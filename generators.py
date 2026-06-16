@@ -213,7 +213,6 @@ class BezierCenterlineGenerator(CenterlineGenerator):
         Returns:
             (turn [n], finite_ok [n] bool).
         """
-        n = dense.shape[0]
         # Resample onto a fixed-N real loop (NaN dropped); count[e] == 0 for all-NaN env.
         resampled, count = arc_length_resample(dense, num=self.config.num_points_per_segment)
         turn = turning_number(resampled)  # [n]; nan where the loop is degenerate/NaN
@@ -286,7 +285,6 @@ class FourierCenterlineGenerator(CenterlineGenerator):
         self.std_k = config.amplitude / (k**config.decay_p)  # [K]
 
     def generate(self, ids: torch.Tensor) -> Centerline:
-        E = len(ids)
         # Sample standard normals (float args), then scale by the per-harmonic decay in torch.
         # NOTE: do NOT pass a tensor std into sample_normal_torch (warp dispatch rejects
         # float-mean / tensor-std, and only honors a per-env scalar std).

@@ -294,7 +294,7 @@ def arc_length_resample(
     return resampled, count
 
 
-def _circular_band_mask(p: int, band: int, device, dtype) -> torch.Tensor:
+def _circular_band_mask(p: int, band: int, device) -> torch.Tensor:
     """Boolean [P, P] mask: True where circular index distance <= band."""
     idx = torch.arange(p, device=device)
     diff = (idx.unsqueeze(0) - idx.unsqueeze(1)).abs()
@@ -325,7 +325,6 @@ def nearest_nonadjacent_distance(
     """
     E, N, _ = points.shape
     device = points.device
-    dtype = points.dtype
 
     if decimation is not None and decimation < N:
         sel = torch.linspace(0, N - 1, decimation, device=device).round().long()
@@ -338,7 +337,7 @@ def nearest_nonadjacent_distance(
 
     P = work.shape[1]
     dmat = torch.cdist(work, work)  # [E, P, P]
-    mask = _circular_band_mask(P, dec_band, device, dtype)  # [P, P]
+    mask = _circular_band_mask(P, dec_band, device)  # [P, P]
     dmat = dmat.masked_fill(mask.unsqueeze(0), float("inf"))
     d_work = dmat.min(dim=-1).values  # [E, P]
 
