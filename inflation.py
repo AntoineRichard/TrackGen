@@ -92,3 +92,30 @@ def _width_stage(center: torch.Tensor, kappa: torch.Tensor, config, eps: float =
         w = torch.minimum(w, w_self)
 
     return w.clamp_min(0.0)
+
+
+def _offset_stage(center: torch.Tensor, Nrm: torch.Tensor, w: torch.Tensor):
+    """Offset the centerline by +/- w along the left-normal and assign outer/inner.
+
+    outer = the candidate with the LARGER |polygon_area|; inner = the smaller.
+    Robust to loop orientation. Areas are computed on NaN-zeroed copies so
+    constant_spacing padding (NaN slots) cannot poison the per-env area.
+
+    Args:
+        center: [E, N, 2]
+        Nrm:    [E, N, 2] unit left-normal
+        w:      [E, N]    half-width
+    Returns:
+        outer: [E, N, 2], inner: [E, N, 2]
+    """
+    wn = w.unsqueeze(-1) * Nrm  # [E, N, 2]
+    a = center + wn
+    b = center - wn
+
+    area_a = geometry.polygon_area(torch.nan_to_num(a, nan=0.0)).abs()  # [E]
+    area_b = geometry.polygon_area(torch.nan_to_num(b, nan=0.0)).abs()  # [E]
+
+    a_is_outer = (area_a >= area_b).view(-1, 1, 1)  # [E, 1, 1] for broadcasting
+    outer = torch.where(a_is_outer, a, b)
+    inner = torch.where(a_is_outer, b, a)
+    return outer, inner

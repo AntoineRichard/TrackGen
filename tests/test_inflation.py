@@ -129,3 +129,28 @@ def test_self_distance_clamp_prevents_overlap_on_near_touch():
     assert torch.all(w <= 0.5 * d + 1e-5)
     assert torch.all(w >= 0.0)
     assert torch.isfinite(outer).all() and torch.isfinite(inner).all()
+
+
+def test_offset_orientation_outer_bigger_inner_smaller():
+    radius = 3.0
+    cl = make_circle_centerline(radius=radius, m=300, e=4)
+    cfg = fixed_config(num_points=256, num_envs=4, half_width=0.5, alpha=0.9,
+                       clamp_self_distance=False)
+    res = inflation._resample_stage(cl, cfg)
+    _, Nrm, kappa = inflation._frame_curvature_stage(res.center)
+    w = inflation._width_stage(res.center, kappa, cfg)
+
+    outer, inner = inflation._offset_stage(res.center, Nrm, w)
+
+    assert outer.shape == res.center.shape
+    assert inner.shape == res.center.shape
+
+    a_outer = geometry.polygon_area(outer).abs()   # [E]
+    a_center = geometry.polygon_area(res.center).abs()
+    a_inner = geometry.polygon_area(inner).abs()
+
+    assert torch.all(a_outer > a_center)
+    assert torch.all(a_center > a_inner)
+    w_scalar = cfg.half_width
+    assert torch.allclose(a_outer, torch.full_like(a_outer, math.pi * (radius + w_scalar) ** 2), atol=1e-1)
+    assert torch.allclose(a_inner, torch.full_like(a_inner, math.pi * (radius - w_scalar) ** 2), atol=1e-1)
