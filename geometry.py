@@ -292,3 +292,60 @@ def arc_length_resample(
 
     count = torch.tensor(counts, dtype=torch.long, device=device)
     return resampled, count
+
+
+def _circular_band_mask(p: int, band: int, device, dtype) -> torch.Tensor:
+    """Boolean [P, P] mask: True where circular index distance <= band."""
+    idx = torch.arange(p, device=device)
+    diff = (idx.unsqueeze(0) - idx.unsqueeze(1)).abs()
+    circ = torch.minimum(diff, p - diff)
+    return circ <= band
+
+
+def nearest_nonadjacent_distance(
+    points: torch.Tensor,
+    band: int,
+    decimation: int | None = None,
+) -> torch.Tensor:
+    """Min distance from each point to any non-adjacent point on a closed loop.
+
+    "Adjacent" = within +/-band index positions on the loop (with wraparound),
+    which also excludes the point itself. Masked pairs are set to +inf before
+    the per-point min. Optionally decimate to `decimation` evenly-spaced points
+    for speed, then map the result back to N indices.
+
+    Args:
+        points: Tensor [E, N, 2], closed loop.
+        band: Half-width (in indices) of the excluded neighbor window.
+        decimation: If given, compute on this many evenly-spaced points and map
+            back to N.
+
+    Returns:
+        Tensor [E, N], min non-adjacent distance per point.
+    """
+    E, N, _ = points.shape
+    device = points.device
+    dtype = points.dtype
+
+    if decimation is not None and decimation < N:
+        sel = torch.linspace(0, N - 1, decimation, device=device).round().long()
+        work = points[:, sel, :]  # [E, P, 2]
+        dec_band = max(1, int(round(band * decimation / N)))
+    else:
+        sel = None
+        work = points
+        dec_band = band
+
+    P = work.shape[1]
+    dmat = torch.cdist(work, work)  # [E, P, P]
+    mask = _circular_band_mask(P, dec_band, device, dtype)  # [P, P]
+    dmat = dmat.masked_fill(mask.unsqueeze(0), float("inf"))
+    d_work = dmat.min(dim=-1).values  # [E, P]
+
+    if sel is None:
+        return d_work
+
+    full_idx = torch.arange(N, device=device)
+    nearest = torch.bucketize(full_idx, sel.clamp(max=N - 1))
+    nearest = nearest.clamp(max=P - 1)
+    return d_work[:, nearest]
