@@ -42,6 +42,27 @@ def polygon_area(points: torch.Tensor) -> torch.Tensor:
     return 0.5 * cross.sum(dim=1)
 
 
+def segment_directions(points: torch.Tensor, closed: bool = True) -> torch.Tensor:
+    """Unit direction of each edge i -> i+1.
+
+    Args:
+        points: Tensor [E, P, 2].
+        closed: If True, the last edge wraps from the final vertex back to the
+            first. If False, that final wrap slot is set to zero.
+
+    Returns:
+        Tensor [E, P, 2] of unit edge directions; zero vectors (degenerate or
+        the open-chain wrap slot) stay finite (zero).
+    """
+    points_next = torch.roll(points, shifts=-1, dims=1)
+    deltas = points_next - points
+    dirs = safe_normalize(deltas)
+    if not closed:
+        dirs = dirs.clone()
+        dirs[:, -1, :] = 0.0
+    return dirs
+
+
 def ccw_sort(points: torch.Tensor) -> torch.Tensor:
     """Order each env's points angularly around their centroid.
 
