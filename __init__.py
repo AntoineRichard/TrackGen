@@ -1,8 +1,4 @@
-"""track_gen — GPU-batched race-track generator.
-
-Public API is grown incrementally as modules land. Geometry primitives are
-re-exported here for convenience.
-"""
+"""track_gen — GPU-batched race-track generator."""
 
 __version__ = "0.1.0"
 
@@ -20,6 +16,14 @@ from .geometry import (
     turning_number,
     vertex_tangents,
 )
+from .types import Track, TrackGenConfig
+from .generators import (
+    BezierCenterlineGenerator,
+    Centerline,
+    CenterlineGenerator,
+    FourierCenterlineGenerator,
+)
+from .track_generator import TrackGenerator, generate_tracks
 
 __all__ = [
     "PerEnvSeededRNG",
@@ -34,4 +38,12 @@ __all__ = [
     "tangents_normals",
     "arc_length_resample",
     "nearest_nonadjacent_distance",
+    "Track",
+    "TrackGenConfig",
+    "Centerline",
+    "CenterlineGenerator",
+    "BezierCenterlineGenerator",
+    "FourierCenterlineGenerator",
+    "TrackGenerator",
+    "generate_tracks",
 ]
