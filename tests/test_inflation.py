@@ -154,3 +154,51 @@ def test_offset_orientation_outer_bigger_inner_smaller():
     w_scalar = cfg.half_width
     assert torch.allclose(a_outer, torch.full_like(a_outer, math.pi * (radius + w_scalar) ** 2), atol=1e-1)
     assert torch.allclose(a_inner, torch.full_like(a_inner, math.pi * (radius - w_scalar) ** 2), atol=1e-1)
+
+
+def make_figure_eight_centerline(scale=2.0, m=400, e=1, device="cpu"):
+    """A self-crossing figure-eight (lemniscate): turning number ~ 0, not +/- 2pi."""
+    t = torch.linspace(0, 2 * math.pi, m + 1, device=device)[:-1]
+    x = scale * torch.sin(t)
+    y = scale * torch.sin(t) * torch.cos(t)
+    pts = torch.stack([x, y], dim=-1).unsqueeze(0).expand(e, m, 2).contiguous()
+    valid = torch.ones(e, dtype=torch.bool, device=device)
+    return Centerline(points=pts, valid=valid)
+
+
+def _run_to_width(cl, cfg):
+    res = inflation._resample_stage(cl, cfg)
+    _, Nrm, kappa = inflation._frame_curvature_stage(res.center)
+    w = inflation._width_stage(res.center, kappa, cfg)
+    return res.center, Nrm, w, res.count
+
+
+def test_validity_true_for_clean_circle():
+    cl = make_circle_centerline(radius=3.0, m=300, e=2)
+    cfg = fixed_config(num_points=256, num_envs=2, half_width=0.4, alpha=0.9,
+                       clamp_self_distance=False, turning_tol=0.2, w_floor=1e-3)
+    center, _, w, count = _run_to_width(cl, cfg)
+    valid = inflation._validity_stage(center, w, count, cl.valid, cfg)
+    assert valid.dtype == torch.bool
+    assert valid.shape == (2,)
+    assert torch.all(valid)
+
+
+def test_validity_false_for_self_crossing():
+    cl = make_figure_eight_centerline(scale=2.0, m=400, e=1)
+    cfg = fixed_config(num_points=256, num_envs=1, half_width=0.2, alpha=0.9,
+                       clamp_self_distance=False, turning_tol=0.2, w_floor=1e-3)
+    center, _, w, count = _run_to_width(cl, cfg)
+    valid = inflation._validity_stage(center, w, count, cl.valid, cfg)
+    assert not bool(valid[0])
+
+
+def test_validity_respects_gen_valid_flag():
+    cl = make_circle_centerline(radius=3.0, m=300, e=2)
+    cl.valid[1] = False
+    cfg = fixed_config(num_points=256, num_envs=2, half_width=0.4, alpha=0.9,
+                       clamp_self_distance=False, turning_tol=0.2, w_floor=1e-3)
+    center, _, w, count = _run_to_width(cl, cfg)
+    valid = inflation._validity_stage(center, w, count, cl.valid, cfg)
+    assert bool(valid[0]) is True
+    assert bool(valid[1]) is False

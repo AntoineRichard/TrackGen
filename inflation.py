@@ -119,3 +119,36 @@ def _offset_stage(center: torch.Tensor, Nrm: torch.Tensor, w: torch.Tensor):
     outer = torch.where(a_is_outer, a, b)
     inner = torch.where(a_is_outer, b, a)
     return outer, inner
+
+
+def _real_point_mask(count: torch.Tensor, n: int, device) -> torch.Tensor:
+    """[E, N] bool mask: slot j is real iff j < count[env]. Fixed mode -> all True."""
+    idx = torch.arange(n, device=device).unsqueeze(0)  # [1, N]
+    return idx < count.unsqueeze(1)  # [E, N]
+
+
+def _validity_stage(center, w, count, gen_valid, config) -> torch.Tensor:
+    """Per-track validity: generation flag AND closed-loop turning AND width floor AND no-NaN.
+
+    Args:
+        center:    [E, N, 2]
+        w:         [E, N]
+        count:     [E]   number of real points per env.
+        gen_valid: [E]   bool generation-time validity.
+        config:    TrackGenConfig (turning_tol, w_floor).
+    Returns:
+        valid: [E] bool.
+    """
+    e, n = w.shape
+    real = _real_point_mask(count, n, w.device)  # [E, N]
+
+    turning = geometry.turning_number(center)  # [E]
+    turn_ok = (turning.abs() - 2.0 * math.pi).abs() <= float(config.turning_tol)
+
+    w_ok = torch.where(real, w > float(config.w_floor), torch.ones_like(real)).all(dim=1)
+
+    nan_per_point = torch.isnan(center).any(dim=-1)  # [E, N]
+    nan_real = (nan_per_point & real).any(dim=1)  # [E]
+    no_nan = ~nan_real
+
+    return gen_valid.to(torch.bool) & turn_ok & w_ok & no_nan
