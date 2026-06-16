@@ -84,3 +84,69 @@ def test_bezier_init_p_increases_with_edgy():
     low = BezierCenterlineGenerator(_bezier_config(edgy=0.0), rng=None).p
     high = BezierCenterlineGenerator(_bezier_config(edgy=5.0), rng=None).p
     assert high > low
+
+
+def _make_rng(num_envs, seed=1234, device="cpu"):
+    import warp as wp  # noqa: F401  (governed by importorskip in each test)
+    wp.init()
+    from track_gen.rng_utils import PerEnvSeededRNG
+
+    seeds = torch.arange(num_envs, dtype=torch.int32) + seed
+    rng = PerEnvSeededRNG(seeds=seeds, num_envs=num_envs, device=device)
+    rng.set_seeds(seeds, ids=torch.arange(num_envs, dtype=torch.int32))
+    return rng
+
+
+def test_cell_sampling_shape():
+    pytest.importorskip("warp")
+    E = 4
+    cfg = _bezier_config(num_envs=E, device="cpu")
+    gen = BezierCenterlineGenerator(cfg, rng=_make_rng(E))
+    ids = torch.arange(E)
+    pts = gen._sample_corner_points(ids)
+    assert pts.shape == (E, cfg.max_num_points, 2)
+    assert torch.isfinite(pts).all()
+
+
+def test_cell_sampling_reproducible():
+    pytest.importorskip("warp")
+    E = 4
+    cfg = _bezier_config(num_envs=E, device="cpu")
+    ids = torch.arange(E)
+    gen_a = BezierCenterlineGenerator(cfg, rng=_make_rng(E, seed=7))
+    gen_b = BezierCenterlineGenerator(cfg, rng=_make_rng(E, seed=7))
+    pts_a = gen_a._sample_corner_points(ids)
+    pts_b = gen_b._sample_corner_points(ids)
+    assert torch.allclose(pts_a, pts_b)
+
+
+def test_cell_indices_distinct_per_env():
+    pytest.importorskip("warp")
+    E = 4
+    cfg = _bezier_config(num_envs=E, device="cpu")
+    gen = BezierCenterlineGenerator(cfg, rng=_make_rng(E))
+    ids = torch.arange(E)
+    idxs = gen._sample_cell_indices(ids)  # [E, max_num_points] cell ids
+    assert idxs.shape == (E, cfg.max_num_points)
+    for e in range(E):
+        assert len(torch.unique(idxs[e])) == cfg.max_num_points  # no duplicate cells
+
+
+def test_cell_sampling_env_independence():
+    pytest.importorskip("warp")
+    E = 3
+    cfg = _bezier_config(num_envs=E, device="cpu")
+    ids = torch.arange(E)
+    base = BezierCenterlineGenerator(cfg, rng=_make_rng(E, seed=100))
+    base_pts = base._sample_corner_points(ids)
+    import warp as wp  # noqa: F401
+    from track_gen.rng_utils import PerEnvSeededRNG
+
+    seeds = torch.tensor([100, 101, 999], dtype=torch.int32)
+    rng2 = PerEnvSeededRNG(seeds=seeds, num_envs=E, device="cpu")
+    rng2.set_seeds(seeds, ids=torch.arange(E, dtype=torch.int32))
+    gen2 = BezierCenterlineGenerator(cfg, rng=rng2)
+    pts2 = gen2._sample_corner_points(ids)
+    assert torch.allclose(base_pts[0], pts2[0])
+    assert torch.allclose(base_pts[1], pts2[1])
+    assert not torch.allclose(base_pts[2], pts2[2])

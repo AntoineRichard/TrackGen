@@ -72,5 +72,34 @@ class BezierCenterlineGenerator(CenterlineGenerator):
         self.bernstein_2 = torch.tensor(bernstein(3, 2, t), device=self.device, dtype=torch.float32)
         self.bernstein_3 = torch.tensor(bernstein(3, 3, t), device=self.device, dtype=torch.float32)
 
+    def _sample_cell_indices(self, ids: torch.Tensor) -> torch.Tensor:
+        """Per-env uniform subset (without replacement) of grid cell indices.
+
+        Draws num_cells**2 i.i.d. uniforms per env; the indices of the max_num_points
+        largest are a uniform k-subset without replacement (top-k trick). Device-resident,
+        per-env seeded -- replaces the old numpy rng.choice host-sync path.
+
+        Returns:
+            [E, max_num_points] long tensor of cell indices in [0, num_cells**2).
+        """
+        n = self.num_cells * self.num_cells
+        u = self.rng.sample_uniform_torch(0.0, 1.0, (n,), ids=ids)  # [E, n]
+        cell_idxs = u.topk(self.config.max_num_points, dim=1).indices  # [E, max_num_points]
+        return cell_idxs.long()
+
+    def _sample_corner_points(self, ids: torch.Tensor) -> torch.Tensor:
+        """Sample max_num_points corner points in scaled grid coordinates.
+
+        Returns:
+            [E, max_num_points, 2] float tensor.
+        """
+        cell_idxs = self._sample_cell_indices(ids)  # [E, max_num_points]
+        x = (cell_idxs % self.num_cells).float()
+        y = (cell_idxs // self.num_cells).float()
+        # Per-corner uniform noise in [-0.5, 0.5) makes the discrete grid continuous.
+        noise = self.rng.sample_uniform_torch(-0.5, 0.5, (self.config.max_num_points, 2), ids=ids)
+        xy = torch.stack([x, y], dim=2) * (self.config.min_point_distance * 2.0) + noise
+        return xy * self.config.scale
+
     def generate(self, ids: torch.Tensor) -> Centerline:
         raise NotImplementedError  # filled in by later tasks
