@@ -157,3 +157,23 @@ def menger_curvature(points: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
 
     denom = (len_a * len_b * len_c).clamp_min(eps)
     return 4.0 * area / denom
+
+
+def tangents_normals(points: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """Unit central-difference tangents and their left-normals on a closed loop.
+
+    Tangent at point i uses the central difference points[i+1] - points[i-1]
+    (wrapping on the closed loop), then safe_normalize. The left-normal is the
+    90-degree CCW rotation: Nrm = stack(-T_y, T_x). Orthonormal by construction.
+
+    Args:
+        points: Tensor [E, N, 2], closed loop.
+
+    Returns:
+        (T, Nrm), each Tensor [E, N, 2]. ||T|| = 1 and T . Nrm = 0 everywhere.
+    """
+    p_next = torch.roll(points, shifts=-1, dims=1)
+    p_prev = torch.roll(points, shifts=1, dims=1)
+    T = safe_normalize(p_next - p_prev)
+    Nrm = torch.stack([-T[..., 1], T[..., 0]], dim=-1)
+    return T, Nrm
