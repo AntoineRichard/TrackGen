@@ -35,6 +35,10 @@ class PerEnvSeededRNG:
         self._use_numpy_rng = False
         self._numpy_rng_is_initialized = False
 
+        # Auto-initialize states from seeds so that construction alone is sufficient
+        # to produce reproducible, seed-determined outputs without a separate set_seeds call.
+        self.set_seeds_warp(self._seeds, None)
+
     @property
     def seeds_warp(self) -> wp.array:
         """Get the seeds for each environment."""

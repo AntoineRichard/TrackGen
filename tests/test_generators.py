@@ -304,3 +304,79 @@ def test_generate_accepts_pruned_variable_count_tracks():
         [bool(torch.isnan(cl.points[e]).any()) for e in valid_idx.tolist()]
     )
     assert has_nan_tail.any(), "no pruned variable-count track was accepted"
+
+
+from track_gen.generators import FourierCenterlineGenerator
+
+
+def _fourier_config(**overrides):
+    cfg = types.SimpleNamespace(
+        num_harmonics=3,
+        decay_p=2.0,
+        amplitude=1.0,
+        scale=10.0,
+        num_centerline_samples=256,
+        device="cpu",
+        num_envs=4,
+        turning_tol=0.5,
+    )
+    for k, v in overrides.items():
+        setattr(cfg, k, v)
+    return cfg
+
+
+def test_fourier_generate_shape_and_closed():
+    pytest.importorskip("warp")
+    E = 4
+    cfg = _fourier_config(num_envs=E, num_centerline_samples=256)
+    gen = FourierCenterlineGenerator(cfg, rng=_make_rng(E, seed=21))
+    ids = torch.arange(E)
+    cl = gen.generate(ids)
+    assert cl.points.shape == (E, 256, 2)
+    assert torch.isfinite(cl.points).all()
+    for e in range(E):
+        gap = torch.linalg.norm(cl.points[e, -1] - cl.points[e, 0])
+        step = torch.linalg.norm(cl.points[e, 1] - cl.points[e, 0])
+        assert gap <= 3.0 * step + 1e-4
+
+
+def test_fourier_mean_centered_and_scaled():
+    pytest.importorskip("warp")
+    E = 3
+    cfg = _fourier_config(num_envs=E, scale=10.0)
+    gen = FourierCenterlineGenerator(cfg, rng=_make_rng(E, seed=8))
+    cl = gen.generate(torch.arange(E))
+    for e in range(E):
+        center = cl.points[e].mean(dim=0)
+        assert torch.allclose(center, torch.zeros(2), atol=1e-4)
+        bbox = cl.points[e].amax(dim=0) - cl.points[e].amin(dim=0)
+        assert bbox.amax().item() == pytest.approx(10.0, abs=1e-3)
+
+
+def test_fourier_reproducible_and_independent():
+    pytest.importorskip("warp")
+    E = 4
+    cfg = _fourier_config(num_envs=E)
+    ids = torch.arange(E)
+    a = FourierCenterlineGenerator(cfg, rng=_make_rng(E, seed=2)).generate(ids)
+    b = FourierCenterlineGenerator(cfg, rng=_make_rng(E, seed=2)).generate(ids)
+    assert torch.allclose(a.points, b.points)
+    import warp as wp  # noqa: F401
+    from track_gen.rng_utils import PerEnvSeededRNG
+
+    seeds = torch.tensor([2, 3, 4, 999], dtype=torch.int32)
+    c = FourierCenterlineGenerator(cfg, rng=PerEnvSeededRNG(seeds=seeds, num_envs=E, device="cpu")).generate(ids)
+    assert torch.allclose(a.points[0], c.points[0])
+    assert not torch.allclose(a.points[3], c.points[3])
+
+
+def test_fourier_low_k_turning_is_loop():
+    pytest.importorskip("warp")
+    from track_gen.geometry import turning_number
+
+    E = 4
+    cfg = _fourier_config(num_envs=E, num_harmonics=1, decay_p=2.0)
+    cl = FourierCenterlineGenerator(cfg, rng=_make_rng(E, seed=14)).generate(torch.arange(E))
+    turn = turning_number(cl.points)
+    assert torch.allclose(turn.abs(), torch.full((E,), 2.0 * math.pi), atol=cfg.turning_tol)
+    assert cl.valid.dtype == torch.bool
