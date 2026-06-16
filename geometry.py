@@ -63,6 +63,27 @@ def segment_directions(points: torch.Tensor, closed: bool = True) -> torch.Tenso
     return dirs
 
 
+def vertex_tangents(points: torch.Tensor, p: float) -> torch.Tensor:
+    """Blended unit tangent at each vertex from its two incident edge dirs.
+
+    Vector-space tangent blend (replaces the old atan2 angle blend). At vertex i,
+    u_out is the direction of edge i -> i+1 and u_in is the direction of edge
+    i-1 -> i; the tangent is safe_normalize(p * u_out + (1 - p) * u_in).
+
+    Args:
+        points: Tensor [E, P, 2], closed loop.
+        p: Blend weight in [0, 1]. p=1 -> pure out-edge, p=0 -> pure in-edge,
+            p=0.5 -> bisector.
+
+    Returns:
+        Tensor [E, P, 2] of unit tangents.
+    """
+    u_out = segment_directions(points, closed=True)
+    u_in = torch.roll(u_out, shifts=1, dims=1)
+    blended = p * u_out + (1.0 - p) * u_in
+    return safe_normalize(blended)
+
+
 def ccw_sort(points: torch.Tensor) -> torch.Tensor:
     """Order each env's points angularly around their centroid.
 
