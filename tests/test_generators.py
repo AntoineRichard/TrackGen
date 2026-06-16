@@ -380,3 +380,16 @@ def test_fourier_low_k_turning_is_loop():
     turn = turning_number(cl.points)
     assert torch.allclose(turn.abs(), torch.full((E,), 2.0 * math.pi), atol=cfg.turning_tol)
     assert cl.valid.dtype == torch.bool
+
+
+def test_module_exposes_both_generators():
+    from track_gen.generators import (
+        BezierCenterlineGenerator,
+        Centerline,
+        CenterlineGenerator,
+        FourierCenterlineGenerator,
+    )
+
+    assert issubclass(BezierCenterlineGenerator, CenterlineGenerator)
+    assert issubclass(FourierCenterlineGenerator, CenterlineGenerator)
+    assert Centerline.__dataclass_fields__.keys() == {"points", "valid"}
