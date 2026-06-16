@@ -84,6 +84,26 @@ def vertex_tangents(points: torch.Tensor, p: float) -> torch.Tensor:
     return safe_normalize(blended)
 
 
+def turning_number(points: torch.Tensor) -> torch.Tensor:
+    """Signed total turning of a closed polygon, in radians.
+
+    +/-2*pi for a simple loop (sign = orientation); ~0 for a figure-eight whose
+    lobes wind in opposite directions. Used as a cheap O(P) self-intersection
+    gate.
+
+    Args:
+        points: Tensor [E, P, 2], closed loop.
+
+    Returns:
+        Tensor [E].
+    """
+    dirs = segment_directions(points, closed=True)
+    theta = torch.atan2(dirs[..., 1], dirs[..., 0])
+    dtheta = theta - torch.roll(theta, shifts=1, dims=1)
+    dtheta = torch.atan2(torch.sin(dtheta), torch.cos(dtheta))  # wrap into (-pi, pi]
+    return dtheta.sum(dim=1)
+
+
 def ccw_sort(points: torch.Tensor) -> torch.Tensor:
     """Order each env's points angularly around their centroid.
 
