@@ -13,7 +13,7 @@ import numpy as np
 import torch
 from scipy.special import binom
 
-from .geometry import ccw_sort, vertex_tangents
+from .geometry import arc_length_resample, ccw_sort, safe_normalize, turning_number, vertex_tangents
 
 
 @dataclass
@@ -180,5 +180,87 @@ class BezierCenterlineGenerator(CenterlineGenerator):
             segments.append(seg)
         return torch.cat(segments, dim=1)
 
+    def _corner_angles(self, corners: torch.Tensor) -> torch.Tensor:
+        """Interior angle at each corner via clamped arccos (NaN-safe).
+
+        Args:
+            corners: [E, P, 2] (may contain NaN pruned rows).
+
+        Returns:
+            [E, P] angles in radians; degenerate/NaN corners -> 0.0 (always fail).
+            Boundary corners whose rolled neighbour is NaN also yield 0.0.
+        """
+        eps = 1e-7
+        prev = torch.roll(corners, 1, dims=1)
+        nxt = torch.roll(corners, -1, dims=1)
+        u_in = safe_normalize(corners - prev)
+        u_out = safe_normalize(nxt - corners)
+        cos_turn = (u_in * u_out).sum(dim=-1).clamp(-1.0 + eps, 1.0 - eps)
+        angle = math.pi - torch.arccos(cos_turn)  # interior angle
+        return torch.nan_to_num(angle, nan=0.0)
+
+    def _real_turning_and_finite(self, dense: torch.Tensor):
+        """Per-env turning number + finiteness computed over REAL (non-NaN) points only.
+
+        The NaN-padded dense buffer would otherwise poison turning_number for any
+        pruned (variable-count) env. We compact each env to a fixed-N real
+        centerline via arc_length_resample (which drops NaN points), then gate on
+        that. An env with < 2 real points yields turn = nan (fails) and finite = False.
+
+        Args:
+            dense: [n, M_max, 2] candidate centerlines (may contain NaN).
+
+        Returns:
+            (turn [n], finite_ok [n] bool).
+        """
+        n = dense.shape[0]
+        # Resample onto a fixed-N real loop (NaN dropped); count[e] == 0 for all-NaN env.
+        resampled, count = arc_length_resample(dense, num=self.config.num_points_per_segment)
+        turn = turning_number(resampled)  # [n]; nan where the loop is degenerate/NaN
+        finite_ok = (count >= 2) & torch.isfinite(turn)
+        return turn, finite_ok
+
+    def _generate_batch(self, ids: torch.Tensor):
+        """One full draw for the given ids: corners -> prune -> dense centerline + control corners."""
+        raw = self._sample_corner_points(ids)
+        pruned, _count = self._prune_corners(raw, ids)
+        dense = self._assemble_centerline(pruned)
+        return dense, pruned
+
     def generate(self, ids: torch.Tensor) -> Centerline:
-        raise NotImplementedError  # filled in by later tasks
+        E = len(ids)
+        M_max = self.config.max_num_points * self.config.num_points_per_segment
+
+        points = torch.full((E, M_max, 2), float("nan"), device=self.device)
+        valid = torch.zeros((E,), dtype=torch.bool, device=self.device)
+        pending = torch.arange(E, device=self.device)  # local rows still needing a good draw
+
+        for _ in range(self.config.max_regen_iters):
+            if pending.numel() == 0:
+                break
+            sub_ids = ids[pending]
+            dense, corners = self._generate_batch(sub_ids)
+
+            # Gate 1: every REAL interior corner (with real neighbours) exceeds min_angle.
+            # NaN corners (pruned) yield angle 0.0 via nan_to_num but are excluded.
+            # Boundary corners whose rolled neighbour is NaN (roll wraps into padding)
+            # are also excluded — they belong to the circular closure of real corners.
+            angles = self._corner_angles(corners)  # [n, P]
+            real_corner = torch.isfinite(corners).all(dim=-1)  # [n, P] bool
+            prev_real = torch.roll(real_corner, 1, dims=1)
+            next_real = torch.roll(real_corner, -1, dims=1)
+            # Corner is "constrained" only when it and both its neighbours are real.
+            constrained = real_corner & prev_real & next_real
+            # A constrained corner must pass; unconstrained corners are irrelevant.
+            angle_ok = ((angles > self.config.min_angle) | ~constrained).all(dim=1)
+            # Gates 2 & 3: turning number ~ 2*pi AND finite, evaluated on REAL points only.
+            turn, finite_ok = self._real_turning_and_finite(dense)
+            turn_ok = (turn.abs() - 2.0 * math.pi).abs() <= self.config.turning_tol
+            ok = angle_ok & turn_ok & finite_ok
+
+            good = pending[ok]
+            points[good] = dense[ok]
+            valid[good] = True
+            pending = pending[~ok]
+
+        return Centerline(points=points, valid=valid)

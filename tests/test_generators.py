@@ -235,3 +235,72 @@ def test_assemble_centerline_nan_corner_propagates():
     dense = gen._assemble_centerline(corners)
     assert torch.isnan(dense[0]).any()
     assert torch.isfinite(dense[0]).any()
+
+
+def test_corner_angles_clamped_no_nan():
+    cfg = _bezier_config()
+    gen = BezierCenterlineGenerator(cfg, rng=None)
+    corners = torch.tensor([[[0.0, 0.0], [1.0, 0.0], [1.0, 0.0], [0.0, 1.0]]])  # repeated corner
+    ang = gen._corner_angles(corners)
+    assert ang.shape == (1, 4)
+    assert torch.isfinite(ang).all()
+
+
+def test_generate_returns_centerline():
+    pytest.importorskip("warp")
+    E = 8
+    cfg = _bezier_config(num_envs=E, device="cpu")
+    gen = BezierCenterlineGenerator(cfg, rng=_make_rng(E, seed=11))
+    ids = torch.arange(E)
+    cl = gen.generate(ids)
+    from track_gen.generators import Centerline
+
+    assert isinstance(cl, Centerline)
+    M_max = cfg.max_num_points * cfg.num_points_per_segment
+    assert cl.points.shape == (E, M_max, 2)
+    assert cl.valid.shape == (E,)
+    assert cl.valid.dtype == torch.bool
+
+
+def test_generate_reproducible():
+    pytest.importorskip("warp")
+    E = 6
+    cfg = _bezier_config(num_envs=E, device="cpu")
+    ids = torch.arange(E)
+    a = BezierCenterlineGenerator(cfg, rng=_make_rng(E, seed=5)).generate(ids)
+    b = BezierCenterlineGenerator(cfg, rng=_make_rng(E, seed=5)).generate(ids)
+    assert torch.equal(torch.isnan(a.points), torch.isnan(b.points))
+    fin = torch.isfinite(a.points)
+    assert torch.allclose(a.points[fin], b.points[fin])
+    assert torch.equal(a.valid, b.valid)
+
+
+def test_generate_pathological_flags_invalid_without_hang():
+    pytest.importorskip("warp")
+    E = 4
+    cfg = _bezier_config(num_envs=E, device="cpu", min_angle=3.10, max_regen_iters=3)
+    gen = BezierCenterlineGenerator(cfg, rng=_make_rng(E, seed=1))
+    ids = torch.arange(E)
+    cl = gen.generate(ids)  # must return, not hang
+    assert cl.valid.shape == (E,)
+    assert (~cl.valid).all()
+
+
+def test_generate_accepts_pruned_variable_count_tracks():
+    pytest.importorskip("warp")
+    # With a wide [min,max] count window, many envs draw < max corners. The
+    # NaN-aware gates must still accept geometrically-good pruned tracks, so
+    # not every valid env has exactly max_num_points corners.
+    E = 32
+    cfg = _bezier_config(num_envs=E, device="cpu", min_num_points=6, max_num_points=13)
+    gen = BezierCenterlineGenerator(cfg, rng=_make_rng(E, seed=99))
+    ids = torch.arange(E)
+    cl = gen.generate(ids)
+    # At least one valid env exists and at least one valid env has a NaN tail
+    # (i.e. a pruned, variable-count track was accepted).
+    valid_idx = torch.where(cl.valid)[0]
+    assert valid_idx.numel() > 0
+    has_nan_tail = torch.tensor(
+        [bool(torch.isnan(cl.points[e]).any()) for e in valid_idx.tolist()]
+    )
+    assert has_nan_tail.any(), "no pruned variable-count track was accepted"
