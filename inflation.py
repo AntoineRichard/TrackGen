@@ -61,3 +61,34 @@ def _frame_curvature_stage(center: torch.Tensor):
     T, Nrm = geometry.tangents_normals(center)
     kappa = geometry.menger_curvature(center)
     return T, Nrm, kappa
+
+
+def _width_stage(center: torch.Tensor, kappa: torch.Tensor, config, eps: float = 1e-8):
+    """Per-point half-width via curvature clamp + optional self-distance clamp.
+
+    Args:
+        center: [E, N, 2] resampled centerline.
+        kappa:  [E, N]    non-negative curvature.
+        config: TrackGenConfig (half_width, alpha, clamp_self_distance,
+                self_distance_margin, self_distance_band, self_distance_decimation).
+    Returns:
+        w: [E, N] non-negative half-width.
+    """
+    w_max = float(config.half_width)
+    alpha = float(config.alpha)
+
+    w_curv = torch.where(
+        kappa > eps,
+        alpha / kappa.clamp_min(eps),
+        torch.full_like(kappa, w_max),
+    )
+    w = w_curv.clamp_max(w_max)
+
+    if config.clamp_self_distance:
+        d = geometry.nearest_nonadjacent_distance(
+            center, config.self_distance_band, config.self_distance_decimation
+        )  # [E, N]
+        w_self = 0.5 * (d - float(config.self_distance_margin))
+        w = torch.minimum(w, w_self)
+
+    return w.clamp_min(0.0)

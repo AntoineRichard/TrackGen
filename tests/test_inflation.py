@@ -6,6 +6,7 @@ import torch
 from track_gen.generators import Centerline
 from track_gen.types import Track, TrackGenConfig
 from track_gen import inflation
+from track_gen import geometry
 
 
 def make_circle_centerline(radius=2.0, m=200, e=1, center=(0.0, 0.0), device="cpu"):
@@ -62,3 +63,69 @@ def test_frame_curvature_orthonormal_and_circle_kappa():
     dot = (T * Nrm).sum(dim=-1)  # [E, N]
     assert torch.allclose(dot, torch.zeros_like(dot), atol=1e-4)
     assert torch.allclose(kappa, torch.full_like(kappa, 1.0 / radius), atol=1e-2)
+
+
+def make_ellipse_centerline(a=4.0, b=1.5, m=300, e=1, device="cpu"):
+    """Closed ellipse Centerline; high curvature at the ends of the major axis."""
+    theta = torch.linspace(0, 2 * math.pi, m + 1, device=device)[:-1]
+    x = a * torch.cos(theta)
+    y = b * torch.sin(theta)
+    pts = torch.stack([x, y], dim=-1).unsqueeze(0).expand(e, m, 2).contiguous()
+    valid = torch.ones(e, dtype=torch.bool, device=device)
+    return Centerline(points=pts, valid=valid)
+
+
+def make_near_touch_centerline(m=400, e=1, gap=0.2, device="cpu"):
+    """A peanut/dumbbell loop whose two lobes pass within ~gap of each other."""
+    t = torch.linspace(0, 2 * math.pi, m + 1, device=device)[:-1]
+    r = 3.0 + 2.0 * torch.cos(2 * t)  # waist where cos(2t) is most negative
+    x = r * torch.cos(t)
+    y = r * torch.sin(t)
+    squeeze = gap + 0.5 * (x / x.abs().max())**2
+    y = y * squeeze / (squeeze.abs().max())
+    pts = torch.stack([x, y], dim=-1).unsqueeze(0).expand(e, m, 2).contiguous()
+    valid = torch.ones(e, dtype=torch.bool, device=device)
+    return Centerline(points=pts, valid=valid)
+
+
+def test_width_bounded_by_w_max_on_circle():
+    cl = make_circle_centerline(radius=5.0, m=200, e=1)
+    cfg = fixed_config(num_points=256, num_envs=1, half_width=0.4, alpha=0.9,
+                       clamp_self_distance=False)
+    res = inflation._resample_stage(cl, cfg)
+    _, _, kappa = inflation._frame_curvature_stage(res.center)
+    w = inflation._width_stage(res.center, kappa, cfg)
+    assert w.shape == (1, 256)
+    assert torch.all(w <= cfg.half_width + 1e-6)
+    assert torch.allclose(w, torch.full_like(w, cfg.half_width), atol=1e-3)
+
+
+def test_width_no_fold_on_ellipse():
+    cl = make_ellipse_centerline(a=4.0, b=1.0, m=400, e=1)
+    cfg = fixed_config(num_points=400, num_envs=1, half_width=2.0, alpha=0.9,
+                       clamp_self_distance=False)
+    res = inflation._resample_stage(cl, cfg)
+    _, _, kappa = inflation._frame_curvature_stage(res.center)
+    w = inflation._width_stage(res.center, kappa, cfg)
+    assert torch.all(w * kappa < cfg.alpha + 1e-4)
+    assert torch.all(w * kappa < 1.0)
+
+
+def test_self_distance_clamp_prevents_overlap_on_near_touch():
+    cl = make_near_touch_centerline(m=600, e=1, gap=0.3)
+    cfg = fixed_config(
+        num_points=600, num_envs=1, half_width=1.0, alpha=0.9,
+        clamp_self_distance=True, self_distance_margin=0.02,
+        self_distance_band=8, self_distance_decimation=64,
+    )
+    res = inflation._resample_stage(cl, cfg)
+    _, Nrm, kappa = inflation._frame_curvature_stage(res.center)
+    w = inflation._width_stage(res.center, kappa, cfg)
+    outer = res.center + w.unsqueeze(-1) * Nrm
+    inner = res.center - w.unsqueeze(-1) * Nrm
+    d = geometry.nearest_nonadjacent_distance(
+        res.center, cfg.self_distance_band, cfg.self_distance_decimation
+    )
+    assert torch.all(w <= 0.5 * d + 1e-5)
+    assert torch.all(w >= 0.0)
+    assert torch.isfinite(outer).all() and torch.isfinite(inner).all()
