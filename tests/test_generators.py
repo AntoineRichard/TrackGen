@@ -194,3 +194,44 @@ def test_prune_corners_reproducible():
     pb, cb = b._prune_corners(b._sample_corner_points(ids), ids)
     assert torch.equal(ca, cb)
     assert torch.equal(torch.isnan(pa), torch.isnan(pb))
+
+
+def _square_corners(E=2):
+    sq = torch.tensor([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]])
+    return sq.unsqueeze(0).expand(E, 4, 2).contiguous()
+
+
+def test_assemble_centerline_shape():
+    cfg = _bezier_config(num_points_per_segment=30)
+    gen = BezierCenterlineGenerator(cfg, rng=None)
+    corners = _square_corners(E=3)  # P=4
+    dense = gen._assemble_centerline(corners)
+    assert dense.shape == (3, 4 * 30, 2)
+
+
+def test_assemble_centerline_is_closed_loop():
+    cfg = _bezier_config(num_points_per_segment=30, rad=0.2, edgy=0.0)
+    gen = BezierCenterlineGenerator(cfg, rng=None)
+    corners = _square_corners(E=1)
+    dense = gen._assemble_centerline(corners)
+    assert torch.isfinite(dense).all()
+    gap = torch.linalg.norm(dense[0, -1] - dense[0, 0])
+    seg_step = torch.linalg.norm(dense[0, 1] - dense[0, 0])
+    assert gap <= 3.0 * seg_step + 1e-4
+
+
+def test_assemble_centerline_nan_corner_propagates():
+    cfg = _bezier_config(num_points_per_segment=30)
+    gen = BezierCenterlineGenerator(cfg, rng=None)
+    # Use a hexagon: vertex_tangents makes a pruned corner poison its tangent
+    # plus its two neighbours' tangents (4 consecutive cubic segments). With a
+    # 4-corner square that is ALL segments, so nothing finite survives; with
+    # >=6 corners at least one fully-finite segment remains, which is what lets
+    # us assert that the NaN propagates *locally* rather than destroying the
+    # whole dense polyline.
+    ang = torch.arange(6, dtype=torch.float32) * (2.0 * torch.pi / 6.0)
+    corners = torch.stack([torch.cos(ang), torch.sin(ang)], dim=-1).unsqueeze(0)  # [1, 6, 2]
+    corners[0, 2] = float("nan")  # prune the 3rd corner
+    dense = gen._assemble_centerline(corners)
+    assert torch.isnan(dense[0]).any()
+    assert torch.isfinite(dense[0]).any()

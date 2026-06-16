@@ -13,7 +13,7 @@ import numpy as np
 import torch
 from scipy.special import binom
 
-from .geometry import ccw_sort
+from .geometry import ccw_sort, vertex_tangents
 
 
 @dataclass
@@ -131,6 +131,54 @@ class BezierCenterlineGenerator(CenterlineGenerator):
         nan = torch.full_like(points, float("nan"))
         pruned = torch.where(keep.unsqueeze(-1), points, nan)
         return pruned, count
+
+    def _cubic_bezier(self, p0, p1, p2, p3):
+        """Evaluate a batched cubic Bezier with the precomputed Bernstein basis.
+
+        Args:
+            p0, p1, p2, p3: each [E, 2] control points.
+
+        Returns:
+            [E, num_points_per_segment, 2] dense samples.
+        """
+        curve = (
+            torch.einsum("s,ed->esd", self.bernstein_0, p0)
+            + torch.einsum("s,ed->esd", self.bernstein_1, p1)
+            + torch.einsum("s,ed->esd", self.bernstein_2, p2)
+            + torch.einsum("s,ed->esd", self.bernstein_3, p3)
+        )
+        return curve
+
+    def _segment(self, c0, c1, t0, t1):
+        """Cubic Bezier from corner c0 (tangent t0) to corner c1 (tangent t1).
+
+        Inner handles sit at distance rad * chord along the corner tangents.
+        """
+        chord = torch.linalg.norm(c1 - c0, dim=1, keepdim=True)  # [E, 1]
+        handle = self.config.rad * chord
+        p1 = c0 + t0 * handle  # leave c0 along its tangent
+        p2 = c1 - t1 * handle  # arrive at c1 along its tangent
+        return self._cubic_bezier(c0, p1, p2, c1)
+
+    def _assemble_centerline(self, corners: torch.Tensor) -> torch.Tensor:
+        """Build the closed dense centerline from ccw-ordered (possibly NaN-padded) corners.
+
+        Args:
+            corners: [E, P, 2]; NaN rows are pruned corners.
+
+        Returns:
+            [E, P * num_points_per_segment, 2] closed dense polyline (NaN where pruned).
+        """
+        P = corners.shape[1]
+        # Use the derived edgy-based blend weight self.p, NOT config.decay_p.
+        tangents = vertex_tangents(corners, self.p)  # [E, P, 2] unit, NaN at pruned
+
+        segments = []
+        for i in range(P):
+            j = (i + 1) % P  # wrap the last corner back to the first
+            seg = self._segment(corners[:, i], corners[:, j], tangents[:, i], tangents[:, j])
+            segments.append(seg)
+        return torch.cat(segments, dim=1)
 
     def generate(self, ids: torch.Tensor) -> Centerline:
         raise NotImplementedError  # filled in by later tasks
