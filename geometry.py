@@ -40,3 +40,24 @@ def polygon_area(points: torch.Tensor) -> torch.Tensor:
     y_next = torch.roll(y, shifts=-1, dims=1)
     cross = x * y_next - x_next * y
     return 0.5 * cross.sum(dim=1)
+
+
+def ccw_sort(points: torch.Tensor) -> torch.Tensor:
+    """Order each env's points angularly around their centroid.
+
+    Ported from the original ``TrackGenerator.ccw_sort`` to preserve behavior,
+    including its ``atan2(dx, dy)`` argument order. Reordering points by angle
+    around the centroid yields a simple (non-self-intersecting) polygon.
+
+    Args:
+        points: Tensor [E, P, 2].
+
+    Returns:
+        Tensor [E, P, 2], the same points reordered along the P axis.
+    """
+    mean = torch.mean(points, dim=1)
+    dist = points - mean.unsqueeze(1)
+    angles = torch.arctan2(dist[:, :, 0], dist[:, :, 1])
+    ids = torch.argsort(angles, dim=1)
+    points = torch.gather(points, 1, ids.unsqueeze(-1).expand(-1, -1, points.size(2)))
+    return points
