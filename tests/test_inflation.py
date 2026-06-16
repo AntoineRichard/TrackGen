@@ -45,3 +45,20 @@ def test_resample_stage_circle_is_arc_uniform_and_on_circle():
     assert torch.allclose(r, torch.full_like(r, radius), atol=1e-3)
     seg = torch.linalg.norm(torch.diff(res.center, dim=1, append=res.center[:, :1]), dim=-1)
     assert seg.std(dim=1).max().item() < 1e-3
+
+
+def test_frame_curvature_orthonormal_and_circle_kappa():
+    radius = 2.0
+    cl = make_circle_centerline(radius=radius, m=500, e=2)
+    cfg = fixed_config(num_points=256, num_envs=2)
+
+    res = inflation._resample_stage(cl, cfg)
+    T, Nrm, kappa = inflation._frame_curvature_stage(res.center)
+
+    t_norm = torch.linalg.norm(T, dim=-1)  # [E, N]
+    assert torch.allclose(t_norm, torch.ones_like(t_norm), atol=1e-4)
+    n_norm = torch.linalg.norm(Nrm, dim=-1)
+    assert torch.allclose(n_norm, torch.ones_like(n_norm), atol=1e-4)
+    dot = (T * Nrm).sum(dim=-1)  # [E, N]
+    assert torch.allclose(dot, torch.zeros_like(dot), atol=1e-4)
+    assert torch.allclose(kappa, torch.full_like(kappa, 1.0 / radius), atol=1e-2)

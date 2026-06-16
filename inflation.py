@@ -48,3 +48,16 @@ def _resample_stage(centerline, config) -> _ResampleResult:
         raise ValueError(f"Unknown output_mode: {config.output_mode!r}")
 
     return _ResampleResult(center=resampled, count=count)
+
+
+def _frame_curvature_stage(center: torch.Tensor):
+    """Compute the per-point frame and curvature on the resampled centerline.
+
+    Returns:
+        T:     [E, N, 2] unit tangent (central difference).
+        Nrm:   [E, N, 2] unit left-normal, Nrm = (-T_y, T_x).
+        kappa: [E, N]    non-negative Menger curvature.
+    """
+    T, Nrm = geometry.tangents_normals(center)
+    kappa = geometry.menger_curvature(center)
+    return T, Nrm, kappa
