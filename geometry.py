@@ -123,3 +123,37 @@ def ccw_sort(points: torch.Tensor) -> torch.Tensor:
     ids = torch.argsort(angles, dim=1)
     points = torch.gather(points, 1, ids.unsqueeze(-1).expand(-1, -1, points.size(2)))
     return points
+
+
+def menger_curvature(points: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
+    """Non-negative Menger curvature at each point on a closed loop.
+
+    For the triple (i-1, i, i+1): kappa = 4 * |triangle area| / (|a||b||c|),
+    where a, b, c are the triangle's side lengths. Tends to 1/r on a radius-r
+    circle; ~0 on a straight line. The denominator is clamped by eps so
+    coincident points yield 0 rather than NaN.
+
+    Args:
+        points: Tensor [E, N, 2], closed loop.
+        eps: Denominator floor guarding divide-by-zero.
+
+    Returns:
+        Tensor [E, N], kappa >= 0.
+    """
+    p_prev = torch.roll(points, shifts=1, dims=1)
+    p_curr = points
+    p_next = torch.roll(points, shifts=-1, dims=1)
+
+    a = p_curr - p_prev
+    b = p_next - p_curr
+    c = p_next - p_prev
+
+    len_a = torch.linalg.norm(a, dim=-1)
+    len_b = torch.linalg.norm(b, dim=-1)
+    len_c = torch.linalg.norm(c, dim=-1)
+
+    cross = a[..., 0] * b[..., 1] - a[..., 1] * b[..., 0]  # 2D cross product
+    area = 0.5 * cross.abs()
+
+    denom = (len_a * len_b * len_c).clamp_min(eps)
+    return 4.0 * area / denom
