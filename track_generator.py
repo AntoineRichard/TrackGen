@@ -80,3 +80,35 @@ class TrackGenerator:
         ids = self._resolve_ids(num_or_ids)
         centerline: Centerline = self._generator.generate(ids)
         return inflate(centerline, self._config)
+
+
+def generate_tracks(num_tracks: int, config: TrackGenConfig | None = None, rng=None) -> Tensor:
+    """Deprecated backward-compatibility shim for the old centerline-only API.
+
+    The legacy ``TrackGenerator.generate_tracks`` returned only centerline data.
+    This shim runs the full pipeline and returns just the centerline points,
+    shaped ``[num_tracks, N, 2]``, so existing callers keep working.
+
+    .. deprecated::
+        Use ``TrackGenerator(config, rng).generate(num_tracks).center`` instead.
+
+    Args:
+        num_tracks: Number of tracks to generate.
+        config: Pipeline configuration. If ``None``, a default
+            :class:`TrackGenConfig` with ``num_envs = num_tracks`` is used.
+        rng: A ``PerEnvSeededRNG`` instance.
+
+    Returns:
+        The centerline points, shape ``[num_tracks, N, 2]``.
+    """
+    warnings.warn(
+        "generate_tracks() is deprecated; use "
+        "TrackGenerator(config, rng).generate(num_tracks).center instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    if config is None:
+        config = TrackGenConfig(num_envs=num_tracks)
+    generator = TrackGenerator(config, rng)
+    track = generator.generate(num_tracks)
+    return track.center
