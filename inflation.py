@@ -152,3 +152,67 @@ def _validity_stage(center, w, count, gen_valid, config) -> torch.Tensor:
     no_nan = ~nan_real
 
     return gen_valid.to(torch.bool) & turn_ok & w_ok & no_nan
+
+
+def _arclength(center: torch.Tensor, count: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """Cumulative arc length [E, N] (0 at index 0) and closed-loop total length [E].
+
+    Uses only real points: padded (NaN) slots contribute zero-length segments. The
+    closing wrap segment (last real point -> point 0) is added explicitly so the
+    total length matches the closed-loop definition in both output modes.
+    """
+    e, n, _ = center.shape
+    real = _real_point_mask(count, n, center.device)  # [E, N]
+
+    nxt = torch.roll(center, shifts=-1, dims=1)
+    seg = nxt - center  # [E, N, 2]
+    seg_len = torch.linalg.norm(seg, dim=-1)  # [E, N]
+    real_next = torch.roll(real, shifts=-1, dims=1)
+    seg_real = real & real_next  # [E, N]
+    seg_len = torch.where(seg_real, seg_len, torch.zeros_like(seg_len))
+
+    cum = torch.cumsum(seg_len, dim=1)  # length at i is sum of seg[0..i]
+    arclen = torch.zeros_like(cum)
+    arclen[:, 1:] = cum[:, :-1]
+
+    # Closing wrap segment: last real point (index count-1) -> first point (index 0).
+    # In fixed mode this is already captured by seg at index N-1; in constant_spacing
+    # mode it is NOT (the next slot after count-1 is padding), so add it explicitly.
+    last_idx = (count - 1).clamp_min(0)  # [E]
+    first_pt = center[:, 0, :]  # [E, 2]
+    last_pt = center[torch.arange(e, device=center.device), last_idx]  # [E, 2]
+    wrap_already_counted = real_next.gather(1, last_idx.unsqueeze(1)).squeeze(1)  # [E] bool
+    wrap_len = torch.linalg.norm(first_pt - last_pt, dim=-1)  # [E]
+    # Add the wrap only when it was NOT already counted as a real segment and count>=2.
+    add_wrap = (~wrap_already_counted) & (count >= 2)
+    wrap_contrib = torch.where(add_wrap, wrap_len, torch.zeros_like(wrap_len))
+
+    length = seg_len.sum(dim=1) + wrap_contrib
+    return arclen, length
+
+
+def inflate(centerline, config) -> Track:
+    """Inflate a dense Centerline into a Track (outer/center/inner + frame + metadata).
+
+    Stages: resample -> frame+curvature -> width -> offset -> validity -> assemble.
+    """
+    res = _resample_stage(centerline, config)
+    center, count = res.center, res.count
+
+    T, Nrm, kappa = _frame_curvature_stage(center)
+    w = _width_stage(center, kappa, config)
+    outer, inner = _offset_stage(center, Nrm, w)
+    valid = _validity_stage(center, w, count, centerline.valid, config)
+    arclen, length = _arclength(center, count)
+
+    return Track(
+        outer=outer,
+        center=center,
+        inner=inner,
+        tangent=T,
+        normal=Nrm,
+        arclen=arclen,
+        length=length,
+        valid=valid,
+        count=count,
+    )

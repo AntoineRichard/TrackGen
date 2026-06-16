@@ -202,3 +202,55 @@ def test_validity_respects_gen_valid_flag():
     valid = inflation._validity_stage(center, w, count, cl.valid, cfg)
     assert bool(valid[0]) is True
     assert bool(valid[1]) is False
+
+
+def test_inflate_fixed_mode_full_track():
+    radius = 3.0
+    cl = make_circle_centerline(radius=radius, m=300, e=3)
+    cfg = fixed_config(num_points=128, num_envs=3, half_width=0.4, alpha=0.9,
+                       clamp_self_distance=False, turning_tol=0.2, w_floor=1e-3)
+
+    track = inflation.inflate(cl, cfg)
+
+    assert isinstance(track, Track)
+    for arr in (track.outer, track.center, track.inner, track.tangent, track.normal):
+        assert arr.shape == (3, 128, 2)
+    assert track.arclen.shape == (3, 128)
+    assert track.length.shape == (3,)
+    assert track.valid.shape == (3,)
+    assert track.count.shape == (3,)
+
+    assert torch.equal(track.count, torch.full((3,), 128, dtype=track.count.dtype))
+    assert torch.all(track.valid)
+    assert torch.isfinite(track.center).all()
+    assert torch.isfinite(track.outer).all()
+    assert torch.isfinite(track.inner).all()
+
+    assert torch.allclose(track.arclen[:, 0], torch.zeros(3), atol=1e-6)
+    assert torch.all(track.arclen[:, 1:] - track.arclen[:, :-1] >= -1e-6)
+    assert torch.allclose(track.length, torch.full((3,), 2 * math.pi * radius), atol=1e-1)
+
+
+def test_inflate_constant_spacing_mode_padding_and_wrap_length():
+    radius = 3.0
+    cl = make_circle_centerline(radius=radius, m=300, e=1)
+    # Circumference ~ 18.85; spacing 0.5 -> ~38 real points, padded to N_max=128.
+    cfg = TrackGenConfig(
+        device="cpu", num_envs=1,
+        output_mode="constant_spacing", spacing=0.5, N_max=128,
+        half_width=0.3, alpha=0.9, clamp_self_distance=False,
+        turning_tol=0.2, w_floor=1e-3,
+    )
+
+    track = inflation.inflate(cl, cfg)
+
+    assert track.center.shape == (1, 128, 2)
+    c = int(track.count[0].item())
+    assert 0 < c <= 128
+    assert torch.isfinite(track.center[0, :c]).all()
+    if c < 128:
+        assert torch.isnan(track.center[0, c:]).all()
+    assert abs(c - round(2 * math.pi * radius / 0.5)) <= 2
+    # The closing wrap segment must be included -> total length ~ circumference,
+    # not short by one segment.
+    assert torch.allclose(track.length, torch.full((1,), 2 * math.pi * radius), atol=0.6)
