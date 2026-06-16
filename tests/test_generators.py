@@ -150,3 +150,47 @@ def test_cell_sampling_env_independence():
     assert torch.allclose(base_pts[0], pts2[0])
     assert torch.allclose(base_pts[1], pts2[1])
     assert not torch.allclose(base_pts[2], pts2[2])
+
+
+def test_prune_corners_shape_and_count():
+    pytest.importorskip("warp")
+    E = 6
+    cfg = _bezier_config(num_envs=E, device="cpu", min_num_points=9, max_num_points=13)
+    gen = BezierCenterlineGenerator(cfg, rng=_make_rng(E))
+    ids = torch.arange(E)
+    raw = gen._sample_corner_points(ids)
+    pruned, count = gen._prune_corners(raw, ids)
+    assert pruned.shape == (E, cfg.max_num_points, 2)
+    assert count.shape == (E,)
+    assert (count >= cfg.min_num_points).all()
+    assert (count <= cfg.max_num_points).all()
+
+
+def test_prune_corners_pads_with_nan():
+    pytest.importorskip("warp")
+    E = 6
+    cfg = _bezier_config(num_envs=E, device="cpu", min_num_points=4, max_num_points=13)
+    gen = BezierCenterlineGenerator(cfg, rng=_make_rng(E, seed=42))
+    ids = torch.arange(E)
+    raw = gen._sample_corner_points(ids)
+    pruned, count = gen._prune_corners(raw, ids)
+    for e in range(E):
+        c = int(count[e])
+        assert torch.isfinite(pruned[e, :c]).all()
+        if c < cfg.max_num_points:
+            assert torch.isnan(pruned[e, c:]).all()
+        finite_rows = torch.isfinite(pruned[e]).all(dim=1).sum().item()
+        assert finite_rows == c
+
+
+def test_prune_corners_reproducible():
+    pytest.importorskip("warp")
+    E = 5
+    cfg = _bezier_config(num_envs=E, device="cpu")
+    ids = torch.arange(E)
+    a = BezierCenterlineGenerator(cfg, rng=_make_rng(E, seed=3))
+    b = BezierCenterlineGenerator(cfg, rng=_make_rng(E, seed=3))
+    pa, ca = a._prune_corners(a._sample_corner_points(ids), ids)
+    pb, cb = b._prune_corners(b._sample_corner_points(ids), ids)
+    assert torch.equal(ca, cb)
+    assert torch.equal(torch.isnan(pa), torch.isnan(pb))

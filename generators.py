@@ -13,6 +13,8 @@ import numpy as np
 import torch
 from scipy.special import binom
 
+from .geometry import ccw_sort
+
 
 @dataclass
 class Centerline:
@@ -100,6 +102,35 @@ class BezierCenterlineGenerator(CenterlineGenerator):
         noise = self.rng.sample_uniform_torch(-0.5, 0.5, (self.config.max_num_points, 2), ids=ids)
         xy = torch.stack([x, y], dim=2) * (self.config.min_point_distance * 2.0) + noise
         return xy * self.config.scale
+
+    def _prune_corners(self, points: torch.Tensor, ids: torch.Tensor):
+        """ccw-sort corners, then NaN-pad a per-env random tail to vary the corner count.
+
+        Args:
+            points: [E, max_num_points, 2] raw sampled corners.
+            ids: [E] env ids (for per-env reproducible count sampling).
+
+        Returns:
+            (pruned [E, max_num_points, 2], count [E] long) where rows >= count are NaN.
+        """
+        E, P, _ = points.shape
+        points = ccw_sort(points)  # disjoint angular wedges -> simple polygon
+
+        # Per-env corner count in [min_num_points, max_num_points] (inclusive).
+        # sample_integer_torch samples in [low, high); high = max+1 for an inclusive upper bound.
+        count = self.rng.sample_integer_torch(
+            self.config.min_num_points,
+            self.config.max_num_points + 1,
+            (1,),
+            ids=ids,
+        ).view(E).long()
+        count = count.clamp(max=P)
+
+        row_idx = torch.arange(P, device=points.device).unsqueeze(0).expand(E, P)
+        keep = row_idx < count.unsqueeze(1)  # [E, P] bool
+        nan = torch.full_like(points, float("nan"))
+        pruned = torch.where(keep.unsqueeze(-1), points, nan)
+        return pruned, count
 
     def generate(self, ids: torch.Tensor) -> Centerline:
         raise NotImplementedError  # filled in by later tasks
