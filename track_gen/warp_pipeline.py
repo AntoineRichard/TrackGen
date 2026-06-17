@@ -17,6 +17,8 @@ Convention: one thread per output element; flat arrays ``[E*N]`` of ``wp.vec2f``
 """
 from __future__ import annotations
 
+import math
+
 import torch
 
 try:
@@ -38,6 +40,18 @@ def _init() -> None:
 def _sync(device) -> None:
     if "cuda" in str(device):
         wp.synchronize()
+
+
+def _mean_seg_len_torch(center: torch.Tensor) -> torch.Tensor:
+    """Mean closed-loop segment length per env (perimeter / N). center [E, N, 2] -> [E].
+
+    Reproduces geometry.mean_seg_len (= geometry.perimeter / N) with the identical
+    roll-and-norm formula, but without importing geometry at runtime (warp_pipeline
+    must stay free of the torch oracle modules). Reused by the validity / inflate band
+    derivation; the caller applies any clamp_min itself, matching the oracle's call site.
+    """
+    seg = torch.roll(center, -1, dims=1) - center
+    return torch.linalg.norm(seg, dim=-1).sum(dim=1) / center.shape[1]
 
 
 if _HAVE_WARP:
@@ -316,6 +330,31 @@ if _HAVE_WARP:
         p1 = c[eb + (idx + 1) % N]
         out[t] = p0 + frac * (p1 - p0)
 
+    @wp.kernel
+    def _turning_k(
+        c: wp.array(dtype=wp.vec2f),
+        N: int,
+        out: wp.array(dtype=wp.float32),
+    ):
+        # One thread per env e. Signed total turning of the closed polygon.
+        # Edge angle theta_i = atan2(d_i.y, d_i.x) for raw edge d_i = c[(i+1)%N] - c[i]
+        # (atan2 is scale-invariant, so no normalization is needed; the zero-length
+        # edge gives atan2(0,0)=0, matching the torch safe_normalize-then-atan2 case).
+        # Per edge, dtheta = theta_i - theta_{i-1} wrapped into (-pi, pi] via
+        # atan2(sin, cos); the sum over all edges is the turning number.
+        e = wp.tid()
+        b = e * N
+        total = float(0.0)
+        for i in range(N):
+            di = c[b + (i + 1) % N] - c[b + i]
+            ip = (i + N - 1) % N
+            dp = c[b + (ip + 1) % N] - c[b + ip]
+            theta_i = wp.atan2(di[1], di[0])
+            theta_prev = wp.atan2(dp[1], dp[0])
+            dth = theta_i - theta_prev
+            total = total + wp.atan2(wp.sin(dth), wp.cos(dth))
+        out[e] = total
+
 
 def offset(center: torch.Tensor, Nrm: torch.Tensor, half_width: float):
     """Constant-width offset of a closed-loop centerline, matching inflation._offset_stage.
@@ -511,3 +550,80 @@ def resample_uniform(center: torch.Tensor, n: int) -> torch.Tensor:
     wp.launch(_resample_lookup_k, dim=flat, inputs=[cf, wp_seg, wp_s, N, wp_out], device=dev)
     _sync(center.device)
     return out_t.view(E, n, 2)
+
+
+def turning_number(center: torch.Tensor) -> torch.Tensor:
+    """Signed total turning of each closed polygon, in radians. center [E, N, 2] -> [E] float32.
+
+    +/-2*pi for a simple loop (sign = orientation); ~0 for a figure-eight whose lobes
+    wind in opposite directions. Matches geometry.turning_number to allclose(atol=1e-4).
+    Pure Warp (cpu+cuda). One thread per env; O(N) loop over edge-angle deltas.
+    """
+    _init()
+    E, N, _ = center.shape
+    dev = str(center.device)
+
+    cf = wp.from_torch(center.reshape(E * N, 2).contiguous(), dtype=wp.vec2f)
+    out_t = torch.empty(E, device=center.device, dtype=torch.float32)
+    wp.launch(_turning_k, dim=E,
+              inputs=[cf, N, wp.from_torch(out_t, dtype=wp.float32)],
+              device=dev)
+    _sync(center.device)
+    return out_t
+
+
+def validity(center: torch.Tensor, w: torch.Tensor, count: torch.Tensor,
+             gen_valid: torch.Tensor, config, outer: torch.Tensor | None = None,
+             inner: torch.Tensor | None = None) -> torch.Tensor:
+    """Per-track validity gate, a drop-in replacement for inflation._validity_stage.
+
+    Combines: generation flag AND closed-loop turning AND width floor AND no-NaN AND
+    thickness >= (1-relax_tol)*half_width AND zero border self-intersections. The heavy
+    geometry runs through the verified Warp wrappers (turning_number, thickness,
+    self_intersections); the real-point mask, width floor, NaN, band derivation and the
+    boolean combine are light torch glue at the boundary, matching the established wrapper
+    pattern. Equals inflation._validity_stage exactly (torch.equal on the bool output).
+
+    Args:
+        center:    [E, N, 2] float32 resampled centerline.
+        w:         [E, N]    half-width per point.
+        count:     [E]       int real-point count per env (fixed mode -> N).
+        gen_valid: [E]       bool generation flag.
+        config:    TrackGenConfig (uses turning_tol, w_floor, half_width, relax_tol).
+        outer:     [E, N, 2] outer border polygon, or None to skip the border check.
+        inner:     [E, N, 2] inner border polygon, or None to skip the border check.
+
+    Returns:
+        [E] bool validity. When either border is None the border check is skipped
+        (border_ok all True), matching the oracle's outer/inner defaults.
+    """
+    E, N = w.shape
+    device = w.device
+
+    # Real-point mask: slot j is real iff j < count[env] (fixed mode -> all True).
+    idx = torch.arange(N, device=device).unsqueeze(0)        # [1, N]
+    real = idx < count.unsqueeze(1)                          # [E, N]
+
+    turning = turning_number(center)
+    turn_ok = (turning.abs() - 2.0 * math.pi).abs() <= float(config.turning_tol)
+
+    w_ok = torch.where(real, w > float(config.w_floor), torch.ones_like(real)).all(dim=1)
+
+    nan_per_point = torch.isnan(center).any(dim=-1)
+    no_nan = ~(nan_per_point & real).any(dim=1)
+
+    # band = round(D / mean_seg_len).long().clamp_min(1); mean_seg_len = perimeter / N.
+    D = 2.0 * float(config.half_width)
+    L0 = _mean_seg_len_torch(center).clamp_min(1e-9)
+    band = (D / L0).round().long().clamp_min(1)              # [E]
+    th = thickness(center, band)
+    th_ok = th >= (1.0 - float(config.relax_tol)) * float(config.half_width)
+
+    if outer is None or inner is None:
+        border_ok = torch.ones(E, dtype=torch.bool, device=device)
+    else:
+        crossings = self_intersections(torch.nan_to_num(outer, nan=0.0)) + \
+                    self_intersections(torch.nan_to_num(inner, nan=0.0))
+        border_ok = crossings == 0
+
+    return gen_valid.to(torch.bool) & turn_ok & w_ok & no_nan & th_ok & border_ok
