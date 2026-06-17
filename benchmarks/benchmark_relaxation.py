@@ -64,7 +64,15 @@ def _quality(center0, relaxed, half_width):
     disp = torch.linalg.norm(relaxed - center0, dim=-1).mean(dim=1)
     kappa = geometry.menger_curvature(relaxed)
     crad = 1.0 / kappa.clamp_min(1e-12)
-    hc = torch.minimum(crad, 0.5 * geometry.separation_min(relaxed, band).unsqueeze(1))
+    # Per-point achievable half-clearance = min(local curvature radius, half the nearest
+    # NON-adjacent distance). Use the per-point nearest distance (NOT the global scalar
+    # separation_min, which would broadcast to a constant and give CV~0).
+    Np = relaxed.shape[1]
+    dmat = torch.cdist(relaxed, relaxed)
+    circ = geometry.circ_index_dist(Np, relaxed.device)
+    dmat = dmat.masked_fill(circ[None] <= band.view(-1, 1, 1), float("inf"))
+    nn = dmat.amin(dim=-1)                                   # [E, N] per-point clearance
+    hc = torch.minimum(crad, 0.5 * nn)
     cv = (hc.std(dim=1) / hc.mean(dim=1).clamp_min(1e-12))
     return {
         "valid_frac": valid.float().mean().item(),

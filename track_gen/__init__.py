@@ -2,7 +2,6 @@
 
 __version__ = "0.1.0"
 
-from .rng_utils import PerEnvSeededRNG
 from . import geometry
 from . import relaxation
 from .relaxation import relax
@@ -30,6 +29,18 @@ from .generators import (
     FourierCenterlineGenerator,
 )
 from .track_generator import TrackGenerator, generate_tracks
+
+
+def __getattr__(name):
+    # Lazy re-export so `import track_gen` (and the warp-free geometry/relaxation/
+    # inflation submodules) does NOT pull in NVIDIA Warp. Warp is an optional extra,
+    # needed only for the RNG-backed generators; importing it is deferred until
+    # PerEnvSeededRNG is actually accessed.
+    if name == "PerEnvSeededRNG":
+        from .rng_utils import PerEnvSeededRNG
+        return PerEnvSeededRNG
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     "PerEnvSeededRNG",

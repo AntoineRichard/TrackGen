@@ -257,13 +257,14 @@ class BezierCenterlineGenerator(CenterlineGenerator):
             turn_ok = (turn.abs() - 2.0 * math.pi).abs() <= self.config.turning_tol
             # Gate 4: the dense centerline must be a SIMPLE (non-self-intersecting) loop
             # AT THE RESOLUTION THE PIPELINE USES. Relaxation by repulsion cannot untangle
-            # a global self-crossing, so reject it here. We test on a 256-point arc-length
-            # resample (drops NaN, reconnects pruned gaps): this catches genuine global
-            # crossings while ignoring sub-resolution corner cusps that (a) the 256-point
-            # pipeline never sees and (b) the relaxation's bending rounds out anyway. This
-            # matches the simplicity criterion validated in the bake-off. Fixed 256 so
-            # lightweight unit-test configs (no num_points field) still work.
-            simple_resampled, _ = arc_length_resample(dense, num=256)
+            # a global self-crossing, so reject it here. We test on an arc-length resample
+            # at the pipeline's output resolution (drops NaN, reconnects pruned gaps): this
+            # catches genuine global crossings while ignoring sub-resolution corner cusps
+            # that (a) the pipeline never sees and (b) the relaxation's bending rounds out
+            # anyway. Falls back to 256 so lightweight unit-test configs (no num_points
+            # field) still work.
+            simple_n = int(getattr(self.config, "num_points", 256) or 256)
+            simple_resampled, _ = arc_length_resample(dense, num=simple_n)
             simple_ok = self_intersections(simple_resampled) == 0
             ok = angle_ok & turn_ok & finite_ok & simple_ok
 

@@ -16,7 +16,6 @@ import warnings
 import torch
 from torch import Tensor
 
-from . import PerEnvSeededRNG  # noqa: F401  (re-export; matches legacy import surface)
 from .types import Track, TrackGenConfig
 from .generators import (
     BezierCenterlineGenerator,

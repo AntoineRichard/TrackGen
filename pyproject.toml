@@ -7,9 +7,12 @@ name = "track_gen"
 version = "0.1.0"
 description = "GPU-batched race-track generator with centerline relaxation."
 requires-python = ">=3.10"
-dependencies = ["torch", "scipy", "numpy", "warp-lang"]
+dependencies = ["torch", "scipy", "numpy"]
 
 [project.optional-dependencies]
+# Warp is only needed for the RNG-backed generators; geometry/relaxation/inflation
+# are warp-free and CPU-importable without it.
+warp = ["warp-lang"]
 dev = ["pytest", "matplotlib"]
 
 [tool.setuptools]

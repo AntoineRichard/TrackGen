@@ -63,7 +63,7 @@ def _frame_curvature_stage(center: torch.Tensor):
     return T, Nrm, kappa
 
 
-def _width_stage(center: torch.Tensor, kappa: torch.Tensor, config, eps: float = 1e-8):
+def _width_stage(center: torch.Tensor, kappa: torch.Tensor, config):
     """Constant half-width. Relaxation guarantees thickness >= half_width upstream, so
     no curvature/self-distance clamp is needed. kappa is accepted for signature
     compatibility but unused."""
@@ -106,7 +106,14 @@ def _real_point_mask(count: torch.Tensor, n: int, device) -> torch.Tensor:
 
 def _validity_stage(center, w, count, gen_valid, config, outer=None, inner=None) -> torch.Tensor:
     """Real per-track validity: generation flag AND closed-loop turning AND width floor
-    AND no-NaN AND thickness >= (1-tol)*half_width AND zero border self-intersections."""
+    AND no-NaN AND thickness >= (1-tol)*half_width AND zero border self-intersections.
+
+    Note: the turning and thickness checks are computed on the full ``center`` tensor.
+    In ``output_mode="constant_spacing"`` the NaN padding beyond ``count`` poisons those
+    two metrics (-> NaN -> fails), so such tracks are flagged invalid. This is a known
+    limitation: the relaxation pipeline targets fixed-N mode (where there is no padding),
+    which is what the facade and benchmark use; ``constant_spacing`` is not supported by
+    the relaxed-track validity gate."""
     e, n = w.shape
     real = _real_point_mask(count, n, w.device)  # [E, N]
 
