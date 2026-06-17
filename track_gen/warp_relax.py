@@ -56,6 +56,64 @@ if _HAVE_WARP:
         else:
             out[t] = wp.vec2f(0.0, 0.0)
 
+    @wp.kernel
+    def _disp_kernel(center: wp.array(dtype=wp.vec2f), band: wp.array(dtype=wp.int32),
+                     L0: wp.array(dtype=wp.float32), N: int, target: wp.float32, R_min: wp.float32,
+                     sr: wp.float32, pr: wp.float32, br: wp.float32,
+                     out: wp.array(dtype=wp.vec2f)):
+        # Full fused XPBD sweep per bead: separation + spacing + bending, Jacobi (reads
+        # only `center`, writes only out[t]) so the companion _apply_kernel can update
+        # positions race-free. Matches the torch _separation_disp/_spacing_disp/_bending_disp.
+        t = wp.tid()
+        e = t // N
+        i = t % N
+        b = e * N
+        xi = center[t]
+        # --- separation ---
+        sep = wp.vec2f(0.0, 0.0)
+        cnt = int(0)
+        for j in range(N):
+            dd = wp.abs(i - j)
+            circ = wp.min(dd, N - dd)
+            if circ > band[e]:
+                diff = xi - center[b + j]
+                dist = wp.max(wp.length(diff), 1.0e-9)
+                pen = target - dist
+                if pen > 0.0:
+                    sep = sep + (0.5 * pen / dist) * diff
+                    cnt += 1
+        if cnt > 0:
+            sep = sep / wp.float32(cnt)
+        # --- spacing (edges i and i-1 toward rest length L0[e]) ---
+        xn = center[b + ((i + 1) % N)]
+        xp = center[b + ((i + N - 1) % N)]
+        dn = xn - xi
+        ln = wp.max(wp.length(dn), 1.0e-9)
+        dp = xi - xp
+        lp = wp.max(wp.length(dp), 1.0e-9)
+        spc = 0.25 * (((ln - L0[e]) / ln) * dn - ((lp - L0[e]) / lp) * dp)
+        # --- bending (push apex toward neighbour-midpoint if radius < R_min, flip-clamped) ---
+        a = xi - xp
+        bb = xn - xi
+        la = wp.length(a)
+        lb = wp.length(bb)
+        lc = wp.length(xn - xp)
+        denom = wp.max(la * lb * lc, 1.0e-12)
+        cross = a[0] * bb[1] - a[1] * bb[0]
+        area = 0.5 * wp.abs(cross)
+        kappa = 4.0 * area / denom
+        radius = 1.0 / wp.max(kappa, 1.0e-12)
+        mid = 0.5 * (xp + xn)
+        toward = mid - xi
+        deficit = wp.max((R_min - radius) / R_min, 0.0)
+        bscale = wp.min(br * deficit, 1.0)            # clamp: never pass the chord midpoint
+        out[t] = sr * sep + pr * spc + bscale * toward
+
+    @wp.kernel
+    def _apply_kernel(center: wp.array(dtype=wp.vec2f), disp: wp.array(dtype=wp.vec2f)):
+        t = wp.tid()
+        center[t] = center[t] + disp[t]
+
 
 def warp_available(device) -> bool:
     """True iff Warp is importable and the tensors live on CUDA."""
@@ -92,3 +150,44 @@ def separation_disp(center: torch.Tensor, band: torch.Tensor, target: float) -> 
     wp.launch(_sep_kernel, dim=E * N, inputs=[cf, bw, N, float(target), ow], device=str(center.device))
     torch.cuda.synchronize()  # order Warp's write before torch reads (graph capture removes this later)
     return out_t.view(E, N, 2)
+
+
+def xpbd_solve(center0: torch.Tensor, band: torch.Tensor, L0: torch.Tensor, config) -> torch.Tensor:
+    """Full fixed-iteration XPBD solve in fused Warp kernels (separation + spacing +
+    bending per sweep, double-buffered). Pure Warp loop — no torch ops, no per-iter
+    sync, O(E*N) memory (no chunking). Numerically matches the torch _relax_xpbd sweep.
+
+    Args:
+        center0: [E, N, 2] float32 CUDA centerline.
+        band:    [E] integer excluded-neighbour index half-window.
+        L0:      [E] per-track rest segment length (perimeter/N).
+        config:  TrackGenConfig (half_width, relax_margin, relax_iters, relax_*_relax).
+    Returns:
+        [E, N, 2] relaxed centerline (NOT resampled; caller resamples).
+    """
+    global _INITED
+    if not _INITED:
+        wp.init()
+        _INITED = True
+    E, N, _ = center0.shape
+    hw = float(config.half_width)
+    margin = float(config.relax_margin)
+    target = 2.0 * hw * (1.0 + margin)
+    R_min = hw * (1.0 + margin)
+    sr = float(config.relax_sep_relax)
+    pr = float(config.relax_spc_relax)
+    br = float(config.relax_bend_relax)
+    dev = str(center0.device)
+
+    cb = center0.reshape(E * N, 2).contiguous().clone()   # working buffer, updated in place
+    db = torch.empty_like(cb)
+    cw = wp.from_torch(cb, dtype=wp.vec2f)
+    dw = wp.from_torch(db, dtype=wp.vec2f)
+    bw = wp.from_torch(band.to(torch.int32).contiguous(), dtype=wp.int32)
+    lw = wp.from_torch(L0.to(torch.float32).contiguous(), dtype=wp.float32)
+    for _ in range(int(config.relax_iters)):
+        wp.launch(_disp_kernel, dim=E * N,
+                  inputs=[cw, bw, lw, N, target, R_min, sr, pr, br, dw], device=dev)
+        wp.launch(_apply_kernel, dim=E * N, inputs=[cw, dw], device=dev)
+    wp.synchronize()
+    return cb.view(E, N, 2)

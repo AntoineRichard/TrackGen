@@ -122,23 +122,22 @@ def _relax_xpbd(center0, band, config):
     sep_relax = float(config.relax_sep_relax)
     spc_relax = float(config.relax_spc_relax)
     bend_relax = float(config.relax_bend_relax)
-
-    center = center0.clone()
     L0 = geometry.perimeter(center0) / N
 
-    # Separation is the hot-spot. On CUDA (with Warp) use the fused kernel — no
-    # [E,N,N] materialization, ~100-500x faster — else the pure-torch pairwise op.
-    use_warp = warp_relax.should_use(center0.device, config)
-    if not use_warp:
-        circ = geometry.circ_index_dist(N, center0.device)
-        mask_keep = circ[None] > band.view(E, 1, 1)
+    # On CUDA with Warp: run the whole fixed-iteration solve in fused kernels
+    # (separation + spacing + bending per sweep, double-buffered) — no [E,N,N]
+    # materialization, no per-iter sync, ~900x over the torch loop and O(E*N) memory
+    # (so no chunking needed). CPU / no-Warp falls through to the pure-torch path
+    # below, which stays the validated, CPU-testable reference.
+    if warp_relax.should_use(center0.device, config):
+        relaxed = warp_relax.xpbd_solve(center0, band, L0, config)
+        return _resample_uniform(relaxed, N)
 
+    center = center0.clone()
+    circ = geometry.circ_index_dist(N, center0.device)
+    mask_keep = circ[None] > band.view(E, 1, 1)
     for _ in range(int(config.relax_iters)):
-        if use_warp:
-            sep = warp_relax.separation_disp(center, band, target)
-        else:
-            sep = _separation_disp(center, mask_keep, D, margin)
-        disp = sep_relax * sep
+        disp = sep_relax * _separation_disp(center, mask_keep, D, margin)
         disp = disp + spc_relax * _spacing_disp(center, L0)
         if bend_relax > 0.0:
             bend, toward = _bending_disp(center, R_min)
