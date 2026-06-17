@@ -355,6 +355,28 @@ if _HAVE_WARP:
             total = total + wp.atan2(wp.sin(dth), wp.cos(dth))
         out[e] = total
 
+    @wp.kernel
+    def _arclength_k(
+        c: wp.array(dtype=wp.vec2f),
+        N: int,
+        arclen: wp.array(dtype=wp.float32),
+        length: wp.array(dtype=wp.float32),
+    ):
+        # One thread per env e. FIXED-mode arc length (count == N, all real):
+        # seg_len[i] = |c[(i+1)%N] - c[i]| (i=N-1 is the wrap segment),
+        # arclen[i] = sum_{j<i} seg_len[j] (arclen[0]=0; wrap NOT in any arclen entry),
+        # length    = sum_i seg_len[i] (full closed perimeter, wrap INCLUDED).
+        # Running sum is accumulated in float64 to limit drift vs the torch oracle's
+        # cumsum (residual ~1e-3 over N segments is float32 sqrt rounding).
+        e = wp.tid()
+        b = e * N
+        acc = wp.float64(0.0)
+        for i in range(N):
+            arclen[b + i] = wp.float32(acc)            # arc length BEFORE segment i
+            d = c[b + (i + 1) % N] - c[b + i]
+            acc = acc + wp.float64(wp.length(d))       # add segment i (i=N-1 is the wrap)
+        length[e] = wp.float32(acc)
+
 
 def offset(center: torch.Tensor, Nrm: torch.Tensor, half_width: float):
     """Constant-width offset of a closed-loop centerline, matching inflation._offset_stage.
@@ -627,3 +649,83 @@ def validity(center: torch.Tensor, w: torch.Tensor, count: torch.Tensor,
         border_ok = crossings == 0
 
     return gen_valid.to(torch.bool) & turn_ok & w_ok & no_nan & th_ok & border_ok
+
+
+def _arclength(center: torch.Tensor):
+    """Cumulative arc length [E, N] (0 at index 0) and closed-loop total length [E].
+
+    FIXED-mode only (all points real, the wrap segment closes the loop). Reproduces
+    inflation._arclength under that assumption via a single Warp kernel: one thread per
+    env, float64-accumulated running sum. arclen[i] is the length before segment i; the
+    total length includes the wrap segment (last point -> point 0). Pure Warp (cpu+cuda);
+    allclose to the torch oracle to atol~1e-3 (float32-cumsum vs float64 drift over N segs).
+
+    Args:
+        center: [E, N, 2] float32 closed-loop points (finite; no NaN assumed).
+
+    Returns:
+        arclen: [E, N] float32 cumulative arc length, length: [E] float32 perimeter.
+    """
+    _init()
+    E, N, _ = center.shape
+    dev = str(center.device)
+
+    cf = wp.from_torch(center.reshape(E * N, 2).contiguous(), dtype=wp.vec2f)
+    arclen_t = torch.empty(E * N, device=center.device, dtype=torch.float32)
+    length_t = torch.empty(E, device=center.device, dtype=torch.float32)
+    wp.launch(_arclength_k, dim=E,
+              inputs=[cf, N, wp.from_torch(arclen_t, dtype=wp.float32),
+                      wp.from_torch(length_t, dtype=wp.float32)],
+              device=dev)
+    _sync(center.device)
+    return arclen_t.view(E, N), length_t
+
+
+def inflate_warp(center: torch.Tensor, config, valid: torch.Tensor | None = None):
+    """Pure-Warp drop-in for inflation.inflate on a CLEAN, fixed-N centerline.
+
+    Composes the verified Warp wrappers in the same order as inflation.inflate:
+    resample -> frame+curvature -> constant width -> offset -> validity -> arclength ->
+    assemble Track. Requires no NaN, ``center.shape[1] == config.num_points`` and
+    ``config.output_mode == "fixed"`` (so count == N everywhere and the masked-resample /
+    NaN-padding branches of the oracle collapse to the simple closed-loop case).
+
+    Args:
+        center: [E, N, 2] float32 centerline, N == config.num_points, no NaN.
+        config: TrackGenConfig (output_mode must be "fixed").
+        valid:  [E] bool generation flag; defaults to all-True.
+
+    Returns:
+        track_gen.types.Track with center/outer/inner/tangent/normal/arclen/length/
+        valid/count. Equals inflation.inflate within FP tolerance (positions/frame
+        ~1e-4, arclen/length ~1e-3; valid/count exact).
+    """
+    from .types import Track  # local import: keep warp_pipeline free of oracle modules
+
+    assert config.output_mode == "fixed", "inflate_warp supports output_mode='fixed' only"
+    assert center.shape[1] == config.num_points, "center N must equal config.num_points"
+    E, N, _ = center.shape
+    hw = float(config.half_width)
+
+    # 1. arc-length-uniform resample; fixed mode -> every env keeps all N points.
+    rs = resample_uniform(center, config.num_points)
+    count = torch.full((E,), N, dtype=torch.long, device=center.device)
+
+    # 2. frame + curvature (kappa unused, like inflation._width_stage).
+    T, Nrm, _kappa = frame_curvature(rs)
+
+    # 3. constant half-width per point.
+    w = torch.full((E, N), hw, device=center.device, dtype=rs.dtype)
+
+    # 4. offset to outer/inner borders.
+    outer, inner = offset(rs, Nrm, hw)
+
+    # 5. per-track validity gate.
+    gen_valid = valid if valid is not None else torch.ones(E, dtype=torch.bool, device=center.device)
+    valid_out = validity(rs, w, count, gen_valid, config, outer, inner)
+
+    # 6. cumulative arc length + total length.
+    arclen, length = _arclength(rs)
+
+    return Track(outer=outer, center=rs, inner=inner, tangent=T, normal=Nrm,
+                 arclen=arclen, length=length, valid=valid_out, count=count)
