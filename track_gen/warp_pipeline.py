@@ -377,6 +377,58 @@ if _HAVE_WARP:
             acc = acc + wp.float64(wp.length(d))       # add segment i (i=N-1 is the wrap)
         length[e] = wp.float32(acc)
 
+    @wp.kernel
+    def _corner_sample_k(
+        seeds: wp.array(dtype=wp.int32),
+        attempt: int,
+        num_cells: int,
+        nc2: int,
+        cell_size: float,
+        scale: float,
+        P: int,
+        used: wp.array(dtype=wp.int32),
+        out: wp.array(dtype=wp.vec2f),
+    ):
+        # ACCEPTED RNG REDESIGN (does NOT match the torch _sample_corner_points
+        # bit-for-bit; validated by structural properties only). One thread per env e.
+        #
+        # Seeding: state = wp.rand_init(seeds[e] * 9781 + attempt) -> reproducible per
+        # (env, attempt). 9781 is a large odd multiplier so distinct env seeds map to
+        # well-separated rand_init states.
+        #
+        # Draw ORDER per corner c (fixed so a corner's noise is deterministic given its
+        # retries): for each duplicate-rejection retry draw ONE cell-selection randf,
+        # then once a cell is accepted draw the two noise randfs (nx, ny) in that order.
+        #
+        # Dedup: a corner's cell is redrawn (up to 8 tries) if it collides with any cell
+        # already chosen for an EARLIER corner of this env, preserving the distinct-cell
+        # spread the oracle's top-k subset gave. The per-thread chosen-cell history lives
+        # in the scratch buffer used[e*P + 0 .. e*P + c] (pre-filled with -1 by the
+        # wrapper); after the retry budget we accept whatever cell we have.
+        e = wp.tid()
+        state = wp.rand_init(seeds[e] * 9781 + attempt)
+        base = e * P
+        for c in range(P):
+            cell = wp.min(int(wp.randf(state) * float(nc2)), nc2 - 1)
+            # Bounded duplicate rejection against earlier corners of this env.
+            # dup is an int flag (Warp can't mutate a Python bool in a dynamic loop).
+            for _retry in range(8):
+                dup = int(0)
+                for k in range(c):
+                    if used[base + k] == cell:
+                        dup = int(1)
+                if dup == 0:
+                    break
+                cell = wp.min(int(wp.randf(state) * float(nc2)), nc2 - 1)
+            used[base + c] = cell
+
+            x = float(cell % num_cells)
+            y = float(cell // num_cells)
+            nx = wp.randf(state) - 0.5            # [0,1) -> [-0.5, 0.5)
+            ny = wp.randf(state) - 0.5
+            out[base + c] = wp.vec2f((x * cell_size + nx) * scale,
+                                     (y * cell_size + ny) * scale)
+
 
 def offset(center: torch.Tensor, Nrm: torch.Tensor, half_width: float):
     """Constant-width offset of a closed-loop centerline, matching inflation._offset_stage.
@@ -679,6 +731,71 @@ def _arclength(center: torch.Tensor):
               device=dev)
     _sync(center.device)
     return arclen_t.view(E, N), length_t
+
+
+def corner_sample(seeds: torch.Tensor, attempt: int, config) -> torch.Tensor:
+    """Sample max_num_points grid-corner points per env with Warp's built-in RNG.
+
+    ACCEPTED RNG REDESIGN: this is the pure-Warp replacement for the torch oracle
+    generators.BezierCenterlineGenerator._sample_corner_points. It does NOT reproduce
+    the oracle bit-for-bit (the legacy PerEnvSeededRNG is retired from the pure-Warp
+    path); it is validated by structural properties only. The construction matches the
+    oracle's GEOMETRY, though: each corner picks a grid cell in [0, num_cells**2),
+    derives cell coords (x = cell % num_cells, y = cell // num_cells), adds per-corner
+    noise in [-0.5, 0.5), and scales by (cell_size, scale). Distinct cells are preferred
+    via bounded duplicate rejection, echoing the oracle's no-replacement top-k subset.
+
+    Seeding/draw order (see _corner_sample_k): state = rand_init(seed*9781 + attempt);
+    per corner, one cell-selection randf per duplicate-rejection try, then two noise
+    randfs (nx, ny). Reproducible per (seeds, attempt, config).
+
+    Args:
+        seeds:   [E] int per-env base seed. Interpreted mod 2**32 (narrowed to int32
+                 before the seed mix), so very large seeds may alias.
+        attempt: int retry counter (mixed into the seed for attempt-to-attempt variety).
+        config:  TrackGenConfig (uses max_num_points, min_point_distance, scale).
+
+    Returns:
+        [E, max_num_points, 2] float32 corner points in scaled grid coordinates.
+        Pure Warp (cpu+cuda).
+    """
+    return _corner_sample_raw(seeds, attempt, config)[0]
+
+
+def _corner_sample_raw(seeds: torch.Tensor, attempt: int, config):
+    """corner_sample internals, also returning the chosen grid cells for inspection/tests.
+
+    Returns:
+        (corners [E, max_num_points, 2] float32, cells [E, max_num_points] int32).
+        ``cells[e, c]`` is the grid-cell index in [0, num_cells**2) chosen for corner c
+        of env e (after duplicate rejection) — the only directly-observable record of the
+        cell-selection RNG, since the additive per-corner noise makes cells unrecoverable
+        from the scaled positions.
+    """
+    _init()
+    E = seeds.shape[0]
+    dev = str(seeds.device)
+    P = int(config.max_num_points)
+    num_cells = int(1.0 / (config.min_point_distance * 2))
+    nc2 = num_cells * num_cells
+    cell_size = config.min_point_distance * 2.0
+
+    seeds_i32 = seeds.to(torch.int32).contiguous()
+    # Scratch dedup buffer doubling as the output cell record:
+    # used[e*P + c] = cell chosen for corner c of env e (-1 = unset).
+    used_t = torch.full((E * P,), -1, device=seeds.device, dtype=torch.int32)
+    out_t = torch.empty(E * P, 2, device=seeds.device, dtype=torch.float32)
+
+    wp.launch(
+        _corner_sample_k, dim=E,
+        inputs=[wp.from_torch(seeds_i32, dtype=wp.int32), int(attempt),
+                num_cells, nc2, float(cell_size), float(config.scale), P,
+                wp.from_torch(used_t, dtype=wp.int32),
+                wp.from_torch(out_t, dtype=wp.vec2f)],
+        device=dev,
+    )
+    _sync(seeds.device)
+    return out_t.view(E, P, 2), used_t.view(E, P)
 
 
 def inflate_warp(center: torch.Tensor, config, valid: torch.Tensor | None = None):
