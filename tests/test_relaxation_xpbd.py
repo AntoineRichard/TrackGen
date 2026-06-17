@@ -40,3 +40,17 @@ def test_relax_disabled_is_identity():
     c0 = _star().unsqueeze(0)
     cfg = _cfg(relax_enable=False)
     assert torch.allclose(relaxation.relax(c0, cfg), c0)
+
+
+def test_xpbd_pushes_apart_near_touch():
+    # Two near-touching strands (a pinched oval): separation-limited, not curvature.
+    import math
+    n = 256
+    t = torch.linspace(0, 2 * math.pi, n + 1)[:-1]
+    x = torch.cos(t)
+    y = 0.15 * torch.sin(t)          # very flat oval -> top/bottom strands ~0.3 apart
+    c0 = torch.stack([x, y], dim=-1).unsqueeze(0)
+    cfg = _cfg(half_width=0.05, relax_iters=300)
+    out = relaxation.relax(c0, cfg)
+    band = relaxation._band(c0, cfg)
+    assert float(geometry.separation_min(out, band)[0]) >= 2 * 0.05 * 0.98

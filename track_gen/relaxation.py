@@ -140,9 +140,15 @@ def _relax_xpbd(center0, band, config):
 _BACKENDS = {"xpbd": _relax_xpbd}  # energy/tp_sobolev added in later tasks
 
 
+def _chunks(e: int, size):
+    if not size or size >= e:
+        yield slice(0, e)
+        return
+    for start in range(0, e, size):
+        yield slice(start, min(start + size, e))
+
+
 def relax(center: torch.Tensor, config) -> torch.Tensor:
-    """Reshape a closed, arc-length-uniform centerline [E,N,2] so thickness >= half_width.
-    Dispatches on config.relax_solver; returns the relaxed centerline (same N)."""
     if not config.relax_enable:
         return center
     backend = _BACKENDS.get(config.relax_solver)
@@ -150,4 +156,7 @@ def relax(center: torch.Tensor, config) -> torch.Tensor:
         raise ValueError(f"Unknown relax_solver {config.relax_solver!r}; "
                          f"expected one of {sorted(_BACKENDS)}.")
     band = _band(center, config)
-    return backend(center, band, config)
+    outs = []
+    for sl in _chunks(center.shape[0], config.relax_chunk_size):
+        outs.append(backend(center[sl], band[sl], config))
+    return torch.cat(outs, dim=0)
