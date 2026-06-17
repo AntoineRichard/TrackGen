@@ -621,6 +621,41 @@ if _HAVE_WARP:
         b3 = u * u * u                # u^3
         out[t] = b0 * c0 + b1 * p1 + b2 * p2 + b3 * c1
 
+    @wp.kernel
+    def _corner_angles_gate_k(
+        c: wp.array(dtype=wp.vec2f),
+        P: int,
+        min_angle: float,
+        ok: wp.array(dtype=wp.int32),
+    ):
+        # One thread per env e. Reproduces generate()'s ANGLE gate over this env's P
+        # (pre-pruned, NaN-tail) corners: angle_ok = ((angle > min_angle) | ~constrained)
+        # over all corners. A corner i is "constrained" only when i and BOTH its circular
+        # neighbours i-1, i+1 are real (both components finite); unconstrained corners are
+        # skipped (mirrors the oracle's nan_to_num(angle, 0) | ~constrained passing them).
+        # For each constrained corner: interior angle = pi - acos(clamp(dot(u_in, u_out))),
+        # u_in = safe_normalize(c_i - c_prev), u_out = safe_normalize(c_next - c_i), with the
+        # same [-1+1e-7, 1-1e-7] cos clamp. If any constrained corner fails (not > min_angle),
+        # the env's flag is 0.
+        e = wp.tid()
+        b = e * P
+        flag = int(1)
+        for i in range(P):
+            ci = c[b + i]
+            cp = c[b + (i + P - 1) % P]
+            cn = c[b + (i + 1) % P]
+            real_i = wp.isfinite(ci[0]) and wp.isfinite(ci[1])
+            real_p = wp.isfinite(cp[0]) and wp.isfinite(cp[1])
+            real_n = wp.isfinite(cn[0]) and wp.isfinite(cn[1])
+            if real_i and real_p and real_n:
+                u_in = _safe_normalize2(ci - cp)
+                u_out = _safe_normalize2(cn - ci)
+                cos = wp.clamp(wp.dot(u_in, u_out), -1.0 + 1.0e-7, 1.0 - 1.0e-7)
+                angle = wp.pi - wp.acos(cos)
+                if not (angle > min_angle):
+                    flag = int(0)
+        ok[e] = flag
+
 
 def assemble(corners: torch.Tensor, count: torch.Tensor, config) -> torch.Tensor:
     """Build the closed dense Bezier centerline from ccw-ordered corners.
@@ -938,6 +973,70 @@ def turning_number(center: torch.Tensor) -> torch.Tensor:
               device=dev)
     _sync(center.device)
     return out_t
+
+
+def gates(corners: torch.Tensor, dense: torch.Tensor, count: torch.Tensor,
+          config) -> torch.Tensor:
+    """Per-env accept mask, a drop-in for the gate conjunction in generate().
+
+    Reproduces ``ok = angle_ok & turn_ok & finite_ok & simple_ok`` from
+    BezierCenterlineGenerator.generate, with the heavy geometry running through the
+    verified Warp wrappers and only light torch glue at the boundary:
+
+      1. ANGLE: prune corners (rows >= count -> NaN, matching _prune_corners), then a
+         new Warp kernel (_corner_angles_gate_k, one thread per env) checks that every
+         CONSTRAINED corner (it and both circular neighbours real) has interior angle >
+         min_angle. Unconstrained (NaN-neighboured) corners are skipped, matching the
+         oracle's nan_to_num(angle, 0) | ~constrained.
+      2. TURN + FINITE: arc_length_resample_warp(dense, num_points_per_segment) ->
+         turning_number; turn_ok = (|turn| - 2*pi).abs() <= turning_tol;
+         finite_ok = (count_turn >= 2) & isfinite(turn).
+      3. SIMPLE: arc_length_resample_warp(dense, num_points) -> self_intersections == 0.
+
+    The TURN resample is to num_points_per_segment (30) and the SIMPLE resample is to
+    num_points (256) -- different sizes, exactly as the oracle. Equals the oracle's accept
+    mask (torch.equal) for cases built clear of the thresholds; the ~5e-4 resample drift is
+    geometrically negligible. Pure Warp + torch glue (cpu+cuda); no oracle-module imports.
+
+    Args:
+        corners: [E, P, 2] float32 RAW ccw-sorted corners (pre-prune; P == count's domain).
+        dense:   [E, M, 2] float32 assembled dense centerline (already NaN where pruned).
+        count:   [E] int real-corner count per env (rows >= count are pruned to NaN).
+        config:  TrackGenConfig (uses min_angle, turning_tol, num_points,
+                 num_points_per_segment).
+
+    Returns:
+        [E] bool accept mask.
+    """
+    _init()
+    E, P, _ = corners.shape
+    dev = str(corners.device)
+    device = corners.device
+
+    # --- ANGLE gate (Warp kernel over the pruned corners) ---
+    row = torch.arange(P, device=device)
+    keep = (row < count.to(device)[:, None]).unsqueeze(-1)            # [E, P, 1]
+    pruned = torch.where(keep, corners, torch.full_like(corners, float("nan")))
+
+    cf = wp.from_torch(pruned.reshape(E * P, 2).contiguous(), dtype=wp.vec2f)
+    ok_t = torch.empty(E, device=device, dtype=torch.int32)
+    wp.launch(_corner_angles_gate_k, dim=E,
+              inputs=[cf, P, float(config.min_angle), wp.from_torch(ok_t, dtype=wp.int32)],
+              device=dev)
+    _sync(device)
+    angle_ok = ok_t.bool()
+
+    # --- TURN + FINITE gates (resample to num_points_per_segment, then turning number) ---
+    rs_turn, cnt_turn = arc_length_resample_warp(dense, int(config.num_points_per_segment))
+    turn = turning_number(rs_turn)
+    turn_ok = (turn.abs() - 2.0 * math.pi).abs() <= float(config.turning_tol)
+    finite_ok = (cnt_turn >= 2) & torch.isfinite(turn)
+
+    # --- SIMPLE gate (resample to num_points, then count self-crossings) ---
+    rs_simple, _ = arc_length_resample_warp(dense, int(config.num_points))
+    simple_ok = self_intersections(rs_simple) == 0
+
+    return angle_ok & turn_ok & finite_ok & simple_ok
 
 
 def validity(center: torch.Tensor, w: torch.Tensor, count: torch.Tensor,
