@@ -75,3 +75,12 @@ Look at `_frame_k`/`frame_curvature` + `test_warp_frame.py` as the canonical tem
 `generate_tracks_warp(config, seeds)` produces a `Track` on cuda + cpu (Warp devices), end-to-end CUDA-graph-captured on CUDA; validity yield + shape stats match the torch oracle (≥98% relaxed-valid) on a fixed seed set; per-kernel allclose tests pass cpu+cuda; torch compute removed (torch only the I/O container); full suite green; benchmark drives the Warp pipeline.
 
 **Immediate next step:** Task 6 (validity kernel) — it only needs the Task-5 kernels + a turning-number kernel, so it's a clean continuation of the established pattern.
+
+---
+
+## 9. Progress + review notes (live, this session)
+**Task 6 DONE** (commit `warp_pipeline: validity kernel == torch oracle`): added `turning_number(center)->[E]` (kernel `_turning_k`, allclose 1e-4 to `geometry.turning_number`) and `validity(center,w,count,gen_valid,config,outer=None,inner=None)->[E] bool` (orchestrates the verified Warp wrappers + torch boundary glue; `torch.equal` to `inflation._validity_stage`; matches the oracle's optional-border fallback). Added private `_mean_seg_len_torch(center)` helper (Task 7 reuses it for the band). Reviewed by 3 read-only agents (spec + adversarial-divergence + quality) — all approved.
+
+**Forward-looking review insights (carry into later tasks):**
+- **Decision-boundary FP flips (Tasks 13 + any randomized validity test).** `validity`'s `torch.equal`-to-oracle guarantee holds only AWAY from the hard `th_ok` (`th >= (1-relax_tol)*hw`) and `turn_ok` thresholds. The relaxation converges to *exactly* `(1-relax_tol)*hw` (its own target), so a relaxed track can sit on the boundary where the accepted ~1e-4 Warp-vs-torch thickness drift flips the bool. This is inherent accepted tolerance, NOT a bug — so Task 13's end-to-end check must compare **validity yield within a few %** (per the plan), never exact per-env equality, and any future randomized validity test must keep inputs off the threshold.
+- **Per-wrapper syncs (Task 14 graph capture).** `validity` calls `turning_number` + `thickness` + `self_intersections`×2, each its own `wp.launch` + `_sync` on cuda. Correct, but to capture as one graph these intermediate syncs (and the torch boolean-combine / band glue) must be consolidated into the captured region / a fused kernel.
