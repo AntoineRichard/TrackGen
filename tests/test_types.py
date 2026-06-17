@@ -92,6 +92,18 @@ def test_track_construct_from_tensors_field_shapes():
     assert track.count.shape == (E,)
 
 
+def test_relaxation_defaults():
+    from track_gen.types import TrackGenConfig
+    cfg = TrackGenConfig()
+    assert cfg.relax_enable is True
+    assert cfg.relax_solver == "xpbd"
+    assert cfg.relax_bend_relax == 1.5
+    assert cfg.relax_margin == 0.15
+    assert cfg.energy_steps == 800
+    assert cfg.tp_iters == 100
+    assert cfg.smooth_finish is False
+
+
 def test_types_module_has_no_intra_package_imports():
     # The leaf must not import generators/inflation/track_generator/rng_utils.
     import track_gen.types as t
