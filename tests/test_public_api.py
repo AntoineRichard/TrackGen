@@ -17,3 +17,11 @@ def test_geometry_primitives_are_reexported():
     for name in names:
         assert hasattr(track_gen, name), f"track_gen.{name} is not exported"
         assert callable(getattr(track_gen, name))
+
+
+def test_relaxation_surface_exported():
+    import track_gen
+    assert hasattr(track_gen, "relax")
+    from track_gen import relaxation  # module importable
+    from track_gen.geometry import thickness, self_intersections, separation_min
+    assert callable(track_gen.relax)
