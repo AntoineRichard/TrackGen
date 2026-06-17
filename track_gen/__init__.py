@@ -4,6 +4,7 @@ __version__ = "0.1.0"
 
 from .rng_utils import PerEnvSeededRNG
 from . import geometry
+from . import relaxation
 from .geometry import (
     arc_length_resample,
     ccw_sort,
@@ -28,6 +29,7 @@ from .track_generator import TrackGenerator, generate_tracks
 __all__ = [
     "PerEnvSeededRNG",
     "geometry",
+    "relaxation",
     "safe_normalize",
     "polygon_area",
     "ccw_sort",

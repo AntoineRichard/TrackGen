@@ -56,6 +56,18 @@ class TrackGenConfig:
     self_distance_band: int = 8
     self_distance_decimation: int = 64
 
+    # --- Relaxation: backend selection + scale ---
+    relax_enable: bool = True
+    relax_solver: str = "xpbd"            # {"xpbd","energy","tp_sobolev"}
+    relax_chunk_size: int | None = None   # env-chunk the dense [E,N,N] term
+    relax_tol: float = 0.02               # target = (1 - tol) * half_width
+    relax_band: int | None = None         # None => round(D / L0) per track
+    relax_iters: int = 150
+    relax_sep_relax: float = 1.0
+    relax_spc_relax: float = 1.0
+    relax_bend_relax: float = 1.5
+    relax_margin: float = 0.15
+
     # --- Output params ---
     num_points: int = 256  # N
     output_mode: str = "fixed"  # one of {"fixed", "constant_spacing"}
