@@ -259,6 +259,55 @@ if _HAVE_WARP:
 
         out[e] = wp.min(rad_min, 0.5 * sep_min)
 
+    @wp.kernel
+    def _resample_scan_k(
+        seg: wp.array(dtype=wp.float32),
+        N: int,
+        s: wp.array(dtype=wp.float32),
+    ):
+        # One thread per env e.  seg[e*N+i] is pre-computed by the wrapper using
+        # torch.linalg.norm (identical to the oracle).  This kernel only builds the
+        # cumulative arc-length array: s[e*(N+1)+0]=0, s[e*(N+1)+i+1]=s[...+i]+seg[i].
+        e = wp.tid()
+        b = e * N
+        s[e * (N + 1)] = float(0.0)
+        for i in range(N):
+            s[e * (N + 1) + i + 1] = s[e * (N + 1) + i] + seg[b + i]
+
+    @wp.kernel
+    def _resample_lookup_k(
+        c: wp.array(dtype=wp.vec2f),
+        seg: wp.array(dtype=wp.float32),
+        s: wp.array(dtype=wp.float32),
+        N: int,
+        out: wp.array(dtype=wp.vec2f),
+    ):
+        # One thread per output point t; e = env index, k = point-within-env index.
+        # Finds the segment containing target arc-length tk via linear scan matching
+        # searchsorted(right=False).clamp(max=N-1), then lerps.
+        t = wp.tid()
+        e = t // N
+        k = t % N
+        eb = e * N
+        es = e * (N + 1)
+
+        total = s[es + N]
+        tk = float(k) * total / float(N)
+
+        # Linear scan: first j with s[es+j+1] >= tk, clamped to N-1.
+        idx = int(0)
+        while idx < N - 1 and s[es + idx + 1] < tk:
+            idx = idx + 1
+
+        s0 = s[es + idx]
+        segl = wp.max(seg[eb + idx], float(1.0e-12))
+        frac = wp.clamp((tk - s0) / segl, float(0.0), float(1.0))
+
+        # p0 = c[eb+idx]; p1 = c[eb+(idx+1)%N]
+        p0 = c[eb + idx]
+        p1 = c[eb + (idx + 1) % N]
+        out[t] = p0 + frac * (p1 - p0)
+
 
 def offset(center: torch.Tensor, Nrm: torch.Tensor, half_width: float):
     """Constant-width offset of a closed-loop centerline, matching inflation._offset_stage.
@@ -424,3 +473,48 @@ def thickness(points: torch.Tensor, band: torch.Tensor) -> torch.Tensor:
               device=dev)
     _sync(points.device)
     return out_t
+
+
+def resample_uniform(center: torch.Tensor, n: int) -> torch.Tensor:
+    """Arc-length-uniform resample of each closed loop to n points.
+
+    Matches track_gen.relaxation._resample_uniform exactly (allclose atol=1e-4).
+    Two Warp kernels: scan (one thread per env, builds seg+cumulative s) then
+    lookup (one thread per output point, linear-scan searchsorted + lerp).
+    center [E, N, 2] float32 -> [E, n, 2] float32.  n must equal N for now.
+    Pure Warp (cpu+cuda).
+    """
+    _init()
+    assert n == center.shape[1], "resample_uniform: n must equal N (input point count)"
+    E, N, _ = center.shape
+    dev = str(center.device)
+    flat = E * N
+
+    # Compute seg and cumulative arc-length s identically to the oracle using
+    # torch.linalg.norm + torch.cumsum so that float32 rounding matches exactly.
+    closed = torch.cat([center, center[:, :1]], dim=1)              # [E, N+1, 2]
+    seg_2d = torch.linalg.norm(closed[:, 1:] - closed[:, :-1], dim=-1)  # [E, N]
+    s_2d = torch.cat(
+        [torch.zeros(E, 1, device=center.device, dtype=center.dtype),
+         torch.cumsum(seg_2d, dim=1)],
+        dim=1,
+    )                                                                # [E, N+1]
+
+    # Flatten to 1-D contiguous arrays for Warp kernels.
+    seg_t = seg_2d.contiguous().view(flat)                           # [E*N]
+    s_t = s_2d.contiguous().view(E * (N + 1))                       # [E*(N+1)]
+
+    cf = wp.from_torch(center.reshape(flat, 2).contiguous(), dtype=wp.vec2f)
+    out_t = torch.empty(flat, 2, device=center.device, dtype=torch.float32)
+
+    wp_seg = wp.from_torch(seg_t, dtype=wp.float32)
+    wp_s = wp.from_torch(s_t, dtype=wp.float32)
+    wp_out = wp.from_torch(out_t, dtype=wp.vec2f)
+
+    # _resample_scan_k is bypassed: seg and s are pre-computed above in torch.
+    # _resample_lookup_k: one thread per output point — linear-scan searchsorted + lerp.
+    wp.launch(_resample_lookup_k, dim=flat,
+              inputs=[cf, wp_seg, wp_s, N, wp_out],
+              device=dev)
+    _sync(center.device)
+    return out_t.view(E, n, 2)
