@@ -6,11 +6,10 @@
 
 """Visual ablation harness for the GPU-batched race-track generator.
 
-Renders four 4x4 figures that let a human eyeball how generation settings drive
+Renders three 4x4 figures that let a human eyeball how generation settings drive
 track shape and self-intersection:
 
     fig1_bezier_rad_edgy.png   -- Bezier handle-length (rad) x edginess (edgy)
-    fig2_width_models.png      -- naive vs curvature-clamp vs self-distance-clamp
     fig3_bezier_vs_fourier.png -- the two generators side by side per seed
     fig4_min_angle_min_dist.png-- Bezier min_angle x min_point_distance
 
@@ -216,118 +215,6 @@ def figure1_rad_edgy(seed: int = 7) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Figure 2 -- width models / self-intersection-avoidance money shot
-# --------------------------------------------------------------------------- #
-
-
-def figure2_width_models() -> str:
-    """4 columns (seeds chosen to surface tight corners / near-touches) x 4 rows.
-
-    Rows on the SAME centerline:
-      (a) NAIVE: center +/- w_max * normal computed here directly, ignoring every
-          clamp -> borders are allowed to CROSS at tight corners.
-      (b) pipeline, clamp_self_distance=False -> curvature clamp only.
-      (c) pipeline, clamp_self_distance=True  -> curvature + self-distance clamp.
-      (d) OVERLAY of all three inner borders for column 0, with a legend, so the
-          progressive un-crossing of the inner border is unmistakable.
-    """
-    # Seeds picked to include tight corners / near-touches; a wide count window
-    # and a deliberately generous half_width make the guards actually bite.
-    seeds = [3, 11, 23, 41]
-    n = len(seeds)
-    w_max = 0.16
-
-    base_kw = dict(
-        generator="bezier",
-        device=DEVICE,
-        num_envs=1,
-        num_points=256,
-        min_num_points=9,
-        max_num_points=13,
-        half_width=w_max,
-        alpha=0.9,
-    )
-
-    # Precompute, per seed: naive band + the two pipeline tracks.
-    naive_outer, naive_inner = [], []
-    tracks_curv, tracks_self = [], []
-    for s in seeds:
-        # (b) curvature clamp only -- also the source of the shared centerline + normal.
-        cfg_b = TrackGenConfig(clamp_self_distance=False, **base_kw)
-        tb = generate(cfg_b, 1, seed=s)
-        tracks_curv.append(tb)
-
-        # (c) curvature + self-distance clamp on the SAME seed -> same centerline.
-        cfg_c = TrackGenConfig(
-            clamp_self_distance=True,
-            self_distance_margin=0.0,
-            self_distance_band=8,
-            self_distance_decimation=64,
-            **base_kw,
-        )
-        tc = generate(cfg_c, 1, seed=s)
-        tracks_self.append(tc)
-
-        # (a) NAIVE constant offset on that same centerline, ignoring all clamps.
-        center = tb.center[0]
-        normal = tb.normal[0]
-        naive_outer.append(center + w_max * normal)
-        naive_inner.append(center - w_max * normal)
-
-    fig, axes = plt.subplots(n, n, figsize=(11.5, 11.5))
-
-    # Row 0: NAIVE constant offset (borders cross).
-    for c in range(n):
-        ax = axes[0, c]
-        _draw_polyline(axes[0, c], tracks_curv[c].center[0], color="0.25", lw=0.8, ls="--", zorder=4)
-        _draw_polyline(ax, naive_outer[c], color="#1f77b4", lw=1.1, zorder=3)
-        _draw_polyline(ax, naive_inner[c], color="#d62728", lw=1.1, zorder=3)
-        _style_cell(ax, f"seed {seeds[c]}\n(a) NAIVE  +/- w_max*n (no clamp)")
-
-    # Row 1: pipeline, curvature clamp only.
-    for c in range(n):
-        draw_track(
-            axes[1, c],
-            tracks_curv[c],
-            0,
-            f"(b) curvature clamp\nvalid={bool(tracks_curv[c].valid[0])}",
-            _is_invalid(tracks_curv[c], 0),
-        )
-
-    # Row 2: pipeline, curvature + self-distance clamp.
-    for c in range(n):
-        draw_track(
-            axes[2, c],
-            tracks_self[c],
-            0,
-            f"(c) + self-distance clamp\nvalid={bool(tracks_self[c].valid[0])}",
-            _is_invalid(tracks_self[c], 0),
-        )
-
-    # Row 3: overlay of the three INNER borders (the one that crosses) per column.
-    for c in range(n):
-        ax = axes[3, c]
-        _draw_polyline(ax, tracks_curv[c].center[0], color="0.55", lw=0.7, ls="--", zorder=2)
-        _draw_polyline(ax, naive_inner[c], color="#d62728", lw=1.2, zorder=3, label="naive inner")
-        _draw_polyline(ax, tracks_curv[c].inner[0], color="#ff7f0e", lw=1.2, zorder=4, label="curv inner")
-        _draw_polyline(ax, tracks_self[c].inner[0], color="#2ca02c", lw=1.2, zorder=5, label="self-dist inner")
-        _style_cell(ax, f"(d) inner-border overlay\nseed {seeds[c]}")
-    axes[3, 0].legend(loc="lower left", fontsize=5.5, framealpha=0.85)
-
-    fig.suptitle(
-        "Figure 2 -- Width models on the SAME centerline (self-intersection avoidance)\n"
-        "(a) naive constant offset crosses at tight corners -> (b) curvature clamp -> "
-        "(c) + self-distance clamp; (d) inner border stops crossing as guards turn on",
-        fontsize=11,
-    )
-    fig.tight_layout(rect=(0, 0, 1, 0.94))
-    path = os.path.join(OUT_DIR, "fig2_width_models.png")
-    fig.savefig(path, dpi=DPI)
-    plt.close(fig)
-    return path
-
-
-# --------------------------------------------------------------------------- #
 # Figure 3 -- Bezier vs Fourier, one seed per row
 # --------------------------------------------------------------------------- #
 
@@ -452,7 +339,6 @@ def main() -> None:
 
     paths = [
         figure1_rad_edgy(),
-        figure2_width_models(),
         figure3_bezier_vs_fourier(),
         figure4_min_angle_min_dist(),
     ]

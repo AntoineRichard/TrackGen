@@ -64,34 +64,11 @@ def _frame_curvature_stage(center: torch.Tensor):
 
 
 def _width_stage(center: torch.Tensor, kappa: torch.Tensor, config, eps: float = 1e-8):
-    """Per-point half-width via curvature clamp + optional self-distance clamp.
-
-    Args:
-        center: [E, N, 2] resampled centerline.
-        kappa:  [E, N]    non-negative curvature.
-        config: TrackGenConfig (half_width, alpha, clamp_self_distance,
-                self_distance_margin, self_distance_band, self_distance_decimation).
-    Returns:
-        w: [E, N] non-negative half-width.
-    """
-    w_max = float(config.half_width)
-    alpha = float(config.alpha)
-
-    w_curv = torch.where(
-        kappa > eps,
-        alpha / kappa.clamp_min(eps),
-        torch.full_like(kappa, w_max),
-    )
-    w = w_curv.clamp_max(w_max)
-
-    if config.clamp_self_distance:
-        d = geometry.nearest_nonadjacent_distance(
-            center, config.self_distance_band, config.self_distance_decimation
-        )  # [E, N]
-        w_self = 0.5 * (d - float(config.self_distance_margin))
-        w = torch.minimum(w, w_self)
-
-    return w.clamp_min(0.0)
+    """Constant half-width. Relaxation guarantees thickness >= half_width upstream, so
+    no curvature/self-distance clamp is needed. kappa is accepted for signature
+    compatibility but unused."""
+    w = torch.full(center.shape[:2], float(config.half_width), device=center.device, dtype=center.dtype)
+    return w
 
 
 def _offset_stage(center: torch.Tensor, Nrm: torch.Tensor, w: torch.Tensor):
@@ -127,31 +104,32 @@ def _real_point_mask(count: torch.Tensor, n: int, device) -> torch.Tensor:
     return idx < count.unsqueeze(1)  # [E, N]
 
 
-def _validity_stage(center, w, count, gen_valid, config) -> torch.Tensor:
-    """Per-track validity: generation flag AND closed-loop turning AND width floor AND no-NaN.
-
-    Args:
-        center:    [E, N, 2]
-        w:         [E, N]
-        count:     [E]   number of real points per env.
-        gen_valid: [E]   bool generation-time validity.
-        config:    TrackGenConfig (turning_tol, w_floor).
-    Returns:
-        valid: [E] bool.
-    """
+def _validity_stage(center, w, count, gen_valid, config, outer=None, inner=None) -> torch.Tensor:
+    """Real per-track validity: generation flag AND closed-loop turning AND width floor
+    AND no-NaN AND thickness >= (1-tol)*half_width AND zero border self-intersections."""
     e, n = w.shape
     real = _real_point_mask(count, n, w.device)  # [E, N]
 
-    turning = geometry.turning_number(center)  # [E]
+    turning = geometry.turning_number(center)
     turn_ok = (turning.abs() - 2.0 * math.pi).abs() <= float(config.turning_tol)
-
     w_ok = torch.where(real, w > float(config.w_floor), torch.ones_like(real)).all(dim=1)
+    nan_per_point = torch.isnan(center).any(dim=-1)
+    no_nan = ~(nan_per_point & real).any(dim=1)
 
-    nan_per_point = torch.isnan(center).any(dim=-1)  # [E, N]
-    nan_real = (nan_per_point & real).any(dim=1)  # [E]
-    no_nan = ~nan_real
+    D = 2.0 * float(config.half_width)
+    L0 = geometry.mean_seg_len(center).clamp_min(1e-9)
+    band = (D / L0).round().long().clamp_min(1)
+    th = geometry.thickness(center, band)
+    th_ok = th >= (1.0 - float(config.relax_tol)) * float(config.half_width)
 
-    return gen_valid.to(torch.bool) & turn_ok & w_ok & no_nan
+    if outer is None or inner is None:
+        border_ok = torch.ones(e, dtype=torch.bool, device=center.device)
+    else:
+        crossings = geometry.self_intersections(torch.nan_to_num(outer, nan=0.0)) + \
+                    geometry.self_intersections(torch.nan_to_num(inner, nan=0.0))
+        border_ok = crossings == 0
+
+    return gen_valid.to(torch.bool) & turn_ok & w_ok & no_nan & th_ok & border_ok
 
 
 def _arclength(center: torch.Tensor, count: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -198,21 +176,10 @@ def inflate(centerline, config) -> Track:
     """
     res = _resample_stage(centerline, config)
     center, count = res.center, res.count
-
     T, Nrm, kappa = _frame_curvature_stage(center)
     w = _width_stage(center, kappa, config)
     outer, inner = _offset_stage(center, Nrm, w)
-    valid = _validity_stage(center, w, count, centerline.valid, config)
+    valid = _validity_stage(center, w, count, centerline.valid, config, outer=outer, inner=inner)
     arclen, length = _arclength(center, count)
-
-    return Track(
-        outer=outer,
-        center=center,
-        inner=inner,
-        tangent=T,
-        normal=Nrm,
-        arclen=arclen,
-        length=length,
-        valid=valid,
-        count=count,
-    )
+    return Track(outer=outer, center=center, inner=inner, tangent=T, normal=Nrm,
+                 arclen=arclen, length=length, valid=valid, count=count)

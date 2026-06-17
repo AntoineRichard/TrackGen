@@ -26,7 +26,7 @@ def test_inflate_runs_on_a_synthetic_centerline_without_warp():
     theta = torch.linspace(0, 2 * math.pi, 201)[:-1]
     pts = torch.stack([2.0 * torch.cos(theta), 2.0 * torch.sin(theta)], dim=-1).unsqueeze(0)
     cl = Centerline(points=pts, valid=torch.ones(1, dtype=torch.bool))
-    cfg = TrackGenConfig(num_envs=1, num_points=128, output_mode="fixed", clamp_self_distance=False)
+    cfg = TrackGenConfig(num_envs=1, num_points=128, output_mode="fixed")
 
     track = inflation.inflate(cl, cfg)
     assert track.center.shape == (1, 128, 2)

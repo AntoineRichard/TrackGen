@@ -50,11 +50,6 @@ class TrackGenConfig:
 
     # --- Width params ---
     half_width: float = 0.1  # w_max
-    alpha: float = 0.9  # curvature safety fraction; w * kappa <= alpha < 1
-    clamp_self_distance: bool = False
-    self_distance_margin: float = 0.0
-    self_distance_band: int = 8
-    self_distance_decimation: int = 64
 
     # --- Relaxation: backend selection + scale ---
     relax_enable: bool = True
