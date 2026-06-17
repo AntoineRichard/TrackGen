@@ -37,20 +37,26 @@ def _band(center: torch.Tensor, config) -> torch.Tensor:
 
 
 def _resample_uniform(center: torch.Tensor, n: int) -> torch.Tensor:
-    """Arc-length-uniform resample of each closed loop to n points (keeps n)."""
+    """Arc-length-uniform resample of each closed loop to n points (keeps n).
+
+    Fully batched (no per-env loop): batched ``searchsorted`` + ``gather`` so it runs as
+    a handful of GPU kernels regardless of E, instead of E serial searchsorted calls.
+    """
     E = center.shape[0]
     closed = torch.cat([center, center[:, :1]], dim=1)               # [E,n+1,2]
     seg = torch.linalg.norm(closed[:, 1:] - closed[:, :-1], dim=-1)  # [E,n]
     s = torch.cat([torch.zeros(E, 1, device=center.device, dtype=center.dtype),
                    torch.cumsum(seg, dim=1)], dim=1)                 # [E,n+1]
     total = s[:, -1:]
-    targets = torch.arange(n, dtype=center.dtype, device=center.device)[None] * (total / n)
-    out = torch.empty_like(center)
-    for e in range(E):
-        idx = torch.searchsorted(s[e, 1:], targets[e], right=False).clamp(max=seg.shape[1] - 1)
-        frac = ((targets[e] - s[e, idx]) / seg[e, idx].clamp_min(1e-12)).clamp(0, 1).unsqueeze(-1)
-        out[e] = closed[e, idx] + frac * (closed[e, idx + 1] - closed[e, idx])
-    return out
+    targets = torch.arange(n, dtype=center.dtype, device=center.device)[None] * (total / n)  # [E,n]
+    idx = torch.searchsorted(s[:, 1:].contiguous(), targets, right=False).clamp(max=seg.shape[1] - 1)  # [E,n] (clamp to #input segments)
+    s0 = torch.gather(s, 1, idx)                                     # [E,n] arc-len at segment start
+    seg_l = torch.gather(seg, 1, idx).clamp_min(1e-12)              # [E,n]
+    frac = ((targets - s0) / seg_l).clamp(0.0, 1.0).unsqueeze(-1)   # [E,n,1]
+    idx2 = idx.unsqueeze(-1).expand(-1, -1, 2)                       # [E,n,2]
+    p0 = torch.gather(closed, 1, idx2)
+    p1 = torch.gather(closed, 1, idx2 + 1)
+    return p0 + frac * (p1 - p0)
 
 
 # ---------------------------------------------------------------------------
