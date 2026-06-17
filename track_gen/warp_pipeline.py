@@ -656,6 +656,113 @@ if _HAVE_WARP:
                     flag = int(0)
         ok[e] = flag
 
+    @wp.kernel
+    def _corner_count_sample_k(
+        seeds: wp.array(dtype=wp.int32),
+        attempt: int,
+        min_num: int,
+        max_num: int,
+        out: wp.array(dtype=wp.int32),
+    ):
+        # ACCEPTED RNG REDESIGN (does NOT match the torch oracle's per-env corner-count
+        # draw bit-for-bit; validated by range/reproducibility only). One thread per env e.
+        #
+        # Seeding: state = wp.rand_init(seeds[e] * 6151 + attempt). The 6151 multiplier is
+        # DISTINCT from corner_sample's 9781 so the count stream and the corner-position
+        # stream stay decorrelated (different rand_init states for the same (seed, attempt)).
+        #
+        # Draw: a single uniform randf in [0, 1) maps to an inclusive integer count in
+        # [min_num, max_num] via floor(randf * range) where range = max_num - min_num + 1,
+        # then clamp to max_num to fold the measure-zero randf == 1.0 edge back in range.
+        e = wp.tid()
+        state = wp.rand_init(seeds[e] * 6151 + attempt)
+        span = max_num - min_num + 1
+        count = min_num + int(wp.randf(state) * float(span))
+        out[e] = wp.min(count, max_num)
+
+
+def corner_count_sample(seeds: torch.Tensor, attempt: int, config) -> torch.Tensor:
+    """Sample a per-env corner COUNT in [min_num_points, max_num_points] via Warp RNG.
+
+    ACCEPTED RNG REDESIGN: pure-Warp replacement for the torch oracle's per-env corner
+    count draw in BezierCenterlineGenerator.generate. It does NOT reproduce the oracle
+    bit-for-bit (the legacy PerEnvSeededRNG is retired from the pure-Warp path); it is
+    validated by range and reproducibility only. One thread per env (see
+    _corner_count_sample_k): state = rand_init(seed*6151 + attempt) -- a DISTINCT seed
+    multiplier from corner_sample's 9781 so corner counts and corner positions are
+    uncorrelated -- then one randf maps to an inclusive integer in the closed range.
+
+    Args:
+        seeds:   [E] int per-env base seed (narrowed to int32 before the seed mix).
+        attempt: int retry counter (mixed into the seed for attempt-to-attempt variety).
+        config:  TrackGenConfig (uses min_num_points, max_num_points).
+
+    Returns:
+        [E] long corner count per env, every value in [min_num_points, max_num_points].
+        Pure Warp (cpu+cuda); reproducible per (seeds, attempt, config) within a device.
+    """
+    _init()
+    E = seeds.shape[0]
+    dev = str(seeds.device)
+    min_num = int(config.min_num_points)
+    max_num = int(config.max_num_points)
+
+    seeds_i32 = seeds.to(torch.int32).contiguous()
+    out_t = torch.empty(E, device=seeds.device, dtype=torch.int32)
+    wp.launch(
+        _corner_count_sample_k, dim=E,
+        inputs=[wp.from_torch(seeds_i32, dtype=wp.int32), int(attempt),
+                min_num, max_num, wp.from_torch(out_t, dtype=wp.int32)],
+        device=dev,
+    )
+    _sync(seeds.device)
+    return out_t.long()
+
+
+def generate_centerline_warp(seeds: torch.Tensor, config):
+    """Static, fixed-iteration, masked accept-first-valid centerline generation.
+
+    Pure-Warp drop-in for BezierCenterlineGenerator.generate with the downstream final
+    arc-length resample to ``num_points`` FUSED in (returns the 256-resampled centerline
+    directly). Composes the verified wrappers in the oracle's order: per attempt sample
+    corners -> ccw_sort -> sample a per-env corner count -> assemble dense (NaN-pruned) ->
+    gate (angle & turn & finite & simple) -> resample the gated dense to num_points.
+
+    The loop runs a FIXED ``config.max_regen_iters`` times for ALL envs (no host
+    data-branching, no early exit on valid.all()) so the whole thing is graph-capturable.
+    Each env keeps its FIRST accepted candidate: ``take = accept & ~valid`` selects only
+    envs newly accepted this attempt, then ``valid |= accept``; later attempts recompute
+    but never overwrite an already-valid env. The stored centerline is the SAME
+    arc_length_resample_warp(dense, num_points) that ``gates`` checked simple_ok on, so
+    every valid env's centerline is simple by construction.
+
+    Args:
+        seeds:  [E] int per-env base seed.
+        config: TrackGenConfig (uses max_regen_iters, num_points, and the fields the
+                composed wrappers read: max_num_points, min/max_num_points, min_angle,
+                turning_tol, rad, edgy, num_points_per_segment, min_point_distance, scale).
+
+    Returns:
+        (centerline [E, num_points, 2] float32, valid [E] bool). Invalid envs keep an
+        all-NaN centerline row. Pure Warp + torch glue (cpu+cuda); no oracle-module imports.
+    """
+    E = seeds.shape[0]
+    N = int(config.num_points)
+    centerline = torch.full((E, N, 2), float("nan"), device=seeds.device, dtype=torch.float32)
+    valid = torch.zeros(E, dtype=torch.bool, device=seeds.device)
+
+    for k in range(int(config.max_regen_iters)):
+        corners = ccw_sort(corner_sample(seeds, k, config))   # [E, P, 2]
+        count = corner_count_sample(seeds, k, config)         # [E]
+        dense = assemble(corners, count, config)              # [E, M, 2] (NaN-pruned)
+        accept = gates(corners, dense, count, config)         # [E] bool
+        rs, _ = arc_length_resample_warp(dense, N)            # [E, N, 2] (the gated centerline)
+        take = accept & (~valid)                              # accept-FIRST-valid
+        centerline = torch.where(take[:, None, None], rs, centerline)
+        valid = valid | accept
+
+    return centerline, valid
+
 
 def assemble(corners: torch.Tensor, count: torch.Tensor, config) -> torch.Tensor:
     """Build the closed dense Bezier centerline from ccw-ordered corners.
