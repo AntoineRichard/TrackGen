@@ -289,7 +289,14 @@ def relax(center: torch.Tensor, config) -> torch.Tensor:
         raise ValueError(f"Unknown relax_solver {config.relax_solver!r}; "
                          f"expected one of {sorted(_BACKENDS)}.")
     band = _band(center, config)
-    outs = []
-    for sl in _chunks(center.shape[0], config.relax_chunk_size):
-        outs.append(backend(center[sl], band[sl], config))
-    return torch.cat(outs, dim=0)
+    outs = [backend(center[sl], band[sl], config)
+            for sl in _chunks(center.shape[0], config.relax_chunk_size)]
+    out = torch.cat(outs, dim=0)
+    if config.smooth_finish:
+        fb = _band(out, config)
+        outs = [_tp_flow(out[sl], fb[sl], config,
+                         n_steps=config.smooth_finish_iters, tau=config.smooth_finish_tau,
+                         early_stop=False)
+                for sl in _chunks(out.shape[0], config.relax_chunk_size)]
+        out = torch.cat(outs, dim=0)
+    return out
