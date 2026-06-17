@@ -138,6 +138,127 @@ if _HAVE_WARP:
         denom = wp.max(wp.length(a) * wp.length(bb) * wp.length(cc), 1.0e-12)
         kappa[t] = 4.0 * area / denom
 
+    @wp.func
+    def _ccw(ox: float, oy: float, px: float, py: float, qx: float, qy: float) -> float:
+        # Returns (q.y-o.y)*(p.x-o.x) - (p.y-o.y)*(q.x-o.x)
+        return (qy - oy) * (px - ox) - (py - oy) * (qx - ox)
+
+    @wp.kernel
+    def _self_intersections_k(
+        poly: wp.array(dtype=wp.vec2f),
+        N: int,
+        out: wp.array(dtype=wp.int32),
+    ):
+        # One thread per env e. Loops all unique pairs (i,j) with j > i,
+        # skips if circular index distance <= 1, counts proper crossings.
+        e = wp.tid()
+        count = int(0)
+        for i in range(N):
+            for j in range(i + 1, N):
+                diff = j - i
+                circ_dist = wp.min(diff, N - diff)
+                if circ_dist <= 1:
+                    continue
+                Ai = poly[e * N + i]
+                Bi = poly[e * N + (i + 1) % N]
+                Aj = poly[e * N + j]
+                Bj = poly[e * N + (j + 1) % N]
+                d1 = _ccw(Aj[0], Aj[1], Bj[0], Bj[1], Ai[0], Ai[1])
+                d2 = _ccw(Aj[0], Aj[1], Bj[0], Bj[1], Bi[0], Bi[1])
+                d3 = _ccw(Ai[0], Ai[1], Bi[0], Bi[1], Aj[0], Aj[1])
+                d4 = _ccw(Ai[0], Ai[1], Bi[0], Bi[1], Bj[0], Bj[1])
+                seg_ij = (d1 > 0.0) != (d2 > 0.0)
+                seg_ji = (d3 > 0.0) != (d4 > 0.0)
+                if seg_ij and seg_ji:
+                    count = count + 1
+        out[e] = count
+
+    @wp.kernel
+    def _sep_min_k(
+        pts: wp.array(dtype=wp.vec2f),
+        band: wp.array(dtype=wp.int32),
+        N: int,
+        out: wp.array(dtype=wp.float32),
+    ):
+        # One thread per env e. Min distance over pairs with circ_dist > band[e].
+        e = wp.tid()
+        b = band[e]
+        sep_min = float(1.0e30)
+        for i in range(N):
+            for j in range(i + 1, N):
+                diff = j - i
+                circ_dist = wp.min(diff, N - diff)
+                if circ_dist > b:
+                    pi = pts[e * N + i]
+                    pj = pts[e * N + j]
+                    d = wp.length(pi - pj)
+                    sep_min = wp.min(sep_min, d)
+        out[e] = sep_min
+
+    @wp.kernel
+    def _curvrad_min_k(
+        pts: wp.array(dtype=wp.vec2f),
+        N: int,
+        out: wp.array(dtype=wp.float32),
+    ):
+        # One thread per env e. 1 / max Menger curvature.
+        e = wp.tid()
+        kappa_max = float(0.0)
+        for i in range(N):
+            xp = pts[e * N + (i + N - 1) % N]
+            xc = pts[e * N + i]
+            xn = pts[e * N + (i + 1) % N]
+            a = xc - xp
+            bb = xn - xc
+            cc = xn - xp
+            cross = a[0] * bb[1] - a[1] * bb[0]
+            area = 0.5 * wp.abs(cross)
+            denom = wp.max(wp.length(a) * wp.length(bb) * wp.length(cc), float(1.0e-12))
+            kappa = 4.0 * area / denom
+            kappa_max = wp.max(kappa_max, kappa)
+        out[e] = 1.0 / wp.max(kappa_max, float(1.0e-12))
+
+    @wp.kernel
+    def _thickness_k(
+        pts: wp.array(dtype=wp.vec2f),
+        band: wp.array(dtype=wp.int32),
+        N: int,
+        out: wp.array(dtype=wp.float32),
+    ):
+        # One thread per env e. thickness = min(rad_min, 0.5 * sep_min).
+        e = wp.tid()
+        b = band[e]
+
+        # --- sep_min: min dist over pairs with circ_dist > band ---
+        sep_min = float(1.0e30)
+        for i in range(N):
+            for j in range(i + 1, N):
+                diff = j - i
+                circ_dist = wp.min(diff, N - diff)
+                if circ_dist > b:
+                    pi = pts[e * N + i]
+                    pj = pts[e * N + j]
+                    d = wp.length(pi - pj)
+                    sep_min = wp.min(sep_min, d)
+
+        # --- rad_min: 1 / max Menger curvature ---
+        kappa_max = float(0.0)
+        for i in range(N):
+            xp = pts[e * N + (i + N - 1) % N]
+            xc = pts[e * N + i]
+            xn = pts[e * N + (i + 1) % N]
+            a = xc - xp
+            bb = xn - xc
+            cc = xn - xp
+            cross = a[0] * bb[1] - a[1] * bb[0]
+            area = 0.5 * wp.abs(cross)
+            denom = wp.max(wp.length(a) * wp.length(bb) * wp.length(cc), float(1.0e-12))
+            kappa = 4.0 * area / denom
+            kappa_max = wp.max(kappa_max, kappa)
+        rad_min = 1.0 / wp.max(kappa_max, float(1.0e-12))
+
+        out[e] = wp.min(rad_min, 0.5 * sep_min)
+
 
 def offset(center: torch.Tensor, Nrm: torch.Tensor, half_width: float):
     """Constant-width offset of a closed-loop centerline, matching inflation._offset_stage.
@@ -214,3 +335,92 @@ def frame_curvature(center: torch.Tensor):
               device=dev)
     _sync(center.device)
     return T.view(E, N, 2), Nrm.view(E, N, 2), kap.view(E, N)
+
+
+def self_intersections(poly: torch.Tensor) -> torch.Tensor:
+    """Count proper self-crossings of each closed polyline. poly [E, N, 2] -> [E] long.
+
+    Matches geometry.self_intersections exactly (torch.equal). Pure Warp (cpu+cuda).
+    One thread per env; O(N^2) loop over edge pairs inside the kernel.
+    """
+    _init()
+    E, N, _ = poly.shape
+    dev = str(poly.device)
+
+    flat = poly.reshape(E * N, 2).contiguous()
+    wp_poly = wp.from_torch(flat, dtype=wp.vec2f)
+
+    out_t = torch.zeros(E, device=poly.device, dtype=torch.int32)
+    wp.launch(_self_intersections_k, dim=E,
+              inputs=[wp_poly, N, wp.from_torch(out_t, dtype=wp.int32)],
+              device=dev)
+    _sync(poly.device)
+    return out_t.long()
+
+
+def separation_min(points: torch.Tensor, band: torch.Tensor) -> torch.Tensor:
+    """Min Euclidean distance over pairs with circ-index-dist > band. [E] float32.
+
+    points [E, N, 2]; band [E] int. Returns +inf when no valid pair exists.
+    Pure Warp (cpu+cuda). Matches geometry.separation_min to allclose(atol=1e-4).
+    """
+    _init()
+    E, N, _ = points.shape
+    dev = str(points.device)
+
+    flat = points.reshape(E * N, 2).contiguous()
+    wp_pts = wp.from_torch(flat, dtype=wp.vec2f)
+    band_i32 = band.to(torch.int32).contiguous()
+    wp_band = wp.from_torch(band_i32, dtype=wp.int32)
+
+    out_t = torch.empty(E, device=points.device, dtype=torch.float32)
+    wp.launch(_sep_min_k, dim=E,
+              inputs=[wp_pts, wp_band, N, wp.from_torch(out_t, dtype=wp.float32)],
+              device=dev)
+    _sync(points.device)
+    # Replace sentinel (no valid pair) with actual +inf to match torch oracle.
+    out_t[out_t >= 1.0e29] = float("inf")
+    return out_t
+
+
+def curvature_radius_min(points: torch.Tensor) -> torch.Tensor:
+    """1 / max Menger curvature over the loop. points [E, N, 2] -> [E] float32.
+
+    Pure Warp (cpu+cuda). Matches geometry.curvature_radius_min to allclose(atol=1e-4).
+    """
+    _init()
+    E, N, _ = points.shape
+    dev = str(points.device)
+
+    flat = points.reshape(E * N, 2).contiguous()
+    wp_pts = wp.from_torch(flat, dtype=wp.vec2f)
+
+    out_t = torch.empty(E, device=points.device, dtype=torch.float32)
+    wp.launch(_curvrad_min_k, dim=E,
+              inputs=[wp_pts, N, wp.from_torch(out_t, dtype=wp.float32)],
+              device=dev)
+    _sync(points.device)
+    return out_t
+
+
+def thickness(points: torch.Tensor, band: torch.Tensor) -> torch.Tensor:
+    """Discrete curve thickness = min(curvature_radius_min, 0.5*separation_min). [E] float32.
+
+    points [E, N, 2] float32; band [E] int (per-env exclusion window).
+    Matches geometry.thickness to allclose(atol=1e-4). Pure Warp (cpu+cuda).
+    """
+    _init()
+    E, N, _ = points.shape
+    dev = str(points.device)
+
+    flat = points.reshape(E * N, 2).contiguous()
+    wp_pts = wp.from_torch(flat, dtype=wp.vec2f)
+    band_i32 = band.to(torch.int32).contiguous()
+    wp_band = wp.from_torch(band_i32, dtype=wp.int32)
+
+    out_t = torch.empty(E, device=points.device, dtype=torch.float32)
+    wp.launch(_thickness_k, dim=E,
+              inputs=[wp_pts, wp_band, N, wp.from_torch(out_t, dtype=wp.float32)],
+              device=dev)
+    _sync(points.device)
+    return out_t
