@@ -331,6 +331,89 @@ if _HAVE_WARP:
         out[t] = p0 + frac * (p1 - p0)
 
     @wp.kernel
+    def _arc_scan_k(
+        dense: wp.array(dtype=wp.vec2f),
+        M: int,
+        real_pts: wp.array(dtype=wp.vec2f),
+        seg: wp.array(dtype=wp.float32),
+        s: wp.array(dtype=wp.float32),
+        count_r: wp.array(dtype=wp.int32),
+    ):
+        # One thread per env e. NaN-aware generalization of _resample_scan_k: first
+        # COMPACT the real (both-components-finite) points IN ORDER (dropping interior
+        # NaN too, like the oracle's pe[isfinite.all(-1)]), then build the closed-loop
+        # segment lengths and cumulative arc length over those R real points.
+        e = wp.tid()
+        db = e * M
+        rb = e * M
+        es = e * (M + 1)
+
+        # Compaction: walk i=0..M-1, append every finite point in order.
+        r = int(0)
+        for i in range(M):
+            p = dense[db + i]
+            if wp.isfinite(p[0]) and wp.isfinite(p[1]):
+                real_pts[rb + r] = p
+                r = r + 1
+        count_r[e] = r
+
+        # R >= 2: closed-loop arc length over real_pts[0..R-1]. seg[j] = |real[(j+1)%R]
+        # - real[j]| (j=R-1 is the wrap |real[0]-real[R-1]|); s[0]=0, s[j+1]=s[j]+seg[j].
+        # Accumulate in float64 to limit drift vs the torch oracle's cumsum.
+        if r >= 2:
+            s[es] = float(0.0)
+            acc = wp.float64(0.0)
+            for j in range(r):
+                nxt = real_pts[rb + (j + 1) % r]
+                l = wp.length(nxt - real_pts[rb + j])
+                seg[rb + j] = l
+                acc = acc + wp.float64(l)
+                s[es + j + 1] = wp.float32(acc)
+        # R < 2: leave seg/s untouched; _arc_lookup_k emits NaN for this env.
+
+    @wp.kernel
+    def _arc_lookup_k(
+        real_pts: wp.array(dtype=wp.vec2f),
+        seg: wp.array(dtype=wp.float32),
+        s: wp.array(dtype=wp.float32),
+        count_r: wp.array(dtype=wp.int32),
+        M: int,
+        num: int,
+        out: wp.array(dtype=wp.vec2f),
+    ):
+        # One thread per OUTPUT point t (dim = E*num); e = env index, k = point-within-env.
+        # R = count_r[e]. R < 2 -> NaN (matches _resample_one's degenerate full-NaN row).
+        # Else: linear-scan searchsorted(right=False).clamp(max=R-1) over the closed
+        # real-loop arc length, then lerp. Mirrors _resample_lookup_k with variable R and
+        # the wrap p1 = real[0] for idx == R-1 ((idx+1)%R).
+        t = wp.tid()
+        e = t // num
+        k = t % num
+        rb = e * M
+        es = e * (M + 1)
+
+        r = count_r[e]
+        if r < 2:
+            out[t] = wp.vec2f(wp.nan, wp.nan)
+            return
+
+        total = s[es + r]
+        target = float(k) * total / float(num)
+
+        # Linear scan: first j in [0, R-1] with s[es+j+1] >= target, clamped to R-1.
+        idx = int(0)
+        while idx < r - 1 and s[es + idx + 1] < target:
+            idx = idx + 1
+
+        s0 = s[es + idx]
+        segl = wp.max(seg[rb + idx], float(1.0e-12))
+        frac = wp.clamp((target - s0) / segl, float(0.0), float(1.0))
+
+        p0 = real_pts[rb + idx]
+        p1 = real_pts[rb + (idx + 1) % r]   # closed[idx+1]: real[0] when idx == R-1
+        out[t] = p0 + frac * (p1 - p0)
+
+    @wp.kernel
     def _turning_k(
         c: wp.array(dtype=wp.vec2f),
         N: int,
@@ -782,6 +865,59 @@ def resample_uniform(center: torch.Tensor, n: int) -> torch.Tensor:
     wp.launch(_resample_lookup_k, dim=flat, inputs=[cf, wp_seg, wp_s, N, wp_out], device=dev)
     _sync(center.device)
     return out_t.view(E, n, 2)
+
+
+def arc_length_resample_warp(points: torch.Tensor, num: int):
+    """NaN-aware arc-length-uniform resample, a drop-in for geometry.arc_length_resample.
+
+    FIXED mode (``num`` given, no spacing/valid_mask): per env, DROP every non-finite
+    point (interior NaN too) compacting the rest IN ORDER (R real points), close that
+    real loop, and emit exactly ``num`` arc-uniform points. Envs with R < 2 yield an
+    all-NaN row and count 0; envs with R >= 2 get count ``num``. Generalizes
+    resample_uniform (variable R per env, NaN dropping, output count != input count).
+
+    Two Warp kernels mirroring _resample_scan_k / _resample_lookup_k: _arc_scan_k (one
+    thread per env) compacts real points and builds the closed-loop float64-accumulated
+    arc length; _arc_lookup_k (one thread per output point) does a linear-scan
+    searchsorted + lerp. Pure Warp (cpu+cuda), no torch compute on the geometry.
+
+    Args:
+        points: [E, M, 2] float32 dense loops (may contain NaN padding / interior NaN).
+        num: fixed output point count per env.
+
+    Returns:
+        (resampled [E, num, 2] float32, count [E] long). Matches the torch oracle:
+        count EXACT; positions allclose to atol~5e-4 (float32-cumsum vs float64 drift).
+    """
+    _init()
+    E, M, _ = points.shape
+    dev = str(points.device)
+    device = points.device
+
+    df = wp.from_torch(points.reshape(E * M, 2).contiguous(), dtype=wp.vec2f)
+
+    # Scratch: compacted real points, per-real-segment lengths, cumulative arc length,
+    # and the real-point count R per env (read by the lookup to gate NaN / clamp idx).
+    real_t = torch.empty(E * M, 2, device=device, dtype=torch.float32)
+    seg_t = torch.empty(E * M, device=device, dtype=torch.float32)
+    s_t = torch.empty(E * (M + 1), device=device, dtype=torch.float32)
+    count_r_t = torch.empty(E, device=device, dtype=torch.int32)
+    out_t = torch.empty(E * num, 2, device=device, dtype=torch.float32)
+
+    wp_real = wp.from_torch(real_t, dtype=wp.vec2f)
+    wp_seg = wp.from_torch(seg_t, dtype=wp.float32)
+    wp_s = wp.from_torch(s_t, dtype=wp.float32)
+    wp_count_r = wp.from_torch(count_r_t, dtype=wp.int32)
+    wp_out = wp.from_torch(out_t, dtype=wp.vec2f)
+
+    wp.launch(_arc_scan_k, dim=E, inputs=[df, M, wp_real, wp_seg, wp_s, wp_count_r], device=dev)
+    wp.launch(_arc_lookup_k, dim=E * num,
+              inputs=[wp_real, wp_seg, wp_s, wp_count_r, M, num, wp_out], device=dev)
+    _sync(points.device)
+
+    # Public count matches the oracle: R >= 2 -> num, R < 2 -> 0.
+    count = torch.where(count_r_t >= 2, num, 0).long()
+    return out_t.view(E, num, 2), count
 
 
 def turning_number(center: torch.Tensor) -> torch.Tensor:
