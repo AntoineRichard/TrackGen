@@ -429,6 +429,44 @@ if _HAVE_WARP:
             out[base + c] = wp.vec2f((x * cell_size + nx) * scale,
                                      (y * cell_size + ny) * scale)
 
+    @wp.kernel
+    def _ccw_sort_k(
+        points: wp.array(dtype=wp.vec2f),
+        P: int,
+        keys: wp.array(dtype=wp.float32),
+        out: wp.array(dtype=wp.vec2f),
+    ):
+        # One thread per env e. Orders this env's P corners ascending by the
+        # centroid-relative angle key = atan2(dx, dy) (X FIRST, matching the
+        # geometry.ccw_sort quirk). The output `out` and scratch `keys` buffers
+        # double as the sorted-prefix arrays for an in-place insertion sort; the
+        # original corner is always read from the read-only `points` input.
+        e = wp.tid()
+        base = e * P
+
+        # Centroid (sums accumulated in float64 to match torch.mean closely and
+        # keep the angular ordering robust at the ULP level).
+        sx = wp.float64(0.0)
+        sy = wp.float64(0.0)
+        for i in range(P):
+            p = points[base + i]
+            sx = sx + wp.float64(p[0])
+            sy = sy + wp.float64(p[1])
+        cx = wp.float32(sx / wp.float64(P))
+        cy = wp.float32(sy / wp.float64(P))
+
+        # Stable insertion sort (strict `>` -> stable for distinct keys).
+        for c in range(P):
+            p = points[base + c]
+            key = wp.atan2(p[0] - cx, p[1] - cy)   # X first!
+            j = c - 1
+            while j >= 0 and keys[base + j] > key:
+                keys[base + j + 1] = keys[base + j]
+                out[base + j + 1] = out[base + j]
+                j = j - 1
+            keys[base + j + 1] = key
+            out[base + j + 1] = p
+
 
 def offset(center: torch.Tensor, Nrm: torch.Tensor, half_width: float):
     """Constant-width offset of a closed-loop centerline, matching inflation._offset_stage.
@@ -796,6 +834,35 @@ def _corner_sample_raw(seeds: torch.Tensor, attempt: int, config):
     )
     _sync(seeds.device)
     return out_t.view(E, P, 2), used_t.view(E, P)
+
+
+def ccw_sort(points: torch.Tensor) -> torch.Tensor:
+    """Order each env's points angularly around their centroid. [E, P, 2] -> [E, P, 2].
+
+    Matches geometry.ccw_sort for DISTINCT angle keys (torch.equal): the output is the
+    input points permuted along P (no value arithmetic), sorted ascending by the
+    centroid-relative angle key atan2(dx, dy) (the X-component FIRST argument is an
+    intentional quirk of the original generator, preserved here). The sort is stable
+    (strict ``>``); torch.argsort is non-stable, so on exactly-equal fp32 keys (a
+    measure-zero tie) the two may order the tied points differently. Pure Warp
+    (cpu+cuda); one thread per env, in-place insertion sort.
+    """
+    _init()
+    E, P, _ = points.shape
+    dev = str(points.device)
+    flat = E * P
+
+    pf = wp.from_torch(points.reshape(flat, 2).contiguous(), dtype=wp.vec2f)
+    # keys_t / out_t are intentionally uninitialised: the insertion sort only ever reads
+    # slots strictly behind its write frontier (index < c), so no garbage is consumed.
+    keys_t = torch.empty(flat, device=points.device, dtype=torch.float32)
+    out_t = torch.empty(flat, 2, device=points.device, dtype=torch.float32)
+    wp.launch(_ccw_sort_k, dim=E,
+              inputs=[pf, P, wp.from_torch(keys_t, dtype=wp.float32),
+                      wp.from_torch(out_t, dtype=wp.vec2f)],
+              device=dev)
+    _sync(points.device)
+    return out_t.view(E, P, 2)
 
 
 def inflate_warp(center: torch.Tensor, config, valid: torch.Tensor | None = None):
