@@ -171,11 +171,106 @@ def _relax_energy(center0, band, config):
 
 
 # ---------------------------------------------------------------------------
+# Tangent-point + fractional-Sobolev (Repulsive Curves) backend + finisher core
+# ---------------------------------------------------------------------------
+
+def _dual_weights(center):
+    e = _roll(center, -1) - center
+    el = torch.linalg.norm(e, dim=-1)
+    return 0.5 * (el + _roll(el, 1))
+
+
+def _tp_tangents(center):
+    return geometry.safe_normalize(_roll(center, -1) - _roll(center, 1))
+
+
+def _tp_energy(center, pair_mask, alpha, beta, eps):
+    T = _tp_tangents(center)
+    w = _dual_weights(center)
+    diff = center[:, None, :, :] - center[:, :, None, :]      # [E,N,N,2] (x_j - x_i)
+    d2 = (diff * diff).sum(-1)
+    wedge = diff[..., 0] * T[:, :, None, 1] - diff[..., 1] * T[:, :, None, 0]
+    num = (wedge.abs() + eps) ** alpha
+    den = (d2 + eps * eps) ** (beta * 0.5)
+    k = (num / den) * (w[:, :, None] * w[:, None, :]) * pair_mask
+    return k.sum()
+
+
+def _length_grad(center):
+    u_fwd = geometry.safe_normalize(_roll(center, -1) - center)
+    return -u_fwd + _roll(u_fwd, 1)
+
+
+def _ring_spectral_filter(n, s, eps_reg, device, dtype):
+    k = torch.arange(n // 2 + 1, device=device, dtype=dtype)
+    lam = 2.0 - 2.0 * torch.cos(2.0 * torch.pi * k / n)
+    return 1.0 / (lam.clamp_min(0.0) ** s + eps_reg)
+
+
+def _precondition_fft(grad, inv_filter):
+    G = torch.fft.rfft(grad, dim=1) * inv_filter[None, :, None]
+    return torch.fft.irfft(G, n=grad.shape[1], dim=1)
+
+
+def _tp_flow(center0, band, config, n_steps, tau, early_stop):
+    """Shared tangent-point/Sobolev gradient flow. Used by the standalone backend
+    (early_stop=True, n_steps=tp_iters) and the smoothing finisher (early_stop=False)."""
+    device = center0.device
+    E, N, _ = center0.shape
+    alpha = float(config.tp_alpha); beta = float(config.tp_beta)
+    eps = 1e-4
+    s = (beta - 1.0) / (2.0 * alpha)
+    eps_reg = 1e-3
+    hw = float(config.half_width)
+    target = (1.0 - float(config.relax_tol)) * hw
+
+    circ = geometry.circ_index_dist(N, device)
+    pair_mask = (circ[None] > band.view(E, 1, 1)).to(center0.dtype)
+    center = center0.detach().clone()
+    L0_total = geometry.perimeter(center0).detach()
+    inv_filter = _ring_spectral_filter(N, s, eps_reg, device, center0.dtype)
+    active = torch.ones(E, dtype=torch.bool, device=device)
+
+    for _ in range(int(n_steps)):
+        if early_stop:
+            th = geometry.thickness(center, band)
+            active = active & (th < target)
+            if not bool(active.any()):
+                break
+        x = center.detach().clone().requires_grad_(True)
+        (grad,) = torch.autograd.grad(_tp_energy(x, pair_mask, alpha, beta, eps), x)
+        with torch.no_grad():
+            g = _precondition_fft(grad, inv_filter)
+            lg = _length_grad(center)
+            Ainv_lg = _precondition_fft(lg, inv_filter)
+            num = (g * lg).sum(dim=(1, 2))
+            den = (lg * Ainv_lg).sum(dim=(1, 2)).clamp_min(1e-12)
+            g = g - (num / den)[:, None, None] * Ainv_lg
+            g = g - g.mean(dim=1, keepdim=True)
+            gmax = torch.linalg.norm(g, dim=-1).amax(dim=1).clamp_min(1e-12)
+            step = (tau * geometry.mean_seg_len(center) / gmax)[:, None, None] * g
+            move = active[:, None, None].to(center.dtype) if early_stop else 1.0
+            center = center - step * move
+            cur_len = geometry.perimeter(center).clamp_min(1e-9)
+            bc = center.mean(dim=1, keepdim=True)
+            scale = (L0_total / cur_len)[:, None, None]
+            if early_stop:
+                scale = torch.where(active[:, None, None], scale, torch.ones_like(scale))
+            center = bc + (center - bc) * scale
+    return _resample_uniform(center, N)
+
+
+def _relax_tp(center0, band, config):
+    return _tp_flow(center0, band, config, n_steps=config.tp_iters, tau=config.tp_tau, early_stop=True)
+
+
+# ---------------------------------------------------------------------------
 # Dispatcher
 # ---------------------------------------------------------------------------
 
 _BACKENDS = {"xpbd": _relax_xpbd}  # energy/tp_sobolev added in later tasks
 _BACKENDS["energy"] = _relax_energy
+_BACKENDS["tp_sobolev"] = _relax_tp
 
 
 def _chunks(e: int, size):
