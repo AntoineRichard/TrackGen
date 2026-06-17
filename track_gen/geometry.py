@@ -348,3 +348,36 @@ def nearest_nonadjacent_distance(
     nearest = torch.bucketize(full_idx, sel.clamp(max=N - 1))
     nearest = nearest.clamp(max=P - 1)
     return d_work[:, nearest]
+
+
+def circ_index_dist(n: int, device) -> torch.Tensor:
+    """[n, n] circular index distance: min(|i-j|, n-|i-j|)."""
+    idx = torch.arange(n, device=device)
+    d = (idx.unsqueeze(0) - idx.unsqueeze(1)).abs()
+    return torch.minimum(d, n - d)
+
+
+def self_intersections(poly: torch.Tensor) -> torch.Tensor:
+    """Count proper self-crossings of each closed polyline. poly [E, N, 2] -> [E] long.
+
+    Tests every pair of edges (i -> i+1, j -> j+1), excluding the same edge and edges
+    that share an endpoint (circular index distance <= 1). A proper crossing is the
+    standard orientation test: endpoints of each segment lie on opposite sides of the
+    other. Each crossing is counted once.
+    """
+    E, N, _ = poly.shape
+    A = poly
+    B = torch.roll(poly, shifts=-1, dims=1)
+
+    def ccw(o, p, q):
+        return (q[..., 1] - o[..., 1]) * (p[..., 0] - o[..., 0]) - \
+               (p[..., 1] - o[..., 1]) * (q[..., 0] - o[..., 0])
+
+    Ai = A[:, :, None, :]; Bi = B[:, :, None, :]
+    Aj = A[:, None, :, :]; Bj = B[:, None, :, :]
+    d1 = ccw(Aj, Bj, Ai); d2 = ccw(Aj, Bj, Bi)
+    d3 = ccw(Ai, Bi, Aj); d4 = ccw(Ai, Bi, Bj)
+    cross = ((d1 > 0) != (d2 > 0)) & ((d3 > 0) != (d4 > 0))  # [E,N,N]
+    circ = circ_index_dist(N, poly.device)
+    cross = cross & (circ[None] > 1)
+    return (cross.sum(dim=(-1, -2)) // 2).long()
