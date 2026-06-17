@@ -16,6 +16,7 @@ from __future__ import annotations
 import torch
 
 from . import geometry
+from . import warp_relax
 
 
 def _roll(x, k):
@@ -117,17 +118,27 @@ def _relax_xpbd(center0, band, config):
     # smooth, resample-stable shape — early-stopping froze under-converged tracks whose
     # thickness then collapsed on the final resample.
     R_min = hw * (1.0 + margin)
+    target = D * (1.0 + margin)
     sep_relax = float(config.relax_sep_relax)
     spc_relax = float(config.relax_spc_relax)
     bend_relax = float(config.relax_bend_relax)
 
     center = center0.clone()
     L0 = geometry.perimeter(center0) / N
-    circ = geometry.circ_index_dist(N, center0.device)
-    mask_keep = circ[None] > band.view(E, 1, 1)
+
+    # Separation is the hot-spot. On CUDA (with Warp) use the fused kernel — no
+    # [E,N,N] materialization, ~100-500x faster — else the pure-torch pairwise op.
+    use_warp = warp_relax.should_use(center0.device, config)
+    if not use_warp:
+        circ = geometry.circ_index_dist(N, center0.device)
+        mask_keep = circ[None] > band.view(E, 1, 1)
 
     for _ in range(int(config.relax_iters)):
-        disp = sep_relax * _separation_disp(center, mask_keep, D, margin)
+        if use_warp:
+            sep = warp_relax.separation_disp(center, band, target)
+        else:
+            sep = _separation_disp(center, mask_keep, D, margin)
+        disp = sep_relax * sep
         disp = disp + spc_relax * _spacing_disp(center, L0)
         if bend_relax > 0.0:
             bend, toward = _bending_disp(center, R_min)
