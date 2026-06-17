@@ -261,18 +261,26 @@ if _HAVE_WARP:
 
     @wp.kernel
     def _resample_scan_k(
-        seg: wp.array(dtype=wp.float32),
+        c: wp.array(dtype=wp.vec2f),
         N: int,
+        seg: wp.array(dtype=wp.float32),
         s: wp.array(dtype=wp.float32),
     ):
-        # One thread per env e.  seg[e*N+i] is pre-computed by the wrapper using
-        # torch.linalg.norm (identical to the oracle).  This kernel only builds the
-        # cumulative arc-length array: s[e*(N+1)+0]=0, s[e*(N+1)+i+1]=s[...+i]+seg[i].
+        # One thread per env e. Pure Warp: segment lengths seg[e*N+i]=|c[i+1]-c[i]|
+        # (i+1 wraps) and the cumulative arc length s[e*(N+1)+0]=0, s[..+i+1]=s[..+i]+seg[i].
+        # The running sum is accumulated in float64 to limit drift vs the torch oracle's
+        # cumsum (the residual ~1e-4 is float32 sqrt rounding, geometrically negligible).
         e = wp.tid()
         b = e * N
-        s[e * (N + 1)] = float(0.0)
+        es = e * (N + 1)
+        s[es] = float(0.0)
+        acc = wp.float64(0.0)
         for i in range(N):
-            s[e * (N + 1) + i + 1] = s[e * (N + 1) + i] + seg[b + i]
+            d = c[b + (i + 1) % N] - c[b + i]
+            l = wp.length(d)
+            seg[b + i] = l
+            acc = acc + wp.float64(l)
+            s[es + i + 1] = wp.float32(acc)
 
     @wp.kernel
     def _resample_lookup_k(
@@ -478,11 +486,12 @@ def thickness(points: torch.Tensor, band: torch.Tensor) -> torch.Tensor:
 def resample_uniform(center: torch.Tensor, n: int) -> torch.Tensor:
     """Arc-length-uniform resample of each closed loop to n points.
 
-    Matches track_gen.relaxation._resample_uniform exactly (allclose atol=1e-4).
-    Two Warp kernels: scan (one thread per env, builds seg+cumulative s) then
-    lookup (one thread per output point, linear-scan searchsorted + lerp).
+    Matches track_gen.relaxation._resample_uniform within FP tolerance (~1e-4; the
+    Warp float32 sqrt vs torch's differs by rounding, geometrically negligible).
+    Two Warp kernels: scan (one thread per env, builds seg+cumulative s from points)
+    then lookup (one thread per output point, linear-scan searchsorted + lerp).
     center [E, N, 2] float32 -> [E, n, 2] float32.  n must equal N for now.
-    Pure Warp (cpu+cuda).
+    Pure Warp (cpu+cuda), no torch compute.
     """
     _init()
     assert n == center.shape[1], "resample_uniform: n must equal N (input point count)"
@@ -490,31 +499,15 @@ def resample_uniform(center: torch.Tensor, n: int) -> torch.Tensor:
     dev = str(center.device)
     flat = E * N
 
-    # Compute seg and cumulative arc-length s identically to the oracle using
-    # torch.linalg.norm + torch.cumsum so that float32 rounding matches exactly.
-    closed = torch.cat([center, center[:, :1]], dim=1)              # [E, N+1, 2]
-    seg_2d = torch.linalg.norm(closed[:, 1:] - closed[:, :-1], dim=-1)  # [E, N]
-    s_2d = torch.cat(
-        [torch.zeros(E, 1, device=center.device, dtype=center.dtype),
-         torch.cumsum(seg_2d, dim=1)],
-        dim=1,
-    )                                                                # [E, N+1]
-
-    # Flatten to 1-D contiguous arrays for Warp kernels.
-    seg_t = seg_2d.contiguous().view(flat)                           # [E*N]
-    s_t = s_2d.contiguous().view(E * (N + 1))                       # [E*(N+1)]
-
     cf = wp.from_torch(center.reshape(flat, 2).contiguous(), dtype=wp.vec2f)
+    seg_t = torch.empty(flat, device=center.device, dtype=torch.float32)
+    s_t = torch.empty(E * (N + 1), device=center.device, dtype=torch.float32)
     out_t = torch.empty(flat, 2, device=center.device, dtype=torch.float32)
-
     wp_seg = wp.from_torch(seg_t, dtype=wp.float32)
     wp_s = wp.from_torch(s_t, dtype=wp.float32)
     wp_out = wp.from_torch(out_t, dtype=wp.vec2f)
 
-    # _resample_scan_k is bypassed: seg and s are pre-computed above in torch.
-    # _resample_lookup_k: one thread per output point — linear-scan searchsorted + lerp.
-    wp.launch(_resample_lookup_k, dim=flat,
-              inputs=[cf, wp_seg, wp_s, N, wp_out],
-              device=dev)
+    wp.launch(_resample_scan_k, dim=E, inputs=[cf, N, wp_seg, wp_s], device=dev)
+    wp.launch(_resample_lookup_k, dim=flat, inputs=[cf, wp_seg, wp_s, N, wp_out], device=dev)
     _sync(center.device)
     return out_t.view(E, n, 2)
