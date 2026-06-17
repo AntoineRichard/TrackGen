@@ -189,5 +189,11 @@ def xpbd_solve(center0: torch.Tensor, band: torch.Tensor, L0: torch.Tensor, conf
         wp.launch(_disp_kernel, dim=E * N,
                   inputs=[cw, bw, lw, N, target, R_min, sr, pr, br, dw], device=dev)
         wp.launch(_apply_kernel, dim=E * N, inputs=[cw, dw], device=dev)
-    wp.synchronize()
+    # Host-blocking sync is ILLEGAL during CUDA graph capture; warp_pipeline sets _CAPTURING
+    # while it captures the whole pipeline (this solve included) into one graph, where stream
+    # ordering already serializes the launches. Skip the sync there; keep it on the eager path
+    # so the caller's torch read sees the Warp write.
+    from . import warp_pipeline  # local import avoids an import cycle at module load
+    if not warp_pipeline._CAPTURING:
+        wp.synchronize()
     return cb.view(E, N, 2)
