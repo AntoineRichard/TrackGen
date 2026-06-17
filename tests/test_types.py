@@ -27,11 +27,6 @@ def test_config_defaults_instantiate():
     assert cfg.num_centerline_samples == 256
     # Width params
     assert cfg.half_width == 0.1
-    assert math.isclose(cfg.alpha, 0.9)
-    assert cfg.clamp_self_distance is False
-    assert cfg.self_distance_margin == 0.0
-    assert cfg.self_distance_band == 8
-    assert cfg.self_distance_decimation == 64
     # Output params
     assert cfg.num_points == 256
     assert cfg.output_mode == "fixed"
@@ -49,8 +44,6 @@ def test_config_overrides_round_trip():
         num_envs=32,
         num_points=128,
         half_width=0.25,
-        alpha=0.8,
-        clamp_self_distance=True,
         output_mode="constant_spacing",
         spacing=0.05,
         N_max=512,
@@ -61,7 +54,6 @@ def test_config_overrides_round_trip():
     assert cfg.generator == "fourier"
     assert cfg.num_envs == 32
     assert cfg.num_points == 128
-    assert cfg.clamp_self_distance is True
     assert cfg.output_mode == "constant_spacing"
     assert cfg.spacing == 0.05
     assert cfg.N_max == 512
@@ -90,6 +82,26 @@ def test_track_construct_from_tensors_field_shapes():
     assert track.valid.shape == (E,)
     assert track.valid.dtype == torch.bool
     assert track.count.shape == (E,)
+
+
+def test_relaxation_defaults():
+    from track_gen.types import TrackGenConfig
+    cfg = TrackGenConfig()
+    assert cfg.relax_enable is True
+    assert cfg.relax_solver == "xpbd"
+    assert cfg.relax_bend_relax == 1.5
+    assert cfg.relax_margin == 0.15
+    assert cfg.energy_steps == 800
+    assert cfg.tp_iters == 100
+    assert cfg.smooth_finish is False
+
+
+def test_deprecated_width_clamp_fields_removed():
+    from track_gen.types import TrackGenConfig
+    cfg = TrackGenConfig()
+    for dead in ("alpha", "clamp_self_distance", "self_distance_margin",
+                 "self_distance_band", "self_distance_decimation"):
+        assert not hasattr(cfg, dead), f"{dead} should be removed"
 
 
 def test_types_module_has_no_intra_package_imports():

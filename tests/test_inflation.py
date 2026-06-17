@@ -21,13 +21,12 @@ def make_circle_centerline(radius=2.0, m=200, e=1, center=(0.0, 0.0), device="cp
 
 
 def fixed_config(num_points=128, device="cpu", **overrides):
-    """A TrackGenConfig in fixed output mode with self-distance clamp OFF by default."""
+    """A TrackGenConfig in fixed output mode."""
     kwargs = dict(
         device=device,
         num_envs=1,
         output_mode="fixed",
         num_points=num_points,
-        clamp_self_distance=False,
     )
     kwargs.update(overrides)
     return TrackGenConfig(**kwargs)
@@ -65,33 +64,9 @@ def test_frame_curvature_orthonormal_and_circle_kappa():
     assert torch.allclose(kappa, torch.full_like(kappa, 1.0 / radius), atol=1e-2)
 
 
-def make_ellipse_centerline(a=4.0, b=1.5, m=300, e=1, device="cpu"):
-    """Closed ellipse Centerline; high curvature at the ends of the major axis."""
-    theta = torch.linspace(0, 2 * math.pi, m + 1, device=device)[:-1]
-    x = a * torch.cos(theta)
-    y = b * torch.sin(theta)
-    pts = torch.stack([x, y], dim=-1).unsqueeze(0).expand(e, m, 2).contiguous()
-    valid = torch.ones(e, dtype=torch.bool, device=device)
-    return Centerline(points=pts, valid=valid)
-
-
-def make_near_touch_centerline(m=400, e=1, gap=0.2, device="cpu"):
-    """A peanut/dumbbell loop whose two lobes pass within ~gap of each other."""
-    t = torch.linspace(0, 2 * math.pi, m + 1, device=device)[:-1]
-    r = 3.0 + 2.0 * torch.cos(2 * t)  # waist where cos(2t) is most negative
-    x = r * torch.cos(t)
-    y = r * torch.sin(t)
-    squeeze = gap + 0.5 * (x / x.abs().max())**2
-    y = y * squeeze / (squeeze.abs().max())
-    pts = torch.stack([x, y], dim=-1).unsqueeze(0).expand(e, m, 2).contiguous()
-    valid = torch.ones(e, dtype=torch.bool, device=device)
-    return Centerline(points=pts, valid=valid)
-
-
 def test_width_bounded_by_w_max_on_circle():
     cl = make_circle_centerline(radius=5.0, m=200, e=1)
-    cfg = fixed_config(num_points=256, num_envs=1, half_width=0.4, alpha=0.9,
-                       clamp_self_distance=False)
+    cfg = fixed_config(num_points=256, num_envs=1, half_width=0.4)
     res = inflation._resample_stage(cl, cfg)
     _, _, kappa = inflation._frame_curvature_stage(res.center)
     w = inflation._width_stage(res.center, kappa, cfg)
@@ -100,42 +75,10 @@ def test_width_bounded_by_w_max_on_circle():
     assert torch.allclose(w, torch.full_like(w, cfg.half_width), atol=1e-3)
 
 
-def test_width_no_fold_on_ellipse():
-    cl = make_ellipse_centerline(a=4.0, b=1.0, m=400, e=1)
-    cfg = fixed_config(num_points=400, num_envs=1, half_width=2.0, alpha=0.9,
-                       clamp_self_distance=False)
-    res = inflation._resample_stage(cl, cfg)
-    _, _, kappa = inflation._frame_curvature_stage(res.center)
-    w = inflation._width_stage(res.center, kappa, cfg)
-    assert torch.all(w * kappa < cfg.alpha + 1e-4)
-    assert torch.all(w * kappa < 1.0)
-
-
-def test_self_distance_clamp_prevents_overlap_on_near_touch():
-    cl = make_near_touch_centerline(m=600, e=1, gap=0.3)
-    cfg = fixed_config(
-        num_points=600, num_envs=1, half_width=1.0, alpha=0.9,
-        clamp_self_distance=True, self_distance_margin=0.02,
-        self_distance_band=8, self_distance_decimation=64,
-    )
-    res = inflation._resample_stage(cl, cfg)
-    _, Nrm, kappa = inflation._frame_curvature_stage(res.center)
-    w = inflation._width_stage(res.center, kappa, cfg)
-    outer = res.center + w.unsqueeze(-1) * Nrm
-    inner = res.center - w.unsqueeze(-1) * Nrm
-    d = geometry.nearest_nonadjacent_distance(
-        res.center, cfg.self_distance_band, cfg.self_distance_decimation
-    )
-    assert torch.all(w <= 0.5 * d + 1e-5)
-    assert torch.all(w >= 0.0)
-    assert torch.isfinite(outer).all() and torch.isfinite(inner).all()
-
-
 def test_offset_orientation_outer_bigger_inner_smaller():
     radius = 3.0
     cl = make_circle_centerline(radius=radius, m=300, e=4)
-    cfg = fixed_config(num_points=256, num_envs=4, half_width=0.5, alpha=0.9,
-                       clamp_self_distance=False)
+    cfg = fixed_config(num_points=256, num_envs=4, half_width=0.5)
     res = inflation._resample_stage(cl, cfg)
     _, Nrm, kappa = inflation._frame_curvature_stage(res.center)
     w = inflation._width_stage(res.center, kappa, cfg)
@@ -175,8 +118,8 @@ def _run_to_width(cl, cfg):
 
 def test_validity_true_for_clean_circle():
     cl = make_circle_centerline(radius=3.0, m=300, e=2)
-    cfg = fixed_config(num_points=256, num_envs=2, half_width=0.4, alpha=0.9,
-                       clamp_self_distance=False, turning_tol=0.2, w_floor=1e-3)
+    cfg = fixed_config(num_points=256, num_envs=2, half_width=0.4,
+                       turning_tol=0.2, w_floor=1e-3)
     center, _, w, count = _run_to_width(cl, cfg)
     valid = inflation._validity_stage(center, w, count, cl.valid, cfg)
     assert valid.dtype == torch.bool
@@ -186,8 +129,8 @@ def test_validity_true_for_clean_circle():
 
 def test_validity_false_for_self_crossing():
     cl = make_figure_eight_centerline(scale=2.0, m=400, e=1)
-    cfg = fixed_config(num_points=256, num_envs=1, half_width=0.2, alpha=0.9,
-                       clamp_self_distance=False, turning_tol=0.2, w_floor=1e-3)
+    cfg = fixed_config(num_points=256, num_envs=1, half_width=0.2,
+                       turning_tol=0.2, w_floor=1e-3)
     center, _, w, count = _run_to_width(cl, cfg)
     valid = inflation._validity_stage(center, w, count, cl.valid, cfg)
     assert not bool(valid[0])
@@ -196,8 +139,8 @@ def test_validity_false_for_self_crossing():
 def test_validity_respects_gen_valid_flag():
     cl = make_circle_centerline(radius=3.0, m=300, e=2)
     cl.valid[1] = False
-    cfg = fixed_config(num_points=256, num_envs=2, half_width=0.4, alpha=0.9,
-                       clamp_self_distance=False, turning_tol=0.2, w_floor=1e-3)
+    cfg = fixed_config(num_points=256, num_envs=2, half_width=0.4,
+                       turning_tol=0.2, w_floor=1e-3)
     center, _, w, count = _run_to_width(cl, cfg)
     valid = inflation._validity_stage(center, w, count, cl.valid, cfg)
     assert bool(valid[0]) is True
@@ -207,8 +150,8 @@ def test_validity_respects_gen_valid_flag():
 def test_inflate_fixed_mode_full_track():
     radius = 3.0
     cl = make_circle_centerline(radius=radius, m=300, e=3)
-    cfg = fixed_config(num_points=128, num_envs=3, half_width=0.4, alpha=0.9,
-                       clamp_self_distance=False, turning_tol=0.2, w_floor=1e-3)
+    cfg = fixed_config(num_points=128, num_envs=3, half_width=0.4,
+                       turning_tol=0.2, w_floor=1e-3)
 
     track = inflation.inflate(cl, cfg)
 
@@ -238,7 +181,7 @@ def test_inflate_constant_spacing_mode_padding_and_wrap_length():
     cfg = TrackGenConfig(
         device="cpu", num_envs=1,
         output_mode="constant_spacing", spacing=0.5, N_max=128,
-        half_width=0.3, alpha=0.9, clamp_self_distance=False,
+        half_width=0.3,
         turning_tol=0.2, w_floor=1e-3,
     )
 

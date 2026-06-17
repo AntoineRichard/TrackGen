@@ -13,7 +13,7 @@ import numpy as np
 import torch
 from scipy.special import binom
 
-from .geometry import arc_length_resample, ccw_sort, safe_normalize, turning_number, vertex_tangents
+from .geometry import arc_length_resample, ccw_sort, safe_normalize, self_intersections, turning_number, vertex_tangents
 
 
 @dataclass
@@ -255,7 +255,18 @@ class BezierCenterlineGenerator(CenterlineGenerator):
             # Gates 2 & 3: turning number ~ 2*pi AND finite, evaluated on REAL points only.
             turn, finite_ok = self._real_turning_and_finite(dense)
             turn_ok = (turn.abs() - 2.0 * math.pi).abs() <= self.config.turning_tol
-            ok = angle_ok & turn_ok & finite_ok
+            # Gate 4: the dense centerline must be a SIMPLE (non-self-intersecting) loop
+            # AT THE RESOLUTION THE PIPELINE USES. Relaxation by repulsion cannot untangle
+            # a global self-crossing, so reject it here. We test on an arc-length resample
+            # at the pipeline's output resolution (drops NaN, reconnects pruned gaps): this
+            # catches genuine global crossings while ignoring sub-resolution corner cusps
+            # that (a) the pipeline never sees and (b) the relaxation's bending rounds out
+            # anyway. Falls back to 256 so lightweight unit-test configs (no num_points
+            # field) still work.
+            simple_n = int(getattr(self.config, "num_points", 256) or 256)
+            simple_resampled, _ = arc_length_resample(dense, num=simple_n)
+            simple_ok = self_intersections(simple_resampled) == 0
+            ok = angle_ok & turn_ok & finite_ok & simple_ok
 
             good = pending[ok]
             points[good] = dense[ok]

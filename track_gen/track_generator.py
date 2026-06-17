@@ -16,7 +16,6 @@ import warnings
 import torch
 from torch import Tensor
 
-from . import PerEnvSeededRNG  # noqa: F401  (re-export; matches legacy import surface)
 from .types import Track, TrackGenConfig
 from .generators import (
     BezierCenterlineGenerator,
@@ -79,7 +78,13 @@ class TrackGenerator:
         """
         ids = self._resolve_ids(num_or_ids)
         centerline: Centerline = self._generator.generate(ids)
-        return inflate(centerline, self._config)
+        # Resample to a uniform centerline, relax it (thickness >= half_width), then inflate.
+        from . import relaxation
+        from .inflation import _resample_stage
+        res = _resample_stage(centerline, self._config)            # arc-length uniform
+        relaxed = relaxation.relax(res.center, self._config)       # bead-chain relaxation
+        relaxed_cl = Centerline(points=relaxed, valid=centerline.valid)
+        return inflate(relaxed_cl, self._config)
 
 
 def generate_tracks(num_tracks: int, config: TrackGenConfig | None = None, rng=None) -> Tensor:
