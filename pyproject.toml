@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "track_gen"
+version = "0.1.0"
+description = "GPU-batched race-track generator with centerline relaxation."
+requires-python = ">=3.10"
+dependencies = ["torch", "scipy", "numpy", "warp-lang"]
+
+[project.optional-dependencies]
+dev = ["pytest", "matplotlib"]
+
+[tool.setuptools]
+packages = ["track_gen"]
