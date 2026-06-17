@@ -21,6 +21,8 @@ import math
 
 import torch
 
+from . import warp_relax  # pure-Warp XPBD solve (cpu+cuda); part of the pure-Warp impl
+
 try:
     import warp as wp
     _HAVE_WARP = True
@@ -762,6 +764,72 @@ def generate_centerline_warp(seeds: torch.Tensor, config):
         valid = valid | accept
 
     return centerline, valid
+
+
+def generate_tracks_warp(config, seeds: torch.Tensor):
+    """End-to-end pure-Warp track generation: a drop-in for TrackGenerator.generate.
+
+    Composes the verified pure-Warp stages in the torch oracle's order
+    (TrackGenerator.generate -> _resample_stage -> relaxation.relax -> inflate):
+
+      1. ``generate_centerline_warp`` -> [E, N, 2] centerline already arc-length resampled
+         to ``num_points`` (the oracle's dense->N resample is fused in) plus the [E] bool
+         generation flag. Never-accepted envs carry an all-NaN centerline row.
+      2. Relax: band = round(2*half_width / mean_seg_len).clamp_min(1) and rest length
+         L0 = perimeter/N (mean_seg_len), then ``warp_relax.xpbd_solve`` (a fused pure-Warp
+         XPBD solve that runs on cpu AND cuda; it is called DIRECTLY, not via the torch
+         relaxation.relax which only takes the Warp path on cuda). The band is guarded with
+         nan_to_num so an invalid env's NaN mean_seg_len still yields a valid int band (the
+         kernel must not choke); the NaN otherwise flows untouched through relax + resample.
+      3. ``resample_uniform`` re-uniformizes (matches relaxation._relax_xpbd's final resample).
+      4. ``inflate_warp`` builds the Track, with the generation flag passed as ``valid``.
+
+    Invalid (never-accepted) envs propagate NaN through relax + resample, so inflate_warp's
+    validity gate marks them invalid (no_nan=False AND gen_valid=False). This is the intended
+    static-batch behaviour: a single fixed-size launch, no per-env host branching, fully
+    graph-capturable on cuda. Validated by YIELD / WIDTH / SHAPE aggregates (Warp RNG produces
+    different tracks than the torch oracle, so there is no per-env allclose).
+
+    Only the default relaxation is ported: ``relax_solver`` must be "xpbd" and
+    ``smooth_finish`` must be False (asserted); ``relax_band`` is honored if set.
+
+    Args:
+        config: TrackGenConfig (output_mode must be "fixed"; relax_solver="xpbd",
+                smooth_finish=False; uses num_points, half_width, relax_band and the
+                fields the composed stages read).
+        seeds:  [E] int per-env base seed (the only per-env input).
+
+    Returns:
+        track_gen.types.Track with all fields shaped per inflate_warp. Pure Warp + torch glue
+        (cpu+cuda); no oracle-module imports.
+    """
+    # Only the default (XPBD, no finisher) relaxation is ported to pure Warp. Fail loudly
+    # rather than silently diverge from the torch oracle if the facade passes other knobs.
+    assert config.relax_solver == "xpbd", \
+        f"generate_tracks_warp only supports relax_solver='xpbd', got {config.relax_solver!r}"
+    assert not config.smooth_finish, \
+        "generate_tracks_warp does not implement the smooth_finish (tp_sobolev) pass"
+
+    N = int(config.num_points)
+    hw = float(config.half_width)
+
+    centerline, gen_valid = generate_centerline_warp(seeds, config)   # [E, N, 2], [E] bool
+    E = centerline.shape[0]
+
+    if config.relax_band is not None:
+        # Honor an explicit per-track band override exactly like relaxation._band.
+        band = torch.full((E,), int(config.relax_band), dtype=torch.long, device=centerline.device)
+        L0 = _mean_seg_len_torch(centerline)                          # still needed as xpbd rest length
+    else:
+        L0 = _mean_seg_len_torch(centerline)                          # [E] (NaN for invalid envs)
+        # band = round(2*hw / L0).long().clamp_min(1); guard against NaN/inf from invalid (NaN)
+        # envs so the kernel gets a valid int band (the NaN still flows through relax+resample).
+        band_f = 2.0 * hw / L0
+        band = torch.nan_to_num(band_f, nan=1.0, posinf=1.0, neginf=1.0).round().long().clamp_min(1)
+
+    relaxed = warp_relax.xpbd_solve(centerline, band, L0, config)     # pure Warp (cpu+cuda)
+    relaxed = resample_uniform(relaxed, N)                            # final re-uniform
+    return inflate_warp(relaxed, config, valid=gen_valid)
 
 
 def assemble(corners: torch.Tensor, count: torch.Tensor, config) -> torch.Tensor:
