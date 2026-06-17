@@ -381,3 +381,39 @@ def self_intersections(poly: torch.Tensor) -> torch.Tensor:
     circ = circ_index_dist(N, poly.device)
     cross = cross & (circ[None] > 1)
     return (cross.sum(dim=(-1, -2)) // 2).long()
+
+
+def perimeter(points: torch.Tensor) -> torch.Tensor:
+    """Closed-loop perimeter of each polyline. points [E, N, 2] -> [E]."""
+    seg = torch.roll(points, shifts=-1, dims=1) - points
+    return torch.linalg.norm(seg, dim=-1).sum(dim=1)
+
+
+def mean_seg_len(points: torch.Tensor) -> torch.Tensor:
+    """Mean segment length (rest spacing) = perimeter / N. [E]."""
+    return perimeter(points) / points.shape[1]
+
+
+def separation_min(points: torch.Tensor, band: torch.Tensor) -> torch.Tensor:
+    """Min distance between any two non-adjacent points (circular index dist > band).
+
+    points [E, N, 2]; band [E] long (an INDEX window, not a distance). Pairs within
+    band indices are excluded (set to +inf) before the global min. Returns [E].
+    """
+    E, N, _ = points.shape
+    dmat = torch.cdist(points, points)                       # [E,N,N]
+    circ = circ_index_dist(N, points.device)                 # [N,N]
+    mask = circ[None] <= band.view(E, 1, 1)
+    dmat = dmat.masked_fill(mask, float("inf"))
+    return dmat.amin(dim=(-1, -2))
+
+
+def curvature_radius_min(points: torch.Tensor) -> torch.Tensor:
+    """1 / max Menger curvature over the loop. points [E, N, 2] -> [E]."""
+    kappa = menger_curvature(points)                         # [E,N]
+    return 1.0 / kappa.amax(dim=1).clamp_min(1e-12)
+
+
+def thickness(points: torch.Tensor, band: torch.Tensor) -> torch.Tensor:
+    """Discrete curve thickness = min(min-curvature-radius, 0.5 * separation_min). [E]."""
+    return torch.minimum(curvature_radius_min(points), 0.5 * separation_min(points, band))
