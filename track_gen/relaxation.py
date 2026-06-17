@@ -135,10 +135,47 @@ def _relax_xpbd(center0, band, config):
 
 
 # ---------------------------------------------------------------------------
+# Energy (Adam soft-penalty) backend
+# ---------------------------------------------------------------------------
+
+def _energy(center, x0, circ, band, D, w_sep, w_len, w_bend, w_anchor, L0):
+    E, N, _ = center.shape
+    dmat = torch.cdist(center, center)                      # [E,N,N]
+    mask = circ[None] > band.view(E, 1, 1)
+    viol = torch.relu(D - dmat) * mask
+    e_sep = 0.5 * w_sep * (viol ** 2).sum()
+    seg = _roll(center, -1) - center
+    seglen = torch.linalg.norm(seg, dim=-1)
+    e_len = w_len * ((seglen - L0.view(E, 1)) ** 2).sum()
+    lap = _roll(center, -1) - 2.0 * center + _roll(center, 1)
+    e_bend = w_bend * (lap ** 2).sum()
+    e_anchor = w_anchor * ((center - x0) ** 2).sum()
+    return e_sep + e_len + e_bend + e_anchor
+
+
+def _relax_energy(center0, band, config):
+    E, N, _ = center0.shape
+    D = 2.0 * float(config.half_width)
+    circ = geometry.circ_index_dist(N, center0.device).to(center0.dtype)
+    L0 = geometry.mean_seg_len(center0).detach()
+    x0 = center0.detach().clone()
+    x = center0.detach().clone().requires_grad_(True)
+    opt = torch.optim.Adam([x], lr=float(config.energy_lr))
+    for _ in range(int(config.energy_steps)):
+        opt.zero_grad(set_to_none=True)
+        e = _energy(x, x0, circ, band, D, float(config.energy_w_sep), float(config.energy_w_len),
+                    float(config.energy_w_bend), float(config.energy_w_anchor), L0)
+        e.backward()
+        opt.step()
+    return _resample_uniform(x.detach(), N)
+
+
+# ---------------------------------------------------------------------------
 # Dispatcher
 # ---------------------------------------------------------------------------
 
 _BACKENDS = {"xpbd": _relax_xpbd}  # energy/tp_sobolev added in later tasks
+_BACKENDS["energy"] = _relax_energy
 
 
 def _chunks(e: int, size):
