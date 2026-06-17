@@ -467,6 +467,126 @@ if _HAVE_WARP:
             keys[base + j + 1] = key
             out[base + j + 1] = p
 
+    @wp.func
+    def _safe_normalize2(v: wp.vec2f) -> wp.vec2f:
+        # Mirrors geometry.safe_normalize: v / clamp_min(||v||, 1e-8). The wp.max
+        # floors finite lengths at 1e-8 exactly like torch.clamp_min, and a NaN
+        # vector divides to (nan, nan) (NaN/eps = nan) so NaN propagates to BOTH
+        # components, matching the torch oracle bit-for-bit on pruned corners.
+        return v / wp.max(wp.length(v), 1.0e-8)
+
+    @wp.kernel
+    def _vertex_tangents_k(
+        c: wp.array(dtype=wp.vec2f),
+        P: int,
+        p: float,
+        tangents: wp.array(dtype=wp.vec2f),
+    ):
+        # One thread per corner t (dim = E*P); e = env index, i = corner-within-env.
+        # Mirrors geometry.vertex_tangents: u_out_i = dir(i -> i+1), u_in_i = dir(i-1 -> i)
+        # (== roll(u_out, +1)); tangent_i = safe_normalize(p*u_out + (1-p)*u_in). NaN at any
+        # pruned (NaN) corner propagates the same way the torch oracle's safe_normalize does.
+        t = wp.tid()
+        e = t // P
+        i = t % P
+        b = e * P
+        c_i = c[t]
+        c_next = c[b + (i + 1) % P]
+        c_prev = c[b + (i + P - 1) % P]
+        u_out = _safe_normalize2(c_next - c_i)
+        u_in = _safe_normalize2(c_i - c_prev)
+        blended = p * u_out + (1.0 - p) * u_in
+        tangents[t] = _safe_normalize2(blended)
+
+    @wp.kernel
+    def _assemble_k(
+        c: wp.array(dtype=wp.vec2f),
+        tangents: wp.array(dtype=wp.vec2f),
+        P: int,
+        npseg: int,
+        rad: float,
+        out: wp.array(dtype=wp.vec2f),
+    ):
+        # One thread per dense sample t (dim = E*P*npseg). Decodes (e, segment i, sample s),
+        # rebuilds the cubic Bezier of segment i (corner i -> corner (i+1)%P) and evaluates
+        # it at parameter u = s/(npseg-1) with the degree-3 Bernstein basis. Mirrors
+        # BezierCenterlineGenerator._segment + _cubic_bezier: handle = rad*chord along the
+        # corner tangents. NaN corners/tangents propagate into the output as in the oracle.
+        t = wp.tid()
+        per_env = P * npseg
+        e = t // per_env
+        rem = t % per_env
+        i = rem // npseg
+        s = rem % npseg
+        b = e * P
+
+        c0 = c[b + i]
+        c1 = c[b + (i + 1) % P]
+        t0 = tangents[b + i]
+        t1 = tangents[b + (i + 1) % P]
+
+        chord = wp.length(c1 - c0)
+        handle = rad * chord
+        p1 = c0 + t0 * handle    # leave c0 along its tangent
+        p2 = c1 - t1 * handle    # arrive at c1 along its tangent
+
+        u = float(s) / float(npseg - 1)
+        omu = 1.0 - u
+        b0 = omu * omu * omu          # (1-u)^3
+        b1 = 3.0 * u * omu * omu      # 3u(1-u)^2
+        b2 = 3.0 * u * u * omu        # 3u^2(1-u)
+        b3 = u * u * u                # u^3
+        out[t] = b0 * c0 + b1 * p1 + b2 * p2 + b3 * c1
+
+
+def assemble(corners: torch.Tensor, count: torch.Tensor, config) -> torch.Tensor:
+    """Build the closed dense Bezier centerline from ccw-ordered corners.
+
+    Pure-Warp drop-in for BezierCenterlineGenerator._assemble_centerline (with the
+    _prune_corners NaN step folded in): corner row i of env e is kept iff i < count[e],
+    else replaced by NaN. Then per-corner blended unit tangents are computed and each of
+    the P closed segments is sampled as a cubic Bezier (npseg samples), yielding a dense
+    ``[E, P*npseg, 2]`` polyline. NaN from pruned corners lands in the SAME positions as
+    the oracle. Pure Warp (cpu+cuda); allclose to the oracle to atol=1e-4 (float32 sqrt
+    drift in safe_normalize).
+
+    Args:
+        corners: [E, P, 2] float32 ccw-ordered corners (P == config.max_num_points).
+        count:   [E] int real-corner count per env; rows >= count are pruned to NaN.
+        config:  TrackGenConfig (uses edgy, rad, max_num_points, num_points_per_segment).
+
+    Returns:
+        [E, P * num_points_per_segment, 2] float32 dense closed centerline (NaN where pruned).
+    """
+    _init()
+    E, P, _ = corners.shape
+    assert P == int(config.max_num_points), "corners P must equal config.max_num_points"
+    npseg = int(config.num_points_per_segment)
+    # u = s/(npseg-1) below needs npseg >= 2 (one sample per segment is non-physical
+    # and would divide by zero, unlike the oracle's linspace which tolerates it).
+    assert npseg >= 2, "num_points_per_segment must be >= 2"
+    dev = str(corners.device)
+
+    # Prune mask (folds in _prune_corners' NaN step): corner i is real iff i < count[e].
+    row = torch.arange(P, device=corners.device)
+    keep = (row < count.to(corners.device)[:, None]).unsqueeze(-1)        # [E, P, 1]
+    pruned = torch.where(keep, corners, torch.full_like(corners, float("nan")))
+
+    # edgy -> vertex_tangents blend weight (default edgy=0 -> p=0.5).
+    p = math.atan(config.edgy) / math.pi + 0.5
+
+    cf = wp.from_torch(pruned.reshape(E * P, 2).contiguous(), dtype=wp.vec2f)
+    tan_t = torch.empty(E * P, 2, device=corners.device, dtype=torch.float32)
+    wp_tan = wp.from_torch(tan_t, dtype=wp.vec2f)
+    out_t = torch.empty(E * P * npseg, 2, device=corners.device, dtype=torch.float32)
+    wp_out = wp.from_torch(out_t, dtype=wp.vec2f)
+
+    wp.launch(_vertex_tangents_k, dim=E * P, inputs=[cf, P, float(p), wp_tan], device=dev)
+    wp.launch(_assemble_k, dim=E * P * npseg,
+              inputs=[cf, wp_tan, P, npseg, float(config.rad), wp_out], device=dev)
+    _sync(corners.device)
+    return out_t.view(E, P * npseg, 2)
+
 
 def offset(center: torch.Tensor, Nrm: torch.Tensor, half_width: float):
     """Constant-width offset of a closed-loop centerline, matching inflation._offset_stage.
