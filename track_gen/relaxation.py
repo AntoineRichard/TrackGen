@@ -101,23 +101,26 @@ def _bending_disp(center, R_min):
 def _relax_xpbd(center0, band, config):
     E, N, _ = center0.shape
     hw = float(config.half_width)
+    margin = float(config.relax_margin)
     D = 2.0 * hw
-    R_min = hw
-    target = (1.0 - float(config.relax_tol)) * hw
+    # Aim BOTH constraints slightly past the validity target (the separation already
+    # over-shoots to D*(1+margin); give bending the same headroom via R_min). The final
+    # arc-length resample can shift per-point Menger curvature, so a track relaxed only
+    # to the bare target can drop back under it; the margin absorbs that. We run a FIXED
+    # number of sweeps (no per-track early stop) so every track fully converges to a
+    # smooth, resample-stable shape — early-stopping froze under-converged tracks whose
+    # thickness then collapsed on the final resample.
+    R_min = hw * (1.0 + margin)
     sep_relax = float(config.relax_sep_relax)
     spc_relax = float(config.relax_spc_relax)
     bend_relax = float(config.relax_bend_relax)
-    margin = float(config.relax_margin)
 
     center = center0.clone()
     L0 = geometry.perimeter(center0) / N
     circ = geometry.circ_index_dist(N, center0.device)
     mask_keep = circ[None] > band.view(E, 1, 1)
-    active = torch.ones(E, dtype=torch.bool, device=center0.device)
 
     for _ in range(int(config.relax_iters)):
-        if not bool(active.any()):
-            break
         disp = sep_relax * _separation_disp(center, mask_keep, D, margin)
         disp = disp + spc_relax * _spacing_disp(center, L0)
         if bend_relax > 0.0:
@@ -126,9 +129,7 @@ def _relax_xpbd(center0, band, config):
             max_len = torch.linalg.norm(toward, dim=-1, keepdim=True)
             step_len = torch.linalg.norm(step, dim=-1, keepdim=True)
             disp = disp + step * (max_len / step_len.clamp_min(1e-12)).clamp(max=1.0)
-        center = torch.where(active[:, None, None], center + disp, center)
-        th = geometry.thickness(center, band)
-        active = active & (th < target)
+        center = center + disp
 
     return _resample_uniform(center, N)
 
