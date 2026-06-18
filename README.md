@@ -21,12 +21,31 @@ seeds[E] ─► generate (static regen) ─► arc-length resample ─► XPBD r
 Python ≥ 3.10. The pipeline requires `warp-lang`; the torch geometry/inflation/relaxation
 modules are warp-free (they serve as the test oracle and import without Warp).
 
+### From scratch with [uv](https://docs.astral.sh/uv/) (recommended)
+
+```bash
+# 1. install uv (skip if you already have it)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# 2. create the project venv — uv fetches Python 3.12 if it isn't present
+uv venv --python 3.12
+
+# 3. install track_gen (editable) with the warp + dev extras
+uv pip install -e ".[warp,dev]"
+
+# 4. verify
+.venv/bin/python -m pytest -q
+```
+
+### With venv + pip
+
 ```bash
 python -m venv .venv
 .venv/bin/pip install -e ".[warp,dev]"
 ```
 
-Core deps: `torch`, `scipy`, `numpy`. Extras: `warp` → `warp-lang`; `dev` → `pytest`, `matplotlib`.
+Both create a `.venv/`; run anything in it with `.venv/bin/python …` (or `source .venv/bin/activate`,
+or `uv run …`). Core deps: `torch`, `scipy`, `numpy`. Extras: `warp` → `warp-lang`; `dev` → `pytest`, `matplotlib`.
 
 ## Quickstart
 
