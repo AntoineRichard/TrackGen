@@ -14,6 +14,7 @@ dependencies = ["torch", "scipy", "numpy"]
 # are warp-free and CPU-importable without it.
 warp = ["warp-lang"]
 dev = ["pytest", "matplotlib"]
+ui = ["gradio"]
 
 [tool.setuptools]
 packages = ["track_gen"]

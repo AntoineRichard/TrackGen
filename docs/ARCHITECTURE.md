@@ -134,6 +134,18 @@ each track at a constant arc spacing of ~`0.6·half_width` (per-track `count[e] 
 round(perimeter/spacing)`, NaN-padded to `N_max`); at that resolution the same solve
 converges → smooth, valid tracks.
 
+## Parameter explorer
+
+[`viz/param_explorer.py`](../viz/param_explorer.py) is an interactive
+[Gradio](https://www.gradio.app/) UI for *seeing* how the config affects generation: sliders
+for the regime / shape / resolution / relaxation knobs drive the real `generate_tracks_warp`,
+rendering a paged grid of tracks plus the valid-yield and quality stats over a full batch
+(so the yield numbers are statistically meaningful). It builds on the same pure core
+(`build_config` → `generate_tracks_warp` → `draw_track`) and defaults to `constant_spacing`.
+Launch with `python -m viz.param_explorer` (needs the optional `ui` extra); the README has
+the control walkthrough. Note: the explorer's default is `constant_spacing`, whereas the
+library `TrackGenConfig` default remains `fixed` (the stable, parity-tested baseline).
+
 ## Torch as the test oracle
 
 The original torch implementation is **retained, but only as the verification oracle**:

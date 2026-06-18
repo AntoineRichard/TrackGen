@@ -27,7 +27,7 @@ A thin Gradio shell over a **pure, UI-free core**, so the logic is testable with
 | Shape | `max_num_points` | int slider | 5–20 | 13 |
 | Shape | `rad` | slider | 0.0–0.5 | 0.2 |
 | Shape | `edgy` | slider | 0.0–1.0 | 0.0 |
-| Res/mode | `output_mode` | radio | fixed / constant_spacing | fixed |
+| Res/mode | `output_mode` | radio | fixed / constant_spacing | constant_spacing |
 | Res/mode | `num_points` (fixed) | int slider | 64–512 | 256 |
 | Res/mode | `spacing` (constant) | slider | 0.1–1.0 | 0.30 |
 | Res/mode | `N_max` (constant) | int slider | 128–512 | 384 |
@@ -84,6 +84,14 @@ The Gradio event wiring itself is not unit-tested (thin shell); correctness live
 | `pyproject.toml` | `ui = ["gradio"]` optional extra | modify |
 | `tests/test_param_explorer.py` | core unit tests + app-builds smoke | create |
 | `README.md` | "Parameter explorer" launch note | modify |
+
+### Batch size & pagination
+
+A `batch_size` control (dropdown: 256 / 1024 / 2048 / 4096 / 8192, default 2048) sets how many
+tracks are generated per run. Stats (yield, mean length, mean thickness, mean count) are computed
+over the **full batch** — not just the visible page — for honest statistics at large N. The grid
+shows a `grid_n×grid_n` page of the cached `Track`; ◀ prev / next ▶ buttons re-draw slices of
+the cached object without regenerating. Only Generate / reroll / param changes trigger a new batch.
 
 ## Success criteria
 

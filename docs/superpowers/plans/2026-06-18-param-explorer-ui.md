@@ -405,6 +405,10 @@ git commit -m "viz(explorer): Gradio Blocks app (mode-aware controls, live + Gen
 
 ---
 
+### Task 5: batch size + paginated grid (done)
+
+`batch_size` param (19th key) + `generate_batch`/`render_page`/`n_pages` split; `render_grid` is now a convenience wrapper; `build_app` adds the batch_size Dropdown, ◀/▶ paging buttons, and `track_state`/`page_state` Gradio State — paging reads the cached Track without regenerating.
+
 ## Self-Review
 
 **Spec coverage:** Gradio shell + pure core (Task 1 `build_config`, Task 2 `render_grid`) → all spec §Architecture; the curated control set + ranges/defaults → Task 4 `build_app`; mode-aware visibility → Task 4 `_toggle`; live/Generate/reroll → Task 4 events; stats (yield/len/thickness/count) → Task 2 `_stats`; optional `ui` extra → Task 3; README → Task 3; tests (core on cpu + gradio smoke skip-if-absent) → Tasks 1/2/4. All spec sections mapped.

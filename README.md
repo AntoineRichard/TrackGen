@@ -141,7 +141,7 @@ track_gen/
   rng_utils.py        # PerEnvSeededRNG (Warp RNG state); seeds the pipeline
 tests/                # per-kernel oracle tests (cpu+cuda) + end-to-end + graph tests
 benchmarks/           # benchmark_pipeline.py (end-to-end), benchmark_relaxation.py (backends)
-viz/                  # plotting helpers
+viz/                  # plotting helpers (plot_tracks, make_report) + param_explorer.py (interactive Gradio UI)
 docs/                 # ARCHITECTURE.md + superpowers/ design/plan/handoff docs
 ```
 
@@ -162,6 +162,28 @@ docs/                 # ARCHITECTURE.md + superpowers/ design/plan/handoff docs
 Post-generation stages are count-aware: they operate over flat `[E, N_max, 2]` buffers with
 a per-track `count[e]` (fixed mode is the `count == N_max` special case). Every new kernel
 ships with a test asserting equivalence to its torch oracle on `cpu` and `cuda`.
+
+## Parameter explorer (UI)
+
+An interactive Gradio app to see how each parameter affects generation — sliders for the
+regime / shape / resolution / relaxation knobs, a live track grid, and the valid-yield stat.
+
+```bash
+.venv/bin/pip install -e ".[ui]"     # adds gradio
+.venv/bin/python -m viz.param_explorer   # opens a local URL (default http://127.0.0.1:7860)
+```
+
+**Using it:**
+- Controls are grouped — **Regime** (width / box), **Shape** (corner count / `rad` / `edgy`),
+  **Resolution & mode**, **Relaxation**, **Batch**.
+- **`output_mode`** toggles `fixed` ↔ `constant_spacing`; the resolution control swaps between
+  `num_points` and `spacing` + `N_max`.
+- **Batch size** generates that many tracks (256–8192); the **valid-yield % + mean length /
+  thickness / count** shown above the grid are computed over the *whole batch* for honest stats.
+- The grid shows one **page** of `grid_n × grid_n` tracks — **◀ prev / next ▶** page through the
+  batch *without* regenerating. Invalid tracks get a red title.
+- **Auto-update** (on) re-generates as you change a control; for heavy settings (large batch ×
+  high `relax_iters`) untick it and use **Generate**. **Reroll** draws fresh seeds.
 
 ## License
 
