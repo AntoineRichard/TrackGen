@@ -13,7 +13,7 @@ import numpy as np
 import torch
 from scipy.special import binom
 
-from .geometry import arc_length_resample, ccw_sort, safe_normalize, self_intersections, turning_number, vertex_tangents
+from .geometry import arc_length_resample, ccw_sort, ccw_sort_count, safe_normalize, self_intersections, turning_number, vertex_tangents
 
 
 @dataclass
@@ -104,7 +104,12 @@ class BezierCenterlineGenerator(CenterlineGenerator):
         return xy * self.config.scale
 
     def _prune_corners(self, points: torch.Tensor, ids: torch.Tensor):
-        """ccw-sort corners, then NaN-pad a per-env random tail to vary the corner count.
+        """Sample a per-env corner count, then prune-then-sort: angle-sort the first
+        ``count`` corners about THEIR OWN centroid (rows >= count are NaN).
+
+        Sorting the kept subset about its own centre yields an angularly-monotone (winding
+        +-1) polygon, avoiding the figure-eight that sort-then-prune produced (the kept
+        corners were a mis-centered angular wedge with a long Bezier closing chord).
 
         Args:
             points: [E, max_num_points, 2] raw sampled corners.
@@ -114,7 +119,6 @@ class BezierCenterlineGenerator(CenterlineGenerator):
             (pruned [E, max_num_points, 2], count [E] long) where rows >= count are NaN.
         """
         E, P, _ = points.shape
-        points = ccw_sort(points)  # disjoint angular wedges -> simple polygon
 
         # Per-env corner count in [min_num_points, max_num_points] (inclusive).
         # sample_integer_torch samples in [low, high); high = max+1 for an inclusive upper bound.
@@ -126,10 +130,7 @@ class BezierCenterlineGenerator(CenterlineGenerator):
         ).view(E).long()
         count = count.clamp(max=P)
 
-        row_idx = torch.arange(P, device=points.device).unsqueeze(0).expand(E, P)
-        keep = row_idx < count.unsqueeze(1)  # [E, P] bool
-        nan = torch.full_like(points, float("nan"))
-        pruned = torch.where(keep.unsqueeze(-1), points, nan)
+        pruned = ccw_sort_count(points, count)  # sort first `count` about own centroid; NaN tail
         return pruned, count
 
     def _cubic_bezier(self, p0, p1, p2, p3):
