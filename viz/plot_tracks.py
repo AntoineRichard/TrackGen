@@ -45,6 +45,14 @@ from track_gen.track_generator import TrackGenerator
 
 OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out")
 
+# Empirical max centerline bbox extent of a raw (scale=1) Bézier track (~1.8; rounded up
+# for margin). Used to map a target physical box size to ``scale`` so the largest track's
+# outer border lands near ``box_m``. 1 coordinate unit == 1 metre throughout this script.
+RAW_CENTER_EXTENT = 1.9
+
+# Length of the per-cell metric scale bar (metres).
+SCALEBAR_M = 5.0
+
 
 def make_rng(num_envs: int, seed: int, device: str) -> PerEnvSeededRNG:
     """Per-env seeded RNG, mirroring the tests / plot_ablations.
@@ -73,8 +81,9 @@ def _np_loop(arr2d: torch.Tensor) -> tuple[np.ndarray, np.ndarray]:
 
 
 def draw_track(ax, track: Track, e: int) -> None:
-    """Plot env ``e``'s track into ``ax``: filled band + outer/inner borders + dashed
-    centerline. Invalid tracks get a red title."""
+    """Plot env ``e``'s track at metric scale: filled band + outer/inner borders + dashed
+    centerline, a metre scale bar, and the track's W x H (metres) in the title. The axes
+    are in metres (1 coordinate unit = 1 m). Invalid tracks get a red title."""
     cx, cy = _np_loop(track.center[e])
     ox, oy = _np_loop(track.outer[e])
     ix, iy = _np_loop(track.inner[e])
@@ -89,20 +98,45 @@ def draw_track(ax, track: Track, e: int) -> None:
     if cx.size:
         ax.plot(cx, cy, color="0.25", lw=0.6, ls="--", zorder=4)
 
-    invalid = not bool(track.valid[e].item())
     ax.set_aspect("equal")
     ax.set_xticks([])
     ax.set_yticks([])
-    ax.set_title(f"env {e}{'  INVALID' if invalid else ''}",
+
+    size = ""
+    if cx.size:
+        # Freeze the autoscaled (metre) view, then draw a SCALEBAR_M-long scale bar in the
+        # lower-left so the bar can't re-expand the limits.
+        ax.relim()
+        ax.autoscale_view()
+        x0, x1 = ax.get_xlim()
+        y0, y1 = ax.get_ylim()
+        ax.autoscale(False)
+        sx = x0 + 0.06 * (x1 - x0)
+        sy = y0 + 0.06 * (y1 - y0)
+        ax.plot([sx, sx + SCALEBAR_M], [sy, sy], color="k", lw=1.4, zorder=6)
+        ax.text(sx, sy, f" {SCALEBAR_M:g} m", fontsize=4.5, va="bottom", ha="left", zorder=6)
+        size = f"  {cx.max() - cx.min():.0f}x{cy.max() - cy.min():.0f} m"
+
+    invalid = not bool(track.valid[e].item())
+    ax.set_title(f"env {e}{size}{'  INVALID' if invalid else ''}",
                  fontsize=6, color=("red" if invalid else "black"), pad=1.5)
 
 
-def render(images=10, rows=9, cols=9, half_width=0.05, num_points=256, scale=1.0,
+def render(images=10, rows=9, cols=9, track_width_m=1.0, box_m=20.0, num_points=256,
            device="cuda", seed=0, dpi=150, cell_in=1.8):
-    """Generate images*rows*cols tracks and save ``images`` grid PNGs to viz/out/."""
+    """Generate images*rows*cols tracks at metric scale and save ``images`` grid PNGs.
+
+    Physical units (1 coordinate unit = 1 m): the track width is ``track_width_m`` (so
+    ``half_width = track_width_m / 2``) and ``scale`` maps the raw generator extent so the
+    largest track fits in roughly ``box_m`` x ``box_m``. The geometry/yield are
+    scale-invariant, so this is the unitless default re-expressed in metres.
+    """
     if device == "cuda" and not torch.cuda.is_available():
         device = "cpu"
     os.makedirs(OUT_DIR, exist_ok=True)
+
+    half_width = track_width_m / 2.0
+    scale = (box_m - track_width_m) / RAW_CENTER_EXTENT  # largest outer border ~= box_m
 
     per_image = rows * cols
     E = images * per_image
@@ -112,8 +146,9 @@ def render(images=10, rows=9, cols=9, half_width=0.05, num_points=256, scale=1.0
     track = TrackGenerator(config, rng).generate(E)
 
     valid = track.valid
-    print(f"generated {E} tracks on {device} (hw={half_width}); "
-          f"overall valid yield: {valid.float().mean().item():.3f}")
+    print(f"generated {E} tracks on {device}: width {track_width_m} m, box <= {box_m} m "
+          f"(half_width={half_width} m, scale={scale:.2f}); "
+          f"valid yield {valid.float().mean().item():.3f}")
 
     paths = []
     for img in range(images):
@@ -123,7 +158,9 @@ def render(images=10, rows=9, cols=9, half_width=0.05, num_points=256, scale=1.0
             draw_track(ax, track, base + k)
         n_valid = int(valid[base:base + per_image].sum().item())
         fig.suptitle(f"tracks {base}-{base + per_image - 1}   "
-                     f"({n_valid}/{per_image} valid)", fontsize=10)
+                     f"width {track_width_m:g} m · box ≤ {box_m:g} m · "
+                     f"band={track_width_m:g} m · {n_valid}/{per_image} valid",
+                     fontsize=10)
         fig.tight_layout(rect=(0, 0, 1, 0.985))
         path = os.path.join(OUT_DIR, f"tracks_grid_{img:02d}.png")
         fig.savefig(path, dpi=dpi)
@@ -138,13 +175,13 @@ if __name__ == "__main__":
     ap.add_argument("--images", type=int, default=10)
     ap.add_argument("--rows", type=int, default=9)
     ap.add_argument("--cols", type=int, default=9)
-    ap.add_argument("--half_width", type=float, default=0.05)
+    ap.add_argument("--track_width_m", type=float, default=1.0, help="track width in metres")
+    ap.add_argument("--box_m", type=float, default=20.0, help="max track bounding box in metres")
     ap.add_argument("--num_points", type=int, default=256)
-    ap.add_argument("--scale", type=float, default=1.0)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--dpi", type=int, default=150)
     ap.add_argument("--cpu", action="store_true")
     a = ap.parse_args()
-    render(images=a.images, rows=a.rows, cols=a.cols, half_width=a.half_width,
-           num_points=a.num_points, scale=a.scale, seed=a.seed, dpi=a.dpi,
+    render(images=a.images, rows=a.rows, cols=a.cols, track_width_m=a.track_width_m,
+           box_m=a.box_m, num_points=a.num_points, seed=a.seed, dpi=a.dpi,
            device="cpu" if a.cpu else "cuda")
