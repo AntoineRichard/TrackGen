@@ -840,6 +840,69 @@ if _HAVE_WARP:
         count = min_num + int(wp.randf(state) * float(span))
         out[e] = wp.min(count, max_num)
 
+    @wp.kernel
+    def _fill_vec2_k(arr: wp.array(dtype=wp.vec2f), vx: float, vy: float):
+        # One thread per element: constant vec2 fill (pure-Warp torch.full replacement).
+        arr[wp.tid()] = wp.vec2f(vx, vy)
+
+    @wp.kernel
+    def _fill_f32_k(arr: wp.array(dtype=wp.float32), v: float):
+        # One thread per element: constant float fill (pure-Warp torch.full replacement).
+        arr[wp.tid()] = v
+
+    @wp.kernel
+    def _fill_i32_k(arr: wp.array(dtype=wp.int32), v: int):
+        # One thread per element: constant int fill (pure-Warp torch.full/zeros/ones).
+        arr[wp.tid()] = v
+
+    @wp.kernel
+    def _select_first_valid_k(
+        accept: wp.array(dtype=wp.int32),
+        valid: wp.array(dtype=wp.int32),
+        rs: wp.array(dtype=wp.vec2f),
+        centerline: wp.array(dtype=wp.vec2f),
+        N: int,
+    ):
+        # One thread per POINT t (dim = E*N); e = env index. Accept-FIRST-valid take:
+        # write the freshly-resampled rs into centerline ONLY for envs newly accepted this
+        # attempt (accept[e]==1 AND the OLD valid[e]==0). Reads valid but never writes it
+        # (no race); _or_update_k updates valid AFTER so the take here saw the old flag.
+        t = wp.tid()
+        e = t // N
+        if accept[e] == 1 and valid[e] == 0:
+            centerline[t] = rs[t]
+
+    @wp.kernel
+    def _or_update_k(accept: wp.array(dtype=wp.int32), valid: wp.array(dtype=wp.int32)):
+        # One thread per env e. valid |= accept (run AFTER _select_first_valid_k so the
+        # select saw the OLD valid). Folds the torch `valid = valid | accept`.
+        e = wp.tid()
+        if accept[e] != 0:
+            valid[e] = 1
+
+    @wp.kernel
+    def _band_l0_k(
+        center: wp.array(dtype=wp.vec2f),
+        N: int,
+        two_hw: float,
+        band_out: wp.array(dtype=wp.int32),
+        l0_out: wp.array(dtype=wp.float32),
+    ):
+        # One thread per env e. L0 = perimeter/N (closed-loop mean segment length; mirrors
+        # _mean_seg_len_torch). band = round(2*hw / L0).clamp_min(1); the isfinite guard on
+        # 2*hw/L0 reproduces the torch nan_to_num(nan=1.0,posinf=1.0,neginf=1.0).round()
+        # .long().clamp_min(1) for invalid (NaN-centerline) envs -> band 1. L0 itself may stay
+        # NaN for invalid envs (that flows untouched into xpbd, which propagates the NaN).
+        e = wp.tid()
+        base = e * N
+        peri = float(0.0)
+        for i in range(N):
+            peri += wp.length(center[base + (i + 1) % N] - center[base + i])
+        l0 = peri / float(N)
+        l0_out[e] = l0
+        bf = two_hw / wp.max(l0, float(1.0e-9))
+        band_out[e] = wp.where(wp.isfinite(bf), wp.max(int(wp.round(bf)), 1), 1)
+
 
 def corner_count_sample(seeds: torch.Tensor, attempt: int, config) -> torch.Tensor:
     """Sample a per-env corner COUNT in [min_num_points, max_num_points] via Warp RNG.
@@ -906,10 +969,22 @@ def generate_centerline_warp(seeds: torch.Tensor, config):
         (centerline [E, num_points, 2] float32, valid [E] bool). Invalid envs keep an
         all-NaN centerline row. Pure Warp + torch glue (cpu+cuda); no oracle-module imports.
     """
+    _init()
     E = seeds.shape[0]
     N = int(config.num_points)
-    centerline = torch.full((E, N, 2), float("nan"), device=seeds.device, dtype=torch.float32)
-    valid = torch.zeros(E, dtype=torch.bool, device=seeds.device)
+    dev = str(seeds.device)
+
+    # Persistent buffers updated IN PLACE across the fixed loop (this in-place pattern is
+    # also what makes the later CUDA graph capture work). torch.empty is just an I/O alloc;
+    # the kernel fills below (NaN centerline, valid=0) replace torch.full/torch.zeros so no
+    # torch compute touches them.
+    centerline = torch.empty(E * N, 2, device=seeds.device, dtype=torch.float32)
+    valid = torch.empty(E, device=seeds.device, dtype=torch.int32)
+    cl_w = wp.from_torch(centerline, dtype=wp.vec2f)
+    valid_w = wp.from_torch(valid, dtype=wp.int32)
+    nan = float("nan")
+    wp.launch(_fill_vec2_k, dim=E * N, inputs=[cl_w, nan, nan], device=dev)
+    wp.launch(_fill_i32_k, dim=E, inputs=[valid_w, 0], device=dev)
 
     for k in range(int(config.max_regen_iters)):
         corners = ccw_sort(corner_sample(seeds, k, config))   # [E, P, 2]
@@ -917,11 +992,16 @@ def generate_centerline_warp(seeds: torch.Tensor, config):
         dense = assemble(corners, count, config)              # [E, M, 2] (NaN-pruned)
         accept = gates(corners, dense, count, config)         # [E] bool
         rs, _ = arc_length_resample_warp(dense, N)            # [E, N, 2] (the gated centerline)
-        take = accept & (~valid)                              # accept-FIRST-valid
-        centerline = torch.where(take[:, None, None], rs, centerline)
-        valid = valid | accept
+        accept_w = wp.from_torch(accept.to(torch.int32).contiguous(), dtype=wp.int32)
+        rs_w = wp.from_torch(rs.reshape(E * N, 2).contiguous(), dtype=wp.vec2f)
+        # accept-FIRST-valid: select reads the OLD valid (take = accept & ~valid), then
+        # _or_update_k does valid |= accept AFTER so the select saw the pre-update flag.
+        wp.launch(_select_first_valid_k, dim=E * N,
+                  inputs=[accept_w, valid_w, rs_w, cl_w, N], device=dev)
+        wp.launch(_or_update_k, dim=E, inputs=[accept_w, valid_w], device=dev)
 
-    return centerline, valid
+    _sync(seeds.device)
+    return centerline.view(E, N, 2), valid.bool()
 
 
 def generate_tracks_warp(config, seeds: torch.Tensor):
@@ -973,18 +1053,26 @@ def generate_tracks_warp(config, seeds: torch.Tensor):
 
     centerline, gen_valid = generate_centerline_warp(seeds, config)   # [E, N, 2], [E] bool
     E = centerline.shape[0]
+    dev = str(centerline.device)
+
+    # band = round(2*hw / (perimeter/N)).clamp_min(1) and rest length L0 = perimeter/N,
+    # BOTH computed in one pure-Warp kernel (folds _mean_seg_len_torch + the nan_to_num /
+    # round / long / clamp_min torch glue). L0 stays NaN for invalid envs and flows untouched
+    # through xpbd; the band's isfinite guard yields a valid int band there.
+    band = torch.empty(E, device=centerline.device, dtype=torch.int32)
+    L0 = torch.empty(E, device=centerline.device, dtype=torch.float32)
+    cl_w = wp.from_torch(centerline.reshape(E * N, 2).contiguous(), dtype=wp.vec2f)
+    band_w = wp.from_torch(band, dtype=wp.int32)
+    l0_w = wp.from_torch(L0, dtype=wp.float32)
+    wp.launch(_band_l0_k, dim=E, inputs=[cl_w, N, 2.0 * hw, band_w, l0_w], device=dev)
 
     if config.relax_band is not None:
-        # Honor an explicit per-track band override exactly like relaxation._band.
-        band = torch.full((E,), int(config.relax_band), dtype=torch.long, device=centerline.device)
-        L0 = _mean_seg_len_torch(centerline)                          # still needed as xpbd rest length
-    else:
-        L0 = _mean_seg_len_torch(centerline)                          # [E] (NaN for invalid envs)
-        # band = round(2*hw / L0).long().clamp_min(1); guard against NaN/inf from invalid (NaN)
-        # envs so the kernel gets a valid int band (the NaN still flows through relax+resample).
-        band_f = 2.0 * hw / L0
-        band = torch.nan_to_num(band_f, nan=1.0, posinf=1.0, neginf=1.0).round().long().clamp_min(1)
+        # Honor an explicit per-track band override exactly like relaxation._band: overwrite
+        # band with the config constant (L0 from _band_l0_k above is still the xpbd rest
+        # length). Host branch on a CONFIG value (not tensor data) -> capture-safe.
+        wp.launch(_fill_i32_k, dim=E, inputs=[band_w, int(config.relax_band)], device=dev)
 
+    _sync(centerline.device)
     relaxed = warp_relax.xpbd_solve(centerline, band, L0, config)     # pure Warp (cpu+cuda)
     relaxed = resample_uniform(relaxed, N)                            # final re-uniform
     return inflate_warp(relaxed, config, valid=gen_valid)
@@ -1595,24 +1683,38 @@ def inflate_warp(center: torch.Tensor, config, valid: torch.Tensor | None = None
 
     assert config.output_mode == "fixed", "inflate_warp supports output_mode='fixed' only"
     assert center.shape[1] == config.num_points, "center N must equal config.num_points"
+    _init()
     E, N, _ = center.shape
+    dev = str(center.device)
     hw = float(config.half_width)
 
     # 1. arc-length-uniform resample; fixed mode -> every env keeps all N points.
     rs = resample_uniform(center, config.num_points)
-    count = torch.full((E,), N, dtype=torch.long, device=center.device)
+
+    # Constant per-track count (== N) and per-point half-width (== hw), plus the default
+    # all-valid generation flag, ALL kernel-filled (pure-Warp torch.full/ones replacements).
+    # torch.empty is just an I/O alloc; validity/offset/the Track consume these as before.
+    count_i32 = torch.empty(E, device=center.device, dtype=torch.int32)
+    w = torch.empty(E * N, device=center.device, dtype=torch.float32)
+    wp.launch(_fill_i32_k, dim=E, inputs=[wp.from_torch(count_i32, dtype=wp.int32), N], device=dev)
+    wp.launch(_fill_f32_k, dim=E * N, inputs=[wp.from_torch(w, dtype=wp.float32), hw], device=dev)
+    count = count_i32.long()                       # Track stores count as long (I/O dtype view)
+    w = w.view(E, N)                               # validity indexes w as [E, N]
 
     # 2. frame + curvature (kappa unused, like inflation._width_stage).
     T, Nrm, _kappa = frame_curvature(rs)
 
-    # 3. constant half-width per point.
-    w = torch.full((E, N), hw, device=center.device, dtype=rs.dtype)
-
     # 4. offset to outer/inner borders.
     outer, inner = offset(rs, Nrm, hw)
 
-    # 5. per-track validity gate.
-    gen_valid = valid if valid is not None else torch.ones(E, dtype=torch.bool, device=center.device)
+    # 5. per-track validity gate. Default gen flag (all valid) is a kernel int32 fill;
+    # otherwise the passed bool `valid` is consumed directly (validity .to(int32) on it).
+    if valid is not None:
+        gen_valid = valid
+    else:
+        gen_valid_i32 = torch.empty(E, device=center.device, dtype=torch.int32)
+        wp.launch(_fill_i32_k, dim=E, inputs=[wp.from_torch(gen_valid_i32, dtype=wp.int32), 1], device=dev)
+        gen_valid = gen_valid_i32                  # validity .to(int32) is a no-op view here
     valid_out = validity(rs, w, count, gen_valid, config, outer, inner)
 
     # 6. cumulative arc length + total length.
