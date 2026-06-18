@@ -34,19 +34,14 @@ def test_bezier_path_returns_track_with_aligned_boundaries():
     assert track.valid.dtype == torch.bool
 
 
-def test_fourier_generator_is_routed():
-    E, N = 4, 64
-    cfg = TrackGenConfig(generator="fourier", num_envs=E, num_points=N, device="cpu")
-    rng = _make_rng(E)
-    gen = TrackGenerator(cfg, rng)
-
-    from track_gen.generators import FourierCenterlineGenerator
-
-    assert isinstance(gen._generator, FourierCenterlineGenerator)
-
-    track = gen.generate(E)
-    assert isinstance(track, Track)
-    assert track.center.shape == (E, N, 2)
+def test_fourier_generator_rejected():
+    # The Fourier generator was not ported to Warp; the pure-Warp facade supports
+    # generator="bezier" only and rejects "fourier" at construction. (The
+    # FourierCenterlineGenerator class itself remains available as a torch primitive.)
+    cfg = TrackGenConfig(generator="fourier", num_envs=4, num_points=64, device="cpu")
+    rng = _make_rng(4)
+    with pytest.raises(ValueError):
+        TrackGenerator(cfg, rng)
 
 
 def test_unknown_generator_raises():

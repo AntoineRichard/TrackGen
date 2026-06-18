@@ -5,10 +5,11 @@
 
 """Top-level facade for the batched track generator.
 
-Wires the configured centerline generator (Bezier or Fourier) to the inflation
-stage and returns a fully-populated :class:`Track`. The public dataclasses
-``TrackGenConfig`` and ``Track`` live in the dependency-free leaf module
-``types.py`` and are re-exported here for backward compatibility.
+Runs the pure-Warp pipeline (``warp_pipeline.generate_tracks_warp``: generation ->
+resample -> relax -> inflate, all NVIDIA Warp kernels) and returns a fully-populated
+:class:`Track`. The public dataclasses ``TrackGenConfig`` and ``Track`` live in the
+dependency-free leaf module ``types.py`` and are re-exported here for backward
+compatibility.
 """
 
 import warnings
@@ -17,12 +18,6 @@ import torch
 from torch import Tensor
 
 from .types import Track, TrackGenConfig
-from .generators import (
-    BezierCenterlineGenerator,
-    Centerline,
-    FourierCenterlineGenerator,
-)
-from .inflation import inflate
 
 __all__ = [
     "Track",
@@ -33,32 +28,31 @@ __all__ = [
 
 
 class TrackGenerator:
-    """Top-level facade: build the configured centerline generator, run it,
-    inflate the result, and return a :class:`Track`.
-    """
+    """Top-level facade: run the pure-Warp track-generation pipeline and return a
+    :class:`Track`.
 
-    _GENERATORS = {
-        "bezier": BezierCenterlineGenerator,
-        "fourier": FourierCenterlineGenerator,
-    }
+    Generation, resample, relaxation and inflation are all expressed as NVIDIA Warp
+    kernels (``warp_pipeline.generate_tracks_warp``), runnable on the Warp ``cpu`` and
+    ``cuda`` devices with torch only as the array container. Only the ``bezier``
+    generator is supported on this path (the Fourier generator was not ported to Warp).
+    """
 
     def __init__(self, config: TrackGenConfig, rng) -> None:
         """Args:
-        config: The pipeline configuration.
-        rng: A ``PerEnvSeededRNG`` instance for per-env reproducible sampling.
+        config: The pipeline configuration. ``config.generator`` must be ``"bezier"``.
+        rng: A ``PerEnvSeededRNG`` instance; its per-env seed values seed the pipeline's
+            built-in Warp RNG (one base seed per env). The legacy host-side RNG state
+            machine is not used by the Warp pipeline.
         """
         if rng is None:
             raise ValueError("A random number generator must be provided.")
+        if config.generator != "bezier":
+            raise ValueError(
+                f"The pure-Warp pipeline supports generator='bezier' only; "
+                f"got {config.generator!r}."
+            )
         self._config = config
         self._rng = rng
-
-        generator_cls = self._GENERATORS.get(config.generator)
-        if generator_cls is None:
-            raise ValueError(
-                f"Unknown generator '{config.generator}'. "
-                f"Expected one of {sorted(self._GENERATORS)}."
-            )
-        self._generator = generator_cls(config, rng)
 
     def _resolve_ids(self, num_or_ids) -> Tensor:
         """Map an int count to ids ``0..n-1``; pass a tensor of ids through."""
@@ -66,8 +60,21 @@ class TrackGenerator:
             return torch.arange(num_or_ids, device=self._config.device)
         return num_or_ids
 
+    def _seeds_for(self, ids: Tensor) -> Tensor:
+        """Per-env base seeds for the Warp RNG: the rng's seed value for each env id.
+
+        Reproduces the legacy per-env seeding (a scalar rng seed -> all envs share it;
+        a per-env seed tensor -> distinct seeds) without driving the retired host-side
+        RNG state machine: the Warp pipeline reseeds ``wp.rand_init`` per (env, attempt)
+        from these values.
+        """
+        import warp as wp
+
+        seeds_all = wp.to_torch(self._rng.seeds_warp)  # [num_envs] int32 (rng device)
+        return seeds_all.to(self._config.device)[ids.long()]
+
     def generate(self, num_or_ids) -> Track:
-        """Generate a batch of tracks.
+        """Generate a batch of tracks via the pure-Warp pipeline.
 
         Args:
             num_or_ids: Either an ``int`` number of tracks (ids ``0..n-1``) or a
@@ -76,15 +83,11 @@ class TrackGenerator:
         Returns:
             A fully-populated :class:`Track`.
         """
+        from . import warp_pipeline
+
         ids = self._resolve_ids(num_or_ids)
-        centerline: Centerline = self._generator.generate(ids)
-        # Resample to a uniform centerline, relax it (thickness >= half_width), then inflate.
-        from . import relaxation
-        from .inflation import _resample_stage
-        res = _resample_stage(centerline, self._config)            # arc-length uniform
-        relaxed = relaxation.relax(res.center, self._config)       # bead-chain relaxation
-        relaxed_cl = Centerline(points=relaxed, valid=centerline.valid)
-        return inflate(relaxed_cl, self._config)
+        seeds = self._seeds_for(ids)
+        return warp_pipeline.generate_tracks_warp(self._config, seeds)
 
 
 def generate_tracks(num_tracks: int, config: TrackGenConfig | None = None, rng=None) -> Tensor:
