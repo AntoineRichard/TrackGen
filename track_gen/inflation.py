@@ -108,12 +108,13 @@ def _validity_stage(center, w, count, gen_valid, config, outer=None, inner=None)
     """Real per-track validity: generation flag AND closed-loop turning AND width floor
     AND no-NaN AND thickness >= (1-tol)*half_width AND zero border self-intersections.
 
-    Note: the turning and thickness checks are computed on the full ``center`` tensor.
-    In ``output_mode="constant_spacing"`` the NaN padding beyond ``count`` poisons those
-    two metrics (-> NaN -> fails), so such tracks are flagged invalid. This is a known
-    limitation: the relaxation pipeline targets fixed-N mode (where there is no padding),
-    which is what the facade and benchmark use; ``constant_spacing`` is not supported by
-    the relaxed-track validity gate."""
+    Note: this torch path is the verification *oracle*, and its gate here does NOT
+    count-mask the NaN padding -- the turning and thickness checks run over the full
+    ``center`` tensor, so in ``output_mode="constant_spacing"`` the NaN padding beyond
+    ``count`` poisons those two metrics (-> NaN -> fails) and such padded tracks are
+    flagged invalid. That is a limitation of this oracle path only. The runtime
+    pure-Warp pipeline's ``warp_pipeline._validity_k`` IS count-masked, so
+    ``output_mode="constant_spacing"`` is fully supported on the Warp path."""
     e, n = w.shape
     real = _real_point_mask(count, n, w.device)  # [E, N]
 

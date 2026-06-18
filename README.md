@@ -53,6 +53,14 @@ track.valid    # [E] bool — True where the track relaxed to a valid constant-w
 Only the **Bézier** generator is supported (`config.generator="bezier"`, the default);
 the legacy Fourier generator is not part of the Warp pipeline.
 
+### Output modes
+
+Two output modes (set via `config.output_mode`): `fixed` (default) gives every track
+exactly `num_points` points; `constant_spacing` gives each track a per-track count
+`round(perimeter/spacing)` (with `spacing` ≈ `0.6*half_width`, capped at `N_max`). At a
+constant arc spacing the relaxation converges to smoother, higher *honest*-yield tracks in
+tight-width regimes. Configured via `output_mode`, `spacing`, and `N_max`.
+
 ### The `Track` result
 
 All boundary arrays are index-aligned (`outer[i]`, `center[i]`, `inner[i]` share one
@@ -65,7 +73,7 @@ cross-section normal). Half-width is recovered as `‖outer − center‖`.
 | `arclen` | `[E, N]` | cumulative arc length (0 at index 0) |
 | `length` | `[E]` | closed-loop perimeter |
 | `valid` | `[E]` bool | per-track validity |
-| `count` | `[E]` int | real point count (`== N` in the default fixed mode) |
+| `count` | `[E]` int | real point count (`== N` in fixed mode; per-track `round(perimeter/spacing)` in constant_spacing) |
 
 ## Direct pure-Warp entry points
 
@@ -132,8 +140,9 @@ docs/                 # ARCHITECTURE.md + superpowers/ design/plan/handoff docs
 
 **Conventions** (see `docs/ARCHITECTURE.md`): one thread per output element; flat `[E*N]`
 `wp.vec2f` arrays; env index `e = tid // N`; launch with `device=str(tensor.device)`.
-Every new kernel ships with a test asserting equivalence to its torch oracle on `cpu` and
-`cuda`.
+Post-generation stages are count-aware: they operate over flat `[E, N_max, 2]` buffers with
+a per-track `count[e]` (fixed mode is the `count == N_max` special case). Every new kernel
+ships with a test asserting equivalence to its torch oracle on `cpu` and `cuda`.
 
 ## License
 

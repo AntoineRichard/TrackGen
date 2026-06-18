@@ -1,3 +1,5 @@
+> **⚠️ Superseded — not in the live code.** The `relax_anchor` and `relax_tp_finish` features in this plan were implemented then **removed**: the anchor lowered yield with no deformation benefit, and the TP-Sobolev finisher circularized tangled tracks. The real root cause — fixed-resolution / slow-Jacobi **under-convergence** — is addressed by [`2026-06-18-constant-spacing-warp.md`](2026-06-18-constant-spacing-warp.md). The removed implementation is preserved on git branch `anchor-tp-finisher`. Kept as a point-in-time record.
+
 # Relaxation Quality (TP-Sobolev Untangle Hybrid + Anti-Creep Anchor) — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

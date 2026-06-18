@@ -44,6 +44,12 @@ Track(outer, center, inner, tangent, normal, arclen, length, valid, count)
 - **One thread per output element.** A kernel launched with `dim=E*N` decodes its
   environment as `e = tid // N` and its within-env index as `i = tid % N`. Reductions
   (per-env min/sum/count) use `dim=E`, one thread looping that env's `N` points.
+- **Count-aware buffers.** Post-generation, `n_max` is the buffer stride and `count[e]`
+  is env `e`'s real-point count; padding slots `i ≥ count[e]` hold `wp.nan`. Count-aware
+  kernels loop `range(count[e])`, base their reads at `e*n_max`, wrap neighbours with
+  `% count[e]`, and guard `i ≥ count[e]`. The **parity invariant**: when `count[e] == N_max`
+  for all envs, every count-aware kernel is bit-identical to the fixed-`N` kernel — this is
+  what protects fixed mode and the existing tests.
 - Public wrappers do: `_init()` (idempotent `wp.init`) → `wp.from_torch(t.reshape(...).contiguous(), dtype=...)`
   → `wp.launch(kernel, dim=..., device=str(tensor.device))` → `_sync(device)` → return torch views.
 - **In-kernel idioms** (so there is no torch glue to break graph capture): boolean
@@ -88,6 +94,11 @@ Two arc-length resamplers:
   generator output, as the dense→`num_points` resample.
 - **`resample_uniform(center[E,N,2], n)`** — the simpler `N→N` re-uniformizer
   (`_resample_scan_k` + `_resample_lookup_k`), used after relax (and inside `inflate_warp`).
+- **`resample_constant_spacing(center[E,N,2], spacing, N_max)`** — the count-aware
+  resampler: from a fixed source it picks a per-track `count = round(perimeter/spacing)`,
+  lays the arc-uniform points into an `[E, N_max, 2]` buffer NaN-padded past `count[e]`,
+  and matches the `geometry.arc_length_resample(spacing=)` oracle. Selected by
+  `output_mode="constant_spacing"`.
 
 ### Relax — `warp_relax.xpbd_solve(center, band, L0, config)`
 
@@ -98,7 +109,8 @@ than `D·(1+margin)`), an **edge-spacing** correction toward rest length `L0`, a
 flip-clamped **bending** push when the local radius is below `R_min`. It runs on cpu and
 cuda (it syncs with `wp.synchronize`, not `torch.cuda`), and reshapes the centerline so a
 constant-width inflation becomes valid (thickness ≥ half_width). `generate_tracks_warp`
-derives `band` and `L0` from `mean_seg_len` via `_band_l0_k`.
+derives `band` and `L0` from `mean_seg_len` via `_band_l0_k`. In `constant_spacing` mode
+the sweep is count-aware — it operates over each env's `count[e]` real points.
 
 ### Inflate — `inflate_warp(center, config, valid)`
 
@@ -109,7 +121,18 @@ candidate) → `validity` (`_validity_k`) → an arc-length kernel (`_arclength_
 
 `_validity_k` is a single per-env kernel that combines: the generation flag, closed-loop
 turning ≈ 2π, a width floor, no-NaN, thickness ≥ `(1−relax_tol)·half_width`, and zero
-border self-intersections.
+border self-intersections. In `constant_spacing` mode the offset, validity, and arclength
+stages are count-aware — they operate over each env's `count[e]` real points.
+
+## Output modes / constant spacing
+
+`output_mode="fixed"` (the default) gives every track `num_points` points. The catch: a
+fixed 256 **over-resolves** the centerline relative to its half-width, so the slow Jacobi
+XPBD solve **under-converges** under the fixed iteration count → jagged tracks whose 1 m
+road self-overlaps. `output_mode="constant_spacing"` (`spacing`, `N_max`) instead relaxes
+each track at a constant arc spacing of ~`0.6·half_width` (per-track `count[e] =
+round(perimeter/spacing)`, NaN-padded to `N_max`); at that resolution the same solve
+converges → smooth, valid tracks.
 
 ## Torch as the test oracle
 
@@ -137,6 +160,9 @@ graph:
   it and replays, re-running every stage on the GPU off the buffer contents. Replay yields
   a `Track` matching the eager `generate_tracks_warp` (positions allclose; `valid`/`count`
   exact).
+- `output_mode="constant_spacing"` captures too: the per-track `count[e]` is device-side
+  data the count-aware kernels read at runtime, so all launch dims stay static via `N_max`
+  and nothing branches on tensor data on the host.
 
 At large batches the pipeline is compute-bound (relaxation dominates), so graph replay is
 ~the same wall-clock as the eager call; the graph's value is a single, GPU-resident,
@@ -149,9 +175,12 @@ deployable replayable unit, not a speedup.
   differ — each device is internally reproducible; cross-device yields are compared
   statistically, not per-env.
 - **Yield.** Relaxed-valid yield is ≈ 0.975–0.98 at the default config (E ≥ 512), on par
-  with the torch baseline. The ~2% loss is genuinely un-relaxable, over-pinched tracks
-  (thickness far below target + self-intersecting borders) that the fixed iteration count
-  cannot fix — the same hard-track loss both implementations share.
+  with the torch baseline. The fixed-mode residual loss — and the ≈ 0.68 yield in the
+  tight-width / fat-band regime — is largely slow-Jacobi **under-convergence** from
+  over-resolution, *not* genuinely un-relaxable geometry: at a fixed 256 points the centerline
+  is over-resolved relative to its half-width, so the fixed iteration count cannot drive the
+  Jacobi solve to convergence. `output_mode="constant_spacing"` lifts E=8192 yield
+  **0.684 → 0.999**, produces smoother tracks, runs faster, and remains graph-capturable.
 - **FP tolerance & hard thresholds.** Validity gates (`th_ok`, `turn_ok`) are hard
   comparisons; near a decision boundary the accepted ~1e-4 Warp-vs-torch drift can flip a
   single env's bool. Tests keep their inputs away from those boundaries; the end-to-end
