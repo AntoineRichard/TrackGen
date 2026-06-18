@@ -41,11 +41,13 @@ SCALE = 10.0          # ~20 m box  (1m/20m proportions -> ~0.68 baseline yield)
 REPS = 2              # E=8192 timing is low-variance
 
 
-def bench(links=256, iters=150, regen=10, sr=1.0, pr=1.0, br=1.5, margin=0.15, seed=0):
+def bench(links=256, iters=150, regen=10, sr=1.0, pr=1.0, br=1.5, margin=0.15, seed=0,
+          output_mode="fixed", spacing=0.10, n_max=256):
     cfg = TrackGenConfig(
         num_envs=E, num_points=links, half_width=HALF_WIDTH, scale=SCALE,
         relax_iters=iters, max_regen_iters=regen,
         relax_sep_relax=sr, relax_spc_relax=pr, relax_bend_relax=br, relax_margin=margin,
+        output_mode=output_mode, spacing=spacing, N_max=n_max,
         device=DEVICE,
     )
     seeds = (torch.arange(E, dtype=torch.int32) + seed).to(DEVICE)
@@ -65,7 +67,8 @@ def bench(links=256, iters=150, regen=10, sr=1.0, pr=1.0, br=1.5, margin=0.15, s
     sec = (time.time() - t0) / REPS
     peak = (torch.cuda.max_memory_allocated() / 1e6) if DEVICE == "cuda" else float("nan")
     return {"links": links, "iters": iters, "regen": regen, "sr": sr, "pr": pr,
-            "margin": margin, "yield": track.valid.float().mean().item(),
+            "margin": margin, "output_mode": output_mode, "spacing": spacing, "n_max": n_max,
+            "yield": track.valid.float().mean().item(),
             "sec": sec, "peak_mb": peak}
 
 
@@ -84,6 +87,8 @@ CONFIGS = [
     {"sr": 2.0, "pr": 2.0, "iters": 50},             # big steps + few iters (speed/yield)
     # combined high-link probe
     {"links": 512, "iters": 300, "regen": 20},
+    # constant-spacing baseline: ~0.30 m ≈ 0.6×half_width, N_max=384
+    {"output_mode": "constant_spacing", "spacing": 0.30, "n_max": 384},
 ]
 
 
@@ -94,16 +99,21 @@ def main():
     for ov in CONFIGS:
         r = bench(**ov)
         rows.append(r)
+        mode_tag = (f"  output_mode={r['output_mode']} spacing={r['spacing']:.2f} n_max={r['n_max']}"
+                    if r["output_mode"] != "fixed" else "")
         print(f"ROW links={r['links']:>4} iters={r['iters']:>4} regen={r['regen']:>3} "
               f"sr={r['sr']:.1f} pr={r['pr']:.1f} margin={r['margin']:.2f}  "
-              f"yield={r['yield']:.3f}  sec={r['sec']:.3f}  peak_mb={r['peak_mb']:.0f}", flush=True)
+              f"yield={r['yield']:.3f}  sec={r['sec']:.3f}  peak_mb={r['peak_mb']:.0f}"
+              f"{mode_tag}", flush=True)
 
     print("\n=== TABLE ===")
-    hdr = f"{'links':>6}{'iters':>6}{'regen':>6}{'sr':>5}{'pr':>5}{'margin':>7}{'yield':>8}{'sec':>8}{'mb':>7}"
+    hdr = (f"{'links':>6}{'iters':>6}{'regen':>6}{'sr':>5}{'pr':>5}{'margin':>7}"
+           f"{'yield':>8}{'sec':>8}{'mb':>7}  {'output_mode':<20}{'spacing':>8}{'n_max':>6}")
     print(hdr)
     for r in rows:
         print(f"{r['links']:>6}{r['iters']:>6}{r['regen']:>6}{r['sr']:>5.1f}{r['pr']:>5.1f}"
-              f"{r['margin']:>7.2f}{r['yield']:>8.3f}{r['sec']:>8.3f}{r['peak_mb']:>7.0f}")
+              f"{r['margin']:>7.2f}{r['yield']:>8.3f}{r['sec']:>8.3f}{r['peak_mb']:>7.0f}"
+              f"  {r['output_mode']:<20}{r['spacing']:>8.2f}{r['n_max']:>6}")
 
 
 if __name__ == "__main__":

@@ -68,6 +68,9 @@ PBD_EXTRA = {  # margin / combined probes (256 links, iters=150 unless noted)
 
 BASELINE = {"links": 256, "iters": 150, "regen": 10, "yield": 0.684, "sec": 0.782}
 
+# Constant-spacing result (E=8192, spacing=0.30 m ≈ 0.6×half_width, N_max=384, iters=150)
+CS = {"spacing": 0.30, "n_max": 384, "yield": 0.999, "sec": 0.557, "peak_mb": 353}
+
 
 # ------------------------------------------------------------------ track drawing
 def _np_loop(arr2d: torch.Tensor):
@@ -111,10 +114,12 @@ def _draw(ax, track, e, title_prefix):
                  color=("red" if invalid else "black"), pad=1.5)
 
 
-def _gen(links, iters, n, regen=10, sr=1.0, pr=1.0, margin=0.15, seed0=0):
+def _gen(links, iters, n, regen=10, sr=1.0, pr=1.0, margin=0.15, seed0=0,
+         output_mode="fixed", spacing=0.10, n_max=256):
     cfg = TrackGenConfig(num_envs=n, num_points=links, half_width=HALF_WIDTH, scale=SCALE,
                          relax_iters=iters, max_regen_iters=regen, relax_sep_relax=sr,
-                         relax_spc_relax=pr, relax_margin=margin, device=DEVICE)
+                         relax_spc_relax=pr, relax_margin=margin, device=DEVICE,
+                         output_mode=output_mode, spacing=spacing, N_max=n_max)
     seeds = (torch.arange(n, dtype=torch.int32) + seed0).to(DEVICE)
     return wpl.generate_tracks_warp(cfg, seeds)
 
@@ -157,6 +162,12 @@ def page_overview(pdf):
             lines.append(f"  x{x:<4} steps{'':<13}{y:>8.3f}{s:>9.3f}")
     for k, v in PBD_EXTRA.items():
         lines.append(f"  {k:<22}{v['yield']:>8.3f}{v['sec']:>9.3f}")
+    lines += [
+        "",
+        "constant_spacing (the convergence fix):",
+        f"  spacing=0.30 m, N_max=384 {'':<2}{CS['yield']:>8.3f}{CS['sec']:>9.3f}"
+        f"  <- yield {BASELINE['yield']:.3f} -> {CS['yield']:.3f}",
+    ]
     _text_page(pdf, "Track-gen yield study", lines, fontsize=9)
 
 
@@ -215,6 +226,34 @@ def _fixed_seed_page(pdf, title, subtitle, col_settings, gen_fn, n_seeds=5):
     plt.close(fig)
 
 
+def page_constant_spacing(pdf):
+    """Fixed-seed comparison: fixed-256 (jagged, low yield) vs constant_spacing=0.30 (smooth)."""
+    caption = (
+        f"Fixed-256 yield={BASELINE['yield']:.3f} (E=8192) vs "
+        f"constant_spacing spacing=0.30 m yield={CS['yield']:.3f} (E=8192, {CS['sec']:.3f} s/call, "
+        f"{CS['peak_mb']:.0f} MB). Constant spacing is the convergence fix: adaptive "
+        f"arc-length resampling to ~0.6×half_width ensures the XPBD relaxation sees a "
+        f"uniform, well-conditioned chain — eliminating the pinching that fixed-N misses "
+        f"at tight bends. X = invalid track."
+    )
+    _fixed_seed_page(
+        pdf,
+        "Constant spacing — the convergence fix",
+        caption,
+        [
+            ("fixed-256", "fixed"),
+            ("constant_spacing\nspacing=0.30 m", "constant_spacing"),
+        ],
+        lambda mode, n: _gen(
+            256, 150, n,
+            output_mode=mode,
+            spacing=CS["spacing"],
+            n_max=CS["n_max"],
+        ),
+        n_seeds=5,
+    )
+
+
 def main():
     os.makedirs(os.path.dirname(OUT_PDF), exist_ok=True)
     with PdfPages(OUT_PDF) as pdf:
@@ -246,6 +285,8 @@ def main():
             [(f"{n} links", n) for n in (128, 256, 512)],
             lambda lk, n: _gen(lk, 150, n),
         )
+        # p6: constant-spacing vs fixed-256 comparison.
+        page_constant_spacing(pdf)
 
         findings = [
             "FINDINGS (1 m / 20 m regime, E=8192):",
