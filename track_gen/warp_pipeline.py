@@ -215,12 +215,13 @@ if _HAVE_WARP:
     @wp.kernel
     def _self_intersections_k(
         poly: wp.array(dtype=wp.vec2f),
-        N: int,
+        n_max: int,
+        count: wp.array(dtype=wp.int32),
         out: wp.array(dtype=wp.int32),
     ):
-        # One thread per env e. Delegates to _self_intersections_func over [e*N, e*N+N).
+        # One thread per env e. Delegates to _self_intersections_func over [e*n_max, e*n_max+count[e]).
         e = wp.tid()
-        out[e] = _self_intersections_func(poly, e * N, N)
+        out[e] = _self_intersections_func(poly, e * n_max, count[e])
 
     @wp.kernel
     def _sep_min_k(
@@ -1265,22 +1266,30 @@ def frame_curvature(center: torch.Tensor):
     return T.view(E, N, 2), Nrm.view(E, N, 2), kap.view(E, N)
 
 
-def self_intersections(poly: torch.Tensor) -> torch.Tensor:
+def self_intersections(poly: torch.Tensor,
+                       count: torch.Tensor | None = None) -> torch.Tensor:
     """Count proper self-crossings of each closed polyline. poly [E, N, 2] -> [E] long.
 
     Matches geometry.self_intersections exactly (torch.equal). Pure Warp (cpu+cuda).
     One thread per env; O(N^2) loop over edge pairs inside the kernel.
+
+    count [E] int32 (optional): per-env real point count (1..N). When None, all
+    envs use N (fixed mode — identical to the pre-count-aware behaviour).
     """
     _init()
-    E, N, _ = poly.shape
+    E, n_max, _ = poly.shape
     dev = str(poly.device)
 
-    flat = poly.reshape(E * N, 2).contiguous()
+    if count is None:
+        count = torch.full((E,), n_max, dtype=torch.int32, device=poly.device)
+
+    flat = poly.reshape(E * n_max, 2).contiguous()
     wp_poly = wp.from_torch(flat, dtype=wp.vec2f)
+    wp_count = wp.from_torch(count.contiguous(), dtype=wp.int32)
 
     out_t = torch.zeros(E, device=poly.device, dtype=torch.int32)
     wp.launch(_self_intersections_k, dim=E,
-              inputs=[wp_poly, N, wp.from_torch(out_t, dtype=wp.int32)],
+              inputs=[wp_poly, n_max, wp_count, wp.from_torch(out_t, dtype=wp.int32)],
               device=dev)
     _sync(poly.device)
     return out_t.long()

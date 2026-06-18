@@ -79,3 +79,23 @@ def test_thickness_count_aware(dev):
     assert th[0] > 0.0 and torch.isfinite(th[0])
     # the radius-1 50-pt circle thickness ~ min(curv_radius≈1, 0.5*sep) — sane, finite
     assert torch.isfinite(th[1])
+
+
+@pytest.mark.parametrize("dev", DEVS)
+def test_self_intersections_count_aware(dev):
+    t = torch.linspace(0, 2 * math.pi, 100 + 1, device=dev)[:-1]
+    fig8 = torch.stack([torch.sin(t), torch.sin(t) * torch.cos(t)], -1).to(torch.float32)  # 1 crossing
+    circle = _circle(100, 1.0, dev)
+    src = torch.stack([fig8, circle], 0)
+    base = wpl.self_intersections(src)
+    buf, cnt = _pad(src, 100)
+    out = wpl.self_intersections(buf, count=cnt)
+    assert torch.equal(out.cpu(), base.cpu())          # parity: count==N matches fixed
+    # variable: env0 = 60-pt figure-eight padded to 100; crossing still detected, NaN tail ignored
+    buf2 = torch.full((2, 100, 2), float("nan"), device=dev, dtype=torch.float32)
+    t2 = torch.linspace(0, 2 * math.pi, 60 + 1, device=dev)[:-1]
+    buf2[0, :60] = torch.stack([torch.sin(t2), torch.sin(t2) * torch.cos(t2)], -1).to(torch.float32)
+    buf2[1, :100] = circle
+    cnt2 = torch.tensor([60, 100], dtype=torch.int32, device=dev)
+    xs = wpl.self_intersections(buf2, count=cnt2)
+    assert int(xs[0]) >= 1 and int(xs[1]) == 0          # fig8 crossing; circle simple; pad ignored
