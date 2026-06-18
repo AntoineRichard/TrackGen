@@ -234,7 +234,9 @@ def page_constant_spacing(pdf):
         f"{CS['peak_mb']:.0f} MB). Constant spacing is the convergence fix: adaptive "
         f"arc-length resampling to ~0.6×half_width ensures the XPBD relaxation sees a "
         f"uniform, well-conditioned chain — eliminating the pinching that fixed-N misses "
-        f"at tight bends. X = invalid track."
+        f"at tight bends. Both at the default max_regen_iters=10; relaxation becomes lossless "
+        f"(valid ≈ generation-valid), so generation/regen is the new ceiling, and it is faster "
+        f"at equal regen (~0.55 vs ~0.79 s/8192). X = invalid track."
     )
     _fixed_seed_page(
         pdf,

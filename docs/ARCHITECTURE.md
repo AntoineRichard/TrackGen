@@ -179,8 +179,14 @@ deployable replayable unit, not a speedup.
   tight-width / fat-band regime — is largely slow-Jacobi **under-convergence** from
   over-resolution, *not* genuinely un-relaxable geometry: at a fixed 256 points the centerline
   is over-resolved relative to its half-width, so the fixed iteration count cannot drive the
-  Jacobi solve to convergence. `output_mode="constant_spacing"` lifts E=8192 yield
-  **0.684 → 0.999**, produces smoother tracks, runs faster, and remains graph-capturable.
+  Jacobi solve to convergence. `output_mode="constant_spacing"` (relaxing at ~0.6×half_width
+  spacing) makes the relaxation essentially **lossless** — every *generation*-valid track stays
+  valid after relax. At the default `max_regen_iters=10` (both modes, identical generation) the
+  E=8192 yield goes **0.684 → 0.999**, while running *faster* at equal regen (~0.55 vs ~0.79
+  s/8192 — the solve runs on ~145 nodes/track, not 256) and remaining graph-capturable. With
+  relaxation no longer the bottleneck, the residual ceiling is now **generation/regen**:
+  final-valid ≈ generation-valid (~0.52 at `max_regen_iters=1`, ~0.999 at 10) — whereas in
+  fixed mode regen could not move the relaxation-bound yield (flat 0.684 at regen 10/20/40).
 - **FP tolerance & hard thresholds.** Validity gates (`th_ok`, `turn_ok`) are hard
   comparisons; near a decision boundary the accepted ~1e-4 Warp-vs-torch drift can flip a
   single env's bool. Tests keep their inputs away from those boundaries; the end-to-end
