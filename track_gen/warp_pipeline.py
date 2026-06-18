@@ -170,15 +170,20 @@ if _HAVE_WARP:
         # Returns (q.y-o.y)*(p.x-o.x) - (p.y-o.y)*(q.x-o.x)
         return (qy - oy) * (px - ox) - (py - oy) * (qx - ox)
 
-    @wp.kernel
-    def _self_intersections_k(
-        poly: wp.array(dtype=wp.vec2f),
-        N: int,
-        out: wp.array(dtype=wp.int32),
-    ):
-        # One thread per env e. Loops all unique pairs (i,j) with j > i,
-        # skips if circular index distance <= 1, counts proper crossings.
-        e = wp.tid()
+    @wp.func
+    def _nan0(x: float) -> float:
+        # NaN/inf -> 0.0 guard, reproducing torch.nan_to_num(..., nan=0.0) for the border
+        # self-intersection check. wp.where(cond, if_true, if_false) is the Warp 1.14
+        # non-deprecated select primitive. A NO-OP for finite inputs, so the
+        # self_intersections oracle (torch.equal) test is unaffected.
+        return wp.where(wp.isfinite(x), x, 0.0)
+
+    @wp.func
+    def _self_intersections_func(poly: wp.array(dtype=wp.vec2f), base: int, N: int) -> int:
+        # Proper-crossing double-loop count for the env whose points start at `base`.
+        # Each coordinate is read through _nan0 (NaN->0 guard), which is a no-op on finite
+        # inputs (so the self_intersections torch.equal test stays exact) and reproduces
+        # the validity border check's torch.nan_to_num(outer/inner, nan=0.0).
         count = int(0)
         for i in range(N):
             for j in range(i + 1, N):
@@ -186,19 +191,33 @@ if _HAVE_WARP:
                 circ_dist = wp.min(diff, N - diff)
                 if circ_dist <= 1:
                     continue
-                Ai = poly[e * N + i]
-                Bi = poly[e * N + (i + 1) % N]
-                Aj = poly[e * N + j]
-                Bj = poly[e * N + (j + 1) % N]
-                d1 = _ccw(Aj[0], Aj[1], Bj[0], Bj[1], Ai[0], Ai[1])
-                d2 = _ccw(Aj[0], Aj[1], Bj[0], Bj[1], Bi[0], Bi[1])
-                d3 = _ccw(Ai[0], Ai[1], Bi[0], Bi[1], Aj[0], Aj[1])
-                d4 = _ccw(Ai[0], Ai[1], Bi[0], Bi[1], Bj[0], Bj[1])
+                Ai = poly[base + i]
+                Bi = poly[base + (i + 1) % N]
+                Aj = poly[base + j]
+                Bj = poly[base + (j + 1) % N]
+                aix = _nan0(Ai[0]); aiy = _nan0(Ai[1])
+                bix = _nan0(Bi[0]); biy = _nan0(Bi[1])
+                ajx = _nan0(Aj[0]); ajy = _nan0(Aj[1])
+                bjx = _nan0(Bj[0]); bjy = _nan0(Bj[1])
+                d1 = _ccw(ajx, ajy, bjx, bjy, aix, aiy)
+                d2 = _ccw(ajx, ajy, bjx, bjy, bix, biy)
+                d3 = _ccw(aix, aiy, bix, biy, ajx, ajy)
+                d4 = _ccw(aix, aiy, bix, biy, bjx, bjy)
                 seg_ij = (d1 > 0.0) != (d2 > 0.0)
                 seg_ji = (d3 > 0.0) != (d4 > 0.0)
                 if seg_ij and seg_ji:
                     count = count + 1
-        out[e] = count
+        return count
+
+    @wp.kernel
+    def _self_intersections_k(
+        poly: wp.array(dtype=wp.vec2f),
+        N: int,
+        out: wp.array(dtype=wp.int32),
+    ):
+        # One thread per env e. Delegates to _self_intersections_func over [e*N, e*N+N).
+        e = wp.tid()
+        out[e] = _self_intersections_func(poly, e * N, N)
 
     @wp.kernel
     def _sep_min_k(
@@ -245,35 +264,29 @@ if _HAVE_WARP:
             kappa_max = wp.max(kappa_max, kappa)
         out[e] = 1.0 / wp.max(kappa_max, float(1.0e-12))
 
-    @wp.kernel
-    def _thickness_k(
-        pts: wp.array(dtype=wp.vec2f),
-        band: wp.array(dtype=wp.int32),
-        N: int,
-        out: wp.array(dtype=wp.float32),
-    ):
-        # One thread per env e. thickness = min(rad_min, 0.5 * sep_min).
-        e = wp.tid()
-        b = band[e]
-
+    @wp.func
+    def _thickness_func(pts: wp.array(dtype=wp.vec2f), base: int, N: int, band: int) -> float:
+        # thickness = min(rad_min, 0.5 * sep_min) for the env whose points start at `base`.
+        # sep_min = min pairwise distance over pairs with circ_dist > band;
+        # rad_min  = 1 / max Menger curvature.
         # --- sep_min: min dist over pairs with circ_dist > band ---
         sep_min = float(1.0e30)
         for i in range(N):
             for j in range(i + 1, N):
                 diff = j - i
                 circ_dist = wp.min(diff, N - diff)
-                if circ_dist > b:
-                    pi = pts[e * N + i]
-                    pj = pts[e * N + j]
+                if circ_dist > band:
+                    pi = pts[base + i]
+                    pj = pts[base + j]
                     d = wp.length(pi - pj)
                     sep_min = wp.min(sep_min, d)
 
         # --- rad_min: 1 / max Menger curvature ---
         kappa_max = float(0.0)
         for i in range(N):
-            xp = pts[e * N + (i + N - 1) % N]
-            xc = pts[e * N + i]
-            xn = pts[e * N + (i + 1) % N]
+            xp = pts[base + (i + N - 1) % N]
+            xc = pts[base + i]
+            xn = pts[base + (i + 1) % N]
             a = xc - xp
             bb = xn - xc
             cc = xn - xp
@@ -284,7 +297,18 @@ if _HAVE_WARP:
             kappa_max = wp.max(kappa_max, kappa)
         rad_min = 1.0 / wp.max(kappa_max, float(1.0e-12))
 
-        out[e] = wp.min(rad_min, 0.5 * sep_min)
+        return wp.min(rad_min, 0.5 * sep_min)
+
+    @wp.kernel
+    def _thickness_k(
+        pts: wp.array(dtype=wp.vec2f),
+        band: wp.array(dtype=wp.int32),
+        N: int,
+        out: wp.array(dtype=wp.float32),
+    ):
+        # One thread per env e. Delegates to _thickness_func with this env's band.
+        e = wp.tid()
+        out[e] = _thickness_func(pts, e * N, N, band[e])
 
     @wp.kernel
     def _resample_scan_k(
@@ -426,30 +450,101 @@ if _HAVE_WARP:
         p1 = real_pts[rb + (idx + 1) % r]   # closed[idx+1]: real[0] when idx == R-1
         out[t] = p0 + frac * (p1 - p0)
 
+    @wp.func
+    def _turning_func(c: wp.array(dtype=wp.vec2f), base: int, N: int) -> float:
+        # Signed total turning of the closed polygon whose points start at `base`.
+        # Edge angle theta_i = atan2(d_i.y, d_i.x) for raw edge d_i = c[(i+1)%N] - c[i]
+        # (atan2 is scale-invariant, so no normalization is needed; the zero-length
+        # edge gives atan2(0,0)=0, matching the torch safe_normalize-then-atan2 case).
+        # Per edge, dtheta = theta_i - theta_{i-1} wrapped into (-pi, pi] via
+        # atan2(sin, cos); the sum over all edges is the turning number.
+        total = float(0.0)
+        for i in range(N):
+            di = c[base + (i + 1) % N] - c[base + i]
+            ip = (i + N - 1) % N
+            dp = c[base + (ip + 1) % N] - c[base + ip]
+            theta_i = wp.atan2(di[1], di[0])
+            theta_prev = wp.atan2(dp[1], dp[0])
+            dth = theta_i - theta_prev
+            total = total + wp.atan2(wp.sin(dth), wp.cos(dth))
+        return total
+
     @wp.kernel
     def _turning_k(
         c: wp.array(dtype=wp.vec2f),
         N: int,
         out: wp.array(dtype=wp.float32),
     ):
-        # One thread per env e. Signed total turning of the closed polygon.
-        # Edge angle theta_i = atan2(d_i.y, d_i.x) for raw edge d_i = c[(i+1)%N] - c[i]
-        # (atan2 is scale-invariant, so no normalization is needed; the zero-length
-        # edge gives atan2(0,0)=0, matching the torch safe_normalize-then-atan2 case).
-        # Per edge, dtheta = theta_i - theta_{i-1} wrapped into (-pi, pi] via
-        # atan2(sin, cos); the sum over all edges is the turning number.
+        # One thread per env e. Delegates to _turning_func over [e*N, e*N+N).
         e = wp.tid()
-        b = e * N
-        total = float(0.0)
+        out[e] = _turning_func(c, e * N, N)
+
+    @wp.kernel
+    def _validity_k(
+        center: wp.array(dtype=wp.vec2f),
+        w: wp.array(dtype=wp.float32),
+        count: wp.array(dtype=wp.int32),
+        gen_valid: wp.array(dtype=wp.int32),
+        outer: wp.array(dtype=wp.vec2f),
+        inner: wp.array(dtype=wp.vec2f),
+        has_border: int,
+        N: int,
+        half_width: float,
+        turning_tol: float,
+        w_floor: float,
+        relax_tol: float,
+        out: wp.array(dtype=wp.int32),
+    ):
+        # One thread per env e. Fuses inflation._validity_stage entirely in-kernel:
+        # gen_valid AND turning AND width-floor AND no-NaN AND thickness AND border-simple.
+        # All sub-results are 0/1 int flags (Warp can't AND Python bools in dynamic loops).
+        e = wp.tid()
+        base = e * N
+
+        # --- turning ---
+        turn = _turning_func(center, base, N)
+        turn_ok = int(0)
+        if wp.abs(wp.abs(turn) - 2.0 * wp.pi) <= turning_tol:
+            turn_ok = int(1)
+
+        # --- real-point mask (i < count[e]): width floor + no NaN over real points ---
+        cnt = count[e]
+        w_ok = int(1)
+        no_nan = int(1)
         for i in range(N):
-            di = c[b + (i + 1) % N] - c[b + i]
-            ip = (i + N - 1) % N
-            dp = c[b + (ip + 1) % N] - c[b + ip]
-            theta_i = wp.atan2(di[1], di[0])
-            theta_prev = wp.atan2(dp[1], dp[0])
-            dth = theta_i - theta_prev
-            total = total + wp.atan2(wp.sin(dth), wp.cos(dth))
-        out[e] = total
+            if i < cnt:
+                if not (w[base + i] > w_floor):
+                    w_ok = int(0)
+                ci = center[base + i]
+                if not (wp.isfinite(ci[0]) and wp.isfinite(ci[1])):
+                    no_nan = int(0)
+
+        # --- band = round(2*hw / (perimeter/N)).clamp_min(1); perimeter = closed-loop sum ---
+        peri = float(0.0)
+        for i in range(N):
+            peri += wp.length(center[base + (i + 1) % N] - center[base + i])
+        L0 = wp.max(peri / float(N), float(1.0e-9))
+        band = wp.max(int(wp.round(2.0 * half_width / L0)), 1)
+
+        # --- thickness gate ---
+        th = _thickness_func(center, base, N, band)
+        th_ok = int(0)
+        if th >= (1.0 - relax_tol) * half_width:
+            th_ok = int(1)
+
+        # --- border self-intersection gate (skipped when has_border == 0) ---
+        border_ok = int(1)
+        if has_border == 1:
+            cross = _self_intersections_func(outer, base, N) + _self_intersections_func(inner, base, N)
+            if cross != 0:
+                border_ok = int(0)
+
+        # --- generation flag ---
+        gv = int(0)
+        if gen_valid[e] != 0:
+            gv = int(1)
+
+        out[e] = gv & turn_ok & w_ok & no_nan & th_ok & border_ok
 
     @wp.kernel
     def _arclength_k(
@@ -1249,37 +1344,46 @@ def validity(center: torch.Tensor, w: torch.Tensor, count: torch.Tensor,
     Returns:
         [E] bool validity. When either border is None the border check is skipped
         (border_ok all True), matching the oracle's outer/inner defaults.
+
+    Pure Warp: a single ``_validity_k`` launch (one thread per env) does ALL the per-env
+    logic (turning, real-mask width floor + no-NaN, in-kernel band derivation, thickness,
+    and border self-intersection combine). The wrapper does ZERO torch compute -- only
+    wp.from_torch I/O wrapping, dtype conversions for I/O (.to(int32) on inputs, .bool()
+    on the output), and the dummy-array handling for the None border case.
     """
+    _init()
     E, N = w.shape
     device = w.device
+    dev = str(device)
+    flat = E * N
 
-    # Real-point mask: slot j is real iff j < count[env] (fixed mode -> all True).
-    idx = torch.arange(N, device=device).unsqueeze(0)        # [1, N]
-    real = idx < count.unsqueeze(1)                          # [E, N]
-
-    turning = turning_number(center)
-    turn_ok = (turning.abs() - 2.0 * math.pi).abs() <= float(config.turning_tol)
-
-    w_ok = torch.where(real, w > float(config.w_floor), torch.ones_like(real)).all(dim=1)
-
-    nan_per_point = torch.isnan(center).any(dim=-1)
-    no_nan = ~(nan_per_point & real).any(dim=1)
-
-    # band = round(D / mean_seg_len).long().clamp_min(1); mean_seg_len = perimeter / N.
-    D = 2.0 * float(config.half_width)
-    L0 = _mean_seg_len_torch(center).clamp_min(1e-9)
-    band = (D / L0).round().long().clamp_min(1)              # [E]
-    th = thickness(center, band)
-    th_ok = th >= (1.0 - float(config.relax_tol)) * float(config.half_width)
+    cf = wp.from_torch(center.reshape(flat, 2).contiguous(), dtype=wp.vec2f)
+    wf = wp.from_torch(w.reshape(flat).contiguous().to(torch.float32), dtype=wp.float32)
+    cnt = wp.from_torch(count.to(torch.int32).contiguous(), dtype=wp.int32)
+    gv = wp.from_torch(gen_valid.to(torch.int32).contiguous(), dtype=wp.int32)
 
     if outer is None or inner is None:
-        border_ok = torch.ones(E, dtype=torch.bool, device=device)
+        # No border: pass center as a dummy non-empty vec2f array and disable the check.
+        has_border = 0
+        ob = cf
+        ib = cf
     else:
-        crossings = self_intersections(torch.nan_to_num(outer, nan=0.0)) + \
-                    self_intersections(torch.nan_to_num(inner, nan=0.0))
-        border_ok = crossings == 0
+        # The kernel NaN->0 guards outer/inner internally (== oracle nan_to_num(nan=0.0)).
+        has_border = 1
+        ob = wp.from_torch(outer.reshape(flat, 2).contiguous(), dtype=wp.vec2f)
+        ib = wp.from_torch(inner.reshape(flat, 2).contiguous(), dtype=wp.vec2f)
 
-    return gen_valid.to(torch.bool) & turn_ok & w_ok & no_nan & th_ok & border_ok
+    out_t = torch.empty(E, device=device, dtype=torch.int32)
+    wp.launch(
+        _validity_k, dim=E,
+        inputs=[cf, wf, cnt, gv, ob, ib, int(has_border), N,
+                float(config.half_width), float(config.turning_tol),
+                float(config.w_floor), float(config.relax_tol),
+                wp.from_torch(out_t, dtype=wp.int32)],
+        device=dev,
+    )
+    _sync(device)
+    return out_t.bool()
 
 
 def _arclength(center: torch.Tensor):
