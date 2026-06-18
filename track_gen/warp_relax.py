@@ -111,6 +111,8 @@ if _HAVE_WARP:
 
     @wp.kernel
     def _apply_kernel(center: wp.array(dtype=wp.vec2f), disp: wp.array(dtype=wp.vec2f)):
+        # One thread per bead: in-place XPBD position update center[t] += disp[t]
+        # (the apply half of the double-buffered disp/apply sweep).
         t = wp.tid()
         center[t] = center[t] + disp[t]
 

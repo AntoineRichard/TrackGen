@@ -40,6 +40,7 @@ _CAPTURING = False
 
 
 def _init() -> None:
+    """Initialize Warp once (idempotent). Must run before any wp.launch / wp.from_torch."""
     global _INITED
     if not _INITED:
         wp.init()
@@ -136,6 +137,8 @@ if _HAVE_WARP:
 
     @wp.kernel
     def _double_k(x: wp.array(dtype=wp.float32), out: wp.array(dtype=wp.float32)):
+        # Smoke-test kernel: out[i] = 2*x[i]. Exercises the Warp cpu/cuda launch path
+        # (used only by the scaffolding smoke test, _smoke_double).
         i = wp.tid()
         out[i] = 2.0 * x[i]
 
@@ -1735,6 +1738,7 @@ class CapturedTracks:
     """
 
     def __init__(self, graph, seeds_buf: torch.Tensor, track, config):
+        """Store the captured graph plus its static seed-input and Track-output buffers."""
         self._graph = graph
         self._seeds_buf = seeds_buf      # static [E] input buffer; copy_ new seeds before replay
         self._track = track              # Track whose tensors are the static graph outputs
