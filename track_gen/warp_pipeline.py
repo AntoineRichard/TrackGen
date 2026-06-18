@@ -734,39 +734,47 @@ if _HAVE_WARP:
     def _ccw_sort_k(
         points: wp.array(dtype=wp.vec2f),
         P: int,
+        count: wp.array(dtype=wp.int32),
         keys: wp.array(dtype=wp.float32),
         out: wp.array(dtype=wp.vec2f),
     ):
-        # One thread per env e. Orders this env's P corners ascending by the
-        # centroid-relative angle key = atan2(dx, dy) (X FIRST, matching the
-        # geometry.ccw_sort quirk). The output `out` and scratch `keys` buffers
-        # double as the sorted-prefix arrays for an in-place insertion sort; the
-        # original corner is always read from the read-only `points` input.
+        # One thread per env e. Orders this env's FIRST m = count[e] corners ascending by
+        # the centroid-relative angle key = atan2(dx, dy) (X FIRST), about the centroid of
+        # those m corners; rows [m, P) are written NaN (the pruned tail). m == P reproduces
+        # the legacy all-P sort with no NaN tail. The insertion sort reads only slots behind
+        # its write frontier, so the uninitialised keys/out scratch is never consumed.
         e = wp.tid()
         base = e * P
+        m = count[e]
+        if m < 1:
+            m = 1
+        if m > P:
+            m = P
 
-        # Centroid (sums accumulated in float64 to match torch.mean closely and
-        # keep the angular ordering robust at the ULP level).
+        # Centroid over the first m corners (float64 to match torch.mean closely).
         sx = wp.float64(0.0)
         sy = wp.float64(0.0)
         for i in range(P):
-            p = points[base + i]
-            sx = sx + wp.float64(p[0])
-            sy = sy + wp.float64(p[1])
-        cx = wp.float32(sx / wp.float64(P))
-        cy = wp.float32(sy / wp.float64(P))
+            if i < m:
+                p = points[base + i]
+                sx = sx + wp.float64(p[0])
+                sy = sy + wp.float64(p[1])
+        cx = wp.float32(sx / wp.float64(m))
+        cy = wp.float32(sy / wp.float64(m))
 
-        # Stable insertion sort (strict `>` -> stable for distinct keys).
         for c in range(P):
-            p = points[base + c]
-            key = wp.atan2(p[0] - cx, p[1] - cy)   # X first!
-            j = c - 1
-            while j >= 0 and keys[base + j] > key:
-                keys[base + j + 1] = keys[base + j]
-                out[base + j + 1] = out[base + j]
-                j = j - 1
-            keys[base + j + 1] = key
-            out[base + j + 1] = p
+            if c < m:
+                p = points[base + c]
+                key = wp.atan2(p[0] - cx, p[1] - cy)   # X first!
+                j = c - 1
+                while j >= 0 and keys[base + j] > key:
+                    keys[base + j + 1] = keys[base + j]
+                    out[base + j + 1] = out[base + j]
+                    j = j - 1
+                keys[base + j + 1] = key
+                out[base + j + 1] = p
+            else:
+                out[base + c] = wp.vec2f(wp.nan, wp.nan)
 
     @wp.func
     def _safe_normalize2(v: wp.vec2f) -> wp.vec2f:
@@ -1884,16 +1892,14 @@ def _corner_sample_raw(seeds: torch.Tensor, attempt: int, config):
     return out_t.view(E, P, 2), used_t.view(E, P)
 
 
-def ccw_sort(points: torch.Tensor) -> torch.Tensor:
-    """Order each env's points angularly around their centroid. [E, P, 2] -> [E, P, 2].
+def ccw_sort(points: torch.Tensor, count: torch.Tensor | None = None) -> torch.Tensor:
+    """Angle-sort each env's corners about their centroid (X-first atan2 key).
 
-    Matches geometry.ccw_sort for DISTINCT angle keys (torch.equal): the output is the
-    input points permuted along P (no value arithmetic), sorted ascending by the
-    centroid-relative angle key atan2(dx, dy) (the X-component FIRST argument is an
-    intentional quirk of the original generator, preserved here). The sort is stable
-    (strict ``>``); torch.argsort is non-stable, so on exactly-equal fp32 keys (a
-    measure-zero tie) the two may order the tied points differently. Pure Warp
-    (cpu+cuda); one thread per env, in-place insertion sort.
+    With ``count=None`` (default) sorts all P corners about the all-P centroid -- the legacy
+    behaviour, byte-identical to :func:`track_gen.geometry.ccw_sort`. With a per-env ``count``
+    it prune-then-sorts: only the first ``count[e]`` corners are sorted (about THEIR centroid)
+    and rows ``>= count`` are returned NaN, matching :func:`track_gen.geometry.ccw_sort_count`.
+    Pure Warp (cpu+cuda); one thread per env, in-place insertion sort.
     """
     _init()
     E, P, _ = points.shape
@@ -1902,11 +1908,17 @@ def ccw_sort(points: torch.Tensor) -> torch.Tensor:
 
     pf = wp.from_torch(points.reshape(flat, 2).contiguous(), dtype=wp.vec2f)
     # keys_t / out_t are intentionally uninitialised: the insertion sort only ever reads
-    # slots strictly behind its write frontier (index < c), so no garbage is consumed.
+    # slots strictly behind its write frontier, so no garbage is consumed; pruned rows
+    # ([count, P)) are written NaN by the kernel.
     keys_t = torch.empty(flat, device=points.device, dtype=torch.float32)
     out_t = torch.empty(flat, 2, device=points.device, dtype=torch.float32)
+    if count is None:
+        count_t = torch.full((E,), P, device=points.device, dtype=torch.int32)
+    else:
+        count_t = count.to(device=points.device, dtype=torch.int32).contiguous()
     wp.launch(_ccw_sort_k, dim=E,
-              inputs=[pf, P, wp.from_torch(keys_t, dtype=wp.float32),
+              inputs=[pf, P, wp.from_torch(count_t, dtype=wp.int32),
+                      wp.from_torch(keys_t, dtype=wp.float32),
                       wp.from_torch(out_t, dtype=wp.vec2f)],
               device=dev)
     _sync(points.device)

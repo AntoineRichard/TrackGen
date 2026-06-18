@@ -58,3 +58,44 @@ def test_ccw_sort_keys_monotone(dev):
     keys = torch.arctan2(d[:, :, 0], d[:, :, 1])  # [E, P]
     diffs = keys[:, 1:] - keys[:, :-1]
     assert (diffs >= -1e-5).all(), keys
+
+
+def _count_env(P, count, cx, cy, r, scramble, dev):
+    """First `count` points on a jittered circle (well-separated angles, scrambled),
+    then `P-count` far-away padding points that ccw_sort_count must drop to NaN."""
+    base = torch.arange(count, dtype=torch.float32)
+    ang = base * (2.0 * math.pi / count) + 0.07 * torch.sin(base * 1.3)
+    rad = r * (1.0 + 0.13 * torch.cos(base * 0.9))
+    circle = torch.stack([cx + rad * torch.cos(ang), cy + rad * torch.sin(ang)], dim=-1)
+    circle = circle[torch.tensor(scramble, dtype=torch.long)]
+    j = torch.arange(P - count, dtype=torch.float32)
+    pad = torch.stack([cx + 20.0 + j, cy + 20.0 + j], dim=-1)
+    return torch.cat([circle, pad], dim=0).to(dev)            # [P, 2]
+
+
+@pytest.mark.parametrize("dev", DEVS)
+def test_ccw_sort_count_matches_oracle(dev):
+    P = 11
+    pts = torch.stack([
+        _count_env(P, count=11, cx=0.0, cy=0.0, r=2.0, scramble=[3, 7, 0, 10, 4, 1, 9, 2, 6, 8, 5], dev=dev),
+        _count_env(P, count=7, cx=5.0, cy=-3.0, r=1.0, scramble=[6, 0, 4, 2, 5, 1, 3], dev=dev),
+        _count_env(P, count=5, cx=-4.0, cy=8.0, r=3.5, scramble=[2, 0, 4, 1, 3], dev=dev),
+    ], dim=0)
+    count = torch.tensor([11, 7, 5], device=dev)
+
+    got = wpl.ccw_sort(pts, count)
+    ref = geometry.ccw_sort_count(pts, count)
+    for e in range(pts.shape[0]):
+        c = int(count[e])
+        # kept rows are a pure permutation (no coord arithmetic) -> byte-exact
+        assert torch.equal(got[e, :c].cpu(), ref[e, :c].cpu())
+        assert torch.isnan(got[e, c:]).all()
+        assert torch.isnan(ref[e, c:]).all()
+
+
+@pytest.mark.parametrize("dev", DEVS)
+def test_ccw_sort_no_count_unchanged(dev):
+    # count=None keeps the legacy all-P behaviour byte-for-byte.
+    pts = _make_batch(dev)
+    assert torch.equal(wpl.ccw_sort(pts).cpu(), wpl.ccw_sort(pts, count=None).cpu())
+    assert torch.equal(wpl.ccw_sort(pts).cpu(), geometry.ccw_sort(pts).cpu())
