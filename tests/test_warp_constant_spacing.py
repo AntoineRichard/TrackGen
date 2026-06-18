@@ -326,3 +326,15 @@ def test_graph_capture_constant_spacing():
     replay = cap.replay(seeds)
     assert torch.equal(replay.count.cpu(), eager.count.cpu())
     assert torch.equal(replay.valid.cpu(), eager.valid.cpu())
+
+
+@pytest.mark.parametrize("dev", DEVS)
+def test_constant_spacing_handles_nan_env(dev):
+    # a never-accepted env has an all-NaN centerline; resample must give count 0 for it,
+    # and generate-style validity must mark it invalid (no crash, no garbage count).
+    src = torch.stack([_circle(200, 2.0, dev),
+                       torch.full((200, 2), float("nan"), device=dev, dtype=torch.float32)], 0)
+    out, cnt = wpl.resample_constant_spacing(src, 0.3, 256)
+    assert int(cnt[1]) == 0                       # NaN env -> count 0 (deterministic)
+    assert int(cnt[0]) > 0
+    assert torch.isnan(out[1]).all()              # whole NaN-env row stays NaN

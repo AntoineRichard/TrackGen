@@ -92,6 +92,11 @@ class TrackGenConfig:
     turning_tol: float = 0.1
     w_floor: float = 1e-3  # validity: every real point must have w > w_floor
 
+    def __post_init__(self):
+        if self.output_mode not in ("fixed", "constant_spacing"):
+            raise ValueError(
+                f"output_mode must be 'fixed' or 'constant_spacing', got {self.output_mode!r}")
+
 
 @dataclass
 class Track:

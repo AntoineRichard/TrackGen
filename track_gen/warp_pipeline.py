@@ -429,7 +429,7 @@ if _HAVE_WARP:
             acc = acc + wp.float64(l)
             s[es + i + 1] = wp.float32(acc)
         total = wp.float32(acc)
-        if total <= 0.0:
+        if not (total > 0.0):      # catches total <= 0 AND NaN (never-accepted envs)
             count[e] = 0
             return
         k = int(wp.floor(total / spacing)) + 1
@@ -602,6 +602,10 @@ if _HAVE_WARP:
         cnt = count[e]
         base = e * n_max
 
+        if cnt == 0:
+            out[e] = 0
+            return
+
         # --- turning (over cnt real points only) ---
         turn = _turning_func(center, base, cnt)
         turn_ok = int(0)
@@ -611,13 +615,12 @@ if _HAVE_WARP:
         # --- real-point mask (i < cnt): width floor + no NaN over real points ---
         w_ok = int(1)
         no_nan = int(1)
-        for i in range(n_max):
-            if i < cnt:
-                if not (w[base + i] > w_floor):
-                    w_ok = int(0)
-                ci = center[base + i]
-                if not (wp.isfinite(ci[0]) and wp.isfinite(ci[1])):
-                    no_nan = int(0)
+        for i in range(cnt):
+            if not (w[base + i] > w_floor):
+                w_ok = int(0)
+            ci = center[base + i]
+            if not (wp.isfinite(ci[0]) and wp.isfinite(ci[1])):
+                no_nan = int(0)
 
         # --- band = round(2*hw / (perimeter/cnt)).clamp_min(1); perimeter over cnt real pts ---
         peri = float(0.0)
@@ -672,9 +675,8 @@ if _HAVE_WARP:
             acc = acc + wp.float64(wp.length(d))       # add segment i (i=cn-1 is the wrap)
         length[e] = wp.float32(acc)
         # NaN-pad slots beyond the real count
-        for i in range(n_max):
-            if i >= cn:
-                arclen[b + i] = wp.nan
+        for i in range(cn, n_max):
+            arclen[b + i] = wp.nan
 
     @wp.kernel
     def _corner_sample_k(
@@ -1529,7 +1531,14 @@ def resample_uniform(center: torch.Tensor, n: int,
 def resample_constant_spacing(center: torch.Tensor, spacing: float, n_max: int):
     """Arc-length resample each fully-real closed loop to constant `spacing`, padded to
     n_max with NaN. Returns (out [E, n_max, 2], count [E] long). Matches
-    geometry.arc_length_resample(points, spacing=spacing, n_max=n_max). Pure Warp (cpu+cuda)."""
+    geometry.arc_length_resample(points, spacing=spacing, n_max=n_max). Pure Warp (cpu+cuda).
+
+    Note: ``count[e]`` is silently capped at ``n_max``. The caller MUST choose
+    ``N_max >= max(perimeter) / spacing + 1`` across all envs, otherwise a track whose
+    true count exceeds ``n_max`` will be truncated and its last segment will be longer
+    than ``spacing`` (the loop closing segment spans the gap from the last emitted point
+    back to the start). Reading ``count`` back to the host to assert this would break CUDA
+    graph capture, so the responsibility lies with the caller to size ``N_max`` correctly."""
     _init()
     E, N, _ = center.shape
     dev = str(center.device)
