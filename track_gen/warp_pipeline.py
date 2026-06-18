@@ -75,18 +75,24 @@ if _HAVE_WARP:
         center: wp.array(dtype=wp.vec2f),
         Nrm: wp.array(dtype=wp.vec2f),
         half_width: float,
-        N: int,
+        n_max: int,
         area_a: wp.array(dtype=wp.float32),
         area_b: wp.array(dtype=wp.float32),
+        count: wp.array(dtype=wp.int32),
     ):
         # One thread per point t.  e = env index, i = point-within-env index.
         # Accumulates the per-env signed shoelace cross-product terms for
         # candidate polygons a (center + hw*Nrm) and b (center - hw*Nrm) via
         # atomic adds.  area_a/area_b must be zero-initialised before launch.
+        # Padding threads (i >= count[e]) add nothing to the accumulators.
         t = wp.tid()
-        e = t // N
-        i = t % N
-        b_base = e * N
+        e = t // n_max
+        i = t % n_max
+        b_base = e * n_max
+
+        # Guard: padding threads contribute nothing to the shoelace accumulation.
+        if i >= count[e]:
+            return
 
         # Offset points at this thread's index.
         ct = center[t]
@@ -94,8 +100,8 @@ if _HAVE_WARP:
         at = ct + half_width * nt
         bt = ct - half_width * nt
 
-        # Offset points at the NEXT index (wraps within env).
-        next_idx = b_base + (i + 1) % N
+        # Offset points at the NEXT index (wraps within the real loop).
+        next_idx = b_base + (i + 1) % count[e]
         cn = center[next_idx]
         nn = Nrm[next_idx]
         an = cn + half_width * nn
@@ -112,16 +118,27 @@ if _HAVE_WARP:
         center: wp.array(dtype=wp.vec2f),
         Nrm: wp.array(dtype=wp.vec2f),
         half_width: float,
-        N: int,
+        n_max: int,
         area_a: wp.array(dtype=wp.float32),
         area_b: wp.array(dtype=wp.float32),
         outer: wp.array(dtype=wp.vec2f),
         inner: wp.array(dtype=wp.vec2f),
+        count: wp.array(dtype=wp.int32),
     ):
         # One thread per point t.  Recompute a[t], b[t] (cheap), then assign
         # outer/inner based on which candidate has the larger |signed area|.
+        # Padding threads (i >= count[e]) write NaN to outer/inner and return.
         t = wp.tid()
-        e = t // N
+        e = t // n_max
+        i = t % n_max
+
+        # Guard: padding threads write NaN.
+        if i >= count[e]:
+            nan_val = wp.vec2f(wp.nan, wp.nan)
+            outer[t] = nan_val
+            inner[t] = nan_val
+            return
+
         ct = center[t]
         nt = Nrm[t]
         at = ct + half_width * nt
@@ -143,18 +160,30 @@ if _HAVE_WARP:
         out[i] = 2.0 * x[i]
 
     @wp.kernel
-    def _frame_k(c: wp.array(dtype=wp.vec2f), N: int,
+    def _frame_k(c: wp.array(dtype=wp.vec2f), n_max: int,
                  T: wp.array(dtype=wp.vec2f), Nrm: wp.array(dtype=wp.vec2f),
-                 kappa: wp.array(dtype=wp.float32)):
+                 kappa: wp.array(dtype=wp.float32),
+                 count: wp.array(dtype=wp.int32)):
         # Per closed-loop point: central-difference unit tangent, left-normal, and
         # non-negative Menger curvature. Matches geometry.tangents_normals + menger_curvature.
+        # Padding threads (i >= count[e]) write NaN and return.
         t = wp.tid()
-        e = t // N
-        i = t % N
-        b = e * N
-        xp = c[b + ((i + N - 1) % N)]
+        e = t // n_max
+        i = t % n_max
+        b = e * n_max
+
+        # Guard: padding threads write NaN to all outputs and return.
+        if i >= count[e]:
+            nan_val = wp.vec2f(wp.nan, wp.nan)
+            T[t] = nan_val
+            Nrm[t] = nan_val
+            kappa[t] = wp.nan
+            return
+
+        real_n = count[e]
+        xp = c[b + (i + real_n - 1) % real_n]
         xc = c[t]
-        xn = c[b + ((i + 1) % N)]
+        xn = c[b + (i + 1) % real_n]
         d = xn - xp
         inv = 1.0 / wp.max(wp.length(d), 1.0e-8)   # safe_normalize floor
         tan = d * inv
@@ -1190,7 +1219,8 @@ def assemble(corners: torch.Tensor, count: torch.Tensor, config) -> torch.Tensor
     return out_t.view(E, P * npseg, 2)
 
 
-def offset(center: torch.Tensor, Nrm: torch.Tensor, half_width: float):
+def offset(center: torch.Tensor, Nrm: torch.Tensor, half_width: float,
+           count: torch.Tensor | None = None):
     """Constant-width offset of a closed-loop centerline, matching inflation._offset_stage.
 
     Computes a = center + half_width*Nrm and b = center - half_width*Nrm per point,
@@ -1198,20 +1228,28 @@ def offset(center: torch.Tensor, Nrm: torch.Tensor, half_width: float):
     other.  Pure Warp (cpu+cuda); allclose to the torch oracle to atol=1e-5.
 
     Args:
-        center:     [E, N, 2] float32 closed-loop points (finite; no NaN assumed).
+        center:     [E, N, 2] float32 closed-loop points.
         Nrm:        [E, N, 2] float32 unit left-normals.
         half_width: Python float, constant for all points/envs.
+        count:      [E] int32 (optional): per-env real point count (1..N). When None,
+                    all envs use N (fixed mode — identical to pre-count-aware behaviour).
+                    Padding points (i >= count[e]) receive NaN in outer/inner.
 
     Returns:
         outer: [E, N, 2], inner: [E, N, 2]
     """
     _init()
-    E, N, _ = center.shape
+    E, n_max, _ = center.shape
     dev = str(center.device)
-    flat = E * N
+    flat = E * n_max
+
+    if count is None:
+        count = torch.full((E,), n_max, dtype=torch.int32, device=center.device)
 
     cf = wp.from_torch(center.reshape(flat, 2).contiguous(), dtype=wp.vec2f)
     nf = wp.from_torch(Nrm.reshape(flat, 2).contiguous(), dtype=wp.vec2f)
+    count_i32 = count.to(torch.int32).contiguous()
+    wp_count = wp.from_torch(count_i32, dtype=wp.int32)
 
     # Per-env accumulators (zero-initialised so atomic_add works correctly).
     area_a = torch.zeros(E, device=center.device, dtype=torch.float32)
@@ -1225,13 +1263,13 @@ def offset(center: torch.Tensor, Nrm: torch.Tensor, half_width: float):
     wi = wp.from_torch(inn_t, dtype=wp.vec2f)
 
     wp.launch(_offset_build_k, dim=flat,
-              inputs=[cf, nf, float(half_width), N, wa, wb],
+              inputs=[cf, nf, float(half_width), n_max, wa, wb, wp_count],
               device=dev)
     wp.launch(_offset_assign_k, dim=flat,
-              inputs=[cf, nf, float(half_width), N, wa, wb, wo, wi],
+              inputs=[cf, nf, float(half_width), n_max, wa, wb, wo, wi, wp_count],
               device=dev)
     _sync(center.device)
-    return out_t.view(E, N, 2), inn_t.view(E, N, 2)
+    return out_t.view(E, n_max, 2), inn_t.view(E, n_max, 2)
 
 
 def _smoke_double(x: torch.Tensor) -> torch.Tensor:
@@ -1249,22 +1287,35 @@ def _smoke_double(x: torch.Tensor) -> torch.Tensor:
     return out
 
 
-def frame_curvature(center: torch.Tensor):
+def frame_curvature(center: torch.Tensor,
+                    count: torch.Tensor | None = None):
     """Per-point unit tangent, left-normal, and Menger curvature on a closed loop.
-    center [E, N, 2] -> (T [E,N,2], Nrm [E,N,2], kappa [E,N]). Pure Warp (cpu+cuda)."""
+    center [E, N, 2] -> (T [E,N,2], Nrm [E,N,2], kappa [E,N]). Pure Warp (cpu+cuda).
+
+    count [E] int32 (optional): per-env real point count (1..N). When None, all
+    envs use N (fixed mode — identical to the pre-count-aware behaviour). Padding
+    points (i >= count[e]) receive NaN in all output tensors.
+    """
     _init()
-    E, N, _ = center.shape
+    E, n_max, _ = center.shape
     dev = str(center.device)
-    cf = wp.from_torch(center.reshape(E * N, 2).contiguous(), dtype=wp.vec2f)
-    T = torch.empty(E * N, 2, device=center.device, dtype=torch.float32)
+
+    if count is None:
+        count = torch.full((E,), n_max, dtype=torch.int32, device=center.device)
+
+    cf = wp.from_torch(center.reshape(E * n_max, 2).contiguous(), dtype=wp.vec2f)
+    count_i32 = count.to(torch.int32).contiguous()
+    wp_count = wp.from_torch(count_i32, dtype=wp.int32)
+    T = torch.empty(E * n_max, 2, device=center.device, dtype=torch.float32)
     Nrm = torch.empty_like(T)
-    kap = torch.empty(E * N, device=center.device, dtype=torch.float32)
-    wp.launch(_frame_k, dim=E * N,
-              inputs=[cf, N, wp.from_torch(T, dtype=wp.vec2f),
-                      wp.from_torch(Nrm, dtype=wp.vec2f), wp.from_torch(kap, dtype=wp.float32)],
+    kap = torch.empty(E * n_max, device=center.device, dtype=torch.float32)
+    wp.launch(_frame_k, dim=E * n_max,
+              inputs=[cf, n_max, wp.from_torch(T, dtype=wp.vec2f),
+                      wp.from_torch(Nrm, dtype=wp.vec2f), wp.from_torch(kap, dtype=wp.float32),
+                      wp_count],
               device=dev)
     _sync(center.device)
-    return T.view(E, N, 2), Nrm.view(E, N, 2), kap.view(E, N)
+    return T.view(E, n_max, 2), Nrm.view(E, n_max, 2), kap.view(E, n_max)
 
 
 def self_intersections(poly: torch.Tensor,

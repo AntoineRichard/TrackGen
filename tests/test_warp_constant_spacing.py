@@ -114,3 +114,70 @@ def test_turning_count_aware(dev):
     cnt2 = torch.tensor([50, 80], dtype=torch.int32, device=dev)
     tn = wpl.turning_number(buf2, count=cnt2)
     assert torch.allclose(tn.abs(), torch.full_like(tn, 2 * math.pi), atol=1e-2)
+
+
+@pytest.mark.parametrize("dev", DEVS)
+def test_frame_curvature_count_aware(dev):
+    # --- parity: count==N_max reproduces the fixed call ---
+    src = torch.stack([_circle(80, 1.0, dev), _circle(80, 2.0, dev)], 0)
+    T_base, Nrm_base, kap_base = wpl.frame_curvature(src)
+    buf, cnt = _pad(src, 80)
+    T_out, Nrm_out, kap_out = wpl.frame_curvature(buf, count=cnt)
+    assert torch.allclose(T_out, T_base, atol=1e-4)
+    assert torch.allclose(Nrm_out, Nrm_base, atol=1e-4)
+    assert torch.allclose(kap_out, kap_base, atol=1e-4)
+
+    # --- variable: env0 = 50-pt circle padded to 80, env1 = full 80-pt circle ---
+    buf2 = torch.full((2, 80, 2), float("nan"), device=dev, dtype=torch.float32)
+    buf2[0, :50] = _circle(50, 1.0, dev)
+    buf2[1, :80] = _circle(80, 2.0, dev)
+    cnt2 = torch.tensor([50, 80], dtype=torch.int32, device=dev)
+    T2, Nrm2, kap2 = wpl.frame_curvature(buf2, count=cnt2)
+
+    # Real points (0..49) of env0: normals must be unit-length
+    nrm0_real = Nrm2[0, :50]
+    lengths = torch.linalg.norm(nrm0_real, dim=-1)
+    assert torch.allclose(lengths, torch.ones_like(lengths), atol=1e-4), \
+        "env0 real normals should be unit-length"
+
+    # Padding points (50..79) of env0: must be NaN
+    assert torch.isnan(Nrm2[0, 50:]).all(), "env0 padding normals should be NaN"
+    assert torch.isnan(T2[0, 50:]).all(), "env0 padding tangents should be NaN"
+    assert torch.isnan(kap2[0, 50:]).all(), "env0 padding kappa should be NaN"
+
+
+@pytest.mark.parametrize("dev", DEVS)
+def test_offset_count_aware(dev):
+    # --- parity: count==N_max reproduces the fixed call ---
+    src = torch.stack([_circle(80, 1.0, dev), _circle(80, 2.0, dev)], 0)
+    _, Nrm_base, _ = wpl.frame_curvature(src)
+    outer_base, inner_base = wpl.offset(src, Nrm_base, 0.1)
+    buf, cnt = _pad(src, 80)
+    _, Nrm_buf, _ = wpl.frame_curvature(buf, count=cnt)
+    outer_out, inner_out = wpl.offset(buf, Nrm_buf, 0.1, count=cnt)
+    assert torch.allclose(outer_out, outer_base, atol=1e-4)
+    assert torch.allclose(inner_out, inner_base, atol=1e-4)
+
+    # --- variable: env0 = 50-pt circle (r=1) padded to 80, env1 = full 80-pt circle (r=2) ---
+    buf2 = torch.full((2, 80, 2), float("nan"), device=dev, dtype=torch.float32)
+    buf2[0, :50] = _circle(50, 1.0, dev)
+    buf2[1, :80] = _circle(80, 2.0, dev)
+    cnt2 = torch.tensor([50, 80], dtype=torch.int32, device=dev)
+    _, Nrm2, _ = wpl.frame_curvature(buf2, count=cnt2)
+    outer2, inner2 = wpl.offset(buf2, Nrm2, 0.1, count=cnt2)
+
+    # Real points (0..49) of env0: outer ~ r=1.1, inner ~ r=0.9  (both finite)
+    outer0_real = outer2[0, :50]
+    inner0_real = inner2[0, :50]
+    assert torch.isfinite(outer0_real).all(), "env0 real outer points should be finite"
+    assert torch.isfinite(inner0_real).all(), "env0 real inner points should be finite"
+    r_outer = torch.linalg.norm(outer0_real, dim=-1)
+    r_inner = torch.linalg.norm(inner0_real, dim=-1)
+    assert torch.allclose(r_outer, torch.full_like(r_outer, 1.1), atol=5e-2), \
+        f"env0 outer radius ~ 1.1, got {r_outer.mean():.4f}"
+    assert torch.allclose(r_inner, torch.full_like(r_inner, 0.9), atol=5e-2), \
+        f"env0 inner radius ~ 0.9, got {r_inner.mean():.4f}"
+
+    # Padding points (50..79) of env0: must be NaN
+    assert torch.isnan(outer2[0, 50:]).all(), "env0 padding outer should be NaN"
+    assert torch.isnan(inner2[0, 50:]).all(), "env0 padding inner should be NaN"
