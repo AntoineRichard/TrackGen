@@ -957,6 +957,69 @@ if _HAVE_WARP:
         bf = two_hw / wp.max(l0, float(1.0e-9))
         band_out[e] = wp.where(wp.isfinite(bf), wp.max(int(wp.round(bf)), 1), 1)
 
+    @wp.kernel
+    def _resample_scan_ca_k(
+        c: wp.array(dtype=wp.vec2f),
+        n_max: int,
+        count: wp.array(dtype=wp.int32),
+        seg: wp.array(dtype=wp.float32),
+        s: wp.array(dtype=wp.float32),
+    ):
+        # Count-aware version of _resample_scan_k. One thread per env e.
+        # Loops over count[e] real points (base e*n_max), wraps via %count[e].
+        # Writes cumulative arc s[e*(n_max+1) + 0..count[e]], leaving s beyond count[e]
+        # uninitialised (they are never read by _resample_lookup_ca_k).
+        # PARITY: when n_max==N and count[e]==N for all e, produces identical output to
+        # _resample_scan_k (same float64 accumulation order, same modular indexing).
+        e = wp.tid()
+        cn = count[e]
+        b = e * n_max
+        es = e * (n_max + 1)
+        s[es] = float(0.0)
+        acc = wp.float64(0.0)
+        for i in range(cn):
+            d = c[b + (i + 1) % cn] - c[b + i]
+            l = wp.length(d)
+            seg[b + i] = l
+            acc = acc + wp.float64(l)
+            s[es + i + 1] = wp.float32(acc)
+
+    @wp.kernel
+    def _resample_lookup_ca_k(
+        c: wp.array(dtype=wp.vec2f),
+        seg: wp.array(dtype=wp.float32),
+        s: wp.array(dtype=wp.float32),
+        n_max: int,
+        count: wp.array(dtype=wp.int32),
+        out: wp.array(dtype=wp.vec2f),
+    ):
+        # Count-aware version of _resample_lookup_k. One thread per output slot t.
+        # e = t // n_max, k = t % n_max.
+        # k >= count[e] -> NaN pad (padding region).
+        # Otherwise: target tk = k * total / count[e], linear scan then lerp.
+        # PARITY: when n_max==N and count[e]==N for all e, result is bit-identical to
+        # _resample_lookup_k (same formula, same scan bounds, same wrap modulus).
+        t = wp.tid()
+        e = t // n_max
+        k = t % n_max
+        cn = count[e]
+        if k >= cn:
+            out[t] = wp.vec2f(wp.nan, wp.nan)
+            return
+        eb = e * n_max
+        es = e * (n_max + 1)
+        total = s[es + cn]
+        tk = float(k) * total / float(cn)
+        idx = int(0)
+        while idx < cn - 1 and s[es + idx + 1] < tk:
+            idx = idx + 1
+        s0 = s[es + idx]
+        segl = wp.max(seg[eb + idx], float(1.0e-12))
+        frac = wp.clamp((tk - s0) / segl, float(0.0), float(1.0))
+        p0 = c[eb + idx]
+        p1 = c[eb + (idx + 1) % cn]
+        out[t] = p0 + frac * (p1 - p0)
+
 
 def corner_count_sample(seeds: torch.Tensor, attempt: int, config) -> torch.Tensor:
     """Sample a per-env corner COUNT in [min_num_points, max_num_points] via Warp RNG.
@@ -1345,32 +1408,58 @@ def thickness(points: torch.Tensor, band: torch.Tensor) -> torch.Tensor:
     return out_t
 
 
-def resample_uniform(center: torch.Tensor, n: int) -> torch.Tensor:
+def resample_uniform(center: torch.Tensor, n: int,
+                     count: torch.Tensor | None = None) -> torch.Tensor:
     """Arc-length-uniform resample of each closed loop to n points.
 
     Matches track_gen.relaxation._resample_uniform within FP tolerance (~1e-4; the
     Warp float32 sqrt vs torch's differs by rounding, geometrically negligible).
     Two Warp kernels: scan (one thread per env, builds seg+cumulative s from points)
     then lookup (one thread per output point, linear-scan searchsorted + lerp).
-    center [E, N, 2] float32 -> [E, n, 2] float32.  n must equal N for now.
+    center [E, N, 2] float32 -> [E, n, 2] float32.  n must equal N (== center.shape[1]).
+
+    count: optional int32 [E] tensor giving the number of real (non-NaN) points per env.
+        count=None (default): parity path — behaves identically to the old fixed-N call,
+            all E*N points are real, output is dense [E, N, 2].
+        count provided: count-aware path — resamples count[e] real points per env to
+            count[e] arc-uniform points; pads output beyond count[e] with NaN.
+            PARITY INVARIANT: count=full((E,), N) reproduces count=None bit-exactly.
     Pure Warp (cpu+cuda), no torch compute.
     """
     _init()
-    assert n == center.shape[1], "resample_uniform: n must equal N (input point count)"
-    E, N, _ = center.shape
+    E, n_max, _ = center.shape
+    assert n == n_max, "resample_uniform: n must equal center.shape[1]"
     dev = str(center.device)
-    flat = E * N
+    flat = E * n_max
 
+    if count is None:
+        # Parity path: use original fixed-N kernels unchanged.
+        cf = wp.from_torch(center.reshape(flat, 2).contiguous(), dtype=wp.vec2f)
+        seg_t = torch.empty(flat, device=center.device, dtype=torch.float32)
+        s_t = torch.empty(E * (n_max + 1), device=center.device, dtype=torch.float32)
+        out_t = torch.empty(flat, 2, device=center.device, dtype=torch.float32)
+        wp_seg = wp.from_torch(seg_t, dtype=wp.float32)
+        wp_s = wp.from_torch(s_t, dtype=wp.float32)
+        wp_out = wp.from_torch(out_t, dtype=wp.vec2f)
+        wp.launch(_resample_scan_k, dim=E, inputs=[cf, n_max, wp_seg, wp_s], device=dev)
+        wp.launch(_resample_lookup_k, dim=flat, inputs=[cf, wp_seg, wp_s, n_max, wp_out],
+                  device=dev)
+        _sync(center.device)
+        return out_t.view(E, n, 2)
+
+    # Count-aware path: use _resample_scan_ca_k / _resample_lookup_ca_k.
     cf = wp.from_torch(center.reshape(flat, 2).contiguous(), dtype=wp.vec2f)
     seg_t = torch.empty(flat, device=center.device, dtype=torch.float32)
-    s_t = torch.empty(E * (N + 1), device=center.device, dtype=torch.float32)
+    s_t = torch.empty(E * (n_max + 1), device=center.device, dtype=torch.float32)
     out_t = torch.empty(flat, 2, device=center.device, dtype=torch.float32)
     wp_seg = wp.from_torch(seg_t, dtype=wp.float32)
     wp_s = wp.from_torch(s_t, dtype=wp.float32)
     wp_out = wp.from_torch(out_t, dtype=wp.vec2f)
-
-    wp.launch(_resample_scan_k, dim=E, inputs=[cf, N, wp_seg, wp_s], device=dev)
-    wp.launch(_resample_lookup_k, dim=flat, inputs=[cf, wp_seg, wp_s, N, wp_out], device=dev)
+    wp_count = wp.from_torch(count.contiguous(), dtype=wp.int32)
+    wp.launch(_resample_scan_ca_k, dim=E,
+              inputs=[cf, n_max, wp_count, wp_seg, wp_s], device=dev)
+    wp.launch(_resample_lookup_ca_k, dim=flat,
+              inputs=[cf, wp_seg, wp_s, n_max, wp_count, wp_out], device=dev)
     _sync(center.device)
     return out_t.view(E, n, 2)
 

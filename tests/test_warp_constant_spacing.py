@@ -43,3 +43,21 @@ def test_constant_spacing_resample_matches_torch_oracle(dev):
         c = int(cnt_w[e])
         assert torch.allclose(out_w[e, :c], out_t[e, :c], atol=1e-4)
         assert torch.isnan(out_w[e, c:]).all()
+
+
+@pytest.mark.parametrize("dev", DEVS)
+def test_resample_uniform_count_aware(dev):
+    # parity: count==N reproduces the fixed call
+    src = torch.stack([_circle(64, 1.0, dev), _circle(64, 2.0, dev)], 0)
+    base = wpl.resample_uniform(src, 64)
+    buf, cnt = _pad(src, 64)
+    out = wpl.resample_uniform(buf, 64, count=cnt)
+    assert torch.allclose(out, base, atol=1e-5, equal_nan=True)
+    # variable: env0 uses 40 real pts (rest NaN), env1 uses 64; env0 stays ~circle, pad NaN
+    buf2 = torch.full((2, 64, 2), float("nan"), device=dev, dtype=torch.float32)
+    buf2[0, :40] = _circle(40, 1.0, dev); buf2[1, :64] = _circle(64, 2.0, dev)
+    cnt2 = torch.tensor([40, 64], dtype=torch.int32, device=dev)
+    out2 = wpl.resample_uniform(buf2, 64, count=cnt2)
+    r0 = torch.linalg.norm(out2[0, :40], dim=-1)
+    assert torch.allclose(r0, torch.ones_like(r0), atol=2e-2)
+    assert torch.isnan(out2[0, 40:]).all()
