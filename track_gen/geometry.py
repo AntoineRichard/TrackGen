@@ -125,6 +125,37 @@ def ccw_sort(points: torch.Tensor) -> torch.Tensor:
     return points
 
 
+def ccw_sort_count(points: torch.Tensor, count: torch.Tensor) -> torch.Tensor:
+    """Angle-sort each env's FIRST ``count`` corners about THEIR OWN centroid; NaN the rest.
+
+    Prune-then-sort. Unlike :func:`ccw_sort` (which sorts all ``P`` corners about the
+    all-``P`` centroid), this sorts only the corners that will be used (rows ``0..count-1``)
+    about the centroid of that subset, so the kept polygon is angularly monotone about its
+    own centre (winding +-1). Rows ``>= count`` are returned as NaN (the pruned tail). Same
+    ``atan2(dx, dy)`` (X-first) key as :func:`ccw_sort`.
+
+    Args:
+        points: [E, P, 2] raw corners.
+        count:  [E] integer per-env kept-corner count, each in [1, P].
+
+    Returns:
+        [E, P, 2]: rows [0, count) = kept corners sorted by angle about their centroid;
+        rows [count, P) = NaN.
+    """
+    E, P, _ = points.shape
+    count = count.to(points.device)
+    row = torch.arange(P, device=points.device).unsqueeze(0)                 # [1, P]
+    kept = row < count.unsqueeze(1)                                          # [E, P] bool
+    nan = torch.full_like(points, float("nan"))
+    masked = torch.where(kept.unsqueeze(-1), points, nan)                    # pruned rows -> NaN
+    centroid = torch.nansum(masked, dim=1) / count.clamp(min=1).unsqueeze(-1).to(points.dtype)
+    d = masked - centroid.unsqueeze(1)                                       # NaN on pruned rows
+    angles = torch.arctan2(d[:, :, 0], d[:, :, 1])                           # X first
+    key = torch.where(kept, angles, torch.full_like(angles, float("inf")))   # pruned -> tail
+    ids = torch.argsort(key, dim=1, stable=True)
+    return torch.gather(masked, 1, ids.unsqueeze(-1).expand(-1, -1, points.size(2)))
+
+
 def menger_curvature(points: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
     """Non-negative Menger curvature at each point on a closed loop.
 
