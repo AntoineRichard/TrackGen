@@ -99,3 +99,18 @@ def test_self_intersections_count_aware(dev):
     cnt2 = torch.tensor([60, 100], dtype=torch.int32, device=dev)
     xs = wpl.self_intersections(buf2, count=cnt2)
     assert int(xs[0]) >= 1 and int(xs[1]) == 0          # fig8 crossing; circle simple; pad ignored
+
+
+@pytest.mark.parametrize("dev", DEVS)
+def test_turning_count_aware(dev):
+    src = torch.stack([_circle(80, 1.0, dev), _circle(80, 2.0, dev)], 0)
+    base = wpl.turning_number(src)
+    buf, cnt = _pad(src, 80)
+    out = wpl.turning_number(buf, count=cnt)
+    assert torch.allclose(out, base, atol=1e-5)
+    # variable: 50-pt circle padded to 80; turning still ~ 2*pi (turning number 1)
+    buf2 = torch.full((2, 80, 2), float("nan"), device=dev, dtype=torch.float32)
+    buf2[0, :50] = _circle(50, 1.0, dev); buf2[1, :80] = _circle(80, 2.0, dev)
+    cnt2 = torch.tensor([50, 80], dtype=torch.int32, device=dev)
+    tn = wpl.turning_number(buf2, count=cnt2)
+    assert torch.allclose(tn.abs(), torch.full_like(tn, 2 * math.pi), atol=1e-2)

@@ -541,12 +541,13 @@ if _HAVE_WARP:
     @wp.kernel
     def _turning_k(
         c: wp.array(dtype=wp.vec2f),
-        N: int,
+        n_max: int,
+        count: wp.array(dtype=wp.int32),
         out: wp.array(dtype=wp.float32),
     ):
-        # One thread per env e. Delegates to _turning_func over [e*N, e*N+N).
+        # One thread per env e. Delegates to _turning_func over [e*n_max, e*n_max+count[e]).
         e = wp.tid()
-        out[e] = _turning_func(c, e * N, N)
+        out[e] = _turning_func(c, e * n_max, count[e])
 
     @wp.kernel
     def _validity_k(
@@ -1511,21 +1512,30 @@ def arc_length_resample_warp(points: torch.Tensor, num: int):
     return out_t.view(E, num, 2), count_out_t.long()
 
 
-def turning_number(center: torch.Tensor) -> torch.Tensor:
+def turning_number(center: torch.Tensor,
+                   count: torch.Tensor | None = None) -> torch.Tensor:
     """Signed total turning of each closed polygon, in radians. center [E, N, 2] -> [E] float32.
 
     +/-2*pi for a simple loop (sign = orientation); ~0 for a figure-eight whose lobes
     wind in opposite directions. Matches geometry.turning_number to allclose(atol=1e-4).
     Pure Warp (cpu+cuda). One thread per env; O(N) loop over edge-angle deltas.
+
+    count [E] int32 (optional): per-env real point count (1..N). When None, all
+    envs use N (fixed mode — identical to the pre-count-aware behaviour).
     """
     _init()
     E, N, _ = center.shape
     dev = str(center.device)
+    n_max = N
+    if count is None:
+        count = torch.full((E,), N, dtype=torch.int32, device=center.device)
 
-    cf = wp.from_torch(center.reshape(E * N, 2).contiguous(), dtype=wp.vec2f)
+    cf = wp.from_torch(center.reshape(E * n_max, 2).contiguous(), dtype=wp.vec2f)
+    count_i32 = count.to(torch.int32).contiguous()
+    wp_count = wp.from_torch(count_i32, dtype=wp.int32)
     out_t = torch.empty(E, device=center.device, dtype=torch.float32)
     wp.launch(_turning_k, dim=E,
-              inputs=[cf, N, wp.from_torch(out_t, dtype=wp.float32)],
+              inputs=[cf, n_max, wp_count, wp.from_torch(out_t, dtype=wp.float32)],
               device=dev)
     _sync(center.device)
     return out_t
