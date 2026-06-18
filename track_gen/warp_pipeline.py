@@ -371,6 +371,54 @@ if _HAVE_WARP:
         out[t] = p0 + frac * (p1 - p0)
 
     @wp.kernel
+    def _cs_scan_k(c: wp.array(dtype=wp.vec2f), N: int, spacing: wp.float32, n_max: int,
+                   seg: wp.array(dtype=wp.float32), s: wp.array(dtype=wp.float32),
+                   count: wp.array(dtype=wp.int32)):
+        # One thread per env e. Closed-loop seg lengths + cumulative arc s (len N+1),
+        # then count = floor(total/spacing)+1, capped so target (count-1)*spacing < total
+        # and to n_max. Mirrors geometry._resample_one's spacing branch.
+        e = wp.tid()
+        b = e * N
+        es = e * (N + 1)
+        s[es] = float(0.0)
+        acc = wp.float64(0.0)
+        for i in range(N):
+            d = c[b + (i + 1) % N] - c[b + i]
+            l = wp.length(d)
+            seg[b + i] = l
+            acc = acc + wp.float64(l)
+            s[es + i + 1] = wp.float32(acc)
+        total = wp.float32(acc)
+        k = int(wp.floor(total / spacing)) + 1
+        while k > 1 and wp.float32(k - 1) * spacing >= total:
+            k = k - 1
+        count[e] = wp.min(wp.max(k, 1), n_max)
+
+    @wp.kernel
+    def _cs_lookup_k(c: wp.array(dtype=wp.vec2f), seg: wp.array(dtype=wp.float32),
+                     s: wp.array(dtype=wp.float32), N: int, spacing: wp.float32, n_max: int,
+                     count: wp.array(dtype=wp.int32), out: wp.array(dtype=wp.vec2f)):
+        # One thread per OUTPUT slot t (dim = E*n_max). k >= count[e] -> NaN pad.
+        t = wp.tid()
+        e = t // n_max
+        k = t % n_max
+        if k >= count[e]:
+            out[t] = wp.vec2f(wp.nan, wp.nan)
+            return
+        eb = e * N
+        esi = e * (N + 1)
+        target = wp.float32(k) * spacing
+        idx = int(0)
+        while idx < N - 1 and s[esi + idx + 1] < target:
+            idx = idx + 1
+        s0 = s[esi + idx]
+        segl = wp.max(seg[eb + idx], float(1.0e-12))
+        frac = wp.clamp((target - s0) / segl, float(0.0), float(1.0))
+        p0 = c[eb + idx]
+        p1 = c[eb + (idx + 1) % N]
+        out[t] = p0 + frac * (p1 - p0)
+
+    @wp.kernel
     def _arc_scan_k(
         dense: wp.array(dtype=wp.vec2f),
         M: int,
@@ -1322,6 +1370,28 @@ def resample_uniform(center: torch.Tensor, n: int) -> torch.Tensor:
     wp.launch(_resample_lookup_k, dim=flat, inputs=[cf, wp_seg, wp_s, N, wp_out], device=dev)
     _sync(center.device)
     return out_t.view(E, n, 2)
+
+
+def resample_constant_spacing(center: torch.Tensor, spacing: float, n_max: int):
+    """Arc-length resample each fully-real closed loop to constant `spacing`, padded to
+    n_max with NaN. Returns (out [E, n_max, 2], count [E] long). Matches
+    geometry.arc_length_resample(points, spacing=spacing, n_max=n_max). Pure Warp (cpu+cuda)."""
+    _init()
+    E, N, _ = center.shape
+    dev = str(center.device)
+    cf = wp.from_torch(center.reshape(E * N, 2).contiguous(), dtype=wp.vec2f)
+    seg = torch.empty(E * N, device=center.device, dtype=torch.float32)
+    s = torch.empty(E * (N + 1), device=center.device, dtype=torch.float32)
+    cnt = torch.empty(E, device=center.device, dtype=torch.int32)
+    out = torch.empty(E * n_max, 2, device=center.device, dtype=torch.float32)
+    wp.launch(_cs_scan_k, dim=E, inputs=[cf, N, float(spacing), n_max,
+              wp.from_torch(seg, dtype=wp.float32), wp.from_torch(s, dtype=wp.float32),
+              wp.from_torch(cnt, dtype=wp.int32)], device=dev)
+    wp.launch(_cs_lookup_k, dim=E * n_max, inputs=[cf, wp.from_torch(seg, dtype=wp.float32),
+              wp.from_torch(s, dtype=wp.float32), N, float(spacing), n_max,
+              wp.from_torch(cnt, dtype=wp.int32), wp.from_torch(out, dtype=wp.vec2f)], device=dev)
+    _sync(center.device)
+    return out.view(E, n_max, 2), cnt.long()
 
 
 def arc_length_resample_warp(points: torch.Tensor, num: int):

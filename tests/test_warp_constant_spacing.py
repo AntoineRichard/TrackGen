@@ -28,3 +28,18 @@ def _pad(center, n_max):
     buf[:, :N] = center
     count = torch.full((E,), N, dtype=torch.int32, device=center.device)
     return buf, count
+
+
+def test_constant_spacing_resample_matches_torch_oracle():
+    dev = "cpu"
+    E, N = 3, 300
+    src = torch.stack([_circle(N, r, dev) for r in (1.0, 2.5, 4.0)], 0)  # [3,N,2]
+    spacing, n_max = 0.5, 128
+    out_w, cnt_w = wpl.resample_constant_spacing(src, spacing, n_max)
+    out_t, cnt_t = geometry.arc_length_resample(src, spacing=spacing, n_max=n_max)
+    assert out_w.shape == (E, n_max, 2)
+    assert torch.equal(cnt_w.cpu(), cnt_t.cpu()), f"{cnt_w} vs {cnt_t}"
+    for e in range(E):
+        c = int(cnt_w[e])
+        assert torch.allclose(out_w[e, :c], out_t[e, :c], atol=1e-4)
+        assert torch.isnan(out_w[e, c:]).all()
