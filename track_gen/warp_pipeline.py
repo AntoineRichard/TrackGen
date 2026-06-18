@@ -1872,19 +1872,31 @@ def ccw_sort(points: torch.Tensor) -> torch.Tensor:
     return out_t.view(E, P, 2)
 
 
-def inflate_warp(center: torch.Tensor, config, valid: torch.Tensor | None = None):
-    """Pure-Warp drop-in for inflation.inflate on a CLEAN, fixed-N centerline.
+def inflate_warp(center: torch.Tensor, config, valid: torch.Tensor | None = None,
+                 count: torch.Tensor | None = None):
+    """Pure-Warp drop-in for inflation.inflate, supporting both fixed and constant_spacing.
 
     Composes the verified Warp wrappers in the same order as inflation.inflate:
     resample -> frame+curvature -> constant width -> offset -> validity -> arclength ->
-    assemble Track. Requires no NaN, ``center.shape[1] == config.num_points`` and
-    ``config.output_mode == "fixed"`` (so count == N everywhere and the masked-resample /
-    NaN-padding branches of the oracle collapse to the simple closed-loop case).
+    assemble Track.
+
+    Fixed path (count=None, output_mode="fixed"):
+        Requires center.shape[1] == config.num_points and no NaN. All sub-stages run
+        with a full count tensor (count[e] == N for all e) so they take their parity
+        path. Output is bit-identical to the pre-count-aware behaviour.
+
+    Constant-spacing path (count provided, output_mode="constant_spacing"):
+        center is [E, n_max, 2] NaN-padded (real points in [0, count[e])).
+        n_max = center.shape[1]. count is threaded into every sub-stage so each
+        operates on only the real points and NaN-pads the rest. Track.count = count;
+        all output arrays are [E, n_max, ...] with NaN beyond count[e].
 
     Args:
-        center: [E, N, 2] float32 centerline, N == config.num_points, no NaN.
-        config: TrackGenConfig (output_mode must be "fixed").
+        center: [E, N, 2] float32 centerline (fixed: no NaN, N==config.num_points;
+                constant_spacing: NaN-padded, N==config.N_max).
+        config: TrackGenConfig.
         valid:  [E] bool generation flag; defaults to all-True.
+        count:  [E] int32 real point count per env. None -> fixed path (count==N).
 
     Returns:
         track_gen.types.Track with center/outer/inner/tangent/normal/arclen/length/
@@ -1893,47 +1905,92 @@ def inflate_warp(center: torch.Tensor, config, valid: torch.Tensor | None = None
     """
     from .types import Track  # local import: keep warp_pipeline free of oracle modules
 
-    assert config.output_mode == "fixed", "inflate_warp supports output_mode='fixed' only"
-    assert center.shape[1] == config.num_points, "center N must equal config.num_points"
     _init()
-    E, N, _ = center.shape
+    E, n_max, _ = center.shape
     dev = str(center.device)
     hw = float(config.half_width)
 
-    # 1. arc-length-uniform resample; fixed mode -> every env keeps all N points.
-    rs = resample_uniform(center, config.num_points)
+    if count is None:
+        # --- Fixed path: bit-identical to pre-count-aware behaviour ---
+        assert config.output_mode == "fixed", "inflate_warp: count=None requires output_mode='fixed'"
+        assert center.shape[1] == config.num_points, "center N must equal config.num_points"
+        N = n_max
 
-    # Constant per-track count (== N) and per-point half-width (== hw), plus the default
-    # all-valid generation flag, ALL kernel-filled (pure-Warp torch.full/ones replacements).
-    # torch.empty is just an I/O alloc; validity/offset/the Track consume these as before.
-    count_i32 = torch.empty(E, device=center.device, dtype=torch.int32)
-    w = torch.empty(E * N, device=center.device, dtype=torch.float32)
-    wp.launch(_fill_i32_k, dim=E, inputs=[wp.from_torch(count_i32, dtype=wp.int32), N], device=dev)
-    wp.launch(_fill_f32_k, dim=E * N, inputs=[wp.from_torch(w, dtype=wp.float32), hw], device=dev)
-    count = count_i32.long()                       # Track stores count as long (I/O dtype view)
-    w = w.view(E, N)                               # validity indexes w as [E, N]
+        # Build a full count tensor (== N for all envs) to pass to count-aware sub-stages.
+        # This is the parity path: operationally identical to calling them without count.
+        count_i32 = torch.empty(E, device=center.device, dtype=torch.int32)
+        wp.launch(_fill_i32_k, dim=E,
+                  inputs=[wp.from_torch(count_i32, dtype=wp.int32), N], device=dev)
+        count_arr = count_i32  # int32, used for sub-stage calls
 
-    # 2. frame + curvature (kappa unused, like inflation._width_stage).
-    T, Nrm, _kappa = frame_curvature(rs)
+        # 1. arc-length-uniform resample; fixed mode -> every env keeps all N points.
+        rs = resample_uniform(center, N, count=count_arr)
 
-    # 4. offset to outer/inner borders.
-    outer, inner = offset(rs, Nrm, hw)
+        # Per-point half-width (== hw) kernel-filled over E*N real points.
+        w = torch.empty(E * N, device=center.device, dtype=torch.float32)
+        wp.launch(_fill_f32_k, dim=E * N,
+                  inputs=[wp.from_torch(w, dtype=wp.float32), hw], device=dev)
+        w = w.view(E, N)
 
-    # 5. per-track validity gate. Default gen flag (all valid) is a kernel int32 fill;
-    # otherwise the passed bool `valid` is consumed directly (validity .to(int32) on it).
-    if valid is not None:
-        gen_valid = valid
+        # 2. frame + curvature (kappa unused, like inflation._width_stage).
+        T, Nrm, _kappa = frame_curvature(rs, count=count_arr)
+
+        # 4. offset to outer/inner borders.
+        outer, inner = offset(rs, Nrm, hw, count=count_arr)
+
+        # 5. per-track validity gate.
+        if valid is not None:
+            gen_valid = valid
+        else:
+            gen_valid_i32 = torch.empty(E, device=center.device, dtype=torch.int32)
+            wp.launch(_fill_i32_k, dim=E,
+                      inputs=[wp.from_torch(gen_valid_i32, dtype=wp.int32), 1], device=dev)
+            gen_valid = gen_valid_i32
+        valid_out = validity(rs, w, count_arr, gen_valid, config, outer, inner)
+
+        # 6. cumulative arc length + total length.
+        arclen, length = _arclength(rs, count=count_arr)
+
+        # Track.count == N for all envs (as before); stored as long.
+        track_count = count_i32.long()
+
     else:
-        gen_valid_i32 = torch.empty(E, device=center.device, dtype=torch.int32)
-        wp.launch(_fill_i32_k, dim=E, inputs=[wp.from_torch(gen_valid_i32, dtype=wp.int32), 1], device=dev)
-        gen_valid = gen_valid_i32                  # validity .to(int32) is a no-op view here
-    valid_out = validity(rs, w, count, gen_valid, config, outer, inner)
+        # --- Constant-spacing path: variable count per env, NaN-padded output ---
+        count_arr = count.to(torch.int32).contiguous()
 
-    # 6. cumulative arc length + total length.
-    arclen, length = _arclength(rs)
+        # 1. arc-length-uniform resample within real points (NaN-pads beyond count[e]).
+        rs = resample_uniform(center, n_max, count=count_arr)
+
+        # Per-point half-width (== hw) over E*n_max slots.
+        w = torch.empty(E * n_max, device=center.device, dtype=torch.float32)
+        wp.launch(_fill_f32_k, dim=E * n_max,
+                  inputs=[wp.from_torch(w, dtype=wp.float32), hw], device=dev)
+        w = w.view(E, n_max)
+
+        # 2. frame + curvature.
+        T, Nrm, _kappa = frame_curvature(rs, count=count_arr)
+
+        # 4. offset to outer/inner borders.
+        outer, inner = offset(rs, Nrm, hw, count=count_arr)
+
+        # 5. per-track validity gate.
+        if valid is not None:
+            gen_valid = valid
+        else:
+            gen_valid_i32 = torch.empty(E, device=center.device, dtype=torch.int32)
+            wp.launch(_fill_i32_k, dim=E,
+                      inputs=[wp.from_torch(gen_valid_i32, dtype=wp.int32), 1], device=dev)
+            gen_valid = gen_valid_i32
+        valid_out = validity(rs, w, count_arr, gen_valid, config, outer, inner)
+
+        # 6. cumulative arc length + total length.
+        arclen, length = _arclength(rs, count=count_arr)
+
+        # Track.count == per-env real point count; stored as long.
+        track_count = count_arr.long()
 
     return Track(outer=outer, center=rs, inner=inner, tangent=T, normal=Nrm,
-                 arclen=arclen, length=length, valid=valid_out, count=count)
+                 arclen=arclen, length=length, valid=valid_out, count=track_count)
 
 
 class CapturedTracks:

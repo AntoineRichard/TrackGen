@@ -257,3 +257,20 @@ def test_validity_count_aware(dev):
     os, is_ = wpl.offset(small, Nrm_s, hw, count=cnt_full)
     v_small = wpl.validity(small, w, cnt_full, gv, cfg, os, is_)
     assert bool(v_small[0]) is False, "radius-0.3 circle with hw=0.5 must be invalid"
+
+
+@pytest.mark.parametrize("dev", DEVS)
+def test_inflate_warp_constant_spacing(dev):
+    hw = 0.5
+    buf = torch.full((1, 200, 2), float("nan"), device=dev, dtype=torch.float32)
+    buf[0, :120] = _circle(120, 5.0, dev)
+    cnt = torch.tensor([120], dtype=torch.int32, device=dev)
+    gv = torch.ones(1, dtype=torch.bool, device=dev)
+    cfg = TrackGenConfig(num_envs=1, num_points=120, half_width=hw,
+                         output_mode="constant_spacing", spacing=0.30, N_max=200, device=dev)
+    tr = wpl.inflate_warp(buf, cfg, valid=gv, count=cnt)
+    assert tr.center.shape == (1, 200, 2)
+    assert int(tr.count[0]) == 120
+    assert torch.isnan(tr.center[0, 120:]).all()
+    assert bool(tr.valid[0]) is True
+    assert torch.allclose(tr.length, torch.tensor([2 * math.pi * 5.0], device=dev), atol=0.5)
