@@ -84,7 +84,7 @@ class TrackGenConfig:
     # --- Output params ---
     num_points: int = 256  # N
     output_mode: str = "fixed"  # one of {"fixed", "constant_spacing"}
-    spacing: float = 0.1
+    spacing: float = 0.1            # constant_spacing arc-length step (m). Warp relax: set ~0.6*half_width.
     N_max: int = 256
 
     # --- Robustness params ---
