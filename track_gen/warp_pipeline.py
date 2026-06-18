@@ -587,7 +587,7 @@ if _HAVE_WARP:
         outer: wp.array(dtype=wp.vec2f),
         inner: wp.array(dtype=wp.vec2f),
         has_border: int,
-        N: int,
+        n_max: int,
         half_width: float,
         turning_tol: float,
         w_floor: float,
@@ -597,20 +597,21 @@ if _HAVE_WARP:
         # One thread per env e. Fuses inflation._validity_stage entirely in-kernel:
         # gen_valid AND turning AND width-floor AND no-NaN AND thickness AND border-simple.
         # All sub-results are 0/1 int flags (Warp can't AND Python bools in dynamic loops).
+        # count[e] real points; NaN padding beyond is ignored in all sub-checks.
         e = wp.tid()
-        base = e * N
+        cnt = count[e]
+        base = e * n_max
 
-        # --- turning ---
-        turn = _turning_func(center, base, N)
+        # --- turning (over cnt real points only) ---
+        turn = _turning_func(center, base, cnt)
         turn_ok = int(0)
         if wp.abs(wp.abs(turn) - 2.0 * wp.pi) <= turning_tol:
             turn_ok = int(1)
 
-        # --- real-point mask (i < count[e]): width floor + no NaN over real points ---
-        cnt = count[e]
+        # --- real-point mask (i < cnt): width floor + no NaN over real points ---
         w_ok = int(1)
         no_nan = int(1)
-        for i in range(N):
+        for i in range(n_max):
             if i < cnt:
                 if not (w[base + i] > w_floor):
                     w_ok = int(0)
@@ -618,23 +619,23 @@ if _HAVE_WARP:
                 if not (wp.isfinite(ci[0]) and wp.isfinite(ci[1])):
                     no_nan = int(0)
 
-        # --- band = round(2*hw / (perimeter/N)).clamp_min(1); perimeter = closed-loop sum ---
+        # --- band = round(2*hw / (perimeter/cnt)).clamp_min(1); perimeter over cnt real pts ---
         peri = float(0.0)
-        for i in range(N):
-            peri += wp.length(center[base + (i + 1) % N] - center[base + i])
-        L0 = wp.max(peri / float(N), float(1.0e-9))
+        for i in range(cnt):
+            peri += wp.length(center[base + (i + 1) % cnt] - center[base + i])
+        L0 = wp.max(peri / float(cnt), float(1.0e-9))
         band = wp.max(int(wp.round(2.0 * half_width / L0)), 1)
 
-        # --- thickness gate ---
-        th = _thickness_func(center, base, N, band)
+        # --- thickness gate (over cnt real points only) ---
+        th = _thickness_func(center, base, cnt, band)
         th_ok = int(0)
         if th >= (1.0 - relax_tol) * half_width:
             th_ok = int(1)
 
-        # --- border self-intersection gate (skipped when has_border == 0) ---
+        # --- border self-intersection gate (skipped when has_border == 0; cnt real pts) ---
         border_ok = int(1)
         if has_border == 1:
-            cross = _self_intersections_func(outer, base, N) + _self_intersections_func(inner, base, N)
+            cross = _self_intersections_func(outer, base, cnt) + _self_intersections_func(inner, base, cnt)
             if cross != 0:
                 border_ok = int(0)
 

@@ -222,3 +222,38 @@ def test_xpbd_count_aware(dev):
     assert torch.isfinite(out2[0, :60]).all()                  # real points finite (not NaN-poisoned)
     assert torch.isnan(out2[0, 60:]).all()                     # padding stays NaN
     assert torch.isfinite(out2[1]).all()
+
+
+@pytest.mark.parametrize("dev", DEVS)
+def test_validity_count_aware(dev):
+    hw = 0.5
+    cfg = TrackGenConfig(num_envs=1, num_points=120, half_width=hw, device=dev)
+    src = _circle(120, 5.0, dev).unsqueeze(0)            # radius 5, 1m road -> easily valid
+    w = torch.full((1, 120), hw, device=dev)
+    gv = torch.ones(1, dtype=torch.int32, device=dev)
+    cnt_full = torch.full((1,), 120, dtype=torch.int32, device=dev)
+    # build outer/inner with the count-aware offset (count==N here)
+    _, Nrm_full, _ = wpl.frame_curvature(src, count=cnt_full)
+    o, i = wpl.offset(src, Nrm_full, hw, count=cnt_full)
+    v_fixed = wpl.validity(src, w, cnt_full, gv, cfg, o, i)   # count==N (fixed mode)
+    assert bool(v_fixed[0]) is True, "full circle radius-5 must be valid"
+
+    # padded version: same circle in a 200-wide buffer, count=120
+    buf = torch.full((1, 200, 2), float("nan"), device=dev, dtype=torch.float32)
+    buf[0, :120] = src[0]
+    w2 = torch.full((1, 200), hw, device=dev)
+    cnt = torch.tensor([120], dtype=torch.int32, device=dev)
+    _, Nrm2, _ = wpl.frame_curvature(buf, count=cnt)
+    o2, i2 = wpl.offset(buf, Nrm2, hw, count=cnt)
+    v_pad = wpl.validity(buf, w2, cnt, gv, cfg, o2, i2)
+    assert bool(v_pad[0]) is True, "padded circle (NaN tail) must still be valid"
+
+    # parity: fixed and padded must agree
+    assert bool(v_pad[0]) == bool(v_fixed[0])
+
+    # a genuinely too-sharp small circle (radius 0.3 < hw=0.5) must be INVALID, count-masked
+    small = _circle(120, 0.3, dev).unsqueeze(0)
+    _, Nrm_s, _ = wpl.frame_curvature(small, count=cnt_full)
+    os, is_ = wpl.offset(small, Nrm_s, hw, count=cnt_full)
+    v_small = wpl.validity(small, w, cnt_full, gv, cfg, os, is_)
+    assert bool(v_small[0]) is False, "radius-0.3 circle with hw=0.5 must be invalid"
