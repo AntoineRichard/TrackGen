@@ -987,22 +987,27 @@ if _HAVE_WARP:
     @wp.kernel
     def _band_l0_k(
         center: wp.array(dtype=wp.vec2f),
-        N: int,
+        n_max: int,
         two_hw: float,
         band_out: wp.array(dtype=wp.int32),
         l0_out: wp.array(dtype=wp.float32),
+        count: wp.array(dtype=wp.int32),
     ):
-        # One thread per env e. L0 = perimeter/N (closed-loop mean segment length; mirrors
-        # _mean_seg_len_torch). band = round(2*hw / L0).clamp_min(1); the isfinite guard on
-        # 2*hw/L0 reproduces the torch nan_to_num(nan=1.0,posinf=1.0,neginf=1.0).round()
-        # .long().clamp_min(1) for invalid (NaN-centerline) envs -> band 1. L0 itself may stay
-        # NaN for invalid envs (that flows untouched into xpbd, which propagates the NaN).
+        # One thread per env e. Count-aware: loop over count[e] real points, base e*n_max,
+        # wrap index (i+1)%count[e]. L0 = perimeter/count[e] (mean segment length). band =
+        # round(2*hw / L0).clamp_min(1); the isfinite guard reproduces the torch
+        # nan_to_num(nan=1.0,posinf=1.0,neginf=1.0).round().long().clamp_min(1) for invalid
+        # (NaN-centerline) envs -> band 1. L0 itself may stay NaN for invalid envs (that
+        # flows untouched into xpbd, which propagates the NaN).
+        # PARITY: when count[e]==n_max for all e, produces identical output to the former
+        # fixed-N kernel (same loop bounds, same formula).
         e = wp.tid()
-        base = e * N
+        base = e * n_max
+        cn = count[e]
         peri = float(0.0)
-        for i in range(N):
-            peri += wp.length(center[base + (i + 1) % N] - center[base + i])
-        l0 = peri / float(N)
+        for i in range(cn):
+            peri += wp.length(center[base + (i + 1) % cn] - center[base + i])
+        l0 = peri / float(cn)
         l0_out[e] = l0
         bf = two_hw / wp.max(l0, float(1.0e-9))
         band_out[e] = wp.where(wp.isfinite(bf), wp.max(int(wp.round(bf)), 1), 1)
@@ -1158,6 +1163,27 @@ def generate_tracks_warp(config, seeds: torch.Tensor):
     E = centerline.shape[0]
     dev = str(centerline.device)
 
+    # --- constant_spacing branch: resample to ~0.6*half_width spacing, then relax + inflate ---
+    if config.output_mode == "constant_spacing":
+        n_max = int(config.N_max)
+        centerline, count = resample_constant_spacing(centerline, float(config.spacing), n_max)
+        E = centerline.shape[0]
+        band = torch.empty(E, device=centerline.device, dtype=torch.int32)
+        L0 = torch.empty(E, device=centerline.device, dtype=torch.float32)
+        cl_w = wp.from_torch(centerline.reshape(E * n_max, 2).contiguous(), dtype=wp.vec2f)
+        count_i32 = count.to(torch.int32)
+        wp.launch(_band_l0_k, dim=E, inputs=[cl_w, n_max, 2.0 * hw,
+                  wp.from_torch(band, dtype=wp.int32), wp.from_torch(L0, dtype=wp.float32),
+                  wp.from_torch(count_i32, dtype=wp.int32)], device=dev)
+        if config.relax_band is not None:
+            wp.launch(_fill_i32_k, dim=E, inputs=[wp.from_torch(band, dtype=wp.int32),
+                      int(config.relax_band)], device=dev)
+        _sync(centerline.device)
+        relaxed = warp_relax.xpbd_solve(centerline, band, L0, config, count=count_i32)
+        relaxed = resample_uniform(relaxed, n_max, count=count_i32)
+        return inflate_warp(relaxed, config, valid=gen_valid, count=count_i32)
+
+    # --- fixed path (default): bit-identical to pre-constant_spacing behaviour ---
     # band = round(2*hw / (perimeter/N)).clamp_min(1) and rest length L0 = perimeter/N,
     # BOTH computed in one pure-Warp kernel (folds _mean_seg_len_torch + the nan_to_num /
     # round / long / clamp_min torch glue). L0 stays NaN for invalid envs and flows untouched
@@ -1167,7 +1193,13 @@ def generate_tracks_warp(config, seeds: torch.Tensor):
     cl_w = wp.from_torch(centerline.reshape(E * N, 2).contiguous(), dtype=wp.vec2f)
     band_w = wp.from_torch(band, dtype=wp.int32)
     l0_w = wp.from_torch(L0, dtype=wp.float32)
-    wp.launch(_band_l0_k, dim=E, inputs=[cl_w, N, 2.0 * hw, band_w, l0_w], device=dev)
+    # Parity: pass n_max=N and count=full(E,N) so the count-aware _band_l0_k takes the same
+    # code path it always did (count[e]==N for all e -> operationally identical).
+    count_full = torch.empty(E, device=centerline.device, dtype=torch.int32)
+    wp.launch(_fill_i32_k, dim=E, inputs=[wp.from_torch(count_full, dtype=wp.int32), N],
+              device=dev)
+    wp.launch(_band_l0_k, dim=E, inputs=[cl_w, N, 2.0 * hw, band_w, l0_w,
+              wp.from_torch(count_full, dtype=wp.int32)], device=dev)
 
     if config.relax_band is not None:
         # Honor an explicit per-track band override exactly like relaxation._band: overwrite

@@ -259,6 +259,45 @@ def test_validity_count_aware(dev):
     assert bool(v_small[0]) is False, "radius-0.3 circle with hw=0.5 must be invalid"
 
 
+def _mean_jag(center, count):
+    # Resolution-normalised jaggedness: (mean |turning angle|) / (2*pi/c), per env.
+    # For a perfectly smooth c-gon this ratio equals 1.0; jagged tracks score > 1.
+    # Dividing by 2*pi/c removes the resolution effect so the metric is comparable across
+    # fixed-256 (c==256) and constant-spacing (c variable, typically ~145 at spacing=0.30,
+    # scale=10). This is the correct smoothness measure for this comparison.
+    E = center.shape[0]
+    out = torch.zeros(E, device=center.device)
+    for e in range(E):
+        c = int(count[e])
+        if c < 3:
+            out[e] = 0.0
+            continue
+        p = center[e, :c]
+        d = torch.roll(p, -1, 0) - p
+        u = d / d.norm(dim=-1, keepdim=True).clamp_min(1e-9)
+        ang = torch.arccos((u * torch.roll(u, 1, 0)).sum(-1).clamp(-1, 1))
+        # normalize by expected turning per vertex for a regular c-gon
+        out[e] = ang.mean() / (2 * math.pi / c)
+    return out
+
+
+def test_generate_tracks_constant_spacing_smoother_and_valid():
+    dev = "cpu"
+    E = 96
+    seeds = torch.arange(E, dtype=torch.int32, device=dev)
+    base = dict(num_envs=E, num_points=256, half_width=0.5, scale=10.0, relax_iters=150, device=dev)
+    fixed = wpl.generate_tracks_warp(TrackGenConfig(output_mode="fixed", **base), seeds)
+    cs = wpl.generate_tracks_warp(TrackGenConfig(output_mode="constant_spacing", spacing=0.30,
+                                                 N_max=384, **base), seeds)
+    # constant spacing lifts yield in the fat-band regime (fixed-256 leaves ~30% jagged-invalid)
+    assert cs.valid.float().mean() > fixed.valid.float().mean()
+    # and its valid tracks are smoother (lower mean turning per vertex)
+    assert (_mean_jag(cs.center, cs.count)[cs.valid].mean()
+            < _mean_jag(fixed.center, fixed.count)[fixed.valid].mean())
+    # fixed-mode output shape/count unchanged
+    assert fixed.center.shape == (E, 256, 2) and int(fixed.count[0]) == 256
+
+
 @pytest.mark.parametrize("dev", DEVS)
 def test_inflate_warp_constant_spacing(dev):
     hw = 0.5
