@@ -2093,9 +2093,15 @@ def generate_tracks_warp_graph(config, seeds_template: torch.Tensor) -> Captured
     reproduces the eager result and replay with NEW seeds equals ``generate_tracks_warp(config,
     new_seeds)`` (positions allclose ~1e-4; valid/count exact).
 
+    ``output_mode="constant_spacing"`` is also supported: although ``_cs_scan_k`` writes a
+    per-track ``count[e]`` array during capture, this value lives exclusively as a device
+    tensor (data) and is never read back to the host or used as a Python branch or kernel
+    launch dimension (all Warp launches use the static dims ``E*N_max`` and ``E``).
+    CUDA graph capture is therefore fully compatible with constant_spacing.
+
     Args:
-        config:         TrackGenConfig (same constraints as generate_tracks_warp: output_mode
-                        "fixed", relax_solver "xpbd", smooth_finish False).
+        config:         TrackGenConfig (relax_solver "xpbd", smooth_finish False).
+                        Both output_mode "fixed" and "constant_spacing" are supported.
         seeds_template: [E] int CUDA tensor; its SHAPE/DTYPE/DEVICE fix the captured batch.
                         Its values seed the warmup but are otherwise irrelevant (replay
                         overwrites the seed buffer).

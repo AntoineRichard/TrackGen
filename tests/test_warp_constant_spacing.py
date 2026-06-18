@@ -313,3 +313,16 @@ def test_inflate_warp_constant_spacing(dev):
     assert torch.isnan(tr.center[0, 120:]).all()
     assert bool(tr.valid[0]) is True
     assert torch.allclose(tr.length, torch.tensor([2 * math.pi * 5.0], device=dev), atol=0.5)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda")
+def test_graph_capture_constant_spacing():
+    E = 8
+    cfg = TrackGenConfig(num_envs=E, num_points=256, half_width=0.5, scale=10.0,
+                         output_mode="constant_spacing", spacing=0.30, N_max=384, device="cuda")
+    seeds = torch.arange(E, dtype=torch.int32, device="cuda")
+    cap = wpl.generate_tracks_warp_graph(cfg, seeds)
+    eager = wpl.generate_tracks_warp(cfg, seeds)
+    replay = cap.replay(seeds)
+    assert torch.equal(replay.count.cpu(), eager.count.cpu())
+    assert torch.equal(replay.valid.cpu(), eager.valid.cpu())
