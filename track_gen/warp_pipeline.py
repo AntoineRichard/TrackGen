@@ -371,10 +371,12 @@ if _HAVE_WARP:
     def _arc_scan_k(
         dense: wp.array(dtype=wp.vec2f),
         M: int,
+        num: int,
         real_pts: wp.array(dtype=wp.vec2f),
         seg: wp.array(dtype=wp.float32),
         s: wp.array(dtype=wp.float32),
         count_r: wp.array(dtype=wp.int32),
+        count_out: wp.array(dtype=wp.int32),
     ):
         # One thread per env e. NaN-aware generalization of _resample_scan_k: first
         # COMPACT the real (both-components-finite) points IN ORDER (dropping interior
@@ -393,6 +395,8 @@ if _HAVE_WARP:
                 real_pts[rb + r] = p
                 r = r + 1
         count_r[e] = r
+        # Public arc-resample count (folds in the wrapper's torch.where): R>=2 -> num, else 0.
+        count_out[e] = wp.where(r >= 2, num, 0)
 
         # R >= 2: closed-loop arc length over real_pts[0..R-1]. seg[j] = |real[(j+1)%R]
         # - real[j]| (j=R-1 is the wrap |real[0]-real[R-1]|); s[0]=0, s[j+1]=s[j]+seg[j].
@@ -666,24 +670,36 @@ if _HAVE_WARP:
         # components, matching the torch oracle bit-for-bit on pruned corners.
         return v / wp.max(wp.length(v), 1.0e-8)
 
+    @wp.func
+    def _pruned_corner(c: wp.array(dtype=wp.vec2f), b: int, i: int, cnt: int) -> wp.vec2f:
+        # Folds in _prune_corners' NaN step: corner i of the env at base b is real iff
+        # i < cnt; rows i >= cnt are replaced by (nan, nan), reproducing the torch
+        # where(arange(P) < count, corners, nan) prune EXACTLY (same NaN positions). The
+        # downstream safe_normalize/bezier NaN-propagation then matches the oracle.
+        ci = c[b + i]
+        return wp.where(i < cnt, ci, wp.vec2f(wp.nan, wp.nan))
+
     @wp.kernel
     def _vertex_tangents_k(
         c: wp.array(dtype=wp.vec2f),
+        count: wp.array(dtype=wp.int32),
         P: int,
         p: float,
         tangents: wp.array(dtype=wp.vec2f),
     ):
         # One thread per corner t (dim = E*P); e = env index, i = corner-within-env.
         # Mirrors geometry.vertex_tangents: u_out_i = dir(i -> i+1), u_in_i = dir(i-1 -> i)
-        # (== roll(u_out, +1)); tangent_i = safe_normalize(p*u_out + (1-p)*u_in). NaN at any
-        # pruned (NaN) corner propagates the same way the torch oracle's safe_normalize does.
+        # (== roll(u_out, +1)); tangent_i = safe_normalize(p*u_out + (1-p)*u_in). The
+        # count->NaN prune is folded in-kernel (corner i is NaN iff i >= count[e]); NaN at
+        # any pruned corner propagates the same way the torch oracle's safe_normalize does.
         t = wp.tid()
         e = t // P
         i = t % P
         b = e * P
-        c_i = c[t]
-        c_next = c[b + (i + 1) % P]
-        c_prev = c[b + (i + P - 1) % P]
+        cnt = count[e]
+        c_i = _pruned_corner(c, b, i, cnt)
+        c_next = _pruned_corner(c, b, (i + 1) % P, cnt)
+        c_prev = _pruned_corner(c, b, (i + P - 1) % P, cnt)
         u_out = _safe_normalize2(c_next - c_i)
         u_in = _safe_normalize2(c_i - c_prev)
         blended = p * u_out + (1.0 - p) * u_in
@@ -692,6 +708,7 @@ if _HAVE_WARP:
     @wp.kernel
     def _assemble_k(
         c: wp.array(dtype=wp.vec2f),
+        count: wp.array(dtype=wp.int32),
         tangents: wp.array(dtype=wp.vec2f),
         P: int,
         npseg: int,
@@ -702,7 +719,8 @@ if _HAVE_WARP:
         # rebuilds the cubic Bezier of segment i (corner i -> corner (i+1)%P) and evaluates
         # it at parameter u = s/(npseg-1) with the degree-3 Bernstein basis. Mirrors
         # BezierCenterlineGenerator._segment + _cubic_bezier: handle = rad*chord along the
-        # corner tangents. NaN corners/tangents propagate into the output as in the oracle.
+        # corner tangents. The count->NaN prune is folded in-kernel (corner i is NaN iff
+        # i >= count[e]); NaN corners/tangents propagate into the output as in the oracle.
         t = wp.tid()
         per_env = P * npseg
         e = t // per_env
@@ -710,9 +728,10 @@ if _HAVE_WARP:
         i = rem // npseg
         s = rem % npseg
         b = e * P
+        cnt = count[e]
 
-        c0 = c[b + i]
-        c1 = c[b + (i + 1) % P]
+        c0 = _pruned_corner(c, b, i, cnt)
+        c1 = _pruned_corner(c, b, (i + 1) % P, cnt)
         t0 = tangents[b + i]
         t1 = tangents[b + (i + 1) % P]
 
@@ -732,26 +751,31 @@ if _HAVE_WARP:
     @wp.kernel
     def _corner_angles_gate_k(
         c: wp.array(dtype=wp.vec2f),
+        count: wp.array(dtype=wp.int32),
         P: int,
         min_angle: float,
         ok: wp.array(dtype=wp.int32),
     ):
-        # One thread per env e. Reproduces generate()'s ANGLE gate over this env's P
-        # (pre-pruned, NaN-tail) corners: angle_ok = ((angle > min_angle) | ~constrained)
-        # over all corners. A corner i is "constrained" only when i and BOTH its circular
-        # neighbours i-1, i+1 are real (both components finite); unconstrained corners are
-        # skipped (mirrors the oracle's nan_to_num(angle, 0) | ~constrained passing them).
-        # For each constrained corner: interior angle = pi - acos(clamp(dot(u_in, u_out))),
+        # One thread per env e. Reproduces generate()'s ANGLE gate over this env's P RAW
+        # corners with the _prune_corners NaN step folded in: corner i is REAL iff
+        # i < count[e] AND both components finite. angle_ok = ((angle > min_angle) |
+        # ~constrained) over all corners; a corner is "constrained" only when i and BOTH
+        # its circular neighbours i-1, i+1 are real; unconstrained corners are skipped
+        # (mirrors the oracle's nan_to_num(angle, 0) | ~constrained passing them). For each
+        # constrained corner: interior angle = pi - acos(clamp(dot(u_in, u_out))),
         # u_in = safe_normalize(c_i - c_prev), u_out = safe_normalize(c_next - c_i), with the
         # same [-1+1e-7, 1-1e-7] cos clamp. If any constrained corner fails (not > min_angle),
         # the env's flag is 0.
         e = wp.tid()
         b = e * P
+        cnt = count[e]
         flag = int(1)
         for i in range(P):
-            ci = c[b + i]
-            cp = c[b + (i + P - 1) % P]
-            cn = c[b + (i + 1) % P]
+            ip = (i + P - 1) % P
+            inx = (i + 1) % P
+            ci = _pruned_corner(c, b, i, cnt)
+            cp = _pruned_corner(c, b, ip, cnt)
+            cn = _pruned_corner(c, b, inx, cnt)
             real_i = wp.isfinite(ci[0]) and wp.isfinite(ci[1])
             real_p = wp.isfinite(cp[0]) and wp.isfinite(cp[1])
             real_n = wp.isfinite(cn[0]) and wp.isfinite(cn[1])
@@ -763,6 +787,34 @@ if _HAVE_WARP:
                 if not (angle > min_angle):
                     flag = int(0)
         ok[e] = flag
+
+    @wp.kernel
+    def _gates_combine_k(
+        angle_ok: wp.array(dtype=wp.int32),
+        turn: wp.array(dtype=wp.float32),
+        cnt_turn: wp.array(dtype=wp.int32),
+        cross_simple: wp.array(dtype=wp.int32),
+        turning_tol: float,
+        out: wp.array(dtype=wp.int32),
+    ):
+        # One thread per env e. Fuses generate()'s gate conjunction:
+        #   turn_ok   = |(|turn| - 2*pi)| <= turning_tol
+        #   finite_ok = (cnt_turn >= 2) and isfinite(turn)
+        #   simple_ok = (cross_simple == 0)
+        #   out       = angle_ok & turn_ok & finite_ok & simple_ok   (int 0/1 flags)
+        # cnt_turn is the [E] count returned by arc_length_resample_warp(dense, npseg).
+        e = wp.tid()
+        tu = turn[e]
+        turn_ok = int(0)
+        if wp.abs(wp.abs(tu) - 2.0 * wp.pi) <= turning_tol:
+            turn_ok = int(1)
+        finite_ok = int(0)
+        if cnt_turn[e] >= 2 and wp.isfinite(tu):
+            finite_ok = int(1)
+        simple_ok = int(0)
+        if cross_simple[e] == 0:
+            simple_ok = int(1)
+        out[e] = angle_ok[e] & turn_ok & finite_ok & simple_ok
 
     @wp.kernel
     def _corner_count_sample_k(
@@ -966,23 +1018,21 @@ def assemble(corners: torch.Tensor, count: torch.Tensor, config) -> torch.Tensor
     assert npseg >= 2, "num_points_per_segment must be >= 2"
     dev = str(corners.device)
 
-    # Prune mask (folds in _prune_corners' NaN step): corner i is real iff i < count[e].
-    row = torch.arange(P, device=corners.device)
-    keep = (row < count.to(corners.device)[:, None]).unsqueeze(-1)        # [E, P, 1]
-    pruned = torch.where(keep, corners, torch.full_like(corners, float("nan")))
-
     # edgy -> vertex_tangents blend weight (default edgy=0 -> p=0.5).
     p = math.atan(config.edgy) / math.pi + 0.5
 
-    cf = wp.from_torch(pruned.reshape(E * P, 2).contiguous(), dtype=wp.vec2f)
+    # RAW corners + count fed straight to the kernels; the _prune_corners NaN step
+    # (corner i -> NaN iff i >= count[e]) is folded in-kernel via _pruned_corner.
+    cf = wp.from_torch(corners.reshape(E * P, 2).contiguous(), dtype=wp.vec2f)
+    cnt = wp.from_torch(count.to(torch.int32).contiguous(), dtype=wp.int32)
     tan_t = torch.empty(E * P, 2, device=corners.device, dtype=torch.float32)
     wp_tan = wp.from_torch(tan_t, dtype=wp.vec2f)
     out_t = torch.empty(E * P * npseg, 2, device=corners.device, dtype=torch.float32)
     wp_out = wp.from_torch(out_t, dtype=wp.vec2f)
 
-    wp.launch(_vertex_tangents_k, dim=E * P, inputs=[cf, P, float(p), wp_tan], device=dev)
+    wp.launch(_vertex_tangents_k, dim=E * P, inputs=[cf, cnt, P, float(p), wp_tan], device=dev)
     wp.launch(_assemble_k, dim=E * P * npseg,
-              inputs=[cf, wp_tan, P, npseg, float(config.rad), wp_out], device=dev)
+              inputs=[cf, cnt, wp_tan, P, npseg, float(config.rad), wp_out], device=dev)
     _sync(corners.device)
     return out_t.view(E, P * npseg, 2)
 
@@ -1213,27 +1263,30 @@ def arc_length_resample_warp(points: torch.Tensor, num: int):
     df = wp.from_torch(points.reshape(E * M, 2).contiguous(), dtype=wp.vec2f)
 
     # Scratch: compacted real points, per-real-segment lengths, cumulative arc length,
-    # and the real-point count R per env (read by the lookup to gate NaN / clamp idx).
+    # the real-point count R per env (read by the lookup to gate NaN / clamp idx), and the
+    # public per-env output count written directly by the scan kernel (R>=2 -> num, else 0).
     real_t = torch.empty(E * M, 2, device=device, dtype=torch.float32)
     seg_t = torch.empty(E * M, device=device, dtype=torch.float32)
     s_t = torch.empty(E * (M + 1), device=device, dtype=torch.float32)
     count_r_t = torch.empty(E, device=device, dtype=torch.int32)
+    count_out_t = torch.empty(E, device=device, dtype=torch.int32)
     out_t = torch.empty(E * num, 2, device=device, dtype=torch.float32)
 
     wp_real = wp.from_torch(real_t, dtype=wp.vec2f)
     wp_seg = wp.from_torch(seg_t, dtype=wp.float32)
     wp_s = wp.from_torch(s_t, dtype=wp.float32)
     wp_count_r = wp.from_torch(count_r_t, dtype=wp.int32)
+    wp_count_out = wp.from_torch(count_out_t, dtype=wp.int32)
     wp_out = wp.from_torch(out_t, dtype=wp.vec2f)
 
-    wp.launch(_arc_scan_k, dim=E, inputs=[df, M, wp_real, wp_seg, wp_s, wp_count_r], device=dev)
+    wp.launch(_arc_scan_k, dim=E,
+              inputs=[df, M, num, wp_real, wp_seg, wp_s, wp_count_r, wp_count_out], device=dev)
     wp.launch(_arc_lookup_k, dim=E * num,
               inputs=[wp_real, wp_seg, wp_s, wp_count_r, M, num, wp_out], device=dev)
     _sync(points.device)
 
-    # Public count matches the oracle: R >= 2 -> num, R < 2 -> 0.
-    count = torch.where(count_r_t >= 2, num, 0).long()
-    return out_t.view(E, num, 2), count
+    # Public count written in-kernel (R >= 2 -> num, R < 2 -> 0); .long() is an I/O dtype view.
+    return out_t.view(E, num, 2), count_out_t.long()
 
 
 def turning_number(center: torch.Tensor) -> torch.Tensor:
@@ -1261,23 +1314,25 @@ def gates(corners: torch.Tensor, dense: torch.Tensor, count: torch.Tensor,
     """Per-env accept mask, a drop-in for the gate conjunction in generate().
 
     Reproduces ``ok = angle_ok & turn_ok & finite_ok & simple_ok`` from
-    BezierCenterlineGenerator.generate, with the heavy geometry running through the
-    verified Warp wrappers and only light torch glue at the boundary:
+    BezierCenterlineGenerator.generate entirely in Warp kernels (the wrapper does ZERO
+    torch compute -- only wp.from_torch I/O + dtype views + launches):
 
-      1. ANGLE: prune corners (rows >= count -> NaN, matching _prune_corners), then a
-         new Warp kernel (_corner_angles_gate_k, one thread per env) checks that every
-         CONSTRAINED corner (it and both circular neighbours real) has interior angle >
-         min_angle. Unconstrained (NaN-neighboured) corners are skipped, matching the
-         oracle's nan_to_num(angle, 0) | ~constrained.
-      2. TURN + FINITE: arc_length_resample_warp(dense, num_points_per_segment) ->
-         turning_number; turn_ok = (|turn| - 2*pi).abs() <= turning_tol;
-         finite_ok = (count_turn >= 2) & isfinite(turn).
-      3. SIMPLE: arc_length_resample_warp(dense, num_points) -> self_intersections == 0.
+      1. ANGLE: _corner_angles_gate_k (one thread per env) takes the RAW corners + count
+         and folds in the _prune_corners NaN step (corner i real iff i < count[e] AND
+         both components finite), then checks that every CONSTRAINED corner (it and both
+         circular neighbours real) has interior angle > min_angle. Unconstrained corners
+         are skipped, matching the oracle's nan_to_num(angle, 0) | ~constrained.
+      2. TURN + FINITE inputs: arc_length_resample_warp(dense, num_points_per_segment) ->
+         turning_number (turn) plus the resample count (cnt_turn).
+      3. SIMPLE input: arc_length_resample_warp(dense, num_points) -> self_intersections
+         (cross).
+      4. COMBINE: _gates_combine_k (one thread per env) computes turn_ok / finite_ok /
+         simple_ok from turn/cnt_turn/cross and ANDs them with angle_ok into the result.
 
     The TURN resample is to num_points_per_segment (30) and the SIMPLE resample is to
     num_points (256) -- different sizes, exactly as the oracle. Equals the oracle's accept
     mask (torch.equal) for cases built clear of the thresholds; the ~5e-4 resample drift is
-    geometrically negligible. Pure Warp + torch glue (cpu+cuda); no oracle-module imports.
+    geometrically negligible. Pure Warp (cpu+cuda); no oracle-module imports.
 
     Args:
         corners: [E, P, 2] float32 RAW ccw-sorted corners (pre-prune; P == count's domain).
@@ -1294,30 +1349,37 @@ def gates(corners: torch.Tensor, dense: torch.Tensor, count: torch.Tensor,
     dev = str(corners.device)
     device = corners.device
 
-    # --- ANGLE gate (Warp kernel over the pruned corners) ---
-    row = torch.arange(P, device=device)
-    keep = (row < count.to(device)[:, None]).unsqueeze(-1)            # [E, P, 1]
-    pruned = torch.where(keep, corners, torch.full_like(corners, float("nan")))
-
-    cf = wp.from_torch(pruned.reshape(E * P, 2).contiguous(), dtype=wp.vec2f)
-    ok_t = torch.empty(E, device=device, dtype=torch.int32)
+    # --- ANGLE gate (Warp kernel over RAW corners + count; prune folded in-kernel) ---
+    cf = wp.from_torch(corners.reshape(E * P, 2).contiguous(), dtype=wp.vec2f)
+    cnt = wp.from_torch(count.to(torch.int32).contiguous(), dtype=wp.int32)
+    angle_ok_t = torch.empty(E, device=device, dtype=torch.int32)
     wp.launch(_corner_angles_gate_k, dim=E,
-              inputs=[cf, P, float(config.min_angle), wp.from_torch(ok_t, dtype=wp.int32)],
+              inputs=[cf, cnt, P, float(config.min_angle),
+                      wp.from_torch(angle_ok_t, dtype=wp.int32)],
               device=dev)
-    _sync(device)
-    angle_ok = ok_t.bool()
 
-    # --- TURN + FINITE gates (resample to num_points_per_segment, then turning number) ---
+    # --- TURN + FINITE inputs (resample to num_points_per_segment, then turning number) ---
     rs_turn, cnt_turn = arc_length_resample_warp(dense, int(config.num_points_per_segment))
     turn = turning_number(rs_turn)
-    turn_ok = (turn.abs() - 2.0 * math.pi).abs() <= float(config.turning_tol)
-    finite_ok = (cnt_turn >= 2) & torch.isfinite(turn)
 
-    # --- SIMPLE gate (resample to num_points, then count self-crossings) ---
+    # --- SIMPLE input (resample to num_points, then count self-crossings) ---
     rs_simple, _ = arc_length_resample_warp(dense, int(config.num_points))
-    simple_ok = self_intersections(rs_simple) == 0
+    cross = self_intersections(rs_simple)
 
-    return angle_ok & turn_ok & finite_ok & simple_ok
+    # --- combine all gates in one kernel (no torch where/&/comparisons) ---
+    out_t = torch.empty(E, device=device, dtype=torch.int32)
+    wp.launch(
+        _gates_combine_k, dim=E,
+        inputs=[wp.from_torch(angle_ok_t, dtype=wp.int32),
+                wp.from_torch(turn.contiguous(), dtype=wp.float32),
+                wp.from_torch(cnt_turn.to(torch.int32).contiguous(), dtype=wp.int32),
+                wp.from_torch(cross.to(torch.int32).contiguous(), dtype=wp.int32),
+                float(config.turning_tol),
+                wp.from_torch(out_t, dtype=wp.int32)],
+        device=dev,
+    )
+    _sync(device)
+    return out_t.bool()
 
 
 def validity(center: torch.Tensor, w: torch.Tensor, count: torch.Tensor,
