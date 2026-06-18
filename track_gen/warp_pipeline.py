@@ -1105,9 +1105,9 @@ def generate_centerline_warp(seeds: torch.Tensor, config):
     wp.launch(_fill_i32_k, dim=E, inputs=[valid_w, 0], device=dev)
 
     for k in range(int(config.max_regen_iters)):
-        corners = ccw_sort(corner_sample(seeds, k, config))   # [E, P, 2]
-        count = corner_count_sample(seeds, k, config)         # [E]
-        dense = assemble(corners, count, config)              # [E, M, 2] (NaN-pruned)
+        count = corner_count_sample(seeds, k, config)              # [E]
+        corners = ccw_sort(corner_sample(seeds, k, config), count) # [E, P, 2] prune-then-sort
+        dense = assemble(corners, count, config)                   # [E, M, 2] (NaN-pruned)
         accept = gates(corners, dense, count, config)         # [E] bool
         rs, _ = arc_length_resample_warp(dense, N)            # [E, N, 2] (the gated centerline)
         accept_w = wp.from_torch(accept.to(torch.int32).contiguous(), dtype=wp.int32)
