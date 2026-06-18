@@ -58,23 +58,31 @@ if _HAVE_WARP:
 
     @wp.kernel
     def _disp_kernel(center: wp.array(dtype=wp.vec2f), band: wp.array(dtype=wp.int32),
-                     L0: wp.array(dtype=wp.float32), N: int, target: wp.float32, R_min: wp.float32,
+                     L0: wp.array(dtype=wp.float32), target: wp.float32, R_min: wp.float32,
                      sr: wp.float32, pr: wp.float32, br: wp.float32,
+                     n_max: int, count: wp.array(dtype=wp.int32),
                      out: wp.array(dtype=wp.vec2f)):
         # Full fused XPBD sweep per bead: separation + spacing + bending, Jacobi (reads
         # only `center`, writes only out[t]) so the companion _apply_kernel can update
         # positions race-free. Matches the torch _separation_disp/_spacing_disp/_bending_disp.
+        # count[e] is the number of real (non-padding) beads in env e; n_max is the buffer
+        # stride. Padding beads (i >= count[e]) receive disp=0 so NaN positions stay NaN.
         t = wp.tid()
-        e = t // N
-        i = t % N
-        b = e * N
+        e = t // n_max
+        i = t % n_max
+        b = e * n_max
+        # --- guard: padding bead → zero displacement (NaN center stays NaN after apply) ---
+        if i >= count[e]:
+            out[t] = wp.vec2f(0.0, 0.0)
+            return
         xi = center[t]
+        ne = count[e]           # number of real beads in this env
         # --- separation ---
         sep = wp.vec2f(0.0, 0.0)
         cnt = int(0)
-        for j in range(N):
+        for j in range(ne):
             dd = wp.abs(i - j)
-            circ = wp.min(dd, N - dd)
+            circ = wp.min(dd, ne - dd)
             if circ > band[e]:
                 diff = xi - center[b + j]
                 dist = wp.max(wp.length(diff), 1.0e-9)
@@ -85,8 +93,8 @@ if _HAVE_WARP:
         if cnt > 0:
             sep = sep / wp.float32(cnt)
         # --- spacing (edges i and i-1 toward rest length L0[e]) ---
-        xn = center[b + ((i + 1) % N)]
-        xp = center[b + ((i + N - 1) % N)]
+        xn = center[b + ((i + 1) % ne)]
+        xp = center[b + ((i + ne - 1) % ne)]
         dn = xn - xi
         ln = wp.max(wp.length(dn), 1.0e-9)
         dp = xi - xp
@@ -154,24 +162,32 @@ def separation_disp(center: torch.Tensor, band: torch.Tensor, target: float) -> 
     return out_t.view(E, N, 2)
 
 
-def xpbd_solve(center0: torch.Tensor, band: torch.Tensor, L0: torch.Tensor, config) -> torch.Tensor:
+def xpbd_solve(center0: torch.Tensor, band: torch.Tensor, L0: torch.Tensor, config,
+               count: torch.Tensor | None = None) -> torch.Tensor:
     """Full fixed-iteration XPBD solve in fused Warp kernels (separation + spacing +
     bending per sweep, double-buffered). Pure Warp loop — no torch ops, no per-iter
     sync, O(E*N) memory (no chunking). Numerically matches the torch _relax_xpbd sweep.
 
     Args:
-        center0: [E, N, 2] float32 CUDA centerline.
+        center0: [E, N, 2] float32 centerline (may be NaN-padded when count is given).
         band:    [E] integer excluded-neighbour index half-window.
-        L0:      [E] per-track rest segment length (perimeter/N).
+        L0:      [E] per-track rest segment length (perimeter/count[e]).
         config:  TrackGenConfig (half_width, relax_margin, relax_iters, relax_*_relax).
+        count:   Optional [E] int32 tensor of real bead counts per track. When None,
+                 defaults to torch.full((E,), N) — parity path, bit-identical to the
+                 fixed-N behaviour (the existing tests in test_warp_relax.py verify this).
     Returns:
-        [E, N, 2] relaxed centerline (NOT resampled; caller resamples).
+        [E, N, 2] relaxed centerline; padding slots (i >= count[e]) remain NaN.
     """
     global _INITED
     if not _INITED:
         wp.init()
         _INITED = True
     E, N, _ = center0.shape
+    # Parity path: count=None → every env has exactly N real beads (fixed-N mode).
+    n_max = N
+    if count is None:
+        count = torch.full((E,), N, dtype=torch.int32, device=center0.device)
     hw = float(config.half_width)
     margin = float(config.relax_margin)
     target = 2.0 * hw * (1.0 + margin)
@@ -181,16 +197,17 @@ def xpbd_solve(center0: torch.Tensor, band: torch.Tensor, L0: torch.Tensor, conf
     br = float(config.relax_bend_relax)
     dev = str(center0.device)
 
-    cb = center0.reshape(E * N, 2).contiguous().clone()   # working buffer, updated in place
+    cb = center0.reshape(E * n_max, 2).contiguous().clone()   # working buffer, updated in place
     db = torch.empty_like(cb)
     cw = wp.from_torch(cb, dtype=wp.vec2f)
     dw = wp.from_torch(db, dtype=wp.vec2f)
     bw = wp.from_torch(band.to(torch.int32).contiguous(), dtype=wp.int32)
     lw = wp.from_torch(L0.to(torch.float32).contiguous(), dtype=wp.float32)
+    cntw = wp.from_torch(count.to(torch.int32).contiguous(), dtype=wp.int32)
     for _ in range(int(config.relax_iters)):
-        wp.launch(_disp_kernel, dim=E * N,
-                  inputs=[cw, bw, lw, N, target, R_min, sr, pr, br, dw], device=dev)
-        wp.launch(_apply_kernel, dim=E * N, inputs=[cw, dw], device=dev)
+        wp.launch(_disp_kernel, dim=E * n_max,
+                  inputs=[cw, bw, lw, target, R_min, sr, pr, br, n_max, cntw, dw], device=dev)
+        wp.launch(_apply_kernel, dim=E * n_max, inputs=[cw, dw], device=dev)
     # Host-blocking sync is ILLEGAL during CUDA graph capture; warp_pipeline sets _CAPTURING
     # while it captures the whole pipeline (this solve included) into one graph, where stream
     # ordering already serializes the launches. Skip the sync there; keep it on the eager path
@@ -198,4 +215,4 @@ def xpbd_solve(center0: torch.Tensor, band: torch.Tensor, L0: torch.Tensor, conf
     from . import warp_pipeline  # local import avoids an import cycle at module load
     if not warp_pipeline._CAPTURING:
         wp.synchronize()
-    return cb.view(E, N, 2)
+    return cb.view(E, n_max, 2)

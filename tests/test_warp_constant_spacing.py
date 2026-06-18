@@ -200,3 +200,25 @@ def test_arclength_count_aware(dev):
     diffs = a2[0, 1:50] - a2[0, :49]
     assert (diffs > 0).all()                 # strictly increasing over real points
     assert torch.isnan(a2[0, 50:]).all()     # NaN padding tail
+
+
+@pytest.mark.parametrize("dev", DEVS)
+def test_xpbd_count_aware(dev):
+    src = torch.stack([_circle(96, 1.0, dev), _circle(96, 1.4, dev)], 0)
+    band = torch.tensor([3, 2], dtype=torch.int32, device=dev)
+    L0 = geometry.perimeter(src) / 96
+    cfg = TrackGenConfig(num_envs=2, num_points=96, half_width=0.05, relax_iters=40, device=dev)
+    base = warp_relax.xpbd_solve(src, band, L0, cfg)
+    buf, cnt = _pad(src, 96)
+    out = warp_relax.xpbd_solve(buf, band, L0, cfg, count=cnt)
+    assert torch.allclose(out[:, :96], base, atol=1e-5)        # parity: count==N matches fixed
+    # variable: env0 = 60-pt circle padded to 96; real points relax & stay finite, padding stays NaN
+    buf2 = torch.full((2, 96, 2), float("nan"), device=dev, dtype=torch.float32)
+    buf2[0, :60] = _circle(60, 1.0, dev); buf2[1, :96] = _circle(96, 1.4, dev)
+    cnt2 = torch.tensor([60, 96], dtype=torch.int32, device=dev)
+    L02 = torch.tensor([float(geometry.perimeter(buf2[0:1, :60])[0]) / 60,
+                        float(geometry.perimeter(buf2[1:2])[0]) / 96], device=dev)
+    out2 = warp_relax.xpbd_solve(buf2, band, L02, cfg, count=cnt2)
+    assert torch.isfinite(out2[0, :60]).all()                  # real points finite (not NaN-poisoned)
+    assert torch.isnan(out2[0, 60:]).all()                     # padding stays NaN
+    assert torch.isfinite(out2[1]).all()
