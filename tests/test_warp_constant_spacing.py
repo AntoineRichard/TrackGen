@@ -181,3 +181,22 @@ def test_offset_count_aware(dev):
     # Padding points (50..79) of env0: must be NaN
     assert torch.isnan(outer2[0, 50:]).all(), "env0 padding outer should be NaN"
     assert torch.isnan(inner2[0, 50:]).all(), "env0 padding inner should be NaN"
+
+
+@pytest.mark.parametrize("dev", DEVS)
+def test_arclength_count_aware(dev):
+    src = torch.stack([_circle(80, 1.0, dev), _circle(80, 2.0, dev)], 0)
+    a0, L0 = wpl._arclength(src)
+    buf, cnt = _pad(src, 80)
+    a, L = wpl._arclength(buf, count=cnt)
+    assert torch.allclose(a[:, :80], a0, atol=1e-4)
+    assert torch.allclose(L, L0, atol=1e-4)
+    # variable: env0 = 50-pt unit circle padded to 80; length ~ 2*pi, arclen monotonic over real, NaN tail
+    buf2 = torch.full((2, 80, 2), float("nan"), device=dev, dtype=torch.float32)
+    buf2[0, :50] = _circle(50, 1.0, dev); buf2[1, :80] = _circle(80, 2.0, dev)
+    cnt2 = torch.tensor([50, 80], dtype=torch.int32, device=dev)
+    a2, L2 = wpl._arclength(buf2, count=cnt2)
+    assert torch.allclose(L2[0], torch.tensor(2 * math.pi, device=dev), atol=1e-2)
+    diffs = a2[0, 1:50] - a2[0, :49]
+    assert (diffs > 0).all()                 # strictly increasing over real points
+    assert torch.isnan(a2[0, 50:]).all()     # NaN padding tail

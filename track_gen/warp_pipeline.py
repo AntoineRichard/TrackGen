@@ -648,24 +648,32 @@ if _HAVE_WARP:
     @wp.kernel
     def _arclength_k(
         c: wp.array(dtype=wp.vec2f),
-        N: int,
+        n_max: int,
+        count: wp.array(dtype=wp.int32),
         arclen: wp.array(dtype=wp.float32),
         length: wp.array(dtype=wp.float32),
     ):
-        # One thread per env e. FIXED-mode arc length (count == N, all real):
-        # seg_len[i] = |c[(i+1)%N] - c[i]| (i=N-1 is the wrap segment),
-        # arclen[i] = sum_{j<i} seg_len[j] (arclen[0]=0; wrap NOT in any arclen entry),
-        # length    = sum_i seg_len[i] (full closed perimeter, wrap INCLUDED).
-        # Running sum is accumulated in float64 to limit drift vs the torch oracle's
-        # cumsum (residual ~1e-3 over N segments is float32 sqrt rounding).
+        # One thread per env e. Count-aware arc length:
+        # Only count[e] real points are used; padding slots i in [count[e], n_max) get NaN.
+        # seg_len[i] = |c[b+(i+1)%count[e]] - c[b+i]| for i in [0, count[e]):
+        #   i=count[e]-1 is the closing wrap segment (last real pt -> first pt).
+        # arclen[b+i] = cumulative length BEFORE segment i (arclen[b+0]=0).
+        # length[e] = full closed perimeter (all count[e] segments including wrap).
+        # Running sum in float64 to limit drift vs the torch oracle's cumsum.
+        # PARITY: when count[e]==n_max for all e, bit-identical to the former fixed-N path.
         e = wp.tid()
-        b = e * N
+        cn = count[e]
+        b = e * n_max
         acc = wp.float64(0.0)
-        for i in range(N):
+        for i in range(cn):
             arclen[b + i] = wp.float32(acc)            # arc length BEFORE segment i
-            d = c[b + (i + 1) % N] - c[b + i]
-            acc = acc + wp.float64(wp.length(d))       # add segment i (i=N-1 is the wrap)
+            d = c[b + (i + 1) % cn] - c[b + i]
+            acc = acc + wp.float64(wp.length(d))       # add segment i (i=cn-1 is the wrap)
         length[e] = wp.float32(acc)
+        # NaN-pad slots beyond the real count
+        for i in range(n_max):
+            if i >= cn:
+                arclen[b + i] = wp.nan
 
     @wp.kernel
     def _corner_sample_k(
@@ -1731,30 +1739,38 @@ def validity(center: torch.Tensor, w: torch.Tensor, count: torch.Tensor,
     return out_t.bool()
 
 
-def _arclength(center: torch.Tensor):
+def _arclength(center: torch.Tensor, count: torch.Tensor | None = None):
     """Cumulative arc length [E, N] (0 at index 0) and closed-loop total length [E].
 
-    FIXED-mode only (all points real, the wrap segment closes the loop). Reproduces
-    inflation._arclength under that assumption via a single Warp kernel: one thread per
-    env, float64-accumulated running sum. arclen[i] is the length before segment i; the
-    total length includes the wrap segment (last point -> point 0). Pure Warp (cpu+cuda);
-    allclose to the torch oracle to atol~1e-3 (float32-cumsum vs float64 drift over N segs).
+    Reproduces inflation._arclength via a single Warp kernel: one thread per env,
+    float64-accumulated running sum. arclen[b+i] is the length before segment i; the
+    total length includes the closing wrap segment (last real pt -> pt 0). Pure Warp
+    (cpu+cuda); allclose to the torch oracle to atol~1e-3 (float32-cumsum drift).
 
     Args:
-        center: [E, N, 2] float32 closed-loop points (finite; no NaN assumed).
+        center: [E, N, 2] float32 closed-loop points.
+        count:  optional int32 [E] per-env real-point count. When None, all N points per
+                env are real (fixed mode — bit-identical to the pre-count-aware behaviour).
+                Padding slots i in [count[e], N) receive NaN in the output arclen.
 
     Returns:
-        arclen: [E, N] float32 cumulative arc length, length: [E] float32 perimeter.
+        arclen: [E, N] float32 cumulative arc length (NaN in padding slots when count given).
+        length: [E] float32 closed-loop perimeter.
     """
     _init()
     E, N, _ = center.shape
+    n_max = N
     dev = str(center.device)
+    if count is None:
+        count = torch.full((E,), n_max, dtype=torch.int32, device=center.device)
 
-    cf = wp.from_torch(center.reshape(E * N, 2).contiguous(), dtype=wp.vec2f)
-    arclen_t = torch.empty(E * N, device=center.device, dtype=torch.float32)
+    cf = wp.from_torch(center.reshape(E * n_max, 2).contiguous(), dtype=wp.vec2f)
+    count_i32 = count.to(torch.int32).contiguous()
+    arclen_t = torch.empty(E * n_max, device=center.device, dtype=torch.float32)
     length_t = torch.empty(E, device=center.device, dtype=torch.float32)
     wp.launch(_arclength_k, dim=E,
-              inputs=[cf, N, wp.from_torch(arclen_t, dtype=wp.float32),
+              inputs=[cf, n_max, wp.from_torch(count_i32, dtype=wp.int32),
+                      wp.from_torch(arclen_t, dtype=wp.float32),
                       wp.from_torch(length_t, dtype=wp.float32)],
               device=dev)
     _sync(center.device)
