@@ -21,18 +21,16 @@ in [NVIDIA Warp](https://github.com/NVIDIA/warp) kernels.
 
 ```
 seeds[E]
-  │  GENERATION  (static regen: a fixed K = max_regen_iters attempts, accept-first-valid)
-  │    corner_sample ─► ccw_sort ─► assemble (Bézier) ─► gates (angle/turn/finite/simple)
+  │  GENERATION  (static regen: a fixed K = max_regen_iters attempts, accept-first-valid;
+  │    corner_sample ─► ccw_sort ─► assemble (Bézier) ─► gates ─► arc-length resample [FUSED])
   ▼
-centerline[E, N, 2]              (= the gated 256-point arc-length resample; NaN rows for
+centerline[E, N, 2]              (= the gated arc-length resample to num_points; NaN rows for
   │                                 envs that never passed) + valid[E]
-  │  RESAMPLE   (re-uniformize before relax)
-  ▼
-center[E, N, 2]
   │  RELAX      (fused XPBD: separation + spacing + bending, fixed iters, double-buffered)
   ▼
 relaxed[E, N, 2]
-  │  INFLATE    frame+curvature ─► constant-width offset ─► validity ─► arclength
+  │  INFLATE    resample_uniform (re-uniformize) ─► frame+curvature ─► constant-width offset
+  │             ─► validity ─► arclength
   ▼
 Track(outer, center, inner, tangent, normal, arclen, length, valid, count)
 ```
@@ -92,10 +90,13 @@ Two arc-length resamplers:
   `num` arc-uniform targets (searchsorted + lerp). Envs with `< 2` real points yield an
   all-NaN row and `count 0`. Used by `gates` (dense→256 and dense→30) and, fused into the
   generator output, as the dense→`num_points` resample.
-- **`resample_uniform(center[E,N,2], n)`** — the simpler `N→N` re-uniformizer
+- **`resample_uniform(center[E,N,2], n, count=None)`** — the count-aware `N→N` re-uniformizer
   (`_resample_scan_k` + `_resample_lookup_k`), used after relax (and inside `inflate_warp`).
+  With `count=None` all `E*N` points are real; with `count` it re-uniformizes each env's
+  `count[e]` real points (NaN-padded past `count[e]`).
 - **`resample_constant_spacing(center[E,N,2], spacing, N_max)`** — the count-aware
-  resampler: from a fixed source it picks a per-track `count = round(perimeter/spacing)`,
+  resampler: from a fixed source it picks a per-track `count = floor(perimeter/spacing)+1`
+  (decremented while `(count-1)·spacing ≥ perimeter`, capped at `N_max`),
   lays the arc-uniform points into an `[E, N_max, 2]` buffer NaN-padded past `count[e]`,
   and matches the `geometry.arc_length_resample(spacing=)` oracle. Selected by
   `output_mode="constant_spacing"`.
@@ -109,10 +110,11 @@ than `D·(1+margin)`), an **edge-spacing** correction toward rest length `L0`, a
 flip-clamped **bending** push when the local radius is below `R_min`. It runs on cpu and
 cuda (it syncs with `wp.synchronize`, not `torch.cuda`), and reshapes the centerline so a
 constant-width inflation becomes valid (thickness ≥ half_width). `generate_tracks_warp`
-derives `band` and `L0` from `mean_seg_len` via `_band_l0_k`. In `constant_spacing` mode
-the sweep is count-aware — it operates over each env's `count[e]` real points.
+derives `band` and `L0` from `mean_seg_len` via `_band_l0_k`. The sweep is count-aware in
+both modes — it operates over each env's `count[e]` real points (fixed mode is just
+`count[e] == N`).
 
-### Inflate — `inflate_warp(center, config, valid)`
+### Inflate — `inflate_warp(center, config, valid=None, count=None)`
 
 Composes: `resample_uniform` → `frame_curvature` (`_frame_k`: central-difference unit
 tangent, left-normal, Menger curvature) → constant half-width → `offset`
@@ -121,8 +123,8 @@ candidate) → `validity` (`_validity_k`) → an arc-length kernel (`_arclength_
 
 `_validity_k` is a single per-env kernel that combines: the generation flag, closed-loop
 turning ≈ 2π, a width floor, no-NaN, thickness ≥ `(1−relax_tol)·half_width`, and zero
-border self-intersections. In `constant_spacing` mode the offset, validity, and arclength
-stages are count-aware — they operate over each env's `count[e]` real points.
+border self-intersections. The offset, validity, and arclength stages are count-aware in
+both modes — they operate over each env's `count[e]` real points (fixed mode is `count[e] == N`).
 
 ## Output modes / constant spacing
 
@@ -130,9 +132,11 @@ stages are count-aware — they operate over each env's `count[e]` real points.
 fixed 256 **over-resolves** the centerline relative to its half-width, so the slow Jacobi
 XPBD solve **under-converges** under the fixed iteration count → jagged tracks whose 1 m
 road self-overlaps. `output_mode="constant_spacing"` (`spacing`, `N_max`) instead relaxes
-each track at a constant arc spacing of ~`0.6·half_width` (per-track `count[e] =
-round(perimeter/spacing)`, NaN-padded to `N_max`); at that resolution the same solve
-converges → smooth, valid tracks.
+each track at a constant arc spacing (per-track `count[e] = floor(perimeter/spacing)+1`,
+decremented while `(count-1)·spacing ≥ perimeter`, capped at `N_max`, NaN-padded); at a
+width-appropriate spacing the same solve converges → smooth, valid tracks. The library
+default is `spacing=0.1` (equal to the default `half_width`); a good rule of thumb is
+`spacing ≈ 0.6·half_width` — the value the parameter explorer defaults to.
 
 ## Parameter explorer
 
@@ -142,8 +146,8 @@ for the regime / shape / resolution / relaxation knobs drive the real `generate_
 rendering a paged grid of tracks plus the valid-yield and quality stats over a full batch
 (so the yield numbers are statistically meaningful). It builds on the same pure core
 (`build_config` → `generate_tracks_warp` → `draw_track`) and defaults to `constant_spacing`.
-Launch with `python -m viz.param_explorer` (needs the optional `ui` extra); the README has
-the control walkthrough. Note: the explorer's default is `constant_spacing`, whereas the
+Launch with `.venv/bin/python -m viz.param_explorer` (needs the optional `ui` extra); the
+README has the control walkthrough. Note: the explorer's default is `constant_spacing`, whereas the
 library `TrackGenConfig` default remains `fixed` (the stable, parity-tested baseline).
 
 ## Torch as the test oracle
