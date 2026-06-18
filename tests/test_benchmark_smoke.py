@@ -12,3 +12,14 @@ def test_benchmark_runs_small_cpu():
     for r in rows:
         assert 0.0 <= r["valid_frac"] <= 1.0
         assert r["seconds"] >= 0.0
+
+
+def test_pipeline_benchmark_runs_small_cpu():
+    pytest.importorskip("warp")
+    from benchmarks.benchmark_pipeline import run_pipeline_benchmark
+    rows = run_pipeline_benchmark(E=8, N=128, half_width=0.03, device="cpu",
+                                  relax_iters=30, max_regen_iters=4, reps=1)
+    assert any(r["mode"] == "eager" for r in rows)
+    for r in rows:
+        assert 0.0 <= r["valid_frac"] <= 1.0
+        assert r["seconds"] >= 0.0
