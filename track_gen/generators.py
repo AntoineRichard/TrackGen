@@ -13,7 +13,7 @@ import numpy as np
 import torch
 from scipy.special import binom
 
-from .geometry import arc_length_resample, ccw_sort, ccw_sort_count, safe_normalize, self_intersections, turning_number, vertex_tangents
+from .geometry import arc_length_resample, ccw_sort_count, safe_normalize, self_intersections, turning_number, vertex_tangents
 
 
 @dataclass
