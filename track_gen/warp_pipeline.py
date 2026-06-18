@@ -389,6 +389,9 @@ if _HAVE_WARP:
             acc = acc + wp.float64(l)
             s[es + i + 1] = wp.float32(acc)
         total = wp.float32(acc)
+        if total <= 0.0:
+            count[e] = 0
+            return
         k = int(wp.floor(total / spacing)) + 1
         while k > 1 and wp.float32(k - 1) * spacing >= total:
             k = k - 1
@@ -406,12 +409,12 @@ if _HAVE_WARP:
             out[t] = wp.vec2f(wp.nan, wp.nan)
             return
         eb = e * N
-        esi = e * (N + 1)
+        es = e * (N + 1)
         target = wp.float32(k) * spacing
         idx = int(0)
-        while idx < N - 1 and s[esi + idx + 1] < target:
+        while idx < N - 1 and s[es + idx + 1] < target:
             idx = idx + 1
-        s0 = s[esi + idx]
+        s0 = s[es + idx]
         segl = wp.max(seg[eb + idx], float(1.0e-12))
         frac = wp.clamp((target - s0) / segl, float(0.0), float(1.0))
         p0 = c[eb + idx]

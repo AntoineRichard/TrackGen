@@ -30,8 +30,8 @@ def _pad(center, n_max):
     return buf, count
 
 
-def test_constant_spacing_resample_matches_torch_oracle():
-    dev = "cpu"
+@pytest.mark.parametrize("dev", DEVS)
+def test_constant_spacing_resample_matches_torch_oracle(dev):
     E, N = 3, 300
     src = torch.stack([_circle(N, r, dev) for r in (1.0, 2.5, 4.0)], 0)  # [3,N,2]
     spacing, n_max = 0.5, 128
