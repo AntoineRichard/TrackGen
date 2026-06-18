@@ -226,20 +226,22 @@ if _HAVE_WARP:
     def _sep_min_k(
         pts: wp.array(dtype=wp.vec2f),
         band: wp.array(dtype=wp.int32),
-        N: int,
+        n_max: int,
+        count: wp.array(dtype=wp.int32),
         out: wp.array(dtype=wp.float32),
     ):
         # One thread per env e. Min distance over pairs with circ_dist > band[e].
         e = wp.tid()
         b = band[e]
+        cn = count[e]
         sep_min = float(1.0e30)
-        for i in range(N):
-            for j in range(i + 1, N):
+        for i in range(cn):
+            for j in range(i + 1, cn):
                 diff = j - i
-                circ_dist = wp.min(diff, N - diff)
+                circ_dist = wp.min(diff, cn - diff)
                 if circ_dist > b:
-                    pi = pts[e * N + i]
-                    pj = pts[e * N + j]
+                    pi = pts[e * n_max + i]
+                    pj = pts[e * n_max + j]
                     d = wp.length(pi - pj)
                     sep_min = wp.min(sep_min, d)
         out[e] = sep_min
@@ -247,16 +249,18 @@ if _HAVE_WARP:
     @wp.kernel
     def _curvrad_min_k(
         pts: wp.array(dtype=wp.vec2f),
-        N: int,
+        n_max: int,
+        count: wp.array(dtype=wp.int32),
         out: wp.array(dtype=wp.float32),
     ):
         # One thread per env e. 1 / max Menger curvature.
         e = wp.tid()
+        cn = count[e]
         kappa_max = float(0.0)
-        for i in range(N):
-            xp = pts[e * N + (i + N - 1) % N]
-            xc = pts[e * N + i]
-            xn = pts[e * N + (i + 1) % N]
+        for i in range(cn):
+            xp = pts[e * n_max + (i + cn - 1) % cn]
+            xc = pts[e * n_max + i]
+            xn = pts[e * n_max + (i + 1) % cn]
             a = xc - xp
             bb = xn - xc
             cc = xn - xp
@@ -306,12 +310,13 @@ if _HAVE_WARP:
     def _thickness_k(
         pts: wp.array(dtype=wp.vec2f),
         band: wp.array(dtype=wp.int32),
-        N: int,
+        n_max: int,
+        count: wp.array(dtype=wp.int32),
         out: wp.array(dtype=wp.float32),
     ):
         # One thread per env e. Delegates to _thickness_func with this env's band.
         e = wp.tid()
-        out[e] = _thickness_func(pts, e * N, N, band[e])
+        out[e] = _thickness_func(pts, e * n_max, count[e], band[e])
 
     @wp.kernel
     def _resample_scan_k(
@@ -1281,24 +1286,33 @@ def self_intersections(poly: torch.Tensor) -> torch.Tensor:
     return out_t.long()
 
 
-def separation_min(points: torch.Tensor, band: torch.Tensor) -> torch.Tensor:
+def separation_min(points: torch.Tensor, band: torch.Tensor,
+                   count: torch.Tensor | None = None) -> torch.Tensor:
     """Min Euclidean distance over pairs with circ-index-dist > band. [E] float32.
 
     points [E, N, 2]; band [E] int. Returns +inf when no valid pair exists.
     Pure Warp (cpu+cuda). Matches geometry.separation_min to allclose(atol=1e-4).
+
+    count [E] int32 (optional): per-env real point count (1..N). When None, all
+    envs use N (fixed mode — identical to the pre-count-aware behaviour).
     """
     _init()
     E, N, _ = points.shape
     dev = str(points.device)
+    n_max = N
+    if count is None:
+        count = torch.full((E,), N, dtype=torch.int32, device=points.device)
 
-    flat = points.reshape(E * N, 2).contiguous()
+    flat = points.reshape(E * n_max, 2).contiguous()
     wp_pts = wp.from_torch(flat, dtype=wp.vec2f)
     band_i32 = band.to(torch.int32).contiguous()
     wp_band = wp.from_torch(band_i32, dtype=wp.int32)
+    count_i32 = count.to(torch.int32).contiguous()
+    wp_count = wp.from_torch(count_i32, dtype=wp.int32)
 
     out_t = torch.empty(E, device=points.device, dtype=torch.float32)
     wp.launch(_sep_min_k, dim=E,
-              inputs=[wp_pts, wp_band, N, wp.from_torch(out_t, dtype=wp.float32)],
+              inputs=[wp_pts, wp_band, n_max, wp_count, wp.from_torch(out_t, dtype=wp.float32)],
               device=dev)
     _sync(points.device)
     # Replace sentinel (no valid pair) with actual +inf to match torch oracle.
@@ -1306,44 +1320,62 @@ def separation_min(points: torch.Tensor, band: torch.Tensor) -> torch.Tensor:
     return out_t
 
 
-def curvature_radius_min(points: torch.Tensor) -> torch.Tensor:
+def curvature_radius_min(points: torch.Tensor,
+                         count: torch.Tensor | None = None) -> torch.Tensor:
     """1 / max Menger curvature over the loop. points [E, N, 2] -> [E] float32.
 
     Pure Warp (cpu+cuda). Matches geometry.curvature_radius_min to allclose(atol=1e-4).
+
+    count [E] int32 (optional): per-env real point count (1..N). When None, all
+    envs use N (fixed mode — identical to the pre-count-aware behaviour).
     """
     _init()
     E, N, _ = points.shape
     dev = str(points.device)
+    n_max = N
+    if count is None:
+        count = torch.full((E,), N, dtype=torch.int32, device=points.device)
 
-    flat = points.reshape(E * N, 2).contiguous()
+    flat = points.reshape(E * n_max, 2).contiguous()
     wp_pts = wp.from_torch(flat, dtype=wp.vec2f)
+    count_i32 = count.to(torch.int32).contiguous()
+    wp_count = wp.from_torch(count_i32, dtype=wp.int32)
 
     out_t = torch.empty(E, device=points.device, dtype=torch.float32)
     wp.launch(_curvrad_min_k, dim=E,
-              inputs=[wp_pts, N, wp.from_torch(out_t, dtype=wp.float32)],
+              inputs=[wp_pts, n_max, wp_count, wp.from_torch(out_t, dtype=wp.float32)],
               device=dev)
     _sync(points.device)
     return out_t
 
 
-def thickness(points: torch.Tensor, band: torch.Tensor) -> torch.Tensor:
+def thickness(points: torch.Tensor, band: torch.Tensor,
+              count: torch.Tensor | None = None) -> torch.Tensor:
     """Discrete curve thickness = min(curvature_radius_min, 0.5*separation_min). [E] float32.
 
     points [E, N, 2] float32; band [E] int (per-env exclusion window).
     Matches geometry.thickness to allclose(atol=1e-4). Pure Warp (cpu+cuda).
+
+    count [E] int32 (optional): per-env real point count (1..N). When None, all
+    envs use N (fixed mode — identical to the pre-count-aware behaviour).
     """
     _init()
     E, N, _ = points.shape
     dev = str(points.device)
+    n_max = N
+    if count is None:
+        count = torch.full((E,), N, dtype=torch.int32, device=points.device)
 
-    flat = points.reshape(E * N, 2).contiguous()
+    flat = points.reshape(E * n_max, 2).contiguous()
     wp_pts = wp.from_torch(flat, dtype=wp.vec2f)
     band_i32 = band.to(torch.int32).contiguous()
     wp_band = wp.from_torch(band_i32, dtype=wp.int32)
+    count_i32 = count.to(torch.int32).contiguous()
+    wp_count = wp.from_torch(count_i32, dtype=wp.int32)
 
     out_t = torch.empty(E, device=points.device, dtype=torch.float32)
     wp.launch(_thickness_k, dim=E,
-              inputs=[wp_pts, wp_band, N, wp.from_torch(out_t, dtype=wp.float32)],
+              inputs=[wp_pts, wp_band, n_max, wp_count, wp.from_torch(out_t, dtype=wp.float32)],
               device=dev)
     _sync(points.device)
     return out_t

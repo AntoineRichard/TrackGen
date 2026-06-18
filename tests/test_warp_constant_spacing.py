@@ -61,3 +61,21 @@ def test_resample_uniform_count_aware(dev):
     r0 = torch.linalg.norm(out2[0, :40], dim=-1)
     assert torch.allclose(r0, torch.ones_like(r0), atol=2e-2)
     assert torch.isnan(out2[0, 40:]).all()
+
+
+@pytest.mark.parametrize("dev", DEVS)
+def test_thickness_count_aware(dev):
+    src = torch.stack([_circle(80, 1.0, dev), _circle(80, 2.0, dev)], 0)
+    band = torch.tensor([3, 3], dtype=torch.int32, device=dev)
+    base = wpl.thickness(src, band)
+    buf, cnt = _pad(src, 80)
+    out = wpl.thickness(buf, band, count=cnt)
+    assert torch.allclose(out, base, atol=1e-5)
+    # variable: env0 real=50 (radius-1 circle) padded to 80; thickness finite, not poisoned by NaN tail
+    buf2 = torch.full((2, 80, 2), float("nan"), device=dev, dtype=torch.float32)
+    buf2[0, :50] = _circle(50, 1.0, dev); buf2[1, :80] = _circle(80, 2.0, dev)
+    cnt2 = torch.tensor([50, 80], dtype=torch.int32, device=dev)
+    th = wpl.thickness(buf2, band, count=cnt2)
+    assert th[0] > 0.0 and torch.isfinite(th[0])
+    # the radius-1 50-pt circle thickness ~ min(curv_radius≈1, 0.5*sep) — sane, finite
+    assert torch.isfinite(th[1])
