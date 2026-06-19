@@ -1,8 +1,3 @@
-# Copyright (c) 2022-2025, The Isaac Lab Project Developers.
-# All rights reserved.
-#
-# SPDX-License-Identifier: BSD-3-Clause
-
 """Property-based tests for warp_pipeline.corner_sample (Warp built-in RNG).
 
 This is an ACCEPTED RNG REDESIGN: the pure-Warp corner sampler does NOT match the

@@ -1,9 +1,4 @@
 #!/usr/bin/env python3
-# Copyright (c) 2022-2025, The Isaac Lab Project Developers.
-# All rights reserved.
-#
-# SPDX-License-Identifier: BSD-3-Clause
-
 """Render high-resolution track grids for visual inspection.
 
 Generates a batch of tracks through the REAL public facade (the pure-Warp pipeline)

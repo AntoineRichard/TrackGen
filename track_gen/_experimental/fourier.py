@@ -1,8 +1,3 @@
-# Copyright (c) 2022-2025, The Isaac Lab Project Developers.
-# All rights reserved.
-#
-# SPDX-License-Identifier: BSD-3-Clause
-
 """Experimental truncated-Fourier centerline generator.
 
 NOT part of the supported Warp pipeline: it was never ported to Warp, and the

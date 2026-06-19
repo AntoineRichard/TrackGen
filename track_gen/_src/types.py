@@ -1,8 +1,3 @@
-# Copyright (c) 2022-2025, The Isaac Lab Project Developers.
-# All rights reserved.
-#
-# SPDX-License-Identifier: BSD-3-Clause
-
 """Dependency-free leaf dataclasses shared across the pipeline.
 
 This module imports NOTHING from the rest of the package (no generators, no

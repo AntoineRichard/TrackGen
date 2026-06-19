@@ -1,8 +1,4 @@
 #!/usr/bin/env python3
-# Copyright (c) 2022-2025, The Isaac Lab Project Developers.
-# All rights reserved.
-#
-# SPDX-License-Identifier: BSD-3-Clause
 """Interactive Gradio explorer for track-generation parameters.
 
 A thin Gradio shell over a pure core (`build_config` + `render_grid`) that drives the real

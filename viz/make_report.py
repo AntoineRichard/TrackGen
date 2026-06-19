@@ -1,9 +1,4 @@
 #!/usr/bin/env python3
-# Copyright (c) 2022-2025, The Isaac Lab Project Developers.
-# All rights reserved.
-#
-# SPDX-License-Identifier: BSD-3-Clause
-
 """Build a multi-page PDF report of the E=8192 yield study with illustrative plots.
 
 Pages: (1) overview + sweep table, (2) quantitative lever impact (yield vs chain-links /

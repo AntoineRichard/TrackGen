@@ -1,8 +1,3 @@
-# Copyright (c) 2022-2025, The Isaac Lab Project Developers.
-# All rights reserved.
-#
-# SPDX-License-Identifier: BSD-3-Clause
-
 """F1 (proper closed assemble) + F2 (adaptive handle clamp).
 
 F1: the assemble must close the loop with a REAL cubic Bezier over all `count` corners

@@ -1,8 +1,3 @@
-# Copyright (c) 2022-2025, The Isaac Lab Project Developers.
-# All rights reserved.
-#
-# SPDX-License-Identifier: BSD-3-Clause
-
 """Verify the pure-Warp ``assemble`` (vertex tangents + cubic Bezier) wrapper
 matches the torch oracle ``BezierCenterlineGenerator._assemble_centerline``.
 

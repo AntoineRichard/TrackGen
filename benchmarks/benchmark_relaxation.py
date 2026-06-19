@@ -1,5 +1,3 @@
-# Copyright (c) 2022-2025, The Isaac Lab Project Developers.
-# SPDX-License-Identifier: BSD-3-Clause
 """Benchmark the three relaxation backends on a large batch (default E=8192).
 
 Reports per backend: validity yield (thickness + zero border/centerline crossings),

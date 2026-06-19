@@ -1,8 +1,3 @@
-# Copyright (c) 2022-2025, The Isaac Lab Project Developers.
-# All rights reserved.
-#
-# SPDX-License-Identifier: BSD-3-Clause
-
 """CUDA-only: end-to-end CUDA graph capture of the pure-Warp track pipeline.
 
 ``generate_tracks_warp_graph`` captures the ENTIRE ``generate_tracks_warp`` pipeline

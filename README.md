@@ -193,7 +193,3 @@ regime / shape / resolution / relaxation knobs, a live track grid, and the valid
   batch *without* regenerating. Invalid tracks get a red title.
 - **Auto-update** (on) re-generates as you change a control; for heavy settings (large batch ×
   high `relax_iters`) untick it and use **Generate**. **Reroll** draws fresh seeds.
-
-## License
-
-BSD-3-Clause. Copyright (c) 2022-2025, The Isaac Lab Project Developers.

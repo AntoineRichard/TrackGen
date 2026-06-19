@@ -1,8 +1,3 @@
-# Copyright (c) 2022-2025, The Isaac Lab Project Developers.
-# All rights reserved.
-#
-# SPDX-License-Identifier: BSD-3-Clause
-
 """Inflation stage: turn a dense Centerline into a Track (outer/center/inner + metadata).
 
 Pure batched torch, device-agnostic, CPU-testable. Depends only on geometry.py and

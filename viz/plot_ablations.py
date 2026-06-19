@@ -1,9 +1,4 @@
 #!/usr/bin/env python3
-# Copyright (c) 2022-2025, The Isaac Lab Project Developers.
-# All rights reserved.
-#
-# SPDX-License-Identifier: BSD-3-Clause
-
 """Visual ablation harness for the GPU-batched race-track generator.
 
 Renders three 4x4 figures that let a human eyeball how generation settings drive

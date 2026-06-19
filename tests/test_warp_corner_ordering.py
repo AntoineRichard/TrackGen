@@ -1,5 +1,3 @@
-# Copyright (c) 2022-2025, The Isaac Lab Project Developers.
-# SPDX-License-Identifier: BSD-3-Clause
 """Behaviour: prune-then-sort eliminates winding-0 figure-eights at the fat-band regime.
 
 The old sort-then-prune ordering produced ~3.5% figure-eights (winding != +-1) on a single

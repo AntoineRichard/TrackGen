@@ -1,8 +1,3 @@
-# Copyright (c) 2022-2025, The Isaac Lab Project Developers.
-# All rights reserved.
-#
-# SPDX-License-Identifier: BSD-3-Clause
-
 """Centerline relaxation: reshape a closed, arc-length-uniform centerline so a
 constant-width inflation becomes valid (thickness >= half_width).
 

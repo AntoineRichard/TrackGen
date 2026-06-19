@@ -1,8 +1,3 @@
-# Copyright (c) 2022-2025, The Isaac Lab Project Developers.
-# All rights reserved.
-#
-# SPDX-License-Identifier: BSD-3-Clause
-
 """Tests for the static-regen pure-Warp centerline generator (Task 12).
 
 Covers ``corner_count_sample`` (per-(env, attempt) Warp-RNG corner count) and

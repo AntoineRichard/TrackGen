@@ -1,8 +1,3 @@
-# Copyright (c) 2022-2025, The Isaac Lab Project Developers.
-# All rights reserved.
-#
-# SPDX-License-Identifier: BSD-3-Clause
-
 """self_intersections must be robust to near-collinear segments.
 
 The f32 proper-crossing test false-positives when two non-adjacent segments are nearly

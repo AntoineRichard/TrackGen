@@ -1,8 +1,3 @@
-# Copyright (c) 2022-2025, The Isaac Lab Project Developers.
-# All rights reserved.
-#
-# SPDX-License-Identifier: BSD-3-Clause
-
 """gates(): pure-Warp accept mask == the torch oracle inside
 BezierCenterlineGenerator.generate (angle & turn & finite & simple conjunction).
 

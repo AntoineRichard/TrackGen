@@ -1,8 +1,3 @@
-# Copyright (c) 2022-2025, The Isaac Lab Project Developers.
-# All rights reserved.
-#
-# SPDX-License-Identifier: BSD-3-Clause
-
 """Optional NVIDIA Warp acceleration for the XPBD separation constraint.
 
 The torch separation builds the full ``[E, N, N, 2]`` pairwise tensor every sweep

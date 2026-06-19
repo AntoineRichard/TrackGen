@@ -1,8 +1,3 @@
-# Copyright (c) 2022-2025, The Isaac Lab Project Developers.
-# All rights reserved.
-#
-# SPDX-License-Identifier: BSD-3-Clause
-
 """track_gen — GPU-batched race-track generator.
 
 The public API is the Warp pipeline plus its result types. The heavy Warp

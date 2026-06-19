@@ -1,5 +1,3 @@
-# Copyright (c) 2022-2025, The Isaac Lab Project Developers.
-# SPDX-License-Identifier: BSD-3-Clause
 """Parameter-explorer core (build_config + render_grid) on CPU, plus a gradio app-builds smoke.
 
 Output is always constant_spacing (the only supported mode): per-track boundary arrays are

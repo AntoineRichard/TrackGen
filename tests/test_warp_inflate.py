@@ -1,8 +1,3 @@
-# Copyright (c) 2022-2025, The Isaac Lab Project Developers.
-# All rights reserved.
-#
-# SPDX-License-Identifier: BSD-3-Clause
-
 """inflate_warp == torch inflation stages on a constant_spacing centerline.
 
 Builds two closed loops (a fat circle -> valid, a thin ellipse -> invalid),

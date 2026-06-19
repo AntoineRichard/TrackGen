@@ -1,5 +1,3 @@
-# Copyright (c) 2022-2025, The Isaac Lab Project Developers.
-# SPDX-License-Identifier: BSD-3-Clause
 """E=8192 end-to-end pipeline study: what lifts relaxed-valid yield, and at what cost?
 
 Sweeps the pure-Warp pipeline (generate_tracks_warp) at E=8192 over four levers, all in

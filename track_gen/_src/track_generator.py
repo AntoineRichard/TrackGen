@@ -1,8 +1,3 @@
-# Copyright (c) 2022-2025, The Isaac Lab Project Developers.
-# All rights reserved.
-#
-# SPDX-License-Identifier: BSD-3-Clause
-
 """Top-level facade for the batched track generator.
 
 Runs the pure-Warp pipeline (``warp_pipeline.generate_tracks_warp``: generation ->

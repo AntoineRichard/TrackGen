@@ -1,5 +1,3 @@
-# Copyright (c) 2022-2025, The Isaac Lab Project Developers.
-# SPDX-License-Identifier: BSD-3-Clause
 """Constant-spacing Warp pipeline: per-stage parity (count==N_max matches fixed-N) and
 variable-count behaviour, plus the end-to-end smoothness/yield win."""
 import math
