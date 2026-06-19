@@ -9,3 +9,4 @@ __pycache__/
 viz/out/
 .worktrees/
 .superpowers/
+.claude/worktrees/
