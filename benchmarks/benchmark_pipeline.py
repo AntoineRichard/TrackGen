@@ -18,8 +18,8 @@ import time
 
 import torch
 
-from track_gen.types import TrackGenConfig
-from track_gen import warp_pipeline as wpl
+from track_gen._src.types import TrackGenConfig
+from track_gen._src import warp_pipeline as wpl
 
 
 def run_pipeline_benchmark(E=8192, N=256, half_width=0.03, scale=1.0, device="cuda",

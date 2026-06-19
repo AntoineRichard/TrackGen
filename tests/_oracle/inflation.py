@@ -16,7 +16,7 @@ from collections import namedtuple
 import torch
 
 from . import geometry
-from track_gen.types import Track, TrackGenConfig  # noqa: F401  (TrackGenConfig used for typing)
+from track_gen._src.types import Track, TrackGenConfig  # noqa: F401  (TrackGenConfig used for typing)
 
 # Intermediate result of the resample stage; replaced by a full Track once inflate() is complete.
 _ResampleResult = namedtuple("_ResampleResult", ["center", "count"])

@@ -18,8 +18,8 @@ import torch
 
 pytest.importorskip("warp")
 
-from track_gen import warp_pipeline as wpl
-from track_gen.types import TrackGenConfig, Track
+from track_gen._src import warp_pipeline as wpl
+from track_gen._src.types import TrackGenConfig, Track
 
 DEVS = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
 
@@ -91,8 +91,8 @@ def test_generate_tracks_warp_e2e(dev):
     # only compare the AGGREGATE yields, not per-env tracks. rng construction mirrors
     # tests/test_end_to_end_relaxation.py.
     try:
-        from track_gen.track_generator import TrackGenerator
-        from track_gen.rng_utils import PerEnvSeededRNG
+        from track_gen._src.track_generator import TrackGenerator
+        from track_gen._src.rng_utils import PerEnvSeededRNG
 
         ocfg = TrackGenConfig(num_envs=E, half_width=hw, device=dev)
         oseeds = torch.arange(E, dtype=torch.int32, device=dev)

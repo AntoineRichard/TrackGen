@@ -23,8 +23,8 @@ import torch
 torch = pytest.importorskip("torch")
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda")
 
-from track_gen.types import TrackGenConfig  # noqa: E402
-from track_gen import warp_pipeline as wpp  # noqa: E402
+from track_gen._src.types import TrackGenConfig  # noqa: E402
+from track_gen._src import warp_pipeline as wpp  # noqa: E402
 
 
 def _cfg(E: int) -> TrackGenConfig:

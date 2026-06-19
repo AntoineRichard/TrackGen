@@ -46,8 +46,8 @@ def test_polygonal_fallback_not_flagged(dev):
     import dataclasses
     import warp as wp
     wp.init()
-    from track_gen import warp_pipeline as wpl
-    from track_gen.types import TrackGenConfig
+    from track_gen._src import warp_pipeline as wpl
+    from track_gen._src.types import TrackGenConfig
 
     E = 2048
     cfg = TrackGenConfig(num_envs=E, num_points=256, half_width=0.5, scale=10.0,

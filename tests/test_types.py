@@ -2,7 +2,7 @@ import math
 
 import torch
 
-from track_gen.types import Track, TrackGenConfig
+from track_gen._src.types import Track, TrackGenConfig
 
 
 def test_config_defaults_instantiate():
@@ -88,7 +88,7 @@ def test_track_construct_from_tensors_field_shapes():
 
 
 def test_relaxation_defaults():
-    from track_gen.types import TrackGenConfig
+    from track_gen._src.types import TrackGenConfig
     cfg = TrackGenConfig()
     assert cfg.relax_enable is True
     assert cfg.relax_solver == "xpbd"
@@ -100,7 +100,7 @@ def test_relaxation_defaults():
 
 
 def test_deprecated_width_clamp_fields_removed():
-    from track_gen.types import TrackGenConfig
+    from track_gen._src.types import TrackGenConfig
     cfg = TrackGenConfig()
     for dead in ("alpha", "clamp_self_distance", "self_distance_margin",
                  "self_distance_band", "self_distance_decimation"):
@@ -108,9 +108,12 @@ def test_deprecated_width_clamp_fields_removed():
 
 
 def test_types_module_has_no_intra_package_imports():
-    # The leaf must not import generators/inflation/track_generator/rng_utils.
-    import track_gen.types as t
+    # The leaf must not import the Warp-touching siblings (keeps the leaf
+    # dataclasses and `import track_gen` Warp-free).
+    import track_gen._src.types as t
 
     src = open(t.__file__).read()
-    for forbidden in ("from .generators", "from .inflation", "from .track_generator", "from .rng_utils", "import warp"):
+    for forbidden in ("from .track_generator", "from .warp_pipeline",
+                      "from .warp_relax", "from .rng_utils", "from .rng_kernels",
+                      "import warp"):
         assert forbidden not in src, f"types.py must not contain '{forbidden}'"

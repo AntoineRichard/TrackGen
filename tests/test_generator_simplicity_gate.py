@@ -19,8 +19,8 @@ def test_simplicity_gate_helper_flags_self_crossing():
 def test_simple_gate_applied_in_generate():
     pytest.importorskip("warp")
     import warp as wp; wp.init()
-    from track_gen.rng_utils import PerEnvSeededRNG
-    from track_gen.types import TrackGenConfig
+    from track_gen._src.rng_utils import PerEnvSeededRNG
+    from track_gen._src.types import TrackGenConfig
     E = 16
     seeds = torch.arange(E, dtype=torch.int32) + 7
     rng = PerEnvSeededRNG(seeds=seeds, num_envs=E, device="cpu")

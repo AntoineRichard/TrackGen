@@ -29,8 +29,8 @@ import torch
 
 import warp as wp
 
-from track_gen.types import TrackGenConfig
-from track_gen import warp_pipeline as wpl
+from track_gen._src.types import TrackGenConfig
+from track_gen._src import warp_pipeline as wpl
 from viz.plot_tracks import draw_track
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"

@@ -1,7 +1,7 @@
 import math
 import torch
 from tests._oracle.generators import Centerline
-from track_gen.types import TrackGenConfig
+from track_gen._src.types import TrackGenConfig
 from tests._oracle import inflation, geometry
 
 

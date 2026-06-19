@@ -21,7 +21,7 @@ def test_inflate_runs_on_a_synthetic_centerline_without_warp():
     import math
 
     from tests._oracle.generators import Centerline
-    from track_gen.types import TrackGenConfig
+    from track_gen._src.types import TrackGenConfig
     from tests._oracle import inflation
 
     theta = torch.linspace(0, 2 * math.pi, 201)[:-1]

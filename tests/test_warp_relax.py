@@ -7,8 +7,8 @@ if not torch.cuda.is_available():
     pytest.skip("Warp separation path requires CUDA", allow_module_level=True)
 
 from tests._oracle import relaxation, geometry
-from track_gen.types import TrackGenConfig
-from track_gen import warp_relax
+from track_gen._src.types import TrackGenConfig
+from track_gen._src import warp_relax
 
 
 def _star(n=256, r0=1.0, amp=0.6, k=7, phase=0.0):

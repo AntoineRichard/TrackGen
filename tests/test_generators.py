@@ -89,7 +89,7 @@ def test_bezier_init_p_increases_with_edgy():
 def _make_rng(num_envs, seed=1234, device="cpu"):
     import warp as wp  # noqa: F401  (governed by importorskip in each test)
     wp.init()
-    from track_gen.rng_utils import PerEnvSeededRNG
+    from track_gen._src.rng_utils import PerEnvSeededRNG
 
     seeds = torch.arange(num_envs, dtype=torch.int32) + seed
     rng = PerEnvSeededRNG(seeds=seeds, num_envs=num_envs, device=device)
@@ -140,7 +140,7 @@ def test_cell_sampling_env_independence():
     base = BezierCenterlineGenerator(cfg, rng=_make_rng(E, seed=100))
     base_pts = base._sample_corner_points(ids)
     import warp as wp  # noqa: F401
-    from track_gen.rng_utils import PerEnvSeededRNG
+    from track_gen._src.rng_utils import PerEnvSeededRNG
 
     seeds = torch.tensor([100, 101, 999], dtype=torch.int32)
     rng2 = PerEnvSeededRNG(seeds=seeds, num_envs=E, device="cpu")
@@ -362,7 +362,7 @@ def test_fourier_reproducible_and_independent():
     b = FourierCenterlineGenerator(cfg, rng=_make_rng(E, seed=2)).generate(ids)
     assert torch.allclose(a.points, b.points)
     import warp as wp  # noqa: F401
-    from track_gen.rng_utils import PerEnvSeededRNG
+    from track_gen._src.rng_utils import PerEnvSeededRNG
 
     seeds = torch.tensor([2, 3, 4, 999], dtype=torch.int32)
     c = FourierCenterlineGenerator(cfg, rng=PerEnvSeededRNG(seeds=seeds, num_envs=E, device="cpu")).generate(ids)

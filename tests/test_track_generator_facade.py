@@ -9,7 +9,7 @@ import torch
 pytest.importorskip("warp")
 
 from track_gen import PerEnvSeededRNG
-from track_gen.track_generator import Track, TrackGenConfig, TrackGenerator
+from track_gen._src.track_generator import Track, TrackGenConfig, TrackGenerator
 
 
 def _make_rng(num_envs, device="cpu"):

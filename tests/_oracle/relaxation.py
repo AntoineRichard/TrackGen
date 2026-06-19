@@ -16,7 +16,7 @@ from __future__ import annotations
 import torch
 
 from . import geometry
-from track_gen import warp_relax
+from track_gen._src import warp_relax
 
 
 def _roll(x, k):

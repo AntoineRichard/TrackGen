@@ -18,9 +18,9 @@ import torch
 
 pytest.importorskip("warp")
 
-from track_gen import warp_pipeline as wpl
+from track_gen._src import warp_pipeline as wpl
 from tests._oracle.generators import BezierCenterlineGenerator
-from track_gen.types import TrackGenConfig
+from track_gen._src.types import TrackGenConfig
 
 DEVS = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
 

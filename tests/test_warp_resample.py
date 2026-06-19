@@ -3,7 +3,7 @@ import pytest
 import torch
 
 pytest.importorskip("warp")
-from track_gen import warp_pipeline as wpl
+from track_gen._src import warp_pipeline as wpl
 from tests._oracle.relaxation import _resample_uniform
 
 DEVS = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])

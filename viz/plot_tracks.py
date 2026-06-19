@@ -40,8 +40,8 @@ import torch
 import warp as wp
 
 from track_gen import PerEnvSeededRNG
-from track_gen.types import Track, TrackGenConfig
-from track_gen.track_generator import TrackGenerator
+from track_gen._src.types import Track, TrackGenConfig
+from track_gen._src.track_generator import TrackGenerator
 
 OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out")
 

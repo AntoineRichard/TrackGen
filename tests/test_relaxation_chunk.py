@@ -1,6 +1,6 @@
 import math
 import torch
-from track_gen.types import TrackGenConfig
+from track_gen._src.types import TrackGenConfig
 from tests._oracle import relaxation
 
 

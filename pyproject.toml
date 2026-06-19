@@ -16,5 +16,5 @@ warp = ["warp-lang"]
 dev = ["pytest", "matplotlib"]
 ui = ["gradio"]
 
-[tool.setuptools]
-packages = ["track_gen"]
+[tool.setuptools.packages.find]
+include = ["track_gen*"]

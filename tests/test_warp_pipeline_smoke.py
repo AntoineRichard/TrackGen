@@ -2,7 +2,7 @@ import pytest
 import torch
 
 pytest.importorskip("warp")
-from track_gen import warp_pipeline as wpl
+from track_gen._src import warp_pipeline as wpl
 
 
 def test_warp_runs_on_cpu_device():

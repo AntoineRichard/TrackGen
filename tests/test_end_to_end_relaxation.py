@@ -12,7 +12,7 @@ from tests._oracle import geometry
 def warp_rng():
     pytest.importorskip("warp")
     import warp as wp; wp.init()
-    from track_gen.rng_utils import PerEnvSeededRNG
+    from track_gen._src.rng_utils import PerEnvSeededRNG
 
     def make(E, seed=20):
         seeds = torch.arange(E, dtype=torch.int32) + seed
@@ -23,8 +23,8 @@ def warp_rng():
 
 
 def test_xpbd_pipeline_makes_constant_width_tracks_valid(warp_rng):
-    from track_gen.types import TrackGenConfig
-    from track_gen.track_generator import TrackGenerator
+    from track_gen._src.types import TrackGenConfig
+    from track_gen._src.track_generator import TrackGenerator
     E = 32
     # constant_spacing is the only mode; pin spacing/N_max for determinism (spacing
     # would otherwise auto-resolve to 0.6*half_width = 0.018 anyway).
