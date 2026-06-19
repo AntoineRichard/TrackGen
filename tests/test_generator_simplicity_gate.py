@@ -6,7 +6,10 @@ from track_gen.generators import BezierCenterlineGenerator
 
 
 def test_simplicity_gate_helper_flags_self_crossing():
-    t = torch.linspace(0, 2 * math.pi, 256 + 1)[:-1]
+    # +0.123 phase so the figure-eight crossing falls between samples (a genuine transversal
+    # crossing) rather than on the coincident vertices t=0/pi (a degenerate vertex-touch the
+    # collinear-robust detector correctly reports as 0 -- f32 and f64 agree).
+    t = torch.linspace(0, 2 * math.pi, 256 + 1)[:-1] + 0.123
     fig8 = torch.stack([torch.sin(t), torch.sin(t) * torch.cos(t)], dim=-1).unsqueeze(0)
     circle = torch.stack([torch.cos(t), torch.sin(t)], dim=-1).unsqueeze(0)
     assert int(geometry.self_intersections(fig8)[0]) >= 1

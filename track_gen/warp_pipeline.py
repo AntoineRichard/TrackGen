@@ -235,8 +235,17 @@ if _HAVE_WARP:
                 d2 = _ccw(ajx, ajy, bjx, bjy, bix, biy)
                 d3 = _ccw(aix, aiy, bix, biy, ajx, ajy)
                 d4 = _ccw(aix, aiy, bix, biy, bjx, bjy)
-                seg_ij = (d1 > 0.0) != (d2 > 0.0)
-                seg_ji = (d3 > 0.0) != (d4 > 0.0)
+                # Scale-relative collinearity tolerance (matches geometry.SELF_X_REL): a
+                # straddle counts only if both endpoints clear the other segment's line by
+                # more than SELF_X_REL * (that segment length). |d| = len * perp-offset, so
+                # the threshold eps = REL * len^2. Kills the float32 sign-flip false positives
+                # on near-collinear/straight segments without missing genuine crossings.
+                lj2 = (bjx - ajx) * (bjx - ajx) + (bjy - ajy) * (bjy - ajy)
+                li2 = (bix - aix) * (bix - aix) + (biy - aiy) * (biy - aiy)
+                ej = float(1.0e-3) * lj2
+                ei = float(1.0e-3) * li2
+                seg_ij = (d1 > ej and d2 < -ej) or (d1 < -ej and d2 > ej)
+                seg_ji = (d3 > ei and d4 < -ei) or (d3 < -ei and d4 > ei)
                 if seg_ij and seg_ji:
                     count = count + 1
         return count

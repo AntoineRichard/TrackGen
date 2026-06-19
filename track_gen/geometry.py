@@ -7,6 +7,13 @@ documented per function in [brackets].
 
 import torch  # noqa: F401
 
+# Collinearity tolerance for the proper-crossing test (self_intersections): a straddle is
+# real only if each endpoint clears the other segment's line by more than SELF_X_REL of that
+# segment's length. Guards against float32 sign-flips on near-collinear segments (the source
+# of large self-intersection over-counts on straight/polygonal centerlines). The Warp
+# _self_intersections_func uses the SAME constant so the two detectors stay in parity.
+SELF_X_REL = 1.0e-3
+
 
 def safe_normalize(v: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
     """Normalize vectors along the last axis; zero vectors stay finite (zero).
@@ -408,7 +415,20 @@ def self_intersections(poly: torch.Tensor) -> torch.Tensor:
     Aj = A[:, None, :, :]; Bj = B[:, None, :, :]
     d1 = ccw(Aj, Bj, Ai); d2 = ccw(Aj, Bj, Bi)
     d3 = ccw(Ai, Bi, Aj); d4 = ccw(Ai, Bi, Bj)
-    cross = ((d1 > 0) != (d2 > 0)) & ((d3 > 0) != (d4 > 0))  # [E,N,N]
+    # Scale-relative collinearity tolerance: a straddle counts only if both endpoints lie
+    # clear of the other segment's line by more than SELF_X_REL * (that segment length).
+    # |d| = (segment length) * (perpendicular offset), so the threshold eps = REL * len^2
+    # means "off the line by > REL of a segment length". This kills the float32 false
+    # positives on near-collinear segments (where the true determinant is ~0 and rounding
+    # flips its sign) without missing genuine crossings (offsets are orders of magnitude
+    # larger). NB: replaces the exact-zero (d>0)!=(d>0) sign test.
+    seg = B - A                                              # [E, N, 2] edge vectors
+    len2 = (seg * seg).sum(dim=-1)                           # [E, N] squared edge lengths
+    ej = SELF_X_REL * len2[:, None, :]                       # [E, 1, N] threshold for edge j
+    ei = SELF_X_REL * len2[:, :, None]                       # [E, N, 1] threshold for edge i
+    straddle_j = ((d1 > ej) & (d2 < -ej)) | ((d1 < -ej) & (d2 > ej))
+    straddle_i = ((d3 > ei) & (d4 < -ei)) | ((d3 < -ei) & (d4 > ei))
+    cross = straddle_j & straddle_i                          # [E,N,N]
     circ = circ_index_dist(N, poly.device)
     cross = cross & (circ[None] > 1)
     return (cross.sum(dim=(-1, -2)) // 2).long()
