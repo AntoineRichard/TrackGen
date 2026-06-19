@@ -108,8 +108,8 @@ def test_deprecated_width_clamp_fields_removed():
 
 
 def test_types_module_has_no_intra_package_imports():
-    # The leaf must not import the Warp-touching siblings (keeps the leaf
-    # dataclasses and `import track_gen` Warp-free).
+    # types.py is the dependency-light leaf: it must not import the heavier _src
+    # siblings (which would create import cycles), so the public dataclasses stay cheap.
     import track_gen._src.types as t
 
     src = open(t.__file__).read()

@@ -21,7 +21,7 @@ from . import warp_relax  # pure-Warp XPBD solve (cpu+cuda); part of the pure-Wa
 try:
     import warp as wp
     _HAVE_WARP = True
-except Exception:  # warp is an optional extra
+except Exception:  # defensive: warp-lang is a core dep; degrade only if the import fails
     _HAVE_WARP = False
 
 _INITED = False

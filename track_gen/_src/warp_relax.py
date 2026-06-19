@@ -6,9 +6,9 @@ same per-bead displacement in a single FUSED Warp kernel — each bead loops its
 neighbours and accumulates the push with NO ``[E, N, N]`` materialization — which is
 ~2-3 orders of magnitude faster on CUDA while staying numerically equivalent.
 
-Import is always safe: if Warp is absent (the optional extra) the module simply
-reports unavailable and the caller falls back to the pure-torch separation. Warp is
-used only on CUDA tensors; CPU stays pure torch (and CPU-testable).
+Warp is used only on CUDA tensors; CPU stays pure torch (and CPU-testable), so the
+caller may fall back to the pure-torch separation. warp-lang is a core dependency;
+the import guard below is defensive only.
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ import torch
 try:
     import warp as wp
     _HAVE_WARP = True
-except Exception:  # warp is an optional extra
+except Exception:  # defensive: warp-lang is a core dep; degrade only if the import fails
     _HAVE_WARP = False
 
 _INITED = False

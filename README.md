@@ -18,8 +18,9 @@ seeds[E] ─► generate (single pass) ─► constant-spacing resample ─► X
 
 ## Install
 
-Python ≥ 3.10. The pipeline requires `warp-lang`; the torch geometry/inflation/relaxation
-modules are warp-free (they serve as the test oracle and import without Warp).
+Python ≥ 3.10. This is a Warp-first library: `warp-lang` is a required **core** dependency
+(installed automatically), alongside `torch`, `scipy`, `numpy`. It runs on the Warp `cpu`
+device (GPU-free, for tests/CI) and on `cuda`.
 
 ### From scratch with [uv](https://docs.astral.sh/uv/) (recommended)
 
@@ -30,8 +31,8 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 # 2. create the project venv — uv fetches Python 3.12 if it isn't present
 uv venv --python 3.12
 
-# 3. install track_gen (editable) with the warp + dev extras
-uv pip install -e ".[warp,dev]"
+# 3. install track_gen (editable) with the dev extras (warp-lang comes in as a core dep)
+uv pip install -e ".[dev]"
 
 # 4. verify
 .venv/bin/python -m pytest -q
@@ -41,11 +42,11 @@ uv pip install -e ".[warp,dev]"
 
 ```bash
 python -m venv .venv
-.venv/bin/pip install -e ".[warp,dev]"
+.venv/bin/pip install -e ".[dev]"
 ```
 
 Both create a `.venv/`; run anything in it with `.venv/bin/python …` (or `source .venv/bin/activate`,
-or `uv run …`). Core deps: `torch`, `scipy`, `numpy`. Extras: `warp` → `warp-lang`; `dev` → `pytest`, `matplotlib`.
+or `uv run …`). Core deps: `torch`, `scipy`, `numpy`, `warp-lang`. Extras: `dev` → `pytest`, `matplotlib`; `ui` → `gradio`.
 
 ## Quickstart
 
