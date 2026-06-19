@@ -1,7 +1,7 @@
 import math
 import torch
 from track_gen.types import TrackGenConfig
-from track_gen import relaxation, geometry
+from tests._oracle import relaxation, geometry
 
 
 def _flat_oval(n=256):

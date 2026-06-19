@@ -1,6 +1,6 @@
 import torch
 
-from track_gen.geometry import segment_directions
+from tests._oracle.geometry import segment_directions
 
 
 def test_unit_square_edges_are_axis_aligned_unit_dirs():

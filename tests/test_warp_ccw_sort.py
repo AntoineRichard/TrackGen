@@ -1,7 +1,7 @@
 import math, pytest, torch
 pytest.importorskip("warp")
 from track_gen import warp_pipeline as wpl
-from track_gen import geometry
+from tests._oracle import geometry
 
 DEVS = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
 

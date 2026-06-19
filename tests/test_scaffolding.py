@@ -9,6 +9,6 @@ def test_package_imports():
 
 
 def test_geometry_module_imports():
-    from track_gen import geometry
+    from tests._oracle import geometry
 
     assert geometry is not None

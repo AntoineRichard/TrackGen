@@ -14,7 +14,7 @@ A scale-relative collinearity tolerance fixes it without missing genuine crossin
 import pytest
 import torch
 
-from track_gen.geometry import self_intersections
+from tests._oracle.geometry import self_intersections
 
 
 def test_genuine_crossing_still_detected():

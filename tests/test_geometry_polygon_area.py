@@ -1,6 +1,6 @@
 import torch
 
-from track_gen.geometry import polygon_area
+from tests._oracle.geometry import polygon_area
 
 
 def test_unit_square_ccw_is_plus_one():

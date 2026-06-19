@@ -37,7 +37,7 @@ import torch
 
 pytest.importorskip("warp")
 
-from track_gen import inflation  # noqa: E402
+from tests._oracle import inflation  # noqa: E402
 from track_gen import warp_pipeline as wpl  # noqa: E402
 from track_gen.types import Track, TrackGenConfig  # noqa: E402
 

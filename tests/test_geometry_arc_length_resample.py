@@ -2,7 +2,7 @@ import math
 
 import torch
 
-from track_gen.geometry import arc_length_resample
+from tests._oracle.geometry import arc_length_resample
 
 
 def _circle(n: int, radius: float) -> torch.Tensor:

@@ -14,8 +14,8 @@ import argparse, time
 import torch
 
 from track_gen.types import TrackGenConfig
-from track_gen import relaxation, geometry, inflation
-from track_gen.generators import BezierCenterlineGenerator
+from tests._oracle import relaxation, geometry, inflation
+from tests._oracle.generators import BezierCenterlineGenerator
 
 
 class _Cfg:

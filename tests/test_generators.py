@@ -4,8 +4,8 @@ import types
 import torch
 import pytest
 
-from track_gen.generators import Centerline, CenterlineGenerator
-from track_gen.generators import BezierCenterlineGenerator
+from tests._oracle.generators import Centerline, CenterlineGenerator
+from tests._oracle.generators import BezierCenterlineGenerator
 
 
 def test_centerline_holds_tensors():
@@ -253,7 +253,7 @@ def test_generate_returns_centerline():
     gen = BezierCenterlineGenerator(cfg, rng=_make_rng(E, seed=11))
     ids = torch.arange(E)
     cl = gen.generate(ids)
-    from track_gen.generators import Centerline
+    from tests._oracle.generators import Centerline
 
     assert isinstance(cl, Centerline)
     M_max = cfg.max_num_points * cfg.num_points_per_segment
@@ -306,7 +306,7 @@ def test_generate_accepts_pruned_variable_count_tracks():
     assert has_nan_tail.any(), "no pruned variable-count track was accepted"
 
 
-from track_gen.generators import FourierCenterlineGenerator
+from tests._oracle.generators import FourierCenterlineGenerator
 
 
 def _fourier_config(**overrides):
@@ -372,7 +372,7 @@ def test_fourier_reproducible_and_independent():
 
 def test_fourier_low_k_turning_is_loop():
     pytest.importorskip("warp")
-    from track_gen.geometry import turning_number
+    from tests._oracle.geometry import turning_number
 
     E = 4
     cfg = _fourier_config(num_envs=E, num_harmonics=1, decay_p=2.0)
@@ -383,7 +383,7 @@ def test_fourier_low_k_turning_is_loop():
 
 
 def test_module_exposes_both_generators():
-    from track_gen.generators import (
+    from tests._oracle.generators import (
         BezierCenterlineGenerator,
         Centerline,
         CenterlineGenerator,

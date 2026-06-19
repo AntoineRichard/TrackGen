@@ -1,6 +1,6 @@
 import math
 import torch
-from track_gen.geometry import self_intersections
+from tests._oracle.geometry import self_intersections
 
 
 def _circle(n=64, r=1.0):

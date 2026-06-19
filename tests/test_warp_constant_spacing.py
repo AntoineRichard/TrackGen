@@ -10,7 +10,8 @@ pytest.importorskip("warp")
 import warp as wp  # noqa: E402
 wp.init()
 
-from track_gen import warp_pipeline as wpl, warp_relax, geometry  # noqa: E402
+from track_gen import warp_pipeline as wpl, warp_relax
+from tests._oracle import geometry  # noqa: E402
 from track_gen.types import TrackGenConfig  # noqa: E402
 
 DEVS = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])

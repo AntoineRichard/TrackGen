@@ -1,6 +1,6 @@
 import torch
 
-from track_gen.geometry import safe_normalize
+from tests._oracle.geometry import safe_normalize
 
 
 def test_unit_vectors_have_norm_one():

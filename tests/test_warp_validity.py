@@ -5,7 +5,7 @@ import torch
 
 pytest.importorskip("warp")
 from track_gen import warp_pipeline as wpl
-from track_gen import geometry, inflation
+from tests._oracle import geometry, inflation
 from track_gen.types import TrackGenConfig
 
 DEVS = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])

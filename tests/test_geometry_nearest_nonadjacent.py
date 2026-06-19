@@ -2,7 +2,7 @@ import math
 
 import torch
 
-from track_gen.geometry import nearest_nonadjacent_distance
+from tests._oracle.geometry import nearest_nonadjacent_distance
 
 
 def _circle(n: int, radius: float) -> torch.Tensor:

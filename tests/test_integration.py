@@ -10,7 +10,6 @@ def test_package_imports_without_circular_import():
 
     importlib.reload(track_gen)
     assert hasattr(track_gen, "TrackGenerator")
-    assert hasattr(track_gen, "Centerline")
     assert hasattr(track_gen, "Track")
     assert hasattr(track_gen, "TrackGenConfig")
 
@@ -21,9 +20,9 @@ def test_inflate_runs_on_a_synthetic_centerline_without_warp():
     # point count in track.count; assertions are count-aware (mask to [:count]).
     import math
 
-    from track_gen.generators import Centerline
+    from tests._oracle.generators import Centerline
     from track_gen.types import TrackGenConfig
-    from track_gen import inflation
+    from tests._oracle import inflation
 
     theta = torch.linspace(0, 2 * math.pi, 201)[:-1]
     pts = torch.stack([2.0 * torch.cos(theta), 2.0 * torch.sin(theta)], dim=-1).unsqueeze(0)

@@ -1,6 +1,6 @@
 import math
 import torch
-from track_gen import relaxation
+from tests._oracle import relaxation
 
 
 def _resample_uniform_reference(center, n):

@@ -2,7 +2,7 @@ import math
 
 import torch
 
-from track_gen.geometry import tangents_normals
+from tests._oracle.geometry import tangents_normals
 
 
 def _circle(n: int, radius: float) -> torch.Tensor:

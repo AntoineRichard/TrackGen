@@ -5,7 +5,7 @@
 
 import torch
 import pytest
-from track_gen import geometry
+from tests._oracle import geometry
 
 
 @pytest.fixture

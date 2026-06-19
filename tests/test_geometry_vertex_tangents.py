@@ -2,7 +2,7 @@ import math
 
 import torch
 
-from track_gen.geometry import vertex_tangents
+from tests._oracle.geometry import vertex_tangents
 
 
 def _regular_polygon(n: int, radius: float = 1.0) -> torch.Tensor:

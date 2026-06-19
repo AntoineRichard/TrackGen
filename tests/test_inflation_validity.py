@@ -1,8 +1,8 @@
 import math
 import torch
-from track_gen.generators import Centerline
+from tests._oracle.generators import Centerline
 from track_gen.types import TrackGenConfig
-from track_gen import inflation, geometry
+from tests._oracle import inflation, geometry
 
 
 def _circle_cl(r=3.0, m=300, e=1):

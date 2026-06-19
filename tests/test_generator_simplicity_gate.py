@@ -1,8 +1,8 @@
 import math
 import torch
 import pytest
-from track_gen import geometry
-from track_gen.generators import BezierCenterlineGenerator
+from tests._oracle import geometry
+from tests._oracle.generators import BezierCenterlineGenerator
 
 
 def test_simplicity_gate_helper_flags_self_crossing():

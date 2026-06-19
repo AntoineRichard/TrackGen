@@ -1,7 +1,7 @@
 import math
 import torch
 from track_gen.types import TrackGenConfig
-from track_gen import relaxation
+from tests._oracle import relaxation
 
 
 def _star(n=256, r0=1.0, amp=0.6, k=7, phase=0.0):

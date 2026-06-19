@@ -1,7 +1,7 @@
 import torch
 
-from track_gen import geometry
-from track_gen.geometry import ccw_sort, polygon_area
+from tests._oracle import geometry
+from tests._oracle.geometry import ccw_sort, polygon_area
 
 
 def test_scramble_is_reordered_to_a_simple_polygon():

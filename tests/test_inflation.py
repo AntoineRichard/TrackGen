@@ -3,10 +3,10 @@ import math
 import pytest
 import torch
 
-from track_gen.generators import Centerline
+from tests._oracle.generators import Centerline
 from track_gen.types import Track, TrackGenConfig
-from track_gen import inflation
-from track_gen import geometry
+from tests._oracle import inflation
+from tests._oracle import geometry
 
 
 def make_circle_centerline(radius=2.0, m=200, e=1, center=(0.0, 0.0), device="cpu"):

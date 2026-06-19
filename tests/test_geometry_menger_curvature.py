@@ -2,7 +2,7 @@ import math
 
 import torch
 
-from track_gen.geometry import menger_curvature
+from tests._oracle.geometry import menger_curvature
 
 
 def _circle(n: int, radius: float) -> torch.Tensor:

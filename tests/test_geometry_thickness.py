@@ -1,6 +1,6 @@
 import math
 import torch
-from track_gen.geometry import (
+from tests._oracle.geometry import (
     perimeter, mean_seg_len, separation_min, curvature_radius_min, thickness,
 )
 

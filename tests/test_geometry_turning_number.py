@@ -2,7 +2,7 @@ import math
 
 import torch
 
-from track_gen.geometry import turning_number
+from tests._oracle.geometry import turning_number
 
 
 def _regular_polygon(n: int, radius: float = 1.0) -> torch.Tensor:
