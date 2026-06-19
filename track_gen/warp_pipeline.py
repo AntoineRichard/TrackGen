@@ -1094,57 +1094,49 @@ def generate_centerline_warp(seeds: torch.Tensor, config):
     corners -> ccw_sort -> sample a per-env corner count -> assemble dense (NaN-pruned) ->
     gate (angle & turn & finite & simple) -> resample the gated dense to num_points.
 
-    The loop runs a FIXED ``config.max_regen_iters`` times for ALL envs (no host
-    data-branching, no early exit on valid.all()) so the whole thing is graph-capturable.
-    Each env keeps its FIRST accepted candidate: ``take = accept & ~valid`` selects only
-    envs newly accepted this attempt, then ``valid |= accept``; later attempts recompute
-    but never overwrite an already-valid env. The stored centerline is the SAME
-    arc_length_resample_warp(dense, num_points) that ``gates`` checked simple_ok on, so
-    every valid env's centerline is simple by construction.
+    SINGLE PASS -- no regen loop, no generation gating. One corner draw per env; the only
+    "fix" is Fix B: a track whose assembled centerline self-crosses falls back to its CORNER
+    POLYGON (handle_clamp_frac=0 -> straight pieces), which is provably simple because the
+    angle-sorted polygon never self-crosses. The downstream XPBD relaxation re-rounds the
+    straightened corners. ``self_intersections`` is the collinear-robust detector, so the
+    polygonal fallback registers as simple (no float32 false positives on its straight runs).
+
+    ``valid`` is returned all-True: there is no generation gate. Final validity (turning /
+    width / thickness / border-crossing) is decided post-relaxation by ``inflate_warp``.
+    Structure is fully static / branchless (both the Bezier and polygonal centerlines are
+    always computed, the per-env select is a single ``torch.where``) -> CUDA-graph-capturable.
 
     Args:
         seeds:  [E] int per-env base seed.
-        config: TrackGenConfig (uses max_regen_iters, num_points, and the fields the
-                composed wrappers read: max_num_points, min/max_num_points, min_angle,
-                turning_tol, rad, edgy, num_points_per_segment, min_point_distance, scale).
+        config: TrackGenConfig (uses num_points, handle_clamp_frac, and the fields the
+                composed wrappers read: max_num_points, min/max_num_points, rad, edgy,
+                num_points_per_segment, min_point_distance, scale).
 
     Returns:
-        (centerline [E, num_points, 2] float32, valid [E] bool). Invalid envs keep an
-        all-NaN centerline row. Pure Warp + torch glue (cpu+cuda); no oracle-module imports.
+        (centerline [E, num_points, 2] float32 -- every env real, no NaN, ~always simple;
+        valid [E] bool, all True). Pure Warp + torch glue (cpu+cuda); no oracle-module imports.
     """
+    import dataclasses
+
     _init()
     E = seeds.shape[0]
     N = int(config.num_points)
-    dev = str(seeds.device)
 
-    # Persistent buffers updated IN PLACE across the fixed loop (this in-place pattern is
-    # also what makes the later CUDA graph capture work). torch.empty is just an I/O alloc;
-    # the kernel fills below (NaN centerline, valid=0) replace torch.full/torch.zeros so no
-    # torch compute touches them.
-    centerline = torch.empty(E * N, 2, device=seeds.device, dtype=torch.float32)
-    valid = torch.empty(E, device=seeds.device, dtype=torch.int32)
-    cl_w = wp.from_torch(centerline, dtype=wp.vec2f)
-    valid_w = wp.from_torch(valid, dtype=wp.int32)
-    nan = float("nan")
-    wp.launch(_fill_vec2_k, dim=E * N, inputs=[cl_w, nan, nan], device=dev)
-    wp.launch(_fill_i32_k, dim=E, inputs=[valid_w, 0], device=dev)
+    count = corner_count_sample(seeds, 0, config)                  # [E] (single attempt)
+    corners = ccw_sort(corner_sample(seeds, 0, config), count)     # [E, P, 2] prune-then-sort
+    dense = assemble(corners, count, config)                       # [E, M, 2] F1+F2 closed assemble
+    rs, _ = arc_length_resample_warp(dense, N)                     # [E, N, 2]
 
-    for k in range(int(config.max_regen_iters)):
-        count = corner_count_sample(seeds, k, config)              # [E]
-        corners = ccw_sort(corner_sample(seeds, k, config), count) # [E, P, 2] prune-then-sort
-        dense = assemble(corners, count, config)                   # [E, M, 2] (NaN-pruned)
-        accept = gates(corners, dense, count, config)         # [E] bool
-        rs, _ = arc_length_resample_warp(dense, N)            # [E, N, 2] (the gated centerline)
-        accept_w = wp.from_torch(accept.to(torch.int32).contiguous(), dtype=wp.int32)
-        rs_w = wp.from_torch(rs.reshape(E * N, 2).contiguous(), dtype=wp.vec2f)
-        # accept-FIRST-valid: select reads the OLD valid (take = accept & ~valid), then
-        # _or_update_k does valid |= accept AFTER so the select saw the pre-update flag.
-        wp.launch(_select_first_valid_k, dim=E * N,
-                  inputs=[accept_w, valid_w, rs_w, cl_w, N], device=dev)
-        wp.launch(_or_update_k, dim=E, inputs=[accept_w, valid_w], device=dev)
+    # Fix B: self-crossing tracks -> corner-polygon fallback (handle_clamp_frac=0).
+    crossers = self_intersections(rs)                              # [E] long (collinear-robust)
+    cfg_poly = dataclasses.replace(config, handle_clamp_frac=0.0)
+    dense_poly = assemble(corners, count, cfg_poly)
+    rs_poly, _ = arc_length_resample_warp(dense_poly, N)
+    centerline = torch.where((crossers > 0).view(E, 1, 1), rs_poly, rs)
 
     _sync(seeds.device)
-    return centerline.view(E, N, 2), valid.bool()
+    valid = torch.ones(E, dtype=torch.bool, device=seeds.device)
+    return centerline, valid
 
 
 def generate_tracks_warp(config, seeds: torch.Tensor):

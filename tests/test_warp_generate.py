@@ -61,14 +61,15 @@ def test_generate_centerline_warp(dev):
     assert valid.shape == (E,)
     assert valid.dtype == torch.bool
 
-    # YIELD >= 0.95
-    yield_rate = valid.float().mean().item()
-    assert yield_rate >= 0.95, f"yield {yield_rate} < 0.95 on {dev}"
+    # Single-pass + Fix B (no regen, no generation gating): every env is gen-valid and gets a
+    # real centerline (final validity is decided post-relaxation, not here).
+    assert valid.all()
+    assert torch.isfinite(centerline).all()
 
-    # every valid centerline is simple + finite
-    if valid.any():
-        assert (wpl.self_intersections(centerline[valid]) == 0).all()
-        assert torch.isfinite(centerline[valid]).all()
+    # Fix B (self-crossing track -> corner-polygon fallback) + the collinear-robust detector:
+    # the generated centerline is ~always simple.
+    cf = (wpl.self_intersections(centerline) == 0).float().mean().item()
+    assert cf >= 0.99, f"crossing-free {cf} < 0.99 on {dev}"
 
     # reproducible within a device
     centerline2, valid2 = wpl.generate_centerline_warp(seeds, config)
