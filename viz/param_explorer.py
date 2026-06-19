@@ -61,10 +61,10 @@ def build_config(p: dict) -> TrackGenConfig:
         max_num_points=hi,
         rad=float(p["rad"]),
         edgy=float(p["edgy"]),
+        handle_clamp_frac=float(p.get("handle_clamp_frac", 0.4)),
         output_mode="constant_spacing",
         N_max=int(p["n_max"]),
         relax_iters=int(p["relax_iters"]),
-        max_regen_iters=int(p["max_regen_iters"]),
         relax_sep_relax=float(p["relax_sep_relax"]),
         relax_spc_relax=float(p["relax_spc_relax"]),
         relax_bend_relax=float(p["relax_bend_relax"]),
@@ -151,7 +151,7 @@ def render_grid(p: dict):
 
 def _collect(*vals) -> dict:
     keys = ["half_width", "scale", "min_num_points", "max_num_points", "rad", "edgy",
-            "spacing", "n_max", "relax_iters", "max_regen_iters",
+            "handle_clamp_frac", "spacing", "n_max", "relax_iters",
             "relax_sep_relax", "relax_spc_relax", "relax_bend_relax", "relax_margin",
             "grid_n", "seed", "batch_size"]
     return dict(zip(keys, vals))
@@ -179,14 +179,15 @@ def build_app():
                 gr.Markdown("### Shape")
                 min_np = gr.Slider(5, 20, value=9, step=1, label="min corners")
                 max_np = gr.Slider(5, 20, value=13, step=1, label="max corners")
-                rad = gr.Slider(0.0, 0.5, value=0.2, step=0.01, label="rad (roundness)")
+                rad = gr.Slider(0.0, 0.6, value=0.4, step=0.01, label="rad (roundness)")
                 edgy = gr.Slider(0.0, 1.0, value=0.0, step=0.05, label="edgy")
+                handle_clamp = gr.Slider(0.0, 1.0, value=0.4, step=0.01,
+                                         label="handle_clamp_frac (overshoot↔roundness)")
                 gr.Markdown("### Resolution (constant-spacing)")
                 spacing = gr.Slider(0.1, 1.0, value=0.30, step=0.02, label="spacing (m)")
                 n_max = gr.Slider(128, 512, value=384, step=8, label="N_max")
                 gr.Markdown("### Relaxation")
                 relax_iters = gr.Slider(0, 600, value=150, step=10, label="relax_iters")
-                max_regen = gr.Slider(1, 20, value=10, step=1, label="max_regen_iters")
                 sep = gr.Slider(0.0, 2.0, value=1.0, step=0.1, label="sep factor")
                 spc = gr.Slider(0.0, 2.0, value=1.0, step=0.1, label="spc factor")
                 bend = gr.Slider(0.0, 2.0, value=1.5, step=0.1, label="bend factor")
@@ -211,8 +212,8 @@ def build_app():
         track_state = gr.State(None)
         page_state = gr.State(0)
 
-        controls = [half_width, scale, min_np, max_np, rad, edgy,
-                    spacing, n_max, relax_iters, max_regen, sep, spc, bend, margin, grid_n, seed,
+        controls = [half_width, scale, min_np, max_np, rad, edgy, handle_clamp,
+                    spacing, n_max, relax_iters, sep, spc, bend, margin, grid_n, seed,
                     batch_size]
 
         def _generate(*vals):

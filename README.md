@@ -12,8 +12,8 @@ as the array container at the boundary. The entire pipeline can be captured as a
 replayable **CUDA graph**.
 
 ```
-seeds[E] ─► generate (static regen) ─► arc-length resample ─► XPBD relax ─► inflate ─► Track
-            corners→sort→bezier→gates                          thickness≥w            outer/center/inner
+seeds[E] ─► generate (single pass) ─► constant-spacing resample ─► XPBD relax ─► inflate ─► Track
+            corners→prune-sort→bezier→de-cross                       thickness≥w              outer/center/inner
 ```
 
 ## Install
@@ -55,7 +55,9 @@ import warp as wp; wp.init()   # PerEnvSeededRNG is Warp-backed; initialize Warp
 from track_gen import TrackGenerator, TrackGenConfig, PerEnvSeededRNG
 
 E, device = 64, "cuda"  # or "cpu"
-config = TrackGenConfig(num_envs=E, num_points=256, half_width=0.03, device=device)
+config = TrackGenConfig(num_envs=E, half_width=0.03, device=device)
+# output_mode is "constant_spacing" (the only mode). spacing auto-couples to 0.6*half_width,
+# so each track gets its own arc-uniform point count (≤ N_max, default 256), NaN-padded past it.
 
 # The rng's per-env seed values seed the pipeline's built-in Warp RNG (one base seed/env).
 seeds = torch.arange(E, dtype=torch.int32, device=device)
@@ -63,22 +65,27 @@ rng = PerEnvSeededRNG(seeds=seeds, num_envs=E, device=device)
 
 track = TrackGenerator(config, rng).generate(E)
 
-track.center   # [E, 256, 2] arc-length-uniform centerline
-track.outer    # [E, 256, 2] outer border   (constant half_width offset)
-track.inner    # [E, 256, 2] inner border
+track.center   # [E, N_max, 2] centerline, arc-uniform then NaN-padded past track.count[e]
+track.outer    # [E, N_max, 2] outer border   (constant half_width offset)
+track.inner    # [E, N_max, 2] inner border
 track.valid    # [E] bool — True where the track relaxed to a valid constant-width band
+track.count    # [E] int  — real points per track (the rest of each row is NaN padding)
 ```
 
 Only the **Bézier** generator is supported (`config.generator="bezier"`, the default);
 the legacy Fourier generator is not part of the Warp pipeline.
 
-### Output modes
+### Output (constant spacing)
 
-Two output modes (set via `config.output_mode`): `fixed` (default) gives every track
-exactly `num_points` points; `constant_spacing` gives each track a per-track count
-`round(perimeter/spacing)` (with `spacing` ≈ `0.6*half_width`, capped at `N_max`). At a
-constant arc spacing the relaxation converges to smoother, higher *honest*-yield tracks in
-tight-width regimes. Configured via `output_mode`, `spacing`, and `N_max`.
+There is one output mode, `constant_spacing` — the only value `config.output_mode` accepts
+(`__post_init__` raises otherwise). Each track is emitted at a constant arc *spacing* rather
+than a constant point *count*: a per-track `count[e] = floor(perimeter/spacing)+1`, capped at
+`N_max` and NaN-padded past it. `spacing` defaults to `None` → auto `0.6*half_width` (the
+relax-friendly value; set it explicitly to override). The legacy `fixed` mode (constant
+`num_points`) was **dropped**: a fixed count over-resolves short tracks, so the Jacobi XPBD
+solve under-converges and the road self-overlaps; relaxing at a width-appropriate spacing
+converges to smooth, valid tracks on fewer nodes. `num_points` now only sets the intermediate
+dense-resample resolution. Size `N_max ≥ max(perimeter)/spacing + 1` so no track is truncated.
 
 ### The `Track` result
 
@@ -92,7 +99,7 @@ cross-section normal). Half-width is recovered as `‖outer − center‖`.
 | `arclen` | `[E, N]` | cumulative arc length (0 at index 0) |
 | `length` | `[E]` | closed-loop perimeter |
 | `valid` | `[E]` bool | per-track validity |
-| `count` | `[E]` int | real point count (`== N` in fixed mode; per-track `round(perimeter/spacing)` in constant_spacing) |
+| `count` | `[E]` int | real points per track (`floor(perimeter/spacing)+1`, capped at `N_max`); the rest of each `[N, 2]` row is NaN padding |
 
 ## Direct pure-Warp entry points
 
@@ -120,8 +127,9 @@ and its Warp kernels, the kernel conventions, the torch-as-test-oracle approach,
 the end-to-end CUDA graph is captured.
 
 In short: every stage is a Warp kernel over flat `[E*N]` arrays (one thread per element,
-env index `= tid // N`). Generation uses Warp's built-in RNG with a fixed-iteration,
-masked "accept-first-valid" regen loop so the whole thing is static and graph-capturable.
+env index `= tid // N`). Generation uses Warp's built-in RNG in a single static pass (one
+corner draw per env, no regen loop and no gate; any self-crossing track falls back to its
+corner polygon, which XPBD re-rounds) so the whole thing is graph-capturable.
 The existing torch implementation (`geometry`/`inflation`/`generators`/`relaxation`) is
 retained as the **verification oracle**: every Warp kernel has a test asserting it matches
 its torch counterpart on both `cpu` and `cuda`.
@@ -139,9 +147,10 @@ track_gen/
   generators.py       # torch Bézier/Fourier gen     │ runtime path
   relaxation.py       # torch relax backends        ┘
   rng_utils.py        # PerEnvSeededRNG (Warp RNG state); seeds the pipeline
+  rng_kernels.py      # Warp RNG kernels backing PerEnvSeededRNG
 tests/                # per-kernel oracle tests (cpu+cuda) + end-to-end + graph tests
-benchmarks/           # benchmark_pipeline.py (end-to-end), benchmark_relaxation.py (backends)
-viz/                  # plotting helpers (plot_tracks, make_report) + param_explorer.py (interactive Gradio UI)
+benchmarks/           # benchmark_pipeline.py (end-to-end), benchmark_yield_sweep.py, benchmark_relaxation.py (backends)
+viz/                  # plotting (plot_tracks, plot_ablations, make_report) + param_explorer.py (interactive Gradio UI)
 docs/                 # ARCHITECTURE.md + superpowers/ design/plan/handoff docs
 ```
 
@@ -160,7 +169,8 @@ docs/                 # ARCHITECTURE.md + superpowers/ design/plan/handoff docs
 **Conventions** (see `docs/ARCHITECTURE.md`): one thread per output element; flat `[E*N]`
 `wp.vec2f` arrays; env index `e = tid // N`; launch with `device=str(tensor.device)`.
 Post-generation stages are count-aware: they operate over flat `[E, N_max, 2]` buffers with
-a per-track `count[e]` (fixed mode is the `count == N_max` special case). Every new kernel
+a per-track `count[e]` (the fixed-`N` parity path the oracle tests use is `count == N_max`).
+Every new kernel
 ships with a test asserting equivalence to its torch oracle on `cpu` and `cuda`.
 
 ## Parameter explorer (UI)
@@ -174,10 +184,11 @@ regime / shape / resolution / relaxation knobs, a live track grid, and the valid
 ```
 
 **Using it:**
-- Controls are grouped — **Regime** (width / box), **Shape** (corner count / `rad` / `edgy`),
-  **Resolution & mode**, **Relaxation**, **Batch**.
-- **`output_mode`** toggles `fixed` ↔ `constant_spacing`; the resolution control swaps between
-  `num_points` and `spacing` + `N_max`.
+- Controls are grouped — **Regime** (width / box), **Shape** (corner count / `rad` / `edgy` /
+  `handle_clamp_frac`), **Resolution** (`spacing` / `N_max`), **Relaxation**, **Batch**.
+- Output is always **`constant_spacing`** (the only mode): **`spacing`** sets the arc step
+  (≈ `0.6*half_width`) and **`N_max`** the per-track point cap. **`handle_clamp_frac`** trades
+  Bézier-handle overshoot (the main self-crossing source) against corner roundness.
 - **Batch size** generates that many tracks (256–8192); the **valid-yield % + mean length /
   thickness / count** shown above the grid are computed over the *whole batch* for honest stats.
 - The grid shows one **page** of `grid_n × grid_n` tracks — **◀ prev / next ▶** page through the

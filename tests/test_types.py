@@ -17,7 +17,8 @@ def test_config_defaults_instantiate():
     assert cfg.num_points_per_segment == 30
     assert cfg.min_point_distance == 0.05
     assert math.isclose(cfg.min_angle, (12.5 / 180) * math.pi)
-    assert cfg.rad == 0.2
+    assert cfg.rad == 0.4
+    assert cfg.handle_clamp_frac == 0.4  # kept == rad so the clamp doesn't bind every segment
     assert cfg.edgy == 0.0
     assert cfg.scale == 1.0
     # Fourier params (reconciled names)

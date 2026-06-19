@@ -38,17 +38,23 @@ class TrackGenConfig:
     num_points_per_segment: int = 30
     min_point_distance: float = 0.05
     min_angle: float = (12.5 / 180) * math.pi
-    rad: float = 0.2
+    # Cubic-Bezier handle length as a fraction of the segment chord -- the main curviness
+    # dial. Only LIVE when rad <= handle_clamp_frac; if rad exceeds the clamp, the clamp binds
+    # every segment and rad does nothing (see handle_clamp_frac).
+    rad: float = 0.4
     edgy: float = 0.0
     scale: float = 1.0
     # Adaptive Bezier-handle clamp (F2): each corner's handle is capped at
     # handle_clamp_frac * (its shorter incident edge), so a long handle can't overshoot past a
-    # nearby corner and self-cross. Lower = fewer overshoot crossings but rounder->tighter
-    # corners (less shape diversity); ~0.10 takes single-attempt crossing-free ~96.4%->~99.2%
-    # at the fat-band regime with ~8% roundness narrowing. Set very large to disable. The
-    # generation gate + regen still guarantee 100% crossing-free on ACCEPTED tracks; this
-    # knob only trades corner roundness against regen pressure.
-    handle_clamp_frac: float = 0.10
+    # nearby corner and self-cross. The clamp does its narrow job (and leaves `rad` as the live
+    # curviness dial) only when handle_clamp_frac >= rad; set BELOW rad it binds EVERY segment
+    # and pins the handle to handle_clamp_frac*edge regardless of rad -- which is what produced
+    # near-polygonal (straight) tracks at the old 0.10 default. Kept == rad here so the clamp
+    # only trims genuine overshoot corners. Set very large to disable. Generation is single-pass
+    # (no gate, no regen): any track that still self-crosses falls back to its corner polygon
+    # (handle_clamp_frac=0, applied to the WHOLE track), which XPBD re-rounds -- so this knob
+    # trades corner roundness against how often that polygon fallback fires (~5% at 0.4).
+    handle_clamp_frac: float = 0.4
 
     # --- Fourier params ---
     num_harmonics: int = 5  # K
@@ -138,4 +144,4 @@ class Track:
     arclen: Tensor  # [E, N] cumulative arc length
     length: Tensor  # [E] total length per track
     valid: Tensor  # [E] bool validity mask
-    count: Tensor  # [E] int real point count (== N in fixed mode)
+    count: Tensor  # [E] int real points per track (constant_spacing; rest of each row is NaN pad)

@@ -82,23 +82,39 @@ def _attempt0_centerline(cfg, dev):
 
 @pytest.mark.parametrize("dev", DEVS)
 def test_adaptive_handle_clamp_drives_out_crossings(dev):
-    """F2: the adaptive per-corner handle clamp removes most residual Bezier-overshoot
-    self-crossings, lifting single-attempt crossing-free from ~96.4% (F1-alone) to ~99.2%
-    at the default frac=0.10. (Reaching ~100% needs near-polygonal corners, not worth the
-    shape cost; the gate + regen already guarantee acceptance.)"""
+    """F2: a TIGHT adaptive per-corner handle clamp removes most residual Bezier-overshoot
+    self-crossings -- single-attempt crossing-free ~96.4% (F1-alone) -> ~99.2% at frac=0.10.
+    The production default is now frac=0.4 (== rad, for curvier tracks), so assemble ALONE is
+    not ~always simple; the Fix B whole-track polygon fallback in generate_centerline_warp is
+    what guarantees the FINAL centerline is simple. Pin both: the clamp MECHANISM at a tight
+    frac (independent of the production default) and the Fix B end-to-end guarantee."""
     cfg = _fatband_cfg(2048, dev)
+    cfg.handle_clamp_frac = 0.10  # tight clamp: exercise the overshoot-removal mechanism
     rs = _attempt0_centerline(cfg, dev)
     crossing_free = (wpl.self_intersections(rs) == 0).float().mean().item()
     assert crossing_free >= 0.985, (
-        f"crossing-free rate {crossing_free:.4f} < 0.985 -- the adaptive handle clamp "
+        f"crossing-free rate {crossing_free:.4f} < 0.985 -- a tight handle clamp "
         f"should remove most Bezier overshoot (F1-alone is ~0.964)")
+
+    # Fix B is the production guarantee: at the default clamp the assembled centerline still
+    # self-crosses sometimes, but the whole-track polygon fallback drives the FINAL centerline
+    # to ~always simple.
+    seeds = torch.arange(cfg.num_envs, dtype=torch.int32, device=dev)
+    centerline, _ = wpl.generate_centerline_warp(seeds, _fatband_cfg(2048, dev))
+    final_simple = (wpl.self_intersections(centerline) == 0).float().mean().item()
+    assert final_simple >= 0.999, (
+        f"Fix B polygon fallback should make the final centerline ~always simple, "
+        f"got {final_simple:.4f}")
 
 
 @pytest.mark.parametrize("dev", DEVS)
 def test_handle_clamp_preserves_shape_diversity(dev):
-    """The clamp must not collapse shape diversity: at the default frac the per-track area
-    spread stays within ~15% of the unclamped (frac=inf) spread."""
+    """The clamp must not collapse shape diversity: at the production default frac (== rad)
+    the per-track area spread stays within ~15% of the unclamped (frac=inf) spread. (At the
+    old 0.10 default the clamp bound EVERY segment and did throttle diversity; the default is
+    now 0.4 so the clamp only trims genuine overshoot corners.)"""
     cfg = _fatband_cfg(2048, dev)
+    default_frac = cfg.handle_clamp_frac  # production default (== rad); read before mutation
     seeds = torch.arange(cfg.num_envs, dtype=torch.int32, device=dev)
     count = wpl.corner_count_sample(seeds, 0, cfg)
     corners = wpl.ccw_sort(wpl.corner_sample(seeds, 0, cfg), count)
@@ -112,7 +128,7 @@ def test_handle_clamp_preserves_shape_diversity(dev):
         area = 0.5 * (x * yn - xn * y).nansum(1).abs()
         return area.std().item()
 
-    clamped = area_std(0.10)
+    clamped = area_std(default_frac)
     unclamped = area_std(1.0e9)
     assert clamped >= 0.85 * unclamped, (
         f"area spread collapsed under the clamp: {clamped:.2f} < 0.85*{unclamped:.2f}")

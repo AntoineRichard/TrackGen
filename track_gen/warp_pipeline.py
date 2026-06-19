@@ -1086,13 +1086,13 @@ def corner_count_sample(seeds: torch.Tensor, attempt: int, config) -> torch.Tens
 
 
 def generate_centerline_warp(seeds: torch.Tensor, config):
-    """Static, fixed-iteration, masked accept-first-valid centerline generation.
+    """Single-pass centerline generation -- no regen loop, no generation gate.
 
     Pure-Warp drop-in for BezierCenterlineGenerator.generate with the downstream final
-    arc-length resample to ``num_points`` FUSED in (returns the 256-resampled centerline
-    directly). Composes the verified wrappers in the oracle's order: per attempt sample
-    corners -> ccw_sort -> sample a per-env corner count -> assemble dense (NaN-pruned) ->
-    gate (angle & turn & finite & simple) -> resample the gated dense to num_points.
+    arc-length resample to ``num_points`` FUSED in (returns the resampled centerline
+    directly). Composes the verified wrappers in the oracle's order: sample corners ->
+    sample a per-env corner count -> prune-then-sort ccw_sort(raw, count) -> assemble the
+    closed Bezier (F1 wrap + F2 handle clamp, NaN-pruned) -> resample dense to num_points.
 
     SINGLE PASS -- no regen loop, no generation gating. One corner draw per env; the only
     "fix" is Fix B: a track whose assembled centerline self-crosses falls back to its CORNER
@@ -1147,7 +1147,8 @@ def generate_tracks_warp(config, seeds: torch.Tensor):
 
       1. ``generate_centerline_warp`` -> [E, N, 2] centerline already arc-length resampled
          to ``num_points`` (the oracle's dense->N resample is fused in) plus the [E] bool
-         generation flag. Never-accepted envs carry an all-NaN centerline row.
+         generation flag (all True: single-pass generation does not gate; self-crossers fall
+         back to their corner polygon, so every env carries a real, ~always-simple centerline).
       2. Relax: band = round(2*half_width / mean_seg_len).clamp_min(1) and rest length
          L0 = perimeter/N (mean_seg_len), then ``warp_relax.xpbd_solve`` (a fused pure-Warp
          XPBD solve that runs on cpu AND cuda; it is called DIRECTLY, not via the torch
@@ -1157,8 +1158,9 @@ def generate_tracks_warp(config, seeds: torch.Tensor):
       3. ``resample_uniform`` re-uniformizes (matches relaxation._relax_xpbd's final resample).
       4. ``inflate_warp`` builds the Track, with the generation flag passed as ``valid``.
 
-    Invalid (never-accepted) envs propagate NaN through relax + resample, so inflate_warp's
-    validity gate marks them invalid (no_nan=False AND gen_valid=False). This is the intended
+    Generation no longer gates (gen_valid is all True), so final validity is decided purely by
+    inflate_warp's geometric gate (turning ~= 2pi, thickness >= (1-relax_tol)*half_width, width
+    floor, no-NaN). This is the intended
     static-batch behaviour: a single fixed-size launch, no per-env host branching, fully
     graph-capturable on cuda. Validated by YIELD / WIDTH / SHAPE aggregates (Warp RNG produces
     different tracks than the torch oracle, so there is no per-env allclose).
@@ -1227,7 +1229,8 @@ def assemble(corners: torch.Tensor, count: torch.Tensor, config) -> torch.Tensor
     Args:
         corners: [E, P, 2] float32 ccw-ordered corners (P == config.max_num_points).
         count:   [E] int real-corner count per env; rows >= count are pruned to NaN.
-        config:  TrackGenConfig (uses edgy, rad, max_num_points, num_points_per_segment).
+        config:  TrackGenConfig (uses edgy, rad, handle_clamp_frac, max_num_points,
+                 num_points_per_segment).
 
     Returns:
         [E, P * num_points_per_segment, 2] float32 dense closed centerline (NaN where pruned).

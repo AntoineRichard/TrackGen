@@ -14,8 +14,8 @@ from viz import param_explorer as px
 
 def _params(**over):
     p = dict(half_width=0.5, scale=10.0, min_num_points=9, max_num_points=13, rad=0.2, edgy=0.0,
-             num_points=256, spacing=0.30, n_max=384,
-             relax_iters=40, max_regen_iters=3, relax_sep_relax=1.0, relax_spc_relax=1.0,
+             handle_clamp_frac=0.10, num_points=256, spacing=0.30, n_max=384,
+             relax_iters=40, relax_sep_relax=1.0, relax_spc_relax=1.0,
              relax_bend_relax=1.5, relax_margin=0.15, grid_n=3, seed=0, batch_size=16)
     p.update(over)
     return p
@@ -27,6 +27,7 @@ def test_build_config_maps_and_clamps():
     assert cfg.num_envs == 16  # batch_size=16 from _params default
     assert cfg.output_mode == "constant_spacing"  # the only supported mode
     assert abs(cfg.half_width - 0.5) < 1e-9 and abs(cfg.scale - 10.0) < 1e-9
+    assert abs(cfg.handle_clamp_frac - 0.10) < 1e-9  # the F2 overshoot-clamp knob round-trips
     cfg2 = px.build_config(_params(spacing=0.3, n_max=384))
     assert cfg2.output_mode == "constant_spacing" and cfg2.N_max == 384
     assert abs(cfg2.spacing - 0.3) < 1e-9
