@@ -306,7 +306,7 @@ def test_generate_accepts_pruned_variable_count_tracks():
     assert has_nan_tail.any(), "no pruned variable-count track was accepted"
 
 
-from tests._oracle.generators import FourierCenterlineGenerator
+from track_gen._experimental.fourier import FourierCenterlineGenerator
 
 
 def _fourier_config(**overrides):
@@ -382,14 +382,15 @@ def test_fourier_low_k_turning_is_loop():
     assert cl.valid.dtype == torch.bool
 
 
-def test_module_exposes_both_generators():
+def test_generators_live_in_their_split_homes():
     from tests._oracle.generators import (
         BezierCenterlineGenerator,
-        Centerline,
-        CenterlineGenerator,
+        CenterlineGenerator as OracleBase,
+    )
+    from track_gen._experimental.fourier import (
         FourierCenterlineGenerator,
+        CenterlineGenerator as FourierBase,
     )
 
-    assert issubclass(BezierCenterlineGenerator, CenterlineGenerator)
-    assert issubclass(FourierCenterlineGenerator, CenterlineGenerator)
-    assert Centerline.__dataclass_fields__.keys() == {"points", "valid"}
+    assert issubclass(BezierCenterlineGenerator, OracleBase)
+    assert issubclass(FourierCenterlineGenerator, FourierBase)

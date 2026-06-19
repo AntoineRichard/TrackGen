@@ -56,7 +56,8 @@ class TrackGenConfig:
     # trades corner roundness against how often that polygon fallback fires (~5% at 0.4).
     handle_clamp_frac: float = 0.4
 
-    # --- Fourier params ---
+    # --- Fourier params (EXPERIMENTAL: consumed only by track_gen._experimental.fourier;
+    #     the supported Warp pipeline ignores them) ---
     num_harmonics: int = 5  # K
     decay_p: int = 2  # decay exponent: amplitude ~ amp / k**decay_p
     amplitude: float = 1.0
