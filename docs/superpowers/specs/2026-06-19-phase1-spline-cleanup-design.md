@@ -1,10 +1,37 @@
 # Phase-1 spline self-intersection cleanup — design
 
 **Date:** 2026-06-19
-**Status:** draft (brainstorm) — pending approval
-**Branch:** `feat/phase1-closed-assemble` (builds on F1+F2, commit `dd46b24`)
+**Status:** IMPLEMENTED (diverged from the original draft — see "What was actually built")
+**Branch:** `feat/phase1-spline-cleanup` (builds on F1+F2)
 **Goal:** Close the last ~0.6% of Phase-1 splines that self-intersect on a *clean* corner
 polygon, via two targeted fixes — without pruning/distorting the 99.4% of good tracks.
+
+## What was actually built (data-driven divergence from the draft below)
+
+The measurements changed the plan:
+
+- **Fix A (corner spacing) — SKIPPED.** A jitter sweep showed (1) the close-pair mechanism
+  is *not* a crossing driver (crossing-free was flat across jitter), and (2) the jitter-scale
+  variant halves *size* diversity. The corner-distance scatter showed no radius separates
+  crossers from valid/hairpin tracks. So Fix A was hygiene-only and was dropped.
+- **A prerequisite emerged: collinear-robust `self_intersections`.** The f32 detector
+  false-positived on near-collinear segments (296/2048 provably-simple corner polygons flagged;
+  f64: 0) — which would have broken Fix B's polygonal fallback. Fixed with a scale-relative
+  collinearity tolerance (`SELF_X_REL`), torch + Warp parity (commit `56c44a3`).
+- **Fix B — realised as a per-TRACK corner-polygon fallback, not per-piece straightening.**
+  Per-piece dense straightening over-fired (sub-resolution cusps) and re-created the F1
+  straight-chord crossing on long pieces. Instead: a track whose centerline self-crosses
+  reverts wholesale to its corner polygon (`handle_clamp_frac=0`, provably simple); XPBD
+  relaxation re-rounds it. Validated E=8192: all 49 crossers rescued.
+- **Regen loop dropped.** `generate_centerline_warp` is now single-pass + Fix B, `valid`
+  all-True (no generation gate); final validity is post-relaxation. → **99.93% valid
+  (E=4096), 0 self-crossings**, static / graph-capturable.
+- **Still open (follow-up):** drop the `fixed` output mode (constant_spacing only); optionally
+  loosen the thickness threshold for the ~0.07% marginal-curvature residuals.
+
+---
+
+_Original draft design (superseded in part) follows._
 
 ## Background (what we know)
 
