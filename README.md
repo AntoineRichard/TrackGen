@@ -131,8 +131,8 @@ In short: every stage is a Warp kernel over flat `[E*N]` arrays (one thread per 
 env index `= tid // N`). Generation uses Warp's built-in RNG in a single static pass (one
 corner draw per env, no regen loop and no gate; any self-crossing track falls back to its
 corner polygon, which XPBD re-rounds) so the whole thing is graph-capturable.
-The torch reference implementation (`geometry`/`inflation`/`generators`/`relaxation`) lives
-under `tests/_oracle/` and is **not** part of the shipped package — it serves purely as the
+The torch reference implementation (`tests._oracle.geometry` / `inflation` / `generators` /
+`relaxation`) lives under `tests/_oracle/` and is **not** part of the shipped package — it serves purely as the
 **verification oracle**: every Warp kernel has a test asserting it matches its torch
 counterpart on both `cpu` and `cuda`.
 
@@ -145,7 +145,7 @@ track_gen/
   _version.py
   _src/              # the Warp pipeline (private core)
     warp_pipeline.py warp_relax.py track_generator.py types.py rng_utils.py rng_kernels.py
-  _experimental/     # Fourier generator (unsupported, not on the Warp path)
+  _experimental/     # fourier.py — Fourier generator (unsupported, not on the Warp path)
 tests/
   _oracle/           # torch reference impl used to validate the Warp kernels
   test_*.py
