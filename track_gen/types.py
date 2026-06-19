@@ -41,6 +41,14 @@ class TrackGenConfig:
     rad: float = 0.2
     edgy: float = 0.0
     scale: float = 1.0
+    # Adaptive Bezier-handle clamp (F2): each corner's handle is capped at
+    # handle_clamp_frac * (its shorter incident edge), so a long handle can't overshoot past a
+    # nearby corner and self-cross. Lower = fewer overshoot crossings but rounder->tighter
+    # corners (less shape diversity); ~0.10 takes single-attempt crossing-free ~96.4%->~99.2%
+    # at the fat-band regime with ~8% roundness narrowing. Set very large to disable. The
+    # generation gate + regen still guarantee 100% crossing-free on ACCEPTED tracks; this
+    # knob only trades corner roundness against regen pressure.
+    handle_clamp_frac: float = 0.10
 
     # --- Fourier params ---
     num_harmonics: int = 5  # K

@@ -13,7 +13,7 @@ import numpy as np
 import torch
 from scipy.special import binom
 
-from .geometry import arc_length_resample, ccw_sort_count, safe_normalize, self_intersections, turning_number, vertex_tangents
+from .geometry import arc_length_resample, ccw_sort_count, safe_normalize, self_intersections, turning_number
 
 
 @dataclass
@@ -133,36 +133,15 @@ class BezierCenterlineGenerator(CenterlineGenerator):
         pruned = ccw_sort_count(points, count)  # sort first `count` about own centroid; NaN tail
         return pruned, count
 
-    def _cubic_bezier(self, p0, p1, p2, p3):
-        """Evaluate a batched cubic Bezier with the precomputed Bernstein basis.
-
-        Args:
-            p0, p1, p2, p3: each [E, 2] control points.
-
-        Returns:
-            [E, num_points_per_segment, 2] dense samples.
-        """
-        curve = (
-            torch.einsum("s,ed->esd", self.bernstein_0, p0)
-            + torch.einsum("s,ed->esd", self.bernstein_1, p1)
-            + torch.einsum("s,ed->esd", self.bernstein_2, p2)
-            + torch.einsum("s,ed->esd", self.bernstein_3, p3)
-        )
-        return curve
-
-    def _segment(self, c0, c1, t0, t1):
-        """Cubic Bezier from corner c0 (tangent t0) to corner c1 (tangent t1).
-
-        Inner handles sit at distance rad * chord along the corner tangents.
-        """
-        chord = torch.linalg.norm(c1 - c0, dim=1, keepdim=True)  # [E, 1]
-        handle = self.config.rad * chord
-        p1 = c0 + t0 * handle  # leave c0 along its tangent
-        p2 = c1 - t1 * handle  # arrive at c1 along its tangent
-        return self._cubic_bezier(c0, p1, p2, c1)
-
     def _assemble_centerline(self, corners: torch.Tensor) -> torch.Tensor:
         """Build the closed dense centerline from ccw-ordered (possibly NaN-padded) corners.
+
+        Closes the loop with a real cubic Bezier over ALL ``count`` real corners: vertex
+        tangents and segments wrap mod ``count`` (the number of finite corner rows), so the
+        closing segment (corner ``count-1`` -> corner ``0``) is a genuine Bezier rather than
+        the old straight chord that dropped the first & last corner. Rows ``i >= count`` are
+        NaN (the pruned tail); their segments stay NaN and are dropped by the downstream
+        arc-length resample.
 
         Args:
             corners: [E, P, 2]; NaN rows are pruned corners.
@@ -170,16 +149,54 @@ class BezierCenterlineGenerator(CenterlineGenerator):
         Returns:
             [E, P * num_points_per_segment, 2] closed dense polyline (NaN where pruned).
         """
-        P = corners.shape[1]
-        # Use the derived edgy-based blend weight self.p, NOT config.decay_p.
-        tangents = vertex_tangents(corners, self.p)  # [E, P, 2] unit, NaN at pruned
+        E, P, _ = corners.shape
+        device = corners.device
+        # count = number of real (finite) corner rows per env; clamp guards the wrap of a
+        # degenerate all-NaN env.
+        count = torch.isfinite(corners).all(dim=-1).sum(dim=1)             # [E]
+        cnt = count.clamp(min=1)
 
-        segments = []
-        for i in range(P):
-            j = (i + 1) % P  # wrap the last corner back to the first
-            seg = self._segment(corners[:, i], corners[:, j], tangents[:, i], tangents[:, j])
-            segments.append(seg)
-        return torch.cat(segments, dim=1)
+        row = torch.arange(P, device=device).unsqueeze(0).expand(E, -1)    # [E, P]
+        nxt = torch.where(row + 1 < cnt.unsqueeze(1), row + 1, torch.zeros_like(row))
+        prv = torch.where(row - 1 >= 0, row - 1, cnt.unsqueeze(1) - 1)
+
+        def _gather(t, idx):
+            return torch.gather(t, 1, idx.unsqueeze(-1).expand(-1, -1, t.size(-1)))
+
+        c_i = corners
+        c_next = _gather(corners, nxt)
+        c_prev = _gather(corners, prv)
+        # count-aware vertex tangents (geometry.vertex_tangents formula, wrapped mod count):
+        # tangent_i = normalize(p * dir(i->next) + (1-p) * dir(prev->i)), with the derived
+        # edgy-based blend weight self.p. NaN at pruned corners propagates via safe_normalize.
+        u_out = safe_normalize(c_next - c_i)
+        u_in = safe_normalize(c_i - c_prev)
+        tangents = safe_normalize(self.p * u_out + (1.0 - self.p) * u_in)   # [E, P, 2]
+        tan_next = _gather(tangents, nxt)
+
+        # Cubic Bezier per segment i: corner i (tangent i) -> next corner (tangent next),
+        # inner handles at rad*chord along the tangents. Segments with c_i NaN (i >= count)
+        # stay NaN. Layout [E, P, npseg, 2] -> [E, P*npseg, 2] matches the Warp _assemble_k.
+        chord = torch.linalg.norm(c_next - c_i, dim=-1, keepdim=True)       # [E, P, 1]
+        # F2 adaptive clamp: cap each corner's handle at handle_clamp_frac * (its shorter
+        # incident edge), so a long handle can't overshoot past a nearby corner and self-cross.
+        edge_in = torch.linalg.norm(c_i - c_prev, dim=-1, keepdim=True)
+        scale = torch.minimum(chord, edge_in)                              # [E, P, 1] shorter edge
+        scale_next = _gather(scale, nxt)
+        # getattr default disables the clamp for lightweight test configs lacking the field;
+        # mirrors the Warp assemble() wrapper so oracle<->warp parity holds on any config.
+        frac = getattr(self.config, "handle_clamp_frac", 1.0e9)
+        h0 = torch.minimum(self.config.rad * chord, frac * scale)
+        h1 = torch.minimum(self.config.rad * chord, frac * scale_next)
+        p1 = c_i + tangents * h0
+        p2 = c_next - tan_next * h1
+        curve = (
+            torch.einsum("s,epd->epsd", self.bernstein_0, c_i)
+            + torch.einsum("s,epd->epsd", self.bernstein_1, p1)
+            + torch.einsum("s,epd->epsd", self.bernstein_2, p2)
+            + torch.einsum("s,epd->epsd", self.bernstein_3, c_next)
+        )
+        return curve.reshape(E, P * self.config.num_points_per_segment, 2)
 
     def _corner_angles(self, corners: torch.Tensor) -> torch.Tensor:
         """Interior angle at each corner via clamped arccos (NaN-safe).

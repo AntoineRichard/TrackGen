@@ -800,6 +800,7 @@ if _HAVE_WARP:
         P: int,
         p: float,
         tangents: wp.array(dtype=wp.vec2f),
+        scale: wp.array(dtype=wp.float32),
     ):
         # One thread per corner t (dim = E*P); e = env index, i = corner-within-env.
         # Mirrors geometry.vertex_tangents: u_out_i = dir(i -> i+1), u_in_i = dir(i-1 -> i)
@@ -811,22 +812,30 @@ if _HAVE_WARP:
         i = t % P
         b = e * P
         cnt = count[e]
+        cm = wp.max(cnt, 1)                       # guard %0 for degenerate (cnt==0) envs
         c_i = _pruned_corner(c, b, i, cnt)
-        c_next = _pruned_corner(c, b, (i + 1) % P, cnt)
-        c_prev = _pruned_corner(c, b, (i + P - 1) % P, cnt)
+        # Wrap mod cnt (not P): a real corner's circular neighbours are real corners, so the
+        # closing edge (corner cnt-1 -> corner 0) is a genuine segment. (Mod-P-with-NaN would
+        # poison the seam tangents and drop the first/last corner + close with a straight chord.)
+        c_next = _pruned_corner(c, b, (i + 1) % cm, cnt)
+        c_prev = _pruned_corner(c, b, (i + cm - 1) % cm, cnt)
         u_out = _safe_normalize2(c_next - c_i)
         u_in = _safe_normalize2(c_i - c_prev)
         blended = p * u_out + (1.0 - p) * u_in
         tangents[t] = _safe_normalize2(blended)
+        # Per-corner scale = shorter incident edge; the F2 handle clamp caps handles by it.
+        scale[t] = wp.min(wp.length(c_next - c_i), wp.length(c_i - c_prev))
 
     @wp.kernel
     def _assemble_k(
         c: wp.array(dtype=wp.vec2f),
         count: wp.array(dtype=wp.int32),
         tangents: wp.array(dtype=wp.vec2f),
+        scale: wp.array(dtype=wp.float32),
         P: int,
         npseg: int,
         rad: float,
+        clamp_frac: float,
         out: wp.array(dtype=wp.vec2f),
     ):
         # One thread per dense sample t (dim = E*P*npseg). Decodes (e, segment i, sample s),
@@ -843,16 +852,23 @@ if _HAVE_WARP:
         s = rem % npseg
         b = e * P
         cnt = count[e]
+        cm = wp.max(cnt, 1)                       # guard %0 for degenerate (cnt==0) envs
 
         c0 = _pruned_corner(c, b, i, cnt)
-        c1 = _pruned_corner(c, b, (i + 1) % P, cnt)
+        # Closing segment i == cnt-1 wraps to corner 0 -> a real cubic Bezier (not the old
+        # straight chord). Segments i >= cnt keep c0 = NaN and drop out via the resample.
+        inext = (i + 1) % cm
+        c1 = _pruned_corner(c, b, inext, cnt)
         t0 = tangents[b + i]
-        t1 = tangents[b + (i + 1) % P]
+        t1 = tangents[b + inext]
 
         chord = wp.length(c1 - c0)
-        handle = rad * chord
-        p1 = c0 + t0 * handle    # leave c0 along its tangent
-        p2 = c1 - t1 * handle    # arrive at c1 along its tangent
+        # F2: clamp each end's handle by clamp_frac * (that corner's shorter incident edge),
+        # so a long handle can't overshoot past a nearby corner and self-cross.
+        h0 = wp.min(rad * chord, clamp_frac * scale[b + i])
+        h1 = wp.min(rad * chord, clamp_frac * scale[b + inext])
+        p1 = c0 + t0 * h0    # leave c0 along its tangent
+        p2 = c1 - t1 * h1    # arrive at c1 along its tangent
 
         u = float(s) / float(npseg - 1)
         omu = 1.0 - u
@@ -1260,12 +1276,16 @@ def assemble(corners: torch.Tensor, count: torch.Tensor, config) -> torch.Tensor
     cnt = wp.from_torch(count.to(torch.int32).contiguous(), dtype=wp.int32)
     tan_t = torch.empty(E * P, 2, device=corners.device, dtype=torch.float32)
     wp_tan = wp.from_torch(tan_t, dtype=wp.vec2f)
+    scale_t = torch.empty(E * P, device=corners.device, dtype=torch.float32)
+    wp_scale = wp.from_torch(scale_t, dtype=wp.float32)
     out_t = torch.empty(E * P * npseg, 2, device=corners.device, dtype=torch.float32)
     wp_out = wp.from_torch(out_t, dtype=wp.vec2f)
 
-    wp.launch(_vertex_tangents_k, dim=E * P, inputs=[cf, cnt, P, float(p), wp_tan], device=dev)
+    clamp_frac = float(getattr(config, "handle_clamp_frac", 1.0e9))
+    wp.launch(_vertex_tangents_k, dim=E * P, inputs=[cf, cnt, P, float(p), wp_tan, wp_scale], device=dev)
     wp.launch(_assemble_k, dim=E * P * npseg,
-              inputs=[cf, cnt, wp_tan, P, npseg, float(config.rad), wp_out], device=dev)
+              inputs=[cf, cnt, wp_tan, wp_scale, P, npseg, float(config.rad), clamp_frac, wp_out],
+              device=dev)
     _sync(corners.device)
     return out_t.view(E, P * npseg, 2)
 
