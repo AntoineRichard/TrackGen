@@ -41,19 +41,22 @@ def test_generate_tracks_warp_rejects_unsupported_relax_knobs():
 @pytest.mark.parametrize("dev", DEVS)
 def test_generate_tracks_warp_e2e(dev):
     E = _E_BY_DEV[dev]
-    N = 256
+    # constant_spacing output: arrays are [E, N_max, 2] NaN-padded with a per-env real
+    # point count in track.count (real points live in center[e, :count[e]]). N_max is the
+    # padded width, NOT a per-env point count, so it is set explicitly for a deterministic
+    # shape; spacing is auto 0.6*half_width.
+    N_max = 256
     hw = 0.03
-    config = TrackGenConfig(num_envs=E, half_width=hw)
-    assert config.num_points == N
+    config = TrackGenConfig(num_envs=E, half_width=hw, N_max=N_max)
 
     seeds = torch.arange(E, device=dev)
     track = wpl.generate_tracks_warp(config, seeds)
 
-    # --- type + shapes ---
+    # --- type + shapes (all arrays padded to N_max; count varies per env) ---
     assert isinstance(track, Track)
     for field in ("outer", "center", "inner", "tangent", "normal"):
-        assert getattr(track, field).shape == (E, N, 2), field
-    assert track.arclen.shape == (E, N)
+        assert getattr(track, field).shape == (E, N_max, 2), field
+    assert track.arclen.shape == (E, N_max)
     assert track.length.shape == (E,)
     assert track.valid.shape == (E,)
     assert track.count.shape == (E,)
@@ -62,14 +65,26 @@ def test_generate_tracks_warp_e2e(dev):
     yield_frac = track.valid.float().mean().item()
     assert yield_frac >= 0.9, f"{dev} yield {yield_frac} < 0.9"
 
-    # --- constant width on valid envs ---
-    w = torch.linalg.norm(track.outer - track.center, dim=-1)  # [E, N]
+    # --- count is a sane per-env real-point count in (0, N_max] for valid envs ---
     if track.valid.any():
-        wv = w[track.valid]
+        cv = track.count[track.valid]
+        assert (cv > 0).all() and (cv <= N_max).all(), \
+            f"{dev} count out of range: {cv.min()}..{cv.max()} (N_max={N_max})"
+
+    # --- constant width on valid envs, count-aware ---
+    # The real points are center[e, :count[e]]; everything from count[e] onward is NaN
+    # padding. Mask to the finite real points per env before comparing the width to hw.
+    w = torch.linalg.norm(track.outer - track.center, dim=-1)  # [E, N_max], NaN-padded
+    real = torch.isfinite(track.center).all(dim=-1)  # [E, N_max] real-point mask
+    for e in torch.nonzero(track.valid, as_tuple=False).flatten().tolist():
+        cnt = int(track.count[e].item())
+        # The finite mask must exactly cover the first count[e] points and nothing else.
+        assert bool(real[e, :cnt].all()), f"{dev} env {e}: real points must be finite"
+        assert not bool(real[e, cnt:].any()), \
+            f"{dev} env {e}: padding past count[e]={cnt} must be NaN"
+        wv = w[e, :cnt]
         assert torch.allclose(wv, torch.full_like(wv, hw), atol=1e-4), \
-            f"{dev} width not constant: range [{wv.min()}, {wv.max()}]"
-        # valid tracks must be finite.
-        assert torch.isfinite(track.center[track.valid]).all()
+            f"{dev} env {e} width not constant: range [{wv.min()}, {wv.max()}]"
 
     # --- best-effort torch-oracle yield comparison ---
     # The Warp pipeline uses Warp RNG (different tracks than the torch oracle), so we

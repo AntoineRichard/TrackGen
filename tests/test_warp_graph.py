@@ -29,8 +29,11 @@ from track_gen import warp_pipeline as wpp  # noqa: E402
 
 def _cfg(E: int) -> TrackGenConfig:
     # Modest iters keep the test fast; the capture mechanism is independent of count.
+    # constant_spacing is the only supported mode; fix spacing + N_max so the captured
+    # graph's static N_max buffer is deterministic (and large enough for every env).
     return TrackGenConfig(
-        num_envs=E, device="cuda:0", output_mode="fixed",
+        num_envs=E, device="cuda:0", output_mode="constant_spacing",
+        spacing=0.6, N_max=256,
         relax_solver="xpbd", smooth_finish=False,
         relax_iters=20, max_regen_iters=4,
     )
@@ -92,6 +95,7 @@ def test_eager_path_still_syncs_unchanged():
     cfg = _cfg(E)
     t = wpp.generate_tracks_warp(cfg, _seeds(E, 7))
     torch.cuda.synchronize()
-    assert t.center.shape == (E, cfg.num_points, 2)
+    # constant_spacing output is NaN-padded to [E, N_max, 2] (N_max, NOT num_points).
+    assert t.center.shape == (E, cfg.N_max, 2)
     # Flag must be restored to False after a (separate) capture, not left set.
     assert wpp._CAPTURING is False

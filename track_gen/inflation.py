@@ -28,25 +28,16 @@ def _valid_mask_from_points(points: torch.Tensor) -> torch.Tensor:
 
 
 def _resample_stage(centerline, config) -> _ResampleResult:
-    """Masked arc-length resample of the centerline per config.output_mode.
+    """Masked constant-spacing arc-length resample of the centerline.
 
-    fixed mode            -> num = config.num_points, count == num.
-    constant_spacing mode -> spacing = config.spacing, padded to config.N_max with NaN.
+    Spacing = config.spacing (~0.6*half_width), padded to config.N_max with NaN; the per-env
+    real-point count is returned. (The legacy fixed-count mode was dropped.)
     """
     points = centerline.points  # [E, M_max, 2]
     valid_mask = _valid_mask_from_points(points)  # [E, M_max]
-
-    if config.output_mode == "fixed":
-        resampled, count = geometry.arc_length_resample(
-            points, num=config.num_points, valid_mask=valid_mask
-        )
-    elif config.output_mode == "constant_spacing":
-        resampled, count = geometry.arc_length_resample(
-            points, spacing=config.spacing, valid_mask=valid_mask, n_max=config.N_max
-        )
-    else:
-        raise ValueError(f"Unknown output_mode: {config.output_mode!r}")
-
+    resampled, count = geometry.arc_length_resample(
+        points, spacing=config.spacing, valid_mask=valid_mask, n_max=config.N_max
+    )
     return _ResampleResult(center=resampled, count=count)
 
 

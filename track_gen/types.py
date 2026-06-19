@@ -90,9 +90,11 @@ class TrackGenConfig:
     smooth_finish_tau: float = 0.2
 
     # --- Output params ---
-    num_points: int = 256  # N
-    output_mode: str = "fixed"  # one of {"fixed", "constant_spacing"}
-    spacing: float = 0.1            # constant_spacing arc-length step (m). Warp relax: set ~0.6*half_width.
+    num_points: int = 256  # N: intermediate dense->resample resolution before constant-spacing
+    output_mode: str = "constant_spacing"  # the only supported mode (see __post_init__)
+    # constant_spacing arc-length step (m). None -> auto 0.6*half_width (the relax-friendly
+    # value); set explicitly to override. A fixed default would be wrong across half_widths.
+    spacing: float | None = None
     N_max: int = 256
 
     # --- Robustness params ---
@@ -101,9 +103,17 @@ class TrackGenConfig:
     w_floor: float = 1e-3  # validity: every real point must have w > w_floor
 
     def __post_init__(self):
-        if self.output_mode not in ("fixed", "constant_spacing"):
+        # Only constant_spacing is supported: the legacy "fixed" (constant point COUNT) mode
+        # over-resolved the centerline (jagged XPBD -> folded roads) and was dropped in favour
+        # of constant link SIZE (~0.6*half_width), which relaxes to smoother, higher-yield tracks.
+        if self.output_mode != "constant_spacing":
             raise ValueError(
-                f"output_mode must be 'fixed' or 'constant_spacing', got {self.output_mode!r}")
+                f"output_mode must be 'constant_spacing' (the only supported mode), "
+                f"got {self.output_mode!r}")
+        # Auto-couple spacing to half_width (~0.6*half_width relaxes to smoother tracks);
+        # a fixed spacing default would be wrong as half_width varies (too coarse -> degenerate).
+        if self.spacing is None:
+            self.spacing = 0.6 * self.half_width
 
 
 @dataclass

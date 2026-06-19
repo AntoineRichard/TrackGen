@@ -1167,9 +1167,9 @@ def generate_tracks_warp(config, seeds: torch.Tensor):
     ``smooth_finish`` must be False (asserted); ``relax_band`` is honored if set.
 
     Args:
-        config: TrackGenConfig (output_mode must be "fixed"; relax_solver="xpbd",
-                smooth_finish=False; uses num_points, half_width, relax_band and the
-                fields the composed stages read).
+        config: TrackGenConfig (output_mode is "constant_spacing"; relax_solver="xpbd",
+                smooth_finish=False; uses num_points, half_width, spacing, N_max, relax_band
+                and the fields the composed stages read).
         seeds:  [E] int per-env base seed (the only per-env input).
 
     Returns:
@@ -1183,61 +1183,34 @@ def generate_tracks_warp(config, seeds: torch.Tensor):
     assert not config.smooth_finish, \
         "generate_tracks_warp does not implement the smooth_finish (tp_sobolev) pass"
 
-    N = int(config.num_points)
     hw = float(config.half_width)
 
-    centerline, gen_valid = generate_centerline_warp(seeds, config)   # [E, N, 2], [E] bool
+    centerline, gen_valid = generate_centerline_warp(seeds, config)   # [E, num_points, 2], [E] bool
     E = centerline.shape[0]
     dev = str(centerline.device)
 
-    # --- constant_spacing branch: resample to ~0.6*half_width spacing, then relax + inflate ---
-    if config.output_mode == "constant_spacing":
-        n_max = int(config.N_max)
-        centerline, count = resample_constant_spacing(centerline, float(config.spacing), n_max)
-        E = centerline.shape[0]
-        band = torch.empty(E, device=centerline.device, dtype=torch.int32)
-        L0 = torch.empty(E, device=centerline.device, dtype=torch.float32)
-        cl_w = wp.from_torch(centerline.reshape(E * n_max, 2).contiguous(), dtype=wp.vec2f)
-        count_i32 = count.to(torch.int32)
-        wp.launch(_band_l0_k, dim=E, inputs=[cl_w, n_max, 2.0 * hw,
-                  wp.from_torch(band, dtype=wp.int32), wp.from_torch(L0, dtype=wp.float32),
-                  wp.from_torch(count_i32, dtype=wp.int32)], device=dev)
-        if config.relax_band is not None:
-            wp.launch(_fill_i32_k, dim=E, inputs=[wp.from_torch(band, dtype=wp.int32),
-                      int(config.relax_band)], device=dev)
-        _sync(centerline.device)
-        relaxed = warp_relax.xpbd_solve(centerline, band, L0, config, count=count_i32)
-        relaxed = resample_uniform(relaxed, n_max, count=count_i32)
-        return inflate_warp(relaxed, config, valid=gen_valid, count=count_i32)
-
-    # --- fixed path (default): bit-identical to pre-constant_spacing behaviour ---
-    # band = round(2*hw / (perimeter/N)).clamp_min(1) and rest length L0 = perimeter/N,
-    # BOTH computed in one pure-Warp kernel (folds _mean_seg_len_torch + the nan_to_num /
-    # round / long / clamp_min torch glue). L0 stays NaN for invalid envs and flows untouched
-    # through xpbd; the band's isfinite guard yields a valid int band there.
+    # Resample to ~0.6*half_width constant spacing, then relax + inflate (count-aware).
+    # band = round(2*hw / L0).clamp_min(1) and rest length L0 = perimeter/count, both from one
+    # pure-Warp kernel; L0 stays NaN for invalid envs and flows untouched through xpbd while
+    # the band's isfinite guard yields a valid int band there.
+    n_max = int(config.N_max)
+    centerline, count = resample_constant_spacing(centerline, float(config.spacing), n_max)
+    E = centerline.shape[0]
     band = torch.empty(E, device=centerline.device, dtype=torch.int32)
     L0 = torch.empty(E, device=centerline.device, dtype=torch.float32)
-    cl_w = wp.from_torch(centerline.reshape(E * N, 2).contiguous(), dtype=wp.vec2f)
-    band_w = wp.from_torch(band, dtype=wp.int32)
-    l0_w = wp.from_torch(L0, dtype=wp.float32)
-    # Parity: pass n_max=N and count=full(E,N) so the count-aware _band_l0_k takes the same
-    # code path it always did (count[e]==N for all e -> operationally identical).
-    count_full = torch.empty(E, device=centerline.device, dtype=torch.int32)
-    wp.launch(_fill_i32_k, dim=E, inputs=[wp.from_torch(count_full, dtype=wp.int32), N],
-              device=dev)
-    wp.launch(_band_l0_k, dim=E, inputs=[cl_w, N, 2.0 * hw, band_w, l0_w,
-              wp.from_torch(count_full, dtype=wp.int32)], device=dev)
-
+    cl_w = wp.from_torch(centerline.reshape(E * n_max, 2).contiguous(), dtype=wp.vec2f)
+    count_i32 = count.to(torch.int32)
+    wp.launch(_band_l0_k, dim=E, inputs=[cl_w, n_max, 2.0 * hw,
+              wp.from_torch(band, dtype=wp.int32), wp.from_torch(L0, dtype=wp.float32),
+              wp.from_torch(count_i32, dtype=wp.int32)], device=dev)
     if config.relax_band is not None:
-        # Honor an explicit per-track band override exactly like relaxation._band: overwrite
-        # band with the config constant (L0 from _band_l0_k above is still the xpbd rest
-        # length). Host branch on a CONFIG value (not tensor data) -> capture-safe.
-        wp.launch(_fill_i32_k, dim=E, inputs=[band_w, int(config.relax_band)], device=dev)
-
+        # Honor an explicit per-track band override (host branch on a CONFIG value -> capture-safe).
+        wp.launch(_fill_i32_k, dim=E, inputs=[wp.from_torch(band, dtype=wp.int32),
+                  int(config.relax_band)], device=dev)
     _sync(centerline.device)
-    relaxed = warp_relax.xpbd_solve(centerline, band, L0, config)     # pure Warp (cpu+cuda)
-    relaxed = resample_uniform(relaxed, N)                            # final re-uniform
-    return inflate_warp(relaxed, config, valid=gen_valid)
+    relaxed = warp_relax.xpbd_solve(centerline, band, L0, config, count=count_i32)
+    relaxed = resample_uniform(relaxed, n_max, count=count_i32)
+    return inflate_warp(relaxed, config, valid=gen_valid, count=count_i32)
 
 
 def assemble(corners: torch.Tensor, count: torch.Tensor, config) -> torch.Tensor:
@@ -1954,12 +1927,12 @@ def inflate_warp(center: torch.Tensor, config, valid: torch.Tensor | None = None
     resample -> frame+curvature -> constant width -> offset -> validity -> arclength ->
     assemble Track.
 
-    Fixed path (count=None, output_mode="fixed"):
+    count=None convenience path (generic fixed-N, not tied to output_mode):
         Requires center.shape[1] == config.num_points and no NaN. All sub-stages run
         with a full count tensor (count[e] == N for all e) so they take their parity
-        path. Output is bit-identical to the pre-count-aware behaviour.
+        path. For direct callers handing in a constant-N, fully-finite centerline.
 
-    Constant-spacing path (count provided, output_mode="constant_spacing"):
+    Constant-spacing path (count provided -- the pipeline always uses this):
         center is [E, n_max, 2] NaN-padded (real points in [0, count[e])).
         n_max = center.shape[1]. count is threaded into every sub-stage so each
         operates on only the real points and NaN-pads the rest. Track.count = count;
@@ -1985,8 +1958,9 @@ def inflate_warp(center: torch.Tensor, config, valid: torch.Tensor | None = None
     hw = float(config.half_width)
 
     if count is None:
-        # --- Fixed path: bit-identical to pre-count-aware behaviour ---
-        assert config.output_mode == "fixed", "inflate_warp: count=None requires output_mode='fixed'"
+        # --- count=None convenience: a fixed-N, fully-finite centerline (every env keeps all
+        # N points). Not tied to any output_mode -- the pipeline always passes an explicit
+        # count now; this branch is for direct callers handing in a constant-N centerline. ---
         assert center.shape[1] == config.num_points, "center N must equal config.num_points"
         N = n_max
 

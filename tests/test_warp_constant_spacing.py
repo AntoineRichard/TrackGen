@@ -284,20 +284,35 @@ def _mean_jag(center, count):
 
 
 def test_generate_tracks_constant_spacing_smoother_and_valid():
+    # Originally a fixed-256 vs constant_spacing comparison ("constant spacing lifts yield and
+    # smooths the fat-band regime where fixed-256 left ~30% jagged-invalid"). The fixed mode was
+    # dropped (constructing output_mode="fixed" now raises), so the relative comparison is gone;
+    # repurposed to assert the absolute end-to-end properties constant_spacing delivers in that
+    # same fat-band regime: near-total yield and smooth (low resolution-normalised turning) valid
+    # tracks. These bounds are what the original "win" was demonstrating.
     dev = "cpu"
     E = 96
     seeds = torch.arange(E, dtype=torch.int32, device=dev)
     base = dict(num_envs=E, num_points=256, half_width=0.5, scale=10.0, relax_iters=150, device=dev)
-    fixed = wpl.generate_tracks_warp(TrackGenConfig(output_mode="fixed", **base), seeds)
     cs = wpl.generate_tracks_warp(TrackGenConfig(output_mode="constant_spacing", spacing=0.30,
                                                  N_max=384, **base), seeds)
-    # constant spacing lifts yield in the fat-band regime (fixed-256 leaves ~30% jagged-invalid)
-    assert cs.valid.float().mean() > fixed.valid.float().mean()
-    # and its valid tracks are smoother (lower mean turning per vertex)
-    assert (_mean_jag(cs.center, cs.count)[cs.valid].mean()
-            < _mean_jag(fixed.center, fixed.count)[fixed.valid].mean())
-    # fixed-mode output shape/count unchanged
-    assert fixed.center.shape == (E, 256, 2) and int(fixed.count[0]) == 256
+    # constant spacing yields near-everything in the fat-band regime (the regime that left
+    # fixed-256 ~30% jagged-invalid before the mode was dropped).
+    assert cs.valid.float().mean() > 0.95
+    assert cs.valid.any(), "need valid tracks to measure smoothness"
+    # valid tracks are smooth: resolution-normalised mean turning per vertex stays well-bounded
+    # (a folded/jagged road would score far higher). Observed mean ~4.3, max ~6.7 across seeds.
+    jag = _mean_jag(cs.center, cs.count)[cs.valid]
+    assert torch.isfinite(jag).all(), "valid tracks must have finite jaggedness"
+    assert jag.mean() < 8.0, f"valid constant_spacing tracks should be smooth, got {jag.mean():.3f}"
+    # constant_spacing output is NaN-padded to N_max with per-env real count < N_max.
+    assert cs.center.shape == (E, 384, 2)
+    assert (cs.count <= 384).all() and (cs.count[cs.valid] >= 3).all()
+    for e in torch.nonzero(cs.valid).flatten().tolist():
+        c = int(cs.count[e])
+        assert torch.isfinite(cs.center[e, :c]).all(), "real points finite"
+        if c < 384:
+            assert torch.isnan(cs.center[e, c:]).all(), "padding tail is NaN"
 
 
 @pytest.mark.parametrize("dev", DEVS)

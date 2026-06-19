@@ -20,13 +20,26 @@ def make_circle_centerline(radius=2.0, m=200, e=1, center=(0.0, 0.0), device="cp
     return Centerline(points=pts, valid=valid)
 
 
-def fixed_config(num_points=128, device="cpu", **overrides):
-    """A TrackGenConfig in fixed output mode."""
+def circle_cs_config(radius, n_max=128, device="cpu", **overrides):
+    """A constant_spacing TrackGenConfig tuned so a circle of ``radius`` resamples to
+    EXACTLY ``n_max`` real points (count == n_max, no NaN padding).
+
+    The legacy "fixed" output mode (constant point COUNT) was dropped; constant_spacing
+    is the only mode. To preserve the intent of the circle stage-tests -- which want a
+    fully populated [E, n_max, 2] resample on a known circle -- we pick the spacing that
+    divides the circumference into exactly ``n_max`` arc-uniform segments. The resample
+    then emits targets i*spacing for i in [0, n_max) (all < circumference) and drops the
+    target at i == n_max (== circumference), giving count == n_max with no padding. This
+    keeps the oracle's full-tensor turning/thickness metrics NaN-free for the on-circle
+    cases while exercising the real constant_spacing path.
+    """
+    circumference = 2 * math.pi * radius
     kwargs = dict(
         device=device,
         num_envs=1,
-        output_mode="fixed",
-        num_points=num_points,
+        output_mode="constant_spacing",
+        spacing=circumference / n_max,
+        N_max=n_max,
     )
     kwargs.update(overrides)
     return TrackGenConfig(**kwargs)
@@ -35,10 +48,11 @@ def fixed_config(num_points=128, device="cpu", **overrides):
 def test_resample_stage_circle_is_arc_uniform_and_on_circle():
     radius = 2.0
     cl = make_circle_centerline(radius=radius, m=200, e=3)
-    cfg = fixed_config(num_points=128, num_envs=3)
+    cfg = circle_cs_config(radius=radius, n_max=128, num_envs=3)
 
     res = inflation._resample_stage(cl, cfg)
 
+    # constant_spacing tuned to fill exactly N_max real points (no NaN padding).
     assert res.center.shape == (3, 128, 2)
     assert torch.equal(res.count, torch.full((3,), 128, dtype=res.count.dtype))
     r = torch.linalg.norm(res.center, dim=-1)  # [E, N]
@@ -50,7 +64,7 @@ def test_resample_stage_circle_is_arc_uniform_and_on_circle():
 def test_frame_curvature_orthonormal_and_circle_kappa():
     radius = 2.0
     cl = make_circle_centerline(radius=radius, m=500, e=2)
-    cfg = fixed_config(num_points=256, num_envs=2)
+    cfg = circle_cs_config(radius=radius, n_max=256, num_envs=2)
 
     res = inflation._resample_stage(cl, cfg)
     T, Nrm, kappa = inflation._frame_curvature_stage(res.center)
@@ -65,8 +79,9 @@ def test_frame_curvature_orthonormal_and_circle_kappa():
 
 
 def test_width_bounded_by_w_max_on_circle():
-    cl = make_circle_centerline(radius=5.0, m=200, e=1)
-    cfg = fixed_config(num_points=256, num_envs=1, half_width=0.4)
+    radius = 5.0
+    cl = make_circle_centerline(radius=radius, m=200, e=1)
+    cfg = circle_cs_config(radius=radius, n_max=256, num_envs=1, half_width=0.4)
     res = inflation._resample_stage(cl, cfg)
     _, _, kappa = inflation._frame_curvature_stage(res.center)
     w = inflation._width_stage(res.center, kappa, cfg)
@@ -78,7 +93,7 @@ def test_width_bounded_by_w_max_on_circle():
 def test_offset_orientation_outer_bigger_inner_smaller():
     radius = 3.0
     cl = make_circle_centerline(radius=radius, m=300, e=4)
-    cfg = fixed_config(num_points=256, num_envs=4, half_width=0.5)
+    cfg = circle_cs_config(radius=radius, n_max=256, num_envs=4, half_width=0.5)
     res = inflation._resample_stage(cl, cfg)
     _, Nrm, kappa = inflation._frame_curvature_stage(res.center)
     w = inflation._width_stage(res.center, kappa, cfg)
@@ -109,6 +124,28 @@ def make_figure_eight_centerline(scale=2.0, m=400, e=1, device="cpu"):
     return Centerline(points=pts, valid=valid)
 
 
+def figure_eight_cs_config(cl, n_max=256, device="cpu", **overrides):
+    """A constant_spacing config tuned so the figure-eight resamples to exactly ``n_max``
+    real points (count == n_max, no NaN padding), mirroring :func:`circle_cs_config`.
+
+    Spacing = (closed-loop arc length) / n_max so the validity oracle's full-tensor
+    turning/thickness metrics see a fully populated, NaN-free polygon -- isolating the
+    self-crossing (turning ~ 0 / border-crossing) signal from the padding artifact.
+    """
+    pts = cl.points[0]
+    closed = torch.cat([pts, pts[:1]], dim=0)
+    total = torch.linalg.norm(closed[1:] - closed[:-1], dim=-1).sum().item()
+    kwargs = dict(
+        device=device,
+        num_envs=int(cl.points.shape[0]),
+        output_mode="constant_spacing",
+        spacing=total / n_max,
+        N_max=n_max,
+    )
+    kwargs.update(overrides)
+    return TrackGenConfig(**kwargs)
+
+
 def _run_to_width(cl, cfg):
     res = inflation._resample_stage(cl, cfg)
     _, Nrm, kappa = inflation._frame_curvature_stage(res.center)
@@ -117,10 +154,14 @@ def _run_to_width(cl, cfg):
 
 
 def test_validity_true_for_clean_circle():
-    cl = make_circle_centerline(radius=3.0, m=300, e=2)
-    cfg = fixed_config(num_points=256, num_envs=2, half_width=0.4,
-                       turning_tol=0.2, w_floor=1e-3)
+    radius = 3.0
+    cl = make_circle_centerline(radius=radius, m=300, e=2)
+    cfg = circle_cs_config(radius=radius, n_max=256, num_envs=2, half_width=0.4,
+                           turning_tol=0.2, w_floor=1e-3)
     center, _, w, count = _run_to_width(cl, cfg)
+    # Tuned spacing -> count == N_max for every env, so the oracle's full-tensor
+    # turning/thickness metrics are NaN-free and the clean circle is valid.
+    assert torch.equal(count, torch.full((2,), 256, dtype=count.dtype))
     valid = inflation._validity_stage(center, w, count, cl.valid, cfg)
     assert valid.dtype == torch.bool
     assert valid.shape == (2,)
@@ -129,29 +170,36 @@ def test_validity_true_for_clean_circle():
 
 def test_validity_false_for_self_crossing():
     cl = make_figure_eight_centerline(scale=2.0, m=400, e=1)
-    cfg = fixed_config(num_points=256, num_envs=1, half_width=0.2,
-                       turning_tol=0.2, w_floor=1e-3)
+    cfg = figure_eight_cs_config(cl, n_max=256, num_envs=1, half_width=0.2,
+                                 turning_tol=0.2, w_floor=1e-3)
     center, _, w, count = _run_to_width(cl, cfg)
+    # No NaN padding (count == N_max), so the invalidity is the genuine self-crossing
+    # signal (turning ~ 0), not the padding artifact.
+    assert torch.equal(count, torch.full((1,), 256, dtype=count.dtype))
     valid = inflation._validity_stage(center, w, count, cl.valid, cfg)
     assert not bool(valid[0])
 
 
 def test_validity_respects_gen_valid_flag():
-    cl = make_circle_centerline(radius=3.0, m=300, e=2)
+    radius = 3.0
+    cl = make_circle_centerline(radius=radius, m=300, e=2)
     cl.valid[1] = False
-    cfg = fixed_config(num_points=256, num_envs=2, half_width=0.4,
-                       turning_tol=0.2, w_floor=1e-3)
+    cfg = circle_cs_config(radius=radius, n_max=256, num_envs=2, half_width=0.4,
+                           turning_tol=0.2, w_floor=1e-3)
     center, _, w, count = _run_to_width(cl, cfg)
     valid = inflation._validity_stage(center, w, count, cl.valid, cfg)
     assert bool(valid[0]) is True
     assert bool(valid[1]) is False
 
 
-def test_inflate_fixed_mode_full_track():
+def test_inflate_constant_spacing_full_track():
+    # Repurposed from the dropped "fixed mode full track" test: a fully-populated
+    # constant_spacing track (spacing tuned so count == N_max for every env, no NaN
+    # padding) is the closest meaningful equivalent of the old constant-COUNT mode.
     radius = 3.0
     cl = make_circle_centerline(radius=radius, m=300, e=3)
-    cfg = fixed_config(num_points=128, num_envs=3, half_width=0.4,
-                       turning_tol=0.2, w_floor=1e-3)
+    cfg = circle_cs_config(radius=radius, n_max=128, num_envs=3, half_width=0.4,
+                           turning_tol=0.2, w_floor=1e-3)
 
     track = inflation.inflate(cl, cfg)
 
@@ -163,6 +211,7 @@ def test_inflate_fixed_mode_full_track():
     assert track.valid.shape == (3,)
     assert track.count.shape == (3,)
 
+    # Tuned spacing -> exactly N_max real points: count == 128 and fully finite.
     assert torch.equal(track.count, torch.full((3,), 128, dtype=track.count.dtype))
     assert torch.all(track.valid)
     assert torch.isfinite(track.center).all()

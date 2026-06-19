@@ -29,8 +29,10 @@ def test_config_defaults_instantiate():
     assert cfg.half_width == 0.1
     # Output params
     assert cfg.num_points == 256
-    assert cfg.output_mode == "fixed"
-    assert cfg.spacing == 0.1
+    # "fixed" was dropped; constant_spacing is the only supported mode.
+    assert cfg.output_mode == "constant_spacing"
+    # spacing defaults to None -> __post_init__ auto-couples it to 0.6*half_width.
+    assert math.isclose(cfg.spacing, 0.6 * cfg.half_width)
     assert cfg.N_max == 256
     # Robustness params
     assert cfg.max_regen_iters == 10

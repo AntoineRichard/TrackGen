@@ -37,22 +37,31 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 
 def build_config(p: dict) -> TrackGenConfig:
-    """Map a params dict to a TrackGenConfig, clamping degenerate inputs."""
+    """Map a params dict to a TrackGenConfig, clamping degenerate inputs.
+
+    Output is always constant_spacing (the only supported mode): ``spacing`` is the
+    arc-length step and ``N_max`` the per-track point cap. ``num_points`` is the
+    intermediate dense-resample resolution before constant-spacing (optional; the
+    config default is used when absent).
+    """
     lo = min(int(p["min_num_points"]), int(p["max_num_points"]))
     hi = max(int(p["min_num_points"]), int(p["max_num_points"]))
     grid_n = int(p["grid_n"])
     num_envs = int(p.get("batch_size", grid_n * grid_n))
+    kw = {}
+    if p.get("num_points") is not None:
+        kw["num_points"] = int(p["num_points"])
+    if p.get("spacing") is not None:
+        kw["spacing"] = float(p["spacing"])
     return TrackGenConfig(
         num_envs=num_envs,
-        num_points=int(p["num_points"]),
         half_width=float(p["half_width"]),
         scale=float(p["scale"]),
         min_num_points=lo,
         max_num_points=hi,
         rad=float(p["rad"]),
         edgy=float(p["edgy"]),
-        output_mode=str(p["output_mode"]),
-        spacing=float(p["spacing"]),
+        output_mode="constant_spacing",
         N_max=int(p["n_max"]),
         relax_iters=int(p["relax_iters"]),
         max_regen_iters=int(p["max_regen_iters"]),
@@ -61,6 +70,7 @@ def build_config(p: dict) -> TrackGenConfig:
         relax_bend_relax=float(p["relax_bend_relax"]),
         relax_margin=float(p["relax_margin"]),
         device=DEVICE,
+        **kw,
     )
 
 
@@ -99,13 +109,18 @@ def render_page(track, page: int, grid_n: int):
     return fig
 
 
-def _stats(track, output_mode: str, num_points: int) -> dict:
-    """Aggregate readout over the batch (means taken over valid tracks)."""
+def _stats(track) -> dict:
+    """Aggregate readout over the batch (means taken over valid tracks).
+
+    Output is always constant_spacing: ``count`` is the per-track real-point count and
+    VARIES per env, so the reported ``count`` is the mean over valid tracks.
+    """
     valid = track.valid
     n = int(valid.sum())
     if n == 0:
         return {"yield": 0.0, "n_valid": 0, "mean_len": float("nan"),
-                "mean_thickness": float("nan"), "count": (num_points if output_mode == "fixed" else 0)}
+                "mean_thickness": float("nan"), "count": 0.0}
+    # half-width from the first REAL point of each env (index 0 is always real / non-NaN).
     hw = float(torch.linalg.norm(track.outer[:, 0] - track.center[:, 0], dim=-1).median())
     cnt = track.count.clamp_min(1)
     band = (2.0 * hw / (track.length / cnt.float()).clamp_min(1e-9)).round().to(torch.int32).clamp_min(1)
@@ -115,7 +130,7 @@ def _stats(track, output_mode: str, num_points: int) -> dict:
         "n_valid": n,
         "mean_len": float(track.length[valid].mean()),
         "mean_thickness": float(th[valid].mean()),
-        "count": (num_points if output_mode == "fixed" else float(track.count[valid].float().mean())),
+        "count": float(track.count[valid].float().mean()),
     }
 
 
@@ -125,7 +140,7 @@ def render_grid(p: dict):
     try:
         track = generate_batch(p)
         fig = render_page(track, 0, int(p["grid_n"]))
-        st = _stats(track, str(p["output_mode"]), int(p["num_points"]))
+        st = _stats(track)
         return fig, st
     except Exception as exc:  # never crash the UI
         fig = plt.figure(figsize=(5, 3))
@@ -136,7 +151,7 @@ def render_grid(p: dict):
 
 def _collect(*vals) -> dict:
     keys = ["half_width", "scale", "min_num_points", "max_num_points", "rad", "edgy",
-            "output_mode", "num_points", "spacing", "n_max", "relax_iters", "max_regen_iters",
+            "spacing", "n_max", "relax_iters", "max_regen_iters",
             "relax_sep_relax", "relax_spc_relax", "relax_bend_relax", "relax_margin",
             "grid_n", "seed", "batch_size"]
     return dict(zip(keys, vals))
@@ -166,9 +181,7 @@ def build_app():
                 max_np = gr.Slider(5, 20, value=13, step=1, label="max corners")
                 rad = gr.Slider(0.0, 0.5, value=0.2, step=0.01, label="rad (roundness)")
                 edgy = gr.Slider(0.0, 1.0, value=0.0, step=0.05, label="edgy")
-                gr.Markdown("### Resolution & mode")
-                output_mode = gr.Radio(["fixed", "constant_spacing"], value="constant_spacing", label="output_mode")
-                num_points = gr.Slider(64, 512, value=256, step=8, label="num_points (links)", visible=False)
+                gr.Markdown("### Resolution (constant-spacing)")
                 spacing = gr.Slider(0.1, 1.0, value=0.30, step=0.02, label="spacing (m)")
                 n_max = gr.Slider(128, 512, value=384, step=8, label="N_max")
                 gr.Markdown("### Relaxation")
@@ -198,14 +211,9 @@ def build_app():
         track_state = gr.State(None)
         page_state = gr.State(0)
 
-        controls = [half_width, scale, min_np, max_np, rad, edgy, output_mode, num_points,
+        controls = [half_width, scale, min_np, max_np, rad, edgy,
                     spacing, n_max, relax_iters, max_regen, sep, spc, bend, margin, grid_n, seed,
                     batch_size]
-
-        def _toggle(mode):
-            fixed = mode == "fixed"
-            return gr.update(visible=fixed), gr.update(visible=not fixed), gr.update(visible=not fixed)
-        output_mode.change(_toggle, output_mode, [num_points, spacing, n_max])
 
         def _generate(*vals):
             p = _collect(*vals)
@@ -213,7 +221,7 @@ def build_app():
             try:
                 track = generate_batch(p)
                 fig = render_page(track, 0, gn)
-                st = _stats(track, str(p["output_mode"]), int(p["num_points"]))
+                st = _stats(track)
                 lbl = f"page 1/{n_pages(track.center.shape[0], gn)}"
                 return fig, _stats_md(st), track, 0, lbl
             except Exception as exc:

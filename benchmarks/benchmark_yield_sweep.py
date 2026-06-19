@@ -42,7 +42,7 @@ REPS = 2              # E=8192 timing is low-variance
 
 
 def bench(links=256, iters=150, regen=10, sr=1.0, pr=1.0, br=1.5, margin=0.15, seed=0,
-          output_mode="fixed", spacing=0.10, n_max=256):
+          output_mode="constant_spacing", spacing=0.10, n_max=256):
     cfg = TrackGenConfig(
         num_envs=E, num_points=links, half_width=HALF_WIDTH, scale=SCALE,
         relax_iters=iters, max_regen_iters=regen,

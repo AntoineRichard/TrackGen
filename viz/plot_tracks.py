@@ -124,7 +124,7 @@ def draw_track(ax, track: Track, e: int) -> None:
 
 def render(images=10, rows=9, cols=9, track_width_m=1.0, box_m=20.0, num_points=256,
            device="cuda", seed=0, dpi=150, cell_in=1.8,
-           output_mode="fixed", spacing=0.30, n_max=384):
+           output_mode="constant_spacing", spacing=0.30, n_max=384):
     """Generate images*rows*cols tracks at metric scale and save ``images`` grid PNGs.
 
     Physical units (1 coordinate unit = 1 m): the track width is ``track_width_m`` (so
@@ -184,7 +184,7 @@ if __name__ == "__main__":
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--dpi", type=int, default=150)
     ap.add_argument("--cpu", action="store_true")
-    ap.add_argument("--output_mode", default="fixed", choices=["fixed", "constant_spacing"])
+    ap.add_argument("--output_mode", default="constant_spacing", choices=["constant_spacing"])
     ap.add_argument("--spacing", type=float, default=0.30, help="constant_spacing arc step (m)")
     ap.add_argument("--n_max", type=int, default=384, help="constant_spacing max points/track")
     a = ap.parse_args()

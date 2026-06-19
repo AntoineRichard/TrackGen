@@ -115,7 +115,7 @@ def _draw(ax, track, e, title_prefix):
 
 
 def _gen(links, iters, n, regen=10, sr=1.0, pr=1.0, margin=0.15, seed0=0,
-         output_mode="fixed", spacing=0.10, n_max=256):
+         output_mode="constant_spacing", spacing=0.10, n_max=256):
     cfg = TrackGenConfig(num_envs=n, num_points=links, half_width=HALF_WIDTH, scale=SCALE,
                          relax_iters=iters, max_regen_iters=regen, relax_sep_relax=sr,
                          relax_spc_relax=pr, relax_margin=margin, device=DEVICE,
@@ -227,29 +227,30 @@ def _fixed_seed_page(pdf, title, subtitle, col_settings, gen_fn, n_seeds=5):
 
 
 def page_constant_spacing(pdf):
-    """Fixed-seed comparison: fixed-256 (jagged, low yield) vs constant_spacing=0.30 (smooth)."""
+    """Fixed-seed comparison: over-resolved spacing (jagged) vs ~0.6*half_width (smooth).
+
+    (The legacy fixed-count mode was dropped; the same convergence lesson is now shown
+    within constant_spacing by varying the arc-length step.)"""
     caption = (
-        f"Fixed-256 yield={BASELINE['yield']:.3f} (E=8192) vs "
-        f"constant_spacing spacing=0.30 m yield={CS['yield']:.3f} (E=8192, {CS['sec']:.3f} s/call, "
-        f"{CS['peak_mb']:.0f} MB). Constant spacing is the convergence fix: adaptive "
-        f"arc-length resampling to ~0.6×half_width ensures the XPBD relaxation sees a "
-        f"uniform, well-conditioned chain — eliminating the pinching that fixed-N misses "
-        f"at tight bends. Both at the default max_regen_iters=10; relaxation becomes lossless "
-        f"(valid ≈ generation-valid), so generation/regen is the new ceiling, and it is faster "
-        f"at equal regen (~0.55 vs ~0.79 s/8192). X = invalid track."
+        f"Constant spacing is the convergence fix: a too-fine arc-length step over-resolves "
+        f"the chain (jagged XPBD, pinching at tight bends), while ~0.6×half_width gives the "
+        f"relaxation a uniform, well-conditioned chain. Right column (spacing=0.30 m): "
+        f"yield={CS['yield']:.3f} (E=8192, {CS['sec']:.3f} s/call, {CS['peak_mb']:.0f} MB). "
+        f"Relaxation is lossless (valid ≈ generation-valid), so generation is the ceiling. "
+        f"X = invalid track."
     )
     _fixed_seed_page(
         pdf,
         "Constant spacing — the convergence fix",
         caption,
         [
-            ("fixed-256", "fixed"),
-            ("constant_spacing\nspacing=0.30 m", "constant_spacing"),
+            ("constant_spacing\nspacing=0.05 m (over-resolved)", 0.05),
+            ("constant_spacing\nspacing=0.30 m (relax-friendly)", CS["spacing"]),
         ],
-        lambda mode, n: _gen(
+        lambda spacing, n: _gen(
             256, 150, n,
-            output_mode=mode,
-            spacing=CS["spacing"],
+            output_mode="constant_spacing",
+            spacing=spacing,
             n_max=CS["n_max"],
         ),
         n_seeds=5,

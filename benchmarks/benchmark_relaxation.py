@@ -39,10 +39,12 @@ def _gen_simple_tracks(E, N, scale, device, seed):
         cfg = TrackGenConfig(device=device, num_envs=B, scale=scale, num_points=N,
                              max_regen_iters=20, relax_enable=False)
         cl = BezierCenterlineGenerator(cfg, rng).generate(torch.arange(B, device=device))
-        res = inflation._resample_stage(cl, cfg)            # arc-length uniform [B,N,2]
-        ok = torch.isfinite(res.center).all(dim=(1, 2)) & cl.valid
+        # Resample to a FIXED N directly (this bake-off wants constant-N tracks); the pipeline's
+        # constant_spacing output_mode would NaN-pad to N_max, which this harness isn't built for.
+        center, _count = geometry.arc_length_resample(cl.points, num=N)   # [B, N, 2]
+        ok = torch.isfinite(center).all(dim=(1, 2)) & cl.valid
         for e in torch.where(ok)[0].tolist():
-            kept.append(res.center[e])
+            kept.append(center[e])
             if len(kept) >= E:
                 break
         s += B
