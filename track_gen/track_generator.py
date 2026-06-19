@@ -8,8 +8,8 @@
 Runs the pure-Warp pipeline (``warp_pipeline.generate_tracks_warp``: generation ->
 resample -> relax -> inflate, all NVIDIA Warp kernels) and returns a fully-populated
 :class:`Track`. The public dataclasses ``TrackGenConfig`` and ``Track`` live in the
-dependency-free leaf module ``types.py`` and are re-exported here for backward
-compatibility.
+dependency-free leaf module ``types.py``; this facade re-exports ``TrackGenerator``
+as the package's top-level entry point.
 """
 
 import torch
