@@ -72,8 +72,9 @@ track.valid    # [E] bool — True where the track relaxed to a valid constant-w
 track.count    # [E] int  — real points per track (the rest of each row is NaN padding)
 ```
 
-Only the **Bézier** generator is supported (`config.generator="bezier"`, the default);
-the legacy Fourier generator is not part of the Warp pipeline.
+Only the **Bézier** generator is on the Warp path (`config.generator="bezier"`, the default).
+The Fourier generator lives in `track_gen._experimental` and is **unsupported** — it is not
+on the Warp pipeline and receives no compatibility guarantees.
 
 ### Output (constant spacing)
 
@@ -103,16 +104,16 @@ cross-section normal). Half-width is recovered as `‖outer − center‖`.
 
 ## Direct pure-Warp entry points
 
-The facade above wraps `track_gen.warp_pipeline`. You can call it directly:
+The facade above wraps the Warp pipeline. You can also call it directly via the public top-level imports:
 
 ```python
-from track_gen import warp_pipeline as wpl
+from track_gen import generate_tracks_warp, generate_tracks_warp_graph
 
 # Eager: one Track from per-env seeds.
-track = wpl.generate_tracks_warp(config, seeds)
+track = generate_tracks_warp(config, seeds)
 
 # Captured: the WHOLE pipeline as one CUDA graph, replayed with new seeds (CUDA only).
-captured = wpl.generate_tracks_warp_graph(config, seeds_template)
+captured = generate_tracks_warp_graph(config, seeds_template)
 track = captured.replay(new_seeds)   # re-runs every stage on the GPU off the seed buffer
 ```
 
@@ -130,28 +131,25 @@ In short: every stage is a Warp kernel over flat `[E*N]` arrays (one thread per 
 env index `= tid // N`). Generation uses Warp's built-in RNG in a single static pass (one
 corner draw per env, no regen loop and no gate; any self-crossing track falls back to its
 corner polygon, which XPBD re-rounds) so the whole thing is graph-capturable.
-The existing torch implementation (`geometry`/`inflation`/`generators`/`relaxation`) is
-retained as the **verification oracle**: every Warp kernel has a test asserting it matches
-its torch counterpart on both `cpu` and `cuda`.
+The torch reference implementation (`geometry`/`inflation`/`generators`/`relaxation`) lives
+under `tests/_oracle/` and is **not** part of the shipped package — it serves purely as the
+**verification oracle**: every Warp kernel has a test asserting it matches its torch
+counterpart on both `cpu` and `cuda`.
 
 ## Project layout
 
 ```
 track_gen/
-  warp_pipeline.py    # the pure-Warp pipeline: all kernels + generate_tracks_warp(_graph)
-  warp_relax.py       # fused-Warp XPBD relaxation solve (cpu+cuda)
-  track_generator.py  # TrackGenerator facade -> generate_tracks_warp
-  types.py            # TrackGenConfig, Track (dependency-free leaf dataclasses)
-  geometry.py         # torch geometry primitives  ┐
-  inflation.py        # torch inflate stages         ├ test oracles (warp-free); not on the
-  generators.py       # torch Bézier/Fourier gen     │ runtime path
-  relaxation.py       # torch relax backends        ┘
-  rng_utils.py        # PerEnvSeededRNG (Warp RNG state); seeds the pipeline
-  rng_kernels.py      # Warp RNG kernels backing PerEnvSeededRNG
-tests/                # per-kernel oracle tests (cpu+cuda) + end-to-end + graph tests
-benchmarks/           # benchmark_pipeline.py (end-to-end), benchmark_yield_sweep.py, benchmark_relaxation.py (backends)
-viz/                  # plotting (plot_tracks, plot_ablations, make_report) + param_explorer.py (interactive Gradio UI)
-docs/                 # ARCHITECTURE.md + superpowers/ design/plan/handoff docs
+  __init__.py        # curated public API (TrackGenerator, generate_tracks_warp[_graph],
+                     #   TrackGenConfig, Track, PerEnvSeededRNG, __version__)
+  _version.py
+  _src/              # the Warp pipeline (private core)
+    warp_pipeline.py warp_relax.py track_generator.py types.py rng_utils.py rng_kernels.py
+  _experimental/     # Fourier generator (unsupported, not on the Warp path)
+tests/
+  _oracle/           # torch reference impl used to validate the Warp kernels
+  test_*.py
+benchmarks/  viz/  docs/
 ```
 
 ## Development

@@ -2,9 +2,9 @@
 
 This document explains how `track_gen` turns a batch of per-environment seeds into a
 batch of `Track`s. The whole pipeline lives in
-[`track_gen/warp_pipeline.py`](../track_gen/warp_pipeline.py) (plus the fused relaxation
-solve in [`track_gen/warp_relax.py`](../track_gen/warp_relax.py)) and is written entirely
-in [NVIDIA Warp](https://github.com/NVIDIA/warp) kernels.
+[`track_gen/_src/warp_pipeline.py`](../track_gen/_src/warp_pipeline.py) (plus the fused
+relaxation solve in [`track_gen/_src/warp_relax.py`](../track_gen/_src/warp_relax.py)) and
+is written entirely in [NVIDIA Warp](https://github.com/NVIDIA/warp) kernels.
 
 ## Goals
 
@@ -175,14 +175,19 @@ README has the control walkthrough.
 
 ## Torch as the test oracle
 
-The original torch implementation is **retained, but only as the verification oracle**:
-`geometry.py`, `inflation.py`, `generators.py`, and the torch `relaxation.py` backends are
+The original torch implementation is **retained, but only as the verification oracle** and
+lives under `tests/_oracle/` (importable by tests as `tests._oracle.*`); it is **not**
+shipped as part of the `track_gen` package. The modules `tests._oracle.geometry`,
+`tests._oracle.inflation`, `tests._oracle.generators`, and `tests._oracle.relaxation` are
 warp-free and are **not** imported by the runtime pipeline. Every Warp kernel has a test
 (`tests/test_warp_*.py`) asserting it matches its torch counterpart on both `cpu` and
 `cuda` (`torch.equal` for integer/boolean results; `allclose` at ~1e-4 for float results —
 Warp's float32 `sqrt`/`length` differs from torch by ~ULP, which is geometrically
 negligible and an accepted tolerance; the corner-sampling RNG is validated by structural
 properties, not bit-equality, since it is a deliberate redesign).
+
+The Fourier generator lives in `track_gen._experimental.fourier` and is **unsupported** —
+it is self-contained, not on the Warp pipeline, and receives no compatibility guarantees.
 
 ## End-to-end CUDA graph — `generate_tracks_warp_graph`
 
