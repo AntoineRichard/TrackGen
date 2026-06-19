@@ -1994,7 +1994,12 @@ def inflate_warp(center: torch.Tensor, config, valid: torch.Tensor | None = None
             wp.launch(_fill_i32_k, dim=E,
                       inputs=[wp.from_torch(gen_valid_i32, dtype=wp.int32), 1], device=dev)
             gen_valid = gen_valid_i32
-        valid_out = validity(rs, w, count_arr, gen_valid, config, outer, inner)
+        # Border self_intersections is optional (config.validity_border_check, default off):
+        # it is redundant with the thickness/separation gate, so skip the two O(N^2) passes by
+        # passing None borders (validity then sets border_ok all True).
+        _bc = getattr(config, "validity_border_check", False)
+        valid_out = validity(rs, w, count_arr, gen_valid, config,
+                             outer if _bc else None, inner if _bc else None)
 
         # 6. cumulative arc length + total length.
         arclen, length = _arclength(rs, count=count_arr)
@@ -2029,7 +2034,12 @@ def inflate_warp(center: torch.Tensor, config, valid: torch.Tensor | None = None
             wp.launch(_fill_i32_k, dim=E,
                       inputs=[wp.from_torch(gen_valid_i32, dtype=wp.int32), 1], device=dev)
             gen_valid = gen_valid_i32
-        valid_out = validity(rs, w, count_arr, gen_valid, config, outer, inner)
+        # Border self_intersections is optional (config.validity_border_check, default off):
+        # it is redundant with the thickness/separation gate, so skip the two O(N^2) passes by
+        # passing None borders (validity then sets border_ok all True).
+        _bc = getattr(config, "validity_border_check", False)
+        valid_out = validity(rs, w, count_arr, gen_valid, config,
+                             outer if _bc else None, inner if _bc else None)
 
         # 6. cumulative arc length + total length.
         arclen, length = _arclength(rs, count=count_arr)

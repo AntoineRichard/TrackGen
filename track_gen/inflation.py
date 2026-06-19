@@ -178,7 +178,11 @@ def inflate(centerline, config) -> Track:
     T, Nrm, kappa = _frame_curvature_stage(center)
     w = _width_stage(center, kappa, config)
     outer, inner = _offset_stage(center, Nrm, w)
-    valid = _validity_stage(center, w, count, centerline.valid, config, outer=outer, inner=inner)
+    # Border self_intersections is optional (config.validity_border_check, default off):
+    # redundant with the thickness/separation gate, so skip it by passing None borders.
+    _bc = getattr(config, "validity_border_check", False)
+    valid = _validity_stage(center, w, count, centerline.valid, config,
+                            outer=(outer if _bc else None), inner=(inner if _bc else None))
     arclen, length = _arclength(center, count)
     return Track(outer=outer, center=center, inner=inner, tangent=T, normal=Nrm,
                  arclen=arclen, length=length, valid=valid, count=count)

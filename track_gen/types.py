@@ -101,6 +101,11 @@ class TrackGenConfig:
     max_regen_iters: int = 10
     turning_tol: float = 0.1
     w_floor: float = 1e-3  # validity: every real point must have w > w_floor
+    # Optional extra border self-intersection check in validity. Redundant with the
+    # thickness/separation gate (a self-crossing / fat-band overlap drives separation_min->0
+    # -> thickness < half_width -> invalid), so default OFF saves two O(N^2) passes with no
+    # change to the valid mask. Set True to re-enable the explicit border crossing check.
+    validity_border_check: bool = False
 
     def __post_init__(self):
         # Only constant_spacing is supported: the legacy "fixed" (constant point COUNT) mode
