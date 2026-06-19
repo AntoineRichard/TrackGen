@@ -26,8 +26,13 @@ The measurements changed the plan:
 - **Regen loop dropped.** `generate_centerline_warp` is now single-pass + Fix B, `valid`
   all-True (no generation gate); final validity is post-relaxation. → **99.93% valid
   (E=4096), 0 self-crossings**, static / graph-capturable.
-- **Still open (follow-up):** drop the `fixed` output mode (constant_spacing only); optionally
-  loosen the thickness threshold for the ~0.07% marginal-curvature residuals.
+- **Fixed mode dropped (done).** `constant_spacing` is now the only output mode (default;
+  `fixed` raises; spacing auto-couples to 0.6*half_width). All consumers migrated to count-aware
+  output (12 test files, benchmarks, viz). NB: the torch oracle `inflation._validity_stage`
+  is not count-masked (pre-existing, documented) — the facade uses the count-masked Warp
+  validity, so production is correct.
+- **Still open (optional follow-up):** loosen the thickness threshold for the ~0.07%
+  marginal-curvature residuals; count-mask the torch oracle validity for full parity.
 
 ---
 
