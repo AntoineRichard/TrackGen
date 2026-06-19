@@ -62,7 +62,6 @@ class FourierCenterlineGenerator(CenterlineGenerator):
 
         # Dense parameter grid over [0, 2*pi) (endpoint excluded so the loop closes cleanly).
         t = torch.linspace(0.0, 2.0 * math.pi, self.M + 1, device=self.device)[:-1]  # [M]
-        self.t = t
         k = torch.arange(1, self.K + 1, device=self.device, dtype=torch.float32)  # [K]
         self.cos_kt = torch.cos(k.unsqueeze(1) * t.unsqueeze(0))  # [K, M]
         self.sin_kt = torch.sin(k.unsqueeze(1) * t.unsqueeze(0))  # [K, M]
