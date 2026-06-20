@@ -10,7 +10,7 @@ import warp as wp
 from scipy.special import binom
 
 
-def _ids_to_warp(ids: torch.Tensor, device: str) -> wp.array:
+def _ids_to_warp(ids: torch.Tensor) -> wp.array:
     """Convert a torch ids tensor to a wp.array of int32, usable by the _warp samplers."""
     return wp.from_torch(ids.to(torch.int32), dtype=wp.int32)
 
@@ -86,7 +86,7 @@ class BezierCenterlineGenerator(CenterlineGenerator):
             [E, max_num_points] long tensor of cell indices in [0, num_cells**2).
         """
         n = self.num_cells * self.num_cells
-        u = wp.to_torch(self.rng.sample_uniform_warp(0.0, 1.0, (n,), ids=_ids_to_warp(ids, self.device)))  # [E, n]
+        u = wp.to_torch(self.rng.sample_uniform_warp(0.0, 1.0, (n,), ids=_ids_to_warp(ids)))  # [E, n]
         cell_idxs = u.topk(self.config.max_num_points, dim=1).indices  # [E, max_num_points]
         return cell_idxs.long()
 
@@ -100,7 +100,7 @@ class BezierCenterlineGenerator(CenterlineGenerator):
         x = (cell_idxs % self.num_cells).float()
         y = (cell_idxs // self.num_cells).float()
         # Per-corner uniform noise in [-0.5, 0.5) makes the discrete grid continuous.
-        noise = wp.to_torch(self.rng.sample_uniform_warp(-0.5, 0.5, (self.config.max_num_points, 2), ids=_ids_to_warp(ids, self.device)))
+        noise = wp.to_torch(self.rng.sample_uniform_warp(-0.5, 0.5, (self.config.max_num_points, 2), ids=_ids_to_warp(ids)))
         xy = torch.stack([x, y], dim=2) * (self.config.min_point_distance * 2.0) + noise
         return xy * self.config.scale
 
@@ -127,7 +127,7 @@ class BezierCenterlineGenerator(CenterlineGenerator):
             self.config.min_num_points,
             self.config.max_num_points + 1,
             (1,),
-            ids=_ids_to_warp(ids, self.device),
+            ids=_ids_to_warp(ids),
         )).view(E).long()
         count = count.clamp(max=P)
 

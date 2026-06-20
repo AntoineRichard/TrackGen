@@ -12,8 +12,8 @@ Everything is headless (Agg backend); PNGs land in ``viz/out/`` next to this fil
 The pipeline is driven through the REAL public API exactly as the test-suite does:
 
     import warp as wp; wp.init()
-    rng = PerEnvSeededRNG(seeds=<int32 tensor on device>, num_envs=E, device=device)
-    rng.set_seeds(seeds, ids=<int32 tensor on device>)
+    rng = PerEnvSeededRNG(seeds=wp.from_torch(seeds_i32), num_envs=E, device=device)
+    rng.set_seeds_warp(wp.from_torch(seeds_i32), ids=wp.from_torch(ids_i32))
     track = TrackGenerator(TrackGenConfig(...), rng).generate(E)
 
 NOTE on devices: ``PerEnvSeededRNG`` keeps a tensor seed on whatever device the
