@@ -165,6 +165,16 @@ def _frame_k(c: wp.array(dtype=wp.vec2f), n_max: int,
     kappa[t] = 4.0 * area / denom
 
 @wp.func
+def _separation_band(l0: float, two_hw: float) -> int:
+    # Excluded-neighbour half-window for the XPBD separation pass and the thickness
+    # gate: round(2*half_width / L0).clamp_min(1), where L0 is the mean segment length.
+    # The divisor is floored at 1e-9 to bound the ratio, and the isfinite guard maps a
+    # NaN/inf ratio (invalid NaN-centerline envs) to band 1. Shared by _band_l0_k and
+    # _validity_k so the band definition lives in exactly one place.
+    bf = two_hw / wp.max(l0, float(1.0e-9))
+    return wp.where(wp.isfinite(bf), wp.max(int(wp.round(bf)), 1), 1)
+
+@wp.func
 def _ccw(ox: float, oy: float, px: float, py: float, qx: float, qy: float) -> float:
     # Returns (q.y-o.y)*(p.x-o.x) - (p.y-o.y)*(q.x-o.x)
     return (qy - oy) * (px - ox) - (py - oy) * (qx - ox)
@@ -547,12 +557,11 @@ def _validity_k(
         if not (wp.isfinite(ci[0]) and wp.isfinite(ci[1])):
             no_nan = int(0)
 
-    # --- band = round(2*hw / (perimeter/cnt)).clamp_min(1); perimeter over cnt real pts ---
+    # --- separation band from the mean segment length (perimeter over cnt real pts) ---
     peri = float(0.0)
     for i in range(cnt):
         peri += wp.length(center[base + (i + 1) % cnt] - center[base + i])
-    L0 = wp.max(peri / float(cnt), float(1.0e-9))
-    band = wp.max(int(wp.round(2.0 * half_width / L0)), 1)
+    band = _separation_band(peri / float(cnt), 2.0 * half_width)
 
     # --- thickness gate (over cnt real points only) ---
     th = _thickness_func(center, base, cnt, band)
@@ -950,10 +959,10 @@ def _band_l0_k(
     count: wp.array(dtype=wp.int32),
 ):
     # One thread per env e. Count-aware: loop over count[e] real points, base e*n_max,
-    # wrap index (i+1)%count[e]. L0 = perimeter/count[e] (mean segment length). band =
-    # round(2*hw / L0).clamp_min(1); the isfinite guard maps NaN/inf -> 1 for invalid
-    # (NaN-centerline) envs -> band 1. L0 itself may stay NaN for invalid envs (that
-    # flows untouched into xpbd, which propagates the NaN).
+    # wrap index (i+1)%count[e]. L0 = perimeter/count[e] (mean segment length). The band
+    # is _separation_band(L0, 2*hw); L0 itself may stay NaN for invalid (NaN-centerline)
+    # envs (that flows untouched into xpbd, which propagates the NaN), while the band's
+    # isfinite guard maps such envs to band 1.
     # PARITY: when count[e]==n_max for all e, produces identical output to the former
     # fixed-N kernel (same loop bounds, same formula).
     e = wp.tid()
@@ -964,8 +973,7 @@ def _band_l0_k(
         peri += wp.length(center[base + (i + 1) % cn] - center[base + i])
     l0 = peri / float(cn)
     l0_out[e] = l0
-    bf = two_hw / wp.max(l0, float(1.0e-9))
-    band_out[e] = wp.where(wp.isfinite(bf), wp.max(int(wp.round(bf)), 1), 1)
+    band_out[e] = _separation_band(l0, two_hw)
 
 def corner_count_sample_inplace(seeds_wp, attempt, config, out_count):
     """In-place: writes per-env corner counts into out_count ([E] int32 wp.array). Zero alloc."""
@@ -1217,23 +1225,32 @@ def _run_pipeline(config, seed_buf_wp: wp.array, out: "Track", scratch: "_Scratc
         seg_wp=scratch.cs_seg, s_wp=scratch.cs_s,
     )
 
-    # 3. Band / L0 computation in-place.
-    wp.launch(_band_l0_k, dim=E, inputs=[scratch.cs_center, n_max, 2.0 * hw,
-              scratch.band, scratch.L0, scratch.count], device=dev)
-    if config.relax_band is not None:
-        wp.launch(_fill_i32_k, dim=E, inputs=[scratch.band,
-                  int(config.relax_band)], device=dev)
-    _sync(dev)
+    # 3-4. Relaxation (band/L0 setup + XPBD solve) in-place, then choose its input to
+    # inflate. relax_enable=False is an identity pass-through (matches the oracle's
+    # `if not relax_enable: return center`): skip the relax band/L0 + solve and inflate
+    # the constant-spacing centerline directly. The branch is resolved at capture time,
+    # so the captured graph is fixed and allocation-free either way.
+    if config.relax_enable:
+        # 3. Band / L0 computation in-place.
+        wp.launch(_band_l0_k, dim=E, inputs=[scratch.cs_center, n_max, 2.0 * hw,
+                  scratch.band, scratch.L0, scratch.count], device=dev)
+        if config.relax_band is not None:
+            wp.launch(_fill_i32_k, dim=E, inputs=[scratch.band,
+                      int(config.relax_band)], device=dev)
+        _sync(dev)
 
-    # 4. XPBD relaxation in-place.
-    warp_relax.xpbd_solve_inplace(
-        scratch.cs_center, scratch.relaxed, scratch.xpbd_db,
-        scratch.band, scratch.L0, scratch.count, n_max, config,
-    )
+        # 4. XPBD relaxation in-place.
+        warp_relax.xpbd_solve_inplace(
+            scratch.cs_center, scratch.relaxed, scratch.xpbd_db,
+            scratch.band, scratch.L0, scratch.count, n_max, config,
+        )
+        relax_out = scratch.relaxed
+    else:
+        relax_out = scratch.cs_center
 
     # 5. Inflate (resample_uniform + frame + offset + validity) in-place.
     return inflate_warp(
-        scratch.relaxed, config, out=out, valid=scratch.gen_valid,
+        relax_out, config, out=out, valid=scratch.gen_valid,
         count=scratch.count, scratch=scratch,
     )
 

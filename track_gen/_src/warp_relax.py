@@ -14,32 +14,6 @@ _INITED = False
 
 
 @wp.kernel
-def _sep_kernel(center: wp.array(dtype=wp.vec2f), band: wp.array(dtype=wp.int32),
-                N: int, target: wp.float32, out: wp.array(dtype=wp.vec2f)):
-    # One thread per bead (flat index over E*N). e = env, i = bead within env.
-    t = wp.tid()
-    e = t // N
-    i = t % N
-    xi = center[t]
-    disp = wp.vec2f(0.0, 0.0)
-    cnt = int(0)
-    base = e * N
-    for j in range(N):
-        d = wp.abs(i - j)
-        circ = wp.min(d, N - d)               # circular index distance
-        if circ > band[e]:                    # non-adjacent pair only
-            diff = xi - center[base + j]
-            dist = wp.max(wp.length(diff), 1.0e-9)
-            pen = target - dist
-            if pen > 0.0:                     # closer than D*(1+margin) -> push apart
-                disp = disp + (0.5 * pen / dist) * diff
-                cnt += 1
-    if cnt > 0:
-        out[t] = disp / wp.float32(cnt)       # Jacobi average by violated-pair count
-    else:
-        out[t] = wp.vec2f(0.0, 0.0)
-
-@wp.kernel
 def _disp_kernel(center: wp.array(dtype=wp.vec2f), band: wp.array(dtype=wp.int32),
                  L0: wp.array(dtype=wp.float32), target: wp.float32, R_min: wp.float32,
                  sr: wp.float32, pr: wp.float32, br: wp.float32,

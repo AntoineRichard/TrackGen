@@ -255,19 +255,3 @@ def xpbd_solve(center0, band, L0, config, count=None):
     return wp.to_torch(out_wp).view(E, n_max, 2)
 
 
-def separation_disp(center, band, target):
-    """Torch-in/out: fused Warp separation disp [E, N, 2] float32 (CUDA only)."""
-    import torch
-    E, N, _ = center.shape
-    cf = wp.from_torch(center.reshape(E * N, 2).contiguous(), dtype=wp.vec2f)
-    bw = wp.from_torch(band.to(torch.int32).contiguous(), dtype=wp.int32)
-    out_t = torch.empty(E * N, 2, device=center.device, dtype=torch.float32)
-    ow = wp.from_torch(out_t, dtype=wp.vec2f)
-    from track_gen._src.warp_relax import _sep_kernel, _INITED
-    if not _INITED:
-        wp.init()
-    wp.launch(_sep_kernel, dim=E * N, inputs=[cf, bw, N, float(target), ow],
-              device=str(center.device))
-    import torch as _torch
-    _torch.cuda.synchronize()
-    return out_t.view(E, N, 2)

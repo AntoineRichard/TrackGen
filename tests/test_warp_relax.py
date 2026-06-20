@@ -7,7 +7,7 @@ if not torch.cuda.is_available():
     pytest.skip("Warp separation path requires CUDA", allow_module_level=True)
 
 from tests._oracle import relaxation, geometry
-from tests._warp_compare import separation_disp, xpbd_solve
+from tests._warp_compare import xpbd_solve
 from track_gen._src.types import TrackGenConfig
 
 
@@ -15,20 +15,6 @@ def _star(n=256, r0=1.0, amp=0.6, k=7, phase=0.0):
     t = torch.linspace(0, 2 * math.pi, n + 1)[:-1] + phase
     r = r0 + amp * torch.cos(k * t)
     return torch.stack([r * torch.cos(t), r * torch.sin(t)], dim=-1)
-
-
-def test_warp_separation_matches_torch():
-    torch.manual_seed(0)
-    E, N, hw = 8, 256, 0.05
-    c = (torch.randn(E, N, 2) * 0.5).cuda()
-    cfg = TrackGenConfig(device="cuda", num_envs=E, num_points=N, half_width=hw, relax_margin=0.15)
-    band = relaxation._band(c, cfg)
-    D = 2 * hw; margin = 0.15; target = D * (1 + margin)
-    circ = geometry.circ_index_dist(N, c.device)
-    mask = circ[None] > band.view(E, 1, 1)
-    ref = relaxation._separation_disp(c, mask, D, margin)        # torch pairwise
-    got = separation_disp(c, band, target)                        # fused warp kernel
-    assert torch.allclose(ref, got, atol=1e-5), (ref - got).abs().max().item()
 
 
 def test_warp_xpbd_matches_torch_solve():
