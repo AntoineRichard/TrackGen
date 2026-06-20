@@ -23,8 +23,9 @@ def test_simple_gate_applied_in_generate():
     from track_gen._src.types import TrackGenConfig
     E = 16
     seeds = torch.arange(E, dtype=torch.int32) + 7
-    rng = PerEnvSeededRNG(seeds=seeds, num_envs=E, device="cpu")
-    rng.set_seeds(seeds, ids=torch.arange(E, dtype=torch.int32))
+    rng = PerEnvSeededRNG(seeds=wp.from_torch(seeds, dtype=wp.int32), num_envs=E, device="cpu")
+    rng.set_seeds_warp(wp.from_torch(seeds, dtype=wp.int32),
+                       ids=wp.array(list(range(E)), dtype=wp.int32, device="cpu"))
     cfg = TrackGenConfig(device="cpu", num_envs=E, scale=1.0, max_regen_iters=20)
     cl = BezierCenterlineGenerator(cfg, rng).generate(torch.arange(E))
     # Every VALID centerline must be a simple (non-self-intersecting) loop AT THE

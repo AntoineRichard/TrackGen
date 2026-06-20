@@ -12,6 +12,7 @@ import math
 from dataclasses import dataclass
 
 import torch
+import warp as wp
 
 
 @dataclass
@@ -65,10 +66,11 @@ class FourierCenterlineGenerator(CenterlineGenerator):
 
     def generate(self, ids: torch.Tensor) -> Centerline:
         # Sample standard normals (float args), then scale by the per-harmonic decay in torch.
-        # NOTE: do NOT pass a tensor std into sample_normal_torch (warp dispatch rejects
+        # NOTE: do NOT pass a tensor std into sample_normal_warp (warp dispatch rejects
         # float-mean / tensor-std, and only honors a per-env scalar std).
-        a = self.rng.sample_normal_torch(0.0, 1.0, (self.K, 2), ids=ids)  # [E, K, 2]
-        b = self.rng.sample_normal_torch(0.0, 1.0, (self.K, 2), ids=ids)  # [E, K, 2]
+        wp_ids = wp.from_torch(ids.to(torch.int32), dtype=wp.int32)
+        a = wp.to_torch(self.rng.sample_normal_warp(0.0, 1.0, (self.K, 2), ids=wp_ids))  # [E, K, 2]
+        b = wp.to_torch(self.rng.sample_normal_warp(0.0, 1.0, (self.K, 2), ids=wp_ids))  # [E, K, 2]
         a = a * self.std_k.view(1, self.K, 1)
         b = b * self.std_k.view(1, self.K, 1)
 

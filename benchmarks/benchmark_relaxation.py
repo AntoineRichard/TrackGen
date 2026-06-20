@@ -32,8 +32,10 @@ def _gen_simple_tracks(E, N, scale, device, seed):
     while len(kept) < E:
         B = min(2048, 2 * (E - len(kept)) + 256)
         seeds = torch.arange(B, dtype=torch.int32) + s
-        rng = PerEnvSeededRNG(seeds=seeds, num_envs=B, device=device)
-        rng.set_seeds(seeds, ids=torch.arange(B, dtype=torch.int32))
+        wp_seeds = wp.from_torch(seeds, dtype=wp.int32)
+        rng = PerEnvSeededRNG(seeds=wp_seeds, num_envs=B, device=device)
+        rng.set_seeds_warp(wp_seeds,
+                           ids=wp.array(list(range(B)), dtype=wp.int32, device=device))
         cfg = TrackGenConfig(device=device, num_envs=B, scale=scale, num_points=N,
                              max_regen_iters=20, relax_enable=False)
         cl = BezierCenterlineGenerator(cfg, rng).generate(torch.arange(B, device=device))

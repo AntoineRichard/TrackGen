@@ -12,6 +12,7 @@ import pytest
 import torch
 
 pytest.importorskip("warp")
+import warp as wp
 
 from track_gen._src import warp_pipeline as wpl
 from track_gen._src.types import TrackGenConfig, Track
@@ -91,8 +92,10 @@ def test_generate_tracks_warp_e2e(dev):
 
         ocfg = TrackGenConfig(num_envs=E, half_width=hw, device=dev)
         oseeds = torch.arange(E, dtype=torch.int32, device=dev)
-        rng = PerEnvSeededRNG(seeds=oseeds, num_envs=E, device=dev)
-        rng.set_seeds(oseeds, ids=torch.arange(E, dtype=torch.int32, device=dev))
+        wp_oseeds = wp.from_torch(oseeds, dtype=wp.int32)
+        rng = PerEnvSeededRNG(seeds=wp_oseeds, num_envs=E, device=dev)
+        rng.set_seeds_warp(wp_oseeds,
+                           ids=wp.array(list(range(E)), dtype=wp.int32, device=dev))
         otrack = TrackGenerator(ocfg, rng).generate(E)
         oracle_yield = otrack.valid.float().mean().item()
     except Exception:  # rng/oracle construction non-obvious or unavailable -> skip

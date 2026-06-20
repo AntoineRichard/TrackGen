@@ -73,8 +73,10 @@ def make_rng(num_envs: int, seed: int = 1234, device: str = DEVICE) -> PerEnvSee
     wp.init()
     seeds = (torch.arange(num_envs, dtype=torch.int32) + seed).to(device)
     ids = torch.arange(num_envs, dtype=torch.int32).to(device)
-    rng = PerEnvSeededRNG(seeds=seeds, num_envs=num_envs, device=device)
-    rng.set_seeds(seeds, ids=ids)
+    wp_seeds = wp.from_torch(seeds, dtype=wp.int32)
+    wp_ids = wp.from_torch(ids, dtype=wp.int32)
+    rng = PerEnvSeededRNG(seeds=wp_seeds, num_envs=num_envs, device=device)
+    rng.set_seeds_warp(wp_seeds, ids=wp_ids)
     return rng
 
 

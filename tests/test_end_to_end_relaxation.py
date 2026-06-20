@@ -11,8 +11,9 @@ def warp_rng():
 
     def make(E, seed=20):
         seeds = torch.arange(E, dtype=torch.int32) + seed
-        rng = PerEnvSeededRNG(seeds=seeds, num_envs=E, device="cpu")
-        rng.set_seeds(seeds, ids=torch.arange(E, dtype=torch.int32))
+        rng = PerEnvSeededRNG(seeds=wp.from_torch(seeds, dtype=wp.int32), num_envs=E, device="cpu")
+        rng.set_seeds_warp(wp.from_torch(seeds, dtype=wp.int32),
+                           ids=wp.array(list(range(E)), dtype=wp.int32, device="cpu"))
         return rng
     return make
 
