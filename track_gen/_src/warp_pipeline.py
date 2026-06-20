@@ -18,11 +18,7 @@ import torch
 
 from . import warp_relax  # pure-Warp XPBD solve (cpu+cuda); part of the pure-Warp impl
 
-try:
-    import warp as wp
-    _HAVE_WARP = True
-except Exception:  # defensive: warp-lang is a core dep; degrade only if the import fails
-    _HAVE_WARP = False
+import warp as wp
 
 _INITED = False
 
@@ -63,984 +59,983 @@ def _mean_seg_len_torch(center: torch.Tensor) -> torch.Tensor:
     return torch.linalg.norm(seg, dim=-1).sum(dim=1) / center.shape[1]
 
 
-if _HAVE_WARP:
 
-    @wp.kernel
-    def _offset_build_k(
-        center: wp.array(dtype=wp.vec2f),
-        Nrm: wp.array(dtype=wp.vec2f),
-        half_width: float,
-        n_max: int,
-        area_a: wp.array(dtype=wp.float32),
-        area_b: wp.array(dtype=wp.float32),
-        count: wp.array(dtype=wp.int32),
-    ):
-        # One thread per point t.  e = env index, i = point-within-env index.
-        # Accumulates the per-env signed shoelace cross-product terms for
-        # candidate polygons a (center + hw*Nrm) and b (center - hw*Nrm) via
-        # atomic adds.  area_a/area_b must be zero-initialised before launch.
-        # Padding threads (i >= count[e]) add nothing to the accumulators.
-        t = wp.tid()
-        e = t // n_max
-        i = t % n_max
-        b_base = e * n_max
+@wp.kernel
+def _offset_build_k(
+    center: wp.array(dtype=wp.vec2f),
+    Nrm: wp.array(dtype=wp.vec2f),
+    half_width: float,
+    n_max: int,
+    area_a: wp.array(dtype=wp.float32),
+    area_b: wp.array(dtype=wp.float32),
+    count: wp.array(dtype=wp.int32),
+):
+    # One thread per point t.  e = env index, i = point-within-env index.
+    # Accumulates the per-env signed shoelace cross-product terms for
+    # candidate polygons a (center + hw*Nrm) and b (center - hw*Nrm) via
+    # atomic adds.  area_a/area_b must be zero-initialised before launch.
+    # Padding threads (i >= count[e]) add nothing to the accumulators.
+    t = wp.tid()
+    e = t // n_max
+    i = t % n_max
+    b_base = e * n_max
 
-        # Guard: padding threads contribute nothing to the shoelace accumulation.
-        if i >= count[e]:
-            return
+    # Guard: padding threads contribute nothing to the shoelace accumulation.
+    if i >= count[e]:
+        return
 
-        # Offset points at this thread's index.
-        ct = center[t]
-        nt = Nrm[t]
-        at = ct + half_width * nt
-        bt = ct - half_width * nt
+    # Offset points at this thread's index.
+    ct = center[t]
+    nt = Nrm[t]
+    at = ct + half_width * nt
+    bt = ct - half_width * nt
 
-        # Offset points at the NEXT index (wraps within the real loop).
-        next_idx = b_base + (i + 1) % count[e]
-        cn = center[next_idx]
-        nn = Nrm[next_idx]
-        an = cn + half_width * nn
-        bn = cn - half_width * nn
+    # Offset points at the NEXT index (wraps within the real loop).
+    next_idx = b_base + (i + 1) % count[e]
+    cn = center[next_idx]
+    nn = Nrm[next_idx]
+    an = cn + half_width * nn
+    bn = cn - half_width * nn
 
-        # Shoelace edge contribution: x_i * y_{i+1} - x_{i+1} * y_i
-        cross_a = at[0] * an[1] - an[0] * at[1]
-        cross_b = bt[0] * bn[1] - bn[0] * bt[1]
-        wp.atomic_add(area_a, e, 0.5 * cross_a)
-        wp.atomic_add(area_b, e, 0.5 * cross_b)
+    # Shoelace edge contribution: x_i * y_{i+1} - x_{i+1} * y_i
+    cross_a = at[0] * an[1] - an[0] * at[1]
+    cross_b = bt[0] * bn[1] - bn[0] * bt[1]
+    wp.atomic_add(area_a, e, 0.5 * cross_a)
+    wp.atomic_add(area_b, e, 0.5 * cross_b)
 
-    @wp.kernel
-    def _offset_assign_k(
-        center: wp.array(dtype=wp.vec2f),
-        Nrm: wp.array(dtype=wp.vec2f),
-        half_width: float,
-        n_max: int,
-        area_a: wp.array(dtype=wp.float32),
-        area_b: wp.array(dtype=wp.float32),
-        outer: wp.array(dtype=wp.vec2f),
-        inner: wp.array(dtype=wp.vec2f),
-        count: wp.array(dtype=wp.int32),
-    ):
-        # One thread per point t.  Recompute a[t], b[t] (cheap), then assign
-        # outer/inner based on which candidate has the larger |signed area|.
-        # Padding threads (i >= count[e]) write NaN to outer/inner and return.
-        t = wp.tid()
-        e = t // n_max
-        i = t % n_max
+@wp.kernel
+def _offset_assign_k(
+    center: wp.array(dtype=wp.vec2f),
+    Nrm: wp.array(dtype=wp.vec2f),
+    half_width: float,
+    n_max: int,
+    area_a: wp.array(dtype=wp.float32),
+    area_b: wp.array(dtype=wp.float32),
+    outer: wp.array(dtype=wp.vec2f),
+    inner: wp.array(dtype=wp.vec2f),
+    count: wp.array(dtype=wp.int32),
+):
+    # One thread per point t.  Recompute a[t], b[t] (cheap), then assign
+    # outer/inner based on which candidate has the larger |signed area|.
+    # Padding threads (i >= count[e]) write NaN to outer/inner and return.
+    t = wp.tid()
+    e = t // n_max
+    i = t % n_max
 
-        # Guard: padding threads write NaN.
-        if i >= count[e]:
-            nan_val = wp.vec2f(wp.nan, wp.nan)
-            outer[t] = nan_val
-            inner[t] = nan_val
-            return
+    # Guard: padding threads write NaN.
+    if i >= count[e]:
+        nan_val = wp.vec2f(wp.nan, wp.nan)
+        outer[t] = nan_val
+        inner[t] = nan_val
+        return
 
-        ct = center[t]
-        nt = Nrm[t]
-        at = ct + half_width * nt
-        bt = ct - half_width * nt
-        aa = wp.abs(area_a[e])
-        ab = wp.abs(area_b[e])
-        if aa >= ab:
-            outer[t] = at
-            inner[t] = bt
-        else:
-            outer[t] = bt
-            inner[t] = at
+    ct = center[t]
+    nt = Nrm[t]
+    at = ct + half_width * nt
+    bt = ct - half_width * nt
+    aa = wp.abs(area_a[e])
+    ab = wp.abs(area_b[e])
+    if aa >= ab:
+        outer[t] = at
+        inner[t] = bt
+    else:
+        outer[t] = bt
+        inner[t] = at
 
-    @wp.kernel
-    def _double_k(x: wp.array(dtype=wp.float32), out: wp.array(dtype=wp.float32)):
-        # Smoke-test kernel: out[i] = 2*x[i]. Exercises the Warp cpu/cuda launch path
-        # (used only by the scaffolding smoke test, _smoke_double).
-        i = wp.tid()
-        out[i] = 2.0 * x[i]
+@wp.kernel
+def _double_k(x: wp.array(dtype=wp.float32), out: wp.array(dtype=wp.float32)):
+    # Smoke-test kernel: out[i] = 2*x[i]. Exercises the Warp cpu/cuda launch path
+    # (used only by the scaffolding smoke test, _smoke_double).
+    i = wp.tid()
+    out[i] = 2.0 * x[i]
 
-    @wp.kernel
-    def _frame_k(c: wp.array(dtype=wp.vec2f), n_max: int,
-                 T: wp.array(dtype=wp.vec2f), Nrm: wp.array(dtype=wp.vec2f),
-                 kappa: wp.array(dtype=wp.float32),
-                 count: wp.array(dtype=wp.int32)):
-        # Per closed-loop point: central-difference unit tangent, left-normal, and
-        # non-negative Menger curvature. Matches geometry.tangents_normals + menger_curvature.
-        # Padding threads (i >= count[e]) write NaN and return.
-        t = wp.tid()
-        e = t // n_max
-        i = t % n_max
-        b = e * n_max
+@wp.kernel
+def _frame_k(c: wp.array(dtype=wp.vec2f), n_max: int,
+             T: wp.array(dtype=wp.vec2f), Nrm: wp.array(dtype=wp.vec2f),
+             kappa: wp.array(dtype=wp.float32),
+             count: wp.array(dtype=wp.int32)):
+    # Per closed-loop point: central-difference unit tangent, left-normal, and
+    # non-negative Menger curvature. Matches geometry.tangents_normals + menger_curvature.
+    # Padding threads (i >= count[e]) write NaN and return.
+    t = wp.tid()
+    e = t // n_max
+    i = t % n_max
+    b = e * n_max
 
-        # Guard: padding threads write NaN to all outputs and return.
-        if i >= count[e]:
-            nan_val = wp.vec2f(wp.nan, wp.nan)
-            T[t] = nan_val
-            Nrm[t] = nan_val
-            kappa[t] = wp.nan
-            return
+    # Guard: padding threads write NaN to all outputs and return.
+    if i >= count[e]:
+        nan_val = wp.vec2f(wp.nan, wp.nan)
+        T[t] = nan_val
+        Nrm[t] = nan_val
+        kappa[t] = wp.nan
+        return
 
-        real_n = count[e]
-        xp = c[b + (i + real_n - 1) % real_n]
-        xc = c[t]
-        xn = c[b + (i + 1) % real_n]
-        d = xn - xp
-        inv = 1.0 / wp.max(wp.length(d), 1.0e-8)   # safe_normalize floor
-        tan = d * inv
-        T[t] = tan
-        Nrm[t] = wp.vec2f(-tan[1], tan[0])
+    real_n = count[e]
+    xp = c[b + (i + real_n - 1) % real_n]
+    xc = c[t]
+    xn = c[b + (i + 1) % real_n]
+    d = xn - xp
+    inv = 1.0 / wp.max(wp.length(d), 1.0e-8)   # safe_normalize floor
+    tan = d * inv
+    T[t] = tan
+    Nrm[t] = wp.vec2f(-tan[1], tan[0])
+    a = xc - xp
+    bb = xn - xc
+    cc = xn - xp
+    cross = a[0] * bb[1] - a[1] * bb[0]
+    area = 0.5 * wp.abs(cross)
+    denom = wp.max(wp.length(a) * wp.length(bb) * wp.length(cc), 1.0e-12)
+    kappa[t] = 4.0 * area / denom
+
+@wp.func
+def _ccw(ox: float, oy: float, px: float, py: float, qx: float, qy: float) -> float:
+    # Returns (q.y-o.y)*(p.x-o.x) - (p.y-o.y)*(q.x-o.x)
+    return (qy - oy) * (px - ox) - (py - oy) * (qx - ox)
+
+@wp.func
+def _nan0(x: float) -> float:
+    # NaN/inf -> 0.0 guard, reproducing torch.nan_to_num(..., nan=0.0) for the border
+    # self-intersection check. wp.where(cond, if_true, if_false) is the Warp 1.14
+    # non-deprecated select primitive. A NO-OP for finite inputs, so the
+    # self_intersections oracle (torch.equal) test is unaffected.
+    return wp.where(wp.isfinite(x), x, 0.0)
+
+@wp.func
+def _self_intersections_func(poly: wp.array(dtype=wp.vec2f), base: int, N: int) -> int:
+    # Proper-crossing double-loop count for the env whose points start at `base`.
+    # Each coordinate is read through _nan0 (NaN->0 guard), which is a no-op on finite
+    # inputs (so the self_intersections torch.equal test stays exact) and reproduces
+    # the validity border check's torch.nan_to_num(outer/inner, nan=0.0).
+    count = int(0)
+    for i in range(N):
+        for j in range(i + 1, N):
+            diff = j - i
+            circ_dist = wp.min(diff, N - diff)
+            if circ_dist <= 1:
+                continue
+            Ai = poly[base + i]
+            Bi = poly[base + (i + 1) % N]
+            Aj = poly[base + j]
+            Bj = poly[base + (j + 1) % N]
+            aix = _nan0(Ai[0]); aiy = _nan0(Ai[1])
+            bix = _nan0(Bi[0]); biy = _nan0(Bi[1])
+            ajx = _nan0(Aj[0]); ajy = _nan0(Aj[1])
+            bjx = _nan0(Bj[0]); bjy = _nan0(Bj[1])
+            d1 = _ccw(ajx, ajy, bjx, bjy, aix, aiy)
+            d2 = _ccw(ajx, ajy, bjx, bjy, bix, biy)
+            d3 = _ccw(aix, aiy, bix, biy, ajx, ajy)
+            d4 = _ccw(aix, aiy, bix, biy, bjx, bjy)
+            # Scale-relative collinearity tolerance (matches geometry.SELF_X_REL): a
+            # straddle counts only if both endpoints clear the other segment's line by
+            # more than SELF_X_REL * (that segment length). |d| = len * perp-offset, so
+            # the threshold eps = REL * len^2. Kills the float32 sign-flip false positives
+            # on near-collinear/straight segments without missing genuine crossings.
+            lj2 = (bjx - ajx) * (bjx - ajx) + (bjy - ajy) * (bjy - ajy)
+            li2 = (bix - aix) * (bix - aix) + (biy - aiy) * (biy - aiy)
+            ej = float(1.0e-3) * lj2
+            ei = float(1.0e-3) * li2
+            seg_ij = (d1 > ej and d2 < -ej) or (d1 < -ej and d2 > ej)
+            seg_ji = (d3 > ei and d4 < -ei) or (d3 < -ei and d4 > ei)
+            if seg_ij and seg_ji:
+                count = count + 1
+    return count
+
+@wp.kernel
+def _self_intersections_k(
+    poly: wp.array(dtype=wp.vec2f),
+    n_max: int,
+    count: wp.array(dtype=wp.int32),
+    out: wp.array(dtype=wp.int32),
+):
+    # One thread per env e. Delegates to _self_intersections_func over [e*n_max, e*n_max+count[e]).
+    e = wp.tid()
+    out[e] = _self_intersections_func(poly, e * n_max, count[e])
+
+@wp.kernel
+def _sep_min_k(
+    pts: wp.array(dtype=wp.vec2f),
+    band: wp.array(dtype=wp.int32),
+    n_max: int,
+    count: wp.array(dtype=wp.int32),
+    out: wp.array(dtype=wp.float32),
+):
+    # One thread per env e. Min distance over pairs with circ_dist > band[e].
+    e = wp.tid()
+    b = band[e]
+    cn = count[e]
+    sep_min = float(1.0e30)
+    for i in range(cn):
+        for j in range(i + 1, cn):
+            diff = j - i
+            circ_dist = wp.min(diff, cn - diff)
+            if circ_dist > b:
+                pi = pts[e * n_max + i]
+                pj = pts[e * n_max + j]
+                d = wp.length(pi - pj)
+                sep_min = wp.min(sep_min, d)
+    out[e] = sep_min
+
+@wp.kernel
+def _curvrad_min_k(
+    pts: wp.array(dtype=wp.vec2f),
+    n_max: int,
+    count: wp.array(dtype=wp.int32),
+    out: wp.array(dtype=wp.float32),
+):
+    # One thread per env e. 1 / max Menger curvature.
+    e = wp.tid()
+    cn = count[e]
+    kappa_max = float(0.0)
+    for i in range(cn):
+        xp = pts[e * n_max + (i + cn - 1) % cn]
+        xc = pts[e * n_max + i]
+        xn = pts[e * n_max + (i + 1) % cn]
         a = xc - xp
         bb = xn - xc
         cc = xn - xp
         cross = a[0] * bb[1] - a[1] * bb[0]
         area = 0.5 * wp.abs(cross)
-        denom = wp.max(wp.length(a) * wp.length(bb) * wp.length(cc), 1.0e-12)
-        kappa[t] = 4.0 * area / denom
+        denom = wp.max(wp.length(a) * wp.length(bb) * wp.length(cc), float(1.0e-12))
+        kappa = 4.0 * area / denom
+        kappa_max = wp.max(kappa_max, kappa)
+    out[e] = 1.0 / wp.max(kappa_max, float(1.0e-12))
 
-    @wp.func
-    def _ccw(ox: float, oy: float, px: float, py: float, qx: float, qy: float) -> float:
-        # Returns (q.y-o.y)*(p.x-o.x) - (p.y-o.y)*(q.x-o.x)
-        return (qy - oy) * (px - ox) - (py - oy) * (qx - ox)
+@wp.func
+def _thickness_func(pts: wp.array(dtype=wp.vec2f), base: int, N: int, band: int) -> float:
+    # thickness = min(rad_min, 0.5 * sep_min) for the env whose points start at `base`.
+    # sep_min = min pairwise distance over pairs with circ_dist > band;
+    # rad_min  = 1 / max Menger curvature.
+    # --- sep_min: min dist over pairs with circ_dist > band ---
+    sep_min = float(1.0e30)
+    for i in range(N):
+        for j in range(i + 1, N):
+            diff = j - i
+            circ_dist = wp.min(diff, N - diff)
+            if circ_dist > band:
+                pi = pts[base + i]
+                pj = pts[base + j]
+                d = wp.length(pi - pj)
+                sep_min = wp.min(sep_min, d)
 
-    @wp.func
-    def _nan0(x: float) -> float:
-        # NaN/inf -> 0.0 guard, reproducing torch.nan_to_num(..., nan=0.0) for the border
-        # self-intersection check. wp.where(cond, if_true, if_false) is the Warp 1.14
-        # non-deprecated select primitive. A NO-OP for finite inputs, so the
-        # self_intersections oracle (torch.equal) test is unaffected.
-        return wp.where(wp.isfinite(x), x, 0.0)
+    # --- rad_min: 1 / max Menger curvature ---
+    kappa_max = float(0.0)
+    for i in range(N):
+        xp = pts[base + (i + N - 1) % N]
+        xc = pts[base + i]
+        xn = pts[base + (i + 1) % N]
+        a = xc - xp
+        bb = xn - xc
+        cc = xn - xp
+        cross = a[0] * bb[1] - a[1] * bb[0]
+        area = 0.5 * wp.abs(cross)
+        denom = wp.max(wp.length(a) * wp.length(bb) * wp.length(cc), float(1.0e-12))
+        kappa = 4.0 * area / denom
+        kappa_max = wp.max(kappa_max, kappa)
+    rad_min = 1.0 / wp.max(kappa_max, float(1.0e-12))
 
-    @wp.func
-    def _self_intersections_func(poly: wp.array(dtype=wp.vec2f), base: int, N: int) -> int:
-        # Proper-crossing double-loop count for the env whose points start at `base`.
-        # Each coordinate is read through _nan0 (NaN->0 guard), which is a no-op on finite
-        # inputs (so the self_intersections torch.equal test stays exact) and reproduces
-        # the validity border check's torch.nan_to_num(outer/inner, nan=0.0).
-        count = int(0)
-        for i in range(N):
-            for j in range(i + 1, N):
-                diff = j - i
-                circ_dist = wp.min(diff, N - diff)
-                if circ_dist <= 1:
-                    continue
-                Ai = poly[base + i]
-                Bi = poly[base + (i + 1) % N]
-                Aj = poly[base + j]
-                Bj = poly[base + (j + 1) % N]
-                aix = _nan0(Ai[0]); aiy = _nan0(Ai[1])
-                bix = _nan0(Bi[0]); biy = _nan0(Bi[1])
-                ajx = _nan0(Aj[0]); ajy = _nan0(Aj[1])
-                bjx = _nan0(Bj[0]); bjy = _nan0(Bj[1])
-                d1 = _ccw(ajx, ajy, bjx, bjy, aix, aiy)
-                d2 = _ccw(ajx, ajy, bjx, bjy, bix, biy)
-                d3 = _ccw(aix, aiy, bix, biy, ajx, ajy)
-                d4 = _ccw(aix, aiy, bix, biy, bjx, bjy)
-                # Scale-relative collinearity tolerance (matches geometry.SELF_X_REL): a
-                # straddle counts only if both endpoints clear the other segment's line by
-                # more than SELF_X_REL * (that segment length). |d| = len * perp-offset, so
-                # the threshold eps = REL * len^2. Kills the float32 sign-flip false positives
-                # on near-collinear/straight segments without missing genuine crossings.
-                lj2 = (bjx - ajx) * (bjx - ajx) + (bjy - ajy) * (bjy - ajy)
-                li2 = (bix - aix) * (bix - aix) + (biy - aiy) * (biy - aiy)
-                ej = float(1.0e-3) * lj2
-                ei = float(1.0e-3) * li2
-                seg_ij = (d1 > ej and d2 < -ej) or (d1 < -ej and d2 > ej)
-                seg_ji = (d3 > ei and d4 < -ei) or (d3 < -ei and d4 > ei)
-                if seg_ij and seg_ji:
-                    count = count + 1
-        return count
+    return wp.min(rad_min, 0.5 * sep_min)
 
-    @wp.kernel
-    def _self_intersections_k(
-        poly: wp.array(dtype=wp.vec2f),
-        n_max: int,
-        count: wp.array(dtype=wp.int32),
-        out: wp.array(dtype=wp.int32),
-    ):
-        # One thread per env e. Delegates to _self_intersections_func over [e*n_max, e*n_max+count[e]).
-        e = wp.tid()
-        out[e] = _self_intersections_func(poly, e * n_max, count[e])
+@wp.kernel
+def _thickness_k(
+    pts: wp.array(dtype=wp.vec2f),
+    band: wp.array(dtype=wp.int32),
+    n_max: int,
+    count: wp.array(dtype=wp.int32),
+    out: wp.array(dtype=wp.float32),
+):
+    # One thread per env e. Delegates to _thickness_func with this env's band.
+    e = wp.tid()
+    out[e] = _thickness_func(pts, e * n_max, count[e], band[e])
 
-    @wp.kernel
-    def _sep_min_k(
-        pts: wp.array(dtype=wp.vec2f),
-        band: wp.array(dtype=wp.int32),
-        n_max: int,
-        count: wp.array(dtype=wp.int32),
-        out: wp.array(dtype=wp.float32),
-    ):
-        # One thread per env e. Min distance over pairs with circ_dist > band[e].
-        e = wp.tid()
-        b = band[e]
-        cn = count[e]
-        sep_min = float(1.0e30)
-        for i in range(cn):
-            for j in range(i + 1, cn):
-                diff = j - i
-                circ_dist = wp.min(diff, cn - diff)
-                if circ_dist > b:
-                    pi = pts[e * n_max + i]
-                    pj = pts[e * n_max + j]
-                    d = wp.length(pi - pj)
-                    sep_min = wp.min(sep_min, d)
-        out[e] = sep_min
+@wp.kernel
+def _resample_scan_k(
+    c: wp.array(dtype=wp.vec2f),
+    n_max: int,
+    count: wp.array(dtype=wp.int32),
+    seg: wp.array(dtype=wp.float32),
+    s: wp.array(dtype=wp.float32),
+):
+    # One thread per env e. Segment lengths seg[e*n_max+i]=|c[i+1]-c[i]|
+    # (i+1 wraps via %count[e]) and cumulative arc s[e*(n_max+1)+0]=0,
+    # s[..+i+1]=s[..+i]+seg[i] for i in range(count[e]).
+    # Running sum in float64 to limit drift vs the torch oracle's cumsum.
+    # PARITY: when count[e]==n_max for all e, produces identical output to the
+    # former fixed-N kernel (same float64 accumulation order, same modular indexing).
+    e = wp.tid()
+    cn = count[e]
+    b = e * n_max
+    es = e * (n_max + 1)
+    s[es] = float(0.0)
+    acc = wp.float64(0.0)
+    for i in range(cn):
+        d = c[b + (i + 1) % cn] - c[b + i]
+        l = wp.length(d)
+        seg[b + i] = l
+        acc = acc + wp.float64(l)
+        s[es + i + 1] = wp.float32(acc)
 
-    @wp.kernel
-    def _curvrad_min_k(
-        pts: wp.array(dtype=wp.vec2f),
-        n_max: int,
-        count: wp.array(dtype=wp.int32),
-        out: wp.array(dtype=wp.float32),
-    ):
-        # One thread per env e. 1 / max Menger curvature.
-        e = wp.tid()
-        cn = count[e]
-        kappa_max = float(0.0)
-        for i in range(cn):
-            xp = pts[e * n_max + (i + cn - 1) % cn]
-            xc = pts[e * n_max + i]
-            xn = pts[e * n_max + (i + 1) % cn]
-            a = xc - xp
-            bb = xn - xc
-            cc = xn - xp
-            cross = a[0] * bb[1] - a[1] * bb[0]
-            area = 0.5 * wp.abs(cross)
-            denom = wp.max(wp.length(a) * wp.length(bb) * wp.length(cc), float(1.0e-12))
-            kappa = 4.0 * area / denom
-            kappa_max = wp.max(kappa_max, kappa)
-        out[e] = 1.0 / wp.max(kappa_max, float(1.0e-12))
+@wp.kernel
+def _resample_lookup_k(
+    c: wp.array(dtype=wp.vec2f),
+    seg: wp.array(dtype=wp.float32),
+    s: wp.array(dtype=wp.float32),
+    n_max: int,
+    count: wp.array(dtype=wp.int32),
+    out: wp.array(dtype=wp.vec2f),
+):
+    # One thread per output slot t; e = t // n_max, k = t % n_max.
+    # k >= count[e] -> NaN pad (padding region).
+    # Otherwise: target tk = k * total / count[e], linear scan then lerp.
+    # PARITY: when count[e]==n_max for all e, result is bit-identical to the
+    # former fixed-N kernel (same formula, same scan bounds, same wrap modulus).
+    t = wp.tid()
+    e = t // n_max
+    k = t % n_max
+    cn = count[e]
+    if k >= cn:
+        out[t] = wp.vec2f(wp.nan, wp.nan)
+        return
+    eb = e * n_max
+    es = e * (n_max + 1)
+    total = s[es + cn]
+    tk = float(k) * total / float(cn)
+    idx = int(0)
+    while idx < cn - 1 and s[es + idx + 1] < tk:
+        idx = idx + 1
+    s0 = s[es + idx]
+    segl = wp.max(seg[eb + idx], float(1.0e-12))
+    frac = wp.clamp((tk - s0) / segl, float(0.0), float(1.0))
+    p0 = c[eb + idx]
+    p1 = c[eb + (idx + 1) % cn]
+    out[t] = p0 + frac * (p1 - p0)
 
-    @wp.func
-    def _thickness_func(pts: wp.array(dtype=wp.vec2f), base: int, N: int, band: int) -> float:
-        # thickness = min(rad_min, 0.5 * sep_min) for the env whose points start at `base`.
-        # sep_min = min pairwise distance over pairs with circ_dist > band;
-        # rad_min  = 1 / max Menger curvature.
-        # --- sep_min: min dist over pairs with circ_dist > band ---
-        sep_min = float(1.0e30)
-        for i in range(N):
-            for j in range(i + 1, N):
-                diff = j - i
-                circ_dist = wp.min(diff, N - diff)
-                if circ_dist > band:
-                    pi = pts[base + i]
-                    pj = pts[base + j]
-                    d = wp.length(pi - pj)
-                    sep_min = wp.min(sep_min, d)
+@wp.kernel
+def _cs_scan_k(c: wp.array(dtype=wp.vec2f), N: int, spacing: wp.float32, n_max: int,
+               seg: wp.array(dtype=wp.float32), s: wp.array(dtype=wp.float32),
+               count: wp.array(dtype=wp.int32)):
+    # One thread per env e. Closed-loop seg lengths + cumulative arc s (len N+1),
+    # then count = floor(total/spacing)+1, capped so target (count-1)*spacing < total
+    # and to n_max. Mirrors geometry._resample_one's spacing branch.
+    e = wp.tid()
+    b = e * N
+    es = e * (N + 1)
+    s[es] = float(0.0)
+    acc = wp.float64(0.0)
+    for i in range(N):
+        d = c[b + (i + 1) % N] - c[b + i]
+        l = wp.length(d)
+        seg[b + i] = l
+        acc = acc + wp.float64(l)
+        s[es + i + 1] = wp.float32(acc)
+    total = wp.float32(acc)
+    if not (total > 0.0):      # catches total <= 0 AND NaN (never-accepted envs)
+        count[e] = 0
+        return
+    k = int(wp.floor(total / spacing)) + 1
+    while k > 1 and wp.float32(k - 1) * spacing >= total:
+        k = k - 1
+    count[e] = wp.min(wp.max(k, 1), n_max)
 
-        # --- rad_min: 1 / max Menger curvature ---
-        kappa_max = float(0.0)
-        for i in range(N):
-            xp = pts[base + (i + N - 1) % N]
-            xc = pts[base + i]
-            xn = pts[base + (i + 1) % N]
-            a = xc - xp
-            bb = xn - xc
-            cc = xn - xp
-            cross = a[0] * bb[1] - a[1] * bb[0]
-            area = 0.5 * wp.abs(cross)
-            denom = wp.max(wp.length(a) * wp.length(bb) * wp.length(cc), float(1.0e-12))
-            kappa = 4.0 * area / denom
-            kappa_max = wp.max(kappa_max, kappa)
-        rad_min = 1.0 / wp.max(kappa_max, float(1.0e-12))
+@wp.kernel
+def _cs_lookup_k(c: wp.array(dtype=wp.vec2f), seg: wp.array(dtype=wp.float32),
+                 s: wp.array(dtype=wp.float32), N: int, spacing: wp.float32, n_max: int,
+                 count: wp.array(dtype=wp.int32), out: wp.array(dtype=wp.vec2f)):
+    # One thread per OUTPUT slot t (dim = E*n_max). k >= count[e] -> NaN pad.
+    t = wp.tid()
+    e = t // n_max
+    k = t % n_max
+    if k >= count[e]:
+        out[t] = wp.vec2f(wp.nan, wp.nan)
+        return
+    eb = e * N
+    es = e * (N + 1)
+    target = wp.float32(k) * spacing
+    idx = int(0)
+    while idx < N - 1 and s[es + idx + 1] < target:
+        idx = idx + 1
+    s0 = s[es + idx]
+    segl = wp.max(seg[eb + idx], float(1.0e-12))
+    frac = wp.clamp((target - s0) / segl, float(0.0), float(1.0))
+    p0 = c[eb + idx]
+    p1 = c[eb + (idx + 1) % N]
+    out[t] = p0 + frac * (p1 - p0)
 
-        return wp.min(rad_min, 0.5 * sep_min)
+@wp.kernel
+def _arc_scan_k(
+    dense: wp.array(dtype=wp.vec2f),
+    M: int,
+    num: int,
+    real_pts: wp.array(dtype=wp.vec2f),
+    seg: wp.array(dtype=wp.float32),
+    s: wp.array(dtype=wp.float32),
+    count_r: wp.array(dtype=wp.int32),
+    count_out: wp.array(dtype=wp.int32),
+):
+    # One thread per env e. NaN-aware generalization of _resample_scan_k: first
+    # COMPACT the real (both-components-finite) points IN ORDER (dropping interior
+    # NaN too, like the oracle's pe[isfinite.all(-1)]), then build the closed-loop
+    # segment lengths and cumulative arc length over those R real points.
+    e = wp.tid()
+    db = e * M
+    rb = e * M
+    es = e * (M + 1)
 
-    @wp.kernel
-    def _thickness_k(
-        pts: wp.array(dtype=wp.vec2f),
-        band: wp.array(dtype=wp.int32),
-        n_max: int,
-        count: wp.array(dtype=wp.int32),
-        out: wp.array(dtype=wp.float32),
-    ):
-        # One thread per env e. Delegates to _thickness_func with this env's band.
-        e = wp.tid()
-        out[e] = _thickness_func(pts, e * n_max, count[e], band[e])
+    # Compaction: walk i=0..M-1, append every finite point in order.
+    r = int(0)
+    for i in range(M):
+        p = dense[db + i]
+        if wp.isfinite(p[0]) and wp.isfinite(p[1]):
+            real_pts[rb + r] = p
+            r = r + 1
+    count_r[e] = r
+    # Public arc-resample count (folds in the wrapper's torch.where): R>=2 -> num, else 0.
+    count_out[e] = wp.where(r >= 2, num, 0)
 
-    @wp.kernel
-    def _resample_scan_k(
-        c: wp.array(dtype=wp.vec2f),
-        n_max: int,
-        count: wp.array(dtype=wp.int32),
-        seg: wp.array(dtype=wp.float32),
-        s: wp.array(dtype=wp.float32),
-    ):
-        # One thread per env e. Segment lengths seg[e*n_max+i]=|c[i+1]-c[i]|
-        # (i+1 wraps via %count[e]) and cumulative arc s[e*(n_max+1)+0]=0,
-        # s[..+i+1]=s[..+i]+seg[i] for i in range(count[e]).
-        # Running sum in float64 to limit drift vs the torch oracle's cumsum.
-        # PARITY: when count[e]==n_max for all e, produces identical output to the
-        # former fixed-N kernel (same float64 accumulation order, same modular indexing).
-        e = wp.tid()
-        cn = count[e]
-        b = e * n_max
-        es = e * (n_max + 1)
+    # R >= 2: closed-loop arc length over real_pts[0..R-1]. seg[j] = |real[(j+1)%R]
+    # - real[j]| (j=R-1 is the wrap |real[0]-real[R-1]|); s[0]=0, s[j+1]=s[j]+seg[j].
+    # Accumulate in float64 to limit drift vs the torch oracle's cumsum.
+    if r >= 2:
         s[es] = float(0.0)
         acc = wp.float64(0.0)
-        for i in range(cn):
-            d = c[b + (i + 1) % cn] - c[b + i]
-            l = wp.length(d)
-            seg[b + i] = l
+        for j in range(r):
+            nxt = real_pts[rb + (j + 1) % r]
+            l = wp.length(nxt - real_pts[rb + j])
+            seg[rb + j] = l
             acc = acc + wp.float64(l)
-            s[es + i + 1] = wp.float32(acc)
+            s[es + j + 1] = wp.float32(acc)
+    # R < 2: leave seg/s untouched; _arc_lookup_k emits NaN for this env.
 
-    @wp.kernel
-    def _resample_lookup_k(
-        c: wp.array(dtype=wp.vec2f),
-        seg: wp.array(dtype=wp.float32),
-        s: wp.array(dtype=wp.float32),
-        n_max: int,
-        count: wp.array(dtype=wp.int32),
-        out: wp.array(dtype=wp.vec2f),
-    ):
-        # One thread per output slot t; e = t // n_max, k = t % n_max.
-        # k >= count[e] -> NaN pad (padding region).
-        # Otherwise: target tk = k * total / count[e], linear scan then lerp.
-        # PARITY: when count[e]==n_max for all e, result is bit-identical to the
-        # former fixed-N kernel (same formula, same scan bounds, same wrap modulus).
-        t = wp.tid()
-        e = t // n_max
-        k = t % n_max
-        cn = count[e]
-        if k >= cn:
-            out[t] = wp.vec2f(wp.nan, wp.nan)
-            return
-        eb = e * n_max
-        es = e * (n_max + 1)
-        total = s[es + cn]
-        tk = float(k) * total / float(cn)
-        idx = int(0)
-        while idx < cn - 1 and s[es + idx + 1] < tk:
-            idx = idx + 1
-        s0 = s[es + idx]
-        segl = wp.max(seg[eb + idx], float(1.0e-12))
-        frac = wp.clamp((tk - s0) / segl, float(0.0), float(1.0))
-        p0 = c[eb + idx]
-        p1 = c[eb + (idx + 1) % cn]
-        out[t] = p0 + frac * (p1 - p0)
+@wp.kernel
+def _arc_lookup_k(
+    real_pts: wp.array(dtype=wp.vec2f),
+    seg: wp.array(dtype=wp.float32),
+    s: wp.array(dtype=wp.float32),
+    count_r: wp.array(dtype=wp.int32),
+    M: int,
+    num: int,
+    out: wp.array(dtype=wp.vec2f),
+):
+    # One thread per OUTPUT point t (dim = E*num); e = env index, k = point-within-env.
+    # R = count_r[e]. R < 2 -> NaN (matches _resample_one's degenerate full-NaN row).
+    # Else: linear-scan searchsorted(right=False).clamp(max=R-1) over the closed
+    # real-loop arc length, then lerp. Mirrors _resample_lookup_k with variable R and
+    # the wrap p1 = real[0] for idx == R-1 ((idx+1)%R).
+    t = wp.tid()
+    e = t // num
+    k = t % num
+    rb = e * M
+    es = e * (M + 1)
 
-    @wp.kernel
-    def _cs_scan_k(c: wp.array(dtype=wp.vec2f), N: int, spacing: wp.float32, n_max: int,
-                   seg: wp.array(dtype=wp.float32), s: wp.array(dtype=wp.float32),
-                   count: wp.array(dtype=wp.int32)):
-        # One thread per env e. Closed-loop seg lengths + cumulative arc s (len N+1),
-        # then count = floor(total/spacing)+1, capped so target (count-1)*spacing < total
-        # and to n_max. Mirrors geometry._resample_one's spacing branch.
-        e = wp.tid()
-        b = e * N
-        es = e * (N + 1)
-        s[es] = float(0.0)
-        acc = wp.float64(0.0)
-        for i in range(N):
-            d = c[b + (i + 1) % N] - c[b + i]
-            l = wp.length(d)
-            seg[b + i] = l
-            acc = acc + wp.float64(l)
-            s[es + i + 1] = wp.float32(acc)
-        total = wp.float32(acc)
-        if not (total > 0.0):      # catches total <= 0 AND NaN (never-accepted envs)
-            count[e] = 0
-            return
-        k = int(wp.floor(total / spacing)) + 1
-        while k > 1 and wp.float32(k - 1) * spacing >= total:
-            k = k - 1
-        count[e] = wp.min(wp.max(k, 1), n_max)
+    r = count_r[e]
+    if r < 2:
+        out[t] = wp.vec2f(wp.nan, wp.nan)
+        return
 
-    @wp.kernel
-    def _cs_lookup_k(c: wp.array(dtype=wp.vec2f), seg: wp.array(dtype=wp.float32),
-                     s: wp.array(dtype=wp.float32), N: int, spacing: wp.float32, n_max: int,
-                     count: wp.array(dtype=wp.int32), out: wp.array(dtype=wp.vec2f)):
-        # One thread per OUTPUT slot t (dim = E*n_max). k >= count[e] -> NaN pad.
-        t = wp.tid()
-        e = t // n_max
-        k = t % n_max
-        if k >= count[e]:
-            out[t] = wp.vec2f(wp.nan, wp.nan)
-            return
-        eb = e * N
-        es = e * (N + 1)
-        target = wp.float32(k) * spacing
-        idx = int(0)
-        while idx < N - 1 and s[es + idx + 1] < target:
-            idx = idx + 1
-        s0 = s[es + idx]
-        segl = wp.max(seg[eb + idx], float(1.0e-12))
-        frac = wp.clamp((target - s0) / segl, float(0.0), float(1.0))
-        p0 = c[eb + idx]
-        p1 = c[eb + (idx + 1) % N]
-        out[t] = p0 + frac * (p1 - p0)
+    total = s[es + r]
+    target = float(k) * total / float(num)
 
-    @wp.kernel
-    def _arc_scan_k(
-        dense: wp.array(dtype=wp.vec2f),
-        M: int,
-        num: int,
-        real_pts: wp.array(dtype=wp.vec2f),
-        seg: wp.array(dtype=wp.float32),
-        s: wp.array(dtype=wp.float32),
-        count_r: wp.array(dtype=wp.int32),
-        count_out: wp.array(dtype=wp.int32),
-    ):
-        # One thread per env e. NaN-aware generalization of _resample_scan_k: first
-        # COMPACT the real (both-components-finite) points IN ORDER (dropping interior
-        # NaN too, like the oracle's pe[isfinite.all(-1)]), then build the closed-loop
-        # segment lengths and cumulative arc length over those R real points.
-        e = wp.tid()
-        db = e * M
-        rb = e * M
-        es = e * (M + 1)
+    # Linear scan: first j in [0, R-1] with s[es+j+1] >= target, clamped to R-1.
+    idx = int(0)
+    while idx < r - 1 and s[es + idx + 1] < target:
+        idx = idx + 1
 
-        # Compaction: walk i=0..M-1, append every finite point in order.
-        r = int(0)
-        for i in range(M):
-            p = dense[db + i]
-            if wp.isfinite(p[0]) and wp.isfinite(p[1]):
-                real_pts[rb + r] = p
-                r = r + 1
-        count_r[e] = r
-        # Public arc-resample count (folds in the wrapper's torch.where): R>=2 -> num, else 0.
-        count_out[e] = wp.where(r >= 2, num, 0)
+    s0 = s[es + idx]
+    segl = wp.max(seg[rb + idx], float(1.0e-12))
+    frac = wp.clamp((target - s0) / segl, float(0.0), float(1.0))
 
-        # R >= 2: closed-loop arc length over real_pts[0..R-1]. seg[j] = |real[(j+1)%R]
-        # - real[j]| (j=R-1 is the wrap |real[0]-real[R-1]|); s[0]=0, s[j+1]=s[j]+seg[j].
-        # Accumulate in float64 to limit drift vs the torch oracle's cumsum.
-        if r >= 2:
-            s[es] = float(0.0)
-            acc = wp.float64(0.0)
-            for j in range(r):
-                nxt = real_pts[rb + (j + 1) % r]
-                l = wp.length(nxt - real_pts[rb + j])
-                seg[rb + j] = l
-                acc = acc + wp.float64(l)
-                s[es + j + 1] = wp.float32(acc)
-        # R < 2: leave seg/s untouched; _arc_lookup_k emits NaN for this env.
+    p0 = real_pts[rb + idx]
+    p1 = real_pts[rb + (idx + 1) % r]   # closed[idx+1]: real[0] when idx == R-1
+    out[t] = p0 + frac * (p1 - p0)
 
-    @wp.kernel
-    def _arc_lookup_k(
-        real_pts: wp.array(dtype=wp.vec2f),
-        seg: wp.array(dtype=wp.float32),
-        s: wp.array(dtype=wp.float32),
-        count_r: wp.array(dtype=wp.int32),
-        M: int,
-        num: int,
-        out: wp.array(dtype=wp.vec2f),
-    ):
-        # One thread per OUTPUT point t (dim = E*num); e = env index, k = point-within-env.
-        # R = count_r[e]. R < 2 -> NaN (matches _resample_one's degenerate full-NaN row).
-        # Else: linear-scan searchsorted(right=False).clamp(max=R-1) over the closed
-        # real-loop arc length, then lerp. Mirrors _resample_lookup_k with variable R and
-        # the wrap p1 = real[0] for idx == R-1 ((idx+1)%R).
-        t = wp.tid()
-        e = t // num
-        k = t % num
-        rb = e * M
-        es = e * (M + 1)
+@wp.func
+def _turning_func(c: wp.array(dtype=wp.vec2f), base: int, N: int) -> float:
+    # Signed total turning of the closed polygon whose points start at `base`.
+    # Edge angle theta_i = atan2(d_i.y, d_i.x) for raw edge d_i = c[(i+1)%N] - c[i]
+    # (atan2 is scale-invariant, so no normalization is needed; the zero-length
+    # edge gives atan2(0,0)=0, matching the torch safe_normalize-then-atan2 case).
+    # Per edge, dtheta = theta_i - theta_{i-1} wrapped into (-pi, pi] via
+    # atan2(sin, cos); the sum over all edges is the turning number.
+    total = float(0.0)
+    for i in range(N):
+        di = c[base + (i + 1) % N] - c[base + i]
+        ip = (i + N - 1) % N
+        dp = c[base + (ip + 1) % N] - c[base + ip]
+        theta_i = wp.atan2(di[1], di[0])
+        theta_prev = wp.atan2(dp[1], dp[0])
+        dth = theta_i - theta_prev
+        total = total + wp.atan2(wp.sin(dth), wp.cos(dth))
+    return total
 
-        r = count_r[e]
-        if r < 2:
-            out[t] = wp.vec2f(wp.nan, wp.nan)
-            return
+@wp.kernel
+def _turning_k(
+    c: wp.array(dtype=wp.vec2f),
+    n_max: int,
+    count: wp.array(dtype=wp.int32),
+    out: wp.array(dtype=wp.float32),
+):
+    # One thread per env e. Delegates to _turning_func over [e*n_max, e*n_max+count[e]).
+    e = wp.tid()
+    out[e] = _turning_func(c, e * n_max, count[e])
 
-        total = s[es + r]
-        target = float(k) * total / float(num)
+@wp.kernel
+def _validity_k(
+    center: wp.array(dtype=wp.vec2f),
+    w: wp.array(dtype=wp.float32),
+    count: wp.array(dtype=wp.int32),
+    gen_valid: wp.array(dtype=wp.int32),
+    outer: wp.array(dtype=wp.vec2f),
+    inner: wp.array(dtype=wp.vec2f),
+    has_border: int,
+    n_max: int,
+    half_width: float,
+    turning_tol: float,
+    w_floor: float,
+    relax_tol: float,
+    out: wp.array(dtype=wp.int32),
+):
+    # One thread per env e. Fuses inflation._validity_stage entirely in-kernel:
+    # gen_valid AND turning AND width-floor AND no-NaN AND thickness AND border-simple.
+    # All sub-results are 0/1 int flags (Warp can't AND Python bools in dynamic loops).
+    # count[e] real points; NaN padding beyond is ignored in all sub-checks.
+    e = wp.tid()
+    cnt = count[e]
+    base = e * n_max
 
-        # Linear scan: first j in [0, R-1] with s[es+j+1] >= target, clamped to R-1.
-        idx = int(0)
-        while idx < r - 1 and s[es + idx + 1] < target:
-            idx = idx + 1
+    if cnt == 0:
+        out[e] = 0
+        return
 
-        s0 = s[es + idx]
-        segl = wp.max(seg[rb + idx], float(1.0e-12))
-        frac = wp.clamp((target - s0) / segl, float(0.0), float(1.0))
+    # --- turning (over cnt real points only) ---
+    turn = _turning_func(center, base, cnt)
+    turn_ok = int(0)
+    if wp.abs(wp.abs(turn) - 2.0 * wp.pi) <= turning_tol:
+        turn_ok = int(1)
 
-        p0 = real_pts[rb + idx]
-        p1 = real_pts[rb + (idx + 1) % r]   # closed[idx+1]: real[0] when idx == R-1
-        out[t] = p0 + frac * (p1 - p0)
+    # --- real-point mask (i < cnt): width floor + no NaN over real points ---
+    w_ok = int(1)
+    no_nan = int(1)
+    for i in range(cnt):
+        if not (w[base + i] > w_floor):
+            w_ok = int(0)
+        ci = center[base + i]
+        if not (wp.isfinite(ci[0]) and wp.isfinite(ci[1])):
+            no_nan = int(0)
 
-    @wp.func
-    def _turning_func(c: wp.array(dtype=wp.vec2f), base: int, N: int) -> float:
-        # Signed total turning of the closed polygon whose points start at `base`.
-        # Edge angle theta_i = atan2(d_i.y, d_i.x) for raw edge d_i = c[(i+1)%N] - c[i]
-        # (atan2 is scale-invariant, so no normalization is needed; the zero-length
-        # edge gives atan2(0,0)=0, matching the torch safe_normalize-then-atan2 case).
-        # Per edge, dtheta = theta_i - theta_{i-1} wrapped into (-pi, pi] via
-        # atan2(sin, cos); the sum over all edges is the turning number.
-        total = float(0.0)
-        for i in range(N):
-            di = c[base + (i + 1) % N] - c[base + i]
-            ip = (i + N - 1) % N
-            dp = c[base + (ip + 1) % N] - c[base + ip]
-            theta_i = wp.atan2(di[1], di[0])
-            theta_prev = wp.atan2(dp[1], dp[0])
-            dth = theta_i - theta_prev
-            total = total + wp.atan2(wp.sin(dth), wp.cos(dth))
-        return total
+    # --- band = round(2*hw / (perimeter/cnt)).clamp_min(1); perimeter over cnt real pts ---
+    peri = float(0.0)
+    for i in range(cnt):
+        peri += wp.length(center[base + (i + 1) % cnt] - center[base + i])
+    L0 = wp.max(peri / float(cnt), float(1.0e-9))
+    band = wp.max(int(wp.round(2.0 * half_width / L0)), 1)
 
-    @wp.kernel
-    def _turning_k(
-        c: wp.array(dtype=wp.vec2f),
-        n_max: int,
-        count: wp.array(dtype=wp.int32),
-        out: wp.array(dtype=wp.float32),
-    ):
-        # One thread per env e. Delegates to _turning_func over [e*n_max, e*n_max+count[e]).
-        e = wp.tid()
-        out[e] = _turning_func(c, e * n_max, count[e])
+    # --- thickness gate (over cnt real points only) ---
+    th = _thickness_func(center, base, cnt, band)
+    th_ok = int(0)
+    if th >= (1.0 - relax_tol) * half_width:
+        th_ok = int(1)
 
-    @wp.kernel
-    def _validity_k(
-        center: wp.array(dtype=wp.vec2f),
-        w: wp.array(dtype=wp.float32),
-        count: wp.array(dtype=wp.int32),
-        gen_valid: wp.array(dtype=wp.int32),
-        outer: wp.array(dtype=wp.vec2f),
-        inner: wp.array(dtype=wp.vec2f),
-        has_border: int,
-        n_max: int,
-        half_width: float,
-        turning_tol: float,
-        w_floor: float,
-        relax_tol: float,
-        out: wp.array(dtype=wp.int32),
-    ):
-        # One thread per env e. Fuses inflation._validity_stage entirely in-kernel:
-        # gen_valid AND turning AND width-floor AND no-NaN AND thickness AND border-simple.
-        # All sub-results are 0/1 int flags (Warp can't AND Python bools in dynamic loops).
-        # count[e] real points; NaN padding beyond is ignored in all sub-checks.
-        e = wp.tid()
-        cnt = count[e]
-        base = e * n_max
+    # --- border self-intersection gate (skipped when has_border == 0; cnt real pts) ---
+    border_ok = int(1)
+    if has_border == 1:
+        cross = _self_intersections_func(outer, base, cnt) + _self_intersections_func(inner, base, cnt)
+        if cross != 0:
+            border_ok = int(0)
 
-        if cnt == 0:
-            out[e] = 0
-            return
+    # --- generation flag ---
+    gv = int(0)
+    if gen_valid[e] != 0:
+        gv = int(1)
 
-        # --- turning (over cnt real points only) ---
-        turn = _turning_func(center, base, cnt)
-        turn_ok = int(0)
-        if wp.abs(wp.abs(turn) - 2.0 * wp.pi) <= turning_tol:
-            turn_ok = int(1)
+    out[e] = gv & turn_ok & w_ok & no_nan & th_ok & border_ok
 
-        # --- real-point mask (i < cnt): width floor + no NaN over real points ---
-        w_ok = int(1)
-        no_nan = int(1)
-        for i in range(cnt):
-            if not (w[base + i] > w_floor):
-                w_ok = int(0)
-            ci = center[base + i]
-            if not (wp.isfinite(ci[0]) and wp.isfinite(ci[1])):
-                no_nan = int(0)
+@wp.kernel
+def _arclength_k(
+    c: wp.array(dtype=wp.vec2f),
+    n_max: int,
+    count: wp.array(dtype=wp.int32),
+    arclen: wp.array(dtype=wp.float32),
+    length: wp.array(dtype=wp.float32),
+):
+    # One thread per env e. Count-aware arc length:
+    # Only count[e] real points are used; padding slots i in [count[e], n_max) get NaN.
+    # seg_len[i] = |c[b+(i+1)%count[e]] - c[b+i]| for i in [0, count[e]):
+    #   i=count[e]-1 is the closing wrap segment (last real pt -> first pt).
+    # arclen[b+i] = cumulative length BEFORE segment i (arclen[b+0]=0).
+    # length[e] = full closed perimeter (all count[e] segments including wrap).
+    # Running sum in float64 to limit drift vs the torch oracle's cumsum.
+    # PARITY: when count[e]==n_max for all e, bit-identical to the former fixed-N path.
+    e = wp.tid()
+    cn = count[e]
+    b = e * n_max
+    acc = wp.float64(0.0)
+    for i in range(cn):
+        arclen[b + i] = wp.float32(acc)            # arc length BEFORE segment i
+        d = c[b + (i + 1) % cn] - c[b + i]
+        acc = acc + wp.float64(wp.length(d))       # add segment i (i=cn-1 is the wrap)
+    length[e] = wp.float32(acc)
+    # NaN-pad slots beyond the real count
+    for i in range(cn, n_max):
+        arclen[b + i] = wp.nan
 
-        # --- band = round(2*hw / (perimeter/cnt)).clamp_min(1); perimeter over cnt real pts ---
-        peri = float(0.0)
-        for i in range(cnt):
-            peri += wp.length(center[base + (i + 1) % cnt] - center[base + i])
-        L0 = wp.max(peri / float(cnt), float(1.0e-9))
-        band = wp.max(int(wp.round(2.0 * half_width / L0)), 1)
-
-        # --- thickness gate (over cnt real points only) ---
-        th = _thickness_func(center, base, cnt, band)
-        th_ok = int(0)
-        if th >= (1.0 - relax_tol) * half_width:
-            th_ok = int(1)
-
-        # --- border self-intersection gate (skipped when has_border == 0; cnt real pts) ---
-        border_ok = int(1)
-        if has_border == 1:
-            cross = _self_intersections_func(outer, base, cnt) + _self_intersections_func(inner, base, cnt)
-            if cross != 0:
-                border_ok = int(0)
-
-        # --- generation flag ---
-        gv = int(0)
-        if gen_valid[e] != 0:
-            gv = int(1)
-
-        out[e] = gv & turn_ok & w_ok & no_nan & th_ok & border_ok
-
-    @wp.kernel
-    def _arclength_k(
-        c: wp.array(dtype=wp.vec2f),
-        n_max: int,
-        count: wp.array(dtype=wp.int32),
-        arclen: wp.array(dtype=wp.float32),
-        length: wp.array(dtype=wp.float32),
-    ):
-        # One thread per env e. Count-aware arc length:
-        # Only count[e] real points are used; padding slots i in [count[e], n_max) get NaN.
-        # seg_len[i] = |c[b+(i+1)%count[e]] - c[b+i]| for i in [0, count[e]):
-        #   i=count[e]-1 is the closing wrap segment (last real pt -> first pt).
-        # arclen[b+i] = cumulative length BEFORE segment i (arclen[b+0]=0).
-        # length[e] = full closed perimeter (all count[e] segments including wrap).
-        # Running sum in float64 to limit drift vs the torch oracle's cumsum.
-        # PARITY: when count[e]==n_max for all e, bit-identical to the former fixed-N path.
-        e = wp.tid()
-        cn = count[e]
-        b = e * n_max
-        acc = wp.float64(0.0)
-        for i in range(cn):
-            arclen[b + i] = wp.float32(acc)            # arc length BEFORE segment i
-            d = c[b + (i + 1) % cn] - c[b + i]
-            acc = acc + wp.float64(wp.length(d))       # add segment i (i=cn-1 is the wrap)
-        length[e] = wp.float32(acc)
-        # NaN-pad slots beyond the real count
-        for i in range(cn, n_max):
-            arclen[b + i] = wp.nan
-
-    @wp.kernel
-    def _corner_sample_k(
-        seeds: wp.array(dtype=wp.int32),
-        attempt: int,
-        num_cells: int,
-        nc2: int,
-        cell_size: float,
-        scale: float,
-        P: int,
-        used: wp.array(dtype=wp.int32),
-        out: wp.array(dtype=wp.vec2f),
-    ):
-        # ACCEPTED RNG REDESIGN (does NOT match the torch _sample_corner_points
-        # bit-for-bit; validated by structural properties only). One thread per env e.
-        #
-        # Seeding: state = wp.rand_init(seeds[e] * 9781 + attempt) -> reproducible per
-        # (env, attempt). 9781 is a large odd multiplier so distinct env seeds map to
-        # well-separated rand_init states.
-        #
-        # Draw ORDER per corner c (fixed so a corner's noise is deterministic given its
-        # retries): for each duplicate-rejection retry draw ONE cell-selection randf,
-        # then once a cell is accepted draw the two noise randfs (nx, ny) in that order.
-        #
-        # Dedup: a corner's cell is redrawn (up to 8 tries) if it collides with any cell
-        # already chosen for an EARLIER corner of this env, preserving the distinct-cell
-        # spread the oracle's top-k subset gave. The per-thread chosen-cell history lives
-        # in the scratch buffer used[e*P + 0 .. e*P + c] (pre-filled with -1 by the
-        # wrapper); after the retry budget we accept whatever cell we have.
-        e = wp.tid()
-        state = wp.rand_init(seeds[e] * 9781 + attempt)
-        base = e * P
-        for c in range(P):
+@wp.kernel
+def _corner_sample_k(
+    seeds: wp.array(dtype=wp.int32),
+    attempt: int,
+    num_cells: int,
+    nc2: int,
+    cell_size: float,
+    scale: float,
+    P: int,
+    used: wp.array(dtype=wp.int32),
+    out: wp.array(dtype=wp.vec2f),
+):
+    # ACCEPTED RNG REDESIGN (does NOT match the torch _sample_corner_points
+    # bit-for-bit; validated by structural properties only). One thread per env e.
+    #
+    # Seeding: state = wp.rand_init(seeds[e] * 9781 + attempt) -> reproducible per
+    # (env, attempt). 9781 is a large odd multiplier so distinct env seeds map to
+    # well-separated rand_init states.
+    #
+    # Draw ORDER per corner c (fixed so a corner's noise is deterministic given its
+    # retries): for each duplicate-rejection retry draw ONE cell-selection randf,
+    # then once a cell is accepted draw the two noise randfs (nx, ny) in that order.
+    #
+    # Dedup: a corner's cell is redrawn (up to 8 tries) if it collides with any cell
+    # already chosen for an EARLIER corner of this env, preserving the distinct-cell
+    # spread the oracle's top-k subset gave. The per-thread chosen-cell history lives
+    # in the scratch buffer used[e*P + 0 .. e*P + c] (pre-filled with -1 by the
+    # wrapper); after the retry budget we accept whatever cell we have.
+    e = wp.tid()
+    state = wp.rand_init(seeds[e] * 9781 + attempt)
+    base = e * P
+    for c in range(P):
+        cell = wp.min(int(wp.randf(state) * float(nc2)), nc2 - 1)
+        # Bounded duplicate rejection against earlier corners of this env.
+        # dup is an int flag (Warp can't mutate a Python bool in a dynamic loop).
+        for _retry in range(8):
+            dup = int(0)
+            for k in range(c):
+                if used[base + k] == cell:
+                    dup = int(1)
+            if dup == 0:
+                break
             cell = wp.min(int(wp.randf(state) * float(nc2)), nc2 - 1)
-            # Bounded duplicate rejection against earlier corners of this env.
-            # dup is an int flag (Warp can't mutate a Python bool in a dynamic loop).
-            for _retry in range(8):
-                dup = int(0)
-                for k in range(c):
-                    if used[base + k] == cell:
-                        dup = int(1)
-                if dup == 0:
-                    break
-                cell = wp.min(int(wp.randf(state) * float(nc2)), nc2 - 1)
-            used[base + c] = cell
+        used[base + c] = cell
 
-            x = float(cell % num_cells)
-            y = float(cell // num_cells)
-            nx = wp.randf(state) - 0.5            # [0,1) -> [-0.5, 0.5)
-            ny = wp.randf(state) - 0.5
-            out[base + c] = wp.vec2f((x * cell_size + nx) * scale,
-                                     (y * cell_size + ny) * scale)
+        x = float(cell % num_cells)
+        y = float(cell // num_cells)
+        nx = wp.randf(state) - 0.5            # [0,1) -> [-0.5, 0.5)
+        ny = wp.randf(state) - 0.5
+        out[base + c] = wp.vec2f((x * cell_size + nx) * scale,
+                                 (y * cell_size + ny) * scale)
 
-    @wp.kernel
-    def _ccw_sort_k(
-        points: wp.array(dtype=wp.vec2f),
-        P: int,
-        count: wp.array(dtype=wp.int32),
-        keys: wp.array(dtype=wp.float32),
-        out: wp.array(dtype=wp.vec2f),
-    ):
-        # One thread per env e. Orders this env's FIRST m = count[e] corners ascending by
-        # the centroid-relative angle key = atan2(dx, dy) (X FIRST), about the centroid of
-        # those m corners; rows [m, P) are written NaN (the pruned tail). m == P reproduces
-        # the legacy all-P sort with no NaN tail. The insertion sort reads only slots behind
-        # its write frontier, so the uninitialised keys/out scratch is never consumed.
-        e = wp.tid()
-        base = e * P
-        m = count[e]
-        if m < 1:
-            m = 1
-        if m > P:
-            m = P
+@wp.kernel
+def _ccw_sort_k(
+    points: wp.array(dtype=wp.vec2f),
+    P: int,
+    count: wp.array(dtype=wp.int32),
+    keys: wp.array(dtype=wp.float32),
+    out: wp.array(dtype=wp.vec2f),
+):
+    # One thread per env e. Orders this env's FIRST m = count[e] corners ascending by
+    # the centroid-relative angle key = atan2(dx, dy) (X FIRST), about the centroid of
+    # those m corners; rows [m, P) are written NaN (the pruned tail). m == P reproduces
+    # the legacy all-P sort with no NaN tail. The insertion sort reads only slots behind
+    # its write frontier, so the uninitialised keys/out scratch is never consumed.
+    e = wp.tid()
+    base = e * P
+    m = count[e]
+    if m < 1:
+        m = 1
+    if m > P:
+        m = P
 
-        # Centroid over the first m corners (float64 to match torch.mean closely).
-        sx = wp.float64(0.0)
-        sy = wp.float64(0.0)
-        for i in range(P):
-            if i < m:
-                p = points[base + i]
-                sx = sx + wp.float64(p[0])
-                sy = sy + wp.float64(p[1])
-        cx = wp.float32(sx / wp.float64(m))
-        cy = wp.float32(sy / wp.float64(m))
+    # Centroid over the first m corners (float64 to match torch.mean closely).
+    sx = wp.float64(0.0)
+    sy = wp.float64(0.0)
+    for i in range(P):
+        if i < m:
+            p = points[base + i]
+            sx = sx + wp.float64(p[0])
+            sy = sy + wp.float64(p[1])
+    cx = wp.float32(sx / wp.float64(m))
+    cy = wp.float32(sy / wp.float64(m))
 
-        for c in range(P):
-            if c < m:
-                p = points[base + c]
-                key = wp.atan2(p[0] - cx, p[1] - cy)   # X first!
-                j = c - 1
-                while j >= 0 and keys[base + j] > key:
-                    keys[base + j + 1] = keys[base + j]
-                    out[base + j + 1] = out[base + j]
-                    j = j - 1
-                keys[base + j + 1] = key
-                out[base + j + 1] = p
-            else:
-                out[base + c] = wp.vec2f(wp.nan, wp.nan)
+    for c in range(P):
+        if c < m:
+            p = points[base + c]
+            key = wp.atan2(p[0] - cx, p[1] - cy)   # X first!
+            j = c - 1
+            while j >= 0 and keys[base + j] > key:
+                keys[base + j + 1] = keys[base + j]
+                out[base + j + 1] = out[base + j]
+                j = j - 1
+            keys[base + j + 1] = key
+            out[base + j + 1] = p
+        else:
+            out[base + c] = wp.vec2f(wp.nan, wp.nan)
 
-    @wp.func
-    def _safe_normalize2(v: wp.vec2f) -> wp.vec2f:
-        # Mirrors geometry.safe_normalize: v / clamp_min(||v||, 1e-8). The wp.max
-        # floors finite lengths at 1e-8 exactly like torch.clamp_min, and a NaN
-        # vector divides to (nan, nan) (NaN/eps = nan) so NaN propagates to BOTH
-        # components, matching the torch oracle bit-for-bit on pruned corners.
-        return v / wp.max(wp.length(v), 1.0e-8)
+@wp.func
+def _safe_normalize2(v: wp.vec2f) -> wp.vec2f:
+    # Mirrors geometry.safe_normalize: v / clamp_min(||v||, 1e-8). The wp.max
+    # floors finite lengths at 1e-8 exactly like torch.clamp_min, and a NaN
+    # vector divides to (nan, nan) (NaN/eps = nan) so NaN propagates to BOTH
+    # components, matching the torch oracle bit-for-bit on pruned corners.
+    return v / wp.max(wp.length(v), 1.0e-8)
 
-    @wp.func
-    def _pruned_corner(c: wp.array(dtype=wp.vec2f), b: int, i: int, cnt: int) -> wp.vec2f:
-        # Folds in _prune_corners' NaN step: corner i of the env at base b is real iff
-        # i < cnt; rows i >= cnt are replaced by (nan, nan), reproducing the torch
-        # where(arange(P) < count, corners, nan) prune EXACTLY (same NaN positions). The
-        # downstream safe_normalize/bezier NaN-propagation then matches the oracle.
-        ci = c[b + i]
-        return wp.where(i < cnt, ci, wp.vec2f(wp.nan, wp.nan))
+@wp.func
+def _pruned_corner(c: wp.array(dtype=wp.vec2f), b: int, i: int, cnt: int) -> wp.vec2f:
+    # Folds in _prune_corners' NaN step: corner i of the env at base b is real iff
+    # i < cnt; rows i >= cnt are replaced by (nan, nan), reproducing the torch
+    # where(arange(P) < count, corners, nan) prune EXACTLY (same NaN positions). The
+    # downstream safe_normalize/bezier NaN-propagation then matches the oracle.
+    ci = c[b + i]
+    return wp.where(i < cnt, ci, wp.vec2f(wp.nan, wp.nan))
 
-    @wp.kernel
-    def _vertex_tangents_k(
-        c: wp.array(dtype=wp.vec2f),
-        count: wp.array(dtype=wp.int32),
-        P: int,
-        p: float,
-        tangents: wp.array(dtype=wp.vec2f),
-        scale: wp.array(dtype=wp.float32),
-    ):
-        # One thread per corner t (dim = E*P); e = env index, i = corner-within-env.
-        # Mirrors geometry.vertex_tangents: u_out_i = dir(i -> i+1), u_in_i = dir(i-1 -> i)
-        # (== roll(u_out, +1)); tangent_i = safe_normalize(p*u_out + (1-p)*u_in). The
-        # count->NaN prune is folded in-kernel (corner i is NaN iff i >= count[e]); NaN at
-        # any pruned corner propagates the same way the torch oracle's safe_normalize does.
-        t = wp.tid()
-        e = t // P
-        i = t % P
-        b = e * P
-        cnt = count[e]
-        cm = wp.max(cnt, 1)                       # guard %0 for degenerate (cnt==0) envs
-        c_i = _pruned_corner(c, b, i, cnt)
-        # Wrap mod cnt (not P): a real corner's circular neighbours are real corners, so the
-        # closing edge (corner cnt-1 -> corner 0) is a genuine segment. (Mod-P-with-NaN would
-        # poison the seam tangents and drop the first/last corner + close with a straight chord.)
-        c_next = _pruned_corner(c, b, (i + 1) % cm, cnt)
-        c_prev = _pruned_corner(c, b, (i + cm - 1) % cm, cnt)
-        u_out = _safe_normalize2(c_next - c_i)
-        u_in = _safe_normalize2(c_i - c_prev)
-        blended = p * u_out + (1.0 - p) * u_in
-        tangents[t] = _safe_normalize2(blended)
-        # Per-corner scale = shorter incident edge; the F2 handle clamp caps handles by it.
-        scale[t] = wp.min(wp.length(c_next - c_i), wp.length(c_i - c_prev))
+@wp.kernel
+def _vertex_tangents_k(
+    c: wp.array(dtype=wp.vec2f),
+    count: wp.array(dtype=wp.int32),
+    P: int,
+    p: float,
+    tangents: wp.array(dtype=wp.vec2f),
+    scale: wp.array(dtype=wp.float32),
+):
+    # One thread per corner t (dim = E*P); e = env index, i = corner-within-env.
+    # Mirrors geometry.vertex_tangents: u_out_i = dir(i -> i+1), u_in_i = dir(i-1 -> i)
+    # (== roll(u_out, +1)); tangent_i = safe_normalize(p*u_out + (1-p)*u_in). The
+    # count->NaN prune is folded in-kernel (corner i is NaN iff i >= count[e]); NaN at
+    # any pruned corner propagates the same way the torch oracle's safe_normalize does.
+    t = wp.tid()
+    e = t // P
+    i = t % P
+    b = e * P
+    cnt = count[e]
+    cm = wp.max(cnt, 1)                       # guard %0 for degenerate (cnt==0) envs
+    c_i = _pruned_corner(c, b, i, cnt)
+    # Wrap mod cnt (not P): a real corner's circular neighbours are real corners, so the
+    # closing edge (corner cnt-1 -> corner 0) is a genuine segment. (Mod-P-with-NaN would
+    # poison the seam tangents and drop the first/last corner + close with a straight chord.)
+    c_next = _pruned_corner(c, b, (i + 1) % cm, cnt)
+    c_prev = _pruned_corner(c, b, (i + cm - 1) % cm, cnt)
+    u_out = _safe_normalize2(c_next - c_i)
+    u_in = _safe_normalize2(c_i - c_prev)
+    blended = p * u_out + (1.0 - p) * u_in
+    tangents[t] = _safe_normalize2(blended)
+    # Per-corner scale = shorter incident edge; the F2 handle clamp caps handles by it.
+    scale[t] = wp.min(wp.length(c_next - c_i), wp.length(c_i - c_prev))
 
-    @wp.kernel
-    def _assemble_k(
-        c: wp.array(dtype=wp.vec2f),
-        count: wp.array(dtype=wp.int32),
-        tangents: wp.array(dtype=wp.vec2f),
-        scale: wp.array(dtype=wp.float32),
-        P: int,
-        npseg: int,
-        rad: float,
-        clamp_frac: float,
-        out: wp.array(dtype=wp.vec2f),
-    ):
-        # One thread per dense sample t (dim = E*P*npseg). Decodes (e, segment i, sample s),
-        # rebuilds the cubic Bezier of segment i (corner i -> corner (i+1)%P) and evaluates
-        # it at parameter u = s/(npseg-1) with the degree-3 Bernstein basis. Mirrors
-        # BezierCenterlineGenerator._segment + _cubic_bezier: handle = rad*chord along the
-        # corner tangents. The count->NaN prune is folded in-kernel (corner i is NaN iff
-        # i >= count[e]); NaN corners/tangents propagate into the output as in the oracle.
-        t = wp.tid()
-        per_env = P * npseg
-        e = t // per_env
-        rem = t % per_env
-        i = rem // npseg
-        s = rem % npseg
-        b = e * P
-        cnt = count[e]
-        cm = wp.max(cnt, 1)                       # guard %0 for degenerate (cnt==0) envs
+@wp.kernel
+def _assemble_k(
+    c: wp.array(dtype=wp.vec2f),
+    count: wp.array(dtype=wp.int32),
+    tangents: wp.array(dtype=wp.vec2f),
+    scale: wp.array(dtype=wp.float32),
+    P: int,
+    npseg: int,
+    rad: float,
+    clamp_frac: float,
+    out: wp.array(dtype=wp.vec2f),
+):
+    # One thread per dense sample t (dim = E*P*npseg). Decodes (e, segment i, sample s),
+    # rebuilds the cubic Bezier of segment i (corner i -> corner (i+1)%P) and evaluates
+    # it at parameter u = s/(npseg-1) with the degree-3 Bernstein basis. Mirrors
+    # BezierCenterlineGenerator._segment + _cubic_bezier: handle = rad*chord along the
+    # corner tangents. The count->NaN prune is folded in-kernel (corner i is NaN iff
+    # i >= count[e]); NaN corners/tangents propagate into the output as in the oracle.
+    t = wp.tid()
+    per_env = P * npseg
+    e = t // per_env
+    rem = t % per_env
+    i = rem // npseg
+    s = rem % npseg
+    b = e * P
+    cnt = count[e]
+    cm = wp.max(cnt, 1)                       # guard %0 for degenerate (cnt==0) envs
 
-        c0 = _pruned_corner(c, b, i, cnt)
-        # Closing segment i == cnt-1 wraps to corner 0 -> a real cubic Bezier (not the old
-        # straight chord). Segments i >= cnt keep c0 = NaN and drop out via the resample.
-        inext = (i + 1) % cm
-        c1 = _pruned_corner(c, b, inext, cnt)
-        t0 = tangents[b + i]
-        t1 = tangents[b + inext]
+    c0 = _pruned_corner(c, b, i, cnt)
+    # Closing segment i == cnt-1 wraps to corner 0 -> a real cubic Bezier (not the old
+    # straight chord). Segments i >= cnt keep c0 = NaN and drop out via the resample.
+    inext = (i + 1) % cm
+    c1 = _pruned_corner(c, b, inext, cnt)
+    t0 = tangents[b + i]
+    t1 = tangents[b + inext]
 
-        chord = wp.length(c1 - c0)
-        # F2: clamp each end's handle by clamp_frac * (that corner's shorter incident edge),
-        # so a long handle can't overshoot past a nearby corner and self-cross.
-        h0 = wp.min(rad * chord, clamp_frac * scale[b + i])
-        h1 = wp.min(rad * chord, clamp_frac * scale[b + inext])
-        p1 = c0 + t0 * h0    # leave c0 along its tangent
-        p2 = c1 - t1 * h1    # arrive at c1 along its tangent
+    chord = wp.length(c1 - c0)
+    # F2: clamp each end's handle by clamp_frac * (that corner's shorter incident edge),
+    # so a long handle can't overshoot past a nearby corner and self-cross.
+    h0 = wp.min(rad * chord, clamp_frac * scale[b + i])
+    h1 = wp.min(rad * chord, clamp_frac * scale[b + inext])
+    p1 = c0 + t0 * h0    # leave c0 along its tangent
+    p2 = c1 - t1 * h1    # arrive at c1 along its tangent
 
-        u = float(s) / float(npseg - 1)
-        omu = 1.0 - u
-        b0 = omu * omu * omu          # (1-u)^3
-        b1 = 3.0 * u * omu * omu      # 3u(1-u)^2
-        b2 = 3.0 * u * u * omu        # 3u^2(1-u)
-        b3 = u * u * u                # u^3
-        out[t] = b0 * c0 + b1 * p1 + b2 * p2 + b3 * c1
+    u = float(s) / float(npseg - 1)
+    omu = 1.0 - u
+    b0 = omu * omu * omu          # (1-u)^3
+    b1 = 3.0 * u * omu * omu      # 3u(1-u)^2
+    b2 = 3.0 * u * u * omu        # 3u^2(1-u)
+    b3 = u * u * u                # u^3
+    out[t] = b0 * c0 + b1 * p1 + b2 * p2 + b3 * c1
 
-    @wp.kernel
-    def _corner_angles_gate_k(
-        c: wp.array(dtype=wp.vec2f),
-        count: wp.array(dtype=wp.int32),
-        P: int,
-        min_angle: float,
-        ok: wp.array(dtype=wp.int32),
-    ):
-        # One thread per env e. Reproduces generate()'s ANGLE gate over this env's P RAW
-        # corners with the _prune_corners NaN step folded in: corner i is REAL iff
-        # i < count[e] AND both components finite. angle_ok = ((angle > min_angle) |
-        # ~constrained) over all corners; a corner is "constrained" only when i and BOTH
-        # its circular neighbours i-1, i+1 are real; unconstrained corners are skipped
-        # (mirrors the oracle's nan_to_num(angle, 0) | ~constrained passing them). For each
-        # constrained corner: interior angle = pi - acos(clamp(dot(u_in, u_out))),
-        # u_in = safe_normalize(c_i - c_prev), u_out = safe_normalize(c_next - c_i), with the
-        # same [-1+1e-7, 1-1e-7] cos clamp. If any constrained corner fails (not > min_angle),
-        # the env's flag is 0.
-        e = wp.tid()
-        b = e * P
-        cnt = count[e]
-        flag = int(1)
-        for i in range(P):
-            ip = (i + P - 1) % P
-            inx = (i + 1) % P
-            ci = _pruned_corner(c, b, i, cnt)
-            cp = _pruned_corner(c, b, ip, cnt)
-            cn = _pruned_corner(c, b, inx, cnt)
-            real_i = wp.isfinite(ci[0]) and wp.isfinite(ci[1])
-            real_p = wp.isfinite(cp[0]) and wp.isfinite(cp[1])
-            real_n = wp.isfinite(cn[0]) and wp.isfinite(cn[1])
-            if real_i and real_p and real_n:
-                u_in = _safe_normalize2(ci - cp)
-                u_out = _safe_normalize2(cn - ci)
-                cos = wp.clamp(wp.dot(u_in, u_out), -1.0 + 1.0e-7, 1.0 - 1.0e-7)
-                angle = wp.pi - wp.acos(cos)
-                if not (angle > min_angle):
-                    flag = int(0)
-        ok[e] = flag
+@wp.kernel
+def _corner_angles_gate_k(
+    c: wp.array(dtype=wp.vec2f),
+    count: wp.array(dtype=wp.int32),
+    P: int,
+    min_angle: float,
+    ok: wp.array(dtype=wp.int32),
+):
+    # One thread per env e. Reproduces generate()'s ANGLE gate over this env's P RAW
+    # corners with the _prune_corners NaN step folded in: corner i is REAL iff
+    # i < count[e] AND both components finite. angle_ok = ((angle > min_angle) |
+    # ~constrained) over all corners; a corner is "constrained" only when i and BOTH
+    # its circular neighbours i-1, i+1 are real; unconstrained corners are skipped
+    # (mirrors the oracle's nan_to_num(angle, 0) | ~constrained passing them). For each
+    # constrained corner: interior angle = pi - acos(clamp(dot(u_in, u_out))),
+    # u_in = safe_normalize(c_i - c_prev), u_out = safe_normalize(c_next - c_i), with the
+    # same [-1+1e-7, 1-1e-7] cos clamp. If any constrained corner fails (not > min_angle),
+    # the env's flag is 0.
+    e = wp.tid()
+    b = e * P
+    cnt = count[e]
+    flag = int(1)
+    for i in range(P):
+        ip = (i + P - 1) % P
+        inx = (i + 1) % P
+        ci = _pruned_corner(c, b, i, cnt)
+        cp = _pruned_corner(c, b, ip, cnt)
+        cn = _pruned_corner(c, b, inx, cnt)
+        real_i = wp.isfinite(ci[0]) and wp.isfinite(ci[1])
+        real_p = wp.isfinite(cp[0]) and wp.isfinite(cp[1])
+        real_n = wp.isfinite(cn[0]) and wp.isfinite(cn[1])
+        if real_i and real_p and real_n:
+            u_in = _safe_normalize2(ci - cp)
+            u_out = _safe_normalize2(cn - ci)
+            cos = wp.clamp(wp.dot(u_in, u_out), -1.0 + 1.0e-7, 1.0 - 1.0e-7)
+            angle = wp.pi - wp.acos(cos)
+            if not (angle > min_angle):
+                flag = int(0)
+    ok[e] = flag
 
-    @wp.kernel
-    def _gates_combine_k(
-        angle_ok: wp.array(dtype=wp.int32),
-        turn: wp.array(dtype=wp.float32),
-        cnt_turn: wp.array(dtype=wp.int32),
-        cross_simple: wp.array(dtype=wp.int32),
-        turning_tol: float,
-        out: wp.array(dtype=wp.int32),
-    ):
-        # One thread per env e. Fuses generate()'s gate conjunction:
-        #   turn_ok   = |(|turn| - 2*pi)| <= turning_tol
-        #   finite_ok = (cnt_turn >= 2) and isfinite(turn)
-        #   simple_ok = (cross_simple == 0)
-        #   out       = angle_ok & turn_ok & finite_ok & simple_ok   (int 0/1 flags)
-        # cnt_turn is the [E] count returned by arc_length_resample_warp(dense, npseg).
-        e = wp.tid()
-        tu = turn[e]
-        turn_ok = int(0)
-        if wp.abs(wp.abs(tu) - 2.0 * wp.pi) <= turning_tol:
-            turn_ok = int(1)
-        finite_ok = int(0)
-        if cnt_turn[e] >= 2 and wp.isfinite(tu):
-            finite_ok = int(1)
-        simple_ok = int(0)
-        if cross_simple[e] == 0:
-            simple_ok = int(1)
-        out[e] = angle_ok[e] & turn_ok & finite_ok & simple_ok
+@wp.kernel
+def _gates_combine_k(
+    angle_ok: wp.array(dtype=wp.int32),
+    turn: wp.array(dtype=wp.float32),
+    cnt_turn: wp.array(dtype=wp.int32),
+    cross_simple: wp.array(dtype=wp.int32),
+    turning_tol: float,
+    out: wp.array(dtype=wp.int32),
+):
+    # One thread per env e. Fuses generate()'s gate conjunction:
+    #   turn_ok   = |(|turn| - 2*pi)| <= turning_tol
+    #   finite_ok = (cnt_turn >= 2) and isfinite(turn)
+    #   simple_ok = (cross_simple == 0)
+    #   out       = angle_ok & turn_ok & finite_ok & simple_ok   (int 0/1 flags)
+    # cnt_turn is the [E] count returned by arc_length_resample_warp(dense, npseg).
+    e = wp.tid()
+    tu = turn[e]
+    turn_ok = int(0)
+    if wp.abs(wp.abs(tu) - 2.0 * wp.pi) <= turning_tol:
+        turn_ok = int(1)
+    finite_ok = int(0)
+    if cnt_turn[e] >= 2 and wp.isfinite(tu):
+        finite_ok = int(1)
+    simple_ok = int(0)
+    if cross_simple[e] == 0:
+        simple_ok = int(1)
+    out[e] = angle_ok[e] & turn_ok & finite_ok & simple_ok
 
-    @wp.kernel
-    def _corner_count_sample_k(
-        seeds: wp.array(dtype=wp.int32),
-        attempt: int,
-        min_num: int,
-        max_num: int,
-        out: wp.array(dtype=wp.int32),
-    ):
-        # ACCEPTED RNG REDESIGN (does NOT match the torch oracle's per-env corner-count
-        # draw bit-for-bit; validated by range/reproducibility only). One thread per env e.
-        #
-        # Seeding: state = wp.rand_init(seeds[e] * 6151 + attempt). The 6151 multiplier is
-        # DISTINCT from corner_sample's 9781 so the count stream and the corner-position
-        # stream stay decorrelated (different rand_init states for the same (seed, attempt)).
-        #
-        # Draw: a single uniform randf in [0, 1) maps to an inclusive integer count in
-        # [min_num, max_num] via floor(randf * range) where range = max_num - min_num + 1,
-        # then clamp to max_num to fold the measure-zero randf == 1.0 edge back in range.
-        e = wp.tid()
-        state = wp.rand_init(seeds[e] * 6151 + attempt)
-        span = max_num - min_num + 1
-        count = min_num + int(wp.randf(state) * float(span))
-        out[e] = wp.min(count, max_num)
+@wp.kernel
+def _corner_count_sample_k(
+    seeds: wp.array(dtype=wp.int32),
+    attempt: int,
+    min_num: int,
+    max_num: int,
+    out: wp.array(dtype=wp.int32),
+):
+    # ACCEPTED RNG REDESIGN (does NOT match the torch oracle's per-env corner-count
+    # draw bit-for-bit; validated by range/reproducibility only). One thread per env e.
+    #
+    # Seeding: state = wp.rand_init(seeds[e] * 6151 + attempt). The 6151 multiplier is
+    # DISTINCT from corner_sample's 9781 so the count stream and the corner-position
+    # stream stay decorrelated (different rand_init states for the same (seed, attempt)).
+    #
+    # Draw: a single uniform randf in [0, 1) maps to an inclusive integer count in
+    # [min_num, max_num] via floor(randf * range) where range = max_num - min_num + 1,
+    # then clamp to max_num to fold the measure-zero randf == 1.0 edge back in range.
+    e = wp.tid()
+    state = wp.rand_init(seeds[e] * 6151 + attempt)
+    span = max_num - min_num + 1
+    count = min_num + int(wp.randf(state) * float(span))
+    out[e] = wp.min(count, max_num)
 
-    @wp.kernel
-    def _fill_vec2_k(arr: wp.array(dtype=wp.vec2f), vx: float, vy: float):
-        # One thread per element: constant vec2 fill (pure-Warp torch.full replacement).
-        arr[wp.tid()] = wp.vec2f(vx, vy)
+@wp.kernel
+def _fill_vec2_k(arr: wp.array(dtype=wp.vec2f), vx: float, vy: float):
+    # One thread per element: constant vec2 fill (pure-Warp torch.full replacement).
+    arr[wp.tid()] = wp.vec2f(vx, vy)
 
-    @wp.kernel
-    def _fill_f32_k(arr: wp.array(dtype=wp.float32), v: float):
-        # One thread per element: constant float fill (pure-Warp torch.full replacement).
-        arr[wp.tid()] = v
+@wp.kernel
+def _fill_f32_k(arr: wp.array(dtype=wp.float32), v: float):
+    # One thread per element: constant float fill (pure-Warp torch.full replacement).
+    arr[wp.tid()] = v
 
-    @wp.kernel
-    def _fill_i32_k(arr: wp.array(dtype=wp.int32), v: int):
-        # One thread per element: constant int fill (pure-Warp torch.full/zeros/ones).
-        arr[wp.tid()] = v
+@wp.kernel
+def _fill_i32_k(arr: wp.array(dtype=wp.int32), v: int):
+    # One thread per element: constant int fill (pure-Warp torch.full/zeros/ones).
+    arr[wp.tid()] = v
 
-    @wp.kernel
-    def _select_first_valid_k(
-        accept: wp.array(dtype=wp.int32),
-        valid: wp.array(dtype=wp.int32),
-        rs: wp.array(dtype=wp.vec2f),
-        centerline: wp.array(dtype=wp.vec2f),
-        N: int,
-    ):
-        # One thread per POINT t (dim = E*N); e = env index. Accept-FIRST-valid take:
-        # write the freshly-resampled rs into centerline ONLY for envs newly accepted this
-        # attempt (accept[e]==1 AND the OLD valid[e]==0). Reads valid but never writes it
-        # (no race); _or_update_k updates valid AFTER so the take here saw the old flag.
-        t = wp.tid()
-        e = t // N
-        if accept[e] == 1 and valid[e] == 0:
-            centerline[t] = rs[t]
+@wp.kernel
+def _select_first_valid_k(
+    accept: wp.array(dtype=wp.int32),
+    valid: wp.array(dtype=wp.int32),
+    rs: wp.array(dtype=wp.vec2f),
+    centerline: wp.array(dtype=wp.vec2f),
+    N: int,
+):
+    # One thread per POINT t (dim = E*N); e = env index. Accept-FIRST-valid take:
+    # write the freshly-resampled rs into centerline ONLY for envs newly accepted this
+    # attempt (accept[e]==1 AND the OLD valid[e]==0). Reads valid but never writes it
+    # (no race); _or_update_k updates valid AFTER so the take here saw the old flag.
+    t = wp.tid()
+    e = t // N
+    if accept[e] == 1 and valid[e] == 0:
+        centerline[t] = rs[t]
 
-    @wp.kernel
-    def _or_update_k(accept: wp.array(dtype=wp.int32), valid: wp.array(dtype=wp.int32)):
-        # One thread per env e. valid |= accept (run AFTER _select_first_valid_k so the
-        # select saw the OLD valid). Folds the torch `valid = valid | accept`.
-        e = wp.tid()
-        if accept[e] != 0:
-            valid[e] = 1
+@wp.kernel
+def _or_update_k(accept: wp.array(dtype=wp.int32), valid: wp.array(dtype=wp.int32)):
+    # One thread per env e. valid |= accept (run AFTER _select_first_valid_k so the
+    # select saw the OLD valid). Folds the torch `valid = valid | accept`.
+    e = wp.tid()
+    if accept[e] != 0:
+        valid[e] = 1
 
-    @wp.kernel
-    def _band_l0_k(
-        center: wp.array(dtype=wp.vec2f),
-        n_max: int,
-        two_hw: float,
-        band_out: wp.array(dtype=wp.int32),
-        l0_out: wp.array(dtype=wp.float32),
-        count: wp.array(dtype=wp.int32),
-    ):
-        # One thread per env e. Count-aware: loop over count[e] real points, base e*n_max,
-        # wrap index (i+1)%count[e]. L0 = perimeter/count[e] (mean segment length). band =
-        # round(2*hw / L0).clamp_min(1); the isfinite guard reproduces the torch
-        # nan_to_num(nan=1.0,posinf=1.0,neginf=1.0).round().long().clamp_min(1) for invalid
-        # (NaN-centerline) envs -> band 1. L0 itself may stay NaN for invalid envs (that
-        # flows untouched into xpbd, which propagates the NaN).
-        # PARITY: when count[e]==n_max for all e, produces identical output to the former
-        # fixed-N kernel (same loop bounds, same formula).
-        e = wp.tid()
-        base = e * n_max
-        cn = count[e]
-        peri = float(0.0)
-        for i in range(cn):
-            peri += wp.length(center[base + (i + 1) % cn] - center[base + i])
-        l0 = peri / float(cn)
-        l0_out[e] = l0
-        bf = two_hw / wp.max(l0, float(1.0e-9))
-        band_out[e] = wp.where(wp.isfinite(bf), wp.max(int(wp.round(bf)), 1), 1)
+@wp.kernel
+def _band_l0_k(
+    center: wp.array(dtype=wp.vec2f),
+    n_max: int,
+    two_hw: float,
+    band_out: wp.array(dtype=wp.int32),
+    l0_out: wp.array(dtype=wp.float32),
+    count: wp.array(dtype=wp.int32),
+):
+    # One thread per env e. Count-aware: loop over count[e] real points, base e*n_max,
+    # wrap index (i+1)%count[e]. L0 = perimeter/count[e] (mean segment length). band =
+    # round(2*hw / L0).clamp_min(1); the isfinite guard reproduces the torch
+    # nan_to_num(nan=1.0,posinf=1.0,neginf=1.0).round().long().clamp_min(1) for invalid
+    # (NaN-centerline) envs -> band 1. L0 itself may stay NaN for invalid envs (that
+    # flows untouched into xpbd, which propagates the NaN).
+    # PARITY: when count[e]==n_max for all e, produces identical output to the former
+    # fixed-N kernel (same loop bounds, same formula).
+    e = wp.tid()
+    base = e * n_max
+    cn = count[e]
+    peri = float(0.0)
+    for i in range(cn):
+        peri += wp.length(center[base + (i + 1) % cn] - center[base + i])
+    l0 = peri / float(cn)
+    l0_out[e] = l0
+    bf = two_hw / wp.max(l0, float(1.0e-9))
+    band_out[e] = wp.where(wp.isfinite(bf), wp.max(int(wp.round(bf)), 1), 1)
 
 def corner_count_sample(seeds: torch.Tensor, attempt: int, config) -> torch.Tensor:
     """Sample a per-env corner COUNT in [min_num_points, max_num_points] via Warp RNG.
