@@ -43,20 +43,24 @@ def test_polygonal_fallback_not_flagged(dev):
     wp.init()
     from track_gen._src import warp_pipeline as wpl
     from track_gen._src.types import TrackGenConfig
+    from tests._warp_compare import (
+        corner_count_sample, corner_sample, ccw_sort, assemble,
+        arc_length_resample_warp, self_intersections as warp_self_intersections,
+    )
 
     E = 2048
     cfg = TrackGenConfig(num_envs=E, num_points=256, half_width=0.5, scale=10.0,
                          output_mode="constant_spacing", spacing=0.30, N_max=384, device=dev)
     seeds = torch.arange(E, dtype=torch.int32, device=dev)
-    cc = wpl.corner_count_sample(seeds, 0, cfg)
-    corners = wpl.ccw_sort(wpl.corner_sample(seeds, 0, cfg), cc)
+    cc = corner_count_sample(seeds, 0, cfg)
+    corners = ccw_sort(corner_sample(seeds, 0, cfg), cc)
     cfg0 = dataclasses.replace(cfg, handle_clamp_frac=0.0)          # polygonal
-    dense0 = wpl.assemble(corners, cc, cfg0)
-    cl0, _ = wpl.arc_length_resample_warp(dense0, 256)
+    dense0 = assemble(corners, cc, cfg0)
+    cl0, _ = arc_length_resample_warp(dense0, 256)
 
     truth = self_intersections(cl0.double())                       # f64 = 0 everywhere
     assert int((truth > 0).sum()) == 0
     # torch f32 detector must match the truth (no collinear false positives)
     assert int((self_intersections(cl0) > 0).sum()) == 0
     # warp f32 detector likewise
-    assert int((wpl.self_intersections(cl0) > 0).sum()) == 0
+    assert int((warp_self_intersections(cl0) > 0).sum()) == 0

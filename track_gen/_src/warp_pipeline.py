@@ -47,19 +47,6 @@ def _sync(device) -> None:
         wp.synchronize()
 
 
-def _mean_seg_len_torch(center: torch.Tensor) -> torch.Tensor:
-    """Mean closed-loop segment length per env (perimeter / N). center [E, N, 2] -> [E].
-
-    Reproduces geometry.mean_seg_len (= geometry.perimeter / N) with the identical
-    roll-and-norm formula, but without importing geometry at runtime (warp_pipeline
-    must stay free of the torch oracle modules). Reused by the validity / inflate band
-    derivation; the caller applies any clamp_min itself, matching the oracle's call site.
-    """
-    seg = torch.roll(center, -1, dims=1) - center
-    return torch.linalg.norm(seg, dim=-1).sum(dim=1) / center.shape[1]
-
-
-
 @wp.kernel
 def _offset_build_k(
     center: wp.array(dtype=wp.vec2f),
@@ -1050,44 +1037,6 @@ def _band_l0_k(
     bf = two_hw / wp.max(l0, float(1.0e-9))
     band_out[e] = wp.where(wp.isfinite(bf), wp.max(int(wp.round(bf)), 1), 1)
 
-def corner_count_sample(seeds: torch.Tensor, attempt: int, config) -> torch.Tensor:
-    """Sample a per-env corner COUNT in [min_num_points, max_num_points] via Warp RNG.
-
-    ACCEPTED RNG REDESIGN: pure-Warp replacement for the torch oracle's per-env corner
-    count draw in BezierCenterlineGenerator.generate. It does NOT reproduce the oracle
-    bit-for-bit (the legacy PerEnvSeededRNG is retired from the pure-Warp path); it is
-    validated by range and reproducibility only. One thread per env (see
-    _corner_count_sample_k): state = rand_init(seed*6151 + attempt) -- a DISTINCT seed
-    multiplier from corner_sample's 9781 so corner counts and corner positions are
-    uncorrelated -- then one randf maps to an inclusive integer in the closed range.
-
-    Args:
-        seeds:   [E] int per-env base seed (narrowed to int32 before the seed mix).
-        attempt: int retry counter (mixed into the seed for attempt-to-attempt variety).
-        config:  TrackGenConfig (uses min_num_points, max_num_points).
-
-    Returns:
-        [E] int32 corner count per env, every value in [min_num_points, max_num_points].
-        Pure Warp (cpu+cuda); reproducible per (seeds, attempt, config) within a device.
-    """
-    _init()
-    E = seeds.shape[0]
-    dev = str(seeds.device)
-    min_num = int(config.min_num_points)
-    max_num = int(config.max_num_points)
-
-    seeds_i32 = seeds.to(torch.int32).contiguous()
-    out_t = torch.empty(E, device=seeds.device, dtype=torch.int32)
-    wp.launch(
-        _corner_count_sample_k, dim=E,
-        inputs=[wp.from_torch(seeds_i32, dtype=wp.int32), int(attempt),
-                min_num, max_num, wp.from_torch(out_t, dtype=wp.int32)],
-        device=dev,
-    )
-    _sync(seeds.device)
-    return out_t
-
-
 def corner_count_sample_inplace(seeds_wp, attempt, config, out_count):
     """In-place: writes per-env corner counts into out_count ([E] int32 wp.array). Zero alloc."""
     _init()
@@ -1175,6 +1124,60 @@ def _arc_resample_inplace(points_wp, M, num, real_wp, seg_wp, s_wp, count_r_wp, 
               inputs=[points_wp, M, num, real_wp, seg_wp, s_wp, count_r_wp, count_out_wp], device=dev)
     wp.launch(_arc_lookup_k, dim=E * num,
               inputs=[real_wp, seg_wp, s_wp, count_r_wp, M, num, out_wp], device=dev)
+
+
+def arc_length_resample_inplace(
+    points_wp: "wp.array",
+    M: int,
+    num: int,
+    real_wp: "wp.array",
+    seg_wp: "wp.array",
+    s_wp: "wp.array",
+    count_r_wp: "wp.array",
+    count_out_wp: "wp.array",
+    out_wp: "wp.array",
+    dev: str,
+) -> None:
+    """Public in-place NaN-aware arc-length resample. All args are wp.arrays. Zero alloc.
+
+    Identical to _arc_resample_inplace (which remains for internal use); this public name
+    allows tests + the standalone generate path to call it without using the private alias.
+
+    points_wp:   [E*M] vec2f input (may contain NaN).
+    real_wp:     [E*M] vec2f scratch (compacted real points).
+    seg_wp:      [E*M] float32 scratch (per-segment lengths).
+    s_wp:        [E*(M+1)] float32 scratch (cumulative arc length).
+    count_r_wp:  [E] int32 scratch (real-point count per env).
+    count_out_wp:[E] int32 output (R>=2 -> num, else 0).
+    out_wp:      [E*num] vec2f output.
+    dev:         Warp device string.
+    """
+    _init()
+    _arc_resample_inplace(points_wp, M, num, real_wp, seg_wp, s_wp, count_r_wp, count_out_wp, out_wp, dev)
+    _sync(dev)
+
+
+def turning_number_inplace(
+    center_wp: "wp.array",
+    n_max: int,
+    count_wp: "wp.array",
+    out_wp: "wp.array",
+) -> None:
+    """In-place signed total turning of each closed polygon. Zero alloc.
+
+    center_wp: [E*n_max] vec2f flat input centerline (NaN-padded beyond count[e]).
+    n_max:     int stride per env in the flat array.
+    count_wp:  [E] int32 real point count per env.
+    out_wp:    [E] float32 output (signed turning in radians per env).
+
+    Pure Warp (cpu+cuda); matches geometry.turning_number to allclose(atol=1e-4).
+    """
+    _init()
+    E = count_wp.shape[0]
+    wp.launch(_turning_k, dim=E,
+              inputs=[center_wp, n_max, count_wp, out_wp],
+              device=str(out_wp.device))
+    _sync(out_wp.device)
 
 
 def generate_centerline_warp(seeds: torch.Tensor, config,
@@ -1286,23 +1289,61 @@ def generate_centerline_warp(seeds: torch.Tensor, config,
         return None
 
     else:
-        # --- Standalone path: allocates internally, returns torch tensors ---
+        # --- Standalone path: allocates wp.arrays internally, returns torch tensors ---
         E = seeds.shape[0]
         N = int(config.num_points)
+        P = int(config.max_num_points)
+        npseg = int(config.num_points_per_segment)
+        M = P * npseg  # dense points per env
+        dev = str(seeds.device)
 
-        count = corner_count_sample(seeds, 0, config)                  # [E] int32
-        corners = ccw_sort(corner_sample(seeds, 0, config), count)     # [E, P, 2] prune-then-sort
-        dense = assemble(corners, count, config)                       # [E, M, 2] F1+F2 closed assemble
-        rs, _ = arc_length_resample_warp(dense, N)                     # [E, N, 2]
+        seeds_wp = wp.from_torch(seeds.to(torch.int32).contiguous(), dtype=wp.int32)
+
+        # --- Allocate all wp.array buffers ---
+        count_wp = wp.empty(E, dtype=wp.int32, device=dev)
+        corners_wp = wp.empty(E * P, dtype=wp.vec2f, device=dev)
+        ordered_wp = wp.empty(E * P, dtype=wp.vec2f, device=dev)
+        used_wp = wp.empty(E * P, dtype=wp.int32, device=dev)
+        keys_wp = wp.empty(E * P, dtype=wp.float32, device=dev)
+        tan_wp = wp.empty(E * P, dtype=wp.vec2f, device=dev)
+        scale_wp = wp.empty(E * P, dtype=wp.float32, device=dev)
+        dense_wp = wp.empty(E * M, dtype=wp.vec2f, device=dev)
+        poly_wp = wp.empty(E * M, dtype=wp.vec2f, device=dev)
+        arc_real_wp = wp.empty(E * M, dtype=wp.vec2f, device=dev)
+        arc_seg_wp = wp.empty(E * M, dtype=wp.float32, device=dev)
+        arc_s_wp = wp.empty(E * (M + 1), dtype=wp.float32, device=dev)
+        arc_cr_wp = wp.empty(E, dtype=wp.int32, device=dev)
+        arc_co_wp = wp.empty(E, dtype=wp.int32, device=dev)
+        rs_wp = wp.empty(E * N, dtype=wp.vec2f, device=dev)
+        rs_poly_wp = wp.empty(E * N, dtype=wp.vec2f, device=dev)
+        crossers_wp = wp.empty(E, dtype=wp.int32, device=dev)
+        out_wp = wp.empty(E * N, dtype=wp.vec2f, device=dev)
+
+        # Step 1-3: sample corners, sort
+        corner_count_sample_inplace(seeds_wp, 0, config, count_wp)
+        corner_sample_inplace(seeds_wp, 0, config, corners_wp, used_wp)
+        ccw_sort_inplace(corners_wp, count_wp, keys_wp, ordered_wp, P)
+
+        # Step 4: assemble Bezier dense
+        assemble_inplace(ordered_wp, count_wp, config, tan_wp, scale_wp, dense_wp)
+
+        # Step 5: arc-resample Bezier dense -> rs_wp
+        _arc_resample_inplace(dense_wp, M, N, arc_real_wp, arc_seg_wp, arc_s_wp, arc_cr_wp, arc_co_wp, rs_wp, dev)
 
         # Fix B: self-crossing tracks -> corner-polygon fallback (handle_clamp_frac=0).
-        crossers = self_intersections(rs)                              # [E] int32 (collinear-robust)
-        cfg_poly = dataclasses.replace(config, handle_clamp_frac=0.0)
-        dense_poly = assemble(corners, count, cfg_poly)
-        rs_poly, _ = arc_length_resample_warp(dense_poly, N)
-        centerline = torch.where((crossers > 0).view(E, 1, 1), rs_poly, rs)
+        self_intersections_inplace(rs_wp, arc_co_wp, crossers_wp, N)
 
-        _sync(seeds.device)
+        cfg_poly = dataclasses.replace(config, handle_clamp_frac=0.0)
+        assemble_inplace(ordered_wp, count_wp, cfg_poly, tan_wp, scale_wp, poly_wp)
+        _arc_resample_inplace(poly_wp, M, N, arc_real_wp, arc_seg_wp, arc_s_wp, arc_cr_wp, arc_co_wp, rs_poly_wp, dev)
+
+        # Select: rs_poly if crossers > 0, else rs
+        wp.launch(_select_vec2_k, dim=E * N,
+                  inputs=[rs_wp, rs_poly_wp, crossers_wp, N, out_wp],
+                  device=dev)
+
+        _sync(dev)
+        centerline = wp.to_torch(out_wp).view(E, N, 2).clone()
         valid = torch.ones(E, dtype=torch.bool, device=seeds.device)
         return centerline, valid
 
@@ -1407,78 +1448,27 @@ def generate_tracks_warp(config, seeds: torch.Tensor, out=None, scratch=None):
         centerline_cs, count_t = resample_constant_spacing(
             centerline, float(config.spacing), n_max)
         E = centerline_cs.shape[0]
-        band_t = torch.empty(E, device=centerline.device, dtype=torch.int32)
-        L0_t = torch.empty(E, device=centerline.device, dtype=torch.float32)
-        cl_w = wp.from_torch(centerline_cs.reshape(E * n_max, 2).contiguous(), dtype=wp.vec2f)
         count_i32 = count_t.to(torch.int32)
+        # Build wp.array wrappers for band/L0 computation (allocate wp, not torch scratch).
+        cl_w = wp.from_torch(centerline_cs.reshape(E * n_max, 2).contiguous(), dtype=wp.vec2f)
+        band_wp = wp.empty(E, dtype=wp.int32, device=dev)
+        L0_wp = wp.empty(E, dtype=wp.float32, device=dev)
+        cnt_wp = wp.from_torch(count_i32, dtype=wp.int32)
         wp.launch(_band_l0_k, dim=E, inputs=[cl_w, n_max, 2.0 * hw,
-                  wp.from_torch(band_t, dtype=wp.int32),
-                  wp.from_torch(L0_t, dtype=wp.float32),
-                  wp.from_torch(count_i32, dtype=wp.int32)], device=dev)
+                  band_wp, L0_wp, cnt_wp], device=dev)
         if config.relax_band is not None:
-            wp.launch(_fill_i32_k, dim=E, inputs=[wp.from_torch(band_t, dtype=wp.int32),
-                      int(config.relax_band)], device=dev)
-        _sync(centerline.device)
-        relaxed_t = warp_relax.xpbd_solve(
-            centerline_cs, band_t, L0_t, config, count=count_i32)
-        # Pass relaxed_t to inflate_warp as a torch tensor; inflate_warp calls
+            wp.launch(_fill_i32_k, dim=E, inputs=[band_wp, int(config.relax_band)], device=dev)
+        _sync(dev)
+        # In-place XPBD solve: allocate relaxed + db wp.arrays.
+        relaxed_wp = wp.empty(E * n_max, dtype=wp.vec2f, device=dev)
+        db_wp = wp.empty(E * n_max, dtype=wp.vec2f, device=dev)
+        warp_relax.xpbd_solve_inplace(cl_w, relaxed_wp, db_wp, band_wp, L0_wp, cnt_wp, n_max, config)
+        # Pass relaxed_wp to inflate_warp as a wp.array; inflate_warp calls
         # resample_uniform in-place into out.center internally.
         return inflate_warp(
-            relaxed_t, config, out=out, valid=gen_valid,
+            relaxed_wp, config, out=out, valid=gen_valid,
             count=count_i32, scratch=scratch,
         )
-
-
-def assemble(corners: torch.Tensor, count: torch.Tensor, config) -> torch.Tensor:
-    """Build the closed dense Bezier centerline from ccw-ordered corners.
-
-    Pure-Warp drop-in for BezierCenterlineGenerator._assemble_centerline (with the
-    _prune_corners NaN step folded in): corner row i of env e is kept iff i < count[e],
-    else replaced by NaN. Then per-corner blended unit tangents are computed and each of
-    the P closed segments is sampled as a cubic Bezier (npseg samples), yielding a dense
-    ``[E, P*npseg, 2]`` polyline. NaN from pruned corners lands in the SAME positions as
-    the oracle. Pure Warp (cpu+cuda); allclose to the oracle to atol=1e-4 (float32 sqrt
-    drift in safe_normalize).
-
-    Args:
-        corners: [E, P, 2] float32 ccw-ordered corners (P == config.max_num_points).
-        count:   [E] int real-corner count per env; rows >= count are pruned to NaN.
-        config:  TrackGenConfig (uses edgy, rad, handle_clamp_frac, max_num_points,
-                 num_points_per_segment).
-
-    Returns:
-        [E, P * num_points_per_segment, 2] float32 dense closed centerline (NaN where pruned).
-    """
-    _init()
-    E, P, _ = corners.shape
-    assert P == int(config.max_num_points), "corners P must equal config.max_num_points"
-    npseg = int(config.num_points_per_segment)
-    # u = s/(npseg-1) below needs npseg >= 2 (one sample per segment is non-physical
-    # and would divide by zero, unlike the oracle's linspace which tolerates it).
-    assert npseg >= 2, "num_points_per_segment must be >= 2"
-    dev = str(corners.device)
-
-    # edgy -> vertex_tangents blend weight (default edgy=0 -> p=0.5).
-    p = math.atan(config.edgy) / math.pi + 0.5
-
-    # RAW corners + count fed straight to the kernels; the _prune_corners NaN step
-    # (corner i -> NaN iff i >= count[e]) is folded in-kernel via _pruned_corner.
-    cf = wp.from_torch(corners.reshape(E * P, 2).contiguous(), dtype=wp.vec2f)
-    cnt = wp.from_torch(count.to(torch.int32).contiguous(), dtype=wp.int32)
-    tan_t = torch.empty(E * P, 2, device=corners.device, dtype=torch.float32)
-    wp_tan = wp.from_torch(tan_t, dtype=wp.vec2f)
-    scale_t = torch.empty(E * P, device=corners.device, dtype=torch.float32)
-    wp_scale = wp.from_torch(scale_t, dtype=wp.float32)
-    out_t = torch.empty(E * P * npseg, 2, device=corners.device, dtype=torch.float32)
-    wp_out = wp.from_torch(out_t, dtype=wp.vec2f)
-
-    clamp_frac = float(getattr(config, "handle_clamp_frac", 1.0e9))
-    wp.launch(_vertex_tangents_k, dim=E * P, inputs=[cf, cnt, P, float(p), wp_tan, wp_scale], device=dev)
-    wp.launch(_assemble_k, dim=E * P * npseg,
-              inputs=[cf, cnt, wp_tan, wp_scale, P, npseg, float(config.rad), clamp_frac, wp_out],
-              device=dev)
-    _sync(corners.device)
-    return out_t.view(E, P * npseg, 2)
 
 
 def offset(center, Nrm, half_width, out_outer, out_inner, area_a, area_b, count):
@@ -1542,130 +1532,6 @@ def frame_curvature(
               inputs=[center_wp, n_max, out_T, out_Nrm, kappa_scratch, count_wp],
               device=str(out_T.device))
     _sync(out_T.device)
-
-
-def self_intersections(poly: torch.Tensor,
-                       count: torch.Tensor | None = None) -> torch.Tensor:
-    """Count proper self-crossings of each closed polyline. poly [E, N, 2] -> [E] long.
-
-    Matches geometry.self_intersections exactly (torch.equal). Pure Warp (cpu+cuda).
-    One thread per env; O(N^2) loop over edge pairs inside the kernel.
-
-    count [E] int32 (optional): per-env real point count (1..N). When None, all
-    envs use N (fixed mode — identical to the pre-count-aware behaviour).
-    """
-    _init()
-    E, n_max, _ = poly.shape
-    dev = str(poly.device)
-
-    if count is None:
-        count = torch.full((E,), n_max, dtype=torch.int32, device=poly.device)
-
-    flat = poly.reshape(E * n_max, 2).contiguous()
-    wp_poly = wp.from_torch(flat, dtype=wp.vec2f)
-    wp_count = wp.from_torch(count.contiguous(), dtype=wp.int32)
-
-    out_t = torch.zeros(E, device=poly.device, dtype=torch.int32)
-    wp.launch(_self_intersections_k, dim=E,
-              inputs=[wp_poly, n_max, wp_count, wp.from_torch(out_t, dtype=wp.int32)],
-              device=dev)
-    _sync(poly.device)
-    return out_t.long()
-
-
-def separation_min(points: torch.Tensor, band: torch.Tensor,
-                   count: torch.Tensor | None = None) -> torch.Tensor:
-    """Min Euclidean distance over pairs with circ-index-dist > band. [E] float32.
-
-    points [E, N, 2]; band [E] int. Returns +inf when no valid pair exists.
-    Pure Warp (cpu+cuda). Matches geometry.separation_min to allclose(atol=1e-4).
-
-    count [E] int32 (optional): per-env real point count (1..N). When None, all
-    envs use N (fixed mode — identical to the pre-count-aware behaviour).
-    """
-    _init()
-    E, N, _ = points.shape
-    dev = str(points.device)
-    n_max = N
-    if count is None:
-        count = torch.full((E,), N, dtype=torch.int32, device=points.device)
-
-    flat = points.reshape(E * n_max, 2).contiguous()
-    wp_pts = wp.from_torch(flat, dtype=wp.vec2f)
-    band_i32 = band.to(torch.int32).contiguous()
-    wp_band = wp.from_torch(band_i32, dtype=wp.int32)
-    count_i32 = count.to(torch.int32).contiguous()
-    wp_count = wp.from_torch(count_i32, dtype=wp.int32)
-
-    out_t = torch.empty(E, device=points.device, dtype=torch.float32)
-    wp.launch(_sep_min_k, dim=E,
-              inputs=[wp_pts, wp_band, n_max, wp_count, wp.from_torch(out_t, dtype=wp.float32)],
-              device=dev)
-    _sync(points.device)
-    # Replace sentinel (no valid pair) with actual +inf to match torch oracle.
-    out_t[out_t >= 1.0e29] = float("inf")
-    return out_t
-
-
-def curvature_radius_min(points: torch.Tensor,
-                         count: torch.Tensor | None = None) -> torch.Tensor:
-    """1 / max Menger curvature over the loop. points [E, N, 2] -> [E] float32.
-
-    Pure Warp (cpu+cuda). Matches geometry.curvature_radius_min to allclose(atol=1e-4).
-
-    count [E] int32 (optional): per-env real point count (1..N). When None, all
-    envs use N (fixed mode — identical to the pre-count-aware behaviour).
-    """
-    _init()
-    E, N, _ = points.shape
-    dev = str(points.device)
-    n_max = N
-    if count is None:
-        count = torch.full((E,), N, dtype=torch.int32, device=points.device)
-
-    flat = points.reshape(E * n_max, 2).contiguous()
-    wp_pts = wp.from_torch(flat, dtype=wp.vec2f)
-    count_i32 = count.to(torch.int32).contiguous()
-    wp_count = wp.from_torch(count_i32, dtype=wp.int32)
-
-    out_t = torch.empty(E, device=points.device, dtype=torch.float32)
-    wp.launch(_curvrad_min_k, dim=E,
-              inputs=[wp_pts, n_max, wp_count, wp.from_torch(out_t, dtype=wp.float32)],
-              device=dev)
-    _sync(points.device)
-    return out_t
-
-
-def thickness(points: torch.Tensor, band: torch.Tensor,
-              count: torch.Tensor | None = None) -> torch.Tensor:
-    """Discrete curve thickness = min(curvature_radius_min, 0.5*separation_min). [E] float32.
-
-    points [E, N, 2] float32; band [E] int (per-env exclusion window).
-    Matches geometry.thickness to allclose(atol=1e-4). Pure Warp (cpu+cuda).
-
-    count [E] int32 (optional): per-env real point count (1..N). When None, all
-    envs use N (fixed mode — identical to the pre-count-aware behaviour).
-    """
-    _init()
-    E, N, _ = points.shape
-    dev = str(points.device)
-    n_max = N
-    if count is None:
-        count = torch.full((E,), N, dtype=torch.int32, device=points.device)
-
-    flat = points.reshape(E * n_max, 2).contiguous()
-    wp_pts = wp.from_torch(flat, dtype=wp.vec2f)
-    band_i32 = band.to(torch.int32).contiguous()
-    wp_band = wp.from_torch(band_i32, dtype=wp.int32)
-    count_i32 = count.to(torch.int32).contiguous()
-    wp_count = wp.from_torch(count_i32, dtype=wp.int32)
-
-    out_t = torch.empty(E, device=points.device, dtype=torch.float32)
-    wp.launch(_thickness_k, dim=E,
-              inputs=[wp_pts, wp_band, n_max, wp_count, wp.from_torch(out_t, dtype=wp.float32)],
-              device=dev)
-    _sync(points.device)
-    return out_t
 
 
 def resample_uniform(
@@ -1790,230 +1656,6 @@ def resample_constant_spacing(
         return out_t.view(E, n_max, 2), cnt_t.long()
 
 
-def arc_length_resample_warp(points: torch.Tensor, num: int):
-    """NaN-aware arc-length-uniform resample, a drop-in for geometry.arc_length_resample.
-
-    FIXED mode (``num`` given, no spacing/valid_mask): per env, DROP every non-finite
-    point (interior NaN too) compacting the rest IN ORDER (R real points), close that
-    real loop, and emit exactly ``num`` arc-uniform points. Envs with R < 2 yield an
-    all-NaN row and count 0; envs with R >= 2 get count ``num``. Generalizes
-    resample_uniform (variable R per env, NaN dropping, output count != input count).
-
-    Two Warp kernels mirroring _resample_scan_k / _resample_lookup_k: _arc_scan_k (one
-    thread per env) compacts real points and builds the closed-loop float64-accumulated
-    arc length; _arc_lookup_k (one thread per output point) does a linear-scan
-    searchsorted + lerp. Pure Warp (cpu+cuda), no torch compute on the geometry.
-
-    Args:
-        points: [E, M, 2] float32 dense loops (may contain NaN padding / interior NaN).
-        num: fixed output point count per env.
-
-    Returns:
-        (resampled [E, num, 2] float32, count [E] long). Matches the torch oracle:
-        count EXACT; positions allclose to atol~5e-4 (float32-cumsum vs float64 drift).
-    """
-    _init()
-    E, M, _ = points.shape
-    dev = str(points.device)
-    device = points.device
-
-    df = wp.from_torch(points.reshape(E * M, 2).contiguous(), dtype=wp.vec2f)
-
-    # Scratch: compacted real points, per-real-segment lengths, cumulative arc length,
-    # the real-point count R per env (read by the lookup to gate NaN / clamp idx), and the
-    # public per-env output count written directly by the scan kernel (R>=2 -> num, else 0).
-    real_t = torch.empty(E * M, 2, device=device, dtype=torch.float32)
-    seg_t = torch.empty(E * M, device=device, dtype=torch.float32)
-    s_t = torch.empty(E * (M + 1), device=device, dtype=torch.float32)
-    count_r_t = torch.empty(E, device=device, dtype=torch.int32)
-    count_out_t = torch.empty(E, device=device, dtype=torch.int32)
-    out_t = torch.empty(E * num, 2, device=device, dtype=torch.float32)
-
-    wp_real = wp.from_torch(real_t, dtype=wp.vec2f)
-    wp_seg = wp.from_torch(seg_t, dtype=wp.float32)
-    wp_s = wp.from_torch(s_t, dtype=wp.float32)
-    wp_count_r = wp.from_torch(count_r_t, dtype=wp.int32)
-    wp_count_out = wp.from_torch(count_out_t, dtype=wp.int32)
-    wp_out = wp.from_torch(out_t, dtype=wp.vec2f)
-
-    wp.launch(_arc_scan_k, dim=E,
-              inputs=[df, M, num, wp_real, wp_seg, wp_s, wp_count_r, wp_count_out], device=dev)
-    wp.launch(_arc_lookup_k, dim=E * num,
-              inputs=[wp_real, wp_seg, wp_s, wp_count_r, M, num, wp_out], device=dev)
-    _sync(points.device)
-
-    # Public count written in-kernel (R >= 2 -> num, R < 2 -> 0); .long() is an I/O dtype view.
-    return out_t.view(E, num, 2), count_out_t.long()
-
-
-def turning_number(center: torch.Tensor,
-                   count: torch.Tensor | None = None) -> torch.Tensor:
-    """Signed total turning of each closed polygon, in radians. center [E, N, 2] -> [E] float32.
-
-    +/-2*pi for a simple loop (sign = orientation); ~0 for a figure-eight whose lobes
-    wind in opposite directions. Matches geometry.turning_number to allclose(atol=1e-4).
-    Pure Warp (cpu+cuda). One thread per env; O(N) loop over edge-angle deltas.
-
-    count [E] int32 (optional): per-env real point count (1..N). When None, all
-    envs use N (fixed mode — identical to the pre-count-aware behaviour).
-    """
-    _init()
-    E, N, _ = center.shape
-    dev = str(center.device)
-    n_max = N
-    if count is None:
-        count = torch.full((E,), N, dtype=torch.int32, device=center.device)
-
-    cf = wp.from_torch(center.reshape(E * n_max, 2).contiguous(), dtype=wp.vec2f)
-    count_i32 = count.to(torch.int32).contiguous()
-    wp_count = wp.from_torch(count_i32, dtype=wp.int32)
-    out_t = torch.empty(E, device=center.device, dtype=torch.float32)
-    wp.launch(_turning_k, dim=E,
-              inputs=[cf, n_max, wp_count, wp.from_torch(out_t, dtype=wp.float32)],
-              device=dev)
-    _sync(center.device)
-    return out_t
-
-
-def gates(corners: torch.Tensor, dense: torch.Tensor, count: torch.Tensor,
-          config) -> torch.Tensor:
-    """Per-env accept mask, a drop-in for the gate conjunction in generate().
-
-    Reproduces ``ok = angle_ok & turn_ok & finite_ok & simple_ok`` from
-    BezierCenterlineGenerator.generate entirely in Warp kernels (the wrapper does ZERO
-    torch compute -- only wp.from_torch I/O + dtype views + launches):
-
-      1. ANGLE: _corner_angles_gate_k (one thread per env) takes the RAW corners + count
-         and folds in the _prune_corners NaN step (corner i real iff i < count[e] AND
-         both components finite), then checks that every CONSTRAINED corner (it and both
-         circular neighbours real) has interior angle > min_angle. Unconstrained corners
-         are skipped, matching the oracle's nan_to_num(angle, 0) | ~constrained.
-      2. TURN + FINITE inputs: arc_length_resample_warp(dense, num_points_per_segment) ->
-         turning_number (turn) plus the resample count (cnt_turn).
-      3. SIMPLE input: arc_length_resample_warp(dense, num_points) -> self_intersections
-         (cross).
-      4. COMBINE: _gates_combine_k (one thread per env) computes turn_ok / finite_ok /
-         simple_ok from turn/cnt_turn/cross and ANDs them with angle_ok into the result.
-
-    The TURN resample is to num_points_per_segment (30) and the SIMPLE resample is to
-    num_points (256) -- different sizes, exactly as the oracle. Equals the oracle's accept
-    mask (torch.equal) for cases built clear of the thresholds; the ~5e-4 resample drift is
-    geometrically negligible. Pure Warp (cpu+cuda); no oracle-module imports.
-
-    Args:
-        corners: [E, P, 2] float32 RAW ccw-sorted corners (pre-prune; P == count's domain).
-        dense:   [E, M, 2] float32 assembled dense centerline (already NaN where pruned).
-        count:   [E] int real-corner count per env (rows >= count are pruned to NaN).
-        config:  TrackGenConfig (uses min_angle, turning_tol, num_points,
-                 num_points_per_segment).
-
-    Returns:
-        [E] bool accept mask.
-    """
-    _init()
-    E, P, _ = corners.shape
-    dev = str(corners.device)
-    device = corners.device
-
-    # --- ANGLE gate (Warp kernel over RAW corners + count; prune folded in-kernel) ---
-    cf = wp.from_torch(corners.reshape(E * P, 2).contiguous(), dtype=wp.vec2f)
-    cnt = wp.from_torch(count.to(torch.int32).contiguous(), dtype=wp.int32)
-    angle_ok_t = torch.empty(E, device=device, dtype=torch.int32)
-    wp.launch(_corner_angles_gate_k, dim=E,
-              inputs=[cf, cnt, P, float(config.min_angle),
-                      wp.from_torch(angle_ok_t, dtype=wp.int32)],
-              device=dev)
-
-    # --- TURN + FINITE inputs (resample to num_points_per_segment, then turning number) ---
-    rs_turn, cnt_turn = arc_length_resample_warp(dense, int(config.num_points_per_segment))
-    turn = turning_number(rs_turn)
-
-    # --- SIMPLE input (resample to num_points, then count self-crossings) ---
-    rs_simple, _ = arc_length_resample_warp(dense, int(config.num_points))
-    cross = self_intersections(rs_simple)
-
-    # --- combine all gates in one kernel (no torch where/&/comparisons) ---
-    out_t = torch.empty(E, device=device, dtype=torch.int32)
-    wp.launch(
-        _gates_combine_k, dim=E,
-        inputs=[wp.from_torch(angle_ok_t, dtype=wp.int32),
-                wp.from_torch(turn.contiguous(), dtype=wp.float32),
-                wp.from_torch(cnt_turn.to(torch.int32).contiguous(), dtype=wp.int32),
-                wp.from_torch(cross.to(torch.int32).contiguous(), dtype=wp.int32),
-                float(config.turning_tol),
-                wp.from_torch(out_t, dtype=wp.int32)],
-        device=dev,
-    )
-    _sync(device)
-    return out_t.bool()
-
-
-def validity(center: torch.Tensor, w: torch.Tensor, count: torch.Tensor,
-             gen_valid: torch.Tensor, config, outer: torch.Tensor | None = None,
-             inner: torch.Tensor | None = None) -> torch.Tensor:
-    """Per-track validity gate, a drop-in replacement for inflation._validity_stage.
-
-    Combines: generation flag AND closed-loop turning AND width floor AND no-NaN AND
-    thickness >= (1-relax_tol)*half_width AND zero border self-intersections. The heavy
-    geometry runs through the verified Warp wrappers (turning_number, thickness,
-    self_intersections); the real-point mask, width floor, NaN, band derivation and the
-    boolean combine are light torch glue at the boundary, matching the established wrapper
-    pattern. Equals inflation._validity_stage exactly (torch.equal on the bool output).
-
-    Args:
-        center:    [E, N, 2] float32 resampled centerline.
-        w:         [E, N]    half-width per point.
-        count:     [E]       int real-point count per env (fixed mode -> N).
-        gen_valid: [E]       bool generation flag.
-        config:    TrackGenConfig (uses turning_tol, w_floor, half_width, relax_tol).
-        outer:     [E, N, 2] outer border polygon, or None to skip the border check.
-        inner:     [E, N, 2] inner border polygon, or None to skip the border check.
-
-    Returns:
-        [E] bool validity. When either border is None the border check is skipped
-        (border_ok all True), matching the oracle's outer/inner defaults.
-
-    Pure Warp: a single ``_validity_k`` launch (one thread per env) does ALL the per-env
-    logic (turning, real-mask width floor + no-NaN, in-kernel band derivation, thickness,
-    and border self-intersection combine). The wrapper does ZERO torch compute -- only
-    wp.from_torch I/O wrapping, dtype conversions for I/O (.to(int32) on inputs, .bool()
-    on the output), and the dummy-array handling for the None border case.
-    """
-    _init()
-    E, N = w.shape
-    device = w.device
-    dev = str(device)
-    flat = E * N
-
-    cf = wp.from_torch(center.reshape(flat, 2).contiguous(), dtype=wp.vec2f)
-    wf = wp.from_torch(w.reshape(flat).contiguous().to(torch.float32), dtype=wp.float32)
-    cnt = wp.from_torch(count.to(torch.int32).contiguous(), dtype=wp.int32)
-    gv = wp.from_torch(gen_valid.to(torch.int32).contiguous(), dtype=wp.int32)
-
-    if outer is None or inner is None:
-        # No border: pass center as a dummy non-empty vec2f array and disable the check.
-        has_border = 0
-        ob = cf
-        ib = cf
-    else:
-        # The kernel NaN->0 guards outer/inner internally (== oracle nan_to_num(nan=0.0)).
-        has_border = 1
-        ob = wp.from_torch(outer.reshape(flat, 2).contiguous(), dtype=wp.vec2f)
-        ib = wp.from_torch(inner.reshape(flat, 2).contiguous(), dtype=wp.vec2f)
-
-    out_t = torch.empty(E, device=device, dtype=torch.int32)
-    wp.launch(
-        _validity_k, dim=E,
-        inputs=[cf, wf, cnt, gv, ob, ib, int(has_border), N,
-                float(config.half_width), float(config.turning_tol),
-                float(config.w_floor), float(config.relax_tol),
-                wp.from_torch(out_t, dtype=wp.int32)],
-        device=dev,
-    )
-    _sync(device)
-    return out_t.bool()
-
-
 def validity_inplace(
     center_wp: "wp.array",
     w_wp: "wp.array",
@@ -2079,104 +1721,6 @@ def _arclength(
               inputs=[center_wp, n_max, count_wp, out_arclen, out_length],
               device=str(out_arclen.device))
     _sync(out_arclen.device)
-
-
-def corner_sample(seeds: torch.Tensor, attempt: int, config) -> torch.Tensor:
-    """Sample max_num_points grid-corner points per env with Warp's built-in RNG.
-
-    ACCEPTED RNG REDESIGN: this is the pure-Warp replacement for the torch oracle
-    generators.BezierCenterlineGenerator._sample_corner_points. It does NOT reproduce
-    the oracle bit-for-bit (the legacy PerEnvSeededRNG is retired from the pure-Warp
-    path); it is validated by structural properties only. The construction matches the
-    oracle's GEOMETRY, though: each corner picks a grid cell in [0, num_cells**2),
-    derives cell coords (x = cell % num_cells, y = cell // num_cells), adds per-corner
-    noise in [-0.5, 0.5), and scales by (cell_size, scale). Distinct cells are preferred
-    via bounded duplicate rejection, echoing the oracle's no-replacement top-k subset.
-
-    Seeding/draw order (see _corner_sample_k): state = rand_init(seed*9781 + attempt);
-    per corner, one cell-selection randf per duplicate-rejection try, then two noise
-    randfs (nx, ny). Reproducible per (seeds, attempt, config).
-
-    Args:
-        seeds:   [E] int per-env base seed. Interpreted mod 2**32 (narrowed to int32
-                 before the seed mix), so very large seeds may alias.
-        attempt: int retry counter (mixed into the seed for attempt-to-attempt variety).
-        config:  TrackGenConfig (uses max_num_points, min_point_distance, scale).
-
-    Returns:
-        [E, max_num_points, 2] float32 corner points in scaled grid coordinates.
-        Pure Warp (cpu+cuda).
-    """
-    return _corner_sample_raw(seeds, attempt, config)[0]
-
-
-def _corner_sample_raw(seeds: torch.Tensor, attempt: int, config):
-    """corner_sample internals, also returning the chosen grid cells for inspection/tests.
-
-    Returns:
-        (corners [E, max_num_points, 2] float32, cells [E, max_num_points] int32).
-        ``cells[e, c]`` is the grid-cell index in [0, num_cells**2) chosen for corner c
-        of env e (after duplicate rejection) — the only directly-observable record of the
-        cell-selection RNG, since the additive per-corner noise makes cells unrecoverable
-        from the scaled positions.
-    """
-    _init()
-    E = seeds.shape[0]
-    dev = str(seeds.device)
-    P = int(config.max_num_points)
-    num_cells = int(1.0 / (config.min_point_distance * 2))
-    nc2 = num_cells * num_cells
-    cell_size = config.min_point_distance * 2.0
-
-    seeds_i32 = seeds.to(torch.int32).contiguous()
-    # Scratch dedup buffer doubling as the output cell record:
-    # used[e*P + c] = cell chosen for corner c of env e (-1 = unset).
-    used_t = torch.full((E * P,), -1, device=seeds.device, dtype=torch.int32)
-    out_t = torch.empty(E * P, 2, device=seeds.device, dtype=torch.float32)
-
-    wp.launch(
-        _corner_sample_k, dim=E,
-        inputs=[wp.from_torch(seeds_i32, dtype=wp.int32), int(attempt),
-                num_cells, nc2, float(cell_size), float(config.scale), P,
-                wp.from_torch(used_t, dtype=wp.int32),
-                wp.from_torch(out_t, dtype=wp.vec2f)],
-        device=dev,
-    )
-    _sync(seeds.device)
-    return out_t.view(E, P, 2), used_t.view(E, P)
-
-
-def ccw_sort(points: torch.Tensor, count: torch.Tensor | None = None) -> torch.Tensor:
-    """Angle-sort each env's corners about their centroid (X-first atan2 key).
-
-    With ``count=None`` (default) sorts all P corners about the all-P centroid -- the legacy
-    behaviour, byte-identical to :func:`track_gen.geometry.ccw_sort`. With a per-env ``count``
-    it prune-then-sorts: only the first ``count[e]`` corners are sorted (about THEIR centroid)
-    and rows ``>= count`` are returned NaN, matching :func:`track_gen.geometry.ccw_sort_count`.
-    Pure Warp (cpu+cuda); one thread per env, in-place insertion sort.
-    """
-    _init()
-    E, P, _ = points.shape
-    dev = str(points.device)
-    flat = E * P
-
-    pf = wp.from_torch(points.reshape(flat, 2).contiguous(), dtype=wp.vec2f)
-    # keys_t / out_t are intentionally uninitialised: the insertion sort only ever reads
-    # slots strictly behind its write frontier, so no garbage is consumed; pruned rows
-    # ([count, P)) are written NaN by the kernel.
-    keys_t = torch.empty(flat, device=points.device, dtype=torch.float32)
-    out_t = torch.empty(flat, 2, device=points.device, dtype=torch.float32)
-    if count is None:
-        count_t = torch.full((E,), P, device=points.device, dtype=torch.int32)
-    else:
-        count_t = count.to(device=points.device, dtype=torch.int32).contiguous()
-    wp.launch(_ccw_sort_k, dim=E,
-              inputs=[pf, P, wp.from_torch(count_t, dtype=wp.int32),
-                      wp.from_torch(keys_t, dtype=wp.float32),
-                      wp.from_torch(out_t, dtype=wp.vec2f)],
-              device=dev)
-    _sync(points.device)
-    return out_t.view(E, P, 2)
 
 
 class _Scratch:

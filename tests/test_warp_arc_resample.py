@@ -4,8 +4,8 @@ import pytest
 import torch
 
 pytest.importorskip("warp")
-from track_gen._src import warp_pipeline as wpl
 from tests._oracle import geometry
+from tests._warp_compare import arc_length_resample_warp
 
 DEVS = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
 
@@ -45,7 +45,7 @@ def test_arc_resample_matches_oracle(dev):
     pts = _make_batch(dev)
 
     ref_r, ref_c = geometry.arc_length_resample(pts, num=num)
-    got_r, got_c = wpl.arc_length_resample_warp(pts, num)
+    got_r, got_c = arc_length_resample_warp(pts, num)
 
     # Count EXACT: 64 for R>=2 envs (0, 1, 2), 0 for R<2 envs (3, 4).
     assert torch.equal(got_c.cpu(), ref_c.cpu()), (got_c.tolist(), ref_c.tolist())
@@ -68,7 +68,7 @@ def test_arc_resample_clean_loop_uniform(dev):
     num = 137
     t = torch.linspace(0, 2 * math.pi, M + 1, device=dev)[:-1]
     c = torch.stack([2.0 * torch.cos(t), 2.0 * torch.sin(t)], dim=-1).unsqueeze(0)
-    out, count = wpl.arc_length_resample_warp(c, num)
+    out, count = arc_length_resample_warp(c, num)
     assert int(count.item()) == num
     assert out.shape == (1, num, 2)
     seg = torch.linalg.norm(torch.diff(out, dim=1, append=out[:, :1]), dim=-1)

@@ -1,7 +1,7 @@
 import math, pytest, torch
 pytest.importorskip("warp")
-from track_gen._src import warp_pipeline as wpl
 from tests._oracle import geometry
+from tests._warp_compare import ccw_sort
 
 DEVS = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
 
@@ -41,7 +41,7 @@ def _make_batch(dev):
 @pytest.mark.parametrize("dev", DEVS)
 def test_ccw_sort_matches_oracle(dev):
     pts = _make_batch(dev)
-    got = wpl.ccw_sort(pts)
+    got = ccw_sort(pts)
     ref = geometry.ccw_sort(pts)
     # Output is a PERMUTATION of the input (no value arithmetic) -> byte-exact.
     assert torch.equal(got.cpu(), ref.cpu())
@@ -50,7 +50,7 @@ def test_ccw_sort_matches_oracle(dev):
 @pytest.mark.parametrize("dev", DEVS)
 def test_ccw_sort_keys_monotone(dev):
     pts = _make_batch(dev)
-    got = wpl.ccw_sort(pts)
+    got = ccw_sort(pts)
     # Recompute the per-point key atan2(dx, dy) (X FIRST) from the output and
     # assert it is non-decreasing along P within each env.
     mean = got.mean(dim=1, keepdim=True)
@@ -83,7 +83,7 @@ def test_ccw_sort_count_matches_oracle(dev):
     ], dim=0)
     count = torch.tensor([11, 7, 5], device=dev)
 
-    got = wpl.ccw_sort(pts, count)
+    got = ccw_sort(pts, count)
     ref = geometry.ccw_sort_count(pts, count)
     for e in range(pts.shape[0]):
         c = int(count[e])
@@ -97,5 +97,5 @@ def test_ccw_sort_count_matches_oracle(dev):
 def test_ccw_sort_no_count_unchanged(dev):
     # count=None keeps the legacy all-P behaviour byte-for-byte.
     pts = _make_batch(dev)
-    assert torch.equal(wpl.ccw_sort(pts).cpu(), wpl.ccw_sort(pts, count=None).cpu())
-    assert torch.equal(wpl.ccw_sort(pts).cpu(), geometry.ccw_sort(pts).cpu())
+    assert torch.equal(ccw_sort(pts).cpu(), ccw_sort(pts, count=None).cpu())
+    assert torch.equal(ccw_sort(pts).cpu(), geometry.ccw_sort(pts).cpu())

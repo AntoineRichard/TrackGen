@@ -11,7 +11,6 @@ from __future__ import annotations
 import torch
 
 from . import geometry
-from track_gen._src import warp_relax
 
 
 def _roll(x, k):
@@ -118,15 +117,6 @@ def _relax_xpbd(center0, band, config):
     spc_relax = float(config.relax_spc_relax)
     bend_relax = float(config.relax_bend_relax)
     L0 = geometry.perimeter(center0) / N
-
-    # On CUDA with Warp: run the whole fixed-iteration solve in fused kernels
-    # (separation + spacing + bending per sweep, double-buffered) — no [E,N,N]
-    # materialization, no per-iter sync, ~900x over the torch loop and O(E*N) memory
-    # (so no chunking needed). CPU / no-Warp falls through to the pure-torch path
-    # below, which stays the validated, CPU-testable reference.
-    if warp_relax.should_use(center0.device, config):
-        relaxed = warp_relax.xpbd_solve(center0, band, L0, config)
-        return _resample_uniform(relaxed, N)
 
     center = center0.clone()
     circ = geometry.circ_index_dist(N, center0.device)

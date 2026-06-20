@@ -4,8 +4,8 @@ import pytest
 import torch
 
 pytest.importorskip("warp")
-from track_gen._src import warp_pipeline as wpl
 from tests._oracle import geometry, inflation
+from tests._warp_compare import validity, turning_number
 from track_gen._src.types import TrackGenConfig
 
 DEVS = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
@@ -48,7 +48,7 @@ def test_validity_matches_oracle(dev):
     gen_valid = torch.ones(E, dtype=torch.bool, device=dev)
 
     ref = inflation._validity_stage(center, w, count, gen_valid, config, outer, inner)
-    got = wpl.validity(center, w, count, gen_valid, config, outer, inner)
+    got = validity(center, w, count, gen_valid, config, outer, inner)
 
     assert torch.equal(got.cpu(), ref.cpu())
     assert got.cpu().tolist() == [True, False, False]
@@ -67,19 +67,19 @@ def test_validity_no_border_matches_oracle(dev):
     w = torch.full((E, N), float(config.half_width), device=dev)
 
     ref = inflation._validity_stage(center, w, count, gen_valid, config)
-    got = wpl.validity(center, w, count, gen_valid, config)
+    got = validity(center, w, count, gen_valid, config)
     assert torch.equal(got.cpu(), ref.cpu())
 
 
 @pytest.mark.parametrize("dev", DEVS)
 def test_turning_number_matches_oracle(dev):
     c = _circle(N, 2.0, dev)
-    assert torch.allclose(wpl.turning_number(c).cpu(),
+    assert torch.allclose(turning_number(c).cpu(),
                           geometry.turning_number(c).cpu(), atol=1e-4)
     # circle turning number is approximately +/- 2*pi.
-    assert abs(abs(wpl.turning_number(c).item()) - 2.0 * math.pi) <= 1e-3
+    assert abs(abs(turning_number(c).item()) - 2.0 * math.pi) <= 1e-3
 
     torch.manual_seed(0)
     rand = torch.randn(4, N, 2, device=dev) * 0.8
-    assert torch.allclose(wpl.turning_number(rand).cpu(),
+    assert torch.allclose(turning_number(rand).cpu(),
                           geometry.turning_number(rand).cpu(), atol=1e-4)

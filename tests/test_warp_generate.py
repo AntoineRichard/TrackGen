@@ -14,6 +14,7 @@ pytest.importorskip("warp")
 
 from track_gen._src import warp_pipeline as wpl  # noqa: E402
 from track_gen._src.types import TrackGenConfig  # noqa: E402
+from tests._warp_compare import corner_count_sample, self_intersections  # noqa: E402
 
 DEVS = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
 
@@ -24,7 +25,7 @@ def test_corner_count_sample(dev):
     E = 256
     seeds = torch.arange(E, device=dev)
 
-    count = wpl.corner_count_sample(seeds, 0, config)
+    count = corner_count_sample(seeds, 0, config)
 
     # shape + dtype
     assert count.shape == (E,)
@@ -34,11 +35,11 @@ def test_corner_count_sample(dev):
     assert int(count.max()) <= int(config.max_num_points)
 
     # reproducible: same seeds/attempt -> equal
-    count2 = wpl.corner_count_sample(seeds, 0, config)
+    count2 = corner_count_sample(seeds, 0, config)
     assert torch.equal(count, count2)
 
     # different attempts differ (somewhere across the 256 envs)
-    count_a1 = wpl.corner_count_sample(seeds, 1, config)
+    count_a1 = corner_count_sample(seeds, 1, config)
     assert not torch.equal(count, count_a1)
 
 
@@ -63,7 +64,7 @@ def test_generate_centerline_warp(dev):
 
     # Fix B (self-crossing track -> corner-polygon fallback) + the collinear-robust detector:
     # the generated centerline is ~always simple.
-    cf = (wpl.self_intersections(centerline) == 0).float().mean().item()
+    cf = (self_intersections(centerline) == 0).float().mean().item()
     assert cf >= 0.99, f"crossing-free {cf} < 0.99 on {dev}"
 
     # reproducible within a device

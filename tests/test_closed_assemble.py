@@ -18,6 +18,10 @@ pytest.importorskip("warp")
 
 from track_gen._src import warp_pipeline as wpl
 from track_gen._src.types import TrackGenConfig
+from tests._warp_compare import (
+    corner_count_sample, corner_sample, ccw_sort, assemble,
+    arc_length_resample_warp, self_intersections,
+)
 
 DEVS = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
 
@@ -47,7 +51,7 @@ def test_closed_assemble_keeps_all_count_segments(dev):
     # full (==P) and short counts, all distinct corners so no degenerate segments.
     count = torch.tensor([P, P - 3, P - 4], dtype=torch.long, device=corners.device)
 
-    dense = wpl.assemble(corners, count, config)        # [E, P*npseg, 2]
+    dense = assemble(corners, count, config)        # [E, P*npseg, 2]
     finite = torch.isfinite(dense).all(dim=-1)          # [E, P*npseg]
 
     for e in range(count.shape[0]):
@@ -68,10 +72,10 @@ def _attempt0_centerline(cfg, dev):
     """Production attempt-0 corners -> ccw_sort -> assemble -> resample to num_points."""
     E = cfg.num_envs
     seeds = torch.arange(E, dtype=torch.int32, device=dev)
-    count = wpl.corner_count_sample(seeds, 0, cfg)
-    corners = wpl.ccw_sort(wpl.corner_sample(seeds, 0, cfg), count)
-    dense = wpl.assemble(corners, count, cfg)
-    rs, _ = wpl.arc_length_resample_warp(dense, int(cfg.num_points))
+    count = corner_count_sample(seeds, 0, cfg)
+    corners = ccw_sort(corner_sample(seeds, 0, cfg), count)
+    dense = assemble(corners, count, cfg)
+    rs, _ = arc_length_resample_warp(dense, int(cfg.num_points))
     return rs
 
 
@@ -86,7 +90,7 @@ def test_adaptive_handle_clamp_drives_out_crossings(dev):
     cfg = _fatband_cfg(2048, dev)
     cfg.handle_clamp_frac = 0.10  # tight clamp: exercise the overshoot-removal mechanism
     rs = _attempt0_centerline(cfg, dev)
-    crossing_free = (wpl.self_intersections(rs) == 0).float().mean().item()
+    crossing_free = (self_intersections(rs) == 0).float().mean().item()
     assert crossing_free >= 0.985, (
         f"crossing-free rate {crossing_free:.4f} < 0.985 -- a tight handle clamp "
         f"should remove most Bezier overshoot (F1-alone is ~0.964)")
@@ -96,7 +100,7 @@ def test_adaptive_handle_clamp_drives_out_crossings(dev):
     # to ~always simple.
     seeds = torch.arange(cfg.num_envs, dtype=torch.int32, device=dev)
     centerline, _ = wpl.generate_centerline_warp(seeds, _fatband_cfg(2048, dev))
-    final_simple = (wpl.self_intersections(centerline) == 0).float().mean().item()
+    final_simple = (self_intersections(centerline) == 0).float().mean().item()
     assert final_simple >= 0.999, (
         f"Fix B polygon fallback should make the final centerline ~always simple, "
         f"got {final_simple:.4f}")
@@ -111,13 +115,13 @@ def test_handle_clamp_preserves_shape_diversity(dev):
     cfg = _fatband_cfg(2048, dev)
     default_frac = cfg.handle_clamp_frac  # production default (== rad); read before mutation
     seeds = torch.arange(cfg.num_envs, dtype=torch.int32, device=dev)
-    count = wpl.corner_count_sample(seeds, 0, cfg)
-    corners = wpl.ccw_sort(wpl.corner_sample(seeds, 0, cfg), count)
+    count = corner_count_sample(seeds, 0, cfg)
+    corners = ccw_sort(corner_sample(seeds, 0, cfg), count)
 
     def area_std(frac):
         cfg.handle_clamp_frac = frac
-        dense = wpl.assemble(corners, count, cfg)
-        rs, _ = wpl.arc_length_resample_warp(dense, int(cfg.num_points))
+        dense = assemble(corners, count, cfg)
+        rs, _ = arc_length_resample_warp(dense, int(cfg.num_points))
         x, y = rs[..., 0], rs[..., 1]
         xn, yn = torch.roll(x, -1, 1), torch.roll(y, -1, 1)
         area = 0.5 * (x * yn - xn * y).nansum(1).abs()

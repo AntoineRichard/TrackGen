@@ -7,8 +7,8 @@ if not torch.cuda.is_available():
     pytest.skip("Warp separation path requires CUDA", allow_module_level=True)
 
 from tests._oracle import relaxation, geometry
+from tests._warp_compare import separation_disp, xpbd_solve
 from track_gen._src.types import TrackGenConfig
-from track_gen._src import warp_relax
 
 
 def _star(n=256, r0=1.0, amp=0.6, k=7, phase=0.0):
@@ -27,7 +27,7 @@ def test_warp_separation_matches_torch():
     circ = geometry.circ_index_dist(N, c.device)
     mask = circ[None] > band.view(E, 1, 1)
     ref = relaxation._separation_disp(c, mask, D, margin)        # torch pairwise
-    got = warp_relax.separation_disp(c, band, target)           # fused warp kernel
+    got = separation_disp(c, band, target)                        # fused warp kernel
     assert torch.allclose(ref, got, atol=1e-5), (ref - got).abs().max().item()
 
 
@@ -37,8 +37,11 @@ def test_warp_xpbd_matches_torch_solve():
     base = dict(device="cuda", num_envs=E, num_points=N, half_width=hw,
                 relax_iters=150, relax_bend_relax=1.5, relax_margin=0.15)
     out_torch = relaxation.relax(c0, TrackGenConfig(**base, relax_use_warp=False))
-    out_warp = relaxation.relax(c0, TrackGenConfig(**base, relax_use_warp=True))
+    out_warp = xpbd_solve(c0, relaxation._band(c0, TrackGenConfig(**base)),
+                          geometry.perimeter(c0) / N, TrackGenConfig(**base))
+    # Resample to N (relaxation.relax returns resampled; xpbd_solve returns raw).
+    out_warp_rs, _ = geometry.arc_length_resample(out_warp, num=N)
     # Same dynamics, separation differs only at ~1e-5/iter -> trajectories stay close.
-    assert torch.allclose(out_torch, out_warp, atol=1e-2)
+    assert torch.allclose(out_torch, out_warp_rs, atol=1e-2)
     band = relaxation._band(c0, TrackGenConfig(**base))
-    assert float(geometry.thickness(out_warp, band).min()) >= 0.95 * hw
+    assert float(geometry.thickness(out_warp_rs, band).min()) >= 0.95 * hw

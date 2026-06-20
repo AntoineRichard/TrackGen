@@ -13,8 +13,8 @@ import torch
 
 pytest.importorskip("warp")
 
-from track_gen._src import warp_pipeline as wpl
 from tests._oracle.generators import BezierCenterlineGenerator
+from tests._warp_compare import assemble
 from track_gen._src.types import TrackGenConfig
 
 DEVS = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
@@ -56,7 +56,7 @@ def test_assemble_matches_oracle(dev, edgy):
     pruned = torch.where(keep, corners, torch.full_like(corners, float("nan")))
     ref = gen._assemble_centerline(pruned)
 
-    got = wpl.assemble(corners, count, config)
+    got = assemble(corners, count, config)
 
     assert got.shape == (E, P * npseg, 2)
     # NaN must land in EXACTLY the same positions as the oracle.

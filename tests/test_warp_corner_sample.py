@@ -11,7 +11,7 @@ import torch
 
 pytest.importorskip("warp")
 
-from track_gen._src import warp_pipeline as wpl
+from tests._warp_compare import corner_sample, _corner_sample_raw
 from track_gen._src.types import TrackGenConfig
 
 DEVS = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
@@ -36,7 +36,7 @@ def test_shape_and_finite(dev):
     config = TrackGenConfig()
     E = 6
     seeds = torch.arange(E, device=dev)
-    out = wpl.corner_sample(seeds, 0, config)
+    out = corner_sample(seeds, 0, config)
     assert out.shape == (E, config.max_num_points, 2)
     assert torch.isfinite(out).all()
 
@@ -46,7 +46,7 @@ def test_in_box(dev):
     config = TrackGenConfig()
     E = 6
     seeds = torch.arange(E, device=dev)
-    out = wpl.corner_sample(seeds, 0, config)
+    out = corner_sample(seeds, 0, config)
     lo, hi, _, _ = _bounds(config)
     assert (out >= lo - 1e-6).all()
     assert (out <= hi + 1e-6).all()
@@ -57,8 +57,8 @@ def test_reproducible(dev):
     config = TrackGenConfig()
     E = 6
     seeds = torch.arange(E, device=dev)
-    a = wpl.corner_sample(seeds, 0, config)
-    b = wpl.corner_sample(seeds, 0, config)
+    a = corner_sample(seeds, 0, config)
+    b = corner_sample(seeds, 0, config)
     assert torch.equal(a, b)
 
 
@@ -67,7 +67,7 @@ def test_env_diversity(dev):
     config = TrackGenConfig()
     E = 4
     seeds = torch.arange(E, device=dev)
-    out = wpl.corner_sample(seeds, 0, config)
+    out = corner_sample(seeds, 0, config)
     # env 0 vs env 1 must not be identical.
     assert not torch.equal(out[0], out[1])
 
@@ -77,8 +77,8 @@ def test_attempt_diversity(dev):
     config = TrackGenConfig()
     E = 4
     seeds = torch.arange(E, device=dev)
-    a = wpl.corner_sample(seeds, 0, config)
-    b = wpl.corner_sample(seeds, 1, config)
+    a = corner_sample(seeds, 0, config)
+    b = corner_sample(seeds, 1, config)
     assert not torch.equal(a, b)
 
 
@@ -96,7 +96,7 @@ def test_dedup_distinct_cells(dev):
     _, _, num_cells, _ = _bounds(config)
     assert num_cells * num_cells >= P  # precondition for full dedup
 
-    _, cells = wpl._corner_sample_raw(seeds, 0, config)
+    _, cells = _corner_sample_raw(seeds, 0, config)
     assert cells.shape == (E, P)
     assert (cells >= 0).all() and (cells < num_cells * num_cells).all()
     for e in range(E):
@@ -115,7 +115,7 @@ def test_grid_mapping_matches_oracle(dev):
     seeds = torch.arange(E, device=dev)
     _, _, num_cells, cell_size = _bounds(config)
 
-    out, cells = wpl._corner_sample_raw(seeds, 0, config)
+    out, cells = _corner_sample_raw(seeds, 0, config)
     cx = (cells % num_cells).to(torch.float32)
     cy = (cells // num_cells).to(torch.float32)
     cell_coord = torch.stack([cx, cy], dim=-1)  # [E, P, 2]

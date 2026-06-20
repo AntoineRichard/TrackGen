@@ -18,8 +18,8 @@ import torch
 pytest.importorskip("warp")
 
 from tests._oracle import geometry  # noqa: E402
-from track_gen._src import warp_pipeline as wpl  # noqa: E402
 from tests._oracle.generators import BezierCenterlineGenerator  # noqa: E402
+from tests._warp_compare import gates  # noqa: E402
 from track_gen._src.types import TrackGenConfig  # noqa: E402
 
 DEVS = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
@@ -86,7 +86,7 @@ def test_gates_matches_oracle(dev):
     dense = gen._assemble_centerline(pruned)
 
     ref = _oracle_accept(gen, pruned, dense, config)
-    got = wpl.gates(corners, dense, count, config)
+    got = gates(corners, dense, count, config)
 
     assert got.dtype == torch.bool
     assert torch.equal(got.cpu(), ref.cpu())

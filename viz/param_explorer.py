@@ -161,7 +161,17 @@ def _stats(track) -> dict:
     hw = float(torch.linalg.norm(t.outer[:, 0] - t.center[:, 0], dim=-1).median())
     cnt = t.count.clamp_min(1)
     band = (2.0 * hw / (t.length / cnt.float()).clamp_min(1e-9)).round().to(torch.int32).clamp_min(1)
-    th = wpl.thickness(t.center, band, count=t.count.to(torch.int32))
+    # thickness: call the kernel in-place via wp.array (wpl.thickness was removed in Inc 7)
+    E, n_max, _ = t.center.shape
+    dev = str(t.center.device)
+    pf = wp.from_torch(t.center.reshape(E * n_max, 2).contiguous(), dtype=wp.vec2f)
+    band_wp = wp.from_torch(band.contiguous(), dtype=wp.int32)
+    cnt_wp = wp.from_torch(t.count.to(torch.int32).contiguous(), dtype=wp.int32)
+    out_wp = wp.zeros(E, dtype=wp.float32, device=dev)
+    wp.launch(wpl._thickness_k, dim=E, inputs=[pf, band_wp, n_max, cnt_wp, out_wp], device=dev)
+    if "cuda" in dev:
+        wp.synchronize()
+    th = wp.to_torch(out_wp)
     return {
         "yield": float(valid.float().mean()),
         "n_valid": n,

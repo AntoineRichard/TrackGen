@@ -11,8 +11,11 @@ import torch
 
 pytest.importorskip("warp")
 
-from track_gen._src import warp_pipeline as wpl  # noqa: E402
 from track_gen._src.types import TrackGenConfig  # noqa: E402
+from tests._warp_compare import (  # noqa: E402
+    corner_count_sample, corner_sample, ccw_sort, assemble,
+    arc_length_resample_warp, turning_number, gates,
+)
 
 DEVS = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
 
@@ -25,11 +28,11 @@ def test_prune_then_sort_eliminates_figure_eights(dev):
     seeds = torch.arange(E, dtype=torch.int32, device=dev)
 
     # Reproduce generate_centerline_warp's attempt-0 corner pipeline (prune-then-sort).
-    count = wpl.corner_count_sample(seeds, 0, cfg)
-    corners = wpl.ccw_sort(wpl.corner_sample(seeds, 0, cfg), count)
-    dense = wpl.assemble(corners, count, cfg)
-    rs30, _ = wpl.arc_length_resample_warp(dense, int(cfg.num_points_per_segment))
-    turn = wpl.turning_number(rs30)
+    count = corner_count_sample(seeds, 0, cfg)
+    corners = ccw_sort(corner_sample(seeds, 0, cfg), count)
+    dense = assemble(corners, count, cfg)
+    rs30, _ = arc_length_resample_warp(dense, int(cfg.num_points_per_segment))
+    turn = turning_number(rs30)
     turn_ok = (turn.abs() - 2.0 * math.pi).abs() <= float(cfg.turning_tol)
 
     fig8_rate = 1.0 - turn_ok.float().mean().item()
@@ -38,6 +41,6 @@ def test_prune_then_sort_eliminates_figure_eights(dev):
     # Per-attempt accept should clear the old single-attempt baseline (~0.51). Deterministic
     # (fixed seeds), so not flaky; this is a secondary sanity floor -- the figure-8 assertion
     # above is the primary check. Observed ~0.62 (cuda) / ~0.77 (cpu).
-    accept = wpl.gates(corners, dense, count, cfg)
+    accept = gates(corners, dense, count, cfg)
     acc = accept.float().mean().item()
     assert acc > 0.55, f"per-attempt accept {acc:.4f} not > 0.55 (old baseline ~0.51)"

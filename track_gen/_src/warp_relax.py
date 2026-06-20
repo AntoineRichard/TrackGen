@@ -116,43 +116,6 @@ def _apply_kernel(center: wp.array(dtype=wp.vec2f), disp: wp.array(dtype=wp.vec2
     center[t] = center[t] + disp[t]
 
 
-def warp_available(device) -> bool:
-    """True iff Warp is importable and the tensors live on CUDA."""
-    return "cuda" in str(device)
-
-
-def should_use(device, config) -> bool:
-    """Resolve config.relax_use_warp: None -> auto (Warp on CUDA), else the explicit bool."""
-    flag = getattr(config, "relax_use_warp", None)
-    if flag is None:
-        return warp_available(device)
-    return bool(flag) and warp_available(device)
-
-
-def separation_disp(center: torch.Tensor, band: torch.Tensor, target: float) -> torch.Tensor:
-    """Fused Warp separation. Numerically matches relaxation._separation_disp's result.
-
-    Args:
-        center: [E, N, 2] float32 CUDA tensor.
-        band:   [E] integer tensor (excluded-neighbour index half-window).
-        target: D * (1 + margin) separation distance.
-    Returns:
-        [E, N, 2] per-bead displacement.
-    """
-    global _INITED
-    if not _INITED:
-        wp.init()
-        _INITED = True
-    E, N, _ = center.shape
-    cf = wp.from_torch(center.reshape(E * N, 2).contiguous(), dtype=wp.vec2f)
-    bw = wp.from_torch(band.to(torch.int32).contiguous(), dtype=wp.int32)
-    out_t = torch.empty(E * N, 2, device=center.device, dtype=torch.float32)
-    ow = wp.from_torch(out_t, dtype=wp.vec2f)
-    wp.launch(_sep_kernel, dim=E * N, inputs=[cf, bw, N, float(target), ow], device=str(center.device))
-    torch.cuda.synchronize()  # order Warp's write before torch reads (graph capture removes this later)
-    return out_t.view(E, N, 2)
-
-
 def xpbd_solve_inplace(
     center_wp: "wp.array",
     relaxed_wp: "wp.array",
@@ -209,60 +172,3 @@ def xpbd_solve_inplace(
         wp.synchronize()
 
 
-def xpbd_solve(center0: torch.Tensor, band: torch.Tensor, L0: torch.Tensor, config,
-               count: torch.Tensor | None = None,
-               out_wp: "wp.array | None" = None,
-               db_wp: "wp.array | None" = None) -> torch.Tensor:
-    """Full fixed-iteration XPBD solve in fused Warp kernels (separation + spacing +
-    bending per sweep, double-buffered). Pure Warp loop — no torch ops, no per-iter
-    sync, O(E*N) memory (no chunking). Numerically matches the torch _relax_xpbd sweep.
-
-    In-place mode (``out_wp`` and ``db_wp`` provided):
-        Writes relaxed positions into ``out_wp`` (a pre-allocated [E*N] wp.vec2f).
-        Uses ``db_wp`` as the displacement double-buffer (pre-allocated [E*N] wp.vec2f).
-        Returns a torch tensor view of ``out_wp`` (zero-copy ``wp.to_torch``).
-
-    Standalone / legacy mode (``out_wp``/``db_wp`` omitted):
-        Allocates the working buffer via ``wp.empty`` (no torch alloc) and returns
-        a torch tensor view of the result.
-
-    Args:
-        center0: [E, N, 2] float32 centerline (may be NaN-padded when count is given).
-        band:    [E] integer excluded-neighbour index half-window.
-        L0:      [E] per-track rest segment length (perimeter/count[e]).
-        config:  TrackGenConfig (half_width, relax_margin, relax_iters, relax_*_relax).
-        count:   Optional [E] int32 tensor of real bead counts per track. When None,
-                 defaults to full((E,), N) — parity path, bit-identical to fixed-N mode.
-        out_wp:  Optional pre-allocated [E*N] wp.vec2f output buffer.
-        db_wp:   Optional pre-allocated [E*N] wp.vec2f displacement scratch.
-    Returns:
-        [E, N, 2] relaxed centerline torch tensor; padding slots remain NaN.
-    """
-    global _INITED
-    if not _INITED:
-        wp.init()
-        _INITED = True
-    E, N, _ = center0.shape
-    # Parity path: count=None → every env has exactly N real beads (fixed-N mode).
-    n_max = N
-    if count is None:
-        count_wp = wp.empty(E, dtype=wp.int32, device=str(center0.device))
-        from . import warp_pipeline as _wpl  # local import avoids cycle
-        wp.launch(_wpl._fill_i32_k, dim=E, inputs=[count_wp, N],
-                  device=str(center0.device))
-    else:
-        count_wp = wp.from_torch(count.to(torch.int32).contiguous(), dtype=wp.int32)
-    dev = str(center0.device)
-    flat = E * n_max
-
-    cw_in = wp.from_torch(center0.reshape(flat, 2).contiguous(), dtype=wp.vec2f)
-    bw = wp.from_torch(band.to(torch.int32).contiguous(), dtype=wp.int32)
-    lw = wp.from_torch(L0.to(torch.float32).contiguous(), dtype=wp.float32)
-
-    if out_wp is None:
-        out_wp = wp.empty(flat, dtype=wp.vec2f, device=dev)
-    if db_wp is None:
-        db_wp = wp.empty(flat, dtype=wp.vec2f, device=dev)
-
-    xpbd_solve_inplace(cw_in, out_wp, db_wp, bw, lw, count_wp, n_max, config)
-    return wp.to_torch(out_wp).view(E, n_max, 2)
