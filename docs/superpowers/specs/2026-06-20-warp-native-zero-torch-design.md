@@ -102,13 +102,28 @@ needed torch samples** — the oracle generators (`tests/_oracle/generators.py`)
 call sites; the values are identical (the torch samplers were already `wp.to_torch` of the warp
 ones). The plan verifies the warp samplers exist for every sampler the oracle/Fourier needs.
 
-### 5. CUDA-graph path → Warp-native capture
-With the glue gone, `generate_tracks_warp_graph` no longer needs `torch.cuda.CUDAGraph` +
-`wp.ScopedStream` stream-routing. It uses Warp's native capture (`wp.capture_begin(device)` /
-`wp.capture_end()` → a `wp.Graph`, replayed with `wp.capture_launch`). `CapturedTracks` holds a
-static `wp.array` seed buffer; `replay(new_seeds)` copies into it (`seed_buf.assign(...)`) and
-`wp.capture_launch`es; the captured output is a static `wp.array` `Track`. This removes the
-torch warmup/side-stream dance entirely. **CUDA-only; the hard, separately-phased piece.**
+### 5. One stateful `TrackGenerator` with automatic graph capture
+The eager and graph paths **unify** into the single stateful generator. The free
+`generate_tracks_warp` / `generate_tracks_warp_graph` functions and the `CapturedTracks` class
+are **removed** (folded into `TrackGenerator` as private helpers).
+
+`TrackGenerator(config, rng)` pre-allocates, once: the output `Track` `wp.array`s, all per-stage
+scratch, and a static `wp.array` **seed buffer**. `self._graph = None`.
+
+`generate()` (no batch-size arg — operates on the fixed configured batch `E = config.num_envs`):
+1. Refresh the seed buffer **in place** from `rng` (current per-env seeds).
+2. **CUDA + `self._graph is None`:** warm up (run the pipeline a few times on a side stream),
+   then capture it with Warp-native capture (`wp.ScopedCapture(device)` → `wp.Graph` stored on
+   `self._graph`), then launch it. (No `torch.cuda.CUDAGraph`, no stream-routing — the pipeline
+   is pure Warp now.)
+3. **CUDA + graph exists:** `wp.capture_launch(self._graph)` — pure replay, all buffers updated
+   in place.
+4. **Warp `cpu` device (no CUDA graphs):** run the kernels eagerly in place (no capture).
+5. Return the persistent `Track` (same instance every call; buffers rewritten in place).
+
+Re-running with the same `rng` seeds reproduces the same tracks (deterministic); reseeding the
+rng before `generate()` yields new tracks, written into the same buffers. **The graph rework is
+the hard, CUDA-only piece** (Phase B); Phase A delivers steps 1/4/5 (always-eager).
 
 ### 6. Dependencies (`pyproject.toml`)
 ```toml
@@ -133,18 +148,29 @@ switch to `wp.to_torch(rng.sample_*_warp(...))` since the torch samplers are gon
 by `__init__` or the hot path, so it never pulls torch into the runtime import graph.
 
 ### 9. Facade / benchmarks / viz
-- `track_generator.py`: `_resolve_ids`/`_seeds_for` produce `wp.array` (or accept `wp.array`);
-  `generate` returns the `wp.array`-`Track`.
-- `benchmarks/`, `viz/`: seeds via `wp.array`/`wp.arange`; outputs read with `wp.to_numpy` /
-  `wp.to_torch` for metrics/plotting. Import lines + boundary conversions only.
+- `track_generator.py` **becomes the whole public entry point** (§5): it owns the buffers,
+  seed buffer, and (Phase B) the graph; `generate()` updates in place and returns the persistent
+  `wp.array`-`Track`. The pipeline kernels (formerly `warp_pipeline.generate_tracks_warp`) move
+  to private stage helpers it drives. Public `__all__` = `TrackGenerator`, `TrackGenConfig`,
+  `Track`, `PerEnvSeededRNG`, `__version__` (the two `generate_tracks_warp*` names are gone).
+- `benchmarks/`, `viz/` are **consumers** (outside the runtime): they construct a
+  `TrackGenerator`, call `generate()`, and convert the `wp.array` outputs on **their** side
+  (`wp.to_torch`/`wp.to_numpy`) for metrics/plotting. That readback is consumer-side and allowed
+  (it is not in `track_gen/`).
 
 ## Phasing
 
-- **Phase A — eager path (CPU-testable), the bulk:** Track→`wp.array`, allocation layer,
-  real-op replacements, RNG de-torch, facade, `pyproject`, oracle/fourier RNG-call updates,
-  and the ~40 test-file boundary conversions. Gate: `pytest -q` green on the Warp `cpu` device.
-- **Phase B — graph path (CUDA-only):** port `generate_tracks_warp_graph` + `CapturedTracks`
-  to Warp-native capture. Gate: the graph tests pass on `cuda` (`torch.cuda.is_available()`).
+- **Phase A — eager in-place path (CPU-testable), the bulk:** `Track`→`wp.array`; lift all
+  buffers (output + scratch + seed) to one-time allocation owned by `TrackGenerator`;
+  `generate()` runs the pipeline eagerly **in place** and returns the persistent `Track`;
+  remove the free `generate_tracks_warp`/`_graph` functions + `CapturedTracks` and slim `__all__`;
+  real-op replacements; RNG de-torch + numpy-RNG removal; `pyproject`; oracle/Fourier RNG-call
+  updates; ~40 test-file boundary conversions; stable-pointer + torch-free-import + no-readback
+  guards. Gate: `pytest -q` green on the Warp `cpu` device.
+- **Phase B — automatic graph capture (CUDA-only):** add the capture-on-first-call / replay
+  branch to `generate()` (steps 2–3 of §5) using Warp-native `wp.ScopedCapture`. Gate: graph
+  capture+replay equals the eager result on `cuda` (guarded by `torch.cuda.is_available()`), and
+  a second `generate()` is a pure replay (no re-capture, buffers in place).
 
 Each phase is its own implementation plan.
 
@@ -182,6 +208,10 @@ Each phase is its own implementation plan.
   by a stateful object; `generate()`/`replay()` return the same `Track`. Zero per-call alloc.
 - numpy → **init-only host glue, owns no real op**; numpy-RNG path removed; **no `wp.to_numpy`
   / readback in `track_gen/`** (the boundary serves `wp.array`; consumers convert).
+- API → one stateful `TrackGenerator` that **auto-captures** a Warp graph on the first CUDA
+  `generate()` and replays it thereafter (eager in place on `cpu`); free
+  `generate_tracks_warp`/`_graph` + `CapturedTracks` removed; `__all__` =
+  `TrackGenerator`, `TrackGenConfig`, `Track`, `PerEnvSeededRNG`, `__version__`.
 - Fourier → left in `track_gen/_experimental/` (torch, dev-only-importable).
 - Test validation → `wp.to_torch` at the boundary; oracle stays torch.
 - torch → `dev` dependency; scipy → `dev`; core = `numpy`, `warp-lang`.
