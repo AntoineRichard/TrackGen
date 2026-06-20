@@ -24,8 +24,8 @@ def circle_cs_config(radius, n_max=128, device="cpu", **overrides):
     """A constant_spacing TrackGenConfig tuned so a circle of ``radius`` resamples to
     EXACTLY ``n_max`` real points (count == n_max, no NaN padding).
 
-    The legacy "fixed" output mode (constant point COUNT) was dropped; constant_spacing
-    is the only mode. To preserve the intent of the circle stage-tests -- which want a
+    constant_spacing is the only output mode (constant point COUNT is unsupported).
+    To preserve the intent of the circle stage-tests -- which want a
     fully populated [E, n_max, 2] resample on a known circle -- we pick the spacing that
     divides the circumference into exactly ``n_max`` arc-uniform segments. The resample
     then emits targets i*spacing for i in [0, n_max) (all < circumference) and drops the

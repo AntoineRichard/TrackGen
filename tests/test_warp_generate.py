@@ -1,8 +1,8 @@
 """Tests for the single-pass pure-Warp centerline generator.
 
 Covers ``corner_count_sample`` (per-(env, attempt) Warp-RNG corner count) and
-``generate_centerline_warp`` (single-pass generation with Fix B polygon fallback,
-routed through the ``tests/_warp_compare`` helpers). Reproducibility is asserted
+``generate_centerline_warp`` (single-pass generation with a polygon fallback for
+self-crossers, routed through the ``tests/_warp_compare`` helpers). Reproducibility is asserted
 WITHIN a device only (Warp RNG may legitimately differ cpu vs cuda).
 """
 from __future__ import annotations
@@ -74,13 +74,13 @@ def test_generate_centerline_warp(dev):
     assert centerline.shape == (E, N, 2)
     assert valid.shape == (E,)
 
-    # Single-pass + Fix B (no regen, no generation gating): every env is gen-valid and gets a
-    # real centerline (final validity is decided post-relaxation, not here).
+    # Single-pass + polygon fallback (no regen, no generation gating): every env is gen-valid
+    # and gets a real centerline (final validity is decided post-relaxation, not here).
     assert valid.all()
     assert torch.isfinite(centerline).all()
 
-    # Fix B (self-crossing track -> corner-polygon fallback) + the collinear-robust detector:
-    # the generated centerline is ~always simple.
+    # The polygon fallback (self-crossing track -> corner-polygon) + the collinear-robust
+    # detector: the generated centerline is ~always simple.
     cf = (self_intersections(centerline) == 0).float().mean().item()
     assert cf >= 0.99, f"crossing-free {cf} < 0.99 on {dev}"
 

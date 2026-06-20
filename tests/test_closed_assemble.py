@@ -1,13 +1,12 @@
-"""F1 (proper closed assemble) + F2 (adaptive handle clamp).
+"""Closed Bezier assemble + adaptive handle clamp.
 
-F1: the assemble must close the loop with a REAL cubic Bezier over all `count` corners
-(wrap mod count) instead of dropping the first & last corner and closing with a straight
-chord. Concretely, every one of the `count` segments -- including the closing
+The assemble closes the loop with a REAL cubic Bezier over all `count` corners
+(wrap mod count). Every one of the `count` segments -- including the closing
 (count-1 -> 0) -- is a real Bezier, so the dense buffer has exactly count*npseg finite
-samples (today's drop-2/straight-close keeps only (count-3)*npseg).
+samples.
 
-Oracle<->Warp parity is guarded by tests/test_warp_assemble.py (unchanged): both paths get
-the same closed behaviour, so they must still match bit-for-bit.
+Oracle<->Warp parity is guarded by tests/test_warp_assemble.py: both paths get the same
+closed behaviour, so they must still match bit-for-bit.
 """
 import math
 
@@ -82,23 +81,23 @@ def _attempt0_centerline(cfg, dev):
 
 @pytest.mark.parametrize("dev", DEVS)
 def test_adaptive_handle_clamp_drives_out_crossings(dev):
-    """F2: a TIGHT adaptive per-corner handle clamp removes most residual Bezier-overshoot
-    self-crossings -- single-attempt crossing-free ~96.4% (F1-alone) -> ~99.2% at frac=0.10.
-    The production default is now frac=0.4 (== rad, for curvier tracks), so assemble ALONE is
-    not ~always simple; the Fix B whole-track polygon fallback in generate_centerline_warp is
+    """A TIGHT adaptive per-corner handle clamp removes most residual Bezier-overshoot
+    self-crossings -- single-attempt crossing-free ~96.4% (clamp alone) -> ~99.2% at frac=0.10.
+    The production default is frac=0.4 (== rad, for curvier tracks), so assemble ALONE is
+    not ~always simple; the whole-track polygon fallback in generate_centerline_warp is
     what guarantees the FINAL centerline is simple. Pin both: the clamp MECHANISM at a tight
-    frac (independent of the production default) and the Fix B end-to-end guarantee."""
+    frac (independent of the production default) and the polygon-fallback end-to-end guarantee."""
     cfg = _fatband_cfg(2048, dev)
     cfg.handle_clamp_frac = 0.10  # tight clamp: exercise the overshoot-removal mechanism
     rs = _attempt0_centerline(cfg, dev)
     crossing_free = (self_intersections(rs) == 0).float().mean().item()
     assert crossing_free >= 0.985, (
         f"crossing-free rate {crossing_free:.4f} < 0.985 -- a tight handle clamp "
-        f"should remove most Bezier overshoot (F1-alone is ~0.964)")
+        f"should remove most Bezier overshoot (no clamp is ~0.964)")
 
-    # Fix B is the production guarantee: at the default clamp the assembled centerline still
-    # self-crosses sometimes, but the whole-track polygon fallback drives the FINAL centerline
-    # to ~always simple.
+    # The polygon fallback is the production guarantee: at the default clamp the assembled
+    # centerline still self-crosses sometimes, but the whole-track polygon fallback drives the
+    # FINAL centerline to ~always simple.
     fb_cfg = _fatband_cfg(2048, dev)
     _, scratch_fb = wpl._inflate_warp_alloc(fb_cfg)
     seeds_t = torch.arange(fb_cfg.num_envs, dtype=torch.int32, device=dev)
@@ -113,7 +112,7 @@ def test_adaptive_handle_clamp_drives_out_crossings(dev):
                                                               int(fb_cfg.num_points), 2)
     final_simple = (self_intersections(centerline) == 0).float().mean().item()
     assert final_simple >= 0.999, (
-        f"Fix B polygon fallback should make the final centerline ~always simple, "
+        f"the polygon fallback should make the final centerline ~always simple, "
         f"got {final_simple:.4f}")
 
 

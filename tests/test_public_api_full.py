@@ -9,4 +9,4 @@ def test_full_public_api_is_reexported():
 def test_generate_tracks_warp_is_removed():
     import track_gen
     assert not hasattr(track_gen, "generate_tracks_warp"), \
-        "generate_tracks_warp should no longer be part of the public API"
+        "generate_tracks_warp must not be part of the public API"

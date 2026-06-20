@@ -2,7 +2,7 @@
 """Interactive Gradio explorer for track-generation parameters.
 
 A thin Gradio shell over a pure core (`build_config` + `render_grid`) that drives the real
-pure-Warp pipeline (`track_gen.warp_pipeline.generate_tracks_warp`) and renders a grid of
+pure-Warp pipeline (`TrackGenerator.generate`) and renders a grid of
 tracks + yield/quality stats. Launch:  `.venv/bin/python -m viz.param_explorer`
 (needs the `ui` extra: `pip install -e ".[ui]"`).
 """

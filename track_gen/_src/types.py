@@ -65,7 +65,7 @@ class TrackGenConfig:
     relax_enable: bool = True
     relax_solver: str = "xpbd"            # {"xpbd","energy","tp_sobolev"}
     relax_chunk_size: int | None = None   # env-chunk the dense [E,N,N] term
-    relax_use_warp: bool | None = None    # legacy/unused on hot path (consumer warp_relax.should_use was deleted)
+    relax_use_warp: bool | None = None    # ignored by the warp runtime; read only by the torch oracle (tests)
     relax_tol: float = 0.02               # target = (1 - tol) * half_width
     relax_band: int | None = None         # None => round(D / L0) per track
     relax_iters: int = 150
@@ -118,9 +118,9 @@ class TrackGenConfig:
     validity_border_check: bool = False
 
     def __post_init__(self):
-        # Only constant_spacing is supported: the legacy "fixed" (constant point COUNT) mode
-        # over-resolved the centerline (jagged XPBD -> folded roads) and was dropped in favour
-        # of constant link SIZE (~0.6*half_width), which relaxes to smoother, higher-yield tracks.
+        # Only constant_spacing is supported: a constant link SIZE (~0.6*half_width) relaxes
+        # to smoother, higher-yield tracks than a constant point COUNT, which over-resolves
+        # the centerline (jagged XPBD -> folded roads).
         if self.output_mode != "constant_spacing":
             raise ValueError(
                 f"output_mode must be 'constant_spacing' (the only supported mode), "

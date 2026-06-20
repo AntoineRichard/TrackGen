@@ -18,8 +18,8 @@ def _fig8_cl(s=2.0, m=400, e=1):
 
 
 def _cfg(**ov):
-    # output_mode="fixed" was dropped; constant_spacing is the only mode. Tests set
-    # spacing/N_max explicitly for determinism (otherwise spacing auto-couples to half_width).
+    # constant_spacing is the only output mode. Tests set spacing/N_max explicitly for
+    # determinism (otherwise spacing auto-couples to half_width).
     base = dict(device="cpu", num_envs=1, num_points=256,
                 half_width=0.4, turning_tol=0.2, w_floor=1e-3, relax_enable=False)
     base.update(ov)

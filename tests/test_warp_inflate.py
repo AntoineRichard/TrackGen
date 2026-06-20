@@ -198,6 +198,6 @@ def test_inflate_warp_count_none_rejects_wrong_N():
 
 
 def test_constant_spacing_is_the_only_output_mode():
-    # The legacy "fixed" (constant point COUNT) output mode was dropped.
+    # Any output_mode other than constant_spacing is rejected at config time.
     with pytest.raises(ValueError):
         TrackGenConfig(half_width=0.1, num_points=256, output_mode="fixed")

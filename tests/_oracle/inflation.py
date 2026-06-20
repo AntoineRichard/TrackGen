@@ -26,7 +26,7 @@ def _resample_stage(centerline, config) -> _ResampleResult:
     """Masked constant-spacing arc-length resample of the centerline.
 
     Spacing = config.spacing (~0.6*half_width), padded to config.N_max with NaN; the per-env
-    real-point count is returned. (The legacy fixed-count mode was dropped.)
+    real-point count is returned.
     """
     points = centerline.points  # [E, M_max, 2]
     valid_mask = _valid_mask_from_points(points)  # [E, M_max]

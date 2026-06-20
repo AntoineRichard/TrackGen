@@ -665,8 +665,8 @@ def _ccw_sort_k(
 ):
     # One thread per env e. Orders this env's FIRST m = count[e] corners ascending by
     # the centroid-relative angle key = atan2(dx, dy) (X FIRST), about the centroid of
-    # those m corners; rows [m, P) are written NaN (the pruned tail). m == P reproduces
-    # the legacy all-P sort with no NaN tail. The insertion sort reads only slots behind
+    # those m corners; rows [m, P) are written NaN (the pruned tail). m == P sorts all P
+    # slots with no NaN tail. The insertion sort reads only slots behind
     # its write frontier, so the uninitialised keys/out scratch is never consumed.
     e = wp.tid()
     base = e * P
@@ -746,7 +746,7 @@ def _vertex_tangents_k(
     u_in = _safe_normalize2(c_i - c_prev)
     blended = p * u_out + (1.0 - p) * u_in
     tangents[t] = _safe_normalize2(blended)
-    # Per-corner scale = shorter incident edge; the F2 handle clamp caps handles by it.
+    # Per-corner scale = shorter incident edge; the adaptive handle clamp caps handles by it.
     scale[t] = wp.min(wp.length(c_next - c_i), wp.length(c_i - c_prev))
 
 @wp.kernel
@@ -907,7 +907,7 @@ def _fill_i32_k(arr: wp.array(dtype=wp.int32), v: int):
 def _select_vec2_k(rs: wp.array(dtype=wp.vec2f), rs_poly: wp.array(dtype=wp.vec2f),
                    crossers: wp.array(dtype=wp.int32), N: int, out: wp.array(dtype=wp.vec2f)):
     # One thread per point t (dim=E*N). e = env index.
-    # Selects rs_poly[t] if crossers[e] > 0, else rs[t] (Fix B polygon fallback).
+    # Selects rs_poly[t] if crossers[e] > 0, else rs[t] (polygon fallback for self-crossers).
     t = wp.tid()
     e = t // N
     if crossers[e] > 0:
@@ -1115,8 +1115,8 @@ def generate_centerline_warp(seeds_wp: wp.array, config,
                               scratch: "_Scratch") -> None:
     """Single-pass centerline generation — in-place owned path only.
 
-    Pure-Warp: sample corners -> sort ccw -> assemble Bezier -> arc-resample -> Fix B
-    polygon fallback (if self-crossing) -> write chosen centerline into out_centerline.
+    Pure-Warp: sample corners -> sort ccw -> assemble Bezier -> arc-resample -> polygon
+    fallback (if self-crossing) -> write chosen centerline into out_centerline.
     Marks all envs valid (generation gate is always True; inflate does the real gate).
 
     Args:
@@ -1490,7 +1490,7 @@ class _Scratch:
                    (kappa is computed by the kernel but unused by the pipeline).
     w:             [E*N_max] float32 per-point half-width buffer for validity_inplace.
 
-    Resample / relax fields (added in M2 Inc 5):
+    Resample / relax fields:
     cs_center:     [E*N_max] vec2f — constant-spacing resampled centerline output.
     cs_seg:        [E*N_max] float32 — scan scratch shared by resample_constant_spacing
                    and resample_uniform (sequential stages, safe to alias).
@@ -1504,7 +1504,7 @@ class _Scratch:
     L0:            [E] float32 — _band_l0_k output (rest segment length per env).
     xpbd_db:       [E*N_max] vec2f — xpbd_solve double-buffer (displacement scratch).
 
-    Generation fields (added in M2 Inc 6 — owned generate path):
+    Generation fields (owned generate path):
     gen_count:     [E] int32 — per-env corner count from corner_count_sample_inplace.
     gen_corners:   [E*P] vec2f — raw corners from corner_sample_inplace (P=max_num_points).
     gen_ordered:   [E*P] vec2f — ccw-sorted corners from ccw_sort_inplace.
@@ -1513,9 +1513,10 @@ class _Scratch:
     gen_tan:       [E*P] vec2f — vertex tangents scratch for assemble_inplace.
     gen_scale:     [E*P] float32 — vertex scale scratch for assemble_inplace.
     gen_dense:     [E*P*npseg] vec2f — Bezier assembled dense centerline.
-    gen_poly:      [E*P*npseg] vec2f — polygon assembled dense centerline (Fix B).
+    gen_poly:      [E*P*npseg] vec2f — polygon assembled dense centerline (the
+                   self-crossing fallback, handle_clamp_frac=0).
     gen_rs:        [E*num_points] vec2f — Bezier arc-resampled N-point centerline.
-    gen_crossers:  [E] int32 — self-intersection counts (Fix B select input).
+    gen_crossers:  [E] int32 — self-intersection counts (fallback select input).
     gen_centerline:[E*num_points] vec2f — final chosen centerline (output of _select_vec2_k;
                    fed directly into resample_constant_spacing on the owned pipeline path).
     gen_valid:     [E] int32 — generation validity (always 1; passed to inflate_warp).
@@ -1531,7 +1532,7 @@ class _Scratch:
         "area_a", "area_b", "kappa", "w",
         "cs_center", "cs_seg", "cs_s", "count",
         "relaxed", "band", "L0", "xpbd_db",
-        # Generation intermediates (M2 Inc 6)
+        # Generation intermediates
         "gen_count", "gen_corners", "gen_ordered", "gen_used", "gen_keys",
         "gen_tan", "gen_scale", "gen_dense", "gen_poly",
         "gen_rs", "gen_crossers", "gen_centerline", "gen_valid",
@@ -1552,7 +1553,7 @@ class _Scratch:
         band: "wp.array | None" = None,
         L0: "wp.array | None" = None,
         xpbd_db: "wp.array | None" = None,
-        # Generation intermediates (M2 Inc 6)
+        # Generation intermediates
         gen_count: "wp.array | None" = None,
         gen_corners: "wp.array | None" = None,
         gen_ordered: "wp.array | None" = None,
@@ -1584,7 +1585,7 @@ class _Scratch:
         self.band = band
         self.L0 = L0
         self.xpbd_db = xpbd_db
-        # Generation intermediates (M2 Inc 6)
+        # Generation intermediates
         self.gen_count = gen_count
         self.gen_corners = gen_corners
         self.gen_ordered = gen_ordered
@@ -1649,7 +1650,7 @@ def _inflate_warp_alloc(config):
         area_b=wp.zeros(E, dtype=wp.float32, device=dev),
         kappa=wp.empty(flat, dtype=wp.float32, device=dev),
         w=wp.empty(flat, dtype=wp.float32, device=dev),
-        # M2 Inc 5: resample + relax intermediates
+        # resample + relax intermediates
         cs_center=wp.empty(flat, dtype=wp.vec2f, device=dev),
         cs_seg=wp.empty(flat, dtype=wp.float32, device=dev),
         cs_s=wp.empty(E * (n_max + 1), dtype=wp.float32, device=dev),
@@ -1658,7 +1659,7 @@ def _inflate_warp_alloc(config):
         band=wp.empty(E, dtype=wp.int32, device=dev),
         L0=wp.empty(E, dtype=wp.float32, device=dev),
         xpbd_db=wp.empty(flat, dtype=wp.vec2f, device=dev),
-        # M2 Inc 6: generation intermediates (owned generate path)
+        # generation intermediates (owned generate path)
         gen_count=wp.empty(E, dtype=wp.int32, device=dev),
         gen_corners=wp.empty(E * P, dtype=wp.vec2f, device=dev),
         gen_ordered=wp.empty(E * P, dtype=wp.vec2f, device=dev),

@@ -269,7 +269,8 @@ def _relax_tp(center0, band, config):
 # Dispatcher
 # ---------------------------------------------------------------------------
 
-_BACKENDS = {"xpbd": _relax_xpbd}  # energy/tp_sobolev added in later tasks
+# Relaxation-backend registry (oracle): name -> solver fn.
+_BACKENDS = {"xpbd": _relax_xpbd}
 _BACKENDS["energy"] = _relax_energy
 _BACKENDS["tp_sobolev"] = _relax_tp
 

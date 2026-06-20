@@ -179,7 +179,7 @@ class BezierCenterlineGenerator(CenterlineGenerator):
         # inner handles at rad*chord along the tangents. Segments with c_i NaN (i >= count)
         # stay NaN. Layout [E, P, npseg, 2] -> [E, P*npseg, 2] matches the Warp _assemble_k.
         chord = torch.linalg.norm(c_next - c_i, dim=-1, keepdim=True)       # [E, P, 1]
-        # F2 adaptive clamp: cap each corner's handle at handle_clamp_frac * (its shorter
+        # Adaptive handle clamp: cap each corner's handle at handle_clamp_frac * (its shorter
         # incident edge), so a long handle can't overshoot past a nearby corner and self-cross.
         edge_in = torch.linalg.norm(c_i - c_prev, dim=-1, keepdim=True)
         scale = torch.minimum(chord, edge_in)                              # [E, P, 1] shorter edge

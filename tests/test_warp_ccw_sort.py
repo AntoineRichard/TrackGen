@@ -95,7 +95,7 @@ def test_ccw_sort_count_matches_oracle(dev):
 
 @pytest.mark.parametrize("dev", DEVS)
 def test_ccw_sort_no_count_unchanged(dev):
-    # count=None keeps the legacy all-P behaviour byte-for-byte.
+    # count=None sorts all P slots (no NaN-tail pruning) byte-for-byte.
     pts = _make_batch(dev)
     assert torch.equal(ccw_sort(pts).cpu(), ccw_sort(pts, count=None).cpu())
     assert torch.equal(ccw_sort(pts).cpu(), geometry.ccw_sort(pts).cpu())

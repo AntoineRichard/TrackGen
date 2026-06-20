@@ -25,7 +25,7 @@ def test_build_config_maps_and_clamps():
     assert cfg.num_envs == 16  # batch_size=16 from _params default
     assert cfg.output_mode == "constant_spacing"  # the only supported mode
     assert abs(cfg.half_width - 0.5) < 1e-9 and abs(cfg.scale - 10.0) < 1e-9
-    assert abs(cfg.handle_clamp_frac - 0.10) < 1e-9  # the F2 overshoot-clamp knob round-trips
+    assert abs(cfg.handle_clamp_frac - 0.10) < 1e-9  # the overshoot-clamp knob round-trips
     cfg2 = px.build_config(_params(spacing=0.3, n_max=384))
     assert cfg2.output_mode == "constant_spacing" and cfg2.N_max == 384
     assert abs(cfg2.spacing - 0.3) < 1e-9

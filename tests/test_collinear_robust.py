@@ -36,7 +36,7 @@ def test_collinear_simple_loop_not_flagged():
 
 @pytest.mark.parametrize("dev", ["cpu"] + (["cuda"] if torch.cuda.is_available() else []))
 def test_polygonal_fallback_not_flagged(dev):
-    """The corner-polygon fallback (Fix B) is provably simple; neither detector may flag it."""
+    """The corner-polygon fallback is provably simple; neither detector may flag it."""
     pytest.importorskip("warp")
     import dataclasses
     import warp as wp

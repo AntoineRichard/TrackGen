@@ -17,7 +17,8 @@ def test_public_names_are_accessible():
 
 
 def test_oracle_internals_are_not_public():
-    # The torch oracle moved to tests/_oracle and is no longer part of the package.
+    # The torch oracle lives in tests/_oracle, not the shipped package; none of these
+    # internal names should be importable from track_gen.
     for gone in ("geometry", "relaxation", "inflation", "generators", "relax",
                  "safe_normalize", "polygon_area", "Centerline", "warp_pipeline",
                  "generate_tracks_warp"):
