@@ -1,12 +1,10 @@
 """Fused NVIDIA Warp XPBD relaxation kernels.
 
-``xpbd_solve`` runs the full fixed-iteration XPBD solve (separation + spacing +
+``xpbd_solve_inplace`` runs the full fixed-iteration XPBD solve (separation + spacing +
 bending, double-buffered) as fused Warp kernels on BOTH the Warp ``cpu`` device and
-``cuda`` — this is the pipeline's relaxation stage.
-
-``separation_disp`` is a standalone fused separation kernel: each bead loops its
-neighbours and accumulates the push with NO ``[E, N, N, 2]`` materialization,
-~2-3 orders of magnitude faster on CUDA while staying numerically equivalent.
+``cuda`` — this is the pipeline's relaxation stage. It is strictly in-place and
+zero-alloc per call: all buffers (input centerline, relaxed output, displacement
+double-buffer, band, L0, count) are pre-allocated by the caller.
 """
 from __future__ import annotations
 
@@ -150,7 +148,7 @@ def xpbd_solve_inplace(
     sr = float(config.relax_sep_relax)
     pr = float(config.relax_spc_relax)
     br = float(config.relax_bend_relax)
-    dev = center_wp.device
+    dev = str(center_wp.device)
 
     # Copy input into the working buffer (relaxed_wp starts as a copy of center_wp).
     wp.copy(relaxed_wp, center_wp)

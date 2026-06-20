@@ -116,3 +116,29 @@ def test_generate_reuses_output_buffers():
     # In-place write proof: generate() must have overwritten the -999 sentinel.
     assert not torch.all(view == -999.0), \
         "generate() must overwrite the shared buffer in place (sentinel not cleared)"
+
+
+def test_relax_solver_energy_raises():
+    """TrackGenerator must reject relax_solver != 'xpbd' at construction time."""
+    cfg = TrackGenConfig(relax_solver="energy", num_envs=4)
+    rng = _make_rng(4)
+    with pytest.raises(AssertionError):
+        TrackGenerator(cfg, rng)
+
+
+def test_smooth_finish_raises():
+    """TrackGenerator must reject smooth_finish=True at construction time."""
+    cfg = TrackGenConfig(smooth_finish=True, num_envs=4)
+    rng = _make_rng(4)
+    with pytest.raises(AssertionError):
+        TrackGenerator(cfg, rng)
+
+
+def test_generate_wrong_batch_raises():
+    """generate() must raise ValueError when num_or_ids count != num_envs."""
+    E = 4
+    cfg = TrackGenConfig(num_envs=E, device="cpu")
+    rng = _make_rng(E)
+    gen = TrackGenerator(cfg, rng)
+    with pytest.raises(ValueError):
+        gen.generate(E + 1)

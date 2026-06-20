@@ -1,9 +1,9 @@
-"""Tests for the static-regen pure-Warp centerline generator (Task 12).
+"""Tests for the single-pass pure-Warp centerline generator.
 
 Covers ``corner_count_sample`` (per-(env, attempt) Warp-RNG corner count) and
-``generate_centerline_warp`` (fixed-iteration masked accept-first-valid generation
-fused with the final arc-length resample to ``num_points``). Reproducibility is
-asserted WITHIN a device only (Warp RNG may legitimately differ cpu vs cuda).
+``generate_centerline_warp`` (single-pass generation with Fix B polygon fallback,
+routed through the ``tests/_warp_compare`` helpers). Reproducibility is asserted
+WITHIN a device only (Warp RNG may legitimately differ cpu vs cuda).
 """
 from __future__ import annotations
 

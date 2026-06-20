@@ -1,7 +1,7 @@
 """E=8192 end-to-end pipeline study: what lifts relaxed-valid yield, and at what cost?
 
-Sweeps the pure-Warp pipeline (generate_tracks_warp) at E=8192 over four levers, all in
-the physically-anchored 1 m-track / ~20 m-box regime (half_width=0.5, scale=10 -> the
+Sweeps the pure-Warp pipeline at E=8192 over four levers, all in the
+physically-anchored 1 m-track / ~20 m-box regime (half_width=0.5, scale=10 -> the
 ~0.68-yield proportions):
 
   * chain links   (num_points)          -- relax/validation resolution
@@ -55,13 +55,15 @@ def bench(links=256, iters=150, regen=10, sr=1.0, pr=1.0, br=1.5, margin=0.15, s
         if DEVICE == "cuda":
             torch.cuda.synchronize()
 
-    TrackGenerator(cfg, rng).generate(E)  # warmup
+    # Construct once and warmup; only generate() is timed (mirrors benchmark_pipeline.py).
+    gen = TrackGenerator(cfg, rng)
+    gen.generate(E)  # warmup (kernel compile / module load / graph capture on CUDA)
     sync()
     if DEVICE == "cuda":
         torch.cuda.reset_peak_memory_stats()
     t0 = time.time()
     for _ in range(REPS):
-        track = TrackGenerator(cfg, rng).generate(E)
+        track = gen.generate(E)
     sync()
     sec = (time.time() - t0) / REPS
     peak = (torch.cuda.max_memory_allocated() / 1e6) if DEVICE == "cuda" else float("nan")

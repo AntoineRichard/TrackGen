@@ -127,13 +127,6 @@ def _offset_assign_k(
         inner[t] = at
 
 @wp.kernel
-def _double_k(x: wp.array(dtype=wp.float32), out: wp.array(dtype=wp.float32)):
-    # Smoke-test kernel: out[i] = 2*x[i]. Exercises the Warp cpu/cuda launch path
-    # (used only by the scaffolding smoke test, _smoke_double).
-    i = wp.tid()
-    out[i] = 2.0 * x[i]
-
-@wp.kernel
 def _frame_k(c: wp.array(dtype=wp.vec2f), n_max: int,
              T: wp.array(dtype=wp.vec2f), Nrm: wp.array(dtype=wp.vec2f),
              kappa: wp.array(dtype=wp.float32),
@@ -1363,15 +1356,17 @@ def resample_uniform(
     Two Warp kernels: scan (one thread per env, builds seg+cumulative s from points)
     then lookup (one thread per output point, linear-scan searchsorted + lerp).
 
-    All arrays are pre-allocated wp.array buffers; zero external allocations.
+    The owned pipeline path (``seg_wp`` and ``s_wp`` pre-allocated) is zero-alloc and
+    safe inside a CUDA graph capture region. When ``seg_wp`` or ``s_wp`` is ``None``
+    those arrays are allocated internally (not zero-alloc).
 
     Args:
         center_wp: [E*n_max] wp.vec2f flat input centerline.
         out_wp:    [E*n_max] wp.vec2f flat output buffer (written in-place).
         n:         output point count per env (== n_max, the buffer stride).
         count_wp:  [E] wp.int32 real point count per env.
-        seg_wp:    [E*n_max] wp.float32 scan scratch (allocated here if None).
-        s_wp:      [E*(n_max+1)] wp.float32 scan scratch (allocated here if None).
+        seg_wp:    [E*n_max] wp.float32 scan scratch (allocated internally if None).
+        s_wp:      [E*(n_max+1)] wp.float32 scan scratch (allocated internally if None).
         device:    Warp device string (e.g. "cpu", "cuda:0").
 
     PARITY INVARIANT: count=full((E,), N) reproduces the former fixed-N behaviour
@@ -1401,26 +1396,29 @@ def resample_constant_spacing(
     count_wp: "wp.array | None" = None,
     seg_wp: "wp.array | None" = None,
     s_wp: "wp.array | None" = None,
-):
-    """Arc-length resample each fully-real closed loop to constant `spacing`, padded to
-    n_max with NaN.  Matches geometry.arc_length_resample(points, spacing=spacing,
-    n_max=n_max). Pure Warp (cpu+cuda).
+) -> "tuple[wp.array, wp.array] | None":
+    """Arc-length resample each fully-real closed loop to constant ``spacing``, padded to
+    ``n_max`` with NaN.  Matches ``geometry.arc_length_resample(points, spacing=spacing,
+    n_max=n_max)``. Pure Warp (cpu+cuda).
 
-    center must be a wp.array [E*N] vec2f flat.
+    ``center`` must be a ``wp.array [E*N] vec2f`` flat.
 
-    In-place mode (all pre-allocated buffers provided):
+    In-place mode (all four pre-allocated buffers provided):
         ``out_wp``   — [E*n_max] wp.vec2f written in-place (center output).
         ``count_wp`` — [E] wp.int32 written in-place (real point count per env).
         ``seg_wp``   — [E*N] wp.float32 scan scratch.
         ``s_wp``     — [E*(N+1)] wp.float32 scan scratch.
-        Returns ``None`` (caller reads out_wp / count_wp directly).
+        Returns ``None`` (caller reads out_wp / count_wp directly). This path is
+        zero-alloc and safe inside a CUDA graph capture region.
 
-    Allocating-mode (any buffer omitted -> allocated here):
-        Returns ``(out_wp, count_wp)`` both wp.arrays.
+    Allocating-mode (any buffer omitted -> allocated internally):
+        Returns ``(out_wp, count_wp)`` — both freshly-allocated wp.arrays. This
+        branch allocates; do not use inside a CUDA graph capture region.
 
-    Note: ``count[e]`` is silently capped at ``n_max``. The caller MUST choose
-    ``N_max >= max(perimeter) / spacing + 1`` across all envs, otherwise a track whose
-    true count exceeds ``n_max`` will be truncated."""
+    ``count[e]`` is capped at ``n_max`` (required for fixed-buffer sizing). If the
+    true point count hits N_max, a ``RuntimeWarning`` is emitted on the non-capture
+    path (the cap is silent during CUDA graph replay). The caller MUST choose
+    ``N_max >= max(perimeter) / spacing + 1`` across all envs to avoid truncation."""
     _init()
     if count_wp is not None:
         E = count_wp.shape[0]
@@ -1448,6 +1446,22 @@ def resample_constant_spacing(
     wp.launch(_cs_lookup_k, dim=E * n_max, inputs=[cf, seg_wp, s_wp, N,
               float(spacing), n_max, count_wp, out_wp], device=dev)
     _sync(dev)
+
+    # N_max truncation warning: only on the non-capture path (a host readback is
+    # ILLEGAL during CUDA graph capture and unnecessary on replay — count is fixed).
+    # This is the ONE justified host readback in _src; gated off during capture.
+    if not _CAPTURING:
+        import warnings
+        import numpy as _np
+        max_count = int(_np.max(count_wp.numpy()))
+        if max_count >= n_max:
+            warnings.warn(
+                f"constant_spacing: a track's point count hit N_max={n_max} "
+                f"(spacing={spacing}); it was truncated — increase N_max to avoid "
+                f"truncation. (CUDA graph replay cannot re-check.)",
+                RuntimeWarning,
+                stacklevel=2,
+            )
 
     if _allocating:
         return out_wp, count_wp

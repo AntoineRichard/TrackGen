@@ -138,3 +138,42 @@ def test_eager_path_unaffected():
     assert center_t.shape[0] == E * cfg.N_max, \
         f"center flat size mismatch: {center_t.shape[0]} != {E * cfg.N_max}"
     assert wpp._CAPTURING is False
+
+
+def test_captured_graph_reads_live_seed_buffer():
+    """Captured graph reads the live seed buffer, not a baked copy of the seeds.
+
+    Build an eager reference for seed-set B (rngB), capture genA with seed-set A,
+    then overwrite genA's seed buffer with seed-set B and replay.  If the graph
+    correctly reads the live buffer, genA's output after replay must match the
+    seed-B eager reference.  A bug that bakes seeds into the graph at capture time
+    would produce the seed-A result instead and cause this test to fail.
+    """
+    E = 32
+    cfg = _cfg(E)
+
+    # Build eager reference for seed-set B.
+    rngB = _make_rng(E, seed=999)
+    genB = TrackGenerator(cfg, rngB)
+    wp.copy(genB._seed_buf, rngB.seeds_warp)
+    genB._run()
+    wp.synchronize()
+    ref_b = _clone_track(genB._track)
+
+    # Capture genA with seed-set A (different seeds).
+    rngA = _make_rng(E, seed=111)
+    genA = TrackGenerator(cfg, rngA)
+    genA.generate(E)  # first call: warms up + captures graph with seed-set A
+    torch.cuda.synchronize()
+
+    # Overwrite genA's seed buffer with seed-set B and replay the captured graph.
+    wp.copy(genA._seed_buf, rngB.seeds_warp)
+    wp.capture_launch(genA._graph)
+    wp.synchronize()
+
+    # genA's Track must now match the seed-B eager reference.
+    _track_allclose(genA._track, ref_b, atol=1e-4)
+    assert torch.equal(wp.to_torch(genA._track.valid), ref_b["valid"]), \
+        "valid mask must match seed-B reference after seed-buffer overwrite"
+    assert torch.equal(wp.to_torch(genA._track.count), ref_b["count"]), \
+        "count must match seed-B reference after seed-buffer overwrite"

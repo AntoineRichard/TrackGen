@@ -65,7 +65,7 @@ class TrackGenConfig:
     relax_enable: bool = True
     relax_solver: str = "xpbd"            # {"xpbd","energy","tp_sobolev"}
     relax_chunk_size: int | None = None   # env-chunk the dense [E,N,N] term
-    relax_use_warp: bool | None = None    # xpbd separation: None=auto (Warp on CUDA), True=force Warp
+    relax_use_warp: bool | None = None    # legacy/unused on hot path (consumer warp_relax.should_use was deleted)
     relax_tol: float = 0.02               # target = (1 - tol) * half_width
     relax_band: int | None = None         # None => round(D / L0) per track
     relax_iters: int = 150
@@ -131,14 +131,39 @@ class Track:
     ``inner[i]`` share a single cross-section normal. Half-width is not stored;
     recover it as the outer-center norm along dim=-1.
     Fields are ``wp.array``; convert at the boundary via the wp bridge.
+
+    **Aliasing warning**: ``TrackGenerator.generate()`` returns the SAME ``Track``
+    instance on every call and overwrites its buffers in place. A reference held
+    across two ``generate()`` calls will see mutated data. Use ``Track.clone()`` to
+    obtain a fully-owned deep copy before the next call.
     """
 
-    outer: wp.array    # [E, N] vec2f
-    center: wp.array   # [E, N] vec2f
-    inner: wp.array    # [E, N] vec2f
-    tangent: wp.array  # [E, N] vec2f
-    normal: wp.array   # [E, N] vec2f
-    arclen: wp.array   # [E, N] float32
+    # flat [E*N_max] vec2f storage; reshape via wp.to_torch(...).view(E, N_max, 2)
+    outer: wp.array    # flat [E*N_max] vec2f; reshape via wp.to_torch(...).view(E, N_max, 2)
+    center: wp.array   # flat [E*N_max] vec2f; reshape via wp.to_torch(...).view(E, N_max, 2)
+    inner: wp.array    # flat [E*N_max] vec2f; reshape via wp.to_torch(...).view(E, N_max, 2)
+    tangent: wp.array  # flat [E*N_max] vec2f; reshape via wp.to_torch(...).view(E, N_max, 2)
+    normal: wp.array   # flat [E*N_max] vec2f; reshape via wp.to_torch(...).view(E, N_max, 2)
+    arclen: wp.array   # flat [E*N_max] float32; reshape via wp.to_torch(...).view(E, N_max)
     length: wp.array   # [E] float32
-    valid: wp.array    # [E] bool/int32
+    valid: wp.array    # [E] int32 (0/1; wp.to_torch(...).bool() to recover)
     count: wp.array    # [E] int32
+
+    def clone(self) -> "Track":
+        """Return a fully-owned deep copy of this Track.
+
+        Each field is cloned via ``wp.clone`` (torch-free), so the returned Track owns
+        independent buffers unaffected by future ``generate()`` calls that overwrite
+        this instance in place.
+        """
+        return Track(
+            outer=wp.clone(self.outer),
+            center=wp.clone(self.center),
+            inner=wp.clone(self.inner),
+            tangent=wp.clone(self.tangent),
+            normal=wp.clone(self.normal),
+            arclen=wp.clone(self.arclen),
+            length=wp.clone(self.length),
+            valid=wp.clone(self.valid),
+            count=wp.clone(self.count),
+        )

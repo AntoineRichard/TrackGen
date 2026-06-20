@@ -1,14 +1,16 @@
 """Top-level facade for the batched track generator.
 
-Runs the pure-Warp pipeline (``warp_pipeline.generate_tracks_warp``: generation ->
-resample -> relax -> inflate, all NVIDIA Warp kernels) and returns a fully-populated
-:class:`Track`. The public dataclasses ``TrackGenConfig`` and ``Track`` live in the
-dependency-free leaf module ``types.py``; this facade re-exports ``TrackGenerator``
-as the package's top-level entry point.
+Runs the pure-Warp pipeline (``_run_pipeline``: generation -> resample -> relax ->
+inflate, all NVIDIA Warp kernels) and returns a fully-populated :class:`Track`. The
+public dataclasses ``TrackGenConfig`` and ``Track`` live in the dependency-free leaf
+module ``types.py``; this facade re-exports ``TrackGenerator`` as the package's
+top-level entry point.
 
 TrackGenerator pre-allocates a single :class:`Track` instance in ``__init__`` and
 returns the SAME instance from every ``generate()`` call (stable ``.ptr`` pointers).
-Callers that need a snapshot must clone the individual fields.
+The generator operates on a fixed configured batch (``config.num_envs``) and the same
+persistent ``Track`` is reused across calls; callers that need a snapshot must use
+``Track.clone()``.
 
 On a CUDA device, the first ``generate()`` call warms up the Warp kernels then captures
 the whole pipeline into a native ``wp.Graph`` (via ``wp.ScopedCapture``). Every subsequent
@@ -32,19 +34,23 @@ class TrackGenerator:
     :class:`Track`.
 
     Generation, resample, relaxation and inflation are all expressed as NVIDIA Warp
-    kernels (``warp_pipeline.generate_tracks_warp``), runnable on the Warp ``cpu`` and
-    ``cuda`` devices. Only the ``bezier`` generator is supported on this path (the Fourier
-    generator was not ported to Warp).
+    kernels (via ``_run_pipeline``), runnable on the Warp ``cpu`` and ``cuda`` devices.
+    Only the ``bezier`` generator is supported on this path (the Fourier generator was
+    not ported to Warp).
 
-    The output :class:`Track` is pre-allocated once in ``__init__`` (via
+    The generator is fixed-batch: it always operates on exactly ``config.num_envs``
+    environments. The output :class:`Track` is pre-allocated once in ``__init__`` (via
     ``_inflate_warp_alloc``) and reused across calls: ``generate()`` always returns
-    ``self._track``, writing new results into the same wp.array buffers in place. This
-    ensures stable ``.ptr`` pointers so downstream CUDA graph consumers can bake the
-    device addresses once.
+    the same ``self._track`` instance, writing new results into the same wp.array buffers
+    in place. This ensures stable ``.ptr`` pointers so downstream CUDA graph consumers can
+    bake the device addresses once. Use ``Track.clone()`` to obtain an independent snapshot.
 
     On a CUDA device the pipeline is auto-captured into a ``wp.Graph`` on the first
     ``generate()`` call and replayed on every subsequent call. On the Warp ``cpu``
     device the pipeline runs eagerly.
+
+    Only ``relax_solver="xpbd"`` and ``smooth_finish=False`` are supported; construction
+    raises ``AssertionError`` for other combinations.
     """
 
     def __init__(self, config: TrackGenConfig, rng) -> None:
@@ -60,6 +66,14 @@ class TrackGenerator:
                 f"The pure-Warp pipeline supports generator='bezier' only; "
                 f"got {config.generator!r}."
             )
+        assert config.relax_solver == "xpbd", (
+            f"TrackGenerator only supports relax_solver='xpbd'; "
+            f"got {config.relax_solver!r}."
+        )
+        assert not config.smooth_finish, (
+            "TrackGenerator does not support smooth_finish=True; "
+            "set smooth_finish=False."
+        )
         self._config = config
         self._rng = rng
 
@@ -90,8 +104,13 @@ class TrackGenerator:
             out=self._track, scratch=self._scratch,
         )
 
-    def generate(self, num_or_ids) -> Track:
-        """Generate a batch of tracks via the pure-Warp pipeline.
+    def generate(self, num_or_ids=None) -> Track:
+        """Generate a batch of tracks for the fixed configured batch.
+
+        This generator is fixed-batch: it always operates on exactly ``config.num_envs``
+        environments. If ``num_or_ids`` is provided it is validated against the configured
+        batch size and a ``ValueError`` is raised if they disagree (so existing call sites
+        passing ``E == num_envs`` continue to work unchanged).
 
         On the first CUDA call: warms up kernel loading then captures the pipeline into a
         ``wp.Graph`` (via ``wp.ScopedCapture``), then immediately replays it. On subsequent
@@ -99,15 +118,28 @@ class TrackGenerator:
         On ``cpu``: runs ``_run()`` eagerly every call.
 
         Writes results into ``self._track`` in place and returns the SAME instance every
-        call (stable ``.ptr`` pointers). Callers that need a snapshot must clone fields.
+        call (stable ``.ptr`` pointers). Use ``Track.clone()`` to obtain an independent copy.
 
         Args:
-            num_or_ids: Either an ``int`` number of tracks (ids ``0..n-1``) or a
-                1D tensor of explicit environment ids.
+            num_or_ids: Optional. Either an ``int`` number of tracks or a sequence of
+                environment ids. Must equal ``config.num_envs`` (int) or have length
+                ``config.num_envs`` (sequence). Omit to run the full configured batch.
 
         Returns:
             ``self._track`` — the same :class:`Track` instance every call (stable pointers).
+
+        Raises:
+            ValueError: if ``num_or_ids`` is provided and its count differs from
+                ``config.num_envs``.
         """
+        if num_or_ids is not None:
+            n = num_or_ids if isinstance(num_or_ids, int) else len(num_or_ids)
+            if n != self._config.num_envs:
+                raise ValueError(
+                    f"TrackGenerator is fixed-batch for {self._config.num_envs} envs; "
+                    f"got num_or_ids with count {n}. "
+                    f"Construct a new TrackGenerator with num_envs={n} instead."
+                )
         from . import warp_pipeline
 
         # Refresh the seed buffer in place from the rng (zero allocation: wp.copy).
