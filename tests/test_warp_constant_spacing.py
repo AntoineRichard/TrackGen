@@ -140,13 +140,34 @@ def test_turning_count_aware(dev):
     assert torch.allclose(tn.abs(), torch.full_like(tn, 2 * math.pi), atol=1e-2)
 
 
+def _call_frame_curvature(center, count=None):
+    """Allocate out/scratch buffers and call the in-place frame_curvature wrapper."""
+    E, n_max, _ = center.shape
+    flat = E * n_max
+    dev = str(center.device)
+    cf = wp.from_torch(center.reshape(flat, 2).contiguous(), dtype=wp.vec2f)
+    if count is None:
+        count_t = torch.full((E,), n_max, dtype=torch.int32, device=center.device)
+    else:
+        count_t = count.to(torch.int32).contiguous()
+    cnt_wp = wp.from_torch(count_t, dtype=wp.int32)
+    out_T = wp.zeros(flat, dtype=wp.vec2f, device=dev)
+    out_Nrm = wp.zeros(flat, dtype=wp.vec2f, device=dev)
+    kappa = wp.zeros(flat, dtype=wp.float32, device=dev)
+    wpl.frame_curvature(cf, out_T, out_Nrm, kappa, cnt_wp)
+    T = wp.to_torch(out_T).view(E, n_max, 2)
+    Nrm = wp.to_torch(out_Nrm).view(E, n_max, 2)
+    kap = wp.to_torch(kappa).view(E, n_max)
+    return T, Nrm, kap
+
+
 @pytest.mark.parametrize("dev", DEVS)
 def test_frame_curvature_count_aware(dev):
     # --- parity: count==N_max reproduces the fixed call ---
     src = torch.stack([_circle(80, 1.0, dev), _circle(80, 2.0, dev)], 0)
-    T_base, Nrm_base, kap_base = wpl.frame_curvature(src)
+    T_base, Nrm_base, kap_base = _call_frame_curvature(src)
     buf, cnt = _pad(src, 80)
-    T_out, Nrm_out, kap_out = wpl.frame_curvature(buf, count=cnt)
+    T_out, Nrm_out, kap_out = _call_frame_curvature(buf, count=cnt)
     assert torch.allclose(T_out, T_base, atol=1e-4)
     assert torch.allclose(Nrm_out, Nrm_base, atol=1e-4)
     assert torch.allclose(kap_out, kap_base, atol=1e-4)
@@ -156,7 +177,7 @@ def test_frame_curvature_count_aware(dev):
     buf2[0, :50] = _circle(50, 1.0, dev)
     buf2[1, :80] = _circle(80, 2.0, dev)
     cnt2 = torch.tensor([50, 80], dtype=torch.int32, device=dev)
-    T2, Nrm2, kap2 = wpl.frame_curvature(buf2, count=cnt2)
+    T2, Nrm2, kap2 = _call_frame_curvature(buf2, count=cnt2)
 
     # Real points (0..49) of env0: normals must be unit-length
     nrm0_real = Nrm2[0, :50]
@@ -174,10 +195,10 @@ def test_frame_curvature_count_aware(dev):
 def test_offset_count_aware(dev):
     # --- parity: count==N_max reproduces the fixed call ---
     src = torch.stack([_circle(80, 1.0, dev), _circle(80, 2.0, dev)], 0)
-    _, Nrm_base, _ = wpl.frame_curvature(src)
+    _, Nrm_base, _ = _call_frame_curvature(src)
     outer_base, inner_base = _offset(src, Nrm_base, 0.1)
     buf, cnt = _pad(src, 80)
-    _, Nrm_buf, _ = wpl.frame_curvature(buf, count=cnt)
+    _, Nrm_buf, _ = _call_frame_curvature(buf, count=cnt)
     outer_out, inner_out = _offset(buf, Nrm_buf, 0.1, count=cnt)
     assert torch.allclose(outer_out, outer_base, atol=1e-4)
     assert torch.allclose(inner_out, inner_base, atol=1e-4)
@@ -187,7 +208,7 @@ def test_offset_count_aware(dev):
     buf2[0, :50] = _circle(50, 1.0, dev)
     buf2[1, :80] = _circle(80, 2.0, dev)
     cnt2 = torch.tensor([50, 80], dtype=torch.int32, device=dev)
-    _, Nrm2, _ = wpl.frame_curvature(buf2, count=cnt2)
+    _, Nrm2, _ = _call_frame_curvature(buf2, count=cnt2)
     outer2, inner2 = _offset(buf2, Nrm2, 0.1, count=cnt2)
 
     # Real points (0..49) of env0: outer ~ r=1.1, inner ~ r=0.9  (both finite)
@@ -207,19 +228,38 @@ def test_offset_count_aware(dev):
     assert torch.isnan(inner2[0, 50:]).all(), "env0 padding inner should be NaN"
 
 
+def _call_arclength(center, count=None):
+    """Allocate out buffers and call the in-place _arclength wrapper."""
+    E, n_max, _ = center.shape
+    flat = E * n_max
+    dev = str(center.device)
+    cf = wp.from_torch(center.reshape(flat, 2).contiguous(), dtype=wp.vec2f)
+    if count is None:
+        count_t = torch.full((E,), n_max, dtype=torch.int32, device=center.device)
+    else:
+        count_t = count.to(torch.int32).contiguous()
+    cnt_wp = wp.from_torch(count_t, dtype=wp.int32)
+    out_arclen = wp.zeros(flat, dtype=wp.float32, device=dev)
+    out_length = wp.zeros(E, dtype=wp.float32, device=dev)
+    wpl._arclength(cf, out_arclen, out_length, cnt_wp)
+    arclen = wp.to_torch(out_arclen).view(E, n_max)
+    length = wp.to_torch(out_length)
+    return arclen, length
+
+
 @pytest.mark.parametrize("dev", DEVS)
 def test_arclength_count_aware(dev):
     src = torch.stack([_circle(80, 1.0, dev), _circle(80, 2.0, dev)], 0)
-    a0, L0 = wpl._arclength(src)
+    a0, L0 = _call_arclength(src)
     buf, cnt = _pad(src, 80)
-    a, L = wpl._arclength(buf, count=cnt)
+    a, L = _call_arclength(buf, count=cnt)
     assert torch.allclose(a[:, :80], a0, atol=1e-4)
     assert torch.allclose(L, L0, atol=1e-4)
     # variable: env0 = 50-pt unit circle padded to 80; length ~ 2*pi, arclen monotonic over real, NaN tail
     buf2 = torch.full((2, 80, 2), float("nan"), device=dev, dtype=torch.float32)
     buf2[0, :50] = _circle(50, 1.0, dev); buf2[1, :80] = _circle(80, 2.0, dev)
     cnt2 = torch.tensor([50, 80], dtype=torch.int32, device=dev)
-    a2, L2 = wpl._arclength(buf2, count=cnt2)
+    a2, L2 = _call_arclength(buf2, count=cnt2)
     assert torch.allclose(L2[0], torch.tensor(2 * math.pi, device=dev), atol=1e-2)
     diffs = a2[0, 1:50] - a2[0, :49]
     assert (diffs > 0).all()                 # strictly increasing over real points
@@ -257,7 +297,7 @@ def test_validity_count_aware(dev):
     gv = torch.ones(1, dtype=torch.int32, device=dev)
     cnt_full = torch.full((1,), 120, dtype=torch.int32, device=dev)
     # build outer/inner with the count-aware offset (count==N here)
-    _, Nrm_full, _ = wpl.frame_curvature(src, count=cnt_full)
+    _, Nrm_full, _ = _call_frame_curvature(src, count=cnt_full)
     o, i = _offset(src, Nrm_full, hw, count=cnt_full)
     v_fixed = wpl.validity(src, w, cnt_full, gv, cfg, o, i)   # count==N (fixed mode)
     assert bool(v_fixed[0]) is True, "full circle radius-5 must be valid"
@@ -267,7 +307,7 @@ def test_validity_count_aware(dev):
     buf[0, :120] = src[0]
     w2 = torch.full((1, 200), hw, device=dev)
     cnt = torch.tensor([120], dtype=torch.int32, device=dev)
-    _, Nrm2, _ = wpl.frame_curvature(buf, count=cnt)
+    _, Nrm2, _ = _call_frame_curvature(buf, count=cnt)
     o2, i2 = _offset(buf, Nrm2, hw, count=cnt)
     v_pad = wpl.validity(buf, w2, cnt, gv, cfg, o2, i2)
     assert bool(v_pad[0]) is True, "padded circle (NaN tail) must still be valid"
@@ -277,7 +317,7 @@ def test_validity_count_aware(dev):
 
     # a genuinely too-sharp small circle (radius 0.3 < hw=0.5) must be INVALID, count-masked
     small = _circle(120, 0.3, dev).unsqueeze(0)
-    _, Nrm_s, _ = wpl.frame_curvature(small, count=cnt_full)
+    _, Nrm_s, _ = _call_frame_curvature(small, count=cnt_full)
     os, is_ = _offset(small, Nrm_s, hw, count=cnt_full)
     v_small = wpl.validity(small, w, cnt_full, gv, cfg, os, is_)
     assert bool(v_small[0]) is False, "radius-0.3 circle with hw=0.5 must be invalid"

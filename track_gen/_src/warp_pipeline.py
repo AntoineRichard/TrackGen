@@ -1299,35 +1299,28 @@ def _smoke_double(x: torch.Tensor) -> torch.Tensor:
     return out
 
 
-def frame_curvature(center: torch.Tensor,
-                    count: torch.Tensor | None = None):
-    """Per-point unit tangent, left-normal, and Menger curvature on a closed loop.
-    center [E, N, 2] -> (T [E,N,2], Nrm [E,N,2], kappa [E,N]). Pure Warp (cpu+cuda).
+def frame_curvature(
+    center_wp: "wp.array",
+    out_T: "wp.array",
+    out_Nrm: "wp.array",
+    kappa_scratch: "wp.array",
+    count_wp: "wp.array",
+):
+    """In-place: writes T/Nrm into out_T/out_Nrm (wp.array [E*n_max] vec2f);
+    kappa_scratch (wp.array [E*n_max] float32) receives kappa (unused by pipeline).
+    All args are wp.array; nothing allocated. n_max inferred from out_T.shape[0]
+    and count_wp.shape[0] (== E).
 
-    count [E] int32 (optional): per-env real point count (1..N). When None, all
-    envs use N (fixed mode — identical to the pre-count-aware behaviour). Padding
-    points (i >= count[e]) receive NaN in all output tensors.
+    Pure Warp (cpu+cuda); allclose to the torch oracle to atol=1e-5.
     """
     _init()
-    E, n_max, _ = center.shape
-    dev = str(center.device)
-
-    if count is None:
-        count = torch.full((E,), n_max, dtype=torch.int32, device=center.device)
-
-    cf = wp.from_torch(center.reshape(E * n_max, 2).contiguous(), dtype=wp.vec2f)
-    count_i32 = count.to(torch.int32).contiguous()
-    wp_count = wp.from_torch(count_i32, dtype=wp.int32)
-    T = torch.empty(E * n_max, 2, device=center.device, dtype=torch.float32)
-    Nrm = torch.empty_like(T)
-    kap = torch.empty(E * n_max, device=center.device, dtype=torch.float32)
-    wp.launch(_frame_k, dim=E * n_max,
-              inputs=[cf, n_max, wp.from_torch(T, dtype=wp.vec2f),
-                      wp.from_torch(Nrm, dtype=wp.vec2f), wp.from_torch(kap, dtype=wp.float32),
-                      wp_count],
-              device=dev)
-    _sync(center.device)
-    return T.view(E, n_max, 2), Nrm.view(E, n_max, 2), kap.view(E, n_max)
+    E = count_wp.shape[0]
+    flat = out_T.shape[0]
+    n_max = flat // E
+    wp.launch(_frame_k, dim=flat,
+              inputs=[center_wp, n_max, out_T, out_Nrm, kappa_scratch, count_wp],
+              device=str(out_T.device))
+    _sync(out_T.device)
 
 
 def self_intersections(poly: torch.Tensor,
@@ -1750,42 +1743,26 @@ def validity(center: torch.Tensor, w: torch.Tensor, count: torch.Tensor,
     return out_t.bool()
 
 
-def _arclength(center: torch.Tensor, count: torch.Tensor | None = None):
-    """Cumulative arc length [E, N] (0 at index 0) and closed-loop total length [E].
+def _arclength(
+    center_wp: "wp.array",
+    out_arclen: "wp.array",
+    out_length: "wp.array",
+    count_wp: "wp.array",
+):
+    """In-place: writes arclen into out_arclen (wp.array [E*n_max] float32) and
+    total perimeter into out_length (wp.array [E] float32). All args are wp.array;
+    nothing allocated. n_max inferred from out_arclen.shape[0] and count_wp.shape[0].
 
-    Reproduces inflation._arclength via a single Warp kernel: one thread per env,
-    float64-accumulated running sum. arclen[b+i] is the length before segment i; the
-    total length includes the closing wrap segment (last real pt -> pt 0). Pure Warp
-    (cpu+cuda); allclose to the torch oracle to atol~1e-3 (float32-cumsum drift).
-
-    Args:
-        center: [E, N, 2] float32 closed-loop points.
-        count:  optional int32 [E] per-env real-point count. When None, all N points per
-                env are real (fixed mode — bit-identical to the pre-count-aware behaviour).
-                Padding slots i in [count[e], N) receive NaN in the output arclen.
-
-    Returns:
-        arclen: [E, N] float32 cumulative arc length (NaN in padding slots when count given).
-        length: [E] float32 closed-loop perimeter.
+    Pure Warp (cpu+cuda); allclose to the torch oracle to atol~1e-3 (float32 drift).
     """
     _init()
-    E, N, _ = center.shape
-    n_max = N
-    dev = str(center.device)
-    if count is None:
-        count = torch.full((E,), n_max, dtype=torch.int32, device=center.device)
-
-    cf = wp.from_torch(center.reshape(E * n_max, 2).contiguous(), dtype=wp.vec2f)
-    count_i32 = count.to(torch.int32).contiguous()
-    arclen_t = torch.empty(E * n_max, device=center.device, dtype=torch.float32)
-    length_t = torch.empty(E, device=center.device, dtype=torch.float32)
+    E = count_wp.shape[0]
+    flat = out_arclen.shape[0]
+    n_max = flat // E
     wp.launch(_arclength_k, dim=E,
-              inputs=[cf, n_max, wp.from_torch(count_i32, dtype=wp.int32),
-                      wp.from_torch(arclen_t, dtype=wp.float32),
-                      wp.from_torch(length_t, dtype=wp.float32)],
-              device=dev)
-    _sync(center.device)
-    return arclen_t.view(E, N), length_t
+              inputs=[center_wp, n_max, count_wp, out_arclen, out_length],
+              device=str(out_arclen.device))
+    _sync(out_arclen.device)
 
 
 def corner_sample(seeds: torch.Tensor, attempt: int, config) -> torch.Tensor:
@@ -1892,13 +1869,21 @@ class _Scratch:
     Owned by TrackGenerator; threaded into inflate_warp on the owned path so the
     runtime generate() path makes zero per-call allocations for the converted stages.
     area_a/area_b: [E] float32 accumulators for the offset shoelace kernel.
+    kappa:         [E*N_max] float32 Menger curvature scratch for frame_curvature
+                   (kappa is computed by the kernel but unused by the pipeline).
     """
 
-    __slots__ = ("area_a", "area_b")
+    __slots__ = ("area_a", "area_b", "kappa")
 
-    def __init__(self, area_a: "wp.array", area_b: "wp.array") -> None:
+    def __init__(
+        self,
+        area_a: "wp.array",
+        area_b: "wp.array",
+        kappa: "wp.array",
+    ) -> None:
         self.area_a = area_a
         self.area_b = area_b
+        self.kappa = kappa
 
 
 def _inflate_warp_alloc(config):
@@ -1938,6 +1923,7 @@ def _inflate_warp_alloc(config):
     scratch = _Scratch(
         area_a=wp.zeros(E, dtype=wp.float32, device=dev),
         area_b=wp.zeros(E, dtype=wp.float32, device=dev),
+        kappa=wp.empty(flat, dtype=wp.float32, device=dev),
     )
     return track, scratch
 
@@ -2006,6 +1992,37 @@ def inflate_warp(center: torch.Tensor, config, out=None,
     E, n_max, _ = center.shape
     dev = str(center.device)
     hw = float(config.half_width)
+    flat = E * n_max
+
+    # Allocate a fresh Track (and scratch) when no out buffer was provided.
+    # Done BEFORE the per-path resample so frame_curvature can write directly into
+    # out.tangent/out.normal (in-place, zero copy).
+    if out is None:
+        out = Track(
+            outer=wp.empty(flat, dtype=wp.vec2f, device=dev),
+            center=wp.empty(flat, dtype=wp.vec2f, device=dev),
+            inner=wp.empty(flat, dtype=wp.vec2f, device=dev),
+            tangent=wp.empty(flat, dtype=wp.vec2f, device=dev),
+            normal=wp.empty(flat, dtype=wp.vec2f, device=dev),
+            arclen=wp.empty(flat, dtype=wp.float32, device=dev),
+            length=wp.empty(E, dtype=wp.float32, device=dev),
+            valid=wp.empty(E, dtype=wp.int32, device=dev),
+            count=wp.empty(E, dtype=wp.int32, device=dev),
+        )
+        if scratch is None:
+            scratch = _Scratch(
+                area_a=wp.zeros(E, dtype=wp.float32, device=dev),
+                area_b=wp.zeros(E, dtype=wp.float32, device=dev),
+                kappa=wp.empty(flat, dtype=wp.float32, device=dev),
+            )
+    else:
+        # Owned path: the caller (TrackGenerator / graph capture) MUST pass pre-allocated
+        # scratch. Allocating it here would silently break the zero-per-call-allocation
+        # contract, so fail loudly instead.
+        assert scratch is not None, (
+            "inflate_warp(out=...) requires a pre-allocated scratch=_Scratch(...) "
+            "(zero-allocation contract); pass scratch alongside out."
+        )
 
     if count is None:
         # --- count=None convenience: a fixed-N, fully-finite centerline (every env keeps all
@@ -2030,9 +2047,6 @@ def inflate_warp(center: torch.Tensor, config, out=None,
                   inputs=[wp.from_torch(w, dtype=wp.float32), hw], device=dev)
         w = w.view(E, N)
 
-        # 2. frame + curvature (kappa unused, like inflation._width_stage).
-        T, Nrm, _kappa = frame_curvature(rs, count=count_arr)
-
         # Track.count == N for all envs (as before); stored as int32.
         track_count_i32 = count_i32
 
@@ -2049,47 +2063,22 @@ def inflate_warp(center: torch.Tensor, config, out=None,
                   inputs=[wp.from_torch(w, dtype=wp.float32), hw], device=dev)
         w = w.view(E, n_max)
 
-        # 2. frame + curvature.
-        T, Nrm, _kappa = frame_curvature(rs, count=count_arr)
-
         # Track.count == per-env real point count; stored as int32.
         track_count_i32 = count_arr
 
-    # Allocate a fresh Track (and scratch) when no out buffer was provided.
-    if out is None:
-        out = Track(
-            outer=wp.empty(E * n_max, dtype=wp.vec2f, device=dev),
-            center=wp.empty(E * n_max, dtype=wp.vec2f, device=dev),
-            inner=wp.empty(E * n_max, dtype=wp.vec2f, device=dev),
-            tangent=wp.empty(E * n_max, dtype=wp.vec2f, device=dev),
-            normal=wp.empty(E * n_max, dtype=wp.vec2f, device=dev),
-            arclen=wp.empty(E * n_max, dtype=wp.float32, device=dev),
-            length=wp.empty(E, dtype=wp.float32, device=dev),
-            valid=wp.empty(E, dtype=wp.int32, device=dev),
-            count=wp.empty(E, dtype=wp.int32, device=dev),
-        )
-        if scratch is None:
-            scratch = _Scratch(
-                area_a=wp.zeros(E, dtype=wp.float32, device=dev),
-                area_b=wp.zeros(E, dtype=wp.float32, device=dev),
-            )
-    else:
-        # Owned path: the caller (TrackGenerator / graph capture) MUST pass pre-allocated
-        # scratch. Allocating it here would silently break the zero-per-call-allocation
-        # contract, so fail loudly instead.
-        assert scratch is not None, (
-            "inflate_warp(out=...) requires a pre-allocated scratch=_Scratch(...) "
-            "(zero-allocation contract); pass scratch alongside out."
-        )
+    # 2. frame + curvature — in-place directly into out.tangent/out.normal.
+    # rs is still torch; wrap as a zero-copy wp view (no allocation).
+    rs_wp = wp.from_torch(rs.reshape(flat, 2).contiguous(), dtype=wp.vec2f)
+    cnt_wp = wp.from_torch(count_arr.contiguous(), dtype=wp.int32)
+    frame_curvature(rs_wp, out.tangent, out.normal, scratch.kappa, cnt_wp)
+
+    # 3. cumulative arc length + total length — in-place into out.arclen/out.length.
+    _arclength(rs_wp, out.arclen, out.length, cnt_wp)
 
     # 4. offset to outer/inner borders — in-place directly into out.outer/out.inner.
-    # center/Nrm are still torch at this point (frame_curvature returns torch);
-    # wrap via zero-copy wp.from_torch views (no allocation).
-    flat = E * n_max
-    cf_wp = wp.from_torch(rs.reshape(flat, 2).contiguous(), dtype=wp.vec2f)
-    nf_wp = wp.from_torch(Nrm.reshape(flat, 2).contiguous(), dtype=wp.vec2f)
-    cnt_wp = wp.from_torch(count_arr.contiguous(), dtype=wp.int32)
-    offset(cf_wp, nf_wp, hw, out.outer, out.inner, scratch.area_a, scratch.area_b, cnt_wp)
+    # out.normal is already written in-place by frame_curvature; pass it directly
+    # (no wp.from_torch shim needed).
+    offset(rs_wp, out.normal, hw, out.outer, out.inner, scratch.area_a, scratch.area_b, cnt_wp)
 
     # 5. per-track validity gate.
     if valid is not None:
@@ -2115,16 +2104,9 @@ def inflate_warp(center: torch.Tensor, config, out=None,
         inner_th = None
     valid_out = validity(rs, w, count_arr, gen_valid, config, outer_th, inner_th)
 
-    # 6. cumulative arc length + total length.
-    arclen, length = _arclength(rs, count=count_arr)
-
     # Boundary copy: torch stage results -> pre-allocated wp.array buffers.
-    # outer/inner are already written in-place; skip those boundary copies.
-    _copy_torch_to_wp_vec2(out.center, rs.reshape(E * n_max, 2))
-    _copy_torch_to_wp_vec2(out.tangent, T.reshape(E * n_max, 2))
-    _copy_torch_to_wp_vec2(out.normal, Nrm.reshape(E * n_max, 2))
-    _copy_torch_to_wp_f32(out.arclen, arclen.reshape(E * n_max))
-    _copy_torch_to_wp_f32(out.length, length)
+    # outer/inner/tangent/normal/arclen/length are already written in-place; skip those.
+    _copy_torch_to_wp_vec2(out.center, rs.reshape(flat, 2))
     _copy_torch_to_wp_i32(out.valid, valid_out.to(torch.int32))
     _copy_torch_to_wp_i32(out.count, track_count_i32)
 
