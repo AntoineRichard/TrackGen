@@ -91,12 +91,13 @@ def xpbd_solve_inplace(
     count_wp: "wp.array",
     n_max: int,
     config,
+    capturing: bool = False,
 ) -> None:
     """Full fixed-iteration XPBD solve — strict in-place, zero per-call allocation.
 
     Reads ``center_wp`` (the input centerline), writes the relaxed result into
     ``relaxed_wp``.  Uses ``db_wp`` as the displacement double-buffer.  All arrays
-    are pre-allocated ``wp.array`` buffers owned by the caller (e.g. ``_Scratch``).
+    are pre-allocated ``wp.array`` buffers owned by the caller (e.g. the relax scratch).
 
     Args:
         center_wp:  [E*n_max] wp.vec2f flat input centerline (NaN-padded beyond count[e]).
@@ -107,6 +108,11 @@ def xpbd_solve_inplace(
         count_wp:   [E] wp.int32 real bead count per env.
         n_max:      int buffer stride (== total points per env slot).
         config:     TrackGenConfig (half_width, relax_margin, relax_iters, relax_*_relax).
+        capturing:  True while a CUDA graph is being captured. The final host-blocking
+                    wp.synchronize() is then skipped (it is ILLEGAL during capture and
+                    unnecessary on replay, where the graph records stream ordering). The
+                    orchestrator passes its capture state in explicitly so this module
+                    never reaches back into the pipeline for it.
     """
     global _INITED
     if not _INITED:
@@ -133,8 +139,10 @@ def xpbd_solve_inplace(
         wp.launch(_apply_kernel, dim=E * n_max,
                   inputs=[relaxed_wp, db_wp], device=dev)
 
-    from . import warp_pipeline  # local import avoids an import cycle at module load
-    if not warp_pipeline._CAPTURING:
+    # Skip the host-blocking sync during CUDA graph capture (illegal there; the graph
+    # records stream ordering, so it is unnecessary on replay too). The caller passes
+    # its capture state in -- this module never reads the pipeline's _CAPTURING global.
+    if not capturing:
         wp.synchronize()
 
 

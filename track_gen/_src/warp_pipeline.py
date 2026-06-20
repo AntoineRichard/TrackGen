@@ -1239,10 +1239,12 @@ def _run_pipeline(config, seed_buf_wp: wp.array, out: "Track", scratch: "_Scratc
                       int(config.relax_band)], device=dev)
         _sync(dev)
 
-        # 4. XPBD relaxation in-place.
+        # 4. XPBD relaxation in-place. Thread the pipeline's capture state in explicitly
+        # so warp_relax decides its host-sync without reaching back into this module.
         warp_relax.xpbd_solve_inplace(
             scratch.cs_center, scratch.relaxed, scratch.xpbd_db,
             scratch.band, scratch.L0, scratch.count, n_max, config,
+            capturing=_CAPTURING,
         )
         relax_out = scratch.relaxed
     else:
