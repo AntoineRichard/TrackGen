@@ -28,7 +28,7 @@ def test_corner_count_sample(dev):
 
     # shape + dtype
     assert count.shape == (E,)
-    assert count.dtype == torch.long
+    assert count.dtype == torch.int32
     # range: every count in [min_num_points, max_num_points] inclusive
     assert int(count.min()) >= int(config.min_num_points)
     assert int(count.max()) <= int(config.max_num_points)
