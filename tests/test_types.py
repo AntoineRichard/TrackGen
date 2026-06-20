@@ -34,7 +34,7 @@ def test_config_defaults_instantiate():
     assert cfg.output_mode == "constant_spacing"
     # spacing defaults to None -> __post_init__ auto-couples it to 0.6*half_width.
     assert math.isclose(cfg.spacing, 0.6 * cfg.half_width)
-    assert cfg.N_max == 256
+    assert cfg.N_max == 320
     # Robustness params
     assert cfg.max_regen_iters == 10
     assert cfg.turning_tol == 0.1

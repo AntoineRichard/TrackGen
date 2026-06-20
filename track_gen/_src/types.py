@@ -97,7 +97,12 @@ class TrackGenConfig:
     # constant_spacing arc-length step (m). None -> auto 0.6*half_width (the relax-friendly
     # value); set explicitly to override. A fixed default would be wrong across half_widths.
     spacing: float | None = None
-    N_max: int = 256
+    # Output buffer width: max constant-spacing points per track. The default regime
+    # (half_width=0.03, scale=1, spacing=0.6*half_width=0.018) needs ~272 points per loop
+    # with the curvier defaults, so 256 truncated every track by ~6% (an oversized closing
+    # seam). 320 leaves headroom; tracks whose true count still exceeds N_max are truncated
+    # with an explicit RuntimeWarning (see resample_constant_spacing) — raise N_max for those.
+    N_max: int = 320
 
     # --- Robustness params ---
     max_regen_iters: int = 10

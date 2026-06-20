@@ -33,7 +33,9 @@ def test_generate_tracks_e2e(dev):
     E = _E_BY_DEV[dev]
     # constant_spacing output: arrays are [E*N_max] flat NaN-padded with a per-env real
     # point count in track.count. N_max is the padded width; spacing is auto 0.6*half_width.
-    N_max = 256
+    # N_max=320 (the default) sits above the ~272 points this regime needs, so no truncation
+    # and the NaN-padding tail is genuinely exercised.
+    N_max = 320
     hw = 0.03
     config = TrackGenConfig(num_envs=E, half_width=hw, N_max=N_max, device=dev)
 
