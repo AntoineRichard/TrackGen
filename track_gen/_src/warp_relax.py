@@ -153,11 +153,78 @@ def separation_disp(center: torch.Tensor, band: torch.Tensor, target: float) -> 
     return out_t.view(E, N, 2)
 
 
+def xpbd_solve_inplace(
+    center_wp: "wp.array",
+    relaxed_wp: "wp.array",
+    db_wp: "wp.array",
+    band_wp: "wp.array",
+    l0_wp: "wp.array",
+    count_wp: "wp.array",
+    n_max: int,
+    config,
+) -> None:
+    """Full fixed-iteration XPBD solve — strict in-place, zero per-call allocation.
+
+    Reads ``center_wp`` (the input centerline), writes the relaxed result into
+    ``relaxed_wp``.  Uses ``db_wp`` as the displacement double-buffer.  All arrays
+    are pre-allocated ``wp.array`` buffers owned by the caller (e.g. ``_Scratch``).
+
+    Args:
+        center_wp:  [E*n_max] wp.vec2f flat input centerline (NaN-padded beyond count[e]).
+        relaxed_wp: [E*n_max] wp.vec2f flat output buffer (written in-place).
+        db_wp:      [E*n_max] wp.vec2f flat displacement scratch (double-buffer).
+        band_wp:    [E] wp.int32 excluded-neighbour half-window per env.
+        l0_wp:      [E] wp.float32 rest segment length per env.
+        count_wp:   [E] wp.int32 real bead count per env.
+        n_max:      int buffer stride (== total points per env slot).
+        config:     TrackGenConfig (half_width, relax_margin, relax_iters, relax_*_relax).
+    """
+    global _INITED
+    if not _INITED:
+        wp.init()
+        _INITED = True
+
+    E = count_wp.shape[0]
+    hw = float(config.half_width)
+    margin = float(config.relax_margin)
+    target = 2.0 * hw * (1.0 + margin)
+    R_min = hw * (1.0 + margin)
+    sr = float(config.relax_sep_relax)
+    pr = float(config.relax_spc_relax)
+    br = float(config.relax_bend_relax)
+    dev = center_wp.device
+
+    # Copy input into the working buffer (relaxed_wp starts as a copy of center_wp).
+    wp.copy(relaxed_wp, center_wp)
+
+    for _ in range(int(config.relax_iters)):
+        wp.launch(_disp_kernel, dim=E * n_max,
+                  inputs=[relaxed_wp, band_wp, l0_wp, target, R_min, sr, pr, br,
+                          n_max, count_wp, db_wp], device=dev)
+        wp.launch(_apply_kernel, dim=E * n_max,
+                  inputs=[relaxed_wp, db_wp], device=dev)
+
+    from . import warp_pipeline  # local import avoids an import cycle at module load
+    if not warp_pipeline._CAPTURING:
+        wp.synchronize()
+
+
 def xpbd_solve(center0: torch.Tensor, band: torch.Tensor, L0: torch.Tensor, config,
-               count: torch.Tensor | None = None) -> torch.Tensor:
+               count: torch.Tensor | None = None,
+               out_wp: "wp.array | None" = None,
+               db_wp: "wp.array | None" = None) -> torch.Tensor:
     """Full fixed-iteration XPBD solve in fused Warp kernels (separation + spacing +
     bending per sweep, double-buffered). Pure Warp loop — no torch ops, no per-iter
     sync, O(E*N) memory (no chunking). Numerically matches the torch _relax_xpbd sweep.
+
+    In-place mode (``out_wp`` and ``db_wp`` provided):
+        Writes relaxed positions into ``out_wp`` (a pre-allocated [E*N] wp.vec2f).
+        Uses ``db_wp`` as the displacement double-buffer (pre-allocated [E*N] wp.vec2f).
+        Returns a torch tensor view of ``out_wp`` (zero-copy ``wp.to_torch``).
+
+    Standalone / legacy mode (``out_wp``/``db_wp`` omitted):
+        Allocates the working buffer via ``wp.empty`` (no torch alloc) and returns
+        a torch tensor view of the result.
 
     Args:
         center0: [E, N, 2] float32 centerline (may be NaN-padded when count is given).
@@ -165,10 +232,11 @@ def xpbd_solve(center0: torch.Tensor, band: torch.Tensor, L0: torch.Tensor, conf
         L0:      [E] per-track rest segment length (perimeter/count[e]).
         config:  TrackGenConfig (half_width, relax_margin, relax_iters, relax_*_relax).
         count:   Optional [E] int32 tensor of real bead counts per track. When None,
-                 defaults to torch.full((E,), N) — parity path, bit-identical to the
-                 fixed-N behaviour (the existing tests in test_warp_relax.py verify this).
+                 defaults to full((E,), N) — parity path, bit-identical to fixed-N mode.
+        out_wp:  Optional pre-allocated [E*N] wp.vec2f output buffer.
+        db_wp:   Optional pre-allocated [E*N] wp.vec2f displacement scratch.
     Returns:
-        [E, N, 2] relaxed centerline; padding slots (i >= count[e]) remain NaN.
+        [E, N, 2] relaxed centerline torch tensor; padding slots remain NaN.
     """
     global _INITED
     if not _INITED:
@@ -178,32 +246,23 @@ def xpbd_solve(center0: torch.Tensor, band: torch.Tensor, L0: torch.Tensor, conf
     # Parity path: count=None → every env has exactly N real beads (fixed-N mode).
     n_max = N
     if count is None:
-        count = torch.full((E,), N, dtype=torch.int32, device=center0.device)
-    hw = float(config.half_width)
-    margin = float(config.relax_margin)
-    target = 2.0 * hw * (1.0 + margin)
-    R_min = hw * (1.0 + margin)
-    sr = float(config.relax_sep_relax)
-    pr = float(config.relax_spc_relax)
-    br = float(config.relax_bend_relax)
+        count_wp = wp.empty(E, dtype=wp.int32, device=str(center0.device))
+        from . import warp_pipeline as _wpl  # local import avoids cycle
+        wp.launch(_wpl._fill_i32_k, dim=E, inputs=[count_wp, N],
+                  device=str(center0.device))
+    else:
+        count_wp = wp.from_torch(count.to(torch.int32).contiguous(), dtype=wp.int32)
     dev = str(center0.device)
+    flat = E * n_max
 
-    cb = center0.reshape(E * n_max, 2).contiguous().clone()   # working buffer, updated in place
-    db = torch.empty_like(cb)
-    cw = wp.from_torch(cb, dtype=wp.vec2f)
-    dw = wp.from_torch(db, dtype=wp.vec2f)
+    cw_in = wp.from_torch(center0.reshape(flat, 2).contiguous(), dtype=wp.vec2f)
     bw = wp.from_torch(band.to(torch.int32).contiguous(), dtype=wp.int32)
     lw = wp.from_torch(L0.to(torch.float32).contiguous(), dtype=wp.float32)
-    cntw = wp.from_torch(count.to(torch.int32).contiguous(), dtype=wp.int32)
-    for _ in range(int(config.relax_iters)):
-        wp.launch(_disp_kernel, dim=E * n_max,
-                  inputs=[cw, bw, lw, target, R_min, sr, pr, br, n_max, cntw, dw], device=dev)
-        wp.launch(_apply_kernel, dim=E * n_max, inputs=[cw, dw], device=dev)
-    # Host-blocking sync is ILLEGAL during CUDA graph capture; warp_pipeline sets _CAPTURING
-    # while it captures the whole pipeline (this solve included) into one graph, where stream
-    # ordering already serializes the launches. Skip the sync there; keep it on the eager path
-    # so the caller's torch read sees the Warp write.
-    from . import warp_pipeline  # local import avoids an import cycle at module load
-    if not warp_pipeline._CAPTURING:
-        wp.synchronize()
-    return cb.view(E, n_max, 2)
+
+    if out_wp is None:
+        out_wp = wp.empty(flat, dtype=wp.vec2f, device=dev)
+    if db_wp is None:
+        db_wp = wp.empty(flat, dtype=wp.vec2f, device=dev)
+
+    xpbd_solve_inplace(cw_in, out_wp, db_wp, bw, lw, count_wp, n_max, config)
+    return wp.to_torch(out_wp).view(E, n_max, 2)

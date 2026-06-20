@@ -52,6 +52,25 @@ def _offset(center, Nrm, half_width, count=None):
     return wp.to_torch(oo).view(E, n_max, 2), wp.to_torch(oi).view(E, n_max, 2)
 
 
+def _resample_uniform(center, n, count=None):
+    """Test helper: allocates wp.array buffers, calls in-place resample_uniform, returns torch."""
+    E, n_max, _ = center.shape
+    assert n == n_max
+    dev = str(center.device)
+    flat = E * n_max
+    if count is None:
+        count_t = torch.full((E,), n_max, dtype=torch.int32, device=center.device)
+    else:
+        count_t = count.to(torch.int32).contiguous()
+    cw = wp.from_torch(center.reshape(flat, 2).contiguous(), dtype=wp.vec2f)
+    out_wp = wp.empty(flat, dtype=wp.vec2f, device=dev)
+    cnt_wp = wp.from_torch(count_t, dtype=wp.int32)
+    wpl.resample_uniform(cw, out_wp, n, cnt_wp, device=dev)
+    if "cuda" in dev:
+        wp.synchronize()
+    return wp.to_torch(out_wp).view(E, n, 2)
+
+
 @pytest.mark.parametrize("dev", DEVS)
 def test_constant_spacing_resample_matches_torch_oracle(dev):
     E, N = 3, 300
@@ -71,15 +90,15 @@ def test_constant_spacing_resample_matches_torch_oracle(dev):
 def test_resample_uniform_count_aware(dev):
     # parity: count==N reproduces the fixed call
     src = torch.stack([_circle(64, 1.0, dev), _circle(64, 2.0, dev)], 0)
-    base = wpl.resample_uniform(src, 64)
+    base = _resample_uniform(src, 64)
     buf, cnt = _pad(src, 64)
-    out = wpl.resample_uniform(buf, 64, count=cnt)
+    out = _resample_uniform(buf, 64, count=cnt)
     assert torch.allclose(out, base, atol=1e-5, equal_nan=True)
     # variable: env0 uses 40 real pts (rest NaN), env1 uses 64; env0 stays ~circle, pad NaN
     buf2 = torch.full((2, 64, 2), float("nan"), device=dev, dtype=torch.float32)
     buf2[0, :40] = _circle(40, 1.0, dev); buf2[1, :64] = _circle(64, 2.0, dev)
     cnt2 = torch.tensor([40, 64], dtype=torch.int32, device=dev)
-    out2 = wpl.resample_uniform(buf2, 64, count=cnt2)
+    out2 = _resample_uniform(buf2, 64, count=cnt2)
     r0 = torch.linalg.norm(out2[0, :40], dim=-1)
     assert torch.allclose(r0, torch.ones_like(r0), atol=2e-2)
     assert torch.isnan(out2[0, 40:]).all()

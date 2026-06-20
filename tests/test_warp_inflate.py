@@ -87,7 +87,16 @@ def test_inflate_warp_matches_oracle(dev):
     E = 2
     n_max = config.N_max
     count_i32 = count.to(torch.int32)
-    rs_ref = wpl.resample_uniform(cs_center, n_max, count=count_i32)  # [E, N, 2] torch
+    # Compute rs_ref via the in-place resample_uniform API (allocate wp.array buffers here).
+    _flat = E * n_max
+    _dev = str(cs_center.device)
+    _cw = wp.from_torch(cs_center.reshape(_flat, 2).contiguous(), dtype=wp.vec2f)
+    _out_wp = wp.empty(_flat, dtype=wp.vec2f, device=_dev)
+    _cnt_wp = wp.from_torch(count_i32, dtype=wp.int32)
+    wpl.resample_uniform(_cw, _out_wp, n_max, _cnt_wp, device=_dev)
+    if "cuda" in _dev:
+        wp.synchronize()
+    rs_ref = wp.to_torch(_out_wp).view(E, n_max, 2)  # [E, N, 2] torch
     rs_wp = wp.to_torch(got.center).view(E, n_max, 2)   # [E, N, 2] torch (from output)
     T, Nrm, kappa = inflation._frame_curvature_stage(rs_ref)
     w = inflation._width_stage(rs_ref, kappa, config)

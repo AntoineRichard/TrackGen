@@ -1188,24 +1188,60 @@ def generate_tracks_warp(config, seeds: torch.Tensor, out=None, scratch=None):
     # pure-Warp kernel; L0 stays NaN for invalid envs and flows untouched through xpbd while
     # the band's isfinite guard yields a valid int band there.
     n_max = int(config.N_max)
-    centerline, count = resample_constant_spacing(centerline, float(config.spacing), n_max)
-    E = centerline.shape[0]
-    band = torch.empty(E, device=centerline.device, dtype=torch.int32)
-    L0 = torch.empty(E, device=centerline.device, dtype=torch.float32)
-    cl_w = wp.from_torch(centerline.reshape(E * n_max, 2).contiguous(), dtype=wp.vec2f)
-    count_i32 = count.to(torch.int32)
-    wp.launch(_band_l0_k, dim=E, inputs=[cl_w, n_max, 2.0 * hw,
-              wp.from_torch(band, dtype=wp.int32), wp.from_torch(L0, dtype=wp.float32),
-              wp.from_torch(count_i32, dtype=wp.int32)], device=dev)
-    if config.relax_band is not None:
-        # Honor an explicit per-track band override (host branch on a CONFIG value -> capture-safe).
-        wp.launch(_fill_i32_k, dim=E, inputs=[wp.from_torch(band, dtype=wp.int32),
-                  int(config.relax_band)], device=dev)
-    _sync(centerline.device)
-    relaxed = warp_relax.xpbd_solve(centerline, band, L0, config, count=count_i32)
-    relaxed = resample_uniform(relaxed, n_max, count=count_i32)
-    return inflate_warp(relaxed, config, out=out, valid=gen_valid, count=count_i32,
-                        scratch=scratch)
+
+    if scratch is not None:
+        # --- Owned path: zero per-call allocation via pre-allocated scratch buffers ---
+        resample_constant_spacing(
+            centerline, float(config.spacing), n_max,
+            out_wp=scratch.cs_center, count_wp=scratch.count,
+            seg_wp=scratch.cs_seg, s_wp=scratch.cs_s,
+        )
+        # cs_center is [E*n_max] vec2f flat; band/L0 written into pre-allocated scratch.
+        wp.launch(_band_l0_k, dim=E, inputs=[scratch.cs_center, n_max, 2.0 * hw,
+                  scratch.band, scratch.L0, scratch.count], device=dev)
+        if config.relax_band is not None:
+            wp.launch(_fill_i32_k, dim=E, inputs=[scratch.band,
+                      int(config.relax_band)], device=dev)
+        _sync(centerline.device)
+        warp_relax.xpbd_solve_inplace(
+            scratch.cs_center, scratch.relaxed, scratch.xpbd_db,
+            scratch.band, scratch.L0, scratch.count, n_max, config,
+        )
+        # inflate_warp receives the relaxed wp.array centerline; it calls resample_uniform
+        # in-place into out.center and uses out.center as rs_wp for all downstream stages.
+        assert out is not None, (
+            "generate_tracks_warp: scratch provided but out=None; "
+            "pass a pre-allocated Track alongside scratch."
+        )
+        return inflate_warp(
+            scratch.relaxed, config, out=out, valid=gen_valid,
+            count=scratch.count, scratch=scratch,
+        )
+    else:
+        # --- Unowned path: allocate per-call (standalone / test callers without scratch) ---
+        centerline_cs, count_t = resample_constant_spacing(
+            centerline, float(config.spacing), n_max)
+        E = centerline_cs.shape[0]
+        band_t = torch.empty(E, device=centerline.device, dtype=torch.int32)
+        L0_t = torch.empty(E, device=centerline.device, dtype=torch.float32)
+        cl_w = wp.from_torch(centerline_cs.reshape(E * n_max, 2).contiguous(), dtype=wp.vec2f)
+        count_i32 = count_t.to(torch.int32)
+        wp.launch(_band_l0_k, dim=E, inputs=[cl_w, n_max, 2.0 * hw,
+                  wp.from_torch(band_t, dtype=wp.int32),
+                  wp.from_torch(L0_t, dtype=wp.float32),
+                  wp.from_torch(count_i32, dtype=wp.int32)], device=dev)
+        if config.relax_band is not None:
+            wp.launch(_fill_i32_k, dim=E, inputs=[wp.from_torch(band_t, dtype=wp.int32),
+                      int(config.relax_band)], device=dev)
+        _sync(centerline.device)
+        relaxed_t = warp_relax.xpbd_solve(
+            centerline_cs, band_t, L0_t, config, count=count_i32)
+        # Pass relaxed_t to inflate_warp as a torch tensor; inflate_warp calls
+        # resample_uniform in-place into out.center internally.
+        return inflate_warp(
+            relaxed_t, config, out=out, valid=gen_valid,
+            count=count_i32, scratch=scratch,
+        )
 
 
 def assemble(corners: torch.Tensor, count: torch.Tensor, config) -> torch.Tensor:
@@ -1447,53 +1483,75 @@ def thickness(points: torch.Tensor, band: torch.Tensor,
     return out_t
 
 
-def resample_uniform(center: torch.Tensor, n: int,
-                     count: torch.Tensor | None = None) -> torch.Tensor:
-    """Arc-length-uniform resample of each closed loop to n points.
+def resample_uniform(
+    center_wp: "wp.array",
+    out_wp: "wp.array",
+    n: int,
+    count_wp: "wp.array",
+    seg_wp: "wp.array | None" = None,
+    s_wp: "wp.array | None" = None,
+    device: str = "cpu",
+) -> None:
+    """Arc-length-uniform resample of each closed loop to n points — in-place.
 
     Matches track_gen.relaxation._resample_uniform within FP tolerance (~1e-4; the
     Warp float32 sqrt vs torch's differs by rounding, geometrically negligible).
     Two Warp kernels: scan (one thread per env, builds seg+cumulative s from points)
     then lookup (one thread per output point, linear-scan searchsorted + lerp).
-    center [E, N, 2] float32 -> [E, n, 2] float32.  n must equal N (== center.shape[1]).
 
-    count: optional int32 [E] tensor giving the number of real (non-NaN) points per env.
-        count=None (default): all E*N points are real; a full tensor (count[e]==n_max) is
-            built internally so the single count-aware kernel pair handles both paths.
-        count provided: resamples count[e] real points per env to count[e] arc-uniform
-            points; pads output beyond count[e] with NaN.
-        PARITY INVARIANT: count=full((E,), N) reproduces count=None bit-exactly.
-    Pure Warp (cpu+cuda), no torch compute.
+    All arrays are pre-allocated wp.array buffers; no torch/wp allocations occur.
+
+    Args:
+        center_wp: [E*n_max] wp.vec2f flat input centerline.
+        out_wp:    [E*n_max] wp.vec2f flat output buffer (written in-place).
+        n:         output point count per env (== n_max, the buffer stride).
+        count_wp:  [E] wp.int32 real point count per env.
+        seg_wp:    [E*n_max] wp.float32 scan scratch (allocated here if None).
+        s_wp:      [E*(n_max+1)] wp.float32 scan scratch (allocated here if None).
+        device:    Warp device string (e.g. "cpu", "cuda:0").
+
+    PARITY INVARIANT: count=full((E,), N) reproduces the former fixed-N behaviour
+    bit-exactly.  Pure Warp (cpu+cuda), zero torch compute.
     """
     _init()
-    E, n_max, _ = center.shape
-    assert n == n_max, "resample_uniform: n must equal center.shape[1]"
-    dev = str(center.device)
+    E = count_wp.shape[0]
+    n_max = n
     flat = E * n_max
 
-    if count is None:
-        count = torch.full((E,), n_max, dtype=torch.int32, device=center.device)
+    if seg_wp is None:
+        seg_wp = wp.empty(flat, dtype=wp.float32, device=device)
+    if s_wp is None:
+        s_wp = wp.empty(E * (n_max + 1), dtype=wp.float32, device=device)
 
-    cf = wp.from_torch(center.reshape(flat, 2).contiguous(), dtype=wp.vec2f)
-    seg_t = torch.empty(flat, device=center.device, dtype=torch.float32)
-    s_t = torch.empty(E * (n_max + 1), device=center.device, dtype=torch.float32)
-    out_t = torch.empty(flat, 2, device=center.device, dtype=torch.float32)
-    wp_seg = wp.from_torch(seg_t, dtype=wp.float32)
-    wp_s = wp.from_torch(s_t, dtype=wp.float32)
-    wp_out = wp.from_torch(out_t, dtype=wp.vec2f)
-    wp_count = wp.from_torch(count.contiguous(), dtype=wp.int32)
     wp.launch(_resample_scan_k, dim=E,
-              inputs=[cf, n_max, wp_count, wp_seg, wp_s], device=dev)
+              inputs=[center_wp, n_max, count_wp, seg_wp, s_wp], device=device)
     wp.launch(_resample_lookup_k, dim=flat,
-              inputs=[cf, wp_seg, wp_s, n_max, wp_count, wp_out], device=dev)
-    _sync(center.device)
-    return out_t.view(E, n, 2)
+              inputs=[center_wp, seg_wp, s_wp, n_max, count_wp, out_wp], device=device)
 
 
-def resample_constant_spacing(center: torch.Tensor, spacing: float, n_max: int):
+def resample_constant_spacing(
+    center: torch.Tensor,
+    spacing: float,
+    n_max: int,
+    out_wp: "wp.array | None" = None,
+    count_wp: "wp.array | None" = None,
+    seg_wp: "wp.array | None" = None,
+    s_wp: "wp.array | None" = None,
+):
     """Arc-length resample each fully-real closed loop to constant `spacing`, padded to
-    n_max with NaN. Returns (out [E, n_max, 2], count [E] long). Matches
-    geometry.arc_length_resample(points, spacing=spacing, n_max=n_max). Pure Warp (cpu+cuda).
+    n_max with NaN.  Matches geometry.arc_length_resample(points, spacing=spacing,
+    n_max=n_max). Pure Warp (cpu+cuda).
+
+    In-place mode (all pre-allocated buffers provided):
+        ``out_wp``   — [E*n_max] wp.vec2f written in-place (center output).
+        ``count_wp`` — [E] wp.int32 written in-place (real point count per env).
+        ``seg_wp``   — [E*N] wp.float32 scan scratch.
+        ``s_wp``     — [E*(N+1)] wp.float32 scan scratch.
+        Returns ``None`` (caller reads out_wp / count_wp directly).
+
+    Standalone / legacy mode (any buffer omitted → allocated here):
+        Returns ``(out [E, n_max, 2] torch.Tensor, count [E] long torch.Tensor)``
+        for backward-compatible callers (tests, standalone scripts).
 
     Note: ``count[e]`` is silently capped at ``n_max``. The caller MUST choose
     ``N_max >= max(perimeter) / spacing + 1`` across all envs, otherwise a track whose
@@ -1505,18 +1563,33 @@ def resample_constant_spacing(center: torch.Tensor, spacing: float, n_max: int):
     E, N, _ = center.shape
     dev = str(center.device)
     cf = wp.from_torch(center.reshape(E * N, 2).contiguous(), dtype=wp.vec2f)
-    seg = torch.empty(E * N, device=center.device, dtype=torch.float32)
-    s = torch.empty(E * (N + 1), device=center.device, dtype=torch.float32)
-    cnt = torch.empty(E, device=center.device, dtype=torch.int32)
-    out = torch.empty(E * n_max, 2, device=center.device, dtype=torch.float32)
+
+    # Standalone path: allocate any missing buffers (tests / direct callers).
+    _standalone = out_wp is None or count_wp is None
+    if out_wp is None:
+        out_torch = torch.empty(E * n_max, 2, device=center.device, dtype=torch.float32)
+        out_wp = wp.from_torch(out_torch, dtype=wp.vec2f)
+    if count_wp is None:
+        cnt_torch = torch.empty(E, device=center.device, dtype=torch.int32)
+        count_wp = wp.from_torch(cnt_torch, dtype=wp.int32)
+    if seg_wp is None:
+        seg_wp = wp.from_torch(
+            torch.empty(E * N, device=center.device, dtype=torch.float32), dtype=wp.float32)
+    if s_wp is None:
+        s_wp = wp.from_torch(
+            torch.empty(E * (N + 1), device=center.device, dtype=torch.float32), dtype=wp.float32)
+
     wp.launch(_cs_scan_k, dim=E, inputs=[cf, N, float(spacing), n_max,
-              wp.from_torch(seg, dtype=wp.float32), wp.from_torch(s, dtype=wp.float32),
-              wp.from_torch(cnt, dtype=wp.int32)], device=dev)
-    wp.launch(_cs_lookup_k, dim=E * n_max, inputs=[cf, wp.from_torch(seg, dtype=wp.float32),
-              wp.from_torch(s, dtype=wp.float32), N, float(spacing), n_max,
-              wp.from_torch(cnt, dtype=wp.int32), wp.from_torch(out, dtype=wp.vec2f)], device=dev)
+              seg_wp, s_wp, count_wp], device=dev)
+    wp.launch(_cs_lookup_k, dim=E * n_max, inputs=[cf, seg_wp, s_wp, N,
+              float(spacing), n_max, count_wp, out_wp], device=dev)
     _sync(center.device)
-    return out.view(E, n_max, 2), cnt.long()
+
+    if _standalone:
+        # Return torch tensors for backward-compatible callers (tests, standalone scripts).
+        out_t = wp.to_torch(out_wp)
+        cnt_t = wp.to_torch(count_wp)
+        return out_t.view(E, n_max, 2), cnt_t.long()
 
 
 def arc_length_resample_warp(points: torch.Tensor, num: int):
@@ -1913,13 +1986,33 @@ class _Scratch:
 
     Owned by TrackGenerator; threaded into inflate_warp on the owned path so the
     runtime generate() path makes zero per-call allocations for the converted stages.
+
+    Inflate / offset / frame-curvature / validity fields:
     area_a/area_b: [E] float32 accumulators for the offset shoelace kernel.
     kappa:         [E*N_max] float32 Menger curvature scratch for frame_curvature
                    (kappa is computed by the kernel but unused by the pipeline).
     w:             [E*N_max] float32 per-point half-width buffer for validity_inplace.
+
+    Resample / relax fields (added in M2 Inc 5):
+    cs_center:     [E*N_max] vec2f — constant-spacing resampled centerline output.
+    cs_seg:        [E*N_max] float32 — scan scratch shared by resample_constant_spacing
+                   and resample_uniform (sequential stages, safe to alias).
+    cs_s:          [E*(N_max+1)] float32 — cumulative arc-length scratch (same sharing).
+    count:         [E] int32 — real-point-count output of resample_constant_spacing;
+                   also threaded through relax → inflate as Track.count.
+    relaxed:       [E*N_max] vec2f — xpbd_solve output / resample_uniform input on the
+                   generate path (written by xpbd_solve, read-then-overwritten by
+                   resample_uniform which writes directly into out.center).
+    band:          [E] int32 — _band_l0_k output (excluded-neighbour half-window).
+    L0:            [E] float32 — _band_l0_k output (rest segment length per env).
+    xpbd_db:       [E*N_max] vec2f — xpbd_solve double-buffer (displacement scratch).
     """
 
-    __slots__ = ("area_a", "area_b", "kappa", "w")
+    __slots__ = (
+        "area_a", "area_b", "kappa", "w",
+        "cs_center", "cs_seg", "cs_s", "count",
+        "relaxed", "band", "L0", "xpbd_db",
+    )
 
     def __init__(
         self,
@@ -1927,11 +2020,27 @@ class _Scratch:
         area_b: "wp.array",
         kappa: "wp.array",
         w: "wp.array",
+        cs_center: "wp.array | None" = None,
+        cs_seg: "wp.array | None" = None,
+        cs_s: "wp.array | None" = None,
+        count: "wp.array | None" = None,
+        relaxed: "wp.array | None" = None,
+        band: "wp.array | None" = None,
+        L0: "wp.array | None" = None,
+        xpbd_db: "wp.array | None" = None,
     ) -> None:
         self.area_a = area_a
         self.area_b = area_b
         self.kappa = kappa
         self.w = w
+        self.cs_center = cs_center
+        self.cs_seg = cs_seg
+        self.cs_s = cs_s
+        self.count = count
+        self.relaxed = relaxed
+        self.band = band
+        self.L0 = L0
+        self.xpbd_db = xpbd_db
 
 
 def _inflate_warp_alloc(config):
@@ -1973,39 +2082,36 @@ def _inflate_warp_alloc(config):
         area_b=wp.zeros(E, dtype=wp.float32, device=dev),
         kappa=wp.empty(flat, dtype=wp.float32, device=dev),
         w=wp.empty(flat, dtype=wp.float32, device=dev),
+        # M2 Inc 5: resample + relax intermediates
+        cs_center=wp.empty(flat, dtype=wp.vec2f, device=dev),
+        cs_seg=wp.empty(flat, dtype=wp.float32, device=dev),
+        cs_s=wp.empty(E * (n_max + 1), dtype=wp.float32, device=dev),
+        count=wp.empty(E, dtype=wp.int32, device=dev),
+        relaxed=wp.empty(flat, dtype=wp.vec2f, device=dev),
+        band=wp.empty(E, dtype=wp.int32, device=dev),
+        L0=wp.empty(E, dtype=wp.float32, device=dev),
+        xpbd_db=wp.empty(flat, dtype=wp.vec2f, device=dev),
     )
     return track, scratch
 
 
-def _copy_torch_to_wp_vec2(dst: "wp.array", src: torch.Tensor) -> None:
-    """Copy a [K, 2] or [K*2] float32 torch tensor into a [K] vec2f wp.array."""
-    flat = src.reshape(-1, 2).contiguous()
-    wp.copy(dst, wp.from_torch(flat, dtype=wp.vec2f))
 
-
-def _copy_torch_to_wp_f32(dst: "wp.array", src: torch.Tensor) -> None:
-    """Copy a 1-D float32 torch tensor into a float32 wp.array."""
-    wp.copy(dst, wp.from_torch(src.contiguous(), dtype=wp.float32))
-
-
-def _copy_torch_to_wp_i32(dst: "wp.array", src: torch.Tensor) -> None:
-    """Copy a 1-D int32 torch tensor into an int32 wp.array."""
-    wp.copy(dst, wp.from_torch(src.to(torch.int32).contiguous(), dtype=wp.int32))
-
-
-def inflate_warp(center: torch.Tensor, config, out=None,
+def inflate_warp(center, config, out=None,
                  valid: torch.Tensor | None = None,
-                 count: torch.Tensor | None = None,
-                 scratch: "_Scratch | None" = None):
+                 count=None,
+                 scratch: "_Scratch | None" = None,
+                 _center_is_wp: bool = False):
     """Pure-Warp drop-in for inflation.inflate, supporting both fixed and constant_spacing.
 
     Composes the verified Warp wrappers in the same order as inflation.inflate:
     resample -> frame+curvature -> constant width -> offset -> validity -> arclength ->
     write results into out's wp.array Track buffers (or allocate a fresh Track).
 
+    resample_uniform writes DIRECTLY into out.center (in-place, zero copy).
+    All other stages use out.center as input (rs_wp = out.center).
     The offset stage writes DIRECTLY into out.outer/out.inner (in-place, zero copy).
-    Scratch buffers (area_a/area_b) are either passed in via ``scratch`` (the owned
-    TrackGenerator path, zero allocation) or allocated here (the out=None fresh path).
+    Scratch buffers (area_a/area_b/kappa/w) are either passed in via ``scratch`` (the
+    owned TrackGenerator path, zero allocation) or allocated here (the out=None path).
 
     count=None convenience path (generic fixed-N, not tied to output_mode):
         Requires center.shape[1] == config.num_points and no NaN. All sub-stages run
@@ -2014,20 +2120,28 @@ def inflate_warp(center: torch.Tensor, config, out=None,
 
     Constant-spacing path (count provided -- the pipeline always uses this):
         center is [E, n_max, 2] NaN-padded (real points in [0, count[e])).
-        n_max = center.shape[1]. count is threaded into every sub-stage so each
-        operates on only the real points and NaN-pads the rest. Track.count = count;
-        all output arrays are [E, n_max, ...] with NaN beyond count[e].
+        n_max = center.shape[1] (or count_wp.shape[0] when center is a wp.array).
+        count is threaded into every sub-stage so each operates on only the real points
+        and NaN-pads the rest. Track.count = count; all output arrays are [E, n_max, ...]
+        with NaN beyond count[e].
 
     Args:
-        center:  [E, N, 2] float32 centerline (fixed: no NaN, N==config.num_points;
-                 constant_spacing: NaN-padded, N==config.N_max).
-        config:  TrackGenConfig.
-        out:     Optional pre-allocated Track (wp.array fields). When None a fresh Track
-                 is allocated. Either way the Track is returned.
-        valid:   [E] bool generation flag; defaults to all-True.
-        count:   [E] int32 real point count per env. None -> fixed path (count==N).
-        scratch: Optional _Scratch with pre-allocated area_a/area_b. When None the
-                 scratch is allocated here (the out=None / standalone path).
+        center:      [E, N, 2] float32 centerline (torch.Tensor or wp.array [E*N] vec2f).
+                     When a torch.Tensor, the function builds a zero-copy wp.from_torch
+                     shim. When a wp.array (from the in-place generate path), used
+                     directly. In both cases, resample_uniform writes its output into
+                     out.center; all downstream stages read out.center.
+        config:      TrackGenConfig.
+        out:         Optional pre-allocated Track (wp.array fields). When None a fresh
+                     Track is allocated. Either way the Track is returned.
+        valid:       [E] bool generation flag; defaults to all-True.
+        count:       [E] real point count per env (torch.Tensor int or long, or wp.array
+                     int32). None -> fixed path (count==N). On the owned generate path
+                     this is scratch.count (a wp.array).
+        scratch:     Optional _Scratch with pre-allocated buffers. When None the scratch
+                     is allocated here (the out=None / standalone path).
+        _center_is_wp: Internal flag: center is already a flat wp.array [E*N] vec2f
+                     (set by the unowned generate path; skips wp.from_torch shim).
 
     Returns:
         track_gen.types.Track with wp.array fields. When ``out`` is provided the SAME
@@ -2038,14 +2152,31 @@ def inflate_warp(center: torch.Tensor, config, out=None,
     from .types import Track  # local import: keep warp_pipeline free of oracle modules
 
     _init()
-    E, n_max, _ = center.shape
-    dev = str(center.device)
+
+    # --- Resolve center shape / device from either torch.Tensor or wp.array ---
+    if _center_is_wp:
+        # center is a flat wp.array [E*n_max] vec2f from the unowned generate path.
+        center_wp_in = center  # type: ignore[assignment]
+        E = count.shape[0] if count is not None else center.shape[0]
+        # infer n_max from flat length
+        n_max = center.shape[0] // E
+        dev = center.device
+    elif isinstance(center, wp.array):
+        # center is a flat wp.array [E*n_max] vec2f from the owned generate path.
+        center_wp_in = center
+        E = count.shape[0]  # type: ignore[union-attr]
+        n_max = center.shape[0] // E
+        dev = center.device
+    else:
+        # center is a torch.Tensor [E, n_max, 2] — original API.
+        E, n_max, _ = center.shape
+        dev = str(center.device)
+        center_wp_in = None  # will be built below after we know flat
+
     hw = float(config.half_width)
     flat = E * n_max
 
-    # Allocate a fresh Track (and scratch) when no out buffer was provided.
-    # Done BEFORE the per-path resample so frame_curvature can write directly into
-    # out.tangent/out.normal (in-place, zero copy).
+    # --- Allocate Track + scratch when not pre-provided ---
     if out is None:
         out = Track(
             outer=wp.empty(flat, dtype=wp.vec2f, device=dev),
@@ -2074,84 +2205,94 @@ def inflate_warp(center: torch.Tensor, config, out=None,
             "(zero-allocation contract); pass scratch alongside out."
         )
 
+    # --- Build center_wp_in from torch tensor (standalone / test path) ---
+    if center_wp_in is None:
+        center_wp_in = wp.from_torch(
+            center.reshape(flat, 2).contiguous(), dtype=wp.vec2f)  # type: ignore[union-attr]
+
+    # --- Allocate resample scan scratch (seg/s) from _Scratch or standalone ---
+    if scratch.cs_seg is not None and scratch.cs_s is not None:
+        rs_seg_wp = scratch.cs_seg
+        rs_s_wp = scratch.cs_s
+    else:
+        # Standalone path (no full scratch): allocate small per-call temps.
+        rs_seg_wp = None
+        rs_s_wp = None
+
     if count is None:
-        # --- count=None convenience: a fixed-N, fully-finite centerline (every env keeps all
-        # N points). Not tied to any output_mode -- the pipeline always passes an explicit
-        # count now; this branch is for direct callers handing in a constant-N centerline. ---
-        assert center.shape[1] == config.num_points, "center N must equal config.num_points"
+        # --- count=None convenience: fixed-N, fully-finite centerline ---
+        if not isinstance(center, torch.Tensor):
+            raise ValueError(
+                "inflate_warp count=None path requires center as a torch.Tensor "
+                "(fixed-N convenience mode)"
+            )
+        assert center.shape[1] == config.num_points, "center N must equal config.num_points"  # type: ignore[index]
         N = n_max
 
-        # Build a full count tensor (== N for all envs) to pass to count-aware sub-stages.
-        # This is the parity path: operationally identical to calling them without count.
-        count_i32 = torch.empty(E, device=center.device, dtype=torch.int32)
-        wp.launch(_fill_i32_k, dim=E,
-                  inputs=[wp.from_torch(count_i32, dtype=wp.int32), N], device=dev)
-        count_arr = count_i32  # int32, used for sub-stage calls
+        # Build a full count wp.array (== N for all envs); allocate small temp.
+        count_i32_t = torch.empty(E, device=center.device, dtype=torch.int32)  # type: ignore[union-attr]
+        cnt_wp = wp.from_torch(count_i32_t, dtype=wp.int32)
+        wp.launch(_fill_i32_k, dim=E, inputs=[cnt_wp, N], device=dev)
 
-        # 1. arc-length-uniform resample; fixed mode -> every env keeps all N points.
-        rs = resample_uniform(center, N, count=count_arr)
+        # 1. resample_uniform: writes directly into out.center.
+        resample_uniform(center_wp_in, out.center, N, cnt_wp,
+                         seg_wp=rs_seg_wp, s_wp=rs_s_wp, device=dev)
+        _sync(dev)
 
-        # Per-point half-width (== hw) kernel-filled into scratch.w (flat [E*N] float32).
-        wp.launch(_fill_f32_k, dim=flat,
-                  inputs=[scratch.w, hw], device=dev)
+        # Per-point half-width (== hw) kernel-filled into scratch.w.
+        wp.launch(_fill_f32_k, dim=flat, inputs=[scratch.w, hw], device=dev)
 
-        # Track.count == N for all envs (as before); stored as int32.
-        track_count_i32 = count_i32
+        # Track.count == N for all envs; copy into out.count via a small kernel.
+        wp.launch(_fill_i32_k, dim=E, inputs=[out.count, N], device=dev)
 
     else:
         # --- Constant-spacing path: variable count per env, NaN-padded output ---
-        count_arr = count.to(torch.int32).contiguous()
+        if isinstance(count, wp.array):
+            cnt_wp = count  # already a wp.int32 array (owned generate path)
+        else:
+            count_i32 = count.to(torch.int32).contiguous()  # type: ignore[union-attr]
+            cnt_wp = wp.from_torch(count_i32, dtype=wp.int32)
 
-        # 1. arc-length-uniform resample within real points (NaN-pads beyond count[e]).
-        rs = resample_uniform(center, n_max, count=count_arr)
+        # 1. resample_uniform: writes directly into out.center.
+        resample_uniform(center_wp_in, out.center, n_max, cnt_wp,
+                         seg_wp=rs_seg_wp, s_wp=rs_s_wp, device=dev)
+        _sync(dev)
 
-        # Per-point half-width (== hw) kernel-filled into scratch.w (flat [E*n_max] float32).
-        wp.launch(_fill_f32_k, dim=flat,
-                  inputs=[scratch.w, hw], device=dev)
+        # Per-point half-width (== hw) kernel-filled into scratch.w.
+        wp.launch(_fill_f32_k, dim=flat, inputs=[scratch.w, hw], device=dev)
 
-        # Track.count == per-env real point count; stored as int32.
-        track_count_i32 = count_arr
+        # Track.count == per-env real point count; copy cnt_wp -> out.count.
+        wp.copy(out.count, cnt_wp)
 
     # 2. frame + curvature — in-place directly into out.tangent/out.normal.
-    # rs is still torch; wrap as a zero-copy wp view (no allocation).
-    rs_wp = wp.from_torch(rs.reshape(flat, 2).contiguous(), dtype=wp.vec2f)
-    cnt_wp = wp.from_torch(count_arr.contiguous(), dtype=wp.int32)
-    frame_curvature(rs_wp, out.tangent, out.normal, scratch.kappa, cnt_wp)
+    # out.center was written by resample_uniform above; use it directly as rs_wp.
+    frame_curvature(out.center, out.tangent, out.normal, scratch.kappa, cnt_wp)
 
     # 3. cumulative arc length + total length — in-place into out.arclen/out.length.
-    _arclength(rs_wp, out.arclen, out.length, cnt_wp)
+    _arclength(out.center, out.arclen, out.length, cnt_wp)
 
     # 4. offset to outer/inner borders — in-place directly into out.outer/out.inner.
-    # out.normal is already written in-place by frame_curvature; pass it directly
-    # (no wp.from_torch shim needed).
-    offset(rs_wp, out.normal, hw, out.outer, out.inner, scratch.area_a, scratch.area_b, cnt_wp)
+    # out.normal is already written in-place by frame_curvature; pass it directly.
+    offset(out.center, out.normal, hw, out.outer, out.inner,
+           scratch.area_a, scratch.area_b, cnt_wp)
 
     # 5. per-track validity gate (in-place: writes directly into out.valid).
-    # gen_valid as a wp.array; the generate path always passes valid != None.
     if valid is not None:
         gv_wp = wp.from_torch(valid.to(torch.int32).contiguous(), dtype=wp.int32)
     else:
         # Standalone / test path: allocate a small temp (not the hot generate path).
-        gv_t = torch.empty(E, device=center.device, dtype=torch.int32)
+        gv_t = torch.empty(E, device=dev, dtype=torch.int32)
         wp.launch(_fill_i32_k, dim=E,
                   inputs=[wp.from_torch(gv_t, dtype=wp.int32), 1], device=dev)
         gv_wp = wp.from_torch(gv_t, dtype=wp.int32)
 
-    # Border self_intersections is optional (config.validity_border_check, default off):
-    # it is redundant with the thickness/separation gate, so skip the two O(N^2) passes by
-    # passing has_border=0 (validity_inplace then sets border_ok all True for every env).
-    # When enabled, pass out.outer/out.inner directly — no wp.to_torch readback needed.
+    # Border self_intersections is optional (config.validity_border_check, default off).
     _bc = getattr(config, "validity_border_check", False)
     has_border = 1 if _bc else 0
 
     # validity_inplace writes into out.valid directly — no boundary copy needed.
-    validity_inplace(rs_wp, scratch.w, cnt_wp, gv_wp,
+    validity_inplace(out.center, scratch.w, cnt_wp, gv_wp,
                      out.outer, out.inner, has_border, n_max, out.valid, config)
-
-    # Boundary copy: torch stage results -> pre-allocated wp.array buffers.
-    # outer/inner/tangent/normal/arclen/length/valid are already written in-place; skip those.
-    _copy_torch_to_wp_vec2(out.center, rs.reshape(flat, 2))
-    _copy_torch_to_wp_i32(out.count, track_count_i32)
 
     return out
 
