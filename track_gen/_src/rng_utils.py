@@ -9,7 +9,12 @@ class PerEnvSeededRNG:
     def __init__(self, seeds: int | wp.array, num_envs: int, device: str):
         """Initialize the random number generator.
         Args:
-            seeds: The seeds for each environment (int scalar or wp.array of int32).
+            seeds: Per-env seeds. An int scalar seeds the whole BATCH: it expands to
+                distinct per-env seeds ``seed + arange(num_envs)`` so the batch is
+                reproducible AND diverse. (Each env's RNG state is ``wp.rand_init(seed)``
+                with no env-index folding, so identical per-env seeds would yield
+                identical tracks — hence the expansion.) Pass a wp.array of int32 to
+                control every env's seed explicitly.
             num_envs: The number of environments.
             device: The device to use."""
 
@@ -18,7 +23,9 @@ class PerEnvSeededRNG:
 
         # Instantiate buffers
         if isinstance(seeds, int):
-            self._seeds = wp.array(np.ones(num_envs) * seeds, dtype=wp.int32, device=device)
+            # Distinct per-env seeds -> diverse batch (a flat broadcast made every env
+            # identical, since the state is seeded purely from the seed value).
+            self._seeds = wp.array(seeds + np.arange(num_envs), dtype=wp.int32, device=device)
         else:
             self._seeds = seeds
 
