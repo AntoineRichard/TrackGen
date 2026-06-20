@@ -16,6 +16,27 @@ This is the endgame of the original "only Warp on the hot path" goal: the hot pa
 Warp end-to-end, with consumers converting to torch themselves via `wp.to_torch` (zero-copy,
 same-device) at the boundary.
 
+## Core principles (GPU-first, non-negotiable)
+
+1. **Pre-allocate once; stable pointers; update in place.** The generator owns its output
+   buffers (the `Track` `wp.array`s). They are allocated **once** at construction (sized
+   `[E, N_max]`) and the **same device pointers persist for the object's lifetime**. Each
+   `generate()`/`replay()` writes results into those buffers **in place** — it never
+   re-allocates and never swaps the pointer. A consumer therefore calls `wp.to_torch(track.center)`
+   **once**; because the torch view shares the underlying memory, it keeps reflecting every
+   subsequent run. Intermediate per-stage scratch is likewise pre-allocated once and reused —
+   **zero allocation in the per-call hot path**.
+   - *API consequence:* outputs are owned by a **stateful object** (`TrackGenerator`,
+     `CapturedTracks`); `generate()`/`replay()` return the **same** `Track` instance each call.
+2. **No readback in our code.** `track_gen` **serves `wp.array`** and stops there — consumers
+   convert to torch/numpy/whatever on their side. **No `wp.to_numpy`** anywhere in shipped
+   `track_gen/` (only with an explicit, justified exception). No `.numpy()`, no host copies on
+   the hot path.
+3. **numpy is init-only glue, owns no real operation.** numpy may appear **only** in one-time
+   construction (e.g. `wp.array(np.arange(num_envs))` to seed an index/seed buffer), executed
+   once per object — never inside `generate()`/`replay()` and never as a compute step. The
+   vestigial host numpy-RNG path is removed entirely (see §4).
+
 ## Non-goals
 
 - **Not** removing torch from the repo. The torch oracle (`tests/_oracle/`) stays torch —
@@ -46,12 +67,20 @@ rest). `TrackGenConfig` is **unchanged** (pure scalars, no tensors, no torch imp
 Consumers recover torch with `wp.to_torch(track.center)` (zero-copy on the same device).
 `types.py` drops `from torch import Tensor`.
 
-### 2. Allocation layer → Warp / numpy
+These buffers are **owned and pre-allocated by the generator** (Principle 1): the `Track`
+returned by `generate()` is the same instance every call, its `wp.array`s written in place.
+`Track` is a plain holder of persistent `wp.array`s — no per-call construction.
+
+### 2. Allocation layer → Warp (pre-allocated once)
 Every `torch.empty/full/zeros/empty_like` buffer in `warp_pipeline.py` / `warp_relax.py`
-becomes a `wp.zeros`/`wp.empty` device array (replacing the `torch.empty(...)` + `wp.from_torch`
-pair with a direct `wp.array`), or `numpy.full` for host-side scalar/count arrays. `torch.int/
-float/bool` dtype constants become `wp.int32`/`wp.float32`/`wp.bool` (or `np.*`). `torch.cuda.
-synchronize` → `wp.synchronize`. This is the bulk: trivial but high-volume (~25–30 sites).
+becomes a `wp.array` (the `torch.empty(...)` + `wp.from_torch` pair collapses to a direct
+device `wp.array`). **All such buffers — outputs AND per-stage scratch, including the per-track
+`count` array (device, kernel-consumed) — are pre-allocated once by the owning object and reused
+in place** (Principle 1); none are allocated per `generate()` call. `torch.int/float/bool` dtype
+constants become `wp.int32`/`wp.float32`/`wp.bool`; `torch.cuda.synchronize` → `wp.synchronize`.
+numpy is **not** used here (device data is `wp.array`); it appears only in one-time index/seed
+setup (§4). This is the bulk: trivial-but-high-volume (~25–30 sites) plus the lift-allocations-
+to-construction restructure.
 
 ### 3. Real torch ops → Warp / numpy / deletion
 - `_mean_seg_len_torch` (dead on the Warp path) → **delete** (and the `import torch` it forces).
@@ -60,13 +89,18 @@ synchronize` → `wp.synchronize`. This is the bulk: trivial but high-volume (~2
 - Scattered `.long()`/`.bool()`/`.view()`/`.contiguous()` → `wp` dtype/shape equivalents or
   `wp.to_numpy(...).astype(...)` for host-side counts.
 
-### 4. `PerEnvSeededRNG` → torch-free
-`rng_utils.py` drops `from torch import …` and the torch-facing surface
-(`seeds_torch`, `states_torch`, `sample_*_torch`, the torch branch of `set_seeds`). It keeps
-the warp-native (`seeds_warp`, `sample_*_warp`) + numpy methods. The pipeline already uses the
-warp path, so the runtime is unaffected. **Callers that needed torch samples** — the oracle
-generators (`tests/_oracle/generators.py`) and `_experimental/fourier.py` — wrap the warp/numpy
-samplers with `wp.to_torch(...)` at their call sites (they are dev/test-side, torch-allowed).
+### 4. `PerEnvSeededRNG` → torch-free, warp-only sampling
+`rng_utils.py` drops `from torch import …` and the torch surface (`seeds_torch`,
+`states_torch`, `sample_*_torch`, the torch branch of `set_seeds`) **and the vestigial host
+numpy-RNG path** (`_numpy_rngs`, `np.random.default_rng`, `initialize_numpy_rng`,
+`sample_*_numpy`, the numpy branch of `set_seeds`). What remains: the **warp-native** samplers
+(`sample_*_warp`) the pipeline already uses, plus `seeds_warp`/`states_warp`. numpy survives in
+this file **only** as one-time construction glue — `wp.array(np.arange(num_envs))` /
+`wp.array(np.ones(num_envs)*seeds)` in `__init__`, executed once (Principle 3). **Callers that
+needed torch samples** — the oracle generators (`tests/_oracle/generators.py`) and
+`_experimental/fourier.py` — switch to `wp.to_torch(rng.sample_*_warp(...))` at their (dev-side)
+call sites; the values are identical (the torch samplers were already `wp.to_torch` of the warp
+ones). The plan verifies the warp samplers exist for every sampler the oracle/Fourier needs.
 
 ### 5. CUDA-graph path → Warp-native capture
 With the glue gone, `generate_tracks_warp_graph` no longer needs `torch.cuda.CUDAGraph` +
@@ -132,12 +166,22 @@ Each phase is its own implementation plan.
 - `python -c "import sys, track_gen; assert 'torch' not in sys.modules"` (fresh interpreter) —
   the runtime is torch-free.
 - `pip install -e .` with **torch absent** still imports `track_gen` and runs a CPU generation.
+- **`grep -rn "wp.to_numpy\|\.numpy()\|np\." track_gen/` shows numpy only in one-time `__init__`
+  setup** — zero numpy and zero readback in any `generate()`/`replay()`/hot-path code path; the
+  numpy-RNG path is gone.
+- **Stable pointers:** a test calls `generate()` twice and asserts the `Track` `wp.array`s have
+  the **same `.ptr`** both calls (buffers reused in place, not re-allocated), and that a
+  `wp.to_torch(track.center)` taken after the first call reflects the second call's values.
 - Phase B: graph capture/replay equals eager output (positions allclose ~1e-4; valid/count
   exact) on `cuda`.
 
 ## Open items resolved
 
 - Track type → `wp.array` (not numpy: numpy would force host copies for CUDA outputs).
+- Output + scratch buffers → **pre-allocated once, stable pointers, updated in place**; owned
+  by a stateful object; `generate()`/`replay()` return the same `Track`. Zero per-call alloc.
+- numpy → **init-only host glue, owns no real op**; numpy-RNG path removed; **no `wp.to_numpy`
+  / readback in `track_gen/`** (the boundary serves `wp.array`; consumers convert).
 - Fourier → left in `track_gen/_experimental/` (torch, dev-only-importable).
 - Test validation → `wp.to_torch` at the boundary; oracle stays torch.
 - torch → `dev` dependency; scipy → `dev`; core = `numpy`, `warp-lang`.
