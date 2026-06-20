@@ -1743,6 +1743,51 @@ def validity(center: torch.Tensor, w: torch.Tensor, count: torch.Tensor,
     return out_t.bool()
 
 
+def validity_inplace(
+    center_wp: "wp.array",
+    w_wp: "wp.array",
+    count_wp: "wp.array",
+    gen_valid_wp: "wp.array",
+    outer_wp: "wp.array",
+    inner_wp: "wp.array",
+    has_border: int,
+    n_max: int,
+    out_valid: "wp.array",
+    config,
+) -> None:
+    """In-place validity gate: writes directly into out_valid ([E] int32 wp.array). Zero alloc.
+
+    All arguments are wp.arrays. has_border=0 means the border self-intersection check is
+    skipped (outer_wp/inner_wp are ignored by the kernel). n_max must be passed explicitly.
+
+    Args:
+        center_wp:    [E*n_max] vec2f resampled centerline (flat).
+        w_wp:         [E*n_max] float32 per-point half-width (flat).
+        count_wp:     [E] int32 real-point count per env.
+        gen_valid_wp: [E] int32 generation flag (0/1).
+        outer_wp:     [E*n_max] vec2f outer border (flat); ignored when has_border==0.
+        inner_wp:     [E*n_max] vec2f inner border (flat); ignored when has_border==0.
+        has_border:   int flag (1 -> run border self-intersection check, 0 -> skip).
+        n_max:        int stride per env in the flat arrays.
+        out_valid:    [E] int32 wp.array to write into (e.g. out.valid).
+        config:       TrackGenConfig (uses half_width, turning_tol, w_floor, relax_tol).
+    """
+    _init()
+    E = count_wp.shape[0]
+    wp.launch(
+        _validity_k, dim=E,
+        inputs=[
+            center_wp, w_wp, count_wp, gen_valid_wp, outer_wp, inner_wp,
+            int(has_border), int(n_max),
+            float(config.half_width), float(config.turning_tol),
+            float(config.w_floor), float(config.relax_tol),
+            out_valid,
+        ],
+        device=str(out_valid.device),
+    )
+    _sync(out_valid.device)
+
+
 def _arclength(
     center_wp: "wp.array",
     out_arclen: "wp.array",
@@ -1871,19 +1916,22 @@ class _Scratch:
     area_a/area_b: [E] float32 accumulators for the offset shoelace kernel.
     kappa:         [E*N_max] float32 Menger curvature scratch for frame_curvature
                    (kappa is computed by the kernel but unused by the pipeline).
+    w:             [E*N_max] float32 per-point half-width buffer for validity_inplace.
     """
 
-    __slots__ = ("area_a", "area_b", "kappa")
+    __slots__ = ("area_a", "area_b", "kappa", "w")
 
     def __init__(
         self,
         area_a: "wp.array",
         area_b: "wp.array",
         kappa: "wp.array",
+        w: "wp.array",
     ) -> None:
         self.area_a = area_a
         self.area_b = area_b
         self.kappa = kappa
+        self.w = w
 
 
 def _inflate_warp_alloc(config):
@@ -1924,6 +1972,7 @@ def _inflate_warp_alloc(config):
         area_a=wp.zeros(E, dtype=wp.float32, device=dev),
         area_b=wp.zeros(E, dtype=wp.float32, device=dev),
         kappa=wp.empty(flat, dtype=wp.float32, device=dev),
+        w=wp.empty(flat, dtype=wp.float32, device=dev),
     )
     return track, scratch
 
@@ -2014,6 +2063,7 @@ def inflate_warp(center: torch.Tensor, config, out=None,
                 area_a=wp.zeros(E, dtype=wp.float32, device=dev),
                 area_b=wp.zeros(E, dtype=wp.float32, device=dev),
                 kappa=wp.empty(flat, dtype=wp.float32, device=dev),
+                w=wp.empty(flat, dtype=wp.float32, device=dev),
             )
     else:
         # Owned path: the caller (TrackGenerator / graph capture) MUST pass pre-allocated
@@ -2041,11 +2091,9 @@ def inflate_warp(center: torch.Tensor, config, out=None,
         # 1. arc-length-uniform resample; fixed mode -> every env keeps all N points.
         rs = resample_uniform(center, N, count=count_arr)
 
-        # Per-point half-width (== hw) kernel-filled over E*N real points.
-        w = torch.empty(E * N, device=center.device, dtype=torch.float32)
-        wp.launch(_fill_f32_k, dim=E * N,
-                  inputs=[wp.from_torch(w, dtype=wp.float32), hw], device=dev)
-        w = w.view(E, N)
+        # Per-point half-width (== hw) kernel-filled into scratch.w (flat [E*N] float32).
+        wp.launch(_fill_f32_k, dim=flat,
+                  inputs=[scratch.w, hw], device=dev)
 
         # Track.count == N for all envs (as before); stored as int32.
         track_count_i32 = count_i32
@@ -2057,11 +2105,9 @@ def inflate_warp(center: torch.Tensor, config, out=None,
         # 1. arc-length-uniform resample within real points (NaN-pads beyond count[e]).
         rs = resample_uniform(center, n_max, count=count_arr)
 
-        # Per-point half-width (== hw) over E*n_max slots.
-        w = torch.empty(E * n_max, device=center.device, dtype=torch.float32)
-        wp.launch(_fill_f32_k, dim=E * n_max,
-                  inputs=[wp.from_torch(w, dtype=wp.float32), hw], device=dev)
-        w = w.view(E, n_max)
+        # Per-point half-width (== hw) kernel-filled into scratch.w (flat [E*n_max] float32).
+        wp.launch(_fill_f32_k, dim=flat,
+                  inputs=[scratch.w, hw], device=dev)
 
         # Track.count == per-env real point count; stored as int32.
         track_count_i32 = count_arr
@@ -2080,34 +2126,31 @@ def inflate_warp(center: torch.Tensor, config, out=None,
     # (no wp.from_torch shim needed).
     offset(rs_wp, out.normal, hw, out.outer, out.inner, scratch.area_a, scratch.area_b, cnt_wp)
 
-    # 5. per-track validity gate.
+    # 5. per-track validity gate (in-place: writes directly into out.valid).
+    # gen_valid as a wp.array; the generate path always passes valid != None.
     if valid is not None:
-        gen_valid = valid
+        gv_wp = wp.from_torch(valid.to(torch.int32).contiguous(), dtype=wp.int32)
     else:
-        gen_valid_i32 = torch.empty(E, device=center.device, dtype=torch.int32)
+        # Standalone / test path: allocate a small temp (not the hot generate path).
+        gv_t = torch.empty(E, device=center.device, dtype=torch.int32)
         wp.launch(_fill_i32_k, dim=E,
-                  inputs=[wp.from_torch(gen_valid_i32, dtype=wp.int32), 1], device=dev)
-        gen_valid = gen_valid_i32
+                  inputs=[wp.from_torch(gv_t, dtype=wp.int32), 1], device=dev)
+        gv_wp = wp.from_torch(gv_t, dtype=wp.int32)
+
     # Border self_intersections is optional (config.validity_border_check, default off):
     # it is redundant with the thickness/separation gate, so skip the two O(N^2) passes by
-    # passing None borders (validity then sets border_ok all True).
+    # passing has_border=0 (validity_inplace then sets border_ok all True for every env).
+    # When enabled, pass out.outer/out.inner directly — no wp.to_torch readback needed.
     _bc = getattr(config, "validity_border_check", False)
-    if _bc:
-        # TODO(M2: validity stage conversion): replace this wp.to_torch readback with the
-        # warp-native self_intersections stage so the border check stays zero-readback.
-        # wp.to_torch gives a zero-copy view of the in-place written outer/inner buffers.
-        # Only materialise these views when the border check is actually active.
-        outer_th = wp.to_torch(out.outer).view(E, n_max, 2)
-        inner_th = wp.to_torch(out.inner).view(E, n_max, 2)
-    else:
-        outer_th = None
-        inner_th = None
-    valid_out = validity(rs, w, count_arr, gen_valid, config, outer_th, inner_th)
+    has_border = 1 if _bc else 0
+
+    # validity_inplace writes into out.valid directly — no boundary copy needed.
+    validity_inplace(rs_wp, scratch.w, cnt_wp, gv_wp,
+                     out.outer, out.inner, has_border, n_max, out.valid, config)
 
     # Boundary copy: torch stage results -> pre-allocated wp.array buffers.
-    # outer/inner/tangent/normal/arclen/length are already written in-place; skip those.
+    # outer/inner/tangent/normal/arclen/length/valid are already written in-place; skip those.
     _copy_torch_to_wp_vec2(out.center, rs.reshape(flat, 2))
-    _copy_torch_to_wp_i32(out.valid, valid_out.to(torch.int32))
     _copy_torch_to_wp_i32(out.count, track_count_i32)
 
     return out
