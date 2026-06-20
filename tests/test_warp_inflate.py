@@ -79,25 +79,29 @@ def test_inflate_warp_matches_oracle(dev):
     assert (count >= 3).all()
 
     # The Warp inflate re-resamples its real points (resample_uniform) BEFORE building the
-    # frame/offset, so the oracle reference is its stages applied to got.center (the SAME
-    # resampled centerline). center is fully count-aware on both sides; arclen/length too.
-    # got.center is wp.array [E*N] vec2f; reshape to [E, N, 2] torch for oracle.
+    # frame/offset. The oracle reference for center is therefore the independent re-sample
+    # of cs_center: rs_ref = resample_uniform(cs_center, ..., count=count).
+    # We compute rs_ref here (from the INPUT, not from got.center) and use it as the
+    # oracle for all field comparisons below — this is the real cross-check.
     import warp as wp
     E = 2
     n_max = config.N_max
-    rs_wp = wp.to_torch(got.center).view(E, n_max, 2)   # [E, N, 2] torch
-    T, Nrm, kappa = inflation._frame_curvature_stage(rs_wp)
-    w = inflation._width_stage(rs_wp, kappa, config)
-    outer, inner = inflation._offset_stage(rs_wp, Nrm, w)
-    arclen, length = inflation._arclength(rs_wp, count)
+    count_i32 = count.to(torch.int32)
+    rs_ref = wpl.resample_uniform(cs_center, n_max, count=count_i32)  # [E, N, 2] torch
+    rs_wp = wp.to_torch(got.center).view(E, n_max, 2)   # [E, N, 2] torch (from output)
+    T, Nrm, kappa = inflation._frame_curvature_stage(rs_ref)
+    w = inflation._width_stage(rs_ref, kappa, config)
+    outer, inner = inflation._offset_stage(rs_ref, Nrm, w)
+    arclen, length = inflation._arclength(rs_ref, count)
 
     for e in range(2):
         c = int(count[e].item())
 
-        # center: count-aware on both sides -> identical real points, NaN padding beyond.
-        center_e = rs_wp[e]   # [N, 2] torch (already reshaped from got.center)
-        assert torch.allclose(center_e[:c], rs_wp[e, :c], atol=1e-4), f"center env{e} on {dev}"
-        assert torch.isnan(center_e[c:]).all(), f"center pad env{e} on {dev}"
+        # center: inflate_warp stores resample_uniform(cs_center) in Track.center.
+        # Cross-check the output against the independently-computed rs_ref (derived from
+        # the INPUT, not from got.center itself — avoids the tautological self-comparison).
+        assert torch.allclose(rs_wp[e, :c], rs_ref[e, :c], atol=1e-4), f"center env{e} on {dev}"
+        assert torch.isnan(rs_wp[e, c:]).all(), f"center pad env{e} on {dev}"
 
         # tangent/normal/outer/inner: oracle is count-aware everywhere EXCEPT the two seam
         # points (0 and c-1), which its non-count-aware central difference poisons with NaN.

@@ -99,7 +99,11 @@ def test_generate_reuses_output_buffers():
     # Register a persistent torch view that shares the same memory.
     view = wp.to_torch(t1.center)
 
-    # Second generate call — must return the identical Track instance.
+    # Clobber the shared buffer via the view so we can detect in-place overwrite.
+    view.fill_(-999.0)
+
+    # Second generate call — must return the identical Track instance AND write new
+    # values into the same buffer (overwriting the sentinel we just wrote).
     t2 = gen.generate(E)
 
     assert t2 is t1, "generate() must return the same Track object every call"
@@ -109,3 +113,6 @@ def test_generate_reuses_output_buffers():
     view2 = wp.to_torch(t2.center)
     assert view.data_ptr() == view2.data_ptr(), \
         "pre-registered torch view must share the same buffer as t2.center"
+    # In-place write proof: generate() must have overwritten the -999 sentinel.
+    assert not torch.all(view == -999.0), \
+        "generate() must overwrite the shared buffer in place (sentinel not cleared)"
