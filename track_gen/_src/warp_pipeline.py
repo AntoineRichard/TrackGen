@@ -13,7 +13,10 @@ from __future__ import annotations
 
 import math
 
-from . import warp_relax  # pure-Warp XPBD solve (cpu+cuda); part of the pure-Warp impl
+from . import warp_relax  # pure-Warp XPBD setup + solve (cpu+cuda); part of the pure-Warp impl
+# _separation_band is defined in warp_relax (relaxation owns the band definition); it is
+# imported into this module's namespace so the _validity_k kernel can resolve the @wp.func.
+from .warp_relax import _separation_band  # noqa: F401  (used inside _validity_k)
 
 import warp as wp
 
@@ -163,16 +166,6 @@ def _frame_k(c: wp.array(dtype=wp.vec2f), n_max: int,
     area = 0.5 * wp.abs(cross)
     denom = wp.max(wp.length(a) * wp.length(bb) * wp.length(cc), 1.0e-12)
     kappa[t] = 4.0 * area / denom
-
-@wp.func
-def _separation_band(l0: float, two_hw: float) -> int:
-    # Excluded-neighbour half-window for the XPBD separation pass and the thickness
-    # gate: round(2*half_width / L0).clamp_min(1), where L0 is the mean segment length.
-    # The divisor is floored at 1e-9 to bound the ratio, and the isfinite guard maps a
-    # NaN/inf ratio (invalid NaN-centerline envs) to band 1. Shared by _band_l0_k and
-    # _validity_k so the band definition lives in exactly one place.
-    bf = two_hw / wp.max(l0, float(1.0e-9))
-    return wp.where(wp.isfinite(bf), wp.max(int(wp.round(bf)), 1), 1)
 
 @wp.func
 def _ccw(ox: float, oy: float, px: float, py: float, qx: float, qy: float) -> float:
@@ -949,32 +942,6 @@ def _or_update_k(accept: wp.array(dtype=wp.int32), valid: wp.array(dtype=wp.int3
     if accept[e] != 0:
         valid[e] = 1
 
-@wp.kernel
-def _band_l0_k(
-    center: wp.array(dtype=wp.vec2f),
-    n_max: int,
-    two_hw: float,
-    band_out: wp.array(dtype=wp.int32),
-    l0_out: wp.array(dtype=wp.float32),
-    count: wp.array(dtype=wp.int32),
-):
-    # One thread per env e. Count-aware: loop over count[e] real points, base e*n_max,
-    # wrap index (i+1)%count[e]. L0 = perimeter/count[e] (mean segment length). The band
-    # is _separation_band(L0, 2*hw); L0 itself may stay NaN for invalid (NaN-centerline)
-    # envs (that flows untouched into xpbd, which propagates the NaN), while the band's
-    # isfinite guard maps such envs to band 1.
-    # PARITY: when count[e]==n_max for all e, produces identical output to the former
-    # fixed-N kernel (same loop bounds, same formula).
-    e = wp.tid()
-    base = e * n_max
-    cn = count[e]
-    peri = float(0.0)
-    for i in range(cn):
-        peri += wp.length(center[base + (i + 1) % cn] - center[base + i])
-    l0 = peri / float(cn)
-    l0_out[e] = l0
-    band_out[e] = _separation_band(l0, two_hw)
-
 def corner_count_sample_inplace(seeds_wp, attempt, config, out_count):
     """In-place: writes per-env corner counts into out_count ([E] int32 wp.array). Zero alloc."""
     _init()
@@ -1207,9 +1174,6 @@ def _run_pipeline(config, seed_buf_wp: wp.array, out: "Track", scratch: "_Scratc
     Returns:
         out (the same Track instance).
     """
-    E = scratch.gen_count.shape[0]
-    dev = str(scratch.gen_centerline.device)
-    hw = float(config.half_width)
     n_max = int(config.N_max)
 
     # 1. Generate centerline in-place.
@@ -1231,13 +1195,11 @@ def _run_pipeline(config, seed_buf_wp: wp.array, out: "Track", scratch: "_Scratc
     # the constant-spacing centerline directly. The branch is resolved at capture time,
     # so the captured graph is fixed and allocation-free either way.
     if config.relax_enable:
-        # 3. Band / L0 computation in-place.
-        wp.launch(_band_l0_k, dim=E, inputs=[scratch.cs_center, n_max, 2.0 * hw,
-                  scratch.band, scratch.L0, scratch.count], device=dev)
-        if config.relax_band is not None:
-            wp.launch(_fill_i32_k, dim=E, inputs=[scratch.band,
-                      int(config.relax_band)], device=dev)
-        _sync(dev)
+        # 3. Relaxation setup: band / L0 (the relax module owns its own setup).
+        warp_relax.band_l0_inplace(
+            scratch.cs_center, n_max, scratch.band, scratch.L0,
+            scratch.count, config, capturing=_CAPTURING,
+        )
 
         # 4. XPBD relaxation in-place. Thread the pipeline's capture state in explicitly
         # so warp_relax decides its host-sync without reaching back into this module.

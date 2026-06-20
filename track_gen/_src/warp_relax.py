@@ -1,10 +1,11 @@
-"""Fused NVIDIA Warp XPBD relaxation kernels.
+"""Fused NVIDIA Warp XPBD relaxation: setup + solve.
 
-``xpbd_solve_inplace`` runs the full fixed-iteration XPBD solve (separation + spacing +
-bending, double-buffered) as fused Warp kernels on BOTH the Warp ``cpu`` device and
-``cuda`` — this is the pipeline's relaxation stage. It is strictly in-place and
-zero-alloc per call: all buffers (input centerline, relaxed output, displacement
-double-buffer, band, L0, count) are pre-allocated by the caller.
+This module owns the whole relaxation concern. ``band_l0_inplace`` precomputes the
+per-env separation band and rest length (the relaxation SETUP) from the centerline;
+``xpbd_solve_inplace`` then runs the full fixed-iteration XPBD solve (separation +
+spacing + bending, double-buffered). Both run as fused Warp kernels on BOTH the Warp
+``cpu`` device and ``cuda``, are strictly in-place and zero-alloc per call (all buffers
+are pre-allocated by the caller), and import only ``warp`` — never the pipeline.
 """
 from __future__ import annotations
 
@@ -12,6 +13,42 @@ import warp as wp
 
 _INITED = False
 
+
+@wp.func
+def _separation_band(l0: float, two_hw: float) -> int:
+    # Excluded-neighbour half-window for the XPBD separation pass and the thickness
+    # gate: round(2*half_width / L0).clamp_min(1), where L0 is the mean segment length.
+    # The divisor is floored at 1e-9 to bound the ratio, and the isfinite guard maps a
+    # NaN/inf ratio (invalid NaN-centerline envs) to band 1. Shared by _band_l0_k (here)
+    # and the pipeline's _validity_k so the band definition lives in exactly one place.
+    bf = two_hw / wp.max(l0, float(1.0e-9))
+    return wp.where(wp.isfinite(bf), wp.max(int(wp.round(bf)), 1), 1)
+
+@wp.kernel
+def _band_l0_k(
+    center: wp.array(dtype=wp.vec2f),
+    n_max: int,
+    two_hw: float,
+    band_out: wp.array(dtype=wp.int32),
+    l0_out: wp.array(dtype=wp.float32),
+    count: wp.array(dtype=wp.int32),
+):
+    # One thread per env e. Count-aware: loop over count[e] real points, base e*n_max,
+    # wrap index (i+1)%count[e]. L0 = perimeter/count[e] (mean segment length). The band
+    # is _separation_band(L0, 2*hw); L0 itself may stay NaN for invalid (NaN-centerline)
+    # envs (that flows untouched into xpbd, which propagates the NaN), while the band's
+    # isfinite guard maps such envs to band 1.
+    # PARITY: when count[e]==n_max for all e, produces identical output to the former
+    # fixed-N kernel (same loop bounds, same formula).
+    e = wp.tid()
+    base = e * n_max
+    cn = count[e]
+    peri = float(0.0)
+    for i in range(cn):
+        peri += wp.length(center[base + (i + 1) % cn] - center[base + i])
+    l0 = peri / float(cn)
+    l0_out[e] = l0
+    band_out[e] = _separation_band(l0, two_hw)
 
 @wp.kernel
 def _disp_kernel(center: wp.array(dtype=wp.vec2f), band: wp.array(dtype=wp.int32),
@@ -143,6 +180,52 @@ def xpbd_solve_inplace(
     # records stream ordering, so it is unnecessary on replay too). The caller passes
     # its capture state in -- this module never reads the pipeline's _CAPTURING global.
     if not capturing:
+        wp.synchronize()
+
+
+@wp.kernel
+def _band_fill_k(arr: wp.array(dtype=wp.int32), v: int):
+    # One thread per element: constant int fill (relax_band override).
+    arr[wp.tid()] = v
+
+
+def band_l0_inplace(
+    center_wp: "wp.array",
+    n_max: int,
+    band_wp: "wp.array",
+    l0_wp: "wp.array",
+    count_wp: "wp.array",
+    config,
+    capturing: bool = False,
+) -> None:
+    """Relaxation setup — precompute the per-env separation band + rest length L0.
+
+    Writes ``band_wp`` (excluded-neighbour half-window) and ``l0_wp`` (mean segment
+    length) in place from the centerline. ``config.relax_band`` (when not None) overrides
+    every env's band with that constant. Strict in-place, zero per-call allocation.
+
+    Args:
+        center_wp:  [E*n_max] wp.vec2f flat centerline (NaN-padded beyond count[e]).
+        n_max:      int buffer stride (== total points per env slot).
+        band_wp:    [E] wp.int32 output — separation band per env.
+        l0_wp:      [E] wp.float32 output — rest segment length per env.
+        count_wp:   [E] wp.int32 real bead count per env.
+        config:     TrackGenConfig (uses half_width, relax_band).
+        capturing:  True while a CUDA graph is being captured -> skip the host sync.
+    """
+    global _INITED
+    if not _INITED:
+        wp.init()
+        _INITED = True
+
+    E = count_wp.shape[0]
+    dev = str(center_wp.device)
+    two_hw = 2.0 * float(config.half_width)
+    wp.launch(_band_l0_k, dim=E,
+              inputs=[center_wp, n_max, two_hw, band_wp, l0_wp, count_wp], device=dev)
+    if config.relax_band is not None:
+        wp.launch(_band_fill_k, dim=E, inputs=[band_wp, int(config.relax_band)], device=dev)
+    if not capturing and "cuda" in dev:
         wp.synchronize()
 
 
