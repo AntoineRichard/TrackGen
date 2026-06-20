@@ -2073,14 +2073,13 @@ def inflate_warp(center: torch.Tensor, config, out=None,
                 area_a=wp.zeros(E, dtype=wp.float32, device=dev),
                 area_b=wp.zeros(E, dtype=wp.float32, device=dev),
             )
-
-    # scratch must be set by now (either passed in or freshly allocated above).
-    # If out was provided but scratch was not (shouldn't happen in normal use, but
-    # be defensive), allocate scratch here too.
-    if scratch is None:
-        scratch = _Scratch(
-            area_a=wp.zeros(E, dtype=wp.float32, device=dev),
-            area_b=wp.zeros(E, dtype=wp.float32, device=dev),
+    else:
+        # Owned path: the caller (TrackGenerator / graph capture) MUST pass pre-allocated
+        # scratch. Allocating it here would silently break the zero-per-call-allocation
+        # contract, so fail loudly instead.
+        assert scratch is not None, (
+            "inflate_warp(out=...) requires a pre-allocated scratch=_Scratch(...) "
+            "(zero-allocation contract); pass scratch alongside out."
         )
 
     # 4. offset to outer/inner borders — in-place directly into out.outer/out.inner.
@@ -2105,6 +2104,8 @@ def inflate_warp(center: torch.Tensor, config, out=None,
     # passing None borders (validity then sets border_ok all True).
     _bc = getattr(config, "validity_border_check", False)
     if _bc:
+        # TODO(M2: validity stage conversion): replace this wp.to_torch readback with the
+        # warp-native self_intersections stage so the border check stays zero-readback.
         # wp.to_torch gives a zero-copy view of the in-place written outer/inner buffers.
         # Only materialise these views when the border check is actually active.
         outer_th = wp.to_torch(out.outer).view(E, n_max, 2)
