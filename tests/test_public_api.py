@@ -22,3 +22,19 @@ def test_oracle_internals_are_not_public():
                  "safe_normalize", "polygon_area", "Centerline", "warp_pipeline",
                  "generate_tracks_warp"):
         assert not hasattr(track_gen, gone), f"track_gen.{gone} should not be public"
+
+
+def test_import_track_gen_pulls_no_torch():
+    # The shipped runtime is pure NVIDIA Warp + numpy; torch is a dev-only dependency
+    # (tests + the torch oracle). `import track_gen` must NOT pull torch into sys.modules.
+    # Fresh interpreter, because other tests in this session import torch.
+    import subprocess
+    import sys
+
+    code = (
+        "import sys, track_gen\n"
+        "leaked = sorted(m for m in sys.modules if m == 'torch' or m.startswith('torch.'))\n"
+        "assert not leaked, leaked\n"
+    )
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr

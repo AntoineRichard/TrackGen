@@ -7,11 +7,13 @@ name = "track_gen"
 version = "0.1.0"
 description = "GPU-batched race-track generator with centerline relaxation."
 requires-python = ">=3.10"
-# Warp-first: warp-lang is a core dependency, not an optional extra.
-dependencies = ["torch", "scipy", "numpy", "warp-lang"]
+# Warp-native runtime: the shipped package is pure NVIDIA Warp + numpy. torch and scipy
+# are NOT runtime deps — they are used only by the test suite + the torch oracle (tests/_oracle)
+# and the experimental Fourier generator, so they live in the dev extra.
+dependencies = ["numpy", "warp-lang"]
 
 [project.optional-dependencies]
-dev = ["pytest", "matplotlib"]
+dev = ["pytest", "matplotlib", "scipy", "torch"]
 ui = ["gradio"]
 
 [tool.setuptools.packages.find]
