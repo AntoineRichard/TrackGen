@@ -14,6 +14,8 @@ from tests._warp_compare import (  # noqa: E402
     to_t, thickness, self_intersections, turning_number, validity, xpbd_solve,
 )
 from track_gen._src.types import TrackGenConfig  # noqa: E402
+from track_gen._src.track_generator import TrackGenerator  # noqa: E402
+from track_gen._src.rng_utils import PerEnvSeededRNG  # noqa: E402
 
 DEVS = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
 
@@ -32,13 +34,18 @@ def _pad(center, n_max):
     return buf, count
 
 
-def _offset(center, Nrm, half_width, count=None):
-    """Test helper: allocates buffers and calls the in-place wpl.offset, returns torch tensors.
+def _resample_cs_wp(src_t: torch.Tensor, spacing: float, n_max: int):
+    """Constant-spacing resample from a torch tensor; returns (out_t, cnt_t) tensors."""
+    E, N, _ = src_t.shape
+    dev = str(src_t.device)
+    cf = wp.from_torch(src_t.reshape(E * N, 2).contiguous(), dtype=wp.vec2f)
+    count_wp = wp.empty(E, dtype=wp.int32, device=dev)
+    out_wp, count_wp = wpl.resample_constant_spacing(cf, spacing, n_max, count_wp=count_wp)
+    return wp.to_torch(out_wp).view(E, n_max, 2), wp.to_torch(count_wp).long()
 
-    This wraps the new strict-in-place API for use in standalone tests (buffers allocated
-    per call here, which is fine for dev-side tests; the no-alloc rule only applies to
-    the runtime generate() path).
-    """
+
+def _offset(center, Nrm, half_width, count=None):
+    """Test helper: allocates buffers and calls the in-place wpl.offset, returns torch tensors."""
     E, n_max, _ = center.shape
     dev = center.device
     if count is None:
@@ -78,7 +85,7 @@ def test_constant_spacing_resample_matches_torch_oracle(dev):
     E, N = 3, 300
     src = torch.stack([_circle(N, r, dev) for r in (1.0, 2.5, 4.0)], 0)  # [3,N,2]
     spacing, n_max = 0.5, 128
-    out_w, cnt_w = wpl.resample_constant_spacing(src, spacing, n_max)
+    out_w, cnt_w = _resample_cs_wp(src, spacing, n_max)
     out_t, cnt_t = geometry.arc_length_resample(src, spacing=spacing, n_max=n_max)
     assert out_w.shape == (E, n_max, 2)
     assert torch.equal(cnt_w.cpu(), cnt_t.cpu()), f"{cnt_w} vs {cnt_t}"
@@ -346,10 +353,6 @@ def test_validity_count_aware(dev):
 
 def _mean_jag(center, count):
     # Resolution-normalised jaggedness: (mean |turning angle|) / (2*pi/c), per env.
-    # For a perfectly smooth c-gon this ratio equals 1.0; jagged tracks score > 1.
-    # Dividing by 2*pi/c removes the resolution effect so the metric is comparable across
-    # fixed-256 (c==256) and constant-spacing (c variable, typically ~145 at spacing=0.30,
-    # scale=10). This is the correct smoothness measure for this comparison.
     E = center.shape[0]
     out = torch.zeros(E, device=center.device)
     for e in range(E):
@@ -361,39 +364,31 @@ def _mean_jag(center, count):
         d = torch.roll(p, -1, 0) - p
         u = d / d.norm(dim=-1, keepdim=True).clamp_min(1e-9)
         ang = torch.arccos((u * torch.roll(u, 1, 0)).sum(-1).clamp(-1, 1))
-        # normalize by expected turning per vertex for a regular c-gon
         out[e] = ang.mean() / (2 * math.pi / c)
     return out
 
 
 def test_generate_tracks_constant_spacing_smoother_and_valid():
-    # Originally a fixed-256 vs constant_spacing comparison ("constant spacing lifts yield and
-    # smooths the fat-band regime where fixed-256 left ~30% jagged-invalid"). The fixed mode was
-    # dropped (constructing output_mode="fixed" now raises), so the relative comparison is gone;
-    # repurposed to assert the absolute end-to-end properties constant_spacing delivers in that
-    # same fat-band regime: near-total yield and smooth (low resolution-normalised turning) valid
-    # tracks. These bounds are what the original "win" was demonstrating.
+    # End-to-end: assert the absolute properties constant_spacing delivers in the fat-band
+    # regime: near-total yield and smooth valid tracks.
     dev = "cpu"
     E = 96
     N_max = 384
-    seeds = torch.arange(E, dtype=torch.int32, device=dev)
-    base = dict(num_envs=E, num_points=256, half_width=0.5, scale=10.0, relax_iters=150, device=dev)
-    cs = wpl.generate_tracks_warp(TrackGenConfig(output_mode="constant_spacing", spacing=0.30,
-                                                 N_max=N_max, **base), seeds)
-    # Track fields are wp.array; convert to torch for assertions.
+    cfg = TrackGenConfig(output_mode="constant_spacing", spacing=0.30, N_max=N_max,
+                         num_envs=E, num_points=256, half_width=0.5, scale=10.0,
+                         relax_iters=150, device=dev)
+    rng = PerEnvSeededRNG(seeds=42, num_envs=E, device=dev)
+    gen = TrackGenerator(cfg, rng)
+    cs = gen.generate(E)
+    # Track fields are wp.array; convert to tensors for assertions.
     valid_t = to_t(cs.valid).bool()
     count_t = to_t(cs.count)
     center_t = wp.to_torch(cs.center).view(E, N_max, 2)
-    # constant spacing yields near-everything in the fat-band regime (the regime that left
-    # fixed-256 ~30% jagged-invalid before the mode was dropped).
     assert valid_t.float().mean() > 0.95
     assert valid_t.any(), "need valid tracks to measure smoothness"
-    # valid tracks are smooth: resolution-normalised mean turning per vertex stays well-bounded
-    # (a folded/jagged road would score far higher). Observed mean ~4.3, max ~6.7 across seeds.
     jag = _mean_jag(center_t, count_t)[valid_t]
     assert torch.isfinite(jag).all(), "valid tracks must have finite jaggedness"
     assert jag.mean() < 8.0, f"valid constant_spacing tracks should be smooth, got {jag.mean():.3f}"
-    # constant_spacing output is NaN-padded to N_max with per-env real count < N_max.
     assert center_t.shape == (E, N_max, 2)
     assert (count_t <= N_max).all() and (count_t[valid_t] >= 3).all()
     for e in torch.nonzero(valid_t).flatten().tolist():
@@ -406,19 +401,25 @@ def test_generate_tracks_constant_spacing_smoother_and_valid():
 @pytest.mark.parametrize("dev", DEVS)
 def test_inflate_warp_constant_spacing(dev):
     hw = 0.5
-    buf = torch.full((1, 200, 2), float("nan"), device=dev, dtype=torch.float32)
-    buf[0, :120] = _circle(120, 5.0, dev)
-    cnt = torch.tensor([120], dtype=torch.int32, device=dev)
-    gv = torch.ones(1, dtype=torch.bool, device=dev)
-    cfg = TrackGenConfig(num_envs=1, num_points=120, half_width=hw,
-                         output_mode="constant_spacing", spacing=0.30, N_max=200, device=dev)
-    tr = wpl.inflate_warp(buf, cfg, valid=gv, count=cnt)
-    # Track fields are wp.array; convert to torch for assertions.
-    center_t = wp.to_torch(tr.center).view(1, 200, 2)
+    n_max = 200
+    E = 1
+    # Build NaN-padded wp.array center with 120 real points.
+    buf_t = torch.full((E, n_max, 2), float("nan"), device=dev, dtype=torch.float32)
+    buf_t[0, :120] = _circle(120, 5.0, dev)
+    buf_wp = wp.from_torch(buf_t.reshape(E * n_max, 2).contiguous(), dtype=wp.vec2f)
+    cnt_wp = wp.empty(E, dtype=wp.int32, device=dev)
+    wp.launch(wpl._fill_i32_k, dim=E, inputs=[cnt_wp, 120], device=dev)
+    gv_wp = wp.empty(E, dtype=wp.int32, device=dev)
+    wp.launch(wpl._fill_i32_k, dim=E, inputs=[gv_wp, 1], device=dev)
+    cfg = TrackGenConfig(num_envs=E, num_points=120, half_width=hw,
+                         output_mode="constant_spacing", spacing=0.30, N_max=n_max, device=dev)
+    tr = wpl.inflate_warp(buf_wp, cfg, valid=gv_wp, count=cnt_wp)
+    # Track fields are wp.array; convert to tensors for assertions.
+    center_t = wp.to_torch(tr.center).view(E, n_max, 2)
     count_t = to_t(tr.count)
     valid_t = to_t(tr.valid).bool()
     length_t = to_t(tr.length)
-    assert center_t.shape == (1, 200, 2)
+    assert center_t.shape == (E, n_max, 2)
     assert int(count_t[0]) == 120
     assert torch.isnan(center_t[0, 120:]).all()
     assert bool(valid_t[0]) is True
@@ -427,9 +428,6 @@ def test_inflate_warp_constant_spacing(dev):
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda")
 def test_graph_capture_constant_spacing():
-    from track_gen._src.track_generator import TrackGenerator
-    from track_gen._src.rng_utils import PerEnvSeededRNG
-
     E = 8
     cfg = TrackGenConfig(num_envs=E, num_points=256, half_width=0.5, scale=10.0,
                          output_mode="constant_spacing", spacing=0.30, N_max=384, device="cuda")
@@ -441,7 +439,7 @@ def test_graph_capture_constant_spacing():
     count_after_capture = to_t(first.count).cpu().clone()
     valid_after_capture = to_t(first.valid).cpu().clone()
     replay = gen.generate(E)  # replay (same rng seeds -> same result)
-    # Track fields are wp.array; convert to torch for comparison.
+    # Track fields are wp.array; convert to tensors for comparison.
     assert torch.equal(to_t(replay.count).cpu(), count_after_capture), \
         "count differs between capture and replay"
     assert torch.equal(to_t(replay.valid).cpu(), valid_after_capture), \
@@ -452,9 +450,15 @@ def test_graph_capture_constant_spacing():
 def test_constant_spacing_handles_nan_env(dev):
     # a never-accepted env has an all-NaN centerline; resample must give count 0 for it,
     # and generate-style validity must mark it invalid (no crash, no garbage count).
-    src = torch.stack([_circle(200, 2.0, dev),
-                       torch.full((200, 2), float("nan"), device=dev, dtype=torch.float32)], 0)
-    out, cnt = wpl.resample_constant_spacing(src, 0.3, 256)
-    assert int(cnt[1]) == 0                       # NaN env -> count 0 (deterministic)
-    assert int(cnt[0]) > 0
-    assert torch.isnan(out[1]).all()              # whole NaN-env row stays NaN
+    N = 200
+    E = 2
+    src = torch.stack([_circle(N, 2.0, dev),
+                       torch.full((N, 2), float("nan"), device=dev, dtype=torch.float32)], 0)
+    src_wp = wp.from_torch(src.reshape(E * N, 2).contiguous(), dtype=wp.vec2f)
+    cnt_wp = wp.empty(E, dtype=wp.int32, device=dev)
+    out_wp, cnt_wp = wpl.resample_constant_spacing(src_wp, 0.3, 256, count_wp=cnt_wp)
+    cnt_t = wp.to_torch(cnt_wp)
+    out_t = wp.to_torch(out_wp).view(E, 256, 2)
+    assert int(cnt_t[1]) == 0                       # NaN env -> count 0 (deterministic)
+    assert int(cnt_t[0]) > 0
+    assert torch.isnan(out_t[1]).all()              # whole NaN-env row stays NaN

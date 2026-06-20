@@ -65,7 +65,7 @@ class TrackGenConfig:
     relax_enable: bool = True
     relax_solver: str = "xpbd"            # {"xpbd","energy","tp_sobolev"}
     relax_chunk_size: int | None = None   # env-chunk the dense [E,N,N] term
-    relax_use_warp: bool | None = None    # xpbd separation: None=auto (Warp on CUDA), False=torch, True=force Warp
+    relax_use_warp: bool | None = None    # xpbd separation: None=auto (Warp on CUDA), True=force Warp
     relax_tol: float = 0.02               # target = (1 - tol) * half_width
     relax_band: int | None = None         # None => round(D / L0) per track
     relax_iters: int = 150
@@ -129,8 +129,8 @@ class Track:
 
     All boundary arrays are index-aligned: ``outer[i]``, ``center[i]`` and
     ``inner[i]`` share a single cross-section normal. Half-width is not stored;
-    recover it as ``wp.to_torch(outer) - wp.to_torch(center)`` norm along dim=-1.
-    Fields are ``wp.array``; use ``wp.to_torch(field)`` at the boundary.
+    recover it as the outer-center norm along dim=-1.
+    Fields are ``wp.array``; convert at the boundary via the wp bridge.
     """
 
     outer: wp.array    # [E, N] vec2f

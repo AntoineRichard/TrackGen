@@ -85,7 +85,7 @@ class TrackGenerator:
         wp.ScopedCapture (no host syncs, no allocations inside the capture region).
         """
         from . import warp_pipeline
-        warp_pipeline.generate_tracks_warp(
+        warp_pipeline._run_pipeline(
             self._config, self._seed_buf,
             out=self._track, scratch=self._scratch,
         )

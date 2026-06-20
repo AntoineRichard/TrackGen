@@ -26,7 +26,8 @@ import torch
 import warp as wp
 
 from track_gen._src.types import TrackGenConfig
-from track_gen._src import warp_pipeline as wpl
+from track_gen._src.track_generator import TrackGenerator
+from track_gen._src.rng_utils import PerEnvSeededRNG
 from viz.plot_tracks import draw_track
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -80,8 +81,9 @@ def generate_batch(p: dict):
     wp.init()
     cfg = build_config(p)
     E = cfg.num_envs
-    seeds = (torch.arange(E, dtype=torch.int32) + int(p["seed"])).to(DEVICE)
-    return wpl.generate_tracks_warp(cfg, seeds)
+    rng = PerEnvSeededRNG(seeds=int(p["seed"]), num_envs=E, device=DEVICE)
+    gen = TrackGenerator(cfg, rng)
+    return gen.generate(E)
 
 
 def _track_num_envs(track) -> int:
@@ -161,14 +163,15 @@ def _stats(track) -> dict:
     hw = float(torch.linalg.norm(t.outer[:, 0] - t.center[:, 0], dim=-1).median())
     cnt = t.count.clamp_min(1)
     band = (2.0 * hw / (t.length / cnt.float()).clamp_min(1e-9)).round().to(torch.int32).clamp_min(1)
-    # thickness: call the kernel in-place via wp.array (wpl.thickness was removed in Inc 7)
+    # thickness: call the kernel in-place via wp.array (_thickness_k from warp_pipeline)
+    from track_gen._src import warp_pipeline as _wpl
     E, n_max, _ = t.center.shape
     dev = str(t.center.device)
     pf = wp.from_torch(t.center.reshape(E * n_max, 2).contiguous(), dtype=wp.vec2f)
     band_wp = wp.from_torch(band.contiguous(), dtype=wp.int32)
     cnt_wp = wp.from_torch(t.count.to(torch.int32).contiguous(), dtype=wp.int32)
     out_wp = wp.zeros(E, dtype=wp.float32, device=dev)
-    wp.launch(wpl._thickness_k, dim=E, inputs=[pf, band_wp, n_max, cnt_wp, out_wp], device=dev)
+    wp.launch(_wpl._thickness_k, dim=E, inputs=[pf, band_wp, n_max, cnt_wp, out_wp], device=dev)
     if "cuda" in dev:
         wp.synchronize()
     th = wp.to_torch(out_wp)

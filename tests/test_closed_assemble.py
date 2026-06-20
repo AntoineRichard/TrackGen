@@ -16,6 +16,7 @@ import torch
 
 pytest.importorskip("warp")
 
+import warp as wp  # noqa: E402
 from track_gen._src import warp_pipeline as wpl
 from track_gen._src.types import TrackGenConfig
 from tests._warp_compare import (
@@ -98,8 +99,18 @@ def test_adaptive_handle_clamp_drives_out_crossings(dev):
     # Fix B is the production guarantee: at the default clamp the assembled centerline still
     # self-crosses sometimes, but the whole-track polygon fallback drives the FINAL centerline
     # to ~always simple.
-    seeds = torch.arange(cfg.num_envs, dtype=torch.int32, device=dev)
-    centerline, _ = wpl.generate_centerline_warp(seeds, _fatband_cfg(2048, dev))
+    fb_cfg = _fatband_cfg(2048, dev)
+    _, scratch_fb = wpl._inflate_warp_alloc(fb_cfg)
+    seeds_t = torch.arange(fb_cfg.num_envs, dtype=torch.int32, device=dev)
+    seeds_wp = wp.from_torch(seeds_t, dtype=wp.int32)
+    wpl.generate_centerline_warp(seeds_wp, fb_cfg,
+                                 out_centerline=scratch_fb.gen_centerline,
+                                 out_valid_wp=scratch_fb.gen_valid,
+                                 scratch=scratch_fb)
+    if "cuda" in dev:
+        wp.synchronize()
+    centerline = wp.to_torch(scratch_fb.gen_centerline).view(fb_cfg.num_envs,
+                                                              int(fb_cfg.num_points), 2)
     final_simple = (self_intersections(centerline) == 0).float().mean().item()
     assert final_simple >= 0.999, (
         f"Fix B polygon fallback should make the final centerline ~always simple, "

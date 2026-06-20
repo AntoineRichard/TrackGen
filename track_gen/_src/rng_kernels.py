@@ -587,7 +587,7 @@ def rand_sign_fn(
 ###################
 # POISSON
 ###################
-# Note we need to cast from uint32 to int32 for the output of the poisson function so that torch can handle it
+# Note: cast from uint32 to int32 for the poisson output (int32 compatible with downstream consumers).
 
 
 @wp.kernel

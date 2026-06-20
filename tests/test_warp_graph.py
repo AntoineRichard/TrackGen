@@ -27,6 +27,7 @@ from track_gen._src.types import TrackGenConfig  # noqa: E402
 from track_gen._src import warp_pipeline as wpp  # noqa: E402
 from track_gen._src.track_generator import TrackGenerator  # noqa: E402
 from track_gen._src.rng_utils import PerEnvSeededRNG  # noqa: E402
+from track_gen._src.types import Track  # noqa: E402
 
 
 def _cfg(E: int) -> TrackGenConfig:
@@ -44,53 +45,70 @@ def _make_rng(E: int, seed: int) -> PerEnvSeededRNG:
     return PerEnvSeededRNG(seeds=seed, num_envs=E, device="cuda:0")
 
 
-def _track_allclose(got, ref, atol=1e-4):
-    """Assert got == ref field-by-field (Track with wp.array fields)."""
+def _clone_track(t: Track) -> dict:
+    """Clone all Track fields from wp.arrays into regular tensors for comparison."""
+    return {
+        "center": wp.to_torch(t.center).clone(),
+        "outer": wp.to_torch(t.outer).clone(),
+        "inner": wp.to_torch(t.inner).clone(),
+        "tangent": wp.to_torch(t.tangent).clone(),
+        "normal": wp.to_torch(t.normal).clone(),
+        "arclen": wp.to_torch(t.arclen).clone(),
+        "length": wp.to_torch(t.length).clone(),
+        "valid": wp.to_torch(t.valid).clone(),
+        "count": wp.to_torch(t.count).clone(),
+    }
+
+
+def _track_allclose(got: Track, ref: dict, atol=1e-4):
+    """Assert got == ref field-by-field (Track with wp.array fields vs cloned dict)."""
     E_Nmax = to_t(got.valid).shape[0]   # E
     center_flat_size = to_t(got.center).shape[0]  # E*N_max
     N_max = center_flat_size // E_Nmax
 
-    assert torch.equal(to_t(got.valid), to_t(ref.valid)), "valid mask differs"
-    assert torch.equal(to_t(got.count), to_t(ref.count)), "count differs"
+    assert torch.equal(to_t(got.valid), ref["valid"]), "valid mask differs"
+    assert torch.equal(to_t(got.count), ref["count"]), "count differs"
+
     got_center = wp.to_torch(got.center).view(E_Nmax, N_max, 2)
-    ref_center = wp.to_torch(ref.center).view(E_Nmax, N_max, 2)
+    ref_center = ref["center"].view(E_Nmax, N_max, 2)
     assert torch.equal(torch.isnan(got_center), torch.isnan(ref_center)), "NaN pattern differs"
+
     for name in ("center", "outer", "inner", "tangent", "normal", "arclen"):
         if name == "arclen":
             a = torch.nan_to_num(wp.to_torch(getattr(got, name)).view(E_Nmax, N_max))
-            b = torch.nan_to_num(wp.to_torch(getattr(ref, name)).view(E_Nmax, N_max))
+            b = torch.nan_to_num(ref[name].view(E_Nmax, N_max))
         else:
             a = torch.nan_to_num(wp.to_torch(getattr(got, name)).view(E_Nmax, N_max, 2))
-            b = torch.nan_to_num(wp.to_torch(getattr(ref, name)).view(E_Nmax, N_max, 2))
+            b = torch.nan_to_num(ref[name].view(E_Nmax, N_max, 2))
         assert torch.allclose(a, b, atol=atol), \
             f"{name} mismatch, max err {(a - b).abs().max().item():.3e}"
     la = torch.nan_to_num(to_t(got.length))
-    lb = torch.nan_to_num(to_t(ref.length))
+    lb = torch.nan_to_num(ref["length"])
     assert torch.allclose(la, lb, atol=1e-3), \
         f"length mismatch, max err {(la - lb).abs().max().item():.3e}"
 
 
 def test_autocapture_replay_matches_eager():
-    """First generate() captures; second generate() replays; result == eager."""
+    """First generate() captures; second generate() replays; result == eager _run()."""
     E = 64
     cfg = _cfg(E)
 
-    # Build an eager reference with the free-func (same seeds as the generator will use).
+    # Build an eager reference using gen._run() directly (same seeds as the captured run).
     rng = _make_rng(E, seed=42)
-    seeds_wp = rng.seeds_warp                          # [E] int32 wp.array on cuda:0
-    seeds_t = wp.to_torch(seeds_wp).to(torch.int64)   # to_torch returns int32; cast for compat
-
-    ref = wpp.generate_tracks_warp(cfg, seeds_t)
-    torch.cuda.synchronize()
-
-    # Construct TrackGenerator with the SAME rng (same seeds).
     gen = TrackGenerator(cfg, rng)
 
-    # First call: captures the graph (internally), replays, returns self._track.
+    # Seed the buffer and run eager once for the reference.
+    wp.copy(gen._seed_buf, rng.seeds_warp)
+    gen._run()
+    wp.synchronize()
+    ref = _clone_track(gen._track)
+
+    # First generate() call: captures the graph (internally), replays, returns self._track.
+    # Seeds have not changed so results should match.
     track_a = gen.generate(E)
     torch.cuda.synchronize()
 
-    # track_a should equal the eager reference (same seeds).
+    # track_a should equal the eager reference (same seeds, same pipeline).
     _track_allclose(track_a, ref)
 
     # Second call: replays (graph already captured). The rng seeds haven't changed so
@@ -108,13 +126,13 @@ def test_autocapture_replay_matches_eager():
 
 
 def test_eager_path_unaffected():
-    """The public eager API (free func) is unaffected by capture machinery."""
+    """The capture flag is False outside a capture region."""
     assert wpp._CAPTURING is False
     E = 16
     cfg = _cfg(E)
     rng = _make_rng(E, seed=7)
-    seeds_t = wp.to_torch(rng.seeds_warp).to(torch.int64)
-    t = wpp.generate_tracks_warp(cfg, seeds_t)
+    gen = TrackGenerator(cfg, rng)
+    t = gen.generate(E)
     torch.cuda.synchronize()
     center_t = wp.to_torch(t.center)
     assert center_t.shape[0] == E * cfg.N_max, \

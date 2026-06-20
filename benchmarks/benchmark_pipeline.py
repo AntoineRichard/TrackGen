@@ -1,9 +1,9 @@
 """End-to-end benchmark of the pure-Warp track-generation pipeline.
 
-Drives ``warp_pipeline.generate_tracks_warp`` (generation -> resample -> XPBD relax ->
-inflate, ALL NVIDIA Warp kernels; torch only as the I/O container) at scale and reports
-validity yield, wall-clock, and peak GPU memory. With ``--graph`` it also captures the
-WHOLE pipeline as one CUDA graph and times replay (the deployable, GPU-resident path).
+Drives ``TrackGenerator.generate()`` (generation -> resample -> XPBD relax ->
+inflate, ALL NVIDIA Warp kernels) at scale and reports validity yield, wall-clock,
+and peak GPU memory. With ``--graph`` it also captures the WHOLE pipeline as one
+CUDA graph and times replay (the deployable, GPU-resident path).
 
     .venv/bin/python -m benchmarks.benchmark_pipeline                # auto device, E=8192
     .venv/bin/python -m benchmarks.benchmark_pipeline --E 2048 --cpu
@@ -18,7 +18,8 @@ import torch
 import warp as wp
 
 from track_gen._src.types import TrackGenConfig
-from track_gen._src import warp_pipeline as wpl
+from track_gen._src.track_generator import TrackGenerator
+from track_gen._src.rng_utils import PerEnvSeededRNG
 
 
 def run_pipeline_benchmark(E=8192, N=256, half_width=0.03, scale=1.0, device="cuda",
@@ -28,7 +29,7 @@ def run_pipeline_benchmark(E=8192, N=256, half_width=0.03, scale=1.0, device="cu
         device = "cpu"
     cfg = TrackGenConfig(device=device, num_envs=E, num_points=N, half_width=half_width,
                          scale=scale, relax_iters=relax_iters, max_regen_iters=max_regen_iters)
-    seeds = torch.arange(seed, seed + E, dtype=torch.int32, device=device)
+    rng = PerEnvSeededRNG(seeds=seed, num_envs=E, device=device)
     rows = []
 
     def _sync():
@@ -36,13 +37,14 @@ def run_pipeline_benchmark(E=8192, N=256, half_width=0.03, scale=1.0, device="cu
             torch.cuda.synchronize()
 
     # --- eager path ---
+    gen = TrackGenerator(cfg, rng)
     if device == "cuda":
         torch.cuda.reset_peak_memory_stats()
-    wpl.generate_tracks_warp(cfg, seeds)  # warmup (kernel compile / module load)
+    gen.generate(E)  # warmup (kernel compile / module load)
     _sync()
     t0 = time.time()
     for _ in range(reps):
-        track = wpl.generate_tracks_warp(cfg, seeds)
+        track = gen.generate(E)
     _sync()
     eager_s = (time.time() - t0) / reps
     peak_mb = (torch.cuda.max_memory_allocated() / 1e6) if device == "cuda" else float("nan")
@@ -52,15 +54,18 @@ def run_pipeline_benchmark(E=8192, N=256, half_width=0.03, scale=1.0, device="cu
 
     # --- single-CUDA-graph replay (cuda only) ---
     if graph and device == "cuda":
+        # The TrackGenerator auto-captures on first generate() and replays on subsequent calls.
+        rng2 = PerEnvSeededRNG(seeds=seed, num_envs=E, device=device)
+        gen2 = TrackGenerator(cfg, rng2)
         t0 = time.time()
-        captured = wpl.generate_tracks_warp_graph(cfg, seeds)
+        captured_track = gen2.generate(E)  # first call: captures graph
         _sync()
         capture_s = time.time() - t0
-        captured.replay(seeds)  # warmup replay
+        gen2.generate(E)  # warmup replay
         _sync()
         t0 = time.time()
         for _ in range(reps):
-            rt = captured.replay(seeds)
+            rt = gen2.generate(E)
         _sync()
         replay_s = (time.time() - t0) / reps
         rows.append({"mode": "graph_replay", "device": device, "E": E, "N": N,

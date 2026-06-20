@@ -5,15 +5,10 @@ bending, double-buffered) as fused Warp kernels on BOTH the Warp ``cpu`` device 
 ``cuda`` — this is the pipeline's relaxation stage.
 
 ``separation_disp`` is a standalone fused separation kernel: each bead loops its
-neighbours and accumulates the push with NO ``[E, N, N, 2]`` materialization (the
-torch separation builds that ~GB-scale pairwise tensor every sweep), ~2-3 orders of
-magnitude faster on CUDA while staying numerically equivalent. The torch oracle uses
-it (via ``should_use`` / ``warp_available``) to accelerate its own separation on CUDA;
-on CPU the oracle stays pure torch.
+neighbours and accumulates the push with NO ``[E, N, N, 2]`` materialization,
+~2-3 orders of magnitude faster on CUDA while staying numerically equivalent.
 """
 from __future__ import annotations
-
-import torch
 
 import warp as wp
 
@@ -55,7 +50,7 @@ def _disp_kernel(center: wp.array(dtype=wp.vec2f), band: wp.array(dtype=wp.int32
                  out: wp.array(dtype=wp.vec2f)):
     # Full fused XPBD sweep per bead: separation + spacing + bending, Jacobi (reads
     # only `center`, writes only out[t]) so the companion _apply_kernel can update
-    # positions race-free. Matches the torch _separation_disp/_spacing_disp/_bending_disp.
+    # positions race-free.
     # count[e] is the number of real (non-padding) beads in env e; n_max is the buffer
     # stride. Padding beads (i >= count[e]) receive disp=0 so NaN positions stay NaN.
     t = wp.tid()
