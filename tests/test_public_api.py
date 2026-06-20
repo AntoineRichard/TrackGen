@@ -5,7 +5,6 @@ def test_public_api_surface_is_exactly_curated():
     assert set(track_gen.__all__) == {
         "TrackGenerator",
         "generate_tracks_warp",
-        "generate_tracks_warp_graph",
         "TrackGenConfig",
         "Track",
         "PerEnvSeededRNG",

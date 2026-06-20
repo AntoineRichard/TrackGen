@@ -427,16 +427,25 @@ def test_inflate_warp_constant_spacing(dev):
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda")
 def test_graph_capture_constant_spacing():
+    from track_gen._src.track_generator import TrackGenerator
+    from track_gen._src.rng_utils import PerEnvSeededRNG
+
     E = 8
     cfg = TrackGenConfig(num_envs=E, num_points=256, half_width=0.5, scale=10.0,
                          output_mode="constant_spacing", spacing=0.30, N_max=384, device="cuda")
-    seeds = torch.arange(E, dtype=torch.int32, device="cuda")
-    cap = wpl.generate_tracks_warp_graph(cfg, seeds)
-    eager = wpl.generate_tracks_warp(cfg, seeds)
-    replay = cap.replay(seeds)
+    # TrackGenerator auto-captures on first generate() call (cuda device); second replays.
+    rng = PerEnvSeededRNG(seeds=42, num_envs=E, device="cuda")
+    gen = TrackGenerator(cfg, rng)
+    first = gen.generate(E)   # capture (returns self._track)
+    # Clone count+valid before second call overwrites self._track in place.
+    count_after_capture = to_t(first.count).cpu().clone()
+    valid_after_capture = to_t(first.valid).cpu().clone()
+    replay = gen.generate(E)  # replay (same rng seeds -> same result)
     # Track fields are wp.array; convert to torch for comparison.
-    assert torch.equal(to_t(replay.count).cpu(), to_t(eager.count).cpu())
-    assert torch.equal(to_t(replay.valid).cpu(), to_t(eager.valid).cpu())
+    assert torch.equal(to_t(replay.count).cpu(), count_after_capture), \
+        "count differs between capture and replay"
+    assert torch.equal(to_t(replay.valid).cpu(), valid_after_capture), \
+        "valid mask differs between capture and replay"
 
 
 @pytest.mark.parametrize("dev", DEVS)

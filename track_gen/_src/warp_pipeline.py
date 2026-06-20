@@ -22,11 +22,11 @@ import warp as wp
 
 _INITED = False
 
-# True only inside generate_tracks_warp_graph's capture/warmup region. While set, every
-# wrapper's _sync() is a no-op (host-blocking sync is ILLEGAL during CUDA graph capture)
-# and warp_relax.xpbd_solve skips its own wp.synchronize(). The public eager path never
-# sets it, so eager behaviour is unchanged. Module-global because the whole pipeline (and
-# warp_relax) must agree, and the captured region is single-threaded/serial by construction.
+# True only inside a CUDA graph capture region (set by TrackGenerator around the
+# wp.ScopedCapture context). While set, every wrapper's _sync() is a no-op (host-blocking
+# sync is ILLEGAL during CUDA graph capture) and warp_relax.xpbd_solve skips its own
+# wp.synchronize(). Module-global because the whole pipeline (and warp_relax) must agree,
+# and the captured region is single-threaded/serial by construction.
 _CAPTURING = False
 
 
@@ -1404,8 +1404,13 @@ def generate_tracks_warp(config, seeds: torch.Tensor, out=None, scratch=None):
         E = scratch.gen_count.shape[0]
         dev = str(scratch.gen_centerline.device)
 
-        # Build seeds wp.array once (single small shim; not in hot loop)
-        seeds_wp = wp.from_torch(seeds.to(torch.int32).contiguous(), dtype=wp.int32)
+        # Accept wp.array seeds directly (from TrackGenerator's pre-allocated seed buffer)
+        # or convert from torch.Tensor (legacy callers). The wp.array path is zero-alloc
+        # and safe to use inside a CUDA graph capture region.
+        if isinstance(seeds, wp.array):
+            seeds_wp = seeds
+        else:
+            seeds_wp = wp.from_torch(seeds.to(torch.int32).contiguous(), dtype=wp.int32)
 
         # In-place generation: writes into scratch.gen_centerline + scratch.gen_valid
         generate_centerline_warp(seeds_wp, config,
@@ -2131,142 +2136,3 @@ def inflate_warp(center, config, out=None,
     return out
 
 
-class CapturedTracks:
-    """A captured CUDA graph of the whole ``generate_tracks_warp`` pipeline + its replay.
-
-    Built by :func:`generate_tracks_warp_graph`. Holds the static seed input buffer, the
-    static Track output buffers (the device addresses baked into the graph), and the
-    captured :class:`torch.cuda.CUDAGraph`. :meth:`replay` copies new seeds into the seed
-    buffer, replays the graph (re-running EVERY stage on the GPU with the new seed contents),
-    and returns a Track viewing the output buffers (cloned so successive replays don't alias).
-    """
-
-    def __init__(self, graph, seeds_buf: torch.Tensor, track, config, scratch=None):
-        """Store the captured graph plus its static seed-input and Track-output buffers."""
-        self._graph = graph
-        self._seeds_buf = seeds_buf      # static [E] input buffer; copy_ new seeds before replay
-        self._track = track              # Track whose tensors are the static graph outputs
-        self._config = config
-        self._scratch = scratch          # keeps static scratch alive (addresses baked into graph)
-
-    def replay(self, new_seeds: torch.Tensor):
-        """Replay the captured pipeline with ``new_seeds`` -> a fresh Track (cloned outputs)."""
-        from .types import Track  # local import: keep warp_pipeline free of oracle modules
-
-        if new_seeds.shape != self._seeds_buf.shape:
-            raise ValueError(
-                f"replay seeds shape {tuple(new_seeds.shape)} != captured "
-                f"{tuple(self._seeds_buf.shape)}"
-            )
-        # Push the new per-env seeds into the static buffer the graph reads, then replay.
-        self._seeds_buf.copy_(new_seeds.to(self._seeds_buf.dtype))
-        self._graph.replay()
-        # Clone the static wp.array outputs so the returned Track is stable across
-        # the next replay (wp.array has no .clone(); use wp.empty_like + wp.copy).
-        def _wp_clone(a: wp.array) -> wp.array:
-            c = wp.empty_like(a)
-            wp.copy(c, a)
-            return c
-
-        t = self._track
-        return Track(
-            outer=_wp_clone(t.outer), center=_wp_clone(t.center),
-            inner=_wp_clone(t.inner), tangent=_wp_clone(t.tangent),
-            normal=_wp_clone(t.normal), arclen=_wp_clone(t.arclen),
-            length=_wp_clone(t.length), valid=_wp_clone(t.valid),
-            count=_wp_clone(t.count),
-        )
-
-
-def generate_tracks_warp_graph(config, seeds_template: torch.Tensor) -> CapturedTracks:
-    """Capture the ENTIRE ``generate_tracks_warp`` pipeline as ONE CUDA graph.
-
-    The whole eager pipeline -- generation (fixed-iter regen loop), the band/L0 torch glue,
-    the pure-Warp XPBD relax loop, the final resample, and inflate (with its torch validity
-    glue) -- is captured into a single :class:`torch.cuda.CUDAGraph` and returned wrapped in a
-    :class:`CapturedTracks` whose ``.replay(new_seeds)`` re-runs the graph with new seeds.
-
-    Mechanism (Warp 1.14 + torch 2.6):
-      * ``torch.cuda.graph`` is stream-level: it captures ALL CUDA work submitted to its
-        internal capture stream. torch ops land there automatically; to make Warp's kernel
-        launches land there too we wrap that stream as a ``wp.Stream(device, cuda_stream=...)``
-        and enter ``wp.ScopedStream`` so ``wp.launch`` submits to the SAME capturing stream.
-        Result: torch glue + Warp kernels are unified in one native graph.
-      * Host-blocking syncs are illegal during capture. The module global ``_CAPTURING`` is
-        set for the warmup + capture region so every wrapper's ``_sync`` and
-        ``warp_relax.xpbd_solve``'s ``wp.synchronize`` become no-ops (the graph records the
-        stream ordering, so they are unnecessary anyway).
-      * ``torch.cuda.graph`` requires warmup on a side stream before capture; we run the
-        pipeline a few times there (also under ``_CAPTURING`` + the routed Warp stream) so
-        all kernels/modules are loaded and torch's graph memory pool is primed.
-      * Static buffers: the [E] ``seeds_buf`` is allocated once; ``replay`` copies new seeds
-        into it. The fresh per-call ``torch.empty`` scratch inside the wrappers is served
-        from torch's private graph memory pool and its addresses are baked into the graph,
-        so replay reuses them. The captured Track tensors are the graph's static outputs.
-
-    The Warp RNG is deterministic in the seed buffer contents, so replay with the SAME seeds
-    reproduces the eager result and replay with NEW seeds equals ``generate_tracks_warp(config,
-    new_seeds)`` (positions allclose ~1e-4; valid/count exact).
-
-    ``output_mode="constant_spacing"`` is also supported: although ``_cs_scan_k`` writes a
-    per-track ``count[e]`` array during capture, this value lives exclusively as a device
-    tensor (data) and is never read back to the host or used as a Python branch or kernel
-    launch dimension (all Warp launches use the static dims ``E*N_max`` and ``E``).
-    CUDA graph capture is therefore fully compatible with constant_spacing.
-
-    Args:
-        config:         TrackGenConfig (relax_solver "xpbd", smooth_finish False).
-                        Both output_mode "fixed" and "constant_spacing" are supported.
-        seeds_template: [E] int CUDA tensor; its SHAPE/DTYPE/DEVICE fix the captured batch.
-                        Its values seed the warmup but are otherwise irrelevant (replay
-                        overwrites the seed buffer).
-
-    Returns:
-        CapturedTracks. CUDA only (graph capture needs a GPU).
-    """
-    global _CAPTURING
-    assert seeds_template.is_cuda, "generate_tracks_warp_graph requires CUDA seeds"
-    _init()
-
-    dev = str(seeds_template.device)
-    wp_dev = wp.get_device(dev)
-
-    # Static input buffer the graph reads; replay copies new seeds into it.
-    seeds_buf = torch.empty_like(seeds_template)
-    seeds_buf.copy_(seeds_template)
-
-    # Pre-allocate the Track output and offset scratch BEFORE entering the capture region.
-    # wp.zeros/wp.empty inside the CUDA graph capture context are NOT graph-pool-aware and
-    # would cause "operation not permitted when stream is capturing" errors. Allocating them
-    # here (outside capture) gives stable device addresses that the graph can bake in.
-    static_track, static_scratch = _inflate_warp_alloc(config)
-
-    def _run():
-        # Sync-free pipeline (guaranteed by _CAPTURING being set around every call site).
-        return generate_tracks_warp(config, seeds_buf, out=static_track,
-                                    scratch=static_scratch)
-
-    # ---- Warmup on a side stream (torch.cuda.graph requirement) ----
-    side = torch.cuda.Stream()
-    side.wait_stream(torch.cuda.current_stream())
-    _CAPTURING = True
-    try:
-        with torch.cuda.stream(side):
-            wp_side = wp.Stream(wp_dev, cuda_stream=side.cuda_stream)
-            with wp.ScopedStream(wp_side, sync_enter=False, sync_exit=False):
-                for _ in range(3):
-                    _run()
-        torch.cuda.current_stream().wait_stream(side)
-        torch.cuda.synchronize()  # OUTSIDE capture: fine, ensures warmup finished
-
-        # ---- Capture: route Warp onto torch's internal capture stream ----
-        graph = torch.cuda.CUDAGraph()
-        with torch.cuda.graph(graph):
-            cap_stream = torch.cuda.current_stream()
-            wp_cap = wp.Stream(wp_dev, cuda_stream=cap_stream.cuda_stream)
-            with wp.ScopedStream(wp_cap, sync_enter=False, sync_exit=False):
-                track = _run()
-    finally:
-        _CAPTURING = False
-
-    return CapturedTracks(graph, seeds_buf, track, config, scratch=static_scratch)

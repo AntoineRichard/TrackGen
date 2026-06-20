@@ -10,12 +10,11 @@ from ._version import __version__
 from ._src.types import Track, TrackGenConfig
 from ._src.track_generator import TrackGenerator
 from ._src.rng_utils import PerEnvSeededRNG
-from ._src.warp_pipeline import generate_tracks_warp, generate_tracks_warp_graph
+from ._src.warp_pipeline import generate_tracks_warp
 
 __all__ = [
     "TrackGenerator",
     "generate_tracks_warp",
-    "generate_tracks_warp_graph",
     "TrackGenConfig",
     "Track",
     "PerEnvSeededRNG",
