@@ -30,7 +30,8 @@ import warp as wp
 wp.init()
 
 from track_gen._src.types import TrackGenConfig
-from track_gen._src import warp_pipeline as wpl
+from track_gen._src.track_generator import TrackGenerator
+from track_gen._src.rng_utils import PerEnvSeededRNG
 
 E = 8192
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -48,25 +49,25 @@ def bench(links=256, iters=150, regen=10, sr=1.0, pr=1.0, br=1.5, margin=0.15, s
         output_mode=output_mode, spacing=spacing, N_max=n_max,
         device=DEVICE,
     )
-    seeds = (torch.arange(E, dtype=torch.int32) + seed).to(DEVICE)
+    rng = PerEnvSeededRNG(seeds=seed, num_envs=E, device=DEVICE)
 
     def sync():
         if DEVICE == "cuda":
             torch.cuda.synchronize()
 
-    wpl.generate_tracks_warp(cfg, seeds)  # warmup
+    TrackGenerator(cfg, rng).generate(E)  # warmup
     sync()
     if DEVICE == "cuda":
         torch.cuda.reset_peak_memory_stats()
     t0 = time.time()
     for _ in range(REPS):
-        track = wpl.generate_tracks_warp(cfg, seeds)
+        track = TrackGenerator(cfg, rng).generate(E)
     sync()
     sec = (time.time() - t0) / REPS
     peak = (torch.cuda.max_memory_allocated() / 1e6) if DEVICE == "cuda" else float("nan")
     return {"links": links, "iters": iters, "regen": regen, "sr": sr, "pr": pr,
             "margin": margin, "output_mode": output_mode, "spacing": spacing, "n_max": n_max,
-            "yield": track.valid.float().mean().item(),
+            "yield": wp.to_torch(track.valid).float().mean().item(),
             "sec": sec, "peak_mb": peak}
 
 

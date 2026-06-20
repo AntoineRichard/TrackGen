@@ -35,7 +35,8 @@ from matplotlib.backends.backend_pdf import PdfPages
 import warp as wp
 
 from track_gen._src.types import TrackGenConfig
-from track_gen._src import warp_pipeline as wpl
+from track_gen._src.track_generator import TrackGenerator
+from track_gen._src.rng_utils import PerEnvSeededRNG
 
 OUT_PDF = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out", "track_gen_report.pdf")
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -109,14 +110,23 @@ def _draw(ax, track, e, title_prefix):
                  color=("red" if invalid else "black"), pad=1.5)
 
 
+class _TrackView:
+    """Thin wrapper that exposes Track wp.array fields as torch tensors for plotting."""
+    def __init__(self, track):
+        self.center = wp.to_torch(track.center)
+        self.outer = wp.to_torch(track.outer)
+        self.inner = wp.to_torch(track.inner)
+        self.valid = wp.to_torch(track.valid)
+
+
 def _gen(links, iters, n, regen=10, sr=1.0, pr=1.0, margin=0.15, seed0=0,
          output_mode="constant_spacing", spacing=0.10, n_max=256):
     cfg = TrackGenConfig(num_envs=n, num_points=links, half_width=HALF_WIDTH, scale=SCALE,
                          relax_iters=iters, max_regen_iters=regen, relax_sep_relax=sr,
                          relax_spc_relax=pr, relax_margin=margin, device=DEVICE,
                          output_mode=output_mode, spacing=spacing, N_max=n_max)
-    seeds = (torch.arange(n, dtype=torch.int32) + seed0).to(DEVICE)
-    return wpl.generate_tracks_warp(cfg, seeds)
+    rng = PerEnvSeededRNG(seeds=seed0, num_envs=n, device=DEVICE)
+    return _TrackView(TrackGenerator(cfg, rng).generate(n))
 
 
 # ------------------------------------------------------------------ pages
