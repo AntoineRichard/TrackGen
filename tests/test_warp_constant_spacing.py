@@ -30,6 +30,28 @@ def _pad(center, n_max):
     return buf, count
 
 
+def _offset(center, Nrm, half_width, count=None):
+    """Test helper: allocates buffers and calls the in-place wpl.offset, returns torch tensors.
+
+    This wraps the new strict-in-place API for use in standalone tests (buffers allocated
+    per call here, which is fine for dev-side tests; the no-alloc rule only applies to
+    the runtime generate() path).
+    """
+    E, n_max, _ = center.shape
+    dev = center.device
+    if count is None:
+        count = torch.full((E,), n_max, dtype=torch.int32, device=dev)
+    cf  = wp.from_torch(center.reshape(E * n_max, 2).contiguous(), dtype=wp.vec2f)
+    nf  = wp.from_torch(Nrm.reshape(E * n_max, 2).contiguous(), dtype=wp.vec2f)
+    oo  = wp.zeros(E * n_max, dtype=wp.vec2f, device=str(dev))
+    oi  = wp.zeros(E * n_max, dtype=wp.vec2f, device=str(dev))
+    aa  = wp.zeros(E, dtype=wp.float32, device=str(dev))
+    ab  = wp.zeros(E, dtype=wp.float32, device=str(dev))
+    cnt = wp.from_torch(count.to(torch.int32).contiguous(), dtype=wp.int32)
+    wpl.offset(cf, nf, half_width, oo, oi, aa, ab, cnt)
+    return wp.to_torch(oo).view(E, n_max, 2), wp.to_torch(oi).view(E, n_max, 2)
+
+
 @pytest.mark.parametrize("dev", DEVS)
 def test_constant_spacing_resample_matches_torch_oracle(dev):
     E, N = 3, 300
@@ -153,10 +175,10 @@ def test_offset_count_aware(dev):
     # --- parity: count==N_max reproduces the fixed call ---
     src = torch.stack([_circle(80, 1.0, dev), _circle(80, 2.0, dev)], 0)
     _, Nrm_base, _ = wpl.frame_curvature(src)
-    outer_base, inner_base = wpl.offset(src, Nrm_base, 0.1)
+    outer_base, inner_base = _offset(src, Nrm_base, 0.1)
     buf, cnt = _pad(src, 80)
     _, Nrm_buf, _ = wpl.frame_curvature(buf, count=cnt)
-    outer_out, inner_out = wpl.offset(buf, Nrm_buf, 0.1, count=cnt)
+    outer_out, inner_out = _offset(buf, Nrm_buf, 0.1, count=cnt)
     assert torch.allclose(outer_out, outer_base, atol=1e-4)
     assert torch.allclose(inner_out, inner_base, atol=1e-4)
 
@@ -166,7 +188,7 @@ def test_offset_count_aware(dev):
     buf2[1, :80] = _circle(80, 2.0, dev)
     cnt2 = torch.tensor([50, 80], dtype=torch.int32, device=dev)
     _, Nrm2, _ = wpl.frame_curvature(buf2, count=cnt2)
-    outer2, inner2 = wpl.offset(buf2, Nrm2, 0.1, count=cnt2)
+    outer2, inner2 = _offset(buf2, Nrm2, 0.1, count=cnt2)
 
     # Real points (0..49) of env0: outer ~ r=1.1, inner ~ r=0.9  (both finite)
     outer0_real = outer2[0, :50]
@@ -236,7 +258,7 @@ def test_validity_count_aware(dev):
     cnt_full = torch.full((1,), 120, dtype=torch.int32, device=dev)
     # build outer/inner with the count-aware offset (count==N here)
     _, Nrm_full, _ = wpl.frame_curvature(src, count=cnt_full)
-    o, i = wpl.offset(src, Nrm_full, hw, count=cnt_full)
+    o, i = _offset(src, Nrm_full, hw, count=cnt_full)
     v_fixed = wpl.validity(src, w, cnt_full, gv, cfg, o, i)   # count==N (fixed mode)
     assert bool(v_fixed[0]) is True, "full circle radius-5 must be valid"
 
@@ -246,7 +268,7 @@ def test_validity_count_aware(dev):
     w2 = torch.full((1, 200), hw, device=dev)
     cnt = torch.tensor([120], dtype=torch.int32, device=dev)
     _, Nrm2, _ = wpl.frame_curvature(buf, count=cnt)
-    o2, i2 = wpl.offset(buf, Nrm2, hw, count=cnt)
+    o2, i2 = _offset(buf, Nrm2, hw, count=cnt)
     v_pad = wpl.validity(buf, w2, cnt, gv, cfg, o2, i2)
     assert bool(v_pad[0]) is True, "padded circle (NaN tail) must still be valid"
 
@@ -256,7 +278,7 @@ def test_validity_count_aware(dev):
     # a genuinely too-sharp small circle (radius 0.3 < hw=0.5) must be INVALID, count-masked
     small = _circle(120, 0.3, dev).unsqueeze(0)
     _, Nrm_s, _ = wpl.frame_curvature(small, count=cnt_full)
-    os, is_ = wpl.offset(small, Nrm_s, hw, count=cnt_full)
+    os, is_ = _offset(small, Nrm_s, hw, count=cnt_full)
     v_small = wpl.validity(small, w, cnt_full, gv, cfg, os, is_)
     assert bool(v_small[0]) is False, "radius-0.3 circle with hw=0.5 must be invalid"
 

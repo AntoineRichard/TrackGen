@@ -1129,7 +1129,7 @@ def generate_centerline_warp(seeds: torch.Tensor, config):
     return centerline, valid
 
 
-def generate_tracks_warp(config, seeds: torch.Tensor, out=None):
+def generate_tracks_warp(config, seeds: torch.Tensor, out=None, scratch=None):
     """End-to-end pure-Warp track generation: a drop-in for TrackGenerator.generate.
 
     Composes the verified pure-Warp stages in the torch oracle's order
@@ -1204,7 +1204,8 @@ def generate_tracks_warp(config, seeds: torch.Tensor, out=None):
     _sync(centerline.device)
     relaxed = warp_relax.xpbd_solve(centerline, band, L0, config, count=count_i32)
     relaxed = resample_uniform(relaxed, n_max, count=count_i32)
-    return inflate_warp(relaxed, config, out=out, valid=gen_valid, count=count_i32)
+    return inflate_warp(relaxed, config, out=out, valid=gen_valid, count=count_i32,
+                        scratch=scratch)
 
 
 def assemble(corners: torch.Tensor, count: torch.Tensor, config) -> torch.Tensor:
@@ -1259,57 +1260,28 @@ def assemble(corners: torch.Tensor, count: torch.Tensor, config) -> torch.Tensor
     return out_t.view(E, P * npseg, 2)
 
 
-def offset(center: torch.Tensor, Nrm: torch.Tensor, half_width: float,
-           count: torch.Tensor | None = None):
-    """Constant-width offset of a closed-loop centerline, matching inflation._offset_stage.
+def offset(center, Nrm, half_width, out_outer, out_inner, area_a, area_b, count):
+    """In-place: writes outer/inner into out_outer/out_inner (wp.array [E*n_max] vec2f),
+    using area_a/area_b (wp.array [E] f32) scratch. All args are wp.array; nothing
+    allocated. center/Nrm: wp.array [E*n_max] vec2f. count: wp.array [E] int32.
+    half_width: float. n_max is inferred from out_outer.shape[0] // count.shape[0].
 
-    Computes a = center + half_width*Nrm and b = center - half_width*Nrm per point,
-    then assigns outer = whichever candidate has larger |shoelace area|, inner = the
-    other.  Pure Warp (cpu+cuda); allclose to the torch oracle to atol=1e-5.
-
-    Args:
-        center:     [E, N, 2] float32 closed-loop points.
-        Nrm:        [E, N, 2] float32 unit left-normals.
-        half_width: Python float, constant for all points/envs.
-        count:      [E] int32 (optional): per-env real point count (1..N). When None,
-                    all envs use N (fixed mode — identical to pre-count-aware behaviour).
-                    Padding points (i >= count[e]) receive NaN in outer/inner.
-
-    Returns:
-        outer: [E, N, 2], inner: [E, N, 2]
+    Pure Warp (cpu+cuda); allclose to the torch oracle to atol=1e-5.
     """
     _init()
-    E, n_max, _ = center.shape
-    dev = str(center.device)
-    flat = E * n_max
-
-    if count is None:
-        count = torch.full((E,), n_max, dtype=torch.int32, device=center.device)
-
-    cf = wp.from_torch(center.reshape(flat, 2).contiguous(), dtype=wp.vec2f)
-    nf = wp.from_torch(Nrm.reshape(flat, 2).contiguous(), dtype=wp.vec2f)
-    count_i32 = count.to(torch.int32).contiguous()
-    wp_count = wp.from_torch(count_i32, dtype=wp.int32)
-
-    # Per-env accumulators (zero-initialised so atomic_add works correctly).
-    area_a = torch.zeros(E, device=center.device, dtype=torch.float32)
-    area_b = torch.zeros(E, device=center.device, dtype=torch.float32)
-    out_t = torch.empty(flat, 2, device=center.device, dtype=torch.float32)
-    inn_t = torch.empty(flat, 2, device=center.device, dtype=torch.float32)
-
-    wa = wp.from_torch(area_a, dtype=wp.float32)
-    wb = wp.from_torch(area_b, dtype=wp.float32)
-    wo = wp.from_torch(out_t, dtype=wp.vec2f)
-    wi = wp.from_torch(inn_t, dtype=wp.vec2f)
-
+    E = count.shape[0]
+    flat = out_outer.shape[0]
+    n_max = flat // E
+    area_a.zero_()
+    area_b.zero_()
     wp.launch(_offset_build_k, dim=flat,
-              inputs=[cf, nf, float(half_width), n_max, wa, wb, wp_count],
-              device=dev)
+              inputs=[center, Nrm, float(half_width), n_max, area_a, area_b, count],
+              device=str(out_outer.device))
     wp.launch(_offset_assign_k, dim=flat,
-              inputs=[cf, nf, float(half_width), n_max, wa, wb, wo, wi, wp_count],
-              device=dev)
-    _sync(center.device)
-    return out_t.view(E, n_max, 2), inn_t.view(E, n_max, 2)
+              inputs=[center, Nrm, float(half_width), n_max, area_a, area_b,
+                      out_outer, out_inner, count],
+              device=str(out_outer.device))
+    _sync(out_outer.device)
 
 
 def _smoke_double(x: torch.Tensor) -> torch.Tensor:
@@ -1914,18 +1886,36 @@ def ccw_sort(points: torch.Tensor, count: torch.Tensor | None = None) -> torch.T
     return out_t.view(E, P, 2)
 
 
-def _inflate_warp_alloc(config) -> "Track":
+class _Scratch:
+    """Pre-allocated per-env scratch arrays for in-place stage computations.
+
+    Owned by TrackGenerator; threaded into inflate_warp on the owned path so the
+    runtime generate() path makes zero per-call allocations for the converted stages.
+    area_a/area_b: [E] float32 accumulators for the offset shoelace kernel.
+    """
+
+    __slots__ = ("area_a", "area_b")
+
+    def __init__(self, area_a: "wp.array", area_b: "wp.array") -> None:
+        self.area_a = area_a
+        self.area_b = area_b
+
+
+def _inflate_warp_alloc(config):
     """Allocate a Track with pre-sized wp.array buffers for TrackGenerator.__init__.
 
     Sizes: outer/center/inner/tangent/normal are [E*N_max] vec2f; arclen is
     [E*N_max] float32; length/valid/count are [E] float32/int32/int32.
     These are the flat storage shapes -- reshape via torch at the boundary.
 
+    Also allocates a _Scratch holder with per-env area_a/area_b accumulators for the
+    in-place offset stage.
+
     Args:
         config: TrackGenConfig (uses num_envs, N_max, device).
 
     Returns:
-        Track with uninitialized wp.array fields (all on config.device).
+        (Track, _Scratch) — both with all arrays on config.device.
     """
     from .types import Track  # local import: keep warp_pipeline free of oracle modules
 
@@ -1934,7 +1924,7 @@ def _inflate_warp_alloc(config) -> "Track":
     n_max = int(config.N_max)
     dev = str(config.device)
     flat = E * n_max
-    return Track(
+    track = Track(
         outer=wp.empty(flat, dtype=wp.vec2f, device=dev),
         center=wp.empty(flat, dtype=wp.vec2f, device=dev),
         inner=wp.empty(flat, dtype=wp.vec2f, device=dev),
@@ -1945,6 +1935,11 @@ def _inflate_warp_alloc(config) -> "Track":
         valid=wp.empty(E, dtype=wp.int32, device=dev),
         count=wp.empty(E, dtype=wp.int32, device=dev),
     )
+    scratch = _Scratch(
+        area_a=wp.zeros(E, dtype=wp.float32, device=dev),
+        area_b=wp.zeros(E, dtype=wp.float32, device=dev),
+    )
+    return track, scratch
 
 
 def _copy_torch_to_wp_vec2(dst: "wp.array", src: torch.Tensor) -> None:
@@ -1965,12 +1960,17 @@ def _copy_torch_to_wp_i32(dst: "wp.array", src: torch.Tensor) -> None:
 
 def inflate_warp(center: torch.Tensor, config, out=None,
                  valid: torch.Tensor | None = None,
-                 count: torch.Tensor | None = None):
+                 count: torch.Tensor | None = None,
+                 scratch: "_Scratch | None" = None):
     """Pure-Warp drop-in for inflation.inflate, supporting both fixed and constant_spacing.
 
     Composes the verified Warp wrappers in the same order as inflation.inflate:
     resample -> frame+curvature -> constant width -> offset -> validity -> arclength ->
     write results into out's wp.array Track buffers (or allocate a fresh Track).
+
+    The offset stage writes DIRECTLY into out.outer/out.inner (in-place, zero copy).
+    Scratch buffers (area_a/area_b) are either passed in via ``scratch`` (the owned
+    TrackGenerator path, zero allocation) or allocated here (the out=None fresh path).
 
     count=None convenience path (generic fixed-N, not tied to output_mode):
         Requires center.shape[1] == config.num_points and no NaN. All sub-stages run
@@ -1984,13 +1984,15 @@ def inflate_warp(center: torch.Tensor, config, out=None,
         all output arrays are [E, n_max, ...] with NaN beyond count[e].
 
     Args:
-        center: [E, N, 2] float32 centerline (fixed: no NaN, N==config.num_points;
-                constant_spacing: NaN-padded, N==config.N_max).
-        config: TrackGenConfig.
-        out:    Optional pre-allocated Track (wp.array fields). When None a fresh Track
-                is allocated via _inflate_warp_alloc. Either way the Track is returned.
-        valid:  [E] bool generation flag; defaults to all-True.
-        count:  [E] int32 real point count per env. None -> fixed path (count==N).
+        center:  [E, N, 2] float32 centerline (fixed: no NaN, N==config.num_points;
+                 constant_spacing: NaN-padded, N==config.N_max).
+        config:  TrackGenConfig.
+        out:     Optional pre-allocated Track (wp.array fields). When None a fresh Track
+                 is allocated. Either way the Track is returned.
+        valid:   [E] bool generation flag; defaults to all-True.
+        count:   [E] int32 real point count per env. None -> fixed path (count==N).
+        scratch: Optional _Scratch with pre-allocated area_a/area_b. When None the
+                 scratch is allocated here (the out=None / standalone path).
 
     Returns:
         track_gen.types.Track with wp.array fields. When ``out`` is provided the SAME
@@ -2031,27 +2033,6 @@ def inflate_warp(center: torch.Tensor, config, out=None,
         # 2. frame + curvature (kappa unused, like inflation._width_stage).
         T, Nrm, _kappa = frame_curvature(rs, count=count_arr)
 
-        # 4. offset to outer/inner borders.
-        outer, inner = offset(rs, Nrm, hw, count=count_arr)
-
-        # 5. per-track validity gate.
-        if valid is not None:
-            gen_valid = valid
-        else:
-            gen_valid_i32 = torch.empty(E, device=center.device, dtype=torch.int32)
-            wp.launch(_fill_i32_k, dim=E,
-                      inputs=[wp.from_torch(gen_valid_i32, dtype=wp.int32), 1], device=dev)
-            gen_valid = gen_valid_i32
-        # Border self_intersections is optional (config.validity_border_check, default off):
-        # it is redundant with the thickness/separation gate, so skip the two O(N^2) passes by
-        # passing None borders (validity then sets border_ok all True).
-        _bc = getattr(config, "validity_border_check", False)
-        valid_out = validity(rs, w, count_arr, gen_valid, config,
-                             outer if _bc else None, inner if _bc else None)
-
-        # 6. cumulative arc length + total length.
-        arclen, length = _arclength(rs, count=count_arr)
-
         # Track.count == N for all envs (as before); stored as int32.
         track_count_i32 = count_i32
 
@@ -2071,31 +2052,10 @@ def inflate_warp(center: torch.Tensor, config, out=None,
         # 2. frame + curvature.
         T, Nrm, _kappa = frame_curvature(rs, count=count_arr)
 
-        # 4. offset to outer/inner borders.
-        outer, inner = offset(rs, Nrm, hw, count=count_arr)
-
-        # 5. per-track validity gate.
-        if valid is not None:
-            gen_valid = valid
-        else:
-            gen_valid_i32 = torch.empty(E, device=center.device, dtype=torch.int32)
-            wp.launch(_fill_i32_k, dim=E,
-                      inputs=[wp.from_torch(gen_valid_i32, dtype=wp.int32), 1], device=dev)
-            gen_valid = gen_valid_i32
-        # Border self_intersections is optional (config.validity_border_check, default off):
-        # it is redundant with the thickness/separation gate, so skip the two O(N^2) passes by
-        # passing None borders (validity then sets border_ok all True).
-        _bc = getattr(config, "validity_border_check", False)
-        valid_out = validity(rs, w, count_arr, gen_valid, config,
-                             outer if _bc else None, inner if _bc else None)
-
-        # 6. cumulative arc length + total length.
-        arclen, length = _arclength(rs, count=count_arr)
-
         # Track.count == per-env real point count; stored as int32.
         track_count_i32 = count_arr
 
-    # Allocate a fresh Track when no out buffer was provided.
+    # Allocate a fresh Track (and scratch) when no out buffer was provided.
     if out is None:
         out = Track(
             outer=wp.empty(E * n_max, dtype=wp.vec2f, device=dev),
@@ -2108,12 +2068,58 @@ def inflate_warp(center: torch.Tensor, config, out=None,
             valid=wp.empty(E, dtype=wp.int32, device=dev),
             count=wp.empty(E, dtype=wp.int32, device=dev),
         )
+        if scratch is None:
+            scratch = _Scratch(
+                area_a=wp.zeros(E, dtype=wp.float32, device=dev),
+                area_b=wp.zeros(E, dtype=wp.float32, device=dev),
+            )
+
+    # scratch must be set by now (either passed in or freshly allocated above).
+    # If out was provided but scratch was not (shouldn't happen in normal use, but
+    # be defensive), allocate scratch here too.
+    if scratch is None:
+        scratch = _Scratch(
+            area_a=wp.zeros(E, dtype=wp.float32, device=dev),
+            area_b=wp.zeros(E, dtype=wp.float32, device=dev),
+        )
+
+    # 4. offset to outer/inner borders — in-place directly into out.outer/out.inner.
+    # center/Nrm are still torch at this point (frame_curvature returns torch);
+    # wrap via zero-copy wp.from_torch views (no allocation).
+    flat = E * n_max
+    cf_wp = wp.from_torch(rs.reshape(flat, 2).contiguous(), dtype=wp.vec2f)
+    nf_wp = wp.from_torch(Nrm.reshape(flat, 2).contiguous(), dtype=wp.vec2f)
+    cnt_wp = wp.from_torch(count_arr.contiguous(), dtype=wp.int32)
+    offset(cf_wp, nf_wp, hw, out.outer, out.inner, scratch.area_a, scratch.area_b, cnt_wp)
+
+    # 5. per-track validity gate.
+    if valid is not None:
+        gen_valid = valid
+    else:
+        gen_valid_i32 = torch.empty(E, device=center.device, dtype=torch.int32)
+        wp.launch(_fill_i32_k, dim=E,
+                  inputs=[wp.from_torch(gen_valid_i32, dtype=wp.int32), 1], device=dev)
+        gen_valid = gen_valid_i32
+    # Border self_intersections is optional (config.validity_border_check, default off):
+    # it is redundant with the thickness/separation gate, so skip the two O(N^2) passes by
+    # passing None borders (validity then sets border_ok all True).
+    _bc = getattr(config, "validity_border_check", False)
+    if _bc:
+        # wp.to_torch gives a zero-copy view of the in-place written outer/inner buffers.
+        # Only materialise these views when the border check is actually active.
+        outer_th = wp.to_torch(out.outer).view(E, n_max, 2)
+        inner_th = wp.to_torch(out.inner).view(E, n_max, 2)
+    else:
+        outer_th = None
+        inner_th = None
+    valid_out = validity(rs, w, count_arr, gen_valid, config, outer_th, inner_th)
+
+    # 6. cumulative arc length + total length.
+    arclen, length = _arclength(rs, count=count_arr)
 
     # Boundary copy: torch stage results -> pre-allocated wp.array buffers.
-    # This is the temporary scaffold (Inc 2+ will write into out's buffers directly).
-    _copy_torch_to_wp_vec2(out.outer, outer.reshape(E * n_max, 2))
+    # outer/inner are already written in-place; skip those boundary copies.
     _copy_torch_to_wp_vec2(out.center, rs.reshape(E * n_max, 2))
-    _copy_torch_to_wp_vec2(out.inner, inner.reshape(E * n_max, 2))
     _copy_torch_to_wp_vec2(out.tangent, T.reshape(E * n_max, 2))
     _copy_torch_to_wp_vec2(out.normal, Nrm.reshape(E * n_max, 2))
     _copy_torch_to_wp_f32(out.arclen, arclen.reshape(E * n_max))
@@ -2227,9 +2233,16 @@ def generate_tracks_warp_graph(config, seeds_template: torch.Tensor) -> Captured
     seeds_buf = torch.empty_like(seeds_template)
     seeds_buf.copy_(seeds_template)
 
+    # Pre-allocate the Track output and offset scratch BEFORE entering the capture region.
+    # wp.zeros/wp.empty inside the CUDA graph capture context are NOT graph-pool-aware and
+    # would cause "operation not permitted when stream is capturing" errors. Allocating them
+    # here (outside capture) gives stable device addresses that the graph can bake in.
+    static_track, static_scratch = _inflate_warp_alloc(config)
+
     def _run():
         # Sync-free pipeline (guaranteed by _CAPTURING being set around every call site).
-        return generate_tracks_warp(config, seeds_buf)
+        return generate_tracks_warp(config, seeds_buf, out=static_track,
+                                    scratch=static_scratch)
 
     # ---- Warmup on a side stream (torch.cuda.graph requirement) ----
     side = torch.cuda.Stream()

@@ -3,6 +3,8 @@ import pytest
 import torch
 
 pytest.importorskip("warp")
+import warp as wp
+wp.init()
 from track_gen._src import warp_pipeline as wpl
 from tests._oracle import geometry, inflation
 
@@ -20,7 +22,17 @@ def test_offset_matches_torch(dev):
     c = torch.randn(5, 256, 2, device=dev) * torch.linspace(0.5, 3.0, 5, device=dev).view(5, 1, 1)
     _, Nrm = geometry.tangents_normals(c)
     hw = 0.1
-    outer, inner = wpl.offset(c, Nrm, hw)
+    E, n_max = c.shape[0], c.shape[1]
+    cf  = wp.from_torch(c.reshape(E * n_max, 2).contiguous(), dtype=wp.vec2f)
+    nf  = wp.from_torch(Nrm.reshape(E * n_max, 2).contiguous(), dtype=wp.vec2f)
+    oo  = wp.zeros(E * n_max, dtype=wp.vec2f, device=dev)
+    oi  = wp.zeros(E * n_max, dtype=wp.vec2f, device=dev)
+    aa  = wp.zeros(E, dtype=wp.float32, device=dev)
+    ab  = wp.zeros(E, dtype=wp.float32, device=dev)
+    cnt = wp.from_torch(torch.full((E,), n_max, dtype=torch.int32, device=dev), dtype=wp.int32)
+    wpl.offset(cf, nf, hw, oo, oi, aa, ab, cnt)
+    outer = wp.to_torch(oo).view(E, n_max, 2)
+    inner = wp.to_torch(oi).view(E, n_max, 2)
     w = torch.full((5, 256), hw, device=dev)
     o_ref, i_ref = inflation._offset_stage(c, Nrm, w)
     assert torch.allclose(outer, o_ref, atol=1e-5)
@@ -31,5 +43,15 @@ def test_offset_matches_torch(dev):
 def test_offset_outer_bigger_on_circle(dev):
     c = _loop(256, 3.0, dev)
     _, Nrm = geometry.tangents_normals(c)
-    outer, inner = wpl.offset(c, Nrm, 0.5)
+    E, n_max = c.shape[0], c.shape[1]
+    cf  = wp.from_torch(c.reshape(E * n_max, 2).contiguous(), dtype=wp.vec2f)
+    nf  = wp.from_torch(Nrm.reshape(E * n_max, 2).contiguous(), dtype=wp.vec2f)
+    oo  = wp.zeros(E * n_max, dtype=wp.vec2f, device=dev)
+    oi  = wp.zeros(E * n_max, dtype=wp.vec2f, device=dev)
+    aa  = wp.zeros(E, dtype=wp.float32, device=dev)
+    ab  = wp.zeros(E, dtype=wp.float32, device=dev)
+    cnt = wp.from_torch(torch.full((E,), n_max, dtype=torch.int32, device=dev), dtype=wp.int32)
+    wpl.offset(cf, nf, 0.5, oo, oi, aa, ab, cnt)
+    outer = wp.to_torch(oo).view(E, n_max, 2)
+    inner = wp.to_torch(oi).view(E, n_max, 2)
     assert geometry.polygon_area(outer).abs()[0] > geometry.polygon_area(inner).abs()[0]

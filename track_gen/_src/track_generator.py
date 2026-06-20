@@ -56,9 +56,11 @@ class TrackGenerator:
         self._config = config
         self._rng = rng
 
-        # Pre-allocate the persistent output Track buffers (one allocation per generator).
+        # Pre-allocate the persistent output Track buffers and offset scratch (one
+        # allocation per generator); both are reused across every generate() call.
         from . import warp_pipeline
-        self._track: Track = warp_pipeline._inflate_warp_alloc(config)
+        self._track: Track
+        self._track, self._scratch = warp_pipeline._inflate_warp_alloc(config)
 
     def _resolve_ids(self, num_or_ids) -> Tensor:
         """Map an int count to ids ``0..n-1``; pass a tensor of ids through."""
@@ -96,5 +98,6 @@ class TrackGenerator:
 
         ids = self._resolve_ids(num_or_ids)
         seeds = self._seeds_for(ids)
-        warp_pipeline.generate_tracks_warp(self._config, seeds, out=self._track)
+        warp_pipeline.generate_tracks_warp(self._config, seeds, out=self._track,
+                                           scratch=self._scratch)
         return self._track
