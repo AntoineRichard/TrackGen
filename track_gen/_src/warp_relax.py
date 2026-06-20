@@ -13,7 +13,6 @@ import warp as wp
 _INITED = False
 
 
-
 @wp.kernel
 def _sep_kernel(center: wp.array(dtype=wp.vec2f), band: wp.array(dtype=wp.int32),
                 N: int, target: wp.float32, out: wp.array(dtype=wp.vec2f)):

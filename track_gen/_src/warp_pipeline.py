@@ -226,55 +226,6 @@ def _self_intersections_k(
     e = wp.tid()
     out[e] = _self_intersections_func(poly, e * n_max, count[e])
 
-@wp.kernel
-def _sep_min_k(
-    pts: wp.array(dtype=wp.vec2f),
-    band: wp.array(dtype=wp.int32),
-    n_max: int,
-    count: wp.array(dtype=wp.int32),
-    out: wp.array(dtype=wp.float32),
-):
-    # One thread per env e. Min distance over pairs with circ_dist > band[e].
-    e = wp.tid()
-    b = band[e]
-    cn = count[e]
-    sep_min = float(1.0e30)
-    for i in range(cn):
-        for j in range(i + 1, cn):
-            diff = j - i
-            circ_dist = wp.min(diff, cn - diff)
-            if circ_dist > b:
-                pi = pts[e * n_max + i]
-                pj = pts[e * n_max + j]
-                d = wp.length(pi - pj)
-                sep_min = wp.min(sep_min, d)
-    out[e] = sep_min
-
-@wp.kernel
-def _curvrad_min_k(
-    pts: wp.array(dtype=wp.vec2f),
-    n_max: int,
-    count: wp.array(dtype=wp.int32),
-    out: wp.array(dtype=wp.float32),
-):
-    # One thread per env e. 1 / max Menger curvature.
-    e = wp.tid()
-    cn = count[e]
-    kappa_max = float(0.0)
-    for i in range(cn):
-        xp = pts[e * n_max + (i + cn - 1) % cn]
-        xc = pts[e * n_max + i]
-        xn = pts[e * n_max + (i + 1) % cn]
-        a = xc - xp
-        bb = xn - xc
-        cc = xn - xp
-        cross = a[0] * bb[1] - a[1] * bb[0]
-        area = 0.5 * wp.abs(cross)
-        denom = wp.max(wp.length(a) * wp.length(bb) * wp.length(cc), float(1.0e-12))
-        kappa = 4.0 * area / denom
-        kappa_max = wp.max(kappa_max, kappa)
-    out[e] = 1.0 / wp.max(kappa_max, float(1.0e-12))
-
 @wp.func
 def _thickness_func(pts: wp.array(dtype=wp.vec2f), base: int, N: int, band: int) -> float:
     # thickness = min(rad_min, 0.5 * sep_min) for the env whose points start at `base`.
@@ -943,11 +894,6 @@ def _corner_count_sample_k(
     out[e] = wp.min(count, max_num)
 
 @wp.kernel
-def _fill_vec2_k(arr: wp.array(dtype=wp.vec2f), vx: float, vy: float):
-    # One thread per element: constant vec2 fill.
-    arr[wp.tid()] = wp.vec2f(vx, vy)
-
-@wp.kernel
 def _fill_f32_k(arr: wp.array(dtype=wp.float32), v: float):
     # One thread per element: constant float fill.
     arr[wp.tid()] = v
@@ -1316,7 +1262,6 @@ def offset(center, Nrm, half_width, out_outer, out_inner, area_a, area_b, count)
     _sync(out_outer.device)
 
 
-
 def frame_curvature(
     center_wp: "wp.array",
     out_T: "wp.array",
@@ -1429,7 +1374,6 @@ def resample_constant_spacing(
             "resample_constant_spacing: need count_wp or out_wp to infer E from wp.array input")
     N = center.shape[0] // E
     dev = str(center.device)
-    cf = center  # already flat [E*N] vec2f
 
     _allocating = out_wp is None or count_wp is None
     if out_wp is None:
@@ -1441,9 +1385,9 @@ def resample_constant_spacing(
     if s_wp is None:
         s_wp = wp.empty(E * (N + 1), dtype=wp.float32, device=dev)
 
-    wp.launch(_cs_scan_k, dim=E, inputs=[cf, N, float(spacing), n_max,
+    wp.launch(_cs_scan_k, dim=E, inputs=[center, N, float(spacing), n_max,
               seg_wp, s_wp, count_wp], device=dev)
-    wp.launch(_cs_lookup_k, dim=E * n_max, inputs=[cf, seg_wp, s_wp, N,
+    wp.launch(_cs_lookup_k, dim=E * n_max, inputs=[center, seg_wp, s_wp, N,
               float(spacing), n_max, count_wp, out_wp], device=dev)
     _sync(dev)
 
@@ -1735,7 +1679,6 @@ def _inflate_warp_alloc(config):
         gen_arc_co=wp.empty(E, dtype=wp.int32, device=dev),
     )
     return track, scratch
-
 
 
 def inflate_warp(center, config, out=None,
