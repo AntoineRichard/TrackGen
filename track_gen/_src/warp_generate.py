@@ -418,7 +418,7 @@ def assemble_inplace(corners_wp, count_wp, config, tan_scratch, scale_scratch, o
 
 def generate_centerline_warp(seeds_wp: wp.array, config,
                               out_centerline: wp.array, out_valid_wp: wp.array,
-                              scratch: "_Scratch") -> None:
+                              scratch) -> None:
     """Single-pass centerline generation — in-place owned path only.
 
     Pure-Warp: sample corners -> sort ccw -> assemble Bezier -> arc-resample -> polygon
@@ -430,7 +430,9 @@ def generate_centerline_warp(seeds_wp: wp.array, config,
         config:        TrackGenConfig.
         out_centerline:[E*N] vec2f wp.array — written in-place with the chosen centerline.
         out_valid_wp:  [E] int32 wp.array — filled with 1 (all valid at generation stage).
-        scratch:       _Scratch with generation intermediates.
+        scratch:       the generation buffer group exposing the gen_* arrays — a
+                       warp_pipeline.GenScratch (passed by the orchestrator) or the
+                       composite _Scratch (which delegates gen_* to its .gen group).
     """
     _pipe._init()
 

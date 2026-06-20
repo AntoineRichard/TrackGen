@@ -714,16 +714,18 @@ def _run_pipeline(config, seed_buf_wp: wp.array, out: "Track", scratch: "_Scratc
     from . import warp_generate
 
     n_max = int(config.N_max)
+    gen = scratch.gen        # GenScratch  — generation buffers
+    relax = scratch.relax    # RelaxScratch — band/L0 + XPBD buffers
 
-    # 1. Generate centerline in-place.
+    # 1. Generate centerline in-place (the generation group only).
     warp_generate.generate_centerline_warp(seed_buf_wp, config,
-                                           out_centerline=scratch.gen_centerline,
-                                           out_valid_wp=scratch.gen_valid,
-                                           scratch=scratch)
+                                           out_centerline=gen.gen_centerline,
+                                           out_valid_wp=gen.gen_valid,
+                                           scratch=gen)
 
-    # 2. Constant-spacing resample in-place.
+    # 2. Constant-spacing resample in-place (gen centerline -> bridge buffers).
     resample_constant_spacing(
-        scratch.gen_centerline, float(config.spacing), n_max,
+        gen.gen_centerline, float(config.spacing), n_max,
         out_wp=scratch.cs_center, count_wp=scratch.count,
         seg_wp=scratch.cs_seg, s_wp=scratch.cs_s,
     )
@@ -736,24 +738,26 @@ def _run_pipeline(config, seed_buf_wp: wp.array, out: "Track", scratch: "_Scratc
     if config.relax_enable:
         # 3. Relaxation setup: band / L0 (the relax module owns its own setup).
         warp_relax.band_l0_inplace(
-            scratch.cs_center, n_max, scratch.band, scratch.L0,
+            scratch.cs_center, n_max, relax.band, relax.L0,
             scratch.count, config, capturing=_CAPTURING,
         )
 
         # 4. XPBD relaxation in-place. Thread the pipeline's capture state in explicitly
         # so warp_relax decides its host-sync without reaching back into this module.
         warp_relax.xpbd_solve_inplace(
-            scratch.cs_center, scratch.relaxed, scratch.xpbd_db,
-            scratch.band, scratch.L0, scratch.count, n_max, config,
+            scratch.cs_center, relax.relaxed, relax.xpbd_db,
+            relax.band, relax.L0, scratch.count, n_max, config,
             capturing=_CAPTURING,
         )
-        relax_out = scratch.relaxed
+        relax_out = relax.relaxed
     else:
         relax_out = scratch.cs_center
 
-    # 5. Inflate (resample_uniform + frame + offset + validity) in-place.
+    # 5. Inflate (resample_uniform + frame + offset + validity) in-place. inflate_warp
+    # reads the inflate group (kappa/w/area_a/area_b) + the bridge buffers (cs_seg/cs_s/
+    # count) off the composite scratch.
     return inflate_warp(
-        relax_out, config, out=out, valid=scratch.gen_valid,
+        relax_out, config, out=out, valid=gen.gen_valid,
         count=scratch.count, scratch=scratch,
     )
 
@@ -998,33 +1002,9 @@ def _arclength(
     _sync(out_arclen.device)
 
 
-class _Scratch:
-    """Pre-allocated per-env scratch arrays for in-place stage computations.
+class GenScratch:
+    """Pre-allocated generation buffers (owned generate path; warp_generate stage).
 
-    Owned by TrackGenerator; threaded into inflate_warp on the owned path so the
-    runtime generate() path makes zero per-call allocations for the converted stages.
-
-    Inflate / offset / frame-curvature / validity fields:
-    area_a/area_b: [E] float32 accumulators for the offset shoelace kernel.
-    kappa:         [E*N_max] float32 Menger curvature scratch for frame_curvature
-                   (kappa is computed by the kernel but unused by the pipeline).
-    w:             [E*N_max] float32 per-point half-width buffer for validity_inplace.
-
-    Resample / relax fields:
-    cs_center:     [E*N_max] vec2f — constant-spacing resampled centerline output.
-    cs_seg:        [E*N_max] float32 — scan scratch shared by resample_constant_spacing
-                   and resample_uniform (sequential stages, safe to alias).
-    cs_s:          [E*(N_max+1)] float32 — cumulative arc-length scratch (same sharing).
-    count:         [E] int32 — real-point-count output of resample_constant_spacing;
-                   also threaded through relax → inflate as Track.count.
-    relaxed:       [E*N_max] vec2f — xpbd_solve output / resample_uniform input on the
-                   generate path (written by xpbd_solve, read-then-overwritten by
-                   resample_uniform which writes directly into out.center).
-    band:          [E] int32 — _band_l0_k output (excluded-neighbour half-window).
-    L0:            [E] float32 — _band_l0_k output (rest segment length per env).
-    xpbd_db:       [E*N_max] vec2f — xpbd_solve double-buffer (displacement scratch).
-
-    Generation fields (owned generate path):
     gen_count:     [E] int32 — per-env corner count from corner_count_sample_inplace.
     gen_corners:   [E*P] vec2f — raw corners from corner_sample_inplace (P=max_num_points).
     gen_ordered:   [E*P] vec2f — ccw-sorted corners from ccw_sort_inplace.
@@ -1049,10 +1029,6 @@ class _Scratch:
     """
 
     __slots__ = (
-        "area_a", "area_b", "kappa", "w",
-        "cs_center", "cs_seg", "cs_s", "count",
-        "relaxed", "band", "L0", "xpbd_db",
-        # Generation intermediates
         "gen_count", "gen_corners", "gen_ordered", "gen_used", "gen_keys",
         "gen_tan", "gen_scale", "gen_dense", "gen_poly",
         "gen_rs", "gen_crossers", "gen_centerline", "gen_valid",
@@ -1061,51 +1037,25 @@ class _Scratch:
 
     def __init__(
         self,
-        area_a: "wp.array",
-        area_b: "wp.array",
-        kappa: "wp.array",
-        w: "wp.array",
-        cs_center: "wp.array | None" = None,
-        cs_seg: "wp.array | None" = None,
-        cs_s: "wp.array | None" = None,
-        count: "wp.array | None" = None,
-        relaxed: "wp.array | None" = None,
-        band: "wp.array | None" = None,
-        L0: "wp.array | None" = None,
-        xpbd_db: "wp.array | None" = None,
-        # Generation intermediates
-        gen_count: "wp.array | None" = None,
-        gen_corners: "wp.array | None" = None,
-        gen_ordered: "wp.array | None" = None,
-        gen_used: "wp.array | None" = None,
-        gen_keys: "wp.array | None" = None,
-        gen_tan: "wp.array | None" = None,
-        gen_scale: "wp.array | None" = None,
-        gen_dense: "wp.array | None" = None,
-        gen_poly: "wp.array | None" = None,
-        gen_rs: "wp.array | None" = None,
-        gen_crossers: "wp.array | None" = None,
-        gen_centerline: "wp.array | None" = None,
-        gen_valid: "wp.array | None" = None,
-        gen_arc_real: "wp.array | None" = None,
-        gen_arc_seg: "wp.array | None" = None,
-        gen_arc_s: "wp.array | None" = None,
-        gen_arc_cr: "wp.array | None" = None,
-        gen_arc_co: "wp.array | None" = None,
+        gen_count: "wp.array",
+        gen_corners: "wp.array",
+        gen_ordered: "wp.array",
+        gen_used: "wp.array",
+        gen_keys: "wp.array",
+        gen_tan: "wp.array",
+        gen_scale: "wp.array",
+        gen_dense: "wp.array",
+        gen_poly: "wp.array",
+        gen_rs: "wp.array",
+        gen_crossers: "wp.array",
+        gen_centerline: "wp.array",
+        gen_valid: "wp.array",
+        gen_arc_real: "wp.array",
+        gen_arc_seg: "wp.array",
+        gen_arc_s: "wp.array",
+        gen_arc_cr: "wp.array",
+        gen_arc_co: "wp.array",
     ) -> None:
-        self.area_a = area_a
-        self.area_b = area_b
-        self.kappa = kappa
-        self.w = w
-        self.cs_center = cs_center
-        self.cs_seg = cs_seg
-        self.cs_s = cs_s
-        self.count = count
-        self.relaxed = relaxed
-        self.band = band
-        self.L0 = L0
-        self.xpbd_db = xpbd_db
-        # Generation intermediates
         self.gen_count = gen_count
         self.gen_corners = gen_corners
         self.gen_ordered = gen_ordered
@@ -1126,6 +1076,114 @@ class _Scratch:
         self.gen_arc_co = gen_arc_co
 
 
+class RelaxScratch:
+    """Pre-allocated relaxation buffers (band/L0 setup + XPBD solve; warp_relax stage).
+
+    relaxed:  [E*N_max] vec2f — xpbd_solve output / resample_uniform input on the generate
+              path (written by xpbd_solve, read-then-overwritten by resample_uniform which
+              writes directly into out.center).
+    band:     [E] int32 — band_l0_inplace output (excluded-neighbour half-window).
+    L0:       [E] float32 — band_l0_inplace output (rest segment length per env).
+    xpbd_db:  [E*N_max] vec2f — xpbd_solve double-buffer (displacement scratch).
+    """
+
+    __slots__ = ("relaxed", "band", "L0", "xpbd_db")
+
+    def __init__(
+        self,
+        relaxed: "wp.array",
+        band: "wp.array",
+        L0: "wp.array",
+        xpbd_db: "wp.array",
+    ) -> None:
+        self.relaxed = relaxed
+        self.band = band
+        self.L0 = L0
+        self.xpbd_db = xpbd_db
+
+
+class InflateScratch:
+    """Pre-allocated inflation buffers (offset / frame-curvature / validity stages).
+
+    area_a/area_b: [E] float32 accumulators for the offset shoelace kernel.
+    kappa:         [E*N_max] float32 Menger curvature scratch for frame_curvature
+                   (kappa is computed by the kernel but unused by the pipeline).
+    w:             [E*N_max] float32 per-point half-width buffer for validity_inplace.
+    """
+
+    __slots__ = ("area_a", "area_b", "kappa", "w")
+
+    def __init__(
+        self,
+        area_a: "wp.array",
+        area_b: "wp.array",
+        kappa: "wp.array",
+        w: "wp.array",
+    ) -> None:
+        self.area_a = area_a
+        self.area_b = area_b
+        self.kappa = kappa
+        self.w = w
+
+
+class _Scratch:
+    """Per-concern scratch groups for the in-place pipeline, composed in one holder.
+
+    Owned by TrackGenerator; threaded into each stage on the owned path so the runtime
+    generate() path makes zero per-call allocations. The buffers are grouped by lifetime/
+    concern so each stage receives only the group it owns:
+
+    .gen      — GenScratch:     generation intermediates (warp_generate).
+    .relax    — RelaxScratch:   band/L0 + XPBD buffers (warp_relax).
+    .inflate  — InflateScratch: offset/frame/validity scratch.
+
+    Plus the BRIDGE buffers that span stages (the resample output threaded gen -> relax ->
+    inflate), held directly on the holder:
+    cs_center: [E*N_max] vec2f — constant-spacing resampled centerline output.
+    cs_seg:    [E*N_max] float32 — scan scratch shared by resample_constant_spacing and
+               resample_uniform (sequential stages, safe to alias).
+    cs_s:      [E*(N_max+1)] float32 — cumulative arc-length scratch (same sharing).
+    count:     [E] int32 — real-point-count output of resample_constant_spacing; also
+               threaded through relax -> inflate as Track.count.
+
+    For convenience, attribute access falls through to the sub-groups: ``scratch.relaxed``
+    resolves to ``scratch.relax.relaxed``, ``scratch.gen_centerline`` to
+    ``scratch.gen.gen_centerline``, ``scratch.kappa`` to ``scratch.inflate.kappa``, etc.,
+    so existing flat-name call sites keep working while the grouping is type-enforced.
+    """
+
+    __slots__ = ("gen", "relax", "inflate", "cs_center", "cs_seg", "cs_s", "count")
+
+    def __init__(
+        self,
+        inflate: "InflateScratch",
+        gen: "GenScratch | None" = None,
+        relax: "RelaxScratch | None" = None,
+        cs_center: "wp.array | None" = None,
+        cs_seg: "wp.array | None" = None,
+        cs_s: "wp.array | None" = None,
+        count: "wp.array | None" = None,
+    ) -> None:
+        self.gen = gen
+        self.relax = relax
+        self.inflate = inflate
+        self.cs_center = cs_center
+        self.cs_seg = cs_seg
+        self.cs_s = cs_s
+        self.count = count
+
+    def __getattr__(self, name):
+        # Fall through to the per-concern sub-groups so flat-name accesses
+        # (scratch.relaxed, scratch.gen_centerline, scratch.kappa, ...) keep working.
+        # __getattr__ runs only for names not found via __slots__, so the bridge fields
+        # and the sub-group handles above are never routed here.
+        for group in (self.gen, self.relax, self.inflate):
+            if group is not None and name in group.__slots__:
+                return getattr(group, name)
+        raise AttributeError(
+            f"{type(self).__name__!r} object has no attribute {name!r}")
+
+
 def _inflate_warp_alloc(config):
     """Allocate a Track with pre-sized wp.array buffers for TrackGenerator.__init__.
 
@@ -1133,8 +1191,9 @@ def _inflate_warp_alloc(config):
     [E*N_max] float32; length/valid/count are [E] float32/int32/int32.
     These are the flat storage shapes — reshape via wp bridge at the boundary.
 
-    Also allocates a _Scratch holder with per-env area_a/area_b accumulators for the
-    in-place offset stage.
+    Also allocates the composite _Scratch holder: a GenScratch, RelaxScratch and
+    InflateScratch group plus the bridge buffers (cs_center/cs_seg/cs_s/count), all sized
+    for the owned generate path so every stage runs zero-alloc.
 
     Args:
         config: TrackGenConfig (uses num_envs, N_max, device).
@@ -1165,21 +1224,7 @@ def _inflate_warp_alloc(config):
     M_dense = P * npseg  # dense points per env (assembled Bezier / polygon)
     N_gen = int(config.num_points)  # arc-resampled centerline length (input to cs-resample)
 
-    scratch = _Scratch(
-        area_a=wp.zeros(E, dtype=wp.float32, device=dev),
-        area_b=wp.zeros(E, dtype=wp.float32, device=dev),
-        kappa=wp.empty(flat, dtype=wp.float32, device=dev),
-        w=wp.empty(flat, dtype=wp.float32, device=dev),
-        # resample + relax intermediates
-        cs_center=wp.empty(flat, dtype=wp.vec2f, device=dev),
-        cs_seg=wp.empty(flat, dtype=wp.float32, device=dev),
-        cs_s=wp.empty(E * (n_max + 1), dtype=wp.float32, device=dev),
-        count=wp.empty(E, dtype=wp.int32, device=dev),
-        relaxed=wp.empty(flat, dtype=wp.vec2f, device=dev),
-        band=wp.empty(E, dtype=wp.int32, device=dev),
-        L0=wp.empty(E, dtype=wp.float32, device=dev),
-        xpbd_db=wp.empty(flat, dtype=wp.vec2f, device=dev),
-        # generation intermediates (owned generate path)
+    gen = GenScratch(
         gen_count=wp.empty(E, dtype=wp.int32, device=dev),
         gen_corners=wp.empty(E * P, dtype=wp.vec2f, device=dev),
         gen_ordered=wp.empty(E * P, dtype=wp.vec2f, device=dev),
@@ -1198,6 +1243,26 @@ def _inflate_warp_alloc(config):
         gen_arc_s=wp.empty(E * (M_dense + 1), dtype=wp.float32, device=dev),
         gen_arc_cr=wp.empty(E, dtype=wp.int32, device=dev),
         gen_arc_co=wp.empty(E, dtype=wp.int32, device=dev),
+    )
+    relax = RelaxScratch(
+        relaxed=wp.empty(flat, dtype=wp.vec2f, device=dev),
+        band=wp.empty(E, dtype=wp.int32, device=dev),
+        L0=wp.empty(E, dtype=wp.float32, device=dev),
+        xpbd_db=wp.empty(flat, dtype=wp.vec2f, device=dev),
+    )
+    inflate = InflateScratch(
+        area_a=wp.zeros(E, dtype=wp.float32, device=dev),
+        area_b=wp.zeros(E, dtype=wp.float32, device=dev),
+        kappa=wp.empty(flat, dtype=wp.float32, device=dev),
+        w=wp.empty(flat, dtype=wp.float32, device=dev),
+    )
+    scratch = _Scratch(
+        inflate=inflate, gen=gen, relax=relax,
+        # bridge buffers threaded gen -> relax -> inflate
+        cs_center=wp.empty(flat, dtype=wp.vec2f, device=dev),
+        cs_seg=wp.empty(flat, dtype=wp.float32, device=dev),
+        cs_s=wp.empty(E * (n_max + 1), dtype=wp.float32, device=dev),
+        count=wp.empty(E, dtype=wp.int32, device=dev),
     )
     return track, scratch
 
@@ -1271,11 +1336,15 @@ def inflate_warp(center, config, out=None,
             count=wp.empty(E, dtype=wp.int32, device=dev),
         )
         if scratch is None:
+            # Standalone path: only the inflate group is needed (no gen/relax buffers);
+            # cs_seg/cs_s left None so inflate_warp allocates its own resample scan scratch.
             scratch = _Scratch(
-                area_a=wp.zeros(E, dtype=wp.float32, device=dev),
-                area_b=wp.zeros(E, dtype=wp.float32, device=dev),
-                kappa=wp.empty(flat, dtype=wp.float32, device=dev),
-                w=wp.empty(flat, dtype=wp.float32, device=dev),
+                inflate=InflateScratch(
+                    area_a=wp.zeros(E, dtype=wp.float32, device=dev),
+                    area_b=wp.zeros(E, dtype=wp.float32, device=dev),
+                    kappa=wp.empty(flat, dtype=wp.float32, device=dev),
+                    w=wp.empty(flat, dtype=wp.float32, device=dev),
+                ),
             )
     else:
         # Owned path: the caller MUST pass pre-allocated scratch.
