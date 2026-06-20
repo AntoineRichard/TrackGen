@@ -1,16 +1,16 @@
-"""Dependency-free leaf dataclasses shared across the pipeline.
+"""Shared dataclasses for the track generation pipeline.
 
-This module imports NOTHING from the rest of the package (no generators, no
-inflation, no track_generator, no rng_utils, no warp). It is the shared home for
-``TrackGenConfig`` and ``Track`` so that ``inflation.py`` and the facade can both
-import them without a circular import, and so CPU-only tests never drag in NVIDIA
-Warp.
+This module imports nothing from the rest of the package (no generators, no
+inflation, no track_generator, no rng_utils). It is the shared home for
+``TrackGenConfig`` and ``Track`` so that ``warp_pipeline.py`` and the facade can
+both import them without a circular import. Warp is a core dependency (``Track``
+fields are ``wp.array``).
 """
 
 import math
 from dataclasses import dataclass
 
-from torch import Tensor
+import warp as wp
 
 
 @dataclass
@@ -129,15 +129,16 @@ class Track:
 
     All boundary arrays are index-aligned: ``outer[i]``, ``center[i]`` and
     ``inner[i]`` share a single cross-section normal. Half-width is not stored;
-    recover it as ``torch.linalg.norm(outer - center, dim=-1)``.
+    recover it as ``wp.to_torch(outer) - wp.to_torch(center)`` norm along dim=-1.
+    Fields are ``wp.array``; use ``wp.to_torch(field)`` at the boundary.
     """
 
-    outer: Tensor  # [E, N, 2]
-    center: Tensor  # [E, N, 2]
-    inner: Tensor  # [E, N, 2]
-    tangent: Tensor  # [E, N, 2] unit tangent along centerline
-    normal: Tensor  # [E, N, 2] unit left-normal along centerline
-    arclen: Tensor  # [E, N] cumulative arc length
-    length: Tensor  # [E] total length per track
-    valid: Tensor  # [E] bool validity mask
-    count: Tensor  # [E] int real points per track (constant_spacing; rest of each row is NaN pad)
+    outer: wp.array    # [E, N] vec2f
+    center: wp.array   # [E, N] vec2f
+    inner: wp.array    # [E, N] vec2f
+    tangent: wp.array  # [E, N] vec2f
+    normal: wp.array   # [E, N] vec2f
+    arclen: wp.array   # [E, N] float32
+    length: wp.array   # [E] float32
+    valid: wp.array    # [E] bool/int32
+    count: wp.array    # [E] int32

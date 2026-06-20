@@ -15,6 +15,7 @@ import argparse
 import time
 
 import torch
+import warp as wp
 
 from track_gen._src.types import TrackGenConfig
 from track_gen._src import warp_pipeline as wpl
@@ -46,7 +47,7 @@ def run_pipeline_benchmark(E=8192, N=256, half_width=0.03, scale=1.0, device="cu
     eager_s = (time.time() - t0) / reps
     peak_mb = (torch.cuda.max_memory_allocated() / 1e6) if device == "cuda" else float("nan")
     rows.append({"mode": "eager", "device": device, "E": E, "N": N,
-                 "valid_frac": track.valid.float().mean().item(),
+                 "valid_frac": wp.to_torch(track.valid).float().mean().item(),
                  "seconds": eager_s, "peak_gpu_mb": peak_mb, "capture_s": float("nan")})
 
     # --- single-CUDA-graph replay (cuda only) ---
@@ -63,7 +64,7 @@ def run_pipeline_benchmark(E=8192, N=256, half_width=0.03, scale=1.0, device="cu
         _sync()
         replay_s = (time.time() - t0) / reps
         rows.append({"mode": "graph_replay", "device": device, "E": E, "N": N,
-                     "valid_frac": rt.valid.float().mean().item(),
+                     "valid_frac": wp.to_torch(rt.valid).float().mean().item(),
                      "seconds": replay_s, "peak_gpu_mb": float("nan"), "capture_s": capture_s})
     return rows
 

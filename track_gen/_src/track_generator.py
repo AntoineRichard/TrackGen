@@ -5,6 +5,10 @@ resample -> relax -> inflate, all NVIDIA Warp kernels) and returns a fully-popul
 :class:`Track`. The public dataclasses ``TrackGenConfig`` and ``Track`` live in the
 dependency-free leaf module ``types.py``; this facade re-exports ``TrackGenerator``
 as the package's top-level entry point.
+
+TrackGenerator pre-allocates a single :class:`Track` instance in ``__init__`` and
+returns the SAME instance from every ``generate()`` call (stable ``.ptr`` pointers).
+Callers that need a snapshot must clone the individual fields.
 """
 
 import torch
@@ -27,6 +31,12 @@ class TrackGenerator:
     kernels (``warp_pipeline.generate_tracks_warp``), runnable on the Warp ``cpu`` and
     ``cuda`` devices with torch only as the array container. Only the ``bezier``
     generator is supported on this path (the Fourier generator was not ported to Warp).
+
+    The output :class:`Track` is pre-allocated once in ``__init__`` (via
+    ``_inflate_warp_alloc``) and reused across calls: ``generate()`` always returns
+    ``self._track``, writing new results into the same wp.array buffers in place. This
+    ensures stable ``.ptr`` pointers so downstream CUDA graph consumers can bake the
+    device addresses once.
     """
 
     def __init__(self, config: TrackGenConfig, rng) -> None:
@@ -45,6 +55,10 @@ class TrackGenerator:
             )
         self._config = config
         self._rng = rng
+
+        # Pre-allocate the persistent output Track buffers (one allocation per generator).
+        from . import warp_pipeline
+        self._track: Track = warp_pipeline._inflate_warp_alloc(config)
 
     def _resolve_ids(self, num_or_ids) -> Tensor:
         """Map an int count to ids ``0..n-1``; pass a tensor of ids through."""
@@ -68,15 +82,19 @@ class TrackGenerator:
     def generate(self, num_or_ids) -> Track:
         """Generate a batch of tracks via the pure-Warp pipeline.
 
+        Writes results into ``self._track`` in place and returns the SAME instance every
+        call (stable ``.ptr`` pointers). Callers that need a snapshot must clone fields.
+
         Args:
             num_or_ids: Either an ``int`` number of tracks (ids ``0..n-1``) or a
                 1D tensor of explicit environment ids.
 
         Returns:
-            A fully-populated :class:`Track`.
+            ``self._track`` — the same :class:`Track` instance every call (stable pointers).
         """
         from . import warp_pipeline
 
         ids = self._resolve_ids(num_or_ids)
         seeds = self._seeds_for(ids)
-        return warp_pipeline.generate_tracks_warp(self._config, seeds)
+        warp_pipeline.generate_tracks_warp(self._config, seeds, out=self._track)
+        return self._track

@@ -1,6 +1,7 @@
 import torch
 import pytest
 from tests._oracle import geometry
+from tests._warp_compare import to_t
 
 
 @pytest.fixture
@@ -21,6 +22,7 @@ def warp_rng():
 def test_xpbd_pipeline_makes_constant_width_tracks_valid(warp_rng):
     from track_gen._src.types import TrackGenConfig
     from track_gen._src.track_generator import TrackGenerator
+    import warp as wp
     E = 32
     # constant_spacing is the only mode; pin spacing/N_max for determinism (spacing
     # would otherwise auto-resolve to 0.6*half_width = 0.018 anyway).
@@ -30,23 +32,30 @@ def test_xpbd_pipeline_makes_constant_width_tracks_valid(warp_rng):
                          relax_solver="xpbd", relax_iters=200, relax_bend_relax=1.5,
                          relax_margin=0.15, max_regen_iters=20)
     track = TrackGenerator(cfg, warp_rng(E)).generate(E)
+    # Track fields are wp.array; use to_t() to convert for torch operations.
+    valid_t = to_t(track.valid).bool()
+    count_t = to_t(track.count)
+    # Reshape flat wp.array [E*N_max] vec2f -> [E, N_max, 2] torch for per-env ops.
+    N_max = cfg.N_max
+    center_t = wp.to_torch(track.center).view(E, N_max, 2)
+    outer_t = wp.to_torch(track.outer).view(E, N_max, 2)
     # Relaxed + constant-width inflation: a large majority must be valid (was ~3% before).
-    assert track.valid.float().mean().item() >= 0.9
+    assert valid_t.float().mean().item() >= 0.9
     # Count-aware output: per-env real-point count is in [1, N_max]; the centerline is
     # finite over the real prefix [:count[e]] and NaN-padded beyond it.
-    assert track.count.min().item() >= 1
-    assert track.count.max().item() <= cfg.N_max
+    assert count_t.min().item() >= 1
+    assert count_t.max().item() <= cfg.N_max
     # Width is constant (== half_width) at every real point, masking out the NaN padding.
-    w = torch.linalg.norm(track.outer - track.center, dim=-1)  # [E, N_max], NaN past count
+    w = torch.linalg.norm(outer_t - center_t, dim=-1)  # [E, N_max], NaN past count
     real = torch.isfinite(w)
     # The finite (real) width slots are exactly the per-env real points.
-    assert int(real.sum().item()) == int(track.count.sum().item())
+    assert int(real.sum().item()) == int(count_t.sum().item())
     for e in range(E):
-        c = int(track.count[e].item())
+        c = int(count_t[e].item())
         # Real prefix is finite; padding beyond count is NaN.
-        assert torch.isfinite(track.center[e, :c]).all()
+        assert torch.isfinite(center_t[e, :c]).all()
         if c < cfg.N_max:
-            assert torch.isnan(track.center[e, c:]).all()
+            assert torch.isnan(center_t[e, c:]).all()
         # Constant width over this env's real points.
         we = w[e, :c]
         assert torch.allclose(we, torch.full_like(we, 0.03), atol=1e-3)

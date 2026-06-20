@@ -5,6 +5,7 @@ pytest.importorskip("warp")
 
 from track_gen import PerEnvSeededRNG
 from track_gen._src.track_generator import Track, TrackGenConfig, TrackGenerator
+from tests._warp_compare import to_t
 
 
 def _make_rng(num_envs, device="cpu"):
@@ -14,10 +15,9 @@ def _make_rng(num_envs, device="cpu"):
 
 
 def test_bezier_path_returns_track_with_aligned_boundaries():
-    # constant_spacing output: boundary arrays are [E, N_max, 2] NaN-padded, with a
-    # per-env real-point count in track.count (real points live in [:count[e]]). The
-    # second dim is N_max (NOT num_points / not a per-env count), so we set N_max
-    # explicitly for a deterministic shape assertion.
+    # constant_spacing output: boundary arrays are wp.array with E*N_max vec2f elements
+    # (flat [E*N_max] storage). The second dim is N_max (NOT num_points / not a per-env
+    # count), so we set N_max explicitly for a deterministic shape assertion.
     E, N_max = 4, 128
     cfg = TrackGenConfig(
         generator="bezier", num_envs=E, num_points=64, N_max=N_max, device="cpu"
@@ -28,26 +28,32 @@ def test_bezier_path_returns_track_with_aligned_boundaries():
     track = gen.generate(E)
 
     assert isinstance(track, Track)
-    # All boundary arrays share the padded [E, N_max, 2] shape.
-    assert track.outer.shape == (E, N_max, 2)
-    assert track.center.shape == (E, N_max, 2)
-    assert track.inner.shape == (E, N_max, 2)
-    assert track.valid.shape == (E,)
-    assert track.valid.dtype == torch.bool
+    # All boundary arrays are wp.array with flat E*N_max vec2f storage; reshape to [E,N,2]
+    # via to_t() for shape assertions.
+    outer_t = to_t(track.outer).view(E, N_max, 2)
+    center_t = to_t(track.center).view(E, N_max, 2)
+    inner_t = to_t(track.inner).view(E, N_max, 2)
+    assert outer_t.shape == (E, N_max, 2)
+    assert center_t.shape == (E, N_max, 2)
+    assert inner_t.shape == (E, N_max, 2)
+    valid_t = to_t(track.valid).bool()
+    assert valid_t.shape == (E,)
+    assert valid_t.dtype == torch.bool
 
     # count is a per-env real-point count in [1, N_max].
-    assert track.count.shape == (E,)
-    assert torch.all(track.count >= 1)
-    assert torch.all(track.count <= N_max)
+    count_t = to_t(track.count)
+    assert count_t.shape == (E,)
+    assert torch.all(count_t >= 1)
+    assert torch.all(count_t <= N_max)
 
     # Boundaries are index-aligned: outer[e], center[e], inner[e] share one
     # cross-section normal, so their finite masks must agree per env, and the finite
     # region must be exactly the first count[e] rows (real points finite, padding NaN).
     for e in range(E):
-        c = int(track.count[e])
-        finite_center = torch.isfinite(track.center[e]).all(dim=-1)
-        finite_outer = torch.isfinite(track.outer[e]).all(dim=-1)
-        finite_inner = torch.isfinite(track.inner[e]).all(dim=-1)
+        c = int(count_t[e])
+        finite_center = torch.isfinite(center_t[e]).all(dim=-1)
+        finite_outer = torch.isfinite(outer_t[e]).all(dim=-1)
+        finite_inner = torch.isfinite(inner_t[e]).all(dim=-1)
         # Aligned: all three boundaries finite at exactly the same slots.
         assert torch.equal(finite_center, finite_outer)
         assert torch.equal(finite_center, finite_inner)
@@ -71,3 +77,35 @@ def test_unknown_generator_raises():
     rng = _make_rng(2)
     with pytest.raises(ValueError):
         TrackGenerator(cfg, rng)
+
+
+def test_generate_reuses_output_buffers():
+    """TrackGenerator.generate() returns the same Track instance on every call.
+
+    The same wp.array pointers (stable device addresses) are reused, so callers
+    can register persistent tensor views before the first generate and know those
+    views will reflect updated values after each subsequent generate call.
+    """
+    import warp as wp
+
+    E = 8
+    cfg = TrackGenConfig(num_envs=E, num_points=64, N_max=128, device="cpu")
+    rng = _make_rng(E)
+    gen = TrackGenerator(cfg, rng)
+
+    t1 = gen.generate(E)
+    # Record the device pointer of the center buffer.
+    p1 = t1.center.ptr
+    # Register a persistent torch view that shares the same memory.
+    view = wp.to_torch(t1.center)
+
+    # Second generate call — must return the identical Track instance.
+    t2 = gen.generate(E)
+
+    assert t2 is t1, "generate() must return the same Track object every call"
+    assert t2.center.ptr == p1, "center buffer pointer must be stable across calls"
+    # The torch view (registered before t2) must alias t2.center (same memory).
+    # Both are views of the same wp.array buffer, so their data_ptr must match.
+    view2 = wp.to_torch(t2.center)
+    assert view.data_ptr() == view2.data_ptr(), \
+        "pre-registered torch view must share the same buffer as t2.center"

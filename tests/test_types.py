@@ -66,24 +66,28 @@ def test_config_overrides_round_trip():
 
 
 def test_track_construct_from_tensors_field_shapes():
+    import warp as wp
+    wp.init()
     E, N = 4, 16
     track = Track(
-        outer=torch.zeros(E, N, 2),
-        center=torch.zeros(E, N, 2),
-        inner=torch.zeros(E, N, 2),
-        tangent=torch.zeros(E, N, 2),
-        normal=torch.zeros(E, N, 2),
-        arclen=torch.zeros(E, N),
-        length=torch.zeros(E),
-        valid=torch.ones(E, dtype=torch.bool),
-        count=torch.full((E,), N, dtype=torch.long),
+        outer=wp.zeros(E * N, dtype=wp.vec2f),
+        center=wp.zeros(E * N, dtype=wp.vec2f),
+        inner=wp.zeros(E * N, dtype=wp.vec2f),
+        tangent=wp.zeros(E * N, dtype=wp.vec2f),
+        normal=wp.zeros(E * N, dtype=wp.vec2f),
+        arclen=wp.zeros(E * N, dtype=wp.float32),
+        length=wp.zeros(E, dtype=wp.float32),
+        valid=wp.zeros(E, dtype=wp.int32),
+        count=wp.zeros(E, dtype=wp.int32),
     )
     for arr in (track.outer, track.center, track.inner, track.tangent, track.normal):
-        assert arr.shape == (E, N, 2)
-    assert track.arclen.shape == (E, N)
+        assert arr.shape == (E * N,)
+        assert arr.dtype == wp.vec2f
+    assert track.arclen.shape == (E * N,)
+    assert track.arclen.dtype == wp.float32
     assert track.length.shape == (E,)
+    assert track.length.dtype == wp.float32
     assert track.valid.shape == (E,)
-    assert track.valid.dtype == torch.bool
     assert track.count.shape == (E,)
 
 
@@ -108,12 +112,12 @@ def test_deprecated_width_clamp_fields_removed():
 
 
 def test_types_module_has_no_intra_package_imports():
-    # types.py is the dependency-light leaf: it must not import the heavier _src
-    # siblings (which would create import cycles), so the public dataclasses stay cheap.
+    # types.py must not import the heavier _src siblings (which would create import
+    # cycles), so the public dataclasses stay cheap. Warp is a core dep (Track fields
+    # are wp.array), so "import warp" is explicitly allowed.
     import track_gen._src.types as t
 
     src = open(t.__file__).read()
     for forbidden in ("from .track_generator", "from .warp_pipeline",
-                      "from .warp_relax", "from .rng_utils", "from .rng_kernels",
-                      "import warp"):
+                      "from .warp_relax", "from .rng_utils", "from .rng_kernels"):
         assert forbidden not in src, f"types.py must not contain '{forbidden}'"

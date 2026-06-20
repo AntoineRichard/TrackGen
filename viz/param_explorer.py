@@ -84,12 +84,21 @@ def generate_batch(p: dict):
     return wpl.generate_tracks_warp(cfg, seeds)
 
 
+def _track_num_envs(track) -> int:
+    """Return E (number of envs) from a Track regardless of whether fields are wp.array or Tensor."""
+    v = track.valid
+    if isinstance(v, torch.Tensor):
+        return v.shape[0]
+    # wp.array: valid is [E] int32/bool
+    return wp.to_torch(v).shape[0]
+
+
 def render_page(track, page: int, grid_n: int):
     """Draw a grid_n×grid_n window of the cached Track starting at page*grid_n**2.
 
     Returns a matplotlib Figure with grid_n**2 axes. Cells beyond the batch are left blank.
     """
-    E = track.center.shape[0]
+    E = _track_num_envs(track)
     np_ = n_pages(E, grid_n)
     start = page * grid_n * grid_n
     fig, axes = plt.subplots(grid_n, grid_n, figsize=(2.1 * grid_n, 2.1 * grid_n))
@@ -105,28 +114,60 @@ def render_page(track, page: int, grid_n: int):
     return fig
 
 
+def _to_torch_track(track):
+    """Convert a wp.array Track to plain torch tensors for stats computation.
+
+    Returns a namespace with:
+      valid:  [E] bool
+      count:  [E] int32
+      length: [E] float32
+      outer:  [E, N_max, 2] float32
+      center: [E, N_max, 2] float32
+    Handles both wp.array (new) and torch.Tensor (oracle/legacy) tracks.
+    """
+    import types as _types
+    ns = _types.SimpleNamespace()
+    if isinstance(track.valid, torch.Tensor):
+        ns.valid = track.valid.bool()
+        ns.count = track.count
+        ns.length = track.length
+        ns.outer = track.outer
+        ns.center = track.center
+        return ns
+    # wp.array: valid/count/length are [E]; center/outer are flat [E*N_max] vec2f.
+    ns.valid = wp.to_torch(track.valid).bool()
+    ns.count = wp.to_torch(track.count)
+    ns.length = wp.to_torch(track.length)
+    E = ns.valid.shape[0]
+    N_max = track.center.shape[0] // E
+    ns.outer = wp.to_torch(track.outer).view(E, N_max, 2)
+    ns.center = wp.to_torch(track.center).view(E, N_max, 2)
+    return ns
+
+
 def _stats(track) -> dict:
     """Aggregate readout over the batch (means taken over valid tracks).
 
     Output is always constant_spacing: ``count`` is the per-track real-point count and
     VARIES per env, so the reported ``count`` is the mean over valid tracks.
     """
-    valid = track.valid
+    t = _to_torch_track(track)
+    valid = t.valid
     n = int(valid.sum())
     if n == 0:
         return {"yield": 0.0, "n_valid": 0, "mean_len": float("nan"),
                 "mean_thickness": float("nan"), "count": 0.0}
     # half-width from the first REAL point of each env (index 0 is always real / non-NaN).
-    hw = float(torch.linalg.norm(track.outer[:, 0] - track.center[:, 0], dim=-1).median())
-    cnt = track.count.clamp_min(1)
-    band = (2.0 * hw / (track.length / cnt.float()).clamp_min(1e-9)).round().to(torch.int32).clamp_min(1)
-    th = wpl.thickness(track.center, band, count=track.count.to(torch.int32))
+    hw = float(torch.linalg.norm(t.outer[:, 0] - t.center[:, 0], dim=-1).median())
+    cnt = t.count.clamp_min(1)
+    band = (2.0 * hw / (t.length / cnt.float()).clamp_min(1e-9)).round().to(torch.int32).clamp_min(1)
+    th = wpl.thickness(t.center, band, count=t.count.to(torch.int32))
     return {
         "yield": float(valid.float().mean()),
         "n_valid": n,
-        "mean_len": float(track.length[valid].mean()),
+        "mean_len": float(t.length[valid].mean()),
         "mean_thickness": float(th[valid].mean()),
-        "count": float(track.count[valid].float().mean()),
+        "count": float(t.count[valid].float().mean()),
     }
 
 
@@ -219,7 +260,7 @@ def build_app():
                 track = generate_batch(p)
                 fig = render_page(track, 0, gn)
                 st = _stats(track)
-                lbl = f"page 1/{n_pages(track.center.shape[0], gn)}"
+                lbl = f"page 1/{n_pages(_track_num_envs(track), gn)}"
                 return fig, _stats_md(st), track, 0, lbl
             except Exception as exc:
                 err_fig = plt.figure(figsize=(5, 3))
@@ -232,7 +273,7 @@ def build_app():
         def _go(track, page, gn, delta):
             if track is None:
                 return gr.update(), page, gr.update()
-            np_ = n_pages(track.center.shape[0], int(gn))
+            np_ = n_pages(_track_num_envs(track), int(gn))
             new = max(0, min(int(page) + delta, np_ - 1))
             fig = render_page(track, new, int(gn))
             return fig, new, f"page {new + 1}/{np_}"

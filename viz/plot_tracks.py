@@ -77,13 +77,37 @@ def _np_loop(arr2d: torch.Tensor) -> tuple[np.ndarray, np.ndarray]:
     return pts[:, 0], pts[:, 1]
 
 
+def _track_to_torch(track: Track) -> tuple:
+    """Convert Track wp.array fields to shaped [E, N_max, 2] torch tensors.
+
+    Returns (center_t, outer_t, inner_t, valid_t, count_t) where the first three
+    are [E, N_max, 2] float32 tensors and valid_t / count_t are [E] tensors.
+    Handles both wp.array (new) and torch.Tensor (oracle/legacy) Track fields.
+    """
+    if isinstance(track.center, torch.Tensor):
+        # Oracle / legacy Track: fields are already torch tensors with [E, N, 2] shape.
+        return track.center, track.outer, track.inner, track.valid, track.count
+    # wp.array Track: center is flat [E*N_max] vec2f; count is [E] int32.
+    count_t = wp.to_torch(track.valid)   # [E] int32 (used for E)
+    E = count_t.shape[0]
+    flat_size = track.center.shape[0]    # E * N_max
+    N_max = flat_size // E
+    center_t = wp.to_torch(track.center).view(E, N_max, 2)
+    outer_t = wp.to_torch(track.outer).view(E, N_max, 2)
+    inner_t = wp.to_torch(track.inner).view(E, N_max, 2)
+    valid_t = wp.to_torch(track.valid).bool()
+    count_t2 = wp.to_torch(track.count)
+    return center_t, outer_t, inner_t, valid_t, count_t2
+
+
 def draw_track(ax, track: Track, e: int) -> None:
     """Plot env ``e``'s track at metric scale: filled band + outer/inner borders + dashed
     centerline, a metre scale bar, and the track's W x H (metres) in the title. The axes
     are in metres (1 coordinate unit = 1 m). Invalid tracks get a red title."""
-    cx, cy = _np_loop(track.center[e])
-    ox, oy = _np_loop(track.outer[e])
-    ix, iy = _np_loop(track.inner[e])
+    center_t, outer_t, inner_t, valid_t, _ = _track_to_torch(track)
+    cx, cy = _np_loop(center_t[e])
+    ox, oy = _np_loop(outer_t[e])
+    ix, iy = _np_loop(inner_t[e])
 
     if ox.size and ix.size and ox.size == ix.size:
         ax.fill(np.concatenate([ox, ix[::-1]]), np.concatenate([oy, iy[::-1]]),
@@ -114,7 +138,7 @@ def draw_track(ax, track: Track, e: int) -> None:
         ax.text(sx, sy, f" {SCALEBAR_M:g} m", fontsize=4.5, va="bottom", ha="left", zorder=6)
         size = f"  {cx.max() - cx.min():.0f}x{cy.max() - cy.min():.0f} m"
 
-    invalid = not bool(track.valid[e].item())
+    invalid = not bool(wp.to_torch(track.valid)[e].item() if not isinstance(track.valid, torch.Tensor) else track.valid[e].item())
     ax.set_title(f"env {e}{size}{'  INVALID' if invalid else ''}",
                  fontsize=6, color=("red" if invalid else "black"), pad=1.5)
 
@@ -144,11 +168,12 @@ def render(images=10, rows=9, cols=9, track_width_m=1.0, box_m=20.0, num_points=
     rng = make_rng(E, seed=seed, device=device)
     track = TrackGenerator(config, rng).generate(E)
 
-    valid = track.valid
+    # Convert valid to torch for slicing/summation (wp.array has no .float()/.sum()).
+    valid_t = wp.to_torch(track.valid).bool() if not isinstance(track.valid, torch.Tensor) else track.valid.bool()
     mode_note = f"constant_spacing(spacing={spacing} m, N_max={n_max})" if output_mode == "constant_spacing" else "fixed"
     print(f"generated {E} tracks on {device}: width {track_width_m} m, box <= {box_m} m "
           f"(half_width={half_width} m, scale={scale:.2f}, {mode_note}); "
-          f"valid yield {valid.float().mean().item():.3f}")
+          f"valid yield {valid_t.float().mean().item():.3f}")
 
     paths = []
     for img in range(images):
@@ -156,7 +181,7 @@ def render(images=10, rows=9, cols=9, track_width_m=1.0, box_m=20.0, num_points=
         base = img * per_image
         for k, ax in enumerate(axes.flat):
             draw_track(ax, track, base + k)
-        n_valid = int(valid[base:base + per_image].sum().item())
+        n_valid = int(valid_t[base:base + per_image].sum().item())
         fig.suptitle(f"tracks {base}-{base + per_image - 1}   "
                      f"width {track_width_m:g} m · box ≤ {box_m:g} m · "
                      f"band={track_width_m:g} m · {n_valid}/{per_image} valid",

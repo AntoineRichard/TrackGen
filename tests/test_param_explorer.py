@@ -71,16 +71,20 @@ def test_build_app_smoke():
 
 
 def test_batch_and_pagination():
+    import warp as wp
     p = _params(grid_n=3, batch_size=20, spacing=0.30, n_max=384)
     track = px.generate_batch(p)
-    assert track.center.shape[0] == 20                 # full batch generated
-    assert track.center.shape[1] == 384                # NaN-padded to N_max
-    assert track.count.shape[0] == 20
+    # Track fields are wp.array; center is flat [E*N_max] vec2f, count is [E] int32.
+    center_t = wp.to_torch(track.center).view(20, 384, 2)
+    count_t = wp.to_torch(track.count)
+    assert center_t.shape[0] == 20                      # full batch generated
+    assert center_t.shape[1] == 384                     # NaN-padded to N_max
+    assert count_t.shape[0] == 20
     # constant_spacing output is NaN-padded: each env has count[e] real points then NaN pad.
     for e in range(20):
-        c = int(track.count[e].item())
+        c = int(count_t[e].item())
         assert 1 <= c <= 384
-        finite = torch.isfinite(track.center[e]).all(dim=-1)
+        finite = torch.isfinite(center_t[e]).all(dim=-1)
         # exactly the first count[e] points are real (finite); the rest are NaN padding.
         assert int(finite.sum().item()) == c
         assert bool(finite[:c].all().item())

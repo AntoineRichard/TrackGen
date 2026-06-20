@@ -10,6 +10,7 @@ wp.init()
 
 from track_gen._src import warp_pipeline as wpl, warp_relax
 from tests._oracle import geometry  # noqa: E402
+from tests._warp_compare import to_t  # noqa: E402
 from track_gen._src.types import TrackGenConfig  # noqa: E402
 
 DEVS = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
@@ -291,27 +292,32 @@ def test_generate_tracks_constant_spacing_smoother_and_valid():
     # tracks. These bounds are what the original "win" was demonstrating.
     dev = "cpu"
     E = 96
+    N_max = 384
     seeds = torch.arange(E, dtype=torch.int32, device=dev)
     base = dict(num_envs=E, num_points=256, half_width=0.5, scale=10.0, relax_iters=150, device=dev)
     cs = wpl.generate_tracks_warp(TrackGenConfig(output_mode="constant_spacing", spacing=0.30,
-                                                 N_max=384, **base), seeds)
+                                                 N_max=N_max, **base), seeds)
+    # Track fields are wp.array; convert to torch for assertions.
+    valid_t = to_t(cs.valid).bool()
+    count_t = to_t(cs.count)
+    center_t = wp.to_torch(cs.center).view(E, N_max, 2)
     # constant spacing yields near-everything in the fat-band regime (the regime that left
     # fixed-256 ~30% jagged-invalid before the mode was dropped).
-    assert cs.valid.float().mean() > 0.95
-    assert cs.valid.any(), "need valid tracks to measure smoothness"
+    assert valid_t.float().mean() > 0.95
+    assert valid_t.any(), "need valid tracks to measure smoothness"
     # valid tracks are smooth: resolution-normalised mean turning per vertex stays well-bounded
     # (a folded/jagged road would score far higher). Observed mean ~4.3, max ~6.7 across seeds.
-    jag = _mean_jag(cs.center, cs.count)[cs.valid]
+    jag = _mean_jag(center_t, count_t)[valid_t]
     assert torch.isfinite(jag).all(), "valid tracks must have finite jaggedness"
     assert jag.mean() < 8.0, f"valid constant_spacing tracks should be smooth, got {jag.mean():.3f}"
     # constant_spacing output is NaN-padded to N_max with per-env real count < N_max.
-    assert cs.center.shape == (E, 384, 2)
-    assert (cs.count <= 384).all() and (cs.count[cs.valid] >= 3).all()
-    for e in torch.nonzero(cs.valid).flatten().tolist():
-        c = int(cs.count[e])
-        assert torch.isfinite(cs.center[e, :c]).all(), "real points finite"
-        if c < 384:
-            assert torch.isnan(cs.center[e, c:]).all(), "padding tail is NaN"
+    assert center_t.shape == (E, N_max, 2)
+    assert (count_t <= N_max).all() and (count_t[valid_t] >= 3).all()
+    for e in torch.nonzero(valid_t).flatten().tolist():
+        c = int(count_t[e])
+        assert torch.isfinite(center_t[e, :c]).all(), "real points finite"
+        if c < N_max:
+            assert torch.isnan(center_t[e, c:]).all(), "padding tail is NaN"
 
 
 @pytest.mark.parametrize("dev", DEVS)
@@ -324,11 +330,16 @@ def test_inflate_warp_constant_spacing(dev):
     cfg = TrackGenConfig(num_envs=1, num_points=120, half_width=hw,
                          output_mode="constant_spacing", spacing=0.30, N_max=200, device=dev)
     tr = wpl.inflate_warp(buf, cfg, valid=gv, count=cnt)
-    assert tr.center.shape == (1, 200, 2)
-    assert int(tr.count[0]) == 120
-    assert torch.isnan(tr.center[0, 120:]).all()
-    assert bool(tr.valid[0]) is True
-    assert torch.allclose(tr.length, torch.tensor([2 * math.pi * 5.0], device=dev), atol=0.5)
+    # Track fields are wp.array; convert to torch for assertions.
+    center_t = wp.to_torch(tr.center).view(1, 200, 2)
+    count_t = to_t(tr.count)
+    valid_t = to_t(tr.valid).bool()
+    length_t = to_t(tr.length)
+    assert center_t.shape == (1, 200, 2)
+    assert int(count_t[0]) == 120
+    assert torch.isnan(center_t[0, 120:]).all()
+    assert bool(valid_t[0]) is True
+    assert torch.allclose(length_t, torch.tensor([2 * math.pi * 5.0], device=dev), atol=0.5)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda")
@@ -340,8 +351,9 @@ def test_graph_capture_constant_spacing():
     cap = wpl.generate_tracks_warp_graph(cfg, seeds)
     eager = wpl.generate_tracks_warp(cfg, seeds)
     replay = cap.replay(seeds)
-    assert torch.equal(replay.count.cpu(), eager.count.cpu())
-    assert torch.equal(replay.valid.cpu(), eager.valid.cpu())
+    # Track fields are wp.array; convert to torch for comparison.
+    assert torch.equal(to_t(replay.count).cpu(), to_t(eager.count).cpu())
+    assert torch.equal(to_t(replay.valid).cpu(), to_t(eager.valid).cpu())
 
 
 @pytest.mark.parametrize("dev", DEVS)

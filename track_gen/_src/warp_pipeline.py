@@ -1129,7 +1129,7 @@ def generate_centerline_warp(seeds: torch.Tensor, config):
     return centerline, valid
 
 
-def generate_tracks_warp(config, seeds: torch.Tensor):
+def generate_tracks_warp(config, seeds: torch.Tensor, out=None):
     """End-to-end pure-Warp track generation: a drop-in for TrackGenerator.generate.
 
     Composes the verified pure-Warp stages in the torch oracle's order
@@ -1163,6 +1163,8 @@ def generate_tracks_warp(config, seeds: torch.Tensor):
                 smooth_finish=False; uses num_points, half_width, spacing, N_max, relax_band
                 and the fields the composed stages read).
         seeds:  [E] int per-env base seed (the only per-env input).
+        out:    Optional pre-allocated Track (wp.array fields). Threaded to inflate_warp;
+                when None a fresh Track is allocated.
 
     Returns:
         track_gen.types.Track with all fields shaped per inflate_warp. Pure Warp + torch glue
@@ -1202,7 +1204,7 @@ def generate_tracks_warp(config, seeds: torch.Tensor):
     _sync(centerline.device)
     relaxed = warp_relax.xpbd_solve(centerline, band, L0, config, count=count_i32)
     relaxed = resample_uniform(relaxed, n_max, count=count_i32)
-    return inflate_warp(relaxed, config, valid=gen_valid, count=count_i32)
+    return inflate_warp(relaxed, config, out=out, valid=gen_valid, count=count_i32)
 
 
 def assemble(corners: torch.Tensor, count: torch.Tensor, config) -> torch.Tensor:
@@ -1912,13 +1914,63 @@ def ccw_sort(points: torch.Tensor, count: torch.Tensor | None = None) -> torch.T
     return out_t.view(E, P, 2)
 
 
-def inflate_warp(center: torch.Tensor, config, valid: torch.Tensor | None = None,
+def _inflate_warp_alloc(config) -> "Track":
+    """Allocate a Track with pre-sized wp.array buffers for TrackGenerator.__init__.
+
+    Sizes: outer/center/inner/tangent/normal are [E*N_max] vec2f; arclen is
+    [E*N_max] float32; length/valid/count are [E] float32/int32/int32.
+    These are the flat storage shapes -- reshape via torch at the boundary.
+
+    Args:
+        config: TrackGenConfig (uses num_envs, N_max, device).
+
+    Returns:
+        Track with uninitialized wp.array fields (all on config.device).
+    """
+    from .types import Track  # local import: keep warp_pipeline free of oracle modules
+
+    _init()
+    E = int(config.num_envs)
+    n_max = int(config.N_max)
+    dev = str(config.device)
+    flat = E * n_max
+    return Track(
+        outer=wp.empty(flat, dtype=wp.vec2f, device=dev),
+        center=wp.empty(flat, dtype=wp.vec2f, device=dev),
+        inner=wp.empty(flat, dtype=wp.vec2f, device=dev),
+        tangent=wp.empty(flat, dtype=wp.vec2f, device=dev),
+        normal=wp.empty(flat, dtype=wp.vec2f, device=dev),
+        arclen=wp.empty(flat, dtype=wp.float32, device=dev),
+        length=wp.empty(E, dtype=wp.float32, device=dev),
+        valid=wp.empty(E, dtype=wp.int32, device=dev),
+        count=wp.empty(E, dtype=wp.int32, device=dev),
+    )
+
+
+def _copy_torch_to_wp_vec2(dst: "wp.array", src: torch.Tensor) -> None:
+    """Copy a [K, 2] or [K*2] float32 torch tensor into a [K] vec2f wp.array."""
+    flat = src.reshape(-1, 2).contiguous()
+    wp.copy(dst, wp.from_torch(flat, dtype=wp.vec2f))
+
+
+def _copy_torch_to_wp_f32(dst: "wp.array", src: torch.Tensor) -> None:
+    """Copy a 1-D float32 torch tensor into a float32 wp.array."""
+    wp.copy(dst, wp.from_torch(src.contiguous(), dtype=wp.float32))
+
+
+def _copy_torch_to_wp_i32(dst: "wp.array", src: torch.Tensor) -> None:
+    """Copy a 1-D int32 torch tensor into an int32 wp.array."""
+    wp.copy(dst, wp.from_torch(src.to(torch.int32).contiguous(), dtype=wp.int32))
+
+
+def inflate_warp(center: torch.Tensor, config, out=None,
+                 valid: torch.Tensor | None = None,
                  count: torch.Tensor | None = None):
     """Pure-Warp drop-in for inflation.inflate, supporting both fixed and constant_spacing.
 
     Composes the verified Warp wrappers in the same order as inflation.inflate:
     resample -> frame+curvature -> constant width -> offset -> validity -> arclength ->
-    assemble Track.
+    write results into out's wp.array Track buffers (or allocate a fresh Track).
 
     count=None convenience path (generic fixed-N, not tied to output_mode):
         Requires center.shape[1] == config.num_points and no NaN. All sub-stages run
@@ -1935,13 +1987,16 @@ def inflate_warp(center: torch.Tensor, config, valid: torch.Tensor | None = None
         center: [E, N, 2] float32 centerline (fixed: no NaN, N==config.num_points;
                 constant_spacing: NaN-padded, N==config.N_max).
         config: TrackGenConfig.
+        out:    Optional pre-allocated Track (wp.array fields). When None a fresh Track
+                is allocated via _inflate_warp_alloc. Either way the Track is returned.
         valid:  [E] bool generation flag; defaults to all-True.
         count:  [E] int32 real point count per env. None -> fixed path (count==N).
 
     Returns:
-        track_gen.types.Track with center/outer/inner/tangent/normal/arclen/length/
-        valid/count. Equals inflation.inflate within FP tolerance (positions/frame
-        ~1e-4, arclen/length ~1e-3; valid/count exact).
+        track_gen.types.Track with wp.array fields. When ``out`` is provided the SAME
+        instance is returned (stable pointers); when None a fresh instance is returned.
+        Equals inflation.inflate within FP tolerance (positions/frame ~1e-4,
+        arclen/length ~1e-3; valid/count exact).
     """
     from .types import Track  # local import: keep warp_pipeline free of oracle modules
 
@@ -1997,8 +2052,8 @@ def inflate_warp(center: torch.Tensor, config, valid: torch.Tensor | None = None
         # 6. cumulative arc length + total length.
         arclen, length = _arclength(rs, count=count_arr)
 
-        # Track.count == N for all envs (as before); stored as long.
-        track_count = count_i32.long()
+        # Track.count == N for all envs (as before); stored as int32.
+        track_count_i32 = count_i32
 
     else:
         # --- Constant-spacing path: variable count per env, NaN-padded output ---
@@ -2037,11 +2092,36 @@ def inflate_warp(center: torch.Tensor, config, valid: torch.Tensor | None = None
         # 6. cumulative arc length + total length.
         arclen, length = _arclength(rs, count=count_arr)
 
-        # Track.count == per-env real point count; stored as long.
-        track_count = count_arr.long()
+        # Track.count == per-env real point count; stored as int32.
+        track_count_i32 = count_arr
 
-    return Track(outer=outer, center=rs, inner=inner, tangent=T, normal=Nrm,
-                 arclen=arclen, length=length, valid=valid_out, count=track_count)
+    # Allocate a fresh Track when no out buffer was provided.
+    if out is None:
+        out = Track(
+            outer=wp.empty(E * n_max, dtype=wp.vec2f, device=dev),
+            center=wp.empty(E * n_max, dtype=wp.vec2f, device=dev),
+            inner=wp.empty(E * n_max, dtype=wp.vec2f, device=dev),
+            tangent=wp.empty(E * n_max, dtype=wp.vec2f, device=dev),
+            normal=wp.empty(E * n_max, dtype=wp.vec2f, device=dev),
+            arclen=wp.empty(E * n_max, dtype=wp.float32, device=dev),
+            length=wp.empty(E, dtype=wp.float32, device=dev),
+            valid=wp.empty(E, dtype=wp.int32, device=dev),
+            count=wp.empty(E, dtype=wp.int32, device=dev),
+        )
+
+    # Boundary copy: torch stage results -> pre-allocated wp.array buffers.
+    # This is the temporary scaffold (Inc 2+ will write into out's buffers directly).
+    _copy_torch_to_wp_vec2(out.outer, outer.reshape(E * n_max, 2))
+    _copy_torch_to_wp_vec2(out.center, rs.reshape(E * n_max, 2))
+    _copy_torch_to_wp_vec2(out.inner, inner.reshape(E * n_max, 2))
+    _copy_torch_to_wp_vec2(out.tangent, T.reshape(E * n_max, 2))
+    _copy_torch_to_wp_vec2(out.normal, Nrm.reshape(E * n_max, 2))
+    _copy_torch_to_wp_f32(out.arclen, arclen.reshape(E * n_max))
+    _copy_torch_to_wp_f32(out.length, length)
+    _copy_torch_to_wp_i32(out.valid, valid_out.to(torch.int32))
+    _copy_torch_to_wp_i32(out.count, track_count_i32)
+
+    return out
 
 
 class CapturedTracks:
@@ -2073,12 +2153,20 @@ class CapturedTracks:
         # Push the new per-env seeds into the static buffer the graph reads, then replay.
         self._seeds_buf.copy_(new_seeds.to(self._seeds_buf.dtype))
         self._graph.replay()
-        # Clone the static outputs so the returned Track is stable across the next replay.
+        # Clone the static wp.array outputs so the returned Track is stable across
+        # the next replay (wp.array has no .clone(); use wp.empty_like + wp.copy).
+        def _wp_clone(a: wp.array) -> wp.array:
+            c = wp.empty_like(a)
+            wp.copy(c, a)
+            return c
+
         t = self._track
         return Track(
-            outer=t.outer.clone(), center=t.center.clone(), inner=t.inner.clone(),
-            tangent=t.tangent.clone(), normal=t.normal.clone(), arclen=t.arclen.clone(),
-            length=t.length.clone(), valid=t.valid.clone(), count=t.count.clone(),
+            outer=_wp_clone(t.outer), center=_wp_clone(t.center),
+            inner=_wp_clone(t.inner), tangent=_wp_clone(t.tangent),
+            normal=_wp_clone(t.normal), arclen=_wp_clone(t.arclen),
+            length=_wp_clone(t.length), valid=_wp_clone(t.valid),
+            count=_wp_clone(t.count),
         )
 
 
