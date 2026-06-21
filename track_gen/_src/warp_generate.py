@@ -54,6 +54,32 @@ def _corner_count_sample_k(
     out[e] = wp.min(count, max_num)
 
 @wp.kernel
+def _style_sample_k(
+    seeds: wp.array(dtype=wp.int32),
+    rad_lo: float, rad_hi: float,
+    scale_lo: float, scale_hi: float,
+    clamp_lo: float, clamp_hi: float,
+    rad_out: wp.array(dtype=wp.float32),
+    scale_out: wp.array(dtype=wp.float32),
+    clamp_out: wp.array(dtype=wp.float32),
+):
+    # Per-env style draw for method #1 (per-env style randomization). One thread per env e.
+    #
+    # Seeding: state = wp.rand_init(seeds[e] * 2741). The 2741 multiplier is DISTINCT from
+    # corner_count's 6151 and corner_sample's 9781, so the style stream is decorrelated from
+    # both the count and the corner-position streams for the same seed. No `attempt` term:
+    # generation is single-pass, so each env's style is a pure function of its seed.
+    #
+    # Draw ORDER (fixed): rad, then scale, then handle_clamp_frac, each a single uniform
+    # randf mapped to [lo, hi). A "disabled" knob is encoded by lo == hi (the wrapper passes
+    # lo == hi == scalar when its *_range is None), which collapses to the constant lo.
+    e = wp.tid()
+    state = wp.rand_init(seeds[e] * 2741)
+    rad_out[e] = rad_lo + wp.randf(state) * (rad_hi - rad_lo)
+    scale_out[e] = scale_lo + wp.randf(state) * (scale_hi - scale_lo)
+    clamp_out[e] = clamp_lo + wp.randf(state) * (clamp_hi - clamp_lo)
+
+@wp.kernel
 def _corner_sample_k(
     seeds: wp.array(dtype=wp.int32),
     attempt: int,
@@ -104,6 +130,45 @@ def _corner_sample_k(
         ny = wp.randf(state) - 0.5
         out[base + c] = wp.vec2f((x * cell_size + nx) * scale,
                                  (y * cell_size + ny) * scale)
+
+@wp.kernel
+def _corner_sample_style_k(
+    seeds: wp.array(dtype=wp.int32),
+    attempt: int,
+    num_cells: int,
+    nc2: int,
+    cell_size: float,
+    scale: wp.array(dtype=wp.float32),
+    P: int,
+    used: wp.array(dtype=wp.int32),
+    out: wp.array(dtype=wp.vec2f),
+):
+    # Per-env-scale variant of _corner_sample_k (method #1). BIT-IDENTICAL to it in every
+    # respect except `scale` is read per env from a device array (scale[e]) instead of a
+    # broadcast scalar. The RNG seeding/draw order is unchanged, so for a UNIFORM per-env
+    # scale array equal to the config scalar this reproduces _corner_sample_k exactly.
+    e = wp.tid()
+    state = wp.rand_init(seeds[e] * 9781 + attempt)
+    base = e * P
+    sc = scale[e]
+    for c in range(P):
+        cell = wp.min(int(wp.randf(state) * float(nc2)), nc2 - 1)
+        for _retry in range(8):
+            dup = int(0)
+            for k in range(c):
+                if used[base + k] == cell:
+                    dup = int(1)
+            if dup == 0:
+                break
+            cell = wp.min(int(wp.randf(state) * float(nc2)), nc2 - 1)
+        used[base + c] = cell
+
+        x = float(cell % num_cells)
+        y = float(cell // num_cells)
+        nx = wp.randf(state) - 0.5
+        ny = wp.randf(state) - 0.5
+        out[base + c] = wp.vec2f((x * cell_size + nx) * sc,
+                                 (y * cell_size + ny) * sc)
 
 @wp.kernel
 def _ccw_sort_k(
@@ -249,6 +314,54 @@ def _assemble_k(
     b1 = 3.0 * u * omu * omu      # 3u(1-u)^2
     b2 = 3.0 * u * u * omu        # 3u^2(1-u)
     b3 = u * u * u                # u^3
+    out[t] = b0 * c0 + b1 * p1 + b2 * p2 + b3 * c1
+
+@wp.kernel
+def _assemble_style_k(
+    c: wp.array(dtype=wp.vec2f),
+    count: wp.array(dtype=wp.int32),
+    tangents: wp.array(dtype=wp.vec2f),
+    scale: wp.array(dtype=wp.float32),
+    P: int,
+    npseg: int,
+    rad: wp.array(dtype=wp.float32),
+    clamp_frac: wp.array(dtype=wp.float32),
+    out: wp.array(dtype=wp.vec2f),
+):
+    # Per-env (rad, clamp_frac) variant of _assemble_k (method #1). BIT-IDENTICAL to it
+    # except `rad` and `clamp_frac` are read per env from device arrays (rad[e],
+    # clamp_frac[e]) instead of broadcast scalars. For uniform per-env arrays equal to the
+    # config scalars this reproduces _assemble_k exactly.
+    t = wp.tid()
+    per_env = P * npseg
+    e = t // per_env
+    rem = t % per_env
+    i = rem // npseg
+    s = rem % npseg
+    b = e * P
+    cnt = count[e]
+    cm = wp.max(cnt, 1)
+
+    c0 = _pruned_corner(c, b, i, cnt)
+    inext = (i + 1) % cm
+    c1 = _pruned_corner(c, b, inext, cnt)
+    t0 = tangents[b + i]
+    t1 = tangents[b + inext]
+
+    rad_e = rad[e]
+    cf_e = clamp_frac[e]
+    chord = wp.length(c1 - c0)
+    h0 = wp.min(rad_e * chord, cf_e * scale[b + i])
+    h1 = wp.min(rad_e * chord, cf_e * scale[b + inext])
+    p1 = c0 + t0 * h0
+    p2 = c1 - t1 * h1
+
+    u = float(s) / float(npseg - 1)
+    omu = 1.0 - u
+    b0 = omu * omu * omu
+    b1 = 3.0 * u * omu * omu
+    b2 = 3.0 * u * u * omu
+    b3 = u * u * u
     out[t] = b0 * c0 + b1 * p1 + b2 * p2 + b3 * c1
 
 @wp.kernel
@@ -402,9 +515,44 @@ def corner_count_sample_inplace(seeds_wp, attempt, config, out_count):
               device=str(out_count.device))
     _pipe._sync(out_count.device)
 
-def corner_sample_inplace(seeds_wp, attempt, config, out_corners, used_scratch):
+def style_sample_inplace(seeds_wp, config, rad_out, scale_out, clamp_out):
+    """In-place per-env style draw (method #1). Writes [E] float32 per-env rad/scale/
+    handle_clamp_frac into rad_out/scale_out/clamp_out. Zero alloc.
+
+    Each *_range that is None collapses to the corresponding config scalar (lo == hi), so
+    that knob is held constant across envs. Only called when config.style_sampling=True.
+    """
+    _pipe._init()
+    E = seeds_wp.shape[0]
+    dev = str(rad_out.device)
+    rad_lo, rad_hi = _range_or_scalar(config.rad_range, float(config.rad))
+    scale_lo, scale_hi = _range_or_scalar(config.scale_range, float(config.scale))
+    clamp_default = float(getattr(config, "handle_clamp_frac", 1.0e9))
+    clamp_lo, clamp_hi = _range_or_scalar(config.handle_clamp_frac_range, clamp_default)
+    wp.launch(_style_sample_k, dim=E,
+              inputs=[seeds_wp, rad_lo, rad_hi, scale_lo, scale_hi, clamp_lo, clamp_hi,
+                      rad_out, scale_out, clamp_out],
+              device=dev)
+    _pipe._sync(rad_out.device)
+
+
+def _range_or_scalar(rng, scalar):
+    """Map an optional (lo, hi) range to a (lo, hi) tuple, or (scalar, scalar) if None."""
+    if rng is None:
+        return float(scalar), float(scalar)
+    return float(rng[0]), float(rng[1])
+
+
+def corner_sample_inplace(seeds_wp, attempt, config, out_corners, used_scratch,
+                          scale_per_env=None):
     """In-place: writes [E*P] vec2f into out_corners. used_scratch is [E*P] int32 scratch.
-    Zero alloc."""
+    Zero alloc.
+
+    scale_per_env: optional [E] float32 wp.array of per-env scale (method #1). When None the
+    config.scale scalar is broadcast via the original _corner_sample_k (DEFAULT path,
+    byte-for-byte unchanged). When provided, the bit-identical _corner_sample_style_k reads
+    scale[e] per env instead.
+    """
     _pipe._init()
     E = seeds_wp.shape[0]
     P = int(config.max_num_points)
@@ -414,10 +562,16 @@ def corner_sample_inplace(seeds_wp, attempt, config, out_corners, used_scratch):
     dev = str(out_corners.device)
     # Fill scratch with -1 (dedup init)
     wp.launch(_pipe._fill_i32_k, dim=E * P, inputs=[used_scratch, -1], device=dev)
-    wp.launch(_corner_sample_k, dim=E,
-              inputs=[seeds_wp, int(attempt), num_cells, nc2, float(cell_size),
-                      float(config.scale), P, used_scratch, out_corners],
-              device=dev)
+    if scale_per_env is None:
+        wp.launch(_corner_sample_k, dim=E,
+                  inputs=[seeds_wp, int(attempt), num_cells, nc2, float(cell_size),
+                          float(config.scale), P, used_scratch, out_corners],
+                  device=dev)
+    else:
+        wp.launch(_corner_sample_style_k, dim=E,
+                  inputs=[seeds_wp, int(attempt), num_cells, nc2, float(cell_size),
+                          scale_per_env, P, used_scratch, out_corners],
+                  device=dev)
     _pipe._sync(out_corners.device)
 
 def ccw_sort_inplace(corners_wp, count_wp, keys_scratch, out_wp, P):
@@ -431,9 +585,17 @@ def ccw_sort_inplace(corners_wp, count_wp, keys_scratch, out_wp, P):
               device=dev)
     _pipe._sync(out_wp.device)
 
-def assemble_inplace(corners_wp, count_wp, config, tan_scratch, scale_scratch, out_wp):
+def assemble_inplace(corners_wp, count_wp, config, tan_scratch, scale_scratch, out_wp,
+                     rad_per_env=None, clamp_per_env=None):
     """In-place: writes dense [E*P*npseg] vec2f into out_wp. Zero alloc.
-    tan_scratch: [E*P] vec2f; scale_scratch: [E*P] float32."""
+    tan_scratch: [E*P] vec2f; scale_scratch: [E*P] float32.
+
+    rad_per_env / clamp_per_env: optional [E] float32 wp.arrays of per-env rad /
+    handle_clamp_frac (method #1). When BOTH None the config scalars are broadcast via the
+    original _assemble_k (DEFAULT path, byte-for-byte unchanged). When provided, the
+    bit-identical _assemble_style_k reads rad[e]/clamp_frac[e] per env instead. (Both are
+    threaded together: the style path always supplies both arrays.)
+    """
     _pipe._init()
     E = count_wp.shape[0]
     P = int(config.max_num_points)
@@ -445,10 +607,16 @@ def assemble_inplace(corners_wp, count_wp, config, tan_scratch, scale_scratch, o
     wp.launch(_vertex_tangents_k, dim=E * P,
               inputs=[corners_wp, count_wp, P, float(p), tan_scratch, scale_scratch],
               device=dev)
-    wp.launch(_assemble_k, dim=E * P * npseg,
-              inputs=[corners_wp, count_wp, tan_scratch, scale_scratch,
-                      P, npseg, float(config.rad), clamp_frac, out_wp],
-              device=dev)
+    if rad_per_env is None and clamp_per_env is None:
+        wp.launch(_assemble_k, dim=E * P * npseg,
+                  inputs=[corners_wp, count_wp, tan_scratch, scale_scratch,
+                          P, npseg, float(config.rad), clamp_frac, out_wp],
+                  device=dev)
+    else:
+        wp.launch(_assemble_style_k, dim=E * P * npseg,
+                  inputs=[corners_wp, count_wp, tan_scratch, scale_scratch,
+                          P, npseg, rad_per_env, clamp_per_env, out_wp],
+                  device=dev)
     _pipe._sync(out_wp.device)
 
 def generate_centerline_warp(seeds_wp: wp.array, config,
@@ -479,15 +647,32 @@ def generate_centerline_warp(seeds_wp: wp.array, config,
     M = P * npseg  # dense points per env
     dev = str(out_centerline.device)
 
+    # Step 0 (opt-in, method #1): per-env style draw. The flag is a Python bool resolved at
+    # CUDA-graph capture time, so it selects which kernels the captured graph contains; the
+    # per-env style values themselves are device arrays (capturable). When OFF, the style
+    # arrays are never touched and the DEFAULT scalar kernels run (byte-for-byte unchanged).
+    # gen_style_* are present on the GenScratch group only when allocated for style.
+    style = bool(getattr(config, "style_sampling", False))
+    scale_pe = rad_pe = clamp_pe = None
+    if style:
+        style_sample_inplace(seeds_wp, config,
+                             scratch.gen_style_rad, scratch.gen_style_scale,
+                             scratch.gen_style_clamp)
+        scale_pe = scratch.gen_style_scale
+        rad_pe = scratch.gen_style_rad
+        clamp_pe = scratch.gen_style_clamp
+
     # Step 1-3: sample corners, sort
     corner_count_sample_inplace(seeds_wp, 0, config, scratch.gen_count)
-    corner_sample_inplace(seeds_wp, 0, config, scratch.gen_corners, scratch.gen_used)
+    corner_sample_inplace(seeds_wp, 0, config, scratch.gen_corners, scratch.gen_used,
+                          scale_per_env=scale_pe)
     ccw_sort_inplace(scratch.gen_corners, scratch.gen_count, scratch.gen_keys,
                      scratch.gen_ordered, P)
 
     # Step 4: assemble Bezier dense -> gen_dense
     assemble_inplace(scratch.gen_ordered, scratch.gen_count, config,
-                     scratch.gen_tan, scratch.gen_scale, scratch.gen_dense)
+                     scratch.gen_tan, scratch.gen_scale, scratch.gen_dense,
+                     rad_per_env=rad_pe, clamp_per_env=clamp_pe)
 
     # Step 5: arc-resample Bezier dense -> gen_rs (N points per env)
     _pipe._arc_resample_inplace(scratch.gen_dense, M, N,
@@ -538,6 +723,12 @@ def bezier_alloc_scratch(config):
     M_dense = P * npseg
     N_gen = int(config.num_points)
     dev = str(config.device)
+    # Per-env style buffers (method #1): allocated ONLY when opt-in style sampling is on, so
+    # the default path's allocation footprint is unchanged. Each is [E] float32.
+    style = bool(getattr(config, "style_sampling", False))
+    gen_style_rad = wp.empty(E, dtype=wp.float32, device=dev) if style else None
+    gen_style_scale = wp.empty(E, dtype=wp.float32, device=dev) if style else None
+    gen_style_clamp = wp.empty(E, dtype=wp.float32, device=dev) if style else None
     return _pipe.GenScratch(
         gen_count=wp.empty(E, dtype=wp.int32, device=dev),
         gen_corners=wp.empty(E * P, dtype=wp.vec2f, device=dev),
@@ -555,6 +746,9 @@ def bezier_alloc_scratch(config):
         gen_arc_s=wp.empty(E * (M_dense + 1), dtype=wp.float32, device=dev),
         gen_arc_cr=wp.empty(E, dtype=wp.int32, device=dev),
         gen_arc_co=wp.empty(E, dtype=wp.int32, device=dev),
+        gen_style_rad=gen_style_rad,
+        gen_style_scale=gen_style_scale,
+        gen_style_clamp=gen_style_clamp,
     )
 
 

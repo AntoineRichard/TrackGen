@@ -58,6 +58,23 @@ class TrackGenConfig:
     # a grounded default (lobes vary by up to ±half the local radius).
     hull_displacement: float = 0.5
 
+    # --- Per-env style sampling (method #1: "Per-env style randomization") ---
+    # OPT-IN. When False (the default) the bezier generator is BYTE-FOR-BYTE unchanged: the
+    # kernels consume the scalar `rad`/`scale`/`handle_clamp_frac` above exactly as before.
+    # When True, each env draws its OWN `rad`/`scale`/`handle_clamp_frac` from the *_range
+    # fields below via the per-env Warp RNG (seeded from seeds_wp[e]), so a single batch
+    # spans a *family* of styles instead of one config scalar -> much richer per-env
+    # diversity. Corner-count spread already varies per env via min/max_num_points, so it
+    # needs no range here. The flag selects the code path at CUDA-graph CAPTURE time (a
+    # Python branch over which kernel to launch); the per-env values themselves live in
+    # device arrays, so the captured graph stays fixed and capturable. A *_range left None
+    # while style_sampling=True falls back to the corresponding scalar for every env (that
+    # knob is simply not varied).
+    style_sampling: bool = False
+    rad_range: tuple[float, float] | None = None
+    scale_range: tuple[float, float] | None = None
+    handle_clamp_frac_range: tuple[float, float] | None = None
+
     # --- Fourier params (EXPERIMENTAL: consumed only by track_gen._experimental.fourier;
     #     the supported Warp pipeline ignores them) ---
     num_harmonics: int = 5  # K

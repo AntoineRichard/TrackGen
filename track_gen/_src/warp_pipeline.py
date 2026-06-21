@@ -1176,6 +1176,10 @@ class GenScratch:
     gen_arc_cr:    [E] int32 — arc-resample real-point-count scratch.
     gen_arc_co:    [E] int32 — arc-resample output-count scratch (also used as count=N
                    input to self_intersections_inplace after the Bezier resample).
+    gen_style_rad:   [E] float32 — per-env rad draw (method #1; only written/read when
+                     config.style_sampling=True, else None/untouched). Optional.
+    gen_style_scale: [E] float32 — per-env scale draw (method #1). Optional.
+    gen_style_clamp: [E] float32 — per-env handle_clamp_frac draw (method #1). Optional.
     """
 
     __slots__ = (
@@ -1183,6 +1187,7 @@ class GenScratch:
         "gen_tan", "gen_scale", "gen_dense", "gen_poly",
         "gen_rs", "gen_crossers",
         "gen_arc_real", "gen_arc_seg", "gen_arc_s", "gen_arc_cr", "gen_arc_co",
+        "gen_style_rad", "gen_style_scale", "gen_style_clamp",
     )
 
     def __init__(
@@ -1203,6 +1208,9 @@ class GenScratch:
         gen_arc_s: "wp.array",
         gen_arc_cr: "wp.array",
         gen_arc_co: "wp.array",
+        gen_style_rad: "wp.array | None" = None,
+        gen_style_scale: "wp.array | None" = None,
+        gen_style_clamp: "wp.array | None" = None,
     ) -> None:
         self.gen_count = gen_count
         self.gen_corners = gen_corners
@@ -1220,6 +1228,9 @@ class GenScratch:
         self.gen_arc_s = gen_arc_s
         self.gen_arc_cr = gen_arc_cr
         self.gen_arc_co = gen_arc_co
+        self.gen_style_rad = gen_style_rad
+        self.gen_style_scale = gen_style_scale
+        self.gen_style_clamp = gen_style_clamp
 
 
 class RelaxScratch:
