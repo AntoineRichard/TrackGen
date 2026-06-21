@@ -6,10 +6,13 @@ kappa=0 straights — the additive DC-shift does NOT, and produced round blobs),
 theta/edges, close displacement by subtracting the mean edge (gap-distribution close), and
 normalize the resulting centerline to the same coordinate range as the other generators.
 
-CLOSURE NOTE (match grammar_proto.py exactly): the heading is closed by SCALING kappa
-(kappa *= 2*pi / net_turn), NOT adding a DC offset. Scaling leaves kappa==0 spans at zero
-so STRAIGHTS stay straight; a DC shift would arc them. A cap (_HEADING_SCALE_CAP) prevents
-near-zero net windings from amplifying the curve into a self-crossing knot.
+CLOSURE NOTE (equivalent to grammar_proto.py up to a one-sample integration convention):
+the heading is closed by SCALING kappa (kappa *= 2*pi / net_turn), NOT adding a DC offset.
+Scaling leaves kappa==0 spans at zero so STRAIGHTS stay straight; a DC shift would arc
+them. A cap (_HEADING_SCALE_CAP) prevents near-zero net windings from amplifying the curve
+into a self-crossing knot. The kernel integrates theta with a forward convention (theta
+starts at 0, advances AFTER emitting each edge) vs the prototype's cumsum-then-subtract
+theta[0]; this is a benign one-sample phase shift — geometry is statistically identical.
 
 Hard invariants (shared with all of ``track_gen/_src``): Warp-native + torch-free,
 ZERO per-call allocation (all buffers come from ``grammar_alloc_scratch``), CUDA-graph-
@@ -60,6 +63,8 @@ def _grammar_angle_sort_k(
     # bezier/hull ccw-sort convention) about their centroid. Insertion sort — O(Np^2)
     # but Np<=32 so this is fast. The Np-point result in `out` is then arc-resampled back
     # to N, producing a smooth simple polygon like hull's sparse-point fallback.
+    # NOTE: no NaN/count guard needed here (unlike hull's _angle_sort_k which has `if c < m`):
+    # all Np stride-subsampled slots are real grammar points — grammar count == N, no NaN tail.
     e = wp.tid()
     n_base = e * N
     p_base = e * Np

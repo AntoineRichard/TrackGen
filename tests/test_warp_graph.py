@@ -13,6 +13,11 @@ first captures, the second replays), and asserts:
 Capture needs a real GPU, so the whole module is skipped without CUDA.
 
 Track fields are wp.array; test reads are wrapped with to_t() from _warp_compare.
+
+The zero-alloc-in-capture invariant (no allocations during CUDA graph capture/replay) is
+tested for ALL registered generators via pytest parametrize over
+``generator_registry.available()``.  New generators are auto-covered when added to the
+registry.
 """
 from __future__ import annotations
 
@@ -25,12 +30,16 @@ import warp as wp  # noqa: E402
 from tests._warp_compare import to_t  # noqa: E402
 from track_gen._src.types import TrackGenConfig  # noqa: E402
 from track_gen._src import warp_pipeline as wpp  # noqa: E402
+from track_gen._src import generator_registry  # noqa: E402
 from track_gen._src.track_generator import TrackGenerator  # noqa: E402
 from track_gen._src.rng_utils import PerEnvSeededRNG  # noqa: E402
 from track_gen._src.types import Track  # noqa: E402
 
+# All registered generator names — parametrize uses this so new generators are auto-covered.
+_ALL_GENERATORS = generator_registry.available()
 
-def _cfg(E: int, relax_iters: int = 20) -> TrackGenConfig:
+
+def _cfg(E: int, relax_iters: int = 20, generator: str = "bezier") -> TrackGenConfig:
     # Modest iters keep the test fast; the capture mechanism is independent of count.
     # constant_spacing is the only supported mode; N_max large enough for every env.
     return TrackGenConfig(
@@ -38,6 +47,7 @@ def _cfg(E: int, relax_iters: int = 20) -> TrackGenConfig:
         spacing=0.6, N_max=256,
         relax_solver="xpbd", smooth_finish=False,
         relax_iters=relax_iters, max_regen_iters=4,
+        generator=generator,
     )
 
 
@@ -88,10 +98,15 @@ def _track_allclose(got: Track, ref: dict, atol=1e-4):
         f"length mismatch, max err {(la - lb).abs().max().item():.3e}"
 
 
-def test_autocapture_replay_matches_eager():
-    """First generate() captures; second generate() replays; result == eager _run()."""
+@pytest.mark.parametrize("gen_name", _ALL_GENERATORS)
+def test_autocapture_replay_matches_eager(gen_name: str):
+    """First generate() captures; second generate() replays; result == eager _run().
+
+    Parametrized over all registered generators (``generator_registry.available()``) so the
+    zero-alloc-in-capture invariant is enforced for every generator, including ``"grammar"``.
+    """
     E = 64
-    cfg = _cfg(E)
+    cfg = _cfg(E, generator=gen_name)
 
     # Build an eager reference using gen._run() directly (same seeds as the captured run).
     rng = _make_rng(E, seed=42)
