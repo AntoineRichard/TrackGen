@@ -49,6 +49,7 @@ def _ensure_loaded() -> None:
     # Importing each generator module runs its module-level register(...) call.
     # Add one import line per new generator (the only shared touch-point).
     from . import warp_generate  # noqa: F401  (registers "bezier")
+    from . import warp_generate_polar  # noqa: F401  (registers "polar")
     _LOADED = True
 
 
