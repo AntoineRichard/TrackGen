@@ -71,19 +71,26 @@ def _disp_kernel(center: wp.array(dtype=wp.vec2f), band: wp.array(dtype=wp.int32
         return
     xi = center[t]
     ne = count[e]           # number of real beads in this env
+    band_e = band[e]
+    l0_e = L0[e]
+    target2 = target * target
     # --- separation ---
     sep = wp.vec2f(0.0, 0.0)
     cnt = int(0)
     for j in range(ne):
         dd = wp.abs(i - j)
         circ = wp.min(dd, ne - dd)
-        if circ > band[e]:
+        if circ > band_e:
             diff = xi - center[b + j]
-            dist = wp.max(wp.length(diff), 1.0e-9)
-            pen = target - dist
-            if pen > 0.0:
-                sep = sep + (0.5 * pen / dist) * diff
-                cnt += 1
+            adx = wp.abs(diff[0])
+            ady = wp.abs(diff[1])
+            if adx < target and ady < target:
+                dist2 = diff[0] * diff[0] + diff[1] * diff[1]
+                if dist2 < target2:
+                    dist = wp.max(wp.sqrt(dist2), 1.0e-9)
+                    pen = target - dist
+                    sep = sep + (0.5 * pen / dist) * diff
+                    cnt += 1
     if cnt > 0:
         sep = sep / wp.float32(cnt)
     # --- spacing (edges i and i-1 toward rest length L0[e]) ---
@@ -93,7 +100,7 @@ def _disp_kernel(center: wp.array(dtype=wp.vec2f), band: wp.array(dtype=wp.int32
     ln = wp.max(wp.length(dn), 1.0e-9)
     dp = xi - xp
     lp = wp.max(wp.length(dp), 1.0e-9)
-    spc = 0.25 * (((ln - L0[e]) / ln) * dn - ((lp - L0[e]) / lp) * dp)
+    spc = 0.25 * (((ln - l0_e) / ln) * dn - ((lp - l0_e) / lp) * dp)
     # --- bending (push apex toward neighbour-midpoint if radius < R_min, flip-clamped) ---
     a = xi - xp
     bb = xn - xi

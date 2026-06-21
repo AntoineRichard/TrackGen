@@ -22,7 +22,6 @@ is no module-load import cycle.
 """
 from __future__ import annotations
 
-import dataclasses
 import math
 
 import warp as wp
@@ -253,6 +252,42 @@ def _assemble_k(
     out[t] = b0 * c0 + b1 * p1 + b2 * p2 + b3 * c1
 
 @wp.kernel
+def _assemble_polygon_selected_k(
+    c: wp.array(dtype=wp.vec2f),
+    count: wp.array(dtype=wp.int32),
+    P: int,
+    npseg: int,
+    active: wp.array(dtype=wp.int32),
+    out: wp.array(dtype=wp.vec2f),
+):
+    # Polygon fallback equivalent to _assemble_k with handle_clamp_frac=0.0, but
+    # only for envs whose Bezier resample self-crossed. Non-active rows are left
+    # untouched because _select_vec2_k never reads their polygon fallback slots.
+    t = wp.tid()
+    per_env = P * npseg
+    e = t // per_env
+    if active[e] <= 0:
+        return
+
+    rem = t % per_env
+    i = rem // npseg
+    s = rem % npseg
+    b = e * P
+    cnt = count[e]
+    cm = wp.max(cnt, 1)
+
+    c0 = _pruned_corner(c, b, i, cnt)
+    c1 = _pruned_corner(c, b, (i + 1) % cm, cnt)
+
+    u = float(s) / float(npseg - 1)
+    omu = 1.0 - u
+    b0 = omu * omu * omu
+    b1 = 3.0 * u * omu * omu
+    b2 = 3.0 * u * u * omu
+    b3 = u * u * u
+    out[t] = (b0 + b1) * c0 + (b2 + b3) * c1
+
+@wp.kernel
 def _corner_angles_gate_k(
     c: wp.array(dtype=wp.vec2f),
     count: wp.array(dtype=wp.int32),
@@ -460,30 +495,31 @@ def generate_centerline_warp(seeds_wp: wp.array, config,
                           scratch.gen_arc_s, scratch.gen_arc_cr,
                           scratch.gen_arc_co, scratch.gen_rs, dev)
 
-    # Step 6: assemble polygon dense -> gen_poly (handle_clamp_frac=0)
-    cfg_poly = dataclasses.replace(config, handle_clamp_frac=0.0)
-    assemble_inplace(scratch.gen_ordered, scratch.gen_count, cfg_poly,
-                     scratch.gen_tan, scratch.gen_scale, scratch.gen_poly)
-
-    # Step 7: arc-resample polygon dense -> out_centerline (temporarily holds rs_poly)
-    _pipe._arc_resample_inplace(scratch.gen_poly, M, N,
-                          scratch.gen_arc_real, scratch.gen_arc_seg,
-                          scratch.gen_arc_s, scratch.gen_arc_cr,
-                          scratch.gen_arc_co, out_centerline, dev)
-
-    # Step 8: self-intersections of the Bezier resample -> gen_crossers
+    # Step 6: self-intersections of the Bezier resample -> gen_crossers.
     # gen_arc_co was written by _arc_scan_k: R>=2 -> N, R<2 -> 0. Pass directly as count.
     _pipe.self_intersections_inplace(scratch.gen_rs, scratch.gen_arc_co,
                                scratch.gen_crossers, N)
 
-    # Step 9: select: rs if no crossings, rs_poly (= out_centerline temporarily) if crossings.
+    # Step 7: assemble and resample the polygon fallback only for self-crossing envs.
+    # Most Bezier centerlines are already simple, so non-crossers skip this fallback work.
+    wp.launch(_assemble_polygon_selected_k, dim=E * M,
+              inputs=[scratch.gen_ordered, scratch.gen_count, P, npseg,
+                      scratch.gen_crossers, scratch.gen_poly],
+              device=dev)
+    _pipe._arc_resample_selected_inplace(
+        scratch.gen_poly, scratch.gen_crossers, M, N,
+        scratch.gen_arc_real, scratch.gen_arc_seg, scratch.gen_arc_s,
+        scratch.gen_arc_cr, scratch.gen_arc_co, out_centerline, dev,
+    )
+
+    # Step 8: select: rs if no crossings, rs_poly (= out_centerline temporarily) if crossings.
     # out_centerline aliases rs_poly arg: safe per-thread (each thread reads its own slot
     # then writes it for the crossers>0 branch; reads gen_rs for the else branch).
     wp.launch(_select_vec2_k, dim=E * N,
               inputs=[scratch.gen_rs, out_centerline, scratch.gen_crossers, N, out_centerline],
               device=dev)
 
-    # Step 10: mark all envs valid (gen gate is always True; inflate does the real gate).
+    # Step 9: mark all envs valid (gen gate is always True; inflate does the real gate).
     wp.launch(_pipe._fill_i32_k, dim=E, inputs=[out_valid_wp, 1], device=dev)
 
     _pipe._sync(dev)

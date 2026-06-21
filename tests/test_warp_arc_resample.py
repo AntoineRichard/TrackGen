@@ -73,3 +73,43 @@ def test_arc_resample_clean_loop_uniform(dev):
     assert out.shape == (1, num, 2)
     seg = torch.linalg.norm(torch.diff(out, dim=1, append=out[:, :1]), dim=-1)
     assert seg.std(dim=1).max().item() < 1e-2
+
+
+@pytest.mark.parametrize("dev", DEVS)
+def test_arc_resample_selected_only_writes_active_rows(dev):
+    import warp as wp
+    wp.init()
+    from track_gen._src import warp_pipeline as wpl
+
+    num = 32
+    pts = _make_batch(dev)[:3].contiguous()
+    E, M, _ = pts.shape
+    active_t = torch.tensor([0, 1, 0], dtype=torch.int32, device=dev)
+
+    pts_wp = wp.from_torch(pts.reshape(E * M, 2).contiguous(), dtype=wp.vec2f)
+    active_wp = wp.from_torch(active_t, dtype=wp.int32)
+    real_wp = wp.empty(E * M, dtype=wp.vec2f, device=dev)
+    seg_wp = wp.empty(E * M, dtype=wp.float32, device=dev)
+    s_wp = wp.empty(E * (M + 1), dtype=wp.float32, device=dev)
+    count_r_wp = wp.empty(E, dtype=wp.int32, device=dev)
+    count_out_wp = wp.empty(E, dtype=wp.int32, device=dev)
+
+    sentinel = torch.full((E, num, 2), -123.0, dtype=torch.float32, device=dev)
+    out_wp = wp.from_torch(sentinel.reshape(E * num, 2).contiguous(), dtype=wp.vec2f)
+
+    wpl.arc_length_resample_selected_inplace(
+        pts_wp, active_wp, M, num,
+        real_wp, seg_wp, s_wp, count_r_wp, count_out_wp, out_wp, dev,
+    )
+    if "cuda" in dev:
+        wp.synchronize()
+
+    got = wp.to_torch(out_wp).view(E, num, 2)
+    counts = wp.to_torch(count_out_wp)
+    ref, ref_counts = geometry.arc_length_resample(pts, num=num)
+
+    assert torch.equal(counts.cpu(), torch.tensor([0, num, 0], dtype=torch.int32))
+    assert torch.allclose(got[1], ref[1], atol=5e-4, equal_nan=True)
+    assert int(ref_counts[1].item()) == num
+    assert torch.equal(got[0], sentinel[0])
+    assert torch.equal(got[2], sentinel[2])

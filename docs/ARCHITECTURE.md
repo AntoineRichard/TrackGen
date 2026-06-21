@@ -61,7 +61,7 @@ Track(outer, center, inner, tangent, normal, arclen, length, valid, count)
 - **Shared `@wp.func` helpers** keep the heavy geometry DRY across kernels:
   `_safe_normalize2` (= `v / max(‖v‖, 1e-8)`), `_nan0` (NaN/inf → 0), `_pruned_corner`
   (returns NaN for `i ≥ count`), `_thickness_func`, `_self_intersections_func`,
-  `_turning_func`. The standalone kernels (`_thickness_k`, `_self_intersections_k`,
+  `_turning_func`. The standalone kernels (`_thickness_k`, `_self_intersections_by_i_k`,
   `_turning_k`) and the fused `_validity_k`/`gates` all call the same helpers.
 
 ## Stages
@@ -79,7 +79,7 @@ The steps:
 | order (prune-then-sort) | `ccw_sort(raw, count)` / `_ccw_sort_k` | sort **only the first `count[e]`** corners by `atan2` around **their own** centroid (NaN tail untouched) → an angularly-monotone, star-shaped polygon. The old sort-all-then-keep-`count` ordered a partial wedge about the wrong (all-corner) centroid and produced figure-eight (winding-0) loops; prune-then-sort eliminates them |
 | build | `assemble` / `_vertex_tangents_k` + `_assemble_k` | blend unit vertex tangents (`p·u_out + (1−p)·u_in`), then a cubic Bézier per **closed** edge (segments wrap `mod count[e]`, so the closing edge is a real Bézier rather than a dropped straight chord — **F1**); each handle is `rad·chord` but **clamped to `handle_clamp_frac · shorter-incident-edge`** so a long handle can't overshoot a nearby corner into a self-crossing (**F2**); the `count`→NaN prune is folded in |
 | resample | `arc_length_resample_warp(dense, num_points)` | the dense Bézier → `num_points` arc-uniform points (fused into the generator output) |
-| de-cross (Fix B) | `self_intersections` + `torch.where` | the few tracks whose Bézier centerline still self-crosses fall back to their **corner polygon** (the same `assemble` with `handle_clamp_frac=0` → straight pieces), which the angle-sorted ordering makes provably simple; the downstream XPBD relax re-rounds the straightened corners. Both centerlines are always computed and the per-env choice is a single `torch.where`, so the stage stays branchless / graph-capturable |
+| de-cross (Fix B) | `self_intersections` + selected polygon fallback + `_select_vec2_k` | the few tracks whose Bézier centerline still self-crosses fall back to their **corner polygon** (straight pieces), which the angle-sorted ordering makes provably simple; the downstream XPBD relax re-rounds the straightened corners. The fallback assemble/resample runs only for crossing envs, while the final device-side select keeps the stage graph-capturable |
 
 Output: `centerline[E, num_points, 2]` (every env real — no NaN rows) and `valid[E]`, which is
 **all True**: there is no generation gate. Final validity (turning / width / thickness / optional
@@ -95,7 +95,7 @@ Two arc-length resamplers:
   NaN, in order), builds the closed-loop cumulative arc length in `float64`, and looks up
   `num` arc-uniform targets (searchsorted + lerp). Envs with `< 2` real points yield an
   all-NaN row and `count 0`. Fused into the generator output as the dense→`num_points` resample
-  (and into the polygon-fallback de-cross check); also used by the standalone `gates` parity
+  and reused by the selected polygon-fallback de-cross path; also used by the standalone `gates` parity
   wrapper (dense→`num_points` and dense→`num_points_per_segment`), which the torch oracle tests
   exercise but the single-pass generator no longer calls.
 - **`resample_uniform(center[E,N,2], n, count=None)`** — the count-aware `N→N` re-uniformizer
