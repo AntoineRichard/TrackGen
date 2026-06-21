@@ -52,6 +52,11 @@ def default_params() -> dict:
         "polar_num_knots": cfg.polar_num_knots,
         "polar_radial_jitter": cfg.polar_radial_jitter,
         "polar_angular_jitter": cfg.polar_angular_jitter,
+        "grammar_segments": cfg.grammar_segments,
+        "grammar_straight_frac": cfg.grammar_straight_frac,
+        "grammar_curvature_budget": cfg.grammar_curvature_budget,
+        "grammar_chicane_bias": cfg.grammar_chicane_bias,
+        "grammar_hairpin_max_frac": cfg.grammar_hairpin_max_frac,
         "num_points": cfg.num_points,
         "spacing": 0.30,
         "n_max": cfg.N_max,
@@ -101,6 +106,17 @@ def build_config(p: dict) -> TrackGenConfig:
         kw["polar_radial_jitter"] = float(p["polar_radial_jitter"])
     if p.get("polar_angular_jitter") is not None:
         kw["polar_angular_jitter"] = float(p["polar_angular_jitter"])
+    # Segment-grammar knobs; absent -> config defaults.
+    if p.get("grammar_segments") is not None:
+        kw["grammar_segments"] = int(p["grammar_segments"])
+    if p.get("grammar_straight_frac") is not None:
+        kw["grammar_straight_frac"] = float(p["grammar_straight_frac"])
+    if p.get("grammar_curvature_budget") is not None:
+        kw["grammar_curvature_budget"] = float(p["grammar_curvature_budget"])
+    if p.get("grammar_chicane_bias") is not None:
+        kw["grammar_chicane_bias"] = float(p["grammar_chicane_bias"])
+    if p.get("grammar_hairpin_max_frac") is not None:
+        kw["grammar_hairpin_max_frac"] = float(p["grammar_hairpin_max_frac"])
     # PBD separation broadphase/narrowphase knobs; absent -> config defaults.
     if p.get("relax_sep_every") is not None:
         kw["relax_sep_every"] = int(p["relax_sep_every"])
@@ -261,7 +277,9 @@ def _collect(*vals) -> dict:
     keys = ["generator", "half_width", "scale", "min_num_points", "max_num_points",
             "min_point_distance", "num_points_per_segment", "hull_displacement",
             "rad", "edgy", "handle_clamp_frac", "polar_num_knots", "polar_radial_jitter",
-            "polar_angular_jitter", "spacing", "n_max", "relax_iters",
+            "polar_angular_jitter", "grammar_segments", "grammar_straight_frac",
+            "grammar_curvature_budget", "grammar_chicane_bias", "grammar_hairpin_max_frac",
+            "spacing", "n_max", "relax_iters",
             "relax_sep_relax", "relax_spc_relax", "relax_bend_relax", "relax_margin",
             "relax_sep_every", "relax_sep_cache_slots", "relax_sep_cache_skin",
             "grid_n", "seed", "batch_size"]
@@ -314,6 +332,17 @@ def build_app():
                                          label="polar radial jitter")
                 polar_angular = gr.Slider(0.0, 0.45, value=defaults["polar_angular_jitter"], step=0.01,
                                           label="polar angular jitter")
+                gr.Markdown("### Segment grammar")
+                grammar_segs = gr.Slider(4, 32, value=defaults["grammar_segments"], step=1,
+                                         label="grammar_segments (fixed segment count)")
+                grammar_sf = gr.Slider(0.0, 0.9, value=defaults["grammar_straight_frac"], step=0.01,
+                                       label="grammar_straight_frac (target straight arc-length fraction)")
+                grammar_cb = gr.Slider(0.3, 3.0, value=defaults["grammar_curvature_budget"], step=0.05,
+                                       label="grammar_curvature_budget (max per-corner turn, rad)")
+                grammar_chi = gr.Slider(0.0, 0.5, value=defaults["grammar_chicane_bias"], step=0.01,
+                                        label="grammar_chicane_bias (chicane density)")
+                grammar_hpf = gr.Slider(0.02, 0.30, value=defaults["grammar_hairpin_max_frac"], step=0.01,
+                                        label="grammar_hairpin_max_frac (max single-corner arc-length cap)")
                 gr.Markdown("### Resolution (constant-spacing)")
                 spacing = gr.Slider(0.1, 1.0, value=defaults["spacing"], step=0.02, label="spacing (m)")
                 n_max = gr.Slider(128, 512, value=defaults["n_max"], step=8, label="N_max")
@@ -352,7 +381,8 @@ def build_app():
 
         controls = [generator, half_width, scale, min_np, max_np, min_dist, samples_per_seg,
                     hull_disp, rad, edgy, handle_clamp, polar_knots, polar_radial,
-                    polar_angular, spacing, n_max, relax_iters, sep, spc, bend, margin,
+                    polar_angular, grammar_segs, grammar_sf, grammar_cb, grammar_chi, grammar_hpf,
+                    spacing, n_max, relax_iters, sep, spc, bend, margin,
                     sep_every, sep_slots, sep_skin, grid_n, seed, batch_size]
 
         def _generate(*vals):
