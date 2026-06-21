@@ -21,6 +21,8 @@ def test_config_defaults_instantiate():
     assert cfg.handle_clamp_frac == 0.4  # kept == rad so the clamp doesn't bind every segment
     assert cfg.edgy == 0.0
     assert cfg.scale == 1.0
+    # Hull params
+    assert cfg.hull_displacement == 0.15
     # Fourier params (reconciled names)
     assert cfg.num_harmonics == 5
     assert cfg.decay_p == 2

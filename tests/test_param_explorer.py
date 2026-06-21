@@ -11,10 +11,12 @@ from viz import param_explorer as px
 
 
 def _params(**over):
-    p = dict(half_width=0.5, scale=10.0, min_num_points=9, max_num_points=13, rad=0.2, edgy=0.0,
-             handle_clamp_frac=0.10, num_points=256, spacing=0.30, n_max=384,
-             relax_iters=40, relax_sep_relax=1.0, relax_spc_relax=1.0,
-             relax_bend_relax=1.5, relax_margin=0.15, grid_n=3, seed=0, batch_size=16)
+    p = dict(half_width=0.5, scale=10.0, min_num_points=9, max_num_points=13,
+             min_point_distance=0.05, num_points_per_segment=30, hull_displacement=0.15,
+             rad=0.2, edgy=0.0, handle_clamp_frac=0.10, num_points=256,
+             spacing=0.30, n_max=384, relax_iters=40, relax_sep_relax=1.0,
+             relax_spc_relax=1.0, relax_bend_relax=1.5, relax_margin=0.15,
+             grid_n=3, seed=0, batch_size=16)
     p.update(over)
     return p
 
@@ -38,6 +40,19 @@ def test_build_config_auto_spacing():
     cfg = px.build_config(p)
     assert cfg.output_mode == "constant_spacing"
     assert abs(cfg.spacing - 0.6 * 0.5) < 1e-9
+
+
+def test_build_config_maps_hull_shape_knobs():
+    cfg = px.build_config(_params(
+        generator="hull",
+        hull_displacement=0.42,
+        min_point_distance=0.08,
+        num_points_per_segment=24,
+    ))
+    assert cfg.generator == "hull"
+    assert abs(cfg.hull_displacement - 0.42) < 1e-9
+    assert abs(cfg.min_point_distance - 0.08) < 1e-9
+    assert cfg.num_points_per_segment == 24
 
 
 import matplotlib.figure

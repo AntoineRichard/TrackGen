@@ -49,8 +49,14 @@ def build_config(p: dict) -> TrackGenConfig:
     kw = {}
     if p.get("num_points") is not None:
         kw["num_points"] = int(p["num_points"])
+    if p.get("num_points_per_segment") is not None:
+        kw["num_points_per_segment"] = int(p["num_points_per_segment"])
     if p.get("spacing") is not None:
         kw["spacing"] = float(p["spacing"])
+    if p.get("min_point_distance") is not None:
+        kw["min_point_distance"] = float(p["min_point_distance"])
+    if p.get("hull_displacement") is not None:
+        kw["hull_displacement"] = float(p["hull_displacement"])
     # Phase-1 generator selector (registered name); absent -> config default ("bezier").
     if p.get("generator") is not None:
         kw["generator"] = str(p["generator"])
@@ -211,8 +217,9 @@ def render_grid(p: dict):
 
 
 def _collect(*vals) -> dict:
-    keys = ["generator", "half_width", "scale", "min_num_points", "max_num_points", "rad", "edgy",
-            "handle_clamp_frac", "spacing", "n_max", "relax_iters",
+    keys = ["generator", "half_width", "scale", "min_num_points", "max_num_points",
+            "min_point_distance", "num_points_per_segment", "hull_displacement",
+            "rad", "edgy", "handle_clamp_frac", "spacing", "n_max", "relax_iters",
             "relax_sep_relax", "relax_spc_relax", "relax_bend_relax", "relax_margin",
             "relax_sep_every", "relax_sep_cache_slots", "relax_sep_cache_skin",
             "grid_n", "seed", "batch_size"]
@@ -237,17 +244,23 @@ def build_app():
             with gr.Column(scale=1):
                 gr.Markdown("### Phase-1 generator")
                 generator = gr.Dropdown(generator_registry.available(), value="bezier",
-                                        label="generator method (shape sliders below apply to bezier)")
+                                        label="generator method")
                 gr.Markdown("### Regime")
                 half_width = gr.Slider(0.05, 1.0, value=0.5, step=0.01, label="half_width (m)")
                 scale = gr.Slider(1.0, 20.0, value=10.0, step=0.5, label="scale (box)")
-                gr.Markdown("### Shape")
+                gr.Markdown("### Shape / sampling")
                 min_np = gr.Slider(5, 20, value=9, step=1, label="min corners")
                 max_np = gr.Slider(5, 20, value=13, step=1, label="max corners")
-                rad = gr.Slider(0.0, 0.6, value=0.4, step=0.01, label="rad (roundness)")
-                edgy = gr.Slider(0.0, 1.0, value=0.0, step=0.05, label="edgy")
+                min_dist = gr.Slider(0.02, 0.20, value=0.05, step=0.005,
+                                     label="min_point_distance (sampling spread)")
+                samples_per_seg = gr.Slider(8, 60, value=30, step=1,
+                                            label="num_points_per_segment (generator smoothing samples)")
+                hull_disp = gr.Slider(0.0, 0.8, value=0.15, step=0.01,
+                                      label="hull_displacement (hull midpoint displacement)")
+                rad = gr.Slider(0.0, 0.6, value=0.4, step=0.01, label="bezier rad (roundness)")
+                edgy = gr.Slider(0.0, 1.0, value=0.0, step=0.05, label="bezier edgy")
                 handle_clamp = gr.Slider(0.0, 1.0, value=0.4, step=0.01,
-                                         label="handle_clamp_frac (overshoot↔roundness)")
+                                         label="bezier handle_clamp_frac (overshoot↔roundness)")
                 gr.Markdown("### Resolution (constant-spacing)")
                 spacing = gr.Slider(0.1, 1.0, value=0.30, step=0.02, label="spacing (m)")
                 n_max = gr.Slider(128, 512, value=384, step=8, label="N_max")
@@ -284,9 +297,10 @@ def build_app():
         track_state = gr.State(None)
         page_state = gr.State(0)
 
-        controls = [generator, half_width, scale, min_np, max_np, rad, edgy, handle_clamp,
-                    spacing, n_max, relax_iters, sep, spc, bend, margin,
-                    sep_every, sep_slots, sep_skin, grid_n, seed, batch_size]
+        controls = [generator, half_width, scale, min_np, max_np, min_dist, samples_per_seg,
+                    hull_disp, rad, edgy, handle_clamp, spacing, n_max, relax_iters,
+                    sep, spc, bend, margin, sep_every, sep_slots, sep_skin,
+                    grid_n, seed, batch_size]
 
         def _generate(*vals):
             p = _collect(*vals)
