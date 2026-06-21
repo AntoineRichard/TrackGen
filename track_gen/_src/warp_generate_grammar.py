@@ -37,6 +37,54 @@ _GRAMMAR_SALT = 6271
 _HEADING_SCALE_CAP = 2.0
 
 
+# Stride for subsampling the grammar centerline before angle-sort. Taking every
+# _POLY_STRIDE-th point from the N dense centerline gives Np = N // _POLY_STRIDE
+# sparse control points. These are then angle-sorted into a simple polygon and
+# arc-resampled back to N, matching hull's pattern (P sparse -> angle-sort -> resample N).
+# With N=128 and stride=8, Np=16 — similar to hull's typical P=10-20 control points.
+_POLY_STRIDE = 8
+
+
+@wp.kernel
+def _grammar_angle_sort_k(
+    points: wp.array(dtype=wp.vec2f),
+    N: int,
+    stride: int,
+    Np: int,
+    keys: wp.array(dtype=wp.float32),
+    out: wp.array(dtype=wp.vec2f),
+):
+    # One thread per env e. Stride-subsample the N grammar centerline by taking every
+    # `stride`-th point (indices 0, stride, 2*stride, ...) giving Np = N//stride points.
+    # Then angle-sort those Np points ascending by atan2(dx, dy) (X first, matching the
+    # bezier/hull ccw-sort convention) about their centroid. Insertion sort — O(Np^2)
+    # but Np<=32 so this is fast. The Np-point result in `out` is then arc-resampled back
+    # to N, producing a smooth simple polygon like hull's sparse-point fallback.
+    e = wp.tid()
+    n_base = e * N
+    p_base = e * Np
+
+    sx = wp.float64(0.0)
+    sy = wp.float64(0.0)
+    for c in range(Np):
+        p = points[n_base + c * stride]
+        sx = sx + wp.float64(p[0])
+        sy = sy + wp.float64(p[1])
+    cx = wp.float32(sx / wp.float64(Np))
+    cy = wp.float32(sy / wp.float64(Np))
+
+    for c in range(Np):
+        p = points[n_base + c * stride]
+        key = wp.atan2(p[0] - cx, p[1] - cy)   # X first!
+        j = c - 1
+        while j >= 0 and keys[p_base + j] > key:
+            keys[p_base + j + 1] = keys[p_base + j]
+            out[p_base + j + 1] = out[p_base + j]
+            j = j - 1
+        keys[p_base + j + 1] = key
+        out[p_base + j + 1] = p
+
+
 @wp.kernel
 def _grammar_normalize_k(
     points: wp.array(dtype=wp.vec2f),
@@ -304,14 +352,40 @@ class GrammarScratch:
                 via ``_Scratch.__getattr__``; both slots would match "kappa" and GrammarScratch
                 would win the name lookup, returning the wrong (smaller) buffer to inflate_warp.
     raw:        [E*N]   vec2f   — scratch for closed-loop edge vectors before cumsum.
+
+    Polygon-fallback buffers (mirrors hull's crosser + arc-resample slots).
+    The fallback stride-subsamples the N grammar points to Np = N//_POLY_STRIDE sparse
+    control points before angle-sorting, matching hull's sparse-control-point pattern:
+    crossers:   [E]        int32   — self-intersection counts after grammar centerline is built.
+    poly:       [E*Np]     vec2f   — angle-sorted sparse polygon (Np = N//_POLY_STRIDE).
+    sort_keys:  [E*Np]     float32 — angle-sort key scratch.
+    arc_real:   [E*Np]     vec2f   — arc-resample compacted-real scratch.
+    arc_seg:    [E*Np]     float32 — arc-resample per-segment length scratch.
+    arc_s:      [E*(Np+1)] float32 — arc-resample cumulative arc-length scratch.
+    arc_cr:     [E]        int32   — arc-resample real-point-count scratch.
+    arc_co:     [E]        int32   — arc-resample output-count scratch.
     """
 
-    __slots__ = ("segments", "rast_kappa", "raw")
+    __slots__ = (
+        "segments", "rast_kappa", "raw",
+        "crossers", "poly", "sort_keys",
+        "arc_real", "arc_seg", "arc_s", "arc_cr", "arc_co",
+    )
 
-    def __init__(self, segments, rast_kappa, raw) -> None:
+    def __init__(self, segments, rast_kappa, raw,
+                 crossers, poly, sort_keys,
+                 arc_real, arc_seg, arc_s, arc_cr, arc_co) -> None:
         self.segments = segments
         self.rast_kappa = rast_kappa
         self.raw = raw
+        self.crossers = crossers
+        self.poly = poly
+        self.sort_keys = sort_keys
+        self.arc_real = arc_real
+        self.arc_seg = arc_seg
+        self.arc_s = arc_s
+        self.arc_cr = arc_cr
+        self.arc_co = arc_co
 
 
 def grammar_alloc_scratch(config):
@@ -320,11 +394,20 @@ def grammar_alloc_scratch(config):
     E = int(config.num_envs)
     S = int(config.grammar_segments)
     N = int(config.num_points)
+    Np = max(N // _POLY_STRIDE, 3)  # sparse control-point count for angle-sort polygon
     dev = str(config.device)
     return GrammarScratch(
         segments=wp.empty(E * S * 3, dtype=wp.float32, device=dev),
         rast_kappa=wp.empty(E * N, dtype=wp.float32, device=dev),
         raw=wp.empty(E * N, dtype=wp.vec2f, device=dev),
+        crossers=wp.empty(E, dtype=wp.int32, device=dev),
+        poly=wp.empty(E * Np, dtype=wp.vec2f, device=dev),
+        sort_keys=wp.empty(E * Np, dtype=wp.float32, device=dev),
+        arc_real=wp.empty(E * Np, dtype=wp.vec2f, device=dev),
+        arc_seg=wp.empty(E * Np, dtype=wp.float32, device=dev),
+        arc_s=wp.empty(E * (Np + 1), dtype=wp.float32, device=dev),
+        arc_cr=wp.empty(E, dtype=wp.int32, device=dev),
+        arc_co=wp.empty(E, dtype=wp.int32, device=dev),
     )
 
 
@@ -338,8 +421,16 @@ def generate_grammar_warp(
     """Segment-grammar centerline generation — in-place, pure Warp, zero-alloc.
 
     Draws per-env segment grammars (sample_k), rasterizes + closes + integrates (build_k),
-    then normalizes the bbox (normalize_k). Marks all envs valid at generation stage.
-    CUDA-graph-capturable: fixed-bound loops over S and N, no host sync.
+    normalizes the bbox (normalize_k), then rescues self-crossing envs with a simple
+    angle-sorted polygon fallback (mirrors hull's Step 6-7). Non-crossing envs keep their
+    grammar curve untouched.
+
+    Polygon fallback (CUDA-graph-capturable, zero host sync):
+    1. Detect self-crossers via self_intersections_inplace -> scratch.crossers.
+    2. For crossing envs only: angle-sort the N grammar centerline points about their
+       centroid into scratch.poly (produces a star-shaped simple loop).
+    3. Arc-resample the selected polygon back into out_centerline for crossing envs only
+       (non-crossing rows are left untouched by the selected resampler).
 
     Args:
         seeds_wp:       [E] int32 wp.array — per-env base seeds.
@@ -362,6 +453,7 @@ def generate_grammar_warp(
     chicane_bias = float(config.grammar_chicane_bias)
     hairpin_max_frac = float(config.grammar_hairpin_max_frac)
 
+    # Step 1-3: sample grammar, rasterize + close + integrate, normalize bbox.
     wp.launch(
         _grammar_sample_k,
         dim=E,
@@ -382,6 +474,36 @@ def generate_grammar_warp(
         inputs=[out_centerline, N, target_extent],
         device=dev,
     )
+
+    # Step 4: detect self-crossers in the grammar centerline.
+    # scratch.arc_co is used as a fixed-N count array (all envs have N real points);
+    # self_intersections_inplace reads it but does NOT write it, so it stays valid as
+    # input to _arc_resample_selected_inplace below (where it becomes the output-count scratch).
+    wp.launch(_pipe._fill_i32_k, dim=E, inputs=[scratch.arc_co, N], device=dev)
+    _pipe.self_intersections_inplace(out_centerline, scratch.arc_co, scratch.crossers, N)
+
+    # Step 5: stride-subsample + angle-sort the grammar centerline -> scratch.poly.
+    # Np = N // _POLY_STRIDE sparse control points are taken from out_centerline (every
+    # stride-th point), then angle-sorted about their centroid into scratch.poly.  This
+    # gives a sparse simple polygon (like hull's P control points) that arc-resamples
+    # cleanly to N, rather than sorting all N dense points which produces irregular geometry.
+    # We launch for ALL envs; the selected resampler below skips non-crossers.
+    Np = int(scratch.poly.shape[0]) // E
+    wp.launch(
+        _grammar_angle_sort_k,
+        dim=E,
+        inputs=[out_centerline, N, _POLY_STRIDE, Np, scratch.sort_keys, scratch.poly],
+        device=dev,
+    )
+
+    # Step 6: arc-resample the angle-sorted sparse polygon (Np pts) into out_centerline
+    # (N pts) for crossing envs only. Non-crossing envs' rows are left untouched.
+    _pipe._arc_resample_selected_inplace(
+        scratch.poly, scratch.crossers, Np, N,
+        scratch.arc_real, scratch.arc_seg, scratch.arc_s,
+        scratch.arc_cr, scratch.arc_co, out_centerline, dev,
+    )
+
     _pipe._sync(dev)
 
 
