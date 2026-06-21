@@ -908,6 +908,9 @@ def _run_pipeline(
             scratch.cs_center, relax.relaxed, relax.xpbd_db,
             relax.band, relax.L0, scratch.count, n_max, config,
             capturing=_CAPTURING,
+            sep_cache_idx_wp=relax.sep_cache_idx,
+            sep_cache_count_wp=relax.sep_cache_count,
+            sep_cache_overflow_wp=relax.sep_cache_overflow,
         )
         relax_out = relax.relaxed
     else:
@@ -1251,10 +1254,14 @@ class RelaxScratch:
               writes directly into out.center).
     band:     [E] int32 — band_l0_inplace output (excluded-neighbour half-window).
     L0:       [E] float32 — band_l0_inplace output (rest segment length per env).
-    xpbd_db:  [E*N_max] vec2f — xpbd_solve double-buffer (displacement scratch).
+    xpbd_db:  [E*N_max] vec2f — xpbd_solve position ping-pong scratch.
+    sep_cache_idx/count/overflow: optional fixed-size separation candidate cache.
     """
 
-    __slots__ = ("relaxed", "band", "L0", "xpbd_db")
+    __slots__ = (
+        "relaxed", "band", "L0", "xpbd_db",
+        "sep_cache_idx", "sep_cache_count", "sep_cache_overflow",
+    )
 
     def __init__(
         self,
@@ -1262,11 +1269,17 @@ class RelaxScratch:
         band: "wp.array",
         L0: "wp.array",
         xpbd_db: "wp.array",
+        sep_cache_idx: "wp.array | None" = None,
+        sep_cache_count: "wp.array | None" = None,
+        sep_cache_overflow: "wp.array | None" = None,
     ) -> None:
         self.relaxed = relaxed
         self.band = band
         self.L0 = L0
         self.xpbd_db = xpbd_db
+        self.sep_cache_idx = sep_cache_idx
+        self.sep_cache_count = sep_cache_count
+        self.sep_cache_overflow = sep_cache_overflow
 
 
 class InflateScratch:
@@ -1415,11 +1428,25 @@ def _inflate_warp_alloc(config, generator_spec=None):
     N_gen = int(config.num_points)
     gen_centerline = wp.empty(E * N_gen, dtype=wp.vec2f, device=dev)
     gen_valid = wp.empty(E, dtype=wp.int32, device=dev)
+    # XPBD cached-contacts perf buffers (from main): sized by config.relax_sep_cache_slots,
+    # threaded into RelaxScratch below; None when separation caching is disabled (slots == 0).
+    sep_cache_slots = max(0, int(getattr(config, "relax_sep_cache_slots", 0)))
+    if sep_cache_slots > 0:
+        sep_cache_idx = wp.empty(flat * sep_cache_slots, dtype=wp.int32, device=dev)
+        sep_cache_count = wp.empty(flat, dtype=wp.int32, device=dev)
+        sep_cache_overflow = wp.empty(1, dtype=wp.int32, device=dev)
+    else:
+        sep_cache_idx = None
+        sep_cache_count = None
+        sep_cache_overflow = None
     relax = RelaxScratch(
         relaxed=wp.empty(flat, dtype=wp.vec2f, device=dev),
         band=wp.empty(E, dtype=wp.int32, device=dev),
         L0=wp.empty(E, dtype=wp.float32, device=dev),
         xpbd_db=wp.empty(flat, dtype=wp.vec2f, device=dev),
+        sep_cache_idx=sep_cache_idx,
+        sep_cache_count=sep_cache_count,
+        sep_cache_overflow=sep_cache_overflow,
     )
     inflate = InflateScratch(
         area_a=wp.zeros(E, dtype=wp.float32, device=dev),

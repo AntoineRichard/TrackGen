@@ -2,7 +2,7 @@
 
 This document explains how `track_gen` turns a batch of per-environment seeds into a
 batch of `Track`s. The whole pipeline lives in
-[`track_gen/_src/warp_pipeline.py`](../track_gen/_src/warp_pipeline.py) (plus the fused
+[`track_gen/_src/warp_pipeline.py`](../track_gen/_src/warp_pipeline.py) (plus the
 relaxation solve in [`track_gen/_src/warp_relax.py`](../track_gen/_src/warp_relax.py)) and
 is written entirely in [NVIDIA Warp](https://github.com/NVIDIA/warp) kernels.
 
@@ -30,7 +30,7 @@ centerline[E, num_points, 2]     (every env real, ~always simple) + valid[E] (al
   │  RESAMPLE   resample_constant_spacing → per-track count[e] = ⌊perimeter/spacing⌋+1, capped at N_max
   ▼
 spaced[E, N_max, 2]              (NaN-padded past each track's count[e])
-  │  RELAX      (fused XPBD: separation + spacing + bending, fixed iters, double-buffered, count-aware)
+  │  RELAX      (XPBD: separation + spacing + bending, fixed iters, double-buffered, count-aware)
   ▼
 relaxed[E, N_max, 2]
   │  INFLATE    resample_uniform (re-uniformize) ─► frame+curvature ─► constant-width offset
@@ -109,17 +109,27 @@ Two arc-length resamplers:
   and matches the `geometry.arc_length_resample(spacing=)` oracle. Selected by
   `output_mode="constant_spacing"`.
 
-### Relax — `warp_relax.xpbd_solve(center, band, L0, config)`
+### Relax — `warp_relax.xpbd_solve_inplace(center, band, L0, config)`
 
-A fixed-iteration XPBD solve, **fully fused** (kernels `_disp_kernel` + `_apply_kernel`,
-double-buffered) so there is no `[E,N,N]` materialization and no per-iteration sync. Each
-sweep applies, per bead: a Jacobi-averaged **separation** push (non-adjacent pairs closer
-than `D·(1+margin)`), an **edge-spacing** correction toward rest length `L0`, and a
-flip-clamped **bending** push when the local radius is below `R_min`. It runs on cpu and
-cuda (it syncs with `wp.synchronize`, not `torch.cuda`), and reshapes the centerline so a
-constant-width inflation becomes valid (thickness ≥ half_width). `generate_tracks_warp`
-derives `band` and `L0` from `mean_seg_len` via `_band_l0_k`. The sweep is count-aware — it
-operates over each env's `count[e]` real points (the fixed-`N` parity path is `count[e] == N`).
+A fixed-iteration XPBD solve, double-buffered, with no `[E,N,N]` materialization and no
+per-iteration host sync. Each sweep applies, per bead: a Jacobi-averaged **separation**
+push (non-adjacent pairs closer than `target = 2*half_width*(1+relax_margin)`), an
+**edge-spacing** correction toward rest length `L0`, and a flip-clamped **bending** push
+when the local radius is below `R_min`. It runs on cpu and cuda (it syncs with
+`wp.synchronize`, not `torch.cuda`), and reshapes the centerline so a constant-width
+inflation becomes valid (thickness >= half_width). `generate_tracks_warp` derives `band`
+and `L0` from `mean_seg_len` via `_band_l0_k`. The sweep is count-aware: it operates over
+each env's `count[e]` real points (the fixed-`N` parity path is `count[e] == N`).
+
+The separation term has two execution modes. The baseline `_step_kernel` performs the dense
+`O(count[e]^2)` separation scan whenever `relax_sep_every` says to do so. With
+`relax_sep_cache_slots == 0`, `relax_sep_every > 1` is a naive skip cadence: spacing and
+bending still run every sweep, but separation is absent between dense scans. With
+`relax_sep_cache_slots > 0`, the solver uses a fixed-size broadphase cache: `_build_sep_cache_kernel`
+rebuilds candidate bead indices every `relax_sep_every` sweeps using radius
+`target*(1+relax_sep_cache_skin)`, and `_step_cached_kernel` runs the exact narrowphase
+`dist < target` test plus separation push on cached candidates every sweep. Cache buffers are
+preallocated in `RelaxScratch`, so this path remains CUDA-graph-capturable.
 
 ### Inflate — `inflate_warp(center, config, valid=None, count=None)`
 

@@ -58,7 +58,7 @@ from track_gen import TrackGenerator, TrackGenConfig, PerEnvSeededRNG
 E, device = 64, "cuda"  # or "cpu"
 config = TrackGenConfig(num_envs=E, half_width=0.03, device=device)
 # output_mode is "constant_spacing" (the only mode). spacing auto-couples to 0.6*half_width,
-# so each track gets its own arc-uniform point count (≤ N_max, default 256), NaN-padded past it.
+# so each track gets its own arc-uniform point count (≤ N_max, default 384), NaN-padded past it.
 
 # The rng's per-env seed values seed the pipeline's built-in Warp RNG (one base seed/env).
 seeds = torch.arange(E, dtype=torch.int32, device=device)
@@ -95,6 +95,50 @@ relax-friendly value; set it explicitly to override). The legacy `fixed` mode (c
 solve under-converges and the road self-overlaps; relaxing at a width-appropriate spacing
 converges to smooth, valid tracks on fewer nodes. `num_points` now only sets the intermediate
 dense-resample resolution. Size `N_max ≥ max(perimeter)/spacing + 1` so no track is truncated.
+
+### Advanced XPBD separation cache
+
+The relaxation solve has one expensive term: non-neighbour separation. The exact separation
+target is:
+
+```text
+target = 2 * half_width * (1 + relax_margin)
+```
+
+The baseline (`relax_sep_every=1`, `relax_sep_cache_slots=0`) scans all non-neighbour pairs
+every XPBD sweep. This is robust, but it is `O(count[e]^2)` per track per sweep. Three
+advanced knobs expose a graph-capturable broadphase cache for this term:
+
+| setting | meaning | default |
+|---|---|---|
+| `relax_sep_every` | Broadphase refresh interval `K`. With no cache, this is a naive skip cadence; with cache enabled, this rebuilds candidates every `K` sweeps. | `1` |
+| `relax_sep_cache_slots` | Fixed candidate capacity per bead. `0` disables caching. Larger values use more memory and narrowphase work, but reduce candidate overflow risk. | `0` |
+| `relax_sep_cache_skin` | Extra broadphase radius as a fraction of `target`: cache radius is `target * (1 + skin)`. Exact separation is still applied only for current `dist < target`. | `0.5` |
+
+Cached mode is enabled when `relax_sep_cache_slots > 0` and `relax_sep_every > 1`. In that
+mode, TrackGen rebuilds a fixed-size per-bead candidate list every `K` sweeps, then runs the
+exact narrowphase distance test and separation push against the cached candidates on every
+sweep. This is different from the naive cadence path, which simply skips separation on
+intermediate sweeps. `skin=0.0` stores only pairs already inside the exact separation target at
+refresh time; positive skin stores near pairs too, which is safer for long refresh intervals but
+slower.
+
+A useful high-throughput setting from the `E=8192`, `half_width=0.03`,
+`relax_iters=150` CUDA graph benchmark was:
+
+```python
+TrackGenConfig(
+    ...,
+    relax_sep_every=40,
+    relax_sep_cache_slots=16,
+    relax_sep_cache_skin=0.0,
+)
+```
+
+On the benchmark machine this was about `0.066 s` per graph replay versus `0.366 s` for the
+dense baseline, with effectively unchanged validity in the checked runs. Keep the dense
+baseline for maximum conservatism; use the cache knobs when throughput matters and validate
+yield in the target regime.
 
 ### The `Track` result
 

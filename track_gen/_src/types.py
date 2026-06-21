@@ -93,6 +93,26 @@ class TrackGenConfig:
     relax_tol: float = 0.02               # target = (1 - tol) * half_width
     relax_band: int | None = None         # None => round(D / L0) per track
     relax_iters: int = 150
+    # Separation broadphase refresh interval.
+    #
+    # The XPBD separation target is target = 2*half_width*(1 + relax_margin).
+    # With relax_sep_cache_slots == 0, this is a naive cadence: the dense O(N^2)
+    # separation scan runs only every K sweeps and is skipped in between. That is fast
+    # but can miss transient contacts. With relax_sep_cache_slots > 0, this becomes the
+    # broadphase refresh interval: every K sweeps we rebuild a fixed-size candidate
+    # cache, while the exact narrowphase distance test and separation push still run on
+    # cached candidates every sweep. K=1 preserves the dense baseline.
+    relax_sep_every: int = 1
+    # Cached separation candidate capacity per bead. 0 disables the cache. When enabled,
+    # each bead stores up to this many non-neighbour bead indices from the latest
+    # broadphase refresh. Larger values add memory and narrowphase work, but reduce the
+    # chance of dropping candidates in crowded tracks.
+    relax_sep_cache_slots: int = 0
+    # Broadphase skin as a fraction of the exact separation target. The cache stores
+    # candidates within target*(1 + skin), but every cached sweep still applies
+    # separation only when the current exact distance is < target. skin=0 is fastest;
+    # positive values are more conservative when contacts may enter during a long K.
+    relax_sep_cache_skin: float = 0.5
     relax_sep_relax: float = 1.0
     relax_spc_relax: float = 1.0
     relax_bend_relax: float = 1.5
@@ -142,6 +162,15 @@ class TrackGenConfig:
     validity_border_check: bool = False
 
     def __post_init__(self):
+        if int(self.relax_sep_every) < 1:
+            raise ValueError(f"relax_sep_every must be >= 1, got {self.relax_sep_every!r}")
+        if int(self.relax_sep_cache_slots) < 0:
+            raise ValueError(
+                f"relax_sep_cache_slots must be >= 0, got {self.relax_sep_cache_slots!r}")
+        if float(self.relax_sep_cache_skin) < 0.0:
+            raise ValueError(
+                f"relax_sep_cache_skin must be >= 0, got {self.relax_sep_cache_skin!r}")
+
         # Only constant_spacing is supported: a constant link SIZE (~0.6*half_width) relaxes
         # to smoother, higher-yield tracks than a constant point COUNT, which over-resolves
         # the centerline (jagged XPBD -> folded roads).
