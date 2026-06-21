@@ -219,15 +219,49 @@ def _self_intersections_func(poly: wp.array(dtype=wp.vec2f), base: int, N: int) 
     return count
 
 @wp.kernel
-def _self_intersections_k(
+def _self_intersections_by_i_k(
     poly: wp.array(dtype=wp.vec2f),
     n_max: int,
     count: wp.array(dtype=wp.int32),
     out: wp.array(dtype=wp.int32),
 ):
-    # One thread per env e. Delegates to _self_intersections_func over [e*n_max, e*n_max+count[e]).
-    e = wp.tid()
-    out[e] = _self_intersections_func(poly, e * n_max, count[e])
+    # One thread per segment start i. This preserves the same pair predicate as
+    # _self_intersections_func, but avoids serializing every O(N^2) pair check onto
+    # one thread per environment. Crossing counts are rare, so atomics are cheap.
+    t = wp.tid()
+    e = t // n_max
+    i = t % n_max
+    N = count[e]
+    if i >= N:
+        return
+
+    base = e * n_max
+    Ai = poly[base + i]
+    Bi = poly[base + (i + 1) % N]
+    aix = _nan0(Ai[0]); aiy = _nan0(Ai[1])
+    bix = _nan0(Bi[0]); biy = _nan0(Bi[1])
+
+    for j in range(i + 1, N):
+        diff = j - i
+        circ_dist = wp.min(diff, N - diff)
+        if circ_dist <= 1:
+            continue
+        Aj = poly[base + j]
+        Bj = poly[base + (j + 1) % N]
+        ajx = _nan0(Aj[0]); ajy = _nan0(Aj[1])
+        bjx = _nan0(Bj[0]); bjy = _nan0(Bj[1])
+        d1 = _ccw(ajx, ajy, bjx, bjy, aix, aiy)
+        d2 = _ccw(ajx, ajy, bjx, bjy, bix, biy)
+        d3 = _ccw(aix, aiy, bix, biy, ajx, ajy)
+        d4 = _ccw(aix, aiy, bix, biy, bjx, bjy)
+        lj2 = (bjx - ajx) * (bjx - ajx) + (bjy - ajy) * (bjy - ajy)
+        li2 = (bix - aix) * (bix - aix) + (biy - aiy) * (biy - aiy)
+        ej = float(1.0e-3) * lj2
+        ei = float(1.0e-3) * li2
+        seg_ij = (d1 > ej and d2 < -ej) or (d1 < -ej and d2 > ej)
+        seg_ji = (d3 > ei and d4 < -ei) or (d3 < -ei and d4 > ei)
+        if seg_ij and seg_ji:
+            wp.atomic_add(out, e, int(1))
 
 @wp.func
 def _thickness_func(pts: wp.array(dtype=wp.vec2f), base: int, N: int, band: int) -> float:
@@ -476,6 +510,86 @@ def _arc_lookup_k(
     p1 = real_pts[rb + (idx + 1) % r]   # closed[idx+1]: real[0] when idx == R-1
     out[t] = p0 + frac * (p1 - p0)
 
+@wp.kernel
+def _arc_scan_selected_k(
+    dense: wp.array(dtype=wp.vec2f),
+    active: wp.array(dtype=wp.int32),
+    M: int,
+    num: int,
+    real_pts: wp.array(dtype=wp.vec2f),
+    seg: wp.array(dtype=wp.float32),
+    s: wp.array(dtype=wp.float32),
+    count_r: wp.array(dtype=wp.int32),
+    count_out: wp.array(dtype=wp.int32),
+):
+    # Same as _arc_scan_k for active envs. Inactive envs write only their counts,
+    # allowing downstream lookup to skip them and leave output rows untouched.
+    e = wp.tid()
+    if active[e] <= 0:
+        count_r[e] = int(0)
+        count_out[e] = int(0)
+        return
+
+    db = e * M
+    rb = e * M
+    es = e * (M + 1)
+
+    r = int(0)
+    for i in range(M):
+        p = dense[db + i]
+        if wp.isfinite(p[0]) and wp.isfinite(p[1]):
+            real_pts[rb + r] = p
+            r = r + 1
+    count_r[e] = r
+    count_out[e] = wp.where(r >= 2, num, 0)
+
+    if r >= 2:
+        s[es] = float(0.0)
+        acc = wp.float64(0.0)
+        for j in range(r):
+            nxt = real_pts[rb + (j + 1) % r]
+            l = wp.length(nxt - real_pts[rb + j])
+            seg[rb + j] = l
+            acc = acc + wp.float64(l)
+            s[es + j + 1] = wp.float32(acc)
+
+@wp.kernel
+def _arc_lookup_selected_k(
+    real_pts: wp.array(dtype=wp.vec2f),
+    seg: wp.array(dtype=wp.float32),
+    s: wp.array(dtype=wp.float32),
+    count_r: wp.array(dtype=wp.int32),
+    active: wp.array(dtype=wp.int32),
+    M: int,
+    num: int,
+    out: wp.array(dtype=wp.vec2f),
+):
+    t = wp.tid()
+    e = t // num
+    if active[e] <= 0:
+        return
+
+    k = t % num
+    rb = e * M
+    es = e * (M + 1)
+    r = count_r[e]
+    if r < 2:
+        out[t] = wp.vec2f(wp.nan, wp.nan)
+        return
+
+    total = s[es + r]
+    target = float(k) * total / float(num)
+    idx = int(0)
+    while idx < r - 1 and s[es + idx + 1] < target:
+        idx = idx + 1
+
+    s0 = s[es + idx]
+    segl = wp.max(seg[rb + idx], float(1.0e-12))
+    frac = wp.clamp((target - s0) / segl, float(0.0), float(1.0))
+    p0 = real_pts[rb + idx]
+    p1 = real_pts[rb + (idx + 1) % r]
+    out[t] = p0 + frac * (p1 - p0)
+
 @wp.func
 def _turning_func(c: wp.array(dtype=wp.vec2f), base: int, N: int) -> float:
     # Signed total turning of the closed polygon whose points start at `base`.
@@ -621,7 +735,8 @@ def self_intersections_inplace(poly_wp, count_wp, out_wp, n_max):
     _init()
     E = count_wp.shape[0]
     dev = str(out_wp.device)
-    wp.launch(_self_intersections_k, dim=E,
+    wp.launch(_fill_i32_k, dim=E, inputs=[out_wp, 0], device=dev)
+    wp.launch(_self_intersections_by_i_k, dim=E * n_max,
               inputs=[poly_wp, n_max, count_wp, out_wp],
               device=dev)
     _sync(out_wp.device)
@@ -669,6 +784,40 @@ def arc_length_resample_inplace(
     """
     _init()
     _arc_resample_inplace(points_wp, M, num, real_wp, seg_wp, s_wp, count_r_wp, count_out_wp, out_wp, dev)
+    _sync(dev)
+
+
+def _arc_resample_selected_inplace(
+    points_wp, active_wp, M, num, real_wp, seg_wp, s_wp, count_r_wp, count_out_wp, out_wp, dev
+):
+    E = points_wp.shape[0] // M
+    wp.launch(_arc_scan_selected_k, dim=E,
+              inputs=[points_wp, active_wp, M, num, real_wp, seg_wp, s_wp,
+                      count_r_wp, count_out_wp], device=dev)
+    wp.launch(_arc_lookup_selected_k, dim=E * num,
+              inputs=[real_wp, seg_wp, s_wp, count_r_wp, active_wp, M, num, out_wp],
+              device=dev)
+
+
+def arc_length_resample_selected_inplace(
+    points_wp: "wp.array",
+    active_wp: "wp.array",
+    M: int,
+    num: int,
+    real_wp: "wp.array",
+    seg_wp: "wp.array",
+    s_wp: "wp.array",
+    count_r_wp: "wp.array",
+    count_out_wp: "wp.array",
+    out_wp: "wp.array",
+    dev: str,
+) -> None:
+    """Selected NaN-aware arc-length resample. Inactive envs leave output untouched."""
+    _init()
+    _arc_resample_selected_inplace(
+        points_wp, active_wp, M, num, real_wp, seg_wp, s_wp,
+        count_r_wp, count_out_wp, out_wp, dev,
+    )
     _sync(dev)
 
 
