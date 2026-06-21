@@ -21,12 +21,11 @@ is written entirely in [NVIDIA Warp](https://github.com/NVIDIA/warp) kernels.
 
 ```
 seeds[E]
-  │  GENERATION  (single pass — one corner draw per env, no regen loop, no generation gate:
-  │    corner_sample ─► ccw_sort(count) [prune-then-sort] ─► assemble (closed Bézier + handle clamp)
-  │    ─► arc-length resample [FUSED] ─► self-intersection check ─► polygon fallback for crossers)
+  │  FIRST-STAGE GENERATION  (registered config.generator: "bezier", "hull", or "polar";
+  │    single pass, generator-private scratch, no regen loop, no generation gate)
   ▼
-centerline[E, num_points, 2]     (every env real, ~always simple) + valid[E] (all True —
-  │                                 final validity is decided post-relax by INFLATE)
+centerline[E, num_points, 2]     (every env real) + valid[E] (all True —
+  │                                 final geometric validity is decided post-relax by INFLATE)
   │  RESAMPLE   resample_constant_spacing → per-track count[e] = ⌊perimeter/spacing⌋+1, capped at N_max
   ▼
 spaced[E, N_max, 2]              (NaN-padded past each track's count[e])
@@ -66,25 +65,153 @@ Track(outer, center, inner, tangent, normal, arclen, length, valid, count)
 
 ## Stages
 
-### Generation — `generate_centerline_warp(seeds, config)`
+### Generation — registered first-stage centerline methods
 
-A **single pass**: one corner draw per env, no regen loop and no generation gate. The whole
-thing is static (no early exit, no host branching on tensor data) so it stays graph-capturable.
-The steps:
+The first stage is now pluggable. `TrackGenerator.__init__` resolves
+`config.generator` through `track_gen._src.generator_registry`, allocates that generator's
+private scratch once, and `_run_pipeline` calls the resolved `GeneratorSpec.generate`
+with orchestrator-owned `out_centerline` and `out_valid_wp` buffers. The production
+runtime registry currently exposes:
 
-| step | wrapper / kernels | what it does |
-|---|---|---|
-| sample corners | `corner_sample` / `_corner_sample_k` | per-env seed `wp.rand_init(seed*9781)`; pick `max_num_points` grid cells (bounded duplicate-rejection) + per-corner noise; matches the torch generator's coordinate construction (RNG redesign — validated by properties, not bit-equality) |
-| sample count | `corner_count_sample` / `_corner_count_sample_k` | per-env corner count in `[min,max]_num_points` (distinct RNG stream, `*6151`) |
-| order (prune-then-sort) | `ccw_sort(raw, count)` / `_ccw_sort_k` | sort **only the first `count[e]`** corners by `atan2` around **their own** centroid (NaN tail untouched) → an angularly-monotone, star-shaped polygon. The old sort-all-then-keep-`count` ordered a partial wedge about the wrong (all-corner) centroid and produced figure-eight (winding-0) loops; prune-then-sort eliminates them |
-| build | `assemble` / `_vertex_tangents_k` + `_assemble_k` | blend unit vertex tangents (`p·u_out + (1−p)·u_in`), then a cubic Bézier per **closed** edge (segments wrap `mod count[e]`, so the closing edge is a real Bézier rather than a dropped straight chord — **F1**); each handle is `rad·chord` but **clamped to `handle_clamp_frac · shorter-incident-edge`** so a long handle can't overshoot a nearby corner into a self-crossing (**F2**); the `count`→NaN prune is folded in |
-| resample | `arc_length_resample_warp(dense, num_points)` | the dense Bézier → `num_points` arc-uniform points (fused into the generator output) |
-| de-cross (Fix B) | `self_intersections` + selected polygon fallback + `_select_vec2_k` | the few tracks whose Bézier centerline still self-crosses fall back to their **corner polygon** (straight pieces), which the angle-sorted ordering makes provably simple; the downstream XPBD relax re-rounds the straightened corners. The fallback assemble/resample runs only for crossing envs, while the final device-side select keeps the stage graph-capturable |
+| generator | module | representation | repair path |
+|---|---|---|---|
+| `"bezier"` | `warp_generate.py` | sampled grid corners → angle-sorted closed cubic Bezier | selected corner-polygon fallback for Bezier self-crossers |
+| `"hull"` | `warp_generate_hull.py` | angle-sorted point loop → displaced midpoints → closed Catmull-Rom | selected augmented-polygon fallback for Catmull-Rom self-crossers |
+| `"polar"` | `warp_generate_polar.py` | sorted polar control knots → periodic Catmull-Rom spline | no generator-local fallback; downstream relaxation/inflation gates final validity |
 
-Output: `centerline[E, num_points, 2]` (every env real — no NaN rows) and `valid[E]`, which is
-**all True**: there is no generation gate. Final validity (turning / width / thickness / optional
-border-crossing) is decided **after relaxation** by `inflate_warp`. Generation produces a simple
-closed loop for ≈100% of envs at the default config.
+Every registered runtime generator follows the same hard contract:
+
+- `alloc_scratch(config)` allocates fixed-shape, generator-private Warp buffers once.
+- `generate(seeds_wp, config, out_centerline, out_valid_wp, scratch)` writes an
+  `[E*num_points]` closed centerline into the supplied output buffer and writes `[E]`
+  generation flags.
+- The hot path is pure Warp, zero allocation, deterministic in `(seed, config)`, and
+  graph-capturable: no host-side retry loop, no host branch on generated tensor data, and
+  no per-env Python branching.
+- `out_valid_wp` is filled with `1` by the current runtime generators. It is a stage flag,
+  not the final quality decision. Turning, thickness, NaNs, width floor, and optional
+  border intersections are judged later by `inflate_warp` after constant-spacing and PBD
+  relaxation.
+
+#### `generator="bezier"` — corner-sort Bezier family
+
+This is the original first-stage method, now wrapped as a `GeneratorSpec` and extended
+with optional per-env style sampling. It is still a **single-pass** draw: one count draw,
+one corner-position draw, no accept/retry loop, then device-side rescue for the few smooth
+curves that cross themselves.
+
+1. **Optional style draw.** When `style_sampling=False` (the default), the legacy scalar
+   kernels consume `rad`, `scale`, and `handle_clamp_frac` exactly as before. When
+   `style_sampling=True`, `_style_sample_k` draws per-env `rad`, `scale`, and
+   `handle_clamp_frac` from `*_range` fields into `[E]` device arrays using the seed salt
+   `2741`. A missing range collapses to the scalar value, so individual knobs can stay
+   fixed. The Python branch selecting scalar vs style kernels is resolved at CUDA graph
+   capture time; the sampled values themselves are device data.
+2. **Corner count and positions.** `_corner_count_sample_k` draws
+   `count[e] in [min_num_points, max_num_points]` from a stream salted by `6151`.
+   `_corner_sample_k` (or `_corner_sample_style_k`) draws `max_num_points` grid cells from
+   a `num_cells x num_cells` grid derived from `min_point_distance`, with bounded
+   duplicate-cell rejection and per-corner jitter. The position stream uses salt `9781`;
+   style sampling only changes the per-env scale multiplier.
+3. **Prune-then-sort.** `_ccw_sort_k` sorts only the first `count[e]` corners by
+   `atan2(dx, dy)` around the centroid of those same kept corners and writes NaN past the
+   count. Sorting after pruning matters: sorting all `P` points and then keeping a prefix
+   produced partial angular wedges around the wrong centroid, which could close as
+   figure-eight loops.
+4. **Closed Bezier assembly.** `_vertex_tangents_k` blends incoming/outgoing unit edge
+   directions using `edgy` (`p = atan(edgy)/pi + 0.5`). `_assemble_k` emits
+   `num_points_per_segment` samples for every closed edge, wrapping the final corner back
+   to the first. The handle length starts as `rad * chord`, then is clamped to
+   `handle_clamp_frac * min(adjacent edge lengths)` so a handle cannot overshoot a nearby
+   corner. The style variant reads `rad[e]` and `clamp[e]` from the sampled arrays.
+5. **Dense-to-N resample and de-cross.** `_arc_resample_inplace` arc-resamples the dense
+   Bezier loop to `num_points`. `self_intersections_inplace` counts proper crossings on
+   that N-point loop. For crossing envs only, `_assemble_polygon_selected_k` emits the
+   straight corner polygon and `_arc_resample_selected_inplace` overwrites those rows.
+   `_select_vec2_k` then chooses Bezier rows for non-crossers and polygon rows for
+   crossers. XPBD later re-rounds the polygon fallback.
+
+The important knobs are `min_num_points`, `max_num_points`, `num_points_per_segment`,
+`min_point_distance`, `rad`, `edgy`, `scale`, `handle_clamp_frac`, and the opt-in
+`style_sampling` ranges. The method remains mostly star-shaped around the sampled-corner
+centroid; style sampling broadens the family without changing the representation.
+
+#### `generator="hull"` — angle-sort hull plus midpoint displacement
+
+This method is the method-2 production port from `docs/pre-relaxation-generator-methods.md`.
+It deliberately avoids a true dynamic convex-hull algorithm because that is awkward in a
+fixed-shape Warp graph. Instead, it uses the same angle-sort pattern as Bezier as a cheap,
+static hull-like base, then adds a radial midpoint-displacement layer for more racing-shape
+variety.
+
+1. **Point count and positions.** `_point_count_sample_k` draws the base count with salt
+   `5119`. `_point_sample_k` draws `P=max_num_points` grid-jittered points with bounded
+   duplicate-cell rejection, using the same coordinate construction and `scale` convention
+   as Bezier but a different position salt (`7919`).
+2. **Hull-like ordering.** `_angle_sort_k` sorts the first `m=count[e]` points by angle
+   around their own centroid and writes NaN beyond `m`. This is not an exact convex hull;
+   it is a fixed-bound stand-in that gives a simple ordered base loop in the same static
+   execution style as the rest of the pipeline.
+3. **Midpoint displacement.** `_midpoint_displace_k` interleaves every sorted vertex with
+   one displaced edge midpoint, producing an augmented loop of `2m` vertices. Each midpoint
+   is moved along the radial direction from the centroid through the midpoint by a signed
+   random amount in `[-hull_displacement, +hull_displacement] * distance(centroid, midpoint)`
+   using salt `3083`. Positive values bulge a lobe outward; negative values pinch it inward.
+4. **Closed Catmull-Rom smoothing.** `_catmull_rom_k` evaluates a closed uniform
+   Catmull-Rom spline over the augmented vertices, with `2P * num_points_per_segment`
+   dense slots per env. Segments beyond the real augmented count write NaN and are ignored
+   by the arc resampler.
+5. **Dense-to-N resample and fallback.** The smooth dense loop is arc-resampled directly
+   into `out_centerline`, checked for self-intersections, and crossing envs are overwritten
+   by an arc-resampled straight augmented polygon. Non-crossing rows are left untouched by
+   the selected resampler.
+
+The main knob is `hull_displacement`. At `0`, the method collapses toward a plain
+angle-sorted loop. Larger values create stronger lobes, pinches, and straights, but can
+increase the downstream relaxation and thickness burden.
+
+#### `generator="polar"` — periodic polar control-knot spline
+
+The polar generator is the method-3 production port. It starts from a closed radial
+representation instead of sampled Cartesian corners, so it is smooth and centered by
+construction and is useful as a low-burden contrast to the corner/polygon families.
+
+1. **Control knots.** `_polar_controls_k` draws `K=polar_num_knots` fixed-order polar
+   controls from salt `7919 + 17`. Each knot `i` starts at angle `2*pi*i/K`, receives
+   bounded angular jitter, and receives radial jitter around `_BASE_RADIUS`. The radial
+   jitter is clamped so radii stay positive; angular jitter is clamped below half a cell
+   so the index order remains the sorted angular order without a runtime sort.
+2. **Periodic spline.** `_polar_spline_dense_k` evaluates a closed uniform Catmull-Rom
+   spline through the `K` controls. Samples are endpoint-excluded within each segment;
+   the arc resampler closes the final segment back to the first point.
+3. **Dense-to-N resample.** `_arc_resample_inplace` converts the dense periodic spline to
+   `num_points` arc-uniform points.
+4. **Normalization.** `_normalize_centerline_k` centers each env by its bounding box and
+   isotropically rescales the longest bbox dimension to `config.scale * 1.44`. The `1.44`
+   constant matches the Bezier baseline's typical longest bbox extent at `scale=1`, so
+   `half_width`, constant spacing, and relaxation see comparable coordinate ranges across
+   generators.
+5. **Generation flag.** The generator writes `out_valid_wp=1` for every env. It does not
+   run a local polygon fallback; any rare bad geometry is handled by the common
+   post-relax validity gate.
+
+The knobs are `polar_num_knots`, `polar_radial_jitter`, and `polar_angular_jitter`. The
+implementation intentionally uses random radial knots rather than the old low-pass Fourier
+function path, because the latter tended to collapse toward high-compactness near-circles.
+
+#### Experimental grammar prototype — not a runtime generator yet
+
+`track_gen/_experimental/grammar_proto.py` is a host/numpy prototype for the planned
+`"grammar"` generator and is **not imported by the runtime registry**. It is documented in
+`docs/superpowers/specs/2026-06-21-segment-grammar-generator-design.md` and currently exists
+to tune the representation before a Warp port. The prototype samples a fixed sequence of
+curvature-segment primitives (straight spans, constant-curvature arcs, and linear ramps) as
+a net-positive winding (corners biased one way, with gentle reversals as chicanes and a
+budget on per-corner turn angle), rasterizes the sequence to `kappa[i]`, closes heading by
+SCALING the curvature (`kappa *= 2*pi/net`, capped) so `kappa=0` straights stay straight,
+closes displacement by subtracting the mean edge vector, then normalizes to the same
+`scale * 1.44` extent as the polar generator. It should only appear in this architecture as
+an experimental direction until `warp_generate_grammar.py` is implemented and registered.
 
 ### Resample — `arc_length_resample_warp` and `resample_uniform`
 
@@ -109,27 +236,66 @@ Two arc-length resamplers:
   and matches the `geometry.arc_length_resample(spacing=)` oracle. Selected by
   `output_mode="constant_spacing"`.
 
-### Relax — `warp_relax.xpbd_solve_inplace(center, band, L0, config)`
+### Relax — PBD/XPBD bead-chain relaxation
 
-A fixed-iteration XPBD solve, double-buffered, with no `[E,N,N]` materialization and no
-per-iteration host sync. Each sweep applies, per bead: a Jacobi-averaged **separation**
-push (non-adjacent pairs closer than `target = 2*half_width*(1+relax_margin)`), an
-**edge-spacing** correction toward rest length `L0`, and a flip-clamped **bending** push
-when the local radius is below `R_min`. It runs on cpu and cuda (it syncs with
-`wp.synchronize`, not `torch.cuda`), and reshapes the centerline so a constant-width
-inflation becomes valid (thickness >= half_width). `generate_tracks_warp` derives `band`
-and `L0` from `mean_seg_len` via `_band_l0_k`. The sweep is count-aware: it operates over
-each env's `count[e]` real points (the fixed-`N` parity path is `count[e] == N`).
+Relaxation lives in `track_gen/_src/warp_relax.py` and is the only production relax backend
+used by `TrackGenerator` (`relax_solver="xpbd"`, `smooth_finish=False`). The implementation
+is a PBD/XPBD-style position projection over the constant-spacing centerline beads: it does
+not allocate dense `[E,N,N]` tensors, does not run an optimizer, and does not store a
+per-constraint Lagrange multiplier history. Instead, every fixed sweep reads one complete
+position buffer, computes local position corrections, writes a second buffer, and swaps the
+two buffers. That gives Jacobi semantics and keeps the solve graph-capturable.
 
-The separation term has two execution modes. The baseline `_step_kernel` performs the dense
-`O(count[e]^2)` separation scan whenever `relax_sep_every` says to do so. With
-`relax_sep_cache_slots == 0`, `relax_sep_every > 1` is a naive skip cadence: spacing and
-bending still run every sweep, but separation is absent between dense scans. With
-`relax_sep_cache_slots > 0`, the solver uses a fixed-size broadphase cache: `_build_sep_cache_kernel`
-rebuilds candidate bead indices every `relax_sep_every` sweeps using radius
-`target*(1+relax_sep_cache_skin)`, and `_step_cached_kernel` runs the exact narrowphase
-`dist < target` test plus separation push on cached candidates every sweep. Cache buffers are
-preallocated in `RelaxScratch`, so this path remains CUDA-graph-capturable.
+Setup happens before the sweep in `band_l0_inplace`:
+
+- `L0[e] = perimeter(center[e]) / count[e]`, the rest edge length for the constant-spacing
+  bead chain.
+- `band[e] = round(2*half_width / L0[e]).clamp_min(1)` unless `config.relax_band` overrides
+  it. The band excludes immediate geometric neighbours from the separation scan, so the
+  road does not try to push apart points that are adjacent along the same local segment.
+- `target = 2*half_width*(1+relax_margin)` is the non-local separation distance. It is a
+  slightly inflated road diameter, so relaxation leaves margin for the later thickness gate.
+- `R_min = half_width*(1+relax_margin)` is the local curvature-radius target used by the
+  bending correction.
+
+Each sweep applies three corrections per real bead `i`:
+
+1. **Non-local separation.** For every bead `j` with circular index distance greater than
+   `band[e]`, if the current Euclidean distance is below `target`, bead `i` receives a push
+   along `xi - xj` of `0.5 * (target - dist) / dist`. The pushes are averaged over all
+   colliding candidates for that bead, then scaled by `relax_sep_relax`. This is the term
+   that opens self-approaches and makes enough room for a constant-width road.
+2. **Edge spacing.** The two incident edges `(i-1,i)` and `(i,i+1)` are corrected toward
+   rest length `L0[e]`. The implementation uses the local formula from `_step_kernel`,
+   scaled by `relax_spc_relax`, so the relaxed loop keeps near-constant bead spacing
+   instead of stretching into a few long chords.
+3. **Bending / radius guard.** The local Menger curvature through `(i-1,i,i+1)` gives a
+   radius estimate. If `radius < R_min`, the bead is pushed toward the midpoint of its
+   neighbours. The scale is `relax_bend_relax * (R_min - radius) / R_min`, clamped to `1`,
+   so the bead never passes the chord midpoint in a single sweep. This removes jagged
+   under-radius corners introduced by generation or by separation pushes.
+
+The solver is count-aware. Kernels launch over the static stride `N_max`, but threads with
+`i >= count[e]` copy through the NaN-padded tail. When every `count[e] == N_max`, the same
+kernels reduce to the old fixed-N parity path.
+
+Separation has two execution modes:
+
+- **Dense / cadenced mode.** `_step_kernel` scans all non-band neighbours in
+  `O(count[e]^2)` whenever `step_i % relax_sep_every == 0`; spacing and bending still run
+  every sweep. If `relax_sep_cache_slots == 0` and `relax_sep_every > 1`, this is a naive
+  skip cadence: there is no separation force between dense scans.
+- **Cached broadphase mode.** When `relax_sep_cache_slots > 0` and `relax_sep_every > 1`,
+  `_build_sep_cache_kernel` refreshes a fixed-slot directed candidate list every
+  `relax_sep_every` sweeps using radius `target*(1+relax_sep_cache_skin)`. Then
+  `_step_cached_kernel` runs every sweep, re-testing each cached candidate with the exact
+  current `dist < target` narrowphase before applying the separation push. Cache arrays live
+  in `RelaxScratch`, including an overflow counter for beads whose candidate list exceeded
+  the configured slot count, so the mode remains allocation-free and CUDA-graph-capturable.
+
+If `relax_enable=False`, `_run_pipeline` bypasses `band_l0_inplace` and `xpbd_solve_inplace`
+and inflates the constant-spacing centerline directly. Otherwise the relaxed output is
+re-uniformized by `inflate_warp` before frame, offset, validity, and arclength are computed.
 
 ### Inflate — `inflate_warp(center, config, valid=None, count=None)`
 
@@ -173,10 +339,10 @@ default (`half_width=0.5`, `spacing=0.30`, `N_max=384`) leaves ample headroom (m
 
 [`viz/param_explorer.py`](../viz/param_explorer.py) is an interactive
 [Gradio](https://www.gradio.app/) UI for *seeing* how the config affects generation: sliders
-for the regime / shape / resolution / relaxation knobs drive the real `generate_tracks_warp`,
+for the regime / shape / resolution / relaxation knobs drive the real `TrackGenerator.generate`,
 rendering a paged grid of tracks plus the valid-yield and quality stats over a full batch
 (so the yield numbers are statistically meaningful). It builds on the same pure core
-(`build_config` → `generate_tracks_warp` → `draw_track`). It opens on the high-yield fat-band
+(`build_config` → `PerEnvSeededRNG` + `TrackGenerator.generate` → `draw_track`). It opens on the high-yield fat-band
 regime — `half_width=0.5`, `scale=10`, `spacing=0.30`, `N_max=384`, XPBD `150` iters,
 `rad=0.4`/`handle_clamp_frac=0.4` (clamp == rad, so it only trims overshoot corners rather
 than binding every segment) — the config that relaxes to ≈ 99.9% valid at the default batch.
@@ -198,25 +364,33 @@ properties, not bit-equality, since it is a deliberate redesign).
 
 The Fourier generator lives in `track_gen._experimental.fourier` and is **unsupported** —
 it is self-contained, not on the Warp pipeline, and receives no compatibility guarantees.
+The segment-grammar prototype in `track_gen._experimental.grammar_proto` is also dev-only
+until a Warp implementation is added to the runtime registry.
 
-## End-to-end CUDA graph — `generate_tracks_warp_graph`
+## End-to-end CUDA graph — `TrackGenerator.generate`
 
-Because the pipeline is pure Warp and sync-free, the **whole** thing captures as one CUDA
-graph:
+`TrackGenerator` owns the production graph-captured path. Construction resolves the selected
+generator, pre-allocates the persistent `Track`, all per-stage scratch groups, and the `[E]`
+seed buffer. `generate()` always returns that same `Track` instance with stable `wp.array`
+pointers; callers that need a snapshot use `Track.clone()`.
 
-- CUDA graph capture is **stream-level**. `torch.cuda.graph` captures all CUDA work on its
-  internal capture stream; Warp's launches are routed onto that same stream via
-  `wp.ScopedStream`, so torch boundary ops *and* every Warp kernel land in one native graph.
-- A module global `_CAPTURING` makes every wrapper's `_sync` (and `warp_relax`'s
-  `wp.synchronize`) a no-op during capture — host-blocking syncs are illegal mid-capture,
-  and the graph records stream ordering anyway.
-- The `[E]` seed buffer is static; `CapturedTracks.replay(new_seeds)` copies new seeds into
-  it and replays, re-running every stage on the GPU off the buffer contents. Replay yields
-  a `Track` matching the eager `generate_tracks_warp` (positions allclose; `valid`/`count`
-  exact).
-- `output_mode="constant_spacing"` captures too: the per-track `count[e]` is device-side
-  data the count-aware kernels read at runtime, so all launch dims stay static via `N_max`
-  and nothing branches on tensor data on the host.
+On the Warp `cpu` device, every `generate()` call runs `_run_pipeline` eagerly. On `cuda`,
+the first call compiles/warms the kernels, captures `_run_pipeline` with `wp.ScopedCapture`,
+stores the resulting `wp.Graph`, and then launches it. Subsequent calls copy the current
+`rng.seeds_warp` values into the pre-allocated seed buffer and replay the stored graph with
+`wp.capture_launch`.
+
+The capture works because every stage is pure Warp and fixed-shape:
+
+- A module global `_CAPTURING` makes every wrapper's `_sync` and `warp_relax`'s final
+  `wp.synchronize` a no-op during capture. Host-blocking syncs are illegal inside capture,
+  and the graph records stream ordering.
+- The seed buffer address is stable; replay reuses the same buffer and reads the new seed
+  contents on device.
+- `output_mode="constant_spacing"` captures too: per-track `count[e]` is device-side data,
+  and count-aware kernels keep static launch dimensions via `N_max`.
+- Generator selection and `relax_enable` are Python branches resolved before capture. The
+  captured graph is fixed for that `TrackGenerator`'s config.
 
 At large batches the pipeline is compute-bound (relaxation dominates), so graph replay is
 ~the same wall-clock as the eager call; the graph's value is a single, GPU-resident,
@@ -237,13 +411,15 @@ deployable replayable unit, not a speedup.
     half-width, so the fixed iteration count can't drive the Jacobi solve to convergence.
     Relaxing at ~0.6×half_width spacing (≈ 145–160 nodes/track, not 256) lifted that same regime
     **0.684 → 0.999** — and runs *faster* (fewer nodes), while staying graph-capturable.
-  - **Single-pass generation + Fix B replaced the regen loop.** With relaxation lossless, the
-    residual was a small fraction of *generation* self-crossers. Rather than a fixed
-    `max_regen_iters` accept-first-valid loop, generation now takes **one** corner draw per env
-    and routes any track whose Bézier centerline self-crosses to its (provably simple) corner
-    polygon, which XPBD re-rounds — rescuing essentially every self-crosser (→ ≈ 0.999 at E=8192).
-    `max_regen_iters` is therefore **vestigial** on the Warp path: it remains a `TrackGenConfig`
-    field for the torch oracle but is ignored by `generate_tracks_warp`.
+  - **Single-pass first-stage generation replaced the regen loop.** With relaxation lossless,
+    the default Bezier residual was a small fraction of smooth-centerline self-crossers.
+    Rather than a fixed `max_regen_iters` accept-first-valid loop, the Bezier generator now
+    takes one corner draw per env and routes any track whose smooth Bezier centerline
+    self-crosses to its provably simple corner polygon, which XPBD re-rounds. The `hull`
+    generator follows the same selected-polygon rescue pattern for its Catmull-Rom
+    self-crossers, while `polar` emits a closed radial spline and relies on the common
+    post-relax validity gate. `max_regen_iters` is therefore **vestigial** on the Warp path:
+    it remains a `TrackGenConfig` field for the torch oracle but is ignored by `_run_pipeline`.
 - **FP tolerance & hard thresholds.** Validity gates (`th_ok`, `turn_ok`) are hard
   comparisons; near a decision boundary the accepted ~1e-4 Warp-vs-torch drift can flip a
   single env's bool. Tests keep their inputs away from those boundaries; the end-to-end
