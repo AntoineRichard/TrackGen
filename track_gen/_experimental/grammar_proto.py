@@ -35,23 +35,28 @@ def sample_segments(rng: np.random.Generator, S: int, cfg: dict) -> np.ndarray:
     """Return [S, 3] rows (kappa_start, kappa_end, length_frac), pre-closure.
 
     Net-winding grammar: alternate a straight (kappa=0) with a corner. Corners are biased
-    one direction (net winding) with varied turn angle (gentle sweeper .. tight hairpin) and
-    an occasional reversal (chicane). Straight spans are longer on average than corner spans
-    so real straights dominate. Scaling closure later sets the net turn to 2*pi.
+    one direction (net winding) with varied turn angle (gentle sweeper .. tight hairpin);
+    EXACTLY round(n_corner * chicane_bias) of them reverse sign (chicanes). Fixing the reverse
+    COUNT (vs an independent per-corner coin flip) keeps the net winding reliably away from
+    zero, so the heading-closure scale factor stays bounded and rarely hits _HEADING_SCALE_CAP
+    — the coin-flip's heavy tail produced net~0 seeds that the cap then folded into
+    self-crossing knots. Straight spans are longer on average so real straights dominate.
     """
     straight_frac = float(cfg["grammar_straight_frac"])
     sharp = float(cfg["grammar_curvature_budget"])       # max per-corner turn angle (rad)
     hairpin_max = float(cfg["grammar_hairpin_max_frac"])
     reverse_frac = float(cfg["grammar_chicane_bias"])
     n_corner = max(2, S // 2)
+    n_neg = int(round(n_corner * reverse_frac))          # exact reverse count -> bounded net winding
+    neg_idx = set(rng.choice(n_corner, size=n_neg, replace=False).tolist()) if n_neg else set()
     segs = []
-    for _ in range(n_corner):
+    for ci in range(n_corner):
         # straight (kappa = 0) — long on average so straights are visible
         segs.append((0.0, 0.0, rng.uniform(0.06, 0.22)))
-        # corner — varied turn angle, biased + (winding); occasional reverse = chicane
+        # corner — varied turn angle, biased + (winding); chosen indices reverse = chicane
         ang = rng.uniform(0.25, sharp)
         ln = rng.uniform(0.02, hairpin_max)
-        sgn = -1.0 if rng.random() < reverse_frac else 1.0
+        sgn = -1.0 if ci in neg_idx else 1.0
         k = sgn * ang / max(ln, 1e-6)                    # kappa = turn / span -> visible feature
         if rng.random() < 0.4:                           # 40% linear-ramp (clothoid/spiral)
             segs.append((0.0, k, ln))
