@@ -251,7 +251,21 @@ def xpbd_solve(center0, band, L0, config, count=None):
     count_wp = wp.from_torch(count_t, dtype=wp.int32)
     out_wp = wp.empty(flat, dtype=wp.vec2f, device=dev)
     db_wp = wp.empty(flat, dtype=wp.vec2f, device=dev)
-    warp_relax.xpbd_solve_inplace(cw_in, out_wp, db_wp, bw, lw, count_wp, n_max, config)
+    cache_slots = max(0, int(getattr(config, "relax_sep_cache_slots", 0)))
+    if cache_slots > 0:
+        cache_idx_wp = wp.empty(flat * cache_slots, dtype=wp.int32, device=dev)
+        cache_count_wp = wp.empty(flat, dtype=wp.int32, device=dev)
+        cache_overflow_wp = wp.empty(1, dtype=wp.int32, device=dev)
+    else:
+        cache_idx_wp = None
+        cache_count_wp = None
+        cache_overflow_wp = None
+    warp_relax.xpbd_solve_inplace(
+        cw_in, out_wp, db_wp, bw, lw, count_wp, n_max, config,
+        sep_cache_idx_wp=cache_idx_wp,
+        sep_cache_count_wp=cache_count_wp,
+        sep_cache_overflow_wp=cache_overflow_wp,
+    )
     return wp.to_torch(out_wp).view(E, n_max, 2)
 
 

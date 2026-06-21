@@ -142,6 +142,26 @@ def test_autocapture_replay_matches_eager_with_odd_relax_iters():
     _track_allclose(track, ref)
 
 
+def test_autocapture_replay_matches_eager_with_cached_separation():
+    """Cached XPBD separation keeps graph replay equivalent to eager execution."""
+    E = 16
+    cfg = _cfg(E, relax_iters=9)
+    cfg.relax_sep_every = 3
+    cfg.relax_sep_cache_slots = 8
+    cfg.relax_sep_cache_skin = 0.0
+    rng = _make_rng(E, seed=126)
+    gen = TrackGenerator(cfg, rng)
+
+    wp.copy(gen._seed_buf, rng.seeds_warp)
+    gen._run()
+    wp.synchronize()
+    ref = _clone_track(gen._track)
+
+    track = gen.generate(E)
+    torch.cuda.synchronize()
+    _track_allclose(track, ref)
+
+
 def test_eager_path_unaffected():
     """The capture flag is False outside a capture region."""
     assert wpp._CAPTURING is False

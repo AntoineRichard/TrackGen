@@ -318,6 +318,59 @@ def test_xpbd_count_aware(dev, relax_iters):
 
 
 @pytest.mark.parametrize("dev", DEVS)
+def test_xpbd_separation_cadence_skips_intermediate_sweeps(dev):
+    N = 32
+    src = _circle(N, 0.1, dev).unsqueeze(0)
+    band = torch.tensor([1], dtype=torch.int32, device=dev)
+    L0 = geometry.perimeter(src) / N
+    base = dict(
+        num_envs=1,
+        num_points=N,
+        half_width=0.08,
+        relax_iters=2,
+        relax_margin=0.15,
+        device=dev,
+    )
+
+    every = xpbd_solve(src, band, L0, TrackGenConfig(**base, relax_sep_every=1))
+    sparse = xpbd_solve(src, band, L0, TrackGenConfig(**base, relax_sep_every=99))
+
+    assert torch.isfinite(sparse).all()
+    assert torch.max(torch.abs(every - sparse)) > 1.0e-4
+
+
+@pytest.mark.parametrize("dev", DEVS)
+def test_xpbd_cached_separation_runs_between_refreshes(dev):
+    N = 32
+    src = _circle(N, 0.1, dev).unsqueeze(0)
+    band = torch.tensor([1], dtype=torch.int32, device=dev)
+    L0 = geometry.perimeter(src) / N
+    base = dict(
+        num_envs=1,
+        num_points=N,
+        half_width=0.08,
+        relax_iters=2,
+        relax_margin=0.15,
+        device=dev,
+    )
+
+    every = xpbd_solve(src, band, L0, TrackGenConfig(**base, relax_sep_every=1))
+    sparse = xpbd_solve(src, band, L0, TrackGenConfig(**base, relax_sep_every=99))
+    cached = xpbd_solve(
+        src,
+        band,
+        L0,
+        TrackGenConfig(**base, relax_sep_every=99, relax_sep_cache_slots=32, relax_sep_cache_skin=0.0),
+    )
+
+    sparse_err = torch.max(torch.abs(every - sparse))
+    cached_err = torch.max(torch.abs(every - cached))
+    assert torch.isfinite(cached).all()
+    assert sparse_err > 1.0e-4
+    assert cached_err < 1.0e-6
+
+
+@pytest.mark.parametrize("dev", DEVS)
 def test_validity_count_aware(dev):
     hw = 0.5
     cfg = TrackGenConfig(num_envs=1, num_points=120, half_width=hw, device=dev)
