@@ -49,7 +49,7 @@ def run_generator(name, seed_base, E, base_config) -> dict:
     valid = wp.to_torch(track.valid).cpu().numpy().astype(bool)
     count = wp.to_torch(track.count).cpu().numpy().astype(int)
 
-    lengths, compactness, peak_k, lap_times = [], [], [], []
+    lengths, compactness, peak_k, lap_times, chicanes, straights = [], [], [], [], [], []
     compactness_degenerate = 0
     pre_self_int = 0
     disp_sum, disp_pts = 0.0, 0
@@ -72,6 +72,8 @@ def run_generator(name, seed_base, E, base_config) -> dict:
             rl = tm.racing_line_proxy(post_e)
             peak_k.append(rl["peak_curvature"])
             lap_times.append(rl["lap_time"])
+            chicanes.append(tm.chicane_count(post_e))
+            straights.append(tm.straight_fraction(post_e))
         if np.isfinite(pre_e).all():
             disp_sum += float(np.linalg.norm(post_e - pre_e, axis=1).sum())
             disp_pts += c
@@ -93,6 +95,7 @@ def run_generator(name, seed_base, E, base_config) -> dict:
         return float(np.mean(xs)) if xs else float("nan")
 
     mean_compactness = _mean(compactness)
+    comp_arr = np.array(compactness) if compactness else np.array([float("nan")])
     degenerate_rate = (
         compactness_degenerate / len(compactness) if compactness else float("nan")
     )
@@ -109,8 +112,13 @@ def run_generator(name, seed_base, E, base_config) -> dict:
         "xpbd_displacement": (disp_sum / disp_pts) if disp_pts else float("nan"),
         "mean_length": _mean(lengths),
         "mean_compactness": mean_compactness,
+        "compactness_p10": float(np.percentile(comp_arr, 10)),
+        "compactness_p50": float(np.percentile(comp_arr, 50)),
+        "compactness_p90": float(np.percentile(comp_arr, 90)),
         "compactness_degenerate_rate": degenerate_rate,
         "shape_variety_pass": shape_variety_pass,
+        "mean_chicanes": _mean(chicanes),
+        "straight_frac": _mean(straights),
         "peak_curvature": _mean(peak_k),
         "lap_time": _mean(lap_times),
         "gen_ms_per_call": gen_ms,
@@ -127,8 +135,9 @@ def compare(names=None, seed_base=0, E=4096, base_config=None) -> list:
 
 def format_table(rows) -> str:
     cols = ["generator", "yield", "pre_relax_self_intersection_rate", "xpbd_displacement",
-            "mean_length", "mean_compactness", "compactness_degenerate_rate",
-            "shape_variety_pass", "peak_curvature", "lap_time", "gen_ms_per_call"]
+            "mean_length", "mean_compactness", "compactness_p50", "compactness_degenerate_rate",
+            "shape_variety_pass", "mean_chicanes", "straight_frac",
+            "peak_curvature", "lap_time", "gen_ms_per_call"]
     head = "| " + " | ".join(cols) + " |"
     sep = "| " + " | ".join("---" for _ in cols) + " |"
     lines = [head, sep]

@@ -44,6 +44,21 @@ def test_self_intersection_detection():
     assert m.self_intersects(_figure_eight(200))
 
 
+def test_chicane_count_zero_for_convex_positive_for_figure_eight():
+    # a circle / convex CCW loop never reverses turn direction -> 0 chicanes
+    assert m.chicane_count(_circle(128)) == 0
+    assert m.chicane_count(_square()) == 0
+    # a figure-eight reverses curvature -> at least one left<->right reversal
+    assert m.chicane_count(_figure_eight(200)) >= 1
+
+
+def test_straight_fraction_high_for_square_low_for_circle():
+    # a square is mostly straight sides (curvature ~0) with 4 sharp corners
+    assert m.straight_fraction(_square()) > 0.5
+    # a circle has constant curvature == mean -> no point is "much straighter than typical"
+    assert m.straight_fraction(_circle(256)) < 0.1
+
+
 def test_racing_line_proxy_keys_and_circle_values():
     out = m.racing_line_proxy(_circle(n=512, r=2.0), a_lat_max=1.0)
     assert set(out) == {"peak_curvature", "integral_kappa2", "lap_time"}

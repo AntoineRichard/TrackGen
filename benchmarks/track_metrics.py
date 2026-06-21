@@ -44,6 +44,29 @@ def curvature(pts: np.ndarray) -> np.ndarray:
     return np.abs(turn_angles(pts)) / mean_adj
 
 
+def chicane_count(pts: np.ndarray, min_turn: float = 0.05) -> int:
+    """Left<->right reversals (S-bends / chicanes): sign changes in the signed turn-angle
+    sequence, ignoring |turn| < ``min_turn`` rad as noise. A circle or any constant-sign
+    (convex) loop scores 0; a track with genuine chicanes/S-bends scores several."""
+    sig = np.sign(turn_angles(pts))
+    sig = sig[np.abs(turn_angles(pts)) >= min_turn]
+    if sig.size < 2:
+        return 0
+    return int(np.count_nonzero(sig[1:] != sig[:-1]))
+
+
+def straight_fraction(pts: np.ndarray, rel: float = 0.5) -> float:
+    """Fraction of points whose curvature is below ``rel`` * the env's MEAN curvature — i.e.
+    locally much straighter than typical (the presence of straights). A circle (curvature
+    constant == mean) scores ~0; a track with real low-curvature runs scores positive.
+    Mean (not median) is used so mostly-straight shapes don't collapse the reference to ~0."""
+    k = curvature(pts)
+    mean = float(np.mean(k))
+    if mean <= 1e-9:
+        return 0.0
+    return float(np.mean(k < rel * mean))
+
+
 def self_intersects(pts: np.ndarray) -> bool:
     n = len(pts)
     a = pts
