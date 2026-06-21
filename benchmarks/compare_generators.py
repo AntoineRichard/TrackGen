@@ -41,8 +41,8 @@ def run_generator(name, seed_base, E, base_config) -> dict:
 
     # Read back once. cs_center is the pre-relax constant-spacing centerline (XPBD writes a
     # separate `relaxed` buffer, so cs_center survives the run). Track.center is post-relax.
-    pre = wp.to_torch(gen._scratch.cs_center).reshape(-1, 2).cpu().numpy()
-    post = wp.to_torch(track.center).reshape(-1, 2).cpu().numpy()
+    pre = wp.to_torch(gen._scratch.cs_center).cpu().numpy()
+    post = wp.to_torch(track.center).cpu().numpy()
     valid = wp.to_torch(track.valid).cpu().numpy().astype(bool)
     count = wp.to_torch(track.count).cpu().numpy().astype(int)
 

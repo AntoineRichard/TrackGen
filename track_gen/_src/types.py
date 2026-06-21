@@ -23,7 +23,7 @@ class TrackGenConfig:
     """
 
     # --- Generator selection + batching ---
-    generator: str = "bezier"  # one of {"bezier", "fourier"}
+    generator: str = "bezier"  # registered generator name; see generator_registry.available() (currently "bezier")
     device: str = "cpu"
     num_envs: int = 1
 

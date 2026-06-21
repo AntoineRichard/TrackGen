@@ -34,7 +34,7 @@ def turn_angles(pts: np.ndarray) -> np.ndarray:
     a_prev = np.arctan2(v_prev[:, 1], v_prev[:, 0])
     a_cur = np.arctan2(v[:, 1], v[:, 0])
     d = a_cur - a_prev
-    return (d + np.pi) % (2 * np.pi) - np.pi    # wrap to (-pi, pi]
+    return (d + np.pi) % (2 * np.pi) - np.pi    # wrap to [-pi, pi)
 
 
 def curvature(pts: np.ndarray) -> np.ndarray:
@@ -54,7 +54,7 @@ def self_intersects(pts: np.ndarray) -> bool:
 
     for i in range(n):
         for j in range(i + 1, n):
-            if j == i or (i + 1) % n == j or (j + 1) % n == i:
+            if (i + 1) % n == j or (j + 1) % n == i:
                 continue  # skip shared-endpoint / adjacent edges
             d1 = _ccw(a[i], b[i], a[j])
             d2 = _ccw(a[i], b[i], b[j])

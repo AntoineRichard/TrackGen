@@ -1,4 +1,3 @@
-import dataclasses
 from benchmarks import compare_generators as cg
 from track_gen._src.types import TrackGenConfig
 

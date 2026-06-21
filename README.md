@@ -73,7 +73,7 @@ track.valid    # [E] bool — True where the track relaxed to a valid constant-w
 track.count    # [E] int  — real points per track (the rest of each row is NaN padding)
 ```
 
-Only the **Bézier** generator is on the Warp path (`config.generator="bezier"`, the default).
+Currently the only registered generator is **Bézier** (`config.generator="bezier"`, the default).
 The Fourier generator lives in `track_gen._experimental` and is **unsupported** — it is not
 on the Warp pipeline and receives no compatibility guarantees.
 

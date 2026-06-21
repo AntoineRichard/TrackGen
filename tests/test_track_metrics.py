@@ -14,7 +14,7 @@ def _square(s=3.0, n_per_side=50):
     right = np.stack([np.full_like(side, s), s - side], 1)
     bottom = np.stack([s - side, np.zeros_like(side)], 1)
     left = np.stack([np.zeros_like(side), side], 1)
-    return np.concatenate([np.stack([side, np.zeros_like(side)], 1), right, top[::-1], left[::-1]])
+    return np.concatenate([top, right, bottom, left])
 
 
 def _figure_eight(n=200):
@@ -30,7 +30,7 @@ def test_perimeter_and_area_of_circle():
 
 def test_compactness_circle_near_one_square_less():
     assert m.compactness(_circle(512)) == pytest.approx(1.0, abs=1e-2)
-    assert m.compactness(_square()) < 0.9  # square is less compact than a circle
+    assert m.compactness(_square()) == pytest.approx(np.pi / 4, rel=5e-2)
 
 
 def test_curvature_of_circle_is_constant_inverse_radius():
