@@ -21,7 +21,10 @@ def test_config_defaults_instantiate():
     assert cfg.handle_clamp_frac == 0.4  # kept == rad so the clamp doesn't bind every segment
     assert cfg.edgy == 0.0
     assert cfg.scale == 1.0
-    # Fourier params (reconciled names)
+    # Polar / Fourier params (reconciled names)
+    assert cfg.polar_num_knots == 12
+    assert cfg.polar_radial_jitter == 0.60
+    assert cfg.polar_angular_jitter == 0.30
     assert cfg.num_harmonics == 5
     assert cfg.decay_p == 2
     assert cfg.amplitude == 1.0

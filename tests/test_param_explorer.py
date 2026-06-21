@@ -8,15 +8,40 @@ import pytest
 import torch
 
 from viz import param_explorer as px
+from track_gen._src.types import TrackGenConfig
 
 
 def _params(**over):
     p = dict(half_width=0.5, scale=10.0, min_num_points=9, max_num_points=13, rad=0.2, edgy=0.0,
-             handle_clamp_frac=0.10, num_points=256, spacing=0.30, n_max=384,
+             handle_clamp_frac=0.10, polar_num_knots=12, polar_radial_jitter=0.60,
+             polar_angular_jitter=0.30, num_points=256, spacing=0.30, n_max=384,
              relax_iters=40, relax_sep_relax=1.0, relax_spc_relax=1.0,
              relax_bend_relax=1.5, relax_margin=0.15, grid_n=3, seed=0, batch_size=16)
     p.update(over)
     return p
+
+
+def test_default_params_favor_polar_knot_method():
+    defaults = TrackGenConfig()
+    params = px.default_params()
+    cfg = px.build_config(params)
+    assert cfg.generator == "polar"
+    assert cfg.polar_num_knots == defaults.polar_num_knots
+    assert cfg.polar_radial_jitter == defaults.polar_radial_jitter
+    assert cfg.polar_angular_jitter == defaults.polar_angular_jitter
+
+
+def test_build_config_maps_polar_controls():
+    cfg = px.build_config(_params(
+        generator="polar",
+        polar_num_knots=16,
+        polar_radial_jitter=0.72,
+        polar_angular_jitter=0.22,
+    ))
+    assert cfg.generator == "polar"
+    assert cfg.polar_num_knots == 16
+    assert abs(cfg.polar_radial_jitter - 0.72) < 1e-9
+    assert abs(cfg.polar_angular_jitter - 0.22) < 1e-9
 
 
 def test_build_config_maps_and_clamps():

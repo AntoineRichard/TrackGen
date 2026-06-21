@@ -22,6 +22,9 @@ from track_gen._src.rng_utils import PerEnvSeededRNG
 from track_gen._src import generator_registry
 from benchmarks import track_metrics as tm
 
+_COMPACTNESS_DEGENERATE_THRESHOLD = 0.90
+_COMPACTNESS_DEGENERATE_RATE_MAX = 0.25
+
 
 def _real_points(flat_xy: np.ndarray, e: int, n_max: int, count: int) -> np.ndarray:
     """Slice env e's first `count` real points from a flat [E*n_max, 2] numpy array."""
@@ -47,6 +50,7 @@ def run_generator(name, seed_base, E, base_config) -> dict:
     count = wp.to_torch(track.count).cpu().numpy().astype(int)
 
     lengths, compactness, peak_k, lap_times = [], [], [], []
+    compactness_degenerate = 0
     pre_self_int = 0
     disp_sum, disp_pts = 0.0, 0
     for e in range(E):
@@ -61,7 +65,10 @@ def run_generator(name, seed_base, E, base_config) -> dict:
             pre_self_int += 1
         if valid[e]:
             lengths.append(tm.perimeter(post_e))
-            compactness.append(tm.compactness(post_e))
+            cpt = tm.compactness(post_e)
+            compactness.append(cpt)
+            if cpt > _COMPACTNESS_DEGENERATE_THRESHOLD:
+                compactness_degenerate += 1
             rl = tm.racing_line_proxy(post_e)
             peak_k.append(rl["peak_curvature"])
             lap_times.append(rl["lap_time"])
@@ -85,13 +92,25 @@ def run_generator(name, seed_base, E, base_config) -> dict:
     def _mean(xs):
         return float(np.mean(xs)) if xs else float("nan")
 
+    mean_compactness = _mean(compactness)
+    degenerate_rate = (
+        compactness_degenerate / len(compactness) if compactness else float("nan")
+    )
+    shape_variety_pass = float(
+        bool(compactness)
+        and degenerate_rate < _COMPACTNESS_DEGENERATE_RATE_MAX
+        and mean_compactness < _COMPACTNESS_DEGENERATE_THRESHOLD
+    )
+
     return {
         "generator": name,
         "yield": float(valid.mean()),
         "pre_relax_self_intersection_rate": pre_self_int / E,
         "xpbd_displacement": (disp_sum / disp_pts) if disp_pts else float("nan"),
         "mean_length": _mean(lengths),
-        "mean_compactness": _mean(compactness),
+        "mean_compactness": mean_compactness,
+        "compactness_degenerate_rate": degenerate_rate,
+        "shape_variety_pass": shape_variety_pass,
         "peak_curvature": _mean(peak_k),
         "lap_time": _mean(lap_times),
         "gen_ms_per_call": gen_ms,
@@ -108,7 +127,8 @@ def compare(names=None, seed_base=0, E=4096, base_config=None) -> list:
 
 def format_table(rows) -> str:
     cols = ["generator", "yield", "pre_relax_self_intersection_rate", "xpbd_displacement",
-            "mean_length", "mean_compactness", "peak_curvature", "lap_time", "gen_ms_per_call"]
+            "mean_length", "mean_compactness", "compactness_degenerate_rate",
+            "shape_variety_pass", "peak_curvature", "lap_time", "gen_ms_per_call"]
     head = "| " + " | ".join(cols) + " |"
     sep = "| " + " | ".join("---" for _ in cols) + " |"
     lines = [head, sep]

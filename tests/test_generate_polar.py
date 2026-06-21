@@ -6,8 +6,6 @@ reasonable valid fraction, and is deterministic in the per-env seed.
 """
 from __future__ import annotations
 
-import dataclasses
-
 import numpy as np
 import pytest
 
@@ -18,6 +16,15 @@ from track_gen._src.types import TrackGenConfig  # noqa: E402
 from track_gen._src.track_generator import TrackGenerator  # noqa: E402
 from track_gen._src.rng_utils import PerEnvSeededRNG  # noqa: E402
 from track_gen._src import generator_registry  # noqa: E402
+
+
+def _compactness(pts: np.ndarray) -> np.ndarray:
+    nxt = np.roll(pts, -1, axis=1)
+    perimeter = np.linalg.norm(nxt - pts, axis=2).sum(axis=1)
+    area = 0.5 * np.abs(
+        (pts[:, :, 0] * nxt[:, :, 1] - nxt[:, :, 0] * pts[:, :, 1]).sum(axis=1)
+    )
+    return 4.0 * np.pi * area / np.maximum(perimeter * perimeter, 1.0e-12)
 
 
 def _run(seed=0, E=64, **overrides):
@@ -66,6 +73,18 @@ def test_polar_e2e_centered_and_sized():
     assert 1.0 < float(longest.mean()) < 2.0
     center = gc.mean(axis=1)
     assert np.abs(center).max() < 0.3  # near origin (mean over a near-symmetric loop)
+
+
+def test_polar_default_shapes_are_not_mostly_round_blobs():
+    # The SOTA/pre-relax docs call out the failure mode for polar functions: high-yield
+    # nearly-circular blobs. The default polar generator should exercise the intended
+    # random-radial-knot design space instead of clustering near compactness == 1.
+    cfg, gen, track = _run(seed=0, E=64)
+    N = int(cfg.num_points)
+    gc = wp.to_torch(gen._scratch.gen_centerline).cpu().numpy().reshape(cfg.num_envs, N, 2)
+    c = _compactness(gc)
+    assert float(c.mean()) < 0.90
+    assert float((c > 0.90).mean()) < 0.25
 
 
 def test_polar_e2e_reasonable_yield():

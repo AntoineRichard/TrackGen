@@ -75,8 +75,16 @@ class TrackGenConfig:
     scale_range: tuple[float, float] | None = None
     handle_clamp_frac_range: tuple[float, float] | None = None
 
-    # --- Fourier params (EXPERIMENTAL: consumed only by track_gen._experimental.fourier;
-    #     the supported Warp pipeline ignores them) ---
+    # --- Polar / Fourier params ---
+    # Supported polar generator (generator="polar"): random sorted polar control knots ->
+    # periodic cubic spline. Knots default to a denser, non-round design space than the old
+    # low-pass Fourier variant; jitter values are clamped by the generator to preserve
+    # positive radii and monotone angular order.
+    polar_num_knots: int = 12
+    polar_radial_jitter: float = 0.60
+    polar_angular_jitter: float = 0.30
+    # Experimental torch-only Fourier generator fields retained for compatibility with
+    # track_gen._experimental.fourier and older sweeps.
     num_harmonics: int = 5  # K
     decay_p: int = 2  # decay exponent: amplitude ~ amp / k**decay_p
     amplitude: float = 1.0

@@ -34,6 +34,38 @@ from viz.plot_tracks import draw_track
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 
+def default_params() -> dict:
+    """Return the Gradio explorer defaults as a params dict accepted by build_config."""
+    cfg = TrackGenConfig()
+    return {
+        "generator": "polar",
+        "half_width": 0.5,
+        "scale": 10.0,
+        "min_num_points": cfg.min_num_points,
+        "max_num_points": cfg.max_num_points,
+        "rad": cfg.rad,
+        "edgy": cfg.edgy,
+        "handle_clamp_frac": cfg.handle_clamp_frac,
+        "polar_num_knots": cfg.polar_num_knots,
+        "polar_radial_jitter": cfg.polar_radial_jitter,
+        "polar_angular_jitter": cfg.polar_angular_jitter,
+        "num_points": cfg.num_points,
+        "spacing": 0.30,
+        "n_max": cfg.N_max,
+        "relax_iters": cfg.relax_iters,
+        "relax_sep_relax": cfg.relax_sep_relax,
+        "relax_spc_relax": cfg.relax_spc_relax,
+        "relax_bend_relax": cfg.relax_bend_relax,
+        "relax_margin": cfg.relax_margin,
+        "relax_sep_every": cfg.relax_sep_every,
+        "relax_sep_cache_slots": cfg.relax_sep_cache_slots,
+        "relax_sep_cache_skin": cfg.relax_sep_cache_skin,
+        "grid_n": 4,
+        "seed": 0,
+        "batch_size": 2048,
+    }
+
+
 def build_config(p: dict) -> TrackGenConfig:
     """Map a params dict to a TrackGenConfig, clamping degenerate inputs.
 
@@ -54,6 +86,12 @@ def build_config(p: dict) -> TrackGenConfig:
     # Phase-1 generator selector (registered name); absent -> config default ("bezier").
     if p.get("generator") is not None:
         kw["generator"] = str(p["generator"])
+    if p.get("polar_num_knots") is not None:
+        kw["polar_num_knots"] = int(p["polar_num_knots"])
+    if p.get("polar_radial_jitter") is not None:
+        kw["polar_radial_jitter"] = float(p["polar_radial_jitter"])
+    if p.get("polar_angular_jitter") is not None:
+        kw["polar_angular_jitter"] = float(p["polar_angular_jitter"])
     # PBD separation broadphase/narrowphase knobs; absent -> config defaults.
     if p.get("relax_sep_every") is not None:
         kw["relax_sep_every"] = int(p["relax_sep_every"])
@@ -212,7 +250,8 @@ def render_grid(p: dict):
 
 def _collect(*vals) -> dict:
     keys = ["generator", "half_width", "scale", "min_num_points", "max_num_points", "rad", "edgy",
-            "handle_clamp_frac", "spacing", "n_max", "relax_iters",
+            "handle_clamp_frac", "polar_num_knots", "polar_radial_jitter",
+            "polar_angular_jitter", "spacing", "n_max", "relax_iters",
             "relax_sep_relax", "relax_spc_relax", "relax_bend_relax", "relax_margin",
             "relax_sep_every", "relax_sep_cache_slots", "relax_sep_cache_skin",
             "grid_n", "seed", "batch_size"]
@@ -231,43 +270,53 @@ def build_app():
     """Build the Gradio Blocks UI (does not launch). Requires the `ui` extra."""
     import gradio as gr
 
+    defaults = default_params()
+
     with gr.Blocks(title="Track-gen parameter explorer") as app:
         gr.Markdown("## Track-gen parameter explorer")
         with gr.Row():
             with gr.Column(scale=1):
                 gr.Markdown("### Phase-1 generator")
-                generator = gr.Dropdown(generator_registry.available(), value="bezier",
-                                        label="generator method (shape sliders below apply to bezier)")
+                available_generators = generator_registry.available()
+                generator_default = defaults["generator"] if defaults["generator"] in available_generators else "bezier"
+                generator = gr.Dropdown(available_generators, value=generator_default,
+                                        label="generator method")
                 gr.Markdown("### Regime")
-                half_width = gr.Slider(0.05, 1.0, value=0.5, step=0.01, label="half_width (m)")
-                scale = gr.Slider(1.0, 20.0, value=10.0, step=0.5, label="scale (box)")
-                gr.Markdown("### Shape")
-                min_np = gr.Slider(5, 20, value=9, step=1, label="min corners")
-                max_np = gr.Slider(5, 20, value=13, step=1, label="max corners")
-                rad = gr.Slider(0.0, 0.6, value=0.4, step=0.01, label="rad (roundness)")
-                edgy = gr.Slider(0.0, 1.0, value=0.0, step=0.05, label="edgy")
-                handle_clamp = gr.Slider(0.0, 1.0, value=0.4, step=0.01,
-                                         label="handle_clamp_frac (overshoot↔roundness)")
+                half_width = gr.Slider(0.05, 1.0, value=defaults["half_width"], step=0.01, label="half_width (m)")
+                scale = gr.Slider(1.0, 20.0, value=defaults["scale"], step=0.5, label="scale (box)")
+                gr.Markdown("### Bezier / hull controls")
+                min_np = gr.Slider(5, 20, value=defaults["min_num_points"], step=1, label="min corners")
+                max_np = gr.Slider(5, 20, value=defaults["max_num_points"], step=1, label="max corners")
+                rad = gr.Slider(0.0, 0.6, value=defaults["rad"], step=0.01, label="rad (roundness)")
+                edgy = gr.Slider(0.0, 1.0, value=defaults["edgy"], step=0.05, label="edgy")
+                handle_clamp = gr.Slider(0.0, 1.0, value=defaults["handle_clamp_frac"], step=0.01,
+                                         label="handle_clamp_frac (overshoot<->roundness)")
+                gr.Markdown("### Polar knot spline")
+                polar_knots = gr.Slider(4, 24, value=defaults["polar_num_knots"], step=1, label="polar knots")
+                polar_radial = gr.Slider(0.0, 0.85, value=defaults["polar_radial_jitter"], step=0.01,
+                                         label="polar radial jitter")
+                polar_angular = gr.Slider(0.0, 0.45, value=defaults["polar_angular_jitter"], step=0.01,
+                                          label="polar angular jitter")
                 gr.Markdown("### Resolution (constant-spacing)")
-                spacing = gr.Slider(0.1, 1.0, value=0.30, step=0.02, label="spacing (m)")
-                n_max = gr.Slider(128, 512, value=384, step=8, label="N_max")
+                spacing = gr.Slider(0.1, 1.0, value=defaults["spacing"], step=0.02, label="spacing (m)")
+                n_max = gr.Slider(128, 512, value=defaults["n_max"], step=8, label="N_max")
                 gr.Markdown("### Relaxation")
-                relax_iters = gr.Slider(0, 600, value=150, step=10, label="relax_iters")
-                sep = gr.Slider(0.0, 2.0, value=1.0, step=0.1, label="sep factor")
-                spc = gr.Slider(0.0, 2.0, value=1.0, step=0.1, label="spc factor")
-                bend = gr.Slider(0.0, 2.0, value=1.5, step=0.1, label="bend factor")
-                margin = gr.Slider(0.0, 0.5, value=0.15, step=0.01, label="relax_margin")
+                relax_iters = gr.Slider(0, 600, value=defaults["relax_iters"], step=10, label="relax_iters")
+                sep = gr.Slider(0.0, 2.0, value=defaults["relax_sep_relax"], step=0.1, label="sep factor")
+                spc = gr.Slider(0.0, 2.0, value=defaults["relax_spc_relax"], step=0.1, label="spc factor")
+                bend = gr.Slider(0.0, 2.0, value=defaults["relax_bend_relax"], step=0.1, label="bend factor")
+                margin = gr.Slider(0.0, 0.5, value=defaults["relax_margin"], step=0.01, label="relax_margin")
                 gr.Markdown("### PBD separation (broadphase / narrowphase)")
-                sep_every = gr.Slider(1, 150, value=40, step=1,
+                sep_every = gr.Slider(1, 150, value=defaults["relax_sep_every"], step=1,
                                       label="K — broadphase refresh interval (sweeps)")
-                sep_slots = gr.Slider(0, 64, value=16, step=1,
+                sep_slots = gr.Slider(0, 64, value=defaults["relax_sep_cache_slots"], step=1,
                                       label="cache slots — broadphase candidates/bead (0 = exact dense)")
-                sep_skin = gr.Slider(0.0, 2.0, value=0.5, step=0.1,
+                sep_skin = gr.Slider(0.0, 2.0, value=defaults["relax_sep_cache_skin"], step=0.1,
                                      label="cache skin — broadphase margin (× target)")
                 gr.Markdown("### Batch")
-                grid_n = gr.Dropdown([3, 4, 5, 6], value=4, label="grid (n x n)")
-                seed = gr.Number(value=0, precision=0, label="seed")
-                batch_size = gr.Dropdown([256, 1024, 2048, 4096, 8192], value=2048, label="batch size")
+                grid_n = gr.Dropdown([3, 4, 5, 6], value=defaults["grid_n"], label="grid (n x n)")
+                seed = gr.Number(value=defaults["seed"], precision=0, label="seed")
+                batch_size = gr.Dropdown([256, 1024, 2048, 4096, 8192], value=defaults["batch_size"], label="batch size")
                 with gr.Row():
                     reroll = gr.Button("reroll seed")
                     generate = gr.Button("Generate", variant="primary")
@@ -285,7 +334,7 @@ def build_app():
         page_state = gr.State(0)
 
         controls = [generator, half_width, scale, min_np, max_np, rad, edgy, handle_clamp,
-                    spacing, n_max, relax_iters, sep, spc, bend, margin,
+                    polar_knots, polar_radial, polar_angular, spacing, n_max, relax_iters, sep, spc, bend, margin,
                     sep_every, sep_slots, sep_skin, grid_n, seed, batch_size]
 
         def _generate(*vals):
