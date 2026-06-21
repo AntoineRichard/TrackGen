@@ -16,10 +16,11 @@ from track_gen._src.rng_utils import PerEnvSeededRNG
 from track_gen._src import generator_registry
 from benchmarks import track_metrics as tm
 
-# A circle is 1.0; the healthy generators sit at compactness median ~0.4-0.56. 0.85 leaves
-# wide margin for legitimately-smooth generators (e.g. polar) while still catching the
-# near-circular degeneracy (median ~0.95+).
-_MEDIAN_COMPACTNESS_MAX = 0.85
+# A circle is 1.0; the healthy generators sit at compactness median ~0.41-0.61 (bezier/hull
+# ~0.41-0.42, polar ~0.56, grammar ~0.61). An early grammar prototype that blobbed measured
+# ~0.81 yet passed the original 0.85 bar — too lax. 0.65 separates the healthy band from that
+# degeneracy with margin, while still leaving room for legitimately-smooth generators.
+_MEDIAN_COMPACTNESS_MAX = 0.65
 
 
 def test_no_registered_generator_is_degenerate():
