@@ -77,6 +77,13 @@ Only the **Bézier** generator is on the Warp path (`config.generator="bezier"`,
 The Fourier generator lives in `track_gen._experimental` and is **unsupported** — it is not
 on the Warp pipeline and receives no compatibility guarantees.
 
+### Choosing a generator
+
+The first-stage centerline generator is selected by `TrackGenConfig(generator=...)`.
+Available generators: see `track_gen._src.generator_registry.available()` (currently
+`"bezier"`). Adding a method is additive — see `docs/generator-contract.md` and the
+tradeoff table in `docs/generator-baseline.md`.
+
 ### Output (constant spacing)
 
 There is one output mode, `constant_spacing` — the only value `config.output_mode` accepts
