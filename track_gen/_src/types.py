@@ -51,6 +51,13 @@ class TrackGenConfig:
     # trades corner roundness against how often that polygon fallback fires (~5% at 0.4).
     handle_clamp_frac: float = 0.4
 
+    # --- Hull generator params (generator="hull") ---
+    # Max per-edge radial midpoint displacement as a fraction of the centroid->midpoint
+    # distance. 0.0 collapses the augmented loop toward the plain angle-sort (≈ bezier-like
+    # diversity); larger values bulge/pinch the lobes for more racing-shape variety. ~0.5 is
+    # a grounded default (lobes vary by up to ±half the local radius).
+    hull_displacement: float = 0.5
+
     # --- Fourier params (EXPERIMENTAL: consumed only by track_gen._experimental.fourier;
     #     the supported Warp pipeline ignores them) ---
     num_harmonics: int = 5  # K

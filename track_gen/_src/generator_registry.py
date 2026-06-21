@@ -50,6 +50,7 @@ def _ensure_loaded() -> None:
     # Add one import line per new generator (the only shared touch-point).
     from . import warp_generate  # noqa: F401  (registers "bezier")
     from . import warp_generate_polar  # noqa: F401  (registers "polar")
+    from . import warp_generate_hull  # noqa: F401  (registers "hull")
     _LOADED = True
 
 
