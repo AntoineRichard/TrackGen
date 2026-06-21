@@ -35,8 +35,8 @@ class TrackGenerator:
 
     Generation, resample, relaxation and inflation are all expressed as NVIDIA Warp
     kernels (via ``_run_pipeline``), runnable on the Warp ``cpu`` and ``cuda`` devices.
-    Only the ``bezier`` generator is supported on this path (the Fourier generator was
-    not ported to Warp).
+    ``config.generator`` must be a registered generator (see
+    ``generator_registry.available()``).
 
     The generator is fixed-batch: it always operates on exactly ``config.num_envs``
     environments. The output :class:`Track` is pre-allocated once in ``__init__`` (via
@@ -55,17 +55,15 @@ class TrackGenerator:
 
     def __init__(self, config: TrackGenConfig, rng) -> None:
         """Args:
-        config: The pipeline configuration. ``config.generator`` must be ``"bezier"``.
+        config: The pipeline configuration. ``config.generator`` must be a registered
+            generator (see ``generator_registry.available()``).
         rng: A ``PerEnvSeededRNG`` instance; its per-env seed values seed the pipeline's
             built-in Warp RNG (one base seed per env).
         """
         if rng is None:
             raise ValueError("A random number generator must be provided.")
-        if config.generator != "bezier":
-            raise ValueError(
-                f"The pure-Warp pipeline supports generator='bezier' only; "
-                f"got {config.generator!r}."
-            )
+        from . import generator_registry
+        generator_registry.get(config.generator)  # raises ValueError listing available names
         assert config.relax_solver == "xpbd", (
             f"TrackGenerator only supports relax_solver='xpbd'; "
             f"got {config.relax_solver!r}."

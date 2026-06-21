@@ -523,3 +523,44 @@ def generate_centerline_warp(seeds_wp: wp.array, config,
     wp.launch(_pipe._fill_i32_k, dim=E, inputs=[out_valid_wp, 1], device=dev)
 
     _pipe._sync(dev)
+
+
+def bezier_alloc_scratch(config):
+    """Allocate the bezier generator's PRIVATE working scratch (one alloc per generator).
+
+    The generation OUTPUT buffers (gen_centerline, gen_valid) are owned by the orchestrator
+    and passed to generate_centerline_warp; they are not allocated here.
+    """
+    _pipe._init()
+    E = int(config.num_envs)
+    P = int(config.max_num_points)
+    npseg = int(config.num_points_per_segment)
+    M_dense = P * npseg
+    N_gen = int(config.num_points)
+    dev = str(config.device)
+    return _pipe.GenScratch(
+        gen_count=wp.empty(E, dtype=wp.int32, device=dev),
+        gen_corners=wp.empty(E * P, dtype=wp.vec2f, device=dev),
+        gen_ordered=wp.empty(E * P, dtype=wp.vec2f, device=dev),
+        gen_used=wp.empty(E * P, dtype=wp.int32, device=dev),
+        gen_keys=wp.empty(E * P, dtype=wp.float32, device=dev),
+        gen_tan=wp.empty(E * P, dtype=wp.vec2f, device=dev),
+        gen_scale=wp.empty(E * P, dtype=wp.float32, device=dev),
+        gen_dense=wp.empty(E * M_dense, dtype=wp.vec2f, device=dev),
+        gen_poly=wp.empty(E * M_dense, dtype=wp.vec2f, device=dev),
+        gen_rs=wp.empty(E * N_gen, dtype=wp.vec2f, device=dev),
+        gen_crossers=wp.empty(E, dtype=wp.int32, device=dev),
+        gen_arc_real=wp.empty(E * M_dense, dtype=wp.vec2f, device=dev),
+        gen_arc_seg=wp.empty(E * M_dense, dtype=wp.float32, device=dev),
+        gen_arc_s=wp.empty(E * (M_dense + 1), dtype=wp.float32, device=dev),
+        gen_arc_cr=wp.empty(E, dtype=wp.int32, device=dev),
+        gen_arc_co=wp.empty(E, dtype=wp.int32, device=dev),
+    )
+
+
+from . import generator_registry as _registry  # noqa: E402
+_registry.register(_registry.GeneratorSpec(
+    name="bezier",
+    alloc_scratch=bezier_alloc_scratch,
+    generate=generate_centerline_warp,
+))

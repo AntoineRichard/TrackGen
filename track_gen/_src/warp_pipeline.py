@@ -860,21 +860,22 @@ def _run_pipeline(config, seed_buf_wp: wp.array, out: "Track", scratch: "_Scratc
     Returns:
         out (the same Track instance).
     """
-    from . import warp_generate
+    from . import generator_registry
 
     n_max = int(config.N_max)
-    gen = scratch.gen        # GenScratch  — generation buffers
+    gen = scratch.gen        # generator-private scratch
     relax = scratch.relax    # RelaxScratch — band/L0 + XPBD buffers
 
-    # 1. Generate centerline in-place (the generation group only).
-    warp_generate.generate_centerline_warp(seed_buf_wp, config,
-                                           out_centerline=gen.gen_centerline,
-                                           out_valid_wp=gen.gen_valid,
-                                           scratch=gen)
+    # 1. Generate centerline in-place into the orchestrator-owned output buffers.
+    generate = generator_registry.get(config.generator).generate
+    generate(seed_buf_wp, config,
+             out_centerline=scratch.gen_centerline,
+             out_valid_wp=scratch.gen_valid,
+             scratch=gen)
 
-    # 2. Constant-spacing resample in-place (gen centerline -> bridge buffers).
+    # 2. Constant-spacing resample (gen centerline -> bridge buffers).
     resample_constant_spacing(
-        gen.gen_centerline, float(config.spacing), n_max,
+        scratch.gen_centerline, float(config.spacing), n_max,
         out_wp=scratch.cs_center, count_wp=scratch.count,
         seg_wp=scratch.cs_seg, s_wp=scratch.cs_s,
     )
@@ -906,7 +907,7 @@ def _run_pipeline(config, seed_buf_wp: wp.array, out: "Track", scratch: "_Scratc
     # reads the inflate group (kappa/w/area_a/area_b) + the bridge buffers (cs_seg/cs_s/
     # count) off the composite scratch.
     return inflate_warp(
-        relax_out, config, out=out, valid=gen.gen_valid,
+        relax_out, config, out=out, valid=scratch.gen_valid,
         count=scratch.count, scratch=scratch,
     )
 
@@ -1152,7 +1153,10 @@ def _arclength(
 
 
 class GenScratch:
-    """Pre-allocated generation buffers (owned generate path; warp_generate stage).
+    """Pre-allocated generation buffers for the bezier generator's PRIVATE working scratch.
+
+    The generation OUTPUT buffers (gen_centerline, gen_valid) are owned by the orchestrator
+    (_Scratch) and passed into generate_centerline_warp; they are NOT part of this class.
 
     gen_count:     [E] int32 — per-env corner count from corner_count_sample_inplace.
     gen_corners:   [E*P] vec2f — raw corners from corner_sample_inplace (P=max_num_points).
@@ -1166,9 +1170,6 @@ class GenScratch:
                    self-crossing fallback, handle_clamp_frac=0).
     gen_rs:        [E*num_points] vec2f — Bezier arc-resampled N-point centerline.
     gen_crossers:  [E] int32 — self-intersection counts (fallback select input).
-    gen_centerline:[E*num_points] vec2f — final chosen centerline (output of _select_vec2_k;
-                   fed directly into resample_constant_spacing on the owned pipeline path).
-    gen_valid:     [E] int32 — generation validity (always 1; passed to inflate_warp).
     gen_arc_real:  [E*P*npseg] vec2f — arc-resample compacted real points scratch.
     gen_arc_seg:   [E*P*npseg] float32 — arc-resample per-segment length scratch.
     gen_arc_s:     [E*(P*npseg+1)] float32 — arc-resample cumulative arc-length scratch.
@@ -1180,7 +1181,7 @@ class GenScratch:
     __slots__ = (
         "gen_count", "gen_corners", "gen_ordered", "gen_used", "gen_keys",
         "gen_tan", "gen_scale", "gen_dense", "gen_poly",
-        "gen_rs", "gen_crossers", "gen_centerline", "gen_valid",
+        "gen_rs", "gen_crossers",
         "gen_arc_real", "gen_arc_seg", "gen_arc_s", "gen_arc_cr", "gen_arc_co",
     )
 
@@ -1197,8 +1198,6 @@ class GenScratch:
         gen_poly: "wp.array",
         gen_rs: "wp.array",
         gen_crossers: "wp.array",
-        gen_centerline: "wp.array",
-        gen_valid: "wp.array",
         gen_arc_real: "wp.array",
         gen_arc_seg: "wp.array",
         gen_arc_s: "wp.array",
@@ -1216,8 +1215,6 @@ class GenScratch:
         self.gen_poly = gen_poly
         self.gen_rs = gen_rs
         self.gen_crossers = gen_crossers
-        self.gen_centerline = gen_centerline
-        self.gen_valid = gen_valid
         self.gen_arc_real = gen_arc_real
         self.gen_arc_seg = gen_arc_seg
         self.gen_arc_s = gen_arc_s
@@ -1288,6 +1285,10 @@ class _Scratch:
 
     Plus the BRIDGE buffers that span stages (the resample output threaded gen -> relax ->
     inflate), held directly on the holder:
+    gen_centerline: [E*num_points] vec2f — generation output centerline (orchestrator-owned;
+                    written by the generator, read by resample_constant_spacing).
+    gen_valid:      [E] int32 — generation validity output (orchestrator-owned; written by
+                    the generator, read by inflate_warp).
     cs_center: [E*N_max] vec2f — constant-spacing resampled centerline output.
     cs_seg:    [E*N_max] float32 — scan scratch shared by resample_constant_spacing and
                resample_uniform (sequential stages, safe to alias).
@@ -1296,18 +1297,25 @@ class _Scratch:
                threaded through relax -> inflate as Track.count.
 
     For convenience, attribute access falls through to the sub-groups: ``scratch.relaxed``
-    resolves to ``scratch.relax.relaxed``, ``scratch.gen_centerline`` to
-    ``scratch.gen.gen_centerline``, ``scratch.kappa`` to ``scratch.inflate.kappa``, etc.,
-    so existing flat-name call sites keep working while the grouping is type-enforced.
+    resolves to ``scratch.relax.relaxed``, ``scratch.kappa`` to ``scratch.inflate.kappa``,
+    etc., so flat-name call sites keep working while the grouping is type-enforced.
+    gen_centerline and gen_valid are direct slots (orchestrator-owned); they do NOT fall
+    through to scratch.gen.
     """
 
-    __slots__ = ("gen", "relax", "inflate", "cs_center", "cs_seg", "cs_s", "count")
+    __slots__ = (
+        "gen", "relax", "inflate",
+        "gen_centerline", "gen_valid",
+        "cs_center", "cs_seg", "cs_s", "count",
+    )
 
     def __init__(
         self,
         inflate: "InflateScratch",
         gen: "GenScratch | None" = None,
         relax: "RelaxScratch | None" = None,
+        gen_centerline: "wp.array | None" = None,
+        gen_valid: "wp.array | None" = None,
         cs_center: "wp.array | None" = None,
         cs_seg: "wp.array | None" = None,
         cs_s: "wp.array | None" = None,
@@ -1316,6 +1324,8 @@ class _Scratch:
         self.gen = gen
         self.relax = relax
         self.inflate = inflate
+        self.gen_centerline = gen_centerline
+        self.gen_valid = gen_valid
         self.cs_center = cs_center
         self.cs_seg = cs_seg
         self.cs_s = cs_s
@@ -1323,9 +1333,10 @@ class _Scratch:
 
     def __getattr__(self, name):
         # Fall through to the per-concern sub-groups so flat-name accesses
-        # (scratch.relaxed, scratch.gen_centerline, scratch.kappa, ...) keep working.
+        # (scratch.relaxed, scratch.kappa, ...) keep working.
         # __getattr__ runs only for names not found via __slots__, so the bridge fields
-        # and the sub-group handles above are never routed here.
+        # (gen_centerline, gen_valid, cs_center, cs_seg, cs_s, count) and the sub-group
+        # handles above are never routed here.
         for group in (self.gen, self.relax, self.inflate):
             if group is not None and name in group.__slots__:
                 return getattr(group, name)
@@ -1368,31 +1379,11 @@ def _inflate_warp_alloc(config):
         valid=wp.empty(E, dtype=wp.int32, device=dev),
         count=wp.empty(E, dtype=wp.int32, device=dev),
     )
-    P = int(config.max_num_points)
-    npseg = int(config.num_points_per_segment)
-    M_dense = P * npseg  # dense points per env (assembled Bezier / polygon)
-    N_gen = int(config.num_points)  # arc-resampled centerline length (input to cs-resample)
-
-    gen = GenScratch(
-        gen_count=wp.empty(E, dtype=wp.int32, device=dev),
-        gen_corners=wp.empty(E * P, dtype=wp.vec2f, device=dev),
-        gen_ordered=wp.empty(E * P, dtype=wp.vec2f, device=dev),
-        gen_used=wp.empty(E * P, dtype=wp.int32, device=dev),
-        gen_keys=wp.empty(E * P, dtype=wp.float32, device=dev),
-        gen_tan=wp.empty(E * P, dtype=wp.vec2f, device=dev),
-        gen_scale=wp.empty(E * P, dtype=wp.float32, device=dev),
-        gen_dense=wp.empty(E * M_dense, dtype=wp.vec2f, device=dev),
-        gen_poly=wp.empty(E * M_dense, dtype=wp.vec2f, device=dev),
-        gen_rs=wp.empty(E * N_gen, dtype=wp.vec2f, device=dev),
-        gen_crossers=wp.empty(E, dtype=wp.int32, device=dev),
-        gen_centerline=wp.empty(E * N_gen, dtype=wp.vec2f, device=dev),
-        gen_valid=wp.empty(E, dtype=wp.int32, device=dev),
-        gen_arc_real=wp.empty(E * M_dense, dtype=wp.vec2f, device=dev),
-        gen_arc_seg=wp.empty(E * M_dense, dtype=wp.float32, device=dev),
-        gen_arc_s=wp.empty(E * (M_dense + 1), dtype=wp.float32, device=dev),
-        gen_arc_cr=wp.empty(E, dtype=wp.int32, device=dev),
-        gen_arc_co=wp.empty(E, dtype=wp.int32, device=dev),
-    )
+    from . import generator_registry
+    gen = generator_registry.get(config.generator).alloc_scratch(config)
+    N_gen = int(config.num_points)
+    gen_centerline = wp.empty(E * N_gen, dtype=wp.vec2f, device=dev)
+    gen_valid = wp.empty(E, dtype=wp.int32, device=dev)
     relax = RelaxScratch(
         relaxed=wp.empty(flat, dtype=wp.vec2f, device=dev),
         band=wp.empty(E, dtype=wp.int32, device=dev),
@@ -1407,6 +1398,9 @@ def _inflate_warp_alloc(config):
     )
     scratch = _Scratch(
         inflate=inflate, gen=gen, relax=relax,
+        # orchestrator-owned generation output buffers
+        gen_centerline=gen_centerline,
+        gen_valid=gen_valid,
         # bridge buffers threaded gen -> relax -> inflate
         cs_center=wp.empty(flat, dtype=wp.vec2f, device=dev),
         cs_seg=wp.empty(flat, dtype=wp.float32, device=dev),
