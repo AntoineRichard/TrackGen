@@ -15,6 +15,8 @@ Method (registered as ``"hull"``):
    makes the result DIFFERENT from a plain angle-sort (which would collapse toward bezier).
 4. Smooth the augmented ``2m``-vertex loop with closed Catmull-Rom segments into a dense
    polyline (``npseg`` samples per segment) and arc-resample to ``N = config.num_points``.
+5. If that smooth resample self-crosses, fall back to the augmented polygonal loop for
+   that env only; XPBD can re-round the straight fallback downstream.
 
 Coordinates use the SAME grid placement * ``config.scale`` as the bezier generator, so the
 downstream constant-spacing / relax / inflate stages behave identically.
@@ -244,6 +246,41 @@ def _catmull_rom_k(
     )
 
 
+@wp.kernel
+def _assemble_polygon_selected_k(
+    aug: wp.array(dtype=wp.vec2f),
+    aug_count: wp.array(dtype=wp.int32),
+    AP: int,
+    npseg: int,
+    active: wp.array(dtype=wp.int32),
+    out: wp.array(dtype=wp.vec2f),
+):
+    # Straight-piece fallback over the augmented hull loop, only for envs whose smooth
+    # Catmull-Rom resample self-crossed. Inactive rows are left untouched because the
+    # selected arc-resampler skips them.
+    t = wp.tid()
+    per_env = AP * npseg
+    e = t // per_env
+    if active[e] <= 0:
+        return
+
+    rem = t % per_env
+    i = rem // npseg
+    s = rem % npseg
+    b = e * AP
+    cnt = aug_count[e]
+    cm = wp.max(cnt, 1)
+
+    if i >= cnt or cnt < 2:
+        out[t] = wp.vec2f(wp.nan, wp.nan)
+        return
+
+    c0 = aug[b + i]
+    c1 = aug[b + (i + 1) % cm]
+    u = float(s) / float(npseg - 1)
+    out[t] = (1.0 - u) * c0 + u * c1
+
+
 def point_count_sample_inplace(seeds_wp, config, out_count):
     """In-place: per-env point count in [min_num_points, max_num_points]. Zero alloc."""
     _pipe._init()
@@ -282,7 +319,9 @@ class HullScratch:
     keys:      [E*P] float32 — angle-sort key scratch.
     aug:       [E*2P] vec2f — augmented loop (orig + displaced midpoints; NaN beyond 2m).
     aug_count: [E] int32 — augmented loop length (2m) per env.
-    dense:     [E*2P*npseg] vec2f — Catmull-Rom dense polyline (NaN-padded).
+    dense:     [E*2P*npseg] vec2f — Catmull-Rom dense polyline, then selected polygon
+                 fallback dense polyline for crossing rows.
+    crossers:  [E] int32 — self-intersection counts for smooth hull resamples.
     arc_real:  [E*2P*npseg] vec2f — arc-resample compacted-real scratch.
     arc_seg:   [E*2P*npseg] float32 — arc-resample per-segment length scratch.
     arc_s:     [E*(2P*npseg+1)] float32 — arc-resample cumulative arc-length scratch.
@@ -292,11 +331,11 @@ class HullScratch:
 
     __slots__ = (
         "points", "count", "used", "sorted", "keys", "aug", "aug_count",
-        "dense", "arc_real", "arc_seg", "arc_s", "arc_cr", "arc_co",
+        "dense", "crossers", "arc_real", "arc_seg", "arc_s", "arc_cr", "arc_co",
     )
 
     def __init__(self, points, count, used, sorted, keys, aug, aug_count,
-                 dense, arc_real, arc_seg, arc_s, arc_cr, arc_co):
+                 dense, crossers, arc_real, arc_seg, arc_s, arc_cr, arc_co):
         self.points = points
         self.count = count
         self.used = used
@@ -305,6 +344,7 @@ class HullScratch:
         self.aug = aug
         self.aug_count = aug_count
         self.dense = dense
+        self.crossers = crossers
         self.arc_real = arc_real
         self.arc_seg = arc_seg
         self.arc_s = arc_s
@@ -334,6 +374,7 @@ def hull_alloc_scratch(config):
         aug=wp.empty(E * AP, dtype=wp.vec2f, device=dev),
         aug_count=wp.empty(E, dtype=wp.int32, device=dev),
         dense=wp.empty(E * M_dense, dtype=wp.vec2f, device=dev),
+        crossers=wp.empty(E, dtype=wp.int32, device=dev),
         arc_real=wp.empty(E * M_dense, dtype=wp.vec2f, device=dev),
         arc_seg=wp.empty(E * M_dense, dtype=wp.float32, device=dev),
         arc_s=wp.empty(E * (M_dense + 1), dtype=wp.float32, device=dev),
@@ -348,8 +389,9 @@ def generate_hull_warp(seeds_wp: wp.array, config,
     """Convex-hull + midpoint-displacement centerline generation — in-place owned path.
 
     Pure-Warp: sample points -> angle-sort -> midpoint-displace -> closed Catmull-Rom dense
-    -> arc-resample -> write the chosen centerline into out_centerline. Marks all envs valid
-    (generation gate is always True; inflate does the real validity gate, as for bezier).
+    -> arc-resample -> polygon fallback for self-crossers -> write the chosen centerline into
+    out_centerline. Marks all envs valid (generation gate is always True; inflate does the
+    real validity gate, as for bezier).
 
     Args:
         seeds_wp:      [E] int32 wp.array per-env base seeds.
@@ -367,7 +409,7 @@ def generate_hull_warp(seeds_wp: wp.array, config,
     npseg = int(config.num_points_per_segment)
     AP = 2 * P
     M = AP * npseg  # dense points per env
-    disp = float(getattr(config, "hull_displacement", 0.5))
+    disp = float(getattr(config, "hull_displacement", 0.15))
     dev = str(out_centerline.device)
 
     # Step 1: sample point count + positions.
@@ -390,12 +432,29 @@ def generate_hull_warp(seeds_wp: wp.array, config,
               inputs=[scratch.aug, scratch.aug_count, AP, npseg, scratch.dense],
               device=dev)
 
-    # Step 5: arc-resample the dense polyline -> out_centerline (N points per env).
+    # Step 5: arc-resample the smooth dense polyline -> out_centerline (N points per env).
     _pipe._arc_resample_inplace(scratch.dense, M, N,
                                 scratch.arc_real, scratch.arc_seg, scratch.arc_s,
                                 scratch.arc_cr, scratch.arc_co, out_centerline, dev)
 
-    # Step 6: mark all envs valid (gen gate is always True; inflate does the real gate).
+    # Step 6: self-intersections of the smooth resample -> crossers. scratch.arc_co was
+    # written by _arc_scan_k: R>=2 -> N, R<2 -> 0. Pass directly as count.
+    _pipe.self_intersections_inplace(out_centerline, scratch.arc_co, scratch.crossers, N)
+
+    # Step 7: assemble and resample the augmented polygon fallback only for crossing envs.
+    # The selected resampler leaves inactive out_centerline rows untouched, so non-crossers
+    # keep their Catmull-Rom result and crossers are overwritten in place.
+    wp.launch(_assemble_polygon_selected_k, dim=E * M,
+              inputs=[scratch.aug, scratch.aug_count, AP, npseg, scratch.crossers,
+                      scratch.dense],
+              device=dev)
+    _pipe._arc_resample_selected_inplace(
+        scratch.dense, scratch.crossers, M, N,
+        scratch.arc_real, scratch.arc_seg, scratch.arc_s,
+        scratch.arc_cr, scratch.arc_co, out_centerline, dev,
+    )
+
+    # Step 8: mark all envs valid (gen gate is always True; inflate does the real gate).
     wp.launch(_pipe._fill_i32_k, dim=E, inputs=[out_valid_wp, 1], device=dev)
 
     _pipe._sync(dev)

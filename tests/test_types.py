@@ -25,6 +25,8 @@ def test_config_defaults_instantiate():
     assert cfg.polar_num_knots == 12
     assert cfg.polar_radial_jitter == 0.60
     assert cfg.polar_angular_jitter == 0.30
+    # Hull params
+    assert cfg.hull_displacement == 0.15
     assert cfg.num_harmonics == 5
     assert cfg.decay_p == 2
     assert cfg.amplitude == 1.0

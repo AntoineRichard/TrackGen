@@ -54,9 +54,9 @@ class TrackGenConfig:
     # --- Hull generator params (generator="hull") ---
     # Max per-edge radial midpoint displacement as a fraction of the centroid->midpoint
     # distance. 0.0 collapses the augmented loop toward the plain angle-sort (≈ bezier-like
-    # diversity); larger values bulge/pinch the lobes for more racing-shape variety. ~0.5 is
-    # a grounded default (lobes vary by up to ±half the local radius).
-    hull_displacement: float = 0.5
+    # diversity); larger values bulge/pinch the lobes for more racing-shape variety, but
+    # can create pinched loops that fail the thickness gate.
+    hull_displacement: float = 0.15
 
     # --- Per-env style sampling (method #1: "Per-env style randomization") ---
     # OPT-IN. When False (the default) the bezier generator is BYTE-FOR-BYTE unchanged: the
