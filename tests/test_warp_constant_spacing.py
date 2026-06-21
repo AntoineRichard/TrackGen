@@ -295,11 +295,12 @@ def test_arclength_count_aware(dev):
 
 
 @pytest.mark.parametrize("dev", DEVS)
-def test_xpbd_count_aware(dev):
+@pytest.mark.parametrize("relax_iters", [39, 40])
+def test_xpbd_count_aware(dev, relax_iters):
     src = torch.stack([_circle(96, 1.0, dev), _circle(96, 1.4, dev)], 0)
     band = torch.tensor([3, 2], dtype=torch.int32, device=dev)
     L0 = geometry.perimeter(src) / 96
-    cfg = TrackGenConfig(num_envs=2, num_points=96, half_width=0.05, relax_iters=40, device=dev)
+    cfg = TrackGenConfig(num_envs=2, num_points=96, half_width=0.05, relax_iters=relax_iters, device=dev)
     base = xpbd_solve(src, band, L0, cfg)
     buf, cnt = _pad(src, 96)
     out = xpbd_solve(buf, band, L0, cfg, count=cnt)

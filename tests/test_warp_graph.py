@@ -30,14 +30,14 @@ from track_gen._src.rng_utils import PerEnvSeededRNG  # noqa: E402
 from track_gen._src.types import Track  # noqa: E402
 
 
-def _cfg(E: int) -> TrackGenConfig:
+def _cfg(E: int, relax_iters: int = 20) -> TrackGenConfig:
     # Modest iters keep the test fast; the capture mechanism is independent of count.
     # constant_spacing is the only supported mode; N_max large enough for every env.
     return TrackGenConfig(
         num_envs=E, device="cuda:0", output_mode="constant_spacing",
         spacing=0.6, N_max=256,
         relax_solver="xpbd", smooth_finish=False,
-        relax_iters=20, max_regen_iters=4,
+        relax_iters=relax_iters, max_regen_iters=4,
     )
 
 
@@ -123,6 +123,23 @@ def test_autocapture_replay_matches_eager():
 
     # Replay matches reference.
     _track_allclose(track_b, ref)
+
+
+def test_autocapture_replay_matches_eager_with_odd_relax_iters():
+    """Odd XPBD iteration counts keep the graph-captured ping-pong final copy correct."""
+    E = 16
+    cfg = _cfg(E, relax_iters=21)
+    rng = _make_rng(E, seed=84)
+    gen = TrackGenerator(cfg, rng)
+
+    wp.copy(gen._seed_buf, rng.seeds_warp)
+    gen._run()
+    wp.synchronize()
+    ref = _clone_track(gen._track)
+
+    track = gen.generate(E)
+    torch.cuda.synchronize()
+    _track_allclose(track, ref)
 
 
 def test_eager_path_unaffected():

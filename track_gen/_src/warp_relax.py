@@ -51,23 +51,21 @@ def _band_l0_k(
     band_out[e] = _separation_band(l0, two_hw)
 
 @wp.kernel
-def _disp_kernel(center: wp.array(dtype=wp.vec2f), band: wp.array(dtype=wp.int32),
+def _step_kernel(center: wp.array(dtype=wp.vec2f), band: wp.array(dtype=wp.int32),
                  L0: wp.array(dtype=wp.float32), target: wp.float32, R_min: wp.float32,
                  sr: wp.float32, pr: wp.float32, br: wp.float32,
                  n_max: int, count: wp.array(dtype=wp.int32),
                  out: wp.array(dtype=wp.vec2f)):
-    # Full fused XPBD sweep per bead: separation + spacing + bending, Jacobi (reads
-    # only `center`, writes only out[t]) so the companion _apply_kernel can update
-    # positions race-free.
+    # Full fused XPBD sweep per bead: separation + spacing + bending. This keeps
+    # Jacobi semantics by reading only `center` and writing updated positions to `out`.
     # count[e] is the number of real (non-padding) beads in env e; n_max is the buffer
-    # stride. Padding beads (i >= count[e]) receive disp=0 so NaN positions stay NaN.
+    # stride. Padding beads copy through so NaN-padded tails stay NaN with odd iters.
     t = wp.tid()
     e = t // n_max
     i = t % n_max
     b = e * n_max
-    # --- guard: padding bead → zero displacement (NaN center stays NaN after apply) ---
     if i >= count[e]:
-        out[t] = wp.vec2f(0.0, 0.0)
+        out[t] = center[t]
         return
     xi = center[t]
     ne = count[e]           # number of real beads in this env
@@ -116,14 +114,8 @@ def _disp_kernel(center: wp.array(dtype=wp.vec2f), band: wp.array(dtype=wp.int32
     toward = mid - xi
     deficit = wp.max((R_min - radius) / R_min, 0.0)
     bscale = wp.min(br * deficit, 1.0)            # clamp: never pass the chord midpoint
-    out[t] = sr * sep + pr * spc + bscale * toward
-
-@wp.kernel
-def _apply_kernel(center: wp.array(dtype=wp.vec2f), disp: wp.array(dtype=wp.vec2f)):
-    # One thread per bead: in-place XPBD position update center[t] += disp[t]
-    # (the apply half of the double-buffered disp/apply sweep).
-    t = wp.tid()
-    center[t] = center[t] + disp[t]
+    step = sr * sep + pr * spc + bscale * toward
+    out[t] = xi + step
 
 
 def xpbd_solve_inplace(
@@ -140,13 +132,13 @@ def xpbd_solve_inplace(
     """Full fixed-iteration XPBD solve — strict in-place, zero per-call allocation.
 
     Reads ``center_wp`` (the input centerline), writes the relaxed result into
-    ``relaxed_wp``.  Uses ``db_wp`` as the displacement double-buffer.  All arrays
+    ``relaxed_wp``.  Uses ``db_wp`` as the second position buffer.  All arrays
     are pre-allocated ``wp.array`` buffers owned by the caller (e.g. the relax scratch).
 
     Args:
         center_wp:  [E*n_max] wp.vec2f flat input centerline (NaN-padded beyond count[e]).
         relaxed_wp: [E*n_max] wp.vec2f flat output buffer (written in-place).
-        db_wp:      [E*n_max] wp.vec2f flat displacement scratch (double-buffer).
+        db_wp:      [E*n_max] wp.vec2f flat position scratch (ping-pong buffer).
         band_wp:    [E] wp.int32 excluded-neighbour half-window per env.
         l0_wp:      [E] wp.float32 rest segment length per env.
         count_wp:   [E] wp.int32 real bead count per env.
@@ -173,15 +165,19 @@ def xpbd_solve_inplace(
     br = float(config.relax_bend_relax)
     dev = str(center_wp.device)
 
-    # Copy input into the working buffer (relaxed_wp starts as a copy of center_wp).
+    # Copy input into the first position buffer, then ping-pong full position states.
     wp.copy(relaxed_wp, center_wp)
+    read_wp = relaxed_wp
+    write_wp = db_wp
 
     for _ in range(int(config.relax_iters)):
-        wp.launch(_disp_kernel, dim=E * n_max,
-                  inputs=[relaxed_wp, band_wp, l0_wp, target, R_min, sr, pr, br,
-                          n_max, count_wp, db_wp], device=dev)
-        wp.launch(_apply_kernel, dim=E * n_max,
-                  inputs=[relaxed_wp, db_wp], device=dev)
+        wp.launch(_step_kernel, dim=E * n_max,
+                  inputs=[read_wp, band_wp, l0_wp, target, R_min, sr, pr, br,
+                          n_max, count_wp, write_wp], device=dev)
+        read_wp, write_wp = write_wp, read_wp
+
+    if read_wp is not relaxed_wp:
+        wp.copy(relaxed_wp, read_wp)
 
     # Skip the host-blocking sync during CUDA graph capture (illegal there; the graph
     # records stream ordering, so it is unnecessary on replay too). The caller passes
