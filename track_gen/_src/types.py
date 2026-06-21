@@ -83,6 +83,14 @@ class TrackGenConfig:
     polar_num_knots: int = 12
     polar_radial_jitter: float = 0.60
     polar_angular_jitter: float = 0.30
+
+    # --- Segment-grammar (#6) params ---
+    grammar_segments: int = 18           # S: fixed segment count (graph-capture bound); S//2 corners
+    grammar_straight_frac: float = 0.45  # target arc-length fraction forced to straights (kappa=0)
+    grammar_curvature_budget: float = 1.3   # max per-corner turn angle (rad); sets hairpin tightness
+    grammar_chicane_bias: float = 0.22   # fraction of corners that reverse sign (chicane density)
+    grammar_hairpin_max_frac: float = 0.10   # cap on any single corner's arc-length span
+
     # Experimental torch-only Fourier generator fields retained for compatibility with
     # track_gen._experimental.fourier and older sweeps.
     num_harmonics: int = 5  # K
@@ -170,6 +178,10 @@ class TrackGenConfig:
     validity_border_check: bool = False
 
     def __post_init__(self):
+        if int(self.grammar_segments) < 2:
+            raise ValueError(f"grammar_segments must be >= 2, got {self.grammar_segments!r}")
+        if not (0.0 <= float(self.grammar_straight_frac) < 1.0):
+            raise ValueError(f"grammar_straight_frac must be in [0,1), got {self.grammar_straight_frac!r}")
         if int(self.relax_sep_every) < 1:
             raise ValueError(f"relax_sep_every must be >= 1, got {self.relax_sep_every!r}")
         if int(self.relax_sep_cache_slots) < 0:

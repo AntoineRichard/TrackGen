@@ -44,6 +44,12 @@ def test_config_defaults_instantiate():
     assert cfg.max_regen_iters == 10
     assert cfg.turning_tol == 0.1
     assert cfg.w_floor == 1e-3
+    # Segment-grammar (#6) params
+    assert cfg.grammar_segments == 18
+    assert cfg.grammar_straight_frac == 0.45
+    assert cfg.grammar_curvature_budget == 1.3
+    assert cfg.grammar_chicane_bias == 0.22
+    assert cfg.grammar_hairpin_max_frac == 0.10
 
 
 def test_config_overrides_round_trip():
