@@ -28,6 +28,7 @@ import warp as wp
 from track_gen._src.types import TrackGenConfig
 from track_gen._src.track_generator import TrackGenerator
 from track_gen._src.rng_utils import PerEnvSeededRNG
+from track_gen._src import generator_registry
 from viz.plot_tracks import draw_track
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -50,6 +51,16 @@ def build_config(p: dict) -> TrackGenConfig:
         kw["num_points"] = int(p["num_points"])
     if p.get("spacing") is not None:
         kw["spacing"] = float(p["spacing"])
+    # Phase-1 generator selector (registered name); absent -> config default ("bezier").
+    if p.get("generator") is not None:
+        kw["generator"] = str(p["generator"])
+    # PBD separation broadphase/narrowphase knobs; absent -> config defaults.
+    if p.get("relax_sep_every") is not None:
+        kw["relax_sep_every"] = int(p["relax_sep_every"])
+    if p.get("relax_sep_cache_slots") is not None:
+        kw["relax_sep_cache_slots"] = int(p["relax_sep_cache_slots"])
+    if p.get("relax_sep_cache_skin") is not None:
+        kw["relax_sep_cache_skin"] = float(p["relax_sep_cache_skin"])
     return TrackGenConfig(
         num_envs=num_envs,
         half_width=float(p["half_width"]),
@@ -200,9 +211,10 @@ def render_grid(p: dict):
 
 
 def _collect(*vals) -> dict:
-    keys = ["half_width", "scale", "min_num_points", "max_num_points", "rad", "edgy",
+    keys = ["generator", "half_width", "scale", "min_num_points", "max_num_points", "rad", "edgy",
             "handle_clamp_frac", "spacing", "n_max", "relax_iters",
             "relax_sep_relax", "relax_spc_relax", "relax_bend_relax", "relax_margin",
+            "relax_sep_every", "relax_sep_cache_slots", "relax_sep_cache_skin",
             "grid_n", "seed", "batch_size"]
     return dict(zip(keys, vals))
 
@@ -223,6 +235,9 @@ def build_app():
         gr.Markdown("## Track-gen parameter explorer")
         with gr.Row():
             with gr.Column(scale=1):
+                gr.Markdown("### Phase-1 generator")
+                generator = gr.Dropdown(generator_registry.available(), value="bezier",
+                                        label="generator method (shape sliders below apply to bezier)")
                 gr.Markdown("### Regime")
                 half_width = gr.Slider(0.05, 1.0, value=0.5, step=0.01, label="half_width (m)")
                 scale = gr.Slider(1.0, 20.0, value=10.0, step=0.5, label="scale (box)")
@@ -242,6 +257,13 @@ def build_app():
                 spc = gr.Slider(0.0, 2.0, value=1.0, step=0.1, label="spc factor")
                 bend = gr.Slider(0.0, 2.0, value=1.5, step=0.1, label="bend factor")
                 margin = gr.Slider(0.0, 0.5, value=0.15, step=0.01, label="relax_margin")
+                gr.Markdown("### PBD separation (broadphase / narrowphase)")
+                sep_every = gr.Slider(1, 150, value=40, step=1,
+                                      label="K — broadphase refresh interval (sweeps)")
+                sep_slots = gr.Slider(0, 64, value=16, step=1,
+                                      label="cache slots — broadphase candidates/bead (0 = exact dense)")
+                sep_skin = gr.Slider(0.0, 2.0, value=0.5, step=0.1,
+                                     label="cache skin — broadphase margin (× target)")
                 gr.Markdown("### Batch")
                 grid_n = gr.Dropdown([3, 4, 5, 6], value=4, label="grid (n x n)")
                 seed = gr.Number(value=0, precision=0, label="seed")
@@ -262,9 +284,9 @@ def build_app():
         track_state = gr.State(None)
         page_state = gr.State(0)
 
-        controls = [half_width, scale, min_np, max_np, rad, edgy, handle_clamp,
-                    spacing, n_max, relax_iters, sep, spc, bend, margin, grid_n, seed,
-                    batch_size]
+        controls = [generator, half_width, scale, min_np, max_np, rad, edgy, handle_clamp,
+                    spacing, n_max, relax_iters, sep, spc, bend, margin,
+                    sep_every, sep_slots, sep_skin, grid_n, seed, batch_size]
 
         def _generate(*vals):
             p = _collect(*vals)
