@@ -844,7 +844,13 @@ def turning_number_inplace(
     _sync(out_wp.device)
 
 
-def _run_pipeline(config, seed_buf_wp: wp.array, out: "Track", scratch: "_Scratch") -> "Track":
+def _run_pipeline(
+    config,
+    seed_buf_wp: wp.array,
+    out: "Track",
+    scratch: "_Scratch",
+    generator_spec=None,
+) -> "Track":
     """Execute the owned pure-Warp pipeline into pre-allocated buffers. Zero alloc.
 
     Composes: generate_centerline_warp -> resample_constant_spacing -> band/L0 ->
@@ -860,14 +866,18 @@ def _run_pipeline(config, seed_buf_wp: wp.array, out: "Track", scratch: "_Scratc
     Returns:
         out (the same Track instance).
     """
-    from . import generator_registry
+    if generator_spec is None:
+        generator_spec = getattr(scratch, "generator_spec", None)
+    if generator_spec is None:
+        from . import generator_registry
+        generator_spec = generator_registry.get(config.generator)
 
     n_max = int(config.N_max)
     gen = scratch.gen        # generator-private scratch
     relax = scratch.relax    # RelaxScratch — band/L0 + XPBD buffers
 
     # 1. Generate centerline in-place into the orchestrator-owned output buffers.
-    generate = generator_registry.get(config.generator).generate
+    generate = generator_spec.generate
     generate(seed_buf_wp, config,
              out_centerline=scratch.gen_centerline,
              out_valid_wp=scratch.gen_valid,
@@ -1290,6 +1300,7 @@ class _Scratch:
     generate() path makes zero per-call allocations. The buffers are grouped by lifetime/
     concern so each stage receives only the group it owns:
 
+    .generator_spec — GeneratorSpec resolved when this scratch was allocated.
     .gen      — GenScratch:     generation intermediates (warp_generate).
     .relax    — RelaxScratch:   band/L0 + XPBD buffers (warp_relax).
     .inflate  — InflateScratch: offset/frame/validity scratch.
@@ -1315,7 +1326,7 @@ class _Scratch:
     """
 
     __slots__ = (
-        "gen", "relax", "inflate",
+        "generator_spec", "gen", "relax", "inflate",
         "gen_centerline", "gen_valid",
         "cs_center", "cs_seg", "cs_s", "count",
     )
@@ -1323,6 +1334,7 @@ class _Scratch:
     def __init__(
         self,
         inflate: "InflateScratch",
+        generator_spec=None,
         gen: "GenScratch | None" = None,
         relax: "RelaxScratch | None" = None,
         gen_centerline: "wp.array | None" = None,
@@ -1332,6 +1344,7 @@ class _Scratch:
         cs_s: "wp.array | None" = None,
         count: "wp.array | None" = None,
     ) -> None:
+        self.generator_spec = generator_spec
         self.gen = gen
         self.relax = relax
         self.inflate = inflate
@@ -1349,13 +1362,18 @@ class _Scratch:
         # (gen_centerline, gen_valid, cs_center, cs_seg, cs_s, count) and the sub-group
         # handles above are never routed here.
         for group in (self.gen, self.relax, self.inflate):
-            if group is not None and name in group.__slots__:
+            if group is None:
+                continue
+            if name in getattr(group, "__slots__", ()):
+                return getattr(group, name)
+            attrs = getattr(group, "__dict__", None)
+            if attrs is not None and name in attrs:
                 return getattr(group, name)
         raise AttributeError(
             f"{type(self).__name__!r} object has no attribute {name!r}")
 
 
-def _inflate_warp_alloc(config):
+def _inflate_warp_alloc(config, generator_spec=None):
     """Allocate a Track with pre-sized wp.array buffers for TrackGenerator.__init__.
 
     Sizes: outer/center/inner/tangent/normal are [E*N_max] vec2f; arclen is
@@ -1390,8 +1408,10 @@ def _inflate_warp_alloc(config):
         valid=wp.empty(E, dtype=wp.int32, device=dev),
         count=wp.empty(E, dtype=wp.int32, device=dev),
     )
-    from . import generator_registry
-    gen = generator_registry.get(config.generator).alloc_scratch(config)
+    if generator_spec is None:
+        from . import generator_registry
+        generator_spec = generator_registry.get(config.generator)
+    gen = generator_spec.alloc_scratch(config)
     N_gen = int(config.num_points)
     gen_centerline = wp.empty(E * N_gen, dtype=wp.vec2f, device=dev)
     gen_valid = wp.empty(E, dtype=wp.int32, device=dev)
@@ -1408,7 +1428,7 @@ def _inflate_warp_alloc(config):
         w=wp.empty(flat, dtype=wp.float32, device=dev),
     )
     scratch = _Scratch(
-        inflate=inflate, gen=gen, relax=relax,
+        inflate=inflate, generator_spec=generator_spec, gen=gen, relax=relax,
         # orchestrator-owned generation output buffers
         gen_centerline=gen_centerline,
         gen_valid=gen_valid,

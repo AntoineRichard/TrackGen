@@ -63,7 +63,7 @@ class TrackGenerator:
         if rng is None:
             raise ValueError("A random number generator must be provided.")
         from . import generator_registry
-        generator_registry.get(config.generator)  # raises ValueError listing available names
+        self._generator_spec = generator_registry.get(config.generator)
         assert config.relax_solver == "xpbd", (
             f"TrackGenerator only supports relax_solver='xpbd'; "
             f"got {config.relax_solver!r}."
@@ -79,7 +79,9 @@ class TrackGenerator:
         # (one allocation per generator); all are reused across every generate() call.
         from . import warp_pipeline
         self._track: Track
-        self._track, self._scratch = warp_pipeline._inflate_warp_alloc(config)
+        self._track, self._scratch = warp_pipeline._inflate_warp_alloc(
+            config, generator_spec=self._generator_spec,
+        )
 
         # Pre-allocate the [E] int32 seed buffer on the pipeline device. Seeds are
         # written in place before each run (wp.copy); no allocation occurs in the hot path.
@@ -100,6 +102,7 @@ class TrackGenerator:
         warp_pipeline._run_pipeline(
             self._config, self._seed_buf,
             out=self._track, scratch=self._scratch,
+            generator_spec=self._generator_spec,
         )
 
     def generate(self, num_or_ids=None) -> Track:
