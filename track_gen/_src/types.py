@@ -102,12 +102,12 @@ class TrackGenConfig:
     # broadphase refresh interval: every K sweeps we rebuild a fixed-size candidate
     # cache, while the exact narrowphase distance test and separation push still run on
     # cached candidates every sweep. K=1 preserves the dense baseline.
-    relax_sep_every: int = 1
+    relax_sep_every: int = 40
     # Cached separation candidate capacity per bead. 0 disables the cache. When enabled,
     # each bead stores up to this many non-neighbour bead indices from the latest
     # broadphase refresh. Larger values add memory and narrowphase work, but reduce the
     # chance of dropping candidates in crowded tracks.
-    relax_sep_cache_slots: int = 0
+    relax_sep_cache_slots: int = 16
     # Broadphase skin as a fraction of the exact separation target. The cache stores
     # candidates within target*(1 + skin), but every cached sweep still applies
     # separation only when the current exact distance is < target. skin=0 is fastest;
