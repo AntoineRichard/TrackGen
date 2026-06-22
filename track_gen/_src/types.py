@@ -23,7 +23,7 @@ class TrackGenConfig:
     """
 
     # --- Generator selection + batching ---
-    generator: str = "bezier"  # registered generator name; see generator_registry.available() (currently "bezier")
+    generator: str = "bezier"  # registered generator name; see generator_registry.available()
     device: str = "cpu"
     num_envs: int = 1
 
@@ -83,6 +83,17 @@ class TrackGenConfig:
     polar_num_knots: int = 12
     polar_radial_jitter: float = 0.60
     polar_angular_jitter: float = 0.30
+
+    # --- Voronoi / graph-cycle generator params (generator="voronoi") ---
+    # Samples a fixed field of cell sites, snaps angular anchor targets to nearby unused
+    # sites, smooths the resulting graph-cycle loop, then resamples to num_points. This is
+    # Warp-native and graph-capturable: exact Voronoi ridge construction remains out of the
+    # runtime path because dynamic Delaunay/cycle-basis traversal does not fit the contract.
+    voronoi_num_sites: int = 256
+    voronoi_site_layout: str = "void_ring"  # {"ring", "void_ring", "clustered", "mixed"}
+    voronoi_control_points: int = 18
+    voronoi_radial_variation: float = 0.62
+    voronoi_angular_jitter: float = 0.08
     # Experimental torch-only Fourier generator fields retained for compatibility with
     # track_gen._experimental.fourier and older sweeps.
     num_harmonics: int = 5  # K
@@ -170,6 +181,25 @@ class TrackGenConfig:
     validity_border_check: bool = False
 
     def __post_init__(self):
+        if int(self.voronoi_control_points) < 6:
+            raise ValueError(
+                f"voronoi_control_points must be >= 6, got {self.voronoi_control_points!r}")
+        if int(self.voronoi_num_sites) < int(self.voronoi_control_points):
+            raise ValueError(
+                "voronoi_num_sites must be >= voronoi_control_points, got "
+                f"{self.voronoi_num_sites!r} < {self.voronoi_control_points!r}")
+        if self.voronoi_site_layout not in {"ring", "void_ring", "clustered", "mixed"}:
+            raise ValueError(
+                "voronoi_site_layout must be one of "
+                "{'ring', 'void_ring', 'clustered', 'mixed'}, got "
+                f"{self.voronoi_site_layout!r}")
+        if float(self.voronoi_radial_variation) < 0.0:
+            raise ValueError(
+                f"voronoi_radial_variation must be >= 0, got {self.voronoi_radial_variation!r}")
+        if float(self.voronoi_angular_jitter) < 0.0:
+            raise ValueError(
+                f"voronoi_angular_jitter must be >= 0, got {self.voronoi_angular_jitter!r}")
+
         if int(self.relax_sep_every) < 1:
             raise ValueError(f"relax_sep_every must be >= 1, got {self.relax_sep_every!r}")
         if int(self.relax_sep_cache_slots) < 0:

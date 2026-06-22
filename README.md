@@ -73,16 +73,17 @@ track.valid    # [E] bool — True where the track relaxed to a valid constant-w
 track.count    # [E] int  — real points per track (the rest of each row is NaN padding)
 ```
 
-Currently the only registered generator is **Bézier** (`config.generator="bezier"`, the default).
-The Fourier generator lives in `track_gen._experimental` and is **unsupported** — it is not
-on the Warp pipeline and receives no compatibility guarantees.
+Registered first-stage generators are selected with `TrackGenConfig(generator=...)`:
+`"bezier"` (default), `"polar"`, `"hull"`, and `"voronoi"`. The Fourier generator lives in
+`track_gen._experimental` and is **unsupported** — it is not on the Warp pipeline and
+receives no compatibility guarantees.
 
 ### Choosing a generator
 
 The first-stage centerline generator is selected by `TrackGenConfig(generator=...)`.
-Available generators: see `track_gen._src.generator_registry.available()` (currently
-`"bezier"`). Adding a method is additive — see `docs/generator-contract.md` and the
-tradeoff table in `docs/generator-baseline.md`.
+Available generators: see `track_gen._src.generator_registry.available()`. Adding a method
+is additive — see `docs/generator-contract.md` and the tradeoff table in
+`docs/generator-baseline.md`.
 
 ### Output (constant spacing)
 
@@ -197,6 +198,7 @@ track_gen/
   _version.py
   _src/              # the Warp pipeline (private core)
     warp_pipeline.py warp_relax.py track_generator.py types.py rng_utils.py rng_kernels.py
+    warp_generate*.py # registered phase-1 generators: bezier, polar, hull, voronoi
   _experimental/     # fourier.py — Fourier generator (unsupported, not on the Warp path)
 tests/
   _oracle/           # torch reference impl used to validate the Warp kernels
@@ -234,8 +236,10 @@ regime / shape / resolution / relaxation knobs, a live track grid, and the valid
 ```
 
 **Using it:**
-- Controls are grouped — **Regime** (width / box), **Shape** (corner count / `rad` / `edgy` /
-  `handle_clamp_frac`), **Resolution** (`spacing` / `N_max`), **Relaxation**, **Batch**.
+- Controls are grouped — **Phase-1 generator** (method selector), **Regime** (width / box),
+  **Shape** (corner count / `rad` / `edgy` / `handle_clamp_frac`), **Polar knot spline**,
+  **Voronoi graph cycle** (`voronoi_num_sites`, layout, control points, variation),
+  **Resolution** (`spacing` / `N_max`), **Relaxation**, **Batch**.
 - Output is always **`constant_spacing`** (the only mode): **`spacing`** sets the arc step
   (≈ `0.6*half_width`) and **`N_max`** the per-track point cap. **`handle_clamp_frac`** trades
   Bézier-handle overshoot (the main self-crossing source) against corner roundness.

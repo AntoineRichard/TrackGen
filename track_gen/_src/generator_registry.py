@@ -51,6 +51,7 @@ def _ensure_loaded() -> None:
     from . import warp_generate  # noqa: F401  (registers "bezier")
     from . import warp_generate_polar  # noqa: F401  (registers "polar")
     from . import warp_generate_hull  # noqa: F401  (registers "hull")
+    from . import warp_generate_voronoi  # noqa: F401  (registers "voronoi")
     _LOADED = True
 
 

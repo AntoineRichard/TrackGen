@@ -1,5 +1,6 @@
 import math
 
+import pytest
 import torch
 
 from track_gen._src.types import Track, TrackGenConfig
@@ -27,6 +28,12 @@ def test_config_defaults_instantiate():
     assert cfg.polar_angular_jitter == 0.30
     # Hull params
     assert cfg.hull_displacement == 0.15
+    # Voronoi / graph-cycle params
+    assert cfg.voronoi_num_sites == 256
+    assert cfg.voronoi_site_layout == "void_ring"
+    assert cfg.voronoi_control_points == 18
+    assert cfg.voronoi_radial_variation == 0.62
+    assert cfg.voronoi_angular_jitter == 0.08
     assert cfg.num_harmonics == 5
     assert cfg.decay_p == 2
     assert cfg.amplitude == 1.0
@@ -68,6 +75,15 @@ def test_config_overrides_round_trip():
     assert cfg.decay_p == 3
     assert cfg.num_centerline_samples == 512
     assert cfg.w_floor == 1e-2
+
+
+def test_voronoi_static_shape_config_validation():
+    with pytest.raises(ValueError, match="voronoi_num_sites"):
+        TrackGenConfig(voronoi_num_sites=12, voronoi_control_points=18)
+    with pytest.raises(ValueError, match="voronoi_site_layout"):
+        TrackGenConfig(voronoi_site_layout="bad-layout")
+    with pytest.raises(ValueError, match="voronoi_control_points"):
+        TrackGenConfig(voronoi_control_points=5)
 
 
 def test_track_construct_from_tensors_field_shapes():

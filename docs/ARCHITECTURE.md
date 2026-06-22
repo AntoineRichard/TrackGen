@@ -21,9 +21,8 @@ is written entirely in [NVIDIA Warp](https://github.com/NVIDIA/warp) kernels.
 
 ```
 seeds[E]
-  │  GENERATION  (single pass — one corner draw per env, no regen loop, no generation gate:
-  │    corner_sample ─► ccw_sort(count) [prune-then-sort] ─► assemble (closed Bézier + handle clamp)
-  │    ─► arc-length resample [FUSED] ─► self-intersection check ─► polygon fallback for crossers)
+  │  GENERATION  (registered phase-1 generator selected by config.generator; single pass,
+  │    fixed scratch, no host retry loop; e.g. bezier / polar / hull / voronoi)
   ▼
 centerline[E, num_points, 2]     (every env real, ~always simple) + valid[E] (all True —
   │                                 final validity is decided post-relax by INFLATE)
@@ -66,7 +65,26 @@ Track(outer, center, inner, tangent, normal, arclen, length, valid, count)
 
 ## Stages
 
-### Generation — `generate_centerline_warp(seeds, config)`
+### Generation — registered first-stage generators
+
+The first stage is selected by `TrackGenConfig.generator` through
+`track_gen._src.generator_registry`. Every registered generator implements the same
+`GeneratorSpec` contract: allocate private fixed-shape scratch once, then write an
+`[E*num_points]` closed centerline and `[E]` generation-valid flag in pure Warp. The common
+runtime stays graph-capturable because each generator has static launch dimensions and no
+host-side retry loop conditioned on generated data.
+
+Registered generators:
+
+- `bezier`: corner sampling -> prune-then-sort -> closed Bezier assembly with polygon fallback.
+- `polar`: fixed-count polar control knots -> periodic Catmull-Rom -> bbox normalization.
+- `hull`: angle-sorted random points -> midpoint displacement -> Catmull-Rom with polygon fallback.
+- `voronoi`: fixed site field -> angular anchor targets snapped to nearby unused sites ->
+  graph-cycle smoothing with polygon fallback. This is the runtime-safe distillation of the
+  Voronoi/random-geometric spike; exact Voronoi/Delaunay ridge traversal stays out of the
+  hot path because dynamic cycle extraction is not CUDA-graph friendly.
+
+#### Bezier generator details
 
 A **single pass**: one corner draw per env, no regen loop and no generation gate. The whole
 thing is static (no early exit, no host branching on tensor data) so it stays graph-capturable.
@@ -173,10 +191,10 @@ default (`half_width=0.5`, `spacing=0.30`, `N_max=384`) leaves ample headroom (m
 
 [`viz/param_explorer.py`](../viz/param_explorer.py) is an interactive
 [Gradio](https://www.gradio.app/) UI for *seeing* how the config affects generation: sliders
-for the regime / shape / resolution / relaxation knobs drive the real `generate_tracks_warp`,
-rendering a paged grid of tracks plus the valid-yield and quality stats over a full batch
-(so the yield numbers are statistically meaningful). It builds on the same pure core
-(`build_config` → `generate_tracks_warp` → `draw_track`). It opens on the high-yield fat-band
+for the generator method, regime / shape / generator-specific / resolution / relaxation knobs
+drive the real `TrackGenerator` pipeline, rendering a paged grid of tracks plus the valid-yield
+and quality stats over a full batch (so the yield numbers are statistically meaningful). It
+builds on the same pure core (`build_config` → `TrackGenerator.generate` → `draw_track`). It opens on the high-yield fat-band
 regime — `half_width=0.5`, `scale=10`, `spacing=0.30`, `N_max=384`, XPBD `150` iters,
 `rad=0.4`/`handle_clamp_frac=0.4` (clamp == rad, so it only trims overshoot corners rather
 than binding every segment) — the config that relaxes to ≈ 99.9% valid at the default batch.

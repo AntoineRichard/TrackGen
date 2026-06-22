@@ -18,6 +18,13 @@ relaxes (XPBD), and inflates. To add one, implement two callables and register a
   - `out_valid_wp`: `[E]` int32 — write 1 for envs that produced a usable centerline.
   - `scratch`: the object your `alloc_scratch` returned.
 
+## Current standard generators
+
+The standard runtime generators are `bezier`, `polar`, `hull`, and `voronoi`. The Voronoi
+method is implemented as a fixed-budget site-field / graph-cycle generator rather than exact
+Voronoi ridge walking; exact Delaunay/Voronoi construction remains an offline diagnostic until
+it can satisfy the same fixed-shape Warp contract.
+
 ## Hard rules
 
 - Pure Warp kernels (`wp.launch`), one env per row. NO torch in `track_gen/_src`.

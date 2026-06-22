@@ -232,16 +232,19 @@ or grid-neighbor graph, then extract a simple cycle. Smooth the cycle and relax 
 bypasses, and more varied topology while still being simple before smoothing.
 
 **Risks.** Delaunay and graph search are not a natural fit for fixed-shape Warp kernels.
-Cycle extraction is algorithmic and branch-heavy. It may be better as an offline dataset
-generator than a runtime GPU generator.
+Cycle extraction is algorithmic and branch-heavy. Exact Voronoi ridge walking remains better
+as an offline diagnostic unless it is reduced to bounded primitives.
 
-**Warp fit.** Low for full graph algorithms. Medium if simplified to a fixed grid and
-bounded local choices.
+**Warp fit.** Medium after simplification. The production `generator="voronoi"` uses a fixed
+site field, angular anchor targets, nearest-unused-site snapping, smoothing, and polygon
+fallback. That keeps the useful cell-count/layout controls while avoiding dynamic
+Delaunay/Voronoi construction.
 
-**Experiment.** Prototype offline only. If shapes are much better, distill the result
-into a simpler generator family, such as waypoint templates or direction sequences.
+**Experiment.** Implemented as a standard Warp generator in `track_gen/_src/warp_generate_voronoi.py`.
+The remaining research question is whether exact face/ring extraction is worth distilling into
+another bounded runtime primitive.
 
-**Priority:** medium-low. Useful for inspiration, not first Warp port.
+**Priority:** implemented, with exact Voronoi traversal deferred.
 
 ### 9. Repulsive-Curve Growth as Generator
 
@@ -382,7 +385,7 @@ Keep the first production versions simple:
 | Checkpoint steering | yes | maybe | closure failures and racing feel |
 | Segment grammar | yes | maybe | closure artifacts and style control |
 | Chain-code directions | yes | maybe | self-cross rate and grid artifacts |
-| Graph-cycle extraction | offline | unlikely | non-star-shaped diversity |
+| Graph-cycle / Voronoi site snapping | yes, done | yes, implemented | site-count/layout diversity |
 | Repulsive-curve growth | yes | optional | quality vs generation cost |
 | Scalar-field contours | offline | unlikely | contour selection failures |
 | Data-driven templates | offline | maybe as codebook | realism and controllability |

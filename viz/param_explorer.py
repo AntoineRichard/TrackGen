@@ -52,6 +52,11 @@ def default_params() -> dict:
         "polar_num_knots": cfg.polar_num_knots,
         "polar_radial_jitter": cfg.polar_radial_jitter,
         "polar_angular_jitter": cfg.polar_angular_jitter,
+        "voronoi_num_sites": cfg.voronoi_num_sites,
+        "voronoi_site_layout": cfg.voronoi_site_layout,
+        "voronoi_control_points": cfg.voronoi_control_points,
+        "voronoi_radial_variation": cfg.voronoi_radial_variation,
+        "voronoi_angular_jitter": cfg.voronoi_angular_jitter,
         "num_points": cfg.num_points,
         "spacing": 0.30,
         "n_max": cfg.N_max,
@@ -101,6 +106,16 @@ def build_config(p: dict) -> TrackGenConfig:
         kw["polar_radial_jitter"] = float(p["polar_radial_jitter"])
     if p.get("polar_angular_jitter") is not None:
         kw["polar_angular_jitter"] = float(p["polar_angular_jitter"])
+    if p.get("voronoi_num_sites") is not None:
+        kw["voronoi_num_sites"] = int(p["voronoi_num_sites"])
+    if p.get("voronoi_site_layout") is not None:
+        kw["voronoi_site_layout"] = str(p["voronoi_site_layout"])
+    if p.get("voronoi_control_points") is not None:
+        kw["voronoi_control_points"] = int(p["voronoi_control_points"])
+    if p.get("voronoi_radial_variation") is not None:
+        kw["voronoi_radial_variation"] = float(p["voronoi_radial_variation"])
+    if p.get("voronoi_angular_jitter") is not None:
+        kw["voronoi_angular_jitter"] = float(p["voronoi_angular_jitter"])
     # PBD separation broadphase/narrowphase knobs; absent -> config defaults.
     if p.get("relax_sep_every") is not None:
         kw["relax_sep_every"] = int(p["relax_sep_every"])
@@ -261,7 +276,9 @@ def _collect(*vals) -> dict:
     keys = ["generator", "half_width", "scale", "min_num_points", "max_num_points",
             "min_point_distance", "num_points_per_segment", "hull_displacement",
             "rad", "edgy", "handle_clamp_frac", "polar_num_knots", "polar_radial_jitter",
-            "polar_angular_jitter", "spacing", "n_max", "relax_iters",
+            "polar_angular_jitter", "voronoi_num_sites", "voronoi_site_layout",
+            "voronoi_control_points", "voronoi_radial_variation", "voronoi_angular_jitter",
+            "spacing", "n_max", "relax_iters",
             "relax_sep_relax", "relax_spc_relax", "relax_bend_relax", "relax_margin",
             "relax_sep_every", "relax_sep_cache_slots", "relax_sep_cache_skin",
             "grid_n", "seed", "batch_size"]
@@ -314,6 +331,18 @@ def build_app():
                                          label="polar radial jitter")
                 polar_angular = gr.Slider(0.0, 0.45, value=defaults["polar_angular_jitter"], step=0.01,
                                           label="polar angular jitter")
+                gr.Markdown("### Voronoi graph cycle")
+                vor_sites = gr.Slider(32, 512, value=defaults["voronoi_num_sites"], step=16,
+                                      label="voronoi sites")
+                vor_layout = gr.Dropdown(["void_ring", "ring", "clustered", "mixed"],
+                                         value=defaults["voronoi_site_layout"],
+                                         label="voronoi site layout")
+                vor_control = gr.Slider(6, 32, value=defaults["voronoi_control_points"], step=1,
+                                        label="voronoi control points")
+                vor_radial = gr.Slider(0.0, 0.85, value=defaults["voronoi_radial_variation"], step=0.01,
+                                       label="voronoi radial variation")
+                vor_angular = gr.Slider(0.0, 0.25, value=defaults["voronoi_angular_jitter"], step=0.01,
+                                        label="voronoi angular jitter")
                 gr.Markdown("### Resolution (constant-spacing)")
                 spacing = gr.Slider(0.1, 1.0, value=defaults["spacing"], step=0.02, label="spacing (m)")
                 n_max = gr.Slider(128, 512, value=defaults["n_max"], step=8, label="N_max")
@@ -352,7 +381,8 @@ def build_app():
 
         controls = [generator, half_width, scale, min_np, max_np, min_dist, samples_per_seg,
                     hull_disp, rad, edgy, handle_clamp, polar_knots, polar_radial,
-                    polar_angular, spacing, n_max, relax_iters, sep, spc, bend, margin,
+                    polar_angular, vor_sites, vor_layout, vor_control, vor_radial, vor_angular,
+                    spacing, n_max, relax_iters, sep, spc, bend, margin,
                     sep_every, sep_slots, sep_skin, grid_n, seed, batch_size]
 
         def _generate(*vals):
