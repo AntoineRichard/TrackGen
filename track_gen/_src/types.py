@@ -58,6 +58,42 @@ class TrackGenConfig:
     # can create pinched loops that fail the thickness gate.
     hull_displacement: float = 0.15
 
+    # --- Checkpoint-steering generator params (generator="checkpoint", method #5) ---
+    # A fixed-shape NVIDIA-Warp port of Gymnasium CarRacing's track family: sample C radial
+    # checkpoints, steer a bounded-turn-rate path that chases them once around, close the
+    # heading to turning-number-1 additively (preserving local curvature), and keep the
+    # best-of-K candidate by self-intersection count. See _experimental/checkpoint_proto.py
+    # for the validated reference these defaults were tuned against.
+    #
+    # checkpoint_count C: number of radial checkpoints (CarRacing's canonical 12). More -> wavier
+    #   (chicane count scales ~ C); fewer -> calmer/rounder. Must be >= 3 for a loop.
+    checkpoint_count: int = 12
+    # Inner radius fraction: checkpoint radius ~ U(checkpoint_radius_min_frac*R, R), R=1. This is
+    #   CarRacing's R/3 exactly — the radial drama that gives the inlets. Must be in [0, 1).
+    checkpoint_radius_min_frac: float = 0.33
+    # Angle noise as +/- this fraction of the per-checkpoint angular slot (slot = 2*pi/C). Kept
+    #   < 1 so the checkpoint sequence stays angle-monotone -> the steered path winds once.
+    checkpoint_angle_jitter: float = 0.55
+    # Max heading change per steering step (rad). Bounds the path curvature -> smooth flow; too
+    #   large lets the path kink, too small can't track the inlets.
+    checkpoint_turn_rate: float = 0.42
+    # Proportional steering gain toward the current target bearing (0..1]. How aggressively the
+    #   heading chases the target each step (the bounded-turn dl couples it to one lap).
+    checkpoint_steer_gain: float = 0.65
+    # Advance to the NEXT checkpoint once within this * R of the current target. Lookahead that
+    #   keeps the path flowing through (not stalling at) each checkpoint.
+    checkpoint_lookahead_frac: float = 0.16
+    # best-of-K: generate K decorrelated candidates per env and KEEP the one with the fewest
+    #   self-intersections (deterministic argmin, ties -> lowest k). Replaces CarRacing's
+    #   unbounded reject-retry with a bounded, capturable pool. 4 is the shipped value (proven
+    #   ~0.4% pre-relax SI); the prototype's 8 was only its render driver's K. Must be >= 1.
+    checkpoint_best_of_k: int = 4
+    # OPT-IN single-crossing clip fallback (default off, like the bezier/hull polygon fallback):
+    #   when True, after best-of-K selection the selected centerline's FIRST self-crossing is
+    #   clipped — split at the intersection point, keep the longer sub-loop arc, resample to N.
+    #   A capture-time Python branch (not per-env), so the captured graph stays fixed either way.
+    checkpoint_clip_fallback: bool = False
+
     # --- Per-env style sampling (method #1: "Per-env style randomization") ---
     # OPT-IN. When False (the default) the bezier generator is BYTE-FOR-BYTE unchanged: the
     # kernels consume the scalar `rad`/`scale`/`handle_clamp_frac` above exactly as before.
@@ -208,6 +244,19 @@ class TrackGenConfig:
         if float(self.relax_sep_cache_skin) < 0.0:
             raise ValueError(
                 f"relax_sep_cache_skin must be >= 0, got {self.relax_sep_cache_skin!r}")
+
+        # Checkpoint-steering generator validation: a loop needs >= 3 checkpoints, the
+        # radius fraction must be a proper sub-unit inner radius, and best-of-K needs >= 1.
+        if int(self.checkpoint_count) < 3:
+            raise ValueError(
+                f"checkpoint_count must be >= 3, got {self.checkpoint_count!r}")
+        if int(self.checkpoint_best_of_k) < 1:
+            raise ValueError(
+                f"checkpoint_best_of_k must be >= 1, got {self.checkpoint_best_of_k!r}")
+        if not (0.0 <= float(self.checkpoint_radius_min_frac) < 1.0):
+            raise ValueError(
+                f"checkpoint_radius_min_frac must be in [0, 1), "
+                f"got {self.checkpoint_radius_min_frac!r}")
 
         # Only constant_spacing is supported: a constant link SIZE (~0.6*half_width) relaxes
         # to smoother, higher-yield tracks than a constant point COUNT, which over-resolves
