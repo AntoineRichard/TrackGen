@@ -57,6 +57,14 @@ def default_params() -> dict:
         "voronoi_control_points": cfg.voronoi_control_points,
         "voronoi_radial_variation": cfg.voronoi_radial_variation,
         "voronoi_angular_jitter": cfg.voronoi_angular_jitter,
+        "checkpoint_count": cfg.checkpoint_count,
+        "checkpoint_radius_min_frac": cfg.checkpoint_radius_min_frac,
+        "checkpoint_angle_jitter": cfg.checkpoint_angle_jitter,
+        "checkpoint_turn_rate": cfg.checkpoint_turn_rate,
+        "checkpoint_steer_gain": cfg.checkpoint_steer_gain,
+        "checkpoint_lookahead_frac": cfg.checkpoint_lookahead_frac,
+        "checkpoint_best_of_k": cfg.checkpoint_best_of_k,
+        "checkpoint_clip_fallback": cfg.checkpoint_clip_fallback,
         "num_points": cfg.num_points,
         "spacing": 0.30,
         "n_max": cfg.N_max,
@@ -116,6 +124,23 @@ def build_config(p: dict) -> TrackGenConfig:
         kw["voronoi_radial_variation"] = float(p["voronoi_radial_variation"])
     if p.get("voronoi_angular_jitter") is not None:
         kw["voronoi_angular_jitter"] = float(p["voronoi_angular_jitter"])
+    # Checkpoint steering knobs; absent -> config defaults.
+    if p.get("checkpoint_count") is not None:
+        kw["checkpoint_count"] = int(p["checkpoint_count"])
+    if p.get("checkpoint_radius_min_frac") is not None:
+        kw["checkpoint_radius_min_frac"] = float(p["checkpoint_radius_min_frac"])
+    if p.get("checkpoint_angle_jitter") is not None:
+        kw["checkpoint_angle_jitter"] = float(p["checkpoint_angle_jitter"])
+    if p.get("checkpoint_turn_rate") is not None:
+        kw["checkpoint_turn_rate"] = float(p["checkpoint_turn_rate"])
+    if p.get("checkpoint_steer_gain") is not None:
+        kw["checkpoint_steer_gain"] = float(p["checkpoint_steer_gain"])
+    if p.get("checkpoint_lookahead_frac") is not None:
+        kw["checkpoint_lookahead_frac"] = float(p["checkpoint_lookahead_frac"])
+    if p.get("checkpoint_best_of_k") is not None:
+        kw["checkpoint_best_of_k"] = int(p["checkpoint_best_of_k"])
+    if p.get("checkpoint_clip_fallback") is not None:
+        kw["checkpoint_clip_fallback"] = bool(p["checkpoint_clip_fallback"])
     # PBD separation broadphase/narrowphase knobs; absent -> config defaults.
     if p.get("relax_sep_every") is not None:
         kw["relax_sep_every"] = int(p["relax_sep_every"])
@@ -278,6 +303,9 @@ def _collect(*vals) -> dict:
             "rad", "edgy", "handle_clamp_frac", "polar_num_knots", "polar_radial_jitter",
             "polar_angular_jitter", "voronoi_num_sites", "voronoi_site_layout",
             "voronoi_control_points", "voronoi_radial_variation", "voronoi_angular_jitter",
+            "checkpoint_count", "checkpoint_radius_min_frac", "checkpoint_angle_jitter",
+            "checkpoint_turn_rate", "checkpoint_steer_gain", "checkpoint_lookahead_frac",
+            "checkpoint_best_of_k", "checkpoint_clip_fallback",
             "spacing", "n_max", "relax_iters",
             "relax_sep_relax", "relax_spc_relax", "relax_bend_relax", "relax_margin",
             "relax_sep_every", "relax_sep_cache_slots", "relax_sep_cache_skin",
@@ -343,6 +371,23 @@ def build_app():
                                        label="voronoi radial variation")
                 vor_angular = gr.Slider(0.0, 0.25, value=defaults["voronoi_angular_jitter"], step=0.01,
                                         label="voronoi angular jitter")
+                gr.Markdown("### Checkpoint steering")
+                checkpoint_count = gr.Slider(4, 24, value=defaults["checkpoint_count"], step=1,
+                                             label="checkpoint_count (radial waypoints)")
+                checkpoint_radius_min_frac = gr.Slider(0.1, 0.9, value=defaults["checkpoint_radius_min_frac"],
+                                                       step=0.01, label="checkpoint_radius_min_frac")
+                checkpoint_angle_jitter = gr.Slider(0.0, 0.9, value=defaults["checkpoint_angle_jitter"],
+                                                    step=0.01, label="checkpoint_angle_jitter")
+                checkpoint_turn_rate = gr.Slider(0.1, 1.0, value=defaults["checkpoint_turn_rate"],
+                                                 step=0.01, label="checkpoint_turn_rate")
+                checkpoint_steer_gain = gr.Slider(0.1, 1.0, value=defaults["checkpoint_steer_gain"],
+                                                  step=0.01, label="checkpoint_steer_gain")
+                checkpoint_lookahead_frac = gr.Slider(0.05, 0.4, value=defaults["checkpoint_lookahead_frac"],
+                                                      step=0.01, label="checkpoint_lookahead_frac")
+                checkpoint_best_of_k = gr.Slider(1, 8, value=defaults["checkpoint_best_of_k"], step=1,
+                                                 label="checkpoint_best_of_k (candidates)")
+                checkpoint_clip_fallback = gr.Checkbox(value=defaults["checkpoint_clip_fallback"],
+                                                       label="checkpoint_clip_fallback (single-crossing rescue)")
                 gr.Markdown("### Resolution (constant-spacing)")
                 spacing = gr.Slider(0.1, 1.0, value=defaults["spacing"], step=0.02, label="spacing (m)")
                 n_max = gr.Slider(128, 512, value=defaults["n_max"], step=8, label="N_max")
@@ -382,6 +427,9 @@ def build_app():
         controls = [generator, half_width, scale, min_np, max_np, min_dist, samples_per_seg,
                     hull_disp, rad, edgy, handle_clamp, polar_knots, polar_radial,
                     polar_angular, vor_sites, vor_layout, vor_control, vor_radial, vor_angular,
+                    checkpoint_count, checkpoint_radius_min_frac, checkpoint_angle_jitter,
+                    checkpoint_turn_rate, checkpoint_steer_gain, checkpoint_lookahead_frac,
+                    checkpoint_best_of_k, checkpoint_clip_fallback,
                     spacing, n_max, relax_iters, sep, spc, bend, margin,
                     sep_every, sep_slots, sep_skin, grid_n, seed, batch_size]
 
