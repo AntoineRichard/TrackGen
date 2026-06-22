@@ -152,7 +152,8 @@ def _close_heading_ramp_k(
     two_pi = 2.0 * wp.pi
     ds = 1.0 / float(N)
 
-    # Heading of edge 0 (the cumsum reference; theta_closed[0] := 0 after rebuild).
+    # Heading of edge 0 (used as the walking reference for wrapped-increment accumulation only;
+    # NOT the cumsum zeroing reference — see drift below).
     e0 = path[b + 1] - path[b + 0]
     theta_prev = wp.atan2(e0[1], e0[0])
     theta0 = theta_prev
@@ -173,8 +174,13 @@ def _close_heading_ramp_k(
     # Rebuild headings with the drift, integrate the unit-step displacement, accumulate the mean
     # edge (for gap-distribution) and the raw cumulative position sum (for the centroid). Each
     # quantity is a sequential reduction in this single thread — no scratch, no host sync.
-    # theta_closed[i] = (cumsum of (dtheta + drift))[i] - theta0, with dtheta_0 = 0.
-    theta_acc = float(0.0)        # running cumsum of corrected increments (pre theta0 shift)
+    #
+    # After adding drift: dtheta[0] = 0 + drift = drift (since dtheta_0 = 0 by construction),
+    # so theta_closed[0] = cumsum[0] = drift. Subtracting drift zeros the first element:
+    # theta_closed[i] = (cumsum of (dtheta + drift))[i] - drift, with theta_closed[0] := 0.
+    # (Matches the proto's `theta_closed -= theta_closed[0]` which subtracts drift for the same
+    # reason. Using theta0 instead would apply a constant ~3 rad offset — a rigid rotation.)
+    theta_acc = float(0.0)        # running cumsum of corrected increments (pre drift shift)
     theta_prev2 = theta0
     sum_ex = float(0.0)           # sum of edge x (for mean-edge subtraction)
     sum_ey = float(0.0)
@@ -190,7 +196,7 @@ def _close_heading_ramp_k(
             dth = wp.atan2(wp.sin(dthr), wp.cos(dthr))
             theta_prev2 = theta_i
         theta_acc += dth + drift
-        th_closed = theta_acc - theta0
+        th_closed = theta_acc - drift   # subtract drift so theta_closed[0] := 0
         sum_ex += ds * wp.cos(th_closed)
         sum_ey += ds * wp.sin(th_closed)
     mean_ex = sum_ex / float(N)
@@ -214,7 +220,7 @@ def _close_heading_ramp_k(
             dth = wp.atan2(wp.sin(dthr), wp.cos(dthr))
             theta_prev3 = theta_i
         theta_acc += dth + drift
-        th_closed = theta_acc - theta0
+        th_closed = theta_acc - drift   # subtract drift so theta_closed[0] := 0
         ex = ds * wp.cos(th_closed) - mean_ex
         ey = ds * wp.sin(th_closed) - mean_ey
         px += ex
@@ -320,8 +326,9 @@ def _clip_assemble_k(
     base = e * N
     db = e * M
 
-    # --- find first crossing (same proper-crossing predicate as track_metrics.self_intersects,
-    # without the scale-relative tolerance, matching the proto's _find_crossings) ---
+    # --- find first crossing (strict >0 sign-flip predicate, matching the proto's
+    # _find_crossings; intentionally different from the pipeline's self_intersections_inplace
+    # which uses a scale-relative tolerance for best-of-K scoring — not a bug) ---
     found = int(0)
     fi = int(0)
     fj = int(0)
