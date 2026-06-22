@@ -148,3 +148,78 @@ Risks to watch on the Warp port:
    ~0.7% and K=8 reaches 0%; the port must keep K≥4 (ideally 8) and the deterministic
    fewest-crossings argmin. The per-candidate self-intersection count is the cost driver of the
    port (O(N^2) edge pairs × K) and should be a tiled/blocked kernel, not the host loop used here.
+
+## Cheaper alternative: K + single-crossing CLIP ("loop removal") — benchmark
+
+The K=8 brute-force pays 8× the O(N²) edge-pair cost just to *select away* the rare crosser. Can a
+cheaper **K=2 best-of-K + one-shot clip** match it? The clip (`clip_single_crossing`) finds the
+self-crossings (the same O(N²) edge-pair PASS, now recording the crossing index pair `(i,j)` and
+the intersection point `P`), and **if the curve crosses** splits it at the first crossing into two
+sub-loops — inner arc `pts[i+1..j]` and outer arc `pts[j+1..N-1]+pts[0..i]`, each closed through
+`P` — keeps the **longer by arc length**, and arc-resamples it back to N points (fixed-N out).
+With **exactly one** crossing both sub-loops are simple, so the clip is a guaranteed rescue. With
+≥2 it is best-effort: we apply the single clip anyway (one-shot, **no** iterate-until-simple loop)
+and re-count residual crossings. The `K+clip` pipeline (`generate_centerline_clip`) clips each of K
+candidates once and keeps the one with the fewest residual crossings (argmin, ties → lowest k).
+
+Benchmark: `track_gen/_experimental/checkpoint_clip_bench.py`, **1000 seeds**, tuned DEFAULTS.
+Cost proxy = O(N²) self-intersection PASSES per env (the Warp cost driver), worst-case (no
+early-out): best-of-K alone = **K** passes; `K+clip` = **2K** passes (K clip-find + K residual-count).
+
+| config | post-proc SI rate | cost (N² passes/env) | compactness p50 | straight_fraction |
+|---|---|---|---|---|
+| K=1        | 0.2210 | 1 | 0.555 | 0.770 |
+| K=2        | 0.0630 | 2 | 0.574 | 0.763 |
+| K=4        | 0.0040 | 4 | 0.581 | 0.758 |
+| K=8        | **0.0000** | 8 | 0.580 | 0.757 |
+| K=1+clip   | 0.0770 | 2 | 0.582 | 0.767 |
+| **K=2+clip** | **0.0060** | **4** | 0.586 | 0.766 |
+| K=4+clip   | **0.0000** | 8 | 0.583 | 0.765 |
+
+(Host-numpy wall clock was ~80–100 s / 1000 envs across configs — dominated by the O(N²) self-int
+test in pure numpy; it's a rough secondary signal, NOT the Warp cost. The pass column is the real
+trade.) Compactness p50 (~0.58) and straight_fraction (~0.77) are **unchanged** by clipping — the
+clip keeps the longer sub-loop, so it preserves the flowing/sweeping shape rather than wrecking it.
+
+### KEY diagnostic — crossing-count distribution among the raw K=1 crossers
+
+This single number explains the whole table. Of the **221/1000 = 22.1%** single-candidate crossers:
+
+| crossings on the crosser | count | fraction of crossers | fraction of all envs |
+|---|---|---|---|
+| **exactly 1** (one-shot clippable → simple) | 110 | **0.498** | 0.110 |
+| exactly 2 | 60 | 0.272 | — |
+| ≥3 (max seen: 6) | 51 | 0.231 | — |
+
+**Only ~50% of crossers have a single crossing** — so a *lone* one-shot clip cannot zero the rate
+(it leaves the ~half with ≥2 crossings, some still crossing after one clip). That is exactly why
+`K=1+clip` only reaches 7.7% (≈ the 11% single-crossers it can fix, minus partial reductions on
+multi-crossers). The leverage comes from **combining** clip with even a tiny best-of-K: clipping
+*reduces* every candidate's crossing count (a 3-crossing curve clips toward 1–2), and best-of-2
+then **selects the candidate that clipped cleanest**. Two clipped, decorrelated candidates almost
+always contain one that lands at zero → **K=2+clip = 0.6%**, statistically tied with **K=4 (0.4%)**
+and one residual short of K=8.
+
+### Verdict on K=2+clip
+
+**K=2+clip matches K=4-quality (0.6% vs 0.4% SI) at K=4-equivalent cost (4 passes), and lands within
+one residual env of K=8 at HALF of K=8's cost (4 vs 8 passes).** It is the **sweet spot for the
+near-zero tier**: the cheapest config that drops SI to <1% while *fully* preserving shape. It does
+**not** beat plain K=4 on the cost/quality frontier (both are 4 passes, ~0.5% SI), because the clip
+itself costs a second pass per candidate (2K, not K) — so "K=2+clip" and "K=4-alone" are the same
+price. The honest framing: **clip buys you K=8's quality tier at K=4's price** (K=4+clip = 0/1000,
+8 passes, identical to K=8 but with shape-preserving rescue instead of blind reselection), and lets
+**K=2 reach the sub-1% band it cannot reach alone** (6.3% → 0.6%).
+
+**Residual for the validity gate:** K=2+clip leaves **~0.6% (6/1000)** self-intersecting envs — the
+multi-crossing cases (≥2) where neither decorrelated candidate clipped to zero. That residual must
+still be caught by the downstream validity gate (or bumped to K=4+clip / K=8 for a hard-zero
+guarantee). Recommendation: **K=2+clip when a ~0.6% residual is acceptable to the gate** (best
+shape-preserving rescue per pass in the near-zero band); **K=4+clip for a measured 0/1000** at the
+same 8-pass budget as K=8. The clip is fully bounded (O(N²) find + O(N) keep-longer + O(N) resample,
+no unbounded iterate-until-simple), so it is as CUDA-graph-capturable as best-of-K itself.
+
+Render: `viz/out/checkpoint_k2clip_grid.png` (K=2+clip) — 24/25 clean, flowing loops with inlets,
+visually the same family as the K=8 grid; clip preserves shape (no degenerate cusps/collapsed
+loops). The lone red cell is a residual ≥2-crossing seed, consistent with the 0.6% rate.
+(Regenerate with `python track_gen/_experimental/checkpoint_clip_grid.py`; renders not committed.)

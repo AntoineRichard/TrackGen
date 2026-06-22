@@ -324,6 +324,125 @@ def _self_intersects(pts: np.ndarray) -> bool:
     return _self_intersections_count(pts) > 0
 
 
+def _find_crossings(pts: np.ndarray):
+    """Return [(i, j, P), ...] for every non-adjacent edge-pair crossing on the closed loop.
+
+    Same proper-crossing test as ``_self_intersections_count`` / ``track_metrics.self_intersects``
+    (one O(N^2) edge-pair PASS), but instead of just counting it records the segment index pair
+    ``(i, j)`` (with ``i < j``, scanned in increasing-``i`` then increasing-``j`` order so the
+    "first" crossing is deterministic) and the intersection point ``P`` of segments
+    ``pts[i]->pts[i+1]`` and ``pts[j]->pts[j+1]``. The point is computed by the standard 2D
+    segment-intersection parameterisation (a bounded per-pair arithmetic — Warp-friendly).
+    """
+    n = len(pts)
+    a = pts                              # [n,2] segment starts
+    b = np.roll(pts, -1, axis=0)         # [n,2] segment ends
+
+    def ccw(o, p, q):
+        return (p[..., 0] - o[..., 0]) * (q[..., 1] - o[..., 1]) - \
+               (p[..., 1] - o[..., 1]) * (q[..., 0] - o[..., 0])
+
+    ai = a[:, None, :]; bi = b[:, None, :]
+    aj = a[None, :, :]; bj = b[None, :, :]
+    d1 = ccw(ai, bi, aj); d2 = ccw(ai, bi, bj)
+    d3 = ccw(aj, bj, ai); d4 = ccw(aj, bj, bi)
+    crosses = ((d1 > 0) != (d2 > 0)) & ((d3 > 0) != (d4 > 0))
+    i = np.arange(n)[:, None]; j = np.arange(n)[None, :]
+    adjacent = ((i + 1) % n == j) | ((j + 1) % n == i)
+    mask = (j > i) & ~adjacent & crosses
+    ii, jj = np.nonzero(mask)            # already sorted by (i, j) -> deterministic first crossing
+
+    out = []
+    for si, sj in zip(ii.tolist(), jj.tolist()):
+        p1, p2 = a[si], b[si]
+        p3, p4 = a[sj], b[sj]
+        r = p2 - p1
+        s = p4 - p3
+        denom = r[0] * s[1] - r[1] * s[0]
+        if abs(denom) < 1e-12:
+            P = 0.5 * (p1 + p3)          # degenerate (near-parallel) -> midpoint fallback
+        else:
+            t = ((p3[0] - p1[0]) * s[1] - (p3[1] - p1[1]) * s[0]) / denom
+            P = p1 + t * r
+        out.append((si, sj, P))
+    return out
+
+
+def clip_single_crossing(pts: np.ndarray):
+    """One-shot "loop removal": clip the FIRST self-crossing, keep the longer sub-loop, re-fix-N.
+
+    A closed N-point loop with a self-crossing at segment pair ``(i, j)`` (i<j) splits, at the
+    intersection point ``P``, into two sub-loops:
+      * the "inner" arc ``points[i+1 .. j]`` closed via ``P``;
+      * the "outer" arc ``points[j+1 .. N-1] + points[0 .. i]`` closed via ``P``.
+    With EXACTLY ONE crossing both sub-loops are simple (the single crossing was their only shared
+    geometry), so keeping either gives a simple loop. We keep the LONGER one (by arc length) to
+    preserve as much of the track as possible, then arc-length resample it back to N points so the
+    output stays fixed-N.
+
+    With >=2 crossings clipping the first one does NOT guarantee simplicity (the kept arc may still
+    contain another crossing). This applies the single clip anyway (best-effort, one-shot) and the
+    caller can re-test for residual crossings. There is deliberately NO iterate-until-simple loop.
+
+    Cost: one O(N^2) find PASS + O(N) keep-longer + O(N) resample — all bounded / capturable.
+
+    Returns ``(clipped_pts [N,2], n_crossings_before)``. If the input is already simple
+    (0 crossings) it is returned unchanged with ``n_crossings_before == 0``.
+    """
+    n = len(pts)
+    crossings = _find_crossings(pts)
+    nc = len(crossings)
+    if nc == 0:
+        return pts.copy(), 0
+
+    i, j, P = crossings[0]               # deterministic first crossing
+    P = P.reshape(1, 2)
+
+    # Inner sub-loop: vertices i+1 .. j, closed through the intersection point P.
+    inner = np.vstack([P, pts[i + 1:j + 1], P])
+    # Outer sub-loop: vertices j+1 .. N-1 then 0 .. i, closed through P.
+    outer = np.vstack([P, pts[j + 1:n], pts[0:i + 1], P])
+
+    def arclen(poly):
+        return float(np.linalg.norm(np.diff(poly, axis=0), axis=1).sum())
+
+    keep = inner if arclen(inner) >= arclen(outer) else outer
+    # keep already starts and ends at P (closed); resample its open vertex list (drop the
+    # duplicate closing P) back to N points via the existing closed-loop arc resampler.
+    return _resample_closed(keep[:-1], n), nc
+
+
+# ---------------------------------------------------------------------------------------------
+# Pipeline variants: best-of-K alone, and K + one-shot clip.
+# ---------------------------------------------------------------------------------------------
+
+def generate_centerline_clip(seed: int, cfg: dict, K: int):
+    """K candidates -> clip EACH one-shot -> keep the candidate with the FEWEST residual crossings.
+
+    For each of the K decorrelated candidates (seed ``seed*K + k``, same decorrelation as
+    best-of-K), run ``clip_single_crossing`` ONCE, then re-count crossings on the clipped result.
+    Select the clipped candidate with the fewest residual crossings (deterministic argmin, ties ->
+    lowest k; early-out on the first zero). This is the cheaper alternative to a big-K brute force:
+    instead of K passes hoping one candidate is crossing-free, we actively rescue each candidate.
+
+    Cost per env (O(N^2) PASSES): K find-passes inside the clips + K residual-count passes = 2K.
+    With the zero-residual early-out it can be less, but we report the worst case (no early-out) in
+    the benchmark cost column to keep the compute trade conservative and seed-independent.
+
+    Returns ``(best_clipped_pts, best_residual_crossings)``.
+    """
+    best, best_res = None, None
+    for k in range(K):
+        cand = generate_candidate(seed * K + k, cfg)
+        clipped, _ = clip_single_crossing(cand)          # one find PASS
+        res = _self_intersections_count(clipped)         # one residual-count PASS
+        if best_res is None or res < best_res:
+            best, best_res = clipped, res
+            if best_res == 0:
+                break
+    return best, best_res
+
+
 # ---------------------------------------------------------------------------------------------
 # Driver: metrics tables (K=1, 4, 8) + single-candidate and best-of-K render grids.
 # ---------------------------------------------------------------------------------------------
