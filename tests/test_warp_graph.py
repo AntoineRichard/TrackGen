@@ -25,12 +25,15 @@ import warp as wp  # noqa: E402
 from tests._warp_compare import to_t  # noqa: E402
 from track_gen._src.types import TrackGenConfig  # noqa: E402
 from track_gen._src import warp_pipeline as wpp  # noqa: E402
+from track_gen._src import generator_registry  # noqa: E402
 from track_gen._src.track_generator import TrackGenerator  # noqa: E402
 from track_gen._src.rng_utils import PerEnvSeededRNG  # noqa: E402
 from track_gen._src.types import Track  # noqa: E402
 
+_ALL_GENERATORS = generator_registry.available()
 
-def _cfg(E: int, relax_iters: int = 20) -> TrackGenConfig:
+
+def _cfg(E: int, relax_iters: int = 20, generator: str = "bezier") -> TrackGenConfig:
     # Modest iters keep the test fast; the capture mechanism is independent of count.
     # constant_spacing is the only supported mode; N_max large enough for every env.
     return TrackGenConfig(
@@ -38,6 +41,7 @@ def _cfg(E: int, relax_iters: int = 20) -> TrackGenConfig:
         spacing=0.6, N_max=256,
         relax_solver="xpbd", smooth_finish=False,
         relax_iters=relax_iters, max_regen_iters=4,
+        generator=generator,
     )
 
 
@@ -88,10 +92,11 @@ def _track_allclose(got: Track, ref: dict, atol=1e-4):
         f"length mismatch, max err {(la - lb).abs().max().item():.3e}"
 
 
-def test_autocapture_replay_matches_eager():
+@pytest.mark.parametrize("gen_name", _ALL_GENERATORS)
+def test_autocapture_replay_matches_eager(gen_name: str):
     """First generate() captures; second generate() replays; result == eager _run()."""
     E = 64
-    cfg = _cfg(E)
+    cfg = _cfg(E, generator=gen_name)
 
     # Build an eager reference using gen._run() directly (same seeds as the captured run).
     rng = _make_rng(E, seed=42)
