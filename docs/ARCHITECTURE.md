@@ -22,7 +22,7 @@ is written entirely in [NVIDIA Warp](https://github.com/NVIDIA/warp) kernels.
 ```
 seeds[E]
   │  FIRST-STAGE GENERATION  (registered config.generator:
-  │    "bezier", "hull", "polar", or "voronoi";
+  │    "bezier", "hull", "polar", "voronoi", or "checkpoint";
   │    single pass, generator-private scratch, no regen loop, no generation gate)
   ▼
 centerline[E, num_points, 2]     (every env real) + valid[E] (all True —
@@ -80,6 +80,7 @@ runtime registry currently exposes:
 | `"hull"` | `warp_generate_hull.py` | angle-sorted point loop → displaced midpoints → closed Catmull-Rom | selected augmented-polygon fallback for Catmull-Rom self-crossers |
 | `"polar"` | `warp_generate_polar.py` | sorted polar control knots → periodic Catmull-Rom spline | no generator-local fallback; downstream relaxation/inflation gates final validity |
 | `"voronoi"` | `warp_generate_voronoi.py` | fixed site field → angular anchor cycle → smoothed graph-cycle loop | selected anchor-polygon fallback for smooth-loop self-crossers |
+| `"checkpoint"` | `warp_generate_checkpoint.py` | radial checkpoints → bounded-turn steering → additive heading-ramp closure | best-of-K candidate selection (default K=4); optional single-crossing clip fallback (off by default) |
 
 Every registered runtime generator follows the same hard contract:
 
@@ -227,6 +228,45 @@ The knobs are `voronoi_num_sites`, `voronoi_site_layout`, `voronoi_control_point
 `voronoi_radial_variation`, and `voronoi_angular_jitter`. Higher site counts make the anchor
 snap richer but increase site-scan work; higher control counts add more local features and
 can raise the relaxation burden.
+
+#### `generator="checkpoint"` — checkpoint-steering (CarRacing family)
+
+The checkpoint generator is the runtime-safe distillation of Gymnasium `CarRacing`'s track
+synthesis: it steers a bounded-turn path through random radial checkpoints, producing an
+organic, continuously-undulating "flowing" loop unlike the star-shaped families. CarRacing's
+two data-dependent steps — an unbounded reject-retry loop and a variable-length lap trim — do
+not fit the fixed-shape CUDA-graph contract, so both are replaced with bounded, capturable
+analogues.
+
+1. **Checkpoints.** `_sample_checkpoints_k` draws `C=checkpoint_count` points at angles
+   `2*pi*c/C + jitter` (bounded by `checkpoint_angle_jitter`, kept angle-monotone) on radii
+   `U(checkpoint_radius_min_frac*R, R)` — CarRacing's checkpoint distribution.
+2. **Bounded-turn steering.** `_steer_k` walks a fixed `num_points`-step path with step length
+   `dl = ring_perimeter/N` (pins it to ~one lap — no over-generate-and-trim); each step steers
+   the heading toward the current target checkpoint with proportional gain
+   `checkpoint_steer_gain`, the per-step turn clamped to `±checkpoint_turn_rate`, advancing the
+   target when within `checkpoint_lookahead_frac*R` of it.
+3. **Additive heading-ramp closure.** `_close_heading_ramp_k` closes the heading to turning
+   number 1 ADDITIVELY — a constant drift `(2*pi - net_turn)/N` per step makes the net turn
+   exactly 2*pi (no inner loops) while PRESERVING the steered local curvature (the sweeps and
+   inlets); displacement is then gap-distribution closed. (Multiplicative rescaling flattened the
+   loop toward a blob, and closing in position space self-crossed — both were rejected.)
+4. **Best-of-K selection.** With `checkpoint_best_of_k` (K, default 4) > 1, `_select_best_k`
+   keeps the least-self-intersecting of K decorrelated candidates per env (deterministic argmin,
+   tie-break lowest k) — the bounded, capturable replacement for CarRacing's reject-retry, a
+   capture-time Python branch (K==1 copies the single candidate via `_copy_single_k`). K=4 gives
+   ~0% pre-relax self-intersection at the default config; `_normalize_centerline_k` then centers
+   + bbox-rescales to the shared target extent.
+5. **Optional clip fallback.** When `checkpoint_clip_fallback=True` (off by default),
+   `_clip_assemble_k` rescues any self-crossing selected env by single-crossing "loop removal"
+   (clip at the crossing, keep the longer simple sub-loop, arc-resample) — a shape-preserving
+   rescue. Off, self-crossers are decided by the shared post-relax validity gate, like polar.
+
+The knobs are `checkpoint_count`, `checkpoint_radius_min_frac`, `checkpoint_angle_jitter`,
+`checkpoint_turn_rate`, `checkpoint_steer_gain`, `checkpoint_lookahead_frac`,
+`checkpoint_best_of_k`, and `checkpoint_clip_fallback`. The host reference
+`track_gen/_experimental/checkpoint_proto.py` mirrors the steering + closure (best-of-K is
+warp-only).
 
 ### Resample — `arc_length_resample_warp` and `resample_uniform`
 
