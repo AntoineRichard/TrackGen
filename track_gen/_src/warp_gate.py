@@ -342,16 +342,15 @@ def _finalize_validity_k(
             p = position[base + i]
             t = tangent[base + i]
             n = normal[base + i]
+            li = left[base + i]
+            ri = right[base + i]
             fields_finite = (
                 wp.isfinite(p[0]) and wp.isfinite(p[1]) and
                 wp.isfinite(t[0]) and wp.isfinite(t[1]) and
-                wp.isfinite(n[0]) and wp.isfinite(n[1])
+                wp.isfinite(n[0]) and wp.isfinite(n[1]) and
+                wp.isfinite(li[0]) and wp.isfinite(li[1]) and
+                wp.isfinite(ri[0]) and wp.isfinite(ri[1])
             )
-            if gate_width > 0.0:
-                li = left[base + i]
-                ri = right[base + i]
-                fields_finite = fields_finite and wp.isfinite(li[0]) and wp.isfinite(li[1])
-                fields_finite = fields_finite and wp.isfinite(ri[0]) and wp.isfinite(ri[1])
             if not fields_finite:
                 ok = int(0)
 

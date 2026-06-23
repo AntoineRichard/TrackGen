@@ -37,6 +37,28 @@ def test_finalize_computes_normals_and_endpoints():
     assert torch.isnan(left[0, 2:]).all()
 
 
+def test_finalize_invalidates_nonfinite_endpoints():
+    gates = _manual_sequence()
+    pos = to_t(gates.position).view(1, 4, 2)
+    tan = to_t(gates.tangent).view(1, 4, 2)
+    count = to_t(gates.count)
+    pos[0, 0] = torch.tensor([0.0, 0.0])
+    pos[0, 1] = torch.tensor([2.0, 0.0])
+    tan[0, 0] = torch.tensor([1.0, 0.0])
+    tan[0, 1] = torch.tensor([1.0, 0.0])
+    count[0] = 2
+
+    cfg = GateGenConfig(
+        max_gates=4,
+        gate_width=float("nan"),
+        min_gate_distance=0.0,
+        min_gates=2,
+    )
+    warp_gate.finalize_gate_sequence(gates, cfg)
+
+    assert to_t(gates.valid).bool().tolist() == [False]
+
+
 def test_finalize_invalidates_too_close_gate_centres():
     gates = _manual_sequence()
     pos = to_t(gates.position).view(1, 4, 2)
