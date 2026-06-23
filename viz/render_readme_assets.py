@@ -1,7 +1,8 @@
 """Render deterministic PNG assets used by the README.
 
-The images are generated from the real TrackGen runtime pipeline with fixed seeds, then
-written under ``docs/assets`` so they can be committed and displayed by GitHub.
+The images are generated from the real TrackGen runtime pipeline with fixed seeds and
+default geometry parameters, then written under ``docs/assets`` so they can be committed
+and displayed by GitHub.
 
 Run from the repository root:
 
@@ -32,16 +33,7 @@ GENERATORS = [
 
 def _generate(name: str, seed: int, needed: int = 5):
     batch = 24
-    cfg = TrackGenConfig(
-        generator=name,
-        num_envs=batch,
-        device="cpu",
-        half_width=0.08,
-        scale=5.0,
-        spacing=0.12,
-        N_max=384,
-        relax_iters=80,
-    )
+    cfg = TrackGenConfig(generator=name, num_envs=batch, device="cpu")
     rng = PerEnvSeededRNG(seeds=seed, num_envs=batch, device="cpu")
     track = TrackGenerator(cfg, rng).generate()
     center = wp.to_torch(track.center).cpu().numpy().reshape(batch, cfg.N_max, 2)
@@ -68,16 +60,7 @@ def _generate(name: str, seed: int, needed: int = 5):
 
 def _generate_pipeline_sample(name: str = "bezier", seed: int = 100):
     batch = 24
-    cfg = TrackGenConfig(
-        generator=name,
-        num_envs=batch,
-        device="cpu",
-        half_width=0.08,
-        scale=5.0,
-        spacing=0.12,
-        N_max=384,
-        relax_iters=80,
-    )
+    cfg = TrackGenConfig(generator=name, num_envs=batch, device="cpu")
     rng = PerEnvSeededRNG(seeds=seed, num_envs=batch, device="cpu")
     generator = TrackGenerator(cfg, rng)
     track = generator.generate()

@@ -18,14 +18,14 @@ seeds[E] ─► registered phase-1 generator ─► constant-spacing resample �
 
 ![TrackGen standard generator grid](docs/assets/readme-generator-grid.png)
 
-*Deterministic fixed-seed render of the five standard first-stage generators: Bezier,
-checkpoint, hull, polar, and Voronoi.*
+*Deterministic fixed-seed render of the five standard first-stage generators using
+default parameters: Bezier, checkpoint, hull, polar, and Voronoi.*
 
 ![TrackGen pipeline stages](docs/assets/readme-pipeline-stages.png)
 
-*The runtime pipeline turns the first Bezier sample above from a raw phase-1 centerline
-into a constant-spacing path, relaxes it with XPBD, then inflates it into a
-constant-width road band.*
+*The runtime pipeline turns the first default-parameter Bezier sample above from a raw
+phase-1 centerline into a constant-spacing path, relaxes it with XPBD, then inflates it
+into a constant-width road band.*
 
 ## Install
 
