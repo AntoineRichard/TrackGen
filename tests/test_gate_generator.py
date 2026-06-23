@@ -257,3 +257,31 @@ def test_point_family_gate_generators_cuda_capture_reuses_output(generator):
         c = int(count[e])
         assert torch.isfinite(position[e, :c]).all()
         assert torch.isfinite(position[e]).all(dim=-1).sum().item() == c
+
+
+def test_gate_generator_invalidates_large_min_distance():
+    E = 4
+    cfg = GateGenConfig(
+        generator="checkpoint",
+        gate_ordering="raw",
+        num_envs=E,
+        max_gates=32,
+        min_gate_distance=100.0,
+        device="cpu",
+    )
+    gates = GateGenerator(cfg, _make_rng(E, seed=5)).generate(E)
+    assert not to_t(gates.valid).bool().any()
+
+
+def test_generate_wrong_batch_raises():
+    cfg = GateGenConfig(num_envs=4, device="cpu")
+    gen = GateGenerator(cfg, _make_rng(4))
+    with pytest.raises(ValueError):
+        gen.generate(5)
+
+
+def test_generate_rejects_sequence_ids():
+    cfg = GateGenConfig(num_envs=4, device="cpu")
+    gen = GateGenerator(cfg, _make_rng(4))
+    with pytest.raises(TypeError, match="does not accept explicit environment ids"):
+        gen.generate([0, 1, 2, 3])

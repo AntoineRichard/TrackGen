@@ -90,6 +90,36 @@ center[0, : int(count[0])]  # real arc-uniform centerline points for env 0
 graph captures one fixed batch shape. The same `Track` instance and Warp buffers are reused
 on every call, so use `track.clone()` when you need an independent snapshot.
 
+### Gate sequence generation
+
+For drone-style courses where track width is irrelevant, use `GateGenerator`.
+It emits gate centres and orientations directly from native first-stage generator anchors
+and skips constant-spacing, XPBD relaxation, and inflation.
+
+```python
+import warp as wp
+wp.init()
+
+from track_gen import GateGenConfig, GateGenerator, PerEnvSeededRNG
+
+E, device = 64, "cuda"
+config = GateGenConfig(
+    generator="bezier",
+    gate_ordering="random_pairs",
+    num_envs=E,
+    max_gates=32,
+    gate_width=0.4,
+    min_gate_distance=0.05,
+    device=device,
+)
+rng = PerEnvSeededRNG(seeds=0, num_envs=E, device=device)
+
+gates = GateGenerator(config, rng).generate()
+position = wp.to_torch(gates.position).view(E, config.max_gates, 2)
+tangent = wp.to_torch(gates.tangent).view(E, config.max_gates, 2)
+valid = wp.to_torch(gates.valid).bool()
+```
+
 Registered first-stage generators are selected with `TrackGenConfig(generator=...)`:
 `"bezier"` (default), `"checkpoint"`, `"hull"`, `"polar"`, and `"voronoi"`. The Fourier
 generator lives in `track_gen._experimental` and is **unsupported** — it is not on the
