@@ -90,7 +90,7 @@ def _generate_pipeline_sample(name: str = "bezier", seed: int = 100):
     final_center = final_all[env_id, :count]
     outer = wp.to_torch(track.outer).cpu().numpy().reshape(batch, cfg.N_max, 2)[env_id, :count]
     inner = wp.to_torch(track.inner).cpu().numpy().reshape(batch, cfg.N_max, 2)[env_id, :count]
-    return raw, cs, relaxed, final_center, outer, inner, bool(valid_arr[env_id])
+    return raw, cs, relaxed, final_center, outer, inner, bool(valid_arr[env_id]), float(cfg.half_width)
 
 
 def _finite_rows(points: np.ndarray) -> np.ndarray:
@@ -138,6 +138,35 @@ def _draw_centerline_stage(ax, points: np.ndarray, *, color: str, title: str, do
             ax.scatter(pts[::every, 0], pts[::every, 1], s=7, color="#111827", alpha=0.85, zorder=3)
         _set_track_limits(ax, pts)
     ax.set_title(title, fontsize=11, fontweight="bold", color="#111827", pad=8)
+    _style_axis(ax)
+
+
+def _offset_polyline(points: np.ndarray, half_width: float) -> tuple[np.ndarray, np.ndarray]:
+    prev_pts = np.roll(points, 1, axis=0)
+    next_pts = np.roll(points, -1, axis=0)
+    tangent = next_pts - prev_pts
+    normal = np.column_stack([-tangent[:, 1], tangent[:, 0]])
+    length = np.linalg.norm(normal, axis=1, keepdims=True)
+    normal = np.divide(normal, length, out=np.zeros_like(normal), where=length > 1e-8)
+    return points + half_width * normal, points - half_width * normal
+
+
+def _draw_relaxed_stage(ax, points: np.ndarray, *, track_half_width: float) -> None:
+    pts = _finite_rows(points)
+    if len(pts) >= 3:
+        visual_half_width = 0.5 * track_half_width
+        outer, inner = _offset_polyline(pts, visual_half_width)
+        band = np.vstack([outer, inner[::-1]])
+        ax.fill(band[:, 0], band[:, 1], color="#ede9fe", alpha=0.92, linewidth=0, zorder=1)
+        for edge in (outer, inner):
+            closed_edge = np.vstack([edge, edge[0]])
+            ax.plot(closed_edge[:, 0], closed_edge[:, 1], color="#7c3aed", lw=0.85, zorder=2)
+        closed = np.vstack([pts, pts[0]])
+        ax.plot(closed[:, 0], closed[:, 1], color="#4c1d95", lw=1.0, zorder=3)
+        every = max(1, len(pts) // 42)
+        ax.scatter(pts[::every, 0], pts[::every, 1], s=6, color="#111827", alpha=0.78, zorder=4)
+        _set_track_limits(ax, np.vstack([outer, inner, pts]))
+    ax.set_title("XPBD Relaxed", fontsize=11, fontweight="bold", color="#111827", pad=8)
     _style_axis(ax)
 
 
@@ -204,11 +233,11 @@ def render_readme_assets(output_dir: Path = OUT_DIR) -> list[Path]:
     fig.savefig(grid_path, bbox_inches="tight", facecolor="white")
     plt.close(fig)
 
-    raw, cs, relaxed, final_center, outer, inner, valid = _generate_pipeline_sample()
+    raw, cs, relaxed, final_center, outer, inner, valid, track_half_width = _generate_pipeline_sample()
     fig, axes = plt.subplots(1, 4, figsize=(12.2, 3.0), dpi=180, facecolor="white")
     _draw_centerline_stage(axes[0], raw, color="#2563eb", title="Phase 1", dots=False)
     _draw_centerline_stage(axes[1], cs, color="#0f766e", title="Constant Spacing", dots=True)
-    _draw_centerline_stage(axes[2], relaxed, color="#7c3aed", title="XPBD Relaxed", dots=True)
+    _draw_relaxed_stage(axes[2], relaxed, track_half_width=track_half_width)
     _draw_final_stage(axes[3], final_center, outer, inner, valid=valid)
     fig.suptitle(
         "Phase-1 centerline to final road band",

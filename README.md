@@ -16,17 +16,16 @@ seeds[E] ─► registered phase-1 generator ─► constant-spacing resample �
             bezier/checkpoint/hull/polar/voronoi                         thickness≥w              outer/center/inner
 ```
 
-![TrackGen standard generator grid](docs/assets/readme-generator-grid.png)
+![Representative phase-1 outputs by generator](docs/assets/readme-generator-strip.png)
 
-*Deterministic fixed-seed render of the raw phase-1 centerline output from each
-standard generator, using default parameters: Bezier, checkpoint, hull, polar, and
-Voronoi.*
+*One representative raw phase-1 centerline from each standard generator, rendered with
+fixed seeds and default parameters.*
 
 ![TrackGen pipeline stages](docs/assets/readme-pipeline-stages.png)
 
-*The runtime pipeline turns the first default-parameter Bezier sample above from a raw
-phase-1 centerline into a constant-spacing path, relaxes it with XPBD, then inflates it
-into a constant-width road band.*
+*The runtime pipeline turns the first default-parameter Bezier sample in the strip above
+from a raw phase-1 centerline into a constant-spacing path, relaxes it with XPBD, then
+inflates it into a constant-width road band.*
 
 ## Install
 
@@ -96,10 +95,10 @@ Registered first-stage generators are selected with `TrackGenConfig(generator=..
 generator lives in `track_gen._experimental` and is **unsupported** — it is not on the
 Warp pipeline and receives no compatibility guarantees.
 
-![Representative tracks by generator](docs/assets/readme-generator-strip.png)
+![TrackGen standard generator grid](docs/assets/readme-generator-grid.png)
 
-*One representative raw phase-1 centerline from each standard generator, rendered by
-`.venv/bin/python -m viz.render_readme_assets`.*
+*Five deterministic raw phase-1 centerline outputs from each standard generator,
+rendered by `.venv/bin/python -m viz.render_readme_assets`.*
 
 ### Choosing a generator
 
