@@ -28,6 +28,10 @@ def _track_snapshot(seed=123):
         to_t(track.center).clone(),
         to_t(track.outer).clone(),
         to_t(track.inner).clone(),
+        to_t(track.tangent).clone(),
+        to_t(track.normal).clone(),
+        to_t(track.arclen).clone(),
+        to_t(track.length).clone(),
         to_t(track.valid).clone(),
         to_t(track.count).clone(),
     )
