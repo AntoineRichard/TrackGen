@@ -120,7 +120,7 @@ tangent = wp.to_torch(gates.tangent).view(E, config.max_gates, 2)
 valid = wp.to_torch(gates.valid).bool()
 ```
 
-Registered first-stage generators are selected with `TrackGenConfig(generator=...)`:
+Registered first-stage gate generators are selected with `GateGenConfig(generator=...)`:
 `"bezier"` (default), `"checkpoint"`, `"hull"`, `"polar"`, and `"voronoi"`. The Fourier
 generator lives in `track_gen._experimental` and is **unsupported** — it is not on the
 Warp pipeline and receives no compatibility guarantees.

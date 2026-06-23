@@ -10,6 +10,22 @@ def _make_rng(num_envs: int, seed: int = 0, device: str = "cpu"):
     return PerEnvSeededRNG(seeds=seed, num_envs=num_envs, device=device)
 
 
+def _assert_generated_gate_fields_are_finite(gates, num_envs: int, max_gates: int):
+    fields = [
+        to_t(gates.position).view(num_envs, max_gates, 2),
+        to_t(gates.tangent).view(num_envs, max_gates, 2),
+        to_t(gates.normal).view(num_envs, max_gates, 2),
+        to_t(gates.left).view(num_envs, max_gates, 2),
+        to_t(gates.right).view(num_envs, max_gates, 2),
+    ]
+    count = to_t(gates.count)
+    for e in range(num_envs):
+        c = int(count[e])
+        for field in fields:
+            assert torch.isfinite(field[e, :c]).all()
+            assert torch.isnan(field[e, c:]).all()
+
+
 def test_gate_generator_requires_rng():
     cfg = GateGenConfig()
     with pytest.raises(ValueError, match="random number generator"):
@@ -129,17 +145,14 @@ def test_point_family_gate_generators_emit_finite_native_gates(generator, orderi
     )
     gates = GateGenerator(cfg, _make_rng(E, seed=31)).generate(E)
     position = to_t(gates.position).view(E, G, 2)
-    tangent = to_t(gates.tangent).view(E, G, 2)
     count = to_t(gates.count)
     valid = to_t(gates.valid).bool()
 
     assert valid.all()
     assert torch.all(count >= cfg.min_gates)
+    _assert_generated_gate_fields_are_finite(gates, E, G)
     for e in range(E):
         c = int(count[e])
-        assert torch.isfinite(position[e, :c]).all()
-        assert torch.isfinite(tangent[e, :c]).all()
-        assert torch.isnan(position[e, c:]).all()
         assert torch.isfinite(position[e]).all(dim=-1).sum().item() == c
 
 
@@ -163,17 +176,13 @@ def test_structured_gate_generators_emit_finite_native_gates(generator, ordering
             min_gate_distance=0.0,
         )
         gates = GateGenerator(cfg, _make_rng(E, seed=71)).generate(E)
-        position = to_t(gates.position).view(E, G, 2)
-        tangent = to_t(gates.tangent).view(E, G, 2)
         count = to_t(gates.count)
         valid = to_t(gates.valid).bool()
         assert valid.all()
+        _assert_generated_gate_fields_are_finite(gates, E, G)
         for e in range(E):
             c = int(count[e])
             assert c >= cfg.min_gates
-            assert torch.isfinite(position[e, :c]).all()
-            assert torch.isfinite(tangent[e, :c]).all()
-            assert torch.isnan(position[e, c:]).all()
 
 
 def test_polar_gate_generator_capacity_uses_clamped_knot_count():
@@ -226,6 +235,28 @@ def test_point_family_gate_generators_reject_too_small_max_gates(generator):
         GateGenerator(cfg, _make_rng(1, seed=7))
 
 
+def test_gate_generator_cpu_reuses_output_instance_and_buffers():
+    E, G = 2, 32
+    cfg = GateGenConfig(
+        generator="bezier",
+        gate_ordering="ccw",
+        num_envs=E,
+        max_gates=G,
+        device="cpu",
+        min_gate_distance=0.0,
+    )
+    gen = GateGenerator(cfg, _make_rng(E, seed=41))
+
+    first = gen.generate(E)
+    ptr = first.position.ptr
+    second = gen.generate()
+
+    assert second is first
+    assert second.position.ptr == ptr
+    assert to_t(second.valid).bool().all()
+    _assert_generated_gate_fields_are_finite(second, E, G)
+
+
 @pytest.mark.cuda
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda")
 @pytest.mark.parametrize("generator", ["bezier", "hull"])
@@ -253,10 +284,37 @@ def test_point_family_gate_generators_cuda_capture_reuses_output(generator):
     count = to_t(second.count)
     valid = to_t(second.valid).bool()
     assert valid.all()
+    _assert_generated_gate_fields_are_finite(second, E, G)
     for e in range(E):
         c = int(count[e])
-        assert torch.isfinite(position[e, :c]).all()
         assert torch.isfinite(position[e]).all(dim=-1).sum().item() == c
+
+
+def test_gate_generator_invalidates_zero_count_from_native_generator(monkeypatch):
+    monkeypatch.setattr(reg, "GATE_GENERATORS", {})
+    monkeypatch.setattr(reg, "_LOADED", True)
+    reg.register(reg.GateGeneratorSpec(
+        name="zero-count",
+        alloc_scratch=lambda config: object(),
+        generate=lambda seeds_wp, config, out, scratch: None,
+        max_gates=lambda config: 2,
+        supported_orderings=frozenset({"ccw"}),
+    ))
+
+    E, G = 3, 2
+    cfg = GateGenConfig(
+        generator="zero-count",
+        num_envs=E,
+        min_gates=2,
+        max_gates=G,
+        device="cpu",
+    )
+    gates = GateGenerator(cfg, _make_rng(E, seed=101)).generate()
+
+    count = to_t(gates.count)
+    assert torch.equal(count, torch.zeros_like(count))
+    assert not to_t(gates.valid).bool().any()
+    _assert_generated_gate_fields_are_finite(gates, E, G)
 
 
 def test_gate_generator_invalidates_large_min_distance():
