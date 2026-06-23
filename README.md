@@ -18,8 +18,14 @@ seeds[E] ─► registered phase-1 generator ─► constant-spacing resample �
 
 ![TrackGen standard generator grid](docs/assets/readme-generator-grid.png)
 
-*Deterministic CPU render of the five standard first-stage generators: Bezier, checkpoint,
-hull, polar, and Voronoi.*
+*Deterministic fixed-seed render of the five standard first-stage generators: Bezier,
+checkpoint, hull, polar, and Voronoi.*
+
+![TrackGen pipeline stages](docs/assets/readme-pipeline-stages.png)
+
+*The runtime pipeline turns the first Bezier sample above from a raw phase-1 centerline
+into a constant-spacing path, relaxes it with XPBD, then inflates it into a
+constant-width road band.*
 
 ## Install
 
@@ -234,7 +240,7 @@ benchmarks/  viz/  docs/
 # Render sample tracks without launching the Gradio app.
 .venv/bin/python -m viz.plot_tracks --images 1 --rows 4 --cols 4 --cpu
 
-# Rebuild the committed README images from deterministic CPU runs.
+# Rebuild the committed README images from deterministic fixed-seed runs.
 .venv/bin/python -m viz.render_readme_assets
 ```
 

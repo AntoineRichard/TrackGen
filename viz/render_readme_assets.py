@@ -1,7 +1,7 @@
 """Render deterministic PNG assets used by the README.
 
-The images are generated from the real TrackGen runtime pipeline on the Warp CPU device,
-then written under ``docs/assets`` so they can be committed and displayed by GitHub.
+The images are generated from the real TrackGen runtime pipeline with fixed seeds, then
+written under ``docs/assets`` so they can be committed and displayed by GitHub.
 
 Run from the repository root:
 
@@ -66,8 +66,65 @@ def _generate(name: str, seed: int, needed: int = 5):
     return center, outer, inner, valid, count, chosen[:needed]
 
 
+def _generate_pipeline_sample(name: str = "bezier", seed: int = 100):
+    batch = 24
+    cfg = TrackGenConfig(
+        generator=name,
+        num_envs=batch,
+        device="cpu",
+        half_width=0.08,
+        scale=5.0,
+        spacing=0.12,
+        N_max=384,
+        relax_iters=80,
+    )
+    rng = PerEnvSeededRNG(seeds=seed, num_envs=batch, device="cpu")
+    generator = TrackGenerator(cfg, rng)
+    track = generator.generate()
+    scratch = generator._scratch
+
+    valid_arr = wp.to_torch(track.valid).cpu().numpy().astype(bool)
+    count_arr = wp.to_torch(track.count).cpu().numpy().astype(int)
+    final_all = wp.to_torch(track.center).cpu().numpy().reshape(batch, cfg.N_max, 2)
+    env_id = 0
+    for e in range(batch):
+        n = int(count_arr[e])
+        if valid_arr[e] and n >= 4 and np.isfinite(final_all[e, :n]).all():
+            env_id = e
+            break
+
+    count = int(count_arr[env_id])
+    raw = wp.to_torch(scratch.gen_centerline).cpu().numpy().reshape(batch, cfg.num_points, 2)[env_id]
+    cs = wp.to_torch(scratch.cs_center).cpu().numpy().reshape(batch, cfg.N_max, 2)[env_id, :count]
+    relaxed = wp.to_torch(scratch.relax.relaxed).cpu().numpy().reshape(batch, cfg.N_max, 2)[env_id, :count]
+    final_center = final_all[env_id, :count]
+    outer = wp.to_torch(track.outer).cpu().numpy().reshape(batch, cfg.N_max, 2)[env_id, :count]
+    inner = wp.to_torch(track.inner).cpu().numpy().reshape(batch, cfg.N_max, 2)[env_id, :count]
+    return raw, cs, relaxed, final_center, outer, inner, bool(valid_arr[env_id])
+
+
 def _finite_rows(points: np.ndarray) -> np.ndarray:
     return points[np.isfinite(points).all(axis=1)]
+
+
+def _set_track_limits(ax, points: np.ndarray, pad_frac: float = 0.22) -> None:
+    pts = _finite_rows(points)
+    if len(pts) < 3:
+        return
+    xmin, ymin = pts.min(axis=0)
+    xmax, ymax = pts.max(axis=0)
+    dx, dy = xmax - xmin, ymax - ymin
+    pad = max(dx, dy) * pad_frac + 0.1
+    ax.set_xlim(xmin - pad, xmax + pad)
+    ax.set_ylim(ymin - pad, ymax + pad)
+
+
+def _style_axis(ax) -> None:
+    ax.set_aspect("equal")
+    ax.set_xticks([])
+    ax.set_yticks([])
+    for spine in ax.spines.values():
+        spine.set_visible(False)
 
 
 def _draw_track(ax, center, outer, inner, valid, count, e: int, *, lw: float, center_lw: float) -> None:
@@ -93,12 +150,7 @@ def _draw_track(ax, center, outer, inner, valid, count, e: int, *, lw: float, ce
             ls=(0, (5, 4)),
             zorder=3,
         )
-        xmin, ymin = c.min(axis=0)
-        xmax, ymax = c.max(axis=0)
-        dx, dy = xmax - xmin, ymax - ymin
-        pad = max(dx, dy) * 0.22 + 0.1
-        ax.set_xlim(xmin - pad, xmax + pad)
-        ax.set_ylim(ymin - pad, ymax + pad)
+        _set_track_limits(ax, c)
     if not bool(valid[e]):
         ax.text(
             0.5,
@@ -110,11 +162,40 @@ def _draw_track(ax, center, outer, inner, valid, count, e: int, *, lw: float, ce
             color="#dc2626",
             fontsize=8,
         )
-    ax.set_aspect("equal")
-    ax.set_xticks([])
-    ax.set_yticks([])
-    for spine in ax.spines.values():
-        spine.set_visible(False)
+    _style_axis(ax)
+
+
+def _draw_centerline_stage(ax, points: np.ndarray, *, color: str, title: str, dots: bool = False) -> None:
+    pts = _finite_rows(points)
+    if len(pts) >= 3:
+        closed = np.vstack([pts, pts[0]])
+        ax.plot(closed[:, 0], closed[:, 1], color=color, lw=1.45, zorder=2)
+        if dots:
+            every = max(1, len(pts) // 42)
+            ax.scatter(pts[::every, 0], pts[::every, 1], s=7, color="#111827", alpha=0.85, zorder=3)
+        _set_track_limits(ax, pts)
+    ax.set_title(title, fontsize=11, fontweight="bold", color="#111827", pad=8)
+    _style_axis(ax)
+
+
+def _draw_final_stage(ax, center: np.ndarray, outer: np.ndarray, inner: np.ndarray, *, valid: bool) -> None:
+    c = _finite_rows(center)
+    o = _finite_rows(outer)
+    inn = _finite_rows(inner)
+    if len(o) >= 3 and len(inn) >= 3:
+        band = np.vstack([o, inn[::-1]])
+        ax.fill(band[:, 0], band[:, 1], color="#2f343b", alpha=0.96, linewidth=0, zorder=1)
+        for pts in (o, inn):
+            closed = np.vstack([pts, pts[0]])
+            ax.plot(closed[:, 0], closed[:, 1], color="#111827", lw=1.15, zorder=2)
+    if len(c) >= 3:
+        closed = np.vstack([c, c[0]])
+        ax.plot(closed[:, 0], closed[:, 1], color="#f8fafc", lw=0.75, ls=(0, (5, 4)), zorder=3)
+        _set_track_limits(ax, np.vstack([o, inn, c]))
+    if not valid:
+        ax.text(0.5, 0.5, "invalid", transform=ax.transAxes, ha="center", va="center", color="#dc2626")
+    ax.set_title("Inflated Track", fontsize=11, fontweight="bold", color="#111827", pad=8)
+    _style_axis(ax)
 
 
 def _load_samples() -> dict[str, tuple]:
@@ -160,6 +241,24 @@ def render_readme_assets(output_dir: Path = OUT_DIR) -> list[Path]:
     fig.savefig(grid_path, bbox_inches="tight", facecolor="white")
     plt.close(fig)
 
+    raw, cs, relaxed, final_center, outer, inner, valid = _generate_pipeline_sample()
+    fig, axes = plt.subplots(1, 4, figsize=(12.2, 3.0), dpi=180, facecolor="white")
+    _draw_centerline_stage(axes[0], raw, color="#2563eb", title="Phase 1", dots=False)
+    _draw_centerline_stage(axes[1], cs, color="#0f766e", title="Constant Spacing", dots=True)
+    _draw_centerline_stage(axes[2], relaxed, color="#7c3aed", title="XPBD Relaxed", dots=True)
+    _draw_final_stage(axes[3], final_center, outer, inner, valid=valid)
+    fig.suptitle(
+        "Phase-1 centerline to final road band",
+        fontsize=15,
+        fontweight="bold",
+        y=1.02,
+        color="#111827",
+    )
+    fig.tight_layout(w_pad=0.55)
+    pipeline_path = output_dir / "readme-pipeline-stages.png"
+    fig.savefig(pipeline_path, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+
     fig, axes = plt.subplots(1, len(GENERATORS), figsize=(12.0, 2.75), dpi=180, facecolor="white")
     for ax, (name, label) in zip(axes, GENERATORS):
         center, outer, inner, valid, count, chosen = samples[name]
@@ -170,7 +269,7 @@ def render_readme_assets(output_dir: Path = OUT_DIR) -> list[Path]:
     fig.savefig(strip_path, bbox_inches="tight", facecolor="white")
     plt.close(fig)
 
-    return [grid_path, strip_path]
+    return [grid_path, pipeline_path, strip_path]
 
 
 def main() -> None:
