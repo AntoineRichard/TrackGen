@@ -176,6 +176,43 @@ def test_structured_gate_generators_emit_finite_native_gates(generator, ordering
             assert torch.isnan(position[e, c:]).all()
 
 
+def test_polar_gate_generator_capacity_uses_clamped_knot_count():
+    cfg = GateGenConfig(generator="polar", polar_num_knots=3, max_gates=3, min_gates=2)
+    rng = PerEnvSeededRNG(seeds=0, num_envs=cfg.num_envs, device=cfg.device)
+    with pytest.raises(ValueError, match="max_gates"):
+        GateGenerator(cfg, rng)
+
+
+@pytest.mark.parametrize(
+    ("cfg_kwargs", "required"),
+    [
+        ({"generator": "polar", "polar_num_knots": 3, "max_gates": 4}, 4),
+        (
+            {
+                "generator": "voronoi",
+                "voronoi_control_points": 7,
+                "voronoi_num_sites": 7,
+                "max_gates": 7,
+            },
+            7,
+        ),
+        ({"generator": "checkpoint", "checkpoint_count": 5, "max_gates": 5}, 5),
+    ],
+)
+def test_structured_gate_generators_succeed_at_tight_capacity(cfg_kwargs, required):
+    cfg = GateGenConfig(num_envs=3, min_gate_distance=0.0, **cfg_kwargs)
+    gates = GateGenerator(cfg, _make_rng(cfg.num_envs, seed=83)).generate(cfg.num_envs)
+    count = to_t(gates.count)
+    assert torch.equal(count, torch.full_like(count, required))
+
+
+@pytest.mark.parametrize("generator", ["polar", "voronoi", "checkpoint"])
+def test_structured_gate_generators_reject_random_pairs_ordering(generator):
+    cfg = GateGenConfig(generator=generator, gate_ordering="random_pairs")
+    with pytest.raises(ValueError, match="does not support gate_ordering"):
+        GateGenerator(cfg, _make_rng(cfg.num_envs, seed=97))
+
+
 @pytest.mark.parametrize("generator", ["bezier", "hull"])
 def test_point_family_gate_generators_reject_too_small_max_gates(generator):
     cfg = GateGenConfig(

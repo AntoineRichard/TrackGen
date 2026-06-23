@@ -90,7 +90,7 @@ def register_specs() -> None:
         name="polar",
         alloc_scratch=polar_gate_alloc_scratch,
         generate=generate_polar_gates,
-        max_gates=lambda config: int(config.polar_num_knots),
+        max_gates=_polar_num_knots,
         supported_orderings=frozenset({"ccw", "raw"}),
     ))
 
