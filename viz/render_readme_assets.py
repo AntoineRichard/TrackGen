@@ -22,6 +22,8 @@ import warp as wp  # noqa: E402
 from track_gen import PerEnvSeededRNG, TrackGenConfig, TrackGenerator  # noqa: E402
 
 OUT_DIR = Path("docs/assets")
+README_PIPELINE_HALF_WIDTH = 0.05
+
 GENERATORS = [
     ("bezier", "Bezier"),
     ("checkpoint", "Checkpoint"),
@@ -67,7 +69,12 @@ def _generate(name: str, seed: int, needed: int = 5):
 
 def _generate_pipeline_sample(name: str = "bezier", seed: int = 100):
     batch = 24
-    cfg = TrackGenConfig(generator=name, num_envs=batch, device="cpu")
+    cfg = TrackGenConfig(
+        generator=name,
+        num_envs=batch,
+        device="cpu",
+        half_width=README_PIPELINE_HALF_WIDTH,
+    )
     rng = PerEnvSeededRNG(seeds=seed, num_envs=batch, device="cpu")
     generator = TrackGenerator(cfg, rng)
     track = generator.generate()
@@ -151,11 +158,10 @@ def _offset_polyline(points: np.ndarray, half_width: float) -> tuple[np.ndarray,
     return points + half_width * normal, points - half_width * normal
 
 
-def _draw_relaxed_stage(ax, points: np.ndarray, *, track_half_width: float) -> None:
+def _draw_relaxed_stage(ax, points: np.ndarray, *, relax_half_width: float) -> None:
     pts = _finite_rows(points)
     if len(pts) >= 3:
-        visual_half_width = 0.5 * track_half_width
-        outer, inner = _offset_polyline(pts, visual_half_width)
+        outer, inner = _offset_polyline(pts, relax_half_width)
         band = np.vstack([outer, inner[::-1]])
         ax.fill(band[:, 0], band[:, 1], color="#ede9fe", alpha=0.92, linewidth=0, zorder=1)
         for edge in (outer, inner):
@@ -233,11 +239,11 @@ def render_readme_assets(output_dir: Path = OUT_DIR) -> list[Path]:
     fig.savefig(grid_path, bbox_inches="tight", facecolor="white")
     plt.close(fig)
 
-    raw, cs, relaxed, final_center, outer, inner, valid, track_half_width = _generate_pipeline_sample()
+    raw, cs, relaxed, final_center, outer, inner, valid, relax_half_width = _generate_pipeline_sample()
     fig, axes = plt.subplots(1, 4, figsize=(12.2, 3.0), dpi=180, facecolor="white")
     _draw_centerline_stage(axes[0], raw, color="#2563eb", title="Phase 1", dots=False)
     _draw_centerline_stage(axes[1], cs, color="#0f766e", title="Constant Spacing", dots=True)
-    _draw_relaxed_stage(axes[2], relaxed, track_half_width=track_half_width)
+    _draw_relaxed_stage(axes[2], relaxed, relax_half_width=relax_half_width)
     _draw_final_stage(axes[3], final_center, outer, inner, valid=valid)
     fig.suptitle(
         "Phase-1 centerline to final road band",

@@ -23,9 +23,9 @@ fixed seeds and default parameters.*
 
 ![TrackGen pipeline stages](docs/assets/readme-pipeline-stages.png)
 
-*The runtime pipeline turns the first default-parameter Bezier sample in the strip above
-from a raw phase-1 centerline into a constant-spacing path, relaxes it with XPBD, then
-inflates it into a constant-width road band.*
+*The runtime pipeline turns a Bezier sample at half the default track width from a raw
+phase-1 centerline into a constant-spacing path, relaxes it with XPBD, then inflates it
+into a constant-width road band.*
 
 ## Install
 
@@ -236,7 +236,23 @@ benchmarks/  viz/  docs/
 # End-to-end benchmark (auto device, E=8192). --graph captures + times the CUDA graph.
 .venv/bin/python -m benchmarks.benchmark_pipeline --graph
 .venv/bin/python -m benchmarks.benchmark_pipeline --E 2048 --cpu
+```
 
+Current timing snapshot, from `.venv/bin/python -m benchmarks.compare_generators --E 512 --seed 0`
+and `.venv/bin/python -m benchmarks.benchmark_pipeline --graph` on June 23, 2026:
+
+| benchmark | device / batch | timing |
+|---|---:|---:|
+| Full pipeline with Bezier first-stage | CPU / E=512 | 807.9 ms/call |
+| Full pipeline with Checkpoint first-stage | CPU / E=512 | 1145.0 ms/call |
+| Full pipeline with Hull first-stage | CPU / E=512 | 864.7 ms/call |
+| Full pipeline with Polar first-stage | CPU / E=512 | 576.6 ms/call |
+| Full pipeline with Voronoi first-stage | CPU / E=512 | 755.5 ms/call |
+| Full pipeline + XPBD, eager | CUDA / E=8192 | 0.0962 s/call |
+| Full pipeline + XPBD, graph replay | CUDA / E=8192 | 0.0959 s/replay |
+| CUDA graph capture | CUDA / E=8192 | 0.3866 s |
+
+```bash
 # Render sample tracks without launching the Gradio app.
 .venv/bin/python -m viz.plot_tracks --images 1 --rows 4 --cols 4 --cpu
 
