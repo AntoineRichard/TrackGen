@@ -156,6 +156,7 @@ def test_point_family_gate_generators_reject_too_small_max_gates(generator):
         GateGenerator(cfg, _make_rng(1, seed=7))
 
 
+@pytest.mark.cuda
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda")
 @pytest.mark.parametrize("generator", ["bezier", "hull"])
 def test_point_family_gate_generators_cuda_capture_reuses_output(generator):

@@ -72,20 +72,28 @@ def generate_hull_gates(seeds_wp, config, out, scratch) -> None:
     wp.copy(out.count, scratch.count)
 
 
-from . import gate_generator_registry as _registry  # noqa: E402
+def _max_point_gates(config) -> int:
+    return int(config.max_num_points)
 
-_registry.register(_registry.GateGeneratorSpec(
-    name="bezier",
-    alloc_scratch=_point_gate_alloc_scratch,
-    generate=generate_bezier_gates,
-    max_gates=lambda config: int(config.max_num_points),
-    supported_orderings=frozenset({"ccw", "random_pairs"}),
-))
 
-_registry.register(_registry.GateGeneratorSpec(
-    name="hull",
-    alloc_scratch=_point_gate_alloc_scratch,
-    generate=generate_hull_gates,
-    max_gates=lambda config: int(config.max_num_points),
-    supported_orderings=frozenset({"ccw", "random_pairs"}),
-))
+def register_specs() -> None:
+    from . import gate_generator_registry as _registry
+
+    _registry.register(_registry.GateGeneratorSpec(
+        name="bezier",
+        alloc_scratch=_point_gate_alloc_scratch,
+        generate=generate_bezier_gates,
+        max_gates=_max_point_gates,
+        supported_orderings=frozenset({"ccw", "random_pairs"}),
+    ))
+
+    _registry.register(_registry.GateGeneratorSpec(
+        name="hull",
+        alloc_scratch=_point_gate_alloc_scratch,
+        generate=generate_hull_gates,
+        max_gates=_max_point_gates,
+        supported_orderings=frozenset({"ccw", "random_pairs"}),
+    ))
+
+
+register_specs()

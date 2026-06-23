@@ -42,9 +42,24 @@ _OPTIONAL_GATE_GENERATOR_MODULES = (
 )
 
 
+def _spec_module(spec: GateGeneratorSpec) -> str | None:
+    for attr in ("generate", "alloc_scratch", "max_gates"):
+        module = getattr(getattr(spec, attr), "__module__", None)
+        if module:
+            return module
+    return None
+
+
 def register(spec: GateGeneratorSpec) -> None:
-    if spec.name in GATE_GENERATORS:
-        raise ValueError(f"gate generator {spec.name!r} is already registered")
+    existing = GATE_GENERATORS.get(spec.name)
+    if existing is not None:
+        existing_module = _spec_module(existing)
+        spec_module = _spec_module(spec)
+        if existing_module != spec_module:
+            raise ValueError(
+                f"gate generator {spec.name!r} is already registered by "
+                f"{existing_module!r}"
+            )
     GATE_GENERATORS[spec.name] = spec
 
 
@@ -55,7 +70,10 @@ def _ensure_loaded() -> None:
 
     for module_name in _OPTIONAL_GATE_GENERATOR_MODULES:
         if importlib.util.find_spec(module_name) is not None:
-            importlib.import_module(module_name)
+            module = importlib.import_module(module_name)
+            register_specs = getattr(module, "register_specs", None)
+            if register_specs is not None:
+                register_specs()
 
     _LOADED = True
 
