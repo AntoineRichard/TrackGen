@@ -5,13 +5,12 @@ import warp as wp
 
 
 class PointGateScratch:
-    __slots__ = ("count", "points", "used", "ordered", "keys")
+    __slots__ = ("count", "points", "used", "keys")
 
-    def __init__(self, count, points, used, ordered, keys):
+    def __init__(self, count, points, used, keys):
         self.count = count
         self.points = points
         self.used = used
-        self.ordered = ordered
         self.keys = keys
 
 
@@ -27,7 +26,6 @@ def _point_gate_alloc_scratch(config):
         count=wp.empty(E, dtype=wp.int32, device=dev),
         points=wp.empty(E * P, dtype=wp.vec2f, device=dev),
         used=wp.empty(E * P, dtype=wp.int32, device=dev),
-        ordered=wp.empty(E * G, dtype=wp.vec2f, device=dev),
         keys=wp.empty(E * G, dtype=wp.float32, device=dev),
     )
 

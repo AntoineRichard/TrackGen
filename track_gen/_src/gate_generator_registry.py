@@ -43,6 +43,8 @@ _OPTIONAL_GATE_GENERATOR_MODULES = (
 
 
 def register(spec: GateGeneratorSpec) -> None:
+    if spec.name in GATE_GENERATORS:
+        raise ValueError(f"gate generator {spec.name!r} is already registered")
     GATE_GENERATORS[spec.name] = spec
 
 

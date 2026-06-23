@@ -140,3 +140,49 @@ def test_point_family_gate_generators_emit_finite_native_gates(generator, orderi
         assert torch.isfinite(position[e, :c]).all()
         assert torch.isfinite(tangent[e, :c]).all()
         assert torch.isnan(position[e, c:]).all()
+        assert torch.isfinite(position[e]).all(dim=-1).sum().item() == c
+
+
+@pytest.mark.parametrize("generator", ["bezier", "hull"])
+def test_point_family_gate_generators_reject_too_small_max_gates(generator):
+    cfg = GateGenConfig(
+        generator=generator,
+        num_envs=1,
+        max_gates=8,
+        max_num_points=13,
+        device="cpu",
+    )
+    with pytest.raises(ValueError, match="max_gates"):
+        GateGenerator(cfg, _make_rng(1, seed=7))
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda")
+@pytest.mark.parametrize("generator", ["bezier", "hull"])
+def test_point_family_gate_generators_cuda_capture_reuses_output(generator):
+    E, G = 2, 32
+    cfg = GateGenConfig(
+        generator=generator,
+        gate_ordering="ccw",
+        num_envs=E,
+        max_gates=G,
+        device="cuda:0",
+        min_gate_distance=0.0,
+    )
+    gen = GateGenerator(cfg, _make_rng(E, seed=41, device="cuda:0"))
+
+    first = gen.generate(E)
+    ptr = first.position.ptr
+    second = gen.generate(E)
+    torch.cuda.synchronize()
+
+    assert second is first
+    assert second.position.ptr == ptr
+
+    position = to_t(second.position).view(E, G, 2)
+    count = to_t(second.count)
+    valid = to_t(second.valid).bool()
+    assert valid.all()
+    for e in range(E):
+        c = int(count[e])
+        assert torch.isfinite(position[e, :c]).all()
+        assert torch.isfinite(position[e]).all(dim=-1).sum().item() == c
