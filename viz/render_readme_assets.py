@@ -31,31 +31,38 @@ GENERATORS = [
 ]
 
 
+def _choose_phase1_examples(
+    phase1: np.ndarray,
+    phase1_valid: np.ndarray,
+    final_valid: np.ndarray,
+    needed: int,
+) -> list[int]:
+    chosen: list[int] = []
+    for e in range(phase1.shape[0]):
+        if phase1_valid[e] and final_valid[e] and np.isfinite(phase1[e]).all():
+            chosen.append(e)
+        if len(chosen) >= needed:
+            return chosen
+    for e in range(phase1.shape[0]):
+        if e not in chosen and phase1_valid[e] and np.isfinite(phase1[e]).all():
+            chosen.append(e)
+        if len(chosen) >= needed:
+            return chosen
+    return chosen
+
+
 def _generate(name: str, seed: int, needed: int = 5):
     batch = 24
     cfg = TrackGenConfig(generator=name, num_envs=batch, device="cpu")
     rng = PerEnvSeededRNG(seeds=seed, num_envs=batch, device="cpu")
-    track = TrackGenerator(cfg, rng).generate()
-    center = wp.to_torch(track.center).cpu().numpy().reshape(batch, cfg.N_max, 2)
-    outer = wp.to_torch(track.outer).cpu().numpy().reshape(batch, cfg.N_max, 2)
-    inner = wp.to_torch(track.inner).cpu().numpy().reshape(batch, cfg.N_max, 2)
-    valid = wp.to_torch(track.valid).cpu().numpy().astype(bool)
-    count = wp.to_torch(track.count).cpu().numpy().astype(int)
-
-    chosen: list[int] = []
-    for e in range(batch):
-        n = int(count[e])
-        if valid[e] and n >= 4 and np.isfinite(center[e, :n]).all():
-            chosen.append(e)
-        if len(chosen) >= needed:
-            break
-    if len(chosen) < needed:
-        for e in range(batch):
-            if e not in chosen and int(count[e]) >= 4:
-                chosen.append(e)
-            if len(chosen) >= needed:
-                break
-    return center, outer, inner, valid, count, chosen[:needed]
+    generator = TrackGenerator(cfg, rng)
+    track = generator.generate()
+    scratch = generator._scratch
+    phase1 = wp.to_torch(scratch.gen_centerline).cpu().numpy().reshape(batch, cfg.num_points, 2)
+    phase1_valid = wp.to_torch(scratch.gen_valid).cpu().numpy().astype(bool)
+    final_valid = wp.to_torch(track.valid).cpu().numpy().astype(bool)
+    chosen = _choose_phase1_examples(phase1, phase1_valid, final_valid, needed)
+    return phase1, phase1_valid, chosen
 
 
 def _generate_pipeline_sample(name: str = "bezier", seed: int = 100):
@@ -110,41 +117,14 @@ def _style_axis(ax) -> None:
         spine.set_visible(False)
 
 
-def _draw_track(ax, center, outer, inner, valid, count, e: int, *, lw: float, center_lw: float) -> None:
-    n = int(count[e])
-    c = _finite_rows(center[e, :n])
-    o = _finite_rows(outer[e, :n])
-    inn = _finite_rows(inner[e, :n])
-
-    if len(o) >= 3 and len(inn) >= 3:
-        band = np.vstack([o, inn[::-1]])
-        ax.fill(band[:, 0], band[:, 1], color="#2f343b", alpha=0.96, linewidth=0, zorder=1)
-        closed_o = np.vstack([o, o[0]])
-        closed_i = np.vstack([inn, inn[0]])
-        ax.plot(closed_o[:, 0], closed_o[:, 1], color="#111827", lw=lw, zorder=2)
-        ax.plot(closed_i[:, 0], closed_i[:, 1], color="#111827", lw=lw, zorder=2)
-    if len(c) >= 3:
-        closed_c = np.vstack([c, c[0]])
-        ax.plot(
-            closed_c[:, 0],
-            closed_c[:, 1],
-            color="#f8fafc",
-            lw=center_lw,
-            ls=(0, (5, 4)),
-            zorder=3,
-        )
-        _set_track_limits(ax, c)
+def _draw_phase1_output(ax, phase1: np.ndarray, valid: np.ndarray, e: int, *, lw: float) -> None:
+    pts = _finite_rows(phase1[e])
+    if len(pts) >= 3:
+        closed = np.vstack([pts, pts[0]])
+        ax.plot(closed[:, 0], closed[:, 1], color="#2563eb", lw=lw, zorder=2)
+        _set_track_limits(ax, pts)
     if not bool(valid[e]):
-        ax.text(
-            0.5,
-            0.5,
-            "invalid",
-            transform=ax.transAxes,
-            ha="center",
-            va="center",
-            color="#dc2626",
-            fontsize=8,
-        )
+        ax.text(0.5, 0.5, "invalid", transform=ax.transAxes, ha="center", va="center", color="#dc2626")
     _style_axis(ax)
 
 
@@ -197,10 +177,10 @@ def render_readme_assets(output_dir: Path = OUT_DIR) -> list[Path]:
         len(GENERATORS), 5, figsize=(10.8, 8.6), dpi=170, facecolor="white"
     )
     for row, (name, label) in enumerate(GENERATORS):
-        center, outer, inner, valid, count, chosen = samples[name]
+        phase1, valid, chosen = samples[name]
         for col, env_id in enumerate(chosen):
             ax = axes[row, col]
-            _draw_track(ax, center, outer, inner, valid, count, env_id, lw=0.75, center_lw=0.5)
+            _draw_phase1_output(ax, phase1, valid, env_id, lw=1.15)
             if col == 0:
                 ax.set_ylabel(
                     label,
@@ -213,7 +193,7 @@ def render_readme_assets(output_dir: Path = OUT_DIR) -> list[Path]:
                     color="#111827",
                 )
     fig.suptitle(
-        "TrackGen standard first-stage generators",
+        "TrackGen standard phase-1 generator outputs",
         fontsize=16,
         fontweight="bold",
         y=0.985,
@@ -244,8 +224,8 @@ def render_readme_assets(output_dir: Path = OUT_DIR) -> list[Path]:
 
     fig, axes = plt.subplots(1, len(GENERATORS), figsize=(12.0, 2.75), dpi=180, facecolor="white")
     for ax, (name, label) in zip(axes, GENERATORS):
-        center, outer, inner, valid, count, chosen = samples[name]
-        _draw_track(ax, center, outer, inner, valid, count, chosen[0], lw=1.15, center_lw=0.8)
+        phase1, valid, chosen = samples[name]
+        _draw_phase1_output(ax, phase1, valid, chosen[0], lw=1.65)
         ax.set_title(label, fontsize=12, fontweight="bold", color="#111827", pad=8)
     fig.tight_layout(w_pad=0.45)
     strip_path = output_dir / "readme-generator-strip.png"

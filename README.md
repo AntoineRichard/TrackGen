@@ -18,8 +18,9 @@ seeds[E] ─► registered phase-1 generator ─► constant-spacing resample �
 
 ![TrackGen standard generator grid](docs/assets/readme-generator-grid.png)
 
-*Deterministic fixed-seed render of the five standard first-stage generators using
-default parameters: Bezier, checkpoint, hull, polar, and Voronoi.*
+*Deterministic fixed-seed render of the raw phase-1 centerline output from each
+standard generator, using default parameters: Bezier, checkpoint, hull, polar, and
+Voronoi.*
 
 ![TrackGen pipeline stages](docs/assets/readme-pipeline-stages.png)
 
@@ -97,7 +98,7 @@ Warp pipeline and receives no compatibility guarantees.
 
 ![Representative tracks by generator](docs/assets/readme-generator-strip.png)
 
-*One representative relaxed track from each standard generator, rendered by
+*One representative raw phase-1 centerline from each standard generator, rendered by
 `.venv/bin/python -m viz.render_readme_assets`.*
 
 ### Choosing a generator
