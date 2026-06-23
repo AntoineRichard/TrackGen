@@ -238,19 +238,20 @@ benchmarks/  viz/  docs/
 .venv/bin/python -m benchmarks.benchmark_pipeline --E 2048 --cpu
 ```
 
-Current timing snapshot, from `.venv/bin/python -m benchmarks.compare_generators --E 512 --seed 0`
-and `.venv/bin/python -m benchmarks.benchmark_pipeline --graph` on June 23, 2026:
+Current timing snapshot on June 23, 2026. Generator rows are timing-only CUDA graph
+replays at the same geometry as `benchmarks.benchmark_pipeline --graph` (`E=8192`,
+`half_width=0.03`, `num_points=256`, `relax_iters=150`).
 
 | benchmark | device / batch | timing |
 |---|---:|---:|
-| Full pipeline with Bezier first-stage | CPU / E=512 | 807.9 ms/call |
-| Full pipeline with Checkpoint first-stage | CPU / E=512 | 1145.0 ms/call |
-| Full pipeline with Hull first-stage | CPU / E=512 | 864.7 ms/call |
-| Full pipeline with Polar first-stage | CPU / E=512 | 576.6 ms/call |
-| Full pipeline with Voronoi first-stage | CPU / E=512 | 755.5 ms/call |
-| Full pipeline + XPBD, eager | CUDA / E=8192 | 0.0962 s/call |
-| Full pipeline + XPBD, graph replay | CUDA / E=8192 | 0.0959 s/replay |
-| CUDA graph capture | CUDA / E=8192 | 0.3866 s |
+| Full pipeline with Bezier first-stage | CUDA / E=8192 | 93.2 ms/replay |
+| Full pipeline with Checkpoint first-stage | CUDA / E=8192 | 92.2 ms/replay |
+| Full pipeline with Hull first-stage | CUDA / E=8192 | 98.9 ms/replay |
+| Full pipeline with Polar first-stage | CUDA / E=8192 | 80.8 ms/replay |
+| Full pipeline with Voronoi first-stage | CUDA / E=8192 | 81.3 ms/replay |
+| `.venv/bin/python -m benchmarks.benchmark_pipeline --graph`, eager | CUDA / E=8192 | 96.2 ms/call |
+| `.venv/bin/python -m benchmarks.benchmark_pipeline --graph`, graph replay | CUDA / E=8192 | 95.9 ms/replay |
+| CUDA graph capture | CUDA / E=8192 | 386.6 ms |
 
 ```bash
 # Render sample tracks without launching the Gradio app.
