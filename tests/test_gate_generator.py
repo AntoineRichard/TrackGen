@@ -1,7 +1,13 @@
 import pytest
+import torch
 
 from track_gen import GateGenConfig, GateGenerator, PerEnvSeededRNG
 from track_gen._src import gate_generator_registry as reg
+from tests._warp_compare import to_t
+
+
+def _make_rng(num_envs: int, seed: int = 0, device: str = "cpu"):
+    return PerEnvSeededRNG(seeds=seed, num_envs=num_envs, device=device)
 
 
 def test_gate_generator_requires_rng():
@@ -107,3 +113,30 @@ def test_cuda_capture_sets_gate_and_pipeline_capture_flags(monkeypatch):
     assert launched == [gen._graph]
     assert warp_gate._CAPTURING is False
     assert warp_pipeline._CAPTURING is False
+
+
+@pytest.mark.parametrize("generator", ["bezier", "hull"])
+@pytest.mark.parametrize("ordering", ["ccw", "random_pairs"])
+def test_point_family_gate_generators_emit_finite_native_gates(generator, ordering):
+    E, G = 8, 32
+    cfg = GateGenConfig(
+        generator=generator,
+        gate_ordering=ordering,
+        num_envs=E,
+        max_gates=G,
+        device="cpu",
+        min_gate_distance=0.0,
+    )
+    gates = GateGenerator(cfg, _make_rng(E, seed=31)).generate(E)
+    position = to_t(gates.position).view(E, G, 2)
+    tangent = to_t(gates.tangent).view(E, G, 2)
+    count = to_t(gates.count)
+    valid = to_t(gates.valid).bool()
+
+    assert valid.all()
+    assert torch.all(count >= cfg.min_gates)
+    for e in range(E):
+        c = int(count[e])
+        assert torch.isfinite(position[e, :c]).all()
+        assert torch.isfinite(tangent[e, :c]).all()
+        assert torch.isnan(position[e, c:]).all()
