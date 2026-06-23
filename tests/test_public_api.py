@@ -6,6 +6,9 @@ def test_public_api_surface_is_exactly_curated():
         "TrackGenerator",
         "TrackGenConfig",
         "Track",
+        "GateGenerator",
+        "GateGenConfig",
+        "GateSequence",
         "PerEnvSeededRNG",
         "__version__",
     }

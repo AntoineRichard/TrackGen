@@ -142,3 +142,58 @@ def test_types_module_has_no_intra_package_imports():
     for forbidden in ("from .track_generator", "from .warp_pipeline",
                       "from .warp_relax", "from .rng_utils", "from .rng_kernels"):
         assert forbidden not in src, f"types.py must not contain '{forbidden}'"
+
+
+def test_gate_config_defaults_instantiate():
+    from track_gen._src.types import GateGenConfig
+
+    cfg = GateGenConfig()
+    assert cfg.generator == "bezier"
+    assert cfg.device == "cpu"
+    assert cfg.num_envs == 1
+    assert cfg.min_gates == 4
+    assert cfg.max_gates == 32
+    assert cfg.min_gate_distance == 0.05
+    assert cfg.gate_width == 0.0
+    assert cfg.gate_ordering == "ccw"
+    assert cfg.max_num_points == 13
+    assert cfg.polar_num_knots == 12
+    assert cfg.voronoi_control_points == 18
+    assert cfg.checkpoint_count == 12
+
+
+def test_gate_config_validates_basic_bounds():
+    from track_gen._src.types import GateGenConfig
+
+    with pytest.raises(ValueError, match="min_gates"):
+        GateGenConfig(min_gates=1)
+    with pytest.raises(ValueError, match="max_gates"):
+        GateGenConfig(min_gates=6, max_gates=5)
+    with pytest.raises(ValueError, match="min_gate_distance"):
+        GateGenConfig(min_gate_distance=-1.0)
+    with pytest.raises(ValueError, match="gate_width"):
+        GateGenConfig(gate_width=-1.0)
+    with pytest.raises(ValueError, match="gate_ordering"):
+        GateGenConfig(gate_ordering="spiral")
+
+
+def test_gate_sequence_construct_from_warp_arrays_and_clone():
+    import warp as wp
+    from track_gen._src.types import GateSequence
+
+    wp.init()
+    E, G = 2, 8
+    gates = GateSequence(
+        position=wp.zeros(E * G, dtype=wp.vec2f),
+        tangent=wp.zeros(E * G, dtype=wp.vec2f),
+        normal=wp.zeros(E * G, dtype=wp.vec2f),
+        left=wp.zeros(E * G, dtype=wp.vec2f),
+        right=wp.zeros(E * G, dtype=wp.vec2f),
+        valid=wp.zeros(E, dtype=wp.int32),
+        count=wp.zeros(E, dtype=wp.int32),
+    )
+    assert gates.position.shape == (E * G,)
+    assert gates.tangent.dtype == wp.vec2f
+    clone = gates.clone()
+    assert clone is not gates
+    assert clone.position.ptr != gates.position.ptr

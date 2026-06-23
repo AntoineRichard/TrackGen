@@ -7,14 +7,18 @@ dependency — this is a Warp-first library, so the surface is imported eagerly.
 """
 
 from ._version import __version__
-from ._src.types import Track, TrackGenConfig
+from ._src.types import GateGenConfig, GateSequence, Track, TrackGenConfig
 from ._src.track_generator import TrackGenerator
+from ._src.gate_generator import GateGenerator
 from ._src.rng_utils import PerEnvSeededRNG
 
 __all__ = [
     "TrackGenerator",
     "TrackGenConfig",
     "Track",
+    "GateGenerator",
+    "GateGenConfig",
+    "GateSequence",
     "PerEnvSeededRNG",
     "__version__",
 ]

@@ -272,6 +272,113 @@ class TrackGenConfig:
 
 
 @dataclass
+class GateGenConfig:
+    """Configuration for fixed-batch native gate sequence generation."""
+
+    generator: str = "bezier"
+    device: str = "cpu"
+    num_envs: int = 1
+
+    min_gates: int = 4
+    max_gates: int = 32
+    min_gate_distance: float = 0.05
+    gate_width: float = 0.0
+    gate_ordering: str = "ccw"
+
+    min_num_points: int = 9
+    max_num_points: int = 13
+    num_points_per_segment: int = 30
+    min_point_distance: float = 0.05
+    rad: float = 0.4
+    edgy: float = 0.0
+    scale: float = 1.0
+    handle_clamp_frac: float = 0.4
+    hull_displacement: float = 0.15
+
+    polar_num_knots: int = 12
+    polar_radial_jitter: float = 0.60
+    polar_angular_jitter: float = 0.30
+
+    voronoi_num_sites: int = 256
+    voronoi_site_layout: str = "void_ring"
+    voronoi_control_points: int = 18
+    voronoi_radial_variation: float = 0.62
+    voronoi_angular_jitter: float = 0.08
+
+    checkpoint_count: int = 12
+    checkpoint_radius_min_frac: float = 0.33
+    checkpoint_angle_jitter: float = 0.55
+
+    def __post_init__(self):
+        if int(self.min_gates) < 2:
+            raise ValueError(f"min_gates must be >= 2, got {self.min_gates!r}")
+        if int(self.max_gates) < int(self.min_gates):
+            raise ValueError(
+                f"max_gates must be >= min_gates, got "
+                f"{self.max_gates!r} < {self.min_gates!r}"
+            )
+        if float(self.min_gate_distance) < 0.0:
+            raise ValueError(
+                f"min_gate_distance must be >= 0, got {self.min_gate_distance!r}"
+            )
+        if float(self.gate_width) < 0.0:
+            raise ValueError(f"gate_width must be >= 0, got {self.gate_width!r}")
+        if self.gate_ordering not in {"ccw", "raw", "random_pairs"}:
+            raise ValueError(
+                "gate_ordering must be one of {'ccw', 'raw', 'random_pairs'}, "
+                f"got {self.gate_ordering!r}"
+            )
+        if int(self.voronoi_control_points) < 3:
+            raise ValueError(
+                f"voronoi_control_points must be >= 3, got {self.voronoi_control_points!r}"
+            )
+        if int(self.voronoi_num_sites) < int(self.voronoi_control_points):
+            raise ValueError(
+                "voronoi_num_sites must be >= voronoi_control_points, got "
+                f"{self.voronoi_num_sites!r} < {self.voronoi_control_points!r}"
+            )
+        if self.voronoi_site_layout not in {"ring", "void_ring", "clustered", "mixed"}:
+            raise ValueError(
+                "voronoi_site_layout must be one of "
+                "{'ring', 'void_ring', 'clustered', 'mixed'}, got "
+                f"{self.voronoi_site_layout!r}"
+            )
+        if int(self.checkpoint_count) < 3:
+            raise ValueError(
+                f"checkpoint_count must be >= 3, got {self.checkpoint_count!r}"
+            )
+        if not (0.0 <= float(self.checkpoint_radius_min_frac) < 1.0):
+            raise ValueError(
+                "checkpoint_radius_min_frac must be in [0, 1), got "
+                f"{self.checkpoint_radius_min_frac!r}"
+            )
+
+
+@dataclass
+class GateSequence:
+    """Batched fixed-stride gate result returned by GateGenerator."""
+
+    position: wp.array
+    tangent: wp.array
+    normal: wp.array
+    left: wp.array
+    right: wp.array
+    valid: wp.array
+    count: wp.array
+
+    def clone(self) -> "GateSequence":
+        return GateSequence(
+            position=wp.clone(self.position),
+            tangent=wp.clone(self.tangent),
+            normal=wp.clone(self.normal),
+            left=wp.clone(self.left),
+            right=wp.clone(self.right),
+            valid=wp.clone(self.valid),
+            count=wp.clone(self.count),
+        )
+
+
+@dataclass
 class Track:
     """Final batched result of the track generation pipeline.
 
