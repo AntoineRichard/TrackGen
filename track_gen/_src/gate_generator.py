@@ -96,9 +96,12 @@ class GateGenerator:
         dev = str(self._config.device)
         if "cuda" in dev:
             if self._graph is None:
-                from . import warp_gate
+                from . import warp_gate, warp_pipeline
 
+                prev_gate_capturing = warp_gate._CAPTURING
+                prev_pipeline_capturing = warp_pipeline._CAPTURING
                 warp_gate._CAPTURING = True
+                warp_pipeline._CAPTURING = True
                 try:
                     for _ in range(3):
                         self._run()
@@ -108,7 +111,8 @@ class GateGenerator:
                         self._run()
                     self._graph = cap.graph
                 finally:
-                    warp_gate._CAPTURING = False
+                    warp_gate._CAPTURING = prev_gate_capturing
+                    warp_pipeline._CAPTURING = prev_pipeline_capturing
 
             wp.capture_launch(self._graph)
             wp.synchronize()

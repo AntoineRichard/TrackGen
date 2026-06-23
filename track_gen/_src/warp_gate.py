@@ -166,21 +166,34 @@ def _order_random_pairs_k(
     if m > max_gates:
         m = max_gates
 
-    for i in range(max_gates):
-        if i < m:
-            pair = i // 2
-            intra = i - pair * 2
+    pair_count = (m + 1) // 2
+    for pair in range(max_gates):
+        if pair < pair_count:
             state = wp.rand_init(seeds[e] * 3187 + salt + pair * 104729)
-            key = wp.randf(state) + float(intra) * 1.0e-6
-            p = src[src_base + i]
-            j = i - 1
-            while j >= 0 and keys[dst_base + j] > key:
-                keys[dst_base + j + 1] = keys[dst_base + j]
-                dst[dst_base + j + 1] = dst[dst_base + j]
-                j = j - 1
-            keys[dst_base + j + 1] = key
-            dst[dst_base + j + 1] = p
-        else:
+            keys[dst_base + pair] = wp.randf(state) + float(pair) * 1.0e-6
+
+    out_i = int(0)
+    for _unit in range(max_gates):
+        if _unit < pair_count:
+            best_pair = int(0)
+            best_key = float(1.0e30)
+            for pair in range(max_gates):
+                if pair < pair_count:
+                    key = keys[dst_base + pair]
+                    if key < best_key:
+                        best_key = key
+                        best_pair = pair
+
+            src_i = best_pair * 2
+            dst[dst_base + out_i] = src[src_base + src_i]
+            out_i = out_i + 1
+            if src_i + 1 < m:
+                dst[dst_base + out_i] = src[src_base + src_i + 1]
+                out_i = out_i + 1
+            keys[dst_base + best_pair] = float(1.0e30)
+
+    for i in range(max_gates):
+        if i >= m:
             dst[dst_base + i] = wp.vec2f(wp.nan, wp.nan)
 
 
@@ -250,6 +263,15 @@ def _tangents_from_positions_k(
         tangent[t] = wp.vec2f(0.0, 0.0)
         return
 
+    if cnt == 2:
+        p0 = position[base]
+        p1 = position[base + 1]
+        if i == 0:
+            tangent[t] = p1 - p0
+        else:
+            tangent[t] = p0 - p1
+        return
+
     prev_i = (i + cnt - 1) % cnt
     next_i = (i + 1) % cnt
     tangent[t] = position[base + next_i] - position[base + prev_i]
@@ -297,6 +319,7 @@ def _finalize_frame_k(
 def _finalize_validity_k(
     position: wp.array(dtype=wp.vec2f),
     tangent: wp.array(dtype=wp.vec2f),
+    normal: wp.array(dtype=wp.vec2f),
     left: wp.array(dtype=wp.vec2f),
     right: wp.array(dtype=wp.vec2f),
     count: wp.array(dtype=wp.int32),
@@ -318,7 +341,18 @@ def _finalize_validity_k(
         if i < cnt:
             p = position[base + i]
             t = tangent[base + i]
-            if not (wp.isfinite(p[0]) and wp.isfinite(p[1]) and wp.isfinite(t[0]) and wp.isfinite(t[1])):
+            n = normal[base + i]
+            fields_finite = (
+                wp.isfinite(p[0]) and wp.isfinite(p[1]) and
+                wp.isfinite(t[0]) and wp.isfinite(t[1]) and
+                wp.isfinite(n[0]) and wp.isfinite(n[1])
+            )
+            if gate_width > 0.0:
+                li = left[base + i]
+                ri = right[base + i]
+                fields_finite = fields_finite and wp.isfinite(li[0]) and wp.isfinite(li[1])
+                fields_finite = fields_finite and wp.isfinite(ri[0]) and wp.isfinite(ri[1])
+            if not fields_finite:
                 ok = int(0)
 
     min_d2 = min_gate_distance * min_gate_distance
@@ -482,6 +516,7 @@ def finalize_gate_sequence(gates: GateSequence, config: GateGenConfig) -> None:
         inputs=[
             gates.position,
             gates.tangent,
+            gates.normal,
             gates.left,
             gates.right,
             gates.count,
