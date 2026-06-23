@@ -58,25 +58,53 @@ def test_reloading_gate_generator_module_keeps_specs_registered():
     assert "hull" in names
 
 
+def test_reloading_structured_gate_generator_modules_keeps_specs_registered():
+    from track_gen._src import warp_generate_checkpoint_gates
+    from track_gen._src import warp_generate_polar_gates
+    from track_gen._src import warp_generate_voronoi_gates
+
+    names = reg.available()
+    assert "checkpoint" in names
+    assert "polar" in names
+    assert "voronoi" in names
+
+    importlib.reload(warp_generate_checkpoint_gates)
+    importlib.reload(warp_generate_polar_gates)
+    importlib.reload(warp_generate_voronoi_gates)
+
+    names = reg.available()
+    assert "checkpoint" in names
+    assert "polar" in names
+    assert "voronoi" in names
+
+
 def test_reloading_registry_repopulates_already_imported_gate_modules():
     from track_gen._src import warp_generate_gates  # noqa: F401
+    from track_gen._src import warp_generate_checkpoint_gates  # noqa: F401
+    from track_gen._src import warp_generate_polar_gates  # noqa: F401
+    from track_gen._src import warp_generate_voronoi_gates  # noqa: F401
 
     assert "bezier" in reg.available()
     importlib.reload(reg)
 
     names = reg.available()
     assert "bezier" in names
+    assert "checkpoint" in names
     assert "hull" in names
+    assert "polar" in names
+    assert "voronoi" in names
 
 
-def test_bezier_and_hull_gate_generators_registered():
-    names = reg.available()
-    assert "bezier" in names
-    assert "hull" in names
-    for name in ("bezier", "hull"):
+def test_all_standard_gate_generators_registered():
+    assert reg.available() == ["bezier", "checkpoint", "hull", "polar", "voronoi"]
+    for name in ("bezier", "checkpoint", "hull", "polar", "voronoi"):
         spec = reg.get(name)
         assert spec.name == name
         assert callable(spec.alloc_scratch)
         assert callable(spec.generate)
         assert callable(spec.max_gates)
-        assert spec.supported_orderings == frozenset({"ccw", "random_pairs"})
+
+    assert reg.get("bezier").supported_orderings == frozenset({"ccw", "random_pairs"})
+    assert reg.get("hull").supported_orderings == frozenset({"ccw", "random_pairs"})
+    for name in ("checkpoint", "polar", "voronoi"):
+        assert reg.get(name).supported_orderings == frozenset({"ccw", "raw"})

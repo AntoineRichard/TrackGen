@@ -143,6 +143,39 @@ def test_point_family_gate_generators_emit_finite_native_gates(generator, orderi
         assert torch.isfinite(position[e]).all(dim=-1).sum().item() == c
 
 
+@pytest.mark.parametrize(
+    ("generator", "orderings"),
+    [
+        ("polar", ["ccw", "raw"]),
+        ("voronoi", ["ccw", "raw"]),
+        ("checkpoint", ["ccw", "raw"]),
+    ],
+)
+def test_structured_gate_generators_emit_finite_native_gates(generator, orderings):
+    E, G = 6, 32
+    for ordering in orderings:
+        cfg = GateGenConfig(
+            generator=generator,
+            gate_ordering=ordering,
+            num_envs=E,
+            max_gates=G,
+            device="cpu",
+            min_gate_distance=0.0,
+        )
+        gates = GateGenerator(cfg, _make_rng(E, seed=71)).generate(E)
+        position = to_t(gates.position).view(E, G, 2)
+        tangent = to_t(gates.tangent).view(E, G, 2)
+        count = to_t(gates.count)
+        valid = to_t(gates.valid).bool()
+        assert valid.all()
+        for e in range(E):
+            c = int(count[e])
+            assert c >= cfg.min_gates
+            assert torch.isfinite(position[e, :c]).all()
+            assert torch.isfinite(tangent[e, :c]).all()
+            assert torch.isnan(position[e, c:]).all()
+
+
 @pytest.mark.parametrize("generator", ["bezier", "hull"])
 def test_point_family_gate_generators_reject_too_small_max_gates(generator):
     cfg = GateGenConfig(

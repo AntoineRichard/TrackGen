@@ -29,6 +29,9 @@ _LOADED = False
 
 _OPTIONAL_GATE_GENERATOR_MODULES = (
     "track_gen._src.warp_generate_gates",
+    "track_gen._src.warp_generate_polar_gates",
+    "track_gen._src.warp_generate_voronoi_gates",
+    "track_gen._src.warp_generate_checkpoint_gates",
     "track_gen._src.warp_gate_generate",
     "track_gen._src.warp_gate_generate_polar",
     "track_gen._src.warp_gate_generate_hull",
