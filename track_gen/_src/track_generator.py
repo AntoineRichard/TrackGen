@@ -109,9 +109,11 @@ class TrackGenerator:
         """Generate a batch of tracks for the fixed configured batch.
 
         This generator is fixed-batch: it always operates on exactly ``config.num_envs``
-        environments. If ``num_or_ids`` is provided it is validated against the configured
-        batch size and a ``ValueError`` is raised if they disagree (so existing call sites
-        passing ``E == num_envs`` continue to work unchanged).
+        environments. If integer ``num_or_ids`` is provided it is validated against the
+        configured batch size and a ``ValueError`` is raised if they disagree (so existing
+        call sites passing ``E == num_envs`` continue to work unchanged). Explicit
+        environment-id sequences are rejected with ``TypeError`` because selected-env
+        execution is not part of the fixed-batch graph-captured contract.
 
         On the first CUDA call: warms up kernel loading then captures the pipeline into a
         ``wp.Graph`` (via ``wp.ScopedCapture``), then immediately replays it. On subsequent
@@ -122,31 +124,34 @@ class TrackGenerator:
         call (stable ``.ptr`` pointers). Use ``Track.clone()`` to obtain an independent copy.
 
         Args:
-            num_or_ids: Optional. Either an ``int`` number of tracks or a sequence of
-                environment ids. Must equal ``config.num_envs`` (int) or have length
-                ``config.num_envs`` (sequence). Omit to run the full configured batch.
+            num_or_ids: Optional. Either ``None`` or the integer batch size. When an
+                integer is provided, it must equal ``config.num_envs``. Explicit
+                environment-id sequences are not supported by this fixed-batch,
+                graph-capturable facade.
 
         Returns:
             ``self._track`` — the same :class:`Track` instance every call (stable pointers).
 
         Raises:
-            ValueError: if ``num_or_ids`` is provided and its count differs from
-                ``config.num_envs``.
+            TypeError: if ``num_or_ids`` is an explicit environment-id sequence.
+            ValueError: if an integer ``num_or_ids`` differs from ``config.num_envs``.
         """
         if num_or_ids is not None:
-            n = num_or_ids if isinstance(num_or_ids, int) else len(num_or_ids)
-            if n != self._config.num_envs:
+            if not isinstance(num_or_ids, int):
+                raise TypeError(
+                    "TrackGenerator.generate() does not accept explicit environment ids; "
+                    "construct a generator with the desired fixed num_envs instead."
+                )
+            if num_or_ids != self._config.num_envs:
                 raise ValueError(
                     f"TrackGenerator is fixed-batch for {self._config.num_envs} envs; "
-                    f"got num_or_ids with count {n}. "
-                    f"Construct a new TrackGenerator with num_envs={n} instead."
+                    f"got num_or_ids={num_or_ids}. "
+                    f"Construct a new TrackGenerator with num_envs={num_or_ids} instead."
                 )
         from . import warp_pipeline
 
         # Refresh the seed buffer in place from the rng (zero allocation: wp.copy).
-        # rng.seeds_warp is a wp.array [num_envs] int32. We write all envs; num_or_ids
-        # determines which env ids are active but the seed buffer covers all envs by design
-        # (the pipeline uses seeds_warp[e] for env e; extra envs just produce irrelevant output).
+        # rng.seeds_warp is a wp.array [num_envs] int32, matching the fixed batch.
         wp.copy(self._seed_buf, self._rng.seeds_warp)
 
         dev = str(self._config.device)

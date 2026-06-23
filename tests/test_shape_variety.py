@@ -8,6 +8,7 @@ be clearly below a circle's 1.0. A regression that makes any generator collapse 
 (or a new generator that ships degenerate) fails here.
 """
 import numpy as np
+import pytest
 import warp as wp
 
 from track_gen._src.types import TrackGenConfig
@@ -15,6 +16,8 @@ from track_gen._src.track_generator import TrackGenerator
 from track_gen._src.rng_utils import PerEnvSeededRNG
 from track_gen._src import generator_registry
 from benchmarks import track_metrics as tm
+
+pytestmark = pytest.mark.slow
 
 # A circle is 1.0; the healthy generators sit at compactness median ~0.4-0.56. 0.85 leaves
 # wide margin for legitimately-smooth generators (e.g. polar) while still catching the

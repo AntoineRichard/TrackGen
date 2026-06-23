@@ -17,9 +17,9 @@ import warp as wp
 class TrackGenConfig:
     """Single configuration object passed to every stage of the pipeline.
 
-    Fields mirror design spec section 3.2. ``rad``, ``edgy`` and ``half_width``
-    are scalars for now (per-env sampling of their ranges is intentionally
-    deferred — see the "Deferred (YAGNI)" note at the end of the plan).
+    Fields configure the fixed-shape Warp pipeline. Scalar style knobs are used by
+    default; opt-in per-env style sampling is available through ``style_sampling`` and
+    the ``*_range`` fields for the Bezier generator.
     """
 
     # --- Generator selection + batching ---

@@ -8,9 +8,9 @@ is written entirely in [NVIDIA Warp](https://github.com/NVIDIA/warp) kernels.
 
 ## Goals
 
-1. **No torch/Warp mixing.** One implementation. Every pipeline stage is a Warp kernel;
-   PyTorch is only the array container at the boundary (`wp.from_torch` in, torch views
-   out). The pipeline imports no torch compute module at runtime.
+1. **No torch/Warp mixing.** One implementation. Every pipeline stage is a Warp kernel.
+   Runtime package imports do not depend on torch; tests and diagnostics may bridge via
+   `wp.from_torch` / `wp.to_torch` at the boundary.
 2. **One codebase, two devices.** Warp kernels run on the Warp **`cpu`** device (GPU-free,
    for tests/CI) and on **`cuda`** (production). The same code path serves both.
 3. **A single replayable CUDA graph.** The entire pipeline is static (fixed shapes, fixed
@@ -52,8 +52,9 @@ Track(outer, center, inner, tangent, normal, arclen, length, valid, count)
   `% count[e]`, and guard `i ≥ count[e]`. The **parity invariant**: when `count[e] == N_max`
   for all envs, every count-aware kernel is bit-identical to the fixed-`N` kernel — this is
   what protects the fixed-`N` parity path the per-kernel oracle tests exercise.
-- Public wrappers do: `_init()` (idempotent `wp.init`) → `wp.from_torch(t.reshape(...).contiguous(), dtype=...)`
-  → `wp.launch(kernel, dim=..., device=str(tensor.device))` → `_sync(device)` → return torch views.
+- Test and diagnostic wrappers do: `_init()` (idempotent `wp.init`) → optional
+  `wp.from_torch(t.reshape(...).contiguous(), dtype=...)` → `wp.launch(kernel, dim=...,
+  device=str(device))` → `_sync(device)` → optional torch views via `wp.to_torch`.
 - **In-kernel idioms** (so there is no torch glue to break graph capture): boolean
   reductions use `int` 0/1 flags (Warp can't fold Python `bool`s in dynamic loops); NaN is
   `wp.nan`; conditional selects use `wp.where`; floating accumulations that must track a
@@ -470,9 +471,11 @@ deployable replayable unit, not a speedup.
     takes one corner draw per env and routes any track whose smooth Bezier centerline
     self-crosses to its provably simple corner polygon, which XPBD re-rounds. The `hull`
     generator follows the same selected-polygon rescue pattern for its Catmull-Rom
-    self-crossers, while `polar` emits a closed radial spline and relies on the common
-    post-relax validity gate. `max_regen_iters` is therefore **vestigial** on the Warp path:
-    it remains a `TrackGenConfig` field for the torch oracle but is ignored by `_run_pipeline`.
+    self-crossers, `voronoi` falls back to its selected anchor polygon for smooth-loop
+    crossings, `checkpoint` uses bounded best-of-K selection with an optional single-crossing
+    clip fallback, and `polar` emits a closed radial spline with no generator-local fallback.
+    `max_regen_iters` is therefore **vestigial** on the Warp path: it remains a
+    `TrackGenConfig` field for the torch oracle but is ignored by `_run_pipeline`.
 - **FP tolerance & hard thresholds.** Validity gates (`th_ok`, `turn_ok`) are hard
   comparisons; near a decision boundary the accepted ~1e-4 Warp-vs-torch drift can flip a
   single env's bool. Tests keep their inputs away from those boundaries; the end-to-end

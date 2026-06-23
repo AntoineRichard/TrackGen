@@ -7,20 +7,27 @@ RL simulator.
 
 The whole pipeline — **generation → resample → relaxation → inflation** — is expressed
 as [NVIDIA Warp](https://github.com/NVIDIA/warp) kernels. It runs on the Warp **`cpu`**
-device (GPU-free, for tests/CI) and on **`cuda`** (production), with PyTorch acting only
-as the array container at the boundary. The entire pipeline can be captured as a single
-replayable **CUDA graph**.
+device (GPU-free, for tests/CI) and on **`cuda`** (production). Runtime outputs are Warp
+arrays; tests and diagnostics may view them through `wp.to_torch`. The CUDA path captures
+the full pipeline as a single replayable **CUDA graph** on the first `generate()` call.
 
 ```
-seeds[E] ─► generate (single pass) ─► constant-spacing resample ─► XPBD relax ─► inflate ─► Track
-            corners→prune-sort→bezier→de-cross                       thickness≥w              outer/center/inner
+seeds[E] ─► registered phase-1 generator ─► constant-spacing resample ─► XPBD relax ─► inflate ─► Track
+            bezier/checkpoint/hull/polar/voronoi                         thickness≥w              outer/center/inner
 ```
+
+![TrackGen standard generator grid](docs/assets/readme-generator-grid.png)
+
+*Deterministic CPU render of the five standard first-stage generators: Bezier, checkpoint,
+hull, polar, and Voronoi.*
 
 ## Install
 
-Python ≥ 3.10. This is a Warp-first library: `warp-lang` is a required **core** dependency
-(installed automatically), alongside `torch`, `scipy`, `numpy`. It runs on the Warp `cpu`
-device (GPU-free, for tests/CI) and on `cuda`.
+Python ≥ 3.10. This is a Warp-first library: `warp-lang` and `numpy` are the only
+required runtime dependencies. `torch`, `scipy`, `matplotlib`, and `pytest` live in the
+`dev` extra for tests, benchmarks, and oracle comparisons; `gradio` lives in the `ui`
+extra. The runtime path runs on the Warp `cpu` device (GPU-free, for tests/CI) and on
+`cuda`.
 
 ### From scratch with [uv](https://docs.astral.sh/uv/) (recommended)
 
@@ -34,8 +41,8 @@ uv venv --python 3.12
 # 3. install track_gen (editable) with the dev extras (warp-lang comes in as a core dep)
 uv pip install -e ".[dev]"
 
-# 4. verify
-.venv/bin/python -m pytest -q
+# 4. verify the fast lane
+.venv/bin/python -m pytest -q -m "not slow and not benchmark and not cuda"
 ```
 
 ### With venv + pip
@@ -46,37 +53,46 @@ python -m venv .venv
 ```
 
 Both create a `.venv/`; run anything in it with `.venv/bin/python …` (or `source .venv/bin/activate`,
-or `uv run …`). Core deps: `torch`, `scipy`, `numpy`, `warp-lang`. Extras: `dev` → `pytest`, `matplotlib`; `ui` → `gradio`.
+or `uv run …`). Core deps: `numpy`, `warp-lang`. Extras: `dev` → `pytest`, `matplotlib`, `scipy`, `torch`; `ui` → `gradio`.
 
 ## Quickstart
 
 ```python
-import torch
-import warp as wp; wp.init()   # PerEnvSeededRNG is Warp-backed; initialize Warp once up front
+import warp as wp
+wp.init()
+
 from track_gen import TrackGenerator, TrackGenConfig, PerEnvSeededRNG
 
 E, device = 64, "cuda"  # or "cpu"
 config = TrackGenConfig(num_envs=E, half_width=0.03, device=device)
-# output_mode is "constant_spacing" (the only mode). spacing auto-couples to 0.6*half_width,
-# so each track gets its own arc-uniform point count (≤ N_max, default 384), NaN-padded past it.
+rng = PerEnvSeededRNG(seeds=0, num_envs=E, device=device)
 
-# The rng's per-env seed values seed the pipeline's built-in Warp RNG (one base seed/env).
-seeds = torch.arange(E, dtype=torch.int32, device=device)
-rng = PerEnvSeededRNG(seeds=seeds, num_envs=E, device=device)
+generator = TrackGenerator(config, rng)
+track = generator.generate()  # fixed batch: config.num_envs tracks
 
-track = TrackGenerator(config, rng).generate(E)
+center = wp.to_torch(track.center).view(E, config.N_max, 2)
+outer = wp.to_torch(track.outer).view(E, config.N_max, 2)
+inner = wp.to_torch(track.inner).view(E, config.N_max, 2)
+valid = wp.to_torch(track.valid).bool()
+count = wp.to_torch(track.count)
 
-track.center   # [E, N_max, 2] centerline, arc-uniform then NaN-padded past track.count[e]
-track.outer    # [E, N_max, 2] outer border   (constant half_width offset)
-track.inner    # [E, N_max, 2] inner border
-track.valid    # [E] bool — True where the track relaxed to a valid constant-width band
-track.count    # [E] int  — real points per track (the rest of each row is NaN padding)
+center[0, : int(count[0])]  # real arc-uniform centerline points for env 0
 ```
 
+`TrackGenerator` is fixed-batch. Omit `generate()`'s argument, or pass the integer
+`E == config.num_envs`; explicit environment-id sequences are rejected because the CUDA
+graph captures one fixed batch shape. The same `Track` instance and Warp buffers are reused
+on every call, so use `track.clone()` when you need an independent snapshot.
+
 Registered first-stage generators are selected with `TrackGenConfig(generator=...)`:
-`"bezier"` (default), `"polar"`, `"hull"`, and `"voronoi"`. The Fourier generator lives in
-`track_gen._experimental` and is **unsupported** — it is not on the Warp pipeline and
-receives no compatibility guarantees.
+`"bezier"` (default), `"checkpoint"`, `"hull"`, `"polar"`, and `"voronoi"`. The Fourier
+generator lives in `track_gen._experimental` and is **unsupported** — it is not on the
+Warp pipeline and receives no compatibility guarantees.
+
+![Representative tracks by generator](docs/assets/readme-generator-strip.png)
+
+*One representative relaxed track from each standard generator, rendered by
+`.venv/bin/python -m viz.render_readme_assets`.*
 
 ### Choosing a generator
 
@@ -155,24 +171,17 @@ cross-section normal). Half-width is recovered as `‖outer − center‖`.
 | `valid` | `[E]` bool | per-track validity |
 | `count` | `[E]` int | real points per track (`floor(perimeter/spacing)+1`, capped at `N_max`); the rest of each `[N, 2]` row is NaN padding |
 
-## Direct pure-Warp entry points
+## Runtime facade and CUDA graph capture
 
-The facade above wraps the Warp pipeline. You can also call it directly via the public top-level imports:
+`TrackGenerator` is the public runtime facade. It preallocates generator scratch, pipeline
+scratch, seed buffers, and a persistent `Track` once in `__init__`. On `cpu`, every
+`generate()` call runs eagerly. On `cuda`, the first `generate()` warms kernels, captures
+the whole pipeline into a `wp.Graph`, and immediately replays it; later calls copy the
+current RNG seeds into the fixed seed buffer and replay the same graph.
 
-```python
-from track_gen import generate_tracks_warp, generate_tracks_warp_graph
-
-# Eager: one Track from per-env seeds.
-track = generate_tracks_warp(config, seeds)
-
-# Captured: the WHOLE pipeline as one CUDA graph, replayed with new seeds (CUDA only).
-captured = generate_tracks_warp_graph(config, seeds_template)
-track = captured.replay(new_seeds)   # re-runs every stage on the GPU off the seed buffer
-```
-
-The CUDA graph is the deployable, GPU-resident path. At large batches the pipeline is
-compute-bound (the relaxation dominates), so graph replay is ~the same wall-clock as the
-eager call — capture's value is a single replayable graph, not a speedup.
+The old top-level `generate_tracks_warp` / `generate_tracks_warp_graph` helpers are no
+longer public API. Use `TrackGenerator(config, rng).generate()` for both eager CPU and
+auto-captured CUDA execution.
 
 ## Architecture
 
@@ -181,9 +190,9 @@ and its Warp kernels, the kernel conventions, the torch-as-test-oracle approach,
 the end-to-end CUDA graph is captured.
 
 In short: every stage is a Warp kernel over flat `[E*N]` arrays (one thread per element,
-env index `= tid // N`). Generation uses Warp's built-in RNG in a single static pass (one
-corner draw per env, no regen loop and no gate; any self-crossing track falls back to its
-corner polygon, which XPBD re-rounds) so the whole thing is graph-capturable.
+env index `= tid // N`). First-stage generation uses Warp's built-in RNG in one fixed
+pass through the selected registered generator; any local fallback is generator-specific,
+and final geometric validity is decided after relaxation/inflation.
 The torch reference implementation (`tests._oracle.geometry` / `inflation` / `generators` /
 `relaxation`) lives under `tests/_oracle/` and is **not** part of the shipped package — it serves purely as the
 **verification oracle**: every Warp kernel has a test asserting it matches its torch
@@ -193,13 +202,13 @@ counterpart on both `cpu` and `cuda`.
 
 ```
 track_gen/
-  __init__.py        # curated public API (TrackGenerator, generate_tracks_warp[_graph],
-                     #   TrackGenConfig, Track, PerEnvSeededRNG, __version__)
+  __init__.py        # curated public API (TrackGenerator, TrackGenConfig, Track,
+                     #   PerEnvSeededRNG, __version__)
   _version.py
   _src/              # the Warp pipeline (private core)
     warp_pipeline.py warp_relax.py track_generator.py types.py rng_utils.py rng_kernels.py
-    warp_generate*.py # registered phase-1 generators: bezier, polar, hull, voronoi
-  _experimental/     # fourier.py — Fourier generator (unsupported, not on the Warp path)
+    warp_generate*.py # registered phase-1 generators: bezier, checkpoint, hull, polar, voronoi
+  _experimental/     # unsupported prototypes/reports (Fourier, checkpoint diagnostics)
 tests/
   _oracle/           # torch reference impl used to validate the Warp kernels
   test_*.py
@@ -209,14 +218,29 @@ benchmarks/  viz/  docs/
 ## Development
 
 ```bash
-# Full test suite (most tests run on the Warp cpu device, so no GPU is required;
-# cuda-only assertions are guarded by torch.cuda.is_available()).
+# Fast local lane: skips slower quality gates, benchmark checks, and CUDA-only graph tests.
+.venv/bin/python -m pytest -q -m "not slow and not benchmark and not cuda"
+
+# Full suite. CUDA-only assertions are skipped automatically when CUDA is unavailable.
 .venv/bin/python -m pytest -q
 
-# End-to-end benchmark (auto device, E=8192). --graph also captures + times the CUDA graph.
+# Compare every registered first-stage generator on quality/diversity/speed.
+.venv/bin/python -m benchmarks.compare_generators --E 512 --seed 0
+
+# End-to-end benchmark (auto device, E=8192). --graph captures + times the CUDA graph.
 .venv/bin/python -m benchmarks.benchmark_pipeline --graph
 .venv/bin/python -m benchmarks.benchmark_pipeline --E 2048 --cpu
+
+# Render sample tracks without launching the Gradio app.
+.venv/bin/python -m viz.plot_tracks --images 1 --rows 4 --cols 4 --cpu
+
+# Rebuild the committed README images from deterministic CPU runs.
+.venv/bin/python -m viz.render_readme_assets
 ```
+
+Pytest markers: `slow` covers quality gates that are useful but heavier than smoke tests,
+`benchmark` covers benchmark harness checks, and `cuda` covers tests that require a CUDA
+device.
 
 **Conventions** (see `docs/ARCHITECTURE.md`): one thread per output element; flat `[E*N]`
 `wp.vec2f` arrays; env index `e = tid // N`; launch with `device=str(tensor.device)`.
@@ -239,6 +263,7 @@ regime / shape / resolution / relaxation knobs, a live track grid, and the valid
 - Controls are grouped — **Phase-1 generator** (method selector), **Regime** (width / box),
   **Shape** (corner count / `rad` / `edgy` / `handle_clamp_frac`), **Polar knot spline**,
   **Voronoi graph cycle** (`voronoi_num_sites`, layout, control points, variation),
+  **Checkpoint steering** (`checkpoint_count`, turn/steer/lookahead, best-of-K, clip fallback),
   **Resolution** (`spacing` / `N_max`), **Relaxation**, **Batch**.
 - Output is always **`constant_spacing`** (the only mode): **`spacing`** sets the arc step
   (≈ `0.6*half_width`) and **`N_max`** the per-track point cap. **`handle_clamp_frac`** trades

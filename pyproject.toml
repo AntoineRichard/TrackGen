@@ -18,3 +18,10 @@ ui = ["gradio"]
 
 [tool.setuptools.packages.find]
 include = ["track_gen*"]
+
+[tool.pytest.ini_options]
+markers = [
+    "benchmark: benchmark and performance smoke tests",
+    "cuda: tests that require a CUDA device",
+    "slow: tests that are useful for quality gates but slower than API/kernel smoke tests",
+]

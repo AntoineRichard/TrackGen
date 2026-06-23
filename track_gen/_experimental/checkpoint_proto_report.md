@@ -118,10 +118,10 @@ deliberate corners.
 
 ## Renders
 
-- Single-candidate (K=1): `viz/out/checkpoint_proto_grid_k1.png` — several seeds show red
-  (self-crossing) loops; the ~20% K=1 crossing rate made visible.
-- Best-of-8: `viz/out/checkpoint_proto_grid_k8.png` — all clean (0 crossings across the full 500
-  seeds), flowing/sweeping loops with inlets and bulges.
+- Single-candidate (K=1): regenerate `viz/out/checkpoint_proto_grid_k1.png` to see several
+  red (self-crossing) loops; the original run made the ~20% K=1 crossing rate visible.
+- Best-of-8: regenerate `viz/out/checkpoint_proto_grid_k8.png` to see the clean
+  flowing/sweeping loops with inlets and bulges from the original 500-seed run.
 
 (Renders are throwaway / not committed; regenerate with
 `python track_gen/_experimental/checkpoint_proto.py`.)
@@ -219,7 +219,7 @@ shape-preserving rescue per pass in the near-zero band); **K=4+clip for a measur
 same 8-pass budget as K=8. The clip is fully bounded (O(N²) find + O(N) keep-longer + O(N) resample,
 no unbounded iterate-until-simple), so it is as CUDA-graph-capturable as best-of-K itself.
 
-Render: `viz/out/checkpoint_k2clip_grid.png` (K=2+clip) — 24/25 clean, flowing loops with inlets,
-visually the same family as the K=8 grid; clip preserves shape (no degenerate cusps/collapsed
-loops). The lone red cell is a residual ≥2-crossing seed, consistent with the 0.6% rate.
-(Regenerate with `python track_gen/_experimental/checkpoint_clip_grid.py`; renders not committed.)
+Render: regenerate `viz/out/checkpoint_k2clip_grid.png` (K=2+clip) to inspect the original
+24/25-clean flowing-loop result. The lone red cell in that run was a residual >=2-crossing
+seed, consistent with the 0.6% rate. Renders are not committed; regenerate with
+`python track_gen/_experimental/checkpoint_clip_grid.py`.

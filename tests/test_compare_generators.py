@@ -1,5 +1,9 @@
+import pytest
+
 from benchmarks import compare_generators as cg
 from track_gen._src.types import TrackGenConfig
+
+pytestmark = pytest.mark.benchmark
 
 _EXPECTED_KEYS = {
     "generator", "yield", "pre_relax_self_intersection_rate", "xpbd_displacement",

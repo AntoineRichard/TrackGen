@@ -6,7 +6,7 @@ This note records the cleanup pass that promoted Voronoi from an experimental sp
 
 - Added the Warp-native generator implementation in `track_gen/_src/warp_generate_voronoi.py`.
 - Registered `voronoi` through the normal generator registry import path.
-- Added `TrackParams` fields for the bounded Voronoi controls: `voronoi_num_sites`, `voronoi_site_layout`, `voronoi_control_points`, `voronoi_radial_variation`, and `voronoi_angular_jitter`.
+- Added `TrackGenConfig` fields for the bounded Voronoi controls: `voronoi_num_sites`, `voronoi_site_layout`, `voronoi_control_points`, `voronoi_radial_variation`, and `voronoi_angular_jitter`.
 - Wired the generator into the Gradio parameter explorer so it can be selected alongside the other standard first-phase generators.
 - Documented the generator in the architecture, generator contract, baseline, and pre-relaxation generator-method notes.
 
@@ -63,4 +63,4 @@ Generated preview artifact:
 
 ## Outcome
 
-Voronoi is now treated as a standard, non-experimental first-phase generator. Future changes should extend the production `voronoi` path directly and keep the public contract aligned with `TrackParams`, the generator registry, Gradio controls, and the generator documentation.
+Voronoi is now treated as a standard, non-experimental first-phase generator. Future changes should extend the production `voronoi` path directly and keep the public contract aligned with `TrackGenConfig`, the generator registry, Gradio controls, and the generator documentation.

@@ -1,6 +1,8 @@
 import torch
 import pytest
 
+pytestmark = [pytest.mark.benchmark, pytest.mark.slow]
+
 
 def test_benchmark_runs_small_cpu():
     pytest.importorskip("warp")

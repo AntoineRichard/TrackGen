@@ -142,3 +142,13 @@ def test_generate_wrong_batch_raises():
     gen = TrackGenerator(cfg, rng)
     with pytest.raises(ValueError):
         gen.generate(E + 1)
+
+
+def test_generate_rejects_sequence_ids():
+    """generate() is fixed-batch; explicit env-id selection is not supported."""
+    E = 4
+    cfg = TrackGenConfig(num_envs=E, device="cpu")
+    rng = _make_rng(E)
+    gen = TrackGenerator(cfg, rng)
+    with pytest.raises(TypeError, match="does not accept explicit environment ids"):
+        gen.generate([0, 1, 2, 3])

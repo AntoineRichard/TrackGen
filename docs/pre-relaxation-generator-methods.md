@@ -2,9 +2,13 @@
 
 This note lists candidate methods for the first stage of TrackGen: the stage that
 produces an initial closed centerline before constant-spacing resampling and XPBD
-relaxation. The goal is not to replace relaxation. The goal is to feed XPBD better
-initial curves: more diverse, more controllable, less degenerate, and easier to repair
-into constant-width valid tracks.
+relaxation. It is partly historical: `hull`, `polar`, `checkpoint`, and `voronoi` have
+since shipped as standard runtime generators, while several later sections remain
+investigation notes. The canonical runtime contract is `docs/generator-contract.md`.
+
+The goal is not to replace relaxation. The goal is to feed XPBD better initial curves:
+more diverse, more controllable, less degenerate, and easier to repair into
+constant-width valid tracks.
 
 ## Contract for Any First-Stage Generator
 
@@ -71,6 +75,9 @@ sweeping config batches. Report valid yield, fallback rate, and diversity metric
 
 ### 2. Convex Hull plus Midpoint Displacement
 
+**Status:** implemented as the standard `generator="hull"` runtime path. This section is
+the original investigation framing.
+
 **Idea.** Sample random points, compute or approximate their convex hull, insert
 midpoints along hull edges, displace those midpoints inward/outward, then smooth with
 Catmull-Rom or Bezier segments. This is the common OSS pattern used in small Unity
@@ -95,6 +102,9 @@ promising, port the deterministic midpoint expansion to Warp.
 **Priority:** high. Good cheap competitor to the current method.
 
 ### 3. Periodic Polar Spline / Radial Function Generator
+
+**Status:** implemented as the standard `generator="polar"` runtime path. This section is
+the original investigation framing.
 
 **Idea.** Represent the loop in polar form around a center:
 `r(theta) = base + random low-frequency signal`, then sample sorted angles and fit a
@@ -155,9 +165,14 @@ to translate racing-line prior art into a pre-relaxation centerline generator.
 
 ### 5. Checkpoint-Steering Generator Like Gym CarRacing
 
+**Status:** implemented as the standard `generator="checkpoint"` runtime path. The shipped
+version does not over-generate and trim a second lap; it steers exactly `num_points` steps,
+uses an additive heading-ramp closure, selects the best of a fixed candidate pool, and can
+optionally apply a bounded single-crossing clip fallback.
+
 **Idea.** Sample radial checkpoints around a rough circle, then integrate a heading that
-steers toward the next checkpoint under a bounded turn rate. Trim the second completed
-lap into a closed loop. Gymnasium CarRacing uses this kind of procedural path heuristic.
+steers toward the next checkpoint under a bounded turn rate. Gymnasium CarRacing uses this
+kind of procedural path heuristic.
 
 **Why investigate.** It can create natural flowing tracks with long arcs and a stronger
 sense of vehicle path than point sorting. Turn-rate limits directly control curvature

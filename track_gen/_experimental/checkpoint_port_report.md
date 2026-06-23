@@ -91,14 +91,13 @@ Tests:
   `tests/test_param_explorer.py` (missing `gradio`), pre-existing and unrelated to
   checkpoint.
 
-Render: 5x5 post-relax centerline grid of the default config saved to
-`viz/out/checkpoint_warp_grid.png` (all 25 valid, non-circular CarRacing-style loops).
-Note: `viz/out/` is gitignored in this repo (render scratch dir), so the PNG is on disk
-at that path but is NOT committed, consistent with every other `viz/out/*.png`.
+Render: a 5x5 post-relax centerline grid of the default config can be regenerated as
+`viz/out/checkpoint_warp_grid.png` (all 25 valid in the original run, non-circular
+CarRacing-style loops). `viz/out/` is gitignored render scratch, so the PNG is not part
+of the committed report evidence and may not be present in a fresh checkout.
 
 ## Concerns
 - None blocking. The single test skip is pre-existing (`gradio` not installed) and
   unrelated to this work.
-- The render PNG is intentionally not committed because `viz/out/` is gitignored
-  (matches the existing repo convention for all renders); it exists on disk at the
-  reported path.
+- Render PNGs are intentionally not committed because `viz/out/` is gitignored
+  (matches the existing repo convention for local renders); regenerate them when needed.

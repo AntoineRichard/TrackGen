@@ -1,7 +1,7 @@
 # Segment-Grammar First-Stage Generator (#6) — Design Spec
 
 **Date:** 2026-06-21
-**Status:** Design (pre-implementation)
+**Status:** Historical design (pre-implementation; catalog references below reflect 2026-06-21, not the current runtime registry)
 **Depends on:** the pluggable generator framework (registry + `GeneratorSpec`, `docs/generator-contract.md`), the existing generators (`warp_generate.py` bezier, `warp_generate_hull.py`, `warp_generate_polar.py`), and the shape-variety gate (`tests/test_shape_variety.py` + `benchmarks/compare_generators.py` `compactness_p*`/`mean_chicanes`/`straight_frac`, `benchmarks/track_metrics.py` `chicane_count`/`straight_fraction`).
 **Strategy input:** the deferred-methods investigation (its numpy prototype validated the curvature-integrator + closure approach and exposed the residual/self-intersection tradeoff). The doc section is "### 6. Segment Grammar / Road-Block Generator" in `docs/pre-relaxation-generator-methods.md`.
 
@@ -11,7 +11,7 @@ Add a fourth first-stage generator, `"grammar"`, that builds a closed centerline
 
 ## Background / current state
 
-- The catalog (`generator_registry.available()`) is `["bezier", "hull", "polar"]`; all three are healthy (post-relax compactness medians ~0.41–0.56). They are star-shaped and cannot hold a true straight, a localized hairpin, or a real chicane — curvature is only an emergent side effect.
+- At time of writing, the catalog (`generator_registry.available()`) was `["bezier", "hull", "polar"]`; the current runtime registry also includes `checkpoint` and `voronoi`. The original three are star-shaped and cannot hold a true straight, a localized hairpin, or a real chicane — curvature is only an emergent side effect.
 - The framework: each generator is a module exposing `alloc_scratch(config)` + `generate(seeds_wp, config, out_centerline, out_valid_wp, scratch)`, registered as a `GeneratorSpec` (one line in `generator_registry._ensure_loaded`). `warp_generate_polar.py` is the closest template (closed-by-construction, `valid=1`, a two-pass-over-N kernel: build raw points, then center + isotropic bbox-rescale).
 - The shape-variety gate (just landed) is the acceptance check: median post-relax compactness must stay < 0.85, and the harness reports `chicane_count` / `straight_fraction` so feature presence is measurable.
 - The investigation's numpy prototype established: heading closure is *linear* (DC-shift κ so `Σκ·ds = 2π`); displacement closure is solved warp-native by a *gap-distribution* pass (no host solve); and **characterful grammars self-intersect ~42% at m=1 with median residual ~1.3× extent**, so the grammar must be budgeted to keep the linear correction mild.

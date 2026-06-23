@@ -1,5 +1,7 @@
 # Segment-Grammar Generator (#6) Implementation Plan
 
+**Status:** Historical implementation plan from 2026-06-21. Registry examples and expected output snippets reflect the catalog at that time, not the current runtime registry.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add a fourth first-stage generator `"grammar"` that builds a closed centerline from an explicit racing-segment vocabulary (straights, sweepers, hairpins, chicanes, S-bends, kinks, clothoid/spiral transitions) via curvature integration, adding counted straights/hairpins/chicanes the catalog can't otherwise express.
@@ -320,7 +322,7 @@ In `track_gen/_src/generator_registry._ensure_loaded`, after the `warp_generate_
 - [ ] **Step 3: Verify it loads + registers**
 
 Run: `.venv/bin/python -c "from track_gen._src import generator_registry as r; print(r.available())"`
-Expected: `['bezier', 'grammar', 'hull', 'polar']`.
+Expected at time of writing: `['bezier', 'grammar', 'hull', 'polar']` (current registry also includes later standard generators).
 
 - [ ] **Step 4: Smoke-generate (cpu + cuda) — no allocation in capture**
 
