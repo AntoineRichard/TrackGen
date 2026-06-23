@@ -249,9 +249,6 @@ replays at the same geometry as `benchmarks.benchmark_pipeline --graph` (`E=8192
 | Full pipeline with Hull first-stage | CUDA / E=8192 | 98.9 ms/replay |
 | Full pipeline with Polar first-stage | CUDA / E=8192 | 80.8 ms/replay |
 | Full pipeline with Voronoi first-stage | CUDA / E=8192 | 81.3 ms/replay |
-| `.venv/bin/python -m benchmarks.benchmark_pipeline --graph`, eager | CUDA / E=8192 | 96.2 ms/call |
-| `.venv/bin/python -m benchmarks.benchmark_pipeline --graph`, graph replay | CUDA / E=8192 | 95.9 ms/replay |
-| CUDA graph capture | CUDA / E=8192 | 386.6 ms |
 
 ```bash
 # Render sample tracks without launching the Gradio app.
