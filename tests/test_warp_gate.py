@@ -217,6 +217,26 @@ def test_relax_gate_spheres_handles_coincident_centres_deterministically():
     assert dist >= 0.2 - 1e-6
 
 
+def test_relax_gate_spheres_needs_multiple_passes_for_three_gate_cluster():
+    target = 0.2
+
+    def run(iterations):
+        gates = _manual_sequence()
+        pos = to_t(gates.position).view(1, 4, 2)
+        count = to_t(gates.count)
+        pos[0, 0] = torch.tensor([0.0, 0.0])
+        pos[0, 1] = torch.tensor([0.01, 0.0])
+        pos[0, 2] = torch.tensor([0.0, 0.01])
+        count[0] = 3
+        warp_gate.relax_gate_spheres(gates.position, 4, gates.count, target, iterations)
+        out = to_t(gates.position).view(1, 4, 2)[0, :3]
+        dist = torch.cdist(out, out)
+        return dist[dist > 0].min()
+
+    assert run(1) < target - 1e-3
+    assert run(8) >= target - 1e-6
+
+
 def test_tangents_from_positions_uses_wrapped_central_difference():
     gates = _manual_sequence()
     pos = to_t(gates.position).view(1, 4, 2)

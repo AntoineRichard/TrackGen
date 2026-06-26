@@ -128,9 +128,10 @@ generator lives in `track_gen._experimental` and is **unsupported** — it is no
 Warp pipeline and receives no compatibility guarantees.
 
 Gate centers are treated as spheres/disks when `gate_radius` is set. The generated center
-spacing target is `max(min_gate_distance, 2 * gate_radius)`, and `gate_solve_iters` runs a
-small deterministic pairwise solve that pushes overlapping gate spheres apart before
-recomputing tangents. Set `gate_solve_iters=0` to inspect the raw sampled anchors.
+spacing target is `max(min_gate_distance, 2 * gate_radius)`, and `gate_solve_iters` runs
+up to that many iterations of a small deterministic pairwise solve that pushes overlapping
+gate spheres apart before recomputing tangents. Set `gate_solve_iters=0` to inspect the
+raw sampled anchors.
 
 ![TrackGen standard generator grid](docs/assets/readme-generator-grid.png)
 

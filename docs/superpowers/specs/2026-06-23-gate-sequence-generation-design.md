@@ -110,8 +110,8 @@ Validity is gate-specific and intentionally smaller than track validity:
 The centre spacing target is `min_gate_distance` unless `gate_radius` is set, in which
 case the gate centres are treated as spheres/disks and the target is
 `max(min_gate_distance, 2 * gate_radius)`. Before validity, gate generation may run a
-small fixed-iteration pairwise solve that pushes overlapping gate spheres apart and then
-recomputes tangents.
+small fixed-iteration pairwise solve with device-side early stopping that pushes
+overlapping gate spheres apart and then recomputes tangents.
 
 There is no track-width feasibility gate, no turning-number requirement, no XPBD road
 relaxation check, and no border self-intersection check. A course whose centreline crosses

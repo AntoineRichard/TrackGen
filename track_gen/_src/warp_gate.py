@@ -259,6 +259,7 @@ def _relax_gate_spheres_k(
 
     eps = float(1.0e-8)
     for it in range(iterations):
+        moved = int(0)
         for i in range(max_gates):
             if i < cnt:
                 pi = position[base + i]
@@ -267,7 +268,7 @@ def _relax_gate_spheres_k(
                         pj = position[base + j]
                         d = pj - pi
                         dist = wp.length(d)
-                        if dist < target_distance:
+                        if dist + eps < target_distance:
                             n = wp.vec2f(0.0, 0.0)
                             if dist > eps:
                                 n = d / dist
@@ -284,6 +285,9 @@ def _relax_gate_spheres_k(
                             pj = pj + correction
                             position[base + i] = pi
                             position[base + j] = pj
+                            moved = int(1)
+        if moved == 0:
+            break
 
 
 @wp.kernel
