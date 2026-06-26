@@ -49,6 +49,10 @@ uv pip install -e ".[dev]"
 
 # 4. verify the fast lane
 .venv/bin/python -m pytest -q -m "not slow and not benchmark and not cuda"
+
+# Optional: add the Gradio UI and open the parameter explorer
+.venv/bin/pip install -e ".[ui]"
+.venv/bin/python -m viz.param_explorer   # opens a local URL (default http://127.0.0.1:7860)
 ```
 
 ### With venv + pip
