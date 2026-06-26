@@ -111,8 +111,6 @@ def test_build_gate_config_maps_solver_and_shape_knobs():
     cfg = px.build_gate_config(_gate_params(
         gate_generator="bezier",
         gate_ordering="random_pairs",
-        gate_min_gates=5,
-        gate_max_gates=12,
         gate_width=0.2,
         gate_radius=0.1,
         gate_solve_iters=11,
@@ -122,7 +120,7 @@ def test_build_gate_config_maps_solver_and_shape_knobs():
     ))
     assert cfg.generator == "bezier"
     assert cfg.gate_ordering == "random_pairs"
-    assert cfg.min_gates == 5
+    assert cfg.min_gates == 7
     assert cfg.max_gates == 12
     assert abs(cfg.gate_width - 0.2) < 1e-9
     assert abs(cfg.gate_radius - 0.1) < 1e-9
@@ -130,6 +128,18 @@ def test_build_gate_config_maps_solver_and_shape_knobs():
     assert abs(cfg.scale - 2.5) < 1e-9
     assert cfg.min_num_points == 7
     assert cfg.max_num_points == 12
+
+
+def test_build_gate_config_derives_fixed_mode_gate_counts():
+    cases = [
+        ("polar", "gate_polar_num_knots", 14),
+        ("voronoi", "gate_voronoi_control_points", 21),
+        ("checkpoint", "gate_checkpoint_count", 9),
+    ]
+    for generator, key, count in cases:
+        cfg = px.build_gate_config(_gate_params(gate_generator=generator, **{key: count}))
+        assert cfg.min_gates == count
+        assert cfg.max_gates == count
 
 
 def test_build_gate_config_raw_toggle_disables_solver():
@@ -229,6 +239,11 @@ def test_gate_app_labels_explain_units_and_collision_stage():
     assert "gate_radius [world units]" in labels
     assert "scale [x]" in labels
     assert "min_point_distance [pre-scale world units]" in labels
+    assert "min gates" not in labels
+    assert "max gates" not in labels
+    assert "min sampled anchors" in labels
+    assert "max sampled anchors" in labels
+    assert "For Bezier/Hull gates, sampled anchors become gate centers." in markdown
 
 
 def test_batch_and_pagination():

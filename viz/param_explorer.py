@@ -303,8 +303,6 @@ def default_gate_params() -> dict:
     return {
         "gate_generator": cfg.generator,
         "gate_ordering": cfg.gate_ordering,
-        "gate_min_gates": cfg.min_gates,
-        "gate_max_gates": cfg.max_gates,
         "gate_width": 0.05,
         "gate_radius": cfg.gate_radius,
         "gate_solve_iters": cfg.gate_solve_iters,
@@ -356,21 +354,26 @@ def gate_visible_sections(generator: str) -> dict[str, bool]:
 
 def build_gate_config(p: dict) -> GateGenConfig:
     generator = str(p["gate_generator"])
-    min_gates = max(2, int(p["gate_min_gates"]))
-    max_gates = max(min_gates, int(p["gate_max_gates"]))
     min_points = min(int(p["gate_min_num_points"]), int(p["gate_max_num_points"]))
     max_points = max(int(p["gate_min_num_points"]), int(p["gate_max_num_points"]))
     polar_knots = max(4, int(p["gate_polar_num_knots"]))
     vor_control = max(3, int(p["gate_voronoi_control_points"]))
     checkpoint_count = max(3, int(p["gate_checkpoint_count"]))
     if generator in {"bezier", "hull"}:
-        max_gates = max(max_gates, max_points)
+        min_gates = max(2, min_points)
+        max_gates = max(min_gates, max_points)
     elif generator == "polar":
-        max_gates = max(max_gates, polar_knots)
+        min_gates = polar_knots
+        max_gates = polar_knots
     elif generator == "voronoi":
-        max_gates = max(max_gates, vor_control)
+        min_gates = vor_control
+        max_gates = vor_control
     elif generator == "checkpoint":
-        max_gates = max(max_gates, checkpoint_count)
+        min_gates = checkpoint_count
+        max_gates = checkpoint_count
+    else:
+        min_gates = 2
+        max_gates = max(2, max_points)
     radius = float(p["gate_radius"])
     supported_orderings = gate_supported_orderings(generator)
     ordering = str(p["gate_ordering"])
@@ -573,8 +576,7 @@ def render_gate_grid(p: dict):
 
 
 def _collect_gate(*vals) -> dict:
-    keys = ["gate_generator", "gate_ordering", "gate_min_gates", "gate_max_gates",
-            "gate_width", "gate_radius", "gate_solve_iters",
+    keys = ["gate_generator", "gate_ordering", "gate_width", "gate_radius", "gate_solve_iters",
             "gate_show_raw", "gate_scale", "gate_min_num_points", "gate_max_num_points",
             "gate_min_point_distance", "gate_num_points_per_segment", "gate_rad",
             "gate_edgy", "gate_handle_clamp_frac", "gate_hull_displacement",
@@ -795,10 +797,6 @@ def build_app():
                         gate_ordering = gr.Dropdown(gate_ordering_choices,
                                                     value=gate_ordering_default, label="ordering")
                         gr.Markdown("### Gate layout")
-                        gate_min_gates = gr.Slider(2, 32, value=gate_defaults["gate_min_gates"], step=1,
-                                                   label="min gates")
-                        gate_max_gates = gr.Slider(2, 64, value=gate_defaults["gate_max_gates"], step=1,
-                                                   label="max gates")
                         gate_width = gr.Slider(0.0, 1.0, value=gate_defaults["gate_width"], step=0.01,
                                                label="gate_width [world units]")
                         gate_scale = gr.Slider(0.25, 20.0, value=gate_defaults["gate_scale"], step=0.25,
@@ -812,10 +810,12 @@ def build_app():
                         gate_show_raw = gr.Checkbox(value=gate_defaults["gate_show_raw"],
                                                     label="show raw anchors (skip collisions)")
                         gate_point_md = gr.Markdown("### Point-family controls", visible=gate_mode_visible["point"])
+                        gate_point_note = gr.Markdown("For Bezier/Hull gates, sampled anchors become gate centers.",
+                                                      visible=gate_mode_visible["point"])
                         gate_min_np = gr.Slider(2, 32, value=gate_defaults["gate_min_num_points"], step=1,
-                                                label="min points", visible=gate_mode_visible["point"])
+                                                label="min sampled anchors", visible=gate_mode_visible["point"])
                         gate_max_np = gr.Slider(2, 32, value=gate_defaults["gate_max_num_points"], step=1,
-                                                label="max points", visible=gate_mode_visible["point"])
+                                                label="max sampled anchors", visible=gate_mode_visible["point"])
                         gate_min_point_distance = gr.Slider(0.01, 0.30, value=gate_defaults["gate_min_point_distance"],
                                                             step=0.005, label="min_point_distance [pre-scale world units]",
                                                             visible=gate_mode_visible["point"])
@@ -887,8 +887,7 @@ def build_app():
                 gate_state = gr.State(None)
                 gate_config_state = gr.State(None)
                 gate_page_state = gr.State(0)
-                gate_controls = [gate_generator, gate_ordering, gate_min_gates, gate_max_gates,
-                                 gate_width, gate_radius, gate_solve_iters,
+                gate_controls = [gate_generator, gate_ordering, gate_width, gate_radius, gate_solve_iters,
                                  gate_show_raw, gate_scale, gate_min_np, gate_max_np,
                                  gate_min_point_distance, gate_samples_per_seg, gate_rad,
                                  gate_edgy, gate_handle_clamp, gate_hull_disp,
@@ -900,7 +899,7 @@ def build_app():
 
                 gate_mode_outputs = [
                     gate_ordering,
-                    gate_point_md, gate_min_np, gate_max_np, gate_min_point_distance,
+                    gate_point_md, gate_point_note, gate_min_np, gate_max_np, gate_min_point_distance,
                     gate_polar_md, gate_polar_knots, gate_polar_radial, gate_polar_angular,
                     gate_vor_md, gate_vor_sites, gate_vor_layout, gate_vor_control,
                     gate_vor_radial, gate_vor_angular,
@@ -914,6 +913,7 @@ def build_app():
                     visible = gate_visible_sections(generator_name)
                     return [
                         gr.update(choices=supported, value=ordering_value),
+                        gr.update(visible=visible["point"]),
                         gr.update(visible=visible["point"]),
                         gr.update(visible=visible["point"]),
                         gr.update(visible=visible["point"]),
