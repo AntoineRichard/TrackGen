@@ -139,6 +139,32 @@ def test_build_gate_config_raw_toggle_disables_solver():
     assert cfg.gate_solve_iters == 0
 
 
+def test_gate_supported_orderings_follow_generator_capabilities():
+    assert px.gate_supported_orderings("bezier") == ["ccw", "random_pairs"]
+    assert px.gate_supported_orderings("hull") == ["ccw", "random_pairs"]
+    assert px.gate_supported_orderings("polar") == ["ccw", "raw"]
+    assert px.gate_supported_orderings("voronoi") == ["ccw", "raw"]
+    assert px.gate_supported_orderings("checkpoint") == ["ccw", "raw"]
+
+
+def test_gate_visible_sections_are_generator_specific():
+    assert px.gate_visible_sections("bezier") == {
+        "point": True,
+        "polar": False,
+        "voronoi": False,
+        "checkpoint": False,
+    }
+    assert px.gate_visible_sections("polar")["polar"] is True
+    assert px.gate_visible_sections("voronoi")["voronoi"] is True
+    assert px.gate_visible_sections("checkpoint")["checkpoint"] is True
+
+
+def test_build_gate_config_clamps_unsupported_ordering():
+    cfg = px.build_gate_config(_gate_params(gate_generator="checkpoint", gate_ordering="random_pairs"))
+    assert cfg.generator == "checkpoint"
+    assert cfg.gate_ordering == "ccw"
+
+
 def test_render_gate_grid_runs():
     fig, stats = px.render_gate_grid(_gate_params(
         gate_generator="bezier",

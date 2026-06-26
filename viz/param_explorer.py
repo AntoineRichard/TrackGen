@@ -336,6 +336,25 @@ def default_gate_params() -> dict:
     }
 
 
+def gate_supported_orderings(generator: str) -> list[str]:
+    try:
+        supported = gate_generator_registry.get(str(generator)).supported_orderings
+    except Exception:
+        supported = frozenset({"ccw"})
+    ordered = [name for name in ("ccw", "raw", "random_pairs") if name in supported]
+    return ordered or ["ccw"]
+
+
+def gate_visible_sections(generator: str) -> dict[str, bool]:
+    name = str(generator)
+    return {
+        "point": name in {"bezier", "hull"},
+        "polar": name == "polar",
+        "voronoi": name == "voronoi",
+        "checkpoint": name == "checkpoint",
+    }
+
+
 def build_gate_config(p: dict) -> GateGenConfig:
     generator = str(p["gate_generator"])
     min_gates = max(2, int(p["gate_min_gates"]))
@@ -354,9 +373,13 @@ def build_gate_config(p: dict) -> GateGenConfig:
     elif generator == "checkpoint":
         max_gates = max(max_gates, checkpoint_count)
     radius = float(p["gate_radius"])
+    supported_orderings = gate_supported_orderings(generator)
+    ordering = str(p["gate_ordering"])
+    if ordering not in supported_orderings:
+        ordering = supported_orderings[0]
     return GateGenConfig(
         generator=generator,
-        gate_ordering=str(p["gate_ordering"]),
+        gate_ordering=ordering,
         num_envs=int(p.get("gate_batch_size", int(p["gate_grid_n"]) ** 2)),
         min_gates=min_gates,
         max_gates=max_gates,
@@ -417,6 +440,21 @@ def _gate_tensors(gates):
     return ns
 
 
+def _nice_scale_length(span: float) -> float:
+    if span <= 0.0 or not math.isfinite(span):
+        return 1.0
+    raw = span / 4.0
+    exp = math.floor(math.log10(raw))
+    base = raw / (10.0 ** exp)
+    if base < 2.0:
+        nice = 1.0
+    elif base < 5.0:
+        nice = 2.0
+    else:
+        nice = 5.0
+    return nice * (10.0 ** exp)
+
+
 def _draw_gate_sequence(ax, gt, cfg: GateGenConfig, e: int) -> None:
     c = int(gt.count[e].item())
     valid = bool(gt.valid[e].item())
@@ -460,6 +498,14 @@ def _draw_gate_sequence(ax, gt, cfg: GateGenConfig, e: int) -> None:
         cy = 0.5 * (ymin + ymax)
         ax.set_xlim(cx - 0.5 * span - pad, cx + 0.5 * span + pad)
         ax.set_ylim(cy - 0.5 * span - pad, cy + 0.5 * span + pad)
+        x0, x1 = ax.get_xlim()
+        y0, y1 = ax.get_ylim()
+        bar = _nice_scale_length(max(x1 - x0, y1 - y0))
+        sx = x0 + 0.07 * (x1 - x0)
+        sy = y0 + 0.07 * (y1 - y0)
+        ax.plot([sx, sx + bar], [sy, sy], color="#111827", lw=1.1, zorder=6)
+        ax.text(sx, sy, f" {bar:g} m", fontsize=4.8, va="bottom", ha="left",
+                color="#111827", zorder=6)
     ax.set_aspect("equal")
     ax.set_xticks([])
     ax.set_yticks([])
@@ -744,10 +790,15 @@ def build_app():
                         gr.Markdown("### Gate generator")
                         gate_available_generators = gate_generator_registry.available()
                         gate_generator_default = gate_defaults["gate_generator"] if gate_defaults["gate_generator"] in gate_available_generators else "bezier"
+                        gate_mode_visible = gate_visible_sections(gate_generator_default)
+                        gate_ordering_choices = gate_supported_orderings(gate_generator_default)
+                        gate_ordering_default = gate_defaults["gate_ordering"]
+                        if gate_ordering_default not in gate_ordering_choices:
+                            gate_ordering_default = gate_ordering_choices[0]
                         gate_generator = gr.Dropdown(gate_available_generators, value=gate_generator_default,
                                                      label="generator method")
-                        gate_ordering = gr.Dropdown(["ccw", "raw", "random_pairs"],
-                                                    value=gate_defaults["gate_ordering"], label="ordering")
+                        gate_ordering = gr.Dropdown(gate_ordering_choices,
+                                                    value=gate_ordering_default, label="ordering")
                         gr.Markdown("### Gate spacing")
                         gate_min_gates = gr.Slider(2, 32, value=gate_defaults["gate_min_gates"], step=1,
                                                    label="min gates")
@@ -765,49 +816,61 @@ def build_app():
                                                     label="show raw anchors")
                         gate_scale = gr.Slider(0.25, 20.0, value=gate_defaults["gate_scale"], step=0.25,
                                                label="scale")
-                        gr.Markdown("### Point-family controls")
+                        gate_point_md = gr.Markdown("### Point-family controls", visible=gate_mode_visible["point"])
                         gate_min_np = gr.Slider(2, 32, value=gate_defaults["gate_min_num_points"], step=1,
-                                                label="min points")
+                                                label="min points", visible=gate_mode_visible["point"])
                         gate_max_np = gr.Slider(2, 32, value=gate_defaults["gate_max_num_points"], step=1,
-                                                label="max points")
+                                                label="max points", visible=gate_mode_visible["point"])
                         gate_min_point_distance = gr.Slider(0.01, 0.30, value=gate_defaults["gate_min_point_distance"],
-                                                            step=0.005, label="min_point_distance")
+                                                            step=0.005, label="min_point_distance",
+                                                            visible=gate_mode_visible["point"])
                         gate_samples_per_seg = gr.Slider(8, 60, value=gate_defaults["gate_num_points_per_segment"],
-                                                         step=1, label="num_points_per_segment")
+                                                         step=1, label="num_points_per_segment", visible=False)
                         gate_rad = gr.Slider(0.0, 0.6, value=gate_defaults["gate_rad"], step=0.01,
-                                             label="rad")
+                                             label="rad", visible=False)
                         gate_edgy = gr.Slider(0.0, 1.0, value=gate_defaults["gate_edgy"], step=0.05,
-                                              label="edgy")
+                                              label="edgy", visible=False)
                         gate_handle_clamp = gr.Slider(0.0, 1.0, value=gate_defaults["gate_handle_clamp_frac"],
-                                                      step=0.01, label="handle_clamp_frac")
+                                                      step=0.01, label="handle_clamp_frac", visible=False)
                         gate_hull_disp = gr.Slider(0.0, 0.8, value=gate_defaults["gate_hull_displacement"],
-                                                   step=0.01, label="hull_displacement")
-                        gr.Markdown("### Structured controls")
+                                                   step=0.01, label="hull_displacement", visible=False)
+                        gate_polar_md = gr.Markdown("### Polar controls", visible=gate_mode_visible["polar"])
                         gate_polar_knots = gr.Slider(4, 32, value=gate_defaults["gate_polar_num_knots"], step=1,
-                                                     label="polar knots")
+                                                     label="polar knots", visible=gate_mode_visible["polar"])
                         gate_polar_radial = gr.Slider(0.0, 0.85, value=gate_defaults["gate_polar_radial_jitter"],
-                                                      step=0.01, label="polar radial jitter")
+                                                      step=0.01, label="polar radial jitter",
+                                                      visible=gate_mode_visible["polar"])
                         gate_polar_angular = gr.Slider(0.0, 0.45, value=gate_defaults["gate_polar_angular_jitter"],
-                                                       step=0.01, label="polar angular jitter")
+                                                       step=0.01, label="polar angular jitter",
+                                                       visible=gate_mode_visible["polar"])
+                        gate_vor_md = gr.Markdown("### Voronoi controls", visible=gate_mode_visible["voronoi"])
                         gate_vor_sites = gr.Slider(32, 512, value=gate_defaults["gate_voronoi_num_sites"], step=16,
-                                                   label="voronoi sites")
+                                                   label="voronoi sites", visible=gate_mode_visible["voronoi"])
                         gate_vor_layout = gr.Dropdown(["void_ring", "ring", "clustered", "mixed"],
                                                       value=gate_defaults["gate_voronoi_site_layout"],
-                                                      label="voronoi site layout")
+                                                      label="voronoi site layout",
+                                                      visible=gate_mode_visible["voronoi"])
                         gate_vor_control = gr.Slider(3, 40, value=gate_defaults["gate_voronoi_control_points"],
-                                                     step=1, label="voronoi control points")
+                                                     step=1, label="voronoi control points",
+                                                     visible=gate_mode_visible["voronoi"])
                         gate_vor_radial = gr.Slider(0.0, 0.85, value=gate_defaults["gate_voronoi_radial_variation"],
-                                                    step=0.01, label="voronoi radial variation")
+                                                    step=0.01, label="voronoi radial variation",
+                                                    visible=gate_mode_visible["voronoi"])
                         gate_vor_angular = gr.Slider(0.0, 0.25, value=gate_defaults["gate_voronoi_angular_jitter"],
-                                                     step=0.01, label="voronoi angular jitter")
+                                                     step=0.01, label="voronoi angular jitter",
+                                                     visible=gate_mode_visible["voronoi"])
+                        gate_checkpoint_md = gr.Markdown("### Checkpoint controls", visible=gate_mode_visible["checkpoint"])
                         gate_checkpoint_count = gr.Slider(3, 32, value=gate_defaults["gate_checkpoint_count"],
-                                                          step=1, label="checkpoint_count")
+                                                          step=1, label="checkpoint_count",
+                                                          visible=gate_mode_visible["checkpoint"])
                         gate_checkpoint_radius_min_frac = gr.Slider(0.1, 0.9,
                                                                     value=gate_defaults["gate_checkpoint_radius_min_frac"],
-                                                                    step=0.01, label="checkpoint_radius_min_frac")
+                                                                    step=0.01, label="checkpoint_radius_min_frac",
+                                                                    visible=gate_mode_visible["checkpoint"])
                         gate_checkpoint_angle_jitter = gr.Slider(0.0, 0.9,
                                                                  value=gate_defaults["gate_checkpoint_angle_jitter"],
-                                                                 step=0.01, label="checkpoint_angle_jitter")
+                                                                 step=0.01, label="checkpoint_angle_jitter",
+                                                                 visible=gate_mode_visible["checkpoint"])
                         gr.Markdown("### Batch")
                         gate_grid_n = gr.Dropdown([3, 4, 5, 6], value=gate_defaults["gate_grid_n"],
                                                   label="grid (n x n)")
@@ -840,6 +903,42 @@ def build_app():
                                  gate_checkpoint_count, gate_checkpoint_radius_min_frac,
                                  gate_checkpoint_angle_jitter, gate_grid_n, gate_seed, gate_batch_size]
 
+                gate_mode_outputs = [
+                    gate_ordering,
+                    gate_point_md, gate_min_np, gate_max_np, gate_min_point_distance,
+                    gate_polar_md, gate_polar_knots, gate_polar_radial, gate_polar_angular,
+                    gate_vor_md, gate_vor_sites, gate_vor_layout, gate_vor_control,
+                    gate_vor_radial, gate_vor_angular,
+                    gate_checkpoint_md, gate_checkpoint_count, gate_checkpoint_radius_min_frac,
+                    gate_checkpoint_angle_jitter,
+                ]
+
+                def _gate_mode_update(generator_name, current_ordering):
+                    supported = gate_supported_orderings(generator_name)
+                    ordering_value = current_ordering if current_ordering in supported else supported[0]
+                    visible = gate_visible_sections(generator_name)
+                    return [
+                        gr.update(choices=supported, value=ordering_value),
+                        gr.update(visible=visible["point"]),
+                        gr.update(visible=visible["point"]),
+                        gr.update(visible=visible["point"]),
+                        gr.update(visible=visible["point"]),
+                        gr.update(visible=visible["polar"]),
+                        gr.update(visible=visible["polar"]),
+                        gr.update(visible=visible["polar"]),
+                        gr.update(visible=visible["polar"]),
+                        gr.update(visible=visible["voronoi"]),
+                        gr.update(visible=visible["voronoi"]),
+                        gr.update(visible=visible["voronoi"]),
+                        gr.update(visible=visible["voronoi"]),
+                        gr.update(visible=visible["voronoi"]),
+                        gr.update(visible=visible["voronoi"]),
+                        gr.update(visible=visible["checkpoint"]),
+                        gr.update(visible=visible["checkpoint"]),
+                        gr.update(visible=visible["checkpoint"]),
+                        gr.update(visible=visible["checkpoint"]),
+                    ]
+
                 def _generate_gates(*vals):
                     p = _collect_gate(*vals)
                     gn = int(p["gate_grid_n"])
@@ -867,6 +966,7 @@ def build_app():
                     fig = render_gate_page(gates, cfg, new, int(gn))
                     return fig, new, f"page {new + 1}/{np_}"
 
+                gate_generator.change(_gate_mode_update, [gate_generator, gate_ordering], gate_mode_outputs)
                 gate_generate.click(_generate_gates, gate_controls,
                                     [gate_plot, gate_stats, gate_state, gate_config_state,
                                      gate_page_state, gate_page_lbl])
