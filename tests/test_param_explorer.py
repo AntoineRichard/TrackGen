@@ -26,6 +26,13 @@ def _params(**over):
     return p
 
 
+def _gate_params(**over):
+    p = px.default_gate_params()
+    p.update({"gate_grid_n": 2, "gate_batch_size": 4})
+    p.update(over)
+    return p
+
+
 def test_default_params_favor_polar_knot_method():
     defaults = TrackGenConfig()
     params = px.default_params()
@@ -98,6 +105,55 @@ def test_build_config_maps_voronoi_shape_knobs():
     assert cfg.voronoi_control_points == 22
     assert abs(cfg.voronoi_radial_variation - 0.70) < 1e-9
     assert abs(cfg.voronoi_angular_jitter - 0.12) < 1e-9
+
+
+def test_build_gate_config_maps_solver_and_shape_knobs():
+    cfg = px.build_gate_config(_gate_params(
+        gate_generator="bezier",
+        gate_ordering="random_pairs",
+        gate_min_gates=5,
+        gate_max_gates=12,
+        gate_width=0.2,
+        gate_radius=0.1,
+        gate_min_distance=0.03,
+        gate_solve_iters=11,
+        gate_scale=2.5,
+        gate_min_num_points=7,
+        gate_max_num_points=12,
+    ))
+    assert cfg.generator == "bezier"
+    assert cfg.gate_ordering == "random_pairs"
+    assert cfg.min_gates == 5
+    assert cfg.max_gates == 12
+    assert abs(cfg.gate_width - 0.2) < 1e-9
+    assert abs(cfg.gate_radius - 0.1) < 1e-9
+    assert abs(cfg.min_gate_distance - 0.03) < 1e-9
+    assert cfg.gate_solve_iters == 11
+    assert abs(cfg.scale - 2.5) < 1e-9
+    assert cfg.min_num_points == 7
+    assert cfg.max_num_points == 12
+
+
+def test_build_gate_config_raw_toggle_disables_solver():
+    cfg = px.build_gate_config(_gate_params(gate_show_raw=True, gate_solve_iters=13))
+    assert cfg.gate_solve_iters == 0
+
+
+def test_render_gate_grid_runs():
+    fig, stats = px.render_gate_grid(_gate_params(
+        gate_generator="bezier",
+        gate_ordering="ccw",
+        gate_width=0.05,
+        gate_radius=0.025,
+        gate_min_distance=0.05,
+    ))
+    assert isinstance(fig, matplotlib.figure.Figure)
+    assert len(fig.axes) == 4
+    assert 0.0 <= stats["yield"] <= 1.0
+    assert stats["n_valid"] + stats["n_invalid"] == 4
+    assert stats["target_center_distance"] >= 0.05
+    import matplotlib.pyplot as plt
+    plt.close(fig)
 
 
 import matplotlib.figure
