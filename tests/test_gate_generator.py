@@ -55,6 +55,22 @@ def test_gate_generator_unsupported_ordering_raises(monkeypatch):
         GateGenerator(cfg, rng)
 
 
+@pytest.mark.parametrize(
+    ("cfg_kwargs", "producible"),
+    [
+        ({"generator": "bezier", "max_num_points": 13}, 13),
+        ({"generator": "hull", "max_num_points": 13}, 13),
+        ({"generator": "polar", "polar_num_knots": 12}, 12),
+        ({"generator": "voronoi", "voronoi_control_points": 12, "voronoi_num_sites": 12}, 12),
+        ({"generator": "checkpoint", "checkpoint_count": 12}, 12),
+    ],
+)
+def test_gate_generator_rejects_unreachable_min_gates(cfg_kwargs, producible):
+    cfg = GateGenConfig(min_gates=20, max_gates=32, gate_radius=0.0, **cfg_kwargs)
+    with pytest.raises(ValueError, match=rf"min_gates.*{producible}"):
+        GateGenerator(cfg, _make_rng(cfg.num_envs, seed=13))
+
+
 def test_gate_generator_rejects_too_small_max_gates(monkeypatch):
     monkeypatch.setattr(reg, "GATE_GENERATORS", {})
     monkeypatch.setattr(reg, "_LOADED", True)
@@ -81,7 +97,7 @@ def test_cuda_capture_sets_gate_and_pipeline_capture_flags(monkeypatch):
         name="fake-cuda",
         alloc_scratch=lambda config: object(),
         generate=lambda seeds_wp, config, out, scratch: None,
-        max_gates=lambda config: 1,
+        max_gates=lambda config: 4,
         supported_orderings=frozenset({"ccw"}),
     ))
 

@@ -36,6 +36,12 @@ class GateGenerator:
             )
 
         required_max_gates = int(generator_spec.max_gates(config))
+        if required_max_gates < int(config.min_gates):
+            raise ValueError(
+                f"GateGenConfig.min_gates={config.min_gates!r} is too large for "
+                f"gate generator {config.generator!r}; generator can produce at most "
+                f"{required_max_gates} gates."
+            )
         if required_max_gates > int(config.max_gates):
             raise ValueError(
                 f"GateGenConfig.max_gates={config.max_gates!r} is too small for "
