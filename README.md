@@ -51,8 +51,8 @@ uv pip install -e ".[dev]"
 .venv/bin/python -m pytest -q -m "not slow and not benchmark and not cuda"
 
 # Optional: add the Gradio UI and open the parameter explorer
-.venv/bin/pip install -e ".[ui]"
-.venv/bin/python -m viz.param_explorer   # opens a local URL (default http://127.0.0.1:7860)
+uv pip install -e ".[ui]"
+uv run python -m viz.param_explorer   # opens a local URL (default http://127.0.0.1:7860)
 ```
 
 ### With venv + pip
@@ -279,8 +279,8 @@ An interactive Gradio app to see how each parameter affects generation — slide
 regime / shape / resolution / relaxation knobs, a live track grid, and the valid-yield stat.
 
 ```bash
-.venv/bin/pip install -e ".[ui]"     # adds gradio
-.venv/bin/python -m viz.param_explorer   # opens a local URL (default http://127.0.0.1:7860)
+uv pip install -e ".[ui]"     # adds gradio
+uv run python -m viz.param_explorer   # opens a local URL (default http://127.0.0.1:7860)
 ```
 
 **Using it:**
