@@ -209,6 +209,28 @@ def test_build_app_smoke():
     assert isinstance(app, gr.Blocks)
 
 
+def test_gate_app_labels_explain_units_and_collision_stage():
+    pytest.importorskip("gradio")
+    app = px.build_app()
+    labels = {
+        c.get("props", {}).get("label")
+        for c in app.config["components"]
+        if c.get("props", {}).get("label")
+    }
+    markdown = {
+        c.get("props", {}).get("value")
+        for c in app.config["components"]
+        if c.get("type") == "markdown"
+    }
+
+    assert "### Gate Collisions" in markdown
+    assert "Center spacing target = 2 * gate_radius." in markdown
+    assert "gate_width [world units]" in labels
+    assert "gate_radius [world units]" in labels
+    assert "scale [x]" in labels
+    assert "min_point_distance [pre-scale world units]" in labels
+
+
 def test_batch_and_pagination():
     import warp as wp
     p = _params(grid_n=3, batch_size=20, spacing=0.30, n_max=384)

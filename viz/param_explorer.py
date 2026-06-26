@@ -794,28 +794,30 @@ def build_app():
                                                      label="generator method")
                         gate_ordering = gr.Dropdown(gate_ordering_choices,
                                                     value=gate_ordering_default, label="ordering")
-                        gr.Markdown("### Gate spacing")
+                        gr.Markdown("### Gate layout")
                         gate_min_gates = gr.Slider(2, 32, value=gate_defaults["gate_min_gates"], step=1,
                                                    label="min gates")
                         gate_max_gates = gr.Slider(2, 64, value=gate_defaults["gate_max_gates"], step=1,
                                                    label="max gates")
                         gate_width = gr.Slider(0.0, 1.0, value=gate_defaults["gate_width"], step=0.01,
-                                               label="gate_width")
+                                               label="gate_width [world units]")
+                        gate_scale = gr.Slider(0.25, 20.0, value=gate_defaults["gate_scale"], step=0.25,
+                                               label="scale [x]")
+                        gr.Markdown("### Gate Collisions")
+                        gr.Markdown("Center spacing target = 2 * gate_radius.")
                         gate_radius = gr.Slider(0.0, 10.0, value=gate_defaults["gate_radius"], step=0.005,
-                                                label="gate_radius")
+                                                label="gate_radius [world units]")
                         gate_solve_iters = gr.Slider(0, 64, value=gate_defaults["gate_solve_iters"], step=1,
                                                      label="gate_solve_iters")
                         gate_show_raw = gr.Checkbox(value=gate_defaults["gate_show_raw"],
-                                                    label="show raw anchors")
-                        gate_scale = gr.Slider(0.25, 20.0, value=gate_defaults["gate_scale"], step=0.25,
-                                               label="scale")
+                                                    label="show raw anchors (skip collisions)")
                         gate_point_md = gr.Markdown("### Point-family controls", visible=gate_mode_visible["point"])
                         gate_min_np = gr.Slider(2, 32, value=gate_defaults["gate_min_num_points"], step=1,
                                                 label="min points", visible=gate_mode_visible["point"])
                         gate_max_np = gr.Slider(2, 32, value=gate_defaults["gate_max_num_points"], step=1,
                                                 label="max points", visible=gate_mode_visible["point"])
                         gate_min_point_distance = gr.Slider(0.01, 0.30, value=gate_defaults["gate_min_point_distance"],
-                                                            step=0.005, label="min_point_distance",
+                                                            step=0.005, label="min_point_distance [pre-scale world units]",
                                                             visible=gate_mode_visible["point"])
                         gate_samples_per_seg = gr.Slider(8, 60, value=gate_defaults["gate_num_points_per_segment"],
                                                          step=1, label="num_points_per_segment", visible=False)
