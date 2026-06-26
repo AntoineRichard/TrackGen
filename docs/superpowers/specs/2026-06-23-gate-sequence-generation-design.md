@@ -26,7 +26,7 @@ Expose these names from `track_gen.__all__`:
 
 `GateGenConfig` should reuse the existing generator/style knobs where practical, but it is
 not a subclass of `TrackGenConfig`. It should carry only gate-relevant fields:
-`generator`, `device`, `num_envs`, `max_gates`, `min_gates`, `min_gate_distance`,
+`generator`, `device`, `num_envs`, `max_gates`, `min_gates`, `gate_radius`,
 `gate_width`, `gate_ordering`, and the existing per-generator shape knobs needed by the
 native extractors.
 
@@ -107,11 +107,10 @@ Validity is gate-specific and intentionally smaller than track validity:
 - if `gate_width > 0`, gate line segments do not intersect except for an exact same-gate
   segment.
 
-The centre spacing target is `min_gate_distance` unless `gate_radius` is set, in which
-case the gate centres are treated as spheres/disks and the target is
-`max(min_gate_distance, 2 * gate_radius)`. Before validity, gate generation may run a
-small fixed-iteration pairwise solve with device-side early stopping that pushes
-overlapping gate spheres apart and then recomputes tangents.
+The centre spacing target is `2 * gate_radius`: gate centres are treated as spheres/disks
+with radius `gate_radius`. Before validity, gate generation may run a small fixed-iteration
+pairwise solve with device-side early stopping that pushes overlapping gate spheres apart
+and then recomputes tangents.
 
 There is no track-width feasibility gate, no turning-number requirement, no XPBD road
 relaxation check, and no border self-intersection check. A course whose centreline crosses
@@ -134,7 +133,7 @@ Required tests:
 - public API surface includes the new gate names and preserves existing track names;
 - `GateGenerator` returns a `GateSequence` with stable buffers across calls;
 - fixed seeds produce deterministic gates on the same device;
-- `min_gate_distance` / `gate_radius` invalidates too-close gates after the gate sphere solve;
+- `gate_radius` invalidates overlapping gate spheres after the gate sphere solve;
 - `gate_width > 0` invalidates intersecting gate segments;
 - existing `TrackGenerator` outputs are unchanged for fixed seeds and representative
   configs;

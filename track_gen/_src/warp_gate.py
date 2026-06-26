@@ -377,7 +377,7 @@ def _finalize_validity_k(
     count: wp.array(dtype=wp.int32),
     max_gates: int,
     min_gates: int,
-    min_gate_distance: float,
+    center_distance: float,
     gate_width: float,
     valid: wp.array(dtype=wp.int32),
 ):
@@ -406,7 +406,7 @@ def _finalize_validity_k(
             if not fields_finite:
                 ok = int(0)
 
-    min_d2 = min_gate_distance * min_gate_distance
+    min_d2 = center_distance * center_distance
     min_d2_slop = 1.0e-6 * wp.max(float(1.0), min_d2)
     for i in range(max_gates):
         if i < cnt:
@@ -563,11 +563,7 @@ def tangents_from_positions(
 
 
 def _gate_center_distance(config: GateGenConfig) -> float:
-    distance = float(config.min_gate_distance)
-    radius = getattr(config, "gate_radius", None)
-    if radius is not None:
-        distance = max(distance, 2.0 * float(radius))
-    return distance
+    return 2.0 * float(config.gate_radius)
 
 
 def finalize_gate_sequence(gates: GateSequence, config: GateGenConfig) -> None:

@@ -306,8 +306,7 @@ def default_gate_params() -> dict:
         "gate_min_gates": cfg.min_gates,
         "gate_max_gates": cfg.max_gates,
         "gate_width": 0.05,
-        "gate_radius": 0.025,
-        "gate_min_distance": cfg.min_gate_distance,
+        "gate_radius": cfg.gate_radius,
         "gate_solve_iters": cfg.gate_solve_iters,
         "gate_show_raw": False,
         "gate_scale": cfg.scale,
@@ -384,8 +383,7 @@ def build_gate_config(p: dict) -> GateGenConfig:
         min_gates=min_gates,
         max_gates=max_gates,
         gate_width=float(p["gate_width"]),
-        gate_radius=(radius if radius > 0.0 else None),
-        min_gate_distance=float(p["gate_min_distance"]),
+        gate_radius=max(0.0, radius),
         gate_solve_iters=(0 if bool(p.get("gate_show_raw", False)) else int(p["gate_solve_iters"])),
         scale=float(p["gate_scale"]),
         min_num_points=min_points,
@@ -412,10 +410,7 @@ def build_gate_config(p: dict) -> GateGenConfig:
 
 
 def _gate_center_target(cfg: GateGenConfig) -> float:
-    target = float(cfg.min_gate_distance)
-    if cfg.gate_radius is not None:
-        target = max(target, 2.0 * float(cfg.gate_radius))
-    return target
+    return 2.0 * float(cfg.gate_radius)
 
 
 def generate_gate_batch(p: dict):
@@ -480,7 +475,7 @@ def _draw_gate_sequence(ax, gt, cfg: GateGenConfig, e: int) -> None:
     if left.shape[0] == right.shape[0] == pos.shape[0]:
         for li, ri in zip(left, right):
             ax.plot([li[0], ri[0]], [li[1], ri[1]], color="#2563eb", lw=1.2, zorder=2)
-    if cfg.gate_radius is not None and float(cfg.gate_radius) > 0.0:
+    if float(cfg.gate_radius) > 0.0:
         radius = float(cfg.gate_radius)
         for pnt in pos:
             ax.add_patch(plt.Circle((float(pnt[0]), float(pnt[1])), radius, fill=False,
@@ -579,7 +574,7 @@ def render_gate_grid(p: dict):
 
 def _collect_gate(*vals) -> dict:
     keys = ["gate_generator", "gate_ordering", "gate_min_gates", "gate_max_gates",
-            "gate_width", "gate_radius", "gate_min_distance", "gate_solve_iters",
+            "gate_width", "gate_radius", "gate_solve_iters",
             "gate_show_raw", "gate_scale", "gate_min_num_points", "gate_max_num_points",
             "gate_min_point_distance", "gate_num_points_per_segment", "gate_rad",
             "gate_edgy", "gate_handle_clamp_frac", "gate_hull_displacement",
@@ -806,10 +801,8 @@ def build_app():
                                                    label="max gates")
                         gate_width = gr.Slider(0.0, 1.0, value=gate_defaults["gate_width"], step=0.01,
                                                label="gate_width")
-                        gate_radius = gr.Slider(0.0, 0.5, value=gate_defaults["gate_radius"], step=0.005,
-                                                label="gate_radius (0 disables sphere radius)")
-                        gate_min_distance = gr.Slider(0.0, 1.0, value=gate_defaults["gate_min_distance"], step=0.005,
-                                                      label="min_gate_distance")
+                        gate_radius = gr.Slider(0.0, 10.0, value=gate_defaults["gate_radius"], step=0.005,
+                                                label="gate_radius")
                         gate_solve_iters = gr.Slider(0, 64, value=gate_defaults["gate_solve_iters"], step=1,
                                                      label="gate_solve_iters")
                         gate_show_raw = gr.Checkbox(value=gate_defaults["gate_show_raw"],
@@ -893,7 +886,7 @@ def build_app():
                 gate_config_state = gr.State(None)
                 gate_page_state = gr.State(0)
                 gate_controls = [gate_generator, gate_ordering, gate_min_gates, gate_max_gates,
-                                 gate_width, gate_radius, gate_min_distance, gate_solve_iters,
+                                 gate_width, gate_radius, gate_solve_iters,
                                  gate_show_raw, gate_scale, gate_min_np, gate_max_np,
                                  gate_min_point_distance, gate_samples_per_seg, gate_rad,
                                  gate_edgy, gate_handle_clamp, gate_hull_disp,

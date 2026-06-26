@@ -281,8 +281,7 @@ class GateGenConfig:
 
     min_gates: int = 4
     max_gates: int = 32
-    min_gate_distance: float = 0.05
-    gate_radius: float | None = None
+    gate_radius: float = 0.025
     gate_solve_iters: int = 8
     gate_width: float = 0.0
     gate_ordering: str = "ccw"
@@ -319,11 +318,7 @@ class GateGenConfig:
                 f"max_gates must be >= min_gates, got "
                 f"{self.max_gates!r} < {self.min_gates!r}"
             )
-        if float(self.min_gate_distance) < 0.0:
-            raise ValueError(
-                f"min_gate_distance must be >= 0, got {self.min_gate_distance!r}"
-            )
-        if self.gate_radius is not None and float(self.gate_radius) < 0.0:
+        if float(self.gate_radius) < 0.0:
             raise ValueError(f"gate_radius must be >= 0, got {self.gate_radius!r}")
         if int(self.gate_solve_iters) < 0:
             raise ValueError(

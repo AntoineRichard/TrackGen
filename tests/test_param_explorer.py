@@ -115,7 +115,6 @@ def test_build_gate_config_maps_solver_and_shape_knobs():
         gate_max_gates=12,
         gate_width=0.2,
         gate_radius=0.1,
-        gate_min_distance=0.03,
         gate_solve_iters=11,
         gate_scale=2.5,
         gate_min_num_points=7,
@@ -127,7 +126,6 @@ def test_build_gate_config_maps_solver_and_shape_knobs():
     assert cfg.max_gates == 12
     assert abs(cfg.gate_width - 0.2) < 1e-9
     assert abs(cfg.gate_radius - 0.1) < 1e-9
-    assert abs(cfg.min_gate_distance - 0.03) < 1e-9
     assert cfg.gate_solve_iters == 11
     assert abs(cfg.scale - 2.5) < 1e-9
     assert cfg.min_num_points == 7
@@ -171,7 +169,6 @@ def test_render_gate_grid_runs():
         gate_ordering="ccw",
         gate_width=0.05,
         gate_radius=0.025,
-        gate_min_distance=0.05,
     ))
     assert isinstance(fig, matplotlib.figure.Figure)
     assert len(fig.axes) == 4

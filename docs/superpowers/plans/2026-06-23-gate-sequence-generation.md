@@ -85,7 +85,7 @@ def test_gate_config_defaults_instantiate():
     assert cfg.num_envs == 1
     assert cfg.min_gates == 4
     assert cfg.max_gates == 32
-    assert cfg.min_gate_distance == 0.05
+    assert cfg.gate_radius == 0.025
     assert cfg.gate_width == 0.0
     assert cfg.gate_ordering == "ccw"
     assert cfg.max_num_points == 13
@@ -101,8 +101,8 @@ def test_gate_config_validates_basic_bounds():
         GateGenConfig(min_gates=1)
     with pytest.raises(ValueError, match="max_gates"):
         GateGenConfig(min_gates=6, max_gates=5)
-    with pytest.raises(ValueError, match="min_gate_distance"):
-        GateGenConfig(min_gate_distance=-1.0)
+    with pytest.raises(ValueError, match="gate_radius"):
+        GateGenConfig(gate_radius=-1.0)
     with pytest.raises(ValueError, match="gate_width"):
         GateGenConfig(gate_width=-1.0)
     with pytest.raises(ValueError, match="gate_ordering"):
@@ -156,7 +156,7 @@ class GateGenConfig:
 
     min_gates: int = 4
     max_gates: int = 32
-    min_gate_distance: float = 0.05
+    gate_radius: float = 0.025
     gate_width: float = 0.0
     gate_ordering: str = "ccw"
 
@@ -192,10 +192,8 @@ class GateGenConfig:
                 f"max_gates must be >= min_gates, got "
                 f"{self.max_gates!r} < {self.min_gates!r}"
             )
-        if float(self.min_gate_distance) < 0.0:
-            raise ValueError(
-                f"min_gate_distance must be >= 0, got {self.min_gate_distance!r}"
-            )
+        if float(self.gate_radius) < 0.0:
+            raise ValueError(f"gate_radius must be >= 0, got {self.gate_radius!r}")
         if float(self.gate_width) < 0.0:
             raise ValueError(f"gate_width must be >= 0, got {self.gate_width!r}")
         if self.gate_ordering not in {"ccw", "raw", "random_pairs"}:
@@ -357,7 +355,7 @@ def _make_rng(num_envs, seed=0, device="cpu"):
 
 def test_gate_generator_returns_reused_sequence_buffers():
     E, G = 4, 32
-    cfg = GateGenConfig(num_envs=E, max_gates=G, device="cpu", min_gate_distance=0.0)
+    cfg = GateGenConfig(num_envs=E, max_gates=G, device="cpu", gate_radius=0.0)
     gen = GateGenerator(cfg, _make_rng(E))
 
     gates1 = gen.generate(E)
@@ -586,7 +584,7 @@ def test_finalize_computes_normals_and_endpoints():
     tan[0, 1] = torch.tensor([1.0, 0.0])
     count[0] = 2
 
-    cfg = GateGenConfig(max_gates=4, gate_width=2.0, min_gate_distance=0.0)
+    cfg = GateGenConfig(max_gates=4, gate_width=2.0, gate_radius=0.0)
     warp_gate.finalize_gate_sequence(gates, cfg)
 
     normal = to_t(gates.normal).view(1, 4, 2)
@@ -610,7 +608,7 @@ def test_finalize_invalidates_too_close_gate_centres():
     tan[0, :2] = torch.tensor([[1.0, 0.0], [1.0, 0.0]])
     count[0] = 2
 
-    cfg = GateGenConfig(max_gates=4, min_gates=2, min_gate_distance=0.05)
+    cfg = GateGenConfig(max_gates=4, min_gates=2, gate_radius=0.05)
     warp_gate.finalize_gate_sequence(gates, cfg)
 
     assert to_t(gates.valid).bool().tolist() == [False]
@@ -627,7 +625,7 @@ def test_finalize_invalidates_crossing_gate_segments():
     tan[0, 1] = torch.tensor([0.0, 1.0])
     count[0] = 2
 
-    cfg = GateGenConfig(max_gates=4, min_gates=2, gate_width=2.0, min_gate_distance=0.0)
+    cfg = GateGenConfig(max_gates=4, min_gates=2, gate_width=2.0, gate_radius=0.0)
     warp_gate.finalize_gate_sequence(gates, cfg)
 
     assert to_t(gates.valid).bool().tolist() == [False]
@@ -921,7 +919,7 @@ def finalize_gate_sequence(gates: GateSequence, config) -> None:
     dev = str(gates.position.device)
     wp.launch(_endpoint_k, dim=E * G, inputs=[gates.position, gates.tangent, gates.normal, gates.left, gates.right, G, gates.count, float(config.gate_width)], device=dev)
     wp.launch(_fill_padding_k, dim=E * G, inputs=[gates.position, gates.tangent, gates.normal, gates.left, gates.right, G, gates.count], device=dev)
-    wp.launch(_gate_validity_k, dim=E, inputs=[gates.position, gates.tangent, gates.left, gates.right, G, gates.count, int(config.min_gates), float(config.min_gate_distance), int(float(config.gate_width) > 0.0), gates.valid], device=dev)
+    wp.launch(_gate_validity_k, dim=E, inputs=[gates.position, gates.tangent, gates.left, gates.right, G, gates.count, int(config.min_gates), 2.0 * float(config.gate_radius), int(float(config.gate_width) > 0.0), gates.valid], device=dev)
     _sync(dev)
 ```
 
@@ -970,7 +968,7 @@ def test_point_family_gate_generators_emit_finite_native_gates(generator, orderi
         num_envs=E,
         max_gates=G,
         device="cpu",
-        min_gate_distance=0.0,
+        gate_radius=0.0,
     )
     gates = GateGenerator(cfg, _make_rng(E, seed=31)).generate(E)
     position = to_t(gates.position).view(E, G, 2)
@@ -1148,7 +1146,7 @@ def test_structured_gate_generators_emit_finite_native_gates(generator, ordering
             num_envs=E,
             max_gates=G,
             device="cpu",
-            min_gate_distance=0.0,
+            gate_radius=0.0,
         )
         gates = GateGenerator(cfg, _make_rng(E, seed=71)).generate(E)
         position = to_t(gates.position).view(E, G, 2)
@@ -1277,14 +1275,14 @@ git commit --no-gpg-sign -m "feat: add structured gate generators"
 Append to `tests/test_gate_generator.py`:
 
 ```python
-def test_gate_generator_invalidates_large_min_distance():
+def test_gate_generator_invalidates_large_gate_radius():
     E = 4
     cfg = GateGenConfig(
         generator="checkpoint",
         gate_ordering="raw",
         num_envs=E,
         max_gates=32,
-        min_gate_distance=100.0,
+        gate_radius=50.0,
         device="cpu",
     )
     gates = GateGenerator(cfg, _make_rng(E, seed=5)).generate(E)
@@ -1346,7 +1344,7 @@ def _track_snapshot(seed=123):
 def test_gate_generation_does_not_change_track_generation_outputs():
     before = _track_snapshot()
 
-    gate_cfg = GateGenConfig(num_envs=4, max_gates=32, device="cpu", min_gate_distance=0.0)
+    gate_cfg = GateGenConfig(num_envs=4, max_gates=32, device="cpu", gate_radius=0.0)
     gate_rng = PerEnvSeededRNG(seeds=77, num_envs=4, device="cpu")
     GateGenerator(gate_cfg, gate_rng).generate(4)
 
@@ -1390,7 +1388,7 @@ config = GateGenConfig(
     num_envs=E,
     max_gates=32,
     gate_width=0.4,
-    min_gate_distance=0.05,
+    gate_radius=0.05,
     device=device,
 )
 rng = PerEnvSeededRNG(seeds=0, num_envs=E, device=device)

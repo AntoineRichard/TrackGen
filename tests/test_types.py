@@ -153,8 +153,7 @@ def test_gate_config_defaults_instantiate():
     assert cfg.num_envs == 1
     assert cfg.min_gates == 4
     assert cfg.max_gates == 32
-    assert cfg.min_gate_distance == 0.05
-    assert cfg.gate_radius is None
+    assert cfg.gate_radius == 0.025
     assert cfg.gate_solve_iters == 8
     assert cfg.gate_width == 0.0
     assert cfg.gate_ordering == "ccw"
@@ -171,8 +170,6 @@ def test_gate_config_validates_basic_bounds():
         GateGenConfig(min_gates=1)
     with pytest.raises(ValueError, match="max_gates"):
         GateGenConfig(min_gates=6, max_gates=5)
-    with pytest.raises(ValueError, match="min_gate_distance"):
-        GateGenConfig(min_gate_distance=-1.0)
     with pytest.raises(ValueError, match="gate_radius"):
         GateGenConfig(gate_radius=-1.0)
     with pytest.raises(ValueError, match="gate_solve_iters"):

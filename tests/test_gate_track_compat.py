@@ -40,7 +40,7 @@ def _track_snapshot(seed=123):
 def test_gate_generation_does_not_change_track_generation_outputs():
     before = _track_snapshot()
 
-    gate_cfg = GateGenConfig(num_envs=4, max_gates=32, device="cpu", min_gate_distance=0.0)
+    gate_cfg = GateGenConfig(num_envs=4, max_gates=32, device="cpu", gate_radius=0.0)
     gate_rng = PerEnvSeededRNG(seeds=77, num_envs=4, device="cpu")
     GateGenerator(gate_cfg, gate_rng).generate(4)
 

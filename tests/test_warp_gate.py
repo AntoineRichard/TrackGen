@@ -23,7 +23,7 @@ def test_finalize_computes_normals_and_endpoints():
     tan[0, 1] = torch.tensor([1.0, 0.0])
     count[0] = 2
 
-    cfg = GateGenConfig(max_gates=4, gate_width=2.0, min_gate_distance=0.0, min_gates=2)
+    cfg = GateGenConfig(max_gates=4, gate_width=2.0, gate_radius=0.0, min_gates=2)
     warp_gate.finalize_gate_sequence(gates, cfg)
 
     normal = to_t(gates.normal).view(1, 4, 2)
@@ -51,7 +51,7 @@ def test_finalize_invalidates_nonfinite_endpoints():
     cfg = GateGenConfig(
         max_gates=4,
         gate_width=float("nan"),
-        min_gate_distance=0.0,
+        gate_radius=0.0,
         min_gates=2,
     )
     warp_gate.finalize_gate_sequence(gates, cfg)
@@ -69,7 +69,7 @@ def test_finalize_invalidates_too_close_gate_centres():
     tan[0, :2] = torch.tensor([[1.0, 0.0], [1.0, 0.0]])
     count[0] = 2
 
-    cfg = GateGenConfig(max_gates=4, min_gates=2, min_gate_distance=0.05)
+    cfg = GateGenConfig(max_gates=4, min_gates=2, gate_radius=0.025)
     warp_gate.finalize_gate_sequence(gates, cfg)
 
     assert to_t(gates.valid).bool().tolist() == [False]
@@ -88,7 +88,6 @@ def test_finalize_uses_gate_radius_as_sphere_distance():
     cfg = GateGenConfig(
         max_gates=4,
         min_gates=2,
-        min_gate_distance=0.0,
         gate_radius=0.1,
     )
     warp_gate.finalize_gate_sequence(gates, cfg)
@@ -107,7 +106,7 @@ def test_finalize_invalidates_crossing_gate_segments():
     tan[0, 1] = torch.tensor([0.0, 1.0])
     count[0] = 2
 
-    cfg = GateGenConfig(max_gates=4, min_gates=2, gate_width=2.0, min_gate_distance=0.0)
+    cfg = GateGenConfig(max_gates=4, min_gates=2, gate_width=2.0, gate_radius=0.0)
     warp_gate.finalize_gate_sequence(gates, cfg)
 
     assert to_t(gates.valid).bool().tolist() == [False]
@@ -260,7 +259,7 @@ def test_two_gate_tangents_are_nonzero_and_finalize_valid():
     count[0] = 2
 
     warp_gate.tangents_from_positions(gates.position, gates.tangent, 4, gates.count)
-    cfg = GateGenConfig(max_gates=4, gate_width=2.0, min_gate_distance=0.0, min_gates=2)
+    cfg = GateGenConfig(max_gates=4, gate_width=2.0, gate_radius=0.0, min_gates=2)
     warp_gate.finalize_gate_sequence(gates, cfg)
 
     tangent = to_t(gates.tangent).view(1, 4, 2)

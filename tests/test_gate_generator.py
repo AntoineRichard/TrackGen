@@ -141,7 +141,7 @@ def test_point_family_gate_generators_emit_finite_native_gates(generator, orderi
         num_envs=E,
         max_gates=G,
         device="cpu",
-        min_gate_distance=0.0,
+        gate_radius=0.0,
     )
     gates = GateGenerator(cfg, _make_rng(E, seed=31)).generate(E)
     position = to_t(gates.position).view(E, G, 2)
@@ -173,7 +173,7 @@ def test_structured_gate_generators_emit_finite_native_gates(generator, ordering
             num_envs=E,
             max_gates=G,
             device="cpu",
-            min_gate_distance=0.0,
+            gate_radius=0.0,
         )
         gates = GateGenerator(cfg, _make_rng(E, seed=71)).generate(E)
         count = to_t(gates.count)
@@ -209,7 +209,7 @@ def test_polar_gate_generator_capacity_uses_clamped_knot_count():
     ],
 )
 def test_structured_gate_generators_succeed_at_tight_capacity(cfg_kwargs, required):
-    cfg = GateGenConfig(num_envs=3, min_gate_distance=0.0, **cfg_kwargs)
+    cfg = GateGenConfig(num_envs=3, gate_radius=0.0, **cfg_kwargs)
     gates = GateGenerator(cfg, _make_rng(cfg.num_envs, seed=83)).generate(cfg.num_envs)
     count = to_t(gates.count)
     assert torch.equal(count, torch.full_like(count, required))
@@ -243,7 +243,7 @@ def test_gate_generator_cpu_reuses_output_instance_and_buffers():
         num_envs=E,
         max_gates=G,
         device="cpu",
-        min_gate_distance=0.0,
+        gate_radius=0.0,
     )
     gen = GateGenerator(cfg, _make_rng(E, seed=41))
 
@@ -297,7 +297,6 @@ def test_gate_generator_sphere_solve_repairs_overlapping_native_points(monkeypat
         num_envs=1,
         min_gates=2,
         max_gates=4,
-        min_gate_distance=0.0,
         gate_radius=0.1,
         gate_solve_iters=1,
         device="cpu",
@@ -324,7 +323,7 @@ def test_point_family_gate_generators_cuda_capture_reuses_output(generator):
         num_envs=E,
         max_gates=G,
         device="cuda:0",
-        min_gate_distance=0.0,
+        gate_radius=0.0,
     )
     gen = GateGenerator(cfg, _make_rng(E, seed=41, device="cuda:0"))
 
@@ -373,14 +372,14 @@ def test_gate_generator_invalidates_zero_count_from_native_generator(monkeypatch
     _assert_generated_gate_fields_are_finite(gates, E, G)
 
 
-def test_gate_generator_invalidates_large_min_distance():
+def test_gate_generator_invalidates_large_gate_radius():
     E = 4
     cfg = GateGenConfig(
         generator="checkpoint",
         gate_ordering="raw",
         num_envs=E,
         max_gates=32,
-        min_gate_distance=100.0,
+        gate_radius=50.0,
         gate_solve_iters=0,
         device="cpu",
     )
