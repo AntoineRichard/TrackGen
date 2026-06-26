@@ -340,6 +340,16 @@ class GateGenConfig:
                 "voronoi_num_sites must be >= voronoi_control_points, got "
                 f"{self.voronoi_num_sites!r} < {self.voronoi_control_points!r}"
             )
+        if float(self.voronoi_radial_variation) < 0.0:
+            raise ValueError(
+                "voronoi_radial_variation must be >= 0, got "
+                f"{self.voronoi_radial_variation!r}"
+            )
+        if float(self.voronoi_angular_jitter) < 0.0:
+            raise ValueError(
+                "voronoi_angular_jitter must be >= 0, got "
+                f"{self.voronoi_angular_jitter!r}"
+            )
         if self.voronoi_site_layout not in {"ring", "void_ring", "clustered", "mixed"}:
             raise ValueError(
                 "voronoi_site_layout must be one of "
@@ -359,17 +369,28 @@ class GateGenConfig:
 
 @dataclass
 class GateSequence:
-    """Batched fixed-stride gate result returned by GateGenerator."""
+    """Batched fixed-stride gate result returned by ``GateGenerator``.
 
-    position: wp.array
-    tangent: wp.array
-    normal: wp.array
-    left: wp.array
-    right: wp.array
-    valid: wp.array
-    count: wp.array
+    Gate pose arrays are flat ``[E * max_gates]`` ``vec2f`` buffers; reshape via
+    ``wp.to_torch(...).view(E, max_gates, 2)``. ``count[e]`` gives the real gate
+    count for environment ``e`` and slots ``i >= count[e]`` are NaN-padded.
+
+    **Aliasing warning**: ``GateGenerator.generate()`` returns the SAME
+    ``GateSequence`` instance on every call and overwrites its buffers in place. A
+    reference held across two ``generate()`` calls will see mutated data. Use
+    ``GateSequence.clone()`` to obtain a fully-owned deep copy before the next call.
+    """
+
+    position: wp.array  # flat [E*max_gates] gate centers; NaN-padded past count[e]
+    tangent: wp.array   # flat [E*max_gates] unit tangent vectors
+    normal: wp.array    # flat [E*max_gates] unit normals, perpendicular to tangent
+    left: wp.array      # flat [E*max_gates] left gate endpoints
+    right: wp.array     # flat [E*max_gates] right gate endpoints
+    valid: wp.array     # [E] int32 (0/1; wp.to_torch(...).bool() to recover)
+    count: wp.array     # [E] int32 real gate counts
 
     def clone(self) -> "GateSequence":
+        """Return a deep copy whose Warp buffers do not alias this sequence."""
         return GateSequence(
             position=wp.clone(self.position),
             tangent=wp.clone(self.tangent),

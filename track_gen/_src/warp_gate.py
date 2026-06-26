@@ -405,6 +405,9 @@ def _finalize_validity_k(
             )
             if not fields_finite:
                 ok = int(0)
+            tangent_len2 = t[0] * t[0] + t[1] * t[1]
+            if tangent_len2 <= 1.0e-12:
+                ok = int(0)
 
     min_d2 = center_distance * center_distance
     min_d2_slop = 1.0e-6 * wp.max(float(1.0), min_d2)
@@ -432,6 +435,18 @@ def _finalize_validity_k(
                             ok = int(0)
 
     valid[e] = ok
+
+
+def alloc_order_scratch(config: GateGenConfig):
+    """Allocate common per-env count and ordering-key scratch for gate generators."""
+    _init()
+    E = int(config.num_envs)
+    G = int(config.max_gates)
+    dev = str(config.device)
+    return (
+        wp.empty(E, dtype=wp.int32, device=dev),
+        wp.empty(E * G, dtype=wp.float32, device=dev),
+    )
 
 
 def alloc_gate_sequence(config: GateGenConfig) -> GateSequence:
@@ -502,6 +517,26 @@ def order_points(
     else:
         raise ValueError(f"unsupported gate ordering {ordering!r}")
     _sync(dev)
+
+
+def finish_ordered_gates(
+    seeds_wp: wp.array,
+    src: wp.array,
+    src_stride: int,
+    count: wp.array,
+    max_gates: int,
+    ordering: str,
+    keys: wp.array,
+    out: GateSequence,
+    normalize_extent: float | None = None,
+) -> None:
+    """Order gates, optionally normalize them, recompute tangents, and copy count."""
+    G = int(max_gates)
+    order_points(seeds_wp, src, int(src_stride), count, G, ordering, keys, out.position)
+    if normalize_extent is not None:
+        normalize_positions(out.position, G, count, float(normalize_extent))
+    tangents_from_positions(out.position, out.tangent, G, count)
+    wp.copy(out.count, count)
 
 
 def normalize_positions(

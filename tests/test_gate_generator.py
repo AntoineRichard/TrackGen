@@ -251,6 +251,27 @@ def test_point_family_gate_generators_reject_too_small_max_gates(generator):
         GateGenerator(cfg, _make_rng(1, seed=7))
 
 
+def test_gate_generator_independent_instances_with_same_seed_are_deterministic():
+    E, G = 4, 32
+    cfg = GateGenConfig(
+        generator="bezier",
+        gate_ordering="random_pairs",
+        num_envs=E,
+        max_gates=G,
+        device="cpu",
+        gate_radius=0.0,
+    )
+    gates_a = GateGenerator(cfg, _make_rng(E, seed=211)).generate(E)
+    gates_b = GateGenerator(cfg, _make_rng(E, seed=211)).generate(E)
+
+    for name in ("position", "tangent", "normal", "left", "right"):
+        a = to_t(getattr(gates_a, name))
+        b = to_t(getattr(gates_b, name))
+        assert torch.allclose(a, b, equal_nan=True)
+    assert torch.equal(to_t(gates_a.count), to_t(gates_b.count))
+    assert torch.equal(to_t(gates_a.valid), to_t(gates_b.valid))
+
+
 def test_gate_generator_cpu_reuses_output_instance_and_buffers():
     E, G = 2, 32
     cfg = GateGenConfig(
@@ -307,17 +328,25 @@ def test_gate_generator_sphere_solve_repairs_overlapping_native_points(monkeypat
         supported_orderings=frozenset({"raw"}),
     ))
 
-    cfg = GateGenConfig(
+    base_kwargs = dict(
         generator="overlap",
         gate_ordering="raw",
         num_envs=1,
         min_gates=2,
         max_gates=4,
         gate_radius=0.1,
-        gate_solve_iters=1,
         device="cpu",
     )
-    gates = GateGenerator(cfg, _make_rng(1, seed=53)).generate()
+
+    raw_cfg = GateGenConfig(gate_solve_iters=0, **base_kwargs)
+    raw_gates = GateGenerator(raw_cfg, _make_rng(1, seed=53)).generate()
+    raw_position = to_t(raw_gates.position).view(1, 4, 2)
+    raw_distance = torch.linalg.norm(raw_position[0, 1] - raw_position[0, 0])
+    assert to_t(raw_gates.valid).bool().tolist() == [False]
+    assert raw_distance < 0.2
+
+    solved_cfg = GateGenConfig(gate_solve_iters=1, **base_kwargs)
+    gates = GateGenerator(solved_cfg, _make_rng(1, seed=53)).generate()
 
     position = to_t(gates.position).view(1, 4, 2)
     tangent = to_t(gates.tangent).view(1, 4, 2)

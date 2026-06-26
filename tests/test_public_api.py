@@ -28,17 +28,32 @@ def test_oracle_internals_are_not_public():
         assert not hasattr(track_gen, gone), f"track_gen.{gone} should not be public"
 
 
-def test_import_track_gen_pulls_no_torch():
+def test_import_track_gen_and_gate_registry_pull_no_torch_or_scipy():
     # The shipped runtime is pure NVIDIA Warp + numpy; torch is a dev-only dependency
-    # (tests + the torch oracle). `import track_gen` must NOT pull torch into sys.modules.
+    # (tests + the torch oracle). `import track_gen` and the lazy gate registry must NOT
+    # pull torch or scipy into sys.modules.
     # Fresh interpreter, because other tests in this session import torch.
     import subprocess
     import sys
 
-    code = (
-        "import sys, track_gen\n"
-        "leaked = sorted(m for m in sys.modules if m == 'torch' or m.startswith('torch.'))\n"
-        "assert not leaked, leaked\n"
-    )
+    code = "\n".join([
+        "import sys, track_gen",
+        "from track_gen._src import gate_generator_registry",
+        "gate_generator_registry.available()",
+        "expected = {",
+        "    'track_gen._src.warp_generate_gates',",
+        "    'track_gen._src.warp_generate_polar_gates',",
+        "    'track_gen._src.warp_generate_voronoi_gates',",
+        "    'track_gen._src.warp_generate_checkpoint_gates',",
+        "}",
+        "missing = sorted(name for name in expected if name not in sys.modules)",
+        "assert not missing, missing",
+        "leaked = sorted(",
+        "    m for m in sys.modules",
+        "    if m == 'torch' or m.startswith('torch.')",
+        "    or m == 'scipy' or m.startswith('scipy.')",
+        ")",
+        "assert not leaked, leaked",
+    ])
     r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert r.returncode == 0, r.stderr

@@ -1,10 +1,10 @@
-"""Top-level facade skeleton for native batched gate sequence generation.
+"""Top-level facade for native batched gate sequence generation.
 
 ``GateGenerator`` mirrors the fixed-batch contract of ``TrackGenerator``: construction
 owns persistent output and scratch buffers, while ``generate()`` refreshes the per-env
-seed buffer and writes into the same ``GateSequence`` instance every call. The actual
-Warp allocation and run functions live in the future ``warp_gate`` module, so today this
-facade mainly provides the registry and validation boundary.
+seed buffer and writes into the same ``GateSequence`` instance every call. Native gate
+generators provide first-stage anchors through the registry; ``warp_gate`` owns the
+common ordering, collision, frame, and validity pipeline.
 """
 
 import warp as wp

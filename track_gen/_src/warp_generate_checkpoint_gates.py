@@ -25,12 +25,12 @@ def checkpoint_gate_alloc_scratch(config):
     warp_gate._init()
     E = int(config.num_envs)
     C = int(config.checkpoint_count)
-    G = int(config.max_gates)
     dev = str(config.device)
+    count, keys = warp_gate.alloc_order_scratch(config)
     return CheckpointGateScratch(
         checkpoints=wp.empty(E * C, dtype=wp.vec2f, device=dev),
-        count=wp.empty(E, dtype=wp.int32, device=dev),
-        keys=wp.empty(E * G, dtype=wp.float32, device=dev),
+        count=count,
+        keys=keys,
     )
 
 
@@ -61,7 +61,7 @@ def generate_checkpoint_gates(seeds_wp, config, out, scratch) -> None:
         ],
         device=dev,
     )
-    warp_gate.order_points(
+    warp_gate.finish_ordered_gates(
         seeds_wp,
         scratch.checkpoints,
         C,
@@ -69,11 +69,9 @@ def generate_checkpoint_gates(seeds_wp, config, out, scratch) -> None:
         G,
         str(config.gate_ordering),
         scratch.keys,
-        out.position,
+        out,
+        normalize_extent=target_extent,
     )
-    warp_gate.normalize_positions(out.position, G, scratch.count, target_extent)
-    warp_gate.tangents_from_positions(out.position, out.tangent, G, scratch.count)
-    wp.copy(out.count, scratch.count)
 
 
 def register_specs() -> None:

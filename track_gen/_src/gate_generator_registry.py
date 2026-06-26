@@ -1,15 +1,12 @@
-"""Registry of native gate sequence generators.
+"""Registry of shipped native gate sequence generators.
 
-Gate generator modules are optional at this stage of the implementation plan. The
-registry therefore probes for future modules before importing them; if a module
-exists, its import is allowed to fail normally so real implementation errors are
-visible.
+The registry loads the gate generator modules lazily so importing ``track_gen`` stays
+cheap, while construction and discovery surface real import errors from shipped modules.
 """
 from __future__ import annotations
 
 import dataclasses
 import importlib
-import importlib.util
 from typing import Callable
 
 
@@ -27,21 +24,11 @@ class GateGeneratorSpec:
 GATE_GENERATORS: dict[str, GateGeneratorSpec] = {}
 _LOADED = False
 
-_OPTIONAL_GATE_GENERATOR_MODULES = (
+_GATE_GENERATOR_MODULES = (
     "track_gen._src.warp_generate_gates",
     "track_gen._src.warp_generate_polar_gates",
     "track_gen._src.warp_generate_voronoi_gates",
     "track_gen._src.warp_generate_checkpoint_gates",
-    "track_gen._src.warp_gate_generate",
-    "track_gen._src.warp_gate_generate_polar",
-    "track_gen._src.warp_gate_generate_hull",
-    "track_gen._src.warp_gate_generate_voronoi",
-    "track_gen._src.warp_gate_generate_checkpoint",
-    "track_gen._src.warp_gate_bezier",
-    "track_gen._src.warp_gate_polar",
-    "track_gen._src.warp_gate_hull",
-    "track_gen._src.warp_gate_voronoi",
-    "track_gen._src.warp_gate_checkpoint",
 )
 
 
@@ -71,12 +58,11 @@ def _ensure_loaded() -> None:
     if _LOADED:
         return
 
-    for module_name in _OPTIONAL_GATE_GENERATOR_MODULES:
-        if importlib.util.find_spec(module_name) is not None:
-            module = importlib.import_module(module_name)
-            register_specs = getattr(module, "register_specs", None)
-            if register_specs is not None:
-                register_specs()
+    for module_name in _GATE_GENERATOR_MODULES:
+        module = importlib.import_module(module_name)
+        register_specs = getattr(module, "register_specs", None)
+        if register_specs is not None:
+            register_specs()
 
     _LOADED = True
 

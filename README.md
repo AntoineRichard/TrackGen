@@ -122,14 +122,20 @@ valid = wp.to_torch(gates.valid).bool()
 ```
 
 Registered first-stage gate generators are selected with `GateGenConfig(generator=...)`:
-`"bezier"` (default), `"checkpoint"`, `"hull"`, `"polar"`, and `"voronoi"`. The Fourier
-generator lives in `track_gen._experimental` and is **unsupported** — it is not on the
-Warp pipeline and receives no compatibility guarantees.
+`"bezier"` (default), `"checkpoint"`, `"hull"`, `"polar"`, and `"voronoi"`. Ordering
+support is generator-specific: Bezier/Hull support `{ "ccw", "random_pairs" }`, while
+Polar/Voronoi/Checkpoint support `{ "ccw", "raw" }`. The `"ccw"` gate ordering name is
+kept for API compatibility with the prototype; its current centroid-angle convention is
+clockwise in standard xy coordinates. The Fourier generator lives in
+`track_gen._experimental` and is **unsupported** — it is not on the Warp pipeline and
+receives no compatibility guarantees.
 
 Gate centers are treated as spheres/disks with radius `gate_radius`. The generated center
 spacing target is `2 * gate_radius`, and `gate_solve_iters` runs up to that many iterations
 of a small deterministic pairwise solve that pushes overlapping gate spheres apart before
-recomputing tangents. Set `gate_solve_iters=0` to inspect the raw sampled anchors.
+recomputing tangents. `scale` controls the pre-collision generator layout; the collision
+solve may expand the final bbox when necessary to satisfy the requested gate radius. Set
+`gate_solve_iters=0` to inspect the raw sampled anchors.
 
 ![TrackGen standard generator grid](docs/assets/readme-generator-grid.png)
 

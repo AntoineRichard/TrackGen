@@ -178,6 +178,10 @@ def test_gate_config_validates_basic_bounds():
         GateGenConfig(gate_width=-1.0)
     with pytest.raises(ValueError, match="gate_ordering"):
         GateGenConfig(gate_ordering="spiral")
+    with pytest.raises(ValueError, match="voronoi_radial_variation"):
+        GateGenConfig(voronoi_radial_variation=-0.1)
+    with pytest.raises(ValueError, match="voronoi_angular_jitter"):
+        GateGenConfig(voronoi_angular_jitter=-0.1)
 
 
 def test_gate_sequence_construct_from_warp_arrays_and_clone():

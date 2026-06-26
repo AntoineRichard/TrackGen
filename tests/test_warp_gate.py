@@ -59,6 +59,22 @@ def test_finalize_invalidates_nonfinite_endpoints():
     assert to_t(gates.valid).bool().tolist() == [False]
 
 
+def test_finalize_invalidates_zero_tangent_even_without_gate_radius():
+    gates = _manual_sequence()
+    pos = to_t(gates.position).view(1, 4, 2)
+    tan = to_t(gates.tangent).view(1, 4, 2)
+    count = to_t(gates.count)
+    pos[0, 0] = torch.tensor([0.0, 0.0])
+    pos[0, 1] = torch.tensor([2.0, 0.0])
+    tan[0, :2] = torch.tensor([[0.0, 0.0], [0.0, 0.0]])
+    count[0] = 2
+
+    cfg = GateGenConfig(max_gates=4, gate_width=0.0, gate_radius=0.0, min_gates=2)
+    warp_gate.finalize_gate_sequence(gates, cfg)
+
+    assert to_t(gates.valid).bool().tolist() == [False]
+
+
 def test_finalize_invalidates_too_close_gate_centres():
     gates = _manual_sequence()
     pos = to_t(gates.position).view(1, 4, 2)
@@ -296,3 +312,21 @@ def test_order_points_raw_ccw_and_random_pairs_are_deterministic():
 
     assert torch.equal(to_t(out_raw), to_t(src))
     assert torch.equal(to_t(out_rand_a), to_t(out_rand_b))
+
+
+def test_sync_skips_cuda_synchronize_while_capturing(monkeypatch):
+    calls = []
+    previous = warp_gate._CAPTURING
+    monkeypatch.setattr(warp_gate.wp, "synchronize", lambda: calls.append("sync"))
+    try:
+        warp_gate._CAPTURING = True
+        warp_gate._sync("cuda:0")
+        assert calls == []
+
+        warp_gate._CAPTURING = False
+        warp_gate._sync("cpu")
+        assert calls == []
+        warp_gate._sync("cuda:0")
+        assert calls == ["sync"]
+    finally:
+        warp_gate._CAPTURING = previous

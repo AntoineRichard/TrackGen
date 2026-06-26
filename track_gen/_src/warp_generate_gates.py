@@ -20,13 +20,13 @@ def _point_gate_alloc_scratch(config):
     warp_gate._init()
     E = int(config.num_envs)
     P = int(config.max_num_points)
-    G = int(config.max_gates)
     dev = str(config.device)
+    count, keys = warp_gate.alloc_order_scratch(config)
     return PointGateScratch(
-        count=wp.empty(E, dtype=wp.int32, device=dev),
+        count=count,
         points=wp.empty(E * P, dtype=wp.vec2f, device=dev),
         used=wp.empty(E * P, dtype=wp.int32, device=dev),
-        keys=wp.empty(E * G, dtype=wp.float32, device=dev),
+        keys=keys,
     )
 
 
@@ -37,7 +37,7 @@ def generate_bezier_gates(seeds_wp, config, out, scratch) -> None:
     G = int(config.max_gates)
     warp_generate.corner_count_sample_inplace(seeds_wp, 0, config, scratch.count)
     warp_generate.corner_sample_inplace(seeds_wp, 0, config, scratch.points, scratch.used)
-    warp_gate.order_points(
+    warp_gate.finish_ordered_gates(
         seeds_wp,
         scratch.points,
         P,
@@ -45,10 +45,8 @@ def generate_bezier_gates(seeds_wp, config, out, scratch) -> None:
         G,
         str(config.gate_ordering),
         scratch.keys,
-        out.position,
+        out,
     )
-    warp_gate.tangents_from_positions(out.position, out.tangent, G, scratch.count)
-    wp.copy(out.count, scratch.count)
 
 
 def generate_hull_gates(seeds_wp, config, out, scratch) -> None:
@@ -58,7 +56,7 @@ def generate_hull_gates(seeds_wp, config, out, scratch) -> None:
     G = int(config.max_gates)
     warp_generate_hull.point_count_sample_inplace(seeds_wp, config, scratch.count)
     warp_generate_hull.point_sample_inplace(seeds_wp, config, scratch.points, scratch.used)
-    warp_gate.order_points(
+    warp_gate.finish_ordered_gates(
         seeds_wp,
         scratch.points,
         P,
@@ -66,10 +64,8 @@ def generate_hull_gates(seeds_wp, config, out, scratch) -> None:
         G,
         str(config.gate_ordering),
         scratch.keys,
-        out.position,
+        out,
     )
-    warp_gate.tangents_from_positions(out.position, out.tangent, G, scratch.count)
-    wp.copy(out.count, scratch.count)
 
 
 def _max_point_gates(config) -> int:

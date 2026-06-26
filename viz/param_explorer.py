@@ -29,10 +29,22 @@ from track_gen import GateGenConfig, GateGenerator
 from track_gen._src.types import TrackGenConfig
 from track_gen._src.track_generator import TrackGenerator
 from track_gen._src.rng_utils import PerEnvSeededRNG
-from track_gen._src import gate_generator_registry, generator_registry
+from track_gen._src import gate_generator_registry, generator_registry, warp_gate
 from viz.plot_tracks import draw_track
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+GATE_CONTROL_KEYS = [
+    "gate_generator", "gate_ordering", "gate_width", "gate_radius", "gate_solve_iters",
+    "gate_show_raw", "gate_scale", "gate_min_num_points", "gate_max_num_points",
+    "gate_min_point_distance", "gate_num_points_per_segment", "gate_rad",
+    "gate_edgy", "gate_handle_clamp_frac", "gate_hull_displacement",
+    "gate_polar_num_knots", "gate_polar_radial_jitter", "gate_polar_angular_jitter",
+    "gate_voronoi_num_sites", "gate_voronoi_site_layout", "gate_voronoi_control_points",
+    "gate_voronoi_radial_variation", "gate_voronoi_angular_jitter",
+    "gate_checkpoint_count", "gate_checkpoint_radius_min_frac",
+    "gate_checkpoint_angle_jitter", "gate_grid_n", "gate_seed", "gate_batch_size",
+]
 
 
 def default_params() -> dict:
@@ -336,7 +348,7 @@ def default_gate_params() -> dict:
 def gate_supported_orderings(generator: str) -> list[str]:
     try:
         supported = gate_generator_registry.get(str(generator)).supported_orderings
-    except Exception:
+    except ValueError:
         supported = frozenset({"ccw"})
     ordered = [name for name in ("ccw", "raw", "random_pairs") if name in supported]
     return ordered or ["ccw"]
@@ -413,7 +425,7 @@ def build_gate_config(p: dict) -> GateGenConfig:
 
 
 def _gate_center_target(cfg: GateGenConfig) -> float:
-    return 2.0 * float(cfg.gate_radius)
+    return warp_gate._gate_center_distance(cfg)
 
 
 def generate_gate_batch(p: dict):
@@ -576,16 +588,11 @@ def render_gate_grid(p: dict):
 
 
 def _collect_gate(*vals) -> dict:
-    keys = ["gate_generator", "gate_ordering", "gate_width", "gate_radius", "gate_solve_iters",
-            "gate_show_raw", "gate_scale", "gate_min_num_points", "gate_max_num_points",
-            "gate_min_point_distance", "gate_num_points_per_segment", "gate_rad",
-            "gate_edgy", "gate_handle_clamp_frac", "gate_hull_displacement",
-            "gate_polar_num_knots", "gate_polar_radial_jitter", "gate_polar_angular_jitter",
-            "gate_voronoi_num_sites", "gate_voronoi_site_layout", "gate_voronoi_control_points",
-            "gate_voronoi_radial_variation", "gate_voronoi_angular_jitter",
-            "gate_checkpoint_count", "gate_checkpoint_radius_min_frac",
-            "gate_checkpoint_angle_jitter", "gate_grid_n", "gate_seed", "gate_batch_size"]
-    return dict(zip(keys, vals))
+    if len(vals) != len(GATE_CONTROL_KEYS):
+        raise ValueError(
+            f"expected {len(GATE_CONTROL_KEYS)} gate controls, got {len(vals)}"
+        )
+    return dict(zip(GATE_CONTROL_KEYS, vals))
 
 
 def _gate_stats_md(st: dict) -> str:
@@ -896,6 +903,8 @@ def build_app():
                                  gate_vor_radial, gate_vor_angular,
                                  gate_checkpoint_count, gate_checkpoint_radius_min_frac,
                                  gate_checkpoint_angle_jitter, gate_grid_n, gate_seed, gate_batch_size]
+                if len(gate_controls) != len(GATE_CONTROL_KEYS):
+                    raise RuntimeError("gate control list and key list are out of sync")
 
                 gate_mode_outputs = [
                     gate_ordering,
