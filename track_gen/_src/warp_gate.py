@@ -239,6 +239,54 @@ def _normalize_positions_k(
 
 
 @wp.kernel
+def _relax_gate_spheres_k(
+    position: wp.array(dtype=wp.vec2f),
+    max_gates: int,
+    count: wp.array(dtype=wp.int32),
+    target_distance: float,
+    iterations: int,
+):
+    e = wp.tid()
+    if target_distance <= 0.0 or iterations <= 0:
+        return
+
+    base = e * max_gates
+    cnt = count[e]
+    if cnt < 0:
+        cnt = 0
+    if cnt > max_gates:
+        cnt = max_gates
+
+    eps = float(1.0e-8)
+    for it in range(iterations):
+        for i in range(max_gates):
+            if i < cnt:
+                pi = position[base + i]
+                for j in range(i + 1, max_gates):
+                    if j < cnt:
+                        pj = position[base + j]
+                        d = pj - pi
+                        dist = wp.length(d)
+                        if dist < target_distance:
+                            n = wp.vec2f(0.0, 0.0)
+                            if dist > eps:
+                                n = d / dist
+                            else:
+                                angle = (
+                                    float(i + 1) * 12.9898
+                                    + float(j + 1) * 78.233
+                                    + float(it + 1) * 37.719
+                                    + float(e + 1) * 19.371
+                                )
+                                n = wp.vec2f(wp.cos(angle), wp.sin(angle))
+                            correction = 0.5 * (target_distance - dist) * n
+                            pi = pi - correction
+                            pj = pj + correction
+                            position[base + i] = pi
+                            position[base + j] = pj
+
+
+@wp.kernel
 def _tangents_from_positions_k(
     position: wp.array(dtype=wp.vec2f),
     tangent: wp.array(dtype=wp.vec2f),
@@ -355,6 +403,7 @@ def _finalize_validity_k(
                 ok = int(0)
 
     min_d2 = min_gate_distance * min_gate_distance
+    min_d2_slop = 1.0e-6 * wp.max(float(1.0), min_d2)
     for i in range(max_gates):
         if i < cnt:
             pi = position[base + i]
@@ -363,7 +412,7 @@ def _finalize_validity_k(
                     pj = position[base + j]
                     d = pj - pi
                     d2 = d[0] * d[0] + d[1] * d[1]
-                    if d2 < min_d2:
+                    if d2 + min_d2_slop < min_d2:
                         ok = int(0)
 
     if gate_width > 0.0:
@@ -469,6 +518,27 @@ def normalize_positions(
     _sync(dev)
 
 
+def relax_gate_spheres(
+    position: wp.array,
+    max_gates: int,
+    count: wp.array,
+    target_distance: float,
+    iterations: int,
+) -> None:
+    """Iteratively separate overlapping gate center spheres/disks in-place."""
+    _init()
+    if float(target_distance) <= 0.0 or int(iterations) <= 0:
+        return
+    dev = str(position.device)
+    wp.launch(
+        _relax_gate_spheres_k,
+        dim=count.shape[0],
+        inputs=[position, int(max_gates), count, float(target_distance), int(iterations)],
+        device=dev,
+    )
+    _sync(dev)
+
+
 def tangents_from_positions(
     position: wp.array,
     tangent: wp.array,
@@ -488,12 +558,21 @@ def tangents_from_positions(
     _sync(dev)
 
 
+def _gate_center_distance(config: GateGenConfig) -> float:
+    distance = float(config.min_gate_distance)
+    radius = getattr(config, "gate_radius", None)
+    if radius is not None:
+        distance = max(distance, 2.0 * float(radius))
+    return distance
+
+
 def finalize_gate_sequence(gates: GateSequence, config: GateGenConfig) -> None:
     """Normalize tangents, derive gate normals/endpoints, NaN-pad, and validate."""
     _init()
     E = gates.count.shape[0]
     G = int(config.max_gates)
     dev = str(gates.position.device)
+    min_center_distance = _gate_center_distance(config)
     wp.launch(
         _finalize_frame_k,
         dim=E * G,
@@ -521,7 +600,7 @@ def finalize_gate_sequence(gates: GateSequence, config: GateGenConfig) -> None:
             gates.count,
             G,
             int(config.min_gates),
-            float(config.min_gate_distance),
+            float(min_center_distance),
             float(config.gate_width),
             gates.valid,
         ],
@@ -547,5 +626,11 @@ def _run_gate_pipeline(
     """Run a native gate generator into ``out`` and finalize the common fields."""
     _init()
     generator_spec.generate(seed_buf_wp, config, out, scratch)
+    min_center_distance = _gate_center_distance(config)
+    solve_iters = int(getattr(config, "gate_solve_iters", 0))
+    if solve_iters > 0 and min_center_distance > 0.0:
+        G = int(config.max_gates)
+        relax_gate_spheres(out.position, G, out.count, min_center_distance, solve_iters)
+        tangents_from_positions(out.position, out.tangent, G, out.count)
     finalize_gate_sequence(out, config)
     return out

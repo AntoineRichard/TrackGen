@@ -109,7 +109,9 @@ config = GateGenConfig(
     num_envs=E,
     max_gates=32,
     gate_width=0.4,
+    gate_radius=0.025,
     min_gate_distance=0.05,
+    gate_solve_iters=8,
     device=device,
 )
 rng = PerEnvSeededRNG(seeds=0, num_envs=E, device=device)
@@ -124,6 +126,11 @@ Registered first-stage gate generators are selected with `GateGenConfig(generato
 `"bezier"` (default), `"checkpoint"`, `"hull"`, `"polar"`, and `"voronoi"`. The Fourier
 generator lives in `track_gen._experimental` and is **unsupported** — it is not on the
 Warp pipeline and receives no compatibility guarantees.
+
+Gate centers are treated as spheres/disks when `gate_radius` is set. The generated center
+spacing target is `max(min_gate_distance, 2 * gate_radius)`, and `gate_solve_iters` runs a
+small deterministic pairwise solve that pushes overlapping gate spheres apart before
+recomputing tangents. Set `gate_solve_iters=0` to inspect the raw sampled anchors.
 
 ![TrackGen standard generator grid](docs/assets/readme-generator-grid.png)
 

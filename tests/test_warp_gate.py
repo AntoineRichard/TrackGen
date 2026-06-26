@@ -75,6 +75,27 @@ def test_finalize_invalidates_too_close_gate_centres():
     assert to_t(gates.valid).bool().tolist() == [False]
 
 
+def test_finalize_uses_gate_radius_as_sphere_distance():
+    gates = _manual_sequence()
+    pos = to_t(gates.position).view(1, 4, 2)
+    tan = to_t(gates.tangent).view(1, 4, 2)
+    count = to_t(gates.count)
+    pos[0, 0] = torch.tensor([0.0, 0.0])
+    pos[0, 1] = torch.tensor([0.15, 0.0])
+    tan[0, :2] = torch.tensor([[1.0, 0.0], [1.0, 0.0]])
+    count[0] = 2
+
+    cfg = GateGenConfig(
+        max_gates=4,
+        min_gates=2,
+        min_gate_distance=0.0,
+        gate_radius=0.1,
+    )
+    warp_gate.finalize_gate_sequence(gates, cfg)
+
+    assert to_t(gates.valid).bool().tolist() == [False]
+
+
 def test_finalize_invalidates_crossing_gate_segments():
     gates = _manual_sequence()
     pos = to_t(gates.position).view(1, 4, 2)
@@ -162,6 +183,38 @@ def test_normalize_positions_centers_scales_and_pads():
     expected = torch.tensor([[-2.0, -1.0], [2.0, -1.0], [0.0, 1.0]])
     assert torch.allclose(out[0, :3], expected, atol=1e-6)
     assert torch.isnan(out[0, 3]).all()
+
+
+def test_relax_gate_spheres_separates_overlapping_centres():
+    gates = _manual_sequence()
+    pos = to_t(gates.position).view(1, 4, 2)
+    count = to_t(gates.count)
+    pos[0, 0] = torch.tensor([0.0, 0.0])
+    pos[0, 1] = torch.tensor([0.01, 0.0])
+    count[0] = 2
+
+    warp_gate.relax_gate_spheres(gates.position, 4, gates.count, 0.25, 1)
+
+    out = to_t(gates.position).view(1, 4, 2)
+    dist = torch.linalg.norm(out[0, 1] - out[0, 0])
+    assert dist >= 0.25 - 1e-6
+    assert torch.allclose(out[0, :2].mean(dim=0), torch.tensor([0.005, 0.0]), atol=1e-6)
+
+
+def test_relax_gate_spheres_handles_coincident_centres_deterministically():
+    gates = _manual_sequence()
+    pos = to_t(gates.position).view(1, 4, 2)
+    count = to_t(gates.count)
+    pos[0, 0] = torch.tensor([0.0, 0.0])
+    pos[0, 1] = torch.tensor([0.0, 0.0])
+    count[0] = 2
+
+    warp_gate.relax_gate_spheres(gates.position, 4, gates.count, 0.2, 1)
+
+    out = to_t(gates.position).view(1, 4, 2)
+    assert torch.isfinite(out[0, :2]).all()
+    dist = torch.linalg.norm(out[0, 1] - out[0, 0])
+    assert dist >= 0.2 - 1e-6
 
 
 def test_tangents_from_positions_uses_wrapped_central_difference():

@@ -103,13 +103,19 @@ Validity is gate-specific and intentionally smaller than track validity:
 
 - all real gate pose fields are finite;
 - `count[e] >= min_gates`;
-- pairwise gate-centre distance is at least `min_gate_distance` for non-identical gates;
+- pairwise gate-centre distance is at least the configured centre spacing target;
 - if `gate_width > 0`, gate line segments do not intersect except for an exact same-gate
   segment.
 
-There is no thickness gate, no turning-number requirement, no relaxation check, and no
-border self-intersection check. A course whose centreline crosses itself can still be
-valid.
+The centre spacing target is `min_gate_distance` unless `gate_radius` is set, in which
+case the gate centres are treated as spheres/disks and the target is
+`max(min_gate_distance, 2 * gate_radius)`. Before validity, gate generation may run a
+small fixed-iteration pairwise solve that pushes overlapping gate spheres apart and then
+recomputes tangents.
+
+There is no track-width feasibility gate, no turning-number requirement, no XPBD road
+relaxation check, and no border self-intersection check. A course whose centreline crosses
+itself can still be valid.
 
 ## Implementation Boundaries
 
@@ -128,7 +134,7 @@ Required tests:
 - public API surface includes the new gate names and preserves existing track names;
 - `GateGenerator` returns a `GateSequence` with stable buffers across calls;
 - fixed seeds produce deterministic gates on the same device;
-- `min_gate_distance` invalidates too-close gates;
+- `min_gate_distance` / `gate_radius` invalidates too-close gates after the gate sphere solve;
 - `gate_width > 0` invalidates intersecting gate segments;
 - existing `TrackGenerator` outputs are unchanged for fixed seeds and representative
   configs;

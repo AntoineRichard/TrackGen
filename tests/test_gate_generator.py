@@ -257,6 +257,62 @@ def test_gate_generator_cpu_reuses_output_instance_and_buffers():
     _assert_generated_gate_fields_are_finite(second, E, G)
 
 
+def test_gate_generator_sphere_solve_repairs_overlapping_native_points(monkeypatch):
+    import types
+    import warp as wp
+
+    def alloc_scratch(config):
+        nan = float("nan")
+        return types.SimpleNamespace(
+            position=wp.array(
+                [
+                    wp.vec2f(0.0, 0.0),
+                    wp.vec2f(0.01, 0.0),
+                    wp.vec2f(nan, nan),
+                    wp.vec2f(nan, nan),
+                ],
+                dtype=wp.vec2f,
+                device=str(config.device),
+            ),
+            count=wp.array([2], dtype=wp.int32, device=str(config.device)),
+        )
+
+    def generate(seeds_wp, config, out, scratch):
+        wp.copy(out.position, scratch.position)
+        wp.copy(out.count, scratch.count)
+
+    monkeypatch.setattr(reg, "GATE_GENERATORS", {})
+    monkeypatch.setattr(reg, "_LOADED", True)
+    reg.register(reg.GateGeneratorSpec(
+        name="overlap",
+        alloc_scratch=alloc_scratch,
+        generate=generate,
+        max_gates=lambda config: 2,
+        supported_orderings=frozenset({"raw"}),
+    ))
+
+    cfg = GateGenConfig(
+        generator="overlap",
+        gate_ordering="raw",
+        num_envs=1,
+        min_gates=2,
+        max_gates=4,
+        min_gate_distance=0.0,
+        gate_radius=0.1,
+        gate_solve_iters=1,
+        device="cpu",
+    )
+    gates = GateGenerator(cfg, _make_rng(1, seed=53)).generate()
+
+    position = to_t(gates.position).view(1, 4, 2)
+    tangent = to_t(gates.tangent).view(1, 4, 2)
+    distance = torch.linalg.norm(position[0, 1] - position[0, 0])
+    assert to_t(gates.valid).bool().tolist() == [True]
+    assert distance >= 0.2 - 1e-6
+    assert torch.isfinite(tangent[0, :2]).all()
+    assert torch.isnan(position[0, 2:]).all()
+
+
 @pytest.mark.cuda
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda")
 @pytest.mark.parametrize("generator", ["bezier", "hull"])
@@ -325,6 +381,7 @@ def test_gate_generator_invalidates_large_min_distance():
         num_envs=E,
         max_gates=32,
         min_gate_distance=100.0,
+        gate_solve_iters=0,
         device="cpu",
     )
     gates = GateGenerator(cfg, _make_rng(E, seed=5)).generate(E)
