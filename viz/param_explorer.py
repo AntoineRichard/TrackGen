@@ -387,6 +387,20 @@ def gate_visible_sections(generator: str) -> dict[str, bool]:
     }
 
 
+def track_visible_sections(generator: str) -> dict[str, bool]:
+    name = str(generator)
+    point = name in {"bezier", "hull"}
+    return {
+        "sampling": point,
+        "smoothing": name in {"bezier", "hull", "polar", "voronoi"},
+        "bezier": name == "bezier",
+        "hull": name == "hull",
+        "polar": name == "polar",
+        "voronoi": name == "voronoi",
+        "checkpoint": name == "checkpoint",
+    }
+
+
 def build_gate_config(p: dict) -> GateGenConfig:
     generator = str(p["gate_generator"])
     min_points = min(int(p["gate_min_num_points"]), int(p["gate_max_num_points"]))

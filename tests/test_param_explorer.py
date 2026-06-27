@@ -275,3 +275,26 @@ def test_batch_and_pagination():
     # mean count over valid tracks is variable (constant_spacing), never a fixed N.
     assert st["count"] >= 1
     assert px.n_pages(20, 3) == 3                       # ceil(20/9)
+
+
+def test_track_visible_sections_are_generator_specific():
+    assert px.track_visible_sections("bezier") == {
+        "sampling": True, "smoothing": True, "bezier": True, "hull": False,
+        "polar": False, "voronoi": False, "checkpoint": False,
+    }
+    assert px.track_visible_sections("hull") == {
+        "sampling": True, "smoothing": True, "bezier": False, "hull": True,
+        "polar": False, "voronoi": False, "checkpoint": False,
+    }
+    assert px.track_visible_sections("polar") == {
+        "sampling": False, "smoothing": True, "bezier": False, "hull": False,
+        "polar": True, "voronoi": False, "checkpoint": False,
+    }
+    assert px.track_visible_sections("voronoi") == {
+        "sampling": False, "smoothing": True, "bezier": False, "hull": False,
+        "polar": False, "voronoi": True, "checkpoint": False,
+    }
+    assert px.track_visible_sections("checkpoint") == {
+        "sampling": False, "smoothing": False, "bezier": False, "hull": False,
+        "polar": False, "voronoi": False, "checkpoint": True,
+    }
