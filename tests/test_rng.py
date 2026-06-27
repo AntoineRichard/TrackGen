@@ -28,3 +28,12 @@ def test_partial_ids_sample_preserves_untouched_env_states():
     # Envs 1..3 were not sampled; their states must be unchanged (not zeroed).
     assert (after[1:] == before[1:]).all(), "partial-ids sample corrupted untouched env states"
     assert (after[1:] != 0).any(), "untouched env states were zeroed"
+
+
+def test_uniform_and_normal_accept_python_int_bounds():
+    rng = _rng(num_envs=3, seed=3)
+    u = wp.to_torch(rng.sample_uniform_warp(0, 1, (2,)))  # int bounds, must not raise
+    assert u.shape == (3, 2)
+    assert (u >= 0.0).all() and (u < 1.0).all()
+    n = wp.to_torch(rng.sample_normal_warp(0, 1, (2,)))  # int mean/std, must not raise
+    assert n.shape == (3, 2)

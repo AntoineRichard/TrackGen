@@ -313,10 +313,12 @@ def uniform(
         if isinstance(low, float) or isinstance(high, float):
             raise ValueError("The high value must be a tensor if the low value is a tensor.")
         output = uniform_tensorized(low, high, states, new_states, ids, shape, device=device)
-    elif isinstance(low, float) or isinstance(high, float):
-        if isinstance(low, wp.array) or isinstance(high, wp.array):
-            raise ValueError("The low value must be a tensor if the high value is a tensor.")
-        output = uniform_single(low, high, states, new_states, ids, shape, device=device)
+    elif isinstance(low, (int, float)) and isinstance(high, (int, float)):
+        output = uniform_single(float(low), float(high), states, new_states, ids, shape, device=device)
+    else:
+        raise TypeError(
+            f"low and high must both be float/int scalars or both wp.array, "
+            f"got {type(low).__name__} and {type(high).__name__}")
     return output
 
 
@@ -1411,10 +1413,12 @@ def normal(
         if isinstance(mean, float) or isinstance(std, float):
             raise ValueError("The high value must be a tensor if the low value is a tensor.")
         output = normal_tensorized(mean, std, states, new_states, ids, shape, device=device)
-    elif isinstance(mean, float) or isinstance(std, float):
-        if isinstance(mean, wp.array) or isinstance(std, wp.array):
-            raise ValueError("The low value must be a tensor if the high value is a tensor.")
-        output = normal_single(mean, std, states, new_states, ids, shape, device=device)
+    elif isinstance(mean, (int, float)) and isinstance(std, (int, float)):
+        output = normal_single(float(mean), float(std), states, new_states, ids, shape, device=device)
+    else:
+        raise TypeError(
+            f"mean and std must both be float/int scalars or both wp.array, "
+            f"got {type(mean).__name__} and {type(std).__name__}")
     return output
 
 
