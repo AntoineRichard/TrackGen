@@ -36,6 +36,10 @@ class PerEnvSeededRNG:
         # Auto-initialize states from seeds so that construction alone is sufficient
         # to produce reproducible, seed-determined outputs without a separate set_seeds call.
         self.set_seeds_warp(self._seeds, None)
+        # Mirror states into the double-buffer so a first PARTIAL-ids sample (which only
+        # writes new_states for selected envs, then wp.copy's the WHOLE array back) cannot
+        # zero the untouched envs' seed-derived states.
+        wp.copy(self._new_states, self._states)
 
     @property
     def seeds_warp(self) -> wp.array:
