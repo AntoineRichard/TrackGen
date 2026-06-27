@@ -18,6 +18,8 @@ call replays the graph (``wp.capture_launch``) with new seeds written into the p
 seed buffer in place. On the Warp ``cpu`` device the pipeline runs eagerly every call.
 """
 
+import numbers
+
 import warp as wp
 
 from .types import Track, TrackGenConfig
@@ -141,12 +143,14 @@ class TrackGenerator:
             ValueError: if an integer ``num_or_ids`` differs from ``config.num_envs``.
         """
         if num_or_ids is not None:
-            if not isinstance(num_or_ids, int):
+            # Accept any integer scalar (incl. numpy ints from array shapes); reject bool
+            # (an int subclass) and non-integers, which are treated as env-id sequences.
+            if isinstance(num_or_ids, bool) or not isinstance(num_or_ids, numbers.Integral):
                 raise TypeError(
                     "TrackGenerator.generate() does not accept explicit environment ids; "
                     "construct a generator with the desired fixed num_envs instead."
                 )
-            if num_or_ids != self._config.num_envs:
+            if int(num_or_ids) != self._config.num_envs:
                 raise ValueError(
                     f"TrackGenerator is fixed-batch for {self._config.num_envs} envs; "
                     f"got num_or_ids={num_or_ids}. "
@@ -166,6 +170,7 @@ class TrackGenerator:
             if self._graph is None:
                 # First CUDA call: warm up (loads kernels/modules), then capture.
                 # _CAPTURING suppresses host-blocking syncs during warmup + capture.
+                prev_capturing = warp_pipeline._CAPTURING
                 warp_pipeline._CAPTURING = True
                 try:
                     for _ in range(3):
@@ -176,7 +181,7 @@ class TrackGenerator:
                         self._run()
                     self._graph = cap.graph
                 finally:
-                    warp_pipeline._CAPTURING = False
+                    warp_pipeline._CAPTURING = prev_capturing
 
             # Replay the captured graph (seed buffer already updated above).
             wp.capture_launch(self._graph)

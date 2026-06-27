@@ -136,7 +136,8 @@ def test_cuda_capture_sets_gate_and_pipeline_capture_flags(monkeypatch):
     )
 
     cfg = GateGenConfig(generator="fake-cuda", device="cuda", num_envs=1)
-    rng = type("Rng", (), {"seeds_warp": object()})()
+    # seeds_warp.shape[0] must match num_envs (checked at construction).
+    rng = type("Rng", (), {"seeds_warp": type("Seeds", (), {"shape": (1,)})()})()
     gen = GateGenerator(cfg, rng)
 
     assert gen.generate(1) is gen._gate_sequence
@@ -555,3 +556,10 @@ def test_gate_width_flows_through_real_generator_without_crossing_bars():
                     assert not _segments_properly_cross(
                         left[e, i], right[e, i], left[e, j], right[e, j]
                     ), f"valid env {e} has crossing gate bars {i},{j}"
+
+
+def test_gate_generator_rejects_rng_env_count_mismatch():
+    cfg = GateGenConfig(num_envs=4, device="cpu")
+    rng = PerEnvSeededRNG(seeds=0, num_envs=3, device="cpu")  # wrong env count
+    with pytest.raises(ValueError, match="seeds"):
+        GateGenerator(cfg, rng)

@@ -336,7 +336,9 @@ def xpbd_solve_inplace(
     # Skip the host-blocking sync during CUDA graph capture (illegal there; the graph
     # records stream ordering, so it is unnecessary on replay too). The caller passes
     # its capture state in -- this module never reads the pipeline's _CAPTURING global.
-    if not capturing:
+    # Gate on cuda like band_l0_inplace: on the cpu device kernels are eager, so a global
+    # wp.synchronize() is pure overhead.
+    if not capturing and "cuda" in dev:
         wp.synchronize()
 
 

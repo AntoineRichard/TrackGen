@@ -574,6 +574,12 @@ def generate_checkpoint_warp(seeds_wp: wp.array, config,
 
     # 5. OPT-IN single-crossing clip of the selected centerline (capture-time Python branch).
     if bool(getattr(config, "checkpoint_clip_fallback", False)):
+        # The clip buffers are allocated only when the flag was set at alloc time; a flag
+        # flipped on between alloc and generate would launch with None buffers. Fail loudly.
+        assert scratch.clip_dense is not None, (
+            "checkpoint_clip_fallback=True requires scratch allocated with the same flag; "
+            "reallocate the generator after changing checkpoint_clip_fallback."
+        )
         M = N + 2
         wp.launch(_clip_assemble_k, dim=E,
                   inputs=[out_centerline, N, M, scratch.clip_dense],

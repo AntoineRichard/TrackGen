@@ -165,3 +165,15 @@ def test_repeated_generate_is_deterministic_for_a_fixed_rng():
     a = to_t(gen.generate(E).center).clone()
     b = to_t(gen.generate(E).center).clone()
     assert torch.equal(torch.nan_to_num(a), torch.nan_to_num(b))
+
+
+def test_generate_accepts_numpy_int_and_rejects_bool():
+    import numpy as np
+    E, N_max = 2, 64
+    cfg = TrackGenConfig(
+        generator="bezier", num_envs=E, num_points=64, N_max=N_max, device="cpu"
+    )
+    gen = TrackGenerator(cfg, _make_rng(E))
+    gen.generate(np.int64(E))  # numpy int scalar must be accepted (equals num_envs)
+    with pytest.raises(TypeError):
+        gen.generate(True)  # bool is an int subclass but is not a valid count

@@ -24,6 +24,13 @@ class GateGenerator:
         """
         if rng is None:
             raise ValueError("A random number generator must be provided.")
+        # Catch an env-count mismatch at construction (clear message) rather than as an
+        # opaque wp.copy size error on the first generate() call.
+        if int(rng.seeds_warp.shape[0]) != int(config.num_envs):
+            raise ValueError(
+                f"rng has {int(rng.seeds_warp.shape[0])} seeds but config.num_envs="
+                f"{config.num_envs!r}; construct the rng with num_envs={config.num_envs!r}."
+            )
 
         from . import gate_generator_registry
 
