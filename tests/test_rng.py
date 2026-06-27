@@ -37,3 +37,14 @@ def test_uniform_and_normal_accept_python_int_bounds():
     assert (u >= 0.0).all() and (u < 1.0).all()
     n = wp.to_torch(rng.sample_normal_warp(0, 1, (2,)))  # int mean/std, must not raise
     assert n.shape == (3, 2)
+
+
+def test_quaternion_draws_are_not_all_identical_within_a_block():
+    # Axis and angle previously shared a seed (angle a deterministic function of the axis).
+    # After decorrelation, a (6,) block of quats for one env must not be all-identical.
+    rng = _rng(num_envs=2, seed=5)
+    q = wp.to_torch(rng.sample_quaternion_warp((6,)))  # (2,6,4)
+    for e in range(q.shape[0]):
+        block = q[e]
+        first = block[0]
+        assert not bool((block == first).all()), "quaternion block is degenerate/identical"

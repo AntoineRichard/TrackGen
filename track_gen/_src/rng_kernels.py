@@ -1443,7 +1443,8 @@ def rand_quaternion_1D(
         output: The output tensor."""
     tid = wp.tid()
     vec3f_unit_sphere = wp.sample_unit_sphere(states[ids[tid]])
-    angle = wp.randf(states[ids[tid]], 0.0, 2.0 * 4.0 * wp.atan(1.0))
+    # Salt the angle seed so it does not reuse the axis's PCG state (decorrelation).
+    angle = wp.randf(states[ids[tid]] + wp.uint32(2654435761), 0.0, 2.0 * 4.0 * wp.atan(1.0))
     output[tid] = wp.quat_from_axis_angle(vec3f_unit_sphere, angle)
     new_states[ids[tid]] = states[ids[tid]] + wp.uint32(1)
 
@@ -1466,7 +1467,7 @@ def rand_quaternion_2D(
         offset: The offset for the 2D tensor. Used to calculate the correct state for each environment."""
     i, j = wp.tid()
     vec3f_unit_sphere = wp.sample_unit_sphere(states[ids[i]] + wp.uint32(j))
-    angle = wp.randf(states[ids[i]] + wp.uint32(j), 0.0, 2.0 * 4.0 * wp.atan(1.0))
+    angle = wp.randf(states[ids[i]] + wp.uint32(j) + wp.uint32(2654435761), 0.0, 2.0 * 4.0 * wp.atan(1.0))
     output[i][j] = wp.quat_from_axis_angle(vec3f_unit_sphere, angle)
     new_states[ids[i]] = states[ids[i]] + wp.uint32(offset)
 
@@ -1491,7 +1492,7 @@ def rand_quaternion_3D(
         shape: The shape of the 3D tensor. Used to calculate the correct state for each environment."""
     i, j, k = wp.tid()
     vec3f_unit_sphere = wp.sample_unit_sphere(states[ids[i]] + wp.uint32(j * shape[2] + k))
-    angle = wp.randf(states[ids[i]] + wp.uint32(j * shape[2] + k), 0.0, 2.0 * 4.0 * wp.atan(1.0))
+    angle = wp.randf(states[ids[i]] + wp.uint32(j * shape[2] + k) + wp.uint32(2654435761), 0.0, 2.0 * 4.0 * wp.atan(1.0))
     output[i][j][k] = wp.quat_from_axis_angle(vec3f_unit_sphere, angle)
     new_states[ids[i]] = states[ids[i]] + wp.uint32(offset)
 
