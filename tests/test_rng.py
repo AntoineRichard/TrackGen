@@ -1,0 +1,18 @@
+import warp as wp
+from track_gen._src.rng_utils import PerEnvSeededRNG
+
+
+def _rng(num_envs=4, seed=0):
+    return PerEnvSeededRNG(seeds=seed, num_envs=num_envs, device="cpu")
+
+
+def test_uniform_3d_block_has_no_index_collisions():
+    # A (3,5) block has 15 distinct (j,k) cells. With the correct row-major stride
+    # (j*shape[2]+k) each cell seeds a distinct PCG state -> 15 distinct floats per env.
+    # The stride bug (j*shape[1]+k) collides cells (e.g. (1,0) and (0,3) both map to 3),
+    # producing duplicate values within a single draw.
+    rng = _rng(num_envs=2, seed=7)
+    out = wp.to_torch(rng.sample_uniform_warp(0.0, 1.0, (3, 5)))  # (2,3,5)
+    for e in range(out.shape[0]):
+        flat = out[e].reshape(-1)
+        assert flat.unique().numel() == flat.numel(), "duplicate RNG values within a 3D draw"
