@@ -296,6 +296,31 @@ def test_build_gate_config_uses_defaults_for_dropped_knobs():
     assert cfg.hull_displacement == d.hull_displacement
 
 
+def test_track_mode_visibility_orders_flags_to_match_outputs():
+    # The generator.change handler emits these flags positionally onto
+    # track_mode_outputs, so order + count must be exact. Checking non-default
+    # generators (the default build is polar) catches section/count drift that a
+    # polar-only build-time assertion cannot.
+    assert px.track_mode_visibility("bezier") == (
+        [True] * 4 + [True] * 2 + [True] * 4 + [False] * 2
+        + [False] * 4 + [False] * 6 + [False] * 9
+    )
+    assert px.track_mode_visibility("hull") == (
+        [True] * 4 + [True] * 2 + [False] * 4 + [True] * 2
+        + [False] * 4 + [False] * 6 + [False] * 9
+    )
+    assert px.track_mode_visibility("voronoi") == (
+        [False] * 4 + [True] * 2 + [False] * 4 + [False] * 2
+        + [False] * 4 + [True] * 6 + [False] * 9
+    )
+    assert px.track_mode_visibility("checkpoint") == (
+        [False] * (4 + 2 + 4 + 2 + 4 + 6) + [True] * 9
+    )
+    # Every generator yields the same fixed number of flags (one per output component).
+    for gen in ("bezier", "hull", "polar", "voronoi", "checkpoint"):
+        assert len(px.track_mode_visibility(gen)) == 31
+
+
 def _visible_by_label(app, label):
     """Return the visible prop of the FIRST app component with this exact label."""
     for c in app.config["components"]:

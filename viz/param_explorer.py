@@ -395,6 +395,26 @@ def track_visible_sections(generator: str) -> dict[str, bool]:
     }
 
 
+# Ordered (section, component_count) segments for the Tracks tab's generator-specific
+# controls. Single source of truth shared by the build-time visibility flags, the
+# generator.change handler, and the build-time length guard. Each section contributes
+# its header markdown plus its controls, in the SAME order as ``track_mode_outputs``.
+TRACK_MODE_SECTION_SIZES = (
+    ("sampling", 4), ("smoothing", 2), ("bezier", 4), ("hull", 2),
+    ("polar", 4), ("voronoi", 6), ("checkpoint", 9),
+)
+
+
+def track_mode_visibility(generator: str) -> list[bool]:
+    """Per-output visibility flags for the track generator-specific components,
+    ordered to match ``track_mode_outputs``."""
+    sections = track_visible_sections(generator)
+    flags: list[bool] = []
+    for key, count in TRACK_MODE_SECTION_SIZES:
+        flags.extend([sections[key]] * count)
+    return flags
+
+
 def build_gate_config(p: dict) -> GateGenConfig:
     generator = str(p["gate_generator"])
     min_points = min(int(p["gate_min_num_points"]), int(p["gate_max_num_points"]))
@@ -809,14 +829,14 @@ def build_app():
                     checkpoint_lookahead_frac, checkpoint_best_of_k, checkpoint_clip_fallback,
                 ]
 
+                if len(track_mode_outputs) != len(track_mode_visibility(generator_default)):
+                    raise RuntimeError(
+                        "track_mode_outputs is out of sync with TRACK_MODE_SECTION_SIZES"
+                    )
+
                 def _track_mode_update(generator_name):
-                    v = track_visible_sections(generator_name)
-                    counts = [("sampling", 4), ("smoothing", 2), ("bezier", 4), ("hull", 2),
-                              ("polar", 4), ("voronoi", 6), ("checkpoint", 9)]
-                    updates = []
-                    for key, n in counts:
-                        updates.extend([gr.update(visible=v[key])] * n)
-                    return updates
+                    return [gr.update(visible=flag)
+                            for flag in track_mode_visibility(generator_name)]
 
                 generator.change(_track_mode_update, [generator], track_mode_outputs)
 
