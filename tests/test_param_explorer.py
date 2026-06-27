@@ -277,6 +277,38 @@ def test_batch_and_pagination():
     assert px.n_pages(20, 3) == 3                       # ceil(20/9)
 
 
+def _visible_by_label(app, label):
+    """Return the visible prop of the FIRST app component with this exact label."""
+    for c in app.config["components"]:
+        props = c.get("props", {})
+        if props.get("label") == label:
+            return props.get("visible", True)
+    raise AssertionError(f"no component labeled {label!r}")
+
+
+def test_track_tab_shows_only_selected_generator_controls():
+    pytest.importorskip("gradio")
+    app = px.build_app()
+    markdown = {
+        c.get("props", {}).get("value")
+        for c in app.config["components"]
+        if c.get("type") == "markdown"
+    }
+    # New clean section headers exist; the old mixed header is gone.
+    assert "### Sampling (point-family)" in markdown
+    assert "### Curve smoothing" in markdown
+    assert "### Hull controls" in markdown
+    assert "### Shape / sampling" not in markdown
+
+    # Default track generator is "polar": only smoothing + polar sections visible.
+    # Use track-unique labels (gate tab reuses some bare names).
+    assert _visible_by_label(app, "num_points_per_segment (generator smoothing samples)") is True
+    assert _visible_by_label(app, "min corners") is False
+    assert _visible_by_label(app, "rad (roundness)") is False
+    assert _visible_by_label(app, "hull_displacement (hull midpoint displacement)") is False
+    assert _visible_by_label(app, "checkpoint_count (radial waypoints)") is False
+
+
 def test_track_visible_sections_are_generator_specific():
     assert px.track_visible_sections("bezier") == {
         "sampling": True, "smoothing": True, "bezier": True, "hull": False,
