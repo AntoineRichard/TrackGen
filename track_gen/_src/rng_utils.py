@@ -59,14 +59,6 @@ class PerEnvSeededRNG:
         else:
             return shape
 
-    @staticmethod
-    def get_offset(shape: tuple[int]) -> int:
-        """Get the offset based on the shape."""
-        out = 1
-        for i in shape:
-            out *= i
-        return out
-
     def set_seeds_warp(self, seeds: wp.array, ids: wp.array | None) -> None:
         """Set the seeds for each environment.
         Args:

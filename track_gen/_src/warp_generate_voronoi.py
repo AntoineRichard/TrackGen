@@ -22,6 +22,9 @@ _TARGET_EXTENT = 1.44
 _SITE_SALT = 8171
 _ANCHOR_SALT = 3911
 
+# NOTE: _LAYOUT_RING ("ring") is the uniform box-fill baseline — it does NOT sample an
+# annulus. Only _LAYOUT_VOID_RING ("void_ring") sets use_annulus; the "ring" name is kept
+# for config compatibility but produces uniformly-filled sites, not a ring distribution.
 _LAYOUT_RING = 0
 _LAYOUT_VOID_RING = 1
 _LAYOUT_CLUSTERED = 2
