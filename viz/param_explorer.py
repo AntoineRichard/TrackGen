@@ -8,9 +8,11 @@ tracks + yield/quality stats. Launch:  `.venv/bin/python -m viz.param_explorer`
 """
 from __future__ import annotations
 
+import logging
 import math
 import os
 import sys
+import traceback
 
 _PKG_PARENT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _PKG_PARENT not in sys.path:
@@ -33,6 +35,25 @@ from track_gen._src import gate_generator_registry, generator_registry, warp_gat
 from viz.plot_tracks import draw_track
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+logger = logging.getLogger("param_explorer")
+
+
+def _ui_error_message(exc: Exception, context: str) -> str:
+    """Log a render failure and return the message to show in the UI.
+
+    The render handlers must keep the UI alive, but swallowing the bare ``str(exc)``
+    loses the traceback and makes a genuine bug (kernel launch failure, shape
+    mismatch after a refactor, renamed field) indistinguishable from a user typo.
+    A ``ValueError`` is a rejected config the user can act on, so its message is
+    enough; anything else is unexpected and gets its full stack logged to the
+    console so it stays debuggable.
+    """
+    if isinstance(exc, ValueError):
+        logger.warning("%s rejected input: %s", context, exc)
+        return str(exc)
+    logger.error("%s crashed:\n%s", context, traceback.format_exc())
+    return f"internal error: {exc} (see console log)"
 
 GATE_CONTROL_KEYS = [
     "gate_generator", "gate_ordering", "gate_width", "gate_radius", "gate_solve_iters",
@@ -303,10 +324,11 @@ def render_grid(p: dict):
         fig = render_page(track, 0, int(p["grid_n"]))
         st = _stats(track)
         return fig, st
-    except Exception as exc:  # never crash the UI
+    except Exception as exc:  # keep the UI alive; full traceback is logged
+        msg = _ui_error_message(exc, "track render")
         fig = plt.figure(figsize=(5, 3))
-        fig.text(0.5, 0.5, f"error: {exc}", ha="center", va="center", fontsize=9, color="red", wrap=True)
-        return fig, {"error": str(exc), "yield": 0.0, "n_valid": 0, "mean_len": float("nan"),
+        fig.text(0.5, 0.5, f"error: {msg}", ha="center", va="center", fontsize=9, color="red", wrap=True)
+        return fig, {"error": msg, "yield": 0.0, "n_valid": 0, "mean_len": float("nan"),
                      "mean_thickness": float("nan"), "count": 0}
 
 
@@ -578,11 +600,12 @@ def render_gate_grid(p: dict):
         gates, cfg = generate_gate_batch(p)
         fig = render_gate_page(gates, cfg, 0, int(p["gate_grid_n"]))
         return fig, _gate_stats(gates, cfg)
-    except Exception as exc:
+    except Exception as exc:  # keep the UI alive; full traceback is logged
+        msg = _ui_error_message(exc, "gate render")
         fig = plt.figure(figsize=(5, 3))
-        fig.text(0.5, 0.5, f"error: {exc}", ha="center", va="center", fontsize=9,
+        fig.text(0.5, 0.5, f"error: {msg}", ha="center", va="center", fontsize=9,
                  color="red", wrap=True)
-        return fig, {"error": str(exc), "yield": 0.0, "n_valid": 0, "n_invalid": 0,
+        return fig, {"error": msg, "yield": 0.0, "n_valid": 0, "n_invalid": 0,
                      "mean_count": 0.0, "min_center_distance": float("nan"),
                      "target_center_distance": float("nan")}
 
@@ -753,11 +776,12 @@ def build_app():
                         st = _stats(track)
                         lbl = f"page 1/{n_pages(_track_num_envs(track), gn)}"
                         return fig, _stats_md(st), track, 0, lbl
-                    except Exception as exc:
+                    except Exception as exc:  # keep the UI alive; full traceback is logged
+                        msg = _ui_error_message(exc, "track render")
                         err_fig = plt.figure(figsize=(5, 3))
-                        err_fig.text(0.5, 0.5, f"error: {exc}", ha="center", va="center",
+                        err_fig.text(0.5, 0.5, f"error: {msg}", ha="center", va="center",
                                      fontsize=9, color="red", wrap=True)
-                        err_st = {"error": str(exc), "yield": 0.0, "n_valid": 0,
+                        err_st = {"error": msg, "yield": 0.0, "n_valid": 0,
                                   "mean_len": float("nan"), "mean_thickness": float("nan"), "count": 0}
                         return err_fig, _stats_md(err_st), None, 0, "page 1/1"
 
@@ -952,11 +976,12 @@ def build_app():
                         st = _gate_stats(gates, cfg)
                         lbl = f"page 1/{n_pages(_gate_num_envs(gates), gn)}"
                         return fig, _gate_stats_md(st), gates, cfg, 0, lbl
-                    except Exception as exc:
+                    except Exception as exc:  # keep the UI alive; full traceback is logged
+                        msg = _ui_error_message(exc, "gate render")
                         err_fig = plt.figure(figsize=(5, 3))
-                        err_fig.text(0.5, 0.5, f"error: {exc}", ha="center", va="center",
+                        err_fig.text(0.5, 0.5, f"error: {msg}", ha="center", va="center",
                                      fontsize=9, color="red", wrap=True)
-                        err_st = {"error": str(exc), "yield": 0.0, "n_valid": 0,
+                        err_st = {"error": msg, "yield": 0.0, "n_valid": 0,
                                   "n_invalid": 0, "mean_count": 0.0,
                                   "min_center_distance": float("nan"),
                                   "target_center_distance": float("nan")}

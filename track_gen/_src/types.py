@@ -331,6 +331,11 @@ class GateGenConfig:
                 "gate_ordering must be one of {'ccw', 'raw', 'random_pairs'}, "
                 f"got {self.gate_ordering!r}"
             )
+        # Floor is 3 here, not 6 as in TrackGenConfig: the gate-native Voronoi
+        # generator selects anchor sites and emits them directly as gates, so it
+        # never runs the Chaikin/Catmull-Rom densification that TrackGenConfig's
+        # >= 6 floor protects. Three control points is the smallest non-degenerate
+        # gate ring, which lets callers request short gate sequences.
         if int(self.voronoi_control_points) < 3:
             raise ValueError(
                 f"voronoi_control_points must be >= 3, got {self.voronoi_control_points!r}"
