@@ -286,6 +286,12 @@ class GateGenConfig:
     gate_width: float = 0.0
     gate_ordering: str = "ccw"
 
+    # Point-family (bezier/hull) sampler inputs. The gate path only samples corner
+    # anchors and emits them as gates; it never runs the Bezier/hull curve assembly,
+    # so num_points_per_segment, rad, edgy, handle_clamp_frac, and hull_displacement
+    # are inert for gate output (they remain for parity with TrackGenConfig and are
+    # hidden in the explorer UI). min_num_points, max_num_points, min_point_distance,
+    # and scale do affect the sampled anchors.
     min_num_points: int = 9
     max_num_points: int = 13
     num_points_per_segment: int = 30
@@ -311,6 +317,8 @@ class GateGenConfig:
     checkpoint_angle_jitter: float = 0.55
 
     def __post_init__(self):
+        if int(self.num_envs) < 1:
+            raise ValueError(f"num_envs must be >= 1, got {self.num_envs!r}")
         if int(self.min_gates) < 2:
             raise ValueError(f"min_gates must be >= 2, got {self.min_gates!r}")
         if int(self.max_gates) < int(self.min_gates):
@@ -330,6 +338,24 @@ class GateGenConfig:
             raise ValueError(
                 "gate_ordering must be one of {'ccw', 'raw', 'random_pairs'}, "
                 f"got {self.gate_ordering!r}"
+            )
+        # Point-family (bezier/hull) sampler inputs. These feed the shared corner
+        # sampler, where min_point_distance divides a cell count and the
+        # [min_num_points, max_num_points] range feeds wp.randi; validate them here
+        # so direct API callers get a clean config-time error instead of an opaque
+        # ZeroDivisionError or inverted-range sample deep inside generation.
+        if float(self.min_point_distance) <= 0.0:
+            raise ValueError(
+                f"min_point_distance must be > 0, got {self.min_point_distance!r}"
+            )
+        if int(self.min_num_points) < 2:
+            raise ValueError(
+                f"min_num_points must be >= 2, got {self.min_num_points!r}"
+            )
+        if int(self.max_num_points) < int(self.min_num_points):
+            raise ValueError(
+                "max_num_points must be >= min_num_points, got "
+                f"{self.max_num_points!r} < {self.min_num_points!r}"
             )
         # Floor is 3 here, not 6 as in TrackGenConfig: the gate-native Voronoi
         # generator selects anchor sites and emits them directly as gates, so it

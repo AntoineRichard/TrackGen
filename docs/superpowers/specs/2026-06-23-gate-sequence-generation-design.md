@@ -51,6 +51,8 @@ GateGeneratorSpec(
     name,
     alloc_scratch(config),
     generate(seeds_wp, config, out_gate_sequence, scratch),
+    max_gates(config),
+    supported_orderings,
 )
 ```
 

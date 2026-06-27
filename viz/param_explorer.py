@@ -370,7 +370,8 @@ def default_gate_params() -> dict:
 def gate_supported_orderings(generator: str) -> list[str]:
     try:
         supported = gate_generator_registry.get(str(generator)).supported_orderings
-    except ValueError:
+    except ValueError as exc:
+        logger.warning("gate ordering lookup failed for %r: %s", generator, exc)
         supported = frozenset({"ccw"})
     ordered = [name for name in ("ccw", "raw", "random_pairs") if name in supported]
     return ordered or ["ccw"]
@@ -574,16 +575,20 @@ def _gate_stats(gates, cfg: GateGenConfig) -> dict:
     gt = _gate_tensors(gates)
     valid = gt.valid
     n_valid = int(valid.sum().item())
-    min_dist = float("nan")
-    for e in range(gt.position.shape[0]):
-        c = int(gt.count[e].item())
-        pts = gt.position[e, :c]
-        pts = pts[torch.isfinite(pts).all(dim=-1)]
-        if pts.shape[0] >= 2:
-            d = torch.pdist(pts)
-            if d.numel() > 0:
-                v = float(d.min().item())
-                min_dist = v if math.isnan(min_dist) else min(min_dist, v)
+    # Vectorized min pairwise center distance across the whole batch: one cdist over
+    # the [E, G, G] gate grid with non-finite (NaN-padded past count) slots and the
+    # self-pairs masked to +inf, then a single host sync. Avoids the per-env
+    # .item()/pdist loop, which issued thousands of device syncs at large batch sizes.
+    pos = gt.position
+    finite = torch.isfinite(pos).all(dim=-1)
+    safe = torch.where(finite.unsqueeze(-1), pos, torch.zeros_like(pos))
+    dmat = torch.cdist(safe, safe)
+    pair_ok = finite.unsqueeze(1) & finite.unsqueeze(2)
+    pair_ok = pair_ok & ~torch.eye(pos.shape[1], dtype=torch.bool, device=pos.device)
+    dmat = torch.where(pair_ok, dmat, torch.full_like(dmat, float("inf")))
+    per_env_min = dmat.flatten(1).min(dim=1).values
+    per_env_min = per_env_min[torch.isfinite(per_env_min)]
+    min_dist = float(per_env_min.min().item()) if per_env_min.numel() else float("nan")
     counts = gt.count.float()
     return {
         "yield": float(valid.float().mean().item()),

@@ -157,6 +157,7 @@ class GateGenConfig:
     min_gates: int = 4
     max_gates: int = 32
     gate_radius: float = 0.025
+    gate_solve_iters: int = 8
     gate_width: float = 0.0
     gate_ordering: str = "ccw"
 

@@ -84,6 +84,3 @@ def register_specs() -> None:
         max_gates=lambda config: int(config.checkpoint_count),
         supported_orderings=frozenset({"ccw", "raw"}),
     ))
-
-
-register_specs()

@@ -90,6 +90,3 @@ def register_specs() -> None:
         max_gates=_max_point_gates,
         supported_orderings=frozenset({"ccw", "random_pairs"}),
     ))
-
-
-register_specs()

@@ -135,7 +135,8 @@ spacing target is `2 * gate_radius`, and `gate_solve_iters` runs up to that many
 of a small deterministic pairwise solve that pushes overlapping gate spheres apart before
 recomputing tangents. `scale` controls the pre-collision generator layout; the collision
 solve may expand the final bbox when necessary to satisfy the requested gate radius. Set
-`gate_solve_iters=0` to inspect the raw sampled anchors.
+`gate_solve_iters=0` to inspect the anchors before the collision solve (they are still
+ordered and bbox-normalized, not raw sampler-space coordinates).
 
 ![TrackGen standard generator grid](docs/assets/readme-generator-grid.png)
 

@@ -91,6 +91,3 @@ def register_specs() -> None:
         max_gates=_polar_num_knots,
         supported_orderings=frozenset({"ccw", "raw"}),
     ))
-
-
-register_specs()

@@ -184,6 +184,21 @@ def test_gate_config_validates_basic_bounds():
         GateGenConfig(voronoi_angular_jitter=-0.1)
 
 
+def test_gate_config_validates_num_envs_and_point_family_inputs():
+    from track_gen._src.types import GateGenConfig
+
+    with pytest.raises(ValueError, match="num_envs"):
+        GateGenConfig(num_envs=0)
+    # min_point_distance feeds a 1/(d*2) cell count in the shared corner sampler; a
+    # non-positive value must fail at construction, not as a downstream ZeroDivisionError.
+    with pytest.raises(ValueError, match="min_point_distance"):
+        GateGenConfig(min_point_distance=0.0)
+    with pytest.raises(ValueError, match="min_num_points"):
+        GateGenConfig(min_num_points=1)
+    with pytest.raises(ValueError, match="max_num_points"):
+        GateGenConfig(min_num_points=13, max_num_points=9)
+
+
 def test_gate_sequence_construct_from_warp_arrays_and_clone():
     import warp as wp
     from track_gen._src.types import GateSequence

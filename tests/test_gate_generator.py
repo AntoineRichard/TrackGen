@@ -444,3 +444,114 @@ def test_generate_rejects_sequence_ids():
     gen = GateGenerator(cfg, _make_rng(4))
     with pytest.raises(TypeError, match="does not accept explicit environment ids"):
         gen.generate([0, 1, 2, 3])
+
+
+def test_distinct_per_env_seeds_produce_diverse_gates():
+    # A single int seed expands to seed + arange(E) per-env seeds. Guard against an
+    # env-collapse regression where every environment generates the identical track,
+    # which would silently destroy batch diversity for RL training.
+    E, G = 8, 32
+    cfg = GateGenConfig(
+        generator="bezier", gate_ordering="ccw", num_envs=E, max_gates=G,
+        device="cpu", gate_radius=0.0,
+    )
+    gates = GateGenerator(cfg, _make_rng(E, seed=17)).generate(E)
+    position = to_t(gates.position).view(E, G, 2)
+    count = to_t(gates.count)
+
+    diverse = False
+    for e in range(1, E):
+        c0, ce = int(count[0]), int(count[e])
+        if c0 != ce or not torch.allclose(
+            position[0, :c0], position[e, :ce], equal_nan=True
+        ):
+            diverse = True
+            break
+    assert diverse, "distinct per-env seeds must yield at least two differing envs"
+
+
+def test_different_global_seeds_produce_different_gates():
+    E, G = 4, 32
+    cfg = GateGenConfig(
+        generator="bezier", gate_ordering="ccw", num_envs=E, max_gates=G,
+        device="cpu", gate_radius=0.0,
+    )
+    a = GateGenerator(cfg, _make_rng(E, seed=1)).generate(E)
+    b = GateGenerator(cfg, _make_rng(E, seed=999)).generate(E)
+    assert not torch.allclose(to_t(a.position), to_t(b.position), equal_nan=True)
+
+
+def test_clone_is_isolated_from_in_place_regenerate():
+    # Exercises the GateSequence aliasing contract: generate() overwrites the same
+    # instance in place, while clone() snapshots a fully-owned copy. Mutating the rng
+    # seeds between calls is what makes the in-place overwrite observable.
+    import numpy as np
+    import warp as wp
+
+    E, G = 4, 32
+    cfg = GateGenConfig(
+        generator="bezier", gate_ordering="ccw", num_envs=E, max_gates=G,
+        device="cpu", gate_radius=0.0,
+    )
+    seeds = wp.array(np.arange(E) + 1, dtype=wp.int32, device="cpu")
+    rng = PerEnvSeededRNG(seeds=seeds, num_envs=E, device="cpu")
+    gen = GateGenerator(cfg, rng)
+
+    first = gen.generate(E)
+    snapshot = first.clone()
+    snapshot_pos = to_t(snapshot.position).clone()
+
+    # clone() is a value-preserving deep copy, not an alias.
+    assert snapshot.position.ptr != first.position.ptr
+    assert torch.allclose(to_t(first.position), snapshot_pos, equal_nan=True)
+
+    # Change the per-env seeds and regenerate: the shared instance is overwritten...
+    wp.copy(rng.seeds_warp, wp.array(np.arange(E) + 9999, dtype=wp.int32, device="cpu"))
+    second = gen.generate(E)
+    assert second is first
+    assert not torch.allclose(to_t(second.position), snapshot_pos, equal_nan=True)
+    # ...but the earlier clone snapshot is untouched.
+    assert torch.allclose(to_t(snapshot.position), snapshot_pos, equal_nan=True)
+
+
+def _segments_properly_cross(a, b, c, d):
+    """Independent mirror of warp_gate._proper_segment_intersection (strict crossing)."""
+    def cross(o, p, q):
+        return float((p[0] - o[0]) * (q[1] - o[1]) - (p[1] - o[1]) * (q[0] - o[0]))
+
+    def opp(x, y):
+        return (x > 0.0 and y < 0.0) or (x < 0.0 and y > 0.0)
+
+    o1, o2 = cross(a, b, c), cross(a, b, d)
+    o3, o4 = cross(c, d, a), cross(c, d, b)
+    return opp(o1, o2) and opp(o3, o4)
+
+
+def test_gate_width_flows_through_real_generator_without_crossing_bars():
+    # The gate_width collision path is only otherwise tested on hand-built sequences.
+    # Run a positive width end-to-end through a real generator and verify both the
+    # endpoint geometry and (independently) the non-crossing guarantee for valid envs.
+    E, G, width = 6, 32, 0.03
+    cfg = GateGenConfig(
+        generator="checkpoint", gate_ordering="ccw", num_envs=E, max_gates=G,
+        device="cpu", gate_radius=0.02, gate_width=width,
+    )
+    gates = GateGenerator(cfg, _make_rng(E, seed=123)).generate(E)
+    pos = to_t(gates.position).view(E, G, 2)
+    nrm = to_t(gates.normal).view(E, G, 2)
+    left = to_t(gates.left).view(E, G, 2)
+    right = to_t(gates.right).view(E, G, 2)
+    count = to_t(gates.count)
+    valid = to_t(gates.valid).bool()
+
+    assert valid.any(), "expected at least one valid env with gate_width > 0"
+    for e in range(E):
+        c = int(count[e])
+        assert torch.allclose(left[e, :c], pos[e, :c] + 0.5 * width * nrm[e, :c], atol=1e-5)
+        assert torch.allclose(right[e, :c], pos[e, :c] - 0.5 * width * nrm[e, :c], atol=1e-5)
+        if valid[e]:
+            for i in range(c):
+                for j in range(i + 1, c):
+                    assert not _segments_properly_cross(
+                        left[e, i], right[e, i], left[e, j], right[e, j]
+                    ), f"valid env {e} has crossing gate bars {i},{j}"

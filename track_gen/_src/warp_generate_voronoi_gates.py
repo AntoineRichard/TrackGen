@@ -102,6 +102,3 @@ def register_specs() -> None:
         max_gates=lambda config: int(config.voronoi_control_points),
         supported_orderings=frozenset({"ccw", "raw"}),
     ))
-
-
-register_specs()
