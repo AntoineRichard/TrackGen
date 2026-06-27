@@ -275,3 +275,102 @@ def test_batch_and_pagination():
     # mean count over valid tracks is variable (constant_spacing), never a fixed N.
     assert st["count"] >= 1
     assert px.n_pages(20, 3) == 3                       # ceil(20/9)
+
+
+def test_gate_controls_drop_inert_point_family_knobs():
+    dropped = ("gate_num_points_per_segment", "gate_rad", "gate_edgy",
+               "gate_handle_clamp_frac", "gate_hull_displacement")
+    for key in dropped:
+        assert key not in px.GATE_CONTROL_KEYS
+        assert key not in px.default_gate_params()
+
+
+def test_build_gate_config_uses_defaults_for_dropped_knobs():
+    from track_gen._src.types import GateGenConfig
+    d = GateGenConfig()
+    cfg = px.build_gate_config(_gate_params(gate_generator="bezier"))
+    assert cfg.num_points_per_segment == d.num_points_per_segment
+    assert cfg.rad == d.rad
+    assert cfg.edgy == d.edgy
+    assert cfg.handle_clamp_frac == d.handle_clamp_frac
+    assert cfg.hull_displacement == d.hull_displacement
+
+
+def test_track_mode_visibility_orders_flags_to_match_outputs():
+    # The generator.change handler emits these flags positionally onto
+    # track_mode_outputs, so order + count must be exact. Checking non-default
+    # generators (the default build is polar) catches section/count drift that a
+    # polar-only build-time assertion cannot.
+    assert px.track_mode_visibility("bezier") == (
+        [True] * 4 + [True] * 2 + [True] * 4 + [False] * 2
+        + [False] * 4 + [False] * 6 + [False] * 9
+    )
+    assert px.track_mode_visibility("hull") == (
+        [True] * 4 + [True] * 2 + [False] * 4 + [True] * 2
+        + [False] * 4 + [False] * 6 + [False] * 9
+    )
+    assert px.track_mode_visibility("voronoi") == (
+        [False] * 4 + [True] * 2 + [False] * 4 + [False] * 2
+        + [False] * 4 + [True] * 6 + [False] * 9
+    )
+    assert px.track_mode_visibility("checkpoint") == (
+        [False] * (4 + 2 + 4 + 2 + 4 + 6) + [True] * 9
+    )
+    # Every generator yields the same fixed number of flags (one per output component).
+    for gen in ("bezier", "hull", "polar", "voronoi", "checkpoint"):
+        assert len(px.track_mode_visibility(gen)) == 31
+
+
+def _visible_by_label(app, label):
+    """Return the visible prop of the FIRST app component with this exact label."""
+    for c in app.config["components"]:
+        props = c.get("props", {})
+        if props.get("label") == label:
+            return props.get("visible", True)
+    raise AssertionError(f"no component labeled {label!r}")
+
+
+def test_track_tab_shows_only_selected_generator_controls():
+    pytest.importorskip("gradio")
+    app = px.build_app()
+    markdown = {
+        c.get("props", {}).get("value")
+        for c in app.config["components"]
+        if c.get("type") == "markdown"
+    }
+    # New clean section headers exist; the old mixed header is gone.
+    assert "### Sampling (point-family)" in markdown
+    assert "### Curve smoothing" in markdown
+    assert "### Hull controls" in markdown
+    assert "### Shape / sampling" not in markdown
+
+    # Default track generator is "polar": only smoothing + polar sections visible.
+    # Use track-unique labels (gate tab reuses some bare names).
+    assert _visible_by_label(app, "num_points_per_segment (generator smoothing samples)") is True
+    assert _visible_by_label(app, "min corners") is False
+    assert _visible_by_label(app, "rad (roundness)") is False
+    assert _visible_by_label(app, "hull_displacement (hull midpoint displacement)") is False
+    assert _visible_by_label(app, "checkpoint_count (radial waypoints)") is False
+
+
+def test_track_visible_sections_are_generator_specific():
+    assert px.track_visible_sections("bezier") == {
+        "sampling": True, "smoothing": True, "bezier": True, "hull": False,
+        "polar": False, "voronoi": False, "checkpoint": False,
+    }
+    assert px.track_visible_sections("hull") == {
+        "sampling": True, "smoothing": True, "bezier": False, "hull": True,
+        "polar": False, "voronoi": False, "checkpoint": False,
+    }
+    assert px.track_visible_sections("polar") == {
+        "sampling": False, "smoothing": True, "bezier": False, "hull": False,
+        "polar": True, "voronoi": False, "checkpoint": False,
+    }
+    assert px.track_visible_sections("voronoi") == {
+        "sampling": False, "smoothing": True, "bezier": False, "hull": False,
+        "polar": False, "voronoi": True, "checkpoint": False,
+    }
+    assert px.track_visible_sections("checkpoint") == {
+        "sampling": False, "smoothing": False, "bezier": False, "hull": False,
+        "polar": False, "voronoi": False, "checkpoint": True,
+    }

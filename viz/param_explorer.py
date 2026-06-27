@@ -58,8 +58,7 @@ def _ui_error_message(exc: Exception, context: str) -> str:
 GATE_CONTROL_KEYS = [
     "gate_generator", "gate_ordering", "gate_width", "gate_radius", "gate_solve_iters",
     "gate_show_raw", "gate_scale", "gate_min_num_points", "gate_max_num_points",
-    "gate_min_point_distance", "gate_num_points_per_segment", "gate_rad",
-    "gate_edgy", "gate_handle_clamp_frac", "gate_hull_displacement",
+    "gate_min_point_distance",
     "gate_polar_num_knots", "gate_polar_radial_jitter", "gate_polar_angular_jitter",
     "gate_voronoi_num_sites", "gate_voronoi_site_layout", "gate_voronoi_control_points",
     "gate_voronoi_radial_variation", "gate_voronoi_angular_jitter",
@@ -345,11 +344,6 @@ def default_gate_params() -> dict:
         "gate_min_num_points": cfg.min_num_points,
         "gate_max_num_points": cfg.max_num_points,
         "gate_min_point_distance": cfg.min_point_distance,
-        "gate_num_points_per_segment": cfg.num_points_per_segment,
-        "gate_rad": cfg.rad,
-        "gate_edgy": cfg.edgy,
-        "gate_handle_clamp_frac": cfg.handle_clamp_frac,
-        "gate_hull_displacement": cfg.hull_displacement,
         "gate_polar_num_knots": cfg.polar_num_knots,
         "gate_polar_radial_jitter": cfg.polar_radial_jitter,
         "gate_polar_angular_jitter": cfg.polar_angular_jitter,
@@ -385,6 +379,40 @@ def gate_visible_sections(generator: str) -> dict[str, bool]:
         "voronoi": name == "voronoi",
         "checkpoint": name == "checkpoint",
     }
+
+
+def track_visible_sections(generator: str) -> dict[str, bool]:
+    name = str(generator)
+    point = name in {"bezier", "hull"}
+    return {
+        "sampling": point,
+        "smoothing": name in {"bezier", "hull", "polar", "voronoi"},
+        "bezier": name == "bezier",
+        "hull": name == "hull",
+        "polar": name == "polar",
+        "voronoi": name == "voronoi",
+        "checkpoint": name == "checkpoint",
+    }
+
+
+# Ordered (section, component_count) segments for the Tracks tab's generator-specific
+# controls. Single source of truth shared by the build-time visibility flags, the
+# generator.change handler, and the build-time length guard. Each section contributes
+# its header markdown plus its controls, in the SAME order as ``track_mode_outputs``.
+TRACK_MODE_SECTION_SIZES = (
+    ("sampling", 4), ("smoothing", 2), ("bezier", 4), ("hull", 2),
+    ("polar", 4), ("voronoi", 6), ("checkpoint", 9),
+)
+
+
+def track_mode_visibility(generator: str) -> list[bool]:
+    """Per-output visibility flags for the track generator-specific components,
+    ordered to match ``track_mode_outputs``."""
+    sections = track_visible_sections(generator)
+    flags: list[bool] = []
+    for key, count in TRACK_MODE_SECTION_SIZES:
+        flags.extend([sections[key]] * count)
+    return flags
 
 
 def build_gate_config(p: dict) -> GateGenConfig:
@@ -427,11 +455,6 @@ def build_gate_config(p: dict) -> GateGenConfig:
         min_num_points=min_points,
         max_num_points=max_points,
         min_point_distance=float(p["gate_min_point_distance"]),
-        num_points_per_segment=int(p["gate_num_points_per_segment"]),
-        rad=float(p["gate_rad"]),
-        edgy=float(p["gate_edgy"]),
-        handle_clamp_frac=float(p["gate_handle_clamp_frac"]),
-        hull_displacement=float(p["gate_hull_displacement"]),
         polar_num_knots=polar_knots,
         polar_radial_jitter=float(p["gate_polar_radial_jitter"]),
         polar_angular_jitter=float(p["gate_polar_angular_jitter"]),
@@ -675,58 +698,80 @@ def build_app():
                         generator_default = defaults["generator"] if defaults["generator"] in available_generators else "bezier"
                         generator = gr.Dropdown(available_generators, value=generator_default,
                                                 label="generator method")
+                        track_mode_visible = track_visible_sections(generator_default)
                         gr.Markdown("### Regime")
                         half_width = gr.Slider(0.05, 1.0, value=defaults["half_width"], step=0.01, label="half_width (m)")
                         scale = gr.Slider(1.0, 20.0, value=defaults["scale"], step=0.5, label="scale (box)")
-                        gr.Markdown("### Shape / sampling")
-                        min_np = gr.Slider(5, 20, value=defaults["min_num_points"], step=1, label="min corners")
-                        max_np = gr.Slider(5, 20, value=defaults["max_num_points"], step=1, label="max corners")
+                        sampling_md = gr.Markdown("### Sampling (point-family)",
+                                                  visible=track_mode_visible["sampling"])
+                        min_np = gr.Slider(5, 20, value=defaults["min_num_points"], step=1,
+                                           label="min corners", visible=track_mode_visible["sampling"])
+                        max_np = gr.Slider(5, 20, value=defaults["max_num_points"], step=1,
+                                           label="max corners", visible=track_mode_visible["sampling"])
                         min_dist = gr.Slider(0.02, 0.20, value=defaults["min_point_distance"], step=0.005,
-                                             label="min_point_distance (sampling spread)")
+                                             label="min_point_distance (sampling spread)",
+                                             visible=track_mode_visible["sampling"])
+                        smoothing_md = gr.Markdown("### Curve smoothing",
+                                                   visible=track_mode_visible["smoothing"])
                         samples_per_seg = gr.Slider(8, 60, value=defaults["num_points_per_segment"], step=1,
-                                                    label="num_points_per_segment (generator smoothing samples)")
-                        hull_disp = gr.Slider(0.0, 0.8, value=defaults["hull_displacement"], step=0.01,
-                                              label="hull_displacement (hull midpoint displacement)")
-                        gr.Markdown("### Bezier controls")
-                        rad = gr.Slider(0.0, 0.6, value=defaults["rad"], step=0.01, label="rad (roundness)")
-                        edgy = gr.Slider(0.0, 1.0, value=defaults["edgy"], step=0.05, label="edgy")
+                                                    label="num_points_per_segment (generator smoothing samples)",
+                                                    visible=track_mode_visible["smoothing"])
+                        bezier_md = gr.Markdown("### Bezier controls", visible=track_mode_visible["bezier"])
+                        rad = gr.Slider(0.0, 0.6, value=defaults["rad"], step=0.01, label="rad (roundness)",
+                                        visible=track_mode_visible["bezier"])
+                        edgy = gr.Slider(0.0, 1.0, value=defaults["edgy"], step=0.05, label="edgy",
+                                         visible=track_mode_visible["bezier"])
                         handle_clamp = gr.Slider(0.0, 1.0, value=defaults["handle_clamp_frac"], step=0.01,
-                                                 label="handle_clamp_frac (overshoot<->roundness)")
-                        gr.Markdown("### Polar knot spline")
-                        polar_knots = gr.Slider(4, 24, value=defaults["polar_num_knots"], step=1, label="polar knots")
+                                                 label="handle_clamp_frac (overshoot<->roundness)",
+                                                 visible=track_mode_visible["bezier"])
+                        hull_md = gr.Markdown("### Hull controls", visible=track_mode_visible["hull"])
+                        hull_disp = gr.Slider(0.0, 0.8, value=defaults["hull_displacement"], step=0.01,
+                                              label="hull_displacement (hull midpoint displacement)",
+                                              visible=track_mode_visible["hull"])
+                        polar_md = gr.Markdown("### Polar knot spline", visible=track_mode_visible["polar"])
+                        polar_knots = gr.Slider(4, 24, value=defaults["polar_num_knots"], step=1,
+                                                label="polar knots", visible=track_mode_visible["polar"])
                         polar_radial = gr.Slider(0.0, 0.85, value=defaults["polar_radial_jitter"], step=0.01,
-                                                 label="polar radial jitter")
+                                                 label="polar radial jitter", visible=track_mode_visible["polar"])
                         polar_angular = gr.Slider(0.0, 0.45, value=defaults["polar_angular_jitter"], step=0.01,
-                                                  label="polar angular jitter")
-                        gr.Markdown("### Voronoi graph cycle")
+                                                  label="polar angular jitter", visible=track_mode_visible["polar"])
+                        vor_md = gr.Markdown("### Voronoi graph cycle", visible=track_mode_visible["voronoi"])
                         vor_sites = gr.Slider(32, 512, value=defaults["voronoi_num_sites"], step=16,
-                                              label="voronoi sites")
+                                              label="voronoi sites", visible=track_mode_visible["voronoi"])
                         vor_layout = gr.Dropdown(["void_ring", "ring", "clustered", "mixed"],
                                                  value=defaults["voronoi_site_layout"],
-                                                 label="voronoi site layout")
+                                                 label="voronoi site layout", visible=track_mode_visible["voronoi"])
                         vor_control = gr.Slider(6, 32, value=defaults["voronoi_control_points"], step=1,
-                                                label="voronoi control points")
+                                                label="voronoi control points", visible=track_mode_visible["voronoi"])
                         vor_radial = gr.Slider(0.0, 0.85, value=defaults["voronoi_radial_variation"], step=0.01,
-                                               label="voronoi radial variation")
+                                               label="voronoi radial variation", visible=track_mode_visible["voronoi"])
                         vor_angular = gr.Slider(0.0, 0.25, value=defaults["voronoi_angular_jitter"], step=0.01,
-                                                label="voronoi angular jitter")
-                        gr.Markdown("### Checkpoint steering")
+                                                label="voronoi angular jitter", visible=track_mode_visible["voronoi"])
+                        checkpoint_md = gr.Markdown("### Checkpoint steering", visible=track_mode_visible["checkpoint"])
                         checkpoint_count = gr.Slider(4, 24, value=defaults["checkpoint_count"], step=1,
-                                                     label="checkpoint_count (radial waypoints)")
+                                                     label="checkpoint_count (radial waypoints)",
+                                                     visible=track_mode_visible["checkpoint"])
                         checkpoint_radius_min_frac = gr.Slider(0.1, 0.9, value=defaults["checkpoint_radius_min_frac"],
-                                                               step=0.01, label="checkpoint_radius_min_frac")
+                                                               step=0.01, label="checkpoint_radius_min_frac",
+                                                               visible=track_mode_visible["checkpoint"])
                         checkpoint_angle_jitter = gr.Slider(0.0, 0.9, value=defaults["checkpoint_angle_jitter"],
-                                                            step=0.01, label="checkpoint_angle_jitter")
+                                                            step=0.01, label="checkpoint_angle_jitter",
+                                                            visible=track_mode_visible["checkpoint"])
                         checkpoint_turn_rate = gr.Slider(0.1, 1.0, value=defaults["checkpoint_turn_rate"],
-                                                         step=0.01, label="checkpoint_turn_rate")
+                                                         step=0.01, label="checkpoint_turn_rate",
+                                                         visible=track_mode_visible["checkpoint"])
                         checkpoint_steer_gain = gr.Slider(0.1, 1.0, value=defaults["checkpoint_steer_gain"],
-                                                          step=0.01, label="checkpoint_steer_gain")
+                                                          step=0.01, label="checkpoint_steer_gain",
+                                                          visible=track_mode_visible["checkpoint"])
                         checkpoint_lookahead_frac = gr.Slider(0.05, 0.4, value=defaults["checkpoint_lookahead_frac"],
-                                                              step=0.01, label="checkpoint_lookahead_frac")
+                                                              step=0.01, label="checkpoint_lookahead_frac",
+                                                              visible=track_mode_visible["checkpoint"])
                         checkpoint_best_of_k = gr.Slider(1, 8, value=defaults["checkpoint_best_of_k"], step=1,
-                                                         label="checkpoint_best_of_k (candidates)")
+                                                         label="checkpoint_best_of_k (candidates)",
+                                                         visible=track_mode_visible["checkpoint"])
                         checkpoint_clip_fallback = gr.Checkbox(value=defaults["checkpoint_clip_fallback"],
-                                                               label="checkpoint_clip_fallback (single-crossing rescue)")
+                                                               label="checkpoint_clip_fallback (single-crossing rescue)",
+                                                               visible=track_mode_visible["checkpoint"])
                         gr.Markdown("### Resolution (constant-spacing)")
                         spacing = gr.Slider(0.1, 1.0, value=defaults["spacing"], step=0.02, label="spacing (m)")
                         n_max = gr.Slider(128, 512, value=defaults["n_max"], step=8, label="N_max")
@@ -771,6 +816,29 @@ def build_app():
                             checkpoint_best_of_k, checkpoint_clip_fallback,
                             spacing, n_max, relax_iters, sep, spc, bend, margin,
                             sep_every, sep_slots, sep_skin, grid_n, seed, batch_size]
+
+                track_mode_outputs = [
+                    sampling_md, min_np, max_np, min_dist,
+                    smoothing_md, samples_per_seg,
+                    bezier_md, rad, edgy, handle_clamp,
+                    hull_md, hull_disp,
+                    polar_md, polar_knots, polar_radial, polar_angular,
+                    vor_md, vor_sites, vor_layout, vor_control, vor_radial, vor_angular,
+                    checkpoint_md, checkpoint_count, checkpoint_radius_min_frac,
+                    checkpoint_angle_jitter, checkpoint_turn_rate, checkpoint_steer_gain,
+                    checkpoint_lookahead_frac, checkpoint_best_of_k, checkpoint_clip_fallback,
+                ]
+
+                if len(track_mode_outputs) != len(track_mode_visibility(generator_default)):
+                    raise RuntimeError(
+                        "track_mode_outputs is out of sync with TRACK_MODE_SECTION_SIZES"
+                    )
+
+                def _track_mode_update(generator_name):
+                    return [gr.update(visible=flag)
+                            for flag in track_mode_visibility(generator_name)]
+
+                generator.change(_track_mode_update, [generator], track_mode_outputs)
 
                 def _generate(*vals):
                     p = _collect(*vals)
@@ -845,7 +913,7 @@ def build_app():
                                                      label="gate_solve_iters")
                         gate_show_raw = gr.Checkbox(value=gate_defaults["gate_show_raw"],
                                                     label="show raw anchors (skip collisions)")
-                        gate_point_md = gr.Markdown("### Point-family controls", visible=gate_mode_visible["point"])
+                        gate_point_md = gr.Markdown("### Sampling (point-family)", visible=gate_mode_visible["point"])
                         gate_point_note = gr.Markdown("For Bezier/Hull gates, sampled anchors become gate centers.",
                                                       visible=gate_mode_visible["point"])
                         gate_min_np = gr.Slider(2, 32, value=gate_defaults["gate_min_num_points"], step=1,
@@ -855,16 +923,6 @@ def build_app():
                         gate_min_point_distance = gr.Slider(0.01, 0.30, value=gate_defaults["gate_min_point_distance"],
                                                             step=0.005, label="min_point_distance [pre-scale world units]",
                                                             visible=gate_mode_visible["point"])
-                        gate_samples_per_seg = gr.Slider(8, 60, value=gate_defaults["gate_num_points_per_segment"],
-                                                         step=1, label="num_points_per_segment", visible=False)
-                        gate_rad = gr.Slider(0.0, 0.6, value=gate_defaults["gate_rad"], step=0.01,
-                                             label="rad", visible=False)
-                        gate_edgy = gr.Slider(0.0, 1.0, value=gate_defaults["gate_edgy"], step=0.05,
-                                              label="edgy", visible=False)
-                        gate_handle_clamp = gr.Slider(0.0, 1.0, value=gate_defaults["gate_handle_clamp_frac"],
-                                                      step=0.01, label="handle_clamp_frac", visible=False)
-                        gate_hull_disp = gr.Slider(0.0, 0.8, value=gate_defaults["gate_hull_displacement"],
-                                                   step=0.01, label="hull_displacement", visible=False)
                         gate_polar_md = gr.Markdown("### Polar controls", visible=gate_mode_visible["polar"])
                         gate_polar_knots = gr.Slider(4, 32, value=gate_defaults["gate_polar_num_knots"], step=1,
                                                      label="polar knots", visible=gate_mode_visible["polar"])
@@ -925,8 +983,7 @@ def build_app():
                 gate_page_state = gr.State(0)
                 gate_controls = [gate_generator, gate_ordering, gate_width, gate_radius, gate_solve_iters,
                                  gate_show_raw, gate_scale, gate_min_np, gate_max_np,
-                                 gate_min_point_distance, gate_samples_per_seg, gate_rad,
-                                 gate_edgy, gate_handle_clamp, gate_hull_disp,
+                                 gate_min_point_distance,
                                  gate_polar_knots, gate_polar_radial, gate_polar_angular,
                                  gate_vor_sites, gate_vor_layout, gate_vor_control,
                                  gate_vor_radial, gate_vor_angular,
