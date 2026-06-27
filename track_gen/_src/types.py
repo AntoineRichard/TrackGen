@@ -272,6 +272,168 @@ class TrackGenConfig:
 
 
 @dataclass
+class GateGenConfig:
+    """Configuration for fixed-batch native gate sequence generation."""
+
+    generator: str = "bezier"
+    device: str = "cpu"
+    num_envs: int = 1
+
+    min_gates: int = 4
+    max_gates: int = 32
+    gate_radius: float = 0.025
+    gate_solve_iters: int = 8
+    gate_width: float = 0.0
+    gate_ordering: str = "ccw"
+
+    # Point-family (bezier/hull) sampler inputs. The gate path only samples corner
+    # anchors and emits them as gates; it never runs the Bezier/hull curve assembly,
+    # so num_points_per_segment, rad, edgy, handle_clamp_frac, and hull_displacement
+    # are inert for gate output (they remain for parity with TrackGenConfig and are
+    # hidden in the explorer UI). min_num_points, max_num_points, min_point_distance,
+    # and scale do affect the sampled anchors.
+    min_num_points: int = 9
+    max_num_points: int = 13
+    num_points_per_segment: int = 30
+    min_point_distance: float = 0.05
+    rad: float = 0.4
+    edgy: float = 0.0
+    scale: float = 1.0
+    handle_clamp_frac: float = 0.4
+    hull_displacement: float = 0.15
+
+    polar_num_knots: int = 12
+    polar_radial_jitter: float = 0.60
+    polar_angular_jitter: float = 0.30
+
+    voronoi_num_sites: int = 256
+    voronoi_site_layout: str = "void_ring"
+    voronoi_control_points: int = 18
+    voronoi_radial_variation: float = 0.62
+    voronoi_angular_jitter: float = 0.08
+
+    checkpoint_count: int = 12
+    checkpoint_radius_min_frac: float = 0.33
+    checkpoint_angle_jitter: float = 0.55
+
+    def __post_init__(self):
+        if int(self.num_envs) < 1:
+            raise ValueError(f"num_envs must be >= 1, got {self.num_envs!r}")
+        if int(self.min_gates) < 2:
+            raise ValueError(f"min_gates must be >= 2, got {self.min_gates!r}")
+        if int(self.max_gates) < int(self.min_gates):
+            raise ValueError(
+                f"max_gates must be >= min_gates, got "
+                f"{self.max_gates!r} < {self.min_gates!r}"
+            )
+        if float(self.gate_radius) < 0.0:
+            raise ValueError(f"gate_radius must be >= 0, got {self.gate_radius!r}")
+        if int(self.gate_solve_iters) < 0:
+            raise ValueError(
+                f"gate_solve_iters must be >= 0, got {self.gate_solve_iters!r}"
+            )
+        if float(self.gate_width) < 0.0:
+            raise ValueError(f"gate_width must be >= 0, got {self.gate_width!r}")
+        if self.gate_ordering not in {"ccw", "raw", "random_pairs"}:
+            raise ValueError(
+                "gate_ordering must be one of {'ccw', 'raw', 'random_pairs'}, "
+                f"got {self.gate_ordering!r}"
+            )
+        # Point-family (bezier/hull) sampler inputs. These feed the shared corner
+        # sampler, where min_point_distance divides a cell count and the
+        # [min_num_points, max_num_points] range feeds wp.randi; validate them here
+        # so direct API callers get a clean config-time error instead of an opaque
+        # ZeroDivisionError or inverted-range sample deep inside generation.
+        if float(self.min_point_distance) <= 0.0:
+            raise ValueError(
+                f"min_point_distance must be > 0, got {self.min_point_distance!r}"
+            )
+        if int(self.min_num_points) < 2:
+            raise ValueError(
+                f"min_num_points must be >= 2, got {self.min_num_points!r}"
+            )
+        if int(self.max_num_points) < int(self.min_num_points):
+            raise ValueError(
+                "max_num_points must be >= min_num_points, got "
+                f"{self.max_num_points!r} < {self.min_num_points!r}"
+            )
+        # Floor is 3 here, not 6 as in TrackGenConfig: the gate-native Voronoi
+        # generator selects anchor sites and emits them directly as gates, so it
+        # never runs the Chaikin/Catmull-Rom densification that TrackGenConfig's
+        # >= 6 floor protects. Three control points is the smallest non-degenerate
+        # gate ring, which lets callers request short gate sequences.
+        if int(self.voronoi_control_points) < 3:
+            raise ValueError(
+                f"voronoi_control_points must be >= 3, got {self.voronoi_control_points!r}"
+            )
+        if int(self.voronoi_num_sites) < int(self.voronoi_control_points):
+            raise ValueError(
+                "voronoi_num_sites must be >= voronoi_control_points, got "
+                f"{self.voronoi_num_sites!r} < {self.voronoi_control_points!r}"
+            )
+        if float(self.voronoi_radial_variation) < 0.0:
+            raise ValueError(
+                "voronoi_radial_variation must be >= 0, got "
+                f"{self.voronoi_radial_variation!r}"
+            )
+        if float(self.voronoi_angular_jitter) < 0.0:
+            raise ValueError(
+                "voronoi_angular_jitter must be >= 0, got "
+                f"{self.voronoi_angular_jitter!r}"
+            )
+        if self.voronoi_site_layout not in {"ring", "void_ring", "clustered", "mixed"}:
+            raise ValueError(
+                "voronoi_site_layout must be one of "
+                "{'ring', 'void_ring', 'clustered', 'mixed'}, got "
+                f"{self.voronoi_site_layout!r}"
+            )
+        if int(self.checkpoint_count) < 3:
+            raise ValueError(
+                f"checkpoint_count must be >= 3, got {self.checkpoint_count!r}"
+            )
+        if not (0.0 <= float(self.checkpoint_radius_min_frac) < 1.0):
+            raise ValueError(
+                "checkpoint_radius_min_frac must be in [0, 1), got "
+                f"{self.checkpoint_radius_min_frac!r}"
+            )
+
+
+@dataclass
+class GateSequence:
+    """Batched fixed-stride gate result returned by ``GateGenerator``.
+
+    Gate pose arrays are flat ``[E * max_gates]`` ``vec2f`` buffers; reshape via
+    ``wp.to_torch(...).view(E, max_gates, 2)``. ``count[e]`` gives the real gate
+    count for environment ``e`` and slots ``i >= count[e]`` are NaN-padded.
+
+    **Aliasing warning**: ``GateGenerator.generate()`` returns the SAME
+    ``GateSequence`` instance on every call and overwrites its buffers in place. A
+    reference held across two ``generate()`` calls will see mutated data. Use
+    ``GateSequence.clone()`` to obtain a fully-owned deep copy before the next call.
+    """
+
+    position: wp.array  # flat [E*max_gates] gate centers; NaN-padded past count[e]
+    tangent: wp.array   # flat [E*max_gates] unit tangent vectors
+    normal: wp.array    # flat [E*max_gates] unit normals, perpendicular to tangent
+    left: wp.array      # flat [E*max_gates] left gate endpoints
+    right: wp.array     # flat [E*max_gates] right gate endpoints
+    valid: wp.array     # [E] int32 (0/1; wp.to_torch(...).bool() to recover)
+    count: wp.array     # [E] int32 real gate counts
+
+    def clone(self) -> "GateSequence":
+        """Return a deep copy whose Warp buffers do not alias this sequence."""
+        return GateSequence(
+            position=wp.clone(self.position),
+            tangent=wp.clone(self.tangent),
+            normal=wp.clone(self.normal),
+            left=wp.clone(self.left),
+            right=wp.clone(self.right),
+            valid=wp.clone(self.valid),
+            count=wp.clone(self.count),
+        )
+
+
+@dataclass
 class Track:
     """Final batched result of the track generation pipeline.
 

@@ -26,6 +26,13 @@ def _params(**over):
     return p
 
 
+def _gate_params(**over):
+    p = px.default_gate_params()
+    p.update({"gate_grid_n": 2, "gate_batch_size": 4})
+    p.update(over)
+    return p
+
+
 def test_default_params_favor_polar_knot_method():
     defaults = TrackGenConfig()
     params = px.default_params()
@@ -100,6 +107,88 @@ def test_build_config_maps_voronoi_shape_knobs():
     assert abs(cfg.voronoi_angular_jitter - 0.12) < 1e-9
 
 
+def test_build_gate_config_maps_solver_and_shape_knobs():
+    cfg = px.build_gate_config(_gate_params(
+        gate_generator="bezier",
+        gate_ordering="random_pairs",
+        gate_width=0.2,
+        gate_radius=0.1,
+        gate_solve_iters=11,
+        gate_scale=2.5,
+        gate_min_num_points=7,
+        gate_max_num_points=12,
+    ))
+    assert cfg.generator == "bezier"
+    assert cfg.gate_ordering == "random_pairs"
+    assert cfg.min_gates == 7
+    assert cfg.max_gates == 12
+    assert abs(cfg.gate_width - 0.2) < 1e-9
+    assert abs(cfg.gate_radius - 0.1) < 1e-9
+    assert cfg.gate_solve_iters == 11
+    assert abs(cfg.scale - 2.5) < 1e-9
+    assert cfg.min_num_points == 7
+    assert cfg.max_num_points == 12
+
+
+def test_build_gate_config_derives_fixed_mode_gate_counts():
+    cases = [
+        ("polar", "gate_polar_num_knots", 14),
+        ("voronoi", "gate_voronoi_control_points", 21),
+        ("checkpoint", "gate_checkpoint_count", 9),
+    ]
+    for generator, key, count in cases:
+        cfg = px.build_gate_config(_gate_params(gate_generator=generator, **{key: count}))
+        assert cfg.min_gates == count
+        assert cfg.max_gates == count
+
+
+def test_build_gate_config_raw_toggle_disables_solver():
+    cfg = px.build_gate_config(_gate_params(gate_show_raw=True, gate_solve_iters=13))
+    assert cfg.gate_solve_iters == 0
+
+
+def test_gate_supported_orderings_follow_generator_capabilities():
+    assert px.gate_supported_orderings("bezier") == ["ccw", "random_pairs"]
+    assert px.gate_supported_orderings("hull") == ["ccw", "random_pairs"]
+    assert px.gate_supported_orderings("polar") == ["ccw", "raw"]
+    assert px.gate_supported_orderings("voronoi") == ["ccw", "raw"]
+    assert px.gate_supported_orderings("checkpoint") == ["ccw", "raw"]
+
+
+def test_gate_visible_sections_are_generator_specific():
+    assert px.gate_visible_sections("bezier") == {
+        "point": True,
+        "polar": False,
+        "voronoi": False,
+        "checkpoint": False,
+    }
+    assert px.gate_visible_sections("polar")["polar"] is True
+    assert px.gate_visible_sections("voronoi")["voronoi"] is True
+    assert px.gate_visible_sections("checkpoint")["checkpoint"] is True
+
+
+def test_build_gate_config_clamps_unsupported_ordering():
+    cfg = px.build_gate_config(_gate_params(gate_generator="checkpoint", gate_ordering="random_pairs"))
+    assert cfg.generator == "checkpoint"
+    assert cfg.gate_ordering == "ccw"
+
+
+def test_render_gate_grid_runs():
+    fig, stats = px.render_gate_grid(_gate_params(
+        gate_generator="bezier",
+        gate_ordering="ccw",
+        gate_width=0.05,
+        gate_radius=0.025,
+    ))
+    assert isinstance(fig, matplotlib.figure.Figure)
+    assert len(fig.axes) == 4
+    assert 0.0 <= stats["yield"] <= 1.0
+    assert stats["n_valid"] + stats["n_invalid"] == 4
+    assert stats["target_center_distance"] >= 0.05
+    import matplotlib.pyplot as plt
+    plt.close(fig)
+
+
 import matplotlib.figure
 
 
@@ -128,6 +217,33 @@ def test_build_app_smoke():
     gr = pytest.importorskip("gradio")            # skip if the ui extra isn't installed
     app = px.build_app()
     assert isinstance(app, gr.Blocks)
+
+
+def test_gate_app_labels_explain_units_and_collision_stage():
+    pytest.importorskip("gradio")
+    app = px.build_app()
+    labels = {
+        c.get("props", {}).get("label")
+        for c in app.config["components"]
+        if c.get("props", {}).get("label")
+    }
+    markdown = {
+        c.get("props", {}).get("value")
+        for c in app.config["components"]
+        if c.get("type") == "markdown"
+    }
+
+    assert "### Gate Collisions" in markdown
+    assert "Center spacing target = 2 * gate_radius." in markdown
+    assert "gate_width [world units]" in labels
+    assert "gate_radius [world units]" in labels
+    assert "scale [x]" in labels
+    assert "min_point_distance [pre-scale world units]" in labels
+    assert "min gates" not in labels
+    assert "max gates" not in labels
+    assert "min sampled anchors" in labels
+    assert "max sampled anchors" in labels
+    assert "For Bezier/Hull gates, sampled anchors become gate centers." in markdown
 
 
 def test_batch_and_pagination():
