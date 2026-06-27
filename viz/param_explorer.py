@@ -58,8 +58,7 @@ def _ui_error_message(exc: Exception, context: str) -> str:
 GATE_CONTROL_KEYS = [
     "gate_generator", "gate_ordering", "gate_width", "gate_radius", "gate_solve_iters",
     "gate_show_raw", "gate_scale", "gate_min_num_points", "gate_max_num_points",
-    "gate_min_point_distance", "gate_num_points_per_segment", "gate_rad",
-    "gate_edgy", "gate_handle_clamp_frac", "gate_hull_displacement",
+    "gate_min_point_distance",
     "gate_polar_num_knots", "gate_polar_radial_jitter", "gate_polar_angular_jitter",
     "gate_voronoi_num_sites", "gate_voronoi_site_layout", "gate_voronoi_control_points",
     "gate_voronoi_radial_variation", "gate_voronoi_angular_jitter",
@@ -345,11 +344,6 @@ def default_gate_params() -> dict:
         "gate_min_num_points": cfg.min_num_points,
         "gate_max_num_points": cfg.max_num_points,
         "gate_min_point_distance": cfg.min_point_distance,
-        "gate_num_points_per_segment": cfg.num_points_per_segment,
-        "gate_rad": cfg.rad,
-        "gate_edgy": cfg.edgy,
-        "gate_handle_clamp_frac": cfg.handle_clamp_frac,
-        "gate_hull_displacement": cfg.hull_displacement,
         "gate_polar_num_knots": cfg.polar_num_knots,
         "gate_polar_radial_jitter": cfg.polar_radial_jitter,
         "gate_polar_angular_jitter": cfg.polar_angular_jitter,
@@ -441,11 +435,6 @@ def build_gate_config(p: dict) -> GateGenConfig:
         min_num_points=min_points,
         max_num_points=max_points,
         min_point_distance=float(p["gate_min_point_distance"]),
-        num_points_per_segment=int(p["gate_num_points_per_segment"]),
-        rad=float(p["gate_rad"]),
-        edgy=float(p["gate_edgy"]),
-        handle_clamp_frac=float(p["gate_handle_clamp_frac"]),
-        hull_displacement=float(p["gate_hull_displacement"]),
         polar_num_knots=polar_knots,
         polar_radial_jitter=float(p["gate_polar_radial_jitter"]),
         polar_angular_jitter=float(p["gate_polar_angular_jitter"]),
@@ -904,7 +893,7 @@ def build_app():
                                                      label="gate_solve_iters")
                         gate_show_raw = gr.Checkbox(value=gate_defaults["gate_show_raw"],
                                                     label="show raw anchors (skip collisions)")
-                        gate_point_md = gr.Markdown("### Point-family controls", visible=gate_mode_visible["point"])
+                        gate_point_md = gr.Markdown("### Sampling (point-family)", visible=gate_mode_visible["point"])
                         gate_point_note = gr.Markdown("For Bezier/Hull gates, sampled anchors become gate centers.",
                                                       visible=gate_mode_visible["point"])
                         gate_min_np = gr.Slider(2, 32, value=gate_defaults["gate_min_num_points"], step=1,
@@ -914,16 +903,6 @@ def build_app():
                         gate_min_point_distance = gr.Slider(0.01, 0.30, value=gate_defaults["gate_min_point_distance"],
                                                             step=0.005, label="min_point_distance [pre-scale world units]",
                                                             visible=gate_mode_visible["point"])
-                        gate_samples_per_seg = gr.Slider(8, 60, value=gate_defaults["gate_num_points_per_segment"],
-                                                         step=1, label="num_points_per_segment", visible=False)
-                        gate_rad = gr.Slider(0.0, 0.6, value=gate_defaults["gate_rad"], step=0.01,
-                                             label="rad", visible=False)
-                        gate_edgy = gr.Slider(0.0, 1.0, value=gate_defaults["gate_edgy"], step=0.05,
-                                              label="edgy", visible=False)
-                        gate_handle_clamp = gr.Slider(0.0, 1.0, value=gate_defaults["gate_handle_clamp_frac"],
-                                                      step=0.01, label="handle_clamp_frac", visible=False)
-                        gate_hull_disp = gr.Slider(0.0, 0.8, value=gate_defaults["gate_hull_displacement"],
-                                                   step=0.01, label="hull_displacement", visible=False)
                         gate_polar_md = gr.Markdown("### Polar controls", visible=gate_mode_visible["polar"])
                         gate_polar_knots = gr.Slider(4, 32, value=gate_defaults["gate_polar_num_knots"], step=1,
                                                      label="polar knots", visible=gate_mode_visible["polar"])
@@ -984,8 +963,7 @@ def build_app():
                 gate_page_state = gr.State(0)
                 gate_controls = [gate_generator, gate_ordering, gate_width, gate_radius, gate_solve_iters,
                                  gate_show_raw, gate_scale, gate_min_np, gate_max_np,
-                                 gate_min_point_distance, gate_samples_per_seg, gate_rad,
-                                 gate_edgy, gate_handle_clamp, gate_hull_disp,
+                                 gate_min_point_distance,
                                  gate_polar_knots, gate_polar_radial, gate_polar_angular,
                                  gate_vor_sites, gate_vor_layout, gate_vor_control,
                                  gate_vor_radial, gate_vor_angular,

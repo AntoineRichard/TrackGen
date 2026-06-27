@@ -277,6 +277,25 @@ def test_batch_and_pagination():
     assert px.n_pages(20, 3) == 3                       # ceil(20/9)
 
 
+def test_gate_controls_drop_inert_point_family_knobs():
+    dropped = ("gate_num_points_per_segment", "gate_rad", "gate_edgy",
+               "gate_handle_clamp_frac", "gate_hull_displacement")
+    for key in dropped:
+        assert key not in px.GATE_CONTROL_KEYS
+        assert key not in px.default_gate_params()
+
+
+def test_build_gate_config_uses_defaults_for_dropped_knobs():
+    from track_gen._src.types import GateGenConfig
+    d = GateGenConfig()
+    cfg = px.build_gate_config(_gate_params(gate_generator="bezier"))
+    assert cfg.num_points_per_segment == d.num_points_per_segment
+    assert cfg.rad == d.rad
+    assert cfg.edgy == d.edgy
+    assert cfg.handle_clamp_frac == d.handle_clamp_frac
+    assert cfg.hull_displacement == d.hull_displacement
+
+
 def _visible_by_label(app, label):
     """Return the visible prop of the FIRST app component with this exact label."""
     for c in app.config["components"]:
