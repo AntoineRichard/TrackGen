@@ -123,6 +123,10 @@ class TrackGenerator:
         Writes results into ``self._track`` in place and returns the SAME instance every
         call (stable ``.ptr`` pointers). Use ``Track.clone()`` to obtain an independent copy.
 
+        Determinism: ``generate()`` re-copies the rng's CURRENT seeds each call, so repeated
+        calls with an unchanged rng return the IDENTICAL batch. To vary the batch between
+        calls, reseed the rng first (e.g. ``rng.set_seeds_warp(new_seeds, None)``).
+
         Args:
             num_or_ids: Optional. Either ``None`` or the integer batch size. When an
                 integer is provided, it must equal ``config.num_envs``. Explicit
@@ -150,8 +154,9 @@ class TrackGenerator:
                 )
         from . import warp_pipeline
 
-        # Refresh the seed buffer in place from the rng (zero allocation: wp.copy).
-        # rng.seeds_warp is a wp.array [num_envs] int32, matching the fixed batch.
+        # Refresh the seed buffer in place from the rng's CURRENT seeds (zero allocation:
+        # wp.copy). The rng holds fixed seeds unless reseeded, so back-to-back generate()
+        # calls are deterministic; reseed the rng to vary the batch. seeds_warp is [E] int32.
         wp.copy(self._seed_buf, self._rng.seeds_warp)
 
         dev = str(self._config.device)

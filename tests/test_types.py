@@ -199,6 +199,34 @@ def test_gate_config_validates_num_envs_and_point_family_inputs():
         GateGenConfig(min_num_points=13, max_num_points=9)
 
 
+def test_track_config_validates_sampler_and_buffer_invariants():
+    from track_gen._src.types import TrackGenConfig
+    import pytest
+    with pytest.raises(ValueError, match="num_envs"):
+        TrackGenConfig(num_envs=0)
+    with pytest.raises(ValueError, match="half_width"):
+        TrackGenConfig(half_width=0.0)
+    with pytest.raises(ValueError, match="min_num_points"):
+        TrackGenConfig(min_num_points=1)
+    with pytest.raises(ValueError, match="max_num_points"):
+        TrackGenConfig(min_num_points=13, max_num_points=9)
+    with pytest.raises(ValueError, match="min_point_distance"):
+        TrackGenConfig(min_point_distance=0.0)
+    with pytest.raises(ValueError, match="min_point_distance"):
+        TrackGenConfig(min_point_distance=0.6)
+    with pytest.raises(ValueError, match="num_points_per_segment"):
+        TrackGenConfig(num_points_per_segment=1)
+    with pytest.raises(ValueError, match="spacing"):
+        TrackGenConfig(spacing=0.0)
+
+
+def test_track_config_defaults_still_valid():
+    from track_gen._src.types import TrackGenConfig
+    cfg = TrackGenConfig()
+    assert cfg.num_points <= cfg.N_max
+    assert cfg.spacing == 0.6 * cfg.half_width
+
+
 def test_gate_sequence_construct_from_warp_arrays_and_clone():
     import warp as wp
     from track_gen._src.types import GateSequence

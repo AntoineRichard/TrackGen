@@ -106,7 +106,7 @@ def rand_uniform_3D(
         offset: The offset for the 3D tensor. Used to calculate the correct state for each environment.
         shape: The shape of the 3D tensor. Used to calculate the correct state for each environment."""
     i, j, k = wp.tid()
-    output[i][j][k] = wp.randf(states[ids[i]] + wp.uint32(j * shape[1] + k), low, high)
+    output[i][j][k] = wp.randf(states[ids[i]] + wp.uint32(j * shape[2] + k), low, high)
     new_states[ids[i]] = states[ids[i]] + wp.uint32(offset)
 
 
@@ -238,7 +238,7 @@ def rand_uniform_3D_tensorized(
         offset: The offset for the 3D tensor. Used to calculate the correct state for each environment.
         shape: The shape of the 3D tensor. Used to calculate the correct state for each environment."""
     i, j, k = wp.tid()
-    output[i][j][k] = wp.randf(states[ids[i]] + wp.uint32(j * shape[1] + k), low[i], high[i])
+    output[i][j][k] = wp.randf(states[ids[i]] + wp.uint32(j * shape[2] + k), low[i], high[i])
     new_states[ids[i]] = states[ids[i]] + wp.uint32(offset)
 
 
@@ -313,10 +313,12 @@ def uniform(
         if isinstance(low, float) or isinstance(high, float):
             raise ValueError("The high value must be a tensor if the low value is a tensor.")
         output = uniform_tensorized(low, high, states, new_states, ids, shape, device=device)
-    elif isinstance(low, float) or isinstance(high, float):
-        if isinstance(low, wp.array) or isinstance(high, wp.array):
-            raise ValueError("The low value must be a tensor if the high value is a tensor.")
-        output = uniform_single(low, high, states, new_states, ids, shape, device=device)
+    elif isinstance(low, (int, float)) and isinstance(high, (int, float)):
+        output = uniform_single(float(low), float(high), states, new_states, ids, shape, device=device)
+    else:
+        raise TypeError(
+            f"low and high must both be float/int scalars or both wp.array, "
+            f"got {type(low).__name__} and {type(high).__name__}")
     return output
 
 
@@ -398,7 +400,7 @@ def rand_sign_3D(
         offset: The offset for the 3D tensor. Used to calculate the correct state for each environment.
         shape: The shape of the 3D tensor. Used to calculate the correct state for each environment."""
     i, j, k = wp.tid()
-    output[i][j][k] = rand_sign(states[ids[i]] + wp.uint32(j * shape[1] + k))
+    output[i][j][k] = rand_sign(states[ids[i]] + wp.uint32(j * shape[2] + k))
     new_states[ids[i]] = states[ids[i]] + wp.uint32(offset)
 
 
@@ -461,7 +463,7 @@ def rand_sign_3Df(
         offset: The offset for the 3D tensor. Used to calculate the correct state for each environment.
         shape: The shape of the 3D tensor. Used to calculate the correct state for each environment."""
     i, j, k = wp.tid()
-    output[i][j][k] = wp.float32(rand_sign(states[ids[i]] + wp.uint32(j * shape[1] + k)))
+    output[i][j][k] = wp.float32(rand_sign(states[ids[i]] + wp.uint32(j * shape[2] + k)))
     new_states[ids[i]] = states[ids[i]] + wp.uint32(offset)
 
 
@@ -654,7 +656,7 @@ def rand_poisson_3D(
         offset: The offset for the 3D tensor. Used to calculate the correct state for each environment.
         shape: The shape of the 3D tensor. Used to calculate the correct state for each environment."""
     i, j, k = wp.tid()
-    output[i][j][k] = wp.int32(wp.poisson(states[ids[i]] + wp.uint32(j * shape[1] + k), lam))
+    output[i][j][k] = wp.int32(wp.poisson(states[ids[i]] + wp.uint32(j * shape[2] + k), lam))
     new_states[ids[i]] = states[ids[i]] + wp.uint32(offset)
 
 
@@ -722,7 +724,7 @@ def rand_poisson_3D_tensorized(
         offset: The offset for the 3D tensor. Used to calculate the correct state for each environment.
         shape: The shape of the 3D tensor. Used to calculate the correct state for each environment."""
     i, j, k = wp.tid()
-    output[i][j][k] = wp.int32(wp.poisson(states[ids[i]] + wp.uint32(j * shape[1] + k), lam[i]))
+    output[i][j][k] = wp.int32(wp.poisson(states[ids[i]] + wp.uint32(j * shape[2] + k), lam[i]))
     new_states[ids[i]] = states[ids[i]] + wp.uint32(offset)
 
 
@@ -913,7 +915,7 @@ def rand_int_3D(
         output: The output tensor.
         offset: The offset for the 3D tensor. Used to calculate the correct state for each environment."""
     i, j, k = wp.tid()
-    output[i][j][k] = wp.randi(states[ids[i]] + wp.uint32(j * shape[1] + k), low, high)
+    output[i][j][k] = wp.randi(states[ids[i]] + wp.uint32(j * shape[2] + k), low, high)
     new_states[ids[i]] = states[ids[i]] + wp.uint32(offset)
 
 
@@ -987,7 +989,7 @@ def rand_int_3D_tensorized(
         output: The output tensor.
         offset: The offset for the 3D tensor. Used to calculate the correct state for each environment."""
     i, j, k = wp.tid()
-    output[i][j][k] = wp.randi(states[ids[i]] + wp.uint32(j * shape[1] + k), low[i], high[i])
+    output[i][j][k] = wp.randi(states[ids[i]] + wp.uint32(j * shape[2] + k), low[i], high[i])
     new_states[ids[i]] = states[ids[i]] + wp.uint32(offset)
 
 
@@ -1209,7 +1211,7 @@ def rand_normal_3D(
         offset: The offset for the 3D tensor. Used to calculate the correct state for each environment.
         shape: The shape of the 3D tensor. Used to calculate the correct state for each environment."""
     i, j, k = wp.tid()
-    output[i][j][k] = mean + wp.randn(states[ids[i]] + wp.uint32(j * shape[1] + k)) * std
+    output[i][j][k] = mean + wp.randn(states[ids[i]] + wp.uint32(j * shape[2] + k)) * std
     new_states[ids[i]] = states[ids[i]] + wp.uint32(offset)
 
 
@@ -1284,7 +1286,7 @@ def rand_normal_3D_tensorized(
         offset: The offset for the 3D tensor. Used to calculate the correct state for each environment.
         shape: The shape of the 3D tensor. Used to calculate the correct state for each environment."""
     i, j, k = wp.tid()
-    output[i][j][k] = mean[i] + wp.randn(states[ids[i]] + wp.uint32(j * shape[1] + k)) * std[i]
+    output[i][j][k] = mean[i] + wp.randn(states[ids[i]] + wp.uint32(j * shape[2] + k)) * std[i]
     new_states[ids[i]] = states[ids[i]] + wp.uint32(offset)
 
 
@@ -1411,10 +1413,12 @@ def normal(
         if isinstance(mean, float) or isinstance(std, float):
             raise ValueError("The high value must be a tensor if the low value is a tensor.")
         output = normal_tensorized(mean, std, states, new_states, ids, shape, device=device)
-    elif isinstance(mean, float) or isinstance(std, float):
-        if isinstance(mean, wp.array) or isinstance(std, wp.array):
-            raise ValueError("The low value must be a tensor if the high value is a tensor.")
-        output = normal_single(mean, std, states, new_states, ids, shape, device=device)
+    elif isinstance(mean, (int, float)) and isinstance(std, (int, float)):
+        output = normal_single(float(mean), float(std), states, new_states, ids, shape, device=device)
+    else:
+        raise TypeError(
+            f"mean and std must both be float/int scalars or both wp.array, "
+            f"got {type(mean).__name__} and {type(std).__name__}")
     return output
 
 
@@ -1439,7 +1443,8 @@ def rand_quaternion_1D(
         output: The output tensor."""
     tid = wp.tid()
     vec3f_unit_sphere = wp.sample_unit_sphere(states[ids[tid]])
-    angle = wp.randf(states[ids[tid]], 0.0, 2.0 * 4.0 * wp.atan(1.0))
+    # Salt the angle seed so it does not reuse the axis's PCG state (decorrelation).
+    angle = wp.randf(states[ids[tid]] + wp.uint32(2654435761), 0.0, 2.0 * 4.0 * wp.atan(1.0))
     output[tid] = wp.quat_from_axis_angle(vec3f_unit_sphere, angle)
     new_states[ids[tid]] = states[ids[tid]] + wp.uint32(1)
 
@@ -1462,7 +1467,7 @@ def rand_quaternion_2D(
         offset: The offset for the 2D tensor. Used to calculate the correct state for each environment."""
     i, j = wp.tid()
     vec3f_unit_sphere = wp.sample_unit_sphere(states[ids[i]] + wp.uint32(j))
-    angle = wp.randf(states[ids[i]] + wp.uint32(j), 0.0, 2.0 * 4.0 * wp.atan(1.0))
+    angle = wp.randf(states[ids[i]] + wp.uint32(j) + wp.uint32(2654435761), 0.0, 2.0 * 4.0 * wp.atan(1.0))
     output[i][j] = wp.quat_from_axis_angle(vec3f_unit_sphere, angle)
     new_states[ids[i]] = states[ids[i]] + wp.uint32(offset)
 
@@ -1486,8 +1491,8 @@ def rand_quaternion_3D(
         offset: The offset for the 3D tensor. Used to calculate the correct state for each environment.
         shape: The shape of the 3D tensor. Used to calculate the correct state for each environment."""
     i, j, k = wp.tid()
-    vec3f_unit_sphere = wp.sample_unit_sphere(states[ids[i]] + wp.uint32(j * shape[1] + k))
-    angle = wp.randf(states[ids[i]] + wp.uint32(j * shape[1] + k), 0.0, 2.0 * 4.0 * wp.atan(1.0))
+    vec3f_unit_sphere = wp.sample_unit_sphere(states[ids[i]] + wp.uint32(j * shape[2] + k))
+    angle = wp.randf(states[ids[i]] + wp.uint32(j * shape[2] + k) + wp.uint32(2654435761), 0.0, 2.0 * 4.0 * wp.atan(1.0))
     output[i][j][k] = wp.quat_from_axis_angle(vec3f_unit_sphere, angle)
     new_states[ids[i]] = states[ids[i]] + wp.uint32(offset)
 

@@ -217,6 +217,26 @@ class TrackGenConfig:
     validity_border_check: bool = False
 
     def __post_init__(self):
+        if int(self.num_envs) < 1:
+            raise ValueError(f"num_envs must be >= 1, got {self.num_envs!r}")
+        if float(self.half_width) <= 0.0:
+            raise ValueError(f"half_width must be > 0, got {self.half_width!r}")
+        # Point-family sampler inputs (shared bezier/hull corner sampler). min_point_distance
+        # is a divisor: num_cells = int(1/(min_point_distance*2)) in warp_generate.py, so
+        # values <= 0 or > 0.5 drive a divide-by-zero in the grid kernels; min/max_num_points
+        # feed wp.randi and must be a non-inverted range. GateGenConfig already guards these.
+        if int(self.min_num_points) < 2:
+            raise ValueError(f"min_num_points must be >= 2, got {self.min_num_points!r}")
+        if int(self.max_num_points) < int(self.min_num_points):
+            raise ValueError(
+                "max_num_points must be >= min_num_points, got "
+                f"{self.max_num_points!r} < {self.min_num_points!r}")
+        if not (0.0 < float(self.min_point_distance) <= 0.5):
+            raise ValueError(
+                f"min_point_distance must be in (0, 0.5], got {self.min_point_distance!r}")
+        if int(self.num_points_per_segment) < 2:
+            raise ValueError(
+                f"num_points_per_segment must be >= 2, got {self.num_points_per_segment!r}")
         if int(self.voronoi_control_points) < 6:
             raise ValueError(
                 f"voronoi_control_points must be >= 6, got {self.voronoi_control_points!r}")
@@ -269,6 +289,8 @@ class TrackGenConfig:
         # a fixed spacing default would be wrong as half_width varies (too coarse -> degenerate).
         if self.spacing is None:
             self.spacing = 0.6 * self.half_width
+        if float(self.spacing) <= 0.0:
+            raise ValueError(f"spacing must be > 0, got {self.spacing!r}")
 
 
 @dataclass

@@ -1461,8 +1461,11 @@ def _inflate_warp_alloc(config, generator_spec=None):
         gen_valid=gen_valid,
         # bridge buffers threaded gen -> relax -> inflate
         cs_center=wp.empty(flat, dtype=wp.vec2f, device=dev),
-        cs_seg=wp.empty(flat, dtype=wp.float32, device=dev),
-        cs_s=wp.empty(E * (n_max + 1), dtype=wp.float32, device=dev),
+        # The resample scan scratch is indexed by the INPUT count N (= num_points when fed the
+        # generation buffer), not the N_max output. Size it to max(N_max, num_points) so a
+        # config with num_points > N_max cannot overrun it (out-of-bounds GPU writes).
+        cs_seg=wp.empty(E * max(n_max, N_gen), dtype=wp.float32, device=dev),
+        cs_s=wp.empty(E * (max(n_max, N_gen) + 1), dtype=wp.float32, device=dev),
         count=wp.empty(E, dtype=wp.int32, device=dev),
     )
     return track, scratch
