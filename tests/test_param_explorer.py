@@ -388,3 +388,8 @@ def test_estimate_half_width_ignores_invalid_nan_envs():
     hw = px._estimate_half_width(outer, center, valid)
     assert torch.isfinite(torch.tensor(hw))
     assert abs(hw - 1.0) < 1e-6
+
+
+def test_collect_raises_on_control_count_mismatch():
+    with pytest.raises(ValueError, match="track controls"):
+        px._collect(1, 2, 3)  # far fewer than the expected key count

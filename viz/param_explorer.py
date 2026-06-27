@@ -677,6 +677,8 @@ def _collect(*vals) -> dict:
             "relax_sep_relax", "relax_spc_relax", "relax_bend_relax", "relax_margin",
             "relax_sep_every", "relax_sep_cache_slots", "relax_sep_cache_skin",
             "grid_n", "seed", "batch_size"]
+    if len(vals) != len(keys):
+        raise ValueError(f"expected {len(keys)} track controls, got {len(vals)}")
     return dict(zip(keys, vals))
 
 
