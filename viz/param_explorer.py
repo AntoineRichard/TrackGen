@@ -278,6 +278,13 @@ def _to_torch_track(track):
     return ns
 
 
+def _estimate_half_width(outer, center, valid) -> float:
+    """Median half-width over VALID envs only. Index 0 is real (count>=1) for valid envs;
+    including invalid (count==0, fully NaN-padded) envs would NaN-poison the median."""
+    d = torch.linalg.norm(outer[valid, 0] - center[valid, 0], dim=-1)
+    return float(d.median())
+
+
 def _stats(track) -> dict:
     """Aggregate readout over the batch (means taken over valid tracks).
 
@@ -290,8 +297,9 @@ def _stats(track) -> dict:
     if n == 0:
         return {"yield": 0.0, "n_valid": 0, "mean_len": float("nan"),
                 "mean_thickness": float("nan"), "count": 0.0}
-    # half-width from the first REAL point of each env (index 0 is always real / non-NaN).
-    hw = float(torch.linalg.norm(t.outer[:, 0] - t.center[:, 0], dim=-1).median())
+    # half-width from the first REAL point of each VALID env (invalid envs have count==0
+    # and are fully NaN-padded, which would NaN-poison the median). n > 0 here, so non-empty.
+    hw = _estimate_half_width(t.outer, t.center, valid)
     cnt = t.count.clamp_min(1)
     band = (2.0 * hw / (t.length / cnt.float()).clamp_min(1e-9)).round().to(torch.int32).clamp_min(1)
     # thickness: call the kernel in-place via wp.array (_thickness_k from warp_pipeline)

@@ -374,3 +374,17 @@ def test_track_visible_sections_are_generator_specific():
         "sampling": False, "smoothing": False, "bezier": False, "hull": False,
         "polar": False, "voronoi": False, "checkpoint": True,
     }
+
+
+def test_estimate_half_width_ignores_invalid_nan_envs():
+    import torch
+    # env 1 is invalid: its index-0 row is NaN (count==0 -> fully NaN-padded). A median over
+    # all envs would be NaN-poisoned; restricting to valid envs must yield a finite width.
+    outer = torch.zeros(3, 4, 2)
+    center = torch.zeros(3, 4, 2)
+    outer[:, 0, 0] = torch.tensor([1.0, float("nan"), 1.0])  # half-width 1.0 for valid envs
+    center[:, 0, 0] = 0.0
+    valid = torch.tensor([True, False, True])
+    hw = px._estimate_half_width(outer, center, valid)
+    assert torch.isfinite(torch.tensor(hw))
+    assert abs(hw - 1.0) < 1e-6
