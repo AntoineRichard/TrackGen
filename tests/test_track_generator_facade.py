@@ -152,3 +152,16 @@ def test_generate_rejects_sequence_ids():
     gen = TrackGenerator(cfg, rng)
     with pytest.raises(TypeError, match="does not accept explicit environment ids"):
         gen.generate([0, 1, 2, 3])
+
+
+def test_repeated_generate_is_deterministic_for_a_fixed_rng():
+    # Documented contract: output is deterministic for a fixed rng state (the same instance
+    # and buffers are reused in place). Callers reseed the rng to vary the batch.
+    E, N_max = 4, 128
+    cfg = TrackGenConfig(
+        generator="bezier", num_envs=E, num_points=64, N_max=N_max, device="cpu"
+    )
+    gen = TrackGenerator(cfg, _make_rng(E))
+    a = to_t(gen.generate(E).center).clone()
+    b = to_t(gen.generate(E).center).clone()
+    assert torch.equal(torch.nan_to_num(a), torch.nan_to_num(b))
