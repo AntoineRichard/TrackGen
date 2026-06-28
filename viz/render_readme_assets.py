@@ -372,7 +372,30 @@ def render_readme_assets(output_dir: Path = OUT_DIR) -> list[Path]:
 
     gate_strip_path = render_gate_assets(output_dir)
 
-    return [grid_path, pipeline_path, strip_path, gate_strip_path]
+    panel_paths = render_generator_panels(output_dir)
+
+    return [grid_path, pipeline_path, strip_path, gate_strip_path, *panel_paths]
+
+
+def render_generator_panels(output_dir: Path = OUT_DIR) -> list[Path]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    wp.init()
+    written: list[Path] = []
+    for idx, (name, label) in enumerate(GENERATORS):
+        phase1, valid, chosen = _generate(name, seed=100 + 17 * idx, needed=5)
+        ncol = max(1, len(chosen))
+        fig, axes = plt.subplots(1, ncol, figsize=(2.3 * ncol, 2.6), dpi=170, facecolor="white")
+        axes = axes if ncol > 1 else [axes]
+        for ax, env_id in zip(axes, chosen):
+            _draw_phase1_output(ax, phase1, valid, env_id, lw=1.5)
+        fig.suptitle(f"{label} — representative phase-1 outputs", fontsize=13,
+                     fontweight="bold", color="#111827")
+        fig.tight_layout(rect=(0, 0, 1, 0.92), w_pad=0.4)
+        path = output_dir / f"generator-{name}.png"
+        fig.savefig(path, bbox_inches="tight", facecolor="white")
+        plt.close(fig)
+        written.append(path)
+    return written
 
 
 def render_gate_assets(output_dir: Path = OUT_DIR) -> Path:
