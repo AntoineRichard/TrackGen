@@ -65,17 +65,17 @@ Math
 .. math::
 
    \theta_i = \frac{2\pi i}{K} + \epsilon_i^{(\theta)},
-   \qquad |\epsilon_i^{(\theta)}| < \frac{\alpha}{1},\; \alpha < 0.5 \cdot \frac{2\pi}{K}
+   \qquad |\epsilon_i^{(\theta)}| < \frac{2\pi\,\alpha}{K},\quad \alpha = \texttt{polar\_angular\_jitter} < 0.5
 
 .. math::
 
    r_i = R_\text{base} \cdot \max\!\bigl(1 + \epsilon_i^{(r)},\; 0.1\bigr),
    \qquad |\epsilon_i^{(r)}| \leq \delta_r
 
-where :math:`\alpha` is ``polar_angular_jitter`` (a fraction of one knot
-spacing, clamped to ``< 0.5`` so the index order remains the angular order),
-:math:`\delta_r` is ``polar_radial_jitter``, and :math:`R_\text{base} = 1.0`
-(a pre-normalization working radius). The Cartesian knot position is:
+where :math:`\alpha` is the dimensionless ``polar_angular_jitter`` fraction (clamped to
+``[0, 0.45]``, strictly below ``0.5`` so the fixed index order remains the sorted angular
+order without a runtime sort), :math:`\delta_r` is ``polar_radial_jitter``, and
+:math:`R_\text{base} = 1.0` (a pre-normalization working radius). The Cartesian knot position is:
 
 .. math::
 

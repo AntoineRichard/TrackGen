@@ -20,7 +20,7 @@ How It Works
 
 1. **Sample checkpoint ring.**  ``_sample_checkpoints_k`` draws ``C = checkpoint_count``
    checkpoints, one per angular slot, at angles ``2*pi*c/C + jitter`` (bounded by
-   ``checkpoint_angle_jitter * slot``, kept angle-monotone so the steered path winds
+   ``checkpoint_angle_jitter * slot``, approximately angle-ordered so the steered path winds
    exactly once around) on radii drawn uniformly from
    ``[checkpoint_radius_min_frac * R, R]`` with ``R = 1``.  The sampling is repeated
    independently for each of the ``K`` decorrelated candidates using per-candidate RNG
@@ -143,8 +143,11 @@ validation rules.
 
 ``checkpoint_angle_jitter`` (float, default 0.55)
     Angular jitter as a fraction of the per-checkpoint angular slot ``2*pi/C``.
-    Must be below 1.0 to keep the checkpoint sequence angle-monotone.  Larger values
-    produce more irregular spacing and more varied corner geometry.
+    Must be below 1.0 (enforced in Python before launch) so each checkpoint stays within
+    its nominal angular slot. Values above 0.5 allow adjacent checkpoints to swap angular
+    positions; the steering walk still completes approximately one lap by chasing checkpoints
+    in index order, but strict angle-monotonicity is not guaranteed at the default of 0.55.
+    Larger values produce more irregular spacing and more varied corner geometry.
 
 ``checkpoint_turn_rate`` (float, default 0.42)
     Maximum heading change in radians per steering step.  Bounds path curvature: too
