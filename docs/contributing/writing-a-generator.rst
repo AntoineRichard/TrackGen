@@ -93,7 +93,7 @@ How a generator is judged
 --------------------------
 
 Run ``benchmarks/compare_generators.py`` to characterise a new generator
-against the existing ones (see ``docs/generator-baseline.md`` for baseline
+against the existing ones (see the :doc:`Benchmarks page </generators/benchmarks>` for baseline
 numbers and the comparison methodology).
 
 Generators are characterised, never gated: a method that scores worse on yield
