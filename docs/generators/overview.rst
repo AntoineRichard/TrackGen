@@ -1,5 +1,3 @@
-:orphan:
-
 Generators Overview
 ===================
 
@@ -27,6 +25,7 @@ nearby corners.  Optional ``style_sampling`` draws per-environment ``rad``,
 ``scale``, and ``handle_clamp_frac`` from configured ranges, broadening the shape
 family without changing the representation.  Self-crossing smooth curves fall back
 to their provably simple corner polygon, which XPBD re-rounds.
+See :doc:`bezier` for the full deep dive.
 
 hull
 ~~~~
@@ -37,6 +36,7 @@ with one radially displaced midpoint.  The augmented loop is smoothed by a close
 uniform Catmull-Rom spline.  ``hull_displacement`` controls how strongly midpoints
 are pushed outward (lobes) or inward (pinches and straights).  Catmull-Rom
 self-crossers fall back to an arc-resampled straight augmented polygon.
+See :doc:`hull` for the full deep dive.
 
 polar
 ~~~~~
@@ -47,6 +47,7 @@ sequence is smoothed by a closed uniform Catmull-Rom spline.  The output is
 bounding-box normalized to the shared target extent.  Because the shape is smooth
 and centered by construction, polar carries the lowest relaxation burden of the five
 generators and has no generator-local fallback.
+See :doc:`polar` for the full deep dive.
 
 voronoi
 ~~~~~~~
@@ -58,6 +59,7 @@ modulated by ``voronoi_radial_variation`` — to the nearest unused site.  The a
 cycle is rounded by one Chaikin subdivision and a closed Catmull-Rom pass, then
 arc-resampled.  Self-crossing smooth loops fall back to the selected anchor polygon.
 The ``void_ring`` default produces the highest compactness of the five generators.
+See :doc:`voronoi` for the full deep dive.
 
 checkpoint
 ~~~~~~~~~~
@@ -71,6 +73,7 @@ heading-ramp closure ensures the net turning number is exactly one (no inner loo
 while preserving the steered local curvature.  Best-of-K selection (default K=4)
 keeps the least-self-intersecting of K decorrelated candidates per environment;
 an optional single-crossing clip fallback is available but off by default.
+See :doc:`checkpoint` for the full deep dive.
 
 When to Use Which
 -----------------
@@ -118,4 +121,5 @@ branch on generated tensor data, and no per-environment Python branching inside
 ``generate``.  Generators set ``out_valid_wp`` to ``1`` for every environment at this
 stage; final geometric validity (turning number, thickness, NaN checks) is decided
 later by the shared post-relax inflation validity gate.  The full contract, hard
-rules, and registration instructions are documented in ``docs/generator-contract.md``.
+rules, and registration instructions are documented in
+:doc:`/contributing/writing-a-generator`.

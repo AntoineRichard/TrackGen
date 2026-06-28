@@ -175,8 +175,8 @@ rendered by `.venv/bin/python -m viz.render_readme_assets`.*
 
 The first-stage centerline generator is selected by `TrackGenConfig(generator=...)`.
 Available generators: see `track_gen._src.generator_registry.available()`. Adding a method
-is additive — see `docs/generator-contract.md` and the tradeoff table in
-`docs/generator-baseline.md`.
+is additive — see [`docs/contributing/writing-a-generator.rst`](docs/contributing/writing-a-generator.rst) and the tradeoff table in
+[`docs/generators/benchmarks.rst`](docs/generators/benchmarks.rst).
 
 ### Output (constant spacing)
 
@@ -262,7 +262,8 @@ auto-captured CUDA execution.
 
 ## Architecture
 
-See **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** for the full walkthrough: each stage
+See **[docs/how-it-works/pipeline.rst](docs/how-it-works/pipeline.rst)** (and the rest of the
+[How it works](docs/how-it-works/) section) for the full walkthrough: each stage
 and its Warp kernels, the kernel conventions, the torch-as-test-oracle approach, and how
 the end-to-end CUDA graph is captured.
 
@@ -333,12 +334,24 @@ Pytest markers: `slow` covers quality gates that are useful but heavier than smo
 `benchmark` covers benchmark harness checks, and `cuda` covers tests that require a CUDA
 device.
 
-**Conventions** (see `docs/ARCHITECTURE.md`): one thread per output element; flat `[E*N]`
+**Conventions** (see [`docs/how-it-works/conventions.rst`](docs/how-it-works/conventions.rst)): one thread per output element; flat `[E*N]`
 `wp.vec2f` arrays; env index `e = tid // N`; launch with `device=str(tensor.device)`.
 Post-generation stages are count-aware: they operate over flat `[E, N_max, 2]` buffers with
 a per-track `count[e]` (the fixed-`N` parity path the oracle tests use is `count == N_max`).
 Every new kernel
 ships with a test asserting equivalence to its torch oracle on `cpu` and `cuda`.
+
+## Documentation
+
+The full documentation site is built from `docs/` with Sphinx. After installing the `docs`
+extra, build with:
+
+```bash
+pip install -e ".[docs]"
+.venv/bin/python -m sphinx -b html docs docs/_build/html
+```
+
+The rendered site will be hosted on GitHub Pages (URL to be filled when Pages is enabled).
 
 ## Parameter explorer (UI)
 

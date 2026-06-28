@@ -1,5 +1,3 @@
-:orphan:
-
 Generating a Batch of Tracks
 =============================
 

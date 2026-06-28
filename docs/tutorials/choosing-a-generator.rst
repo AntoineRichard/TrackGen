@@ -1,5 +1,3 @@
-:orphan:
-
 Choosing a First-Stage Generator
 ==================================
 
@@ -106,8 +104,12 @@ the ``generator`` string.
 Deep-Dive References
 ----------------------
 
-Detailed descriptions of each generator's algorithm, knobs, and tradeoffs are
-in ``docs/ARCHITECTURE.md`` (the "Generation" section) and in the generator
-baseline comparison document at ``docs/generator-baseline.md``. The contract
-every registered generator must satisfy is documented in
-``docs/generator-contract.md``.
+Detailed descriptions of each generator's algorithm, knobs, and tradeoffs:
+
+- :doc:`/generators/bezier` — Bézier corner-sort deep dive
+- :doc:`/generators/hull` — Hull midpoint-displacement deep dive
+- :doc:`/generators/polar` — Polar spline deep dive
+- :doc:`/generators/voronoi` — Voronoi site-field deep dive
+- :doc:`/generators/checkpoint` — Checkpoint-steering deep dive
+- :doc:`/generators/benchmarks` — Side-by-side quality, diversity, and speed metrics
+- :doc:`/contributing/writing-a-generator` — contract every registered generator must satisfy

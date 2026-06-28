@@ -1,5 +1,3 @@
-:orphan:
-
 Parameter explorer (UI)
 =======================
 

@@ -1,5 +1,3 @@
-:orphan:
-
 CUDA Graph — capture, replay, and buffer reuse
 ================================================
 

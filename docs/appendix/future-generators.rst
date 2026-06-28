@@ -1,15 +1,12 @@
-:orphan:
-
-======================================
 Future and Experimental Generators
-======================================
+===================================
 
 This page lists candidate methods for the first stage of TrackGen: the stage that
 produces an initial closed centerline before constant-spacing resampling and XPBD
 relaxation. It is partly historical: ``hull``, ``polar``, ``checkpoint``, and ``voronoi``
 have since shipped as standard runtime generators, while several later sections remain
 investigation notes. The canonical runtime contract is documented in
-``docs/generator-contract.md``.
+:doc:`/contributing/writing-a-generator`.
 
 The goal is not to replace relaxation. The goal is to feed XPBD better initial curves:
 more diverse, more controllable, less degenerate, and easier to repair into
@@ -89,7 +86,7 @@ sweeping config batches. Report valid yield, fallback rate, and diversity metric
 2. Convex Hull plus Midpoint Displacement
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Implemented: see the Hull Generator deep dive at ``docs/generators/hull.rst``.
+Implemented: see the :doc:`Hull Generator deep dive </generators/hull>`.
 
 **Idea.** Sample random points, compute or approximate their convex hull, insert
 midpoints along hull edges, displace those midpoints inward/outward, then smooth with
@@ -118,7 +115,7 @@ promising, port the deterministic midpoint expansion to Warp.
 3. Periodic Polar Spline / Radial Function Generator
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Implemented: see the Polar Generator deep dive at ``docs/generators/polar.rst``.
+Implemented: see the :doc:`Polar Generator deep dive </generators/polar>`.
 
 **Idea.** Represent the loop in polar form around a center:
 ``r(theta) = base + random low-frequency signal``, then sample sorted angles and fit a
@@ -182,7 +179,7 @@ to translate racing-line prior art into a pre-relaxation centerline generator.
 5. Checkpoint-Steering Generator Like Gym CarRacing
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Implemented: see the Checkpoint Generator deep dive at ``docs/generators/checkpoint.rst``.
+Implemented: see the :doc:`Checkpoint Generator deep dive </generators/checkpoint>`.
 
 **Idea.** Sample radial checkpoints around a rough circle, then integrate a heading that
 steers toward the next checkpoint under a bounded turn rate. Gymnasium CarRacing uses this
@@ -260,7 +257,7 @@ control.
 8. Graph-Cycle Extraction from Random Geometric Graphs
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Implemented: see the Voronoi Generator deep dive at ``docs/generators/voronoi.rst``.
+Implemented: see the :doc:`Voronoi Generator deep dive </generators/voronoi>`.
 
 **Idea.** Sample random points, build a local graph such as Delaunay, k-nearest-neighbor,
 or grid-neighbor graph, then extract a simple cycle. Smooth the cycle and relax it.

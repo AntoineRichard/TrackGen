@@ -1,5 +1,3 @@
-:orphan:
-
 Resample — constant-spacing arc-length resampling
 ===================================================
 

@@ -1,5 +1,3 @@
-:orphan:
-
 Pipeline — data-flow overview
 ==============================
 

@@ -1,5 +1,3 @@
-:orphan:
-
 Generating Gate Sequences for Drone Courses
 ============================================
 

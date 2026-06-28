@@ -1,5 +1,3 @@
-:orphan:
-
 Inflation — borders, validity, and the ``Track`` result
 =========================================================
 

@@ -1,11 +1,8 @@
-:orphan:
-
 Tuning guide
 ============
 
 This page collects practical tuning advice for ``TrackGenConfig``. For the
-complete parameter descriptions, see the Configuration reference
-(``docs/configuration/reference.rst``).
+complete parameter descriptions, see the :doc:`Configuration reference <reference>`.
 
 Yield vs. diversity
 -------------------
