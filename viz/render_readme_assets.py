@@ -44,7 +44,7 @@ GATE_GENERATORS = [
 # visible, and a radius large enough that raw anchors overlap before the collision solve
 # (so the phase-2 separation is unmistakable in the before/after).
 GATE_ASSET_GATE_WIDTH = 0.16
-GATE_ASSET_GATE_RADIUS = 0.10
+GATE_ASSET_GATE_RADIUS = 0.13
 GATE_ASSET_SOLVE_ITERS = 16
 
 
@@ -73,15 +73,24 @@ def _gate_batch(name: str, *, seed: int, solve_iters: int):
     return position, tangent, left, right, valid, count
 
 
-def _choose_gate_env(valid: np.ndarray, count: np.ndarray, position: np.ndarray) -> int:
-    """Pick a representative env: valid, finite, and with at least 4 gates; else first finite."""
-    for e in range(position.shape[0]):
+def _choose_gate_env(valid: np.ndarray, count: np.ndarray, raw_pos: np.ndarray, solved_pos: np.ndarray) -> int:
+    """Pick the valid, finite, >=4-gate env where the collision solve moved gates most."""
+    best_e, best_disp = -1, -1.0
+    for e in range(solved_pos.shape[0]):
         c = int(count[e])
-        if valid[e] and c >= 4 and np.isfinite(position[e, :c]).all():
-            return e
-    for e in range(position.shape[0]):
+        if c < 4 or not valid[e]:
+            continue
+        r, s = raw_pos[e, :c], solved_pos[e, :c]
+        if not (np.isfinite(r).all() and np.isfinite(s).all()):
+            continue
+        disp = float(np.linalg.norm(s - r, axis=1).max())
+        if disp > best_disp:
+            best_disp, best_e = disp, e
+    if best_e >= 0:
+        return best_e
+    for e in range(solved_pos.shape[0]):
         c = int(count[e])
-        if c >= 2 and np.isfinite(position[e, :c]).all():
+        if c >= 2 and np.isfinite(solved_pos[e, :c]).all():
             return e
     return 0
 
@@ -375,9 +384,9 @@ def render_gate_assets(output_dir: Path = OUT_DIR) -> Path:
         seed = 100 + 23 * col
         solved = _gate_batch(name, seed=seed, solve_iters=GATE_ASSET_SOLVE_ITERS)
         s_pos, s_tan, s_left, s_right, s_valid, s_count = solved
-        env = _choose_gate_env(s_valid, s_count, s_pos)
         raw = _gate_batch(name, seed=seed, solve_iters=0)
         r_pos, r_tan, r_left, r_right, r_valid, r_count = raw
+        env = _choose_gate_env(s_valid, s_count, r_pos, s_pos)
         _draw_gate_asset(axes[0, col], r_pos, r_tan, r_left, r_right, r_count, env, draw_frames=False)
         _draw_gate_asset(axes[1, col], s_pos, s_tan, s_left, s_right, s_count, env, draw_frames=True)
         axes[0, col].set_title(label, fontsize=12, fontweight="bold", color="#111827", pad=8)
