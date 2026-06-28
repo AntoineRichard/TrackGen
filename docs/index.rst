@@ -1,5 +1,5 @@
-track_gen
-=========
+TrackGen
+========
 
 **GPU-batched generation of closed-loop race tracks** — thousands of smooth,
 validated tracks per ``generate()`` call, expressed as NVIDIA Warp kernels and

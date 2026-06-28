@@ -1,7 +1,7 @@
 """Sphinx configuration for the track_gen documentation site."""
 import importlib.metadata
 
-project = "track_gen"
+project = "TrackGen"
 author = "Antoine Richard"
 copyright = "2026, Antoine Richard"
 release = importlib.metadata.version("track_gen")
@@ -43,7 +43,7 @@ intersphinx_mapping = {
 
 html_theme = "furo"
 html_static_path = ["_static"]
-html_title = "track_gen"
+html_title = "TrackGen"
 
 linkcheck_ignore = [
     # Paywall / bot-blocked publisher sites (403 Forbidden)
