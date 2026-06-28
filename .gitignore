@@ -10,3 +10,4 @@ viz/out/
 .worktrees/
 .superpowers/
 .claude/worktrees/
+docs/_build/

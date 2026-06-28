@@ -15,6 +15,7 @@ dependencies = ["numpy", "warp-lang"]
 [project.optional-dependencies]
 dev = ["pytest", "matplotlib", "scipy", "torch"]
 ui = ["gradio"]
+docs = ["sphinx", "furo", "sphinx-copybutton", "sphinx-design"]
 
 [tool.setuptools.packages.find]
 include = ["track_gen*"]
