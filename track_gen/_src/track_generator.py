@@ -61,6 +61,11 @@ class TrackGenerator:
             generator (see ``generator_registry.available()``).
         rng: A ``PerEnvSeededRNG`` instance; its per-env seed values seed the pipeline's
             built-in Warp RNG (one base seed per env).
+
+        Raises:
+            ValueError: if ``rng`` is ``None``.
+            AssertionError: if ``config.relax_solver`` is not ``"xpbd"``, or if
+                ``config.smooth_finish`` is ``True``.
         """
         if rng is None:
             raise ValueError("A random number generator must be provided.")

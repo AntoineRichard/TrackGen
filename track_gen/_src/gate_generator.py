@@ -15,12 +15,36 @@ __all__ = ["GateGenConfig", "GateGenerator", "GateSequence"]
 
 
 class GateGenerator:
-    """Facade for fixed-batch native gate sequence generation."""
+    """Facade for fixed-batch native gate sequence generation.
+
+    Mirrors the fixed-batch contract of :class:`~track_gen.TrackGenerator`: construction
+    allocates persistent output and scratch buffers once (via ``warp_gate._gate_warp_alloc``),
+    and ``generate()`` refreshes the per-env seed buffer then writes results into the same
+    :class:`~track_gen.GateSequence` instance on every call (stable ``.ptr`` pointers).
+    Use ``GateSequence.clone()`` when an independent snapshot is needed.
+
+    On a CUDA device the gate pipeline is auto-captured into a ``wp.Graph`` on the first
+    ``generate()`` call and replayed on subsequent calls. On the Warp ``cpu`` device the
+    pipeline runs eagerly.
+    """
 
     def __init__(self, config: GateGenConfig, rng) -> None:
         """Args:
-        config: The gate generation configuration.
+        config: The gate generation configuration. ``config.generator`` must be a
+            registered gate generator; ``config.gate_ordering`` must be supported by
+            that generator; and ``config.max_gates`` must satisfy the generator's
+            capacity requirements.
         rng: A ``PerEnvSeededRNG`` instance with one seed per configured env.
+
+        Raises:
+            ValueError: if ``rng`` is ``None``.
+            ValueError: if the number of seeds in ``rng`` does not match
+                ``config.num_envs``.
+            ValueError: if ``config.gate_ordering`` is not supported by the selected
+                gate generator.
+            ValueError: if ``config.min_gates`` exceeds the maximum gate count the
+                generator can produce, or if ``config.max_gates`` is too small for
+                the generator's required capacity.
         """
         if rng is None:
             raise ValueError("A random number generator must be provided.")
@@ -90,6 +114,24 @@ class GateGenerator:
         Passing an integer is accepted only when it matches that batch size. Explicit
         environment-id sequences are rejected because selected-env execution is outside
         the fixed-batch graph-capturable contract.
+
+        Writes results into ``self._gate_sequence`` in place and returns the SAME
+        instance every call (stable ``.ptr`` pointers). Use ``GateSequence.clone()``
+        to obtain an independent snapshot.
+
+        Args:
+            num_or_ids: Optional. Either ``None`` or the integer batch size. When an
+                integer is provided, it must equal ``config.num_envs``. Explicit
+                environment-id sequences are not supported.
+
+        Returns:
+            ``self._gate_sequence`` — the same :class:`~track_gen.GateSequence` instance
+            every call (stable pointers).
+
+        Raises:
+            TypeError: if ``num_or_ids`` is not an ``int`` (i.e. an explicit
+                environment-id sequence was passed).
+            ValueError: if an integer ``num_or_ids`` differs from ``config.num_envs``.
         """
         if num_or_ids is not None:
             if not isinstance(num_or_ids, int):

@@ -6,6 +6,20 @@ from .rng_kernels import integer, normal, poisson, quaternion, rand_sign_fn, set
 
 
 class PerEnvSeededRNG:
+    """Per-environment seeded random number generator backed by NVIDIA Warp kernels.
+
+    Each of the ``num_envs`` environments owns an independent RNG state so that
+    parallel sampling yields reproducible, environment-diverse results.  A scalar
+    ``seeds`` int is expanded to ``seed + arange(num_envs)`` (diversity expansion):
+    because Warp seeds its state purely from the seed value, a flat broadcast would
+    make every environment identical; the offset guarantees each env starts from a
+    distinct stream.  Pass a ``wp.array`` of ``int32`` to control every env's seed
+    explicitly.
+
+    After construction the states are immediately initialised from the seeds, so
+    no separate ``set_seeds_warp`` call is required before the first sample.
+    """
+
     def __init__(self, seeds: int | wp.array, num_envs: int, device: str):
         """Initialize the random number generator.
         Args:
@@ -43,12 +57,12 @@ class PerEnvSeededRNG:
 
     @property
     def seeds_warp(self) -> wp.array:
-        """Get the seeds for each environment."""
+        """The ``[num_envs]`` ``int32`` Warp array of per-environment base seeds."""
         return self._seeds
 
     @property
     def states_warp(self) -> wp.array:
-        """Get the states for each environment."""
+        """The ``[num_envs]`` ``uint32`` Warp array of live per-environment RNG states."""
         return self._states
 
     @staticmethod
