@@ -125,6 +125,24 @@ tangent = wp.to_torch(gates.tangent).view(E, config.max_gates, 2)
 valid = wp.to_torch(gates.valid).bool()
 ```
 
+The same `GateSequence` instance and its Warp buffers are reused on every `generate()` call;
+use `gates.clone()` when you need an independent snapshot.
+
+| field | shape | meaning |
+|---|---|---|
+| `position` | `[E, G, 2]` | gate centers (`G = max_gates`) |
+| `tangent`, `normal` | `[E, G, 2]` | unit tangent and left-normal at each gate |
+| `left`, `right` | `[E, G, 2]` | gate endpoints (`center ± 0.5 * gate_width * normal`) |
+| `valid` | `[E]` bool | per-sequence validity |
+| `count` | `[E]` int | real gates per env; slots `i >= count[e]` are NaN padding |
+
+`gate_width` is the full gate opening: the `left`/`right` endpoints sit at `±0.5 * gate_width`
+along the gate normal, so the default `gate_width=0.0` collapses them onto the center (point
+gates), and a positive `gate_width` additionally invalidates any sequence whose gate bars
+cross. `max_gates` sizes the fixed output buffers and must be at least the chosen generator's
+reachable gate count; `min_gates` rejects a configuration the generator cannot satisfy. Both
+bounds are checked when the `GateGenerator` is constructed.
+
 Registered first-stage gate generators are selected with `GateGenConfig(generator=...)`:
 `"bezier"` (default), `"checkpoint"`, `"hull"`, `"polar"`, and `"voronoi"`. Ordering
 support is generator-specific: Bezier/Hull support `{ "ccw", "random_pairs" }`, while
@@ -141,6 +159,12 @@ recomputing tangents. `scale` controls the pre-collision generator layout; the c
 solve may expand the final bbox when necessary to satisfy the requested gate radius. Set
 `gate_solve_iters=0` to inspect the anchors before the collision solve (they are still
 ordered and bbox-normalized, not raw sampler-space coordinates).
+
+![Phase-2 gate collision solve](docs/assets/readme-gate-strip.png)
+
+*Phase-2 gate collision solve separates overlapping gate spheres to the `2 * gate_radius`
+center-spacing target. Top: raw anchors (`gate_solve_iters=0`); bottom: after the solve, with
+gate tangents and `gate_width` bars. Rendered by `.venv/bin/python -m viz.render_readme_assets`.*
 
 ![TrackGen standard generator grid](docs/assets/readme-generator-grid.png)
 
