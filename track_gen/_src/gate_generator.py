@@ -29,12 +29,13 @@ class GateGenerator:
     """
 
     def __init__(self, config: GateGenConfig, rng) -> None:
-        """Args:
-        config: The gate generation configuration. ``config.generator`` must be a
-            registered gate generator; ``config.gate_ordering`` must be supported by
-            that generator; and ``config.max_gates`` must satisfy the generator's
-            capacity requirements.
-        rng: A ``PerEnvSeededRNG`` instance with one seed per configured env.
+        """
+        Args:
+            config: The gate generation configuration. ``config.generator`` must be a
+                registered gate generator; ``config.gate_ordering`` must be supported
+                by that generator; and ``config.max_gates`` must satisfy the
+                generator's capacity requirements.
+            rng: A ``PerEnvSeededRNG`` instance with one seed per configured env.
 
         Raises:
             ValueError: if ``rng`` is ``None``.

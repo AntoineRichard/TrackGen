@@ -56,11 +56,12 @@ class TrackGenerator:
     """
 
     def __init__(self, config: TrackGenConfig, rng) -> None:
-        """Args:
-        config: The pipeline configuration. ``config.generator`` must be a registered
-            generator (see ``generator_registry.available()``).
-        rng: A ``PerEnvSeededRNG`` instance; its per-env seed values seed the pipeline's
-            built-in Warp RNG (one base seed per env).
+        """
+        Args:
+            config: The pipeline configuration. ``config.generator`` must be a
+                registered generator (see ``generator_registry.available()``).
+            rng: A ``PerEnvSeededRNG`` instance; its per-env seed values seed the
+                pipeline's built-in Warp RNG (one base seed per env).
 
         Raises:
             ValueError: if ``rng`` is ``None``.

@@ -22,6 +22,7 @@ class PerEnvSeededRNG:
 
     def __init__(self, seeds: int | wp.array, num_envs: int, device: str):
         """Initialize the random number generator.
+
         Args:
             seeds: Per-env seeds. An int scalar seeds the whole BATCH: it expands to
                 distinct per-env seeds ``seed + arange(num_envs)`` so the batch is
@@ -30,7 +31,8 @@ class PerEnvSeededRNG:
                 identical tracks — hence the expansion.) Pass a wp.array of int32 to
                 control every env's seed explicitly.
             num_envs: The number of environments.
-            device: The device to use."""
+            device: The device to use.
+        """
 
         self._device = device
         self._num_envs = num_envs
