@@ -24,5 +24,9 @@ Result types
 .. autoclass:: track_gen.Track
    :no-members:
 
+   .. automethod:: clone
+
 .. autoclass:: track_gen.GateSequence
    :no-members:
+
+   .. automethod:: clone
