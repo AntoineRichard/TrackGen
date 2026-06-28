@@ -118,8 +118,8 @@ class TrackGenConfig:
         Best-of-K candidate count.  Must be >= 1.  Generates ``K`` decorrelated
         candidates per env and keeps the one with the fewest self-intersections
         (deterministic argmin; ties broken by lowest ``k``).  Replaces CarRacing's
-        unbounded reject-retry with a bounded, graph-capturable pool; K=4 achieves
-        ~0% pre-relax self-intersections at the default config.
+        unbounded reject-retry with a bounded, graph-capturable pool; K=4 leaves
+        ≲0.4% of tracks with a pre-relax self-intersection at the default config.
     checkpoint_clip_fallback : bool
         Opt-in single-crossing clip fallback (default ``False``).  When ``True``,
         the first self-crossing of the selected centerline is clipped: split at the
@@ -162,9 +162,11 @@ class TrackGenConfig:
         the cost of a larger all-sites scan.  Default 256.
     voronoi_site_layout : str
         *Voronoi generator only.*  Site distribution layout.  One of ``"ring"``
-        (annular band), ``"void_ring"`` (default — center void plus annular bias for
-        usable loops), ``"clustered"`` (random Gaussian clusters), or ``"mixed"``
-        (blend of layouts).
+        (uniform box fill — NOT an annular band; name kept for config compatibility),
+        ``"void_ring"`` (default — annular band with center void,
+        r ∈ [0.14·box, 0.52·box], biased for usable closed loops),
+        ``"clustered"`` (6 radial Gaussian clusters with ~22% annular fallback per
+        site), or ``"mixed"`` (65% annular sites blended with 35% uniform box fill).
     voronoi_control_points : int
         *Voronoi generator only.*  Number of angular anchor sites selected from the
         site field (``K``).  Must be >= 6 for Chaikin/Catmull-Rom densification to
