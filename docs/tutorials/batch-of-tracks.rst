@@ -22,7 +22,7 @@ Building the Config and RNG
 
 ``TrackGenConfig`` holds every generation parameter. The two required fields are
 ``num_envs`` (batch size) and ``device`` (``"cpu"`` or ``"cuda"``).
-``half_width`` is the road half-width in world units and defaults to ``0.5``.
+``half_width`` is the road half-width in world units and defaults to ``0.1``.
 
 .. code-block:: python
 

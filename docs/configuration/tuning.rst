@@ -37,7 +37,7 @@ A few principles:
   broad distribution.
 
 - **Use the parameter explorer to iterate quickly.** The interactive Gradio UI
-  (``python -m viz.param_explorer``) shows valid-yield and quality stats over a
+  (``.venv/bin/python -m viz.param_explorer``) shows valid-yield and quality stats over a
   full batch in real time, so shape/yield trade-offs are immediately visible.
 
 ``half_width`` and ``spacing`` coupling

@@ -96,7 +96,7 @@ Every registered runtime generator follows the same hard contract:
   no per-env Python branching.
 - ``out_valid_wp`` is filled with ``1`` by the current runtime generators. It is a stage
   flag, not the final quality decision. Turning, thickness, NaNs, width floor, and optional
-  border intersections are judged later by ``inflate_warp`` after constant-spacing and PBD
+  border intersections are judged later by ``inflate_warp`` after constant-spacing and XPBD
   relaxation.
 
 Per-generator algorithm details are covered in the individual generator deep-dive pages
