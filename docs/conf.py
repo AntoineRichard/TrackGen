@@ -45,4 +45,17 @@ html_theme = "furo"
 html_static_path = ["_static"]
 html_title = "track_gen"
 
-linkcheck_ignore = []
+linkcheck_ignore = [
+    # Paywall / bot-blocked publisher sites (403 Forbidden)
+    r"https://www\.tandfonline\.com/.*",
+    r"https://asmedigitalcollection\.asme\.org/.*",
+    r"https://dl\.acm\.org/.*",
+    r"https://sourceforge\.net/.*",
+    r"https://gitlab\.com/speed-dreams/.*",
+    r"https://services\.igi-global\.com/.*",
+    # DOI redirects that resolve to paywalled content
+    r"https://doi\.org/10\.1080/.*",
+    r"https://doi\.org/10\.1115/.*",
+    r"https://doi\.org/10\.1145/.*",
+    r"https://doi\.org/10\.4018/.*",
+]
