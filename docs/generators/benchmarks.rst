@@ -1,0 +1,171 @@
+:orphan:
+
+Generator Benchmarks
+====================
+
+Reference metrics for the five registered first-stage generators, produced by
+``benchmarks/compare_generators.py``.  These numbers characterize tradeoffs among
+quality, diversity, and speed.  They never gate which generators ship — every
+registered generator stays selectable via ``config.generator``.
+
+.. note::
+
+   Suite: seed base 0, E=512, default ``TrackGenConfig`` on the Warp ``cpu`` device.
+   CPU timings are machine-dependent and intended for relative comparison only;
+   use a larger ``E`` for release-grade timing.
+
+Reproduce
+---------
+
+.. code-block:: bash
+
+   .venv/bin/python -m benchmarks.compare_generators --E 512 --seed 0
+
+Metrics Table
+-------------
+
+.. list-table::
+   :header-rows: 1
+   :widths: 14 8 14 12 12 13 13 14 14 12 12 12 10 14
+
+   * - generator
+     - yield
+     - pre_relax_self_intersection_rate
+     - xpbd_displacement
+     - mean_length
+     - mean_compactness
+     - compactness_p50
+     - compactness_degenerate_rate
+     - shape_variety_pass
+     - mean_chicanes
+     - straight_frac
+     - peak_curvature
+     - lap_time
+     - gen_ms_per_call
+   * - bezier
+     - 0.9922
+     - 0.005859
+     - 0.05008
+     - 5.056
+     - 0.4387
+     - 0.4238
+     - 0
+     - 1
+     - 13.21
+     - 0.2295
+     - 8.762
+     - 10.16
+     - 794
+   * - checkpoint
+     - 0.9766
+     - 0.001953
+     - 0.03541
+     - 4.224
+     - 0.6142
+     - 0.6225
+     - 0
+     - 1
+     - 14.8
+     - 0.1991
+     - 8.577
+     - 8.549
+     - 1125
+   * - hull
+     - 0.9941
+     - 0.007812
+     - 0.06167
+     - 4.958
+     - 0.4254
+     - 0.4111
+     - 0
+     - 1
+     - 14.13
+     - 0.1919
+     - 8.908
+     - 10.52
+     - 839.5
+   * - polar
+     - 1
+     - 0
+     - 0.0271
+     - 4.736
+     - 0.5586
+     - 0.5524
+     - 0
+     - 1
+     - 12.72
+     - 0.1978
+     - 8.44
+     - 9.488
+     - 568
+   * - voronoi
+     - 1
+     - 0
+     - 0.01315
+     - 4.27
+     - 0.7335
+     - 0.7318
+     - 0
+     - 1
+     - 13.88
+     - 0.2185
+     - 8.205
+     - 7.849
+     - 736.9
+
+Metric Definitions
+------------------
+
+**yield**
+   Fraction of generated environments that pass the full post-relax validity gate
+   (turning number, thickness floor, no NaN); higher is better.
+
+**pre_relax_self_intersection_rate**
+   Fraction of environments whose first-stage centerline contains at least one
+   proper crossing before any relaxation; lower indicates a cleaner generator-level
+   output.
+
+**xpbd_displacement**
+   Mean displacement (in track-coordinate units) that XPBD relaxation applies to the
+   centerline; lower means the generator already produces geometry close to the
+   relaxed equilibrium.
+
+**mean_length**
+   Mean centerline perimeter (track-coordinate units) across valid environments;
+   reflects the typical physical size of generated tracks.
+
+**mean_compactness**
+   Mean isoperimetric compactness (``4π·area / perimeter²``) across valid
+   environments; higher values indicate rounder, more compact track shapes.
+
+**compactness_p50**
+   Median compactness; a robust central-tendency measure less sensitive to extreme
+   shape outliers than the mean.
+
+**compactness_degenerate_rate**
+   Fraction of valid environments with compactness below a degenerate threshold;
+   zero means no degenerate (near-zero-area) shapes were produced in this suite run.
+
+**shape_variety_pass**
+   Binary flag (0 or 1) indicating whether the generator produces sufficient
+   shape diversity across the batch; all five generators pass at default config.
+
+**mean_chicanes**
+   Mean count of chicane-like direction-reversals per valid track; reflects how
+   much local curvature variation the generator introduces.
+
+**straight_frac**
+   Mean fraction of the centerline classified as a straight segment; higher values
+   indicate more open, high-speed layout character.
+
+**peak_curvature**
+   Mean maximum absolute curvature over the relaxed centerline; reflects how tight
+   the sharpest corner of a typical track is.
+
+**lap_time**
+   Estimated lap time (seconds) from a simple kinematic model; lower values
+   correspond to faster, more open tracks.
+
+**gen_ms_per_call**
+   Wall-clock generation time in milliseconds per ``TrackGenerator.generate()`` call
+   on CPU at E=512; machine-dependent — use for relative comparison only.
