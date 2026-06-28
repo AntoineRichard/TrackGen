@@ -32,6 +32,100 @@ GENERATORS = [
     ("voronoi", "Voronoi"),
 ]
 
+GATE_GENERATORS = [
+    ("bezier", "Bezier"),
+    ("checkpoint", "Checkpoint"),
+    ("hull", "Hull"),
+    ("polar", "Polar"),
+    ("voronoi", "Voronoi"),
+]
+
+# Illustrative gate geometry for the asset: a non-zero opening so the gate bars are
+# visible, and a radius large enough that raw anchors overlap before the collision solve
+# (so the phase-2 separation is unmistakable in the before/after).
+GATE_ASSET_GATE_WIDTH = 0.16
+GATE_ASSET_GATE_RADIUS = 0.10
+GATE_ASSET_SOLVE_ITERS = 16
+
+
+def _gate_batch(name: str, *, seed: int, solve_iters: int):
+    """Run one CPU gate batch; return (position, tangent, left, right, valid, count) numpy."""
+    from track_gen import GateGenConfig, GateGenerator, PerEnvSeededRNG
+
+    batch = 24
+    cfg = GateGenConfig(
+        generator=name,
+        num_envs=batch,
+        device="cpu",
+        gate_radius=GATE_ASSET_GATE_RADIUS,
+        gate_width=GATE_ASSET_GATE_WIDTH,
+        gate_solve_iters=solve_iters,
+    )
+    rng = PerEnvSeededRNG(seeds=seed, num_envs=batch, device="cpu")
+    gates = GateGenerator(cfg, rng).generate()
+    g = gates.position.shape[0] // batch
+    position = wp.to_torch(gates.position).cpu().numpy().reshape(batch, g, 2)
+    tangent = wp.to_torch(gates.tangent).cpu().numpy().reshape(batch, g, 2)
+    left = wp.to_torch(gates.left).cpu().numpy().reshape(batch, g, 2)
+    right = wp.to_torch(gates.right).cpu().numpy().reshape(batch, g, 2)
+    valid = wp.to_torch(gates.valid).cpu().numpy().astype(bool)
+    count = wp.to_torch(gates.count).cpu().numpy().astype(int)
+    return position, tangent, left, right, valid, count
+
+
+def _choose_gate_env(valid: np.ndarray, count: np.ndarray, position: np.ndarray) -> int:
+    """Pick a representative env: valid, finite, and with at least 4 gates; else first finite."""
+    for e in range(position.shape[0]):
+        c = int(count[e])
+        if valid[e] and c >= 4 and np.isfinite(position[e, :c]).all():
+            return e
+    for e in range(position.shape[0]):
+        c = int(count[e])
+        if c >= 2 and np.isfinite(position[e, :c]).all():
+            return e
+    return 0
+
+
+def _set_gate_limits(ax, pts: np.ndarray) -> None:
+    finite = pts[np.isfinite(pts).all(axis=1)]
+    if len(finite) < 2:
+        return
+    xmin, ymin = finite.min(axis=0)
+    xmax, ymax = finite.max(axis=0)
+    span = max(xmax - xmin, ymax - ymin, 1.0e-3)
+    pad = 0.18 * span + 1.6 * GATE_ASSET_GATE_RADIUS
+    cx, cy = 0.5 * (xmin + xmax), 0.5 * (ymin + ymax)
+    ax.set_xlim(cx - 0.5 * span - pad, cx + 0.5 * span + pad)
+    ax.set_ylim(cy - 0.5 * span - pad, cy + 0.5 * span + pad)
+
+
+def _draw_gate_asset(ax, position, tangent, left, right, count, e: int, *, draw_frames: bool) -> None:
+    c = int(count[e])
+    pos = position[e, :c]
+    finite = np.isfinite(pos).all(axis=1)
+    pos = pos[finite]
+    if len(pos) >= 2:
+        closed = np.vstack([pos, pos[0]])
+        ax.plot(closed[:, 0], closed[:, 1], color="0.35", lw=0.7, ls="--", alpha=0.6, zorder=1)
+    if len(pos) > 0:
+        ax.scatter(pos[:, 0], pos[:, 1], s=16, color="#111827", zorder=4)
+    for pnt in pos:
+        ax.add_patch(plt.Circle((pnt[0], pnt[1]), GATE_ASSET_GATE_RADIUS, fill=False,
+                                color="#64748b", lw=0.8, alpha=0.85, zorder=2))
+    if draw_frames:
+        tan = tangent[e, :c][finite]
+        lft = left[e, :c][finite]
+        rgt = right[e, :c][finite]
+        if len(tan) == len(pos) and len(pos) > 0:
+            ax.quiver(pos[:, 0], pos[:, 1], tan[:, 0], tan[:, 1], angles="xy",
+                      scale_units="xy", scale=12, width=0.005, color="#f97316",
+                      alpha=0.85, zorder=3)
+        if len(lft) == len(rgt) == len(pos):
+            for li, ri in zip(lft, rgt):
+                ax.plot([li[0], ri[0]], [li[1], ri[1]], color="#2563eb", lw=1.3, zorder=3)
+    _set_gate_limits(ax, pos)
+    _style_axis(ax)
+
 
 def _choose_phase1_examples(
     phase1: np.ndarray,
@@ -267,7 +361,37 @@ def render_readme_assets(output_dir: Path = OUT_DIR) -> list[Path]:
     fig.savefig(strip_path, bbox_inches="tight", facecolor="white")
     plt.close(fig)
 
-    return [grid_path, pipeline_path, strip_path]
+    gate_strip_path = render_gate_assets(output_dir)
+
+    return [grid_path, pipeline_path, strip_path, gate_strip_path]
+
+
+def render_gate_assets(output_dir: Path = OUT_DIR) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    wp.init()
+    n = len(GATE_GENERATORS)
+    fig, axes = plt.subplots(2, n, figsize=(2.3 * n, 4.8), dpi=170, facecolor="white")
+    for col, (name, label) in enumerate(GATE_GENERATORS):
+        seed = 100 + 23 * col
+        solved = _gate_batch(name, seed=seed, solve_iters=GATE_ASSET_SOLVE_ITERS)
+        s_pos, s_tan, s_left, s_right, s_valid, s_count = solved
+        env = _choose_gate_env(s_valid, s_count, s_pos)
+        raw = _gate_batch(name, seed=seed, solve_iters=0)
+        r_pos, r_tan, r_left, r_right, r_valid, r_count = raw
+        _draw_gate_asset(axes[0, col], r_pos, r_tan, r_left, r_right, r_count, env, draw_frames=False)
+        _draw_gate_asset(axes[1, col], s_pos, s_tan, s_left, s_right, s_count, env, draw_frames=True)
+        axes[0, col].set_title(label, fontsize=12, fontweight="bold", color="#111827", pad=8)
+    axes[0, 0].set_ylabel("raw anchors\n(gate_solve_iters=0)", rotation=0, ha="right",
+                          va="center", labelpad=18, fontsize=9.5, fontweight="bold", color="#111827")
+    axes[1, 0].set_ylabel("collision-solved", rotation=0, ha="right", va="center",
+                          labelpad=18, fontsize=9.5, fontweight="bold", color="#111827")
+    fig.suptitle("Phase-2 gate collision solve: raw anchors vs separated gates",
+                 fontsize=15, fontweight="bold", y=1.0, color="#111827")
+    fig.tight_layout(rect=(0.08, 0.0, 1.0, 0.96), h_pad=0.6, w_pad=0.3)
+    path = output_dir / "readme-gate-strip.png"
+    fig.savefig(path, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return path
 
 
 def main() -> None:
