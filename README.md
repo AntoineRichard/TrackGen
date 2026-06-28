@@ -365,3 +365,15 @@ uv run python -m viz.param_explorer   # opens a local URL (default http://127.0.
   batch *without* regenerating. Invalid tracks get a red title.
 - **Auto-update** (on) re-generates as you change a control; for heavy settings (large batch ×
   high `relax_iters`) untick it and use **Generate**. **Reroll** draws fresh seeds.
+
+**Gates tab:** a second tab generates gate sequences instead of tracks (see *Gate sequence
+generation* above). Controls are grouped —
+- **Gate generator** — method selector and `ordering` (choices follow the selected generator).
+- **Gate layout** — `gate_width` (full gate opening) and `scale` (pre-collision layout size).
+- **Gate collisions** — `gate_radius`, `gate_solve_iters`, and **show raw anchors** (forces
+  `gate_solve_iters=0` to inspect anchors before the collision solve). Center spacing target is
+  `2 * gate_radius`.
+- **Generator-specific sampling** — point-family (Bezier/Hull), Polar, Voronoi, or Checkpoint
+  controls, shown for the selected generator.
+- **Batch** — grid (n×n), seed, batch size; the stat line reports valid-yield and gate counts
+  over the whole batch, and **◀ prev / next ▶** page through the batch without regenerating.
