@@ -158,7 +158,7 @@ Every `discovery_query` value uses exactly one mode. Counts are `seed::` 29, `ci
 | AGRL0015 | `seed::C0046` | C0046: MetaDrive: Composing Diverse Driving Scenarios for Generalizable Reinforcement Learning |
 | AGRL0016 | `seed::C0007` | C0007: OpenDRIVE |
 | AGRL0017 | `seed::C0008` | C0008: Procedural Generation of Complex Roundabouts for Autonomous Vehicle Testing |
-| AGRL0018 | `seed::C0015` | C0015: Automated Lane Keeping Systems (ALKS) |
+| AGRL0018 | `seed::C0014` | C0014: Automatic Generation of Challenging Road Networks for ALKS Testing based on Bezier Curves and Search |
 | AGRL0020 | `seed::C0097` | C0097: HDMapGen |
 | AGRL0022 | `seed::C0022` | C0022: Automatically Testing Self-Driving Cars with Search-Based Procedural Content Generation / ASFault |
 | AGRL0023 | `seed::C0023` | C0023: Model-based Exploration of the Frontier of Behaviours for Deep Learning System Testing |

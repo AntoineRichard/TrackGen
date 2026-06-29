@@ -1273,7 +1273,15 @@ git commit -m "docs: add independent survey discovery runs"
 **Files:**
 
 - Create: paper/scripts/merge_candidates.py
+- Create: paper/scripts/prepare_metadata_batches.py
+- Create: paper/scripts/integrate_metadata.py
+- Create: paper/data/metadata_manifest.csv
+- Create: paper/data/metadata_runs/metadata-01.csv through metadata-06.csv
+- Create: paper/data/metadata_runs/metadata-01-conflicts.csv through metadata-06-conflicts.csv
+- Create: paper/data/bibliography.csv
 - Modify: tests/test_survey_corpus.py
+- Create: tests/test_merge_candidates.py
+- Create: tests/test_metadata_verification.py
 - Populate: paper/data/candidates.csv
 - Populate: paper/data/conflicts.csv
 - Populate: paper/references.bib
@@ -1506,9 +1514,9 @@ python3 paper/scripts/merge_candidates.py \
 Expected: the dry-run reports counts by source stream, duplicate identity, and conflict
 field; the write run assigns stable IDs and does not erase bootstrap provenance.
 
-- [ ] **Step 5: Verify metadata source by source**
+- [ ] **Step 5: Freeze and verify metadata source by source**
 
-For each candidate likely to be included:
+For every candidate, including currently excluded rows, freeze its complete row and sorted conflict rows into one of six deterministic, immutable verification batches before research begins. Each candidate appears exactly once; per-row hashes detect ledger drift; weighting by unresolved bibliographic-conflict count balances the batches. Then:
 
 1. resolve the DOI or stable paper URL;
 2. match title, complete author list, year, and venue against the publisher or proceedings;
@@ -1516,21 +1524,28 @@ For each candidate likely to be included:
 4. record the metadata source in metadata_evidence;
 5. set metadata_status to verified only after all bibliographic fields agree;
 6. resolve every conflicts.csv row with a source URL and resolver name;
-7. create a BibTeX key using FirstAuthorYearShortTitle, adding a lowercase suffix for collisions;
-8. add a references.bib entry containing author, title, year, venue, DOI when available,
-   URL when useful, and no unverified abstract or keyword fields.
+7. record structured citation inputs for centralized deterministic key generation;
+8. do not edit canonical ledgers or references.bib from an agent output; record author, title, year, venue, DOI when available,
+   URL when useful, and no unverified abstract or keyword fields in the immutable result.
 
 For software, standards, and competitions without a paper, use the official documentation
 as the citable source and set source_type accordingly.
 
-- [ ] **Step 6: Validate bibliography correspondence**
+The frozen manifest records `manifest_version,snapshot_sha256,batch_id,candidate_id,input_sha256,weight`. Each of six agents writes only its own immutable metadata and conflict-resolution CSVs under `paper/data/metadata_runs/`; agents never edit the canonical ledgers. Published-paper fields require publisher or official-proceedings evidence, with Crossref used only to resolve or corroborate when a primary record exists. Preprints and non-paper artifacts require official repository, issuing-body, organizer, release, documentation, or `CITATION.cff` evidence. Search snippets and generic scholarly aggregators are discovery aids only. Equal-authority disagreements remain unresolved.
+The metadata result header is `candidate_id,input_sha256,agent_id,verified_on,metadata_status,title,authors,year,venue,doi,url,source_type,title_evidence,authors_evidence,year_evidence,venue_evidence,doi_evidence,url_evidence,source_type_evidence,bib_entry_type,bib_venue_field,bib_url,key_author,author_kinds,notes`. The conflict result header is `candidate_id,input_sha256,agent_id,input_conflict_id,field,value_a,value_b,resolution,resolution_evidence`. Use `NR`, not blanks, and encode field evidence as semicolon-separated `source_kind::URL` tokens.
 
-Extend validate_corpus.py so every verified included or boundary cite_key has exactly one
-BibTeX entry and every BibTeX entry maps to a candidate row. Parse BibTeX entry keys with
+A central integrator validates manifest membership and hashes, preserves candidate IDs, discovery provenance, screening status, and exclusion reasons byte-for-byte, and updates only bibliographic fields, metadata state, conflict resolutions, and citation artifacts. `metadata_status=conflict` applies only to unresolved title, authors, year, venue, DOI, URL, or source-type disagreements; screening conflicts remain for Task 6 and never change metadata status.
+
+Generate deterministic keys and `references.bib` centrally from `bibliography.csv`, whose header is `candidate_id,cite_key,entry_type,key_author,authors,author_kinds,title,year,venue_field,venue,doi,url`. Assign keys to verified, non-excluded candidates without changing screening status. Normalize author or corporate-author tokens, use the four-digit year or `Nodate`, append two non-stopword title tokens, and suffix every collision member in stable candidate-ID order. Existing nonempty keys are never silently renamed.
+
+- [ ] **Step 6: Integrate metadata and validate bibliography correspondence**
+
+Extend validate_corpus.py so every nonempty cite_key belongs to a verified, non-excluded candidate and has exactly one
+bibliography.csv row and BibTeX entry, and every citation artifact maps to the same candidate. Parse BibTeX entry keys with
 a conservative regular expression; do not attempt to rewrite BibTeX.
 
 Add this implementation to validate_corpus.py and call
-validate_bibliography(data_dir.parent / "references.bib", screened_keys) at the end of
+validate_bibliography(data_dir.parent / "references.bib", cite_bearing_verified_keys) at the end of
 validate_directory:
 
 ~~~python
@@ -1580,7 +1595,7 @@ python3 paper/scripts/validate_corpus.py
 ~~~
 
 Expected: all tests and production validation pass with no unresolved bibliographic
-conflicts for screened-in sources.
+conflicts hidden by a verified status; unresolved disagreements remain explicit and uncited.
 
 - [ ] **Step 7: Commit the reconciled bibliography**
 
