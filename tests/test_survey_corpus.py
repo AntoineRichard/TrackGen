@@ -63,7 +63,7 @@ def build_valid_fixture(tmp_path: Path) -> Path:
         generator_family="stochastic_procedural",
         generation_role="geometry_synthesis",
         validity_strategy="rejection",
-        code_status="not_found",
+        code_status="NR",
         evidence_locator="Section 3",
     )
     claim = blank_row("claims.csv")
@@ -537,3 +537,43 @@ def test_resolved_conflict_requires_resolution_metadata(tmp_path):
 
     with pytest.raises(CorpusError, match="resolver is required"):
         validate_directory(fixture)
+
+
+def test_invalid_utf8_csv_is_wrapped_with_path_and_cause(tmp_path):
+    fixture = build_valid_fixture(tmp_path)
+    path = fixture / "claims.csv"
+    path.write_bytes(b"\xff")
+
+    with pytest.raises(CorpusError, match=r"claims\.csv: invalid UTF-8") as error:
+        validate_directory(fixture)
+
+    assert isinstance(error.value.__cause__, UnicodeDecodeError)
+
+
+@pytest.mark.parametrize("filename", ["claims.csv", "metrics.csv"])
+def test_declared_citation_lists_reject_trailing_empty_element(
+    tmp_path, filename
+):
+    fixture = build_valid_fixture(tmp_path)
+    path = fixture / filename
+    rows = read_rows(path)
+    if not rows:
+        rows = [minimal_required_row(filename)]
+    rows[0]["cite_keys"] = "Sample2026Course;"
+    rewrite_rows(path, rows)
+
+    with pytest.raises(CorpusError, match="cite_keys contains an empty list element"):
+        validate_directory(fixture)
+
+
+@pytest.mark.parametrize("filename", ["claims.csv", "metrics.csv"])
+def test_optional_declared_citation_lists_allow_blank(tmp_path, filename):
+    fixture = build_valid_fixture(tmp_path)
+    path = fixture / filename
+    rows = read_rows(path)
+    if not rows:
+        rows = [minimal_required_row(filename)]
+    rows[0]["cite_keys"] = ""
+    rewrite_rows(path, rows)
+
+    validate_directory(fixture)

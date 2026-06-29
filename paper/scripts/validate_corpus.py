@@ -150,8 +150,17 @@ def normalize_doi(value: str) -> str:
     return value.rstrip("/")
 
 
-def split_values(value: str) -> list[str]:
-    return [item.strip() for item in value.split(";") if item.strip()]
+def split_citation_keys(
+    filename: str, row_number: int, value: str
+) -> list[str]:
+    if not value.strip():
+        return []
+    values = [item.strip() for item in value.split(";")]
+    if any(not item for item in values):
+        raise CorpusError(
+            f"{filename}:{row_number}: cite_keys contains an empty list element"
+        )
+    return values
 
 
 def read_csv(path: Path, required: tuple[str, ...]) -> list[dict[str, str]]:
@@ -164,6 +173,8 @@ def read_csv(path: Path, required: tuple[str, ...]) -> list[dict[str, str]]:
             if actual != required:
                 raise CorpusError(f"{path}: headers {actual!r} != {required!r}")
             rows = list(reader)
+        except UnicodeError as exc:
+            raise CorpusError(f"{path}: invalid UTF-8: {exc}") from exc
         except csv.Error as exc:
             raise CorpusError(
                 f"{path}:{reader.line_num}: CSV parse error: {exc}"
@@ -352,7 +363,10 @@ def validate_directory(data_dir: Path) -> None:
 
     for filename in ("claims.csv", "metrics.csv"):
         for row_number, row in enumerate(tables[filename], start=2):
-            for cite_key in split_values(row["cite_keys"]):
+            cite_keys = split_citation_keys(
+                filename, row_number, row["cite_keys"]
+            )
+            for cite_key in cite_keys:
                 if cite_key not in screened_keys:
                     raise CorpusError(
                         f"{filename}:{row_number}: unknown cite_key {cite_key!r}"
