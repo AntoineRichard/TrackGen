@@ -154,6 +154,10 @@ An `evidence_locator` must contain a complete HTTP(S) URL or a page, section, ta
 figure, appendix, source-path, or line marker. This is only a structural locator check;
 it does not prove that the cited material semantically supports the coded claim.
 
+## `candidate_aliases.csv`
+
+This ledger records explicit candidate-ID retirements when multiple assigned rows are proven to describe one citable work or one project whose paper is its citable system description. Each row names one retired ID, one surviving ID, a specific reason, and primary or official evidence. Migrations are direct and acyclic: unaffected IDs never change, retired IDs remain permanent gaps, and neither retired nor surviving IDs may be reassigned. A shared repository, a similar title, or `seed::` discovery provenance alone is not sufficient evidence for an alias. Distinct versions, standards, competitions, and related projects remain separate unless the ledger states otherwise.
+
 ## `candidates.csv`
 
 One row records one discovered source, including provenance, screening disposition, and
