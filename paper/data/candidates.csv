@@ -96,6 +96,6 @@ C0094,,Adaptive Planning and Control with Time-Varying Tire Models for Autonomou
 C0095,,LLA-MPC: Fast Adaptive Control for Autonomous Racing,AL-Sunni; Almubarak; Horng; Dolan,2025,,,https://arxiv.org/abs/2505.19512,paper,bootstrap,docs/related-work/prior-art.rst,main,candidate,,unverified,Bootstrap seed: docs/related-work/prior-art.rst
 C0096,,Autonomous Vehicles on the Edge: A Survey on Autonomous Vehicle Racing,Betz et al.,2022,,,https://arxiv.org/abs/2202.07008,survey,bootstrap,docs/related-work/prior-art.rst,main,candidate,,unverified,Bootstrap seed: docs/related-work/prior-art.rst
 C0097,,HDMapGen,,,,,,software,bootstrap,docs/related-work/prior-art.rst,main,candidate,,unverified,Bootstrap seed: docs/related-work/prior-art.rst
-C0098,,OSM/GIS extraction pipelines,,,,,,software,bootstrap,docs/related-work/prior-art.rst,main,candidate,,unverified,Bootstrap seed: docs/related-work/prior-art.rst
+C0098,,OSM,,,,,,software,bootstrap,docs/related-work/prior-art.rst,main,candidate,,unverified,Bootstrap seed: docs/related-work/prior-art.rst
 C0099,,Position-Based Multi-Agent Dynamics for Real-Time Crowd Simulation,Weiss et al.,2017/2018,,,https://arxiv.org/abs/1802.02673,paper,bootstrap,docs/related-work/prior-art.rst,main,candidate,,unverified,Bootstrap seed: docs/related-work/prior-art.rst
 C0100,,uv,,,,,,software,bootstrap,docs/tutorials/gate-sequences.rst,main,candidate,,unverified,Bootstrap seed: docs/tutorials/gate-sequences.rst

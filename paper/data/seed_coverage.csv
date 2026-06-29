@@ -151,7 +151,8 @@ docs/related-work/prior-art.rst,7. Procedural road/city network generation,Road/
 docs/related-work/prior-art.rst,7. Procedural road/city network generation,PGDrive,C0006,linked,
 docs/related-work/prior-art.rst,7. Procedural road/city network generation,ASFault,C0022,linked,
 docs/related-work/prior-art.rst,7. Procedural road/city network generation,HDMapGen,C0097,linked,
-docs/related-work/prior-art.rst,7. Procedural road/city network generation,OSM/GIS extraction pipelines,C0098,linked,
+docs/related-work/prior-art.rst,7. Procedural road/city network generation,OSM,C0098,linked,Concrete OSM project mention split from the aggregate pipeline family.
+docs/related-work/prior-art.rst,7. Procedural road/city network generation,GIS extraction pipelines,,unreviewed,Generic pipeline family; no distinct work is named in the bootstrap source.
 docs/related-work/prior-art.rst,7. Procedural road/city network generation,OpenDRIVE tooling,C0007,linked,
 docs/related-work/prior-art.rst,"8. Curve self-avoidance, thickness, and repulsive geometry","Gonzalez and Maddocks, ""Global Curvature, Thickness and the Ideal Shapes of Knots"" (PNAS 1999)",C0055,linked,
 docs/related-work/prior-art.rst,"8. Curve self-avoidance, thickness, and repulsive geometry","Yu, Schumacher, Crane, ""Repulsive Curves"" (SIGGRAPH 2021 / arXiv 2020)",C0057,linked,
@@ -243,3 +244,78 @@ docs/superpowers/specs/2026-06-23-gate-sequence-generation-design.md,Implementat
 docs/superpowers/specs/2026-06-23-gate-sequence-generation-design.md,Testing,TrackGen,C0063,linked,
 docs/superpowers/specs/2026-06-23-gate-sequence-generation-design.md,Testing,Warp,C0064,linked,
 docs/superpowers/specs/2026-06-23-gate-sequence-generation-design.md,Testing,CUDA,C0065,linked,
+docs/related-work/state-of-the-art.rst,Track Generation State of the Art,PBD,C0060,linked,Additional visible mention at source line 8.
+docs/related-work/state-of-the-art.rst,Track Generation State of the Art,XPBD,C0061,linked,Additional visible mention at source line 8.
+docs/related-work/state-of-the-art.rst,Evolutionary and Metaheuristic Race-Track Generators,TORCS,C0001,linked,Additional visible mention at source line 62.
+docs/related-work/state-of-the-art.rst,Evolutionary and Metaheuristic Race-Track Generators,Speed Dreams,C0002,linked,Additional visible mention at source line 62.
+docs/related-work/state-of-the-art.rst,Search over Splines and Control Points,TrackGen,C0063,linked,Additional visible mention at source line 101.
+docs/related-work/state-of-the-art.rst,Search over Splines and Control Points,TrackGen,C0063,linked,Additional visible mention at source line 123.
+docs/related-work/state-of-the-art.rst,Search over Splines and Control Points,CarRacing,C0017,linked,Additional visible mention at source line 122.
+docs/related-work/state-of-the-art.rst,3D Gate and Waypoint Course Generators,TrackGen,C0063,linked,Additional visible mention at source line 172.
+docs/related-work/state-of-the-art.rst,Boundary Case: Racing-Line Optimization on Fixed Tracks,TrackGen,C0063,linked,Additional visible mention at source line 210.
+docs/related-work/state-of-the-art.rst,Open-Source Implementations and Practical Baselines,Unity,C0048,linked,Additional visible mention at source line 313.
+docs/related-work/state-of-the-art.rst,"Curve Thickness, Ropelength, and Tangent-Point/Sobolev Methods",Repulsive Curves,C0057,linked,Additional visible mention at source line 364.
+docs/related-work/state-of-the-art.rst,"Curve Thickness, Ropelength, and Tangent-Point/Sobolev Methods",PBD,C0060,linked,Additional visible mention at source line 370.
+docs/related-work/state-of-the-art.rst,"Curve Thickness, Ropelength, and Tangent-Point/Sobolev Methods",XPBD,C0061,linked,Additional visible mention at source line 370.
+docs/related-work/state-of-the-art.rst,"Curve Thickness, Ropelength, and Tangent-Point/Sobolev Methods",TrackGen,C0063,linked,Additional visible mention at source line 370.
+docs/related-work/state-of-the-art.rst,"Curve Thickness, Ropelength, and Tangent-Point/Sobolev Methods",TrackGen,C0063,linked,Additional visible mention at source line 379.
+docs/related-work/state-of-the-art.rst,Position-Based Constraint Projection,PBD,C0060,linked,Additional visible mention at source line 386.
+docs/related-work/state-of-the-art.rst,Position-Based Constraint Projection,XPBD,C0061,linked,Additional visible mention at source line 386.
+docs/related-work/state-of-the-art.rst,Position-Based Constraint Projection,XPBD,C0061,linked,Additional visible mention at source line 401.
+docs/related-work/state-of-the-art.rst,Position-Based Constraint Projection,TrackGen,C0063,linked,Additional visible mention at source line 387.
+docs/related-work/prior-art.rst,Racetrack Generation Prior Art,XPBD,C0061,linked,Additional visible mention at source line 7.
+docs/related-work/prior-art.rst,1. Constructive segment/tile generators,TrackGen,C0063,linked,Additional visible mention at source line 47.
+docs/related-work/prior-art.rst,1. Constructive segment/tile generators,TrackGen,C0063,linked,Additional visible mention at source line 58.
+docs/related-work/prior-art.rst,2. Search over spline/control-point road geometry,TrackGen,C0063,linked,Additional visible mention at source line 99.
+docs/related-work/prior-art.rst,"4. RL, UED, and procedural racing levels",REPAIRED,C0016,linked,Additional visible mention at source line 169.
+docs/related-work/prior-art.rst,"4. RL, UED, and procedural racing levels",CarRacing,C0017,linked,Additional visible mention at source line 193.
+docs/related-work/prior-art.rst,"4. RL, UED, and procedural racing levels",PBD,C0060,linked,Additional visible mention at source line 161.
+docs/related-work/prior-art.rst,"4. RL, UED, and procedural racing levels",XPBD,C0061,linked,Additional visible mention at source line 161.
+docs/related-work/prior-art.rst,"4. RL, UED, and procedural racing levels",TrackGen,C0063,linked,Additional visible mention at source line 159.
+docs/related-work/prior-art.rst,"4. RL, UED, and procedural racing levels",TrackGen,C0063,linked,Additional visible mention at source line 177.
+docs/related-work/prior-art.rst,"4. RL, UED, and procedural racing levels",TrackGen,C0063,linked,Additional visible mention at source line 207.
+docs/related-work/prior-art.rst,5. Drone racing and 3D gate-course generation,PBD,C0060,linked,Additional visible mention at source line 218.
+docs/related-work/prior-art.rst,5. Drone racing and 3D gate-course generation,PBD,C0060,linked,Additional visible mention at source line 324.
+docs/related-work/prior-art.rst,5. Drone racing and 3D gate-course generation,XPBD,C0061,linked,Additional visible mention at source line 218.
+docs/related-work/prior-art.rst,5. Drone racing and 3D gate-course generation,XPBD,C0061,linked,Additional visible mention at source line 324.
+docs/related-work/prior-art.rst,5. Drone racing and 3D gate-course generation,TrackGen,C0063,linked,Additional visible mention at source line 213.
+docs/related-work/prior-art.rst,5. Drone racing and 3D gate-course generation,TrackGen,C0063,linked,Additional visible mention at source line 229.
+docs/related-work/prior-art.rst,5. Drone racing and 3D gate-course generation,TrackGen,C0063,linked,Additional visible mention at source line 243.
+docs/related-work/prior-art.rst,5. Drone racing and 3D gate-course generation,TrackGen,C0063,linked,Additional visible mention at source line 251.
+docs/related-work/prior-art.rst,5. Drone racing and 3D gate-course generation,TrackGen,C0063,linked,Additional visible mention at source line 306.
+docs/related-work/prior-art.rst,5. Drone racing and 3D gate-course generation,TrackGen,C0063,linked,Additional visible mention at source line 316.
+docs/related-work/prior-art.rst,5. Drone racing and 3D gate-course generation,TrackGen,C0063,linked,Additional visible mention at source line 320.
+docs/related-work/prior-art.rst,"6. Autonomous-racing labs, platforms, and downstream consumers",TrackGen,C0063,linked,Additional visible mention at source line 344.
+docs/related-work/prior-art.rst,"6. Autonomous-racing labs, platforms, and downstream consumers",TrackGen,C0063,linked,Additional visible mention at source line 356.
+docs/related-work/prior-art.rst,"6. Autonomous-racing labs, platforms, and downstream consumers",TrackGen,C0063,linked,Additional visible mention at source line 394.
+docs/related-work/prior-art.rst,"6. Autonomous-racing labs, platforms, and downstream consumers",TrackGen,C0063,linked,Additional visible mention at source line 436.
+docs/related-work/prior-art.rst,"6. Autonomous-racing labs, platforms, and downstream consumers",TrackGen,C0063,linked,Additional visible mention at source line 446.
+docs/related-work/prior-art.rst,"6. Autonomous-racing labs, platforms, and downstream consumers",PBD,C0060,linked,Additional visible mention at source line 357.
+docs/related-work/prior-art.rst,"6. Autonomous-racing labs, platforms, and downstream consumers",XPBD,C0061,linked,Additional visible mention at source line 357.
+docs/related-work/prior-art.rst,7. Procedural road/city network generation,PBD,C0060,linked,Additional visible mention at source line 477.
+docs/related-work/prior-art.rst,"8. Curve self-avoidance, thickness, and repulsive geometry",TrackGen,C0063,linked,Additional visible mention at source line 483.
+docs/related-work/prior-art.rst,"8. Curve self-avoidance, thickness, and repulsive geometry",TrackGen,C0063,linked,Additional visible mention at source line 492.
+docs/related-work/prior-art.rst,"8. Curve self-avoidance, thickness, and repulsive geometry",TrackGen,C0063,linked,Additional visible mention at source line 503.
+docs/related-work/prior-art.rst,"8. Curve self-avoidance, thickness, and repulsive geometry",PBD,C0060,linked,Additional visible mention at source line 503.
+docs/related-work/prior-art.rst,"8. Curve self-avoidance, thickness, and repulsive geometry",XPBD,C0061,linked,Additional visible mention at source line 500.
+docs/related-work/prior-art.rst,9. PBD / XPBD and constraint projection,TrackGen,C0063,linked,Additional visible mention at source line 509.
+docs/related-work/prior-art.rst,9. PBD / XPBD and constraint projection,PBD,C0060,linked,Additional visible mention at source line 520.
+docs/related-work/prior-art.rst,9. PBD / XPBD and constraint projection,PBD,C0060,linked,Additional visible mention at source line 528.
+docs/related-work/prior-art.rst,Where TrackGen Lands,TrackGen,C0063,linked,Additional visible mention at source line 549.
+docs/related-work/prior-art.rst,What Seems Unique,PBD,C0060,linked,Additional visible mention at source line 558.
+docs/related-work/prior-art.rst,What Seems Unique,PBD,C0060,linked,Additional visible mention at source line 583.
+docs/related-work/prior-art.rst,What Seems Unique,PBD,C0060,linked,Additional visible mention at source line 587.
+docs/related-work/prior-art.rst,What Seems Unique,XPBD,C0061,linked,Additional visible mention at source line 558.
+docs/related-work/prior-art.rst,What Seems Unique,XPBD,C0061,linked,Additional visible mention at source line 583.
+docs/related-work/prior-art.rst,What Seems Unique,XPBD,C0061,linked,Additional visible mention at source line 587.
+docs/related-work/prior-art.rst,What Seems Unique,Repulsive Curves,C0057,linked,Additional visible mention at source line 584.
+docs/related-work/prior-art.rst,What Seems Unique,TrackGen,C0063,linked,Additional visible mention at source line 572.
+docs/related-work/prior-art.rst,What Seems Unique,TrackGen,C0063,linked,Additional visible mention at source line 576.
+docs/related-work/prior-art.rst,What Seems Unique,Warp,C0064,linked,Additional visible mention at source line 570.
+docs/related-work/prior-art.rst,What Seems Unique,CUDA graph capture,C0065,linked,Additional visible mention at source line 571.
+docs/related-work/prior-art.rst,Suggested Positioning Sentence,PBD,C0060,linked,Additional visible mention at source line 596.
+docs/related-work/prior-art.rst,Suggested Positioning Sentence,XPBD,C0061,linked,Additional visible mention at source line 596.
+docs/related-work/prior-art.rst,Suggested Positioning Sentence,TrackGen,C0063,linked,Additional visible mention at source line 595.
+docs/related-work/prior-art.rst,Suggested Related-Work Buckets,XPBD,C0061,linked,Additional visible mention at source line 624.
+docs/tutorials/gate-sequences.rst,Buffer Reuse and Snapshots,Warp,C0064,linked,Additional visible mention at source line 168.
+docs/superpowers/specs/2026-06-23-gate-sequence-generation-design.md,Public API,Warp,C0064,linked,Additional visible mention at source line 33.

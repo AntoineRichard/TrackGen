@@ -1,6 +1,6 @@
 search_id,search_date,stream,agent,query,search_surface,results_screened,candidates_added,notes
-S0001,2026-06-29,bootstrap,main,docs/related-work/state-of-the-art.rst,local-corpus,77,65,Complete mention-level bootstrap inventory; repeated mentions retained and candidate identities deduplicated.
-S0002,2026-06-29,bootstrap,main,docs/related-work/prior-art.rst,local-corpus,133,34,Complete mention-level bootstrap inventory; includes summary-section repeats and two explicit unresolved aggregate labels.
+S0001,2026-06-29,bootstrap,main,docs/related-work/state-of-the-art.rst,local-corpus,96,65,Complete mention-level bootstrap inventory; repeated mentions retained and candidate identities deduplicated.
+S0002,2026-06-29,bootstrap,main,docs/related-work/prior-art.rst,local-corpus,188,34,Complete mention-level bootstrap inventory; includes summary-section repeats and three explicit unresolved aggregate labels.
 S0003,2026-06-29,bootstrap,main,docs/generators/benchmarks.rst,local-corpus,6,0,"Reviewed internal benchmark, TrackGen, Warp, and XPBD source-bearing mentions."
-S0004,2026-06-29,bootstrap,main,docs/tutorials/gate-sequences.rst,local-corpus,14,1,"Reviewed TrackGen API, Warp, CUDA, XPBD, and uv source-bearing mentions."
-S0005,2026-06-29,bootstrap,main,docs/superpowers/specs/2026-06-23-gate-sequence-generation-design.md,local-corpus,14,0,Reviewed named systems and solver references in the approved gate-sequence design.
+S0004,2026-06-29,bootstrap,main,docs/tutorials/gate-sequences.rst,local-corpus,15,1,"Reviewed TrackGen API, Warp, CUDA, XPBD, and uv source-bearing mentions."
+S0005,2026-06-29,bootstrap,main,docs/superpowers/specs/2026-06-23-gate-sequence-generation-design.md,local-corpus,15,0,Reviewed named systems and solver references in the approved gate-sequence design.
