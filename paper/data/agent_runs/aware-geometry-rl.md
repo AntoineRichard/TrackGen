@@ -353,3 +353,10 @@ Validation used Python's `csv` module with `newline=""` and UTF-8, compared the 
 - Code and asset statuses were not inferred from paper silence or from unofficial mirrors.
 - Simulator/export fields are conservative. A simulator or export value is `NR` when the inspected primary source did not expose a named platform or serialized schema; internal parameter vectors and geometric representations are not treated as export formats.
 - This worker did not broaden into aerial-only gate-course papers except where a method directly informed a ground/road citation chain.
+
+## Canonical final-round record
+
+```final-saturation
+round=R4 added=2 denominator=49 cumulative_retained=51 percent=4.08%
+round=R5 added=0 denominator=51 cumulative_retained=51 percent=0.00%
+```

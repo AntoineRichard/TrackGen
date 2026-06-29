@@ -240,3 +240,10 @@ The stopping calculation is `new strict candidates / cumulative unique strict ca
 - `blind-aerial-maritime.md`: this protocol, query, screening, saturation, and retrieval report.
 
 Post-write validation uses a standards-compliant CSV parser and checks the literal header, 35 columns on every row, exact `; ` list separators, scalar status vocabularies, sole-`NR` technical fields, candidate/domain counts, DOI and normalized-title uniqueness, and complete primary/official URLs in every evidence locator. The manual evidence audit removed unsupported technical details from BAAM-A012, A016, M007, and M011 where full text was not retrieved. The final availability audit adds official repository evidence for BAAM-A002, BAAM-A007, and BAAM-M012 and replaces unsupported undated absence judgments with `NR`. Validation reads only these two destination files.
+
+## Canonical final-round record
+
+```final-saturation
+round=R5 added=0 denominator=31 cumulative_retained=31 percent=0.000%
+round=R6 added=1 denominator=32 cumulative_retained=32 percent=3.125%
+```

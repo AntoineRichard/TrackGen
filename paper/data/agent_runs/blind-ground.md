@@ -306,3 +306,10 @@ Files written by this run:
 
 - `paper/data/agent_runs/blind-ground.csv`
 - `paper/data/agent_runs/blind-ground.md`
+
+## Canonical final-round record
+
+```final-saturation
+round=R2 added=1 denominator=45 cumulative_retained=45 percent=2.22%
+round=R3 added=0 denominator=45 cumulative_retained=45 percent=0.00%
+```

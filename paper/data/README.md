@@ -107,6 +107,14 @@ state that the total screened-hit count was not captured. Under the append-only 
 ledger, corrective query rows may follow a run's summary; the summary need not be
 physically last.
 
+Each paired report contains exactly one `final-saturation` fenced block under
+`## Canonical final-round record`. Its two ordered lines use
+`round=R# added=<integer> denominator=<positive integer> cumulative_retained=<integer> percent=<decimal>%`.
+Round identities must be different and consecutive, both recomputed percentages must be
+below 5%, and the summary note repeats both records exactly. A displayed percentage is
+valid when its absolute difference from `100 * added / denominator` is no more than
+half one unit in its final displayed decimal place.
+
 The Task 4 rows document search actions and output accounting. They must not be pooled
 with bootstrap named-mention counts, and `NR` must not be converted into zero or an
 invented screened-hit total.

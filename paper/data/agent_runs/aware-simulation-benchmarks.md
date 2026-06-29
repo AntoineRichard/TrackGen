@@ -307,3 +307,10 @@ These are coded `NR` and do not block inclusion of the directly supported system
 - The report does not assert that every simulator version behaves identically to the cited documentation version.
 
 Final validation checks the exact 35-column header, uniform row width, required fields, continuous/unique IDs, controlled labels, whole-cell `NR` semantics, semicolon-plus-space list formatting, direct evidence locators, and normalized DOI/title duplicates. The fresh command result is reported in the task completion response.
+
+## Canonical final-round record
+
+```final-saturation
+round=R5 added=0 denominator=29 cumulative_retained=29 percent=0.00%
+round=R6 added=1 denominator=29 cumulative_retained=30 percent=3.45%
+```

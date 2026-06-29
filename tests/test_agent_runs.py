@@ -1124,14 +1124,18 @@ def test_citation_provenance_requires_matching_report_ledger_relationship(
         ("notes", "0 excluded", "1 excluded", "excluded"),
         (
             "notes",
-            "1/45 = 2.22%",
-            "9/45 = 20.00%",
+            "round=R2 added=1 denominator=45 "
+            "cumulative_retained=45 percent=2.22%",
+            "round=R2 added=9 denominator=45 "
+            "cumulative_retained=45 percent=20.00%",
             "saturation",
         ),
         (
             "notes",
-            "0/45 = 0.00%",
-            "1/45 = 2.22%",
+            "round=R3 added=0 denominator=45 "
+            "cumulative_retained=45 percent=0.00%",
+            "round=R3 added=1 denominator=45 "
+            "cumulative_retained=45 percent=2.22%",
             "saturation",
         ),
         (
@@ -1166,11 +1170,21 @@ def test_runtime_summary_rejects_incorrect_structured_semantics(
 @pytest.mark.parametrize(
     ("old", "new"),
     [
-        ("1/45 = 2.22%", "1/45 = 2.21%"),
-        ("0/45 = 0.00%", "0/45 = 0.01%"),
+        (
+            "round=R2 added=1 denominator=45 "
+            "cumulative_retained=45 percent=2.22%",
+            "round=R2 added=1 denominator=100 "
+            "cumulative_retained=45 percent=1.00%",
+        ),
+        (
+            "round=R3 added=0 denominator=45 "
+            "cumulative_retained=45 percent=0.00%",
+            "round=R3 added=0 denominator=100 "
+            "cumulative_retained=45 percent=0.00%",
+        ),
     ],
 )
-def test_runtime_summary_ratios_must_appear_in_the_paired_report(
+def test_runtime_summary_saturation_must_match_canonical_report(
     agent_run_dir: Path,
     old: str,
     new: str,
@@ -1180,7 +1194,328 @@ def test_runtime_summary_ratios_must_appear_in_the_paired_report(
     assert old in text
     path.write_text(text.replace(old, new), encoding="utf-8")
 
-    with pytest.raises(ValueError, match="saturation.*paired report"):
+    with pytest.raises(ValueError, match="final saturation.*canonical"):
+        validate_agent_runs(agent_run_dir)
+
+
+SaturationFixture = tuple[str, int, int, int, str]
+
+GROUND_FINAL_SATURATION: tuple[SaturationFixture, ...] = (
+    ("R2", 1, 45, 45, "2.22"),
+    ("R3", 0, 45, 45, "0.00"),
+)
+SATURATION_SECTION_PATTERN = re.compile(
+    r"\n## Canonical final-round record\n\n"
+    + re.escape(chr(96) * 3)
+    + r"final-saturation\n.*?\n"
+    + re.escape(chr(96) * 3)
+    + r"\n",
+    re.DOTALL,
+)
+
+
+def render_saturation_section(
+    records: tuple[SaturationFixture, ...],
+    heading: str = "Canonical final-round record",
+) -> str:
+    fence = chr(96) * 3
+    lines = "\n".join(
+        f"round={round_id} added={added} denominator={denominator} "
+        f"cumulative_retained={cumulative} percent={percent}%"
+        for round_id, added, denominator, cumulative, percent in records
+    )
+    return (
+        f"## {heading}\n\n"
+        f"{fence}final-saturation\n{lines}\n{fence}\n"
+    )
+
+
+def replace_report_saturation(
+    path: Path,
+    records: tuple[SaturationFixture, ...],
+    heading: str = "Canonical final-round record",
+) -> None:
+    text = path.read_text(encoding="utf-8")
+    section = render_saturation_section(records, heading)
+    if SATURATION_SECTION_PATTERN.search(text):
+        text = SATURATION_SECTION_PATTERN.sub("\n" + section, text, count=1)
+    else:
+        text = text.rstrip() + "\n\n" + section
+    path.write_text(text, encoding="utf-8")
+
+
+def remove_report_saturation(path: Path) -> None:
+    text = path.read_text(encoding="utf-8")
+    text = SATURATION_SECTION_PATTERN.sub("\n", text, count=1)
+    path.write_text(text.rstrip() + "\n", encoding="utf-8")
+
+
+def set_summary_saturation(
+    summary: dict[str, str],
+    records: tuple[SaturationFixture, ...],
+) -> None:
+    encoded = "; ".join(
+        f"round={round_id} added={added} denominator={denominator} "
+        f"cumulative_retained={cumulative} percent={percent}%"
+        for round_id, added, denominator, cumulative, percent in records
+    )
+    replacement = f"final saturation: {encoded}. Total screened-hit"
+    notes = re.sub(
+        r"final saturation(?: arithmetic)?: .*?\. Total screened-hit",
+        replacement,
+        summary["notes"],
+    )
+    assert notes != summary["notes"]
+    summary["notes"] = notes
+
+
+def test_runtime_rejects_an_earlier_nonfinal_ratio(
+    agent_run_dir: Path,
+):
+    report_path = agent_run_dir / "blind-ground.md"
+    text = report_path.read_text(encoding="utf-8")
+    log_path = fixture_search_log_path(agent_run_dir)
+    rows = read_search_log(log_path)
+    summary = fixture_summary(rows, "blind-ground")
+
+    diagnostic = "Earlier nonfinal diagnostic ratio: 1/100 = 1.00%."
+    report_path.write_text(
+        text.rstrip() + "\n\n" + diagnostic + "\n",
+        encoding="utf-8",
+    )
+    if "## Canonical final-round record" in text:
+        records = (
+            ("R2", 1, 100, 45, "1.00"),
+            GROUND_FINAL_SATURATION[1],
+        )
+        set_summary_saturation(summary, records)
+    else:
+        summary["notes"] = summary["notes"].replace(
+            "1/45 = 2.22%",
+            "1/100 = 1.00%",
+            1,
+        )
+    write_search_log(log_path, rows)
+
+    with pytest.raises(ValueError, match="final saturation.*canonical"):
+        validate_agent_runs(agent_run_dir)
+
+
+def test_runtime_recomputes_final_saturation_percentage(
+    agent_run_dir: Path,
+):
+    report_path = agent_run_dir / "blind-ground.md"
+    text = report_path.read_text(encoding="utf-8")
+    log_path = fixture_search_log_path(agent_run_dir)
+    rows = read_search_log(log_path)
+    summary = fixture_summary(rows, "blind-ground")
+
+    if "## Canonical final-round record" in text:
+        records = (
+            ("R2", 1, 45, 45, "99.99"),
+            GROUND_FINAL_SATURATION[1],
+        )
+        replace_report_saturation(report_path, records)
+        set_summary_saturation(summary, records)
+    else:
+        report_path.write_text(
+            text.replace("1/45 = 2.22%", "1/45 = 99.99%", 1),
+            encoding="utf-8",
+        )
+        summary["notes"] = summary["notes"].replace(
+            "1/45 = 2.22%",
+            "1/45 = 99.99%",
+            1,
+        )
+    write_search_log(log_path, rows)
+
+    with pytest.raises(ValueError, match="percentage.*added.*denominator"):
+        validate_agent_runs(agent_run_dir)
+
+
+def test_runtime_allows_equal_arithmetic_for_distinct_zero_yield_rounds(
+    agent_run_dir: Path,
+):
+    records = (
+        ("R2", 0, 45, 45, "0.00"),
+        ("R3", 0, 45, 45, "0.00"),
+    )
+    report_path = agent_run_dir / "blind-ground.md"
+    text = report_path.read_text(encoding="utf-8")
+    log_path = fixture_search_log_path(agent_run_dir)
+    rows = read_search_log(log_path)
+    summary = fixture_summary(rows, "blind-ground")
+
+    if "## Canonical final-round record" in text:
+        replace_report_saturation(report_path, records)
+        set_summary_saturation(summary, records)
+    else:
+        summary["notes"] = summary["notes"].replace(
+            "1/45 = 2.22%",
+            "0/45 = 0.00%",
+            1,
+        )
+    write_search_log(log_path, rows)
+
+    validate_agent_runs(agent_run_dir)
+
+
+def test_runtime_requires_one_canonical_final_round_record(
+    agent_run_dir: Path,
+):
+    remove_report_saturation(agent_run_dir / "blind-ground.md")
+
+    with pytest.raises(ValueError, match="canonical final-round record"):
+        validate_agent_runs(agent_run_dir)
+
+
+def test_runtime_requires_exactly_two_final_saturation_rounds(
+    agent_run_dir: Path,
+):
+    records = GROUND_FINAL_SATURATION + (
+        ("R4", 0, 45, 45, "0.00"),
+    )
+    replace_report_saturation(agent_run_dir / "blind-ground.md", records)
+
+    with pytest.raises(ValueError, match="exactly two"):
+        validate_agent_runs(agent_run_dir)
+
+
+def test_runtime_requires_consecutive_final_round_identities(
+    agent_run_dir: Path,
+):
+    records = (
+        GROUND_FINAL_SATURATION[0],
+        ("R4", 0, 45, 45, "0.00"),
+    )
+    report_path = agent_run_dir / "blind-ground.md"
+    had_canonical = "## Canonical final-round record" in report_path.read_text(
+        encoding="utf-8"
+    )
+    replace_report_saturation(report_path, records)
+    if had_canonical:
+        log_path = fixture_search_log_path(agent_run_dir)
+        rows = read_search_log(log_path)
+        set_summary_saturation(fixture_summary(rows, "blind-ground"), records)
+        write_search_log(log_path, rows)
+
+    with pytest.raises(ValueError, match="consecutive"):
+        validate_agent_runs(agent_run_dir)
+
+
+def test_runtime_ignores_saturation_record_under_wrong_heading(
+    agent_run_dir: Path,
+):
+    path = agent_run_dir / "blind-ground.md"
+    remove_report_saturation(path)
+    replace_report_saturation(
+        path,
+        GROUND_FINAL_SATURATION,
+        heading="Other machine-readable data",
+    )
+
+    with pytest.raises(ValueError, match="canonical final-round record"):
+        validate_agent_runs(agent_run_dir)
+
+
+def append_provenance_row(path: Path, row: str) -> None:
+    text = path.read_text(encoding="utf-8")
+    path.write_text(text.rstrip() + "\n\n" + row + "\n", encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        (
+            "| AGRL9999 | "
+            + chr(96)
+            + "seed::C0009"
+            + chr(96)
+            + " | stale seed relationship |"
+        ),
+        (
+            "| AGRL9998 | "
+            + chr(96)
+            + "citation::10.1145/3680468"
+            + chr(96)
+            + " | stale citation relationship |"
+        ),
+    ],
+)
+def test_provenance_ledger_rejects_extra_stale_relationship(
+    agent_run_dir: Path,
+    row: str,
+):
+    path = agent_run_dir / "aware-geometry-rl.md"
+    append_provenance_row(path, row)
+
+    with pytest.raises(ValueError, match="provenance ledger.*exactly"):
+        validate_agent_runs(agent_run_dir)
+
+
+def test_provenance_ledger_rejects_duplicate_candidate_mapping(
+    agent_run_dir: Path,
+):
+    path = agent_run_dir / "aware-geometry-rl.md"
+    append_provenance_row(
+        path,
+        (
+            "| AGRL0001 | "
+            + chr(96)
+            + "seed::C0010"
+            + chr(96)
+            + " | duplicate candidate mapping |"
+        ),
+    )
+
+    with pytest.raises(ValueError, match="one-to-one"):
+        validate_agent_runs(agent_run_dir)
+
+
+def test_provenance_ledger_rejects_missing_relationship(
+    agent_run_dir: Path,
+):
+    path = agent_run_dir / "aware-geometry-rl.md"
+    text = path.read_text(encoding="utf-8")
+    prefix = (
+        "| AGRL0001 | "
+        + chr(96)
+        + "seed::C0009"
+        + chr(96)
+        + " |"
+    )
+    line = next(
+        line for line in text.splitlines() if line.startswith(prefix)
+    )
+    path.write_text(text.replace(line + "\n", "", 1), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="provenance ledger.*exactly"):
+        validate_agent_runs(agent_run_dir)
+
+
+def test_provenance_ledger_rejects_mismatched_source(
+    agent_run_dir: Path,
+):
+    path = agent_run_dir / "aware-geometry-rl.md"
+    text = path.read_text(encoding="utf-8")
+    old = (
+        "| AGRL0001 | "
+        + chr(96)
+        + "seed::C0009"
+        + chr(96)
+        + " |"
+    )
+    new = (
+        "| AGRL0001 | "
+        + chr(96)
+        + "seed::C0010"
+        + chr(96)
+        + " |"
+    )
+    assert old in text
+    path.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="provenance ledger.*exactly"):
         validate_agent_runs(agent_run_dir)
 
 

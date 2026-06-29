@@ -7,6 +7,7 @@ import re
 import unicodedata
 from collections import Counter
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -126,17 +127,18 @@ PROVENANCE_LEDGER_PATTERN = re.compile(
 STABLE_SOURCE_IDENTIFIER_PATTERN = re.compile(
     r"[A-Za-z0-9][A-Za-z0-9._:/-]*"
 )
-SATURATION_STATEMENT_PATTERN = (
-    r"[0-9]+/[0-9]+ = [0-9]+(?:\.[0-9]+)?%"
+SATURATION_LINE_PATTERN = re.compile(
+    r"^round=(?P<round_id>R[0-9]+) "
+    r"added=(?P<added>[0-9]+) "
+    r"denominator=(?P<denominator>[1-9][0-9]*) "
+    r"cumulative_retained=(?P<cumulative>[0-9]+) "
+    r"percent=(?P<percent>[0-9]+\.[0-9]+)%$"
 )
 SUMMARY_NOTES_PATTERN = re.compile(
     r"^Source: (?P<source>[^;]+); "
     r"(?P<retained>[0-9]+) retained, (?P<excluded>[0-9]+) excluded; "
-    r"final saturation arithmetic: (?P<first>"
-    + SATURATION_STATEMENT_PATTERN
-    + r") and (?P<second>"
-    + SATURATION_STATEMENT_PATTERN
-    + r")\. Total screened-hit count was not captured\.$"
+    r"final saturation: (?P<saturation>.+)\. "
+    r"Total screened-hit count was not captured\.$"
 )
 LOCATOR_MARKER_PATTERN = re.compile(
     r"(?i)(?:\bp{1,2}\.?\s+\d+|\bpages?\s+\d+"
@@ -162,10 +164,19 @@ class ReportQuery:
 
 
 @dataclass(frozen=True)
+class SaturationRound:
+    round_id: str
+    added: int
+    denominator: int
+    cumulative_retained: int
+    percent_text: str
+
+
+@dataclass(frozen=True)
 class ReportData:
-    text: str
     queries: tuple[ReportQuery, ...]
     provenance: dict[str, str]
+    saturation: tuple[SaturationRound, ...]
 
 
 def _numbered_ids(prefix: str, count: int, width: int) -> tuple[str, ...]:
@@ -611,6 +622,76 @@ def _validate_csv(
     return rows
 
 
+def _parse_saturation_line(
+    value: str,
+    context: str,
+) -> SaturationRound:
+    match = SATURATION_LINE_PATTERN.fullmatch(value)
+    if not match:
+        raise AgentRunError(
+            f"{context}: malformed canonical final saturation line {value!r}"
+        )
+    return SaturationRound(
+        round_id=match.group("round_id"),
+        added=int(match.group("added")),
+        denominator=int(match.group("denominator")),
+        cumulative_retained=int(match.group("cumulative")),
+        percent_text=match.group("percent"),
+    )
+
+
+def _validate_saturation_rounds(
+    records: tuple[SaturationRound, ...],
+    context: str,
+) -> None:
+    if len(records) != 2:
+        raise AgentRunError(
+            f"{context}: canonical final-round record must contain exactly two "
+            "rounds"
+        )
+
+    first, second = records
+    first_number = int(first.round_id.removeprefix("R"))
+    second_number = int(second.round_id.removeprefix("R"))
+    if first.round_id == second.round_id or second_number != first_number + 1:
+        raise AgentRunError(
+            f"{context}: final saturation requires two different consecutive "
+            "round identities"
+        )
+
+    for record in records:
+        reported = Decimal(record.percent_text)
+        expected = Decimal(record.added) * Decimal(100) / Decimal(
+            record.denominator
+        )
+        precision = len(record.percent_text.partition(".")[2])
+        tolerance = Decimal(1).scaleb(-precision) / Decimal(2)
+        if abs(reported - expected) > tolerance:
+            raise AgentRunError(
+                f"{context}: saturation percentage {record.percent_text}% "
+                f"does not match added={record.added} and "
+                f"denominator={record.denominator} within rounding tolerance "
+                f"{tolerance}"
+            )
+        if reported >= Decimal(5) or expected >= Decimal(5):
+            raise AgentRunError(
+                f"{context}: both final saturation rounds must be below 5%"
+            )
+        if record.cumulative_retained < record.added:
+            raise AgentRunError(
+                f"{context}: cumulative_retained cannot be less than added"
+            )
+
+    if (
+        second.cumulative_retained
+        != first.cumulative_retained + second.added
+    ):
+        raise AgentRunError(
+            f"{context}: consecutive cumulative_retained values do not "
+            "reconcile with the second round's added count"
+        )
+
+
 def _validate_report(path: Path) -> ReportData:
     try:
         text = path.read_text(encoding="utf-8")
@@ -621,9 +702,11 @@ def _validate_report(path: Path) -> ReportData:
     report_headings: list[str] = []
     queries: list[ReportQuery] = []
     provenance: dict[str, str] = {}
+    saturation_blocks: list[tuple[str, ...]] = []
     fenced_lines: list[str] = []
     fenced_section = ""
     capture_fence = False
+    capture_saturation = False
     in_fence = False
 
     def query_context() -> bool:
@@ -648,14 +731,24 @@ def _validate_report(path: Path) -> ReportData:
             report_headings.append(value.casefold())
             continue
 
-        if line.lstrip().startswith(chr(96) * 3):
+        stripped = line.lstrip()
+        if stripped.startswith(chr(96) * 3):
             if not in_fence:
                 in_fence = True
-                capture_fence = query_context()
+                fence_info = stripped[3:].strip()
+                capture_saturation = (
+                    fence_info == "final-saturation"
+                    and bool(headings)
+                    and headings[-1][1].casefold()
+                    == "canonical final-round record"
+                )
+                capture_fence = query_context() and not capture_saturation
                 fenced_section = section_name()
                 fenced_lines = []
             else:
-                if capture_fence:
+                if capture_saturation:
+                    saturation_blocks.append(tuple(fenced_lines))
+                elif capture_fence:
                     queries.extend(
                         ReportQuery(fenced_section, query)
                         for query in fenced_lines
@@ -663,11 +756,12 @@ def _validate_report(path: Path) -> ReportData:
                     )
                 in_fence = False
                 capture_fence = False
+                capture_saturation = False
                 fenced_lines = []
             continue
 
         if in_fence:
-            if capture_fence:
+            if capture_fence or capture_saturation:
                 fenced_lines.append(line)
             continue
 
@@ -676,8 +770,9 @@ def _validate_report(path: Path) -> ReportData:
             candidate_id = ledger_match.group("candidate_id")
             if candidate_id in provenance:
                 raise AgentRunError(
-                    f"{path}:{line_number}: duplicate provenance ledger row "
-                    f"for {candidate_id}"
+                    f"{path}:{line_number}: duplicate candidate mapping "
+                    "violates the one-to-one provenance ledger contract for "
+                    f"{candidate_id}"
                 )
             provenance[candidate_id] = ledger_match.group("provenance")
 
@@ -692,7 +787,22 @@ def _validate_report(path: Path) -> ReportData:
             )
     if not queries:
         raise AgentRunError(f"{path}: exact query ledger is empty")
-    return ReportData(text, tuple(queries), provenance)
+    if len(saturation_blocks) != 1:
+        raise AgentRunError(
+            f"{path}: requires exactly one canonical final-round record"
+        )
+
+    block = saturation_blocks[0]
+    if len(block) != 2:
+        raise AgentRunError(
+            f"{path}: canonical final-round record must contain exactly two "
+            "rounds"
+        )
+    saturation = tuple(
+        _parse_saturation_line(line, str(path)) for line in block
+    )
+    _validate_saturation_rounds(saturation, str(path))
+    return ReportData(tuple(queries), provenance, saturation)
 
 
 def _query_batches_follow_report_order(
@@ -788,6 +898,44 @@ def _exact_query_action(
     return action
 
 
+def _validate_provenance_ledger(
+    slug: str,
+    candidate_rows: list[dict[str, str]],
+    report: ReportData,
+) -> None:
+    if slug not in AWARE_RUNS:
+        return
+
+    expected = {
+        row["candidate_id"]: row["discovery_query"]
+        for row in candidate_rows
+        if row["discovery_query"].startswith(("seed::", "citation::"))
+    }
+    actual = report.provenance
+    if actual == expected:
+        return
+
+    expected_ids = set(expected)
+    actual_ids = set(actual)
+    missing = sorted(expected_ids - actual_ids)
+    extra = sorted(actual_ids - expected_ids)
+    mismatched = sorted(
+        candidate_id
+        for candidate_id in expected_ids & actual_ids
+        if expected[candidate_id] != actual[candidate_id]
+    )
+    expected_values = [
+        expected[candidate_id]
+        for candidate_id in missing + mismatched
+    ]
+    prefix = f"{expected_values[0]}: " if expected_values else ""
+    raise AgentRunError(
+        f"{prefix}{slug}: provenance ledger must exactly match all non-query "
+        f"CSV provenance values; missing={missing}, extra={extra}, "
+        f"mismatched={mismatched}"
+    )
+
+
 def _validate_candidate_queries(
     slug: str,
     csv_path: Path,
@@ -836,11 +984,6 @@ def _validate_candidate_queries(
                     f"{csv_path}:{row_number}: {value} does not reference an "
                     "existing bootstrap candidate"
                 )
-            if report.provenance.get(row["candidate_id"]) != value:
-                raise AgentRunError(
-                    f"{csv_path}:{row_number}: {value} has no matching "
-                    "provenance ledger relationship in the paired report"
-                )
             continue
 
         if value.startswith("citation::"):
@@ -852,11 +995,6 @@ def _validate_candidate_queries(
                     f"{csv_path}:{row_number}: citation:: provenance requires "
                     "a nonempty stable source identifier"
                 )
-            if report.provenance.get(row["candidate_id"]) != value:
-                raise AgentRunError(
-                    f"{csv_path}:{row_number}: {value} has no matching "
-                    "provenance ledger relationship in the paired report"
-                )
             continue
 
         raise AgentRunError(
@@ -865,9 +1003,11 @@ def _validate_candidate_queries(
             "(query::<literal>, seed::<C####>, or citation::<source identifier>)"
         )
 
-
-def _normalize_ratio_statement(value: str) -> str:
-    return re.sub(r"\s+", "", value)
+    _validate_provenance_ledger(
+        slug,
+        candidate_rows,
+        report,
+    )
 
 
 def _validate_summary(
@@ -921,6 +1061,23 @@ def _validate_summary(
             f"{slug}: RUN-SUMMARY source path does not match the paired report"
         )
 
+    summary_saturation = tuple(
+        _parse_saturation_line(
+            value,
+            f"{slug}: RUN-SUMMARY final saturation",
+        )
+        for value in match.group("saturation").split("; ")
+    )
+    _validate_saturation_rounds(
+        summary_saturation,
+        f"{slug}: RUN-SUMMARY final saturation",
+    )
+    if summary_saturation != report.saturation:
+        raise AgentRunError(
+            f"{slug}: RUN-SUMMARY final saturation does not exactly match "
+            "the canonical report record"
+        )
+
     excluded = sum(
         row["screening_status"].strip() == "excluded"
         for row in candidate_rows
@@ -934,20 +1091,11 @@ def _validate_summary(
         raise AgentRunError(
             f"{slug}: RUN-SUMMARY excluded count does not match CSV statuses"
         )
-
-    statements = (match.group("first"), match.group("second"))
-    if statements[0] == statements[1]:
+    if report.saturation[-1].cumulative_retained != retained:
         raise AgentRunError(
-            f"{slug}: RUN-SUMMARY saturation arithmetic must identify two "
-            "distinct final statements"
+            f"{slug}: final saturation cumulative_retained does not match "
+            "the retained CSV row count"
         )
-    compact_report = _normalize_ratio_statement(report.text)
-    for statement in statements:
-        if _normalize_ratio_statement(statement) not in compact_report:
-            raise AgentRunError(
-                f"{slug}: RUN-SUMMARY saturation statement {statement!r} "
-                "is absent from the paired report"
-            )
 
 
 def _validate_search_integration(
