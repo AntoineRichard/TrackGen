@@ -1,1 +1,245 @@
 source_path,source_heading,source_label,candidate_id,coverage_status,notes
+docs/related-work/state-of-the-art.rst,"Constructive Segment, Tile, and Road-Block Generators",TORCS,C0001,linked,
+docs/related-work/state-of-the-art.rst,"Constructive Segment, Tile, and Road-Block Generators",Speed Dreams,C0002,linked,
+docs/related-work/state-of-the-art.rst,"Constructive Segment, Tile, and Road-Block Generators",Interactive Track Generator for TORCS and Speed Dreams,C0003,linked,
+docs/related-work/state-of-the-art.rst,"Constructive Segment, Tile, and Road-Block Generators","Barthet et al., ""Closing the Affective Loop via Experience-Driven Reinforcement Learning Designers"" (2024)",C0004,linked,
+docs/related-work/state-of-the-art.rst,"Constructive Segment, Tile, and Road-Block Generators",Solid Rally,C0005,linked,Named game in the Barthet et al. source description.
+docs/related-work/state-of-the-art.rst,"Constructive Segment, Tile, and Road-Block Generators","Li et al., ""Improving the Generalization of End-to-End Driving through Procedural Generation"" / PGDrive (2020)",C0006,linked,
+docs/related-work/state-of-the-art.rst,"Constructive Segment, Tile, and Road-Block Generators","Ikram, Muktadir, Whitehead, ""Procedural Generation of Complex Roundabouts for Autonomous Vehicle Testing"" (2023)",C0008,linked,
+docs/related-work/state-of-the-art.rst,"Constructive Segment, Tile, and Road-Block Generators",OpenDRIVE,C0007,linked,Named export/road standard in the roundabout source description.
+docs/related-work/state-of-the-art.rst,Evolutionary and Metaheuristic Race-Track Generators,"Loiacono, Cardamone, Lanzi, ""Automatic Track Generation for High-End Racing Games Using Evolutionary Computation"" (2011)",C0009,linked,
+docs/related-work/state-of-the-art.rst,Evolutionary and Metaheuristic Race-Track Generators,"Togelius, De Nardi, Lucas, ""Making Racing Fun Through Player Modeling and Track Evolution"" (2006)",C0010,linked,
+docs/related-work/state-of-the-art.rst,Evolutionary and Metaheuristic Race-Track Generators,"Prasetya and Maulidevi, ""Search-Based Procedural Content Generation for Race Tracks in Video Games"" (2016)",C0011,linked,
+docs/related-work/state-of-the-art.rst,Evolutionary and Metaheuristic Race-Track Generators,"Alyaseri and Conner, ""Comparative Analysis of Metaheuristic Algorithms for Procedural Race Track Generation in Games"" (2024)",C0012,linked,
+docs/related-work/state-of-the-art.rst,Evolutionary and Metaheuristic Race-Track Generators,"Nascimento et al., ""Procedural Generation of Isometric Racetracks Using Chain Code for Racing Games"" (2021)",C0013,linked,
+docs/related-work/state-of-the-art.rst,Search over Splines and Control Points,"Klueck, Klampfl, Wotawa, ""Automatic Generation of Challenging Road Networks for ALKS Testing based on Bezier Curves and Search"" (2021)",C0014,linked,
+docs/related-work/state-of-the-art.rst,Search over Splines and Control Points,ALKS,C0015,linked,Named standard/test regime in the paper title.
+docs/related-work/state-of-the-art.rst,Search over Splines and Control Points,"Jiang et al., ""Replay-Guided Adversarial Environment Design"" / REPAIRED (2021)",C0016,linked,
+docs/related-work/state-of-the-art.rst,Search over Splines and Control Points,OpenAI Gym CarRacing,C0017,linked,Named benchmark environment used by REPAIRED.
+docs/related-work/state-of-the-art.rst,Search over Splines and Control Points,"Azad et al., ""CLUTR: Curriculum Learning via Unsupervised Task Representation Learning"" (2022)",C0018,linked,
+docs/related-work/state-of-the-art.rst,Search over Splines and Control Points,PLR,C0019,linked,Named curriculum method in the CLUTR comparison.
+docs/related-work/state-of-the-art.rst,Search over Splines and Control Points,PAIRED,C0020,linked,Named curriculum method in the CLUTR comparison.
+docs/related-work/state-of-the-art.rst,Search over Splines and Control Points,ACCEL,C0021,linked,Named curriculum method in the CLUTR comparison.
+docs/related-work/state-of-the-art.rst,Search over Splines and Control Points,"Gambi, Mueller, Fraser, ""Automatically Testing Self-Driving Cars with Search-Based Procedural Content Generation"" / ASFault (2019)",C0022,linked,
+docs/related-work/state-of-the-art.rst,Search over Splines and Control Points,DeepJanus,C0023,linked,
+docs/related-work/state-of-the-art.rst,Search over Splines and Control Points,Frenet-space SDC testing,C0024,linked,
+docs/related-work/state-of-the-art.rst,3D Gate and Waypoint Course Generators,"Madaan et al., ""AirSim Drone Racing Lab"" (2020)",C0025,linked,
+docs/related-work/state-of-the-art.rst,3D Gate and Waypoint Course Generators,"Song, Steinweg, Kaufmann, Scaramuzza, ""Autonomous Drone Racing with Deep Reinforcement Learning"" (2021)",C0026,linked,
+docs/related-work/state-of-the-art.rst,3D Gate and Waypoint Course Generators,"Liu et al., ""Learning Generalizable Policy for Obstacle-Aware Autonomous Drone Racing"" (2024)",C0027,linked,
+docs/related-work/state-of-the-art.rst,3D Gate and Waypoint Course Generators,Isaac Gym,C0028,linked,Named simulator in the Liu et al. source description.
+docs/related-work/state-of-the-art.rst,Boundary Case: Racing Agents on Fixed Tracks,"Wurman et al., ""Outracing champion Gran Turismo drivers with deep reinforcement learning"" / GT Sophy (Nature 2022)",C0029,linked,
+docs/related-work/state-of-the-art.rst,Boundary Case: Racing Agents on Fixed Tracks,Gran Turismo,C0030,linked,Named fixed-track game platform in the GT Sophy source description.
+docs/related-work/state-of-the-art.rst,Boundary Case: Racing Agents on Fixed Tracks,"Fuchs et al., ""Super-Human Performance in Gran Turismo Sport Using Deep Reinforcement Learning"" (2020/2021)",C0031,linked,
+docs/related-work/state-of-the-art.rst,Boundary Case: Racing Agents on Fixed Tracks,Sony AI vision-based GT agents (arXiv:2406.12563),C0032,linked,Compound source label split by its first visible link.
+docs/related-work/state-of-the-art.rst,Boundary Case: Racing Agents on Fixed Tracks,Sony AI vision-based GT agents (arXiv:2504.09021),C0033,linked,Compound source label split by its second visible link.
+docs/related-work/state-of-the-art.rst,Boundary Case: Racing Agents on Fixed Tracks,Gran Turismo Sport,C0034,linked,Named game platform in the Fuchs et al. source description.
+docs/related-work/state-of-the-art.rst,Boundary Case: Racing Agents on Fixed Tracks,Gran Turismo 7,C0035,linked,Named game platform in the later-agent source description.
+docs/related-work/state-of-the-art.rst,Boundary Case: Racing-Line Optimization on Fixed Tracks,"Theodosis and Gerdes, ""Generating a Racing Line for an Autonomous Racecar Using Professional Driving Techniques"" (2011)",C0036,linked,
+docs/related-work/state-of-the-art.rst,Boundary Case: Racing-Line Optimization on Fixed Tracks,"Braghin et al., ""Race driver model"" (2008)",C0037,linked,Compound source label split into distinct works.
+docs/related-work/state-of-the-art.rst,Boundary Case: Racing-Line Optimization on Fixed Tracks,"Heilmeier et al., ""Minimum curvature trajectory planning and control for an autonomous race car"" (2020)",C0038,linked,Compound source label split into distinct works.
+docs/related-work/state-of-the-art.rst,Boundary Case: Racing-Line Optimization on Fixed Tracks,"Muehlmeier and Mueller, ""Optimization of the Driving Line on a Race Track"" (2002)",C0039,linked,Compound source label split into distinct works.
+docs/related-work/state-of-the-art.rst,Boundary Case: Racing-Line Optimization on Fixed Tracks,"Cardamone et al., ""Searching for the optimal racing line using genetic algorithms"" (2010)",C0040,linked,Compound source label split into distinct works.
+docs/related-work/state-of-the-art.rst,Boundary Case: Racing-Line Optimization on Fixed Tracks,"Christ et al., ""Time-optimal trajectory planning for a race car considering variable tyre-road friction coefficients"" (2021)",C0041,linked,
+docs/related-work/state-of-the-art.rst,Boundary Case: Racing-Line Optimization on Fixed Tracks,"Jain and Morari, ""Computing the racing line using Bayesian optimization"" (2020)",C0042,linked,
+docs/related-work/state-of-the-art.rst,Boundary Case: Racing-Line Optimization on Fixed Tracks,"Kapania and Gerdes, ""Learning at the Racetrack"" (2020)",C0043,linked,Compound source label split into distinct works.
+docs/related-work/state-of-the-art.rst,Boundary Case: Racing-Line Optimization on Fixed Tracks,"Bonab and Emadi, ""Optimization-based Path Planning for an Autonomous Vehicle in a Racing Track"" (2019)",C0044,linked,Compound source label split into distinct works.
+docs/related-work/state-of-the-art.rst,Open-Source Implementations and Practical Baselines,Gymnasium / OpenAI Gym CarRacing,C0017,linked,
+docs/related-work/state-of-the-art.rst,Open-Source Implementations and Practical Baselines,Box2D,C0045,linked,Named rendering/physics system in the CarRacing description.
+docs/related-work/state-of-the-art.rst,Open-Source Implementations and Practical Baselines,MetaDrive,C0046,linked,Compound source label split from PGDrive.
+docs/related-work/state-of-the-art.rst,Open-Source Implementations and Practical Baselines,PGDrive,C0006,linked,Compound source label split from MetaDrive.
+docs/related-work/state-of-the-art.rst,Open-Source Implementations and Practical Baselines,AirSim Drone Racing Lab,C0025,linked,
+docs/related-work/state-of-the-art.rst,Open-Source Implementations and Practical Baselines,AirSim,C0025,linked,Project alias linked to its citable system description.
+docs/related-work/state-of-the-art.rst,Open-Source Implementations and Practical Baselines,TORCS,C0001,linked,
+docs/related-work/state-of-the-art.rst,Open-Source Implementations and Practical Baselines,Speed Dreams,C0002,linked,
+docs/related-work/state-of-the-art.rst,Open-Source Implementations and Practical Baselines,ChickenKorma/Track-Generator,C0047,linked,
+docs/related-work/state-of-the-art.rst,Open-Source Implementations and Practical Baselines,Unity,C0048,linked,Mentioned in the ChickenKorma/Track-Generator description.
+docs/related-work/state-of-the-art.rst,Open-Source Implementations and Practical Baselines,Drallig/ProceduralTrack,C0049,linked,
+docs/related-work/state-of-the-art.rst,Open-Source Implementations and Practical Baselines,Unity,C0048,linked,Mentioned independently in the Drallig/ProceduralTrack description.
+docs/related-work/state-of-the-art.rst,Open-Source Implementations and Practical Baselines,meraccos/random_car_racing_track_generator,C0050,linked,
+docs/related-work/state-of-the-art.rst,Open-Source Implementations and Practical Baselines,h3h3h0h0/Racetrackgen2,C0051,linked,
+docs/related-work/state-of-the-art.rst,Procedural Road and Street Networks,"Parish and Mueller, ""Procedural Modeling of Cities"" (SIGGRAPH 2001)",C0052,linked,
+docs/related-work/state-of-the-art.rst,Procedural Road and Street Networks,CityEngine,C0053,linked,Named lineage/software system in the Parish and Mueller description.
+docs/related-work/state-of-the-art.rst,Procedural Road and Street Networks,"Chen et al., ""Interactive Procedural Street Modeling"" (SIGGRAPH 2008)",C0054,linked,
+docs/related-work/state-of-the-art.rst,"Curve Thickness, Ropelength, and Tangent-Point/Sobolev Methods","Gonzalez and Maddocks, ""Global Curvature, Thickness and the Ideal Shapes of Knots"" (1999)",C0055,linked,Compound source label split from broader ropelength work.
+docs/related-work/state-of-the-art.rst,"Curve Thickness, Ropelength, and Tangent-Point/Sobolev Methods",knot-thickness / ropelength work,C0056,linked,Aggregate label linked to the separately cited arXiv work.
+docs/related-work/state-of-the-art.rst,"Curve Thickness, Ropelength, and Tangent-Point/Sobolev Methods","Yu, Schumacher, Crane, ""Repulsive Curves"" (SIGGRAPH 2021 / arXiv 2020)",C0057,linked,
+docs/related-work/state-of-the-art.rst,"Curve Thickness, Ropelength, and Tangent-Point/Sobolev Methods","Henrich and Koetter, ""From Generation to Gameplay: Authoring Race Tracks With Repulsive Curves"" (2025)",C0058,linked,
+docs/related-work/state-of-the-art.rst,"Curve Thickness, Ropelength, and Tangent-Point/Sobolev Methods",Unity,C0048,linked,Named editor/3D pipeline in the Henrich and Koetter description.
+docs/related-work/state-of-the-art.rst,"Curve Thickness, Ropelength, and Tangent-Point/Sobolev Methods","Lagemann and von der Mosel, ""Tangent-point energies and ropelength as Gamma-limit of discrete tangent-point energies on biarc curves"" (2022)",C0059,linked,
+docs/related-work/state-of-the-art.rst,Position-Based Constraint Projection,"Mueller et al., ""Position Based Dynamics"" (2007)",C0060,linked,Compound source label split into distinct works.
+docs/related-work/state-of-the-art.rst,Position-Based Constraint Projection,"Macklin et al., ""XPBD: Position-Based Simulation of Compliant Constrained Dynamics"" (2016)",C0061,linked,Compound source label split into distinct works.
+docs/related-work/state-of-the-art.rst,Position-Based Constraint Projection,"Liu et al., ""Differentiable Robotic Manipulation of Deformable Rope-like Objects Using Compliant Position-based Dynamics"" (2022)",C0062,linked,
+docs/related-work/state-of-the-art.rst,Positioning TrackGen,TrackGen,C0063,linked,
+docs/related-work/state-of-the-art.rst,Positioning TrackGen,PBD,C0060,linked,Named solver family linked to its foundational paper.
+docs/related-work/state-of-the-art.rst,Positioning TrackGen,XPBD,C0061,linked,Named solver family linked to its foundational paper.
+docs/related-work/state-of-the-art.rst,Positioning TrackGen,Repulsive Curves,C0057,linked,Named comparison method.
+docs/related-work/state-of-the-art.rst,Positioning TrackGen,recent race-track authoring with repulsive curves,C0058,linked,Visible description of the Henrich and Koetter work.
+docs/related-work/state-of-the-art.rst,Positioning TrackGen,Warp,C0064,linked,Named implementation system.
+docs/related-work/state-of-the-art.rst,Positioning TrackGen,CUDA,C0065,linked,Named execution platform.
+docs/related-work/prior-art.rst,Racetrack Generation Prior Art,TrackGen,C0063,linked,
+docs/related-work/prior-art.rst,Racetrack Generation Prior Art,F1TENTH,C0083,linked,
+docs/related-work/prior-art.rst,Racetrack Generation Prior Art,RoboRacer,C0084,linked,
+docs/related-work/prior-art.rst,Racetrack Generation Prior Art,TUM Autonomous Motorsport,C0086,linked,
+docs/related-work/prior-art.rst,Racetrack Generation Prior Art,ETH/MPCC,C0085,linked,
+docs/related-work/prior-art.rst,Racetrack Generation Prior Art,AutoRally,C0089,linked,
+docs/related-work/prior-art.rst,Racetrack Generation Prior Art,CMU DRIVE,C0090,linked,
+docs/related-work/prior-art.rst,Racetrack Generation Prior Art,PBD,C0060,linked,
+docs/related-work/prior-art.rst,Racetrack Generation Prior Art,XPBD,C0061,linked,
+docs/related-work/prior-art.rst,1. Constructive segment/tile generators,"Barthet, Branco, Gallotta, Khalifa, Yannakakis, ""Closing the Affective Loop via Experience-Driven Reinforcement Learning Designers"" (2024)",C0004,linked,
+docs/related-work/prior-art.rst,1. Constructive segment/tile generators,Solid Rally,C0005,linked,
+docs/related-work/prior-art.rst,1. Constructive segment/tile generators,Go-Explore,C0066,linked,
+docs/related-work/prior-art.rst,1. Constructive segment/tile generators,"Li, Peng, Zhang, Liu, Zhou, ""Improving the Generalization of End-to-End Driving through Procedural Generation"" / PGDrive (2020)",C0006,linked,
+docs/related-work/prior-art.rst,1. Constructive segment/tile generators,"Ikram, Muktadir, Whitehead, ""Procedural Generation of Complex Roundabouts for Autonomous Vehicle Testing"" (2023)",C0008,linked,
+docs/related-work/prior-art.rst,1. Constructive segment/tile generators,OpenDRIVE,C0007,linked,
+docs/related-work/prior-art.rst,1. Constructive segment/tile generators,TORCS,C0001,linked,
+docs/related-work/prior-art.rst,1. Constructive segment/tile generators,Speed Dreams,C0002,linked,
+docs/related-work/prior-art.rst,1. Constructive segment/tile generators,Interactive Track Generator for TORCS and Speed Dreams,C0003,linked,
+docs/related-work/prior-art.rst,2. Search over spline/control-point road geometry,"Klueck, Klampfl, Wotawa, ""Automatic Generation of Challenging Road Networks for ALKS Testing based on Bezier Curves and Search"" (2021)",C0014,linked,
+docs/related-work/prior-art.rst,2. Search over spline/control-point road geometry,ALKS,C0015,linked,
+docs/related-work/prior-art.rst,2. Search over spline/control-point road geometry,"Togelius, De Nardi, Lucas, ""Towards Automatic Personalised Content Creation for Racing Games"" (IEEE CIG 2007)",C0067,linked,
+docs/related-work/prior-art.rst,3. Experience-driven and search-based PCG frameworks,"Togelius, Yannakakis, Stanley, Browne, ""Search-Based Procedural Content Generation: A Taxonomy and Survey"" (2011)",C0068,linked,
+docs/related-work/prior-art.rst,3. Experience-driven and search-based PCG frameworks,"Yannakakis and Togelius, ""Experience-Driven Procedural Content Generation"" (2011)",C0069,linked,
+docs/related-work/prior-art.rst,3. Experience-driven and search-based PCG frameworks,"Hendrikx, Meijer, van der Velden, Iosup, ""Procedural Content Generation for Games: A Survey"" (2013)",C0070,linked,
+docs/related-work/prior-art.rst,"4. RL, UED, and procedural racing levels","Jiang et al., ""Replay-Guided Adversarial Environment Design"" / REPAIRED (NeurIPS 2021)",C0016,linked,
+docs/related-work/prior-art.rst,"4. RL, UED, and procedural racing levels",OpenAI Gym CarRacing,C0017,linked,
+docs/related-work/prior-art.rst,"4. RL, UED, and procedural racing levels",Prioritized Level Replay,C0019,linked,Named component in the REPAIRED description.
+docs/related-work/prior-art.rst,"4. RL, UED, and procedural racing levels",20 human-designed F1 tracks,C0072,linked,Named transfer benchmark in the REPAIRED description.
+docs/related-work/prior-art.rst,"4. RL, UED, and procedural racing levels","Dennis et al., ""Emergent Complexity and Zero-shot Transfer via Unsupervised Environment Design"" / PAIRED (2020)",C0020,linked,
+docs/related-work/prior-art.rst,"4. RL, UED, and procedural racing levels","Jiang et al., ""Prioritized Level Replay"" (2020)",C0019,linked,
+docs/related-work/prior-art.rst,"4. RL, UED, and procedural racing levels","Parker-Holder et al., ""Evolving Curricula with Regret-Based Environment Design"" / ACCEL (2022)",C0021,linked,
+docs/related-work/prior-art.rst,"4. RL, UED, and procedural racing levels","Azad et al., ""CLUTR: Curriculum Learning via Unsupervised Task Representation Learning"" (2022)",C0018,linked,
+docs/related-work/prior-art.rst,"4. RL, UED, and procedural racing levels",F1-style transfer benchmark family,C0072,linked,Repeated benchmark mention in the CLUTR description.
+docs/related-work/prior-art.rst,"4. RL, UED, and procedural racing levels","Cobbe et al., ""Leveraging Procedural Generation to Benchmark Reinforcement Learning"" / Procgen (2019)",C0071,linked,
+docs/related-work/prior-art.rst,5. Drone racing and 3D gate-course generation,"Madaan et al., ""AirSim Drone Racing Lab"" (2020)",C0025,linked,
+docs/related-work/prior-art.rst,5. Drone racing and 3D gate-course generation,"Kaufmann, Loquercio, Ranftl, Dosovitskiy, Koltun, Scaramuzza, ""Deep Drone Racing: Learning Agile Flight in Dynamic Environments"" (CoRL 2018)",C0073,linked,
+docs/related-work/prior-art.rst,5. Drone racing and 3D gate-course generation,"Loquercio, Kaufmann, Ranftl, Dosovitskiy, Koltun, Scaramuzza, ""Deep Drone Racing: From Simulation to Reality with Domain Randomization"" (2019)",C0074,linked,
+docs/related-work/prior-art.rst,5. Drone racing and 3D gate-course generation,"Foehn et al., ""AlphaPilot: Autonomous Drone Racing"" (2020/2021)",C0075,linked,
+docs/related-work/prior-art.rst,5. Drone racing and 3D gate-course generation,"Song, Steinweg, Kaufmann, Scaramuzza, ""Autonomous Drone Racing with Deep Reinforcement Learning"" (IROS 2021)",C0026,linked,
+docs/related-work/prior-art.rst,5. Drone racing and 3D gate-course generation,"Kaufmann et al., ""Champion-level Drone Racing using Deep Reinforcement Learning"" (Nature 2023)",C0076,linked,
+docs/related-work/prior-art.rst,5. Drone racing and 3D gate-course generation,Swift,C0076,linked,Named system described by its citable paper.
+docs/related-work/prior-art.rst,5. Drone racing and 3D gate-course generation,"Song, Romero, Mueller, Koltun, Scaramuzza, ""Reaching the Limit in Autonomous Racing: Optimal Control versus Reinforcement Learning"" (Science Robotics 2023)",C0077,linked,
+docs/related-work/prior-art.rst,5. Drone racing and 3D gate-course generation,"Krinner, Romero, Bauersfeld, Zeilinger, Carron, Scaramuzza, ""MPCC++: Model Predictive Contouring Control for Time-Optimal Flight with Safety Constraints"" (RSS 2024)",C0078,linked,
+docs/related-work/prior-art.rst,5. Drone racing and 3D gate-course generation,"Liu et al., ""Learning Generalizable Policy for Obstacle-Aware Autonomous Drone Racing"" (2024)",C0027,linked,
+docs/related-work/prior-art.rst,5. Drone racing and 3D gate-course generation,Isaac Gym,C0028,linked,
+docs/related-work/prior-art.rst,"6. Autonomous-racing labs, platforms, and downstream consumers",MIT RACECAR,C0082,linked,
+docs/related-work/prior-art.rst,"6. Autonomous-racing labs, platforms, and downstream consumers",Deep Latent Competition,C0079,linked,
+docs/related-work/prior-art.rst,"6. Autonomous-racing labs, platforms, and downstream consumers",Latent Imagination,C0080,linked,
+docs/related-work/prior-art.rst,"6. Autonomous-racing labs, platforms, and downstream consumers",VISTA,C0081,linked,
+docs/related-work/prior-art.rst,"6. Autonomous-racing labs, platforms, and downstream consumers",VISTA 2.0,C0081,linked,Alias/version of the same simulator lineage.
+docs/related-work/prior-art.rst,"6. Autonomous-racing labs, platforms, and downstream consumers",F1TENTH,C0083,linked,
+docs/related-work/prior-art.rst,"6. Autonomous-racing labs, platforms, and downstream consumers","Evans et al., ""Unifying F1TENTH Autonomous Racing: Survey, Methods and Benchmarks"" (2024)",C0083,linked,Citable ecosystem description.
+docs/related-work/prior-art.rst,"6. Autonomous-racing labs, platforms, and downstream consumers",RoboRacer survey work,C0084,linked,
+docs/related-work/prior-art.rst,"6. Autonomous-racing labs, platforms, and downstream consumers","Liniger, Domahidi, Morari, ""Optimization-Based Autonomous Racing of 1:43 Scale RC Cars"" (2015/2017)",C0085,linked,
+docs/related-work/prior-art.rst,"6. Autonomous-racing labs, platforms, and downstream consumers",ETH/MPCC,C0085,linked,Named platform/method lineage represented by the Liniger et al. paper.
+docs/related-work/prior-art.rst,"6. Autonomous-racing labs, platforms, and downstream consumers",TUM Autonomous Motorsport work (arXiv:2205.15979),C0086,linked,Compound source label split by visible link.
+docs/related-work/prior-art.rst,"6. Autonomous-racing labs, platforms, and downstream consumers",TUM Autonomous Motorsport work (arXiv:2202.03807),C0087,linked,Compound source label split by visible link.
+docs/related-work/prior-art.rst,"6. Autonomous-racing labs, platforms, and downstream consumers",Indy Autonomous Challenge,C0088,linked,
+docs/related-work/prior-art.rst,"6. Autonomous-racing labs, platforms, and downstream consumers","Goldfain et al., ""AutoRally: An Open Platform for Aggressive Autonomous Driving"" (2018)",C0089,linked,
+docs/related-work/prior-art.rst,"6. Autonomous-racing labs, platforms, and downstream consumers",CMU Driverless Intelligent Vehicles Lab / DRIVE Lab,C0090,linked,
+docs/related-work/prior-art.rst,"6. Autonomous-racing labs, platforms, and downstream consumers",Indy Autonomous Challenge,C0088,linked,Repeated in the DRIVE Lab description.
+docs/related-work/prior-art.rst,"6. Autonomous-racing labs, platforms, and downstream consumers",AI Racing Tech,C0091,linked,
+docs/related-work/prior-art.rst,"6. Autonomous-racing labs, platforms, and downstream consumers","Xue, Zhu, Dolan, Borrelli, ""Learning Model Predictive Control with Error Dynamics Regression for Autonomous Racing"" (2023)",C0092,linked,
+docs/related-work/prior-art.rst,"6. Autonomous-racing labs, platforms, and downstream consumers",Indy Autonomous Challenge,C0088,linked,Repeated in the Xue et al. description.
+docs/related-work/prior-art.rst,"6. Autonomous-racing labs, platforms, and downstream consumers","Kalaria, Lin, Dolan, ""Towards Safety Assured End-to-End Vision-Based Control for Autonomous Racing"" (2023)",C0093,linked,
+docs/related-work/prior-art.rst,"6. Autonomous-racing labs, platforms, and downstream consumers","Kalaria, Lin, Dolan, ""Adaptive Planning and Control with Time-Varying Tire Models for Autonomous Racing Using Extreme Learning Machine"" (2023)",C0094,linked,
+docs/related-work/prior-art.rst,"6. Autonomous-racing labs, platforms, and downstream consumers","AL-Sunni, Almubarak, Horng, Dolan, ""LLA-MPC: Fast Adaptive Control for Autonomous Racing"" (2025)",C0095,linked,
+docs/related-work/prior-art.rst,"6. Autonomous-racing labs, platforms, and downstream consumers","Betz et al., ""Autonomous Vehicles on the Edge: A Survey on Autonomous Vehicle Racing"" (2022)",C0096,linked,
+docs/related-work/prior-art.rst,7. Procedural road/city network generation,"Parish and Mueller, ""Procedural Modeling of Cities"" (SIGGRAPH 2001)",C0052,linked,
+docs/related-work/prior-art.rst,7. Procedural road/city network generation,CityEngine,C0053,linked,
+docs/related-work/prior-art.rst,7. Procedural road/city network generation,"Chen, Esch, Wonka, Mueller, Zhang, ""Interactive Procedural Street Modeling"" (SIGGRAPH 2008)",C0054,linked,
+docs/related-work/prior-art.rst,7. Procedural road/city network generation,Road/HD-map generators for AV testing,,unreviewed,Aggregate family label; component named systems are inventoried separately.
+docs/related-work/prior-art.rst,7. Procedural road/city network generation,PGDrive,C0006,linked,
+docs/related-work/prior-art.rst,7. Procedural road/city network generation,ASFault,C0022,linked,
+docs/related-work/prior-art.rst,7. Procedural road/city network generation,HDMapGen,C0097,linked,
+docs/related-work/prior-art.rst,7. Procedural road/city network generation,OSM/GIS extraction pipelines,C0098,linked,
+docs/related-work/prior-art.rst,7. Procedural road/city network generation,OpenDRIVE tooling,C0007,linked,
+docs/related-work/prior-art.rst,"8. Curve self-avoidance, thickness, and repulsive geometry","Gonzalez and Maddocks, ""Global Curvature, Thickness and the Ideal Shapes of Knots"" (PNAS 1999)",C0055,linked,
+docs/related-work/prior-art.rst,"8. Curve self-avoidance, thickness, and repulsive geometry","Yu, Schumacher, Crane, ""Repulsive Curves"" (SIGGRAPH 2021 / arXiv 2020)",C0057,linked,
+docs/related-work/prior-art.rst,9. PBD / XPBD and constraint projection,"Mueller et al., ""Position Based Dynamics"" (2007)",C0060,linked,
+docs/related-work/prior-art.rst,9. PBD / XPBD and constraint projection,"Macklin et al., ""XPBD: Position-Based Simulation of Compliant Constrained Dynamics"" (2016)",C0061,linked,
+docs/related-work/prior-art.rst,9. PBD / XPBD and constraint projection,"Weiss et al., ""Position-Based Multi-Agent Dynamics for Real-Time Crowd Simulation"" (2017/2018)",C0099,linked,
+docs/related-work/prior-art.rst,Where TrackGen Lands,TrackGen,C0063,linked,
+docs/related-work/prior-art.rst,Where TrackGen Lands,Warp,C0064,linked,
+docs/related-work/prior-art.rst,Where TrackGen Lands,CUDA graph capture,C0065,linked,
+docs/related-work/prior-art.rst,What Seems Unique,TrackGen,C0063,linked,
+docs/related-work/prior-art.rst,What Seems Unique,PGDrive,C0006,linked,
+docs/related-work/prior-art.rst,What Seems Unique,UED CarRacing,C0017,linked,
+docs/related-work/prior-art.rst,What Seems Unique,PLR,C0019,linked,
+docs/related-work/prior-art.rst,What Seems Unique,CLUTR,C0018,linked,
+docs/related-work/prior-art.rst,What Seems Unique,F1TENTH,C0083,linked,
+docs/related-work/prior-art.rst,What Seems Unique,RoboRacer,C0084,linked,
+docs/related-work/prior-art.rst,What Seems Unique,TUM Autonomous Motorsport,C0086,linked,
+docs/related-work/prior-art.rst,What Seems Unique,IAC,C0088,linked,
+docs/related-work/prior-art.rst,What Seems Unique,ETH/MPCC,C0085,linked,
+docs/related-work/prior-art.rst,What Seems Unique,AutoRally,C0089,linked,
+docs/related-work/prior-art.rst,What Seems Unique,CMU DRIVE,C0090,linked,
+docs/related-work/prior-art.rst,Suggested Related-Work Buckets,Togelius et al. 2007,C0067,linked,
+docs/related-work/prior-art.rst,Suggested Related-Work Buckets,Barthet et al. 2024,C0004,linked,
+docs/related-work/prior-art.rst,Suggested Related-Work Buckets,SBPCG surveys,C0068,linked,
+docs/related-work/prior-art.rst,Suggested Related-Work Buckets,EDPCG surveys,C0069,linked,
+docs/related-work/prior-art.rst,Suggested Related-Work Buckets,PAIRED,C0020,linked,
+docs/related-work/prior-art.rst,Suggested Related-Work Buckets,PLR,C0019,linked,
+docs/related-work/prior-art.rst,Suggested Related-Work Buckets,REPAIRED,C0016,linked,
+docs/related-work/prior-art.rst,Suggested Related-Work Buckets,ACCEL,C0021,linked,
+docs/related-work/prior-art.rst,Suggested Related-Work Buckets,CLUTR,C0018,linked,
+docs/related-work/prior-art.rst,Suggested Related-Work Buckets,Procgen,C0071,linked,
+docs/related-work/prior-art.rst,Suggested Related-Work Buckets,AirSim Drone Racing Lab,C0025,linked,
+docs/related-work/prior-art.rst,Suggested Related-Work Buckets,Scaramuzza/RPG drone racing papers,,unreviewed,Aggregate family label; individually named papers are inventoried in the drone-racing heading.
+docs/related-work/prior-art.rst,Suggested Related-Work Buckets,AlphaPilot,C0075,linked,
+docs/related-work/prior-art.rst,Suggested Related-Work Buckets,Swift,C0076,linked,
+docs/related-work/prior-art.rst,Suggested Related-Work Buckets,optimal-control-versus-RL drone racing,C0077,linked,
+docs/related-work/prior-art.rst,Suggested Related-Work Buckets,random waypoint/obstacle generators,C0027,linked,
+docs/related-work/prior-art.rst,Suggested Related-Work Buckets,MIT RACECAR,C0082,linked,
+docs/related-work/prior-art.rst,Suggested Related-Work Buckets,VISTA,C0081,linked,
+docs/related-work/prior-art.rst,Suggested Related-Work Buckets,F1TENTH,C0083,linked,
+docs/related-work/prior-art.rst,Suggested Related-Work Buckets,RoboRacer,C0084,linked,
+docs/related-work/prior-art.rst,Suggested Related-Work Buckets,TUM Autonomous Motorsport,C0086,linked,
+docs/related-work/prior-art.rst,Suggested Related-Work Buckets,IAC,C0088,linked,
+docs/related-work/prior-art.rst,Suggested Related-Work Buckets,ETH/MPCC,C0085,linked,
+docs/related-work/prior-art.rst,Suggested Related-Work Buckets,AutoRally,C0089,linked,
+docs/related-work/prior-art.rst,Suggested Related-Work Buckets,CMU DRIVE Lab,C0090,linked,
+docs/related-work/prior-art.rst,Suggested Related-Work Buckets,AI Racing Tech,C0091,linked,
+docs/related-work/prior-art.rst,Suggested Related-Work Buckets,PGDrive,C0006,linked,
+docs/related-work/prior-art.rst,Suggested Related-Work Buckets,ASFault,C0022,linked,
+docs/related-work/prior-art.rst,Suggested Related-Work Buckets,Bezier road search,C0014,linked,
+docs/related-work/prior-art.rst,Suggested Related-Work Buckets,roundabout/OpenDRIVE generators,C0008,linked,
+docs/related-work/prior-art.rst,Suggested Related-Work Buckets,OpenDRIVE,C0007,linked,
+docs/related-work/prior-art.rst,Suggested Related-Work Buckets,Procedural Modeling of Cities,C0052,linked,
+docs/related-work/prior-art.rst,Suggested Related-Work Buckets,Interactive Procedural Street Modeling,C0054,linked,
+docs/related-work/prior-art.rst,Suggested Related-Work Buckets,PBD,C0060,linked,
+docs/related-work/prior-art.rst,Suggested Related-Work Buckets,XPBD,C0061,linked,
+docs/related-work/prior-art.rst,Suggested Related-Work Buckets,PBD for crowds/collision avoidance,C0099,linked,
+docs/generators/benchmarks.rst,Generator Benchmarks,TrackGen generator benchmark suite,C0063,linked,
+docs/generators/benchmarks.rst,Generator Benchmarks,benchmarks/compare_generators.py,C0063,linked,
+docs/generators/benchmarks.rst,Generator Benchmarks,TrackGenConfig,C0063,linked,
+docs/generators/benchmarks.rst,Generator Benchmarks,Warp,C0064,linked,
+docs/generators/benchmarks.rst,Metric Definitions,XPBD,C0061,linked,
+docs/generators/benchmarks.rst,Metric Definitions,TrackGenerator.generate(),C0063,linked,
+docs/tutorials/gate-sequences.rst,Generating Gate Sequences for Drone Courses,track_gen,C0063,linked,
+docs/tutorials/gate-sequences.rst,Generating Gate Sequences for Drone Courses,GateGenerator,C0063,linked,
+docs/tutorials/gate-sequences.rst,Generating Gate Sequences for Drone Courses,XPBD,C0061,linked,
+docs/tutorials/gate-sequences.rst,Prerequisites,track_gen,C0063,linked,
+docs/tutorials/gate-sequences.rst,Prerequisites,uv,C0100,linked,
+docs/tutorials/gate-sequences.rst,Building the Gate Config,GateGenConfig,C0063,linked,
+docs/tutorials/gate-sequences.rst,Building the Gate Config,Warp,C0064,linked,
+docs/tutorials/gate-sequences.rst,Generating the Gate Sequence,GateGenerator,C0063,linked,
+docs/tutorials/gate-sequences.rst,Generating the Gate Sequence,TrackGenerator,C0063,linked,
+docs/tutorials/gate-sequences.rst,Generating the Gate Sequence,CUDA,C0065,linked,
+docs/tutorials/gate-sequences.rst,Generating the Gate Sequence,wp.Graph,C0064,linked,
+docs/tutorials/gate-sequences.rst,Gate Figure,TrackGen gate collision solve,C0063,linked,
+docs/tutorials/gate-sequences.rst,The gate_solve_iters Collision Behavior,GateGenerator,C0063,linked,
+docs/tutorials/gate-sequences.rst,Buffer Reuse and Snapshots,GateSequence,C0063,linked,
+docs/superpowers/specs/2026-06-23-gate-sequence-generation-design.md,Goal,TrackGen,C0063,linked,
+docs/superpowers/specs/2026-06-23-gate-sequence-generation-design.md,Goal,TrackGenerator,C0063,linked,
+docs/superpowers/specs/2026-06-23-gate-sequence-generation-design.md,Goal,TrackGenConfig,C0063,linked,
+docs/superpowers/specs/2026-06-23-gate-sequence-generation-design.md,Goal,XPBD,C0061,linked,
+docs/superpowers/specs/2026-06-23-gate-sequence-generation-design.md,Public API,track_gen,C0063,linked,
+docs/superpowers/specs/2026-06-23-gate-sequence-generation-design.md,Gate-Native Registry,TrackGen,C0063,linked,
+docs/superpowers/specs/2026-06-23-gate-sequence-generation-design.md,Generator Semantics,TrackGen,C0063,linked,
+docs/superpowers/specs/2026-06-23-gate-sequence-generation-design.md,Validity,XPBD,C0061,linked,
+docs/superpowers/specs/2026-06-23-gate-sequence-generation-design.md,Implementation Boundaries,TrackGen,C0063,linked,
+docs/superpowers/specs/2026-06-23-gate-sequence-generation-design.md,Implementation Boundaries,CUDA graph capture,C0065,linked,
+docs/superpowers/specs/2026-06-23-gate-sequence-generation-design.md,Implementation Boundaries,Warp,C0064,linked,
+docs/superpowers/specs/2026-06-23-gate-sequence-generation-design.md,Testing,TrackGen,C0063,linked,
+docs/superpowers/specs/2026-06-23-gate-sequence-generation-design.md,Testing,Warp,C0064,linked,
+docs/superpowers/specs/2026-06-23-gate-sequence-generation-design.md,Testing,CUDA,C0065,linked,

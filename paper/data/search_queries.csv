@@ -1,0 +1,26 @@
+query_id,stream,domain,query,rationale
+B-G-01,blind-ground,ground,"procedural race track generation robot reinforcement learning",Direct robot-racing geometry
+B-G-02,blind-ground,ground,"autonomous racing generated tracks benchmark",Racing benchmark distributions
+B-G-03,blind-ground,ground,"search based procedural track generation racing games",Search-based PCG lineage
+B-G-04,blind-ground,ground,"procedural road geometry generation autonomous vehicle testing",Adjacent road synthesis
+B-G-05,blind-ground,ground,"OpenDRIVE procedural road network generation",Portable road representations
+B-G-06,blind-ground,ground,"F1TENTH RoboRacer generated map track benchmark",Small-scale racing platforms
+B-AM-01,blind-aerial-maritime,aerial,"drone racing random gate course generation reinforcement learning",3D gate synthesis
+B-AM-02,blind-aerial-maritime,aerial,"quadrotor waypoint generator obstacle course curriculum",Aerial curriculum generation
+B-AM-03,blind-aerial-maritime,aerial,"drone racing track complexity metric gate visibility",Aerial difficulty metrics
+B-AM-04,blind-aerial-maritime,maritime,"autonomous surface vehicle buoy course generation",Maritime course synthesis
+B-AM-05,blind-aerial-maritime,maritime,"boat racing reinforcement learning waypoint course",Maritime RL courses
+B-AM-06,blind-aerial-maritime,maritime,"VRX RobotX buoy navigation benchmark course",Competition and simulator courses
+B-AM-07,blind-aerial-maritime,maritime,"USV simulator procedural environment generation",Maritime simulation
+B-AM-08,blind-aerial-maritime,mixed,"robot racing course generation benchmark",Cross-domain terminology
+A-G-01,aware-geometry-rl,ground,"papers citing procedural generation CarRacing UED Bezier tracks",Citation expansion from known RL tasks
+A-G-02,aware-geometry-rl,ground,"papers citing automatic track generation evolutionary computation",Citation expansion from racing PCG
+A-G-03,aware-geometry-rl,adjacent,"road scenario generation survey geometry validity",Adjacent survey coverage
+A-S-01,aware-simulation,mixed,"generated course export CARLA OpenDRIVE Isaac Sim AirSim Gazebo",Simulator portability
+A-S-02,aware-simulation,ground,"Gymnasium CarRacing track generator source format",RL interface evidence
+A-S-03,aware-simulation,aerial,"AirSim drone racing gate API track generation",Aerial simulator interface
+A-S-04,aware-simulation,maritime,"Gazebo VRX world buoy course format",Maritime simulator interface
+B-M-01,blind-ground,mixed,"legged mobile robot racing obstacle course generation",Adjacent agile-robot course design
+B-M-02,blind-aerial-maritime,mixed,"robot obstacle course procedural generation reinforcement learning",Cross-domain course distributions
+X-01,survey-exemplars,adjacent,"site:journals.sagepub.com IJRR survey robotics taxonomy benchmark",IJRR structural exemplars
+X-02,survey-exemplars,adjacent,"site:science.org/journal/scirobotics review robotics taxonomy benchmark",Science Robotics structural exemplars
