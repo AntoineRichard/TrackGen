@@ -7,6 +7,7 @@ all: check
 
 validate:
 	$(PYTHON) scripts/validate_corpus.py
+	$(PYTHON) scripts/validate_agent_runs.py
 
 tables: validate
 	$(PYTHON) scripts/render_tables.py

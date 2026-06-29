@@ -82,13 +82,44 @@ hardcode the current query strings.
 One row records one reproducible search action. Assign a unique `search_id`; record the
 date, discovery stream, agent, exact query, search surface, counts screened and added,
 and any notes needed to replay or interpret the search.
+
+Count fields are nonnegative decimal integers by default. The literal sentinel `NR` is
+allowed only for non-bootstrap rows whose notes explicitly state that the count or
+counts were not captured. Blank, negative, and malformed values remain invalid.
+
 For `stream=bootstrap` and `search_surface=local-corpus`, `results_screened` counts
 inventoried visible named-mention occurrences in the named local file. It includes
 repeated mentions under different headings and repeated summary occurrences. This unit
-must equal the number of `seed_coverage.csv` rows for that source path and must not be
-pooled with search-engine result counts. External discovery rows instead count query
-results screened on their stated search surface.
+must equal the number of `seed_coverage.csv` rows for that source path. Bootstrap count
+fields are always nonnegative integers; `NR` is not permitted.
 
+Task 4 exact-query rows reproduce every executed query recorded in an immutable agent
+report, in report order and without deduplicating queries repeated across rounds. They
+use `search_surface=mixed-primary-web`; both count fields are `NR` because per-query hit
+and addition counts were not recorded. Their notes identify the report and round or
+section and explicitly document the missing counts.
+
+Each run ends with one `RUN-SUMMARY:<report-path>` row using
+`search_surface=documented-agent-run`. Its `results_screened` may be `NR`, while
+`candidates_added` is the integer number of rows in that run's output CSV. Summary notes
+distinguish retained and excluded rows, preserve the final saturation arithmetic, and
+state that the total screened-hit count was not captured.
+
+The Task 4 rows document search actions and output accounting. They must not be pooled
+with bootstrap named-mention counts, and `NR` must not be converted into zero or an
+invented screened-hit total.
+
+## `agent_runs/`
+
+This directory contains exactly four independent discovery outputs, each as one CSV and
+one Markdown report. The CSVs share a fixed 35-column header. Validate their filenames,
+row shape, run-specific IDs and provenance, status scalars, list encoding, evidence
+surfaces, deduplication, and report coverage with
+`python3 -m paper.scripts.validate_agent_runs` from the repository root.
+
+Blind-run technical fields preserve the agents' descriptive terminology and are not
+checked against `taxonomy.json`. Integration validates structure and provenance without
+rewriting the scientific content of the run artifacts.
 
 ## `candidates.csv`
 

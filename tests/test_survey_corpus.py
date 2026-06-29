@@ -278,6 +278,67 @@ def test_search_counts_require_nonnegative_integers(tmp_path, field, value):
         validate_directory(fixture)
 
 
+def test_nonbootstrap_exact_query_accepts_documented_nr_counts(tmp_path):
+    fixture = build_valid_fixture(tmp_path)
+    path = fixture / "search_log.csv"
+    rows = read_rows(path)
+    rows[0].update(
+        results_screened="NR",
+        candidates_added="NR",
+        notes="Per-query screened-hit and candidate-add counts were not captured.",
+    )
+    rewrite_rows(path, rows)
+
+    validate_directory(fixture)
+
+
+def test_nonbootstrap_summary_accepts_documented_nr_screened_count(tmp_path):
+    fixture = build_valid_fixture(tmp_path)
+    path = fixture / "search_log.csv"
+    rows = read_rows(path)
+    rows[0].update(
+        query="RUN-SUMMARY:paper/data/agent_runs/test.md",
+        search_surface="documented-agent-run",
+        results_screened="NR",
+        candidates_added="1",
+        notes="Total screened-hit count was not captured.",
+    )
+    rewrite_rows(path, rows)
+
+    validate_directory(fixture)
+
+
+@pytest.mark.parametrize("field", ["results_screened", "candidates_added"])
+def test_bootstrap_search_counts_reject_nr(tmp_path, field):
+    fixture = build_valid_fixture(tmp_path)
+    path = fixture / "search_log.csv"
+    rows = read_rows(path)
+    rows[0].update(
+        stream="bootstrap",
+        query="fixture.rst",
+        search_surface="local-corpus",
+        notes="The count was not captured.",
+    )
+    rows[0][field] = "NR"
+    rewrite_rows(path, rows)
+
+    with pytest.raises(CorpusError, match=rf"{field}.*nonnegative integer"):
+        validate_directory(fixture)
+
+
+@pytest.mark.parametrize("field", ["results_screened", "candidates_added"])
+def test_nonbootstrap_nr_count_requires_explicit_uncaptured_note(tmp_path, field):
+    fixture = build_valid_fixture(tmp_path)
+    path = fixture / "search_log.csv"
+    rows = read_rows(path)
+    rows[0][field] = "NR"
+    rows[0]["notes"] = "Count unavailable."
+    rewrite_rows(path, rows)
+
+    with pytest.raises(CorpusError, match=rf"{field}.*not captured"):
+        validate_directory(fixture)
+
+
 def test_local_corpus_bootstrap_count_must_equal_seed_mentions(tmp_path):
     fixture = build_valid_fixture(tmp_path)
     path = fixture / "search_log.csv"

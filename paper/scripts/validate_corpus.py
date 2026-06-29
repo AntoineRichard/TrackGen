@@ -368,6 +368,22 @@ def _validate_search_log(rows: list[dict[str, str]]) -> None:
             )
         for field in ("results_screened", "candidates_added"):
             value = row[field].strip()
+            if value == "NR":
+                if row["stream"].strip() == "bootstrap":
+                    raise CorpusError(
+                        f"search_log.csv:{row_number}: {field}={value!r} "
+                        "must be a nonnegative integer"
+                    )
+                if not re.search(
+                    r"\bcounts?\s+(?:was|were)\s+not captured\b",
+                    row["notes"],
+                    re.IGNORECASE,
+                ):
+                    raise CorpusError(
+                        f"search_log.csv:{row_number}: {field}={value!r} requires "
+                        "notes to state that the count was not captured"
+                    )
+                continue
             if not re.fullmatch(r"[0-9]+", value):
                 raise CorpusError(
                     f"search_log.csv:{row_number}: {field}={value!r} "
