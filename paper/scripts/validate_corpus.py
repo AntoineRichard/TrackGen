@@ -102,6 +102,43 @@ CONTROLLED_FIELDS = {
     "claims.csv": {"evidence_status": "evidence_status"},
 }
 
+SCALAR_CONTROLLED_FIELDS = {
+    ("candidates.csv", "screening_status"),
+    ("candidates.csv", "metadata_status"),
+    ("evidence.csv", "code_status"),
+    ("claims.csv", "evidence_status"),
+}
+
+REQUIRED_FIELDS = {
+    "search_log.csv": (
+        "search_id", "search_date", "stream", "agent", "query",
+        "search_surface", "results_screened", "candidates_added",
+    ),
+    "candidates.csv": (
+        "candidate_id", "title", "screening_status", "metadata_status",
+    ),
+    "seed_coverage.csv": (
+        "source_path", "source_heading", "source_label", "coverage_status",
+    ),
+    "evidence.csv": (
+        "cite_key", "domain", "course_object", "representation_family",
+        "generator_family", "generation_role", "validity_strategy",
+        "code_status", "evidence_locator",
+    ),
+    "claims.csv": (
+        "claim_id", "section", "claim_text", "evidence_status",
+    ),
+    "metrics.csv": (
+        "metric_id", "layer", "name", "definition", "domain",
+        "requires_dynamics", "minimum_reporting",
+    ),
+    "simulators.csv": ("system", "domain"),
+    "conflicts.csv": (
+        "conflict_id", "record_type", "record_key", "field", "value_a",
+        "value_b",
+    ),
+}
+
 FORBIDDEN_MARKERS = ("TO" + "DO", "T" + "BD", "FIX" + "ME", "CITATION " + "NEEDED")
 
 
@@ -120,15 +157,22 @@ def split_values(value: str) -> list[str]:
 def read_csv(path: Path, required: tuple[str, ...]) -> list[dict[str, str]]:
     if not path.is_file():
         raise CorpusError(f"{path}: file is missing")
-    with path.open(newline="") as handle:
-        reader = csv.DictReader(handle)
-        actual = tuple(reader.fieldnames or ())
-        if actual != required:
-            raise CorpusError(f"{path}: headers {actual!r} != {required!r}")
-        rows = list(reader)
+    with path.open(encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle, strict=True)
+        try:
+            actual = tuple(reader.fieldnames or ())
+            if actual != required:
+                raise CorpusError(f"{path}: headers {actual!r} != {required!r}")
+            rows = list(reader)
+        except csv.Error as exc:
+            raise CorpusError(
+                f"{path}:{reader.line_num}: CSV parse error: {exc}"
+            ) from exc
     for row_number, row in enumerate(rows, start=2):
         if None in row or any(value is None for value in row.values()):
             raise CorpusError(f"{path}:{row_number}: malformed CSV row")
+        if not any(value.strip() for value in row.values()):
+            raise CorpusError(f"{path}:{row_number}: row is entirely blank")
     return rows
 
 
@@ -142,6 +186,12 @@ def _require(
     if not value:
         raise CorpusError(f"{filename}:{row_number}: {field} is required")
     return value
+
+
+def _validate_required(filename: str, rows: list[dict[str, str]]) -> None:
+    for row_number, row in enumerate(rows, start=2):
+        for field in REQUIRED_FIELDS.get(filename, ()):
+            _require(filename, row_number, row, field)
 
 
 def _check_unique(
@@ -172,13 +222,36 @@ def _validate_controlled(
 ) -> None:
     for field, vocabulary_name in CONTROLLED_FIELDS.get(filename, {}).items():
         allowed = set(taxonomy[vocabulary_name])
+        scalar = (filename, field) in SCALAR_CONTROLLED_FIELDS
         for row_number, row in enumerate(rows, start=2):
-            for value in split_values(row[field]):
+            values = [item.strip() for item in row[field].split(";")]
+            if any(not value for value in values):
+                raise CorpusError(
+                    f"{filename}:{row_number}: {field} contains an empty list element"
+                )
+            if "NR" in values:
+                if filename != "evidence.csv":
+                    raise CorpusError(
+                        f"{filename}:{row_number}: {field}='NR' is outside "
+                        f"{vocabulary_name}"
+                    )
+                if len(values) != 1:
+                    raise CorpusError(
+                        f"{filename}:{row_number}: {field}: NR must be used alone"
+                    )
+                row[field] = "NR"
+                continue
+            if scalar and len(values) != 1:
+                raise CorpusError(
+                    f"{filename}:{row_number}: {field} must contain exactly one value"
+                )
+            for value in values:
                 if value not in allowed:
                     raise CorpusError(
                         f"{filename}:{row_number}: {field}={value!r} "
                         f"is outside {vocabulary_name}"
                     )
+            row[field] = values[0] if scalar else "; ".join(values)
 
 
 def _validate_markers(filename: str, rows: list[dict[str, str]]) -> None:
@@ -191,16 +264,31 @@ def _validate_markers(filename: str, rows: list[dict[str, str]]) -> None:
                     )
 
 
+def _read_taxonomy(path: Path) -> dict[str, list[str]]:
+    if not path.is_file():
+        raise CorpusError(f"{path}: file is missing")
+    try:
+        taxonomy = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeError) as exc:
+        raise CorpusError(f"{path}: invalid JSON: {exc}") from exc
+    if not isinstance(taxonomy, dict):
+        raise CorpusError(f"{path}: top-level JSON value must be an object")
+    for name in DEFAULT_TAXONOMY:
+        if name not in taxonomy:
+            raise CorpusError(f"{path}: missing vocabulary {name!r}")
+        values = taxonomy[name]
+        if not isinstance(values, list):
+            raise CorpusError(f"{path}: {name!r} must be a list")
+        if any(not isinstance(value, str) or not value.strip() for value in values):
+            raise CorpusError(f"{path}: {name!r} values must be nonempty strings")
+        if len(values) != len(set(values)):
+            raise CorpusError(f"{path}: duplicate value in {name!r}")
+    return taxonomy
+
+
 def validate_directory(data_dir: Path) -> None:
     taxonomy_path = data_dir / "taxonomy.json"
-    if not taxonomy_path.is_file():
-        raise CorpusError(f"{taxonomy_path}: file is missing")
-    taxonomy = json.loads(taxonomy_path.read_text())
-    for name in DEFAULT_TAXONOMY:
-        if name not in taxonomy or not isinstance(taxonomy[name], list):
-            raise CorpusError(f"{taxonomy_path}: missing list {name!r}")
-        if len(taxonomy[name]) != len(set(taxonomy[name])):
-            raise CorpusError(f"{taxonomy_path}: duplicate value in {name!r}")
+    taxonomy = _read_taxonomy(taxonomy_path)
 
     tables = {
         filename: read_csv(data_dir / filename, header)
@@ -208,16 +296,12 @@ def validate_directory(data_dir: Path) -> None:
     }
     for filename, rows in tables.items():
         _validate_markers(filename, rows)
+        _validate_required(filename, rows)
         _validate_controlled(filename, rows, taxonomy)
 
     candidates = tables["candidates.csv"]
     for row_number, row in enumerate(candidates, start=2):
-        _require("candidates.csv", row_number, row, "candidate_id")
-        _require("candidates.csv", row_number, row, "title")
-        status = _require(
-            "candidates.csv", row_number, row, "screening_status"
-        )
-        _require("candidates.csv", row_number, row, "metadata_status")
+        status = row["screening_status"]
         if status in {"included", "boundary"}:
             _require("candidates.csv", row_number, row, "cite_key")
             if row["metadata_status"] != "verified":
@@ -296,7 +380,36 @@ def validate_directory(data_dir: Path) -> None:
                 f"{candidate_id!r}"
             )
 
+    conflict_targets = {
+        "candidate": (
+            "candidates.csv",
+            {candidate_id.strip() for candidate_id in by_id},
+        ),
+        "evidence": (
+            "evidence.csv",
+            {cite_key.strip() for cite_key in evidence_keys},
+        ),
+    }
     for row_number, row in enumerate(tables["conflicts.csv"], start=2):
+        record_type = row["record_type"].strip()
+        if record_type not in conflict_targets:
+            raise CorpusError(
+                f"conflicts.csv:{row_number}: record_type={record_type!r} "
+                "is unsupported"
+            )
+        target_filename, target_keys = conflict_targets[record_type]
+        record_key = row["record_key"].strip()
+        if record_key not in target_keys:
+            raise CorpusError(
+                f"conflicts.csv:{row_number}: {record_type} "
+                f"record_key={record_key!r} does not resolve"
+            )
+        field = row["field"].strip()
+        if field not in HEADERS[target_filename]:
+            raise CorpusError(
+                f"conflicts.csv:{row_number}: {record_type} field={field!r} "
+                f"is not a column in {target_filename}"
+            )
         if row["resolution"].strip():
             _require("conflicts.csv", row_number, row, "resolver")
             _require("conflicts.csv", row_number, row, "resolution_evidence")

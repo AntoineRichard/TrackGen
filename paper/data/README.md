@@ -10,21 +10,36 @@ by the reviewed source or an allowed official source.
 Use semicolons to separate multiple values in one cell, with no space before and one
 space after each semicolon. Strip surrounding whitespace from each item. A semicolon
 is always a list separator and has no escape form inside a list item; rephrase an item
-that would otherwise contain one. Use standard CSV quoting for cells containing a
-comma, quote, or newline, and double an embedded quote. CSV quoting does not turn a
-semicolon into a literal character.
+that would otherwise contain one. Empty elements, including double or trailing
+semicolons, are invalid. Use standard CSV quoting for cells containing a comma, quote,
+or newline, and double an embedded quote. CSV quoting does not turn a semicolon into
+a literal character.
 
-Use the literal `NR` only when the reviewed source does not report a fact. Do not
-infer a negative from silence. Use `not_applicable` only when the controlled field
-explicitly provides that value and the concept does not apply. Record a documented
-negative only when the paper, official supplement, official repository, or author
-page explicitly supports it, and provide the corresponding evidence locator.
+The scalar controlled fields are `candidates.csv` `screening_status` and
+`metadata_status`, `evidence.csv` `code_status`, and `claims.csv`
+`evidence_status`. Each requires exactly one value. The other controlled fields in
+`evidence.csv` (`domain`, `course_object`, `representation_family`,
+`generator_family`, `generation_role`, and `validity_strategy`) may contain one or
+more semicolon-separated values. The validator canonicalizes controlled values by
+trimming each token and joining lists with a semicolon followed by one space.
+
+`NR` is permitted as a sole sentinel in controlled fields only in `evidence.csv`; it
+must not be combined with another value and is invalid for candidate or claim statuses.
+In noncontrolled factual cells, use `NR` only when the reviewed source does not report
+the fact. Never infer a negative from silence. Use
+`not_applicable` only when the controlled field provides that value and the concept does
+not apply. Record a documented negative only when direct or allowed official evidence
+supports it.
+
+Use `code_status=not_found` only for an explicit search outcome across documented
+official project and author surfaces. Record the searched locations and search date in
+`coding_notes`. Use `code_status=NR` when availability was not assessed or not reported.
+Code and asset status otherwise require an official repository or author page;
+third-party search results and silence are not evidence of availability or absence.
 
 Evidence locators must identify the supporting material as a page, section, figure,
 table, appendix, or official URL, for example `p. 7`, `Section 3.2`, `Figure 4`,
-`Table 2`, `Appendix A`, or a complete official URL. Code and asset status require an
-official repository or author page; third-party search results and silence are not
-evidence of availability or absence.
+`Table 2`, `Appendix A`, or a complete official URL.
 
 The controlled vocabulary is stored in `taxonomy.json`. Values may be split or merged
 only through a recorded codebook decision in Task 7.
@@ -111,6 +126,10 @@ RL interfaces, and open-source status only when explicitly documented.
 ## `conflicts.csv`
 
 One row preserves one unresolved or resolved disagreement about a record field.
-`conflict_id` is unique. Keep both observed values and identify their source context in
-`resolution_evidence`. A nonempty resolution requires both a resolver and resolution
-evidence; never erase the original disagreement.
+`conflict_id` is unique. This phase supports only `record_type=candidate` and
+`record_type=evidence`. A candidate conflict uses `candidate_id` as `record_key`, and
+its `field` must be a `candidates.csv` column. An evidence conflict uses `cite_key` as
+`record_key`, and its `field` must be an `evidence.csv` column. Unsupported record
+types, orphaned keys, and unknown fields are invalid. Keep both observed values and
+identify their source context in `resolution_evidence`. A nonempty resolution requires
+both a resolver and resolution evidence; never erase the original disagreement.
