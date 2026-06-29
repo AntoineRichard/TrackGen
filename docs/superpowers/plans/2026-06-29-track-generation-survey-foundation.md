@@ -383,7 +383,7 @@ Run:
 
 ~~~bash
 .venv/bin/python -m pytest -q tests/test_paper_artifacts.py
-latexmk -cd -pdf paper/main.tex
+latexmk -r paper/latexmkrc -cd -pdf paper/main.tex
 ~~~
 
 Expected: tests pass and paper/build/main.pdf exists with no LaTeX build error.
@@ -2429,7 +2429,7 @@ After each section group:
 
 ~~~bash
 python3 paper/scripts/validate_corpus.py
-latexmk -cd -pdf paper/main.tex
+latexmk -r paper/latexmkrc -cd -pdf paper/main.tex
 python3 paper/scripts/check_tex_log.py paper/build/main.log
 ~~~
 
@@ -2563,7 +2563,7 @@ Every figure requires:
 - [ ] **Step 5: Build and visually inspect the PDF**
 
 ~~~bash
-latexmk -cd -pdf paper/main.tex
+latexmk -r paper/latexmkrc -cd -pdf paper/main.tex
 python3 paper/scripts/check_tex_log.py paper/build/main.log
 ~~~
 
