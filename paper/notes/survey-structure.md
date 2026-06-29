@@ -1,6 +1,6 @@
 # Survey Structure Analysis
 
-**Analysis date:** 2026-06-29  
+**Analysis date:** 2026-06-29
 **Purpose:** identify transferable structural practices from six IJRR and Science Robotics exemplars before drafting the course-generation survey.
 
 ## Evidence and citation-count policy
