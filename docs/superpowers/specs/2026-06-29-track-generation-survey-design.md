@@ -15,6 +15,12 @@ The survey scope is literature-driven, not repository-driven. The current TrackG
 `docs/generators/benchmarks.rst` are seed materials and reference implementation
 evidence. They must not define the boundary of the paper.
 
+Those existing notes should still be used deliberately. They provide the first citation
+graph, terminology, and known paper clusters for bootstrapping corpus-aware searches.
+The research process should treat them as a map of what is already known, then actively
+look for missing regions around other vehicles, simulators, benchmark formats, and
+course-generation traditions.
+
 The paper should search beyond the current SOTA notes into at least:
 
 - robot racing and autonomous-racing track generation;
@@ -47,8 +53,8 @@ Proposed contribution claims:
    dynamics relevance, simulator portability, reproducibility, and generation throughput.
 4. OSS reference implementations for representative generator families.
 5. Large training distributions, such as 10,000-100,000 courses per generator.
-6. Curated easy/medium/hard evaluation suites selected by explicit metrics and diversity
-   criteria.
+6. Curated evaluation suites sampled along an explicit difficulty spectrum, selected
+   by metrics and diversity criteria.
 
 ## Survey Exemplar Lessons
 
@@ -176,14 +182,16 @@ Propose two benchmark products:
 
 1. Training distributions: 10,000-100,000 generated courses per generator family, with
    fixed seeds, configs, metrics, and train/validation splits.
-2. Evaluation suites: curated easy/medium/hard sets selected by metric quantiles and
-   diversity clustering. The default paper target is 100 courses per difficulty tier
-   for each main domain. A smaller 100-total smoke suite can be published as an
-   additional convenience set for expensive simulator evaluations.
+2. Evaluation suites: curated sets sampled along a difficulty spectrum selected by
+   metric quantiles and diversity clustering. The default paper target is 100 courses
+   for each selected spectrum band or operating point per main domain. The final naming
+   and banding should be decided after the survey clarifies which difficulty metrics are
+   meaningful. A smaller 100-total smoke suite can be published as an additional
+   convenience set for expensive simulator evaluations.
 
 The selection process should avoid cherry-picking: first filter for feasibility, then
 stratify by domain-specific difficulty metrics, then choose diverse representatives
-within each tier.
+across the spectrum.
 
 ### 9. OSS Reference Implementations
 
@@ -239,6 +247,25 @@ End with forward-looking questions:
 ## Literature Search Plan
 
 The next research pass should deliberately go beyond the current related-work files.
+It should use a mixed-agent strategy to avoid both duplication and anchoring bias:
+
+1. Corpus-aware agents should read the current TrackGen related-work and benchmark docs
+   first, then expand outward through citations, terminology variants, simulator names,
+   and papers that cite or reuse the known systems.
+2. Blind discovery agents should not receive the existing TrackGen corpus initially.
+   They should search from the paper thesis and target domains only, so they can surface
+   papers, communities, and terminology that the current notes may have missed.
+3. A reconciliation pass should merge both result sets, deduplicate papers, mark which
+   sources were found independently, and flag disagreements in taxonomy or scope.
+
+Corpus-aware bootstrap files:
+
+- `docs/related-work/state-of-the-art.rst`;
+- `docs/related-work/prior-art.rst`;
+- `docs/generators/benchmarks.rst`;
+- `docs/tutorials/gate-sequences.rst`;
+- `docs/superpowers/specs/2026-06-23-gate-sequence-generation-design.md`.
+
 Suggested query families:
 
 - "procedural track generation reinforcement learning car racing";
@@ -292,7 +319,7 @@ High-value survey artifacts:
 - metric hierarchy table;
 - benchmark selection pipeline figure;
 - simulator export compatibility matrix;
-- easy/medium/hard metric distribution plots from reference generators.
+- difficulty-spectrum metric distribution plots from reference generators.
 
 ## Success Criteria
 
