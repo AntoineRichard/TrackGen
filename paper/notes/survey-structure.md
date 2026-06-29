@@ -73,7 +73,7 @@ The two date discrepancies are retained rather than silently reconciled: the pub
 
 ## 3. Dynamic movement primitives in robotics: A tutorial survey
 
-**Metadata and inspected text.** Matteo Saveriano, Fares J. Abu-Dakka, Aljaz Kramberger, and Luka Peternel. The [SAGE journal record](https://journals.sagepub.com/doi/10.1177/02783649231201196) was checked against Crossref; structure was inspected in the [author manuscript on arXiv](https://arxiv.org/abs/2102.03861).
+**Metadata and inspected text.** Matteo Saveriano, Fares J. Abu-Dakka, Aljaz Kramberger, and Luka Peternel. The [SAGE journal record](https://journals.sagepub.com/doi/10.1177/02783649231201196) was checked against Crossref. Structure and review-method numbers were inspected only in [arXiv:2102.03861v1](https://arxiv.org/abs/2102.03861), submitted 7 February 2021; the arXiv record exposes no later manuscript version. The 2023 journal metadata above remains separate and is not used to infer v1 review counts.
 
 **Section sequence.**
 
@@ -91,7 +91,7 @@ The two date discrepancies are retained rather than silently reconciled: the pub
 
 **Comparison-table axes.** Table 1 uses prior survey/tutorial, topics, and description. A formulation table summarizes mathematical variants. The released-code table uses approach, author, language, and description. The limitations table uses limitation, related work, and solved/partially-solved status.
 
-**Evaluation and reproducibility.** The authors searched Scopus for "Dynamic Movement Primitive" on 2020-11-25 and refined the search on 2023-06-20. They report 1223 initial papers and 321 analyzed DMP papers among 373 references. Selection included manual judgments of technical quality and significance. They inventory third-party implementations and release code at [dmp-codes-collection](https://gitlab.com/dmp-codes-collection). The explicit dates and counts are useful; the reliance on venue prestige or citation count as a tie-breaker is not appropriate for this survey's scientific inclusion decisions.
+**Evaluation and reproducibility.** The inspected v1 manuscript reports that an automatic Scopus search for "Dynamic Movement Primitive" on 25 November 2020 returned 1223 papers and that the authors further refined the search on 01 February 2021 to include last-minute papers. After manual screening, v1 reports 276 papers on DMPs analyzed out of 328 total references. Selection included manual judgments of technical quality and significance. The authors inventory third-party implementations and release code at [dmp-codes-collection](https://gitlab.com/dmp-codes-collection). The explicit dates and counts are useful; the reliance on venue prestige or citation count as a tie-breaker is not appropriate for this survey's scientific inclusion decisions.
 
 **Research agenda.** Guidelines first explain which formulation fits which application. Open issues then cover implicit time dependence, missing stochastic information, closed-loop stability/passivity, high-dimensional inputs, and multi-attractor behavior. A status table separates addressed from partially addressed limitations.
 
@@ -208,4 +208,3 @@ This ordering keeps representations, generation mechanisms, metrics, benchmarks,
 | Long tutorial derivations before field synthesis (Saveriano) | Reject for the main survey | Put only notation needed to compare representations and metrics in the main text. | Detailed derivations belong in appendices or referenced tutorials. |
 | Unverified reconstruction of inaccessible article structure | Reject | Record retrieval limits, as done for Biohybrid, and leave unsupported fields unclaimed. | No structural conclusion may depend on inaccessible evidence. |
 | Agenda derived from explicit limitations (all inspectable exemplars) | Adopt | Tie each open problem to coded evidence, benchmark absence, or reproducibility failure. | Separate observed gaps from author inference and proposed research directions. |
-

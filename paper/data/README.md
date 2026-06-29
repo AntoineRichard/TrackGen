@@ -70,11 +70,25 @@ leading `https://doi.org/`, `http://doi.org/`, or `doi:` prefix, and removing tr
 slashes. Store the bare canonical DOI when possible. Two nonempty values that normalize
 to the same DOI are duplicates.
 
+## `search_queries.csv`
+
+This file freezes the discovery query matrix. Each row has a unique `query_id`, one of
+the matrix's allowed discovery streams, a domain from `taxonomy.json`, and nonempty
+query and rationale text. The validator checks the generic matrix contract; it does not
+hardcode the current query strings.
+
 ## `search_log.csv`
 
 One row records one reproducible search action. Assign a unique `search_id`; record the
 date, discovery stream, agent, exact query, search surface, counts screened and added,
 and any notes needed to replay or interpret the search.
+For `stream=bootstrap` and `search_surface=local-corpus`, `results_screened` counts
+inventoried visible named-mention occurrences in the named local file. It includes
+repeated mentions under different headings and repeated summary occurrences. This unit
+must equal the number of `seed_coverage.csv` rows for that source path and must not be
+pooled with search-engine result counts. External discovery rows instead count query
+results screened on their stated search surface.
+
 
 ## `candidates.csv`
 
@@ -82,6 +96,10 @@ One row records one discovered source, including provenance, screening dispositi
 metadata verification. `candidate_id` is required and unique. Included and boundary
 sources require a unique `cite_key`, verified metadata, and exactly one matching row in
 `evidence.csv`. Excluded sources require a specific `exclusion_reason`.
+Candidate IDs are stable after assignment and surviving records are never renumbered.
+Retired IDs remain as documented gaps, such as C0072, so later records keep durable
+identities across reviews and merges.
+
 
 This table records discovery and screening, not verified technical coding. Conflicting
 metadata remains visible with `metadata_status=conflict` until it is resolved through

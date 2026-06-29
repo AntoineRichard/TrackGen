@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import csv
 import json
+import re
+from datetime import date
 from pathlib import Path
 
 
@@ -10,6 +12,9 @@ class CorpusError(ValueError):
 
 
 HEADERS = {
+    "search_queries.csv": (
+        "query_id", "stream", "domain", "query", "rationale",
+    ),
     "search_log.csv": (
         "search_id", "search_date", "stream", "agent", "query", "search_surface",
         "results_screened", "candidates_added", "notes",
@@ -51,6 +56,19 @@ HEADERS = {
         "resolution", "resolver", "resolution_evidence",
     ),
 }
+
+
+SEARCH_QUERY_STREAMS = frozenset(
+    {
+        "blind-ground",
+        "blind-aerial-maritime",
+        "aware-geometry-rl",
+        "aware-simulation",
+        "survey-exemplars",
+    }
+)
+CANDIDATE_ID_PATTERN = re.compile(r"C[0-9]{4,}")
+ISO_DATE_PATTERN = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 
 DEFAULT_TAXONOMY = {
     "domain": ["ground", "aerial", "maritime", "mixed", "adjacent"],
@@ -110,6 +128,9 @@ SCALAR_CONTROLLED_FIELDS = {
 }
 
 REQUIRED_FIELDS = {
+    "search_queries.csv": (
+        "query_id", "stream", "domain", "query", "rationale",
+    ),
     "search_log.csv": (
         "search_id", "search_date", "stream", "agent", "query",
         "search_surface", "results_screened", "candidates_added",
@@ -301,6 +322,81 @@ def _read_taxonomy(path: Path) -> dict[str, list[str]]:
     return taxonomy
 
 
+def _validate_search_queries(
+    rows: list[dict[str, str]],
+    taxonomy: dict[str, list[str]],
+) -> None:
+    _check_unique(
+        "search_queries.csv",
+        rows,
+        "query_id",
+        "query_id",
+    )
+    allowed_domains = set(taxonomy["domain"])
+    for row_number, row in enumerate(rows, start=2):
+        stream = row["stream"].strip()
+        if stream not in SEARCH_QUERY_STREAMS:
+            raise CorpusError(
+                f"search_queries.csv:{row_number}: stream={stream!r} "
+                "is outside frozen query matrix streams"
+            )
+        domain = row["domain"].strip()
+        if domain not in allowed_domains:
+            raise CorpusError(
+                f"search_queries.csv:{row_number}: domain={domain!r} "
+                "is outside domain"
+            )
+
+
+def _validate_search_log(rows: list[dict[str, str]]) -> None:
+    for row_number, row in enumerate(rows, start=2):
+        search_date = row["search_date"].strip()
+        try:
+            parsed_date = date.fromisoformat(search_date)
+        except ValueError as exc:
+            raise CorpusError(
+                f"search_log.csv:{row_number}: search_date={search_date!r} "
+                "must be an ISO date (YYYY-MM-DD)"
+            ) from exc
+        if (
+            not ISO_DATE_PATTERN.fullmatch(search_date)
+            or parsed_date.isoformat() != search_date
+        ):
+            raise CorpusError(
+                f"search_log.csv:{row_number}: search_date={search_date!r} "
+                "must be an ISO date (YYYY-MM-DD)"
+            )
+        for field in ("results_screened", "candidates_added"):
+            value = row[field].strip()
+            if not re.fullmatch(r"[0-9]+", value):
+                raise CorpusError(
+                    f"search_log.csv:{row_number}: {field}={value!r} "
+                    "must be a nonnegative integer"
+                )
+
+
+def _validate_local_corpus_counts(
+    search_rows: list[dict[str, str]],
+    seed_rows: list[dict[str, str]],
+) -> None:
+    for row_number, row in enumerate(search_rows, start=2):
+        if (
+            row["stream"].strip() != "bootstrap"
+            or row["search_surface"].strip() != "local-corpus"
+        ):
+            continue
+        query_path = row["query"].strip()
+        expected = sum(
+            seed["source_path"].strip() == query_path for seed in seed_rows
+        )
+        actual = int(row["results_screened"])
+        if actual != expected:
+            raise CorpusError(
+                f"search_log.csv:{row_number}: results_screened={actual} "
+                f"but seed_coverage rows={expected} for {query_path!r}"
+            )
+
+
 def validate_directory(data_dir: Path) -> None:
     taxonomy_path = data_dir / "taxonomy.json"
     taxonomy = _read_taxonomy(taxonomy_path)
@@ -313,9 +409,20 @@ def validate_directory(data_dir: Path) -> None:
         _validate_markers(filename, rows)
         _validate_required(filename, rows)
         _validate_controlled(filename, rows, taxonomy)
+    _validate_search_queries(tables["search_queries.csv"], taxonomy)
+    _validate_search_log(tables["search_log.csv"])
+    _validate_local_corpus_counts(
+        tables["search_log.csv"], tables["seed_coverage.csv"]
+    )
 
     candidates = tables["candidates.csv"]
     for row_number, row in enumerate(candidates, start=2):
+        candidate_id = row["candidate_id"].strip()
+        if not CANDIDATE_ID_PATTERN.fullmatch(candidate_id):
+            raise CorpusError(
+                f"candidates.csv:{row_number}: candidate_id={candidate_id!r} "
+                "must be C followed by at least four digits"
+            )
         status = row["screening_status"]
         if status in {"included", "boundary"}:
             _require("candidates.csv", row_number, row, "cite_key")

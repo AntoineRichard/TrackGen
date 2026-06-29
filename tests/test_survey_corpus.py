@@ -12,6 +12,26 @@ from paper.scripts.validate_corpus import (
     validate_directory,
 )
 
+SEARCH_QUERY_HEADERS = (
+    "query_id",
+    "stream",
+    "domain",
+    "query",
+    "rationale",
+)
+
+
+def write_search_queries(path: Path, rows: list[dict[str, str]]) -> None:
+    with path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=SEARCH_QUERY_HEADERS)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def read_search_queries(path: Path) -> list[dict[str, str]]:
+    with path.open(newline="") as handle:
+        return list(csv.DictReader(handle))
+
 
 def write_rows(path: Path, rows: list[dict[str, str]]) -> None:
     with path.open("w", newline="") as handle:
@@ -107,6 +127,18 @@ def build_valid_fixture(tmp_path: Path) -> Path:
     }
     for filename, rows in rows_by_file.items():
         write_rows(data / filename, rows)
+    write_search_queries(
+        data / "search_queries.csv",
+        [
+            {
+                "query_id": "B-G-01",
+                "stream": "blind-ground",
+                "domain": "ground",
+                "query": "fictional course generation",
+                "rationale": "Exercise the query validator.",
+            }
+        ],
+    )
     (tmp_path / "references.bib").write_text("")
     return data
 
@@ -148,6 +180,136 @@ def test_duplicate_doi_is_rejected_after_normalization(tmp_path):
     rewrite_rows(fixture / "candidates.csv", rows + [duplicate])
     with pytest.raises(CorpusError, match="duplicate DOI"):
         validate_directory(fixture)
+def test_search_queries_requires_exact_header(tmp_path):
+    fixture = build_valid_fixture(tmp_path)
+    (fixture / "search_queries.csv").write_text(
+        "query_id,stream,domain,query,reason\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(CorpusError, match=r"search_queries\.csv: headers"):
+        validate_directory(fixture)
+
+
+@pytest.mark.parametrize(
+    "field", ["query_id", "stream", "domain", "query", "rationale"]
+)
+def test_search_queries_requires_nonempty_fields(tmp_path, field):
+    fixture = build_valid_fixture(tmp_path)
+    path = fixture / "search_queries.csv"
+    rows = read_search_queries(path)
+    rows[0][field] = ""
+    write_search_queries(path, rows)
+
+    with pytest.raises(CorpusError, match=rf"{field} is required"):
+        validate_directory(fixture)
+
+
+def test_search_query_id_must_be_unique(tmp_path):
+    fixture = build_valid_fixture(tmp_path)
+    path = fixture / "search_queries.csv"
+    rows = read_search_queries(path)
+    write_search_queries(path, rows + [dict(rows[0])])
+
+    with pytest.raises(CorpusError, match="duplicate query_id"):
+        validate_directory(fixture)
+
+
+def test_search_query_stream_must_be_from_frozen_matrix(tmp_path):
+    fixture = build_valid_fixture(tmp_path)
+    path = fixture / "search_queries.csv"
+    rows = read_search_queries(path)
+    rows[0]["stream"] = "bootstrap"
+    write_search_queries(path, rows)
+
+    with pytest.raises(CorpusError, match="stream='bootstrap'.*frozen query matrix"):
+        validate_directory(fixture)
+
+
+def test_search_query_domain_must_be_in_taxonomy(tmp_path):
+    fixture = build_valid_fixture(tmp_path)
+    path = fixture / "search_queries.csv"
+    rows = read_search_queries(path)
+    rows[0]["domain"] = "space"
+    write_search_queries(path, rows)
+
+    with pytest.raises(CorpusError, match="domain='space'.*domain"):
+        validate_directory(fixture)
+
+
+@pytest.mark.parametrize("candidate_id", ["1", "C123", "c0001", "C0001x"])
+def test_candidate_id_requires_c_and_at_least_four_digits(
+    tmp_path, candidate_id
+):
+    fixture = build_valid_fixture(tmp_path)
+    path = fixture / "candidates.csv"
+    rows = read_rows(path)
+    rows[0]["candidate_id"] = candidate_id
+    rewrite_rows(path, rows)
+
+    with pytest.raises(
+        CorpusError, match="candidate_id.*C followed by at least four digits"
+    ):
+        validate_directory(fixture)
+
+
+@pytest.mark.parametrize("search_date", ["2026-6-29", "2026-02-30", "not-a-date"])
+def test_search_date_requires_iso_calendar_date(tmp_path, search_date):
+    fixture = build_valid_fixture(tmp_path)
+    path = fixture / "search_log.csv"
+    rows = read_rows(path)
+    rows[0]["search_date"] = search_date
+    rewrite_rows(path, rows)
+
+    with pytest.raises(CorpusError, match="search_date.*ISO date"):
+        validate_directory(fixture)
+
+
+@pytest.mark.parametrize("field", ["results_screened", "candidates_added"])
+@pytest.mark.parametrize("value", ["-1", "1.5", "+1", "one"])
+def test_search_counts_require_nonnegative_integers(tmp_path, field, value):
+    fixture = build_valid_fixture(tmp_path)
+    path = fixture / "search_log.csv"
+    rows = read_rows(path)
+    rows[0][field] = value
+    rewrite_rows(path, rows)
+
+    with pytest.raises(CorpusError, match=rf"{field}.*nonnegative integer"):
+        validate_directory(fixture)
+
+
+def test_local_corpus_bootstrap_count_must_equal_seed_mentions(tmp_path):
+    fixture = build_valid_fixture(tmp_path)
+    path = fixture / "search_log.csv"
+    rows = read_rows(path)
+    rows[0].update(
+        stream="bootstrap",
+        query="fixture.rst",
+        search_surface="local-corpus",
+        results_screened="0",
+    )
+    rewrite_rows(path, rows)
+
+    with pytest.raises(
+        CorpusError, match="results_screened=0.*seed_coverage rows=1"
+    ):
+        validate_directory(fixture)
+
+
+def test_local_corpus_bootstrap_count_accepts_matching_seed_mentions(tmp_path):
+    fixture = build_valid_fixture(tmp_path)
+    path = fixture / "search_log.csv"
+    rows = read_rows(path)
+    rows[0].update(
+        stream="bootstrap",
+        query="fixture.rst",
+        search_surface="local-corpus",
+        results_screened="1",
+    )
+    rewrite_rows(path, rows)
+
+    validate_directory(fixture)
+
 
 
 @pytest.mark.parametrize(

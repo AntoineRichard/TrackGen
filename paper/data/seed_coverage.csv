@@ -45,8 +45,8 @@ docs/related-work/state-of-the-art.rst,Boundary Case: Racing-Line Optimization o
 docs/related-work/state-of-the-art.rst,Boundary Case: Racing-Line Optimization on Fixed Tracks,"Bonab and Emadi, ""Optimization-based Path Planning for an Autonomous Vehicle in a Racing Track"" (2019)",C0044,linked,Compound source label split into distinct works.
 docs/related-work/state-of-the-art.rst,Open-Source Implementations and Practical Baselines,Gymnasium / OpenAI Gym CarRacing,C0017,linked,
 docs/related-work/state-of-the-art.rst,Open-Source Implementations and Practical Baselines,Box2D,C0045,linked,Named rendering/physics system in the CarRacing description.
-docs/related-work/state-of-the-art.rst,Open-Source Implementations and Practical Baselines,MetaDrive,C0046,linked,Compound source label split from PGDrive.
-docs/related-work/state-of-the-art.rst,Open-Source Implementations and Practical Baselines,PGDrive,C0006,linked,Compound source label split from MetaDrive.
+docs/related-work/state-of-the-art.rst,Open-Source Implementations and Practical Baselines,MetaDrive,C0046,linked,"Visible compound mention ""MetaDrive / PGDrive"": MetaDrive identity."
+docs/related-work/state-of-the-art.rst,Open-Source Implementations and Practical Baselines,PGDrive,C0006,linked,"Visible compound mention ""MetaDrive / PGDrive"": PGDrive identity."
 docs/related-work/state-of-the-art.rst,Open-Source Implementations and Practical Baselines,AirSim Drone Racing Lab,C0025,linked,
 docs/related-work/state-of-the-art.rst,Open-Source Implementations and Practical Baselines,AirSim,C0025,linked,Project alias linked to its citable system description.
 docs/related-work/state-of-the-art.rst,Open-Source Implementations and Practical Baselines,TORCS,C0001,linked,
@@ -103,12 +103,12 @@ docs/related-work/prior-art.rst,3. Experience-driven and search-based PCG framew
 docs/related-work/prior-art.rst,"4. RL, UED, and procedural racing levels","Jiang et al., ""Replay-Guided Adversarial Environment Design"" / REPAIRED (NeurIPS 2021)",C0016,linked,
 docs/related-work/prior-art.rst,"4. RL, UED, and procedural racing levels",OpenAI Gym CarRacing,C0017,linked,
 docs/related-work/prior-art.rst,"4. RL, UED, and procedural racing levels",Prioritized Level Replay,C0019,linked,Named component in the REPAIRED description.
-docs/related-work/prior-art.rst,"4. RL, UED, and procedural racing levels",20 human-designed F1 tracks,C0072,linked,Named transfer benchmark in the REPAIRED description.
+docs/related-work/prior-art.rst,"4. RL, UED, and procedural racing levels",20 human-designed F1 tracks,C0016,linked,Study-level evaluation set defined within REPAIRED; not a standalone citable source.
 docs/related-work/prior-art.rst,"4. RL, UED, and procedural racing levels","Dennis et al., ""Emergent Complexity and Zero-shot Transfer via Unsupervised Environment Design"" / PAIRED (2020)",C0020,linked,
 docs/related-work/prior-art.rst,"4. RL, UED, and procedural racing levels","Jiang et al., ""Prioritized Level Replay"" (2020)",C0019,linked,
 docs/related-work/prior-art.rst,"4. RL, UED, and procedural racing levels","Parker-Holder et al., ""Evolving Curricula with Regret-Based Environment Design"" / ACCEL (2022)",C0021,linked,
 docs/related-work/prior-art.rst,"4. RL, UED, and procedural racing levels","Azad et al., ""CLUTR: Curriculum Learning via Unsupervised Task Representation Learning"" (2022)",C0018,linked,
-docs/related-work/prior-art.rst,"4. RL, UED, and procedural racing levels",F1-style transfer benchmark family,C0072,linked,Repeated benchmark mention in the CLUTR description.
+docs/related-work/prior-art.rst,"4. RL, UED, and procedural racing levels",F1-style transfer benchmark family,C0018,linked,Study-level evaluation set defined within CLUTR; not a standalone citable source.
 docs/related-work/prior-art.rst,"4. RL, UED, and procedural racing levels","Cobbe et al., ""Leveraging Procedural Generation to Benchmark Reinforcement Learning"" / Procgen (2019)",C0071,linked,
 docs/related-work/prior-art.rst,5. Drone racing and 3D gate-course generation,"Madaan et al., ""AirSim Drone Racing Lab"" (2020)",C0025,linked,
 docs/related-work/prior-art.rst,5. Drone racing and 3D gate-course generation,"Kaufmann, Loquercio, Ranftl, Dosovitskiy, Koltun, Scaramuzza, ""Deep Drone Racing: Learning Agile Flight in Dynamic Environments"" (CoRL 2018)",C0073,linked,
