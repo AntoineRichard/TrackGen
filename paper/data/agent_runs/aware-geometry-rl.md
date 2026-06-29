@@ -1,7 +1,7 @@
 # Corpus-aware geometry/RL discovery report
 
-Date: 2026-06-29  
-Worker: `aware-geometry-rl`  
+Date: 2026-06-29
+Worker: `aware-geometry-rl`
 Owned data file: `paper/data/agent_runs/aware-geometry-rl.csv`
 
 ## Scope and decision rule
@@ -224,7 +224,7 @@ These terms identify materially different roles. In particular, `scenario genera
 
 ## Integration-conflict note for Task 5
 
-Per the reviewer-supplied cross-stream summary, three independent observations disagree with the simulator stream and must be preserved as integration conflicts: CarRacing (AGRL0013), OpenDRIVE (AGRL0016), and CommonRoad (AGRL0019). This worker did not read or alter the other stream. Task 5 should retain these rows and reconcile the conflicting generator, serialization, and benchmark interpretations explicitly rather than silently preferring either stream.
+Per the reviewer-supplied cross-stream summary, three independent observations disagree with the simulator stream and must be preserved as integration conflicts: CarRacing (AGRL0013), OpenDRIVE (AGRL0016), and CommonRoad (AGRL0019). For OpenDRIVE specifically, AGRL0016 records the normative ASAM OpenDRIVE 1.9.0 release dated 19 May 2026, while the independent simulator stream records OpenDRIVE 1.8.1; Task 5 must preserve both versioned observations. This worker did not read or alter the other stream. Task 5 should reconcile the conflicting generator, serialization, and benchmark interpretations explicitly rather than silently preferring either stream.
 
 ## Saturation arithmetic
 
@@ -288,4 +288,3 @@ Validation used Python's `csv` module with `newline=""` and UTF-8, compared the 
 - Code and asset statuses were not inferred from paper silence or from unofficial mirrors.
 - Simulator/export fields are conservative. A simulator or export value is `NR` when the inspected primary source did not expose a named platform or serialized schema; internal parameter vectors and geometric representations are not treated as export formats.
 - This worker did not broaden into aerial-only gate-course papers except where a method directly informed a ground/road citation chain.
-

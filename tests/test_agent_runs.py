@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,19 @@ ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT / "paper" / "data"
 AGENT_RUN_DIR = DATA_DIR / "agent_runs"
 SEARCH_LOG_PATH = DATA_DIR / "search_log.csv"
+TAXONOMY_PATH = DATA_DIR / "taxonomy.json"
+
+SEARCH_LOG_HEADER = (
+    "search_id",
+    "search_date",
+    "stream",
+    "agent",
+    "query",
+    "search_surface",
+    "results_screened",
+    "candidates_added",
+    "notes",
+)
 
 COMMON_HEADER = (
     "candidate_id",
@@ -93,7 +107,12 @@ INLINE_QUERY = re.compile(
 
 @pytest.fixture
 def agent_run_dir(tmp_path: Path) -> Path:
-    return Path(shutil.copytree(AGENT_RUN_DIR, tmp_path / "agent_runs"))
+    data_dir = tmp_path / "data"
+    run_dir = Path(shutil.copytree(AGENT_RUN_DIR, data_dir / "agent_runs"))
+    shutil.copy2(SEARCH_LOG_PATH, data_dir / "search_log.csv")
+    shutil.copy2(TAXONOMY_PATH, data_dir / "taxonomy.json")
+    complete_fixture_search_log(run_dir)
+    return run_dir
 
 
 def validate_agent_runs(path: Path) -> None:
@@ -184,9 +203,61 @@ def extract_report_queries(path: Path) -> list[tuple[str, str]]:
     return queries
 
 
-def read_search_log() -> list[dict[str, str]]:
-    with SEARCH_LOG_PATH.open(encoding="utf-8", newline="") as handle:
+def read_search_log(
+    path: Path = SEARCH_LOG_PATH,
+) -> list[dict[str, str]]:
+    with path.open(encoding="utf-8", newline="") as handle:
         return list(csv.DictReader(handle))
+
+
+def write_search_log(path: Path, rows: list[dict[str, str]]) -> None:
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=SEARCH_LOG_HEADER,
+            lineterminator="\n",
+        )
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def complete_fixture_search_log(run_dir: Path) -> None:
+    path = run_dir.parent / "search_log.csv"
+    rows = read_search_log(path)
+    remaining = Counter(
+        (row["stream"], row["agent"], row["query"])
+        for row in rows
+        if row["search_surface"] == "mixed-primary-web"
+    )
+    next_id = max(int(row["search_id"][1:]) for row in rows) + 1
+
+    for slug, spec in RUN_SPECS.items():
+        report_path = f"paper/data/agent_runs/{slug}.md"
+        for section, query in extract_report_queries(run_dir / f"{slug}.md"):
+            key = (spec["stream"], spec["agent"], query)
+            if remaining[key]:
+                remaining[key] -= 1
+                continue
+            rows.append(
+                {
+                    "search_id": f"S{next_id:04d}",
+                    "search_date": "2026-06-29",
+                    "stream": spec["stream"],
+                    "agent": spec["agent"],
+                    "query": query,
+                    "search_surface": "mixed-primary-web",
+                    "results_screened": "NR",
+                    "candidates_added": "NR",
+                    "notes": (
+                        f"Source: {report_path}; section: {section}. "
+                        "Per-query screened-hit and candidate-add counts "
+                        "were not captured."
+                    ),
+                }
+            )
+            next_id += 1
+
+    write_search_log(path, rows)
 
 
 def test_production_agent_runs_validate():
@@ -515,17 +586,24 @@ def test_search_log_covers_every_report_query_in_order():
             if report_path in row["notes"]
             and not row["query"].startswith("RUN-SUMMARY:")
         ]
-        assert [row["query"] for row in actual] == [
-            query for _, query in expected
-        ]
-        for row, (section, _) in zip(actual, expected, strict=True):
+        expected_queries = [query for _, query in expected]
+        assert Counter(row["query"] for row in actual) == Counter(
+            expected_queries
+        )
+        assert query_batches_follow_report_order(actual, expected_queries)
+        for row in actual:
             assert row["search_date"] == "2026-06-29"
             assert row["stream"] == spec["stream"]
             assert row["agent"] == spec["agent"]
             assert row["search_surface"] == "mixed-primary-web"
             assert row["results_screened"] == "NR"
             assert row["candidates_added"] == "NR"
-            assert section in row["notes"]
+            sections = [
+                section
+                for section, query in expected
+                if query == row["query"]
+            ]
+            assert any(section in row["notes"] for section in sections)
             assert re.search(
                 r"counts? (?:was|were) not captured",
                 row["notes"],
@@ -576,6 +654,349 @@ def test_search_log_ids_are_unique_sequential_and_no_action_disappears():
         for slug in RUN_SPECS
     ) + len(RUN_SPECS)
     assert len(log_rows) - 5 == expected_task_rows
+
+
+def fixture_search_log_path(run_dir: Path) -> Path:
+    return run_dir.parent / "search_log.csv"
+
+
+def exact_log_indexes(
+    rows: list[dict[str, str]],
+    slug: str,
+) -> list[int]:
+    spec = RUN_SPECS[slug]
+    return [
+        index
+        for index, row in enumerate(rows)
+        if row["stream"] == spec["stream"]
+        and row["agent"] == spec["agent"]
+        and row["search_surface"] == "mixed-primary-web"
+    ]
+
+
+def query_batches_follow_report_order(
+    rows: list[dict[str, str]],
+    expected_queries: list[str],
+) -> bool:
+    batches: list[list[str]] = []
+    previous_id: int | None = None
+    for row in rows:
+        search_id = int(row["search_id"][1:])
+        if previous_id is None or search_id != previous_id + 1:
+            batches.append([])
+        batches[-1].append(row["query"])
+        previous_id = search_id
+
+    for batch in batches:
+        position = 0
+        for query in batch:
+            while (
+                position < len(expected_queries)
+                and expected_queries[position] != query
+            ):
+                position += 1
+            if position == len(expected_queries):
+                return False
+            position += 1
+    return True
+
+
+def test_runtime_rejects_removed_report_query(agent_run_dir: Path):
+    path = fixture_search_log_path(agent_run_dir)
+    rows = read_search_log(path)
+    del rows[exact_log_indexes(rows, "blind-ground")[0]]
+    write_search_log(path, rows)
+
+    with pytest.raises(ValueError, match="exact-query.*missing"):
+        validate_agent_runs(agent_run_dir)
+
+
+def test_runtime_rejects_extra_exact_query(agent_run_dir: Path):
+    path = fixture_search_log_path(agent_run_dir)
+    rows = read_search_log(path)
+    extra = dict(rows[exact_log_indexes(rows, "blind-ground")[0]])
+    extra.update(search_id="S9999", query="undocumented extra query")
+    rows.append(extra)
+    write_search_log(path, rows)
+
+    with pytest.raises(ValueError, match="exact-query.*extra"):
+        validate_agent_runs(agent_run_dir)
+
+
+def test_runtime_rejects_reordered_query_batch(agent_run_dir: Path):
+    path = fixture_search_log_path(agent_run_dir)
+    rows = read_search_log(path)
+    first, second = exact_log_indexes(rows, "blind-ground")[:2]
+    rows[first]["query"], rows[second]["query"] = (
+        rows[second]["query"],
+        rows[first]["query"],
+    )
+    write_search_log(path, rows)
+
+    with pytest.raises(ValueError, match="report order"):
+        validate_agent_runs(agent_run_dir)
+
+
+def test_runtime_preserves_duplicate_query_executions(agent_run_dir: Path):
+    path = fixture_search_log_path(agent_run_dir)
+    rows = read_search_log(path)
+    indexes = exact_log_indexes(rows, "aware-simulation-benchmarks")
+    counts = Counter(rows[index]["query"] for index in indexes)
+    duplicated_query = next(query for query, count in counts.items() if count > 1)
+    del rows[next(index for index in indexes if rows[index]["query"] == duplicated_query)]
+    write_search_log(path, rows)
+
+    with pytest.raises(ValueError, match="exact-query.*missing"):
+        validate_agent_runs(agent_run_dir)
+
+
+def test_runtime_rejects_query_attributed_to_wrong_agent(agent_run_dir: Path):
+    path = fixture_search_log_path(agent_run_dir)
+    rows = read_search_log(path)
+    index = exact_log_indexes(rows, "blind-ground")[0]
+    rows[index]["agent"] = "different-agent"
+    write_search_log(path, rows)
+
+    with pytest.raises(ValueError, match="exact-query.*missing"):
+        validate_agent_runs(agent_run_dir)
+
+
+@pytest.mark.parametrize("mutation", ["missing", "duplicate"])
+def test_runtime_requires_exactly_one_run_summary(
+    agent_run_dir: Path,
+    mutation: str,
+):
+    path = fixture_search_log_path(agent_run_dir)
+    rows = read_search_log(path)
+    summary_query = (
+        "RUN-SUMMARY:paper/data/agent_runs/blind-ground.md"
+    )
+    index = next(
+        index for index, row in enumerate(rows) if row["query"] == summary_query
+    )
+    if mutation == "missing":
+        del rows[index]
+    else:
+        duplicate = dict(rows[index])
+        duplicate["search_id"] = "S9999"
+        rows.append(duplicate)
+    write_search_log(path, rows)
+
+    with pytest.raises(ValueError, match="RUN-SUMMARY.*exactly one"):
+        validate_agent_runs(agent_run_dir)
+
+
+def test_runtime_summary_count_matches_csv_rows(agent_run_dir: Path):
+    path = fixture_search_log_path(agent_run_dir)
+    rows = read_search_log(path)
+    summary_query = (
+        "RUN-SUMMARY:paper/data/agent_runs/blind-ground.md"
+    )
+    summary = next(row for row in rows if row["query"] == summary_query)
+    summary["candidates_added"] = "44"
+    write_search_log(path, rows)
+
+    with pytest.raises(ValueError, match="candidates_added.*CSV row count"):
+        validate_agent_runs(agent_run_dir)
+
+
+def test_candidate_discovery_query_must_resolve_to_query_ledgers(
+    agent_run_dir: Path,
+):
+    mutate_row(
+        agent_run_dir,
+        "blind-ground",
+        0,
+        discovery_query="undocumented candidate discovery query",
+    )
+
+    with pytest.raises(ValueError, match="discovery_query.*query ledger"):
+        validate_agent_runs(agent_run_dir)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "domain",
+        "course_object",
+        "representation_family",
+        "generator_family",
+        "generation_role",
+        "validity_strategy",
+    ],
+)
+def test_aware_controlled_fields_use_taxonomy(
+    agent_run_dir: Path,
+    field: str,
+):
+    mutate_row(
+        agent_run_dir,
+        "aware-geometry-rl",
+        0,
+        **{field: "outside_taxonomy"},
+    )
+
+    with pytest.raises(ValueError, match=rf"{field}.*taxonomy"):
+        validate_agent_runs(agent_run_dir)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "domain",
+        "course_object",
+        "representation_family",
+        "generator_family",
+        "generation_role",
+        "validity_strategy",
+    ],
+)
+def test_aware_controlled_fields_allow_sole_nr(
+    agent_run_dir: Path,
+    field: str,
+):
+    mutate_row(agent_run_dir, "aware-geometry-rl", 0, **{field: "NR"})
+
+    validate_agent_runs(agent_run_dir)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "authors",
+        "year",
+        "doi",
+        "url",
+        "discovery_query",
+        "domain",
+        "coding_notes",
+    ],
+)
+def test_factual_fields_use_nr_instead_of_blank(
+    agent_run_dir: Path,
+    field: str,
+):
+    mutate_row(agent_run_dir, "blind-ground", 0, **{field: ""})
+
+    with pytest.raises(ValueError, match=rf"{field}.*NR rather than blank"):
+        validate_agent_runs(agent_run_dir)
+
+
+def test_cite_key_may_use_nr(agent_run_dir: Path):
+    mutate_row(agent_run_dir, "blind-ground", 0, cite_key="NR")
+
+    validate_agent_runs(agent_run_dir)
+
+
+@pytest.mark.parametrize("reason", ["", "NR"])
+def test_excluded_rows_require_specific_reason(
+    agent_run_dir: Path,
+    reason: str,
+):
+    _, rows = read_csv(agent_run_dir / "aware-geometry-rl.csv")
+    row_index = next(
+        index
+        for index, row in enumerate(rows)
+        if row["screening_status"] == "excluded"
+    )
+    mutate_row(
+        agent_run_dir,
+        "aware-geometry-rl",
+        row_index,
+        exclusion_reason=reason,
+    )
+
+    with pytest.raises(ValueError, match="exclusion_reason"):
+        validate_agent_runs(agent_run_dir)
+
+
+def test_aware_coding_notes_require_discovery_provenance(
+    agent_run_dir: Path,
+):
+    mutate_row(
+        agent_run_dir,
+        "aware-simulation-benchmarks",
+        0,
+        coding_notes="Technical interpretation only.",
+    )
+
+    with pytest.raises(ValueError, match="coding_notes.*provenance"):
+        validate_agent_runs(agent_run_dir)
+
+
+@pytest.mark.parametrize(
+    "locator",
+    ["primary paper", "https:///missing-host"],
+)
+def test_evidence_locator_requires_precise_shape(
+    agent_run_dir: Path,
+    locator: str,
+):
+    mutate_row(
+        agent_run_dir,
+        "blind-ground",
+        0,
+        evidence_locator=locator,
+    )
+
+    with pytest.raises(ValueError, match="evidence_locator.*precise locator"):
+        validate_agent_runs(agent_run_dir)
+
+
+@pytest.mark.parametrize(
+    "locator",
+    [
+        "p. 7",
+        "Section 3.2",
+        "Table 2",
+        "Figure 4",
+        "Appendix A",
+        "source path: src/generator.py",
+        "lines 10-20",
+    ],
+)
+def test_evidence_locator_accepts_precise_non_url_markers(
+    agent_run_dir: Path,
+    locator: str,
+):
+    mutate_row(
+        agent_run_dir,
+        "blind-ground",
+        0,
+        evidence_locator=locator,
+    )
+
+    validate_agent_runs(agent_run_dir)
+
+
+def test_production_search_log_has_final_task4_counts():
+    rows = read_search_log()
+    exact_counts = Counter(
+        (row["stream"], row["agent"])
+        for row in rows
+        if row["search_surface"] == "mixed-primary-web"
+    )
+
+    assert len(rows) == 246
+    assert exact_counts[("blind-ground", "blind-ground")] == 88
+    assert exact_counts[
+        ("blind-aerial-maritime", "blind-aerial-maritime")
+    ] == 64
+    assert exact_counts[("aware-geometry-rl", "aware-geometry-rl")] == 38
+    assert exact_counts[
+        ("aware-simulation", "aware-simulation-benchmarks")
+    ] == 47
+    assert sum(
+        row["search_surface"] == "documented-agent-run"
+        for row in rows
+    ) == 4
+
+
+def test_agent_reports_have_clean_terminal_whitespace():
+    for path in sorted(AGENT_RUN_DIR.glob("*.md")):
+        text = path.read_text(encoding="utf-8")
+        assert not re.search(r"[ \t]+$", text, re.MULTILINE), path
+        assert text.endswith("\n") and not text.endswith("\n\n"), path
 
 
 def test_make_validate_runs_both_corpus_validators():

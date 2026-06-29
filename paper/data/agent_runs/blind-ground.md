@@ -1,6 +1,6 @@
 # Blind Ground Literature Discovery
 
-Date: 2026-06-29  
+Date: 2026-06-29
 Agent: `blind-ground`
 
 ## Blindness and Evidence Protocol
@@ -64,6 +64,7 @@ autonomous race track generation reinforcement learning random tracks paper
 autonomous racing simulator procedural tracks RaceCarGym paper
 OpenAI Gym CarRacing random track generation official repository paper
 procedural road maps driving reinforcement learning simulator random tracks benchmark
+procedurally generated driving simulator road networks reinforcement learning MetaDrive official paper
 site:f1tenth-gym.readthedocs.io random track generator OpenAI CarRacing
 site:github.com/f1tenth f1tenth_gym random track generator
 F1TENTH gym paper simulation environment official
@@ -77,6 +78,8 @@ autonomous racing training procedurally generated race tracks sim-to-real paper
 robot race procedural track generator unseen tracks paper
 "procedural race track generation for domain randomization" Behrens PDF
 "Technical Reports in Computing Science" "CS-01-2020"
+"BAYESRACE" "random track generator"
+"Improving the Generalization of End-to-End Driving through Procedural Generation" authors
 ```
 
 ### Racing-Game Geometry Transfer
@@ -105,7 +108,9 @@ site:ieeexplore.ieee.org procedural road generation autonomous vehicle testing O
 JunctionArt procedural generation high-definition road networks official paper
 RoadGen generating road scenarios autonomous vehicle testing official repository
 "DeepHyperion" autonomous driving road official paper
+"DeepHyperion: Exploring the Feature Space" DOI
 "DeepJanus" autonomous driving roads paper official
+DeepJanus autonomous driving road generation DOI
 "Automatically testing self-driving cars" AsFault official ACM
 search based road generation autonomous driving BeamNG test generation paper
 "A search-based framework for automatic generation of testing environments" DOI
@@ -137,6 +142,7 @@ open ended environment generation BipedalWalker obstacle courses POET PAIRED
 "Learning robust perceptive locomotion" procedural terrains official paper
 "Eurekaverse" terrain generation quadruped official paper
 "Robot Parkour Learning" terrain generation obstacle curriculum
+"Extreme Parkour with Legged Robots" procedural terrains
 site:proceedings.mlr.press POET open ended environments BipedalWalker
 site:proceedings.neurips.cc PAIRED environment generation BipedalWalker
 site:proceedings.mlr.press ACCEL environment design BipedalWalker
@@ -144,6 +150,18 @@ site:proceedings.mlr.press ACCEL environment design BipedalWalker
 "Paired Open-Ended Trailblazer" GECCO official DOI
 site:arxiv.org/abs/1901.01753 POET
 ```
+
+### Candidate Mapping for Added Initial-Search Queries
+
+These six queries were executed during initial discovery and candidate-specific metadata/full-text retrieval before the formal saturation rounds. They do not change formal-round yields or candidate counts.
+
+- `BG-011`: Autonomous Racing and Simulators; pre-formal candidate-specific retrieval.
+- `BG-013`: Autonomous Racing and Simulators; pre-formal candidate-specific retrieval.
+- `BG-014`: Autonomous-Vehicle Road and Map Generation; pre-formal candidate-specific retrieval.
+- `BG-016`: Autonomous-Vehicle Road and Map Generation; pre-formal candidate-specific retrieval.
+- `BG-017`: Autonomous-Vehicle Road and Map Generation; pre-formal candidate-specific retrieval.
+- `BG-037`: Legged, Parkour, and Open-Ended Terrain; pre-formal candidate-specific retrieval.
+
 
 ## Formal Refinement and Saturation
 
@@ -278,11 +296,11 @@ The candidate set, IDs, discovery queries, row counts, and saturation calculatio
 
 ## Validation Record
 
-The repository validator `python3 -m paper.scripts.validate_agent_runs` was run from the survey worktree after the corrections and returned `agent discovery validation passed`. A focused two-file check also confirmed the unchanged discovery-query digest, the BG-012 release-mapping disclaimer, the BG-032 technical-field downgrade, and the dated BG-018/BG-030 `not_found` evidence.
+The repository validator `python3 -m paper.scripts.validate_agent_runs` was run from the survey worktree after this query-ledger correction and returned `agent discovery validation passed`. A focused two-file check confirms 88 exact query lines, one occurrence of each of the six corrected CSV discovery queries, the unchanged CSV query digest, the BG-012 release-mapping disclaimer, the BG-032 technical-field downgrade, and the dated BG-018/BG-030 `not_found` evidence.
 
-The CSV was parsed with Python's standard `csv` module. Validation checks the literal required header; 35 fields in every row; 45 sequential candidate IDs; DOI-first and normalized-title deduplication; fixed candidate/unverified/agent values; canonical `; ` separators; absence of mixed `NR` values in `course_object`, `representation_family`, `generator_family`, `generation_role`, and `validity_strategy`; scalar membership for both status columns; a direct official package/repository/artifact locator for every positive code/asset status; and at least one complete primary/official URL in every `evidence_locator`. Saturation values are rechecked as unchanged at `4/44 = 9.09%`, `1/45 = 2.22%`, and `0/45 = 0.00%`.
+The CSV was parsed with Python's standard `csv` module. Automated validation checks the literal required header; 35 fields in every row; 45 sequential candidate IDs; DOI-first and normalized-title deduplication; fixed candidate/unverified/agent values; canonical `; ` separators; absence of mixed `NR` values in `course_object`, `representation_family`, `generator_family`, `generation_role`, and `validity_strategy`; scalar membership for both status columns; and locator presence. Saturation values are rechecked as unchanged at `4/44 = 9.09%`, `1/45 = 2.22%`, and `0/45 = 0.00%`.
 
-These are schema, consistency, deduplication, status, and locator-presence checks. They do not assert that every paper was available in full text, that every technical claim was independently reproduced, or that every repository builds.
+Official availability and provenance linkage are manual evidence-audit judgments, not guarantees made by the automated validator. The manual audit checked positive code/asset claims against official package, project, author-repository, or artifact locators and reviewed the primary/official locator recorded for each row. Neither the automated checks nor the manual audit assert that every paper was available in full text, that every technical claim was independently reproduced, or that every repository builds.
 
 Files written by this run:
 

@@ -121,6 +121,22 @@ Blind-run technical fields preserve the agents' descriptive terminology and are 
 checked against `taxonomy.json`. Integration validates structure and provenance without
 rewriting the scientific content of the run artifacts.
 
+Runtime validation also reads the sibling `taxonomy.json` and `search_log.csv`. For each
+run it compares the report's exact-query multiset with exact-query log rows for the
+declared stream and agent, preserves duplicate executions and append-batch report order,
+requires exactly one summary, and checks the summary's candidate count against the CSV.
+Literal candidate queries must resolve through those ledgers; corpus-aware seed and
+citation-chain descriptors require explicit provenance in `coding_notes`.
+
+All cells other than a non-excluded row's `exclusion_reason` must use `NR` instead of a
+blank. `cite_key=NR` is permitted. Excluded rows require a specific reason. Aware-run
+controlled fields use `taxonomy.json` values or sole `NR`, and every aware-run
+`coding_notes` cell must state bootstrap/seed lineage or newly discovered provenance.
+
+An `evidence_locator` must contain a complete HTTP(S) URL or a page, section, table,
+figure, appendix, source-path, or line marker. This is only a structural locator check;
+it does not prove that the cited material semantically supports the coded claim.
+
 ## `candidates.csv`
 
 One row records one discovered source, including provenance, screening disposition, and
