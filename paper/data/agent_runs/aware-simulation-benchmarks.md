@@ -211,7 +211,7 @@ Discovery required terms that are easy to miss when searching only for "track ge
 - Coordinate conventions are heterogeneous: CARLA is left-handed x-forward/y-right/z-up; AirSim racing APIs use NED world coordinates; Gazebo/SDFormat uses scoped frame semantics; F1TENTH depends on map metadata; physical RobotX documents dimensions but not a machine-readable global course frame.
 - Reset semantics differ across current Gymnasium, legacy OpenAI Gym integrations, simulator world resets, competition task resets, and physical course redeployment. No common reset contract can be inferred.
 - Aerial and maritime systems commonly serialize an entire simulator level/world or runtime object placements. QGroundControl supplies a portable waypoint/mission bundle, but no canonical cross-simulator gate/buoy world bundle was supported.
-- VRX has legacy evidence of YAML/Xacro world generation, but the current official branch/documentation did not provide a stable versioned public schema during this run. The row therefore records the current exact schema as `NR`.
+- `ASIM0021` now separates the 2019 VRX paper from the unpinned current repository. The paper supports the Gazebo/ROS WAM-V benchmark and task concepts; the current repository supports only `official_open` code/asset status. World schema, export, load validation, frames, units, collision geometry, and spawn/reset remain `NR` until a repository tag/commit and documentation matched to the 2019 paper are retrieved.
 - Isaac Lab terrain documentation and Isaac Sim/OpenUSD stage documentation change by release. Stage units, up-axis, persistence, collision filtering, and reset behavior were not merged across unmatched versions.
 - F1TENTH and Formula Student map repositories expose useful assets, but ancillary centerline/raceline/track schemas are not uniformly documented for every file/version.
 - Source availability is not inferred from a paper's silence. `official_open` is used only where an official repository/package was directly located; unresolved asset or library status is `NR`.
@@ -257,6 +257,18 @@ They remain in this agent-local output. Task 5 must reconcile metadata, evidence
 
 All rows received canonical semicolon-plus-space and direct-locator normalization. Substantive claim, sentinel, version, asset, or retrieval-note changes were made to `ASIM0001`-`ASIM0006`, `ASIM0008`-`ASIM0012`, `ASIM0015`-`ASIM0023`, and `ASIM0025`-`ASIM0029`. `ASIM0030` is the sole new row. Unsupported subfacts were removed or represented by a whole-cell `NR`; no cell combines `NR` with another value.
 
+## Final ASIM0021 evidence qualification
+
+Exact `ASIM0021` changes:
+
+- `url` now points to the 2019 paper; the unpinned current repository remains secondary metadata evidence.
+- `representation_family` was narrowed from `gate_poses; simulator_native; hybrid` to `simulator_native`.
+- `generation_role` no longer claims serialization.
+- `geometry_metrics` and `difficulty_metrics` now state only 2019-paper-supported task/environment concepts.
+- `diversity_metrics`, `training_distribution`, `export_format`, and `reproducibility_fields` are whole-cell `NR`.
+- `code_status=official_open` and `asset_status=official_open` are retained, supported only by the current official repository and not attributed to the 2019 release.
+- `evidence_locator` and `coding_notes` explicitly prohibit using the unpinned repository for 2019 schema, load, frame, unit, collision, or reset claims and identify the required version-matched retrieval.
+
 ## High-priority manual retrieval
 
 The six pending leads were not added because no primary/official locator directly supported a complete row during this run:
@@ -271,7 +283,7 @@ The six pending leads were not added because no primary/official locator directl
 Supported rows that still need targeted source retrieval rather than a new candidate include:
 
 - PyFlyt's version-matched waypoint sampler and seed path.
-- The current VRX randomized-world/configuration schema and validation path.
+- A VRX repository tag or commit and documentation matched to the 2019 paper, covering world/configuration schema, export, validation, frames, units, collision, and spawn/reset.
 - A per-track inventory of F1TENTH Racetracks ancillary centerline/raceline files.
 - OpenCRG C/MATLAB API source/license status.
 - HoloOcean world-package asset license and coordinate/load-validation details.
@@ -281,6 +293,7 @@ These are coded `NR` and do not block inclusion of the directly supported system
 
 ## Verification status and limitations
 
+- Repository validator: `python3 -m paper.scripts.validate_agent_runs paper/data/agent_runs` returned `agent discovery validation passed` after the final `ASIM0021` qualification.
 - CSV rows: 30.
 - Candidate IDs: continuous from `ASIM0001` to `ASIM0030`.
 - Metadata status: all 30 rows are `verified` against at least one primary/official locator for the title/system identity; unreported author/year/DOI details remain `NR`.

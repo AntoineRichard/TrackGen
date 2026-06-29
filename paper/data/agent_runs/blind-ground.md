@@ -222,7 +222,7 @@ Rounds 2 and 3 are consecutive rounds below 5%, so the stopping rule is satisfie
 - Publication-year conventions conflict for online-first versus issue dates, notably MetaDrive and the automated lane-keeping GA paper; the coded year follows the primary record used and remains unverified.
 - The Kempten technical-report trail has contradictory author/title manifestations for the 2020 domain-randomization report. No claim was promoted without an official report record.
 - RoadSign's DOI is now resolved as `10.1109/SBFT59156.2023.00006`; its exact road representation, validity predicates, export, code, and released assets remain `NR`.
-- RoadGPT's DOI is now resolved as `10.1109/ICSE-NIER66352.2025.00021`; claims beyond the IEEE record and BeamNG official abstract were downgraded to `NR`.
+- RoadGPT's DOI is resolved as `10.1109/ICSE-NIER66352.2025.00021`; no paper-specific full text or author copy was located in the final audit, so all abstract/index-only technical fields are `NR` and the generic BeamNG index is not used as evidence.
 - The GenTe paper reports 100 terrains (50 text and 50 figure), while the pinned official repository README reports 200 samples (100 text and 100 image). The CSV preserves the paper's evaluation count and records the repository discrepancy in `coding_notes`.
 - Exact seeds, generated-suite sizes, export formats, artifact licenses, and historical availability are the most frequent remaining reproducibility gaps.
 
@@ -232,8 +232,8 @@ Rounds 2 and 3 are consecutive rounds below 5%, so the stopping rule is satisfie
 2. **Construction of an Autonomous Driving Model Vehicle: Procedural Track Generation for Driving Simulations** (Callum Munro, Roman Wecker, Bunyamin Orumcek, 2021). Discovery material indicates graph/A* generation, noise-weighted variety, VDI/Carolo constraints, and OpenDRIVE export, but no primary/official locator was found.
 3. **Automatic Terrain Curriculum Generation via Optimal Transport for Multi-DoF Rover Robot Locomotion** (accepted IROS 2026). An official lab publication list exists, but the paper and artifact were not yet retrievable.
 4. **RoadSign**: DOI and IEEE document are resolved. Retrieve full text or an official artifact to resolve road encoding, hard validity predicates, export format, code, and released tests.
-5. **Random Track Generator**: source provenance is resolved to PyPI 1.1.0 and the owner-matched repository at commit `4ad014853493d5500aec9dd7121d6dc8f8c240c0`. Remaining work is to map the PyPI release exactly to a repository tag/commit because PyPI omits `project_urls`.
-6. **RoadGPT**: DOI and IEEE document are resolved. Retrieve full text/artifact to code prompt count, hard geometric validators, export format, user-study size, code, and downloadable outputs.
+5. **Random Track Generator**: PyPI 1.1.0 establishes package availability. The owner-matched repository snapshot at commit `4ad014853493d5500aec9dd7121d6dc8f8c240c0` establishes current provenance, not an exact source mapping for that PyPI release. Resolve the release-to-commit mapping; PyPI omits `project_urls`.
+6. **RoadGPT**: DOI and IEEE document are resolved, but no paper-specific full text or author copy was located. All technical coding is `NR`; retrieve full text or an official artifact before restoring representation, generator, validity, distribution, evaluation, simulator/export, reproducibility, code, or asset claims.
 7. **GenTe**: official code and benchmark are resolved at commit `60ceed680802fb30db86e1be8f0e62a321e7d782`. Resolve the missing license and the paper/repository benchmark-count contradiction.
 8. **Learning to Race Full-Scale Autonomous Racecars** technical report. Retrieve the official report/artifact section describing the procedural pipeline reported to produce more than 100 tracks.
 
@@ -243,11 +243,11 @@ The candidate set, IDs, discovery queries, and saturation rounds are unchanged. 
 
 - `BG-001`, `BG-004`, `BG-007`, `BG-010`, `BG-028`, `BG-029`, `BG-030`, and `BG-031`: removed mixed supported-plus-`NR` values from `representation_family` and/or `validity_strategy`; moved unresolved detail to `coding_notes`.
 - `BG-011`: changed `representation_family`, `generator_family`, `generation_role`, `validity_strategy`, `geometry_metrics`, `difficulty_metrics`, `diversity_metrics`, `training_distribution`, `evaluation_suite`, `simulator`, `reproducibility_fields`, `metadata_evidence`, `evidence_locator`, `code_status`, `asset_status`, and `coding_notes`. It is now explicitly a control paper using an inherited generator; Appendix B reports four tracks.
-- `BG-012`: changed `authors`, `metadata_evidence`, `evidence_locator`, `reproducibility_fields`, `code_status`, `asset_status`, and `coding_notes` to record PyPI 1.1.0, owner-matched source provenance, pinned repository paths, dependencies, and MIT license.
+- `BG-012`: changed `authors`, `metadata_evidence`, `evidence_locator`, `reproducibility_fields`, `code_status`, `asset_status`, and `coding_notes` to record PyPI 1.1.0, owner-matched current source provenance, pinned repository paths, dependencies, and MIT license without equating the audited commit to the PyPI release source.
 - `BG-015`, `BG-016`, `BG-017`, `BG-020`, `BG-023`, `BG-025`, `BG-029`, `BG-030`, `BG-033`, `BG-034`, `BG-035`, `BG-038`, and `BG-041`: replaced narrative status claims with audited scalar statuses and added direct official repository/artifact locators; unsupported asset claims were set to `NR` or `not_found`.
 - `BG-018`: changed both statuses to `not_found` and recorded that the paper-cited official replication URL returned 404.
 - `BG-021`, `BG-022`, and `BG-024`: changed unsupported positive code/asset claims to `NR` and documented the missing official artifact locator.
-- `BG-032`: changed `doi`, `url`, `metadata_evidence`, `course_object`, `representation_family`, `generator_family`, `generation_role`, `validity_strategy`, all three metric fields, `training_distribution`, `evaluation_suite`, `simulator`, `export_format`, `reproducibility_fields`, `evidence_locator`, both statuses, and `coding_notes`. Only claims supported by the IEEE record and BeamNG official abstract remain.
+- `BG-032`: resolved bibliographic metadata from the IEEE DOI/document record. The final evidence audit superseded abstract/index-based technical coding: all technical fields are now `NR`, and the generic BeamNG index is no longer a row-level evidence locator.
 - `BG-042`: changed `doi`, `url`, `metadata_evidence`, `representation_family`, `generator_family`, `generation_role`, `validity_strategy`, all three metric fields, `training_distribution`, `evaluation_suite`, `simulator`, `export_format`, `reproducibility_fields`, `evidence_locator`, both statuses, and `coding_notes`; IEEE document `10190387` and the official competition report now support the retained claims.
 - `BG-043`: changed `representation_family`, `validity_strategy`, all three metric fields, `training_distribution`, `export_format`, `evidence_locator`, both statuses, and `coding_notes`.
 - `BG-044`: changed `representation_family`, `validity_strategy`, `training_distribution`, `export_format`, `evidence_locator`, both statuses, and `coding_notes`.
@@ -257,6 +257,15 @@ The candidate set, IDs, discovery queries, and saturation rounds are unchanged. 
 - `evidence_locator` was replaced for all `BG-001`-`BG-045` with a complete primary paper/record and, where applicable, precise section/page or commit-pinned official artifact path.
 - All semicolon-delimited cells were normalized to `; `.
 
+## Final Evidence-Audit Corrections
+
+The candidate set, IDs, discovery queries, row counts, and saturation calculations remain unchanged. This final pass changed only these CSV fields:
+
+- `BG-012` `reproducibility_fields` and `coding_notes`: labeled commit `4ad014853493d5500aec9dd7121d6dc8f8c240c0` as an owner-matched current provenance snapshot and made the PyPI 1.1.0 release-to-commit mapping explicitly unresolved.
+- `BG-030` `coding_notes`: retained `asset_status=not_found` and dated the checkpoint-TODO observation to the 2026-06-29 audit.
+- `BG-032` `metadata_evidence`, `vehicle`, `course_object`, `representation_family`, `generator_family`, `generation_role`, `validity_strategy`, `training_distribution`, `evaluation_suite`, `simulator`, `reproducibility_fields`, `evidence_locator`, and `coding_notes`: removed the generic BeamNG index and downgraded every abstract/index-only technical claim to `NR` after no paper-specific full text or author copy was located. `geometry_metrics`, `difficulty_metrics`, `diversity_metrics`, `export_format`, `code_status`, and `asset_status` were already `NR` and remain unchanged.
+- `BG-018` received no field change; its dated 2026-06-29 `not_found` evidence remains intact.
+
 ## Limitations After Cleanup
 
 - The destination path and repository name were visible even though corpus contents and implementation details were not; this is path-blindness leakage, explicitly disclosed above.
@@ -264,10 +273,12 @@ The candidate set, IDs, discovery queries, and saturation rounds are unchanged. 
 - `official_open` records current accessibility and official provenance, not buildability, completeness, archival permanence, or license sufficiency.
 - Closed/paywalled publisher records were not necessarily available as full text. Retained claims for those rows are bounded by accessible abstracts/official records; detailed fields remain `NR` where support was insufficient.
 - Repository commit pins capture the audited state on 2026-06-29. Historical release state may differ.
-- BG-012 provenance is strong but indirect because PyPI omits `project_urls`; the owner identity and matching repository/package documentation provide the link.
+- BG-012 provenance is owner-matched and current but indirect because PyPI omits `project_urls`; the audited repository commit is not established as the exact source for PyPI 1.1.0, and the release-to-commit mapping remains unresolved.
 - BG-045 has a live official release but no located license and conflicting benchmark counts between paper and repository.
 
 ## Validation Record
+
+The repository validator `python3 -m paper.scripts.validate_agent_runs` was run from the survey worktree after the corrections and returned `agent discovery validation passed`. A focused two-file check also confirmed the unchanged discovery-query digest, the BG-012 release-mapping disclaimer, the BG-032 technical-field downgrade, and the dated BG-018/BG-030 `not_found` evidence.
 
 The CSV was parsed with Python's standard `csv` module. Validation checks the literal required header; 35 fields in every row; 45 sequential candidate IDs; DOI-first and normalized-title deduplication; fixed candidate/unverified/agent values; canonical `; ` separators; absence of mixed `NR` values in `course_object`, `representation_family`, `generator_family`, `generation_role`, and `validity_strategy`; scalar membership for both status columns; a direct official package/repository/artifact locator for every positive code/asset status; and at least one complete primary/official URL in every `evidence_locator`. Saturation values are rechecked as unchanged at `4/44 = 9.09%`, `1/45 = 2.22%`, and `0/45 = 0.00%`.
 

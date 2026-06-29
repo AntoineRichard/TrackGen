@@ -43,13 +43,31 @@ The following files were read completely before searching:
 - Official author/project repositories for code, schemas, generated data, and simulator/export behavior.
 - OpenAlex only for lead discovery where a registry query was incomplete. It is not used as final evidence in the CSV.
 - Search snippets and secondary pages were used only to identify leads, never as `metadata_evidence` or `evidence_locator`.
-- Crossref and DOI-issued BibTeX were used for metadata only. Technical coding is supported by a primary paper section/page, an official source-code path, an official specification section, or a complete publisher/official URL whose abstract directly states the retained claim.
+- Crossref and DOI-issued BibTeX were used for metadata only. Technical coding requires a primary full-text section/page, an official source-code path, or an official specification section. Abstract and DOI landing pages are not field-level technical evidence.
 
 ## Evidence audit revision
 
-All 55 rows were re-audited after review. Every non-`NR` technical field now has an `evidence_locator` containing a complete primary/official URL plus a precise section, page, table, algorithm, documentation subsection, or source-code path. Vague repository-level and “primary paper” locators were replaced.
+The 55-row file was revalidated after review. For the nine rows in this final correction, every retained non-`NR` technical field now has an `evidence_locator` containing a complete primary/official URL plus a precise section, page, table, algorithm, documentation subsection, or source-code path. Vague repository-level and “primary paper” locators in those rows were replaced.
 
-When only an abstract was retrievable, the row was narrowed to claims stated in that abstract. Unsupported representation, validity, metric, simulator, export, code, and asset details were set to `NR`, and the remaining retrieval need was added to `coding_notes`. The audit also corrected AGRL0003 to its closed B-spline/Bezier representation, AGRL0042 from BeamNG to the fixed-track Udacity simulator study, and several values that described internal representations rather than serialized export formats.
+For these nine rows, when no primary full text or official source path was retrievable, unsupported representation, generator/role, validity, metric, simulator/export, code/asset, distribution/evaluation, and reproducibility fields were set to `NR`; abstracts were not retained as field-level support. The remaining retrieval need was added to `coding_notes`. The audit also corrected AGRL0003 to its closed B-spline/Bezier representation, AGRL0042 from BeamNG to the fixed-track Udacity simulator study, and several values that described internal representations rather than serialized export formats.
+
+### Final nine-row evidence correction
+
+The final review targeted AGRL0011, AGRL0021, AGRL0027, AGRL0028, AGRL0031, AGRL0032, AGRL0041, AGRL0043, and AGRL0044. Screening statuses and saturation membership did not change.
+
+| Row | Direct primary/official support added | Fields downgraded or left `NR` |
+|---|---|---|
+| AGRL0011 | None; DOI/Crossref metadata only | Downgraded `representation_family`, `generator_family`, `generation_role`, `validity_strategy`, `geometry_metrics`, `training_distribution`, `evaluation_suite`, `simulator`, and `reproducibility_fields`; all other audited technical fields remain `NR` |
+| AGRL0021 | SciOpen accepted manuscript Secs. 2.1-4.3 and ETS package support representation, synthesis/serialization, penalties, metrics, CARLA, OpenDRIVE, code, assets, distribution, evaluation, and reproducibility | `diversity_metrics` downgraded to `NR`; the 15 complexity levels are a distribution design, not a diversity metric |
+| AGRL0027 | Authors' RoadSearch repository paths support all retained representation, search/mutation, validity, OOB/diversity metric, BeamNG.tech, CSV, code, asset, distribution, evaluation, and reproducibility fields | None |
+| AGRL0028 | None; DOI metadata only | Downgraded `representation_family`, `generator_family`, `generation_role`, `validity_strategy`, `geometry_metrics`, `difficulty_metrics`, `training_distribution`, `evaluation_suite`, `simulator`, and `reproducibility_fields`; remaining audited fields stay `NR` |
+| AGRL0031 | None; DOI/Crossref metadata only | Downgraded `representation_family`, `generator_family`, `generation_role`, `validity_strategy`, all three metric fields, `training_distribution`, `evaluation_suite`, and `reproducibility_fields`; simulator/export/code/assets remain `NR` |
+| AGRL0032 | ACM full text Secs. 3-5.5 plus Zenodo/GitHub support representation, evolutionary/RL generation, mutation, validity, metrics, BeamNG.tech/MuJoCo, code, assets, distribution, evaluation, and reproducibility | No field was downgraded to `NR`; `export_format` remains `NR`, and role/validity labels were recoded to the directly reported mutation, rejection, and penalty behavior |
+| AGRL0041 | Springer full text Secs. 2.2-4.2.3 plus GitHub/Zenodo support road features, selection role, metrics, BeamNG.tech, code, assets, distributions, evaluations, and reproducibility | No field was downgraded; `export_format` remains `NR` because no course serialization schema is defined |
+| AGRL0043 | White Rose manuscript Secs. 3-4.1 and the author source archive support world/mission representation, PCG, validity, metrics, Player/Stage files/logs, code, assets, distribution, evaluation, and reproducibility | `diversity_metrics` downgraded to `NR`; 500 situations is a distribution size, not a diversity metric |
+| AGRL0044 | HAL manuscript Secs. III-VI supports world representation/generation, constraints, metrics, MORSE/Blender/Bullet, distributions, evaluations, and reproducibility | No newly unsupported field; export/code/assets remain `NR` because the full text reports no official package or serialized world format |
+
+The three unresolved technical retrievals are therefore AGRL0011 (IEEE Transactions on Games), AGRL0028 (SBST 2021), and AGRL0031 (ISSRE 2023). Their scope-level course labels are preserved, but no detailed technical field relies on an abstract.
 
 ## Exact queries
 
@@ -231,20 +249,17 @@ WOGAN is an excluded round-3 lead. The three round-5 leads retained as exclusion
 
 ## High-priority manual retrieval
 
-The evidence audit retrieved official full text for Prasetya and Maulidevi 2016, Nascimento et al. 2021, and the author-deposited Jahangirova et al. metrics paper. The following sources still have authoritative metadata/abstracts but need primary full-text retrieval for the fields left `NR`:
+The final audit retrieved primary full text or official source paths for Zhu et al. 2026, Castellano et al. 2021, Humeniuk et al. 2024, Birchler et al. 2023, Arnold and Alexander 2013, and Sotiropoulos et al. 2016. The following sources still need primary full-text retrieval for fields left `NR`:
 
 1. Georgiou and Demiris 2016, `10.1109/cig.2016.7860435`: exact track encoding, simulator, and validity procedure.
 2. Campos, Leitao, and Coelho 2015, `10.4018/ijcicg.2015070103`: representation, generator family, construction constraints, simulator, and evaluation.
 3. Alyaseri and Conner 2024, `10.4018/ijamc.350330`: representation, validity checks, metric formulas, and implementation status.
-4. Henrich and Koetter 2025, `10.1109/tg.2025.3561107`: exact difficulty/diversity metrics and any exported asset format.
-5. Castellano, Cetinkaya, and Arcaini 2021, `10.1109/qrs54544.2021.00028`: names and definitions of all six encodings and per-encoding results.
-6. Arcaini and Cetinkaya 2024, `10.1016/j.scico.2024.103171`: CRAG encoding, constraints, simulator, export, and generated assets.
-7. Tang et al. 2023, `10.1109/issre59848.2023.00054`: named industrial simulator and export schema.
-8. Humeniuk, Khomh, and Antoniol 2024, `10.1145/3680468`: named simulators and complete constraint implementation.
-9. Birchler et al. 2023, `10.1007/s10664-023-10286-y`: road representation, feature set, diversity measures, and outputs.
-10. Arnold and Alexander 2013, `10.1007/978-3-642-40793-2_4`: generated-world representation and serialization.
-11. Ashlock, Manikas, and Ashenayi 2006, `10.1109/cec.2006.1688530`: exact problem representation and validity treatment.
-12. Heilmeier et al. and Christ et al. 2019: named simulator/tooling, reproducibility package, and any output interchange format.
+4. Henrich and Koetter 2025 (AGRL0011), `10.1109/tg.2025.3561107`: all detailed representation, generator/role, validity, metric, simulator/export, distribution/evaluation, code/asset, and reproducibility fields.
+5. Arcaini and Cetinkaya 2024, `10.1016/j.scico.2024.103171`: CRAG encoding, constraints, simulator, export, and generated assets.
+6. Han et al. 2021 (AGRL0028), `10.1109/sbst52555.2021.00020`: crossover representation/operator, validity, metrics, simulator, distribution, and evaluation.
+7. Tang et al. 2023 (AGRL0031), `10.1109/issre59848.2023.00054`: road/maneuver representation, generator/role, validity, metrics, distributions, evaluation, named industrial simulator, and export schema.
+8. Ashlock, Manikas, and Ashenayi 2006, `10.1109/cec.2006.1688530`: exact problem representation and validity treatment.
+9. Heilmeier et al. and Christ et al. 2019: named simulator/tooling, reproducibility package, and any output interchange format.
 
 ## Counts and validation
 
@@ -263,11 +278,11 @@ The evidence audit retrieved official full text for Prasetya and Maulidevi 2016,
 - Candidate IDs unique: yes.
 - Cite keys unique: yes.
 
-Validation used Python's `csv` module with `newline=""` and UTF-8, compared the parsed header to the required literal header, checked every parsed row width, validated controlled labels, rejected mixed `NR` list values and noncanonical semicolon spacing, checked direct locator URLs/precision markers, and normalized DOI/title keys independently.
+Validation used Python's `csv` module with `newline=""` and UTF-8, compared the parsed header to the required literal header, checked every parsed row width, validated controlled labels, rejected mixed `NR` list values and noncanonical semicolon spacing, checked direct locator URLs/precision markers for the nine final-audit rows, and normalized DOI/title keys independently.
 
 ## Verification limitations
 
-- DOI and venue metadata are authoritative, but Crossref supports metadata only; it is never used as technical evidence. Some publisher full texts still require manual access.
+- DOI and venue metadata are authoritative, but Crossref supports metadata only; it is never used as technical evidence. AGRL0011, AGRL0028, and AGRL0031 still require manual primary-full-text access, and their detailed technical fields are `NR`.
 - A few early papers are verified from author-hosted primary PDFs rather than DOI registries.
 - `NR` means unreported or not verified in the inspected primary surface. It does not mean absent.
 - Code and asset statuses were not inferred from paper silence or from unofficial mirrors.

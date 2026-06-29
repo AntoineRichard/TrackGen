@@ -14,11 +14,11 @@ The strict in-scope unit was a source that generates, instantiates, or defines a
 - Aerial: **17**. Maritime: **15**.
 - Source mix: **24 research/system papers**, **2 official repositories**, and **6 official competition specifications**.
 - DOI present: **23/32**. The nine `NR` DOI records are repositories/specifications or the Flightmare proceedings record.
-- Code status after resource re-audit: **17/32 `official_open`**, **9/32 `not_found`**, and **6/32 `not_applicable`**.
-- Reusable-asset status after resource re-audit: **19/32 `official_open`**, **2/32 `not_found`**, and **11/32 `NR`**.
+- Code status after final availability re-audit: **17/32 `official_open`**, **9/32 `NR`**, and **6/32 `not_applicable`**.
+- Reusable-asset status after final availability re-audit: **19/32 `official_open`** and **13/32 `NR`**.
 - Every row has `screening_status=candidate` and `metadata_status=unverified`, as requested. `NR` is used rather than inference where a primary source did not report a field.
 
-`official_open` is reserved for reusable code, configurations, models, environments, or data exposed by an official author or organization source. A paper, handbook, rules page, project video, illustration, or data-on-request statement is not counted as a reusable asset. Public simulator dependencies are identified in notes where the paper-specific generator itself was not found.
+`official_open` is reserved for reusable code, configurations, models, environments, or data exposed by an official author or organization source. A paper, handbook, rules page, project video, illustration, or data-on-request statement is not counted as a reusable asset. Public simulator dependencies are identified separately from paper-specific generator availability. Undated absence judgments without row-specific official availability surfaces are coded `NR`, not `not_found`.
 
 Coverage is intentionally non-exclusive:
 
@@ -214,13 +214,13 @@ The stopping calculation is `new strict candidates / cumulative unique strict ca
 - **Diversity metrics are weak.** Success on named unseen layouts is common, while geometric novelty, coverage, dispersion, and topology diversity are seldom quantified.
 - **Difficulty mixes causes.** Gate count, obstacle density, clearance, sensor noise, dynamics uncertainty, and policy performance are frequently collapsed into one curriculum level. The CSV separates geometry and difficulty fields where sources allow it.
 - **Export formats are not standardized.** VRX has the clearest path from YAML to `.world`/`.world.xacro`. Aerial work commonly leaves tracks as in-memory pose arrays or simulator-specific Python configuration.
-- **Accepted-preprint metadata can conflict with final publication metadata.** Mastering Diverse Tracks and ASVSim had accepted venues but no final publisher DOI located on their primary preprint pages; the arXiv DOI is retained and marked unverified.
+- **Accepted-preprint metadata can conflict with final publication metadata.** Mastering Diverse Tracks remains an accepted-preprint record with final publisher metadata unverified. ASVSim is reconciled to its 2026 IEEE Access record and DOI `10.1109/ACCESS.2026.3687084` using the official repository and DOI record.
 - **Living competition documents change.** RobotX 2026 and Njord 2026 were current on 29 June 2026 but may change before their events.
 
 ## High-priority retrievals
 
 1. Final IEEE Robotics and Automation Letters record, DOI, supplement, and generator code for **Mastering Diverse, Unknown, and Cluttered Tracks**.
-2. Final IEEE Access record/DOI and the exact Unreal PCG parameter schema for **ASVSim**.
+2. Version-pinned Unreal PCG parameter schema and reproducible release artifact for **ASVSim**; final IEEE Access metadata and DOI are now resolved.
 3. Full supplement or released code for **Environment as Policy**, especially environment-action bounds and any global gate-layout validity checks.
 4. Paper-specific track-generator release for **Autonomous Drone Racing with Deep Reinforcement Learning**, distinct from the public Flightmare simulator.
 5. Exact object/course serialization and portability guarantees in **Flightmare** and **AirSim Drone Racing Lab**.
@@ -237,4 +237,4 @@ The stopping calculation is `new strict candidates / cumulative unique strict ca
 - `blind-aerial-maritime.csv`: 32 candidate rows plus the exact 35-column header.
 - `blind-aerial-maritime.md`: this protocol, query, screening, saturation, and retrieval report.
 
-Post-write validation uses a standards-compliant CSV parser and checks the literal header, 35 columns on every row, exact `; ` list separators, scalar status vocabularies, sole-`NR` technical fields, candidate/domain counts, DOI and normalized-title uniqueness, and complete primary/official URLs in every evidence locator. The manual evidence audit removed unsupported technical details from BAAM-A012, A016, M007, and M011 where full text was not retrieved. Validation reads only these two destination files.
+Post-write validation uses a standards-compliant CSV parser and checks the literal header, 35 columns on every row, exact `; ` list separators, scalar status vocabularies, sole-`NR` technical fields, candidate/domain counts, DOI and normalized-title uniqueness, and complete primary/official URLs in every evidence locator. The manual evidence audit removed unsupported technical details from BAAM-A012, A016, M007, and M011 where full text was not retrieved. The final availability audit adds official repository evidence for BAAM-A002, BAAM-A007, and BAAM-M012 and replaces unsupported undated absence judgments with `NR`. Validation reads only these two destination files.
