@@ -1475,3 +1475,274 @@ def test_explicit_exclusion_wins_for_a_new_identity_seen_as_candidate(tmp_path):
     assert merged[0]["screening_status"] == "excluded"
     assert merged[0]["exclusion_reason"] == "No course geometry contribution."
     assert conflicts == []
+
+
+@pytest.mark.parametrize(
+    (
+        "candidate_id",
+        "existing_title",
+        "incoming_title",
+        "arxiv_id",
+        "incoming_url",
+    ),
+    [
+        (
+            "C0016",
+            "Replay-Guided Adversarial Environment Design / REPAIRED",
+            "Replay-Guided Adversarial Environment Design",
+            "2110.02439",
+            (
+                "https://arxiv.org/abs/2110.02439v3; "
+                "https://github.com/facebookresearch/dcd"
+            ),
+        ),
+        (
+            "C0020",
+            (
+                "Emergent Complexity and Zero-shot Transfer via "
+                "Unsupervised Environment Design / PAIRED"
+            ),
+            (
+                "Emergent Complexity and Zero-shot Transfer via "
+                "Unsupervised Environment Design"
+            ),
+            "2012.02096",
+            (
+                "https://github.com/facebookresearch/dcd; "
+                "https://arxiv.org/pdf/2012.02096v2.pdf"
+            ),
+        ),
+    ],
+)
+def test_semicolon_url_items_bridge_versioned_arxiv_abs_and_pdf_variants(
+    tmp_path,
+    candidate_id,
+    existing_title,
+    incoming_title,
+    arxiv_id,
+    incoming_url,
+):
+    existing = merge_candidate_row(
+        candidate_id=candidate_id,
+        title=existing_title,
+        doi="",
+        url=f"https://arxiv.org/abs/{arxiv_id}",
+        discovery_stream="bootstrap",
+    )
+    incoming = merge_candidate_row(
+        candidate_id="aware-local",
+        title=incoming_title,
+        doi="NR",
+        url=incoming_url,
+        discovery_stream="aware-geometry-rl",
+    )
+    existing_path, agent_paths = build_merge_fixture(
+        tmp_path, [existing], [incoming]
+    )
+
+    merged, conflicts = merge_candidate_files(existing_path, agent_paths)
+
+    assert len(merged) == 1
+    assert merged[0]["candidate_id"] == candidate_id
+    assert {row["field"] for row in conflicts} == {"title", "url"}
+
+
+def test_pair_write_rolls_back_both_files_when_second_replace_fails(
+    tmp_path, monkeypatch
+):
+    existing = merge_candidate_row(
+        candidate_id="C0001",
+        title="Existing Track",
+        doi="10.1000/existing",
+    )
+    incoming = merge_candidate_row(
+        candidate_id="agent-new",
+        title="New Track",
+        doi="10.1000/new",
+    )
+    existing_path, agent_paths = build_merge_fixture(
+        tmp_path, [existing], [incoming]
+    )
+    conflicts_path = tmp_path / "conflicts.csv"
+    conflicts_path.write_bytes(b"original conflict ledger\n")
+    original_candidates = existing_path.read_bytes()
+    original_conflicts = conflicts_path.read_bytes()
+    real_replace = Path.replace
+    injected = False
+
+    def fail_second_data_replace(source: Path, target: Path):
+        nonlocal injected
+        if Path(target) == conflicts_path and not injected:
+            injected = True
+            raise OSError("injected second replacement failure")
+        return real_replace(source, target)
+
+    monkeypatch.setattr(Path, "replace", fail_second_data_replace)
+
+    with pytest.raises(OSError, match="second replacement failure"):
+        merge_candidates_main(
+            [
+                "--existing",
+                str(existing_path),
+                "--agent",
+                str(agent_paths[0]),
+                "--write",
+            ]
+        )
+
+    assert injected
+    assert existing_path.read_bytes() == original_candidates
+    assert conflicts_path.read_bytes() == original_conflicts
+
+
+def test_conflict_evidence_records_all_sources_and_marks_metadata_conflict(
+    tmp_path,
+):
+    existing = merge_candidate_row(
+        candidate_id="C0001",
+        title="Canonical Track",
+        authors="A. Author",
+        doi="10.1000/context",
+        metadata_status="unverified",
+    )
+    incoming_a = merge_candidate_row(
+        candidate_id="agent-a",
+        title="Canonical Track",
+        authors="B. Author",
+        doi="10.1000/context",
+    )
+    incoming_b = merge_candidate_row(
+        candidate_id="agent-b",
+        title="Canonical Track",
+        authors="B. Author",
+        doi="10.1000/context",
+    )
+    existing_path, agent_paths = build_merge_fixture(
+        tmp_path, [existing], [incoming_a], [incoming_b]
+    )
+
+    forward = merge_candidate_files(existing_path, agent_paths)
+    reverse = merge_candidate_files(existing_path, list(reversed(agent_paths)))
+    merged, conflicts = forward
+
+    assert forward == reverse
+    assert merged[0]["metadata_status"] == "conflict"
+    assert len(conflicts) == 1
+    assert conflicts[0]["resolution"] == ""
+    assert conflicts[0]["resolver"] == ""
+    assert conflicts[0]["resolution_evidence"] == (
+        "existing=candidates.csv#C0001; "
+        "incoming=agent-1.csv#agent-a; "
+        "incoming=agent-2.csv#agent-b"
+    )
+
+
+def test_excluded_status_propagates_to_existing_stable_candidate_deterministically(
+    tmp_path,
+):
+    existing = merge_candidate_row(
+        candidate_id="C0042",
+        title="Stable Candidate",
+        doi="10.1000/stable-exclusion",
+        discovery_stream="bootstrap",
+        screening_status="candidate",
+        exclusion_reason="",
+    )
+    candidate = merge_candidate_row(
+        candidate_id="blind-local",
+        title="Stable Candidate",
+        doi="10.1000/stable-exclusion",
+        discovery_stream="blind-stream",
+        screening_status="candidate",
+    )
+    excluded = merge_candidate_row(
+        candidate_id="aware-local",
+        title="Stable Candidate",
+        doi="10.1000/stable-exclusion",
+        discovery_stream="aware-stream",
+        screening_status="excluded",
+        exclusion_reason="No course geometry contribution.",
+    )
+    existing_path, agent_paths = build_merge_fixture(
+        tmp_path, [existing], [candidate], [excluded]
+    )
+
+    forward = merge_candidate_files(existing_path, agent_paths)
+    reverse = merge_candidate_files(existing_path, list(reversed(agent_paths)))
+
+    assert forward == reverse
+    merged, conflicts = forward
+    assert conflicts == []
+    assert merged[0]["screening_status"] == "excluded"
+    assert merged[0]["exclusion_reason"] == "No course geometry contribution."
+    assert merged[0]["discovery_stream"] == (
+        "aware-stream; blind-stream; bootstrap"
+    )
+
+
+def test_dry_run_reports_zero_inclusive_file_stream_and_identity_counts(
+    tmp_path, capsys
+):
+    existing = merge_candidate_row(
+        candidate_id="C0001",
+        title="Existing Track",
+        doi="10.1000/report",
+    )
+    duplicate = merge_candidate_row(
+        candidate_id="agent-duplicate",
+        title="Existing Track",
+        doi="10.1000/report",
+        discovery_stream="mixed-stream",
+    )
+    first_new = merge_candidate_row(
+        candidate_id="agent-new-a",
+        title="New Track A",
+        discovery_stream="mixed-stream",
+    )
+    second_new = merge_candidate_row(
+        candidate_id="agent-new-b",
+        title="New Track B",
+        discovery_stream="new-only-stream",
+    )
+    existing_path, agent_paths = build_merge_fixture(
+        tmp_path,
+        [existing],
+        [duplicate, first_new],
+        [second_new],
+        [],
+    )
+
+    assert merge_candidates_main(
+        [
+            "--existing",
+            str(existing_path),
+            *[
+                item
+                for path in agent_paths
+                for item in ("--agent", str(path))
+            ],
+        ]
+    ) == 0
+
+    output = capsys.readouterr().out
+    assert "incoming_total=3" in output
+    assert "source_file[agent-1.csv].incoming=2" in output
+    assert "source_file[agent-1.csv].new=1" in output
+    assert "source_file[agent-1.csv].duplicate=1" in output
+    assert "source_file[agent-2.csv].incoming=1" in output
+    assert "source_file[agent-2.csv].new=1" in output
+    assert "source_file[agent-2.csv].duplicate=0" in output
+    assert "source_file[agent-3.csv].incoming=0" in output
+    assert "source_file[agent-3.csv].new=0" in output
+    assert "source_file[agent-3.csv].duplicate=0" in output
+    assert "source_stream[mixed-stream].incoming=2" in output
+    assert "source_stream[mixed-stream].new=1" in output
+    assert "source_stream[mixed-stream].duplicate=1" in output
+    assert "source_stream[new-only-stream].incoming=1" in output
+    assert "source_stream[new-only-stream].new=1" in output
+    assert "source_stream[new-only-stream].duplicate=0" in output
+    assert "identity_matches[doi]=1" in output
+    assert "identity_matches[title]=0" in output
+    assert "identity_matches[arxiv]=0" in output
+    assert "conflicts[doi]=0" in output
+    assert "conflicts[source_type]=0" in output

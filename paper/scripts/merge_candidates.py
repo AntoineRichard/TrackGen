@@ -4,6 +4,7 @@ import argparse
 import csv
 import os
 import re
+import shutil
 import stat
 import tempfile
 import unicodedata
@@ -62,10 +63,42 @@ IdentityKey = tuple[str, str]
 ConflictSignature = tuple[str, str, str, str]
 
 
+@dataclass(frozen=True)
+class IncomingRecord:
+    row: CandidateRow
+    source_file: str
+    local_id: str
+
+    @property
+    def source(self) -> str:
+        return f"{self.source_file}#{self.local_id or '<missing>'}"
+
+
+@dataclass
+class PendingConflict:
+    candidate_id: str
+    field_name: str
+    current: str
+    proposed: str
+    existing_source: str
+    incoming_sources: set[str] = field(default_factory=set)
+
+
 @dataclass
 class MergeStats:
     existing_count: int
+    incoming_total: int = 0
     new_count: int = 0
+    duplicate_count: int = 0
+    source_files: set[str] = field(default_factory=set)
+    source_streams: set[str] = field(default_factory=set)
+    incoming_by_file: Counter[str] = field(default_factory=Counter)
+    new_by_file: Counter[str] = field(default_factory=Counter)
+    duplicate_by_file: Counter[str] = field(default_factory=Counter)
+    incoming_by_stream: Counter[str] = field(default_factory=Counter)
+    new_by_stream: Counter[str] = field(default_factory=Counter)
+    duplicate_by_stream: Counter[str] = field(default_factory=Counter)
+    identity_matches: Counter[str] = field(default_factory=Counter)
     duplicate_matches: Counter[tuple[str, str]] = field(
         default_factory=Counter
     )
@@ -131,13 +164,13 @@ def _arxiv_id_from_url(value: str) -> str:
 
 def _arxiv_id(row: CandidateRow) -> str:
     identities = {
-        value
-        for value in (
-            _arxiv_id_from_doi(row["doi"]),
-            _arxiv_id_from_url(row["url"]),
-        )
-        if value
+        value for value in (_arxiv_id_from_doi(row["doi"]),) if value
     }
+    identities.update(
+        identity
+        for url in split_values(row["url"])
+        if (identity := _arxiv_id_from_url(url))
+    )
     if len(identities) > 1:
         raise MergeError(
             f"{row['title']!r} contains conflicting arXiv identities "
@@ -272,14 +305,20 @@ def _append_unique_values(existing: str, incoming: str) -> str:
     return "; ".join(values)
 
 
-def _incoming_sort_key(row: CandidateRow) -> tuple[object, ...]:
+def _incoming_sort_key(incoming: IncomingRecord) -> tuple[object, ...]:
+    row = incoming.row
     identities = tuple(
         (IDENTITY_ORDER[kind], value) for kind, value in _identity_keys(row)
     )
     values = tuple(
         _value_sort_key(row[name]) for name in INCOMING_SORT_FIELDS
     )
-    return identities, values
+    return (
+        identities,
+        values,
+        _value_sort_key(incoming.source_file),
+        _value_sort_key(incoming.local_id),
+    )
 
 
 def _candidate_id_sort_key(candidate_id: str) -> tuple[int, int, str]:
@@ -353,11 +392,12 @@ def _conflict_value(field_name: str, value: str) -> str:
 
 
 def _record_conflict(
-    conflicts: dict[ConflictSignature, tuple[str, str, str, str]],
+    conflicts: dict[ConflictSignature, PendingConflict],
     candidate_id: str,
     field_name: str,
     current: str,
     proposed: str,
+    incoming_source: str,
 ) -> None:
     signature = (
         candidate_id,
@@ -365,35 +405,51 @@ def _record_conflict(
         _conflict_value(field_name, current),
         _conflict_value(field_name, proposed),
     )
-    conflicts.setdefault(
-        signature, (candidate_id, field_name, current, proposed)
+    pending = conflicts.setdefault(
+        signature,
+        PendingConflict(
+            candidate_id=candidate_id,
+            field_name=field_name,
+            current=current,
+            proposed=proposed,
+            existing_source=f"candidates.csv#{candidate_id}",
+        ),
     )
+    pending.incoming_sources.add(incoming_source)
 
 
 def _build_conflict_rows(
-    conflicts: dict[ConflictSignature, tuple[str, str, str, str]],
+    conflicts: dict[ConflictSignature, PendingConflict],
 ) -> list[CandidateRow]:
     values = sorted(
         conflicts.values(),
         key=lambda item: (
-            _candidate_id_sort_key(item[0]),
-            CONFLICT_FIELD_ORDER[item[1]],
-            _value_sort_key(_conflict_value(item[1], item[3])),
-            _value_sort_key(item[3]),
+            _candidate_id_sort_key(item.candidate_id),
+            CONFLICT_FIELD_ORDER[item.field_name],
+            _value_sort_key(
+                _conflict_value(item.field_name, item.proposed)
+            ),
+            _value_sort_key(item.proposed),
         ),
     )
     rows = []
-    for number, (candidate_id, field_name, current, proposed) in enumerate(
-        values, start=1
-    ):
+    for number, pending in enumerate(values, start=1):
         row = dict.fromkeys(CONFLICT_HEADER, "")
+        source_context = [f"existing={pending.existing_source}"]
+        source_context.extend(
+            f"incoming={source}"
+            for source in sorted(
+                pending.incoming_sources, key=_value_sort_key
+            )
+        )
         row.update(
             conflict_id=f"X{number:04d}",
             record_type="candidate",
-            record_key=candidate_id,
-            field=field_name,
-            value_a=current,
-            value_b=proposed,
+            record_key=pending.candidate_id,
+            field=pending.field_name,
+            value_a=pending.current,
+            value_b=pending.proposed,
+            resolution_evidence="; ".join(source_context),
         )
         rows.append(row)
     return rows
@@ -433,18 +489,30 @@ def _merge_candidate_files(
     for index, row in enumerate(merged):
         _add_to_lookup(lookup, row, index)
 
-    incoming_rows = []
+    stats = MergeStats(existing_count=len(existing))
+    incoming_rows: list[IncomingRecord] = []
     for path in sorted((Path(path) for path in agent_paths), key=str):
-        incoming_rows.extend(_read_candidate_rows(path, existing=False))
+        source_file = path.name
+        rows = _read_candidate_rows(path, existing=False)
+        stats.source_files.add(source_file)
+        stats.incoming_total += len(rows)
+        stats.incoming_by_file[source_file] += len(rows)
+        for row in rows:
+            streams = split_values(row["discovery_stream"]) or ["<missing>"]
+            for stream in streams:
+                stats.source_streams.add(stream)
+                stats.incoming_by_stream[stream] += 1
+            incoming_rows.append(
+                IncomingRecord(row, source_file, row["candidate_id"])
+            )
     incoming_rows.sort(key=_incoming_sort_key)
 
-    stats = MergeStats(existing_count=len(existing))
     next_number = _next_candidate_number(merged)
-    conflict_values: dict[
-        ConflictSignature, tuple[str, str, str, str]
-    ] = {}
+    conflict_values: dict[ConflictSignature, PendingConflict] = {}
 
-    for incoming in incoming_rows:
+    for incoming_record in incoming_rows:
+        incoming = incoming_record.row
+        streams = split_values(incoming["discovery_stream"]) or ["<missing>"]
         index, match_type = _find_match(incoming, merged, lookup)
         if index is None:
             record = _new_record(incoming, f"C{next_number:04d}")
@@ -453,17 +521,21 @@ def _merge_candidate_files(
             index = len(merged) - 1
             _add_to_lookup(lookup, record, index)
             stats.new_count += 1
+            stats.new_by_file[incoming_record.source_file] += 1
+            for stream in streams:
+                stats.new_by_stream[stream] += 1
             continue
 
-        streams = split_values(incoming["discovery_stream"]) or ["<missing>"]
+        identity_type = match_type or "unknown"
+        stats.duplicate_count += 1
+        stats.duplicate_by_file[incoming_record.source_file] += 1
+        stats.identity_matches[identity_type] += 1
         for stream in streams:
-            stats.duplicate_matches[(match_type or "unknown", stream)] += 1
+            stats.duplicate_by_stream[stream] += 1
+            stats.duplicate_matches[(identity_type, stream)] += 1
 
         record = merged[index]
-        if (
-            index >= stats.existing_count
-            and incoming["screening_status"] == "excluded"
-        ):
+        if incoming["screening_status"] == "excluded":
             record["screening_status"] = "excluded"
             record["exclusion_reason"] = incoming["exclusion_reason"]
         for name in PROVENANCE_FIELDS:
@@ -486,7 +558,9 @@ def _merge_candidate_files(
                 name,
                 current,
                 proposed,
+                incoming_record.source,
             )
+            record["metadata_status"] = "conflict"
         _add_to_lookup(lookup, record, index)
 
     conflicts = _build_conflict_rows(conflict_values)
@@ -528,13 +602,46 @@ def _write_temporary_rows(
     return temporary_path
 
 
+def _backup_existing_file(path: Path) -> Path | None:
+    if not path.exists():
+        return None
+    descriptor, name = tempfile.mkstemp(
+        prefix=f".{path.name}.backup.", suffix=".tmp", dir=path.parent
+    )
+    os.close(descriptor)
+    backup = Path(name)
+    try:
+        shutil.copy2(path, backup)
+        with backup.open("rb") as handle:
+            os.fsync(handle.fileno())
+    except BaseException:
+        backup.unlink(missing_ok=True)
+        raise
+    return backup
+
+
+def _restore_file(path: Path, backup: Path | None) -> None:
+    if backup is None:
+        path.unlink(missing_ok=True)
+    else:
+        os.replace(backup, path)
+
+
 def _atomic_write_outputs(
     existing_path: Path,
     merged: list[CandidateRow],
     conflicts_path: Path,
     conflicts: list[CandidateRow],
 ) -> None:
+    """Replace both ledgers with rollback-guaranteed cross-file atomicity.
+
+    Both files are staged and backed up before replacement. If either data
+    replacement fails, both original byte streams are restored before the
+    replacement error is propagated.
+    """
     temporary_paths = []
+    backups: dict[Path, Path | None] = {}
+    targets = (existing_path, conflicts_path)
     try:
         candidate_temporary = _write_temporary_rows(
             existing_path, merged, CANDIDATE_HEADER
@@ -544,8 +651,25 @@ def _atomic_write_outputs(
             conflicts_path, conflicts, CONFLICT_HEADER
         )
         temporary_paths.append(conflict_temporary)
-        candidate_temporary.replace(existing_path)
-        conflict_temporary.replace(conflicts_path)
+        backups = {path: _backup_existing_file(path) for path in targets}
+        temporary_paths.extend(
+            backup for backup in backups.values() if backup is not None
+        )
+        try:
+            candidate_temporary.replace(existing_path)
+            conflict_temporary.replace(conflicts_path)
+        except OSError as replacement_error:
+            rollback_errors = []
+            for path in targets:
+                try:
+                    _restore_file(path, backups[path])
+                except OSError as rollback_error:
+                    rollback_errors.append(rollback_error)
+            if rollback_errors:
+                raise MergeError(
+                    "pair replacement failed and rollback was incomplete"
+                ) from replacement_error
+            raise
     finally:
         for path in temporary_paths:
             path.unlink(missing_ok=True)
@@ -559,31 +683,58 @@ def _print_report(
 ) -> None:
     print(f"mode={mode}")
     print(f"merged_total={len(merged)}")
+    print(f"incoming_total={stats.incoming_total}")
     print(f"new_count={stats.new_count}")
     print(
         "excluded_count="
         f"{sum(row['screening_status'] == 'excluded' for row in merged)}"
     )
-    print(f"duplicate_total={sum(stats.duplicate_matches.values())}")
-    if stats.duplicate_matches:
-        for (identity_type, stream), count in sorted(
-            stats.duplicate_matches.items(),
-            key=lambda item: (
-                IDENTITY_ORDER.get(item[0][0], len(IDENTITY_ORDER)),
-                _value_sort_key(item[0][1]),
-            ),
-        ):
+    print(f"duplicate_total={stats.duplicate_count}")
+
+    for source_file in sorted(stats.source_files, key=_value_sort_key):
+        print(
+            f"source_file[{source_file}].incoming="
+            f"{stats.incoming_by_file[source_file]}"
+        )
+        print(
+            f"source_file[{source_file}].new="
+            f"{stats.new_by_file[source_file]}"
+        )
+        print(
+            f"source_file[{source_file}].duplicate="
+            f"{stats.duplicate_by_file[source_file]}"
+        )
+
+    streams = sorted(stats.source_streams, key=_value_sort_key)
+    for stream in streams:
+        print(
+            f"source_stream[{stream}].incoming="
+            f"{stats.incoming_by_stream[stream]}"
+        )
+        print(f"source_stream[{stream}].new={stats.new_by_stream[stream]}")
+        print(
+            f"source_stream[{stream}].duplicate="
+            f"{stats.duplicate_by_stream[stream]}"
+        )
+
+    for identity_type in IDENTITY_ORDER:
+        print(
+            f"identity_matches[{identity_type}]="
+            f"{stats.identity_matches[identity_type]}"
+        )
+        for stream in streams:
             print(
-                f"duplicate_matches[{identity_type}][{stream}]={count}"
+                f"duplicate_matches[{identity_type}][{stream}]="
+                f"{stats.duplicate_matches[(identity_type, stream)]}"
             )
-    else:
+    if not streams:
         print("duplicate_matches=0")
+
 
     conflict_counts = Counter(row["field"] for row in conflicts)
     print(f"conflict_total={len(conflicts)}")
     for name in BIBLIOGRAPHIC_FIELDS:
-        if conflict_counts[name]:
-            print(f"conflicts[{name}]={conflict_counts[name]}")
+        print(f"conflicts[{name}]={conflict_counts[name]}")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
