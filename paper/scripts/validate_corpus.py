@@ -349,7 +349,15 @@ def _validate_search_queries(
 
 
 def _validate_search_log(rows: list[dict[str, str]]) -> None:
-    for row_number, row in enumerate(rows, start=2):
+    for action_number, row in enumerate(rows, start=1):
+        row_number = action_number + 1
+        expected_id = f"S{action_number:04d}"
+        if row["search_id"] != expected_id:
+            raise CorpusError(
+                f"search_log.csv:{row_number}: search_id={row['search_id']!r}; "
+                f"search_id values must be exactly sequential in row order "
+                f"(expected {expected_id!r})"
+            )
         search_date = row["search_date"].strip()
         try:
             parsed_date = date.fromisoformat(search_date)

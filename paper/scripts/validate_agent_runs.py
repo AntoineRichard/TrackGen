@@ -87,7 +87,6 @@ AVAILABILITY_STATUSES = frozenset(
     }
 )
 URL_PATTERN = re.compile(r"https?://[^\s;,)\]\"']+")
-HEADING_PATTERN = re.compile(r"^#{1,6}\s+(.+?)\s*$", re.MULTILINE)
 INLINE_QUERY_PATTERN = re.compile(
     r"^-\s+" + chr(96) + r"([^\x60]+)" + chr(96) + r"\s*$"
 )
@@ -117,13 +116,34 @@ PROVENANCE_PATTERN = re.compile(
     r"\b(?:bootstrap|seed|newly discovered)\b",
     re.IGNORECASE,
 )
+PROVENANCE_LEDGER_PATTERN = re.compile(
+    r"^\|\s*(?P<candidate_id>(?:AGRL|ASIM)[0-9]{4})\s*\|\s*"
+    + chr(96)
+    + r"(?P<provenance>(?:seed|citation)::[^\x60]+)"
+    + chr(96)
+    + r"\s*\|"
+)
+STABLE_SOURCE_IDENTIFIER_PATTERN = re.compile(
+    r"[A-Za-z0-9][A-Za-z0-9._:/-]*"
+)
+SATURATION_STATEMENT_PATTERN = (
+    r"[0-9]+/[0-9]+ = [0-9]+(?:\.[0-9]+)?%"
+)
+SUMMARY_NOTES_PATTERN = re.compile(
+    r"^Source: (?P<source>[^;]+); "
+    r"(?P<retained>[0-9]+) retained, (?P<excluded>[0-9]+) excluded; "
+    r"final saturation arithmetic: (?P<first>"
+    + SATURATION_STATEMENT_PATTERN
+    + r") and (?P<second>"
+    + SATURATION_STATEMENT_PATTERN
+    + r")\. Total screened-hit count was not captured\.$"
+)
 LOCATOR_MARKER_PATTERN = re.compile(
     r"(?i)(?:\bp{1,2}\.?\s+\d+|\bpages?\s+\d+"
     r"|\b(?:sections?|secs?\.?|tables?|figures?|appendi(?:x|ces)|"
     r"chapters?|algorithms?|lines?)\s+[A-Z0-9]"
     r"|\bsource[- ]path\s*:)",
 )
-QUERY_TOKEN_PATTERN = re.compile(r"[a-z0-9]+")
 
 
 @dataclass(frozen=True)
@@ -133,6 +153,19 @@ class RunSpec:
     discovery_streams: frozenset[str]
     discovery_agent: str
     search_stream: str
+
+
+@dataclass(frozen=True)
+class ReportQuery:
+    section: str
+    query: str
+
+
+@dataclass(frozen=True)
+class ReportData:
+    text: str
+    queries: tuple[ReportQuery, ...]
+    provenance: dict[str, str]
 
 
 def _numbered_ids(prefix: str, count: int, width: int) -> tuple[str, ...]:
@@ -330,6 +363,10 @@ def _read_taxonomy(path: Path) -> dict[str, frozenset[str]]:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (UnicodeError, json.JSONDecodeError) as exc:
         raise AgentRunError(f"{path}: invalid taxonomy: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise AgentRunError(
+            f"{path}: taxonomy top-level value must be a mapping"
+        )
     taxonomy: dict[str, frozenset[str]] = {}
     for field in AWARE_CONTROLLED_FIELDS:
         values = raw.get(field)
@@ -362,6 +399,10 @@ def _validate_list_fields(
 ) -> None:
     for field in LIST_FIELDS:
         value = row[field]
+        if value != value.strip():
+            raise AgentRunError(
+                f"{path}:{row_number}: {field} must use canonical whitespace"
+            )
         if ";" not in value:
             continue
         if re.search(r";(?! )|; {2,}", value):
@@ -570,34 +611,56 @@ def _validate_csv(
     return rows
 
 
-def _extract_report_queries(text: str) -> list[str]:
+def _validate_report(path: Path) -> ReportData:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeError as exc:
+        raise AgentRunError(f"{path}: invalid UTF-8: {exc}") from exc
+
     headings: list[tuple[int, str]] = []
-    queries: list[str] = []
+    report_headings: list[str] = []
+    queries: list[ReportQuery] = []
+    provenance: dict[str, str] = {}
     fenced_lines: list[str] = []
+    fenced_section = ""
     capture_fence = False
     in_fence = False
 
     def query_context() -> bool:
         context = " ".join(value.casefold() for _, value in headings)
-        return any(word in context for word in ("quer", "refinement", "saturation"))
+        return any(
+            word in context for word in ("quer", "refinement", "saturation")
+        )
 
-    for line in text.splitlines():
+    def section_name() -> str:
+        return " / ".join(
+            value for level, value in headings if level >= 2
+        )
+
+    for line_number, line in enumerate(text.splitlines(), start=1):
         heading = re.fullmatch(r"(#{1,6})\s+(.+?)\s*", line)
         if heading and not in_fence:
             level = len(heading.group(1))
             while headings and headings[-1][0] >= level:
                 headings.pop()
-            headings.append((level, heading.group(2).strip()))
+            value = heading.group(2).strip()
+            headings.append((level, value))
+            report_headings.append(value.casefold())
             continue
 
-        if line.startswith(chr(96) * 3):
+        if line.lstrip().startswith(chr(96) * 3):
             if not in_fence:
                 in_fence = True
                 capture_fence = query_context()
+                fenced_section = section_name()
                 fenced_lines = []
             else:
                 if capture_fence:
-                    queries.extend(query for query in fenced_lines if query.strip())
+                    queries.extend(
+                        ReportQuery(fenced_section, query)
+                        for query in fenced_lines
+                        if query.strip()
+                    )
                 in_fence = False
                 capture_fence = False
                 fenced_lines = []
@@ -608,40 +671,38 @@ def _extract_report_queries(text: str) -> list[str]:
                 fenced_lines.append(line)
             continue
 
+        ledger_match = PROVENANCE_LEDGER_PATTERN.match(line)
+        if ledger_match:
+            candidate_id = ledger_match.group("candidate_id")
+            if candidate_id in provenance:
+                raise AgentRunError(
+                    f"{path}:{line_number}: duplicate provenance ledger row "
+                    f"for {candidate_id}"
+                )
+            provenance[candidate_id] = ledger_match.group("provenance")
+
         inline = INLINE_QUERY_PATTERN.fullmatch(line)
         if inline and query_context():
-            queries.append(inline.group(1))
+            queries.append(ReportQuery(section_name(), inline.group(1)))
 
-    return queries
-
-
-def _validate_report(path: Path) -> list[str]:
-    try:
-        text = path.read_text(encoding="utf-8")
-    except UnicodeError as exc:
-        raise AgentRunError(f"{path}: invalid UTF-8: {exc}") from exc
-    headings = [
-        match.group(1).strip().casefold()
-        for match in HEADING_PATTERN.finditer(text)
-    ]
     for category, matcher in REPORT_SECTION_MATCHERS.items():
-        if not any(matcher(heading) for heading in headings):
+        if not any(matcher(heading) for heading in report_headings):
             raise AgentRunError(
                 f"{path}: missing required report section: {category}"
             )
-    queries = _extract_report_queries(text)
     if not queries:
         raise AgentRunError(f"{path}: exact query ledger is empty")
-    return queries
+    return ReportData(text, tuple(queries), provenance)
 
 
 def _query_batches_follow_report_order(
     log_rows: list[dict[str, str]],
-    report_queries: list[str],
+    logged_actions: list[ReportQuery],
+    report_actions: tuple[ReportQuery, ...],
 ) -> bool:
-    batches: list[list[str]] = []
+    batches: list[list[ReportQuery]] = []
     previous_id: int | None = None
-    for row in log_rows:
+    for row, action in zip(log_rows, logged_actions):
         match = re.fullmatch(r"S([0-9]+)", row["search_id"])
         if not match:
             raise AgentRunError(
@@ -650,143 +711,173 @@ def _query_batches_follow_report_order(
         search_id = int(match.group(1))
         if previous_id is None or search_id != previous_id + 1:
             batches.append([])
-        batches[-1].append(row["query"])
+        batches[-1].append(action)
         previous_id = search_id
 
     for batch in batches:
         position = 0
-        for query in batch:
+        for action in batch:
             while (
-                position < len(report_queries)
-                and report_queries[position] != query
+                position < len(report_actions)
+                and report_actions[position] != action
             ):
                 position += 1
-            if position == len(report_queries):
+            if position == len(report_actions):
                 return False
             position += 1
     return True
 
 
-def _query_tokens(value: str) -> set[str]:
-    ignored = {
-        "autonomous",
-        "bootstrap",
-        "discovery",
-        "doi",
-        "extension",
-        "generation",
-        "generator",
-        "journal",
-        "official",
-        "paper",
-        "primary",
-        "query",
-        "road",
-        "source",
-        "test",
-        "testing",
-        "title",
-        "track",
-        "verification",
-    }
-    return set(QUERY_TOKEN_PATTERN.findall(value.casefold())) - ignored
+def _read_bootstrap_candidate_ids(path: Path) -> frozenset[str]:
+    if not path.is_file():
+        raise AgentRunError(f"{path}: bootstrap candidate table is missing")
+    try:
+        with path.open(encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle, strict=True)
+            fields = set(reader.fieldnames or ())
+            required = {"candidate_id", "discovery_stream"}
+            if not required.issubset(fields):
+                raise AgentRunError(
+                    f"{path}: candidate table lacks {sorted(required)!r}"
+                )
+            rows = list(reader)
+    except UnicodeError as exc:
+        raise AgentRunError(f"{path}: invalid UTF-8: {exc}") from exc
+    except csv.Error as exc:
+        raise AgentRunError(f"{path}: CSV parse error: {exc}") from exc
+
+    for row_number, row in enumerate(rows, start=2):
+        if None in row or any(value is None for value in row.values()):
+            raise AgentRunError(f"{path}:{row_number}: malformed CSV row")
+    return frozenset(
+        row["candidate_id"].strip()
+        for row in rows
+        if row["discovery_stream"].strip() == "bootstrap"
+    )
 
 
-def _legacy_aware_geometry_query(
+def _exact_query_action(
+    slug: str,
+    report_path: str,
+    report: ReportData,
     row: dict[str, str],
-    report_queries: set[str],
-    logged_queries: set[str],
-) -> bool:
-    query = row["discovery_query"].strip()
-    stripped = re.sub(
-        r"^bootstrap [^:]+:\s*",
-        "",
-        query,
-        flags=re.IGNORECASE,
+) -> ReportQuery:
+    prefix = f"Source: {report_path}; section: "
+    suffix = (
+        ". Per-query screened-hit and candidate-add counts were not captured."
     )
-    if stripped in report_queries and stripped in logged_queries:
-        return True
-
-    if not PROVENANCE_PATTERN.search(row["coding_notes"]):
-        return False
-    context = " ".join(
-        (row["title"], row["cite_key"], row["coding_notes"])
+    notes = row["notes"]
+    if (
+        not notes.startswith(prefix)
+        or not notes.endswith(suffix)
+        or len(notes) <= len(prefix) + len(suffix)
+    ):
+        raise AgentRunError(
+            f"{slug}: exact-query section/source notes do not match the "
+            "paired report"
+        )
+    action = ReportQuery(
+        notes[len(prefix):-len(suffix)],
+        row["query"],
     )
-    if _query_tokens(query) & _query_tokens(context):
-        return True
-    return row["candidate_id"] == "AGRL0022" and "asfault" in query.casefold()
+    report_queries = {item.query for item in report.queries}
+    if action.query in report_queries and action not in set(report.queries):
+        raise AgentRunError(
+            f"{slug}: exact-query section does not match the paired report"
+        )
+    return action
 
 
 def _validate_candidate_queries(
     slug: str,
     csv_path: Path,
     candidate_rows: list[dict[str, str]],
-    report_queries: list[str],
-    logged_queries: list[str],
+    report: ReportData,
+    logged_actions: list[ReportQuery],
+    bootstrap_candidate_ids: frozenset[str],
 ) -> None:
-    report_set = set(report_queries)
-    logged_set = set(logged_queries)
+    report_queries = {item.query for item in report.queries}
+    logged_queries = {item.query for item in logged_actions}
+
     for row_number, row in enumerate(candidate_rows, start=2):
-        query = row["discovery_query"].strip()
-        if query == "NR":
+        value = row["discovery_query"]
+        if slug not in AWARE_RUNS:
+            if value == "NR":
+                continue
+            if value in report_queries and value in logged_queries:
+                continue
+            raise AgentRunError(
+                f"{csv_path}:{row_number}: discovery_query={value!r} "
+                "is absent from the report and exact-query log query ledgers"
+            )
+
+        if value.startswith("query::"):
+            literal = value.removeprefix("query::")
+            if (
+                literal
+                and literal in report_queries
+                and literal in logged_queries
+            ):
+                continue
+            raise AgentRunError(
+                f"{csv_path}:{row_number}: discovery_query {value!r}; "
+                "query:: literal must match an exact-query report and log action"
+            )
+
+        if value.startswith("seed::"):
+            candidate_id = value.removeprefix("seed::")
+            if not re.fullmatch(r"C[0-9]{4,}", candidate_id):
+                raise AgentRunError(
+                    f"{csv_path}:{row_number}: discovery_query={value!r} "
+                    "does not follow the aware provenance grammar"
+                )
+            if candidate_id not in bootstrap_candidate_ids:
+                raise AgentRunError(
+                    f"{csv_path}:{row_number}: {value} does not reference an "
+                    "existing bootstrap candidate"
+                )
+            if report.provenance.get(row["candidate_id"]) != value:
+                raise AgentRunError(
+                    f"{csv_path}:{row_number}: {value} has no matching "
+                    "provenance ledger relationship in the paired report"
+                )
             continue
-        if query in report_set and query in logged_set:
+
+        if value.startswith("citation::"):
+            source_identifier = value.removeprefix("citation::")
+            if not STABLE_SOURCE_IDENTIFIER_PATTERN.fullmatch(
+                source_identifier
+            ):
+                raise AgentRunError(
+                    f"{csv_path}:{row_number}: citation:: provenance requires "
+                    "a nonempty stable source identifier"
+                )
+            if report.provenance.get(row["candidate_id"]) != value:
+                raise AgentRunError(
+                    f"{csv_path}:{row_number}: {value} has no matching "
+                    "provenance ledger relationship in the paired report"
+                )
             continue
-        if (
-            slug == "aware-geometry-rl"
-            and _legacy_aware_geometry_query(row, report_set, logged_set)
-        ):
-            continue
+
         raise AgentRunError(
-            f"{csv_path}:{row_number}: discovery_query={query!r} "
-            "is absent from the report and exact-query log query ledgers"
+            f"{csv_path}:{row_number}: discovery_query={value!r} does not "
+            "follow the aware provenance grammar "
+            "(query::<literal>, seed::<C####>, or citation::<source identifier>)"
         )
 
 
-def _validate_search_integration(
+def _normalize_ratio_statement(value: str) -> str:
+    return re.sub(r"\s+", "", value)
+
+
+def _validate_summary(
     slug: str,
     spec: RunSpec,
-    csv_path: Path,
     candidate_rows: list[dict[str, str]],
-    report_queries: list[str],
-    search_rows: list[dict[str, str]],
+    report_path: str,
+    report: ReportData,
+    summary: dict[str, str],
 ) -> None:
-    exact_rows = [
-        row
-        for row in search_rows
-        if row["stream"].strip() == spec.search_stream
-        and row["agent"].strip() == spec.discovery_agent
-        and row["search_surface"].strip() == "mixed-primary-web"
-    ]
-    logged_queries = [row["query"] for row in exact_rows]
-    expected = Counter(report_queries)
-    actual = Counter(logged_queries)
-    missing = list((expected - actual).elements())
-    if missing:
-        raise AgentRunError(
-            f"{slug}: exact-query ledger is missing {missing!r}"
-        )
-    extra = list((actual - expected).elements())
-    if extra:
-        raise AgentRunError(
-            f"{slug}: exact-query ledger has extra queries {extra!r}"
-        )
-    if not _query_batches_follow_report_order(exact_rows, report_queries):
-        raise AgentRunError(
-            f"{slug}: exact-query rows do not preserve report order "
-            "within append batches"
-        )
-
-    report_path = f"paper/data/agent_runs/{slug}.md"
-    summary_query = f"RUN-SUMMARY:{report_path}"
-    summaries = [
-        row for row in search_rows if row["query"] == summary_query
-    ]
-    if len(summaries) != 1:
-        raise AgentRunError(
-            f"{slug}: RUN-SUMMARY must appear exactly one time"
-        )
-    summary = summaries[0]
     if (
         summary["stream"].strip() != spec.search_stream
         or summary["agent"].strip() != spec.discovery_agent
@@ -795,6 +886,11 @@ def _validate_search_integration(
         raise AgentRunError(
             f"{slug}: RUN-SUMMARY has incorrect stream, agent, or surface"
         )
+    if summary["results_screened"] != "NR":
+        raise AgentRunError(
+            f"{slug}: RUN-SUMMARY results_screened must be NR"
+        )
+
     try:
         candidates_added = int(summary["candidates_added"])
     except ValueError as exc:
@@ -807,12 +903,121 @@ def _validate_search_integration(
             f"does not match CSV row count {len(candidate_rows)}"
         )
 
+    notes = summary["notes"]
+    required_missing_text = "Total screened-hit count was not captured."
+    if required_missing_text not in notes:
+        raise AgentRunError(
+            f"{slug}: RUN-SUMMARY must explicitly state that the total "
+            "screened-hit count was not captured"
+        )
+    match = SUMMARY_NOTES_PATTERN.fullmatch(notes)
+    if not match:
+        raise AgentRunError(
+            f"{slug}: RUN-SUMMARY notes do not follow the structured "
+            "source/count/saturation contract"
+        )
+    if match.group("source") != report_path:
+        raise AgentRunError(
+            f"{slug}: RUN-SUMMARY source path does not match the paired report"
+        )
+
+    excluded = sum(
+        row["screening_status"].strip() == "excluded"
+        for row in candidate_rows
+    )
+    retained = len(candidate_rows) - excluded
+    if int(match.group("retained")) != retained:
+        raise AgentRunError(
+            f"{slug}: RUN-SUMMARY retained count does not match CSV statuses"
+        )
+    if int(match.group("excluded")) != excluded:
+        raise AgentRunError(
+            f"{slug}: RUN-SUMMARY excluded count does not match CSV statuses"
+        )
+
+    statements = (match.group("first"), match.group("second"))
+    if statements[0] == statements[1]:
+        raise AgentRunError(
+            f"{slug}: RUN-SUMMARY saturation arithmetic must identify two "
+            "distinct final statements"
+        )
+    compact_report = _normalize_ratio_statement(report.text)
+    for statement in statements:
+        if _normalize_ratio_statement(statement) not in compact_report:
+            raise AgentRunError(
+                f"{slug}: RUN-SUMMARY saturation statement {statement!r} "
+                "is absent from the paired report"
+            )
+
+
+def _validate_search_integration(
+    slug: str,
+    spec: RunSpec,
+    csv_path: Path,
+    candidate_rows: list[dict[str, str]],
+    report: ReportData,
+    search_rows: list[dict[str, str]],
+    bootstrap_candidate_ids: frozenset[str],
+) -> None:
+    exact_rows = [
+        row
+        for row in search_rows
+        if row["stream"].strip() == spec.search_stream
+        and row["agent"].strip() == spec.discovery_agent
+        and row["search_surface"].strip() == "mixed-primary-web"
+    ]
+    report_path = f"paper/data/agent_runs/{slug}.md"
+    logged_actions = [
+        _exact_query_action(slug, report_path, report, row)
+        for row in exact_rows
+    ]
+    expected = Counter(report.queries)
+    actual = Counter(logged_actions)
+    missing = list((expected - actual).elements())
+    if missing:
+        raise AgentRunError(
+            f"{slug}: exact-query ledger is missing "
+            f"{[item.query for item in missing]!r}"
+        )
+    extra = list((actual - expected).elements())
+    if extra:
+        raise AgentRunError(
+            f"{slug}: exact-query ledger has extra queries "
+            f"{[item.query for item in extra]!r}"
+        )
+    if not _query_batches_follow_report_order(
+        exact_rows,
+        logged_actions,
+        report.queries,
+    ):
+        raise AgentRunError(
+            f"{slug}: exact-query rows do not preserve report order "
+            "within append batches"
+        )
+
+    summary_query = f"RUN-SUMMARY:{report_path}"
+    summaries = [
+        row for row in search_rows if row["query"] == summary_query
+    ]
+    if len(summaries) != 1:
+        raise AgentRunError(
+            f"{slug}: RUN-SUMMARY must appear exactly one time"
+        )
+    _validate_summary(
+        slug,
+        spec,
+        candidate_rows,
+        report_path,
+        report,
+        summaries[0],
+    )
     _validate_candidate_queries(
         slug,
         csv_path,
         candidate_rows,
-        report_queries,
-        logged_queries,
+        report,
+        logged_actions,
+        bootstrap_candidate_ids,
     )
 
 
@@ -821,6 +1026,9 @@ def validate_agent_runs(data_dir: Path) -> None:
     _validate_files(data_dir)
     taxonomy = _read_taxonomy(data_dir.parent / "taxonomy.json")
     search_rows = _read_search_log(data_dir.parent / "search_log.csv")
+    bootstrap_candidate_ids = _read_bootstrap_candidate_ids(
+        data_dir.parent / "candidates.csv"
+    )
     for slug, spec in RUN_SPECS.items():
         csv_path = data_dir / f"{slug}.csv"
         candidate_rows = _validate_csv(
@@ -829,14 +1037,15 @@ def validate_agent_runs(data_dir: Path) -> None:
             slug,
             taxonomy,
         )
-        report_queries = _validate_report(data_dir / f"{slug}.md")
+        report = _validate_report(data_dir / f"{slug}.md")
         _validate_search_integration(
             slug,
             spec,
             csv_path,
             candidate_rows,
-            report_queries,
+            report,
             search_rows,
+            bootstrap_candidate_ids,
         )
 
 

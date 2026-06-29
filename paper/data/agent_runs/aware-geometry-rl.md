@@ -127,7 +127,72 @@ These four Crossref `query.bibliographic` strings were run as the final round:
 
 They returned generic geometry, trajectory-planning, road-design, and unrelated robotics records, but no additional in-scope primary course source after deduplication and screening.
 
+### Exclusion-lead verification queries
+
+- `autonomous vehicle fuzzing scenario generation road geometry fixed map`
+- `safety-critical traffic scenario factory road generation fixed road`
+- `procedural generation race track surroundings iterative level design`
+
+These three executed literals support AGRL0053-AGRL0055 and are now present in this exact-query ledger. Integration records them in `paper/data/search_log.csv` as append-only corrective actions S0247-S0249; their per-query counts were not captured.
+
 Exact-title and DOI lookups were also run for each candidate. Examples include `query.title=Global Curvature Thickness and the Ideal Shapes of Knots`, `query.title=Learn to Race autonomous racing environment`, and direct `/works/{doi}` requests. These were metadata verification operations, not separate expansion rounds.
+
+## Provenance ledger
+
+Every `discovery_query` value uses exactly one mode. Counts are `seed::` 29, `citation::` 14, and `query::` 12, totaling 55 rows. The exact literal following each `query::` appears in the exact-query ledger above. The tables below make every non-query source relationship auditable.
+
+### Bootstrap-source rows
+
+| Row | Provenance | Bootstrap source |
+|---|---|---|
+| AGRL0001 | `seed::C0009` | C0009: Automatic Track Generation for High-End Racing Games Using Evolutionary Computation |
+| AGRL0002 | `seed::C0010` | C0010: Making Racing Fun Through Player Modeling and Track Evolution |
+| AGRL0003 | `seed::C0067` | C0067: Towards Automatic Personalised Content Creation for Racing Games |
+| AGRL0007 | `seed::C0011` | C0011: Search-Based Procedural Content Generation for Race Tracks in Video Games |
+| AGRL0008 | `seed::C0013` | C0013: Procedural Generation of Isometric Racetracks Using Chain Code for Racing Games |
+| AGRL0009 | `seed::C0012` | C0012: Comparative Analysis of Metaheuristic Algorithms for Procedural Race Track Generation in Games |
+| AGRL0010 | `seed::C0004` | C0004: Closing the Affective Loop via Experience-Driven Reinforcement Learning Designers |
+| AGRL0011 | `seed::C0058` | C0058: From Generation to Gameplay: Authoring Race Tracks With Repulsive Curves |
+| AGRL0013 | `seed::C0017` | C0017: Gymnasium / OpenAI Gym CarRacing |
+| AGRL0014 | `seed::C0006` | C0006: Improving the Generalization of End-to-End Driving through Procedural Generation |
+| AGRL0015 | `seed::C0046` | C0046: MetaDrive: Composing Diverse Driving Scenarios for Generalizable Reinforcement Learning |
+| AGRL0016 | `seed::C0007` | C0007: OpenDRIVE |
+| AGRL0017 | `seed::C0008` | C0008: Procedural Generation of Complex Roundabouts for Autonomous Vehicle Testing |
+| AGRL0018 | `seed::C0015` | C0015: Automated Lane Keeping Systems (ALKS) |
+| AGRL0020 | `seed::C0097` | C0097: HDMapGen |
+| AGRL0022 | `seed::C0022` | C0022: Automatically Testing Self-Driving Cars with Search-Based Procedural Content Generation / ASFault |
+| AGRL0023 | `seed::C0023` | C0023: Model-based Exploration of the Frontier of Behaviours for Deep Learning System Testing |
+| AGRL0033 | `seed::C0024` | C0024: Diversity-guided Search Exploration for Self-driving Cars Test Generation through Frenet Space Encoding |
+| AGRL0035 | `seed::C0016` | C0016: Replay-Guided Adversarial Environment Design / REPAIRED |
+| AGRL0036 | `seed::C0018` | C0018: CLUTR: Curriculum Learning via Unsupervised Task Representation Learning |
+| AGRL0037 | `seed::C0019` | C0019: Prioritized Level Replay |
+| AGRL0038 | `seed::C0020` | C0020: Emergent Complexity and Zero-shot Transfer via Unsupervised Environment Design / PAIRED |
+| AGRL0039 | `seed::C0021` | C0021: Evolving Curricula with Regret-Based Environment Design / ACCEL |
+| AGRL0046 | `seed::C0055` | C0055: Global Curvature, Thickness, and the Ideal Shapes of Knots |
+| AGRL0047 | `seed::C0057` | C0057: Repulsive Curves |
+| AGRL0048 | `seed::C0060` | C0060: Position Based Dynamics |
+| AGRL0049 | `seed::C0061` | C0061: XPBD: Position-Based Simulation of Compliant Constrained Dynamics |
+| AGRL0051 | `seed::C0038` | C0038: Minimum curvature trajectory planning and control for an autonomous race car |
+| AGRL0052 | `seed::C0041` | C0041: Time-optimal trajectory planning for a race car considering variable tyre-road friction coefficients |
+
+### Citation-chain rows
+
+| Row | Provenance | Source relationship |
+|---|---|---|
+| AGRL0004 | `citation::10.1109/tciaig.2011.2163692` | Backward citation from the 2011 automatic-track-generation paper to Cardamone et al. 2011. Source: Automatic Track Generation for High-End Racing Games Using Evolutionary Computation. |
+| AGRL0005 | `citation::10.1109/tciaig.2011.2163692` | Forward citation from the 2011 automatic-track-generation paper to TrackGen. Source: Automatic Track Generation for High-End Racing Games Using Evolutionary Computation. |
+| AGRL0006 | `citation::10.1109/tciaig.2011.2163692` | Forward citation from the 2011 automatic-track-generation paper to personalized track design. Source: Automatic Track Generation for High-End Racing Games Using Evolutionary Computation. |
+| AGRL0024 | `citation::10.1145/3368089.3409730` | Forward citation from DeepJanus to DeepHyperion. Source: Model-based exploration of the frontier of behaviours for deep learning system testing. |
+| AGRL0025 | `citation::10.1145/3293882.3330566` | ASFault backward/forward chain to the 2022 AmbieGen framework paper. Source: Automatically Testing Self-Driving Cars with Search-Based Procedural Content Generation. |
+| AGRL0026 | `citation::10.1016/j.infsof.2022.106936` | Journal extension followed from the 2022 AmbieGen framework paper. Source: A search-based framework for automatic generation of testing environments for cyber-physical systems. |
+| AGRL0027 | `citation::10.1145/3293882.3330566` | ASFault forward chain to the six-representation analysis. Source: Automatically Testing Self-Driving Cars with Search-Based Procedural Content Generation. |
+| AGRL0028 | `citation::10.1145/3293882.3330566` | ASFault forward chain to path-aware crossover. Source: Automatically Testing Self-Driving Cars with Search-Based Procedural Content Generation. |
+| AGRL0032 | `citation::10.1016/j.scico.2023.102990` | AmbieGen journal-paper forward chain to RIGAA. Source: AmbieGen: A search-based framework for autonomous systems testing. |
+| AGRL0034 | `citation::10.1145/3293882.3330566` | ASFault forward chain to the SBST competition protocol. Source: Automatically Testing Self-Driving Cars with Search-Based Procedural Content Generation. |
+| AGRL0040 | `citation::10.1145/3680468` | RIGAA comparison chain to WOGAN. Source: Reinforcement Learning Informed Evolutionary Search for Autonomous Systems Testing. |
+| AGRL0041 | `citation::10.1145/3293882.3330566` | ASFault forward citation to SDC-Scissor test selection. Source: Automatically Testing Self-Driving Cars with Search-Based Procedural Content Generation. |
+| AGRL0042 | `citation::10.1145/3293882.3330566` | ASFault forward chain to generated-test quality metrics and oracles. Source: Automatically Testing Self-Driving Cars with Search-Based Procedural Content Generation. |
+| AGRL0043 | `citation::10.1109/edcc.2016.14` | Backward citation from Sotiropoulos et al. 2016 to Arnold and Alexander 2013. Source: Virtual Worlds for Testing Robot Navigation: A Study on the Difficulty Level. |
 
 ## Citation-chain expansion
 
@@ -224,7 +289,7 @@ These terms identify materially different roles. In particular, `scenario genera
 
 ## Integration-conflict note for Task 5
 
-Per the reviewer-supplied cross-stream summary, three independent observations disagree with the simulator stream and must be preserved as integration conflicts: CarRacing (AGRL0013), OpenDRIVE (AGRL0016), and CommonRoad (AGRL0019). For OpenDRIVE specifically, AGRL0016 records the normative ASAM OpenDRIVE 1.9.0 release dated 19 May 2026, while the independent simulator stream records OpenDRIVE 1.8.1; Task 5 must preserve both versioned observations. This worker did not read or alter the other stream. Task 5 should reconcile the conflicting generator, serialization, and benchmark interpretations explicitly rather than silently preferring either stream.
+Per the reviewer-supplied cross-stream summary, four independent observations disagree with the simulator or blind streams and must be preserved as integration conflicts: CarRacing (AGRL0013), OpenDRIVE (AGRL0016), CommonRoad (AGRL0019), and WOGAN (AGRL0040 versus blind BG-022). For OpenDRIVE specifically, AGRL0016 records the normative ASAM OpenDRIVE 1.9.0 release dated 19 May 2026, while the independent simulator stream records OpenDRIVE 1.8.1; Task 5 must preserve both versioned observations. For WOGAN, AGRL0040 and BG-022 resolve to DOI `10.1145/3526072.3527522`: the blind stream treats it as road generation, while aware full-text screening excludes it because the original method generates generic CPS test vectors and no course geometry. Task 5 must preserve both WOGAN observations. This worker did not read or alter the other streams. Task 5 should reconcile the conflicting generator, serialization, and benchmark interpretations explicitly rather than silently preferring one stream.
 
 ## Saturation arithmetic
 

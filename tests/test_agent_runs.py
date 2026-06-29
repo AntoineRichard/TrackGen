@@ -17,6 +17,7 @@ DATA_DIR = ROOT / "paper" / "data"
 AGENT_RUN_DIR = DATA_DIR / "agent_runs"
 SEARCH_LOG_PATH = DATA_DIR / "search_log.csv"
 TAXONOMY_PATH = DATA_DIR / "taxonomy.json"
+CANDIDATES_PATH = DATA_DIR / "candidates.csv"
 
 SEARCH_LOG_HEADER = (
     "search_id",
@@ -111,6 +112,7 @@ def agent_run_dir(tmp_path: Path) -> Path:
     run_dir = Path(shutil.copytree(AGENT_RUN_DIR, data_dir / "agent_runs"))
     shutil.copy2(SEARCH_LOG_PATH, data_dir / "search_log.csv")
     shutil.copy2(TAXONOMY_PATH, data_dir / "taxonomy.json")
+    shutil.copy2(CANDIDATES_PATH, data_dir / "candidates.csv")
     complete_fixture_search_log(run_dir)
     return run_dir
 
@@ -498,7 +500,13 @@ def test_all_scalar_code_and_asset_status_values_are_allowed(
     ("category", "headings"),
     [
         ("search surfaces", ("## Search surfaces",)),
-        ("queries", ("## Exact queries",)),
+        (
+            "queries",
+            (
+                "## Exact queries",
+                "### Exclusion-lead verification queries",
+            ),
+        ),
         ("boundary", ("## Inclusion and boundary judgments",)),
         ("terminology", ("## Terminology absent from the supplied brief",)),
         ("sparse", ("## Sparse and contradictory areas",)),
@@ -548,6 +556,16 @@ def test_report_heading_matching_accepts_clear_wording_variants(
         assert old in text
         text = text.replace(old, new, 1)
     path.write_text(text, encoding="utf-8")
+    log_path = agent_run_dir.parent / "search_log.csv"
+    rows = read_search_log(log_path)
+    for row in rows:
+        if row["agent"] != "aware-geometry-rl":
+            continue
+        row["notes"] = row["notes"].replace(
+            "section: Exact queries",
+            "section: Executed search-query record",
+        )
+    write_search_log(log_path, rows)
 
     validate_agent_runs(agent_run_dir)
 
@@ -969,6 +987,362 @@ def test_evidence_locator_accepts_precise_non_url_markers(
     validate_agent_runs(agent_run_dir)
 
 
+def fixture_summary(
+    rows: list[dict[str, str]],
+    slug: str,
+) -> dict[str, str]:
+    query = f"RUN-SUMMARY:paper/data/agent_runs/{slug}.md"
+    return next(row for row in rows if row["query"] == query)
+
+
+@pytest.mark.parametrize(
+    ("slug", "row_index", "value"),
+    [
+        ("aware-geometry-rl", 0, "automatic"),
+        ("aware-geometry-rl", 21, "asfault"),
+        ("aware-geometry-rl", 0, "bootstrap seed C0009"),
+        ("aware-simulation-benchmarks", 0, "CarRacing"),
+    ],
+)
+def test_aware_discovery_query_requires_explicit_provenance_grammar(
+    agent_run_dir: Path,
+    slug: str,
+    row_index: int,
+    value: str,
+):
+    mutate_row(
+        agent_run_dir,
+        slug,
+        row_index,
+        discovery_query=value,
+    )
+
+    with pytest.raises(ValueError, match="provenance grammar"):
+        validate_agent_runs(agent_run_dir)
+
+
+def test_query_provenance_requires_an_exact_report_and_log_literal(
+    agent_run_dir: Path,
+):
+    mutate_row(
+        agent_run_dir,
+        "aware-geometry-rl",
+        11,
+        discovery_query=(
+            "query::procedural generation road paths driving simulation fabricated"
+        ),
+    )
+
+    with pytest.raises(ValueError, match="query::.*exact-query"):
+        validate_agent_runs(agent_run_dir)
+
+
+def test_seed_provenance_requires_an_existing_bootstrap_candidate(
+    agent_run_dir: Path,
+):
+    candidate_path = agent_run_dir.parent / "candidates.csv"
+    header, candidates = read_csv(candidate_path)
+    candidates = [
+        row for row in candidates if row["candidate_id"] != "C0009"
+    ]
+    write_csv(candidate_path, candidates, header)
+
+    with pytest.raises(ValueError, match="seed::C0009.*bootstrap candidate"):
+        validate_agent_runs(agent_run_dir)
+
+
+def test_seed_provenance_requires_matching_report_ledger_relationship(
+    agent_run_dir: Path,
+):
+    path = agent_run_dir / "aware-geometry-rl.md"
+    text = path.read_text(encoding="utf-8")
+    old = "| AGRL0001 | " + chr(96) + "seed::C0009" + chr(96) + " |"
+    new = "| AGRL0001 | " + chr(96) + "seed::C0010" + chr(96) + " |"
+    assert old in text
+    path.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="seed::C0009.*provenance ledger"):
+        validate_agent_runs(agent_run_dir)
+
+
+@pytest.mark.parametrize("value", ["citation::", "citation::not stable"])
+def test_citation_provenance_requires_a_stable_source_identifier(
+    agent_run_dir: Path,
+    value: str,
+):
+    mutate_row(
+        agent_run_dir,
+        "aware-geometry-rl",
+        3,
+        discovery_query=value,
+    )
+
+    with pytest.raises(ValueError, match="citation::.*stable source identifier"):
+        validate_agent_runs(agent_run_dir)
+
+
+def test_citation_provenance_requires_matching_report_ledger_relationship(
+    agent_run_dir: Path,
+):
+    path = agent_run_dir / "aware-geometry-rl.md"
+    text = path.read_text(encoding="utf-8")
+    old = (
+        "| AGRL0004 | "
+        + chr(96)
+        + "citation::10.1109/tciaig.2011.2163692"
+        + chr(96)
+        + " |"
+    )
+    new = (
+        "| AGRL0004 | "
+        + chr(96)
+        + "citation::10.1145/3368089.3409730"
+        + chr(96)
+        + " |"
+    )
+    assert old in text
+    path.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+    with pytest.raises(
+        ValueError,
+        match="citation::10.*provenance ledger",
+    ):
+        validate_agent_runs(agent_run_dir)
+
+
+@pytest.mark.parametrize(
+    ("field", "old", "new", "message"),
+    [
+        ("results_screened", None, "0", "results_screened.*NR"),
+        (
+            "notes",
+            "Source: paper/data/agent_runs/blind-ground.md",
+            "Source: paper/data/agent_runs/aware-geometry-rl.md",
+            "source path",
+        ),
+        ("notes", "45 retained", "44 retained", "retained"),
+        ("notes", "0 excluded", "1 excluded", "excluded"),
+        (
+            "notes",
+            "1/45 = 2.22%",
+            "9/45 = 20.00%",
+            "saturation",
+        ),
+        (
+            "notes",
+            "0/45 = 0.00%",
+            "1/45 = 2.22%",
+            "saturation",
+        ),
+        (
+            "notes",
+            "Total screened-hit count was not captured.",
+            "Count was not captured.",
+            "screened-hit count.*not captured",
+        ),
+    ],
+)
+def test_runtime_summary_rejects_incorrect_structured_semantics(
+    agent_run_dir: Path,
+    field: str,
+    old: str | None,
+    new: str,
+    message: str,
+):
+    path = fixture_search_log_path(agent_run_dir)
+    rows = read_search_log(path)
+    summary = fixture_summary(rows, "blind-ground")
+    if field == "notes":
+        assert old is not None and old in summary["notes"]
+        summary["notes"] = summary["notes"].replace(old, new, 1)
+    else:
+        summary[field] = new
+    write_search_log(path, rows)
+
+    with pytest.raises(ValueError, match=message):
+        validate_agent_runs(agent_run_dir)
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        ("1/45 = 2.22%", "1/45 = 2.21%"),
+        ("0/45 = 0.00%", "0/45 = 0.01%"),
+    ],
+)
+def test_runtime_summary_ratios_must_appear_in_the_paired_report(
+    agent_run_dir: Path,
+    old: str,
+    new: str,
+):
+    path = agent_run_dir / "blind-ground.md"
+    text = path.read_text(encoding="utf-8")
+    assert old in text
+    path.write_text(text.replace(old, new), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="saturation.*paired report"):
+        validate_agent_runs(agent_run_dir)
+
+
+@pytest.mark.parametrize("value", [" ground", "ground "])
+def test_list_coded_singletons_reject_outer_whitespace(
+    agent_run_dir: Path,
+    value: str,
+):
+    mutate_row(agent_run_dir, "blind-ground", 0, domain=value)
+
+    with pytest.raises(ValueError, match="domain.*canonical whitespace"):
+        validate_agent_runs(agent_run_dir)
+
+
+def test_taxonomy_top_level_must_be_a_mapping(agent_run_dir: Path):
+    path = agent_run_dir.parent / "taxonomy.json"
+    path.write_text("[]\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="taxonomy.*top-level.*mapping"):
+        validate_agent_runs(agent_run_dir)
+
+
+@pytest.mark.parametrize(
+    ("target", "payload", "message"),
+    [
+        ("taxonomy.json", b"{not-json", "invalid taxonomy"),
+        ("taxonomy.json", b"\xff", "invalid taxonomy"),
+        ("agent_runs/blind-ground.csv", b"\xff", "invalid UTF-8"),
+    ],
+)
+def test_malformed_structured_inputs_raise_domain_validation_errors(
+    agent_run_dir: Path,
+    target: str,
+    payload: bytes,
+    message: str,
+):
+    path = agent_run_dir.parent / target
+    path.write_bytes(payload)
+
+    with pytest.raises(ValueError, match=message):
+        validate_agent_runs(agent_run_dir)
+
+
+def test_malformed_csv_raises_domain_validation_error(agent_run_dir: Path):
+    path = agent_run_dir / "blind-ground.csv"
+    path.write_text(
+        path.read_text(encoding="utf-8") + '"unterminated\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="CSV parse error"):
+        validate_agent_runs(agent_run_dir)
+
+
+def test_required_report_heading_inside_fence_does_not_count(
+    agent_run_dir: Path,
+):
+    path = agent_run_dir / "aware-geometry-rl.md"
+    text = path.read_text(encoding="utf-8")
+    heading = "## Inclusion and boundary judgments"
+    assert heading in text
+    text = text.replace(heading, "## Scope documentation", 1)
+    text += (
+        "\n"
+        + chr(96) * 3
+        + "text\n"
+        + heading
+        + "\n"
+        + chr(96) * 3
+        + "\n"
+    )
+    path.write_text(text, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="boundary"):
+        validate_agent_runs(agent_run_dir)
+
+
+def test_runtime_exact_query_section_must_match_report_section(
+    agent_run_dir: Path,
+):
+    path = fixture_search_log_path(agent_run_dir)
+    rows = read_search_log(path)
+    index = exact_log_indexes(rows, "blind-ground")[0]
+    notes = rows[index]["notes"]
+    rows[index]["notes"] = re.sub(
+        r"section: .*?\. Per-query",
+        "section: Wrong section. Per-query",
+        notes,
+    )
+    assert rows[index]["notes"] != notes
+    write_search_log(path, rows)
+
+    with pytest.raises(ValueError, match="section.*report"):
+        validate_agent_runs(agent_run_dir)
+
+
+def test_simulator_nonexpansion_queries_use_the_exact_report_section():
+    rows = read_search_log()
+    queries = {
+        "site:gymnasium.farama.org api env reset seed options "
+        "terminated truncated official",
+        "site:gymnasium.farama.org vectorize custom environment official",
+        "site:pettingzoo.farama.org api parallel reset seed multi agent official",
+    }
+    matches = [row for row in rows if row["query"] in queries]
+
+    assert len(matches) == 3
+    assert all(
+        "section: Exact queries by round / "
+        "Non-expansion interface-verification queries."
+        in row["notes"]
+        for row in matches
+    )
+
+
+def test_geometry_corrective_queries_have_stable_ids_and_sections():
+    rows = read_search_log()
+    expected = [
+        (
+            "S0247",
+            "autonomous vehicle fuzzing scenario generation road geometry fixed map",
+        ),
+        (
+            "S0248",
+            "safety-critical traffic scenario factory road generation fixed road",
+        ),
+        (
+            "S0249",
+            "procedural generation race track surroundings iterative level design",
+        ),
+    ]
+    actual = [
+        (row["search_id"], row["query"])
+        for row in rows
+        if row["search_id"] in {"S0247", "S0248", "S0249"}
+    ]
+
+    assert actual == expected
+    for row in rows:
+        if row["search_id"] not in {"S0247", "S0248", "S0249"}:
+            continue
+        assert row["stream"] == "aware-geometry-rl"
+        assert row["agent"] == "aware-geometry-rl"
+        assert row["results_screened"] == "NR"
+        assert row["candidates_added"] == "NR"
+        assert (
+            "section: Exact queries / Exclusion-lead verification queries."
+            in row["notes"]
+        )
+        assert "counts were not captured" in row["notes"]
+
+
+def test_data_readme_allows_corrective_queries_after_one_summary():
+    text = " ".join(
+        (DATA_DIR / "README.md").read_text(encoding="utf-8").split()
+    )
+
+    assert "exactly one" in text and "RUN-SUMMARY" in text
+    assert "corrective query rows may follow" in text
+    assert "need not be physically last" in text
+
+
 def test_production_search_log_has_final_task4_counts():
     rows = read_search_log()
     exact_counts = Counter(
@@ -977,12 +1351,12 @@ def test_production_search_log_has_final_task4_counts():
         if row["search_surface"] == "mixed-primary-web"
     )
 
-    assert len(rows) == 246
+    assert len(rows) == 249
     assert exact_counts[("blind-ground", "blind-ground")] == 88
     assert exact_counts[
         ("blind-aerial-maritime", "blind-aerial-maritime")
     ] == 64
-    assert exact_counts[("aware-geometry-rl", "aware-geometry-rl")] == 38
+    assert exact_counts[("aware-geometry-rl", "aware-geometry-rl")] == 41
     assert exact_counts[
         ("aware-simulation", "aware-simulation-benchmarks")
     ] == 47

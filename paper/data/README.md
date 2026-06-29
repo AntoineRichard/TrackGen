@@ -97,13 +97,15 @@ Task 4 exact-query rows reproduce every executed query recorded in an immutable 
 report, in report order and without deduplicating queries repeated across rounds. They
 use `search_surface=mixed-primary-web`; both count fields are `NR` because per-query hit
 and addition counts were not recorded. Their notes identify the report and round or
-section and explicitly document the missing counts.
+section exactly as recorded and explicitly document the missing counts.
 
-Each run ends with one `RUN-SUMMARY:<report-path>` row using
+Each run has exactly one `RUN-SUMMARY:<report-path>` row using
 `search_surface=documented-agent-run`. Its `results_screened` may be `NR`, while
 `candidates_added` is the integer number of rows in that run's output CSV. Summary notes
 distinguish retained and excluded rows, preserve the final saturation arithmetic, and
-state that the total screened-hit count was not captured.
+state that the total screened-hit count was not captured. Under the append-only search
+ledger, corrective query rows may follow a run's summary; the summary need not be
+physically last.
 
 The Task 4 rows document search actions and output accounting. They must not be pooled
 with bootstrap named-mention counts, and `NR` must not be converted into zero or an
@@ -123,10 +125,17 @@ rewriting the scientific content of the run artifacts.
 
 Runtime validation also reads the sibling `taxonomy.json` and `search_log.csv`. For each
 run it compares the report's exact-query multiset with exact-query log rows for the
-declared stream and agent, preserves duplicate executions and append-batch report order,
-requires exactly one summary, and checks the summary's candidate count against the CSV.
-Literal candidate queries must resolve through those ledgers; corpus-aware seed and
-citation-chain descriptors require explicit provenance in `coding_notes`.
+declared stream and agent, including the recorded report section, preserves duplicate
+executions and append-batch report order, and requires exactly one summary. Structured
+summary notes must match the report path, CSV row count, retained/excluded status counts,
+and two final saturation statements present in the paired report.
+
+Blind-run `discovery_query` values are exact report/log literals. Aware-run values use
+exactly one explicit mode: `query::<literal>`, `seed::<C####>`, or
+`citation::<source identifier>`. A `query::` literal must resolve through both exact-query
+ledgers. A `seed::` ID must name an existing bootstrap row in `candidates.csv`, and the
+paired aware report must record that row-to-seed relationship. A `citation::` value must
+use a stable nonempty identifier and match the report's citation provenance ledger.
 
 All cells other than a non-excluded row's `exclusion_reason` must use `NR` instead of a
 blank. `cite_key=NR` is permitted. Excluded rows require a specific reason. Aware-run

@@ -178,6 +178,8 @@ Candidate additions are reproducible against the query blocks above:
 - Round 5: none.
 - Round 6: BAAM-M015.
 
+**BAAM-A012 provenance audit.** The literal discovery query remains `site:arxiv.org autonomous surface vessel random obstacle scenarios reinforcement learning waypoint distribution`. The original run context records the UAV paper as cross-domain search-result spillover from that Round 4 maritime query. It was screened into the aerial candidate set during Round 4 after title/abstract review; no alternate executed aerial query was retained for this candidate, so the query was not replaced. The separate `search_log` was not edited and may need an integrator update to mirror this clarification.
+
 The stopping calculation is `new strict candidates / cumulative unique strict candidates after the round`. The final two formal refinements are consecutive and below 5%: Round 5 produced `0/31`, then Round 6 produced `1/32 = 3.125%`. A later boundary audit found dynamic ship-encounter generators but no additional static geometry, waypoint, buoy, gate, port, or waterway candidate; those unsupported or out-of-scope leads remain outside the saturation denominator.
 
 ## Boundary judgments

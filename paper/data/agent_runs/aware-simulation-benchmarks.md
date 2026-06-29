@@ -45,6 +45,8 @@ Search-engine results were used to reach these sources, but no result snippet wa
 
 These are the recorded discovery/refinement query strings. Direct URL opening, repository navigation, and in-document searching followed each query and are not additional search queries.
 
+Provenance mode: all 30 CSV `discovery_query` values use `query::<literal>` to mark executed-query provenance; the text after `query::` is the exact executed query and appears verbatim in the ledger below.
+
 ### Round 1: named-system verification
 
 ```text
@@ -131,6 +133,8 @@ Six candidate families or terminology branches were screened; admission required
 | OGC KML route/course terminology | OGC-focused query | Not added; no official course-specific execution or validation contract was located. |
 
 Round 6 therefore added one supported unique candidate from a prior total of 29: `1 / 29 = 3.45%`.
+
+### Non-expansion interface-verification queries
 
 The earlier Gymnasium/PettingZoo API checks remain useful interface evidence for existing rows, but they are explicitly not counted as an expansion or saturation round. Their exact non-expansion queries were:
 

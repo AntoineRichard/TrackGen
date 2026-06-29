@@ -44,6 +44,20 @@ def read_rows(path: Path) -> list[dict[str, str]]:
     with path.open(newline="") as handle:
         return list(csv.DictReader(handle))
 
+def write_sequential_search_rows(path: Path, count: int = 4) -> None:
+    rows = read_rows(path)
+    template = rows[0]
+    expanded = []
+    for number in range(1, count + 1):
+        row = dict(template)
+        row.update(
+            search_id=f"S{number:04d}",
+            query=f"fictional fixture {number}",
+        )
+        expanded.append(row)
+    write_rows(path, expanded)
+
+
 
 def blank_row(filename: str) -> dict[str, str]:
     return dict.fromkeys(HEADERS[filename], "")
@@ -276,6 +290,42 @@ def test_search_counts_require_nonnegative_integers(tmp_path, field, value):
 
     with pytest.raises(CorpusError, match=rf"{field}.*nonnegative integer"):
         validate_directory(fixture)
+
+def test_search_ids_reject_a_gap_after_deleted_s0003(tmp_path):
+    fixture = build_valid_fixture(tmp_path)
+    path = fixture / "search_log.csv"
+    write_sequential_search_rows(path)
+    rows = read_rows(path)
+    del rows[2]
+    write_rows(path, rows)
+
+    with pytest.raises(CorpusError, match="search_id.*sequential"):
+        validate_directory(fixture)
+
+
+def test_search_ids_reject_reversed_row_order(tmp_path):
+    fixture = build_valid_fixture(tmp_path)
+    path = fixture / "search_log.csv"
+    write_sequential_search_rows(path)
+    rows = read_rows(path)
+    write_rows(path, list(reversed(rows)))
+
+    with pytest.raises(CorpusError, match="search_id.*sequential"):
+        validate_directory(fixture)
+
+
+@pytest.mark.parametrize("search_id", ["S01", "S000A", "S-0001", "0001"])
+def test_search_ids_reject_malformed_values(tmp_path, search_id):
+    fixture = build_valid_fixture(tmp_path)
+    path = fixture / "search_log.csv"
+    write_sequential_search_rows(path)
+    rows = read_rows(path)
+    rows[0]["search_id"] = search_id
+    write_rows(path, rows)
+
+    with pytest.raises(CorpusError, match="search_id.*sequential"):
+        validate_directory(fixture)
+
 
 
 def test_nonbootstrap_exact_query_accepts_documented_nr_counts(tmp_path):
