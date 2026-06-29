@@ -1,0 +1,9 @@
+retired_candidate_id,surviving_candidate_id,reason,evidence
+C0105,C0003,TrackGen software placeholder and its citable system paper are one work.,https://doi.org/10.1016/j.asoc.2014.11.010
+C0117,C0097,HDMapGen project placeholder and its citable system paper are one work.,"https://doi.org/10.1109/CVPR46437.2021.00421; https://openaccess.thecvf.com/content/CVPR2021/html/Mi_HDMapGen_A_Hierarchical_Graph_Generative_Model_of_High_Definition_Maps_CVPR_2021_paper.html"
+C0174,C0017,Official CarRacing documentation duplicates the stable Gymnasium system record.,"https://gymnasium.farama.org/environments/box2d/car_racing/; https://github.com/Farama-Foundation/Gymnasium/blob/main/gymnasium/envs/box2d/car_racing.py"
+C0179,C0021,ACCEL title variant duplicates the stable paper record.,"https://proceedings.mlr.press/v162/parker-holder22a.html; https://github.com/facebookresearch/dcd"
+C0181,C0180,F1TENTH Gym is the official implementation for the stable system paper.,"https://github.com/f1tenth/f1tenth_gym; https://proceedings.mlr.press/v123/o-kelly20a.html"
+C0186,C0017,Gymnasium CarRacing generator duplicates the stable system record.,https://github.com/Farama-Foundation/Gymnasium/blob/main/gymnasium/envs/box2d/car_racing.py
+C0197,C0196,Same random-track-generator PyPI project and version.,"https://pypi.org/project/random-track-generator/1.1.0/; https://github.com/mvanlobensels/random-track-generator/tree/v1.1.0"
+C0208,C0147,VRX resources are the official implementation for the stable system paper.,"https://github.com/osrf/vrx; https://doi.org/10.23919/OCEANS40490.2019.8962724"

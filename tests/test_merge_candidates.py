@@ -9,6 +9,32 @@ from paper.scripts.merge_candidates import (
     main as merge_candidates_main,
     merge_candidate_files,
 )
+ALIAS_HEADER = (
+    "retired_candidate_id",
+    "surviving_candidate_id",
+    "reason",
+    "evidence",
+)
+
+
+def alias_row(**updates: str) -> dict[str, str]:
+    row = dict.fromkeys(ALIAS_HEADER, "")
+    row.update(updates)
+    return row
+
+
+def write_alias_rows(
+    path: Path,
+    rows: list[dict[str, str]],
+    header: tuple[str, ...] = ALIAS_HEADER,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=header)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
 from paper.scripts.validate_corpus import HEADERS
 
 
@@ -184,8 +210,10 @@ def test_merge_preserves_existing_bibliography_and_records_conflicts(
     assert conflicts[0]["record_type"] == "candidate"
     assert conflicts[0]["record_key"] == "C0008"
     assert conflicts[0]["field"] == field
-    assert conflicts[0]["value_a"] == current
-    assert conflicts[0]["value_b"] == proposed
+    assert {conflicts[0]["value_a"], conflicts[0]["value_b"]} == {
+        current,
+        proposed,
+    }
 
 
 def test_merge_deduplicates_repeated_equivalent_conflicts(tmp_path):
@@ -817,9 +845,9 @@ def test_conflict_evidence_records_all_sources_and_marks_metadata_conflict(
     assert conflicts[0]["resolution"] == ""
     assert conflicts[0]["resolver"] == ""
     assert conflicts[0]["resolution_evidence"] == (
-        f"value_a={existing_path.resolve().as_posix()}#C0001@row:2; "
-        f"value_b={agent_paths[0].resolve().as_posix()}#agent-a@row:2; "
-        f"value_b={agent_paths[1].resolve().as_posix()}#agent-b@row:2"
+        f"value_a={existing_path.resolve().as_posix()}#C0001; "
+        f"value_b={agent_paths[0].resolve().as_posix()}#agent-a; "
+        f"value_b={agent_paths[1].resolve().as_posix()}#agent-b"
     )
 
 
@@ -987,7 +1015,31 @@ def test_identity_component_collapses_carracing_alias_chain_to_c0017(tmp_path):
         ],
     )
 
-    merged, _ = merge_candidate_files(existing_path, agent_paths)
+    aliases_path = tmp_path / "aliases.csv"
+    write_alias_rows(
+        aliases_path,
+        [
+            alias_row(
+                retired_candidate_id="C0174",
+                surviving_candidate_id="C0017",
+                reason="Official documentation duplicates the system.",
+                evidence=(
+                    "https://gymnasium.farama.org/environments/box2d/"
+                    "car_racing/"
+                ),
+            ),
+            alias_row(
+                retired_candidate_id="C0186",
+                surviving_candidate_id="C0017",
+                reason="Official generator duplicates the system.",
+                evidence="https://github.com/Farama-Foundation/Gymnasium",
+            ),
+        ],
+    )
+
+    merged, _ = merge_candidate_files(
+        existing_path, agent_paths, aliases_path=aliases_path
+    )
 
     assert [row["candidate_id"] for row in merged] == ["C0017"]
     assert merged[0]["discovery_stream"] == (
@@ -1293,7 +1345,23 @@ def test_normal_write_preserves_resolved_conflict_by_stable_signature(tmp_path):
         ]
     ) == 0
 
-    assert read_conflict_rows(conflicts_path) == [reviewed]
+    rows = read_conflict_rows(conflicts_path)
+    assert len(rows) == 1
+    result = rows[0]
+    assert {
+        name: result[name]
+        for name in HEADERS["conflicts.csv"]
+        if name != "resolution_evidence"
+    } == {
+        name: reviewed[name]
+        for name in HEADERS["conflicts.csv"]
+        if name != "resolution_evidence"
+    }
+    assert set(result["resolution_evidence"].split("; ")) == {
+        "registry snapshot 2026-06-30",
+        f"value_a={existing_path.resolve().as_posix()}#C0001",
+        f"value_b={agent_paths[0].resolve().as_posix()}#agent-conflict",
+    }
 
 
 def test_new_conflict_id_is_hash_stable_when_earlier_conflict_is_added(
@@ -1375,8 +1443,8 @@ def test_component_conflict_evidence_tracks_true_value_origins_and_rows(
 
     author_conflict = next(row for row in conflicts if row["field"] == "authors")
     assert author_conflict["resolution_evidence"] == (
-        f"value_a={agent_paths[0].resolve().as_posix()}#agent-a@row:2; "
-        f"value_b={agent_paths[1].resolve().as_posix()}#agent-b@row:2"
+        f"value_a={agent_paths[0].resolve().as_posix()}#agent-a; "
+        f"value_b={agent_paths[1].resolve().as_posix()}#agent-b"
     )
     assert "candidates.csv#C0001" not in author_conflict["resolution_evidence"]
 
@@ -1541,16 +1609,12 @@ def test_incoming_reason_cannot_overwrite_reviewed_exclusion(tmp_path):
 
     assert merged[0]["screening_status"] == "excluded"
     assert merged[0]["exclusion_reason"] == "Reviewed exclusion rationale."
-    assert [
-        (row["field"], row["value_a"], row["value_b"])
-        for row in conflicts
-    ] == [
-        (
-            "exclusion_reason",
-            "Reviewed exclusion rationale.",
-            "Different agent rationale.",
-        )
-    ]
+    assert len(conflicts) == 1
+    assert conflicts[0]["field"] == "exclusion_reason"
+    assert {conflicts[0]["value_a"], conflicts[0]["value_b"]} == {
+        "Reviewed exclusion rationale.",
+        "Different agent rationale.",
+    }
 
 
 def test_multiple_exclusion_reasons_remain_unreviewed_and_conflicted(tmp_path):
@@ -2016,6 +2080,937 @@ def test_mirrored_paper_data_paths_use_portable_conflict_labels(tmp_path):
 
     author_conflict = next(row for row in conflicts if row["field"] == "authors")
     assert author_conflict["resolution_evidence"] == (
-        "value_a=paper/data/candidates.csv#C0001@row:2; "
-        "value_b=paper/data/agent_runs/agent.csv#agent-row@row:2"
+        "value_a=paper/data/agent_runs/agent.csv#agent-row; "
+        "value_b=paper/data/candidates.csv#C0001"
     )
+
+def test_alias_migration_selects_survivor_and_preserves_unaffected_ids(
+    tmp_path,
+):
+    survivor = merge_candidate_row(
+        candidate_id="C0001",
+        title="Canonical Track System",
+        discovery_stream="bootstrap",
+    )
+    retired = merge_candidate_row(
+        candidate_id="C0002",
+        title="Legacy Track Placeholder",
+        discovery_stream="legacy-catalog",
+    )
+    unaffected = merge_candidate_row(
+        candidate_id="C0005",
+        title="Unaffected Source",
+        discovery_stream="bootstrap",
+    )
+    existing_path, _ = build_merge_fixture(
+        tmp_path, [survivor, retired, unaffected]
+    )
+    aliases_path = tmp_path / "candidate_aliases.csv"
+    write_alias_rows(
+        aliases_path,
+        [
+            alias_row(
+                retired_candidate_id="C0002",
+                surviving_candidate_id="C0001",
+                reason="Legacy placeholder duplicates the citable system.",
+                evidence="https://doi.org/10.1000/canonical",
+            )
+        ],
+    )
+
+    merged, conflicts = merge_candidate_files(
+        existing_path, [], aliases_path=aliases_path
+    )
+
+    assert [row["candidate_id"] for row in merged] == ["C0001", "C0005"]
+    assert merged[0]["discovery_stream"] == "bootstrap; legacy-catalog"
+    assert merged[1] == unaffected
+    assert {row["record_key"] for row in conflicts} == {"C0001"}
+
+
+@pytest.mark.parametrize(
+    ("rows", "match"),
+    [
+        (
+            [
+                alias_row(
+                    retired_candidate_id="C1",
+                    surviving_candidate_id="C0001",
+                    reason="Invalid retired ID.",
+                    evidence="https://example.test/evidence",
+                )
+            ],
+            "retired_candidate_id.*not a stable candidate ID",
+        ),
+        (
+            [
+                alias_row(
+                    retired_candidate_id="C0002",
+                    surviving_candidate_id="C0002",
+                    reason="Self alias.",
+                    evidence="https://example.test/evidence",
+                )
+            ],
+            "cannot retire C0002 to itself",
+        ),
+        (
+            [
+                alias_row(
+                    retired_candidate_id="C0002",
+                    surviving_candidate_id="C0001",
+                    reason="First declaration.",
+                    evidence="https://example.test/first",
+                ),
+                alias_row(
+                    retired_candidate_id="C0002",
+                    surviving_candidate_id="C0001",
+                    reason="Duplicate declaration.",
+                    evidence="https://example.test/second",
+                ),
+            ],
+            "duplicate retired candidate C0002",
+        ),
+        (
+            [
+                alias_row(
+                    retired_candidate_id="C0003",
+                    surviving_candidate_id="C0002",
+                    reason="Indirect alias.",
+                    evidence="https://example.test/indirect",
+                ),
+                alias_row(
+                    retired_candidate_id="C0002",
+                    surviving_candidate_id="C0001",
+                    reason="Direct alias.",
+                    evidence="https://example.test/direct",
+                ),
+            ],
+            "aliases must be direct and acyclic",
+        ),
+        (
+            [
+                alias_row(
+                    retired_candidate_id="C0002",
+                    surviving_candidate_id="C0001",
+                    reason="",
+                    evidence="https://example.test/evidence",
+                )
+            ],
+            "reason and evidence must be nonempty",
+        ),
+        (
+            [
+                alias_row(
+                    retired_candidate_id="C0002",
+                    surviving_candidate_id="C0099",
+                    reason="Missing survivor.",
+                    evidence="https://example.test/evidence",
+                )
+            ],
+            "alias survivors are absent.*C0099",
+        ),
+    ],
+)
+def test_alias_validation_rejects_invalid_mappings(tmp_path, rows, match):
+    existing_path, _ = build_merge_fixture(
+        tmp_path,
+        [
+            merge_candidate_row(candidate_id="C0001", title="One"),
+            merge_candidate_row(candidate_id="C0002", title="Two"),
+            merge_candidate_row(candidate_id="C0003", title="Three"),
+        ],
+    )
+    aliases_path = tmp_path / "aliases.csv"
+    write_alias_rows(aliases_path, rows)
+
+    with pytest.raises(ValueError, match=match):
+        merge_candidate_files(existing_path, [], aliases_path=aliases_path)
+
+
+def test_alias_validation_requires_exact_header(tmp_path):
+    existing_path, _ = build_merge_fixture(
+        tmp_path,
+        [merge_candidate_row(candidate_id="C0001", title="One")],
+    )
+    aliases_path = tmp_path / "aliases.csv"
+    write_alias_rows(
+        aliases_path,
+        [
+            alias_row(
+                retired_candidate_id="C0002",
+                surviving_candidate_id="C0001",
+                reason="Legacy duplicate.",
+                evidence="https://example.test/evidence",
+            )
+        ],
+        header=(
+            "surviving_candidate_id",
+            "retired_candidate_id",
+            "reason",
+            "evidence",
+        ),
+    )
+
+    with pytest.raises(ValueError, match="alias columns must be exactly"):
+        merge_candidate_files(existing_path, [], aliases_path=aliases_path)
+
+
+def test_alias_component_requires_every_non_survivor_to_be_retired(tmp_path):
+    existing = [
+        merge_candidate_row(
+            candidate_id=candidate_id,
+            title=f"Track {candidate_id}",
+            doi="10.1000/shared-component",
+        )
+        for candidate_id in ("C0001", "C0002", "C0003")
+    ]
+    existing_path, _ = build_merge_fixture(tmp_path, existing)
+    aliases_path = tmp_path / "aliases.csv"
+    write_alias_rows(
+        aliases_path,
+        [
+            alias_row(
+                retired_candidate_id="C0002",
+                surviving_candidate_id="C0001",
+                reason="Declared duplicate.",
+                evidence="https://doi.org/10.1000/shared-component",
+            )
+        ],
+    )
+
+    with pytest.raises(ValueError, match="complete retirement aliases"):
+        merge_candidate_files(existing_path, [], aliases_path=aliases_path)
+
+
+def test_absent_retired_alias_reserves_future_id_and_default_sibling_is_used(
+    tmp_path,
+):
+    existing_path, agent_paths = build_merge_fixture(
+        tmp_path,
+        [merge_candidate_row(candidate_id="C0001", title="Survivor")],
+        [merge_candidate_row(candidate_id="agent-new", title="New identity")],
+    )
+    write_alias_rows(
+        tmp_path / "candidate_aliases.csv",
+        [
+            alias_row(
+                retired_candidate_id="C0100",
+                surviving_candidate_id="C0001",
+                reason="Previously migrated duplicate.",
+                evidence="https://example.test/migration",
+            )
+        ],
+    )
+
+    merged, _ = merge_candidate_files(existing_path, agent_paths)
+
+    assert [row["candidate_id"] for row in merged] == ["C0001", "C0101"]
+
+
+def test_cli_accepts_explicit_alias_path(tmp_path, capsys):
+    existing_path, _ = build_merge_fixture(
+        tmp_path,
+        [
+            merge_candidate_row(candidate_id="C0001", title="Survivor"),
+            merge_candidate_row(candidate_id="C0002", title="Retired"),
+        ],
+    )
+    aliases_path = tmp_path / "config" / "aliases.csv"
+    write_alias_rows(
+        aliases_path,
+        [
+            alias_row(
+                retired_candidate_id="C0002",
+                surviving_candidate_id="C0001",
+                reason="Explicitly retired placeholder.",
+                evidence="https://example.test/migration",
+            )
+        ],
+    )
+
+    assert merge_candidates_main(
+        [
+            "--existing",
+            str(existing_path),
+            "--aliases",
+            str(aliases_path),
+        ]
+    ) == 0
+
+    assert "merged_total=1" in capsys.readouterr().out
+
+
+def test_candidate_excluded_conflict_is_symmetric_when_excluded_is_base(
+    tmp_path,
+):
+    excluded = merge_candidate_row(
+        candidate_id="agent-excluded",
+        title="Symmetric Screening",
+        doi="10.1000/symmetric-screening",
+        discovery_stream="a-excluded",
+        screening_status="excluded",
+        exclusion_reason="No generated course geometry.",
+    )
+    candidate = merge_candidate_row(
+        candidate_id="agent-candidate",
+        title="Symmetric Screening",
+        doi="10.1000/symmetric-screening",
+        discovery_stream="z-candidate",
+        screening_status="candidate",
+        exclusion_reason="",
+    )
+    existing_path, agent_paths = build_merge_fixture(
+        tmp_path, [], [excluded], [candidate]
+    )
+
+    merged, conflicts = merge_candidate_files(existing_path, agent_paths)
+
+    assert merged[0]["screening_status"] == "excluded"
+    assert merged[0]["exclusion_reason"] == "No generated course geometry."
+    assert merged[0]["metadata_status"] == "unverified"
+    assert [
+        (row["field"], row["value_a"], row["value_b"])
+        for row in conflicts
+    ] == [("screening_status", "candidate", "excluded")]
+
+
+def test_all_excluded_component_keeps_deterministic_reason_and_conflicts_others(
+    tmp_path,
+):
+    observations = [
+        merge_candidate_row(
+            candidate_id="agent-third",
+            title="Unanimously Excluded",
+            doi="10.1000/unanimous-exclusion",
+            discovery_stream="third",
+            screening_status="excluded",
+            exclusion_reason="Third specific reason.",
+        ),
+        merge_candidate_row(
+            candidate_id="agent-first",
+            title="Unanimously Excluded",
+            doi="10.1000/unanimous-exclusion",
+            discovery_stream="first",
+            screening_status="excluded",
+            exclusion_reason="First specific reason.",
+        ),
+        merge_candidate_row(
+            candidate_id="agent-second",
+            title="Unanimously Excluded",
+            doi="10.1000/unanimous-exclusion",
+            discovery_stream="second",
+            screening_status="excluded",
+            exclusion_reason="Second specific reason.",
+        ),
+    ]
+    existing_path, agent_paths = build_merge_fixture(
+        tmp_path, [], *([row] for row in observations)
+    )
+
+    forward = merge_candidate_files(existing_path, agent_paths)
+    reverse = merge_candidate_files(existing_path, list(reversed(agent_paths)))
+    merged, conflicts = forward
+
+    assert forward == reverse
+    assert merged[0]["screening_status"] == "excluded"
+    assert merged[0]["exclusion_reason"] == "First specific reason."
+    assert merged[0]["metadata_status"] == "unverified"
+    assert [row["field"] for row in conflicts] == [
+        "exclusion_reason",
+        "exclusion_reason",
+    ]
+    assert {
+        frozenset((row["value_a"], row["value_b"])) for row in conflicts
+    } == {
+        frozenset(("First specific reason.", "Second specific reason.")),
+        frozenset(("First specific reason.", "Third specific reason.")),
+    }
+
+
+def test_generated_conflict_pair_and_id_are_orientation_independent(tmp_path):
+    def generated_conflict(
+        directory: Path, existing_authors: str, incoming_authors: str
+    ) -> dict[str, str]:
+        existing_path, agent_paths = build_merge_fixture(
+            directory,
+            [
+                merge_candidate_row(
+                    candidate_id="C0001",
+                    title="Orientation Track",
+                    authors=existing_authors,
+                    doi="10.1000/orientation",
+                )
+            ],
+            [
+                merge_candidate_row(
+                    candidate_id="agent-orientation",
+                    title="Orientation Track",
+                    authors=incoming_authors,
+                    doi="10.1000/orientation",
+                )
+            ],
+        )
+        _, conflicts = merge_candidate_files(existing_path, agent_paths)
+        return next(row for row in conflicts if row["field"] == "authors")
+
+    forward = generated_conflict(tmp_path / "forward", "Zulu", "Alpha")
+    reverse = generated_conflict(tmp_path / "reverse", "Alpha", "Zulu")
+
+    assert (forward["value_a"], forward["value_b"]) == ("Alpha", "Zulu")
+    assert (reverse["value_a"], reverse["value_b"]) == ("Alpha", "Zulu")
+    assert forward["conflict_id"] == reverse["conflict_id"]
+
+
+def test_reversed_resolved_conflict_preserves_review_and_merges_all_origins(
+    tmp_path,
+):
+    existing_path, agent_paths = build_merge_fixture(
+        tmp_path,
+        [
+            merge_candidate_row(
+                candidate_id="C0001",
+                title="Reviewed Orientation",
+                authors="Alpha Author",
+                doi="10.1000/reviewed-orientation",
+            )
+        ],
+        [
+            merge_candidate_row(
+                candidate_id="agent-zulu-a",
+                title="Reviewed Orientation",
+                authors="Zulu Author",
+                doi="10.1000/reviewed-orientation",
+            )
+        ],
+        [
+            merge_candidate_row(
+                candidate_id="agent-zulu-b",
+                title="Reviewed Orientation",
+                authors="Zulu Author",
+                doi="10.1000/reviewed-orientation",
+            )
+        ],
+    )
+    reviewed = conflict_row(
+        conflict_id="REVIEWED-ORIENTATION",
+        record_type="candidate",
+        record_key="C0001",
+        field="authors",
+        value_a="Zulu Author",
+        value_b="Alpha Author",
+        resolution="Use the authority record.",
+        resolver="metadata-reviewer",
+        resolution_evidence=(
+            "manual registry review; value_a=legacy/source#C0001"
+        ),
+    )
+    conflicts_path = tmp_path / "conflicts.csv"
+    write_conflict_rows(conflicts_path, [reviewed])
+
+    arguments = ["--existing", str(existing_path)]
+    for path in agent_paths:
+        arguments.extend(("--agent-file", str(path)))
+    arguments.append("--write")
+    assert merge_candidates_main(arguments) == 0
+
+    rows = read_conflict_rows(conflicts_path)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["conflict_id"] == "REVIEWED-ORIENTATION"
+    assert (row["value_a"], row["value_b"]) == (
+        "Zulu Author",
+        "Alpha Author",
+    )
+    assert row["resolution"] == "Use the authority record."
+    assert row["resolver"] == "metadata-reviewer"
+    evidence = set(row["resolution_evidence"].split("; "))
+    assert "manual registry review" in evidence
+    assert "value_a=legacy/source#C0001" in evidence
+    assert (
+        f"value_a={agent_paths[0].resolve().as_posix()}#agent-zulu-a"
+        in evidence
+    )
+    assert (
+        f"value_a={agent_paths[1].resolve().as_posix()}#agent-zulu-b"
+        in evidence
+    )
+    assert f"value_b={existing_path.resolve().as_posix()}#C0001" in evidence
+    assert "@row:" not in row["resolution_evidence"]
+
+
+def test_conflict_evidence_is_stable_when_agent_rows_are_reordered(tmp_path):
+    existing_path = tmp_path / "candidates.csv"
+    agent_path = tmp_path / "agent.csv"
+    write_candidate_rows(existing_path, [])
+    alpha = merge_candidate_row(
+        candidate_id="agent-alpha",
+        title="Row Stable Track",
+        authors="Alpha Author",
+        doi="10.1000/row-stability",
+    )
+    zulu = merge_candidate_row(
+        candidate_id="agent-zulu",
+        title="Row Stable Track",
+        authors="Zulu Author",
+        doi="10.1000/row-stability",
+    )
+    unrelated = merge_candidate_row(
+        candidate_id="agent-unrelated",
+        title="Unrelated Track",
+    )
+    write_candidate_rows(agent_path, [alpha, zulu, unrelated])
+
+    first = merge_candidate_files(existing_path, [agent_path])
+    write_candidate_rows(agent_path, [unrelated, zulu, alpha])
+    second = merge_candidate_files(existing_path, [agent_path])
+
+    assert first == second
+    assert "@row:" not in first[1][0]["resolution_evidence"]
+
+
+def test_normal_write_migrates_retired_conflict_keys_to_survivor(
+    tmp_path,
+):
+    shared = dict(
+        title="Aliased Stable Track",
+        authors="Stable Author",
+        doi="10.1000/aliased-stable",
+    )
+    existing_path, agent_paths = build_merge_fixture(
+        tmp_path,
+        [
+            merge_candidate_row(candidate_id="C0001", **shared),
+            merge_candidate_row(candidate_id="C0002", **shared),
+        ],
+        [merge_candidate_row(candidate_id="agent-new", title="New Track")],
+    )
+    write_alias_rows(
+        tmp_path / "candidate_aliases.csv",
+        [
+            alias_row(
+                retired_candidate_id="C0002",
+                surviving_candidate_id="C0001",
+                reason="Duplicate stable assignment.",
+                evidence="https://doi.org/10.1000/aliased-stable",
+            )
+        ],
+    )
+    conflicts_path = tmp_path / "conflicts.csv"
+    write_conflict_rows(
+        conflicts_path,
+        [
+            conflict_row(
+                conflict_id="LEGACY-C0002",
+                record_type="candidate",
+                record_key="C0002",
+                field="venue",
+                value_a="Venue A",
+                value_b="Venue B",
+                resolution="Reviewed on the retired row.",
+                resolver="reviewer",
+                resolution_evidence="authority record",
+            )
+        ],
+    )
+
+    assert merge_candidates_main(
+        [
+            "--existing",
+            str(existing_path),
+            "--agent-file",
+            str(agent_paths[0]),
+            "--write",
+        ]
+    ) == 0
+
+    migrated = next(
+        row
+        for row in read_conflict_rows(conflicts_path)
+        if row["conflict_id"] == "LEGACY-C0002"
+    )
+    assert migrated["record_key"] == "C0001"
+    assert migrated["resolution"] == "Reviewed on the retired row."
+
+
+def test_report_enumerates_every_present_record_type_and_field(
+    tmp_path, capsys
+):
+    existing_path, agent_paths = build_merge_fixture(
+        tmp_path,
+        [
+            merge_candidate_row(
+                candidate_id="C0001",
+                title="Reporting Track",
+                authors="Original Author",
+                doi="10.1000/report-types",
+            )
+        ],
+        [
+            merge_candidate_row(
+                candidate_id="agent-report",
+                title="Reporting Track",
+                authors="Incoming Author",
+                doi="10.1000/report-types",
+            )
+        ],
+    )
+    write_conflict_rows(
+        tmp_path / "conflicts.csv",
+        [
+            conflict_row(
+                conflict_id="EVIDENCE-DOMAIN",
+                record_type="evidence",
+                record_key="E0001",
+                field="domain",
+                value_a="ground",
+                value_b="mixed",
+                resolution="Use mixed.",
+                resolver="reviewer",
+                resolution_evidence="manual scope review",
+            )
+        ],
+    )
+
+    assert merge_candidates_main(
+        [
+            "--existing",
+            str(existing_path),
+            "--agent-file",
+            str(agent_paths[0]),
+            "--write",
+        ]
+    ) == 0
+
+    output = capsys.readouterr().out
+    assert "conflict_total=2" in output
+    assert "conflicts[authors]=1" in output
+    assert "conflicts_by_type[candidate][authors]=1" in output
+    assert "conflicts_by_type[evidence][domain]=1" in output
+
+
+def test_reconciliation_normalizes_legacy_row_number_origins(tmp_path):
+    existing_path, agent_paths = build_merge_fixture(
+        tmp_path,
+        [
+            merge_candidate_row(
+                candidate_id="C0001",
+                title="Legacy Origin Track",
+                authors="Alpha Author",
+                doi="10.1000/legacy-origin",
+            )
+        ],
+        [
+            merge_candidate_row(
+                candidate_id="agent-zulu",
+                title="Legacy Origin Track",
+                authors="Zulu Author",
+                doi="10.1000/legacy-origin",
+            )
+        ],
+    )
+    conflicts_path = tmp_path / "conflicts.csv"
+    write_conflict_rows(
+        conflicts_path,
+        [
+            conflict_row(
+                conflict_id="LEGACY-ORIGINS",
+                record_type="candidate",
+                record_key="C0001",
+                field="authors",
+                value_a="Alpha Author",
+                value_b="Zulu Author",
+                resolution="Use the authority form.",
+                resolver="reviewer",
+                resolution_evidence=(
+                    "authority snapshot; "
+                    f"value_a={existing_path.resolve().as_posix()}"
+                    "#C0001@row:2; "
+                    f"value_b={agent_paths[0].resolve().as_posix()}"
+                    "#agent-zulu@row:99"
+                ),
+            )
+        ],
+    )
+
+    assert merge_candidates_main(
+        [
+            "--existing",
+            str(existing_path),
+            "--agent-file",
+            str(agent_paths[0]),
+            "--write",
+        ]
+    ) == 0
+
+    rows = read_conflict_rows(conflicts_path)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["conflict_id"] == "LEGACY-ORIGINS"
+    assert row["resolution"] == "Use the authority form."
+    assert row["resolver"] == "reviewer"
+    assert set(row["resolution_evidence"].split("; ")) == {
+        "authority snapshot",
+        f"value_a={existing_path.resolve().as_posix()}#C0001",
+        f"value_b={agent_paths[0].resolve().as_posix()}#agent-zulu",
+    }
+    assert "@row:" not in row["resolution_evidence"]
+
+
+def test_committed_aliases_and_canonical_candidate_id_gaps():
+    repository = Path(__file__).resolve().parents[1]
+    aliases_path = repository / "paper" / "data" / "candidate_aliases.csv"
+    candidates_path = repository / "paper" / "data" / "candidates.csv"
+    conflicts_path = repository / "paper" / "data" / "conflicts.csv"
+
+    with aliases_path.open(encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        assert tuple(reader.fieldnames or ()) == ALIAS_HEADER
+        aliases = list(reader)
+    expected_aliases = {
+        "C0105": "C0003",
+        "C0117": "C0097",
+        "C0174": "C0017",
+        "C0179": "C0021",
+        "C0181": "C0180",
+        "C0186": "C0017",
+        "C0197": "C0196",
+        "C0208": "C0147",
+    }
+    assert {
+        row["retired_candidate_id"]: row["surviving_candidate_id"]
+        for row in aliases
+    } == expected_aliases
+    assert all(row["reason"] and row["evidence"] for row in aliases)
+
+    with candidates_path.open(encoding="utf-8", newline="") as handle:
+        candidates = list(csv.DictReader(handle))
+    by_id = {row["candidate_id"]: row for row in candidates}
+    candidate_ids = set(by_id)
+    retired_ids = set(expected_aliases)
+    expected_gaps = {"C0072", *retired_ids}
+
+    assert len(candidates) == 202
+    assert max(int(candidate_id[1:]) for candidate_id in candidate_ids) == 211
+    assert {
+        f"C{number:04d}"
+        for number in range(1, 212)
+        if f"C{number:04d}" not in candidate_ids
+    } == expected_gaps
+    assert retired_ids.isdisjoint(candidate_ids)
+    assert set(expected_aliases.values()) <= candidate_ids
+    assert by_id["C0184"]["title"] == "Formula Student Driverless Simulator v2.2.0"
+    assert by_id["C0185"]["title"] == "FSSIM: Formula Student Driverless Simulator"
+
+    with conflicts_path.open(encoding="utf-8", newline="") as handle:
+        conflicts = list(csv.DictReader(handle))
+    assert not {
+        row["record_key"]
+        for row in conflicts
+        if row["record_type"] == "candidate"
+    } & retired_ids
+    corrected_f1tenth_url = (
+        "https://proceedings.mlr.press/v123/o-kelly20a.html"
+    )
+    assert by_id["C0180"]["url"] == corrected_f1tenth_url
+    resolved_f1tenth = next(
+        row
+        for row in conflicts
+        if row["record_type"] == "candidate"
+        and row["record_key"] == "C0180"
+        and row["field"] == "url"
+        and "https://proceedings.mlr.press/v123/o2020a.html"
+        in {row["value_a"], row["value_b"]}
+    )
+    assert resolved_f1tenth["resolution"] == corrected_f1tenth_url
+    assert resolved_f1tenth["resolver"] == "entity-resolution-audit"
+    assert corrected_f1tenth_url in resolved_f1tenth["resolution_evidence"]
+    assert all("@row:" not in row["resolution_evidence"] for row in conflicts)
+
+
+
+def test_secondary_repository_evidence_does_not_bridge_distinct_primary_rows(
+    tmp_path,
+):
+    guide = merge_candidate_row(
+        candidate_id="C0207",
+        title="Virtual RobotX Competition 2022 Technical Guide",
+        url=(
+            "https://robonation.org/app/uploads/VRX2022-Technical-Guide.pdf"
+        ),
+        source_type="official competition documentation; official repository",
+        metadata_evidence="https://github.com/osrf/vrx",
+    )
+    resources = merge_candidate_row(
+        candidate_id="C0208",
+        title="Virtual RobotX Resources",
+        url="https://github.com/osrf/vrx",
+        source_type="official repository",
+        metadata_evidence="https://github.com/osrf/vrx",
+    )
+    existing_path, _ = build_merge_fixture(tmp_path, [guide, resources])
+
+    merged, conflicts = merge_candidate_files(existing_path, [])
+
+    assert [row["candidate_id"] for row in merged] == ["C0207", "C0208"]
+    assert conflicts == []
+
+
+def test_absent_retired_alias_redirects_matching_primary_evidence_to_survivor(
+    tmp_path,
+):
+    survivor = merge_candidate_row(
+        candidate_id="C0001",
+        title="System Publication",
+        url="https://proceedings.example.test/system-paper",
+        source_type="conference paper",
+        discovery_stream="publication",
+    )
+    incoming = merge_candidate_row(
+        candidate_id="agent-repository",
+        title="Official System Repository",
+        url="https://github.com/example/system",
+        source_type="official repository",
+        discovery_stream="repository",
+    )
+    existing_path, agent_paths = build_merge_fixture(
+        tmp_path, [survivor], [incoming]
+    )
+    aliases_path = tmp_path / "aliases.csv"
+    write_alias_rows(
+        aliases_path,
+        [
+            alias_row(
+                retired_candidate_id="C0002",
+                surviving_candidate_id="C0001",
+                reason="Repository implements the stable system paper.",
+                evidence=(
+                    "https://github.com/example/system; "
+                    "https://proceedings.example.test/system-paper"
+                ),
+            )
+        ],
+    )
+
+    merged, conflicts = merge_candidate_files(
+        existing_path, agent_paths, aliases_path=aliases_path
+    )
+
+    assert len(merged) == 1
+    assert merged[0]["candidate_id"] == "C0001"
+    assert merged[0]["discovery_stream"] == "publication; repository"
+    assert {row["record_key"] for row in conflicts} == {"C0001"}
+
+
+def test_retirement_repository_evidence_does_not_bridge_shared_paper_repo(
+    tmp_path,
+):
+    survivor = merge_candidate_row(
+        candidate_id="C0001",
+        title="Target System Paper",
+        url="https://proceedings.example.test/target-paper",
+        source_type="conference paper; official software",
+    )
+    unrelated = merge_candidate_row(
+        candidate_id="C0002",
+        title="Unrelated Paper",
+        url="https://arxiv.org/abs/2401.00002",
+        source_type="paper; official software",
+    )
+    target_update = merge_candidate_row(
+        candidate_id="agent-target",
+        title="Target System Paper",
+        url=(
+            "https://proceedings.example.test/target-paper; "
+            "https://github.com/example/shared-suite"
+        ),
+        source_type="conference paper; official software",
+    )
+    unrelated_update = merge_candidate_row(
+        candidate_id="agent-unrelated",
+        title="Unrelated Paper",
+        url=(
+            "https://arxiv.org/abs/2401.00002; "
+            "https://github.com/example/shared-suite"
+        ),
+        source_type="paper; official software",
+    )
+    existing_path, agent_paths = build_merge_fixture(
+        tmp_path,
+        [survivor, unrelated],
+        [target_update, unrelated_update],
+    )
+    aliases_path = tmp_path / "aliases.csv"
+    write_alias_rows(
+        aliases_path,
+        [
+            alias_row(
+                retired_candidate_id="C0003",
+                surviving_candidate_id="C0001",
+                reason="Implementation accompanies the target paper.",
+                evidence=(
+                    "https://proceedings.example.test/target-paper; "
+                    "https://github.com/example/shared-suite"
+                ),
+            )
+        ],
+    )
+
+    merged, _ = merge_candidate_files(
+        existing_path, agent_paths, aliases_path=aliases_path
+    )
+
+    assert [row["candidate_id"] for row in merged] == ["C0001", "C0002"]
+
+
+def test_dry_run_reports_retirement_identity_matches(tmp_path, capsys):
+    existing_path, agent_paths = build_merge_fixture(
+        tmp_path,
+        [
+            merge_candidate_row(
+                candidate_id="C0001",
+                title="Stable System Paper",
+                url="https://proceedings.example.test/system-paper",
+                source_type="conference paper",
+            )
+        ],
+        [
+            merge_candidate_row(
+                candidate_id="agent-repository",
+                title="Official System Repository",
+                url="https://github.com/example/system",
+                source_type="official repository",
+                discovery_stream="repository",
+            )
+        ],
+    )
+    aliases_path = tmp_path / "aliases.csv"
+    write_alias_rows(
+        aliases_path,
+        [
+            alias_row(
+                retired_candidate_id="C0002",
+                surviving_candidate_id="C0001",
+                reason="Repository implements the stable system paper.",
+                evidence=(
+                    "https://github.com/example/system; "
+                    "https://proceedings.example.test/system-paper"
+                ),
+            )
+        ],
+    )
+
+    assert merge_candidates_main(
+        [
+            "--existing",
+            str(existing_path),
+            "--aliases",
+            str(aliases_path),
+            "--agent-file",
+            str(agent_paths[0]),
+        ]
+    ) == 0
+
+    output = capsys.readouterr().out
+    assert "duplicate_total=1" in output
+    assert "identity_matches[retirement]=1" in output
+    assert "duplicate_matches[retirement][repository]=1" in output
