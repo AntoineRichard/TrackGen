@@ -403,28 +403,35 @@ def _validate_required(
             )
 
 
+def _parse_canonical_list(
+    path: Path,
+    row_number: int,
+    field: str,
+    value: str,
+) -> tuple[str, ...]:
+    if value != value.strip():
+        raise AgentRunError(
+            f"{path}:{row_number}: {field} must use canonical whitespace"
+        )
+    if ";" in value and re.search(r";(?! )|; {2,}", value):
+        raise AgentRunError(
+            f"{path}:{row_number}: {field} has malformed semicolon spacing"
+        )
+    values = tuple(value.split("; "))
+    if any(not item or item != item.strip() for item in values):
+        raise AgentRunError(
+            f"{path}:{row_number}: {field} has a malformed list"
+        )
+    return values
+
+
 def _validate_list_fields(
     path: Path,
     row_number: int,
     row: dict[str, str],
 ) -> None:
     for field in LIST_FIELDS:
-        value = row[field]
-        if value != value.strip():
-            raise AgentRunError(
-                f"{path}:{row_number}: {field} must use canonical whitespace"
-            )
-        if ";" not in value:
-            continue
-        if re.search(r";(?! )|; {2,}", value):
-            raise AgentRunError(
-                f"{path}:{row_number}: {field} has malformed semicolon spacing"
-            )
-        values = value.split("; ")
-        if any(not item or item != item.strip() for item in values):
-            raise AgentRunError(
-                f"{path}:{row_number}: {field} has a malformed list"
-            )
+        values = _parse_canonical_list(path, row_number, field, row[field])
         if "NR" in values and len(values) != 1:
             raise AgentRunError(
                 f"{path}:{row_number}: {field}: NR must be used alone"
@@ -859,11 +866,14 @@ def _read_bootstrap_candidate_ids(path: Path) -> frozenset[str]:
     for row_number, row in enumerate(rows, start=2):
         if None in row or any(value is None for value in row.values()):
             raise AgentRunError(f"{path}:{row_number}: malformed CSV row")
-    return frozenset(
-        row["candidate_id"].strip()
-        for row in rows
-        if row["discovery_stream"].strip() == "bootstrap"
-    )
+    bootstrap_ids: set[str] = set()
+    for row_number, row in enumerate(rows, start=2):
+        streams = _parse_canonical_list(
+            path, row_number, "discovery_stream", row["discovery_stream"]
+        )
+        if "bootstrap" in streams:
+            bootstrap_ids.add(row["candidate_id"].strip())
+    return frozenset(bootstrap_ids)
 
 
 def _exact_query_action(

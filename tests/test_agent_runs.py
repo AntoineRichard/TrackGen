@@ -1051,6 +1051,52 @@ def test_seed_provenance_requires_an_existing_bootstrap_candidate(
         validate_agent_runs(agent_run_dir)
 
 
+def test_seed_provenance_accepts_merged_bootstrap_discovery_stream(
+    agent_run_dir: Path,
+):
+    candidate_path = agent_run_dir.parent / "candidates.csv"
+    header, candidates = read_csv(candidate_path)
+    for row in candidates:
+        if "bootstrap" in row["discovery_stream"].split("; "):
+            row["discovery_stream"] = "bootstrap"
+    seed = next(row for row in candidates if row["candidate_id"] == "C0009")
+    seed["discovery_stream"] = (
+        "aware-geometry-rl; bootstrap; racing-game PCG transfer"
+    )
+    write_csv(candidate_path, candidates, header)
+
+    validate_agent_runs(agent_run_dir)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "aware-geometry-rl;bootstrap",
+        "aware-geometry-rl;  bootstrap",
+        "aware-geometry-rl ; bootstrap",
+        "aware-geometry-rl; bootstrap ",
+    ],
+)
+def test_bootstrap_provenance_requires_canonical_list_spacing(
+    agent_run_dir: Path,
+    value: str,
+):
+    candidate_path = agent_run_dir.parent / "candidates.csv"
+    header, candidates = read_csv(candidate_path)
+    for row in candidates:
+        if "bootstrap" in row["discovery_stream"].split("; "):
+            row["discovery_stream"] = "bootstrap"
+    seed = next(row for row in candidates if row["candidate_id"] == "C0009")
+    seed["discovery_stream"] = value
+    write_csv(candidate_path, candidates, header)
+
+    with pytest.raises(
+        ValueError,
+        match="discovery_stream.*(whitespace|semicolon spacing|malformed list)",
+    ):
+        validate_agent_runs(agent_run_dir)
+
+
 def test_seed_provenance_requires_matching_report_ledger_relationship(
     agent_run_dir: Path,
 ):
