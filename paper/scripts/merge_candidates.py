@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import csv
 import os
 import re
@@ -40,7 +41,16 @@ PROVENANCE_FIELDS = (
 )
 IDENTITY_ORDER = {"doi": 0, "title": 1, "arxiv": 2}
 CONFLICT_FIELD_ORDER = {
-    name: index for index, name in enumerate(BIBLIOGRAPHIC_FIELDS)
+    name: index
+    for index, name in enumerate(
+        (*BIBLIOGRAPHIC_FIELDS, "screening_status", "exclusion_reason")
+    )
+}
+SCREENING_STATUS_ORDER = {
+    "candidate": 0,
+    "included": 1,
+    "boundary": 2,
+    "excluded": 3,
 }
 STABLE_CANDIDATE_PATTERN = re.compile(r"C([0-9]{4,})")
 ARXIV_ID_PATTERN = re.compile(
@@ -50,6 +60,7 @@ ARXIV_ID_PATTERN = re.compile(
 ARXIV_VERSION_PATTERN = re.compile(r"v[0-9]+$", re.IGNORECASE)
 CANDIDATE_HEADER = HEADERS["candidates.csv"]
 CONFLICT_HEADER = HEADERS["conflicts.csv"]
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 INCOMING_SORT_FIELDS = (
     *BIBLIOGRAPHIC_FIELDS,
     *PROVENANCE_FIELDS,
@@ -80,8 +91,8 @@ class PendingConflict:
     field_name: str
     current: str
     proposed: str
-    existing_source: str
-    incoming_sources: set[str] = field(default_factory=set)
+    value_a_sources: set[str] = field(default_factory=set)
+    value_b_sources: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -397,8 +408,18 @@ def _record_conflict(
     field_name: str,
     current: str,
     proposed: str,
-    incoming_source: str,
+    current_sources: set[str],
+    proposed_source: str,
 ) -> None:
+    value_a_sources = set(current_sources)
+    value_b_sources = {proposed_source}
+    if (
+        field_name == "screening_status"
+        and SCREENING_STATUS_ORDER[current]
+        > SCREENING_STATUS_ORDER[proposed]
+    ):
+        current, proposed = proposed, current
+        value_a_sources, value_b_sources = value_b_sources, value_a_sources
     signature = (
         candidate_id,
         field_name,
@@ -412,10 +433,10 @@ def _record_conflict(
             field_name=field_name,
             current=current,
             proposed=proposed,
-            existing_source=f"candidates.csv#{candidate_id}",
         ),
     )
-    pending.incoming_sources.add(incoming_source)
+    pending.value_a_sources.update(value_a_sources)
+    pending.value_b_sources.update(value_b_sources)
 
 
 def _build_conflict_rows(
@@ -433,17 +454,35 @@ def _build_conflict_rows(
         ),
     )
     rows = []
-    for number, pending in enumerate(values, start=1):
+    for pending in values:
         row = dict.fromkeys(CONFLICT_HEADER, "")
-        source_context = [f"existing={pending.existing_source}"]
-        source_context.extend(
-            f"incoming={source}"
+        source_context = [
+            f"value_a={source}"
             for source in sorted(
-                pending.incoming_sources, key=_value_sort_key
+                pending.value_a_sources, key=_value_sort_key
+            )
+        ]
+        source_context.extend(
+            f"value_b={source}"
+            for source in sorted(
+                pending.value_b_sources, key=_value_sort_key
             )
         )
+        signature_text = "\0".join(
+            (
+                "candidate",
+                pending.candidate_id,
+                pending.field_name,
+                _conflict_value(pending.field_name, pending.current),
+                _conflict_value(pending.field_name, pending.proposed),
+            )
+        )
+        conflict_id = "X" + hashlib.sha256(
+            signature_text.encode("utf-8")
+        ).hexdigest()[:12].upper()
+
         row.update(
-            conflict_id=f"X{number:04d}",
+            conflict_id=conflict_id,
             record_type="candidate",
             record_key=pending.candidate_id,
             field=pending.field_name,
@@ -468,6 +507,301 @@ def _new_record(incoming: CandidateRow, candidate_id: str) -> CandidateRow:
     return record
 
 
+@dataclass(frozen=True)
+class ComponentNode:
+    row: CandidateRow
+    source_file: str
+    source_label: str
+    local_id: str
+    row_number: int
+    existing: bool
+
+    @property
+    def source(self) -> str:
+        return (
+            f"{self.source_label}#{self.local_id or '<missing>'}"
+            f"@row:{self.row_number}"
+        )
+
+
+def _portable_path_label(path: Path) -> str:
+    resolved = path.resolve()
+    try:
+        return resolved.relative_to(REPOSITORY_ROOT).as_posix()
+    except ValueError:
+        parts = resolved.parts
+        for index in range(len(parts) - 1):
+            if parts[index : index + 2] == ("paper", "data"):
+                return Path(*parts[index:]).as_posix()
+    return resolved.as_posix()
+
+
+class UnionFind:
+    def __init__(self, size: int) -> None:
+        self.parent = list(range(size))
+        self.rank = [0] * size
+
+    def find(self, item: int) -> int:
+        parent = self.parent[item]
+        if parent != item:
+            self.parent[item] = self.find(parent)
+        return self.parent[item]
+
+    def union(self, left: int, right: int) -> None:
+        left_root = self.find(left)
+        right_root = self.find(right)
+        if left_root == right_root:
+            return
+        if self.rank[left_root] < self.rank[right_root]:
+            left_root, right_root = right_root, left_root
+        self.parent[right_root] = left_root
+        if self.rank[left_root] == self.rank[right_root]:
+            self.rank[left_root] += 1
+
+
+PAPER_SOURCE_PATTERN = re.compile(r"paper|article|preprint|survey")
+ARTIFACT_SOURCE_PATTERN = re.compile(
+    r"software|repository|package|documentation|simulator|benchmark|"
+    r"platform|standard|system|competition|artifact"
+)
+SEED_PATTERN = re.compile(r"(?<![A-Za-z0-9])seed::(C[0-9]{4,})(?![0-9])")
+URL_PATTERN = re.compile(r"https?://[^\s;]+", re.IGNORECASE)
+EXTENDED_IDENTITY_ORDER = {
+    **IDENTITY_ORDER,
+    "artifact": len(IDENTITY_ORDER),
+}
+
+
+def _strict_nonpaper_artifact(row: CandidateRow) -> bool:
+    source_type = row["source_type"].casefold()
+    return (
+        not PAPER_SOURCE_PATTERN.search(source_type)
+        and bool(ARTIFACT_SOURCE_PATTERN.search(source_type))
+    )
+
+
+def _urls_in_cell(value: str) -> tuple[str, ...]:
+    urls = []
+    for item in split_values(value):
+        match = URL_PATTERN.search(item)
+        if match:
+            urls.append(match.group(0).rstrip(".,)]"))
+    return tuple(urls)
+
+
+def _normalize_artifact_url(value: str) -> str:
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return ""
+    host = (parsed.hostname or "").casefold()
+    parts = [unquote(part) for part in parsed.path.split("/") if part]
+
+    if host == "github.com":
+        if len(parts) < 2:
+            return ""
+        owner = parts[0].casefold()
+        repository = parts[1].removesuffix(".git").casefold()
+        return f"github.com/{owner}/{repository}" if repository else ""
+
+
+    if host == "gitlab.com":
+        if len(parts) < 2:
+            return ""
+        for marker in ("-", "blob", "tree", "raw"):
+            if marker in parts[1:]:
+                parts = parts[: parts.index(marker)]
+                break
+        if len(parts) < 2:
+            return ""
+        parts[-1] = parts[-1].removesuffix(".git")
+        return "gitlab.com/" + "/".join(part.casefold() for part in parts)
+
+    if host == "pypi.org":
+        if len(parts) < 2 or parts[0].casefold() != "project":
+            return ""
+        project = re.sub(r"[-_.]+", "-", parts[1]).casefold()
+        return f"pypi.org/project/{project}" if project else ""
+
+    return ""
+
+
+def _artifact_identity_keys(row: CandidateRow) -> tuple[IdentityKey, ...]:
+    if not _strict_nonpaper_artifact(row):
+        return ()
+    urls = (*_urls_in_cell(row["url"]), *_urls_in_cell(row["metadata_evidence"]))
+    aliases = {
+        normalized
+        for url in urls
+        if (normalized := _normalize_artifact_url(url))
+    }
+    return tuple(("artifact", alias) for alias in sorted(aliases))
+
+
+def _component_identity_keys(row: CandidateRow) -> tuple[IdentityKey, ...]:
+    return (*_identity_keys(row), *_artifact_identity_keys(row))
+
+
+def _seed_targets(row: CandidateRow) -> tuple[str, ...]:
+    return tuple(sorted(set(SEED_PATTERN.findall(row["discovery_query"]))))
+
+
+def _component_node_sort_key(node: ComponentNode) -> tuple[object, ...]:
+    return _incoming_sort_key(
+        IncomingRecord(node.row, node.source_file, node.local_id)
+    )
+
+
+def _component_sort_key(nodes: list[ComponentNode]) -> tuple[object, ...]:
+    aliases = sorted(
+        {
+            (EXTENDED_IDENTITY_ORDER[kind], value)
+            for node in nodes
+            for kind, value in _component_identity_keys(node.row)
+        }
+    )
+    row_values = sorted(
+        tuple(_value_sort_key(node.row[name]) for name in INCOMING_SORT_FIELDS)
+        for node in nodes
+    )
+    return tuple(aliases), tuple(row_values)
+
+
+def _connection_type(
+    node: ComponentNode, component: list[ComponentNode]
+) -> str:
+    node_keys = set(_component_identity_keys(node.row))
+    other_keys = {
+        key
+        for other in component
+        if other is not node
+        for key in _component_identity_keys(other.row)
+    }
+    shared = sorted(
+        node_keys & other_keys,
+        key=lambda item: (EXTENDED_IDENTITY_ORDER[item[0]], item[1]),
+    )
+    if shared:
+        return shared[0][0]
+    return "unknown"
+
+
+def _merge_component_record(
+    base: CandidateRow,
+    base_source: str,
+    preserve_reviewed_status: bool,
+    incoming_nodes: list[ComponentNode],
+    conflicts: dict[ConflictSignature, PendingConflict],
+) -> CandidateRow:
+    record = dict(base)
+    origins = {
+        name: ({base_source} if record[name] else set())
+        for name in BIBLIOGRAPHIC_FIELDS
+    }
+    if not incoming_nodes:
+        return record
+
+    for name in PROVENANCE_FIELDS:
+        record[name] = _canonical_union(
+            record[name], *(node.row[name] for node in incoming_nodes)
+        )
+    for node in incoming_nodes:
+        record["metadata_evidence"] = _append_unique_values(
+            record["metadata_evidence"], node.row["metadata_evidence"]
+        )
+
+    if preserve_reviewed_status:
+        for node in incoming_nodes:
+            proposed_status = node.row["screening_status"]
+            if proposed_status != record["screening_status"]:
+                _record_conflict(
+                    conflicts,
+                    record["candidate_id"],
+                    "screening_status",
+                    record["screening_status"],
+                    proposed_status,
+                    {base_source},
+                    node.source,
+                )
+            proposed_reason = node.row["exclusion_reason"]
+            if (
+                proposed_status == "excluded"
+                and proposed_reason != record["exclusion_reason"]
+            ):
+                _record_conflict(
+                    conflicts,
+                    record["candidate_id"],
+                    "exclusion_reason",
+                    record["exclusion_reason"] or "<empty>",
+                    proposed_reason or "<empty>",
+                    {base_source},
+                    node.source,
+                )
+    else:
+        excluded_nodes = [
+            node
+            for node in incoming_nodes
+            if node.row["screening_status"] == "excluded"
+        ]
+        exclusion_reasons = sorted(
+            {node.row["exclusion_reason"] for node in excluded_nodes},
+            key=_value_sort_key,
+        )
+        if record["screening_status"] == "candidate" and excluded_nodes:
+            for node in excluded_nodes:
+                _record_conflict(
+                    conflicts,
+                    record["candidate_id"],
+                    "screening_status",
+                    "candidate",
+                    "excluded",
+                    {base_source},
+                    node.source,
+                )
+            if len(exclusion_reasons) > 1:
+                for node in excluded_nodes:
+                    _record_conflict(
+                        conflicts,
+                        record["candidate_id"],
+                        "exclusion_reason",
+                        record["exclusion_reason"] or "<empty>",
+                        node.row["exclusion_reason"],
+                        {base_source},
+                        node.source,
+                    )
+            else:
+                record["screening_status"] = "excluded"
+                record["exclusion_reason"] = exclusion_reasons[0]
+        elif excluded_nodes:
+            record["screening_status"] = "excluded"
+            record["exclusion_reason"] = exclusion_reasons[0]
+
+    for node in incoming_nodes:
+        for name in BIBLIOGRAPHIC_FIELDS:
+            current = record[name]
+            proposed = node.row[name]
+            if not proposed:
+                continue
+            if not current:
+                record[name] = proposed
+                origins[name] = {node.source}
+                continue
+            if _equivalent(name, current, proposed):
+                origins[name].add(node.source)
+                continue
+            _record_conflict(
+                conflicts,
+                record["candidate_id"],
+                name,
+                current,
+                proposed,
+                origins[name],
+                node.source,
+            )
+            record["metadata_status"] = "conflict"
+    return record
+
+
 def _merge_candidate_files(
     existing_path: Path,
     agent_paths: Sequence[Path],
@@ -484,89 +818,146 @@ def _merge_candidate_files(
             f"{existing_path}: duplicate candidate IDs {duplicate_ids}"
         )
 
-    merged = [dict(row) for row in existing]
-    lookup: dict[IdentityKey, set[int]] = {}
-    for index, row in enumerate(merged):
-        _add_to_lookup(lookup, row, index)
-
     stats = MergeStats(existing_count=len(existing))
-    incoming_rows: list[IncomingRecord] = []
+    nodes = [
+        ComponentNode(
+            row=row,
+            source_file=existing_path.name,
+            source_label=_portable_path_label(existing_path),
+            local_id=row["candidate_id"],
+            row_number=row_number,
+            existing=True,
+        )
+        for row_number, row in enumerate(existing, start=2)
+    ]
+    existing_indexes = {
+        node.local_id: index for index, node in enumerate(nodes)
+    }
+
+    incoming_nodes: list[ComponentNode] = []
     for path in sorted((Path(path) for path in agent_paths), key=str):
         source_file = path.name
         rows = _read_candidate_rows(path, existing=False)
         stats.source_files.add(source_file)
         stats.incoming_total += len(rows)
         stats.incoming_by_file[source_file] += len(rows)
-        for row in rows:
+        for row_number, row in enumerate(rows, start=2):
             streams = split_values(row["discovery_stream"]) or ["<missing>"]
             for stream in streams:
                 stats.source_streams.add(stream)
                 stats.incoming_by_stream[stream] += 1
-            incoming_rows.append(
-                IncomingRecord(row, source_file, row["candidate_id"])
+            incoming_nodes.append(
+                ComponentNode(
+                    row=row,
+                    source_file=source_file,
+                    source_label=_portable_path_label(path),
+                    local_id=row["candidate_id"],
+                    row_number=row_number,
+                    existing=False,
+                )
             )
-    incoming_rows.sort(key=_incoming_sort_key)
+    incoming_nodes.sort(key=_component_node_sort_key)
+    nodes.extend(incoming_nodes)
 
-    next_number = _next_candidate_number(merged)
-    conflict_values: dict[ConflictSignature, PendingConflict] = {}
+    union_find = UnionFind(len(nodes))
+    alias_indexes: dict[IdentityKey, int] = {}
+    for index, node in enumerate(nodes):
+        for alias in _component_identity_keys(node.row):
+            previous = alias_indexes.setdefault(alias, index)
+            union_find.union(previous, index)
 
-    for incoming_record in incoming_rows:
-        incoming = incoming_record.row
-        streams = split_values(incoming["discovery_stream"]) or ["<missing>"]
-        index, match_type = _find_match(incoming, merged, lookup)
-        if index is None:
-            record = _new_record(incoming, f"C{next_number:04d}")
-            next_number += 1
-            merged.append(record)
-            index = len(merged) - 1
-            _add_to_lookup(lookup, record, index)
-            stats.new_count += 1
-            stats.new_by_file[incoming_record.source_file] += 1
-            for stream in streams:
-                stats.new_by_stream[stream] += 1
+    for node in nodes:
+        if node.existing:
             continue
+        for target in _seed_targets(node.row):
+            if target not in existing_indexes:
+                raise MergeError(
+                    f"{node.source}: seed target {target} does not exist in "
+                    f"{existing_path}"
+                )
 
-        identity_type = match_type or "unknown"
-        stats.duplicate_count += 1
-        stats.duplicate_by_file[incoming_record.source_file] += 1
-        stats.identity_matches[identity_type] += 1
-        for stream in streams:
-            stats.duplicate_by_stream[stream] += 1
-            stats.duplicate_matches[(identity_type, stream)] += 1
+    grouped: dict[int, list[ComponentNode]] = {}
+    for index, node in enumerate(nodes):
+        grouped.setdefault(union_find.find(index), []).append(node)
 
-        record = merged[index]
-        if incoming["screening_status"] == "excluded":
-            record["screening_status"] = "excluded"
-            record["exclusion_reason"] = incoming["exclusion_reason"]
-        for name in PROVENANCE_FIELDS:
-            record[name] = _canonical_union(record[name], incoming[name])
-        record["metadata_evidence"] = _append_unique_values(
-            record["metadata_evidence"], incoming["metadata_evidence"]
+    components = list(grouped.values())
+    for component in components:
+        stable_ids = sorted(
+            (node.local_id for node in component if node.existing),
+            key=_candidate_id_sort_key,
         )
-
-        for name in BIBLIOGRAPHIC_FIELDS:
-            current = record[name]
-            proposed = incoming[name]
-            if not current and proposed:
-                record[name] = proposed
-                continue
-            if not proposed or _equivalent(name, current, proposed):
-                continue
-            _record_conflict(
-                conflict_values,
-                record["candidate_id"],
-                name,
-                current,
-                proposed,
-                incoming_record.source,
+        if len(stable_ids) > 1:
+            raise MergeError(
+                "identity component bridges multiple existing identities "
+                "(baseline collision): " + ", ".join(stable_ids)
             )
-            record["metadata_status"] = "conflict"
-        _add_to_lookup(lookup, record, index)
+
+    new_components = sorted(
+        (
+            component
+            for component in components
+            if not any(node.existing for node in component)
+        ),
+        key=_component_sort_key,
+    )
+    next_number = _next_candidate_number(existing)
+    assigned_ids = {
+        id(component): f"C{next_number + offset:04d}"
+        for offset, component in enumerate(new_components)
+    }
+
+    conflict_values: dict[ConflictSignature, PendingConflict] = {}
+    merged = []
+    for component in components:
+        existing_node = next(
+            (node for node in component if node.existing), None
+        )
+        incoming = sorted(
+            (node for node in component if not node.existing),
+            key=_component_node_sort_key,
+        )
+        if existing_node is not None:
+            record = _merge_component_record(
+                existing_node.row,
+                existing_node.source,
+                existing_node.row["screening_status"]
+                in {"included", "boundary", "excluded"},
+                incoming,
+                conflict_values,
+            )
+            duplicate_nodes = incoming
+            new_node = None
+        else:
+            new_node = incoming[0]
+            record = _new_record(new_node.row, assigned_ids[id(component)])
+            record = _merge_component_record(
+                record,
+                new_node.source,
+                False,
+                incoming[1:], conflict_values,
+            )
+            duplicate_nodes = incoming[1:]
+            stats.new_count += 1
+            stats.new_by_file[new_node.source_file] += 1
+            for stream in split_values(new_node.row["discovery_stream"]) or [
+                "<missing>"
+            ]:
+                stats.new_by_stream[stream] += 1
+
+        for node in duplicate_nodes:
+            identity_type = _connection_type(node, component)
+            stats.duplicate_count += 1
+            stats.duplicate_by_file[node.source_file] += 1
+            stats.identity_matches[identity_type] += 1
+            for stream in split_values(node.row["discovery_stream"]) or [
+                "<missing>"
+            ]:
+                stats.duplicate_by_stream[stream] += 1
+                stats.duplicate_matches[(identity_type, stream)] += 1
+        merged.append(record)
 
     conflicts = _build_conflict_rows(conflict_values)
     return sorted(merged, key=_candidate_sort_key), conflicts, stats
-
-
 def merge_candidate_files(
     existing_path: Path,
     agent_paths: list[Path],
@@ -577,29 +968,105 @@ def merge_candidate_files(
     return merged, conflicts
 
 
+def _read_conflict_rows(path: Path) -> list[CandidateRow]:
+    reader: csv.DictReader | None = None
+    try:
+        with path.open(encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle, strict=True)
+            actual = tuple(reader.fieldnames or ())
+            if actual != CONFLICT_HEADER:
+                raise MergeError(
+                    f"{path}: conflict columns must be exactly "
+                    f"{list(CONFLICT_HEADER)}; found {list(actual)}"
+                )
+            rows = []
+            for row_number, raw_row in enumerate(reader, start=2):
+                if None in raw_row or any(
+                    value is None for value in raw_row.values()
+                ):
+                    raise MergeError(f"{path}:{row_number}: malformed CSV row")
+                row = {
+                    name: (raw_row.get(name) or "").strip()
+                    for name in CONFLICT_HEADER
+                }
+                if not any(row.values()):
+                    raise MergeError(
+                        f"{path}:{row_number}: row is entirely blank"
+                    )
+                rows.append(row)
+            return rows
+    except UnicodeDecodeError as exc:
+        raise MergeError(f"{path}: invalid UTF-8: {exc}") from exc
+    except csv.Error as exc:
+        line_number = reader.line_num if reader is not None else 1
+        raise MergeError(
+            f"{path}:{line_number}: CSV parse error: {exc}"
+        ) from exc
+
+
+def _ledger_conflict_signature(row: CandidateRow) -> tuple[str, ...]:
+    field_name = row["field"]
+    return (
+        row["record_type"],
+        row["record_key"],
+        field_name,
+        _conflict_value(field_name, row["value_a"]),
+        _conflict_value(field_name, row["value_b"]),
+    )
+
+
+def _reconcile_conflict_rows(
+    generated: list[CandidateRow],
+    existing: list[CandidateRow],
+    *,
+    replace: bool = False,
+) -> list[CandidateRow]:
+    if replace:
+        return [dict(row) for row in generated]
+
+    reconciled = []
+    seen: set[tuple[str, ...]] = set()
+    for row in (*existing, *generated):
+        signature = _ledger_conflict_signature(row)
+        if signature in seen:
+            continue
+        seen.add(signature)
+        reconciled.append(dict(row))
+    return reconciled
+
+
 def _write_temporary_rows(
     path: Path, rows: list[CandidateRow], header: tuple[str, ...]
 ) -> Path:
-    with tempfile.NamedTemporaryFile(
-        mode="w",
-        encoding="utf-8",
-        newline="",
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-        dir=path.parent,
-        delete=False,
-    ) as handle:
-        writer = csv.DictWriter(
-            handle, fieldnames=header, extrasaction="ignore", lineterminator="\n"
-        )
-        writer.writeheader()
-        writer.writerows(rows)
-        handle.flush()
-        os.fsync(handle.fileno())
-        temporary_path = Path(handle.name)
-    if path.exists():
-        os.chmod(temporary_path, stat.S_IMODE(path.stat().st_mode))
-    return temporary_path
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="",
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            dir=path.parent,
+            delete=False,
+        ) as handle:
+            temporary_path = Path(handle.name)
+            writer = csv.DictWriter(
+                handle,
+                fieldnames=header,
+                extrasaction="ignore",
+                lineterminator="\n",
+            )
+            writer.writeheader()
+            writer.writerows(rows)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if path.exists():
+            os.chmod(temporary_path, stat.S_IMODE(path.stat().st_mode))
+        return temporary_path
+    except BaseException:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+        raise
 
 
 def _backup_existing_file(path: Path) -> Path | None:
@@ -623,8 +1090,10 @@ def _backup_existing_file(path: Path) -> Path | None:
 def _restore_file(path: Path, backup: Path | None) -> None:
     if backup is None:
         path.unlink(missing_ok=True)
-    else:
-        os.replace(backup, path)
+        return
+    shutil.copy2(backup, path)
+    with path.open("rb") as handle:
+        os.fsync(handle.fileno())
 
 
 def _atomic_write_outputs(
@@ -633,46 +1102,73 @@ def _atomic_write_outputs(
     conflicts_path: Path,
     conflicts: list[CandidateRow],
 ) -> None:
-    """Replace both ledgers with rollback-guaranteed cross-file atomicity.
+    """Replace paired ledgers with best-effort rollback for caught failures.
 
-    Both files are staged and backed up before replacement. If either data
-    replacement fails, both original byte streams are restored before the
-    replacement error is propagated.
+    This is not crash-atomic across two files. Both outputs are staged and
+    backed up before replacement. A caught replacement failure triggers
+    rollback; incomplete rollback retains backups and reports recovery paths.
     """
-    temporary_paths = []
+    if existing_path.resolve() == conflicts_path.resolve():
+        raise MergeError(
+            "candidate and conflict output paths must be distinct: "
+            f"{existing_path}"
+        )
+
+    staged_paths: list[Path] = []
     backups: dict[Path, Path | None] = {}
     targets = (existing_path, conflicts_path)
+    retain_backups = False
     try:
         candidate_temporary = _write_temporary_rows(
             existing_path, merged, CANDIDATE_HEADER
         )
-        temporary_paths.append(candidate_temporary)
+        staged_paths.append(candidate_temporary)
         conflict_temporary = _write_temporary_rows(
             conflicts_path, conflicts, CONFLICT_HEADER
         )
-        temporary_paths.append(conflict_temporary)
-        backups = {path: _backup_existing_file(path) for path in targets}
-        temporary_paths.extend(
-            backup for backup in backups.values() if backup is not None
-        )
+        staged_paths.append(conflict_temporary)
+
+        for path in targets:
+            backup = _backup_existing_file(path)
+            backups[path] = backup
+
         try:
             candidate_temporary.replace(existing_path)
             conflict_temporary.replace(conflicts_path)
         except OSError as replacement_error:
-            rollback_errors = []
+            rollback_errors: list[tuple[Path, OSError]] = []
             for path in targets:
                 try:
                     _restore_file(path, backups[path])
                 except OSError as rollback_error:
-                    rollback_errors.append(rollback_error)
+                    rollback_errors.append((path, rollback_error))
             if rollback_errors:
+                retain_backups = True
+                recovery_paths = [
+                    backup
+                    for path in targets
+                    if (backup := backups.get(path)) is not None
+                ]
+                recovery_text = ", ".join(
+                    str(path) for path in recovery_paths
+                ) or "<none available>"
+                rollback_text = "; ".join(
+                    f"{path}: {error}"
+                    for path, error in rollback_errors
+                )
                 raise MergeError(
-                    "pair replacement failed and rollback was incomplete"
+                    "pair replacement failed and rollback was incomplete; "
+                    f"recovery backups: {recovery_text}; "
+                    f"rollback errors: {rollback_text}"
                 ) from replacement_error
             raise
     finally:
-        for path in temporary_paths:
+        for path in staged_paths:
             path.unlink(missing_ok=True)
+        if not retain_backups:
+            for backup in backups.values():
+                if backup is not None:
+                    backup.unlink(missing_ok=True)
 
 
 def _print_report(
@@ -717,7 +1213,7 @@ def _print_report(
             f"{stats.duplicate_by_stream[stream]}"
         )
 
-    for identity_type in IDENTITY_ORDER:
+    for identity_type in EXTENDED_IDENTITY_ORDER:
         print(
             f"identity_matches[{identity_type}]="
             f"{stats.identity_matches[identity_type]}"
@@ -733,7 +1229,7 @@ def _print_report(
 
     conflict_counts = Counter(row["field"] for row in conflicts)
     print(f"conflict_total={len(conflicts)}")
-    for name in BIBLIOGRAPHIC_FIELDS:
+    for name in CONFLICT_FIELD_ORDER:
         print(f"conflicts[{name}]={conflict_counts[name]}")
 
 
@@ -742,18 +1238,44 @@ def main(argv: Sequence[str] | None = None) -> int:
         description="Deterministically merge survey candidate streams."
     )
     parser.add_argument("--existing", type=Path, required=True)
-    parser.add_argument("--agent", type=Path, action="append", default=[])
+    parser.add_argument(
+        "--agent",
+        "--agent-file",
+        dest="agent",
+        type=Path,
+        action="append",
+        default=[],
+    )
     parser.add_argument("--write", action="store_true")
+    parser.add_argument("--replace-conflicts", action="store_true")
     arguments = parser.parse_args(argv)
+    if arguments.write and not arguments.agent:
+        parser.error("--write requires at least one --agent-file")
 
     merged, conflicts, stats = _merge_candidate_files(
         arguments.existing, arguments.agent
     )
     if arguments.write:
+        conflicts_path = arguments.existing.parent / "conflicts.csv"
+        if arguments.existing.resolve() == conflicts_path.resolve():
+            raise MergeError(
+                "candidate and conflict output paths must be distinct: "
+                f"{arguments.existing}"
+            )
+        existing_conflicts = (
+            _read_conflict_rows(conflicts_path)
+            if not arguments.replace_conflicts and conflicts_path.exists()
+            else []
+        )
+        conflicts = _reconcile_conflict_rows(
+            conflicts,
+            existing_conflicts,
+            replace=arguments.replace_conflicts,
+        )
         _atomic_write_outputs(
             arguments.existing,
             merged,
-            arguments.existing.parent / "conflicts.csv",
+            conflicts_path,
             conflicts,
         )
     _print_report(
