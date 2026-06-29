@@ -1,5 +1,5 @@
 search_id,search_date,stream,agent,query,search_surface,results_screened,candidates_added,notes
-S0001,2026-06-29,bootstrap,main,docs/related-work/state-of-the-art.rst,local-corpus,96,65,Complete mention-level bootstrap inventory; repeated mentions retained and candidate identities deduplicated.
+S0001,2026-06-29,bootstrap,main,docs/related-work/state-of-the-art.rst,local-corpus,95,65,Complete mention-level bootstrap inventory; repeated mentions retained and candidate identities deduplicated.
 S0002,2026-06-29,bootstrap,main,docs/related-work/prior-art.rst,local-corpus,188,34,Complete mention-level bootstrap inventory; includes summary-section repeats and three explicit unresolved aggregate labels.
 S0003,2026-06-29,bootstrap,main,docs/generators/benchmarks.rst,local-corpus,6,0,"Reviewed internal benchmark, TrackGen, Warp, and XPBD source-bearing mentions."
 S0004,2026-06-29,bootstrap,main,docs/tutorials/gate-sequences.rst,local-corpus,15,1,"Reviewed TrackGen API, Warp, CUDA, XPBD, and uv source-bearing mentions."

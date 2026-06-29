@@ -254,7 +254,6 @@ docs/related-work/state-of-the-art.rst,Search over Splines and Control Points,Ca
 docs/related-work/state-of-the-art.rst,3D Gate and Waypoint Course Generators,TrackGen,C0063,linked,Additional visible mention at source line 172.
 docs/related-work/state-of-the-art.rst,Boundary Case: Racing-Line Optimization on Fixed Tracks,TrackGen,C0063,linked,Additional visible mention at source line 210.
 docs/related-work/state-of-the-art.rst,Open-Source Implementations and Practical Baselines,Unity,C0048,linked,Additional visible mention at source line 313.
-docs/related-work/state-of-the-art.rst,"Curve Thickness, Ropelength, and Tangent-Point/Sobolev Methods",Repulsive Curves,C0057,linked,Additional visible mention at source line 364.
 docs/related-work/state-of-the-art.rst,"Curve Thickness, Ropelength, and Tangent-Point/Sobolev Methods",PBD,C0060,linked,Additional visible mention at source line 370.
 docs/related-work/state-of-the-art.rst,"Curve Thickness, Ropelength, and Tangent-Point/Sobolev Methods",XPBD,C0061,linked,Additional visible mention at source line 370.
 docs/related-work/state-of-the-art.rst,"Curve Thickness, Ropelength, and Tangent-Point/Sobolev Methods",TrackGen,C0063,linked,Additional visible mention at source line 370.
