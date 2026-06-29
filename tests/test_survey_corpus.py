@@ -8,6 +8,7 @@ from paper.scripts.validate_corpus import (
     CorpusError,
     DEFAULT_TAXONOMY,
     HEADERS,
+    split_values,
     validate_directory,
 )
 
@@ -577,3 +578,7 @@ def test_optional_declared_citation_lists_allow_blank(tmp_path, filename):
     rewrite_rows(path, rows)
 
     validate_directory(fixture)
+
+
+def test_split_values_strips_whitespace_and_omits_empty_elements():
+    assert split_values(" alpha ; ; beta; ") == ["alpha", "beta"]

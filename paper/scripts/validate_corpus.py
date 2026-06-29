@@ -150,6 +150,10 @@ def normalize_doi(value: str) -> str:
     return value.rstrip("/")
 
 
+def split_values(value: str) -> list[str]:
+    return [item.strip() for item in value.split(';') if item.strip()]
+
+
 def split_citation_keys(
     filename: str, row_number: int, value: str
 ) -> list[str]:
