@@ -147,7 +147,7 @@ _MUTABLE_REFERENCE_VALUES = frozenset(
 )
 _LOCATOR_TOKEN = re.compile(
     r"(?:\bpages?\s+[A-Za-z0-9]|\bparagraphs?\s+[A-Za-z0-9]|"
-    r"\bpp?\.?\s*\d+|"
+    r"\bsentences?\s+[A-Za-z0-9]|\bpp?\.?\s*\d+|"
     r"\bsections?\s+[\"']?[A-Za-z0-9][^;,\s]*|"
     r"\u00a7+\s*[A-Za-z0-9]|"
     r"\b(?:tables?|figures?|fig\.?|algorithms?|chapters?|"
@@ -1298,10 +1298,9 @@ def _validate_locator(value: str, *, context: str) -> None:
     heading_clauses = [
         part.strip() for part in re.split(r"[;,>]", value) if part.strip()
     ]
-    has_stable_heading_path = (
-        len(value) >= 20
-        and len(heading_clauses) >= 2
-        and _STABLE_HEADING_LOCATOR.search(value) is not None
+    has_stable_heading_path = len(value) >= 20 and (
+        len(heading_clauses) >= 2
+        or _STABLE_HEADING_LOCATOR.search(value) is not None
     )
     if _LOCATOR_TOKEN.search(value) is None and not has_stable_heading_path:
         raise ScreeningResultError(
@@ -1343,11 +1342,28 @@ def _has_persistent_document_identifier(parsed: SplitResult) -> bool:
         re.IGNORECASE,
     ):
         return True
+    if host == "cgl.ethz.ch" and re.search(
+        r"/(?:19|20)[0-9]{2}/.+\.pdf$", path, re.IGNORECASE
+    ):
+        return True
+    if host == "cogprints.org" and re.match(
+        r"/[1-9][0-9]*/[1-9][0-9]*/.+\.pdf$", path, re.IGNORECASE
+    ):
+        return True
+    if host == "raw.githubusercontent.com" and re.match(
+        r"/mlresearch/v[1-9][0-9]*/main/assets/.+\.pdf$",
+        path,
+        re.IGNORECASE,
+    ):
+        return True
     return False
 
 
 def _validate_version_pinned_archive_url(
-    value: str, *, context: str
+    value: str,
+    *,
+    context: str,
+    content_hash_pinned: bool = False,
 ) -> str:
     canonical = _canonical_http_url(
         value,
@@ -1370,10 +1386,11 @@ def _validate_version_pinned_archive_url(
         raise ScreeningResultError(
             f"{context}: evidence_archive_url uses a mutable version value"
         )
+    persistent_document = _has_persistent_document_identifier(parsed)
     path_segments = {
         segment.casefold() for segment in parsed.path.split("/") if segment
     }
-    if path_segments & _MUTABLE_REFERENCE_VALUES:
+    if path_segments & _MUTABLE_REFERENCE_VALUES and not persistent_document:
         raise ScreeningResultError(
             f"{context}: evidence_archive_url uses a mutable path reference"
         )
@@ -1382,7 +1399,8 @@ def _validate_version_pinned_archive_url(
     if (
         _VERSION_PIN_PATH.search(pin_material) is None
         and not pinned_query
-        and not _has_persistent_document_identifier(parsed)
+        and not persistent_document
+        and not content_hash_pinned
     ):
         raise ScreeningResultError(
             f"{context}: evidence_archive_url must be version-pinned"
@@ -1480,17 +1498,19 @@ def _validate_result_decision(row: Row, *, context: str) -> None:
         )
     archive_url = row["evidence_archive_url"]
     evidence_sha256 = row["evidence_sha256"]
-    archive_canonical: str | None = None
-    if archive_url != "NR":
-        archive_canonical = _validate_version_pinned_archive_url(
-            archive_url, context=context
-        )
     if (
         evidence_sha256 != "NR"
         and _LOWER_SHA256.fullmatch(evidence_sha256) is None
     ):
         raise ScreeningResultError(
             f"{context}: evidence_sha256 must be NR or lowercase 64-hex"
+        )
+    archive_canonical: str | None = None
+    if archive_url != "NR":
+        archive_canonical = _validate_version_pinned_archive_url(
+            archive_url,
+            context=context,
+            content_hash_pinned=evidence_sha256 != "NR",
         )
     if (
         status in {"included", "boundary"}
@@ -1520,6 +1540,7 @@ def _validate_result_decision(row: Row, *, context: str) -> None:
         limitation_terms = (
             "abstract",
             "access",
+            "attempt",
             "exhausted",
             "full text",
             "limitation",

@@ -2013,6 +2013,12 @@ def test_cli_seals_phase_and_calibration_decision(
         "https://mediatum.ub.tum.de/1379638",
         "https://digitalcollection.zhaw.ch/bitstreams/c06a4f2a-a833-4e82-8880-c4159addb4d4/download",
         "https://www.indyautonomouschallenge.com/s/2022-ACTMS-Rules-v100.pdf",
+        "https://cgl.ethz.ch/Downloads/Publications/Papers/2001/p_Par01.pdf",
+        "http://cogprints.org/5573/1/Togelius2007Towards.pdf",
+        (
+            "https://raw.githubusercontent.com/mlresearch/v270/main/"
+            "assets/liang25a/liang25a.pdf"
+        ),
         "https://robonation.org/app/uploads/sites/3/2025/10/handbook.pdf",
     ],
 )
@@ -2037,6 +2043,13 @@ def test_persistent_scholarly_and_standards_identifiers_are_valid(
         "Statement; Adversarial Multi-Agent Systems",
         "OpenAlex work W4385326949, abstract_inverted_index positions 0-75",
         "paragraphs 5.2.1, 6.2.3(g), and 7.1",
+        "Crossref record message.abstract field",
+        "OpenAlex abstract sentences 2-5 describing geometric constraints",
+        "About Us, competition-history and team sections",
+        "About OpenStreetMap; The Map; Mapping; Using OpenStreetMap data",
+        "OpenDRIVE standalone mode; Run a standalone map; client.generate_opendrive_world()",
+        "SDF worlds; Defining a world; Adding models",
+        "What's New in SDFormat 1.7; Pose and Frame Semantics; Frame semantics in nested models",
     ],
 )
 def test_compound_formal_and_stable_heading_locators_are_valid(
@@ -2053,10 +2066,13 @@ def test_compound_formal_and_stable_heading_locators_are_valid(
     [
         ("sha-only", False),
         ("archive-only-official", False),
+        ("sha-pinned-retrieval-url", False),
         ("missing-official", True),
         ("mutable-version", True),
+        ("mutable-version-with-sha", True),
         ("abstract-insufficient", False),
         ("abstract-direct-exclusion", False),
+        ("abstract-attempt-log", False),
         ("abstract-no-notes", True),
     ],
 )
@@ -2075,16 +2091,21 @@ def test_result_provenance_and_abstract_exclusions_follow_protocol(
     elif provenance_case == "archive-only-official":
         row["access_status"] = "official_documentation"
         row["evidence_sha256"] = "NR"
+    elif provenance_case == "sha-pinned-retrieval-url":
+        row["evidence_archive_url"] = (
+            "https://archive.example.test/unversioned/document.pdf"
+        )
     elif provenance_case == "missing-official":
         row["access_status"] = "official_documentation"
         row["evidence_archive_url"] = "NR"
         row["evidence_sha256"] = "NR"
-    elif provenance_case == "mutable-version":
+    elif provenance_case in {"mutable-version", "mutable-version-with-sha"}:
         row["access_status"] = "official_documentation"
         row["evidence_archive_url"] = (
             "https://archive.example.test/item?version=latest"
         )
-        row["evidence_sha256"] = "NR"
+        if provenance_case == "mutable-version":
+            row["evidence_sha256"] = "NR"
     else:
         row["access_status"] = "abstract_only"
         row["screening_status"] = "excluded"
@@ -2095,6 +2116,11 @@ def test_result_provenance_and_abstract_exclusions_follow_protocol(
             "DOI, title, repository, and official-project retrieval attempts "
             "were exhausted."
         )
+        if provenance_case == "abstract-attempt-log":
+            row["notes"] = (
+                "DOI, publisher, title search, indexes, repositories, and "
+                "author pages were attempted."
+            )
         if provenance_case == "abstract-no-notes":
             row["notes"] = "NR"
         if provenance_case in {"abstract-insufficient", "abstract-no-notes"}:
