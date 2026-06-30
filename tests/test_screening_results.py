@@ -1998,6 +1998,50 @@ def test_cli_seals_phase_and_calibration_decision(
 
 
 @pytest.mark.parametrize(
+    "archive_url",
+    [
+        "https://doi.org/10.1016/j.scico.2024.103171",
+        "https://arxiv.org/pdf/2109.12674v3",
+        "https://proceedings.mlr.press/v123/madaan20a/madaan20a.pdf",
+        "https://openaccess.thecvf.com/content/CVPR2021/papers/Mi_HDMapGen.pdf",
+        "https://docs.un.org/en/E/ECE/TRANS/505/Rev.3/Add.156",
+        "https://eur-lex.europa.eu/legal-content/EN/TXT/PDF/?uri=CELEX:42021X0389",
+        "https://mediatum.ub.tum.de/1379638",
+        "https://digitalcollection.zhaw.ch/bitstreams/c06a4f2a-a833-4e82-8880-c4159addb4d4/download",
+        "https://robonation.org/app/uploads/sites/3/2025/10/handbook.pdf",
+    ],
+)
+def test_persistent_scholarly_and_standards_identifiers_are_valid(
+    coordinator: Path,
+    archive_url: str,
+) -> None:
+    row = _decision_for_assignment(_manifest(coordinator)[0])
+    row["evidence_archive_url"] = archive_url
+    screening_results.validate_result_decision(row, context="persistent-source")
+
+
+@pytest.mark.parametrize(
+    "locator",
+    [
+        (
+            "PDF pp. 4-5, Section V.A-C (Track Representation; "
+            "Track Encoding; Genotype to Phenotype Mapping), Algorithm 1"
+        ),
+        "Class RandomRouteAction > Description",
+        "Statement tab; Research tab, Research Topics",
+        "Statement; Adversarial Multi-Agent Systems",
+    ],
+)
+def test_compound_formal_and_stable_heading_locators_are_valid(
+    coordinator: Path,
+    locator: str,
+) -> None:
+    row = _decision_for_assignment(_manifest(coordinator)[0])
+    row["screening_locator"] = locator
+    screening_results.validate_result_decision(row, context="compound-locator")
+
+
+@pytest.mark.parametrize(
     ("provenance_case", "should_fail"),
     [
         ("sha-only", False),

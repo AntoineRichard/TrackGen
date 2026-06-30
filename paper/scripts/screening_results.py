@@ -17,7 +17,7 @@ from fractions import Fraction
 from functools import wraps
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
-from urllib.parse import parse_qsl, urlsplit, urlunsplit
+from urllib.parse import SplitResult, parse_qsl, urlsplit, urlunsplit
 
 try:
     import paper.scripts.prepare_screening_batches as screening_batches
@@ -153,6 +153,20 @@ _LOCATOR_TOKEN = re.compile(
     r"[#A-Za-z0-9][A-Za-z0-9._:~/#-]*|"
     r"\bappendi(?:x|ces)\s+[A-Za-z0-9]|"
     r"#[A-Za-z0-9][A-Za-z0-9._:~-]{2,})",
+    re.IGNORECASE,
+)
+_STABLE_HEADING_LOCATOR = re.compile(
+    r"\b(?:tab|topics?|record|fields?|description|challenge|scenarios?|"
+    r"results?\s+page|class|heading|statement)\b",
+    re.IGNORECASE,
+)
+_ARXIV_VERSIONED_PATH = re.compile(
+    r"/(?:abs|pdf)/[0-9]{4}\.[0-9]{4,5}v[1-9][0-9]*(?:\.pdf)?$",
+    re.IGNORECASE,
+)
+_UUID_PATH = re.compile(
+    r"/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-"
+    r"[0-9a-f]{12}(?:/|$)",
     re.IGNORECASE,
 )
 _STABLE_FRAGMENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:~-]{2,}")
@@ -1279,12 +1293,50 @@ def _validate_locator(value: str, *, context: str) -> None:
         raise ScreeningResultError(
             f"{context}: screening_locator must identify precise evidence"
         )
-    parts = value.split(";")
-    if any(not part.strip() or _LOCATOR_TOKEN.search(part) is None for part in parts):
+    heading_clauses = [
+        part.strip() for part in re.split(r"[;,>]", value) if part.strip()
+    ]
+    has_stable_heading_path = (
+        len(value) >= 20
+        and len(heading_clauses) >= 2
+        and _STABLE_HEADING_LOCATOR.search(value) is not None
+    )
+    if _LOCATOR_TOKEN.search(value) is None and not has_stable_heading_path:
         raise ScreeningResultError(
             f"{context}: screening_locator lacks a page, section, table, "
             "figure, algorithm, appendix, or stable anchor"
         )
+
+
+def _has_persistent_document_identifier(parsed: SplitResult) -> bool:
+    host = (parsed.hostname or "").casefold()
+    path = parsed.path
+    query = parsed.query
+    if host == "doi.org" and path.startswith("/10."):
+        return True
+    if host == "arxiv.org" and _ARXIV_VERSIONED_PATH.fullmatch(path):
+        return True
+    if host == "proceedings.mlr.press" and re.match(r"/v[1-9][0-9]*/", path):
+        return True
+    if host == "openaccess.thecvf.com" and re.match(
+        r"/content/[A-Za-z]+[0-9]{4}/.+\.pdf$", path
+    ):
+        return True
+    if host == "docs.un.org" and path.startswith("/en/"):
+        return True
+    if host == "eur-lex.europa.eu" and "CELEX:" in query.upper():
+        return True
+    if host == "mediatum.ub.tum.de" and re.fullmatch(r"/[1-9][0-9]+", path):
+        return True
+    if host == "digitalcollection.zhaw.ch" and _UUID_PATH.search(path):
+        return True
+    if host == "robonation.org" and re.search(
+        r"/20[0-9]{2}/(?:0[1-9]|1[0-2])/.+\.pdf$",
+        path,
+        re.IGNORECASE,
+    ):
+        return True
+    return False
 
 
 def _validate_version_pinned_archive_url(
@@ -1320,7 +1372,11 @@ def _validate_version_pinned_archive_url(
         )
     pinned_query = any(bool(query_value) for _, query_value in pin_pairs)
     pin_material = f"{parsed.path}#{parsed.fragment}"
-    if _VERSION_PIN_PATH.search(pin_material) is None and not pinned_query:
+    if (
+        _VERSION_PIN_PATH.search(pin_material) is None
+        and not pinned_query
+        and not _has_persistent_document_identifier(parsed)
+    ):
         raise ScreeningResultError(
             f"{context}: evidence_archive_url must be version-pinned"
         )
