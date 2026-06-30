@@ -394,6 +394,16 @@ def test_inclusion_is_source_native_and_boundary_is_survey_level_transfer() -> N
         "used to relabel that source as a generated-course contribution." in procedure
     )
 
+    clarification = _normalized(
+        _section(text, "Inclusion-boundary precedence clarification", level=3)
+    )
+    assert "source-native script, implementation, algorithm, or specification" in clarification
+    assert "satisfies include-1" in clarification
+    assert "reusable course representation" in clarification
+    assert "satisfies include-2" in clarification
+    assert "generic laboratory, project, promotional, or topic page" in clarification
+    assert "it is excluded" in clarification
+
 
 def test_decision_procedure_has_explicit_precedence_and_status_pairing() -> None:
     text = _protocol()
