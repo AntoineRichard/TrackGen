@@ -67,6 +67,15 @@ ALIAS_HEADER = (
     "reason",
     "evidence",
 )
+CORRECTION_HEADER = (
+    "candidate_id",
+    "field",
+    "old_value",
+    "new_value",
+    "reason",
+    "evidence",
+    "resolver",
+)
 INCOMING_SORT_FIELDS = (
     *BIBLIOGRAPHIC_FIELDS,
     *PROVENANCE_FIELDS,
@@ -80,6 +89,20 @@ IdentityKey = tuple[str, str]
 ConflictSignature = tuple[str, str, str, str]
 
 
+def _candidate_row_digest(row: CandidateRow) -> str:
+    digest_input = "\0".join(
+        row.get(name, "") for name in CANDIDATE_HEADER
+    )
+    return hashlib.sha256(digest_input.encode("utf-8")).hexdigest()
+
+
+def _correction_row_digest(row: dict[str, str]) -> str:
+    digest_input = "\0".join(
+        row.get(name, "") for name in CORRECTION_HEADER
+    )
+    return hashlib.sha256(digest_input.encode("utf-8")).hexdigest()
+
+
 @dataclass(frozen=True)
 class IncomingRecord:
     row: CandidateRow
@@ -88,7 +111,10 @@ class IncomingRecord:
 
     @property
     def source(self) -> str:
-        return f"{self.source_file}#{self.local_id or '<missing>'}"
+        return (
+            f"{self.source_file}#{self.local_id or '<missing>'}"
+            f"@sha256:{_candidate_row_digest(self.row)}"
+        )
 
 
 @dataclass(frozen=True)
@@ -97,6 +123,18 @@ class CandidateAlias:
     surviving_candidate_id: str
     reason: str
     evidence: str
+
+
+@dataclass(frozen=True)
+class CandidateCorrection:
+    candidate_id: str
+    field_name: str
+    old_value: str
+    new_value: str
+    reason: str
+    evidence: str
+    resolver: str
+    source: str
 
 
 @dataclass
@@ -306,6 +344,7 @@ def _read_candidate_rows(path: Path, *, existing: bool) -> list[CandidateRow]:
 def _value_sort_key(value: str) -> tuple[str, str]:
     return value.casefold(), value
 
+
 def _candidate_alias_path(
     existing_path: Path, aliases_path: Path | None
 ) -> Path | None:
@@ -316,6 +355,117 @@ def _candidate_alias_path(
         return path
     sibling = existing_path.parent / "candidate_aliases.csv"
     return sibling if sibling.exists() else None
+
+
+def _candidate_corrections_path(
+    existing_path: Path, corrections_path: Path | None
+) -> Path | None:
+    if corrections_path is not None:
+        path = Path(corrections_path)
+        if not path.exists():
+            raise MergeError(f"{path}: candidate correction file does not exist")
+        return path
+    sibling = existing_path.parent / "candidate_corrections.csv"
+    return sibling if sibling.exists() else None
+
+
+def _read_candidate_corrections(
+    path: Path | None, existing_ids: set[str]
+) -> list[CandidateCorrection]:
+    if path is None:
+        return []
+
+    reader: csv.DictReader | None = None
+    try:
+        with path.open(encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle, strict=True)
+            actual = tuple(reader.fieldnames or ())
+            if actual != CORRECTION_HEADER:
+                raise MergeError(
+                    f"{path}: correction columns must be exactly "
+                    f"{list(CORRECTION_HEADER)}; found {list(actual)}"
+                )
+            corrections = []
+            seen_targets: set[tuple[str, str]] = set()
+            for row_number, raw_row in enumerate(reader, start=2):
+                if None in raw_row or any(
+                    value is None for value in raw_row.values()
+                ):
+                    raise MergeError(f"{path}:{row_number}: malformed CSV row")
+                values = {
+                    name: (raw_row.get(name) or "").strip()
+                    for name in CORRECTION_HEADER
+                }
+                candidate_id = values["candidate_id"]
+                field_name = values["field"]
+                if not STABLE_CANDIDATE_PATTERN.fullmatch(candidate_id):
+                    raise MergeError(
+                        f"{path}:{row_number}: candidate_id {candidate_id!r} "
+                        "is not a stable candidate ID"
+                    )
+                if candidate_id not in existing_ids:
+                    raise MergeError(
+                        f"{path}:{row_number}: candidate {candidate_id} "
+                        "does not exist"
+                    )
+                if field_name not in BIBLIOGRAPHIC_FIELDS:
+                    raise MergeError(
+                        f"{path}:{row_number}: field {field_name!r} must be "
+                        "bibliographic"
+                    )
+                if _is_absent(values["old_value"]) or _is_absent(
+                    values["new_value"]
+                ):
+                    raise MergeError(
+                        f"{path}:{row_number}: old_value and new_value must "
+                        "be nonempty"
+                    )
+                if _equivalent(
+                    field_name, values["old_value"], values["new_value"]
+                ):
+                    raise MergeError(
+                        f"{path}:{row_number}: old_value and new_value must "
+                        "differ"
+                    )
+                if any(
+                    _is_absent(values[name])
+                    for name in ("reason", "evidence", "resolver")
+                ):
+                    raise MergeError(
+                        f"{path}:{row_number}: reason, evidence, and resolver "
+                        "must be nonempty"
+                    )
+                target = (candidate_id, field_name)
+                if target in seen_targets:
+                    raise MergeError(
+                        f"{path}:{row_number}: duplicate correction for "
+                        f"{candidate_id}.{field_name}"
+                    )
+                seen_targets.add(target)
+                corrections.append(
+                    CandidateCorrection(
+                        candidate_id=values["candidate_id"],
+                        field_name=values["field"],
+                        old_value=values["old_value"],
+                        new_value=values["new_value"],
+                        reason=values["reason"],
+                        evidence=values["evidence"],
+                        resolver=values["resolver"],
+                        source=(
+                            f"{_portable_path_label(path)}#"
+                            f"{candidate_id}:{field_name}"
+                            f"@sha256:{_correction_row_digest(values)}"
+                        ),
+                    )
+                )
+            return corrections
+    except UnicodeDecodeError as exc:
+        raise MergeError(f"{path}: invalid UTF-8: {exc}") from exc
+    except csv.Error as exc:
+        line_number = reader.line_num if reader is not None else 1
+        raise MergeError(
+            f"{path}:{line_number}: CSV parse error: {exc}"
+        ) from exc
 
 
 def _read_candidate_aliases(
@@ -643,6 +793,244 @@ def _build_conflict_rows(
     return rows
 
 
+def _normalized_conflict_pair(
+    field_name: str, left: str, right: str
+) -> tuple[str, str]:
+    value_a, value_b = _canonical_conflict_values(
+        field_name, left, right
+    )
+    return (
+        _conflict_value(field_name, value_a),
+        _conflict_value(field_name, value_b),
+    )
+
+
+def _apply_candidate_corrections(
+    merged: list[CandidateRow],
+    conflicts: list[CandidateRow],
+    corrections: list[CandidateCorrection],
+) -> None:
+    by_id = {row["candidate_id"]: row for row in merged}
+    for correction in sorted(
+        corrections,
+        key=lambda item: (
+            _candidate_id_sort_key(item.candidate_id),
+            CONFLICT_FIELD_ORDER.get(item.field_name, len(CONFLICT_FIELD_ORDER)),
+        ),
+    ):
+        record = by_id.get(correction.candidate_id)
+        if record is None:
+            raise MergeError(
+                f"correction target {correction.candidate_id} is absent "
+                "after candidate merge"
+            )
+        current = record[correction.field_name]
+        if not (
+            _equivalent(correction.field_name, current, correction.old_value)
+            or _equivalent(
+                correction.field_name, current, correction.new_value
+            )
+        ):
+            raise MergeError(
+                f"correction for {correction.candidate_id}."
+                f"{correction.field_name} expected old or new value; "
+                f"found {current!r}"
+            )
+        record[correction.field_name] = correction.new_value
+
+        signature = _normalized_conflict_pair(
+            correction.field_name,
+            correction.old_value,
+            correction.new_value,
+        )
+        conflict = next(
+            (
+                row
+                for row in conflicts
+                if row["record_type"] == "candidate"
+                and row["record_key"] == correction.candidate_id
+                and row["field"] == correction.field_name
+                and _normalized_conflict_pair(
+                    row["field"], row["value_a"], row["value_b"]
+                )
+                == signature
+            ),
+            None,
+        )
+        if conflict is None:
+            pending: dict[ConflictSignature, PendingConflict] = {}
+            _record_conflict(
+                pending,
+                correction.candidate_id,
+                correction.field_name,
+                correction.old_value,
+                correction.new_value,
+                {correction.source},
+                correction.source,
+            )
+            conflict = _build_conflict_rows(pending)[0]
+            conflicts.append(conflict)
+        origins, notes = _split_resolution_evidence(
+            conflict["resolution_evidence"]
+        )
+        for label in ("value_a", "value_b"):
+            origins[label].add(correction.source)
+        conflict["resolution_evidence"] = "; ".join(
+            [
+                *notes,
+                *(
+                    f"{label}={origin}"
+                    for label in ("value_a", "value_b")
+                    for origin in sorted(origins[label], key=_value_sort_key)
+                ),
+            ]
+        )
+        new_label = next(
+            label
+            for label in ("value_a", "value_b")
+            if _equivalent(
+                correction.field_name,
+                conflict[label],
+                correction.new_value,
+            )
+        )
+        new_sources = origins[new_label]
+        for historical in tuple(conflicts):
+            if (
+                historical is conflict
+                or historical["record_type"] != "candidate"
+                or historical["record_key"] != correction.candidate_id
+                or historical["field"] != correction.field_name
+                or _normalized_conflict_pair(
+                    historical["field"],
+                    historical["value_a"],
+                    historical["value_b"],
+                )
+                == signature
+            ):
+                continue
+            old_labels = [
+                label
+                for label in ("value_a", "value_b")
+                if _equivalent(
+                    correction.field_name,
+                    historical[label],
+                    correction.old_value,
+                )
+            ]
+            if len(old_labels) != 1:
+                continue
+            other_label = (
+                "value_b" if old_labels[0] == "value_a" else "value_a"
+            )
+            other_value = historical[other_label]
+            if _equivalent(
+                correction.field_name,
+                other_value,
+                correction.new_value,
+            ):
+                continue
+            historical_origins, _ = _split_resolution_evidence(
+                historical["resolution_evidence"]
+            )
+            pending = {}
+            for other_source in historical_origins[other_label]:
+                _record_conflict(
+                    pending,
+                    correction.candidate_id,
+                    correction.field_name,
+                    correction.new_value,
+                    other_value,
+                    new_sources,
+                    other_source,
+                )
+            if not pending:
+                continue
+            derived = _build_conflict_rows(pending)[0]
+            matching = next(
+                (
+                    row
+                    for row in conflicts
+                    if row["record_type"] == "candidate"
+                    and row["record_key"] == correction.candidate_id
+                    and row["field"] == correction.field_name
+                    and _normalized_conflict_pair(
+                        row["field"], row["value_a"], row["value_b"]
+                    )
+                    == _normalized_conflict_pair(
+                        derived["field"],
+                        derived["value_a"],
+                        derived["value_b"],
+                    )
+                ),
+                None,
+            )
+            if matching is None:
+                conflicts.append(derived)
+            else:
+                matching["resolution_evidence"] = _merge_resolution_evidence(
+                    matching, derived
+                )
+        conflict["resolution"] = correction.new_value
+        conflict["resolver"] = correction.resolver
+        conflict["resolution_evidence"] = _append_unique_values(
+            conflict["resolution_evidence"],
+            f"{correction.reason}={correction.evidence}",
+        )
+
+    conflicts.sort(
+        key=lambda row: (
+            _candidate_id_sort_key(row["record_key"]),
+            CONFLICT_FIELD_ORDER.get(
+                row["field"], len(CONFLICT_FIELD_ORDER)
+            ),
+            _value_sort_key(
+                _conflict_value(row["field"], row["value_b"])
+            ),
+            _value_sort_key(row["value_b"]),
+        )
+    )
+
+
+def _append_canonical_candidate_origins(
+    merged: list[CandidateRow],
+    conflicts: list[CandidateRow],
+    existing_path: Path,
+) -> None:
+    by_id = {row["candidate_id"]: row for row in merged}
+    source_label = _portable_path_label(existing_path)
+    for conflict in conflicts:
+        if conflict["record_type"] != "candidate":
+            continue
+        record = by_id.get(conflict["record_key"])
+        field_name = conflict["field"]
+        if record is None or field_name not in record:
+            continue
+        canonical_value = record[field_name] or "<empty>"
+        source = (
+            f"{source_label}#{record['candidate_id']}"
+            f"@sha256:{_candidate_row_digest(record)}"
+        )
+        origins, notes = _split_resolution_evidence(
+            conflict["resolution_evidence"]
+        )
+        for label in ("value_a", "value_b"):
+            if _conflict_value(
+                field_name, conflict[label]
+            ) == _conflict_value(field_name, canonical_value):
+                origins[label].add(source)
+        conflict["resolution_evidence"] = "; ".join(
+            [
+                *notes,
+                *(
+                    f"{label}={origin}"
+                    for label in ("value_a", "value_b")
+                    for origin in sorted(origins[label], key=_value_sort_key)
+                ),
+            ]
+        )
+
+
 def _new_record(incoming: CandidateRow, candidate_id: str) -> CandidateRow:
     record = dict(incoming)
     record["candidate_id"] = candidate_id
@@ -667,7 +1055,10 @@ class ComponentNode:
 
     @property
     def source(self) -> str:
-        return f"{self.source_label}#{self.local_id or '<missing>'}"
+        return (
+            f"{self.source_label}#{self.local_id or '<missing>'}"
+            f"@sha256:{_candidate_row_digest(self.row)}"
+        )
 
 
 def _portable_path_label(path: Path) -> str:
@@ -1075,6 +1466,7 @@ def _merge_candidate_files(
     existing_path: Path,
     agent_paths: Sequence[Path],
     aliases_path: Path | None = None,
+    corrections_path: Path | None = None,
 ) -> tuple[list[CandidateRow], list[CandidateRow], MergeStats]:
     existing = _read_candidate_rows(existing_path, existing=True)
     candidate_ids = [row["candidate_id"] for row in existing]
@@ -1089,6 +1481,10 @@ def _merge_candidate_files(
         )
     aliases = _read_candidate_aliases(
         _candidate_alias_path(existing_path, aliases_path), set(candidate_ids)
+    )
+    corrections = _read_candidate_corrections(
+        _candidate_corrections_path(existing_path, corrections_path),
+        set(candidate_ids),
     )
 
     stats = MergeStats(
@@ -1273,16 +1669,22 @@ def _merge_candidate_files(
         merged.append(record)
 
     conflicts = _build_conflict_rows(conflict_values)
+    _apply_candidate_corrections(merged, conflicts, corrections)
+    _append_canonical_candidate_origins(merged, conflicts, existing_path)
     return sorted(merged, key=_candidate_sort_key), conflicts, stats
+
+
 def merge_candidate_files(
     existing_path: Path,
     agent_paths: list[Path],
     aliases_path: Path | None = None,
+    corrections_path: Path | None = None,
 ) -> tuple[list[CandidateRow], list[CandidateRow]]:
     merged, conflicts, _ = _merge_candidate_files(
         Path(existing_path),
         [Path(path) for path in agent_paths],
         Path(aliases_path) if aliases_path is not None else None,
+        Path(corrections_path) if corrections_path is not None else None,
     )
     return merged, conflicts
 
@@ -1353,11 +1755,6 @@ def _split_resolution_evidence(
     return origins, notes
 
 
-def _is_candidate_ledger_origin(source: str) -> bool:
-    path = source.split("#", 1)[0]
-    return Path(path).name == "candidates.csv"
-
-
 def _merge_resolution_evidence(
     existing: CandidateRow, generated: CandidateRow
 ) -> str:
@@ -1378,11 +1775,11 @@ def _merge_resolution_evidence(
         }
     for label in origins:
         additions = generated_origins[label]
-        if origins[label]:
-            additions = {
+        if any("@sha256:" in source for source in additions):
+            origins[label] = {
                 source
-                for source in additions
-                if not _is_candidate_ledger_origin(source)
+                for source in origins[label]
+                if "@sha256:" in source
             }
         origins[label].update(additions)
     for note in generated_notes:
@@ -1428,10 +1825,27 @@ def _reconcile_conflict_rows(
 ) -> list[CandidateRow]:
     alias_map = aliases or {}
     if replace:
-        return [
-            _migrate_conflict_record_key(row, alias_map)
-            for row in generated
-        ]
+        prior: dict[tuple[str, ...], CandidateRow] = {}
+        for source_row in existing:
+            row = _migrate_conflict_record_key(source_row, alias_map)
+            signature = _ledger_conflict_signature(row)
+            if signature in prior:
+                prior[signature] = _merge_reconciled_conflict(
+                    prior[signature], row
+                )
+            else:
+                prior[signature] = row
+
+        replaced = []
+        for source_row in generated:
+            row = _migrate_conflict_record_key(source_row, alias_map)
+            previous = prior.get(_ledger_conflict_signature(row))
+            if previous is not None and (
+                row["resolution"] or row["resolver"]
+            ):
+                row = _merge_reconciled_conflict(row, previous)
+            replaced.append(row)
+        return replaced
 
     reconciled: list[CandidateRow] = []
     indexes: dict[tuple[str, ...], int] = {}
@@ -1691,6 +2105,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=[],
     )
     parser.add_argument("--aliases", type=Path)
+    parser.add_argument("--corrections", type=Path)
     parser.add_argument("--write", action="store_true")
     parser.add_argument("--replace-conflicts", action="store_true")
     arguments = parser.parse_args(argv)
@@ -1698,7 +2113,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("--write requires at least one --agent-file")
 
     merged, conflicts, stats = _merge_candidate_files(
-        arguments.existing, arguments.agent, arguments.aliases
+        arguments.existing,
+        arguments.agent,
+        arguments.aliases,
+        arguments.corrections,
     )
     if arguments.write:
         conflicts_path = arguments.existing.parent / "conflicts.csv"
@@ -1708,9 +2126,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f"{arguments.existing}"
             )
         existing_conflicts = (
-            _read_conflict_rows(conflicts_path)
-            if not arguments.replace_conflicts and conflicts_path.exists()
-            else []
+            _read_conflict_rows(conflicts_path) if conflicts_path.exists() else []
         )
         conflicts = _reconcile_conflict_rows(
             conflicts,

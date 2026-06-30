@@ -1,4 +1,6 @@
 import csv
+import hashlib
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -27,6 +29,35 @@ def write_alias_rows(
     path: Path,
     rows: list[dict[str, str]],
     header: tuple[str, ...] = ALIAS_HEADER,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=header)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+CORRECTION_HEADER = (
+    "candidate_id",
+    "field",
+    "old_value",
+    "new_value",
+    "reason",
+    "evidence",
+    "resolver",
+)
+
+
+def correction_row(**updates: str) -> dict[str, str]:
+    row = dict.fromkeys(CORRECTION_HEADER, "")
+    row.update(updates)
+    return row
+
+
+def write_correction_rows(
+    path: Path,
+    rows: list[dict[str, str]],
+    header: tuple[str, ...] = CORRECTION_HEADER,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as handle:
@@ -97,6 +128,19 @@ def build_merge_fixture(
         write_candidate_rows(path, rows)
         agent_paths.append(path)
     return existing_path, agent_paths
+
+
+def immutable_origin(
+    path: Path,
+    row: dict[str, str],
+    label: str | None = None,
+) -> str:
+    digest_input = "\0".join(
+        row[name] for name in HEADERS["candidates.csv"]
+    )
+    digest = hashlib.sha256(digest_input.encode("utf-8")).hexdigest()
+    source = label or path.resolve().as_posix()
+    return f"{source}#{row['candidate_id']}@sha256:{digest}"
 
 
 def test_merge_deduplicates_doi_prefixes_case_and_trailing_slash(tmp_path):
@@ -539,7 +583,7 @@ def test_merge_is_independent_of_agent_path_and_row_order(tmp_path):
     assert first_signatures == second_signatures
 
 
-def test_rerunning_merge_with_same_agent_inputs_is_idempotent(tmp_path):
+def test_rerunning_public_merge_preserves_semantics_and_origin_history(tmp_path):
     existing = merge_candidate_row(
         candidate_id="C0100",
         title="Stable Track",
@@ -565,7 +609,21 @@ def test_rerunning_merge_with_same_agent_inputs_is_idempotent(tmp_path):
     )
 
     assert second_merged == first_merged
-    assert second_conflicts == first_conflicts
+    assert [
+        {key: value for key, value in row.items() if key != "resolution_evidence"}
+        for row in second_conflicts
+    ] == [
+        {key: value for key, value in row.items() if key != "resolution_evidence"}
+        for row in first_conflicts
+    ]
+    first_evidence = set(first_conflicts[0]["resolution_evidence"].split("; "))
+    second_evidence = set(second_conflicts[0]["resolution_evidence"].split("; "))
+    historical = f"value_b={immutable_origin(existing_path, existing)}"
+    canonical = f"value_b={immutable_origin(existing_path, first_merged[0])}"
+    assert historical in first_evidence
+    assert canonical in first_evidence & second_evidence
+    assert historical not in second_evidence
+    assert all("@sha256:" in item for item in first_evidence | second_evidence)
 
 
 def test_merge_cli_dry_run_reports_identity_stream_and_conflict_counts(
@@ -844,11 +902,12 @@ def test_conflict_evidence_records_all_sources_and_marks_metadata_conflict(
     assert len(conflicts) == 1
     assert conflicts[0]["resolution"] == ""
     assert conflicts[0]["resolver"] == ""
-    assert conflicts[0]["resolution_evidence"] == (
-        f"value_a={existing_path.resolve().as_posix()}#C0001; "
-        f"value_b={agent_paths[0].resolve().as_posix()}#agent-a; "
-        f"value_b={agent_paths[1].resolve().as_posix()}#agent-b"
-    )
+    assert set(conflicts[0]["resolution_evidence"].split("; ")) == {
+        f"value_a={immutable_origin(existing_path, existing)}",
+        f"value_a={immutable_origin(existing_path, merged[0])}",
+        f"value_b={immutable_origin(agent_paths[0], incoming_a)}",
+        f"value_b={immutable_origin(agent_paths[1], incoming_b)}",
+    }
 
 
 def test_excluded_status_propagates_to_existing_stable_candidate_deterministically(
@@ -1357,10 +1416,13 @@ def test_normal_write_preserves_resolved_conflict_by_stable_signature(tmp_path):
         for name in HEADERS["conflicts.csv"]
         if name != "resolution_evidence"
     }
+    with existing_path.open(encoding="utf-8", newline="") as handle:
+        canonical = next(csv.DictReader(handle))
     assert set(result["resolution_evidence"].split("; ")) == {
         "registry snapshot 2026-06-30",
-        f"value_a={existing_path.resolve().as_posix()}#C0001",
-        f"value_b={agent_paths[0].resolve().as_posix()}#agent-conflict",
+        f"value_a={immutable_origin(existing_path, existing)}",
+        f"value_a={immutable_origin(existing_path, canonical)}",
+        f"value_b={immutable_origin(agent_paths[0], incoming)}",
     }
 
 
@@ -1439,14 +1501,14 @@ def test_component_conflict_evidence_tracks_true_value_origins_and_rows(
         tmp_path, [], [first], [second]
     )
 
-    _, conflicts = merge_candidate_files(existing_path, agent_paths)
+    merged, conflicts = merge_candidate_files(existing_path, agent_paths)
 
     author_conflict = next(row for row in conflicts if row["field"] == "authors")
-    assert author_conflict["resolution_evidence"] == (
-        f"value_a={agent_paths[0].resolve().as_posix()}#agent-a; "
-        f"value_b={agent_paths[1].resolve().as_posix()}#agent-b"
-    )
-    assert "candidates.csv#C0001" not in author_conflict["resolution_evidence"]
+    assert set(author_conflict["resolution_evidence"].split("; ")) == {
+        f"value_a={immutable_origin(agent_paths[0], first)}",
+        f"value_a={immutable_origin(existing_path, merged[0])}",
+        f"value_b={immutable_origin(agent_paths[1], second)}",
+    }
 
 
 def test_replace_conflicts_explicitly_discards_unrelated_existing_rows(tmp_path):
@@ -2053,36 +2115,31 @@ def test_mirrored_paper_data_paths_use_portable_conflict_labels(tmp_path):
     data_dir = tmp_path / "staging" / "paper" / "data"
     existing_path = data_dir / "candidates.csv"
     agent_path = data_dir / "agent_runs" / "agent.csv"
-    write_candidate_rows(
-        existing_path,
-        [
-            merge_candidate_row(
-                candidate_id="C0001",
-                title="Stable Track",
-                authors="Original Author",
-                doi="10.1000/portable-path",
-            )
-        ],
+    existing = merge_candidate_row(
+        candidate_id="C0001",
+        title="Stable Track",
+        authors="Original Author",
+        doi="10.1000/portable-path",
     )
-    write_candidate_rows(
-        agent_path,
-        [
-            merge_candidate_row(
-                candidate_id="agent-row",
-                title="Stable Track",
-                authors="Incoming Author",
-                doi="10.1000/portable-path",
-            )
-        ],
+    incoming = merge_candidate_row(
+        candidate_id="agent-row",
+        title="Stable Track",
+        authors="Incoming Author",
+        doi="10.1000/portable-path",
     )
+    write_candidate_rows(existing_path, [existing])
+    write_candidate_rows(agent_path, [incoming])
 
-    _, conflicts = merge_candidate_files(existing_path, [agent_path])
+    merged, conflicts = merge_candidate_files(existing_path, [agent_path])
 
     author_conflict = next(row for row in conflicts if row["field"] == "authors")
-    assert author_conflict["resolution_evidence"] == (
-        "value_a=paper/data/agent_runs/agent.csv#agent-row; "
-        "value_b=paper/data/candidates.csv#C0001"
-    )
+    agent_label = "paper/data/agent_runs/agent.csv"
+    candidate_label = "paper/data/candidates.csv"
+    assert set(author_conflict["resolution_evidence"].split("; ")) == {
+        f"value_a={immutable_origin(agent_path, incoming, agent_label)}",
+        f"value_b={immutable_origin(existing_path, existing, candidate_label)}",
+        f"value_b={immutable_origin(existing_path, merged[0], candidate_label)}",
+    }
 
 def test_alias_migration_selects_survivor_and_preserves_unaffected_ids(
     tmp_path,
@@ -2525,16 +2582,14 @@ def test_reversed_resolved_conflict_preserves_review_and_merges_all_origins(
     assert row["resolver"] == "metadata-reviewer"
     evidence = set(row["resolution_evidence"].split("; "))
     assert "manual registry review" in evidence
-    assert "value_a=legacy/source#C0001" in evidence
-    assert (
-        f"value_a={agent_paths[0].resolve().as_posix()}#agent-zulu-a"
-        in evidence
-    )
-    assert (
-        f"value_a={agent_paths[1].resolve().as_posix()}#agent-zulu-b"
-        in evidence
-    )
-    assert f"value_b={existing_path.resolve().as_posix()}#C0001" in evidence
+    assert "value_a=legacy/source#C0001" not in evidence
+    origins = {
+        item for item in evidence if item.startswith(("value_a=", "value_b="))
+    }
+    assert len(origins) == 4
+    assert all("@sha256:" in item for item in origins)
+    assert sum("#agent-zulu-" in item for item in origins) == 2
+    assert sum("candidates.csv#C0001" in item for item in origins) == 2
     assert "@row:" not in row["resolution_evidence"]
 
 
@@ -2565,6 +2620,11 @@ def test_conflict_evidence_is_stable_when_agent_rows_are_reordered(tmp_path):
     second = merge_candidate_files(existing_path, [agent_path])
 
     assert first == second
+    assert set(first[1][0]["resolution_evidence"].split("; ")) == {
+        f"value_a={immutable_origin(agent_path, alpha)}",
+        f"value_b={immutable_origin(agent_path, zulu)}",
+        f"value_a={immutable_origin(existing_path, first[0][0])}",
+    }
     assert "@row:" not in first[1][0]["resolution_evidence"]
 
 
@@ -2689,24 +2749,20 @@ def test_report_enumerates_every_present_record_type_and_field(
 
 
 def test_reconciliation_normalizes_legacy_row_number_origins(tmp_path):
+    existing = merge_candidate_row(
+        candidate_id="C0001",
+        title="Legacy Origin Track",
+        authors="Alpha Author",
+        doi="10.1000/legacy-origin",
+    )
+    incoming = merge_candidate_row(
+        candidate_id="agent-zulu",
+        title="Legacy Origin Track",
+        authors="Zulu Author",
+        doi="10.1000/legacy-origin",
+    )
     existing_path, agent_paths = build_merge_fixture(
-        tmp_path,
-        [
-            merge_candidate_row(
-                candidate_id="C0001",
-                title="Legacy Origin Track",
-                authors="Alpha Author",
-                doi="10.1000/legacy-origin",
-            )
-        ],
-        [
-            merge_candidate_row(
-                candidate_id="agent-zulu",
-                title="Legacy Origin Track",
-                authors="Zulu Author",
-                doi="10.1000/legacy-origin",
-            )
-        ],
+        tmp_path, [existing], [incoming]
     )
     conflicts_path = tmp_path / "conflicts.csv"
     write_conflict_rows(
@@ -2741,6 +2797,8 @@ def test_reconciliation_normalizes_legacy_row_number_origins(tmp_path):
             "--write",
         ]
     ) == 0
+    with existing_path.open(encoding="utf-8", newline="") as handle:
+        canonical = next(csv.DictReader(handle))
 
     rows = read_conflict_rows(conflicts_path)
     assert len(rows) == 1
@@ -2748,12 +2806,17 @@ def test_reconciliation_normalizes_legacy_row_number_origins(tmp_path):
     assert row["conflict_id"] == "LEGACY-ORIGINS"
     assert row["resolution"] == "Use the authority form."
     assert row["resolver"] == "reviewer"
-    assert set(row["resolution_evidence"].split("; ")) == {
+    evidence = set(row["resolution_evidence"].split("; "))
+    assert evidence == {
         "authority snapshot",
-        f"value_a={existing_path.resolve().as_posix()}#C0001",
-        f"value_b={agent_paths[0].resolve().as_posix()}#agent-zulu",
+        f"value_a={immutable_origin(existing_path, existing)}",
+        f"value_a={immutable_origin(existing_path, canonical)}",
+        f"value_b={immutable_origin(agent_paths[0], incoming)}",
     }
     assert "@row:" not in row["resolution_evidence"]
+    for item in evidence:
+        if item.startswith(("value_a=", "value_b=")):
+            assert "@sha256:" in item
 
 
 def test_committed_aliases_and_canonical_candidate_id_gaps():
@@ -3014,3 +3077,656 @@ def test_dry_run_reports_retirement_identity_matches(tmp_path, capsys):
     assert "duplicate_total=1" in output
     assert "identity_matches[retirement]=1" in output
     assert "duplicate_matches[retirement][repository]=1" in output
+
+
+def test_correction_applies_after_merge_and_resolves_conflict(tmp_path):
+    old_url = "https://example.test/old-record"
+    new_url = "https://example.test/canonical-record"
+    existing = merge_candidate_row(
+        candidate_id="C0001",
+        title="Corrected Track Paper",
+        doi="10.1000/corrected-track",
+        url=old_url,
+    )
+    incoming = merge_candidate_row(
+        candidate_id="agent-corrected",
+        title="Corrected Track Paper",
+        doi="10.1000/corrected-track",
+        url=new_url,
+    )
+    existing_path, agent_paths = build_merge_fixture(
+        tmp_path, [existing], [incoming]
+    )
+    corrections_path = tmp_path / "corrections.csv"
+    write_correction_rows(
+        corrections_path,
+        [
+            correction_row(
+                candidate_id="C0001",
+                field="url",
+                old_value=old_url,
+                new_value=new_url,
+                reason="official registry record",
+                evidence="https://example.test/evidence",
+                resolver="metadata-auditor",
+            )
+        ],
+    )
+
+    merged, conflicts = merge_candidate_files(
+        existing_path,
+        agent_paths,
+        corrections_path=corrections_path,
+    )
+
+    assert merged[0]["url"] == new_url
+    url_conflicts = [row for row in conflicts if row["field"] == "url"]
+    assert len(url_conflicts) == 1
+    conflict = url_conflicts[0]
+    assert {conflict["value_a"], conflict["value_b"]} == {
+        old_url,
+        new_url,
+    }
+    assert conflict["resolution"] == new_url
+    assert conflict["resolver"] == "metadata-auditor"
+    assert (
+        f"value_a={agent_paths[0].resolve().as_posix()}#agent-corrected"
+        in conflict["resolution_evidence"]
+        or f"value_b={agent_paths[0].resolve().as_posix()}#agent-corrected"
+        in conflict["resolution_evidence"]
+    )
+    assert (
+        f"value_a={existing_path.resolve().as_posix()}#C0001"
+        in conflict["resolution_evidence"]
+        or f"value_b={existing_path.resolve().as_posix()}#C0001"
+        in conflict["resolution_evidence"]
+    )
+    assert "official registry record" in conflict["resolution_evidence"]
+    assert "https://example.test/evidence" in conflict["resolution_evidence"]
+
+
+@pytest.mark.parametrize(
+    ("updates", "match"),
+    [
+        (
+            {"candidate_id": "C1"},
+            "candidate_id.*not a stable candidate ID",
+        ),
+        (
+            {"candidate_id": "C0099"},
+            "candidate C0099 does not exist",
+        ),
+        (
+            {"field": "screening_status"},
+            "field.*must be bibliographic",
+        ),
+        (
+            {"old_value": "NR"},
+            "old_value and new_value must be nonempty",
+        ),
+        (
+            {"new_value": ""},
+            "old_value and new_value must be nonempty",
+        ),
+        (
+            {"old_value": "same", "new_value": "same"},
+            "old_value and new_value must differ",
+        ),
+        (
+            {
+                "field": "doi",
+                "old_value": "doi:10.1000/SAME",
+                "new_value": "https://doi.org/10.1000/same/",
+            },
+            "old_value and new_value must differ",
+        ),
+        (
+            {
+                "field": "title",
+                "old_value": "Café Track: Study",
+                "new_value": "CAFE TRACK STUDY",
+            },
+            "old_value and new_value must differ",
+        ),
+        (
+            {"reason": ""},
+            "reason, evidence, and resolver must be nonempty",
+        ),
+        (
+            {"evidence": "NR"},
+            "reason, evidence, and resolver must be nonempty",
+        ),
+        (
+            {"resolver": ""},
+            "reason, evidence, and resolver must be nonempty",
+        ),
+    ],
+)
+def test_correction_validation_rejects_invalid_rows(tmp_path, updates, match):
+    existing_path, _ = build_merge_fixture(
+        tmp_path,
+        [
+            merge_candidate_row(
+                candidate_id="C0001",
+                title="Correction Target",
+                url="https://example.test/old",
+            )
+        ],
+    )
+    row = correction_row(
+        candidate_id="C0001",
+        field="url",
+        old_value="https://example.test/old",
+        new_value="https://example.test/new",
+        reason="official correction",
+        evidence="https://example.test/evidence",
+        resolver="reviewer",
+    )
+    row.update(updates)
+    corrections_path = tmp_path / "corrections.csv"
+    write_correction_rows(corrections_path, [row])
+
+    with pytest.raises(ValueError, match=match):
+        merge_candidate_files(
+            existing_path, [], corrections_path=corrections_path
+        )
+
+
+def test_correction_validation_requires_exact_header(tmp_path):
+    existing_path, _ = build_merge_fixture(
+        tmp_path,
+        [merge_candidate_row(candidate_id="C0001", title="Target")],
+    )
+    corrections_path = tmp_path / "corrections.csv"
+    row = correction_row(
+        candidate_id="C0001",
+        field="title",
+        old_value="Target",
+        new_value="Corrected Target",
+        reason="official correction",
+        evidence="https://example.test/evidence",
+        resolver="reviewer",
+    )
+    write_correction_rows(
+        corrections_path,
+        [row],
+        header=(
+            "field",
+            "candidate_id",
+            "old_value",
+            "new_value",
+            "reason",
+            "evidence",
+            "resolver",
+        ),
+    )
+
+    with pytest.raises(ValueError, match="correction columns must be exactly"):
+        merge_candidate_files(
+            existing_path, [], corrections_path=corrections_path
+        )
+
+
+def test_correction_validation_rejects_duplicate_candidate_field(tmp_path):
+    existing_path, _ = build_merge_fixture(
+        tmp_path,
+        [
+            merge_candidate_row(
+                candidate_id="C0001",
+                title="Target",
+                url="https://example.test/old",
+            )
+        ],
+    )
+    first = correction_row(
+        candidate_id="C0001",
+        field="url",
+        old_value="https://example.test/old",
+        new_value="https://example.test/new",
+        reason="first correction",
+        evidence="https://example.test/first",
+        resolver="reviewer",
+    )
+    second = dict(first, new_value="https://example.test/other")
+    corrections_path = tmp_path / "corrections.csv"
+    write_correction_rows(corrections_path, [first, second])
+
+    with pytest.raises(ValueError, match="duplicate correction.*C0001.url"):
+        merge_candidate_files(
+            existing_path, [], corrections_path=corrections_path
+        )
+
+
+def test_already_corrected_candidate_still_emits_reviewed_conflict(tmp_path):
+    old_url = "https://example.test/old"
+    new_url = "https://example.test/new"
+    existing = merge_candidate_row(
+        candidate_id="C0001",
+        title="Already Corrected",
+        doi="10.1000/already-corrected",
+        url=new_url,
+    )
+    incoming = merge_candidate_row(
+        candidate_id="agent-current",
+        title="Already Corrected",
+        doi="10.1000/already-corrected",
+        url=new_url,
+    )
+    existing_path, agent_paths = build_merge_fixture(
+        tmp_path, [existing], [incoming]
+    )
+    corrections_path = tmp_path / "corrections.csv"
+    write_correction_rows(
+        corrections_path,
+        [
+            correction_row(
+                candidate_id="C0001",
+                field="url",
+                old_value=old_url,
+                new_value=new_url,
+                reason="official correction",
+                evidence="https://example.test/evidence",
+                resolver="reviewer",
+            )
+        ],
+    )
+
+    merged, conflicts = merge_candidate_files(
+        existing_path,
+        agent_paths,
+        corrections_path=corrections_path,
+    )
+
+    assert merged[0]["url"] == new_url
+    assert len(conflicts) == 1
+    conflict = conflicts[0]
+    assert {conflict["value_a"], conflict["value_b"]} == {
+        old_url,
+        new_url,
+    }
+    assert conflict["resolution"] == new_url
+    assert conflict["resolver"] == "reviewer"
+    assert "https://example.test/evidence" in conflict["resolution_evidence"]
+    assert "@sha256:" in conflict["resolution_evidence"]
+
+
+def test_correction_rejects_current_value_matching_neither_old_nor_new(
+    tmp_path,
+):
+    existing_path, _ = build_merge_fixture(
+        tmp_path,
+        [
+            merge_candidate_row(
+                candidate_id="C0001",
+                title="Unexpected Current Value",
+                url="https://example.test/third",
+            )
+        ],
+    )
+    corrections_path = tmp_path / "corrections.csv"
+    write_correction_rows(
+        corrections_path,
+        [
+            correction_row(
+                candidate_id="C0001",
+                field="url",
+                old_value="https://example.test/old",
+                new_value="https://example.test/new",
+                reason="official correction",
+                evidence="https://example.test/evidence",
+                resolver="reviewer",
+            )
+        ],
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="C0001.url expected old or new value.*third",
+    ):
+        merge_candidate_files(
+            existing_path, [], corrections_path=corrections_path
+        )
+
+
+def test_cli_applies_explicit_correction_ledger(tmp_path):
+    old_url = "https://example.test/old"
+    new_url = "https://example.test/new"
+    existing = merge_candidate_row(
+        candidate_id="C0001",
+        title="CLI Correction",
+        doi="10.1000/cli-correction",
+        url=old_url,
+    )
+    incoming = merge_candidate_row(
+        candidate_id="agent-current",
+        title="CLI Correction",
+        doi="10.1000/cli-correction",
+        url=new_url,
+    )
+    existing_path, agent_paths = build_merge_fixture(
+        tmp_path, [existing], [incoming]
+    )
+    corrections_path = tmp_path / "reviewed-corrections.csv"
+    write_correction_rows(
+        corrections_path,
+        [
+            correction_row(
+                candidate_id="C0001",
+                field="url",
+                old_value=old_url,
+                new_value=new_url,
+                reason="official correction",
+                evidence="https://example.test/evidence",
+                resolver="reviewer",
+            )
+        ],
+    )
+
+    assert merge_candidates_main(
+        [
+            "--existing",
+            str(existing_path),
+            "--agent-file",
+            str(agent_paths[0]),
+            "--corrections",
+            str(corrections_path),
+            "--replace-conflicts",
+            "--write",
+        ]
+    ) == 0
+
+    with existing_path.open(encoding="utf-8", newline="") as handle:
+        candidate = next(csv.DictReader(handle))
+    conflicts = read_conflict_rows(tmp_path / "conflicts.csv")
+    assert candidate["url"] == new_url
+    assert len(conflicts) == 1
+    assert conflicts[0]["resolution"] == new_url
+    assert conflicts[0]["resolver"] == "reviewer"
+
+
+def test_replace_conflicts_correction_rerun_is_byte_idempotent(tmp_path):
+    old_url = "https://example.test/old"
+    new_url = "https://example.test/new"
+    existing = merge_candidate_row(
+        candidate_id="C0001",
+        title="Durable Correction",
+        doi="10.1000/durable-correction",
+        url=old_url,
+    )
+    incoming = merge_candidate_row(
+        candidate_id="agent-current",
+        title="Durable Correction",
+        doi="10.1000/durable-correction",
+        url=new_url,
+    )
+    existing_path, agent_paths = build_merge_fixture(
+        tmp_path, [existing], [incoming]
+    )
+    write_correction_rows(
+        tmp_path / "candidate_corrections.csv",
+        [
+            correction_row(
+                candidate_id="C0001",
+                field="url",
+                old_value=old_url,
+                new_value=new_url,
+                reason="official correction",
+                evidence="https://example.test/evidence",
+                resolver="reviewer",
+            )
+        ],
+    )
+    arguments = [
+        "--existing",
+        str(existing_path),
+        "--agent-file",
+        str(agent_paths[0]),
+        "--replace-conflicts",
+        "--write",
+    ]
+
+    assert merge_candidates_main(arguments) == 0
+    conflicts_path = tmp_path / "conflicts.csv"
+    first_candidates = existing_path.read_bytes()
+    first_conflicts = conflicts_path.read_bytes()
+
+    assert merge_candidates_main(arguments) == 0
+
+    assert existing_path.read_bytes() == first_candidates
+    assert conflicts_path.read_bytes() == first_conflicts
+    conflict = read_conflict_rows(conflicts_path)[0]
+    origins = {
+        item
+        for item in conflict["resolution_evidence"].split("; ")
+        if item.startswith(("value_a=", "value_b="))
+    }
+    assert origins
+    assert all("@sha256:" in item for item in origins)
+
+
+def test_normal_rerun_preserves_reviewed_correction_conflict(tmp_path):
+    old_url = "https://example.test/old"
+    new_url = "https://example.test/new"
+    existing = merge_candidate_row(
+        candidate_id="C0001",
+        title="Reviewed Correction",
+        doi="10.1000/reviewed-correction",
+        url=old_url,
+    )
+    incoming = merge_candidate_row(
+        candidate_id="agent-current",
+        title="Reviewed Correction",
+        doi="10.1000/reviewed-correction",
+        url=new_url,
+    )
+    existing_path, agent_paths = build_merge_fixture(
+        tmp_path, [existing], [incoming]
+    )
+    corrections_path = tmp_path / "candidate_corrections.csv"
+    write_correction_rows(
+        corrections_path,
+        [
+            correction_row(
+                candidate_id="C0001",
+                field="url",
+                old_value=old_url,
+                new_value=new_url,
+                reason="official correction",
+                evidence="https://example.test/evidence",
+                resolver="reviewer",
+            )
+        ],
+    )
+    common = [
+        "--existing",
+        str(existing_path),
+        "--agent-file",
+        str(agent_paths[0]),
+        "--corrections",
+        str(corrections_path),
+        "--write",
+    ]
+    assert merge_candidates_main([*common, "--replace-conflicts"]) == 0
+    conflicts_path = tmp_path / "conflicts.csv"
+    reviewed = read_conflict_rows(conflicts_path)[0]
+    reviewed["conflict_id"] = "REVIEWED-CORRECTION"
+    reviewed["resolution_evidence"] += "; curator review note"
+    write_conflict_rows(conflicts_path, [reviewed])
+
+    assert merge_candidates_main(common) == 0
+
+    result = read_conflict_rows(conflicts_path)[0]
+    assert result["conflict_id"] == "REVIEWED-CORRECTION"
+    assert result["resolution"] == new_url
+    assert result["resolver"] == "reviewer"
+    assert "curator review note" in result["resolution_evidence"]
+    assert "official correction" in result["resolution_evidence"]
+
+
+def test_correction_merge_is_invariant_to_agent_file_order(tmp_path):
+    old_url = "https://example.test/old"
+    new_url = "https://example.test/new"
+    existing = merge_candidate_row(
+        candidate_id="C0001",
+        title="Order Stable Correction",
+        doi="10.1000/order-stable-correction",
+        url=old_url,
+    )
+    corrected = merge_candidate_row(
+        candidate_id="agent-current",
+        title="Order Stable Correction",
+        doi="10.1000/order-stable-correction",
+        url=new_url,
+    )
+    unrelated = merge_candidate_row(
+        candidate_id="agent-unrelated",
+        title="Unrelated Candidate",
+    )
+    existing_path, agent_paths = build_merge_fixture(
+        tmp_path, [existing], [corrected], [unrelated]
+    )
+    corrections_path = tmp_path / "candidate_corrections.csv"
+    write_correction_rows(
+        corrections_path,
+        [
+            correction_row(
+                candidate_id="C0001",
+                field="url",
+                old_value=old_url,
+                new_value=new_url,
+                reason="official correction",
+                evidence="https://example.test/evidence",
+                resolver="reviewer",
+            )
+        ],
+    )
+
+    forward = merge_candidate_files(
+        existing_path,
+        agent_paths,
+        corrections_path=corrections_path,
+    )
+    reverse = merge_candidate_files(
+        existing_path,
+        list(reversed(agent_paths)),
+        corrections_path=corrections_path,
+    )
+
+    assert reverse == forward
+
+
+def test_correction_materializes_current_conflict_for_third_value(tmp_path):
+    old_url = "https://example.test/old"
+    new_url = "https://example.test/new"
+    repository_url = "https://github.com/example/project"
+    existing = merge_candidate_row(
+        candidate_id="C0001",
+        title="Three Value Correction",
+        doi="10.1000/three-value-correction",
+        url=old_url,
+    )
+    corrected = merge_candidate_row(
+        candidate_id="agent-current",
+        title="Three Value Correction",
+        doi="10.1000/three-value-correction",
+        url=new_url,
+    )
+    repository = merge_candidate_row(
+        candidate_id="agent-repository",
+        title="Three Value Correction",
+        doi="10.1000/three-value-correction",
+        url=repository_url,
+    )
+    existing_path, agent_paths = build_merge_fixture(
+        tmp_path, [existing], [corrected, repository]
+    )
+    corrections_path = tmp_path / "candidate_corrections.csv"
+    write_correction_rows(
+        corrections_path,
+        [
+            correction_row(
+                candidate_id="C0001",
+                field="url",
+                old_value=old_url,
+                new_value=new_url,
+                reason="official correction",
+                evidence="https://example.test/evidence",
+                resolver="reviewer",
+            )
+        ],
+    )
+    common = [
+        "--existing",
+        str(existing_path),
+        "--agent-file",
+        str(agent_paths[0]),
+        "--corrections",
+        str(corrections_path),
+        "--write",
+    ]
+
+    assert merge_candidates_main([*common, "--replace-conflicts"]) == 0
+    conflicts_path = tmp_path / "conflicts.csv"
+    first_conflicts = conflicts_path.read_bytes()
+    pairs = {
+        frozenset((row["value_a"], row["value_b"]))
+        for row in read_conflict_rows(conflicts_path)
+        if row["field"] == "url"
+    }
+    assert pairs == {
+        frozenset((old_url, new_url)),
+        frozenset((old_url, repository_url)),
+        frozenset((new_url, repository_url)),
+    }
+
+    assert merge_candidates_main(common) == 0
+    assert conflicts_path.read_bytes() == first_conflicts
+
+
+def test_fe3e44e_replay_reproduces_production_ledgers(tmp_path):
+    repository = Path(__file__).resolve().parents[1]
+    production_data = repository / "paper" / "data"
+    staging_data = tmp_path / "paper" / "data"
+    staging_data.mkdir(parents=True)
+    baseline = subprocess.run(
+        ["git", "show", "fe3e44e:paper/data/candidates.csv"],
+        cwd=repository,
+        check=True,
+        stdout=subprocess.PIPE,
+    ).stdout
+    staged_candidates = staging_data / "candidates.csv"
+    staged_aliases = staging_data / "candidate_aliases.csv"
+    staged_corrections = staging_data / "candidate_corrections.csv"
+    staged_candidates.write_bytes(baseline)
+    staged_aliases.write_bytes(
+        (production_data / "candidate_aliases.csv").read_bytes()
+    )
+    staged_corrections.write_bytes(
+        (production_data / "candidate_corrections.csv").read_bytes()
+    )
+    agent_paths = [
+        production_data / "agent_runs" / "aware-geometry-rl.csv",
+        production_data / "agent_runs" / "aware-simulation-benchmarks.csv",
+        production_data / "agent_runs" / "blind-aerial-maritime.csv",
+        production_data / "agent_runs" / "blind-ground.csv",
+    ]
+    arguments = [
+        "--existing",
+        str(staged_candidates),
+        "--aliases",
+        str(staged_aliases),
+        "--corrections",
+        str(staged_corrections),
+    ]
+    for path in agent_paths:
+        arguments.extend(("--agent-file", str(path)))
+    arguments.extend(("--replace-conflicts", "--write"))
+
+    assert merge_candidates_main(arguments) == 0
+
+    assert staged_candidates.read_bytes() == (
+        production_data / "candidates.csv"
+    ).read_bytes()
+    assert (staging_data / "conflicts.csv").read_bytes() == (
+        production_data / "conflicts.csv"
+    ).read_bytes()
