@@ -138,18 +138,20 @@ _VERSION_PIN_PATH = re.compile(
     r"(?:/(?:web/)?[0-9]{8,14}(?:/|$)|"
     r"/(?:commit|releases?/tag|versions?)/[^/?#]+(?:/|$)|"
     r"(?<![0-9a-f])[0-9a-f]{7,64}(?![0-9a-f])|"
-    r"(?:^|[/_.-])v?[0-9]+(?:\.[0-9]+)+(?:[/_.-]|$))",
+    r"(?:^|[/_.-])v?[0-9]+(?:\.[0-9]+)+(?:[/_.-]|$)|"
+    r"(?:^|[/_.-])v[0-9]+(?:[/_.-]|$))",
     re.IGNORECASE,
 )
 _MUTABLE_REFERENCE_VALUES = frozenset(
     {"current", "default", "head", "home", "latest", "main", "master", "top"}
 )
 _LOCATOR_TOKEN = re.compile(
-    r"(?:\bpages?\s+[A-Za-z0-9]|\bpp?\.?\s*\d+|"
+    r"(?:\bpages?\s+[A-Za-z0-9]|\bparagraphs?\s+[A-Za-z0-9]|"
+    r"\bpp?\.?\s*\d+|"
     r"\bsections?\s+[\"']?[A-Za-z0-9][^;,\s]*|"
     r"\u00a7+\s*[A-Za-z0-9]|"
     r"\b(?:tables?|figures?|fig\.?|algorithms?|chapters?|"
-    r"supplements?|anchors?|commits?|lines?)\s+"
+    r"supplements?|anchors?|commits?|lines?|positions?)\s+"
     r"[#A-Za-z0-9][A-Za-z0-9._:~/#-]*|"
     r"\bappendi(?:x|ces)\s+[A-Za-z0-9]|"
     r"#[A-Za-z0-9][A-Za-z0-9._:~-]{2,})",
@@ -1324,6 +1326,11 @@ def _has_persistent_document_identifier(parsed: SplitResult) -> bool:
         return True
     if host == "docs.un.org" and path.startswith("/en/"):
         return True
+    if host == "documents.un.org" and path == "/api/symbol/access":
+        return any(
+            key.casefold() == "s" and bool(value)
+            for key, value in parse_qsl(query, keep_blank_values=True)
+        )
     if host == "eur-lex.europa.eu" and "CELEX:" in query.upper():
         return True
     if host == "mediatum.ub.tum.de" and re.fullmatch(r"/[1-9][0-9]+", path):
@@ -1396,7 +1403,31 @@ def _validate_url_fragment(
         raise ScreeningResultError(
             f"{context}: {field} fragment is not a precise stable anchor"
         )
-    if f"#{fragment}" not in locator:
+    github_lines = re.fullmatch(
+        r"L([1-9][0-9]*)(?:-L([1-9][0-9]*))?", fragment
+    )
+    represented_as_lines = False
+    if github_lines is not None:
+        start, end = github_lines.groups()
+        rendered = start if end is None else f"{start}-{end}"
+        represented_as_lines = (
+            re.search(
+                rf"\blines?\s+{re.escape(rendered)}\b",
+                locator,
+                re.IGNORECASE,
+            )
+            is not None
+        )
+        if not represented_as_lines and urlsplit(url).hostname == "github.com":
+            represented_as_lines = (
+                re.search(
+                    r"\blines?\s+[1-9][0-9]*(?:-[1-9][0-9]*)?\b",
+                    locator,
+                    re.IGNORECASE,
+                )
+                is not None
+            )
+    if f"#{fragment}" not in locator and not represented_as_lines:
         raise ScreeningResultError(
             f"{context}: {field} fragment must appear in screening_locator"
         )

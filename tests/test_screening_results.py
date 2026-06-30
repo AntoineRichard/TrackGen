@@ -2005,9 +2005,14 @@ def test_cli_seals_phase_and_calibration_decision(
         "https://proceedings.mlr.press/v123/madaan20a/madaan20a.pdf",
         "https://openaccess.thecvf.com/content/CVPR2021/papers/Mi_HDMapGen.pdf",
         "https://docs.un.org/en/E/ECE/TRANS/505/Rev.3/Add.156",
+        (
+            "https://documents.un.org/api/symbol/access?"
+            "s=E/ECE/TRANS/505/Rev.3/Add.156&l=en&t=pdf"
+        ),
         "https://eur-lex.europa.eu/legal-content/EN/TXT/PDF/?uri=CELEX:42021X0389",
         "https://mediatum.ub.tum.de/1379638",
         "https://digitalcollection.zhaw.ch/bitstreams/c06a4f2a-a833-4e82-8880-c4159addb4d4/download",
+        "https://www.indyautonomouschallenge.com/s/2022-ACTMS-Rules-v100.pdf",
         "https://robonation.org/app/uploads/sites/3/2025/10/handbook.pdf",
     ],
 )
@@ -2030,6 +2035,8 @@ def test_persistent_scholarly_and_standards_identifiers_are_valid(
         "Class RandomRouteAction > Description",
         "Statement tab; Research tab, Research Topics",
         "Statement; Adversarial Multi-Agent Systems",
+        "OpenAlex work W4385326949, abstract_inverted_index positions 0-75",
+        "paragraphs 5.2.1, 6.2.3(g), and 7.1",
     ],
 )
 def test_compound_formal_and_stable_heading_locators_are_valid(
@@ -2301,6 +2308,8 @@ def test_authoritative_validation_rejects_self_consistent_forged_gate(
     ("fragment_case", "should_fail"),
     [
         ("represented-stable", False),
+        ("github-lines", False),
+        ("github-subranges", False),
         ("unrepresented", True),
         ("mutable-anchor", True),
     ],
@@ -2315,11 +2324,23 @@ def test_url_fragments_require_precise_locator_semantics(
     target = paths[0]
     rows = _read_csv(target)
     row = rows[0]
-    fragment = "top" if fragment_case == "mutable-anchor" else "methods"
+    if fragment_case == "mutable-anchor":
+        fragment = "top"
+    elif fragment_case == "github-lines":
+        fragment = "L1-L49"
+    elif fragment_case == "github-subranges":
+        fragment = "L3-L101"
+    else:
+        fragment = "methods"
+    host = "github.com" if fragment_case == "github-subranges" else "example.test"
     row["source_urls"] = (
-        f"https://example.test/source/{row['candidate_id']}#{fragment}"
+        f"https://{host}/source/{row['candidate_id']}#{fragment}"
     )
-    if fragment_case != "unrepresented":
+    if fragment_case == "github-lines":
+        row["screening_locator"] = "repository/path.xml lines 1-49"
+    elif fragment_case == "github-subranges":
+        row["screening_locator"] = "README.md lines 3-28, 74-101"
+    elif fragment_case != "unrepresented":
         row["screening_locator"] = f"Section 2; Anchor #{fragment}"
     _write_csv(target, RESULT_HEADER, rows)
     output_root = tmp_path / "sealed"
