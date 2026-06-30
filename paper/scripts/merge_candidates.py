@@ -1789,7 +1789,10 @@ def _split_resolution_evidence(
 
 
 def _merge_resolution_evidence(
-    existing: CandidateRow, generated: CandidateRow
+    existing: CandidateRow,
+    generated: CandidateRow,
+    *,
+    include_generated_notes: bool = True,
 ) -> str:
     origins, notes = _split_resolution_evidence(
         existing["resolution_evidence"]
@@ -1815,9 +1818,10 @@ def _merge_resolution_evidence(
                 if "@sha256:" in source
             }
         origins[label].update(additions)
-    for note in generated_notes:
-        if note not in notes:
-            notes.append(note)
+    if include_generated_notes:
+        for note in generated_notes:
+            if note not in notes:
+                notes.append(note)
 
     parts = list(notes)
     for label in ("value_a", "value_b"):
@@ -1829,11 +1833,16 @@ def _merge_resolution_evidence(
 
 
 def _merge_reconciled_conflict(
-    existing: CandidateRow, generated: CandidateRow
+    existing: CandidateRow,
+    generated: CandidateRow,
+    *,
+    include_generated_notes: bool = True,
 ) -> CandidateRow:
     row = dict(existing)
     row["resolution_evidence"] = _merge_resolution_evidence(
-        existing, generated
+        existing,
+        generated,
+        include_generated_notes=include_generated_notes,
     )
     return row
 
@@ -1841,13 +1850,11 @@ def _merge_reconciled_conflict(
 def _review_is_compatible(
     existing: CandidateRow, generated: CandidateRow
 ) -> bool:
-    if not (existing["resolution"] or existing["resolver"]):
-        return False
-    if not (generated["resolution"] or generated["resolver"]):
-        return True
     existing_resolution = existing["resolution"]
+    if not existing_resolution:
+        return False
     generated_resolution = generated["resolution"]
-    if not existing_resolution or not generated_resolution:
+    if not generated_resolution:
         return True
     field_name = generated["field"]
     return _conflict_value(
@@ -1892,10 +1899,15 @@ def _reconcile_conflict_rows(
             previous = prior.get(_ledger_conflict_signature(row))
             if previous is not None:
                 preserve_review = _review_is_compatible(previous, row)
-                row = _merge_reconciled_conflict(row, previous)
+                row = _merge_reconciled_conflict(
+                    row,
+                    previous,
+                    include_generated_notes=preserve_review,
+                )
                 if preserve_review:
                     row["resolution"] = previous["resolution"]
-                    row["resolver"] = previous["resolver"]
+                    if previous["resolver"]:
+                        row["resolver"] = previous["resolver"]
             replaced.append(row)
         return replaced
 

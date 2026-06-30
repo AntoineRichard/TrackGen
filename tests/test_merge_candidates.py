@@ -3822,3 +3822,122 @@ def test_replace_conflicts_preserves_compatible_reviewed_resolution(tmp_path):
     assert result["resolution"] == "Use the reviewed authority form."
     assert result["resolver"] == "metadata-reviewer"
     assert "reviewed registry snapshot" in result["resolution_evidence"]
+
+
+@pytest.mark.parametrize(
+    (
+        "prior_resolution",
+        "prior_resolver",
+        "prior_note",
+        "expected_resolver",
+        "preserves_prior_note",
+    ),
+    [
+        pytest.param(
+            "",
+            "resolver-only-reviewer",
+            "resolver-only review note",
+            "correction-reviewer",
+            False,
+            id="resolver-only",
+        ),
+        pytest.param(
+            "",
+            "",
+            "evidence-only review note",
+            "correction-reviewer",
+            False,
+            id="evidence-only",
+        ),
+        pytest.param(
+            "compatible",
+            "compatible-reviewer",
+            "compatible review note",
+            "compatible-reviewer",
+            True,
+            id="complete-compatible",
+        ),
+        pytest.param(
+            "incompatible",
+            "incompatible-reviewer",
+            "incompatible review note",
+            "correction-reviewer",
+            False,
+            id="complete-incompatible",
+        ),
+    ],
+)
+def test_replace_conflicts_only_preserves_complete_compatible_review(
+    tmp_path,
+    prior_resolution,
+    prior_resolver,
+    prior_note,
+    expected_resolver,
+    preserves_prior_note,
+):
+    old_url = "https://example.test/review-old"
+    new_url = "https://example.test/review-new"
+    existing = merge_candidate_row(
+        candidate_id="C0001",
+        title="Complete Review Payload",
+        doi="10.1000/complete-review-payload",
+        url=old_url,
+    )
+    incoming = merge_candidate_row(
+        candidate_id="agent-current",
+        title="Complete Review Payload",
+        doi="10.1000/complete-review-payload",
+        url=new_url,
+    )
+    existing_path, agent_paths = build_merge_fixture(
+        tmp_path, [existing], [incoming]
+    )
+    write_correction_rows(
+        tmp_path / "candidate_corrections.csv",
+        [
+            correction_row(
+                candidate_id="C0001",
+                field="url",
+                old_value=old_url,
+                new_value=new_url,
+                reason="official correction",
+                evidence="https://example.test/review-evidence",
+                resolver="correction-reviewer",
+            )
+        ],
+    )
+    arguments = [
+        "--existing",
+        str(existing_path),
+        "--agent-file",
+        str(agent_paths[0]),
+        "--replace-conflicts",
+        "--write",
+    ]
+    assert merge_candidates_main(arguments) == 0
+    conflicts_path = tmp_path / "conflicts.csv"
+    prior = read_conflict_rows(conflicts_path)[0]
+    prior["resolution"] = {
+        "": "",
+        "compatible": new_url,
+        "incompatible": "https://example.test/unrelated-review",
+    }[prior_resolution]
+    prior["resolver"] = prior_resolver
+    historical_origin = (
+        "review-ledger.csv#review-1@sha256:" + "a" * 64
+    )
+    prior["resolution_evidence"] += (
+        f"; {prior_note}; value_a={historical_origin}"
+    )
+    write_conflict_rows(conflicts_path, [prior])
+
+    assert merge_candidates_main(arguments) == 0
+
+    result = read_conflict_rows(conflicts_path)[0]
+    assert result["resolution"] == new_url
+    assert result["resolver"] == expected_resolver
+    assert (
+        prior_note in result["resolution_evidence"]
+    ) is preserves_prior_note
+    assert historical_origin in result["resolution_evidence"]
+    assert "official correction" in result["resolution_evidence"]
