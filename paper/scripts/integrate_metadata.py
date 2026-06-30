@@ -10,7 +10,7 @@ import stat
 import tempfile
 import unicodedata
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 from typing import Iterable, Sequence
@@ -88,6 +88,8 @@ BIBLIOGRAPHY_HEADER = (
     "doi",
     "url",
 )
+
+CITATION_KEYS_HEADER = ("candidate_id", "cite_key")
 
 CANDIDATE_HEADER = HEADERS["candidates.csv"]
 CONFLICT_HEADER = HEADERS["conflicts.csv"]
@@ -185,6 +187,7 @@ EVIDENCE_TOKEN_PATTERN = re.compile(
 )
 NEW_CONFLICT_PATTERN = re.compile(r"NEW-[A-Za-z0-9][A-Za-z0-9._-]*")
 CITE_KEY_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9:._/+\-]*")
+CANDIDATE_ID_PATTERN = re.compile(r"C[0-9]{4,}")
 YEAR_PATTERN = re.compile(r"[0-9]{4}")
 DOI_PATTERN = re.compile(
     r"10\.[0-9]{4,9}/[a-z0-9._;()/:+\-]+"
@@ -197,7 +200,7 @@ NONPAPER_SOURCE_PATTERN = re.compile(
     r"software|documentation|standard|repository|benchmark|competition|"
     r"simulator|platform|release|dataset|artifact|tool|package|system"
 )
-INCOMPLETE_AUTHOR_PATTERN = re.compile(r"\bet\.?\s+al\.?\b", re.IGNORECASE)
+INCOMPLETE_AUTHOR_PATTERN = re.compile(r"\bet[\W_]*al\b", re.IGNORECASE)
 STOPWORDS = frozenset(
     {
         "a",
@@ -228,11 +231,24 @@ class ResultFilePair:
 
 
 @dataclass(frozen=True)
+class InputFingerprint:
+    path: Path
+    resolved_path: Path
+    sha256: str
+
+
+@dataclass(frozen=True)
 class MetadataIntegrationResult:
     candidates: list[CandidateRow]
     conflicts: list[CandidateRow]
     bibliography: list[CandidateRow]
     bibtex: str
+    citation_keys: list[CandidateRow]
+    new_citation_keys: list[CandidateRow]
+    citation_keys_bytes: bytes
+    input_fingerprints: tuple[InputFingerprint, ...] = field(
+        compare=False, repr=False
+    )
     input_paths: tuple[Path, ...]
 
     @property
@@ -321,6 +337,103 @@ def _read_rows(
     return rows
 
 
+def _capture_input_fingerprint(path: Path) -> InputFingerprint:
+    absolute_path = Path(path).absolute()
+    try:
+        resolved_path = absolute_path.resolve(strict=True)
+        payload = absolute_path.read_bytes()
+    except OSError as exc:
+        raise MetadataIntegrationError(
+            f"{absolute_path}: cannot fingerprint immutable input: {exc}"
+        ) from exc
+    return InputFingerprint(
+        path=absolute_path,
+        resolved_path=resolved_path,
+        sha256=hashlib.sha256(payload).hexdigest(),
+    )
+
+
+def _capture_input_fingerprints(
+    paths: Sequence[Path],
+) -> tuple[InputFingerprint, ...]:
+    return tuple(_capture_input_fingerprint(path) for path in paths)
+
+
+def _assert_input_fingerprints_current(
+    fingerprints: Sequence[InputFingerprint],
+) -> None:
+    for fingerprint in fingerprints:
+        try:
+            resolved_path = fingerprint.path.resolve(strict=True)
+            payload = fingerprint.path.read_bytes()
+        except OSError as exc:
+            raise MetadataIntegrationError(
+                f"input {fingerprint.path} changed since integration: {exc}"
+            ) from exc
+        current_sha256 = hashlib.sha256(payload).hexdigest()
+        if (
+            resolved_path != fingerprint.resolved_path
+            or current_sha256 != fingerprint.sha256
+        ):
+            raise MetadataIntegrationError(
+                f"input {fingerprint.path} changed since integration"
+            )
+
+
+def _validate_citation_key_rows(
+    rows: list[CandidateRow],
+    candidates: list[CandidateRow],
+    *,
+    path: Path,
+) -> None:
+    candidate_ids = {row["candidate_id"] for row in candidates}
+    seen_ids: dict[str, int] = {}
+    seen_keys: dict[str, tuple[str, int]] = {}
+    for row_number, row in enumerate(rows, start=2):
+        candidate_id = row["candidate_id"]
+        cite_key = row["cite_key"]
+        if not candidate_id:
+            raise MetadataIntegrationError(
+                f"{path}:{row_number}: candidate_id is required"
+            )
+        if not cite_key:
+            raise MetadataIntegrationError(
+                f"{path}:{row_number}: cite_key is required"
+            )
+        if CANDIDATE_ID_PATTERN.fullmatch(candidate_id) is None:
+            raise MetadataIntegrationError(
+                f"{path}:{row_number}: candidate_id={candidate_id!r} must "
+                "be C followed by at least four digits"
+            )
+        if candidate_id not in candidate_ids:
+            raise MetadataIntegrationError(
+                f"{path}:{row_number}: candidate_id={candidate_id!r} does "
+                "not exist in candidates input"
+            )
+        if candidate_id in seen_ids:
+            raise MetadataIntegrationError(
+                f"{path}:{row_number}: duplicate candidate_id "
+                f"{candidate_id!r}; first seen on row "
+                f"{seen_ids[candidate_id]}"
+            )
+        seen_ids[candidate_id] = row_number
+
+        if CITE_KEY_PATTERN.fullmatch(cite_key) is None:
+            raise MetadataIntegrationError(
+                f"{path}:{row_number}: cite_key={cite_key!r} is not "
+                "BibTeX-safe"
+            )
+        folded_key = cite_key.casefold()
+        if folded_key in seen_keys:
+            first_key, first_row = seen_keys[folded_key]
+            raise MetadataIntegrationError(
+                f"{path}:{row_number}: case-insensitive duplicate cite_key "
+                f"{cite_key!r}; first spelling {first_key!r} on row "
+                f"{first_row}"
+            )
+        seen_keys[folded_key] = cite_key, row_number
+
+
 def _normalize_result_pairs(
     result_pairs: Sequence[
         ResultFilePair | tuple[Path, Path] | list[Path] | Path
@@ -402,6 +515,11 @@ def _parse_absolute_url(
     context: str,
     schemes: frozenset[str],
 ) -> tuple[SplitResult, str]:
+    if any(character.isspace() for character in value):
+        raise MetadataIntegrationError(
+            f"{context}: URL must not contain whitespace"
+        )
+
     try:
         parsed = urlsplit(value)
         host = parsed.hostname
@@ -717,18 +835,28 @@ def _validate_bibliography_url(
 ) -> None:
     if row["bib_url"] == "NR":
         return
+
+    _, bibliography_host = _parse_absolute_url(
+        row["bib_url"],
+        context=f"{context} bib_url",
+        schemes=frozenset({"http", "https"}),
+    )
+    if bibliography_host in DOI_RESOLVER_HOSTS:
+        canonical_doi = _canonical_doi(
+            row["doi"], context=f"{context} doi"
+        )
+        resolver_doi = _doi_from_resolver_url(row["bib_url"])
+        if not canonical_doi or resolver_doi != canonical_doi:
+            raise MetadataIntegrationError(
+                f"{context}: DOI resolver bib_url requires a nonempty "
+                "matching doi"
+            )
+        return
+
     bibliography_url = _canonical_url(row["bib_url"])
     if (
         row["url"] != "NR"
         and bibliography_url == _canonical_url(row["url"])
-    ):
-        return
-    canonical_doi = _canonical_doi(
-        row["doi"], context=f"{context} doi"
-    )
-    if (
-        canonical_doi
-        and _doi_from_resolver_url(row["bib_url"]) == canonical_doi
     ):
         return
     evidence_urls = {
@@ -739,8 +867,8 @@ def _validate_bibliography_url(
     }
     if bibliography_url not in evidence_urls:
         raise MetadataIntegrationError(
-            f"{context}: bib_url must match the candidate URL, canonical "
-            "DOI resolver, or authoritative field evidence"
+            f"{context}: bib_url must match the candidate URL or "
+            "authoritative field evidence"
         )
 
 
@@ -772,9 +900,14 @@ def _validate_verified_row(
             f"{context}: unsupported bib_entry_type "
             f"{row['bib_entry_type']!r}"
         )
-    if row["key_author"] == "NR":
+    key_author = row["key_author"]
+    if not key_author or key_author == "NR":
         raise MetadataIntegrationError(
-            f"{context}: verified key_author cannot be NR"
+            f"{context}: verified key_author cannot be empty or NR"
+        )
+    if INCOMPLETE_AUTHOR_PATTERN.search(key_author):
+        raise MetadataIntegrationError(
+            f"{context}: verified key_author must be complete, not et al."
         )
 
     expected_venue_field = VENUE_FIELD_BY_ENTRY_TYPE[row["bib_entry_type"]]
@@ -1323,103 +1456,98 @@ def _letter_suffix(number: int) -> str:
     return "".join(reversed(characters))
 
 
-def _assign_citation_keys(
+def _candidate_id_sort_key(candidate_id: str) -> tuple[int, str]:
+    return int(candidate_id[1:]), candidate_id
+
+
+def _assign_citation_keys_from_ledger(
     candidates: list[CandidateRow],
     original_by_id: dict[str, CandidateRow],
     metadata_by_id: dict[str, CandidateRow],
-) -> None:
-    eligible = {
-        row["candidate_id"]
-        for row in candidates
-        if row["metadata_status"] == "verified"
-        and row["screening_status"] != "excluded"
+    citation_keys: list[CandidateRow],
+    *,
+    extend: bool,
+) -> tuple[list[CandidateRow], list[CandidateRow]]:
+    ledger_by_id = {
+        row["candidate_id"]: row["cite_key"] for row in citation_keys
     }
-    existing_by_folded: dict[str, str] = {}
-    for original in original_by_id.values():
-        key = original["cite_key"]
-        if not key:
-            continue
-        candidate_id = original["candidate_id"]
-        if candidate_id not in eligible:
+    for candidate_id, original in original_by_id.items():
+        snapshot_key = original["cite_key"]
+        if snapshot_key and ledger_by_id.get(candidate_id) != snapshot_key:
             raise MetadataIntegrationError(
-                f"candidate_id={candidate_id!r}: existing cite_key belongs "
-                "to a candidate that is not verified and non-excluded"
+                f"candidate_id={candidate_id!r}: snapshot cite_key "
+                f"{snapshot_key!r} does not match citation key ledger"
             )
-        if CITE_KEY_PATTERN.fullmatch(key) is None:
-            raise MetadataIntegrationError(
-                f"candidate_id={candidate_id!r}: existing cite_key {key!r} "
-                "is not BibTeX-safe"
-            )
-        folded = key.casefold()
-        if folded in existing_by_folded:
-            raise MetadataIntegrationError(
-                "existing cite_key values are not case-insensitively unique: "
-                f"{existing_by_folded[folded]!r}, {key!r}"
-            )
-        existing_by_folded[folded] = key
 
-    candidates_by_id = {row["candidate_id"]: row for row in candidates}
-    for candidate_id in eligible:
-        candidates_by_id[candidate_id]["cite_key"] = original_by_id[
+    candidates_by_id = {
+        row["candidate_id"]: row for row in candidates
+    }
+    active_ids = sorted(
+        (
             candidate_id
-        ]["cite_key"]
-    for candidate_id, candidate in candidates_by_id.items():
-        if candidate_id not in eligible:
-            candidate["cite_key"] = ""
+            for candidate_id, candidate in candidates_by_id.items()
+            if candidate["metadata_status"] == "verified"
+            and candidate["screening_status"] != "excluded"
+        ),
+        key=_candidate_id_sort_key,
+    )
+    missing_ids = [
+        candidate_id
+        for candidate_id in active_ids
+        if candidate_id not in ledger_by_id
+    ]
+    if missing_ids and not extend:
+        raise MetadataIntegrationError(
+            f"candidate_id={missing_ids[0]!r}: active candidate requires "
+            "a citation key ledger assignment"
+        )
 
+    used = {key.casefold() for key in ledger_by_id.values()}
     bases = {
         candidate_id: _citation_base(
             candidates_by_id[candidate_id], metadata_by_id[candidate_id]
         )
-        for candidate_id in eligible
-        if not candidates_by_id[candidate_id]["cite_key"]
+        for candidate_id in missing_ids
     }
     groups: defaultdict[str, list[str]] = defaultdict(list)
     for candidate_id, base in bases.items():
         groups[base.casefold()].append(candidate_id)
 
-    used = set(existing_by_folded)
     for folded_base in sorted(groups):
-        member_ids = sorted(groups[folded_base])
+        member_ids = sorted(
+            groups[folded_base], key=_candidate_id_sort_key
+        )
         canonical_base = bases[member_ids[0]]
-        unkeyed = [
-            candidate_id
-            for candidate_id in member_ids
-            if not candidates_by_id[candidate_id]["cite_key"]
-        ]
-        if not unkeyed:
-            continue
         collision = len(member_ids) > 1 or folded_base in used
         if not collision:
-            candidates_by_id[unkeyed[0]]["cite_key"] = canonical_base
+            ledger_by_id[member_ids[0]] = canonical_base
             used.add(folded_base)
             continue
+
         suffix_number = 0
-        for candidate_id in unkeyed:
+        for candidate_id in member_ids:
             while True:
                 proposed = canonical_base + _letter_suffix(suffix_number)
                 suffix_number += 1
                 if proposed.casefold() not in used:
                     break
-            candidates_by_id[candidate_id]["cite_key"] = proposed
+            ledger_by_id[candidate_id] = proposed
             used.add(proposed.casefold())
 
-    final_keys = [
-        candidates_by_id[candidate_id]["cite_key"] for candidate_id in eligible
+    new_citation_keys = [
+        {
+            "candidate_id": candidate_id,
+            "cite_key": ledger_by_id[candidate_id],
+        }
+        for candidate_id in missing_ids
     ]
-    if len({key.casefold() for key in final_keys}) != len(final_keys):
-        raise MetadataIntegrationError(
-            "generated cite_key values are not case-insensitively unique"
+    for candidate_id, candidate in candidates_by_id.items():
+        candidate["cite_key"] = (
+            ledger_by_id[candidate_id]
+            if candidate_id in active_ids
+            else ""
         )
-    for candidate_id, original in original_by_id.items():
-        if original["cite_key"] and (
-            candidates_by_id[candidate_id]["cite_key"]
-            != original["cite_key"]
-        ):
-            raise MetadataIntegrationError(
-                f"candidate_id={candidate_id!r}: existing cite_key would "
-                "be renamed"
-            )
+    return [*citation_keys, *new_citation_keys], new_citation_keys
 
 
 def _doi_from_resolver_url(value: str) -> str:
@@ -1503,6 +1631,14 @@ def _bibtex_authors(authors_value: str, kinds_value: str) -> str:
 
 
 def render_bibtex(rows: Sequence[CandidateRow]) -> str:
+    for row in rows:
+        for field_name in BIBLIOGRAPHY_HEADER:
+            if "\r" in row[field_name]:
+                raise MetadataIntegrationError(
+                    f"bibliography field {field_name!r} contains "
+                    "carriage return"
+                )
+
     entries = []
     for row in sorted(
         rows,
@@ -1540,6 +1676,8 @@ def integrate_metadata(
     conflict_result_paths: Sequence[Path] | None = None,
     *,
     metadata_result_paths: Sequence[Path] | None = None,
+    citation_keys_path: Path,
+    extend_citation_keys: bool = False,
 ) -> MetadataIntegrationResult:
     """Validate immutable agent results and derive canonical citation outputs.
 
@@ -1550,15 +1688,41 @@ def integrate_metadata(
     candidates_path = Path(candidates_path)
     conflicts_path = Path(conflicts_path)
     manifest_path = Path(manifest_path)
-
-    # The frozen-input contract is the first validation gate. Result files are
-    # not trusted or read until the manifest is proven current.
-    validate_manifest_inputs(manifest_path, candidates_path, conflicts_path)
+    citation_keys_path = Path(citation_keys_path)
 
     normalized_pairs = _normalize_result_pairs(
         result_pairs, conflict_result_paths, metadata_result_paths
     )
+    input_source_paths = (
+        candidates_path,
+        conflicts_path,
+        manifest_path,
+        citation_keys_path,
+        *sorted(
+            (
+                Path(path)
+                for pair in normalized_pairs
+                for path in (pair.metadata_path, pair.conflict_path)
+            ),
+            key=lambda path: path.as_posix(),
+        ),
+    )
+    # Capture every immutable input before validation so a mutation during the
+    # manifest gate cannot become the accepted fingerprint baseline.
+    input_fingerprints = _capture_input_fingerprints(input_source_paths)
+    validate_manifest_inputs(manifest_path, candidates_path, conflicts_path)
+    _assert_input_fingerprints_current(input_fingerprints)
+    citation_keys_input_bytes = citation_keys_path.read_bytes()
+
     input_candidates = _read_rows(candidates_path, CANDIDATE_HEADER)
+    citation_keys = _read_rows(
+        citation_keys_path, CITATION_KEYS_HEADER
+    )
+    _validate_citation_key_rows(
+        citation_keys,
+        input_candidates,
+        path=citation_keys_path,
+    )
     input_conflicts = _read_rows(conflicts_path, CONFLICT_HEADER)
     manifest_rows = _read_rows(manifest_path, MANIFEST_HEADER)
     manifest_by_id = {
@@ -1695,8 +1859,12 @@ def integrate_metadata(
                 "candidates must finish metadata_status=verified"
             )
 
-    _assign_citation_keys(
-        integrated_candidates, original_by_id, metadata_by_id
+    citation_keys, new_citation_keys = _assign_citation_keys_from_ledger(
+        integrated_candidates,
+        original_by_id,
+        metadata_by_id,
+        citation_keys,
+        extend=extend_citation_keys,
     )
     for candidate in integrated_candidates:
         if (
@@ -1711,24 +1879,23 @@ def integrate_metadata(
         integrated_candidates, metadata_by_id
     )
     bibtex = render_bibtex(bibliography)
-    immutable_input_paths = (
-        candidates_path.resolve(),
-        conflicts_path.resolve(),
-        manifest_path.resolve(),
-        *sorted(
-            (
-                path.resolve()
-                for pair in normalized_pairs
-                for path in (pair.metadata_path, pair.conflict_path)
-            ),
-            key=lambda path: path.as_posix(),
-        ),
+    citation_keys_bytes = _append_citation_key_rows(
+        citation_keys_input_bytes,
+        new_citation_keys,
+    )
+    _assert_input_fingerprints_current(input_fingerprints)
+    immutable_input_paths = tuple(
+        fingerprint.resolved_path for fingerprint in input_fingerprints
     )
     return MetadataIntegrationResult(
         candidates=integrated_candidates,
         conflicts=integrated_conflicts,
         bibliography=bibliography,
         bibtex=bibtex,
+        citation_keys=citation_keys,
+        new_citation_keys=new_citation_keys,
+        citation_keys_bytes=citation_keys_bytes,
+        input_fingerprints=input_fingerprints,
         input_paths=immutable_input_paths,
     )
 
@@ -1746,6 +1913,19 @@ def _csv_bytes(
     writer.writeheader()
     writer.writerows(rows)
     return buffer.getvalue().encode("utf-8")
+
+
+def _append_citation_key_rows(
+    source_bytes: bytes,
+    new_rows: list[CandidateRow],
+) -> bytes:
+    if not new_rows:
+        return source_bytes
+    rendered = _csv_bytes(CITATION_KEYS_HEADER, new_rows)
+    header = _csv_bytes(CITATION_KEYS_HEADER, [])
+    appended_rows = rendered[len(header) :]
+    separator = b"" if source_bytes.endswith((b"\n", b"\r")) else b"\n"
+    return source_bytes + separator + appended_rows
 
 
 def _paths_alias(left: Path, right: Path) -> bool:
@@ -1855,6 +2035,7 @@ def write_integration_outputs(
     conflicts_path: Path,
     bibliography_path: Path,
     bibtex_path: Path,
+    citation_keys_path: Path | None = None,
     input_paths: Sequence[Path] | None = None,
 ) -> None:
     """Stage and replace all integration outputs with best-effort rollback."""
@@ -1864,10 +2045,17 @@ def write_integration_outputs(
         Path(bibliography_path),
         Path(bibtex_path),
     ]
+    if citation_keys_path is not None:
+        destinations.append(Path(citation_keys_path))
     if not result.input_paths:
         raise MetadataIntegrationError(
             "writer input paths are required for mandatory alias protection"
         )
+    if not result.input_fingerprints:
+        raise MetadataIntegrationError(
+            "writer input fingerprints are required"
+        )
+    _assert_input_fingerprints_current(result.input_fingerprints)
     protected_inputs = list(result.input_paths)
     if input_paths is not None:
         protected_inputs.extend(Path(path).resolve() for path in input_paths)
@@ -1879,6 +2067,8 @@ def write_integration_outputs(
         result.bibtex.encode("utf-8"),
     ]
 
+    if citation_keys_path is not None:
+        payloads.append(result.citation_keys_bytes)
     staged: dict[Path, Path] = {}
     backups: dict[Path, Path] = {}
     existed = {destination: destination.exists() for destination in destinations}
@@ -1891,6 +2081,7 @@ def write_integration_outputs(
                 backups[destination] = _stage_bytes(
                     destination, destination.read_bytes(), backup=True
                 )
+        _assert_input_fingerprints_current(result.input_fingerprints)
         for destination in destinations:
             attempted.append(destination)
             staged[destination].replace(destination)
@@ -1945,6 +2136,10 @@ def _argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--candidates", required=True, type=Path)
     parser.add_argument("--conflicts", required=True, type=Path)
     parser.add_argument("--manifest", required=True, type=Path)
+    parser.add_argument("--citation-keys", required=True, type=Path)
+    parser.add_argument(
+        "--extend-citation-keys", action="store_true"
+    )
     parser.add_argument(
         "--metadata-result", required=True, action="append", type=Path
     )
@@ -1955,15 +2150,32 @@ def _argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-conflicts", required=True, type=Path)
     parser.add_argument("--output-bibliography", required=True, type=Path)
     parser.add_argument("--output-bibtex", required=True, type=Path)
+    parser.add_argument("--output-citation-keys", type=Path)
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    arguments = _argument_parser().parse_args(argv)
+    parser = _argument_parser()
+    arguments = parser.parse_args(argv)
+    if (
+        arguments.extend_citation_keys
+        and arguments.output_citation_keys is None
+    ):
+        parser.error(
+            "--output-citation-keys is required with --extend-citation-keys"
+        )
+    if (
+        not arguments.extend_citation_keys
+        and arguments.output_citation_keys is not None
+    ):
+        parser.error(
+            "--output-citation-keys is forbidden without --extend-citation-keys"
+        )
     input_paths = [
         arguments.candidates,
         arguments.conflicts,
         arguments.manifest,
+        arguments.citation_keys,
         *arguments.metadata_result,
         *arguments.conflict_result,
     ]
@@ -1973,6 +2185,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         arguments.output_bibliography,
         arguments.output_bibtex,
     ]
+    if arguments.output_citation_keys is not None:
+        output_paths.append(arguments.output_citation_keys)
     _validate_output_paths(output_paths, input_paths)
     result = integrate_metadata(
         arguments.candidates,
@@ -1980,6 +2194,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         arguments.manifest,
         arguments.metadata_result,
         arguments.conflict_result,
+        citation_keys_path=arguments.citation_keys,
+        extend_citation_keys=arguments.extend_citation_keys,
     )
     write_integration_outputs(
         result,
@@ -1987,6 +2203,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         conflicts_path=arguments.output_conflicts,
         bibliography_path=arguments.output_bibliography,
         bibtex_path=arguments.output_bibtex,
+        citation_keys_path=arguments.output_citation_keys,
         input_paths=input_paths,
     )
     return 0

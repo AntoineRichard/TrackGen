@@ -156,9 +156,189 @@ it does not prove that the cited material semantically supports the coded claim.
 
 ## `metadata_manifest.csv` and `metadata_runs/`
 
-The versioned manifest freezes every candidate exactly once into one of six metadata-verification batches. `input_sha256` binds the complete candidate row and all sorted conflict rows; `snapshot_sha256` binds the complete assignment. A normal rerun validates and preserves an existing manifest. Replacing it requires explicit `--refreeze` and therefore a documented corpus change.
+The versioned manifest freezes every candidate exactly once into one of six
+metadata-verification batches. `input_sha256` binds the complete candidate row and all
+sorted conflict rows; `snapshot_sha256` binds the complete assignment. The committed
+manifest is semantically bound to the explicit immutable version
+`metadata_inputs/v1/`, whose `candidates.csv` and `conflicts.csv` are the exact
+pre-integration bytes from commit `c96c2d6`. Their raw SHA-256 digests are
+`62b7fc3a2716f923422b77d538e9cfb4c95cefb1687bf979af4cb953656e90a3` and
+`4495d57179822dd099299825015bc27a6ddf91e397ecbba8a4ac63ec1363ca52`,
+respectively. There is deliberately no mutable `current` path. The repository
+`.gitattributes` marks every file below `metadata_inputs/` as binary (`-text`), so Git
+does not apply checkout newline conversion. Raw-byte integrity is intentionally checked
+separately from the semantic manifest contract.
 
-Each metadata agent writes only its assigned `metadata-0N.csv` and `metadata-0N-conflicts.csv` under `metadata_runs/`. Result rows must match the manifest candidate ID, batch ID, and input hash. Agents never edit canonical candidates, conflicts, bibliography, or BibTeX files; the central integrator validates all six result pairs before producing those artifacts.
+Verify the exact checked-out `v1` bytes with:
+
+~~~bash
+set -euo pipefail
+snapshot_hashes=(
+  "62b7fc3a2716f923422b77d538e9cfb4c95cefb1687bf979af4cb953656e90a3  paper/data/metadata_inputs/v1/candidates.csv"
+  "4495d57179822dd099299825015bc27a6ddf91e397ecbba8a4ac63ec1363ca52  paper/data/metadata_inputs/v1/conflicts.csv"
+)
+printf '%s\n' "${snapshot_hashes[@]}" | sha256sum --check --strict
+~~~
+
+Validate the committed manifest and frozen inputs after canonical integration with this
+non-mutating command:
+
+~~~bash
+set -euo pipefail
+python3 paper/scripts/prepare_metadata_batches.py \
+  --snapshot-dir paper/data/metadata_inputs/v1 \
+  --output paper/data/metadata_manifest.csv
+~~~
+
+Each metadata agent writes only its assigned `metadata-0N.csv` and
+`metadata-0N-conflicts.csv` under `metadata_runs/`. Result rows must match the
+manifest candidate ID, batch ID, and input hash. Agents never edit canonical candidates,
+conflicts, bibliography, or BibTeX files; the central integrator validates all six result
+pairs before producing those artifacts.
+
+## `citation_keys.csv`
+
+This two-column ledger is the append-only authority for issued citation identities.
+It contains `candidate_id,cite_key` only: mutable title, author, year, screening, and
+metadata fields never participate in the stored assignment. Existing rows may not be
+renamed, reassigned, reordered, or deleted. Key uniqueness is case-insensitive across
+all rows, including dormant assignments.
+
+The current ledger preserves the 184 keys issued by the first canonical metadata
+integration as an exact prefix and appends 14 newly verified candidates in numeric ID
+order. Its full-file SHA-256 is
+`48d891587257f79b9c7cf97f90dd3ebd36bd0378e9ed8c100628afcfd6540e5f`.
+A verified, non-excluded candidate must have its ledger key in `candidates.csv`,
+`bibliography.csv`, and `references.bib`. An excluded or otherwise inactive candidate
+may retain a dormant ledger reservation while generated citation artifacts omit it;
+re-inclusion restores the same key.
+
+Routine metadata replay is strict and fails when an active candidate lacks a ledger
+assignment. Adding candidates requires the explicit `--extend-citation-keys` mode and a
+distinct `--output-citation-keys` path. Review the append-only output before publishing
+it; strict replay never rewrites the ledger or seeds keys from generated candidates.
+
+The following Bash block replays all six result pairs from `v1` into a temporary
+directory and compares every generated artifact byte-for-byte with the canonical tree.
+A failed `cmp` means reviewed run rows and canonical integration are out of sync; update
+canonical outputs through the integrator rather than weakening the comparison.
+
+~~~bash
+set -euo pipefail
+metadata_replay_args=(
+  --candidates paper/data/metadata_inputs/v1/candidates.csv
+  --conflicts paper/data/metadata_inputs/v1/conflicts.csv
+  --manifest paper/data/metadata_manifest.csv
+  --citation-keys paper/data/citation_keys.csv
+  --metadata-result paper/data/metadata_runs/metadata-01.csv
+  --metadata-result paper/data/metadata_runs/metadata-02.csv
+  --metadata-result paper/data/metadata_runs/metadata-03.csv
+  --metadata-result paper/data/metadata_runs/metadata-04.csv
+  --metadata-result paper/data/metadata_runs/metadata-05.csv
+  --metadata-result paper/data/metadata_runs/metadata-06.csv
+  --conflict-result paper/data/metadata_runs/metadata-01-conflicts.csv
+  --conflict-result paper/data/metadata_runs/metadata-02-conflicts.csv
+  --conflict-result paper/data/metadata_runs/metadata-03-conflicts.csv
+  --conflict-result paper/data/metadata_runs/metadata-04-conflicts.csv
+  --conflict-result paper/data/metadata_runs/metadata-05-conflicts.csv
+  --conflict-result paper/data/metadata_runs/metadata-06-conflicts.csv
+)
+replay_dir="$(mktemp -d)"
+cleanup() {
+  rm -rf -- "$replay_dir"
+}
+trap cleanup EXIT
+python3 paper/scripts/integrate_metadata.py "${metadata_replay_args[@]}" \
+  --output-candidates "$replay_dir/candidates.csv" \
+  --output-conflicts "$replay_dir/conflicts.csv" \
+  --output-bibliography "$replay_dir/bibliography.csv" \
+  --output-bibtex "$replay_dir/references.bib"
+cmp -- "$replay_dir/candidates.csv" paper/data/candidates.csv
+cmp -- "$replay_dir/conflicts.csv" paper/data/conflicts.csv
+cmp -- "$replay_dir/bibliography.csv" paper/data/bibliography.csv
+cmp -- "$replay_dir/references.bib" paper/references.bib
+~~~
+
+After review, publish the same replay through the integrator's staged four-output writer:
+
+~~~bash
+set -euo pipefail
+metadata_replay_args=(
+  --candidates paper/data/metadata_inputs/v1/candidates.csv
+  --conflicts paper/data/metadata_inputs/v1/conflicts.csv
+  --manifest paper/data/metadata_manifest.csv
+  --citation-keys paper/data/citation_keys.csv
+  --metadata-result paper/data/metadata_runs/metadata-01.csv
+  --metadata-result paper/data/metadata_runs/metadata-02.csv
+  --metadata-result paper/data/metadata_runs/metadata-03.csv
+  --metadata-result paper/data/metadata_runs/metadata-04.csv
+  --metadata-result paper/data/metadata_runs/metadata-05.csv
+  --metadata-result paper/data/metadata_runs/metadata-06.csv
+  --conflict-result paper/data/metadata_runs/metadata-01-conflicts.csv
+  --conflict-result paper/data/metadata_runs/metadata-02-conflicts.csv
+  --conflict-result paper/data/metadata_runs/metadata-03-conflicts.csv
+  --conflict-result paper/data/metadata_runs/metadata-04-conflicts.csv
+  --conflict-result paper/data/metadata_runs/metadata-05-conflicts.csv
+  --conflict-result paper/data/metadata_runs/metadata-06-conflicts.csv
+)
+python3 paper/scripts/integrate_metadata.py "${metadata_replay_args[@]}" \
+  --output-candidates paper/data/candidates.csv \
+  --output-conflicts paper/data/conflicts.csv \
+  --output-bibliography paper/data/bibliography.csv \
+  --output-bibtex paper/references.bib
+~~~
+
+A future refreeze must name a new, non-existing version explicitly. For example, after a
+documented corpus change, create `v2` and replace the manifest together with:
+
+~~~bash
+set -euo pipefail
+snapshot_dir="paper/data/metadata_inputs/v2"
+if [[ -e "$snapshot_dir" || -L "$snapshot_dir" ]]; then
+  printf 'snapshot version already exists: %s\n' "$snapshot_dir" >&2
+  exit 1
+fi
+python3 paper/scripts/prepare_metadata_batches.py \
+  --candidates paper/data/candidates.csv \
+  --conflicts paper/data/conflicts.csv \
+  --snapshot-dir "$snapshot_dir" \
+  --output paper/data/metadata_manifest.csv \
+  --refreeze
+~~~
+
+Initial freeze uses direct `--candidates` and `--conflicts` arguments without
+`--refreeze`; both the manifest and named version must be absent. Once the manifest
+exists, ordinary validation omits the direct inputs, names the immutable version
+explicitly, and performs no writes.
+
+The tool copies the source bytes into a hidden staging directory, builds and stages the
+manifest from those copies, and publishes the immutable version with Linux
+`renameat2(RENAME_NOREPLACE)`. Any existing or racing entry, including a symlink or
+empty directory, is rejected without replacement. Legacy direct manifest creation uses
+the same atomic no-clobber operation.
+
+Before refreeze publication, the tool creates an adjacent recovery journal matching
+`.metadata_manifest.csv.recovery.*`. It contains `old-manifest.csv`, an independent
+byte copy of the pre-refreeze manifest, and `old-manifest.inode`, a hard link used for
+exact-inode checks. After publishing the snapshot, the tool atomically exchanges the
+staged and current manifests with `renameat2(RENAME_EXCHANGE)`, verifies the swapped-out
+inode and SHA-256 content, and rechecks ownership of the published inode.
+
+The bounded guarantee is: while the canonical path still contains the transaction-owned
+new inode, exchange-back restores the exact manifest displaced by the final swap. If
+ownership changes again or restoration cannot be proven complete, the tool does not
+overwrite the unknown canonical manifest. It retains the old byte copy and inode link,
+moves the published snapshot to `snapshot/`, preserves any swapped path as
+`swapped-manifest.csv`, writes `RECOVERY.txt`, and annotates the original exception
+with the exact recovery directory. A complete success or rollback removes the journal.
+Changes made by a non-cooperating writer after the final ownership check are outside
+this bounded guarantee.
+
+Generated snapshot version directories use mode `0755` and their two CSV files use
+`0644`, independent of the caller's umask. `--refreeze` requires an existing regular
+non-symlink manifest and an explicit new `--snapshot-dir`. Legacy direct-input
+validation remains available, but the explicit versioned workflow above is canonical
+for this corpus.
 
 ## `candidate_aliases.csv`
 

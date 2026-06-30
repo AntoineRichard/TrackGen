@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -20,7 +21,14 @@ from paper.scripts.prepare_metadata_batches import (
     MANIFEST_HEADER,
     build_manifest,
 )
-from paper.scripts.validate_corpus import HEADERS
+from paper.scripts.validate_corpus import (
+    DEFAULT_TAXONOMY,
+    HEADERS,
+    validate_directory,
+)
+
+
+CITATION_KEYS_HEADER = ("candidate_id", "cite_key")
 
 
 def candidate_row(candidate_id: str, **values: str) -> dict[str, str]:
@@ -73,6 +81,13 @@ def write_rows(
         writer.writerows(rows)
 
 
+def write_citation_keys(
+    path: Path,
+    rows: list[dict[str, str]],
+) -> None:
+    write_rows(path, CITATION_KEYS_HEADER, rows)
+
+
 def metadata_result_row(
     manifest_row: dict[str, str],
     candidate: dict[str, str],
@@ -118,6 +133,7 @@ class IntegrationCase:
     candidates_path: Path
     conflicts_path: Path
     manifest_path: Path
+    citation_keys_path: Path
     result_pairs: list[tuple[Path, Path]]
     metadata_rows: dict[str, list[dict[str, str]]]
     conflict_rows: dict[str, list[dict[str, str]]]
@@ -169,10 +185,19 @@ def build_case(
     candidates_path = inputs / "candidates.csv"
     conflicts_path = inputs / "conflicts.csv"
     manifest_path = inputs / "metadata_manifest.csv"
+    citation_keys_path = inputs / "citation_keys.csv"
     write_rows(candidates_path, HEADERS["candidates.csv"], candidates)
     write_rows(conflicts_path, HEADERS["conflicts.csv"], conflicts)
     manifest = build_manifest(candidates_path, conflicts_path)
     write_rows(manifest_path, MANIFEST_HEADER, manifest)
+    write_citation_keys(
+        citation_keys_path,
+        [
+            {"candidate_id": row["candidate_id"], "cite_key": row["cite_key"]}
+            for row in candidates
+            if row["cite_key"]
+        ],
+    )
 
     candidates_by_id = {row["candidate_id"]: row for row in candidates}
     manifest_by_id = {row["candidate_id"]: row for row in manifest}
@@ -243,6 +268,7 @@ def build_case(
         candidates_path=candidates_path,
         conflicts_path=conflicts_path,
         manifest_path=manifest_path,
+        citation_keys_path=citation_keys_path,
         result_pairs=result_pairs,
         metadata_rows=metadata_rows,
         conflict_rows=conflict_rows,
@@ -259,7 +285,40 @@ def integrate(case: IntegrationCase):
         case.conflicts_path,
         case.manifest_path,
         case.result_pairs,
+        citation_keys_path=case.citation_keys_path,
+        extend_citation_keys=True,
     )
+
+
+
+def validate_integration_round_trip(tmp_path: Path, result) -> Path:
+    root = tmp_path / "roundtrip"
+    data = root / "data"
+    data.mkdir(parents=True)
+    (data / "taxonomy.json").write_text(
+        json.dumps(DEFAULT_TAXONOMY, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    generated_tables = {
+        "candidates.csv",
+        "conflicts.csv",
+        "bibliography.csv",
+        "citation_keys.csv",
+    }
+    for filename, header in HEADERS.items():
+        if filename not in generated_tables:
+            write_rows(data / filename, header, [])
+
+    write_integration_outputs(
+        result,
+        candidates_path=data / "candidates.csv",
+        conflicts_path=data / "conflicts.csv",
+        bibliography_path=data / "bibliography.csv",
+        bibtex_path=root / "references.bib",
+        citation_keys_path=data / "citation_keys.csv",
+    )
+    validate_directory(data)
+    return data
 
 
 def result_row(case: IntegrationCase, candidate_id: str) -> dict[str, str]:
@@ -350,6 +409,378 @@ def test_public_headers_are_exact_and_valid_results_integrate(tmp_path):
     assert "  url =" not in result.bibtex
 
 
+def test_strict_integration_rejects_missing_active_ledger_assignment(tmp_path):
+    case = build_case(tmp_path)
+    citation_keys_path = tmp_path / "citation_keys.csv"
+    write_citation_keys(citation_keys_path, [])
+
+    with pytest.raises(
+        MetadataIntegrationError,
+        match=r"candidate_id='C0001'.*citation key|citation key.*C0001",
+    ):
+        integrate_metadata(
+            case.candidates_path,
+            case.conflicts_path,
+            case.manifest_path,
+            case.result_pairs,
+            citation_keys_path=citation_keys_path,
+        )
+
+
+def test_extension_appends_only_missing_active_keys_in_numeric_id_order(tmp_path):
+    candidates = [
+        candidate_row(
+            "C0001",
+            cite_key="DormantKey",
+            screening_status="excluded",
+            exclusion_reason="Out of scope",
+        ),
+        candidate_row("C0010", title="Zeta Course"),
+        candidate_row("C0002", title="Alpha Course"),
+    ]
+    case = build_case(tmp_path, candidates=candidates)
+    result = integrate(case)
+
+    assert result.new_citation_keys == [
+        {"candidate_id": "C0002", "cite_key": "Example2025AlphaCourse"},
+        {"candidate_id": "C0010", "cite_key": "Example2025ZetaCourse"},
+    ]
+    assert result.citation_keys == [
+        {"candidate_id": "C0001", "cite_key": "DormantKey"},
+        *result.new_citation_keys,
+    ]
+
+    candidates_by_id = {
+        row["candidate_id"]: row for row in result.candidates
+    }
+    assert candidates_by_id["C0001"]["cite_key"] == ""
+    assert candidates_by_id["C0002"]["cite_key"] == "Example2025AlphaCourse"
+
+
+def test_dormant_ledger_key_reserves_casefold_namespace(tmp_path):
+    case = build_case(
+        tmp_path,
+        candidates=[
+            candidate_row(
+                "C0001",
+                cite_key="example2025sametrack",
+                screening_status="excluded",
+                exclusion_reason="Out of scope",
+            ),
+            candidate_row("C0002", title="Same Track"),
+        ],
+    )
+
+    result = integrate(case)
+    candidates_by_id = {
+        row["candidate_id"]: row for row in result.candidates
+    }
+
+    assert candidates_by_id["C0001"]["cite_key"] == ""
+    assert candidates_by_id["C0002"]["cite_key"] == "Example2025SameTracka"
+    assert result.new_citation_keys == [
+        {"candidate_id": "C0002", "cite_key": "Example2025SameTracka"}
+    ]
+
+
+def test_collision_suffix_order_uses_numeric_candidate_ids(tmp_path):
+    case = build_case(
+        tmp_path,
+        candidates=[
+            candidate_row("C10000", title="Same Track"),
+            candidate_row("C9999", title="Same Track"),
+        ],
+    )
+
+    result = integrate(case)
+
+    assert result.new_citation_keys == [
+        {"candidate_id": "C9999", "cite_key": "Example2025SameTracka"},
+        {"candidate_id": "C10000", "cite_key": "Example2025SameTrackb"},
+    ]
+
+
+def test_reinclusion_restores_exact_dormant_ledger_key(tmp_path):
+    dormant_root = tmp_path / "dormant"
+    dormant_root.mkdir()
+    dormant_case = build_case(
+        dormant_root,
+        candidates=[
+            candidate_row(
+                "C0001",
+                cite_key="StableKey",
+                screening_status="excluded",
+                exclusion_reason="Out of scope",
+            )
+        ],
+    )
+    dormant_result = integrate(dormant_case)
+
+    active_root = tmp_path / "active"
+    active_root.mkdir()
+    active_case = build_case(
+        active_root,
+        candidates=[candidate_row("C0001")],
+    )
+    write_citation_keys(
+        active_case.citation_keys_path,
+        [{"candidate_id": "C0001", "cite_key": "StableKey"}],
+    )
+    active_result = integrate_metadata(
+        active_case.candidates_path,
+        active_case.conflicts_path,
+        active_case.manifest_path,
+        active_case.result_pairs,
+        citation_keys_path=active_case.citation_keys_path,
+    )
+
+    assert dormant_result.candidates[0]["cite_key"] == ""
+    assert active_result.candidates[0]["cite_key"] == "StableKey"
+    assert active_result.new_citation_keys == []
+
+
+def test_citation_key_ledger_requires_exact_header(tmp_path):
+    case = build_case(tmp_path)
+    case.citation_keys_path.write_text(
+        "candidate_id,key\nC0001,Example2025TrackStudy\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(MetadataIntegrationError, match=r"headers.*cite_key"):
+        integrate(case)
+
+
+@pytest.mark.parametrize(
+    ("rows", "message"),
+    [
+        (
+            [{"candidate_id": "", "cite_key": "ExampleKey"}],
+            "candidate_id.*required|candidate_id.*nonempty",
+        ),
+        (
+            [{"candidate_id": "C0001", "cite_key": ""}],
+            "cite_key.*required|cite_key.*nonempty",
+        ),
+        (
+            [{"candidate_id": "C01", "cite_key": "ExampleKey"}],
+            "candidate_id.*C01.*four digits|candidate_id.*format",
+        ),
+        (
+            [{"candidate_id": "C9999", "cite_key": "ExampleKey"}],
+            "C9999.*does not exist|unknown candidate_id.*C9999",
+        ),
+        (
+            [
+                {"candidate_id": "C0001", "cite_key": "ExampleKey"},
+                {"candidate_id": "C0001", "cite_key": "OtherKey"},
+            ],
+            "duplicate candidate_id.*C0001",
+        ),
+        (
+            [
+                {"candidate_id": "C0001", "cite_key": "ExampleKey"},
+                {"candidate_id": "C0002", "cite_key": "examplekey"},
+            ],
+            "case-insensitive|casefold|duplicate cite_key",
+        ),
+        (
+            [{"candidate_id": "C0001", "cite_key": "unsafe key"}],
+            "cite_key.*BibTeX-safe",
+        ),
+    ],
+    ids=[
+        "blank-candidate-id",
+        "blank-cite-key",
+        "malformed-candidate-id",
+        "orphan-candidate-id",
+        "duplicate-candidate-id",
+        "casefold-duplicate-key",
+        "unsafe-key",
+    ],
+)
+def test_citation_key_ledger_rejects_malformed_rows(
+    tmp_path, rows, message
+):
+    case = build_case(
+        tmp_path,
+        candidates=[candidate_row("C0001"), candidate_row("C0002")],
+    )
+    write_citation_keys(case.citation_keys_path, rows)
+
+    with pytest.raises(MetadataIntegrationError, match=message):
+        integrate(case)
+
+
+def test_snapshot_cite_key_is_only_a_matching_ledger_assertion(tmp_path):
+    case = build_case(
+        tmp_path,
+        candidates=[candidate_row("C0001", cite_key="SnapshotKey")],
+    )
+    write_citation_keys(
+        case.citation_keys_path,
+        [{"candidate_id": "C0001", "cite_key": "LedgerKey"}],
+    )
+
+    with pytest.raises(
+        MetadataIntegrationError,
+        match=r"snapshot cite_key 'SnapshotKey'.*ledger",
+    ):
+        integrate(case)
+
+
+def test_corrected_corpus_strict_replay_is_deterministic_and_preserves_keys():
+    root = Path(__file__).resolve().parents[1]
+    data_dir = root / "paper" / "data"
+    runs_dir = data_dir / "metadata_runs"
+    result_pairs = [
+        (
+            runs_dir / f"metadata-{number:02d}.csv",
+            runs_dir / f"metadata-{number:02d}-conflicts.csv",
+        )
+        for number in range(1, 7)
+    ]
+    arguments = {
+        "candidates_path": data_dir / "metadata_inputs" / "v1" / "candidates.csv",
+        "conflicts_path": data_dir / "metadata_inputs" / "v1" / "conflicts.csv",
+        "manifest_path": data_dir / "metadata_manifest.csv",
+        "result_pairs": result_pairs,
+        "citation_keys_path": data_dir / "citation_keys.csv",
+    }
+
+    first = integrate_metadata(**arguments)
+    second = integrate_metadata(**arguments)
+    with (data_dir / "citation_keys.csv").open(
+        encoding="utf-8", newline=""
+    ) as handle:
+        committed_ledger = list(csv.DictReader(handle))
+
+    assert second == first
+    assert first.new_citation_keys == []
+    assert first.citation_keys == committed_ledger
+    assert len(first.bibliography) == 198
+    assert {
+        row["cite_key"] for row in first.bibliography
+    } == {
+        row["cite_key"] for row in committed_ledger
+    }
+
+    candidates_by_id = {
+        row["candidate_id"]: row for row in first.candidates
+    }
+    assert {
+        candidate_id: candidates_by_id[candidate_id]["cite_key"]
+        for candidate_id in ("C0049", "C0082", "C0165", "C0188", "C0189")
+    } == {
+        "C0049": "DralligNodateProceduralRace",
+        "C0082": "MIT2017MITRACECAR",
+        "C0165": "Yu2025MasteringDiverse",
+        "C0188": "IsaacLabNodateIsaacLab",
+        "C0189": "TUMFTM2020LapTime",
+    }
+    assert {
+        row["candidate_id"] for row in first.candidates if row["cite_key"]
+    } == {
+        row["candidate_id"] for row in committed_ledger
+    }
+
+
+def test_default_integration_outputs_validate_round_trip(tmp_path):
+    result = integrate(build_case(tmp_path))
+
+    data = validate_integration_round_trip(tmp_path, result)
+
+    assert (data.parent / "references.bib").read_bytes() == (
+        result.bibtex.encode("utf-8")
+    )
+
+
+def test_complex_rendered_values_validate_round_trip(tmp_path):
+    case = build_case(tmp_path)
+    row = case.all_metadata_rows[0]
+    row.update(
+        title="Étude {Nested}\nTrack \\ Path, 100%",
+        authors="ACME {R&D}, GmbH;Zoë D'Árc",
+        author_kinds="corporate;personal",
+        key_author="ACME",
+        venue="Journál, Series",
+    )
+    case.write_results()
+
+    result = integrate(case)
+    validate_integration_round_trip(tmp_path, result)
+
+    assert "author = {{ACME \\{R\\&D\\}, GmbH} and Zoë D'Árc}" in result.bibtex
+    assert "title = {Étude \\{Nested\\}\nTrack \\textbackslash{} Path, 100\\%}" in (
+        result.bibtex
+    )
+
+def test_multiline_lf_bibliography_values_validate_round_trip(tmp_path):
+    case = build_case(tmp_path)
+    row = case.all_metadata_rows[0]
+    row.update(
+        title="Track\nStudy",
+        authors="Alice\nExample;ACME\nLabs",
+        author_kinds="personal;corporate",
+        key_author="Example",
+        venue="Journal\nSeries",
+    )
+    case.write_results()
+
+    result = integrate(case)
+    data = validate_integration_round_trip(tmp_path, result)
+
+    references = (data.parent / "references.bib").read_bytes()
+    assert b"\r" not in references
+    assert references == result.bibtex.encode("utf-8")
+
+
+@pytest.mark.parametrize("field", ["title", "authors", "venue", "key_author"])
+def test_integrator_rejects_embedded_carriage_return_before_output(
+    tmp_path, field
+):
+    case = build_case(tmp_path)
+    row = case.all_metadata_rows[0]
+    value = row[field]
+    row[field] = f"{value[:1]}\r{value[1:]}"
+    case.write_results()
+
+    with pytest.raises(
+        MetadataIntegrationError,
+        match=rf"bibliography field {field!r} contains carriage return",
+    ):
+        integrate(case)
+
+
+@pytest.mark.parametrize("field", BIBLIOGRAPHY_HEADER)
+def test_render_bibtex_rejects_embedded_carriage_return(tmp_path, field):
+    result = integrate(build_case(tmp_path))
+    row = dict(result.bibliography[0])
+    value = row[field] or "value"
+    row[field] = f"{value}\rcontinued"
+
+    with pytest.raises(
+        MetadataIntegrationError,
+        match=rf"bibliography field {field!r} contains carriage return",
+    ):
+        metadata_integration.render_bibtex([row])
+
+
+
+def test_misc_paper_integration_outputs_validate_round_trip(tmp_path):
+    case = build_case(tmp_path)
+    row = case.all_metadata_rows[0]
+    row.update(
+        bib_entry_type="misc",
+        bib_venue_field="howpublished",
+    )
+    case.write_results()
+
+    result = integrate(case)
+
+    validate_integration_round_trip(tmp_path, result)
+
+
+
 @pytest.mark.parametrize(
     ("mutation", "message"),
     [
@@ -415,6 +846,7 @@ def test_exactly_six_distinct_result_pairs_are_required(tmp_path):
             case.conflicts_path,
             case.manifest_path,
             case.result_pairs[:-1],
+            citation_keys_path=case.citation_keys_path,
         )
     with pytest.raises(MetadataIntegrationError, match="distinct"):
         integrate_metadata(
@@ -422,6 +854,7 @@ def test_exactly_six_distinct_result_pairs_are_required(tmp_path):
             case.conflicts_path,
             case.manifest_path,
             [*case.result_pairs[:-1], case.result_pairs[0]],
+            citation_keys_path=case.citation_keys_path,
         )
 
 
@@ -581,7 +1014,7 @@ def test_doi_conflict_resolution_is_stored_canonically(tmp_path):
     assert result.conflicts[0]["resolution"] == "10.1000/c0001"
 
 
-def test_distinct_evidenced_doi_resolver_url_is_not_omitted(tmp_path):
+def test_distinct_doi_resolver_bibliography_url_is_rejected(tmp_path):
     case = build_case(tmp_path)
     row = case.all_metadata_rows[0]
     alternate = "https://doi.org/10.1000/alternate"
@@ -589,10 +1022,91 @@ def test_distinct_evidenced_doi_resolver_url_is_not_omitted(tmp_path):
     row["url_evidence"] += f";doi::{alternate}"
     case.write_results()
 
-    result = integrate(case)
+    with pytest.raises(
+        MetadataIntegrationError,
+        match="bib_url.*DOI|DOI.*bib_url|match.*doi",
+    ):
+        integrate(case)
 
-    assert result.bibliography[0]["url"] == alternate
-    assert f"url = {{{alternate}}}" in result.bibtex
+
+def test_doi_resolver_bibliography_url_requires_candidate_doi(tmp_path):
+    case = build_case(tmp_path)
+    row = case.all_metadata_rows[0]
+    resolver = "https://doi.org/10.1000/alternate"
+    row.update(
+        doi="NR",
+        doi_evidence="NR",
+        url=resolver,
+        url_evidence=f"doi::{resolver}",
+        bib_url=resolver,
+    )
+    case.write_results()
+
+    with pytest.raises(
+        MetadataIntegrationError,
+        match="bib_url.*DOI|DOI.*bib_url|requires.*doi",
+    ):
+        integrate(case)
+
+
+@pytest.mark.parametrize("field", ["url", "bib_url"])
+@pytest.mark.parametrize(
+    "whitespace",
+    [
+        " ",
+        "\t",
+        "\n",
+        "\r",
+        "\v",
+        "\f",
+        "\u00a0",
+        "\u1680",
+        "\u2003",
+        "\u2028",
+        "\u202f",
+        "\u3000",
+    ],
+    ids=[
+        "space",
+        "tab",
+        "newline",
+        "carriage-return",
+        "vertical-tab",
+        "form-feed",
+        "no-break-space",
+        "ogham-space-mark",
+        "em-space",
+        "line-separator",
+        "narrow-no-break-space",
+        "ideographic-space",
+    ],
+)
+def test_produced_urls_reject_unicode_whitespace(tmp_path, field, whitespace):
+    case = build_case(tmp_path)
+    row = case.all_metadata_rows[0]
+    malformed = f"https://publisher.example/path{whitespace}segment"
+    row[field] = malformed
+    case.write_results()
+
+    with pytest.raises(MetadataIntegrationError, match="URL.*whitespace"):
+        integrate(case)
+
+
+def test_non_whitespace_unicode_url_validates_round_trip(tmp_path):
+    case = build_case(tmp_path)
+    row = case.all_metadata_rows[0]
+    url = "https://publisher.example/café"
+    row.update(
+        url=url,
+        bib_url=url,
+        url_evidence=f"publisher::{url}",
+    )
+    case.write_results()
+
+    result = integrate(case)
+    validate_integration_round_trip(tmp_path, result)
+
+    assert result.bibliography[0]["url"] == url
 
 
 def test_malformed_populated_doi_is_rejected(tmp_path):
@@ -787,6 +1301,7 @@ def test_verified_official_undated_artifact_uses_nodate_corporate_key(
     case.write_results()
 
     result = integrate(case)
+    validate_integration_round_trip(tmp_path, result)
 
     assert result.candidates[0]["cite_key"] == "EPFLNodateUberTrack"
     assert result.bibliography[0]["year"] == ""
@@ -844,6 +1359,54 @@ def test_author_kinds_align_with_complete_authors(
 
     with pytest.raises(MetadataIntegrationError, match="author"):
         integrate(case)
+
+
+@pytest.mark.parametrize("field", ["year", "venue"])
+def test_misc_paper_like_source_requires_year_and_venue(tmp_path, field):
+    case = build_case(tmp_path)
+    row = case.all_metadata_rows[0]
+    row.update(
+        bib_entry_type="misc",
+        bib_venue_field="howpublished",
+    )
+    row[field] = "NR"
+    row[f"{field}_evidence"] = "NR"
+    if field == "venue":
+        row["bib_venue_field"] = "NR"
+    case.write_results()
+
+    with pytest.raises(
+        MetadataIntegrationError,
+        match=rf"paper-like {field}",
+    ):
+        integrate(case)
+
+
+@pytest.mark.parametrize(
+    "authors",
+    ["One Author ET, AL.", "One Author et-al", "One Author Et.Al."],
+)
+def test_incomplete_author_markers_are_punctuation_robust(tmp_path, authors):
+    case = build_case(tmp_path)
+    case.all_metadata_rows[0]["authors"] = authors
+    case.write_results()
+
+    with pytest.raises(
+        MetadataIntegrationError,
+        match="authors.*complete|not et al",
+    ):
+        integrate(case)
+
+
+@pytest.mark.parametrize("key_author", ["", "NR", "et al.", "ET, AL."])
+def test_verified_key_author_must_be_complete(tmp_path, key_author):
+    case = build_case(tmp_path)
+    case.all_metadata_rows[0]["key_author"] = key_author
+    case.write_results()
+
+    with pytest.raises(MetadataIntegrationError, match="key_author"):
+        integrate(case)
+
 
 
 def test_immutable_candidate_columns_are_preserved(tmp_path):
@@ -1325,6 +1888,50 @@ def test_collision_suffixes_all_unkeyed_members_by_candidate_id(tmp_path):
     }
 
 
+def test_existing_key_on_ineligible_candidate_is_dormant(tmp_path):
+    case = build_case(
+        tmp_path,
+        candidates=[
+            candidate_row(
+                "C0001",
+                cite_key="StaleKey",
+                screening_status="excluded",
+                exclusion_reason="Out of scope",
+            )
+        ],
+    )
+
+    result = integrate(case)
+
+    assert result.candidates[0]["cite_key"] == ""
+    assert result.bibliography == []
+    assert result.citation_keys == [
+        {"candidate_id": "C0001", "cite_key": "StaleKey"}
+    ]
+
+
+def test_casefold_collision_from_ineligible_key_is_rejected(tmp_path):
+    case = build_case(
+        tmp_path,
+        candidates=[
+            candidate_row("C0001", cite_key="ProtectedKey"),
+            candidate_row(
+                "C0002",
+                cite_key="protectedkey",
+                screening_status="excluded",
+                exclusion_reason="Out of scope",
+            ),
+        ],
+    )
+
+    with pytest.raises(
+        MetadataIntegrationError,
+        match="existing cite_key.*not verified and non-excluded|case-insensitive",
+    ):
+        integrate(case)
+
+
+
 def test_existing_key_is_preserved_and_later_collision_is_suffixed(tmp_path):
     candidates = [
         candidate_row(
@@ -1475,6 +2082,114 @@ def output_paths(tmp_path: Path) -> dict[str, Path]:
     }
 
 
+def test_writer_preserves_existing_ledger_bytes_as_extension_prefix(tmp_path):
+    case = build_case(
+        tmp_path,
+        candidates=[
+            candidate_row(
+                "C0001",
+                cite_key="DormantKey",
+                screening_status="excluded",
+                exclusion_reason="Out of scope",
+            ),
+            candidate_row("C0002", title="Alpha Course"),
+        ],
+    )
+    original_bytes = (
+        b'candidate_id,cite_key\r\nC0001,"DormantKey"\r\n'
+    )
+    case.citation_keys_path.write_bytes(original_bytes)
+    result = integrate(case)
+    outputs = output_paths(tmp_path)
+    output_citation_keys = outputs["candidates_path"].with_name(
+        "citation_keys.csv"
+    )
+
+    write_integration_outputs(
+        result,
+        citation_keys_path=output_citation_keys,
+        **outputs,
+    )
+
+    assert output_citation_keys.read_bytes() == (
+        original_bytes + b"C0002,Example2025AlphaCourse\n"
+    )
+
+
+def test_mutation_during_manifest_validation_is_rejected(
+    tmp_path,
+    monkeypatch,
+):
+    case = build_case(tmp_path)
+    original_validate = metadata_integration.validate_manifest_inputs
+
+    def validate_then_mutate(*args, **kwargs):
+        result = original_validate(*args, **kwargs)
+        payload = case.candidates_path.read_bytes()
+        assert b"discovery-agent" in payload
+        case.candidates_path.write_bytes(
+            payload.replace(b"discovery-agent", b"mutated-agent", 1)
+        )
+        return result
+
+    monkeypatch.setattr(
+        metadata_integration,
+        "validate_manifest_inputs",
+        validate_then_mutate,
+    )
+
+    with pytest.raises(
+        MetadataIntegrationError,
+        match=r"input .* changed since integration",
+    ):
+        integrate(case)
+
+
+def test_writer_rejects_ledger_mutation_after_integration(tmp_path):
+    case = build_case(tmp_path)
+    result = integrate(case)
+    case.citation_keys_path.write_text(
+        "candidate_id,cite_key\nC0001,TamperedKey\n",
+        encoding="utf-8",
+    )
+    outputs = output_paths(tmp_path)
+    output_citation_keys = outputs["candidates_path"].with_name(
+        "citation_keys.csv"
+    )
+
+    with pytest.raises(
+        MetadataIntegrationError,
+        match=r"input.*changed since integration|input mutation",
+    ):
+        write_integration_outputs(
+            result,
+            citation_keys_path=output_citation_keys,
+            **outputs,
+        )
+
+    assert not any(path.exists() for path in outputs.values())
+    assert not output_citation_keys.exists()
+
+
+@pytest.mark.parametrize("alias_kind", ["ledger-input", "other-output"])
+def test_writer_rejects_ledger_output_path_aliases(tmp_path, alias_kind):
+    case = build_case(tmp_path)
+    result = integrate(case)
+    outputs = output_paths(tmp_path)
+    output_citation_keys = (
+        case.citation_keys_path
+        if alias_kind == "ledger-input"
+        else outputs["candidates_path"]
+    )
+
+    with pytest.raises(MetadataIntegrationError, match="alias|distinct|differ"):
+        write_integration_outputs(
+            result,
+            citation_keys_path=output_citation_keys,
+            **outputs,
+        )
+
+
 def test_writer_is_byte_idempotent_and_uses_exact_output_schemas(tmp_path):
     case = build_case(tmp_path)
     result = integrate(case)
@@ -1515,6 +2230,10 @@ def test_writer_rejects_empty_carried_input_identity(tmp_path):
         conflicts=result.conflicts,
         bibliography=result.bibliography,
         bibtex=result.bibtex,
+        citation_keys=result.citation_keys,
+        new_citation_keys=result.new_citation_keys,
+        citation_keys_bytes=result.citation_keys_bytes,
+        input_fingerprints=(),
         input_paths=(),
     )
     outputs = output_paths(tmp_path)
@@ -1668,6 +2387,8 @@ def _cli_inputs(case: IntegrationCase) -> list[str]:
         str(case.conflicts_path),
         "--manifest",
         str(case.manifest_path),
+        "--citation-keys",
+        str(case.citation_keys_path),
     ]
     for metadata_path, conflict_path in case.result_pairs:
         arguments.extend(["--metadata-result", str(metadata_path)])
@@ -1709,18 +2430,12 @@ def test_cli_output_path_failure_writes_nothing(tmp_path):
 
 def test_cli_requires_explicit_outputs_and_writes_all_four(tmp_path):
     case = build_case(tmp_path)
+    write_citation_keys(
+        case.citation_keys_path,
+        [{"candidate_id": "C0001", "cite_key": "Example2025TrackStudy"}],
+    )
     outputs = output_paths(tmp_path)
-    arguments = [
-        "--candidates",
-        str(case.candidates_path),
-        "--conflicts",
-        str(case.conflicts_path),
-        "--manifest",
-        str(case.manifest_path),
-    ]
-    for metadata_path, conflict_path in case.result_pairs:
-        arguments.extend(["--metadata-result", str(metadata_path)])
-        arguments.extend(["--conflict-result", str(conflict_path)])
+    arguments = _cli_inputs(case)
     arguments.extend(
         [
             "--output-candidates",
@@ -1736,3 +2451,92 @@ def test_cli_requires_explicit_outputs_and_writes_all_four(tmp_path):
 
     assert main(arguments) == 0
     assert all(path.is_file() for path in outputs.values())
+
+
+def _required_cli_outputs(outputs: dict[str, Path]) -> list[str]:
+    return [
+        "--output-candidates",
+        str(outputs["candidates_path"]),
+        "--output-conflicts",
+        str(outputs["conflicts_path"]),
+        "--output-bibliography",
+        str(outputs["bibliography_path"]),
+        "--output-bibtex",
+        str(outputs["bibtex_path"]),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("extra_arguments", "message"),
+    [
+        (
+            ["--extend-citation-keys"],
+            "--output-citation-keys is required",
+        ),
+        (
+            ["--output-citation-keys", "unused.csv"],
+            "--output-citation-keys is forbidden",
+        ),
+    ],
+    ids=["extension-missing-output", "strict-output-forbidden"],
+)
+def test_cli_couples_extension_and_ledger_output(
+    tmp_path,
+    capsys,
+    extra_arguments,
+    message,
+):
+    case = build_case(tmp_path)
+    outputs = output_paths(tmp_path)
+
+    with pytest.raises(SystemExit) as raised:
+        main(
+            [
+                *_cli_inputs(case),
+                *_required_cli_outputs(outputs),
+                *extra_arguments,
+            ]
+        )
+
+    assert raised.value.code == 2
+    assert message in capsys.readouterr().err
+
+
+def test_cli_extension_writes_all_outputs_and_appended_ledger(tmp_path):
+    case = build_case(tmp_path)
+    outputs = output_paths(tmp_path)
+    output_citation_keys = outputs["candidates_path"].with_name(
+        "citation_keys.csv"
+    )
+
+    assert (
+        main(
+            [
+                *_cli_inputs(case),
+                *_required_cli_outputs(outputs),
+                "--extend-citation-keys",
+                "--output-citation-keys",
+                str(output_citation_keys),
+            ]
+        )
+        == 0
+    )
+    assert all(path.is_file() for path in outputs.values())
+    assert output_citation_keys.read_text(encoding="utf-8") == (
+        "candidate_id,cite_key\n"
+        "C0001,Example2025TrackStudy\n"
+    )
+
+
+def test_cli_requires_citation_key_ledger(tmp_path, capsys):
+    case = build_case(tmp_path)
+    outputs = output_paths(tmp_path)
+    arguments = _cli_inputs(case)
+    ledger_index = arguments.index("--citation-keys")
+    del arguments[ledger_index : ledger_index + 2]
+
+    with pytest.raises(SystemExit) as raised:
+        main([*arguments, *_required_cli_outputs(outputs)])
+
+    assert raised.value.code == 2
+    assert "--citation-keys" in capsys.readouterr().err

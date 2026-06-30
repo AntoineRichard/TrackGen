@@ -1579,52 +1579,91 @@ A central integrator validates manifest membership and hashes, preserves candida
 
 Generate deterministic keys and `references.bib` centrally from `bibliography.csv`, whose header is `candidate_id,cite_key,entry_type,key_author,authors,author_kinds,title,year,venue_field,venue,doi,url`. Assign keys to verified, non-excluded candidates without changing screening status. Normalize author or corporate-author tokens, use the four-digit year or `Nodate`, append two non-stopword title tokens, and suffix every collision member in stable candidate-ID order. Existing nonempty keys are never silently renamed.
 
-- [ ] **Step 6: Integrate metadata and validate bibliography correspondence**
+#### Citation-key identity hardening (2026-06-30)
+
+The complete append-only `paper/data/citation_keys.csv` ledger is the assignment
+authority. It preserves all 184 initially issued mappings as an exact prefix and appends
+14 newly verified candidates, for 198 case-insensitively unique keys. Strict integration
+requires every active candidate to resolve through this ledger; extension is an explicit,
+separately published operation. Metadata corrections cannot rename issued keys, dormant
+keys reserve their namespace, and the committed full-ledger SHA-256 independently anchors
+all 198 assignments.
+
+- [x] Add strict and extension integration modes, append-prefix preservation, collision
+  reservation, input fingerprinting before manifest validation, and staged ledger output.
+- [x] Extend corpus validation for active/dormant key correspondence and exact
+  bibliography/BibTeX agreement.
+- [x] Preserve the five keys whose corrected metadata would otherwise rename them and
+  publish 14 deterministic new assignments.
+- [x] Run two byte-identical strict replays and anchor the complete ledger with SHA-256
+  `48d891587257f79b9c7cf97f90dd3ebd36bd0378e9ed8c100628afcfd6540e5f`.
+
+#### Metadata replay hardening (2026-06-30)
+
+The committed manifest remains bound to explicit immutable inputs at
+`paper/data/metadata_inputs/v1/{candidates.csv,conflicts.csv}`. The snapshots are the
+exact pre-integration blobs from `c96c2d6`, not reconstructions from the canonical
+post-integration ledgers. Validation and replay always name `v1`; there is no mutable
+`current` pointer.
+
+- [x] Add failing tests in `tests/test_metadata_batches.py` for snapshot-mode initial
+  freeze, non-mutating validation, explicit refreeze to a new version, rejection of an
+  existing version, tampered snapshots, publication rollback, the committed v1 hash
+  contract, and replay of all six metadata result pairs to byte-identical canonical
+  candidates, conflicts, bibliography, and BibTeX outputs.
+- [x] Extend `paper/scripts/prepare_metadata_batches.py` with `--snapshot-dir`. With an
+  existing manifest and no `--refreeze`, validate that manifest against
+  `<snapshot-dir>/candidates.csv` and `<snapshot-dir>/conflicts.csv` without writing.
+  Initial freeze and `--refreeze` require direct `--candidates` and `--conflicts` inputs
+  plus a non-existing snapshot directory. Stage exact input bytes and the manifest,
+  publish the immutable directory first, then atomically exchange and verify the
+  manifest last. Roll back owned paths or retain a named recovery journal when safe
+  restoration cannot be proven. Reject `--refreeze` without
+  an explicit snapshot directory. Keep legacy direct-input initial freeze and ordinary
+  validation.
+- [x] Extract the c96c2d6 candidate and conflict blobs into
+  `paper/data/metadata_inputs/v1/`, then verify
+  `validate_manifest_inputs(metadata_manifest.csv, v1/candidates.csv,
+  v1/conflicts.csv)` yields snapshot
+  `303e6b0efb7a94be636ce0b22de9454062029ef9193ef5e0442aee263227ecec`.
+- [x] Document exact non-mutating validation, temporary-directory replay, and future
+  `v2` refreeze commands in `paper/data/README.md`; execute the documented validation
+  and six-pair replay commands.
+- [x] Re-run the strict current-tree byte comparison after the independent metadata
+  audits are canonically integrated. Two strict ledger-backed replays from `v1` are
+  byte-identical and reproduce canonical `candidates.csv`, `conflicts.csv`,
+  `bibliography.csv`, and `references.bib`.
+
+- [x] **Step 6: Integrate metadata and validate bibliography correspondence**
+
+#### Independent snapshot review follow-up
+
+- [x] Inject exceptions and `KeyboardInterrupt` after snapshot publication and after
+  manifest exchange. Verify the swapped-out inode and content, exchange back only while
+  the published inode remains transaction-owned, and retain
+  `.metadata_manifest.csv.recovery.*` with old manifest and snapshot state otherwise.
+  Preserve the original exception with Python 3.10-compatible rollback reporting.
+- [x] Race publication against symlinks, empty directories, and late-created entries.
+  Publish the fully staged directory with Linux `renameat2(RENAME_NOREPLACE)`; use
+  `lstat` identities to quarantine only the directory owned by this transaction, and
+  use no-clobber publication for legacy direct manifest creation.
+- [x] Reject symlinked manifest/snapshot files and directories plus lexical, resolved,
+  and hard-link aliases. Require an existing regular non-symlink manifest for
+  `--refreeze`, require an absent manifest for initial freeze, and publish snapshot
+  directories/files as `0755`/`0644`.
+- [x] Add `.gitattributes` with `paper/data/metadata_inputs/** binary`, retain the v1
+  raw SHA-256 assertions separately from semantic manifest validation, and make every
+  README shell block self-contained with `set -euo pipefail`, cleanup traps, and
+  unmasked `cmp` failures.
 
 Extend validate_corpus.py so every nonempty cite_key belongs to a verified, non-excluded candidate and has exactly one
-bibliography.csv row and BibTeX entry, and every citation artifact maps to the same candidate. Parse BibTeX entry keys with
-a conservative regular expression; do not attempt to rewrite BibTeX.
+bibliography.csv row and BibTeX entry, and every citation artifact maps to the same candidate. Parse the constrained generated BibTeX with a brace-aware deterministic parser and compare every rendered field; do not rewrite BibTeX during validation.
 
-Add this implementation to validate_corpus.py and call
-validate_bibliography(data_dir.parent / "references.bib", cite_bearing_verified_keys) at the end of
-validate_directory:
-
-~~~python
-BIB_KEY_PATTERN = re.compile(
-    r"(?m)^@\w+\s*{\s*([^,\s]+)\s*,"
-)
-
-
-def validate_bibliography(path: Path, expected_keys: set[str]) -> None:
-    if not path.is_file():
-        raise CorpusError(f"{path}: bibliography is missing")
-    keys = BIB_KEY_PATTERN.findall(path.read_text())
-    duplicates = sorted(key for key, count in Counter(keys).items() if count > 1)
-    if duplicates:
-        raise CorpusError(f"{path}: duplicate BibTeX keys {duplicates}")
-    actual = set(keys)
-    if actual != expected_keys:
-        raise CorpusError(
-            f"{path}: BibTeX mismatch; "
-            f"missing={sorted(expected_keys - actual)}, "
-            f"extra={sorted(actual - expected_keys)}"
-        )
-~~~
-
-Import re and Counter at module scope. Update build_valid_fixture so references.bib
-contains:
-
-~~~bibtex
-@article{Sample2026Course,
-  author = {Author, A.},
-  title = {A Fictional Course Generator},
-  journal = {Test Proceedings},
-  year = {2026},
-  doi = {10.0000/example}
-}
-~~~
-
-
+The implemented validator requires the exact `bibliography.csv` schema, checks active
+candidate and append-only ledger correspondence, validates author and venue invariants,
+parses nested BibTeX braces and escaped values deterministically, and compares the exact
+UTF-8/LF rendering against `references.bib`. Producer-to-validator round-trip tests cover
+Unicode, corporate authors, malformed entries, URL/DOI rules, and byte-level line endings.
 
 
 
@@ -1638,7 +1677,7 @@ python3 paper/scripts/validate_corpus.py
 Expected: all tests and production validation pass with no unresolved bibliographic
 conflicts hidden by a verified status; unresolved disagreements remain explicit and uncited.
 
-- [ ] **Step 7: Commit the reconciled bibliography**
+- [x] **Step 7: Commit the reconciled bibliography**
 
 ~~~bash
 git add paper/scripts paper/data paper/references.bib tests/test_survey_corpus.py

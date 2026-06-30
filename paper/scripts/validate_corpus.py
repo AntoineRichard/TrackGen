@@ -3,8 +3,10 @@ from __future__ import annotations
 import csv
 import json
 import re
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 
 class CorpusError(ValueError):
@@ -55,6 +57,14 @@ HEADERS = {
         "conflict_id", "record_type", "record_key", "field", "value_a", "value_b",
         "resolution", "resolver", "resolution_evidence",
     ),
+    "bibliography.csv": (
+        "candidate_id", "cite_key", "entry_type", "key_author", "authors",
+        "author_kinds", "title", "year", "venue_field", "venue", "doi",
+        "url",
+    ),
+    "citation_keys.csv": (
+        "candidate_id", "cite_key",
+    ),
 }
 
 
@@ -69,6 +79,41 @@ SEARCH_QUERY_STREAMS = frozenset(
 )
 CANDIDATE_ID_PATTERN = re.compile(r"C[0-9]{4,}")
 ISO_DATE_PATTERN = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+CITE_KEY_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9:._/+\-]*")
+YEAR_PATTERN = re.compile(r"[0-9]{4}")
+DOI_PATTERN = re.compile(r"10\.[0-9]{4,9}/[a-z0-9._;()/:+\-]+")
+SUPPORTED_ENTRY_TYPES = frozenset(
+    {"article", "inproceedings", "misc", "techreport", "book"}
+)
+VENUE_FIELD_BY_ENTRY_TYPE = {
+    "article": "journal",
+    "inproceedings": "booktitle",
+    "misc": "howpublished",
+    "techreport": "institution",
+    "book": "publisher",
+}
+AUTHOR_KINDS = frozenset({"personal", "corporate"})
+DOI_RESOLVER_HOSTS = frozenset({"doi.org", "dx.doi.org", "www.doi.org"})
+PAPER_SOURCE_PATTERN = re.compile(
+    r"paper|article|preprint|proceedings|journal|conference|publication|"
+    r"survey|thesis|report|book"
+)
+NONPAPER_SOURCE_PATTERN = re.compile(
+    r"software|documentation|standard|repository|benchmark|competition|"
+    r"simulator|platform|release|dataset|artifact|tool|package|system"
+)
+INCOMPLETE_AUTHOR_PATTERN = re.compile(r"\bet[\W_]*al\b", re.IGNORECASE)
+
+BIBLIOGRAPHY_REQUIRED_FIELDS = (
+    "candidate_id",
+    "cite_key",
+    "entry_type",
+    "key_author",
+    "authors",
+    "author_kinds",
+    "title",
+)
+
 
 DEFAULT_TAXONOMY = {
     "domain": ["ground", "aerial", "maritime", "mixed", "adjacent"],
@@ -158,6 +203,7 @@ REQUIRED_FIELDS = {
         "conflict_id", "record_type", "record_key", "field", "value_a",
         "value_b",
     ),
+    "citation_keys.csv": ("candidate_id", "cite_key"),
 }
 
 FORBIDDEN_MARKERS = ("TO" + "DO", "T" + "BD", "FIX" + "ME", "CITATION " + "NEEDED")
@@ -421,6 +467,718 @@ def _validate_local_corpus_counts(
             )
 
 
+def _is_nonpaper_misc(entry_type: str, source_type: str) -> bool:
+    normalized_source_type = source_type.casefold()
+    return (
+        entry_type == "misc"
+        and bool(NONPAPER_SOURCE_PATTERN.search(normalized_source_type))
+        and not PAPER_SOURCE_PATTERN.search(normalized_source_type)
+    )
+
+
+def _split_bibliography_list(
+    value: str,
+    *,
+    field: str,
+    row_number: int,
+) -> list[str]:
+    values = [item.strip() for item in value.split(";")]
+    if any(not item for item in values):
+        raise CorpusError(
+            f"bibliography.csv:{row_number}: {field} contains an empty "
+            "semicolon element"
+        )
+    if "NR" in values:
+        raise CorpusError(
+            f"bibliography.csv:{row_number}: {field}: NR must be the sole list sentinel"
+        )
+    return values
+
+
+def _validate_citation_key_rows(
+    rows: list[dict[str, str]],
+    candidates: list[dict[str, str]],
+) -> None:
+    _check_unique(
+        "citation_keys.csv",
+        rows,
+        "candidate_id",
+        "candidate_id",
+    )
+    _check_unique(
+        "citation_keys.csv",
+        rows,
+        "cite_key",
+        "cite_key",
+        lambda value: value.strip().casefold(),
+    )
+
+    candidates_by_id = {
+        row["candidate_id"]: row for row in candidates
+    }
+    ledger_by_id: dict[str, str] = {}
+    for row_number, row in enumerate(rows, start=2):
+        for field_name, value in row.items():
+            if value != value.strip():
+                raise CorpusError(
+                    f"citation_keys.csv:{row_number}: {field_name} "
+                    "contains surrounding whitespace"
+                )
+        candidate_id = row["candidate_id"]
+        cite_key = row["cite_key"]
+        if CANDIDATE_ID_PATTERN.fullmatch(candidate_id) is None:
+            raise CorpusError(
+                f"citation_keys.csv:{row_number}: candidate_id="
+                f"{candidate_id!r} must be C followed by at least four digits"
+            )
+        if CITE_KEY_PATTERN.fullmatch(cite_key) is None:
+            raise CorpusError(
+                f"citation_keys.csv:{row_number}: cite_key={cite_key!r} "
+                "is not BibTeX-safe"
+            )
+        if candidate_id not in candidates_by_id:
+            raise CorpusError(
+                f"citation_keys.csv:{row_number}: candidate_id="
+                f"{candidate_id!r} does not exist in candidates.csv"
+            )
+        ledger_by_id[candidate_id] = cite_key
+
+    for row_number, candidate in enumerate(candidates, start=2):
+        eligible = (
+            candidate["metadata_status"] == "verified"
+            and candidate["screening_status"] != "excluded"
+        )
+        if not eligible:
+            continue
+        candidate_id = candidate["candidate_id"]
+        ledger_key = ledger_by_id.get(candidate_id)
+        if ledger_key is None:
+            raise CorpusError(
+                f"candidates.csv:{row_number}: candidate_id={candidate_id!r} "
+                "is missing from citation key ledger"
+            )
+        if candidate["cite_key"] != ledger_key:
+            raise CorpusError(
+                f"candidates.csv:{row_number}: candidate_id={candidate_id!r}: "
+                f"cite_key={candidate['cite_key']!r} does not match citation "
+                f"key ledger value {ledger_key!r}"
+            )
+
+
+def _validate_bibliography_row(
+    row: dict[str, str],
+    row_number: int,
+) -> None:
+    for field, value in row.items():
+        if "\r" in value:
+            raise CorpusError(
+                f"bibliography.csv:{row_number}: {field} contains carriage return"
+            )
+        if value != value.strip():
+            raise CorpusError(
+                f"bibliography.csv:{row_number}: {field} contains "
+                "surrounding whitespace"
+            )
+    for field in BIBLIOGRAPHY_REQUIRED_FIELDS:
+        _require("bibliography.csv", row_number, row, field)
+
+    cite_key = row["cite_key"]
+    if CITE_KEY_PATTERN.fullmatch(cite_key) is None:
+        raise CorpusError(
+            f"bibliography.csv:{row_number}: cite_key={cite_key!r} "
+            "is not BibTeX-safe"
+        )
+
+    entry_type = row["entry_type"]
+    if entry_type not in SUPPORTED_ENTRY_TYPES:
+        raise CorpusError(
+            f"bibliography.csv:{row_number}: unsupported "
+            f"entry_type {entry_type!r}"
+        )
+
+    for field in ("authors", "key_author"):
+        value = row[field]
+        if value == "NR":
+            raise CorpusError(
+                f"bibliography.csv:{row_number}: {field} cannot be NR"
+            )
+        if INCOMPLETE_AUTHOR_PATTERN.search(value):
+            raise CorpusError(
+                f"bibliography.csv:{row_number}: {field} contains "
+                "incomplete author marker"
+            )
+
+    authors = _split_bibliography_list(
+        row["authors"], field="authors", row_number=row_number
+    )
+    author_kinds = _split_bibliography_list(
+        row["author_kinds"],
+        field="author_kinds",
+        row_number=row_number,
+    )
+    if len(authors) != len(author_kinds):
+        raise CorpusError(
+            f"bibliography.csv:{row_number}: author_kinds must align "
+            "one-to-one with authors"
+        )
+    invalid_kinds = sorted(set(author_kinds) - AUTHOR_KINDS)
+    if invalid_kinds:
+        raise CorpusError(
+            f"bibliography.csv:{row_number}: invalid author kind "
+            f"{invalid_kinds[0]!r}"
+        )
+
+    venue = row["venue"]
+    venue_field = row["venue_field"]
+    expected_venue_field = VENUE_FIELD_BY_ENTRY_TYPE[entry_type]
+    if venue and venue_field != expected_venue_field:
+        raise CorpusError(
+            f"bibliography.csv:{row_number}: {entry_type} requires "
+            f"venue_field={expected_venue_field!r}"
+        )
+    if not venue and venue_field:
+        raise CorpusError(
+            f"bibliography.csv:{row_number}: venue_field must be empty "
+            "when venue is empty"
+        )
+
+    year = row["year"]
+    if year and YEAR_PATTERN.fullmatch(year) is None:
+        raise CorpusError(
+            f"bibliography.csv:{row_number}: year={year!r} must be "
+            "four digits when present"
+        )
+
+    doi = row["doi"]
+    if doi and (
+        normalize_doi(doi) != doi
+        or DOI_PATTERN.fullmatch(doi) is None
+    ):
+        raise CorpusError(
+            f"bibliography.csv:{row_number}: doi={doi!r} must use "
+            "canonical DOI form"
+        )
+
+    url = row["url"]
+    if not url:
+        return
+    if any(character.isspace() for character in url):
+        raise CorpusError(
+            f"bibliography.csv:{row_number}: url contains whitespace"
+        )
+    try:
+        parsed = urlsplit(url)
+        host = parsed.hostname
+        _ = parsed.port
+    except ValueError as exc:
+        raise CorpusError(
+            f"bibliography.csv:{row_number}: url={url!r} must be an "
+            "absolute HTTP/HTTPS URL with a valid authority"
+        ) from exc
+    if (
+        parsed.scheme.casefold() not in {"http", "https"}
+        or not parsed.netloc
+        or not host
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        raise CorpusError(
+            f"bibliography.csv:{row_number}: url={url!r} must be an "
+            "absolute HTTP/HTTPS URL with a valid authority and no credentials"
+        )
+
+    normalized_host = host.casefold().rstrip(".")
+    if normalized_host in DOI_RESOLVER_HOSTS:
+        resolver_doi = normalize_doi(unquote(parsed.path).lstrip("/"))
+        if (
+            not doi
+            or resolver_doi != doi
+            or DOI_PATTERN.fullmatch(resolver_doi) is None
+        ):
+            raise CorpusError(
+                f"bibliography.csv:{row_number}: DOI resolver URL "
+                f"{url!r} does not match doi={doi!r}"
+            )
+        raise CorpusError(
+            f"bibliography.csv:{row_number}: redundant DOI resolver URL "
+            f"{url!r} must be omitted"
+        )
+
+
+def _validate_bibliography_rows(
+    rows: list[dict[str, str]],
+    candidates: list[dict[str, str]],
+) -> None:
+    for row_number, row in enumerate(rows, start=2):
+        _validate_bibliography_row(row, row_number)
+
+    _check_unique(
+        "bibliography.csv", rows, "candidate_id", "candidate_id"
+    )
+    _check_unique(
+        "bibliography.csv",
+        rows,
+        "cite_key",
+        "cite_key",
+        lambda value: value.strip().casefold(),
+    )
+
+    eligible_by_id = {
+        row["candidate_id"]: row
+        for row in candidates
+        if row["metadata_status"] == "verified"
+        and row["screening_status"] != "excluded"
+    }
+    seen_ids: set[str] = set()
+    candidate_fields = (
+        "cite_key",
+        "title",
+        "authors",
+        "year",
+        "venue",
+        "doi",
+    )
+    for row_number, row in enumerate(rows, start=2):
+        candidate_id = row["candidate_id"]
+        if candidate_id not in eligible_by_id:
+            raise CorpusError(
+                f"bibliography.csv:{row_number}: "
+                f"candidate_id={candidate_id!r} is not eligible; expected "
+                "metadata_status='verified' and screening_status!='excluded'"
+            )
+        seen_ids.add(candidate_id)
+        candidate = eligible_by_id[candidate_id]
+        if not _is_nonpaper_misc(
+            row["entry_type"], candidate["source_type"]
+        ):
+            source_label = (
+                "paper-like misc"
+                if row["entry_type"] == "misc"
+                else row["entry_type"]
+            )
+            for field in ("year", "venue"):
+                if not row[field]:
+                    raise CorpusError(
+                        f"bibliography.csv:{row_number}: {field} is "
+                        f"required for {source_label}"
+                    )
+
+        for field in candidate_fields:
+            if row[field] != candidate[field]:
+                raise CorpusError(
+                    f"bibliography.csv:{row_number}: "
+                    f"candidate_id={candidate_id!r}: {field}={row[field]!r} "
+                    f"does not match candidates.csv value "
+                    f"{candidate[field]!r}"
+                )
+
+    missing = sorted(set(eligible_by_id) - seen_ids)
+    if missing:
+        raise CorpusError(
+            "bibliography.csv: candidate_id mismatch; "
+            f"missing={missing}, extra=[]"
+        )
+
+    expected = sorted(
+        rows,
+        key=lambda row: (
+            row["cite_key"].casefold(),
+            row["cite_key"],
+            row["candidate_id"],
+        ),
+    )
+    if rows != expected:
+        actual_keys = [row["cite_key"] for row in rows]
+        expected_keys = [row["cite_key"] for row in expected]
+        raise CorpusError(
+            "bibliography.csv: rows are not in canonical cite_key order; "
+            f"actual={actual_keys}, expected={expected_keys}"
+        )
+
+
+@dataclass(frozen=True)
+class _BibtexEntry:
+    entry_type: str
+    cite_key: str
+    fields: tuple[tuple[str, str], ...]
+    line_number: int
+
+
+class _BibtexParser:
+    def __init__(self, path: Path, text: str) -> None:
+        self.path = path
+        self.text = text
+        self.index = 0
+
+    def _line_number(self, index: int | None = None) -> int:
+        position = self.index if index is None else index
+        return self.text.count("\n", 0, position) + 1
+
+    def _error(
+        self,
+        message: str,
+        *,
+        index: int | None = None,
+    ) -> None:
+        raise CorpusError(
+            f"{self.path}:{self._line_number(index)}: {message}"
+        )
+
+    def _skip_whitespace(self) -> None:
+        while (
+            self.index < len(self.text)
+            and self.text[self.index].isspace()
+        ):
+            self.index += 1
+
+    def _expect(self, character: str, message: str) -> None:
+        if (
+            self.index >= len(self.text)
+            or self.text[self.index] != character
+        ):
+            self._error(message)
+        self.index += 1
+
+    def _parse_braced_value(
+        self,
+        *,
+        cite_key: str,
+        field: str,
+    ) -> str:
+        self._expect(
+            "{",
+            f"key={cite_key!r}: field {field!r} requires a braced value",
+        )
+        start = self.index
+        depth = 1
+        while self.index < len(self.text):
+            character = self.text[self.index]
+            if character == "\\":
+                self.index += 1
+                if self.index < len(self.text):
+                    self.index += 1
+                continue
+            if character == "{":
+                depth += 1
+            elif character == "}":
+                depth -= 1
+                if depth == 0:
+                    value = self.text[start:self.index]
+                    self.index += 1
+                    return value
+            self.index += 1
+        self._error(
+            f"key={cite_key!r}: field {field!r} has an unclosed braced value",
+            index=start - 1,
+        )
+        raise AssertionError("unreachable")
+
+    def _parse_entry(self) -> _BibtexEntry:
+        entry_start = self.index
+        line_number = self._line_number()
+        self._expect("@", "expected '@' to start a BibTeX entry")
+
+        type_start = self.index
+        while (
+            self.index < len(self.text)
+            and self.text[self.index].isalpha()
+        ):
+            self.index += 1
+        if self.index == type_start:
+            self._error("entry type is required", index=entry_start)
+        entry_type = self.text[type_start:self.index]
+        self._skip_whitespace()
+        self._expect(
+            "{",
+            f"entry_type={entry_type!r}: expected '{{' before cite key",
+        )
+
+        key_start = self.index
+        while (
+            self.index < len(self.text)
+            and self.text[self.index] not in ",}\r\n"
+        ):
+            self.index += 1
+        cite_key = self.text[key_start:self.index].strip()
+        if not cite_key:
+            self._error("BibTeX entry cite key is required", index=key_start)
+        self._expect(
+            ",",
+            f"key={cite_key!r}: expected ',' after cite key",
+        )
+
+        fields: list[tuple[str, str]] = []
+        field_lines: dict[str, tuple[str, int]] = {}
+        while True:
+            self._skip_whitespace()
+            if self.index >= len(self.text):
+                self._error(
+                    f"key={cite_key!r}: expected a closing brace for entry",
+                    index=entry_start,
+                )
+            if self.text[self.index] == "}":
+                self.index += 1
+                break
+
+            field_start = self.index
+            while (
+                self.index < len(self.text)
+                and (
+                    self.text[self.index].isalnum()
+                    or self.text[self.index] == "_"
+                )
+            ):
+                self.index += 1
+            field = self.text[field_start:self.index]
+            if not field:
+                self._error(
+                    f"key={cite_key!r}: expected a field name",
+                    index=field_start,
+                )
+            self._skip_whitespace()
+            self._expect(
+                "=",
+                f"key={cite_key!r}: field {field!r} requires '='",
+            )
+            self._skip_whitespace()
+            value = self._parse_braced_value(
+                cite_key=cite_key,
+                field=field,
+            )
+            field_line = self._line_number(field_start)
+            folded_field = field.casefold()
+            if folded_field in field_lines:
+                first_field, first_line = field_lines[folded_field]
+                self._error(
+                    f"key={cite_key!r}: case-insensitive duplicate field "
+                    f"{field!r}; first spelling {first_field!r} on line "
+                    f"{first_line}",
+                    index=field_start,
+                )
+            field_lines[folded_field] = (field, field_line)
+            fields.append((field, value))
+
+            self._skip_whitespace()
+            if self.index >= len(self.text):
+                self._error(
+                    f"key={cite_key!r}: expected a closing brace for entry",
+                    index=entry_start,
+                )
+            if self.text[self.index] == ",":
+                self.index += 1
+            elif self.text[self.index] != "}":
+                self._error(
+                    f"key={cite_key!r}: expected ',' or a closing brace "
+                    f"after field {field!r}"
+                )
+
+        return _BibtexEntry(
+            entry_type=entry_type,
+            cite_key=cite_key,
+            fields=tuple(fields),
+            line_number=line_number,
+        )
+
+    def parse(self) -> list[_BibtexEntry]:
+        entries: list[_BibtexEntry] = []
+        key_lines: dict[str, tuple[str, int]] = {}
+        self._skip_whitespace()
+        while self.index < len(self.text):
+            entry = self._parse_entry()
+            folded_key = entry.cite_key.casefold()
+            if folded_key in key_lines:
+                first_key, first_line = key_lines[folded_key]
+                raise CorpusError(
+                    f"{self.path}:{entry.line_number}: case-insensitive "
+                    f"duplicate entry key {entry.cite_key!r}; first spelling "
+                    f"{first_key!r} on line {first_line}"
+                )
+            key_lines[folded_key] = (entry.cite_key, entry.line_number)
+            entries.append(entry)
+            self._skip_whitespace()
+        return entries
+
+
+LATEX_ESCAPES = {
+    "\\": r"\textbackslash{}",
+    "{": r"\{",
+    "}": r"\}",
+    "%": r"\%",
+    "&": r"\&",
+    "_": r"\_",
+    "#": r"\#",
+    "$": r"\$",
+    "~": r"\textasciitilde{}",
+    "^": r"\textasciicircum{}",
+}
+
+
+def _latex_escape(value: str) -> str:
+    return "".join(
+        LATEX_ESCAPES.get(character, character)
+        for character in value
+    )
+
+
+def _bibtex_fields(row: dict[str, str]) -> list[tuple[str, str]]:
+    authors = [item.strip() for item in row["authors"].split(";")]
+    author_kinds = [
+        item.strip() for item in row["author_kinds"].split(";")
+    ]
+    rendered_authors = []
+    for author, kind in zip(authors, author_kinds, strict=True):
+        escaped = _latex_escape(author)
+        rendered_authors.append(
+            f"{{{escaped}}}" if kind == "corporate" else escaped
+        )
+
+    fields = [
+        ("author", " and ".join(rendered_authors)),
+        ("title", _latex_escape(row["title"])),
+    ]
+    if row["venue_field"] and row["venue"]:
+        fields.append(
+            (row["venue_field"], _latex_escape(row["venue"]))
+        )
+    fields.extend(
+        (field, _latex_escape(row[field]))
+        for field in ("year", "doi", "url")
+        if row[field]
+    )
+    return fields
+
+
+def _render_bibtex(rows: list[dict[str, str]]) -> str:
+    rendered_entries = []
+    for row in sorted(
+        rows,
+        key=lambda item: (
+            item["cite_key"].casefold(),
+            item["cite_key"],
+        ),
+    ):
+        fields = _bibtex_fields(row)
+        lines = [f"@{row['entry_type']}{{{row['cite_key']},"]
+        lines.extend(
+            f"  {field} = {{{value}}}"
+            f"{',' if index < len(fields) - 1 else ''}"
+            for index, (field, value) in enumerate(fields)
+        )
+        lines.append("}")
+        rendered_entries.append("\n".join(lines))
+    return (
+        "\n\n".join(rendered_entries)
+        + ("\n" if rendered_entries else "")
+    )
+
+
+def _read_references_bib(path: Path) -> tuple[bytes, str]:
+    if not path.is_file():
+        raise CorpusError(f"{path}: file is missing")
+    raw_bytes = path.read_bytes()
+    try:
+        text = raw_bytes.decode("utf-8", errors="strict")
+    except UnicodeError as exc:
+        raise CorpusError(f"{path}: invalid UTF-8: {exc}") from exc
+    if b"\r" in raw_bytes:
+        raise CorpusError(
+            f"{path}: references.bib must use deterministic LF bytes"
+        )
+    return raw_bytes, text
+
+
+def _validate_references_bib(
+    path: Path,
+    bibliography_rows: list[dict[str, str]],
+) -> None:
+    raw_bytes, text = _read_references_bib(path)
+    entries = _BibtexParser(path, text).parse()
+    expected_rows = sorted(
+        bibliography_rows,
+        key=lambda row: (
+            row["cite_key"].casefold(),
+            row["cite_key"],
+        ),
+    )
+    expected_keys = [row["cite_key"] for row in expected_rows]
+    actual_keys = [entry.cite_key for entry in entries]
+    missing = sorted(set(expected_keys) - set(actual_keys))
+    extra = sorted(set(actual_keys) - set(expected_keys))
+    if missing or extra:
+        raise CorpusError(
+            f"{path}: entry mismatch; missing={missing}, extra={extra}"
+        )
+    if actual_keys != expected_keys:
+        raise CorpusError(
+            f"{path}: entries are not in canonical order; "
+            f"actual={actual_keys}, expected={expected_keys}"
+        )
+
+    entries_by_key = {entry.cite_key: entry for entry in entries}
+    for row in expected_rows:
+        cite_key = row["cite_key"]
+        entry = entries_by_key[cite_key]
+        context = (
+            f"{path}:{entry.line_number}: key={cite_key!r}"
+        )
+        if entry.entry_type != row["entry_type"]:
+            raise CorpusError(
+                f"{context}: entry_type={entry.entry_type!r} does not "
+                f"match bibliography.csv value {row['entry_type']!r}"
+            )
+
+        expected_fields = _bibtex_fields(row)
+        expected_names = [field for field, _ in expected_fields]
+        actual_names = [field for field, _ in entry.fields]
+        missing_fields = sorted(
+            set(expected_names) - set(actual_names)
+        )
+        extra_fields = sorted(set(actual_names) - set(expected_names))
+        if missing_fields or extra_fields:
+            raise CorpusError(
+                f"{context}: field mismatch; missing={missing_fields}, "
+                f"extra={extra_fields}"
+            )
+        if actual_names != expected_names:
+            raise CorpusError(
+                f"{context}: fields are not in deterministic order; "
+                f"actual={actual_names}, expected={expected_names}"
+            )
+
+        actual_fields = dict(entry.fields)
+        for field, expected_value in expected_fields:
+            actual_value = actual_fields[field]
+            if actual_value != expected_value:
+                raise CorpusError(
+                    f"{context}: field {field!r}={actual_value!r} does "
+                    "not match bibliography.csv rendered value "
+                    f"{expected_value!r}"
+                )
+
+    expected_text = _render_bibtex(expected_rows)
+    expected_bytes = expected_text.encode("utf-8")
+    if raw_bytes != expected_bytes:
+        actual_lines = text.splitlines(keepends=True)
+        expected_lines = expected_text.splitlines(keepends=True)
+        differing_line = 1
+        for index in range(max(len(actual_lines), len(expected_lines))):
+            actual_line = (
+                actual_lines[index] if index < len(actual_lines) else None
+            )
+            expected_line = (
+                expected_lines[index]
+                if index < len(expected_lines)
+                else None
+            )
+            if actual_line != expected_line:
+                differing_line = index + 1
+                break
+        raise CorpusError(
+            f"{path}:{differing_line}: does not match deterministic "
+            "rendering"
+        )
+
+
 def validate_directory(data_dir: Path) -> None:
     taxonomy_path = data_dir / "taxonomy.json"
     taxonomy = _read_taxonomy(taxonomy_path)
@@ -447,23 +1205,61 @@ def validate_directory(data_dir: Path) -> None:
                 f"candidates.csv:{row_number}: candidate_id={candidate_id!r} "
                 "must be C followed by at least four digits"
             )
+        candidate_url = row["url"]
+        if candidate_url and any(
+            character.isspace() for character in candidate_url
+        ):
+            raise CorpusError(
+                f"candidates.csv:{row_number}: url contains whitespace"
+            )
         status = row["screening_status"]
-        if status in {"included", "boundary"}:
-            _require("candidates.csv", row_number, row, "cite_key")
-            if row["metadata_status"] != "verified":
-                raise CorpusError(
-                    f"candidates.csv:{row_number}: {status} source requires "
-                    "metadata_status=verified"
-                )
+        metadata_status = row["metadata_status"]
+        if (
+            status in {"included", "boundary"}
+            and metadata_status != "verified"
+        ):
+            raise CorpusError(
+                f"candidates.csv:{row_number}: {status} source requires "
+                "metadata_status=verified"
+            )
         if status == "excluded" and not row["exclusion_reason"].strip():
             raise CorpusError(
                 f"candidates.csv:{row_number}: exclusion_reason is required"
             )
 
+        cite_key = row["cite_key"].strip()
+        eligible = (
+            metadata_status == "verified" and status != "excluded"
+        )
+        if eligible and not cite_key:
+            raise CorpusError(
+                f"candidates.csv:{row_number}: cite_key is required for "
+                "verified, non-excluded candidates"
+            )
+        if not eligible and cite_key:
+            raise CorpusError(
+                f"candidates.csv:{row_number}: cite_key must be blank for "
+                "ineligible candidates"
+            )
+
     _check_unique("candidates.csv", candidates, "candidate_id", "candidate_id")
-    _check_unique("candidates.csv", candidates, "cite_key", "cite_key")
+    _check_unique(
+        "candidates.csv",
+        candidates,
+        "cite_key",
+        "cite_key",
+        lambda value: value.strip().casefold(),
+    )
     _check_unique(
         "candidates.csv", candidates, "doi", "DOI", normalize_doi
+    )
+    _validate_citation_key_rows(
+        tables["citation_keys.csv"], candidates
+    )
+    _validate_bibliography_rows(tables["bibliography.csv"], candidates)
+    _validate_references_bib(
+        data_dir.parent / "references.bib",
+        tables["bibliography.csv"],
     )
     _check_unique(
         "search_log.csv",

@@ -2861,8 +2861,8 @@ def test_committed_aliases_and_canonical_candidate_id_gaps():
     } == expected_gaps
     assert retired_ids.isdisjoint(candidate_ids)
     assert set(expected_aliases.values()) <= candidate_ids
-    assert by_id["C0184"]["title"] == "Formula Student Driverless Simulator v2.2.0"
-    assert by_id["C0185"]["title"] == "FSSIM: Formula Student Driverless Simulator"
+    assert by_id["C0184"]["title"] == "Formula Student Driverless Simulator 2.2.0"
+    assert by_id["C0185"]["title"] == "FSSIM"
 
     with conflicts_path.open(encoding="utf-8", newline="") as handle:
         conflicts = list(csv.DictReader(handle))
@@ -3686,9 +3686,10 @@ def test_correction_materializes_current_conflict_for_third_value(tmp_path):
     assert conflicts_path.read_bytes() == first_conflicts
 
 
-def test_fe3e44e_replay_reproduces_production_ledgers(tmp_path):
+def test_fe3e44e_replay_reproduces_frozen_metadata_inputs(tmp_path):
     repository = Path(__file__).resolve().parents[1]
     production_data = repository / "paper" / "data"
+    frozen_inputs = production_data / "metadata_inputs" / "v1"
     staging_data = tmp_path / "paper" / "data"
     staging_data.mkdir(parents=True)
     baseline = subprocess.run(
@@ -3739,10 +3740,10 @@ def test_fe3e44e_replay_reproduces_production_ledgers(tmp_path):
     assert staged_candidates.read_bytes() == first_candidates
     assert staged_conflicts.read_bytes() == first_conflicts
     assert first_candidates == (
-        production_data / "candidates.csv"
+        frozen_inputs / "candidates.csv"
     ).read_bytes()
     assert first_conflicts == (
-        production_data / "conflicts.csv"
+        frozen_inputs / "conflicts.csv"
     ).read_bytes()
 
 
