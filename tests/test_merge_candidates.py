@@ -2883,6 +2883,8 @@ def test_committed_aliases_and_canonical_candidate_id_gaps():
         and row["field"] == "url"
         and "https://proceedings.mlr.press/v123/o2020a.html"
         in {row["value_a"], row["value_b"]}
+        and corrected_f1tenth_url
+        in {row["value_a"], row["value_b"]}
     )
     assert resolved_f1tenth["resolution"] == corrected_f1tenth_url
     assert resolved_f1tenth["resolver"] == "entity-resolution-audit"
@@ -3616,42 +3618,41 @@ def test_correction_merge_is_invariant_to_agent_file_order(tmp_path):
 
 
 def test_correction_materializes_current_conflict_for_third_value(tmp_path):
-    old_url = "https://example.test/old"
-    new_url = "https://example.test/new"
-    repository_url = "https://github.com/example/project"
+    data_dir = tmp_path / "paper" / "data"
+    existing_path = data_dir / "candidates.csv"
+    agent_path = data_dir / "agent_runs" / "fixture.csv"
+    corrections_path = data_dir / "candidate_corrections.csv"
+    old_url = "https://proceedings.mlr.press/v123/o2020a.html"
+    new_url = "https://proceedings.mlr.press/v123/o-kelly20a.html"
+    repository_url = "https://github.com/f1tenth/f1tenth_gym"
     existing = merge_candidate_row(
-        candidate_id="C0001",
-        title="Three Value Correction",
-        doi="10.1000/three-value-correction",
+        candidate_id="C0180",
+        title="F1TENTH Gym",
         url=old_url,
     )
     corrected = merge_candidate_row(
-        candidate_id="agent-current",
-        title="Three Value Correction",
-        doi="10.1000/three-value-correction",
+        candidate_id="agent-pmlr",
+        title="F1TENTH Gym",
         url=new_url,
     )
     repository = merge_candidate_row(
         candidate_id="agent-repository",
-        title="Three Value Correction",
-        doi="10.1000/three-value-correction",
+        title="F1TENTH Gym",
         url=repository_url,
     )
-    existing_path, agent_paths = build_merge_fixture(
-        tmp_path, [existing], [corrected, repository]
-    )
-    corrections_path = tmp_path / "candidate_corrections.csv"
+    write_candidate_rows(existing_path, [existing])
+    write_candidate_rows(agent_path, [corrected, repository])
     write_correction_rows(
         corrections_path,
         [
             correction_row(
-                candidate_id="C0001",
+                candidate_id="C0180",
                 field="url",
                 old_value=old_url,
                 new_value=new_url,
                 reason="official correction",
-                evidence="https://example.test/evidence",
-                resolver="reviewer",
+                evidence=new_url,
+                resolver="entity-resolution-audit",
             )
         ],
     )
@@ -3659,14 +3660,15 @@ def test_correction_materializes_current_conflict_for_third_value(tmp_path):
         "--existing",
         str(existing_path),
         "--agent-file",
-        str(agent_paths[0]),
+        str(agent_path),
         "--corrections",
         str(corrections_path),
         "--write",
     ]
 
     assert merge_candidates_main([*common, "--replace-conflicts"]) == 0
-    conflicts_path = tmp_path / "conflicts.csv"
+    conflicts_path = data_dir / "conflicts.csv"
+    first_candidates = existing_path.read_bytes()
     first_conflicts = conflicts_path.read_bytes()
     pairs = {
         frozenset((row["value_a"], row["value_b"]))
@@ -3679,7 +3681,8 @@ def test_correction_materializes_current_conflict_for_third_value(tmp_path):
         frozenset((new_url, repository_url)),
     }
 
-    assert merge_candidates_main(common) == 0
+    assert merge_candidates_main([*common, "--replace-conflicts"]) == 0
+    assert existing_path.read_bytes() == first_candidates
     assert conflicts_path.read_bytes() == first_conflicts
 
 
@@ -3723,10 +3726,99 @@ def test_fe3e44e_replay_reproduces_production_ledgers(tmp_path):
     arguments.extend(("--replace-conflicts", "--write"))
 
     assert merge_candidates_main(arguments) == 0
+    staged_conflicts = staging_data / "conflicts.csv"
+    first_candidates = staged_candidates.read_bytes()
+    first_conflicts = staged_conflicts.read_bytes()
+    assert any(
+        row["conflict_id"] == "X11BEF7FC371E"
+        for row in read_conflict_rows(staged_conflicts)
+    )
 
-    assert staged_candidates.read_bytes() == (
+    assert merge_candidates_main(arguments) == 0
+
+    assert staged_candidates.read_bytes() == first_candidates
+    assert staged_conflicts.read_bytes() == first_conflicts
+    assert first_candidates == (
         production_data / "candidates.csv"
     ).read_bytes()
-    assert (staging_data / "conflicts.csv").read_bytes() == (
+    assert first_conflicts == (
         production_data / "conflicts.csv"
     ).read_bytes()
+
+
+def test_replace_conflicts_preserves_unresolved_hashed_origins(tmp_path):
+    existing = merge_candidate_row(
+        candidate_id="C0001",
+        title="Unresolved Replacement",
+        authors="Original Author",
+        doi="10.1000/unresolved-replacement",
+    )
+    incoming = merge_candidate_row(
+        candidate_id="agent-conflict",
+        title="Unresolved Replacement",
+        authors="Incoming Author",
+        doi="10.1000/unresolved-replacement",
+    )
+    existing_path, agent_paths = build_merge_fixture(
+        tmp_path, [existing], [incoming]
+    )
+    arguments = [
+        "--existing",
+        str(existing_path),
+        "--agent-file",
+        str(agent_paths[0]),
+        "--replace-conflicts",
+        "--write",
+    ]
+
+    assert merge_candidates_main(arguments) == 0
+    conflicts_path = tmp_path / "conflicts.csv"
+    first_conflicts = conflicts_path.read_bytes()
+    historical_origin = immutable_origin(existing_path, existing)
+
+    assert merge_candidates_main(arguments) == 0
+
+    assert conflicts_path.read_bytes() == first_conflicts
+    assert historical_origin in read_conflict_rows(conflicts_path)[0][
+        "resolution_evidence"
+    ]
+
+
+def test_replace_conflicts_preserves_compatible_reviewed_resolution(tmp_path):
+    existing = merge_candidate_row(
+        candidate_id="C0001",
+        title="Reviewed Replacement",
+        authors="Original Author",
+        doi="10.1000/reviewed-replacement",
+    )
+    incoming = merge_candidate_row(
+        candidate_id="agent-conflict",
+        title="Reviewed Replacement",
+        authors="Incoming Author",
+        doi="10.1000/reviewed-replacement",
+    )
+    existing_path, agent_paths = build_merge_fixture(
+        tmp_path, [existing], [incoming]
+    )
+    arguments = [
+        "--existing",
+        str(existing_path),
+        "--agent-file",
+        str(agent_paths[0]),
+        "--replace-conflicts",
+        "--write",
+    ]
+    assert merge_candidates_main(arguments) == 0
+    conflicts_path = tmp_path / "conflicts.csv"
+    reviewed = read_conflict_rows(conflicts_path)[0]
+    reviewed["resolution"] = "Use the reviewed authority form."
+    reviewed["resolver"] = "metadata-reviewer"
+    reviewed["resolution_evidence"] += "; reviewed registry snapshot"
+    write_conflict_rows(conflicts_path, [reviewed])
+
+    assert merge_candidates_main(arguments) == 0
+
+    result = read_conflict_rows(conflicts_path)[0]
+    assert result["resolution"] == "Use the reviewed authority form."
+    assert result["resolver"] == "metadata-reviewer"
+    assert "reviewed registry snapshot" in result["resolution_evidence"]

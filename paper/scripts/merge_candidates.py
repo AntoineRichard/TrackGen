@@ -875,6 +875,76 @@ def _apply_candidate_corrections(
         )
         for label in ("value_a", "value_b"):
             origins[label].add(correction.source)
+        correction_values = {
+            "old": correction.old_value,
+            "new": correction.new_value,
+        }
+        correction_sources: dict[str, set[str]] = {
+            "old": set(),
+            "new": set(),
+        }
+        for kind, value in correction_values.items():
+            label = next(
+                label
+                for label in ("value_a", "value_b")
+                if _equivalent(correction.field_name, conflict[label], value)
+            )
+            correction_sources[kind].update(origins[label])
+
+        third_values: dict[str, str] = {}
+        third_sources: dict[str, set[str]] = {}
+        for observed in tuple(conflicts):
+            if (
+                observed is conflict
+                or observed["record_type"] != "candidate"
+                or observed["record_key"] != correction.candidate_id
+                or observed["field"] != correction.field_name
+            ):
+                continue
+            observed_origins, _ = _split_resolution_evidence(
+                observed["resolution_evidence"]
+            )
+            correction_matches = [
+                (kind, label)
+                for kind, value in correction_values.items()
+                for label in ("value_a", "value_b")
+                if _equivalent(correction.field_name, observed[label], value)
+            ]
+            if len(correction_matches) != 1:
+                continue
+            kind, value_label = correction_matches[0]
+            other_label = (
+                "value_b" if value_label == "value_a" else "value_a"
+            )
+            other_value = observed[other_label]
+            if any(
+                _equivalent(correction.field_name, other_value, value)
+                for value in correction_values.values()
+            ):
+                continue
+            third_key = _conflict_value(
+                correction.field_name, other_value
+            )
+            current_third = third_values.get(third_key)
+            if current_third is None or _value_sort_key(
+                other_value
+            ) < _value_sort_key(current_third):
+                third_values[third_key] = other_value
+            third_sources.setdefault(third_key, set()).update(
+                observed_origins[other_label]
+            )
+            correction_sources[kind].update(
+                observed_origins[value_label]
+            )
+
+        for kind, value in correction_values.items():
+            correction_sources[kind].add(correction.source)
+            label = next(
+                label
+                for label in ("value_a", "value_b")
+                if _equivalent(correction.field_name, conflict[label], value)
+            )
+            origins[label].update(correction_sources[kind])
         conflict["resolution_evidence"] = "; ".join(
             [
                 *notes,
@@ -885,92 +955,51 @@ def _apply_candidate_corrections(
                 ),
             ]
         )
-        new_label = next(
-            label
-            for label in ("value_a", "value_b")
-            if _equivalent(
-                correction.field_name,
-                conflict[label],
-                correction.new_value,
-            )
-        )
-        new_sources = origins[new_label]
-        for historical in tuple(conflicts):
-            if (
-                historical is conflict
-                or historical["record_type"] != "candidate"
-                or historical["record_key"] != correction.candidate_id
-                or historical["field"] != correction.field_name
-                or _normalized_conflict_pair(
-                    historical["field"],
-                    historical["value_a"],
-                    historical["value_b"],
-                )
-                == signature
-            ):
-                continue
-            old_labels = [
-                label
-                for label in ("value_a", "value_b")
-                if _equivalent(
-                    correction.field_name,
-                    historical[label],
-                    correction.old_value,
-                )
-            ]
-            if len(old_labels) != 1:
-                continue
-            other_label = (
-                "value_b" if old_labels[0] == "value_a" else "value_a"
-            )
-            other_value = historical[other_label]
-            if _equivalent(
-                correction.field_name,
-                other_value,
-                correction.new_value,
-            ):
-                continue
-            historical_origins, _ = _split_resolution_evidence(
-                historical["resolution_evidence"]
-            )
-            pending = {}
-            for other_source in historical_origins[other_label]:
-                _record_conflict(
-                    pending,
-                    correction.candidate_id,
-                    correction.field_name,
-                    correction.new_value,
-                    other_value,
-                    new_sources,
-                    other_source,
-                )
-            if not pending:
-                continue
-            derived = _build_conflict_rows(pending)[0]
-            matching = next(
-                (
-                    row
-                    for row in conflicts
-                    if row["record_type"] == "candidate"
-                    and row["record_key"] == correction.candidate_id
-                    and row["field"] == correction.field_name
-                    and _normalized_conflict_pair(
-                        row["field"], row["value_a"], row["value_b"]
+
+        for third_key in sorted(third_values, key=_value_sort_key):
+            third_value = third_values[third_key]
+            for kind, value in correction_values.items():
+                pending: dict[ConflictSignature, PendingConflict] = {}
+                for third_source in sorted(
+                    third_sources[third_key], key=_value_sort_key
+                ):
+                    _record_conflict(
+                        pending,
+                        correction.candidate_id,
+                        correction.field_name,
+                        value,
+                        third_value,
+                        correction_sources[kind],
+                        third_source,
                     )
-                    == _normalized_conflict_pair(
-                        derived["field"],
-                        derived["value_a"],
-                        derived["value_b"],
-                    )
-                ),
-                None,
-            )
-            if matching is None:
-                conflicts.append(derived)
-            else:
-                matching["resolution_evidence"] = _merge_resolution_evidence(
-                    matching, derived
+                if not pending:
+                    continue
+                derived = _build_conflict_rows(pending)[0]
+                derived_signature = _normalized_conflict_pair(
+                    derived["field"],
+                    derived["value_a"],
+                    derived["value_b"],
                 )
+                matching = next(
+                    (
+                        row
+                        for row in conflicts
+                        if row["record_type"] == "candidate"
+                        and row["record_key"] == correction.candidate_id
+                        and row["field"] == correction.field_name
+                        and _normalized_conflict_pair(
+                            row["field"], row["value_a"], row["value_b"]
+                        )
+                        == derived_signature
+                    ),
+                    None,
+                )
+                if matching is None:
+                    conflicts.append(derived)
+                else:
+                    matching["resolution_evidence"] = (
+                        _merge_resolution_evidence(matching, derived)
+                    )
         conflict["resolution"] = correction.new_value
         conflict["resolver"] = correction.resolver
         conflict["resolution_evidence"] = _append_unique_values(
@@ -988,6 +1017,10 @@ def _apply_candidate_corrections(
                 _conflict_value(row["field"], row["value_b"])
             ),
             _value_sort_key(row["value_b"]),
+            _value_sort_key(
+                _conflict_value(row["field"], row["value_a"])
+            ),
+            _value_sort_key(row["value_a"]),
         )
     )
 
@@ -1805,6 +1838,23 @@ def _merge_reconciled_conflict(
     return row
 
 
+def _review_is_compatible(
+    existing: CandidateRow, generated: CandidateRow
+) -> bool:
+    if not (existing["resolution"] or existing["resolver"]):
+        return False
+    if not (generated["resolution"] or generated["resolver"]):
+        return True
+    existing_resolution = existing["resolution"]
+    generated_resolution = generated["resolution"]
+    if not existing_resolution or not generated_resolution:
+        return True
+    field_name = generated["field"]
+    return _conflict_value(
+        field_name, existing_resolution
+    ) == _conflict_value(field_name, generated_resolution)
+
+
 def _migrate_conflict_record_key(
     row: CandidateRow, aliases: dict[str, str]
 ) -> CandidateRow:
@@ -1840,10 +1890,12 @@ def _reconcile_conflict_rows(
         for source_row in generated:
             row = _migrate_conflict_record_key(source_row, alias_map)
             previous = prior.get(_ledger_conflict_signature(row))
-            if previous is not None and (
-                row["resolution"] or row["resolver"]
-            ):
+            if previous is not None:
+                preserve_review = _review_is_compatible(previous, row)
                 row = _merge_reconciled_conflict(row, previous)
+                if preserve_review:
+                    row["resolution"] = previous["resolution"]
+                    row["resolver"] = previous["resolver"]
             replaced.append(row)
         return replaced
 
