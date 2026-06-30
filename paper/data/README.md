@@ -63,6 +63,77 @@ randomizes appearance or dynamics, only generates traffic participants on fixed 
 or mentions a course without enough detail to support a survey claim. Preserve every
 excluded row in `candidates.csv` and record its specific exclusion reason.
 
+The concise rules above are orientation only. The complete normative eligibility,
+evidence, independence, calibration, adjudication, automation, and accountable-author
+requirements are in `screening_protocol.md`; that frozen file governs every rating.
+
+## Immutable duplicate-screening workflow
+
+Screening artifacts are versioned snapshots, never mutable `current` directories.
+The canonical stage order is:
+
+1. freeze the 202-candidate coordinator under `screening_inputs/vN`;
+2. publish only the 30-candidate calibration release under
+   `screening_releases/calibration/vN`;
+3. collect six isolated reviewer result files under `screening_runs/calibration/vN`;
+4. seal all 60 ratings under `screening_results/calibration/vN`;
+5. seal the calibration decision under `screening_decisions/vN`;
+6. only after a passing decision, publish the 172-candidate main release under
+   `screening_releases/main/vN`;
+7. collect and seal all 344 main ratings under the corresponding run and result
+   versions;
+8. seal adjudications and their execution register under
+   `screening_adjudication/vN`; and
+9. after exact accountable-author verification of every final candidate decision,
+   seal the publication projection under `screening_projection/vN`.
+
+The coordinator binds candidates, conflicts, bibliography, citation-key ledger,
+taxonomy, protocol, the frozen execution profile and reviewer-prompt template,
+deterministic assignments, and the stable 30-candidate calibration selection. Each
+reviewer release contains those frozen execution inputs and the six coordinator-held
+packets for one phase. Before a reviewer starts, `--stage-role` derives a random
+role-private snapshot containing exactly that role's one packet, rendered prompt, and
+hash preimages. Each phase-result snapshot binds the exact reviewer release from which
+its assignments were visible. Main publication and main-result sealing additionally
+bind the calibration release, the 60-rating calibration result, and the passing
+calibration decision as one coherent authorization tuple.
+
+Reviewer roles are `screening-01` through `screening-06`. Each role writes only its
+assigned canonical result file without another reviewer's ratings or traces. Automated
+reviewer rows MUST use `human_role=NR`. Each automated reviewer MUST start with
+`fork_context=false` in a fresh context. On a shared host, procedural isolation uses a
+separately generated random, role-private working and output path for each execution;
+this reduces accidental cross-role access but is not a claim of ACL, container, mount,
+or same-user process isolation. Provider retrieval-cache isolation is explicitly
+recorded as not exposed and reported as a residual limitation. Human and hybrid
+execution records use a
+stable `human_role` identity binding; distinct role labels alone do not establish
+distinct human reviewers. Raw ratings are immutable after sealing. Discussion and
+adjudication append records and never rewrite them. Accountable-author verification of
+all 202 final decisions and every deciding evidence locator remains mandatory before
+publication.
+
+The immutable-input and publication tools reject symlinks, aliases, path overlap,
+noncanonical modes, changed inodes, unexpected entries, checksum drift, and
+self-consistently rehashed substitutions. Cleanup uses a capture-then-classify
+operation: after a best-effort identity precheck, `renameat2(RENAME_NOREPLACE)`
+atomically captures whatever occupies the source name into a fresh
+`.trackgen-retired-*` quarantine name, and only then classifies the captured
+`(dev, ino)`. Expected transaction entries remain quarantined; snapshot cleanup
+captures the complete root once and never recursively deletes children. A captured
+foreign entry is restored with one no-replace rename when the source is still empty.
+If another writer has refilled the source, cleanup overwrites neither name: both
+entries remain, and the error reports the foreign inode's exact quarantine path and
+identity for recovery. Thus cleanup never deletes or overwrites an entry, but a
+non-cooperating same-privilege writer can cause a foreign entry to be moved into
+quarantine. Preventing even that movement requires exclusive control of the parent
+namespace.
+
+The directory names above define roles, not committed production versions. No
+calibration or main snapshot exists until the infrastructure tests and independent
+protocol/code reviews pass. Accountable-author verification is scientific inspection,
+not an automated formality, and MUST NOT be generated from the structural validator.
+
 ## DOI normalization
 
 DOIs are compared after trimming whitespace, converting to lowercase, removing one
