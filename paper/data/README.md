@@ -158,6 +158,10 @@ it does not prove that the cited material semantically supports the coded claim.
 
 This ledger records explicit candidate-ID retirements when multiple assigned rows are proven to describe one citable work or one project whose paper is its citable system description. Each row names one retired ID, one surviving ID, a specific reason, and primary or official evidence. Migrations are direct and acyclic: unaffected IDs never change, retired IDs remain permanent gaps, and neither retired nor surviving IDs may be reassigned. A shared repository, a similar title, or `seed::` discovery provenance alone is not sufficient evidence for an alias. Distinct versions, standards, competitions, and related projects remain separate unless the ledger states otherwise.
 
+## `candidate_corrections.csv`
+
+This ledger records reviewed canonical-field corrections that must replay identically during a full corpus rebuild. Each row identifies the candidate and bibliographic field, preserves both old and new values, and supplies a reason, authoritative evidence, and resolver. The merge creates or updates the corresponding conflict rather than deleting the original observation. Correction and candidate-source origins carry complete-row SHA-256 digests so their meaning remains stable after later edits.
+
 ## `candidates.csv`
 
 One row records one discovered source, including provenance, screening disposition, and

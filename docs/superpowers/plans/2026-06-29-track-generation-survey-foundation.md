@@ -1274,6 +1274,7 @@ git commit -m "docs: add independent survey discovery runs"
 
 - Create: paper/scripts/merge_candidates.py
 - Create: paper/data/candidate_aliases.csv
+- Create: paper/data/candidate_corrections.csv
 - Create: paper/scripts/prepare_metadata_batches.py
 - Create: paper/scripts/integrate_metadata.py
 - Create: paper/data/metadata_manifest.csv
@@ -1491,25 +1492,39 @@ if __name__ == "__main__":
 
 - [ ] **Step 4: Merge all four agent files**
 
-The one-time reconciliation migration starts from the last ledger with all previously assigned stable IDs, commit `fe3e44e`, not from the 99-row bootstrap corpus. Materialize that ledger in a temporary mirrored data directory, pass `--aliases paper/data/candidate_aliases.csv`, and use `--replace-conflicts` only for this audited regeneration. Validate the mirror before copying candidates.csv and conflicts.csv into production. Routine reruns use the current production ledger without `--replace-conflicts`, preserving reviewed conflict resolutions.
+The one-time reconciliation migration starts from the last ledger with all previously assigned stable IDs, commit `fe3e44e`, not from the 99-row bootstrap corpus. Materialize that ledger in a temporary mirrored data directory, pass `--aliases paper/data/candidate_aliases.csv` and `--corrections paper/data/candidate_corrections.csv`, then use `--replace-conflicts` only for this audited regeneration. Validate the mirror before copying candidates.csv and conflicts.csv into production. Routine reruns use the current production ledger without `--replace-conflicts`, preserving reviewed conflict resolutions.
 
 The retirement ledger has header `retired_candidate_id,surviving_candidate_id,reason,evidence`. Every multi-ID identity component requires a direct, evidence-backed retirement to one survivor. Unaffected IDs remain unchanged, retired IDs remain gaps, and neither class may be reused by future assignment.
 
+The reviewed correction ledger has header `candidate_id,field,old_value,new_value,reason,evidence,resolver`. It replays authoritative field corrections after graph materialization, creates or resolves the corresponding orientation-independent conflict, and never erases the observed old value. Every persisted value origin includes a SHA-256 digest of the complete source row so later candidate edits cannot change what historical evidence meant.
+
 ~~~bash
 tmp_dir="$(mktemp -d)"
-cp -a paper/data "$tmp_dir/data"
-git show fe3e44e:paper/data/candidates.csv > "$tmp_dir/data/candidates.csv"
+mkdir -p "$tmp_dir/paper"
+cp -a paper/data "$tmp_dir/paper/data"
+git show fe3e44e:paper/data/candidates.csv > "$tmp_dir/paper/data/candidates.csv"
 python3 paper/scripts/merge_candidates.py \
-  --existing "$tmp_dir/data/candidates.csv" \
+  --existing "$tmp_dir/paper/data/candidates.csv" \
   --aliases paper/data/candidate_aliases.csv \
+  --corrections paper/data/candidate_corrections.csv \
   --agent paper/data/agent_runs/blind-ground.csv \
   --agent paper/data/agent_runs/blind-aerial-maritime.csv \
   --agent paper/data/agent_runs/aware-geometry-rl.csv \
   --agent paper/data/agent_runs/aware-simulation-benchmarks.csv \
   --replace-conflicts --write
-python3 -c "from pathlib import Path; from paper.scripts.validate_corpus import validate_directory; validate_directory(Path('$tmp_dir/data'))"
-cp "$tmp_dir/data/candidates.csv" paper/data/candidates.csv
-cp "$tmp_dir/data/conflicts.csv" paper/data/conflicts.csv
+# Repeat the audited replacement to prove the corpus is a byte-stable fixed point.
+python3 paper/scripts/merge_candidates.py \
+  --existing "$tmp_dir/paper/data/candidates.csv" \
+  --aliases paper/data/candidate_aliases.csv \
+  --corrections paper/data/candidate_corrections.csv \
+  --agent paper/data/agent_runs/blind-ground.csv \
+  --agent paper/data/agent_runs/blind-aerial-maritime.csv \
+  --agent paper/data/agent_runs/aware-geometry-rl.csv \
+  --agent paper/data/agent_runs/aware-simulation-benchmarks.csv \
+  --replace-conflicts --write
+python3 -c "from pathlib import Path; from paper.scripts.validate_corpus import validate_directory; validate_directory(Path('$tmp_dir/paper/data'))"
+cp "$tmp_dir/paper/data/candidates.csv" paper/data/candidates.csv
+cp "$tmp_dir/paper/data/conflicts.csv" paper/data/conflicts.csv
 ~~~
 
 
@@ -1521,6 +1536,7 @@ Run:
 python3 paper/scripts/merge_candidates.py \
   --existing paper/data/candidates.csv \
   --aliases paper/data/candidate_aliases.csv \
+  --corrections paper/data/candidate_corrections.csv \
   --agent paper/data/agent_runs/blind-ground.csv \
   --agent paper/data/agent_runs/blind-aerial-maritime.csv \
   --agent paper/data/agent_runs/aware-geometry-rl.csv \
@@ -1528,6 +1544,7 @@ python3 paper/scripts/merge_candidates.py \
 python3 paper/scripts/merge_candidates.py \
   --existing paper/data/candidates.csv \
   --aliases paper/data/candidate_aliases.csv \
+  --corrections paper/data/candidate_corrections.csv \
   --agent paper/data/agent_runs/blind-ground.csv \
   --agent paper/data/agent_runs/blind-aerial-maritime.csv \
   --agent paper/data/agent_runs/aware-geometry-rl.csv \
