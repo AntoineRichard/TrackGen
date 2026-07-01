@@ -51,9 +51,11 @@ source gives them.
 
 ## C0042 -- Computing the racing line using Bayesian optimization
 
-**Source/access.** [DOI](https://doi.org/10.1109/cdc42340.2020.9304147) and [official IEEE record](https://ieeexplore.ieee.org/document/9304147/) (IEEE record title heading, **Computing the racing line using Bayesian optimization**; Limited: no inspectable paper body was returned by the official endpoint during retrieval).
+**Source/access.** [arXiv primary paper](https://arxiv.org/abs/2002.04794) (Abstract; Introduction; Sections II, IV-A, IV-B, and V; Direct).
 
-**Values.** Domain: racing-line computation (IEEE record title heading). Vehicle: NR. Course object: NR. Representation family: NR. Generator family: NR. Generation role: NR. Validity strategy: NR. Reported geometry/difficulty/diversity metrics: NR. Training/evaluation distribution counts: NR. Simulator/export format: NR. Code/asset status: NR.
+**Values.** Domain: ground autonomous-racing trajectory optimization. Vehicle: autonomous race car. Course object: NR; the method operates on a supplied track. Representation family: centerline plus width; the input is XY centerline waypoints and track width. Generator family: NR; Bayesian optimization searches a racing-line trajectory, not course geometry. Generation role: boundary case. Validity strategy: constrained minimum-time solver over a fixed trajectory, with track, actuation, and friction-circle constraints. Reported geometry metrics: NR. Difficulty metric: minimum traversal/lap time. Diversity metrics and training distribution: NR. Evaluation: two ETH Zurich 1/43-scale tracks and one UC Berkeley 1/10-scale track. Simulator/export format: NR. Code/asset status: author code is linked from Section IV; released assets NR. Reproducibility fields: centerline XY waypoints, track width, and vehicle parameters `m`, `lf`, and `lr`.
+
+**Boundary.** This is direct boundary evidence, not course generation: it searches smooth feasible racing-line trajectories on a supplied track.
 
 ## C0053 -- ArcGIS CityEngine
 
@@ -63,9 +65,11 @@ source gives them.
 
 ## C0054 -- Interactive procedural street modeling
 
-**Source/access.** [DOI/publisher record](https://doi.org/10.1145/1360612.1360702) (ACM record title heading, **Interactive procedural street modeling**; Limited: the primary-paper body was not openly retrievable in this audit).
+**Source/access.** [Primary paper](https://web.engr.oregonstate.edu/~zhange/images/street_sig08.pdf) (Abstract; Sections 3, 5, and 6.1-6.4; Figure 2; Direct).
 
-**Values.** Domain: street modeling (ACM record title heading). Vehicle: NR. Course object: streets (ACM record title heading). Representation family: NR. Generator family: NR; only the title indicates interactive procedural street modeling and the method is inaccessible. Generation role: NR. Validity strategy: NR. Reported geometry/difficulty/diversity metrics: NR. Training/evaluation distribution counts: NR. Simulator/export format: NR. Code/asset status: NR.
+**Values.** Domain: adjacent street-network modeling. Vehicle: NR. Course object: road network. Representation family: waypoint graph; a street network is stored as `G = (V, E)`, with crossings as nodes and street segments as edges. Generator family: constructive and human-designed; tensor fields guide hyperstreamline tracing, while users design/edit fields and graphs. Generation role: geometry synthesis and mutation. Validity strategy: NR. Reported geometry/difficulty/diversity metrics: NR. Training/evaluation distribution counts: NR. Simulator/export format: NR. Code/asset status: NR. Reproducibility fields: water, park/forest, height, and population-density maps; tensor-field design; and graph-edit operations.
+
+**Method.** Figure 2 identifies street-graph generation as the second pipeline stage. Sections 6.1-6.2 trace hyperstreamlines from tensor fields and construct nodes at intersections with segments between consecutive intersections; Sections 6.3-6.4 provide interactive graph editing and tensor-field-based replacement of regions in an existing street graph.
 
 ## C0057 -- Repulsive Curves
 
