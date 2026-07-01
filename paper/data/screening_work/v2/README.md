@@ -98,6 +98,12 @@ adjudication snapshot can be sealed from this draft. This is a procedural limita
 the staged review process, not evidence that the draft decisions received formal
 adjudication provenance.
 
+`evidence_drafts/` contains 38 source-backed, cite-keyed draft evidence rows for the
+40 provisional included/boundary candidates. C0127 and C0143 are retained in the source
+audits but omitted from those CSV drafts because their frozen candidates and citation-key
+ledger deliberately contain no cite key. A future ledger allocation must be recorded
+before either can enter `evidence.csv`; no key has been inferred here.
+
 An accountable author must inspect every final deciding locator and decide the flagged
 cases. The next formal stage must record an `execution_registry.csv`, seal
 `screening_adjudications/v2`, append any required citation keys, and complete the
