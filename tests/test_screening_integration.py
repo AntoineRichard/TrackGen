@@ -10,6 +10,7 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
+from types import SimpleNamespace
 
 import pytest
 
@@ -1173,6 +1174,28 @@ def test_unresolved_conflict_retains_discovery_provenance(
 
     assert tuple(unresolved) == ("C0143",)
     assert unresolved["C0143"][0]["conflict_id"] == "X57B57E64E501"
+
+
+def test_resolved_conflict_accepts_unresolved_discovery_provenance() -> None:
+    conflict = {
+        **_conflict("X57B57E64E501", "C0143"),
+        "resolution_evidence": (
+            "value_a=paper/data/agent_runs/blind-ground.csv#BG-022; "
+            "value_b=paper/data/candidates.csv#C0143"
+        ),
+    }
+
+    resolved = integration._resolved_conflict_ids(
+        {
+            "candidate_id": "C0143",
+            "resolved_conflict_ids": "X57B57E64E501",
+        },
+        SimpleNamespace(conflicts=(conflict,)),
+        {"C0143": (conflict,)},
+        context_label="test",
+    )
+
+    assert resolved == ("X57B57E64E501",)
 
 
 def _seal_adjudications(

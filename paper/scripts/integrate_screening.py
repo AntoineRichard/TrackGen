@@ -791,7 +791,6 @@ def _resolved_conflict_ids(
             or conflict["field"] != "screening_status"
             or conflict["resolution"] != ""
             or conflict["resolver"] != ""
-            or conflict["resolution_evidence"] != ""
         ):
             raise ScreeningIntegrationError(
                 f"{context_label}: conflict {identifier!r} is not an "
