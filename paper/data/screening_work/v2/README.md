@@ -119,6 +119,21 @@ sources and therefore coded their unavailable facts as `NR`. The primary sample,
 template, and failed summary are preserved for a recode with matched source access; no
 codebook or canonical conflict record has been changed from this result.
 
+`evidence_drafts/reliability-v2/` preserves a second, source-packet recode of the same
+deterministic 13-record sample. The independent coder received the field-free source
+packet and the frozen taxonomy, not the primary codes. Exact agreement was 11/13
+(`0.846154`, kappa `0.796875`) for `domain`, 8/13 for both `course_object` and
+`generation_role`, 7/13 for `representation_family`, 6/13 for `generator_family`, and
+10/13 for both `validity_strategy` and `code_status`. Only `domain` reaches the
+predefined 0.80 exact-agreement threshold; the coding set therefore remains
+inconclusive and must not be described as a passed taxonomy-reliability gate. This
+result removes unequal source access as a sufficient explanation for the first failed
+pass. Its disagreement analysis identifies the need for a future operational codebook:
+explicit `NR`/`not_reported`/`not_applicable` semantics, multi-label comparison rules,
+and field-specific decision boundaries. The v2 packet, completed template, and computed
+summary are retained without changing the frozen taxonomy, screening decisions, or
+canonical conflict record.
+
 An accountable author must inspect every final deciding locator and decide the flagged
 cases. The next formal stage must record an `execution_registry.csv`, seal
 `screening_adjudications/v2`, append any required citation keys, and complete the
