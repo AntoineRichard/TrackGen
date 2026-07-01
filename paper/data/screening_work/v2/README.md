@@ -104,6 +104,13 @@ audits but omitted from those CSV drafts because their frozen candidates and cit
 ledger deliberately contain no cite key. A future ledger allocation must be recorded
 before either can enter `evidence.csv`; no key has been inferred here.
 
+`citation_key_proposal.csv` is a full, append-only 200-row ledger proposal with
+`C0127,Klischat2020ScenarioFactory` and
+`C0143,Peltomaki2022WassersteinGAN` appended after the frozen prefix. It passed the
+formal ledger validator with SHA-256
+`e15e7842c4a27655f37bf25c35a64362e2096073cafe5410786e9723764ff79b`, but remains a
+proposal until accountable-author review approves and records the assignments.
+
 An accountable author must inspect every final deciding locator and decide the flagged
 cases. The next formal stage must record an `execution_registry.csv`, seal
 `screening_adjudications/v2`, append any required citation keys, and complete the
