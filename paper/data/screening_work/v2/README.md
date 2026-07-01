@@ -111,6 +111,14 @@ formal ledger validator with SHA-256
 `e15e7842c4a27655f37bf25c35a64362e2096073cafe5410786e9723764ff79b`, but remains a
 proposal until accountable-author review approves and records the assignments.
 
+The provisional 38-row keyed evidence set has a deterministic 13-record reliability
+selection under `evidence_drafts/`. Its first blind comparison is retained as an
+inconclusive draft, not a reliability claim: all seven core fields fall below the 0.80
+agreement threshold because the blind coder could not access eight DOI-linked publisher
+sources and therefore coded their unavailable facts as `NR`. The primary sample, blind
+template, and failed summary are preserved for a recode with matched source access; no
+codebook or canonical conflict record has been changed from this result.
+
 An accountable author must inspect every final deciding locator and decide the flagged
 cases. The next formal stage must record an `execution_registry.csv`, seal
 `screening_adjudications/v2`, append any required citation keys, and complete the
