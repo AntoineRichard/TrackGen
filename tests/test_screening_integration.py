@@ -1149,6 +1149,32 @@ def _trigger_case(tmp_path: Path) -> tuple[ScreeningCase, list[dict[str, str]]]:
     return case, rows
 
 
+def test_unresolved_conflict_retains_discovery_provenance(
+    tmp_path: Path,
+) -> None:
+    conflict = {
+        **_conflict("X57B57E64E501", "C0143"),
+        "resolution_evidence": (
+            "value_a=paper/data/agent_runs/blind-ground.csv#BG-022; "
+            "value_b=paper/data/candidates.csv#C0143"
+        ),
+    }
+    case = _build_case(tmp_path, conflicts=[conflict])
+    context = integration._load_context(
+        case.coordinator,
+        case.calibration_release,
+        case.calibration,
+        case.calibration_decision,
+        case.main_release,
+        case.main,
+    )
+
+    unresolved = integration._unresolved_screening_conflicts(context)
+
+    assert tuple(unresolved) == ("C0143",)
+    assert unresolved["C0143"][0]["conflict_id"] == "X57B57E64E501"
+
+
 def _seal_adjudications(
     case: ScreeningCase,
     rows: list[dict[str, str]],

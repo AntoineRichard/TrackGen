@@ -104,7 +104,9 @@ reviewer rows MUST use `human_role=NR`. Each automated reviewer MUST start with
 `fork_context=false` in a fresh context. On a shared host, procedural isolation uses a
 separately generated random, role-private working and output path for each execution;
 this reduces accidental cross-role access but is not a claim of ACL, container, mount,
-or same-user process isolation. Provider retrieval-cache isolation is explicitly
+or same-user process isolation. If role staging fails, its private parent is intentionally
+retained for inspection and MUST NOT be treated as a valid reviewer input. Provider
+retrieval-cache isolation is explicitly
 recorded as not exposed and reported as a residual limitation. Human and hybrid
 execution records use a
 stable `human_role` identity binding; distinct role labels alone do not establish

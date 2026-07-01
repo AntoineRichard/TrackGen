@@ -4502,15 +4502,8 @@ def _create_role_private_parent(
                     "role-private staging parent mode must be exactly 0o700"
                 )
             return private_parent
-        except BaseException as error:
-            try:
-                private_parent.rmdir()
-            except BaseException as cleanup_error:
-                _attach_exception_detail(
-                    error,
-                    "role-private parent cleanup encountered "
-                    f"{_exception_diagnostic(cleanup_error)}",
-                )
+        except BaseException:
+            # Preserve failed staging paths for inspection rather than deleting them.
             raise
     raise SnapshotError("could not allocate a random role-private staging path")
 
@@ -4583,15 +4576,8 @@ def stage_reviewer_execution(
             artifacts,
             post_publish_check=post_publish_check,
         )
-    except BaseException as error:
-        try:
-            private_parent.rmdir()
-        except BaseException as cleanup_error:
-            _attach_exception_detail(
-                error,
-                "role-private parent cleanup encountered "
-                f"{_exception_diagnostic(cleanup_error)}",
-            )
+    except BaseException:
+        # Preserve failed staging paths for inspection rather than deleting them.
         raise
     return output_dir
 

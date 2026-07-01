@@ -669,7 +669,7 @@ def _unresolved_screening_conflicts(
                     f"unresolved conflict {row['conflict_id']!r} targets "
                     "an unknown candidate"
                 )
-            if row["resolver"] or row["resolution_evidence"]:
+            if row["resolver"]:
                 raise ScreeningIntegrationError(
                     f"unresolved conflict {row['conflict_id']!r} has "
                     "resolution metadata"
