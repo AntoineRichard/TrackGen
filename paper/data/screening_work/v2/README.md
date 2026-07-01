@@ -85,6 +85,12 @@ trigger IDs, conflict IDs, and structured resolution evidence. The file is delib
 unsealed: it has no execution registry and does not replace any reviewer rating or
 authorize a publication projection.
 
+Its current draft totals are 35 `included`, 5 `boundary`, and 62 `excluded`. These
+counts differ by one from the worksheet's raw-dossier tally because C0054 changed from
+a provisional `exclude-insufficient-detail` recommendation to `include-1` after the
+later source reconciliation. The worksheet remains a trace of its input dossiers, not
+a canonical-status report.
+
 The source-review batches do not retain the exact per-role prompt, configuration,
 context, and execution identifiers required by the formal `execution_registry.csv`
 schema. Reconstructing these values after the fact would be unverifiable, so no
