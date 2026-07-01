@@ -1,0 +1,55 @@
+# Adjudication Work v2
+
+This directory contains unsealed source-review drafts for the 102 candidates that
+require adjudication after duplicate screening v2. It is not a screening projection,
+and none of its recommendations supersedes a sealed reviewer rating.
+
+## Draft provenance
+
+The four source-review dossiers were prepared on 2026-07-01 by isolated
+`gpt-5.6-terra` workers configured at `high` reasoning effort. Each worker received a
+disjoint candidate batch and was instructed to use public primary or official sources,
+leave every sealed artifact unchanged, and flag evidence gaps rather than infer a
+resolution. Their results are in `drafts/batch-01.md` through `drafts/batch-04.md`.
+
+The orchestration service briefly created duplicate workers while enforcing its agent
+concurrency limit. The duplicate summaries differed on some evidence-limited flags.
+Only the current batch files are retained as draft research outputs; the discrepancy is
+preserved below and requires independent reconciliation before a canonical decision.
+This is a procedural limitation, not a claim of independent duplicate adjudication.
+
+## Dossier audit
+
+A separate `gpt-5.6-terra` worker audited the completed drafts against the sealed v2
+records. It found 102 unique candidates (26, 26, 26, and 24 per batch). A later
+file-level parse of the current dossiers verified 34 draft recommendations for `included`,
+5 for `boundary`, and 63 for `excluded`; this supersedes the auditor's initial 34/9/59
+summary, which overcounted narrative mentions. The raw sealed status and criterion
+transcriptions agree with the sealed results.
+
+The drafts cannot be converted directly into `adjudications.csv` until the following
+items are resolved:
+
+- Batch 02 omits the raw sealed access status in all 26 entries.
+- Batches 01 and 02 express final access in prose rather than the protocol's controlled
+  access tokens.
+- Batch 03 uses `trigger IDs: none recorded` for 13 status or criterion disagreements;
+  a canonical adjudication must derive and bind the required A1/A2 (and A4 for C0143)
+  controls from the sealed results.
+- The following candidates require accountable-author review of inaccessible or
+  insufficient primary evidence: C0003, C0005, C0012, C0037, C0054, C0058, C0070,
+  C0101, C0106, C0110, C0113, C0114, C0115, C0116, C0119, C0123, C0124, C0125,
+  C0132, C0134, C0141, C0144, and C0151.
+
+Priority reconciliation cases are C0003, C0005, C0012, C0037, and C0054. Batch 03
+also needs independent reconciliation for C0118, C0119, C0122, C0126, C0127, C0128,
+C0129, C0130, C0135, C0137, C0139, C0143, and C0150 because its draft wording did not
+bind the applicable disagreement controls.
+
+## Next stage
+
+An accountable author must inspect every final deciding locator and decide the flagged
+cases. The conversion process must then create canonical `adjudications.csv` and
+`execution_registry.csv`, seal `screening_adjudications/v2`, append any required
+citation keys, and complete the 202-row author-verification file before a publication
+projection can be sealed.
