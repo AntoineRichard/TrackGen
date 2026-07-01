@@ -76,8 +76,23 @@ ready for normalization and 23 rows requiring accountable-author review. The wor
 is not an adjudication decision file and is intentionally not accepted by the sealing
 CLI.
 
+## Canonical Unsealed Draft
+
+`decision_drafts/adjudications.csv` is a canonical, 102-row adjudication draft derived
+from the four source-review batches and validated against the sealed v2 screening
+context on 2026-07-01. It binds the final draft decisions to the authoritative ratings,
+trigger IDs, conflict IDs, and structured resolution evidence. The file is deliberately
+unsealed: it has no execution registry and does not replace any reviewer rating or
+authorize a publication projection.
+
+The source-review batches do not retain the exact per-role prompt, configuration,
+context, and execution identifiers required by the formal `execution_registry.csv`
+schema. Reconstructing these values after the fact would be unverifiable, so no
+adjudication snapshot can be sealed from this draft. This is a procedural limitation of
+the staged review process, not evidence that the draft decisions received formal
+adjudication provenance.
+
 An accountable author must inspect every final deciding locator and decide the flagged
-cases. The conversion process must then create canonical `adjudications.csv` and
-`execution_registry.csv`, seal `screening_adjudications/v2`, append any required
-citation keys, and complete the 202-row author-verification file before a publication
-projection can be sealed.
+cases. The next formal stage must record an `execution_registry.csv`, seal
+`screening_adjudications/v2`, append any required citation keys, and complete the
+202-row author-verification file before a publication projection can be sealed.
