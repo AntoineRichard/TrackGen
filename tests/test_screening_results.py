@@ -2668,6 +2668,218 @@ def test_cli_modes_are_mutually_exclusive() -> None:
     assert completed.returncode != 0
 
 
+def _stage_role_result(
+    coordinator: Path,
+    tmp_path: Path,
+) -> tuple[Path, Path]:
+    release = _release_phase(coordinator, tmp_path, "calibration")
+    (tmp_path / "staging").mkdir()
+    stage = screening_results.screening_batches.stage_reviewer_execution(
+        coordinator, release, "screening-01", tmp_path / "staging"
+    )
+    result = stage.parent / "screening-01-result.csv"
+    _write_csv(
+        result,
+        RESULT_HEADER,
+        [
+            _decision_for_assignment(row)
+            for row in _read_csv(stage / "packet.csv")
+        ],
+    )
+    return stage, result
+
+
+def _validate_role_result(stage: Path, result: str | Path) -> int:
+    return screening_results.main(
+        (
+            "--validate-role-result",
+            "--reviewer-stage",
+            str(stage),
+            "--result",
+            str(result),
+        )
+    )
+
+
+def test_cli_validates_canonical_role_result(
+    coordinator: Path,
+    tmp_path: Path,
+) -> None:
+    stage, result = _stage_role_result(coordinator, tmp_path)
+    assert _validate_role_result(stage, result) == 0
+
+
+@pytest.mark.parametrize(
+    ("mutation", "match"),
+    (
+        ("locator", "locator"),
+        ("path", "result path"),
+        ("assignment", "candidate_id"),
+        ("order", "order"),
+    ),
+)
+def test_cli_role_result_rejects_invalid_data(
+    coordinator: Path,
+    tmp_path: Path,
+    mutation: str,
+    match: str,
+) -> None:
+    stage, result = _stage_role_result(coordinator, tmp_path)
+    target = tmp_path / "wrong-result.csv" if mutation == "path" else result
+    if mutation == "path":
+        target.write_bytes(result.read_bytes())
+    else:
+        rows = _read_csv(result)
+        if mutation == "locator":
+            rows[0]["screening_locator"] = "source discussion"
+        elif mutation == "assignment":
+            rows[0]["candidate_id"] = "C9999"
+        else:
+            rows.reverse()
+        _write_csv(result, RESULT_HEADER, rows)
+    with pytest.raises(screening_results.ScreeningResultError, match=match):
+        _validate_role_result(stage, target)
+
+
+def test_cli_role_result_rejects_nonexact_result_path_spelling(
+    coordinator: Path,
+    tmp_path: Path,
+) -> None:
+    stage, result = _stage_role_result(coordinator, tmp_path)
+    nonexact = f"{result.parent}/./{result.name}"
+
+    with pytest.raises(
+        screening_results.ScreeningResultError,
+        match="result path",
+    ):
+        _validate_role_result(stage, nonexact)
+
+
+def test_cli_role_result_rejects_noncanonical_bytes(
+    coordinator: Path,
+    tmp_path: Path,
+) -> None:
+    stage, result = _stage_role_result(coordinator, tmp_path)
+    result.write_bytes(result.read_bytes().replace(b"\n", b"\r\n"))
+
+    with pytest.raises(
+        screening_results.ScreeningResultError,
+        match="canonical CSV bytes",
+    ):
+        _validate_role_result(stage, result)
+
+
+def test_cli_role_result_mode_is_mutually_exclusive() -> None:
+    with pytest.raises(SystemExit):
+        screening_results.main(
+            ("--seal-phase", "--validate-role-result")
+        )
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    (
+        ("--validate-role-result", "--result", "result.csv"),
+        ("--validate-role-result", "--reviewer-stage", "stage"),
+    ),
+)
+def test_cli_role_result_requires_stage_and_result(
+    arguments: tuple[str, ...],
+) -> None:
+    with pytest.raises(screening_results.ScreeningResultError, match="missing"):
+        screening_results.main(arguments)
+
+
+def test_cli_role_result_requires_exactly_one_result() -> None:
+    with pytest.raises(screening_results.ScreeningResultError, match="exactly one"):
+        screening_results.main(
+            (
+                "--validate-role-result",
+                "--reviewer-stage",
+                "stage",
+                "--result",
+                "one.csv",
+                "--result",
+                "two.csv",
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "legacy_arguments",
+    (
+        ("--coordinator-snapshot", "coordinator"),
+        ("--reviewer-release-snapshot", "release"),
+        ("--phase", "calibration"),
+        ("--calibration-reviewer-release-snapshot", "release"),
+        ("--calibration-result-snapshot", "results"),
+        ("--calibration-decision-snapshot", "decision"),
+        ("--decision-input", "decision.csv"),
+        ("--output-dir", "output"),
+    ),
+)
+def test_cli_role_result_rejects_legacy_arguments(
+    legacy_arguments: tuple[str, str],
+) -> None:
+    with pytest.raises(
+        screening_results.ScreeningResultError,
+        match="only accepts",
+    ):
+        screening_results.main(
+            (
+                "--validate-role-result",
+                "--reviewer-stage",
+                "stage",
+                "--result",
+                "result.csv",
+                *legacy_arguments,
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "legacy_arguments",
+    (
+        (
+            "--seal-phase",
+            "--coordinator-snapshot",
+            "coordinator",
+            "--reviewer-release-snapshot",
+            "release",
+            "--phase",
+            "calibration",
+            "--result",
+            "result.csv",
+            "--output-dir",
+            "output",
+        ),
+        (
+            "--seal-calibration-decision",
+            "--coordinator-snapshot",
+            "coordinator",
+            "--reviewer-release-snapshot",
+            "release",
+            "--calibration-result-snapshot",
+            "results",
+            "--decision-input",
+            "decision.csv",
+            "--output-dir",
+            "output",
+        ),
+    ),
+)
+def test_cli_legacy_modes_reject_reviewer_stage(
+    legacy_arguments: tuple[str, ...],
+) -> None:
+    with pytest.raises(
+        screening_results.ScreeningResultError,
+        match="reviewer-stage",
+    ):
+        screening_results.main(
+            (*legacy_arguments, "--reviewer-stage", "stage")
+        )
+
+
 def _forge_phase_input_binding(
     source: screening_results.PhaseResultSnapshot,
     coordinator: screening_results.CoordinatorSnapshot,

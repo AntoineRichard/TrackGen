@@ -2989,6 +2989,70 @@ def reattest_calibration_release_tuple(
     )
 
 
+@_normalize_os_errors
+def _validate_role_result(
+    reviewer_stage: Path,
+    supplied_result_path: str,
+) -> None:
+    stage = _producer_call(
+        screening_batches.validate_reviewer_stage_snapshot,
+        reviewer_stage,
+    )
+    stage_manifest = _parse_csv(
+        stage["stage_manifest.csv"],
+        "stage_manifest.csv",
+        screening_batches.STAGE_MANIFEST_HEADER,
+    )
+    if len(stage_manifest) != 1:
+        raise ScreeningResultError("stage manifest must contain exactly one row")
+    manifest = stage_manifest[0]
+    if supplied_result_path != manifest["result_path"]:
+        raise ScreeningResultError(
+            "supplied result path does not match stage result path"
+        )
+
+    result_path = Path(supplied_result_path)
+    payload = result_path.read_bytes()
+    rows = _parse_csv(payload, str(result_path), RESULT_HEADER)
+    if not rows:
+        raise ScreeningResultError("result must contain at least one row")
+    if payload != _csv_bytes(RESULT_HEADER, rows):
+        raise ScreeningResultError("result must use canonical CSV bytes")
+
+    packet_rows = screening_batches._read_csv_bytes(
+        stage["packet.csv"],
+        "packet.csv",
+        screening_batches.PACKET_HEADER,
+    )
+    immutable_fields = (
+        "assignment_id",
+        "phase",
+        "candidate_id",
+        "input_sha256",
+        "snapshot_sha256",
+        "batch_id",
+    )
+    packet_assignments = [row["assignment_id"] for row in packet_rows]
+    result_assignments = [row["assignment_id"] for row in rows]
+    if result_assignments != packet_assignments:
+        raise ScreeningResultError("result assignment coverage or order is invalid")
+    for row_number, (result, packet) in enumerate(
+        zip(rows, packet_rows),
+        start=2,
+    ):
+        context = f"{result_path}:{row_number}"
+        for field in immutable_fields:
+            if result[field] != packet[field]:
+                raise ScreeningResultError(
+                    f"{context}: {field} does not match packet.csv"
+                )
+        if result["coder_id"] != manifest["role_id"]:
+            raise ScreeningResultError(
+                f"{context}: coder_id does not match stage role_id"
+            )
+        _validate_result_decision(result, context=context)
+
+
 def _argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Seal immutable screening phase results and calibration gates."
@@ -2996,10 +3060,12 @@ def _argument_parser() -> argparse.ArgumentParser:
     modes = parser.add_mutually_exclusive_group(required=True)
     modes.add_argument("--seal-phase", action="store_true")
     modes.add_argument("--seal-calibration-decision", action="store_true")
+    modes.add_argument("--validate-role-result", action="store_true")
+    parser.add_argument("--reviewer-stage", type=Path)
     parser.add_argument("--coordinator-snapshot", type=Path)
     parser.add_argument("--reviewer-release-snapshot", type=Path)
     parser.add_argument("--phase", choices=("calibration", "main"))
-    parser.add_argument("--result", type=Path, action="append")
+    parser.add_argument("--result", action="append")
     parser.add_argument("--calibration-reviewer-release-snapshot", type=Path)
     parser.add_argument("--calibration-result-snapshot", type=Path)
     parser.add_argument("--calibration-decision-snapshot", type=Path)
@@ -3017,6 +3083,29 @@ def _require_arguments(arguments, names: Sequence[str]) -> None:
 
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = _argument_parser().parse_args(argv)
+    if arguments.validate_role_result:
+        _require_arguments(arguments, ("reviewer_stage", "result"))
+        if len(arguments.result) != 1:
+            raise ScreeningResultError(
+                "--validate-role-result requires exactly one --result"
+            )
+        forbidden = (
+            "coordinator_snapshot",
+            "reviewer_release_snapshot",
+            "phase",
+            "calibration_reviewer_release_snapshot",
+            "calibration_result_snapshot",
+            "calibration_decision_snapshot",
+            "decision_input",
+            "output_dir",
+        )
+        if any(getattr(arguments, name) is not None for name in forbidden):
+            raise ScreeningResultError(
+                "--validate-role-result only accepts --reviewer-stage and --result"
+            )
+        _validate_role_result(arguments.reviewer_stage, arguments.result[0])
+        return 0
+
     if arguments.seal_phase:
         _require_arguments(
             arguments,
@@ -3028,6 +3117,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "output_dir",
             ),
         )
+        if arguments.reviewer_stage is not None:
+            raise ScreeningResultError(
+                "--seal-phase does not accept --reviewer-stage"
+            )
         if arguments.decision_input is not None:
             raise ScreeningResultError(
                 "--seal-phase does not accept --decision-input"
@@ -3047,7 +3140,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         seal_phase_results(
             arguments.coordinator_snapshot,
             arguments.phase,
-            arguments.result,
+            [Path(path) for path in arguments.result],
             arguments.output_dir,
             reviewer_release_snapshot_dir=(
                 arguments.reviewer_release_snapshot
@@ -3074,6 +3167,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             "output_dir",
         ),
     )
+    if arguments.reviewer_stage is not None:
+        raise ScreeningResultError(
+            "--seal-calibration-decision does not accept --reviewer-stage"
+        )
     if (
         arguments.phase is not None
         or arguments.result is not None
