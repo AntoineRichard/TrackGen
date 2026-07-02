@@ -63,6 +63,9 @@
     "excluded",
     "boundary"
   ],
+  "screening_inclusion_criterion": [
+    "include-relevant"
+  ],
   "metadata_status": [
     "unverified",
     "verified",

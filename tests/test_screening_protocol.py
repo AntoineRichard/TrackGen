@@ -7,6 +7,7 @@ from pathlib import Path
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 PROTOCOL_PATH = REPOSITORY_ROOT / "paper" / "data" / "screening_protocol.md"
+TAXONOMY_PATH = REPOSITORY_ROOT / "paper" / "data" / "taxonomy.json"
 README_PATH = REPOSITORY_ROOT / "paper" / "data" / "README.md"
 REVIEWER_PROMPT_PATH = (
     REPOSITORY_ROOT / "paper" / "data" / "screening_reviewer_prompt.md"
@@ -204,7 +205,7 @@ EXECUTION_REGISTER_HEADER = (
 )
 
 SCREENING_STATUSES = {"included", "boundary", "excluded"}
-INCLUSION_CRITERIA = {"include-1", "include-2", "include-3", "include-4"}
+INCLUSION_CRITERIA = {"include-relevant"}
 BOUNDARY_CRITERIA = {"boundary"}
 EXCLUSION_CRITERIA = {
     "exclude-fixed-racing-line",
@@ -374,10 +375,22 @@ def test_inclusion_is_source_native_and_boundary_is_survey_level_transfer() -> N
             ("Value", "Normative meaning"),
         )
     }
-    assert "source-native" in criteria["include-2"]
-    assert "generated or parameterized courses" in criteria["include-2"]
-    assert "source-native" in criteria["include-3"]
-    assert "generated or parameterized courses" in criteria["include-3"]
+    assert criteria == {
+        "include-relevant": (
+            "Material evidence establishes at least one source-native eligibility rule "
+            "for course operations, generated-course artifacts or interfaces, "
+            "generated-course characterization, or survey-gap synthesis."
+        )
+    }
+    assert (
+        "| `include-relevant` | Material evidence establishes at least one "
+        "source-native eligibility rule for course operations, generated-course "
+        "artifacts or interfaces, generated-course characterization, or survey-gap "
+        "synthesis. |" in text
+    )
+    assert not re.search(r"include-[1234]", text)
+    assert "MUST NOT choose or rank a primary contribution subtype" in text
+    assert "downstream evidence extraction" in text
 
     boundary = _normalized(_section(text, "Boundary criterion", level=3))
     assert "survey-level boundary transfer" in boundary
@@ -386,8 +399,8 @@ def test_inclusion_is_source_native_and_boundary_is_survey_level_transfer() -> N
 
     procedure = _normalized(_section(text, "Normative decision procedure", level=2))
     assert (
-        "The source itself MUST connect include-2 or include-3 to generated or "
-        "parameterized courses; intended reuse by this survey is insufficient." in procedure
+        "The source itself MUST establish at least one source-native eligibility rule; "
+        "intended reuse by this survey is insufficient." in procedure
     )
     assert (
         "Boundary is a survey-level transfer from fixed-course work and MUST NOT be "
@@ -395,12 +408,10 @@ def test_inclusion_is_source_native_and_boundary_is_survey_level_transfer() -> N
     )
 
     clarification = _normalized(
-        _section(text, "Inclusion-boundary precedence clarification", level=3)
+        _section(text, "Eligibility/boundary clarification", level=3)
     )
     assert "source-native script, implementation, algorithm, or specification" in clarification
-    assert "satisfies include-1" in clarification
     assert "reusable course representation" in clarification
-    assert "satisfies include-2" in clarification
     assert "generic laboratory, project, promotional, or topic page" in clarification
     assert "it is excluded" in clarification
 
@@ -427,7 +438,7 @@ def test_decision_procedure_has_explicit_precedence_and_status_pairing() -> None
     assert pairing == [
         {
             "screening_status": "`included`",
-            "Allowed criterion": "Exactly one of `include-1` through `include-4`",
+            "Allowed criterion": "`include-relevant`",
             "exclusion_reason": "`NR`",
         },
         {
@@ -441,6 +452,11 @@ def test_decision_procedure_has_explicit_precedence_and_status_pairing() -> None
             "exclusion_reason": "A substantive, source-specific reason",
         },
     ]
+
+
+def test_root_taxonomy_declares_the_v6_inclusion_vocabulary() -> None:
+    taxonomy = json.loads(TAXONOMY_PATH.read_text(encoding="utf-8"))
+    assert taxonomy["screening_inclusion_criterion"] == ["include-relevant"]
 
 
 def test_access_gate_and_evidence_provenance_are_executable() -> None:
