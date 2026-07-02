@@ -85,13 +85,14 @@ def ranked_keys(rows: list[dict[str, str]], count: int) -> list[str]:
 
 def test_core_fields_are_in_contract_order():
     assert CORE_FIELDS == (
-        "domain",
+        "survey_evidence_tier",
         "course_object",
         "representation_family",
         "generator_family",
         "generation_role",
         "validity_strategy",
         "code_status",
+        "asset_status",
     )
 
 
@@ -216,6 +217,21 @@ def test_compare_reports_perfect_agreement_in_contract_order():
     ]
 
 
+def test_compare_counts_core_and_supporting_as_an_independent_disagreement():
+    primary = [coding_row("A", survey_evidence_tier="core")]
+    reliability = [coding_row("A", survey_evidence_tier="supporting")]
+
+    tier = summary_by_field(compare_codings(primary, reliability))["survey_evidence_tier"]
+
+    assert tier == {
+        "field": "survey_evidence_tier",
+        "n": "1",
+        "agreement": "0.000000",
+        "kappa": "NR",
+        "passes": "false",
+    }
+
+
 def test_compare_canonicalizes_semicolon_labels_order_insensitively():
     primary = [
         coding_row(
@@ -239,22 +255,22 @@ def test_compare_canonicalizes_semicolon_labels_order_insensitively():
 
 def test_compare_computes_two_category_kappa():
     primary = [
-        coding_row("A", domain="alpha"),
-        coding_row("B", domain="alpha"),
-        coding_row("C", domain="beta"),
-        coding_row("D", domain="beta"),
+        coding_row("A", survey_evidence_tier="core"),
+        coding_row("B", survey_evidence_tier="core"),
+        coding_row("C", survey_evidence_tier="supporting"),
+        coding_row("D", survey_evidence_tier="supporting"),
     ]
     reliability = [
-        coding_row("A", domain="alpha"),
-        coding_row("B", domain="beta"),
-        coding_row("C", domain="beta"),
-        coding_row("D", domain="beta"),
+        coding_row("A", survey_evidence_tier="core"),
+        coding_row("B", survey_evidence_tier="supporting"),
+        coding_row("C", survey_evidence_tier="supporting"),
+        coding_row("D", survey_evidence_tier="supporting"),
     ]
 
-    domain = summary_by_field(compare_codings(primary, reliability))["domain"]
+    tier = summary_by_field(compare_codings(primary, reliability))["survey_evidence_tier"]
 
-    assert domain == {
-        "field": "domain",
+    assert tier == {
+        "field": "survey_evidence_tier",
         "n": "4",
         "agreement": "0.750000",
         "kappa": "0.500000",
@@ -266,20 +282,20 @@ def test_compare_passes_at_exactly_point_eight():
     primary = [
         coding_row(
             str(number),
-            domain="alpha" if number < 3 else "beta",
+            survey_evidence_tier="core" if number < 3 else "supporting",
             generator_family="generator-a",
         )
         for number in range(5)
     ]
     reliability = copy.deepcopy(primary)
-    reliability[0]["domain"] = "beta"
+    reliability[0]["survey_evidence_tier"] = "supporting"
     reliability[0]["generator_family"] = "generator-b"
     reliability[1]["generator_family"] = "generator-b"
 
     summary = summary_by_field(compare_codings(primary, reliability))
 
-    assert summary["domain"]["agreement"] == "0.800000"
-    assert summary["domain"]["passes"] == "true"
+    assert summary["survey_evidence_tier"]["agreement"] == "0.800000"
+    assert summary["survey_evidence_tier"]["passes"] == "true"
     assert summary["generator_family"]["agreement"] == "0.600000"
     assert summary["generator_family"]["passes"] == "false"
 
@@ -425,15 +441,20 @@ def test_compare_cli_writes_summary_csv(tmp_path):
     output_path = tmp_path / "coding_reliability_summary.csv"
     header = ("cite_key", *CORE_FIELDS)
     primary = [
-        coding_row("B", domain="ground; aerial"),
-        coding_row("A", domain="maritime"),
+        coding_row("B", course_object="ground; aerial"),
+        coding_row("A", course_object="maritime"),
     ]
     reliability = [
-        coding_row("A", domain="maritime"),
-        coding_row("B", domain="aerial;ground"),
+        coding_row("A", course_object="maritime"),
+        coding_row("B", course_object="aerial;ground"),
     ]
     write_csv(primary_path, header, primary)
     write_csv(reliability_path, header, reliability)
+    primary_header, _ = read_csv(primary_path)
+    reliability_header, _ = read_csv(reliability_path)
+    assert primary_header[:2] == ("cite_key", "survey_evidence_tier")
+    assert reliability_header[:2] == ("cite_key", "survey_evidence_tier")
+
 
     result = main(
         [
@@ -449,12 +470,13 @@ def test_compare_cli_writes_summary_csv(tmp_path):
     actual_header, actual_rows = read_csv(output_path)
     assert result == 0
     assert actual_header == ("field", "n", "agreement", "kappa", "passes")
+    assert actual_rows[0]["field"] == "survey_evidence_tier"
     assert actual_rows == [
         {
             "field": field,
             "n": "2",
             "agreement": "1.000000",
-            "kappa": "1.000000" if field == "domain" else "NR",
+            "kappa": "1.000000" if field == "course_object" else "NR",
             "passes": "true",
         }
         for field in CORE_FIELDS
@@ -764,20 +786,20 @@ def test_compare_reports_nr_when_both_coders_use_one_shared_category():
 @pytest.mark.parametrize("many_side", ["primary", "reliability"])
 def test_compare_reports_nr_for_asymmetric_one_vs_many_categories(many_side):
     one_category = [
-        coding_row("A", domain="alpha"),
-        coding_row("B", domain="alpha"),
+        coding_row("A", survey_evidence_tier="core"),
+        coding_row("B", survey_evidence_tier="core"),
     ]
     many_categories = [
-        coding_row("A", domain="alpha"),
-        coding_row("B", domain="beta"),
+        coding_row("A", survey_evidence_tier="core"),
+        coding_row("B", survey_evidence_tier="supporting"),
     ]
     primary = many_categories if many_side == "primary" else one_category
     reliability = many_categories if many_side == "reliability" else one_category
 
-    domain = summary_by_field(compare_codings(primary, reliability))["domain"]
+    tier = summary_by_field(compare_codings(primary, reliability))["survey_evidence_tier"]
 
-    assert domain == {
-        "field": "domain",
+    assert tier == {
+        "field": "survey_evidence_tier",
         "n": "2",
         "agreement": "0.500000",
         "kappa": "NR",
@@ -787,19 +809,19 @@ def test_compare_reports_nr_for_asymmetric_one_vs_many_categories(many_side):
 
 def test_compare_computes_kappa_when_multi_category_coders_share_one_category():
     primary = [
-        coding_row("A", domain="alpha"),
-        coding_row("B", domain="beta"),
+        coding_row("A", survey_evidence_tier="core"),
+        coding_row("B", survey_evidence_tier="supporting"),
     ]
     reliability = [
-        coding_row("A", domain="alpha"),
-        coding_row("B", domain="gamma"),
+        coding_row("A", survey_evidence_tier="core"),
+        coding_row("B", survey_evidence_tier="contextual"),
     ]
 
-    domain = summary_by_field(compare_codings(primary, reliability))["domain"]
+    tier = summary_by_field(compare_codings(primary, reliability))["survey_evidence_tier"]
 
-    assert domain["agreement"] == "0.500000"
-    assert domain["kappa"] == "0.333333"
-    assert domain["passes"] == "false"
+    assert tier["agreement"] == "0.500000"
+    assert tier["kappa"] == "0.333333"
+    assert tier["passes"] == "false"
 
 
 def test_new_output_receives_deterministic_repository_mode(tmp_path):
@@ -1181,6 +1203,7 @@ def test_prepare_blind_writes_metadata_packet_and_blank_template(tmp_path):
         {"cite_key": row["cite_key"], **dict.fromkeys(CORE_FIELDS, "")}
         for row in expected_candidates
     ]
+    assert template_header[:2] == ("cite_key", "survey_evidence_tier")
     packet_bytes = packet_path.read_bytes()
     assert "Trajectoire, étude".encode() in packet_bytes
     assert "García; Müller".encode() in packet_bytes
@@ -1289,7 +1312,7 @@ def test_materialize_primary_is_delayed_and_copies_exact_evidence_rows(tmp_path)
     evidence_path = tmp_path / "evidence.csv"
     selection_path = tmp_path / "selection.csv"
     primary_path = tmp_path / "coding_primary.csv"
-    header = ("title", "cite_key", *CORE_FIELDS, "coding_notes")
+    header = ("cite_key", "survey_evidence_tier", "domain", *CORE_FIELDS[1:], "title", "coding_notes")
     evidence = [
         complete_evidence_row(
             "Éclair",
@@ -1335,6 +1358,7 @@ def test_materialize_primary_is_delayed_and_copies_exact_evidence_rows(tmp_path)
     assert result == 0
     assert actual_header == header
     assert actual_rows == expected
+    assert actual_header[:2] == ("cite_key", "survey_evidence_tier")
     assert [row["cite_key"] for row in actual_rows] == sorted(
         row["cite_key"] for row in actual_rows
     )
@@ -1361,7 +1385,7 @@ def test_materialize_primary_rejects_tampered_selection_and_preserves_output(
     evidence_path = tmp_path / "evidence.csv"
     selection_path = tmp_path / "selection.csv"
     primary_path = tmp_path / "coding_primary.csv"
-    header = ("cite_key", *CORE_FIELDS, "title", "coding_notes")
+    header = ("cite_key", "survey_evidence_tier", "domain", *CORE_FIELDS[1:], "title", "coding_notes")
     evidence = [
         complete_evidence_row(cite_key, "ground")
         for cite_key in ("A", "B", "C", "D")
@@ -1433,7 +1457,7 @@ def test_materialize_primary_rejects_stale_selection_after_evidence_drift(
     evidence_path = tmp_path / "evidence.csv"
     selection_path = tmp_path / "selection.csv"
     primary_path = tmp_path / "coding_primary.csv"
-    header = ("cite_key", *CORE_FIELDS, "title", "coding_notes")
+    header = ("cite_key", "survey_evidence_tier", "domain", *CORE_FIELDS[1:], "title", "coding_notes")
     evidence = [
         complete_evidence_row("A", "ground"),
         complete_evidence_row("B", "ground"),
@@ -2144,7 +2168,7 @@ def test_single_output_post_publication_failure_restores_original(
             str(output_path),
         ]
     else:
-        header = ("cite_key", *CORE_FIELDS, "title", "coding_notes")
+        header = ("cite_key", "survey_evidence_tier", "domain", *CORE_FIELDS[1:], "title", "coding_notes")
         evidence = [
             complete_evidence_row("A", "ground"),
             complete_evidence_row("B", "ground"),

@@ -17,13 +17,14 @@ from typing import Sequence
 
 
 CORE_FIELDS = (
-    "domain",
+    "survey_evidence_tier",
     "course_object",
     "representation_family",
     "generator_family",
     "generation_role",
     "validity_strategy",
     "code_status",
+    "asset_status",
 )
 
 
