@@ -3059,7 +3059,38 @@ DECISION_MANIFEST_HEADER = (
 )
 
 
-def _calibration_result_row(manifest_row: dict[str, str]) -> dict[str, str]:
+@pytest.mark.parametrize(
+    ("taxonomy", "expected"),
+    [
+        (
+            {"screening_inclusion_criterion": ["include-relevant"]},
+            "include-relevant",
+        ),
+        ({}, "include-1"),
+    ],
+)
+def test_calibration_result_fixture_uses_bound_or_historical_criterion(
+    taxonomy: dict[str, list[str]],
+    expected: str,
+) -> None:
+    assert _fixture_inclusion_criterion(taxonomy) == expected
+
+
+def _fixture_inclusion_criterion(
+    taxonomy: dict[str, list[str]],
+) -> str:
+    criteria = taxonomy.get(
+        screening_batches.SCREENING_INCLUSION_CRITERION_KEY
+    )
+    if criteria is None:
+        return "include-1"
+    return criteria[0]
+
+
+def _calibration_result_row(
+    manifest_row: dict[str, str],
+    inclusion_criterion: str,
+) -> dict[str, str]:
     candidate_id = manifest_row["candidate_id"]
     return {
         "assignment_id": manifest_row["assignment_id"],
@@ -3071,7 +3102,7 @@ def _calibration_result_row(manifest_row: dict[str, str]) -> dict[str, str]:
         "coder_id": manifest_row["batch_id"],
         "screened_on": "2026-06-30",
         "screening_status": "included",
-        "criterion": "include-1",
+        "criterion": inclusion_criterion,
         "access_status": "full_text",
         "source_urls": f"https://example.test/source/{candidate_id}",
         "evidence_version": "publisher-version-of-record",
@@ -3178,6 +3209,10 @@ def _write_decision_snapshot(
 ) -> tuple[Path, Path, Path]:
     manifest = _read_csv(coordinator / "manifest.csv")
     calibration = [row for row in manifest if row["phase"] == "calibration"]
+    taxonomy = json.loads(
+        (coordinator / "taxonomy.json").read_text(encoding="utf-8")
+    )
+    inclusion_criterion = _fixture_inclusion_criterion(taxonomy)
 
     release_output = (
         output.parent / "calibration-reviewer-releases" / output.name
@@ -3191,7 +3226,7 @@ def _write_decision_snapshot(
     for batch_id in screening_results.BATCH_IDS:
         result_path = raw_root / f"{batch_id}.csv"
         rows = [
-            _calibration_result_row(row)
+            _calibration_result_row(row, inclusion_criterion)
             for row in calibration
             if row["batch_id"] == batch_id
         ]
