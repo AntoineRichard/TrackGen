@@ -28,7 +28,9 @@ bibliography, citation keys, execution profile, reviewer prompt template, and
 calibration selection are also byte-identical to v6; only the frozen protocol and
 taxonomy differ among the coordinator source inputs.
 
-The v6 coordinator validator passes, and the preserved v5 historical coordinator and
-result snapshots still validate. The parent focused cross-component gate recorded `42 passed,
-502 deselected`; v5 coordinator/result validation and corpus validation also passed.
-The known unrelated full integration contract test was not rerun for this freeze.
+The focused cross-component gate recorded `42 passed, 502 deselected`. After the v6
+release-fixture correction, the full producer suite (`tests/test_screening_batches.py`)
+passed 133 tests. The full result suite passed 189 tests in Task 2, and the protocol
+suite passed 30 tests. V5 coordinator/result validation and corpus validation also
+passed. The pre-existing execution-register integration contract mismatch remains
+outside v6 scope; the full integration module is not claimed passing.
