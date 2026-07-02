@@ -1680,25 +1680,33 @@ def _validate_evidence_retrieval_notes(
     )
     if requires_limitation_notes:
         structured = re.fullmatch(
-            r"attempted: ([^;\r\n]+); outcome: ([^;\r\n]+)",
+            r"attempted: "
+            r"doi_or_publisher=([^|;\r\n]+) \| "
+            r"title_author=([^|;\r\n]+) \| "
+            r"scholarly_index_or_repository=([^|;\r\n]+) \| "
+            r"official_page=([^|;\r\n]+); "
+            r"outcome: ([^|;\r\n]+)",
             notes,
         )
         if structured is None:
             raise SnapshotError(
                 f"{context}: limited access requires substantive "
                 "retrieval_notes exactly "
-                "'attempted: <locations/methods>; outcome: <result>'"
+                "'attempted: doi_or_publisher=<result> | "
+                "title_author=<result> | "
+                "scholarly_index_or_repository=<result> | "
+                "official_page=<result>; outcome: <final result>'"
             )
-        attempted, outcome = structured.groups()
         if any(
             segment != segment.strip()
             or len(segment) < 12
             or not any(character.isalnum() for character in segment)
-            for segment in (attempted, outcome)
+            for segment in structured.groups()
         ):
             raise SnapshotError(
-                f"{context}: attempted and outcome segments must be trimmed "
-                "substantive text of at least 12 characters"
+                f"{context}: doi_or_publisher, title_author, "
+                "scholarly_index_or_repository, official_page, and outcome "
+                "must each be trimmed substantive text of at least 12 characters"
             )
         return
     if notes != "NR" and (

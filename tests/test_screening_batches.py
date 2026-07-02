@@ -3852,6 +3852,17 @@ def _write_evidence_archive(root: Path) -> Path:
     return archive
 
 
+def _complete_limited_access_notes(final_outcome: str) -> str:
+    return (
+        "attempted: "
+        "doi_or_publisher=DOI and publisher returned metadata only | "
+        "title_author=exact title-author search found no manuscript | "
+        "scholarly_index_or_repository=scholarly repository search found no copy | "
+        "official_page=not applicable after source-type review; "
+        f"outcome: {final_outcome}"
+    )
+
+
 def test_evidence_packet_manifest_requires_exact_canonical_bytes_header_and_order(
     tmp_path: Path,
 ) -> None:
@@ -3962,9 +3973,8 @@ def test_evidence_packet_manifest_requires_version_pinned_archive_urls(
         redistribution_status=redistribution_status,
     )
     row["evidence_archive_url"] = archive_url
-    row["retrieval_notes"] = (
-        "attempted: DOI and publisher full-text retrieval; "
-        "outcome: publisher access was unavailable"
+    row["retrieval_notes"] = _complete_limited_access_notes(
+        "publisher access was unavailable"
     )
 
     with pytest.raises(screening_batches.SnapshotError, match="version|mutable"):
@@ -4049,28 +4059,84 @@ def test_evidence_packet_manifest_rejects_unstructured_limited_access_notes(
 
 
 @pytest.mark.parametrize(
+    ("operation", "component"),
+    [
+        ("omit", "doi_or_publisher"),
+        ("omit", "title_author"),
+        ("omit", "scholarly_index_or_repository"),
+        ("omit", "official_page"),
+        ("short", "doi_or_publisher"),
+        ("short", "title_author"),
+        ("short", "scholarly_index_or_repository"),
+        ("short", "official_page"),
+        ("duplicate", "title_author"),
+        ("reorder", "title_author"),
+    ],
+)
+def test_evidence_packet_manifest_requires_each_retrieval_audit_component(
+    tmp_path: Path,
+    operation: str,
+    component: str,
+) -> None:
+    archive = _write_evidence_archive(tmp_path)
+    components = [
+        ["doi_or_publisher", "DOI and publisher returned metadata only"],
+        ["title_author", "exact title-author search found no manuscript"],
+        [
+            "scholarly_index_or_repository",
+            "scholarly repository search found no copy",
+        ],
+        ["official_page", "not applicable after source-type review"],
+    ]
+    index = next(
+        index for index, (label, _) in enumerate(components) if label == component
+    )
+    if operation == "omit":
+        components.pop(index)
+    elif operation == "short":
+        components[index][1] = "short"
+    elif operation == "duplicate":
+        components.insert(index, components[index].copy())
+    elif operation == "reorder":
+        components[index - 1], components[index] = (
+            components[index],
+            components[index - 1],
+        )
+    attempted = " | ".join(f"{label}={value}" for label, value in components)
+    row = _evidence_packet_row()
+    row["access_status"] = "abstract_only"
+    row["retrieval_notes"] = (
+        f"attempted: {attempted}; outcome: only an abstract record was available"
+    )
+
+    with pytest.raises(screening_batches.SnapshotError, match="doi_or_publisher"):
+        screening_batches.parse_evidence_packet_manifest(
+            _evidence_packet_bytes([row]),
+            allowed_candidate_ids={"C0001"},
+            source_archive=archive,
+        )
+
+
+@pytest.mark.parametrize(
     "overrides",
     [
         {
             "access_status": "abstract_only",
-            "retrieval_notes": (
-                "attempted: DOI and publisher full-text retrieval; "
-                "outcome: only the abstract record was available"
+            "retrieval_notes": _complete_limited_access_notes(
+                "only the abstract record was available"
             ),
         },
         {
             "redistribution_status": "metadata-only",
             "evidence_sha256": "NR",
             "local_filename": "NR",
-            "retrieval_notes": (
-                "attempted: publisher and repository download routes; "
-                "outcome: no redistributable local bytes were available"
+            "retrieval_notes": _complete_limited_access_notes(
+                "no redistributable local bytes were available"
             ),
         },
         {
-            "retrieval_notes": (
-                "attempted: publisher and DOI retrieval endpoints; "
-                "outcome: publisher access was blocked by HTTP 403"
+            "retrieval_notes": _complete_limited_access_notes(
+                "publisher access was blocked by HTTP 403"
             ),
         },
     ],
@@ -4213,9 +4279,8 @@ def test_evidence_packet_manifest_accepts_metadata_only_without_local_bytes(
         local_filename="NR",
         redistribution_status="metadata-only",
     )
-    row["retrieval_notes"] = (
-        "attempted: DOI and publisher full-text retrieval; "
-        "outcome: full text was unavailable from all attempted routes"
+    row["retrieval_notes"] = _complete_limited_access_notes(
+        "full text was unavailable from all attempted routes"
     )
 
     assert screening_batches.parse_evidence_packet_manifest(
