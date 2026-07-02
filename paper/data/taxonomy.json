@@ -6,6 +6,11 @@
     "mixed",
     "adjacent"
   ],
+  "survey_evidence_tier": [
+    "core",
+    "supporting",
+    "contextual"
+  ],
   "course_object": [
     "closed_track",
     "open_corridor",

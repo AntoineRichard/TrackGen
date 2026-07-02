@@ -16,12 +16,19 @@ or newline, and double an embedded quote. CSV quoting does not turn a semicolon 
 a literal character.
 
 The scalar controlled fields are `candidates.csv` `screening_status` and
-`metadata_status`, `evidence.csv` `code_status`, and `claims.csv`
-`evidence_status`. Each requires exactly one value. The other controlled fields in
+`metadata_status`, `evidence.csv` `survey_evidence_tier` and `code_status`, and
+`claims.csv` `evidence_status`. Each requires exactly one value. The other controlled fields in
 `evidence.csv` (`domain`, `course_object`, `representation_family`,
 `generator_family`, `generation_role`, and `validity_strategy`) may contain one or
 more semicolon-separated values. The validator canonicalizes controlled values by
 trimming each token and joining lists with a semicolon followed by one space.
+
+`survey_evidence_tier=core` directly supports generated or parameterized-course
+technical claims. `supporting` covers transferred fixed-course, benchmark, interface,
+metric, simulator, dataset, or reporting requirements, but not a generation method.
+`contextual` covers field structure, terminology, or survey-gap evidence, not
+implementation or performance evidence. Retained-source count is not
+generation-method count.
 
 `NR` is permitted as a sole sentinel in controlled fields only in `evidence.csv`; it
 must not be combined with another value and is invalid for candidate or claim statuses.
@@ -30,6 +37,9 @@ the fact. Never infer a negative from silence. Use
 `not_applicable` only when the controlled field provides that value and the concept does
 not apply. Record a documented negative only when direct or allowed official evidence
 supports it.
+
+Pre-v7 uncoded draft rows may use `survey_evidence_tier=NR`; `NR` is not a
+taxonomy value.
 
 Use `code_status=not_found` only for an explicit search outcome across documented
 official project and author surfaces. Record the searched locations and search date in
@@ -43,6 +53,9 @@ table, appendix, or official URL, for example `p. 7`, `Section 3.2`, `Figure 4`,
 
 The controlled vocabulary is stored in `taxonomy.json`. Values may be split or merged
 only through a recorded codebook decision in Task 7.
+
+Do not mechanically redesign `claims.csv` for these tiers: claims currently have no
+claim-type field, so the tier is a source-role guardrail rather than a claim type.
 
 ## Screening rules
 

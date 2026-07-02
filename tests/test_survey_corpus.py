@@ -13,6 +13,9 @@ from paper.scripts.validate_corpus import (
     split_values,
     validate_directory,
 )
+from paper.scripts.prepare_screening_batches import (
+    EVIDENCE_HEADER as SCREENING_EVIDENCE_HEADER,
+)
 
 SEARCH_QUERY_HEADERS = (
     "query_id",
@@ -38,6 +41,30 @@ BIBLIOGRAPHY_HEADERS = (
 )
 
 CITATION_KEYS_HEADERS = ("candidate_id", "cite_key")
+
+EVIDENCE_HEADERS = (
+    "cite_key",
+    "survey_evidence_tier",
+    "domain",
+    "vehicle",
+    "course_object",
+    "representation_family",
+    "generator_family",
+    "generation_role",
+    "validity_strategy",
+    "geometry_metrics",
+    "difficulty_metrics",
+    "diversity_metrics",
+    "training_distribution",
+    "evaluation_suite",
+    "simulator",
+    "export_format",
+    "code_status",
+    "asset_status",
+    "reproducibility_fields",
+    "evidence_locator",
+    "coding_notes",
+)
 
 FIXTURE_BIBTEX = """@article{Sample2026Course,
   author = {A. Author},
@@ -76,6 +103,8 @@ def write_rows(path: Path, rows: list[dict[str, str]]) -> None:
             headers = BIBLIOGRAPHY_HEADERS
         elif path.name == "citation_keys.csv":
             headers = CITATION_KEYS_HEADERS
+        elif path.name == "evidence.csv":
+            headers = EVIDENCE_HEADERS
         else:
             headers = HEADERS[path.name]
         writer = csv.DictWriter(handle, fieldnames=headers)
@@ -106,6 +135,8 @@ def blank_row(filename: str) -> dict[str, str]:
         headers = BIBLIOGRAPHY_HEADERS
     elif filename == "citation_keys.csv":
         headers = CITATION_KEYS_HEADERS
+    elif filename == "evidence.csv":
+        headers = EVIDENCE_HEADERS
     else:
         headers = HEADERS[filename]
 
@@ -140,6 +171,7 @@ def build_valid_fixture(tmp_path: Path) -> Path:
     evidence = blank_row("evidence.csv")
     evidence.update(
         cite_key="Sample2026Course",
+        survey_evidence_tier="core",
         domain="ground",
         vehicle="car",
         course_object="closed_track",
@@ -1679,6 +1711,7 @@ def test_local_corpus_bootstrap_count_accepts_matching_seed_mentions(tmp_path):
         ("candidates.csv", "metadata_status", "verified;unverified"),
         ("evidence.csv", "code_status", "not_found;closed"),
         ("claims.csv", "evidence_status", "direct;inferred"),
+        ("evidence.csv", "survey_evidence_tier", "core;supporting"),
     ],
 )
 def test_scalar_controlled_fields_reject_semicolon_lists(
@@ -1724,7 +1757,7 @@ def test_multivalued_controlled_fields_reject_empty_elements(tmp_path, value):
         validate_directory(fixture)
 
 
-@pytest.mark.parametrize("field", ["domain", "code_status"])
+@pytest.mark.parametrize("field", ["domain", "code_status", "survey_evidence_tier"])
 def test_evidence_controlled_fields_accept_nr_as_sole_value(tmp_path, field):
     fixture = build_valid_fixture(tmp_path)
     rows = read_rows(fixture / "evidence.csv")
@@ -1736,7 +1769,11 @@ def test_evidence_controlled_fields_accept_nr_as_sole_value(tmp_path, field):
 
 @pytest.mark.parametrize(
     ("field", "other"),
-    [("domain", "ground"), ("code_status", "not_found")],
+    [
+        ("domain", "ground"),
+        ("code_status", "not_found"),
+        ("survey_evidence_tier", "core"),
+    ],
 )
 def test_evidence_controlled_fields_reject_nr_combined_with_value(
     tmp_path, field, other
@@ -1793,6 +1830,7 @@ REQUIRED_FIELDS_BY_FILE = {
     ),
     "evidence.csv": (
         "cite_key",
+        "survey_evidence_tier",
         "domain",
         "course_object",
         "representation_family",
@@ -1927,6 +1965,60 @@ def test_production_taxonomy_matches_validator_default():
         Path(__file__).resolve().parents[1] / "paper" / "data" / "taxonomy.json"
     )
     assert json.loads(taxonomy_path.read_text(encoding="utf-8")) == DEFAULT_TAXONOMY
+
+
+def test_survey_evidence_tier_taxonomy_has_exact_order():
+    assert DEFAULT_TAXONOMY["survey_evidence_tier"] == [
+        "core",
+        "supporting",
+        "contextual",
+    ]
+
+
+def test_evidence_header_is_exact_and_matches_screening_batches():
+    assert HEADERS["evidence.csv"] == EVIDENCE_HEADERS
+    assert SCREENING_EVIDENCE_HEADER == EVIDENCE_HEADERS
+
+    evidence_path = (
+        Path(__file__).resolve().parents[1] / "paper" / "data" / "evidence.csv"
+    )
+    with evidence_path.open(encoding="utf-8", newline="") as handle:
+        assert tuple(next(csv.reader(handle))) == EVIDENCE_HEADERS
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["core", "supporting", "contextual", "NR"],
+)
+def test_survey_evidence_tier_accepts_taxonomy_values_and_nr_sentinel(
+    tmp_path, value
+):
+    fixture = build_valid_fixture(tmp_path)
+    rows = read_rows(fixture / "evidence.csv")
+    rows[0]["survey_evidence_tier"] = value
+    rewrite_rows(fixture / "evidence.csv", rows)
+
+    validate_directory(fixture)
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        ("", "survey_evidence_tier is required"),
+        ("core;supporting", "survey_evidence_tier must contain exactly one value"),
+        ("nr", "survey_evidence_tier='nr' is outside survey_evidence_tier"),
+        ("NR;core", "survey_evidence_tier: NR must be used alone"),
+        ("unknown", "survey_evidence_tier='unknown' is outside survey_evidence_tier"),
+    ],
+)
+def test_survey_evidence_tier_rejects_invalid_values(tmp_path, value, message):
+    fixture = build_valid_fixture(tmp_path)
+    rows = read_rows(fixture / "evidence.csv")
+    rows[0]["survey_evidence_tier"] = value
+    rewrite_rows(fixture / "evidence.csv", rows)
+
+    with pytest.raises(CorpusError, match=message):
+        validate_directory(fixture)
 
 
 def test_malformed_taxonomy_json_is_wrapped_with_path(tmp_path):

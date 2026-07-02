@@ -32,8 +32,9 @@ HEADERS = {
         "coverage_status", "notes",
     ),
     "evidence.csv": (
-        "cite_key", "domain", "vehicle", "course_object", "representation_family",
-        "generator_family", "generation_role", "validity_strategy",
+        "cite_key", "survey_evidence_tier", "domain", "vehicle",
+        "course_object", "representation_family", "generator_family",
+        "generation_role", "validity_strategy",
         "geometry_metrics", "difficulty_metrics", "diversity_metrics",
         "training_distribution", "evaluation_suite", "simulator", "export_format",
         "code_status", "asset_status", "reproducibility_fields",
@@ -117,6 +118,7 @@ BIBLIOGRAPHY_REQUIRED_FIELDS = (
 
 DEFAULT_TAXONOMY = {
     "domain": ["ground", "aerial", "maritime", "mixed", "adjacent"],
+    "survey_evidence_tier": ["core", "supporting", "contextual"],
     "course_object": [
         "closed_track", "open_corridor", "gate_chain", "waypoint_sequence",
         "road_network", "buoy_course", "world_asset", "fixed_benchmark",
@@ -155,6 +157,7 @@ CONTROLLED_FIELDS = {
     },
     "evidence.csv": {
         "domain": "domain",
+        "survey_evidence_tier": "survey_evidence_tier",
         "course_object": "course_object",
         "representation_family": "representation_family",
         "generator_family": "generator_family",
@@ -169,6 +172,7 @@ SCALAR_CONTROLLED_FIELDS = {
     ("candidates.csv", "screening_status"),
     ("candidates.csv", "metadata_status"),
     ("evidence.csv", "code_status"),
+    ("evidence.csv", "survey_evidence_tier"),
     ("claims.csv", "evidence_status"),
 }
 
@@ -187,8 +191,9 @@ REQUIRED_FIELDS = {
         "source_path", "source_heading", "source_label", "coverage_status",
     ),
     "evidence.csv": (
-        "cite_key", "domain", "course_object", "representation_family",
-        "generator_family", "generation_role", "validity_strategy",
+        "cite_key", "survey_evidence_tier", "domain", "course_object",
+        "representation_family", "generator_family", "generation_role",
+        "validity_strategy",
         "code_status", "evidence_locator",
     ),
     "claims.csv": (

@@ -189,6 +189,7 @@ CITATION_KEY_HEADER = ("candidate_id", "cite_key")
 CALIBRATION_SELECTION_HEADER = ("candidate_id",)
 EVIDENCE_HEADER = (
     "cite_key",
+    "survey_evidence_tier",
     "domain",
     "vehicle",
     "course_object",
