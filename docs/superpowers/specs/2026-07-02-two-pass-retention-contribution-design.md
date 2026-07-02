@@ -1,6 +1,6 @@
 # Two-Pass Retention And Contribution Coding Design
 
-**Status:** Approved concept; written specification pending user review
+**Status:** Approved by the user on 2026-07-02
 
 **Decision:** Separate eligibility retention from contribution characterization. The
 first pass decides only whether a source is retained for the survey. The second pass
