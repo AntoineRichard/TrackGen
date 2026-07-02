@@ -4,7 +4,7 @@
 
 **Decision:** Use source-native geometry-operation precedence. `include-1` takes
 precedence whenever a report performs at least one qualifying operation on explicit
-course geometry. `include-2` applies only when no `include-1` operation is established.
+course geometry. `include-2` is selected only when no qualifying `include-1` operation is established.
 
 ## Context
 
@@ -42,13 +42,12 @@ spatial traversal constraints.
 
 When a source satisfies `include-1`, the reviewer MUST record `include-1` even if the
 same source also defines an interface, representation, dataset, benchmark, competition
-course set, simulator contract, or interchange artifact that independently satisfies
-`include-2`. Additional `include-2` applicability MAY be recorded in `notes` but MUST
-NOT replace the primary criterion.
+course set, simulator contract, or interchange artifact that defines an `include-2`-type
+contribution. The additional `include-2`-type contribution MUST be recorded in `notes`
+but MUST NOT replace the primary criterion.
 
-`include-2` is selected only when material evidence establishes the reusable
-representation/interface/set contribution and no qualifying `include-1` operation is
-established. Merely loading, referencing, displaying, or controlling on supplied fixed
+`include-2` is selected only when no qualifying `include-1` operation is established.
+Merely loading, referencing, displaying, or controlling on supplied fixed
 geometry is not an `include-1` operation.
 
 The rule applies to both direct robot-racing sources and transferable adjacent domains.

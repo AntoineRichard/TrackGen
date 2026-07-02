@@ -41,8 +41,12 @@ Change the title to `# Duplicate full-text screening codebook v3`. Replace the
 Add this paragraph to `### Inclusion-boundary precedence clarification`:
 
 ```markdown
-When one source both performs a qualifying `include-1` operation and defines an `include-2` representation, interface, dataset, benchmark, course set, simulator contract, or interchange artifact, the reviewer MUST record `include-1`. Additional `include-2` applicability MAY be recorded in `notes` but MUST NOT replace the primary criterion. `include-2` is selected only when no qualifying `include-1` operation is established. Merely loading, referencing, displaying, or controlling on supplied fixed geometry is not an `include-1` operation.
+When one source both performs a qualifying `include-1` operation and defines an `include-2` representation, interface, dataset, benchmark, course set, simulator contract, or interchange artifact, the reviewer MUST record `include-1`. The additional `include-2`-type contribution MUST be recorded in `notes` but MUST NOT replace the primary criterion. `include-2` is selected only when no qualifying `include-1` operation is established. Merely loading, referencing, displaying, or controlling on supplied fixed geometry is not an `include-1` operation.
 ```
+
+Replace the existing sentence ending
+``for generated or parameterized courses satisfies `include-2`.`` with
+``for generated or parameterized courses defines an `include-2`-type contribution.``
 
 - [ ] **Step 3: Record the revision provenance**
 
@@ -65,7 +69,8 @@ diff -u paper/data/screening_inputs/v4/protocol.md paper/data/screening_work/v5/
 rg -n "include-1|include-2|codebook v3" paper/data/screening_work/v5/protocol.md
 ```
 
-Expected: only the title, two criterion definitions, and one precedence paragraph differ.
+Expected: only the title, two criterion definitions, the new precedence paragraph, and
+the terminology of that existing sentence differ.
 
 ### Task 2: Freeze And Validate The V5 Coordinator
 
