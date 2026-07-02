@@ -858,13 +858,9 @@ def test_stage_cli_publishes_and_reports_random_role_snapshot(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    inputs = build_inputs(tmp_path / "inputs")
-    coordinator = tmp_path / "coordinator" / "v1"
-    coordinator.parent.mkdir()
-    freeze(inputs, coordinator)
-    reviewer_release = tmp_path / "releases" / "v1"
-    reviewer_release.parent.mkdir()
-    release(coordinator, "calibration", reviewer_release)
+    coordinator, reviewer_release, _, source_archive = _v2_calibration_release(
+        tmp_path
+    )
     staging_root = tmp_path / "staging"
     staging_root.mkdir(mode=0o700)
     os.chmod(staging_root, 0o700)
@@ -880,12 +876,150 @@ def test_stage_cli_publishes_and_reports_random_role_snapshot(
             "screening-02",
             "--staging-root",
             str(staging_root),
+            "--source-archive",
+            str(source_archive),
         ]
     ) == 0
     output = Path(capsys.readouterr().out.strip())
     assert output.parent.parent == staging_root
     assert output.name == "v1"
     screening_batches.validate_reviewer_stage_snapshot(output)
+
+
+def _v2_calibration_release(
+    tmp_path: Path,
+) -> tuple[Path, Path, Path, Path]:
+    inputs = build_inputs(tmp_path / "inputs")
+    coordinator = tmp_path / "coordinator" / "v7"
+    coordinator.parent.mkdir()
+    freeze(inputs, coordinator)
+    evidence_manifest, source_archive = _phase_evidence_inputs(
+        tmp_path, coordinator, "calibration"
+    )
+    reviewer_release = tmp_path / "releases" / "v2"
+    reviewer_release.parent.mkdir()
+    screening_batches.release_snapshot(
+        coordinator,
+        "calibration",
+        reviewer_release,
+        evidence_manifest=evidence_manifest,
+        source_archive=source_archive,
+    )
+    return coordinator, reviewer_release, evidence_manifest, source_archive
+
+
+def test_stage_role_cli_forwards_source_archive_for_v2_release(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    coordinator, reviewer_release, _, source_archive = _v2_calibration_release(
+        tmp_path
+    )
+    staging_root = tmp_path / "staging"
+    staging_root.mkdir(mode=0o700)
+    os.chmod(staging_root, 0o700)
+
+    assert screening_batches.main(
+        [
+            "--stage-role",
+            "--snapshot-dir",
+            str(coordinator),
+            "--reviewer-release-snapshot",
+            str(reviewer_release),
+            "--role-id",
+            "screening-02",
+            "--staging-root",
+            str(staging_root),
+            "--source-archive",
+            str(source_archive),
+        ]
+    ) == 0
+
+    stage = Path(capsys.readouterr().out.strip())
+    screening_batches.validate_reviewer_stage_snapshot(stage)
+
+
+def test_stage_role_cli_v2_release_requires_source_archive(
+    tmp_path: Path,
+) -> None:
+    coordinator, reviewer_release, _, _ = _v2_calibration_release(tmp_path)
+    staging_root = tmp_path / "staging"
+    staging_root.mkdir(mode=0o700)
+    os.chmod(staging_root, 0o700)
+
+    with pytest.raises(
+        screening_batches.SnapshotError,
+        match="v2 reviewer staging requires a source archive",
+    ):
+        screening_batches.main(
+            [
+                "--stage-role",
+                "--snapshot-dir",
+                str(coordinator),
+                "--reviewer-release-snapshot",
+                str(reviewer_release),
+                "--role-id",
+                "screening-02",
+                "--staging-root",
+                str(staging_root),
+            ]
+        )
+
+
+def test_stage_role_cli_historical_v1_works_without_source_archive(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    staging_root = tmp_path / "staging"
+    staging_root.mkdir(mode=0o700)
+    os.chmod(staging_root, 0o700)
+
+    assert screening_batches.main(
+        [
+            "--stage-role",
+            "--snapshot-dir",
+            str(DATA_ROOT / "screening_inputs" / "v5"),
+            "--reviewer-release-snapshot",
+            str(DATA_ROOT / "screening_releases" / "calibration" / "v5"),
+            "--role-id",
+            "screening-02",
+            "--staging-root",
+            str(staging_root),
+        ]
+    ) == 0
+    screening_batches.validate_reviewer_stage_snapshot(
+        Path(capsys.readouterr().out.strip())
+    )
+
+
+def test_stage_role_cli_rejects_evidence_manifest(
+    tmp_path: Path,
+) -> None:
+    coordinator, reviewer_release, evidence_manifest, source_archive = (
+        _v2_calibration_release(tmp_path)
+    )
+
+    with pytest.raises(
+        screening_batches.SnapshotError,
+        match="--stage-role does not accept --evidence-manifest",
+    ):
+        screening_batches.main(
+            [
+                "--stage-role",
+                "--snapshot-dir",
+                str(coordinator),
+                "--reviewer-release-snapshot",
+                str(reviewer_release),
+                "--role-id",
+                "screening-02",
+                "--staging-root",
+                str(tmp_path / "staging"),
+                "--source-archive",
+                str(source_archive),
+                "--evidence-manifest",
+                str(evidence_manifest),
+            ]
+        )
 
 
 @pytest.mark.parametrize(

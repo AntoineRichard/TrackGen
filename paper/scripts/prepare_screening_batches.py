@@ -5385,9 +5385,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         forbidden = [
             name for name, value in direct_values.items() if value is not None
         ]
-        forbidden.extend(
-            name for name, value in evidence_values.items() if value is not None
-        )
+        if arguments.evidence_manifest is not None:
+            forbidden.append("--evidence-manifest")
         if arguments.phase is not None:
             forbidden.append("--phase")
         if (
@@ -5405,6 +5404,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             arguments.reviewer_release_snapshot,
             arguments.role_id,
             arguments.staging_root,
+            source_archive=arguments.source_archive,
         )
         print(output)
         return 0
