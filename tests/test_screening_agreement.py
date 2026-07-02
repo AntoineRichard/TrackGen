@@ -25,6 +25,7 @@ MAIN_HASH = "4" * 64
 CALIBRATION_RELEASE_HASH = "5" * 64
 MAIN_RELEASE_HASH = "6" * 64
 PRIMARY_HASH = "11f65fdced90dcc0b4c931730113def8827f29480b2261bba4b0e358586dcfd1"
+ROOT = Path(__file__).resolve().parents[1]
 
 
 @dataclass(frozen=True)
@@ -42,7 +43,7 @@ def _sealed_result_row(
 ) -> dict[str, str]:
     candidate_id = manifest_row["candidate_id"]
     criterion = {
-        "included": "include-1",
+        "included": "include-relevant",
         "boundary": "boundary",
         "excluded": "exclude-out-of-scope",
     }[status]
@@ -96,7 +97,7 @@ def _seal_phase(
     for row in manifest:
         if row["phase"] == phase:
             by_candidate[row["candidate_id"]].append(row)
-    statuses = ("included", "boundary", "excluded")
+    statuses = ("included", "excluded")
     for candidate_number, candidate_id in enumerate(
         sorted(by_candidate, key=lambda value: value.encode("utf-8"))
     ):
@@ -334,6 +335,8 @@ def _forge_self_declared_phase_snapshot(
             rows = list(csv.DictReader(handle, strict=True))
         for row in rows:
             row["snapshot_sha256"] = coordinator_sha256
+            if row["screening_status"] == "included":
+                row["criterion"] = "include-1"
         payloads[batch_id] = screening_results._csv_bytes(
             screening_results.RESULT_HEADER, rows
         )
@@ -446,7 +449,11 @@ def _snapshots() -> tuple[
     assert len(calibration_ids) == 30
     assert calibration_ids != frozenset(row["candidate_id"] for row in metadata[:30])
     rows: dict[str, list[dict[str, str]]] = {"calibration": [], "main": []}
-    criteria = agreement.CRITERION_CATEGORIES
+    criteria = tuple(
+        criterion
+        for criterion in agreement.CRITERION_CATEGORIES
+        if criterion != "include-relevant"
+    )
     for number, candidate in enumerate(metadata, start=1):
         candidate_id = candidate["candidate_id"]
         phase = "calibration" if candidate_id in calibration_ids else "main"
@@ -537,6 +544,7 @@ def test_imports_result_contract_and_closed_vocabularies() -> None:
         "include-2",
         "include-3",
         "include-4",
+        "include-relevant",
         "boundary",
         "exclude-fixed-racing-line",
         "exclude-appearance-dynamics",
@@ -599,6 +607,27 @@ def test_public_api_revalidates_against_coordinator_and_derives_provenance(
         for row in report
         for metric in agreement.BOOTSTRAP_METRICS
     )
+
+
+def test_v7_binary_agreement_report_uses_bound_criteria_in_bootstrap(
+    sealed_snapshots: _SealedAgreementSnapshots,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(agreement, "PRODUCTION_BOOTSTRAP_REPLICATES", 2)
+
+    report = agreement.build_agreement_report(
+        **_public_arguments(sealed_snapshots)
+    )
+
+    field = (
+        "criterion_a_include_relevant_criterion_b_exclude_out_of_scope"
+    )
+    assert field in agreement.AGREEMENT_REPORT_HEADER
+    assert all(
+        row["overall_exact_status_agreement_bootstrap_replicates"] == "2"
+        for row in report
+    )
+    assert any(row[field] != "0" for row in report)
 
 
 def test_public_api_removes_hash_and_bootstrap_overrides(
@@ -911,6 +940,52 @@ def test_rejects_invalid_status_criterion_pair() -> None:
         agreement.ScreeningAgreementError, match="criterion.*invalid for included"
     ):
         _build(replace(calibration, rows=tuple(rows)), main, 5)
+
+
+def test_v7_binary_agreement_rejects_injected_boundary_status(
+    sealed_snapshots: _SealedAgreementSnapshots,
+) -> None:
+    coordinator = screening_results.capture_coordinator_snapshot(
+        sealed_snapshots.coordinator
+    )
+    rows = [dict(row) for row in sealed_snapshots.calibration.rows]
+    rows[0].update(screening_status="boundary", criterion="boundary")
+
+    with pytest.raises(
+        agreement.ScreeningAgreementError,
+        match="invalid screening_status",
+    ):
+        agreement._build_agreement_report(
+            replace(sealed_snapshots.calibration, rows=tuple(rows)),
+            sealed_snapshots.main,
+            coordinator_snapshot_sha256=coordinator.snapshot_sha256,
+            protocol_sha256=coordinator.protocol_sha256,
+            allowed_inclusion_criteria=coordinator.allowed_inclusion_criteria,
+            allowed_screening_statuses=coordinator.allowed_screening_statuses,
+            bootstrap_replicates=5,
+        )
+
+
+@pytest.mark.parametrize("version", ("v5", "v6"))
+def test_historical_agreement_coordinator_keeps_legacy_boundary_status(
+    version: str,
+) -> None:
+    coordinator = screening_results.capture_coordinator_snapshot(
+        ROOT / "paper" / "data" / "screening_inputs" / version
+    )
+
+    assert coordinator.allowed_screening_statuses == (
+        "included",
+        "boundary",
+        "excluded",
+    )
+    agreement._validate_status_criterion(
+        "boundary",
+        "boundary",
+        candidate_id="C0001",
+        allowed_inclusion_criteria=coordinator.allowed_inclusion_criteria,
+        allowed_screening_statuses=coordinator.allowed_screening_statuses,
+    )
 
 
 def test_criterion_disagreement_table_matches_raw_pairs() -> None:

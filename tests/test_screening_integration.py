@@ -190,7 +190,7 @@ def _rating(
         "coder_id": assignment["batch_id"],
         "screened_on": "2026-06-30",
         "screening_status": "included",
-        "criterion": "include-1",
+        "criterion": "include-relevant",
         "access_status": "full_text",
         "source_urls": f"{archive};{source}",
         "evidence_version": "version-of-record-1",
@@ -660,8 +660,15 @@ def _trigger_scenarios() -> dict[
             },
         ),
         "C0002": (
-            {"criterion": "include-1"},
-            {"criterion": "include-2"},
+            {},
+            {
+                "screening_status": "excluded",
+                "criterion": "exclude-out-of-scope",
+                "exclusion_reason": (
+                    "The source does not establish a reusable course-generation "
+                    "procedure in the inspected full text."
+                ),
+            },
         ),
         "C0003": (
             {
@@ -723,7 +730,7 @@ def _adjudication_row(
     candidate_id: str,
     *,
     screening_status: str = "included",
-    criterion: str = "include-1",
+    criterion: str = "include-relevant",
     exclusion_reason: str = "NR",
     resolved_conflict_ids: tuple[str, ...] | None = None,
     screening_locator: str = "Algorithm 1; Section 3, page 7",
@@ -1169,7 +1176,7 @@ def _trigger_case(tmp_path: Path) -> tuple[ScreeningCase, list[dict[str, str]]]:
     )
     rows = [
         _adjudication_row(case, "C0001"),
-        _adjudication_row(case, "C0002", criterion="include-2"),
+        _adjudication_row(case, "C0002", criterion="include-relevant"),
         _adjudication_row(
             case,
             "C0003",
@@ -1263,6 +1270,63 @@ def _seal_adjudications(
         output,
     )
     return output
+
+
+def test_adjudication_rejects_boundary_under_v7_binary_contract(
+    tmp_path: Path,
+) -> None:
+    case = _build_case(
+        tmp_path,
+        conflicts=[_conflict("X57B57E64E501", "C0001")],
+    )
+
+    with pytest.raises(
+        integration.ScreeningIntegrationError,
+        match="invalid screening_status",
+    ):
+        _seal_adjudications(
+            case,
+            [
+                _adjudication_row(
+                    case,
+                    "C0001",
+                    screening_status="boundary",
+                    criterion="boundary",
+                )
+            ],
+        )
+
+
+@pytest.mark.parametrize("version", ("v5", "v6"))
+def test_historical_decision_coordinator_keeps_legacy_boundary_status(
+    tmp_path: Path,
+    version: str,
+) -> None:
+    coordinator = screening_results.capture_coordinator_snapshot(
+        ROOT / "paper" / "data" / "screening_inputs" / version
+    )
+    case = _build_case(tmp_path)
+    row = _adjudication_row(
+        case,
+        "C0001",
+        screening_status="boundary",
+        criterion="boundary",
+    )
+
+    assert coordinator.allowed_screening_statuses == (
+        "included",
+        "boundary",
+        "excluded",
+    )
+    integration._validate_adjudication_decision(
+        row,
+        tuple(case.ratings_for("C0001")),
+        (),
+        (),
+        context_label="historical boundary",
+        allowed_inclusion_criteria=coordinator.allowed_inclusion_criteria,
+        allowed_screening_statuses=coordinator.allowed_screening_statuses,
+    )
 
 
 def _case_execution_register(case: ScreeningCase) -> Path:
@@ -2913,7 +2977,7 @@ def test_deciding_locator_section_rejects_prefix_and_suffix_substitution(
             "C0002",
             lambda row: row.update(
                 resolution_evidence=row["resolution_evidence"].replace(
-                    "include-2", "redacted-criterion"
+                    "include-relevant", "redacted-criterion"
                 )
             ),
         ),
@@ -3018,7 +3082,7 @@ def test_canonical_evidence_accepts_control_phrases_as_bound_data(
                 "procedurally reusable."
             ),
         ),
-        _adjudication_row(case, "C0002", criterion="include-2"),
+        _adjudication_row(case, "C0002", criterion="include-relevant"),
         _adjudication_row(
             case,
             "C0003",
@@ -3075,7 +3139,7 @@ def test_grammar_complete_token_inventory_rationale_fails(
     ratings = case.ratings_for("C0001")
     comparison = (
         "Candidate C0001 complete token inventory repeats A1 A2 included "
-        "excluded include-1 exclude-out-of-scope whereas every known label, "
+        "excluded include-relevant exclude-out-of-scope whereas every known label, "
         "identifier, status, criterion, locator, URL, reason, rule, and final "
         "value is listed without independent candidate-specific comparison "
         "analysis or additional source-grounded observations."

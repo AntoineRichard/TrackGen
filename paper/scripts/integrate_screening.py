@@ -995,6 +995,12 @@ def _validate_adjudication_decision(
     trigger_ids: tuple[str, ...],
     *,
     context_label: str,
+    allowed_inclusion_criteria: tuple[str, ...] = (
+        screening_results.INCLUSION_CRITERIA
+    ),
+    allowed_screening_statuses: tuple[str, ...] = (
+        screening_results.LEGACY_SCREENING_STATUSES
+    ),
 ) -> None:
     if (
         row["adjudicator_id"] == "NR"
@@ -1033,9 +1039,11 @@ def _validate_adjudication_decision(
         "notes": row["notes"],
     }
     _call(
-        screening_results.validate_result_decision,
+        screening_results._validate_result_decision,
         surrogate,
         context=context_label,
+        allowed_inclusion_criteria=allowed_inclusion_criteria,
+        allowed_screening_statuses=allowed_screening_statuses,
     )
 
     evidence_text = row["resolution_evidence"]
@@ -1231,6 +1239,12 @@ def _validate_adjudication_rows(
             resolved_conflicts,
             trigger_ids,
             context_label=f"adjudications.csv:{row_number}",
+            allowed_inclusion_criteria=(
+                context.coordinator.allowed_inclusion_criteria
+            ),
+            allowed_screening_statuses=(
+                context.coordinator.allowed_screening_statuses
+            ),
         )
         by_candidate[candidate_id] = dict(row)
 

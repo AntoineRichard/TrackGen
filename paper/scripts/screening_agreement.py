@@ -52,6 +52,7 @@ if set(EXCLUSION_CRITERIA) != set(screening_results.EXCLUSION_CRITERIA):
     raise RuntimeError("screening_results exclusion vocabulary changed")
 CRITERION_CATEGORIES = (
     *INCLUSION_CRITERIA,
+    "include-relevant",
     "boundary",
     *EXCLUSION_CRITERIA,
 )
@@ -223,13 +224,20 @@ _combined_primary_snapshot_sha256 = combined_primary_snapshot_sha256
 
 
 def _validate_status_criterion(
-    status: str, criterion: str, *, candidate_id: str
+    status: str,
+    criterion: str,
+    *,
+    candidate_id: str,
+    allowed_inclusion_criteria: tuple[str, ...] = INCLUSION_CRITERIA,
+    allowed_screening_statuses: tuple[str, ...] = (
+        screening_results.LEGACY_SCREENING_STATUSES
+    ),
 ) -> None:
-    if status not in screening_results.SCREENING_STATUSES:
+    if status not in allowed_screening_statuses:
         raise ScreeningAgreementError(
             f"candidate_id={candidate_id!r}: invalid screening_status {status!r}"
         )
-    if status == "included" and criterion not in INCLUSION_CRITERIA:
+    if status == "included" and criterion not in allowed_inclusion_criteria:
         raise ScreeningAgreementError(
             f"candidate_id={candidate_id!r}: criterion {criterion!r} "
             "is invalid for included"
@@ -250,7 +258,14 @@ def _fraction_or_none(numerator: int, denominator: int) -> Fraction | None:
     return None if denominator == 0 else Fraction(numerator, denominator)
 
 
-def _point_estimates(pairs: Sequence[RatingPair]) -> PointEstimates:
+def _point_estimates(
+    pairs: Sequence[RatingPair],
+    *,
+    allowed_inclusion_criteria: tuple[str, ...] = INCLUSION_CRITERIA,
+    allowed_screening_statuses: tuple[str, ...] = (
+        screening_results.LEGACY_SCREENING_STATUSES
+    ),
+) -> PointEstimates:
     if not pairs:
         raise ScreeningAgreementError("agreement scope must contain candidates")
     matrix = {
@@ -266,10 +281,18 @@ def _point_estimates(pairs: Sequence[RatingPair]) -> PointEstimates:
     }
     for pair in pairs:
         _validate_status_criterion(
-            pair.status_a, pair.criterion_a, candidate_id=pair.candidate_id
+            pair.status_a,
+            pair.criterion_a,
+            candidate_id=pair.candidate_id,
+            allowed_inclusion_criteria=allowed_inclusion_criteria,
+            allowed_screening_statuses=allowed_screening_statuses,
         )
         _validate_status_criterion(
-            pair.status_b, pair.criterion_b, candidate_id=pair.candidate_id
+            pair.status_b,
+            pair.criterion_b,
+            candidate_id=pair.candidate_id,
+            allowed_inclusion_criteria=allowed_inclusion_criteria,
+            allowed_screening_statuses=allowed_screening_statuses,
         )
         matrix[(pair.status_a, pair.status_b)] += 1
         if pair.criterion_a != pair.criterion_b:
@@ -458,6 +481,10 @@ def _bootstrap_intervals(
     scope: str,
     primary_snapshot_sha256: str,
     replicates: int,
+    allowed_inclusion_criteria: tuple[str, ...] = INCLUSION_CRITERIA,
+    allowed_screening_statuses: tuple[str, ...] = (
+        screening_results.LEGACY_SCREENING_STATUSES
+    ),
 ) -> dict[str, BootstrapInterval]:
     if (
         isinstance(replicates, bool)
@@ -493,7 +520,11 @@ def _bootstrap_intervals(
             ]
             for draw in range(expected_count)
         )
-        estimates = _point_estimates(sample)
+        estimates = _point_estimates(
+            sample,
+            allowed_inclusion_criteria=allowed_inclusion_criteria,
+            allowed_screening_statuses=allowed_screening_statuses,
+        )
         replicate_values = {
             "overall_exact_status_agreement": estimates.exact_status_rate,
             "exact_criterion_agreement": estimates.exact_criterion_rate,
@@ -551,6 +582,10 @@ def _phase_pairs(
     expected_phase: str,
     coordinator_snapshot_sha256: str,
     protocol_sha256: str,
+    allowed_inclusion_criteria: tuple[str, ...] = INCLUSION_CRITERIA,
+    allowed_screening_statuses: tuple[str, ...] = (
+        screening_results.LEGACY_SCREENING_STATUSES
+    ),
 ) -> tuple[list[RatingPair], set[str]]:
     if not isinstance(snapshot, screening_results.PhaseResultSnapshot):
         raise ScreeningAgreementError(
@@ -609,6 +644,8 @@ def _phase_pairs(
             row["screening_status"],
             row["criterion"],
             candidate_id=candidate_id,
+            allowed_inclusion_criteria=allowed_inclusion_criteria,
+            allowed_screening_statuses=allowed_screening_statuses,
         )
         grouped[candidate_id].append(row)
 
@@ -668,6 +705,10 @@ def _validated_snapshot_pairs(
     *,
     coordinator_snapshot_sha256: str,
     protocol_sha256: str,
+    allowed_inclusion_criteria: tuple[str, ...] = INCLUSION_CRITERIA,
+    allowed_screening_statuses: tuple[str, ...] = (
+        screening_results.LEGACY_SCREENING_STATUSES
+    ),
 ) -> tuple[list[RatingPair], list[RatingPair], list[RatingPair]]:
     coordinator_hash = _validate_sha256(
         coordinator_snapshot_sha256, "coordinator_snapshot_sha256"
@@ -680,12 +721,16 @@ def _validated_snapshot_pairs(
         expected_phase="calibration",
         coordinator_snapshot_sha256=coordinator_hash,
         protocol_sha256=trusted_protocol_hash,
+        allowed_inclusion_criteria=allowed_inclusion_criteria,
+        allowed_screening_statuses=allowed_screening_statuses,
     )
     main_pairs, main_assignments = _phase_pairs(
         main,
         expected_phase="main",
         coordinator_snapshot_sha256=coordinator_hash,
         protocol_sha256=trusted_protocol_hash,
+        allowed_inclusion_criteria=allowed_inclusion_criteria,
+        allowed_screening_statuses=allowed_screening_statuses,
     )
     if calibration.snapshot_sha256 == main.snapshot_sha256:
         raise ScreeningAgreementError(
@@ -813,6 +858,10 @@ def _build_agreement_report(
     coordinator_snapshot_sha256: str,
     protocol_sha256: str,
     bootstrap_replicates: int,
+    allowed_inclusion_criteria: tuple[str, ...] = INCLUSION_CRITERIA,
+    allowed_screening_statuses: tuple[str, ...] = (
+        screening_results.LEGACY_SCREENING_STATUSES
+    ),
 ) -> list[dict[str, str]]:
     if (
         isinstance(bootstrap_replicates, bool)
@@ -827,6 +876,8 @@ def _build_agreement_report(
         main,
         coordinator_snapshot_sha256=coordinator_snapshot_sha256,
         protocol_sha256=protocol_sha256,
+        allowed_inclusion_criteria=allowed_inclusion_criteria,
+        allowed_screening_statuses=allowed_screening_statuses,
     )
     primary_hash = _combined_primary_snapshot_sha256(
         calibration.snapshot_sha256, main.snapshot_sha256
@@ -843,12 +894,18 @@ def _build_agreement_report(
         ("calibration", calibration_pairs),
         ("full_corpus", full_pairs),
     ):
-        estimates = _point_estimates(pairs)
+        estimates = _point_estimates(
+            pairs,
+            allowed_inclusion_criteria=allowed_inclusion_criteria,
+            allowed_screening_statuses=allowed_screening_statuses,
+        )
         intervals = _bootstrap_intervals(
             pairs,
             scope=scope,
             primary_snapshot_sha256=primary_hash,
             replicates=bootstrap_replicates,
+            allowed_inclusion_criteria=allowed_inclusion_criteria,
+            allowed_screening_statuses=allowed_screening_statuses,
         )
         report.append(
             _scope_row(scope, pairs, estimates, provenance, intervals)
@@ -1125,6 +1182,8 @@ def build_agreement_report(
         ),
         protocol_sha256=authoritative_calibration.protocol_sha256,
         bootstrap_replicates=PRODUCTION_BOOTSTRAP_REPLICATES,
+        allowed_inclusion_criteria=coordinator_snapshot.allowed_inclusion_criteria,
+        allowed_screening_statuses=coordinator_snapshot.allowed_screening_statuses,
     )
 
 
