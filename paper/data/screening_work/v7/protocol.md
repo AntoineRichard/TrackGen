@@ -964,6 +964,28 @@ There is no transaction-wide defense against a concurrent hostile local archive 
 ordinary controlled packet assembly is assumed, and the authoritative control is the
 per-file SHA-256 digest.
 
+For an evidence-bound release v2, each role stage uses execution
+`configuration_version` `3`. Its controlled additions are exactly
+`allowed_screening_statuses` = [`included`,`excluded`],
+`allowed_inclusion_criteria` = [`include-relevant`], and
+`evidence_packet_manifest_sha256`, the SHA-256 of that role's filtered staged
+`evidence_packet_manifest.csv`. Historical release v1 stages retain their v1/v2
+configuration derivation and do not gain this evidence tree.
+
+Role staging filters the phase manifest to the candidates in its one role packet while
+preserving canonical candidate/artifact order, and requires exact candidate coverage.
+For every row with local bytes, staging reopens and verifies the archive source before
+copying the exact bytes to
+`evidence/<candidate_id>/<artifact_id>/<basename>`. `metadata-only` rows create no
+byte file. Duplicate reviewers for the same candidate receive identical filtered rows
+and identical staged bytes.
+
+The staged manifest and every staged evidence path and hash are included in the role
+stage digest and `SHA256SUMS`. Before use, validation checks the configuration binding,
+manifest bytes, exact evidence tree and paths, and each stage-local SHA-256; missing,
+extra, swapped, or mutated bytes are invalid. These stage paths and copied bytes are
+procedural untracked artifacts, not committed evidence inventory artifacts.
+
 ## Automation, AI assistance, and accountability
 
 The paper MUST disclose whether automation or AI assistance was used and, if it was,

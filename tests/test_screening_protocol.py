@@ -1388,3 +1388,20 @@ def test_evidence_packet_phase_release_contract_is_operational() -> None:
         assert label in text
     assert "Evidence binds to immutable reviewer phase releases" in text
     assert "concurrent hostile local archive writer" in text
+
+
+def test_configuration_v3_staged_evidence_contract_is_operational() -> None:
+    root = Path("paper/data/screening_protocol.md")
+    working = Path("paper/data/screening_work/v7/protocol.md")
+    payload = root.read_bytes()
+    text = payload.decode("utf-8")
+
+    assert payload == working.read_bytes()
+    assert "`configuration_version` `3`" in text
+    assert "allowed_screening_statuses" in text
+    assert "allowed_inclusion_criteria" in text
+    assert "evidence_packet_manifest_sha256" in text
+    assert "evidence/<candidate_id>/<artifact_id>/<basename>" in text
+    assert "metadata-only" in text
+    assert "stage-local SHA-256" in text
+    assert "procedural untracked artifacts" in text

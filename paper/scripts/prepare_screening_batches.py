@@ -350,6 +350,9 @@ REVIEWER_STAGE_ROOT_FILENAMES = frozenset(
 _ROLE_PRIVATE_PARENT_PATTERN = re.compile(
     r"(screening-0[1-6])-[0-9a-f]{32}"
 )
+REVIEWER_STAGE_V3_ROOT_FILENAMES = frozenset(
+    (*REVIEWER_STAGE_ROOT_FILENAMES, "evidence_packet_manifest.csv", "evidence")
+)
 PACKET_FIELDS_FROM_CANDIDATE = (
     "title",
     "authors",
@@ -2693,6 +2696,7 @@ def _execution_configuration(
     packet_sha256: str,
     allowed_inclusion_criteria: tuple[str, ...] | None = None,
     allowed_screening_statuses: tuple[str, ...] | None = None,
+    evidence_packet_manifest_sha256: str | None = None,
 ) -> dict[str, object]:
     if (
         allowed_screening_statuses is not None
@@ -2753,6 +2757,21 @@ def _execution_configuration(
         configuration["allowed_inclusion_criteria"] = list(
             allowed_inclusion_criteria
         )
+    if evidence_packet_manifest_sha256 is not None:
+        if (
+            allowed_inclusion_criteria is None
+            or allowed_screening_statuses is None
+        ):
+            raise SnapshotError(
+                "v3 execution configuration requires screening controls"
+            )
+        configuration["configuration_version"] = "3"
+        configuration["allowed_screening_statuses"] = list(
+            allowed_screening_statuses
+        )
+        configuration["evidence_packet_manifest_sha256"] = (
+            evidence_packet_manifest_sha256
+        )
     return configuration
 
 
@@ -2790,10 +2809,8 @@ def build_reviewer_stage_artifacts(
 
     release_manifest = _release_manifest_from_payloads(reviewer_release)
     phase = release_manifest["phase"]
-    release_sha256 = reviewer_release_snapshot_sha256(
-        phase,
-        reviewer_release,
-    )
+    release_sha256 = reviewer_release_snapshot_sha256(phase, reviewer_release)
+    evidence_rows: list[Row] | None = None
     if _release_manifest_header(release_manifest) == RELEASE_MANIFEST_V2_HEADER:
         if source_archive is None:
             raise SnapshotError("v2 reviewer staging requires a source archive")
@@ -2806,11 +2823,12 @@ def build_reviewer_stage_artifacts(
                 PACKET_HEADER,
             )
         }
-        parse_evidence_packet_manifest(
+        evidence_rows = parse_evidence_packet_manifest(
             reviewer_release["evidence_packet_manifest.csv"],
             allowed_candidate_ids=phase_candidate_ids,
             source_archive=source_archive,
         )
+
     filename = f"{role_id}.csv"
     if filename not in PACKET_FILENAMES:
         raise SnapshotError(f"unsupported screening role {role_id!r}")
@@ -2832,10 +2850,47 @@ def build_reviewer_stage_artifacts(
         packet,
         packet_relative,
         expected_batch_id=role_id,
-        expected_assignment_ids={
-            row["assignment_id"] for row in packet_rows
-        },
+        expected_assignment_ids={row["assignment_id"] for row in packet_rows},
     )
+
+    evidence_artifacts: dict[str, bytes] = {}
+    staged_evidence_payload: bytes | None = None
+    if evidence_rows is not None:
+        packet_candidate_ids = {row["candidate_id"] for row in packet_rows}
+        staged_evidence_rows = [
+            row for row in evidence_rows if row["candidate_id"] in packet_candidate_ids
+        ]
+        if {row["candidate_id"] for row in staged_evidence_rows} != packet_candidate_ids:
+            raise SnapshotError("role evidence manifest candidate coverage is not exact")
+        staged_evidence_payload = _csv_bytes(
+            EVIDENCE_PACKET_HEADER, staged_evidence_rows
+        )
+        parse_evidence_packet_manifest(
+            staged_evidence_payload,
+            allowed_candidate_ids=packet_candidate_ids,
+            source_archive=source_archive,
+        )
+        for row in staged_evidence_rows:
+            if row["evidence_sha256"] == "NR":
+                continue
+            assert source_archive is not None
+            payload = _validate_evidence_local_filename(
+                row["local_filename"],
+                source_archive=source_archive,
+                context="staged evidence artifact",
+            )
+            if _sha256(payload) != row["evidence_sha256"]:
+                raise SnapshotError("staged evidence artifact SHA-256 mismatch")
+            relative = (
+                "evidence/"
+                + row["candidate_id"]
+                + "/"
+                + row["artifact_id"]
+                + "/"
+                + PurePosixPath(row["local_filename"]).name
+            )
+            evidence_artifacts[relative] = payload
+
     profile = validate_execution_profile(profile_payload)
     validate_reviewer_prompt_template(template)
     hash_bindings = {
@@ -2859,6 +2914,11 @@ def build_reviewer_stage_artifacts(
         packet_sha256=packet_sha256,
         allowed_inclusion_criteria=allowed_inclusion_criteria,
         allowed_screening_statuses=allowed_screening_statuses,
+        evidence_packet_manifest_sha256=(
+            _sha256(staged_evidence_payload)
+            if staged_evidence_payload is not None
+            else None
+        ),
     )
     configuration_payload = _canonical_json_bytes(configuration)
     prompt = render_reviewer_prompt(
@@ -2876,6 +2936,9 @@ def build_reviewer_stage_artifacts(
         "reviewer_prompt.md": prompt,
         "reviewer_prompt_template.md": template,
     }
+    if staged_evidence_payload is not None:
+        artifacts["evidence_packet_manifest.csv"] = staged_evidence_payload
+        artifacts.update(evidence_artifacts)
     configuration_sha256 = _sha256(configuration_payload)
     prompt_sha256 = _sha256(prompt)
     stage_sha256 = _stage_snapshot_sha256(
@@ -2908,10 +2971,7 @@ def build_reviewer_stage_artifacts(
         "result_path": str(Path(stage_path).parent / f"{role_id}-result.csv"),
         "assignment_count": str(len(packet_rows)),
     }
-    artifacts["stage_manifest.csv"] = _csv_bytes(
-        STAGE_MANIFEST_HEADER,
-        [manifest],
-    )
+    artifacts["stage_manifest.csv"] = _csv_bytes(STAGE_MANIFEST_HEADER, [manifest])
     checksum_paths = sorted(artifacts)
     artifacts["SHA256SUMS"] = "".join(
         f"{_sha256(artifacts[relative])}  {relative}\n"
@@ -3066,30 +3126,30 @@ def _stage_artifacts(
 ) -> None:
     root_stat = os.fstat(staging)
     identities["."] = (root_stat.st_dev, root_stat.st_ino)
-    has_packets = any(
-        relative.startswith("packets/") for relative in artifacts
-    )
+    has_packets = any(relative.startswith("packets/") for relative in artifacts)
     packets_fd: int | None = None
     if has_packets:
         os.mkdir("packets", mode=0o700, dir_fd=staging)
-        packets_stat = os.stat(
-            "packets", dir_fd=staging, follow_symlinks=False
-        )
-        identities["packets"] = (
-            packets_stat.st_dev,
-            packets_stat.st_ino,
-        )
-        packets_fd = os.open(
-            "packets", _DIRECTORY_OPEN_FLAGS, dir_fd=staging
-        )
+        packets_stat = os.stat("packets", dir_fd=staging, follow_symlinks=False)
+        identities["packets"] = (packets_stat.st_dev, packets_stat.st_ino)
+        packets_fd = os.open("packets", _DIRECTORY_OPEN_FLAGS, dir_fd=staging)
+    evidence_directories = {
+        str(directory)
+        for relative in artifacts
+        if relative.startswith("evidence/")
+        for directory in PurePosixPath(relative).parents
+        if str(directory) != "."
+    }
+    for directory in sorted(
+        evidence_directories, key=lambda value: (value.count("/"), value)
+    ):
+        os.mkdir(directory, mode=0o700, dir_fd=staging)
     try:
         for relative in sorted(artifacts):
             payload = artifacts[relative]
             if relative.startswith("packets/"):
                 if packets_fd is None:
-                    raise SnapshotError(
-                        "packet artifact has no staged packets directory"
-                    )
+                    raise SnapshotError("packet artifact has no staged packets directory")
                 directory_fd = packets_fd
                 name = relative.removeprefix("packets/")
             else:
@@ -3102,10 +3162,7 @@ def _stage_artifacts(
                 identities[relative] = identity
 
             identity = _write_snapshot_file_at(
-                directory_fd,
-                name,
-                payload,
-                on_created=record_created,
+                directory_fd, name, payload, on_created=record_created
             )
             if identities.get(relative) != identity:
                 raise SnapshotError(
@@ -3114,6 +3171,13 @@ def _stage_artifacts(
         if packets_fd is not None:
             os.fchmod(packets_fd, 0o755)
             os.fsync(packets_fd)
+        for directory in sorted(evidence_directories, reverse=True):
+            descriptor = os.open(directory, _DIRECTORY_OPEN_FLAGS, dir_fd=staging)
+            try:
+                os.fchmod(descriptor, 0o755)
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
         os.fchmod(staging, 0o755)
         os.fsync(staging)
     finally:
@@ -3161,14 +3225,20 @@ def _verify_staged_artifacts(
                     raise SnapshotError(
                         "packet artifact has no staged packets directory"
                     )
-                directory_fd = packets_fd
-                name = relative.removeprefix("packets/")
+                read_file = _read_regular_file_at(
+                    packets_fd,
+                    relative.removeprefix("packets/"),
+                    f"staged {relative}",
+                )
+            elif relative.startswith("evidence/"):
+                read_file = _read_regular_file(
+                    _directory_path_at(staging) / relative,
+                    f"staged {relative}",
+                )
             else:
-                directory_fd = staging
-                name = relative
-            read_file = _read_regular_file_at(
-                directory_fd, name, f"staged {relative}"
-            )
+                read_file = _read_regular_file_at(
+                    staging, relative, f"staged {relative}"
+                )
             if read_file.identity != identities[relative]:
                 raise SnapshotError(f"staged {relative}: identity changed")
             if read_file.link_count != 1:
@@ -4563,6 +4633,7 @@ def _read_exact_flat_snapshot(
     *,
     label: str,
     expected_names: frozenset[str],
+    directory_names: frozenset[str] = frozenset(),
 ) -> dict[str, bytes]:
     snapshot_dir = _absolute_lexical(snapshot_dir)
     _validate_version_path(snapshot_dir, label)
@@ -4594,10 +4665,9 @@ def _read_exact_flat_snapshot(
         )
         if root_attestation.identity != root_identity:
             raise SnapshotError(f"{snapshot_dir}: {label} identity changed")
-
         first_reads = {
             name: _read_regular_file_at(root_fd, name, f"{label}/{name}")
-            for name in sorted(expected_names)
+            for name in sorted(expected_names - directory_names)
         }
         for name, read_file in first_reads.items():
             if read_file.mode != 0o644:
@@ -4672,12 +4742,23 @@ def validate_reviewer_stage_snapshot(
     snapshot_dir: Path,
 ) -> dict[str, bytes]:
     """Validate one exact role-only pre-execution staging snapshot."""
-
-    snapshot_dir = _absolute_lexical(Path(snapshot_dir))
+    configuration_probe = _parse_canonical_json_payload(
+        _read_regular_file(
+            snapshot_dir / "execution_configuration.json",
+            "reviewer execution configuration",
+        ).payload,
+        label="execution_configuration.json",
+    )
+    is_v3 = configuration_probe.get("configuration_version") == "3"
     actual = _read_exact_flat_snapshot(
         snapshot_dir,
         label="reviewer execution stage",
-        expected_names=REVIEWER_STAGE_ROOT_FILENAMES,
+        expected_names=(
+            REVIEWER_STAGE_V3_ROOT_FILENAMES
+            if is_v3
+            else REVIEWER_STAGE_ROOT_FILENAMES
+        ),
+        directory_names=frozenset({"evidence"}) if is_v3 else frozenset(),
     )
     parent_stat = _require_real_directory(
         snapshot_dir.parent,
@@ -4794,9 +4875,12 @@ def validate_reviewer_stage_snapshot(
         label="execution_configuration.json",
     )
     configuration_version = configuration.get("configuration_version")
+    allowed_inclusion_criteria: tuple[str, ...] | None = None
+    allowed_screening_statuses: tuple[str, ...] | None = None
+    evidence_packet_manifest_sha256: str | None = None
     if configuration_version == "1":
-        allowed_inclusion_criteria = None
-    elif configuration_version == "2":
+        pass
+    elif configuration_version in {"2", "3"}:
         criteria = configuration.get("allowed_inclusion_criteria")
         taxonomy = (
             {SCREENING_INCLUSION_CRITERION_KEY: criteria}
@@ -4805,13 +4889,72 @@ def validate_reviewer_stage_snapshot(
         )
         try:
             allowed_inclusion_criteria = _resolve_inclusion_criteria(
-                taxonomy,
-                strict_new=True,
+                taxonomy, strict_new=True
             )
         except SnapshotError as exc:
-            raise SnapshotError(
-                "allowed inclusion criteria are invalid"
-            ) from exc
+            raise SnapshotError("allowed inclusion criteria are invalid") from exc
+        if configuration_version == "3":
+            statuses = configuration.get("allowed_screening_statuses")
+            try:
+                allowed_screening_statuses = _resolve_screening_result_statuses(
+                    {"screening_result_status": statuses}
+                    if isinstance(statuses, list)
+                    else {},
+                    strict_new=True,
+                )
+            except SnapshotError as exc:
+                raise SnapshotError("allowed screening statuses are invalid") from exc
+            evidence_payload = actual["evidence_packet_manifest.csv"]
+            evidence_packet_manifest_sha256 = _sha256(evidence_payload)
+            if configuration.get("evidence_packet_manifest_sha256") != evidence_packet_manifest_sha256:
+                raise SnapshotError("stage evidence manifest hash does not match configuration")
+            packet_candidate_ids = {row["candidate_id"] for row in packet_rows}
+            evidence_rows = parse_evidence_packet_manifest(
+                evidence_payload,
+                allowed_candidate_ids=packet_candidate_ids,
+                source_archive=None,
+            )
+            if {row["candidate_id"] for row in evidence_rows} != packet_candidate_ids:
+                raise SnapshotError("stage evidence manifest candidate coverage is not exact")
+            expected_evidence_paths = {
+                "evidence/"
+                + row["candidate_id"]
+                + "/"
+                + row["artifact_id"]
+                + "/"
+                + PurePosixPath(row["local_filename"]).name: row
+                for row in evidence_rows
+                if row["evidence_sha256"] != "NR"
+            }
+            actual_evidence_paths = {
+                path.relative_to(snapshot_dir).as_posix()
+                for path in (snapshot_dir / "evidence").rglob("*")
+                if path.is_file()
+            }
+            if actual_evidence_paths != set(expected_evidence_paths):
+                raise SnapshotError("stage evidence paths do not match manifest")
+            expected_evidence_directories = {
+                str(directory)
+                for relative in expected_evidence_paths
+                for directory in PurePosixPath(relative).parents
+                if str(directory) != "."
+            }
+            expected_evidence_directories.add("evidence")
+            actual_evidence_directories = {
+                path.relative_to(snapshot_dir).as_posix()
+                for path in (snapshot_dir / "evidence").rglob("*")
+                if path.is_dir()
+            }
+            actual_evidence_directories.add("evidence")
+            if actual_evidence_directories != expected_evidence_directories:
+                raise SnapshotError("stage evidence directories do not match manifest")
+            for relative, row in expected_evidence_paths.items():
+                payload = _read_regular_file(
+                    snapshot_dir / relative, f"stage {relative}"
+                ).payload
+                if _sha256(payload) != row["evidence_sha256"]:
+                    raise SnapshotError("stage evidence artifact SHA-256 mismatch")
+                actual[relative] = payload
     else:
         raise SnapshotError("execution configuration version is invalid")
     release_manifest = {
@@ -4829,14 +4972,14 @@ def validate_reviewer_stage_snapshot(
     }
     expected_configuration = _execution_configuration(
         release_manifest=release_manifest,
-        reviewer_release_sha256=manifest[
-            "reviewer_release_sha256"
-        ],
+        reviewer_release_sha256=manifest["reviewer_release_sha256"],
         role_id=role_id,
         stage_path=snapshot_dir,
         profile=profile,
         packet_sha256=manifest["packet_sha256"],
         allowed_inclusion_criteria=allowed_inclusion_criteria,
+        allowed_screening_statuses=allowed_screening_statuses,
+        evidence_packet_manifest_sha256=evidence_packet_manifest_sha256,
     )
     if configuration != expected_configuration:
         raise SnapshotError(
@@ -4853,15 +4996,9 @@ def validate_reviewer_stage_snapshot(
         raise SnapshotError("rendered reviewer prompt does not match derivation")
 
     core_artifacts = {
-        name: actual[name]
-        for name in (
-            "execution_configuration.json",
-            "execution_profile.json",
-            "packet.csv",
-            "protocol.md",
-            "reviewer_prompt.md",
-            "reviewer_prompt_template.md",
-        )
+        name: payload
+        for name, payload in actual.items()
+        if name not in {"SHA256SUMS", "stage_manifest.csv"}
     }
     expected_stage_sha256 = _stage_snapshot_sha256(
         artifacts=core_artifacts,

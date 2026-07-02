@@ -939,6 +939,99 @@ def test_stage_role_cli_forwards_source_archive_for_v2_release(
     screening_batches.validate_reviewer_stage_snapshot(stage)
 
 
+
+def test_configuration_v3_stages_role_filtered_evidence_and_exact_bytes(
+    tmp_path: Path,
+) -> None:
+    coordinator, reviewer_release, _, source_archive = _v2_calibration_release(
+        tmp_path
+    )
+    staging_root = tmp_path / "staging"
+    staging_root.mkdir(mode=0o700)
+    os.chmod(staging_root, 0o700)
+
+    stage = screening_batches.stage_reviewer_execution(
+        coordinator,
+        reviewer_release,
+        "screening-01",
+        staging_root,
+        source_archive=source_archive,
+    )
+
+    configuration = json.loads(
+        (stage / "execution_configuration.json").read_text(encoding="utf-8")
+    )
+    assert configuration["configuration_version"] == "3"
+    assert configuration["allowed_screening_statuses"] == ["included", "excluded"]
+    assert configuration["allowed_inclusion_criteria"] == ["include-relevant"]
+
+    packet_candidate_ids = {
+        row["candidate_id"] for row in _read_csv(stage / "packet.csv")
+    }
+    staged_rows = _read_csv(stage / "evidence_packet_manifest.csv")
+    release_rows = _read_csv(reviewer_release / "evidence_packet_manifest.csv")
+    expected_rows = [
+        row for row in release_rows if row["candidate_id"] in packet_candidate_ids
+    ]
+    assert staged_rows == expected_rows
+    assert {
+        row["candidate_id"] for row in staged_rows
+    } == packet_candidate_ids
+    assert configuration["evidence_packet_manifest_sha256"] == hashlib.sha256(
+        (stage / "evidence_packet_manifest.csv").read_bytes()
+    ).hexdigest()
+
+    for row in staged_rows:
+        destination = (
+            stage
+            / "evidence"
+            / row["candidate_id"]
+            / row["artifact_id"]
+            / Path(row["local_filename"]).name
+        )
+        assert destination.read_bytes() == (
+            source_archive / row["local_filename"]
+        ).read_bytes()
+    assert {
+        path.relative_to(stage / "evidence").parts[0]
+        for path in (stage / "evidence").rglob("*")
+        if path.is_file()
+    } == packet_candidate_ids
+
+
+@pytest.mark.parametrize("mutation", ("missing", "extra", "swapped", "mutated"))
+def test_staged_evidence_validation_rejects_tree_mutation(
+    tmp_path: Path, mutation: str
+) -> None:
+    coordinator, reviewer_release, _, source_archive = _v2_calibration_release(
+        tmp_path
+    )
+    staging_root = tmp_path / "staging"
+    staging_root.mkdir(mode=0o700)
+    os.chmod(staging_root, 0o700)
+    stage = screening_batches.stage_reviewer_execution(
+        coordinator,
+        reviewer_release,
+        "screening-01",
+        staging_root,
+        source_archive=source_archive,
+    )
+    evidence_files = [
+        path for path in sorted((stage / "evidence").rglob("*")) if path.is_file()
+    ]
+    assert len(evidence_files) >= 2
+    if mutation == "missing":
+        evidence_files[0].unlink()
+    elif mutation == "extra":
+        (stage / "evidence" / "unexpected.bin").write_bytes(b"unexpected\\n")
+    elif mutation == "swapped":
+        evidence_files[0].write_bytes(evidence_files[1].read_bytes())
+    else:
+        evidence_files[0].write_bytes(b"mutated\\n")
+
+    with pytest.raises(screening_batches.SnapshotError):
+        screening_batches.validate_reviewer_stage_snapshot(stage)
+
 def test_stage_role_cli_v2_release_requires_source_archive(
     tmp_path: Path,
 ) -> None:

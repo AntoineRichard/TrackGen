@@ -2846,7 +2846,11 @@ def _stage_role_result(
     release = _release_phase(coordinator, tmp_path, "calibration")
     (tmp_path / "staging").mkdir()
     stage = screening_results.screening_batches.stage_reviewer_execution(
-        coordinator, release, "screening-01", tmp_path / "staging"
+        coordinator,
+        release,
+        "screening-01",
+        tmp_path / "staging",
+        source_archive=tmp_path / "calibration-source-archive",
     )
     result = stage.parent / "screening-01-result.csv"
     rows = [
@@ -2856,7 +2860,7 @@ def _stage_role_result(
     configuration = json.loads(
         (stage / "execution_configuration.json").read_text(encoding="utf-8")
     )
-    if configuration["configuration_version"] == "2":
+    if configuration["configuration_version"] in {"2", "3"}:
         for row in rows:
             if row["screening_status"] == "included":
                 row["criterion"] = configuration[
@@ -2886,7 +2890,7 @@ def test_v2_role_result_rejects_legacy_inclusion_value(
     configuration = json.loads(
         (stage / "execution_configuration.json").read_text(encoding="utf-8")
     )
-    assert configuration["configuration_version"] == "2"
+    assert configuration["configuration_version"] == "3"
     assert configuration["allowed_inclusion_criteria"] == ["include-relevant"]
 
     rows = _read_csv(result)
@@ -2905,6 +2909,29 @@ def test_v2_role_result_rejects_legacy_inclusion_value(
 
     with pytest.raises(screening_results.ScreeningResultError, match="criterion"):
         _validate_role_result(stage, result)
+
+
+def test_v3_role_result_rejects_boundary_and_revalidates_evidence_binding(
+    v6_coordinator: Path,
+    tmp_path: Path,
+) -> None:
+    stage, result = _stage_role_result(v6_coordinator, tmp_path)
+    configuration = json.loads(
+        (stage / "execution_configuration.json").read_text(encoding="utf-8")
+    )
+    assert configuration["configuration_version"] == "3"
+    assert configuration["allowed_screening_statuses"] == ["included", "excluded"]
+    assert configuration["allowed_inclusion_criteria"] == ["include-relevant"]
+
+    rows = _read_csv(result)
+    rows[0]["screening_status"] = "boundary"
+    rows[0]["criterion"] = "exclude-out-of-scope"
+    rows[0]["exclusion_reason"] = "Boundary is not permitted for this role stage."
+    _write_csv(result, RESULT_HEADER, rows)
+
+    with pytest.raises(screening_results.ScreeningResultError, match="status"):
+        _validate_role_result(stage, result)
+
 
 
 def test_cli_validates_canonical_role_result(

@@ -3114,15 +3114,28 @@ def _validate_role_result(
     configuration_version = configuration["configuration_version"]
     if configuration_version == "1":
         allowed_inclusion_criteria = INCLUSION_CRITERIA
+        allowed_screening_statuses = LEGACY_SCREENING_STATUSES
     elif configuration_version == "2":
         allowed_inclusion_criteria = tuple(
             configuration["allowed_inclusion_criteria"]
         )
-    else:
-        raise ScreeningResultError(
-            "unsupported execution configuration version"
+        allowed_screening_statuses = LEGACY_SCREENING_STATUSES
+    elif configuration_version == "3":
+        allowed_inclusion_criteria = tuple(
+            configuration["allowed_inclusion_criteria"]
         )
-    allowed_screening_statuses = LEGACY_SCREENING_STATUSES
+        allowed_screening_statuses = tuple(
+            configuration["allowed_screening_statuses"]
+        )
+        evidence_payload = stage["evidence_packet_manifest.csv"]
+        if configuration["evidence_packet_manifest_sha256"] != _sha256(
+            evidence_payload
+        ):
+            raise ScreeningResultError(
+                "stage evidence manifest hash does not match configuration"
+            )
+    else:
+        raise ScreeningResultError("unsupported execution configuration version")
     if supplied_result_path != manifest["result_path"]:
         raise ScreeningResultError(
             "supplied result path does not match stage result path"
