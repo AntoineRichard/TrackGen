@@ -544,6 +544,14 @@ def test_imports_result_contract_and_closed_vocabularies() -> None:
         "include-2",
         "include-3",
         "include-4",
+        "boundary",
+        "exclude-fixed-racing-line",
+        "exclude-appearance-dynamics",
+        "exclude-traffic-only",
+        "exclude-insufficient-detail",
+        "exclude-out-of-scope",
+    )
+    assert agreement.V2_CRITERION_CATEGORIES == (
         "include-relevant",
         "boundary",
         "exclude-fixed-racing-line",
@@ -551,6 +559,14 @@ def test_imports_result_contract_and_closed_vocabularies() -> None:
         "exclude-traffic-only",
         "exclude-insufficient-detail",
         "exclude-out-of-scope",
+    )
+    assert agreement.REPORT_VERSION == "1"
+    assert agreement.AGREEMENT_HEADER is agreement.AGREEMENT_REPORT_HEADER
+    v1_header_bytes = (
+        "\n".join(agreement.AGREEMENT_REPORT_HEADER) + "\n"
+    ).encode("utf-8")
+    assert hashlib.sha256(v1_header_bytes).hexdigest() == (
+        "156a62fb1d33dc45fc72dbe4a54b903c4f905f4900f90ff67a93270adf6f8e73"
     )
 
 
@@ -622,12 +638,34 @@ def test_v7_binary_agreement_report_uses_bound_criteria_in_bootstrap(
     field = (
         "criterion_a_include_relevant_criterion_b_exclude_out_of_scope"
     )
-    assert field in agreement.AGREEMENT_REPORT_HEADER
+    assert all(row["report_version"] == "2" for row in report)
+    assert field in agreement.V2_AGREEMENT_REPORT_HEADER
+    assert field not in agreement.AGREEMENT_REPORT_HEADER
     assert all(
         row["overall_exact_status_agreement_bootstrap_replicates"] == "2"
         for row in report
     )
     assert any(row[field] != "0" for row in report)
+    payload = agreement.render_agreement_csv(report)
+    reader = csv.DictReader(io.StringIO(payload.decode(), newline=""))
+    assert tuple(reader.fieldnames or ()) == agreement.V2_AGREEMENT_REPORT_HEADER
+
+
+def test_rejects_unsupported_mixed_agreement_criterion_contract() -> None:
+    calibration, main = _snapshots()
+
+    with pytest.raises(
+        agreement.ScreeningAgreementError,
+        match="unsupported.*inclusion criteria",
+    ):
+        agreement._build_agreement_report(
+            calibration,
+            main,
+            coordinator_snapshot_sha256=COORDINATOR_HASH,
+            protocol_sha256=PROTOCOL_HASH,
+            bootstrap_replicates=2,
+            allowed_inclusion_criteria=("include-1", "include-relevant"),
+        )
 
 
 def test_public_api_removes_hash_and_bootstrap_overrides(
@@ -1101,11 +1139,37 @@ def test_missing_duplicate_and_mismatch_fail(mutation, message: str) -> None:
 
 def test_rendered_csv_is_canonical() -> None:
     calibration, main = _snapshots()
-    payload = agreement.render_agreement_csv(_build(calibration, main, 10))
+    report = _build(calibration, main, 10)
+    assert all(row["report_version"] == "1" for row in report)
+    assert not any(
+        "include_relevant" in field
+        for field in agreement.AGREEMENT_REPORT_HEADER
+    )
+    payload = agreement.render_agreement_csv(report)
     assert payload.endswith(b"\n") and b"\r" not in payload
     reader = csv.DictReader(io.StringIO(payload.decode(), newline=""))
     assert tuple(reader.fieldnames or ()) == agreement.AGREEMENT_REPORT_HEADER
     assert [row["scope"] for row in reader] == ["calibration", "full_corpus"]
+
+
+@pytest.mark.parametrize(
+    ("versions", "message"),
+    [
+        (("1", "2"), "same supported report_version"),
+        (("99", "99"), "unsupported report_version"),
+    ],
+)
+def test_render_rejects_mixed_and_unknown_report_versions(
+    versions: tuple[str, str],
+    message: str,
+) -> None:
+    calibration, main = _snapshots()
+    rows = [dict(row) for row in _build(calibration, main, 2)]
+    for row, version in zip(rows, versions, strict=True):
+        row["report_version"] = version
+
+    with pytest.raises(agreement.ScreeningAgreementError, match=message):
+        agreement.render_agreement_csv(rows)
 
 
 def _forge_main_input_binding(

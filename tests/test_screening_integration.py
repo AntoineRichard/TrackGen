@@ -175,7 +175,10 @@ def _bibliography(candidate: dict[str, str]) -> dict[str, str]:
 
 
 def _rating(
-    assignment: dict[str, str], changes: dict[str, str] | None = None
+    assignment: dict[str, str],
+    changes: dict[str, str] | None = None,
+    *,
+    inclusion_criterion: str = "include-relevant",
 ) -> dict[str, str]:
     candidate_id = assignment["candidate_id"]
     archive = f"https://archive.example.org/{candidate_id}/versions/1.0/"
@@ -190,7 +193,7 @@ def _rating(
         "coder_id": assignment["batch_id"],
         "screened_on": "2026-06-30",
         "screening_status": "included",
-        "criterion": "include-relevant",
+        "criterion": inclusion_criterion,
         "access_status": "full_text",
         "source_urls": f"{archive};{source}",
         "evidence_version": "version-of-record-1",
@@ -340,6 +343,7 @@ def _build_case(
     conflicts: list[dict[str, str]] | None = None,
     keyless: frozenset[str] = frozenset(),
     calibration_status_disagreements: int = 0,
+    legacy_contract: bool = False,
 ) -> ScreeningCase:
     scenarios = dict(scenarios or {})
     conflicts = conflicts or []
@@ -389,8 +393,12 @@ def _build_case(
 
     taxonomy = inputs / "taxonomy.json"
     taxonomy_payload = json.loads(TAXONOMY.read_text(encoding="utf-8"))
-    taxonomy_payload["screening_inclusion_criterion"] = ["include-relevant"]
-    taxonomy_payload["screening_result_status"] = ["included", "excluded"]
+    if legacy_contract:
+        taxonomy_payload.pop("screening_inclusion_criterion", None)
+        taxonomy_payload.pop("screening_result_status", None)
+    else:
+        taxonomy_payload["screening_inclusion_criterion"] = ["include-relevant"]
+        taxonomy_payload["screening_result_status"] = ["included", "excluded"]
     taxonomy.write_text(
         json.dumps(taxonomy_payload, indent=2) + "\n",
         encoding="utf-8",
@@ -398,17 +406,36 @@ def _build_case(
 
     coordinator = tmp_path / "coordinator" / "v1"
     coordinator.parent.mkdir(parents=True)
-    screening_batches.freeze_snapshot(
-        candidates=inputs / "candidates.csv",
-        conflicts=inputs / "conflicts.csv",
-        bibliography=inputs / "bibliography.csv",
-        citation_keys=inputs / "citation_keys.csv",
-        taxonomy=taxonomy,
-        protocol=PROTOCOL,
-        execution_profile=EXECUTION_PROFILE,
-        reviewer_prompt_template=REVIEWER_PROMPT,
-        output_dir=coordinator,
-    )
+    if legacy_contract:
+        raw_payloads = {
+            "candidates.csv": (inputs / "candidates.csv").read_bytes(),
+            "conflicts.csv": (inputs / "conflicts.csv").read_bytes(),
+            "bibliography.csv": (inputs / "bibliography.csv").read_bytes(),
+            "citation_keys.csv": (inputs / "citation_keys.csv").read_bytes(),
+            "taxonomy.json": taxonomy.read_bytes(),
+            "protocol.md": PROTOCOL.read_bytes(),
+            "execution_profile.json": EXECUTION_PROFILE.read_bytes(),
+            "reviewer_prompt_template.md": REVIEWER_PROMPT.read_bytes(),
+        }
+        screening_batches.publish_snapshot(
+            coordinator,
+            screening_batches.build_snapshot_artifacts(
+                raw_payloads,
+                strict_new=False,
+            ),
+        )
+    else:
+        screening_batches.freeze_snapshot(
+            candidates=inputs / "candidates.csv",
+            conflicts=inputs / "conflicts.csv",
+            bibliography=inputs / "bibliography.csv",
+            citation_keys=inputs / "citation_keys.csv",
+            taxonomy=taxonomy,
+            protocol=PROTOCOL,
+            execution_profile=EXECUTION_PROFILE,
+            reviewer_prompt_template=REVIEWER_PROMPT,
+            output_dir=coordinator,
+        )
     manifest_header, manifest = _read_csv(coordinator / "manifest.csv")
     assert manifest_header == screening_batches.MANIFEST_HEADER
     assert len(manifest) == 404
@@ -483,7 +510,15 @@ def _build_case(
             candidate_specs,
             strict=True,
         ):
-            ratings.append(_rating(assignment, changes))
+            ratings.append(
+                _rating(
+                    assignment,
+                    changes,
+                    inclusion_criterion=(
+                        "include-1" if legacy_contract else "include-relevant"
+                    ),
+                )
+            )
 
     calibration_release = tmp_path / "calibration-reviewer-release" / "v1"
     calibration_release.parent.mkdir(parents=True)
@@ -1156,11 +1191,12 @@ def _write_execution_register(
     *,
     name: str = "execution-register.csv",
     rows: list[dict[str, str]] | None = None,
+    header: tuple[str, ...] = EXECUTION_REGISTER_HEADER,
 ) -> Path:
     path = case.root / name
     _write_csv(
         path,
-        EXECUTION_REGISTER_HEADER,
+        header,
         rows if rows is not None else _execution_registry_rows(
             case, adjudications
         ),
@@ -1246,6 +1282,7 @@ def _seal_adjudications(
     *,
     version: str = "v1",
     execution_rows: list[dict[str, str]] | None = None,
+    execution_header: tuple[str, ...] = EXECUTION_REGISTER_HEADER,
 ) -> Path:
     input_path = case.root / f"adjudication-input-{version}.csv"
     _write_csv(input_path, integration.ADJUDICATION_HEADER, rows)
@@ -1254,6 +1291,7 @@ def _seal_adjudications(
         rows,
         name=f"execution-register-{version}.csv",
         rows=execution_rows,
+        header=execution_header,
     )
     case.execution_register_path = execution_register
     output = case.root / "adjudications" / version
@@ -1327,6 +1365,66 @@ def test_historical_decision_coordinator_keeps_legacy_boundary_status(
         allowed_inclusion_criteria=coordinator.allowed_inclusion_criteria,
         allowed_screening_statuses=coordinator.allowed_screening_statuses,
     )
+
+
+def test_historical_adjudication_seals_boundary_end_to_end(
+    tmp_path: Path,
+) -> None:
+    case = _build_case(
+        tmp_path,
+        conflicts=[_conflict("X57B57E64E501", "C0001")],
+        legacy_contract=True,
+    )
+    coordinator = screening_results.capture_coordinator_snapshot(
+        case.coordinator
+    )
+    assert coordinator.allowed_inclusion_criteria == (
+        "include-1",
+        "include-2",
+        "include-3",
+        "include-4",
+    )
+    assert coordinator.allowed_screening_statuses == (
+        "included",
+        "boundary",
+        "excluded",
+    )
+    assert {
+        row["criterion"]
+        for row in case.ratings
+        if row["screening_status"] == "included"
+    } == {"include-1"}
+
+    adjudication = _adjudication_row(
+        case,
+        "C0001",
+        screening_status="boundary",
+        criterion="boundary",
+    )
+    execution_rows = [
+        {field: row[field] for field in integration.EXECUTION_REGISTER_HEADER}
+        for row in _execution_registry_rows(case, [adjudication])
+    ]
+    snapshot_dir = _seal_adjudications(
+        case,
+        [adjudication],
+        version="v1",
+        execution_rows=execution_rows,
+        execution_header=integration.EXECUTION_REGISTER_HEADER,
+    )
+    snapshot = integration.validate_adjudication_snapshot(
+        snapshot_dir,
+        coordinator_snapshot_dir=case.coordinator,
+        calibration_reviewer_release_snapshot_dir=case.calibration_release,
+        calibration_result_snapshot_dir=case.calibration,
+        calibration_decision_snapshot_dir=case.calibration_decision,
+        main_reviewer_release_snapshot_dir=case.main_release,
+        main_result_snapshot_dir=case.main,
+        execution_register_path=_case_execution_register(case),
+    )
+
+    assert snapshot.rows[0]["screening_status"] == "boundary"
+    assert snapshot.rows[0]["criterion"] == "boundary"
 
 
 def _case_execution_register(case: ScreeningCase) -> Path:

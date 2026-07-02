@@ -37,10 +37,12 @@ class ScreeningAgreementError(ValueError):
 
 RESULT_HEADER = screening_results.RESULT_HEADER
 REPORT_VERSION = "1"
+V2_REPORT_VERSION = "2"
 BOOTSTRAP_ALGORITHM = "screening-bootstrap-v1"
 PRODUCTION_BOOTSTRAP_REPLICATES = 10_000
 STATUS_CATEGORIES = ("included", "boundary", "excluded")
 INCLUSION_CRITERIA = tuple(screening_results.INCLUSION_CRITERIA)
+V2_INCLUSION_CRITERIA = ("include-relevant",)
 EXCLUSION_CRITERIA = (
     "exclude-fixed-racing-line",
     "exclude-appearance-dynamics",
@@ -52,7 +54,11 @@ if set(EXCLUSION_CRITERIA) != set(screening_results.EXCLUSION_CRITERIA):
     raise RuntimeError("screening_results exclusion vocabulary changed")
 CRITERION_CATEGORIES = (
     *INCLUSION_CRITERIA,
-    "include-relevant",
+    "boundary",
+    *EXCLUSION_CRITERIA,
+)
+V2_CRITERION_CATEGORIES = (
+    *V2_INCLUSION_CRITERIA,
     "boundary",
     *EXCLUSION_CRITERIA,
 )
@@ -76,10 +82,15 @@ def _criterion_token(criterion: str) -> str:
     return criterion.replace("-", "_")
 
 
-def _criterion_disagreement_field(left: str, right: str) -> str:
+def _criterion_disagreement_field(
+    left: str,
+    right: str,
+    *,
+    criterion_categories: tuple[str, ...] = CRITERION_CATEGORIES,
+) -> str:
     if (
-        left not in CRITERION_CATEGORIES
-        or right not in CRITERION_CATEGORIES
+        left not in criterion_categories
+        or right not in criterion_categories
         or left == right
     ):
         raise ScreeningAgreementError(
@@ -91,59 +102,85 @@ def _criterion_disagreement_field(left: str, right: str) -> str:
     )
 
 
-CRITERION_DISAGREEMENT_FIELDS = tuple(
-    _criterion_disagreement_field(left, right)
-    for left in CRITERION_CATEGORIES
-    for right in CRITERION_CATEGORIES
-    if left != right
+def _criterion_disagreement_fields(
+    criterion_categories: tuple[str, ...],
+) -> tuple[str, ...]:
+    return tuple(
+        _criterion_disagreement_field(
+            left,
+            right,
+            criterion_categories=criterion_categories,
+        )
+        for left in criterion_categories
+        for right in criterion_categories
+        if left != right
+    )
+
+
+def _agreement_report_header(
+    criterion_disagreement_fields: tuple[str, ...],
+) -> tuple[str, ...]:
+    return (
+        "report_version",
+        "scope",
+        *PROVENANCE_FIELDS,
+        "bootstrap_algorithm",
+        "candidate_count",
+        "rating_count",
+        *(
+            f"rating_a_{left}_rating_b_{right}"
+            for left in STATUS_CATEGORIES
+            for right in STATUS_CATEGORIES
+        ),
+        "overall_exact_status_agreement_count",
+        "overall_exact_status_agreement_denominator",
+        "overall_exact_status_agreement_rate",
+        "exact_criterion_agreement_count",
+        "exact_criterion_agreement_denominator",
+        "exact_criterion_agreement_rate",
+        *criterion_disagreement_fields,
+        *(
+            field
+            for category in STATUS_CATEGORIES
+            for field in (
+                f"{category}_positive_numerator",
+                f"{category}_positive_denominator",
+                f"{category}_positive_agreement",
+                f"{category}_negative_numerator",
+                f"{category}_negative_denominator",
+                f"{category}_negative_agreement",
+            )
+        ),
+        "krippendorff_alpha_nominal_numerator",
+        "krippendorff_alpha_nominal_denominator",
+        "krippendorff_alpha_nominal",
+        "gwet_ac1_nominal_numerator",
+        "gwet_ac1_nominal_denominator",
+        "gwet_ac1_nominal",
+        *(
+            field
+            for metric in BOOTSTRAP_METRICS
+            for field in (
+                f"{metric}_bootstrap_replicates",
+                f"{metric}_bootstrap_valid_replicates",
+                f"{metric}_bootstrap_ci95_lower",
+                f"{metric}_bootstrap_ci95_upper",
+            )
+        ),
+    )
+
+
+CRITERION_DISAGREEMENT_FIELDS = _criterion_disagreement_fields(
+    CRITERION_CATEGORIES
 )
-AGREEMENT_REPORT_HEADER = (
-    "report_version",
-    "scope",
-    *PROVENANCE_FIELDS,
-    "bootstrap_algorithm",
-    "candidate_count",
-    "rating_count",
-    *(
-        f"rating_a_{left}_rating_b_{right}"
-        for left in STATUS_CATEGORIES
-        for right in STATUS_CATEGORIES
-    ),
-    "overall_exact_status_agreement_count",
-    "overall_exact_status_agreement_denominator",
-    "overall_exact_status_agreement_rate",
-    "exact_criterion_agreement_count",
-    "exact_criterion_agreement_denominator",
-    "exact_criterion_agreement_rate",
-    *CRITERION_DISAGREEMENT_FIELDS,
-    *(
-        field
-        for category in STATUS_CATEGORIES
-        for field in (
-            f"{category}_positive_numerator",
-            f"{category}_positive_denominator",
-            f"{category}_positive_agreement",
-            f"{category}_negative_numerator",
-            f"{category}_negative_denominator",
-            f"{category}_negative_agreement",
-        )
-    ),
-    "krippendorff_alpha_nominal_numerator",
-    "krippendorff_alpha_nominal_denominator",
-    "krippendorff_alpha_nominal",
-    "gwet_ac1_nominal_numerator",
-    "gwet_ac1_nominal_denominator",
-    "gwet_ac1_nominal",
-    *(
-        field
-        for metric in BOOTSTRAP_METRICS
-        for field in (
-            f"{metric}_bootstrap_replicates",
-            f"{metric}_bootstrap_valid_replicates",
-            f"{metric}_bootstrap_ci95_lower",
-            f"{metric}_bootstrap_ci95_upper",
-        )
-    ),
+V2_CRITERION_DISAGREEMENT_FIELDS = _criterion_disagreement_fields(
+    V2_CRITERION_CATEGORIES
+)
+AGREEMENT_REPORT_HEADER = _agreement_report_header(
+    CRITERION_DISAGREEMENT_FIELDS
+)
+V2_AGREEMENT_REPORT_HEADER = _agreement_report_header(
+    V2_CRITERION_DISAGREEMENT_FIELDS
 )
 AGREEMENT_HEADER = AGREEMENT_REPORT_HEADER
 
@@ -179,6 +216,49 @@ class BootstrapInterval:
     valid_replicates: int
     lower: Fraction
     upper: Fraction
+
+
+@dataclass(frozen=True)
+class _ReportSchema:
+    version: str
+    criterion_categories: tuple[str, ...]
+    header: tuple[str, ...]
+
+
+_REPORT_SCHEMAS = {
+    REPORT_VERSION: _ReportSchema(
+        REPORT_VERSION,
+        CRITERION_CATEGORIES,
+        AGREEMENT_REPORT_HEADER,
+    ),
+    V2_REPORT_VERSION: _ReportSchema(
+        V2_REPORT_VERSION,
+        V2_CRITERION_CATEGORIES,
+        V2_AGREEMENT_REPORT_HEADER,
+    ),
+}
+
+
+def _select_report_schema(
+    allowed_inclusion_criteria: tuple[str, ...],
+) -> _ReportSchema:
+    if allowed_inclusion_criteria == INCLUSION_CRITERIA:
+        return _REPORT_SCHEMAS[REPORT_VERSION]
+    if allowed_inclusion_criteria == V2_INCLUSION_CRITERIA:
+        return _REPORT_SCHEMAS[V2_REPORT_VERSION]
+    raise ScreeningAgreementError(
+        "unsupported agreement inclusion criteria "
+        f"{allowed_inclusion_criteria!r}"
+    )
+
+
+def _report_schema_for_version(version: str) -> _ReportSchema:
+    try:
+        return _REPORT_SCHEMAS[version]
+    except KeyError as exc:
+        raise ScreeningAgreementError(
+            f"unsupported report_version {version!r}"
+        ) from exc
 
 
 def _validate_sha256(value: object, field: str) -> str:
@@ -265,6 +345,7 @@ def _point_estimates(
     allowed_screening_statuses: tuple[str, ...] = (
         screening_results.LEGACY_SCREENING_STATUSES
     ),
+    criterion_categories: tuple[str, ...] = CRITERION_CATEGORIES,
 ) -> PointEstimates:
     if not pairs:
         raise ScreeningAgreementError("agreement scope must contain candidates")
@@ -275,8 +356,8 @@ def _point_estimates(
     }
     criterion_disagreements = {
         (left, right): 0
-        for left in CRITERION_CATEGORIES
-        for right in CRITERION_CATEGORIES
+        for left in criterion_categories
+        for right in criterion_categories
         if left != right
     }
     for pair in pairs:
@@ -485,6 +566,7 @@ def _bootstrap_intervals(
     allowed_screening_statuses: tuple[str, ...] = (
         screening_results.LEGACY_SCREENING_STATUSES
     ),
+    criterion_categories: tuple[str, ...] = CRITERION_CATEGORIES,
 ) -> dict[str, BootstrapInterval]:
     if (
         isinstance(replicates, bool)
@@ -524,6 +606,7 @@ def _bootstrap_intervals(
             sample,
             allowed_inclusion_criteria=allowed_inclusion_criteria,
             allowed_screening_statuses=allowed_screening_statuses,
+            criterion_categories=criterion_categories,
         )
         replicate_values = {
             "overall_exact_status_agreement": estimates.exact_status_rate,
@@ -764,10 +847,11 @@ def _scope_row(
     estimates: PointEstimates,
     provenance: Mapping[str, str],
     intervals: Mapping[str, BootstrapInterval],
+    schema: _ReportSchema,
 ) -> dict[str, str]:
     candidate_count = len(pairs)
     values: dict[str, str] = {
-        "report_version": REPORT_VERSION,
+        "report_version": schema.version,
         "scope": scope,
         **{field: provenance[field] for field in PROVENANCE_FIELDS},
         "bootstrap_algorithm": BOOTSTRAP_ALGORITHM,
@@ -795,11 +879,15 @@ def _scope_row(
             estimates.exact_criterion_rate
         ),
         **{
-            _criterion_disagreement_field(left, right): str(
+            _criterion_disagreement_field(
+                left,
+                right,
+                criterion_categories=schema.criterion_categories,
+            ): str(
                 estimates.criterion_disagreements[(left, right)]
             )
-            for left in CRITERION_CATEGORIES
-            for right in CRITERION_CATEGORIES
+            for left in schema.criterion_categories
+            for right in schema.criterion_categories
             if left != right
         },
     }
@@ -841,14 +929,14 @@ def _scope_row(
                 ),
             }
         )
-    missing = set(AGREEMENT_REPORT_HEADER) - set(values)
-    extra = set(values) - set(AGREEMENT_REPORT_HEADER)
+    missing = set(schema.header) - set(values)
+    extra = set(values) - set(schema.header)
     if missing or extra:
         raise ScreeningAgreementError(
             f"internal report schema mismatch: missing={sorted(missing)!r}, "
             f"extra={sorted(extra)!r}"
         )
-    return {field: values[field] for field in AGREEMENT_REPORT_HEADER}
+    return {field: values[field] for field in schema.header}
 
 
 def _build_agreement_report(
@@ -871,6 +959,7 @@ def _build_agreement_report(
         raise ScreeningAgreementError(
             "bootstrap_replicates must be a positive integer"
         )
+    schema = _select_report_schema(allowed_inclusion_criteria)
     calibration_pairs, _, full_pairs = _validated_snapshot_pairs(
         calibration,
         main,
@@ -898,6 +987,7 @@ def _build_agreement_report(
             pairs,
             allowed_inclusion_criteria=allowed_inclusion_criteria,
             allowed_screening_statuses=allowed_screening_statuses,
+            criterion_categories=schema.criterion_categories,
         )
         intervals = _bootstrap_intervals(
             pairs,
@@ -906,9 +996,17 @@ def _build_agreement_report(
             replicates=bootstrap_replicates,
             allowed_inclusion_criteria=allowed_inclusion_criteria,
             allowed_screening_statuses=allowed_screening_statuses,
+            criterion_categories=schema.criterion_categories,
         )
         report.append(
-            _scope_row(scope, pairs, estimates, provenance, intervals)
+            _scope_row(
+                scope,
+                pairs,
+                estimates,
+                provenance,
+                intervals,
+                schema,
+            )
         )
     return report
 
@@ -1201,28 +1299,32 @@ def render_agreement_csv(
         raise ScreeningAgreementError(
             "agreement CSV requires calibration then full_corpus rows"
         )
-    expected = set(AGREEMENT_REPORT_HEADER)
+    versions = [
+        row.get("report_version") if isinstance(row, Mapping) else None
+        for row in captured
+    ]
+    if len(set(versions)) != 1:
+        raise ScreeningAgreementError(
+            "agreement CSV rows require the same supported report_version"
+        )
+    schema = _report_schema_for_version(versions[0])
+    expected = set(schema.header)
     normalized: list[dict[str, str]] = []
     for row_number, row in enumerate(captured, start=2):
         if not isinstance(row, Mapping) or set(row) != expected:
             raise ScreeningAgreementError(
                 f"report row {row_number} does not match "
-                "AGREEMENT_REPORT_HEADER"
+                f"report_version {schema.version} header"
             )
-        if any(
-            not isinstance(row[field], str)
-            for field in AGREEMENT_REPORT_HEADER
-        ):
+        if any(not isinstance(row[field], str) for field in schema.header):
             raise ScreeningAgreementError(
                 f"report row {row_number} contains a non-string value"
             )
-        normalized.append(
-            {field: row[field] for field in AGREEMENT_REPORT_HEADER}
-        )
+        normalized.append({field: row[field] for field in schema.header})
     buffer = io.StringIO(newline="")
     writer = csv.DictWriter(
         buffer,
-        fieldnames=AGREEMENT_REPORT_HEADER,
+        fieldnames=schema.header,
         extrasaction="raise",
         lineterminator="\n",
     )
