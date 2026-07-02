@@ -88,5 +88,9 @@
     "triangulated",
     "inferred",
     "unsupported"
+  ],
+  "screening_result_status": [
+    "included",
+    "excluded"
   ]
 }
