@@ -390,6 +390,7 @@ def _build_case(
     taxonomy = inputs / "taxonomy.json"
     taxonomy_payload = json.loads(TAXONOMY.read_text(encoding="utf-8"))
     taxonomy_payload["screening_inclusion_criterion"] = ["include-relevant"]
+    taxonomy_payload["screening_result_status"] = ["included", "excluded"]
     taxonomy.write_text(
         json.dumps(taxonomy_payload, indent=2) + "\n",
         encoding="utf-8",

@@ -251,6 +251,8 @@ RELEASE_MANIFEST_HEADER = (
 )
 SCREENING_INCLUSION_CRITERION_KEY = "screening_inclusion_criterion"
 CURRENT_INCLUSION_CRITERIA = ("include-relevant",)
+SCREENING_RESULT_STATUS_KEY = "screening_result_status"
+CURRENT_SCREENING_RESULT_STATUSES = ("included", "excluded")
 
 RAW_FILENAMES = (
     "candidates.csv",
@@ -1025,6 +1027,29 @@ def _resolve_inclusion_criteria(
     return criteria
 
 
+def _resolve_screening_result_statuses(
+    taxonomy: dict[str, list[str]],
+    *,
+    strict_new: bool,
+) -> tuple[str, ...] | None:
+    if SCREENING_RESULT_STATUS_KEY not in taxonomy:
+        if strict_new:
+            raise SnapshotError(
+                "taxonomy.json: taxonomy is missing "
+                f"{SCREENING_RESULT_STATUS_KEY!r}"
+            )
+        return None
+    statuses = taxonomy[SCREENING_RESULT_STATUS_KEY]
+    if (
+        not isinstance(statuses, list)
+        or tuple(statuses) != CURRENT_SCREENING_RESULT_STATUSES
+    ):
+        raise SnapshotError(
+            "taxonomy.json: screening_result_status must equal "
+            "[\"included\", \"excluded\"]"
+        )
+    return tuple(statuses)
+
 def _parse_taxonomy(
     payload: bytes,
     *,
@@ -1036,6 +1061,7 @@ def _parse_taxonomy(
         raise SnapshotError(f"taxonomy.json: invalid taxonomy JSON: {exc}") from exc
     if not isinstance(value, dict) or not value:
         raise SnapshotError("taxonomy.json: taxonomy must be a nonempty object")
+    _resolve_screening_result_statuses(value, strict_new=strict_new)
     for key, items in value.items():
         if (
             not isinstance(key, str)
@@ -2198,7 +2224,16 @@ def _execution_configuration(
     profile: dict[str, object],
     packet_sha256: str,
     allowed_inclusion_criteria: tuple[str, ...] | None = None,
+    allowed_screening_statuses: tuple[str, ...] | None = None,
 ) -> dict[str, object]:
+    if (
+        allowed_screening_statuses is not None
+        and allowed_screening_statuses != CURRENT_SCREENING_RESULT_STATUSES
+    ):
+        raise SnapshotError(
+            "allowed screening statuses must equal "
+            "[\"included\", \"excluded\"]"
+        )
     supplied_stage_path = Path(stage_path)
     canonical_stage_path = _absolute_lexical(supplied_stage_path)
     if (
@@ -2280,6 +2315,7 @@ def build_reviewer_stage_artifacts(
     role_id: str,
     stage_path: Path,
     allowed_inclusion_criteria: tuple[str, ...] | None = None,
+    allowed_screening_statuses: tuple[str, ...] | None = None,
 ) -> dict[str, bytes]:
     """Derive one role-only execution snapshot from a validated release."""
 
@@ -2336,6 +2372,7 @@ def build_reviewer_stage_artifacts(
         profile=profile,
         packet_sha256=packet_sha256,
         allowed_inclusion_criteria=allowed_inclusion_criteria,
+        allowed_screening_statuses=allowed_screening_statuses,
     )
     configuration_payload = _canonical_json_bytes(configuration)
     prompt = render_reviewer_prompt(
@@ -4611,6 +4648,10 @@ def stage_reviewer_execution(
         taxonomy,
         strict_new=False,
     )
+    allowed_screening_statuses = _resolve_screening_result_statuses(
+        taxonomy,
+        strict_new=False,
+    )
     coordinator_hashes = {
         name: _sha256(payload) for name, payload in coordinator.items()
     }
@@ -4649,7 +4690,8 @@ def stage_reviewer_execution(
             reviewer_release,
             role_id,
             output_dir,
-            allowed_inclusion_criteria,
+            allowed_inclusion_criteria=allowed_inclusion_criteria,
+            allowed_screening_statuses=allowed_screening_statuses,
         )
         _publish_artifacts(
             output_dir,

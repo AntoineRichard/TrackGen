@@ -389,6 +389,7 @@ def build_inputs(
     _write_csv(paths.citation_keys, CITATION_KEY_HEADER, citation_keys)
     taxonomy = json.loads((DATA_ROOT / "taxonomy.json").read_text(encoding="utf-8"))
     taxonomy["screening_inclusion_criterion"] = ["include-relevant"]
+    taxonomy["screening_result_status"] = ["included", "excluded"]
     paths.taxonomy.write_bytes(_canonical_json_bytes(taxonomy))
     paths.protocol.write_bytes(PROTOCOL_PATH.read_bytes())
     paths.execution_profile.write_bytes(
@@ -1954,6 +1955,111 @@ def test_freeze_requires_exact_current_inclusion_criterion(
 
     with pytest.raises(screening_batches.SnapshotError):
         freeze(inputs, tmp_path / "v1")
+
+
+@pytest.mark.parametrize(
+    ("result_statuses", "valid"),
+    [
+        (["included", "excluded"], True),
+        (None, False),
+        ([], False),
+        (["included"], False),
+        (["included", "boundary", "excluded"], False),
+    ],
+)
+def test_fresh_freeze_requires_exact_current_screening_result_statuses(
+    tmp_path: Path,
+    result_statuses: list[str] | None,
+    valid: bool,
+) -> None:
+    inputs = build_inputs(tmp_path / "inputs")
+    taxonomy = json.loads(inputs.taxonomy.read_text(encoding="utf-8"))
+    if result_statuses is None:
+        del taxonomy["screening_result_status"]
+    else:
+        taxonomy["screening_result_status"] = result_statuses
+    inputs.taxonomy.write_bytes(_canonical_json_bytes(taxonomy))
+
+    if valid:
+        freeze(inputs, tmp_path / "v1")
+    else:
+        with pytest.raises(
+            screening_batches.SnapshotError,
+            match="screening_result_status",
+        ):
+            freeze(inputs, tmp_path / "v1")
+
+
+def test_screening_result_status_resolver_returns_allowed_binary_statuses() -> None:
+    assert screening_batches._resolve_screening_result_statuses(
+        {"screening_result_status": ["included", "excluded"]},
+        strict_new=True,
+    ) == ("included", "excluded")
+
+
+def test_stage_derives_allowed_screening_statuses_without_serializing_them(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inputs = build_inputs(tmp_path / "inputs")
+    coordinator = tmp_path / "coordinator" / "v1"
+    coordinator.parent.mkdir()
+    freeze(inputs, coordinator)
+    reviewer_release = tmp_path / "releases" / "v1"
+    reviewer_release.parent.mkdir()
+    release(coordinator, "calibration", reviewer_release)
+
+    received_statuses: list[tuple[str, ...] | None] = []
+    build_configuration = screening_batches._execution_configuration
+
+    def capture_configuration(**kwargs):
+        received_statuses.append(kwargs.get("allowed_screening_statuses"))
+        return build_configuration(**kwargs)
+
+    monkeypatch.setattr(
+        screening_batches,
+        "_execution_configuration",
+        capture_configuration,
+    )
+    staging_root = tmp_path / "staging"
+    staging_root.mkdir(mode=0o700)
+    os.chmod(staging_root, 0o700)
+    stage = screening_batches.stage_reviewer_execution(
+        coordinator,
+        reviewer_release,
+        "screening-01",
+        staging_root,
+    )
+
+    assert ("included", "excluded") in received_statuses
+    configuration = json.loads(
+        (stage / "execution_configuration.json").read_text(encoding="utf-8")
+    )
+    assert configuration["configuration_version"] == "2"
+    assert "allowed_screening_statuses" not in configuration
+
+
+@pytest.mark.parametrize("version", range(1, 7))
+def test_committed_historical_coordinator_validation_leaves_v1_through_v6_unchanged(
+    version: int,
+) -> None:
+    snapshot = DATA_ROOT / "screening_inputs" / f"v{version}"
+    before = {
+        path.relative_to(snapshot): path.read_bytes()
+        for path in snapshot.rglob("*")
+        if path.is_file()
+    }
+    taxonomy = json.loads(before[Path("taxonomy.json")].decode("utf-8"))
+    assert "screening_result_status" not in taxonomy
+
+    screening_batches.validate_snapshot(snapshot)
+
+    after = {
+        path.relative_to(snapshot): path.read_bytes()
+        for path in snapshot.rglob("*")
+        if path.is_file()
+    }
+    assert after == before
 
 
 def test_source_validation_requires_resolver_for_resolved_conflict(
