@@ -3225,3 +3225,155 @@ def test_result_publication_routes_through_public_snapshot_publisher(
 
     assert calls == [(output, artifacts, callback)]
 
+
+@pytest.fixture(scope="module")
+def binary_coordinator_template(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Path:
+    root = tmp_path_factory.mktemp("screening-results-binary-coordinator")
+    inputs = build_inputs(root / "inputs", count=202)
+    taxonomy = json.loads(inputs.taxonomy.read_text(encoding="utf-8"))
+    taxonomy["screening_result_status"] = ["included", "excluded"]
+    inputs.taxonomy.write_bytes(
+        screening_results.screening_batches._canonical_json_bytes(taxonomy)
+    )
+    snapshot = root / "v7"
+    freeze(inputs, snapshot)
+    return snapshot
+
+
+@pytest.fixture
+def binary_coordinator(
+    tmp_path: Path, binary_coordinator_template: Path
+) -> Path:
+    destination = tmp_path / "coordinator" / "v7"
+    destination.parent.mkdir()
+    import shutil
+
+    shutil.copytree(binary_coordinator_template, destination)
+    return destination
+
+
+def test_unbound_decision_validation_retains_legacy_boundary(
+    coordinator: Path,
+) -> None:
+    row = _decision_for_assignment(
+        _manifest(coordinator)[0], status="boundary"
+    )
+
+    screening_results.validate_result_decision(row, context="unbound")
+
+
+@pytest.mark.parametrize("status", ("included", "excluded"))
+def test_binary_phase_accepts_allowed_screening_statuses(
+    binary_coordinator: Path,
+    tmp_path: Path,
+    status: str,
+) -> None:
+    release = _release_phase(binary_coordinator, tmp_path, "calibration")
+    paths = _phase_result_paths(
+        tmp_path / f"raw-binary-{status}",
+        binary_coordinator,
+        "calibration",
+    )
+    for path in paths:
+        rows = _read_csv(path)
+        for row in rows:
+            if status == "excluded":
+                row["screening_status"] = "excluded"
+                row["criterion"] = "exclude-out-of-scope"
+                row["exclusion_reason"] = (
+                    "The inspected source does not contribute course-generation "
+                    "geometry, representations, metrics, or interchange."
+                )
+        _write_csv(path, RESULT_HEADER, rows)
+    output = tmp_path / f"sealed-binary-{status}" / "v1"
+    output.parent.mkdir()
+
+    screening_results.seal_phase_results(
+        coordinator_snapshot_dir=binary_coordinator,
+        phase="calibration",
+        result_paths=paths,
+        output_dir=output,
+        reviewer_release_snapshot_dir=release,
+    )
+
+
+def test_binary_phase_rejects_boundary_screening_status(
+    binary_coordinator: Path,
+    tmp_path: Path,
+) -> None:
+    release = _release_phase(binary_coordinator, tmp_path, "calibration")
+    paths = _phase_result_paths(
+        tmp_path / "raw-binary-boundary",
+        binary_coordinator,
+        "calibration",
+    )
+    for path in paths:
+        rows = _read_csv(path)
+        for row in rows:
+            row["screening_status"] = "boundary"
+            row["criterion"] = "boundary"
+        _write_csv(path, RESULT_HEADER, rows)
+    output = tmp_path / "sealed-binary-boundary" / "v1"
+    output.parent.mkdir()
+
+    with pytest.raises(
+        screening_results.ScreeningResultError,
+        match="invalid screening_status",
+    ):
+        screening_results.seal_phase_results(
+            coordinator_snapshot_dir=binary_coordinator,
+            phase="calibration",
+            result_paths=paths,
+            output_dir=output,
+            reviewer_release_snapshot_dir=release,
+        )
+
+
+@pytest.mark.parametrize(
+    ("phase", "version"),
+    (
+        ("calibration", "v1"),
+        ("calibration", "v2"),
+        ("main", "v2"),
+        ("calibration", "v4"),
+        ("calibration", "v5"),
+        ("calibration", "v6"),
+    ),
+)
+def test_committed_result_snapshot_still_validates(
+    phase: str,
+    version: str,
+) -> None:
+    gate_inputs: dict[str, Path] = {}
+    if phase == "main":
+        gate_inputs = {
+            "calibration_reviewer_release_snapshot_dir": Path(
+                "paper/data/screening_releases/calibration/v2"
+            ),
+            "calibration_result_snapshot_dir": Path(
+                "paper/data/screening_results/calibration/v2"
+            ),
+            "calibration_decision_snapshot_dir": Path(
+                "paper/data/screening_decisions/v2"
+            ),
+        }
+    captured = screening_results.validate_phase_result_snapshot(
+        Path("paper/data/screening_results") / phase / version,
+        coordinator_snapshot_dir=Path("paper/data/screening_inputs") / version,
+        reviewer_release_snapshot_dir=(
+            Path("paper/data/screening_releases") / phase / version
+        ),
+        **gate_inputs,
+    )
+
+    assert captured.phase == phase
+
+
+def test_binary_coordinator_captures_allowed_screening_statuses(
+    binary_coordinator: Path,
+) -> None:
+    captured = screening_results.capture_coordinator_snapshot(binary_coordinator)
+
+    assert captured.allowed_screening_statuses == ("included", "excluded")

@@ -107,7 +107,8 @@ MANIFEST_VERSION = "1"
 PHASES = frozenset({"calibration", "main"})
 BATCH_IDS = tuple(filename.removesuffix(".csv") for filename in PACKET_FILENAMES)
 RESULT_FILENAMES = tuple(f"{batch_id}.csv" for batch_id in BATCH_IDS)
-SCREENING_STATUSES = frozenset({"included", "boundary", "excluded"})
+LEGACY_SCREENING_STATUSES = ("included", "boundary", "excluded")
+SCREENING_STATUSES = frozenset(LEGACY_SCREENING_STATUSES)
 INCLUSION_CRITERIA = (
     "include-1",
     "include-2",
@@ -473,6 +474,7 @@ class CoordinatorSnapshot:
     snapshot_sha256: str
     protocol_sha256: str
     allowed_inclusion_criteria: tuple[str, ...]
+    allowed_screening_statuses: tuple[str, ...]
     calibration_candidate_ids: tuple[str, ...]
     tree: DirectoryFingerprint
     fingerprints: tuple[FileFingerprint, ...]
@@ -596,6 +598,13 @@ def _capture_coordinator(path: Path) -> _Coordinator:
     allowed_inclusion_criteria = (
         INCLUSION_CRITERIA if criteria is None else tuple(criteria)
     )
+    statuses = screening_batches._resolve_screening_result_statuses(
+        taxonomy,
+        strict_new=False,
+    )
+    allowed_screening_statuses = (
+        LEGACY_SCREENING_STATUSES if statuses is None else statuses
+    )
     tree.reattest()
     manifest = _parse_csv(
         payloads["manifest.csv"],
@@ -643,6 +652,7 @@ def _capture_coordinator(path: Path) -> _Coordinator:
         payloads=payloads,
         manifest=tuple(manifest),
         snapshot_sha256=next(iter(snapshot_values)),
+        allowed_screening_statuses=allowed_screening_statuses,
         protocol_sha256=next(iter(protocol_values)),
         allowed_inclusion_criteria=allowed_inclusion_criteria,
         calibration_candidate_ids=calibration_candidate_ids,
@@ -763,6 +773,16 @@ def _coordinator_state_signature(
             "caller-supplied coordinator has invalid allowed inclusion criteria"
         )
     if (
+        type(coordinator.allowed_screening_statuses) is not tuple
+        or any(
+            type(status) is not str
+            for status in coordinator.allowed_screening_statuses
+        )
+    ):
+        raise ScreeningResultError(
+            "caller-supplied coordinator has invalid allowed screening statuses"
+        )
+    if (
         type(coordinator.calibration_candidate_ids) is not tuple
         or any(
             type(candidate_id) is not str
@@ -803,6 +823,7 @@ def _coordinator_state_signature(
         manifest_signature,
         coordinator.snapshot_sha256,
         coordinator.protocol_sha256,
+        coordinator.allowed_screening_statuses,
         coordinator.allowed_inclusion_criteria,
         coordinator.calibration_candidate_ids,
         _directory_fingerprint_signature(coordinator.tree),
@@ -1474,10 +1495,11 @@ def _validate_result_decision(
     *,
     context: str,
     allowed_inclusion_criteria: tuple[str, ...] = INCLUSION_CRITERIA,
+    allowed_screening_statuses: tuple[str, ...] = LEGACY_SCREENING_STATUSES,
 ) -> None:
     status = row["screening_status"]
     criterion = row["criterion"]
-    if status not in SCREENING_STATUSES:
+    if status not in allowed_screening_statuses:
         raise ScreeningResultError(
             f"{context}: invalid screening_status {status!r}"
         )
@@ -1660,10 +1682,12 @@ def _validate_phase_payloads(
         coordinator_hash = coordinator.snapshot_sha256
         protocol_hash = coordinator.protocol_sha256
         allowed_inclusion_criteria = coordinator.allowed_inclusion_criteria
+        allowed_screening_statuses = coordinator.allowed_screening_statuses
     else:
         coordinator_hash = sealed_coordinator_hash or ""
         protocol_hash = sealed_protocol_hash or ""
         allowed_inclusion_criteria = INCLUSION_CRITERIA
+        allowed_screening_statuses = LEGACY_SCREENING_STATUSES
         if (
             _LOWER_SHA256.fullmatch(coordinator_hash) is None
             or _LOWER_SHA256.fullmatch(protocol_hash) is None
@@ -1727,6 +1751,7 @@ def _validate_phase_payloads(
                 row,
                 context=context,
                 allowed_inclusion_criteria=allowed_inclusion_criteria,
+                allowed_screening_statuses=allowed_screening_statuses,
             )
             rows_by_assignment[assignment_id] = row
             assignments_in_file.append(assignment_id)
@@ -3036,12 +3061,18 @@ def _validate_role_result(
         raise ScreeningResultError("stage manifest must contain exactly one row")
     manifest = stage_manifest[0]
     configuration = json.loads(stage["execution_configuration.json"])
-    if configuration["configuration_version"] == "1":
+    configuration_version = configuration["configuration_version"]
+    if configuration_version == "1":
         allowed_inclusion_criteria = INCLUSION_CRITERIA
-    else:
+    elif configuration_version == "2":
         allowed_inclusion_criteria = tuple(
             configuration["allowed_inclusion_criteria"]
         )
+    else:
+        raise ScreeningResultError(
+            "unsupported execution configuration version"
+        )
+    allowed_screening_statuses = LEGACY_SCREENING_STATUSES
     if supplied_result_path != manifest["result_path"]:
         raise ScreeningResultError(
             "supplied result path does not match stage result path"
@@ -3090,6 +3121,7 @@ def _validate_role_result(
             result,
             context=context,
             allowed_inclusion_criteria=allowed_inclusion_criteria,
+            allowed_screening_statuses=allowed_screening_statuses,
         )
 
 
