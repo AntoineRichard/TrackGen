@@ -4750,15 +4750,38 @@ def validate_reviewer_stage_snapshot(
         label="execution_configuration.json",
     )
     is_v3 = configuration_probe.get("configuration_version") == "3"
+    evidence_directory_required = False
+    if is_v3:
+        evidence_manifest_probe = _read_regular_file(
+            snapshot_dir / "evidence_packet_manifest.csv",
+            "reviewer execution evidence manifest",
+        ).payload
+        evidence_probe_rows = _read_csv_bytes(
+            evidence_manifest_probe,
+            "evidence_packet_manifest.csv",
+            EVIDENCE_PACKET_HEADER,
+        )
+        evidence_directory_required = any(
+            row["evidence_sha256"] != "NR" for row in evidence_probe_rows
+        )
+    expected_root_names = (
+        REVIEWER_STAGE_V3_ROOT_FILENAMES
+        if is_v3
+        else REVIEWER_STAGE_ROOT_FILENAMES
+    )
+    if is_v3 and not evidence_directory_required:
+        expected_root_names = frozenset(
+            set(expected_root_names) - {"evidence"}
+        )
     actual = _read_exact_flat_snapshot(
         snapshot_dir,
         label="reviewer execution stage",
-        expected_names=(
-            REVIEWER_STAGE_V3_ROOT_FILENAMES
-            if is_v3
-            else REVIEWER_STAGE_ROOT_FILENAMES
+        expected_names=expected_root_names,
+        directory_names=(
+            frozenset({"evidence"})
+            if evidence_directory_required
+            else frozenset()
         ),
-        directory_names=frozenset({"evidence"}) if is_v3 else frozenset(),
     )
     parent_stat = _require_real_directory(
         snapshot_dir.parent,
@@ -4939,13 +4962,13 @@ def validate_reviewer_stage_snapshot(
                 for directory in PurePosixPath(relative).parents
                 if str(directory) != "."
             }
-            expected_evidence_directories.add("evidence")
             actual_evidence_directories = {
                 path.relative_to(snapshot_dir).as_posix()
                 for path in (snapshot_dir / "evidence").rglob("*")
                 if path.is_dir()
             }
-            actual_evidence_directories.add("evidence")
+            if (snapshot_dir / "evidence").is_dir():
+                actual_evidence_directories.add("evidence")
             if actual_evidence_directories != expected_evidence_directories:
                 raise SnapshotError("stage evidence directories do not match manifest")
             for relative, row in expected_evidence_paths.items():

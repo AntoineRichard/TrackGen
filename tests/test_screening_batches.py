@@ -999,6 +999,77 @@ def test_configuration_v3_stages_role_filtered_evidence_and_exact_bytes(
     } == packet_candidate_ids
 
 
+def test_configuration_v3_all_metadata_only_stage_has_no_evidence_directory(
+    tmp_path: Path,
+) -> None:
+    inputs = build_inputs(tmp_path / "inputs")
+    coordinator = tmp_path / "coordinator" / "v7"
+    coordinator.parent.mkdir()
+    freeze(inputs, coordinator)
+    evidence_manifest, source_archive = _phase_evidence_inputs(
+        tmp_path, coordinator, "calibration"
+    )
+    role_candidate_ids = {
+        row["candidate_id"]
+        for row in _read_csv(coordinator / "packets" / "screening-01.csv")
+        if row["phase"] == "calibration"
+    }
+    evidence_rows = _read_csv(evidence_manifest)
+    for row in evidence_rows:
+        if row["candidate_id"] not in role_candidate_ids:
+            continue
+        row["evidence_sha256"] = "NR"
+        row["local_filename"] = "NR"
+        row["redistribution_status"] = "metadata-only"
+        row["retrieval_notes"] = (
+            "attempted: doi_or_publisher=publisher supplied metadata only | "
+            "title_author=title and author search found no copy | "
+            "scholarly_index_or_repository=index search found no accessible copy | "
+            "official_page=official page supplied metadata only; "
+            "outcome: no local evidence bytes were available"
+        )
+    evidence_manifest.write_bytes(_evidence_packet_bytes(evidence_rows))
+
+    reviewer_release = tmp_path / "releases" / "v2"
+    reviewer_release.parent.mkdir()
+    screening_batches.release_snapshot(
+        coordinator,
+        "calibration",
+        reviewer_release,
+        evidence_manifest=evidence_manifest,
+        source_archive=source_archive,
+    )
+    staging_root = tmp_path / "staging"
+    staging_root.mkdir(mode=0o700)
+    os.chmod(staging_root, 0o700)
+    stage = screening_batches.stage_reviewer_execution(
+        coordinator,
+        reviewer_release,
+        "screening-01",
+        staging_root,
+        source_archive=source_archive,
+    )
+
+    configuration = json.loads(
+        (stage / "execution_configuration.json").read_text(encoding="utf-8")
+    )
+    staged_manifest = stage / "evidence_packet_manifest.csv"
+    staged_rows = _read_csv(staged_manifest)
+    assert configuration["configuration_version"] == "3"
+    assert configuration["allowed_screening_statuses"] == ["included", "excluded"]
+    assert configuration["allowed_inclusion_criteria"] == ["include-relevant"]
+    assert configuration["evidence_packet_manifest_sha256"] == hashlib.sha256(
+        staged_manifest.read_bytes()
+    ).hexdigest()
+    assert {row["candidate_id"] for row in staged_rows} == role_candidate_ids
+    assert {row["redistribution_status"] for row in staged_rows} == {
+        "metadata-only"
+    }
+    assert not (stage / "evidence").exists()
+
+    screening_batches.validate_reviewer_stage_snapshot(stage)
+
+
 @pytest.mark.parametrize("mutation", ("missing", "extra", "swapped", "mutated"))
 def test_staged_evidence_validation_rejects_tree_mutation(
     tmp_path: Path, mutation: str
