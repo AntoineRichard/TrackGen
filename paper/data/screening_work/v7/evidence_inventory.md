@@ -21,6 +21,10 @@ therefore marked `local-restricted` unless a redistribution basis was establishe
 commit-pinned Gymnasium MIT source for C0017 is the sole
 `public-redistributable` exception.
 
+C0172 is bound to the exact v1.3.0 Routes URL and retained as v1.3.0. The local
+HTML identifies v1.3.0 in its `data-version` and current-version selector, while the
+publisher's `rel=canonical` incorrectly targets the corresponding v1.4.0 route.
+
 ## Metadata-Only Artifacts
 
 The following four stable candidates have no local bytes in the v7 source archive. The
@@ -31,7 +35,7 @@ it is not present in the archive.
 | --- | --- | --- |
 | C0009 | Automatic Track Generation for High-End Racing Games Using Evolutionary Computation | `C0009/loiacono-2011-ieee-t-ciaig-3-3.pdf` |
 | C0015 | UN Regulation No. 157 - Automated Lane Keeping Systems (ALKS) | `C0015/un-regulation-no-157-2021.pdf` |
-| C0110 | CRAG - a combinatorial testing-based generator of road geometries for ADS testing | `C0110/arcaini-2024-scico-103171.pdf` |
+| C0110 | CRAG – a combinatorial testing-based generator of road geometries for ADS testing | `C0110/arcaini-2024-scico-103171.pdf` |
 | C0134 | RoadSign at the SBFT 2023 Tool Competition Cyber-Physical Systems Track | `C0134/ayerdi-2023-sbft-road-sign.pdf` |
 
 The structured notes in the manifest distinguish v6-recorded metadata from searches
