@@ -1673,31 +1673,34 @@ def _validate_evidence_retrieval_notes(
     context: str,
 ) -> None:
     notes = row["retrieval_notes"]
-    folded = notes.casefold()
-    limitation_terms = (
-        "abstract",
-        "access",
-        "attempt",
-        "blocked",
-        "exhausted",
-        "full text",
-        "limitation",
-        "retriev",
-        "unavailable",
-    )
     requires_limitation_notes = (
         row["access_status"] == "abstract_only"
         or row["redistribution_status"] == "metadata-only"
-        or "blocked" in folded
+        or "blocked" in notes.casefold()
     )
-    if requires_limitation_notes and (
-        notes == "NR"
-        or len(notes) < 24
-        or not any(term in folded for term in limitation_terms)
-    ):
-        raise SnapshotError(
-            f"{context}: limited access requires substantive retrieval_notes"
+    if requires_limitation_notes:
+        structured = re.fullmatch(
+            r"attempted: ([^;\r\n]+); outcome: ([^;\r\n]+)",
+            notes,
         )
+        if structured is None:
+            raise SnapshotError(
+                f"{context}: limited access requires substantive "
+                "retrieval_notes exactly "
+                "'attempted: <locations/methods>; outcome: <result>'"
+            )
+        attempted, outcome = structured.groups()
+        if any(
+            segment != segment.strip()
+            or len(segment) < 12
+            or not any(character.isalnum() for character in segment)
+            for segment in (attempted, outcome)
+        ):
+            raise SnapshotError(
+                f"{context}: attempted and outcome segments must be trimmed "
+                "substantive text of at least 12 characters"
+            )
+        return
     if notes != "NR" and (
         len(notes) < 3 or not any(character.isalnum() for character in notes)
     ):

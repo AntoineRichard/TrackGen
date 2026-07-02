@@ -3963,7 +3963,8 @@ def test_evidence_packet_manifest_requires_version_pinned_archive_urls(
     )
     row["evidence_archive_url"] = archive_url
     row["retrieval_notes"] = (
-        "Exhaustive retrieval attempted the publisher; access was unavailable."
+        "attempted: DOI and publisher full-text retrieval; "
+        "outcome: publisher access was unavailable"
     )
 
     with pytest.raises(screening_batches.SnapshotError, match="version|mutable"):
@@ -4002,6 +4003,92 @@ def test_evidence_packet_manifest_requires_substantive_limited_access_notes(
             allowed_candidate_ids={"C0001"},
             source_archive=archive,
         )
+
+
+@pytest.mark.parametrize(
+    "notes",
+    [
+        "Abstract available; full text unavailable.",
+        "Retrieval attempted at the DOI and publisher; full text unavailable.",
+        "attempted: ; outcome: publisher returned no full text",
+        "attempted: DOI; outcome: blocked",
+        "outcome: publisher access was blocked; attempted: DOI and repository search",
+        "Attempted: DOI and publisher full-text retrieval; outcome: access was blocked",
+        "attempted:  DOI and publisher full-text retrieval; outcome: access was blocked",
+        (
+            "attempted: DOI and publisher full-text retrieval; "
+            "outcome: access was blocked; outcome: no local bytes"
+        ),
+    ],
+    ids=(
+        "generic",
+        "missing-markers",
+        "empty-attempted",
+        "short-segments",
+        "reversed-markers",
+        "case-changed-marker",
+        "untrimmed-segment",
+        "extra-separator",
+    ),
+)
+def test_evidence_packet_manifest_rejects_unstructured_limited_access_notes(
+    tmp_path: Path,
+    notes: str,
+) -> None:
+    archive = _write_evidence_archive(tmp_path)
+    row = _evidence_packet_row()
+    row["access_status"] = "abstract_only"
+    row["retrieval_notes"] = notes
+
+    with pytest.raises(screening_batches.SnapshotError, match="attempted.*outcome"):
+        screening_batches.parse_evidence_packet_manifest(
+            _evidence_packet_bytes([row]),
+            allowed_candidate_ids={"C0001"},
+            source_archive=archive,
+        )
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {
+            "access_status": "abstract_only",
+            "retrieval_notes": (
+                "attempted: DOI and publisher full-text retrieval; "
+                "outcome: only the abstract record was available"
+            ),
+        },
+        {
+            "redistribution_status": "metadata-only",
+            "evidence_sha256": "NR",
+            "local_filename": "NR",
+            "retrieval_notes": (
+                "attempted: publisher and repository download routes; "
+                "outcome: no redistributable local bytes were available"
+            ),
+        },
+        {
+            "retrieval_notes": (
+                "attempted: publisher and DOI retrieval endpoints; "
+                "outcome: publisher access was blocked by HTTP 403"
+            ),
+        },
+    ],
+    ids=("abstract-only", "metadata-only", "blocked-access"),
+)
+def test_evidence_packet_manifest_accepts_structured_limited_access_notes(
+    tmp_path: Path,
+    overrides: dict[str, str],
+) -> None:
+    archive = _write_evidence_archive(tmp_path)
+    row = _evidence_packet_row()
+    row.update(overrides)
+
+    assert screening_batches.parse_evidence_packet_manifest(
+        _evidence_packet_bytes([row]),
+        allowed_candidate_ids={"C0001"},
+        source_archive=archive,
+    ) == [row]
 
 
 def test_evidence_packet_manifest_allows_nr_notes_for_full_text(
@@ -4127,7 +4214,8 @@ def test_evidence_packet_manifest_accepts_metadata_only_without_local_bytes(
         redistribution_status="metadata-only",
     )
     row["retrieval_notes"] = (
-        "Exhaustive retrieval attempted the publisher; full text was unavailable."
+        "attempted: DOI and publisher full-text retrieval; "
+        "outcome: full text was unavailable from all attempted routes"
     )
 
     assert screening_batches.parse_evidence_packet_manifest(
