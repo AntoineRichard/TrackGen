@@ -1,49 +1,53 @@
-# V7 screening reviewer prompt template
+# Screening reviewer execution prompt
 
 ROLE_ID: {{ROLE_ID}}
+STAGE_PATH: {{STAGE_PATH}}
 PROTOCOL_PATH: {{PROTOCOL_PATH}}
 PROTOCOL_SHA256: {{PROTOCOL_SHA256}}
 PACKET_PATH: {{PACKET_PATH}}
 PACKET_SHA256: {{PACKET_SHA256}}
 OUTPUT_PATH: {{OUTPUT_PATH}}
+OUTPUT_SHA256: compute from the exact closed output bytes and report at completion
 
-Act only as the reviewer identified by `ROLE_ID`. Verify the protocol and evidence
-packet SHA-256 values before rating. Stop without writing a result if either binding
-fails.
+Act only as the screening reviewer identified by `ROLE_ID`. The absolute `STAGE_PATH`, `PROTOCOL_PATH`, `PACKET_PATH`, and `OUTPUT_PATH` above are the complete path instructions for this execution. Follow the exact protocol bytes at `PROTOCOL_PATH` and process every assignment in the exact packet bytes at `PACKET_PATH`. Before rating, verify both supplied SHA-256 digests. Stop without writing ratings if any path binding or digest fails.
 
-## Inputs and blinding
+## Sole inputs and context
 
-The frozen protocol and assigned frozen evidence packet are the sole eligibility inputs.
-Both duplicate reviewers rate the same frozen evidence packet. Do not inspect another
-reviewer's output, ratings, disagreements, or rationale. Do not use or request v3-v6
-ratings or disagreements.
+The protocol and assigned packet are the sole supplied screening inputs.
+No other conversation history, memory, ratings, results, summaries, or context may be supplied.
+Both duplicate reviewers MUST rate the same frozen evidence packet.
+Do not inspect another role's output, execution trace, or working path. Do not use v3-v6 ratings or disagreements.
 
-Public retrieval during rating may verify bibliographic metadata or report a packet
-defect. It must not silently replace or add eligibility evidence. Report any stronger
-evidence for a new packet version; do not use it to alter the current rating.
+## Evidence procedure
 
-## Rating instruction
-
-Apply the v7 binary retention protocol. Return only `included`,`include-relevant` when
-packet evidence establishes a core, supporting, or contextual retention condition.
-Otherwise return `excluded` with one controlled exclusion criterion and a
-source-specific exclusion reason. Do not assign `boundary`; it is historical
-terminology only. Do not choose or rank a primary contribution and do not perform Pass
-2 coding.
-
-Fixed CARLA routes or equivalent fixed routes may be retained as supporting evidence
-for a citable representation, benchmark format, simulator interface, or evaluation
-requirement. Do not describe a fixed route as a generation method.
+Inspect only the direct material evidence frozen into the assigned packet when deciding eligibility.
+Public retrieval during rating MAY verify metadata or report a packet defect but MUST NOT silently replace or add eligibility evidence.
+Stronger evidence after freeze requires a new packet version. Report the defect and do not alter the current packet's eligibility basis.
+Apply the protocol's binary retention procedure: return `included`,`include-relevant` when packet evidence establishes a core, supporting, or contextual condition; otherwise return `excluded` with one controlled exclusion criterion. `boundary` is historical terminology only and is forbidden as a v7 result. Record source-specific evidence, precise locators, access status, version, retrieval date, archive URL, and artifact SHA-256 exactly as required.
+Do not choose or rank a primary contribution, perform Pass 2 coding, call fixed routes generation methods, infer eligibility from titles or snippets, or use another reviewer's work.
 
 ## Result contract
 
-Write one canonical UTF-8 CSV row for every assignment, in packet order, to
-`OUTPUT_PATH`. Use LF line endings and RFC 4180 quoting. The header and field order
-are fixed:
+RESULT_HEADER:
 
 ```csv
 assignment_id,phase,candidate_id,input_sha256,snapshot_sha256,batch_id,coder_id,screened_on,screening_status,criterion,access_status,source_urls,evidence_version,evidence_retrieved_on,evidence_archive_url,evidence_sha256,screening_locator,exclusion_reason,notes
 ```
 
-Populate every field. Use `NR` only where the protocol permits it. Do not emit a prose
-rating summary or any counts.
+Write only canonical UTF-8 CSV to `OUTPUT_PATH`.
+Use the exact `RESULT_HEADER`, LF line endings, RFC 4180 quoting, and one row for every packet assignment in canonical assignment order. Populate every field; use `NR` only where the protocol permits it. Set every `coder_id` to `ROLE_ID`. Write no temporary rating file outside the role-private working path.
+
+Do not emit a prose rating summary.
+Do not include decision, status, criterion, access, or evidence counts or summaries in the completion response. The required total `ROWS_WRITTEN` is the only count permitted. After closing the canonical CSV, compute its SHA-256 from the exact file bytes and return only the completion record below.
+
+```text
+ROLE_ID={{ROLE_ID}}
+ROWS_WRITTEN={{ROWS_WRITTEN}}
+OUTPUT_PATH={{OUTPUT_PATH}}
+OUTPUT_SHA256={{OUTPUT_SHA256}}
+```
+
+## Prompt provenance
+
+`prompt_sha256` is the SHA-256 of the exact UTF-8 bytes of this rendered visible reviewer prompt.
+Hidden system or developer instructions are not part of `prompt_sha256`; their exact bytes use the separate execution-register fields or the protocol's explicit provider limitation declarations.
