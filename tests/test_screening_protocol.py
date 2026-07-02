@@ -1366,3 +1366,25 @@ def test_v7_calibration_is_fresh_stable_and_blind() -> None:
     assert "agreement >= 0.80" in section
     assert "no systematic ambiguity" in section
     assert "MUST NOT receive v3-v6 ratings or disagreements" in section
+def test_evidence_packet_phase_release_contract_is_operational() -> None:
+    root = Path("paper/data/screening_protocol.md")
+    working = Path("paper/data/screening_work/v7/protocol.md")
+    payload = root.read_bytes()
+    text = payload.decode("utf-8")
+
+    assert payload == working.read_bytes()
+    assert "## Evidence packet phase releases" in text
+    assert (
+        "candidate_id,artifact_id,artifact_role,source_url,evidence_version,"
+        "evidence_retrieved_on,access_status,evidence_archive_url,"
+        "evidence_sha256,local_filename,redistribution_status,retrieval_notes"
+    ) in text
+    for label in (
+        "doi_or_publisher",
+        "title_author",
+        "scholarly_index_or_repository",
+        "official_page",
+    ):
+        assert label in text
+    assert "Evidence binds to immutable reviewer phase releases" in text
+    assert "concurrent hostile local archive writer" in text

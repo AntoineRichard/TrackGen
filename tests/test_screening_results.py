@@ -9,14 +9,14 @@ import os
 import subprocess
 import sys
 from collections import Counter, defaultdict
-from dataclasses import is_dataclass, replace
+from dataclasses import fields, is_dataclass, replace
 from pathlib import Path
 
 import pytest
 
 import paper.scripts.screening_results as screening_results
 from paper.scripts.prepare_screening_batches import MANIFEST_HEADER
-from tests.test_screening_batches import build_inputs, freeze
+from tests.test_screening_batches import _phase_evidence_inputs, build_inputs, freeze
 
 
 RESULT_HEADER = (
@@ -93,6 +93,11 @@ SCRIPT_PATH = REPOSITORY_ROOT / "paper" / "scripts" / "screening_results.py"
 def test_public_facade_dataclasses_and_phase_coordinator_keyword() -> None:
     assert is_dataclass(screening_results.CoordinatorSnapshot)
     assert is_dataclass(screening_results.ReviewerReleaseSnapshot)
+    assert {
+        "evidence_manifest_payload",
+        "evidence_manifest_sha256",
+        "evidence_bindings_sha256",
+    } <= {field.name for field in fields(screening_results.ReviewerReleaseSnapshot)}
     assert is_dataclass(screening_results.CapturedInput)
     assert screening_results._Coordinator is screening_results.CoordinatorSnapshot
     assert screening_results._CapturedInput is screening_results.CapturedInput
@@ -543,12 +548,17 @@ def _release_phase(
     output_root = tmp_path / f"release-{phase}"
     output_root.mkdir(exist_ok=True)
     output = output_root / version
+    evidence_manifest, source_archive = _phase_evidence_inputs(
+        tmp_path, coordinator, phase
+    )
     screening_results.screening_batches.release_snapshot(
         coordinator,
         phase,
         output,
         calibration_result_snapshot=calibration_result_snapshot,
         calibration_decision_snapshot=calibration_decision_snapshot,
+        evidence_manifest=evidence_manifest,
+        source_archive=source_archive,
     )
     return output
 
@@ -703,6 +713,9 @@ def _publish_main_release(
         calibration_reviewer_release_snapshot_dir=calibration_release,
         calibration_result_snapshot_dir=calibration_result,
     )
+    evidence_manifest, source_archive = _phase_evidence_inputs(
+        output.parent, coordinator, "main"
+    )
     artifacts = (
         screening_results.screening_batches.build_reviewer_release_artifacts(
             captured_coordinator.payloads,
@@ -713,6 +726,8 @@ def _publish_main_release(
             calibration_decision_snapshot_sha256=(
                 captured_decision.snapshot_sha256
             ),
+            evidence_manifest_payload=evidence_manifest.read_bytes(),
+            source_archive=source_archive,
         )
     )
     screening_results.screening_batches.publish_snapshot(output, artifacts)
@@ -3349,6 +3364,28 @@ def test_binary_phase_rejects_boundary_screening_status(
             output_dir=output,
             reviewer_release_snapshot_dir=release,
         )
+
+
+def test_forged_evidence_reviewer_release_capture_is_rejected(
+    binary_coordinator: Path,
+    tmp_path: Path,
+) -> None:
+    release_dir = _release_phase(binary_coordinator, tmp_path, "calibration")
+    coordinator = screening_results.capture_coordinator_snapshot(binary_coordinator)
+    release = screening_results._capture_reviewer_release(
+        release_dir,
+        expected_manifest=screening_results._expected_reviewer_release_manifest(
+            coordinator, "calibration"
+        ),
+        coordinator=coordinator,
+    )
+    forged = replace(release, evidence_bindings_sha256="0" * 64)
+
+    with pytest.raises(
+        screening_results.ScreeningResultError,
+        match="caller-supplied reviewer evidence state changed",
+    ):
+        screening_results._reattest_reviewer_release(forged, coordinator)
 
 
 @pytest.mark.parametrize(

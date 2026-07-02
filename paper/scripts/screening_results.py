@@ -487,6 +487,9 @@ class ReviewerReleaseSnapshot:
     payloads: dict[str, bytes]
     manifest: Row
     snapshot_sha256: str
+    evidence_manifest_payload: bytes | None
+    evidence_manifest_sha256: str | None
+    evidence_bindings_sha256: str | None
     root: DirectoryFingerprint
     packets_tree: DirectoryFingerprint
     fingerprints: tuple[FileFingerprint, ...]
@@ -929,6 +932,9 @@ def _reviewer_release_snapshot_sha256(
     phase: str,
     payloads: dict[str, bytes],
 ) -> str:
+    manifest, header = screening_batches._parse_release_manifest(
+        payloads.get("release_manifest.csv", b"")
+    )
     expected_paths = {
         "protocol.md",
         "execution_profile.json",
@@ -937,6 +943,8 @@ def _reviewer_release_snapshot_sha256(
         "SHA256SUMS",
         *(f"packets/{filename}" for filename in PACKET_FILENAMES),
     }
+    if header == screening_batches.RELEASE_MANIFEST_V2_HEADER:
+        expected_paths.add("evidence_packet_manifest.csv")
     if set(payloads) != expected_paths:
         raise ScreeningResultError(
             "reviewer release payload set is incomplete for hashing"
@@ -947,7 +955,7 @@ def _reviewer_release_snapshot_sha256(
                 {"path": path, "sha256": _sha256(payloads[path])}
                 for path in sorted(payloads, key=lambda value: value.encode("utf-8"))
             ],
-            "manifest_version": MANIFEST_VERSION,
+            "manifest_version": manifest["manifest_version"],
             "phase": phase,
         }
     )
@@ -964,9 +972,19 @@ def _capture_reviewer_release(
         raise ScreeningResultError(
             "reviewer release must be disjoint from the coordinator snapshot"
         )
+    release_manifest_input = _capture_input(
+        directory / "release_manifest.csv", "reviewer release manifest"
+    )
+    manifest_row, manifest_header = screening_batches._parse_release_manifest(
+        release_manifest_input.payload
+    )
     root = _capture_directory_fingerprint(
         directory,
-        screening_batches.REVIEWER_RELEASE_ROOT_FILENAMES,
+        (
+            screening_batches.REVIEWER_RELEASE_V2_ROOT_FILENAMES
+            if manifest_header == screening_batches.RELEASE_MANIFEST_V2_HEADER
+            else screening_batches.REVIEWER_RELEASE_ROOT_FILENAMES
+        ),
         "reviewer release snapshot",
     )
     packets_tree = _capture_directory_fingerprint(
@@ -980,12 +998,18 @@ def _capture_reviewer_release(
         expected_manifest=expected_manifest,
         coordinator_snapshot=coordinator.payloads,
     )
-    manifest_rows = _parse_csv(
-        payloads["release_manifest.csv"],
-        "reviewer release manifest.csv",
-        screening_batches.RELEASE_MANIFEST_HEADER,
+    captured_manifest, captured_header = screening_batches._parse_release_manifest(
+        payloads["release_manifest.csv"]
     )
-    if len(manifest_rows) != 1 or manifest_rows[0] != expected_manifest:
+    if any(
+        captured_manifest[field] != value
+        for field, value in expected_manifest.items()
+        if not (
+            captured_header == screening_batches.RELEASE_MANIFEST_V2_HEADER
+            and field == "manifest_version"
+            and value == screening_batches.MANIFEST_VERSION
+        )
+    ):
         raise ScreeningResultError(
             "reviewer release manifest does not match authoritative authorization"
         )
@@ -998,6 +1022,8 @@ def _capture_reviewer_release(
         "SHA256SUMS",
         *(f"packets/{filename}" for filename in PACKET_FILENAMES),
     )
+    if captured_header == screening_batches.RELEASE_MANIFEST_V2_HEADER:
+        relative_paths = (*relative_paths[:4], "evidence_packet_manifest.csv", *relative_paths[4:])
     coordinator_identities = {
         fingerprint.identity for fingerprint in coordinator.fingerprints
     }
@@ -1041,9 +1067,18 @@ def _capture_reviewer_release(
         directory=directory,
         phase=expected_manifest["phase"],
         payloads=payloads,
-        manifest=dict(expected_manifest),
+        manifest=dict(captured_manifest),
         snapshot_sha256=_reviewer_release_snapshot_sha256(
             expected_manifest["phase"], payloads
+        ),
+        evidence_manifest_payload=(
+            payloads.get("evidence_packet_manifest.csv")
+        ),
+        evidence_manifest_sha256=(
+            captured_manifest.get("evidence_manifest_sha256")
+        ),
+        evidence_bindings_sha256=(
+            captured_manifest.get("evidence_bindings_sha256")
         ),
         root=root,
         packets_tree=packets_tree,
@@ -1071,6 +1106,18 @@ def _reattest_reviewer_release(
         != release.snapshot_sha256
     ):
         raise ScreeningResultError("reviewer release digest changed after capture")
+    current_manifest, _ = screening_batches._parse_release_manifest(
+        current["release_manifest.csv"]
+    )
+    if (
+        current.get("evidence_packet_manifest.csv")
+        != release.evidence_manifest_payload
+        or current_manifest.get("evidence_manifest_sha256")
+        != release.evidence_manifest_sha256
+        or current_manifest.get("evidence_bindings_sha256")
+        != release.evidence_bindings_sha256
+    ):
+        raise ScreeningResultError("caller-supplied reviewer evidence state changed")
     for fingerprint in release.fingerprints:
         fingerprint.reattest()
     release.packets_tree.reattest()

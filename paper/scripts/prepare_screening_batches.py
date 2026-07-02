@@ -256,7 +256,7 @@ PACKET_HEADER = (
     "url",
     "source_type",
 )
-RELEASE_MANIFEST_HEADER = (
+RELEASE_MANIFEST_V1_HEADER = (
     "manifest_version",
     "phase",
     "coordinator_snapshot_sha256",
@@ -267,6 +267,15 @@ RELEASE_MANIFEST_HEADER = (
     "calibration_result_snapshot_sha256",
     "calibration_decision_snapshot_sha256",
 )
+RELEASE_MANIFEST_V2_HEADER = (
+    *RELEASE_MANIFEST_V1_HEADER,
+    "evidence_manifest_sha256",
+    "evidence_artifact_count",
+    "evidence_bindings_sha256",
+)
+RELEASE_MANIFEST_V2_VERSION = "3"
+# Historical callers import this name.  It intentionally remains the v1 schema.
+RELEASE_MANIFEST_HEADER = RELEASE_MANIFEST_V1_HEADER
 SCREENING_INCLUSION_CRITERION_KEY = "screening_inclusion_criterion"
 CURRENT_INCLUSION_CRITERIA = ("include-relevant",)
 SCREENING_RESULT_STATUS_KEY = "screening_result_status"
@@ -303,6 +312,9 @@ REVIEWER_RELEASE_ROOT_FILENAMES = frozenset(
         "SHA256SUMS",
         "packets",
     }
+)
+REVIEWER_RELEASE_V2_ROOT_FILENAMES = frozenset(
+    (*REVIEWER_RELEASE_ROOT_FILENAMES, "evidence_packet_manifest.csv")
 )
 STAGE_MANIFEST_HEADER = (
     "manifest_version",
@@ -1764,7 +1776,7 @@ def parse_evidence_packet_manifest(
     payload: bytes,
     *,
     allowed_candidate_ids: Collection[str],
-    source_archive: Path,
+    source_archive: Path | None,
 ) -> list[Row]:
     label = "evidence packet manifest"
     if b"\r" in payload:
@@ -1833,13 +1845,25 @@ def parse_evidence_packet_manifest(
                 raise SnapshotError(
                     f"{context}: evidence_sha256 must be lowercase 64-hex or NR"
                 )
-            local_payload = _validate_evidence_local_filename(
-                local_filename,
-                source_archive=source_archive,
-                context=context,
-            )
-            if _sha256(local_payload) != evidence_sha256:
-                raise SnapshotError(f"{context}: local evidence SHA-256 mismatch")
+            if source_archive is None:
+                relative = PurePosixPath(local_filename)
+                if (
+                    "\\" in local_filename
+                    or relative.is_absolute()
+                    or local_filename != relative.as_posix()
+                    or any(part in {"", ".", ".."} for part in relative.parts)
+                ):
+                    raise SnapshotError(
+                        f"{context}: local_filename must be a normalized relative POSIX path"
+                    )
+            else:
+                local_payload = _validate_evidence_local_filename(
+                    local_filename,
+                    source_archive=source_archive,
+                    context=context,
+                )
+                if _sha256(local_payload) != evidence_sha256:
+                    raise SnapshotError(f"{context}: local evidence SHA-256 mismatch")
 
         redistribution = row["redistribution_status"]
         if redistribution not in {
@@ -2218,6 +2242,9 @@ def _release_manifest_row(
     prompt_template_sha256: str,
     calibration_result_snapshot_sha256: str = "NR",
     calibration_decision_snapshot_sha256: str = "NR",
+    evidence_manifest_sha256: str | None = None,
+    evidence_artifact_count: int | None = None,
+    evidence_bindings_sha256: str | None = None,
 ) -> Row:
     if phase not in {"calibration", "main"}:
         raise SnapshotError(f"unsupported reviewer release phase {phase!r}")
@@ -2251,8 +2278,12 @@ def _release_manifest_row(
         raise SnapshotError(
             "main release gate bindings must be canonical SHA256 values"
         )
-    return {
-        "manifest_version": MANIFEST_VERSION,
+    row = {
+        "manifest_version": (
+            MANIFEST_VERSION
+            if evidence_manifest_sha256 is None
+            else RELEASE_MANIFEST_V2_VERSION
+        ),
         "phase": phase,
         "coordinator_snapshot_sha256": coordinator_snapshot_sha256,
         "protocol_sha256": protocol_sha256,
@@ -2266,6 +2297,113 @@ def _release_manifest_row(
             calibration_decision_snapshot_sha256
         ),
     }
+    if evidence_manifest_sha256 is None:
+        if evidence_artifact_count is not None or evidence_bindings_sha256 is not None:
+            raise SnapshotError("legacy reviewer release cannot bind evidence")
+        return row
+    if (
+        _LOWER_SHA256_PATTERN.fullmatch(evidence_manifest_sha256) is None
+        or _LOWER_SHA256_PATTERN.fullmatch(evidence_bindings_sha256 or "") is None
+        or evidence_artifact_count is None
+        or evidence_artifact_count < 1
+    ):
+        raise SnapshotError("reviewer release evidence bindings are invalid")
+    return {
+        **row,
+        "evidence_manifest_sha256": evidence_manifest_sha256,
+        "evidence_artifact_count": str(evidence_artifact_count),
+        "evidence_bindings_sha256": evidence_bindings_sha256,
+    }
+
+
+def _release_manifest_header(row: Row) -> tuple[str, ...]:
+    version = row.get("manifest_version")
+    if version == MANIFEST_VERSION:
+        return RELEASE_MANIFEST_V1_HEADER
+    if version == RELEASE_MANIFEST_V2_VERSION:
+        return RELEASE_MANIFEST_V2_HEADER
+    raise SnapshotError(f"unsupported reviewer release manifest version {version!r}")
+
+
+def _parse_release_manifest(payload: bytes) -> tuple[Row, tuple[str, ...]]:
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeError as exc:
+        raise SnapshotError(f"release_manifest.csv: invalid UTF-8: {exc}") from exc
+    reader = csv.reader(io.StringIO(text, newline=""), strict=True)
+    try:
+        header = tuple(next(reader))
+    except (StopIteration, csv.Error) as exc:
+        raise SnapshotError("release_manifest.csv: missing header") from exc
+    if header == RELEASE_MANIFEST_V1_HEADER:
+        expected_header = RELEASE_MANIFEST_V1_HEADER
+    elif header == RELEASE_MANIFEST_V2_HEADER:
+        expected_header = RELEASE_MANIFEST_V2_HEADER
+    else:
+        raise SnapshotError("release_manifest.csv: unsupported header")
+    rows = _read_csv_bytes(payload, "release_manifest.csv", expected_header)
+    if len(rows) != 1:
+        raise SnapshotError("release manifest must contain exactly one authorization row")
+    row = rows[0]
+    if _release_manifest_header(row) != expected_header:
+        raise SnapshotError("release manifest version does not match header")
+    if payload != _csv_bytes(expected_header, [row]):
+        raise SnapshotError("release manifest is not canonical")
+    return row, expected_header
+
+
+def _phase_evidence_bindings(
+    evidence_rows: Sequence[Row],
+    *,
+    phase_candidate_ids: Collection[str],
+    manifest_rows: Sequence[Row],
+    phase: str,
+) -> tuple[int, str]:
+    expected = set(phase_candidate_ids)
+    by_candidate: defaultdict[str, list[tuple[str, str, str]]] = defaultdict(list)
+    for row in evidence_rows:
+        by_candidate[row["candidate_id"]].append(
+            (row["artifact_id"], row["evidence_sha256"], row["local_filename"])
+        )
+    if set(by_candidate) != expected:
+        missing = sorted(expected - set(by_candidate))
+        extra = sorted(set(by_candidate) - expected)
+        raise SnapshotError(
+            f"{phase} evidence candidate coverage is not exact; missing={missing}, extra={extra}"
+        )
+    bindings = [
+        {
+            "candidate_id": candidate_id,
+            "artifacts": [
+                {
+                    "artifact_id": artifact_id,
+                    "evidence_sha256": evidence_sha256,
+                    "local_filename": local_filename,
+                }
+                for artifact_id, evidence_sha256, local_filename in by_candidate[candidate_id]
+            ],
+        }
+        for candidate_id in sorted(expected, key=lambda value: value.encode("utf-8"))
+    ]
+    binding_by_candidate = {
+        item["candidate_id"]: item["artifacts"] for item in bindings
+    }
+    assignment_bindings = {
+        row["assignment_id"]: binding_by_candidate[row["candidate_id"]]
+        for row in manifest_rows
+        if row["phase"] == phase
+    }
+    for candidate_id in expected:
+        values = {
+            _canonical_sha256(assignment_bindings[row["assignment_id"]])
+            for row in manifest_rows
+            if row["phase"] == phase and row["candidate_id"] == candidate_id
+        }
+        if len(values) != 1:
+            raise SnapshotError(
+                f"{phase} duplicate assignments do not share evidence identity for {candidate_id}"
+            )
+    return len(evidence_rows), _canonical_sha256(bindings)
 
 
 def build_reviewer_release_artifacts(
@@ -2274,6 +2412,8 @@ def build_reviewer_release_artifacts(
     *,
     calibration_result_snapshot_sha256: str = "NR",
     calibration_decision_snapshot_sha256: str = "NR",
+    evidence_manifest_payload: bytes | None = None,
+    source_archive: Path | None = None,
 ) -> dict[str, bytes]:
     if phase not in {"calibration", "main"}:
         raise SnapshotError(f"unsupported reviewer release phase {phase!r}")
@@ -2321,6 +2461,36 @@ def build_reviewer_release_artifacts(
         raise SnapshotError(
             "coordinator prompt template does not match its manifest binding"
         )
+    taxonomy = json.loads(coordinator["taxonomy.json"])
+    evidence_required = (
+        _resolve_screening_result_statuses(taxonomy, strict_new=False)
+        is not None
+    )
+    if evidence_required != (evidence_manifest_payload is not None and source_archive is not None):
+        if evidence_required:
+            raise SnapshotError(
+                f"{phase} reviewer release requires evidence manifest and source archive"
+            )
+        raise SnapshotError(
+            "historical reviewer release does not accept evidence manifest or source archive"
+        )
+    phase_candidate_ids = {
+        row["candidate_id"] for row in manifest_rows if row["phase"] == phase
+    }
+    evidence_artifact_count: int | None = None
+    evidence_bindings_sha256: str | None = None
+    if evidence_manifest_payload is not None:
+        evidence_rows = parse_evidence_packet_manifest(
+            evidence_manifest_payload,
+            allowed_candidate_ids=phase_candidate_ids,
+            source_archive=source_archive,
+        )
+        evidence_artifact_count, evidence_bindings_sha256 = _phase_evidence_bindings(
+            evidence_rows,
+            phase_candidate_ids=phase_candidate_ids,
+            manifest_rows=manifest_rows,
+            phase=phase,
+        )
     release_manifest = _release_manifest_row(
         phase=phase,
         coordinator_snapshot_sha256=coordinator_snapshot_sha256,
@@ -2333,6 +2503,13 @@ def build_reviewer_release_artifacts(
         calibration_decision_snapshot_sha256=(
             calibration_decision_snapshot_sha256
         ),
+        evidence_manifest_sha256=(
+            _sha256(evidence_manifest_payload)
+            if evidence_manifest_payload is not None
+            else None
+        ),
+        evidence_artifact_count=evidence_artifact_count,
+        evidence_bindings_sha256=evidence_bindings_sha256,
     )
     expected_assignments = {
         row["assignment_id"] for row in manifest_rows if row["phase"] == phase
@@ -2352,9 +2529,11 @@ def build_reviewer_release_artifacts(
             "reviewer_prompt_template.md"
         ],
         "release_manifest.csv": _csv_bytes(
-            RELEASE_MANIFEST_HEADER, [release_manifest]
+            _release_manifest_header(release_manifest), [release_manifest]
         ),
     }
+    if evidence_manifest_payload is not None:
+        artifacts["evidence_packet_manifest.csv"] = evidence_manifest_payload
     for filename in PACKET_FILENAMES:
         relative = f"packets/{filename}"
         batch_id = filename.removesuffix(".csv")
@@ -2392,6 +2571,9 @@ def reviewer_release_snapshot_sha256(
 ) -> str:
     """Return the canonical digest of one exact reviewer release payload set."""
 
+    release_manifest, header = _parse_release_manifest(
+        payloads.get("release_manifest.csv", b"")
+    )
     expected_paths = {
         "execution_profile.json",
         "protocol.md",
@@ -2400,6 +2582,8 @@ def reviewer_release_snapshot_sha256(
         "SHA256SUMS",
         *(f"packets/{filename}" for filename in PACKET_FILENAMES),
     }
+    if header == RELEASE_MANIFEST_V2_HEADER:
+        expected_paths.add("evidence_packet_manifest.csv")
     if phase not in {"calibration", "main"}:
         raise SnapshotError(f"unsupported reviewer release phase {phase!r}")
     if set(payloads) != expected_paths:
@@ -2415,7 +2599,7 @@ def reviewer_release_snapshot_sha256(
                     key=lambda value: value.encode("utf-8"),
                 )
             ],
-            "manifest_version": MANIFEST_VERSION,
+            "manifest_version": release_manifest["manifest_version"],
             "phase": phase,
         }
     )
@@ -2428,16 +2612,8 @@ def _release_manifest_from_payloads(
         payload = reviewer_release["release_manifest.csv"]
     except KeyError as exc:
         raise SnapshotError("reviewer release manifest is missing") from exc
-    rows = _read_csv_bytes(
-        payload,
-        "release_manifest.csv",
-        RELEASE_MANIFEST_HEADER,
-    )
-    if len(rows) != 1:
-        raise SnapshotError(
-            "release manifest must contain exactly one authorization row"
-        )
-    return _validate_release_manifest_payload(payload, rows[0])
+    row, _ = _parse_release_manifest(payload)
+    return _validate_release_manifest_payload(payload, row)
 
 
 def _reviewer_task(phase: str) -> str:
@@ -2608,6 +2784,7 @@ def build_reviewer_stage_artifacts(
     stage_path: Path,
     allowed_inclusion_criteria: tuple[str, ...] | None = None,
     allowed_screening_statuses: tuple[str, ...] | None = None,
+    source_archive: Path | None = None,
 ) -> dict[str, bytes]:
     """Derive one role-only execution snapshot from a validated release."""
 
@@ -2617,6 +2794,23 @@ def build_reviewer_stage_artifacts(
         phase,
         reviewer_release,
     )
+    if _release_manifest_header(release_manifest) == RELEASE_MANIFEST_V2_HEADER:
+        if source_archive is None:
+            raise SnapshotError("v2 reviewer staging requires a source archive")
+        phase_candidate_ids = {
+            row["candidate_id"]
+            for packet_name in PACKET_FILENAMES
+            for row in _read_csv_bytes(
+                reviewer_release[f"packets/{packet_name}"],
+                f"reviewer release packets/{packet_name}",
+                PACKET_HEADER,
+            )
+        }
+        parse_evidence_packet_manifest(
+            reviewer_release["evidence_packet_manifest.csv"],
+            allowed_candidate_ids=phase_candidate_ids,
+            source_archive=source_archive,
+        )
     filename = f"{role_id}.csv"
     if filename not in PACKET_FILENAMES:
         raise SnapshotError(f"unsupported screening role {role_id!r}")
@@ -3915,24 +4109,18 @@ def _validate_release_manifest_payload(
     payload: bytes,
     expected_manifest: Row,
 ) -> Row:
-    rows = _read_csv_bytes(
-        payload,
-        "release_manifest.csv",
-        RELEASE_MANIFEST_HEADER,
-    )
-    if len(rows) != 1:
-        raise SnapshotError(
-            "release manifest must contain exactly one authorization row"
-        )
-    row = rows[0]
-    if payload != _csv_bytes(RELEASE_MANIFEST_HEADER, [row]):
-        raise SnapshotError("release manifest is not canonical")
-    if set(expected_manifest) != set(RELEASE_MANIFEST_HEADER):
+    row, header = _parse_release_manifest(payload)
+    if any(field not in header for field in expected_manifest):
         raise SnapshotError("expected release manifest schema is invalid")
-    expected_row = {
-        field: expected_manifest[field] for field in RELEASE_MANIFEST_HEADER
-    }
-    if row != expected_row:
+    expected_bindings = dict(expected_manifest)
+    if (
+        header == RELEASE_MANIFEST_V2_HEADER
+        and expected_bindings.get("manifest_version") == MANIFEST_VERSION
+    ):
+        # Callers that capture an already-published release know the coordinator
+        # authorization fields but do not possess a local evidence archive.
+        expected_bindings.pop("manifest_version")
+    if any(row[field] != value for field, value in expected_bindings.items()):
         raise SnapshotError(
             "release manifest binding does not match expected authorization"
         )
@@ -3947,6 +4135,22 @@ def _validate_release_manifest_payload(
         ),
         calibration_decision_snapshot_sha256=(
             row["calibration_decision_snapshot_sha256"]
+        ),
+        evidence_manifest_sha256=(
+            row.get("evidence_manifest_sha256")
+            if header == RELEASE_MANIFEST_V2_HEADER
+            else None
+        ),
+        evidence_artifact_count=(
+            int(row["evidence_artifact_count"])
+            if header == RELEASE_MANIFEST_V2_HEADER
+            and row["evidence_artifact_count"].isdigit()
+            else None
+        ),
+        evidence_bindings_sha256=(
+            row.get("evidence_bindings_sha256")
+            if header == RELEASE_MANIFEST_V2_HEADER
+            else None
         ),
     )
     if row != canonical_row:
@@ -4000,9 +4204,20 @@ def validate_reviewer_release_snapshot(
             raise SnapshotError(
                 f"{snapshot_dir}: reviewer release changed before read"
             )
+        initial_manifest = _read_regular_file_at(
+            root_fd, "release_manifest.csv", "reviewer release/release_manifest.csv"
+        )
+        if initial_manifest.mode != 0o644:
+            raise SnapshotError("release_manifest.csv: file mode must be 0o644")
+        _, initial_header = _parse_release_manifest(initial_manifest.payload)
+        expected_root_filenames = (
+            REVIEWER_RELEASE_V2_ROOT_FILENAMES
+            if initial_header == RELEASE_MANIFEST_V2_HEADER
+            else REVIEWER_RELEASE_ROOT_FILENAMES
+        )
         root_attestation = _attest_directory_fd(
             root_fd,
-            REVIEWER_RELEASE_ROOT_FILENAMES,
+            expected_root_filenames,
             "reviewer release directory",
             0o755,
         )
@@ -4026,6 +4241,8 @@ def validate_reviewer_release_snapshot(
             "SHA256SUMS",
             *(f"packets/{filename}" for filename in PACKET_FILENAMES),
         ]
+        if initial_header == RELEASE_MANIFEST_V2_HEADER:
+            relative_files.insert(4, "evidence_packet_manifest.csv")
         actual: dict[str, bytes] = {}
         first_reads: dict[str, _ReadFile] = {}
         identities: dict[FileIdentity, str] = {}
@@ -4057,6 +4274,9 @@ def validate_reviewer_release_snapshot(
             actual["release_manifest.csv"],
             expected_manifest,
         )
+        release_header = _release_manifest_header(release_manifest)
+        if release_header != initial_header:
+            raise SnapshotError("release manifest changed shape during validation")
         try:
             coordinator_manifest = coordinator_snapshot["manifest.csv"]
             coordinator_protocol = coordinator_snapshot["protocol.md"]
@@ -4220,11 +4440,36 @@ def validate_reviewer_release_snapshot(
                 "reviewer release assignment count does not match "
                 "release manifest"
             )
+        if release_header == RELEASE_MANIFEST_V2_HEADER:
+            evidence_payload = actual["evidence_packet_manifest.csv"]
+            if _sha256(evidence_payload) != release_manifest["evidence_manifest_sha256"]:
+                raise SnapshotError("release evidence manifest hash does not match")
+            phase_candidate_ids = {
+                row["candidate_id"]
+                for row in coordinator_manifest_rows
+                if row["phase"] == release_manifest["phase"]
+            }
+            evidence_rows = parse_evidence_packet_manifest(
+                evidence_payload,
+                allowed_candidate_ids=phase_candidate_ids,
+                source_archive=None,
+            )
+            artifact_count, bindings_sha256 = _phase_evidence_bindings(
+                evidence_rows,
+                phase_candidate_ids=phase_candidate_ids,
+                manifest_rows=coordinator_manifest_rows,
+                phase=release_manifest["phase"],
+            )
+            if (
+                str(artifact_count) != release_manifest["evidence_artifact_count"]
+                or bindings_sha256 != release_manifest["evidence_bindings_sha256"]
+            ):
+                raise SnapshotError("release evidence manifest count or bindings do not match")
 
         _assert_directory_unchanged(
             root_fd,
             root_attestation,
-            REVIEWER_RELEASE_ROOT_FILENAMES,
+            expected_root_filenames,
             "reviewer release directory",
         )
         _assert_directory_unchanged(
@@ -4258,7 +4503,7 @@ def validate_reviewer_release_snapshot(
         _assert_directory_unchanged(
             root_fd,
             root_attestation,
-            REVIEWER_RELEASE_ROOT_FILENAMES,
+            expected_root_filenames,
             "reviewer release directory",
         )
         _assert_directory_unchanged(
@@ -4649,10 +4894,19 @@ def release_snapshot(
     calibration_decision_snapshot: Path | None = None,
     calibration_result_snapshot: Path | None = None,
     calibration_reviewer_release_snapshot: Path | None = None,
+    evidence_manifest: Path | None = None,
+    source_archive: Path | None = None,
 ) -> None:
     snapshot_dir = Path(snapshot_dir)
     output_dir = Path(output_dir)
     _assert_release_paths_disjoint(snapshot_dir, output_dir)
+    evidence_payload: bytes | None = None
+    if (evidence_manifest is None) != (source_archive is None):
+        raise SnapshotError("reviewer release evidence requires both manifest and source archive")
+    if evidence_manifest is not None:
+        evidence_payload = _read_regular_file(
+            Path(evidence_manifest), "evidence packet manifest"
+        ).payload
     if phase == "calibration":
         if (
             calibration_reviewer_release_snapshot is not None
@@ -4691,6 +4945,8 @@ def release_snapshot(
         artifacts = build_reviewer_release_artifacts(
             coordinator,
             phase,
+            evidence_manifest_payload=evidence_payload,
+            source_archive=source_archive,
         )
         _validate_release_manifest_payload(
             artifacts["release_manifest.csv"],
@@ -4794,6 +5050,8 @@ def release_snapshot(
         calibration_decision_snapshot_sha256=(
             captured.decision.snapshot_sha256
         ),
+        evidence_manifest_payload=evidence_payload,
+        source_archive=source_archive,
     )
     _validate_release_manifest_payload(
         artifacts["release_manifest.csv"],
@@ -4857,18 +5115,10 @@ def _validated_release_for_staging(
         Path(reviewer_release_snapshot_dir) / "release_manifest.csv",
         "reviewer release manifest input",
     )
-    manifest_rows = _read_csv_bytes(
-        manifest_input.payload,
-        "release_manifest.csv",
-        RELEASE_MANIFEST_HEADER,
-    )
-    if len(manifest_rows) != 1:
-        raise SnapshotError(
-            "release manifest must contain exactly one authorization row"
-        )
+    manifest_row, _ = _parse_release_manifest(manifest_input.payload)
     expected_manifest = _validate_release_manifest_payload(
         manifest_input.payload,
-        manifest_rows[0],
+        manifest_row,
     )
     reviewer_release = validate_reviewer_release_snapshot(
         reviewer_release_snapshot_dir,
@@ -4913,6 +5163,8 @@ def stage_reviewer_execution(
     reviewer_release_snapshot_dir: Path,
     role_id: str,
     staging_root: Path,
+    *,
+    source_archive: Path | None = None,
 ) -> Path:
     """Validate a release and publish one procedural role-private stage."""
 
@@ -4984,6 +5236,7 @@ def stage_reviewer_execution(
             output_dir,
             allowed_inclusion_criteria=allowed_inclusion_criteria,
             allowed_screening_statuses=allowed_screening_statuses,
+            source_archive=source_archive,
         )
         _publish_artifacts(
             output_dir,
@@ -5002,6 +5255,7 @@ def _argument_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--freeze", action="store_true")
     parser.add_argument("--release", action="store_true")
+    parser.add_argument("--validate-release", action="store_true")
     parser.add_argument("--stage-role", action="store_true")
     parser.add_argument("--phase", choices=("calibration", "main"))
     parser.add_argument("--validate-evidence-manifest", action="store_true")
@@ -5057,13 +5311,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         (
             arguments.freeze,
             arguments.release,
+            arguments.validate_release,
             arguments.stage_role,
             arguments.validate_evidence_manifest,
         )
     )
     if selected_modes > 1:
         raise SnapshotError(
-            "--freeze, --release, --stage-role, and --validate-evidence-manifest "
+            "--freeze, --release, --validate-release, --stage-role, and --validate-evidence-manifest "
             "are mutually exclusive"
         )
     if arguments.validate_evidence_manifest:
@@ -5165,9 +5420,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             for name, value in direct_values.items()
             if name != "--output-dir" and value is not None
         ]
-        forbidden.extend(
-            name for name, value in evidence_values.items() if value is not None
-        )
+        if (arguments.evidence_manifest is None) != (arguments.source_archive is None):
+            raise SnapshotError("--release requires both --evidence-manifest and --source-archive")
         if forbidden:
             raise SnapshotError(
                 "--release does not accept " + ", ".join(forbidden)
@@ -5185,6 +5439,48 @@ def main(argv: Sequence[str] | None = None) -> int:
             calibration_reviewer_release_snapshot=(
                 arguments.calibration_reviewer_release_snapshot
             ),
+            evidence_manifest=arguments.evidence_manifest,
+            source_archive=arguments.source_archive,
+        )
+        return 0
+
+    if arguments.validate_release:
+        if arguments.snapshot_dir is None or arguments.reviewer_release_snapshot is None:
+            raise SnapshotError(
+                "--validate-release requires --snapshot-dir and --reviewer-release-snapshot"
+            )
+        forbidden = [
+            name for name, value in direct_values.items() if value is not None
+        ]
+        forbidden.extend(
+            name for name, value in evidence_values.items() if value is not None
+        )
+        if arguments.phase is not None or arguments.role_id is not None or arguments.staging_root is not None:
+            forbidden.append("phase or staging arguments")
+        if forbidden:
+            raise SnapshotError("--validate-release does not accept " + ", ".join(forbidden))
+        coordinator = validate_snapshot(arguments.snapshot_dir)
+        manifest = _release_manifest_from_payloads(
+            {
+                "release_manifest.csv": _read_regular_file(
+                    arguments.reviewer_release_snapshot / "release_manifest.csv",
+                    "reviewer release manifest",
+                ).payload
+            }
+        )
+        expected = _release_manifest_row(
+            phase=manifest["phase"],
+            coordinator_snapshot_sha256=manifest["coordinator_snapshot_sha256"],
+            protocol_sha256=manifest["protocol_sha256"],
+            execution_profile_sha256=manifest["execution_profile_sha256"],
+            prompt_template_sha256=manifest["prompt_template_sha256"],
+            calibration_result_snapshot_sha256=manifest["calibration_result_snapshot_sha256"],
+            calibration_decision_snapshot_sha256=manifest["calibration_decision_snapshot_sha256"],
+        )
+        validate_reviewer_release_snapshot(
+            arguments.reviewer_release_snapshot,
+            expected_manifest=expected,
+            coordinator_snapshot=coordinator,
         )
         return 0
 

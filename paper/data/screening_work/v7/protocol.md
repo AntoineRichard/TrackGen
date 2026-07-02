@@ -917,6 +917,53 @@ Calibration agreement and its criterion disagreements are reported separately as
 release-control statistics. They do not substitute for final reliability on all 202
 reports.
 
+## Evidence packet phase releases
+
+Every evidence packet manifest is canonical UTF-8 CSV with LF endings, this exact
+header and field order:
+
+```csv
+candidate_id,artifact_id,artifact_role,source_url,evidence_version,evidence_retrieved_on,access_status,evidence_archive_url,evidence_sha256,local_filename,redistribution_status,retrieval_notes
+```
+
+Each row names one candidate artifact. `candidate_id` and `artifact_id` are sorted by
+UTF-8 bytes and the pair is unique. URLs are canonical HTTPS URLs; the version and
+retrieval date identify the inspected artifact; `access_status` is an allowed access
+classification; and `redistribution_status` is exactly `public-redistributable`,
+`local-restricted`, or `metadata-only`. `metadata-only` rows use `NR` for both
+`evidence_sha256` and `local_filename`; all other locally retained bytes use a
+lowercase SHA-256 digest paired with one normalized relative POSIX `local_filename`.
+The named local bytes MUST hash to `evidence_sha256` during packet assembly.
+
+For limited access, `retrieval_notes` has the exact grammar `attempted:
+doi_or_publisher=<outcome> | title_author=<outcome> |
+scholarly_index_or_repository=<outcome> | official_page=<outcome>; outcome:
+<final outcome>`. These four attempt labels are required in that order. The final
+outcome records the access limitation; full-text rows may instead use `NR` or a
+substantive retrieval note.
+
+Evidence binds to immutable reviewer phase releases, never to the coordinator. A
+calibration release contains exactly the 30 calibration candidates and a main release,
+created only after a passing calibration gate, contains exactly the 172 main
+candidates. Each assigned candidate has at least one manifest artifact, and no
+unassigned candidate appears. Both assignments for a candidate use the same ordered
+candidate binding of `(artifact_id,evidence_sha256,local_filename)`.
+
+For binary-result coordinators, the release root copies the canonical manifest as
+`evidence_packet_manifest.csv`. Its SHA-256, artifact count, and canonical
+candidate-binding digest are bound in the versioned release manifest, release snapshot
+digest, and `SHA256SUMS`. Compatibility is selected from authenticated manifest
+version and fields, never from a path name. Historical release manifests and trees
+remain v1 artifacts.
+
+Local evidence bytes remain untracked; canonical manifests and their hashes are
+committed. Release creation verifies the local bytes. Later committed-release
+validation trusts the committed hashes and canonical manifest rather than reopening
+the archive; role staging re-verifies the local bytes before a reviewer uses a packet.
+There is no transaction-wide defense against a concurrent hostile local archive writer:
+ordinary controlled packet assembly is assumed, and the authoritative control is the
+per-file SHA-256 digest.
+
 ## Automation, AI assistance, and accountability
 
 The paper MUST disclose whether automation or AI assistance was used and, if it was,

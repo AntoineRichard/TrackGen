@@ -3852,6 +3852,185 @@ def _write_evidence_archive(root: Path) -> Path:
     return archive
 
 
+def _phase_evidence_inputs(
+    root: Path,
+    coordinator: Path,
+    phase: str,
+) -> tuple[Path, Path]:
+    """Create one locally attested artifact for every candidate in a phase."""
+
+    archive = root / f"{phase}-source-archive"
+    manifest = root / f"{phase}-evidence-packet.csv"
+    rows: list[dict[str, str]] = []
+    candidate_ids = sorted(
+        {
+            row["candidate_id"]
+            for filename in screening_batches.PACKET_FILENAMES
+            for row in _read_csv(coordinator / "packets" / filename)
+            if row["phase"] == phase
+        }
+    )
+    for candidate_id in candidate_ids:
+        payload = f"attested evidence for {candidate_id}\n".encode("ascii")
+        relative = f"evidence/{candidate_id}.txt"
+        destination = archive / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(payload)
+        rows.append(
+            _evidence_packet_row(
+                candidate_id=candidate_id,
+                artifact_id="primary-v1",
+                local_filename=relative,
+                evidence_sha256=hashlib.sha256(payload).hexdigest(),
+            )
+        )
+    manifest.write_bytes(_evidence_packet_bytes(rows))
+    return manifest, archive
+
+
+def test_binary_calibration_release_requires_and_binds_phase_evidence(
+    tmp_path: Path,
+) -> None:
+    inputs = build_inputs(tmp_path / "inputs")
+    coordinator_root = tmp_path / "coordinator"
+    coordinator_root.mkdir()
+    coordinator = coordinator_root / "v7"
+    freeze(inputs, coordinator)
+    output_root = tmp_path / "releases"
+    output_root.mkdir()
+
+    with pytest.raises(screening_batches.SnapshotError, match="evidence"):
+        screening_batches.release_snapshot(
+            coordinator, "calibration", output_root / "v1"
+        )
+
+    evidence_manifest, source_archive = _phase_evidence_inputs(
+        tmp_path, coordinator, "calibration"
+    )
+    screening_batches.release_snapshot(
+        coordinator,
+        "calibration",
+        output_root / "v2",
+        evidence_manifest=evidence_manifest,
+        source_archive=source_archive,
+    )
+
+    release_manifest = _read_csv(output_root / "v2" / "release_manifest.csv")
+    assert release_manifest[0]["manifest_version"] == "3"
+    assert (output_root / "v2" / "evidence_packet_manifest.csv").read_bytes() == (
+        evidence_manifest.read_bytes()
+    )
+    assert release_manifest[0]["evidence_artifact_count"] == "30"
+
+
+def test_release_v2_preserves_historical_v1_release_creation(
+    tmp_path: Path,
+) -> None:
+    coordinator = DATA_ROOT / "screening_inputs" / "v5"
+    artifacts = screening_batches.build_reviewer_release_artifacts(
+        screening_batches.validate_snapshot(coordinator), "calibration"
+    )
+
+    assert set(artifacts) == {
+        "protocol.md",
+        "execution_profile.json",
+        "reviewer_prompt_template.md",
+        "release_manifest.csv",
+        "SHA256SUMS",
+        *(f"packets/{filename}" for filename in screening_batches.PACKET_FILENAMES),
+    }
+    manifest = screening_batches._read_csv_bytes(
+        artifacts["release_manifest.csv"],
+        "release_manifest.csv",
+        RELEASE_MANIFEST_HEADER,
+    )
+    assert tuple(manifest[0]) == RELEASE_MANIFEST_HEADER
+    assert manifest[0]["manifest_version"] == screening_batches.MANIFEST_VERSION
+
+
+@pytest.mark.parametrize("operation", ("missing", "extra"))
+def test_release_v2_rejects_nonexact_phase_evidence_coverage(
+    tmp_path: Path, operation: str
+) -> None:
+    inputs = build_inputs(tmp_path / "inputs")
+    root = tmp_path / "coordinator"
+    root.mkdir()
+    coordinator = root / "v7"
+    freeze(inputs, coordinator)
+    manifest, archive = _phase_evidence_inputs(tmp_path, coordinator, "calibration")
+    rows = _read_csv(manifest)
+    if operation == "missing":
+        rows.pop()
+    else:
+        main_id = next(
+            row["candidate_id"]
+            for row in _read_csv(coordinator / "packets" / "screening-01.csv")
+            if row["phase"] == "main"
+        )
+        extra = _evidence_packet_row(candidate_id=main_id, artifact_id="extra-v1")
+        rows.append(extra)
+        rows.sort(key=lambda row: (row["candidate_id"], row["artifact_id"]))
+    manifest.write_bytes(_evidence_packet_bytes(rows))
+    releases = tmp_path / "releases"
+    releases.mkdir()
+
+    with pytest.raises(screening_batches.SnapshotError, match="candidate coverage|unknown candidate"):
+        screening_batches.release_snapshot(
+            coordinator,
+            "calibration",
+            releases / "v2",
+            evidence_manifest=manifest,
+            source_archive=archive,
+        )
+
+
+@pytest.mark.parametrize("operation", ("mutate", "remove", "add", "forged-count"))
+def test_release_v2_validation_rejects_evidence_manifest_tampering(
+    tmp_path: Path, operation: str
+) -> None:
+    inputs = build_inputs(tmp_path / "inputs")
+    root = tmp_path / "coordinator"
+    root.mkdir()
+    coordinator = root / "v7"
+    freeze(inputs, coordinator)
+    manifest, archive = _phase_evidence_inputs(tmp_path, coordinator, "calibration")
+    releases = tmp_path / "releases"
+    releases.mkdir()
+    release = releases / "v2"
+    screening_batches.release_snapshot(
+        coordinator,
+        "calibration",
+        release,
+        evidence_manifest=manifest,
+        source_archive=archive,
+    )
+    evidence = release / "evidence_packet_manifest.csv"
+    if operation == "mutate":
+        evidence.write_bytes(evidence.read_bytes().replace(b"primary-v1", b"primary-v2", 1))
+    elif operation == "remove":
+        evidence.unlink()
+    elif operation == "add":
+        (release / "unexpected.txt").write_text("unexpected\n", encoding="utf-8")
+    else:
+        rows = _read_csv(release / "release_manifest.csv")
+        rows[0]["evidence_artifact_count"] = "31"
+        release_manifest_header = tuple(rows[0])
+        _write_csv(release / "release_manifest.csv", release_manifest_header, rows)
+
+    with pytest.raises(screening_batches.SnapshotError):
+        screening_batches.validate_reviewer_release_snapshot(
+            release,
+            expected_manifest=screening_batches._release_manifest_row(
+                phase="calibration",
+                coordinator_snapshot_sha256=_read_csv(coordinator / "manifest.csv")[0]["snapshot_sha256"],
+                protocol_sha256=_read_csv(coordinator / "manifest.csv")[0]["protocol_sha256"],
+                execution_profile_sha256=_read_csv(coordinator / "manifest.csv")[0]["execution_profile_sha256"],
+                prompt_template_sha256=_read_csv(coordinator / "manifest.csv")[0]["prompt_template_sha256"],
+            ),
+            coordinator_snapshot=screening_batches.validate_snapshot(coordinator),
+        )
+
+
 def _complete_limited_access_notes(final_outcome: str) -> str:
     return (
         "attempted: "
@@ -4336,15 +4515,6 @@ def test_validate_evidence_manifest_cli_reports_deterministic_counts(
         ["--freeze"],
         ["--snapshot-dir", "snapshot"],
         [
-            "--release",
-            "--snapshot-dir",
-            "snapshot",
-            "--phase",
-            "calibration",
-            "--output-dir",
-            "release",
-        ],
-        [
             "--snapshot-dir",
             "snapshot",
             "--reviewer-release-snapshot",
@@ -4362,7 +4532,7 @@ def test_validate_evidence_manifest_cli_reports_deterministic_counts(
             "staging",
         ],
     ],
-    ids=("freeze", "snapshot-validation", "release", "release-validation", "stage-role"),
+    ids=("freeze", "snapshot-validation", "release-validation", "stage-role"),
 )
 def test_validate_evidence_manifest_cli_arguments_are_isolated_to_their_mode(
     mode_arguments: list[str],
