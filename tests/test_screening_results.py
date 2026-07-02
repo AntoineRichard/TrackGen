@@ -2713,6 +2713,26 @@ def test_public_coordinator_reattest_recaptures_complete_state(
         screening_results.reattest_coordinator_snapshot(forged)
 
 
+def test_release_tuple_signature_binds_allowed_screening_statuses() -> None:
+    captured = screening_results.capture_calibration_release_tuple(
+        Path("paper/data/screening_inputs/v2"),
+        Path("paper/data/screening_releases/calibration/v2"),
+        Path("paper/data/screening_results/calibration/v2"),
+        Path("paper/data/screening_decisions/v2"),
+    )
+    forged = replace(
+        captured,
+        coordinator=replace(
+            captured.coordinator,
+            allowed_screening_statuses=("included",),
+        ),
+    )
+
+    assert screening_results._release_tuple_signature(
+        forged
+    ) != screening_results._release_tuple_signature(captured)
+
+
 @pytest.mark.parametrize(
     ("public_name", "private_name", "args"),
     (

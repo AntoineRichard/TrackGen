@@ -2897,6 +2897,9 @@ def _release_tuple_signature(captured: CalibrationReleaseTuple) -> str:
                 "snapshot_sha256": calibration.snapshot_sha256,
             },
             "coordinator": {
+                "allowed_screening_statuses": list(
+                    coordinator.allowed_screening_statuses
+                ),
                 "calibration_candidate_ids": list(
                     coordinator.calibration_candidate_ids
                 ),
