@@ -1644,6 +1644,66 @@ def _evidence_access_statuses() -> frozenset[str]:
     return ACCESS_STATUSES
 
 
+def _validate_evidence_archive_url(
+    value: str,
+    *,
+    context: str,
+    content_hash_pinned: bool,
+) -> str:
+    try:
+        from paper.scripts.screening_results import (
+            _validate_version_pinned_archive_url,
+        )
+    except ModuleNotFoundError:  # Direct execution from paper/scripts.
+        from screening_results import _validate_version_pinned_archive_url
+
+    try:
+        return _validate_version_pinned_archive_url(
+            value,
+            context=context,
+            content_hash_pinned=content_hash_pinned,
+        )
+    except ValueError as exc:
+        raise SnapshotError(str(exc)) from exc
+
+
+def _validate_evidence_retrieval_notes(
+    row: Row,
+    *,
+    context: str,
+) -> None:
+    notes = row["retrieval_notes"]
+    folded = notes.casefold()
+    limitation_terms = (
+        "abstract",
+        "access",
+        "attempt",
+        "blocked",
+        "exhausted",
+        "full text",
+        "limitation",
+        "retriev",
+        "unavailable",
+    )
+    requires_limitation_notes = (
+        row["access_status"] == "abstract_only"
+        or row["redistribution_status"] == "metadata-only"
+        or "blocked" in folded
+    )
+    if requires_limitation_notes and (
+        notes == "NR"
+        or len(notes) < 24
+        or not any(term in folded for term in limitation_terms)
+    ):
+        raise SnapshotError(
+            f"{context}: limited access requires substantive retrieval_notes"
+        )
+    if notes != "NR" and (
+        len(notes) < 3 or not any(character.isalnum() for character in notes)
+    ):
+        raise SnapshotError(f"{context}: retrieval_notes must be substantive or NR")
+
+
 def _validate_evidence_local_filename(
     value: str,
     *,
@@ -1743,15 +1803,16 @@ def parse_evidence_packet_manifest(
             )
         if row["access_status"] not in _evidence_access_statuses():
             raise SnapshotError(f"{context}: invalid access_status {row['access_status']!r}")
-        if row["evidence_archive_url"] != "NR":
-            _canonical_evidence_http_url(
-                row["evidence_archive_url"],
-                field="evidence_archive_url",
-                context=context,
-            )
 
         evidence_sha256 = row["evidence_sha256"]
         local_filename = row["local_filename"]
+        if row["evidence_archive_url"] != "NR":
+            _validate_evidence_archive_url(
+                row["evidence_archive_url"],
+                context=context,
+                content_hash_pinned=evidence_sha256 != "NR",
+            )
+
         if (evidence_sha256 == "NR") != (local_filename == "NR"):
             raise SnapshotError(
                 f"{context}: evidence_sha256 and local_filename must both be NR or both be present"
@@ -1780,11 +1841,7 @@ def parse_evidence_packet_manifest(
             raise SnapshotError(
                 f"{context}: metadata-only artifacts must not include local bytes"
             )
-        notes = row["retrieval_notes"]
-        if notes != "NR" and (
-            len(notes) < 3 or not any(character.isalnum() for character in notes)
-        ):
-            raise SnapshotError(f"{context}: retrieval_notes must be substantive or NR")
+        _validate_evidence_retrieval_notes(row, context=context)
 
     ordered = sorted(
         rows,
@@ -4974,6 +5031,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--reviewer-prompt-template": arguments.reviewer_prompt_template,
         "--output-dir": arguments.output_dir,
     }
+    evidence_values = {
+        "--evidence-manifest": arguments.evidence_manifest,
+        "--source-archive": arguments.source_archive,
+    }
     stage_values = {
         "--reviewer-release-snapshot": (
             arguments.reviewer_release_snapshot
@@ -5058,6 +5119,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         forbidden = [
             name for name, value in direct_values.items() if value is not None
         ]
+        forbidden.extend(
+            name for name, value in evidence_values.items() if value is not None
+        )
         if arguments.phase is not None:
             forbidden.append("--phase")
         if (
@@ -5090,6 +5154,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             for name, value in direct_values.items()
             if name != "--output-dir" and value is not None
         ]
+        forbidden.extend(
+            name for name, value in evidence_values.items() if value is not None
+        )
         if forbidden:
             raise SnapshotError(
                 "--release does not accept " + ", ".join(forbidden)
@@ -5111,6 +5178,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     if arguments.freeze:
+        supplied_evidence = [
+            name for name, value in evidence_values.items() if value is not None
+        ]
+        if supplied_evidence:
+            raise SnapshotError(
+                "--freeze does not accept " + ", ".join(supplied_evidence)
+            )
         if arguments.phase is not None:
             raise SnapshotError("--freeze does not accept --phase")
         if (
@@ -5158,6 +5232,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     supplied_direct = [
         name for name, value in direct_values.items() if value is not None
+    ] + [
+        name for name, value in evidence_values.items() if value is not None
     ]
     if supplied_direct:
         raise SnapshotError(

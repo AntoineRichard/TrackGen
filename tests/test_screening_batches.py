@@ -3932,6 +3932,93 @@ def test_evidence_packet_manifest_rejects_invalid_field_values(
 
 
 @pytest.mark.parametrize(
+    ("archive_url", "evidence_sha256", "local_filename", "redistribution_status"),
+    [
+        (
+            "https://archive.example.test/paper.pdf",
+            "NR",
+            "NR",
+            "metadata-only",
+        ),
+        (
+            "https://archive.example.test/latest/paper.pdf",
+            hashlib.sha256(b"attested evidence bytes\n").hexdigest(),
+            "papers/paper.pdf",
+            "local-restricted",
+        ),
+    ],
+)
+def test_evidence_packet_manifest_requires_version_pinned_archive_urls(
+    tmp_path: Path,
+    archive_url: str,
+    evidence_sha256: str,
+    local_filename: str,
+    redistribution_status: str,
+) -> None:
+    archive = _write_evidence_archive(tmp_path)
+    row = _evidence_packet_row(
+        evidence_sha256=evidence_sha256,
+        local_filename=local_filename,
+        redistribution_status=redistribution_status,
+    )
+    row["evidence_archive_url"] = archive_url
+    row["retrieval_notes"] = (
+        "Exhaustive retrieval attempted the publisher; access was unavailable."
+    )
+
+    with pytest.raises(screening_batches.SnapshotError, match="version|mutable"):
+        screening_batches.parse_evidence_packet_manifest(
+            _evidence_packet_bytes([row]),
+            allowed_candidate_ids={"C0001"},
+            source_archive=archive,
+        )
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"access_status": "abstract_only", "retrieval_notes": "N/A"},
+        {
+            "redistribution_status": "metadata-only",
+            "evidence_sha256": "NR",
+            "local_filename": "NR",
+            "retrieval_notes": "N/A",
+        },
+        {"retrieval_notes": "access blocked"},
+    ],
+    ids=("abstract-only", "metadata-only", "blocked-access"),
+)
+def test_evidence_packet_manifest_requires_substantive_limited_access_notes(
+    tmp_path: Path,
+    overrides: dict[str, str],
+) -> None:
+    archive = _write_evidence_archive(tmp_path)
+    row = _evidence_packet_row()
+    row.update(overrides)
+
+    with pytest.raises(screening_batches.SnapshotError, match="substantive"):
+        screening_batches.parse_evidence_packet_manifest(
+            _evidence_packet_bytes([row]),
+            allowed_candidate_ids={"C0001"},
+            source_archive=archive,
+        )
+
+
+def test_evidence_packet_manifest_allows_nr_notes_for_full_text(
+    tmp_path: Path,
+) -> None:
+    archive = _write_evidence_archive(tmp_path)
+    row = _evidence_packet_row()
+    row["retrieval_notes"] = "NR"
+
+    assert screening_batches.parse_evidence_packet_manifest(
+        _evidence_packet_bytes([row]),
+        allowed_candidate_ids={"C0001"},
+        source_archive=archive,
+    ) == [row]
+
+
+@pytest.mark.parametrize(
     ("evidence_sha256", "local_filename"),
     [
         ("NR", "papers/paper.pdf"),
@@ -4039,6 +4126,9 @@ def test_evidence_packet_manifest_accepts_metadata_only_without_local_bytes(
         local_filename="NR",
         redistribution_status="metadata-only",
     )
+    row["retrieval_notes"] = (
+        "Exhaustive retrieval attempted the publisher; full text was unavailable."
+    )
 
     assert screening_batches.parse_evidence_packet_manifest(
         _evidence_packet_bytes([row]),
@@ -4085,3 +4175,55 @@ def test_validate_evidence_manifest_cli_reports_deterministic_counts(
 
     assert completed.returncode == 0, completed.stderr
     assert completed.stdout == "evidence manifest valid: candidates=2 artifacts=2\n"
+
+
+@pytest.mark.parametrize(
+    "mode_arguments",
+    [
+        ["--freeze"],
+        ["--snapshot-dir", "snapshot"],
+        [
+            "--release",
+            "--snapshot-dir",
+            "snapshot",
+            "--phase",
+            "calibration",
+            "--output-dir",
+            "release",
+        ],
+        [
+            "--snapshot-dir",
+            "snapshot",
+            "--reviewer-release-snapshot",
+            "release",
+        ],
+        [
+            "--stage-role",
+            "--snapshot-dir",
+            "snapshot",
+            "--reviewer-release-snapshot",
+            "release",
+            "--role-id",
+            "screening-01",
+            "--staging-root",
+            "staging",
+        ],
+    ],
+    ids=("freeze", "snapshot-validation", "release", "release-validation", "stage-role"),
+)
+def test_validate_evidence_manifest_cli_arguments_are_isolated_to_their_mode(
+    mode_arguments: list[str],
+) -> None:
+    with pytest.raises(
+        screening_batches.SnapshotError,
+        match="evidence-manifest|source-archive",
+    ):
+        screening_batches.main(
+            [
+                *mode_arguments,
+                "--evidence-manifest",
+                "evidence.csv",
+                "--source-archive",
+                "source-archive",
+            ]
+        )
