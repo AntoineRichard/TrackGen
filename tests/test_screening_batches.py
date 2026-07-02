@@ -245,6 +245,7 @@ def _canonical_json_bytes(value: object) -> bytes:
 def _fresh_taxonomy(path: Path) -> Path:
     taxonomy = json.loads((DATA_ROOT / "taxonomy.json").read_text(encoding="utf-8"))
     taxonomy["screening_inclusion_criterion"] = ["include-relevant"]
+    taxonomy["screening_result_status"] = ["included", "excluded"]
     path.write_bytes(_canonical_json_bytes(taxonomy))
     return path
 
