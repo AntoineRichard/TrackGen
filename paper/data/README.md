@@ -38,8 +38,11 @@ the fact. Never infer a negative from silence. Use
 not apply. Record a documented negative only when direct or allowed official evidence
 supports it.
 
-Pre-v7 uncoded draft rows may use `survey_evidence_tier=NR`; `NR` is not a
-taxonomy value.
+For `survey_evidence_tier`, `NR` is an uncoded draft/transition sentinel, including
+for migrated pre-v7 rows. It is valid while contribution extraction is incomplete,
+but it must be resolved to `core`, `supporting`, or `contextual` before the source
+enters final tier reliability estimates, method counts, or claim synthesis. `NR` is
+not a taxonomy value.
 
 Use `code_status=not_found` only for an explicit search outcome across documented
 official project and author surfaces. Record the searched locations and search date in
