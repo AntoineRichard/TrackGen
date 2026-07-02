@@ -249,6 +249,9 @@ RELEASE_MANIFEST_HEADER = (
     "calibration_result_snapshot_sha256",
     "calibration_decision_snapshot_sha256",
 )
+SCREENING_INCLUSION_CRITERION_KEY = "screening_inclusion_criterion"
+CURRENT_INCLUSION_CRITERIA = ("include-relevant",)
+
 RAW_FILENAMES = (
     "candidates.csv",
     "conflicts.csv",
@@ -1001,7 +1004,32 @@ def _require_trimmed(
             )
 
 
-def _parse_taxonomy(payload: bytes) -> dict[str, list[str]]:
+def _resolve_inclusion_criteria(
+    taxonomy: dict[str, list[str]],
+    *,
+    strict_new: bool,
+) -> tuple[str, ...] | None:
+    if SCREENING_INCLUSION_CRITERION_KEY not in taxonomy:
+        if strict_new:
+            raise SnapshotError(
+                "taxonomy.json: taxonomy is missing "
+                f"{SCREENING_INCLUSION_CRITERION_KEY!r}"
+            )
+        return None
+    criteria = tuple(taxonomy[SCREENING_INCLUSION_CRITERION_KEY])
+    if criteria != CURRENT_INCLUSION_CRITERIA:
+        raise SnapshotError(
+            "taxonomy.json: screening_inclusion_criterion must equal "
+            "[\"include-relevant\"]"
+        )
+    return criteria
+
+
+def _parse_taxonomy(
+    payload: bytes,
+    *,
+    strict_new: bool,
+) -> dict[str, list[str]]:
     try:
         value = json.loads(payload.decode("utf-8"))
     except (UnicodeError, json.JSONDecodeError) as exc:
@@ -1030,6 +1058,7 @@ def _parse_taxonomy(payload: bytes) -> dict[str, list[str]]:
         raise SnapshotError(
             "taxonomy.json: metadata_status must contain 'verified'"
         )
+    _resolve_inclusion_criteria(value, strict_new=strict_new)
     return value
 
 
@@ -1415,8 +1444,15 @@ def _validate_conflicts(
     return dict(grouped)
 
 
-def _load_source_data(raw_payloads: dict[str, bytes]) -> _SourceData:
-    taxonomy = _parse_taxonomy(raw_payloads["taxonomy.json"])
+def _load_source_data(
+    raw_payloads: dict[str, bytes],
+    *,
+    strict_new: bool,
+) -> _SourceData:
+    taxonomy = _parse_taxonomy(
+        raw_payloads["taxonomy.json"],
+        strict_new=strict_new,
+    )
     _validate_protocol(raw_payloads["protocol.md"])
     validate_execution_profile(raw_payloads["execution_profile.json"])
     validate_reviewer_prompt_template(
@@ -1677,7 +1713,11 @@ def _screening_rank(
     return _stable_candidate_rank(candidate_id)
 
 
-def build_snapshot_artifacts(raw_payloads: dict[str, bytes]) -> dict[str, bytes]:
+def build_snapshot_artifacts(
+    raw_payloads: dict[str, bytes],
+    *,
+    strict_new: bool = False,
+) -> dict[str, bytes]:
     """Build every snapshot file in memory from exact raw source bytes."""
     if set(raw_payloads) != set(RAW_FILENAMES):
         missing = sorted(set(RAW_FILENAMES) - set(raw_payloads))
@@ -1685,7 +1725,7 @@ def build_snapshot_artifacts(raw_payloads: dict[str, bytes]) -> dict[str, bytes]
         raise SnapshotError(
             f"raw snapshot inputs mismatch; missing={missing}, extra={extra}"
         )
-    source = _load_source_data(raw_payloads)
+    source = _load_source_data(raw_payloads, strict_new=strict_new)
     calibration_ids = _select_calibration_candidate_ids(source.candidates)
     records: list[dict[str, object]] = []
     calibration_id_set = set(calibration_ids)
@@ -2157,6 +2197,7 @@ def _execution_configuration(
     stage_path: Path,
     profile: dict[str, object],
     packet_sha256: str,
+    allowed_inclusion_criteria: tuple[str, ...] | None = None,
 ) -> dict[str, object]:
     supplied_stage_path = Path(stage_path)
     canonical_stage_path = _absolute_lexical(supplied_stage_path)
@@ -2167,7 +2208,7 @@ def _execution_configuration(
         raise SnapshotError("execution configuration stage path is not canonical")
     output_path = canonical_stage_path.parent / f"{role_id}-result.csv"
     phase = release_manifest["phase"]
-    return {
+    configuration = {
         "configuration_version": "1",
         "coordinator_snapshot_sha256": release_manifest[
             "coordinator_snapshot_sha256"
@@ -2204,6 +2245,12 @@ def _execution_configuration(
         ),
         "work_item_scope": "one-role-packet",
     }
+    if allowed_inclusion_criteria is not None:
+        configuration["configuration_version"] = "2"
+        configuration["allowed_inclusion_criteria"] = list(
+            allowed_inclusion_criteria
+        )
+    return configuration
 
 
 def _stage_snapshot_sha256(
@@ -2232,6 +2279,7 @@ def build_reviewer_stage_artifacts(
     reviewer_release: dict[str, bytes],
     role_id: str,
     stage_path: Path,
+    allowed_inclusion_criteria: tuple[str, ...] | None = None,
 ) -> dict[str, bytes]:
     """Derive one role-only execution snapshot from a validated release."""
 
@@ -2287,6 +2335,7 @@ def build_reviewer_stage_artifacts(
         stage_path=stage_path,
         profile=profile,
         packet_sha256=packet_sha256,
+        allowed_inclusion_criteria=allowed_inclusion_criteria,
     )
     configuration_payload = _canonical_json_bytes(configuration)
     prompt = render_reviewer_prompt(
@@ -3107,7 +3156,7 @@ def freeze_snapshot(
         protocol=Path(protocol),
         output_dir=output_dir,
     )
-    artifacts = build_snapshot_artifacts(raw_payloads)
+    artifacts = build_snapshot_artifacts(raw_payloads, strict_new=True)
 
     _publish_artifacts(output_dir, artifacts)
 
@@ -3458,7 +3507,7 @@ def validate_snapshot(snapshot_dir: Path) -> dict[str, bytes]:
                 expected_assignment_ids=packet_assignments[filename],
             )
         raw_payloads = {name: actual[name] for name in RAW_FILENAMES}
-        source = _load_source_data(raw_payloads)
+        source = _load_source_data(raw_payloads, strict_new=False)
         expected_selection = _select_calibration_candidate_ids(
             source.candidates
         )
@@ -3467,7 +3516,7 @@ def validate_snapshot(snapshot_dir: Path) -> dict[str, bytes]:
             manifest_rows,
             expected_ids=expected_selection,
         )
-        expected = build_snapshot_artifacts(raw_payloads)
+        expected = build_snapshot_artifacts(raw_payloads, strict_new=False)
         for relative, expected_payload in expected.items():
             if actual[relative] != expected_payload:
                 raise SnapshotError(
@@ -4166,6 +4215,31 @@ def validate_reviewer_stage_snapshot(
         if manifest[field] != expected:
             raise SnapshotError(f"stage manifest {field} binding is invalid")
 
+    configuration = _parse_canonical_json_payload(
+        actual["execution_configuration.json"],
+        label="execution_configuration.json",
+    )
+    configuration_version = configuration.get("configuration_version")
+    if configuration_version == "1":
+        allowed_inclusion_criteria = None
+    elif configuration_version == "2":
+        criteria = configuration.get("allowed_inclusion_criteria")
+        taxonomy = (
+            {SCREENING_INCLUSION_CRITERION_KEY: criteria}
+            if isinstance(criteria, list)
+            else {}
+        )
+        try:
+            allowed_inclusion_criteria = _resolve_inclusion_criteria(
+                taxonomy,
+                strict_new=True,
+            )
+        except SnapshotError as exc:
+            raise SnapshotError(
+                "allowed inclusion criteria are invalid"
+            ) from exc
+    else:
+        raise SnapshotError("execution configuration version is invalid")
     release_manifest = {
         "phase": phase,
         "coordinator_snapshot_sha256": manifest[
@@ -4188,10 +4262,7 @@ def validate_reviewer_stage_snapshot(
         stage_path=snapshot_dir,
         profile=profile,
         packet_sha256=manifest["packet_sha256"],
-    )
-    configuration = _parse_canonical_json_payload(
-        actual["execution_configuration.json"],
-        label="execution_configuration.json",
+        allowed_inclusion_criteria=allowed_inclusion_criteria,
     )
     if configuration != expected_configuration:
         raise SnapshotError(
@@ -4532,6 +4603,14 @@ def stage_reviewer_execution(
             reviewer_release_snapshot_dir,
         )
     )
+    taxonomy = _parse_taxonomy(
+        coordinator["taxonomy.json"],
+        strict_new=False,
+    )
+    allowed_inclusion_criteria = _resolve_inclusion_criteria(
+        taxonomy,
+        strict_new=False,
+    )
     coordinator_hashes = {
         name: _sha256(payload) for name, payload in coordinator.items()
     }
@@ -4570,6 +4649,7 @@ def stage_reviewer_execution(
             reviewer_release,
             role_id,
             output_dir,
+            allowed_inclusion_criteria,
         )
         _publish_artifacts(
             output_dir,

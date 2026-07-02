@@ -242,6 +242,13 @@ def _canonical_json_bytes(value: object) -> bytes:
     ).encode("utf-8")
 
 
+def _fresh_taxonomy(path: Path) -> Path:
+    taxonomy = json.loads((DATA_ROOT / "taxonomy.json").read_text(encoding="utf-8"))
+    taxonomy["screening_inclusion_criterion"] = ["include-relevant"]
+    path.write_bytes(_canonical_json_bytes(taxonomy))
+    return path
+
+
 @dataclass(frozen=True)
 class Inputs:
     root: Path
@@ -380,7 +387,9 @@ def build_inputs(
     _write_csv(paths.conflicts, CONFLICT_HEADER, conflicts)
     _write_csv(paths.bibliography, BIBLIOGRAPHY_HEADER, bibliography)
     _write_csv(paths.citation_keys, CITATION_KEY_HEADER, citation_keys)
-    paths.taxonomy.write_bytes((DATA_ROOT / "taxonomy.json").read_bytes())
+    taxonomy = json.loads((DATA_ROOT / "taxonomy.json").read_text(encoding="utf-8"))
+    taxonomy["screening_inclusion_criterion"] = ["include-relevant"]
+    paths.taxonomy.write_bytes(_canonical_json_bytes(taxonomy))
     paths.protocol.write_bytes(PROTOCOL_PATH.read_bytes())
     paths.execution_profile.write_bytes(
         _canonical_json_bytes(_execution_profile())
@@ -578,7 +587,7 @@ def test_freeze_requires_and_binds_execution_profile_and_prompt_template(
         screening_batches.main(missing_profile)
 
 
-def test_public_role_staging_is_single_packet_and_derivation_bound(
+def test_allowed_inclusion_public_role_staging_is_single_packet_and_derivation_bound(
     tmp_path: Path,
 ) -> None:
     inputs = build_inputs(tmp_path / "inputs")
@@ -675,7 +684,8 @@ def test_public_role_staging_is_single_packet_and_derivation_bound(
         _canonical_json_bytes(configuration)
     )
     assert configuration == {
-        "configuration_version": "1",
+        "allowed_inclusion_criteria": ["include-relevant"],
+        "configuration_version": "2",
         "coordinator_snapshot_sha256": coordinator_manifest[
             "snapshot_sha256"
         ],
@@ -746,6 +756,84 @@ def test_public_role_staging_is_single_packet_and_derivation_bound(
     assert str(stage.parent / f"{role_id}-result.csv") in rendered_prompt
     assert "{{ROWS_WRITTEN}}" in rendered_prompt
     assert "{{OUTPUT_SHA256}}" in rendered_prompt
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (
+            lambda configuration: configuration.update(
+                {"configuration_version": "3"}
+            ),
+            "execution configuration version is invalid",
+        ),
+        (
+            lambda configuration: configuration.update(
+                {
+                    "configuration_version": "2",
+                    "allowed_inclusion_criteria": ["include-1"],
+                }
+            ),
+            "allowed inclusion criteria are invalid",
+        ),
+    ],
+)
+def test_allowed_inclusion_stage_validation_rejects_unknown_or_invalid_v2_configuration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation,
+    message: str,
+) -> None:
+    inputs = build_inputs(tmp_path / "inputs")
+    coordinator = tmp_path / "coordinator" / "v1"
+    coordinator.parent.mkdir()
+    freeze(inputs, coordinator)
+    reviewer_release = tmp_path / "releases" / "v1"
+    reviewer_release.parent.mkdir()
+    release(coordinator, "calibration", reviewer_release)
+    staging_root = tmp_path / "staging"
+    staging_root.mkdir(mode=0o700)
+    os.chmod(staging_root, 0o700)
+    private_parent = staging_root / ("screening-01-" + "a" * 32)
+    private_parent.mkdir(mode=0o700)
+    os.chmod(private_parent, 0o700)
+    stage = private_parent / "v1"
+    release_payloads = {
+        relative: (reviewer_release / relative).read_bytes()
+        for relative in {
+            "execution_profile.json",
+            "protocol.md",
+            "release_manifest.csv",
+            "reviewer_prompt_template.md",
+            "SHA256SUMS",
+            *(
+                f"packets/{filename}"
+                for filename in screening_batches.PACKET_FILENAMES
+            ),
+        }
+    }
+    build_configuration = screening_batches._execution_configuration
+
+    def build_invalid_configuration(**kwargs):
+        configuration = build_configuration(**kwargs)
+        mutation(configuration)
+        return configuration
+
+    monkeypatch.setattr(
+        screening_batches,
+        "_execution_configuration",
+        build_invalid_configuration,
+    )
+    artifacts = screening_batches.build_reviewer_stage_artifacts(
+        release_payloads,
+        "screening-01",
+        stage,
+    )
+    monkeypatch.undo()
+    screening_batches.publish_snapshot(stage, artifacts)
+
+    with pytest.raises(screening_batches.SnapshotError, match=message):
+        screening_batches.validate_reviewer_stage_snapshot(stage)
 
 
 def test_stage_cli_publishes_and_reports_random_role_snapshot(
@@ -1843,6 +1931,31 @@ def test_source_validation_rejects_wrong_header_and_invalid_taxonomy(
         freeze(inputs, tmp_path / "v2")
 
 
+@pytest.mark.parametrize(
+    "inclusion_criteria",
+    [
+        None,
+        ["include-1"],
+        ["include-relevant", "include-1"],
+        [],
+    ],
+)
+def test_freeze_requires_exact_current_inclusion_criterion(
+    tmp_path: Path,
+    inclusion_criteria: list[str] | None,
+) -> None:
+    inputs = build_inputs(tmp_path / "inputs")
+    taxonomy = json.loads(inputs.taxonomy.read_text(encoding="utf-8"))
+    if inclusion_criteria is None:
+        del taxonomy["screening_inclusion_criterion"]
+    else:
+        taxonomy["screening_inclusion_criterion"] = inclusion_criteria
+    inputs.taxonomy.write_bytes(_canonical_json_bytes(taxonomy))
+
+    with pytest.raises(screening_batches.SnapshotError):
+        freeze(inputs, tmp_path / "v1")
+
+
 def test_source_validation_requires_resolver_for_resolved_conflict(
     tmp_path: Path,
 ) -> None:
@@ -2491,7 +2604,7 @@ def test_current_corpus_freezes_to_required_duplicate_batch_counts(
         conflicts=DATA_ROOT / "conflicts.csv",
         bibliography=DATA_ROOT / "bibliography.csv",
         citation_keys=DATA_ROOT / "citation_keys.csv",
-        taxonomy=DATA_ROOT / "taxonomy.json",
+        taxonomy=_fresh_taxonomy(tmp_path / "taxonomy.json"),
         protocol=PROTOCOL_PATH,
         execution_profile=EXECUTION_PROFILE_PATH,
         reviewer_prompt_template=REVIEWER_PROMPT_TEMPLATE_PATH,
@@ -2853,7 +2966,7 @@ def test_actual_corpus_calibration_strata_and_discovery_labels_are_covered(
         conflicts=DATA_ROOT / "conflicts.csv",
         bibliography=DATA_ROOT / "bibliography.csv",
         citation_keys=DATA_ROOT / "citation_keys.csv",
-        taxonomy=DATA_ROOT / "taxonomy.json",
+        taxonomy=_fresh_taxonomy(tmp_path / "taxonomy.json"),
         protocol=PROTOCOL_PATH,
         execution_profile=EXECUTION_PROFILE_PATH,
         reviewer_prompt_template=REVIEWER_PROMPT_TEMPLATE_PATH,

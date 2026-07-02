@@ -307,6 +307,32 @@ def _stage_release_fixture(
 
 
 
+def test_historical_v5_stages_as_legacy_v1_without_untracked_staging(
+    tmp_path: Path,
+) -> None:
+    coordinator = ROOT / "paper" / "data" / "screening_inputs" / "v5"
+    reviewer_release = (
+        ROOT / "paper" / "data" / "screening_releases" / "calibration" / "v5"
+    )
+    staging_root = tmp_path / "staging"
+    staging_root.mkdir(mode=0o700)
+    os.chmod(staging_root, 0o700)
+
+    stage = screening_batches.stage_reviewer_execution(
+        coordinator,
+        reviewer_release,
+        "screening-01",
+        staging_root,
+    )
+
+    configuration = json.loads(
+        (stage / "execution_configuration.json").read_text(encoding="utf-8")
+    )
+    assert configuration["configuration_version"] == "1"
+    assert "allowed_inclusion_criteria" not in configuration
+    screening_batches.validate_reviewer_stage_snapshot(stage)
+
+
 def _build_case(
     tmp_path: Path,
     *,
@@ -361,6 +387,14 @@ def _build_case(
         citation_keys,
     )
 
+    taxonomy = inputs / "taxonomy.json"
+    taxonomy_payload = json.loads(TAXONOMY.read_text(encoding="utf-8"))
+    taxonomy_payload["screening_inclusion_criterion"] = ["include-relevant"]
+    taxonomy.write_text(
+        json.dumps(taxonomy_payload, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
     coordinator = tmp_path / "coordinator" / "v1"
     coordinator.parent.mkdir(parents=True)
     screening_batches.freeze_snapshot(
@@ -368,7 +402,7 @@ def _build_case(
         conflicts=inputs / "conflicts.csv",
         bibliography=inputs / "bibliography.csv",
         citation_keys=inputs / "citation_keys.csv",
-        taxonomy=TAXONOMY,
+        taxonomy=taxonomy,
         protocol=PROTOCOL,
         execution_profile=EXECUTION_PROFILE,
         reviewer_prompt_template=REVIEWER_PROMPT,
