@@ -1,14 +1,14 @@
-cite_key,survey_evidence_tier,domain,course_object,representation_family,generator_family,generation_role,validity_strategy,code_status
-ASAM2024ASAMOpenDRIVE,NR,ground,road_network,parametric_curve; centerline_plus_width,NR,serialization,NR,not_applicable
-Althoff2017CommonRoadComposable,NR,NR,NR,NR,NR,NR,NR,NR
-Brockman2016OpenAIGym,NR,adjacent,fixed_benchmark,NR,NR,benchmark_only,NR,NR
-CARLA2021OpenDRIVEStandalone,NR,ground,road_network,simulator_native,constructive,geometry_synthesis,NR,official_open
-Chen2008InteractiveProcedural,NR,NR,NR,NR,NR,NR,NR,NR
-Jain2020ComputingRacing,NR,NR,NR,NR,NR,NR,NR,NR
-Loquercio2020DeepDrone,NR,NR,NR,NR,NR,NR,NR,NR
-OpenRoboticsNodateVRXAutomated,NR,maritime,world_asset,simulator_native,environment_design,benchmark_only,NR,official_open
-RoboNation2026RoboBoat2026,NR,maritime,gate_chain; buoy_course,gate_poses,human_designed,benchmark_only,NR,not_applicable
-Steininger2025AutomaticallyGenerating,NR,NR,NR,NR,NR,NR,NR,NR
-Yannakakis2011ExperienceDriven,NR,NR,NR,NR,NR,NR,NR,NR
-Yu2021RepulsiveCurves,NR,NR,NR,NR,NR,NR,NR,NR
-Yu2025MasteringDiverse,NR,NR,NR,NR,NR,NR,NR,NR
+cite_key,domain,course_object,representation_family,generator_family,generation_role,validity_strategy,code_status
+ASAM2024ASAMOpenDRIVE,ground,road_network,"parametric_curve; centerline_plus_width",NR,serialization,NR,not_applicable
+Althoff2017CommonRoadComposable,NR,NR,NR,NR,NR,NR,NR
+Brockman2016OpenAIGym,adjacent,fixed_benchmark,NR,NR,benchmark_only,NR,NR
+CARLA2021OpenDRIVEStandalone,ground,road_network,simulator_native,constructive,geometry_synthesis,NR,official_open
+Chen2008InteractiveProcedural,NR,NR,NR,NR,NR,NR,NR
+Jain2020ComputingRacing,NR,NR,NR,NR,NR,NR,NR
+Loquercio2020DeepDrone,NR,NR,NR,NR,NR,NR,NR
+OpenRoboticsNodateVRXAutomated,maritime,world_asset,simulator_native,environment_design,benchmark_only,NR,official_open
+RoboNation2026RoboBoat2026,maritime,"gate_chain; buoy_course",gate_poses,human_designed,benchmark_only,NR,not_applicable
+Steininger2025AutomaticallyGenerating,NR,NR,NR,NR,NR,NR,NR
+Yannakakis2011ExperienceDriven,NR,NR,NR,NR,NR,NR,NR
+Yu2021RepulsiveCurves,NR,NR,NR,NR,NR,NR,NR
+Yu2025MasteringDiverse,NR,NR,NR,NR,NR,NR,NR

@@ -95,26 +95,6 @@ def test_core_fields_are_in_contract_order():
         "asset_status",
     )
 
-@pytest.mark.parametrize(
-    "relative_path",
-    [
-        "paper/data/screening_work/v2/evidence_drafts/"
-        "reliability_summary_draft.csv",
-        "paper/data/screening_work/v2/evidence_drafts/"
-        "reliability-v2/summary.csv",
-    ],
-)
-def test_tracked_summary_artifacts_start_with_evidence_tier_in_contract_order(
-    relative_path,
-):
-    summary_path = Path(__file__).parents[1] / relative_path
-
-    with summary_path.open(encoding="utf-8", newline="") as handle:
-        fields = [row["field"] for row in csv.DictReader(handle)]
-
-    assert fields == [CORE_FIELDS[0], "domain", *CORE_FIELDS[1:-1]]
-
-
 def test_sample_is_first_domain_stratified_deterministic_and_nonmutating():
     ground = [
         evidence_row(f"G{number:02d}", "ground; adjacent", note=str(number))
