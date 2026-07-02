@@ -187,6 +187,7 @@ def test_sample_rejects_invalid_identifiers_and_domains(evidence, message):
 def coding_row(cite_key: str, **values: str) -> dict[str, str]:
     row = {"cite_key": cite_key}
     row.update(dict.fromkeys(CORE_FIELDS, "shared"))
+    row["survey_evidence_tier"] = "core"
     row.update(values)
     return row
 
@@ -197,8 +198,16 @@ def summary_by_field(rows: list[dict[str, str]]) -> dict[str, dict[str, str]]:
 
 def test_compare_reports_perfect_agreement_in_contract_order():
     primary = [
-        coding_row("B", **dict.fromkeys(CORE_FIELDS, "beta")),
-        coding_row("A", **dict.fromkeys(CORE_FIELDS, "alpha")),
+        coding_row(
+            "B",
+            survey_evidence_tier="supporting",
+            **dict.fromkeys(CORE_FIELDS[1:], "beta"),
+        ),
+        coding_row(
+            "A",
+            survey_evidence_tier="core",
+            **dict.fromkeys(CORE_FIELDS[1:], "alpha"),
+        ),
     ]
     reliability = list(reversed(copy.deepcopy(primary)))
 
@@ -230,18 +239,31 @@ def test_compare_counts_core_and_supporting_as_an_independent_disagreement():
         "passes": "false",
     }
 
+@pytest.mark.parametrize("side", ["primary", "reliability"])
+@pytest.mark.parametrize("value", ["core;supporting", "unknown", "NR"])
+def test_compare_rejects_invalid_scalar_evidence_tier(side, value):
+    invalid = [coding_row("A", survey_evidence_tier=value)]
+    valid = [coding_row("A", survey_evidence_tier="core")]
+    primary = invalid if side == "primary" else valid
+    reliability = invalid if side == "reliability" else valid
+
+    with pytest.raises(ValueError, match=rf"{side}.*survey_evidence_tier"):
+        compare_codings(primary, reliability)
+
 
 def test_compare_canonicalizes_semicolon_labels_order_insensitively():
     primary = [
         coding_row(
             "A",
-            **dict.fromkeys(CORE_FIELDS, " beta ; ; alpha "),
+            survey_evidence_tier="core",
+            **dict.fromkeys(CORE_FIELDS[1:], " beta ; ; alpha "),
         )
     ]
     reliability = [
         coding_row(
             "A",
-            **dict.fromkeys(CORE_FIELDS, "alpha;beta"),
+            survey_evidence_tier="core",
+            **dict.fromkeys(CORE_FIELDS[1:], "alpha;beta"),
         )
     ]
 

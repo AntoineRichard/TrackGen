@@ -26,6 +26,7 @@ CORE_FIELDS = (
     "code_status",
     "asset_status",
 )
+_SURVEY_EVIDENCE_TIERS = frozenset({"core", "supporting", "contextual"})
 
 
 def _required_text(
@@ -162,6 +163,19 @@ def _canonical(value: str) -> str:
     )
 
 
+def _validate_survey_evidence_tier(
+    value: str,
+    *,
+    row_number: int,
+    source: str,
+) -> None:
+    if value not in _SURVEY_EVIDENCE_TIERS:
+        raise ValueError(
+            f"{source} row {row_number}: survey_evidence_tier must be exactly "
+            "one of 'core', 'supporting', or 'contextual'"
+        )
+
+
 def cohens_kappa(left: list[str], right: list[str]) -> float:
     if len(left) != len(right) or not left:
         raise ValueError("kappa inputs must have equal nonzero length")
@@ -212,6 +226,12 @@ def _index_codings(
                 raise ValueError(
                     f"{source} row {row_number}: field {field!r} must have "
                     "a nonempty canonical value"
+                )
+            if field == "survey_evidence_tier":
+                _validate_survey_evidence_tier(
+                    value,
+                    row_number=row_number,
+                    source=source,
                 )
         indexed[cite_key] = row
     return indexed
