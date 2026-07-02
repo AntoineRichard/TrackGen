@@ -16,8 +16,9 @@ from collections import Counter, defaultdict
 from datetime import date
 from decimal import Decimal
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Callable, Sequence
+from pathlib import Path, PurePosixPath
+from typing import Callable, Collection, Sequence
+from urllib.parse import urlsplit, urlunsplit
 
 
 class SnapshotError(ValueError):
@@ -121,6 +122,8 @@ _CITE_KEY_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9:._/+\-]*")
 _POSITIVE_INTEGER_PATTERN = re.compile(r"[1-9][0-9]*")
 _YEAR_PATTERN = re.compile(r"[0-9]{4}")
 _DOI_PATTERN = re.compile(r"10\.[0-9]{4,9}/[a-z0-9._;()/:+\-]+")
+_EVIDENCE_ARTIFACT_TOKEN_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+_LOWER_SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 STABLE_IDENTIFIER_PATTERN = re.compile(
     r"[A-Za-z0-9][A-Za-z0-9._:-]{2,127}"
 )
@@ -159,6 +162,20 @@ CANDIDATE_HEADER = (
     "exclusion_reason",
     "metadata_status",
     "metadata_evidence",
+)
+EVIDENCE_PACKET_HEADER = (
+    "candidate_id",
+    "artifact_id",
+    "artifact_role",
+    "source_url",
+    "evidence_version",
+    "evidence_retrieved_on",
+    "access_status",
+    "evidence_archive_url",
+    "evidence_sha256",
+    "local_filename",
+    "redistribution_status",
+    "retrieval_notes",
 )
 CONFLICT_HEADER = (
     "conflict_id",
@@ -1575,6 +1592,212 @@ def _csv_bytes(
     writer.writerows(rows)
     return handle.getvalue().encode("utf-8")
 
+
+
+def _canonical_evidence_http_url(
+    value: str,
+    *,
+    field: str,
+    context: str,
+) -> str:
+    if any(character.isspace() or ord(character) < 0x20 for character in value):
+        raise SnapshotError(f"{context}: {field} must be a canonical HTTP(S) URL")
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError as exc:
+        raise SnapshotError(
+            f"{context}: {field} must be a valid HTTP(S) URL"
+        ) from exc
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise SnapshotError(
+            f"{context}: {field} must be an absolute HTTP(S) URL"
+        )
+    if parsed.username is not None or parsed.password is not None:
+        raise SnapshotError(f"{context}: {field} must not contain URL credentials")
+    hostname = parsed.hostname.lower()
+    if ":" in hostname and not hostname.startswith("["):
+        hostname = f"[{hostname}]"
+    netloc = hostname
+    if port is not None and not (
+        (parsed.scheme == "http" and port == 80)
+        or (parsed.scheme == "https" and port == 443)
+    ):
+        netloc = f"{netloc}:{port}"
+    canonical = urlunsplit(
+        (parsed.scheme.lower(), netloc, parsed.path, parsed.query, parsed.fragment)
+    )
+    if value != canonical:
+        raise SnapshotError(
+            f"{context}: {field} is not canonical; expected {canonical!r}"
+        )
+    return canonical
+
+
+def _evidence_access_statuses() -> frozenset[str]:
+    # The protocol's closed vocabulary is owned by screening_results.
+    try:
+        from paper.scripts.screening_results import ACCESS_STATUSES
+    except ModuleNotFoundError:  # Direct execution from paper/scripts.
+        from screening_results import ACCESS_STATUSES
+
+    return ACCESS_STATUSES
+
+
+def _validate_evidence_local_filename(
+    value: str,
+    *,
+    source_archive: Path,
+    context: str,
+) -> bytes:
+    if "\\" in value:
+        raise SnapshotError(f"{context}: local_filename must use POSIX separators")
+    relative = PurePosixPath(value)
+    if (
+        relative.is_absolute()
+        or value != relative.as_posix()
+        or any(part in {"", ".", ".."} for part in relative.parts)
+    ):
+        raise SnapshotError(
+            f"{context}: local_filename must be a normalized relative POSIX path"
+        )
+    source_root = _absolute_lexical(source_archive)
+    read_file = _read_regular_file(
+        source_root.joinpath(*relative.parts),
+        f"{context}: local evidence artifact",
+    )
+    return read_file.payload
+
+
+def _candidate_ids_from_csv(payload: bytes) -> set[str]:
+    rows = _read_csv_bytes(payload, "candidates.csv", CANDIDATE_HEADER)
+    if not rows:
+        raise SnapshotError("candidates.csv: must contain at least one row")
+    candidate_ids: set[str] = set()
+    for row_number, row in enumerate(rows, start=2):
+        _require_trimmed("candidates.csv", row_number, row, ("candidate_id",))
+        candidate_id = _required("candidates.csv", row_number, row, "candidate_id")
+        if _CANDIDATE_ID_PATTERN.fullmatch(candidate_id) is None:
+            raise SnapshotError(
+                f"candidates.csv:{row_number}: invalid candidate_id {candidate_id!r}"
+            )
+        if candidate_id in candidate_ids:
+            raise SnapshotError(
+                f"candidates.csv:{row_number}: duplicate candidate_id {candidate_id!r}"
+            )
+        candidate_ids.add(candidate_id)
+    return candidate_ids
+
+
+def parse_evidence_packet_manifest(
+    payload: bytes,
+    *,
+    allowed_candidate_ids: Collection[str],
+    source_archive: Path,
+) -> list[Row]:
+    label = "evidence packet manifest"
+    if b"\r" in payload:
+        raise SnapshotError(f"{label}: must use LF line endings")
+    rows = _read_csv_bytes(payload, label, EVIDENCE_PACKET_HEADER)
+    if not rows:
+        raise SnapshotError(f"{label}: must contain at least one row")
+    if payload != _csv_bytes(EVIDENCE_PACKET_HEADER, rows):
+        raise SnapshotError(f"{label}: must use canonical UTF-8/LF CSV bytes")
+
+    allowed = set(allowed_candidate_ids)
+    seen: set[tuple[str, str]] = set()
+    for row_number, row in enumerate(rows, start=2):
+        context = f"{label}:{row_number}"
+        _require_trimmed(context, row_number, row, EVIDENCE_PACKET_HEADER)
+        for field in EVIDENCE_PACKET_HEADER:
+            _required(context, row_number, row, field)
+
+        candidate_id = row["candidate_id"]
+        if candidate_id not in allowed:
+            raise SnapshotError(f"{context}: unknown candidate_id {candidate_id!r}")
+        artifact_id = row["artifact_id"]
+        if _EVIDENCE_ARTIFACT_TOKEN_PATTERN.fullmatch(artifact_id) is None:
+            raise SnapshotError(f"{context}: artifact_id must be a canonical token")
+        artifact_role = row["artifact_role"]
+        if _EVIDENCE_ARTIFACT_TOKEN_PATTERN.fullmatch(artifact_role) is None:
+            raise SnapshotError(f"{context}: artifact_role must be a canonical token")
+        key = (candidate_id, artifact_id)
+        if key in seen:
+            raise SnapshotError(f"{context}: duplicate candidate_id/artifact_id")
+        seen.add(key)
+
+        _canonical_evidence_http_url(
+            row["source_url"], field="source_url", context=context
+        )
+        if row["evidence_version"] == "NR":
+            raise SnapshotError(f"{context}: evidence_version must not be NR")
+        try:
+            retrieved_on = date.fromisoformat(row["evidence_retrieved_on"])
+        except ValueError as exc:
+            raise SnapshotError(
+                f"{context}: evidence_retrieved_on must be an ISO YYYY-MM-DD date"
+            ) from exc
+        if retrieved_on.isoformat() != row["evidence_retrieved_on"]:
+            raise SnapshotError(
+                f"{context}: evidence_retrieved_on must be an ISO YYYY-MM-DD date"
+            )
+        if row["access_status"] not in _evidence_access_statuses():
+            raise SnapshotError(f"{context}: invalid access_status {row['access_status']!r}")
+        if row["evidence_archive_url"] != "NR":
+            _canonical_evidence_http_url(
+                row["evidence_archive_url"],
+                field="evidence_archive_url",
+                context=context,
+            )
+
+        evidence_sha256 = row["evidence_sha256"]
+        local_filename = row["local_filename"]
+        if (evidence_sha256 == "NR") != (local_filename == "NR"):
+            raise SnapshotError(
+                f"{context}: evidence_sha256 and local_filename must both be NR or both be present"
+            )
+        if evidence_sha256 != "NR":
+            if _LOWER_SHA256_PATTERN.fullmatch(evidence_sha256) is None:
+                raise SnapshotError(
+                    f"{context}: evidence_sha256 must be lowercase 64-hex or NR"
+                )
+            local_payload = _validate_evidence_local_filename(
+                local_filename,
+                source_archive=source_archive,
+                context=context,
+            )
+            if _sha256(local_payload) != evidence_sha256:
+                raise SnapshotError(f"{context}: local evidence SHA-256 mismatch")
+
+        redistribution = row["redistribution_status"]
+        if redistribution not in {
+            "public-redistributable",
+            "local-restricted",
+            "metadata-only",
+        }:
+            raise SnapshotError(f"{context}: invalid redistribution_status {redistribution!r}")
+        if redistribution == "metadata-only" and evidence_sha256 != "NR":
+            raise SnapshotError(
+                f"{context}: metadata-only artifacts must not include local bytes"
+            )
+        notes = row["retrieval_notes"]
+        if notes != "NR" and (
+            len(notes) < 3 or not any(character.isalnum() for character in notes)
+        ):
+            raise SnapshotError(f"{context}: retrieval_notes must be substantive or NR")
+
+    ordered = sorted(
+        rows,
+        key=lambda row: (
+            row["candidate_id"].encode("utf-8"),
+            row["artifact_id"].encode("utf-8"),
+        ),
+    )
+    if rows != ordered:
+        raise SnapshotError(
+            f"{label}: rows must be sorted by UTF-8 candidate_id and artifact_id"
+        )
+    return rows
 
 def _normalize_metadata_token(value: str) -> str:
     normalized = unicodedata.normalize("NFKC", value).casefold()
@@ -4713,11 +4936,14 @@ def _argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--release", action="store_true")
     parser.add_argument("--stage-role", action="store_true")
     parser.add_argument("--phase", choices=("calibration", "main"))
+    parser.add_argument("--validate-evidence-manifest", action="store_true")
     parser.add_argument("--reviewer-release-snapshot", type=Path)
     parser.add_argument("--role-id")
     parser.add_argument("--staging-root", type=Path)
     parser.add_argument("--candidates", type=Path)
     parser.add_argument("--conflicts", type=Path)
+    parser.add_argument("--evidence-manifest", type=Path)
+    parser.add_argument("--source-archive", type=Path)
     parser.add_argument("--bibliography", type=Path)
     parser.add_argument("--citation-keys", type=Path)
     parser.add_argument("--taxonomy", type=Path)
@@ -4756,12 +4982,67 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--staging-root": arguments.staging_root,
     }
     selected_modes = sum(
-        (arguments.freeze, arguments.release, arguments.stage_role)
+        (
+            arguments.freeze,
+            arguments.release,
+            arguments.stage_role,
+            arguments.validate_evidence_manifest,
+        )
     )
     if selected_modes > 1:
         raise SnapshotError(
-            "--freeze, --release, and --stage-role are mutually exclusive"
+            "--freeze, --release, --stage-role, and --validate-evidence-manifest "
+            "are mutually exclusive"
         )
+    if arguments.validate_evidence_manifest:
+        required = {
+            "--candidates": arguments.candidates,
+            "--evidence-manifest": arguments.evidence_manifest,
+            "--source-archive": arguments.source_archive,
+        }
+        missing = [name for name, value in required.items() if value is None]
+        if missing:
+            raise SnapshotError(
+                "--validate-evidence-manifest requires " + ", ".join(missing)
+            )
+        forbidden = [
+            name
+            for name, value in direct_values.items()
+            if name != "--candidates" and value is not None
+        ]
+        if arguments.snapshot_dir is not None:
+            forbidden.append("--snapshot-dir")
+        if arguments.phase is not None:
+            forbidden.append("--phase")
+        forbidden.extend(
+            name for name, value in stage_values.items() if value is not None
+        )
+        if (
+            arguments.calibration_reviewer_release_snapshot is not None
+            or arguments.calibration_decision_snapshot is not None
+            or arguments.calibration_result_snapshot is not None
+        ):
+            forbidden.append("calibration gate snapshots")
+        if forbidden:
+            raise SnapshotError(
+                "--validate-evidence-manifest does not accept "
+                + ", ".join(forbidden)
+            )
+        candidate_ids = _candidate_ids_from_csv(
+            _read_regular_file(arguments.candidates, "candidates CSV").payload
+        )
+        rows = parse_evidence_packet_manifest(
+            _read_regular_file(
+                arguments.evidence_manifest, "evidence packet manifest"
+            ).payload,
+            allowed_candidate_ids=candidate_ids,
+            source_archive=arguments.source_archive,
+        )
+        print(
+            "evidence manifest valid: "
+            f"candidates={len(candidate_ids)} artifacts={len(rows)}"
+        )
+        return 0
     if arguments.stage_role:
         required = {
             "--snapshot-dir": arguments.snapshot_dir,

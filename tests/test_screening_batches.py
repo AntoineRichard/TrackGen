@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import csv
 import hashlib
+import io
 import json
 import os
 import shutil
@@ -186,6 +187,21 @@ REVIEWER_PAIRS = (
     ("screening-03", "screening-06"),
     ("screening-04", "screening-05"),
     ("screening-05", "screening-06"),
+)
+
+EVIDENCE_PACKET_HEADER = (
+    "candidate_id",
+    "artifact_id",
+    "artifact_role",
+    "source_url",
+    "evidence_version",
+    "evidence_retrieved_on",
+    "access_status",
+    "evidence_archive_url",
+    "evidence_sha256",
+    "local_filename",
+    "redistribution_status",
+    "retrieval_notes",
 )
 
 
@@ -3789,3 +3805,283 @@ def test_python310_publisher_cleanup_detail_does_not_mask_primary(
     assert "primary publication failure" in str(raised.value)
     assert str(quarantine) in str(raised.value)
     assert "(dev, ino)=(41, 42)" in str(raised.value)
+
+
+def _evidence_packet_bytes(rows: list[dict[str, str]]) -> bytes:
+    handle = io.StringIO(newline="")
+    writer = csv.DictWriter(
+        handle,
+        fieldnames=EVIDENCE_PACKET_HEADER,
+        lineterminator="\n",
+        extrasaction="raise",
+    )
+    writer.writeheader()
+    writer.writerows(rows)
+    return handle.getvalue().encode("utf-8")
+
+
+def _evidence_packet_row(
+    *,
+    candidate_id: str = "C0001",
+    artifact_id: str = "paper-v1",
+    local_filename: str = "papers/paper.pdf",
+    evidence_sha256: str | None = None,
+    redistribution_status: str = "local-restricted",
+) -> dict[str, str]:
+    payload = b"attested evidence bytes\n"
+    return {
+        "candidate_id": candidate_id,
+        "artifact_id": artifact_id,
+        "artifact_role": "primary-report",
+        "source_url": "https://example.test/source",
+        "evidence_version": "v1.0",
+        "evidence_retrieved_on": "2026-07-02",
+        "access_status": "full_text",
+        "evidence_archive_url": "https://archive.example.test/paper-v1.pdf",
+        "evidence_sha256": evidence_sha256 or hashlib.sha256(payload).hexdigest(),
+        "local_filename": local_filename,
+        "redistribution_status": redistribution_status,
+        "retrieval_notes": "Retrieved from the publisher archive.",
+    }
+
+
+def _write_evidence_archive(root: Path) -> Path:
+    archive = root / "source-archive"
+    (archive / "papers").mkdir(parents=True)
+    (archive / "papers" / "paper.pdf").write_bytes(b"attested evidence bytes\n")
+    return archive
+
+
+def test_evidence_packet_manifest_requires_exact_canonical_bytes_header_and_order(
+    tmp_path: Path,
+) -> None:
+    assert screening_batches.EVIDENCE_PACKET_HEADER == EVIDENCE_PACKET_HEADER
+    archive = _write_evidence_archive(tmp_path)
+    first = _evidence_packet_row()
+    second = _evidence_packet_row(
+        candidate_id="C0002", artifact_id="supplement-v1"
+    )
+    payload = _evidence_packet_bytes([first, second])
+
+    rows = screening_batches.parse_evidence_packet_manifest(
+        payload,
+        allowed_candidate_ids={"C0001", "C0002"},
+        source_archive=archive,
+    )
+
+    assert rows == [first, second]
+    for invalid in (
+        _evidence_packet_bytes([]),
+        payload.replace(b"\n", b"\r\n"),
+        payload.rstrip(b"\n"),
+        payload.replace(b"artifact_id", b"artifact", 1),
+        _evidence_packet_bytes([second, first]),
+    ):
+        with pytest.raises(screening_batches.SnapshotError):
+            screening_batches.parse_evidence_packet_manifest(
+                invalid,
+                allowed_candidate_ids={"C0001", "C0002"},
+                source_archive=archive,
+            )
+
+
+def test_evidence_packet_manifest_rejects_duplicate_and_unknown_candidate(
+    tmp_path: Path,
+) -> None:
+    archive = _write_evidence_archive(tmp_path)
+    duplicate = _evidence_packet_row()
+    duplicate["artifact_role"] = "supplement"
+    unknown = _evidence_packet_row(candidate_id="C9999")
+
+    for rows in ([duplicate, duplicate], [unknown]):
+        with pytest.raises(screening_batches.SnapshotError):
+            screening_batches.parse_evidence_packet_manifest(
+                _evidence_packet_bytes(rows),
+                allowed_candidate_ids={"C0001"},
+                source_archive=archive,
+            )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("artifact_id", "../paper"),
+        ("artifact_role", "role/name"),
+        ("source_url", "https://Example.test/source"),
+        ("evidence_version", "NR"),
+        ("evidence_retrieved_on", "2026-2-07"),
+        ("access_status", "downloaded"),
+        ("evidence_archive_url", "ftp://archive.example.test/paper"),
+        ("redistribution_status", "restricted"),
+        ("retrieval_notes", "x"),
+    ],
+)
+def test_evidence_packet_manifest_rejects_invalid_field_values(
+    tmp_path: Path, field: str, value: str
+) -> None:
+    archive = _write_evidence_archive(tmp_path)
+    row = _evidence_packet_row()
+    row[field] = value
+
+    with pytest.raises(screening_batches.SnapshotError):
+        screening_batches.parse_evidence_packet_manifest(
+            _evidence_packet_bytes([row]),
+            allowed_candidate_ids={"C0001"},
+            source_archive=archive,
+        )
+
+
+@pytest.mark.parametrize(
+    ("evidence_sha256", "local_filename"),
+    [
+        ("NR", "papers/paper.pdf"),
+        (hashlib.sha256(b"attested evidence bytes\n").hexdigest(), "NR"),
+    ],
+)
+def test_evidence_packet_manifest_rejects_invalid_nr_pairing(
+    tmp_path: Path, evidence_sha256: str, local_filename: str
+) -> None:
+    archive = _write_evidence_archive(tmp_path)
+    row = _evidence_packet_row(
+        evidence_sha256=evidence_sha256,
+        local_filename=local_filename,
+    )
+
+    with pytest.raises(screening_batches.SnapshotError):
+        screening_batches.parse_evidence_packet_manifest(
+            _evidence_packet_bytes([row]),
+            allowed_candidate_ids={"C0001"},
+            source_archive=archive,
+        )
+
+
+@pytest.mark.parametrize(
+    ("local_filename", "evidence_sha256"),
+    [
+        ("papers/missing.pdf", hashlib.sha256(b"attested evidence bytes\n").hexdigest()),
+        ("papers/paper.pdf", "0" * 64),
+        ("/papers/paper.pdf", hashlib.sha256(b"attested evidence bytes\n").hexdigest()),
+        ("../papers/paper.pdf", hashlib.sha256(b"attested evidence bytes\n").hexdigest()),
+        ("papers\\paper.pdf", hashlib.sha256(b"attested evidence bytes\n").hexdigest()),
+    ],
+)
+def test_evidence_packet_manifest_rejects_unattested_or_unsafe_local_bytes(
+    tmp_path: Path, local_filename: str, evidence_sha256: str
+) -> None:
+    archive = _write_evidence_archive(tmp_path)
+    row = _evidence_packet_row(
+        local_filename=local_filename,
+        evidence_sha256=evidence_sha256,
+    )
+
+    with pytest.raises(screening_batches.SnapshotError):
+        screening_batches.parse_evidence_packet_manifest(
+            _evidence_packet_bytes([row]),
+            allowed_candidate_ids={"C0001"},
+            source_archive=archive,
+        )
+
+
+def test_evidence_packet_manifest_rejects_symlinked_local_bytes(
+    tmp_path: Path,
+) -> None:
+    archive = _write_evidence_archive(tmp_path)
+    target = archive / "papers" / "paper.pdf"
+    (archive / "linked").symlink_to(target)
+    row = _evidence_packet_row(local_filename="linked/paper.pdf")
+
+    with pytest.raises(screening_batches.SnapshotError, match="symlink"):
+        screening_batches.parse_evidence_packet_manifest(
+            _evidence_packet_bytes([row]),
+            allowed_candidate_ids={"C0001"},
+            source_archive=archive,
+        )
+
+
+@pytest.mark.parametrize(
+    ("redistribution_status", "evidence_sha256", "local_filename"),
+    [
+        (
+            "metadata-only",
+            hashlib.sha256(b"attested evidence bytes\n").hexdigest(),
+            "papers/paper.pdf",
+        ),
+        ("metadata-only", "NR", "papers/paper.pdf"),
+    ],
+)
+def test_evidence_packet_manifest_enforces_metadata_only_constraints(
+    tmp_path: Path,
+    redistribution_status: str,
+    evidence_sha256: str,
+    local_filename: str,
+) -> None:
+    archive = _write_evidence_archive(tmp_path)
+    row = _evidence_packet_row(
+        redistribution_status=redistribution_status,
+        evidence_sha256=evidence_sha256,
+        local_filename=local_filename,
+    )
+
+    with pytest.raises(screening_batches.SnapshotError):
+        screening_batches.parse_evidence_packet_manifest(
+            _evidence_packet_bytes([row]),
+            allowed_candidate_ids={"C0001"},
+            source_archive=archive,
+        )
+
+
+def test_evidence_packet_manifest_accepts_metadata_only_without_local_bytes(
+    tmp_path: Path,
+) -> None:
+    archive = _write_evidence_archive(tmp_path)
+    row = _evidence_packet_row(
+        evidence_sha256="NR",
+        local_filename="NR",
+        redistribution_status="metadata-only",
+    )
+
+    assert screening_batches.parse_evidence_packet_manifest(
+        _evidence_packet_bytes([row]),
+        allowed_candidate_ids={"C0001"},
+        source_archive=archive,
+    ) == [row]
+
+
+def test_validate_evidence_manifest_cli_reports_deterministic_counts(
+    tmp_path: Path,
+) -> None:
+    candidates = tmp_path / "candidates.csv"
+    _write_csv(candidates, CANDIDATE_HEADER, [_candidate(1), _candidate(2)])
+    archive = _write_evidence_archive(tmp_path)
+    manifest = tmp_path / "evidence.csv"
+    manifest.write_bytes(
+        _evidence_packet_bytes(
+            [
+                _evidence_packet_row(),
+                _evidence_packet_row(
+                    candidate_id="C0002", artifact_id="supplement-v1"
+                ),
+            ]
+        )
+    )
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--validate-evidence-manifest",
+            "--candidates",
+            str(candidates),
+            "--evidence-manifest",
+            str(manifest),
+            "--source-archive",
+            str(archive),
+        ],
+        cwd=REPOSITORY_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout == "evidence manifest valid: candidates=2 artifacts=2\n"
