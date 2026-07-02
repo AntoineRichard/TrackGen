@@ -4,6 +4,7 @@ import csv
 import errno
 import hashlib
 import inspect
+import json
 import os
 import subprocess
 import sys
@@ -294,6 +295,32 @@ def coordinator(
     return destination
 
 
+@pytest.fixture(scope="module")
+def v6_coordinator_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    root = tmp_path_factory.mktemp("screening-results-v6-coordinator")
+    inputs = build_inputs(root / "inputs", count=202)
+    taxonomy = json.loads(inputs.taxonomy.read_text(encoding="utf-8"))
+    taxonomy["screening_inclusion_criterion"] = ["include-relevant"]
+    inputs.taxonomy.write_bytes(
+        screening_results.screening_batches._canonical_json_bytes(taxonomy)
+    )
+    snapshot = root / "v6"
+    freeze(inputs, snapshot)
+    return snapshot
+
+
+@pytest.fixture
+def v6_coordinator(
+    tmp_path: Path, v6_coordinator_template: Path
+) -> Path:
+    destination = tmp_path / "coordinator" / "v6"
+    destination.parent.mkdir()
+    import shutil
+
+    shutil.copytree(v6_coordinator_template, destination)
+    return destination
+
+
 def _manifest(coordinator: Path) -> list[dict[str, str]]:
     with (coordinator / "manifest.csv").open(
         encoding="utf-8", newline=""
@@ -348,6 +375,90 @@ def _decision_for_assignment(
     }
 
 
+@pytest.mark.parametrize("criterion", screening_results.INCLUSION_CRITERIA)
+def test_unbound_decision_validation_retains_legacy_inclusion_values(
+    coordinator: Path,
+    criterion: str,
+) -> None:
+    row = _decision_for_assignment(_manifest(coordinator)[0])
+    row["criterion"] = criterion
+
+    screening_results.validate_result_decision(row, context="unbound")
+
+
+def test_unbound_decision_validation_rejects_include_relevant(
+    coordinator: Path,
+) -> None:
+    row = _decision_for_assignment(_manifest(coordinator)[0])
+    row["criterion"] = "include-relevant"
+
+    with pytest.raises(screening_results.ScreeningResultError, match="criterion"):
+        screening_results.validate_result_decision(row, context="unbound")
+
+
+def test_v6_phase_accepts_include_relevant(
+    v6_coordinator: Path,
+    tmp_path: Path,
+) -> None:
+    release = _release_phase(v6_coordinator, tmp_path, "calibration")
+    paths = _v6_phase_result_paths(
+        tmp_path / "raw-v6", v6_coordinator, criterion="include-relevant"
+    )
+    output = tmp_path / "sealed-v6" / "v1"
+    output.parent.mkdir()
+
+    screening_results.seal_phase_results(
+        coordinator_snapshot_dir=v6_coordinator,
+        phase="calibration",
+        result_paths=paths,
+        output_dir=output,
+        reviewer_release_snapshot_dir=release,
+    )
+
+
+@pytest.mark.parametrize("criterion", screening_results.INCLUSION_CRITERIA)
+def test_v6_phase_rejects_legacy_inclusion_values(
+    v6_coordinator: Path,
+    tmp_path: Path,
+    criterion: str,
+) -> None:
+    release = _release_phase(v6_coordinator, tmp_path, "calibration")
+    paths = _v6_phase_result_paths(
+        tmp_path / "raw-v6", v6_coordinator, criterion=criterion
+    )
+    output = tmp_path / "sealed-v6" / "v1"
+    output.parent.mkdir()
+
+    with pytest.raises(screening_results.ScreeningResultError, match="criterion"):
+        screening_results.seal_phase_results(
+            coordinator_snapshot_dir=v6_coordinator,
+            phase="calibration",
+            result_paths=paths,
+            output_dir=output,
+            reviewer_release_snapshot_dir=release,
+        )
+
+
+def test_committed_v5_calibration_snapshot_still_validates() -> None:
+    captured = screening_results.validate_phase_result_snapshot(
+        Path("paper/data/screening_results/calibration/v5"),
+        coordinator_snapshot_dir=Path("paper/data/screening_inputs/v5"),
+        reviewer_release_snapshot_dir=Path(
+            "paper/data/screening_releases/calibration/v5"
+        ),
+    )
+
+    assert captured.phase == "calibration"
+
+
+def _coordinator_inclusion_criterion(coordinator: Path) -> str:
+    taxonomy = json.loads(
+        (coordinator / "taxonomy.json").read_text(encoding="utf-8")
+    )
+    criteria = taxonomy.get("screening_inclusion_criterion")
+    return "include-1" if criteria is None else criteria[0]
+
+
 def _phase_result_paths(
     root: Path,
     coordinator: Path,
@@ -356,6 +467,7 @@ def _phase_result_paths(
     disagreements: int = 0,
 ) -> list[Path]:
     root.mkdir()
+    inclusion_criterion = _coordinator_inclusion_criterion(coordinator)
     phase_manifest = [
         row for row in _manifest(coordinator) if row["phase"] == phase
     ]
@@ -375,9 +487,12 @@ def _phase_result_paths(
                 if candidate_id in disagreement_ids and index == 1
                 else "included"
             )
-            rows_by_batch[manifest_row["batch_id"]].append(
-                _decision_for_assignment(manifest_row, status=status)
+            decision = _decision_for_assignment(
+                manifest_row, status=status
             )
+            if status == "included":
+                decision["criterion"] = inclusion_criterion
+            rows_by_batch[manifest_row["batch_id"]].append(decision)
 
     paths = []
     for number in range(1, 7):
@@ -390,6 +505,22 @@ def _phase_result_paths(
         _write_csv(path, RESULT_HEADER, rows)
         paths.append(path)
     return list(reversed(paths))
+
+
+def _v6_phase_result_paths(
+    root: Path,
+    coordinator: Path,
+    *,
+    criterion: str,
+) -> list[Path]:
+    paths = _phase_result_paths(root, coordinator, "calibration")
+    for path in paths:
+        rows = _read_csv(path)
+        for row in rows:
+            if row["screening_status"] == "included":
+                row["criterion"] = criterion
+        _write_csv(path, RESULT_HEADER, rows)
+    return paths
 
 
 def _file_payloads(snapshot: Path) -> dict[str, bytes]:
@@ -2544,6 +2675,7 @@ def test_decision_nested_validation_mutation_fails_coherent_attestation(
         "snapshot-sha256",
         "protocol-sha256",
         "payload-mapping",
+        "allowed-inclusion-criteria",
     ),
 )
 def test_public_coordinator_reattest_recaptures_complete_state(
@@ -2566,6 +2698,10 @@ def test_public_coordinator_reattest_recaptures_complete_state(
         forged = replace(captured, snapshot_sha256="e" * 64)
     elif mutation == "protocol-sha256":
         forged = replace(captured, protocol_sha256="d" * 64)
+    elif mutation == "allowed-inclusion-criteria":
+        forged = replace(
+            captured, allowed_inclusion_criteria=("include-forged",)
+        )
     else:
         captured.payloads["manifest.csv"] += b"forged"
         forged = captured
@@ -2678,14 +2814,20 @@ def _stage_role_result(
         coordinator, release, "screening-01", tmp_path / "staging"
     )
     result = stage.parent / "screening-01-result.csv"
-    _write_csv(
-        result,
-        RESULT_HEADER,
-        [
-            _decision_for_assignment(row)
-            for row in _read_csv(stage / "packet.csv")
-        ],
+    rows = [
+        _decision_for_assignment(row)
+        for row in _read_csv(stage / "packet.csv")
+    ]
+    configuration = json.loads(
+        (stage / "execution_configuration.json").read_text(encoding="utf-8")
     )
+    if configuration["configuration_version"] == "2":
+        for row in rows:
+            if row["screening_status"] == "included":
+                row["criterion"] = configuration[
+                    "allowed_inclusion_criteria"
+                ][0]
+    _write_csv(result, RESULT_HEADER, rows)
     return stage, result
 
 
@@ -2699,6 +2841,35 @@ def _validate_role_result(stage: Path, result: str | Path) -> int:
             str(result),
         )
     )
+
+
+def test_v2_role_result_rejects_legacy_inclusion_value(
+    v6_coordinator: Path,
+    tmp_path: Path,
+) -> None:
+    stage, result = _stage_role_result(v6_coordinator, tmp_path)
+    configuration = json.loads(
+        (stage / "execution_configuration.json").read_text(encoding="utf-8")
+    )
+    assert configuration["configuration_version"] == "2"
+    assert configuration["allowed_inclusion_criteria"] == ["include-relevant"]
+
+    rows = _read_csv(result)
+    for row in rows:
+        row["screening_status"] = "excluded"
+        row["criterion"] = "exclude-out-of-scope"
+        row["exclusion_reason"] = (
+            "The inspected source does not contribute course-generation "
+            "geometry, representations, metrics, or interchange."
+        )
+    rows[0]["screening_status"] = "included"
+    rows[0]["criterion"] = "include-relevant"
+    rows[0]["exclusion_reason"] = "NR"
+    rows[0]["criterion"] = "include-1"
+    _write_csv(result, RESULT_HEADER, rows)
+
+    with pytest.raises(screening_results.ScreeningResultError, match="criterion"):
+        _validate_role_result(stage, result)
 
 
 def test_cli_validates_canonical_role_result(
