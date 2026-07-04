@@ -73,6 +73,14 @@ def render_utilities_overview(output_dir: Path = Path("docs/assets")) -> Path:
     fig.suptitle("track_gen query/instancing utilities on one generated track",
                  fontsize=14)
 
+    # One shared frame for all four panels so they align despite the SDF
+    # panel's padded grid extent: track AABB plus a fixed margin.
+    lo_lim = outer.min(axis=0)
+    hi_lim = outer.max(axis=0)
+    margin = 0.14 * float((hi_lim - lo_lim).max())
+    xlim = (lo_lim[0] - margin, hi_lim[0] + margin)
+    ylim = (lo_lim[1] - margin, hi_lim[1] + margin)
+
     # (a) points mode: cones on both boundaries.
     ax = axes[0, 0]
     _draw_track(ax, inner, outer)
@@ -162,7 +170,13 @@ def render_utilities_overview(output_dir: Path = Path("docs/assets")) -> Path:
     ax.set_yticks([])
     ax.set_title("collision: SDF field (blue = inside) + boxes vs exact backend")
     ax.legend(loc="upper right", fontsize=9)
-    fig.colorbar(im, ax=ax, fraction=0.04, pad=0.02, label="signed distance")
+    # Inset colorbar: keeps this panel's axes the same size as the others.
+    cax = ax.inset_axes([1.02, 0.08, 0.03, 0.84])
+    fig.colorbar(im, cax=cax, label="signed distance")
+
+    for ax_ in axes.flat:
+        ax_.set_xlim(*xlim)
+        ax_.set_ylim(*ylim)
 
     fig.tight_layout(rect=[0, 0, 1, 0.97])
     output_dir = Path(output_dir)
