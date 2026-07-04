@@ -11,6 +11,7 @@ from ._src.types import GateGenConfig, GateSequence, Track, TrackGenConfig
 from ._src.track_generator import TrackGenerator
 from ._src.gate_generator import GateGenerator
 from ._src.rng_utils import PerEnvSeededRNG
+from . import collision
 
 __all__ = [
     "TrackGenerator",
@@ -20,5 +21,6 @@ __all__ = [
     "GateGenConfig",
     "GateSequence",
     "PerEnvSeededRNG",
+    "collision",
     "__version__",
 ]
