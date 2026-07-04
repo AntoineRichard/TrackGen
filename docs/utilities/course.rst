@@ -56,9 +56,7 @@ Under the hood, two CUDA graphs do the heavy lifting on ``cuda`` devices:
 the generator's own pipeline graph (captured on the first ``generate()``)
 and a facade-owned refresh graph covering the post-generation work — SDF
 rebake, checkpoint resample, gate-post rebuild, and the full progress
-reset. Without a ``seeds=`` argument, ``generate()`` reproduces the
-identical batch (the generators are deterministic under an unchanged RNG);
-pass seeds to vary the courses. When ``max_checkpoints`` is auto-derived,
+reset. When ``max_checkpoints`` is auto-derived,
 check ``course.checkpoint_sampler.truncated`` after regenerating onto
 much longer tracks.
 

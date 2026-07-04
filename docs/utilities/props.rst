@@ -3,9 +3,7 @@ Boundary props
 
 ``track_gen.props.PropSampler`` resamples a boundary at a set spacing into
 instancing poses — cones (``mode="points"``) or wall pieces
-(``mode="segments"``, chord midpoint + yaw + length). Spacing snaps per env
-so every ring closes without a seam. Props are not colliders; to make point
-props physical, feed their positions to ``DiscChecker``.
+(``mode="segments"``, chord midpoint + yaw + length).
 
 Both modes snap the requested spacing per environment —
 ``n = clamp(round(perimeter / spacing), 3, max_props)`` at effective step

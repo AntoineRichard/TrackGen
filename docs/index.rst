@@ -91,6 +91,7 @@ Gallery
 
 .. figure:: assets/progress-tracking.png
    :alt: Progress tracking on a generated track.
+   :align: center
 
    Runtime utilities in action: checkpoint progress on a generated track
    with the reward-ready ``dist_to_next`` signal.
