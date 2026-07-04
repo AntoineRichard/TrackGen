@@ -12,6 +12,7 @@ def test_public_api_surface_is_exactly_curated():
         "PerEnvSeededRNG",
         "collision",
         "props",
+        "checkpoints",
         "__version__",
     }
 

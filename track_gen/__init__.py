@@ -13,6 +13,7 @@ from ._src.gate_generator import GateGenerator
 from ._src.rng_utils import PerEnvSeededRNG
 from . import collision
 from . import props
+from . import checkpoints
 
 __all__ = [
     "TrackGenerator",
@@ -24,5 +25,6 @@ __all__ = [
     "PerEnvSeededRNG",
     "collision",
     "props",
+    "checkpoints",
     "__version__",
 ]
