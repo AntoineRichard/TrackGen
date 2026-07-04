@@ -313,8 +313,40 @@ class CollisionChecker:
             boundary=wp.zeros(n, dtype=wp.int32, device=dev),
         )
         if method == "sdf":
-            raise NotImplementedError(
-                "the sdf backend is wired up in collision_sdf (next task)")
+            R = int(sdf_resolution)
+            self._sdf_resolution = R
+            self._sdf_padding = -1.0 if sdf_padding is None else float(sdf_padding)
+            self._sdf_lo = wp.zeros(E, dtype=wp.vec2f, device=dev)
+            self._sdf_hi = wp.zeros(E, dtype=wp.vec2f, device=dev)
+            self._sdf_phi = wp.zeros(E * R * R, dtype=wp.float32, device=dev)
+            self._sdf_bid = wp.zeros(E * R * R, dtype=wp.int8, device=dev)
+            self.bake()
+
+    def bake(self) -> None:
+        """(Re)bake the per-env SDF grids from the bound Track.
+
+        Required after every ``TrackGenerator.generate()`` call when
+        ``method="sdf"`` (the segments backend needs no rebake). Pure kernel
+        launches — CUDA-graph capturable.
+
+        Raises:
+            ValueError: if this checker was constructed with ``method="segments"``.
+        """
+        if self._method != "sdf":
+            raise ValueError("bake() is only valid for method='sdf' checkers")
+        from . import collision_sdf
+        t = self._track
+        E = self._E
+        R = self._sdf_resolution
+        wp.launch(collision_sdf._track_aabb_k, dim=E,
+                  inputs=[t.outer, t.count, self._n_max,
+                          self._sdf_padding, 0.1, self._sdf_lo, self._sdf_hi],
+                  device=self._device)
+        wp.launch(collision_sdf._sdf_bake_k, dim=E * R * R,
+                  inputs=[t.inner, t.outer, t.count, self._n_max, R,
+                          self._sdf_lo, self._sdf_hi, self._sdf_phi, self._sdf_bid],
+                  device=self._device)
+        _sync(self._device)
 
     def query(self, position: wp.array, yaw: wp.array,
               half_extents: wp.array) -> BoxContact:
