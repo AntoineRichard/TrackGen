@@ -189,8 +189,6 @@ def render_utilities_overview(output_dir: Path = Path("docs/assets")) -> Path:
 
 def render_checkpoints_overview(output_dir: Path = Path("docs/assets")) -> Path:
     """Track-sourced checkpoints (virtual gates) beside gate-sourced ones."""
-    import warp as wp  # noqa: F401
-
     from track_gen import (GateGenConfig, GateGenerator, PerEnvSeededRNG,
                            TrackGenConfig, TrackGenerator)
     from track_gen.checkpoints import CheckpointSampler, CheckpointSet
@@ -265,7 +263,7 @@ def render_checkpoints_overview(output_dir: Path = Path("docs/assets")) -> Path:
 
 
 def render_progress_tracking(output_dir: Path = Path("docs/assets")) -> Path:
-    """Scripted agent threading track checkpoints; dist_to_next sawtooth inset."""
+    """Scripted agent threading track checkpoints; dist_to_next sawtooth lower panel."""
     import warp as wp
 
     from track_gen import PerEnvSeededRNG, TrackGenConfig, TrackGenerator

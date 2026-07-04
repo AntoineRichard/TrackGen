@@ -88,9 +88,9 @@ after a reset (or a teleport respawn) can never emit a spurious crossing.
 After regenerating the course (gates or track), call ``reset`` for all envs.
 
 .. figure:: ../assets/progress-tracking.png
-   :alt: Agent path colored by progress with a dist_to_next sawtooth inset.
+   :alt: Agent path colored by progress with a dist_to_next sawtooth lower panel.
 
-   A scripted agent threading track checkpoints. The inset shows the
+   A scripted agent threading track checkpoints. The lower panel shows the
    ``dist_to_next`` sawtooth your negative-delta reward differentiates.
 
 Gate posts & point obstacles

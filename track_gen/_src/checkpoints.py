@@ -164,6 +164,8 @@ def _place_checkpoints_k(
         m = n_max
     base = e * n_max
     step = cp_step[e]
+    # Reconstructs the scan's perimeter (step = perim/n); max queried arc is
+    # (n-1)*step < perim, so the closing segment is never overrun.
     perim = step * float(n)
 
     it = _seg_at_arc(cum, base, m, perim, float(k) * step)

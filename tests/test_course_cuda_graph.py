@@ -92,6 +92,43 @@ def test_progress_update_graph_replay_matches_eager_twin():
                                    equal_nan=True)
 
 
+def test_progress_reset_graph_replay():
+    E = 4
+    track = make_annulus_track(E=E, n=256, device=DEV)
+    cps = CheckpointSampler(track, spacing=0.8).sample()
+    tracker = ProgressTracker(cps)
+
+    # Advance state eagerly so progress > 0 before capturing the reset.
+    steps = [np.stack([np.cos(a) * 1.0 * np.ones(E), np.sin(a) * np.ones(E)],
+                      axis=1).astype(np.float32)
+             for a in np.deg2rad(np.arange(-20.0, 100.0, 40.0))]
+    for s in steps:
+        tracker.update(wp.array(s, dtype=wp.vec2f, device=DEV))
+    assert int(tracker._progress.numpy().sum()) > 0
+
+    mask = wp.full(E, 1, dtype=wp.int32, device=DEV)
+    prev = prog_mod._CAPTURING
+    prog_mod._CAPTURING = True
+    try:
+        tracker.reset(mask)  # warmup
+        wp.synchronize()
+        with wp.ScopedCapture(device=DEV) as cap:
+            tracker.reset(mask)
+    finally:
+        prog_mod._CAPTURING = prev
+
+    # Re-advance state so the buffers are non-zero/non-NaN before replay.
+    for s in steps:
+        tracker.update(wp.array(s, dtype=wp.vec2f, device=DEV))
+    assert int(tracker._progress.numpy().sum()) > 0
+
+    wp.capture_launch(cap.graph)
+    wp.synchronize()
+    assert np.all(tracker._progress.numpy() == 0)
+    assert np.all(tracker._next.numpy() == 0)
+    assert np.isnan(tracker._prev_pos.numpy()).all()
+
+
 def test_disc_query_graph_replay_bound():
     E, B = 2, 4
     discs = wp.array(np.array([[0.12, 0.0], [0.5, 0.5]] * E, np.float32),

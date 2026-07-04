@@ -227,6 +227,21 @@ class ProgressTracker:
         if E < 1 or stride % E != 0:
             raise ValueError(
                 f"checkpoint layout invalid: {stride} slots for {E} envs")
+        for name in ("position", "left", "right", "tangent"):
+            arr = getattr(checkpoints, name)
+            if not isinstance(arr, wp.array) or arr.shape != (stride,) \
+                    or arr.dtype is not wp.vec2f:
+                raise ValueError(
+                    f"checkpoints.{name} must be a [{stride}] vec2f wp.array")
+            if str(arr.device) != str(checkpoints.position.device):
+                raise ValueError(
+                    f"checkpoints.{name} is on {arr.device}, expected "
+                    f"{checkpoints.position.device}")
+        if checkpoints.count.dtype is not wp.int32 \
+                or str(checkpoints.count.device) != str(checkpoints.position.device):
+            raise ValueError(
+                f"checkpoints.count must be a [{E}] int32 wp.array on "
+                f"{checkpoints.position.device}")
         self._cps = checkpoints
         self._E = E
         self._M = stride // E

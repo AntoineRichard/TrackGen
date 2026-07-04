@@ -34,8 +34,6 @@ def test_face_corner_graze_and_miss():
                     [0.13, 0.0],            # graze: dist 0.03 == radius -> hit
                     [0.20, 0.0]])           # miss
     checker = DiscChecker(discs, radius=0.03, max_boxes=4, num_envs=1)
-    pos, yaw, he = _boxes(1, 4, {(0, b): (0.0, 0.0, 0.0, 0.1, 0.05)
-                                 for b in range(4)})
     # All four boxes identical; each box sees ALL discs, so instead probe
     # per-disc behavior with per-box positions FAR from other discs:
     pos, yaw, he = _boxes(1, 4, {
@@ -101,6 +99,26 @@ def test_constructor_validation():
         DiscChecker(discs, radius=float("nan"), max_boxes=1, num_envs=1)
     with pytest.raises(ValueError, match="divisible"):
         DiscChecker(_discs([[0.0, 0.0]] * 3), radius=0.1, max_boxes=1, num_envs=2)
+
+
+def test_bound_mode_equivalence_and_errors():
+    from track_gen.collision import DiscChecker
+    discs = _discs([[0.12, 0.0], [0.5, 0.5]])
+    pos, yaw, he = _boxes(1, 2, {(0, 0): (0.0, 0.0, 0.0, 0.1, 0.05)})
+    free = DiscChecker(discs, radius=0.03, max_boxes=2, num_envs=1)
+    bound = DiscChecker(discs, radius=0.03, max_boxes=2, num_envs=1,
+                        position=pos, yaw=yaw, half_extents=he)
+    r_free = free.query(pos, yaw, he).clone()
+    r_bound = bound.query()
+    np.testing.assert_array_equal(r_bound.hit.numpy(), r_free.hit.numpy())
+    np.testing.assert_array_equal(r_bound.disc.numpy(), r_free.disc.numpy())
+    np.testing.assert_allclose(r_bound.depth.numpy(), r_free.depth.numpy())
+    with pytest.raises(ValueError, match="bound"):
+        bound.query(pos, yaw, he)
+    with pytest.raises(ValueError, match="not bound"):
+        free.query()
+    with pytest.raises(ValueError, match="all of"):
+        DiscChecker(discs, radius=0.03, max_boxes=2, num_envs=1, position=pos)
 
 
 def test_gate_post_recipe():

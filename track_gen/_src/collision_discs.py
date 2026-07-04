@@ -63,7 +63,8 @@ class DiscContact:
         ``int32`` — index of the deepest-penetrating disc, -1 when none.
     depth : wp.array
         ``float32`` — penetration depth of that disc (>= 0; 0 on graze or
-        no hit).
+        no hit). Saturates at ``radius`` once the disc center lies inside
+        the box (ties broken by lowest disc index).
     nearest : wp.array
         ``vec2f`` — point on that disc's boundary nearest the box
         (approximate when the disc center lies deep inside the box). NaN

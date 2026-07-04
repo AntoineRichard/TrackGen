@@ -114,6 +114,8 @@ def _scan_boundary_k(
     out_step: wp.array(dtype=wp.float32),
     out_truncated: wp.array(dtype=wp.int32),
 ):
+    """Also launched by ``_src/checkpoints.py`` (CheckpointSampler) — keep the
+    signature and snap semantics in sync."""
     e = wp.tid()
     m = count[e]
     if m > n_max:

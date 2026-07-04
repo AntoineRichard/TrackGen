@@ -138,3 +138,26 @@ def test_import_surface():
     import track_gen
     from track_gen.progress import ProgressEvents, ProgressTracker  # noqa: F401
     assert "progress" in track_gen.__all__
+
+
+def test_constructor_rejects_mismatched_checkpoint_set():
+    from track_gen.checkpoints import CheckpointSet
+    from track_gen.progress import ProgressTracker
+    good = _ring_checkpoints()
+    bad = CheckpointSet(position=good.position, left=wp.zeros(2, dtype=wp.vec2f, device="cpu"),
+                        right=good.right, tangent=good.tangent, count=good.count)
+    with pytest.raises(ValueError, match="left"):
+        ProgressTracker(bad)
+
+
+def test_zero_checkpoint_env_is_inert():
+    from track_gen.checkpoints import CheckpointSet
+    from track_gen.progress import ProgressTracker
+    cps = _ring_checkpoints()
+    wp.copy(cps.count, wp.zeros(1, dtype=wp.int32, device="cpu"))
+    tracker = ProgressTracker(cps)
+    tracker.update(_pos(0.0))
+    ev = tracker.update(_pos(90.0))   # motion that would cross gates if active
+    assert int(ev.passed.numpy()[0]) == 0
+    assert int(ev.wrong_checkpoint.numpy()[0]) == -1
+    assert np.isnan(float(ev.dist_to_next.numpy()[0]))
