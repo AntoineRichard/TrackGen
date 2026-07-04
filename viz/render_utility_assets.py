@@ -306,10 +306,11 @@ def render_progress_tracking(output_dir: Path = Path("docs/assets")) -> Path:
             passed_at.append(int(ev.checkpoint_passed.numpy()[e]))
     target = int(tracker._next.numpy()[e])
 
-    fig, ax = plt.subplots(figsize=(10.5, 9))
+    fig, (ax, ax2) = plt.subplots(2, 1, figsize=(10.5, 11),
+                                  gridspec_kw={"height_ratios": [4, 1]})
     _draw_track(ax, inner, outer)
     for k, (lf, rt) in enumerate(zip(cleft, cright)):
-        col = "#1a9641" if k in passed_at else ("#d95f02" if k == target else "0.6")
+        col = "#d95f02" if k == target else ("#1a9641" if k in passed_at else "0.6")
         lw = 3.0 if k == target else 2.0
         ax.plot([lf[0], rt[0]], [lf[1], rt[1]], "-", color=col, lw=lw, zorder=3)
     sc = ax.scatter(path[:, 0], path[:, 1], c=prog_trace, cmap="viridis", s=12,
@@ -320,10 +321,9 @@ def render_progress_tracking(output_dir: Path = Path("docs/assets")) -> Path:
     ax.legend(loc="upper right", fontsize=9)
     ax.set_title("ProgressTracker on track checkpoints: path colored by progress")
 
-    ins = ax.inset_axes([0.03, 0.03, 0.42, 0.22])
-    ins.plot(dist_trace, lw=1.2, color="#7570b3")
-    ins.set_title("dist_to_next per step (reward = -delta)", fontsize=8)
-    ins.tick_params(labelsize=7)
+    ax2.plot(dist_trace, lw=1.2, color="#7570b3")
+    ax2.set_title("dist_to_next per step (reward = -delta)")
+    ax2.set_xlabel("step")
 
     fig.tight_layout()
     output_dir = Path(output_dir)
