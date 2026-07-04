@@ -163,9 +163,15 @@ regeneration; per-env respawns via a mask):
    course.generate(seeds=next_seed)   # new courses for everyone
 
 ``generate()`` is whole-batch (the generator pipelines are fixed-batch
-captured graphs); per-env control is ``reset(mask)``. In gates mode the same
+captured graphs); per-env control is ``reset(mask)``. The generators are
+deterministic under an unchanged RNG: calling ``generate()`` again WITHOUT
+``seeds=`` reproduces the identical batch (plus a full progress reset), while
+passing ``seeds=`` advances the RNG for new courses. In gates mode the same
 object wraps ``GateGenerator`` + gate progress + optional ``DiscChecker``
 posts (``post_radius > 0``). The underlying tools stay reachable
 (``course.collision``, ``course.progress``, ``course.checkpoints``) and
 ``track_gen.course.set_capturing(True)`` flips every utility's capture flag
-at once when you capture ``step()`` into your own sim graph.
+at once when you capture ``step()`` into your own sim graph. Once ``step()``
+is captured, keep writing into the SAME bound buffers — rebinding after
+capture leaves the captured graph replaying against the old pointers
+(silently divergent results), so rebind only before (re)capturing.

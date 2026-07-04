@@ -30,7 +30,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import numpy as np
 import warp as wp
 
 from . import checkpoints as _cps_mod
@@ -240,6 +239,8 @@ class Course:
         self._E = int(config.gen.num_envs)
         self._device = str(config.gen.device)
         self._is_cuda = "cuda" in self._device
+        if isinstance(config.seeds, wp.array):
+            self._validate_seed_array(config.seeds)
         self.rng = PerEnvSeededRNG(seeds=config.seeds, num_envs=self._E,
                                    device=self._device)
         if config.mode == "track":
@@ -259,6 +260,53 @@ class Course:
         self._reset_all_mask = wp.full(self._E, 1, dtype=wp.int32,
                                        device=self._device)
 
+    # -- validation ------------------------------------------------------
+
+    def _check_arr(self, name: str, arr, shape: tuple, dtype) -> None:
+        """Validate a bound/seed wp.array's shape, dtype, and device."""
+        if not isinstance(arr, wp.array):
+            raise ValueError(
+                f"{name} must be a wp.array, got {type(arr).__name__}")
+        if tuple(arr.shape) != shape:
+            raise ValueError(
+                f"{name} must have shape {shape}, got {tuple(arr.shape)}")
+        if arr.dtype is not dtype:
+            want = getattr(dtype, "__name__", str(dtype))
+            got = getattr(arr.dtype, "__name__", str(arr.dtype))
+            raise ValueError(
+                f"{name} must have dtype {want}, got {got}")
+        if str(arr.device) != self._device:
+            raise ValueError(
+                f"{name} must be on device {self._device!r}, got "
+                f"{str(arr.device)!r}")
+
+    def _validate_seed_array(self, seeds) -> None:
+        """A wp.array seeds must be ``[E]`` int32 on the course device.
+
+        ``set_seeds_warp`` launches with ``dim=len(seeds)`` against the ``[E]``
+        state arrays: a longer array corrupts device memory past the states, a
+        shorter one only partially reseeds.
+        """
+        self._check_arr("seeds", seeds, (self._E,), wp.int32)
+
+    def _needs_boxes(self) -> bool:
+        cfg = self._cfg
+        return (cfg.mode == "track" and cfg.collision is not None) or \
+               (cfg.mode == "gates" and cfg.post_radius > 0.0)
+
+    def _validate_bind_args(self, a: dict) -> None:
+        """Eagerly validate bound buffers — E, max_boxes, device are all
+        known at construction, so shape/dtype/device errors surface at
+        ``bind()`` rather than at the first ``step()``."""
+        E = self._E
+        self._check_arr("position", a["position"], (E,), wp.vec2f)
+        if self._needs_boxes():
+            nb = (E * self._cfg.max_boxes,)
+            self._check_arr("yaw", a["yaw"], nb, wp.float32)
+            self._check_arr("half_extents", a["half_extents"], nb, wp.vec2f)
+            if self._cfg.max_boxes > 1:
+                self._check_arr("box_position", a["box_position"], nb, wp.vec2f)
+
     # -- binding ---------------------------------------------------------
 
     def bind(self, position: wp.array, yaw: "wp.array | None" = None,
@@ -273,10 +321,14 @@ class Course:
         positions, otherwise pass a separate ``box_position``
         ``[E * max_boxes]`` buffer. May be called before or after the first
         ``generate()``; rebinding replaces the previous binding.
+
+        Do NOT rebind after capturing ``step()`` into a sim graph: the
+        captured graph replays against the buffer pointers live at capture
+        time, so a later rebind leaves it reading the old buffers (silently
+        divergent results) — keep writing into the SAME bound buffers and
+        rebind only before (re)capturing.
         """
-        needs_boxes = (self._cfg.mode == "track" and self._cfg.collision
-                       is not None) or \
-                      (self._cfg.mode == "gates" and self._cfg.post_radius > 0.0)
+        needs_boxes = self._needs_boxes()
         if needs_boxes and (yaw is None or half_extents is None):
             raise RuntimeError(
                 "this course has a collision checker: bind yaw and "
@@ -285,9 +337,11 @@ class Course:
             raise RuntimeError(
                 "max_boxes > 1: bind a separate box_position "
                 "[E*max_boxes] buffer")
-        self._bind_args = {"position": position, "yaw": yaw,
-                           "half_extents": half_extents,
-                           "box_position": box_position}
+        args = {"position": position, "yaw": yaw,
+                "half_extents": half_extents,
+                "box_position": box_position}
+        self._validate_bind_args(args)
+        self._bind_args = args
         if self.progress is not None:
             self._apply_bind()
 
@@ -311,37 +365,41 @@ class Course:
         applicable, and a FULL progress reset (every course changed). On
         cuda the refresh is captured once into a facade-owned graph and
         replayed on later calls. Returns :attr:`result`.
+
+        Determinism contract: the generators are deterministic under an
+        unchanged RNG. Calling ``generate()`` again WITHOUT ``seeds=``
+        reproduces the identical batch (plus a full progress reset); pass
+        ``seeds=`` to advance the RNG and get new courses.
         """
         if seeds is not None:
             if isinstance(seeds, wp.array):
+                self._validate_seed_array(seeds)
                 self.rng.set_seeds_warp(seeds, None)
             else:
                 tmp = PerEnvSeededRNG(seeds=int(seeds), num_envs=self._E,
                                       device=self._device)
                 self.rng.set_seeds_warp(tmp.seeds_warp, None)
-        first = self.result is None
         self.result = self.generator.generate()
-        if first:
+        if self.progress is None:
             self._build_subtools()
             self._refresh()          # eager warmup (also the cpu path)
-            if self._is_cuda:
-                set_capturing(True)
-                try:
-                    self._refresh()  # second warmup, sync-free
-                    wp.synchronize()
-                    with wp.ScopedCapture(device=self._device) as cap:
-                        self._refresh()
-                    self._refresh_graph = cap.graph
-                finally:
-                    set_capturing(False)
-                wp.capture_launch(self._refresh_graph)
-                wp.synchronize()
+        elif self._refresh_graph is not None:
+            wp.capture_launch(self._refresh_graph)
+            wp.synchronize()
         else:
-            if self._refresh_graph is not None:
-                wp.capture_launch(self._refresh_graph)
+            self._refresh()
+        if self._is_cuda and self._refresh_graph is None:
+            set_capturing(True)
+            try:
+                self._refresh()      # warmup, sync-free
                 wp.synchronize()
-            else:
-                self._refresh()
+                with wp.ScopedCapture(device=self._device) as cap:
+                    self._refresh()
+                self._refresh_graph = cap.graph
+            finally:
+                set_capturing(False)
+            wp.capture_launch(self._refresh_graph)
+            wp.synchronize()
         return self.result
 
     def _build_subtools(self) -> None:

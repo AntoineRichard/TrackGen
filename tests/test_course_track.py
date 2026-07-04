@@ -147,6 +147,45 @@ def test_progress_only_bundle():
     assert course.collision is None
 
 
+def test_generate_without_seeds_is_deterministic():
+    course = _course(collision=None)
+    pos, _, _ = _buffers()
+    course.bind(position=pos)
+    t1 = course.generate()
+    c1 = t1.center.numpy().copy()
+    course.generate()                      # no reseed -> identical batch
+    np.testing.assert_array_equal(course.result.center.numpy(), c1)
+    course.generate(seeds=4242)            # reseed -> different batch
+    assert not np.array_equal(course.result.center.numpy(), c1)
+
+
+def test_seed_array_validation():
+    import warp as wp
+    course = _course(collision=None)
+    pos, _, _ = _buffers()
+    course.bind(position=pos)
+    course.generate()
+    with pytest.raises(ValueError, match="seeds"):
+        course.generate(seeds=wp.zeros(E + 1, dtype=wp.int32, device="cpu"))
+    with pytest.raises(ValueError, match="seeds"):
+        course.generate(seeds=wp.zeros(E, dtype=wp.float32, device="cpu"))
+    from track_gen.course import Course, CourseConfig
+    from track_gen import TrackGenConfig
+    with pytest.raises(ValueError, match="seeds"):
+        Course(CourseConfig(mode="track",
+                            gen=TrackGenConfig(num_envs=E, device="cpu"),
+                            seeds=wp.zeros(E + 2, dtype=wp.int32, device="cpu"),
+                            checkpoint_spacing=SPACING))
+
+
+def test_bind_validates_eagerly_before_generate():
+    course = _course(collision="segments")
+    bad = wp.zeros(E + 3, dtype=wp.vec2f, device="cpu")
+    _, yaw, he = _buffers()
+    with pytest.raises(ValueError, match="position"):
+        course.bind(position=bad, yaw=yaw, half_extents=he)
+
+
 def test_facade_matches_manual_wiring():
     from track_gen.progress import ProgressTracker
     course = _course(collision="segments")
