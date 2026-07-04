@@ -21,10 +21,12 @@ def test_uniform_3d_block_has_no_index_collisions():
 def test_partial_ids_sample_preserves_untouched_env_states():
     import numpy as np
     rng = _rng(num_envs=4, seed=11)
-    before = wp.to_torch(rng.states_warp).clone()
+    # numpy, not wp.to_torch: torch cannot wrap uint32 arrays (warp >= 1.14 surfaces
+    # the underlying dtype instead of silently converting on the cpu path).
+    before = rng.states_warp.numpy().copy()
     ids = wp.array(np.array([0], dtype=np.int32), dtype=wp.int32, device="cpu")
     rng.sample_uniform_warp(0.0, 1.0, (1,), ids=ids)  # touch only env 0
-    after = wp.to_torch(rng.states_warp)
+    after = rng.states_warp.numpy()
     # Envs 1..3 were not sampled; their states must be unchanged (not zeroed).
     assert (after[1:] == before[1:]).all(), "partial-ids sample corrupted untouched env states"
     assert (after[1:] != 0).any(), "untouched env states were zeroed"

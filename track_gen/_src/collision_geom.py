@@ -4,12 +4,14 @@ Leaf module (imports only warp): used by the segments backend in
 ``collision.py`` and the SDF backend in ``collision_sdf.py``. All helpers are
 ``@wp.func`` device functions; nothing here launches kernels.
 """
+from __future__ import annotations
+
 import warp as wp
 
 
 @wp.func
 def _is_nan2(v: wp.vec2f) -> int:
-    # NaN != NaN; wp.isnan does not exist in warp 1.0.
+    # NaN != NaN; avoids a torch/older-warp dependency for the NaN probe.
     if v[0] != v[0] or v[1] != v[1]:
         return int(1)
     return int(0)

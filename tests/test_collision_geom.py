@@ -1,6 +1,7 @@
 """Kernel-wrapper tests for the shared collision geometry @wp.funcs."""
+from __future__ import annotations
+
 import numpy as np
-import pytest
 import warp as wp
 
 wp.init()

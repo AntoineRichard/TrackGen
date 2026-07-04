@@ -42,7 +42,8 @@ def _gen_simple_tracks(E, N, scale, device, seed):
         # Resample to a FIXED N directly (this bake-off wants constant-N tracks); the pipeline's
         # constant_spacing output_mode would NaN-pad to N_max, which this harness isn't built for.
         center, _count = geometry.arc_length_resample(cl.points, num=N)   # [B, N, 2]
-        ok = torch.isfinite(center).all(dim=(1, 2)) & cl.valid
+        # Nested .all() calls: Tensor.all(dim=tuple) requires torch >= 2.2.
+        ok = torch.isfinite(center).all(dim=2).all(dim=1) & cl.valid
         for e in torch.where(ok)[0].tolist():
             kept.append(center[e])
             if len(kept) >= E:
