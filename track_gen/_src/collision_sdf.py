@@ -203,6 +203,18 @@ def _box_query_sdf_k(
             phimin = v
             pmin = ck
 
+    # Degenerate env (count < 3): the whole grid is NaN-baked, so the center
+    # sample is NaN. Emit the same conservative result as the segments
+    # backend (oob=1, NaN geometry) instead of relying on clamp(NaN) index
+    # behavior further down.
+    if phimin != phimin:
+        out_oob[t] = 1
+        out_distance[t] = wp.nan
+        out_nearest[t] = nan2
+        out_normal[t] = nan2
+        out_boundary[t] = -1
+        return
+
     oob = int(0)
     if phimin < 0.0:
         oob = int(1)

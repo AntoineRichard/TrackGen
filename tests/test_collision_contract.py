@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 import warp as wp
 
-from tests._collision_fixtures import annulus_polylines, make_annulus_track, make_boxes
+from tests._collision_fixtures import make_annulus_track, make_boxes
 from track_gen.collision import BoxContact, CollisionChecker
 
 

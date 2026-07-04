@@ -45,9 +45,14 @@ def test_query_graph_replay_matches_eager(method):
     finally:
         collision_mod._CAPTURING = prev
 
+    # Poison outputs so the comparison proves the REPLAY recomputed them,
+    # not that stale pre-capture results survived in the reused buffers.
+    replay = checker._contact
+    replay.oob.fill_(-7)
+    replay.distance.fill_(12345.0)
+
     wp.capture_launch(cap.graph)
     wp.synchronize()
-    replay = checker._contact
 
     np.testing.assert_array_equal(replay.oob.numpy(), eager.oob.numpy())
     np.testing.assert_allclose(replay.distance.numpy(), eager.distance.numpy(),
@@ -67,6 +72,9 @@ def test_bake_graph_capturable():
             checker.bake()
     finally:
         collision_mod._CAPTURING = prev
+
+    checker._sdf_phi.fill_(12345.0)
+
     wp.capture_launch(cap.graph)
     wp.synchronize()
     np.testing.assert_allclose(checker._sdf_phi.numpy(), phi_eager,

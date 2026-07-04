@@ -10,7 +10,7 @@ requires-python = ">=3.10"
 # Warp-native runtime: the shipped package is pure NVIDIA Warp + numpy. torch and scipy
 # are NOT runtime deps — they are used only by the test suite + the torch oracle (tests/_oracle)
 # and the experimental Fourier generator, so they live in the dev extra.
-dependencies = ["numpy", "warp-lang"]
+dependencies = ["numpy", "warp-lang>=1.14"]
 
 [project.optional-dependencies]
 dev = ["pytest", "matplotlib", "scipy", "torch"]

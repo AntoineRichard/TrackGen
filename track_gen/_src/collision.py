@@ -273,8 +273,11 @@ class CollisionChecker:
     no rebind step. The ``sdf`` backend requires ``bake()`` after each
     ``generate()`` call.
 
-    ``query()`` is allocation-free and host-sync-free (CUDA-graph capturable)
-    and returns the same preallocated :class:`BoxContact` on every call.
+    ``query()`` is allocation-free and, under graph capture (module
+    ``_CAPTURING`` flag set), host-sync-free (CUDA-graph capturable). In
+    normal (non-capturing) use a ``wp.synchronize()`` follows the launch,
+    per the codebase idiom. ``query()`` returns the same preallocated
+    :class:`BoxContact` on every call.
     """
 
     def __init__(self, track: Track, max_boxes: int, method: str = "segments",
