@@ -75,7 +75,7 @@ class ProgressEvents:
         ``int32`` — index of a non-target checkpoint crossed this step
         (either direction; first in index order), -1 otherwise.
     dist_to_next : wp.array
-        ``float32`` — |position - next checkpoint center| after any advance.
+        ``float32`` — ``|position - next checkpoint center|`` after any advance.
         NaN for envs with no checkpoints.
     """
 
