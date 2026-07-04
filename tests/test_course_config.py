@@ -79,22 +79,15 @@ def test_numeric_validation():
 
 
 def test_set_capturing_propagates():
-    from track_gen._src import checkpoints as cps_mod
-    from track_gen._src import collision as col_mod
-    from track_gen._src import collision_discs as discs_mod
-    from track_gen._src import course as course_mod
-    from track_gen._src import progress as prog_mod
+    from track_gen._src import runtime
     from track_gen.course import set_capturing
     set_capturing(True)
     try:
-        assert course_mod._CAPTURING and col_mod._CAPTURING \
-            and discs_mod._CAPTURING and cps_mod._CAPTURING \
-            and prog_mod._CAPTURING
+        # One shared flag now governs the whole utility family.
+        assert runtime._CAPTURING
     finally:
         set_capturing(False)
-    assert not (course_mod._CAPTURING or col_mod._CAPTURING
-                or discs_mod._CAPTURING or cps_mod._CAPTURING
-                or prog_mod._CAPTURING)
+    assert not runtime._CAPTURING
 
 
 def test_device_is_canonicalized():

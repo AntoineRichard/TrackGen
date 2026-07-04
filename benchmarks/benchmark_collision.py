@@ -22,7 +22,7 @@ import numpy as np
 import torch
 import warp as wp
 
-from track_gen._src import collision as collision_mod
+from track_gen._src import runtime
 from track_gen._src.rng_utils import PerEnvSeededRNG
 from track_gen._src.track_generator import TrackGenerator
 from track_gen._src.types import TrackGenConfig
@@ -57,15 +57,15 @@ def _time_eager(checker, pos, yaw, he, iters, warmup):
 
 def _time_graph(checker, pos, yaw, he, iters, device):
     """Capture one query into a CUDA graph and time its replay."""
-    prev = collision_mod._CAPTURING
-    collision_mod._CAPTURING = True
+    prev = runtime._CAPTURING
+    runtime._CAPTURING = True
     try:
         checker.query(pos, yaw, he)  # warmup: modules loaded before capture
         wp.synchronize()
         with wp.ScopedCapture(device=device) as cap:
             checker.query(pos, yaw, he)
     finally:
-        collision_mod._CAPTURING = prev
+        runtime._CAPTURING = prev
     wp.capture_launch(cap.graph)
     wp.synchronize()
     t0 = time.perf_counter()

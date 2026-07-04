@@ -29,25 +29,8 @@ import warp as wp
 
 from .collision_geom import _safe_normalize2
 from .props import _scan_boundary_k
+from .runtime import _init, _sync
 from .types import GateSequence, Track
-
-_INITED = False
-_CAPTURING = False
-
-
-def _init() -> None:
-    """Initialize Warp once (idempotent). Must run before any wp.launch."""
-    global _INITED
-    if not _INITED:
-        wp.init()
-        _INITED = True
-
-
-def _sync(device) -> None:
-    if _CAPTURING:
-        return
-    if "cuda" in str(device):
-        wp.synchronize()
 
 
 @dataclass

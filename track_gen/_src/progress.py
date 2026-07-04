@@ -28,24 +28,7 @@ import warp as wp
 
 from .checkpoints import CheckpointSet
 from .collision_geom import _is_nan2, _segs_cross
-
-_INITED = False
-_CAPTURING = False
-
-
-def _init() -> None:
-    """Initialize Warp once (idempotent). Must run before any wp.launch."""
-    global _INITED
-    if not _INITED:
-        wp.init()
-        _INITED = True
-
-
-def _sync(device) -> None:
-    if _CAPTURING:
-        return
-    if "cuda" in str(device):
-        wp.synchronize()
+from .runtime import _check_arr, _init, _sync
 
 
 @dataclass
@@ -269,17 +252,7 @@ class ProgressTracker:
         )
 
     def _validate_position(self, position) -> None:
-        if not isinstance(position, wp.array):
-            raise ValueError(f"position must be a wp.array, got {type(position)!r}")
-        if position.shape != (self._E,):
-            raise ValueError(
-                f"position must have shape ({self._E},), got {position.shape}")
-        if position.dtype is not wp.vec2f:
-            raise ValueError(
-                f"position must have dtype vec2f, got {position.dtype.__name__}")
-        if str(position.device) != self._device:
-            raise ValueError(
-                f"position is on {position.device}, tracker is on {self._device}")
+        _check_arr("position", position, (self._E,), wp.vec2f, self._device)
 
     def bind(self, position: wp.array) -> None:
         """Bind (or rebind) a stable ``[E]`` vec2f position buffer.

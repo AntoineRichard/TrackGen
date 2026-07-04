@@ -20,8 +20,7 @@ from .collision_geom import (
     _rot2,
     _safe_normalize2,
 )
-
-_BIG = 1.0e30
+from .runtime import _BIG
 
 
 @wp.kernel

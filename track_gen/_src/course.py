@@ -32,50 +32,16 @@ from dataclasses import dataclass
 
 import warp as wp
 
-from . import checkpoints as _cps_mod
-from . import collision as _col_mod
-from . import collision_discs as _discs_mod
-from . import progress as _prog_mod
+from . import runtime
 from .checkpoints import CheckpointSampler, CheckpointSet
 from .collision import BoxContact, CollisionChecker
 from .collision_discs import DiscChecker, DiscContact
 from .gate_generator import GateGenerator
 from .progress import ProgressEvents, ProgressTracker
 from .rng_utils import PerEnvSeededRNG
+from .runtime import _check_arr, _init, set_capturing
 from .track_generator import TrackGenerator
 from .types import GateGenConfig, GateSequence, Track, TrackGenConfig
-
-_INITED = False
-_CAPTURING = False
-
-
-def _init() -> None:
-    """Initialize Warp once (idempotent). Must run before any wp.launch."""
-    global _INITED
-    if not _INITED:
-        wp.init()
-        _INITED = True
-
-
-def _sync(device) -> None:
-    if _CAPTURING:
-        return
-    if "cuda" in str(device):
-        wp.synchronize()
-
-
-def set_capturing(flag: bool) -> None:
-    """Toggle the capture flag on the facade AND all sub-tool modules.
-
-    One switch for user-side CUDA graph captures of ``step()``/``reset()``:
-    while ``True``, no utility performs a host synchronize.
-    """
-    global _CAPTURING
-    _CAPTURING = bool(flag)
-    _col_mod._CAPTURING = bool(flag)
-    _discs_mod._CAPTURING = bool(flag)
-    _cps_mod._CAPTURING = bool(flag)
-    _prog_mod._CAPTURING = bool(flag)
 
 
 @wp.kernel
@@ -266,22 +232,10 @@ class Course:
     # -- validation ------------------------------------------------------
 
     def _check_arr(self, name: str, arr, shape: tuple, dtype) -> None:
-        """Validate a bound/seed wp.array's shape, dtype, and device."""
-        if not isinstance(arr, wp.array):
-            raise ValueError(
-                f"{name} must be a wp.array, got {type(arr).__name__}")
-        if tuple(arr.shape) != shape:
-            raise ValueError(
-                f"{name} must have shape {shape}, got {tuple(arr.shape)}")
-        if arr.dtype is not dtype:
-            want = getattr(dtype, "__name__", str(dtype))
-            got = getattr(arr.dtype, "__name__", str(arr.dtype))
-            raise ValueError(
-                f"{name} must have dtype {want}, got {got}")
-        if str(arr.device) != self._device:
-            raise ValueError(
-                f"{name} must be on device {self._device!r}, got "
-                f"{str(arr.device)!r}")
+        """Validate a bound/seed wp.array's shape, dtype, and device
+        (thin wrapper over :func:`runtime._check_arr`, pinned to this
+        course's device)."""
+        _check_arr(name, arr, shape, dtype, self._device)
 
     def _validate_seed_array(self, seeds) -> None:
         """A wp.array seeds must be ``[E]`` int32 on the course device.

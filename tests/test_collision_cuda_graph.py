@@ -17,7 +17,7 @@ pytestmark = [
 
 import warp as wp  # noqa: E402
 from tests._collision_fixtures import make_annulus_track, make_boxes  # noqa: E402
-from track_gen._src import collision as collision_mod  # noqa: E402
+from track_gen._src import runtime  # noqa: E402
 from track_gen.collision import CollisionChecker  # noqa: E402
 
 DEV = "cuda:0"
@@ -35,15 +35,15 @@ def test_query_graph_replay_matches_eager(method):
 
     eager = checker.query(pos, yaw, he).clone()
 
-    prev = collision_mod._CAPTURING
-    collision_mod._CAPTURING = True
+    prev = runtime._CAPTURING
+    runtime._CAPTURING = True
     try:
         checker.query(pos, yaw, he)  # warmup: modules loaded before capture
         wp.synchronize()
         with wp.ScopedCapture(device=DEV) as cap:
             checker.query(pos, yaw, he)
     finally:
-        collision_mod._CAPTURING = prev
+        runtime._CAPTURING = prev
 
     # Poison outputs so the comparison proves the REPLAY recomputed them,
     # not that stale pre-capture results survived in the reused buffers.
@@ -64,14 +64,14 @@ def test_bake_graph_capturable():
     checker = CollisionChecker(track, max_boxes=1, method="sdf",
                                sdf_resolution=64)
     phi_eager = checker._sdf_phi.numpy().copy()
-    prev = collision_mod._CAPTURING
-    collision_mod._CAPTURING = True
+    prev = runtime._CAPTURING
+    runtime._CAPTURING = True
     try:
         wp.synchronize()
         with wp.ScopedCapture(device=DEV) as cap:
             checker.bake()
     finally:
-        collision_mod._CAPTURING = prev
+        runtime._CAPTURING = prev
 
     checker._sdf_phi.fill_(12345.0)
 

@@ -26,24 +26,7 @@ from .collision_geom import (
     _rot2,
     _safe_normalize2,
 )
-
-_INITED = False
-_CAPTURING = False
-
-
-def _init() -> None:
-    """Initialize Warp once (idempotent). Must run before any wp.launch."""
-    global _INITED
-    if not _INITED:
-        wp.init()
-        _INITED = True
-
-
-def _sync(device) -> None:
-    if _CAPTURING:
-        return
-    if "cuda" in str(device):
-        wp.synchronize()
+from .runtime import _check_arr, _init, _sync
 
 
 @dataclass
@@ -208,21 +191,10 @@ class DiscChecker:
         )
 
     def _validate_inputs(self, position, yaw, half_extents) -> None:
-        n = self._E * self._B
-        for name, arr, dtype in (("position", position, wp.vec2f),
-                                 ("yaw", yaw, wp.float32),
-                                 ("half_extents", half_extents, wp.vec2f)):
-            if not isinstance(arr, wp.array):
-                raise ValueError(f"{name} must be a wp.array, got {type(arr)!r}")
-            if arr.shape != (n,):
-                raise ValueError(
-                    f"{name} must have shape ({n},) = (E*max_boxes,), got {arr.shape}")
-            if arr.dtype is not dtype:
-                raise ValueError(
-                    f"{name} must have dtype {dtype.__name__}, got {arr.dtype.__name__}")
-            if str(arr.device) != self._device:
-                raise ValueError(
-                    f"{name} is on device {arr.device}, checker is on {self._device}")
+        n = (self._E * self._B,)
+        _check_arr("position", position, n, wp.vec2f, self._device)
+        _check_arr("yaw", yaw, n, wp.float32, self._device)
+        _check_arr("half_extents", half_extents, n, wp.vec2f, self._device)
 
     def bind_inputs(self, position: wp.array, yaw: wp.array,
                     half_extents: wp.array) -> None:

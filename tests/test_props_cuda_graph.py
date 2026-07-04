@@ -16,7 +16,7 @@ pytestmark = [
 
 import warp as wp  # noqa: E402
 from tests._collision_fixtures import make_annulus_track  # noqa: E402
-from track_gen._src import props as props_mod  # noqa: E402
+from track_gen._src import runtime  # noqa: E402
 from track_gen.props import PropSampler  # noqa: E402
 
 DEV = "cuda:0"
@@ -28,15 +28,15 @@ def test_sample_graph_replay_matches_eager(mode):
     sampler = PropSampler(track, spacing=0.1, boundary="outer", mode=mode)
     eager = sampler.sample().clone()
 
-    prev = props_mod._CAPTURING
-    props_mod._CAPTURING = True
+    prev = runtime._CAPTURING
+    runtime._CAPTURING = True
     try:
         sampler.sample()  # warmup: modules loaded before capture
         wp.synchronize()
         with wp.ScopedCapture(device=DEV) as cap:
             sampler.sample()
     finally:
-        props_mod._CAPTURING = prev
+        runtime._CAPTURING = prev
 
     # Poison outputs so the comparison proves the REPLAY recomputed them.
     replay = sampler._props

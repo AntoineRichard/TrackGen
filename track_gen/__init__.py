@@ -16,6 +16,7 @@ from . import props
 from . import checkpoints
 from . import progress
 from . import course
+from .course import set_capturing
 
 __all__ = [
     "TrackGenerator",
@@ -30,5 +31,6 @@ __all__ = [
     "checkpoints",
     "progress",
     "course",
+    "set_capturing",
     "__version__",
 ]
