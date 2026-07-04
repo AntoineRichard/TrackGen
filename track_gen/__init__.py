@@ -15,6 +15,7 @@ from . import collision
 from . import props
 from . import checkpoints
 from . import progress
+from . import course
 
 __all__ = [
     "TrackGenerator",
@@ -28,5 +29,6 @@ __all__ = [
     "props",
     "checkpoints",
     "progress",
+    "course",
     "__version__",
 ]
