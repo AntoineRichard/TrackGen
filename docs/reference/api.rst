@@ -86,3 +86,21 @@ approximate clearance are consumed (e.g. RL reward shaping).
 Reproduce::
 
    python -m benchmarks.benchmark_collision --E 8192
+
+Boundary props
+--------------
+
+Rendering-only instancing poses along track boundaries — cone lines
+(``mode="points"``) and wall pieces (``mode="segments"``). Complementary to
+the collision utility: props never collide.
+
+.. automodule:: track_gen.props
+   :no-members:
+
+.. autoclass:: track_gen.props.PropSampler
+   :members:
+
+.. autoclass:: track_gen.props.PropSet
+   :no-members:
+
+   .. automethod:: clone
