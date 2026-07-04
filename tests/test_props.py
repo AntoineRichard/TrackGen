@@ -172,6 +172,8 @@ def test_constructor_validation():
     track = make_annulus_track(E=1, n=64)
     with pytest.raises(ValueError, match="spacing"):
         PropSampler(track, spacing=0.0)
+    with pytest.raises(ValueError, match="spacing"):
+        PropSampler(track, spacing=float("nan"))
     with pytest.raises(ValueError, match="boundary"):
         PropSampler(track, spacing=0.1, boundary="center")
     with pytest.raises(ValueError, match="mode"):

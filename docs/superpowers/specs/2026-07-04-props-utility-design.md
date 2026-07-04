@@ -115,7 +115,7 @@ pipeline resampler but self-contained:
    the cumulative table, lerp position(s) on the polyline, emit
    position/tangent/yaw/length.
 
-Shared helpers (`_safe_normalize2`, `_is_nan2`) come from
+Shared helper (`_safe_normalize2`) comes from
 `collision_geom.py`. Scratch and outputs preallocated in `__init__`;
 `sample()` is two launches + `_sync`.
 

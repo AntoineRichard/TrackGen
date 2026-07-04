@@ -72,7 +72,8 @@ class PropSet:
         ``float32`` per-prop extent: effective arc step (points mode) or
         chord length (segments mode).
     count : wp.array
-        ``[E]`` ``int32`` real prop counts (0 for degenerate envs).
+        ``[E]`` ``int32`` real prop counts (0 for degenerate envs). Meaningful
+        only for envs with ``valid[e] == 1``.
     truncated : wp.array
         ``[E]`` ``int32`` — 1 if ``max_props`` clipped this env's ring (the
         ring still closes, at a coarser effective spacing).
@@ -133,13 +134,19 @@ def _scan_boundary_k(
         prev = p
     perim = s + wp.length(points[base] - prev)  # closing edge back to point 0
 
-    n = int(wp.round(perim / spacing))
-    if n < 3:
-        n = 3
+    # Snap in float first: float->int32 conversion of out-of-range values
+    # (absurdly small spacing) differs between CPU (INT_MIN) and CUDA
+    # (saturating), so clamp against max_props before the cast.
+    nf = wp.round(perim / spacing)
     trunc = int(0)
-    if n > max_props:
+    n = int(0)
+    if nf > float(max_props):
         n = max_props
         trunc = int(1)
+    else:
+        n = int(nf)
+        if n < 3:
+            n = 3
     out_count[e] = n
     out_step[e] = perim / float(n)
     out_truncated[e] = trunc
@@ -250,13 +257,16 @@ class PropSampler:
     ``_CAPTURING`` flag is set). Because ``TrackGenerator.generate()``
     overwrites its ``Track`` buffers in place, every ``sample()`` reads the
     CURRENT batch — no rebind after regeneration. Props are rendering-only;
-    they are not colliders.
+    they are not colliders. Results for envs with ``valid[e] == 0`` are
+    undefined — an invalid track can still have >= 3 boundary points and
+    will yield well-formed-looking props with no NaN signal; callers must
+    gate on ``Track.valid``, as everywhere in the library.
     """
 
     def __init__(self, track: Track, spacing: float, boundary: str = "outer",
                  mode: str = "points", max_props: "int | None" = None) -> None:
         _init()
-        if float(spacing) <= 0.0:
+        if not (float(spacing) > 0.0):
             raise ValueError(f"spacing must be > 0, got {spacing!r}")
         if boundary not in ("inner", "outer"):
             raise ValueError(

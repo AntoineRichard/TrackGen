@@ -92,7 +92,8 @@ Boundary props
 
 Rendering-only instancing poses along track boundaries — cone lines
 (``mode="points"``) and wall pieces (``mode="segments"``). Complementary to
-the collision utility: props never collide.
+the collision utility: props never collide. Results for invalid envs
+(``Track.valid == 0``) are undefined — always gate on ``valid``.
 
 .. automodule:: track_gen.props
    :no-members:
