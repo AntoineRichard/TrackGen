@@ -28,3 +28,21 @@ Result types
    :no-members:
 
    .. automethod:: clone
+
+Collision queries
+-----------------
+
+Box-vs-track out-of-bounds checks with full contact info. See
+``track_gen.collision`` for backend trade-offs (exact ``segments`` scan vs
+baked ``sdf`` grids).
+
+.. automodule:: track_gen.collision
+   :no-members:
+
+.. autoclass:: track_gen.collision.CollisionChecker
+   :members:
+
+.. autoclass:: track_gen.collision.BoxContact
+   :no-members:
+
+   .. automethod:: clone
