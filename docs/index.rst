@@ -156,6 +156,7 @@ Explore the docs
    tutorials/gate-sequences
    tutorials/choosing-a-generator
    tutorials/cuda-graph-in-a-sim
+   tutorials/runtime-utilities
 
 .. toctree::
    :maxdepth: 1

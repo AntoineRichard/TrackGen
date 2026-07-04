@@ -69,11 +69,18 @@ defined in the same module.
 Utilities overview figure
 -------------------------
 
-``docs/assets/utilities-overview.png`` (the four-panel figure in the API
-reference showing ``track_gen.props`` cones/walls/spacing and the
-``track_gen.collision`` SDF + box classification) is generated separately by
-``viz.render_utility_assets`` — same conventions: fixed seeds, ``cpu``
-device, deterministic output.
+The utilities module renders FOUR figures via ``viz.render_utility_assets``
+(same conventions: fixed seeds, ``cpu`` device, deterministic output):
+
+- ``docs/assets/utilities-overview.png`` — the four-panel figure in the API
+  reference showing ``track_gen.props`` cones/walls/spacing and the
+  ``track_gen.collision`` SDF + box classification
+- ``docs/assets/checkpoints-overview.png`` — track-sourced virtual gates and
+  gate-sourced checkpoints from ``track_gen.checkpoints``
+- ``docs/assets/progress-tracking.png`` — agent path colored by progress state
+  from ``track_gen.progress``
+- ``docs/assets/disc-collision.png`` — disc obstacles and box contacts from
+  ``track_gen.collision.DiscChecker``
 
 .. code-block:: bash
 

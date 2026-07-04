@@ -58,6 +58,14 @@ baked ``sdf`` grids).
 
    .. automethod:: clone
 
+.. autoclass:: track_gen.collision.DiscChecker
+   :members:
+
+.. autoclass:: track_gen.collision.DiscContact
+   :no-members:
+
+   .. automethod:: clone
+
 Performance
 ~~~~~~~~~~~
 
@@ -113,6 +121,37 @@ the collision utility: props never collide. Results for invalid envs
    :members:
 
 .. autoclass:: track_gen.props.PropSet
+   :no-members:
+
+   .. automethod:: clone
+
+Checkpoints
+-----------
+
+Ordered course goals from gates (zero-copy) or subsampled track centerlines.
+
+.. automodule:: track_gen.checkpoints
+   :no-members:
+
+.. autoclass:: track_gen.checkpoints.CheckpointSampler
+   :members:
+
+.. autoclass:: track_gen.checkpoints.CheckpointSet
+   :no-members:
+
+   .. automethod:: from_gates
+
+   .. automethod:: clone
+
+Progress tracking
+-----------------
+
+Stateful per-env course progress over any ``CheckpointSet``.
+
+.. autoclass:: track_gen.progress.ProgressTracker
+   :members:
+
+.. autoclass:: track_gen.progress.ProgressEvents
    :no-members:
 
    .. automethod:: clone
