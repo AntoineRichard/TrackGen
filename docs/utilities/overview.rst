@@ -56,7 +56,7 @@ arrays must be passed at capture and every replay.)
 Outside capture, every utility follows a per-call ``wp.synchronize()`` after
 its kernel launch (blocking, but simple — the codebase idiom). To record
 ``query()``/``update()``/``sample()`` into YOUR OWN CUDA graph — instead of
-relying on the ``Course`` facade's built-in capture, below — call
+relying on the :doc:`Course facade </utilities/course>`'s built-in capture — call
 ``track_gen.set_capturing(True)`` before opening the capture region so those
 per-call syncs are skipped, then restore it (``set_capturing(False)``, or
 the value you saved beforehand) once the capture region is closed.

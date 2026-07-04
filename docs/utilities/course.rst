@@ -1,7 +1,7 @@
 The Course facade
 =================
 
-Everything above can be wired by hand — or bundled by
+The :doc:`runtime utilities </utilities/overview>` can be wired by hand — or bundled by
 ``track_gen.course.Course``, which owns the orchestration invariants
 (rebake/resample/posts rebuild and a full progress reset on every
 regeneration; per-env respawns via a mask):
