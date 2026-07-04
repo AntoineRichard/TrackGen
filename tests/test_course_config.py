@@ -95,3 +95,14 @@ def test_set_capturing_propagates():
     assert not (course_mod._CAPTURING or col_mod._CAPTURING
                 or discs_mod._CAPTURING or cps_mod._CAPTURING
                 or prog_mod._CAPTURING)
+
+
+def test_device_is_canonicalized():
+    """Course stores the Warp-canonical device string (matches
+    str(arr.device) used in bind/seed validation)."""
+    import warp as wp
+
+    from track_gen.course import Course
+    cfg = _track_cfg(collision="segments")
+    course = Course(cfg)
+    assert course._device == str(wp.get_device(cfg.gen.device))

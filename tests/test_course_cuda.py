@@ -94,3 +94,22 @@ def test_user_captured_step_matches_eager_twin():
         np.testing.assert_array_equal(
             course_c._step_result.contacts.oob.numpy(),
             course_e._step_result.contacts.oob.numpy())
+
+
+def test_cuda_alias_device_binds_and_steps():
+    """Regression: device='cuda' (the alias, not 'cuda:0') must construct,
+    bind cuda:0 buffers, generate, and step without a device-mismatch raise."""
+    cfg = CourseConfig(mode="track",
+                       gen=TrackGenConfig(num_envs=E, device="cuda"),
+                       seeds=3, collision="segments",
+                       checkpoint_spacing=0.6, max_checkpoints=64)
+    course = Course(cfg)
+    pos = wp.zeros(E, dtype=wp.vec2f, device="cuda:0")
+    yaw = wp.zeros(E, dtype=wp.float32, device="cuda:0")
+    he = wp.array(np.full((E, 2), 0.02, np.float32), dtype=wp.vec2f,
+                  device="cuda:0")
+    course.bind(position=pos, yaw=yaw, half_extents=he)
+    course.generate()
+    result = course.step()
+    assert result.events is not None
+    assert result.contacts is not None

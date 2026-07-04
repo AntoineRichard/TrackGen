@@ -237,7 +237,10 @@ class Course:
         _init()
         self._cfg = config
         self._E = int(config.gen.num_envs)
-        self._device = str(config.gen.device)
+        # Canonicalize via Warp: "cuda" -> "cuda:0" so the string matches
+        # str(arr.device) in _check_arr (bind/seed validation would otherwise
+        # reject cuda:0 buffers when the config used the "cuda" alias).
+        self._device = str(wp.get_device(config.gen.device))
         self._is_cuda = "cuda" in self._device
         if isinstance(config.seeds, wp.array):
             self._validate_seed_array(config.seeds)
