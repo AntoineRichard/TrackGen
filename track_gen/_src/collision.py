@@ -315,6 +315,7 @@ class CollisionChecker:
             normal=wp.zeros(n, dtype=wp.vec2f, device=dev),
             boundary=wp.zeros(n, dtype=wp.int32, device=dev),
         )
+        self._bound: "tuple | None" = None
         if method == "sdf":
             R = int(sdf_resolution)
             self._sdf_resolution = R
@@ -351,23 +352,7 @@ class CollisionChecker:
                   device=self._device)
         _sync(self._device)
 
-    def query(self, position: wp.array, yaw: wp.array,
-              half_extents: wp.array) -> BoxContact:
-        """Compute contact info for ``E * max_boxes`` oriented boxes.
-
-        Args:
-            position: ``[E*max_boxes]`` ``vec2f`` box centers. NaN marks an
-                inactive slot (NaN outputs, ``oob=0``, ``boundary=-1``).
-            yaw: ``[E*max_boxes]`` ``float32`` box orientations (radians).
-            half_extents: ``[E*max_boxes]`` ``vec2f`` per-box half sizes.
-
-        Returns:
-            The checker's preallocated :class:`BoxContact` (same instance every
-            call; buffers overwritten in place).
-
-        Raises:
-            ValueError: on shape/dtype/device mismatch.
-        """
+    def _validate_inputs(self, position, yaw, half_extents) -> None:
         n = self._E * self._B
         for name, arr, dtype in (("position", position, wp.vec2f),
                                  ("yaw", yaw, wp.float32),
@@ -383,6 +368,64 @@ class CollisionChecker:
             if str(arr.device) != self._device:
                 raise ValueError(
                     f"{name} is on device {arr.device}, checker is on {self._device}")
+
+    def bind_inputs(self, position: wp.array, yaw: wp.array,
+                    half_extents: wp.array) -> None:
+        """Bind stable per-step input buffers (validated once, here).
+
+        After binding, ``query()`` takes no arguments and reads these arrays
+        in place each call — the natural CUDA-graph pattern: the sim writes
+        poses into its stable buffers and replays the captured query. The
+        arrays must keep the same ``.ptr`` for the binding's lifetime.
+        """
+        self._validate_inputs(position, yaw, half_extents)
+        self._bound = (position, yaw, half_extents)
+
+    def query(self, position: "wp.array | None" = None,
+              yaw: "wp.array | None" = None,
+              half_extents: "wp.array | None" = None) -> BoxContact:
+        """Compute contact info for ``E * max_boxes`` oriented boxes.
+
+        Two modes:
+
+        - Bound mode: after ``bind_inputs()``, call ``query()`` with no
+          arguments; it reads the bound arrays in place each call (the
+          arrays must keep the same ``.ptr`` for the binding's lifetime —
+          write new poses into them rather than rebinding, e.g. under
+          CUDA-graph capture).
+        - Per-call mode: if not bound, pass ``position``, ``yaw`` and
+          ``half_extents`` explicitly on every call.
+
+        Args:
+            position: ``[E*max_boxes]`` ``vec2f`` box centers. NaN marks an
+                inactive slot (NaN outputs, ``oob=0``, ``boundary=-1``).
+                Required in per-call mode; omit in bound mode.
+            yaw: ``[E*max_boxes]`` ``float32`` box orientations (radians).
+                Required in per-call mode; omit in bound mode.
+            half_extents: ``[E*max_boxes]`` ``vec2f`` per-box half sizes.
+                Required in per-call mode; omit in bound mode.
+
+        Returns:
+            The checker's preallocated :class:`BoxContact` (same instance every
+            call; buffers overwritten in place).
+
+        Raises:
+            ValueError: on shape/dtype/device mismatch, or on mode misuse
+                (passing arguments while bound, or omitting them while not
+                bound).
+        """
+        if self._bound is not None:
+            if position is not None or yaw is not None or half_extents is not None:
+                raise ValueError(
+                    "checker inputs are bound; call query() with no arguments")
+            position, yaw, half_extents = self._bound
+        else:
+            if position is None or yaw is None or half_extents is None:
+                raise ValueError(
+                    "checker is not bound; pass position, yaw and "
+                    "half_extents to query() or call bind_inputs() first")
+            self._validate_inputs(position, yaw, half_extents)
+        n = self._E * self._B
         t = self._track
         c = self._contact
         if self._method == "segments":
