@@ -16,6 +16,17 @@ def test_benchmark_runs_small_cpu():
         assert r["seconds"] >= 0.0
 
 
+def test_collision_benchmark_runs_small_cpu():
+    pytest.importorskip("warp")
+    from benchmarks.benchmark_collision import run_collision_benchmark
+    m = run_collision_benchmark(E=4, B=2, device="cpu", sdf_resolution=16,
+                                iters=2, warmup=1, seed=42)
+    assert m["boxes"] == 8
+    assert m["seg_eager_s"] >= 0.0 and m["sdf_eager_s"] >= 0.0
+    assert m["seg_graph_s"] is None and m["sdf_graph_s"] is None  # cpu: no graph
+    assert 0.0 <= m["flag_agreement"] <= 1.0
+
+
 def test_pipeline_benchmark_runs_small_cpu():
     pytest.importorskip("warp")
     from benchmarks.benchmark_pipeline import run_pipeline_benchmark
