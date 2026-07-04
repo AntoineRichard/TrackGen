@@ -1,0 +1,140 @@
+"""Analytic course tests for track_gen.progress (hand-built 4-gate ring)."""
+from __future__ import annotations
+
+import numpy as np
+import pytest
+import warp as wp
+
+wp.init()
+
+E = 1
+M = 4
+
+
+def _ring_checkpoints(device="cpu"):
+    """4 checkpoints at angles 0/90/180/270 deg; crossing segments radial
+    [0.3, 1.3]; tangents CCW. Agent paths on the unit circle cross them."""
+    from track_gen.checkpoints import CheckpointSet
+    ang = np.deg2rad([0.0, 90.0, 180.0, 270.0])
+    radial = np.stack([np.cos(ang), np.sin(ang)], axis=1).astype(np.float32)
+    tang = np.stack([-np.sin(ang), np.cos(ang)], axis=1).astype(np.float32)
+
+    def v2(a):
+        return wp.array(a, dtype=wp.vec2f, device=device)
+
+    return CheckpointSet(
+        position=v2(radial * 1.0),
+        left=v2(radial * 0.3),
+        right=v2(radial * 1.3),
+        tangent=v2(tang),
+        count=wp.array(np.array([M], np.int32), dtype=wp.int32, device=device),
+    )
+
+
+def _pos(deg):
+    a = np.deg2rad(deg)
+    return wp.array(np.array([[np.cos(a), np.sin(a)]], np.float32),
+                    dtype=wp.vec2f, device="cpu")
+
+
+def test_ccw_lap_event_trace():
+    from track_gen.progress import ProgressTracker
+    tracker = ProgressTracker(_ring_checkpoints())
+    trace = []
+    for k in range(10):  # angles -22.5 + 45k: crossings at k = 1,3,5,7,9
+        ev = tracker.update(_pos(-22.5 + 45.0 * k))
+        trace.append((int(ev.passed.numpy()[0]), int(ev.next_checkpoint.numpy()[0]),
+                      int(ev.laps.numpy()[0]), int(ev.progress.numpy()[0])))
+    assert trace == [
+        (0, 0, 0, 0),  # first update: init only
+        (1, 1, 0, 1),  # crossed gate 0
+        (0, 1, 0, 1),
+        (1, 2, 0, 2),  # gate 1
+        (0, 2, 0, 2),
+        (1, 3, 0, 3),  # gate 2
+        (0, 3, 0, 3),
+        (1, 0, 1, 4),  # gate 3 -> lap complete
+        (0, 0, 1, 4),
+        (1, 1, 1, 5),  # gate 0 again on lap 2
+    ]
+
+
+def test_dist_to_next_matches_geometry():
+    from track_gen.progress import ProgressTracker
+    tracker = ProgressTracker(_ring_checkpoints())
+    tracker.update(_pos(-22.5))
+    ev = tracker.update(_pos(22.5))   # passed gate 0, next = gate 1 at (0,1)
+    p = np.array([np.cos(np.deg2rad(22.5)), np.sin(np.deg2rad(22.5))])
+    expected = np.linalg.norm(p - np.array([0.0, 1.0]))
+    np.testing.assert_allclose(float(ev.dist_to_next.numpy()[0]), expected,
+                               rtol=1e-5)
+
+
+def test_wrong_way_and_wrong_checkpoint():
+    from track_gen.progress import ProgressTracker
+    tracker = ProgressTracker(_ring_checkpoints())
+    tracker.update(_pos(22.5))
+    ev = tracker.update(_pos(-22.5))  # backward through gate 0
+    assert int(ev.wrong_way.numpy()[0]) == 1
+    assert int(ev.passed.numpy()[0]) == 0
+    assert int(ev.next_checkpoint.numpy()[0]) == 0  # no advance
+
+    tracker2 = ProgressTracker(_ring_checkpoints())
+    tracker2.update(_pos(80.0))
+    ev = tracker2.update(_pos(170.0))  # crosses gate 1 (90 deg), target is 0
+    assert int(ev.passed.numpy()[0]) == 0
+    assert int(ev.wrong_checkpoint.numpy()[0]) == 1
+
+
+def test_double_jump_advances_one_and_flags_second():
+    from track_gen.progress import ProgressTracker
+    tracker = ProgressTracker(_ring_checkpoints())
+    tracker.update(_pos(-10.0))
+    ev = tracker.update(_pos(100.0))  # one step across gates 0 AND 1
+    assert int(ev.passed.numpy()[0]) == 1
+    assert int(ev.checkpoint_passed.numpy()[0]) == 0
+    assert int(ev.next_checkpoint.numpy()[0]) == 1
+    assert int(ev.wrong_checkpoint.numpy()[0]) == 1  # the skipped gate 1
+
+
+def test_reset_mask_no_spurious_crossing():
+    from track_gen.progress import ProgressTracker
+    tracker = ProgressTracker(_ring_checkpoints())
+    tracker.update(_pos(-22.5))
+    tracker.update(_pos(22.5))
+    assert int(tracker._progress.numpy()[0]) == 1
+    mask = wp.array(np.array([1], np.int32), dtype=wp.int32, device="cpu")
+    tracker.reset(mask)
+    # Teleport across the whole course: first post-reset update is inert.
+    ev = tracker.update(_pos(200.0))
+    assert int(ev.passed.numpy()[0]) == 0
+    assert int(ev.wrong_checkpoint.numpy()[0]) == -1
+    assert int(ev.next_checkpoint.numpy()[0]) == 0
+    assert int(ev.laps.numpy()[0]) == 0
+    assert int(ev.progress.numpy()[0]) == 0
+
+
+def test_bound_mode_equivalence_and_errors():
+    from track_gen.progress import ProgressTracker
+    buf = wp.zeros(E, dtype=wp.vec2f, device="cpu")
+    bound = ProgressTracker(_ring_checkpoints(), position=buf)
+    free = ProgressTracker(_ring_checkpoints())
+    with pytest.raises(ValueError, match="bound"):
+        bound.update(_pos(0.0))       # arg while bound
+    with pytest.raises(ValueError, match="position"):
+        free.update()                 # no-arg while unbound
+    for k in range(6):
+        p = _pos(-22.5 + 45.0 * k)
+        wp.copy(buf, p)
+        ev_b = bound.update()
+        ev_f = free.update(p)
+        assert int(ev_b.passed.numpy()[0]) == int(ev_f.passed.numpy()[0])
+        assert int(ev_b.next_checkpoint.numpy()[0]) == int(ev_f.next_checkpoint.numpy()[0])
+        np.testing.assert_allclose(ev_b.dist_to_next.numpy(),
+                                   ev_f.dist_to_next.numpy(), rtol=1e-6)
+
+
+def test_import_surface():
+    import track_gen
+    from track_gen.progress import ProgressEvents, ProgressTracker  # noqa: F401
+    assert "progress" in track_gen.__all__

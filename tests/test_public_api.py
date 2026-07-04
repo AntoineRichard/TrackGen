@@ -13,6 +13,7 @@ def test_public_api_surface_is_exactly_curated():
         "collision",
         "props",
         "checkpoints",
+        "progress",
         "__version__",
     }
 

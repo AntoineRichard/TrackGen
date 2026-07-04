@@ -14,6 +14,7 @@ from ._src.rng_utils import PerEnvSeededRNG
 from . import collision
 from . import props
 from . import checkpoints
+from . import progress
 
 __all__ = [
     "TrackGenerator",
@@ -26,5 +27,6 @@ __all__ = [
     "collision",
     "props",
     "checkpoints",
+    "progress",
     "__version__",
 ]
