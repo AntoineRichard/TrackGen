@@ -74,10 +74,10 @@ Features
       Drone-style gate courses — gate centres and orientations — straight from the
       first-stage anchors via ``GateGenerator``.
 
-   .. grid-item-card:: RL-ready output
+   .. grid-item-card:: RL-ready runtime
 
-      Constant-width outer / center / inner borders, per-point tangent and normal
-      frames, per-track validity, and real-point counts.
+      Out-of-bounds collision, checkpoint progress and rewards, prop
+      instancing — and one Course object that bundles them.
 
 Gallery
 -------
@@ -88,6 +88,12 @@ Gallery
 
    Five generators, one batch — representative raw Phase-1 centerlines from each
    standard generator.
+
+.. figure:: assets/progress-tracking.png
+   :alt: Progress tracking on a generated track.
+
+   Runtime utilities in action: checkpoint progress on a generated track
+   with the reward-ready ``dist_to_next`` signal.
 
 .. figure:: assets/readme-gate-strip.png
    :alt: Gate sequences with collision relaxation
@@ -119,6 +125,12 @@ Explore the docs
       :link-type: doc
 
       How each first-stage generator works and when to use it.
+
+   .. grid-item-card:: Runtime utilities
+      :link: utilities/overview
+      :link-type: doc
+
+      Collision, props, checkpoints & progress, and the Course facade.
 
    .. grid-item-card:: How it works
       :link: how-it-works/pipeline
@@ -156,7 +168,6 @@ Explore the docs
    tutorials/gate-sequences
    tutorials/choosing-a-generator
    tutorials/cuda-graph-in-a-sim
-   tutorials/runtime-utilities
 
 .. toctree::
    :maxdepth: 1
@@ -170,6 +181,17 @@ Explore the docs
    generators/voronoi
    generators/checkpoint
    generators/benchmarks
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Runtime utilities
+   :hidden:
+
+   utilities/overview
+   utilities/collision
+   utilities/props
+   utilities/progress
+   utilities/course
 
 .. toctree::
    :maxdepth: 1
