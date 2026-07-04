@@ -65,3 +65,16 @@ and fixed seeds, so results are deterministic and GPU-free.  Individual helper
 functions — ``render_generator_panels()`` and ``render_gate_assets()`` — can be
 called independently if only a subset of assets needs to be rebuilt; both are
 defined in the same module.
+
+Utilities overview figure
+-------------------------
+
+``docs/assets/utilities-overview.png`` (the four-panel figure in the API
+reference showing ``track_gen.props`` cones/walls/spacing and the
+``track_gen.collision`` SDF + box classification) is generated separately by
+``viz.render_utility_assets`` — same conventions: fixed seeds, ``cpu``
+device, deterministic output.
+
+.. code-block:: bash
+
+   .venv/bin/python -m viz.render_utility_assets

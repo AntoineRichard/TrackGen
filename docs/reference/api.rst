@@ -36,6 +36,17 @@ Box-vs-track out-of-bounds checks with full contact info. See
 ``track_gen.collision`` for backend trade-offs (exact ``segments`` scan vs
 baked ``sdf`` grids).
 
+.. figure:: ../assets/utilities-overview.png
+   :alt: Cones and walls placed by track_gen.props, spacing comparison, and
+         the collision SDF field with boxes classified by the exact backend.
+
+   The query/instancing utilities on one generated track: ``track_gen.props``
+   cones (points mode) and wall pieces (segments mode) on both boundaries,
+   the effect of the spacing knob, and ``track_gen.collision``'s baked SDF
+   field with boxes classified by the exact segments backend (green inside,
+   red out of bounds, dotted lines to the nearest boundary point).
+   Regenerate with ``python -m viz.render_utility_assets``.
+
 .. automodule:: track_gen.collision
    :no-members:
 

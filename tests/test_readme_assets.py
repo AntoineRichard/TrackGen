@@ -25,3 +25,14 @@ def test_render_generator_panels_writes_pngs(tmp_path):
     }
     for p in paths:
         assert p.exists() and p.stat().st_size > 1000
+
+
+@pytest.mark.slow
+def test_render_utilities_overview_writes_png(tmp_path):
+    from viz.render_utility_assets import render_utilities_overview
+
+    path = render_utilities_overview(output_dir=tmp_path)
+
+    assert path.name == "utilities-overview.png"
+    assert path.exists()
+    assert path.stat().st_size > 1000  # a real, non-empty PNG
