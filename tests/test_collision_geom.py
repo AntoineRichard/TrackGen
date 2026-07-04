@@ -121,3 +121,33 @@ def test_is_nan2():
     out = wp.zeros(3, dtype=wp.int32, device="cpu")
     _run(_k_nan2, 3, [p, out])
     assert list(out.numpy()) == [1, 1, 0]
+
+
+@wp.kernel
+def _k_segs_cross(a: wp.array(dtype=wp.vec2f), b: wp.array(dtype=wp.vec2f),
+                  c: wp.vec2f, d: wp.vec2f, out: wp.array(dtype=wp.int32)):
+    i = wp.tid()
+    out[i] = cg._segs_cross(a[i], b[i], c, d)
+
+
+def test_segs_cross_proper_and_degenerate():
+    # Fixed segment cd: vertical from (0,-1) to (0,1).
+    a = np.array([[-1.0, 0.0], [-1.0, 2.0], [-1.0, 0.0], [0.0, 0.0]], np.float32)
+    b = np.array([[1.0, 0.0], [1.0, 2.0], [-0.2, 0.0], [1.0, 0.0]], np.float32)
+    aw = wp.array(a, dtype=wp.vec2f, device="cpu")
+    bw = wp.array(b, dtype=wp.vec2f, device="cpu")
+    out = wp.zeros(4, dtype=wp.int32, device="cpu")
+    _run(_k_segs_cross, 4, [aw, bw, wp.vec2f(0.0, -1.0), wp.vec2f(0.0, 1.0), out])
+    # crossing; passing above; stopping short; starting ON the segment (touch -> 0)
+    assert list(out.numpy()) == [1, 0, 0, 0]
+
+
+def test_segs_cross_degenerate_cd_never_crosses():
+    # Zero-length cd (a gate with width 0) can never be properly crossed.
+    a = np.array([[-1.0, 0.0]], np.float32)
+    b = np.array([[1.0, 0.0]], np.float32)
+    aw = wp.array(a, dtype=wp.vec2f, device="cpu")
+    bw = wp.array(b, dtype=wp.vec2f, device="cpu")
+    out = wp.zeros(1, dtype=wp.int32, device="cpu")
+    _run(_k_segs_cross, 1, [aw, bw, wp.vec2f(0.0, 0.0), wp.vec2f(0.0, 0.0), out])
+    assert list(out.numpy()) == [0]

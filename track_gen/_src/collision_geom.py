@@ -107,3 +107,28 @@ def _seg_hits_aabb(a: wp.vec2f, b: wp.vec2f, he: wp.vec2f) -> int:
             if tmin > tmax:
                 return int(0)
     return int(1)
+
+
+@wp.func
+def _cross2(a: wp.vec2f, b: wp.vec2f) -> float:
+    return a[0] * b[1] - a[1] * b[0]
+
+
+@wp.func
+def _segs_cross(a: wp.vec2f, b: wp.vec2f, c: wp.vec2f, d: wp.vec2f) -> int:
+    """1 iff segments ab and cd properly intersect (strict crossing).
+
+    Collinear overlap, endpoint touching, and degenerate (zero-length)
+    segments all return 0 — a width-0 gate can never be crossed.
+    """
+    ab = b - a
+    cd = d - c
+    o1 = _cross2(ab, c - a)
+    o2 = _cross2(ab, d - a)
+    o3 = _cross2(cd, a - c)
+    o4 = _cross2(cd, b - c)
+    hit_ab = (o1 > 0.0 and o2 < 0.0) or (o1 < 0.0 and o2 > 0.0)
+    hit_cd = (o3 > 0.0 and o4 < 0.0) or (o3 < 0.0 and o4 > 0.0)
+    if hit_ab and hit_cd:
+        return int(1)
+    return int(0)
