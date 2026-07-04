@@ -36,3 +36,18 @@ def test_render_utilities_overview_writes_png(tmp_path):
     assert path.name == "utilities-overview.png"
     assert path.exists()
     assert path.stat().st_size > 1000  # a real, non-empty PNG
+
+
+@pytest.mark.slow
+def test_render_course_assets_write_pngs(tmp_path):
+    from viz.render_utility_assets import (render_checkpoints_overview,
+                                           render_disc_collision,
+                                           render_progress_tracking)
+
+    names = {render_checkpoints_overview(output_dir=tmp_path).name,
+             render_progress_tracking(output_dir=tmp_path).name,
+             render_disc_collision(output_dir=tmp_path).name}
+    assert names == {"checkpoints-overview.png", "progress-tracking.png",
+                     "disc-collision.png"}
+    for n in names:
+        assert (tmp_path / n).stat().st_size > 1000
