@@ -155,3 +155,26 @@ Stateful per-env course progress over any ``CheckpointSet``.
    :no-members:
 
    .. automethod:: clone
+
+Course facade
+-------------
+
+One object bundling generation, collision, and progress per mode; see the
+:doc:`runtime utilities tutorial </tutorials/runtime-utilities>` for the
+lifecycle.
+
+.. automodule:: track_gen.course
+   :no-members:
+
+.. autoclass:: track_gen.course.CourseConfig
+   :no-members:
+
+.. autoclass:: track_gen.course.Course
+   :members:
+
+.. autoclass:: track_gen.course.StepResult
+   :no-members:
+
+   .. automethod:: clone
+
+.. autofunction:: track_gen.course.set_capturing

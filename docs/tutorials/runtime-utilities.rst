@@ -132,3 +132,40 @@ take no arguments and read the buffers in place. Under graph capture this is
 the intended pattern: the sim writes its stable pose buffers, then replays
 the captured update. (Per-call mode also works under capture, but the SAME
 arrays must be passed at capture and every replay.)
+
+Putting it together: the Course facade
+--------------------------------------
+
+Everything above can be wired by hand — or bundled by
+``track_gen.course.Course``, which owns the orchestration invariants
+(rebake/resample/posts rebuild and a full progress reset on every
+regeneration; per-env respawns via a mask):
+
+.. code-block:: python
+
+   from track_gen import TrackGenConfig
+   from track_gen.course import Course, CourseConfig
+
+   course = Course(CourseConfig(
+       mode="track",
+       gen=TrackGenConfig(num_envs=E, device="cuda"),
+       seeds=42,
+       collision="segments",          # or "sdf" / None
+       checkpoint_spacing=0.6,
+   ))
+   course.bind(position=robot_pos, yaw=robot_yaw, half_extents=robot_he)
+
+   track = course.generate()          # whole batch + coherent refresh
+   for _ in range(steps):
+       sim.step()                     # writes the bound buffers in place
+       res = course.step()            # events + contacts, no args
+       course.reset(done_mask)        # respawn finished envs on the same course
+   course.generate(seeds=next_seed)   # new courses for everyone
+
+``generate()`` is whole-batch (the generator pipelines are fixed-batch
+captured graphs); per-env control is ``reset(mask)``. In gates mode the same
+object wraps ``GateGenerator`` + gate progress + optional ``DiscChecker``
+posts (``post_radius > 0``). The underlying tools stay reachable
+(``course.collision``, ``course.progress``, ``course.checkpoints``) and
+``track_gen.course.set_capturing(True)`` flips every utility's capture flag
+at once when you capture ``step()`` into your own sim graph.
