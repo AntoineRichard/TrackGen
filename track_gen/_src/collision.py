@@ -382,12 +382,23 @@ class CollisionChecker:
                     f"{name} is on device {arr.device}, checker is on {self._device}")
         t = self._track
         c = self._contact
-        wp.launch(
-            _box_query_segments_k, dim=n,
-            inputs=[t.inner, t.outer, t.center, t.count, self._n_max, self._B,
-                    position, yaw, half_extents,
-                    c.oob, c.distance, c.nearest, c.normal, c.boundary],
-            device=self._device,
-        )
+        if self._method == "segments":
+            wp.launch(
+                _box_query_segments_k, dim=n,
+                inputs=[t.inner, t.outer, t.center, t.count, self._n_max, self._B,
+                        position, yaw, half_extents,
+                        c.oob, c.distance, c.nearest, c.normal, c.boundary],
+                device=self._device,
+            )
+        else:
+            from . import collision_sdf
+            wp.launch(
+                collision_sdf._box_query_sdf_k, dim=n,
+                inputs=[self._sdf_lo, self._sdf_hi, self._sdf_phi, self._sdf_bid,
+                        self._sdf_resolution, self._B,
+                        position, yaw, half_extents,
+                        c.oob, c.distance, c.nearest, c.normal, c.boundary],
+                device=self._device,
+            )
         _sync(self._device)
         return c

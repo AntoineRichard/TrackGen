@@ -11,7 +11,15 @@ from __future__ import annotations
 
 import warp as wp
 
-from .collision_geom import _closest_on_seg, _crossing
+from .collision_geom import (
+    _box_corner,
+    _closest_on_seg,
+    _crossing,
+    _is_nan2,
+    _pick4,
+    _rot2,
+    _safe_normalize2,
+)
 
 _BIG = 1.0e30
 
@@ -118,3 +126,105 @@ def _sdf_bake_k(
         bid[t] = wp.int8(0)
     else:
         bid[t] = wp.int8(1)
+
+
+@wp.func
+def _grid_coord(pv: float, lov: float, hiv: float, res: int) -> float:
+    f = (pv - lov) / (hiv - lov) * float(res) - 0.5
+    return wp.clamp(f, 0.0, float(res) - 1.0)
+
+
+@wp.func
+def _sample_phi(phi: wp.array(dtype=wp.float32), base: int, res: int,
+                lo: wp.vec2f, hi: wp.vec2f, p: wp.vec2f) -> float:
+    fx = _grid_coord(p[0], lo[0], hi[0], res)
+    fy = _grid_coord(p[1], lo[1], hi[1], res)
+    x0 = int(fx)
+    y0 = int(fy)
+    x1 = wp.min(x0 + 1, res - 1)
+    y1 = wp.min(y0 + 1, res - 1)
+    tx = fx - float(x0)
+    ty = fy - float(y0)
+    v00 = phi[base + y0 * res + x0]
+    v10 = phi[base + y0 * res + x1]
+    v01 = phi[base + y1 * res + x0]
+    v11 = phi[base + y1 * res + x1]
+    return wp.lerp(wp.lerp(v00, v10, tx), wp.lerp(v01, v11, tx), ty)
+
+
+@wp.kernel
+def _box_query_sdf_k(
+    lo: wp.array(dtype=wp.vec2f),
+    hi: wp.array(dtype=wp.vec2f),
+    phi: wp.array(dtype=wp.float32),
+    bid: wp.array(dtype=wp.int8),
+    res: int,
+    max_boxes: int,
+    position: wp.array(dtype=wp.vec2f),
+    yaw: wp.array(dtype=wp.float32),
+    half_extents: wp.array(dtype=wp.vec2f),
+    out_oob: wp.array(dtype=wp.int32),
+    out_distance: wp.array(dtype=wp.float32),
+    out_nearest: wp.array(dtype=wp.vec2f),
+    out_normal: wp.array(dtype=wp.vec2f),
+    out_boundary: wp.array(dtype=wp.int32),
+):
+    t = wp.tid()
+    e = t // max_boxes
+    nan2 = wp.vec2f(wp.nan, wp.nan)
+
+    pos = position[t]
+    if _is_nan2(pos) == 1:
+        out_oob[t] = 0
+        out_distance[t] = wp.nan
+        out_nearest[t] = nan2
+        out_normal[t] = nan2
+        out_boundary[t] = -1
+        return
+
+    l = lo[e]
+    h = hi[e]
+    base = e * res * res
+    yw = yaw[t]
+    he = half_extents[t]
+    ux = _rot2(yw, wp.vec2f(1.0, 0.0))
+    uy = _rot2(yw, wp.vec2f(0.0, 1.0))
+    c0 = _box_corner(pos, ux, uy, he, 0)
+    c1 = _box_corner(pos, ux, uy, he, 1)
+    c2 = _box_corner(pos, ux, uy, he, 2)
+    c3 = _box_corner(pos, ux, uy, he, 3)
+
+    phimin = _sample_phi(phi, base, res, l, h, pos)
+    pmin = pos
+    for k in range(4):
+        ck = _pick4(c0, c1, c2, c3, k)
+        v = _sample_phi(phi, base, res, l, h, ck)
+        if v < phimin:
+            phimin = v
+            pmin = ck
+
+    oob = int(0)
+    if phimin < 0.0:
+        oob = int(1)
+
+    # Central-difference gradient of phi at the argmin sample; phi increases
+    # into the band, so normalize(grad) already points inward.
+    hx = (h[0] - l[0]) / float(res)
+    hy = (h[1] - l[1]) / float(res)
+    gxv = (_sample_phi(phi, base, res, l, h, pmin + wp.vec2f(hx, 0.0))
+           - _sample_phi(phi, base, res, l, h, pmin - wp.vec2f(hx, 0.0))) / (2.0 * hx)
+    gyv = (_sample_phi(phi, base, res, l, h, pmin + wp.vec2f(0.0, hy))
+           - _sample_phi(phi, base, res, l, h, pmin - wp.vec2f(0.0, hy))) / (2.0 * hy)
+    n = _safe_normalize2(wp.vec2f(gxv, gyv))
+    nearest = pmin - phimin * n
+
+    fx = _grid_coord(nearest[0], l[0], h[0], res)
+    fy = _grid_coord(nearest[1], l[1], h[1], res)
+    xi = wp.min(int(fx + 0.5), res - 1)
+    yi = wp.min(int(fy + 0.5), res - 1)
+
+    out_oob[t] = oob
+    out_distance[t] = phimin
+    out_nearest[t] = nearest
+    out_normal[t] = n
+    out_boundary[t] = int(bid[base + yi * res + xi])
