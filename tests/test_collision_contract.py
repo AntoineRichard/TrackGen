@@ -52,6 +52,28 @@ def test_query_returns_same_instance_and_clone_detaches():
     np.testing.assert_allclose(float(snap.distance.numpy()[0]), d_before)
 
 
+def test_constructor_binding_parity_with_disc_checker():
+    # Mirror of DiscChecker's ctor-bind test: construct with all three
+    # per-step inputs -> no-arg query() works and matches the per-call path;
+    # partial binding raises.
+    track = make_annulus_track(E=2, n=64)
+    pos, yaw, he = make_boxes(2, 2, {(0, 0): (1.0, 0.0, 0.0, 0.05, 0.03)})
+    free = CollisionChecker(track, max_boxes=2)
+    bound = CollisionChecker(track, max_boxes=2,
+                             position=pos, yaw=yaw, half_extents=he)
+    r_free = free.query(pos, yaw, he).clone()
+    r_bound = bound.query()
+    np.testing.assert_array_equal(r_bound.oob.numpy(), r_free.oob.numpy())
+    np.testing.assert_allclose(r_bound.distance.numpy(), r_free.distance.numpy(),
+                               equal_nan=True)
+    with pytest.raises(ValueError, match="bound"):
+        bound.query(pos, yaw, he)
+    with pytest.raises(ValueError, match="not bound"):
+        free.query()
+    with pytest.raises(ValueError, match="all of"):
+        CollisionChecker(track, max_boxes=2, position=pos)
+
+
 def test_segments_sees_track_buffer_updates_without_rebind():
     # The checker aliases the Track buffers; writing new geometry into the SAME
     # buffers (as TrackGenerator.generate() does) must be reflected in queries.

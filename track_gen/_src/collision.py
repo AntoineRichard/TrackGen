@@ -263,7 +263,10 @@ class CollisionChecker:
     """
 
     def __init__(self, track: Track, max_boxes: int, method: str = "segments",
-                 sdf_resolution: int = 128, sdf_padding: "float | None" = None) -> None:
+                 sdf_resolution: int = 128, sdf_padding: "float | None" = None,
+                 position: "wp.array | None" = None,
+                 yaw: "wp.array | None" = None,
+                 half_extents: "wp.array | None" = None) -> None:
         _init()
         if int(max_boxes) < 1:
             raise ValueError(f"max_boxes must be >= 1, got {max_boxes!r}")
@@ -298,6 +301,11 @@ class CollisionChecker:
             boundary=wp.zeros(n, dtype=wp.int32, device=dev),
         )
         self._bound: "tuple | None" = None
+        if position is not None or yaw is not None or half_extents is not None:
+            if position is None or yaw is None or half_extents is None:
+                raise ValueError(
+                    "bind all of position/yaw/half_extents or none")
+            self.bind_inputs(position, yaw, half_extents)
         if method == "sdf":
             R = int(sdf_resolution)
             self._sdf_resolution = R
