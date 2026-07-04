@@ -22,6 +22,26 @@ def _gates_cfg(**kw):
     return CourseConfig(**base)
 
 
+def test_config_is_frozen():
+    import dataclasses
+
+    cfg = _track_cfg(collision="segments")
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        cfg.max_boxes = 4
+
+
+def test_max_boxes_without_collision_checker_raises():
+    # Track without a collision checker: max_boxes > 1 is a dead option.
+    with pytest.raises(ValueError, match="max_boxes"):
+        _track_cfg(collision=None, max_boxes=4)
+    # Gates without post collision (post_radius == 0): same.
+    with pytest.raises(ValueError, match="max_boxes"):
+        _gates_cfg(max_boxes=4)
+    # With a checker configured it is allowed.
+    _track_cfg(collision="segments", max_boxes=4)
+    _gates_cfg(post_radius=0.02, max_boxes=4)
+
+
 def test_valid_constructions():
     _track_cfg()                                   # progress-only track
     _track_cfg(collision="segments")

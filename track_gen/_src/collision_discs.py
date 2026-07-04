@@ -153,6 +153,9 @@ class DiscChecker:
             raise ValueError(f"max_boxes must be >= 1, got {max_boxes!r}")
         if count is not None:
             E = int(count.shape[0])
+            if num_envs is not None and int(num_envs) != E:
+                raise ValueError(
+                    f"count.shape[0] ({E}) must equal num_envs ({int(num_envs)})")
         elif num_envs is not None:
             E = int(num_envs)
         else:

@@ -159,6 +159,21 @@ def test_generate_without_seeds_is_deterministic():
     assert not np.array_equal(course.result.center.numpy(), c1)
 
 
+def test_int_reseed_is_deterministic():
+    """generate(seeds=k) reseeds deterministically: two int reseeds with the
+    same k produce identical batches (the int-seed build must match a fresh
+    PerEnvSeededRNG's seed + arange expansion)."""
+    course = _course(collision=None)
+    pos, _, _ = _buffers()
+    course.bind(position=pos)
+    course.generate(seeds=1234)
+    a = course.result.center.numpy().copy()
+    course.generate(seeds=999)               # advance to a different batch
+    assert not np.array_equal(course.result.center.numpy(), a)
+    course.generate(seeds=1234)              # same int reseed -> identical
+    np.testing.assert_array_equal(course.result.center.numpy(), a)
+
+
 def test_seed_array_validation():
     import warp as wp
     course = _course(collision=None)

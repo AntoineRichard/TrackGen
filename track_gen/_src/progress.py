@@ -303,10 +303,7 @@ class ProgressTracker:
         """Clear state where ``mask[e] == 1`` (``[E]`` int32); arms the NaN
         previous-position sentinel so the next update cannot emit a spurious
         crossing. Required after regenerating the bound course."""
-        if not isinstance(mask, wp.array) or mask.shape != (self._E,) \
-                or mask.dtype is not wp.int32:
-            raise ValueError(
-                f"mask must be a [{self._E}] int32 wp.array")
+        _check_arr("mask", mask, (self._E,), wp.int32, self._device)
         wp.launch(
             _progress_reset_k, dim=self._E,
             inputs=[mask, self._prev_pos, self._next, self._laps, self._progress],

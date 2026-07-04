@@ -30,6 +30,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import numpy as np
 import warp as wp
 
 from . import runtime
@@ -55,7 +56,7 @@ def _interleave_posts_k(
     posts[2 * i + 1] = right[i]
 
 
-@dataclass
+@dataclass(frozen=True)
 class CourseConfig:
     """Configuration for :class:`Course`. Strict option applicability:
     inapplicable options raise instead of being silently ignored.
@@ -155,6 +156,16 @@ class CourseConfig:
                     "gates mode requires gen.gate_width > 0: a width-0 gate "
                     "has a degenerate crossing segment and can never be "
                     "passed")
+        # max_boxes is the collision-query stride; without a collision checker
+        # it is a dead option (track: collision=None; gates: post_radius==0).
+        if int(self.max_boxes) > 1:
+            has_checker = (self.mode == "track" and self.collision is not None) \
+                or (self.mode == "gates" and float(self.post_radius) > 0.0)
+            if not has_checker:
+                raise ValueError(
+                    "max_boxes > 1 is a collision-query stride but this course "
+                    "has no collision checker (track: set collision; gates: set "
+                    f"post_radius > 0), got max_boxes={self.max_boxes!r}")
 
 
 @dataclass
@@ -333,9 +344,11 @@ class Course:
                 self._validate_seed_array(seeds)
                 self.rng.set_seeds_warp(seeds, None)
             else:
-                tmp = PerEnvSeededRNG(seeds=int(seeds), num_envs=self._E,
-                                      device=self._device)
-                self.rng.set_seeds_warp(tmp.seeds_warp, None)
+                # Mirror PerEnvSeededRNG's int expansion (seed + arange) so
+                # reseeding via int matches constructing a fresh RNG with it.
+                seed_arr = wp.array(int(seeds) + np.arange(self._E),
+                                    dtype=wp.int32, device=self._device)
+                self.rng.set_seeds_warp(seed_arr, None)
         self.result = self.generator.generate()
         if self.progress is None:
             self._build_subtools()
@@ -346,6 +359,7 @@ class Course:
         else:
             self._refresh()
         if self._is_cuda and self._refresh_graph is None:
+            prev = runtime._CAPTURING          # save/restore (generators' idiom)
             set_capturing(True)
             try:
                 self._refresh()      # warmup, sync-free
@@ -354,7 +368,7 @@ class Course:
                     self._refresh()
                 self._refresh_graph = cap.graph
             finally:
-                set_capturing(False)
+                set_capturing(prev)
             wp.capture_launch(self._refresh_graph)
             wp.synchronize()
         return self.result

@@ -99,6 +99,10 @@ def test_constructor_validation():
         DiscChecker(discs, radius=float("nan"), max_boxes=1, num_envs=1)
     with pytest.raises(ValueError, match="divisible"):
         DiscChecker(_discs([[0.0, 0.0]] * 3), radius=0.1, max_boxes=1, num_envs=2)
+    # count and num_envs both given but disagreeing.
+    count = wp.array(np.array([1], np.int32), dtype=wp.int32, device="cpu")
+    with pytest.raises(ValueError, match="num_envs"):
+        DiscChecker(discs, radius=0.1, max_boxes=1, count=count, num_envs=2)
 
 
 def test_bound_mode_equivalence_and_errors():

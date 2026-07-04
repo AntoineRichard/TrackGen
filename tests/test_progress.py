@@ -114,6 +114,17 @@ def test_reset_mask_no_spurious_crossing():
     assert int(ev.progress.numpy()[0]) == 0
 
 
+def test_reset_mask_validation():
+    from track_gen.progress import ProgressTracker
+    tracker = ProgressTracker(_ring_checkpoints())
+    # Wrong dtype exercises the shared runtime._check_arr validator path
+    # (same body that now also enforces the device check).
+    with pytest.raises(ValueError, match="mask"):
+        tracker.reset(wp.zeros(E, dtype=wp.float32, device="cpu"))
+    with pytest.raises(ValueError, match="mask"):
+        tracker.reset(wp.zeros(E + 1, dtype=wp.int32, device="cpu"))
+
+
 def test_bound_mode_equivalence_and_errors():
     from track_gen.progress import ProgressTracker
     buf = wp.zeros(E, dtype=wp.vec2f, device="cpu")
