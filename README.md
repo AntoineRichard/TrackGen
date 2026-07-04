@@ -1,392 +1,107 @@
-# track_gen
+# TrackGen
 
-GPU-batched generation of closed-loop race tracks. Given a batch of per-environment
-seeds, `track_gen` produces, in parallel, `E` smooth closed centerlines plus their
-constant-width outer/inner borders and per-point frames — ready to drop into a batched
-RL simulator.
+**GPU-batched race tracks, gate courses, and the runtime signals to race
+them — pure [NVIDIA Warp](https://github.com/NVIDIA/warp), CUDA-graph
+native.**
 
-The whole pipeline — **generation → resample → relaxation → inflation** — is expressed
-as [NVIDIA Warp](https://github.com/NVIDIA/warp) kernels. It runs on the Warp **`cpu`**
-device (GPU-free, for tests/CI) and on **`cuda`** (production). Runtime outputs are Warp
-arrays; tests and diagnostics may view them through `wp.to_torch`. The CUDA path captures
-the full pipeline as a single replayable **CUDA graph** on the first `generate()` call.
+[![Documentation](https://img.shields.io/badge/docs-antoinerichard.github.io%2FTrackGen-blue)](https://antoinerichard.github.io/TrackGen/)
+[![docs build](https://github.com/AntoineRichard/TrackGen/actions/workflows/docs.yml/badge.svg)](https://github.com/AntoineRichard/TrackGen/actions/workflows/docs.yml)
+![Python](https://img.shields.io/badge/python-%E2%89%A5%203.10-blue)
+![Warp](https://img.shields.io/badge/warp--lang-%E2%89%A5%201.14-76b900)
+
+Given a batch of per-environment seeds, TrackGen generates `E` closed-loop
+tracks (or gate sequences) in parallel — and then keeps working at sim
+time: out-of-bounds collision, checkpoint progress and rewards, prop
+instancing, all as Warp kernels over the same batched buffers.
 
 ```
-seeds[E] ─► registered phase-1 generator ─► constant-spacing resample ─► XPBD relax ─► inflate ─► Track
-            bezier/checkpoint/hull/polar/voronoi                         thickness≥w              outer/center/inner
+seeds[E] ─► generator ─► resample ─► XPBD relax ─► inflate ─► Track ─► collision · progress · props
+            bezier/checkpoint/hull/polar/voronoi                       (runtime utilities)
 ```
 
 ![Representative phase-1 outputs by generator](docs/assets/readme-generator-strip.png)
 
-*One representative raw phase-1 centerline from each standard generator, rendered with
-fixed seeds and default parameters.*
+## What's in the box
 
-![TrackGen pipeline stages](docs/assets/readme-pipeline-stages.png)
+| | | docs |
+|---|---|---|
+| **Five track generators** | Bezier, checkpoint-steering, hull, polar, Voronoi — one config, per-env styles | [Generators](https://antoinerichard.github.io/TrackGen/generators/overview.html) |
+| **Gate sequences** | Batched gate courses with tangent frames and collision-solved spacing | [Tutorial](https://antoinerichard.github.io/TrackGen/tutorials/gate-sequences.html) |
+| **Out-of-bounds collision** | Oriented boxes vs the drivable band — exact scan or baked SDF — plus disc obstacles (gate posts, cones) | [Collision](https://antoinerichard.github.io/TrackGen/utilities/collision.html) |
+| **Boundary props** | Cone lines and wall pieces along any boundary, seam-free, for instanced rendering | [Props](https://antoinerichard.github.io/TrackGen/utilities/props.html) |
+| **Checkpoints & progress** | Ordered goals from gates *or* subsampled centerlines; pass/lap events and `dist_to_next` rewards | [Progress](https://antoinerichard.github.io/TrackGen/utilities/progress.html) |
+| **The Course facade** | One object: `generate()` → `bind()` → `step()`/`reset(mask)`, CUDA-graph replays included | [Course](https://antoinerichard.github.io/TrackGen/utilities/course.html) |
 
-*The runtime pipeline turns a Bezier sample at half the default track width from a raw
-phase-1 centerline into a constant-spacing path, relaxes it with XPBD, then inflates it
-into a constant-width road band.*
+![Runtime utilities on one generated track](docs/assets/utilities-overview.png)
 
 ## Install
 
-Python ≥ 3.10. This is a Warp-first library: `warp-lang` and `numpy` are the only
-required runtime dependencies. `torch`, `scipy`, `matplotlib`, and `pytest` live in the
-`dev` extra for tests, benchmarks, and oracle comparisons; `gradio` lives in the `ui`
-extra. The runtime path runs on the Warp `cpu` device (GPU-free, for tests/CI) and on
-`cuda`.
-
-### From scratch with [uv](https://docs.astral.sh/uv/) (recommended)
+Python ≥ 3.10; `numpy` and `warp-lang` are the only runtime deps. Runs on
+the Warp `cpu` device (tests/CI) and `cuda` (production).
 
 ```bash
-# 1. install uv (skip if you already have it)
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# 2. create the project venv — uv fetches Python 3.12 if it isn't present
-uv venv --python 3.12
-
-# 3. install track_gen (editable) with the dev extras (warp-lang comes in as a core dep)
-uv pip install -e ".[dev]"
-
-# 4. verify the fast lane
-.venv/bin/python -m pytest -q -m "not slow and not benchmark and not cuda"
-
-# Optional: add the Gradio UI and open the parameter explorer
-uv pip install -e ".[ui]"
-uv run python -m viz.param_explorer   # opens a local URL (default http://127.0.0.1:7860)
+uv venv --python 3.12 && uv pip install -e ".[dev]"     # or:
+python -m venv .venv && .venv/bin/pip install -e ".[dev]"
 ```
 
-### With venv + pip
-
-```bash
-python -m venv .venv
-.venv/bin/pip install -e ".[dev]"
-```
-
-Both create a `.venv/`; run anything in it with `.venv/bin/python …` (or `source .venv/bin/activate`,
-or `uv run …`). Core deps: `numpy`, `warp-lang`. Extras: `dev` → `pytest`, `matplotlib`, `scipy`, `torch`; `ui` → `gradio`.
+Extras: `dev` (tests, torch oracles, matplotlib) · `ui` (Gradio parameter
+explorer) · `docs` (Sphinx). Details:
+[installation](https://antoinerichard.github.io/TrackGen/getting-started/installation.html).
 
 ## Quickstart
 
+Generate a batch of tracks:
+
 ```python
 import warp as wp
 wp.init()
-
 from track_gen import TrackGenerator, TrackGenConfig, PerEnvSeededRNG
 
-E, device = 64, "cuda"  # or "cpu"
+E, device = 64, "cuda"                       # or "cpu"
 config = TrackGenConfig(num_envs=E, half_width=0.03, device=device)
 rng = PerEnvSeededRNG(seeds=0, num_envs=E, device=device)
-
-generator = TrackGenerator(config, rng)
-track = generator.generate()  # fixed batch: config.num_envs tracks
-
-center = wp.to_torch(track.center).view(E, config.N_max, 2)
-outer = wp.to_torch(track.outer).view(E, config.N_max, 2)
-inner = wp.to_torch(track.inner).view(E, config.N_max, 2)
-valid = wp.to_torch(track.valid).bool()
-count = wp.to_torch(track.count)
-
-center[0, : int(count[0])]  # real arc-uniform centerline points for env 0
+track = TrackGenerator(config, rng).generate()
+# track.outer / center / inner: [E*N_max] vec2f, NaN-padded, count[e] real points
 ```
 
-`TrackGenerator` is fixed-batch. Omit `generate()`'s argument, or pass the integer
-`E == config.num_envs`; explicit environment-id sequences are rejected because the CUDA
-graph captures one fixed batch shape. The same `Track` instance and Warp buffers are reused
-on every call, so use `track.clone()` when you need an independent snapshot.
-
-### Gate sequence generation
-
-For drone-style courses where track width is irrelevant, use `GateGenerator`.
-It emits gate centres and orientations directly from native first-stage generator anchors
-and skips constant-spacing, XPBD relaxation, and inflation.
+…or let one object run the whole loop — generation, out-of-bounds checks,
+checkpoint progress:
 
 ```python
-import warp as wp
-wp.init()
+from track_gen.course import Course, CourseConfig
 
-from track_gen import GateGenConfig, GateGenerator, PerEnvSeededRNG
-
-E, device = 64, "cuda"
-config = GateGenConfig(
-    generator="bezier",
-    gate_ordering="random_pairs",
-    num_envs=E,
-    max_gates=32,
-    gate_width=0.4,
-    gate_radius=0.025,
-    gate_solve_iters=8,
-    device=device,
-)
-rng = PerEnvSeededRNG(seeds=0, num_envs=E, device=device)
-
-gates = GateGenerator(config, rng).generate()
-position = wp.to_torch(gates.position).view(E, config.max_gates, 2)
-tangent = wp.to_torch(gates.tangent).view(E, config.max_gates, 2)
-valid = wp.to_torch(gates.valid).bool()
+course = Course(CourseConfig(mode="track", gen=config, seeds=42,
+                             collision="segments", checkpoint_spacing=0.6))
+course.bind(position=robot_pos, yaw=robot_yaw, half_extents=robot_he)
+course.generate()                            # whole batch + coherent refresh
+res = course.step()                          # events + contacts, every sim step
+course.reset(done_mask)                      # respawn finished envs
 ```
 
-The same `GateSequence` instance and its Warp buffers are reused on every `generate()` call;
-use `gates.clone()` when you need an independent snapshot.
+More: [batch generation](https://antoinerichard.github.io/TrackGen/tutorials/batch-of-tracks.html) ·
+[runtime utilities](https://antoinerichard.github.io/TrackGen/utilities/overview.html) ·
+[CUDA graphs in a sim](https://antoinerichard.github.io/TrackGen/tutorials/cuda-graph-in-a-sim.html)
 
-| field | shape | meaning |
-|---|---|---|
-| `position` | `[E, G, 2]` | gate centers (`G = max_gates`) |
-| `tangent`, `normal` | `[E, G, 2]` | unit tangent and left-normal at each gate |
-| `left`, `right` | `[E, G, 2]` | gate endpoints (`center ± 0.5 * gate_width * normal`) |
-| `valid` | `[E]` bool | per-sequence validity |
-| `count` | `[E]` int | real gates per env; slots `i >= count[e]` are NaN padding |
+## Documentation
 
-`gate_width` is the full gate opening: the `left`/`right` endpoints sit at `±0.5 * gate_width`
-along the gate normal, so the default `gate_width=0.0` collapses them onto the center (point
-gates), and a positive `gate_width` additionally invalidates any sequence whose gate bars
-cross. `max_gates` sizes the fixed output buffers and must be at least the chosen generator's
-reachable gate count; `min_gates` rejects a configuration the generator cannot satisfy. Both
-bounds are checked when the `GateGenerator` is constructed.
-
-Registered first-stage gate generators are selected with `GateGenConfig(generator=...)`:
-`"bezier"` (default), `"checkpoint"`, `"hull"`, `"polar"`, and `"voronoi"`. Ordering
-support is generator-specific: Bezier/Hull support `{ "ccw", "random_pairs" }`, while
-Polar/Voronoi/Checkpoint support `{ "ccw", "raw" }`. The `"ccw"` gate ordering name is
-kept for API compatibility with the prototype; its current centroid-angle convention is
-clockwise in standard xy coordinates. The Fourier generator lives in
-`track_gen._experimental` and is **unsupported** — it is not on the Warp pipeline and
-receives no compatibility guarantees.
-
-Gate centers are treated as spheres/disks with radius `gate_radius`. The generated center
-spacing target is `2 * gate_radius`, and `gate_solve_iters` runs up to that many iterations
-of a small deterministic pairwise solve that pushes overlapping gate spheres apart before
-recomputing tangents. `scale` controls the pre-collision generator layout; the collision
-solve may expand the final bbox when necessary to satisfy the requested gate radius. Set
-`gate_solve_iters=0` to inspect the anchors before the collision solve (they are still
-ordered and bbox-normalized, not raw sampler-space coordinates).
-
-![Phase-2 gate collision solve](docs/assets/readme-gate-strip.png)
-
-*Phase-2 gate collision solve separates overlapping gate spheres to the `2 * gate_radius`
-center-spacing target. Top: raw anchors (`gate_solve_iters=0`); bottom: after the solve, with
-gate tangents and `gate_width` bars. Rendered by `.venv/bin/python -m viz.render_readme_assets`.*
-
-![TrackGen standard generator grid](docs/assets/readme-generator-grid.png)
-
-*Five deterministic raw phase-1 centerline outputs from each standard generator,
-rendered by `.venv/bin/python -m viz.render_readme_assets`.*
-
-### Choosing a generator
-
-The first-stage centerline generator is selected by `TrackGenConfig(generator=...)`.
-Available generators: see `track_gen._src.generator_registry.available()`. Adding a method
-is additive — see [`docs/contributing/writing-a-generator.rst`](docs/contributing/writing-a-generator.rst) and the tradeoff table in
-[`docs/generators/benchmarks.rst`](docs/generators/benchmarks.rst).
-
-### Output (constant spacing)
-
-There is one output mode, `constant_spacing` — the only value `config.output_mode` accepts
-(`__post_init__` raises otherwise). Each track is emitted at a constant arc *spacing* rather
-than a constant point *count*: a per-track `count[e] = floor(perimeter/spacing)+1`, capped at
-`N_max` and NaN-padded past it. `spacing` defaults to `None` → auto `0.6*half_width` (the
-relax-friendly value; set it explicitly to override). The legacy `fixed` mode (constant
-`num_points`) was **dropped**: a fixed count over-resolves short tracks, so the Jacobi XPBD
-solve under-converges and the road self-overlaps; relaxing at a width-appropriate spacing
-converges to smooth, valid tracks on fewer nodes. `num_points` now only sets the intermediate
-dense-resample resolution. Size `N_max ≥ max(perimeter)/spacing + 1` so no track is truncated.
-
-### Advanced XPBD separation cache
-
-The relaxation solve has one expensive term: non-neighbour separation. The exact separation
-target is:
-
-```text
-target = 2 * half_width * (1 + relax_margin)
-```
-
-The baseline (`relax_sep_every=1`, `relax_sep_cache_slots=0`) scans all non-neighbour pairs
-every XPBD sweep. This is robust, but it is `O(count[e]^2)` per track per sweep. Three
-advanced knobs expose a graph-capturable broadphase cache for this term:
-
-| setting | meaning | default |
-|---|---|---|
-| `relax_sep_every` | Broadphase refresh interval `K`. With no cache, this is a naive skip cadence; with cache enabled, this rebuilds candidates every `K` sweeps. | `1` |
-| `relax_sep_cache_slots` | Fixed candidate capacity per bead. `0` disables caching. Larger values use more memory and narrowphase work, but reduce candidate overflow risk. | `0` |
-| `relax_sep_cache_skin` | Extra broadphase radius as a fraction of `target`: cache radius is `target * (1 + skin)`. Exact separation is still applied only for current `dist < target`. | `0.5` |
-
-Cached mode is enabled when `relax_sep_cache_slots > 0` and `relax_sep_every > 1`. In that
-mode, TrackGen rebuilds a fixed-size per-bead candidate list every `K` sweeps, then runs the
-exact narrowphase distance test and separation push against the cached candidates on every
-sweep. This is different from the naive cadence path, which simply skips separation on
-intermediate sweeps. `skin=0.0` stores only pairs already inside the exact separation target at
-refresh time; positive skin stores near pairs too, which is safer for long refresh intervals but
-slower.
-
-A useful high-throughput setting from the `E=8192`, `half_width=0.03`,
-`relax_iters=150` CUDA graph benchmark was:
-
-```python
-TrackGenConfig(
-    ...,
-    relax_sep_every=40,
-    relax_sep_cache_slots=16,
-    relax_sep_cache_skin=0.0,
-)
-```
-
-On the benchmark machine this was about `0.066 s` per graph replay versus `0.366 s` for the
-dense baseline, with effectively unchanged validity in the checked runs. Keep the dense
-baseline for maximum conservatism; use the cache knobs when throughput matters and validate
-yield in the target regime.
-
-### The `Track` result
-
-All boundary arrays are index-aligned (`outer[i]`, `center[i]`, `inner[i]` share one
-cross-section normal). Half-width is recovered as `‖outer − center‖`.
-
-| field | shape | meaning |
-|---|---|---|
-| `outer`, `center`, `inner` | `[E, N, 2]` | border / centerline / border points |
-| `tangent`, `normal` | `[E, N, 2]` | unit tangent and left-normal along the centerline |
-| `arclen` | `[E, N]` | cumulative arc length (0 at index 0) |
-| `length` | `[E]` | closed-loop perimeter |
-| `valid` | `[E]` bool | per-track validity |
-| `count` | `[E]` int | real points per track (`floor(perimeter/spacing)+1`, capped at `N_max`); the rest of each `[N, 2]` row is NaN padding |
-
-## Runtime facade and CUDA graph capture
-
-`TrackGenerator` is the public runtime facade. It preallocates generator scratch, pipeline
-scratch, seed buffers, and a persistent `Track` once in `__init__`. On `cpu`, every
-`generate()` call runs eagerly. On `cuda`, the first `generate()` warms kernels, captures
-the whole pipeline into a `wp.Graph`, and immediately replays it; later calls copy the
-current RNG seeds into the fixed seed buffer and replay the same graph.
-
-The old top-level `generate_tracks_warp` / `generate_tracks_warp_graph` helpers are no
-longer public API. Use `TrackGenerator(config, rng).generate()` for both eager CPU and
-auto-captured CUDA execution.
-
-## Architecture
-
-See **[docs/how-it-works/pipeline.rst](docs/how-it-works/pipeline.rst)** (and the rest of the
-[How it works](docs/how-it-works/) section) for the full walkthrough: each stage
-and its Warp kernels, the kernel conventions, the torch-as-test-oracle approach, and how
-the end-to-end CUDA graph is captured.
-
-In short: every stage is a Warp kernel over flat `[E*N]` arrays (one thread per element,
-env index `= tid // N`). First-stage generation uses Warp's built-in RNG in one fixed
-pass through the selected registered generator; any local fallback is generator-specific,
-and final geometric validity is decided after relaxation/inflation.
-The torch reference implementation (`tests._oracle.geometry` / `inflation` / `generators` /
-`relaxation`) lives under `tests/_oracle/` and is **not** part of the shipped package — it serves purely as the
-**verification oracle**: every Warp kernel has a test asserting it matches its torch
-counterpart on both `cpu` and `cuda`.
-
-## Project layout
-
-```
-track_gen/
-  __init__.py        # curated public API (TrackGenerator, TrackGenConfig, Track,
-                     #   PerEnvSeededRNG, __version__)
-  _version.py
-  _src/              # the Warp pipeline (private core)
-    warp_pipeline.py warp_relax.py track_generator.py types.py rng_utils.py rng_kernels.py
-    warp_generate*.py # registered phase-1 generators: bezier, checkpoint, hull, polar, voronoi
-  _experimental/     # unsupported prototypes/reports (Fourier, checkpoint diagnostics)
-tests/
-  _oracle/           # torch reference impl used to validate the Warp kernels
-  test_*.py
-benchmarks/  viz/  docs/
-```
+| | |
+|---|---|
+| [Getting started](https://antoinerichard.github.io/TrackGen/getting-started/quickstart.html) | install, first batch, parameter explorer |
+| [Tutorials](https://antoinerichard.github.io/TrackGen/tutorials/batch-of-tracks.html) | batches, gates, generator choice, CUDA graphs |
+| [Generators](https://antoinerichard.github.io/TrackGen/generators/overview.html) | the five families, quality benchmarks |
+| [Runtime utilities](https://antoinerichard.github.io/TrackGen/utilities/overview.html) | collision, props, checkpoints & progress, Course |
+| [How it works](https://antoinerichard.github.io/TrackGen/how-it-works/resample.html) | resample → XPBD → inflation internals |
+| [Configuration](https://antoinerichard.github.io/TrackGen/configuration/reference.html) | every knob, tuning guidance |
+| [API reference](https://antoinerichard.github.io/TrackGen/reference/api.html) | the complete public surface |
 
 ## Development
 
 ```bash
-# Fast local lane: skips slower quality gates, benchmark checks, and CUDA-only graph tests.
-.venv/bin/python -m pytest -q -m "not slow and not benchmark and not cuda"
-
-# Full suite. CUDA-only assertions are skipped automatically when CUDA is unavailable.
-.venv/bin/python -m pytest -q
-
-# Compare every registered first-stage generator on quality/diversity/speed.
-.venv/bin/python -m benchmarks.compare_generators --E 512 --seed 0
-
-# End-to-end benchmark (auto device, E=8192). --graph captures + times the CUDA graph.
-.venv/bin/python -m benchmarks.benchmark_pipeline --graph
-.venv/bin/python -m benchmarks.benchmark_pipeline --E 2048 --cpu
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q -m "not slow and not benchmark and not cuda"  # fast lane
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q                                              # full suite
+python -m sphinx -W -b html docs docs/_build/html                                                 # docs
 ```
 
-Current timing snapshot on June 23, 2026. Generator rows are timing-only CUDA graph
-replays at the same geometry as `benchmarks.benchmark_pipeline --graph` (`E=8192`,
-`half_width=0.03`, `num_points=256`, `relax_iters=150`).
-
-| benchmark | device / batch | timing |
-|---|---:|---:|
-| Full pipeline with Bezier first-stage | CUDA / E=8192 | 93.2 ms/replay |
-| Full pipeline with Checkpoint first-stage | CUDA / E=8192 | 92.2 ms/replay |
-| Full pipeline with Hull first-stage | CUDA / E=8192 | 98.9 ms/replay |
-| Full pipeline with Polar first-stage | CUDA / E=8192 | 80.8 ms/replay |
-| Full pipeline with Voronoi first-stage | CUDA / E=8192 | 81.3 ms/replay |
-
-```bash
-# Render sample tracks without launching the Gradio app.
-.venv/bin/python -m viz.plot_tracks --images 1 --rows 4 --cols 4 --cpu
-
-# Rebuild the committed README images from deterministic fixed-seed runs.
-.venv/bin/python -m viz.render_readme_assets
-```
-
-Pytest markers: `slow` covers quality gates that are useful but heavier than smoke tests,
-`benchmark` covers benchmark harness checks, and `cuda` covers tests that require a CUDA
-device.
-
-**Conventions** (see [`docs/how-it-works/conventions.rst`](docs/how-it-works/conventions.rst)): one thread per output element; flat `[E*N]`
-`wp.vec2f` arrays; env index `e = tid // N`; launch with `device=str(tensor.device)`.
-Post-generation stages are count-aware: they operate over flat `[E, N_max, 2]` buffers with
-a per-track `count[e]` (the fixed-`N` parity path the oracle tests use is `count == N_max`).
-Every new kernel
-ships with a test asserting equivalence to its torch oracle on `cpu` and `cuda`.
-
-## Documentation
-
-The full documentation site is built from `docs/` with Sphinx. After installing the `docs`
-extra, build with:
-
-```bash
-pip install -e ".[docs]"
-.venv/bin/python -m sphinx -b html docs docs/_build/html
-```
-
-The rendered site will be hosted on GitHub Pages (URL to be filled when Pages is enabled).
-
-## Parameter explorer (UI)
-
-An interactive Gradio app to see how each parameter affects generation — sliders for the
-regime / shape / resolution / relaxation knobs, a live track grid, and the valid-yield stat.
-
-```bash
-uv pip install -e ".[ui]"     # adds gradio
-uv run python -m viz.param_explorer   # opens a local URL (default http://127.0.0.1:7860)
-```
-
-**Using it:**
-- Controls are grouped — **Phase-1 generator** (method selector), **Regime** (width / box),
-  **Shape** (corner count / `rad` / `edgy` / `handle_clamp_frac`), **Polar knot spline**,
-  **Voronoi graph cycle** (`voronoi_num_sites`, layout, control points, variation),
-  **Checkpoint steering** (`checkpoint_count`, turn/steer/lookahead, best-of-K, clip fallback),
-  **Resolution** (`spacing` / `N_max`), **Relaxation**, **Batch**.
-- Output is always **`constant_spacing`** (the only mode): **`spacing`** sets the arc step
-  (≈ `0.6*half_width`) and **`N_max`** the per-track point cap. **`handle_clamp_frac`** trades
-  Bézier-handle overshoot (the main self-crossing source) against corner roundness.
-- **Batch size** generates that many tracks (256–8192); the **valid-yield % + mean length /
-  thickness / count** shown above the grid are computed over the *whole batch* for honest stats.
-- The grid shows one **page** of `grid_n × grid_n` tracks — **◀ prev / next ▶** page through the
-  batch *without* regenerating. Invalid tracks get a red title.
-- **Auto-update** (on) re-generates as you change a control; for heavy settings (large batch ×
-  high `relax_iters`) untick it and use **Generate**. **Reroll** draws fresh seeds.
-
-**Gates tab:** a second tab generates gate sequences instead of tracks (see *Gate sequence
-generation* above). Controls are grouped —
-- **Gate generator** — method selector and `ordering` (choices follow the selected generator).
-- **Gate layout** — `gate_width` (full gate opening) and `scale` (pre-collision layout size).
-- **Gate collisions** — `gate_radius`, `gate_solve_iters`, and **show raw anchors** (forces
-  `gate_solve_iters=0` to inspect anchors before the collision solve). Center spacing target is
-  `2 * gate_radius`.
-- **Generator-specific sampling** — point-family (Bezier/Hull), Polar, Voronoi, or Checkpoint
-  controls, shown for the selected generator.
-- **Batch** — grid (n×n), seed, batch size; the stat line reports valid-yield and gate counts
-  over the whole batch, and **◀ prev / next ▶** page through the batch without regenerating.
+Contributing guides (dev setup, writing a generator, rendering the
+committed figures) live in the
+[docs](https://antoinerichard.github.io/TrackGen/contributing/dev-setup.html).
