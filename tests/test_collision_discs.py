@@ -145,3 +145,15 @@ def test_gate_post_recipe():
     assert int(res.hit.numpy()[e]) == 1
     disc = int(res.disc.numpy()[e])
     assert disc % 2 == 0 and disc // 2 == 0  # left post of gate 0
+
+
+def test_bind_inputs_after_construction():
+    from track_gen.collision import DiscChecker
+    discs = _discs([[0.12, 0.0]])
+    pos, yaw, he = _boxes(1, 1, {(0, 0): (0.0, 0.0, 0.0, 0.1, 0.05)})
+    checker = DiscChecker(discs, radius=0.03, max_boxes=1, num_envs=1)
+    checker.bind_inputs(pos, yaw, he)
+    res = checker.query()
+    assert int(res.hit.numpy()[0]) == 1
+    with pytest.raises(ValueError, match="bound"):
+        checker.query(pos, yaw, he)

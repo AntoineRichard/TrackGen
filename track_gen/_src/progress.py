@@ -249,8 +249,7 @@ class ProgressTracker:
 
         self._bound_pos: "wp.array | None" = None
         if position is not None:
-            self._validate_position(position)
-            self._bound_pos = position
+            self.bind(position)
 
         dev = self._device
         self._prev_pos = wp.array(np.full((E, 2), np.nan, np.float32),
@@ -281,6 +280,16 @@ class ProgressTracker:
         if str(position.device) != self._device:
             raise ValueError(
                 f"position is on {position.device}, tracker is on {self._device}")
+
+    def bind(self, position: wp.array) -> None:
+        """Bind (or rebind) a stable ``[E]`` vec2f position buffer.
+
+        After binding, ``update()`` takes no arguments and reads the buffer
+        in place. Validation happens here, once; the array must keep the
+        same ``.ptr`` for the binding's lifetime (CUDA-graph contract).
+        """
+        self._validate_position(position)
+        self._bound_pos = position
 
     def update(self, position: "wp.array | None" = None) -> ProgressEvents:
         """Advance one step; returns the tracker's preallocated events.

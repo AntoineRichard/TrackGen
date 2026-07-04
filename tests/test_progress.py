@@ -161,3 +161,21 @@ def test_zero_checkpoint_env_is_inert():
     assert int(ev.passed.numpy()[0]) == 0
     assert int(ev.wrong_checkpoint.numpy()[0]) == -1
     assert np.isnan(float(ev.dist_to_next.numpy()[0]))
+
+
+def test_bind_after_construction_and_rebind():
+    from track_gen.progress import ProgressTracker
+    tracker = ProgressTracker(_ring_checkpoints())
+    buf = wp.zeros(E, dtype=wp.vec2f, device="cpu")
+    tracker.bind(buf)
+    wp.copy(buf, _pos(-22.5))
+    tracker.update()                     # bound mode now works
+    wp.copy(buf, _pos(22.5))
+    ev = tracker.update()
+    assert int(ev.passed.numpy()[0]) == 1
+    buf2 = wp.zeros(E, dtype=wp.vec2f, device="cpu")
+    tracker.bind(buf2)                   # rebinding replaces
+    wp.copy(buf2, _pos(67.5))
+    tracker.update()                     # reads buf2, no error
+    with pytest.raises(ValueError, match="position"):
+        tracker.bind(wp.zeros(E + 1, dtype=wp.vec2f, device="cpu"))

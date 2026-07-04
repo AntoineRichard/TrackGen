@@ -196,8 +196,7 @@ class DiscChecker:
             if position is None or yaw is None or half_extents is None:
                 raise ValueError(
                     "bind all of position/yaw/half_extents or none")
-            self._validate_inputs(position, yaw, half_extents)
-            self._bound = (position, yaw, half_extents)
+            self.bind_inputs(position, yaw, half_extents)
 
         n = E * self._B
         dev = self._device
@@ -224,6 +223,16 @@ class DiscChecker:
             if str(arr.device) != self._device:
                 raise ValueError(
                     f"{name} is on device {arr.device}, checker is on {self._device}")
+
+    def bind_inputs(self, position: wp.array, yaw: wp.array,
+                    half_extents: wp.array) -> None:
+        """Bind (or rebind) stable per-step input buffers (validated once).
+
+        After binding, ``query()`` takes no arguments and reads these arrays
+        in place; same-``.ptr`` rule applies under CUDA-graph capture.
+        """
+        self._validate_inputs(position, yaw, half_extents)
+        self._bound = (position, yaw, half_extents)
 
     def query(self, position: "wp.array | None" = None,
               yaw: "wp.array | None" = None,
