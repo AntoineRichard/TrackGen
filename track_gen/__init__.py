@@ -12,6 +12,7 @@ from ._src.track_generator import TrackGenerator
 from ._src.gate_generator import GateGenerator
 from ._src.rng_utils import PerEnvSeededRNG
 from . import collision
+from . import props
 
 __all__ = [
     "TrackGenerator",
@@ -22,5 +23,6 @@ __all__ = [
     "GateSequence",
     "PerEnvSeededRNG",
     "collision",
+    "props",
     "__version__",
 ]

@@ -11,6 +11,7 @@ def test_public_api_surface_is_exactly_curated():
         "GateSequence",
         "PerEnvSeededRNG",
         "collision",
+        "props",
         "__version__",
     }
 
