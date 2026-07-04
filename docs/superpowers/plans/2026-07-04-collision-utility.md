@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - Runtime deps are **numpy + warp-lang only** (pyproject). No scipy/shapely/torch in `track_gen/` code.
-- Warp **1.0.1** compatibility: no `wp.isnan` (use `x != x`), no `wp.launch(..., outputs=)` (pass everything via `inputs=`).
+- Warp: the dev environment runs **warp-lang 1.14** (upgraded from 1.0.1 during Task 1; suite green). Keep the plan's portable idioms as written: `x != x` NaN checks and everything passed via `wp.launch(..., inputs=)` — they are correct on all warp 1.x versions.
 - All batched arrays are **flat** `[E * stride]` wp.arrays (vec2f / float32 / int32), NaN-padded past `count[e]` — match `Track` conventions.
 - `query()` and `bake()` must be CUDA-graph capturable: **no allocation, no host sync** inside them (module `_CAPTURING` flag suppresses `wp.synchronize`, same pattern as `warp_gate.py`).
 - In-place output contract: `query()` returns the SAME `BoxContact` every call; `clone()` for snapshots.
