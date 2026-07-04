@@ -82,10 +82,17 @@ crossings, and reports ``dist_to_next`` — the distance to the next goal:
        reward = reward + 10.0 * wp.to_torch(ev.passed)        # pass bonus
        prev_d = d.clone()
    tracker.reset(done_mask)             # episodic resets, per env
+   # `prev_d` above still holds the FINISHED episode's distance for envs
+   # reset this step; mask it (e.g. zero the reward) before differencing.
 
 ``reset(mask)`` arms a NaN previous-position sentinel, so the first step
 after a reset (or a teleport respawn) can never emit a spurious crossing.
 After regenerating the course (gates or track), call ``reset`` for all envs.
+That sentinel protects the TRACKER's own crossing/wrong-way detection only —
+the caller-side ``-delta distance`` reward term needs its own masking, since
+``prev_d`` for a just-reset env is stale (from the episode that just ended)
+and differencing it against the freshly reset ``dist_to_next`` is not a
+meaningful reward.
 
 .. figure:: ../assets/progress-tracking.png
    :alt: Agent path colored by progress with a dist_to_next sawtooth lower panel.
@@ -104,9 +111,10 @@ obstacles. Gate posts are two lines of code:
    import numpy as np, warp as wp
    from track_gen.collision import DiscChecker
 
+   dev = seq.left.device                       # bind posts on the same device
    posts = np.empty((E, 2 * G, 2), np.float32)
-   posts[:, 0::2] = wp.to_torch(seq.left).view(E, G, 2).cpu().numpy()
-   posts[:, 1::2] = wp.to_torch(seq.right).view(E, G, 2).cpu().numpy()
+   posts[:, 0::2] = seq.left.numpy().reshape(E, G, 2)
+   posts[:, 1::2] = seq.right.numpy().reshape(E, G, 2)
    checker = DiscChecker(wp.array(posts.reshape(-1, 2), dtype=wp.vec2f,
                                   device=dev),
                          radius=0.03, max_boxes=1, num_envs=E)
@@ -114,6 +122,12 @@ obstacles. Gate posts are two lines of code:
 NaN padding in the gate arrays carries over and NaN discs are skipped, so no
 per-env count bookkeeping is needed. A hit reports the deepest disc; for
 interleaved posts, ``gate = disc // 2``.
+
+``posts`` is a host-side snapshot taken via ``.numpy()`` — it does NOT alias
+``seq.left``/``seq.right``, so a later regeneration is invisible to it;
+rebuild ``posts`` (repeat this recipe) after every ``generate()``. The
+``Course`` facade's built-in ``post_radius`` option does this rebuild
+device-side, automatically, on every ``generate()``.
 
 .. figure:: ../assets/disc-collision.png
    :alt: Gate posts as discs with boxes colored by hit.
@@ -132,6 +146,36 @@ take no arguments and read the buffers in place. Under graph capture this is
 the intended pattern: the sim writes its stable pose buffers, then replays
 the captured update. (Per-call mode also works under capture, but the SAME
 arrays must be passed at capture and every replay.)
+
+Outside capture, every utility follows a per-call ``wp.synchronize()`` after
+its kernel launch (blocking, but simple — the codebase idiom). To record
+``query()``/``update()``/``sample()`` into YOUR OWN CUDA graph — instead of
+relying on the ``Course`` facade's built-in capture, below — call
+``track_gen.set_capturing(True)`` before opening the capture region so those
+per-call syncs are skipped, then restore it (``set_capturing(False)``, or
+the value you saved beforehand) once the capture region is closed.
+
+What needs refreshing after regenerating (when wiring the tools by hand,
+i.e. not through ``Course``, which handles all of this for you):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - Tool
+     - After a regeneration
+   * - ``CollisionChecker`` (``method="segments"``)
+     - Nothing — reads the current ``Track`` buffers directly.
+   * - ``CollisionChecker`` (``method="sdf"``)
+     - Call ``bake()``.
+   * - ``PropSampler`` / ``CheckpointSampler``
+     - Call ``sample()``.
+   * - ``ProgressTracker``
+     - Call ``reset(mask)`` for ALL envs (a full progress reset).
+   * - ``CheckpointSet.from_gates``
+     - Nothing — aliases the ``GateSequence`` buffers automatically.
+   * - ``Course``
+     - Nothing — ``generate()`` performs the whole refresh above for you.
 
 Putting it together: the Course facade
 --------------------------------------
@@ -170,8 +214,19 @@ passing ``seeds=`` advances the RNG for new courses. In gates mode the same
 object wraps ``GateGenerator`` + gate progress + optional ``DiscChecker``
 posts (``post_radius > 0``). The underlying tools stay reachable
 (``course.collision``, ``course.progress``, ``course.checkpoints``) and
-``track_gen.course.set_capturing(True)`` flips every utility's capture flag
-at once when you capture ``step()`` into your own sim graph. Once ``step()``
+``track_gen.set_capturing(True)`` flips the ONE shared capture flag used by
+collision, props, checkpoints, progress, and the facade itself, all at
+once, when you capture ``step()`` into your own sim graph. Once ``step()``
 is captured, keep writing into the SAME bound buffers — rebinding after
 capture leaves the captured graph replaying against the old pointers
 (silently divergent results), so rebind only before (re)capturing.
+
+In gates mode with ``post_radius > 0``, ``course.step().contacts`` is a
+:class:`~track_gen.collision.DiscContact` instead of a
+:class:`~track_gen.collision.BoxContact` — same ``StepResult`` field, a
+different contact type depending on the course's collision checker:
+
+.. code-block:: python
+
+   res = course.step()
+   hit = wp.to_torch(res.contacts.hit)      # DiscContact here, not BoxContact

@@ -13,6 +13,10 @@ NaN-marked padding (slots with NaN centers are skipped) — GateSequence
 Per-step inputs can be bound at construction (``position=``, ``yaw=``,
 ``half_extents=`` — all three or none): ``query()`` then takes no arguments
 and reads the stable buffers in place (the CUDA-graph pattern).
+
+Like the sibling ``CollisionChecker``, ``query()`` performs no host sync
+while capturing is enabled (``track_gen.set_capturing``), so it is
+CUDA-graph capturable.
 """
 from __future__ import annotations
 
@@ -47,7 +51,10 @@ class DiscContact:
     depth : wp.array
         ``float32`` — penetration depth of that disc (>= 0; 0 on graze or
         no hit). Saturates at ``radius`` once the disc center lies inside
-        the box (ties broken by lowest disc index).
+        the box (ties broken by lowest disc index). Cf.
+        :class:`BoxContact.distance <track_gen.collision.BoxContact>`, which
+        reports a SIGNED clearance (positive margin / negative penetration)
+        rather than an unsigned depth.
     nearest : wp.array
         ``vec2f`` — point on that disc's boundary nearest the box
         (approximate when the disc center lies deep inside the box). NaN
@@ -146,6 +153,24 @@ class DiscChecker:
                  position: "wp.array | None" = None,
                  yaw: "wp.array | None" = None,
                  half_extents: "wp.array | None" = None) -> None:
+        """Bind a flat disc array and allocate the result buffers.
+
+        Args:
+            discs: ``[E * D]`` vec2f disc centers (ALIASED — regenerated
+                buffers are seen automatically). NaN-marked slots are
+                skipped.
+            radius: shared disc radius (> 0); every disc uses the same
+                radius.
+            max_boxes: query stride (boxes per env); must be >= 1.
+            num_envs: required when ``count`` is not given (a flat disc
+                array alone cannot determine the env split); must match
+                ``count.shape[0]`` when both are given.
+            count: optional ``[E]`` int32 real-disc-count array (aliased,
+                stable user buffer); omit to rely on NaN padding alone.
+            position, yaw, half_extents: optional constructor binding
+                (all-or-none); equivalent to calling :meth:`bind_inputs`
+                right after construction.
+        """
         _init()
         if not (float(radius) > 0.0):
             raise ValueError(f"radius must be > 0, got {radius!r}")

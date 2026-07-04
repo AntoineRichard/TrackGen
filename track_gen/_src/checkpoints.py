@@ -171,18 +171,38 @@ class CheckpointSampler:
     One sampler binds one :class:`Track` and one spacing; ``sample()``
     refreshes the owned :class:`CheckpointSet` in place from the CURRENT
     track batch (no rebind after ``generate()``; two kernel launches,
-    allocation-free, CUDA-graph capturable under the module ``_CAPTURING``
-    flag). Spacing is expected to be coarse — checkpoint counts similar to
-    gate counts; nothing enforces this. Progress state bound to the sampled
-    set must be reset after resampling a regenerated track.
+    allocation-free, CUDA-graph capturable via the shared capture flag —
+    ``track_gen.set_capturing``). Spacing is expected to be coarse —
+    checkpoint counts similar to gate counts; nothing enforces this.
+    Progress state bound to the sampled set must be reset after resampling a
+    regenerated track.
 
     Producer diagnostics live on the sampler (not the set): ``truncated``
     (``[E]`` int32, 1 if ``max_checkpoints`` clipped the ring) and ``step``
-    (``[E]`` float32 effective arc spacing).
+    (``[E]`` float32 effective arc spacing). They live here rather than on
+    ``CheckpointSet`` because the set has a SECOND, sampling-free producer
+    (``CheckpointSet.from_gates``) that has no truncation or step concept —
+    keeping the diagnostics on the sampler avoids meaningless fields on
+    gate-derived sets (contrast ``track_gen.props.PropSet``, whose only
+    producer is ``PropSampler``, so its diagnostics live on the result).
     """
 
     def __init__(self, track: Track, spacing: float,
                  max_checkpoints: "int | None" = None) -> None:
+        """Bind to a :class:`Track` centerline and allocate the result buffers.
+
+        Args:
+            track: the bound track batch; ``sample()`` reads its centerline
+                buffer directly on every call (no rebind needed after
+                ``generate()``).
+            spacing: target arc-length spacing between checkpoints (> 0);
+                snapped per env so each ring closes without a seam (same
+                snap rule as ``track_gen.props``).
+            max_checkpoints: buffer capacity per env; ``None`` (default)
+                derives it from the CURRENT batch (see
+                :meth:`_derive_max_checkpoints`). Must be >= 3 when given
+                explicitly.
+        """
         _init()
         if not (float(spacing) > 0.0):
             raise ValueError(f"spacing must be > 0, got {spacing!r}")

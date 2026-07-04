@@ -10,7 +10,8 @@ for O(1) queries against baked per-env signed-distance grids.
 Layout follows the package conventions: flat ``[E * max_boxes]`` wp.arrays,
 NaN for inactive slots, in-place reuse of the output ``BoxContact`` across
 ``query()`` calls (use ``clone()`` for snapshots), and no host syncs while
-``_CAPTURING`` is set so ``query()``/``bake()`` are CUDA-graph capturable.
+capturing is enabled (``track_gen.set_capturing``) so ``query()``/``bake()``
+are CUDA-graph capturable.
 """
 from __future__ import annotations
 
@@ -51,7 +52,9 @@ class BoxContact:
         ``float32`` signed clearance: positive = margin from the box to the
         nearest boundary; negative = deepest corner penetration when OOB
         (0.0 when the box only edge-crosses a boundary with all corners
-        inside). NaN for inactive slots.
+        inside). NaN for inactive slots. Cf. :class:`DiscContact.depth
+        <track_gen.collision.DiscContact>`, which reports an UNSIGNED
+        penetration depth (0.0 = no hit) rather than a signed clearance.
     nearest : wp.array
         ``vec2f`` nearest point on the boundary polylines to the box.
     normal : wp.array
@@ -255,8 +258,8 @@ class CollisionChecker:
     no rebind step. The ``sdf`` backend requires ``bake()`` after each
     ``generate()`` call.
 
-    ``query()`` is allocation-free and, under graph capture (module
-    ``_CAPTURING`` flag set), host-sync-free (CUDA-graph capturable). In
+    ``query()`` is allocation-free and, under graph capture (enabled via
+    ``track_gen.set_capturing``), host-sync-free (CUDA-graph capturable). In
     normal (non-capturing) use a ``wp.synchronize()`` follows the launch,
     per the codebase idiom. ``query()`` returns the same preallocated
     :class:`BoxContact` on every call.
@@ -267,6 +270,27 @@ class CollisionChecker:
                  position: "wp.array | None" = None,
                  yaw: "wp.array | None" = None,
                  half_extents: "wp.array | None" = None) -> None:
+        """Bind to a :class:`Track` batch and allocate the result buffers.
+
+        Args:
+            track: the bound track batch; the ``segments`` backend reads its
+                buffers directly on every ``query()`` (no rebind needed after
+                ``generate()``).
+            max_boxes: query stride (boxes per env); must be >= 1.
+            method: ``"segments"`` (exact, default) or ``"sdf"`` (baked,
+                approximate near boundaries; see the module docstring).
+            sdf_resolution: ``method="sdf"`` only — grid side length in
+                texels per env (>= 8; default 128). Ignored for ``"segments"``.
+            sdf_padding: ``method="sdf"`` only — per-side AABB padding in
+                world units the grid is expanded by. ``None`` (default)
+                selects AUTO padding: 10% of the larger AABB extent
+                (``max(width, height)``) of each env's track, computed at
+                bake time. Pass a positive float to override with a fixed
+                padding for every env.
+            position, yaw, half_extents: optional constructor binding
+                (all-or-none); equivalent to calling :meth:`bind_inputs`
+                right after construction.
+        """
         _init()
         if int(max_boxes) < 1:
             raise ValueError(f"max_boxes must be >= 1, got {max_boxes!r}")

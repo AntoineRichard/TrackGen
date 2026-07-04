@@ -18,6 +18,10 @@ the NaN previous-position sentinel, so the first update after a reset (or
 after construction) can never emit a spurious crossing. Callers MUST reset
 after regenerating the bound course. Results are undefined for envs with
 ``valid[e] == 0`` on the source batch.
+
+Like the sibling utilities, ``update()``/``reset()`` perform no host sync
+while capturing is enabled (``track_gen.set_capturing``), so they are
+CUDA-graph capturable.
 """
 from __future__ import annotations
 
@@ -204,6 +208,18 @@ class ProgressTracker:
 
     def __init__(self, checkpoints: CheckpointSet,
                  position: "wp.array | None" = None) -> None:
+        """Bind to a :class:`CheckpointSet` and allocate the tracker's state.
+
+        Args:
+            checkpoints: the ordered per-env checkpoint set to track against
+                (from ``CheckpointSet.from_gates`` or
+                ``CheckpointSampler.sample()``). Aliased, not copied — later
+                mutation (e.g. a resampled or regenerated set) is seen on
+                the next ``update()``.
+            position: optional stable ``[E]`` vec2f buffer to bind at
+                construction (bound mode); equivalent to calling
+                :meth:`bind` right after construction.
+        """
         _init()
         E = int(checkpoints.count.shape[0])
         stride = int(checkpoints.position.shape[0])
@@ -271,6 +287,16 @@ class ProgressTracker:
         Per-call mode: pass the ``[E]`` vec2f position array — the SAME
         array (identical ``.ptr``) must be used across a CUDA-graph capture
         and its replays.
+
+        NaN-position semantics: a NaN ``position[e]`` PAUSES env ``e`` for
+        this step rather than erroring — no crossing/wrong-way/wrong-checkpoint
+        event can fire (the crossing test always misses against a NaN
+        endpoint), ``dist_to_next[e]`` is NaN, and the NaN gets written into
+        ``prev_pos[e]``, which re-arms the same sentinel ``reset()`` uses: the
+        FIRST update after a finite position resumes also reports no event
+        (it only re-primes ``prev_pos``), and normal crossing detection
+        resumes the update after that. Useful for envs mid-teleport or
+        awaiting a fresh spawn without a full ``reset()``.
         """
         if self._bound_pos is not None:
             if position is not None:

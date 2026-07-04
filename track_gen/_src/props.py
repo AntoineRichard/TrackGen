@@ -17,7 +17,8 @@ for out-of-bounds queries); this is the rendering/instancing complement.
 Layout follows the package conventions: flat ``[E * max_props]`` wp.arrays,
 NaN-padded past ``count[e]``, in-place reuse of the output ``PropSet`` across
 ``sample()`` calls (use ``clone()`` for snapshots), and no host syncs while
-``_CAPTURING`` is set so ``sample()`` is CUDA-graph capturable.
+capturing is enabled (``track_gen.set_capturing``) so ``sample()`` is
+CUDA-graph capturable.
 """
 from __future__ import annotations
 
@@ -238,18 +239,44 @@ class PropSampler:
 
     One sampler binds one :class:`Track`, one boundary curve, one mode, and
     one spacing, so all output shapes are fixed and ``sample()`` is
-    CUDA-graph capturable (allocation-free; host-sync-free while the module
-    ``_CAPTURING`` flag is set). Because ``TrackGenerator.generate()``
-    overwrites its ``Track`` buffers in place, every ``sample()`` reads the
-    CURRENT batch — no rebind after regeneration. Props are rendering-only;
-    they are not colliders. Results for envs with ``valid[e] == 0`` are
-    undefined — an invalid track can still have >= 3 boundary points and
-    will yield well-formed-looking props with no NaN signal; callers must
-    gate on ``Track.valid``, as everywhere in the library.
+    CUDA-graph capturable (allocation-free; host-sync-free while capturing
+    is enabled via ``track_gen.set_capturing``). Because
+    ``TrackGenerator.generate()`` overwrites its ``Track`` buffers in place,
+    every ``sample()`` reads the CURRENT batch — no rebind after
+    regeneration. Props are rendering-only; they are not colliders. Results
+    for envs with ``valid[e] == 0`` are undefined — an invalid track can
+    still have >= 3 boundary points and will yield well-formed-looking props
+    with no NaN signal; callers must gate on ``Track.valid``, as everywhere
+    in the library.
+
+    ``PropSet.truncated``/``PropSet.step`` live on the RESULT because
+    ``PropSampler`` is the ONLY producer of a ``PropSet`` — unlike
+    ``CheckpointSet``, which is also produced zero-copy by
+    ``CheckpointSet.from_gates`` (no sampling, so no truncation/step to
+    report); ``track_gen.checkpoints.CheckpointSampler`` keeps its analogous
+    diagnostics on the sampler instead, to avoid meaningless fields on
+    gate-derived checkpoint sets.
     """
 
     def __init__(self, track: Track, spacing: float, boundary: str = "outer",
                  mode: str = "points", max_props: "int | None" = None) -> None:
+        """Bind to a :class:`Track` boundary and allocate the result buffers.
+
+        Args:
+            track: the bound track batch; ``sample()`` reads its buffers
+                directly on every call (no rebind needed after
+                ``generate()``).
+            spacing: target arc-length spacing between props (> 0); snapped
+                per env so each ring closes without a seam (see module
+                docstring).
+            boundary: ``"inner"`` or ``"outer"`` (default) — which track
+                boundary curve to resample.
+            mode: ``"points"`` (default, one pose per sample) or
+                ``"segments"`` (one pose per chord between samples).
+            max_props: buffer capacity per env; ``None`` (default) derives
+                it from the CURRENT batch (see :meth:`_derive_max_props`).
+                Must be >= 3 when given explicitly.
+        """
         _init()
         if not (float(spacing) > 0.0):
             raise ValueError(f"spacing must be > 0, got {spacing!r}")

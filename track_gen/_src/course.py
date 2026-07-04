@@ -21,8 +21,8 @@ CUDA graphs: the generator keeps its own pipeline graph (Graph A); the
 facade captures the refresh sequence into its own graph on the first cuda
 ``generate()`` (Graph B) and replays it afterwards. ``step()``/``reset()``
 are NOT auto-captured — they are capture-ready for the caller's sim graph;
-``set_capturing(True)`` flips the facade's and every sub-module's
-``_CAPTURING`` flag in one call.
+``track_gen.set_capturing(True)`` flips the ONE shared capture flag used by
+collision, props, checkpoints, progress, and this facade, all at once.
 
 Results are undefined for envs with ``valid[e] == 0`` on ``course.result``.
 """
@@ -75,7 +75,10 @@ class CourseConfig:
         Track mode only: ``"segments"``, ``"sdf"``, or ``None`` (no
         out-of-bounds checking — progress-only bundles are legal).
     sdf_resolution : int or None
-        Track mode with ``collision="sdf"`` only; ``None`` -> 128.
+        Track mode with ``collision="sdf"`` only; ``None`` -> 128. The
+        facade always uses ``CollisionChecker``'s AUTO SDF padding
+        (``sdf_padding=None``, i.e. 10% of each env's larger AABB extent);
+        ``sdf_padding`` itself is not exposed here.
     post_radius : float
         Gates mode only: > 0 enables ``DiscChecker`` gate-post collision.
     checkpoint_spacing : float or None
@@ -338,6 +341,11 @@ class Course:
         unchanged RNG. Calling ``generate()`` again WITHOUT ``seeds=``
         reproduces the identical batch (plus a full progress reset); pass
         ``seeds=`` to advance the RNG and get new courses.
+
+        In track mode, also check ``course.checkpoint_sampler.truncated``
+        after ``generate()``: a per-env ``[E]`` int32 flag (1 if
+        ``max_checkpoints`` clipped that env's checkpoint ring), mirroring
+        ``PropSet.truncated`` for prop rings.
         """
         if seeds is not None:
             if isinstance(seeds, wp.array):
@@ -352,7 +360,8 @@ class Course:
         self.result = self.generator.generate()
         if self.progress is None:
             self._build_subtools()
-            self._refresh()          # eager warmup (also the cpu path)
+            self._refresh()          # eager warmup (also the cpu path;
+                                      # call 1 of 3 below on first cuda generate())
         elif self._refresh_graph is not None:
             wp.capture_launch(self._refresh_graph)
             wp.synchronize()
@@ -362,10 +371,13 @@ class Course:
             prev = runtime._CAPTURING          # save/restore (generators' idiom)
             set_capturing(True)
             try:
-                self._refresh()      # warmup, sync-free
+                self._refresh()      # warmup, sync-free (call 2 of 3: runs for
+                                      # real, priming any lazy kernel/module
+                                      # init before we start recording below)
                 wp.synchronize()
                 with wp.ScopedCapture(device=self._device) as cap:
-                    self._refresh()
+                    self._refresh()  # call 3 of 3: RECORDED into the graph,
+                                      # not executed here; replayed just below
                 self._refresh_graph = cap.graph
             finally:
                 set_capturing(prev)
@@ -412,7 +424,10 @@ class Course:
             self.checkpoint_sampler.sample()
         if isinstance(self.collision, CollisionChecker) \
                 and self.collision._method == "sdf":
-            self.collision.bake()
+            self.collision.bake()  # re-baked on every _refresh() call, incl.
+                                    # both real warmup passes before the first
+                                    # cuda capture: a one-time construction
+                                    # cost, not a per-step one
         if self._posts is not None:
             self._fill_posts()
         self.progress.reset(self._reset_all_mask)

@@ -148,6 +148,9 @@ Progress tracking
 
 Stateful per-env course progress over any ``CheckpointSet``.
 
+.. automodule:: track_gen.progress
+   :no-members:
+
 .. autoclass:: track_gen.progress.ProgressTracker
    :members:
 
