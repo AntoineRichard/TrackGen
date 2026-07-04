@@ -44,6 +44,37 @@ concern, not a progress concern, and generalizes to any disc obstacles.
   undefined for `valid[e] == 0` envs — all per library convention.
 - Runtime deps numpy + warp-lang only (numpy at construction time only).
 
+### Stable-buffer / input-binding contract (graph capture)
+
+The utilities integrate with a sim that owns persistent state arrays (e.g.
+the robots' pose buffer). Two rules, uniform across the family:
+
+1. **Everything the tool owns is preallocated with stable pointers**:
+   internal state, scratch, and result buffers are allocated once in
+   `__init__` and only ever written in place. (Already the convention;
+   stated here as a hard requirement so CUDA graphs can bake addresses.)
+2. **Per-step inputs can be BOUND once instead of passed per call.** Each
+   per-step method gets a bind-once mode: the tool latches onto the user's
+   stable wp.array(s) (same `.ptr` for the lifetime of the binding) and
+   reads them in place on every call — no per-call marshalling, no per-call
+   validation in the hot path:
+   - `ProgressTracker(checkpoints, position=None)` — when `position` is
+     bound at construction, `update()` takes no arguments and reads the
+     bound buffer; `tracker.update(pos)` (per-call mode) remains available
+     when unbound. Calling `update()` unbound, or `update(pos)` while
+     bound, raises `ValueError`.
+   - `DiscChecker(..., position=None, yaw=None, half_extents=None)` — all
+     three bound together or not at all; `query()` no-arg form when bound.
+   - **Retrofit** (same commit family): `CollisionChecker.bind_inputs(
+     position, yaw, half_extents)` adds the identical bound mode to the
+     existing box checker (`query()` no-arg form). Passing arrays per call
+     stays supported and unchanged.
+   - Shape/dtype/device validation happens once at bind time (construction
+     or `bind_inputs`), never inside the bound-mode hot path.
+   - Docs state the capture rule explicitly: under graph capture, per-call
+     mode requires the SAME arrays (identical `.ptr`) at capture and every
+     replay; bound mode makes this structural — bind once, capture, replay.
+
 ## Unit 1: `track_gen.checkpoints`
 
 ### `CheckpointSet`
@@ -101,8 +132,12 @@ the consumer contract (`from_gates` sets have no such notion).
 
 ```python
 tracker = ProgressTracker(checkpoint_set)
-events = tracker.update(position)   # [E] vec2f, every sim step
+events = tracker.update(position)   # [E] vec2f, per-call mode
 tracker.reset(mask)                 # [E] int32, per-env episodic reset
+
+# Bound mode: latch onto the sim's stable pose buffer once, then no-arg updates
+tracker = ProgressTracker(checkpoint_set, position=robot_pos)  # stable wp.array
+events = tracker.update()           # reads robot_pos in place every step
 ```
 
 Owns device state `[E]`: `prev_pos` (vec2f, NaN = "no motion yet"),
@@ -154,7 +189,12 @@ sdf `bake()` contract).
 ```python
 posts = wp.array(...)  # [E * D] vec2f disc centers (e.g. gates.left/right interleaved)
 checker = DiscChecker(discs=posts, radius=0.015, max_boxes=B, count=None)
-result = checker.query(position, yaw, half_extents)   # same inputs as CollisionChecker
+result = checker.query(position, yaw, half_extents)   # per-call mode
+
+# Bound mode: latch onto the sim's stable pose buffers once
+checker = DiscChecker(discs=posts, radius=0.015, max_boxes=B,
+                      position=pos_buf, yaw=yaw_buf, half_extents=he_buf)
+result = checker.query()
 ```
 
 - Binds a flat `[E * D]` vec2f disc-center array (aliased, so regenerated
@@ -231,8 +271,15 @@ result = checker.query(position, yaw, half_extents)   # same inputs as Collision
   exactly radius, deepest-disc argmax, NaN discs skipped, NaN boxes inert);
   gate-post recipe end-to-end (build posts from a generated GateSequence,
   hit a post, verify index maps back to the gate).
+- **Input binding**: bound-mode equivalence (bound `update()`/`query()`
+  results identical to per-call mode on the same data); bind-time
+  validation errors; mode-misuse errors (no-arg while unbound, arg while
+  bound); writing new poses into the bound buffer between calls is
+  reflected without re-binding; `CollisionChecker.bind_inputs` retrofit.
 - **CUDA**: graph capture for `update()`, `reset()`, `sample()`, and disc
-  `query()` with poisoned-buffer replay; cuda-marked.
+  `query()` with poisoned-buffer replay; the progress + disc capture tests
+  run in BOUND mode (the intended graph pattern: sim writes the pose
+  buffer, replays the captured update); cuda-marked.
 - **Docs**: asset-renderer smoke tests for the three figures; sphinx build
   clean; tutorial page in toctree.
 
