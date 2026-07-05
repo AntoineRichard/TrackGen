@@ -124,10 +124,21 @@ Metrics Table
      - 8.205
      - 7.849
      - 736.9
-
-.. Note: the ``repulsive`` row is added below by the benchmarks-entry task, from a real
-   ``benchmarks/compare_generators.py --cuda`` run (see the warning above for why it is
-   measured on cuda rather than cpu).
+   * - repulsive
+     - 0.9863
+     - 0.01172
+     - 0.0214
+     - 12.91
+     - 0.1558
+     - 0.1544
+     - 0
+     - 1
+     - 34.92
+     - 0.1949
+     - 8.674
+     - 24.95
+     - 591.7 (cuda; see warning — not comparable to the cpu rows; varies run-to-run
+       within roughly 525–1060 across repeated measurements)
 
 Metric Definitions
 ------------------
