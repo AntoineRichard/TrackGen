@@ -32,9 +32,10 @@ CUDA — except ``generator="repulsive"``, which is not graph-capturable and run
 every call, see :doc:`/generators/repulsive`); per-env control is ``reset(mask)``. The
 generators are deterministic under an unchanged RNG: calling ``generate()`` again WITHOUT
 ``seeds=`` reproduces the identical batch (plus a full progress reset), while
-passing ``seeds=`` advances the RNG for new courses. This reproduction is byte-identical on
-CPU; with ``generator="repulsive"`` on CUDA it is only statistically identical (same yield
-and shape distribution, not bit-identical), per the same caveat as above. In gates mode the same
+passing ``seeds=`` advances the RNG for new courses. This reproduction is byte-identical per
+device for all generators, ``repulsive`` included (its analytic-adjoint gradient makes it
+bit-reproducible run-to-run on CUDA as well as CPU); only cross-*device* output differs, and
+then only statistically (fp32 rounding). In gates mode the same
 object wraps ``GateGenerator`` + gate progress + optional ``DiscChecker``
 posts (``post_radius > 0``). The underlying tools stay reachable
 (``course.collision``, ``course.progress``, ``course.checkpoints``) and

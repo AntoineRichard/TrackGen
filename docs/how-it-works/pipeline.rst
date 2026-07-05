@@ -108,11 +108,12 @@ Determinism, yield, and FP tolerance
 **Determinism.** Warp's per-env RNG is deterministic, so a given seed buffer reproduces the
 same tracks run-to-run on a device. The ``cpu`` and ``cuda`` RNG streams may differ — each
 device is internally reproducible; cross-device yields are compared statistically, not
-per-env. **Exception:** ``repulsive`` (the one ``capturable=False`` generator) records a
-fresh ``wp.Tape`` per growth iteration; its CUDA autodiff gradients accumulate via atomics
-whose float summation order varies run-to-run, so on ``cuda`` it is only *statistically*
-reproducible (same distribution, yield, and compactness band), not bit-identical, per seed
-— CPU stays byte-identical. See ``track_gen/_src/warp_generate_repulsive.py``'s module
+per-env. This holds for **all six** generators including ``repulsive`` (the one
+``capturable=False`` generator): its growth gradient is hand-written analytic adjoints — a
+per-vertex gather with no atomics — so it is byte-identical run-to-run on both ``cpu`` and
+``cuda``, per seed. As with every generator, cross-*device* output is statistically
+equivalent (same yield and compactness band) but not bit-identical, since fp32 rounding
+differs between CPU and CUDA. See ``track_gen/_src/warp_generate_repulsive.py``'s module
 docstring for the full account.
 
 **Yield.** Relaxed-valid yield is approximately **0.999** end-to-end (E ≥ 2048): ≈ 0.9991

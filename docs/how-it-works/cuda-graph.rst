@@ -23,10 +23,12 @@ replay the stored graph with ``wp.capture_launch``.
 
 This capture-then-replay path applies to generators whose ``GeneratorSpec.capturable`` is
 ``True`` (the default; ``bezier``, ``hull``, ``polar``, ``voronoi``, and ``checkpoint``
-today). ``repulsive`` registers ``capturable=False`` — its growth loop records a fresh
-``wp.Tape`` per iteration and reads back a stall-convergence scalar, both illegal inside a
-capture region — so ``TrackGenerator.generate()`` runs it eagerly on ``cuda`` every call,
-just like ``cpu``, and never builds a ``wp.Graph`` for it. See
+today). ``repulsive`` registers ``capturable=False`` — its growth loop transitions
+coarse-to-fine stages and reads back a stall-convergence scalar from the host, both illegal
+inside a capture region — so ``TrackGenerator.generate()`` runs it eagerly on ``cuda`` every
+call, just like ``cpu``, and never builds a ``wp.Graph`` for it. (The per-iteration
+``wp.Tape`` that used to be the interior blocker is gone — the gradient is now hand-written
+analytic adjoints — so capture is now just a wiring exercise.) See
 :doc:`/generators/repulsive` for the cost this forfeits.
 
 Capture requirements

@@ -65,22 +65,22 @@ Five rules must hold for every generator whose ``GeneratorSpec`` uses the defaul
    elsewhere in the codebase.
 
 ``GeneratorSpec`` also has a ``capturable: bool = True`` field. A generator may instead set
-``capturable=False`` to opt out of rules 2 and 3: it may allocate per-call (e.g. a fresh
-``wp.Tape`` each iteration) and use host-side control flow — Python loops driving stage
-transitions, readbacks that branch on generated data. ``TrackGenerator`` then runs it
-**eagerly** on CUDA every call — the same code path as ``cpu`` — instead of capturing it
-into a replayable graph; this is a supported, non-error path, not a fallback for a broken
-generator. Rules 1 (pure Warp, no torch) and 4 (fixed-shape buffers) still apply: only the
-*capture* of a static launch topology is waived, not the fixed-shape scratch discipline.
-``repulsive`` is the only current example: its growth loop records a fresh ``wp.Tape`` per
-iteration for autodiff and reads back a stall-convergence scalar to drive an early exit,
-both illegal inside a capture region, even though its scratch buffers are still allocated
-once at a fixed max shape. Rule 5 still applies, with a caveat for chaotic per-iteration
-methods: a ``capturable=False`` generator's CUDA gradients can accumulate via atomics whose
-float summation order varies run-to-run, so the result may be only *statistically*
-reproducible on CUDA (same distribution, same yield) rather than bit-identical, even though
-CPU stays byte-identical per seed — see ``track_gen/_src/warp_generate_repulsive.py``'s
-module docstring for the full account.
+``capturable=False`` to opt out of rules 2 and 3: it may allocate per-call and use host-side
+control flow — Python loops driving stage transitions, readbacks that branch on generated
+data. ``TrackGenerator`` then runs it **eagerly** on CUDA every call — the same code path as
+``cpu`` — instead of capturing it into a replayable graph; this is a supported, non-error
+path, not a fallback for a broken generator. Rules 1 (pure Warp, no torch) and 4 (fixed-shape
+buffers) still apply: only the *capture* of a static launch topology is waived, not the
+fixed-shape scratch discipline. ``repulsive`` is the only current example: its growth loop
+transitions coarse-to-fine stages and reads back a stall-convergence scalar to drive an early
+exit, both illegal inside a capture region, even though its scratch buffers are still
+allocated once at a fixed max shape. Rule 5 still applies, with a caveat for chaotic
+per-iteration methods: if such a generator accumulates its CUDA gradients via ``atomic_add``,
+the varying float summation order can make a chaotically sensitive flow only *statistically*
+reproducible on CUDA rather than bit-identical. Avoid it the way ``repulsive`` does — its
+gradient is hand-written analytic adjoints (a per-vertex gather, no atomics), so it stays
+byte-identical run-to-run on both CPU and CUDA; see
+``track_gen/_src/warp_generate_repulsive.py``'s module docstring for the full account.
 
 What you do NOT have to guarantee
 ----------------------------------

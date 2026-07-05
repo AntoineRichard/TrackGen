@@ -86,8 +86,8 @@ coarse-to-fine (``N = 64 → 128 → 256``) with an area-based stall-stop.  It i
 generator built from iterative physical simulation rather than a single deterministic
 sampling + smoothing pass, and produces the foldiest, most serpentine circuits of the six
 (compactness ≈ 0.15).  It is also the first generator that is **not CUDA-graph-capturable**
-(``capturable=False``): the per-iteration ``wp.Tape`` autodiff record and stall-stop
-readback are both illegal inside a capture region, so it runs eagerly on CUDA every call —
+(``capturable=False``): its host-side stage transitions and stall-stop readback are illegal
+inside a capture region, so it runs eagerly on CUDA every call —
 roughly **1000× slower** than ``bezier`` (~0.2 s @ E=64, ~5 s @ E=8192 on an RTX 4090).
 Prefer a slow regeneration cadence or staggered per-env slices over calling ``generate()``
 every step. See :doc:`repulsive` for the full deep dive.

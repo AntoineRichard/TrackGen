@@ -25,9 +25,11 @@ Yu, Schumacher, and Crane, *Repulsive Curves* (SIGGRAPH 2021 / arXiv 2020).
    takes roughly **0.2 s at E=64** and **5 s at E=8192** (~3 ms/track amortized), versus
    ~2 ms per batch for ``bezier`` — **~1000× slower**.  It runs eagerly on CUDA every call
    (no captured replay); graph capture of the growth loop is future work (see
-   `warp_generate_repulsive.py`'s module docstring and the design spike for why: a fresh
-   ``wp.Tape`` is recorded every iteration for autodiff, which is illegal inside a capture
-   region).  If you use ``repulsive`` in a training loop, prefer a **slow regeneration
+   `warp_generate_repulsive.py`'s module docstring and the design spike): the loop still
+   drives stage transitions, per-window stall readbacks, and the early exit from the host,
+   which is illegal inside a capture region.  (The per-iteration ``wp.Tape`` that used to be
+   the interior blocker is gone — the gradient is now hand-written analytic adjoints — so
+   capture is just a wiring exercise.)  If you use ``repulsive`` in a training loop, prefer a **slow regeneration
    cadence** (regenerate a batch every N steps, not every step) or **staggered per-env
    slices** (regenerate a fraction of environments per step) rather than calling
    ``generate()`` every frame.
@@ -58,9 +60,10 @@ How It Works
 
 3. **Coarse-to-fine ratcheted growth.**
    Each iteration: the target length ``L_target`` ratchets toward ``L_final`` by
-   ``repulsive_ratchet_rate``; a differentiable energy (tangent-point self-repulsion +
-   inverse-power obstacle repulsion + a small length regularizer) is recorded under one
-   ``wp.Tape`` and back-propagated to the curve; the gradient is preconditioned by a
+   ``repulsive_ratchet_rate``; the gradient of the total energy (tangent-point self-repulsion
+   + inverse-power obstacle repulsion + a small length regularizer) is evaluated by
+   hand-written analytic adjoint kernels — a per-vertex gather with no atomics; the gradient
+   is preconditioned by a
    fractional-Sobolev filter (FFT-free — a precomputed circulant convolution) and projected
    to be orthogonal to the length direction; a normalized, barycenter-pinned step is applied;
    and the curve is hard-rescaled back to ``L_target``.  Growth starts at ``N=64`` and
@@ -203,12 +206,13 @@ Key contrasts:
   because the generator is not captured.
 - **~1000× slower.**  See the warning above; this is the dominant practical tradeoff against
   the shape richness.
-- **Determinism caveat.**  CPU output is byte-identical per seed.  On CUDA, the growth is
-  *statistically reproducible but not bit-identical* run-to-run: the ``wp.Tape`` gradient
-  accumulates via atomics whose float summation order varies, and the flow is chaotically
-  sensitive (a fold is a near-buckling instability) enough that this ~2e-6 noise compounds
-  over ~200 iterations into a macroscopically different — but same-distribution, same-yield,
-  same-compactness-band — track.  See the module docstring in
+- **Determinism.**  Output is **byte-identical per device** — same config and seeds give the
+  same centerline run-to-run, bit for bit, on **both CPU and CUDA**.  The gradient is
+  hand-written analytic adjoints (a per-vertex gather with no atomics), so there is no
+  nondeterministic float-summation order to amplify through the chaotically sensitive flow.
+  Cross-*device* equality is **not** claimed: fp32 rounding differs between CPU and CUDA, so a
+  CPU track and a CUDA track for the same seed are statistically equivalent but not
+  bit-identical to each other.  See the module docstring in
   ``track_gen/_src/warp_generate_repulsive.py`` for the full account.
 
 

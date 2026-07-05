@@ -203,11 +203,15 @@ validity`) is unchanged and unaware the generator is non-capturable. No other
   originally worried about). The value is the spike's own build_setup median at `scale=1`,
   measured today; the spec's earlier `≈5.05` had already drifted with the bezier defaults
   (current measured median ≈4.90), so the fixed spike-derived constant is used to keep the
-  generator identical to the validated ground truth. Determinism footnote (discovered in
-  implementation): CUDA output is statistically reproducible but NOT byte-identical — the
-  `wp.Tape` GPU-autodiff atomic gradient noise (~2e-6) amplifies chaotically over the growth
-  iterations; CPU is byte-identical. Byte-identical CUDA determinism needs the analytic
-  adjoints listed under §6 out-of-scope / future work.
+  generator identical to the validated ground truth. Determinism footnote [RESOLVED]: the
+  growth gradient is now hand-written analytic adjoints (per-vertex gather, no atomics),
+  replacing the per-iter `wp.Tape`. Output is byte-identical run-to-run PER DEVICE on both
+  CPU and CUDA (the tape's ~2e-6 atomic gradient noise, which used to amplify chaotically on
+  CUDA, is gone). Cross-device equality is NOT claimed (fp32 rounding differs). The analytic
+  adjoints validate against a float64 reference + finite differences to ~2e-6 rel — tighter
+  than the tape's own fp32 error. Removing the tape also dropped per-iter cost (E=64 CUDA
+  full generate ~206→126 ms, E=1024 ~882→335 ms) and removed the interior CUDA-graph-capture
+  blocker (capture itself is still future work — see §6).
 - **Eager-CUDA numbers are throttle-sensitive** (±1.5× from GPU clock/pool state, per
   the spike). Benchmarks report them as indicative, not contractual.
 - **`num_points` coupling.** `repulsive` requires `num_points == repulsive_stages[-1]`
@@ -216,8 +220,9 @@ validity`) is unchanged and unaware the generator is non-capturable. No other
 
 ## 6. Out of scope
 
-- CUDA graph capture of the growth loop (per-stage graphs; the interior blocker is
-  the per-iter tape).
+- CUDA graph capture of the growth loop (per-stage graphs). The interior per-iter-tape
+  blocker is now REMOVED (analytic adjoints shipped); what remains is host-side control
+  flow (stage transitions, stall readbacks, early exit), so capture is a wiring exercise.
 - BVH far-field for the `O(N²)` TP + obstacle sums.
 - Obstacles as gameplay content (props / `DiscChecker` export).
 - Shipping the actual runtime Warp tail *inside* the spike (already the production

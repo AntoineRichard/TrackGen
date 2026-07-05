@@ -11,8 +11,9 @@ generator is selected by passing ``generator=...`` to ``TrackGenConfig`` (or
 
    config = TrackGenConfig(generator="bezier", num_envs=64, device="cuda")
 
-All six generators are fully supported and deterministic in ``(seed, config)`` (CPU
-byte-identical; see the exception below for ``repulsive`` on CUDA). Five of the six —
+All six generators are fully supported and deterministic in ``(seed, config)`` — byte-identical
+run-to-run per device (both CPU and CUDA; ``repulsive`` included, via its analytic-adjoint
+gradient). Five of the six —
 every one except ``repulsive`` — are graph-capturable; ``repulsive`` is a host-driven,
 non-graph-capturable optimizer that runs eagerly on CUDA every call and is roughly 1000×
 slower (see :doc:`/generators/repulsive`). The choice is about track *shape variety* and
