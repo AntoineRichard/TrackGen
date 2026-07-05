@@ -60,6 +60,7 @@ def _ensure_loaded() -> None:
     from . import warp_generate_hull  # noqa: F401  (registers "hull")
     from . import warp_generate_voronoi  # noqa: F401  (registers "voronoi")
     from . import warp_generate_checkpoint  # noqa: F401  (registers "checkpoint")
+    from . import warp_generate_repulsive  # noqa: F401  (registers "repulsive", capturable=False)
     _LOADED = True
 
 
