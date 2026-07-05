@@ -7,13 +7,24 @@ confined to a disc domain seeded with per-env random disc obstacles. Coarse-to-f
 serpentine tracks (Henrich et al., *Generating Race Tracks With Repulsive Curves*;
 Yu/Schumacher/Crane, *Repulsive Curves* SIGGRAPH 2021).
 
-This is the FIRST non-CUDA-graph-capturable generator: the growth loop reads back an
-area-convergence scalar every stall window to drive the early exit and transitions the
-coarse-to-fine stages on the host -- both illegal inside a capture region. It registers
-with ``capturable=False`` and ``TrackGenerator`` runs it EAGERLY on CUDA (see the cost
-warning on ``TrackGenConfig.repulsive_grow_mult_min``). The per-iteration ``wp.Tape``
-that used to be the interior capture blocker is GONE (replaced by hand-written analytic
-adjoints below); actual graph capture is now just a wiring exercise (future work).
+**CUDA graph capture (``capturable=True``).** The growth loop is fully captured into the
+pipeline-level ``wp.Graph`` like the other five generators -- ``TrackGenerator`` captures it once
+and replays it every call. The per-iteration ``wp.Tape`` that was the historical interior blocker
+is GONE (replaced by the hand-written analytic adjoints below), and the coarse-to-fine stage
+transitions + the periodic resample fire on a HOST-DETERMINISTIC schedule (closed-form
+``_stage_schedule`` + fixed ``resample_every`` cadence), so those iterations UNROLL at capture time
+into a fixed launch sequence. The one data-dependent step -- the area-stall "all envs frozen ->
+break" EARLY EXIT of the final stage -- would need a host readback that is illegal inside a
+capture, so on the captured path it is expressed device-side with a CUDA-graph conditional-node
+while-loop (``wp.capture_while`` on a device ``keep`` flag, with the periodic resample and the
+stall freeze inside ``wp.capture_if`` branches keyed off a device iteration counter). The eager
+path (Warp ``cpu`` always; and the pre-capture reference on ``cuda``) keeps the plain Python loop
+with the host ``frozen.sum() >= E`` readback UNCHANGED. Both paths run the same kernels in the same
+order for the same number of iterations, so eager and replay are bit-identical (see the capture
+parity test). Measured reality on an RTX 4090: the loop is GPU-compute/latency-bound rather than
+host-launch-bound (host launch issue overlaps the O(N^2) kernels), so capture is roughly
+wall-clock-neutral; the win is architectural uniformity + freeing the host thread across the
+captured pipeline (and removing the per-window host syncs the old eager-only path incurred).
 
 Ported from the validated spike ``docs/superpowers/spikes/2026-07-05-repulsive-growth-
 phase1/grow_warp.py`` (proven 64/64 through the standard tail). Production changes:
@@ -601,6 +612,74 @@ def _freeze_update_k(center: wp.array(dtype=wp.vec2f), n: int,
 
 
 # ===========================================================================
+# Device-side final-stage stall loop control (CUDA-graph conditional nodes).
+#
+# On the CUDA graph-capture path the final-stage stall loop is expressed with wp.capture_while
+# (a conditional graph node) driven by these tiny single-thread kernels, so the captured graph
+# replays exactly the eager early-exit iteration count -- no host readback (illegal in a capture),
+# no fixed-budget over-run. The periodic resample (cadence resample_every) and the stall freeze
+# (cadence stall_window) run inside wp.capture_if branches keyed off ``it_dev``, preserving the
+# exact eager cadence. The eager path (cpu, and the pre-capture reference) does not touch these --
+# it keeps the plain Python loop with the host ``frozen.sum() >= E`` readback -- so both paths
+# execute the same kernels in the same order for the same number of iterations => bit-identical.
+# ===========================================================================
+
+@wp.kernel
+def _init_stall_state_k(final_start: int, n_iters: int, it_dev: wp.array(dtype=wp.int32),
+                        active: wp.array(dtype=wp.int32), keep: wp.array(dtype=wp.int32)):
+    # Reset the device loop state at the top of the captured final stage (runs on every replay).
+    # keep=1 iff the final-stage phase has at least one iteration to run.
+    it_dev[0] = final_start
+    active[0] = int(1)
+    k = int(0)
+    if final_start < n_iters:
+        k = int(1)
+    keep[0] = k
+
+
+@wp.kernel
+def _flags_k(it_dev: wp.array(dtype=wp.int32), resample_every: int, stall_window: int,
+             cond_res: wp.array(dtype=wp.int32), cond_stall: wp.array(dtype=wp.int32)):
+    # Per-iteration cadence flags for the two capture_if branches. Mirrors the eager
+    # ``(it + 1) % cadence == 0`` tests with it_dev holding the CURRENT iteration index.
+    it = it_dev[0]
+    cr = int(0)
+    if (it + 1) % resample_every == 0:
+        cr = int(1)
+    cs = int(0)
+    if (it + 1) % stall_window == 0:
+        cs = int(1)
+    cond_res[0] = cr
+    cond_stall[0] = cs
+
+
+@wp.kernel
+def _set_active_k(frozen: wp.array(dtype=wp.int32), E: int, active: wp.array(dtype=wp.int32)):
+    # active = (not all envs frozen). Device-side form of the eager ``frozen.sum() >= E`` readback;
+    # runs only at stall boundaries (inside the stall capture_if), matching where eager may break.
+    ssum = int(0)
+    for e in range(E):
+        ssum += frozen[e]
+    a = int(0)
+    if ssum < E:
+        a = int(1)
+    active[0] = a
+
+
+@wp.kernel
+def _advance_keep_k(active: wp.array(dtype=wp.int32), it_dev: wp.array(dtype=wp.int32),
+                    n_iters: int, keep: wp.array(dtype=wp.int32)):
+    # End-of-body: advance the iteration counter and recompute the loop condition. keep stays 1
+    # while envs remain unfrozen AND the fixed budget is not exhausted -- the two conditions the
+    # eager loop enforces via its ``if all frozen: break`` and its ``range(..., n_iters)`` bound.
+    it_dev[0] = it_dev[0] + 1
+    k = int(0)
+    if active[0] == 1 and it_dev[0] < n_iters:
+        k = int(1)
+    keep[0] = k
+
+
+# ===========================================================================
 # Host-side spectral filter + stage schedule (numpy only, precomputed once)
 # ===========================================================================
 
@@ -650,6 +729,7 @@ class RepulsiveScratch:
         "arc_real", "arc_cr", "arc_co", "count",
         "L_final", "L_init", "L_target", "reached", "frozen", "area_prev", "md_out",
         "num", "den", "gmax", "msl", "cur_len", "gmean", "bc",
+        "it_dev", "active", "keep", "cond_res", "cond_stall",
     )
 
     def __init__(self, **kw) -> None:
@@ -714,11 +794,13 @@ def repulsive_alloc_scratch(config):
         L_final=f32(E), L_init=f32(E), L_target=f32(E), reached=i32(E), frozen=i32(E),
         area_prev=f32(E), md_out=f32(E), num=f32(E), den=f32(E), gmax=f32(E), msl=f32(E),
         cur_len=f32(E), gmean=vec(E), bc=vec(E),
+        # Single-scalar device state for the captured final-stage stall loop (capture_while).
+        it_dev=i32(1), active=i32(1), keep=i32(1), cond_res=i32(1), cond_stall=i32(1),
     )
 
 
 # ===========================================================================
-# Host-driven coarse-to-fine growth loop (eager; non-capturable)
+# Coarse-to-fine growth loop (host-deterministic schedule; CUDA-graph-capturable)
 # ===========================================================================
 
 def generate_repulsive_warp(seeds_wp: wp.array, config,
@@ -728,10 +810,15 @@ def generate_repulsive_warp(seeds_wp: wp.array, config,
     write the final ``[E*num_points]`` closed loops into ``out_centerline`` (valid=1 for all
     envs; the shared downstream gate decides real validity).
 
-    Host-driven (stage transitions, per-window stall readback, early exit) -- illegal inside
-    a CUDA graph capture, hence ``capturable=False``. The gradient is hand-written analytic
-    adjoints (per-vertex gather, no atomics), so the flow is byte-deterministic per device.
-    Ported from the validated spike ``grow_warp.grow_warp`` (with the tape replaced).
+    Registered ``capturable=True``. Coarse stages unroll (host-deterministic schedule); the
+    final-stage area-stall early exit is host-driven on the eager path (``_pipe._CAPTURING`` False:
+    cpu, and the pre-capture reference) and device-driven via ``wp.capture_while`` /
+    ``wp.capture_if`` on the captured path, so ``TrackGenerator`` records the whole loop into the
+    pipeline ``wp.Graph`` and replays it while stopping at the identical iteration. Both paths run
+    the same kernels in the same order for the same iteration count, so eager and replay are
+    bit-identical. The gradient is hand-written analytic adjoints (per-vertex gather, no atomics),
+    so the flow is byte-deterministic per device. Ported from the validated spike
+    ``grow_warp.grow_warp`` (with the tape replaced).
     """
     _pipe._init()
     assert scratch is not None, "generate_repulsive_warp requires scratch"
@@ -787,19 +874,12 @@ def generate_repulsive_warp(seeds_wp: wp.array, config,
         wp.copy(center, s.rs_out, count=E * Nnew)
         Ncur = Nnew
 
-    for it in range(n_iters):
-        # --- coarse-to-fine stage transition (upsample center N -> next N) ---
-        while stage_idx + 1 < len(stages) and it >= stage_starts[stage_idx + 1]:
-            _upsample_to_next()
-
-        h_wp = s.h_by_n[Ncur]
-
-        # 1. ratchet target + deactivation flag
+    def _core_iter(Ncur, h_wp):
+        # One growth iteration, steps 1-6: analytic-adjoint gradient -> Sobolev precondition ->
+        # length projection -> barycenter-pinned step -> hard rescale. Per-vertex gathers, no
+        # atomics -> byte-deterministic per device. Shared verbatim by the coarse-stage loop, the
+        # eager final-stage loop, and the captured capture_while body (identical launch order).
         wp.launch(_ratchet_k, dim=E, inputs=[s.L_target, s.L_final, growth, s.reached], device=dev)
-
-        # 2. energy gradient via hand-written analytic adjoints (all 3 terms -> s.grad).
-        #    Per-vertex gather, no atomics -> byte-deterministic per device. Per-vertex
-        #    tangents/weights are precomputed once (O(E*N)) and shared by both pair kernels.
         wp.launch(_tangent_weight_k, dim=(E, Ncur),
                   inputs=[center, Ncur, s.frozen, s.tang, s.wdual], device=dev)
         wp.launch(_tp_prepass_k, dim=(E, Ncur),
@@ -812,45 +892,85 @@ def generate_repulsive_warp(seeds_wp: wp.array, config,
                   inputs=[center, Ncur, alpha, beta, eps, s.tang, s.wdual, s.wcoef, s.btan,
                           s.obs_pts, s.obs_mw, M, p_exp, s.reached,
                           n_wall, deac_i, s.len_coef, s.frozen, s.grad], device=dev)
-
-        # 3. Sobolev precondition g = A^{-1} grad
         wp.launch(_conv_k, dim=(E, Ncur), inputs=[s.grad, h_wp, Ncur, s.frozen, s.g], device=dev)
-        # 4. length-gradient Sobolev-orthogonal projection
         wp.launch(_length_grad_k, dim=(E, Ncur), inputs=[center, Ncur, s.lg], device=dev)
         wp.launch(_conv_k, dim=(E, Ncur), inputs=[s.lg, h_wp, Ncur, s.frozen, s.ainv_lg], device=dev)
         wp.launch(_numden_k, dim=E, inputs=[s.g, s.lg, s.ainv_lg, Ncur, s.num, s.den], device=dev)
         wp.launch(_project_k, dim=(E, Ncur), inputs=[s.g, s.ainv_lg, Ncur, s.num, s.den], device=dev)
-        # 5. barycenter pin + normalized step
         wp.launch(_gmean_k, dim=E, inputs=[s.g, Ncur, s.gmean], device=dev)
         wp.launch(_gmax_msl_k, dim=E, inputs=[s.g, s.gmean, s.peri_e, Ncur, s.gmax, s.msl], device=dev)
         wp.launch(_step_k, dim=(E, Ncur),
                   inputs=[center, s.g, s.gmean, s.msl, s.gmax, tau, Ncur, s.frozen], device=dev)
-        # 6. hard rescale to the ratcheted target
         wp.launch(_perim_bc_k, dim=E, inputs=[center, Ncur, s.cur_len, s.bc], device=dev)
         wp.launch(_rescale_k, dim=(E, Ncur),
                   inputs=[center, s.bc, s.cur_len, s.L_target, Ncur, s.frozen], device=dev)
 
-        # 7. periodic arc-length resample (pure Warp)
+    def _periodic_resample(Ncur):
+        wp.launch(_pipe._fill_i32_k, dim=E, inputs=[s.count, Ncur], device=dev)
+        _pipe.resample_uniform(center, s.rs_out, Ncur, s.count, s.rs_seg, s.rs_s, device=dev)
+        wp.copy(center, s.rs_out, count=E * Ncur)
+
+    def _freeze(Ncur):
+        # Freeze converged envs (settle behaviour, part of the math): once an env's enclosed area
+        # stops changing it stops taking steps, so its final shape settles instead of drifting.
+        wp.launch(_freeze_update_k, dim=E,
+                  inputs=[center, Ncur, s.reached, stall_tol, s.area_prev, s.frozen, s.md_out],
+                  device=dev)
+
+    # First iter of the final-stage phase (clamped so a tiny budget still hands off a full-res loop).
+    final_start = min(stage_starts[-1], n_iters)
+
+    # --- Phase 1: coarse-stage iterations [0, final_start): stage transitions + periodic resample,
+    #     no stall/freeze (that only runs at the final stage). Identical on eager and captured. ---
+    for it in range(final_start):
+        while stage_idx + 1 < len(stages) and it >= stage_starts[stage_idx + 1]:
+            _upsample_to_next()
+        _core_iter(Ncur, s.h_by_n[Ncur])
         if (it + 1) % resample_every == 0:
-            wp.launch(_pipe._fill_i32_k, dim=E, inputs=[s.count, Ncur], device=dev)
-            _pipe.resample_uniform(center, s.rs_out, Ncur, s.count, s.rs_seg, s.rs_s, device=dev)
-            wp.copy(center, s.rs_out, count=E * Ncur)
+            _periodic_resample(Ncur)
 
-        # 8. stall-stop: freeze converged envs, global early exit when all frozen.
-        if Ncur == stages[-1] and (it + 1) % stall_window == 0:
-            wp.launch(_freeze_update_k, dim=E,
-                      inputs=[center, Ncur, s.reached, stall_tol, s.area_prev, s.frozen, s.md_out],
-                      device=dev)
-            if int(s.frozen.numpy().sum()) >= E:
-                break
-
-    # Defense in depth: guarantee the centerline reaches the final stage resolution
-    # (stages[-1] == num_points) even if the iteration budget was too small to trigger every
-    # coarse-to-fine transition on schedule. Otherwise the tail resample/copy below would pack
-    # stride-Ncur data into the stride-Nmax out_centerline (silent mis-strided garbage). Config
-    # validation already forbids n_iters<=0; this keeps the stride invariant unconditional.
+    # Enter the final stage before Phase 2 (also the defense-in-depth for a budget so small it never
+    # scheduled the transitions: the tail resample/copy below must see stride == stages[-1]).
     while stage_idx + 1 < len(stages):
         _upsample_to_next()
+    h_fin = s.h_by_n[Ncur]  # Ncur == stages[-1]
+
+    # --- Phase 2: final-stage iterations [final_start, n_iters) WITH the area-stall early exit. ---
+    if not _pipe._CAPTURING:
+        # Eager (cpu always; the pre-capture reference on cuda): plain Python loop with the host
+        # ``frozen.sum() >= E`` readback early exit -- byte-identical to the pre-capture generator.
+        for it in range(final_start, n_iters):
+            _core_iter(Ncur, h_fin)
+            if (it + 1) % resample_every == 0:
+                _periodic_resample(Ncur)
+            if (it + 1) % stall_window == 0:
+                _freeze(Ncur)
+                if int(s.frozen.numpy().sum()) >= E:
+                    break
+    else:
+        # Captured: the SAME early exit, expressed device-side as a CUDA-graph conditional-node
+        # while-loop so the replay stops at the identical iteration (a host readback is illegal in a
+        # capture). The periodic resample and the stall freeze sit in wp.capture_if branches keyed
+        # off the device iteration counter, so their cadence matches the eager path exactly.
+        def _resample_cb():
+            _periodic_resample(Ncur)
+
+        def _stall_cb():
+            _freeze(Ncur)
+            wp.launch(_set_active_k, dim=1, inputs=[s.frozen, E, s.active], device=dev)
+
+        def _while_body():
+            _core_iter(Ncur, h_fin)
+            wp.launch(_flags_k, dim=1,
+                      inputs=[s.it_dev, resample_every, stall_window, s.cond_res, s.cond_stall],
+                      device=dev)
+            wp.capture_if(s.cond_res, _resample_cb)
+            wp.capture_if(s.cond_stall, _stall_cb)
+            wp.launch(_advance_keep_k, dim=1, inputs=[s.active, s.it_dev, n_iters, s.keep], device=dev)
+
+        wp.launch(_init_stall_state_k, dim=1,
+                  inputs=[final_start, n_iters, s.it_dev, s.active, s.keep], device=dev)
+        wp.capture_while(s.keep, _while_body)
 
     # final periodic resample at Nmax, then hand the closed loop to the standard tail.
     wp.launch(_pipe._fill_i32_k, dim=E, inputs=[s.count, Ncur], device=dev)
@@ -865,5 +985,5 @@ _registry.register(_registry.GeneratorSpec(
     name="repulsive",
     alloc_scratch=repulsive_alloc_scratch,
     generate=generate_repulsive_warp,
-    capturable=False,
+    capturable=True,
 ))

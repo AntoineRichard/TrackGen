@@ -2,7 +2,7 @@
 
 Task 3 lands the seed-driven obstacle-layout determinism test first; Task 4 extends
 this module with the full per-generator contract (registration, output shape, closed
-loop, NaN-tail, determinism/diversity, yield, compactness, no-graph on CUDA).
+loop, NaN-tail, determinism/diversity, yield, compactness, CUDA-graph capture).
 """
 from __future__ import annotations
 
@@ -217,7 +217,9 @@ def test_repulsive_is_registered():
     spec = reg.get("repulsive")
     assert spec.name == "repulsive"
     assert callable(spec.alloc_scratch) and callable(spec.generate)
-    assert spec.capturable is False
+    # The growth loop runs a fixed host-deterministic budget (no host early-exit readback),
+    # so it captures into the pipeline wp.Graph like the other generators.
+    assert spec.capturable is True
 
 
 @pytest.mark.parametrize("dev", DEVS)
@@ -229,9 +231,13 @@ def test_repulsive_contract_through_tail(dev):
     track = gen.generate(E)
     assert isinstance(track, Track)
 
-    # (h) The CUDA facade must NOT capture a graph for a non-capturable generator.
-    gen.generate(E)  # a second call would replay a captured graph if one existed
-    assert gen._graph is None
+    # (h) The CUDA facade captures a graph on the first call and replays it on the second;
+    #     on cpu it always runs eagerly (no graph).
+    gen.generate(E)  # second call replays the captured graph (cuda) / re-runs eagerly (cpu)
+    if dev.startswith("cuda"):
+        assert gen._graph is not None
+    else:
+        assert gen._graph is None
 
     # (b) Raw generated centerline: [E*num_points, 2], all finite, correct shape.
     gen_center = to_t(gen._scratch.gen_centerline).view(E, N, 2)
@@ -324,7 +330,7 @@ def test_repulsive_default_yield_and_shape_cuda():
     """The spike's bar: ~64/64 through the standard tail at E=64 with default config.
 
     With the analytic-adjoint gradient the CUDA flow is byte-deterministic, so a given seed
-    yields ONE stable answer run-to-run (seed=11 -> a stable 63/64 today; the previous tape
+    yields ONE stable answer run-to-run (seed=11 -> a stable 64/64 today; the previous tape
     path fluctuated 62-64/64 from atomic-gradient noise). The hard gate is the design contract
     (> 0.5); the soft gate (>= 58) guards against a genuinely broken port with margin for
     config/seed variation -- not a loosened bar hiding a bad port (the port matches the spike).
@@ -333,7 +339,7 @@ def test_repulsive_default_yield_and_shape_cuda():
     cfg = TrackGenConfig(generator="repulsive", num_envs=E, device="cuda")
     gen = TrackGenerator(cfg, PerEnvSeededRNG(seeds=11, num_envs=E, device="cuda"))
     track = gen.generate(E)
-    assert gen._graph is None  # eager, never captured
+    assert gen._graph is not None  # capturable: the fixed-budget growth loop is graph-captured
 
     valid = to_t(track.valid).bool()
     yield_frac = float(valid.float().mean())
