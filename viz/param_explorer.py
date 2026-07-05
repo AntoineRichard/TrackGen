@@ -90,6 +90,24 @@ def default_params() -> dict:
         "voronoi_control_points": cfg.voronoi_control_points,
         "voronoi_radial_variation": cfg.voronoi_radial_variation,
         "voronoi_angular_jitter": cfg.voronoi_angular_jitter,
+        "repulsive_grow_mult_min": cfg.repulsive_grow_mult_min,
+        "repulsive_grow_mult_max": cfg.repulsive_grow_mult_max,
+        "repulsive_domain_frac": cfg.repulsive_domain_frac,
+        "repulsive_domain_init_ratio": cfg.repulsive_domain_init_ratio,
+        "repulsive_obstacle_count_min": cfg.repulsive_obstacle_count_min,
+        "repulsive_obstacle_count_max": cfg.repulsive_obstacle_count_max,
+        "repulsive_obstacle_radius_min_frac": cfg.repulsive_obstacle_radius_min_frac,
+        "repulsive_obstacle_radius_max_frac": cfg.repulsive_obstacle_radius_max_frac,
+        "repulsive_ratchet_rate": cfg.repulsive_ratchet_rate,
+        "repulsive_alpha": cfg.repulsive_alpha,
+        "repulsive_beta": cfg.repulsive_beta,
+        "repulsive_tau": cfg.repulsive_tau,
+        "repulsive_w_len": cfg.repulsive_w_len,
+        "repulsive_settle_iters": cfg.repulsive_settle_iters,
+        "repulsive_resample_every": cfg.repulsive_resample_every,
+        "repulsive_stall_window": cfg.repulsive_stall_window,
+        "repulsive_stall_area_tol": cfg.repulsive_stall_area_tol,
+        "repulsive_deactivate_obstacles": cfg.repulsive_deactivate_obstacles,
         "checkpoint_count": cfg.checkpoint_count,
         "checkpoint_radius_min_frac": cfg.checkpoint_radius_min_frac,
         "checkpoint_angle_jitter": cfg.checkpoint_angle_jitter,
@@ -157,6 +175,43 @@ def build_config(p: dict) -> TrackGenConfig:
         kw["voronoi_radial_variation"] = float(p["voronoi_radial_variation"])
     if p.get("voronoi_angular_jitter") is not None:
         kw["voronoi_angular_jitter"] = float(p["voronoi_angular_jitter"])
+    # Repulsive-growth knobs; absent -> config defaults.
+    if p.get("repulsive_grow_mult_min") is not None:
+        kw["repulsive_grow_mult_min"] = float(p["repulsive_grow_mult_min"])
+    if p.get("repulsive_grow_mult_max") is not None:
+        kw["repulsive_grow_mult_max"] = float(p["repulsive_grow_mult_max"])
+    if p.get("repulsive_domain_frac") is not None:
+        kw["repulsive_domain_frac"] = float(p["repulsive_domain_frac"])
+    if p.get("repulsive_domain_init_ratio") is not None:
+        kw["repulsive_domain_init_ratio"] = float(p["repulsive_domain_init_ratio"])
+    if p.get("repulsive_obstacle_count_min") is not None:
+        kw["repulsive_obstacle_count_min"] = int(p["repulsive_obstacle_count_min"])
+    if p.get("repulsive_obstacle_count_max") is not None:
+        kw["repulsive_obstacle_count_max"] = int(p["repulsive_obstacle_count_max"])
+    if p.get("repulsive_obstacle_radius_min_frac") is not None:
+        kw["repulsive_obstacle_radius_min_frac"] = float(p["repulsive_obstacle_radius_min_frac"])
+    if p.get("repulsive_obstacle_radius_max_frac") is not None:
+        kw["repulsive_obstacle_radius_max_frac"] = float(p["repulsive_obstacle_radius_max_frac"])
+    if p.get("repulsive_ratchet_rate") is not None:
+        kw["repulsive_ratchet_rate"] = float(p["repulsive_ratchet_rate"])
+    if p.get("repulsive_alpha") is not None:
+        kw["repulsive_alpha"] = float(p["repulsive_alpha"])
+    if p.get("repulsive_beta") is not None:
+        kw["repulsive_beta"] = float(p["repulsive_beta"])
+    if p.get("repulsive_tau") is not None:
+        kw["repulsive_tau"] = float(p["repulsive_tau"])
+    if p.get("repulsive_w_len") is not None:
+        kw["repulsive_w_len"] = float(p["repulsive_w_len"])
+    if p.get("repulsive_settle_iters") is not None:
+        kw["repulsive_settle_iters"] = int(p["repulsive_settle_iters"])
+    if p.get("repulsive_resample_every") is not None:
+        kw["repulsive_resample_every"] = int(p["repulsive_resample_every"])
+    if p.get("repulsive_stall_window") is not None:
+        kw["repulsive_stall_window"] = int(p["repulsive_stall_window"])
+    if p.get("repulsive_stall_area_tol") is not None:
+        kw["repulsive_stall_area_tol"] = float(p["repulsive_stall_area_tol"])
+    if p.get("repulsive_deactivate_obstacles") is not None:
+        kw["repulsive_deactivate_obstacles"] = bool(p["repulsive_deactivate_obstacles"])
     # Checkpoint steering knobs; absent -> config defaults.
     if p.get("checkpoint_count") is not None:
         kw["checkpoint_count"] = int(p["checkpoint_count"])
@@ -400,6 +455,7 @@ def track_visible_sections(generator: str) -> dict[str, bool]:
         "polar": name == "polar",
         "voronoi": name == "voronoi",
         "checkpoint": name == "checkpoint",
+        "repulsive": name == "repulsive",
     }
 
 
@@ -409,7 +465,7 @@ def track_visible_sections(generator: str) -> dict[str, bool]:
 # its header markdown plus its controls, in the SAME order as ``track_mode_outputs``.
 TRACK_MODE_SECTION_SIZES = (
     ("sampling", 4), ("smoothing", 2), ("bezier", 4), ("hull", 2),
-    ("polar", 4), ("voronoi", 6), ("checkpoint", 9),
+    ("polar", 4), ("voronoi", 6), ("checkpoint", 9), ("repulsive", 19),
 )
 
 
@@ -673,6 +729,13 @@ def _collect(*vals) -> dict:
             "checkpoint_count", "checkpoint_radius_min_frac", "checkpoint_angle_jitter",
             "checkpoint_turn_rate", "checkpoint_steer_gain", "checkpoint_lookahead_frac",
             "checkpoint_best_of_k", "checkpoint_clip_fallback",
+            "repulsive_grow_mult_min", "repulsive_grow_mult_max", "repulsive_domain_frac",
+            "repulsive_domain_init_ratio", "repulsive_obstacle_count_min",
+            "repulsive_obstacle_count_max", "repulsive_obstacle_radius_min_frac",
+            "repulsive_obstacle_radius_max_frac", "repulsive_ratchet_rate",
+            "repulsive_alpha", "repulsive_beta", "repulsive_tau", "repulsive_w_len",
+            "repulsive_settle_iters", "repulsive_resample_every", "repulsive_stall_window",
+            "repulsive_stall_area_tol", "repulsive_deactivate_obstacles",
             "spacing", "n_max", "relax_iters",
             "relax_sep_relax", "relax_spc_relax", "relax_bend_relax", "relax_margin",
             "relax_sep_every", "relax_sep_cache_slots", "relax_sep_cache_skin",
@@ -782,6 +845,63 @@ def build_app():
                         checkpoint_clip_fallback = gr.Checkbox(value=defaults["checkpoint_clip_fallback"],
                                                                label="checkpoint_clip_fallback (single-crossing rescue)",
                                                                visible=track_mode_visible["checkpoint"])
+                        repulsive_md = gr.Markdown(
+                            "### Repulsive growth (host-driven, ~1000x slower than bezier)",
+                            visible=track_mode_visible["repulsive"])
+                        rep_grow_min = gr.Slider(1.0, 10.0, value=defaults["repulsive_grow_mult_min"], step=0.1,
+                                                 label="repulsive_grow_mult_min (target-perimeter multiplier, low)",
+                                                 visible=track_mode_visible["repulsive"])
+                        rep_grow_max = gr.Slider(1.0, 10.0, value=defaults["repulsive_grow_mult_max"], step=0.1,
+                                                 label="repulsive_grow_mult_max (target-perimeter multiplier, high)",
+                                                 visible=track_mode_visible["repulsive"])
+                        rep_domain_frac = gr.Slider(0.10, 0.60, value=defaults["repulsive_domain_frac"], step=0.01,
+                                                    label="repulsive_domain_frac (domain radius / world scale)",
+                                                    visible=track_mode_visible["repulsive"])
+                        rep_domain_init_ratio = gr.Slider(1.5, 8.0, value=defaults["repulsive_domain_init_ratio"],
+                                                          step=0.1, label="repulsive_domain_init_ratio (r_dom / r_init)",
+                                                          visible=track_mode_visible["repulsive"])
+                        rep_obs_count_min = gr.Slider(1, 20, value=defaults["repulsive_obstacle_count_min"], step=1,
+                                                      label="repulsive_obstacle_count_min",
+                                                      visible=track_mode_visible["repulsive"])
+                        rep_obs_count_max = gr.Slider(1, 30, value=defaults["repulsive_obstacle_count_max"], step=1,
+                                                      label="repulsive_obstacle_count_max",
+                                                      visible=track_mode_visible["repulsive"])
+                        rep_obs_rad_min = gr.Slider(0.005, 0.10, value=defaults["repulsive_obstacle_radius_min_frac"],
+                                                    step=0.005, label="repulsive_obstacle_radius_min_frac",
+                                                    visible=track_mode_visible["repulsive"])
+                        rep_obs_rad_max = gr.Slider(0.005, 0.15, value=defaults["repulsive_obstacle_radius_max_frac"],
+                                                    step=0.005, label="repulsive_obstacle_radius_max_frac",
+                                                    visible=track_mode_visible["repulsive"])
+                        rep_ratchet = gr.Slider(0.002, 0.020, value=defaults["repulsive_ratchet_rate"], step=0.001,
+                                                label="repulsive_ratchet_rate (per-iter length growth)",
+                                                visible=track_mode_visible["repulsive"])
+                        rep_alpha = gr.Slider(0.5, 6.0, value=defaults["repulsive_alpha"], step=0.1,
+                                             label="repulsive_alpha (TP energy exponent)",
+                                             visible=track_mode_visible["repulsive"])
+                        rep_beta = gr.Slider(1.0, 12.0, value=defaults["repulsive_beta"], step=0.1,
+                                            label="repulsive_beta (TP energy exponent)",
+                                            visible=track_mode_visible["repulsive"])
+                        rep_tau = gr.Slider(0.05, 1.0, value=defaults["repulsive_tau"], step=0.01,
+                                           label="repulsive_tau (flow step size)",
+                                           visible=track_mode_visible["repulsive"])
+                        rep_w_len = gr.Slider(0.0, 100.0, value=defaults["repulsive_w_len"], step=1.0,
+                                              label="repulsive_w_len (length regularizer weight)",
+                                              visible=track_mode_visible["repulsive"])
+                        rep_settle_iters = gr.Slider(0, 200, value=defaults["repulsive_settle_iters"], step=5,
+                                                     label="repulsive_settle_iters",
+                                                     visible=track_mode_visible["repulsive"])
+                        rep_resample_every = gr.Slider(5, 100, value=defaults["repulsive_resample_every"], step=1,
+                                                       label="repulsive_resample_every",
+                                                       visible=track_mode_visible["repulsive"])
+                        rep_stall_window = gr.Slider(2, 64, value=defaults["repulsive_stall_window"], step=1,
+                                                     label="repulsive_stall_window",
+                                                     visible=track_mode_visible["repulsive"])
+                        rep_stall_tol = gr.Slider(0.005, 0.20, value=defaults["repulsive_stall_area_tol"], step=0.005,
+                                                  label="repulsive_stall_area_tol",
+                                                  visible=track_mode_visible["repulsive"])
+                        rep_deac = gr.Checkbox(value=defaults["repulsive_deactivate_obstacles"],
+                                               label="repulsive_deactivate_obstacles (close disc halos at target length)",
+                                               visible=track_mode_visible["repulsive"])
                         gr.Markdown("### Resolution (constant-spacing)")
                         spacing = gr.Slider(0.1, 1.0, value=defaults["spacing"], step=0.02, label="spacing (m)")
                         n_max = gr.Slider(128, 512, value=defaults["n_max"], step=8, label="N_max")
@@ -824,6 +944,11 @@ def build_app():
                             checkpoint_count, checkpoint_radius_min_frac, checkpoint_angle_jitter,
                             checkpoint_turn_rate, checkpoint_steer_gain, checkpoint_lookahead_frac,
                             checkpoint_best_of_k, checkpoint_clip_fallback,
+                            rep_grow_min, rep_grow_max, rep_domain_frac, rep_domain_init_ratio,
+                            rep_obs_count_min, rep_obs_count_max, rep_obs_rad_min, rep_obs_rad_max,
+                            rep_ratchet, rep_alpha, rep_beta, rep_tau, rep_w_len,
+                            rep_settle_iters, rep_resample_every, rep_stall_window, rep_stall_tol,
+                            rep_deac,
                             spacing, n_max, relax_iters, sep, spc, bend, margin,
                             sep_every, sep_slots, sep_skin, grid_n, seed, batch_size]
 
@@ -837,6 +962,11 @@ def build_app():
                     checkpoint_md, checkpoint_count, checkpoint_radius_min_frac,
                     checkpoint_angle_jitter, checkpoint_turn_rate, checkpoint_steer_gain,
                     checkpoint_lookahead_frac, checkpoint_best_of_k, checkpoint_clip_fallback,
+                    repulsive_md, rep_grow_min, rep_grow_max, rep_domain_frac, rep_domain_init_ratio,
+                    rep_obs_count_min, rep_obs_count_max, rep_obs_rad_min, rep_obs_rad_max,
+                    rep_ratchet, rep_alpha, rep_beta, rep_tau, rep_w_len,
+                    rep_settle_iters, rep_resample_every, rep_stall_window, rep_stall_tol,
+                    rep_deac,
                 ]
 
                 if len(track_mode_outputs) != len(track_mode_visibility(generator_default)):

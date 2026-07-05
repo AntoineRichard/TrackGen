@@ -107,6 +107,49 @@ def test_build_config_maps_voronoi_shape_knobs():
     assert abs(cfg.voronoi_angular_jitter - 0.12) < 1e-9
 
 
+def test_build_config_maps_repulsive_shape_knobs():
+    cfg = px.build_config(_params(
+        generator="repulsive",
+        repulsive_grow_mult_min=4.0,
+        repulsive_grow_mult_max=6.0,
+        repulsive_domain_frac=0.30,
+        repulsive_domain_init_ratio=3.5,
+        repulsive_obstacle_count_min=6,
+        repulsive_obstacle_count_max=14,
+        repulsive_obstacle_radius_min_frac=0.015,
+        repulsive_obstacle_radius_max_frac=0.05,
+        repulsive_ratchet_rate=0.010,
+        repulsive_alpha=2.5,
+        repulsive_beta=5.5,
+        repulsive_tau=0.35,
+        repulsive_w_len=25.0,
+        repulsive_settle_iters=30,
+        repulsive_resample_every=20,
+        repulsive_stall_window=12,
+        repulsive_stall_area_tol=0.04,
+        repulsive_deactivate_obstacles=False,
+    ))
+    assert cfg.generator == "repulsive"
+    assert abs(cfg.repulsive_grow_mult_min - 4.0) < 1e-9
+    assert abs(cfg.repulsive_grow_mult_max - 6.0) < 1e-9
+    assert abs(cfg.repulsive_domain_frac - 0.30) < 1e-9
+    assert abs(cfg.repulsive_domain_init_ratio - 3.5) < 1e-9
+    assert cfg.repulsive_obstacle_count_min == 6
+    assert cfg.repulsive_obstacle_count_max == 14
+    assert abs(cfg.repulsive_obstacle_radius_min_frac - 0.015) < 1e-9
+    assert abs(cfg.repulsive_obstacle_radius_max_frac - 0.05) < 1e-9
+    assert abs(cfg.repulsive_ratchet_rate - 0.010) < 1e-9
+    assert abs(cfg.repulsive_alpha - 2.5) < 1e-9
+    assert abs(cfg.repulsive_beta - 5.5) < 1e-9
+    assert abs(cfg.repulsive_tau - 0.35) < 1e-9
+    assert abs(cfg.repulsive_w_len - 25.0) < 1e-9
+    assert cfg.repulsive_settle_iters == 30
+    assert cfg.repulsive_resample_every == 20
+    assert cfg.repulsive_stall_window == 12
+    assert abs(cfg.repulsive_stall_area_tol - 0.04) < 1e-9
+    assert cfg.repulsive_deactivate_obstacles is False
+
+
 def test_build_gate_config_maps_solver_and_shape_knobs():
     cfg = px.build_gate_config(_gate_params(
         gate_generator="bezier",
@@ -303,22 +346,25 @@ def test_track_mode_visibility_orders_flags_to_match_outputs():
     # polar-only build-time assertion cannot.
     assert px.track_mode_visibility("bezier") == (
         [True] * 4 + [True] * 2 + [True] * 4 + [False] * 2
-        + [False] * 4 + [False] * 6 + [False] * 9
+        + [False] * 4 + [False] * 6 + [False] * 9 + [False] * 19
     )
     assert px.track_mode_visibility("hull") == (
         [True] * 4 + [True] * 2 + [False] * 4 + [True] * 2
-        + [False] * 4 + [False] * 6 + [False] * 9
+        + [False] * 4 + [False] * 6 + [False] * 9 + [False] * 19
     )
     assert px.track_mode_visibility("voronoi") == (
         [False] * 4 + [True] * 2 + [False] * 4 + [False] * 2
-        + [False] * 4 + [True] * 6 + [False] * 9
+        + [False] * 4 + [True] * 6 + [False] * 9 + [False] * 19
     )
     assert px.track_mode_visibility("checkpoint") == (
-        [False] * (4 + 2 + 4 + 2 + 4 + 6) + [True] * 9
+        [False] * (4 + 2 + 4 + 2 + 4 + 6) + [True] * 9 + [False] * 19
+    )
+    assert px.track_mode_visibility("repulsive") == (
+        [False] * (4 + 2 + 4 + 2 + 4 + 6 + 9) + [True] * 19
     )
     # Every generator yields the same fixed number of flags (one per output component).
-    for gen in ("bezier", "hull", "polar", "voronoi", "checkpoint"):
-        assert len(px.track_mode_visibility(gen)) == 31
+    for gen in ("bezier", "hull", "polar", "voronoi", "checkpoint", "repulsive"):
+        assert len(px.track_mode_visibility(gen)) == 31 + 19
 
 
 def _visible_by_label(app, label):
@@ -356,23 +402,27 @@ def test_track_tab_shows_only_selected_generator_controls():
 def test_track_visible_sections_are_generator_specific():
     assert px.track_visible_sections("bezier") == {
         "sampling": True, "smoothing": True, "bezier": True, "hull": False,
-        "polar": False, "voronoi": False, "checkpoint": False,
+        "polar": False, "voronoi": False, "checkpoint": False, "repulsive": False,
     }
     assert px.track_visible_sections("hull") == {
         "sampling": True, "smoothing": True, "bezier": False, "hull": True,
-        "polar": False, "voronoi": False, "checkpoint": False,
+        "polar": False, "voronoi": False, "checkpoint": False, "repulsive": False,
     }
     assert px.track_visible_sections("polar") == {
         "sampling": False, "smoothing": True, "bezier": False, "hull": False,
-        "polar": True, "voronoi": False, "checkpoint": False,
+        "polar": True, "voronoi": False, "checkpoint": False, "repulsive": False,
     }
     assert px.track_visible_sections("voronoi") == {
         "sampling": False, "smoothing": True, "bezier": False, "hull": False,
-        "polar": False, "voronoi": True, "checkpoint": False,
+        "polar": False, "voronoi": True, "checkpoint": False, "repulsive": False,
     }
     assert px.track_visible_sections("checkpoint") == {
         "sampling": False, "smoothing": False, "bezier": False, "hull": False,
-        "polar": False, "voronoi": False, "checkpoint": True,
+        "polar": False, "voronoi": False, "checkpoint": True, "repulsive": False,
+    }
+    assert px.track_visible_sections("repulsive") == {
+        "sampling": False, "smoothing": False, "bezier": False, "hull": False,
+        "polar": False, "voronoi": False, "checkpoint": False, "repulsive": True,
     }
 
 
