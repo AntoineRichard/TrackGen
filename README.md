@@ -16,7 +16,7 @@ instancing, all as Warp kernels over the same batched buffers.
 
 ```
 seeds[E] ─► generator ─► resample ─► XPBD relax ─► inflate ─► Track ─► collision · progress · props
-            bezier/checkpoint/hull/polar/voronoi                       (runtime utilities)
+            bezier/checkpoint/hull/polar/voronoi/repulsive              (runtime utilities)
 ```
 
 ![Representative phase-1 outputs by generator](docs/assets/readme-generator-strip.png)
@@ -25,7 +25,7 @@ seeds[E] ─► generator ─► resample ─► XPBD relax ─► inflate ─�
 
 | | | docs |
 |---|---|---|
-| **Five track generators** | Bezier, checkpoint-steering, hull, polar, Voronoi — one config, per-env styles | [Generators](https://antoinerichard.github.io/TrackGen/generators/overview.html) |
+| **Six track generators** | Bezier, checkpoint-steering, hull, polar, Voronoi, and repulsive-growth (a self-repulsive serpentine option, ~1000× slower and not graph-captured) — one config, per-env styles | [Generators](https://antoinerichard.github.io/TrackGen/generators/overview.html) |
 | **Relaxation & inflation** | XPBD-relaxed centerlines inflated into constant-width road bands — index-aligned outer/center/inner borders with tangent/normal frames | [How it works](https://antoinerichard.github.io/TrackGen/how-it-works/inflation.html) |
 | **Gate sequences** | Batched gate courses with tangent frames and collision-solved spacing | [Tutorial](https://antoinerichard.github.io/TrackGen/tutorials/gate-sequences.html) |
 | **Out-of-bounds collision** | Oriented boxes vs the drivable band — exact scan or baked SDF — plus disc obstacles (gate posts, cones) | [Collision](https://antoinerichard.github.io/TrackGen/utilities/collision.html) |
@@ -89,7 +89,7 @@ More: [batch generation](https://antoinerichard.github.io/TrackGen/tutorials/bat
 |---|---|
 | [Getting started](https://antoinerichard.github.io/TrackGen/getting-started/quickstart.html) | install, first batch, parameter explorer |
 | [Tutorials](https://antoinerichard.github.io/TrackGen/tutorials/batch-of-tracks.html) | batches, gates, generator choice, CUDA graphs |
-| [Generators](https://antoinerichard.github.io/TrackGen/generators/overview.html) | the five families, quality benchmarks |
+| [Generators](https://antoinerichard.github.io/TrackGen/generators/overview.html) | the six families, quality benchmarks |
 | [Runtime utilities](https://antoinerichard.github.io/TrackGen/utilities/overview.html) | collision, props, checkpoints & progress, Course |
 | [How it works](https://antoinerichard.github.io/TrackGen/how-it-works/resample.html) | resample → XPBD → inflation internals |
 | [Configuration](https://antoinerichard.github.io/TrackGen/configuration/reference.html) | every knob, tuning guidance |

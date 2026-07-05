@@ -30,8 +30,8 @@ The figures it produces are:
    * - File
      - Contents
    * - ``docs/assets/readme-generator-grid.png``
-     - Five representative raw phase-1 centerlines from each of the five
-       standard generators (25 panels total), rendered at fixed seeds.
+     - Five representative raw phase-1 centerlines from each of the six
+       standard generators (30 panels total), rendered at fixed seeds.
    * - ``docs/assets/readme-pipeline-stages.png``
      - A single Bezier sample shown at four pipeline stages: Phase 1 raw
        centerline, constant-spacing resample, XPBD-relaxed band, and the final
@@ -40,13 +40,15 @@ The figures it produces are:
      - One representative phase-1 centerline per standard generator in a
        single horizontal strip.
    * - ``docs/assets/readme-gate-strip.png``
-     - The phase-2 gate collision solve illustrated for each generator: raw
+     - The phase-2 gate collision solve illustrated for each **gate** generator
+       (``bezier``, ``checkpoint``, ``hull``, ``polar``, ``voronoi`` — ``repulsive``
+       is not a registered gate generator, so it is not in this strip): raw
        anchors (top row) and separated gates with tangent frames and gate-width
        bars (bottom row).
-   * - ``docs/assets/generator-<name>.png`` (five files)
+   * - ``docs/assets/generator-<name>.png`` (six files)
      - Per-generator panel showing five representative raw phase-1 outputs.
        One file per standard generator (``bezier``, ``checkpoint``, ``hull``,
-       ``polar``, ``voronoi``).
+       ``polar``, ``voronoi``, ``repulsive``).
 
 .. warning::
 

@@ -21,7 +21,7 @@ def test_render_generator_panels_writes_pngs(tmp_path):
     names = {p.name for p in paths}
     assert names == {
         "generator-bezier.png", "generator-checkpoint.png", "generator-hull.png",
-        "generator-polar.png", "generator-voronoi.png",
+        "generator-polar.png", "generator-voronoi.png", "generator-repulsive.png",
     }
     for p in paths:
         assert p.exists() and p.stat().st_size > 1000

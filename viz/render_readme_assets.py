@@ -30,8 +30,11 @@ GENERATORS = [
     ("hull", "Hull"),
     ("polar", "Polar"),
     ("voronoi", "Voronoi"),
+    ("repulsive", "Repulsive"),
 ]
 
+# GateGenerator does not register "repulsive" (it is not a gate-sequence generator), so the
+# gate-asset strip stays at the original five.
 GATE_GENERATORS = [
     ("bezier", "Bezier"),
     ("checkpoint", "Checkpoint"),
