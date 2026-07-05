@@ -30,6 +30,12 @@ RTX 4090 via a dedicated CUDA venv (`.venv-gpu`):
 
 - `grow_tp.py`: the whole spike — obstacle sampling, growth flow, standard tail,
   validity/diversity scoring, figures.
+- `grow_warp.py`: **pure-Warp port of the growth phase** (see "Warp port" below).
+  Reuses `grow_tp`'s obstacle sampling + tail + scoring verbatim; the growth loop
+  itself is Warp kernels only, no torch. Runs torch-vs-Warp parity at `E=64` and a
+  perf sweep at `E=64/1024/8192`.
+- `warp-parity-grid.png`: torch (top row) vs pure-Warp (bottom row) grown-then-tailed
+  tracks for the same seeds — qualitatively identical serpentine circuits.
 - `growth-snapshots.png`: 4 envs × iteration snapshots — the circle growing and
   buckling into folds around obstacles.
 - `grown-grid.png`: 16 grown-then-tailed tracks with constant-width inflation
@@ -217,6 +223,107 @@ but that is the regime the 2026-06-17/18 studies flagged XPBD as fragile in, so
 `0.35` is shipped as the default (rich folds, tail still polishing) with `0.30`
 available via `--r-dom-frac` for the foldier-but-riskier aesthetic.
 
+## Warp port (2026-07-05) — the growth phase runs pure-Warp
+
+`grow_warp.py` ports the whole `grow_tp.grow()` flow to NVIDIA Warp kernels (flat
+`[E*N]` `vec2f` buffers, `env = tid // N`, no host sync in the loop — the
+`warp_relax` / `warp_pipeline` conventions). Only the growth loop is ported; the
+obstacle layout sampling + sizing and the XPBD tail / validity / diversity scoring
+are imported verbatim from `grow_tp` (same `SEED`, so layouts and `L_final` are
+byte-identical to the torch run). This de-risks a future production `repulsive`
+generator: the numerically-heavy inner loop is now proven fast and batched in Warp.
+
+**How the pieces map to Warp:**
+
+- **TP + obstacle + length-penalty gradient — `wp.Tape`, not hand-derived.** The
+  total energy (tangent-point pairs + inverse-power obstacle rings + the small
+  length-ratchet penalty) is one differentiable Warp kernel set that accumulates a
+  scalar via `atomic_add`; the gradient comes from `wp.Tape` (Warp's own reverse-mode
+  autodiff). This was the design's suggested starting point and it **just worked** —
+  a `wp.Tape` grad matches `torch.autograd.grad` on the identical energy to **~2e-7
+  relative** (smoke test), so there was no reason to hand-derive the (messy, `w`- and
+  `T`-dependent) analytic TP gradient. Dense `O(N²)` pairs per env with the paper's
+  constant `±2` circular exclusion, exactly like torch.
+- **Fractional-Sobolev preconditioner WITHOUT FFT.** Warp has no FFT, so the inverse
+  ring-Laplacian filter `1/(λ_k^s + ε)` is turned into its **real-space circulant
+  first row** once on the host (`numpy.fft.irfft` of the spectral filter), uploaded as
+  a `[N]` `wp.array`, and applied as an `O(N²)` **circular-convolution kernel**
+  `A^{-1}g[i] = Σ_j h[(i−j) mod N]·g[j]`. Same cost class as the TP energy. Verified
+  against torch's `rfft` version on random input: **max abs diff 1.2e-4** on a
+  ~150-scale signal (**~8e-7 relative**).
+- **Per-env reductions** (perimeter, barycenter, `gmax`, `⟨g,lg⟩`, `⟨lg,A⁻¹lg⟩`,
+  mean segment length) are small dedicated one-thread-per-env kernels serial over
+  `N=256`, `warp_relax`-style.
+- **Resample** reuses `warp_pipeline.resample_uniform` (the fixed-`N` sibling of the
+  NaN-aware arc-length resampler) with `count=N` — zero-alloc, sync-free.
+- **Ratchet + deactivation state** (`L_target`, `reached`) live in device arrays; the
+  ratchet is a one-line kernel and the inner-disc deactivation is a data-driven branch
+  *inside* the obstacle kernel (`reached[e]`), never host logic.
+
+**Parity at `E=64` (same seed as torch):**
+
+| metric | torch `grow_tp` | pure-Warp `grow_warp` |
+|---|---|---|
+| post-tail valid yield | 64/64 | **64/64** |
+| compactness (4πA/P²) | 0.146 ± 0.012 | **0.146 ± 0.012** |
+| max Menger curvature (median) | 8.3 | 8.3 |
+| perimeter | 13.20 ± 0.79 | 13.20 ± 0.78 |
+
+Yield and every diversity statistic match to the printed precision, and
+`warp-parity-grid.png` shows the two families are the same serpentine circuits
+threading the same obstacle fields. **Exact float parity is not expected and not
+achieved**: the *per-bead* pre-tail centerline displacement between torch and Warp is
+~0.06 (median), because the growth flow is mildly chaotic — accumulated float / op-order
+differences over ~382 iters, compounded by the periodic arc-length **re-parameterization**
+(every 25 iters, which shifts which bead lands where), drift the point *positions* while
+leaving the *shape* statistics identical. This is exactly the "qualitative + yield parity,
+not float parity" bar the task set.
+
+**Performance** (RTX 4090, post-warmup, module load excluded, default config, ~382 iters):
+
+| E | iters | total | ms/iter | peak GPU |
+|---|---|---|---|---|
+| 64 | 382 | 0.53 s | 1.39 ms | 4.6 MiB |
+| 1024 | 383 | 3.49 s | 9.10 ms | 73.7 MiB |
+| 8192 | 383 | 24.5 s | 63.9 ms | 589.8 MiB |
+
+Torch growth at `E=64` is 0.96 s (2.52 ms/iter), so Warp is **~1.8× faster at E=64** —
+modest, and honestly so: at small `E` the loop is **host-launch-bound**, not
+compute-bound. Each iteration issues ~13 tiny kernel launches **plus a fresh `wp.Tape`
+record + `tape.backward`** (which itself expands to a sequence of adjoint launches), and
+those tiny kernels don't fill a 4090. The Warp advantage grows with batch: `E=64→1024` is
+16× the envs for only 6.5× the time (launch overhead amortizes), and `1024→8192` is 8× envs
+for ~7× time (now compute-bound, dense `O(N²)` scaling). Memory stays tiny (590 MiB at
+`E=8192`). The real payoff of the pure-Warp loop is not the 1.8× — it is that it is the
+prerequisite for **CUDA graph capture**, which would erase precisely the per-iter launch
+overhead that dominates the small-`E` regime.
+
+### Graph-capture feasibility (not implemented — assessed)
+
+The task asked what blocks CUDA graph capture of this loop. Assessment (capture **not**
+implemented, per instructions):
+
+- **No host syncs in the loop** — confirmed. All state kernels are async; the resample
+  uses the fixed-`N` `resample_uniform` path (no `count` readback, unlike
+  `resample_constant_spacing`'s truncation-warning readback); the iteration count `n_iters`
+  is computed **once before** the loop from `L_final.max()`. Nothing reads back mid-loop.
+- **The one real blocker is the per-iteration `wp.Tape`.** Creating `wp.Tape()` and calling
+  `tape.backward()` every iteration both *allocates* (adjoint buffers / launch records) and
+  does host-side recording — illegal inside a capture region. **But the launch topology is
+  iteration-invariant here** (same dims, same arrays, fixed `±2` exclusion, static
+  deactivation branch that lives *inside* the kernel), so the fix is standard: **record ONE
+  persistent tape before capture and replay its forward+backward inside the graph**. Warp
+  supports capturing tape replay. After that, the loop body is a fixed sequence of ~13
+  forward/adjoint kernels + 2 resample kernels — fully capturable.
+- **Everything else is already capture-clean**: all buffers pre-allocated (zero alloc in the
+  loop except the tape), the obstacle deactivation is a data-driven in-kernel branch (not host
+  control flow), and the resample cadence is a *static* `(it+1)%25` schedule (unrollable into
+  the captured graph since `n_iters` is fixed).
+- **The alternative that makes capture trivial**: hand-write the analytic adjoint kernels and
+  drop `wp.Tape` entirely. Not needed for the spike (the tape gave exact-parity gradients for
+  free), but a production port that wants a single captured graph would either persist one tape
+  or go analytic. This is the concrete integration decision the port surfaces.
+
 ## Failure modes observed
 
 First-attempt diagnoses (from the initial 0/64 run, fixed in `grow()` /
@@ -298,14 +405,17 @@ probes, not blind-tuned):
   refit per iteration — instead of dense pairs, keeping the whole growth loop in
   Warp. This is the same near/far split the *Repulsive Curves* paper uses
   (Barnes–Hut); the BVH gives it on GPU.
-- **Torch prototype vs the pure-Warp generator contract.** The phase-1 generator
-  contract (`track_gen/_src/generator_registry.py`) is pure-Warp and
-  graph-capturable. This spike is torch (autograd on the TP/obstacle energy). A
-  real integration would either (a) port the constrained flow to hand-written
-  Warp gradients + BVH so it stays graph-capturable, or (b) integrate eagerly
-  outside the capture, exactly like the `tp_sobolev_checkpointed` idea in the
-  2026-06-23 spike — capture phase 0/inflation, run the torch growth phase
-  eagerly between them.
+- **Growth phase is now ported to pure Warp — DONE (`grow_warp.py`).** The
+  numerically-heavy loop runs as Warp kernels with `wp.Tape` gradients, at parity
+  with torch (64/64, identical diversity) and ~1.8× faster at `E=64` / linear-scaling
+  to `E=8192` (63.9 ms/iter, 590 MiB). See the "Warp port" section. Remaining work to
+  make it a production generator: **(a)** make it graph-capturable by persisting one
+  `wp.Tape` (or hand-writing analytic adjoints) — the *only* capture blocker is the
+  per-iter tape (assessed in "Graph-capture feasibility"); **(b)** wire it behind the
+  `generator_registry.py` pure-Warp contract; **(c)** the BVH far-field below for scale.
+  The old torch-eager-outside-capture fallback (option b in the 2026-06-23
+  `tp_sobolev_checkpointed` idea) is no longer the only path — the loop is already pure
+  Warp.
 - **Obstacles as gameplay content.** The per-env disc layouts are already random
   gameplay-relevant geometry. Export them as props / `DiscChecker` obstacles so
   the phase-1 *layout* becomes actual track content (the curve is guaranteed to
