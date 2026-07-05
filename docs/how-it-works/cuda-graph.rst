@@ -21,6 +21,14 @@ On the Warp ``cpu`` device, every ``generate()`` call runs ``_run_pipeline`` eag
 calls copy the current ``rng.seeds_warp`` values into the pre-allocated seed buffer and
 replay the stored graph with ``wp.capture_launch``.
 
+This capture-then-replay path applies to generators whose ``GeneratorSpec.capturable`` is
+``True`` (the default; ``bezier``, ``hull``, ``polar``, ``voronoi``, and ``checkpoint``
+today). ``repulsive`` registers ``capturable=False`` — its growth loop records a fresh
+``wp.Tape`` per iteration and reads back a stall-convergence scalar, both illegal inside a
+capture region — so ``TrackGenerator.generate()`` runs it eagerly on ``cuda`` every call,
+just like ``cpu``, and never builds a ``wp.Graph`` for it. See
+:doc:`/generators/repulsive` for the cost this forfeits.
+
 Capture requirements
 --------------------
 
@@ -59,4 +67,6 @@ call.
 
 .. note::
 
-   ``cpu``-device runs are always eager. The graph capture path is ``cuda``-only.
+   ``cpu``-device runs are always eager. The graph capture path is ``cuda``-only, and even
+   on ``cuda`` it only applies to ``capturable=True`` generators — ``repulsive`` runs
+   eagerly on both devices.

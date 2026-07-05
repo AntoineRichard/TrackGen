@@ -59,15 +59,16 @@ Features
       Generation → constant-spacing resample → XPBD relaxation → inflation, every
       stage a Warp kernel over flat ``[E*N]`` arrays.
 
-   .. grid-item-card:: Five generators
+   .. grid-item-card:: Six generators
 
-      Bezier, Hull, Polar, Voronoi, and Checkpoint — pluggable first-stage
+      Bezier, Hull, Polar, Voronoi, Checkpoint, and Repulsive — pluggable first-stage
       generators, each with a distinct shape family.
 
    .. grid-item-card:: CUDA-graph capture
 
       The whole pipeline is captured once into a replayable CUDA graph and replayed
-      on every later call for high throughput.
+      on every later call for high throughput (all generators except ``repulsive``,
+      which runs eagerly every call — see :doc:`generators/repulsive`).
 
    .. grid-item-card:: Gate sequences
 
@@ -83,10 +84,10 @@ Gallery
 -------
 
 .. figure:: assets/readme-generator-grid.png
-   :alt: Five generators, one batch
+   :alt: Six generators, one batch
    :align: center
 
-   Five generators, one batch — representative raw Phase-1 centerlines from each
+   Six generators, one batch — representative raw Phase-1 centerlines from each
    standard generator.
 
 .. figure:: assets/progress-tracking.png
@@ -181,6 +182,7 @@ Explore the docs
    generators/polar
    generators/voronoi
    generators/checkpoint
+   generators/repulsive
    generators/benchmarks
 
 .. toctree::

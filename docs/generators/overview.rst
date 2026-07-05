@@ -1,18 +1,19 @@
 Generators Overview
 ===================
 
-``track_gen`` ships five registered first-stage centerline generators.
+``track_gen`` ships six registered first-stage centerline generators.
 Each generator is pluggable through ``TrackGenConfig.generator`` and follows the same
 pipeline contract: it writes one closed centerline per environment, then the shared
-resample → XPBD relax → inflate → validity stages take over.
+resample → XPBD relax → inflate → validity stages take over — except ``repulsive``, which
+is not CUDA-graph-capturable (see below).
 
 .. figure:: ../assets/readme-generator-grid.png
    :alt: Grid of sample tracks produced by each generator
    :align: center
 
-   Sample tracks from the five generators (one row per generator).
+   Sample tracks from the six generators (one row per generator).
 
-The Five Generators
+The Six Generators
 -------------------
 
 bezier
@@ -75,6 +76,22 @@ keeps the least-self-intersecting of K decorrelated candidates per environment;
 an optional single-crossing clip fallback is available but off by default.
 See :doc:`checkpoint` for the full deep dive.
 
+repulsive
+~~~~~~~~~
+
+Grows each centerline from a small seed circle under a hard ratcheting length constraint,
+using a tangent-point energy and a Sobolev-preconditioned flow to keep the curve
+self-avoiding while it is confined to a disc domain seeded with random obstacles —
+coarse-to-fine (``N = 64 → 128 → 256``) with an area-based stall-stop.  It is the only
+generator built from iterative physical simulation rather than a single deterministic
+sampling + smoothing pass, and produces the foldiest, most serpentine circuits of the six
+(compactness ≈ 0.15).  It is also the first generator that is **not CUDA-graph-capturable**
+(``capturable=False``): the per-iteration ``wp.Tape`` autodiff record and stall-stop
+readback are both illegal inside a capture region, so it runs eagerly on CUDA every call —
+roughly **1000× slower** than ``bezier`` (~0.2 s @ E=64, ~5 s @ E=8192 on an RTX 4090).
+Prefer a slow regeneration cadence or staggered per-env slices over calling ``generate()``
+every step. See :doc:`repulsive` for the full deep dive.
+
 When to Use Which
 -----------------
 
@@ -106,6 +123,11 @@ When to Use Which
      - Flowing organic loop from bounded-turn steering
      - Medium-high (~0.61)
      - Organic circuit feel; CarRacing-style continuously curving tracks
+   * - ``repulsive``
+     - Dense, foldy serpentine from self-repulsive growth
+     - Very high (~0.15)
+     - Maze-like circuits; **only** when the ~1000× generation cost (non-graph-captured,
+       see :doc:`repulsive`) fits your regeneration cadence
 
 Generator Contract
 ------------------
@@ -115,11 +137,13 @@ It implements two callables: ``alloc_scratch(config)`` allocates fixed-shape,
 generator-private Warp buffers once at construction time, and
 ``generate(seeds_wp, config, out_centerline, out_valid_wp, scratch)`` writes one
 closed centerline per environment into the orchestrator-owned output buffer in place.
-The hot path must be pure Warp, zero-allocation inside ``generate``, deterministic in
-``(seed, config)``, and CUDA-graph-capturable — no host-side retry loop, no host
-branch on generated tensor data, and no per-environment Python branching inside
-``generate``.  Generators set ``out_valid_wp`` to ``1`` for every environment at this
-stage; final geometric validity (turning number, thickness, NaN checks) is decided
-later by the shared post-relax inflation validity gate.  The full contract, hard
-rules, and registration instructions are documented in
-:doc:`/contributing/writing-a-generator`.
+The hot path must be pure Warp and deterministic in ``(seed, config)``.  For the five
+``capturable=True`` generators it must additionally be zero-allocation inside ``generate``
+and CUDA-graph-capturable — no host-side retry loop, no host branch on generated tensor
+data, and no per-environment Python branching inside ``generate``.  A generator may instead
+declare ``capturable=False`` (currently only ``repulsive``) to use host-side control flow
+and per-call allocation; it then runs eagerly on CUDA every call instead of being captured
+into a replayable graph.  Generators set ``out_valid_wp`` to ``1`` for every environment at
+this stage; final geometric validity (turning number, thickness, NaN checks) is decided
+later by the shared post-relax inflation validity gate.  The full contract, hard rules, and
+registration instructions are documented in :doc:`/contributing/writing-a-generator`.

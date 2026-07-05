@@ -26,7 +26,7 @@ Data flow
 
    seeds[E]
      │  FIRST-STAGE GENERATION  (registered config.generator:
-     │    "bezier", "hull", "polar", "voronoi", or "checkpoint";
+     │    "bezier", "hull", "polar", "voronoi", "checkpoint", or "repulsive";
      │    single pass, generator-private scratch, no regen loop, no generation gate)
      ▼
    centerline[E, num_points, 2]     (every env real) + valid[E] (all True —
@@ -91,14 +91,16 @@ Every registered runtime generator follows the same hard contract:
   generation flags.
 - The hot path is pure Warp, zero allocation, deterministic in ``(seed, config)``, and
   graph-capturable: no host-side retry loop, no host branch on generated tensor data, and
-  no per-env Python branching.
+  no per-env Python branching. **Exception:** ``repulsive`` declares
+  ``GeneratorSpec(capturable=False)`` and is exempt from the allocation and
+  graph-capturable clauses — see :doc:`/generators/repulsive` and the note below.
 - ``out_valid_wp`` is filled with ``1`` by the current runtime generators. It is a stage
   flag, not the final quality decision. Turning, thickness, NaNs, width floor, and optional
   border intersections are judged later by ``inflate_warp`` after constant-spacing and XPBD
   relaxation.
 
 Per-generator algorithm details are covered in the individual generator deep-dive pages
-(bezier, hull, polar, voronoi, checkpoint).
+(bezier, hull, polar, voronoi, checkpoint, repulsive).
 
 Determinism, yield, and FP tolerance
 --------------------------------------
@@ -106,7 +108,12 @@ Determinism, yield, and FP tolerance
 **Determinism.** Warp's per-env RNG is deterministic, so a given seed buffer reproduces the
 same tracks run-to-run on a device. The ``cpu`` and ``cuda`` RNG streams may differ — each
 device is internally reproducible; cross-device yields are compared statistically, not
-per-env.
+per-env. **Exception:** ``repulsive`` (the one ``capturable=False`` generator) records a
+fresh ``wp.Tape`` per growth iteration; its CUDA autodiff gradients accumulate via atomics
+whose float summation order varies run-to-run, so on ``cuda`` it is only *statistically*
+reproducible (same distribution, yield, and compactness band), not bit-identical, per seed
+— CPU stays byte-identical. See ``track_gen/_src/warp_generate_repulsive.py``'s module
+docstring for the full account.
 
 **Yield.** Relaxed-valid yield is approximately **0.999** end-to-end (E ≥ 2048): ≈ 0.9991
 at the fat-band default (``half_width=0.5``, ``scale=10``, ``spacing=0.30``,

@@ -48,7 +48,8 @@ the output arrays in place.  Parameters:
 Hard rules
 ----------
 
-Five rules must hold for every generator:
+Five rules must hold for every generator whose ``GeneratorSpec`` uses the default
+``capturable=True``:
 
 1. **Pure Warp kernels only.**  Use ``wp.launch``; one env per row.  No torch
    code inside ``track_gen/_src``.
@@ -62,6 +63,24 @@ Five rules must hold for every generator:
 5. **Deterministic in** ``(per-env seed, config)``.  Use the Warp RNG
    (``track_gen._src.rng_*``).  CPU vs CUDA RNG results may differ, as
    elsewhere in the codebase.
+
+``GeneratorSpec`` also has a ``capturable: bool = True`` field. A generator may instead set
+``capturable=False`` to opt out of rules 2 and 3: it may allocate per-call (e.g. a fresh
+``wp.Tape`` each iteration) and use host-side control flow — Python loops driving stage
+transitions, readbacks that branch on generated data. ``TrackGenerator`` then runs it
+**eagerly** on CUDA every call — the same code path as ``cpu`` — instead of capturing it
+into a replayable graph; this is a supported, non-error path, not a fallback for a broken
+generator. Rules 1 (pure Warp, no torch) and 4 (fixed-shape buffers) still apply: only the
+*capture* of a static launch topology is waived, not the fixed-shape scratch discipline.
+``repulsive`` is the only current example: its growth loop records a fresh ``wp.Tape`` per
+iteration for autodiff and reads back a stall-convergence scalar to drive an early exit,
+both illegal inside a capture region, even though its scratch buffers are still allocated
+once at a fixed max shape. Rule 5 still applies, with a caveat for chaotic per-iteration
+methods: a ``capturable=False`` generator's CUDA gradients can accumulate via atomics whose
+float summation order varies run-to-run, so the result may be only *statistically*
+reproducible on CUDA (same distribution, same yield) rather than bit-identical, even though
+CPU stays byte-identical per seed — see ``track_gen/_src/warp_generate_repulsive.py``'s
+module docstring for the full account.
 
 What you do NOT have to guarantee
 ----------------------------------
@@ -78,7 +97,7 @@ Current standard generators
 ----------------------------
 
 The standard runtime generators are ``bezier``, ``checkpoint``, ``hull``,
-``polar``, and ``voronoi``.  Call
+``polar``, ``repulsive``, and ``voronoi``.  Call
 ``track_gen._src.generator_registry.available()`` for the authoritative list.
 
 The Voronoi method is implemented as a fixed-budget site-field / graph-cycle
@@ -87,7 +106,10 @@ construction remains an offline diagnostic until it can satisfy the same
 fixed-shape Warp contract.  The checkpoint method is the bounded,
 graph-capturable version of the Gymnasium CarRacing checkpoint-steering family:
 fixed-N steering, additive heading-ramp closure, best-of-K selection, and
-optional clip fallback.
+optional clip fallback.  The repulsive method is a ``capturable=False``
+self-repulsive curve-growth generator (see :doc:`/generators/repulsive`); it
+is ~1000× slower than the other five and is the one generator not covered by
+CUDA-graph capture.
 
 How a generator is judged
 --------------------------

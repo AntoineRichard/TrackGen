@@ -155,7 +155,7 @@ reference (``docs/configuration/``).
 What Makes It Distinct
 ----------------------
 
-The polar generator is the only one of the five that works entirely in polar
+The polar generator is the only one of the six that works entirely in polar
 coordinates from the start:
 
 - **No Cartesian corner sampling or sorting.** Bézier and hull generators both
@@ -168,7 +168,7 @@ coordinates from the start:
   angular order and the spline is closed and uniformly parameterized, the
   pre-relax geometry is consistently smooth with no tendency toward figure-eight
   crossings. This translates to the lowest per-step XPBD displacement of the
-  five generators.
+  six generators.
 
 - **No local fallback, fastest hot path.** Bézier detects self-crossings and
   falls back to a corner polygon; hull and voronoi fall back to their anchor
@@ -198,7 +198,7 @@ of geometry.
 
 Final geometric validity — turning number, minimum thickness, NaN checks — is
 decided by the shared post-relax inflation validity gate, which is common to all
-five generators. Any rare degenerate polar loop (e.g., from extreme jitter
+six generators. Any rare degenerate polar loop (e.g., from extreme jitter
 settings) is caught and flagged there, not inside the generator.
 
 This design is intentional: the polar parameterization rarely produces

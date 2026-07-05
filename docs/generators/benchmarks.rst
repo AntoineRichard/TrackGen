@@ -1,16 +1,30 @@
 Generator Benchmarks
 ====================
 
-Reference metrics for the five registered first-stage generators, produced by
+Reference metrics for the six registered first-stage generators, produced by
 ``benchmarks/compare_generators.py``.  These numbers characterize tradeoffs among
 quality, diversity, and speed.  They never gate which generators ship — every
 registered generator stays selectable via ``config.generator``.
 
 .. note::
 
-   Suite: seed base 0, E=512, default ``TrackGenConfig`` on the Warp ``cpu`` device.
-   CPU timings are machine-dependent and intended for relative comparison only;
-   use a larger ``E`` for release-grade timing.
+   Suite: seed base 0, E=512, default ``TrackGenConfig``. The ``bezier``, ``checkpoint``,
+   ``hull``, ``polar``, and ``voronoi`` rows run on the Warp ``cpu`` device; CPU timings are
+   machine-dependent and intended for relative comparison only, use a larger ``E`` for
+   release-grade timing. The ``repulsive`` row is measured on ``cuda`` (an RTX 4090)
+   instead — see the warning below.
+
+.. warning::
+
+   ``repulsive`` is a host-driven, non-graph-capturable optimizer: it does not benefit from
+   CUDA-graph replay the way the other five generators do, so its ``gen_ms_per_call`` is
+   measured on ``cuda`` directly rather than ``cpu`` (a CPU eager run would be even slower
+   and less representative of production use) and is **not directly comparable** to the
+   other rows. Indicative RTX-4090 wall-clock: ~0.2 s at E=64 and ~5 s at E=8192
+   (~3 ms/track amortized), versus ~2 ms per batch for ``bezier`` — roughly **1000×**
+   slower. The number is also throttle-sensitive (±1.5× from GPU clock/pool state). See
+   :doc:`repulsive` for the full cost discussion and the recommended regeneration-cadence /
+   staggered-slice usage.
 
 Reproduce
 ---------
@@ -111,6 +125,10 @@ Metrics Table
      - 7.849
      - 736.9
 
+.. Note: the ``repulsive`` row is added below by the benchmarks-entry task, from a real
+   ``benchmarks/compare_generators.py --cuda`` run (see the warning above for why it is
+   measured on cuda rather than cpu).
+
 Metric Definitions
 ------------------
 
@@ -146,7 +164,7 @@ Metric Definitions
 
 **shape_variety_pass**
    Binary flag (0 or 1) indicating whether the generator produces sufficient
-   shape diversity across the batch; all five generators pass at default config.
+   shape diversity across the batch; all six generators pass at default config.
 
 **mean_chicanes**
    Mean count of chicane-like direction-reversals per valid track; reflects how
@@ -166,4 +184,6 @@ Metric Definitions
 
 **gen_ms_per_call**
    Wall-clock generation time in milliseconds per ``TrackGenerator.generate()`` call
-   on CPU at E=512; machine-dependent — use for relative comparison only.
+   on CPU at E=512; machine-dependent — use for relative comparison only. The
+   ``repulsive`` row is the exception: it is measured on ``cuda`` (see the warning
+   above) and is not comparable to the cpu-measured rows.

@@ -27,11 +27,14 @@ regeneration; per-env respawns via a mask):
        course.reset(done_mask)        # respawn finished envs on the same course
    course.generate(seeds=next_seed)   # new courses for everyone
 
-``generate()`` is whole-batch (the generator pipelines are fixed-batch
-captured graphs); per-env control is ``reset(mask)``. The generators are
-deterministic under an unchanged RNG: calling ``generate()`` again WITHOUT
+``generate()`` is whole-batch (the generator pipelines are fixed-batch captured graphs on
+CUDA — except ``generator="repulsive"``, which is not graph-capturable and runs eagerly
+every call, see :doc:`/generators/repulsive`); per-env control is ``reset(mask)``. The
+generators are deterministic under an unchanged RNG: calling ``generate()`` again WITHOUT
 ``seeds=`` reproduces the identical batch (plus a full progress reset), while
-passing ``seeds=`` advances the RNG for new courses. In gates mode the same
+passing ``seeds=`` advances the RNG for new courses. This reproduction is byte-identical on
+CPU; with ``generator="repulsive"`` on CUDA it is only statistically identical (same yield
+and shape distribution, not bit-identical), per the same caveat as above. In gates mode the same
 object wraps ``GateGenerator`` + gate progress + optional ``DiscChecker``
 posts (``post_radius > 0``). The underlying tools stay reachable
 (``course.collision``, ``course.progress``, ``course.checkpoints``) and

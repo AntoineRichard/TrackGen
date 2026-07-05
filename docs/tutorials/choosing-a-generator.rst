@@ -1,7 +1,7 @@
 Choosing a First-Stage Generator
 ==================================
 
-``track_gen`` ships five registered first-stage centerline generators. The
+``track_gen`` ships six registered first-stage centerline generators. The
 generator is selected by passing ``generator=...`` to ``TrackGenConfig`` (or
 ``GateGenConfig``):
 
@@ -11,11 +11,14 @@ generator is selected by passing ``generator=...`` to ``TrackGenConfig`` (or
 
    config = TrackGenConfig(generator="bezier", num_envs=64, device="cuda")
 
-All five generators are fully supported, graph-capturable, and deterministic in
-``(seed, config)``. The choice is about track *shape variety* and *relaxation
-cost*, not correctness.
+All six generators are fully supported and deterministic in ``(seed, config)`` (CPU
+byte-identical; see the exception below for ``repulsive`` on CUDA). Five of the six —
+every one except ``repulsive`` — are graph-capturable; ``repulsive`` is a host-driven,
+non-graph-capturable optimizer that runs eagerly on CUDA every call and is roughly 1000×
+slower (see :doc:`/generators/repulsive`). The choice is about track *shape variety* and
+*relaxation cost* (and, for ``repulsive``, generation cost), not correctness.
 
-The Five Generators
+The Six Generators
 --------------------
 
 .. list-table::
@@ -43,6 +46,10 @@ The Five Generators
      - Organic, continuously-undulating "flowing" loops in the style of
        Gymnasium CarRacing; the bounded-turn steering gives it a different
        character from the star-shaped families.
+   * - ``"repulsive"``
+     - Dense, foldy serpentine circuits grown by self-repulsion around random
+       obstacles; the foldiest family by far, but ~1000× slower and not
+       graph-capturable — use only when the shape is worth the generation cost.
 
 How to Set the Generator
 --------------------------
@@ -59,8 +66,9 @@ looked up through the production generator registry at ``TrackGenerator``
 
    E, device = 64, "cuda"
 
-   # Switch generators by changing this one field:
-   for name in ("bezier", "hull", "polar", "voronoi", "checkpoint"):
+   # Switch generators by changing this one field. "repulsive" is ~1000x slower than
+   # the other five (it is not graph-capturable) — see docs/generators/repulsive.rst.
+   for name in ("bezier", "hull", "polar", "voronoi", "checkpoint", "repulsive"):
        config = TrackGenConfig(generator=name, num_envs=E, device=device)
        rng    = PerEnvSeededRNG(seeds=0, num_envs=E, device=device)
        track  = TrackGenerator(config, rng).generate()
@@ -95,6 +103,9 @@ Each generator has its own set of shape knobs. A few examples:
   ``voronoi_control_points``, ``voronoi_radial_variation``.
 - ``"checkpoint"`` — ``checkpoint_count``, ``checkpoint_turn_rate``,
   ``checkpoint_steer_gain``, ``checkpoint_best_of_k``.
+- ``"repulsive"`` — ``repulsive_grow_mult_min``/``_max``, ``repulsive_domain_frac``,
+  ``repulsive_ratchet_rate``, ``repulsive_obstacle_count_min``/``_max`` (and more — see
+  :doc:`/generators/repulsive`).
 
 All generator-specific fields live on ``TrackGenConfig`` (and ``GateGenConfig``)
 alongside the shared pipeline fields. Unrelated generator fields are silently
@@ -111,5 +122,6 @@ Detailed descriptions of each generator's algorithm, knobs, and tradeoffs:
 - :doc:`/generators/polar` — Polar spline deep dive
 - :doc:`/generators/voronoi` — Voronoi site-field deep dive
 - :doc:`/generators/checkpoint` — Checkpoint-steering deep dive
+- :doc:`/generators/repulsive` — Repulsive-growth deep dive (the non-graph-capturable one)
 - :doc:`/generators/benchmarks` — Side-by-side quality, diversity, and speed metrics
 - :doc:`/contributing/writing-a-generator` — contract every registered generator must satisfy

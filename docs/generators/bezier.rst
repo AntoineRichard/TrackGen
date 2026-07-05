@@ -218,7 +218,7 @@ full list, defaults, and validation rules).
 What Makes It Distinct
 ----------------------
 
-The Bezier generator is the **default** and most knob-rich of the five generators:
+The Bezier generator is the **default** and most knob-rich of the six generators:
 
 - **Widest style control.** Nine primary knobs (``min_num_points``, ``max_num_points``,
   ``num_points_per_segment``, ``min_point_distance``, ``min_angle``, ``rad``, ``edgy``,
