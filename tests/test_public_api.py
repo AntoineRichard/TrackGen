@@ -14,6 +14,7 @@ def test_public_api_surface_is_exactly_curated():
         "props",
         "checkpoints",
         "progress",
+        "localize",
         "course",
         "set_capturing",
         "__version__",

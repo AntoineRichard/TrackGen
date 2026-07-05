@@ -31,6 +31,7 @@ seeds[E] ─► generator ─► resample ─► XPBD relax ─► inflate ─�
 | **Out-of-bounds collision** | Oriented boxes vs the drivable band — exact scan or baked SDF — plus disc obstacles (gate posts, cones) | [Collision](https://antoinerichard.github.io/TrackGen/utilities/collision.html) |
 | **Boundary props** | Cone lines and wall pieces along any boundary, seam-free, for instanced rendering | [Props](https://antoinerichard.github.io/TrackGen/utilities/props.html) |
 | **Checkpoints & progress** | Ordered goals from gates *or* subsampled centerlines; pass/lap events and `dist_to_next` rewards | [Progress](https://antoinerichard.github.io/TrackGen/utilities/progress.html) |
+| **Track-frame localization** | Arc-length `s` / lateral offset `n` per env (warm-startable), centerline curvature, curvature-limited speed profiles | [Localize](https://antoinerichard.github.io/TrackGen/utilities/localize.html) |
 | **The Course facade** | One object: `generate()` → `bind()` → `step()`/`reset(mask)`, CUDA-graph replays included | [Course](https://antoinerichard.github.io/TrackGen/utilities/course.html) |
 
 ![Runtime utilities on one generated track](docs/assets/utilities-overview.png)
