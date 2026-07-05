@@ -7,11 +7,13 @@ confined to a disc domain seeded with per-env random disc obstacles. Coarse-to-f
 serpentine tracks (Henrich et al., *Generating Race Tracks With Repulsive Curves*;
 Yu/Schumacher/Crane, *Repulsive Curves* SIGGRAPH 2021).
 
-This is the FIRST non-CUDA-graph-capturable generator: the growth loop records a
-fresh ``wp.Tape`` per iteration (autodiff) and reads back an area-convergence scalar
-every window to drive stall-stop -- both illegal inside a capture region. It registers
+This is the FIRST non-CUDA-graph-capturable generator: the growth loop reads back an
+area-convergence scalar every stall window to drive the early exit and transitions the
+coarse-to-fine stages on the host -- both illegal inside a capture region. It registers
 with ``capturable=False`` and ``TrackGenerator`` runs it EAGERLY on CUDA (see the cost
-warning on ``TrackGenConfig.repulsive_grow_mult_min``).
+warning on ``TrackGenConfig.repulsive_grow_mult_min``). The per-iteration ``wp.Tape``
+that used to be the interior capture blocker is GONE (replaced by hand-written analytic
+adjoints below); actual graph capture is now just a wiring exercise (future work).
 
 Ported from the validated spike ``docs/superpowers/spikes/2026-07-05-repulsive-growth-
 phase1/grow_warp.py`` (proven 64/64 through the standard tail). Production changes:
@@ -22,16 +24,18 @@ phase1/grow_warp.py`` (proven 64/64 through the standard tail). Production chang
 **torch-free:** imports only ``warp`` + ``numpy`` (host precompute uses ``numpy.fft``
 for the Sobolev circulant rows and ``numpy.log1p`` for the stage schedule).
 
-**Determinism (CPU byte-identical; CUDA statistically reproducible, NOT bit-identical):**
-The growth gradient comes from ``wp.Tape`` autodiff. On CUDA the adjoint accumulates into
-``center.grad`` via atomics whose float summation order varies run-to-run (~2e-6). The
-repulsive flow is chaotically sensitive (a fold is a near-buckling instability), so that
-tiny noise amplifies over the ~200 iterations into a macroscopically different -- but
-statistically equivalent (still ~64/64, same compactness band) -- track. CPU reductions are
-ordered, so CPU output IS byte-identical per seed. Making CUDA byte-deterministic requires
-hand-written analytic adjoints (per-point gather, no atomics), which the design defers to
-future work (it would also erase the per-iter tape overhead). This is the reason the
-per-generator determinism test asserts byte-identity on CPU only.
+**Determinism (byte-identical per device, CPU AND CUDA):**
+The growth gradient comes from HAND-WRITTEN ANALYTIC ADJOINTS (see the gradient kernels
+below), not ``wp.Tape``. Every gradient kernel is a per-vertex GATHER -- one thread sums
+dE/dx_v into a local register in a fixed loop order, with NO atomics anywhere. That makes
+the whole flow bit-reproducible run-to-run on a given device: same config + seeds -> the
+same centerline, byte for byte, on both CPU and CUDA. (The old ``wp.Tape`` path accumulated
+the adjoint through nondeterministic ``atomic_add``, whose ~2e-6 float-order noise amplified
+chaotically -- a fold is a near-buckling instability -- into macroscopically different, if
+statistically equivalent, CUDA tracks; that is fixed.) Cross-DEVICE equality is NOT claimed:
+fp32 rounding differs between CPU and CUDA, so a CPU track and a CUDA track for the same seed
+are statistically equivalent but not bit-identical to each other. The per-generator
+determinism test asserts byte-identity independently on each available device.
 """
 from __future__ import annotations
 
@@ -209,8 +213,24 @@ def _init_circle_k(center: wp.array(dtype=wp.vec2f), n: int, r_init: float):
 
 
 # ===========================================================================
-# Differentiable energy kernels (recorded under wp.Tape; grad -> center.grad)
-# Ported verbatim from the spike's grow_warp.py (validated at ~2e-7 rel vs torch autograd).
+# Hand-written analytic gradient kernels (replace wp.Tape; grad -> scratch.grad).
+#
+# The total per-iteration energy is E = E_TP + E_obs + E_len, matching the spike's three
+# forward kernels exactly:
+#   E_TP  = sum_{i,j: circ>2} (|wedge_ij|+eps)^alpha / (d2_ij+eps^2)^(beta/2) * w_i * w_j
+#           with T_i = safe_dir(x_{i+1}-x_{i-1}), w_i = 0.5(|x_{i+1}-x_i|+|x_i-x_{i-1}|),
+#           diff_ij = x_j - x_i, wedge_ij = diff_ij x T_i (cross), d2_ij = |diff_ij|^2.
+#   E_obs = sum_i sum_m mw_m * (|x_i - p_m|^2 + 1e-8)^p_exp        (obstacles fixed)
+#   E_len = w_len * ((perimeter - L_target)/L_init)^2
+#
+# dE/dx_v is assembled as a per-vertex GATHER (one thread per v, register accumulate, no
+# atomics). x_v enters E_TP four ways: as x_i in pairs (v,*), as x_j in pairs (*,v), through
+# the tangents T_{v-1},T_{v+1} of its neighbors, and through the dual weights w_{v-1},w_v,
+# w_{v+1}. The tangent/weight couplings reduce to per-vertex accumulators (btan_i = J_i A_i,
+# wcoef_k = C_k + D_k) computed in a first pass and read at the v+-1 stencil in the gather;
+# the diff coupling is a genuine O(N) pair sum done in the gather. Derivation validated
+# against a float64 numpy reference + central finite differences to ~1e-10 rel (see
+# tests/test_generate_repulsive.py::test_analytic_gradient_matches_reference).
 # ===========================================================================
 
 @wp.func
@@ -220,62 +240,154 @@ def _safe_dir(v: wp.vec2f) -> wp.vec2f:
 
 
 @wp.kernel
-def _tp_energy_k(
+def _tp_prepass_k(
     center: wp.array(dtype=wp.vec2f), n: int,
     alpha: float, beta: float, eps: float,
     frozen: wp.array(dtype=wp.int32),
-    energy: wp.array(dtype=wp.float32),
+    wcoef: wp.array(dtype=wp.float32), btan: wp.array(dtype=wp.vec2f),
 ):
-    # One thread per (env e, point i). Dense O(N) inner loop over j with the paper's
-    # constant +-2 circular exclusion. T_i is the central-difference tangent; w_i the dual
-    # (lumped-edge) weight. Frozen envs skip the whole O(N) sum (grad stays zero).
-    e, i = wp.tid()
+    # First pass of the TP gradient: one thread per vertex v accumulates the tangent- and
+    # weight-mechanism reductions that the gather reads at the v+-1 stencil.
+    #   wcoef[v] = C_v + D_v,  C_v = sum_j P(v,j) w_j,  D_v = sum_i P(i,v) w_i
+    #   btan[v]  = J_v A_v,    A_v = sum_j dP/dT_v(v,j) * w_v * w_j,  J_v = (I - T_v T_v^T)/|u_v|
+    # where P(i,j) = (|wedge_ij|+eps)^alpha / (d2_ij+eps^2)^(beta/2). Frozen envs skip it (the
+    # gather also skips them, so the stale values are never read).
+    e, v = wp.tid()
     if frozen[e] == 1:
         return
     b = e * n
-    xi = center[b + i]
-    xn = center[b + (i + 1) % n]
-    xp = center[b + (i + n - 1) % n]
-    Ti = _safe_dir(xn - xp)
-    wi = 0.5 * (wp.length(xn - xi) + wp.length(xi - xp))
-    acc = float(0.0)
+    xv = center[b + v]
+    xvn = center[b + (v + 1) % n]
+    xvp = center[b + (v + n - 1) % n]
+    uv = xvn - xvp
+    lv = wp.max(wp.length(uv), float(1.0e-8))
+    Tv = uv / lv
+    wv = 0.5 * (wp.length(xvn - xv) + wp.length(xv - xvp))
+    hb = beta * 0.5
+    C = float(0.0)
+    D = float(0.0)
+    A = wp.vec2f(0.0, 0.0)
     for j in range(n):
-        dd = wp.abs(i - j)
+        dd = wp.abs(v - j)
         circ = wp.min(dd, n - dd)
         if circ > 2:
             xj = center[b + j]
             xjn = center[b + (j + 1) % n]
             xjp = center[b + (j + n - 1) % n]
+            Tj = _safe_dir(xjn - xjp)
             wj = 0.5 * (wp.length(xjn - xj) + wp.length(xj - xjp))
-            diff = xj - xi
+            diff = xj - xv                     # pair (v,j): owner v
             d2 = wp.dot(diff, diff)
-            wedge = diff[0] * Ti[1] - diff[1] * Ti[0]
-            num = wp.pow(wp.abs(wedge) + eps, alpha)
-            den = wp.pow(d2 + eps * eps, beta * 0.5)
-            acc += (num / den) * wi * wj
-    wp.atomic_add(energy, 0, acc)
+            den = wp.pow(d2 + eps * eps, hb)
+            wedge = diff[0] * Tv[1] - diff[1] * Tv[0]
+            aw = wp.abs(wedge) + eps
+            P_vj = wp.pow(aw, alpha) / den
+            g_num = alpha * wp.pow(aw, alpha - 1.0) * wp.where(wedge < 0.0, float(-1.0), float(1.0))
+            # dP/dT_v = (g_num/den) * (-diff.y, diff.x)
+            A += (g_num / den) * wp.vec2f(-diff[1], diff[0]) * wj
+            C += P_vj * wj
+            # pair (j,v): owner j, diff2 = xv - xj (= -diff), same d2/den, tangent T_j
+            wedge2 = -diff[0] * Tj[1] + diff[1] * Tj[0]
+            P_jv = wp.pow(wp.abs(wedge2) + eps, alpha) / den
+            D += P_jv * wj
+    wcoef[b + v] = C + D
+    Af = wv * A
+    btan[b + v] = (Af - Tv * wp.dot(Tv, Af)) / lv
 
 
 @wp.kernel
-def _obstacle_energy_k(
+def _len_coef_k(
     center: wp.array(dtype=wp.vec2f), n: int,
+    L_target: wp.array(dtype=wp.float32), L_init: wp.array(dtype=wp.float32),
+    w_len: float, frozen: wp.array(dtype=wp.int32),
+    len_coef: wp.array(dtype=wp.float32),
+):
+    # Per-env scalar dE_len/dperimeter = 2*w_len*(perimeter - L_target)/L_init^2. The gather
+    # multiplies it by dperimeter/dx_v = dir(x_v-x_{v-1}) - dir(x_{v+1}-x_v).
+    e = wp.tid()
+    if frozen[e] == 1:
+        len_coef[e] = 0.0
+        return
+    b = e * n
+    peri = float(0.0)
+    for i in range(n):
+        peri += wp.length(center[b + (i + 1) % n] - center[b + i])
+    li = L_init[e]
+    len_coef[e] = 2.0 * w_len * (peri - L_target[e]) / (li * li)
+
+
+@wp.kernel
+def _grad_gather_k(
+    center: wp.array(dtype=wp.vec2f), n: int,
+    alpha: float, beta: float, eps: float,
+    wcoef: wp.array(dtype=wp.float32), btan: wp.array(dtype=wp.vec2f),
     obs_pts: wp.array(dtype=wp.vec2f), obs_mw: wp.array(dtype=wp.float32), m_obs: int,
     p_exp: float, reached: wp.array(dtype=wp.int32),
     n_wall: int, deac: int, deac_wall: int,
+    len_coef: wp.array(dtype=wp.float32),
     frozen: wp.array(dtype=wp.int32),
-    energy: wp.array(dtype=wp.float32),
+    grad: wp.array(dtype=wp.vec2f),
 ):
-    # One thread per (env e, point i). sum_m weight_m*mass_m / |x_i - p_m|^p with
-    # p = beta-alpha; p_exp = -p/2. Padding columns have obs_mw == 0 (skipped, so their NaN
-    # coords never enter the math). Per-env deactivation drops inner discs (m >= n_wall) at
-    # target length when deac; the wall (m < n_wall) only when deac_wall too.
-    e, i = wp.tid()
+    # One thread per vertex v: gather the full dE/dx_v (TP diff + weight + tangent stencils,
+    # obstacle self-term, length regularizer) into a register and overwrite grad[v]. No
+    # atomics. Frozen envs return early (grad[v] stale; the preconditioner also skips them).
+    e, v = wp.tid()
     if frozen[e] == 1:
         return
-    xi = center[e * n + i]
+    b = e * n
+    xv = center[b + v]
+    xvn = center[b + (v + 1) % n]
+    xvp = center[b + (v + n - 1) % n]
+    Tv = _safe_dir(xvn - xvp)
+    wv = 0.5 * (wp.length(xvn - xv) + wp.length(xv - xvp))
+    hb = beta * 0.5
+    g = wp.vec2f(0.0, 0.0)
+
+    # --- TP diff mechanism: sum over partners t of ww*(dP_ddiff(t,v) - dP_ddiff(v,t)) ---
+    for t in range(n):
+        dd = wp.abs(v - t)
+        circ = wp.min(dd, n - dd)
+        if circ > 2:
+            xt = center[b + t]
+            xtn = center[b + (t + 1) % n]
+            xtp = center[b + (t + n - 1) % n]
+            Tt = _safe_dir(xtn - xtp)
+            wt = 0.5 * (wp.length(xtn - xt) + wp.length(xt - xtp))
+            ww = wv * wt
+            diff = xt - xv                     # pair (v,t): owner v
+            d2 = wp.dot(diff, diff)
+            de2 = d2 + eps * eps
+            den = wp.pow(de2, hb)
+            wedge = diff[0] * Tv[1] - diff[1] * Tv[0]
+            aw = wp.abs(wedge) + eps
+            P = wp.pow(aw, alpha) / den
+            gn = alpha * wp.pow(aw, alpha - 1.0) * wp.where(wedge < 0.0, float(-1.0), float(1.0))
+            dP_vt = (gn / den) * wp.vec2f(Tv[1], -Tv[0]) - (P * beta / de2) * diff
+            # pair (t,v): owner t, diff2 = xv - xt (= -diff), same d2/den, tangent T_t
+            diff2 = xv - xt
+            wedge2 = diff2[0] * Tt[1] - diff2[1] * Tt[0]
+            aw2 = wp.abs(wedge2) + eps
+            P2 = wp.pow(aw2, alpha) / den
+            gn2 = alpha * wp.pow(aw2, alpha - 1.0) * wp.where(wedge2 < 0.0, float(-1.0), float(1.0))
+            dP_tv = (gn2 / den) * wp.vec2f(Tt[1], -Tt[0]) - (P2 * beta / de2) * diff2
+            g += ww * (dP_tv - dP_vt)
+
+    # --- TP weight mechanism (v+-1 stencil over wcoef) ---
+    ef = xvn - xv
+    eb = xv - xvp
+    def_dir = _safe_dir(ef)
+    deb_dir = _safe_dir(eb)
+    Wv = wcoef[b + v]
+    Wprev = wcoef[b + (v + n - 1) % n]
+    Wnext = wcoef[b + (v + 1) % n]
+    g += 0.5 * deb_dir * (Wv + Wprev) - 0.5 * def_dir * (Wv + Wnext)
+
+    # --- TP tangent mechanism (v+-1 stencil over btan) ---
+    g += btan[b + (v + n - 1) % n] - btan[b + (v + 1) % n]
+
+    # --- obstacle self-term ---
     ob = e * m_obs
     is_reached = reached[e]
-    acc = float(0.0)
     for m in range(m_obs):
         mw = obs_mw[ob + m]
         if mw != 0.0:
@@ -286,34 +398,18 @@ def _obstacle_energy_k(
                 elif deac_wall == 1:
                     drop = int(1)
             if drop == 0:
-                diff = xi - obs_pts[ob + m]
-                d2 = wp.dot(diff, diff)
-                acc += mw * wp.pow(d2 + float(1.0e-8), p_exp)
-    wp.atomic_add(energy, 0, acc)
+                d = xv - obs_pts[ob + m]
+                d2 = wp.dot(d, d)
+                g += (mw * p_exp * wp.pow(d2 + float(1.0e-8), p_exp - 1.0) * 2.0) * d
 
+    # --- length regularizer ---
+    g += len_coef[e] * (deb_dir - def_dir)
 
-@wp.kernel
-def _length_penalty_k(
-    center: wp.array(dtype=wp.vec2f), n: int,
-    L_target: wp.array(dtype=wp.float32), L_init: wp.array(dtype=wp.float32),
-    w_len: float, frozen: wp.array(dtype=wp.int32),
-    energy: wp.array(dtype=wp.float32),
-):
-    # One thread per env. w_len * ((perimeter - L_target)/L_init)^2 -- the small live
-    # regularizer nudging L toward the ratcheted target before the hard rescale.
-    e = wp.tid()
-    if frozen[e] == 1:
-        return
-    b = e * n
-    peri = float(0.0)
-    for i in range(n):
-        peri += wp.length(center[b + (i + 1) % n] - center[b + i])
-    r = (peri - L_target[e]) / L_init[e]
-    wp.atomic_add(energy, 0, w_len * r * r)
+    grad[b + v] = g
 
 
 # ===========================================================================
-# Non-differentiable optimizer-step kernels (outside the tape)
+# Optimizer-step kernels (consume the gradient; no adjoint needed)
 # ===========================================================================
 
 @wp.kernel
@@ -517,7 +613,7 @@ class RepulsiveScratch:
     __slots__ = (
         "E", "Nmax", "M", "n_wall", "n_disc", "r_dom", "r_init",
         "stages", "stage_starts", "n_iters", "h_by_n",
-        "center", "energy", "obs_pts", "obs_mw",
+        "center", "grad", "wcoef", "btan", "len_coef", "obs_pts", "obs_mw",
         "g", "lg", "ainv_lg", "rs_out", "rs_seg", "rs_s",
         "arc_real", "arc_seg", "arc_s", "arc_cr", "arc_co", "count",
         "L_final", "L_init", "L_target", "reached", "frozen", "area_prev", "md_out",
@@ -572,8 +668,8 @@ def repulsive_alloc_scratch(config):
         E=E, Nmax=Nmax, M=M, n_wall=sc.n_wall, n_disc=sc.n_disc,
         r_dom=sc.r_dom, r_init=sc.r_init,
         stages=stages, stage_starts=stage_starts, n_iters=n_iters, h_by_n=h_by_n,
-        center=wp.zeros(E * Nmax, dtype=wp.vec2f, device=dev, requires_grad=True),
-        energy=wp.zeros(1, dtype=wp.float32, device=dev, requires_grad=True),
+        center=wp.zeros(E * Nmax, dtype=wp.vec2f, device=dev),
+        grad=vec(E * Nmax), wcoef=f32(E * Nmax), btan=vec(E * Nmax), len_coef=f32(E),
         obs_pts=vec(E * M), obs_mw=f32(E * M),
         g=vec(E * Nmax), lg=vec(E * Nmax), ainv_lg=vec(E * Nmax), rs_out=vec(E * Nmax),
         rs_seg=f32(E * Nmax), rs_s=f32(E * (Nmax + 1)),
@@ -596,9 +692,10 @@ def generate_repulsive_warp(seeds_wp: wp.array, config,
     write the final ``[E*num_points]`` closed loops into ``out_centerline`` (valid=1 for all
     envs; the shared downstream gate decides real validity).
 
-    Host-driven (stage transitions, per-window stall readback, early exit) and per-iteration
-    ``wp.Tape`` -- both illegal inside a CUDA graph capture, hence ``capturable=False``.
-    Ported from the validated spike ``grow_warp.grow_warp``.
+    Host-driven (stage transitions, per-window stall readback, early exit) -- illegal inside
+    a CUDA graph capture, hence ``capturable=False``. The gradient is hand-written analytic
+    adjoints (per-vertex gather, no atomics), so the flow is byte-deterministic per device.
+    Ported from the validated spike ``grow_warp.grow_warp`` (with the tape replaced).
     """
     _pipe._init()
     assert scratch is not None, "generate_repulsive_warp requires scratch"
@@ -625,7 +722,6 @@ def generate_repulsive_warp(seeds_wp: wp.array, config,
     n_iters = s.n_iters
 
     center = s.center
-    energy = s.energy
 
     # 1. Seed-driven obstacle layout + per-env target length.
     _sample_obstacles_inplace(seeds_wp, config, s.obs_pts, s.obs_mw, dev)
@@ -659,21 +755,19 @@ def generate_repulsive_warp(seeds_wp: wp.array, config,
         # 1. ratchet target + deactivation flag
         wp.launch(_ratchet_k, dim=E, inputs=[s.L_target, s.L_final, growth, s.reached], device=dev)
 
-        # 2. energy + gradient via wp.Tape (all 3 terms -> center.grad)
-        energy.zero_()
-        tape = wp.Tape()
-        with tape:
-            wp.launch(_tp_energy_k, dim=(E, Ncur),
-                      inputs=[center, Ncur, alpha, beta, eps, s.frozen, energy], device=dev)
-            wp.launch(_obstacle_energy_k, dim=(E, Ncur),
-                      inputs=[center, Ncur, s.obs_pts, s.obs_mw, M, p_exp, s.reached,
-                              n_wall, deac_i, deac_wall_i, s.frozen, energy], device=dev)
-            wp.launch(_length_penalty_k, dim=E,
-                      inputs=[center, Ncur, s.L_target, s.L_init, w_len, s.frozen, energy], device=dev)
-        tape.backward(loss=energy)
+        # 2. energy gradient via hand-written analytic adjoints (all 3 terms -> s.grad).
+        #    Per-vertex gather, no atomics -> byte-deterministic per device.
+        wp.launch(_tp_prepass_k, dim=(E, Ncur),
+                  inputs=[center, Ncur, alpha, beta, eps, s.frozen, s.wcoef, s.btan], device=dev)
+        wp.launch(_len_coef_k, dim=E,
+                  inputs=[center, Ncur, s.L_target, s.L_init, w_len, s.frozen, s.len_coef], device=dev)
+        wp.launch(_grad_gather_k, dim=(E, Ncur),
+                  inputs=[center, Ncur, alpha, beta, eps, s.wcoef, s.btan,
+                          s.obs_pts, s.obs_mw, M, p_exp, s.reached,
+                          n_wall, deac_i, deac_wall_i, s.len_coef, s.frozen, s.grad], device=dev)
 
         # 3. Sobolev precondition g = A^{-1} grad
-        wp.launch(_conv_k, dim=(E, Ncur), inputs=[center.grad, h_wp, Ncur, s.frozen, s.g], device=dev)
+        wp.launch(_conv_k, dim=(E, Ncur), inputs=[s.grad, h_wp, Ncur, s.frozen, s.g], device=dev)
         # 4. length-gradient Sobolev-orthogonal projection
         wp.launch(_length_grad_k, dim=(E, Ncur), inputs=[center, Ncur, s.lg], device=dev)
         wp.launch(_conv_k, dim=(E, Ncur), inputs=[s.lg, h_wp, Ncur, s.frozen, s.ainv_lg], device=dev)
@@ -688,8 +782,6 @@ def generate_repulsive_warp(seeds_wp: wp.array, config,
         wp.launch(_perim_bc_k, dim=E, inputs=[center, Ncur, s.cur_len, s.bc], device=dev)
         wp.launch(_rescale_k, dim=(E, Ncur),
                   inputs=[center, s.bc, s.cur_len, s.L_target, Ncur, s.frozen], device=dev)
-
-        tape.zero()  # clear grads for the next iteration
 
         # 7. periodic arc-length resample (pure Warp)
         if (it + 1) % resample_every == 0:

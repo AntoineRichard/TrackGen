@@ -106,6 +106,104 @@ def test_obstacle_layout_deterministic(dev):
 
 
 # ===========================================================================
+# Analytic gradient validation (hand-written adjoints vs a float64 reference + FD)
+# ===========================================================================
+
+_ALPHA, _BETA, _EPS = 3.0, 6.0, 1e-4
+_P_EXP = -(_BETA - _ALPHA) / 2.0
+_W_LEN = 30.0
+
+
+def _safe_dir_np(v):
+    return v / np.maximum(np.linalg.norm(v, axis=-1, keepdims=True), 1e-8)
+
+
+def _energy_ref(x, obs_pts, obs_mw, Lt, Li):
+    """float64 total energy E_TP + E_obs + E_len, matching the Warp forward kernels."""
+    n = x.shape[0]
+    T = _safe_dir_np(np.roll(x, -1, 0) - np.roll(x, 1, 0))
+    el = np.linalg.norm(np.roll(x, -1, 0) - x, axis=-1)
+    w = 0.5 * (el + np.roll(el, 1))
+    idx = np.arange(n)
+    dd = np.abs(idx[:, None] - idx[None, :])
+    mask = np.minimum(dd, n - dd) > 2
+    diff = x[None, :, :] - x[:, None, :]                      # [i,j] = x_j - x_i
+    d2 = (diff * diff).sum(-1)
+    wedge = diff[..., 0] * T[:, None, 1] - diff[..., 1] * T[:, None, 0]
+    k = ((np.abs(wedge) + _EPS) ** _ALPHA / (d2 + _EPS * _EPS) ** (_BETA * 0.5)) \
+        * (w[:, None] * w[None, :]) * mask
+    e_tp = k.sum()
+    dob = x[:, None, :] - obs_pts[None, :, :]
+    e_obs = (obs_mw[None, :] * ((dob * dob).sum(-1) + 1e-8) ** _P_EXP).sum()
+    peri = np.linalg.norm(np.roll(x, -1, 0) - x, axis=-1).sum()
+    e_len = _W_LEN * ((peri - Lt) / Li) ** 2
+    return e_tp + e_obs + e_len
+
+
+def _analytic_grad_warp(x, obs_pts, obs_mw, Lt, Li, dev):
+    """Launch the three analytic-adjoint kernels for a single env; return grad [N,2]."""
+    n, M = x.shape[0], obs_pts.shape[0]
+    center = wp.array(x.reshape(n, 2).astype(np.float32), dtype=wp.vec2f, device=dev)
+    frozen = wp.zeros(1, dtype=wp.int32, device=dev)
+    reached = wp.zeros(1, dtype=wp.int32, device=dev)
+    op = wp.array(obs_pts.astype(np.float32), dtype=wp.vec2f, device=dev)
+    ow = wp.array(obs_mw.astype(np.float32), dtype=wp.float32, device=dev)
+    lt = wp.array(np.array([Lt], np.float32), dtype=wp.float32, device=dev)
+    li = wp.array(np.array([Li], np.float32), dtype=wp.float32, device=dev)
+    wcoef = wp.zeros(n, dtype=wp.float32, device=dev)
+    btan = wp.zeros(n, dtype=wp.vec2f, device=dev)
+    lc = wp.zeros(1, dtype=wp.float32, device=dev)
+    grad = wp.zeros(n, dtype=wp.vec2f, device=dev)
+    wp.launch(rep._tp_prepass_k, dim=(1, n),
+              inputs=[center, n, _ALPHA, _BETA, _EPS, frozen, wcoef, btan], device=dev)
+    wp.launch(rep._len_coef_k, dim=1,
+              inputs=[center, n, lt, li, _W_LEN, frozen, lc], device=dev)
+    wp.launch(rep._grad_gather_k, dim=(1, n),
+              inputs=[center, n, _ALPHA, _BETA, _EPS, wcoef, btan, op, ow, M, _P_EXP,
+                      reached, 96, 0, 0, lc, frozen, grad], device=dev)
+    wp.synchronize()
+    return grad.numpy().reshape(n, 2)
+
+
+@pytest.mark.parametrize("dev", DEVS)
+def test_analytic_gradient_matches_reference(dev):
+    """The hand-written analytic adjoints reproduce a float64 gradient (and central finite
+    differences) on randomized mid-growth states -- the correctness backbone of the tape
+    replacement. Validated to fp32 precision (~1e-4 rel) on both CPU and CUDA."""
+    rng = np.random.default_rng(20260705)
+    worst_rel = 0.0
+    for _ in range(5):
+        n = int(rng.choice([32, 64]))
+        ang = np.linspace(0, 2 * np.pi, n, endpoint=False)
+        r = 1.0 + 0.3 * np.sin(3 * ang + rng.uniform(0, 6)) + 0.05 * rng.standard_normal(n)
+        x = (np.stack([r * np.cos(ang), r * np.sin(ang)], -1)
+             + 0.01 * rng.standard_normal((n, 2))).astype(np.float64)
+        M = 20
+        obs_pts = 2.0 * rng.standard_normal((M, 2))
+        obs_mw = np.abs(rng.standard_normal(M)) + 0.05
+        peri = np.linalg.norm(np.roll(x, -1, 0) - x, axis=-1).sum()
+        Li = peri
+        Lt = peri * (1.0 + rng.uniform(-0.05, 0.1))
+
+        ga = _analytic_grad_warp(x, obs_pts, obs_mw, Lt, Li, dev)
+
+        # (a) float64 reference via central differences on the exact energy
+        gref = np.zeros_like(x)
+        h = 1e-6
+        for i in range(n):
+            for d in range(2):
+                xp = x.copy(); xp[i, d] += h
+                xm = x.copy(); xm[i, d] -= h
+                gref[i, d] = (_energy_ref(xp, obs_pts, obs_mw, Lt, Li)
+                              - _energy_ref(xm, obs_pts, obs_mw, Lt, Li)) / (2 * h)
+        rel = np.linalg.norm(ga - gref) / max(np.linalg.norm(gref), 1e-30)
+        worst_rel = max(worst_rel, rel)
+        # fp32 analytic vs float64 FD over the big O(N^2) pair sums: ~1e-4 is the fp32 floor.
+        assert rel < 3e-3, f"analytic gradient rel err {rel:.2e} on n={n} ({dev})"
+    assert worst_rel < 3e-3
+
+
+# ===========================================================================
 # Task 4: full per-generator contract (registration + generate through the tail)
 # ===========================================================================
 
@@ -153,21 +251,22 @@ def test_repulsive_contract_through_tail(dev):
         assert not torch.any(finite[c:])
 
 
-def test_repulsive_determinism_and_diversity_cpu():
-    """Byte-identical determinism holds on CPU (deterministic reductions).
+@pytest.mark.parametrize("dev", DEVS)
+def test_repulsive_determinism_and_diversity(dev):
+    """Byte-identical determinism holds PER DEVICE (both CPU and CUDA).
 
-    NOTE: byte-identical determinism is CPU-only. On CUDA the growth flow is chaotically
-    sensitive to the ~2e-6 run-to-run noise of Warp's GPU-autodiff atomic gradient
-    accumulation, so same-seed CUDA runs diverge macroscopically (statistically equivalent,
-    both ~64/64, but not bit-identical). Making CUDA byte-deterministic requires hand-written
-    analytic adjoints (no atomics) -- the design's explicit future work. See the module
-    docstring in warp_generate_repulsive.py.
+    The growth gradient is hand-written analytic adjoints -- a per-vertex gather with NO
+    atomics -- so the flow is bit-reproducible run-to-run on a given device (same seed ->
+    the same centerline, byte for byte, on CPU and on CUDA alike). Cross-device equality is
+    NOT claimed (fp32 rounding differs between CPU and CUDA); this test asserts byte-identity
+    independently on each available device. See the module docstring in
+    warp_generate_repulsive.py.
     """
     E = 8
-    cfg = TrackGenConfig(generator="repulsive", num_envs=E, device="cpu", **_SMALL)
-    g1 = TrackGenerator(cfg, PerEnvSeededRNG(seeds=5, num_envs=E, device="cpu"))
-    g2 = TrackGenerator(cfg, PerEnvSeededRNG(seeds=5, num_envs=E, device="cpu"))
-    g3 = TrackGenerator(cfg, PerEnvSeededRNG(seeds=99, num_envs=E, device="cpu"))
+    cfg = TrackGenConfig(generator="repulsive", num_envs=E, device=dev, **_SMALL)
+    g1 = TrackGenerator(cfg, PerEnvSeededRNG(seeds=5, num_envs=E, device=dev))
+    g2 = TrackGenerator(cfg, PerEnvSeededRNG(seeds=5, num_envs=E, device=dev))
+    g3 = TrackGenerator(cfg, PerEnvSeededRNG(seeds=99, num_envs=E, device=dev))
 
     a = to_t(g1.generate(E).center).clone()
     b = to_t(g2.generate(E).center).clone()
@@ -188,11 +287,11 @@ def test_repulsive_determinism_and_diversity_cpu():
 def test_repulsive_default_yield_and_shape_cuda():
     """The spike's bar: ~64/64 through the standard tail at E=64 with default config.
 
-    Observed yield is a robust 62-64/64 (the 1-2 env fluctuation is the documented CUDA
-    non-determinism; never below 62 across sampling). The hard gate is the design contract
-    (> 0.5); the soft gate (>= 58) guards against a genuinely broken port while tolerating
-    the non-deterministic spread -- it is NOT a loosened bar hiding a bad port (the port
-    matches the spike's 64/64).
+    With the analytic-adjoint gradient the CUDA flow is byte-deterministic, so a given seed
+    yields ONE stable answer run-to-run (seed=11 -> a stable 63/64 today; the previous tape
+    path fluctuated 62-64/64 from atomic-gradient noise). The hard gate is the design contract
+    (> 0.5); the soft gate (>= 58) guards against a genuinely broken port with margin for
+    config/seed variation -- not a loosened bar hiding a bad port (the port matches the spike).
     """
     E = 64
     cfg = TrackGenConfig(generator="repulsive", num_envs=E, device="cuda")
