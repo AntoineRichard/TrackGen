@@ -65,8 +65,10 @@ def test_query_returns_same_instance_and_clone_detaches():
 
 
 def test_sign_convention_and_arc_length_on_annulus():
-    # CCW annulus, r_center=1: n follows Track.normal — positive toward the
-    # OUTER boundary (radius > 1), negative toward the inner one.
+    # n is positive to the RIGHT of the direction of travel. The annulus
+    # fixture winds CCW, so its right side points radially outward: positive
+    # n at radius > 1, negative at radius < 1. (Generated tracks cover both
+    # windings in test_localize.test_sign_convention_on_generated_tracks.)
     track = make_annulus_track(E=3, n=256)
     length = track.length.numpy()
     theta = np.deg2rad(np.array([0.0, 130.0, 275.0]))

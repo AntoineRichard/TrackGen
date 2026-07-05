@@ -14,10 +14,12 @@ def project(center, arclen, length, p):
         p: [2] query point.
 
     Returns:
-        (s, n, segment) with the kernel's conventions: s in [0, length),
-        n positive on the (t.y, -t.x) side of the segment tangent (toward
-        the outer boundary for library tracks), segment the argmin index
-        (lowest index on exact ties, matching the kernel's strict <).
+        (s, n, segment) with the kernel's conventions: s in [0, length)
+        (wrapped at the seam), n positive on the (t.y, -t.x) side of the
+        segment tangent — the RIGHT of the direction of travel; which
+        boundary that is depends on the loop's winding — and segment the
+        argmin index (lowest index on exact ties, matching the kernel's
+        strict <).
     """
     center = np.asarray(center, np.float64)
     arclen = np.asarray(arclen, np.float64)
@@ -41,6 +43,8 @@ def project(center, arclen, length, p):
     seg_start = float(arclen[i])
     seg_end = float(arclen[i + 1]) if i + 1 < m else float(length)
     s = seg_start + u * (seg_end - seg_start)
+    if s >= float(length):
+        s -= float(length)  # u == 1 on the closing segment: wrap the seam
     t = ab / max(float(np.linalg.norm(ab)), 1e-8)
     n = float((p - q) @ np.array([t[1], -t[0]]))
     return s, n, i

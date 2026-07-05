@@ -116,3 +116,55 @@ def test_speed_profile_internal_kappa_matches_precomputed():
     v_pre = speed_profile(track, a_lat_max=1.0, a_accel=1.0, a_brake=1.0,
                           v_cap=2.0, kappa=kap)
     np.testing.assert_array_equal(v_int.numpy(), v_pre.numpy())
+
+
+def test_degenerate_envs_yield_nan_rows():
+    # count < 3: no turn angles, no profile — the whole row is NaN while the
+    # healthy sibling env stays finite.
+    track = make_annulus_track(E=2, n=128, counts=[2, 128])
+    n_max = track.center.shape[0] // 2
+    kap = curvature(track).numpy().reshape(2, n_max)
+    assert np.isnan(kap[0]).all()
+    assert np.isfinite(kap[1, :128]).all()
+    v = speed_profile(track, a_lat_max=1.0, a_accel=1.0, a_brake=1.0,
+                      v_cap=2.0).numpy().reshape(2, n_max)
+    assert np.isnan(v[0]).all()
+    assert np.isfinite(v[1, :128]).all()
+
+
+def test_speed_profile_zero_accel_and_zero_brake_edges():
+    """a_accel=0 / a_brake=0 vs the oracle, plus the collapse-to-min law."""
+    from track_gen import PerEnvSeededRNG, TrackGenConfig, TrackGenerator
+    E = 4
+    a_lat, cap = 3.0, 1.2
+    cfg = TrackGenConfig(num_envs=E, device="cpu")
+    gen = TrackGenerator(cfg, PerEnvSeededRNG(seeds=123, num_envs=E, device="cpu"))
+    track = gen.generate()
+    valid = track.valid.numpy()
+    counts = track.count.numpy()
+    n_max = track.center.shape[0] // E
+    kap = curvature(track)
+    kap_np = kap.numpy().reshape(E, n_max)
+    cases = ((0.0, 2.5), (1.5, 0.0), (0.0, 0.0))
+    profiles = [speed_profile(track, a_lat_max=a_lat, a_accel=a, a_brake=b,
+                              v_cap=cap, kappa=kap).numpy().reshape(E, n_max)
+                for a, b in cases]
+    checked = 0
+    for e in range(E):
+        if not valid[e]:
+            continue
+        m = int(counts[e])
+        seg = _seg_lengths(track, e, n_max)
+        for (a, b), v in zip(cases, profiles):
+            ref = oracle.speed_profile(kap_np[e, :m], seg, a_lat, a, b, cap)
+            np.testing.assert_allclose(v[e, :m], ref, rtol=1e-4,
+                                       err_msg=f"env {e} a={a} b={b}")
+        # With a_accel=0 nothing may speed up around the closed loop, so
+        # after the wrap laps the profile collapses to the global corner
+        # minimum everywhere (a_brake=0 then holds it there too).
+        vs_min = np.min(np.minimum(
+            np.sqrt(a_lat / np.maximum(np.abs(kap_np[e, :m]), 1e-9)), cap))
+        np.testing.assert_allclose(profiles[0][e, :m], vs_min, rtol=1e-4)
+        np.testing.assert_allclose(profiles[2][e, :m], vs_min, rtol=1e-4)
+        checked += 1
+    assert checked > 0, "no valid envs generated — loosen the config/seed"

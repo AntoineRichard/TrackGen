@@ -24,10 +24,14 @@ consistent with ``Track.arclen``/``Track.length``), signed lateral offset
        frame = loc.query()           # no args: bound mode
        # frame.s [E] float32, frame.n [E] float32, frame.segment [E] int32
 
-The sign of ``n`` follows ``Track.normal``: positive toward the OUTER
-boundary, negative toward the inner one, so ``|n| <= half_width`` means the
-point is on the road. NaN positions yield NaN frames (``segment == -1``) —
-the same pause semantics as the sibling utilities.
+``n`` is positive to the RIGHT of the centerline's direction of travel
+(the direction of increasing ``s``), negative to the left. Whether the
+right side is the outer or the inner boundary depends on the loop's
+winding, which is generator-dependent (e.g. polar loops wind CCW — outer
+on the right; bezier loops wind CW — outer on the left); either way
+``|n| <= half_width`` means the point is on the road. NaN positions yield
+NaN frames (``segment == -1``) — the same pause semantics as the sibling
+utilities.
 
 Warm starts
 -----------
@@ -36,9 +40,13 @@ Consumers query every sim step with small motions, so scanning the whole
 centerline each time is wasted work. ``TrackLocalizer(track,
 warm_window=W)`` scans only the ``2*W + 1`` segments centered on each env's
 previous result — exact (identical to the full scan) whenever the nearest
-segment stays inside the window, i.e. whenever per-step motion is small
-against ``W * spacing``. Both modes are fixed-bound kernels: no host sync,
-CUDA-graph capturable via ``track_gen.set_capturing``.
+segment stays inside the window, the usual case when per-step motion is
+small against ``W * spacing``. Small motion alone does not guarantee it:
+where the loop pinches close to itself, the nearest segment can jump half
+a lap discontinuously, and the warm result then stays on the traveled
+branch (often preferable for racing consumers — ``s`` stays continuous —
+but not the cold answer). Both modes are fixed-bound kernels: no host
+sync, CUDA-graph capturable via ``track_gen.set_capturing``.
 
 The warm memory refers to segment INDICES, so it goes stale when the
 geometry changes: call ``reset(mask)`` for all envs after regenerating the

@@ -2,8 +2,9 @@
 
 ``TrackLocalizer`` projects one point per env onto the bound ``Track``'s
 centerline and returns a :class:`TrackFrame`: arc length ``s``, signed
-lateral offset ``n`` (positive toward the outer boundary, following
-``Track.normal``), and the nearest segment index — the Frenet-style frame
+lateral offset ``n`` (positive to the RIGHT of the direction of travel;
+which boundary that is depends on the loop's generator-dependent winding),
+and the nearest segment index — the Frenet-style frame
 racing controllers and reward shapers consume every sim step. An optional
 warm start (``warm_window=``) narrows each scan to a window around the
 previous result; ``reset(mask)`` drops that memory after regenerations and

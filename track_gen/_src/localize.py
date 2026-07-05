@@ -12,10 +12,13 @@ Two search modes, one kernel:
   centerline segments — exact, zero state.
 - Warm start (``warm_window=W``): the scan covers only the ``2*W + 1``
   segments centered on the previous query's result. Exact whenever the true
-  nearest segment lies inside that window — guaranteed for the intended use
-  (queries every sim step, motion per step well under ``W * spacing``).
-  ``reset(mask)`` drops the memory (next query falls back to the full scan),
-  REQUIRED after regenerating the bound track and after teleports.
+  nearest segment lies inside that window — the usual case for the intended
+  use (queries every sim step, motion per step well under ``W * spacing``),
+  but NOT implied by small motion alone: near track pinch points the nearest
+  segment can jump half a lap discontinuously, and the warm result then
+  stays on the traveled branch instead. ``reset(mask)`` drops the memory
+  (next query falls back to the full scan), REQUIRED after regenerating the
+  bound track and after teleports.
 
 ``curvature()`` and ``speed_profile()`` are per-generation helpers in the
 same module: per-point signed centerline curvature (turn angle over arc
@@ -59,10 +62,13 @@ class TrackFrame:
         in ``[0, Track.length[e])``, same units as the track coordinates.
         NaN for NaN positions and degenerate tracks (count < 3).
     n : wp.array
-        ``float32`` — signed lateral offset from the centerline. The sign
-        follows ``Track.normal``: positive on the OUTER-boundary side of the
-        centerline, negative on the inner side (``|n| <= half_width`` means
-        on the road). NaN for NaN positions and degenerate tracks.
+        ``float32`` — signed lateral offset from the centerline: positive to
+        the RIGHT of the centerline's direction of travel (the direction of
+        increasing ``s``), negative to the left. Whether the right side is
+        the outer or the inner boundary depends on the loop's winding, which
+        is generator-dependent (CCW loops have ``outer`` on the right, CW
+        loops on the left); ``|n| <= half_width`` means on the road either
+        way. NaN for NaN positions and degenerate tracks.
     segment : wp.array
         ``int32`` — index ``i`` of the nearest centerline segment (from point
         ``i`` to ``i + 1``, the closing segment being ``count[e] - 1 -> 0``).
@@ -158,12 +164,16 @@ def _localize_k(
     if best_i + 1 < m:
         seg_end = arclen[base + best_i + 1]
 
-    # Signed offset along the segment's Track.normal-side direction: for a
-    # unit tangent t, (t.y, -t.x) points toward the OUTER boundary.
+    # Signed offset: for a unit tangent t, (t.y, -t.x) points to the RIGHT
+    # of the direction of travel (increasing s). Which boundary that is
+    # depends on the loop's winding — see the TrackFrame docstring.
     t = _safe_normalize2(ab)
     n_hat = wp.vec2f(t[1], -t[0])
 
-    out_s[e] = seg_start + best_u * (seg_end - seg_start)
+    s = seg_start + best_u * (seg_end - seg_start)
+    if s >= length[e]:
+        s = s - length[e]  # u == 1 on the closing segment: wrap the seam
+    out_s[e] = s
     out_n[e] = wp.dot(p - q, n_hat)
     out_seg[e] = best_i
     last_seg[e] = best_i
@@ -196,10 +206,14 @@ class TrackLocalizer:
 
     Warm vs cold results are IDENTICAL whenever the nearest centerline
     segment stays within ``warm_window`` segments of the previous query's
-    result — the intended regime (per-step motion small against
-    ``warm_window * spacing``). Outside that contract (teleports, huge
-    steps), a warm query may lock onto a local minimum; call ``reset()`` on
-    the affected envs to force a full rescan.
+    result — the usual regime (per-step motion small against
+    ``warm_window * spacing``). Small motion alone does NOT guarantee it:
+    where the loop pinches close to itself, the nearest segment can jump
+    half a lap for arbitrarily small motion, and the warm result then stays
+    on the traveled branch (often preferable for racing consumers — s stays
+    continuous — but not the cold answer). Outside the contract (teleports,
+    huge steps), a warm query may likewise lock onto a local minimum; call
+    ``reset()`` on the affected envs to force a full rescan.
     """
 
     def __init__(self, track: Track, warm_window: "int | None" = None,
@@ -305,7 +319,7 @@ class TrackLocalizer:
         return f
 
     def reset(self, mask: wp.array) -> None:
-        """Drop warm-start memory where ``mask[e] == 1`` (``[E]`` int32).
+        """Drop warm-start memory where ``mask[e]`` is nonzero (``[E]`` int32).
 
         The next query for those envs performs a full centerline scan.
         Required for ALL envs after regenerating the bound track when
@@ -372,6 +386,8 @@ def _smooth_wrap_k(
         return
     base = e * n_max
     span = 2 * window + 1
+    if span > m:
+        span = m  # tiny loops: average each point once, not double-counted
     acc = float(0.0)
     for k in range(span):
         idx = i - window + k

@@ -54,6 +54,8 @@ def test_generated_tracks_projection_oracle():
                 continue
             c, al, L = _real_env(track, e, n_max)
             s_ref, n_ref, seg_ref = oracle.project(c, al, L, pts[e])
+            assert 0.0 <= float(s[e]) < L, \
+                f"trial {trial} env {e}: s {s[e]} outside [0, {L})"
             assert _wrap_dist(float(s[e]), s_ref, L) < 1e-3, \
                 f"trial {trial} env {e}: s {s[e]} vs {s_ref}"
             np.testing.assert_allclose(n[e], n_ref, atol=1e-4,
@@ -130,3 +132,90 @@ def test_sees_track_buffer_updates_after_reset():
         wp.copy(getattr(track, name), getattr(bigger, name))
     loc.reset(wp.full(1, 1, dtype=wp.int32, device="cpu"))
     np.testing.assert_allclose(loc.query(p).n.numpy(), [-1.8], atol=1e-2)
+
+
+def _shoelace(poly):
+    """Signed area of a closed polygon: positive for CCW winding."""
+    x, y = poly[:, 0], poly[:, 1]
+    return 0.5 * float(np.sum(x * np.roll(y, -1) - np.roll(x, -1) * y))
+
+
+def _generate(generator, E, seeds):
+    from track_gen import PerEnvSeededRNG, TrackGenConfig, TrackGenerator
+    cfg = TrackGenConfig(num_envs=E, device="cpu", generator=generator)
+    rng = PerEnvSeededRNG(seeds=seeds, num_envs=E, device="cpu")
+    return TrackGenerator(cfg, rng).generate()
+
+
+def test_sign_convention_on_generated_tracks():
+    # n is positive to the RIGHT of the direction of travel, so which
+    # boundary is positive depends on the loop's winding: bezier loops wind
+    # CW (outer on the LEFT -> toward-outer n < 0), polar loops wind CCW
+    # (outer on the RIGHT -> toward-outer n > 0). The annulus fixture cannot
+    # test this: its hand-set normals do not come from the pipeline.
+    checked = 0
+    for generator, winding in (("bezier", -1.0), ("polar", 1.0)):
+        E = 2
+        track = _generate(generator, E, seeds=7)
+        valid = track.valid.numpy()
+        counts = track.count.numpy()
+        n_max = track.center.shape[0] // E
+        center = track.center.numpy().reshape(E, n_max, 2)
+        outer = track.outer.numpy().reshape(E, n_max, 2)
+        inner = track.inner.numpy().reshape(E, n_max, 2)
+        loc = TrackLocalizer(track)
+        for boundary, toward in (("outer", outer), ("inner", inner)):
+            pts = np.full((E, 2), np.nan, np.float32)
+            expect = np.zeros(E)
+            for e in range(E):
+                if not valid[e]:
+                    continue
+                m = int(counts[e])
+                w = 1.0 if _shoelace(center[e, :m]) > 0.0 else -1.0
+                assert w == winding, \
+                    f"{generator} env {e}: unexpected winding"
+                i = m // 3
+                # Halfway from the centerline toward the boundary: on-road,
+                # unambiguous side.
+                pts[e] = center[e, i] + 0.5 * (toward[e, i] - center[e, i])
+                expect[e] = w if boundary == "outer" else -w
+            n = loc.query(_positions(pts)).n.numpy()
+            for e in range(E):
+                if expect[e] == 0.0:
+                    continue
+                assert n[e] * expect[e] > 0.0, \
+                    f"{generator} env {e}: toward {boundary} gave n={n[e]}"
+                checked += 1
+    assert checked > 0, "no valid envs generated — loosen the config/seed"
+
+
+def test_warm_matches_cold_two_laps_on_generated_tracks():
+    # Heterogeneous per-env counts, two full laps, wrap seam crossed
+    # forward: warm and cold must stay bitwise identical throughout (points
+    # hug the centerline, so no pinch ambiguity is in play).
+    E = 4
+    track = _generate("bezier", E, seeds=123)
+    valid = track.valid.numpy().astype(bool)
+    counts = track.count.numpy()
+    assert len(set(counts[valid].tolist())) > 1, \
+        "want heterogeneous counts — pick another seed"
+    n_max = track.center.shape[0] // E
+    center = track.center.numpy().reshape(E, n_max, 2)
+    cold = TrackLocalizer(track)
+    warm = TrackLocalizer(track, warm_window=8)
+    rng = np.random.default_rng(3)
+    steps = int(counts[valid].max()) + 4  # 2 points/step -> >= 2 laps each
+    for step in range(steps):
+        pts = np.zeros((E, 2), np.float32)
+        for e in range(E):
+            i = (2 * step) % int(counts[e])
+            pts[e] = center[e, i] + rng.normal(0.0, 0.02, 2)
+        pos = _positions(pts)
+        fc = cold.query(pos).clone()
+        fw = warm.query(pos)
+        np.testing.assert_array_equal(fw.segment.numpy()[valid],
+                                      fc.segment.numpy()[valid])
+        np.testing.assert_array_equal(fw.s.numpy()[valid],
+                                      fc.s.numpy()[valid])
+        np.testing.assert_array_equal(fw.n.numpy()[valid],
+                                      fc.n.numpy()[valid])
