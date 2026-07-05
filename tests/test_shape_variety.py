@@ -24,12 +24,24 @@ pytestmark = pytest.mark.slow
 # near-circular degeneracy (median ~0.95+).
 _MEDIAN_COMPACTNESS_MAX = 0.85
 
+# Per-generator config overrides for the loop below. The host-driven repulsive optimizer is
+# O(E*N^2) per iteration and ~1000x slower than the point-family generators at the default
+# config, so it runs here on a reduced budget (small stages/num_points, fewer envs) — enough
+# to assess non-degeneracy cheaply (~1 s vs many minutes). ``num_envs`` selects the batch size;
+# the rest are TrackGenConfig kwargs. Generators absent from the table keep the default E=256
+# full config, byte-for-byte as before.
+_GEN_OVERRIDES = {
+    "repulsive": dict(num_envs=32, num_points=64, repulsive_stages=(16, 32, 64), N_max=384),
+}
+
 
 def test_no_registered_generator_is_degenerate():
     wp.init()
-    E = 256
     for g in generator_registry.available():
-        cfg = TrackGenConfig(generator=g, device="cpu", num_envs=E, half_width=0.1, relax_iters=40)
+        over = dict(_GEN_OVERRIDES.get(g, {}))
+        E = int(over.pop("num_envs", 256))
+        cfg = TrackGenConfig(generator=g, device="cpu", num_envs=E, half_width=0.1,
+                             relax_iters=40, **over)
         track = TrackGenerator(cfg, PerEnvSeededRNG(seeds=0, num_envs=E, device="cpu")).generate(E)
         center = wp.to_torch(track.center).cpu().numpy().reshape(E, -1, 2)
         count = wp.to_torch(track.count).cpu().numpy().astype(int)

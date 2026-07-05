@@ -159,9 +159,9 @@ def _choose_phase1_examples(
     return chosen
 
 
-def _generate(name: str, seed: int, needed: int = 5):
+def _generate(name: str, seed: int, needed: int = 5, overrides: dict | None = None):
     batch = 24
-    cfg = TrackGenConfig(generator=name, num_envs=batch, device="cpu")
+    cfg = TrackGenConfig(generator=name, num_envs=batch, device="cpu", **(overrides or {}))
     rng = PerEnvSeededRNG(seeds=seed, num_envs=batch, device="cpu")
     generator = TrackGenerator(cfg, rng)
     track = generator.generate()
@@ -380,12 +380,19 @@ def render_readme_assets(output_dir: Path = OUT_DIR) -> list[Path]:
     return [grid_path, pipeline_path, strip_path, gate_strip_path, *panel_paths]
 
 
-def render_generator_panels(output_dir: Path = OUT_DIR) -> list[Path]:
+def render_generator_panels(output_dir: Path = OUT_DIR,
+                            config_overrides: dict | None = None) -> list[Path]:
+    # config_overrides maps a generator name to TrackGenConfig kwargs used only for that
+    # panel. Left None (the committed-asset path), every generator renders at its full default
+    # config. Tests pass a reduced repulsive config to keep the CPU smoke test fast without
+    # touching the other panels or regenerating the committed PNGs.
+    overrides = config_overrides or {}
     output_dir.mkdir(parents=True, exist_ok=True)
     wp.init()
     written: list[Path] = []
     for idx, (name, label) in enumerate(GENERATORS):
-        phase1, valid, chosen = _generate(name, seed=100 + 17 * idx, needed=5)
+        phase1, valid, chosen = _generate(name, seed=100 + 17 * idx, needed=5,
+                                          overrides=overrides.get(name))
         ncol = max(1, len(chosen))
         fig, axes = plt.subplots(1, ncol, figsize=(2.3 * ncol, 2.6), dpi=170, facecolor="white")
         axes = axes if ncol > 1 else [axes]

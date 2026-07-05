@@ -100,6 +100,21 @@ def test_repulsive_config_defaults_and_validation():
     # A repulsive config with stages[-1] == num_points also constructs clean.
     TrackGenConfig(generator="repulsive", num_points=256, repulsive_stages=(64, 128, 256))
 
+    # grow-mult must genuinely grow: min >= 1 and max > 1. A multiplier <= 1 zeroes the growth
+    # budget (n_ratchet <= 0 -> empty growth loop -> centerline left mis-strided at the coarse
+    # stage), so both are rejected at config time.
+    with pytest.raises(ValueError, match="repulsive_grow_mult_min"):
+        TrackGenConfig(repulsive_grow_mult_min=0.9)
+    with pytest.raises(ValueError, match="repulsive_grow_mult_max"):
+        TrackGenConfig(repulsive_grow_mult_min=1.0, repulsive_grow_mult_max=1.0)
+    # settle_iters / resample_every / stall_window must be >= 1 (empty growth loop, or a
+    # ZeroDivisionError at the `(it+1) % k` guards mid-generate).
+    with pytest.raises(ValueError, match="repulsive_settle_iters"):
+        TrackGenConfig(repulsive_settle_iters=0)
+    with pytest.raises(ValueError, match="repulsive_resample_every"):
+        TrackGenConfig(repulsive_resample_every=0)
+    with pytest.raises(ValueError, match="repulsive_stall_window"):
+        TrackGenConfig(repulsive_stall_window=0)
     # Ordered range: max < min raises.
     with pytest.raises(ValueError, match="repulsive_grow_mult"):
         TrackGenConfig(repulsive_grow_mult_min=5.5, repulsive_grow_mult_max=4.5)

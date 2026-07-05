@@ -584,9 +584,16 @@ class TrackGenConfig:
         # the stages schedule is coarse-to-fine (strictly increasing, multiple of 4) and
         # its last entry is the tail input resolution, so it must equal num_points for
         # the repulsive generator.
-        if float(self.repulsive_grow_mult_min) <= 0.0:
+        # grow_mult_min >= 1 and grow_mult_max > 1: a multiplier <= 1 shrinks (or freezes) the
+        # init circle so the ratchet never grows, which drives the iteration budget
+        # n_ratchet = ceil(log(grow_mult_max)/log1p(rate)) to <= 0 -> a zero-length growth loop
+        # that leaves the centerline mis-strided at the coarsest stage (silent garbage tracks).
+        if float(self.repulsive_grow_mult_min) < 1.0:
             raise ValueError(
-                f"repulsive_grow_mult_min must be > 0, got {self.repulsive_grow_mult_min!r}")
+                f"repulsive_grow_mult_min must be >= 1, got {self.repulsive_grow_mult_min!r}")
+        if float(self.repulsive_grow_mult_max) <= 1.0:
+            raise ValueError(
+                f"repulsive_grow_mult_max must be > 1, got {self.repulsive_grow_mult_max!r}")
         if float(self.repulsive_grow_mult_max) < float(self.repulsive_grow_mult_min):
             raise ValueError(
                 "repulsive_grow_mult_max must be >= repulsive_grow_mult_min, got "
@@ -637,6 +644,18 @@ class TrackGenConfig:
             raise ValueError(
                 "repulsive_stages[-1] must equal num_points for generator='repulsive', got "
                 f"{stages[-1]!r} != {self.num_points!r}")
+        # settle_iters >= 1 keeps the growth loop non-empty even at grow_mult_max just above 1
+        # (n_iters = ceil(n_ratchet*1.6) + settle_iters); resample_every / stall_window feed the
+        # `(it+1) % k` guards in the growth loop, so k=0 would be a ZeroDivisionError mid-generate.
+        if int(self.repulsive_settle_iters) < 1:
+            raise ValueError(
+                f"repulsive_settle_iters must be >= 1, got {self.repulsive_settle_iters!r}")
+        if int(self.repulsive_resample_every) < 1:
+            raise ValueError(
+                f"repulsive_resample_every must be >= 1, got {self.repulsive_resample_every!r}")
+        if int(self.repulsive_stall_window) < 1:
+            raise ValueError(
+                f"repulsive_stall_window must be >= 1, got {self.repulsive_stall_window!r}")
 
         if int(self.relax_sep_every) < 1:
             raise ValueError(f"relax_sep_every must be >= 1, got {self.relax_sep_every!r}")

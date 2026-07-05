@@ -17,7 +17,15 @@ def test_render_gate_assets_writes_png(tmp_path):
 def test_render_generator_panels_writes_pngs(tmp_path):
     from viz.render_readme_assets import render_generator_panels
 
-    paths = render_generator_panels(output_dir=tmp_path)
+    # Render the repulsive panel on a reduced budget (small stages/num_points) so this CPU
+    # smoke test stays fast; the ~1000x-slower default config is exercised on CUDA elsewhere.
+    # The committed PNGs are rendered with no overrides (full config), so this does not change
+    # them. Other panels are untouched.
+    paths = render_generator_panels(
+        output_dir=tmp_path,
+        config_overrides={"repulsive": dict(num_points=64,
+                                            repulsive_stages=(16, 32, 64), N_max=384)},
+    )
     names = {p.name for p in paths}
     assert names == {
         "generator-bezier.png", "generator-checkpoint.png", "generator-hull.png",
