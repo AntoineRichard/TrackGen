@@ -133,6 +133,31 @@ def default_params() -> dict:
     }
 
 
+# Table-driven (key, cast) mapping for the repulsive-growth knobs. build_config copies each
+# present key into the config kwargs with its cast; a single source of truth keeps the key
+# string and cast in sync (a mistyped key would otherwise silently fall back to the default).
+_REPULSIVE_BUILD_FIELDS = (
+    ("repulsive_grow_mult_min", float),
+    ("repulsive_grow_mult_max", float),
+    ("repulsive_domain_frac", float),
+    ("repulsive_domain_init_ratio", float),
+    ("repulsive_obstacle_count_min", int),
+    ("repulsive_obstacle_count_max", int),
+    ("repulsive_obstacle_radius_min_frac", float),
+    ("repulsive_obstacle_radius_max_frac", float),
+    ("repulsive_ratchet_rate", float),
+    ("repulsive_alpha", float),
+    ("repulsive_beta", float),
+    ("repulsive_tau", float),
+    ("repulsive_w_len", float),
+    ("repulsive_settle_iters", int),
+    ("repulsive_resample_every", int),
+    ("repulsive_stall_window", int),
+    ("repulsive_stall_area_tol", float),
+    ("repulsive_deactivate_obstacles", bool),
+)
+
+
 def build_config(p: dict) -> TrackGenConfig:
     """Map a params dict to a TrackGenConfig, clamping degenerate inputs.
 
@@ -175,43 +200,10 @@ def build_config(p: dict) -> TrackGenConfig:
         kw["voronoi_radial_variation"] = float(p["voronoi_radial_variation"])
     if p.get("voronoi_angular_jitter") is not None:
         kw["voronoi_angular_jitter"] = float(p["voronoi_angular_jitter"])
-    # Repulsive-growth knobs; absent -> config defaults.
-    if p.get("repulsive_grow_mult_min") is not None:
-        kw["repulsive_grow_mult_min"] = float(p["repulsive_grow_mult_min"])
-    if p.get("repulsive_grow_mult_max") is not None:
-        kw["repulsive_grow_mult_max"] = float(p["repulsive_grow_mult_max"])
-    if p.get("repulsive_domain_frac") is not None:
-        kw["repulsive_domain_frac"] = float(p["repulsive_domain_frac"])
-    if p.get("repulsive_domain_init_ratio") is not None:
-        kw["repulsive_domain_init_ratio"] = float(p["repulsive_domain_init_ratio"])
-    if p.get("repulsive_obstacle_count_min") is not None:
-        kw["repulsive_obstacle_count_min"] = int(p["repulsive_obstacle_count_min"])
-    if p.get("repulsive_obstacle_count_max") is not None:
-        kw["repulsive_obstacle_count_max"] = int(p["repulsive_obstacle_count_max"])
-    if p.get("repulsive_obstacle_radius_min_frac") is not None:
-        kw["repulsive_obstacle_radius_min_frac"] = float(p["repulsive_obstacle_radius_min_frac"])
-    if p.get("repulsive_obstacle_radius_max_frac") is not None:
-        kw["repulsive_obstacle_radius_max_frac"] = float(p["repulsive_obstacle_radius_max_frac"])
-    if p.get("repulsive_ratchet_rate") is not None:
-        kw["repulsive_ratchet_rate"] = float(p["repulsive_ratchet_rate"])
-    if p.get("repulsive_alpha") is not None:
-        kw["repulsive_alpha"] = float(p["repulsive_alpha"])
-    if p.get("repulsive_beta") is not None:
-        kw["repulsive_beta"] = float(p["repulsive_beta"])
-    if p.get("repulsive_tau") is not None:
-        kw["repulsive_tau"] = float(p["repulsive_tau"])
-    if p.get("repulsive_w_len") is not None:
-        kw["repulsive_w_len"] = float(p["repulsive_w_len"])
-    if p.get("repulsive_settle_iters") is not None:
-        kw["repulsive_settle_iters"] = int(p["repulsive_settle_iters"])
-    if p.get("repulsive_resample_every") is not None:
-        kw["repulsive_resample_every"] = int(p["repulsive_resample_every"])
-    if p.get("repulsive_stall_window") is not None:
-        kw["repulsive_stall_window"] = int(p["repulsive_stall_window"])
-    if p.get("repulsive_stall_area_tol") is not None:
-        kw["repulsive_stall_area_tol"] = float(p["repulsive_stall_area_tol"])
-    if p.get("repulsive_deactivate_obstacles") is not None:
-        kw["repulsive_deactivate_obstacles"] = bool(p["repulsive_deactivate_obstacles"])
+    # Repulsive-growth knobs; absent -> config defaults. Table-driven (_REPULSIVE_BUILD_FIELDS).
+    for key, cast in _REPULSIVE_BUILD_FIELDS:
+        if p.get(key) is not None:
+            kw[key] = cast(p[key])
     # Checkpoint steering knobs; absent -> config defaults.
     if p.get("checkpoint_count") is not None:
         kw["checkpoint_count"] = int(p["checkpoint_count"])
@@ -851,8 +843,8 @@ def build_app():
                         rep_grow_min = gr.Slider(1.0, 10.0, value=defaults["repulsive_grow_mult_min"], step=0.1,
                                                  label="repulsive_grow_mult_min (target-perimeter multiplier, low)",
                                                  visible=track_mode_visible["repulsive"])
-                        rep_grow_max = gr.Slider(1.0, 10.0, value=defaults["repulsive_grow_mult_max"], step=0.1,
-                                                 label="repulsive_grow_mult_max (target-perimeter multiplier, high)",
+                        rep_grow_max = gr.Slider(1.1, 10.0, value=defaults["repulsive_grow_mult_max"], step=0.1,
+                                                 label="repulsive_grow_mult_max (target-perimeter multiplier, high; must exceed 1)",
                                                  visible=track_mode_visible["repulsive"])
                         rep_domain_frac = gr.Slider(0.10, 0.60, value=defaults["repulsive_domain_frac"], step=0.01,
                                                     label="repulsive_domain_frac (domain radius / world scale)",
@@ -887,8 +879,8 @@ def build_app():
                         rep_w_len = gr.Slider(0.0, 100.0, value=defaults["repulsive_w_len"], step=1.0,
                                               label="repulsive_w_len (length regularizer weight)",
                                               visible=track_mode_visible["repulsive"])
-                        rep_settle_iters = gr.Slider(0, 200, value=defaults["repulsive_settle_iters"], step=5,
-                                                     label="repulsive_settle_iters",
+                        rep_settle_iters = gr.Slider(5, 200, value=defaults["repulsive_settle_iters"], step=5,
+                                                     label="repulsive_settle_iters (>= 1)",
                                                      visible=track_mode_visible["repulsive"])
                         rep_resample_every = gr.Slider(5, 100, value=defaults["repulsive_resample_every"], step=1,
                                                        label="repulsive_resample_every",
