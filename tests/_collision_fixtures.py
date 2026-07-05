@@ -43,6 +43,8 @@ def make_annulus_track(E=1, n=512, N_max=None, r_center=1.0, half_width=0.3,
         length=wp.array(length, dtype=wp.float32, device=device),
         valid=wp.array(np.ones(E, np.int32), dtype=wp.int32, device=device),
         count=wp.array(np.array(counts, np.int32), dtype=wp.int32, device=device),
+        # theta increases 0 -> 2*pi, so every annulus loop winds CCW (+1.0).
+        winding=wp.array(np.ones(E, np.float32), dtype=wp.float32, device=device),
     )
 
 

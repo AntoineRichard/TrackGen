@@ -853,9 +853,13 @@ class Track:
         Flat ``[E * N_max]`` ``vec2f`` unit tangent vectors at each centerline
         point, derived from central differences.  NaN-padded past ``count[e]``.
     normal : wp.array
-        Flat ``[E * N_max]`` ``vec2f`` unit left-normals at each centerline point
-        (perpendicular to ``tangent``, pointing outward toward ``outer``).
-        NaN-padded past ``count[e]``.
+        Flat ``[E * N_max]`` ``vec2f`` unit left-normals at each centerline point:
+        ``normal = (-tangent.y, tangent.x)`` (``tangent`` rotated +90°).  Which
+        boundary it faces is winding-dependent (see ``winding``): it points toward
+        ``outer`` for clockwise loops and toward ``inner`` for counter-clockwise
+        loops.  The ``outer``/``inner`` split itself is winding-agnostic (assigned by
+        signed-area magnitude), so use ``outer``/``inner`` — not the normal's sign —
+        to identify the boundaries.  NaN-padded past ``count[e]``.
     arclen : wp.array
         Flat ``[E * N_max]`` ``float32`` cumulative arc length along the centerline
         at each point.  Reshape via ``wp.to_torch(...).view(E, N_max)``.  NaN-padded
@@ -873,6 +877,13 @@ class Track:
         ``[E]`` ``int32`` real point counts, derived from constant-spacing resampling
         as ``count[e] = floor(perimeter / spacing) + 1``, capped at ``N_max``.  All
         other arrays are NaN-padded for indices ``i >= count[e]``.
+    winding : wp.array
+        ``[E]`` ``float32`` signed loop winding: ``+1.0`` for a counter-clockwise
+        centerline, ``-1.0`` for clockwise (the sign of the loop's signed area), and
+        ``0.0`` for degenerate/empty loops.  Winding is generator-dependent (bezier
+        and hull wind clockwise; polar, voronoi and checkpoint wind counter-clockwise),
+        so this field lets a consumer orient itself: for a CCW loop ``outer`` lies to
+        the right of increasing arc length, for a CW loop to the left.
     """
 
     outer: wp.array
@@ -884,6 +895,7 @@ class Track:
     length: wp.array
     valid: wp.array
     count: wp.array
+    winding: wp.array
 
     def clone(self) -> "Track":
         """Return a fully-owned deep copy of this Track.
@@ -902,4 +914,5 @@ class Track:
             length=wp.clone(self.length),
             valid=wp.clone(self.valid),
             count=wp.clone(self.count),
+            winding=wp.clone(self.winding),
         )

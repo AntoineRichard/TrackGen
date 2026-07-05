@@ -179,5 +179,29 @@ def inflate(centerline, config) -> Track:
     valid = _validity_stage(center, w, count, centerline.valid, config,
                             outer=(outer if _bc else None), inner=(inner if _bc else None))
     arclen, length = _arclength(center, count)
+    winding = _winding_stage(center, count)
     return Track(outer=outer, center=center, inner=inner, tangent=T, normal=Nrm,
-                 arclen=arclen, length=length, valid=valid, count=count)
+                 arclen=arclen, length=length, valid=valid, count=count,
+                 winding=winding)
+
+
+def _winding_stage(center, count):
+    """Signed loop winding per env from the centerline's signed area.
+
+    +1.0 counter-clockwise, -1.0 clockwise, 0.0 degenerate. Mirrors
+    warp_pipeline._winding_k: shoelace over the count[e] real points with the
+    closing wrap, then sign.
+    """
+    E, N, _ = center.shape
+    idx = torch.arange(N, device=center.device)
+    real = idx.unsqueeze(0) < count.unsqueeze(1)                       # [E, N]
+    # Next index wraps at count[e] (last real point -> point 0); clamp so the
+    # gather stays in-range for the masked-out padding slots.
+    nxt = torch.where(idx.unsqueeze(0) == (count - 1).unsqueeze(1),
+                      torch.zeros(1, dtype=idx.dtype, device=center.device),
+                      idx.unsqueeze(0) + 1).clamp(max=N - 1)           # [E, N]
+    xn = torch.gather(center[..., 0], 1, nxt)
+    yn = torch.gather(center[..., 1], 1, nxt)
+    cross = center[..., 0] * yn - xn * center[..., 1]                  # [E, N]
+    area2 = torch.where(real, cross, torch.zeros_like(cross)).sum(dim=1)
+    return torch.sign(area2).to(center.dtype)

@@ -100,6 +100,7 @@ def test_track_construct_from_tensors_field_shapes():
         length=wp.zeros(E, dtype=wp.float32),
         valid=wp.zeros(E, dtype=wp.int32),
         count=wp.zeros(E, dtype=wp.int32),
+        winding=wp.zeros(E, dtype=wp.float32),
     )
     for arr in (track.outer, track.center, track.inner, track.tangent, track.normal):
         assert arr.shape == (E * N,)

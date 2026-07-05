@@ -40,7 +40,7 @@ Data flow
      │  INFLATE    resample_uniform (re-uniformize) ─► frame+curvature ─► constant-width offset
      │             ─► validity ─► arclength
      ▼
-   Track(outer, center, inner, tangent, normal, arclen, length, valid, count)
+   Track(outer, center, inner, tangent, normal, arclen, length, valid, count, winding)
 
 .. figure:: ../assets/readme-pipeline-stages.png
 
