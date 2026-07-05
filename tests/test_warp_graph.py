@@ -34,7 +34,12 @@ from track_gen._src.track_generator import TrackGenerator  # noqa: E402
 from track_gen._src.rng_utils import PerEnvSeededRNG  # noqa: E402
 from track_gen._src.types import Track  # noqa: E402
 
-_ALL_GENERATORS = generator_registry.available()
+# Only capturable generators are exercised by the auto-capture-replay suite; a
+# non-capturable generator (e.g. "repulsive") runs eagerly and would attempt an illegal
+# capture here. test_noncapturable_generators_excluded guards that they stay excluded.
+_ALL_GENERATORS = [
+    n for n in generator_registry.available() if generator_registry.get(n).capturable
+]
 
 
 def _cfg(E: int, relax_iters: int = 20, generator: str = "bezier") -> TrackGenConfig:
@@ -94,6 +99,18 @@ def _track_allclose(got: Track, ref: dict, atol=1e-4):
     lb = torch.nan_to_num(ref["length"])
     assert torch.allclose(la, lb, atol=1e-3), \
         f"length mismatch, max err {(la - lb).abs().max().item():.3e}"
+
+
+def test_noncapturable_generators_excluded():
+    """Non-capturable generators must not enter the auto-capture parametrization."""
+    noncapturable = [
+        n for n in generator_registry.available()
+        if not generator_registry.get(n).capturable
+    ]
+    for n in noncapturable:
+        assert n not in _ALL_GENERATORS, (
+            f"non-capturable generator {n!r} must be excluded from the capture suite"
+        )
 
 
 @pytest.mark.parametrize("gen_name", _ALL_GENERATORS)

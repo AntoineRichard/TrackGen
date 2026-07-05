@@ -27,11 +27,18 @@ class GeneratorSpec:
     generate:      ``(seeds_wp, config, out_centerline, out_valid_wp, scratch) -> None`` —
                    write the closed centerline ([E*num_points] vec2f) into out_centerline
                    and per-env validity ([E] int32) into out_valid_wp, using scratch.
-                   Pure Warp, in-place, graph-capturable, zero-alloc, no host sync.
+                   Pure Warp, in-place, zero-alloc, no host sync WHEN ``capturable=True``.
+    capturable:    whether ``generate`` obeys the CUDA-graph-capture contract (pure Warp,
+                   no host sync, no per-call allocation). Defaults ``True`` so existing
+                   three-arg registrations are unchanged and stay on the capture-then-replay
+                   CUDA path. A ``capturable=False`` generator may use host-side loop control
+                   and per-call allocation; ``TrackGenerator`` runs it EAGERLY on CUDA every
+                   call (the same code path as ``cpu``), never building a ``wp.Graph`` for it.
     """
     name: str
     alloc_scratch: Callable
     generate: Callable
+    capturable: bool = True
 
 
 GENERATORS: dict[str, GeneratorSpec] = {}

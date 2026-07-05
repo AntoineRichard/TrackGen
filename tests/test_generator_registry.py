@@ -8,6 +8,17 @@ def test_bezier_is_registered():
     assert callable(spec.alloc_scratch) and callable(spec.generate)
 
 
+def test_generatorspec_has_capturable_default_true():
+    # A three-arg GeneratorSpec (the existing registration shape) defaults capturable=True.
+    spec = reg.GeneratorSpec(name="x", alloc_scratch=lambda c: None, generate=lambda *a: None)
+    assert spec.capturable is True
+
+
+def test_existing_generators_are_capturable():
+    for name in ("bezier", "polar", "hull", "voronoi", "checkpoint"):
+        assert reg.get(name).capturable is True
+
+
 def test_unknown_generator_raises_with_available_list():
     import pytest
     with pytest.raises(ValueError) as e:

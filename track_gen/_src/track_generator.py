@@ -82,6 +82,9 @@ class TrackGenerator:
         )
         self._config = config
         self._rng = rng
+        # Non-capturable generators (host-driven loops / per-call allocation) run eagerly
+        # on CUDA every call; no wp.Graph is ever built for them.
+        self._capturable = self._generator_spec.capturable
 
         # Pre-allocate the persistent output Track buffers, scratch, and seed buffer
         # (one allocation per generator); all are reused across every generate() call.
@@ -172,7 +175,7 @@ class TrackGenerator:
         dev = str(self._config.device)
         _is_cuda = "cuda" in dev
 
-        if _is_cuda:
+        if _is_cuda and self._capturable:
             if self._graph is None:
                 # First CUDA call: warm up (loads kernels/modules), then capture.
                 # _CAPTURING suppresses host-blocking syncs during warmup + capture.
@@ -193,7 +196,8 @@ class TrackGenerator:
             wp.capture_launch(self._graph)
             wp.synchronize()
         else:
-            # CPU eager path — no graph capture.
+            # Eager path — no graph capture. Covers cpu, and non-capturable generators
+            # on CUDA (host-driven loops / per-call allocation forbidden inside a capture).
             self._run()
 
         return self._track
