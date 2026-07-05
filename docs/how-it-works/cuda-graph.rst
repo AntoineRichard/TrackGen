@@ -22,14 +22,17 @@ calls copy the current ``rng.seeds_warp`` values into the pre-allocated seed buf
 replay the stored graph with ``wp.capture_launch``.
 
 This capture-then-replay path applies to generators whose ``GeneratorSpec.capturable`` is
-``True`` (the default; ``bezier``, ``hull``, ``polar``, ``voronoi``, and ``checkpoint``
-today). ``repulsive`` registers ``capturable=False`` — its growth loop transitions
-coarse-to-fine stages and reads back a stall-convergence scalar from the host, both illegal
-inside a capture region — so ``TrackGenerator.generate()`` runs it eagerly on ``cuda`` every
-call, just like ``cpu``, and never builds a ``wp.Graph`` for it. (The per-iteration
-``wp.Tape`` that used to be the interior blocker is gone — the gradient is now hand-written
-analytic adjoints — so capture is now just a wiring exercise.) See
-:doc:`/generators/repulsive` for the cost this forfeits.
+``True`` — which is now **all six** (``bezier``, ``hull``, ``polar``, ``voronoi``,
+``checkpoint``, and ``repulsive``). ``repulsive`` was the one exception until 2026-07-05: its
+growth loop transitions coarse-to-fine stages (a host-deterministic schedule that simply unrolls
+into the graph) and drove a final-stage area-stall early exit from a host readback (a host branch
+on device data, illegal inside a capture). That early exit now runs **device-side** under capture
+via a CUDA-graph conditional-node while-loop (``wp.capture_while`` on a device flag, with the
+periodic resample and stall freeze inside ``wp.capture_if`` branches), so the captured replay stops
+at the identical iteration as the eager run and is byte-for-byte identical to it; the ``cpu`` path
+keeps the plain host-driven loop. Capture is roughly wall-clock-neutral for ``repulsive`` (it is
+GPU-compute/latency-bound, not host-launch-bound), so the benefit is architectural uniformity — no
+eager special case and no per-window host syncs. See :doc:`/generators/repulsive`.
 
 Capture requirements
 --------------------
@@ -69,6 +72,7 @@ call.
 
 .. note::
 
-   ``cpu``-device runs are always eager. The graph capture path is ``cuda``-only, and even
-   on ``cuda`` it only applies to ``capturable=True`` generators — ``repulsive`` runs
-   eagerly on both devices.
+   ``cpu``-device runs are always eager. The graph capture path is ``cuda``-only and applies to
+   every ``capturable=True`` generator — which is now all six, ``repulsive`` included (its
+   final-stage stall loop uses ``wp.capture_while`` conditional graph nodes; the ``cpu`` path stays
+   host-driven).

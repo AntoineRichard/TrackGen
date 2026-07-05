@@ -64,22 +64,23 @@ Five rules must hold for every generator whose ``GeneratorSpec`` uses the defaul
    (``track_gen._src.rng_*``).  CPU vs CUDA RNG results may differ, as
    elsewhere in the codebase.
 
-``GeneratorSpec`` also has a ``capturable: bool = True`` field. A generator may instead set
-``capturable=False`` to opt out of rules 2 and 3: it may allocate per-call and use host-side
-control flow — Python loops driving stage transitions, readbacks that branch on generated
-data. ``TrackGenerator`` then runs it **eagerly** on CUDA every call — the same code path as
-``cpu`` — instead of capturing it into a replayable graph; this is a supported, non-error
-path, not a fallback for a broken generator. Rules 1 (pure Warp, no torch) and 4 (fixed-shape
-buffers) still apply: only the *capture* of a static launch topology is waived, not the
-fixed-shape scratch discipline. ``repulsive`` is the only current example: its growth loop
-transitions coarse-to-fine stages and reads back a stall-convergence scalar to drive an early
-exit, both illegal inside a capture region, even though its scratch buffers are still
-allocated once at a fixed max shape. Rule 5 still applies, with a caveat for chaotic
-per-iteration methods: if such a generator accumulates its CUDA gradients via ``atomic_add``,
-the varying float summation order can make a chaotically sensitive flow only *statistically*
-reproducible on CUDA rather than bit-identical. Avoid it the way ``repulsive`` does — its
-gradient is hand-written analytic adjoints (a per-vertex gather, no atomics), so it stays
-byte-identical run-to-run on both CPU and CUDA; see
+``GeneratorSpec`` also has a ``capturable: bool = True`` field. A generator may set
+``capturable=False`` to opt out of rules 2 and 3 — allocating per-call and using host-side
+control flow (Python loops, readbacks that branch on generated data). ``TrackGenerator`` then
+runs it **eagerly** on CUDA every call, the same code path as ``cpu``; this is a supported,
+non-error path, not a fallback for a broken generator. Rules 1 (pure Warp, no torch) and 4
+(fixed-shape buffers) still apply. **No current generator uses it:** all six are
+``capturable=True``. The one that most needed data-dependent control flow, ``repulsive``,
+instead keeps rule 3 by expressing its final-stage area-stall early exit as a **device-side
+CUDA-graph conditional node** (``wp.capture_while`` on a device flag, with the periodic resample
+and stall freeze inside ``wp.capture_if`` branches) under capture, while its ``cpu`` path keeps a
+plain host-driven loop — the replay is byte-for-byte identical to the eager run. Reach for
+conditional graph nodes before ``capturable=False`` when your only obstacle is a data-dependent
+loop bound or branch. Rule 5 still applies, with a caveat for chaotic per-iteration methods: if a
+generator accumulates its CUDA gradients via ``atomic_add``, the varying float summation order can
+make a chaotically sensitive flow only *statistically* reproducible on CUDA rather than
+bit-identical. Avoid it the way ``repulsive`` does — its gradient is hand-written analytic adjoints
+(a per-vertex gather, no atomics), so it stays byte-identical run-to-run on both CPU and CUDA; see
 ``track_gen/_src/warp_generate_repulsive.py``'s module docstring for the full account.
 
 What you do NOT have to guarantee
@@ -106,10 +107,10 @@ construction remains an offline diagnostic until it can satisfy the same
 fixed-shape Warp contract.  The checkpoint method is the bounded,
 graph-capturable version of the Gymnasium CarRacing checkpoint-steering family:
 fixed-N steering, additive heading-ramp closure, best-of-K selection, and
-optional clip fallback.  The repulsive method is a ``capturable=False``
-self-repulsive curve-growth generator (see :doc:`/generators/repulsive`); it
-is ~1000× slower than the other five and is the one generator not covered by
-CUDA-graph capture.
+optional clip fallback.  The repulsive method is a ``capturable=True``
+self-repulsive curve-growth generator (see :doc:`/generators/repulsive`); it is
+the slowest generator by far (an iterative ``O(N²)`` optimizer) and captures its
+final-stage stall loop with device-side conditional graph nodes.
 
 How a generator is judged
 --------------------------

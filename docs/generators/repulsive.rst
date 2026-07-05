@@ -20,19 +20,26 @@ Yu, Schumacher, and Crane, *Repulsive Curves* (SIGGRAPH 2021 / arXiv 2020).
 
 .. warning::
 
-   ``repulsive`` is a **host-driven, non-graph-capturable optimizer** — it is the first
-   registered generator that does not participate in CUDA-graph capture.  On an RTX 4090 it
-   takes roughly **0.2 s at E=64** and **5 s at E=8192** (~3 ms/track amortized), versus
-   ~2 ms per batch for ``bezier`` — **~1000× slower**.  It runs eagerly on CUDA every call
-   (no captured replay); graph capture of the growth loop is future work (see
-   `warp_generate_repulsive.py`'s module docstring and the design spike): the loop still
-   drives stage transitions, per-window stall readbacks, and the early exit from the host,
-   which is illegal inside a capture region.  (The per-iteration ``wp.Tape`` that used to be
-   the interior blocker is gone — the gradient is now hand-written analytic adjoints — so
-   capture is just a wiring exercise.)  If you use ``repulsive`` in a training loop, prefer a **slow regeneration
-   cadence** (regenerate a batch every N steps, not every step) or **staggered per-env
-   slices** (regenerate a fraction of environments per step) rather than calling
-   ``generate()`` every frame.
+   ``repulsive`` is by far the **slowest** generator — an iterative ``O(N²)`` tangent-point /
+   Sobolev optimizer.  On an RTX 4090 it takes roughly **0.1–0.2 s at E=64** and **a few seconds
+   at E=8192**, versus ~2 ms per batch for ``bezier`` — hundreds of times slower.  The number is
+   throttle-sensitive (±1.5× from GPU clock/pool state).  If you use ``repulsive`` in a training
+   loop, prefer a **slow regeneration cadence** (regenerate a batch every N steps, not every step)
+   or **staggered per-env slices** (regenerate a fraction of environments per step) rather than
+   calling ``generate()`` every frame.
+
+.. note::
+
+   Since 2026-07-05 ``repulsive`` **is CUDA-graph-capturable** (``GeneratorSpec(capturable=True)``)
+   — it joins the single replayable pipeline graph like the other five generators.  The final-stage
+   area-stall early exit that used to force a per-window host readback is now expressed device-side
+   with a CUDA-graph conditional-node while-loop (``wp.capture_while`` / ``wp.capture_if``), so the
+   captured replay stops at the identical iteration as the eager run and is byte-for-byte identical
+   to it; the Warp ``cpu`` path keeps the plain host-driven loop unchanged.  Capture is **roughly
+   wall-clock-neutral** on the 4090 (the loop is GPU-compute/latency-bound, not host-launch-bound —
+   host launch issue overlaps the kernels), so the benefit is architectural: no eager special-case,
+   no per-window host syncs, and the host thread is freed across the captured pipeline for CPU/GPU
+   overlap.  See ``docs/superpowers/specs/2026-07-05-repulsive-graph-capture-design.md``.
 
 .. figure:: ../assets/generator-repulsive.png
    :alt: Sample tracks produced by the repulsive generator
@@ -191,21 +198,25 @@ What Makes It Distinct
 -----------------------
 
 ``repulsive`` is the only generator that constructs its output by **iterative physical
-simulation** rather than a single deterministic sampling + smoothing pass, and consequently
-the only one that is **not CUDA-graph-capturable** (``GeneratorSpec(capturable=False)``); see
-:doc:`/how-it-works/cuda-graph` and :doc:`/contributing/writing-a-generator` for the capture
-contract this opts out of.
+simulation** rather than a single deterministic sampling + smoothing pass.  It is nevertheless
+**CUDA-graph-capturable** (``GeneratorSpec(capturable=True)``) like the other five: its coarse
+stages unroll on a host-deterministic schedule, and its one data-dependent step — the final-stage
+area-stall early exit — runs device-side under capture via a CUDA-graph conditional-node while-loop
+(``wp.capture_while`` / ``wp.capture_if``).  See :doc:`/how-it-works/cuda-graph` and
+:doc:`/contributing/writing-a-generator` for the capture contract.
 
 Key contrasts:
 
 - **Foldiest, most serpentine family (compactness ≈ 0.15).**  The ratcheted overfill forces
   the curve to buckle into dense multi-lobe circuits threading between the obstacles, well
   below the compactness of any of the other five generators.
-- **Host-driven control flow.**  Stage transitions, per-window stall readbacks, and the
-  global early exit are host-side Python, not static Warp launch topology — legal only
-  because the generator is not captured.
-- **~1000× slower.**  See the warning above; this is the dominant practical tradeoff against
-  the shape richness.
+- **Iterative control flow, captured device-side.**  Stage transitions and the fixed-cadence
+  periodic resample are host-deterministic (they unroll into the graph); the area-stall early exit
+  is a host readback on the eager path but a device-side ``capture_while`` conditional node under
+  capture, so the replay stops at the identical iteration and is byte-for-byte identical to eager.
+- **The slowest generator.**  An iterative ``O(N²)`` optimizer — hundreds of times slower than
+  ``bezier``; see the warning above.  It is GPU-compute/latency-bound, so graph capture is roughly
+  wall-clock-neutral (the win is architectural, not speed).
 - **Determinism.**  Output is **byte-identical per device** — same config and seeds give the
   same centerline run-to-run, bit for bit, on **both CPU and CUDA**.  The gradient is
   hand-written analytic adjoints (a per-vertex gather with no atomics), so there is no

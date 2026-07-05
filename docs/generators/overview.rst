@@ -4,8 +4,8 @@ Generators Overview
 ``track_gen`` ships six registered first-stage centerline generators.
 Each generator is pluggable through ``TrackGenConfig.generator`` and follows the same
 pipeline contract: it writes one closed centerline per environment, then the shared
-resample → XPBD relax → inflate → validity stages take over — except ``repulsive``, which
-is not CUDA-graph-capturable (see below).
+resample → XPBD relax → inflate → validity stages take over. All six are
+CUDA-graph-capturable; ``repulsive`` is by far the slowest (an iterative optimizer — see below).
 
 .. figure:: ../assets/readme-generator-grid.png
    :alt: Grid of sample tracks produced by each generator
@@ -85,12 +85,14 @@ self-avoiding while it is confined to a disc domain seeded with random obstacles
 coarse-to-fine (``N = 64 → 128 → 256``) with an area-based stall-stop.  It is the only
 generator built from iterative physical simulation rather than a single deterministic
 sampling + smoothing pass, and produces the foldiest, most serpentine circuits of the six
-(compactness ≈ 0.15).  It is also the first generator that is **not CUDA-graph-capturable**
-(``capturable=False``): its host-side stage transitions and stall-stop readback are illegal
-inside a capture region, so it runs eagerly on CUDA every call —
-roughly **1000× slower** than ``bezier`` (~0.2 s @ E=64, ~5 s @ E=8192 on an RTX 4090).
-Prefer a slow regeneration cadence or staggered per-env slices over calling ``generate()``
-every step. See :doc:`repulsive` for the full deep dive.
+(compactness ≈ 0.15).  It is the **slowest** generator by far — an iterative ``O(N²)``
+optimizer, hundreds of times slower than ``bezier`` (~0.1–0.2 s @ E=64, a few seconds @ E=8192
+on an RTX 4090).  It is nonetheless **CUDA-graph-capturable** (``capturable=True``) like the
+others: its coarse stages unroll on a host-deterministic schedule and its final-stage area-stall
+early exit runs device-side under capture via ``wp.capture_while`` conditional graph nodes (the
+``cpu`` path stays host-driven; the replay is byte-identical to eager).  Prefer a slow
+regeneration cadence or staggered per-env slices over calling ``generate()`` every step. See
+:doc:`repulsive` for the full deep dive.
 
 When to Use Which
 -----------------
@@ -126,8 +128,8 @@ When to Use Which
    * - ``repulsive``
      - Dense, foldy serpentine from self-repulsive growth
      - Very high (~0.15)
-     - Maze-like circuits; **only** when the ~1000× generation cost (non-graph-captured,
-       see :doc:`repulsive`) fits your regeneration cadence
+     - Maze-like circuits; **only** when its high generation cost (the slowest generator,
+       an iterative optimizer — see :doc:`repulsive`) fits your regeneration cadence
 
 Generator Contract
 ------------------
@@ -137,13 +139,14 @@ It implements two callables: ``alloc_scratch(config)`` allocates fixed-shape,
 generator-private Warp buffers once at construction time, and
 ``generate(seeds_wp, config, out_centerline, out_valid_wp, scratch)`` writes one
 closed centerline per environment into the orchestrator-owned output buffer in place.
-The hot path must be pure Warp and deterministic in ``(seed, config)``.  For the five
-``capturable=True`` generators it must additionally be zero-allocation inside ``generate``
-and CUDA-graph-capturable — no host-side retry loop, no host branch on generated tensor
-data, and no per-environment Python branching inside ``generate``.  A generator may instead
-declare ``capturable=False`` (currently only ``repulsive``) to use host-side control flow
-and per-call allocation; it then runs eagerly on CUDA every call instead of being captured
-into a replayable graph.  Generators set ``out_valid_wp`` to ``1`` for every environment at
+The hot path must be pure Warp and deterministic in ``(seed, config)``.  For a
+``capturable=True`` generator it must additionally be zero-allocation inside ``generate``
+and CUDA-graph-capturable — no host-side retry loop, no per-environment Python branching; a
+data-dependent loop bound or branch may use device-side conditional graph nodes
+(``wp.capture_while`` / ``wp.capture_if``), as ``repulsive`` does for its final-stage stall
+loop.  All six generators are ``capturable=True``; the ``capturable=False`` opt-out (host-side
+control flow, per-call allocation, eager on CUDA) remains available but is currently unused.
+Generators set ``out_valid_wp`` to ``1`` for every environment at
 this stage; final geometric validity (turning number, thickness, NaN checks) is decided
 later by the shared post-relax inflation validity gate.  The full contract, hard rules, and
 registration instructions are documented in :doc:`/contributing/writing-a-generator`.

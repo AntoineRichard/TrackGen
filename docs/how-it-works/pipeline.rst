@@ -90,10 +90,11 @@ Every registered runtime generator follows the same hard contract:
   ``[E*num_points]`` closed centerline into the supplied output buffer and writes ``[E]``
   generation flags.
 - The hot path is pure Warp, zero allocation, deterministic in ``(seed, config)``, and
-  graph-capturable: no host-side retry loop, no host branch on generated tensor data, and
-  no per-env Python branching. **Exception:** ``repulsive`` declares
-  ``GeneratorSpec(capturable=False)`` and is exempt from the allocation and
-  graph-capturable clauses — see :doc:`/generators/repulsive` and the note below.
+  graph-capturable: no host-side retry loop, no per-env Python branching. All six generators
+  declare ``GeneratorSpec(capturable=True)``. ``repulsive`` is an iterative optimizer, so its
+  one data-dependent step (a final-stage area-stall early exit) becomes a device-side
+  ``wp.capture_while`` conditional graph node under capture rather than a host readback — see
+  :doc:`/generators/repulsive` and the note below.
 - ``out_valid_wp`` is filled with ``1`` by the current runtime generators. It is a stage
   flag, not the final quality decision. Turning, thickness, NaNs, width floor, and optional
   border intersections are judged later by ``inflate_warp`` after constant-spacing and XPBD
@@ -108,10 +109,10 @@ Determinism, yield, and FP tolerance
 **Determinism.** Warp's per-env RNG is deterministic, so a given seed buffer reproduces the
 same tracks run-to-run on a device. The ``cpu`` and ``cuda`` RNG streams may differ — each
 device is internally reproducible; cross-device yields are compared statistically, not
-per-env. This holds for **all six** generators including ``repulsive`` (the one
-``capturable=False`` generator): its growth gradient is hand-written analytic adjoints — a
-per-vertex gather with no atomics — so it is byte-identical run-to-run on both ``cpu`` and
-``cuda``, per seed. As with every generator, cross-*device* output is statistically
+per-env. This holds for **all six** generators including ``repulsive``: its growth gradient is
+hand-written analytic adjoints — a per-vertex gather with no atomics — so it is byte-identical
+run-to-run on both ``cpu`` and ``cuda``, per seed, and the CUDA-graph replay (device-side stall
+loop) is byte-identical to the eager run. As with every generator, cross-*device* output is statistically
 equivalent (same yield and compactness band) but not bit-identical, since fp32 rounding
 differs between CPU and CUDA. See ``track_gen/_src/warp_generate_repulsive.py``'s module
 docstring for the full account.

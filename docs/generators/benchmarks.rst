@@ -16,15 +16,17 @@ registered generator stays selectable via ``config.generator``.
 
 .. warning::
 
-   ``repulsive`` is a host-driven, non-graph-capturable optimizer: it does not benefit from
-   CUDA-graph replay the way the other five generators do, so its ``gen_ms_per_call`` is
-   measured on ``cuda`` directly rather than ``cpu`` (a CPU eager run would be even slower
-   and less representative of production use) and is **not directly comparable** to the
-   other rows. Indicative RTX-4090 wall-clock: ~0.2 s at E=64 and ~5 s at E=8192
-   (~3 ms/track amortized), versus ~2 ms per batch for ``bezier`` — roughly **1000×**
-   slower. The number is also throttle-sensitive (±1.5× from GPU clock/pool state). See
-   :doc:`repulsive` for the full cost discussion and the recommended regeneration-cadence /
-   staggered-slice usage.
+   ``repulsive`` is an iterative ``O(N²)`` optimizer — the slowest generator by far. Its
+   ``gen_ms_per_call`` is measured on ``cuda`` directly rather than ``cpu`` (a CPU eager run
+   would be even slower and less representative of production use) and is **not directly
+   comparable** to the other rows. Indicative RTX-4090 wall-clock: ~0.1–0.2 s at E=64 and a few
+   seconds at E=8192, versus ~2 ms per batch for ``bezier`` — hundreds of times slower. The
+   number is throttle-sensitive (±1.5× from GPU clock/pool state). ``repulsive`` **is**
+   CUDA-graph-capturable (since 2026-07-05, via device-side ``wp.capture_while`` conditional
+   nodes for its final-stage stall loop), but the loop is GPU-compute/latency-bound rather than
+   host-launch-bound, so graph capture is roughly wall-clock-neutral — its value is architectural
+   (see :doc:`repulsive` and the graph-capture design note). See :doc:`repulsive` for the full
+   cost discussion and the recommended regeneration-cadence / staggered-slice usage.
 
 Reproduce
 ---------
@@ -125,21 +127,23 @@ Metrics Table
      - 7.849
      - 736.9
    * - repulsive
-     - 0.9902
-     - 0.001953
-     - 0.02211
+     - 0.9961
+     - 0.009766
+     - 0.02185
      - 12.99
-     - 0.1541
-     - 0.1526
+     - 0.1548
+     - 0.1531
      - 0
      - 1
-     - 34.71
-     - 0.1903
-     - 8.723
-     - 25.23
-     - 242.5 (cuda; see warning — not comparable to the cpu rows; now stable run-to-run
-       within roughly 242–245 across repeated measurements, since the analytic-adjoint
-       gradient makes the flow byte-deterministic — the old tape path spread 525–1060)
+     - 35.04
+     - 0.1935
+     - 8.689
+     - 25.20
+     - ~240 (cuda; see warning — not comparable to the cpu rows; graph-captured since
+       2026-07-05 but the loop is GPU-compute-bound so capture is wall-clock-neutral, ~unchanged
+       from the pre-capture number. Throttle-sensitive: repeated measurements on this 4090 ranged
+       ~210–390 depending on GPU clock/pool state. The generated centerline is byte-deterministic
+       run-to-run; the small run-to-run drift in the quality columns is the CUDA relaxation tail.)
 
 Metric Definitions
 ------------------

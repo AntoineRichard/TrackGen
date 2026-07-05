@@ -28,8 +28,8 @@ regeneration; per-env respawns via a mask):
    course.generate(seeds=next_seed)   # new courses for everyone
 
 ``generate()`` is whole-batch (the generator pipelines are fixed-batch captured graphs on
-CUDA — except ``generator="repulsive"``, which is not graph-capturable and runs eagerly
-every call, see :doc:`/generators/repulsive`); per-env control is ``reset(mask)``. The
+CUDA for all six generators, ``repulsive`` included — see :doc:`/generators/repulsive`);
+per-env control is ``reset(mask)``. The
 generators are deterministic under an unchanged RNG: calling ``generate()`` again WITHOUT
 ``seeds=`` reproduces the identical batch (plus a full progress reset), while
 passing ``seeds=`` advances the RNG for new courses. This reproduction is byte-identical per

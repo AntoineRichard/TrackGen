@@ -13,10 +13,10 @@ generator is selected by passing ``generator=...`` to ``TrackGenConfig`` (or
 
 All six generators are fully supported and deterministic in ``(seed, config)`` — byte-identical
 run-to-run per device (both CPU and CUDA; ``repulsive`` included, via its analytic-adjoint
-gradient). Five of the six —
-every one except ``repulsive`` — are graph-capturable; ``repulsive`` is a host-driven,
-non-graph-capturable optimizer that runs eagerly on CUDA every call and is roughly 1000×
-slower (see :doc:`/generators/repulsive`). The choice is about track *shape variety* and
+gradient). All six are graph-capturable; ``repulsive`` is an iterative ``O(N²)`` optimizer whose
+final-stage early exit runs device-side under capture (``wp.capture_while``), and it is the
+slowest generator by far — hundreds of times slower than ``bezier`` (see
+:doc:`/generators/repulsive`). The choice is about track *shape variety* and
 *relaxation cost* (and, for ``repulsive``, generation cost), not correctness.
 
 The Six Generators
@@ -49,8 +49,9 @@ The Six Generators
        character from the star-shaped families.
    * - ``"repulsive"``
      - Dense, foldy serpentine circuits grown by self-repulsion around random
-       obstacles; the foldiest family by far, but ~1000× slower and not
-       graph-capturable — use only when the shape is worth the generation cost.
+       obstacles; the foldiest family by far, but the slowest generator (an iterative
+       ``O(N²)`` optimizer, hundreds of times slower than ``bezier``) — use only when the
+       shape is worth the generation cost.
 
 How to Set the Generator
 --------------------------
@@ -67,8 +68,8 @@ looked up through the production generator registry at ``TrackGenerator``
 
    E, device = 64, "cuda"
 
-   # Switch generators by changing this one field. "repulsive" is ~1000x slower than
-   # the other five (it is not graph-capturable) — see docs/generators/repulsive.rst.
+   # Switch generators by changing this one field. "repulsive" is the slowest by far
+   # (an iterative O(N^2) optimizer) — see docs/generators/repulsive.rst.
    for name in ("bezier", "hull", "polar", "voronoi", "checkpoint", "repulsive"):
        config = TrackGenConfig(generator=name, num_envs=E, device=device)
        rng    = PerEnvSeededRNG(seeds=0, num_envs=E, device=device)
@@ -123,6 +124,6 @@ Detailed descriptions of each generator's algorithm, knobs, and tradeoffs:
 - :doc:`/generators/polar` — Polar spline deep dive
 - :doc:`/generators/voronoi` — Voronoi site-field deep dive
 - :doc:`/generators/checkpoint` — Checkpoint-steering deep dive
-- :doc:`/generators/repulsive` — Repulsive-growth deep dive (the non-graph-capturable one)
+- :doc:`/generators/repulsive` — Repulsive-growth deep dive (the slowest, iterative one)
 - :doc:`/generators/benchmarks` — Side-by-side quality, diversity, and speed metrics
 - :doc:`/contributing/writing-a-generator` — contract every registered generator must satisfy
