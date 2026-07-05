@@ -86,6 +86,58 @@ def test_voronoi_static_shape_config_validation():
         TrackGenConfig(voronoi_control_points=5)
 
 
+def test_repulsive_config_defaults_and_validation():
+    # Defaults construct clean (the spike's tuned config).
+    cfg = TrackGenConfig()
+    assert cfg.repulsive_grow_mult_min == 4.5
+    assert cfg.repulsive_grow_mult_max == 5.5
+    assert cfg.repulsive_domain_frac == 0.35
+    assert cfg.repulsive_domain_init_ratio == 4.0
+    assert cfg.repulsive_obstacle_count_min == 8
+    assert cfg.repulsive_obstacle_count_max == 12
+    assert cfg.repulsive_ratchet_rate == 0.012
+    assert cfg.repulsive_stages == (64, 128, 256)
+    # A repulsive config with stages[-1] == num_points also constructs clean.
+    TrackGenConfig(generator="repulsive", num_points=256, repulsive_stages=(64, 128, 256))
+
+    # Ordered range: max < min raises.
+    with pytest.raises(ValueError, match="repulsive_grow_mult"):
+        TrackGenConfig(repulsive_grow_mult_min=5.5, repulsive_grow_mult_max=4.5)
+    with pytest.raises(ValueError, match="repulsive_obstacle_radius"):
+        TrackGenConfig(repulsive_obstacle_radius_min_frac=0.05,
+                       repulsive_obstacle_radius_max_frac=0.02)
+    # Counts >= 1.
+    with pytest.raises(ValueError, match="repulsive_obstacle_count_min"):
+        TrackGenConfig(repulsive_obstacle_count_min=0)
+    with pytest.raises(ValueError, match="repulsive_obstacle_count"):
+        TrackGenConfig(repulsive_obstacle_count_min=12, repulsive_obstacle_count_max=8)
+    # domain_init_ratio > 1.
+    with pytest.raises(ValueError, match="repulsive_domain_init_ratio"):
+        TrackGenConfig(repulsive_domain_init_ratio=1.0)
+    # domain_frac > 0.
+    with pytest.raises(ValueError, match="repulsive_domain_frac"):
+        TrackGenConfig(repulsive_domain_frac=0.0)
+    # ratchet_rate > 0.
+    with pytest.raises(ValueError, match="repulsive_ratchet_rate"):
+        TrackGenConfig(repulsive_ratchet_rate=0.0)
+    # alpha, beta > 0.
+    with pytest.raises(ValueError, match="repulsive_alpha"):
+        TrackGenConfig(repulsive_alpha=0.0)
+    with pytest.raises(ValueError, match="repulsive_beta"):
+        TrackGenConfig(repulsive_beta=-1.0)
+    # stages strictly increasing.
+    with pytest.raises(ValueError, match="repulsive_stages"):
+        TrackGenConfig(repulsive_stages=(128, 128, 256))
+    # stages must be positive multiples of 4.
+    with pytest.raises(ValueError, match="repulsive_stages"):
+        TrackGenConfig(repulsive_stages=(64, 130, 256))
+    # For generator="repulsive", stages[-1] must equal num_points.
+    with pytest.raises(ValueError, match="repulsive_stages"):
+        TrackGenConfig(generator="repulsive", num_points=256, repulsive_stages=(64, 128, 200))
+    # But for a non-repulsive generator, a mismatched last stage is allowed.
+    TrackGenConfig(generator="bezier", num_points=256, repulsive_stages=(64, 128, 200))
+
+
 def test_track_construct_from_tensors_field_shapes():
     import warp as wp
     wp.init()

@@ -181,6 +181,76 @@ class TrackGenConfig:
         fraction of a full sector.  Must be >= 0.  Larger values randomise the
         angular spacing of targets.  Default 0.08.
 
+    repulsive_grow_mult_min : float
+        *Repulsive generator only.*  Lower bound of the per-env target-perimeter
+        multiplier draw ``U(min, max)``: the grown loop's target perimeter is
+        ``grow_mult * 2π * r_init``.  Higher → denser mazes at some yield cost.
+
+        .. warning::
+
+            The ``repulsive`` generator is a **host-driven, non-graph-capturable
+            optimizer** — roughly **1000× slower** than ``bezier`` (~0.18 s @ E=64,
+            ~5.1 s @ E=8192 on an RTX 4090, vs ~2 ms for bezier).  It runs eagerly on
+            CUDA every call (no captured replay).  Regenerate on a **slow cadence** or
+            in **staggered per-env slices**, not every frame.
+    repulsive_grow_mult_max : float
+        *Repulsive generator only.*  Upper bound of the target-perimeter multiplier
+        draw.  Must be >= ``repulsive_grow_mult_min``.  Overfill ratio ≈
+        ``grow_mult / repulsive_domain_init_ratio``.
+    repulsive_domain_frac : float
+        *Repulsive generator only.*  Confinement-disc radius as a fraction of the
+        world-scale reference length (``r_dom = repulsive_domain_frac * scale_ref *
+        config.scale``).  Sets the grown curve's absolute scale vs ``half_width``.
+        Must be > 0.  Tighter → richer folds.
+    repulsive_domain_init_ratio : float
+        *Repulsive generator only.*  Ratio ``r_dom / r_init`` of the domain radius to
+        the initial seed-circle radius.  Must be > 1.  Reference value 4.0.
+    repulsive_obstacle_count_min : int
+        *Repulsive generator only.*  Lower bound of the per-env inner-disc obstacle
+        count ``k ~ randi[min, max]``.  Must be >= 1.
+    repulsive_obstacle_count_max : int
+        *Repulsive generator only.*  Upper bound of the inner-disc count.  Must be >=
+        ``repulsive_obstacle_count_min``.
+    repulsive_obstacle_radius_min_frac : float
+        *Repulsive generator only.*  Lower bound of the inner-disc radius as a fraction
+        of ``r_dom``.  Must be > 0.
+    repulsive_obstacle_radius_max_frac : float
+        *Repulsive generator only.*  Upper bound of the inner-disc radius fraction.
+        Must be >= ``repulsive_obstacle_radius_min_frac``.
+    repulsive_ratchet_rate : float
+        *Repulsive generator only.*  Per-iteration length-growth factor of the hard
+        ratchet.  Must be > 0.  ``<= 0.013`` holds full yield with folds; ``>= 0.016``
+        collapses the folds (physical limit).
+    repulsive_alpha : float
+        *Repulsive generator only.*  Tangent-point energy exponent alpha.  Must be > 0.
+    repulsive_beta : float
+        *Repulsive generator only.*  Tangent-point energy exponent beta; obstacle
+        inverse power is ``p = beta - alpha``.  Must be > 0.
+    repulsive_tau : float
+        *Repulsive generator only.*  Normalized flow step size.
+    repulsive_w_len : float
+        *Repulsive generator only.*  Weight of the small inert length regularizer.
+    repulsive_stages : tuple of int
+        *Repulsive generator only.*  Coarse-to-fine resolution schedule ``N = 64 →
+        128 → 256``.  Must be non-empty, strictly increasing, and each a positive
+        multiple of 4.  The last entry must equal ``num_points`` (the tail input
+        resolution) when ``generator == "repulsive"``.
+    repulsive_settle_iters : int
+        *Repulsive generator only.*  Settle-phase iteration budget above the ratchet.
+    repulsive_resample_every : int
+        *Repulsive generator only.*  Periodic arc-length reparameterization interval.
+    repulsive_stall_window : int
+        *Repulsive generator only.*  Iterations between stall checks / early-exit
+        readbacks.
+    repulsive_stall_area_tol : float
+        *Repulsive generator only.*  Freeze an env once it is past target length AND
+        its enclosed-area relative change over a stall window is below this
+        (reparameterization-invariant shape-convergence tolerance).
+    repulsive_deactivate_obstacles : bool
+        *Repulsive generator only.*  When ``True`` (default), zero the inner-disc
+        obstacle weights once an env reaches its target length (the wall stays live),
+        closing the disc halos.
+
     num_harmonics : int
         *Fourier / experimental — not used by the runtime path.*  Number of Fourier
         harmonics (``K``).  Retained for compatibility with
@@ -394,6 +464,27 @@ class TrackGenConfig:
     voronoi_control_points: int = 18
     voronoi_radial_variation: float = 0.62
     voronoi_angular_jitter: float = 0.08
+    # --- Repulsive-growth generator params (generator="repulsive") ---
+    repulsive_grow_mult_min: float = 4.5
+    repulsive_grow_mult_max: float = 5.5
+    repulsive_domain_frac: float = 0.35
+    repulsive_domain_init_ratio: float = 4.0
+    repulsive_obstacle_count_min: int = 8
+    repulsive_obstacle_count_max: int = 12
+    repulsive_obstacle_radius_min_frac: float = 0.02
+    repulsive_obstacle_radius_max_frac: float = 0.045
+    repulsive_ratchet_rate: float = 0.012
+    repulsive_alpha: float = 3.0
+    repulsive_beta: float = 6.0
+    repulsive_tau: float = 0.4
+    repulsive_w_len: float = 30.0
+    repulsive_stages: tuple[int, ...] = (64, 128, 256)
+    repulsive_settle_iters: int = 40
+    repulsive_resample_every: int = 25
+    repulsive_stall_window: int = 16
+    repulsive_stall_area_tol: float = 0.05
+    repulsive_deactivate_obstacles: bool = True
+
     # Experimental torch-only Fourier generator fields retained for compatibility with
     # track_gen._experimental.fourier and older sweeps.
     num_harmonics: int = 5  # K
@@ -488,6 +579,64 @@ class TrackGenConfig:
         if float(self.voronoi_angular_jitter) < 0.0:
             raise ValueError(
                 f"voronoi_angular_jitter must be >= 0, got {self.voronoi_angular_jitter!r}")
+
+        # Repulsive-growth generator validation (Spec §3.1). Ordered/positive knobs;
+        # the stages schedule is coarse-to-fine (strictly increasing, multiple of 4) and
+        # its last entry is the tail input resolution, so it must equal num_points for
+        # the repulsive generator.
+        if float(self.repulsive_grow_mult_min) <= 0.0:
+            raise ValueError(
+                f"repulsive_grow_mult_min must be > 0, got {self.repulsive_grow_mult_min!r}")
+        if float(self.repulsive_grow_mult_max) < float(self.repulsive_grow_mult_min):
+            raise ValueError(
+                "repulsive_grow_mult_max must be >= repulsive_grow_mult_min, got "
+                f"{self.repulsive_grow_mult_max!r} < {self.repulsive_grow_mult_min!r}")
+        if float(self.repulsive_domain_frac) <= 0.0:
+            raise ValueError(
+                f"repulsive_domain_frac must be > 0, got {self.repulsive_domain_frac!r}")
+        if float(self.repulsive_domain_init_ratio) <= 1.0:
+            raise ValueError(
+                "repulsive_domain_init_ratio must be > 1, got "
+                f"{self.repulsive_domain_init_ratio!r}")
+        if int(self.repulsive_obstacle_count_min) < 1:
+            raise ValueError(
+                "repulsive_obstacle_count_min must be >= 1, got "
+                f"{self.repulsive_obstacle_count_min!r}")
+        if int(self.repulsive_obstacle_count_max) < int(self.repulsive_obstacle_count_min):
+            raise ValueError(
+                "repulsive_obstacle_count_max must be >= repulsive_obstacle_count_min, got "
+                f"{self.repulsive_obstacle_count_max!r} < {self.repulsive_obstacle_count_min!r}")
+        if float(self.repulsive_obstacle_radius_min_frac) <= 0.0:
+            raise ValueError(
+                "repulsive_obstacle_radius_min_frac must be > 0, got "
+                f"{self.repulsive_obstacle_radius_min_frac!r}")
+        if (float(self.repulsive_obstacle_radius_max_frac)
+                < float(self.repulsive_obstacle_radius_min_frac)):
+            raise ValueError(
+                "repulsive_obstacle_radius_max_frac must be >= "
+                "repulsive_obstacle_radius_min_frac, got "
+                f"{self.repulsive_obstacle_radius_max_frac!r} < "
+                f"{self.repulsive_obstacle_radius_min_frac!r}")
+        if float(self.repulsive_ratchet_rate) <= 0.0:
+            raise ValueError(
+                f"repulsive_ratchet_rate must be > 0, got {self.repulsive_ratchet_rate!r}")
+        if float(self.repulsive_alpha) <= 0.0:
+            raise ValueError(f"repulsive_alpha must be > 0, got {self.repulsive_alpha!r}")
+        if float(self.repulsive_beta) <= 0.0:
+            raise ValueError(f"repulsive_beta must be > 0, got {self.repulsive_beta!r}")
+        stages = tuple(self.repulsive_stages)
+        if len(stages) == 0:
+            raise ValueError("repulsive_stages must be non-empty")
+        if any(int(s) <= 0 or int(s) % 4 != 0 for s in stages):
+            raise ValueError(
+                f"repulsive_stages entries must be positive multiples of 4, got {stages!r}")
+        if any(int(stages[i]) <= int(stages[i - 1]) for i in range(1, len(stages))):
+            raise ValueError(
+                f"repulsive_stages must be strictly increasing, got {stages!r}")
+        if self.generator == "repulsive" and int(stages[-1]) != int(self.num_points):
+            raise ValueError(
+                "repulsive_stages[-1] must equal num_points for generator='repulsive', got "
+                f"{stages[-1]!r} != {self.num_points!r}")
 
         if int(self.relax_sep_every) < 1:
             raise ValueError(f"relax_sep_every must be >= 1, got {self.relax_sep_every!r}")
