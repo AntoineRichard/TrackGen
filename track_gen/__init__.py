@@ -15,6 +15,7 @@ from . import collision
 from . import props
 from . import checkpoints
 from . import progress
+from . import localize
 from . import course
 from .course import set_capturing
 
@@ -30,6 +31,7 @@ __all__ = [
     "props",
     "checkpoints",
     "progress",
+    "localize",
     "course",
     "set_capturing",
     "__version__",
