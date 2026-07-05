@@ -150,17 +150,22 @@ def _analytic_grad_warp(x, obs_pts, obs_mw, Lt, Li, dev):
     ow = wp.array(obs_mw.astype(np.float32), dtype=wp.float32, device=dev)
     lt = wp.array(np.array([Lt], np.float32), dtype=wp.float32, device=dev)
     li = wp.array(np.array([Li], np.float32), dtype=wp.float32, device=dev)
+    tang = wp.zeros(n, dtype=wp.vec2f, device=dev)
+    wdual = wp.zeros(n, dtype=wp.float32, device=dev)
     wcoef = wp.zeros(n, dtype=wp.float32, device=dev)
     btan = wp.zeros(n, dtype=wp.vec2f, device=dev)
     lc = wp.zeros(1, dtype=wp.float32, device=dev)
+    peri = wp.zeros(1, dtype=wp.float32, device=dev)
     grad = wp.zeros(n, dtype=wp.vec2f, device=dev)
+    wp.launch(rep._tangent_weight_k, dim=(1, n),
+              inputs=[center, n, frozen, tang, wdual], device=dev)
     wp.launch(rep._tp_prepass_k, dim=(1, n),
-              inputs=[center, n, _ALPHA, _BETA, _EPS, frozen, wcoef, btan], device=dev)
+              inputs=[center, n, _ALPHA, _BETA, _EPS, frozen, tang, wdual, wcoef, btan], device=dev)
     wp.launch(rep._len_coef_k, dim=1,
-              inputs=[center, n, lt, li, _W_LEN, frozen, lc], device=dev)
+              inputs=[center, n, lt, li, _W_LEN, frozen, lc, peri], device=dev)
     wp.launch(rep._grad_gather_k, dim=(1, n),
-              inputs=[center, n, _ALPHA, _BETA, _EPS, wcoef, btan, op, ow, M, _P_EXP,
-                      reached, 96, 0, 0, lc, frozen, grad], device=dev)
+              inputs=[center, n, _ALPHA, _BETA, _EPS, tang, wdual, wcoef, btan, op, ow, M, _P_EXP,
+                      reached, 96, 0, lc, frozen, grad], device=dev)
     wp.synchronize()
     return grad.numpy().reshape(n, 2)
 
@@ -249,6 +254,37 @@ def test_repulsive_contract_through_tail(dev):
         finite = torch.isfinite(center[e]).all(dim=-1)
         assert torch.all(finite[:c])
         assert not torch.any(finite[c:])
+
+
+@pytest.mark.parametrize("dev", DEVS)
+def test_repulsive_stride_consistent_minimal_budget(dev):
+    """Regression for the n_iters<=0 / incomplete-stage-schedule mis-stride bug.
+
+    A valid config with the smallest legal growth budget (grow_mult just above 1, the minimum
+    settle_iters=1) must still emit a stride-consistent ``[E*num_points]`` centerline: every env
+    is a SINGLE closed loop of num_points, not a pack of several coarse-stage circles packed into
+    the first quarter (env-0 reading four envs' data) with the later envs left as stale zeros.
+    """
+    E = 8
+    cfg = TrackGenConfig(generator="repulsive", num_envs=E, device=dev,
+                         num_points=64, repulsive_stages=(16, 32, 64), N_max=384,
+                         half_width=0.1, repulsive_grow_mult_min=1.1,
+                         repulsive_grow_mult_max=1.3, repulsive_settle_iters=1)
+    N = int(cfg.num_points)
+    gen = TrackGenerator(cfg, PerEnvSeededRNG(seeds=1, num_envs=E, device=dev))
+    gen.generate(E)
+    c = to_t(gen._scratch.gen_centerline).view(E, N, 2)
+    assert c.shape == (E, N, 2)
+    assert torch.isfinite(c).all()
+    steps = (c[:, 1:] - c[:, :-1]).norm(dim=-1)
+    med = steps.median(dim=1).values
+    # Single closed loop: last->first gap is ~one step, and no giant jump between packed
+    # sub-circles (a mis-strided env would blow past both thresholds).
+    gap = (c[:, 0] - c[:, -1]).norm(dim=-1)
+    assert torch.all(gap <= 3.0 * med)
+    assert torch.all(steps.max(dim=1).values <= 6.0 * med)
+    # No env collapsed onto the stale-zero origin: every env has real radial extent.
+    assert torch.all(c.norm(dim=-1).amax(dim=1) > 1e-3)
 
 
 @pytest.mark.parametrize("dev", DEVS)
