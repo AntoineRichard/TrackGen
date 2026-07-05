@@ -279,7 +279,9 @@ differences over ~382 iters, compounded by the periodic arc-length **re-paramete
 leaving the *shape* statistics identical. This is exactly the "qualitative + yield parity,
 not float parity" bar the task set.
 
-**Performance** (RTX 4090, post-warmup, module load excluded, default config, ~382 iters):
+**Performance** (RTX 4090, post-warmup, module load excluded, ~382 iters). These are the
+**flat single-resolution loop** numbers (`--no-c2f --no-stall`); the 2026-07-05
+**"Coarse-to-fine + stall-stop"** pass below cuts these 3–5× and is now the default:
 
 | E | iters | total | ms/iter | peak GPU |
 |---|---|---|---|---|
@@ -297,6 +299,102 @@ for ~7× time (now compute-bound, dense `O(N²)` scaling). Memory stays tiny (59
 `E=8192`). The real payoff of the pure-Warp loop is not the 1.8× — it is that it is the
 prerequisite for **CUDA graph capture**, which would erase precisely the per-iter launch
 overhead that dominates the small-`E` regime.
+
+### Coarse-to-fine + stall-stop (2026-07-05 perf pass)
+
+The pure-Warp loop above is correct but leaves wall-clock on the table: it grows every
+env at the full `N = 256` for a fixed ~382-iter budget, even though (a) fold wavelengths
+dwarf the bead spacing for most of the run and (b) the long settle tail keeps flowing
+after the shape has converged. Two levers (both behind flags, defaults = best config;
+the pre-lever loop is `--no-c2f --no-stall --growth 0.008`):
+
+- **Lever 1 — coarse-to-fine resolution.** Grow at low `N` and refine: stages
+  `[64, 128, 256]`, upsampling `N → 2N` (arc-length resample, the oracle
+  `_resample_uniform`) when the mean edge length has doubled — the reference's "subdivide
+  on edge-length doubling" trigger. Because the hard-constraint ratchet makes the fastest
+  env's perimeter `L_init·(1+growth)^it`, the doubling iters are a **closed form**
+  (`_stage_schedule`), so the loop stays sync-free except for **one upsample per stage
+  boundary** (2 events, not in the hot path). The `O(N²)` TP + obstacle sums make the
+  `N=64` iters ~16× cheaper and `N=128` ~4× cheaper. The **final stage is always 256**, so
+  the tail input is unchanged. Per-stage circulant Sobolev rows are precomputed on host;
+  pair-exclusion stays `±2`; buffers are reallocated per stage.
+- **Lever 2 — stall-stop + faster ratchet.** (a) The ratchet rate rises `0.008 → 0.012`
+  (the per-env "only ratchet toward `L_final`" guard is unchanged). (b) Once an env reaches
+  its final length **and** its shape has converged it **freezes** — masked out of every
+  step kernel, skipping its `O(N²)` work — and a single small readback per 16-iter window
+  drives a **global early exit** when all envs are frozen, ending the settle on convergence
+  instead of a fixed count.
+
+  The stall metric is **relative enclosed-area change**, *not* bead displacement. The TP
+  flow keeps sliding beads *along* the curve (reparameterization drift, compounded by the
+  periodic arc-length resample), so any per-bead displacement stays large — `~0.1–1.2`
+  over a window — long after the *shape* has stopped evolving; the enclosed area (shoelace)
+  only moves when the shape does. Freeze when the window's relative area change `< 0.05`.
+
+**Coarse-to-fine is what makes the faster ratchet fold.** The flat loop *collapses* at
+`growth = 0.012` — torch **57/64** compactness **0.368**, warp **60/64** compactness
+**0.373**: the length is added faster than the TP energy can buckle it, so the curve just
+expands smoothly instead of folding. Starting **coarse** fixes this: at `N = 64` the curve
+*cannot represent* high-frequency wiggle, so the ratcheted length is forced into **low-mode
+folds**, and `c2f + growth 0.012` folds cleanly (**64/64, compactness 0.152**). So the two
+levers are not independent — the fast ratchet is only full-yield *with* coarse-to-fine.
+
+**Ratchet frontier** (E=64, c2f + stall): `growth ≤ 0.013` holds 64/64 with folds
+(compactness ~0.15); `0.014` drops to 63/64; `≥ 0.016` **collapses the folds**
+(compactness 0.40–0.65) *even without stall-stop* — this is a physical limit of fold
+formation, not a stall artifact. Default `0.012` keeps a safety margin below the 0.014 edge.
+
+**Quality gate (E=64, same seed, full pipeline through the tail).** PASS: warp **64/64**
+valid, compactness **0.152 ± 0.014** (within 0.02 of the 0.146 bar), perimeter **13.13**
+(0.5% off 13.20), kmax median 8.6. `warp-parity-grid.png` (top: torch flat reference
+`g0.008`; bottom: pure-Warp c2f + stall `g0.012`) shows the two families are the same dense
+serpentine circuits. The only drift is a slight loss of foldiness (compactness 0.146 →
+0.152) from the `N=64` coarse stage — visible as ~half a fold fewer on a couple of envs,
+well inside the bar.
+
+**Per-lever attribution** (E=1024, post-warmup, same session; levers isolated at the flat
+loop's valid `growth 0.008`, ratchet as the last row since it only holds yield *with* c2f):
+
+| config | eff iters | total | speedup |
+|---|---|---|---|
+| baseline flat `g0.008` | 383 | 3.50 s | 1.0× |
+| + coarse-to-fine only | 383 | 2.22 s | 1.6× |
+| + stall-stop only | 272 | 2.25 s | 1.6× |
+| + c2f **and** stall | 288 | 0.97 s | 3.6× |
+| + faster ratchet `g0.012` **(default)** | 240 | 0.86 s | **4.1×** |
+
+The two levers are near-multiplicative and slightly better (1.6 × 1.6 ≈ 2.5, actual 3.6):
+stall cuts the expensive full-`N` settle tail that c2f *can't* cheapen, and c2f cheapens
+the growth iters that stall keeps. The ratchet adds a final ~13%.
+
+**Before / after** (RTX 4090, post-warmup, module load excluded):
+
+| E | baseline flat `g0.008` | new default (c2f + stall `g0.012`) | speedup | peak GPU |
+|---|---|---|---|---|
+| 64 | 0.53 s / 383 it | **0.18 s** / 208 eff-it | 3.0× | 4.6 MiB |
+| 1024 | 3.49 s / 383 it | **0.83 s** / 240 eff-it | 4.2× | 73.7 MiB |
+| 8192 | 24.5 s / 383 it | **≈5.1 s** / 240 eff-it | ≈4.8× | 589.8 MiB |
+
+`eff-it` is the effective iteration count (stall-stop exits early). It **jitters 208–240
+run-to-run** because the TP energy accumulates via `atomic_add` (float order is
+nondeterministic on GPU), so the exact iter the last env's area-change dips below threshold
+wanders; yield (64/64) is robust to it. The `E=8192` new-config number is reproducible
+(5.10, 5.12 s across independent sweeps); the baseline is 24.5–25.7 s.
+
+**The 2–4 s target at E=8192 was not quite reached** (new growth is ~5 s). Two honest
+caveats on the measurement and where the time goes:
+- **Power/throttle sensitivity.** Even at `E=8192` the loop draws only ~110 W on the 450 W
+  4090 at "100% util" — it is **partly issue-bound** (~13 tiny sequential kernels + a
+  `wp.Tape` record/backward per iter don't saturate the GPU), not FLOP-bound. So the same
+  `E=8192` config measures ~5 s from cool but ~11 s when run *immediately after* a sustained
+  heavy batch (the pool/clock state matters); read the absolute `E=8192` numbers as ±1.5×,
+  and prefer the per-`E` speedup measured in one session (the attribution table).
+- **Where the residual time is.** The ~120-iter settle tail runs at full `N = 256` with
+  dense `O(N²)` TP pairs — c2f can't cheapen it (the tail must be full-res for tail-input
+  fidelity) and stall only trims its *length*. Because the loop is also issue-bound, the two
+  remaining levers are **CUDA graph capture** (erases the per-iter launch/tape overhead —
+  the dominant cost at the ~110 W operating point) and the **BVH far-field** (cuts the
+  `O(N²)` FLOPs) — not another growth-schedule tweak.
 
 ### Graph-capture feasibility (not implemented — assessed)
 
@@ -323,6 +421,15 @@ implemented, per instructions):
   drop `wp.Tape` entirely. Not needed for the spike (the tape gave exact-parity gradients for
   free), but a production port that wants a single captured graph would either persist one tape
   or go analytic. This is the concrete integration decision the port surfaces.
+- **The coarse-to-fine + stall-stop pass adds two *deliberate* host touchpoints** (both
+  outside the hot inner loop, so they cost nothing at steady state but do break a *single*
+  whole-run captured graph): the **per-stage upsample** (2 events total; a device→host→device
+  arc-length resample at each `N → 2N` boundary — kept torch-simple since it is rare), and the
+  **per-window stall readback** (one `frozen.sum()` sync every 16 iters to drive the global
+  early exit). The natural capture story is then **one captured graph per stage** (the stage
+  interior is still a fixed launch topology), with the upsample and the stall readback as the
+  host seams between graphs — exactly the points where a production port already wants host
+  control anyway.
 
 ## Failure modes observed
 
@@ -385,37 +492,43 @@ probes, not blind-tuned):
 
 ## Resume Points
 
-- **Reference mechanisms we still don't replicate.** From `EnergyCurve.cs` /
-  `MapGenToolBase.cs`, beyond the layout knobs now matched (obstacle recipe,
-  geometry ratios, deactivation): (1) **stop-on-stall** — they end the flow when
-  `numStuckIterations ≥ 3 && TargetLengthReached`; we run a fixed budget, which
-  is *why* we can't deactivate the wall (see the paper-recipe section). Porting a
-  stall detector would let us mirror their full wall-inclusive deactivation
-  without circle-ifying. (2) **Exact line search + backprojection** — they choose
-  the step by line search and correct constraint drift by backprojection each
-  iter; we take a fixed `tau·mean_seg_len/‖g‖` step and hard-rescale to the
-  target. (3) **Curve subdivision** — they subdivide when the average edge length
-  doubles (`subdivideLimit = 2`); we grow at fixed `N = 256` + periodic resample.
-  (4) Their inner-obstacle radial range runs all the way to the wall
-  (`outerRadius`); we cap at `c_frac = 0.9·r_dom`. None of these blocked the
-  visual match, but a faithful Warp port would want (1)–(3).
+- **Reference mechanisms — two now replicated (2026-07-05 perf pass), two still not.**
+  From `EnergyCurve.cs` / `MapGenToolBase.cs`, beyond the layout knobs matched earlier
+  (obstacle recipe, geometry ratios, deactivation):
+  - (1) **stop-on-stall** — DONE (differently). They end the flow on
+    `numStuckIterations ≥ 3 && TargetLengthReached`; we now freeze each env on
+    **enclosed-area convergence** past its target length and globally early-exit when all
+    are frozen (see "Coarse-to-fine + stall-stop"). We use area-change, not their
+    iteration-stuck counter, because our TP flow never truly reaches a fixed point (it
+    keeps reparameterizing) — the *shape* converges, the *points* don't. We still keep the
+    wall live (fixed-budget-free now, but the settle is short enough that dropping the wall
+    would still circle-ify; a longer wall-free relax remains untested).
+  - (3) **Curve subdivision** — DONE. We now subdivide `N → 2N` on edge-length doubling
+    (`[64, 128, 256]`), matching their `subdivideLimit = 2`, instead of growing at fixed
+    `N = 256`. Surprise finding: this is not just a speed trick — the coarse stage
+    *regularizes the fold formation* and is what lets the faster ratchet stay full-yield.
+  - (2) **Exact line search + backprojection** — still not: they choose the step by line
+    search and correct drift by backprojection; we take a fixed `tau·mean_seg_len/‖g‖` step
+    and hard-rescale. (4) Their inner-obstacle radial range runs to the wall; we cap at
+    `c_frac = 0.9·r_dom`. Neither blocked the visual match.
 - **BVH far-field, keep it all in Warp.** The dense `O(N²)` TP pairs and `O(N·M)`
   obstacle sums are trivial at E=64/N=256 but won't scale. A production port
   should evaluate the TP (and obstacle) far-field with `wp.Bvh` — per-edge AABBs,
   refit per iteration — instead of dense pairs, keeping the whole growth loop in
   Warp. This is the same near/far split the *Repulsive Curves* paper uses
   (Barnes–Hut); the BVH gives it on GPU.
-- **Growth phase is now ported to pure Warp — DONE (`grow_warp.py`).** The
-  numerically-heavy loop runs as Warp kernels with `wp.Tape` gradients, at parity
-  with torch (64/64, identical diversity) and ~1.8× faster at `E=64` / linear-scaling
-  to `E=8192` (63.9 ms/iter, 590 MiB). See the "Warp port" section. Remaining work to
-  make it a production generator: **(a)** make it graph-capturable by persisting one
-  `wp.Tape` (or hand-writing analytic adjoints) — the *only* capture blocker is the
-  per-iter tape (assessed in "Graph-capture feasibility"); **(b)** wire it behind the
-  `generator_registry.py` pure-Warp contract; **(c)** the BVH far-field below for scale.
-  The old torch-eager-outside-capture fallback (option b in the 2026-06-23
-  `tp_sobolev_checkpointed` idea) is no longer the only path — the loop is already pure
-  Warp.
+- **Growth phase is now ported to pure Warp AND perf-optimized — DONE (`grow_warp.py`).**
+  The numerically-heavy loop runs as Warp kernels with `wp.Tape` gradients, at parity with
+  torch (64/64, matching diversity). The 2026-07-05 perf pass added **coarse-to-fine
+  resolution + stall-stop + a faster ratchet** (see "Coarse-to-fine + stall-stop"): E=64
+  0.53→0.18 s (3.0×), E=1024 3.49→0.86 s (4.1×), E=8192 24.5→~5–7 s (≈3–5×), same 64/64 at
+  compactness 0.152. Remaining work to make it a production generator: **(a)** graph-capture
+  (per-stage graphs; the only interior blocker is the per-iter tape — persist one or go
+  analytic; the stage boundaries are natural host seams); **(b)** wire it behind the
+  `generator_registry.py` pure-Warp contract; **(c)** close the residual E=8192 time (the
+  full-`N` settle tail) — but note the loop draws only ~110 W at `E=8192` (partly
+  issue-bound), so **CUDA graph capture** (kills per-iter launch/tape overhead) is now at
+  least as binding as the **BVH far-field** (kills the `O(N²)` FLOPs); likely both.
 - **Obstacles as gameplay content.** The per-env disc layouts are already random
   gameplay-relevant geometry. Export them as props / `DiscChecker` obstacles so
   the phase-1 *layout* becomes actual track content (the curve is guaranteed to

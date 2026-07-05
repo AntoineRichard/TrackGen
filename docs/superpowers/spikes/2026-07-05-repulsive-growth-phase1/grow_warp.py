@@ -70,6 +70,7 @@ def _safe_dir(v: wp.vec2f) -> wp.vec2f:
 def _tp_energy_k(
     center: wp.array(dtype=wp.vec2f), n: int,
     alpha: float, beta: float, eps: float,
+    frozen: wp.array(dtype=wp.int32),
     energy: wp.array(dtype=wp.float32),
 ):
     # One thread per (env e, point i). Dense O(N) inner loop over j with the paper's
@@ -77,7 +78,11 @@ def _tp_energy_k(
     #   diff = x_j - x_i, wedge = diff ^ T_i, k_ij = (|wedge|+eps)^alpha
     #          / (d2+eps^2)^(beta/2) * w_i * w_j, summed over unmasked pairs.
     # T_i is the central-difference tangent; w_i the dual (lumped-edge) weight.
+    # Frozen (stalled, target-length-reached) envs skip the whole O(N) sum -- their
+    # grad stays zero so the step/rescale (also frozen-gated) leave them untouched.
     e, i = wp.tid()
+    if frozen[e] == 1:
+        return
     b = e * n
     xi = center[b + i]
     xn = center[b + (i + 1) % n]
@@ -108,6 +113,7 @@ def _obstacle_energy_k(
     obs_pts: wp.array(dtype=wp.vec2f), obs_mw: wp.array(dtype=wp.float32), m_obs: int,
     p_exp: float, reached: wp.array(dtype=wp.int32),
     n_wall: int, deac: int, deac_wall: int,
+    frozen: wp.array(dtype=wp.int32),
     energy: wp.array(dtype=wp.float32),
 ):
     # One thread per (env e, point i). sum_m weight_m*mass_m / |x_i - p_m|^p
@@ -116,6 +122,8 @@ def _obstacle_energy_k(
     # deactivation: at target length (reached[e]), inner-disc columns (m >= n_wall) are
     # dropped when deac; the wall (m < n_wall) only when deac_wall too.
     e, i = wp.tid()
+    if frozen[e] == 1:
+        return
     xi = center[e * n + i]
     ob = e * m_obs
     is_reached = reached[e]
@@ -140,11 +148,14 @@ def _obstacle_energy_k(
 def _length_penalty_k(
     center: wp.array(dtype=wp.vec2f), n: int,
     L_target: wp.array(dtype=wp.float32), L_init: wp.array(dtype=wp.float32),
-    w_len: float, energy: wp.array(dtype=wp.float32),
+    w_len: float, frozen: wp.array(dtype=wp.int32),
+    energy: wp.array(dtype=wp.float32),
 ):
     # One thread per env. w_len * ((perimeter - L_target)/L_init)^2 -- the small live
     # regularizer nudging L toward the ratcheted target before the hard rescale.
     e = wp.tid()
+    if frozen[e] == 1:
+        return
     b = e * n
     peri = float(0.0)
     for i in range(n):
@@ -171,11 +182,14 @@ def _ratchet_k(
 
 @wp.kernel
 def _conv_k(gin: wp.array(dtype=wp.vec2f), h: wp.array(dtype=wp.float32), n: int,
-            out: wp.array(dtype=wp.vec2f)):
+            frozen: wp.array(dtype=wp.int32), out: wp.array(dtype=wp.vec2f)):
     # Circular convolution out[i] = sum_j h[(i-j) mod n] * gin[j] -- the FFT-free
     # fractional-Sobolev preconditioner A^{-1}. h is the fixed circulant row
-    # (numpy irfft of the spectral filter), precomputed once on host.
+    # (numpy irfft of the spectral filter), precomputed once on host. O(N^2), so
+    # frozen envs skip it (their step is gated off; stale out never used).
     e, i = wp.tid()
+    if frozen[e] == 1:
+        return
     b = e * n
     acc = wp.vec2f(0.0, 0.0)
     for j in range(n):
@@ -252,9 +266,12 @@ def _gmax_msl_k(g: wp.array(dtype=wp.vec2f), gmean: wp.array(dtype=wp.vec2f),
 @wp.kernel
 def _step_k(center: wp.array(dtype=wp.vec2f), g: wp.array(dtype=wp.vec2f),
             gmean: wp.array(dtype=wp.vec2f), msl: wp.array(dtype=wp.float32),
-            gmax: wp.array(dtype=wp.float32), tau: float, n: int):
-    # center <- center - (tau*msl/gmax) * (g - gmean).
+            gmax: wp.array(dtype=wp.float32), tau: float, n: int,
+            frozen: wp.array(dtype=wp.int32)):
+    # center <- center - (tau*msl/gmax) * (g - gmean). Frozen envs never move.
     e, i = wp.tid()
+    if frozen[e] == 1:
+        return
     t = e * n + i
     center[t] = center[t] - (tau * msl[e] / gmax[e]) * (g[t] - gmean[e])
 
@@ -276,11 +293,41 @@ def _perim_bc_k(center: wp.array(dtype=wp.vec2f), n: int,
 
 @wp.kernel
 def _rescale_k(center: wp.array(dtype=wp.vec2f), bc: wp.array(dtype=wp.vec2f),
-               cur_len: wp.array(dtype=wp.float32), L_target: wp.array(dtype=wp.float32), n: int):
+               cur_len: wp.array(dtype=wp.float32), L_target: wp.array(dtype=wp.float32), n: int,
+               frozen: wp.array(dtype=wp.int32)):
     # center <- bc + (center-bc) * (L_target/cur_len)  -- hard rescale to the target.
     e, i = wp.tid()
+    if frozen[e] == 1:
+        return
     t = e * n + i
     center[t] = bc[e] + (center[t] - bc[e]) * (L_target[e] / cur_len[e])
+
+
+@wp.kernel
+def _freeze_update_k(center: wp.array(dtype=wp.vec2f), n: int,
+                     reached: wp.array(dtype=wp.int32), thresh: float,
+                     area_prev: wp.array(dtype=wp.float32),
+                     frozen: wp.array(dtype=wp.int32), md_out: wp.array(dtype=wp.float32)):
+    # Per-env stall detector (runs once per stall window). An env freezes when it has
+    # reached its final length AND its enclosed-area relative change over the window is
+    # below ``thresh``. Area (shoelace) is used, NOT bead displacement, because it is
+    # REPARAMETERIZATION-INVARIANT: the TP flow slides beads along the curve and the
+    # periodic arc-length resample shuffles them, so any per-bead displacement stays
+    # large long after the SHAPE has stopped evolving; the enclosed area only moves when
+    # the shape does. ``area_prev`` is the window-start area per env. Frozen is sticky.
+    e = wp.tid()
+    b = e * n
+    a2 = float(0.0)
+    for i in range(n):
+        p0 = center[b + i]
+        p1 = center[b + (i + 1) % n]
+        a2 += p0[0] * p1[1] - p1[0] * p0[1]
+    area = wp.abs(a2) * 0.5
+    rel = wp.abs(area - area_prev[e]) / wp.max(area, float(1.0e-9))
+    md_out[e] = rel
+    area_prev[e] = area
+    if reached[e] == 1 and frozen[e] == 0 and rel < thresh:
+        frozen[e] = 1
 
 
 # ===========================================================================
@@ -301,13 +348,50 @@ def _sobolev_circulant_row(n, s, eps_reg):
 # Pure-Warp growth loop
 # ===========================================================================
 
+def _stage_schedule(stages, growth, subdiv_ratio, n_ratchet):
+    """Deterministic per-stage START ITER (no device sync). The hard-constraint
+    ratchet makes the fastest env's perimeter L_init*(1+growth)^it, so the iter at
+    which the mean edge length has grown by ``subdiv_ratio^i`` (the reference's
+    "subdivide when the average edge doubles" trigger) is a closed form. Each
+    transition is clamped to ``n_ratchet`` so the FINAL stage (N=256) is always
+    entered by the time the target length is reached -- the settle phase, and hence
+    the tail input, stays at the full resolution regardless of ``growth``."""
+    starts = [0]
+    for i in range(1, len(stages)):
+        it_i = int(np.ceil(np.log(subdiv_ratio ** i) / np.log1p(growth)))
+        starts.append(min(it_i, n_ratchet))
+    # enforce non-decreasing (fast growth can collapse several doublings together)
+    for i in range(1, len(starts)):
+        starts[i] = max(starts[i], starts[i - 1])
+    return starts
+
+
 def grow_warp(E, N, r_init, L_final_t, obs_pts_t, obs_mw_t, n_wall, device,
               alpha=3.0, beta=6.0, tau=0.4, growth=0.012, settle_iters=40,
               resample_every=25, w_len=30.0, deac=True, deac_wall=False,
-              return_snaps=False):
+              return_snaps=False, c2f=True, stages=None, subdiv_ratio=2.0,
+              stall=True, stall_window=16, stall_disp=0.02, debug=False):
     """Grow E closed curves from radius-r_init circles to perimeters ``L_final_t``
     with the pure-Warp TP-Sobolev flow. Mirrors grow_tp.grow. Returns
-    (center_torch [E,N,2], n_iters[, snapshots]). No host sync inside the loop."""
+    (center_torch [E,N,2], n_iters[, snapshots]).
+
+    Two wall-clock levers over the flat single-resolution loop:
+
+    * **Coarse-to-fine** (``c2f``): fold wavelengths dwarf bead spacing early, so we
+      grow at low N and refine. ``stages`` (default N//4, N//2, N) run in sequence;
+      the transition iters are precomputed from the ratchet (``_stage_schedule``) so
+      the loop stays sync-free except for the 1 arc-length UPSAMPLE per stage
+      boundary (torch oracle ``_resample_uniform``, reused from grow_tp; 2 events
+      total, not in the hot path). The O(N^2) TP + obstacle sums make N//4 iters
+      ~16x cheaper. The final stage is always ``N`` so the tail input is unchanged.
+    * **Stall-stop** (``stall``): once an env reaches its final length AND its max
+      bead displacement over a ``stall_window`` is below ``stall_disp`` it FREEZES --
+      masked out of every step kernel (frozen-gated above), skipping its O(N^2) work.
+      A single small readback per window drives a global early exit when all envs are
+      frozen, ending the settle phase on convergence instead of a fixed count.
+
+    Set ``c2f=False`` for a single stage at N; ``stall=False`` runs the full
+    ``ceil(1.6*n_ratchet)+settle_iters`` budget (the pre-lever behaviour)."""
     dev = device
     p_obs = beta - alpha
     p_exp = -p_obs / 2.0
@@ -315,26 +399,36 @@ def grow_warp(E, N, r_init, L_final_t, obs_pts_t, obs_mw_t, n_wall, device,
     eps = 1e-4
     M = obs_mw_t.shape[1]
 
-    # --- host-side, once ---
-    h_np, _ = _sobolev_circulant_row(N, s, 1e-3)
-    h_wp = wp.array(h_np, dtype=wp.float32, device=dev)
+    if stages is None:
+        stages = [N // 4, N // 2, N] if (c2f and N % 4 == 0) else [N]
+    stages = list(stages)
+    if not c2f:
+        stages = [N]
+    assert stages[-1] == N, f"final stage {stages[-1]} must equal N={N} (tail input)"
 
-    ang = torch.arange(N, device="cpu", dtype=torch.float32) * (2 * np.pi / N)
-    circle = r_init * torch.stack([torch.cos(ang), torch.sin(ang)], dim=-1)  # [N,2]
-    center_np = circle[None].repeat(E, 1, 1).reshape(E * N, 2).numpy().astype(np.float32)
+    # --- per-stage circulant Sobolev rows, precomputed once on host ---
+    h_by_n = {}
+    for Ns in set(stages):
+        h_np, _ = _sobolev_circulant_row(Ns, s, 1e-3)
+        h_by_n[Ns] = wp.array(h_np, dtype=wp.float32, device=dev)
+
     L_init_val = float(2 * np.pi * r_init)  # init-circle perimeter (uniform across envs)
+    n_ratchet = int(np.ceil(np.log(float((L_final_t / L_init_val).max())) / np.log1p(growth)))
+    n_iters = int(np.ceil(n_ratchet * 1.6)) + settle_iters
+    stage_starts = _stage_schedule(stages, growth, subdiv_ratio, n_ratchet)
+    if debug:
+        print(f"[warp-grow] stages={stages} starts={stage_starts} "
+              f"n_ratchet={n_ratchet} n_iters(cap)={n_iters} growth={growth}")
 
-    n_grow = int(np.ceil(np.log(float((L_final_t / L_init_val).max()))
-                         / np.log1p(growth) * 1.6))
-    n_iters = n_grow + settle_iters
-
-    # --- device buffers (flat [E*N] vec2f; per-env scalars [E]) ---
+    # --- initial circle at the coarsest stage ---
+    N0 = stages[0]
+    ang = torch.arange(N0, device="cpu", dtype=torch.float32) * (2 * np.pi / N0)
+    circle = r_init * torch.stack([torch.cos(ang), torch.sin(ang)], dim=-1)  # [N0,2]
+    center_np = circle[None].repeat(E, 1, 1).reshape(E * N0, 2).numpy().astype(np.float32)
     center = wp.array(center_np, dtype=wp.vec2f, device=dev, requires_grad=True)
-    energy = wp.zeros(1, dtype=wp.float32, device=dev, requires_grad=True)
-    g = wp.zeros(E * N, dtype=wp.vec2f, device=dev)
-    lg = wp.zeros(E * N, dtype=wp.vec2f, device=dev)
-    ainv_lg = wp.zeros(E * N, dtype=wp.vec2f, device=dev)
 
+    # --- N-independent device buffers (per-env scalars [E], obstacles) ---
+    energy = wp.zeros(1, dtype=wp.float32, device=dev, requires_grad=True)
     obs_pts = wp.array(np.nan_to_num(obs_pts_t.reshape(E * M, 2).cpu().numpy()).astype(np.float32),
                        dtype=wp.vec2f, device=dev)
     obs_mw = wp.array(obs_mw_t.reshape(E * M).cpu().numpy().astype(np.float32),
@@ -343,6 +437,9 @@ def grow_warp(E, N, r_init, L_final_t, obs_pts_t, obs_mw_t, n_wall, device,
     L_init = wp.array(np.full(E, L_init_val, np.float32), dtype=wp.float32, device=dev)
     L_target = wp.array(np.full(E, L_init_val, np.float32), dtype=wp.float32, device=dev)
     reached = wp.zeros(E, dtype=wp.int32, device=dev)
+    frozen = wp.zeros(E, dtype=wp.int32, device=dev)
+    area_prev = wp.zeros(E, dtype=wp.float32, device=dev)
+    md_out = wp.zeros(E, dtype=wp.float32, device=dev)
     num = wp.zeros(E, dtype=wp.float32, device=dev)
     den = wp.zeros(E, dtype=wp.float32, device=dev)
     gmean = wp.zeros(E, dtype=wp.vec2f, device=dev)
@@ -351,11 +448,21 @@ def grow_warp(E, N, r_init, L_final_t, obs_pts_t, obs_mw_t, n_wall, device,
     cur_len = wp.zeros(E, dtype=wp.float32, device=dev)
     bc = wp.zeros(E, dtype=wp.vec2f, device=dev)
 
-    # resample scratch (warp_pipeline.resample_uniform, fixed-N, count=N everywhere)
-    rs_out = wp.zeros(E * N, dtype=wp.vec2f, device=dev)
-    rs_seg = wp.zeros(E * N, dtype=wp.float32, device=dev)
-    rs_s = wp.zeros(E * (N + 1), dtype=wp.float32, device=dev)
-    count_N = wp.array(np.full(E, N, np.int32), dtype=wp.int32, device=dev)
+    # --- N-dependent buffers (reallocated per stage) ---
+    def _alloc_N(Ns):
+        return dict(
+            n=Ns, h=h_by_n[Ns],
+            g=wp.zeros(E * Ns, dtype=wp.vec2f, device=dev),
+            lg=wp.zeros(E * Ns, dtype=wp.vec2f, device=dev),
+            ainv_lg=wp.zeros(E * Ns, dtype=wp.vec2f, device=dev),
+            rs_out=wp.zeros(E * Ns, dtype=wp.vec2f, device=dev),
+            rs_seg=wp.zeros(E * Ns, dtype=wp.float32, device=dev),
+            rs_s=wp.zeros(E * (Ns + 1), dtype=wp.float32, device=dev),
+            count=wp.array(np.full(E, Ns, np.int32), dtype=wp.int32, device=dev))
+
+    stage_idx = 0
+    Ncur = stages[0]
+    buf = _alloc_N(Ncur)
 
     deac_i = int(deac)
     deac_wall_i = int(deac_wall)
@@ -363,12 +470,29 @@ def grow_warp(E, N, r_init, L_final_t, obs_pts_t, obs_mw_t, n_wall, device,
 
     def _snap(it):
         if return_snaps and it % 30 == 0:
-            arr = center.numpy().reshape(E, N, 2)
+            arr = center.numpy().reshape(E, Ncur, 2)
             for e in snaps:
                 snaps[e].append(torch.tensor(arr[e]).clone())
 
+    eff_iters = n_iters
     for it in range(n_iters):
+        # --- coarse-to-fine stage transition (upsample center N -> next N) ---
+        while stage_idx + 1 < len(stages) and it >= stage_starts[stage_idx + 1]:
+            stage_idx += 1
+            Nnew = stages[stage_idx]
+            up = R._resample_uniform(
+                torch.tensor(center.numpy().reshape(E, Ncur, 2), device=dev), Nnew)
+            center = wp.array(up.reshape(E * Nnew, 2).cpu().numpy().astype(np.float32),
+                              dtype=wp.vec2f, device=dev, requires_grad=True)
+            Ncur = Nnew
+            buf = _alloc_N(Ncur)
+            if debug:
+                print(f"[warp-grow]   iter {it}: upsample -> N={Ncur}")
+
         _snap(it)
+        Ncur, h_wp = buf["n"], buf["h"]
+        g, lg, ainv_lg = buf["g"], buf["lg"], buf["ainv_lg"]
+
         # 1. ratchet target + deactivation flag
         wp.launch(_ratchet_k, dim=E, inputs=[L_target, L_final, growth, reached], device=dev)
 
@@ -376,46 +500,68 @@ def grow_warp(E, N, r_init, L_final_t, obs_pts_t, obs_mw_t, n_wall, device,
         energy.zero_()
         tape = wp.Tape()
         with tape:
-            wp.launch(_tp_energy_k, dim=(E, N),
-                      inputs=[center, N, alpha, beta, eps, energy], device=dev)
-            wp.launch(_obstacle_energy_k, dim=(E, N),
-                      inputs=[center, N, obs_pts, obs_mw, M, p_exp, reached,
-                              n_wall, deac_i, deac_wall_i, energy], device=dev)
+            wp.launch(_tp_energy_k, dim=(E, Ncur),
+                      inputs=[center, Ncur, alpha, beta, eps, frozen, energy], device=dev)
+            wp.launch(_obstacle_energy_k, dim=(E, Ncur),
+                      inputs=[center, Ncur, obs_pts, obs_mw, M, p_exp, reached,
+                              n_wall, deac_i, deac_wall_i, frozen, energy], device=dev)
             wp.launch(_length_penalty_k, dim=E,
-                      inputs=[center, N, L_target, L_init, w_len, energy], device=dev)
+                      inputs=[center, Ncur, L_target, L_init, w_len, frozen, energy], device=dev)
         tape.backward(loss=energy)
 
         # 3. Sobolev precondition g = A^{-1} grad
-        wp.launch(_conv_k, dim=(E, N), inputs=[center.grad, h_wp, N, g], device=dev)
+        wp.launch(_conv_k, dim=(E, Ncur), inputs=[center.grad, h_wp, Ncur, frozen, g], device=dev)
         # 4. length-gradient Sobolev-orthogonal projection
-        wp.launch(_length_grad_k, dim=(E, N), inputs=[center, N, lg], device=dev)
-        wp.launch(_conv_k, dim=(E, N), inputs=[lg, h_wp, N, ainv_lg], device=dev)
-        wp.launch(_numden_k, dim=E, inputs=[g, lg, ainv_lg, N, num, den], device=dev)
-        wp.launch(_project_k, dim=(E, N), inputs=[g, ainv_lg, N, num, den], device=dev)
+        wp.launch(_length_grad_k, dim=(E, Ncur), inputs=[center, Ncur, lg], device=dev)
+        wp.launch(_conv_k, dim=(E, Ncur), inputs=[lg, h_wp, Ncur, frozen, ainv_lg], device=dev)
+        wp.launch(_numden_k, dim=E, inputs=[g, lg, ainv_lg, Ncur, num, den], device=dev)
+        wp.launch(_project_k, dim=(E, Ncur), inputs=[g, ainv_lg, Ncur, num, den], device=dev)
         # 5. barycenter pin + normalized step
-        wp.launch(_gmean_k, dim=E, inputs=[g, N, gmean], device=dev)
-        wp.launch(_gmax_msl_k, dim=E, inputs=[g, gmean, center, N, gmax, msl], device=dev)
-        wp.launch(_step_k, dim=(E, N), inputs=[center, g, gmean, msl, gmax, tau, N], device=dev)
+        wp.launch(_gmean_k, dim=E, inputs=[g, Ncur, gmean], device=dev)
+        wp.launch(_gmax_msl_k, dim=E, inputs=[g, gmean, center, Ncur, gmax, msl], device=dev)
+        wp.launch(_step_k, dim=(E, Ncur),
+                  inputs=[center, g, gmean, msl, gmax, tau, Ncur, frozen], device=dev)
         # 6. hard rescale to the ratcheted target
-        wp.launch(_perim_bc_k, dim=E, inputs=[center, N, cur_len, bc], device=dev)
-        wp.launch(_rescale_k, dim=(E, N), inputs=[center, bc, cur_len, L_target, N], device=dev)
+        wp.launch(_perim_bc_k, dim=E, inputs=[center, Ncur, cur_len, bc], device=dev)
+        wp.launch(_rescale_k, dim=(E, Ncur),
+                  inputs=[center, bc, cur_len, L_target, Ncur, frozen], device=dev)
 
         tape.zero()  # clear grads for the next iteration
 
         # 7. periodic arc-length resample (pure Warp, sync-free)
         if (it + 1) % resample_every == 0:
-            wpp.resample_uniform(center, rs_out, N, count_N, rs_seg, rs_s, device=dev)
-            wp.copy(center, rs_out)
+            wpp.resample_uniform(center, buf["rs_out"], Ncur, buf["count"],
+                                 buf["rs_seg"], buf["rs_s"], device=dev)
+            wp.copy(center, buf["rs_out"])
 
-    wpp.resample_uniform(center, rs_out, N, count_N, rs_seg, rs_s, device=dev)
-    wp.copy(center, rs_out)
+        # 8. stall-stop: freeze converged envs, global early exit when all frozen.
+        # Only meaningful at the final resolution (freeze needs reached==final length,
+        # which happens well after the last upsample). One tiny readback per window.
+        if stall and Ncur == stages[-1] and (it + 1) % stall_window == 0:
+            wp.launch(_freeze_update_k, dim=E,
+                      inputs=[center, Ncur, reached, stall_disp, area_prev, frozen, md_out],
+                      device=dev)
+            n_frozen = int(frozen.numpy().sum())
+            if debug:
+                md = md_out.numpy()
+                rc = int(reached.numpy().sum())
+                print(f"[warp-grow]   iter {it}: reached {rc}/{E} frozen {n_frozen}/{E} "
+                      f"rel-area-change p50/p90/max {np.median(md):.4f}/"
+                      f"{np.percentile(md, 90):.4f}/{md.max():.4f}")
+            if n_frozen >= E:
+                eff_iters = it + 1
+                break
+
+    wpp.resample_uniform(center, buf["rs_out"], Ncur, buf["count"],
+                         buf["rs_seg"], buf["rs_s"], device=dev)
+    wp.copy(center, buf["rs_out"])
     wp.synchronize()
 
     out = torch.tensor(center.numpy().reshape(E, N, 2), device="cpu")
-    _snap(n_iters)
+    _snap(eff_iters)
     if return_snaps:
-        return out, n_iters, snaps
-    return out, n_iters
+        return out, eff_iters, snaps
+    return out, eff_iters
 
 
 # ===========================================================================
@@ -471,7 +617,7 @@ def plot_parity_grid(center_t, center_w, count_t, count_w, v_t, v_w, hw, path,
     fig, axes = plt.subplots(2, n, figsize=(3.0 * n, 6.2))
     for e in range(n):
         for row, (cen, cnt, val, tag) in enumerate((
-                (center_t, count_t, v_t, "torch"), (center_w, count_w, v_w, "warp"))):
+                (center_t, count_t, v_t, "ref"), (center_w, count_w, v_w, "c2f+stall"))):
             ax = axes[row, e]
             ax.add_patch(plt.Circle((0, 0), r_dom, fill=False, color="0.7", ls="--"))
             for c, r in layouts[e]:
@@ -486,7 +632,8 @@ def plot_parity_grid(center_t, center_w, count_t, count_w, v_t, v_w, hw, path,
                     ax.plot(p[:, 0], p[:, 1], "-", color=col if lw > 1 else "0.5", lw=lw)
             ax.set_aspect("equal"); ax.set_xticks([]); ax.set_yticks([])
             ax.set_title(f"{tag} env {e} {'ok' if val[e] else 'FAIL'}", fontsize=9)
-    fig.suptitle("Repulsive growth: torch (top) vs pure-Warp (bottom), same seed", fontsize=13)
+    fig.suptitle("Repulsive growth: torch flat reference g0.008 (top) vs pure-Warp "
+                 "coarse-to-fine + stall-stop g0.012 (bottom), same seed", fontsize=12)
     fig.tight_layout(rect=[0, 0, 1, 0.96])
     fig.savefig(path, dpi=110)
     plt.close(fig)
@@ -501,7 +648,7 @@ def _add_args(ap):
     ap.add_argument("--E", type=int, default=64)
     ap.add_argument("--N", type=int, default=256)
     ap.add_argument("--tau", type=float, default=0.4)
-    ap.add_argument("--growth", type=float, default=0.008)
+    ap.add_argument("--growth", type=float, default=0.012)
     ap.add_argument("--alpha", type=float, default=3.0)
     ap.add_argument("--beta", type=float, default=6.0)
     ap.add_argument("--r-dom-frac", type=float, default=0.35)
@@ -515,16 +662,41 @@ def _add_args(ap):
     ap.add_argument("--no-deac", action="store_true")
     ap.add_argument("--deac-wall", action="store_true")
     ap.add_argument("--settle-iters", type=int, default=40)
+    # coarse-to-fine + stall-stop levers
+    ap.add_argument("--no-c2f", action="store_true",
+                    help="disable coarse-to-fine; grow at a single resolution N the whole run")
+    ap.add_argument("--stages", type=int, nargs="+", default=None,
+                    help="explicit coarse-to-fine stage schedule (default N//4, N//2, N). "
+                         "The last stage must equal N so the tail input is unchanged.")
+    ap.add_argument("--subdiv-ratio", type=float, default=2.0,
+                    help="upsample N->2N when the mean edge length has grown by this factor "
+                         "(reference: subdivide on edge-length doubling).")
+    ap.add_argument("--no-stall", action="store_true",
+                    help="disable per-env stall-stop; run the full ceil(1.6*n_ratchet)+settle budget")
+    ap.add_argument("--stall-window", type=int, default=16,
+                    help="iters between stall checks / global-early-exit readbacks")
+    ap.add_argument("--stall-disp", type=float, default=0.05,
+                    help="freeze an env once it has reached final length AND its enclosed-area "
+                         "relative change over a stall window is below this (reparameterization-"
+                         "invariant shape-convergence tolerance)")
     ap.add_argument("--perf-only", action="store_true",
                     help="skip torch parity; just time the Warp growth at E=64/1024/8192")
+    ap.add_argument("--attribution", action="store_true",
+                    help="measure each lever independently at E=1024 (c2f alone, stall alone, both)")
 
 
-def _grow_warp_from_setup(E, N, S, args, dev, return_snaps=False):
+def _grow_warp_from_setup(E, N, S, args, dev, return_snaps=False, debug=False,
+                          c2f=None, stall=None, growth=None):
     return grow_warp(
         E, N, S["r_init"], S["L_final"], S["obs_pts"], S["obs_mw"], S["n_wall"], dev,
-        alpha=args.alpha, beta=args.beta, tau=args.tau, growth=args.growth,
+        alpha=args.alpha, beta=args.beta, tau=args.tau,
+        growth=args.growth if growth is None else growth,
         w_len=args.w_len, settle_iters=args.settle_iters,
-        deac=not args.no_deac, deac_wall=args.deac_wall, return_snaps=return_snaps)
+        deac=not args.no_deac, deac_wall=args.deac_wall, return_snaps=return_snaps,
+        c2f=(not args.no_c2f) if c2f is None else c2f, stages=args.stages,
+        subdiv_ratio=args.subdiv_ratio,
+        stall=(not args.no_stall) if stall is None else stall,
+        stall_window=args.stall_window, stall_disp=args.stall_disp, debug=debug)
 
 
 def main():
@@ -542,11 +714,15 @@ def main():
         print(f"[setup] E={E} hw={hw} P_ref={S['P_ref']:.2f} r_dom={r_dom:.3f} "
               f"r_init={S['r_init']:.3f} L_final med {float(S['L_final'].median()):.2f}")
 
-        # torch reference growth (grow_tp.grow) on the identical inputs
+        # torch reference growth (grow_tp.grow): the committed flat-loop quality bar,
+        # run at ITS valid growth 0.008 (the flat loop collapses the folds at the
+        # warp default's faster 0.012 ratchet -- coarse-to-fine is what makes the fast
+        # ratchet fold; see README). This is the "before" of the before/after figure.
+        TORCH_REF_GROWTH = 0.008
         t0 = time.time()
         grown_t_fine, _, n_iters_t = gt.grow(
             E, N, S["r_init"], r_dom, S["L_final"], S["obs_pts"], S["obs_mw"], dev,
-            alpha=args.alpha, beta=args.beta, tau=args.tau, growth=args.growth,
+            alpha=args.alpha, beta=args.beta, tau=args.tau, growth=TORCH_REF_GROWTH,
             w_len=args.w_len, settle_iters=args.settle_iters, n_wall=S["n_wall"],
             deac=not args.no_deac, deac_wall=args.deac_wall)
         torch.cuda.synchronize() if "cuda" in dev else None
@@ -555,13 +731,14 @@ def main():
         # pure-Warp growth (warmup once for module load, then timed)
         _grow_warp_from_setup(E, N, S, args, dev)  # warmup (kernel compile / module load)
         t0 = time.time()
-        grown_w_fine, n_iters_w, snaps = _grow_warp_from_setup(E, N, S, args, dev, return_snaps=True)
+        grown_w_fine, n_iters_w, snaps = _grow_warp_from_setup(
+            E, N, S, args, dev, return_snaps=True, debug=True)
         sec_warp = time.time() - t0
         grown_w_fine = grown_w_fine.to(dev)
 
-        print(f"[grow torch] {n_iters_t} iters {sec_torch:.2f}s "
+        print(f"[grow torch-ref g0.008] {n_iters_t} iters {sec_torch:.2f}s "
               f"({1000*sec_torch/n_iters_t:.2f} ms/iter)")
-        print(f"[grow warp ] {n_iters_w} iters {sec_warp:.2f}s "
+        print(f"[grow warp c2f+stall  ] {n_iters_w} eff-iters {sec_warp:.2f}s "
               f"({1000*sec_warp/n_iters_w:.2f} ms/iter)  speedup {sec_torch/sec_warp:.1f}x")
 
         # same tail + validity + diversity for BOTH (grow_tp functions)
@@ -579,27 +756,43 @@ def main():
         print("[diversity] " + gt.fmt_div("torch", div_t))
         print("[diversity] " + gt.fmt_div("warp ", div_w))
 
-        # per-env centerline displacement torch-vs-warp (pre-tail, matched counts)
-        # (only where counts agree; report median)
-        same = count_t == count_w
-        disp = []
-        gtf = grown_t.cpu(); gwf = grown_w.cpu()
-        for e in range(E):
-            if bool(same[e]) and int(count_t[e]) >= 3:
-                ne = int(count_t[e])
-                disp.append(float(torch.linalg.norm(gtf[e, :ne] - gwf[e, :ne], dim=-1).mean()))
-        if disp:
-            print(f"[parity] pre-tail centerline |torch-warp| median {np.median(disp):.4f} "
-                  f"(counts agree on {int(same.sum())}/{E} envs)")
+        # NOTE: a per-bead torch-vs-warp displacement is no longer meaningful here --
+        # the two runs are DIFFERENT configs (torch flat g0.008 reference vs warp
+        # coarse-to-fine + stall g0.012), not the same flow, so the trajectories diverge
+        # by construction. The parity that matters is yield + shape statistics (above):
+        # both clear 64/64 and land in the same serpentine compactness band.
 
         plot_parity_grid(relax_t.cpu(), relax_w.cpu(), count_t.cpu(), count_w.cpu(),
                          v_t.cpu(), v_w.cpu(), hw, SPIKE_DIR / "warp-parity-grid.png",
                          layouts, r_dom)
         print(f"figure: {SPIKE_DIR}/warp-parity-grid.png")
 
+    # -------------------- Per-lever attribution at E=1024 --------------------
+    # Levers 1 (c2f) and 2 (stall) are isolated at the FLAT loop's valid growth 0.008
+    # (the flat loop collapses at 0.012); the faster ratchet is the last row, and only
+    # holds full yield WITH c2f -- so it is measured c2f+stall g0.008 -> g0.012.
+    if args.attribution:
+        print("\n[attribution] per-lever wall-clock at E=1024 (post-warmup):")
+        print(f"  {'config':>26} {'eff_iters':>10} {'total_s':>9}")
+        Sa = build_setup(1024, N, args, dev)
+        for tag, c2f, stall, gr in (
+                ("baseline flat g0.008", False, False, 0.008),
+                ("+ c2f only g0.008", True, False, 0.008),
+                ("+ stall only g0.008", False, True, 0.008),
+                ("+ c2f + stall g0.008", True, True, 0.008),
+                ("+ faster ratchet g0.012 (default)", True, True, 0.012)):
+            _grow_warp_from_setup(1024, N, Sa, args, dev, c2f=c2f, stall=stall, growth=gr)  # warmup
+            try:
+                wp.synchronize()
+            except Exception:
+                pass
+            t0 = time.time()
+            _, eff = _grow_warp_from_setup(1024, N, Sa, args, dev, c2f=c2f, stall=stall, growth=gr)
+            print(f"  {tag:>26} {eff:>10} {time.time() - t0:>9.3f}")
+
     # -------------------- Performance sweep --------------------
     print("\n[perf] pure-Warp growth wall-clock (post-warmup, module load excluded):")
-    print(f"  {'E':>6} {'iters':>6} {'total_s':>9} {'ms/iter':>9} {'peak_MiB':>9}")
+    print(f"  {'E':>6} {'eff_it':>6} {'total_s':>9} {'ms/iter':>9} {'peak_MiB':>9}")
     for Ep in (64, 1024, 8192):
         Sp = build_setup(Ep, N, args, dev)
         _grow_warp_from_setup(Ep, N, Sp, args, dev)  # warmup
