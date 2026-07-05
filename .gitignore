@@ -5,6 +5,7 @@ __pycache__/
 .sdd_runner.js
 
 .venv/
+.venv-gpu/
 
 viz/out/
 .worktrees/
