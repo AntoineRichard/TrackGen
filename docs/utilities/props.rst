@@ -5,6 +5,13 @@ Boundary props
 instancing poses — cones (``mode="points"``) or wall pieces
 (``mode="segments"``, chord midpoint + yaw + length).
 
+.. figure:: ../assets/boundary-props.png
+   :alt: One track with cone poses along both boundaries (points mode) and
+         wall chords along both boundaries (segments mode).
+
+   The two prop modes on one track: cone poses (left) and wall chords
+   (right), sampled from the inner and outer boundary independently.
+
 Both modes snap the requested spacing per environment —
 ``n = clamp(round(perimeter / spacing), 3, max_props)`` at effective step
 ``perimeter / n`` — so every closed ring places props with no seam gap or

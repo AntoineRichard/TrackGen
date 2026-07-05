@@ -1,10 +1,10 @@
-"""Render the committed utilities-overview figure for the docs.
+"""Render the committed utilities figures for the docs.
 
-Produces ``docs/assets/utilities-overview.png``: a four-panel overview of the
-query/instancing utilities on one generated track — ``track_gen.props`` cones
-(points mode), walls (segments mode), the effect of spacing, and a
-``track_gen.collision`` panel (baked SDF field + boxes classified by the exact
-segments backend).
+Produces the ``docs/assets`` figures for the utilities pages:
+``utilities-overview.png`` (four-panel overview), ``boundary-props.png``
+(cones/walls modes for the props page), ``oob-collision.png`` (out-of-bounds
+contact report for the collision page), plus the checkpoints, progress, and
+disc-collision figures.
 
 Deterministic like ``viz.render_readme_assets``: fixed seeds, cpu device.
 
@@ -182,6 +182,141 @@ def render_utilities_overview(output_dir: Path = Path("docs/assets")) -> Path:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     out = output_dir / "utilities-overview.png"
+    fig.savefig(out, dpi=150)
+    plt.close(fig)
+    return out
+
+
+def render_boundary_props(output_dir: Path = Path("docs/assets")) -> Path:
+    """Dedicated props figure: cones (points mode) beside walls (segments mode)."""
+    from track_gen import PerEnvSeededRNG, TrackGenConfig, TrackGenerator
+    from track_gen.props import PropSampler
+
+    E = 4
+    cfg = TrackGenConfig(num_envs=E, device="cpu")
+    gen = TrackGenerator(cfg, PerEnvSeededRNG(seeds=GEN_SEED, num_envs=E, device="cpu"))
+    track = gen.generate()
+    e = int(np.argmax(track.valid.numpy()))
+    n_max = track.outer.shape[0] // E
+    m = int(track.count.numpy()[e])
+    inner = track.inner.numpy().reshape(E, n_max, 2)[e, :m]
+    outer = track.outer.numpy().reshape(E, n_max, 2)[e, :m]
+
+    def props_of(sampler):
+        p = sampler.sample()
+        n = int(p.count.numpy()[e])
+        sl = slice(e * sampler._M, e * sampler._M + n)
+        return (p.position.numpy().reshape(-1, 2)[sl],
+                p.tangent.numpy().reshape(-1, 2)[sl],
+                p.length.numpy()[sl], n)
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6.8))
+    fig.suptitle("PropSampler: one boundary, two prop modes", fontsize=14)
+
+    ax = axes[0]
+    _draw_track(ax, inner, outer)
+    for boundary, color in (("outer", "#d95f02"), ("inner", "#1b9e77")):
+        pos, _, _, n = props_of(
+            PropSampler(track, spacing=0.12, boundary=boundary, mode="points"))
+        ax.scatter(pos[:, 0], pos[:, 1], s=32, marker="^", color=color,
+                   zorder=3, label=f"{boundary}: {n} cones")
+    ax.set_title('mode="points": cone poses every ~0.12 along each boundary')
+    ax.legend(loc="upper right", fontsize=9)
+
+    ax = axes[1]
+    _draw_track(ax, inner, outer)
+    for boundary, color in (("outer", "#7570b3"), ("inner", "#e7298a")):
+        pos, tang, length, n = props_of(
+            PropSampler(track, spacing=0.18, boundary=boundary, mode="segments"))
+        starts = pos - tang * (length[:, None] / 2)
+        ends = pos + tang * (length[:, None] / 2)
+        for s_, e_ in zip(starts, ends):
+            ax.plot([s_[0], e_[0]], [s_[1], e_[1]], "-", color=color, lw=3.2,
+                    solid_capstyle="butt", zorder=3)
+        ax.scatter(pos[:, 0], pos[:, 1], s=8, color="k", zorder=4)
+        ax.plot([], [], "-", color=color, lw=3.2,
+                label=f"{boundary}: {n} wall pieces")
+    ax.set_title('mode="segments": wall chords (midpoint + yaw + length)')
+    ax.legend(loc="upper right", fontsize=9)
+
+    fig.tight_layout(rect=[0, 0, 1, 0.94])
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    out = output_dir / "boundary-props.png"
+    fig.savefig(out, dpi=150)
+    plt.close(fig)
+    return out
+
+
+def render_oob_collision(output_dir: Path = Path("docs/assets")) -> Path:
+    """Out-of-bounds figure: boxes classified against the drivable band, with
+    the full contact report drawn — nearest boundary point, inward normal,
+    signed clearance."""
+    import warp as wp
+
+    from track_gen import PerEnvSeededRNG, TrackGenConfig, TrackGenerator
+    from track_gen.collision import CollisionChecker
+
+    E = 4
+    B = 10
+    cfg = TrackGenConfig(num_envs=E, device="cpu")
+    gen = TrackGenerator(cfg, PerEnvSeededRNG(seeds=GEN_SEED, num_envs=E, device="cpu"))
+    track = gen.generate()
+    e = int(np.argmax(track.valid.numpy()))
+    n_max = track.outer.shape[0] // E
+    m = int(track.count.numpy()[e])
+    inner = track.inner.numpy().reshape(E, n_max, 2)[e, :m]
+    outer = track.outer.numpy().reshape(E, n_max, 2)[e, :m]
+    center = track.center.numpy().reshape(E, n_max, 2)[e, :m]
+
+    rng = np.random.default_rng(BOX_SEED)
+    idx = rng.integers(0, m, B)
+    pos_np = np.full((E * B, 2), np.nan, np.float32)
+    yaw_np = np.zeros(E * B, np.float32)
+    he_np = np.zeros((E * B, 2), np.float32)
+    pos_np[e * B:(e + 1) * B] = center[idx] + rng.normal(0, 0.09, (B, 2))
+    yaw_np[e * B:(e + 1) * B] = rng.uniform(0, 2 * np.pi, B)
+    he_np[e * B:(e + 1) * B] = rng.uniform(0.02, 0.06, (B, 2))
+    contact = CollisionChecker(track, max_boxes=B, method="segments").query(
+        wp.array(pos_np.reshape(-1, 2), dtype=wp.vec2f, device="cpu"),
+        wp.array(yaw_np, dtype=wp.float32, device="cpu"),
+        wp.array(he_np, dtype=wp.vec2f, device="cpu"))
+    sl = slice(e * B, (e + 1) * B)
+    oob = contact.oob.numpy()[sl]
+    clearance = contact.distance.numpy()[sl]
+    near = contact.nearest.numpy().reshape(-1, 2)[sl]
+    normal = contact.normal.numpy().reshape(-1, 2)[sl]
+
+    fig, ax = plt.subplots(figsize=(10.5, 9))
+    _draw_track(ax, inner, outer)
+    nrm_len = 0.05 * float((outer.max(0) - outer.min(0)).max())
+    signs = np.array([[1, 1], [-1, 1], [-1, -1], [1, -1]], float)
+    for b in range(B):
+        c, yw, he_ = pos_np[e * B + b], yaw_np[e * B + b], he_np[e * B + b]
+        rot = np.array([[np.cos(yw), -np.sin(yw)], [np.sin(yw), np.cos(yw)]])
+        corners = c + (signs * he_) @ rot.T
+        col = "#d7191c" if oob[b] else "#1a9641"
+        ax.add_patch(MplPolygon(corners, closed=True, facecolor="none",
+                                edgecolor=col, lw=2.0, zorder=3))
+        ax.plot([c[0], near[b, 0]], [c[1], near[b, 1]], ":", color=col,
+                lw=1.0, zorder=2)
+        ax.scatter(*near[b], s=16, color=col, zorder=4)
+        ax.annotate("", xy=near[b] + normal[b] * nrm_len, xytext=near[b],
+                    arrowprops=dict(arrowstyle="->", color=col, lw=1.4),
+                    zorder=4)
+        ax.annotate(f"{clearance[b]:+.3f}", c, textcoords="offset points",
+                    xytext=(5, 5), fontsize=8, color=col, zorder=5)
+    ax.plot([], [], "-", color="#1a9641", lw=2, label="inside band")
+    ax.plot([], [], "-", color="#d7191c", lw=2, label="out of bounds")
+    ax.plot([], [], ":", color="0.4", lw=1, label="nearest boundary point")
+    ax.legend(loc="upper right", fontsize=9)
+    ax.set_title("CollisionChecker (segments): OOB flag, signed clearance,\n"
+                 "nearest boundary point and inward normal per box")
+
+    fig.tight_layout()
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    out = output_dir / "oob-collision.png"
     fig.savefig(out, dpi=150)
     plt.close(fig)
     return out
@@ -407,6 +542,8 @@ def render_disc_collision(output_dir: Path = Path("docs/assets")) -> Path:
 
 def main() -> None:
     print(render_utilities_overview().resolve())
+    print(render_boundary_props().resolve())
+    print(render_oob_collision().resolve())
     print(render_checkpoints_overview().resolve())
     print(render_progress_tracking().resolve())
     print(render_disc_collision().resolve())

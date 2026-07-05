@@ -16,6 +16,14 @@ about one grid cell). See Performance below for measured numbers; the rule
 of thumb: ``segments`` unless a track batch serves hundreds of queries
 between regenerations.
 
+.. figure:: ../assets/oob-collision.png
+   :alt: Oriented boxes on a track, green inside the band and red out of
+         bounds, each with its signed clearance, nearest boundary point,
+         and inward normal drawn.
+
+   The full per-box contact report: OOB flag (color), signed clearance
+   (label), nearest boundary point (dotted) and inward normal (arrow).
+
 Performance
 -----------
 
