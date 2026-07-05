@@ -720,6 +720,27 @@ def _arclength_k(
         arclen[b + i] = wp.nan
 
 @wp.kernel
+def _winding_k(
+    c: wp.array(dtype=wp.vec2f),
+    n_max: int,
+    count: wp.array(dtype=wp.int32),
+    out: wp.array(dtype=wp.float32),
+):
+    # One thread per env e. Sign of the closed centerline's signed shoelace area:
+    # +1.0 counter-clockwise, -1.0 clockwise, 0.0 degenerate (count < 3, zero area,
+    # or any NaN point -> comparisons are false -> 0.0). Fixed launch, no host
+    # branch -> safe inside a CUDA graph capture region.
+    e = wp.tid()
+    cn = count[e]
+    b = e * n_max
+    area2 = float(0.0)
+    for i in range(cn):
+        p = c[b + i]
+        q = c[b + (i + 1) % cn]
+        area2 = area2 + (p[0] * q[1] - q[0] * p[1])
+    out[e] = wp.where(area2 > 0.0, 1.0, wp.where(area2 < 0.0, -1.0, 0.0))
+
+@wp.kernel
 def _fill_f32_k(arr: wp.array(dtype=wp.float32), v: float):
     # One thread per element: constant float fill.
     arr[wp.tid()] = v
@@ -1165,6 +1186,27 @@ def _arclength(
     _sync(out_arclen.device)
 
 
+def _winding(
+    center_wp: "wp.array",
+    out_winding: "wp.array",
+    count_wp: "wp.array",
+):
+    """In-place: writes per-env signed loop winding (+1 CCW / -1 CW / 0 degenerate)
+    into out_winding (wp.array [E] float32) from the sign of the centerline's signed
+    area. All args are wp.array; nothing allocated. n_max inferred from
+    center_wp.shape[0] and count_wp.shape[0].
+
+    Fixed launch (no host branch) -> safe inside a CUDA graph capture region.
+    """
+    _init()
+    E = count_wp.shape[0]
+    n_max = center_wp.shape[0] // E
+    wp.launch(_winding_k, dim=E,
+              inputs=[center_wp, n_max, count_wp, out_winding],
+              device=str(out_winding.device))
+    _sync(out_winding.device)
+
+
 class GenScratch:
     """Pre-allocated generation buffers for the bezier generator's PRIVATE working scratch.
 
@@ -1420,6 +1462,7 @@ def _inflate_warp_alloc(config, generator_spec=None):
         length=wp.empty(E, dtype=wp.float32, device=dev),
         valid=wp.empty(E, dtype=wp.int32, device=dev),
         count=wp.empty(E, dtype=wp.int32, device=dev),
+        winding=wp.empty(E, dtype=wp.float32, device=dev),
     )
     if generator_spec is None:
         from . import generator_registry
@@ -1538,6 +1581,7 @@ def inflate_warp(center, config, out=None,
             length=wp.empty(E, dtype=wp.float32, device=dev),
             valid=wp.empty(E, dtype=wp.int32, device=dev),
             count=wp.empty(E, dtype=wp.int32, device=dev),
+            winding=wp.empty(E, dtype=wp.float32, device=dev),
         )
         if scratch is None:
             # Standalone path: only the inflate group is needed (no gen/relax buffers);
@@ -1605,6 +1649,9 @@ def inflate_warp(center, config, out=None,
 
     # 3. cumulative arc length + total length — in-place into out.arclen/out.length.
     _arclength(out.center, out.arclen, out.length, cnt_wp)
+
+    # 3b. signed loop winding (+1 CCW / -1 CW / 0 degenerate) — in-place into out.winding.
+    _winding(out.center, out.winding, cnt_wp)
 
     # 4. offset to outer/inner borders — in-place directly into out.outer/out.inner.
     offset(out.center, out.normal, hw, out.outer, out.inner,

@@ -125,6 +125,27 @@ Stateful per-env course progress over any ``CheckpointSet``.
 
    .. automethod:: clone
 
+Track-frame localization
+------------------------
+
+Per-env (s, n) centerline projection with an optional warm start, plus the
+per-generation curvature and speed-profile helpers.
+
+.. automodule:: track_gen.localize
+   :no-members:
+
+.. autoclass:: track_gen.localize.TrackLocalizer
+   :members:
+
+.. autoclass:: track_gen.localize.TrackFrame
+   :no-members:
+
+   .. automethod:: clone
+
+.. autofunction:: track_gen.localize.curvature
+
+.. autofunction:: track_gen.localize.speed_profile
+
 Course facade
 -------------
 

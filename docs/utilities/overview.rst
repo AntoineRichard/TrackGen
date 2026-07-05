@@ -12,6 +12,9 @@ GPU-batched runtime utilities for the sim loop:
 - :doc:`Checkpoints & progress </utilities/progress>` — ordered course
   goals from gate sequences or subsampled track centerlines, with pass/lap
   events and reward-ready distances.
+- :doc:`Track-frame localization </utilities/localize>` — arc-length ``s``
+  and signed lateral offset ``n`` per env, plus centerline curvature and
+  curvature-limited speed profiles.
 - :doc:`The Course facade </utilities/course>` — one object bundling
   generation, collision, and progress per mode.
 
@@ -81,6 +84,10 @@ i.e. not through ``Course``, which handles all of this for you):
      - Call ``sample()``.
    * - ``ProgressTracker``
      - Call ``reset(mask)`` for ALL envs (a full progress reset).
+   * - ``TrackLocalizer``
+     - Call ``reset(mask)`` for ALL envs when warm-started
+       (``warm_window=``); nothing for cold-scan localizers. Recompute any
+       ``curvature()`` / ``speed_profile()`` arrays.
    * - ``CheckpointSet.from_gates``
      - Nothing — aliases the ``GateSequence`` buffers automatically.
    * - ``Course``

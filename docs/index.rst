@@ -194,6 +194,7 @@ Explore the docs
    utilities/collision
    utilities/props
    utilities/progress
+   utilities/localize
    utilities/course
 
 .. toctree::

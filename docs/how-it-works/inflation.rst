@@ -82,7 +82,9 @@ metric checks the minimum over all beads to ensure no inflation collapsed.
      - Unit tangent at each centerline bead.
    * - ``normal``
      - ``[E, N_max, 2]``
-     - Left-normal at each centerline bead.
+     - Left-normal ``(-tangent.y, tangent.x)`` at each centerline bead; the boundary
+       it faces is winding-dependent (see ``winding``), so read ``outer``/``inner``
+       to identify the borders.
    * - ``arclen``
      - ``[E, N_max]``
      - Cumulative arc length at each bead (0 at bead 0).
@@ -95,6 +97,10 @@ metric checks the minimum over all beads to ensure no inflation collapsed.
    * - ``count``
      - ``[E]``
      - Number of real beads per env (padding is NaN past this index).
+   * - ``winding``
+     - ``[E]``
+     - Signed loop winding: ``+1.0`` CCW, ``-1.0`` CW, ``0.0`` degenerate
+       (sign of the centerline's signed area).
 
 ``generate()`` always returns the **same** ``Track`` instance with stable ``wp.array``
 pointers. Callers that need a snapshot should use ``Track.clone()``.
