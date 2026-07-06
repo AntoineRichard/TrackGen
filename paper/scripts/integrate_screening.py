@@ -3174,6 +3174,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             arguments.adjudication_result_snapshot is not None
             or arguments.citation_key_ledger is not None
             or arguments.author_verification is not None
+            or arguments.batch is not None
+            or arguments.output is not None
         ):
             parser.error(
                 "--seal-adjudication does not accept projection inputs"
@@ -3201,9 +3203,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             "author_verification",
         ),
     )
-    if arguments.adjudication_result is not None:
+    if arguments.adjudication_result is not None or arguments.batch is not None or arguments.output is not None:
         parser.error(
-            "--seal-projection does not accept --adjudication-result"
+            "--seal-projection does not accept adjudication-result or merge inputs"
         )
     seal_screening_projection(
         arguments.coordinator_snapshot,

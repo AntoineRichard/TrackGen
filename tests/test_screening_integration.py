@@ -4574,6 +4574,56 @@ def test_cli_modes_reject_opposite_adjudication_input(
         integration.main(arguments)
 
 
+@pytest.mark.parametrize(
+    ("mode", "merge_flag"),
+    [
+        (mode, flag)
+        for mode in ("--seal-adjudication", "--seal-projection")
+        for flag in ("--batch", "--output")
+    ],
+)
+def test_cli_sealing_modes_reject_merge_only_inputs(
+    mode: str,
+    merge_flag: str,
+) -> None:
+    arguments = [
+        mode,
+        "--coordinator-snapshot",
+        "coordinator/v1",
+        "--calibration-reviewer-release",
+        "calibration-reviewer-release/v1",
+        "--calibration-result-snapshot",
+        "calibration/v1",
+        "--calibration-decision-snapshot",
+        "calibration-decision/v1",
+        "--main-reviewer-release",
+        "main-reviewer-release/v1",
+        "--main-result-snapshot",
+        "main/v1",
+        "--execution-register",
+        "execution-register.csv",
+        "--output-dir",
+        "output/v1",
+    ]
+    if mode == "--seal-adjudication":
+        arguments.extend(("--adjudication-result", "adjudications.csv"))
+    else:
+        arguments.extend(
+            (
+                "--adjudication-result-snapshot",
+                "adjudications/v1",
+                "--citation-key-ledger",
+                "citation-keys.csv",
+                "--author-verification",
+                "author-verification.csv",
+            )
+        )
+    arguments.extend((merge_flag, "merge-only"))
+
+    with pytest.raises(SystemExit):
+        integration.main(arguments)
+
+
 def test_cli_requires_exactly_one_seal_mode() -> None:
     with pytest.raises(SystemExit):
         integration.main([])
