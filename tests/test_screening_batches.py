@@ -487,6 +487,40 @@ def release(
     ) == 0
 
 
+
+def release_with_phase_evidence(
+    snapshot: Path,
+    phase: str,
+    output: Path,
+    calibration_gate: tuple[Path, Path, Path] | None = None,
+) -> None:
+    if phase == "main":
+        evidence_manifest, source_archive = _coordinator_evidence_inputs(
+            output.parent, snapshot
+        )
+    else:
+        evidence_manifest, source_archive = _phase_evidence_inputs(
+            output.parent, snapshot, phase
+        )
+    arguments = {
+        "evidence_manifest": evidence_manifest,
+        "source_archive": source_archive,
+    }
+    if calibration_gate is not None:
+        (
+            calibration_release,
+            result_snapshot,
+            decision_snapshot,
+        ) = calibration_gate
+        arguments.update(
+            {
+                "calibration_reviewer_release_snapshot": calibration_release,
+                "calibration_result_snapshot": result_snapshot,
+                "calibration_decision_snapshot": decision_snapshot,
+            }
+        )
+    screening_batches.release_snapshot(snapshot, phase, output, **arguments)
+
 def _snapshot_files(snapshot: Path) -> list[Path]:
     return sorted(path for path in snapshot.rglob("*") if path.is_file())
 
@@ -1620,14 +1654,17 @@ def test_main_release_post_publish_validation_rejects_wrong_gate_binding(
 
     def build_with_wrong_binding(*args, **kwargs):
         artifacts = build(*args, **kwargs)
+        _, release_header = screening_batches._parse_release_manifest(
+            artifacts["release_manifest.csv"]
+        )
         rows = screening_batches._read_csv_bytes(
             artifacts["release_manifest.csv"],
             "release_manifest.csv",
-            RELEASE_MANIFEST_HEADER,
+            release_header,
         )
         rows[0]["calibration_decision_snapshot_sha256"] = "0" * 64
         artifacts["release_manifest.csv"] = screening_batches._csv_bytes(
-            RELEASE_MANIFEST_HEADER,
+            release_header,
             rows,
         )
         checksum_inputs = {
@@ -1654,7 +1691,7 @@ def test_main_release_post_publish_validation_rejects_wrong_gate_binding(
         screening_batches.SnapshotError,
         match="release manifest|binding",
     ):
-        release(coordinator, "main", output, gate)
+        release_with_phase_evidence(coordinator, "main", output, gate)
     assert not os.path.lexists(output)
 
 
@@ -3639,7 +3676,16 @@ def _write_decision_snapshot(
         output.parent / "calibration-reviewer-releases" / output.name
     )
     release_output.parent.mkdir()
-    release(coordinator, "calibration", release_output)
+    evidence_manifest, source_archive = _phase_evidence_inputs(
+        output.parent, coordinator, "calibration"
+    )
+    screening_batches.release_snapshot(
+        coordinator,
+        "calibration",
+        release_output,
+        evidence_manifest=evidence_manifest,
+        source_archive=source_archive,
+    )
 
     raw_root = output.parent / "raw-calibration-results" / output.name
     raw_root.mkdir(parents=True)
@@ -3766,7 +3812,7 @@ def test_main_release_requires_valid_immutable_calibration_decision(
     decision_root = tmp_path / "decisions"
     decision_root.mkdir()
     gate = _write_decision_snapshot(snapshot, decision_root / "v1")
-    release(snapshot, "main", release_root / "v2", gate)
+    release_with_phase_evidence(snapshot, "main", release_root / "v2", gate)
     released = [
         row
         for number in range(1, 7)
@@ -3882,7 +3928,7 @@ def test_main_release_rejects_same_byte_path_swap_and_rolls_back(
     release_root.mkdir()
     output = release_root / "v1"
     with pytest.raises(screening_batches.SnapshotError):
-        release(
+        release_with_phase_evidence(
             coordinator,
             "main",
             output,
@@ -4168,6 +4214,41 @@ def _phase_evidence_inputs(
             if row["phase"] == phase
         }
     )
+    for candidate_id in candidate_ids:
+        payload = f"attested evidence for {candidate_id}\n".encode("ascii")
+        relative = f"evidence/{candidate_id}.txt"
+        destination = archive / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(payload)
+        rows.append(
+            _evidence_packet_row(
+                candidate_id=candidate_id,
+                artifact_id="primary-v1",
+                local_filename=relative,
+                evidence_sha256=hashlib.sha256(payload).hexdigest(),
+            )
+        )
+    manifest.write_bytes(_evidence_packet_bytes(rows))
+    return manifest, archive
+
+
+def _coordinator_evidence_inputs(
+    root: Path,
+    coordinator: Path,
+) -> tuple[Path, Path]:
+    """Create one locally attested artifact for every coordinator candidate."""
+
+    archive = root / "coordinator-source-archive"
+    manifest = root / "coordinator-evidence-packet.csv"
+    candidate_ids = sorted(
+        {
+            row["candidate_id"]
+            for filename in screening_batches.PACKET_FILENAMES
+            for row in _read_csv(coordinator / "packets" / filename)
+        },
+        key=lambda value: value.encode("utf-8"),
+    )
+    rows: list[dict[str, str]] = []
     for candidate_id in candidate_ids:
         payload = f"attested evidence for {candidate_id}\n".encode("ascii")
         relative = f"evidence/{candidate_id}.txt"
