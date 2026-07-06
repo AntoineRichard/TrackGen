@@ -1,6 +1,56 @@
 \section{Reporting Practices in RL and Control}
 \label{sec:reporting-practices}
 
-This section audits what downstream reinforcement-learning and control papers disclose
-about course representations, generation procedures, sampling distributions,
-constraints, evaluation suites, and reproducibility artifacts.
+Reports should make four claims independently auditable: what a generator attempted,
+what a course is, what a simulator executed, and how a policy performed. A simulator
+import failure is not a generator result, and a policy result conditional on one suite
+is not a generator ranking. The feasibility, spectrum, and paired evaluation
+definitions are those of \cref{sec:metrics,sec:benchmark-protocol}; visualizations
+complement, but do not replace, the relevant counts, distributions, and intervals.
+
+\begin{table}[t]
+  \centering
+  \caption{Minimum reporting checklist. A record means a machine-readable artifact
+  plus a concise human-readable card; proposed artifacts are labelled as such.}
+  \label{tab:reporting-checklist}
+  \small
+  \begin{tabularx}{\linewidth}{@{}p{0.22\linewidth}Y Y@{}}
+    \toprule
+    Record & Minimum disclosure & Claim it supports \\
+    \midrule
+    Generator card & Identifier/version/hash; complete configuration and all seeds;
+    domain/vehicle envelope; raw attempts, failures, rejections, diagnostics, validity
+    definition, repair policy/before-after outcomes, runtime, compute, and peak memory &
+    Generation yield, cost, and constraints \\
+    Course card & Immutable identifier and raw/derived hashes; lineage, geometry,
+    semantics, units/frames, topology, descriptor vector, spectrum reference,
+    diversity-conditioning/selection, license, and provenance & Course-level
+    feasibility, distribution, and reuse \\
+    Simulator conformance record & Import/export version and outcome, unsupported
+    fields and failed imports, frame/unit mapping, collision/reset checks,
+    observation/action schema, $dt$, hardware, and adapter seed behavior & Executed
+    simulator semantics and interoperability \\
+    Policy evaluation record & Algorithm, version, and configuration; every training and
+    rollout seed; suite/simulator hashes; train/validation/test split and leakage
+    checks; outcome taxonomy, denominators, uncertainty, interactions, simulator
+    steps, wall-clock time, and memory & Conditional policy performance and cost \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+The attempt log retains every requested generation, including invalid outputs, timeouts,
+negative imports, and rejected candidates. State whether each statistic is over all
+attempts, raw valid courses, or repaired valid courses, with its denominator. Courses
+must not be selected after inspecting policy outcomes; for diversity conditioning or
+spectrum selection, record the candidate population, reference set, thresholds,
+removals, and resulting split membership. No cherry-picked tracks are presented as a
+distributional result.
+
+Reproducibility requires generator, validator, repair, descriptor, exporter, simulator,
+and policy versions; complete configurations; root and derived seeds; course and
+manifest hashes; units and coordinate frames; and hardware, parallelism, warm-up,
+timeout, and measurement policies. Archive the cards, conformance records, policy
+records, source or executable environment, licenses, and provenance. State whether each
+artifact is released, proposed, or unavailable, including access restrictions. This
+disclosure boundary prevents a planned benchmark or literature example from being
+reported as a reproducible implementation.

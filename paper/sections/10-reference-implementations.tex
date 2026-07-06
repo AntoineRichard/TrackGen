@@ -1,6 +1,97 @@
 \section{Open Reference Implementations}
 \label{sec:reference-implementations}
 
-Open implementations are mapped to the representation, generation, constraint, metric,
-and export portions of the taxonomy, with limitations stated for every uncovered or
-partially supported capability.
+An open reference release should support comparison across the taxonomy rather than
+declare one generator to be best. Small, inspectable implementations expose
+assumptions, failure modes, and engineering trade-offs; a single system risks making
+its representation and repair choices an implicit benchmark definition. The proposed
+release is therefore a common contract plus exemplars from distinct families, evaluated
+under \cref{sec:metrics,sec:benchmark-protocol}. It is a release target, not a claim
+about current code or that literature examples are interoperable software.
+
+\subsection{Canonical Representation and Pipeline}
+
+The portable intermediate representation (IR), here called \texttt{CourseSpec}, should
+be domain aware without being simulator owned. It contains centerlines, segments,
+gates, waypoints, and topology; widths, bounds, and clearance; elevation, local frames,
+and units; semantic obstacles and checkpoints; and the declared domain and
+vehicle/control envelope. Every raw or derived artifact carries provenance, format and
+generator versions, and a content hash. Domain-specific fields are explicit extension
+blocks, rather than silently approximating aerial gates as planar lanes or maritime
+navigability as a road boundary.
+
+The component path is
+\begin{center}
+\small
+\texttt{GeneratorAdapter $\rightarrow$ raw CourseSpec $\rightarrow$ validators
+$\rightarrow$ [declared repair/projection] $\rightarrow$ metrics/spectrum
+$\rightarrow$ exporters $\rightarrow$ simulator/RL adapters}.
+\end{center}
+Validators emit predicate-level outcomes and diagnostics. Repair or projection is
+optional and produces a separately hashed derived \texttt{CourseSpec}; it must never
+replace the raw artifact or conceal a failed attempt. Metrics and spectrum assignment
+use the declared valid population and reference normalization in
+\cref{sec:metrics,sec:benchmark-protocol}.
+
+\subsection{Generator and Interoperability Contract}
+
+Each adapter accepts complete configuration and a root seed; emits a raw
+\texttt{CourseSpec} or structured failure/diagnostic record; and states its deterministic
+reconstruction guarantee. It supports batch and stream generation, with derived seeds
+recorded. Repair is a visible downstream operation, never hidden in the API. A release
+records version and configuration hashes, attempt status, runtime/resource counters,
+and the raw artifact hash.
+
+The release should include constructive spline or gate-sequence, stochastic procedural,
+search or evolutionary, learned or environment-design, and repair/projection exemplars.
+The exact set depends on the screened taxonomy and engineering validation; the labels
+are selection criteria, not claims that every family is already released.
+
+Export begins with portable geometry and semantics. Mappings to OpenDRIVE, Lanelet2,
+SDF, USD, or simulator-native formats are offered only where semantically applicable.
+The tested support matrix must be published rather than assumed: import, collision
+geometry, reset, and identifier preservation are conformance outcomes. Each simulator
+adapter implements the required Gymnasium-style single-environment contract in
+\cref{sec:benchmark-protocol}; vectorized or tensor adapters are optional and declare
+ordering, seed, autoreset, and final-observation semantics.
+
+\subsection{Artifacts and Release Boundary}
+
+The proposed pipeline generates a $10{,}000$--$100{,}000$ attempted-course corpus for
+distribution estimation and training, preserving raw outcomes, manifests, course cards,
+licenses, and provenance. Immutable spectrum-spanning evaluation suites are released
+only after satisfying Section~\ref{sec:benchmark-protocol} admission criteria,
+including at least 100 feasible non-duplicate courses for the declared
+domain/configuration. A smaller shortfall is an audit result, not a suite substitute.
+
+\begin{table}[t]
+  \centering
+  \caption{Proposed open reference-release contract. This survey makes no current-code
+  implementation claim; planned releases and literature examples are distinct status
+  categories.}
+  \label{tab:reference-release-contract}
+  \small
+  \begin{tabularx}{\linewidth}{@{}p{0.25\linewidth}Y Y@{}}
+    \toprule
+    Surface & Required release contract & Optional extension or non-release status \\
+    \midrule
+    Representation & Versioned \texttt{CourseSpec}, units/frames, semantics,
+    domain/vehicle envelope, provenance, and hashes & Domain extensions and exporters
+    after semantic validation \\
+    Generation & Config-and-seed adapter, raw result or diagnostic, deterministic
+    reconstruction statement, batch/stream operation, and no hidden repair & Further
+    taxonomy exemplars after screening and engineering validation \\
+    Validation and metrics & Predicate outcomes, repair/projection lineage, and
+    Section~\ref{sec:metrics} descriptors/spectrum metadata & New validators,
+    policy-conditioned measures, and calibration studies \\
+    Interoperability & Portable geometry plus tested single-environment conformance &
+    Tested OpenDRIVE/Lanelet2/SDF/USD or simulator-native mappings; vector/tensor
+    adapters where applicable \\
+    Corpus and suites & Attempt manifests, cards, licenses, and suites admitted under
+    Section~\ref{sec:benchmark-protocol} & Larger corpora, domains, and longitudinal
+    suites \\
+    Status disclosure & Current code, planned reference release, and literature
+    examples labelled separately & No capability follows from a label, plan, or example \\
+    \bottomrule
+  \end{tabularx}
+\end{table}

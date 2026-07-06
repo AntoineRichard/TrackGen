@@ -1,5 +1,79 @@
 \section{Open Problems}
 \label{sec:open-problems}
 
-Open problems are organized by their scientific consequences and practical
-tractability, connecting each evidence gap to the comparisons or conclusions it limits.
+The following directions are benchmark questions with possible refutations, rather
+than generic future work. Their outcome measures should retain raw feasibility and
+repair lineage from \cref{sec:metrics}, and use the immutable-suite and paired-policy
+procedures in \cref{sec:benchmark-protocol}.
+
+\subsection{Representation and Feasibility}
+
+\paragraph{Cross-domain IR.}
+Can one \texttt{CourseSpec} core preserve ground contact/boundaries, aerial
+three-dimensional gate traversal/visibility, and maritime navigability without lossy
+simulator-specific fields? Test round-trip export/import across domain adapters against
+source predicates; systematic loss in any required predicate rejects the common core.
+
+\paragraph{Geometry versus dynamics.}
+How much do geometry- and topology-valid courses overstate feasibility under declared
+vehicle, actuator, and control envelopes? Compare geometric and dynamics/control-aware
+yield across matched spectrum strata. A bounded negligible gap supports a geometry-only
+approximation for that envelope; a structured gap refutes it.
+
+\paragraph{Difficulty calibration.}
+Can a difficulty spectrum be calibrated independently of policy class? Test rank
+stability of descriptor strata and policy-derived outcomes across reference agents,
+training seeds, and simulators. An ordering that reverses is policy or simulator
+conditioned, not a general difficulty scale.
+
+\subsection{Generation Objectives and Feedback}
+
+\paragraph{Representative versus adversarial generation.}
+Can a generator match a declared target distribution while exposing rare feasible
+failures? Evaluate held-out distribution distance, coverage, duplicate rate, and policy
+failure modes separately. Moving outside preregistered representative bounds while
+improving an adversarial objective rejects representative-generation claims.
+
+\paragraph{UED and curriculum feedback.}
+When generator and policy co-adapt, does the curriculum generalize beyond its feedback
+loop? Freeze generator snapshots and evaluate on common held-out generators, seeds, and
+simulators. Gains confined to the co-adapted distribution falsify transfer; raw attempt
+and repair logs show whether feedback merely selects easier valid cases.
+
+\paragraph{Repair bias.}
+Does repair shift descriptors or suppress failure modes enough to alter comparisons?
+Measure paired raw-to-repaired changes in predicates, spectrum membership, diversity,
+and policy outcomes. Changes outside preregistered tolerances require separate raw and
+repaired conclusions.
+
+\subsection{Transfer and Underrepresented Domains}
+
+\paragraph{Cross-generator and cross-simulator transfer.}
+Do policies trained on one generator family or simulator retain performance on portable
+courses from another, and does the IR predict transfer loss? Use a crossed
+generator-by-simulator matrix with common course identities. Material off-diagonal loss
+rejects a generalization claim and can isolate representation, adapter, and policy
+contributions.
+
+\paragraph{Maritime and 3D challenges.}
+Can benchmarks cover maritime routes and three-dimensional gates with sufficient
+semantic fidelity to test control rather than importer artifacts? Require navigable
+regions, current/wind, visibility, and ordered-gate predicates, then compare
+source-to-simulator conformance and policy failures. Missing maritime suites or failed
+3D gate/visibility round trips are measurable coverage gaps.
+
+\subsection{Learned Generators and Governance}
+
+\paragraph{Learned and language-model generators.}
+Can learned or language-model-driven generators satisfy constraints and produce an
+auditable decision trace under equal budgets? Test raw constraint yield,
+invalid-output taxonomy, reconstruction from prompt/configuration/seed, and explanation
+fidelity to the emitted \texttt{CourseSpec}. Unreconstructible outputs or untraceable
+constraint changes reject auditability claims even when selected courses are valid.
+
+\paragraph{Benchmark governance and drift.}
+Can a benchmark remain comparable as exporters, simulators, descriptors, and policies
+change? Version suites, cards, adapters, and reference normalizations; rerun a fixed
+conformance and policy panel after each change; and publish compatibility and
+deprecation records. A material unexplained shift demonstrates drift; reproducible
+replay and explicit version splits support long-term maintenance.
