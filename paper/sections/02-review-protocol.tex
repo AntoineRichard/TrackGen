@@ -6,14 +6,14 @@
 This survey asks: (i) how are robot courses represented and generated; (ii)
 which constraints, validity checks, and evaluation measures make generated courses
 usable for learning and control; and (iii) how can these choices be reported so
-that results can be compared and reproduced? The unit of technical interest is
-an output spatial layout that constrains traversal: a track or corridor, road,
-ordered gate or waypoint sequence, buoy course, or world layout. We consider
-such outputs for ground, aerial, and maritime robots, including simulated systems
-when their vehicle model and control task make course geometry consequential.
-Transferable adjacent methods are eligible when they contribute a representation,
-generator, constraint, metric, feasibility test, interface, or benchmark that
-maps to this unit without changing the contribution's essential claim.
+that results can be compared and reproduced? The unit of technical interest is a
+course layout that constrains traversal: a track or corridor, road, ordered gate
+or waypoint sequence, buoy course, or world layout. We consider such layouts for
+ground, aerial, and maritime robots, including simulated systems when vehicle
+model and control make course geometry consequential. A transferable adjacent
+method is eligible only when its source exposes a representation, constraint,
+metric, or interface that can be applied to a robot course without reinterpreting
+the source output or objective.
 
 The scope is deliberately broader than the historical state-of-the-art document,
 which focused on track- and road-like geometry generation. It also covers
@@ -26,14 +26,21 @@ because it operates on a track.
 
 \subsection{Discovery, Reports, and Works}
 
-Discovery combines a documented historical bootstrap with independent query
-streams for ground systems, aerial and maritime systems, geometry and
-reinforcement-learning citation expansion, and simulator, benchmark, and
-official-artifact interfaces. Queries span direct robot-racing terminology as
-well as procedural road generation, autonomous-vehicle testing, racing-game
-procedural content generation, and portable course formats. Discovery is used
-to assemble a candidate population, not as evidence for a technical claim;
-primary reports and authoritative artifacts are assessed during screening.
+Searches were executed on 2026-06-29, with full-text and version verification
+continuing through 2026-07-06. A prespecified matrix defined 25 query families,
+and the search log records 249 executed searches. The streams were: historical
+local bootstrap; independent blind ground search; blind aerial/maritime search;
+aware geometry/RL citation expansion; and simulator, benchmark, and
+official-artifact search. We searched the local corpus and mixed primary-web
+surfaces, including publisher, repository, standards, and project pages; we do
+not infer coverage of any unnamed bibliographic database. Exact-title and DOI
+follow-ups, together with forward and backward citation expansion, resolved
+candidate reports and related artifacts. The machine-readable query matrix and
+search log are provided as Supplementary Data \texttt{search\_queries.csv} and
+\texttt{search\_log.csv}.
+
+Discovery assembles a candidate population rather than evidence for a technical
+claim; primary reports and authoritative artifacts are assessed during screening.
 
 The screening unit is a \emph{report}: one identifiable article, preprint,
 thesis, technical report, standard, dataset, release, repository revision, or
@@ -50,11 +57,10 @@ Pass~1 is a binary, evidence-based retention screen. A report is retained only
 when the frozen packet establishes at least one of: a direct course-generation
 contribution; a fixed-course property that transfers to a survey or benchmark
 design decision; or contextual evidence from an inspected survey or systematic
-review. Excluded reports receive one controlled, source-specific exclusion
-criterion. Pass~2 is separate multi-label contribution coding, which assigns
-evidence tier and supported method, representation, interface, dataset,
-benchmark, validity-test, and metric labels. Thus a retained-report count is
-neither a method count nor a prevalence estimate.
+review. Pass~2 is separate multi-label contribution coding for evidence tier,
+method, representation, interface, dataset, benchmark, validity test, and
+metric. A retained-report count is therefore neither a method count nor a
+prevalence estimate.
 
 Fixed routes, static competition layouts, and contextual works are retained only
 when they provide citable transferable representation, interface, benchmark,
@@ -62,77 +68,48 @@ evaluation, or terminology context. They are not relabelled as generators.
 In particular, running, optimizing, or evaluating control on a fixed route does
 not establish a course-generation contribution.
 
-Material evidence is ranked as follows: inspected primary reports and
-authoritative companion artifacts support technical claims; version-identified
-official documentation may support artifact, interface, or benchmark claims;
-and directly inspected reviews may support only field, terminology, or
-literature-gap context. Each deciding item requires a canonical source URL,
-precise page, section, figure, algorithm, repository-path/line, or stable
-documentation anchor, plus the inspected version, retrieval date, and frozen
-artifact or archive locator. The packet also records the associated artifact
-identity where bytes are available. Titles, search snippets, and unverified
-abstract inferences are not material evidence; an abstract-only record cannot
-be included.
+Technical claims require inspected primary reports or authoritative companion
+artifacts. Version-identified official documentation may support artifact,
+interface, or benchmark claims; directly inspected reviews may support only
+field, terminology, or literature-gap context. Each deciding item records a
+version, retrieval date, canonical source, and precise page, section, figure,
+algorithm, repository path/line, or stable documentation anchor. Titles, search
+snippets, and unverified abstract inferences are not material evidence;
+abstract-only records cannot be included.
 
 \subsection{Independent Screening and Adjudication}
 
 Each report is rated independently twice against the same versioned,
-integrity-bound evidence packet. The calibration sample was screened before
-main screening under the final controlled status and criterion vocabulary; the
-main phase was released only after the calibration gate. Reviewers do not see
-the paired rating before both ratings are locked. Adjudication is append-only
-and is triggered cumulatively by A1, a status disagreement; A2, a criterion
-disagreement; A3, unequal normalized exclusion-reason text despite otherwise
-matching exclusions; or A4, a pre-existing unresolved conflict in the frozen
-record. These triggers distinguish disagreements about eligibility from
-differences in required explanatory text.
+frozen evidence set. A calibration sample was screened before the main phase,
+and paired ratings were concealed until locked. Adjudication reconciles status,
+criterion, reason-text, and unresolved-evidence conflicts against the frozen
+source record. The detailed adjudication taxonomy, provisional dispositions,
+and audit trail are reported in Supplementary Data.
 
 \begin{table}[t]
   \centering
-  \caption{Audited Pass~1 screening reliability and adjudication workload. These
-  are process statistics, not final corpus results.}
+  \caption{Observed inter-rater agreement in Pass~1 screening. These are process
+  statistics, not final corpus results.}
   \label{tab:screening-checkpoint}
   \small
   \begin{tabularx}{\linewidth}{@{}lY@{}}
     \toprule
-    Measure & Audited value \\
+    Measure & Value \\
     \midrule
     Candidate reports & 202 \\
-    Calibration status agreement & 27/30 (90.0\%) \\
-    Main status agreement & 170/172 (98.84\%) \\
-    Pooled status agreement & 197/202 (97.52\%) \\
+    Calibration observed status agreement & 27/30 (90.0\%) \\
+    Main observed status agreement & 170/172 (98.84\%) \\
+    Pooled observed status agreement & 197/202 (97.52\%) \\
     Pooled exact status--criterion agreement & 195/202 (96.53\%) \\
-    Cumulative adjudication triggers & 132; 124 were normalized reason-text
-    mismatches, rather than eligibility disagreements \\
     \bottomrule
   \end{tabularx}
 \end{table}
 
-\subsection{Current Non-Final Checkpoint}
-
-\Cref{tab:screening-checkpoint} summarizes the audited screening process for
-202 reports. The current adjudication workbook is explicitly non-final: 75
-reports are draft-included, 125 are draft-excluded, and two are held. Among
-the draft inclusions, 53 use \texttt{full\_text} evidence and 22 use
-\texttt{official\_documentation}; none uses \texttt{abstract\_only} evidence.
-The 132 cumulative triggers should not be read as 132 eligibility disagreements:
-most arose from the protocol's intentionally sensitive A3 comparison of
-normalized reason text.
-
-Two reports, \texttt{C0046} and \texttt{C0173}, remain held because their frozen
-PDFs were structurally unreadable. They require either a corrected, re-frozen
-packet followed by rerating or a governed corrupt-artifact disposition. They
-are therefore not silently treated as ordinary exclusions or inclusions.
-
-\subsection{Audit Trail and Limitations}
-
-The review preserves the query matrix and search ledger, report and evidence
-manifests, frozen reviewer releases, locked results, calibration decision,
-adjudication workbook, and versioned evidence locators. This audit trail makes
-the evidence basis and each later transformation inspectable, but it does not
-remove limitations: discovery may miss eligible work, access limitations can
-prevent assessment, versioned online artifacts can change, and automated
-structural checks cannot replace accountable scholarly verification. No final
-corpus, prevalence, or performance claim will be made until Pass~2 coding,
-citation-key projection, execution receipts, and accountable-author
-verification are complete.
+\Cref{tab:screening-checkpoint} reports observed inter-rater agreement, not
+chance-corrected reliability. These percentages may be inflated by the prevalence
+of a status and should not be interpreted as kappa-like estimates or as uncertainty
+quantification. Two reports with corrupted evidence artifacts remain held pending
+replacement or a governed disposition. Final corpus, prevalence, and performance
+claims are deferred until adjudication, Pass~2 coding, and accountable-author
+verification are complete. The complete evidence and audit materials are available
+in Supplementary Data.
