@@ -1,0 +1,9 @@
+field,n,agreement,kappa,passes
+survey_evidence_tier,18,0.888889,0.723077,true
+course_object,18,0.944444,0.935018,true
+representation_family,18,0.444444,0.372822,false
+generator_family,18,0.666667,0.597015,false
+generation_role,18,0.444444,0.138756,false
+validity_strategy,18,0.500000,0.325000,false
+code_status,18,0.833333,0.689655,true
+asset_status,18,0.944444,0.857143,true
