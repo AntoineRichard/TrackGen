@@ -84,6 +84,29 @@ EXPECTED_BATCH_SPECS = (
     _BatchSpec(6, "pass2-primary-06", "019f3952-5d94-7023-9bce-89acde705820", "gpt-5.6-terra", "high", "trackgen-pass2-primary-06.csv", "9c71b1d35b69d7fd35fdd18cbde434dc056fd066b9281626f8fb4930d91dc793", 12),
 )
 
+V2_EXPECTED_BATCH_SPECS = (
+    _BatchSpec(1, "pass2-primary-01", "019f3952-5cc3-7ac0-b45b-a85d09eb459c", MODEL, REASONING_EFFORT, "trackgen-pass2-v2-primary-01.csv", "de5977bf359b55859bf77c2a0e9a807ab1213428bc29a69e260f2a12c7085724", 13),
+    _BatchSpec(2, "pass2-primary-02", "019f3952-5cec-70e0-bf51-cf59f159aa53", MODEL, REASONING_EFFORT, "trackgen-pass2-v2-primary-02.csv", "48eb8c4f405ab2e0fc37100c974de6fcfffb2a66fab34bdddcb549a0b108c650", 13),
+    _BatchSpec(3, "pass2-primary-03", "019f3952-5dbf-7250-ad10-38411837bbda", MODEL, REASONING_EFFORT, "trackgen-pass2-v2-primary-03.csv", "ebd978a182d64ec08dc88a8503feecd2eabd02ccf75c918e59c58dc4dbbdeb2f", 13),
+    _BatchSpec(4, "pass2-primary-04", "019f3952-5d5b-7c23-9f4f-491aae449174", MODEL, REASONING_EFFORT, "trackgen-pass2-v2-primary-04.csv", "2e6faeb1acda510fab0aa05cf0e750f7d191c6ead376b141bf63a5df0a4e6a29", 12),
+    _BatchSpec(5, "pass2-primary-05", "019f3952-5d2d-74f1-a2ed-f5dfa8a58dea", MODEL, REASONING_EFFORT, "trackgen-pass2-v2-primary-05.csv", "d5ee12d5cb17f76709b0db837d14c9c59de1294dafde3f68397c21ec18c2dab7", 12),
+    _BatchSpec(6, "pass2-primary-06", "019f3952-5d94-7023-9bce-89acde705820", MODEL, REASONING_EFFORT, "trackgen-pass2-v2-primary-06.csv", "919ff91a683cce156782fdc670bb5aa6ae6ae1f3caa761efe8feca1bfdf72920", 12),
+)
+V2_BINDING_HEADER = ("binding", "bound_path", "bound_sha256", "purpose")
+NORMALIZATION_HEADER = ("metric", "count")
+V2_BINDINGS = (
+    ("draft_release_manifest", "paper/data/screening_work/v8/pass2_drafts/v1/release_manifest.csv", "84b38a2c5069779b6b79a12f053205d9a8495174d532f380420ba5f97f6ca678", "immutable draft release artifact set"),
+    ("draft_release_checksums", "paper/data/screening_work/v8/pass2_drafts/v1/SHA256SUMS", "c6a0550993ecb473321eabd5b6fcbc3428e41a4a598699ebd15ec11947de0203", "immutable draft release checksum set"),
+    ("primary_v1_snapshot", "paper/data/screening_work/v8/pass2_coding/primary/v1/manifest/checksums.csv", "ee7bafa35203956779d6be6ac2bb17f5c9c35969db31de68ad12a3919d2da876", "primary v1 snapshot artifact set"),
+    ("pilot_v1_codebook_v2", "paper/data/screening_work/v8/pass2_reliability/pilot-v1/CODEBOOK-v2.md", "2f39b955e455f618ef3104962f10e983a98b9ac25dfe8b340d62fd3673f1a4c4", "prospective pilot-v1 codebook v2"),
+)
+PRIMARY_V1_EVIDENCE = Path(
+    "paper/data/screening_work/v8/pass2_coding/primary/v1/coding/evidence.csv"
+)
+OUTPUT_BY_VERSION = {
+    "v1": Path("paper/data/screening_work/v8/pass2_coding/primary/v1"),
+    "v2": Path("paper/data/screening_work/v8/pass2_coding/primary/v2"),
+}
 
 def _fail(message: str) -> None:
     raise IntegrationError(message)
@@ -164,26 +187,104 @@ def _documentation() -> dict[str, bytes]:
 def _checksums(
     *,
     release: Path,
-    source_payloads: Mapping[int | str, bytes],
-    batch_payloads: Mapping[int | str, bytes],
+    source_payloads: Mapping[int, bytes],
+    batch_payloads: Mapping[int, bytes],
     evidence_payload: bytes,
     registry_payload: bytes,
     documents: Mapping[str, bytes],
-    batch_row_counts: Mapping[int | str, int],
+    specs: Sequence[_BatchSpec],
+    extra_artifacts: Mapping[str, tuple[str, bytes, int]] | None = None,
 ) -> bytes:
     rows = [
         {"artifact_type": "immutable_release", "path": "immutable-release/release_manifest.csv", "sha256": _sha256(_regular_bytes(release / "release_manifest.csv", label="release manifest")), "row_count": "NR"},
         {"artifact_type": "immutable_release", "path": "immutable-release/SHA256SUMS", "sha256": _sha256(_regular_bytes(release / "SHA256SUMS", label="release SHA256SUMS")), "row_count": "NR"},
         {"artifact_type": "coding_output", "path": "coding/evidence.csv", "sha256": _sha256(evidence_payload), "row_count": str(ROSTER_SIZE)},
-        {"artifact_type": "registry", "path": "execution_registry.csv", "sha256": _sha256(registry_payload), "row_count": str(len(EXPECTED_BATCH_SPECS))},
+        {"artifact_type": "registry", "path": "execution_registry.csv", "sha256": _sha256(registry_payload), "row_count": str(len(specs))},
     ]
-    for number, payload in source_payloads.items():
-        rows.append({"artifact_type": "input_batch", "path": f"input/trackgen-pass2-primary-{int(number):02d}.csv", "sha256": _sha256(payload), "row_count": str(batch_row_counts[number])})
-    for number, payload in batch_payloads.items():
-        rows.append({"artifact_type": "integrated_batch", "path": f"batches/pass2-primary-{int(number):02d}.csv", "sha256": _sha256(payload), "row_count": str(batch_row_counts[number])})
+    for spec in specs:
+        rows.append({"artifact_type": "input_batch", "path": f"input/{spec.filename}", "sha256": _sha256(source_payloads[spec.number]), "row_count": str(spec.row_count)})
+        rows.append({"artifact_type": "integrated_batch", "path": f"batches/pass2-primary-{spec.number:02d}.csv", "sha256": _sha256(batch_payloads[spec.number]), "row_count": str(spec.row_count)})
     for path, payload in documents.items():
         rows.append({"artifact_type": "documentation", "path": path, "sha256": _sha256(payload), "row_count": "NR"})
+    for artifact_type, (path, payload, row_count) in (extra_artifacts or {}).items():
+        rows.append({"artifact_type": artifact_type, "path": path, "sha256": _sha256(payload), "row_count": str(row_count)})
     return _csv_bytes(CHECKSUM_HEADER, sorted(rows, key=lambda row: (row["artifact_type"], row["path"])))
+
+
+def _v2_documents() -> dict[str, bytes]:
+    documents = _documentation()
+    prompt = documents["FROZEN-CODER-PROMPT.md"].decode("utf-8")
+    prompt += "\nThis v2 normalization applies the prospective `pilot-v1/CODEBOOK-v2.md` without changing the immutable draft release.\n"
+    limitations = """# Procedural Limitations
+
+This v2 snapshot is a same-six-primary-coder normalization of `primary/v1`, not independent or blind reliability. The coordinator-recorded role, agent identifier, model, and reasoning-effort metadata in `execution_registry.csv` is not provider-side immutable execution attestation.
+
+The fixed `/tmp/trackgen-pass2-v2-primary-XX.csv` locations are procedural same-user isolation paths, not durable provenance locations. Their supplied SHA-256 digests, copied batch digests, bindings to the immutable draft release and primary v1 snapshot, and the prospective pilot-v1 `CODEBOOK-v2.md` are recorded here.
+
+This remains non-final draft coding. It makes no prevalence, taxonomy, final count, or final projection claim. No final counts may be reported until fresh independent blind reliability is completed against the frozen v2 codebook. This snapshot does not alter the bound v1 artifacts.
+"""
+    readme = """# Pass-2 Primary Coding Snapshot v2
+
+This no-clobber snapshot integrates the six fixed v2 primary batches against the immutable `pass2_drafts/v1` release. `batches/` retains each supplied CSV byte-for-byte; `coding/evidence.csv` is their deterministic 75-row merge sorted by `cite_key`.
+
+The same six primary coders normalized the v1 coding under the prospective `pass2_reliability/pilot-v1/CODEBOOK-v2.md`. This is not independent or blind reliability. `bindings.csv` freezes the exact draft-release, primary-v1, and codebook artifacts used; `normalization_summary.csv` deterministically compares the v2 and primary-v1 evidence rows and cells.
+
+`execution_registry.csv` records coordinator-supplied coder metadata and source/output digests. `manifest/checksums.csv` records every integrated batch, generated artifact, documentation record, and immutable release binding. No final counts, prevalence, or taxonomy claims may be made until fresh blind reliability is completed.
+"""
+    return {
+        "README.md": readme.encode("utf-8"),
+        "FROZEN-CODER-PROMPT.md": prompt.encode("utf-8"),
+        "PROCEDURAL-LIMITATIONS.md": limitations.encode("utf-8"),
+    }
+
+
+def _v2_binding_payload(repository_root: Path) -> bytes:
+    rows = []
+    for binding, relative_path, digest, purpose in V2_BINDINGS:
+        payload = _regular_bytes(repository_root / relative_path, label=f"v2 binding {binding}")
+        if _sha256(payload) != digest:
+            _fail(f"v2 binding digest mismatch: {binding}")
+        rows.append(
+            {
+                "binding": binding,
+                "bound_path": relative_path,
+                "bound_sha256": digest,
+                "purpose": purpose,
+            }
+        )
+    return _csv_bytes(V2_BINDING_HEADER, rows)
+
+
+def _normalization_payload(repository_root: Path, evidence_rows: Sequence[dict[str, str]]) -> bytes:
+    _, v1_rows = _read_evidence(
+        repository_root / PRIMARY_V1_EVIDENCE, label="primary v1 evidence"
+    )
+    baseline = {row["cite_key"]: row for row in v1_rows}
+    current_keys = {row["cite_key"] for row in evidence_rows}
+    if len(v1_rows) != ROSTER_SIZE or len(baseline) != ROSTER_SIZE or current_keys != set(baseline):
+        _fail("primary v1 evidence roster mismatch")
+    changed_rows = 0
+    changed_cells = 0
+    for row in evidence_rows:
+        prior = baseline[row["cite_key"]]
+        differences = sum(row[field] != prior[field] for field in EVIDENCE_HEADER)
+        changed_rows += bool(differences)
+        changed_cells += differences
+    return _csv_bytes(
+        NORMALIZATION_HEADER,
+        (
+            {"metric": "changed_rows", "count": str(changed_rows)},
+            {"metric": "changed_fields", "count": str(changed_cells)},
+        ),
+    )
+
+
+def _specs_for_version(version: str) -> Sequence[_BatchSpec]:
+    if version == "v1":
+        return EXPECTED_BATCH_SPECS
+    if version == "v2":
+        return V2_EXPECTED_BATCH_SPECS
+    _fail(f"unsupported version: {version}")
 
 
 def integrate_primary_batches(
@@ -192,8 +293,10 @@ def integrate_primary_batches(
     release: Path,
     output: Path,
     input_root: Path = Path("/tmp"),
+    version: str = "v1",
 ) -> None:
     """Create one separate snapshot from the six fixed primary inputs."""
+    specs = _specs_for_version(version)
     if output.exists() or output.is_symlink():
         _fail("output snapshot must not already exist")
     if release.is_symlink() or not release.is_dir():
@@ -213,7 +316,7 @@ def integrate_primary_batches(
     source_payloads: dict[int, bytes] = {}
     batch_rows: dict[int, list[dict[str, str]]] = {}
     identities: set[tuple[int, int]] = set()
-    for spec in EXPECTED_BATCH_SPECS:
+    for spec in specs:
         source = input_root / spec.filename
         try:
             if source.is_symlink() or not source.is_file():
@@ -253,10 +356,18 @@ def integrate_primary_batches(
             "integrated_batch_filename": f"batches/pass2-primary-{spec.number:02d}.csv",
             "integrated_batch_sha256": _sha256(source_payloads[spec.number]),
         }
-        for spec in EXPECTED_BATCH_SPECS
+        for spec in specs
     ]
     registry_payload = _csv_bytes(REGISTRY_HEADER, registry_rows)
-    documents = _documentation()
+    documents = _documentation() if version == "v1" else _v2_documents()
+    extra_artifacts: dict[str, tuple[str, bytes, int]] = {}
+    if version == "v2":
+        bindings_payload = _v2_binding_payload(root)
+        normalization_payload = _normalization_payload(root, evidence_rows)
+        extra_artifacts = {
+            "bindings": ("bindings.csv", bindings_payload, len(V2_BINDINGS)),
+            "normalization": ("normalization_summary.csv", normalization_payload, 2),
+        }
     checksums_payload = _checksums(
         release=release_root,
         source_payloads=source_payloads,
@@ -264,33 +375,37 @@ def integrate_primary_batches(
         evidence_payload=evidence_payload,
         registry_payload=registry_payload,
         documents=documents,
-        batch_row_counts={spec.number: spec.row_count for spec in EXPECTED_BATCH_SPECS},
+        specs=specs,
+        extra_artifacts=extra_artifacts,
     )
 
     output.mkdir(parents=True)
     (output / "batches").mkdir()
     (output / "coding").mkdir()
     (output / "manifest").mkdir()
-    for spec in EXPECTED_BATCH_SPECS:
+    for spec in specs:
         (output / f"batches/pass2-primary-{spec.number:02d}.csv").write_bytes(source_payloads[spec.number])
     (output / "coding/evidence.csv").write_bytes(evidence_payload)
     (output / "execution_registry.csv").write_bytes(registry_payload)
     for path, payload in documents.items():
         (output / path).write_bytes(payload)
+    for _, (artifact_path, payload, _) in extra_artifacts.items():
+        (output / artifact_path).write_bytes(payload)
     (output / "manifest/checksums.csv").write_bytes(checksums_payload)
-
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--version", choices=("v1", "v2"), default="v1")
     parser.add_argument("--repository-root", type=Path, default=Path("."))
     parser.add_argument("--release", type=Path, default=Path("paper/data/screening_work/v8/pass2_drafts/v1"))
-    parser.add_argument("--output", type=Path, default=Path("paper/data/screening_work/v8/pass2_coding/primary/v1"))
+    parser.add_argument("--output", type=Path)
     arguments = parser.parse_args(argv)
     try:
         integrate_primary_batches(
             repository_root=arguments.repository_root,
             release=arguments.release,
-            output=arguments.output,
+            output=arguments.output or OUTPUT_BY_VERSION[arguments.version],
+            version=arguments.version,
         )
     except IntegrationError as exc:
         parser.error(str(exc))
