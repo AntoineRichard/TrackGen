@@ -72,19 +72,19 @@ guarantee.
 
 \subsection{Policy Evaluation}
 
-For course $c\in\mathcal{C}$, policy seed $p\in\mathcal{P}_c$, and rollout seed
-$r\in\mathcal{R}_{cp}$, let $S_{cpr}$ and $V_{cpr}$ be success and violation
-indicators. Aggregate rollout seeds within a policy seed and policy seeds within a
-course, for example,
+For a global policy/training seed set $p\in\mathcal{P}$, train each seed once and
+evaluate it on every course $c\in\mathcal{C}$; rollout seeds
+$r\in\mathcal{R}_{pc}$ are nested only within the $(p,c)$ cell. Let $S_{cpr}$ and
+$V_{cpr}$ be success and violation indicators. For example,
 \begin{equation}
   \overline{S}_{cp}=\frac{1}{|\mathcal{R}_{cp}|}\sum_{r\in\mathcal{R}_{cp}}S_{cpr},
-  \qquad \widehat{S}_c=\frac{1}{|\mathcal{P}_c|}\sum_{p\in\mathcal{P}_c}\overline{S}_{cp}.
+  \qquad \widehat{S}=\frac{1}{|\mathcal{C}||\mathcal{P}|}
+  \sum_{c\in\mathcal{C}}\sum_{p\in\mathcal{P}}\overline{S}_{cp}.
   \label{eq:policy-success-estimator}
 \end{equation}
-Define $\overline{V}_{cp}$ and $\widehat{V}_c$ analogously. The benchmark success
-and violation rates are $|\mathcal{C}|^{-1}\sum_{c\in\mathcal{C}}\widehat{S}_c$ and
-$|\mathcal{C}|^{-1}\sum_{c\in\mathcal{C}}\widehat{V}_c$: their denominators are,
-respectively, rollouts per policy seed, policy seeds per course, and courses in the immutable suite.
+Define $\overline{V}_{cp}$ and $\widehat{V}$ analogously. The estimand averages over
+the declared course and global training-seed populations; its denominators are
+rollouts per $(p,c)$ cell, global training seeds, and immutable-suite courses.
 
 Report time in seconds (lap time or time to termination), progress as a declared
 fraction in $[0,1]$ or distance in metres, position and angular tracking error in
@@ -97,18 +97,18 @@ tracking, and effort state whether failures are included, censored at the horizo
 reported only for successful runs.
 
 Evaluation is paired across common immutable course identifiers. For two policies,
-form paired course differences only after the rollout-then-policy aggregation above.
-The estimand spans the published course population and declared policy/training and
-rollout-seed populations. Use hierarchical paired resampling: resample common courses,
-then training/policy seeds within courses (or consistently shared seeds across methods),
-then rollout seeds within policy seeds, preserving every pairing. Report
-course-conditional and seed-sensitivity intervals, or a stated mixed-effects
-alternative; a course-only bootstrap is conditional on fixed seeds. Retain the failure
-steps, wall-clock time, and the number of courses observed, so that sample efficiency
-is not conflated with simulator throughput. Cross-generator transfer evaluates policies
-on held-out generators or configuration families; cross-simulator transfer evaluates a
-portable course and policy contract in a second declared simulator. Neither result is
-implied by in-domain success.
+form paired differences after rollout aggregation. Preserve method pairings with common
+course IDs, training-seed schedule or index, and rollout random streams where
+meaningful. Use hierarchical paired resampling: resample global training seeds as
+clusters across all sampled courses, resample courses while preserving common IDs, then
+resample rollout seeds within each $(p,c)$ cell. Report course sensitivity and global
+training-seed sensitivity. An unmatched design requires an appropriate crossed
+mixed-effects model rather than false pairing. Retain the failure taxonomy.
+Training cost should include environment interactions, simulator steps, wall-clock
+time, and courses observed, so sample efficiency is not conflated with throughput.
+Cross-generator transfer evaluates held-out generators or configuration families;
+cross-simulator transfer evaluates a portable course and policy contract in a second
+declared simulator. Neither result is implied by in-domain success.
 
 \begin{table}[t]
   \centering
