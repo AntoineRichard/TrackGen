@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import os
+import tempfile
 import hashlib
 import json
 import re
@@ -2960,6 +2962,73 @@ def seal_screening_projection(
     )
 
 
+def _remove_staged_merged_adjudications(stage_path: Path) -> None:
+    try:
+        os.unlink(stage_path)
+    except OSError as exc:
+        raise ScreeningIntegrationError(
+            f"{stage_path}: could not clean up staged adjudications"
+        ) from exc
+
+
+def _publish_merged_adjudications(output_path: Path, payload: bytes) -> None:
+    output_path = Path(output_path)
+    try:
+        descriptor, stage_name = tempfile.mkstemp(
+            prefix=f".{output_path.name}.",
+            suffix=".tmp",
+            dir=output_path.parent,
+        )
+    except OSError as exc:
+        raise ScreeningIntegrationError(
+            f"{output_path}: could not create staged adjudications"
+        ) from exc
+
+    stage_path = Path(stage_name)
+    try:
+        handle = os.fdopen(descriptor, "wb")
+    except OSError as exc:
+        try:
+            os.close(descriptor)
+        except OSError as close_exc:
+            _remove_staged_merged_adjudications(stage_path)
+            raise ScreeningIntegrationError(
+                f"{stage_path}: could not close staged adjudications"
+            ) from close_exc
+        _remove_staged_merged_adjudications(stage_path)
+        raise ScreeningIntegrationError(
+            f"{output_path}: could not write merged adjudications"
+        ) from exc
+
+    try:
+        with handle:
+            written = handle.write(payload)
+            if written != len(payload):
+                raise OSError("staged adjudication write was partial")
+            handle.flush()
+            os.fsync(handle.fileno())
+    except OSError as exc:
+        _remove_staged_merged_adjudications(stage_path)
+        raise ScreeningIntegrationError(
+            f"{output_path}: could not write merged adjudications"
+        ) from exc
+
+    try:
+        os.link(stage_path, output_path)
+    except FileExistsError as exc:
+        _remove_staged_merged_adjudications(stage_path)
+        raise ScreeningIntegrationError(
+            f"{output_path}: output already exists"
+        ) from exc
+    except OSError as exc:
+        _remove_staged_merged_adjudications(stage_path)
+        raise ScreeningIntegrationError(
+            f"{output_path}: could not publish merged adjudications"
+        ) from exc
+
+    _remove_staged_merged_adjudications(stage_path)
+
+
 def merge_adjudication_batches(
     coordinator_snapshot_dir: Path,
     calibration_reviewer_release_snapshot_dir: Path,
@@ -2979,6 +3048,11 @@ def merge_adjudication_batches(
         main_result_snapshot_dir,
     )
     rows: list[Row] = []
+    _call(
+        screening_results.reject_output_overlap,
+        Path(output_path),
+        (*_context_protected_paths(context), *(Path(path) for path in batch_paths)),
+    )
     seen_candidate_ids: set[str] = set()
     for batch_path in batch_paths:
         captured = _call(
@@ -3005,23 +3079,8 @@ def merge_adjudication_batches(
         ADJUDICATION_HEADER,
         _validate_adjudication_rows(rows, context),
     )
-    try:
-        with Path(output_path).open("xb") as handle:
-            handle.write(payload)
-    except FileExistsError as exc:
-        raise ScreeningIntegrationError(
-            f"{output_path}: output already exists"
-        ) from exc
-    except OSError as exc:
-        try:
-            Path(output_path).unlink()
-        except FileNotFoundError:
-            pass
-        except OSError:
-            pass
-        raise ScreeningIntegrationError(
-            f"{output_path}: could not write merged adjudications"
-        ) from exc
+
+    _publish_merged_adjudications(Path(output_path), payload)
 def _argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
 

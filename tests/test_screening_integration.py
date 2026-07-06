@@ -4314,6 +4314,117 @@ def test_merge_adjudications_failure_leaves_no_output(
     assert not output.exists()
 
 
+def test_merge_adjudications_rejects_output_alias_of_batch(
+    tmp_path: Path,
+) -> None:
+    case, rows = _trigger_case(tmp_path, legacy_contract=True)
+    batch = tmp_path / "batch.csv"
+    _write_csv(batch, integration.ADJUDICATION_HEADER, rows)
+
+    with pytest.raises(integration.ScreeningIntegrationError, match="overlap"):
+        _merge_adjudication_batches(case, [batch], batch)
+
+    assert batch.exists()
+
+
+def test_merge_adjudications_rejects_output_inside_sealed_context(
+    tmp_path: Path,
+) -> None:
+    case, rows = _trigger_case(tmp_path, legacy_contract=True)
+    batch = tmp_path / "batch.csv"
+    _write_csv(batch, integration.ADJUDICATION_HEADER, rows)
+    output = case.coordinator / "merged.csv"
+
+    with pytest.raises(integration.ScreeningIntegrationError, match="overlap"):
+        _merge_adjudication_batches(case, [batch], output)
+
+    assert not output.exists()
+
+
+def test_merge_adjudications_removes_stage_after_partial_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case, rows = _trigger_case(tmp_path, legacy_contract=True)
+    batch = tmp_path / "batch.csv"
+    _write_csv(batch, integration.ADJUDICATION_HEADER, rows)
+    output = tmp_path / "merged.csv"
+
+    class PartialWriter:
+        def __init__(self, descriptor: int) -> None:
+            self.descriptor = descriptor
+
+        def __enter__(self) -> "PartialWriter":
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            os.close(self.descriptor)
+
+        def write(self, payload: bytes) -> int:
+            os.write(self.descriptor, payload[:1])
+            raise OSError("injected partial write")
+
+    monkeypatch.setattr(
+        os,
+        "fdopen",
+        lambda descriptor, mode: PartialWriter(descriptor),
+    )
+
+    with pytest.raises(integration.ScreeningIntegrationError, match="write"):
+        _merge_adjudication_batches(case, [batch], output)
+
+    assert not output.exists()
+    assert not list(tmp_path.glob(".merged.csv.*.tmp"))
+
+
+def test_merge_adjudications_removes_stage_after_publish_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case, rows = _trigger_case(tmp_path, legacy_contract=True)
+    batch = tmp_path / "batch.csv"
+    _write_csv(batch, integration.ADJUDICATION_HEADER, rows)
+    output = tmp_path / "merged.csv"
+
+    def fail_link(_: str, __: str) -> None:
+        raise OSError("injected publish failure")
+
+    monkeypatch.setattr(os, "link", fail_link)
+
+    with pytest.raises(integration.ScreeningIntegrationError, match="publish"):
+        _merge_adjudication_batches(case, [batch], output)
+
+    assert not output.exists()
+    assert not list(tmp_path.glob(".merged.csv.*.tmp"))
+
+
+def test_merge_adjudications_surfaces_stage_cleanup_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case, rows = _trigger_case(tmp_path, legacy_contract=True)
+    batch = tmp_path / "batch.csv"
+    _write_csv(batch, integration.ADJUDICATION_HEADER, rows)
+    output = tmp_path / "merged.csv"
+    real_unlink = os.unlink
+
+    def fail_link(_: str, __: str) -> None:
+        raise OSError("injected publish failure")
+
+    def fail_stage_cleanup(path: str) -> None:
+        if Path(path).name.startswith(".merged.csv."):
+            raise OSError("injected cleanup failure")
+        real_unlink(path)
+
+    monkeypatch.setattr(os, "link", fail_link)
+    monkeypatch.setattr(os, "unlink", fail_stage_cleanup)
+
+    with pytest.raises(integration.ScreeningIntegrationError, match="clean up"):
+        _merge_adjudication_batches(case, [batch], output)
+
+    assert not output.exists()
+
+
 @pytest.mark.parametrize(
     ("mode", "required_flag"),
     [
