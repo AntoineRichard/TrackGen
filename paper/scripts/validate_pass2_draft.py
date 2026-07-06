@@ -292,7 +292,9 @@ def _validate_evidence_rows(rows: list[dict[str, str]], taxonomy: dict[str, list
         if not any(values):
             continue
         tier = row["survey_evidence_tier"]
-        tier_labels = [label.strip() for label in tier.split(";") if label.strip()]
+        tier_labels = [label.strip() for label in tier.split(";")]
+        if any(not label for label in tier_labels):
+            _fail("controlled fields must not contain empty separator elements")
         if "NR" in tier_labels and tier_labels != ["NR"]:
             _fail("controlled fields may use NR only as a sole NR sentinel")
         if tier != "NR" and tier not in taxonomy["survey_evidence_tier"]:
@@ -301,7 +303,9 @@ def _validate_evidence_rows(rows: list[dict[str, str]], taxonomy: dict[str, list
             value = row[field]
             if not value:
                 continue
-            labels = [label.strip() for label in value.split(";") if label.strip()]
+            labels = [label.strip() for label in value.split(";")]
+            if any(not label for label in labels):
+                _fail("controlled fields must not contain empty separator elements")
             if "NR" in labels:
                 if labels != ["NR"]:
                     _fail("controlled fields may use NR only as a sole NR sentinel")

@@ -280,6 +280,24 @@ def test_coding_output_rejects_mixed_nr_controlled_evidence_value(tmp_path: Path
         validate_coding_output(repository_root=ROOT, release=release, coding_output=output)
 
 
+@pytest.mark.parametrize("value", ["NR;", ";NR", "NR;;", "ground;;aerial"])
+def test_coding_output_rejects_empty_controlled_field_separator_elements(
+    tmp_path: Path, value: str
+) -> None:
+    release = prepare_test_release(tmp_path)
+    output = tmp_path / "coding"
+    output.mkdir()
+    evidence = output / "evidence.csv"
+    shutil.copyfile(release / "evidence_template.csv", evidence)
+    rows = read_csv(evidence)
+    rows[0]["survey_evidence_tier"] = "NR"
+    rows[0]["domain"] = value
+    write_csv(evidence, rows)
+
+    with pytest.raises(DraftValidationError, match="empty separator"):
+        validate_coding_output(repository_root=ROOT, release=release, coding_output=output)
+
+
 def test_coding_output_rejects_reference_outside_draft_roster(tmp_path: Path) -> None:
     release = prepare_test_release(tmp_path)
     output = tmp_path / "coding"
