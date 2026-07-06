@@ -25,6 +25,13 @@ supporting training, not a universal adequacy claim. Reports should give the att
 count, feasible count, raw and repaired yields, independent generator seeds, and
 uncertainty as defined in \cref{sec:metrics}.
 
+At the worst-case yield $p=0.5$, 95\% binomial half-width is about $1.0$ percentage
+point for 10,000 attempts and $0.31$ points for 100,000. The range is therefore an
+initial adaptive budget, not a universal mandate. Before sampling, pre-register
+stopping criteria for yield-interval tolerance, descriptor quantile and coverage
+stability, and a minimum valid count in every fixed spectrum stratum. Stop early only
+when all criteria are met. If 100,000 attempts leave any criterion unmet, report
+non-convergence or the shortfall rather than claiming comparable distributions.
 \subsection{Course Construction and Splits}
 
 The construction order is fixed. First, generate raw attempts and evaluate feasibility.
@@ -35,6 +42,12 @@ generator failure rates. Any repair budget, feasibility predicate, descriptor co
 normalization reference set, and selection algorithm belongs in the versioned suite
 manifest.
 
+For generator comparison, publish and freeze the reference population, descriptor
+transform, bin edges, absolute admissible bounds, coverage floor, and fixed-stratum
+occupancy before evaluation. Build the reference from a pooled pilot plus curated
+domain anchors independent of any single generator. Generator-relative quantiles are
+diagnostics only, not comparative coverage evidence.
+
 An immutable held-out evaluation suite may admit a declared domain/configuration only
 after its candidate pool contains at least 100 feasible, non-duplicate courses spanning
 the declared continuous descriptor spectrum and diversity constraints, such as a
@@ -43,6 +56,11 @@ minimum separation or coverage target. These courses are never named ``easy,''
 quantile memberships, normalization domain, and feasibility evidence. A shortfall is a
 generation-audit result: it reports the candidate population and failure causes, but
 does not authorize a smaller immutable released suite for that domain/configuration.
+
+The 100-course threshold is a release floor for fixed-stratum spectrum coverage, not
+a precision claim: its worst-case binary 95\% half-width is about 10 percentage
+points. Expand the suite until preregistered precision or power is met. An infeasible
+configuration remains audit-only; it cannot enter a smaller released suite.
 
 Training, validation, and test partitions must separate root seeds and configuration
 families. A configuration family includes all parameterizations that share a common
@@ -79,9 +97,13 @@ tracking, and effort state whether failures are included, censored at the horizo
 reported only for successful runs.
 
 Evaluation is paired across common immutable course identifiers. For two policies,
-form paired course differences only after the rollout-then-policy aggregation above;
-bootstrap courses for intervals and retain course-level distributions, quantiles, and
-the failure taxonomy. Training cost should include environment interactions, simulator
+form paired course differences only after the rollout-then-policy aggregation above.
+The estimand spans the published course population and declared policy/training and
+rollout-seed populations. Use hierarchical paired resampling: resample common courses,
+then training/policy seeds within courses (or consistently shared seeds across methods),
+then rollout seeds within policy seeds, preserving every pairing. Report
+course-conditional and seed-sensitivity intervals, or a stated mixed-effects
+alternative; a course-only bootstrap is conditional on fixed seeds. Retain the failure
 steps, wall-clock time, and the number of courses observed, so that sample efficiency
 is not conflated with simulator throughput. Cross-generator transfer evaluates policies
 on held-out generators or configuration families; cross-simulator transfer evaluates a
@@ -134,12 +156,20 @@ mistaking an adapter or asset problem for a control result.
 
 \subsection{Interoperability Targets}
 
-The reference implementation target is a portable course representation plus adapters
-to mainstream reinforcement-learning interfaces, including a Gymnasium-style reset/step
-contract and vectorized access where supported. Adapters should preserve immutable
-course identifiers, seed provenance, units, frames, collision geometry, reset state,
-observation and action spaces, reward definition, termination and truncation rules,
-and information fields. A declared backend should also specify its vectorized and
-headless execution behavior, including reset and throughput semantics. The exact
-adapter set, file formats, simulator coverage, and interface behavior are
+The required single-environment contract is
+\texttt{reset(seed, course\_id) -> (obs, info)} and
+\texttt{step(action)} $\to$ \texttt{(obs, reward, terminated,}\
+\texttt{truncated, info)}. Its schema
+manifest declares observation/action keys, shapes, dtypes, bounds, units, and frames;
+fixed $dt$ and action hold; and termination, truncation, and failure codes.
+
+Use named independent seed streams and reconstruct each course deterministically from
+its content hash. Declare state and sensor replay tolerances for each field and target
+platform. The required release contract is this single-environment reset/step,
+content-hash, and seed contract with headless execution.
+
+Vectorized and tensor adapters are optional. When offered, they declare stable
+environment ordering, per-environment seeds and course identifiers, autoreset
+semantics, and final-observation handling; report their headless throughput. The exact
+adapter set, file formats, simulator coverage, and optional interface behavior remain
 implementation targets for a future release, not evidence of a released capability.
