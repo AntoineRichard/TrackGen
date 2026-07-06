@@ -221,3 +221,22 @@ def test_normalization_rejects_nonexact_audit_coverage(tmp_path: Path) -> None:
 
     with pytest.raises(SystemExit, match="2"):
         normalize(paths)
+
+
+def test_normalization_rejects_crlf_audit_csv(tmp_path: Path) -> None:
+    paths = build_inputs(tmp_path)
+    audit_path = paths["audits"] / "audits.csv"
+    audit_path.write_bytes(audit_path.read_bytes().replace(b"\n", b"\r\n"))
+
+    from paper.scripts.normalize_main_evidence_audits import (
+        NormalizationError,
+        normalize as normalize_rows,
+    )
+
+    with pytest.raises(NormalizationError, match="must use LF line endings"):
+        normalize_rows(
+            candidates_path=paths["candidates"],
+            audits_dir=paths["audits"],
+            v7_manifest_path=paths["v7"],
+            source_archive=paths["archive"],
+        )

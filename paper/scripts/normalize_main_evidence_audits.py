@@ -79,11 +79,19 @@ class NormalizationError(ValueError):
     """The frozen main-evidence inputs cannot be normalized safely."""
 
 
-def _read_csv(path: Path, header: tuple[str, ...], *, label: str) -> list[dict[str, str]]:
+def _read_csv(
+    path: Path,
+    header: tuple[str, ...],
+    *,
+    label: str,
+    require_lf: bool = False,
+) -> list[dict[str, str]]:
     try:
         payload = path.read_bytes()
     except OSError as exc:
         raise NormalizationError(f"{label}: unable to read {path}") from exc
+    if require_lf and b"\r" in payload:
+        raise NormalizationError(f"{label}: must use LF line endings")
     try:
         text = payload.decode("utf-8")
     except UnicodeDecodeError as exc:
@@ -140,7 +148,14 @@ def _audit_rows(audits_dir: Path, candidate_ids: set[str]) -> dict[str, dict[str
         raise NormalizationError("main evidence audits: no CSV files found")
     rows: list[dict[str, str]] = []
     for path in paths:
-        rows.extend(_read_csv(path, AUDIT_HEADER, label=f"audit {path.name}"))
+        rows.extend(
+            _read_csv(
+                path,
+                AUDIT_HEADER,
+                label=f"audit {path.name}",
+                require_lf=True,
+            )
+        )
     if len(rows) != CANDIDATE_COUNT:
         raise NormalizationError(
             f"main evidence audits: expected exactly {CANDIDATE_COUNT} audit rows, found {len(rows)}"
