@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+import paper.scripts.merge_main_evidence_manifests as merge_module
 from paper.scripts.merge_main_evidence_manifests import (
     ACQUISITION_QUEUE_HEADER,
     C0122_ARTIFACT_SHA256,
@@ -19,14 +20,12 @@ from paper.scripts.prepare_screening_batches import (
     parse_evidence_packet_manifest,
 )
 
-
 def write_csv(path: Path, header: tuple[str, ...], rows: list[dict[str, str]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=header, lineterminator="\n")
         writer.writeheader()
         writer.writerows(rows)
-
 
 def candidate_rows() -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
@@ -63,7 +62,6 @@ def candidate_rows() -> list[dict[str, str]]:
         rows.append(row)
     return rows
 
-
 def provisional_row(candidate_id: str) -> dict[str, str]:
     return {
         "candidate_id": candidate_id,
@@ -86,7 +84,6 @@ def provisional_row(candidate_id: str) -> dict[str, str]:
         ),
     }
 
-
 def byte_row(candidate_id: str, payload: bytes, *, filename: str, access: str) -> dict[str, str]:
     return {
         "candidate_id": candidate_id,
@@ -103,7 +100,6 @@ def byte_row(candidate_id: str, payload: bytes, *, filename: str, access: str) -
         "retrieval_notes": "Fixture bytes bind this candidate to the primary artifact.",
     }
 
-
 def queue_row(candidate: dict[str, str]) -> dict[str, str]:
     return {
         "candidate_id": candidate["candidate_id"],
@@ -114,7 +110,6 @@ def queue_row(candidate: dict[str, str]) -> dict[str, str]:
         "priority": "high",
         "limitation_note": "Fixture has no archived primary artifact.",
     }
-
 
 def build_inputs(tmp_path: Path) -> dict[str, Path]:
     candidates = candidate_rows()
@@ -175,7 +170,6 @@ def build_inputs(tmp_path: Path) -> dict[str, Path]:
         "supplied_summary": tmp_path / "output" / "supplied_summary.md",
     }
 
-
 def run_merge(paths: dict[str, Path]) -> None:
     merge(
         candidates_path=paths["candidates"],
@@ -193,6 +187,23 @@ def run_merge(paths: dict[str, Path]) -> None:
         report_output_path=paths["report"],
     )
 
+def output_paths(paths: dict[str, Path]) -> tuple[Path, ...]:
+    return (
+        paths["supplied_manifest"],
+        paths["supplied_summary"],
+        paths["manifest"],
+        paths["remaining"],
+        paths["report"],
+    )
+
+def preexisting_output_bytes(paths: dict[str, Path]) -> dict[Path, bytes]:
+    expected: dict[Path, bytes] = {}
+    for number, path in enumerate(output_paths(paths), start=1):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = f"previous output {number}\n".encode("ascii")
+        path.write_bytes(payload)
+        expected[path] = payload
+    return expected
 
 def test_merge_produces_parser_valid_202_row_manifest_and_exact_queue_complement(
     tmp_path: Path,
@@ -223,6 +234,107 @@ def test_merge_produces_parser_valid_202_row_manifest_and_exact_queue_complement
         row["candidate_id"] for row in manifest if row["evidence_sha256"] == "NR"
     }
 
+def test_merge_rejects_output_path_that_aliases_direct_input(tmp_path: Path) -> None:
+    paths = build_inputs(tmp_path)
+    original_draft = paths["draft"].read_bytes()
+    paths["manifest"] = paths["draft"]
+
+    with pytest.raises(MergeError, match="must not alias protected path"):
+        run_merge(paths)
+
+    assert paths["draft"].read_bytes() == original_draft
+
+def test_merge_rejects_output_inside_source_archive_root(tmp_path: Path) -> None:
+    paths = build_inputs(tmp_path)
+    paths["manifest"] = paths["v7"].parent / "provided" / "published.csv"
+
+    with pytest.raises(MergeError, match="must not alias protected path"):
+        run_merge(paths)
+
+def test_merge_rejects_output_symlink_that_aliases_input(tmp_path: Path) -> None:
+    paths = build_inputs(tmp_path)
+    original_draft = paths["draft"].read_bytes()
+    paths["manifest"].parent.mkdir(parents=True)
+    paths["manifest"].symlink_to(paths["draft"])
+
+    with pytest.raises(MergeError, match="must not alias protected path"):
+        run_merge(paths)
+
+    assert paths["draft"].read_bytes() == original_draft
+
+def test_merge_rejects_duplicate_resolved_output_path(tmp_path: Path) -> None:
+    paths = build_inputs(tmp_path)
+    paths["remaining"] = paths["manifest"]
+
+    with pytest.raises(MergeError, match="output paths must be distinct"):
+        run_merge(paths)
+
+def test_late_staging_failure_preserves_all_existing_outputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = build_inputs(tmp_path)
+    original_outputs = preexisting_output_bytes(paths)
+    real_stage = merge_module._write_staged_payload
+    write_calls = 0
+
+    def fail_later_stage(path: Path, payload: bytes) -> None:
+        nonlocal write_calls
+        write_calls += 1
+        if write_calls == 4:
+            raise OSError("injected later staged-write failure")
+        real_stage(path, payload)
+
+    monkeypatch.setattr(merge_module, "_write_staged_payload", fail_later_stage)
+
+    with pytest.raises(MergeError, match="unable to stage output payloads"):
+        run_merge(paths)
+
+    assert {path: path.read_bytes() for path in output_paths(paths)} == original_outputs
+
+def test_staging_directory_fsync_failure_preserves_outputs_and_cleans_staging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = build_inputs(tmp_path)
+    original_outputs = preexisting_output_bytes(paths)
+    real_fsync_directory = merge_module._fsync_directory
+
+    def fail_staging_directory_fsync(path: Path) -> None:
+        if path.name.startswith(".merge-main-evidence."):
+            raise OSError("injected staging-directory fsync failure")
+        real_fsync_directory(path)
+
+    monkeypatch.setattr(
+        merge_module, "_fsync_directory", fail_staging_directory_fsync
+    )
+
+    with pytest.raises(MergeError, match="unable to stage output payloads"):
+        run_merge(paths)
+
+    assert {path: path.read_bytes() for path in output_paths(paths)} == original_outputs
+    for output_path in output_paths(paths):
+        assert not list(output_path.parent.glob(".merge-main-evidence.*.tmp"))
+
+def test_late_publication_failure_rolls_back_existing_outputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = build_inputs(tmp_path)
+    original_outputs = preexisting_output_bytes(paths)
+    real_replace = merge_module.os.replace
+    replace_calls = 0
+
+    def fail_later_replace(source: Path, destination: Path) -> None:
+        nonlocal replace_calls
+        replace_calls += 1
+        if replace_calls == 4:
+            raise OSError("injected later publication failure")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(merge_module.os, "replace", fail_later_replace)
+
+    with pytest.raises(MergeError, match="unable to publish staged output payloads"):
+        run_merge(paths)
+
+    assert {path: path.read_bytes() for path in output_paths(paths)} == original_outputs
 
 def test_merge_rejects_duplicate_overlay_candidate_id(tmp_path: Path) -> None:
     paths = build_inputs(tmp_path)
@@ -232,7 +344,6 @@ def test_merge_rejects_duplicate_overlay_candidate_id(tmp_path: Path) -> None:
 
     with pytest.raises(MergeError, match="duplicate candidate_id"):
         run_merge(paths)
-
 
 def test_merge_rejects_cross_overlay_candidate_id_collision(tmp_path: Path) -> None:
     paths = build_inputs(tmp_path)
@@ -246,7 +357,6 @@ def test_merge_rejects_cross_overlay_candidate_id_collision(tmp_path: Path) -> N
     with pytest.raises(MergeError, match="overlays: duplicate candidate_id 'C0002'"):
         run_merge(paths)
 
-
 def test_merge_rejects_unknown_overlay_candidate_id(tmp_path: Path) -> None:
     paths = build_inputs(tmp_path)
     with paths["public"].open(encoding="utf-8", newline="") as handle:
@@ -257,14 +367,12 @@ def test_merge_rejects_unknown_overlay_candidate_id(tmp_path: Path) -> None:
     with pytest.raises(MergeError, match="unknown candidate_id"):
         run_merge(paths)
 
-
 def test_merge_rejects_hash_mismatched_v7_copy(tmp_path: Path) -> None:
     paths = build_inputs(tmp_path)
     (paths["v7"] / "C0001" / "trusted.pdf").write_bytes(b"tampered v7 bytes")
 
     with pytest.raises(MergeError, match="SHA-256 mismatch"):
         run_merge(paths)
-
 
 def test_merge_refuses_mismatched_existing_destination(tmp_path: Path) -> None:
     paths = build_inputs(tmp_path)
@@ -273,7 +381,6 @@ def test_merge_refuses_mismatched_existing_destination(tmp_path: Path) -> None:
 
     with pytest.raises(MergeError, match="refusing overwrite"):
         run_merge(paths)
-
 
 def test_merge_binds_supplied_c0122_with_declared_hash_and_provenance(tmp_path: Path) -> None:
     paths = build_inputs(tmp_path)
@@ -290,7 +397,6 @@ def test_merge_binds_supplied_c0122_with_declared_hash_and_provenance(tmp_path: 
     assert "user supplied" in supplied["retrieval_notes"].casefold()
     assert hashlib.sha256((paths["v8"] / C0122_LOCAL_FILENAME).read_bytes()).hexdigest() == C0122_ARTIFACT_SHA256
     assert "does not grant redistribution rights" in paths["supplied_summary"].read_text(encoding="utf-8")
-
 
 def test_merge_rejects_overlay_that_does_not_replace_a_provisional_draft_row(
     tmp_path: Path,

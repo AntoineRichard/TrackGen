@@ -5,7 +5,9 @@ import csv
 import hashlib
 import io
 import os
+import shutil
 import subprocess
+import tempfile
 import sys
 from collections import Counter
 from pathlib import Path, PurePosixPath
@@ -395,9 +397,149 @@ def _supplied_summary() -> str:
     )
 
 
-def _write_owned(path: Path, payload: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(payload)
+def _resolved_path(path: Path, *, label: str) -> Path:
+    try:
+        return Path(path).resolve(strict=False)
+    except (OSError, RuntimeError) as exc:
+        raise MergeError(f"{label}: unable to resolve path {path}") from exc
+
+
+def _paths_alias(left: Path, right: Path) -> bool:
+    try:
+        if left.exists() and right.exists() and os.path.samefile(left, right):
+            return True
+    except OSError:
+        pass
+    return _resolved_path(left, label="path") == _resolved_path(right, label="path")
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _validate_output_paths(
+    *,
+    output_paths: tuple[Path, ...],
+    input_paths: tuple[Path, ...],
+    source_archive_roots: tuple[Path, ...],
+) -> None:
+    resolved_roots = tuple(
+        _resolved_path(root, label="source archive") for root in source_archive_roots
+    )
+    for index, output in enumerate(output_paths):
+        resolved_output = _resolved_path(output, label="output")
+        if any(_paths_alias(output, other) for other in output_paths[:index]):
+            raise MergeError(f"output paths must be distinct; duplicate {output}")
+        if any(_paths_alias(output, input_path) for input_path in input_paths):
+            raise MergeError(f"output {output} must not alias protected path")
+        if any(_is_within(resolved_output, root) for root in resolved_roots):
+            raise MergeError(f"output {output} must not alias protected path")
+
+
+def _write_staged_payload(path: Path, payload: bytes) -> None:
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        view = memoryview(payload)
+        while view:
+            written = os.write(descriptor, view)
+            if written <= 0:
+                raise OSError("staged output write made no progress")
+            view = view[written:]
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(
+        path,
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0),
+    )
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _publish_output_payloads(
+    output_payloads: tuple[tuple[Path, bytes], ...],
+) -> None:
+    staging_dirs: dict[Path, Path] = {}
+    staged: list[tuple[Path, Path]] = []
+    backups: dict[Path, Path] = {}
+    original_outputs: dict[Path, bytes | None] = {}
+    try:
+        for destination, _ in output_payloads:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            original_outputs[destination] = (
+                destination.read_bytes() if destination.exists() else None
+            )
+        for index, (destination, payload) in enumerate(output_payloads, start=1):
+            staging_dir = staging_dirs.get(destination.parent)
+            if staging_dir is None:
+                staging_dir = Path(
+                    tempfile.mkdtemp(
+                        prefix=".merge-main-evidence.",
+                        suffix=".tmp",
+                        dir=destination.parent,
+                    )
+                )
+                staging_dirs[destination.parent] = staging_dir
+            staged_path = staging_dir / f"output-{index:02d}"
+            _write_staged_payload(staged_path, payload)
+            staged.append((destination, staged_path))
+            original = original_outputs[destination]
+            if original is not None:
+                backup_path = staging_dir / f"backup-{index:02d}"
+                _write_staged_payload(backup_path, original)
+                backups[destination] = backup_path
+        for staging_dir in staging_dirs.values():
+            _fsync_directory(staging_dir)
+    except (OSError, RuntimeError) as exc:
+        for staging_dir in staging_dirs.values():
+            shutil.rmtree(staging_dir, ignore_errors=True)
+        raise MergeError("unable to stage output payloads") from exc
+
+    replaced: list[Path] = []
+    try:
+        for destination, staged_path in staged:
+            os.replace(staged_path, destination)
+            replaced.append(destination)
+        for parent in staging_dirs:
+            _fsync_directory(parent)
+    except OSError as exc:
+        rollback_errors: list[str] = []
+        for destination in reversed(replaced):
+            try:
+                backup_path = backups.get(destination)
+                if backup_path is None:
+                    destination.unlink(missing_ok=True)
+                else:
+                    os.replace(backup_path, destination)
+            except OSError as rollback_error:
+                rollback_errors.append(
+                    f"{destination}: {type(rollback_error).__name__}: {rollback_error}"
+                )
+        for parent in staging_dirs:
+            try:
+                _fsync_directory(parent)
+            except OSError as rollback_error:
+                rollback_errors.append(
+                    f"{parent}: {type(rollback_error).__name__}: {rollback_error}"
+                )
+        if rollback_errors:
+            raise MergeError(
+                "unable to publish staged output payloads; rollback incomplete: "
+                + "; ".join(rollback_errors)
+            ) from exc
+        raise MergeError("unable to publish staged output payloads") from exc
+    finally:
+        for staging_dir in staging_dirs.values():
+            shutil.rmtree(staging_dir, ignore_errors=True)
 
 
 def merge(
@@ -416,6 +558,30 @@ def merge(
     remaining_queue_output_path: Path,
     report_output_path: Path,
 ) -> None:
+    output_paths = (
+        supplied_manifest_path,
+        supplied_summary_path,
+        manifest_output_path,
+        remaining_queue_output_path,
+        report_output_path,
+    )
+    _validate_output_paths(
+        output_paths=output_paths,
+        input_paths=(
+            candidates_path,
+            draft_path,
+            high_public_path,
+            high_official_path,
+            acquisition_queue_path,
+            supplied_pdf_path,
+        ),
+        source_archive_roots=(
+            source_archive_v7.parent,
+            source_archive_v7,
+            source_archive_v8.parent,
+            source_archive_v8,
+        ),
+    )
     _, candidate_ids = _require_exact_candidate_rows(candidates_path)
     draft = _require_exact_manifest(
         draft_path,
@@ -511,14 +677,18 @@ def merge(
     } != {row["candidate_id"] for row in final_rows if row["evidence_sha256"] == "NR"}:
         raise MergeError("remaining queue: must exactly cover final provisional metadata-only rows")
 
-    _write_owned(supplied_manifest_path, _canonical_csv_bytes(EVIDENCE_PACKET_HEADER, [supplied]))
-    _write_owned(supplied_summary_path, _supplied_summary().encode("utf-8"))
-    _write_owned(manifest_output_path, manifest_payload)
-    _write_owned(
-        remaining_queue_output_path,
-        _canonical_csv_bytes(ACQUISITION_QUEUE_HEADER, remaining),
+    _publish_output_payloads(
+        (
+            (supplied_manifest_path, _canonical_csv_bytes(EVIDENCE_PACKET_HEADER, [supplied])),
+            (supplied_summary_path, _supplied_summary().encode("utf-8")),
+            (manifest_output_path, manifest_payload),
+            (
+                remaining_queue_output_path,
+                _canonical_csv_bytes(ACQUISITION_QUEUE_HEADER, remaining),
+            ),
+            (report_output_path, _report(final_rows, remaining, sources).encode("utf-8")),
+        )
     )
-    _write_owned(report_output_path, _report(final_rows, remaining, sources).encode("utf-8"))
 
 
 def _default_path(*parts: str) -> Path:
