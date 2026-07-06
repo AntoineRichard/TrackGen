@@ -614,6 +614,8 @@ def merge(
     )
     overlays = (high_public, high_official, high_difficult)
     overlay_ids = [row["candidate_id"] for overlay in overlays for row in overlay]
+    if C0122_CANDIDATE_ID in overlay_ids:
+        raise MergeError(f"overlays: reserved candidate_id {C0122_CANDIDATE_ID!r}")
     duplicate_overlay_ids = sorted(
         (candidate_id for candidate_id, count in Counter(overlay_ids).items() if count > 1),
         key=str.encode,

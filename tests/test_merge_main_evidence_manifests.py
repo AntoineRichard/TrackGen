@@ -454,3 +454,23 @@ def test_merge_requires_exact_14_row_difficult_overlay(tmp_path: Path) -> None:
 
     with pytest.raises(MergeError, match="high-difficult overlay: expected 14 rows, found 13"):
         run_merge(paths)
+
+def test_merge_rejects_difficult_overlay_c0122_before_copying_or_publishing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = build_inputs(tmp_path)
+    original_outputs = preexisting_output_bytes(paths)
+    with paths["difficult"].open(encoding="utf-8", newline="") as handle:
+        difficult_rows = list(csv.DictReader(handle))
+    difficult_rows[0]["candidate_id"] = "C0122"
+    write_csv(paths["difficult"], EVIDENCE_PACKET_HEADER, difficult_rows)
+
+    def fail_copy(_: bytes, **__: object) -> None:
+        pytest.fail("reserved-overlay preflight must run before artifact copying")
+
+    monkeypatch.setattr(merge_module, "_copy_exclusive", fail_copy)
+
+    with pytest.raises(MergeError, match="overlays: reserved candidate_id 'C0122'"):
+        run_merge(paths)
+
+    assert {path: path.read_bytes() for path in output_paths(paths)} == original_outputs
