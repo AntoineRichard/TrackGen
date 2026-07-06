@@ -292,13 +292,20 @@ def _validate_evidence_rows(rows: list[dict[str, str]], taxonomy: dict[str, list
         if not any(values):
             continue
         tier = row["survey_evidence_tier"]
-        if tier not in taxonomy["survey_evidence_tier"]:
+        tier_labels = [label.strip() for label in tier.split(";") if label.strip()]
+        if "NR" in tier_labels and tier_labels != ["NR"]:
+            _fail("controlled fields may use NR only as a sole NR sentinel")
+        if tier != "NR" and tier not in taxonomy["survey_evidence_tier"]:
             _fail("completed evidence row requires a scalar controlled tier")
         for field, taxonomy_key in controlled.items():
             value = row[field]
             if not value:
                 continue
             labels = [label.strip() for label in value.split(";") if label.strip()]
+            if "NR" in labels:
+                if labels != ["NR"]:
+                    _fail("controlled fields may use NR only as a sole NR sentinel")
+                continue
             if not labels or any(label not in taxonomy[taxonomy_key] for label in labels):
                 _fail(f"invalid taxonomy-controlled value for {field}")
             if field in {"code_status", "asset_status"} and len(labels) != 1:
@@ -347,12 +354,14 @@ def _validate_references(
     filename: str,
     rows: list[dict[str, str]],
     roster: set[str],
-    *, references_field: str,
+    *, references_field: str, plural: bool,
 ) -> None:
     for row in rows:
         value = row[references_field]
         if not value:
             continue
+        if not plural and ";" in value:
+            _fail(f"{filename} cite_key must contain exactly one draft key")
         keys = [key.strip() for key in value.split(";")]
         if not all(keys) or any(key not in roster for key in keys):
             _fail(f"{filename} has a source reference outside the draft roster")
@@ -374,6 +383,13 @@ def validate_coding_output(
             _fail("coding output must contain evidence.csv and no other artifacts")
         if any(path.is_symlink() or not path.is_file() for path in output.iterdir()):
             _fail("coding output contains an unsafe path")
+        for path in output.iterdir():
+            try:
+                text = path.read_text(encoding="utf-8").lower()
+            except UnicodeDecodeError:
+                _fail(f"coding output artifact is not UTF-8: {path.name}")
+            if any(marker in text for marker in BANNED_RELEASE_MARKERS):
+                _fail(f"coding output contains a prohibited production or final-corpus marker: {path.name}")
         source_index = _read_release_csv(release_root / "source_index.csv", SOURCE_INDEX_HEADER)
         roster = {row["draft_key"] for row in source_index}
         if len(source_index) != ROSTER_SIZE or len(roster) != ROSTER_SIZE:
@@ -386,11 +402,11 @@ def validate_coding_output(
             _fail("coding evidence must contain exactly the 75 draft keys")
         _validate_evidence_rows(evidence, taxonomy)
         optional = (
-            ("claims.csv", CLAIMS_HEADER, "cite_keys"),
-            ("metrics.csv", METRICS_HEADER, "cite_keys"),
-            ("simulators.csv", SIMULATORS_HEADER, "cite_key"),
+            ("claims.csv", CLAIMS_HEADER, "cite_keys", True),
+            ("metrics.csv", METRICS_HEADER, "cite_keys", True),
+            ("simulators.csv", SIMULATORS_HEADER, "cite_key", False),
         )
-        for filename, header, references_field in optional:
+        for filename, header, references_field, plural in optional:
             path = output / filename
             if not path.exists():
                 continue
@@ -400,7 +416,9 @@ def validate_coding_output(
                     status = row["evidence_status"]
                     if status and status not in taxonomy["evidence_status"]:
                         _fail("claims.csv has an invalid evidence_status")
-            _validate_references(filename, rows, roster, references_field=references_field)
+            _validate_references(
+                filename, rows, roster, references_field=references_field, plural=plural
+            )
     except DraftValidationError:
         raise
     except (OSError, ValueError, json.JSONDecodeError) as exc:

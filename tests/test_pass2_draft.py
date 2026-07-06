@@ -199,6 +199,87 @@ def test_coding_output_accepts_initial_evidence_only_directory(tmp_path: Path) -
     validate_coding_output(repository_root=ROOT, release=release, coding_output=output)
 
 
+def test_coding_output_rejects_prohibited_final_marker(tmp_path: Path) -> None:
+    release = prepare_test_release(tmp_path)
+    output = tmp_path / "coding"
+    output.mkdir()
+    evidence = output / "evidence.csv"
+    shutil.copyfile(release / "evidence_template.csv", evidence)
+    rows = read_csv(evidence)
+    rows[0]["coding_notes"] = "final corpus"
+    write_csv(evidence, rows)
+
+    with pytest.raises(DraftValidationError, match="prohibited"):
+        validate_coding_output(repository_root=ROOT, release=release, coding_output=output)
+
+
+def test_coding_output_rejects_multiple_simulator_cite_keys(tmp_path: Path) -> None:
+    release = prepare_test_release(tmp_path)
+    output = tmp_path / "coding"
+    output.mkdir()
+    shutil.copyfile(release / "evidence_template.csv", output / "evidence.csv")
+    simulators = read_csv(release / "simulators_template.csv")
+    simulators.append(
+        {
+            "system": "draft-system",
+            "cite_key": "DRAFT_C0006;DRAFT_C0008",
+            "domain": "ground",
+            "input_representation": "NR",
+            "export_format": "NR",
+            "load_validation": "NR",
+            "coordinate_frame": "NR",
+            "units": "NR",
+            "collision_geometry": "NR",
+            "spawn_reset": "NR",
+            "rl_interface": "NR",
+            "oss_status": "NR",
+            "evidence_locator": "NR",
+        }
+    )
+    write_csv(output / "simulators.csv", simulators)
+
+    with pytest.raises(DraftValidationError, match="exactly one"):
+        validate_coding_output(repository_root=ROOT, release=release, coding_output=output)
+
+
+def test_coding_output_accepts_sole_nr_controlled_evidence_values(tmp_path: Path) -> None:
+    release = prepare_test_release(tmp_path)
+    output = tmp_path / "coding"
+    output.mkdir()
+    evidence = output / "evidence.csv"
+    shutil.copyfile(release / "evidence_template.csv", evidence)
+    rows = read_csv(evidence)
+    for field in (
+        "survey_evidence_tier",
+        "domain",
+        "course_object",
+        "representation_family",
+        "generator_family",
+        "generation_role",
+        "validity_strategy",
+        "code_status",
+        "asset_status",
+    ):
+        rows[0][field] = "NR"
+    write_csv(evidence, rows)
+
+    validate_coding_output(repository_root=ROOT, release=release, coding_output=output)
+
+
+def test_coding_output_rejects_mixed_nr_controlled_evidence_value(tmp_path: Path) -> None:
+    release = prepare_test_release(tmp_path)
+    output = tmp_path / "coding"
+    output.mkdir()
+    evidence = output / "evidence.csv"
+    shutil.copyfile(release / "evidence_template.csv", evidence)
+    rows = read_csv(evidence)
+    rows[0]["survey_evidence_tier"] = "NR;core"
+    write_csv(evidence, rows)
+
+    with pytest.raises(DraftValidationError, match="sole NR"):
+        validate_coding_output(repository_root=ROOT, release=release, coding_output=output)
+
+
 def test_coding_output_rejects_reference_outside_draft_roster(tmp_path: Path) -> None:
     release = prepare_test_release(tmp_path)
     output = tmp_path / "coding"
