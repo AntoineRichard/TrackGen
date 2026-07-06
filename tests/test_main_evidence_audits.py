@@ -208,6 +208,9 @@ def test_normalization_reuses_only_verified_v7_bytes_and_queues_every_provisiona
     assert actions["C0006"] == "user-fetch-or-document-limitation"
     assert "Trusted byte-backed rows: 1." in paths["report_output"].read_text(encoding="utf-8")
     assert "Provisional metadata-only rows: 201." in paths["report_output"].read_text(encoding="utf-8")
+    report = paths["report_output"].read_text(encoding="utf-8")
+    assert "supplied source archive root" in report
+    assert "source_archive/v7" not in report
 
 
 def test_normalization_rejects_nonexact_audit_coverage(tmp_path: Path) -> None:
@@ -234,6 +237,78 @@ def test_normalization_rejects_crlf_audit_csv(tmp_path: Path) -> None:
     )
 
     with pytest.raises(NormalizationError, match="must use LF line endings"):
+        normalize_rows(
+            candidates_path=paths["candidates"],
+            audits_dir=paths["audits"],
+            v7_manifest_path=paths["v7"],
+            source_archive=paths["archive"],
+        )
+
+EXPECTED_ACCESS_STATUS_ACTIONS = {
+    "full_text": "user-fetch-or-document-limitation",
+    "full_text_official": "archive-official-source",
+    "full_text_public": "archive-public-full-text",
+    "full_text_public_archive_corrupt": "replace-corrupt-local",
+    "full_text_repository": "archive-public-full-text",
+    "local-full-text": "user-fetch-or-document-limitation",
+    "local-official-evidence": "archive-official-source",
+    "local_full_text": "user-fetch-or-document-limitation",
+    "metadata-only": "user-fetch-or-document-limitation",
+    "metadata_only": "user-fetch-or-document-limitation",
+    "metadata_only_official": "archive-official-source",
+    "official-web-evidence": "archive-official-source",
+    "official_artifact_only": "archive-official-source",
+    "official_evidence": "archive-official-source",
+    "public-full-text": "archive-public-full-text",
+    "related_local_full_text": "replace-mismatched-local",
+}
+
+
+def test_access_status_mapping_is_complete_for_persisted_audits() -> None:
+    from paper.scripts.normalize_main_evidence_audits import (
+        ACCESS_STATUS_ACTIONS,
+        NormalizationError,
+        _action_for,
+    )
+
+    audit_dir = (
+        Path(__file__).resolve().parents[1]
+        / "paper/data/screening_work/v8/main_evidence_audits"
+    )
+    persisted_statuses: set[str] = set()
+    for audit_path in sorted(audit_dir.glob("*.csv")):
+        with audit_path.open(encoding="utf-8", newline="") as handle:
+            persisted_statuses.update(
+                row["access_status"] for row in csv.DictReader(handle)
+            )
+
+    assert persisted_statuses == set(EXPECTED_ACCESS_STATUS_ACTIONS)
+    assert ACCESS_STATUS_ACTIONS == EXPECTED_ACCESS_STATUS_ACTIONS
+    assert {status: _action_for(status) for status in persisted_statuses} == (
+        EXPECTED_ACCESS_STATUS_ACTIONS
+    )
+    for status in ("not_public_full_text", "unofficial_full_text"):
+        with pytest.raises(NormalizationError, match="unknown access_status"):
+            _action_for(status)
+
+
+@pytest.mark.parametrize("status", ("not_public_full_text", "unofficial_full_text"))
+def test_normalization_rejects_unknown_status_on_trusted_row(
+    tmp_path: Path, status: str
+) -> None:
+    paths = build_inputs(tmp_path)
+    audit_path = paths["audits"] / "audits.csv"
+    with audit_path.open(encoding="utf-8", newline="") as handle:
+        audits = list(csv.DictReader(handle))
+    audits[0]["access_status"] = status
+    write_csv(audit_path, AUDIT_HEADER, audits)
+
+    from paper.scripts.normalize_main_evidence_audits import (
+        NormalizationError,
+        normalize as normalize_rows,
+    )
+
+    with pytest.raises(NormalizationError, match="unknown access_status"):
         normalize_rows(
             candidates_path=paths["candidates"],
             audits_dir=paths["audits"],

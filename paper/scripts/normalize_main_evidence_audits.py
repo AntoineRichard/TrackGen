@@ -39,9 +39,23 @@ ACQUISITION_QUEUE_HEADER = (
 )
 CANDIDATE_COUNT = 202
 NORMALIZATION_DATE = "2026-07-06"
-REPLACEMENT_ACTIONS = {
-    "related_local_full_text": "replace-mismatched-local",
+ACCESS_STATUS_ACTIONS = {
+    "full_text": "user-fetch-or-document-limitation",
+    "full_text_official": "archive-official-source",
+    "full_text_public": "archive-public-full-text",
     "full_text_public_archive_corrupt": "replace-corrupt-local",
+    "full_text_repository": "archive-public-full-text",
+    "local-full-text": "user-fetch-or-document-limitation",
+    "local-official-evidence": "archive-official-source",
+    "local_full_text": "user-fetch-or-document-limitation",
+    "metadata-only": "user-fetch-or-document-limitation",
+    "metadata_only": "user-fetch-or-document-limitation",
+    "metadata_only_official": "archive-official-source",
+    "official-web-evidence": "archive-official-source",
+    "official_artifact_only": "archive-official-source",
+    "official_evidence": "archive-official-source",
+    "public-full-text": "archive-public-full-text",
+    "related_local_full_text": "replace-mismatched-local",
 }
 ACTION_ORDER = (
     "replace-mismatched-local",
@@ -179,6 +193,7 @@ def _audit_rows(audits_dir: Path, candidate_ids: set[str]) -> dict[str, dict[str
                 raise NormalizationError(
                     f"main evidence audits: {candidate_id} has an empty {field}"
                 )
+        _action_for(row["access_status"])
         audits[candidate_id] = row
     if set(audits) != candidate_ids:
         missing = sorted(candidate_ids - set(audits), key=lambda value: value.encode("utf-8"))
@@ -235,16 +250,12 @@ def _declared_bytes_are_trustworthy(row: dict[str, str], source_archive: Path) -
 
 
 def _action_for(raw_access_status: str) -> str:
-    status = raw_access_status.casefold()
-    if status in REPLACEMENT_ACTIONS:
-        return REPLACEMENT_ACTIONS[status]
-    if "public" in status and ("full" in status or "text" in status):
-        return "archive-public-full-text"
-    if "repository" in status and "full" in status:
-        return "archive-public-full-text"
-    if "official" in status:
-        return "archive-official-source"
-    return "user-fetch-or-document-limitation"
+    try:
+        return ACCESS_STATUS_ACTIONS[raw_access_status]
+    except KeyError as exc:
+        raise NormalizationError(
+            f"main evidence audits: unknown access_status {raw_access_status!r}"
+        ) from exc
 
 
 def _priority_for(candidate: dict[str, str], action: str) -> str:
@@ -311,7 +322,8 @@ def normalize(
         candidate_id = candidate["candidate_id"]
         audit = audits[candidate_id]
         v7_row = v7.get(candidate_id)
-        forced_replacement = audit["access_status"].casefold() in REPLACEMENT_ACTIONS
+        action = _action_for(audit["access_status"])
+        forced_replacement = action.startswith("replace-")
         if (
             v7_row is not None
             and not forced_replacement
@@ -321,7 +333,6 @@ def normalize(
             continue
 
         manifest_rows.append(_provisional_manifest_row(audit))
-        action = _action_for(audit["access_status"])
         queue_rows.append(
             {
                 "candidate_id": candidate_id,
@@ -423,7 +434,7 @@ def _report(manifest_rows: list[dict[str, str]], queue_rows: list[dict[str, str]
             "",
             "## Limitations",
             "",
-            "This normalization did not download public links or copy any source-archive bytes. A row is byte-backed only when its existing v7 local file is present beneath source_archive/v7 and its SHA-256 matches the v7 declaration. All other rows are deliberately metadata-only and require the separately listed acquisition action.",
+            "This normalization did not download public links or copy any source-archive bytes. A row is byte-backed only when its v7 manifest row declares a local file present beneath the supplied source archive root and its SHA-256 matches that declaration. All other rows are deliberately metadata-only and require the separately listed acquisition action.",
             f"The provisional evidence_retrieved_on value ({NORMALIZATION_DATE}) records the deterministic normalization date, not a public-link download claim.",
             "",
         ]

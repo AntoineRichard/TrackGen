@@ -27,5 +27,5 @@ High priority applies when title, source type, or source URL contains a generati
 
 ## Limitations
 
-This normalization did not download public links or copy any source-archive bytes. A row is byte-backed only when its existing v7 local file is present beneath source_archive/v7 and its SHA-256 matches the v7 declaration. All other rows are deliberately metadata-only and require the separately listed acquisition action.
+This normalization did not download public links or copy any source-archive bytes. A row is byte-backed only when its v7 manifest row declares a local file present beneath the supplied source archive root and its SHA-256 matches that declaration. All other rows are deliberately metadata-only and require the separately listed acquisition action.
 The provisional evidence_retrieved_on value (2026-07-06) records the deterministic normalization date, not a public-link download claim.
