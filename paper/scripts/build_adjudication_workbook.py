@@ -24,6 +24,7 @@ CRITERIA = frozenset(
         "include-2",
         "include-3",
         "include-4",
+        "include-relevant",
         "boundary",
         "exclude-fixed-racing-line",
         "exclude-appearance-dynamics",

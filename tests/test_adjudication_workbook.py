@@ -41,6 +41,52 @@ def test_parse_draft_accepts_the_dossier_recommendation_formats(tmp_path: Path) 
     ]
 
 
+def test_parse_draft_and_build_rows_preserve_include_relevant(tmp_path: Path) -> None:
+    draft = tmp_path / "batch.md"
+    draft.write_text(
+        "## C0131 - Current v8 criterion\n"
+        "- Recommendation: **included / include-relevant**.\n",
+        encoding="utf-8",
+    )
+
+    recommendations = workbook.parse_draft(draft)
+
+    assert [(row.status, row.criterion) for row in recommendations] == [
+        ("included", "include-relevant"),
+    ]
+
+    rows = workbook.build_rows(
+        recommendations,
+        {
+            "C0131": (
+                {
+                    "assignment_id": "A-C0131-01",
+                    "coder_id": "screening-01",
+                    "input_sha256": "a" * 64,
+                    "screening_status": "included",
+                    "criterion": "include-relevant",
+                    "access_status": "full_text",
+                    "exclusion_reason": "NR",
+                },
+                {
+                    "assignment_id": "A-C0131-02",
+                    "coder_id": "screening-02",
+                    "input_sha256": "a" * 64,
+                    "screening_status": "included",
+                    "criterion": "include-relevant",
+                    "access_status": "full_text",
+                    "exclusion_reason": "NR",
+                },
+            ),
+        },
+        {},
+        snapshot_sha256="b" * 64,
+        primary_snapshot_sha256="c" * 64,
+    )
+
+    assert rows[0]["draft_criterion"] == "include-relevant"
+
+
 def test_build_rows_binds_drafts_to_sealed_ratings_and_conflicts() -> None:
     recommendations = [
         workbook.DraftRecommendation(
