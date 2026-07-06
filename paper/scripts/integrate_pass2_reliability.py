@@ -658,6 +658,491 @@ def validate_reliability_pilot(
     _validate_manifest(snapshot)
 
 
+
+V2_INPUT_SPECS = (
+    InputSpec(
+        "trackgen-pass2-v2-holdout-manifest.csv",
+        "802d3d332a2b3fe7421e4b12ccbc4d2fe0b240e1f3bc51396c0a798f3fe3e6f0",
+        18,
+        (
+            "cite_key",
+            "first_domain",
+            "selection_salt",
+            "salted_rank_sha256",
+            "pilot_overlap",
+            "evidence_sha256",
+        ),
+    ),
+    InputSpec(
+        "trackgen-pass2-v2-reliability-selection.csv",
+        "002ba07d3faee6e2e763af8e88c63dd9924e758f5d25e22d677df12aa80b2880",
+        18,
+        ("cite_key", "first_domain", "rank_sha256", "evidence_sha256"),
+    ),
+    InputSpec(
+        "trackgen-pass2-v2-reliability-packet.csv",
+        "5316c68b10e9643432fd5302738fd5948d2e293850da684147cf4b6d5640e331",
+        18,
+        (
+            "candidate_id",
+            "cite_key",
+            "title",
+            "authors",
+            "year",
+            "venue",
+            "doi",
+            "url",
+            "source_type",
+        ),
+    ),
+    InputSpec(
+        "trackgen-pass2-v2-reliability-template.csv",
+        "61b7ed81880e787e0b4d7a7feaab1101d8f17a652451c9830ef863d7ef031a10",
+        18,
+        (
+            "cite_key",
+            "survey_evidence_tier",
+            "course_object",
+            "representation_family",
+            "generator_family",
+            "generation_role",
+            "validity_strategy",
+            "code_status",
+            "asset_status",
+        ),
+    ),
+    InputSpec(
+        "trackgen-pass2-v2-reliability-coded.csv",
+        "2caf72e026c702c033735861300a75eb0d63e0d6e972f4f0e1422d51f312edac",
+        18,
+        (
+            "cite_key",
+            "survey_evidence_tier",
+            "course_object",
+            "representation_family",
+            "generator_family",
+            "generation_role",
+            "validity_strategy",
+            "code_status",
+            "asset_status",
+        ),
+    ),
+    InputSpec(
+        "trackgen-pass2-v2-reliability-primary-sample.csv",
+        "8f4206418d690626fd2b307665296a7359bb74cac9eec339d32a666d3ff71e3e",
+        18,
+        None,
+    ),
+    InputSpec(
+        "trackgen-pass2-v2-reliability-summary.csv",
+        "d209f72eb47973a8640fb7f5be3c001e831911715a48f3deb69117d170c63ff5",
+        8,
+        ("field", "n", "agreement", "kappa", "passes"),
+    ),
+)
+V2_SUMMARY_ROWS = (
+    ("survey_evidence_tier", "18", "0.888889", "0.776398", "true"),
+    ("course_object", "18", "0.666667", "0.610108", "false"),
+    ("representation_family", "18", "0.500000", "0.423488", "false"),
+    ("generator_family", "18", "0.611111", "0.522727", "false"),
+    ("generation_role", "18", "0.666667", "0.574803", "false"),
+    ("validity_strategy", "18", "0.500000", "0.369650", "false"),
+    ("code_status", "18", "0.500000", "0.124324", "false"),
+    ("asset_status", "18", "0.888889", "0.617021", "true"),
+)
+V2_PRIMARY_RELATIVE = Path("paper/data/screening_work/v8/pass2_coding/primary/v2")
+V2_CODEBOOK_RELATIVE = Path("paper/data/screening_work/v8/pass2_reliability/pilot-v1/CODEBOOK-v2.md")
+V2_PILOT_SELECTION_RELATIVE = Path(
+    "paper/data/screening_work/v8/pass2_reliability/pilot-v1/inputs/trackgen-pass2-reliability-selection.csv"
+)
+V2_HOLDOUT_SALT = "trackgen-pass2-v2-fresh-holdout-v1"
+V2_DISAGREEMENT_HEADER = (
+    "cite_key",
+    "field",
+    "primary_value",
+    "reliability_value",
+)
+
+
+def _v2_csv_payload(
+    header: tuple[str, ...], rows: Iterable[dict[str, str]]
+) -> bytes:
+    handle = io.StringIO(newline="")
+    writer = csv.DictWriter(handle, fieldnames=header, lineterminator="\n")
+    writer.writeheader()
+    writer.writerows(rows)
+    return handle.getvalue().encode("utf-8")
+
+
+def _v2_index(rows: list[dict[str, str]], *, label: str) -> dict[str, dict[str, str]]:
+    indexed: dict[str, dict[str, str]] = {}
+    for row in rows:
+        cite_key = row.get("cite_key", "")
+        if not cite_key or cite_key in indexed:
+            raise ReliabilityValidationError(f"{label}: cite keys must be unique and nonblank")
+        indexed[cite_key] = row
+    return indexed
+
+
+def _v2_disagreement_rows(
+    primary: dict[str, dict[str, str]], reliability: dict[str, dict[str, str]]
+) -> list[dict[str, str]]:
+    return [
+        {
+            "cite_key": cite_key,
+            "field": field,
+            "primary_value": primary[cite_key][field],
+            "reliability_value": reliability[cite_key][field],
+        }
+        for cite_key in sorted(primary)
+        for field in (row[0] for row in V2_SUMMARY_ROWS)
+        if primary[cite_key][field] != reliability[cite_key][field]
+    ]
+
+
+def _v2_validate_primary_snapshot(repository_root: Path) -> None:
+    primary = repository_root / V2_PRIMARY_RELATIVE
+    manifest = primary / "manifest/checksums.csv"
+    if _csv_header(manifest, error_type=ReliabilityValidationError) != PRIMARY_CHECKSUM_HEADER:
+        raise ReliabilityValidationError("primary v2 snapshot checksum header mismatch")
+    rows = _csv_rows(manifest, error_type=ReliabilityValidationError)
+    if not rows or len({(row["artifact_type"], row["path"]) for row in rows}) != len(rows):
+        raise ReliabilityValidationError("primary v2 snapshot checksum records mismatch")
+
+    local_types = {
+        "bindings",
+        "coding_output",
+        "documentation",
+        "integrated_batch",
+        "normalization",
+        "registry",
+    }
+    expected_local = {Path(row["path"]) for row in rows if row["artifact_type"] in local_types}
+    expected_local.add(Path("manifest/checksums.csv"))
+    actual_local = {path.relative_to(primary) for path in primary.rglob("*") if path.is_file()}
+    if actual_local != expected_local:
+        raise ReliabilityValidationError("primary v2 snapshot artifact set mismatch")
+
+    for row in rows:
+        artifact_type = row["artifact_type"]
+        relative = Path(row["path"])
+        if artifact_type in local_types:
+            artifact = primary / relative
+        elif artifact_type == "input_batch":
+            filename = relative.name.removeprefix("trackgen-").replace("pass2-v2-", "pass2-", 1)
+            artifact = primary / "batches" / filename
+        elif artifact_type == "immutable_release":
+            artifact = repository_root / DRAFT_RELATIVE / relative.name
+        else:
+            raise ReliabilityValidationError("primary v2 snapshot checksum records mismatch")
+        payload = _regular_bytes(
+            artifact,
+            label="primary v2 snapshot artifact",
+            error_type=ReliabilityValidationError,
+        )
+        if _sha256(payload) != row["sha256"]:
+            raise ReliabilityValidationError(
+                f"primary v2 snapshot artifact checksum mismatch: {row['path']}"
+            )
+        if row["row_count"] != "NR" and len(
+            _csv_rows(artifact, error_type=ReliabilityValidationError)
+        ) != int(row["row_count"]):
+            raise ReliabilityValidationError(
+                f"primary v2 snapshot artifact row count mismatch: {row['path']}"
+            )
+
+
+def _v2_binding_rows(repository_root: Path) -> tuple[dict[str, str], ...]:
+    bindings = (
+        (
+            "primary_snapshot",
+            V2_PRIMARY_RELATIVE / "manifest/checksums.csv",
+            "binds the sampled primary v2 coding snapshot without altering it",
+        ),
+        (
+            "draft_release",
+            DRAFT_RELATIVE / "release_manifest.csv",
+            "binds the non-final pass2 draft release without altering it",
+        ),
+        (
+            "pilot_v1_codebook_v2",
+            V2_CODEBOOK_RELATIVE,
+            "binds the frozen pilot-v1 CODEBOOK-v2.md without altering it",
+        ),
+    )
+    return tuple(
+        {
+            "binding": name,
+            "bound_path": relative.as_posix(),
+            "bound_sha256": _sha256(
+                _regular_bytes(
+                    repository_root / relative,
+                    label=f"{name} binding",
+                    error_type=ReliabilityIntegrationError,
+                )
+            ),
+            "purpose": purpose,
+        }
+        for name, relative, purpose in bindings
+    )
+
+
+def _v2_registry_rows() -> tuple[dict[str, str], ...]:
+    return (
+        {
+            "role": "pass2-reliability-v2-01",
+            "agent_id": "019f39a2-f37d-77b0-8397-1ef173ab8a56",
+            "model": "gpt-5.6-terra",
+            "reasoning_effort": "high",
+            "fork_context": "false",
+            "scope": "independent blind reliability coding",
+        },
+    )
+
+
+def _v2_readme() -> str:
+    return """# Pass-2 Reliability v2
+
+This no-clobber snapshot freezes the supplied fresh 18-source reliability round. The seven files in `inputs/` are byte-for-byte coordinator inputs. `disagreements.csv` is deterministically derived from the locked primary and reliability rows, and `bindings.csv` freezes primary/v2, the draft release, and pilot-v1 `CODEBOOK-v2.md`; no bound artifact is modified.
+
+## Outcome
+
+The round passed `survey_evidence_tier` (0.888889) and `asset_status` (0.888889), but failed `course_object` (0.666667), `representation_family` (0.500000), `generator_family` (0.611111), `generation_role` (0.666667), `validity_strategy` (0.500000), and `code_status` (0.500000).
+
+This second failed reliability round triggers stopping label-by-label codebook exception iteration. The record must not adjudicate to manufacture agreement. `PROCEDURAL-LIMITATIONS.md` preserves the resulting claim limits and future structural redesign recommendation.
+
+## Integrity
+
+`manifest/checksums.csv` records SHA-256 hashes and row counts for every copied input and generated record. `SHA256SUMS` checks the manifest itself. Run `python paper/scripts/integrate_pass2_reliability.py --repository-root . --input-root /tmp --version v2 --validate --snapshot paper/data/screening_work/v8/pass2_reliability/v2` from the repository root to validate this record.
+"""
+
+
+def _v2_limitations() -> str:
+    return """# Procedural Limitations
+
+This is a failed fresh reliability round, not a final coding release. It prohibits prevalence, frequency, or comparative taxonomy claims. Pending dimension redesign and accountable-author verification, the only permitted output is source-backed qualitative synthesis with direct locators.
+
+The salted holdout contains 18 keys stratified as 10 ground, 3 adjacent, 2 aerial, 2 maritime, and 1 NR. It has exactly one pilot overlap: `DRAFT_C0063`, the sole NR singleton. The remaining 17 keys are disjoint from pilot-v1. The copied template remains blank; the coded rows are preserved only as locked reliability input, and `disagreements.csv` is a deterministic comparison record rather than an adjudication target.
+
+Future work should structurally redesign the dimensions: use a scalar primary representation versus realization tags; decompose generator family into orthogonal mechanism, stochasticity, and adaptation axes; model roles as separate evidenced operations; separate validity applicability from mechanism; and treat availability as a dedicated retrieval audit. Do not revise labels source by source or use adjudication to manufacture agreement.
+
+This snapshot does not alter primary/v2, pilot-v1, or the non-final draft release.
+"""
+
+
+def _v2_validate_data(snapshot: Path, repository_root: Path) -> list[dict[str, str]]:
+    holdout = _v2_index(
+        _csv_rows(snapshot / "inputs/trackgen-pass2-v2-holdout-manifest.csv", error_type=ReliabilityValidationError),
+        label="salted holdout",
+    )
+    selection = _v2_index(
+        _csv_rows(snapshot / "inputs/trackgen-pass2-v2-reliability-selection.csv", error_type=ReliabilityValidationError),
+        label="reliability selection",
+    )
+    if set(holdout) != set(selection) or len(holdout) != 18:
+        raise ReliabilityValidationError("salted holdout and selection keys mismatch")
+    if {row["selection_salt"] for row in holdout.values()} != {V2_HOLDOUT_SALT}:
+        raise ReliabilityValidationError("salted holdout selection salt mismatch")
+    expected_strata = {"ground": 10, "adjacent": 3, "aerial": 2, "maritime": 2, "NR": 1}
+    actual_strata = {
+        stratum: sum(row["first_domain"] == stratum for row in holdout.values())
+        for stratum in expected_strata
+    }
+    if actual_strata != expected_strata:
+        raise ReliabilityValidationError("salted holdout strata mismatch")
+    overlap = {key for key, row in holdout.items() if row["pilot_overlap"] == "true"}
+    if overlap != {"DRAFT_C0063"} or holdout["DRAFT_C0063"]["first_domain"] != "NR":
+        raise ReliabilityValidationError("salted holdout sole NR pilot overlap mismatch")
+    if any(row["pilot_overlap"] not in {"true", "false"} for row in holdout.values()):
+        raise ReliabilityValidationError("salted holdout overlap flag mismatch")
+    pilot = _v2_index(
+        _csv_rows(repository_root / V2_PILOT_SELECTION_RELATIVE, error_type=ReliabilityValidationError),
+        label="pilot-v1 selection",
+    )
+    if set(holdout) & set(pilot) != overlap or len(set(holdout) - set(pilot)) != 17:
+        raise ReliabilityValidationError("salted holdout pilot disjointness mismatch")
+    for key in holdout:
+        if (
+            holdout[key]["first_domain"] != selection[key]["first_domain"]
+            or holdout[key]["evidence_sha256"] != selection[key]["evidence_sha256"]
+            or selection[key]["rank_sha256"] != _sha256(key.encode("utf-8"))
+        ):
+            raise ReliabilityValidationError("salted holdout selection record mismatch")
+
+    packet = _v2_index(
+        _csv_rows(snapshot / "inputs/trackgen-pass2-v2-reliability-packet.csv", error_type=ReliabilityValidationError),
+        label="reliability packet",
+    )
+    template = _v2_index(
+        _csv_rows(snapshot / "inputs/trackgen-pass2-v2-reliability-template.csv", error_type=ReliabilityValidationError),
+        label="reliability template",
+    )
+    primary = _v2_index(
+        _csv_rows(snapshot / "inputs/trackgen-pass2-v2-reliability-primary-sample.csv", error_type=ReliabilityValidationError),
+        label="primary sample",
+    )
+    reliability = _v2_index(
+        _csv_rows(snapshot / "inputs/trackgen-pass2-v2-reliability-coded.csv", error_type=ReliabilityValidationError),
+        label="reliability coding",
+    )
+    if any(set(index) != set(selection) for index in (packet, template, primary, reliability)):
+        raise ReliabilityValidationError("reliability input key sets mismatch")
+    fields = tuple(row[0] for row in V2_SUMMARY_ROWS)
+    if any(template[key][field] for key in template for field in fields):
+        raise ReliabilityValidationError("reliability template must remain blank")
+    if any(not primary[key][field] or not reliability[key][field] for key in primary for field in fields):
+        raise ReliabilityValidationError("locked coding values must be nonblank")
+
+    summary = _csv_rows(
+        snapshot / "inputs/trackgen-pass2-v2-reliability-summary.csv",
+        error_type=ReliabilityValidationError,
+    )
+    actual_summary = tuple(
+        (row["field"], row["n"], row["agreement"], row["kappa"], row["passes"])
+        for row in summary
+    )
+    if actual_summary != V2_SUMMARY_ROWS:
+        raise ReliabilityValidationError("v2 reliability summary values mismatch")
+    try:
+        from paper.scripts.coding_reliability import compare_codings
+    except ModuleNotFoundError:
+        from coding_reliability import compare_codings
+
+    if tuple(
+        (row["field"], row["n"], row["agreement"], row["kappa"], row["passes"])
+        for row in compare_codings(list(primary.values()), list(reliability.values()))
+    ) != V2_SUMMARY_ROWS:
+        raise ReliabilityValidationError("v2 reliability summary derivation mismatch")
+    return _v2_disagreement_rows(primary, reliability)
+
+
+def _v2_artifact_records(output: Path) -> list[dict[str, str]]:
+    paths = [
+        *(Path("inputs") / spec.filename for spec in V2_INPUT_SPECS),
+        Path("disagreements.csv"),
+        Path("README.md"),
+        Path("PROCEDURAL-LIMITATIONS.md"),
+        Path("execution_registry.csv"),
+        Path("bindings.csv"),
+    ]
+    records = []
+    for relative in paths:
+        payload = (output / relative).read_bytes()
+        records.append(
+            {
+                "record_type": "input" if relative.parts[0] == "inputs" else "artifact",
+                "path": relative.as_posix(),
+                "sha256": _sha256(payload),
+                "row_count": str(
+                    len(_csv_rows(output / relative, error_type=ReliabilityIntegrationError))
+                    if relative.suffix == ".csv"
+                    else _line_count(payload)
+                ),
+            }
+        )
+    return sorted(records, key=lambda row: row["path"])
+
+
+def _v2_write_sha256s(output: Path) -> None:
+    records = _v2_artifact_records(output)
+    manifest = output / "manifest/checksums.csv"
+    lines = [f"{row['sha256']}  {row['path']}" for row in records]
+    lines.append(f"{_sha256(manifest.read_bytes())}  manifest/checksums.csv")
+    (output / "SHA256SUMS").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def integrate_reliability_v2(*, repository_root: Path, output: Path, input_root: Path) -> None:
+    """Create the no-clobber failed v2 reliability snapshot."""
+    if output.exists() or output.is_symlink():
+        raise ReliabilityIntegrationError(f"output must not already exist: {output}")
+    source_payloads = {
+        spec.filename: _validate_source_input(input_root, spec) for spec in V2_INPUT_SPECS
+    }
+    bindings = _v2_binding_rows(repository_root)
+
+    output.mkdir(parents=True)
+    inputs = output / "inputs"
+    inputs.mkdir()
+    for spec in V2_INPUT_SPECS:
+        (inputs / spec.filename).write_bytes(source_payloads[spec.filename])
+    disagreements = _v2_validate_data(output, repository_root)
+    (output / "disagreements.csv").write_bytes(
+        _v2_csv_payload(V2_DISAGREEMENT_HEADER, disagreements)
+    )
+    (output / "README.md").write_text(_v2_readme(), encoding="utf-8")
+    (output / "PROCEDURAL-LIMITATIONS.md").write_text(_v2_limitations(), encoding="utf-8")
+    _write_csv(output / "execution_registry.csv", REGISTRY_HEADER, _v2_registry_rows())
+    _write_csv(output / "bindings.csv", BINDINGS_HEADER, bindings)
+    (output / "manifest").mkdir()
+    _write_csv(
+        output / "manifest/checksums.csv", MANIFEST_HEADER, _v2_artifact_records(output)
+    )
+    _v2_write_sha256s(output)
+
+
+def validate_reliability_v2(*, repository_root: Path, snapshot: Path, input_root: Path) -> None:
+    """Validate the fixed v2 inputs, derived disagreements, bindings, and checksums."""
+    if snapshot.is_symlink() or not snapshot.is_dir():
+        raise ReliabilityValidationError("snapshot must be a directory")
+    expected_files = {
+        *(Path("inputs") / spec.filename for spec in V2_INPUT_SPECS),
+        Path("disagreements.csv"),
+        Path("README.md"),
+        Path("PROCEDURAL-LIMITATIONS.md"),
+        Path("execution_registry.csv"),
+        Path("bindings.csv"),
+        Path("manifest/checksums.csv"),
+        Path("SHA256SUMS"),
+    }
+    actual_files = {path.relative_to(snapshot) for path in snapshot.rglob("*") if path.is_file()}
+    if actual_files != expected_files:
+        raise ReliabilityValidationError("snapshot must contain exactly the expected records")
+    for spec in V2_INPUT_SPECS:
+        source = _input_path(input_root, spec)
+        payload = _regular_bytes(source, label="source input", error_type=ReliabilityValidationError)
+        if _sha256(payload) != spec.sha256:
+            raise ReliabilityValidationError(f"source input checksum mismatch: {spec.filename}")
+        _validate_input_copy(snapshot, spec)
+        if payload != (snapshot / "inputs" / spec.filename).read_bytes():
+            raise ReliabilityValidationError(f"snapshot input is not byte-exact: {spec.filename}")
+    disagreements = _v2_validate_data(snapshot, repository_root)
+    if _regular_bytes(
+        snapshot / "disagreements.csv",
+        label="derived disagreements",
+        error_type=ReliabilityValidationError,
+    ) != _v2_csv_payload(V2_DISAGREEMENT_HEADER, disagreements):
+        raise ReliabilityValidationError("derived disagreements mismatch")
+    expected_bindings = _v2_binding_rows_for_validation(repository_root)
+    bindings = _csv_rows(snapshot / "bindings.csv", error_type=ReliabilityValidationError)
+    if _csv_header(snapshot / "bindings.csv", error_type=ReliabilityValidationError) != BINDINGS_HEADER or bindings != list(expected_bindings):
+        raise ReliabilityValidationError("primary snapshot binding or draft release binding mismatch")
+    _v2_validate_primary_snapshot(repository_root)
+    _validate_draft_artifacts(repository_root)
+    registry = _csv_rows(snapshot / "execution_registry.csv", error_type=ReliabilityValidationError)
+    if _csv_header(snapshot / "execution_registry.csv", error_type=ReliabilityValidationError) != REGISTRY_HEADER or registry != list(_v2_registry_rows()):
+        raise ReliabilityValidationError("execution registry mismatch")
+    expected_docs = {
+        "README.md": _v2_readme().encode("utf-8"),
+        "PROCEDURAL-LIMITATIONS.md": _v2_limitations().encode("utf-8"),
+    }
+    for filename, payload in expected_docs.items():
+        if _regular_bytes(snapshot / filename, label=filename, error_type=ReliabilityValidationError) != payload:
+            raise ReliabilityValidationError(f"{filename}: generated content mismatch")
+    manifest = snapshot / "manifest/checksums.csv"
+    if _csv_header(manifest, error_type=ReliabilityValidationError) != MANIFEST_HEADER or _csv_rows(manifest, error_type=ReliabilityValidationError) != _v2_artifact_records(snapshot):
+        raise ReliabilityValidationError("manifest checksum or row count mismatch")
+    expected_sums = [f"{row['sha256']}  {row['path']}" for row in _v2_artifact_records(snapshot)]
+    expected_sums.append(f"{_sha256(manifest.read_bytes())}  manifest/checksums.csv")
+    if _regular_bytes(snapshot / "SHA256SUMS", label="SHA256SUMS", error_type=ReliabilityValidationError) != ("\n".join(expected_sums) + "\n").encode("utf-8"):
+        raise ReliabilityValidationError("SHA256SUMS checksum mismatch")
+
+
+def _v2_binding_rows_for_validation(repository_root: Path) -> tuple[dict[str, str], ...]:
+    try:
+        return _v2_binding_rows(repository_root)
+    except ReliabilityIntegrationError as exc:
+        raise ReliabilityValidationError(str(exc)) from exc
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repository-root", type=Path, required=True)
@@ -665,12 +1150,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--output", type=Path)
     parser.add_argument("--validate", action="store_true")
     parser.add_argument("--snapshot", type=Path)
+    parser.add_argument("--version", choices=("pilot-v1", "v2"), default="pilot-v1")
     args = parser.parse_args(argv)
 
     if args.validate:
         if args.snapshot is None or args.output is not None:
             parser.error("--validate requires --snapshot and does not accept --output")
-        validate_reliability_pilot(
+        validator = (
+            validate_reliability_v2 if args.version == "v2" else validate_reliability_pilot
+        )
+        validator(
             repository_root=args.repository_root,
             snapshot=args.snapshot,
             input_root=args.input_root,
@@ -679,7 +1168,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     if args.output is None or args.snapshot is not None:
         parser.error("creation requires --output and does not accept --snapshot")
-    integrate_reliability_pilot(
+    integrator = integrate_reliability_v2 if args.version == "v2" else integrate_reliability_pilot
+    integrator(
         repository_root=args.repository_root,
         output=args.output,
         input_root=args.input_root,
