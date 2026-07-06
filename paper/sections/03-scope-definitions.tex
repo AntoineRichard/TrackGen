@@ -59,16 +59,19 @@ alter the task-defining traversal constraints. A fixed map collection or competi
 layout is consequently evidence about representation, interface, or constraint
 requirements, not evidence of a generation method.
 
-\paragraph{Generation operation.}
-\emph{Course generation} is an operation that constructs or manages
-task-defining spatial artifacts. The operation may (i) synthesize a new course,
-(ii) select one from an extant set, (iii) mutate a candidate, (iv) repair or project
-a candidate, (v) replay a previously constructed artifact, or (vi) serialize a
-course into a portable realization. These are operations, not mutually exclusive
-method families: one pipeline can synthesize candidates, reject or repair them,
-select a subset for training, and serialize retained artifacts. Procedural road
-construction, replay-guided level selection, and diversity-guided search provide
-examples of different operations that may act on task-defining spatial structure
+\paragraph{Course generation and artifact management.}
+\emph{Course-generation operations} create or change task-defining spatial
+structure: synthesis creates a new course, mutation changes a candidate, and repair
+projects a candidate toward declared constraints. \emph{Artifact-management
+operations} instead select courses from an extant set or replay previously
+constructed artifacts, thereby managing course populations without generating new
+course structure. Serialization changes a course's encoding or concrete realization.
+It is covered because portable realizations matter to interoperability, but
+serialization alone is not course generation. These operations are not mutually
+exclusive method families: one pipeline can synthesize candidates, reject or repair
+them, select a subset for training, and serialize retained artifacts. Procedural road
+construction, replay-guided level selection, and diversity-guided search illustrate
+distinct operations on course structure and course populations
 \cite{Li2020ImprovingGeneralization,Jiang2021ReplayGuided,Blattner2024DiversityGuided}.
 
 \paragraph{Validity predicate.}
@@ -99,42 +102,49 @@ is essential when procedural environments are used to study generalization
 A \emph{controller} or \emph{planner} maps observations, state estimates, and goals
 to actions or trajectories on a given course. Racing-line optimization, trajectory
 tracking, and progress rewards operate \emph{within} a course instance. They may
-expose constraints that a generator should satisfy, but they are not course generation
-unless they construct or manage the task-defining spatial artifact itself.
+expose constraints that a generator should satisfy, but they are not course
+generation. A control or planning study contributes to this survey's scope only when
+it additionally creates or changes course structure, or selects or replays course
+artifacts as an explicit artifact-management contribution.
 
 \begin{table}[t]
   \centering
-  \caption{Boundary of course generation. Classification follows the object that
-  an operation changes, rather than the application domain in which it appears.}
+  \caption{Boundary of surveyed contributions and evidence roles. Classification
+  follows the role established for course structure or artifacts, rather than the
+  application domain in which it appears.}
   \label{tab:scope-boundaries}
   \small
   \begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}p{0.24\linewidth}Y Y@{}}
     \toprule
-    Activity & In scope when it changes or manages & Out of scope when it only changes \\
+    Area & In-scope contribution or evidence role & Out-of-scope use or inference \\
     \midrule
-    Course generation & Course-defining route, corridor, gate, waypoint, buoy, or
-    world geometry and its traversal semantics & Racing actions, a trajectory on a
-    fixed course, or a vehicle model \\
-    Validity and repair & A declared predicate or a transformation of a candidate
-    course artifact & A claim that all generated artifacts are valid without a
-    stated predicate and population \\
+    Course generation & Synthesis, mutation, or repair of a course-defining route,
+    corridor, gate, waypoint, buoy, or world geometry and its traversal semantics &
+    Racing actions, a trajectory on a fixed course, or a vehicle model \\
+    Artifact management and interoperability & Selection or replay of course
+    populations; serialization of a representation or realization & An inference
+    that selection, replay, or serialization alone generates course structure \\
+    Validity and repair & A declared validity predicate as evidence; repair as a
+    transformation of a candidate course artifact & A claim that all generated
+    artifacts are valid without a stated predicate and population \\
     Benchmark, rule, or standard & Representation, interface, fixed suite, or
     admissible task constraint & A method merely because it supplies a fixed layout
     or competition rule \\
     PCG and randomization & Spatial task structure that defines the course & Texture,
     lighting, weather, sensor noise, traffic, or dynamics on an unchanged course \\
-    Control and planning & A course artifact when explicitly synthesized, selected,
-    mutated, repaired, replayed, or serialized & A racing line, policy, or optimizer
-    evaluated only on pre-existing artifacts \\
+    Control and planning & An explicit additional contribution that synthesizes,
+    mutates, or repairs course structure, or selects or replays course artifacts & A
+    racing line, policy, or optimizer evaluated only on pre-existing artifacts \\
     \bottomrule
   \end{tabularx}
 \end{table}
 
 \subsection{Boundary cases}
 
-\Cref{tab:scope-boundaries} establishes the survey boundary. Generic procedural
-content generation (PCG) is in scope only to the extent that it generates or manages
-the spatial artifacts that define the robot's traversal task. Environment
+\Cref{tab:scope-boundaries} establishes the survey boundary by contribution and
+evidence role. Generic procedural content generation (PCG) is in scope only to the
+extent that it generates course structure or manages the spatial artifacts that
+define the robot's traversal task. Environment
 randomization is not course generation when it varies appearance, sensing, dynamics,
 or traffic while leaving the course object unchanged. Conversely, a method that
 changes a road graph, corridor, gate sequence, or buoy layout can be relevant even if
@@ -153,7 +163,9 @@ without supplying an artifact-synthesis procedure
 \cite{RoboNation20222022Maritime,RoboNation2026RoboBoat2026}.
 
 These distinctions also prevent an invalid aggregation. A retained source can
-contribute a representation, a fixed-suite interface, a validity requirement, a
-generator operation, or a reporting requirement; it need not contribute a distinct
-generation method. The survey therefore treats source roles as multi-label evidence
-rather than treating source count as method count. Quantitative conclusions require completed, reliable coding and an explicit unit of analysis.
+contribute a representation, a fixed-suite interface, a validity predicate, a
+course-generation operation, an artifact-management operation, an interoperability
+role, or a reporting requirement; it need not contribute a distinct generation
+method. The survey therefore treats source roles as multi-label evidence rather than
+treating source count as method count. Quantitative conclusions require completed,
+reliable coding and an explicit unit of analysis.
