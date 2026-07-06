@@ -1,8 +1,159 @@
 \section{Scope, Definitions, and Boundaries}
 \label{sec:scope-definitions}
 
-A course is an ordered spatial specification of the route or traversal constraints for
-a robot-racing task. A representation encodes that course, while a generator constructs,
-selects, modifies, replays, or repairs represented courses. A training distribution is
-the population and sampling rule used during system development, and an evaluation
-suite is a fixed or reproducibly sampled set used to assess behavior.
+The central object of this survey is a \emph{course}: an ordered spatial task
+specification that determines where a robot is to travel and how traversal is
+recognized as progress or completion. ``Ordered'' is substantive. A course is
+not merely a collection of geometric primitives, obstacles, or visual assets; it
+encodes an intended traversal relation among task-defining elements. A ground
+course can therefore be a closed or open corridor with an associated route order,
+an aerial course a sequence of gate poses, and a maritime course a sequence of
+waypoints, markers, or buoy-defined gates. These distinctions preserve the
+semantics that make geometry consequential to the task: a gate passed from the
+wrong side, or a buoy encountered out of order, need not constitute completion.
+Ground racing environments, drone-racing tracks with gates, and maritime
+competition tasks illustrate these different realizations of the same abstraction
+\cite{KlimovNodateCarRacing,Kaufmann2018DeepDrone,RoboNation2026RoboBoat2026}.
+
+The definition is intentionally independent of a particular file format, simulator,
+or vehicle. It includes the spatial constraints and traversal semantics needed to
+state the task, but does not imply a unique dynamics model, reward, sensor suite,
+or controller. A course may be closed, open, branching, or include prescribed
+choices, provided that its completion semantics are declared. It may also carry
+task-relevant spatial attributes such as corridor width, gate orientation, clearance,
+or permitted passage direction. The normative interface by which those attributes
+are serialized and tested is specified separately in \cref{sec:benchmark-protocol};
+here the purpose is to establish distinctions that prevent incompatible objects from
+being treated as interchangeable evidence.
+
+\subsection{Objects and transformations}
+
+We distinguish the following objects and operations.
+
+\paragraph{Course object.}
+The \emph{course object} is the abstract task-defining spatial entity: a traversable
+corridor and route relation, an ordered gate chain, a waypoint sequence, or a
+buoy course. It specifies what is to be traversed, not how it is stored or rendered.
+For a road network, a graph alone is insufficient unless the relevant route or
+completion relation is also stated; for an aerial gate course, positions alone are
+insufficient when gate orientation or crossing direction matters.
+
+\paragraph{Representation.}
+A \emph{representation} is an encoding of a course object. Examples include a
+centerline with width profile, paired boundaries, a segment grammar, a waypoint
+graph, an ordered list of gate poses, or a simulator-native world description.
+Representations may be lossless or deliberately task-specific projections. They
+are interfaces between generation, validation, simulation, and evaluation, rather
+than generation methods in themselves. This distinction is material because
+benchmark and standard artifacts can prescribe composable scenarios, route
+semantics, or exchange formats without constructing new courses
+\cite{Althoff2017CommonRoadComposable,ASAM2024ASAMOpenSCENARIO}.
+
+\paragraph{Concrete realization or artifact.}
+A \emph{realization} is a specific instantiated artifact that implements a
+representation: for example, a map, world file, mesh, occupancy image, track asset,
+or scenario record. The realization may add collision geometry, visual markers,
+textures, spawn locations, and simulator metadata. Such additions are relevant to
+interoperability, but they do not retroactively change the course object unless they
+alter the task-defining traversal constraints. A fixed map collection or competition
+layout is consequently evidence about representation, interface, or constraint
+requirements, not evidence of a generation method.
+
+\paragraph{Generation operation.}
+\emph{Course generation} is an operation that constructs or manages
+task-defining spatial artifacts. The operation may (i) synthesize a new course,
+(ii) select one from an extant set, (iii) mutate a candidate, (iv) repair or project
+a candidate, (v) replay a previously constructed artifact, or (vi) serialize a
+course into a portable realization. These are operations, not mutually exclusive
+method families: one pipeline can synthesize candidates, reject or repair them,
+select a subset for training, and serialize retained artifacts. Procedural road
+construction, replay-guided level selection, and diversity-guided search provide
+examples of different operations that may act on task-defining spatial structure
+\cite{Li2020ImprovingGeneralization,Jiang2021ReplayGuided,Blattner2024DiversityGuided}.
+
+\paragraph{Validity predicate.}
+A \emph{validity predicate} is a declared test on a course, its representation, or
+its realization. It may concern geometry (for example, clearance or curvature),
+topology (closure, connectivity, or non-self-intersection), ordered-task semantics,
+dynamics-conditioned traversability, or successful import into a simulator. Validity
+is orthogonal to generation: rejection, construction by constraint, repair, and
+post-hoc simulation checks are alternative ways to relate a generator to one or
+more predicates. It is therefore incorrect to classify a validity test as a
+generation method, or to infer that a syntactically valid artifact is dynamically
+traversable. Search-based test generation makes this separation explicit by
+reporting invalid candidates alongside the exploration procedure
+\cite{Blattner2024DiversityGuided}.
+
+\paragraph{Training distribution and evaluation suite.}
+A \emph{training distribution} is a population of course artifacts together with
+the sampling rule used while fitting, tuning, or adapting a controller or planner.
+It can be fixed, procedurally sampled, curated by selection, or changed over time.
+An \emph{evaluation suite} is instead a fixed or reproducibly sampled, versioned
+set of course instances and conditions used to measure a system. The same generator
+can define a training distribution without defining an evaluation suite, and a fixed
+benchmark can define an evaluation suite without being a generator. This separation
+is essential when procedural environments are used to study generalization
+\cite{Cobbe2020LeveragingProcedural}.
+
+\paragraph{Controller and planner.}
+A \emph{controller} or \emph{planner} maps observations, state estimates, and goals
+to actions or trajectories on a given course. Racing-line optimization, trajectory
+tracking, and progress rewards operate \emph{within} a course instance. They may
+expose constraints that a generator should satisfy, but they are not course generation
+unless they construct or manage the task-defining spatial artifact itself.
+
+\begin{table}[t]
+  \centering
+  \caption{Boundary of course generation. Classification follows the object that
+  an operation changes, rather than the application domain in which it appears.}
+  \label{tab:scope-boundaries}
+  \small
+  \begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}p{0.24\linewidth}Y Y@{}}
+    \toprule
+    Activity & In scope when it changes or manages & Out of scope when it only changes \\
+    \midrule
+    Course generation & Course-defining route, corridor, gate, waypoint, buoy, or
+    world geometry and its traversal semantics & Racing actions, a trajectory on a
+    fixed course, or a vehicle model \\
+    Validity and repair & A declared predicate or a transformation of a candidate
+    course artifact & A claim that all generated artifacts are valid without a
+    stated predicate and population \\
+    Benchmark, rule, or standard & Representation, interface, fixed suite, or
+    admissible task constraint & A method merely because it supplies a fixed layout
+    or competition rule \\
+    PCG and randomization & Spatial task structure that defines the course & Texture,
+    lighting, weather, sensor noise, traffic, or dynamics on an unchanged course \\
+    Control and planning & A course artifact when explicitly synthesized, selected,
+    mutated, repaired, replayed, or serialized & A racing line, policy, or optimizer
+    evaluated only on pre-existing artifacts \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+\subsection{Boundary cases}
+
+\Cref{tab:scope-boundaries} establishes the survey boundary. Generic procedural
+content generation (PCG) is in scope only to the extent that it generates or manages
+the spatial artifacts that define the robot's traversal task. Environment
+randomization is not course generation when it varies appearance, sensing, dynamics,
+or traffic while leaving the course object unchanged. Conversely, a method that
+changes a road graph, corridor, gate sequence, or buoy layout can be relevant even if
+its original application is testing, simulation, or a non-racing navigation domain.
+The criterion is transferability of the represented task structure, not a shared
+application label.
+
+Fixed benchmarks, competition rules, and standards occupy a distinct supporting
+role. They may establish coordinate conventions, ordering requirements, route or
+gate semantics, permissible geometry, serialization interfaces, and evaluation
+conditions. F1TENTH and CommonRoad, for example, provide evaluation artifacts or
+scenario interfaces; they should not be counted as generators simply because a
+controller is evaluated on their courses \cite{OKelly2020F1TENTHOpen,Althoff2017CommonRoadComposable}.
+Likewise, official maritime rules can define buoy-course completion and scoring
+without supplying an artifact-synthesis procedure
+\cite{RoboNation20222022Maritime,RoboNation2026RoboBoat2026}.
+
+These distinctions also prevent an invalid aggregation. A retained source can
+contribute a representation, a fixed-suite interface, a validity requirement, a
+generator operation, or a reporting requirement; it need not contribute a distinct
+generation method. The survey therefore treats source roles as multi-label evidence
+rather than treating source count as method count. Quantitative conclusions require completed, reliable coding and an explicit unit of analysis.
