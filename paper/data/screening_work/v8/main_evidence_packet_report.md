@@ -3,33 +3,34 @@
 ## Coverage
 
 - Final manifest rows: 202/202.
-- Byte-backed rows: 68.
-- Provisional metadata-only rows: 134.
-- Remaining acquisition queue rows: 134.
+- Byte-backed rows: 82.
+- Provisional metadata-only rows: 120.
+- Remaining acquisition queue rows: 120.
 
 ## Access Status
 
 | Value | Count |
 | --- | ---: |
-| abstract_only | 134 |
-| full_text | 43 |
+| abstract_only | 120 |
+| full_text | 57 |
 | official_documentation | 25 |
 
 ## Redistribution Status
 
 | Value | Count |
 | --- | ---: |
-| local-restricted | 62 |
-| metadata-only | 134 |
-| public-redistributable | 6 |
+| local-restricted | 74 |
+| metadata-only | 120 |
+| public-redistributable | 8 |
 
 ## Acquisition Source
 
 | Value | Count |
 | --- | ---: |
+| high-difficult | 14 |
 | high-official | 15 |
 | high-public | 24 |
-| provisional-metadata | 134 |
+| provisional-metadata | 120 |
 | trusted-v7 | 28 |
 | user-supplied | 1 |
 
@@ -42,7 +43,7 @@
 | archive-public-full-text | low | 17 |
 | archive-official-source | medium | 10 |
 | archive-official-source | low | 23 |
-| user-fetch-or-document-limitation | high | 35 |
+| user-fetch-or-document-limitation | high | 21 |
 | user-fetch-or-document-limitation | medium | 14 |
 | user-fetch-or-document-limitation | low | 12 |
 

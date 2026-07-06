@@ -121,6 +121,7 @@ def build_inputs(tmp_path: Path) -> dict[str, Path]:
     trusted_ids = ["C0001", *(f"C{number:04d}" for number in range(41, 68))]
     public_ids = [f"C{number:04d}" for number in range(2, 26)]
     official_ids = [f"C{number:04d}" for number in range(26, 41)]
+    difficult_ids = [f"C{number:04d}" for number in range(68, 82)]
     trusted_payloads: dict[str, bytes] = {}
     for candidate_id in trusted_ids:
         payload = f"trusted v7 bytes {candidate_id}".encode("ascii")
@@ -139,6 +140,12 @@ def build_inputs(tmp_path: Path) -> dict[str, Path]:
         (v8 / candidate_id).mkdir(parents=True)
         (v8 / candidate_id / "official.pdf").write_bytes(payload)
         official_rows.append(byte_row(candidate_id, payload, filename=f"{candidate_id}/official.pdf", access="official_documentation"))
+    difficult_rows = []
+    for candidate_id in difficult_ids:
+        payload = f"trusted difficult overlay bytes {candidate_id}".encode("ascii")
+        (v8 / candidate_id).mkdir(parents=True)
+        (v8 / candidate_id / "difficult.pdf").write_bytes(payload)
+        difficult_rows.append(byte_row(candidate_id, payload, filename=f"{candidate_id}/difficult.pdf", access="full_text"))
 
     draft = [provisional_row(candidate["candidate_id"]) for candidate in candidates]
     for candidate_id in trusted_ids:
@@ -150,6 +157,8 @@ def build_inputs(tmp_path: Path) -> dict[str, Path]:
     write_csv(public_path, EVIDENCE_PACKET_HEADER, public_rows)
     official_path = tmp_path / "high_official.csv"
     write_csv(official_path, EVIDENCE_PACKET_HEADER, official_rows)
+    difficult_path = tmp_path / "high_difficult.csv"
+    write_csv(difficult_path, EVIDENCE_PACKET_HEADER, difficult_rows)
 
     queue_path = tmp_path / "queue.csv"
     write_csv(queue_path, ACQUISITION_QUEUE_HEADER, [queue_row(row) for row in candidates if row["candidate_id"] not in trusted_ids])
@@ -158,6 +167,7 @@ def build_inputs(tmp_path: Path) -> dict[str, Path]:
         "draft": draft_path,
         "public": public_path,
         "official": official_path,
+        "difficult": difficult_path,
         "queue": queue_path,
         "v7": v7,
         "v8": v8,
@@ -176,6 +186,7 @@ def run_merge(paths: dict[str, Path]) -> None:
         draft_path=paths["draft"],
         high_public_path=paths["public"],
         high_official_path=paths["official"],
+        high_difficult_path=paths["difficult"],
         acquisition_queue_path=paths["queue"],
         source_archive_v7=paths["v7"],
         source_archive_v8=paths["v8"],
@@ -219,7 +230,7 @@ def test_merge_produces_parser_valid_202_row_manifest_and_exact_queue_complement
     assert len(manifest) == 202
     assert tuple(manifest[0]) == EVIDENCE_PACKET_HEADER
     assert [row["candidate_id"] for row in manifest] == [f"C{number:04d}" for number in range(1, 203)]
-    assert sum(row["evidence_sha256"] != "NR" for row in manifest) == 68
+    assert sum(row["evidence_sha256"] != "NR" for row in manifest) == 82
     parse_evidence_packet_manifest(
         manifest_bytes,
         allowed_candidate_ids={f"C{number:04d}" for number in range(1, 203)},
@@ -229,7 +240,7 @@ def test_merge_produces_parser_valid_202_row_manifest_and_exact_queue_complement
     with paths["remaining"].open(encoding="utf-8", newline="") as handle:
         remaining = list(csv.DictReader(handle))
     assert tuple(remaining[0]) == ACQUISITION_QUEUE_HEADER
-    assert len(remaining) == 134
+    assert len(remaining) == 120
     assert {row["candidate_id"] for row in remaining} == {
         row["candidate_id"] for row in manifest if row["evidence_sha256"] == "NR"
     }
@@ -411,4 +422,35 @@ def test_merge_rejects_overlay_that_does_not_replace_a_provisional_draft_row(
     write_csv(paths["draft"], EVIDENCE_PACKET_HEADER, rows)
 
     with pytest.raises(MergeError, match="must replace a provisional draft row"):
+        run_merge(paths)
+
+def test_merge_rejects_output_path_that_aliases_difficult_overlay(tmp_path: Path) -> None:
+    paths = build_inputs(tmp_path)
+    original_difficult = paths["difficult"].read_bytes()
+    paths["manifest"] = paths["difficult"]
+
+    with pytest.raises(MergeError, match="must not alias protected path"):
+        run_merge(paths)
+
+    assert paths["difficult"].read_bytes() == original_difficult
+
+def test_merge_rejects_difficult_overlay_candidate_id_collision(tmp_path: Path) -> None:
+    paths = build_inputs(tmp_path)
+    with paths["public"].open(encoding="utf-8", newline="") as handle:
+        public_rows = list(csv.DictReader(handle))
+    with paths["difficult"].open(encoding="utf-8", newline="") as handle:
+        difficult_rows = list(csv.DictReader(handle))
+    difficult_rows[0]["candidate_id"] = public_rows[0]["candidate_id"]
+    write_csv(paths["difficult"], EVIDENCE_PACKET_HEADER, difficult_rows)
+
+    with pytest.raises(MergeError, match="overlays: duplicate candidate_id 'C0002'"):
+        run_merge(paths)
+
+def test_merge_requires_exact_14_row_difficult_overlay(tmp_path: Path) -> None:
+    paths = build_inputs(tmp_path)
+    with paths["difficult"].open(encoding="utf-8", newline="") as handle:
+        difficult_rows = list(csv.DictReader(handle))
+    write_csv(paths["difficult"], EVIDENCE_PACKET_HEADER, difficult_rows[:-1])
+
+    with pytest.raises(MergeError, match="high-difficult overlay: expected 14 rows, found 13"):
         run_merge(paths)

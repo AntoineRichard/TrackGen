@@ -33,8 +33,9 @@ ACQUISITION_QUEUE_HEADER = (
 CANDIDATE_COUNT = 202
 HIGH_PUBLIC_COUNT = 24
 HIGH_OFFICIAL_COUNT = 15
-BYTE_BACKED_COUNT = 68
-PROVISIONAL_COUNT = 134
+HIGH_DIFFICULT_COUNT = 14
+BYTE_BACKED_COUNT = 82
+PROVISIONAL_COUNT = 120
 QUEUE_INPUT_COUNT = 174
 C0122_CANDIDATE_ID = "C0122"
 C0122_ARTIFACT_SHA256 = "8b5119b6edc8bce2bfb360a279a33b20e47fbca9d803a61a2e9cb18890cd020a"
@@ -549,6 +550,7 @@ def merge(
     high_public_path: Path,
     high_official_path: Path,
     acquisition_queue_path: Path,
+    high_difficult_path: Path,
     source_archive_v7: Path,
     source_archive_v8: Path,
     supplied_pdf_path: Path,
@@ -572,6 +574,7 @@ def merge(
             draft_path,
             high_public_path,
             high_official_path,
+            high_difficult_path,
             acquisition_queue_path,
             supplied_pdf_path,
         ),
@@ -603,13 +606,22 @@ def merge(
         allowed_ids=candidate_ids,
         expected_count=HIGH_OFFICIAL_COUNT,
     )
-    collision = set(row["candidate_id"] for row in high_public) & set(
-        row["candidate_id"] for row in high_official
+    high_difficult = _require_exact_manifest(
+        high_difficult_path,
+        label="high-difficult overlay",
+        allowed_ids=candidate_ids,
+        expected_count=HIGH_DIFFICULT_COUNT,
     )
-    if collision:
-        raise MergeError(f"overlays: duplicate candidate_id {sorted(collision, key=str.encode)[0]!r}")
+    overlays = (high_public, high_official, high_difficult)
+    overlay_ids = [row["candidate_id"] for overlay in overlays for row in overlay]
+    duplicate_overlay_ids = sorted(
+        (candidate_id for candidate_id, count in Counter(overlay_ids).items() if count > 1),
+        key=str.encode,
+    )
+    if duplicate_overlay_ids:
+        raise MergeError(f"overlays: duplicate candidate_id {duplicate_overlay_ids[0]!r}")
     draft_by_id = {row["candidate_id"]: row for row in draft}
-    for overlay in (*high_public, *high_official):
+    for overlay in (*high_public, *high_official, *high_difficult):
         draft_row = draft_by_id[overlay["candidate_id"]]
         if (
             draft_row["evidence_sha256"] != "NR"
@@ -619,8 +631,8 @@ def merge(
             raise MergeError(
                 f"overlay {overlay['candidate_id']}: must replace a provisional draft row"
             )
-    _validate_overlays(high_public, label="high-public overlay", source_archive_v8=source_archive_v8)
-    _validate_overlays(high_official, label="high-official overlay", source_archive_v8=source_archive_v8)
+    for label, overlay in zip(("high-public", "high-official", "high-difficult"), overlays, strict=True):
+        _validate_overlays(overlay, label=f"{label} overlay", source_archive_v8=source_archive_v8)
 
     queue = _read_queue(acquisition_queue_path, candidate_ids=candidate_ids)
     draft_provisional = {row["candidate_id"] for row in draft if row["evidence_sha256"] == "NR"}
@@ -663,6 +675,9 @@ def merge(
     for row in high_official:
         final_by_id[row["candidate_id"]] = dict(row)
         sources[row["candidate_id"]] = "high-official"
+    for row in high_difficult:
+        final_by_id[row["candidate_id"]] = dict(row)
+        sources[row["candidate_id"]] = "high-difficult"
     final_by_id[C0122_CANDIDATE_ID] = supplied
     sources[C0122_CANDIDATE_ID] = "user-supplied"
     final_rows = list(final_by_id.values())
@@ -701,6 +716,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--draft", type=Path, default=_default_path("paper", "data", "screening_work", "v8", "main_evidence_manifest_draft.csv"))
     parser.add_argument("--high-public", type=Path, default=_default_path("paper", "data", "screening_work", "v8", "main_evidence_acquisitions", "high_public_manifest.csv"))
     parser.add_argument("--high-official", type=Path, default=_default_path("paper", "data", "screening_work", "v8", "main_evidence_acquisitions", "high_official_manifest.csv"))
+    parser.add_argument("--high-difficult", type=Path, default=_default_path("paper", "data", "screening_work", "v8", "main_evidence_acquisitions", "high_difficult_manifest.csv"))
     parser.add_argument("--acquisition-queue", type=Path, default=_default_path("paper", "data", "screening_work", "v8", "main_evidence_acquisition_queue.csv"))
     parser.add_argument("--source-archive-v7", type=Path, default=_default_path("paper", "data", "source_archive", "v7"))
     parser.add_argument("--source-archive-v8", type=Path, default=_default_path("paper", "data", "source_archive", "v8"))
@@ -717,6 +733,7 @@ def main(argv: list[str] | None = None) -> int:
             draft_path=args.draft,
             high_public_path=args.high_public,
             high_official_path=args.high_official,
+            high_difficult_path=args.high_difficult,
             acquisition_queue_path=args.acquisition_queue,
             source_archive_v7=args.source_archive_v7,
             source_archive_v8=args.source_archive_v8,
