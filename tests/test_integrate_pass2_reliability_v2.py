@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import csv
+import hashlib
+import shutil
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -149,4 +152,107 @@ def test_v2_rejects_existing_output_and_tampered_disagreements(tmp_path: Path) -
     ):
         reliability_snapshot.validate_reliability_v2(
             repository_root=ROOT, snapshot=output, input_root=INPUT_ROOT
+        )
+
+
+def rewrite_csv(path: Path, rows: list[dict[str, str]]) -> None:
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=tuple(rows[0]), lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def mutate_v2_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    snapshot: Path,
+    mutations: dict[str, list[dict[str, str]]],
+) -> Path:
+    input_root = tmp_path / "inputs"
+    input_root.mkdir()
+    for filename in INPUTS:
+        shutil.copyfile(INPUT_ROOT / filename, input_root / filename)
+    for filename, rows in mutations.items():
+        rewrite_csv(input_root / filename, rows)
+        shutil.copyfile(input_root / filename, snapshot / "inputs" / filename)
+
+    monkeypatch.setattr(
+        reliability_snapshot,
+        "V2_INPUT_SPECS",
+        tuple(
+            replace(
+                spec,
+                sha256=hashlib.sha256(
+                    (input_root / spec.filename).read_bytes()
+                ).hexdigest(),
+            )
+            if spec.filename in mutations
+            else spec
+            for spec in reliability_snapshot.V2_INPUT_SPECS
+        ),
+    )
+    return input_root
+
+
+def test_v2_rejects_tampered_salted_rank(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    output = build_snapshot(tmp_path)
+    filename = "trackgen-pass2-v2-holdout-manifest.csv"
+    holdout = read_csv(INPUT_ROOT / filename)
+    holdout[0]["salted_rank_sha256"] = "0" * 64
+    input_root = mutate_v2_inputs(
+        monkeypatch, tmp_path, output, {filename: holdout}
+    )
+
+    with pytest.raises(
+        reliability_snapshot.ReliabilityValidationError,
+        match="salted holdout deterministic selection mismatch",
+    ):
+        reliability_snapshot.validate_reliability_v2(
+            repository_root=ROOT, snapshot=output, input_root=input_root
+        )
+
+
+def test_v2_rejects_quota_preserving_cherry_picked_replacement(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    output = build_snapshot(tmp_path)
+    holdout_filename = "trackgen-pass2-v2-holdout-manifest.csv"
+    selection_filename = "trackgen-pass2-v2-reliability-selection.csv"
+    holdout = read_csv(INPUT_ROOT / holdout_filename)
+    selection = read_csv(INPUT_ROOT / selection_filename)
+    replacement = "DRAFT_C0023"
+    evidence_sha256 = holdout[0]["evidence_sha256"]
+    salt = reliability_snapshot.V2_HOLDOUT_SALT
+
+    holdout[0] = {
+        "cite_key": replacement,
+        "first_domain": "ground",
+        "selection_salt": salt,
+        "salted_rank_sha256": hashlib.sha256(
+            f"{salt}\0{replacement}".encode("utf-8")
+        ).hexdigest(),
+        "pilot_overlap": "false",
+        "evidence_sha256": evidence_sha256,
+    }
+    selection[0] = {
+        "cite_key": replacement,
+        "first_domain": "ground",
+        "rank_sha256": hashlib.sha256(replacement.encode("utf-8")).hexdigest(),
+        "evidence_sha256": evidence_sha256,
+    }
+    input_root = mutate_v2_inputs(
+        monkeypatch,
+        tmp_path,
+        output,
+        {holdout_filename: holdout, selection_filename: selection},
+    )
+
+    with pytest.raises(
+        reliability_snapshot.ReliabilityValidationError,
+        match="salted holdout deterministic selection mismatch",
+    ):
+        reliability_snapshot.validate_reliability_v2(
+            repository_root=ROOT, snapshot=output, input_root=input_root
         )

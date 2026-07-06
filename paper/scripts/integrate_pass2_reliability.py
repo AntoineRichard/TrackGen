@@ -6,6 +6,7 @@ import argparse
 import csv
 import hashlib
 import io
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
@@ -784,6 +785,79 @@ def _v2_index(rows: list[dict[str, str]], *, label: str) -> dict[str, dict[str, 
     return indexed
 
 
+def _v2_expected_holdout(
+    repository_root: Path,
+) -> dict[str, dict[str, str]]:
+    evidence_path = repository_root / V2_PRIMARY_RELATIVE / "coding/evidence.csv"
+    evidence_payload = _regular_bytes(
+        evidence_path,
+        label="primary v2 coding evidence",
+        error_type=ReliabilityValidationError,
+    )
+    evidence = _v2_index(
+        _csv_rows(evidence_path, error_type=ReliabilityValidationError),
+        label="primary v2 coding evidence",
+    )
+    pilot = _v2_index(
+        _csv_rows(
+            repository_root / V2_PILOT_SELECTION_RELATIVE,
+            error_type=ReliabilityValidationError,
+        ),
+        label="pilot-v1 selection",
+    )
+    evidence_sha256 = _sha256(evidence_payload)
+    by_domain: dict[str, list[dict[str, str]]] = {}
+    for cite_key, row in evidence.items():
+        labels = [
+            label.strip()
+            for label in row.get("domain", "").split(";")
+            if label.strip()
+        ]
+        if not labels:
+            raise ReliabilityValidationError(
+                f"primary v2 coding evidence: {cite_key} has no first domain"
+            )
+        first_domain = labels[0]
+        salted_rank = _sha256(
+            f"{V2_HOLDOUT_SALT}\0{cite_key}".encode("utf-8")
+        )
+        by_domain.setdefault(first_domain, []).append(
+            {
+                "cite_key": cite_key,
+                "first_domain": first_domain,
+                "salted_rank_sha256": salted_rank,
+            }
+        )
+
+    expected: dict[str, dict[str, str]] = {}
+    for first_domain in sorted(by_domain):
+        candidates = by_domain[first_domain]
+        target = min(len(candidates), max(2, math.ceil(0.20 * len(candidates))))
+        ranking_key = lambda row: (row["salted_rank_sha256"], row["cite_key"])
+        non_pilot = sorted(
+            (row for row in candidates if row["cite_key"] not in pilot),
+            key=ranking_key,
+        )
+        fallback = sorted(
+            (row for row in candidates if row["cite_key"] in pilot),
+            key=ranking_key,
+        )
+        selected = non_pilot[:target]
+        if len(selected) < target:
+            selected.extend(fallback[: target - len(selected)])
+        for row in selected:
+            cite_key = row["cite_key"]
+            expected[cite_key] = {
+                "cite_key": cite_key,
+                "first_domain": first_domain,
+                "selection_salt": V2_HOLDOUT_SALT,
+                "salted_rank_sha256": row["salted_rank_sha256"],
+                "pilot_overlap": str(cite_key in pilot).lower(),
+                "evidence_sha256": evidence_sha256,
+            }
+    return expected
+
+
 def _v2_disagreement_rows(
     primary: dict[str, dict[str, str]], reliability: dict[str, dict[str, str]]
 ) -> list[dict[str, str]]:
@@ -939,35 +1013,24 @@ def _v2_validate_data(snapshot: Path, repository_root: Path) -> list[dict[str, s
         _csv_rows(snapshot / "inputs/trackgen-pass2-v2-reliability-selection.csv", error_type=ReliabilityValidationError),
         label="reliability selection",
     )
-    if set(holdout) != set(selection) or len(holdout) != 18:
-        raise ReliabilityValidationError("salted holdout and selection keys mismatch")
-    if {row["selection_salt"] for row in holdout.values()} != {V2_HOLDOUT_SALT}:
-        raise ReliabilityValidationError("salted holdout selection salt mismatch")
-    expected_strata = {"ground": 10, "adjacent": 3, "aerial": 2, "maritime": 2, "NR": 1}
-    actual_strata = {
-        stratum: sum(row["first_domain"] == stratum for row in holdout.values())
-        for stratum in expected_strata
+    expected_holdout = _v2_expected_holdout(repository_root)
+    if holdout != expected_holdout:
+        raise ReliabilityValidationError(
+            "salted holdout deterministic selection mismatch"
+        )
+    expected_selection = {
+        cite_key: {
+            "cite_key": cite_key,
+            "first_domain": row["first_domain"],
+            "rank_sha256": _sha256(cite_key.encode("utf-8")),
+            "evidence_sha256": row["evidence_sha256"],
+        }
+        for cite_key, row in holdout.items()
     }
-    if actual_strata != expected_strata:
-        raise ReliabilityValidationError("salted holdout strata mismatch")
-    overlap = {key for key, row in holdout.items() if row["pilot_overlap"] == "true"}
-    if overlap != {"DRAFT_C0063"} or holdout["DRAFT_C0063"]["first_domain"] != "NR":
-        raise ReliabilityValidationError("salted holdout sole NR pilot overlap mismatch")
-    if any(row["pilot_overlap"] not in {"true", "false"} for row in holdout.values()):
-        raise ReliabilityValidationError("salted holdout overlap flag mismatch")
-    pilot = _v2_index(
-        _csv_rows(repository_root / V2_PILOT_SELECTION_RELATIVE, error_type=ReliabilityValidationError),
-        label="pilot-v1 selection",
-    )
-    if set(holdout) & set(pilot) != overlap or len(set(holdout) - set(pilot)) != 17:
-        raise ReliabilityValidationError("salted holdout pilot disjointness mismatch")
-    for key in holdout:
-        if (
-            holdout[key]["first_domain"] != selection[key]["first_domain"]
-            or holdout[key]["evidence_sha256"] != selection[key]["evidence_sha256"]
-            or selection[key]["rank_sha256"] != _sha256(key.encode("utf-8"))
-        ):
-            raise ReliabilityValidationError("salted holdout selection record mismatch")
+    if selection != expected_selection:
+        raise ReliabilityValidationError(
+            "reliability compatibility selection mismatch"
+        )
 
     packet = _v2_index(
         _csv_rows(snapshot / "inputs/trackgen-pass2-v2-reliability-packet.csv", error_type=ReliabilityValidationError),
