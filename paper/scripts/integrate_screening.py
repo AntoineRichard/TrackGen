@@ -908,13 +908,12 @@ def _validate_comparison_analysis(
             for rating in pair
         ]
         comparison_words = set(folded_words)
-        for index in range(2):
-            unique_words = reason_words[index] - reason_words[1 - index]
-            if not unique_words or comparison_words.isdisjoint(unique_words):
-                raise ScreeningIntegrationError(
-                    f"{context_label}: A3 comparison analysis must include a "
-                    "distinctive word from each raw exclusion reason"
-                )
+        distinctive_words = reason_words[0] ^ reason_words[1]
+        if distinctive_words and comparison_words.isdisjoint(distinctive_words):
+            raise ScreeningIntegrationError(
+                f"{context_label}: A3 comparison analysis must include a "
+                "distinctive word from the raw exclusion-reason difference"
+            )
     if "A4" in trigger_ids:
         for conflict in resolved_conflicts:
             conflict_id = _normalize_evidence_text(

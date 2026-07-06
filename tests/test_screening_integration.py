@@ -3139,6 +3139,114 @@ def test_genuinely_structured_adjudication_rationales_pass(
     assert snapshot.is_dir()
 
 
+def _substantive_a3_comparison(extra_clause: str) -> str:
+    return (
+        "For candidate C9000, the adjudicator compares the locked source "
+        "descriptions whereas the evidence review evaluates method details, "
+        "reusable implementation behavior, experimental context, provenance "
+        "records, technical contributions, source passages, and decision "
+        "boundaries before selecting the final outcome. The candidate-specific "
+        "analysis addresses the shared geometry conclusion and explains how "
+        f"the differing exclusion-reason evidence affects the decision: "
+        f"{extra_clause}"
+    )
+
+
+def _strict_subset_a3_validation_inputs(*, reverse: bool = False):
+    common = {
+        "candidate_id": "C9000",
+        "batch_id": "batch-9000",
+        "screening_status": "excluded",
+        "criterion": "exclude-traffic-only",
+    }
+    first = {
+        **common,
+        "assignment_id": "A9000-1",
+        "coder_id": "coder-one",
+        "exclusion_reason": "Shared reference indicates procedural geometry.",
+    }
+    second = {
+        **common,
+        "assignment_id": "A9000-2",
+        "coder_id": "coder-two",
+        "exclusion_reason": (
+            "Shared reference indicates procedural geometry with "
+            "parametric extensions."
+        ),
+    }
+    row = {
+        "candidate_id": "C9000",
+        "input_sha256": "input-sha-9000",
+        "snapshot_sha256": "snapshot-sha-9000",
+        "primary_snapshot_sha256": "primary-snapshot-sha-9000",
+        "assignment_ids": "A9000-1;A9000-2",
+        "adjudicator_id": "adjudicator-9000",
+        "reviewer_ids": "coder-one;coder-two",
+        "screening_status": "excluded",
+        "criterion": "exclude-traffic-only",
+        "access_status": "full_text",
+        "source_urls": "https://example.org/C9000",
+        "evidence_archive_url": "https://archive.example.org/C9000",
+        "evidence_sha256": "evidence-sha-9000",
+        "screening_locator": "Section 3, page 7",
+        "exclusion_reason": first["exclusion_reason"],
+        "resolved_conflict_ids": "NR",
+    }
+    return row, (second, first) if reverse else (first, second)
+
+
+def test_a3_comparison_accepts_strict_subset_reason_difference() -> None:
+    row, pair = _strict_subset_a3_validation_inputs()
+
+    integration._validate_comparison_analysis(
+        _substantive_a3_comparison(
+            "The second review specifically identifies parametric variation."
+        ),
+        row,
+        pair,
+        (),
+        ("A3",),
+        "A source-grounded deciding fact.",
+        context_label="test strict subset",
+    )
+
+
+def test_a3_comparison_accepts_strict_subset_in_reversed_order() -> None:
+    row, pair = _strict_subset_a3_validation_inputs(reverse=True)
+
+    integration._validate_comparison_analysis(
+        _substantive_a3_comparison(
+            "The first review specifically identifies parametric variation."
+        ),
+        row,
+        pair,
+        (),
+        ("A3",),
+        "A source-grounded deciding fact.",
+        context_label="test reversed strict subset",
+    )
+
+
+def test_a3_comparison_rejects_shared_reason_words_only() -> None:
+    row, pair = _strict_subset_a3_validation_inputs()
+
+    with pytest.raises(
+        integration.ScreeningIntegrationError,
+        match="A3 comparison analysis",
+    ):
+        integration._validate_comparison_analysis(
+            _substantive_a3_comparison(
+                "Both reviews retain the shared geometry conclusion."
+            ),
+            row,
+            pair,
+            (),
+            ("A3",),
+            "A source-grounded deciding fact.",
+            context_label="test shared words only",
+        )
+
+
 def test_canonical_evidence_accepts_control_phrases_as_bound_data(
     tmp_path: Path,
 ) -> None:
