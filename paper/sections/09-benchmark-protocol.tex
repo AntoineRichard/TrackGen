@@ -35,14 +35,14 @@ generator failure rates. Any repair budget, feasibility predicate, descriptor co
 normalization reference set, and selection algorithm belongs in the versioned suite
 manifest.
 
-The immutable held-out evaluation suite contains at least 100 courses for each
-declared domain/configuration. Its selection spans continuous descriptor-spectrum
-quantiles and satisfies declared diversity constraints, such as a minimum separation
-or coverage target. These courses are never named ``easy,'' ``medium,'' or ``hard.''
-Instead, the manifest provides their descriptor vectors, quantile memberships,
-normalization domain, and feasibility evidence. When a domain/configuration has fewer
-than 100 feasible non-duplicate candidates, the release must report the shortfall and
-the generator population from which it arose rather than silently relaxing the rule.
+An immutable held-out evaluation suite may admit a declared domain/configuration only
+after its candidate pool contains at least 100 feasible, non-duplicate courses spanning
+the declared continuous descriptor spectrum and diversity constraints, such as a
+minimum separation or coverage target. These courses are never named ``easy,''
+``medium,'' or ``hard.'' Instead, the manifest provides their descriptor vectors,
+quantile memberships, normalization domain, and feasibility evidence. A shortfall is a
+generation-audit result: it reports the candidate population and failure causes, but
+does not authorize a smaller immutable released suite for that domain/configuration.
 
 Training, validation, and test partitions must separate root seeds and configuration
 families. A configuration family includes all parameterizations that share a common
@@ -54,22 +54,39 @@ guarantee.
 
 \subsection{Policy Evaluation}
 
-For every policy--course pair, report completion or task success, progress and lap
-time where defined, collisions and rule or constraint violations, tracking error,
-energy or control effort, and robustness under declared perturbations. Training cost
-should include environment interactions, simulator steps, wall-clock time, and the
-number of courses observed, so that sample efficiency is not conflated with simulator
-throughput. Cross-generator transfer evaluates policies on held-out generators or
-configuration families; cross-simulator transfer evaluates a portable course and
-policy contract in a second declared simulator. Neither result is implied by in-domain
-success.
+For course $c\in\mathcal{C}$, policy seed $p\in\mathcal{P}_c$, and rollout seed
+$r\in\mathcal{R}_{cp}$, let $S_{cpr}$ and $V_{cpr}$ be success and violation
+indicators. Aggregate rollout seeds within a policy seed and policy seeds within a
+course, for example,
+\begin{equation}
+  \overline{S}_{cp}=\frac{1}{|\mathcal{R}_{cp}|}\sum_{r\in\mathcal{R}_{cp}}S_{cpr},
+  \qquad \widehat{S}_c=\frac{1}{|\mathcal{P}_c|}\sum_{p\in\mathcal{P}_c}\overline{S}_{cp}.
+  \label{eq:policy-success-estimator}
+\end{equation}
+Define $\overline{V}_{cp}$ and $\widehat{V}_c$ analogously. The benchmark success
+and violation rates are $|\mathcal{C}|^{-1}\sum_{c\in\mathcal{C}}\widehat{S}_c$ and
+$|\mathcal{C}|^{-1}\sum_{c\in\mathcal{C}}\widehat{V}_c$: their denominators are,
+respectively, rollouts per policy seed, policy seeds per course, and courses in the immutable suite.
 
-Evaluation is paired across common immutable course identifiers. Run multiple policy
-seeds and, where stochastic, multiple rollout seeds; retain each course-level outcome
-rather than reporting only a global mean. Report paired differences, empirical
-distributions and quantiles, a failure taxonomy, and uncertainty intervals bootstrapped
-over courses, with policy-seed aggregation declared explicitly. This protocol exposes
-whether an average masks a narrow subset of course failures.
+Report time in seconds (lap time or time to termination), progress as a declared
+fraction in $[0,1]$ or distance in metres, position and angular tracking error in
+metres and radians, energy in joules when defined, and otherwise-integrated control
+effort in declared action-squared-seconds units. Each continuous outcome states its
+denominator and aggregation order. A timeout without completion has $S_{cpr}=0$;
+collisions and rule violations set $V_{cpr}=1$ under the declared taxonomy. Timeouts,
+collisions, and other terminations remain distinct outcome labels, and time, progress,
+tracking, and effort state whether failures are included, censored at the horizon, or
+reported only for successful runs.
+
+Evaluation is paired across common immutable course identifiers. For two policies,
+form paired course differences only after the rollout-then-policy aggregation above;
+bootstrap courses for intervals and retain course-level distributions, quantiles, and
+the failure taxonomy. Training cost should include environment interactions, simulator
+steps, wall-clock time, and the number of courses observed, so that sample efficiency
+is not conflated with simulator throughput. Cross-generator transfer evaluates policies
+on held-out generators or configuration families; cross-simulator transfer evaluates a
+portable course and policy contract in a second declared simulator. Neither result is
+implied by in-domain success.
 
 \begin{table}[t]
   \centering
@@ -86,9 +103,9 @@ whether an average masks a narrow subset of course failures.
     Course collection & $10{,}000$--$100{,}000$ attempted courses per generator as
     the proposed target; feasibility-first descriptors and recorded repair & Larger
     distributions and adaptive sampling studies \\
-    Evaluation suite & Immutable suite with at least 100 courses per declared
-    domain/configuration, spectrum-quantile coverage, and diversity checks & Expanded
-    suite sizes and longitudinal challenge sets \\
+    Evaluation suite & Admission only after $\geq100$ feasible non-duplicate courses
+    span the declared spectrum and diversity constraints & Expanded suite sizes and
+    longitudinal challenge sets \\
     Policy results & Common course IDs, multiple policy seeds, course-level outcomes,
     intervals, and failure taxonomy & Community leaderboards and additional reference
     agents \\
@@ -121,3 +138,8 @@ The reference implementation target is a portable course representation plus ada
 to mainstream reinforcement-learning interfaces, including a Gymnasium-style reset/step
 contract and vectorized access where supported. Adapters should preserve immutable
 course identifiers, seed provenance, units, frames, collision geometry, reset state,
+observation and action spaces, reward definition, termination and truncation rules,
+and information fields. A declared backend should also specify its vectorized and
+headless execution behavior, including reset and throughput semantics. The exact
+adapter set, file formats, simulator coverage, and interface behavior are
+implementation targets for a future release, not evidence of a released capability.

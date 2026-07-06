@@ -88,20 +88,35 @@ invert when the vehicle, controller, objective, or normalization domain changes.
 
 \subsection{Diversity}
 
-Diversity is evaluated in descriptor space and conditional on feasibility. Given
-normalized descriptors $z_i$, report coverage of a declared grid, quantile lattice,
-or radius-based support; a pairwise-distance summary such as
-$\binom{N}{2}^{-1}\sum_{i<j}\lVert z_i-z_j\rVert$; and a duplicate or near-duplicate
-rate under a fixed descriptor and representation-level threshold. When comparing
-collections $A$ and $B$, report an energy-distance or maximum-mean-discrepancy-style
-estimator with its kernel or distance, normalization, and uncertainty. Entropy is
-appropriate only when binning or density estimation is supported by the sample size;
-report the estimator, bias correction if any, and sensitivity to binning or bandwidth.
+Diversity is evaluated in descriptor space conditional on validity. Let
+\begin{equation}
+  \mathcal{V}=\{i\in\{1,\ldots,N\}:I_i^{(\mathrm{valid})}=1\},
+  \qquad n_V=|\mathcal{V}|,
+  \label{eq:valid-index-set}
+\end{equation}
+where the validity predicate is declared. Given normalized descriptors $z_i$, report
+coverage of a declared grid, quantile lattice, or radius-based support on
+$\mathcal{V}$; a duplicate or near-duplicate rate with its numerator, denominator,
+and representation-level threshold evaluated on $\mathcal{V}$; and, for $n_V\geq2$,
+the pairwise summary
+\begin{equation}
+  \widehat{D}_{\mathrm{pair}}
+  =\binom{n_V}{2}^{-1}\sum_{\substack{i<j\\i,j\in\mathcal{V}}}
+  \lVert z_i-z_j\rVert.
+  \label{eq:feasible-pairwise-diversity}
+\end{equation}
+For collections $A$ and $B$, energy-distance or maximum-mean-discrepancy-style
+estimators use their corresponding valid subsets $A_V$ and $B_V$ and report the
+kernel or distance, normalization, sample sizes, and uncertainty. Entropy is
+appropriate only when binning or density estimation is supported by the valid sample
+size; report the estimator, bias correction if any, and sensitivity to binning or
+bandwidth.
 
-The principal diversity quantity is feasible diversity: calculate all coverage and
-distributional summaries on the subset that passes the declared validity predicate,
-while reporting raw yield beside it. This prevents a collection from appearing diverse
-only because invalid samples spread through descriptor space.
+All such diversity estimates are feasible diversity and must be reported beside raw
+generation yield. A summary over all attempts is permissible only when explicitly
+labelled raw, with its invalid/missing-descriptor treatment and attempted-course
+denominator stated. This prevents a collection from appearing diverse only because
+invalid samples spread through descriptor space.
 
 \subsection{Reproducibility}
 
@@ -139,7 +154,7 @@ simulator.
   unit, denominator or sample population, and uncertainty procedure.}
   \label{tab:metric-map}
   \small
-  \begin{tabularx}{\linewidth}{@{}p{0.22\linewidth}p{0.34\linewidth}Y@{}}
+  \begin{tabularx}{\linewidth}{@{}Y Y Y@{}}
     \toprule
     Question & Metrics and units & Failure interpretation \\
     \midrule
@@ -167,3 +182,5 @@ simulator.
 \Cref{sec:benchmark-protocol} turns these metric contracts into a proposed sampling,
 split, and evaluation protocol. In particular, it preserves raw feasibility outcomes
 before descriptor-based selection and evaluates policies on common immutable course
+identifiers through the paired, course-level comparisons specified in
+\cref{sec:benchmark-protocol}.
