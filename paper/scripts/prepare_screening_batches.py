@@ -2483,11 +2483,39 @@ def build_reviewer_release_artifacts(
     evidence_artifact_count: int | None = None
     evidence_bindings_sha256: str | None = None
     if evidence_manifest_payload is not None:
-        evidence_rows = parse_evidence_packet_manifest(
-            evidence_manifest_payload,
-            allowed_candidate_ids=phase_candidate_ids,
-            source_archive=source_archive,
-        )
+        if phase == "main":
+            coordinator_candidate_ids = {
+                row["candidate_id"] for row in manifest_rows
+            }
+            authoritative_evidence_rows = parse_evidence_packet_manifest(
+                evidence_manifest_payload,
+                allowed_candidate_ids=coordinator_candidate_ids,
+                source_archive=source_archive,
+            )
+            evidence_candidate_ids = {
+                row["candidate_id"] for row in authoritative_evidence_rows
+            }
+            if evidence_candidate_ids != coordinator_candidate_ids:
+                missing = sorted(coordinator_candidate_ids - evidence_candidate_ids)
+                extra = sorted(evidence_candidate_ids - coordinator_candidate_ids)
+                raise SnapshotError(
+                    "main authoritative evidence candidate coverage is not exact; "
+                    f"missing={missing}, extra={extra}"
+                )
+            evidence_rows = [
+                row
+                for row in authoritative_evidence_rows
+                if row["candidate_id"] in phase_candidate_ids
+            ]
+            evidence_manifest_payload = _csv_bytes(
+                EVIDENCE_PACKET_HEADER, evidence_rows
+            )
+        else:
+            evidence_rows = parse_evidence_packet_manifest(
+                evidence_manifest_payload,
+                allowed_candidate_ids=phase_candidate_ids,
+                source_archive=source_archive,
+            )
         evidence_artifact_count, evidence_bindings_sha256 = _phase_evidence_bindings(
             evidence_rows,
             phase_candidate_ids=phase_candidate_ids,

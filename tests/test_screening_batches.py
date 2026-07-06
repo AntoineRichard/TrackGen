@@ -4807,6 +4807,104 @@ def test_validate_evidence_manifest_cli_reports_deterministic_counts(
     assert completed.stdout == "evidence manifest valid: candidates=2 artifacts=2\n"
 
 
+def test_main_release_filters_full_authoritative_v8_evidence_packet(
+    tmp_path: Path,
+) -> None:
+    coordinator = screening_batches.validate_snapshot(
+        DATA_ROOT / "screening_inputs" / "v8"
+    )
+    source_archive = DATA_ROOT / "source_archive" / "v8"
+    evidence_payload = (
+        DATA_ROOT / "screening_work" / "v8" / "main_evidence_packet_manifest.csv"
+    ).read_bytes()
+    artifacts = screening_batches.build_reviewer_release_artifacts(
+        coordinator,
+        "main",
+        calibration_result_snapshot_sha256="1" * 64,
+        calibration_decision_snapshot_sha256="2" * 64,
+        evidence_manifest_payload=evidence_payload,
+        source_archive=source_archive,
+    )
+
+    manifest_rows = screening_batches._validate_manifest_shape(
+        coordinator["manifest.csv"]
+    )
+    main_candidate_ids = {
+        row["candidate_id"] for row in manifest_rows if row["phase"] == "main"
+    }
+    evidence_rows = screening_batches.parse_evidence_packet_manifest(
+        artifacts["evidence_packet_manifest.csv"],
+        allowed_candidate_ids=main_candidate_ids,
+        source_archive=None,
+    )
+    assert len(evidence_rows) == len(main_candidate_ids) == 172
+    assert {row["candidate_id"] for row in evidence_rows} == main_candidate_ids
+
+    released_rows = [
+        row
+        for filename in screening_batches.PACKET_FILENAMES
+        for row in screening_batches._read_csv_bytes(
+            artifacts[f"packets/{filename}"],
+            f"packets/{filename}",
+            PACKET_HEADER,
+        )
+    ]
+    assert len(released_rows) == 344
+    assignments_by_candidate: dict[str, list[str]] = {}
+    for row in released_rows:
+        assignments_by_candidate.setdefault(row["candidate_id"], []).append(
+            row["assignment_id"]
+        )
+    assert set(assignments_by_candidate) == main_candidate_ids
+    assert {len(assignments) for assignments in assignments_by_candidate.values()} == {2}
+
+    output = tmp_path / "v8"
+    screening_batches._publish_artifacts(output, artifacts)
+    release_manifest = screening_batches._parse_release_manifest(
+        artifacts["release_manifest.csv"]
+    )[0]
+    screening_batches.validate_reviewer_release_snapshot(
+        output,
+        expected_manifest=release_manifest,
+        coordinator_snapshot=coordinator,
+    )
+
+
+def test_main_release_rejects_invalid_calibration_row_in_full_v8_evidence_packet(
+    tmp_path: Path,
+) -> None:
+    coordinator = screening_batches.validate_snapshot(
+        DATA_ROOT / "screening_inputs" / "v8"
+    )
+    rows = _read_csv(
+        DATA_ROOT / "screening_work" / "v8" / "main_evidence_packet_manifest.csv"
+    )
+    calibration_candidate_ids = {
+        row["candidate_id"]
+        for row in screening_batches._validate_manifest_shape(coordinator["manifest.csv"])
+        if row["phase"] == "calibration"
+    }
+    invalid = next(row for row in rows if row["candidate_id"] in calibration_candidate_ids)
+    invalid["evidence_version"] = "NR"
+    evidence_manifest = tmp_path / "invalid-full-evidence.csv"
+    evidence_manifest.write_bytes(
+        screening_batches._csv_bytes(EVIDENCE_PACKET_HEADER, rows)
+    )
+
+    with pytest.raises(
+        screening_batches.SnapshotError,
+        match="evidence_version must not be NR",
+    ):
+        screening_batches.build_reviewer_release_artifacts(
+            coordinator,
+            "main",
+            calibration_result_snapshot_sha256="1" * 64,
+            calibration_decision_snapshot_sha256="2" * 64,
+            evidence_manifest_payload=evidence_manifest.read_bytes(),
+            source_archive=DATA_ROOT / "source_archive" / "v8",
+        )
+
+
 @pytest.mark.parametrize(
     "mode_arguments",
     [
