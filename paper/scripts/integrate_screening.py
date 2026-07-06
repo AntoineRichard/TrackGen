@@ -3026,7 +3026,10 @@ def _publish_merged_adjudications(output_path: Path, payload: bytes) -> None:
             f"{output_path}: could not publish merged adjudications"
         ) from exc
 
-    _remove_staged_merged_adjudications(stage_path)
+    try:
+        _remove_staged_merged_adjudications(stage_path)
+    except ScreeningIntegrationError:
+        print(f"warning: retained staged adjudications at {stage_path}", file=sys.stderr)
 
 
 def merge_adjudication_batches(

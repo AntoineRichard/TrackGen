@@ -4425,6 +4425,40 @@ def test_merge_adjudications_surfaces_stage_cleanup_failure(
     assert not output.exists()
 
 
+def test_merge_adjudications_keeps_valid_output_after_post_link_cleanup_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    case, rows = _trigger_case(tmp_path, legacy_contract=True)
+    batch = tmp_path / "batch.csv"
+    _write_csv(batch, integration.ADJUDICATION_HEADER, rows)
+    output = tmp_path / "merged.csv"
+    retained: list[Path] = []
+    real_unlink = os.unlink
+
+    def fail_stage_cleanup(path: str) -> None:
+        stage_path = Path(path)
+        if stage_path.name.startswith(".merged.csv."):
+            retained.append(stage_path)
+            raise OSError("injected post-link cleanup failure")
+        real_unlink(path)
+
+    monkeypatch.setattr(os, "unlink", fail_stage_cleanup)
+
+    assert _merge_adjudication_batches(case, [batch], output) == 0
+
+    expected = _csv_bytes(
+        integration.ADJUDICATION_HEADER,
+        sorted(rows, key=lambda row: row["candidate_id"].encode("utf-8")),
+    )
+    assert output.read_bytes() == expected
+    assert retained and retained[0].read_bytes() == expected
+    assert capsys.readouterr().err == (
+        f"warning: retained staged adjudications at {retained[0]}\n"
+    )
+
+
 @pytest.mark.parametrize(
     ("mode", "required_flag"),
     [
