@@ -245,7 +245,7 @@ def test_normalization_rejects_crlf_audit_csv(tmp_path: Path) -> None:
         )
 
 EXPECTED_ACCESS_STATUS_ACTIONS = {
-    "full_text": "user-fetch-or-document-limitation",
+    "full_text": "archive-public-full-text",
     "full_text_official": "archive-official-source",
     "full_text_public": "archive-public-full-text",
     "full_text_public_archive_corrupt": "replace-corrupt-local",
@@ -315,3 +315,21 @@ def test_normalization_rejects_unknown_status_on_trusted_row(
             v7_manifest_path=paths["v7"],
             source_archive=paths["archive"],
         )
+
+
+def test_full_text_audit_generates_public_full_text_queue_action(
+    tmp_path: Path,
+) -> None:
+    paths = build_inputs(tmp_path)
+    audit_path = paths["audits"] / "audits.csv"
+    with audit_path.open(encoding="utf-8", newline="") as handle:
+        audits = list(csv.DictReader(handle))
+    audits[5]["access_status"] = "full_text"
+    write_csv(audit_path, AUDIT_HEADER, audits)
+
+    normalize(paths)
+
+    with paths["queue_output"].open(encoding="utf-8", newline="") as handle:
+        queue = {row["candidate_id"]: row for row in csv.DictReader(handle)}
+    assert queue["C0006"]["raw_access_status"] == "full_text"
+    assert queue["C0006"]["action"] == "archive-public-full-text"

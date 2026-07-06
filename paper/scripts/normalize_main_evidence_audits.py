@@ -40,7 +40,7 @@ ACQUISITION_QUEUE_HEADER = (
 CANDIDATE_COUNT = 202
 NORMALIZATION_DATE = "2026-07-06"
 ACCESS_STATUS_ACTIONS = {
-    "full_text": "user-fetch-or-document-limitation",
+    "full_text": "archive-public-full-text",
     "full_text_official": "archive-official-source",
     "full_text_public": "archive-public-full-text",
     "full_text_public_archive_corrupt": "replace-corrupt-local",

@@ -18,9 +18,9 @@ candidate_id,title,source_url,raw_access_status,action,priority,limitation_note
 | --- | ---: |
 | replace-mismatched-local | 1 |
 | replace-corrupt-local | 1 |
-| archive-public-full-text | 50 |
+| archive-public-full-text | 62 |
 | archive-official-source | 48 |
-| user-fetch-or-document-limitation | 74 |
+| user-fetch-or-document-limitation | 62 |
 
 Queue order is deterministic: high, medium, then low priority; ties use UTF-8 candidate_id order.
 High priority applies when title, source type, or source URL contains a generation, course, scenario, or environment term (including track, road, route, world, map, or terrain). Medium priority applies to replacement work or simulation/driving/vehicle/racing/benchmark/navigation evidence. All remaining candidates are low priority.
