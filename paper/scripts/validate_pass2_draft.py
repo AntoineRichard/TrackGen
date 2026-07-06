@@ -9,7 +9,7 @@ import io
 import json
 import re
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Sequence
 
 if __package__ in {None, ""}:
@@ -53,6 +53,7 @@ FIELD_LOCATOR_PATTERN = re.compile(
     r"reproducibility_fields)=[^;]+"
 )
 BANNED_RELEASE_MARKERS = (
+    "final screening projection",
     "final corpus",
     "production corpus",
     "paper/data/evidence.csv",
@@ -95,6 +96,65 @@ def _release_path(root: Path, release: Path) -> Path:
     return resolved
 
 
+def _safe_relative_posix(value: str, *, direct: bool) -> PurePosixPath:
+    path = PurePosixPath(value)
+    if (
+        not value
+        or "\\" in value
+        or path.is_absolute()
+        or path.as_posix() != value
+        or any(part in {"", ".", ".."} for part in path.parts)
+        or (direct and len(path.parts) != 1)
+    ):
+        _fail("manifest paths must be safe relative POSIX paths")
+    return path
+
+
+def _manifest_file(root: Path, release: Path, row: dict[str, str]) -> Path:
+    relative = _safe_relative_posix(
+        row["path"], direct=row["record_type"] == "generated"
+    )
+    base = release if row["record_type"] == "generated" else root
+    candidate = base.joinpath(*relative.parts)
+    try:
+        resolved = candidate.resolve(strict=True)
+        if candidate.is_symlink() or resolved != candidate or not resolved.is_file():
+            _fail(f"manifest path is missing or aliased: {row['path']}")
+        if row["record_type"] == "input":
+            resolved.relative_to(root)
+    except (OSError, ValueError) as exc:
+        _fail(f"manifest path is missing or aliased: {row['path']}")
+    return resolved
+
+
+def _expected_manifest_rows(
+    root: Path,
+    source_index: list[dict[str, str]],
+    candidates: list[dict[str, str]],
+    batches: dict[str, list[dict[str, str]]],
+) -> list[dict[str, str]]:
+    payloads = _release_payloads(source_index, candidates, batches)
+    rows = [
+        {
+            "record_type": "generated",
+            "path": path,
+            "sha256": _sha256(payload),
+            "row_count": "NR",
+        }
+        for path, payload in sorted(payloads.items())
+    ]
+    rows.extend(
+        {
+            "record_type": "input",
+            "path": _relative(root, path),
+            "sha256": _sha256(_regular_bytes(path, label="authoritative input")),
+            "row_count": "NR",
+        }
+        for path in _required_input_paths(root)
+    )
+    return sorted(rows, key=lambda row: (row["record_type"], row["path"]))
+
+
 def _manifest_rows(root: Path, release: Path) -> list[dict[str, str]]:
     rows = _read_release_csv(release / "release_manifest.csv", RELEASE_MANIFEST_HEADER)
     if not rows:
@@ -105,6 +165,9 @@ def _manifest_rows(root: Path, release: Path) -> list[dict[str, str]]:
         if key in seen or row["record_type"] not in {"generated", "input"}:
             _fail("release manifest has duplicate or invalid records")
         seen.add(key)
+        _safe_relative_posix(
+            row["path"], direct=row["record_type"] == "generated"
+        )
         if not re.fullmatch(r"[0-9a-f]{64}", row["sha256"]):
             _fail("release manifest has invalid SHA-256")
         if row["row_count"] != "NR":
@@ -112,16 +175,22 @@ def _manifest_rows(root: Path, release: Path) -> list[dict[str, str]]:
     return rows
 
 
-def _verify_manifest_and_sums(root: Path, release: Path) -> None:
+def _verify_manifest_and_sums(
+    root: Path,
+    release: Path,
+    source_index: list[dict[str, str]],
+    candidates: list[dict[str, str]],
+    batches: dict[str, list[dict[str, str]]],
+) -> None:
     rows = _manifest_rows(root, release)
+    expected_rows = _expected_manifest_rows(root, source_index, candidates, batches)
+    if _csv_bytes(RELEASE_MANIFEST_HEADER, rows) != _csv_bytes(
+        RELEASE_MANIFEST_HEADER, expected_rows
+    ):
+        _fail("release manifest must contain exact expected records")
     actual: dict[tuple[str, str], str] = {}
     for row in rows:
-        if row["record_type"] == "generated":
-            path = release / row["path"]
-        else:
-            path = root / row["path"]
-        if path.is_symlink() or not path.is_file():
-            _fail(f"manifest path is missing or aliased: {row['path']}")
+        path = _manifest_file(root, release, row)
         actual[(row["record_type"], row["path"])] = _sha256(
             _regular_bytes(path, label="manifest artifact")
         )
@@ -274,6 +343,70 @@ def _validate_templates(release: Path, source_index: list[dict[str, str]], batch
                         _fail(f"{filename} has a source reference outside the draft roster")
 
 
+def _validate_references(
+    filename: str,
+    rows: list[dict[str, str]],
+    roster: set[str],
+    *, references_field: str,
+) -> None:
+    for row in rows:
+        value = row[references_field]
+        if not value:
+            continue
+        keys = [key.strip() for key in value.split(";")]
+        if not all(keys) or any(key not in roster for key in keys):
+            _fail(f"{filename} has a source reference outside the draft roster")
+
+
+def validate_coding_output(
+    *, repository_root: Path, release: Path, coding_output: Path
+) -> None:
+    """Validate mutable coder output without changing the immutable release."""
+    try:
+        root = repository_root.resolve(strict=True)
+        release_root = _release_path(root, release)
+        output = coding_output.resolve(strict=True)
+        if coding_output.is_symlink() or not output.is_dir():
+            _fail("coding output must be a real directory")
+        allowed = {"evidence.csv", "claims.csv", "metrics.csv", "simulators.csv"}
+        names = {path.name for path in output.iterdir()}
+        if "evidence.csv" not in names or not names <= allowed:
+            _fail("coding output must contain evidence.csv and no other artifacts")
+        if any(path.is_symlink() or not path.is_file() for path in output.iterdir()):
+            _fail("coding output contains an unsafe path")
+        source_index = _read_release_csv(release_root / "source_index.csv", SOURCE_INDEX_HEADER)
+        roster = {row["draft_key"] for row in source_index}
+        if len(source_index) != ROSTER_SIZE or len(roster) != ROSTER_SIZE:
+            _fail("release roster is not a 75-key draft roster")
+        taxonomy = json.loads(
+            (root / "paper/data/taxonomy.json").read_text(encoding="utf-8")
+        )
+        evidence = _read_release_csv(output / "evidence.csv", EVIDENCE_HEADER)
+        if len(evidence) != ROSTER_SIZE or {row["cite_key"] for row in evidence} != roster:
+            _fail("coding evidence must contain exactly the 75 draft keys")
+        _validate_evidence_rows(evidence, taxonomy)
+        optional = (
+            ("claims.csv", CLAIMS_HEADER, "cite_keys"),
+            ("metrics.csv", METRICS_HEADER, "cite_keys"),
+            ("simulators.csv", SIMULATORS_HEADER, "cite_key"),
+        )
+        for filename, header, references_field in optional:
+            path = output / filename
+            if not path.exists():
+                continue
+            rows = _read_release_csv(path, header)
+            if filename == "claims.csv":
+                for row in rows:
+                    status = row["evidence_status"]
+                    if status and status not in taxonomy["evidence_status"]:
+                        _fail("claims.csv has an invalid evidence_status")
+            _validate_references(filename, rows, roster, references_field=references_field)
+    except DraftValidationError:
+        raise
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise DraftValidationError(str(exc)) from exc
+
+
 def _validate_deterministic_payloads(
     root: Path,
     release: Path,
@@ -313,7 +446,9 @@ def validate_release(
         source_index, candidates, batches = _validate_roster(
             root, release_root, evidence_archive, c0110_packet_bytes
         )
-        _verify_manifest_and_sums(root, release_root)
+        _verify_manifest_and_sums(
+            root, release_root, source_index, candidates, batches
+        )
         _validate_templates(release_root, source_index, batches, root)
         _validate_deterministic_payloads(root, release_root, source_index, candidates, batches)
     except DraftValidationError:
@@ -332,6 +467,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--evidence-archive", type=Path, required=True)
     parser.add_argument("--c0110-packet-bytes", type=Path, required=True)
+    parser.add_argument("--coding-output", type=Path)
     arguments = parser.parse_args(argv)
     validate_release(
         repository_root=arguments.repository_root,
@@ -339,6 +475,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         evidence_archive=arguments.evidence_archive,
         c0110_packet_bytes=arguments.c0110_packet_bytes,
     )
+    if arguments.coding_output is not None:
+        validate_coding_output(
+            repository_root=arguments.repository_root,
+            release=arguments.release,
+            coding_output=arguments.coding_output,
+        )
     return 0
 
 

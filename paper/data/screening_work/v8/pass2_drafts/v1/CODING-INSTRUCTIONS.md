@@ -8,4 +8,6 @@ Code only with `DRAFT_C####` keys. The evidence template uses the exact `evidenc
 - `supporting` rows may only state fixed-course properties that are directly established by the source and mapped by the protocol. `contextual` rows may only support field, terminology, or literature-gap context. Neither tier establishes a source-native course-generation method.
 - `asset_status` is prospectively controlled with the same scalar vocabulary as `code_status`: `official_open`, `unofficial_open`, `closed`, `not_found`, or `not_applicable`.
 
+Mutable coding output uses `evidence.csv` with exactly these 75 draft keys. `claims.csv`, `metrics.csv`, and `simulators.csv` are optional until populated, but each must use its exact release template header and may reference only draft keys. Validate an output directory with `validate_pass2_draft.py --coding-output`; this checks output only and never rewrites the immutable release or its checksums.
+
 Leave all analytical fields blank while a row remains a template row.
