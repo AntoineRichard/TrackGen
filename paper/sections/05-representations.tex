@@ -117,8 +117,8 @@ than exporting an opaque scene as if it were a portable course specification.
     \toprule
     Primary representation & Retains directly & Typical loss without auxiliary state \\
     \midrule
-    Segment grammar / topology graph & Element types, connectivity, ports, construction order & Metric geometry, widths, surface, route semantics if edges are untyped \\
-    Parametric or sampled centerline + widths & Longitudinal order, tangent, width profile, compact metric geometry & Surface, obstacles, junction choices, exact boundary correspondence under complex geometry \\
+    Segment grammar / topology graph & Element types and connectivity; grammar steps, ports, or provenance only when encoded & Metric geometry, widths, surface, route semantics, and unencoded order or provenance \\
+    Parametric or sampled centerline + widths & Order and width profile; curve tangents if parametric, centerline samples if discrete & Surface, obstacles, junction choices; sampled tangent or curvature without declared interpolation or differencing \\
     Boundary pair / lanelet & Traversable extent, asymmetric bounds, local adjacency & Canonical progress coordinate, route order, elevation and rule semantics unless supplied \\
     Gate poses / waypoint graph & Pose or point state; declared sequence or successors when encoded & Corridor extent, clearance field, visual/collision geometry \\
     Raster, field, or mesh & Discretized occupancy, elevation, or collision/render surface & Exact topology, orientation, units/frame, progression, and semantic elements unless encoded \\
