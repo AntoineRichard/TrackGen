@@ -1,25 +1,181 @@
 \section{Domain Constraints}
 \label{sec:domain-constraints}
 
-Domain constraints are analyzed separately for ground, aerial, and maritime racing
-before their common structure is compared across domains.
+A course becomes operational only when its spatial structure is connected to
+the traversal semantics and feasibility conditions of a domain.  The same
+polyline, gate set, or waypoint list can be adequate in one setting and
+underspecified in another.  This section therefore treats constraints as part of
+the course contract, not as decorative detail added after generation.  The
+comparison preserves domain-specific requirements while identifying a common
+abstraction suitable for portable course descriptions.  Competition rules and
+standards are used only as supporting evidence for task semantics, coordinates,
+or realization requirements; they are not treated as generators.
 
-\subsection{Ground}
+\subsection{Ground Courses}
 
-The ground-domain analysis covers surface-bound geometry, vehicle clearance, and
-route-boundary constraints.
+Ground courses are usually constrained by a route or corridor embedded in a
+surface-bound world.  At the topological level, the course must state whether it
+is an open route, a closed circuit, a branching road network, or a route through
+a network.  A road graph alone is insufficient for an evaluation task when it
+does not identify admissible successors, start and terminal conditions, or the
+lane-level relation to be traversed.  Constructive road systems make this
+dependence visible: PGDrive joins road blocks through declared sockets and
+configures lanes, width, and curvature as course-defining parameters
+\cite{Li2020ImprovingGeneralization}; JunctionArt constructs intersection
+connectivity and lane geometry from control lines and road-design rules
+\cite{Muktadir2023ProceduralGeneration}.
 
-\subsection{Aerial}
+The geometric contract needs a centerline or boundary representation together
+with width, lane, and boundary semantics.  A centerline without a width profile
+cannot state lateral clearance; paired boundaries without a successor relation
+cannot state intended progress.  Curvature and curvature rate constrain the
+ability of a vehicle to remain within the corridor under a declared speed and
+control envelope.  At intersections, turn geometry, field of view, conflict
+area, and the number of possible connecting lanes can all change the sensing and
+planning task even when the overall network topology is unchanged
+\cite{Muktadir2023ProceduralGeneration}.  Such descriptors should be recorded
+in physical units and evaluated against a stated vehicle envelope, rather than
+collapsed into a generic difficulty label.
 
-The aerial-domain analysis covers three-dimensional gate placement, traversal
-orientation, and free-space constraints.
+Surface and collision constraints anchor the abstract corridor in a usable
+world.  They include elevation and grade when relevant, road-surface support,
+boundary collision geometry, obstacles, lane markings whose semantics matter to
+the task, spawn configuration, and an unambiguous world frame.  A course can be
+geometrically sound in its source representation yet fail as a simulation
+artifact because meshes, collision shapes, units, frames, or route identifiers
+are lost on export.  OpenDRIVE-based construction demonstrates the useful but
+limited role of interchange: a generated road network can be loaded by multiple
+tools that derive meshes and waypoints, but import success is an interoperability
+property, not evidence that the export operation generated the course
+\cite{Muktadir2023ProceduralGeneration}.  The corresponding course card should
+record source geometry, collision realization, semantic loss, and import/reset
+outcomes separately, as required by \cref{sec:metrics,sec:benchmark-protocol}.
 
-\subsection{Maritime}
+\subsection{Aerial Courses}
 
-The maritime-domain analysis covers buoy-defined routes, navigable regions, and
-environmental constraints represented by course generators.
+An aerial course is not a ground corridor lifted into three dimensions.  Its
+task-defining markers are typically gates with a three-dimensional pose,
+orientation, aperture, and crossing direction or precedence.  Position alone is
+not enough: a gate's normal can determine which passage counts, its aperture
+sets a spatial tolerance, and its orientation affects the approach trajectory and
+visibility.  Drone racing is consequently a sequential navigation problem
+through gates at speed, with collision-free flight and lap-time objectives
+\cite{Kaufmann2018DeepDrone}.  The course contract should provide a total order,
+partial order, or admissible transition relation for gates and define how a
+crossing is detected, including tolerance, direction, and reset behavior.
 
-\subsection{Cross-Domain}
+Free space is the aerial analogue of a ground corridor but is generally more
+coupled to vehicle dynamics.  Obstacles, keep-out volumes, gate-frame geometry,
+minimum clearance, and the world boundary specify where flight is allowed.
+Visibility is a separate constraint: a gate may be geometrically reachable while
+occluded, out of sensor range, or visually confusable with an obstacle.  Recent
+vision-based drone-racing work identifies the joint effect of coarse gate
+position information, depth ambiguity between gates and obstacles, limited
+feasible space, and the speed--collision-avoidance tradeoff
+\cite{Yu2025MasteringDiverse}.  These are reasons to encode gate pose, obstacle
+geometry, sensing assumptions, and occlusion-relevant realization together,
+rather than describing a course only as a sequence of points.
 
-The cross-domain analysis identifies constraints that can be expressed consistently
-across vehicle classes without erasing domain-specific requirements.
+Feasibility must also be dynamics conditioned.  Gate spacing, relative
+orientation, turn radius, acceleration and braking margins, thrust limits,
+attitude limits, and a vehicle's collision body determine whether a nominal gate
+sequence is traversable.  A nominally collision-free center trajectory is not a
+certificate for a vehicle with finite extent or a controller with bounded
+tracking error.  Simulators such as Flightmare and Aerial Gym are valuable
+supporting realizations for high-rate aerial evaluation, but a simulator API does
+not establish the gate semantics or feasibility predicate for a particular
+course \cite{Song2021FlightmareFlexible,Kulkarni2025AerialGym}.  The course
+specification should therefore declare the vehicle/control envelope, collision
+model, frames, units, and termination conditions in addition to spatial markers.
+
+\subsection{Maritime Courses}
+
+Maritime courses are organized around waypoints, buoys, marks, gates, regions,
+and task rules rather than a continuously bounded paved corridor.  Their
+semantics must say whether a mark is to be passed on a particular side, whether a
+virtual or physical buoy must be reached, which gate direction is valid, and
+whether the relation is a sequence, a choice, or a coverage task.  The World
+Robotic Sailing Championship fleet-race rules, for example, define a start line,
+ordered markers, a finish line, and completion assessed from tracked positions
+\cite{WRSCIRSCOrganizingCommittee2019WorldRobotic}.  Such rules provide a
+concrete specification of task semantics and scoring; they do not provide a
+course-synthesis method.
+
+Unlike a Cartesian indoor scene, a maritime realization often needs explicit
+geospatial frames and transformations.  Course data can combine latitude and
+longitude, local tangent-plane coordinates, compass headings, and simulator
+world coordinates.  A portable record must identify the datum, projection or
+local frame, units, heading convention, and numerical tolerance used to decide
+passage or arrival.  The official sailing rules illustrate this need by defining
+GPS-based tracking and SI-unit scoring alongside latitude/longitude conventions
+\cite{WRSCIRSCOrganizingCommittee2019WorldRobotic}.  Without a declared frame,
+a seemingly small coordinate conversion can move a virtual mark, reverse a
+passage-side test, or make a simulator realization irreproducible.
+
+Navigable-region and environmental predicates are equally important.  The course
+may constrain water boundaries, shallow or excluded regions, obstacle and vessel
+separation, current or wind conditions, time limits, right-of-way rules, and
+communication or multi-vessel task conditions.  A waypoint search procedure can
+mutate a pre-existing route while optimizing a testing objective, as in WPgen;
+the altered waypoints remain meaningful only relative to a vessel model,
+navigation software, and collision-aware simulation context
+\cite{Nylnder2025SearchBased}.  RoboBoat and RobotX task documents similarly
+specify mission, safety, and obstacle-avoidance conditions that a simulator or
+generator must preserve when they are task defining
+\cite{RoboNation2026RoboBoat2026,RoboNation20222022Maritime}.  Rules should be
+encoded as predicates or evaluation conditions, with a clear statement of which
+environmental quantities are fixed, sampled, observed, or left outside the
+course contract.
+
+\begin{table}[t]
+  \centering
+  \caption{Domain constraints that must be separated from an implementation's
+  incidental rendering or storage choices.}
+  \label{tab:domain-constraint-map}
+  \small
+  \begin{tabularx}{\linewidth}{@{}p{0.16\linewidth}Y Y Y@{}}
+    \toprule
+    Domain & Spatial support & Semantic markers and traversal relation & Feasibility and realization contract \\
+    \midrule
+    Ground & Surface-bound corridor, lanes, boundaries, grade, obstacles &
+    Route/lane successors, checkpoints, start and finish & Width, curvature,
+    clearance, collision geometry, vehicle envelope, units/frames, export and
+    import behavior \\
+    Aerial & Three-dimensional free space, obstacles, keep-out volumes & Gate
+    pose, aperture, crossing direction, precedence & Clearance, visibility,
+    dynamics and controller envelope, collision body, sensor assumptions,
+    frames and reset behavior \\
+    Maritime & Navigable water region, boundaries, hazards, environmental field &
+    Waypoints, marks, buoys, gates, pass side, sequence or coverage relation &
+    Geospatial frame, passage tolerance, vessel envelope, collision/right-of-way
+    rules, weather/current assumptions, timing and scoring \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+\subsection{Shared Course Abstraction}
+
+The domain differences above can be expressed through five common components:
+a \emph{traversal relation} over task elements; \emph{spatial support} in
+which traversal may occur; \emph{semantic markers} that identify gates,
+boundaries, checkpoints, buoys, or regions; \emph{feasibility predicates}
+evaluated under a declared vehicle, controller, and environment envelope; and a
+\emph{realization contract} that preserves the relevant elements across
+serialization and simulation.
+This abstraction is intentionally not a claim that all domains share the same
+geometry.  A ground course's support is normally a narrow surface corridor; an
+aerial support is a volume; a maritime support is a navigable geospatial region
+whose boundaries and dynamics may vary with conditions.  What transfers is the
+need to make progression, allowed space, task markers, feasibility, and
+realization explicit.
+
+The abstraction also separates course constraints from fixed competition rules.
+Rules are supporting constraints when they determine marker-passage semantics,
+coordinate conventions, safety limits, scoring, or completion.  They remain
+external to course generation unless a method explicitly transforms those
+constraints into new spatial course structure.  Treating rules this way permits
+benchmark and simulator interfaces to support reproducibility without inflating
+them into generation evidence.  It also makes cross-domain comparison more
+defensible: comparison can occur at the level of declared traversal relation and
+predicate, while the domain extension retains the surface, volume, or maritime
+environmental detail that determines whether a course is actually feasible.

@@ -1,6 +1,195 @@
 \section{Generation Methods}
 \label{sec:generation-methods}
 
-Generation methods are distinguished by whether they synthesize new courses, select
-existing courses, mutate represented courses, replay recorded courses, or repair
-candidates that violate stated constraints.
+Course generation is best understood as a transformation of a
+task-defining spatial object, rather than as a property of a simulator, file
+format, or benchmark.  A pipeline can construct a new road network, modify a
+gate sequence, reject an infeasible candidate, retain a previously generated
+course for later replay, and emit an exchange artifact.  These are different
+operations, and several may occur in one implementation.  Following the
+boundaries in \cref{sec:scope-definitions}, this section separates
+course-changing mechanisms from management of an existing artifact population.
+The resulting organization is deliberately orthogonal: it describes what
+changes course structure, what operation is applied to a candidate or
+population, and how validity is enforced.  It is an analytic classification, not
+a ranking.
+
+\subsection{Mechanisms That Change Course Structure}
+
+\paragraph{Constructive and rule-based generation.}
+Constructive methods map explicit parameters, primitives, grammars, or
+assembly rules to course structure.  The principal advantage is an inspectable
+connection from parameters to geometry and topology.  For example, PGDrive
+represents road blocks with sockets and parameters such as lane count, width,
+and curvature, then docks compatible blocks while building a road network
+\cite{Li2020ImprovingGeneralization}.  JunctionArt likewise constructs
+high-definition road networks from control lines and intersection rules,
+including lane-connectivity geometry that can be exported to OpenDRIVE
+\cite{Muktadir2023ProceduralGeneration}.  Such systems can expose useful
+semantic controls, including intersection degree, corridor width, or route
+structure, but their reachable design space is bounded by the primitive set and
+the validity assumptions embedded in its composition rules.  Human-authored
+control lines or template choices can be part of a constructive workflow; that
+authoring role does not turn a fixed authored course into a generator.
+
+\paragraph{Stochastic procedural generation.}
+Stochasticity is a separate mechanism, not a synonym for constructive
+generation.  It is present when random choices determine alternative spatial
+structure, such as a selected road-block type, a sampled curvature parameter,
+or a randomized gate layout.  In the PGDrive construction, random block and
+parameter selection is coupled to a deterministic socket-assembly rule
+\cite{Li2020ImprovingGeneralization}.  This combination is useful for
+producing a training distribution with broad support while retaining a clear
+parameterization.  Its costs are uneven coverage and potentially high rejection
+or backtracking cost near difficult constraints.  A seed records a particular
+draw; it does not by itself establish either novelty or feasibility.
+
+\paragraph{Search and evolutionary generation.}
+Search-based methods iteratively retain, vary, or return candidates according
+to an objective, fitness, or comparison rule.  They are especially appropriate
+when the desired property is relational or performance-conditioned: a test case
+may be valuable because it exposes a failure mode, or a course may be selected
+because it has a target curvature, visibility, or difficulty profile.  In an
+early racing example, a fixed-length sequence of straight or curved segments
+with width choices is mutated and retained under entertainment-oriented fitness
+criteria \cite{Togelius2006MakingRacing}.  Search-based road testing similarly
+uses candidate geometry to pursue target behaviors rather than merely sampling
+plausible layouts \cite{Blattner2024DiversityGuided}.  The gain is objective
+directed exploration of sparse or adversarial regions; the tradeoff is that the
+returned distribution depends on representation, objective, simulator,
+budget, and selection pressure.  A high fitness score is not a general validity
+certificate, and a search objective should not be confused with the course
+traversal semantics themselves.
+
+\paragraph{Learned generative generation.}
+Learned generative methods use a trained model to emit course state,
+parameters, or geometry.  Hierarchical learned map generation, for example,
+models high-definition-map structure as a graph-generative problem
+\cite{Mi2021HDMapGenHierarchical}; learned driving-environment models similarly
+aim to synthesize scene structure rather than choose from a fixed set of maps
+\cite{Rowe2025ScenarioDreamer}.  This axis can capture regularities not easily
+encoded as hand-written rules and can condition generation on a desired context.
+It also introduces a fidelity problem: generated structure must satisfy the
+course contract and any target distributional claim must be evaluated rather
+than inferred from visual plausibility.  Training data provenance, conditioning
+variables, deterministic reconstruction, and the cost of validation or repair
+therefore belong in the report described in \cref{sec:metrics}.
+
+\paragraph{Feedback-driven environment design.}
+Feedback-driven environment design adapts a distribution of courses using
+learner, agent, or task-performance information.  It is distinct from a learned
+generator because feedback can guide a procedural teacher, a search procedure,
+or selection from an existing population.  Replay-guided adversarial
+environment design makes the distinction explicit: a teacher can propose new
+levels while a curator prioritizes previously encountered levels for replay,
+with the two roles responding to learner feedback \cite{Jiang2021ReplayGuided}.
+Open-ended coevolution similarly treats environment and solution populations as
+coupled objects \cite{Wang2019POETOpen}.  The benefit is an adaptive curriculum
+that can target the changing competence boundary of a policy.  The principal
+risk is a moving and policy-dependent training distribution: performance may
+reflect the curator, generator, reward, and feedback schedule as much as the
+spatial course mechanism.  Evaluation therefore requires a separately frozen or
+reproducibly sampled suite.
+
+\begin{table}[t]
+  \centering
+  \caption{Orthogonal course-changing mechanism axes.  A pipeline may occupy
+  more than one row when it has separately specified stages; rows are not
+  mutually exclusive counts of methods.}
+  \label{tab:generation-mechanism-axes}
+  \small
+  \begin{tabularx}{\linewidth}{@{}p{0.23\linewidth}Y Y@{}}
+    \toprule
+    Mechanism axis & Changes course structure by & Main strength and reporting risk \\
+    \midrule
+    Constructive/rule-based & Computing geometry or topology from primitives,
+    grammars, and explicit parameters & Inspectable controls; the primitive set
+    can silently bound expressivity \\
+    Stochastic procedural & Sampling structure-determining choices & Broad
+    support; seed-specific draws and rejection cost require accounting \\
+    Search/evolutionary & Iteratively retaining and varying candidates under an
+    objective & Objective-directed exploration; output is objective- and
+    budget-dependent \\
+    Learned generative & A trained model emitting course state or parameters &
+    Can encode data regularities; constraint and distributional fidelity require
+    independent checks \\
+    Feedback-driven environment design & Updating generation or scheduling from
+    learner/task feedback & Adaptive curriculum; training distribution changes
+    with the learner and feedback rule \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+\subsection{Operations on Courses and Populations}
+
+Mechanism axes describe how spatial alternatives arise.  A second axis describes
+the evidenced operation performed on a particular candidate or population.
+\emph{Synthesis} emits new course-defining structure.  \emph{Whole-course
+mutation} transforms an already complete candidate, for example by replacing
+segments or moving control points; the evolutionary track representation above
+has this explicit role \cite{Togelius2006MakingRacing}.  \emph{Selection and
+replay} choose among complete extant courses, perhaps using learning potential
+or regret.  They can be indispensable for curriculum design, but they do not
+create new spatial structure when the underlying courses remain unchanged
+\cite{Jiang2021ReplayGuided}.  \emph{Repair and projection} alter a proposed
+course to satisfy a declared condition; a chain-code track generator illustrates
+a workflow in which a candidate construction is followed by a repair-oriented
+stage \cite{doNascimento2021ProceduralGeneration}.
+
+Serialization and interchange are adjacent artifact-management operations, not
+generation.  An OpenDRIVE export, for example, may preserve or translate road
+geometry and allow other tools to instantiate meshes, waypoints, or traffic, yet
+it does not by itself choose a new route or corridor \cite{Muktadir2023ProceduralGeneration}.
+Similarly, CommonRoad and OpenSCENARIO establish reusable scenario or route
+interfaces without constituting course constructors
+\cite{Althoff2017CommonRoadComposable,ASAM2024ASAMOpenSCENARIO}.  This
+separation matters in hybrid pipelines.  A constructive sampler with rejection,
+an evolutionary mutator followed by projection, or a feedback-driven generator
+with replay contains several operations, but it should be described as a staged
+pipeline rather than multiplied into several independent method observations.
+
+\subsection{Validity as an Independent Axis}
+
+Validity answers a different question: whether a generated course, its
+representation, or its realization satisfies an explicit predicate.  It can be
+enforced by construction, by rejection, by an objective penalty, by repair or
+projection, by a constraint solver, or by simulation-based validation.  PGDrive,
+for instance, tests whether a proposed block intersects the assembled network
+and backtracks when it cannot continue \cite{Li2020ImprovingGeneralization};
+JunctionArt reports an intersection validator that can discard unrealistically
+sharp constructions \cite{Muktadir2023ProceduralGeneration}.  These mechanisms
+are evidence about the relationship between a candidate and a predicate, not a
+separate generation family.
+
+The predicate itself must name the abstraction level.  Topological closure,
+non-self-intersection, boundary clearance, curvature limits, ordered gate
+crossing, and successful simulator import are all useful checks, but none implies
+the others.  In particular, an imported artifact can be syntactically valid while
+remaining dynamically infeasible for a declared vehicle envelope.  Repair must
+retain lineage to the raw candidate, and reports should distinguish raw output,
+rejected output, repaired output, and simulator conformance as specified in
+\cref{sec:metrics,sec:benchmark-protocol}.
+
+\subsection{Purpose Conditions the Pipeline}
+
+The same spatial mechanism has different obligations when it supports training,
+testing, or benchmark construction.  For \emph{training}, generation defines a
+sampling distribution and may legitimately adapt through feedback or replay;
+the curriculum, its seed contract, and its interaction with policy updates are
+part of the method.  Procedural environments have been used precisely to vary
+training levels and study generalization beyond a fixed set
+\cite{Cobbe2020LeveragingProcedural,Li2020ImprovingGeneralization}.  For
+\emph{testing}, the aim may be to expose a boundary case, cover a declared
+descriptor space, or search for a violation.  Search objectives and any
+oracle-dependent simulation outcomes must then be reported with their budget and
+failure taxonomy, rather than presented as generic course quality.
+
+For \emph{benchmark construction}, generation is upstream of curation.  A
+benchmark requires an immutable or deterministically reconstructible suite,
+course identifiers, a representation and realization contract, and an explicit
+separation from the data used to fit policies or tune generators.  Selection can
+make a suite balanced or diverse, but a fixed selected suite is an evaluation
+artifact, not a continuing generator.  Across all three purposes, the central
+reporting unit is therefore the declared pipeline and population: mechanism
+axes, operations, validity predicates, and artifact-management stages should be
+stated together without inferring a method frequency from co-occurring labels.
