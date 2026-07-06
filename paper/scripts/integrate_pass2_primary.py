@@ -64,20 +64,24 @@ class IntegrationError(ValueError):
 
 
 @dataclass(frozen=True)
-class BatchSpec:
+class _BatchSpec:
     number: int
     role: str
     agent_id: str
+    model: str
+    reasoning_effort: str
+    filename: str
     source_digest: str
+    row_count: int
 
 
-BATCH_SPECS = (
-    BatchSpec(1, "pass2-primary-01", "019f3952-5cc3-7ac0-b45b-a85d09eb459c", "53436028264e61d23f35c083ecc8cbed58836a3f8f1ea223a8cb7eb55872d507"),
-    BatchSpec(2, "pass2-primary-02", "019f3952-5cec-70e0-bf51-cf59f159aa53", "498e2f3092a6591dfab7493a81367220c4acbdedffc3453fdf2e9c2fd9d5466c"),
-    BatchSpec(3, "pass2-primary-03", "019f3952-5dbf-7250-ad10-38411837bbda", "752bed14ac9ad5be0b6513f09a77007ad53ec3e2e78ccef1fc0b9febf851ac16"),
-    BatchSpec(4, "pass2-primary-04", "019f3952-5d5b-7c23-9f4f-491aae449174", "51dbccc2a60e7081ae9860f3676735ce572f18661c376574bd70bc6d971bd410"),
-    BatchSpec(5, "pass2-primary-05", "019f3952-5d2d-74f1-a2ed-f5dfa8a58dea", "8fa47b1cbabbe446860e7a0f26e7cf337541ce144c30f10f18d4d7b4f03e1645"),
-    BatchSpec(6, "pass2-primary-06", "019f3952-5d94-7023-9bce-89acde705820", "9c71b1d35b69d7fd35fdd18cbde434dc056fd066b9281626f8fb4930d91dc793"),
+EXPECTED_BATCH_SPECS = (
+    _BatchSpec(1, "pass2-primary-01", "019f3952-5cc3-7ac0-b45b-a85d09eb459c", "gpt-5.6-terra", "high", "trackgen-pass2-primary-01.csv", "53436028264e61d23f35c083ecc8cbed58836a3f8f1ea223a8cb7eb55872d507", 13),
+    _BatchSpec(2, "pass2-primary-02", "019f3952-5cec-70e0-bf51-cf59f159aa53", "gpt-5.6-terra", "high", "trackgen-pass2-primary-02.csv", "498e2f3092a6591dfab7493a81367220c4acbdedffc3453fdf2e9c2fd9d5466c", 13),
+    _BatchSpec(3, "pass2-primary-03", "019f3952-5dbf-7250-ad10-38411837bbda", "gpt-5.6-terra", "high", "trackgen-pass2-primary-03.csv", "752bed14ac9ad5be0b6513f09a77007ad53ec3e2e78ccef1fc0b9febf851ac16", 13),
+    _BatchSpec(4, "pass2-primary-04", "019f3952-5d5b-7c23-9f4f-491aae449174", "gpt-5.6-terra", "high", "trackgen-pass2-primary-04.csv", "51dbccc2a60e7081ae9860f3676735ce572f18661c376574bd70bc6d971bd410", 12),
+    _BatchSpec(5, "pass2-primary-05", "019f3952-5d2d-74f1-a2ed-f5dfa8a58dea", "gpt-5.6-terra", "high", "trackgen-pass2-primary-05.csv", "8fa47b1cbabbe446860e7a0f26e7cf337541ce144c30f10f18d4d7b4f03e1645", 12),
+    _BatchSpec(6, "pass2-primary-06", "019f3952-5d94-7023-9bce-89acde705820", "gpt-5.6-terra", "high", "trackgen-pass2-primary-06.csv", "9c71b1d35b69d7fd35fdd18cbde434dc056fd066b9281626f8fb4930d91dc793", 12),
 )
 
 
@@ -123,19 +127,16 @@ def _release_roster(release: Path) -> set[str]:
     return roster
 
 
-def _validate_batch(
+def _validate_batch_rows(
     *,
-    source: Path,
-    spec: BatchSpec,
+    rows: list[dict[str, str]],
+    spec: _BatchSpec,
     release: Path,
     taxonomy: dict[str, list[str]],
-) -> tuple[bytes, list[dict[str, str]]]:
-    payload, rows = _read_evidence(source, label=f"batch input {spec.number}")
-    if _sha256(payload) != spec.source_digest:
-        _fail(f"batch {spec.number}: digest mismatch")
+) -> None:
     expected_keys = _read_release_assignment(release, spec.number)
     keys = [row["cite_key"] for row in rows]
-    if len(rows) != len(expected_keys) or len(set(keys)) != len(keys):
+    if len(rows) != spec.row_count or len(set(keys)) != len(keys):
         _fail(f"batch {spec.number}: duplicate or missing batch keys")
     if keys != expected_keys:
         _fail(f"batch {spec.number}: assignment or row order differs from its release batch")
@@ -147,7 +148,6 @@ def _validate_batch(
         _validate_evidence_rows(rows, taxonomy)
     except DraftValidationError as exc:
         raise IntegrationError(str(exc)) from exc
-    return payload, rows
 
 
 def _documentation() -> dict[str, bytes]:
@@ -175,7 +175,7 @@ def _checksums(
         {"artifact_type": "immutable_release", "path": "immutable-release/release_manifest.csv", "sha256": _sha256(_regular_bytes(release / "release_manifest.csv", label="release manifest")), "row_count": "NR"},
         {"artifact_type": "immutable_release", "path": "immutable-release/SHA256SUMS", "sha256": _sha256(_regular_bytes(release / "SHA256SUMS", label="release SHA256SUMS")), "row_count": "NR"},
         {"artifact_type": "coding_output", "path": "coding/evidence.csv", "sha256": _sha256(evidence_payload), "row_count": str(ROSTER_SIZE)},
-        {"artifact_type": "registry", "path": "execution_registry.csv", "sha256": _sha256(registry_payload), "row_count": str(len(BATCH_SPECS))},
+        {"artifact_type": "registry", "path": "execution_registry.csv", "sha256": _sha256(registry_payload), "row_count": str(len(EXPECTED_BATCH_SPECS))},
     ]
     for number, payload in source_payloads.items():
         rows.append({"artifact_type": "input_batch", "path": f"input/trackgen-pass2-primary-{int(number):02d}.csv", "sha256": _sha256(payload), "row_count": str(batch_row_counts[number])})
@@ -191,14 +191,15 @@ def integrate_primary_batches(
     repository_root: Path,
     release: Path,
     output: Path,
-    batch_sources: Mapping[int | str, Path],
-    batch_specs: Sequence[BatchSpec] = BATCH_SPECS,
+    input_root: Path = Path("/tmp"),
 ) -> None:
-    """Create one separate snapshot after validating all six completed inputs."""
+    """Create one separate snapshot from the six fixed primary inputs."""
     if output.exists() or output.is_symlink():
         _fail("output snapshot must not already exist")
     if release.is_symlink() or not release.is_dir():
         _fail("immutable release must be a real directory")
+    if input_root.is_symlink() or not input_root.is_dir():
+        _fail("input root must be a real directory")
     try:
         root = repository_root.resolve(strict=True)
         release_root = release.resolve(strict=True)
@@ -208,18 +209,26 @@ def integrate_primary_batches(
         raise IntegrationError(str(exc)) from exc
     if release_root.parts[-2:] != ("pass2_drafts", "v1"):
         _fail("release must be the immutable pass2_drafts/v1 directory")
-    if len(batch_specs) != 6 or {spec.number for spec in batch_specs} != set(range(1, 7)):
-        _fail("integration requires exactly the six primary batch specifications")
 
-    source_payloads: dict[int | str, bytes] = {}
-    batch_rows: dict[int | str, list[dict[str, str]]] = {}
-    for spec in sorted(batch_specs, key=lambda item: int(item.number)):
-        source = batch_sources.get(spec.number)
-        if source is None:
-            _fail(f"batch {spec.number}: source input is required")
-        payload, rows = _validate_batch(
-            source=source, spec=spec, release=release_root, taxonomy=taxonomy
-        )
+    source_payloads: dict[int, bytes] = {}
+    batch_rows: dict[int, list[dict[str, str]]] = {}
+    identities: set[tuple[int, int]] = set()
+    for spec in EXPECTED_BATCH_SPECS:
+        source = input_root / spec.filename
+        try:
+            if source.is_symlink() or not source.is_file():
+                _fail(f"batch input {spec.number} must be a regular non-symlink file")
+            stat = source.stat()
+        except OSError as exc:
+            raise IntegrationError(f"unable to inspect batch input {spec.number}") from exc
+        identity = (stat.st_dev, stat.st_ino)
+        if identity in identities:
+            _fail("batch inputs must not share a hard-link alias")
+        identities.add(identity)
+        payload, rows = _read_evidence(source, label=f"batch input {spec.number}")
+        if _sha256(payload) != spec.source_digest:
+            _fail(f"batch {spec.number}: digest mismatch")
+        _validate_batch_rows(rows=rows, spec=spec, release=release_root, taxonomy=taxonomy)
         source_payloads[spec.number] = payload
         batch_rows[spec.number] = rows
 
@@ -231,40 +240,39 @@ def integrate_primary_batches(
     if len(evidence_rows) != ROSTER_SIZE or len(set(evidence_keys)) != ROSTER_SIZE or set(evidence_keys) != roster:
         _fail("integrated evidence has duplicate or missing draft keys")
     evidence_payload = _csv_bytes(EVIDENCE_HEADER, evidence_rows)
-    batch_payloads = dict(source_payloads)
     registry_rows = [
         {
             "role": spec.role,
             "agent_id": spec.agent_id,
-            "model": MODEL,
-            "reasoning_effort": REASONING_EFFORT,
+            "model": spec.model,
+            "reasoning_effort": spec.reasoning_effort,
             "human_role": "NR",
-            "row_count": str(len(batch_rows[spec.number])),
-            "source_input_filename": f"trackgen-pass2-primary-{int(spec.number):02d}.csv",
-            "source_input_sha256": _sha256(source_payloads[spec.number]),
-            "integrated_batch_filename": f"batches/pass2-primary-{int(spec.number):02d}.csv",
-            "integrated_batch_sha256": _sha256(batch_payloads[spec.number]),
+            "row_count": str(spec.row_count),
+            "source_input_filename": spec.filename,
+            "source_input_sha256": spec.source_digest,
+            "integrated_batch_filename": f"batches/pass2-primary-{spec.number:02d}.csv",
+            "integrated_batch_sha256": _sha256(source_payloads[spec.number]),
         }
-        for spec in sorted(batch_specs, key=lambda item: int(item.number))
+        for spec in EXPECTED_BATCH_SPECS
     ]
     registry_payload = _csv_bytes(REGISTRY_HEADER, registry_rows)
     documents = _documentation()
     checksums_payload = _checksums(
         release=release_root,
         source_payloads=source_payloads,
-        batch_payloads=batch_payloads,
+        batch_payloads=source_payloads,
         evidence_payload=evidence_payload,
         registry_payload=registry_payload,
         documents=documents,
-        batch_row_counts={number: len(rows) for number, rows in batch_rows.items()},
+        batch_row_counts={spec.number: spec.row_count for spec in EXPECTED_BATCH_SPECS},
     )
 
     output.mkdir(parents=True)
     (output / "batches").mkdir()
     (output / "coding").mkdir()
     (output / "manifest").mkdir()
-    for spec in sorted(batch_specs, key=lambda item: int(item.number)):
-        (output / f"batches/pass2-primary-{int(spec.number):02d}.csv").write_bytes(batch_payloads[spec.number])
+    for spec in EXPECTED_BATCH_SPECS:
+        (output / f"batches/pass2-primary-{spec.number:02d}.csv").write_bytes(source_payloads[spec.number])
     (output / "coding/evidence.csv").write_bytes(evidence_payload)
     (output / "execution_registry.csv").write_bytes(registry_payload)
     for path, payload in documents.items():
@@ -277,19 +285,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--repository-root", type=Path, default=Path("."))
     parser.add_argument("--release", type=Path, default=Path("paper/data/screening_work/v8/pass2_drafts/v1"))
     parser.add_argument("--output", type=Path, default=Path("paper/data/screening_work/v8/pass2_coding/primary/v1"))
-    for number in range(1, 7):
-        parser.add_argument(
-            f"--batch-{number:02d}",
-            type=Path,
-            default=Path(f"/tmp/trackgen-pass2-primary-{number:02d}.csv"),
-        )
     arguments = parser.parse_args(argv)
     try:
         integrate_primary_batches(
             repository_root=arguments.repository_root,
             release=arguments.release,
             output=arguments.output,
-            batch_sources={number: getattr(arguments, f"batch_{number:02d}") for number in range(1, 7)},
         )
     except IntegrationError as exc:
         parser.error(str(exc))
