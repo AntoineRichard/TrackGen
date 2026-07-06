@@ -371,6 +371,18 @@ def _validate_references(
             _fail(f"{filename} has a source reference outside the draft roster")
 
 
+def _validate_simulator_domain(value: str, taxonomy: dict[str, list[str]]) -> None:
+    if not value or value == "NR":
+        return
+    labels = [label.strip() for label in value.split(";")]
+    allowed = taxonomy["domain"]
+    if any(not label for label in labels) or any(label not in allowed for label in labels):
+        _fail("simulators.csv has an invalid domain list")
+    order = [allowed.index(label) for label in labels]
+    if order != sorted(order) or len(set(labels)) != len(labels):
+        _fail("simulators.csv domain labels must follow taxonomy order without duplicates")
+
+
 def validate_coding_output(
     *, repository_root: Path, release: Path, coding_output: Path
 ) -> None:
@@ -420,6 +432,9 @@ def validate_coding_output(
                     status = row["evidence_status"]
                     if status and status not in taxonomy["evidence_status"]:
                         _fail("claims.csv has an invalid evidence_status")
+            if filename == "simulators.csv":
+                for row in rows:
+                    _validate_simulator_domain(row["domain"], taxonomy)
             _validate_references(
                 filename, rows, roster, references_field=references_field, plural=plural
             )
@@ -458,6 +473,8 @@ def validate_release(
     try:
         root = repository_root.resolve(strict=True)
         release_root = _release_path(root, release)
+        if evidence_archive.is_symlink() or c0110_packet_bytes.is_symlink():
+            _fail("evidence inputs must not be symlink aliases")
         expected_archive = (root / Path(*SOURCE_ARCHIVE_RELATIVE.parts)).resolve(strict=True)
         if evidence_archive.resolve(strict=True) != expected_archive:
             _fail("evidence archive must be supplied explicitly at the approved v8 location")

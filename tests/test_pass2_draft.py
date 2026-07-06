@@ -9,7 +9,11 @@ from pathlib import Path
 
 import pytest
 
-from paper.scripts.prepare_pass2_draft import prepare_release
+from paper.scripts.prepare_pass2_draft import (
+    DraftPreparationError,
+    _load_adjudication,
+    prepare_release,
+)
 from paper.scripts.validate_pass2_draft import (
     DraftValidationError,
     validate_coding_output,
@@ -50,6 +54,95 @@ def prepare_test_release(tmp_path: Path) -> Path:
         c0110_packet_bytes=C0110_STAGED,
     )
     return release
+
+
+def adjudication_test_root(tmp_path: Path) -> tuple[Path, Path, Path]:
+    root = tmp_path / "repository"
+    directory = root / "paper/data/screening_work/v8/adjudication_drafts"
+    directory.mkdir(parents=True)
+    details = directory / "adjudications.csv"
+    workbook = directory / "adjudication_workbook.csv"
+    shutil.copyfile(
+        ROOT / "paper/data/screening_work/v8/adjudication_drafts/adjudications.csv",
+        details,
+    )
+    shutil.copyfile(
+        ROOT / "paper/data/screening_work/v8/adjudication_drafts/adjudication_workbook.csv",
+        workbook,
+    )
+    return root, details, workbook
+
+
+@pytest.mark.parametrize("invalid_id", ["", "duplicate"])
+def test_load_adjudication_rejects_blank_or_duplicate_detail_candidate_ids(
+    tmp_path: Path, invalid_id: str
+) -> None:
+    root, details, _ = adjudication_test_root(tmp_path)
+    rows = read_csv(details)
+    if invalid_id == "":
+        rows[0]["candidate_id"] = ""
+    else:
+        rows.append(dict(rows[0]))
+    write_csv(details, rows)
+
+    with pytest.raises(DraftPreparationError, match="detail candidate IDs"):
+        _load_adjudication(root)
+
+
+def test_load_adjudication_requires_exact_candidate_id_set_equality(
+    tmp_path: Path,
+) -> None:
+    root, details, _ = adjudication_test_root(tmp_path)
+    rows = read_csv(details)
+    write_csv(details, rows[1:])
+
+    with pytest.raises(DraftPreparationError, match="candidate-ID sets"):
+        _load_adjudication(root)
+
+
+@pytest.mark.parametrize("aliased_input", ["archive", "c0110"])
+def test_prepare_rejects_symlinked_evidence_inputs(
+    tmp_path: Path, aliased_input: str
+) -> None:
+    archive = ARCHIVE
+    c0110 = C0110_STAGED
+    alias = tmp_path / aliased_input
+    alias.symlink_to(archive if aliased_input == "archive" else c0110)
+    if aliased_input == "archive":
+        archive = alias
+    else:
+        c0110 = alias
+
+    with pytest.raises(DraftPreparationError, match="symlink"):
+        prepare_release(
+            repository_root=ROOT,
+            output=tmp_path / "pass2_drafts/v1",
+            evidence_archive=archive,
+            c0110_packet_bytes=c0110,
+        )
+
+
+@pytest.mark.parametrize("aliased_input", ["archive", "c0110"])
+def test_validator_rejects_symlinked_evidence_inputs(
+    tmp_path: Path, aliased_input: str
+) -> None:
+    release = prepare_test_release(tmp_path)
+    archive = ARCHIVE
+    c0110 = C0110_STAGED
+    alias = tmp_path / f"{aliased_input}-alias"
+    alias.symlink_to(archive if aliased_input == "archive" else c0110)
+    if aliased_input == "archive":
+        archive = alias
+    else:
+        c0110 = alias
+
+    with pytest.raises(DraftValidationError, match="symlink"):
+        validate_release(
+            repository_root=ROOT,
+            release=release,
+            evidence_archive=archive,
+            c0110_packet_bytes=c0110,
+        )
 
 
 def test_prepare_and_validate_repository_v1_release(tmp_path: Path) -> None:
@@ -239,6 +332,35 @@ def test_coding_output_rejects_multiple_simulator_cite_keys(tmp_path: Path) -> N
     write_csv(output / "simulators.csv", simulators)
 
     with pytest.raises(DraftValidationError, match="exactly one"):
+        validate_coding_output(repository_root=ROOT, release=release, coding_output=output)
+
+
+def test_coding_output_rejects_invalid_simulator_domain(tmp_path: Path) -> None:
+    release = prepare_test_release(tmp_path)
+    output = tmp_path / "coding"
+    output.mkdir()
+    shutil.copyfile(release / "evidence_template.csv", output / "evidence.csv")
+    simulators = read_csv(release / "simulators_template.csv")
+    simulators.append(
+        {
+            "system": "draft-system",
+            "cite_key": "DRAFT_C0006",
+            "domain": "gruond",
+            "input_representation": "NR",
+            "export_format": "NR",
+            "load_validation": "NR",
+            "coordinate_frame": "NR",
+            "units": "NR",
+            "collision_geometry": "NR",
+            "spawn_reset": "NR",
+            "rl_interface": "NR",
+            "oss_status": "NR",
+            "evidence_locator": "NR",
+        }
+    )
+    write_csv(output / "simulators.csv", simulators)
+
+    with pytest.raises(DraftValidationError, match="simulators.csv.*domain"):
         validate_coding_output(repository_root=ROOT, release=release, coding_output=output)
 
 

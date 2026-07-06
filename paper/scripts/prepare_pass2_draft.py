@@ -244,7 +244,19 @@ def _load_sealed_results(root: Path) -> tuple[dict[str, list[dict[str, str]]], d
 def _load_adjudication(root: Path) -> dict[str, dict[str, str]]:
     workbook = _read_csv(root / "paper/data/screening_work/v8/adjudication_drafts/adjudication_workbook.csv")
     details = _read_csv(root / "paper/data/screening_work/v8/adjudication_drafts/adjudications.csv")
-    detail_ids = {row.get("candidate_id", "") for row in details}
+    detail_id_list = [row.get("candidate_id", "") for row in details]
+    if any(not candidate_id for candidate_id in detail_id_list) or len(
+        set(detail_id_list)
+    ) != len(detail_id_list):
+        raise DraftPreparationError(
+            "draft adjudication detail candidate IDs must be nonblank and unique"
+        )
+    detail_ids = set(detail_id_list)
+    workbook_ids = {row.get("candidate_id", "") for row in workbook}
+    if detail_ids != workbook_ids:
+        raise DraftPreparationError(
+            "draft adjudication candidate-ID sets must match exactly"
+        )
     indexed: dict[str, dict[str, str]] = {}
     for row in workbook:
         candidate_id = row.get("candidate_id", "")
@@ -311,6 +323,8 @@ def _build_rows(
     roster = sorted((sealed_included | draft_included) - blocked)
     if len(roster) != ROSTER_SIZE:
         raise DraftPreparationError(f"expected {ROSTER_SIZE} draft sources, found {len(roster)}")
+    if evidence_archive.is_symlink() or c0110_packet_bytes.is_symlink():
+        raise DraftPreparationError("evidence inputs must not be symlink aliases")
     archive_root = evidence_archive.resolve(strict=True)
     expected_c0110 = (root / Path(*C0110_STAGED_RELATIVE.parts)).resolve(strict=True)
     if c0110_packet_bytes.resolve(strict=True) != expected_c0110:
