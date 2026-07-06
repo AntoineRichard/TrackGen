@@ -1,8 +1,10 @@
-\section{Preregistered Research Hypotheses}
+\section{Falsifiable Research Hypotheses}
 \label{sec:open-problems}
 
-These are preregistered hypotheses, not evidence-ranked gaps. No hypothesis is
-evidence-ranked until Pass 2 is complete. Each comparison uses the measures in
+These are falsifiable hypotheses, not evidence-ranked gaps. No hypothesis is
+evidence-ranked until Pass 2 is complete. Before data collection or evaluation, each
+future study must preregister descriptor bounds, any cost conversion, endpoints,
+rejection criteria, and its analysis plan. Each comparison uses the measures in
 \cref{sec:metrics} and immutable identifiers, lineage, and adapters from
 \cref{sec:benchmark-protocol}.
 
@@ -15,12 +17,12 @@ export traces, and predicate-level conformance records.
 \paragraph{H2: Geometry versus control feasibility.}
 Estimate the matched-stratum difference between geometry/topology yield and
 dynamics/control-aware yield for a declared envelope. Reject geometry-only adequacy
-when the preregistered gap bound is exceeded. Required artifacts are vehicle/controller
+when the pre-specified gap bound is exceeded. Required artifacts are vehicle/controller
 versions, budgets, initial states, solver outcomes, and raw attempts.
 
 \paragraph{H3: Difficulty calibration.}
 Compare descriptor-stratum ordering across reference agents, seeds, and simulators.
-Reject policy-independent calibration when rank stability falls below its preregistered
+Reject policy-independent calibration when rank stability falls below its pre-specified
 bound. Required artifacts are frozen reference distributions, descriptor code, policies,
 and paired outcomes.
 
@@ -33,14 +35,14 @@ candidate pools, selection logs, and policy evaluations.
 \paragraph{H5: UED, curriculum, and repair bias.}
 Compare co-adapted policies and frozen generator snapshots on common held-out suites;
 separately estimate paired raw-to-repaired descriptor and outcome shifts. Reject
-transfer or repair-neutrality when the respective preregistered bounds fail. Required
+transfer or repair-neutrality when the respective pre-specified bounds fail. Required
 artifacts are snapshot lineage, raw/derived pairs, repair traces, and common IDs.
 
 \paragraph{H6: Cross-generator, cross-simulator, and sim-to-real transfer.}
 Estimate a crossed generator-by-simulator transfer matrix and compare generated
 descriptor distributions with a fixed, conditioned real reference corpus. Reject a
 transfer claim on material off-diagonal loss or real-reference mismatch beyond the
-preregistered interval. Required artifacts are corpus extraction/conditioning, adapters,
+pre-specified interval. Required artifacts are corpus extraction/conditioning, adapters,
 conformance records, and paired policies.
 
 \paragraph{H7: Recoverability.}
@@ -58,7 +60,7 @@ rules, interaction traces, and outcome labels.
 
 \paragraph{H9: Card, reconstruction, and audit agreement.}
 Compare course-card declarations with reconstruction and conformance results, then
-measure agreement between preregistered audit codes and their cited locators. Reject
+measure agreement between pre-specified audit codes and their cited locators. Reject
 completeness when a required card field, reconstruction, conformance predicate, or
 audit agreement threshold fails. Required artifacts are cards, hashes, manifests,
 replay logs, and coded ledgers.
@@ -66,9 +68,9 @@ replay logs, and coded ledgers.
 \paragraph{H10: Learned and language-model fidelity.}
 Compare learned or language-model generators with declared baselines under an equal
 budget vector: offline data and compute; online calls, tokens, and wall time; and
-validation/repair cost, or a preregistered conversion. Estimate constraint,
+validation/repair cost, or a pre-specified conversion. Estimate constraint,
 distributional, semantic-intent, and deterministic-reconstruction fidelity. Reject a
-fidelity claim when any preregistered dimension fails. Test explanation and semantic
+fidelity claim when any pre-specified dimension fails. Test explanation and semantic
 fidelity against generator traces and declared constraints using precision/recall or
 intervention consistency, not subjective prose. Required artifacts are prompts,
 traces, configurations, outputs, budgets, validators, and reconstruction tests.
