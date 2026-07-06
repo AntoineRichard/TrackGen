@@ -3247,6 +3247,29 @@ def test_a3_comparison_rejects_shared_reason_words_only() -> None:
         )
 
 
+def test_a3_comparison_rejects_unrepresentable_short_token_difference() -> None:
+    row, pair = _strict_subset_a3_validation_inputs()
+    pair[0]["exclusion_reason"] = "Model v1."
+    pair[1]["exclusion_reason"] = "Model v2."
+    row["exclusion_reason"] = pair[0]["exclusion_reason"]
+
+    with pytest.raises(
+        integration.ScreeningIntegrationError,
+        match="not representable by the current lexical safeguard",
+    ):
+        integration._validate_comparison_analysis(
+            _substantive_a3_comparison(
+                "The evidence distinguishes the model versions."
+            ),
+            row,
+            pair,
+            (),
+            ("A3",),
+            "A source-grounded deciding fact.",
+            context_label="test unrepresentable difference",
+        )
+
+
 def test_canonical_evidence_accepts_control_phrases_as_bound_data(
     tmp_path: Path,
 ) -> None:

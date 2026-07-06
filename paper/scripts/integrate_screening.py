@@ -909,7 +909,12 @@ def _validate_comparison_analysis(
         ]
         comparison_words = set(folded_words)
         distinctive_words = reason_words[0] ^ reason_words[1]
-        if distinctive_words and comparison_words.isdisjoint(distinctive_words):
+        if not distinctive_words:
+            raise ScreeningIntegrationError(
+                f"{context_label}: A3 exclusion-reason disagreement is not "
+                "representable by the current lexical safeguard"
+            )
+        if comparison_words.isdisjoint(distinctive_words):
             raise ScreeningIntegrationError(
                 f"{context_label}: A3 comparison analysis must include a "
                 "distinctive word from the raw exclusion-reason difference"
