@@ -234,6 +234,19 @@ def test_merge_rejects_duplicate_overlay_candidate_id(tmp_path: Path) -> None:
         run_merge(paths)
 
 
+def test_merge_rejects_cross_overlay_candidate_id_collision(tmp_path: Path) -> None:
+    paths = build_inputs(tmp_path)
+    with paths["public"].open(encoding="utf-8", newline="") as handle:
+        public_rows = list(csv.DictReader(handle))
+    with paths["official"].open(encoding="utf-8", newline="") as handle:
+        official_rows = list(csv.DictReader(handle))
+    official_rows[0]["candidate_id"] = public_rows[0]["candidate_id"]
+    write_csv(paths["official"], EVIDENCE_PACKET_HEADER, official_rows)
+
+    with pytest.raises(MergeError, match="overlays: duplicate candidate_id 'C0002'"):
+        run_merge(paths)
+
+
 def test_merge_rejects_unknown_overlay_candidate_id(tmp_path: Path) -> None:
     paths = build_inputs(tmp_path)
     with paths["public"].open(encoding="utf-8", newline="") as handle:
