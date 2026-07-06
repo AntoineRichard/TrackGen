@@ -14,6 +14,6 @@ Documentation and document pins: C0098 is a 2026-07-06 OpenStreetMap About-page 
 
 Failures by title: none.
 
-Every archive artifact is nonempty and identity-checked. Repository tarballs were checked with `file` and `tar -tzf` for the pinned commit-rooted source tree. PDFs were checked with `file`, `pdfinfo`, and `pdftotext`; the WRSC PDF emitted a nonfatal text-extraction state-recovery diagnostic but remained parseable and identity-matched. HTML snapshots were checked for official identity and factual version or release markers. SHA-256 values in the manifest bind every local artifact. The live HTML page URLs remain mutable upstream, so their archived bytes and SHA-256 values are the reproducible snapshot boundary.
+Every archive artifact is nonempty and identity-checked. Repository tarballs were checked with `file` and `tar -tzf` for the pinned commit-rooted source tree. PDFs were checked with `file`, `pdfinfo`, and `pdftotext`. HTML snapshots were checked for official identity and factual version or release markers. SHA-256 values in the manifest bind every local artifact. The live HTML page URLs remain mutable upstream, so their archived bytes and SHA-256 values are the reproducible snapshot boundary.
 
 Redistribution is local-restricted unless explicit terms were verified: C0050 has Apache-2.0, C0182 GPL-3.0, C0195 LGPL-3.0, and C0150 states CC BY in the PDF. No private screening staging or illicit source was used.
