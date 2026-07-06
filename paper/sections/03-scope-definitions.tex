@@ -1,19 +1,22 @@
 \section{Scope, Definitions, and Boundaries}
 \label{sec:scope-definitions}
 
-The central object of this survey is a \emph{course}: an ordered spatial task
-specification that determines where a robot is to travel and how traversal is
-recognized as progress or completion. ``Ordered'' is substantive. A course is
-not merely a collection of geometric primitives, obstacles, or visual assets; it
-encodes an intended traversal relation among task-defining elements. A ground
-course can therefore be a closed or open corridor with an associated route order,
-an aerial course a sequence of gate poses, and a maritime course a sequence of
-waypoints, markers, or buoy-defined gates. These distinctions preserve the
-semantics that make geometry consequential to the task: a gate passed from the
-wrong side, or a buoy encountered out of order, need not constitute completion.
-Ground racing environments, drone-racing tracks with gates, and maritime
-competition tasks illustrate these different realizations of the same abstraction
-\cite{KlimovNodateCarRacing,Kaufmann2018DeepDrone,RoboNation2026RoboBoat2026}.
+The central object of this survey is a \emph{course}: a spatial task specification
+that declares task-defining elements, a traversal relation over those elements, and
+terminal or completion conditions. The traversal relation may be a total sequence,
+a partial order, a directed successor graph, or a task- or policy-conditioned
+admissible transition relation. Accordingly, ``ordered'' means that precedence or
+successor semantics are explicit; it does not require every pair of elements to be
+totally ordered. A course is not merely a collection of geometric primitives,
+obstacles, or visual assets. A ground course can be a closed or open corridor with
+an associated route or successor relation, an aerial course a set of gate poses with
+declared precedence, and a maritime course a set of waypoints, marks, or buoy-defined
+gates with declared admissible transitions. These semantics make geometry
+consequential to the task: traversing a gate in a disallowed direction or visiting a
+required marker before its predecessor need not count as progress. Ground racing
+environments, drone-racing tracks with gates, and sailing race rules illustrate
+these different realizations of the same abstraction
+\cite{KlimovNodateCarRacing,Kaufmann2018DeepDrone,WRSCIRSCOrganizingCommittee2019WorldRobotic}.
 
 The definition is intentionally independent of a particular file format, simulator,
 or vehicle. It includes the spatial constraints and traversal semantics needed to
@@ -21,22 +24,24 @@ state the task, but does not imply a unique dynamics model, reward, sensor suite
 or controller. A course may be closed, open, branching, or include prescribed
 choices, provided that its completion semantics are declared. It may also carry
 task-relevant spatial attributes such as corridor width, gate orientation, clearance,
-or permitted passage direction. The normative interface by which those attributes
-are serialized and tested is specified separately in \cref{sec:benchmark-protocol};
-here the purpose is to establish distinctions that prevent incompatible objects from
-being treated as interchangeable evidence.
+or permitted passage direction. The recommended benchmark interface by which those
+attributes are serialized and tested is specified separately in
+\cref{sec:benchmark-protocol}; here the purpose is to establish distinctions that
+prevent incompatible objects from being treated as interchangeable evidence.
 
 \subsection{Objects and transformations}
 
 We distinguish the following objects and operations.
 
 \paragraph{Course object.}
-The \emph{course object} is the abstract task-defining spatial entity: a traversable
-corridor and route relation, an ordered gate chain, a waypoint sequence, or a
-buoy course. It specifies what is to be traversed, not how it is stored or rendered.
-For a road network, a graph alone is insufficient unless the relevant route or
-completion relation is also stated; for an aerial gate course, positions alone are
-insufficient when gate orientation or crossing direction matters.
+The \emph{course object} is the abstract task-defining spatial entity. It comprises
+task-defining spatial elements, their declared traversal relation, and terminal or
+completion conditions; examples include a traversable corridor with a route relation,
+a gate chain, a waypoint relation, or a buoy course. It specifies what is to be
+traversed, not how it is stored or rendered. For a road network, a graph alone is
+insufficient unless the relevant route or admissible successor relation and terminal
+conditions are stated; for an aerial gate course, positions alone are insufficient
+when gate orientation, crossing direction, or precedence matters.
 
 \paragraph{Representation.}
 A \emph{representation} is an encoding of a course object. Examples include a
@@ -158,9 +163,9 @@ gate semantics, permissible geometry, serialization interfaces, and evaluation
 conditions. F1TENTH and CommonRoad, for example, provide evaluation artifacts or
 scenario interfaces; they should not be counted as generators simply because a
 controller is evaluated on their courses \cite{OKelly2020F1TENTHOpen,Althoff2017CommonRoadComposable}.
-Likewise, official maritime rules can define buoy-course completion and scoring
-without supplying an artifact-synthesis procedure
-\cite{RoboNation20222022Maritime,RoboNation2026RoboBoat2026}.
+Likewise, official maritime rules can define gate or mark-passage requirements,
+completion, and scoring without supplying an artifact-synthesis procedure
+\cite{RoboNation20222022Maritime,WRSCIRSCOrganizingCommittee2019WorldRobotic}.
 
 These distinctions also prevent an invalid aggregation. A retained source can
 contribute a representation, a fixed-suite interface, a validity predicate, a
