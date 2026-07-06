@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import csv
+import shutil
 from pathlib import Path
 
 import pytest
 
 from paper.scripts.integrate_pass2_reliability import (
+    DRAFT_RELATIVE,
     INPUT_SPECS,
+    PRIMARY_RELATIVE,
     ReliabilityIntegrationError,
     ReliabilityValidationError,
     integrate_reliability_pilot,
@@ -29,6 +32,20 @@ def build_snapshot(tmp_path: Path) -> Path:
         repository_root=ROOT, output=output, input_root=INPUT_ROOT
     )
     return output
+
+
+def copy_bound_repository(tmp_path: Path) -> Path:
+    repository = tmp_path / "repository"
+    shutil.copytree(ROOT / PRIMARY_RELATIVE, repository / PRIMARY_RELATIVE)
+    shutil.copytree(ROOT / DRAFT_RELATIVE, repository / DRAFT_RELATIVE)
+    for row in read_csv(ROOT / DRAFT_RELATIVE / "release_manifest.csv"):
+        if row["record_type"] != "input":
+            continue
+        source = ROOT / row["path"]
+        target = repository / row["path"]
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+    return repository
 
 
 def test_builds_byte_exact_reliability_snapshot_and_validates(tmp_path: Path) -> None:
@@ -75,6 +92,22 @@ def test_records_failed_gates_and_prospective_rules(tmp_path: Path) -> None:
     assert "exact-set >=0.80 for each of the eight fields" in limitations
     assert "does not require two consecutive 30-source rounds" in limitations
     assert "pre-submission replication is recommended" in limitations
+
+
+def test_codebook_defines_omitted_failed_field_labels(tmp_path: Path) -> None:
+    codebook = (build_snapshot(tmp_path) / "CODEBOOK-v2.md").read_text(
+        encoding="utf-8"
+    )
+
+    for rule in (
+        "`search_evolutionary` requires explicit iterative candidate search",
+        "`repair_projection` is a generator family only when repair or projection is the course-producing mechanism",
+        "`repair` requires an explicit operation on an existing course candidate",
+        "`serialization` requires an explicit source contribution that converts or emits an existing course definition",
+        "`boundary_case` requires explicit generation, selection, or curation for rare, adversarial, failure-inducing, or limit-testing cases",
+        "Each compatible multi-label assignment requires separately located evidence",
+    ):
+        assert rule in codebook
 
 
 def test_records_exact_coordinator_metadata_and_bindings(tmp_path: Path) -> None:
@@ -128,6 +161,52 @@ def test_validator_rejects_tampered_input_copy(tmp_path: Path) -> None:
     copied.write_bytes(copied.read_bytes() + b"\n")
 
     with pytest.raises(ReliabilityValidationError, match="checksum"):
+        validate_reliability_pilot(
+            repository_root=ROOT, snapshot=output, input_root=INPUT_ROOT
+        )
+
+
+@pytest.mark.parametrize(
+    ("relative_path", "message"),
+    [
+        (PRIMARY_RELATIVE / "coding/evidence.csv", "primary snapshot artifact checksum"),
+        (DRAFT_RELATIVE / "candidates.csv", "draft release artifact checksum"),
+    ],
+)
+def test_validator_rejects_tampered_bound_artifact(
+    tmp_path: Path, relative_path: Path, message: str
+) -> None:
+    repository = copy_bound_repository(tmp_path)
+    output = tmp_path / "pass2_reliability/pilot-v1"
+    integrate_reliability_pilot(
+        repository_root=repository, output=output, input_root=INPUT_ROOT
+    )
+    artifact = repository / relative_path
+    artifact.write_bytes(artifact.read_bytes() + b"\n")
+
+    with pytest.raises(ReliabilityValidationError, match=message):
+        validate_reliability_pilot(
+            repository_root=repository, snapshot=output, input_root=INPUT_ROOT
+        )
+
+
+@pytest.mark.parametrize(
+    "filename", ("README.md", "PROCEDURAL-LIMITATIONS.md", "CODEBOOK-v2.md")
+)
+def test_validator_rejects_noncanonical_generated_document(
+    tmp_path: Path, filename: str
+) -> None:
+    output = build_snapshot(tmp_path)
+    document = output / filename
+    document.write_text(
+        document.read_text(encoding="utf-8")
+        + "\nContradiction: this pilot supports final claims.\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ReliabilityValidationError, match=rf"{filename}: generated content mismatch"
+    ):
         validate_reliability_pilot(
             repository_root=ROOT, snapshot=output, input_root=INPUT_ROOT
         )

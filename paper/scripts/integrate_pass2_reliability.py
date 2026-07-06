@@ -137,6 +137,8 @@ REGISTRY_HEADER = (
     "scope",
 )
 BINDINGS_HEADER = ("binding", "bound_path", "bound_sha256", "purpose")
+PRIMARY_CHECKSUM_HEADER = ("artifact_type", "path", "sha256", "row_count")
+DRAFT_MANIFEST_HEADER = ("record_type", "path", "sha256", "row_count")
 
 
 def _sha256(payload: bytes) -> str:
@@ -298,18 +300,24 @@ This is a prospective, frozen-for-next-round decision codebook distilled from pi
 
 1. `constructive` requires explicit rules, assembly, grammar, geometry construction, or parameter-to-course computation. Random initialization or random parameter values alone do not add `stochastic_procedural`.
 2. `stochastic_procedural` requires a named random sampling or stochastic assembly step that determines alternative topology or geometry. It may combine with `constructive` only when both the constructor and the geometry-determining stochastic operation are directly evidenced.
-3. `learned_generative` requires a trained model to output course state, parameters, or geometry. A learned controller is not a learned generator solely because it is evaluated on courses.
-4. `environment_design` requires selection, adaptation, or optimization of an environment/course distribution using learner, agent, or task-performance feedback. Combine it with `learned_generative` only when both mechanisms are separately evidenced.
-5. `human_designed` requires human course-defining layout decisions, not merely choosing a seed or inspecting output. It can combine with `constructive` for an evidenced authoring-plus-construction workflow.
-6. `selection_replay` is retrieval, replay, permutation, or selection of already complete courses. Assembling new geometry from primitives is `constructive`.
+3. `search_evolutionary` requires explicit iterative candidate search in which an objective, fitness value, comparison, or selection rule affects which course candidate persists, is varied, or is returned. Parameter fitting, one-shot optimization, and random sampling without candidate selection are insufficient. It may combine with `constructive` or `stochastic_procedural` only when a separately evidenced constructor or stochastic geometry operator supplies candidates to the search.
+4. `learned_generative` requires a trained model to output course state, parameters, or geometry. A learned controller is not a learned generator solely because it is evaluated on courses.
+5. `environment_design` requires selection, adaptation, or optimization of an environment/course distribution using learner, agent, or task-performance feedback. Combine it with `learned_generative` only when both mechanisms are separately evidenced.
+6. `human_designed` requires human course-defining layout decisions, not merely choosing a seed or inspecting output. It can combine with `constructive` for an evidenced authoring-plus-construction workflow.
+7. `repair_projection` is a generator family only when repair or projection is the course-producing mechanism that transforms an incomplete, invalid, or proposed course into the final course. A downstream validity repair does not establish this generator family by itself. It may combine with `search_evolutionary`, `constructive`, or `learned_generative` only when the source separately establishes both candidate production and the repair/projection mechanism.
+8. `selection_replay` is retrieval, replay, permutation, or selection of already complete courses. Assembling new geometry from primitives is `constructive`.
+9. Each compatible multi-label assignment requires separately located evidence for every mechanism; a shared pipeline description or one operation described with several synonyms is insufficient.
 
 ## Generation role
 
 1. `geometry_synthesis` creates new course geometry or course-defining spatial structure.
-2. `mutation` requires an explicit operation that transforms an existing complete course into another candidate. It may combine with `geometry_synthesis` only if both the initial construction and whole-course mutation are directly evidenced.
-3. `task_selection` chooses, weights, schedules, or adapts among already defined courses/tasks without changing their geometry.
-4. `benchmark_only` means the source contributes a fixed course/benchmark for use or evaluation and establishes no source-native course-changing operation. It is mutually exclusive with `geometry_synthesis`, `mutation`, `repair`, and `task_selection` for that contribution.
-5. `NR` means no source-native course-operation role is established. For analytical fields, `NR` is sole-valued and is not shorthand for reviewer uncertainty.
+2. `task_selection` chooses, weights, schedules, or adapts among already defined courses/tasks without changing their geometry.
+3. `mutation` requires an explicit operation that transforms an existing complete course into another candidate. It may combine with `geometry_synthesis` only if both the initial construction and whole-course mutation are directly evidenced.
+4. `repair` requires an explicit operation on an existing course candidate that changes course-defining state to remove a stated violation or restore feasibility. Penalty, rejection, or a validity label alone does not establish the role. It may combine with `geometry_synthesis` or `mutation` only when the source separately evidences the initial or mutating operation and the subsequent repair.
+5. `serialization` requires an explicit source contribution that converts or emits an existing course definition into a persistent, exchange, or simulator-consumable representation without thereby changing course-defining geometry. An incidental save/export call is insufficient. It may combine with a course-changing role only when both contributions are separately evidenced.
+6. `benchmark_only` means the source contributes a fixed course/benchmark for use or evaluation and establishes no source-native course-changing or task-selection operation. It is mutually exclusive with `geometry_synthesis`, `task_selection`, `mutation`, and `repair`. It may combine with `serialization` when the source explicitly contributes the reusable benchmark encoding.
+7. `boundary_case` requires explicit generation, selection, or curation for rare, adversarial, failure-inducing, or limit-testing cases. Reporting a worst result or ordinary distribution tail is insufficient. It may combine with the separately evidenced operation that creates or selects those cases, or with `benchmark_only` when the fixed benchmark is explicitly a boundary-case set.
+8. `NR` means no source-native course-operation role is established. It is sole-valued and is not shorthand for reviewer uncertainty.
 
 ## Validity and missingness
 
@@ -445,6 +453,8 @@ def _validate_bindings(repository_root: Path, snapshot: Path) -> None:
     expected = _binding_rows_for_validation(repository_root)
     if rows != list(expected):
         raise ReliabilityValidationError("primary snapshot binding or draft release binding mismatch")
+    _validate_primary_artifacts(repository_root)
+    _validate_draft_artifacts(repository_root)
 
 
 def _binding_rows_for_validation(repository_root: Path) -> tuple[dict[str, str], ...]:
@@ -452,6 +462,122 @@ def _binding_rows_for_validation(repository_root: Path) -> tuple[dict[str, str],
         return _binding_rows(repository_root)
     except ReliabilityIntegrationError as exc:
         raise ReliabilityValidationError(str(exc)) from exc
+
+
+def _validate_primary_artifacts(repository_root: Path) -> None:
+    primary = repository_root / PRIMARY_RELATIVE
+    manifest = primary / "manifest/checksums.csv"
+    if (
+        _csv_header(manifest, error_type=ReliabilityValidationError)
+        != PRIMARY_CHECKSUM_HEADER
+    ):
+        raise ReliabilityValidationError("primary snapshot checksum header mismatch")
+    rows = _csv_rows(manifest, error_type=ReliabilityValidationError)
+    if not rows or len({(row["artifact_type"], row["path"]) for row in rows}) != len(
+        rows
+    ):
+        raise ReliabilityValidationError("primary snapshot checksum records mismatch")
+
+    local_types = {
+        "coding_output",
+        "documentation",
+        "integrated_batch",
+        "registry",
+    }
+    expected_local = {
+        Path(row["path"]) for row in rows if row["artifact_type"] in local_types
+    }
+    expected_local.add(Path("manifest/checksums.csv"))
+    actual_local = {
+        path.relative_to(primary) for path in primary.rglob("*") if path.is_file()
+    }
+    if actual_local != expected_local:
+        raise ReliabilityValidationError("primary snapshot artifact set mismatch")
+
+    for row in rows:
+        artifact_type = row["artifact_type"]
+        relative = Path(row["path"])
+        if artifact_type in local_types:
+            artifact = primary / relative
+        elif artifact_type == "input_batch":
+            artifact = (
+                primary / "batches" / relative.name.removeprefix("trackgen-")
+            )
+        elif artifact_type == "immutable_release":
+            artifact = repository_root / DRAFT_RELATIVE / relative.name
+        else:
+            raise ReliabilityValidationError(
+                "primary snapshot checksum records mismatch"
+            )
+        payload = _regular_bytes(
+            artifact,
+            label="primary snapshot artifact",
+            error_type=ReliabilityValidationError,
+        )
+        if _sha256(payload) != row["sha256"]:
+            raise ReliabilityValidationError(
+                f"primary snapshot artifact checksum mismatch: {row['path']}"
+            )
+        if row["row_count"] != "NR":
+            try:
+                expected_rows = int(row["row_count"])
+            except ValueError as exc:
+                raise ReliabilityValidationError(
+                    "primary snapshot row count record mismatch"
+                ) from exc
+            if len(_csv_rows(artifact, error_type=ReliabilityValidationError)) != expected_rows:
+                raise ReliabilityValidationError(
+                    f"primary snapshot artifact row count mismatch: {row['path']}"
+                )
+
+
+def _validate_draft_artifacts(repository_root: Path) -> None:
+    release = repository_root / DRAFT_RELATIVE
+    manifest = release / "release_manifest.csv"
+    if _csv_header(manifest, error_type=ReliabilityValidationError) != DRAFT_MANIFEST_HEADER:
+        raise ReliabilityValidationError("draft release manifest header mismatch")
+    rows = _csv_rows(manifest, error_type=ReliabilityValidationError)
+    if not rows or len({(row["record_type"], row["path"]) for row in rows}) != len(rows):
+        raise ReliabilityValidationError("draft release manifest records mismatch")
+
+    expected_release = {
+        Path(row["path"]) for row in rows if row["record_type"] == "generated"
+    }
+    expected_release.update({Path("release_manifest.csv"), Path("SHA256SUMS")})
+    actual_release = {
+        path.relative_to(release) for path in release.rglob("*") if path.is_file()
+    }
+    if actual_release != expected_release:
+        raise ReliabilityValidationError("draft release artifact set mismatch")
+
+    for row in rows:
+        if row["record_type"] == "generated":
+            artifact = release / row["path"]
+        elif row["record_type"] == "input":
+            artifact = repository_root / row["path"]
+        else:
+            raise ReliabilityValidationError("draft release manifest records mismatch")
+        payload = _regular_bytes(
+            artifact,
+            label="draft release artifact",
+            error_type=ReliabilityValidationError,
+        )
+        if _sha256(payload) != row["sha256"]:
+            raise ReliabilityValidationError(
+                f"draft release artifact checksum mismatch: {row['path']}"
+            )
+
+    expected_sums = [
+        f"{_sha256(manifest.read_bytes())}  generated/release_manifest.csv\n",
+        *(f"{row['sha256']}  {row['record_type']}/{row['path']}\n" for row in rows),
+    ]
+    actual_sums = _regular_bytes(
+        release / "SHA256SUMS",
+        label="draft release SHA256SUMS",
+        error_type=ReliabilityValidationError,
+    )
+    if actual_sums != "".join(sorted(expected_sums)).encode("ascii"):
+        raise ReliabilityValidationError("draft release SHA256SUMS mismatch")
 
 
 def _validate_manifest(snapshot: Path) -> None:
@@ -479,41 +605,17 @@ def _artifact_records_for_validation(snapshot: Path) -> list[dict[str, str]]:
 
 
 def _validate_docs(snapshot: Path) -> None:
-    required = {
-        "README.md": (
-            "representation_family: 8/18 (0.444) - FAIL",
-            "generator_family: 12/18 (0.667) - FAIL",
-            "generation_role: 8/18 (0.444) - FAIL",
-            "validity_strategy: 9/18 (0.500) - FAIL",
-            "cannot support final prevalence/taxonomy claims",
-        ),
-        "PROCEDURAL-LIMITATIONS.md": (
-            "recode all 75",
-            "fresh blind reliability",
-            "exact-set >=0.80 for each of the eight fields",
-            "pre-submission replication is recommended with a further fresh holdout",
-        ),
-        "CODEBOOK-v2.md": (
-            "source-native and course-defining",
-            "Use multiple labels only",
-            "stochastic_procedural",
-            "Generation role",
-            "not_reported",
-            "core",
-            "supporting",
-            "availability",
-            "code_status/asset_status may be sole NR",
-        ),
+    expected = {
+        "README.md": _readme().encode("utf-8"),
+        "PROCEDURAL-LIMITATIONS.md": _limitations().encode("utf-8"),
+        "CODEBOOK-v2.md": _codebook_v2().encode("utf-8"),
     }
-    for filename, needles in required.items():
-        text = _regular_bytes(
+    for filename, payload in expected.items():
+        actual = _regular_bytes(
             snapshot / filename, label=filename, error_type=ReliabilityValidationError
-        ).decode("utf-8")
-        if any(needle not in text for needle in needles):
-            raise ReliabilityValidationError(f"{filename}: required content missing")
-    codebook = (snapshot / "CODEBOOK-v2.md").read_text(encoding="utf-8")
-    if "completed rows cannot use NR" in codebook:
-        raise ReliabilityValidationError("CODEBOOK-v2.md adopts a rejected NR rule")
+        )
+        if actual != payload:
+            raise ReliabilityValidationError(f"{filename}: generated content mismatch")
 
 
 def _validate_expected_files(snapshot: Path) -> None:

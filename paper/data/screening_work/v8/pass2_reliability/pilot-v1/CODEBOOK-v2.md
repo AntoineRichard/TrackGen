@@ -15,18 +15,24 @@ This is a prospective, frozen-for-next-round decision codebook distilled from pi
 
 1. `constructive` requires explicit rules, assembly, grammar, geometry construction, or parameter-to-course computation. Random initialization or random parameter values alone do not add `stochastic_procedural`.
 2. `stochastic_procedural` requires a named random sampling or stochastic assembly step that determines alternative topology or geometry. It may combine with `constructive` only when both the constructor and the geometry-determining stochastic operation are directly evidenced.
-3. `learned_generative` requires a trained model to output course state, parameters, or geometry. A learned controller is not a learned generator solely because it is evaluated on courses.
-4. `environment_design` requires selection, adaptation, or optimization of an environment/course distribution using learner, agent, or task-performance feedback. Combine it with `learned_generative` only when both mechanisms are separately evidenced.
-5. `human_designed` requires human course-defining layout decisions, not merely choosing a seed or inspecting output. It can combine with `constructive` for an evidenced authoring-plus-construction workflow.
-6. `selection_replay` is retrieval, replay, permutation, or selection of already complete courses. Assembling new geometry from primitives is `constructive`.
+3. `search_evolutionary` requires explicit iterative candidate search in which an objective, fitness value, comparison, or selection rule affects which course candidate persists, is varied, or is returned. Parameter fitting, one-shot optimization, and random sampling without candidate selection are insufficient. It may combine with `constructive` or `stochastic_procedural` only when a separately evidenced constructor or stochastic geometry operator supplies candidates to the search.
+4. `learned_generative` requires a trained model to output course state, parameters, or geometry. A learned controller is not a learned generator solely because it is evaluated on courses.
+5. `environment_design` requires selection, adaptation, or optimization of an environment/course distribution using learner, agent, or task-performance feedback. Combine it with `learned_generative` only when both mechanisms are separately evidenced.
+6. `human_designed` requires human course-defining layout decisions, not merely choosing a seed or inspecting output. It can combine with `constructive` for an evidenced authoring-plus-construction workflow.
+7. `repair_projection` is a generator family only when repair or projection is the course-producing mechanism that transforms an incomplete, invalid, or proposed course into the final course. A downstream validity repair does not establish this generator family by itself. It may combine with `search_evolutionary`, `constructive`, or `learned_generative` only when the source separately establishes both candidate production and the repair/projection mechanism.
+8. `selection_replay` is retrieval, replay, permutation, or selection of already complete courses. Assembling new geometry from primitives is `constructive`.
+9. Each compatible multi-label assignment requires separately located evidence for every mechanism; a shared pipeline description or one operation described with several synonyms is insufficient.
 
 ## Generation role
 
 1. `geometry_synthesis` creates new course geometry or course-defining spatial structure.
-2. `mutation` requires an explicit operation that transforms an existing complete course into another candidate. It may combine with `geometry_synthesis` only if both the initial construction and whole-course mutation are directly evidenced.
-3. `task_selection` chooses, weights, schedules, or adapts among already defined courses/tasks without changing their geometry.
-4. `benchmark_only` means the source contributes a fixed course/benchmark for use or evaluation and establishes no source-native course-changing operation. It is mutually exclusive with `geometry_synthesis`, `mutation`, `repair`, and `task_selection` for that contribution.
-5. `NR` means no source-native course-operation role is established. For analytical fields, `NR` is sole-valued and is not shorthand for reviewer uncertainty.
+2. `task_selection` chooses, weights, schedules, or adapts among already defined courses/tasks without changing their geometry.
+3. `mutation` requires an explicit operation that transforms an existing complete course into another candidate. It may combine with `geometry_synthesis` only if both the initial construction and whole-course mutation are directly evidenced.
+4. `repair` requires an explicit operation on an existing course candidate that changes course-defining state to remove a stated violation or restore feasibility. Penalty, rejection, or a validity label alone does not establish the role. It may combine with `geometry_synthesis` or `mutation` only when the source separately evidences the initial or mutating operation and the subsequent repair.
+5. `serialization` requires an explicit source contribution that converts or emits an existing course definition into a persistent, exchange, or simulator-consumable representation without thereby changing course-defining geometry. An incidental save/export call is insufficient. It may combine with a course-changing role only when both contributions are separately evidenced.
+6. `benchmark_only` means the source contributes a fixed course/benchmark for use or evaluation and establishes no source-native course-changing or task-selection operation. It is mutually exclusive with `geometry_synthesis`, `task_selection`, `mutation`, and `repair`. It may combine with `serialization` when the source explicitly contributes the reusable benchmark encoding.
+7. `boundary_case` requires explicit generation, selection, or curation for rare, adversarial, failure-inducing, or limit-testing cases. Reporting a worst result or ordinary distribution tail is insufficient. It may combine with the separately evidenced operation that creates or selects those cases, or with `benchmark_only` when the fixed benchmark is explicitly a boundary-case set.
+8. `NR` means no source-native course-operation role is established. It is sole-valued and is not shorthand for reviewer uncertainty.
 
 ## Validity and missingness
 
