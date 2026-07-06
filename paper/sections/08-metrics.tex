@@ -1,32 +1,169 @@
 \section{Metrics and Reporting Protocol}
 \label{sec:metrics}
 
-The metric protocol separates validity checks from descriptive and comparative
-measurements so that each reported quantity has a clear role.
+This section proposes an auditable metric framework for course generators and their
+downstream use. It is a reporting design, rather than a claim that the literature
+already reports these measures or that a benchmark has been released. The framework
+keeps four reporting units distinct: a \emph{generator} is a versioned sampling
+procedure; a \emph{course} is one sampled, serialized course; a \emph{simulator
+instance} is an imported and resettable realization of that course; and a
+\emph{policy evaluation} is a specified policy, seed, course, and simulator run.
+Aggregates should identify their unit and sampling population rather than mixing
+these levels.
+
+For a collection of $N$ generated courses, let $I_i^{(q)}\in\{0,1\}$ indicate that
+course $i$ passes check $q$. The reported yield for that check is
+\begin{equation}
+  \widehat{p}_q = \frac{\sum_{i=1}^{N} I_i^{(q)}}{N},
+  \label{eq:metric-yield}
+\end{equation}
+where the numerator is the number of generated courses passing $q$ and the
+denominator is \emph{all} generation attempts, including rejected or repaired
+ones. Report $N$, the number of independent generator seeds or runs, and a binomial
+confidence interval (for example, a Wilson interval) or a seed-level bootstrap
+interval. Continuous course and policy summaries should report their estimator,
+number of courses, number of policy seeds where applicable, and a bootstrap interval
+over the declared independent unit.
 
 \subsection{Feasibility}
 
-Feasibility metrics assess whether a generated course satisfies its stated constraints.
+Feasibility is a chain of declared checks, not a single validity label. At the
+generator level, report completion yield: the fraction of calls that emit a course
+artifact before timeout or resource limit. At the course level, separately report
+geometric and topological validity, minimum boundary or obstacle clearance,
+closed-loop status when a loop is required, and ordered-course status when an ordered
+sequence of gates, waypoints, or route elements is required. For each predicate,
+state its tolerance, coordinate frame, and the course population to which it applies.
+
+Dynamics-aware feasibility adds a vehicle and control envelope $E$ to the contract.
+For course $i$, define $I_i^{(\mathrm{dyn},E)}=1$ only if a declared model, initial
+state set, control limits, and termination conditions admit a feasible traversal (or
+the stated reachability proxy). This quantity is conditional on $E$; it must not be
+presented as an intrinsic property of geometry. Report the solver or controller,
+budget, tolerance, and inconclusive cases separately from failures.
+
+At the simulator level, measure import, instantiation, reset, and collision-check
+yields with the same numerator--denominator discipline as
+\cref{eq:metric-yield}. A course that is geometrically valid but cannot be imported
+is a simulator failure, not evidence of generator validity. Retain raw outcomes
+before repair, and, when repair is offered, report repaired yield and repair rate as
+additional quantities.
 
 \subsection{Geometry}
 
-Geometry metrics describe the spatial and topological properties of a course.
+Geometry descriptors characterize a valid or attempted course without calling it
+better or harder. Report length and empirical distributions of curvature $\kappa(s)$
+and curvature rate $d\kappa/ds$ over arc length $s$, using stated discretization and
+units. Where applicable, also report slope, elevation range, and torsion; width and
+clearance profiles; gate spacing, orientation, and visibility; and topology such as
+component count, loop closure, crossing count, branching factor, and route-choice
+structure. Use medians and quantiles alongside means for skewed descriptors, and
+state whether non-finite values from invalid courses are excluded, separately counted,
+or assigned a sentinel.
 
 \subsection{Difficulty}
 
-Difficulty metrics characterize measurable sources of task demand without assuming a
-fixed set of categorical levels.
+Difficulty is proposed as a continuous, multidimensional spectrum rather than the
+labels ``easy,'' ``medium,'' and ``hard.'' Let $d_i\in\mathbb{R}^m$ be a declared
+descriptor vector for course $i$, with coordinates selected from the geometric,
+visibility, clearance, topology, and dynamics-aware quantities above. Normalize each
+coordinate within a declared domain and reference distribution, for example
+\begin{equation}
+  z_{ij}=\frac{d_{ij}-\operatorname{median}(d_{\cdot j})}
+  {\operatorname{IQR}(d_{\cdot j})},
+  \label{eq:descriptor-normalization}
+\end{equation}
+with explicit handling when the interquartile range is zero. A benchmark may then
+stratify by marginal or joint descriptor quantiles, coverage cells, or a continuous
+curve through descriptor space. The selected strata and their boundaries are
+reporting devices, not difficulty classes.
+
+Policy-derived descriptors, such as success probability, required tracking bandwidth,
+or margin to constraint violation, are reference-agent dependent. They should name the
+reference policy, training distribution, policy seed set, simulator, and evaluation
+budget. Robustness margins should be reported as perturbation radii or distributions
+over stated initial-state, model, sensor, or actuation perturbations. A universal
+scalar difficulty score is unsafe because it can conceal incompatible demands and can
+invert when the vehicle, controller, objective, or normalization domain changes.
 
 \subsection{Diversity}
 
-Diversity metrics compare variation within and between course collections.
+Diversity is evaluated in descriptor space and conditional on feasibility. Given
+normalized descriptors $z_i$, report coverage of a declared grid, quantile lattice,
+or radius-based support; a pairwise-distance summary such as
+$\binom{N}{2}^{-1}\sum_{i<j}\lVert z_i-z_j\rVert$; and a duplicate or near-duplicate
+rate under a fixed descriptor and representation-level threshold. When comparing
+collections $A$ and $B$, report an energy-distance or maximum-mean-discrepancy-style
+estimator with its kernel or distance, normalization, and uncertainty. Entropy is
+appropriate only when binning or density estimation is supported by the sample size;
+report the estimator, bias correction if any, and sensitivity to binning or bandwidth.
+
+The principal diversity quantity is feasible diversity: calculate all coverage and
+distributional summaries on the subset that passes the declared validity predicate,
+while reporting raw yield beside it. This prevents a collection from appearing diverse
+only because invalid samples spread through descriptor space.
 
 \subsection{Reproducibility}
 
-Reproducibility reporting records the generator configuration, randomization controls,
-software state, and retained artifacts needed to reconstruct a course collection.
+Each generator-level report should record generator identifier and version, complete
+configuration, seed or seed schedule, dependency and simulator versions, vehicle and
+control envelope, and a content hash for each emitted course and suite manifest.
+Report determinism by reconstructing the same inputs in fresh processes and comparing
+artifact hashes or a declared numerical tolerance. Runtime, throughput, peak memory,
+and timeout rate require hardware, parallelism, warm-up policy, and reporting unit
+(for example, seconds per attempted course and feasible courses per GPU-hour).
+Finally, report rejection rate, repair rate, repair runtime, and the distribution of
+attempts per retained course so that apparent output quality is not detached from its
+cost.
 
 \subsection{Simulation Feasibility}
 
-Simulation-feasibility metrics assess whether a represented course can be instantiated
-and executed in the target simulation workflow.
+Simulation feasibility, or interoperability, evaluates the path from portable course
+representation to usable learning environment. At the simulator level, report
+serialization and import success; declared units and coordinate frames; collision
+geometry agreement with the source representation; spawn and reset success; and
+deterministic reconstruction of a course from its manifest. Check sensor and world
+integrity after import, including required observations, static geometry, and absence
+of unintended collisions or missing assets.
+
+The interface contract should state whether the simulator exposes a Gymnasium-style
+reset/step API, supports vectorized environments, preserves course identifiers and
+seeds in metadata, and runs headlessly. Report headless steps or episodes per second,
+parallel environment count, hardware, and reset cost. These are implementation-target
+measures: a portable representation does not by itself establish support in every
+simulator.
+
+\begin{table}[t]
+  \centering
+  \caption{Proposed auditable metric map. Every estimate identifies its reporting
+  unit, denominator or sample population, and uncertainty procedure.}
+  \label{tab:metric-map}
+  \small
+  \begin{tabularx}{\linewidth}{@{}p{0.22\linewidth}p{0.34\linewidth}Y@{}}
+    \toprule
+    Question & Metrics and units & Failure interpretation \\
+    \midrule
+    Does the generator emit valid courses? & Completion, geometric/topological,
+    clearance, ordered/closed-loop, and dynamics-aware yields; passed attempts / all
+    attempts & Generator failure, declared-constraint failure, or envelope-conditional
+    infeasibility \\
+    What courses does it produce? & Length, curvature, slope/elevation/torsion,
+    width/clearance, gate, and topology distributions; native physical units & A
+    descriptor is missing, ill-defined, or outside the declared domain \\
+    Where is a course on the spectrum? & Normalized descriptor vector, quantile or
+    coverage-cell assignment, robustness margin; dimensionless coordinates plus native
+    margins & A scalar or categorical label hides dependence on domain or reference
+    agent \\
+    How varied is the feasible output? & Feasible coverage, pairwise distance,
+    energy/MMD-style distance, entropy when estimable, near-duplicate rate & Diversity
+    is low, estimated unreliably, or inflated by invalid samples \\
+    Can another system reproduce and use it? & Manifest/hash match, runtime,
+    memory, rejection/repair cost, import/reset/collision and headless yields & Missing
+    provenance, nondeterminism, or a broken simulator interface \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+\Cref{sec:benchmark-protocol} turns these metric contracts into a proposed sampling,
+split, and evaluation protocol. In particular, it preserves raw feasibility outcomes
+before descriptor-based selection and evaluates policies on common immutable course

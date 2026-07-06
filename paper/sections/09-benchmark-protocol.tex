@@ -1,6 +1,123 @@
 \section{Benchmark Protocol}
 \label{sec:benchmark-protocol}
 
-The benchmark protocol defines training distributions through explicit generators,
-parameters, and sampling rules, while evaluation suites span measured difficulty
-spectra instead of hard-coding easy, medium, and hard labels.
+This section proposes a reference benchmark protocol built on the metric contracts in
+\cref{sec:metrics}. It specifies release requirements separately from future
+extensions. It neither claims that a released benchmark exists nor attributes these
+choices to the current literature.
+
+\subsection{Generator and Seed Contract}
+
+Each participating generator should be exposed through a versioned adapter with a
+stable identifier, declared input schema, complete configuration, and seed contract.
+For each requested course identifier, the adapter records generator version,
+configuration hash, root seed and derived seed, vehicle/domain assumptions, output
+format version, and content hash of the raw artifact. The contract must state whether
+the same inputs reconstruct byte-identical output or only output within a numerical
+tolerance. A manifest should retain failed attempts, termination reason, wall-clock
+budget, and any repair operation; repair may create a derived artifact, but must never
+replace the raw feasibility record.
+
+The proposed distribution-estimation and training target is $10{,}000$--$100{,}000$
+attempted courses per generator, selected according to generator cost and domain
+complexity. This range is a target for estimating descriptor distributions and
+supporting training, not a universal adequacy claim. Reports should give the attempted
+count, feasible count, raw and repaired yields, independent generator seeds, and
+uncertainty as defined in \cref{sec:metrics}.
+
+\subsection{Course Construction and Splits}
+
+The construction order is fixed. First, generate raw attempts and evaluate feasibility.
+Second, compute descriptors for the declared population, retaining explicit missing or
+invalid status. Third, form spectrum strata and diversity-constrained selections from
+the valid subset. This order ensures that repair and selection cannot erase raw
+generator failure rates. Any repair budget, feasibility predicate, descriptor code,
+normalization reference set, and selection algorithm belongs in the versioned suite
+manifest.
+
+The immutable held-out evaluation suite contains at least 100 courses for each
+declared domain/configuration. Its selection spans continuous descriptor-spectrum
+quantiles and satisfies declared diversity constraints, such as a minimum separation
+or coverage target. These courses are never named ``easy,'' ``medium,'' or ``hard.''
+Instead, the manifest provides their descriptor vectors, quantile memberships,
+normalization domain, and feasibility evidence. When a domain/configuration has fewer
+than 100 feasible non-duplicate candidates, the release must report the shortfall and
+the generator population from which it arose rather than silently relaxing the rule.
+
+Training, validation, and test partitions must separate root seeds and configuration
+families. A configuration family includes all parameterizations that share a common
+template or latent design source defined by the adapter. Before release, check for
+cross-split duplicates and near duplicates using both content-hash identity and a
+declared representation/descriptor threshold. Record the check, threshold, candidate
+pairs, and removals in the suite manifest; seed separation alone is not a leakage
+guarantee.
+
+\subsection{Policy Evaluation}
+
+For every policy--course pair, report completion or task success, progress and lap
+time where defined, collisions and rule or constraint violations, tracking error,
+energy or control effort, and robustness under declared perturbations. Training cost
+should include environment interactions, simulator steps, wall-clock time, and the
+number of courses observed, so that sample efficiency is not conflated with simulator
+throughput. Cross-generator transfer evaluates policies on held-out generators or
+configuration families; cross-simulator transfer evaluates a portable course and
+policy contract in a second declared simulator. Neither result is implied by in-domain
+success.
+
+Evaluation is paired across common immutable course identifiers. Run multiple policy
+seeds and, where stochastic, multiple rollout seeds; retain each course-level outcome
+rather than reporting only a global mean. Report paired differences, empirical
+distributions and quantiles, a failure taxonomy, and uncertainty intervals bootstrapped
+over courses, with policy-seed aggregation declared explicitly. This protocol exposes
+whether an average masks a narrow subset of course failures.
+
+\begin{table}[t]
+  \centering
+  \caption{Proposed benchmark release requirements and explicitly future extensions.}
+  \label{tab:benchmark-requirements}
+  \small
+  \begin{tabularx}{\linewidth}{@{}p{0.24\linewidth}Y Y@{}}
+    \toprule
+    Component & Release requirement & Future extension \\
+    \midrule
+    Generator contract & Versioned adapter, configuration and seed contract, raw
+    outcome and artifact hashes & Additional generators, domains, and vehicle/control
+    envelopes \\
+    Course collection & $10{,}000$--$100{,}000$ attempted courses per generator as
+    the proposed target; feasibility-first descriptors and recorded repair & Larger
+    distributions and adaptive sampling studies \\
+    Evaluation suite & Immutable suite with at least 100 courses per declared
+    domain/configuration, spectrum-quantile coverage, and diversity checks & Expanded
+    suite sizes and longitudinal challenge sets \\
+    Policy results & Common course IDs, multiple policy seeds, course-level outcomes,
+    intervals, and failure taxonomy & Community leaderboards and additional reference
+    agents \\
+    Interoperability & Documented portable representation plus declared simulator/RL
+    adapter behavior & More simulator backends, sensor suites, and hardware-in-the-loop
+    validation \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+\subsection{Co-Evaluation and Course Cards}
+
+Generator and policy results should be co-evaluated, not collapsed into one score. A
+generator report gives raw and feasible yield, descriptor coverage, diversity, cost,
+and interoperability; a policy report gives paired outcomes conditional on a declared
+course suite and simulation contract. A policy's success rate therefore cannot be
+used alone to rank generators, and a generator's geometric diversity cannot be used
+alone to rank policies.
+
+Each released evaluation course should have a compact course card: immutable course
+identifier and hashes; generator/configuration/seed lineage; representation, units,
+and frames; feasibility and repair status; descriptor vector and normalization domain;
+collision and reset assumptions; supported simulator adapters; and known limitations.
+Cards make it possible to audit selections and diagnose a policy failure without
+mistaking an adapter or asset problem for a control result.
+
+\subsection{Interoperability Targets}
+
+The reference implementation target is a portable course representation plus adapters
+to mainstream reinforcement-learning interfaces, including a Gymnasium-style reset/step
+contract and vectorized access where supported. Adapters should preserve immutable
+course identifiers, seed provenance, units, frames, collision geometry, reset state,
