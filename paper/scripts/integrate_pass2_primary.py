@@ -396,15 +396,12 @@ def integrate_primary_batches(
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--version", choices=("v1", "v2"), default="v1")
-    parser.add_argument("--repository-root", type=Path, default=Path("."))
-    parser.add_argument("--release", type=Path, default=Path("paper/data/screening_work/v8/pass2_drafts/v1"))
-    parser.add_argument("--output", type=Path)
     arguments = parser.parse_args(argv)
     try:
         integrate_primary_batches(
-            repository_root=arguments.repository_root,
-            release=arguments.release,
-            output=arguments.output or OUTPUT_BY_VERSION[arguments.version],
+            repository_root=Path.cwd(),
+            release=Path("paper/data/screening_work/v8/pass2_drafts/v1"),
+            output=OUTPUT_BY_VERSION[arguments.version],
             version=arguments.version,
         )
     except IntegrationError as exc:

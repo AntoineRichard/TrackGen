@@ -285,6 +285,54 @@ def test_cli_rejects_batch_path_override(capsys: pytest.CaptureFixture[str]) -> 
     assert "unrecognized arguments: --batch-01" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize(
+    ("arguments", "version"),
+    [
+        ([], "v1"),
+        (["--version", "v2"], "v2"),
+    ],
+)
+def test_cli_selects_fixed_paths_without_writing_snapshots(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    arguments: list[str],
+    version: str,
+) -> None:
+    calls: list[dict[str, object]] = []
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        "paper.scripts.integrate_pass2_primary.integrate_primary_batches",
+        lambda **keywords: calls.append(keywords),
+    )
+
+    assert main(arguments) == 0
+    assert calls == [
+        {
+            "repository_root": tmp_path,
+            "release": Path("paper/data/screening_work/v8/pass2_drafts/v1"),
+            "output": Path(
+                f"paper/data/screening_work/v8/pass2_coding/primary/{version}"
+            ),
+            "version": version,
+        }
+    ]
+
+
+@pytest.mark.parametrize("flag", ("--repository-root", "--release", "--output"))
+def test_cli_rejects_path_overrides(
+    flag: str,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "paper.scripts.integrate_pass2_primary.integrate_primary_batches",
+        lambda **_: None,
+    )
+    with pytest.raises(SystemExit):
+        main([flag, "/tmp/alternate"])
+    assert f"unrecognized arguments: {flag}" in capsys.readouterr().err
+
+
 def test_rejects_existing_snapshot_directory(tmp_path: Path) -> None:
     root = input_root(tmp_path)
     output = integrate(tmp_path, root)
