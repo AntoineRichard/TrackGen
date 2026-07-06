@@ -32,6 +32,22 @@ stopping criteria for yield-interval tolerance, descriptor quantile and coverage
 stability, and a minimum valid count in every fixed spectrum stratum. Stop early only
 when all criteria are met. If 100,000 attempts leave any criterion unmet, report
 non-convergence or the shortfall rather than claiming comparable distributions.
+\subsection{CourseSpec and Course Cards}
+
+The normative portable IR is \texttt{CourseSpec}. It records geometry, topology,
+gates, and waypoints; bounds, widths, and clearance; elevation; frames and units;
+semantic obstacles and checkpoints; the domain and vehicle/control envelope; and
+provenance, format version, and content hash. Raw-to-repaired lineage is explicit:
+repair creates a derived artifact and never replaces the raw attempt or its failure
+record. Domain extensions preserve constraints that the common core cannot express.
+
+Each released course card contains immutable identifiers and hashes; generator,
+configuration, and seed lineage; the reference distribution and descriptor
+normalization; perturbation and recovery contract; agent interaction and pass rules;
+units, frames, semantics, and semantic loss on export; conformance/import/reset status;
+and repair, validity, and known-limitations records. The card is the course-level
+interface between the metric definitions in \cref{sec:metrics} and the adapters below.
+
 \subsection{Course Construction and Splits}
 
 The construction order is fixed. First, generate raw attempts and evaluate feasibility.
@@ -147,12 +163,9 @@ course suite and simulation contract. A policy's success rate therefore cannot b
 used alone to rank generators, and a generator's geometric diversity cannot be used
 alone to rank policies.
 
-Each released evaluation course should have a compact course card: immutable course
-identifier and hashes; generator/configuration/seed lineage; representation, units,
-and frames; feasibility and repair status; descriptor vector and normalization domain;
-collision and reset assumptions; supported simulator adapters; and known limitations.
-Cards make it possible to audit selections and diagnose a policy failure without
-mistaking an adapter or asset problem for a control result.
+Each released evaluation course uses the \texttt{CourseSpec} and expanded course card
+specified above. Its reconstruction, import/reset, collision, and semantic-loss records
+are conformance evidence, not a substitute for a generator or policy result.
 
 \subsection{Interoperability Targets}
 

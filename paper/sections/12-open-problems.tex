@@ -1,79 +1,82 @@
-\section{Open Problems}
+\section{Preregistered Research Hypotheses}
 \label{sec:open-problems}
 
-The following directions are benchmark questions with possible refutations, rather
-than generic future work. Their outcome measures should retain raw feasibility and
-repair lineage from \cref{sec:metrics}, and use the immutable-suite and paired-policy
-procedures in \cref{sec:benchmark-protocol}.
+These are preregistered hypotheses, not evidence-ranked gaps. No hypothesis is
+evidence-ranked until Pass 2 is complete. Each comparison uses the measures in
+\cref{sec:metrics} and immutable identifiers, lineage, and adapters from
+\cref{sec:benchmark-protocol}.
 
-\subsection{Representation and Feasibility}
+\paragraph{H1: Cross-domain representation.}
+Compare source and imported predicates for ground, aerial, and maritime
+\texttt{CourseSpec} instances. Reject common-core adequacy when a required
+domain constraint is lost. Required artifacts are source/derived IRs, extension blocks,
+export traces, and predicate-level conformance records.
 
-\paragraph{Cross-domain IR.}
-Can one \texttt{CourseSpec} core preserve ground contact/boundaries, aerial
-three-dimensional gate traversal/visibility, and maritime navigability without lossy
-simulator-specific fields? Test round-trip export/import across domain adapters against
-source predicates; systematic loss in any required predicate rejects the common core.
+\paragraph{H2: Geometry versus control feasibility.}
+Estimate the matched-stratum difference between geometry/topology yield and
+dynamics/control-aware yield for a declared envelope. Reject geometry-only adequacy
+when the preregistered gap bound is exceeded. Required artifacts are vehicle/controller
+versions, budgets, initial states, solver outcomes, and raw attempts.
 
-\paragraph{Geometry versus dynamics.}
-How much do geometry- and topology-valid courses overstate feasibility under declared
-vehicle, actuator, and control envelopes? Compare geometric and dynamics/control-aware
-yield across matched spectrum strata. A bounded negligible gap supports a geometry-only
-approximation for that envelope; a structured gap refutes it.
+\paragraph{H3: Difficulty calibration.}
+Compare descriptor-stratum ordering across reference agents, seeds, and simulators.
+Reject policy-independent calibration when rank stability falls below its preregistered
+bound. Required artifacts are frozen reference distributions, descriptor code, policies,
+and paired outcomes.
 
-\paragraph{Difficulty calibration.}
-Can a difficulty spectrum be calibrated independently of policy class? Test rank
-stability of descriptor strata and policy-derived outcomes across reference agents,
-training seeds, and simulators. An ordering that reverses is policy or simulator
-conditioned, not a general difficulty scale.
+\paragraph{H4: Representative versus adversarial generation.}
+Compare held-out distribution distance, coverage, duplicates, and policy failures under
+matched budgets. Reject representative-generation claims when adversarial improvement
+violates fixed distributional bounds. Required artifacts are target/reference corpora,
+candidate pools, selection logs, and policy evaluations.
 
-\subsection{Generation Objectives and Feedback}
+\paragraph{H5: UED, curriculum, and repair bias.}
+Compare co-adapted policies and frozen generator snapshots on common held-out suites;
+separately estimate paired raw-to-repaired descriptor and outcome shifts. Reject
+transfer or repair-neutrality when the respective preregistered bounds fail. Required
+artifacts are snapshot lineage, raw/derived pairs, repair traces, and common IDs.
 
-\paragraph{Representative versus adversarial generation.}
-Can a generator match a declared target distribution while exposing rare feasible
-failures? Evaluate held-out distribution distance, coverage, duplicate rate, and policy
-failure modes separately. Moving outside preregistered representative bounds while
-improving an adversarial objective rejects representative-generation claims.
+\paragraph{H6: Cross-generator, cross-simulator, and sim-to-real transfer.}
+Estimate a crossed generator-by-simulator transfer matrix and compare generated
+descriptor distributions with a fixed, conditioned real reference corpus. Reject a
+transfer claim on material off-diagonal loss or real-reference mismatch beyond the
+preregistered interval. Required artifacts are corpus extraction/conditioning, adapters,
+conformance records, and paired policies.
 
-\paragraph{UED and curriculum feedback.}
-When generator and policy co-adapt, does the curriculum generalize beyond its feedback
-loop? Freeze generator snapshots and evaluate on common held-out generators, seeds, and
-simulators. Gains confined to the co-adapted distribution falsify transfer; raw attempt
-and repair logs show whether feedback merely selects easier valid cases.
+\paragraph{H7: Recoverability.}
+Compare recovery probability across perturbation distributions, controllers, and
+budgets. Reject a recovery claim when safe-set or recovered-set occupancy misses its
+bound, or collision/irreversible failure exceeds its ceiling. Required artifacts are
+perturbation draws, horizons, safe/recovered definitions, trajectories, and failure
+taxonomy.
 
-\paragraph{Repair bias.}
-Does repair shift descriptors or suppress failure modes enough to alter comparisons?
-Measure paired raw-to-repaired changes in predicates, spectrum membership, diversity,
-and policy outcomes. Changes outside preregistered tolerances require separate raw and
-repaired conclusions.
+\paragraph{H8: Multi-agent and overtaking behavior.}
+Compare collision, deadlock, legal-pass, illegal-pass, and completion rates across
+roles and interaction rules. Reject a passing or interaction claim when separation or
+legal-pass bounds fail. Required artifacts are role assignments, initial states, pass
+rules, interaction traces, and outcome labels.
 
-\subsection{Transfer and Underrepresented Domains}
+\paragraph{H9: Card, reconstruction, and audit agreement.}
+Compare course-card declarations with reconstruction and conformance results, then
+measure agreement between preregistered audit codes and their cited locators. Reject
+completeness when a required card field, reconstruction, conformance predicate, or
+audit agreement threshold fails. Required artifacts are cards, hashes, manifests,
+replay logs, and coded ledgers.
 
-\paragraph{Cross-generator and cross-simulator transfer.}
-Do policies trained on one generator family or simulator retain performance on portable
-courses from another, and does the IR predict transfer loss? Use a crossed
-generator-by-simulator matrix with common course identities. Material off-diagonal loss
-rejects a generalization claim and can isolate representation, adapter, and policy
-contributions.
+\paragraph{H10: Learned and language-model fidelity.}
+Compare learned or language-model generators with declared baselines under an equal
+budget vector: offline data and compute; online calls, tokens, and wall time; and
+validation/repair cost, or a preregistered conversion. Estimate constraint,
+distributional, semantic-intent, and deterministic-reconstruction fidelity. Reject a
+fidelity claim when any preregistered dimension fails. Test explanation and semantic
+fidelity against generator traces and declared constraints using precision/recall or
+intervention consistency, not subjective prose. Required artifacts are prompts,
+traces, configurations, outputs, budgets, validators, and reconstruction tests.
 
-\paragraph{Maritime and 3D challenges.}
-Can benchmarks cover maritime routes and three-dimensional gates with sufficient
-semantic fidelity to test control rather than importer artifacts? Require navigable
-regions, current/wind, visibility, and ordered-gate predicates, then compare
-source-to-simulator conformance and policy failures. Missing maritime suites or failed
-3D gate/visibility round trips are measurable coverage gaps.
-
-\subsection{Learned Generators and Governance}
-
-\paragraph{Learned and language-model generators.}
-Can learned or language-model-driven generators satisfy constraints and produce an
-auditable decision trace under equal budgets? Test raw constraint yield,
-invalid-output taxonomy, reconstruction from prompt/configuration/seed, and explanation
-fidelity to the emitted \texttt{CourseSpec}. Unreconstructible outputs or untraceable
-constraint changes reject auditability claims even when selected courses are valid.
-
-\paragraph{Benchmark governance and drift.}
-Can a benchmark remain comparable as exporters, simulators, descriptors, and policies
-change? Version suites, cards, adapters, and reference normalizations; rerun a fixed
-conformance and policy panel after each change; and publish compatibility and
-deprecation records. A material unexplained shift demonstrates drift; reproducible
-replay and explicit version splits support long-term maintenance.
+\paragraph{H11: Maritime, 3D, and benchmark drift.}
+Compare source-to-simulator conformance and policy outcomes for maritime navigability,
+currents/wind, 3D gate visibility, and ordered traversal; rerun a fixed panel after
+every version change. Reject coverage or maintenance claims on missing required
+predicates, failed round trips, or unexplained version shifts. Required artifacts are
+domain contracts, simulator mappings, versioned suites, compatibility records, and
+deprecation logs.

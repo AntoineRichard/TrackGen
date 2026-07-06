@@ -130,6 +130,34 @@ labelled raw, with its invalid/missing-descriptor treatment and attempted-course
 denominator stated. This prevents a collection from appearing diverse only because
 invalid samples spread through descriptor space.
 
+\subsection{Sim-to-Real, Recoverability, and Interaction}
+
+Sim-to-real comparison uses a fixed real reference corpus, a versioned extraction
+procedure, and declared conditioning variables such as vehicle, site, weather, or
+mission. Compare the generated and real descriptor distributions with a stated
+distance or test, sample sizes, and uncertainty; an unconditioned match does not
+establish agreement within a deployment stratum.
+
+Recoverability is conditional on a declared perturbation distribution, recovery
+horizon, controller, and compute or action budget. Record whether the trajectory enters
+a declared safe set, reaches a recovered set within the horizon, collides, or incurs an
+irreversible failure. Report the denominator over perturbation draws and separate
+inconclusive budget exhaustion from failure.
+
+For multi-agent or overtaking courses, declare agent roles, interaction and pass rules,
+minimum separation, and initial-state distribution. Report collision, deadlock, legal
+pass, illegal-pass, and completion outcomes per interaction episode, with paired seeds
+where policies are compared.
+
+\subsection{Learned and Language-Model Generator Fidelity}
+
+For learned or language-model generators, report offline data and compute, online
+calls, tokens, and wall time, plus validation and repair cost; alternatively publish a
+preregistered cost conversion. Evaluate four distinct fidelities: constraint adherence,
+distributional agreement, semantic-intent agreement, and deterministic reconstruction.
+Semantic explanations are tested against generator traces and declared constraints by
+precision/recall or intervention consistency, not subjective prose.
+
 \subsection{Reproducibility}
 
 Each generator-level report should record generator identifier and version, complete
@@ -187,6 +215,15 @@ simulator.
     Can another system reproduce and use it? & Manifest/hash match, runtime,
     memory, rejection/repair cost, import/reset/collision and headless yields & Missing
     provenance, nondeterminism, or a broken simulator interface \\
+    Does generation agree with deployment data? & Fixed real-reference corpus,
+    extraction/conditioning, distribution distance, and interval & Reference mismatch,
+    insufficient conditioning, or uncertain estimate \\
+    Can the system recover and interact safely? & Safe/recovered, collision,
+    irreversible-failure, deadlock, and legal-pass rates & Recovery, interaction, or
+    rule failure under the declared budget \\
+    Is a learned generator faithful under budget? & Offline/online/repair cost and
+    constraint, distributional, semantic, reconstruction fidelity & A selected output
+    hides budget, trace, or reconstruction failure \\
     \bottomrule
   \end{tabularx}
 \end{table}
