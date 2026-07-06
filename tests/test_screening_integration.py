@@ -1204,15 +1204,21 @@ def _write_execution_register(
     return path
 
 
-def _trigger_case(tmp_path: Path) -> tuple[ScreeningCase, list[dict[str, str]]]:
+def _trigger_case(
+    tmp_path: Path,
+    *,
+    legacy_contract: bool = False,
+) -> tuple[ScreeningCase, list[dict[str, str]]]:
     case = _build_case(
         tmp_path,
         scenarios=_trigger_scenarios(),
         conflicts=[_conflict("X57B57E64E501", "C0143")],
+        legacy_contract=legacy_contract,
     )
+    included_criterion = "include-1" if legacy_contract else "include-relevant"
     rows = [
-        _adjudication_row(case, "C0001"),
-        _adjudication_row(case, "C0002", criterion="include-relevant"),
+        _adjudication_row(case, "C0001", criterion=included_criterion),
+        _adjudication_row(case, "C0002", criterion=included_criterion),
         _adjudication_row(
             case,
             "C0003",
@@ -1223,7 +1229,7 @@ def _trigger_case(tmp_path: Path) -> tuple[ScreeningCase, list[dict[str, str]]]:
                 "geometry and contributes no course-generation method."
             ),
         ),
-        _adjudication_row(case, "C0143"),
+        _adjudication_row(case, "C0143", criterion=included_criterion),
     ]
     return case, rows
 
@@ -4155,6 +4161,157 @@ def test_cli_has_only_seal_adjudication_and_seal_projection_roundtrip(
 
     with pytest.raises(SystemExit):
         integration.main(["--integrate"])
+
+
+def _merge_adjudication_batches(
+    case: ScreeningCase,
+    batches: list[Path],
+    output: Path,
+) -> int:
+    arguments = [
+        "--merge-adjudications",
+        "--coordinator-snapshot",
+        str(case.coordinator),
+        "--calibration-reviewer-release",
+        str(case.calibration_release),
+        "--calibration-result-snapshot",
+        str(case.calibration),
+        "--calibration-decision-snapshot",
+        str(case.calibration_decision),
+        "--main-reviewer-release",
+        str(case.main_release),
+        "--main-result-snapshot",
+        str(case.main),
+    ]
+    for batch in batches:
+        arguments.extend(("--batch", str(batch)))
+    arguments.extend(("--output", str(output)))
+    return integration.main(arguments)
+
+
+def test_merge_adjudications_canonicalizes_valid_batches(
+    tmp_path: Path,
+) -> None:
+    case, rows = _trigger_case(tmp_path, legacy_contract=True)
+    first = tmp_path / "batch-z.csv"
+    second = tmp_path / "batch-a.csv"
+    _write_csv(first, integration.ADJUDICATION_HEADER, [rows[3], rows[1]])
+    _write_csv(second, integration.ADJUDICATION_HEADER, [rows[2], rows[0]])
+    output = tmp_path / "merged.csv"
+
+    assert _merge_adjudication_batches(case, [first, second], output) == 0
+
+    assert output.read_bytes() == _csv_bytes(
+        integration.ADJUDICATION_HEADER,
+        sorted(rows, key=lambda row: row["candidate_id"].encode("utf-8")),
+    )
+
+
+def test_merge_adjudications_rejects_duplicate_candidate_ids_across_batches(
+    tmp_path: Path,
+) -> None:
+    case, rows = _trigger_case(tmp_path, legacy_contract=True)
+    first = tmp_path / "batch-one.csv"
+    second = tmp_path / "batch-two.csv"
+    _write_csv(first, integration.ADJUDICATION_HEADER, rows[:2])
+    _write_csv(second, integration.ADJUDICATION_HEADER, [rows[0], *rows[2:]])
+    output = tmp_path / "merged.csv"
+
+    with pytest.raises(integration.ScreeningIntegrationError, match="duplicate"):
+        _merge_adjudication_batches(case, [first, second], output)
+
+    assert not output.exists()
+
+
+def test_merge_adjudications_rejects_missing_required_trigger(
+    tmp_path: Path,
+) -> None:
+    case, rows = _trigger_case(tmp_path, legacy_contract=True)
+    batch = tmp_path / "batch.csv"
+    _write_csv(batch, integration.ADJUDICATION_HEADER, rows[:-1])
+    output = tmp_path / "merged.csv"
+
+    with pytest.raises(integration.ScreeningIntegrationError, match="coverage"):
+        _merge_adjudication_batches(case, [batch], output)
+
+    assert not output.exists()
+
+
+def test_merge_adjudications_rejects_extra_non_trigger_row(
+    tmp_path: Path,
+) -> None:
+    case, rows = _trigger_case(tmp_path, legacy_contract=True)
+    batch = tmp_path / "batch.csv"
+    _write_csv(
+        batch,
+        integration.ADJUDICATION_HEADER,
+        [
+            *rows,
+            _adjudication_row(
+                case,
+                "C0004",
+                criterion="include-1",
+            ),
+        ],
+    )
+    output = tmp_path / "merged.csv"
+
+    with pytest.raises(integration.ScreeningIntegrationError, match="coverage"):
+        _merge_adjudication_batches(case, [batch], output)
+
+    assert not output.exists()
+
+
+def test_merge_adjudications_rejects_invalid_structured_evidence(
+    tmp_path: Path,
+) -> None:
+    case, rows = _trigger_case(tmp_path, legacy_contract=True)
+    _mutate_resolution_evidence(
+        rows[0],
+        lambda evidence: evidence["final_decision"].update(
+            {"criterion": "include-unrelated"}
+        ),
+    )
+    batch = tmp_path / "batch.csv"
+    _write_csv(batch, integration.ADJUDICATION_HEADER, rows)
+    output = tmp_path / "merged.csv"
+
+    with pytest.raises(
+        integration.ScreeningIntegrationError,
+        match="resolution_evidence final_decision",
+    ):
+        _merge_adjudication_batches(case, [batch], output)
+
+    assert not output.exists()
+
+
+def test_merge_adjudications_does_not_clobber_existing_output(
+    tmp_path: Path,
+) -> None:
+    case, rows = _trigger_case(tmp_path, legacy_contract=True)
+    batch = tmp_path / "batch.csv"
+    _write_csv(batch, integration.ADJUDICATION_HEADER, rows)
+    output = tmp_path / "merged.csv"
+    output.write_bytes(b"existing output\n")
+
+    with pytest.raises(integration.ScreeningIntegrationError, match="already exists"):
+        _merge_adjudication_batches(case, [batch], output)
+
+    assert output.read_bytes() == b"existing output\n"
+
+
+def test_merge_adjudications_failure_leaves_no_output(
+    tmp_path: Path,
+) -> None:
+    case, _ = _trigger_case(tmp_path, legacy_contract=True)
+    batch = tmp_path / "batch.csv"
+    batch.write_bytes(b"unexpected\n")
+    output = tmp_path / "merged.csv"
+
+    with pytest.raises(integration.ScreeningIntegrationError, match="header"):
+        _merge_adjudication_batches(case, [batch], output)
+
+    assert not output.exists()
 
 
 @pytest.mark.parametrize(

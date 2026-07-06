@@ -2960,14 +2960,78 @@ def seal_screening_projection(
     )
 
 
+def merge_adjudication_batches(
+    coordinator_snapshot_dir: Path,
+    calibration_reviewer_release_snapshot_dir: Path,
+    calibration_result_snapshot_dir: Path,
+    calibration_decision_snapshot_dir: Path,
+    main_reviewer_release_snapshot_dir: Path,
+    main_result_snapshot_dir: Path,
+    batch_paths: Sequence[Path],
+    output_path: Path,
+) -> None:
+    context = _load_context(
+        coordinator_snapshot_dir,
+        calibration_reviewer_release_snapshot_dir,
+        calibration_result_snapshot_dir,
+        calibration_decision_snapshot_dir,
+        main_reviewer_release_snapshot_dir,
+        main_result_snapshot_dir,
+    )
+    rows: list[Row] = []
+    seen_candidate_ids: set[str] = set()
+    for batch_path in batch_paths:
+        captured = _call(
+            screening_results.capture_input,
+            Path(batch_path),
+            "adjudication batch",
+        )
+        batch_rows = _parse_csv(
+            captured.payload,
+            f"adjudication batch {captured.fingerprint.path}",
+            ADJUDICATION_HEADER,
+        )
+        for row in batch_rows:
+            candidate_id = row["candidate_id"]
+            if candidate_id in seen_candidate_ids:
+                raise ScreeningIntegrationError(
+                    "adjudication batches contain duplicate candidate_id "
+                    f"{candidate_id!r}"
+                )
+            seen_candidate_ids.add(candidate_id)
+            rows.append(row)
+
+    payload = _csv_bytes(
+        ADJUDICATION_HEADER,
+        _validate_adjudication_rows(rows, context),
+    )
+    try:
+        with Path(output_path).open("xb") as handle:
+            handle.write(payload)
+    except FileExistsError as exc:
+        raise ScreeningIntegrationError(
+            f"{output_path}: output already exists"
+        ) from exc
+    except OSError as exc:
+        try:
+            Path(output_path).unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
+        raise ScreeningIntegrationError(
+            f"{output_path}: could not write merged adjudications"
+        ) from exc
 def _argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
+
         description=(
             "Seal adjudications and immutable screening projections from "
             "validated coordinator and phase snapshots."
         )
     )
     modes = parser.add_mutually_exclusive_group(required=True)
+    modes.add_argument("--merge-adjudications", action="store_true")
     modes.add_argument("--seal-adjudication", action="store_true")
     modes.add_argument("--seal-projection", action="store_true")
     parser.add_argument("--coordinator-snapshot", type=Path)
@@ -2981,6 +3045,8 @@ def _argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--execution-register", type=Path)
     parser.add_argument("--citation-key-ledger", type=Path)
     parser.add_argument("--author-verification", type=Path)
+    parser.add_argument("--batch", action="append", type=Path)
+    parser.add_argument("--output", type=Path)
     parser.add_argument("--output-dir", type=Path)
     return parser
 
@@ -3002,16 +3068,44 @@ def _require(
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _argument_parser()
     arguments = parser.parse_args(argv)
-    common = (
+    context_inputs = (
         "coordinator_snapshot",
         "calibration_reviewer_release",
         "calibration_result_snapshot",
         "calibration_decision_snapshot",
         "main_reviewer_release",
         "main_result_snapshot",
-        "execution_register",
-        "output_dir",
     )
+    common = (*context_inputs, "execution_register", "output_dir")
+    if arguments.merge_adjudications:
+        _require(parser, arguments, (*context_inputs, "batch", "output"))
+        if any(
+            getattr(arguments, name) is not None
+            for name in (
+                "adjudication_result",
+                "adjudication_result_snapshot",
+                "execution_register",
+                "citation_key_ledger",
+                "author_verification",
+                "output_dir",
+            )
+        ):
+            parser.error(
+                "--merge-adjudications accepts only context inputs, "
+                "--batch, and --output"
+            )
+        merge_adjudication_batches(
+            arguments.coordinator_snapshot,
+            arguments.calibration_reviewer_release,
+            arguments.calibration_result_snapshot,
+            arguments.calibration_decision_snapshot,
+            arguments.main_reviewer_release,
+            arguments.main_result_snapshot,
+            arguments.batch,
+            arguments.output,
+        )
+        return 0
+
     if arguments.seal_adjudication:
         _require(parser, arguments, (*common, "adjudication_result"))
         if (
