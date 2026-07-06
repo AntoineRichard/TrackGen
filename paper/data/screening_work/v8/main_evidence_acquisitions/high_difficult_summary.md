@@ -14,7 +14,7 @@ Counts: 36 selected, 14 full-text successes, 22 unresolved access limitations, 0
 | C0069 | Experience-Driven Procedural Content Generation | Georgios Yannakakis author page: https://yannakakis.net/wp-content/uploads/2015/11/PID3821875.pdf |
 | C0102 | Testing Autonomous Robot Control Software Using Procedural Content Generation | White Rose: https://eprints.whiterose.ac.uk/id/eprint/103118/ |
 | C0107 | A Search-Based Framework for Automatic Generation of Testing Environments for Cyber-Physical Systems | arXiv: https://arxiv.org/abs/2203.12138 |
-| C0121 | Environment as Policy: Learning to Race in Unseen Tracks | arXiv: https://arxiv.org/abs/2410.22308 |
+| C0121 | Environment as Policy: Learning to Race in Unseen Tracks | arXiv v3: https://arxiv.org/abs/2410.22308v3 |
 | C0126 | Lanelet2: A high-definition map framework for the future of automated driving | KIT: https://www.mrt.kit.edu/z/publ/download/2018/Poggenhans2018Lanelet2.pdf |
 | C0130 | MAVRL: Learn to Fly in Cluttered Environments With Varying Speed | arXiv: https://arxiv.org/abs/2402.08381 |
 | C0132 | The World Robotic Sailing Championship, a Competition to Stimulate the Development of Autonomous Sailboats | ENSTA author page: https://webperso.ensta.fr/lebars/paper_wrsc_2013_oceans_2015.pdf |
@@ -23,7 +23,7 @@ Counts: 36 selected, 14 full-text successes, 22 unresolved access limitations, 0
 | C0146 | Search-based Generation of Waypoints for Triggering Self-Adaptations in Maritime Autonomous Vessels | Simula author page: https://web-backend.simula.no/sites/default/files/2025-08/GECCO2025_Paper_Waypoints_search%20.pdf |
 | C0152 | Procedural Generation of High-Definition Road Networks for Autonomous Vehicle Testing and Traffic Simulations | SAE: https://saemobilus.sae.org/articles/procedural-generation-high-definition-road-networks-autonomous-vehicle-testing-traffic-simulations-12-06-01-0007 |
 
-All success artifacts were checked as nonempty PDFs with `file`, `pdfinfo`, and first-page `pdftotext`; the manifest records their SHA-256 values. C0146 and C0152 are marked public-redistributable only because their PDFs explicitly state CC BY 4.0. All other archived copies are local-restricted.
+All success artifacts were checked as nonempty PDFs with `file`, `pdfinfo`, and first-page `pdftotext`; the manifest records their SHA-256 values. C0121 is pinned to the archived arXiv v3 author manuscript. C0146 and C0152 are marked public-redistributable only because their PDFs explicitly state CC BY 4.0. All other archived copies are local-restricted. The failure ledger's `attempted_urls` field is a JSON array of dated route records with exact URLs and observed statuses; its limitations remain non-exhaustive.
 
 ## Unresolved Core Generation
 
