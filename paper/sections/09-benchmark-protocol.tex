@@ -126,6 +126,59 @@ Cross-generator transfer evaluates held-out generators or configuration families
 cross-simulator transfer evaluates a portable course and policy contract in a second
 declared simulator. Neither result is implied by in-domain success.
 
+\subsection{Cross-Generator Training-Utility Protocol}
+
+Let $G_1,\ldots,G_m$ denote participating generators. For every $G_i$, train the
+same RL algorithm under one vehicle, dynamics, simulator, observation/action, reward,
+termination, policy-architecture, optimization, environment-interaction, and
+policy-update contract, using the common policy-seed set $P$. Only the distribution
+of training courses changes across generator rows. Equal environment-interaction
+budget is the primary training-budget comparison. Separately report generator
+attempts, feasible courses observed, simulator steps, policy updates, wall-clock
+time, and compute so that equal interaction budgets do not conceal generator or
+throughput cost.
+
+Evaluate every resulting policy on the immutable suites $E_1,\ldots,E_m$ and on a
+frozen evaluation-only real-track suite $E_{\mathrm{real}}$. Training on the finite
+real-track corpus is excluded from this protocol because it would confound training
+utility with memorization and augmentation policy. Preserve common course identifiers
+and, where meaningful, common rollout random streams across training-generator rows.
+Thus the crossed outcomes use the Section~\ref{sec:metrics} definition of $M^Y_{ij}$
+and its real-track column; within a fixed evaluation column, compare training
+distributions through \cref{eq:cross-generator-transfer-gap}, rather than treating
+diagonal--off-diagonal differences over unlike course populations as the primary
+transfer estimand.
+
+Construct each generated suite feasibility-first: account for raw attempts and repair
+outcomes before selection, then apply the same frozen descriptor transform, absolute
+admissible bounds, spectrum strata, diversity rules, and minimum suite-size contract
+to every generator. Require both a full-support analysis, which describes practical
+transfer over each source's own immutable suite, and a common-support analysis over
+descriptor strata represented by every compared generator. The former exposes the
+support each source can supply; the latter reduces support and difficulty confounding.
+Condition $E_{\mathrm{real}}$ on the same domain, vehicle, units, frames, descriptor
+extraction, and feasibility contract, and freeze its composition and conditioning
+variables before policy evaluation.
+
+On the same evaluation courses, run a declared model-based reference controller using
+one generator-independent configuration. Freeze its model, objective, constraints,
+horizon, sampling budget, controller-seed set, compute budget, and termination rules;
+calibrate that configuration once on a declared set disjoint from all training and
+evaluation suites. Preserve its seed and compute contracts across suites and
+generators. Report joint outcome categories---completion, collision, violation,
+timeout, and inconclusive budget exhaustion---before conditional lap-time, progress,
+speed, tracking, or control-effort metrics, including the paired quantities in
+\cref{eq:reference-controller-gap}. Failure by the reference controller, including
+failure shared with RL, is inconclusive for geometric or dynamic infeasibility.
+
+For each outcome, aggregate rollouts within policy-seed/course cells and use
+hierarchical paired resampling of policy seeds, common course identifiers, and nested
+rollout seeds. Report paired intervals for within-column comparisons and retain the
+complete failure taxonomy with outcome-specific denominators and censoring rules.
+Keep yield, descriptor coverage, feasible diversity, cost, interoperability, transfer
+gaps, and reference-controller gaps as separate outcomes; do not collapse them into a
+generator ranking.
+
 \begin{table}[t]
   \centering
   \caption{Proposed benchmark release requirements and explicitly future extensions.}
@@ -144,9 +197,9 @@ declared simulator. Neither result is implied by in-domain success.
     Evaluation suite & Admission only after $\geq100$ feasible non-duplicate courses
     span the declared spectrum and diversity constraints & Expanded suite sizes and
     longitudinal challenge sets \\
-    Policy results & Common course IDs, multiple policy seeds, course-level outcomes,
-    intervals, and failure taxonomy & Community leaderboards and additional reference
-    agents \\
+    Policy results & Common IDs, multiple policy seeds, crossed generator-to-suite
+    outcomes, real-track evaluation, intervals, and failure taxonomy & Additional
+    policy families and model-based reference controllers \\
     Interoperability & Documented portable representation plus declared simulator/RL
     adapter behavior & More simulator backends, sensor suites, and hardware-in-the-loop
     validation \\
