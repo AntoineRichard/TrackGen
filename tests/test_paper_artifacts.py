@@ -56,30 +56,36 @@ SECTION_CONTRACTS = {
         "sec:benchmark-protocol",
     ),
     "10-reference-implementations.tex": (
-        r"\section{Open Reference Implementations}",
+        r"\section{Current Implementation Coverage and Release Gaps}",
         "sec:reference-implementations",
     ),
     "11-reporting-practices.tex": (
-        r"\section{Reporting Practices in RL and Control}",
+        r"\section{Proposed Reporting Standard and Reliability-Limited Empirical Audit}",
         "sec:reporting-practices",
     ),
-    "12-open-problems.tex": (r"\section{Open Problems}", "sec:open-problems"),
+    "12-open-problems.tex": (
+        r"\section{Falsifiable Research Hypotheses}",
+        "sec:open-problems",
+    ),
     "13-conclusion.tex": (r"\section{Conclusion}", "sec:conclusion"),
 }
 REQUIRED_SUBSECTIONS = {
     "07-domain-constraints.tex": (
-        r"\subsection{Ground}",
-        r"\subsection{Aerial}",
-        r"\subsection{Maritime}",
-        r"\subsection{Cross-Domain}",
+        r"\subsection{Ground Courses}",
+        r"\subsection{Aerial Courses}",
+        r"\subsection{Maritime Courses}",
+        r"\subsection{Shared Course Abstraction}",
     ),
     "08-metrics.tex": (
         r"\subsection{Feasibility}",
         r"\subsection{Geometry}",
         r"\subsection{Difficulty}",
         r"\subsection{Diversity}",
+        r"\subsection{Sim-to-Real, Recoverability, and Interaction}",
+        r"\subsection{Learned and Language-Model Generator Fidelity}",
         r"\subsection{Reproducibility}",
         r"\subsection{Simulation Feasibility}",
+        r"\subsection{Cross-Generator Training Utility}",
     ),
 }
 
