@@ -188,12 +188,64 @@ parallel environment count, hardware, and reset cost. These are implementation-t
 measures: a portable representation does not by itself establish support in every
 simulator.
 
+\subsection{Cross-Generator Training Utility}
+
+Controller outcomes can evaluate a generator's utility as a training distribution,
+but they do not define an intrinsic generator quality. Let
+$G_1,\ldots,G_m$ be generators and let $E_1,\ldots,E_m$ be their immutable
+evaluation suites. For outcome $Y$, define $M^Y_{ij}$ as the aggregate outcome of
+policies trained on $G_i$ and evaluated on $E_j$, retaining policy-seed, course, and
+rollout-seed outcomes before aggregation. A separate column
+$M^Y_{i,\mathrm{real}}$ evaluates the same policies on a frozen, evaluation-only
+real-track suite.
+
+Diagonal and off-diagonal cells refer to different course populations and should not
+be subtracted as the primary transfer estimand. Within evaluation column $j$, compare
+training distributions on common courses:
+\begin{equation}
+  \Delta^Y_{ij}=M^Y_{ij}-M^Y_{jj},
+  \label{eq:cross-generator-transfer-gap}
+\end{equation}
+for higher-is-better outcomes, reversing or explicitly declaring the sign for
+lower-is-better outcomes. The real-track column has no privileged diagonal; compare
+policies directly through paired course outcomes. Report the complete matrix,
+leave-source-out and worst-source summaries, real-track outcomes, policy-seed and
+course sensitivity, and training exposure. These quantities form a training-utility
+profile, not a scalar generator ranking.
+
+Every evaluation course should also be attempted by a declared model-based reference
+controller. The contract is controller-generic; MPPI is the proposed initial
+ground-racing implementation. Freeze the controller model, objective, constraints,
+horizon, sampling budget, stochastic seed set, compute budget, and termination rules.
+Tune it once on a declared calibration set disjoint from all training and evaluation
+suites; generator-specific tuning is prohibited.
+
+Report outcome calibration---completion, collision, violation, timeout, or
+inconclusive budget exhaustion---before conditional performance. On explicitly stated
+subsets, particularly courses completed by both methods, report:
+\begin{equation}
+  R^{\mathrm{time}}_{icp}
+  =\frac{\overline{T}^{\mathrm{RL}}_{icp}}
+  {\widetilde{T}^{\mathrm{ref}}_c},
+  \qquad
+  \Delta v_{icp}
+  =\overline{v}^{\mathrm{RL}}_{icp}
+  -\widetilde{v}^{\mathrm{ref}}_c,
+  \label{eq:reference-controller-gap}
+\end{equation}
+where the overbar is the declared RL rollout aggregation and the tilde is the
+preregistered aggregation over reference-controller seeds. Reference-controller
+success with consistent RL failure is diagnostic of a training or policy limitation
+conditional on the declared model and controller configuration. Failure by both
+methods does not establish geometric or dynamic infeasibility. Reference-controller
+outcomes calibrate policy results and are not part of a generator ranking.
+
 \begin{table}[t]
   \centering
   \caption{Proposed auditable metric map. Every estimate identifies its reporting
   unit, denominator or sample population, and uncertainty procedure.}
   \label{tab:metric-map}
-  \small
+  \footnotesize
   \begin{tabularx}{\linewidth}{@{}Y Y Y@{}}
     \toprule
     Question & Metrics and units & Failure interpretation \\
@@ -212,6 +264,10 @@ simulator.
     How varied is the feasible output? & Feasible coverage, pairwise distance,
     energy/MMD-style distance, entropy when estimable, near-duplicate rate & Diversity
     is low, estimated unreliably, or inflated by invalid samples \\
+    Does a training generator support transfer? & Crossed generator-to-suite policy
+    outcomes, within-column transfer gaps, real-track outcomes, and
+    reference-controller gaps & Poor transfer, training sensitivity, or a
+    controller-conditional limitation; not intrinsic generator quality \\
     Can another system reproduce and use it? & Manifest/hash match, runtime,
     memory, rejection/repair cost, import/reset/collision and headless yields & Missing
     provenance, nondeterminism, or a broken simulator interface \\
