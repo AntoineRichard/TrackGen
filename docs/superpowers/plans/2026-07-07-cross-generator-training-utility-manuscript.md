@@ -36,27 +36,54 @@ Immediately before the metric-map table following `Simulation Feasibility`, add:
 \subsection{Cross-Generator Training Utility}
 
 Controller outcomes can evaluate a generator's utility as a training distribution,
-but they do not define an intrinsic generator quality. Let
-$G_1,\ldots,G_m$ be generators and let $E_1,\ldots,E_m$ be their immutable
-evaluation suites. For outcome $Y$, define $M^Y_{ij}$ as the aggregate outcome of
-policies trained on $G_i$ and evaluated on $E_j$, retaining policy-seed, course, and
-rollout-seed outcomes before aggregation. A separate column
-$M^Y_{i,\mathrm{real}}$ evaluates the same policies on a frozen, evaluation-only
-real-track suite.
+but they do not define an intrinsic generator quality. Let $G_1,\ldots,G_m$ be
+generators, let $E_1,\ldots,E_m$ be their immutable generated evaluation suites, and
+let $E_{\mathrm{real}}$ be the frozen evaluation-only real-track suite. Write
+$\mathcal{J}=\{1,\ldots,m,\mathrm{real}\}$ and let $C_j$ be the course set for
+$E_j$, including $C_{\mathrm{real}}$. Let $P$ be the common global policy-seed set
+and $\mathcal{R}_{pcj}$ the common rollout-seed schedule across training-generator
+rows. Retain rollout outcomes and define
+\begin{equation}
+  \overline{Y}_{ijcp}
+  =\operatorname{Agg}_{r\in\mathcal{R}_{pcj}}Y_{ijcpr},
+  \qquad
+  M^Y_{ij}
+  =\frac{1}{|P|\,|C_j|}
+  \sum_{p\in P}\sum_{c\in C_j}\overline{Y}_{ijcp},
+  \quad j\in\mathcal{J}.
+\end{equation}
 
-Diagonal and off-diagonal cells refer to different course populations and should not
-be subtracted as the primary transfer estimand. Within evaluation column $j$, compare
-training distributions on common courses:
+Within generated evaluation column $j$, compare training distributions on common
+courses:
 \begin{equation}
   \Delta^Y_{ij}=M^Y_{ij}-M^Y_{jj},
   \label{eq:cross-generator-transfer-gap}
 \end{equation}
-for higher-is-better outcomes, reversing or explicitly declaring the sign for
-lower-is-better outcomes. The real-track column has no privileged diagonal; compare
-policies directly through paired course outcomes. Report the complete matrix,
-leave-source-out and worst-source summaries, real-track outcomes, policy-seed and
-course sensitivity, and training exposure. These quantities form a training-utility
-profile, not a scalar generator ranking.
+with a declared outcome direction. For the common-stratum analysis, freeze represented
+strata $\mathcal{H}^{\cap}$, positive weights $w_h$ summing to one, and per-suite
+sets $C^{\cap}_{jh}$, then define
+\begin{equation}
+  M^{Y,\cap}_{ij}
+  =\sum_{h\in\mathcal{H}^{\cap}}w_h
+  \left(
+    \frac{1}{|P|\,|C^{\cap}_{jh}|}
+    \sum_{p\in P}\sum_{c\in C^{\cap}_{jh}}\overline{Y}_{ijcp}
+  \right),
+  \qquad
+  \Delta^{Y,\cap}_{ij}=M^{Y,\cap}_{ij}-M^{Y,\cap}_{jj}.
+  \label{eq:common-stratum-transfer-gap}
+\end{equation}
+For each preregistered training-row pair $i<k$, compare policies on the same real
+courses and seed schedules:
+\begin{equation}
+  \Delta^Y_{ik,\mathrm{real}}
+  =M^Y_{i,\mathrm{real}}-M^Y_{k,\mathrm{real}}.
+  \label{eq:real-track-transfer-gap}
+\end{equation}
+Preregister outcome directions, primary contrast families, and multiplicity control.
+Report the complete matrix and separate suite-specific, common-stratum, and real-track
+contrasts. These quantities form a training-utility profile, not a scalar generator
+ranking.
 
 Every evaluation course should also be attempted by a declared model-based reference
 controller. The contract is controller-generic; MPPI is the proposed initial
@@ -69,13 +96,13 @@ Report outcome calibration---completion, collision, violation, timeout, or
 inconclusive budget exhaustion---before conditional performance. On explicitly stated
 subsets, particularly courses completed by both methods, report:
 \begin{equation}
-  R^{\mathrm{time}}_{icp}
-  =\frac{\overline{T}^{\mathrm{RL}}_{icp}}
-  {\widetilde{T}^{\mathrm{ref}}_c},
+  R^{\mathrm{time}}_{ijcp}
+  =\frac{\overline{T}^{\mathrm{RL}}_{ijcp}}
+  {\widetilde{T}^{\mathrm{ref}}_{jc}},
   \qquad
-  \Delta v_{icp}
-  =\overline{v}^{\mathrm{RL}}_{icp}
-  -\widetilde{v}^{\mathrm{ref}}_c,
+  \Delta v_{ijcp}
+  =\overline{v}^{\mathrm{RL}}_{ijcp}
+  -\widetilde{v}^{\mathrm{ref}}_{jc},
   \label{eq:reference-controller-gap}
 \end{equation}
 where the overbar is the declared RL rollout aggregation and the tilde is the
@@ -113,11 +140,11 @@ warnings are acceptable.
 - [ ] **Step 5: Verify equations and non-ranking boundaries**
 
 ```bash
-rg -n "eq:cross-generator-transfer-gap|eq:reference-controller-gap|not a scalar generator ranking|not part of a generator ranking" \
+rg -n "eq:cross-generator-transfer-gap|eq:common-stratum-transfer-gap|eq:real-track-transfer-gap|eq:reference-controller-gap|not a scalar generator ranking|not part of a generator ranking" \
   paper/sections/08-metrics.tex
 ```
 
-Expected: both labels and both qualifications are present.
+Expected: all four labels and both non-ranking qualifications are present.
 
 - [ ] **Step 6: Commit**
 
@@ -173,12 +200,17 @@ Construct every generated suite after raw feasibility accounting with the same f
 descriptor transform, absolute admissible bounds, spectrum strata, diversity rules,
 and minimum suite-size contract. The suite-specific/full-suite analysis uses every
 course in each source's released suite and makes no claim to enumerate the generator's
-full support. For the common-stratum analysis, preregister the intersection of
-descriptor strata represented by every compared generator, fixed stratum weights,
-and restricted course sets $E_j^{\cap}$. Report missing strata and
-insufficient-course shortfalls rather than silently shrinking the comparison. The
-real-track suite uses the same domain, vehicle, units, frames, descriptor extraction,
-and feasibility contract, with composition and conditioning frozen before evaluation.
+full support. For the common-stratum analysis, preregister a minimum occupancy
+$n_{\min}\geq2$ admitted feasible, non-duplicate courses per stratum. A stratum is
+represented for suite $E_j$ only when its frozen manifest meets that threshold. Freeze
+the intersection $\mathcal{H}^{\cap}$, positive weights $w_h$ summing to one, and
+per-suite stratum course sets $C^{\cap}_{jh}$. Use the weighted
+$M^{Y,\cap}_{ij}$ and $\Delta^{Y,\cap}_{ij}$ rather than an unweighted pooled mean,
+and report missing-stratum and occupancy shortfalls without relaxing the contract.
+Freeze $C_{\mathrm{real}}$, its conditioning variables, and
+$\mathcal{R}_{pc,\mathrm{real}}$ before evaluation. Preregister primary outcomes,
+directions, bounds, and one multiplicity family containing selected suite-specific,
+common-stratum, and paired real-track contrasts.
 
 Run the declared reference controller on the same evaluation courses using one
 generator-independent configuration and calibration set. Preserve its stochastic
@@ -189,12 +221,15 @@ conditional metric; the default subset contains only policy-seed/course cells fo
 which both methods complete. Reference-controller failure is inconclusive with respect
 to course infeasibility.
 
-For each outcome, aggregate rollouts within policy-seed/course cells and use
-hierarchical paired resampling over policy seeds, common course identifiers, nested
-rollout seeds, and reference-controller seeds within course. Report full failure
-taxonomies and outcome-specific denominators. Generator yield, coverage, diversity,
-cost, interoperability, training-utility transfer, and reference-controller gaps
-remain separate results.
+For each outcome, aggregate rollouts within policy-seed/course cells. Resample common
+policy-seed indices jointly across rows and columns and course identifiers jointly
+across rows within each evaluation column. For common-stratum estimates, resample
+within strata and recombine with the frozen weights. Resample nested RL rollout seeds
+within cells; for reference gaps, resample controller seeds once per course and share
+the draw across rows. Report paired intervals, full failure taxonomies, and
+outcome-specific denominators. Generator yield, coverage, diversity, cost,
+interoperability, training-utility transfer, and reference-controller gaps remain
+separate results.
 ```
 
 - [ ] **Step 3: Update the benchmark table**
@@ -251,15 +286,16 @@ Replace the current H6 paragraph with:
 \paragraph{H6: Cross-generator training utility and real-track transfer.}
 Train matched policy seeds separately on each generator and evaluate the resulting
 policies on the full crossed generator-to-suite matrix and an evaluation-only
-real-track suite. Compare preregistered within-column gaps $\Delta^Y_{ij}$ under both
-suite-specific/full-suite and common-stratum analyses, and preregister paired
-real-track contrasts, outcome directions, bounds, and the multiplicity rule. Use a
-frozen model-based reference controller to calibrate policy failure without treating
-it as an oracle. Reject a generator training-utility claim if any designated primary
-$\Delta^Y_{ij}$ or paired real-track contrast breaches its bound after the
-preregistered multiplicity rule, or if the two generated-suite analyses yield
-opposite bound decisions. Required artifacts are training distributions and exposure
-logs, immutable generated and real suites, descriptor strata, fixed stratum weights
+real-track suite. Compare preregistered suite-specific gaps $\Delta^Y_{ij}$,
+stratum-weighted gaps $\Delta^{Y,\cap}_{ij}$, and paired real-track contrasts
+$\Delta^Y_{ik,\mathrm{real}}$. Predefine primary outcomes, directions, bounds, and
+their multiplicity family. Use a frozen model-based reference controller to calibrate
+policy failure without treating it as an oracle. Reject a generator training-utility
+claim if any designated primary contrast breaches its bound under the preregistered
+multiplicity rule, or if the suite-specific and common-stratum analyses yield opposite
+bound decisions.
+Required artifacts are training distributions and exposure logs, immutable generated
+and real suites, descriptor strata, fixed stratum weights
 and shortfall records, policy, rollout, and reference-controller seeds,
 reference-controller configuration, paired outcomes, and failure labels.
 ```
@@ -334,11 +370,11 @@ git -c commit.gpgsign=false commit -m "docs: add generator training utility hypo
 - [ ] **Step 1: Verify required concepts**
 
 ```bash
-rg -n "Cross-Generator Training Utility|Cross-Generator Training-Utility Protocol|Cross-generator training utility and real-track transfer|eq:cross-generator-transfer-gap|eq:reference-controller-gap" \
+rg -n "Cross-Generator Training Utility|Cross-Generator Training-Utility Protocol|Cross-generator training utility and real-track transfer|eq:cross-generator-transfer-gap|eq:common-stratum-transfer-gap|eq:real-track-transfer-gap|eq:reference-controller-gap" \
   paper/sections
 ```
 
-Expected: one metric subsection, one benchmark subsection, one H6 paragraph, and both
+Expected: one metric subsection, one benchmark subsection, one H6 paragraph, and all four
 equation labels.
 
 - [ ] **Step 2: Inspect proposal boundaries**

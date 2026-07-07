@@ -50,14 +50,15 @@ memorization and augmentation-policy confounds.
 
 ## Transfer Matrix
 
-For outcome \(Y\), define \(M^Y_{ij}\) as the aggregate performance of policies trained
-on \(G_i\) and evaluated on \(E_j\). The real-track column is
-\(M^Y_{i,\mathrm{real}}\). Every cell retains policy-seed, course, and rollout-seed
-outcomes before aggregation.
+For each evaluation column
+$j\in\{1,\ldots,m,\mathrm{real}\}$, define its frozen course set $C_j$ and common
+rollout-seed schedule $\mathcal{R}_{pcj}$. For outcome $Y$, $M^Y_{ij}$ averages the
+within-rollout aggregation over the common policy seeds and $C_j$. Every cell retains
+policy-seed, course, and rollout-seed outcomes before aggregation.
 
 Report:
 
-- diagonal, in-source performance \(M^Y_{ii}\);
+- diagonal, in-source performance $M^Y_{ii}$;
 - all off-diagonal cells;
 - leave-source-out and worst-source summaries;
 - the real-track column;
@@ -65,16 +66,26 @@ Report:
 - training exposure and cost.
 
 Diagonal-to-off-diagonal differences across unlike suites are not the primary transfer
-estimand. Within evaluation column \(j\), compare training distributions on the same
-courses:
+estimand. Within generated evaluation column $j$, compare training distributions on
+the same courses:
 
 \[
-  \Delta^Y_{ij}=M^Y_{ij}-M^Y_{jj}
+  \Delta^Y_{ij}=M^Y_{ij}-M^Y_{jj}.
 \]
 
-for higher-is-better outcomes, with the sign reversed or stated explicitly for
-lower-is-better outcomes. The real-track column has no privileged diagonal; policies
-are compared directly through paired course outcomes.
+For the common-stratum analysis, freeze represented strata $\mathcal{H}^{\cap}$,
+positive weights $w_h$ summing to one, and per-suite stratum course sets
+$C^{\cap}_{jh}$. Define $M^{Y,\cap}_{ij}$ as the weighted sum of the within-stratum
+course means and
+$\Delta^{Y,\cap}_{ij}=M^{Y,\cap}_{ij}-M^{Y,\cap}_{jj}$. This remains well-defined
+when stratum occupancies differ.
+
+The real-track column has no privileged diagonal. For each preregistered training-row
+pair $i<k$, compare policies on the same $C_{\mathrm{real}}$, policy seeds, and
+rollout-seed schedule through
+$\Delta^Y_{ik,\mathrm{real}}=M^Y_{i,\mathrm{real}}-M^Y_{k,\mathrm{real}}$.
+Preregister outcome directions, bounds, the primary contrast family, and multiplicity
+control.
 
 ## Evaluation Suites
 
@@ -88,11 +99,12 @@ Report two complementary analyses:
 1. **Suite-specific/full-suite analysis:** every course in each released \(E_j\),
    showing practical transfer over the selected suite without claiming to enumerate
    the generator's full support.
-2. **Common-stratum analysis:** before evaluation, freeze the intersection of
-   descriptor strata represented across all compared generators, fixed stratum
-   weights, and restricted course sets \(E_j^{\cap}\). Report missing strata and
-   insufficient-course shortfalls separately rather than silently shrinking the
-   comparison.
+2. **Common-stratum analysis:** preregister an occupancy threshold
+   $n_{\min}\geq2$. A stratum is represented for generated suite $E_j$ only if its
+   frozen manifest contains at least $n_{\min}$ admitted feasible, non-duplicate
+   courses. Freeze the intersection $\mathcal{H}^{\cap}$, positive stratum weights,
+   and per-suite stratum course sets before policy evaluation. Report missing strata
+   and insufficient-course shortfalls separately rather than relaxing the comparison.
 
 The real-track suite uses the same vehicle, domain, units, frames, descriptor
 extraction, and feasibility contract. Its composition and conditioning variables are
@@ -144,9 +156,14 @@ Evaluate policies on common immutable course identifiers and use common rollout 
 streams where meaningful. For comparisons between training generators:
 
 - aggregate rollouts within each policy-seed/course cell;
-- preserve policy-seed clustering across all courses;
-- resample policy seeds, courses, and nested rollout seeds hierarchically;
-- report paired intervals for within-column contrasts;
+- resample common policy-seed indices jointly across rows and columns;
+- resample course identifiers jointly across rows within each evaluation column;
+- for common-stratum estimates, resample within strata and recombine with frozen
+  weights;
+- resample nested rollout seeds within policy-seed/course cells;
+- for reference gaps, resample controller seeds once per course and share the draw
+  across rows;
+- report paired intervals for generated-column and real-track contrasts;
 - report full failure taxonomies rather than conditioning every metric on success; and
 - state outcome-specific denominators and censoring rules.
 

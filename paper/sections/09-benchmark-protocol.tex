@@ -163,18 +163,29 @@ and any resulting suite-size or stratum-occupancy shortfall rather than silently
 replacing courses.
 
 Require a suite-specific analysis over every course in each released $E_j$. Also
-require a common-stratum analysis: before evaluation, freeze the intersection of
-descriptor strata represented across all compared generators, fixed weights for
-those strata, and each restricted per-column suite $E_j^{\cap}\subseteq E_j$ with
-course set $C_j^{\cap}$. For that analysis, the $C_j$ entering the
-Section~\ref{sec:metrics} definition of $M^Y_{ij}$ is $C_j^{\cap}$, and
-stratum-specific cells are combined using the frozen weights. The suite-specific
-analysis measures transfer over each released suite; the common-stratum analysis
-reduces support and difficulty confounding. Report every missing stratum and
-insufficient-course shortfall; do not silently shrink the declared intersection,
-weights, or restricted suites. Condition $E_{\mathrm{real}}$ on the same domain,
-vehicle, units, frames, descriptor extraction, and feasibility contract, and freeze
-its composition and conditioning variables before policy evaluation.
+require a common-stratum analysis. Before policy evaluation, preregister a minimum
+occupancy $n_{\min}\geq2$ admitted feasible, non-duplicate courses per stratum,
+increasing it when the precision analysis requires more. A stratum $h$ is represented
+for generated suite $E_j$ only when its frozen manifest contains
+$|C_{jh}|\geq n_{\min}$ such courses. Freeze
+$\mathcal{H}^{\cap}=\bigcap_{j=1}^{m}\{h:|C_{jh}|\geq n_{\min}\}$, positive
+weights $w_h$ summing to one, and the per-column sets
+$C^{\cap}_{jh}=C_{jh}$ for $h\in\mathcal{H}^{\cap}$. Use
+$M^{Y,\cap}_{ij}$ and $\Delta^{Y,\cap}_{ij}$ from
+\cref{eq:common-stratum-transfer-gap}; do not substitute an unweighted mean over the
+union when stratum occupancies differ. The suite-specific analysis measures transfer
+over each released suite; the common-stratum analysis reduces support and difficulty
+confounding. Report every missing stratum and insufficient-course shortfall; do not
+relax the occupancy threshold, weights, or course sets after observing policy
+outcomes.
+
+Condition $E_{\mathrm{real}}$ on the same domain, vehicle, units, frames, descriptor
+extraction, and feasibility contract, and freeze $C_{\mathrm{real}}$, its conditioning
+variables, and $\mathcal{R}_{pc,\mathrm{real}}$ before policy evaluation. Before
+observing outcomes, designate the primary $Y$, directions, bounds, and one multiplicity
+family containing the selected suite-specific $\Delta^Y_{ij}$, common-stratum
+$\Delta^{Y,\cap}_{ij}$, and paired real-track
+$\Delta^Y_{ik,\mathrm{real}}$ contrasts. Report other contrasts as exploratory.
 
 On the same evaluation courses, run a declared model-based reference controller using
 one generator-independent configuration. Freeze its model, objective, constraints,
@@ -190,14 +201,18 @@ The default subset for lap-time ratios and speed comparisons in
 the reference controller, including failure shared with RL, is inconclusive for
 geometric or dynamic infeasibility.
 
-For each outcome, aggregate rollouts within policy-seed/course cells and use
-hierarchical paired resampling of policy seeds, common course identifiers, and nested
-RL rollout seeds; for reference-controller gaps, also resample reference-controller
-seeds within course. Report paired intervals for within-column comparisons and retain
-the complete failure taxonomy with outcome-specific denominators and censoring rules.
-Keep yield, descriptor coverage, feasible diversity, cost, interoperability, transfer
-gaps, and reference-controller gaps as separate outcomes; do not collapse them into a
-generator ranking.
+For each outcome, aggregate rollouts within policy-seed/course cells. Resample common
+policy-seed indices jointly across all training-generator rows and evaluation columns,
+and resample each evaluation column's course identifiers jointly across all rows. In
+the common-stratum analysis, resample courses within each stratum and recombine the
+stratum estimates with the frozen $w_h$; do not resample from the pooled union. Resample
+nested RL rollout seeds within each policy-seed/course cell. For reference-controller
+gaps, resample its seeds once within course and carry that draw jointly across all
+training-generator rows sharing the course. Report paired intervals for within-column
+and real-track comparisons and retain the complete failure taxonomy with
+outcome-specific denominators and censoring rules. Keep yield, descriptor coverage,
+feasible diversity, cost, interoperability, transfer gaps, and reference-controller
+gaps as separate outcomes; do not collapse them into a generator ranking.
 
 \begin{table}[t]
   \centering

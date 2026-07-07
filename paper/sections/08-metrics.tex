@@ -191,42 +191,73 @@ simulator.
 \subsection{Cross-Generator Training Utility}
 
 Controller outcomes can evaluate a generator's utility as a training distribution,
-but they do not define an intrinsic generator quality. Let
-$G_1,\ldots,G_m$ be generators and let $E_1,\ldots,E_m$ be their immutable
-evaluation suites, with course set $C_j$ for suite $E_j$. Let $P$ be the common
-global policy-seed set used for every training generator, and let
-$\mathcal{R}_{pcj}$ be the common rollout-seed schedule used across
-training-generator rows. For outcome $Y$, retain each rollout outcome $Y_{ijcpr}$ and
-first aggregate over $r$ within each $(i,j,c,p)$ cell, then average over the common
-policy seeds and evaluation courses:
+but they do not define an intrinsic generator quality. Let $G_1,\ldots,G_m$ be
+generators, let $E_1,\ldots,E_m$ be their immutable generated evaluation suites, and
+let $E_{\mathrm{real}}$ be the frozen evaluation-only real-track suite. Write
+$\mathcal{J}=\{1,\ldots,m,\mathrm{real}\}$ and let $C_j$ be the course set for
+$E_j$, including $C_{\mathrm{real}}$. Let $P$ be the common global policy-seed set
+used for every training generator, and let $\mathcal{R}_{pcj}$ be the common
+rollout-seed schedule across training-generator rows for course $c\in C_j$. For
+outcome $Y$, retain each rollout outcome $Y_{ijcpr}$ and first aggregate over $r$
+within each $(i,j,c,p)$ cell, then average over the common policy seeds and evaluation
+courses:
 \begin{equation}
   \overline{Y}_{ijcp}
   =\operatorname{Agg}_{r\in\mathcal{R}_{pcj}}Y_{ijcpr},
   \qquad
   M^Y_{ij}
   =\frac{1}{|P|\,|C_j|}
-  \sum_{p\in P}\sum_{c\in C_j}\overline{Y}_{ijcp}.
+  \sum_{p\in P}\sum_{c\in C_j}\overline{Y}_{ijcp},
+  \quad j\in\mathcal{J}.
 \end{equation}
 The within-cell aggregation and all outcome-specific failure, censoring, and
-conditional-performance rules remain declared explicitly. A separate column
-$M^Y_{i,\mathrm{real}}$ evaluates the same policies on a frozen, evaluation-only
-real-track suite.
+conditional-performance rules remain declared explicitly. In particular,
+$M^Y_{i,\mathrm{real}}$ uses $C_{\mathrm{real}}$ and
+$\mathcal{R}_{pc,\mathrm{real}}$ under the same aggregation order.
 
 Diagonal and off-diagonal cells refer to different course populations and should not
-be subtracted as the primary transfer estimand. Within evaluation column $j$, compare
-training distributions on common courses:
+be subtracted as the primary transfer estimand. Within generated evaluation column
+$j$, compare training distributions on common courses:
 \begin{equation}
   \Delta^Y_{ij}=M^Y_{ij}-M^Y_{jj},
   \label{eq:cross-generator-transfer-gap}
 \end{equation}
 for higher-is-better outcomes, reversing or explicitly declaring the sign for
 lower-is-better outcomes. Both terms use the same $C_j$, $P$, and rollout schedule
-$\mathcal{R}_{pcj}$; only the training-generator row changes. The real-track column
-has no privileged diagonal; compare policies directly through paired course outcomes.
-Report the complete matrix,
-leave-source-out and worst-source summaries, real-track outcomes, policy-seed and
-course sensitivity, and training exposure. These quantities form a training-utility
-profile, not a scalar generator ranking.
+$\mathcal{R}_{pcj}$; only the training-generator row changes.
+
+For the common-stratum analysis, let $\mathcal{H}^{\cap}$ be the preregistered common
+stratum set, let $C^{\cap}_{jh}$ contain the courses from generated suite $E_j$ in
+stratum $h$, and freeze weights $w_h>0$ with
+$\sum_{h\in\mathcal{H}^{\cap}}w_h=1$. Define the stratum-weighted estimand and its
+within-column contrast as
+\begin{equation}
+  M^{Y,\cap}_{ij}
+  =\sum_{h\in\mathcal{H}^{\cap}}w_h
+  \left(
+    \frac{1}{|P|\,|C^{\cap}_{jh}|}
+    \sum_{p\in P}\sum_{c\in C^{\cap}_{jh}}\overline{Y}_{ijcp}
+  \right),
+  \qquad
+  \Delta^{Y,\cap}_{ij}=M^{Y,\cap}_{ij}-M^{Y,\cap}_{jj}.
+  \label{eq:common-stratum-transfer-gap}
+\end{equation}
+This estimand does not depend on equal stratum counts.
+
+The real-track column has no privileged diagonal. For each preregistered pair of
+training generators $i<k$, use the paired contrast
+\begin{equation}
+  \Delta^Y_{ik,\mathrm{real}}
+  =M^Y_{i,\mathrm{real}}-M^Y_{k,\mathrm{real}},
+  \label{eq:real-track-transfer-gap}
+\end{equation}
+with the same $C_{\mathrm{real}}$, $P$, and
+$\mathcal{R}_{pc,\mathrm{real}}$ in both terms. Preregister outcome directions,
+primary contrast families, and multiplicity control. Report the complete matrix,
+suite-specific and common-stratum contrasts, real-track pairwise contrasts,
+leave-source-out and worst-source summaries, policy-seed and course sensitivity, and
+training exposure. These quantities form a training-utility profile, not a scalar
+generator ranking.
 
 Every evaluation course should also be attempted by a declared model-based reference
 controller. The contract is controller-generic; MPPI is the proposed initial

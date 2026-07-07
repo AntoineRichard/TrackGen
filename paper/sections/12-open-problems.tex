@@ -41,15 +41,16 @@ artifacts are snapshot lineage, raw/derived pairs, repair traces, and common IDs
 \paragraph{H6: Cross-generator training utility and real-track transfer.}
 Train matched policy seeds separately on each generator and evaluate the resulting
 policies on the full crossed generator-to-suite matrix and an evaluation-only
-real-track suite. Compare preregistered within-column gaps $\Delta^Y_{ij}$ under both
-suite-specific/full-suite and common-stratum analyses, and preregister paired
-real-track contrasts, outcome directions, bounds, and the multiplicity rule. Use a
-frozen model-based reference controller to calibrate policy failure without treating
-it as an oracle. Reject a generator training-utility claim if any designated primary
-$\Delta^Y_{ij}$ or paired real-track contrast breaches its bound after the
-preregistered multiplicity rule, or if the two generated-suite analyses yield
-opposite bound decisions. Required artifacts are training distributions and exposure
-logs, immutable generated and real suites, descriptor strata, fixed stratum weights
+real-track suite. Compare preregistered suite-specific gaps $\Delta^Y_{ij}$,
+stratum-weighted gaps $\Delta^{Y,\cap}_{ij}$, and paired real-track contrasts
+$\Delta^Y_{ik,\mathrm{real}}$. Predefine primary outcomes, directions, bounds, and
+their multiplicity family. Use a frozen model-based reference controller to calibrate
+policy failure without treating it as an oracle. Reject a generator training-utility
+claim if any designated primary contrast breaches its bound under the preregistered
+multiplicity rule, or if the suite-specific and common-stratum analyses yield opposite
+bound decisions.
+Required artifacts are training distributions and exposure logs, immutable generated
+and real suites, descriptor strata, fixed stratum weights
 and shortfall records, policy, rollout, and reference-controller seeds,
 reference-controller configuration, paired outcomes, and failure labels.
 
