@@ -214,6 +214,11 @@ def _validate_registry(snapshot: Path) -> None:
     rows = _read_csv(snapshot / "execution_registry.csv", REGISTRY_HEADER)
     if len(rows) != 4:
         _fail("execution registry must contain four rows")
+    keys = {(row["candidate_id"], row["reviewer_slot"]) for row in rows}
+    if keys != set(REVIEWERS):
+        _fail("execution registry roster is not exact")
+    if len({row["agent_id"] for row in rows}) != 4:
+        _fail("execution registry must contain four unique agent IDs")
     for row in rows:
         key = (row["candidate_id"], row["reviewer_slot"])
         if (
