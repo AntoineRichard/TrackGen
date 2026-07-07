@@ -32,11 +32,21 @@ matched budgets. Reject representative-generation claims when adversarial improv
 violates fixed distributional bounds. Required artifacts are target/reference corpora,
 candidate pools, selection logs, and policy evaluations.
 
-\paragraph{H5: UED, curriculum, and repair bias.}
-Compare co-adapted policies and frozen generator snapshots on common held-out suites;
-separately estimate paired raw-to-repaired descriptor and outcome shifts. Reject
-transfer or repair-neutrality when the respective pre-specified bounds fail. Required
-artifacts are snapshot lineage, raw/derived pairs, repair traces, and common IDs.
+\paragraph{H5: Co-adaptive UED versus repair neutrality.}
+Separate the effect of a co-adaptive UED or curriculum from the neutrality of a repair
+pipeline. For co-adaptive versus frozen-generator training, match representation,
+validity processing, exposure budget, policy seeds, and reuse schedule; evaluate on
+common immutable suites. Reject the co-adaptation claim when preregistered common-suite
+outcome bounds fail.
+
+For repair neutrality, retain every raw attempt and repair eligibility, failure, and
+attrition. Estimate descriptor and downstream shifts on a preregistered paired subset
+feasible both before and after repair, while separately reporting unpaired feasibility
+changes. Reject repair neutrality when preregistered paired descriptor or downstream-
+outcome shift bounds fail, or when unpaired feasibility or attrition bounds fail.
+Required artifacts are teacher/curriculum snapshot identifiers, policy checkpoints,
+random-stream schedules, exposure logs, raw-derived lineage, the pairing rule, and
+outcome denominators.
 
 \paragraph{H6: Cross-generator training utility and real-track transfer.}
 Train matched policy seeds separately on each generator and evaluate the resulting

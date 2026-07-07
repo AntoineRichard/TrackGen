@@ -67,8 +67,10 @@ the value you saved beforehand) once the capture region is closed.
 After regenerating
 ------------------
 
-What needs refreshing after regenerating (when wiring the tools by hand,
-i.e. not through ``Course``, which handles all of this for you):
+What needs refreshing after regenerating when wiring tools by hand is listed below.
+``Course`` refreshes only its integrated checkpoint, progress, and collision helpers.
+External ``TrackLocalizer`` and ``PropSampler`` instances remain caller-owned and
+require manual reset or resampling.
 
 .. list-table::
    :header-rows: 1
@@ -80,7 +82,9 @@ i.e. not through ``Course``, which handles all of this for you):
      - Nothing — reads the current ``Track`` buffers directly.
    * - ``CollisionChecker`` (``method="sdf"``)
      - Call ``bake()``.
-   * - ``PropSampler`` / ``CheckpointSampler``
+   * - ``PropSampler``
+     - Call ``sample()``; external samplers are caller-owned.
+   * - ``CheckpointSampler``
      - Call ``sample()``.
    * - ``ProgressTracker``
      - Call ``reset(mask)`` for ALL envs (a full progress reset).
@@ -91,4 +95,6 @@ i.e. not through ``Course``, which handles all of this for you):
    * - ``CheckpointSet.from_gates``
      - Nothing — aliases the ``GateSequence`` buffers automatically.
    * - ``Course``
-     - Nothing — ``generate()`` performs the whole refresh above for you.
+     - ``generate()`` refreshes integrated checkpoint, progress, and collision helpers.
+       Reset or resample any caller-owned ``TrackLocalizer`` and ``PropSampler``
+       instances manually.

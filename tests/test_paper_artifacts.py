@@ -19,6 +19,9 @@ SECTIONS = [
     "12-open-problems.tex",
     "13-conclusion.tex",
 ]
+FIGURES = [
+    "runtime-pipeline.tex",
+]
 
 SECTION_CONTRACTS = {
     "00-abstract.tex": (r"\begin{abstract}", None),
@@ -90,6 +93,10 @@ REQUIRED_SUBSECTIONS = {
 }
 
 
+def _normalized_tex(path):
+    return " ".join(path.read_text().split())
+
+
 def test_paper_scaffold_is_complete():
     required = [
         ".gitignore",
@@ -103,6 +110,7 @@ def test_paper_scaffold_is_complete():
     ]
     assert all((PAPER / name).is_file() for name in required)
     assert all((PAPER / "sections" / name).is_file() for name in SECTIONS)
+    assert all((PAPER / "figures" / name).is_file() for name in FIGURES)
 
 
 def test_main_includes_every_section_once():
@@ -110,6 +118,61 @@ def test_main_includes_every_section_once():
     for section in SECTIONS:
         stem = section.removesuffix(".tex")
         assert text.count(rf"\input{{sections/{stem}}}") == 1
+
+
+def test_runtime_pipeline_figure_is_included_once():
+    text = (PAPER / "sections" / "10-reference-implementations.tex").read_text()
+    assert text.count(r"\input{figures/runtime-pipeline}") == 1
+
+
+def test_current_implementation_audit_contract():
+    text = _normalized_tex(
+        PAPER / "sections" / "10-reference-implementations.tex"
+    )
+    audit_sha = "398d136b0c6038971a610dfb4455b392f623397f"
+
+    assert rf"\nolinkurl{{{audit_sha}}}" in text
+    for passing_count in (
+        "124 RL utility tests",
+        "63 Phase~1 tests",
+        "51 Phase~2 tests",
+    ):
+        assert passing_count in text
+
+    for generator in (
+        "bezier",
+        "hull",
+        "polar",
+        "voronoi",
+        "checkpoint",
+        "repulsive",
+    ):
+        assert rf"\texttt{{{generator}}}" in text
+
+
+def test_current_rl_utility_boundaries_are_explicit():
+    text = _normalized_tex(
+        PAPER / "sections" / "10-reference-implementations.tex"
+    )
+
+    for boundary in (
+        "signals not rewards",
+        "geometric queries not physics",
+        "rendering-only",
+        "not a Gymnasium",
+    ):
+        assert boundary in text
+
+
+def test_h5_has_separate_rejection_conditions():
+    text = _normalized_tex(PAPER / "sections" / "12-open-problems.tex")
+    assert "Reject the co-adaptation claim" in text
+    assert "Reject repair neutrality" in text
+
+
+def test_runtime_pipeline_marks_missing_public_lineage():
+    text = _normalized_tex(PAPER / "figures" / "runtime-pipeline.tex")
+    assert "No public lineage" in text
 
 
 def test_section_headings_and_labels_match_contract():

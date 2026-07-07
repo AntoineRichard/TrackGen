@@ -141,11 +141,11 @@ knobs expose a graph-capturable broadphase cache:
    * - ``relax_sep_every``
      - Broadphase refresh interval *K*. Without a cache this is a naive skip
        cadence; with cache enabled it rebuilds candidates every *K* sweeps.
-     - ``1``
+     - ``40``
    * - ``relax_sep_cache_slots``
      - Fixed candidate capacity per bead. ``0`` disables caching. Larger values
        use more memory and narrowphase work but reduce candidate-overflow risk.
-     - ``0``
+     - ``16``
    * - ``relax_sep_cache_skin``
      - Extra broadphase radius as a fraction of ``target``: cache radius is
        ``target * (1 + skin)``. The exact separation push is still applied only

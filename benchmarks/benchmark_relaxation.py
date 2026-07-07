@@ -1,5 +1,8 @@
 """Benchmark the three relaxation backends on a large batch (default E=8192).
 
+This is a fixed-N comparison of test-oracle backends, not a production runtime
+benchmark. It does not exercise the production constant-spacing Warp pipeline.
+
 Reports per backend: validity yield (thickness + zero border/centerline crossings),
 wall-clock, peak GPU memory, and shape-quality metrics (displacement, clearance CV,
 max curvature). Runs on GPU (primary) and CPU (fallback). Run directly:

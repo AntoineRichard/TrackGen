@@ -18,6 +18,13 @@ tolerance. A manifest should retain failed attempts, termination reason, wall-cl
 budget, and any repair operation; repair may create a derived artifact, but must never
 replace the raw feasibility record.
 
+Any future staged-pipeline release must assign stage hashes or identifiers and freeze
+a transformation manifest.  That manifest must record spacing, capacity, relaxation
+solver, iteration and cache parameters, width/inflation settings, validity thresholds,
+device, and warm-up/capture policy.  Evaluation must retain matched-seed raw,
+pre-processing, and post-processing artifacts for comparison rather than inferring
+repair effects from final outputs alone.
+
 The proposed distribution-estimation and training target is $10{,}000$--$100{,}000$
 attempted courses per generator, selected according to generator cost and domain
 complexity. This range is a target for estimating descriptor distributions and

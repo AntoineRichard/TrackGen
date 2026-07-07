@@ -171,6 +171,14 @@ Finally, report rejection rate, repair rate, repair runtime, and the distributio
 attempts per retained course so that apparent output quality is not detached from its
 cost.
 
+For a staged pipeline, the report should additionally preserve stage metrics:
+generator-local fallback, best-of-$K$, and clipping decisions; raw-to-pre- and
+pre-to-post-stage displacement and descriptor shifts; component validity-failure
+counts; capacity/cap and broadphase-overflow events; per-stage runtime and memory;
+and capture versus eager execution mode.  These measures require paired stage
+identifiers so that each raw, intermediate, and final artifact can be compared under
+the same seed and configuration.
+
 \subsection{Simulation Feasibility}
 
 Simulation feasibility, or interoperability, evaluates the path from portable course

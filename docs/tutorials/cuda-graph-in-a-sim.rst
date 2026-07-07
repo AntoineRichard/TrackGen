@@ -1,18 +1,20 @@
 Integrating the CUDA Graph into a Batched RL Sim Loop
 =======================================================
 
-``track_gen`` captures its entire generation pipeline as a single replayable
-CUDA graph on the first ``generate()`` call. This page explains the fixed-batch
-contract, how capture and replay work, how to manage the reused output buffers,
-and how to slot the generator into a batched reinforcement-learning step loop.
+For generators whose ``GeneratorSpec`` has ``capturable=True``, ``track_gen``
+captures the entire generation pipeline as a single replayable CUDA graph on the
+first ``generate()`` call. The ``repulsive`` generator is
+``capturable=False`` and runs eagerly with host-controlled execution. This page
+explains the fixed-batch contract, capture and replay, reused output buffers, and
+how to slot the generator into a batched reinforcement-learning step loop.
 
 The Fixed-Batch Contract
 --------------------------
 
 ``TrackGenerator`` is **fixed-batch**: the batch size ``E = config.num_envs`` is
-set at construction time and cannot change between calls. The CUDA graph records
-one fixed execution with fixed-shape tensors. Passing a different batch size at
-replay time is not possible — construct a new ``TrackGenerator`` instead.
+set at construction time and cannot change between calls. For a capturable generator,
+the CUDA graph records one fixed execution with fixed-shape tensors. Passing a different
+batch size at replay time is not possible — construct a new ``TrackGenerator`` instead.
 
 All pre-allocated buffers (generator scratch, pipeline scratch, seed buffer,
 the persistent ``Track``) are created once in ``__init__``. Their shapes and
@@ -24,7 +26,10 @@ First-Call Capture vs Replay
 On the ``cpu`` device, every ``generate()`` call runs the pipeline eagerly —
 there is no graph.
 
-On ``cuda``:
+On ``cuda``, the following applies when the selected generator has
+``capturable=True``. With ``repulsive``, every call instead runs eagerly under
+host control and no CUDA graph is created.
+
 
 1. **First call** — warms the Warp kernels (compiles JIT-specialized CUDA
    code), captures the full pipeline with ``wp.ScopedCapture``, stores the
@@ -34,7 +39,7 @@ On ``cuda``:
    the pre-allocated seed buffer on device, then replays the stored graph with
    ``wp.capture_launch``.
 
-The capture works because the pipeline is **entirely static**:
+Capture works for those generators because their pipeline is **entirely static**:
 
 - All buffer shapes and loop counts are fixed at construction time.
 - There is no host-side branching on device tensor data (branching on config
@@ -97,6 +102,7 @@ onto episode resets.
 .. code-block:: python
 
    import warp as wp
+   import numpy as np
    wp.init()
    import torch
 
@@ -126,26 +132,18 @@ onto episode resets.
        # ... run RL steps ...
 
        # On episode boundary: generate a fresh batch (fast CUDA graph replay).
-       rng_new = PerEnvSeededRNG(seeds=episode + 1, num_envs=E, device=device)
-       gen_new = TrackGenerator(config, rng_new)
-       track   = gen_new.generate()
-
-       # Rebind the torch views to the new generator's buffers.
-       center = wp.to_torch(track.center).view(E, config.N_max, 2)
-       outer  = wp.to_torch(track.outer).view(E, config.N_max, 2)
-       inner  = wp.to_torch(track.inner).view(E, config.N_max, 2)
-       valid  = wp.to_torch(track.valid).bool()
-       count  = wp.to_torch(track.count)
+       new_seeds = wp.array(episode + 1 + np.arange(E), dtype=wp.int32, device=device)
+       rng.set_seeds_warp(new_seeds, None)
+       track = gen.generate()
 
 .. note::
 
-   Constructing a new ``TrackGenerator`` per episode re-captures the graph on
-   the first call of that object, which involves a kernel warm-up cost. For
-   maximum efficiency, keep a single ``TrackGenerator`` alive across episodes
-   and update the seeds by constructing a new ``PerEnvSeededRNG`` and calling
-   ``gen.generate()`` again — the replay reads from the same pre-allocated seed
-   buffer. The exact API for updating seeds in-place depends on the RNG utility;
-   see ``PerEnvSeededRNG`` for the available constructor arguments.
+   Keep one ``TrackGenerator`` and its existing ``PerEnvSeededRNG`` alive across
+   episodes. Build a per-environment ``wp.int32`` seed array, call
+   ``rng.set_seeds_warp(new_seeds, None)``, then call ``gen.generate()``. The
+   generator copies the RNG's current seeds into its pre-allocated seed buffer and
+   replays the captured graph. Because the persistent ``Track`` buffers retain stable
+   addresses, the Torch views above remain bound and do not need to be recreated.
 
 Performance Notes
 ------------------

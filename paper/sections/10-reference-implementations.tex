@@ -1,51 +1,85 @@
 \section{Current Implementation Coverage and Release Gaps}
 \label{sec:reference-implementations}
 
-This section records repository-observable coverage at source-tree revision
-\texttt{83bf08d}, whose implementation code is unchanged here. It is not a limitation
-on the survey taxonomy or a claim that the planned reference release exists. Statuses
-mean current-tested, current-experimental, partial, or planned. Tests exist in the
-repository, but this paper audit did not rerun them; the document build is not an
-implementation test.
+This author-maintained source-tree audit covers commit
+\nolinkurl{398d136b0c6038971a610dfb4455b392f623397f}. In that audit, 124 RL
+utility tests, 63 Phase~1 tests, and 51 Phase~2 tests passed. These are focused
+passing-test counts for the audited surfaces, not evidence of broader correctness,
+a released benchmark, or a complete reference implementation.
 
 \begin{table}[t]
   \centering
-  \caption{Current \TrackGen{} coverage and gap to the planned reference release.}
-  \label{tab:current-implementation-coverage}
-  \small
-  \begin{tabularx}{\linewidth}{@{}p{0.20\linewidth}>{\raggedright\arraybackslash}p{0.15\linewidth}Y Y@{}}
+  \caption{Audited Phase~1 generator registry at commit \texttt{398d136}.}
+  \label{tab:current-phase-one-generators}
+  \footnotesize
+  \begin{tabularx}{\linewidth}{@{}p{0.13\linewidth}Y p{0.22\linewidth}@{}}
     \toprule
-    Surface & Status & Repository-observable coverage & Planned reference-release gap \\
+    Generator & Construction and local handling & Execution \\
     \midrule
-    Planar tracks & Current-tested & Five closed-track generators:
-    bezier, hull, polar, voronoi, and checkpoint. They cover constructive, stochastic parametric, and sampled planar
-    centerline schemes with width and boundaries. & Open corridors, road networks, waypoint
-    graphs, buoy courses, 3D, terrain, and semantic worlds \\
-    Gates & Current-tested & \texttt{GateGenerator} uses the same samplers for planar
-    gate sequences. & Domain-specific gates, visibility, and non-planar semantics \\
-    Seeding and execution & Partial & Per-environment seed/configuration with
-    fixed-batch Warp generation on a device. & Declared reconstruction tolerance and
-    portable adapter contract; no bit-identical CPU/CUDA claim \\
-    Validation and repair & Partial & Shared constant-spacing, XPBD, inflation, and
-    validity processing; repair is internal. & Raw-to-derived lineage, diagnostics, and
-    externally declared repair/projection \\
-    Measurements & Partial & Runtime length/validity and host benchmark geometry
-    metrics. & Section~\ref{sec:metrics} spectrum, uncertainty, and audit metrics \\
-    Experimental method & Current-experimental & An unregistered Fourier prototype. &
-    Screened, versioned adapter and validation before any release role \\
-    Missing families & Planned & No search/evolutionary, learned, UED, selection, or
-    replay reference generators. & Small validated exemplars spanning the taxonomy \\
-    Release artifacts & Planned & No CourseSpec serialization, cards/manifests/hashes,
-    portable exporters, simulator/RL adapters, immutable corpora/splits/suites, or
-    release conformance. & The contracts and admission conditions in
-    \cref{sec:benchmark-protocol} \\
+    \texttt{bezier} & Grid-jittered corners $\rightarrow$ closed cubic Bezier;
+    selected corner-polygon fallback & CUDA graph-capturable; CPU eager \\
+    \texttt{hull} & Angle-sorted points and displaced midpoints $\rightarrow$ closed
+    Catmull--Rom; selected augmented-polygon fallback & CUDA graph-capturable; CPU eager \\
+    \texttt{polar} & Radial knots $\rightarrow$ periodic Catmull--Rom; no local
+    fallback & CUDA graph-capturable; CPU eager \\
+    \texttt{voronoi} & Sampled site field $\rightarrow$ angular anchor cycle
+    $\rightarrow$ smoothing; anchor-polygon fallback & CUDA graph-capturable; CPU eager \\
+    \texttt{checkpoint} & Radial checkpoints $\rightarrow$ bounded-turn steering and
+    heading-ramp closure; best-of-$K$, optional clip fallback & CUDA graph-capturable;
+    CPU eager \\
+    \texttt{repulsive} & Obstacle-seeded disc $\rightarrow$ tangent-point/Sobolev
+    growth & Eager host-controlled; no CUDA graph \\
     \bottomrule
   \end{tabularx}
 \end{table}
 
-The present implementation is therefore useful evidence about a narrow planar
-generator surface, not a reference benchmark. In particular, internal repair and
-device-deterministic fixed-batch generation do not satisfy the raw-artifact lineage or
-cross-platform reconstruction requirements. The planned release closes those gaps only
-through the normative contracts in \cref{sec:benchmark-protocol}; its exact generator
-set remains contingent on the screened taxonomy and engineering validation.
+The track registry contains the six rows in \cref{tab:current-phase-one-generators}.
+The separate gate-generation registry contains five generators---bezier, hull, polar,
+voronoi, and checkpoint---and does not contain repulsive. The five fixed-shape Warp
+track generators support CUDA graph capture; repulsive follows a distinct Phase~1
+Sobolev procedure and runs eagerly with host control on CUDA. Fourier remains an
+unregistered experimental Torch-only method.
+
+Construction uses a fixed configured batch, per-environment seeds, and a shared fixed
+configuration. \texttt{TrackGenerator} and \texttt{GateGenerator} respectively reuse
+persistent mutable \texttt{Track} and \texttt{GateSequence} buffers across calls;
+selected-environment regeneration is not supported. The audit makes no cross-device
+bit-identity claim.
+
+The production Phase~2 order is generator-local selection or fallback,
+constant-spacing resampling, XPBD geometric projection, inflation, and final
+geometric validity. Energy and tangent-point methods are comparison or test oracles,
+not the production runtime; they should not be conflated with repulsive's separate
+Phase~1 Sobolev procedure. Intermediate raw, pre-projection, and post-projection
+buffers are private, and no public raw-to-derived lineage is retained. Neither
+$N_{\max}$ truncation events nor broadphase cache-overflow counters are exposed.
+Geometric validity alone does not establish dynamic or simulator feasibility.
+
+\input{figures/runtime-pipeline}
+
+\paragraph{Course.}
+The facade provides whole-batch generation, per-environment progress reset, and stable
+buffers. \texttt{Course} is not a Gymnasium \texttt{Env}: it defines no actions,
+observations, reward, or termination, and does not own external localizers or props.
+
+\paragraph{Checkpoints and progress.}
+Utilities expose crossings, laps, wrong-way and wrong-checkpoint flags, and distance to
+the next checkpoint. These are signals not rewards.
+
+\paragraph{Collision.}
+Oriented boxes query exact boundary segments or an approximate signed-distance field;
+discs represent posts. These are geometric queries not physics or contact response.
+
+\paragraph{Localization and speed.}
+Utilities expose $(s,n)$ coordinates, nearest segments, curvature, and speed-profile
+proxies. Warm starts have limits and require reset after teleport or regeneration;
+these proxies do not establish dynamic feasibility.
+
+\paragraph{Props.}
+Props provide rendering-only poses and are not colliders unless explicitly connected
+to the disc checker.
+
+There is no Gymnasium or mainstream simulator/RL adapter, \texttt{CourseSpec}
+serialization, manifest/hash lineage, or immutable corpus. The implementation is a
+non-comparative current snapshot, distinct from the future-facing protocol in
+\cref{sec:benchmark-protocol}.

@@ -15,9 +15,10 @@ Goals
    ``wp.from_torch`` / ``wp.to_torch`` at the boundary.
 2. **One codebase, two devices.** Warp kernels run on the Warp ``cpu`` device (GPU-free,
    for tests/CI) and on ``cuda`` (production). The same code path serves both.
-3. **A single replayable CUDA graph.** The entire pipeline is static (fixed shapes, fixed
-   iteration counts, no host-side branching on tensor data), so it captures into one CUDA
-   graph that can be replayed with new seeds.
+3. **A single replayable CUDA graph for capturable generators.** When
+   ``GeneratorSpec.capturable=True``, the pipeline is static (fixed shapes, fixed iteration
+   counts, no host-side branching on tensor data) and captures into one replayable CUDA
+   graph. ``repulsive`` is host-controlled/eager and does not capture a CUDA graph.
 
 Data flow
 ---------
@@ -61,7 +62,7 @@ generator's private scratch once, and ``_run_pipeline`` calls the resolved
    * - generator
      - module
      - representation
-     - repair path
+     - local handling / execution
    * - ``"bezier"``
      - ``warp_generate.py``
      - sampled grid corners → angle-sorted closed cubic Bezier
@@ -82,6 +83,10 @@ generator's private scratch once, and ``_run_pipeline`` calls the resolved
      - ``warp_generate_checkpoint.py``
      - radial checkpoints → bounded-turn steering → additive heading-ramp closure
      - best-of-K candidate selection (default K=4); optional single-crossing clip fallback (off by default)
+   * - ``"repulsive"``
+     - ``warp_generate_repulsive.py``
+     - obstacle-seeded disc → tangent-point/Sobolev growth
+     - host-controlled/eager; no CUDA graph
 
 Every registered runtime generator follows the same hard contract:
 

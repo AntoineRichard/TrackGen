@@ -403,9 +403,9 @@ class TrackGenConfig:
         ``tests/_oracle/generators.py``.  Ignored by ``_run_pipeline``, which is
         single-pass with no host-side retry loop.
     turning_tol : float
-        Turning-number tolerance for the validity gate.  Tracks whose signed
-        curvature integral deviates from ``2π`` by more than this fraction are
-        marked invalid.  Default 0.1.
+        Absolute angular tolerance in radians for the turning-number validity gate.
+        Tracks whose signed curvature integral deviates from the expected full turn by
+        more than this tolerance are marked invalid.  Default 0.1.
     w_floor : float
         Width floor for validity.  Every real track point must have computed
         half-width > ``w_floor``.  Default ``1e-3``.  Guards against near-degenerate

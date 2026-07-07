@@ -149,6 +149,14 @@ an evolutionary mutator followed by projection, or a feedback-driven generator
 with replay contains several operations, but it should be described as a staged
 pipeline rather than multiplied into several independent method observations.
 
+In any staged pipeline, generator-local fallback (for example, choosing among a
+fixed number of attempts or clipping a generator-specific construction) is a
+separate operation from shared post-processing such as resampling, projection,
+or inflation.  A report should therefore preserve paired lineage from each raw
+attempt through any local fallback and every shared stage; otherwise, a final
+valid artifact cannot distinguish generation behavior from the effect of the
+post-processing pipeline.
+
 \subsection{Validity as an Independent Axis}
 
 Validity answers a different question: whether a generated course, its
