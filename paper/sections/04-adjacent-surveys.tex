@@ -78,48 +78,48 @@ vehicle feasibility, benchmark use, and reference execution.
   summarizes the survey's organizing emphasis, not whether its cited literature
   contains individual examples of tracks, maps, tools, or simulators.}
   \label{tab:adjacent-survey-positioning}
-  \footnotesize
+  \scriptsize
   \setlength{\tabcolsep}{3pt}
-  \renewcommand{\arraystretch}{1.15}
+  \renewcommand{\arraystretch}{1.05}
   \begin{tabularx}{\textwidth}{@{}p{1.75cm}YYYYY@{}}
     \toprule
-    Survey & Unit of analysis & Domain & Repr. focus & Generation / validity focus & Distribution, benchmark, simulator-export treatment \\
+    Survey & Unit of analysis & Domain & Repr. focus & Generation, validity, metric focus & Distribution, benchmark, simulator-export treatment \\
     \midrule
     Betz et al.\ \cite{Betz2022AutonomousVehicles}
       & Autonomous racing system and platform
       & Racecars
       & Maps and course context for autonomy
-      & Autonomy-stack performance and racing challenges
-      & Platforms and simulators as ecosystem context; not a course-artifact protocol \\
+      & System and autonomy performance in racecar context
+      & Platforms and simulators as context; no course-artifact protocol \\
     Hanover et al.\ \cite{Hanover2023AutonomousDrone}
       & Autonomous drone-racing system
       & Quadrotors
       & Gates, obstacles, and track context
-      & Modeling, perception, planning, control, learning
-      & Simulators covered for drone racing; no cross-domain course-distribution protocol \\
+      & System and autonomy performance in drone-racing context
+      & Drone-racing simulators; no cross-domain course-distribution protocol \\
     Togelius et al.\ \cite{Togelius2011SearchBased}
       & Search-based game content
       & Digital and nondigital games
       & Content type, encoding, and fitness
-      & Search / optimization and quality evaluation
+      & Fitness and content-quality evaluation
       & General taxonomy; no robotics benchmark or simulator-export contract \\
     Ding et al.\ \cite{Ding2023SafetyCritical}
       & Safety-critical driving scenario
       & Autonomous-driving traffic
       & Scenario components, including roads and actors
-      & Data-driven, adversarial, knowledge-based scenarios
+      & Fidelity, efficiency, diversity, transferability, controllability
       & Simulation tools and scenario challenges; not course-only benchmarks or exports \\
     Freiknecht and Effelsberg\ \cite{Freiknecht2017SurveyVirtualWorlds}
       & Procedural virtual-world asset
       & Games and virtual worlds
       & Landscapes, roads, buildings, organisms, stories
       & Realism, performance, applicability
-      & Simulation applicability discussed; no robot-course benchmark or reference-execution protocol \\
+      & Simulation applicability; no robot-course benchmark or execution protocol \\
     This review
       & Robot course artifact and its evidence
       & Ground, aerial, maritime robots
       & Course geometry, topology, semantics, and interfaces
-      & Generation, constraints, validity, and simulation feasibility
+      & Auditable generator, course, simulator, and policy metrics
       & Proposed: training distributions; benchmark suites and protocols; simulator/RL export or adapter contracts \\
     \bottomrule
   \end{tabularx}
