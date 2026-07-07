@@ -1,7 +1,62 @@
 \section{Conclusion}
 \label{sec:conclusion}
 
-The conclusion restates the minimum reporting recommendation to disclose course
-representations, generators, constraints, sampling rules, and reproducibility controls,
-and the minimum benchmark recommendation to use feasible, diverse evaluation suites
-that span measured task spectra.
+Course generation is part of the experimental method of robot racing. A course
+determines more than where a robot moves: together with a vehicle envelope and a
+simulator realization, it determines which sensing, planning, and control demands are
+presented to a system. Treating tracks, gates, waypoints, and buoy courses as
+inspectable artifacts therefore clarifies claims that are otherwise easy to conflate.
+Generator completion, geometric validity, dynamics-aware feasibility, simulator
+conformance, and policy success are different outcomes with different denominators.
+Likewise, a representation, its sampled realization, an exported scene, and a
+trajectory through that scene are not interchangeable objects.
+
+The minimum reporting recommendation follows directly from these distinctions. A
+generator result should disclose its version, configuration, seeds, vehicle and domain
+assumptions, every generation attempt, failure and repair outcome, validity predicates,
+runtime and compute, and immutable artifact identities. A course record should expose
+geometry, topology, semantics, units, frames, raw-to-derived lineage, descriptor
+values, and export or import loss. A simulator result should report reconstruction,
+collision-geometry, spawn, reset, observation, and headless-execution checks. A policy
+result should identify the immutable suite, simulator and policy versions, training
+and rollout seeds, outcome taxonomy, denominators, and uncertainty procedure. These
+records keep attractive retained samples from concealing generator rejection and keep
+controller outcomes from standing in for course quality.
+
+The corresponding benchmark recommendation is to generate distributions before
+selecting suites, preserve raw feasibility outcomes before repair, and select held-out
+courses through fixed descriptor and diversity criteria. Difficulty should be reported
+as a continuous, multidimensional spectrum rather than with the labels \emph{easy},
+\emph{medium}, or \emph{hard}. Curvature, clearance, visibility, topology, elevation,
+environmental loads, and dynamics-aware margins can impose distinct demands, and their
+ordering can change with vehicle, controller, and simulator. The proposed
+$10{,}000$--$100{,}000$ attempts per generator are an adaptive starting range for
+distribution estimation and training, not a universal sufficiency threshold. The
+proposed 100-course evaluation requirement is an admission floor for feasible,
+non-duplicate, spectrum-spanning candidates, not a precision guarantee. Immutable
+identifiers and paired, course-level evaluation are then needed to compare policies
+without discarding failure modes or inventing false pairings.
+
+The evidence state limits what can presently be concluded. Final Pass~1 projection
+still requires accountable-author verification and rerating of two reports against
+corrected evidence packets. Pass~2 contribution coding underwent an initial
+reliability assessment and a prospective CODEBOOK-v2 assessment on a deterministic
+fresh holdout; neither met the prespecified all-field gate. Quantitative taxonomy,
+prevalence, and comparative claims are therefore frozen. The representation,
+generation, and domain sections provide a source-backed qualitative synthesis, not a
+frequency analysis of the retained literature. The current \TrackGen{} audit likewise
+documents a narrow planar implementation surface and release gaps; it does not
+establish that \texttt{CourseSpec}, simulator/RL adapters, large corpora, or benchmark
+suites already exist.
+
+The next empirical step is not another round of label-specific exceptions. It is a
+structural redesign of the contribution taxonomy, followed by fresh independent
+validation, completion of corrected-packet reratings, accountable-author verification,
+and final adjudication. The next engineering step is to implement small, validated
+reference generators across the revised taxonomy; serialize their raw and derived
+outputs through \texttt{CourseSpec}; exercise conformance in mainstream simulator and
+reinforcement-learning interfaces; and then generate large training distributions and
+immutable evaluation suites under the proposed admission rules. That sequence turns
+the survey's central argument into a testable program: courses should be generated,
+measured, transported, and audited with the same care applied to the learning and
+control algorithms evaluated on them.
