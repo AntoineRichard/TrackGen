@@ -38,12 +38,20 @@ separately estimate paired raw-to-repaired descriptor and outcome shifts. Reject
 transfer or repair-neutrality when the respective pre-specified bounds fail. Required
 artifacts are snapshot lineage, raw/derived pairs, repair traces, and common IDs.
 
-\paragraph{H6: Cross-generator, cross-simulator, and sim-to-real transfer.}
-Estimate a crossed generator-by-simulator transfer matrix and compare generated
-descriptor distributions with a fixed, conditioned real reference corpus. Reject a
-transfer claim on material off-diagonal loss or real-reference mismatch beyond the
-pre-specified interval. Required artifacts are corpus extraction/conditioning, adapters,
-conformance records, and paired policies.
+\paragraph{H6: Cross-generator training utility and real-track transfer.}
+Train matched policy seeds separately on each generator and evaluate the resulting
+policies on the full crossed generator-to-suite matrix and an evaluation-only
+real-track suite. Compare preregistered within-column gaps $\Delta^Y_{ij}$ under both
+suite-specific/full-suite and common-stratum analyses, and preregister paired
+real-track contrasts, outcome directions, bounds, and the multiplicity rule. Use a
+frozen model-based reference controller to calibrate policy failure without treating
+it as an oracle. Reject a generator training-utility claim if any designated primary
+$\Delta^Y_{ij}$ or paired real-track contrast breaches its bound after the
+preregistered multiplicity rule, or if the two generated-suite analyses yield
+opposite bound decisions. Required artifacts are training distributions and exposure
+logs, immutable generated and real suites, descriptor strata, fixed stratum weights
+and shortfall records, policy, rollout, and reference-controller seeds,
+reference-controller configuration, paired outcomes, and failure labels.
 
 \paragraph{H7: Recoverability.}
 Compare recovery probability across perturbation distributions, controllers, and

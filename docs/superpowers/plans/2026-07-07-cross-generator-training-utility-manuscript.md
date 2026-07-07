@@ -136,7 +136,7 @@ git -c commit.gpgsign=false commit -m "docs: define cross-generator training uti
 - [ ] **Step 1: Confirm the crossed protocol is absent**
 
 ```bash
-rg -n "Full-support analysis|Common-support analysis|evaluation-only real-track|Cross-Generator Training-Utility Protocol" \
+rg -n "Suite-specific/full-suite analysis|Common-stratum analysis|evaluation-only real-track|Cross-Generator Training-Utility Protocol" \
   paper/sections/09-benchmark-protocol.tex
 ```
 
@@ -153,24 +153,30 @@ Insert after the existing `Policy Evaluation` text and before
 For each generator $G_i$, train the same RL algorithm under the same vehicle,
 dynamics, simulator, observation/action, reward, termination, policy architecture,
 optimization, environment-interaction, policy-update, and policy-seed contracts. Only
-the training-course distribution changes. Equal interaction budgets are the primary
-comparison; separately report generator attempts, feasible courses observed,
-simulator steps, updates, wall-clock time, and compute so that generator cost is not
-hidden.
+the training-course distribution changes. Freeze and report unique training-course
+IDs and hashes, generator seeds, sampling order or probabilities, reuse counts, and
+any curriculum or scheduling rule. Equal interaction budgets are the primary
+comparison; separately report generation attempts and failures, feasible courses
+observed, simulator steps, updates, wall-clock time, and compute so that generator
+cost and training exposure are not hidden.
 
 Evaluate every trained policy on immutable suites $E_1,\ldots,E_m$ and on a frozen
 real-track suite $E_{\mathrm{real}}$. Real tracks are evaluation-only in the core
 protocol because training on a finite real corpus would confound generator utility
-with memorization and augmentation. Use common course identifiers and rollout random
-streams across policies where meaningful, and report the matrix and within-column
-contrasts from \cref{eq:cross-generator-transfer-gap}.
+with memorization and augmentation. Before evaluation, run manifest-backed duplicate
+and near-duplicate checks between every training population and every generated suite
+and the real-track suite. Use common course identifiers and rollout random streams
+across policies where meaningful, and report the matrix and within-column contrasts
+from \cref{eq:cross-generator-transfer-gap}.
 
 Construct every generated suite after raw feasibility accounting with the same frozen
 descriptor transform, absolute admissible bounds, spectrum strata, diversity rules,
-and minimum suite-size contract. Report both a full-support analysis on each source's
-released suite and a common-support analysis restricted to descriptor strata
-represented by every compared generator. The former measures practical transfer over
-available support; the latter reduces support and difficulty confounding. The
+and minimum suite-size contract. The suite-specific/full-suite analysis uses every
+course in each source's released suite and makes no claim to enumerate the generator's
+full support. For the common-stratum analysis, preregister the intersection of
+descriptor strata represented by every compared generator, fixed stratum weights,
+and restricted course sets $E_j^{\cap}$. Report missing strata and
+insufficient-course shortfalls rather than silently shrinking the comparison. The
 real-track suite uses the same domain, vehicle, units, frames, descriptor extraction,
 and feasibility contract, with composition and conditioning frozen before evaluation.
 
@@ -178,14 +184,17 @@ Run the declared reference controller on the same evaluation courses using one
 generator-independent configuration and calibration set. Preserve its stochastic
 seeds and compute budget. Report joint RL/reference outcome categories before the
 conditional lap-time, progress, speed, tracking, and control-effort differences in
-\cref{eq:reference-controller-gap}. Reference-controller failure is inconclusive with
-respect to course infeasibility.
+\cref{eq:reference-controller-gap}. State the exact subset and denominator for every
+conditional metric; the default subset contains only policy-seed/course cells for
+which both methods complete. Reference-controller failure is inconclusive with respect
+to course infeasibility.
 
 For each outcome, aggregate rollouts within policy-seed/course cells and use
-hierarchical paired resampling over policy seeds, common course identifiers, and
-nested rollout seeds. Report full failure taxonomies and outcome-specific
-denominators. Generator yield, coverage, diversity, cost, interoperability,
-training-utility transfer, and reference-controller gaps remain separate results.
+hierarchical paired resampling over policy seeds, common course identifiers, nested
+rollout seeds, and reference-controller seeds within course. Report full failure
+taxonomies and outcome-specific denominators. Generator yield, coverage, diversity,
+cost, interoperability, training-utility transfer, and reference-controller gaps
+remain separate results.
 ```
 
 - [ ] **Step 3: Update the benchmark table**
@@ -195,7 +204,8 @@ Replace the `Policy results` row with:
 ```latex
     Policy results & Common course IDs, multiple policy seeds, crossed
     generator-to-suite outcomes, real-track evaluation, intervals, and failure
-    taxonomy & Additional policy families and model-based reference controllers \\
+    taxonomy, plus a frozen model-based reference controller & Additional policy and
+    reference-controller families \\
 ```
 
 - [ ] **Step 4: Build and scan**
@@ -211,7 +221,7 @@ the table becomes too tall, shorten only the modified `Policy results` cells.
 - [ ] **Step 5: Verify confound controls**
 
 ```bash
-rg -n "Only the training-course distribution changes|evaluation-only|full-support analysis|common-support analysis|generator-independent|inconclusive" \
+rg -n "Only the training-course distribution changes|evaluation-only|suite-specific/full-suite analysis|common-stratum analysis|generator-independent|inconclusive" \
   paper/sections/09-benchmark-protocol.tex
 ```
 
@@ -241,14 +251,17 @@ Replace the current H6 paragraph with:
 \paragraph{H6: Cross-generator training utility and real-track transfer.}
 Train matched policy seeds separately on each generator and evaluate the resulting
 policies on the full crossed generator-to-suite matrix and an evaluation-only
-real-track suite. Compare preregistered within-column transfer gaps under both
-full-support and common-support analyses, and use a frozen model-based reference
-controller to calibrate policy failure without treating it as an oracle. Reject a
-generator training-utility claim when off-diagonal or real-track outcomes violate
-their prespecified bounds, or when the conclusion changes under the common-support
-analysis. Required artifacts are training distributions and exposure logs, immutable
-generated and real suites, descriptor-support records, policy and rollout seeds,
-reference-controller configuration and seeds, paired outcomes, and failure labels.
+real-track suite. Compare preregistered within-column gaps $\Delta^Y_{ij}$ under both
+suite-specific/full-suite and common-stratum analyses, and preregister paired
+real-track contrasts, outcome directions, bounds, and the multiplicity rule. Use a
+frozen model-based reference controller to calibrate policy failure without treating
+it as an oracle. Reject a generator training-utility claim if any designated primary
+$\Delta^Y_{ij}$ or paired real-track contrast breaches its bound after the
+preregistered multiplicity rule, or if the two generated-suite analyses yield
+opposite bound decisions. Required artifacts are training distributions and exposure
+logs, immutable generated and real suites, descriptor strata, fixed stratum weights
+and shortfall records, policy, rollout, and reference-controller seeds,
+reference-controller configuration, paired outcomes, and failure labels.
 ```
 
 - [ ] **Step 2: Add one sentence to introduction contribution 4**
@@ -271,9 +284,10 @@ pairings.` add:
 ```latex
 Crossed evaluation of policies trained separately on each generator can then measure
 training-distribution utility, while an evaluation-only real-track suite tests transfer
-beyond generated support. A frozen model-based reference controller can calibrate
-whether poor RL performance is specific to training or policy behavior, but it is not
-an optimal oracle and does not convert these outcomes into a scalar generator rank.
+beyond generated suites. A frozen model-based reference controller can provide
+conditional diagnostic evidence when it succeeds consistently where RL fails; shared
+failure remains inconclusive. It is not an optimal oracle and does not convert these
+outcomes into a scalar generator rank.
 ```
 
 - [ ] **Step 4: Build and scan**

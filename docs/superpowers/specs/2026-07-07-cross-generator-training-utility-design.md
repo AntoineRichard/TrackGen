@@ -85,10 +85,14 @@ generation and repair outcomes separately from suite selection.
 
 Report two complementary analyses:
 
-1. **Full-support analysis:** each source's immutable suite, showing practical transfer
-   over the support that source can provide.
-2. **Common-support analysis:** descriptor strata represented by every compared
-   generator, reducing support and difficulty confounding.
+1. **Suite-specific/full-suite analysis:** every course in each released \(E_j\),
+   showing practical transfer over the selected suite without claiming to enumerate
+   the generator's full support.
+2. **Common-stratum analysis:** before evaluation, freeze the intersection of
+   descriptor strata represented across all compared generators, fixed stratum
+   weights, and restricted course sets \(E_j^{\cap}\). Report missing strata and
+   insufficient-course shortfalls separately rather than silently shrinking the
+   comparison.
 
 The real-track suite uses the same vehicle, domain, units, frames, descriptor
 extraction, and feasibility contract. Its composition and conditioning variables are
@@ -160,15 +164,15 @@ two-part reference-controller comparison.
 ### Section 9: Benchmark Protocol
 
 Add a subsection specifying the crossed training/evaluation design, fixed training
-budgets, common policy seeds, immutable generated and real suites, full-support and
-common-support analyses, reference-controller execution, and hierarchical paired
+budgets, common policy seeds, immutable generated and real suites, full-suite and
+common-stratum analyses, reference-controller execution, and hierarchical paired
 uncertainty.
 
 ### Section 12: Research Hypotheses
 
 Strengthen H6 so that cross-generator training utility is falsifiable through the
-transfer matrix, real-track column, and preregistered off-diagonal and real-reference
-bounds.
+transfer matrix, paired real-track contrasts, preregistered within-column
+$\Delta^Y_{ij}$ bounds, outcome directions, and multiplicity rules.
 
 ### Introduction And Conclusion
 
@@ -185,7 +189,7 @@ The manuscript change is acceptable when:
 - MPPI is presented only as an initial ground-domain reference implementation;
 - real tracks are evaluation-only in the core protocol;
 - comparisons use the same evaluation courses within each column;
-- full-support and common-support results are both required;
+- full-suite and common-stratum results are both required;
 - training interactions and generator cost are reported separately;
 - reference-controller tuning data, stochastic seeds, and compute budget are frozen
   independently of generator identity;
