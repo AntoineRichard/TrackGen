@@ -39,6 +39,22 @@ REGISTRY_HEADER = (
 )
 BINDINGS_HEADER = ("binding", "bound_path", "bound_sha256", "purpose")
 CHECKSUM_HEADER = ("record_type", "path", "sha256", "row_count")
+CALIBRATION_MANIFEST_HEADER = (
+    "manifest_version", "phase_result_snapshot_sha256",
+    "coordinator_snapshot_sha256", "protocol_sha256", "reviewer_release_sha256",
+    "phase", "batch_id", "coder_id", "result_filename", "result_file_sha256",
+    "row_count",
+)
+FROZEN_RATING_HEADER = (
+    "assignment_id", "phase", "candidate_id", "input_sha256", "snapshot_sha256",
+    "batch_id", "coder_id", "screened_on", "screening_status", "criterion",
+    "access_status", "source_urls", "evidence_version", "evidence_retrieved_on",
+    "evidence_archive_url", "evidence_sha256", "screening_locator",
+    "exclusion_reason", "notes",
+)
+CALIBRATION_MANIFEST_PATH = (
+    "paper/data/screening_results/calibration/v8/manifest.csv"
+)
 REVIEWERS = {
     ("C0046", "A"): "019f39f4-2366-7080-9b3b-28da615980eb",
     ("C0046", "B"): "019f39f4-23fb-74a1-8692-33338053f0f4",
@@ -132,7 +148,10 @@ def _validate_file_set(snapshot: Path) -> None:
         _fail("snapshot has an unexpected file set")
 
 
-def _validate_corrections(snapshot: Path, repository_root: Path) -> None:
+def _validate_corrections(
+    snapshot: Path,
+    repository_root: Path,
+) -> list[dict[str, str]]:
     rows = _read_csv(snapshot / "corrections.csv", CORRECTIONS_HEADER)
     if [row["candidate_id"] for row in rows] != ["C0046", "C0173"]:
         _fail("corrections roster is not exact")
@@ -152,6 +171,7 @@ def _validate_corrections(snapshot: Path, repository_root: Path) -> None:
         if _sha256(_regular_bytes(evidence, label="corrected evidence")) != row["corrected_evidence_sha256"]:
             _fail("corrected evidence digest mismatch")
 
+    return rows
 
 def _validate_ratings(snapshot: Path) -> list[dict[str, str]]:
     rows = _read_csv(snapshot / "ratings.csv", RATING_HEADER)
@@ -233,7 +253,10 @@ def _validate_registry(snapshot: Path) -> None:
             _fail("execution registry does not match the fixed rerating record")
 
 
-def _validate_bindings(snapshot: Path, repository_root: Path) -> None:
+def _validate_bindings(
+    snapshot: Path,
+    repository_root: Path,
+) -> list[dict[str, str]]:
     rows = _read_csv(snapshot / "bindings.csv", BINDINGS_HEADER)
     expected_paths = {
         "paper/data/screening_work/v8/protocol.md",
@@ -249,6 +272,67 @@ def _validate_bindings(snapshot: Path, repository_root: Path) -> None:
         if _sha256(_regular_bytes(bound, label="bound artifact")) != row["bound_sha256"]:
             _fail("bound artifact digest mismatch")
 
+    return rows
+
+
+def _validate_old_assignment_provenance(
+    repository_root: Path,
+    corrections: list[dict[str, str]],
+    bindings: list[dict[str, str]],
+) -> None:
+    manifest_binding = next(
+        row for row in bindings if row["bound_path"] == CALIBRATION_MANIFEST_PATH
+    )
+    manifest_path = repository_root / manifest_binding["bound_path"]
+    manifest_rows = _read_csv(manifest_path, CALIBRATION_MANIFEST_HEADER)
+    expected_assignments = [
+        (assignment_id, correction["candidate_id"], correction["old_evidence_sha256"])
+        for correction in corrections
+        for assignment_id in correction["old_assignment_ids"].split(";")
+    ]
+    batch_ids = {
+        f"screening-{assignment_id.rsplit('-', 1)[1]}"
+        for assignment_id, _, _ in expected_assignments
+    }
+    relevant_manifest_rows = [
+        row for row in manifest_rows if row["batch_id"] in batch_ids
+    ]
+    if (
+        len(relevant_manifest_rows) != len(batch_ids)
+        or {row["batch_id"] for row in relevant_manifest_rows} != batch_ids
+    ):
+        _fail("old assignment provenance manifest entries are not exact")
+
+    frozen_rows: list[dict[str, str]] = []
+    for row in relevant_manifest_rows:
+        batch_id = row["batch_id"]
+        if (
+            row["manifest_version"] != "1"
+            or row["phase"] != "calibration"
+            or row["coder_id"] != batch_id
+            or row["result_filename"] != f"{batch_id}.csv"
+            or not row["row_count"].isdigit()
+        ):
+            _fail("old assignment provenance manifest entry is invalid")
+        result_path = manifest_path.parent / row["result_filename"]
+        result_payload = _regular_bytes(result_path, label="frozen calibration result")
+        if _sha256(result_payload) != row["result_file_sha256"]:
+            _fail("old assignment provenance result digest mismatch")
+        result_rows = _read_csv(result_path, FROZEN_RATING_HEADER)
+        if len(result_rows) != int(row["row_count"]):
+            _fail("old assignment provenance result row count mismatch")
+        frozen_rows.extend(result_rows)
+
+    for assignment_id, candidate_id, old_digest in expected_assignments:
+        matches = [
+            row for row in frozen_rows if row["assignment_id"] == assignment_id
+        ]
+        if (
+            len(matches) != 1
+            or matches[0]["candidate_id"] != candidate_id
+            or matches[0]["evidence_sha256"] != old_digest
+        ):
+            _fail("old assignment provenance does not match corrections.csv")
 
 def _validate_limits(snapshot: Path) -> None:
     text = "\n".join(
@@ -285,11 +369,12 @@ def validate_snapshot(*, repository_root: Path, snapshot: Path) -> None:
     """Validate the fixed, append-only corrected-rerating snapshot."""
     snapshot = _snapshot_path(snapshot)
     _validate_file_set(snapshot)
-    _validate_corrections(snapshot, repository_root)
+    corrections = _validate_corrections(snapshot, repository_root)
     ratings = _validate_ratings(snapshot)
     _validate_agreement(snapshot, ratings)
     _validate_registry(snapshot)
-    _validate_bindings(snapshot, repository_root)
+    bindings = _validate_bindings(snapshot, repository_root)
+    _validate_old_assignment_provenance(repository_root, corrections, bindings)
     _validate_limits(snapshot)
     _validate_checksums(snapshot)
 
