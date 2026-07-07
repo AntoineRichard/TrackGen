@@ -383,7 +383,7 @@ Run:
 
 ~~~bash
 .venv/bin/python -m pytest -q tests/test_paper_artifacts.py
-latexmk -cd -pdf paper/main.tex
+latexmk -r paper/latexmkrc -cd -pdf paper/main.tex
 ~~~
 
 Expected: tests pass and paper/build/main.pdf exists with no LaTeX build error.
@@ -1273,7 +1273,17 @@ git commit -m "docs: add independent survey discovery runs"
 **Files:**
 
 - Create: paper/scripts/merge_candidates.py
+- Create: paper/data/candidate_aliases.csv
+- Create: paper/data/candidate_corrections.csv
+- Create: paper/scripts/prepare_metadata_batches.py
+- Create: paper/scripts/integrate_metadata.py
+- Create: paper/data/metadata_manifest.csv
+- Create: paper/data/metadata_runs/metadata-01.csv through metadata-06.csv
+- Create: paper/data/metadata_runs/metadata-01-conflicts.csv through metadata-06-conflicts.csv
+- Create: paper/data/bibliography.csv
 - Modify: tests/test_survey_corpus.py
+- Create: tests/test_merge_candidates.py
+- Create: tests/test_metadata_verification.py
 - Populate: paper/data/candidates.csv
 - Populate: paper/data/conflicts.csv
 - Populate: paper/references.bib
@@ -1482,6 +1492,41 @@ if __name__ == "__main__":
 
 - [ ] **Step 4: Merge all four agent files**
 
+The one-time reconciliation migration starts from the last ledger with all previously assigned stable IDs, commit `fe3e44e`, not from the 99-row bootstrap corpus. Materialize that ledger in a temporary mirrored data directory, pass `--aliases paper/data/candidate_aliases.csv` and `--corrections paper/data/candidate_corrections.csv`, then use `--replace-conflicts` only for this audited regeneration. Validate the mirror before copying candidates.csv and conflicts.csv into production. Routine reruns use the current production ledger without `--replace-conflicts`, preserving reviewed conflict resolutions.
+
+The retirement ledger has header `retired_candidate_id,surviving_candidate_id,reason,evidence`. Every multi-ID identity component requires a direct, evidence-backed retirement to one survivor. Unaffected IDs remain unchanged, retired IDs remain gaps, and neither class may be reused by future assignment.
+
+The reviewed correction ledger has header `candidate_id,field,old_value,new_value,reason,evidence,resolver`. It replays authoritative field corrections after graph materialization, creates or resolves the corresponding orientation-independent conflict, and never erases the observed old value. Every persisted value origin includes a SHA-256 digest of the complete source row so later candidate edits cannot change what historical evidence meant.
+
+~~~bash
+tmp_dir="$(mktemp -d)"
+mkdir -p "$tmp_dir/paper"
+cp -a paper/data "$tmp_dir/paper/data"
+git show fe3e44e:paper/data/candidates.csv > "$tmp_dir/paper/data/candidates.csv"
+python3 paper/scripts/merge_candidates.py \
+  --existing "$tmp_dir/paper/data/candidates.csv" \
+  --aliases paper/data/candidate_aliases.csv \
+  --corrections paper/data/candidate_corrections.csv \
+  --agent paper/data/agent_runs/blind-ground.csv \
+  --agent paper/data/agent_runs/blind-aerial-maritime.csv \
+  --agent paper/data/agent_runs/aware-geometry-rl.csv \
+  --agent paper/data/agent_runs/aware-simulation-benchmarks.csv \
+  --replace-conflicts --write
+# Repeat the audited replacement to prove the corpus is a byte-stable fixed point.
+python3 paper/scripts/merge_candidates.py \
+  --existing "$tmp_dir/paper/data/candidates.csv" \
+  --aliases paper/data/candidate_aliases.csv \
+  --corrections paper/data/candidate_corrections.csv \
+  --agent paper/data/agent_runs/blind-ground.csv \
+  --agent paper/data/agent_runs/blind-aerial-maritime.csv \
+  --agent paper/data/agent_runs/aware-geometry-rl.csv \
+  --agent paper/data/agent_runs/aware-simulation-benchmarks.csv \
+  --replace-conflicts --write
+python3 -c "from pathlib import Path; from paper.scripts.validate_corpus import validate_directory; validate_directory(Path('$tmp_dir/paper/data'))"
+cp "$tmp_dir/paper/data/candidates.csv" paper/data/candidates.csv
+cp "$tmp_dir/paper/data/conflicts.csv" paper/data/conflicts.csv
+~~~
+
 
 
 
@@ -1490,12 +1535,16 @@ Run:
 ~~~bash
 python3 paper/scripts/merge_candidates.py \
   --existing paper/data/candidates.csv \
+  --aliases paper/data/candidate_aliases.csv \
+  --corrections paper/data/candidate_corrections.csv \
   --agent paper/data/agent_runs/blind-ground.csv \
   --agent paper/data/agent_runs/blind-aerial-maritime.csv \
   --agent paper/data/agent_runs/aware-geometry-rl.csv \
   --agent paper/data/agent_runs/aware-simulation-benchmarks.csv
 python3 paper/scripts/merge_candidates.py \
   --existing paper/data/candidates.csv \
+  --aliases paper/data/candidate_aliases.csv \
+  --corrections paper/data/candidate_corrections.csv \
   --agent paper/data/agent_runs/blind-ground.csv \
   --agent paper/data/agent_runs/blind-aerial-maritime.csv \
   --agent paper/data/agent_runs/aware-geometry-rl.csv \
@@ -1506,9 +1555,9 @@ python3 paper/scripts/merge_candidates.py \
 Expected: the dry-run reports counts by source stream, duplicate identity, and conflict
 field; the write run assigns stable IDs and does not erase bootstrap provenance.
 
-- [ ] **Step 5: Verify metadata source by source**
+- [ ] **Step 5: Freeze and verify metadata source by source**
 
-For each candidate likely to be included:
+For every candidate, including currently excluded rows, freeze its complete row and sorted conflict rows into one of six deterministic, immutable verification batches before research begins. Each candidate appears exactly once; per-row hashes detect ledger drift; weighting by unresolved bibliographic-conflict count balances the batches. Then:
 
 1. resolve the DOI or stable paper URL;
 2. match title, complete author list, year, and venue against the publisher or proceedings;
@@ -1516,59 +1565,105 @@ For each candidate likely to be included:
 4. record the metadata source in metadata_evidence;
 5. set metadata_status to verified only after all bibliographic fields agree;
 6. resolve every conflicts.csv row with a source URL and resolver name;
-7. create a BibTeX key using FirstAuthorYearShortTitle, adding a lowercase suffix for collisions;
-8. add a references.bib entry containing author, title, year, venue, DOI when available,
-   URL when useful, and no unverified abstract or keyword fields.
+7. record structured citation inputs for centralized deterministic key generation;
+8. do not edit canonical ledgers or references.bib from an agent output; record author, title, year, venue, DOI when available,
+   URL when useful, and no unverified abstract or keyword fields in the immutable result.
 
 For software, standards, and competitions without a paper, use the official documentation
 as the citable source and set source_type accordingly.
 
-- [ ] **Step 6: Validate bibliography correspondence**
+The frozen manifest records `manifest_version,snapshot_sha256,batch_id,candidate_id,input_sha256,weight`. Each of six agents writes only its own immutable metadata and conflict-resolution CSVs under `paper/data/metadata_runs/`; agents never edit the canonical ledgers. Published-paper fields require publisher or official-proceedings evidence, with Crossref used only to resolve or corroborate when a primary record exists. Preprints and non-paper artifacts require official repository, issuing-body, organizer, release, documentation, or `CITATION.cff` evidence. Search snippets and generic scholarly aggregators are discovery aids only. Equal-authority disagreements remain unresolved.
+The metadata result header is `candidate_id,input_sha256,agent_id,verified_on,metadata_status,title,authors,year,venue,doi,url,source_type,title_evidence,authors_evidence,year_evidence,venue_evidence,doi_evidence,url_evidence,source_type_evidence,bib_entry_type,bib_venue_field,bib_url,key_author,author_kinds,notes`. The conflict result header is `candidate_id,input_sha256,agent_id,input_conflict_id,field,value_a,value_b,resolution,resolution_evidence`. Use `NR`, not blanks, and encode field evidence as semicolon-separated `source_kind::URL` tokens.
 
-Extend validate_corpus.py so every verified included or boundary cite_key has exactly one
-BibTeX entry and every BibTeX entry maps to a candidate row. Parse BibTeX entry keys with
-a conservative regular expression; do not attempt to rewrite BibTeX.
+A central integrator validates manifest membership and hashes, preserves candidate IDs, discovery provenance, screening status, and exclusion reasons byte-for-byte, and updates only bibliographic fields, metadata state, conflict resolutions, and citation artifacts. `metadata_status=conflict` applies only to unresolved title, authors, year, venue, DOI, URL, or source-type disagreements; screening conflicts remain for Task 6 and never change metadata status.
 
-Add this implementation to validate_corpus.py and call
-validate_bibliography(data_dir.parent / "references.bib", screened_keys) at the end of
-validate_directory:
+Generate deterministic keys and `references.bib` centrally from `bibliography.csv`, whose header is `candidate_id,cite_key,entry_type,key_author,authors,author_kinds,title,year,venue_field,venue,doi,url`. Assign keys to verified, non-excluded candidates without changing screening status. Normalize author or corporate-author tokens, use the four-digit year or `Nodate`, append two non-stopword title tokens, and suffix every collision member in stable candidate-ID order. Existing nonempty keys are never silently renamed.
 
-~~~python
-BIB_KEY_PATTERN = re.compile(
-    r"(?m)^@\w+\s*{\s*([^,\s]+)\s*,"
-)
+#### Citation-key identity hardening (2026-06-30)
 
+The complete append-only `paper/data/citation_keys.csv` ledger is the assignment
+authority. It preserves all 184 initially issued mappings as an exact prefix and appends
+14 newly verified candidates, for 198 case-insensitively unique keys. Strict integration
+requires every active candidate to resolve through this ledger; extension is an explicit,
+separately published operation. Metadata corrections cannot rename issued keys, dormant
+keys reserve their namespace, and the committed full-ledger SHA-256 independently anchors
+all 198 assignments.
 
-def validate_bibliography(path: Path, expected_keys: set[str]) -> None:
-    if not path.is_file():
-        raise CorpusError(f"{path}: bibliography is missing")
-    keys = BIB_KEY_PATTERN.findall(path.read_text())
-    duplicates = sorted(key for key, count in Counter(keys).items() if count > 1)
-    if duplicates:
-        raise CorpusError(f"{path}: duplicate BibTeX keys {duplicates}")
-    actual = set(keys)
-    if actual != expected_keys:
-        raise CorpusError(
-            f"{path}: BibTeX mismatch; "
-            f"missing={sorted(expected_keys - actual)}, "
-            f"extra={sorted(actual - expected_keys)}"
-        )
-~~~
+- [x] Add strict and extension integration modes, append-prefix preservation, collision
+  reservation, input fingerprinting before manifest validation, and staged ledger output.
+- [x] Extend corpus validation for active/dormant key correspondence and exact
+  bibliography/BibTeX agreement.
+- [x] Preserve the five keys whose corrected metadata would otherwise rename them and
+  publish 14 deterministic new assignments.
+- [x] Run two byte-identical strict replays and anchor the complete ledger with SHA-256
+  `48d891587257f79b9c7cf97f90dd3ebd36bd0378e9ed8c100628afcfd6540e5f`.
 
-Import re and Counter at module scope. Update build_valid_fixture so references.bib
-contains:
+#### Metadata replay hardening (2026-06-30)
 
-~~~bibtex
-@article{Sample2026Course,
-  author = {Author, A.},
-  title = {A Fictional Course Generator},
-  journal = {Test Proceedings},
-  year = {2026},
-  doi = {10.0000/example}
-}
-~~~
+The committed manifest remains bound to explicit immutable inputs at
+`paper/data/metadata_inputs/v1/{candidates.csv,conflicts.csv}`. The snapshots are the
+exact pre-integration blobs from `c96c2d6`, not reconstructions from the canonical
+post-integration ledgers. Validation and replay always name `v1`; there is no mutable
+`current` pointer.
 
+- [x] Add failing tests in `tests/test_metadata_batches.py` for snapshot-mode initial
+  freeze, non-mutating validation, explicit refreeze to a new version, rejection of an
+  existing version, tampered snapshots, publication rollback, the committed v1 hash
+  contract, and replay of all six metadata result pairs to byte-identical canonical
+  candidates, conflicts, bibliography, and BibTeX outputs.
+- [x] Extend `paper/scripts/prepare_metadata_batches.py` with `--snapshot-dir`. With an
+  existing manifest and no `--refreeze`, validate that manifest against
+  `<snapshot-dir>/candidates.csv` and `<snapshot-dir>/conflicts.csv` without writing.
+  Initial freeze and `--refreeze` require direct `--candidates` and `--conflicts` inputs
+  plus a non-existing snapshot directory. Stage exact input bytes and the manifest,
+  publish the immutable directory first, then atomically exchange and verify the
+  manifest last. Roll back owned paths or retain a named recovery journal when safe
+  restoration cannot be proven. Reject `--refreeze` without
+  an explicit snapshot directory. Keep legacy direct-input initial freeze and ordinary
+  validation.
+- [x] Extract the c96c2d6 candidate and conflict blobs into
+  `paper/data/metadata_inputs/v1/`, then verify
+  `validate_manifest_inputs(metadata_manifest.csv, v1/candidates.csv,
+  v1/conflicts.csv)` yields snapshot
+  `303e6b0efb7a94be636ce0b22de9454062029ef9193ef5e0442aee263227ecec`.
+- [x] Document exact non-mutating validation, temporary-directory replay, and future
+  `v2` refreeze commands in `paper/data/README.md`; execute the documented validation
+  and six-pair replay commands.
+- [x] Re-run the strict current-tree byte comparison after the independent metadata
+  audits are canonically integrated. Two strict ledger-backed replays from `v1` are
+  byte-identical and reproduce canonical `candidates.csv`, `conflicts.csv`,
+  `bibliography.csv`, and `references.bib`.
 
+- [x] **Step 6: Integrate metadata and validate bibliography correspondence**
+
+#### Independent snapshot review follow-up
+
+- [x] Inject exceptions and `KeyboardInterrupt` after snapshot publication and after
+  manifest exchange. Verify the swapped-out inode and content, exchange back only while
+  the published inode remains transaction-owned, and retain
+  `.metadata_manifest.csv.recovery.*` with old manifest and snapshot state otherwise.
+  Preserve the original exception with Python 3.10-compatible rollback reporting.
+- [x] Race publication against symlinks, empty directories, and late-created entries.
+  Publish the fully staged directory with Linux `renameat2(RENAME_NOREPLACE)`; use
+  `lstat` identities to quarantine only the directory owned by this transaction, and
+  use no-clobber publication for legacy direct manifest creation.
+- [x] Reject symlinked manifest/snapshot files and directories plus lexical, resolved,
+  and hard-link aliases. Require an existing regular non-symlink manifest for
+  `--refreeze`, require an absent manifest for initial freeze, and publish snapshot
+  directories/files as `0755`/`0644`.
+- [x] Add `.gitattributes` with `paper/data/metadata_inputs/** binary`, retain the v1
+  raw SHA-256 assertions separately from semantic manifest validation, and make every
+  README shell block self-contained with `set -euo pipefail`, cleanup traps, and
+  unmasked `cmp` failures.
+
+Extend validate_corpus.py so every nonempty cite_key belongs to a verified, non-excluded candidate and has exactly one
+bibliography.csv row and BibTeX entry, and every citation artifact maps to the same candidate. Parse the constrained generated BibTeX with a brace-aware deterministic parser and compare every rendered field; do not rewrite BibTeX during validation.
+
+The implemented validator requires the exact `bibliography.csv` schema, checks active
+candidate and append-only ledger correspondence, validates author and venue invariants,
+parses nested BibTeX braces and escaped values deterministically, and compares the exact
+UTF-8/LF rendering against `references.bib`. Producer-to-validator round-trip tests cover
+Unicode, corporate authors, malformed entries, URL/DOI rules, and byte-level line endings.
 
 
 
@@ -1580,9 +1675,9 @@ python3 paper/scripts/validate_corpus.py
 ~~~
 
 Expected: all tests and production validation pass with no unresolved bibliographic
-conflicts for screened-in sources.
+conflicts hidden by a verified status; unresolved disagreements remain explicit and uncited.
 
-- [ ] **Step 7: Commit the reconciled bibliography**
+- [x] **Step 7: Commit the reconciled bibliography**
 
 ~~~bash
 git add paper/scripts paper/data paper/references.bib tests/test_survey_corpus.py
@@ -2429,7 +2524,7 @@ After each section group:
 
 ~~~bash
 python3 paper/scripts/validate_corpus.py
-latexmk -cd -pdf paper/main.tex
+latexmk -r paper/latexmkrc -cd -pdf paper/main.tex
 python3 paper/scripts/check_tex_log.py paper/build/main.log
 ~~~
 
@@ -2563,7 +2658,7 @@ Every figure requires:
 - [ ] **Step 5: Build and visually inspect the PDF**
 
 ~~~bash
-latexmk -cd -pdf paper/main.tex
+latexmk -r paper/latexmkrc -cd -pdf paper/main.tex
 python3 paper/scripts/check_tex_log.py paper/build/main.log
 ~~~
 

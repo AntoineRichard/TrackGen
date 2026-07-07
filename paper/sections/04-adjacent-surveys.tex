@@ -1,0 +1,138 @@
+\section{Relationship to Existing Surveys}
+\label{sec:adjacent-surveys}
+
+Several adjacent surveys supply concepts, taxonomies, and research infrastructure
+that are directly useful for course generation, but they frame different primary
+objects of study. This distinction matters because a robot course is both a
+geometric artifact and an experimental intervention: it must encode what a robot
+is expected to traverse, support an intended distribution of tasks, and remain
+usable by a simulator, benchmark, and reference implementation. The present
+review therefore positions course generation as an artifact-centered problem
+across ground, aerial, and maritime robotics, rather than as a subtopic of a
+single autonomy stack or a generic content-generation mechanism.
+
+The autonomous vehicle racing survey of Betz et al.\ \cite{Betz2022AutonomousVehicles}
+is a particularly close neighbor. It organizes autonomous racing around the
+capabilities that make high-performance driving possible, including perception,
+planning, control, learning, vehicles, and racing platforms. In doing so, it
+usefully identifies the practical ecosystem in which track geometry, maps, and
+simulators affect a racing system. Its analytic center, however, is the racecar
+autonomy problem and its software--hardware platforms; courses are principally
+the settings in which those systems operate. The resulting perspective is
+essential context for this review, but it does not by itself make the course
+artifact---its representations, generators, validation, and interoperable
+exports---the common unit of comparison.
+
+Hanover et al.\ \cite{Hanover2023AutonomousDrone} provide the complementary
+aerial perspective. Their survey traces autonomous drone racing through modeling,
+state estimation and perception, planning and control, learning, simulators, and
+open challenges. Gate sequences, obstacles, race tracks, and simulation are thus
+material to the literature they synthesize, especially because they condition
+what can be sensed and flown at speed. Yet the survey's organizing question is
+how an aerial vehicle can race autonomously under severe dynamic and sensing
+constraints. It does not seek to compare course artifacts across robot domains or
+to specify a common protocol for their distributions, validity evidence, and
+portable realization. Together, the car and drone surveys clarify why course
+design cannot be separated from autonomy evaluation; this paper is not another
+control or racing survey.
+
+Search-based procedural content generation supplies a different but foundational
+vocabulary. Togelius et al.\ \cite{Togelius2011SearchBased} classify content
+generation by the generated content, its representation, and the evaluation of
+quality or fitness, and connect that taxonomy to optimization-based generation.
+Those distinctions transfer naturally to robot courses: a layout representation
+determines the search space, and a fitness function can express traversability,
+diversity, or task demands. Their scope is intentionally generic across game
+content and search mechanisms, however. It neither fixes a robot-course validity
+contract nor assembles the simulator interfaces, distributions, metrics,
+benchmark procedures, and executable reference artifacts needed to make course
+generators comparable in robotics.
+
+Ding et al.\ \cite{Ding2023SafetyCritical} are also closely related because
+safety-critical driving scenarios may include roads, actors, behaviors, and
+environmental conditions. Their methodological taxonomy of data-driven,
+adversarial, and knowledge-based scenario generation, together with discussion
+of fidelity, efficiency, diversity, transferability, and controllability, offers
+important concepts for evaluating generated test conditions. The target is
+safety-critical traffic scenarios for autonomous-driving evaluation, not a
+cross-domain account of course layouts as reusable experimental artifacts. A
+road geometry can be one component of such a scenario, but scenario validity may
+also depend on traffic interaction and the system under test. Accordingly, this
+paper is not a generic scenario survey; it separates course geometry and its
+interfaces from the broader closed-loop scenario-generation objective while
+retaining relevant safety and diversity concerns.
+
+Freiknecht and Effelsberg\ \cite{Freiknecht2017SurveyVirtualWorlds} survey
+procedural generation for virtual worlds, including landscapes, vegetation, road
+networks, buildings, living beings, and stories. Their treatment is valuable for
+recognizing that roads and networks sit within wider world-building pipelines and
+that realism, level of detail, performance, and applicability in games and
+simulations can constrain generation. It is necessarily broad: its categories
+are virtual-world assets rather than robot traversal courses, and its evaluation
+does not establish a robotics-specific contract linking a course distribution to
+vehicle feasibility, benchmark use, and reference execution.
+
+\begin{table*}[t]
+  \centering
+  \caption{Positioning of this review relative to adjacent surveys. ``Treatment''
+  summarizes the survey's organizing emphasis, not whether its cited literature
+  contains individual examples of tracks, maps, tools, or simulators.}
+  \label{tab:adjacent-survey-positioning}
+  \scriptsize
+  \setlength{\tabcolsep}{3pt}
+  \renewcommand{\arraystretch}{1.05}
+  \begin{tabularx}{\textwidth}{@{}p{1.75cm}YYYYY@{}}
+    \toprule
+    Survey & Unit of analysis & Domain & Repr. focus & Generation, validity, metric focus & Distribution, benchmark, simulator-export treatment \\
+    \midrule
+    Betz et al.\ \cite{Betz2022AutonomousVehicles}
+      & Autonomous racing system and platform
+      & Racecars
+      & Maps and course context for autonomy
+      & System and autonomy performance in racecar context
+      & Platforms and simulators as context; no course-artifact protocol \\
+    Hanover et al.\ \cite{Hanover2023AutonomousDrone}
+      & Autonomous drone-racing system
+      & Quadrotors
+      & Gates, obstacles, and track context
+      & System and autonomy performance in drone-racing context
+      & Drone-racing simulators; no cross-domain course-distribution protocol \\
+    Togelius et al.\ \cite{Togelius2011SearchBased}
+      & Search-based game content
+      & Digital and nondigital games
+      & Content type, encoding, and fitness
+      & Fitness and content-quality evaluation
+      & General taxonomy; no robotics benchmark or simulator-export contract \\
+    Ding et al.\ \cite{Ding2023SafetyCritical}
+      & Safety-critical driving scenario
+      & Autonomous-driving traffic
+      & Scenario components, including roads and actors
+      & Fidelity, efficiency, diversity, transferability, controllability
+      & Simulation tools and scenario challenges; not course-only benchmarks or exports \\
+    Freiknecht and Effelsberg\ \cite{Freiknecht2017SurveyVirtualWorlds}
+      & Procedural virtual-world asset
+      & Games and virtual worlds
+      & Landscapes, roads, buildings, organisms, stories
+      & Realism, performance, applicability
+      & Simulation applicability; no robot-course benchmark or execution protocol \\
+    This review
+      & Robot course artifact and its evidence
+      & Ground, aerial, maritime robots
+      & Course geometry, topology, semantics, and interfaces
+      & Auditable generator, course, simulator, and policy metrics
+      & Proposed: training distributions; benchmark suites and protocols; simulator/RL export or adapter contracts \\
+    \bottomrule
+  \end{tabularx}
+\end{table*}
+
+The gap addressed here is consequently integrative rather than merely topical.
+Within the adjacent surveys considered here, none centers cross-domain robot
+course artifacts across representation, generation, validity, simulation
+feasibility, and metrics while also proposing training distributions, benchmark
+suites and protocols, and simulator/RL export or adapter contracts. Existing surveys
+overlap with individual parts of that agenda: racing surveys ground it in
+high-performance autonomy, procedural-content surveys clarify generative
+representations and mechanisms, the scenario survey develops safety-oriented
+generation, and the virtual-world survey locates roads among broader assets. This
+review joins those concerns around the course itself, and makes the evidentiary
+and interface conditions for comparable course-generation results explicit.

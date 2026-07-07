@@ -1,0 +1,18 @@
+{
+  "candidate_id": "C0046",
+  "reviewer_slot": "B",
+  "screening_status": "included",
+  "criterion": "include-relevant",
+  "access_status": "full_text",
+  "source_urls": "https://arxiv.org/pdf/2109.12674v3",
+  "evidence_version": "arXiv:2109.12674v3",
+  "evidence_retrieved_on": "2026-07-06",
+  "evidence_archive_url": "https://arxiv.org/pdf/2109.12674v3",
+  "evidence_sha256": "ae04f7e4a3976f977ccff136a218d0daca5a84224f68ded684a6a734f8a87e2e",
+  "screening_locator": "p. 6, Sec. 4.1, \"Generating Maps\", Algorithm 1, \"Procedural Generation of Maps\" (lines 1-30), and the road-network representation immediately below; p. 9, Sec. 5.1, \"Experimental Setting\", \"Observation\" and \"Reward and Cost Scheme\".",
+  "exclusion_reason": "NR",
+  "notes": "Core direct contribution, not a supporting fixed-course transfer: its generated road networks map to course constraints as connected parameterized lane edges, sockets, and checkpoints that govern controlled vehicle traversal.",
+  "retention_role": "core_direct_contribution",
+  "deciding_source_fact": "Section 4.1 defines Algorithm 1, which procedurally composes a feasible road network by sampling parameterized road blocks, connecting their lane sockets, and rejecting intersections.",
+  "protocol_reasoning": "This is source-native core evidence of a direct parameterized road/course-generation method in a transferable adjacent driving domain: its lane edges, widths, curvatures, connected sockets, and checkpoints materially constrain vehicle traversal. It is not merely a fixed route or controller and is not retained as a supporting fixed-course transfer; the established generator satisfies the v8 Core retention condition, so the required criterion is include-relevant."
+}

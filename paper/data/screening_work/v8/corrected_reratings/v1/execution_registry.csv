@@ -1,0 +1,5 @@
+candidate_id,reviewer_slot,agent_id,model,reasoning_effort,human_role,execution_context,metadata_limit
+C0046,A,019f39f4-2366-7080-9b3b-28da615980eb,gpt-5.6-terra,high,NR,isolated /tmp packet handoff,coordinator-recorded; not provider-side attestation
+C0046,B,019f39f4-23fb-74a1-8692-33338053f0f4,gpt-5.6-terra,high,NR,isolated /tmp packet handoff,coordinator-recorded; not provider-side attestation
+C0173,A,019f39f4-238c-7210-93bd-e1c08d06e89b,gpt-5.6-terra,high,NR,isolated /tmp packet handoff,coordinator-recorded; not provider-side attestation
+C0173,B,019f39f4-23ce-73c2-b723-6f22d61c5222,gpt-5.6-terra,high,NR,isolated /tmp packet handoff,coordinator-recorded; not provider-side attestation

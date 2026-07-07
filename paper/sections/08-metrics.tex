@@ -1,0 +1,339 @@
+\section{Metrics and Reporting Protocol}
+\label{sec:metrics}
+
+This section proposes an auditable metric framework for course generators and their
+downstream use. It is a reporting design, rather than a claim that the literature
+already reports these measures or that a benchmark has been released. The framework
+keeps four reporting units distinct: a \emph{generator} is a versioned sampling
+procedure; a \emph{course} is one sampled, serialized course; a \emph{simulator
+instance} is an imported and resettable realization of that course; and a
+\emph{policy evaluation} is a specified policy, seed, course, and simulator run.
+Aggregates should identify their unit and sampling population rather than mixing
+these levels.
+
+For a collection of $N$ generated courses, let $I_i^{(q)}\in\{0,1\}$ indicate that
+course $i$ passes check $q$. The reported yield for that check is
+\begin{equation}
+  \widehat{p}_q = \frac{\sum_{i=1}^{N} I_i^{(q)}}{N},
+  \label{eq:metric-yield}
+\end{equation}
+where the numerator is the number of generated courses passing $q$ and the
+denominator is \emph{all} generation attempts, including rejected or repaired
+ones. Report $N$, the number of independent generator seeds or runs, and a binomial
+confidence interval (for example, a Wilson interval) or a seed-level bootstrap
+interval. Continuous course and policy summaries should report their estimator,
+number of courses, number of policy seeds where applicable, and a bootstrap interval
+over the declared independent unit.
+At the worst-case yield $p=0.5$, a 95\% binomial interval has approximate
+half-width $0.98$ percentage points at $N=10{,}000$ and $0.31$ percentage points at
+$N=100{,}000$. These are calibration values for an adaptive sampling budget, not
+evidence that either count is universally sufficient.
+
+\subsection{Feasibility}
+
+Feasibility is a chain of declared checks, not a single validity label. At the
+generator level, report completion yield: the fraction of calls that emit a course
+artifact before timeout or resource limit. At the course level, separately report
+geometric and topological validity, minimum boundary or obstacle clearance,
+closed-loop status when a loop is required, and ordered-course status when an ordered
+sequence of gates, waypoints, or route elements is required. For each predicate,
+state its tolerance, coordinate frame, and the course population to which it applies.
+
+Dynamics-aware feasibility adds a vehicle and control envelope $E$ to the contract.
+For course $i$, define $I_i^{(\mathrm{dyn},E)}=1$ only if a declared model, initial
+state set, control limits, and termination conditions admit a feasible traversal (or
+the stated reachability proxy). This quantity is conditional on $E$; it must not be
+presented as an intrinsic property of geometry. Report the solver or controller,
+budget, tolerance, and inconclusive cases separately from failures.
+
+At the simulator level, measure import, instantiation, reset, and collision-check
+yields with the same numerator--denominator discipline as
+\cref{eq:metric-yield}. A course that is geometrically valid but cannot be imported
+is a simulator failure, not evidence of generator validity. Retain raw outcomes
+before repair, and, when repair is offered, report repaired yield and repair rate as
+additional quantities.
+
+\subsection{Geometry}
+
+Geometry descriptors characterize a valid or attempted course without calling it
+better or harder. Report length and empirical distributions of curvature $\kappa(s)$
+and curvature rate $d\kappa/ds$ over arc length $s$, using stated discretization and
+units. Where applicable, also report slope, elevation range, and torsion; width and
+clearance profiles; gate spacing, orientation, and visibility; and topology such as
+component count, loop closure, crossing count, branching factor, and route-choice
+structure. Use medians and quantiles alongside means for skewed descriptors, and
+state whether non-finite values from invalid courses are excluded, separately counted,
+or assigned a sentinel.
+
+\subsection{Difficulty}
+
+Difficulty is proposed as a continuous, multidimensional spectrum rather than the
+labels ``easy,'' ``medium,'' and ``hard.'' Let $d_i\in\mathbb{R}^m$ be a declared
+descriptor vector for course $i$, with coordinates selected from the geometric,
+visibility, clearance, topology, and dynamics-aware quantities above. Normalize each
+coordinate within a declared domain and reference distribution, for example
+\begin{equation}
+  z_{ij}=\frac{d_{ij}-\operatorname{median}(d_{\cdot j})}
+  {\operatorname{IQR}(d_{\cdot j})},
+  \label{eq:descriptor-normalization}
+\end{equation}
+with explicit handling when the interquartile range is zero. A benchmark may then
+stratify by marginal or joint descriptor quantiles, coverage cells, or a continuous
+curve through descriptor space. The selected strata and their boundaries are
+reporting devices, not difficulty classes.
+
+Comparative coverage uses a published, frozen reference population, descriptor
+transform, bin edges, and absolute admissible descriptor bounds. Construct it from a
+pooled pilot plus curated domain anchors independent of any one evaluated generator.
+Generator-relative quantiles remain diagnostics only; they cannot establish
+comparative coverage. Release reporting requires a fixed absolute coverage floor and
+occupancy of every fixed spectrum stratum defined in
+\cref{sec:benchmark-protocol}.
+
+Policy-derived descriptors, such as success probability, required tracking bandwidth,
+or margin to constraint violation, are reference-agent dependent. They should name the
+reference policy, training distribution, policy seed set, simulator, and evaluation
+budget. Robustness margins should be reported as perturbation radii or distributions
+over stated initial-state, model, sensor, or actuation perturbations. A universal
+scalar difficulty score is unsafe because it can conceal incompatible demands and can
+invert when the vehicle, controller, objective, or normalization domain changes.
+
+\subsection{Diversity}
+
+Diversity is evaluated in descriptor space conditional on validity. Let
+\begin{equation}
+  \mathcal{V}=\{i\in\{1,\ldots,N\}:I_i^{(\mathrm{valid})}=1\},
+  \qquad n_V=|\mathcal{V}|,
+  \label{eq:valid-index-set}
+\end{equation}
+where the validity predicate is declared. Given normalized descriptors $z_i$, report
+coverage of a declared grid, quantile lattice, or radius-based support on
+$\mathcal{V}$; a duplicate or near-duplicate rate with its numerator, denominator,
+and representation-level threshold evaluated on $\mathcal{V}$; and, for $n_V\geq2$,
+the pairwise summary
+\begin{equation}
+  \widehat{D}_{\mathrm{pair}}
+  =\binom{n_V}{2}^{-1}\sum_{\substack{i<j\\i,j\in\mathcal{V}}}
+  \lVert z_i-z_j\rVert.
+  \label{eq:feasible-pairwise-diversity}
+\end{equation}
+For collections $A$ and $B$, energy-distance or maximum-mean-discrepancy-style
+estimators use their corresponding valid subsets $A_V$ and $B_V$ and report the
+kernel or distance, normalization, sample sizes, and uncertainty. Entropy is
+appropriate only when binning or density estimation is supported by the valid sample
+size; report the estimator, bias correction if any, and sensitivity to binning or
+bandwidth.
+
+All such diversity estimates are feasible diversity and must be reported beside raw
+generation yield. A summary over all attempts is permissible only when explicitly
+labelled raw, with its invalid/missing-descriptor treatment and attempted-course
+denominator stated. This prevents a collection from appearing diverse only because
+invalid samples spread through descriptor space.
+
+\subsection{Sim-to-Real, Recoverability, and Interaction}
+
+Sim-to-real comparison uses a fixed real reference corpus, a versioned extraction
+procedure, and declared conditioning variables such as vehicle, site, weather, or
+mission. Compare the generated and real descriptor distributions with a stated
+distance or test, sample sizes, and uncertainty; an unconditioned match does not
+establish agreement within a deployment stratum.
+
+Recoverability is conditional on a declared perturbation distribution, recovery
+horizon, controller, and compute or action budget. Record whether the trajectory enters
+a declared safe set, reaches a recovered set within the horizon, collides, or incurs an
+irreversible failure. Report the denominator over perturbation draws and separate
+inconclusive budget exhaustion from failure.
+
+For multi-agent or overtaking courses, declare agent roles, interaction and pass rules,
+minimum separation, and initial-state distribution. Report collision, deadlock, legal
+pass, illegal-pass, and completion outcomes per interaction episode, with paired seeds
+where policies are compared.
+
+\subsection{Learned and Language-Model Generator Fidelity}
+
+For learned or language-model generators, report offline data and compute, online
+calls, tokens, and wall time, plus validation and repair cost; alternatively publish a
+preregistered cost conversion. Evaluate four distinct fidelities: constraint adherence,
+distributional agreement, semantic-intent agreement, and deterministic reconstruction.
+Semantic explanations are tested against generator traces and declared constraints by
+precision/recall or intervention consistency, not subjective prose.
+
+\subsection{Reproducibility}
+
+Each generator-level report should record generator identifier and version, complete
+configuration, seed or seed schedule, dependency and simulator versions, vehicle and
+control envelope, and a content hash for each emitted course and suite manifest.
+Report determinism by reconstructing the same inputs in fresh processes and comparing
+artifact hashes or a declared numerical tolerance. Runtime, throughput, peak memory,
+and timeout rate require hardware, parallelism, warm-up policy, and reporting unit
+(for example, seconds per attempted course and feasible courses per GPU-hour).
+Finally, report rejection rate, repair rate, repair runtime, and the distribution of
+attempts per retained course so that apparent output quality is not detached from its
+cost.
+
+\subsection{Simulation Feasibility}
+
+Simulation feasibility, or interoperability, evaluates the path from portable course
+representation to usable learning environment. At the simulator level, report
+serialization and import success; declared units and coordinate frames; collision
+geometry agreement with the source representation; spawn and reset success; and
+deterministic reconstruction of a course from its manifest. Check sensor and world
+integrity after import, including required observations, static geometry, and absence
+of unintended collisions or missing assets.
+
+The interface contract should state whether the simulator exposes a Gymnasium-style
+reset/step API, supports vectorized environments, preserves course identifiers and
+seeds in metadata, and runs headlessly. Report headless steps or episodes per second,
+parallel environment count, hardware, and reset cost. These are implementation-target
+measures: a portable representation does not by itself establish support in every
+simulator.
+
+\subsection{Cross-Generator Training Utility}
+
+Controller outcomes can evaluate a generator's utility as a training distribution,
+but they do not define an intrinsic generator quality. Let $G_1,\ldots,G_m$ be
+generators, let $E_1,\ldots,E_m$ be their immutable generated evaluation suites, and
+let $E_{\mathrm{real}}$ be the frozen evaluation-only real-track suite. Write
+$\mathcal{J}=\{1,\ldots,m,\mathrm{real}\}$ and let $C_j$ be the course set for
+$E_j$, including $C_{\mathrm{real}}$. Let $P$ be the common global policy-seed set
+used for every training generator, and let $\mathcal{R}_{pcj}$ be the common
+rollout-seed schedule across training-generator rows for course $c\in C_j$. For
+outcome $Y$, retain each rollout outcome $Y_{ijcpr}$ and first aggregate over $r$
+within each $(i,j,c,p)$ cell, then average over the common policy seeds and evaluation
+courses:
+\begin{equation}
+  \overline{Y}_{ijcp}
+  =\operatorname{Agg}_{r\in\mathcal{R}_{pcj}}Y_{ijcpr},
+  \qquad
+  M^Y_{ij}
+  =\frac{1}{|P|\,|C_j|}
+  \sum_{p\in P}\sum_{c\in C_j}\overline{Y}_{ijcp},
+  \quad j\in\mathcal{J}.
+\end{equation}
+The within-cell aggregation and all outcome-specific failure, censoring, and
+conditional-performance rules remain declared explicitly. In particular,
+$M^Y_{i,\mathrm{real}}$ uses $C_{\mathrm{real}}$ and
+$\mathcal{R}_{pc,\mathrm{real}}$ under the same aggregation order.
+
+Diagonal and off-diagonal cells refer to different course populations and should not
+be subtracted as the primary transfer estimand. Within generated evaluation column
+$j$, compare training distributions on common courses:
+\begin{equation}
+  \Delta^Y_{ij}=M^Y_{ij}-M^Y_{jj},
+  \label{eq:cross-generator-transfer-gap}
+\end{equation}
+for higher-is-better outcomes, reversing or explicitly declaring the sign for
+lower-is-better outcomes. Both terms use the same $C_j$, $P$, and rollout schedule
+$\mathcal{R}_{pcj}$; only the training-generator row changes.
+
+For the common-stratum analysis, let $\mathcal{H}^{\cap}$ be the preregistered common
+stratum set, let $C^{\cap}_{jh}$ contain the courses from generated suite $E_j$ in
+stratum $h$, and freeze weights $w_h>0$ with
+$\sum_{h\in\mathcal{H}^{\cap}}w_h=1$. Define the stratum-weighted estimand and its
+within-column contrast as
+\begin{equation}
+  M^{Y,\cap}_{ij}
+  =\sum_{h\in\mathcal{H}^{\cap}}w_h
+  \left(
+    \frac{1}{|P|\,|C^{\cap}_{jh}|}
+    \sum_{p\in P}\sum_{c\in C^{\cap}_{jh}}\overline{Y}_{ijcp}
+  \right),
+  \qquad
+  \Delta^{Y,\cap}_{ij}=M^{Y,\cap}_{ij}-M^{Y,\cap}_{jj}.
+  \label{eq:common-stratum-transfer-gap}
+\end{equation}
+This estimand does not depend on equal stratum counts.
+
+The real-track column has no privileged diagonal. For each preregistered pair of
+training generators $i<k$, use the paired contrast
+\begin{equation}
+  \Delta^Y_{ik,\mathrm{real}}
+  =M^Y_{i,\mathrm{real}}-M^Y_{k,\mathrm{real}},
+  \label{eq:real-track-transfer-gap}
+\end{equation}
+with the same $C_{\mathrm{real}}$, $P$, and
+$\mathcal{R}_{pc,\mathrm{real}}$ in both terms. Preregister outcome directions,
+primary contrast families, and multiplicity control. Report the complete matrix,
+suite-specific and common-stratum contrasts, real-track pairwise contrasts,
+leave-source-out and worst-source summaries, policy-seed and course sensitivity, and
+training exposure. These quantities form a training-utility profile, not a scalar
+generator ranking.
+
+Every evaluation course should also be attempted by a declared model-based reference
+controller. The contract is controller-generic; MPPI is the proposed initial
+ground-racing implementation. Freeze the controller model, objective, constraints,
+horizon, sampling budget, stochastic seed set, compute budget, and termination rules.
+Tune it once on a declared calibration set disjoint from all training and evaluation
+suites; generator-specific tuning is prohibited.
+
+Report outcome calibration---completion, collision, violation, timeout, or
+inconclusive budget exhaustion---before conditional performance. On explicitly stated
+subsets, particularly courses completed by both methods, report:
+\begin{equation}
+  R^{\mathrm{time}}_{ijcp}
+  =\frac{\overline{T}^{\mathrm{RL}}_{ijcp}}
+  {\widetilde{T}^{\mathrm{ref}}_{jc}},
+  \qquad
+  \Delta v_{ijcp}
+  =\overline{v}^{\mathrm{RL}}_{ijcp}
+  -\widetilde{v}^{\mathrm{ref}}_{jc},
+  \label{eq:reference-controller-gap}
+\end{equation}
+for $p\in P$ and $c\in C_j$, where the overbar is the declared RL rollout aggregation
+over $r\in\mathcal{R}_{pcj}$ and the tilde is the preregistered aggregation over
+reference-controller seeds for course $c$ in evaluation suite $E_j$.
+Reference-controller
+success with consistent RL failure is diagnostic of a training or policy limitation
+conditional on the declared model and controller configuration. Failure by both
+methods does not establish geometric or dynamic infeasibility. Reference-controller
+outcomes calibrate policy results and are not part of a generator ranking.
+
+\begin{table}[t]
+  \centering
+  \caption{Proposed auditable metric map. Every estimate identifies its reporting
+  unit, denominator or sample population, and uncertainty procedure.}
+  \label{tab:metric-map}
+  \footnotesize
+  \begin{tabularx}{\linewidth}{@{}Y Y Y@{}}
+    \toprule
+    Question & Metrics and units & Failure interpretation \\
+    \midrule
+    Does the generator emit valid courses? & Completion, geometric/topological,
+    clearance, ordered/closed-loop, and dynamics-aware yields; passed attempts / all
+    attempts & Generator failure, declared-constraint failure, or envelope-conditional
+    infeasibility \\
+    What courses does it produce? & Length, curvature, slope/elevation/torsion,
+    width/clearance, gate, and topology distributions; native physical units & A
+    descriptor is missing, ill-defined, or outside the declared domain \\
+    Where is a course on the spectrum? & Normalized descriptor vector, quantile or
+    coverage-cell assignment, robustness margin; dimensionless coordinates plus native
+    margins & A scalar or categorical label hides dependence on domain or reference
+    agent \\
+    How varied is the feasible output? & Feasible coverage, pairwise distance,
+    energy/MMD-style distance, entropy when estimable, near-duplicate rate & Diversity
+    is low, estimated unreliably, or inflated by invalid samples \\
+    Does a training generator support transfer? & Crossed generator-to-suite policy
+    outcomes, within-column transfer gaps, real-track outcomes, and
+    reference-controller gaps & Poor transfer, training sensitivity, or a
+    controller-conditional limitation; not intrinsic generator quality \\
+    Can another system reproduce and use it? & Manifest/hash match, runtime,
+    memory, rejection/repair cost, import/reset/collision and headless yields & Missing
+    provenance, nondeterminism, or a broken simulator interface \\
+    Does generation agree with deployment data? & Fixed real-reference corpus,
+    extraction/conditioning, distribution distance, and interval & Reference mismatch,
+    insufficient conditioning, or uncertain estimate \\
+    Can the system recover and interact safely? & Safe/recovered, collision,
+    irreversible-failure, deadlock, and legal-pass rates & Recovery, interaction, or
+    rule failure under the declared budget \\
+    Is a learned generator faithful under budget? & Offline/online/repair cost and
+    constraint, distributional, semantic, reconstruction fidelity & A selected output
+    hides budget, trace, or reconstruction failure \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+\Cref{sec:benchmark-protocol} turns these metric contracts into a proposed sampling,
+split, and evaluation protocol. In particular, it preserves raw feasibility outcomes
+before descriptor-based selection and evaluates policies on common immutable course
+identifiers through the paired, course-level comparisons specified in
+\cref{sec:benchmark-protocol}.

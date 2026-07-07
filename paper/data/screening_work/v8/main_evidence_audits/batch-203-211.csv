@@ -1,0 +1,9 @@
+candidate_id,title,source_url,evidence_version,access_status,local_archive_path_or_NR,limitation_note
+"C0203","SDF worlds","https://gazebosim.org/docs/harmonic/sdf_worlds/","Gazebo Harmonic LTS documentation","full_text_official","NR","Harmonic is an older supported release and live documentation is mutable; no local archive."
+"C0204","Pose Frame Semantics Tutorial","https://sdformat.org/tutorials/specification/pose_frame_semantics/1.7/","SDFormat 1.7","full_text_official","NR","Versioned tutorial page; no local archive."
+"C0205","SLEDGE: Synthesizing Driving Environments with Generative Models and Rule-Based Traffic","https://www.ecva.net/papers/eccv_2024/papers_ECCV/papers/00490.pdf","ECCV 2024 paper 00490 (18 pages)","full_text_public","NR","Official proceedings PDF; no local archive or code snapshot."
+"C0206","Team Handbook Njord 2026","https://njord.gitbook.io/2026/","Njord Challenge 2026 GitBook","full_text_official","NR","Live handbook is updated in place; no local archive."
+"C0207","VRX Competition Technical Guide: Virtual RobotX 2022 Competition","https://robonation.org/app/uploads/sites/2/2021/11/VRX2022_Technical-Guide_v1.1.pdf","VRX 2022 Technical Guide v1.1 (2021-11-23)","full_text_official","NR","Technical guide is public; no local archive."
+"C0209","VRX 2023 Task Descriptions","https://robonation.org/app/uploads/sites/2/2023/07/VRX2023_Task-Descriptions_v1.2.pdf","VRX 2023 Task Descriptions v1.2 (2023-07-03)","full_text_official","NR","Task-description specification is public; no local archive."
+"C0210","VRX Automated Evaluation","https://github.com/osrf/vrx-docker","GitHub master branch","full_text_official","NR","Mutable repository branch; no local archive or commit pin."
+"C0211","World Robotic Sailing Championship 2019 Notice of Race and Competition Rules","https://www.roboticsailing.org/2019/rules/","WRSC and IRSC 2019 rules","full_text_official","NR","Competition rules page; no local archive."

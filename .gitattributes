@@ -1,0 +1,9 @@
+paper/data/metadata_inputs/** binary
+paper/data/screening_inputs/** binary
+paper/data/screening_releases/** binary
+paper/data/screening_runs/** binary
+paper/data/screening_results/** binary
+paper/data/screening_decisions/** binary
+paper/data/screening_adjudication_inputs/** binary
+paper/data/screening_adjudication/** binary
+paper/data/screening_projection/** binary

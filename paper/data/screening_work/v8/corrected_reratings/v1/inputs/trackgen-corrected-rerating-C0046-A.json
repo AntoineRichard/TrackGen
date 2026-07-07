@@ -1,0 +1,18 @@
+{
+  "candidate_id": "C0046",
+  "reviewer_slot": "A",
+  "screening_status": "included",
+  "criterion": "include-relevant",
+  "access_status": "full_text",
+  "source_urls": "https://arxiv.org/pdf/2109.12674v3",
+  "evidence_version": "arXiv:2109.12674v3",
+  "evidence_retrieved_on": "2026-07-06",
+  "evidence_archive_url": "https://arxiv.org/pdf/2109.12674v3",
+  "evidence_sha256": "ae04f7e4a3976f977ccff136a218d0daca5a84224f68ded684a6a734f8a87e2e",
+  "screening_locator": "PDF pp. 5-7, Section 4.1 \"Generating Maps\", Algorithm 1 \"Procedural Generation of Maps\" (p. 6), Figs. 3-4",
+  "exclusion_reason": "NR",
+  "notes": "Core adjacent-domain mapping: the generated road-network graph (lanes, sockets, block geometry, lane width, and curvature) is a topologically connected spatial traversal constraint and maps directly to a parameterized robot course; this is not a claim that a fixed controller or route is a generator.",
+  "retention_role": "core",
+  "deciding_source_fact": "Section 4.1 and Algorithm 1 define Block Incremental Generation, which samples parameterized road blocks, connects their lane sockets, rejects intersections, and returns feasible complete road-network maps.",
+  "protocol_reasoning": "This is a source-native, direct generated and parameterized course contribution in a transferable adjacent driving domain: its road-network representation contains lanes, connected sockets, geometry, and configurable widths and curvatures that materially constrain vehicle traversal. It therefore satisfies the v8 core retention condition. The decision does not rely on a supporting fixed-course transfer, and does not characterize a controller or a fixed route as a generator."
+}

@@ -1,0 +1,71 @@
+\section{Proposed Reporting Standard and Reliability-Limited Empirical Audit}
+\label{sec:reporting-practices}
+
+This section proposes a reporting standard; it does not report a prevalence audit.
+Generator, course, simulator, and policy claims remain separate. The course card and
+conformance fields are defined normatively in \cref{sec:benchmark-protocol}; the
+measures and denominators are defined in \cref{sec:metrics}.
+
+\begin{table}[t]
+  \centering
+  \caption{Compact proposed reporting standard.}
+  \label{tab:reporting-standard}
+  \small
+  \begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}p{0.25\linewidth}Y@{}}
+    \toprule
+    Record & Minimum disclosure \\
+    \midrule
+    Generator card & Version, configuration, seeds, domain/vehicle envelope, all
+    attempts and failures, validity definition, raw/repair status, runtime, compute,
+    memory, and artifact hashes \\
+    Course and conformance records & Course card required by
+    Section~\ref{sec:benchmark-protocol}; export/import outcome, units/frames,
+    collision/reset checks, semantic loss, and observation/action contract \\
+    Policy evaluation record & Algorithm/configuration, all training and rollout
+    seeds, suite and simulator hashes, split/leakage checks, outcome taxonomy,
+    denominators, uncertainty, interactions, steps, wall time, and memory \\
+    Archival disclosure & Source or executable environment, licenses, provenance,
+    access restriction, and released versus proposed versus unavailable status \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+A quantitative empirical audit is withheld because the contribution coding did not
+meet the prespecified all-field reliability gate. A future audit will require a
+structurally redesigned taxonomy, fresh independent reliability validation, final
+adjudication, and accountable-author verification. It will use retained, sufficiently
+accessible sources as the denominator for each item and code reported, not reported,
+unclear, or not applicable separately; neither access failure nor a missing locator is
+evidence of non-reporting. Required fields and locators are drawn from the evidence,
+claims, and metrics ledgers, including source version, page/section or artifact
+locator, coding rationale, and applicability.
+
+\begin{table}[t]
+  \centering
+  \caption{Evidence-facing audit matrix. Current state for every row: not populated
+  because contribution coding did not meet the reliability gate.}
+  \label{tab:reporting-audit-matrix}
+  \small
+  \begin{tabularx}{\linewidth}{@{}p{0.34\linewidth}Y@{}}
+    \toprule
+    Audit dimension & Required coding input and locator \\
+    \midrule
+    Seed and configuration & Generator/policy seed schedule and full configuration \\
+    Attempts, failures, and repair & Attempt denominator, invalid/rejected outcomes,
+    repair status and before/after lineage \\
+    Geometry, difficulty, and diversity & Descriptor definition, reference population,
+    conditioning, and selection rule \\
+    Splits & Train/validation/test construction, family separation, duplicate check \\
+    Simulator and export & Format, import/conformance outcome, units/frames, semantic loss \\
+    Code and assets & Repository/archive identifier, version, license, and access state \\
+    Course cards & Course identifier, lineage, hashes, and card fields or absence \\
+    Uncertainty & Independent unit, interval/resampling procedure, and sample counts \\
+    Learned or language-model disclosure & Offline/online/repair budget, traces,
+    constraint/distribution/semantic/reconstruction fidelity \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+No counts, citations, or literature-prevalence conclusions are made until the revised
+coding is independently validated, populated, adjudicated, and verified by the
+accountable author.

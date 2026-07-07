@@ -1,0 +1,5 @@
+binding,bound_path,bound_sha256,purpose
+draft_release_manifest,paper/data/screening_work/v8/pass2_drafts/v1/release_manifest.csv,84b38a2c5069779b6b79a12f053205d9a8495174d532f380420ba5f97f6ca678,immutable draft release artifact set
+draft_release_checksums,paper/data/screening_work/v8/pass2_drafts/v1/SHA256SUMS,c6a0550993ecb473321eabd5b6fcbc3428e41a4a598699ebd15ec11947de0203,immutable draft release checksum set
+primary_v1_snapshot,paper/data/screening_work/v8/pass2_coding/primary/v1/manifest/checksums.csv,ee7bafa35203956779d6be6ac2bb17f5c9c35969db31de68ad12a3919d2da876,primary v1 snapshot artifact set
+pilot_v1_codebook_v2,paper/data/screening_work/v8/pass2_reliability/pilot-v1/CODEBOOK-v2.md,2f39b955e455f618ef3104962f10e983a98b9ac25dfe8b340d62fd3673f1a4c4,prospective pilot-v1 codebook v2
