@@ -133,10 +133,13 @@ same RL algorithm under one vehicle, dynamics, simulator, observation/action, re
 termination, policy-architecture, optimization, environment-interaction, and
 policy-update contract, using the common policy-seed set $P$. Only the distribution
 of training courses changes across generator rows. Equal environment-interaction
-budget is the primary training-budget comparison. Separately report generator
-attempts, feasible courses observed, simulator steps, policy updates, wall-clock
-time, and compute so that equal interaction budgets do not conceal generator or
-throughput cost.
+budget is the primary training-budget comparison. Before training, freeze the
+course-sampling and reuse contract. Its manifest reports the complete set of unique
+training-course identifiers and content hashes, generator seeds, sampling
+probabilities and presentation order, per-course reuse counts, curriculum or
+scheduling rule, and all generation attempts and failures. Separately report
+simulator steps, policy updates, wall-clock time, and compute so that equal
+interaction budgets do not conceal generator or throughput cost.
 
 Evaluate every resulting policy on the immutable suites $E_1,\ldots,E_m$ and on a
 frozen evaluation-only real-track suite $E_{\mathrm{real}}$. Training on the finite
@@ -152,29 +155,46 @@ transfer estimand.
 Construct each generated suite feasibility-first: account for raw attempts and repair
 outcomes before selection, then apply the same frozen descriptor transform, absolute
 admissible bounds, spectrum strata, diversity rules, and minimum suite-size contract
-to every generator. Require both a full-support analysis, which describes practical
-transfer over each source's own immutable suite, and a common-support analysis over
-descriptor strata represented by every compared generator. The former exposes the
-support each source can supply; the latter reduces support and difficulty confounding.
-Condition $E_{\mathrm{real}}$ on the same domain, vehicle, units, frames, descriptor
-extraction, and feasibility contract, and freeze its composition and conditioning
-variables before policy evaluation.
+to every generator. Before freezing the suites, perform manifest-backed duplicate and
+near-duplicate checks between every realized training population and every generated
+$E_j$ plus $E_{\mathrm{real}}$, using content-hash identity and the declared
+representation/descriptor threshold. Report candidate pairs, decisions, removals,
+and any resulting suite-size or stratum-occupancy shortfall rather than silently
+replacing courses.
+
+Require a suite-specific analysis over every course in each released $E_j$. Also
+require a common-stratum analysis: before evaluation, freeze the intersection of
+descriptor strata represented across all compared generators, fixed weights for
+those strata, and each restricted per-column suite $E_j^{\cap}\subseteq E_j$ with
+course set $C_j^{\cap}$. For that analysis, the $C_j$ entering the
+Section~\ref{sec:metrics} definition of $M^Y_{ij}$ is $C_j^{\cap}$, and
+stratum-specific cells are combined using the frozen weights. The suite-specific
+analysis measures transfer over each released suite; the common-stratum analysis
+reduces support and difficulty confounding. Report every missing stratum and
+insufficient-course shortfall; do not silently shrink the declared intersection,
+weights, or restricted suites. Condition $E_{\mathrm{real}}$ on the same domain,
+vehicle, units, frames, descriptor extraction, and feasibility contract, and freeze
+its composition and conditioning variables before policy evaluation.
 
 On the same evaluation courses, run a declared model-based reference controller using
 one generator-independent configuration. Freeze its model, objective, constraints,
 horizon, sampling budget, controller-seed set, compute budget, and termination rules;
 calibrate that configuration once on a declared set disjoint from all training and
 evaluation suites. Preserve its seed and compute contracts across suites and
-generators. Report joint outcome categories---completion, collision, violation,
-timeout, and inconclusive budget exhaustion---before conditional lap-time, progress,
-speed, tracking, or control-effort metrics, including the paired quantities in
-\cref{eq:reference-controller-gap}. Failure by the reference controller, including
-failure shared with RL, is inconclusive for geometric or dynamic infeasibility.
+generators. First report a joint RL/reference-controller outcome table crossing
+completion, collision, violation, timeout, and inconclusive budget exhaustion. For
+every subsequent conditional metric or reference-controller gap, name the exact
+course subset, RL rollout subset, reference-controller seed subset, and denominator.
+The default subset for lap-time ratios and speed comparisons in
+\cref{eq:reference-controller-gap} is courses completed by both methods. Failure by
+the reference controller, including failure shared with RL, is inconclusive for
+geometric or dynamic infeasibility.
 
 For each outcome, aggregate rollouts within policy-seed/course cells and use
 hierarchical paired resampling of policy seeds, common course identifiers, and nested
-rollout seeds. Report paired intervals for within-column comparisons and retain the
-complete failure taxonomy with outcome-specific denominators and censoring rules.
+RL rollout seeds; for reference-controller gaps, also resample reference-controller
+seeds within course. Report paired intervals for within-column comparisons and retain
+the complete failure taxonomy with outcome-specific denominators and censoring rules.
 Keep yield, descriptor coverage, feasible diversity, cost, interoperability, transfer
 gaps, and reference-controller gaps as separate outcomes; do not collapse them into a
 generator ranking.
@@ -198,8 +218,9 @@ generator ranking.
     span the declared spectrum and diversity constraints & Expanded suite sizes and
     longitudinal challenge sets \\
     Policy results & Common IDs, multiple policy seeds, crossed generator-to-suite
-    outcomes, real-track evaluation, intervals, and failure taxonomy & Additional
-    policy families and model-based reference controllers \\
+    outcomes, real-track evaluation, declared model-based reference-controller
+    calibration, intervals, and failure taxonomy & Additional policy and
+    reference-controller families \\
     Interoperability & Documented portable representation plus declared simulator/RL
     adapter behavior & More simulator backends, sensor suites, and hardware-in-the-loop
     validation \\
