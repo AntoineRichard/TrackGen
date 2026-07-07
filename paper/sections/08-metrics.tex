@@ -193,9 +193,22 @@ simulator.
 Controller outcomes can evaluate a generator's utility as a training distribution,
 but they do not define an intrinsic generator quality. Let
 $G_1,\ldots,G_m$ be generators and let $E_1,\ldots,E_m$ be their immutable
-evaluation suites. For outcome $Y$, define $M^Y_{ij}$ as the aggregate outcome of
-policies trained on $G_i$ and evaluated on $E_j$, retaining policy-seed, course, and
-rollout-seed outcomes before aggregation. A separate column
+evaluation suites, with course set $C_j$ for suite $E_j$. Let $P$ be the common
+global policy-seed set used for every training generator, and let
+$\mathcal{R}_{pcj}$ be the common rollout-seed schedule used across
+training-generator rows. For outcome $Y$, retain each rollout outcome $Y_{ijcpr}$ and
+first aggregate over $r$ within each $(i,j,c,p)$ cell, then average over the common
+policy seeds and evaluation courses:
+\begin{equation}
+  \overline{Y}_{ijcp}
+  =\operatorname{Agg}_{r\in\mathcal{R}_{pcj}}Y_{ijcpr},
+  \qquad
+  M^Y_{ij}
+  =\frac{1}{|P|\,|C_j|}
+  \sum_{p\in P}\sum_{c\in C_j}\overline{Y}_{ijcp}.
+\end{equation}
+The within-cell aggregation and all outcome-specific failure, censoring, and
+conditional-performance rules remain declared explicitly. A separate column
 $M^Y_{i,\mathrm{real}}$ evaluates the same policies on a frozen, evaluation-only
 real-track suite.
 
@@ -207,8 +220,10 @@ training distributions on common courses:
   \label{eq:cross-generator-transfer-gap}
 \end{equation}
 for higher-is-better outcomes, reversing or explicitly declaring the sign for
-lower-is-better outcomes. The real-track column has no privileged diagonal; compare
-policies directly through paired course outcomes. Report the complete matrix,
+lower-is-better outcomes. Both terms use the same $C_j$, $P$, and rollout schedule
+$\mathcal{R}_{pcj}$; only the training-generator row changes. The real-track column
+has no privileged diagonal; compare policies directly through paired course outcomes.
+Report the complete matrix,
 leave-source-out and worst-source summaries, real-track outcomes, policy-seed and
 course sensitivity, and training exposure. These quantities form a training-utility
 profile, not a scalar generator ranking.
@@ -224,17 +239,19 @@ Report outcome calibration---completion, collision, violation, timeout, or
 inconclusive budget exhaustion---before conditional performance. On explicitly stated
 subsets, particularly courses completed by both methods, report:
 \begin{equation}
-  R^{\mathrm{time}}_{icp}
-  =\frac{\overline{T}^{\mathrm{RL}}_{icp}}
-  {\widetilde{T}^{\mathrm{ref}}_c},
+  R^{\mathrm{time}}_{ijcp}
+  =\frac{\overline{T}^{\mathrm{RL}}_{ijcp}}
+  {\widetilde{T}^{\mathrm{ref}}_{jc}},
   \qquad
-  \Delta v_{icp}
-  =\overline{v}^{\mathrm{RL}}_{icp}
-  -\widetilde{v}^{\mathrm{ref}}_c,
+  \Delta v_{ijcp}
+  =\overline{v}^{\mathrm{RL}}_{ijcp}
+  -\widetilde{v}^{\mathrm{ref}}_{jc},
   \label{eq:reference-controller-gap}
 \end{equation}
-where the overbar is the declared RL rollout aggregation and the tilde is the
-preregistered aggregation over reference-controller seeds. Reference-controller
+for $p\in P$ and $c\in C_j$, where the overbar is the declared RL rollout aggregation
+over $r\in\mathcal{R}_{pcj}$ and the tilde is the preregistered aggregation over
+reference-controller seeds for course $c$ in evaluation suite $E_j$.
+Reference-controller
 success with consistent RL failure is diagnostic of a training or policy limitation
 conditional on the declared model and controller configuration. Failure by both
 methods does not establish geometric or dynamic infeasibility. Reference-controller
