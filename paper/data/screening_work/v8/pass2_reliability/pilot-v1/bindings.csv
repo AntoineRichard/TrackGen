@@ -1,3 +1,0 @@
-binding,bound_path,bound_sha256,purpose
-primary_snapshot,paper/data/screening_work/v8/pass2_coding/primary/v1/manifest/checksums.csv,ee7bafa35203956779d6be6ac2bb17f5c9c35969db31de68ad12a3919d2da876,binds the sampled primary coding snapshot without altering it
-draft_release,paper/data/screening_work/v8/pass2_drafts/v1/release_manifest.csv,84b38a2c5069779b6b79a12f053205d9a8495174d532f380420ba5f97f6ca678,binds the non-final pass2 draft release without altering it

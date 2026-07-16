@@ -1,4 +1,0 @@
-role,agent_id,model,reasoning_effort,fork_context,scope
-pass2-reliability-01,019f3969-3bbb-7d01-9abd-f302a8643dc4,gpt-5.6-terra,high,false,independent blind reliability coding
-source-adjudicator,019f396e-256a-7091-bd44-c5e3d2fe6f63,gpt-5.6-terra,high,NR,source-level adjudication after reliability comparison
-methods-reviewer,019f396e-2543-78b1-ba9c-17d0d6a1ba80,gpt-5.6-terra,high,NR,prospective codebook review

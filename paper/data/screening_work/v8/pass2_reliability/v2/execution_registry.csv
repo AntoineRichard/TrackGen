@@ -1,2 +1,0 @@
-role,agent_id,model,reasoning_effort,fork_context,scope
-pass2-reliability-v2-01,019f39a2-f37d-77b0-8397-1ef173ab8a56,gpt-5.6-terra,high,false,independent blind reliability coding

@@ -1,3 +1,0 @@
-candidate_id,reviewer_slots,status_agreement,criterion_agreement,evidence_sha256_agreement,agreed_screening_status,agreed_criterion,agreed_evidence_sha256
-C0046,A;B,exact,exact,exact,included,include-relevant,ae04f7e4a3976f977ccff136a218d0daca5a84224f68ded684a6a734f8a87e2e
-C0173,A;B,exact,exact,exact,included,include-relevant,83f24aad0cb3242fdcb9f81dbe8d53de0b832bf7ffb7517c7a114c129c98d0ba

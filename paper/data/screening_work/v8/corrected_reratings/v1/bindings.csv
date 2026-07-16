@@ -1,5 +1,0 @@
-binding,bound_path,bound_sha256,purpose
-protocol,paper/data/screening_work/v8/protocol.md,5bb02a2585ee00f9513a4929d4f7ad9027c4c15b6880293f2f46a8e72309d445,binds the governing v8 protocol without altering it
-calibration_manifest,paper/data/screening_results/calibration/v8/manifest.csv,a7de5b53bdcf96000bc81da0f1c01c7523784e73fb03652b0a0ae5adf0577def,binds the frozen calibration manifest that records the prior assignments
-corrected_source_C0046,paper/data/source_archive/v8/C0046/metadrive_composing_diverse_driving_scenarios_arxiv_2109.12674v3.pdf,ae04f7e4a3976f977ccff136a218d0daca5a84224f68ded684a6a734f8a87e2e,binds the corrected C0046 evidence bytes
-corrected_source_C0173,paper/data/source_archive/v8/C0173/bayesrace-pmlr155-jain21b-corrected.pdf,83f24aad0cb3242fdcb9f81dbe8d53de0b832bf7ffb7517c7a114c129c98d0ba,binds the corrected C0173 evidence bytes
