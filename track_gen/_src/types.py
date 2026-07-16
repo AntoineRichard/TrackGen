@@ -297,9 +297,44 @@ class TrackGenConfig:
         auto-computes ``round(2 * half_width / L0)`` per track, where ``L0`` is the
         rest edge length.  Set explicitly to override the per-track auto-band.
     relax_iters : int
-        Number of XPBD Jacobi sweeps.  Default 150.  Each sweep applies separation,
-        spacing, and bending corrections; calibrated for ~0.999 end-to-end valid
-        yield at the library defaults.
+        Number of XPBD Jacobi sweeps.  Default 50.  Each sweep applies separation,
+        spacing, and bending corrections; with the default Chebyshev-accelerated
+        solve (``relax_accel="chebyshev"``), 50 sweeps are calibrated for ~0.999
+        end-to-end valid yield at the library defaults (matching what 150 plain
+        Jacobi sweeps used to need).
+    relax_accel : str
+        Iteration-acceleration scheme for the XPBD Jacobi sweeps.  ``"chebyshev"``
+        (default) applies Chebyshev semi-iterative acceleration (Macklin et al.
+        2014): after ``relax_cheby_start`` plain warmup sweeps, each sweep blends
+        the Jacobi update with the current and previous iterates using a
+        host-precomputed omega recurrence, converging ~3x faster per sweep.
+        ``"none"`` runs plain damped Jacobi (the legacy behaviour).
+    relax_cheby_rho : float
+        Chebyshev spectral-radius estimate of the underlying Jacobi iteration.
+        Must be in ``[0, 1)``.  Default 0.98.  Larger values accelerate the
+        long-wavelength modes harder but risk overshoot on the nonsmooth
+        separation contacts; values >= 0.99 were observed to reduce yield.
+    relax_cheby_gamma : float
+        Chebyshev under-relaxation factor applied to the Jacobi step inside the
+        blend.  Must be in ``(0, 1]``.  Default 0.9.  Values below 1 damp the
+        contact-switching noise that acceleration would otherwise amplify.
+    relax_cheby_start : int
+        Sweep index at which Chebyshev acceleration engages; earlier sweeps run
+        plain Jacobi so the separation contact set settles first.  Must be >= 1.
+        Default 8.
+    relax_smooth_passes : int
+        Number of shrink-free Taubin smoothing passes applied after the main sweep
+        loop.  Must be >= 0.  Default 5.  Each pass is two Laplacian half-steps
+        (:math:`\\lambda > 0` then :math:`\\mu < -\\lambda`), which removes the
+        sub-``R_min`` curvature noise the bending guard's deadband cannot see (bending
+        only fires below the minimum radius; gentler wiggles are invisible to all three
+        constraints) without shrinking corners through the validity gate the way a plain
+        Laplacian would.  0 disables the smoothing tail entirely.
+    relax_smooth_spacing_iters : int
+        Number of spacing-only polish sweeps applied after the Taubin passes.  Must be
+        >= 0.  Default 10.  Each is the ordinary edge-spacing correction with separation
+        and bending off, restoring bead uniformity that the Taubin passes perturb.  0
+        disables the polish.
 
     relax_sep_every : int
         Broadphase refresh interval in sweeps.  Must be >= 1.  At 1, the dense
@@ -307,7 +342,11 @@ class TrackGenConfig:
         ``K > 1`` with ``relax_sep_cache_slots == 0``, the dense scan is skipped
         between refreshes (fast but may miss transient contacts).  With
         ``relax_sep_cache_slots > 0``, this is the cache-rebuild interval; the exact
-        narrowphase still runs every sweep on cached candidates.  Default 40.
+        narrowphase still runs every sweep on cached candidates.  Default 20: the
+        broadphase is built at sweep 0 and refreshed only at multiples of this
+        interval, so runs shorter than ``relax_sep_every`` sweeps never refresh it
+        mid-solve — the cadence dropped from 40 alongside the ``relax_iters``
+        150 -> 50 default so the accelerated solve still refreshes mid-solve.
     relax_sep_cache_slots : int
         Broadphase candidate cache capacity per bead.  0 disables the cache (uses
         the dense cadenced scan).  When > 0, each bead stores up to this many
@@ -502,8 +541,14 @@ class TrackGenConfig:
     relax_use_warp: bool | None = None
     relax_tol: float = 0.02
     relax_band: int | None = None
-    relax_iters: int = 150
-    relax_sep_every: int = 40
+    relax_iters: int = 50
+    relax_accel: str = "chebyshev"        # {"none","chebyshev"}
+    relax_cheby_rho: float = 0.98
+    relax_cheby_gamma: float = 0.9
+    relax_cheby_start: int = 8
+    relax_smooth_passes: int = 5
+    relax_smooth_spacing_iters: int = 10
+    relax_sep_every: int = 20
     relax_sep_cache_slots: int = 16
     relax_sep_cache_skin: float = 0.5
     relax_sep_relax: float = 1.0
@@ -665,6 +710,33 @@ class TrackGenConfig:
         if float(self.relax_sep_cache_skin) < 0.0:
             raise ValueError(
                 f"relax_sep_cache_skin must be >= 0, got {self.relax_sep_cache_skin!r}")
+
+        # Chebyshev-acceleration validation: rho is a spectral-radius estimate (< 1 or
+        # the omega recurrence diverges), gamma in (0, 1] keeps the blended step a
+        # damped Jacobi step, and start >= 1 guarantees at least one plain warmup
+        # sweep before the previous-iterate blend engages.
+        if str(self.relax_accel) not in ("none", "chebyshev"):
+            raise ValueError(
+                f"relax_accel must be 'none' or 'chebyshev', got {self.relax_accel!r}")
+        if not (0.0 <= float(self.relax_cheby_rho) < 1.0):
+            raise ValueError(
+                f"relax_cheby_rho must be in [0, 1), got {self.relax_cheby_rho!r}")
+        if not (0.0 < float(self.relax_cheby_gamma) <= 1.0):
+            raise ValueError(
+                f"relax_cheby_gamma must be in (0, 1], got {self.relax_cheby_gamma!r}")
+        if int(self.relax_cheby_start) < 1:
+            raise ValueError(
+                f"relax_cheby_start must be >= 1, got {self.relax_cheby_start!r}")
+
+        # Post-solve smoothing tail: both counts are simple non-negative sweep budgets
+        # (0 disables). No cross-constraint between them — either may run alone.
+        if int(self.relax_smooth_passes) < 0:
+            raise ValueError(
+                f"relax_smooth_passes must be >= 0, got {self.relax_smooth_passes!r}")
+        if int(self.relax_smooth_spacing_iters) < 0:
+            raise ValueError(
+                "relax_smooth_spacing_iters must be >= 0, got "
+                f"{self.relax_smooth_spacing_iters!r}")
 
         # Checkpoint-steering generator validation: a loop needs >= 3 checkpoints, the
         # radius fraction must be a proper sub-unit inner radius, and best-of-K needs >= 1.

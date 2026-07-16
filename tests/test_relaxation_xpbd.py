@@ -42,6 +42,35 @@ def test_relax_disabled_is_identity():
     assert torch.allclose(relaxation.relax(c0, cfg), c0)
 
 
+def _dkappa_rms(pts):
+    """RMS of adjacent Menger-curvature differences over one env's closed loop."""
+    p = pts[0]
+    pp, pn = torch.roll(p, 1, 0), torch.roll(p, -1, 0)
+    a, b, c = p - pp, pn - p, pn - pp
+    cross = a[:, 0] * b[:, 1] - a[:, 1] * b[:, 0]
+    area = 0.5 * cross.abs()
+    la, lb, lc = (x.norm(dim=-1) for x in (a, b, c))
+    kappa = 4.0 * area / (la * lb * lc).clamp_min(1e-12)
+    dk = torch.roll(kappa, -1) - kappa
+    return float((dk ** 2).mean().sqrt())
+
+
+def test_smoothing_tail_reduces_curvature_noise():
+    # The Taubin+polish tail (defaults 5/10) should smooth curvature noise while
+    # keeping the thickness target, versus the tail disabled (0/0).
+    c0 = _star(n=256, r0=1.0, amp=0.6, k=7).unsqueeze(0)
+    cfg_on = _cfg(half_width=0.05)
+    cfg_off = _cfg(half_width=0.05, relax_smooth_passes=0, relax_smooth_spacing_iters=0)
+    out_on = relaxation.relax(c0, cfg_on)
+    out_off = relaxation.relax(c0, cfg_off)
+    band = relaxation._band(c0, cfg_on)
+    # (a) smoothed result still meets the thickness target
+    th_on = geometry.thickness(out_on, band)
+    assert float(th_on[0]) >= 0.98 * cfg_on.half_width
+    # (b) curvature-difference RMS strictly lower with the tail on
+    assert _dkappa_rms(out_on) < _dkappa_rms(out_off)
+
+
 def test_xpbd_pushes_apart_near_touch():
     # Two near-touching strands (a pinched oval): separation-limited, not curvature.
     import math

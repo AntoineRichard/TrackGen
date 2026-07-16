@@ -118,10 +118,26 @@ def _relax_xpbd(center0, band, config):
     bend_relax = float(config.relax_bend_relax)
     L0 = geometry.perimeter(center0) / N
 
+    # Chebyshev semi-iterative acceleration (relax_accel="chebyshev"): independent
+    # torch mirror of the Warp kernel path (deliberately NOT imported from warp_relax —
+    # the oracle stays a separate reference). Same semantics: sweeps below
+    # relax_cheby_start run plain Jacobi with NO blend applied; the first accelerated
+    # sweep uses x_prev := x_cur (exact cancellation, omega=1); later sweeps blend
+    # with the true previous iterate using the locally-duplicated omega recurrence
+    # (omega_1=1, omega_2=2/(2-rho^2), omega_{k+1}=4/(4-rho^2*omega_k)), so oracle and
+    # kernel trajectories match step for step. relax_accel="none" is the legacy path.
+    use_cheby = str(getattr(config, "relax_accel", "none")) == "chebyshev"
+    if use_cheby:
+        rho2 = float(config.relax_cheby_rho) ** 2
+        cheb_gamma = float(config.relax_cheby_gamma)
+        cheb_start = max(1, int(config.relax_cheby_start))
+        omega = 1.0
+        x_prev = None
+
     center = center0.clone()
     circ = geometry.circ_index_dist(N, center0.device)
     mask_keep = circ[None] > band.view(E, 1, 1)
-    for _ in range(int(config.relax_iters)):
+    for k in range(int(config.relax_iters)):
         disp = sep_relax * _separation_disp(center, mask_keep, D, margin)
         disp = disp + spc_relax * _spacing_disp(center, L0)
         if bend_relax > 0.0:
@@ -130,7 +146,35 @@ def _relax_xpbd(center0, band, config):
             max_len = torch.linalg.norm(toward, dim=-1, keepdim=True)
             step_len = torch.linalg.norm(step, dim=-1, keepdim=True)
             disp = disp + step * (max_len / step_len.clamp_min(1e-12)).clamp(max=1.0)
-        center = center + disp
+        x_hat = center + disp
+        if use_cheby and k >= cheb_start:
+            j = k - cheb_start
+            if j == 0:
+                omega = 1.0
+            elif j == 1:
+                omega = 2.0 / (2.0 - rho2)
+            else:
+                omega = 4.0 / (4.0 - rho2 * omega)
+            p = center if j == 0 else x_prev
+            blended = omega * (cheb_gamma * (x_hat - center) + (center - p)) + p
+            x_prev = center
+            center = blended
+        else:
+            center = x_hat
+
+    # Post-solve smoothing tail — independent torch mirror of the Warp kernel tail
+    # (deliberately NOT imported from warp_relax; the oracle stays a separate
+    # reference). Arithmetic-order-identical to the kernel so the CUDA parity test
+    # holds: each Taubin half-step is x + factor * (0.5*(x_prev + x_next) - x); the
+    # spacing polish reuses _spacing_disp (the same 0.25 edge-projection the kernel's
+    # spacing term computes) scaled by spc_relax with separation/bending off. mu < -lambda
+    # makes the pass shrink-free (a plain Laplacian collapses validity by shrinking corners).
+    LAMBDA, MU = 0.5, -0.53
+    for _ in range(int(getattr(config, "relax_smooth_passes", 0))):
+        center = center + LAMBDA * (0.5 * (_roll(center, 1) + _roll(center, -1)) - center)
+        center = center + MU * (0.5 * (_roll(center, 1) + _roll(center, -1)) - center)
+    for _ in range(int(getattr(config, "relax_smooth_spacing_iters", 0))):
+        center = center + spc_relax * _spacing_disp(center, L0)
 
     return _resample_uniform(center, N)
 

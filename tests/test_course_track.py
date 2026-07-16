@@ -102,7 +102,10 @@ def test_regenerate_refreshes_everything():
     course.bind(position=pos, yaw=yaw, half_extents=he)
     course.generate()
     counts1 = course.checkpoints.count.numpy().copy()
-    _drive(course, pos, n_steps=20)
+    # 40 steps (like _drive's default): envs whose bead count is divisible by the
+    # 3-bead stride only ever visit a third of the beads, so shorter drives make
+    # progress depend on checkpoint/bead phase luck of the generated shapes.
+    _drive(course, pos, n_steps=40)
     assert course.progress._progress.numpy().sum() > 0
 
     track2 = course.generate(seeds=999)          # new courses for everyone

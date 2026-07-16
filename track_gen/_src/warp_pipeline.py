@@ -932,6 +932,7 @@ def _run_pipeline(
             sep_cache_idx_wp=relax.sep_cache_idx,
             sep_cache_count_wp=relax.sep_cache_count,
             sep_cache_overflow_wp=relax.sep_cache_overflow,
+            cheb_prev_wp=relax.cheb_prev,
         )
         relax_out = relax.relaxed
     else:
@@ -1297,11 +1298,13 @@ class RelaxScratch:
     band:     [E] int32 — band_l0_inplace output (excluded-neighbour half-window).
     L0:       [E] float32 — band_l0_inplace output (rest segment length per env).
     xpbd_db:  [E*N_max] vec2f — xpbd_solve position ping-pong scratch.
+    cheb_prev: [E*N_max] vec2f — xpbd_solve previous-iterate buffer for Chebyshev
+              acceleration; None when relax_accel == "none".
     sep_cache_idx/count/overflow: optional fixed-size separation candidate cache.
     """
 
     __slots__ = (
-        "relaxed", "band", "L0", "xpbd_db",
+        "relaxed", "band", "L0", "xpbd_db", "cheb_prev",
         "sep_cache_idx", "sep_cache_count", "sep_cache_overflow",
     )
 
@@ -1311,6 +1314,7 @@ class RelaxScratch:
         band: "wp.array",
         L0: "wp.array",
         xpbd_db: "wp.array",
+        cheb_prev: "wp.array | None" = None,
         sep_cache_idx: "wp.array | None" = None,
         sep_cache_count: "wp.array | None" = None,
         sep_cache_overflow: "wp.array | None" = None,
@@ -1319,6 +1323,7 @@ class RelaxScratch:
         self.band = band
         self.L0 = L0
         self.xpbd_db = xpbd_db
+        self.cheb_prev = cheb_prev
         self.sep_cache_idx = sep_cache_idx
         self.sep_cache_count = sep_cache_count
         self.sep_cache_overflow = sep_cache_overflow
@@ -1482,11 +1487,19 @@ def _inflate_warp_alloc(config, generator_spec=None):
         sep_cache_idx = None
         sep_cache_count = None
         sep_cache_overflow = None
+    # Chebyshev previous-iterate buffer: pre-allocated here so the capture-path solve
+    # stays zero-per-call-alloc; None when acceleration is disabled. Contents never
+    # matter (xpbd_solve never reads it before writing it), so wp.empty suffices.
+    if str(getattr(config, "relax_accel", "none")) == "chebyshev":
+        cheb_prev = wp.empty(flat, dtype=wp.vec2f, device=dev)
+    else:
+        cheb_prev = None
     relax = RelaxScratch(
         relaxed=wp.empty(flat, dtype=wp.vec2f, device=dev),
         band=wp.empty(E, dtype=wp.int32, device=dev),
         L0=wp.empty(E, dtype=wp.float32, device=dev),
         xpbd_db=wp.empty(flat, dtype=wp.vec2f, device=dev),
+        cheb_prev=cheb_prev,
         sep_cache_idx=sep_cache_idx,
         sep_cache_count=sep_cache_count,
         sep_cache_overflow=sep_cache_overflow,
