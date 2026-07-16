@@ -1,4 +1,4 @@
-"""Pure-Warp first-stage centerline generator: convex-hull + midpoint displacement.
+"""Pure-Warp centerline generator: convex-hull + midpoint displacement.
 
 Method (registered as ``"hull"``):
 

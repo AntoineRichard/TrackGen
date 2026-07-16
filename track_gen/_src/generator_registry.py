@@ -1,4 +1,4 @@
-"""Registry of first-stage centerline generators.
+"""Registry of centerline generators.
 
 A generator is a (name, alloc_scratch, generate) triple. ``config.generator`` selects
 one by name. ``TrackGenerator`` resolves it once at construction; the orchestrator calls

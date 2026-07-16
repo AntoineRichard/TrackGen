@@ -1,7 +1,7 @@
 Generator Benchmarks
 ====================
 
-Reference metrics for the six registered first-stage generators, produced by
+Reference metrics for the six registered centerline generators, produced by
 ``benchmarks/compare_generators.py``.  These numbers characterize tradeoffs among
 quality, diversity, and speed.  They never gate which generators ship — every
 registered generator stays selectable via ``config.generator``.
@@ -149,7 +149,7 @@ Metric Definitions
    (turning number, thickness floor, no NaN); higher is better.
 
 **pre_relax_self_intersection_rate**
-   Fraction of environments whose first-stage centerline contains at least one
+   Fraction of environments whose raw generated centerline contains at least one
    proper crossing before any relaxation; lower indicates a cleaner generator-level
    output.
 

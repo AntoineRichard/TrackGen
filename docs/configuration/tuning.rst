@@ -30,7 +30,7 @@ A few principles:
   introduce harder-to-relax geometries, so watch yield when you push these.
 
 - **Mix generators across workers** rather than pushing a single generator to
-  its limits. Each first-stage method (``"bezier"``, ``"hull"``, ``"polar"``,
+  its limits. Each centerline generator (``"bezier"``, ``"hull"``, ``"polar"``,
   ``"voronoi"``, ``"checkpoint"``) produces a visually distinct family; using
   different configs across parallel workers is the lowest-friction path to a
   broad distribution.

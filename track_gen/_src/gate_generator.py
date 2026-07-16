@@ -3,7 +3,7 @@
 ``GateGenerator`` mirrors the fixed-batch contract of ``TrackGenerator``: construction
 owns persistent output and scratch buffers, while ``generate()`` refreshes the per-env
 seed buffer and writes into the same ``GateSequence`` instance every call. Native gate
-generators provide first-stage anchors through the registry; ``warp_gate`` owns the
+generators provide centerline-generator anchors through the registry; ``warp_gate`` owns the
 common ordering, collision, frame, and validity pipeline.
 """
 

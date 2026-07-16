@@ -13,7 +13,7 @@ more diverse, more controllable, less degenerate, and easier to repair into
 constant-width valid tracks.
 
 
-Contract for Any First-Stage Generator
+Contract for Any Centerline Generator
 ---------------------------------------
 
 The generator should be judged by the interface it gives to the downstream pipeline:
@@ -150,7 +150,7 @@ fixed-length piecewise-constant curvature arcs, or a small vocabulary of straigh
 clothoid-in ramps, constant-radius apex segments, and clothoid-out ramps.
 
 **Why investigate.** This is the most useful lesson from the racing-line literature for
-phase 1. Theodosis/Gerdes-style clothoid-plus-arc corner models and minimum-curvature
+the centerline-generation stage. Theodosis/Gerdes-style clothoid-plus-arc corner models and minimum-curvature
 racing-line optimizers are solving a different problem, but they point at a strong track
 representation: curvature is the natural variable for controlling radius, sweepers,
 hairpins, chicanes, and straight exits. Used before relaxation, this generator could

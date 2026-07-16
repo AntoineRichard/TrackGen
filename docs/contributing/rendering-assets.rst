@@ -30,17 +30,17 @@ The figures it produces are:
    * - File
      - Contents
    * - ``docs/assets/readme-generator-grid.png``
-     - Five representative raw phase-1 centerlines from each of the six
+     - Five representative raw centerlines from each of the six
        standard generators (30 panels total), rendered at fixed seeds.
    * - ``docs/assets/readme-pipeline-stages.png``
-     - A single Bezier sample shown at four pipeline stages: Phase 1 raw
+     - A single Bezier sample shown at four pipeline stages: raw generated
        centerline, constant-spacing resample, XPBD-relaxed band, and the final
        inflated road.
    * - ``docs/assets/readme-generator-strip.png``
-     - One representative phase-1 centerline per standard generator in a
+     - One representative raw centerline per standard generator in a
        single horizontal strip.
    * - ``docs/assets/readme-gate-strip.png``
-     - The phase-2 gate collision solve illustrated for each **gate** generator
+     - Gate self-collision relaxation illustrated for each **gate** generator
        (``bezier``, ``checkpoint``, ``hull``, ``polar``, ``voronoi`` — ``repulsive``
        is not a registered gate generator, so it is not in this strip): raw
        anchors (top row) and separated gates with tangent frames and gate-width
@@ -50,7 +50,7 @@ The figures it produces are:
        batch at the track tutorial's default geometry (``half_width=0.03``),
        shown as filled constant-width road bands. CPU, deterministic.
    * - ``docs/assets/generator-<name>.png`` (six files)
-     - Per-generator panel showing five representative raw phase-1 outputs.
+     - Per-generator panel showing five representative raw centerline outputs.
        One file per standard generator (``bezier``, ``checkpoint``, ``hull``,
        ``polar``, ``voronoi``, ``repulsive``).
    * - ``docs/assets/relaxation-before-after.png``

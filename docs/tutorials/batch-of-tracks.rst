@@ -2,7 +2,7 @@ Generating a Batch of Tracks
 ============================
 
 ``TrackGenerator`` produces a whole batch of closed, constant-width racing
-tracks in one call: a first-stage generator draws a centerline per environment,
+tracks in one call: a centerline generator draws a centerline per environment,
 the pipeline resamples it at constant arc spacing, XPBD-relaxes it so it is
 inflatable, and inflates it into a road band. This tutorial walks the end-to-end
 workflow — build a config and RNG, call ``generate()``, read the output arrays,

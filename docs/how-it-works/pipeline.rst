@@ -26,7 +26,7 @@ Data flow
 .. code-block:: text
 
    seeds[E]
-     │  FIRST-STAGE GENERATION  (registered config.generator:
+     │  CENTERLINE GENERATION  (registered config.generator:
      │    "bezier", "hull", "polar", "voronoi", "checkpoint", or "repulsive";
      │    single pass, generator-private scratch, no regen loop, no generation gate)
      ▼
@@ -51,10 +51,10 @@ Data flow
 The RELAX stage — the XPBD constraint solve that makes the centerline inflatable —
 has its own section: see :doc:`/relaxation/overview`.
 
-Registered first-stage generators
+Registered centerline generators
 ----------------------------------
 
-The first stage is pluggable. ``TrackGenerator.__init__`` resolves
+The centerline generator is pluggable. ``TrackGenerator.__init__`` resolves
 ``config.generator`` through ``track_gen._src.generator_registry``, allocates that
 generator's private scratch once, and ``_run_pipeline`` calls the resolved
 ``GeneratorSpec.generate`` with orchestrator-owned ``out_centerline`` and
@@ -137,7 +137,7 @@ at the fat-band default (``half_width=0.5``, ``scale=10``, ``spacing=0.30``,
   Relaxing at ~0.6×half_width spacing (≈ 145–160 nodes/track, not 256) lifted that same
   regime **0.684 → 0.999** — and runs faster (fewer nodes), while staying
   graph-capturable.
-- **Single-pass first-stage generation replaced the regen loop.** With relaxation lossless,
+- **Single-pass centerline generation replaced the regen loop.** With relaxation lossless,
   the default Bezier residual was a small fraction of smooth-centerline self-crossers.
   Rather than a fixed ``max_regen_iters`` accept-first-valid loop, the Bezier generator now
   takes one corner draw per env and routes any track whose smooth Bezier centerline

@@ -15,8 +15,9 @@ warning on ``TrackGenConfig.repulsive_grow_mult_min``). The per-iteration ``wp.T
 that used to be the interior capture blocker is GONE (replaced by hand-written analytic
 adjoints below); actual graph capture is now just a wiring exercise (future work).
 
-Ported from the validated spike ``docs/superpowers/spikes/2026-07-05-repulsive-growth-
-phase1/grow_warp.py`` (proven 64/64 through the standard tail). Production changes:
+Ported from the validated spike
+``docs/superpowers/spikes/2026-07-05-repulsive-growth-phase1/grow_warp.py`` (proven 64/64
+through the standard tail). Production changes:
 (a) obstacle layout is a seed-driven Warp kernel (not host torch rejection sampling);
 (b) scratch is allocated once, coarse stages slice the ``[0:E*N_stage]`` prefix;
 (c) the stage upsample uses ``warp_pipeline.arc_length_resample_inplace``.

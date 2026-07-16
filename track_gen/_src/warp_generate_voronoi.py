@@ -1,11 +1,11 @@
-"""Pure-Warp Voronoi/graph-cycle first-stage centerline generator.
+"""Pure-Warp Voronoi/graph-cycle centerline generator.
 
 Registered as ``config.generator="voronoi"``.
 
 This is the production distillation of the host-side Voronoi/random-geometric prototype:
 sample a bounded field of cell sites, choose a fixed number of angular anchor targets,
 snap each target to a nearby unused site, smooth the resulting graph-cycle polyline, and
-arc-length resample it into the standard phase-1 centerline buffer.
+arc-length resample it into the standard centerline buffer.
 
 The implementation deliberately avoids exact Voronoi ridge traversal. Exact Delaunay /
 Voronoi construction and dynamic cycle-basis search are not a good fit for the runtime

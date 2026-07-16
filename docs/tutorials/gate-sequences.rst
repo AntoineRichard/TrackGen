@@ -3,7 +3,7 @@ Generating Gate Sequences for Drone Courses
 
 For drone-style courses where road width is irrelevant, ``track_gen`` provides
 ``GateGenerator``. It emits gate centers and orientations directly from the
-first-stage generator anchors and skips constant-spacing resampling, XPBD
+centerline-generator anchors and skips constant-spacing resampling, XPBD
 relaxation, and inflation — making it faster than the full track pipeline.
 
 Prerequisites
@@ -19,7 +19,7 @@ Building the Gate Config
 --------------------------
 
 ``GateGenConfig`` controls every gate-generation parameter. The key fields are
-``generator`` (which first-stage method to use), ``gate_ordering``,
+``generator`` (which centerline generator to use), ``gate_ordering``,
 ``num_envs``, ``max_gates``, ``gate_width``, ``gate_radius``, and
 ``gate_solve_iters``.
 
@@ -108,7 +108,7 @@ Gate Figure
 
 .. figure:: ../assets/readme-gate-strip.png
 
-   Phase-2 gate collision solve. Top: raw anchors (``gate_solve_iters=0``);
+   Gate self-collision relaxation. Top: raw anchors (``gate_solve_iters=0``);
    bottom: after the solve, with gate tangents and ``gate_width`` bars.
 
 Gate Ordering per Generator

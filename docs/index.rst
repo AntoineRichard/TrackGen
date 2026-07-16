@@ -40,7 +40,7 @@ ready to drop into a batched RL simulator.
    :alt: TrackGen pipeline stages
    :align: center
 
-   The runtime pipeline turns a raw Phase-1 centerline into a constant-spacing path,
+   The runtime pipeline turns a raw generated centerline into a constant-spacing path,
    relaxes it with XPBD, then inflates it into a constant-width road band.
 
 Features
@@ -61,7 +61,7 @@ Features
 
    .. grid-item-card:: Six generators
 
-      Bezier, Hull, Polar, Voronoi, Checkpoint, and Repulsive — pluggable first-stage
+      Bezier, Hull, Polar, Voronoi, Checkpoint, and Repulsive — pluggable centerline
       generators, each with a distinct shape family.
 
    .. grid-item-card:: CUDA-graph capture
@@ -73,7 +73,7 @@ Features
    .. grid-item-card:: Gate sequences
 
       Drone-style gate courses — gate centres and orientations — straight from the
-      first-stage anchors via ``GateGenerator``.
+      centerline-generator anchors via ``GateGenerator``.
 
    .. grid-item-card:: RL-ready runtime
 
@@ -87,22 +87,22 @@ Gallery
    :alt: Six generators, one batch
    :align: center
 
-   Six generators, one batch — representative raw Phase-1 centerlines from each
+   Six centerline generators, one batch — representative raw centerlines from each
    standard generator.
 
-.. figure:: assets/progress-tracking.png
-   :alt: Progress tracking on a generated track.
+.. figure:: assets/relaxation-before-after.png
+   :alt: Centerline self-collision relaxation — raw centerlines versus relaxed, inflated tracks
    :align: center
 
-   Runtime utilities in action: checkpoint progress on a generated track
-   with the reward-ready ``dist_to_next`` signal.
+   Centerline self-collision relaxation — raw constant-spacing centerlines (top)
+   versus the relaxed, inflated tracks (bottom).
 
 .. figure:: assets/readme-gate-strip.png
-   :alt: Gate sequences with collision relaxation
+   :alt: Gate self-collision relaxation — raw anchors versus separated gates
    :align: center
 
-   Gate sequences with the phase-2 collision solve — raw anchors (top) versus
-   separated gates (bottom).
+   Gate self-collision relaxation — raw anchors (top) versus separated gates
+   (bottom).
 
 Explore the docs
 ----------------
@@ -128,7 +128,7 @@ Explore the docs
       :link: generators/overview
       :link-type: doc
 
-      How each first-stage generator works and when to use it.
+      How each centerline generator works and when to use it.
 
    .. grid-item-card:: Track relaxation
       :link: relaxation/overview

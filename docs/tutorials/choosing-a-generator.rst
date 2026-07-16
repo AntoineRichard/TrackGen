@@ -1,7 +1,7 @@
-Choosing a First-Stage Generator
+Choosing a Centerline Generator
 ==================================
 
-``track_gen`` ships six registered first-stage centerline generators. The
+``track_gen`` ships six registered centerline generators. The
 generator is selected by passing ``generator=...`` to ``TrackGenConfig`` (or
 ``GateGenConfig``):
 

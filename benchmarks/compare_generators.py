@@ -1,4 +1,4 @@
-"""Compare first-stage generators on quality / diversity / speed (dev tool — NOT runtime).
+"""Compare centerline generators on quality / diversity / speed (dev tool — NOT runtime).
 
 Runs each registered generator over a fixed seed suite through the full pipeline, reads the
 pre-relax centerline (scratch.cs_center) and post-relax Track in ONE pass, and computes

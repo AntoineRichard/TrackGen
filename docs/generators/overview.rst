@@ -1,7 +1,7 @@
 Generators Overview
 ===================
 
-``track_gen`` ships six registered first-stage centerline generators.
+``track_gen`` ships six registered centerline generators.
 Each generator is pluggable through ``TrackGenConfig.generator`` and follows the same
 pipeline contract: it writes one closed centerline per environment, then the shared
 resample → XPBD relax → inflate → validity stages take over — except ``repulsive``, which
@@ -151,13 +151,13 @@ registration instructions are documented in :doc:`/contributing/writing-a-genera
 Benchmarks
 ----------
 
-The generation cost of each first-stage generator is summarized below; a companion
+The generation cost of each centerline generator is summarized below; a companion
 shape/geometry-metrics comparison table will follow later (the full quality/diversity
 metric suite already lives in :doc:`benchmarks`).  All rows were measured on an
 **NVIDIA RTX 5000 Ada** at ``num_envs = 4096`` with the library-default
 ``TrackGenConfig`` (``half_width = 0.1``, ``num_points = 256``, ``relax_iters = 50``),
-timing the full ``TrackGenerator.generate()`` call — first-stage generation plus the
-shared resample → XPBD relax → inflate stages — since only the first-stage generator
+timing the full ``TrackGenerator.generate()`` call — centerline generation plus the
+shared resample → XPBD relax → inflate stages — since only the centerline generator
 differs across rows.  *warmed ms/call* is the steady-state mean over 10 replays after a
 warmup call; for the five capturable generators this is a CUDA-graph replay.  *first
 call (s)* is that warmup call, which pays CUDA-graph capture plus cached Warp module

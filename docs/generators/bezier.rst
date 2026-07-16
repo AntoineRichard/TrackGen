@@ -1,7 +1,7 @@
 Bezier Generator
 ================
 
-The ``bezier`` generator is the default and most configurable first-stage method.
+The ``bezier`` generator is the default and most configurable of the centerline generators.
 It samples a set of random grid-jittered corner anchors, sorts them by angle around
 their centroid to form a simple star-shaped polygon, and assembles a closed cubic
 Bézier spline through those corners.  Handle lengths are proportional to

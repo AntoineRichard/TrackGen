@@ -45,7 +45,7 @@ GATE_GENERATORS = [
 
 # Illustrative gate geometry for the asset: a non-zero opening so the gate bars are
 # visible, and a radius large enough that raw anchors overlap before the collision solve
-# (so the phase-2 separation is unmistakable in the before/after).
+# (so the gate self-collision separation is unmistakable in the before/after).
 GATE_ASSET_GATE_WIDTH = 0.16
 GATE_ASSET_GATE_RADIUS = 0.13
 GATE_ASSET_SOLVE_ITERS = 16
@@ -148,20 +148,20 @@ def _draw_gate_asset(ax, position, tangent, left, right, count, e: int, *, draw_
     _style_axis(ax)
 
 
-def _choose_phase1_examples(
-    phase1: np.ndarray,
-    phase1_valid: np.ndarray,
+def _choose_centerline_examples(
+    centerline: np.ndarray,
+    centerline_valid: np.ndarray,
     final_valid: np.ndarray,
     needed: int,
 ) -> list[int]:
     chosen: list[int] = []
-    for e in range(phase1.shape[0]):
-        if phase1_valid[e] and final_valid[e] and np.isfinite(phase1[e]).all():
+    for e in range(centerline.shape[0]):
+        if centerline_valid[e] and final_valid[e] and np.isfinite(centerline[e]).all():
             chosen.append(e)
         if len(chosen) >= needed:
             return chosen
-    for e in range(phase1.shape[0]):
-        if e not in chosen and phase1_valid[e] and np.isfinite(phase1[e]).all():
+    for e in range(centerline.shape[0]):
+        if e not in chosen and centerline_valid[e] and np.isfinite(centerline[e]).all():
             chosen.append(e)
         if len(chosen) >= needed:
             return chosen
@@ -175,11 +175,11 @@ def _generate(name: str, seed: int, needed: int = 5, overrides: dict | None = No
     generator = TrackGenerator(cfg, rng)
     track = generator.generate()
     scratch = generator._scratch
-    phase1 = wp.to_torch(scratch.gen_centerline).cpu().numpy().reshape(batch, cfg.num_points, 2)
-    phase1_valid = wp.to_torch(scratch.gen_valid).cpu().numpy().astype(bool)
+    centerline = wp.to_torch(scratch.gen_centerline).cpu().numpy().reshape(batch, cfg.num_points, 2)
+    centerline_valid = wp.to_torch(scratch.gen_valid).cpu().numpy().astype(bool)
     final_valid = wp.to_torch(track.valid).cpu().numpy().astype(bool)
-    chosen = _choose_phase1_examples(phase1, phase1_valid, final_valid, needed)
-    return phase1, phase1_valid, chosen
+    chosen = _choose_centerline_examples(centerline, centerline_valid, final_valid, needed)
+    return centerline, centerline_valid, chosen
 
 
 def _generate_pipeline_sample(name: str = "bezier", seed: int = 100):
@@ -239,8 +239,8 @@ def _style_axis(ax) -> None:
         spine.set_visible(False)
 
 
-def _draw_phase1_output(ax, phase1: np.ndarray, valid: np.ndarray, e: int, *, lw: float) -> None:
-    pts = _finite_rows(phase1[e])
+def _draw_centerline_output(ax, centerline: np.ndarray, valid: np.ndarray, e: int, *, lw: float) -> None:
+    pts = _finite_rows(centerline[e])
     if len(pts) >= 3:
         closed = np.vstack([pts, pts[0]])
         ax.plot(closed[:, 0], closed[:, 1], color="#2563eb", lw=lw, zorder=2)
@@ -327,10 +327,10 @@ def render_readme_assets(output_dir: Path = OUT_DIR) -> list[Path]:
         len(GENERATORS), 5, figsize=(10.8, 8.6), dpi=170, facecolor="white"
     )
     for row, (name, label) in enumerate(GENERATORS):
-        phase1, valid, chosen = samples[name]
+        centerline, valid, chosen = samples[name]
         for col, env_id in enumerate(chosen):
             ax = axes[row, col]
-            _draw_phase1_output(ax, phase1, valid, env_id, lw=1.15)
+            _draw_centerline_output(ax, centerline, valid, env_id, lw=1.15)
             if col == 0:
                 ax.set_ylabel(
                     label,
@@ -343,7 +343,7 @@ def render_readme_assets(output_dir: Path = OUT_DIR) -> list[Path]:
                     color="#111827",
                 )
     fig.suptitle(
-        "TrackGen standard phase-1 generator outputs",
+        "TrackGen centerline generator outputs",
         fontsize=16,
         fontweight="bold",
         y=0.985,
@@ -356,12 +356,12 @@ def render_readme_assets(output_dir: Path = OUT_DIR) -> list[Path]:
 
     raw, cs, relaxed, final_center, outer, inner, valid, relax_half_width = _generate_pipeline_sample()
     fig, axes = plt.subplots(1, 4, figsize=(12.2, 3.0), dpi=180, facecolor="white")
-    _draw_centerline_stage(axes[0], raw, color="#2563eb", title="Phase 1", dots=False)
+    _draw_centerline_stage(axes[0], raw, color="#2563eb", title="Raw Centerline", dots=False)
     _draw_centerline_stage(axes[1], cs, color="#0f766e", title="Constant Spacing", dots=True)
     _draw_relaxed_stage(axes[2], relaxed, relax_half_width=relax_half_width)
     _draw_final_stage(axes[3], final_center, outer, inner, valid=valid)
     fig.suptitle(
-        "Phase-1 centerline to final road band",
+        "Generated centerline to final road band",
         fontsize=15,
         fontweight="bold",
         y=1.02,
@@ -374,8 +374,8 @@ def render_readme_assets(output_dir: Path = OUT_DIR) -> list[Path]:
 
     fig, axes = plt.subplots(1, len(GENERATORS), figsize=(12.0, 2.75), dpi=180, facecolor="white")
     for ax, (name, label) in zip(axes, GENERATORS):
-        phase1, valid, chosen = samples[name]
-        _draw_phase1_output(ax, phase1, valid, chosen[0], lw=1.65)
+        centerline, valid, chosen = samples[name]
+        _draw_centerline_output(ax, centerline, valid, chosen[0], lw=1.65)
         ax.set_title(label, fontsize=12, fontweight="bold", color="#111827", pad=8)
     fig.tight_layout(w_pad=0.45)
     strip_path = output_dir / "readme-generator-strip.png"
@@ -405,14 +405,14 @@ def render_generator_panels(output_dir: Path = OUT_DIR,
     wp.init()
     written: list[Path] = []
     for idx, (name, label) in enumerate(GENERATORS):
-        phase1, valid, chosen = _generate(name, seed=100 + 17 * idx, needed=5,
+        centerline, valid, chosen = _generate(name, seed=100 + 17 * idx, needed=5,
                                           overrides=overrides.get(name))
         ncol = max(1, len(chosen))
         fig, axes = plt.subplots(1, ncol, figsize=(2.3 * ncol, 2.6), dpi=170, facecolor="white")
         axes = axes if ncol > 1 else [axes]
         for ax, env_id in zip(axes, chosen):
-            _draw_phase1_output(ax, phase1, valid, env_id, lw=1.5)
-        fig.suptitle(f"{label} — representative phase-1 outputs", fontsize=13,
+            _draw_centerline_output(ax, centerline, valid, env_id, lw=1.5)
+        fig.suptitle(f"{label} — representative centerline outputs", fontsize=13,
                      fontweight="bold", color="#111827")
         fig.tight_layout(rect=(0, 0, 1, 0.92), w_pad=0.4)
         path = output_dir / f"generator-{name}.png"
@@ -441,7 +441,7 @@ def render_gate_assets(output_dir: Path = OUT_DIR) -> Path:
                           va="center", labelpad=18, fontsize=9.5, fontweight="bold", color="#111827")
     axes[1, 0].set_ylabel("collision-solved", rotation=0, ha="right", va="center",
                           labelpad=18, fontsize=9.5, fontweight="bold", color="#111827")
-    fig.suptitle("Phase-2 gate collision solve: raw anchors vs separated gates",
+    fig.suptitle("Gate self-collision relaxation: raw anchors vs separated gates",
                  fontsize=15, fontweight="bold", y=1.0, color="#111827")
     fig.tight_layout(rect=(0.08, 0.0, 1.0, 0.96), h_pad=0.6, w_pad=0.3)
     path = output_dir / "readme-gate-strip.png"

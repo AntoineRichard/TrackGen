@@ -19,7 +19,7 @@ seeds[E] ─► generator ─► resample ─► XPBD relax ─► inflate ─�
             bezier/checkpoint/hull/polar/voronoi/repulsive              (runtime utilities)
 ```
 
-![Representative phase-1 outputs by generator](docs/assets/readme-generator-strip.png)
+![Representative centerline outputs by generator](docs/assets/readme-generator-strip.png)
 
 ## What's in the box
 

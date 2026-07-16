@@ -2,7 +2,7 @@ Gate relaxation — collision solve
 =================================
 
 Drone-style gate sequences (``GateGenerator``, tutorial at
-:doc:`/tutorials/gate-sequences`) run their own **phase-2 collision solve**, separate
+:doc:`/tutorials/gate-sequences`) run their own **gate self-collision relaxation**, separate
 from the XPBD track relaxation documented on the other pages in this section. It is a
 small per-env pairwise separation that pushes overlapping gates apart before tangents
 and frames are computed. This page covers why it exists, the sphere model and its
@@ -13,7 +13,7 @@ Why gates need it
 -----------------
 
 The gate path does **not** run resample, XPBD relaxation, or inflation — it emits the
-first-stage corner anchors directly as gate centres. Raw anchors routinely land close
+centerline-generator corner anchors directly as gate centres. Raw anchors routinely land close
 together or exactly coincident (two sampled anchors in the same grid cell, a
 tight-corner cluster). Without separation the resulting sequence has gates overlapping
 in the plane: unusable as a drone course, and — with a positive ``gate_width`` — prone
@@ -25,7 +25,7 @@ course.
    :alt: Raw gate anchors versus separated gates after the collision solve
    :align: center
 
-   The phase-2 gate collision solve: raw anchors (top, ``gate_solve_iters=0``) versus
+   Gate self-collision relaxation: raw anchors (top, ``gate_solve_iters=0``) versus
    the separated gates (bottom), with gate tangents and ``gate_width`` bars.
 
 The sphere model and target distance

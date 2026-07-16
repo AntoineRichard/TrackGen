@@ -8,7 +8,7 @@ constant-spacing resample and the constant-width inflation:
 
    generate → constant-spacing resample → RELAXATION → inflate
 
-A raw constant-spacing centerline is not yet inflatable. The first-stage generators
+A raw constant-spacing centerline is not yet inflatable. The centerline generators
 produce closed loops that self-approach (two distant arcs of the loop passing close in
 the plane) and that contain under-radius corners tighter than the road half-width. If
 such a centerline were inflated directly into a constant-width band, the band would

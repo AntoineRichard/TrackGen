@@ -181,7 +181,7 @@ def build_config(p: dict) -> TrackGenConfig:
         kw["min_point_distance"] = float(p["min_point_distance"])
     if p.get("hull_displacement") is not None:
         kw["hull_displacement"] = float(p["hull_displacement"])
-    # Phase-1 generator selector (registered name); absent -> config default ("bezier").
+    # Centerline generator selector (registered name); absent -> config default ("bezier").
     if p.get("generator") is not None:
         kw["generator"] = str(p["generator"])
     if p.get("polar_num_knots") is not None:
@@ -758,7 +758,7 @@ def build_app():
             with gr.Tab("Tracks"):
                 with gr.Row():
                     with gr.Column(scale=1):
-                        gr.Markdown("### Phase-1 generator")
+                        gr.Markdown("### Centerline generator")
                         available_generators = generator_registry.available()
                         generator_default = defaults["generator"] if defaults["generator"] in available_generators else "bezier"
                         generator = gr.Dropdown(available_generators, value=generator_default,

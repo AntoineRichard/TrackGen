@@ -17,7 +17,7 @@ Controls
 
 Controls are grouped:
 
-- **Phase-1 generator** — method selector.
+- **Centerline generator** — method selector.
 - **Regime** — width / box.
 - **Shape** — corner count / ``rad`` / ``edgy`` / ``handle_clamp_frac``.
 - **Polar knot spline**.

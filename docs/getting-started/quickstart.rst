@@ -39,7 +39,7 @@ Gate sequence generation
 ------------------------
 
 For drone-style courses where track width is irrelevant, use ``GateGenerator``.
-It emits gate centres and orientations directly from native first-stage generator anchors
+It emits gate centres and orientations directly from native centerline-generator anchors
 and skips constant-spacing, XPBD relaxation, and inflation.
 
 .. code-block:: python

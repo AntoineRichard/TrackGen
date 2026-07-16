@@ -15,7 +15,7 @@ Three effects compound to make the plain solve slow:
    diffusively. A deep initial penetration between two arcs needs a *long-range* shape
    change (whole arcs must migrate apart), and plain Jacobi delivers that change at
    diffusion speed.
-2. **Deep initial penetrations.** Raw first-stage centerlines can start far inside the
+2. **Deep initial penetrations.** Raw generated centerlines can start far inside the
    separation target, so the total displacement to resolve is many multiples of the
    per-sweep correction.
 3. **The hairpin force balance.** Near tight hairpins, separation (pushing beads apart),

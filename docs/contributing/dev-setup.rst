@@ -93,7 +93,7 @@ Pytest markers
 Additional development commands
 ---------------------------------
 
-Compare every registered first-stage generator on quality, diversity, and
+Compare every registered centerline generator on quality, diversity, and
 speed:
 
 .. code-block:: bash
