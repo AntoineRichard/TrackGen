@@ -178,6 +178,114 @@ every ``generate()`` call. For an independent snapshot use ``gates.clone()``:
 
    snapshot = gates.clone()   # independent copy; safe to keep across generate()
 
+Flying Through the Gates: Progress and Post Collision for RL
+------------------------------------------------------------
+
+Generation gives you the gate geometry; an RL or controller loop also needs to
+know, each step, *did the drone just clear the next gate?* and *did it clip a
+gate post?* The :doc:`Course facade </utilities/course>` bundles gate generation
+with the checkpoint/progress tracker and an optional gate-post collision checker
+in one object, so you never wire those together by hand. Its lifecycle is
+**construct → bind → generate → step / reset** — identical to track mode, only
+the config and the contact type differ.
+
+In ``mode="gates"`` the gates themselves become the checkpoints
+(``CheckpointSet.from_gates`` → ``ProgressTracker``), so there is no
+``checkpoint_spacing`` — passing it is rejected, as is the track-mode
+``collision=`` option. Gate-post collision is opt-in via ``post_radius > 0``: a
+``DiscChecker`` over the gate-bar endpoints (``left``/``right``), with the posts
+array rebuilt device-side on every regeneration. It requires ``gate_width > 0``
+(a width-0 gate has no bar and no posts to hit).
+
+Build a ``Course`` in gates mode, ``bind`` the sim's own state buffers (they are
+read in place every step), ``generate`` the batch, then in the step loop read
+the progress ``events`` for gate rewards and ``contacts`` (a ``DiscContact``
+here) for a post-collision penalty:
+
+.. code-block:: python
+
+   import numpy as np
+   import warp as wp
+   wp.init()
+
+   from track_gen import GateGenConfig
+   from track_gen.course import Course, CourseConfig
+
+   E, device = 4, "cpu"
+
+   course = Course(CourseConfig(
+       mode="gates",
+       gen=GateGenConfig(num_envs=E, gate_width=0.4, gate_radius=0.025,
+                         max_gates=32, device=device),
+       seeds=7,
+       post_radius=0.03,          # > 0 enables DiscChecker gate-post collision;
+                                  # 0 (default) = progress-only. No collision= /
+                                  # checkpoint_spacing here — those are track-mode.
+   ))
+
+   # Bind the sim's own buffers: position drives gate progress; yaw + half_extents
+   # are the oriented box tested against the posts. The sim writes these in place
+   # each step. (With post_radius == 0, bind position alone.)
+   position     = wp.zeros(E, dtype=wp.vec2f, device=device)
+   yaw          = wp.zeros(E, dtype=wp.float32, device=device)
+   half_extents = wp.array(np.full((E, 2), 0.01, np.float32),
+                           dtype=wp.vec2f, device=device)
+   course.bind(position=position, yaw=yaw, half_extents=half_extents)
+
+   seq = course.generate()        # whole batch + posts rebuild + progress reset
+
+   for step in range(40):
+       # sim.step() writes `position` (and `yaw`) in place here.
+
+       res    = course.step()                     # events + contacts, no args
+       passed = res.events.passed.numpy()         # [E] int32: cleared a gate this step
+       dist   = res.events.dist_to_next.numpy()   # [E] float32: distance to next gate
+       hit    = res.contacts.hit.numpy()          # [E] int32: 1 == box touched a post
+       disc   = res.contacts.disc.numpy()         # [E] int32: deepest post, -1 == none
+
+       reward = 10.0 * passed - 5.0 * hit         # gate bonus, post penalty (shaping)
+
+   # Per-env respawn on the SAME course: clear progress only where mask[e] == 1.
+   done = np.zeros(E, np.int32)
+   done[0] = 1
+   course.reset(wp.array(done, dtype=wp.int32, device=device))
+
+   # New courses for everyone: whole-batch regenerate + full progress reset.
+   # The posts are rebuilt device-side onto the new gates automatically.
+   course.generate(seeds=123)
+
+``res.events`` gives the progress signals — ``passed`` for a gate-clear bonus,
+``dist_to_next`` for a negative-delta-distance shaping term, and ``progress``
+for the total gates cleared since the last reset (``next_checkpoint`` is the
+current target gate). ``res.contacts`` is a
+:class:`~track_gen.collision.DiscContact` (not the ``BoxContact`` of track mode):
+``hit`` is the reward/termination signal, ``disc`` the deepest-penetrating post
+(``gate = disc // 2`` since posts interleave ``left``/``right``), and ``depth`` /
+``nearest`` drive a contact response. With ``post_radius == 0`` the course is
+progress-only and ``res.contacts is None``.
+
+Post collision backend
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+Gates mode has no out-of-bounds band — there is nothing to leave — so the only
+collision is the optional gate posts. ``post_radius > 0`` builds a
+``DiscChecker`` over the interleaved ``left``/``right`` bar endpoints; NaN
+padding past each env's real gate count carries over and NaN posts are skipped,
+so no per-env count bookkeeping is needed. See
+:doc:`/utilities/collision` for the disc-obstacle checker (the same one makes
+cones physical) and :doc:`/utilities/progress` for the checkpoint/reward
+contract that gates reuse.
+
+CUDA-graph composability
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``step()`` and ``reset()`` are warp-native and capture-ready: flip the single
+shared capture flag with ``track_gen.set_capturing(True)`` and the whole step —
+gate progress update plus post-collision query — records into your own sim graph
+alongside the physics. Keep writing into the SAME bound buffers after capture
+(rebinding leaves the captured graph reading the old pointers). See
+:doc:`/tutorials/cuda-graph-in-a-sim` for the capture-and-replay pattern.
+
 Full Example
 ------------
 

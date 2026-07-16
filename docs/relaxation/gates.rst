@@ -170,6 +170,8 @@ See also
 --------
 
 - :doc:`/tutorials/gate-sequences` — the end-to-end gate-generation recipe and output
-  fields.
+  fields, including the runtime section that drives gates for RL.
+- :doc:`/utilities/course` — the runtime side: ``Course`` in gates mode turns these
+  separated gates into checkpoints and optional gate-post collision.
 - :doc:`overview`, :doc:`solver` — the XPBD **track** relaxation stage this solve is
   deliberately contrasted with.

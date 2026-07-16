@@ -121,7 +121,8 @@ Explore the docs
       :link-type: doc
 
       End-to-end recipes for tracks, gates, CUDA-graph sim loops, and driving
-      an RL agent against the built-in collision engine.
+      RL agents against the built-in collision engines — track out-of-bounds
+      and gate posts.
 
    .. grid-item-card:: Generators
       :link: generators/overview
