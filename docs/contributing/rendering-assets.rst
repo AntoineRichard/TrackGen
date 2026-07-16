@@ -49,6 +49,26 @@ The figures it produces are:
      - Per-generator panel showing five representative raw phase-1 outputs.
        One file per standard generator (``bezier``, ``checkpoint``, ``hull``,
        ``polar``, ``voronoi``, ``repulsive``).
+   * - ``docs/assets/relaxation-before-after.png``
+     - Same seeds, top row raw constant-spacing centerlines
+       (``relax_enable=False``, centerline-only), bottom row the relaxed and
+       inflated constant-width band, in the metric benchmark regime.
+   * - ``docs/assets/relaxation-same-seeds.png``
+     - Identical seeds through the old relax solver (plain Jacobi, 150 sweeps)
+       and the new default solver (Chebyshev, 50 sweeps) — the visual
+       same-fixed-point comparison.
+   * - ``docs/assets/relaxation-smoothing.png``
+     - The four noisiest valid tracks generated twice with identical seeds —
+       without the post-solve smoothing tail (top row) and with the defaults
+       (bottom row) — plus a zoom on the worst rippled border segment. Each
+       panel is titled with its curvature-noise metric (dkappa RMS). CPU,
+       deterministic.
+   * - ``docs/assets/relaxation-convergence.png``
+     - **Measured** valid-track yield vs ``relax_iters`` for the old and new
+       relax solvers (library defaults, E=2048). This one figure is a real
+       **CUDA** measurement: on a GPU-free machine
+       ``render_relaxation_convergence()`` prints a note and is skipped, so
+       the committed asset must come from a GPU run.
 
 .. warning::
 
@@ -63,10 +83,45 @@ Implementation notes
 
 The function lives in ``viz/render_readme_assets.py``.  It calls
 ``TrackGenerator`` on the ``cpu`` device with a small batch (24 environments)
-and fixed seeds, so results are deterministic and GPU-free.  Individual helper
-functions — ``render_generator_panels()`` and ``render_gate_assets()`` — can be
-called independently if only a subset of assets needs to be rebuilt; both are
-defined in the same module.
+and fixed seeds, so results are deterministic and GPU-free — with one
+exception: ``relaxation-convergence.png`` is a real yield measurement and
+requires CUDA (it is skipped, with a printed note, when no GPU is available).
+Individual helper functions — ``render_generator_panels()``,
+``render_gate_assets()``, and ``render_relaxation_assets()`` — can be called
+independently if only a subset of assets needs to be rebuilt; all are defined
+in the same module.
+
+Relaxation iteration-evolution video
+------------------------------------
+
+The relaxation convergence page embeds a short video, rendered by a **separate**
+standalone script (it is *not* part of ``render_readme_assets()`` because it
+requires ``ffmpeg``):
+
+.. code-block:: bash
+
+   .venv/bin/python -m viz.render_relaxation_video
+
+It writes two files under ``docs/_static/`` (which Sphinx copies verbatim into the
+build, unlike ``docs/assets/`` which is not reachable from raw-HTML ``<video>`` tags):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 40 60
+
+   * - File
+     - Contents
+   * - ``docs/_static/relaxation-iterations.mp4``
+     - Four deeply self-overlapping tracks evolving from the raw centerline through
+       the pure iterative XPBD solve (sweeps 0–50, tail off) and then the smoothing
+       tail (passes 0–5), on fixed per-track axes. libx264, ``-crf 23``, ~9 s.
+   * - ``docs/_static/relaxation-iterations-poster.png``
+     - The final converged frame, used as the ``<video>`` poster.
+
+Each frame is regenerated with ``relax_iters=k`` and is a true snapshot of the same
+deterministic trajectory; the script asserts the raw (k=0) centerlines are
+bit-identical across two generations and aborts otherwise. Requires a CUDA device or
+CPU (either works) plus ``ffmpeg`` on ``PATH``.
 
 Utilities overview figure
 -------------------------

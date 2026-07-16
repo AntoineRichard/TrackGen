@@ -128,6 +128,12 @@ Explore the docs
 
       How each first-stage generator works and when to use it.
 
+   .. grid-item-card:: Relaxation
+      :link: relaxation/overview
+      :link-type: doc
+
+      The XPBD stage that turns raw centerlines into inflatable, valid tracks.
+
    .. grid-item-card:: Runtime utilities
       :link: utilities/overview
       :link-type: doc
@@ -138,7 +144,7 @@ Explore the docs
       :link: how-it-works/pipeline
       :link-type: doc
 
-      The pipeline, XPBD relaxation, inflation, and CUDA-graph capture.
+      The pipeline data flow, resample, inflation, and CUDA-graph capture.
 
    .. grid-item-card:: Configuration & tuning
       :link: configuration/tuning
@@ -187,6 +193,16 @@ Explore the docs
 
 .. toctree::
    :maxdepth: 1
+   :caption: Relaxation
+   :hidden:
+
+   relaxation/overview
+   relaxation/constraints
+   relaxation/solver
+   relaxation/convergence
+
+.. toctree::
+   :maxdepth: 1
    :caption: Runtime utilities
    :hidden:
 
@@ -204,7 +220,6 @@ Explore the docs
 
    how-it-works/pipeline
    how-it-works/resample
-   how-it-works/relaxation
    how-it-works/inflation
    how-it-works/cuda-graph
    how-it-works/conventions

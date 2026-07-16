@@ -35,7 +35,8 @@ Data flow
      │  RESAMPLE   resample_constant_spacing → per-track count[e] = ⌊perimeter/spacing⌋+1, capped at N_max
      ▼
    spaced[E, N_max, 2]              (NaN-padded past each track's count[e])
-     │  RELAX      (XPBD: separation + spacing + bending, fixed iters, double-buffered, count-aware)
+     │  RELAX      (XPBD: separation + spacing + bending, fixed iters, double-buffered,
+     │              count-aware, Chebyshev-accelerated)
      ▼
    relaxed[E, N_max, 2]
      │  INFLATE    resample_uniform (re-uniformize) ─► frame+curvature ─► constant-width offset
@@ -46,6 +47,9 @@ Data flow
 .. figure:: ../assets/readme-pipeline-stages.png
 
    The four pipeline stages: generation, resample, relax, and inflate.
+
+The RELAX stage — the XPBD constraint solve that makes the centerline inflatable —
+has its own section: see :doc:`/relaxation/overview`.
 
 Registered first-stage generators
 ----------------------------------
