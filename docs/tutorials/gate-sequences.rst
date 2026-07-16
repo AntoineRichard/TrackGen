@@ -156,6 +156,12 @@ box when necessary to satisfy the requested ``gate_radius``. A positive
 ``gate_width`` causes any sequence whose gate bars still cross after the solve to
 be marked invalid.
 
+.. seealso::
+
+   :doc:`/relaxation/gates` documents the gate collision solve in depth — the sphere
+   model and ``2 * gate_radius`` target, the per-env Gauss-Seidel semantics, the
+   determinism of the coincident-gate tie-break, and its behaviour under graph capture.
+
 .. note::
 
    ``max_gates`` must be at least the chosen generator's reachable gate count.

@@ -45,6 +45,10 @@ The figures it produces are:
        is not a registered gate generator, so it is not in this strip): raw
        anchors (top row) and separated gates with tangent frames and gate-width
        bars (bottom row).
+   * - ``docs/assets/batch-of-tracks.png``
+     - The eight roundest valid, inflated track bands from one deterministic CPU
+       batch at the track tutorial's default geometry (``half_width=0.03``),
+       shown as filled constant-width road bands. CPU, deterministic.
    * - ``docs/assets/generator-<name>.png`` (six files)
      - Per-generator panel showing five representative raw phase-1 outputs.
        One file per standard generator (``bezier``, ``checkpoint``, ``hull``,

@@ -384,12 +384,14 @@ def render_readme_assets(output_dir: Path = OUT_DIR) -> list[Path]:
 
     gate_strip_path = render_gate_assets(output_dir)
 
+    batch_path = render_batch_of_tracks(output_dir)
+
     panel_paths = render_generator_panels(output_dir)
 
     relaxation_paths = render_relaxation_assets(output_dir)
 
-    return [grid_path, pipeline_path, strip_path, gate_strip_path, *panel_paths,
-            *relaxation_paths]
+    return [grid_path, pipeline_path, strip_path, gate_strip_path, batch_path,
+            *panel_paths, *relaxation_paths]
 
 
 def render_generator_panels(output_dir: Path = OUT_DIR,
@@ -443,6 +445,60 @@ def render_gate_assets(output_dir: Path = OUT_DIR) -> Path:
                  fontsize=15, fontweight="bold", y=1.0, color="#111827")
     fig.tight_layout(rect=(0.08, 0.0, 1.0, 0.96), h_pad=0.6, w_pad=0.3)
     path = output_dir / "readme-gate-strip.png"
+    fig.savefig(path, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return path
+
+
+def render_batch_of_tracks(output_dir: Path = OUT_DIR) -> Path:
+    """Grid of finished, inflated track bands from ONE deterministic CPU batch — the end
+    product of ``TrackGenerator.generate()`` at the track tutorial's default geometry
+    (``half_width=0.03``). The first eight valid, finite tracks in seed order are shown as
+    filled constant-width road bands (dark fill, outer/inner borders, dashed centerline),
+    the same band styling as the ``Inflated Track`` panel of the pipeline figure."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    wp.init()
+    batch, seed, n_show = 64, 100, 8
+    cfg = TrackGenConfig(num_envs=batch, device="cpu", half_width=0.03)
+    rng = PerEnvSeededRNG(seeds=seed, num_envs=batch, device="cpu")
+    track = TrackGenerator(cfg, rng).generate()
+    valid = wp.to_torch(track.valid).cpu().numpy().astype(bool)
+    count = wp.to_torch(track.count).cpu().numpy().astype(int)
+    center = wp.to_torch(track.center).cpu().numpy().reshape(batch, cfg.N_max, 2)
+    outer = wp.to_torch(track.outer).cpu().numpy().reshape(batch, cfg.N_max, 2)
+    inner = wp.to_torch(track.inner).cpu().numpy().reshape(batch, cfg.N_max, 2)
+
+    # Rank valid tracks by roundness (isoperimetric ratio 4*pi*A / P^2, in [0, 1];
+    # higher == rounder, more open) and show the eight cleanest — deterministic.
+    scored: list[tuple[float, int]] = []
+    for e in range(batch):
+        c = int(count[e])
+        if not valid[e] or c < 4 or not np.isfinite(center[e, :c]).all():
+            continue
+        pts = center[e, :c]
+        x, y = pts[:, 0], pts[:, 1]
+        area = 0.5 * abs(float(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1))))
+        perim = float(np.linalg.norm(np.roll(pts, -1, axis=0) - pts, axis=1).sum())
+        if perim <= 0.0:
+            continue
+        scored.append((4.0 * np.pi * area / (perim * perim), e))
+    scored.sort(reverse=True)
+    chosen = [e for _, e in scored[:n_show]]
+
+    ncol, nrow = 4, 2
+    fig, axes = plt.subplots(nrow, ncol, figsize=(2.2 * ncol, 2.2 * nrow), dpi=170,
+                             facecolor="white")
+    flat = axes.ravel()
+    for ax, e in zip(flat, chosen):
+        c = int(count[e])
+        _draw_final_stage(ax, center[e, :c], outer[e, :c], inner[e, :c], valid=True)
+        ax.set_title("")  # drop the per-panel "Inflated Track" label; the suptitle covers it
+    for ax in flat[len(chosen):]:
+        ax.axis("off")
+    fig.suptitle("A generated batch: finished constant-width track bands",
+                 fontsize=14, fontweight="bold", y=1.0, color="#111827")
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.95), w_pad=0.25, h_pad=0.4)
+    path = output_dir / "batch-of-tracks.png"
     fig.savefig(path, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     return path

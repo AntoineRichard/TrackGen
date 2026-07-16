@@ -1,5 +1,5 @@
-Relaxation — the solver
-=======================
+Track relaxation — the solver
+=============================
 
 This page covers how the fixed-iteration solve executes: the Jacobi double-buffering
 that keeps it graph-capturable, the two separation execution modes, and the Chebyshev

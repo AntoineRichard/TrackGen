@@ -147,3 +147,71 @@ into a replayable graph.  Generators set ``out_valid_wp`` to ``1`` for every env
 this stage; final geometric validity (turning number, thickness, NaN checks) is decided
 later by the shared post-relax inflation validity gate.  The full contract, hard rules, and
 registration instructions are documented in :doc:`/contributing/writing-a-generator`.
+
+Benchmarks
+----------
+
+The generation cost of each first-stage generator is summarized below; a companion
+shape/geometry-metrics comparison table will follow later (the full quality/diversity
+metric suite already lives in :doc:`benchmarks`).  All rows were measured on an
+**NVIDIA RTX 5000 Ada** at ``num_envs = 4096`` with the library-default
+``TrackGenConfig`` (``half_width = 0.1``, ``num_points = 256``, ``relax_iters = 50``),
+timing the full ``TrackGenerator.generate()`` call — first-stage generation plus the
+shared resample → XPBD relax → inflate stages — since only the first-stage generator
+differs across rows.  *warmed ms/call* is the steady-state mean over 10 replays after a
+warmup call; for the five capturable generators this is a CUDA-graph replay.  *first
+call (s)* is that warmup call, which pays CUDA-graph capture plus cached Warp module
+load.  Each row was measured twice and agreed within ~10%.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 18 20 18 12
+
+   * - Generator
+     - warmed ms/call
+     - first call (s)
+     - yield
+   * - ``bezier``
+     - 10.1
+     - 0.05
+     - 0.998
+   * - ``hull``
+     - 11.1
+     - 0.05
+     - 0.992
+   * - ``polar``
+     - 7.7
+     - 0.04
+     - 1.000
+   * - ``voronoi``
+     - 13.9
+     - 0.06
+     - 1.000
+   * - ``checkpoint``
+     - 13.7
+     - 0.06
+     - 0.995
+   * - ``repulsive`` [#eager]_
+     - ~1880
+     - ~1.9
+     - 0.997
+
+.. [#eager] ``repulsive`` is ``capturable=False``: it runs **eagerly on CUDA every
+   call** with no CUDA-graph replay, so its *warmed* per-call cost equals its
+   first-call cost (~1.9 s at E=4096) and is **not comparable** to the graph-replayed
+   rows — roughly 150–250× the ms/call of the capturable generators here.  See
+   :doc:`repulsive` for the cost discussion and the recommended slow-cadence /
+   staggered-slice usage.
+
+The *first call (s)* figures above are taken with Warp's on-disk kernel cache warm
+(capture plus cached module load only); the very first run after a fresh install or a
+kernel-source change additionally pays a one-time ~4 s Warp JIT compilation that is
+shared across all generators.
+
+To reproduce per-generator timing at this scale, use
+``benchmarks/compare_generators.py`` (its ``gen_ms_per_call`` column is the warmed
+steady-state generation time):
+
+.. code-block:: bash
+
+   .venv/bin/python -m benchmarks.compare_generators --cuda --E 4096

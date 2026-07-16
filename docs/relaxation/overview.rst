@@ -1,5 +1,5 @@
-Relaxation — overview
-=====================
+Track relaxation — overview
+===========================
 
 Relaxation is the **second stage** of the runtime pipeline. It sits between the
 constant-spacing resample and the constant-width inflation:

@@ -120,7 +120,8 @@ Explore the docs
       :link: tutorials/batch-of-tracks
       :link-type: doc
 
-      End-to-end recipes for tracks, gates, and CUDA-graph sim loops.
+      End-to-end recipes for tracks, gates, CUDA-graph sim loops, and driving
+      an RL agent against the built-in collision engine.
 
    .. grid-item-card:: Generators
       :link: generators/overview
@@ -128,11 +129,18 @@ Explore the docs
 
       How each first-stage generator works and when to use it.
 
-   .. grid-item-card:: Relaxation
+   .. grid-item-card:: Track relaxation
       :link: relaxation/overview
       :link-type: doc
 
       The XPBD stage that turns raw centerlines into inflatable, valid tracks.
+
+   .. grid-item-card:: Gate relaxation
+      :link: relaxation/gates
+      :link-type: doc
+
+      The per-env collision solve that separates overlapping gates into usable
+      drone-course sequences.
 
    .. grid-item-card:: Runtime utilities
       :link: utilities/overview
@@ -193,13 +201,20 @@ Explore the docs
 
 .. toctree::
    :maxdepth: 1
-   :caption: Relaxation
+   :caption: Track relaxation
    :hidden:
 
    relaxation/overview
    relaxation/constraints
    relaxation/solver
    relaxation/convergence
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Gate relaxation
+   :hidden:
+
+   relaxation/gates
 
 .. toctree::
    :maxdepth: 1

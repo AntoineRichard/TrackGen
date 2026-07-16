@@ -1,5 +1,5 @@
-Relaxation — convergence and tuning
-===================================
+Track relaxation — convergence and tuning
+=========================================
 
 This page covers how the solve converges, what the Chebyshev acceleration buys (with
 measured numbers), the ``relax_sep_every`` pitfall, and tuning guidance including the

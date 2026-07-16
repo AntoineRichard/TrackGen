@@ -1,5 +1,5 @@
-Relaxation — setup and constraints
-==================================
+Track relaxation — setup and constraints
+========================================
 
 Relaxation is a PBD/XPBD-style position projection over the constant-spacing centerline
 beads. It does not allocate dense ``[E,N,N]`` tensors, does not run an optimizer, and
