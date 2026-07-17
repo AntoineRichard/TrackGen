@@ -301,8 +301,8 @@ def _to_torch_track(track):
       valid:  [E] bool
       count:  [E] int32
       length: [E] float32
-      outer:  [E, N_max, 2] float32
-      center: [E, N_max, 2] float32
+      outer:  [E, N_max, 3] float32 (z = 0)
+      center: [E, N_max, 3] float32 (z = 0)
     Handles both wp.array (new) and torch.Tensor (oracle/legacy) tracks.
     """
     import types as _types
@@ -314,14 +314,14 @@ def _to_torch_track(track):
         ns.outer = track.outer
         ns.center = track.center
         return ns
-    # wp.array: valid/count/length are [E]; center/outer are flat [E*N_max] vec2f.
+    # wp.array: valid/count/length are [E]; center/outer are flat [E*N_max] vec3f.
     ns.valid = wp.to_torch(track.valid).bool()
     ns.count = wp.to_torch(track.count)
     ns.length = wp.to_torch(track.length)
     E = ns.valid.shape[0]
     N_max = track.center.shape[0] // E
-    ns.outer = wp.to_torch(track.outer).view(E, N_max, 2)
-    ns.center = wp.to_torch(track.center).view(E, N_max, 2)
+    ns.outer = wp.to_torch(track.outer).view(E, N_max, 3)
+    ns.center = wp.to_torch(track.center).view(E, N_max, 3)
     return ns
 
 
@@ -353,7 +353,8 @@ def _stats(track) -> dict:
     from track_gen._src import warp_pipeline as _wpl
     E, n_max, _ = t.center.shape
     dev = str(t.center.device)
-    pf = wp.from_torch(t.center.reshape(E * n_max, 2).contiguous(), dtype=wp.vec2f)
+    # _thickness_k is an internal 2D kernel: feed it the xy projection.
+    pf = wp.from_torch(t.center[..., :2].reshape(E * n_max, 2).contiguous(), dtype=wp.vec2f)
     band_wp = wp.from_torch(band.contiguous(), dtype=wp.int32)
     cnt_wp = wp.from_torch(t.count.to(torch.int32).contiguous(), dtype=wp.int32)
     out_wp = wp.zeros(E, dtype=wp.float32, device=dev)
@@ -545,10 +546,10 @@ def _gate_tensors(gates):
     ns.count = wp.to_torch(gates.count)
     E = ns.valid.shape[0]
     G = gates.position.shape[0] // E
-    ns.position = wp.to_torch(gates.position).view(E, G, 2)
-    ns.tangent = wp.to_torch(gates.tangent).view(E, G, 2)
-    ns.left = wp.to_torch(gates.left).view(E, G, 2)
-    ns.right = wp.to_torch(gates.right).view(E, G, 2)
+    ns.position = wp.to_torch(gates.position).view(E, G, 3)
+    ns.tangent = wp.to_torch(gates.tangent).view(E, G, 3)
+    ns.left = wp.to_torch(gates.left).view(E, G, 3)
+    ns.right = wp.to_torch(gates.right).view(E, G, 3)
     return ns
 
 
@@ -570,10 +571,11 @@ def _nice_scale_length(span: float) -> float:
 def _draw_gate_sequence(ax, gt, cfg: GateGenConfig, e: int) -> None:
     c = int(gt.count[e].item())
     valid = bool(gt.valid[e].item())
-    pos = gt.position[e, :c].detach().cpu()
-    tangent = gt.tangent[e, :c].detach().cpu()
-    left = gt.left[e, :c].detach().cpu()
-    right = gt.right[e, :c].detach().cpu()
+    # xy projection: gate buffers are vec3f (z = 0 in the planar pipeline).
+    pos = gt.position[e, :c, :2].detach().cpu()
+    tangent = gt.tangent[e, :c, :2].detach().cpu()
+    left = gt.left[e, :c, :2].detach().cpu()
+    right = gt.right[e, :c, :2].detach().cpu()
     finite = torch.isfinite(pos).all(dim=-1)
     pos = pos[finite]
     tangent = tangent[finite]

@@ -42,7 +42,7 @@ def test_matches_oracle_on_generated_tracks():
     sampler = PropSampler(track, spacing=spacing, boundary="outer", mode="points",
                           max_props=512)
     props = sampler.sample()
-    outer = track.outer.numpy().reshape(E, n_max, 2)
+    outer = track.outer.numpy().reshape(E, n_max, 3)[..., :2]
     M = sampler._M
     checked = 0
     for e in range(E):

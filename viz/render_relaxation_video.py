@@ -97,9 +97,9 @@ def _gen(seed: int, batch: int, overrides: dict):
     rng = make_rng(batch, seed=seed, device=DEVICE)
     track = TrackGenerator(cfg, rng).generate()
     n_max = track.center.shape[0] // batch
-    center = wp.to_torch(track.center).cpu().numpy().reshape(batch, n_max, 2)
-    outer = wp.to_torch(track.outer).cpu().numpy().reshape(batch, n_max, 2)
-    inner = wp.to_torch(track.inner).cpu().numpy().reshape(batch, n_max, 2)
+    center = wp.to_torch(track.center).cpu().numpy().reshape(batch, n_max, 3)[..., :2]
+    outer = wp.to_torch(track.outer).cpu().numpy().reshape(batch, n_max, 3)[..., :2]
+    inner = wp.to_torch(track.inner).cpu().numpy().reshape(batch, n_max, 3)[..., :2]
     valid = wp.to_torch(track.valid).cpu().numpy().astype(bool)
     count = wp.to_torch(track.count).cpu().numpy().astype(int)
     return dict(center=center, outer=outer, inner=inner, valid=valid, count=count)
@@ -253,10 +253,10 @@ def _gen_gates(solve_iters: int):
     gates = GateGenerator(cfg, rng).generate()
     g = gates.position.shape[0] // GATES_BATCH
     return dict(
-        position=wp.to_torch(gates.position).cpu().numpy().reshape(GATES_BATCH, g, 2),
-        tangent=wp.to_torch(gates.tangent).cpu().numpy().reshape(GATES_BATCH, g, 2),
-        left=wp.to_torch(gates.left).cpu().numpy().reshape(GATES_BATCH, g, 2),
-        right=wp.to_torch(gates.right).cpu().numpy().reshape(GATES_BATCH, g, 2),
+        position=wp.to_torch(gates.position).cpu().numpy().reshape(GATES_BATCH, g, 3)[..., :2],
+        tangent=wp.to_torch(gates.tangent).cpu().numpy().reshape(GATES_BATCH, g, 3)[..., :2],
+        left=wp.to_torch(gates.left).cpu().numpy().reshape(GATES_BATCH, g, 3)[..., :2],
+        right=wp.to_torch(gates.right).cpu().numpy().reshape(GATES_BATCH, g, 3)[..., :2],
         valid=wp.to_torch(gates.valid).cpu().numpy().astype(bool),
         count=wp.to_torch(gates.count).cpu().numpy().astype(int),
     )

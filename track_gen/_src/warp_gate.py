@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import warp as wp
 
+from .collision_geom import _frame_quat, _safe_normalize3
 from .types import GateGenConfig, GateSequence
 
 _INITED = False
@@ -65,8 +66,34 @@ def _fill_vec2_k(arr: wp.array(dtype=wp.vec2f), value: wp.vec2f):
 
 
 @wp.kernel
+def _fill_vec3_k(arr: wp.array(dtype=wp.vec3f), value: wp.vec3f):
+    arr[wp.tid()] = value
+
+
+@wp.kernel
+def _fill_quat_k(arr: wp.array(dtype=wp.quatf), value: wp.quatf):
+    arr[wp.tid()] = value
+
+
+@wp.kernel
+def _fill_f32_k(arr: wp.array(dtype=wp.float32), value: float):
+    arr[wp.tid()] = value
+
+
+@wp.kernel
 def _fill_i32_k(arr: wp.array(dtype=wp.int32), value: int):
     arr[wp.tid()] = value
+
+
+@wp.kernel
+def _lift_positions_k(
+    pos2: wp.array(dtype=wp.vec2f),
+    z: wp.array(dtype=wp.float32),
+    position: wp.array(dtype=wp.vec3f),
+):
+    t = wp.tid()
+    p = pos2[t]
+    position[t] = wp.vec3f(p[0], p[1], z[t])
 
 
 @wp.kernel
@@ -292,8 +319,8 @@ def _relax_gate_spheres_k(
 
 @wp.kernel
 def _tangents_from_positions_k(
-    position: wp.array(dtype=wp.vec2f),
-    tangent: wp.array(dtype=wp.vec2f),
+    position: wp.array(dtype=wp.vec3f),
+    tangent: wp.array(dtype=wp.vec3f),
     max_gates: int,
     count: wp.array(dtype=wp.int32),
 ):
@@ -308,11 +335,11 @@ def _tangents_from_positions_k(
         cnt = max_gates
 
     if i >= cnt:
-        tangent[t] = wp.vec2f(wp.nan, wp.nan)
+        tangent[t] = wp.vec3f(wp.nan, wp.nan, wp.nan)
         return
 
     if cnt < 2:
-        tangent[t] = wp.vec2f(0.0, 0.0)
+        tangent[t] = wp.vec3f(0.0, 0.0, 0.0)
         return
 
     if cnt == 2:
@@ -331,49 +358,72 @@ def _tangents_from_positions_k(
 
 @wp.kernel
 def _finalize_frame_k(
-    position: wp.array(dtype=wp.vec2f),
-    tangent: wp.array(dtype=wp.vec2f),
-    normal: wp.array(dtype=wp.vec2f),
-    left: wp.array(dtype=wp.vec2f),
-    right: wp.array(dtype=wp.vec2f),
+    position: wp.array(dtype=wp.vec3f),
+    tangent: wp.array(dtype=wp.vec3f),
+    orientation: wp.array(dtype=wp.quatf),
+    half_size: wp.array(dtype=wp.float32),
+    left: wp.array(dtype=wp.vec3f),
+    right: wp.array(dtype=wp.vec3f),
     count: wp.array(dtype=wp.int32),
     max_gates: int,
     gate_width: float,
+    align_full: int,
+    fallbacks: wp.array(dtype=wp.int32),
 ):
     t = wp.tid()
     e = t // max_gates
-    i = t % max_gates
+    i = t - e * max_gates
     cnt = count[e]
     if cnt < 0:
         cnt = 0
-
     if i >= cnt or i >= max_gates:
-        nan_val = wp.vec2f(wp.nan, wp.nan)
-        position[t] = nan_val
-        tangent[t] = nan_val
-        normal[t] = nan_val
-        left[t] = nan_val
-        right[t] = nan_val
+        nan3 = wp.vec3f(wp.nan, wp.nan, wp.nan)
+        position[t] = nan3
+        tangent[t] = nan3
+        orientation[t] = wp.quatf(wp.nan, wp.nan, wp.nan, wp.nan)
+        half_size[t] = wp.nan
+        left[t] = nan3
+        right[t] = nan3
         return
-
     p = position[t]
-    tan = _safe_normalize2(tangent[t])
-    n = wp.vec2f(-tan[1], tan[0])
-    hw = 0.5 * gate_width
-    position[t] = p
+    tan = _safe_normalize3(tangent[t])
+    fwd = tan
+    if align_full == 0:
+        fwd = wp.vec3f(tan[0], tan[1], 0.0)
+    horiz2 = fwd[0] * fwd[0] + fwd[1] * fwd[1]
+    if horiz2 < 1.0e-10:
+        # Near-vertical (full_tangent on a steep segment, or degenerate
+        # tangent): fall back to the horizontal tangent direction, then +x.
+        fwd = wp.vec3f(tan[0], tan[1], 0.0)
+        if fwd[0] * fwd[0] + fwd[1] * fwd[1] < 1.0e-10:
+            fwd = wp.vec3f(1.0, 0.0, 0.0)
+        wp.atomic_add(fallbacks, e, 1)
+    fwd = _safe_normalize3(fwd)
+    q = _frame_quat(fwd)
+    hs = 0.5 * gate_width
+    la = wp.quat_rotate(q, wp.vec3f(0.0, 1.0, 0.0))
+    if align_full == 0 and tan[2] == 0.0:
+        # Planar tangent, yaw-only frame: the left axis is analytic. Using it
+        # directly (instead of the quat round-trip, which is only equal to
+        # within rounding) keeps left/right bit-identical to the legacy 2D
+        # path: left = p + hs * (-tan.y, tan.x, 0). This also reproduces the
+        # legacy degenerate-tangent result (tan == 0 -> left == right == p).
+        la = wp.vec3f(-tan[1], tan[0], 0.0)
     tangent[t] = tan
-    normal[t] = n
-    left[t] = p + hw * n
-    right[t] = p - hw * n
+    orientation[t] = q
+    half_size[t] = hs
+    left[t] = p + hs * la
+    right[t] = p - hs * la
 
 
 @wp.kernel
 def _finalize_validity_k(
-    position: wp.array(dtype=wp.vec2f),
-    tangent: wp.array(dtype=wp.vec2f),
-    normal: wp.array(dtype=wp.vec2f),
-    left: wp.array(dtype=wp.vec2f),
-    right: wp.array(dtype=wp.vec2f),
+    position: wp.array(dtype=wp.vec3f),
+    tangent: wp.array(dtype=wp.vec3f),
+    orientation: wp.array(dtype=wp.quatf),
+    half_size: wp.array(dtype=wp.float32),
+    left: wp.array(dtype=wp.vec3f),
+    right: wp.array(dtype=wp.vec3f),
     count: wp.array(dtype=wp.int32),
     max_gates: int,
     min_gates: int,
@@ -393,15 +443,18 @@ def _finalize_validity_k(
         if i < cnt:
             p = position[base + i]
             t = tangent[base + i]
-            n = normal[base + i]
+            q = orientation[base + i]
+            hs = half_size[base + i]
             li = left[base + i]
             ri = right[base + i]
             fields_finite = (
-                wp.isfinite(p[0]) and wp.isfinite(p[1]) and
-                wp.isfinite(t[0]) and wp.isfinite(t[1]) and
-                wp.isfinite(n[0]) and wp.isfinite(n[1]) and
-                wp.isfinite(li[0]) and wp.isfinite(li[1]) and
-                wp.isfinite(ri[0]) and wp.isfinite(ri[1])
+                wp.isfinite(p[0]) and wp.isfinite(p[1]) and wp.isfinite(p[2]) and
+                wp.isfinite(t[0]) and wp.isfinite(t[1]) and wp.isfinite(t[2]) and
+                wp.isfinite(q[0]) and wp.isfinite(q[1]) and
+                wp.isfinite(q[2]) and wp.isfinite(q[3]) and
+                wp.isfinite(hs) and
+                wp.isfinite(li[0]) and wp.isfinite(li[1]) and wp.isfinite(li[2]) and
+                wp.isfinite(ri[0]) and wp.isfinite(ri[1]) and wp.isfinite(ri[2])
             )
             if not fields_finite:
                 ok = int(0)
@@ -409,6 +462,9 @@ def _finalize_validity_k(
             if tangent_len2 <= 1.0e-12:
                 ok = int(0)
 
+    # CRITICAL for golden parity: pairwise min-distance stays an XY check and
+    # the crossing check runs the 2D proper-intersection test on projected
+    # endpoints — identical decisions to the legacy vec2f pipeline.
     min_d2 = center_distance * center_distance
     min_d2_slop = 1.0e-6 * wp.max(float(1.0), min_d2)
     for i in range(max_gates):
@@ -431,7 +487,9 @@ def _finalize_validity_k(
                     if j < cnt:
                         lj = left[base + j]
                         rj = right[base + j]
-                        if _proper_segment_intersection(li, ri, lj, rj) != 0:
+                        if _proper_segment_intersection(
+                                wp.vec2f(li[0], li[1]), wp.vec2f(ri[0], ri[1]),
+                                wp.vec2f(lj[0], lj[1]), wp.vec2f(rj[0], rj[1])) != 0:
                             ok = int(0)
 
     valid[e] = ok
@@ -457,20 +515,23 @@ def alloc_gate_sequence(config: GateGenConfig) -> GateSequence:
     dev = str(config.device)
     flat = E * G
     gates = GateSequence(
-        position=wp.empty(flat, dtype=wp.vec2f, device=dev),
-        tangent=wp.empty(flat, dtype=wp.vec2f, device=dev),
-        normal=wp.empty(flat, dtype=wp.vec2f, device=dev),
-        left=wp.empty(flat, dtype=wp.vec2f, device=dev),
-        right=wp.empty(flat, dtype=wp.vec2f, device=dev),
+        position=wp.empty(flat, dtype=wp.vec3f, device=dev),
+        tangent=wp.empty(flat, dtype=wp.vec3f, device=dev),
+        orientation=wp.empty(flat, dtype=wp.quatf, device=dev),
+        half_size=wp.empty(flat, dtype=wp.float32, device=dev),
+        left=wp.empty(flat, dtype=wp.vec3f, device=dev),
+        right=wp.empty(flat, dtype=wp.vec3f, device=dev),
         valid=wp.empty(E, dtype=wp.int32, device=dev),
         count=wp.empty(E, dtype=wp.int32, device=dev),
     )
-    nan_val = wp.vec2f(wp.nan, wp.nan)
-    wp.launch(_fill_vec2_k, dim=flat, inputs=[gates.position, nan_val], device=dev)
-    wp.launch(_fill_vec2_k, dim=flat, inputs=[gates.tangent, nan_val], device=dev)
-    wp.launch(_fill_vec2_k, dim=flat, inputs=[gates.normal, nan_val], device=dev)
-    wp.launch(_fill_vec2_k, dim=flat, inputs=[gates.left, nan_val], device=dev)
-    wp.launch(_fill_vec2_k, dim=flat, inputs=[gates.right, nan_val], device=dev)
+    nan3 = wp.vec3f(wp.nan, wp.nan, wp.nan)
+    nan_q = wp.quatf(wp.nan, wp.nan, wp.nan, wp.nan)
+    wp.launch(_fill_vec3_k, dim=flat, inputs=[gates.position, nan3], device=dev)
+    wp.launch(_fill_vec3_k, dim=flat, inputs=[gates.tangent, nan3], device=dev)
+    wp.launch(_fill_quat_k, dim=flat, inputs=[gates.orientation, nan_q], device=dev)
+    wp.launch(_fill_f32_k, dim=flat, inputs=[gates.half_size, wp.nan], device=dev)
+    wp.launch(_fill_vec3_k, dim=flat, inputs=[gates.left, nan3], device=dev)
+    wp.launch(_fill_vec3_k, dim=flat, inputs=[gates.right, nan3], device=dev)
     wp.launch(_fill_i32_k, dim=E, inputs=[gates.valid, 0], device=dev)
     wp.launch(_fill_i32_k, dim=E, inputs=[gates.count, 0], device=dev)
     _sync(dev)
@@ -527,15 +588,21 @@ def finish_ordered_gates(
     max_gates: int,
     ordering: str,
     keys: wp.array,
-    out: GateSequence,
+    out,
     normalize_extent: float | None = None,
 ) -> None:
-    """Order gates, optionally normalize them, recompute tangents, and copy count."""
+    """Order gates into the 2D staging buffer, optionally normalize, copy count.
+
+    ``out`` is the vec2f staging view handed to generators (``_GateStaging``):
+    ``out.position`` is the flat ``[E * max_gates]`` vec2f scratch the 2D
+    ordering/normalization kernels operate on. Tangents are no longer computed
+    here — the pipeline lifts the staged positions to the public vec3f buffers
+    and derives tangents from those (see ``_run_gate_pipeline``).
+    """
     G = int(max_gates)
     order_points(seeds_wp, src, int(src_stride), count, G, ordering, keys, out.position)
     if normalize_extent is not None:
         normalize_positions(out.position, G, count, float(normalize_extent))
-    tangents_from_positions(out.position, out.tangent, G, count)
     wp.copy(out.count, count)
 
 
@@ -601,25 +668,41 @@ def _gate_center_distance(config: GateGenConfig) -> float:
     return 2.0 * float(config.gate_radius)
 
 
-def finalize_gate_sequence(gates: GateSequence, config: GateGenConfig) -> None:
-    """Normalize tangents, derive gate normals/endpoints, NaN-pad, and validate."""
+def finalize_gate_sequence(
+    gates: GateSequence,
+    config: GateGenConfig,
+    fallbacks: "wp.array | None" = None,
+) -> None:
+    """Normalize tangents, derive gate frames/endpoints, NaN-pad, and validate.
+
+    ``fallbacks`` is an ``[E]`` int32 scratch counting per-env frame fallbacks
+    (near-vertical/degenerate tangents); it is zeroed here each run. ``None``
+    (convenience/test path) allocates a throwaway buffer — pass a persistent
+    buffer on capturable paths.
+    """
     _init()
     E = gates.count.shape[0]
     G = int(config.max_gates)
     dev = str(gates.position.device)
     min_center_distance = _gate_center_distance(config)
+    if fallbacks is None:
+        fallbacks = wp.empty(E, dtype=wp.int32, device=dev)
+    wp.launch(_fill_i32_k, dim=E, inputs=[fallbacks, 0], device=dev)
     wp.launch(
         _finalize_frame_k,
         dim=E * G,
         inputs=[
             gates.position,
             gates.tangent,
-            gates.normal,
+            gates.orientation,
+            gates.half_size,
             gates.left,
             gates.right,
             gates.count,
             G,
             float(config.gate_width),
+            0,  # align_full: planar (yaw-only) frames in the 2D pipeline
+            fallbacks,
         ],
         device=dev,
     )
@@ -629,7 +712,8 @@ def finalize_gate_sequence(gates: GateSequence, config: GateGenConfig) -> None:
         inputs=[
             gates.position,
             gates.tangent,
-            gates.normal,
+            gates.orientation,
+            gates.half_size,
             gates.left,
             gates.right,
             gates.count,
@@ -644,11 +728,39 @@ def finalize_gate_sequence(gates: GateSequence, config: GateGenConfig) -> None:
     _sync(dev)
 
 
+class _GateStaging:
+    """Vec2f staging view handed to generators.
+
+    ``position`` aliases the pipeline-owned ``[E * max_gates]`` vec2f scratch
+    that the 2D ordering/normalization/relaxation kernels operate on;
+    ``count`` aliases the public ``GateSequence.count``. The pipeline lifts
+    the staged positions into the public vec3f arrays afterwards.
+    """
+
+    __slots__ = ("position", "count")
+
+    def __init__(self, position: wp.array, count: wp.array) -> None:
+        self.position = position
+        self.count = count
+
+
 def _gate_warp_alloc(config: GateGenConfig, generator_spec):
-    """Allocate facade-owned gate output plus generator-private scratch."""
+    """Allocate facade-owned gate output plus pipeline + generator scratch.
+
+    Returns ``(gates, (gen_scratch, pos2, z, fallbacks))``: ``pos2`` is the
+    vec2f staging buffer the 2D kernels write, ``z`` the per-gate elevation
+    profile (zero until a z-profile stage writes it), ``fallbacks`` the
+    per-env frame-fallback counters.
+    """
     gates = alloc_gate_sequence(config)
-    scratch = generator_spec.alloc_scratch(config)
-    return gates, scratch
+    gen_scratch = generator_spec.alloc_scratch(config)
+    E = int(config.num_envs)
+    G = int(config.max_gates)
+    dev = str(config.device)
+    pos2 = wp.empty(E * G, dtype=wp.vec2f, device=dev)
+    z = wp.zeros(E * G, dtype=wp.float32, device=dev)
+    fallbacks = wp.zeros(E, dtype=wp.int32, device=dev)
+    return gates, (gen_scratch, pos2, z, fallbacks)
 
 
 def _run_gate_pipeline(
@@ -658,14 +770,31 @@ def _run_gate_pipeline(
     scratch,
     generator_spec,
 ) -> GateSequence:
-    """Run a native gate generator into ``out`` and finalize the common fields."""
+    """Run a native gate generator into ``out`` and finalize the common fields.
+
+    The generator and the shared 2D kernels (ordering, normalization, sphere
+    relaxation) operate on the vec2f ``pos2`` staging buffer; the staged
+    positions are then lifted to the public vec3f ``out.position`` (z from the
+    ``z`` scratch — all zeros until a z-profile stage writes it), tangents are
+    derived from the lifted positions, and the frame/validity finalization
+    runs on the vec3f arrays.
+    """
     _init()
-    generator_spec.generate(seed_buf_wp, config, out, scratch)
+    gen_scratch, pos2, z, fallbacks = scratch
+    G = int(config.max_gates)
+    dev = str(out.position.device)
+    staging = _GateStaging(pos2, out.count)
+    generator_spec.generate(seed_buf_wp, config, staging, gen_scratch)
     min_center_distance = _gate_center_distance(config)
     solve_iters = int(getattr(config, "gate_solve_iters", 0))
     if solve_iters > 0 and min_center_distance > 0.0:
-        G = int(config.max_gates)
-        relax_gate_spheres(out.position, G, out.count, min_center_distance, solve_iters)
-        tangents_from_positions(out.position, out.tangent, G, out.count)
-    finalize_gate_sequence(out, config)
+        relax_gate_spheres(pos2, G, out.count, min_center_distance, solve_iters)
+    wp.launch(
+        _lift_positions_k,
+        dim=int(pos2.shape[0]),
+        inputs=[pos2, z, out.position],
+        device=dev,
+    )
+    tangents_from_positions(out.position, out.tangent, G, out.count)
+    finalize_gate_sequence(out, config, fallbacks=fallbacks)
     return out

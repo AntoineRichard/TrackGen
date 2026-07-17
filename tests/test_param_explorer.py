@@ -294,7 +294,7 @@ def test_batch_and_pagination():
     p = _params(grid_n=3, batch_size=20, spacing=0.30, n_max=384)
     track = px.generate_batch(p)
     # Track fields are wp.array; center is flat [E*N_max] vec2f, count is [E] int32.
-    center_t = wp.to_torch(track.center).view(20, 384, 2)
+    center_t = wp.to_torch(track.center).view(20, 384, 3)[..., :2]
     count_t = wp.to_torch(track.count)
     assert center_t.shape[0] == 20                      # full batch generated
     assert center_t.shape[1] == 384                     # NaN-padded to N_max

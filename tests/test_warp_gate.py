@@ -12,40 +12,55 @@ def _manual_sequence(E=1, G=4):
     return warp_gate.alloc_gate_sequence(GateGenConfig(num_envs=E, max_gates=G))
 
 
-def test_finalize_computes_normals_and_endpoints():
+def _staging(E=1, G=4):
+    """Vec2f staging buffer + count array for the 2D ordering/relax kernels."""
+    import warp as wp
+
+    pos2 = wp.empty(E * G, dtype=wp.vec2f, device="cpu")
+    count = wp.zeros(E, dtype=wp.int32, device="cpu")
+    return pos2, count
+
+
+def test_finalize_computes_frames_and_endpoints():
     gates = _manual_sequence()
-    pos = to_t(gates.position).view(1, 4, 2)
-    tan = to_t(gates.tangent).view(1, 4, 2)
+    pos = to_t(gates.position).view(1, 4, 3)
+    tan = to_t(gates.tangent).view(1, 4, 3)
     count = to_t(gates.count)
-    pos[0, 0] = torch.tensor([0.0, 0.0])
-    pos[0, 1] = torch.tensor([2.0, 0.0])
-    tan[0, 0] = torch.tensor([1.0, 0.0])
-    tan[0, 1] = torch.tensor([1.0, 0.0])
+    pos[0, 0] = torch.tensor([0.0, 0.0, 0.0])
+    pos[0, 1] = torch.tensor([2.0, 0.0, 0.0])
+    tan[0, 0] = torch.tensor([1.0, 0.0, 0.0])
+    tan[0, 1] = torch.tensor([1.0, 0.0, 0.0])
     count[0] = 2
 
     cfg = GateGenConfig(max_gates=4, gate_width=2.0, gate_radius=0.0, min_gates=2)
     warp_gate.finalize_gate_sequence(gates, cfg)
 
-    normal = to_t(gates.normal).view(1, 4, 2)
-    left = to_t(gates.left).view(1, 4, 2)
-    right = to_t(gates.right).view(1, 4, 2)
+    left = to_t(gates.left).view(1, 4, 3)
+    right = to_t(gates.right).view(1, 4, 3)
+    orient = to_t(gates.orientation).view(1, 4, 4)
+    half = to_t(gates.half_size).view(1, 4)
     valid = to_t(gates.valid).bool()
-    assert torch.allclose(normal[0, 0], torch.tensor([0.0, 1.0]), atol=1e-6)
-    assert torch.allclose(left[0, 0], torch.tensor([0.0, 1.0]), atol=1e-6)
-    assert torch.allclose(right[0, 0], torch.tensor([0.0, -1.0]), atol=1e-6)
+    # +x forward: roll-free frame is the identity quat; left axis is +y.
+    assert torch.allclose(left[0, 0], torch.tensor([0.0, 1.0, 0.0]), atol=1e-6)
+    assert torch.allclose(right[0, 0], torch.tensor([0.0, -1.0, 0.0]), atol=1e-6)
+    assert torch.allclose(orient[0, 0], torch.tensor([0.0, 0.0, 0.0, 1.0]),
+                          atol=1e-6)
+    assert torch.allclose(half[0, :2], torch.full((2,), 1.0), atol=1e-6)
     assert valid.tolist() == [True]
     assert torch.isnan(left[0, 2:]).all()
+    assert torch.isnan(orient[0, 2:]).all()
+    assert torch.isnan(half[0, 2:]).all()
 
 
 def test_finalize_invalidates_nonfinite_endpoints():
     gates = _manual_sequence()
-    pos = to_t(gates.position).view(1, 4, 2)
-    tan = to_t(gates.tangent).view(1, 4, 2)
+    pos = to_t(gates.position).view(1, 4, 3)
+    tan = to_t(gates.tangent).view(1, 4, 3)
     count = to_t(gates.count)
-    pos[0, 0] = torch.tensor([0.0, 0.0])
-    pos[0, 1] = torch.tensor([2.0, 0.0])
-    tan[0, 0] = torch.tensor([1.0, 0.0])
-    tan[0, 1] = torch.tensor([1.0, 0.0])
+    pos[0, 0] = torch.tensor([0.0, 0.0, 0.0])
+    pos[0, 1] = torch.tensor([2.0, 0.0, 0.0])
+    tan[0, 0] = torch.tensor([1.0, 0.0, 0.0])
+    tan[0, 1] = torch.tensor([1.0, 0.0, 0.0])
     count[0] = 2
 
     cfg = GateGenConfig(
@@ -61,12 +76,12 @@ def test_finalize_invalidates_nonfinite_endpoints():
 
 def test_finalize_invalidates_zero_tangent_even_without_gate_radius():
     gates = _manual_sequence()
-    pos = to_t(gates.position).view(1, 4, 2)
-    tan = to_t(gates.tangent).view(1, 4, 2)
+    pos = to_t(gates.position).view(1, 4, 3)
+    tan = to_t(gates.tangent).view(1, 4, 3)
     count = to_t(gates.count)
-    pos[0, 0] = torch.tensor([0.0, 0.0])
-    pos[0, 1] = torch.tensor([2.0, 0.0])
-    tan[0, :2] = torch.tensor([[0.0, 0.0], [0.0, 0.0]])
+    pos[0, 0] = torch.tensor([0.0, 0.0, 0.0])
+    pos[0, 1] = torch.tensor([2.0, 0.0, 0.0])
+    tan[0, :2] = torch.zeros(2, 3)
     count[0] = 2
 
     cfg = GateGenConfig(max_gates=4, gate_width=0.0, gate_radius=0.0, min_gates=2)
@@ -77,12 +92,12 @@ def test_finalize_invalidates_zero_tangent_even_without_gate_radius():
 
 def test_finalize_invalidates_too_close_gate_centres():
     gates = _manual_sequence()
-    pos = to_t(gates.position).view(1, 4, 2)
-    tan = to_t(gates.tangent).view(1, 4, 2)
+    pos = to_t(gates.position).view(1, 4, 3)
+    tan = to_t(gates.tangent).view(1, 4, 3)
     count = to_t(gates.count)
-    pos[0, 0] = torch.tensor([0.0, 0.0])
-    pos[0, 1] = torch.tensor([0.01, 0.0])
-    tan[0, :2] = torch.tensor([[1.0, 0.0], [1.0, 0.0]])
+    pos[0, 0] = torch.tensor([0.0, 0.0, 0.0])
+    pos[0, 1] = torch.tensor([0.01, 0.0, 0.0])
+    tan[0, :2] = torch.tensor([[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
     count[0] = 2
 
     cfg = GateGenConfig(max_gates=4, min_gates=2, gate_radius=0.025)
@@ -93,12 +108,12 @@ def test_finalize_invalidates_too_close_gate_centres():
 
 def test_finalize_uses_gate_radius_as_sphere_distance():
     gates = _manual_sequence()
-    pos = to_t(gates.position).view(1, 4, 2)
-    tan = to_t(gates.tangent).view(1, 4, 2)
+    pos = to_t(gates.position).view(1, 4, 3)
+    tan = to_t(gates.tangent).view(1, 4, 3)
     count = to_t(gates.count)
-    pos[0, 0] = torch.tensor([0.0, 0.0])
-    pos[0, 1] = torch.tensor([0.15, 0.0])
-    tan[0, :2] = torch.tensor([[1.0, 0.0], [1.0, 0.0]])
+    pos[0, 0] = torch.tensor([0.0, 0.0, 0.0])
+    pos[0, 1] = torch.tensor([0.15, 0.0, 0.0])
+    tan[0, :2] = torch.tensor([[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
     count[0] = 2
 
     cfg = GateGenConfig(
@@ -113,13 +128,13 @@ def test_finalize_uses_gate_radius_as_sphere_distance():
 
 def test_finalize_invalidates_crossing_gate_segments():
     gates = _manual_sequence()
-    pos = to_t(gates.position).view(1, 4, 2)
-    tan = to_t(gates.tangent).view(1, 4, 2)
+    pos = to_t(gates.position).view(1, 4, 3)
+    tan = to_t(gates.tangent).view(1, 4, 3)
     count = to_t(gates.count)
-    pos[0, 0] = torch.tensor([0.0, 0.0])
-    pos[0, 1] = torch.tensor([0.0, 0.5])
-    tan[0, 0] = torch.tensor([1.0, 0.0])
-    tan[0, 1] = torch.tensor([0.0, 1.0])
+    pos[0, 0] = torch.tensor([0.0, 0.0, 0.0])
+    pos[0, 1] = torch.tensor([0.0, 0.5, 0.0])
+    tan[0, 0] = torch.tensor([1.0, 0.0, 0.0])
+    tan[0, 1] = torch.tensor([0.0, 1.0, 0.0])
     count[0] = 2
 
     cfg = GateGenConfig(max_gates=4, min_gates=2, gate_width=2.0, gate_radius=0.0)
@@ -184,49 +199,49 @@ def test_order_points_random_pairs_preserves_pair_adjacency_and_singleton():
 
 
 def test_normalize_positions_centers_scales_and_pads():
-    gates = _manual_sequence()
-    pos = to_t(gates.position).view(1, 4, 2)
-    count = to_t(gates.count)
+    pos2, count_wp = _staging()
+    pos = to_t(pos2).view(1, 4, 2)
+    count = to_t(count_wp)
     pos[0, 0] = torch.tensor([0.0, 0.0])
     pos[0, 1] = torch.tensor([2.0, 0.0])
     pos[0, 2] = torch.tensor([1.0, 1.0])
     count[0] = 3
 
-    warp_gate.normalize_positions(gates.position, 4, gates.count, 4.0)
+    warp_gate.normalize_positions(pos2, 4, count_wp, 4.0)
 
-    out = to_t(gates.position).view(1, 4, 2)
+    out = to_t(pos2).view(1, 4, 2)
     expected = torch.tensor([[-2.0, -1.0], [2.0, -1.0], [0.0, 1.0]])
     assert torch.allclose(out[0, :3], expected, atol=1e-6)
     assert torch.isnan(out[0, 3]).all()
 
 
 def test_relax_gate_spheres_separates_overlapping_centres():
-    gates = _manual_sequence()
-    pos = to_t(gates.position).view(1, 4, 2)
-    count = to_t(gates.count)
+    pos2, count_wp = _staging()
+    pos = to_t(pos2).view(1, 4, 2)
+    count = to_t(count_wp)
     pos[0, 0] = torch.tensor([0.0, 0.0])
     pos[0, 1] = torch.tensor([0.01, 0.0])
     count[0] = 2
 
-    warp_gate.relax_gate_spheres(gates.position, 4, gates.count, 0.25, 1)
+    warp_gate.relax_gate_spheres(pos2, 4, count_wp, 0.25, 1)
 
-    out = to_t(gates.position).view(1, 4, 2)
+    out = to_t(pos2).view(1, 4, 2)
     dist = torch.linalg.norm(out[0, 1] - out[0, 0])
     assert dist >= 0.25 - 1e-6
     assert torch.allclose(out[0, :2].mean(dim=0), torch.tensor([0.005, 0.0]), atol=1e-6)
 
 
 def test_relax_gate_spheres_handles_coincident_centres_deterministically():
-    gates = _manual_sequence()
-    pos = to_t(gates.position).view(1, 4, 2)
-    count = to_t(gates.count)
+    pos2, count_wp = _staging()
+    pos = to_t(pos2).view(1, 4, 2)
+    count = to_t(count_wp)
     pos[0, 0] = torch.tensor([0.0, 0.0])
     pos[0, 1] = torch.tensor([0.0, 0.0])
     count[0] = 2
 
-    warp_gate.relax_gate_spheres(gates.position, 4, gates.count, 0.2, 1)
+    warp_gate.relax_gate_spheres(pos2, 4, count_wp, 0.2, 1)
 
-    out = to_t(gates.position).view(1, 4, 2)
+    out = to_t(pos2).view(1, 4, 2)
     assert torch.isfinite(out[0, :2]).all()
     dist = torch.linalg.norm(out[0, 1] - out[0, 0])
     assert dist >= 0.2 - 1e-6
@@ -236,15 +251,15 @@ def test_relax_gate_spheres_needs_multiple_passes_for_three_gate_cluster():
     target = 0.2
 
     def run(iterations):
-        gates = _manual_sequence()
-        pos = to_t(gates.position).view(1, 4, 2)
-        count = to_t(gates.count)
+        pos2, count_wp = _staging()
+        pos = to_t(pos2).view(1, 4, 2)
+        count = to_t(count_wp)
         pos[0, 0] = torch.tensor([0.0, 0.0])
         pos[0, 1] = torch.tensor([0.01, 0.0])
         pos[0, 2] = torch.tensor([0.0, 0.01])
         count[0] = 3
-        warp_gate.relax_gate_spheres(gates.position, 4, gates.count, target, iterations)
-        out = to_t(gates.position).view(1, 4, 2)[0, :3]
+        warp_gate.relax_gate_spheres(pos2, 4, count_wp, target, iterations)
+        out = to_t(pos2).view(1, 4, 2)[0, :3]
         dist = torch.cdist(out, out)
         return dist[dist > 0].min()
 
@@ -254,36 +269,38 @@ def test_relax_gate_spheres_needs_multiple_passes_for_three_gate_cluster():
 
 def test_tangents_from_positions_uses_wrapped_central_difference():
     gates = _manual_sequence()
-    pos = to_t(gates.position).view(1, 4, 2)
+    pos = to_t(gates.position).view(1, 4, 3)
     count = to_t(gates.count)
-    pos[0] = torch.tensor([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]])
+    pos[0] = torch.tensor([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0],
+                           [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]])
     count[0] = 4
 
     warp_gate.tangents_from_positions(gates.position, gates.tangent, 4, gates.count)
 
-    tangent = to_t(gates.tangent).view(1, 4, 2)
-    expected = torch.tensor([[1.0, -1.0], [1.0, 1.0], [-1.0, 1.0], [-1.0, -1.0]])
+    tangent = to_t(gates.tangent).view(1, 4, 3)
+    expected = torch.tensor([[1.0, -1.0, 0.0], [1.0, 1.0, 0.0],
+                             [-1.0, 1.0, 0.0], [-1.0, -1.0, 0.0]])
     assert torch.allclose(tangent[0], expected, atol=1e-6)
 
 
 def test_two_gate_tangents_are_nonzero_and_finalize_valid():
     gates = _manual_sequence()
-    pos = to_t(gates.position).view(1, 4, 2)
+    pos = to_t(gates.position).view(1, 4, 3)
     count = to_t(gates.count)
-    pos[0, 0] = torch.tensor([0.0, 0.0])
-    pos[0, 1] = torch.tensor([2.0, 0.0])
+    pos[0, 0] = torch.tensor([0.0, 0.0, 0.0])
+    pos[0, 1] = torch.tensor([2.0, 0.0, 0.0])
     count[0] = 2
 
     warp_gate.tangents_from_positions(gates.position, gates.tangent, 4, gates.count)
     cfg = GateGenConfig(max_gates=4, gate_width=2.0, gate_radius=0.0, min_gates=2)
     warp_gate.finalize_gate_sequence(gates, cfg)
 
-    tangent = to_t(gates.tangent).view(1, 4, 2)
-    left = to_t(gates.left).view(1, 4, 2)
-    right = to_t(gates.right).view(1, 4, 2)
+    tangent = to_t(gates.tangent).view(1, 4, 3)
+    left = to_t(gates.left).view(1, 4, 3)
+    right = to_t(gates.right).view(1, 4, 3)
     assert to_t(gates.valid).bool().tolist() == [True]
-    assert torch.allclose(tangent[0, 0], torch.tensor([1.0, 0.0]), atol=1e-6)
-    assert torch.allclose(tangent[0, 1], torch.tensor([-1.0, 0.0]), atol=1e-6)
+    assert torch.allclose(tangent[0, 0], torch.tensor([1.0, 0.0, 0.0]), atol=1e-6)
+    assert torch.allclose(tangent[0, 1], torch.tensor([-1.0, 0.0, 0.0]), atol=1e-6)
     assert torch.isfinite(left[0, :2]).all()
     assert torch.isfinite(right[0, :2]).all()
     endpoint_width = torch.linalg.norm(left[0, :2] - right[0, :2], dim=-1)

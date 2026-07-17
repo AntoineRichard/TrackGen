@@ -15,8 +15,9 @@ from .collision_geom import (
     _box_corner,
     _closest_on_seg,
     _crossing,
-    _is_nan2,
+    _is_nan3,
     _pick4,
+    _quat_yaw,
     _rot2,
     _safe_normalize2,
 )
@@ -25,7 +26,7 @@ from .runtime import _BIG
 
 @wp.kernel
 def _track_aabb_k(
-    outer: wp.array(dtype=wp.vec2f),
+    outer: wp.array(dtype=wp.vec3f),
     count: wp.array(dtype=wp.int32),
     n_max: int,
     padding: float,   # explicit per-side padding; <= 0 selects auto mode
@@ -47,11 +48,11 @@ def _track_aabb_k(
     mxx = float(-_BIG)
     mxy = float(-_BIG)
     for i in range(m):
-        p = outer[base + i]
-        mnx = wp.min(mnx, p[0])
-        mny = wp.min(mny, p[1])
-        mxx = wp.max(mxx, p[0])
-        mxy = wp.max(mxy, p[1])
+        p3 = outer[base + i]
+        mnx = wp.min(mnx, p3[0])
+        mny = wp.min(mny, p3[1])
+        mxx = wp.max(mxx, p3[0])
+        mxy = wp.max(mxy, p3[1])
     pad = padding
     if pad <= 0.0:
         pad = pad_frac * wp.max(mxx - mnx, mxy - mny)
@@ -61,8 +62,8 @@ def _track_aabb_k(
 
 @wp.kernel
 def _sdf_bake_k(
-    inner: wp.array(dtype=wp.vec2f),
-    outer: wp.array(dtype=wp.vec2f),
+    inner: wp.array(dtype=wp.vec3f),
+    outer: wp.array(dtype=wp.vec3f),
     count: wp.array(dtype=wp.int32),
     n_max: int,
     res: int,
@@ -102,13 +103,17 @@ def _sdf_bake_k(
         i2 = i + 1
         if i2 == m:
             i2 = 0
-        a = inner[base + i]
-        b = inner[base + i2]
+        a3 = inner[base + i]
+        b3 = inner[base + i2]
+        a = wp.vec2f(a3[0], a3[1])
+        b = wp.vec2f(b3[0], b3[1])
         cp = _closest_on_seg(p, a, b)
         d_in = wp.min(d_in, wp.length(p - cp))
         cn_in = cn_in + _crossing(p, a, b)
-        a = outer[base + i]
-        b = outer[base + i2]
+        a3 = outer[base + i]
+        b3 = outer[base + i2]
+        a = wp.vec2f(a3[0], a3[1])
+        b = wp.vec2f(b3[0], b3[1])
         cp = _closest_on_seg(p, a, b)
         d_out = wp.min(d_out, wp.length(p - cp))
         cn_out = cn_out + _crossing(p, a, b)
@@ -159,8 +164,8 @@ def _box_query_sdf_k(
     bid: wp.array(dtype=wp.int8),
     res: int,
     max_boxes: int,
-    position: wp.array(dtype=wp.vec2f),
-    yaw: wp.array(dtype=wp.float32),
+    position: wp.array(dtype=wp.vec3f),
+    orientation: wp.array(dtype=wp.quatf),
     half_extents: wp.array(dtype=wp.vec2f),
     out_oob: wp.array(dtype=wp.int32),
     out_distance: wp.array(dtype=wp.float32),
@@ -172,19 +177,21 @@ def _box_query_sdf_k(
     e = t // max_boxes
     nan2 = wp.vec2f(wp.nan, wp.nan)
 
-    pos = position[t]
-    if _is_nan2(pos) == 1:
+    pos3 = position[t]
+    if _is_nan3(pos3) == 1:
         out_oob[t] = 0
         out_distance[t] = wp.nan
         out_nearest[t] = nan2
         out_normal[t] = nan2
         out_boundary[t] = -1
         return
+    # Planar OOB semantics: project the box pose to xy.
+    pos = wp.vec2f(pos3[0], pos3[1])
 
     l = lo[e]
     h = hi[e]
     base = e * res * res
-    yw = yaw[t]
+    yw = _quat_yaw(orientation[t])
     he = half_extents[t]
     ux = _rot2(yw, wp.vec2f(1.0, 0.0))
     uy = _rot2(yw, wp.vec2f(0.0, 1.0))

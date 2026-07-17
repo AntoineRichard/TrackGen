@@ -76,10 +76,10 @@ def _gate_batch(name: str, *, seed: int, solve_iters: int):
     rng = PerEnvSeededRNG(seeds=seed, num_envs=batch, device="cpu")
     gates = GateGenerator(cfg, rng).generate()
     g = gates.position.shape[0] // batch
-    position = wp.to_torch(gates.position).cpu().numpy().reshape(batch, g, 2)
-    tangent = wp.to_torch(gates.tangent).cpu().numpy().reshape(batch, g, 2)
-    left = wp.to_torch(gates.left).cpu().numpy().reshape(batch, g, 2)
-    right = wp.to_torch(gates.right).cpu().numpy().reshape(batch, g, 2)
+    position = wp.to_torch(gates.position).cpu().numpy().reshape(batch, g, 3)[..., :2]
+    tangent = wp.to_torch(gates.tangent).cpu().numpy().reshape(batch, g, 3)[..., :2]
+    left = wp.to_torch(gates.left).cpu().numpy().reshape(batch, g, 3)[..., :2]
+    right = wp.to_torch(gates.right).cpu().numpy().reshape(batch, g, 3)[..., :2]
     valid = wp.to_torch(gates.valid).cpu().numpy().astype(bool)
     count = wp.to_torch(gates.count).cpu().numpy().astype(int)
     return position, tangent, left, right, valid, count
@@ -197,7 +197,7 @@ def _generate_pipeline_sample(name: str = "bezier", seed: int = 100):
 
     valid_arr = wp.to_torch(track.valid).cpu().numpy().astype(bool)
     count_arr = wp.to_torch(track.count).cpu().numpy().astype(int)
-    final_all = wp.to_torch(track.center).cpu().numpy().reshape(batch, cfg.N_max, 2)
+    final_all = wp.to_torch(track.center).cpu().numpy().reshape(batch, cfg.N_max, 3)[..., :2]
     env_id = 0
     for e in range(batch):
         n = int(count_arr[e])
@@ -210,8 +210,8 @@ def _generate_pipeline_sample(name: str = "bezier", seed: int = 100):
     cs = wp.to_torch(scratch.cs_center).cpu().numpy().reshape(batch, cfg.N_max, 2)[env_id, :count]
     relaxed = wp.to_torch(scratch.relax.relaxed).cpu().numpy().reshape(batch, cfg.N_max, 2)[env_id, :count]
     final_center = final_all[env_id, :count]
-    outer = wp.to_torch(track.outer).cpu().numpy().reshape(batch, cfg.N_max, 2)[env_id, :count]
-    inner = wp.to_torch(track.inner).cpu().numpy().reshape(batch, cfg.N_max, 2)[env_id, :count]
+    outer = wp.to_torch(track.outer).cpu().numpy().reshape(batch, cfg.N_max, 3)[env_id, :count, :2]
+    inner = wp.to_torch(track.inner).cpu().numpy().reshape(batch, cfg.N_max, 3)[env_id, :count, :2]
     return raw, cs, relaxed, final_center, outer, inner, bool(valid_arr[env_id]), float(cfg.half_width)
 
 
@@ -464,9 +464,9 @@ def render_batch_of_tracks(output_dir: Path = OUT_DIR) -> Path:
     track = TrackGenerator(cfg, rng).generate()
     valid = wp.to_torch(track.valid).cpu().numpy().astype(bool)
     count = wp.to_torch(track.count).cpu().numpy().astype(int)
-    center = wp.to_torch(track.center).cpu().numpy().reshape(batch, cfg.N_max, 2)
-    outer = wp.to_torch(track.outer).cpu().numpy().reshape(batch, cfg.N_max, 2)
-    inner = wp.to_torch(track.inner).cpu().numpy().reshape(batch, cfg.N_max, 2)
+    center = wp.to_torch(track.center).cpu().numpy().reshape(batch, cfg.N_max, 3)[..., :2]
+    outer = wp.to_torch(track.outer).cpu().numpy().reshape(batch, cfg.N_max, 3)[..., :2]
+    inner = wp.to_torch(track.inner).cpu().numpy().reshape(batch, cfg.N_max, 3)[..., :2]
 
     # Rank valid tracks by roundness (isoperimetric ratio 4*pi*A / P^2, in [0, 1];
     # higher == rounder, more open) and show the eight cleanest — deterministic.
@@ -514,7 +514,7 @@ def _relax_track_batch(seed: int, batch: int, overrides: dict | None = None):
     valid = wp.to_torch(track.valid).cpu().numpy().astype(bool)
     E = valid.shape[0]
     n_max = track.center.shape[0] // E
-    center = wp.to_torch(track.center).cpu().numpy().reshape(E, n_max, 2)
+    center = wp.to_torch(track.center).cpu().numpy().reshape(E, n_max, 3)[..., :2]
     count = wp.to_torch(track.count).cpu().numpy().astype(int)
     return track, center, valid, count
 
@@ -555,9 +555,9 @@ def _dkappa_rms(center: np.ndarray, count: int, half_width: float) -> float:
 def _relax_borders_np(track, batch: int):
     """Return (center, outer, inner) as [E, N_max, 2] numpy views of a relaxation Track."""
     n_max = track.center.shape[0] // batch
-    center = wp.to_torch(track.center).cpu().numpy().reshape(batch, n_max, 2)
-    outer = wp.to_torch(track.outer).cpu().numpy().reshape(batch, n_max, 2)
-    inner = wp.to_torch(track.inner).cpu().numpy().reshape(batch, n_max, 2)
+    center = wp.to_torch(track.center).cpu().numpy().reshape(batch, n_max, 3)[..., :2]
+    outer = wp.to_torch(track.outer).cpu().numpy().reshape(batch, n_max, 3)[..., :2]
+    inner = wp.to_torch(track.inner).cpu().numpy().reshape(batch, n_max, 3)[..., :2]
     return center, outer, inner
 
 

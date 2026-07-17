@@ -9,21 +9,16 @@ wp.init()
 
 
 def _boxes(E, B, slots, device="cpu"):
-    pos = np.full((E * B, 2), np.nan, np.float32)
-    yaw = np.zeros(E * B, np.float32)
-    he = np.zeros((E * B, 2), np.float32)
-    for (e, b), (px, py, yw, hx, hy) in slots.items():
-        i = e * B + b
-        pos[i] = (px, py)
-        yaw[i] = yw
-        he[i] = (hx, hy)
-    return (wp.array(pos, dtype=wp.vec2f, device=device),
-            wp.array(yaw, dtype=wp.float32, device=device),
-            wp.array(he, dtype=wp.vec2f, device=device))
+    from tests._collision_fixtures import make_boxes
+    return make_boxes(E, B, slots, device=device)
 
 
 def _discs(rows, device="cpu"):
-    return wp.array(np.array(rows, np.float32), dtype=wp.vec2f, device=device)
+    rows = np.array(rows, np.float32)
+    z = np.zeros((rows.shape[0], 1), np.float32)
+    z[np.isnan(rows).any(axis=1)] = np.nan
+    return wp.array(np.concatenate([rows, z], axis=1), dtype=wp.vec3f,
+                    device=device)
 
 
 def test_face_corner_graze_and_miss():
@@ -111,7 +106,7 @@ def test_bound_mode_equivalence_and_errors():
     pos, yaw, he = _boxes(1, 2, {(0, 0): (0.0, 0.0, 0.0, 0.1, 0.05)})
     free = DiscChecker(discs, radius=0.03, max_boxes=2, num_envs=1)
     bound = DiscChecker(discs, radius=0.03, max_boxes=2, num_envs=1,
-                        position=pos, yaw=yaw, half_extents=he)
+                        position=pos, orientation=yaw, half_extents=he)
     r_free = free.query(pos, yaw, he).clone()
     r_bound = bound.query()
     np.testing.assert_array_equal(r_bound.hit.numpy(), r_free.hit.numpy())
@@ -133,12 +128,12 @@ def test_gate_post_recipe():
     gen = GateGenerator(cfg, PerEnvSeededRNG(seeds=9, num_envs=E, device="cpu"))
     seq = gen.generate()
     G = seq.position.shape[0] // E
-    left = seq.left.numpy().reshape(E, G, 2)
-    right = seq.right.numpy().reshape(E, G, 2)
-    posts = np.empty((E, 2 * G, 2), np.float32)
+    left = seq.left.numpy().reshape(E, G, 3)
+    right = seq.right.numpy().reshape(E, G, 3)
+    posts = np.empty((E, 2 * G, 3), np.float32)
     posts[:, 0::2] = left
     posts[:, 1::2] = right
-    posts_wp = wp.array(posts.reshape(-1, 2), dtype=wp.vec2f, device="cpu")
+    posts_wp = wp.array(posts.reshape(-1, 3), dtype=wp.vec3f, device="cpu")
     checker = DiscChecker(posts_wp, radius=0.02, max_boxes=1, num_envs=E)
     # Park a box exactly on env 0's gate 0 LEFT post.
     valid = seq.valid.numpy()

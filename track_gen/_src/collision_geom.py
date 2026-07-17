@@ -23,6 +23,83 @@ def _safe_normalize2(v: wp.vec2f) -> wp.vec2f:
 
 
 @wp.func
+def _safe_normalize3(v: wp.vec3f) -> wp.vec3f:
+    l = wp.length(v)
+    if l < 1.0e-12:
+        return wp.vec3f(0.0, 0.0, 0.0)
+    return v / l
+
+
+@wp.func
+def _is_nan3(v: wp.vec3f) -> int:
+    # NaN != NaN; any-NaN-component convention for vec3f padding.
+    if v[0] == v[0] and v[1] == v[1] and v[2] == v[2]:
+        return 0
+    return 1
+
+
+@wp.func
+def _yaw_quat(yaw: float) -> wp.quatf:
+    h = 0.5 * yaw
+    return wp.quatf(0.0, 0.0, wp.sin(h), wp.cos(h))
+
+
+@wp.func
+def _quat_yaw(q: wp.quatf) -> float:
+    return wp.atan2(2.0 * (q[3] * q[2] + q[0] * q[1]),
+                    1.0 - 2.0 * (q[1] * q[1] + q[2] * q[2]))
+
+
+@wp.func
+def _frame_quat(fwd: wp.vec3f) -> wp.quatf:
+    """Roll-free frame quat: x=forward, y=left(=up_world x fwd), z=up.
+
+    Caller guarantees fwd is unit and not near-vertical (fallback is the
+    caller's job — see _finalize_frame_k).
+    """
+    up_w = wp.vec3f(0.0, 0.0, 1.0)
+    left = wp.normalize(wp.cross(up_w, fwd))
+    up = wp.cross(fwd, left)
+    return wp.quat_from_matrix(wp.mat33(
+        fwd[0], left[0], up[0],
+        fwd[1], left[1], up[1],
+        fwd[2], left[2], up[2]))
+
+
+@wp.func
+def _plane_pass(prev: wp.vec3f, pos: wp.vec3f, fwd: wp.vec3f,
+                l: wp.vec3f, r: wp.vec3f, v_half: float) -> int:
+    """Swept segment vs gate plane, bounded opening. +1 forward pass,
+    -1 backward crossing inside the opening, 0 otherwise.
+
+    u axis spans left->right (u_half from the endpoints); v axis =
+    u_axis x fwd (up for roll-free frames); v bounded by v_half
+    (checkpoints from track cross-sections pass _BIG = unbounded)."""
+    mid = 0.5 * (l + r)
+    d0 = wp.dot(prev - mid, fwd)
+    d1 = wp.dot(pos - mid, fwd)
+    crossing = int(0)
+    if d0 < 0.0 and d1 >= 0.0:
+        crossing = 1
+    if d0 > 0.0 and d1 <= 0.0:
+        crossing = -1
+    if crossing == 0:
+        return 0
+    t = d0 / (d0 - d1)
+    pi = prev + (pos - prev) * t
+    u_axis = r - l
+    u_len = wp.length(u_axis)
+    if u_len < 1.0e-12:
+        return 0
+    u_axis = u_axis / u_len
+    u = wp.dot(pi - mid, u_axis)
+    v = wp.dot(pi - mid, _safe_normalize3(wp.cross(u_axis, fwd)))
+    if wp.abs(u) <= 0.5 * u_len and wp.abs(v) <= v_half:
+        return crossing
+    return 0
+
+
+@wp.func
 def _rot2(yaw: float, v: wp.vec2f) -> wp.vec2f:
     c = wp.cos(yaw)
     s = wp.sin(yaw)

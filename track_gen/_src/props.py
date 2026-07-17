@@ -88,7 +88,7 @@ class PropSet:
 
 @wp.kernel
 def _scan_boundary_k(
-    points: wp.array(dtype=wp.vec2f),
+    points: wp.array(dtype=wp.vec3f),
     count: wp.array(dtype=wp.int32),
     n_max: int,
     spacing: float,
@@ -99,7 +99,8 @@ def _scan_boundary_k(
     out_truncated: wp.array(dtype=wp.int32),
 ):
     """Also launched by ``_src/checkpoints.py`` (CheckpointSampler) — keep the
-    signature and snap semantics in sync."""
+    signature and snap semantics in sync. Arc lengths are computed on xy
+    (identical for the z = 0 planar pipeline)."""
     e = wp.tid()
     m = count[e]
     if m > n_max:
@@ -115,10 +116,12 @@ def _scan_boundary_k(
     prev = points[base]
     for i in range(1, m):
         p = points[base + i]
-        s = s + wp.length(p - prev)
+        d = p - prev
+        s = s + wp.length(wp.vec2f(d[0], d[1]))
         cum[base + i] = s
         prev = p
-    perim = s + wp.length(points[base] - prev)  # closing edge back to point 0
+    dc = points[base] - prev  # closing edge back to point 0
+    perim = s + wp.length(wp.vec2f(dc[0], dc[1]))
 
     # Snap in float first: float->int32 conversion of out-of-range values
     # (absurdly small spacing) differs between CPU (INT_MIN) and CUDA
@@ -139,7 +142,7 @@ def _scan_boundary_k(
 
 
 @wp.func
-def _sample_at_arc(points: wp.array(dtype=wp.vec2f), cum: wp.array(dtype=wp.float32),
+def _sample_at_arc(points: wp.array(dtype=wp.vec3f), cum: wp.array(dtype=wp.float32),
                    base: int, m: int, perim: float, s: float) -> wp.vec4f:
     """Point and segment direction at arc position s. Returns (px, py, dx, dy).
 
@@ -167,8 +170,10 @@ def _sample_at_arc(points: wp.array(dtype=wp.vec2f), cum: wp.array(dtype=wp.floa
     t = 0.0
     if denom > 1.0e-12:
         t = wp.clamp((s - seg_start) / denom, 0.0, 1.0)
-    a = points[base + i]
-    b = points[base + j]
+    a3 = points[base + i]
+    b3 = points[base + j]
+    a = wp.vec2f(a3[0], a3[1])
+    b = wp.vec2f(b3[0], b3[1])
     p = a + (b - a) * t
     d = _safe_normalize2(b - a)
     return wp.vec4f(p[0], p[1], d[0], d[1])
@@ -176,7 +181,7 @@ def _sample_at_arc(points: wp.array(dtype=wp.vec2f), cum: wp.array(dtype=wp.floa
 
 @wp.kernel
 def _place_props_k(
-    points: wp.array(dtype=wp.vec2f),
+    points: wp.array(dtype=wp.vec3f),
     count: wp.array(dtype=wp.int32),
     n_max: int,
     cum: wp.array(dtype=wp.float32),
@@ -329,7 +334,7 @@ class PropSampler:
         it are truncated and flagged (``PropSet.truncated``).
         """
         E, n_max = self._E, self._n_max
-        pts = self._points.numpy().reshape(E, n_max, 2)
+        pts = self._points.numpy().reshape(E, n_max, 3)
         counts = self._track.count.numpy()
         valid = self._track.valid.numpy()
         best = 0.0

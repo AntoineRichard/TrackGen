@@ -27,10 +27,11 @@ def _cfg(seeds=5):
 
 def _bound_course(seeds=5):
     course = Course(_cfg(seeds))
-    pos = wp.zeros(E, dtype=wp.vec2f, device=DEV)
-    yaw = wp.zeros(E, dtype=wp.float32, device=DEV)
+    pos = wp.zeros(E, dtype=wp.vec3f, device=DEV)
+    orient = wp.array(np.tile(np.array([0.0, 0.0, 0.0, 1.0], np.float32), (E, 1)),
+                      dtype=wp.quatf, device=DEV)
     he = wp.array(np.full((E, 2), 0.02, np.float32), dtype=wp.vec2f, device=DEV)
-    course.bind(position=pos, yaw=yaw, half_extents=he)
+    course.bind(position=pos, orientation=orient, half_extents=he)
     return course, pos
 
 
@@ -72,14 +73,14 @@ def test_user_captured_step_matches_eager_twin():
 
     n_max = course_c.result.outer.shape[0] // E
     center = np.nan_to_num(
-        course_c.result.center.numpy().reshape(E, n_max, 2), nan=0.0)
+        course_c.result.center.numpy().reshape(E, n_max, 3), nan=0.0)
     counts = course_c.result.count.numpy()
     for s in range(12):
-        step_pos = np.zeros((E, 2), np.float32)
+        step_pos = np.zeros((E, 3), np.float32)
         for e in range(E):
             m = max(int(counts[e]), 1)
             step_pos[e] = center[e, (s * 4) % m]
-        arr = wp.array(step_pos, dtype=wp.vec2f, device=DEV)
+        arr = wp.array(step_pos, dtype=wp.vec3f, device=DEV)
         wp.copy(pos_c, arr)
         wp.copy(pos_e, arr)
         course_c._step_result.events.passed.fill_(-7)   # poison
@@ -104,11 +105,12 @@ def test_cuda_alias_device_binds_and_steps():
                        seeds=3, collision="segments",
                        checkpoint_spacing=0.6, max_checkpoints=64)
     course = Course(cfg)
-    pos = wp.zeros(E, dtype=wp.vec2f, device="cuda:0")
-    yaw = wp.zeros(E, dtype=wp.float32, device="cuda:0")
+    pos = wp.zeros(E, dtype=wp.vec3f, device="cuda:0")
+    orient = wp.array(np.tile(np.array([0.0, 0.0, 0.0, 1.0], np.float32), (E, 1)),
+                      dtype=wp.quatf, device="cuda:0")
     he = wp.array(np.full((E, 2), 0.02, np.float32), dtype=wp.vec2f,
                   device="cuda:0")
-    course.bind(position=pos, yaw=yaw, half_extents=he)
+    course.bind(position=pos, orientation=orient, half_extents=he)
     course.generate()
     result = course.step()
     assert result.events is not None

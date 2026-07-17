@@ -25,6 +25,20 @@ BOX_SEED = 3
 SDF_RES = 192
 
 
+def _lift3(p2):
+    """[n, 2] xy -> [n, 3] with z = 0 (vec3f query/position buffers)."""
+    return np.concatenate([p2, np.zeros((p2.shape[0], 1), np.float32)], axis=1)
+
+
+def _yaw_quats(yaw):
+    """Yaw angles -> quatf components (x, y, z, w) about +z, float32 [n, 4]."""
+    h = 0.5 * yaw.astype(np.float64)
+    q = np.zeros((yaw.shape[0], 4), np.float32)
+    q[:, 2] = np.sin(h)
+    q[:, 3] = np.cos(h)
+    return q
+
+
 def _close(p):
     return np.vstack([p, p[:1]])
 
@@ -57,9 +71,9 @@ def render_utilities_overview(output_dir: Path = Path("docs/assets")) -> Path:
     assert valid[e], "no valid env at the fixed seed"
     n_max = track.outer.shape[0] // E
     m = int(track.count.numpy()[e])
-    inner = track.inner.numpy().reshape(E, n_max, 2)[e, :m]
-    outer = track.outer.numpy().reshape(E, n_max, 2)[e, :m]
-    center = track.center.numpy().reshape(E, n_max, 2)[e, :m]
+    inner = track.inner.numpy().reshape(E, n_max, 3)[e, :m, :2]
+    outer = track.outer.numpy().reshape(E, n_max, 3)[e, :m, :2]
+    center = track.center.numpy().reshape(E, n_max, 3)[e, :m, :2]
 
     def props_of(sampler):
         p = sampler.sample()
@@ -148,8 +162,8 @@ def render_utilities_overview(output_dir: Path = Path("docs/assets")) -> Path:
     yaw_np[e * B:(e + 1) * B] = rng.uniform(0, 2 * np.pi, B)
     he_np[e * B:(e + 1) * B] = rng.uniform(0.02, 0.06, (B, 2))
     contact = CollisionChecker(track, max_boxes=B, method="segments").query(
-        wp.array(pos_np.reshape(-1, 2), dtype=wp.vec2f, device="cpu"),
-        wp.array(yaw_np, dtype=wp.float32, device="cpu"),
+        wp.array(_lift3(pos_np), dtype=wp.vec3f, device="cpu"),
+        wp.array(_yaw_quats(yaw_np), dtype=wp.quatf, device="cpu"),
         wp.array(he_np, dtype=wp.vec2f, device="cpu"))
     oob = contact.oob.numpy()[e * B:(e + 1) * B]
     near = contact.nearest.numpy().reshape(-1, 2)[e * B:(e + 1) * B]
@@ -199,8 +213,8 @@ def render_boundary_props(output_dir: Path = Path("docs/assets")) -> Path:
     e = int(np.argmax(track.valid.numpy()))
     n_max = track.outer.shape[0] // E
     m = int(track.count.numpy()[e])
-    inner = track.inner.numpy().reshape(E, n_max, 2)[e, :m]
-    outer = track.outer.numpy().reshape(E, n_max, 2)[e, :m]
+    inner = track.inner.numpy().reshape(E, n_max, 3)[e, :m, :2]
+    outer = track.outer.numpy().reshape(E, n_max, 3)[e, :m, :2]
 
     def props_of(sampler):
         p = sampler.sample()
@@ -265,9 +279,9 @@ def render_oob_collision(output_dir: Path = Path("docs/assets")) -> Path:
     e = int(np.argmax(track.valid.numpy()))
     n_max = track.outer.shape[0] // E
     m = int(track.count.numpy()[e])
-    inner = track.inner.numpy().reshape(E, n_max, 2)[e, :m]
-    outer = track.outer.numpy().reshape(E, n_max, 2)[e, :m]
-    center = track.center.numpy().reshape(E, n_max, 2)[e, :m]
+    inner = track.inner.numpy().reshape(E, n_max, 3)[e, :m, :2]
+    outer = track.outer.numpy().reshape(E, n_max, 3)[e, :m, :2]
+    center = track.center.numpy().reshape(E, n_max, 3)[e, :m, :2]
 
     rng = np.random.default_rng(BOX_SEED)
     idx = rng.integers(0, m, B)
@@ -278,8 +292,8 @@ def render_oob_collision(output_dir: Path = Path("docs/assets")) -> Path:
     yaw_np[e * B:(e + 1) * B] = rng.uniform(0, 2 * np.pi, B)
     he_np[e * B:(e + 1) * B] = rng.uniform(0.02, 0.06, (B, 2))
     contact = CollisionChecker(track, max_boxes=B, method="segments").query(
-        wp.array(pos_np.reshape(-1, 2), dtype=wp.vec2f, device="cpu"),
-        wp.array(yaw_np, dtype=wp.float32, device="cpu"),
+        wp.array(_lift3(pos_np), dtype=wp.vec3f, device="cpu"),
+        wp.array(_yaw_quats(yaw_np), dtype=wp.quatf, device="cpu"),
         wp.array(he_np, dtype=wp.vec2f, device="cpu"))
     sl = slice(e * B, (e + 1) * B)
     oob = contact.oob.numpy()[sl]
@@ -335,18 +349,18 @@ def render_checkpoints_overview(output_dir: Path = Path("docs/assets")) -> Path:
     e = int(np.argmax(track.valid.numpy()))
     n_max = track.outer.shape[0] // E
     m = int(track.count.numpy()[e])
-    inner = track.inner.numpy().reshape(E, n_max, 2)[e, :m]
-    outer = track.outer.numpy().reshape(E, n_max, 2)[e, :m]
+    inner = track.inner.numpy().reshape(E, n_max, 3)[e, :m, :2]
+    outer = track.outer.numpy().reshape(E, n_max, 3)[e, :m, :2]
 
     sampler = CheckpointSampler(track, spacing=0.6)
     cps = sampler.sample()
     M = sampler._M
     n = int(cps.count.numpy()[e])
     sl = slice(e * M, e * M + n)
-    pos = cps.position.numpy().reshape(-1, 2)[sl]
-    left = cps.left.numpy().reshape(-1, 2)[sl]
-    right = cps.right.numpy().reshape(-1, 2)[sl]
-    tang = cps.tangent.numpy().reshape(-1, 2)[sl]
+    pos = cps.position.numpy().reshape(-1, 3)[sl, :2]
+    left = cps.left.numpy().reshape(-1, 3)[sl, :2]
+    right = cps.right.numpy().reshape(-1, 3)[sl, :2]
+    tang = cps.tangent.numpy().reshape(-1, 3)[sl, :2]
 
     gcfg = GateGenConfig(num_envs=E, device="cpu", gate_width=0.08)
     ggen = GateGenerator(gcfg, PerEnvSeededRNG(seeds=GEN_SEED, num_envs=E, device="cpu"))
@@ -356,10 +370,10 @@ def render_checkpoints_overview(output_dir: Path = Path("docs/assets")) -> Path:
     GM = gset.position.shape[0] // E
     gn = int(gset.count.numpy()[ge])
     gsl = slice(ge * GM, ge * GM + gn)
-    gpos = gset.position.numpy().reshape(-1, 2)[gsl]
-    gleft = gset.left.numpy().reshape(-1, 2)[gsl]
-    gright = gset.right.numpy().reshape(-1, 2)[gsl]
-    gtang = gset.tangent.numpy().reshape(-1, 2)[gsl]
+    gpos = gset.position.numpy().reshape(-1, 3)[gsl, :2]
+    gleft = gset.left.numpy().reshape(-1, 3)[gsl, :2]
+    gright = gset.right.numpy().reshape(-1, 3)[gsl, :2]
+    gtang = gset.tangent.numpy().reshape(-1, 3)[gsl, :2]
 
     fig, axes = plt.subplots(1, 2, figsize=(14, 6.8))
     fig.suptitle("CheckpointSet: one contract, two sources", fontsize=14)
@@ -412,17 +426,17 @@ def render_progress_tracking(output_dir: Path = Path("docs/assets")) -> Path:
     e = int(np.argmax(track.valid.numpy()))
     n_max = track.outer.shape[0] // E
     m = int(track.count.numpy()[e])
-    inner = track.inner.numpy().reshape(E, n_max, 2)[e, :m]
-    outer = track.outer.numpy().reshape(E, n_max, 2)[e, :m]
-    center = track.center.numpy().reshape(E, n_max, 2)[e, :m]
+    inner = track.inner.numpy().reshape(E, n_max, 3)[e, :m, :2]
+    outer = track.outer.numpy().reshape(E, n_max, 3)[e, :m, :2]
+    center = track.center.numpy().reshape(E, n_max, 3)[e, :m, :2]
 
     sampler = CheckpointSampler(track, spacing=0.9)
     cps = sampler.sample()
     M = sampler._M
     n = int(cps.count.numpy()[e])
-    cpos = cps.position.numpy().reshape(-1, 2)[e * M:e * M + n]
-    cleft = cps.left.numpy().reshape(-1, 2)[e * M:e * M + n]
-    cright = cps.right.numpy().reshape(-1, 2)[e * M:e * M + n]
+    cpos = cps.position.numpy().reshape(-1, 3)[e * M:e * M + n, :2]
+    cleft = cps.left.numpy().reshape(-1, 3)[e * M:e * M + n, :2]
+    cright = cps.right.numpy().reshape(-1, 3)[e * M:e * M + n, :2]
 
     tracker = ProgressTracker(cps)
     rng = np.random.default_rng(GEN_SEED)
@@ -430,9 +444,9 @@ def render_progress_tracking(output_dir: Path = Path("docs/assets")) -> Path:
     path = center[path_idx] + rng.normal(0.0, 0.01, (len(path_idx), 2))
     prog_trace, dist_trace, passed_at = [], [], []
     for s, p in enumerate(path):
-        full = np.zeros((E, 2), np.float32)
-        full[e] = p
-        ev = tracker.update(wp.array(full, dtype=wp.vec2f, device="cpu"))
+        full = np.zeros((E, 3), np.float32)
+        full[e, :2] = p
+        ev = tracker.update(wp.array(full, dtype=wp.vec3f, device="cpu"))
         prog_trace.append(int(ev.progress.numpy()[e]))
         dist_trace.append(float(ev.dist_to_next.numpy()[e]))
         if int(ev.passed.numpy()[e]):
@@ -483,13 +497,13 @@ def render_disc_collision(output_dir: Path = Path("docs/assets")) -> Path:
     e = int(np.argmax(seq.valid.numpy()))
     G = seq.position.shape[0] // E
     ln = int(seq.count.numpy()[e])
-    left = seq.left.numpy().reshape(E, G, 2)
-    right = seq.right.numpy().reshape(E, G, 2)
+    left = seq.left.numpy().reshape(E, G, 3)[..., :2]
+    right = seq.right.numpy().reshape(E, G, 3)[..., :2]
 
     posts = np.empty((E, 2 * G, 2), np.float32)
     posts[:, 0::2] = left
     posts[:, 1::2] = right
-    posts_wp = wp.array(posts.reshape(-1, 2), dtype=wp.vec2f, device="cpu")
+    posts_wp = wp.array(_lift3(posts.reshape(-1, 2)), dtype=wp.vec3f, device="cpu")
 
     B = 8
     rng = np.random.default_rng(BOX_SEED)
@@ -503,8 +517,8 @@ def render_disc_collision(output_dir: Path = Path("docs/assets")) -> Path:
         yaw_np[e * B + b] = rng.uniform(0, 2 * np.pi)
         he_np[e * B + b] = rng.uniform(0.02, 0.05, 2)
     checker = DiscChecker(posts_wp, radius=RADIUS, max_boxes=B, num_envs=E)
-    res = checker.query(wp.array(pos_np.reshape(-1, 2), dtype=wp.vec2f, device="cpu"),
-                        wp.array(yaw_np, dtype=wp.float32, device="cpu"),
+    res = checker.query(wp.array(_lift3(pos_np), dtype=wp.vec3f, device="cpu"),
+                        wp.array(_yaw_quats(yaw_np), dtype=wp.quatf, device="cpu"),
                         wp.array(he_np, dtype=wp.vec2f, device="cpu"))
     hit = res.hit.numpy()[e * B:(e + 1) * B]
 

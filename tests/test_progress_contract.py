@@ -16,19 +16,23 @@ def _run_and_compare(cps, E, M, centers, rng):
     """Random-walk positions around each env's course; compare every field."""
     tracker = ProgressTracker(cps)
     counts = cps.count.numpy()
-    pos_np = cps.position.numpy().reshape(E, M, 2)
-    left_np = cps.left.numpy().reshape(E, M, 2)
-    right_np = cps.right.numpy().reshape(E, M, 2)
-    tang_np = cps.tangent.numpy().reshape(E, M, 2)
+    pos_np = cps.position.numpy().reshape(E, M, 3)
+    left_np = cps.left.numpy().reshape(E, M, 3)
+    right_np = cps.right.numpy().reshape(E, M, 3)
+    tang_np = cps.tangent.numpy().reshape(E, M, 3)
+    up_np = cps.up_half.numpy().reshape(E, M)
     oracles = {}
     for e in range(E):
         n = int(counts[e])
         if n >= 1:
             oracles[e] = ProgressOracle(pos_np[e, :n], left_np[e, :n],
-                                        right_np[e, :n], tang_np[e, :n])
-    walk = centers + rng.normal(0.0, 0.35, (STEPS, E, 2))
+                                        right_np[e, :n], tang_np[e, :n],
+                                        up_np[e, :n])
+    walk = np.concatenate(
+        [centers + rng.normal(0.0, 0.35, (STEPS, E, 2)),
+         np.zeros((STEPS, E, 1))], axis=2)
     for s in range(STEPS):
-        p = wp.array(walk[s].astype(np.float32), dtype=wp.vec2f, device="cpu")
+        p = wp.array(walk[s].astype(np.float32), dtype=wp.vec3f, device="cpu")
         ev = tracker.update(p)
         got = {f: getattr(ev, f).numpy() for f in FIELDS}
         dist = ev.dist_to_next.numpy()
@@ -51,7 +55,7 @@ def test_oracle_on_generated_gates():
     M = cps.position.shape[0] // E
     valid = seq.valid.numpy().astype(bool)
     counts = cps.count.numpy()
-    pos = np.nan_to_num(cps.position.numpy().reshape(E, M, 2), nan=0.0)
+    pos = np.nan_to_num(cps.position.numpy().reshape(E, M, 3)[..., :2], nan=0.0)
     centers = np.zeros((E, 2))
     for e in range(E):
         if valid[e] and counts[e] > 0:
@@ -76,7 +80,7 @@ def test_oracle_on_track_checkpoints():
     M = sampler._M
     valid = track.valid.numpy().astype(bool)
     counts = cps.count.numpy()
-    pos = np.nan_to_num(cps.position.numpy().reshape(E, M, 2), nan=0.0)
+    pos = np.nan_to_num(cps.position.numpy().reshape(E, M, 3)[..., :2], nan=0.0)
     centers = np.zeros((E, 2))
     for e in range(E):
         if valid[e] and counts[e] > 0:

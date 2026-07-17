@@ -82,8 +82,8 @@ def _track_allclose(got: Track, ref: dict, atol=1e-4):
     assert torch.equal(to_t(got.valid), ref["valid"]), "valid mask differs"
     assert torch.equal(to_t(got.count), ref["count"]), "count differs"
 
-    got_center = wp.to_torch(got.center).view(E_Nmax, N_max, 2)
-    ref_center = ref["center"].view(E_Nmax, N_max, 2)
+    got_center = wp.to_torch(got.center).view(E_Nmax, N_max, 3)
+    ref_center = ref["center"].view(E_Nmax, N_max, 3)
     assert torch.equal(torch.isnan(got_center), torch.isnan(ref_center)), "NaN pattern differs"
 
     for name in ("center", "outer", "inner", "tangent", "normal", "arclen"):
@@ -91,8 +91,8 @@ def _track_allclose(got: Track, ref: dict, atol=1e-4):
             a = torch.nan_to_num(wp.to_torch(getattr(got, name)).view(E_Nmax, N_max))
             b = torch.nan_to_num(ref[name].view(E_Nmax, N_max))
         else:
-            a = torch.nan_to_num(wp.to_torch(getattr(got, name)).view(E_Nmax, N_max, 2))
-            b = torch.nan_to_num(ref[name].view(E_Nmax, N_max, 2))
+            a = torch.nan_to_num(wp.to_torch(getattr(got, name)).view(E_Nmax, N_max, 3))
+            b = torch.nan_to_num(ref[name].view(E_Nmax, N_max, 3))
         assert torch.allclose(a, b, atol=atol), \
             f"{name} mismatch, max err {(a - b).abs().max().item():.3e}"
     la = torch.nan_to_num(to_t(got.length))

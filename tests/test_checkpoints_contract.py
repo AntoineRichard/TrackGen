@@ -48,9 +48,9 @@ def test_matches_oracle_on_generated_tracks():
     sampler = CheckpointSampler(track, spacing=spacing, max_checkpoints=64)
     cps = sampler.sample()
     M = sampler._M
-    center = track.center.numpy().reshape(E, n_max, 2)
-    inner = track.inner.numpy().reshape(E, n_max, 2)
-    outer = track.outer.numpy().reshape(E, n_max, 2)
+    center = track.center.numpy().reshape(E, n_max, 3)[..., :2]
+    inner = track.inner.numpy().reshape(E, n_max, 3)[..., :2]
+    outer = track.outer.numpy().reshape(E, n_max, 3)[..., :2]
     checked = 0
     for e in range(E):
         if not valid[e]:
@@ -60,13 +60,14 @@ def test_matches_oracle_on_generated_tracks():
                                  spacing, 64)
         assert int(cps.count.numpy()[e]) == ref["n"]
         sl = slice(e * M, e * M + ref["n"])
-        np.testing.assert_allclose(cps.position.numpy().reshape(-1, 2)[sl],
+        np.testing.assert_allclose(cps.position.numpy().reshape(-1, 3)[sl, :2],
                                    ref["position"], atol=1e-4)
-        np.testing.assert_allclose(cps.left.numpy().reshape(-1, 2)[sl],
+        np.testing.assert_allclose(cps.left.numpy().reshape(-1, 3)[sl, :2],
                                    ref["left"], atol=1e-4)
-        np.testing.assert_allclose(cps.right.numpy().reshape(-1, 2)[sl],
+        np.testing.assert_allclose(cps.right.numpy().reshape(-1, 3)[sl, :2],
                                    ref["right"], atol=1e-4)
-        np.testing.assert_allclose(cps.tangent.numpy().reshape(-1, 2)[sl],
+        np.testing.assert_allclose(cps.tangent.numpy().reshape(-1, 3)[sl, :2],
                                    ref["tangent"], atol=1e-3)
+        assert np.all(cps.position.numpy().reshape(-1, 3)[sl, 2] == 0.0)
         checked += 1
     assert checked > 0

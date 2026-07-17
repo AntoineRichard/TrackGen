@@ -1000,9 +1000,11 @@ class GateGenConfig:
 class GateSequence:
     """Batched fixed-stride gate result returned by ``GateGenerator``.
 
-    Gate pose arrays are flat ``[E * max_gates]`` ``vec2f`` buffers; reshape via
-    ``wp.to_torch(...).view(E, max_gates, 2)``. ``count[e]`` gives the real gate
-    count for environment ``e`` and slots ``i >= count[e]`` are NaN-padded.
+    Gate pose arrays are flat ``[E * max_gates]`` ``vec3f`` buffers; reshape via
+    ``wp.to_torch(...).view(E, max_gates, 3)``. ``count[e]`` gives the real gate
+    count for environment ``e`` and slots ``i >= count[e]`` are NaN-padded (any
+    NaN component marks a padded slot). The current pipeline is planar: ``z`` is
+    0 for every real slot.
 
     .. warning::
 
@@ -1014,21 +1016,25 @@ class GateSequence:
     Attributes
     ----------
     position : wp.array
-        Flat ``[E * max_gates]`` ``vec2f`` gate centres.  Reshape via
-        ``wp.to_torch(...).view(E, max_gates, 2)``.  Slots ``i >= count[e]`` are
+        Flat ``[E * max_gates]`` ``vec3f`` gate centres.  Reshape via
+        ``wp.to_torch(...).view(E, max_gates, 3)``.  Slots ``i >= count[e]`` are
         NaN-padded.
     tangent : wp.array
-        Flat ``[E * max_gates]`` ``vec2f`` unit tangent vectors at each gate centre.
+        Flat ``[E * max_gates]`` ``vec3f`` unit tangent vectors at each gate centre.
         NaN-padded past ``count[e]``.
-    normal : wp.array
-        Flat ``[E * max_gates]`` ``vec2f`` unit normals perpendicular to ``tangent``.
+    orientation : wp.array
+        Flat ``[E * max_gates]`` ``quatf`` gate poses (``wp.quatf(x, y, z, w)``):
+        the roll-free frame with local x = gate forward, y = left, z = up.
         NaN-padded past ``count[e]``.
+    half_size : wp.array
+        Flat ``[E * max_gates]`` ``float32`` square-opening half-extents
+        (``0.5 * gate_width``).  NaN-padded past ``count[e]``.
     left : wp.array
-        Flat ``[E * max_gates]`` ``vec2f`` left gate endpoints
-        (``position + gate_width * normal``).  NaN-padded past ``count[e]``.
+        Flat ``[E * max_gates]`` ``vec3f`` left gate endpoints
+        (``position + half_size * left_axis``).  NaN-padded past ``count[e]``.
     right : wp.array
-        Flat ``[E * max_gates]`` ``vec2f`` right gate endpoints
-        (``position - gate_width * normal``).  NaN-padded past ``count[e]``.
+        Flat ``[E * max_gates]`` ``vec3f`` right gate endpoints
+        (``position - half_size * left_axis``).  NaN-padded past ``count[e]``.
     valid : wp.array
         ``[E]`` ``int32`` environment validity flags (0 or 1).  Convert to a boolean
         tensor via ``wp.to_torch(...).bool()``.
@@ -1039,7 +1045,8 @@ class GateSequence:
 
     position: wp.array
     tangent: wp.array
-    normal: wp.array
+    orientation: wp.array
+    half_size: wp.array
     left: wp.array
     right: wp.array
     valid: wp.array
@@ -1050,7 +1057,8 @@ class GateSequence:
         return GateSequence(
             position=wp.clone(self.position),
             tangent=wp.clone(self.tangent),
-            normal=wp.clone(self.normal),
+            orientation=wp.clone(self.orientation),
+            half_size=wp.clone(self.half_size),
             left=wp.clone(self.left),
             right=wp.clone(self.right),
             valid=wp.clone(self.valid),
@@ -1077,24 +1085,27 @@ class Track:
     Attributes
     ----------
     outer : wp.array
-        Flat ``[E * N_max]`` ``vec2f`` outer boundary points.  Reshape via
-        ``wp.to_torch(...).view(E, N_max, 2)``.  Points at ``i >= count[e]`` are
-        NaN-padded.
+        Flat ``[E * N_max]`` ``vec3f`` outer boundary points (``z = 0`` from the
+        2D pipeline).  Reshape via ``wp.to_torch(...).view(E, N_max, 3)``.
+        Points at ``i >= count[e]`` are NaN-padded (NaN xy, ``z = 0``).
     center : wp.array
-        Flat ``[E * N_max]`` ``vec2f`` centerline points.  Reshape via
-        ``wp.to_torch(...).view(E, N_max, 2)``.  Index-aligned with ``outer`` and
+        Flat ``[E * N_max]`` ``vec3f`` centerline points (``z = 0``).  Reshape via
+        ``wp.to_torch(...).view(E, N_max, 3)``.  Index-aligned with ``outer`` and
         ``inner``; ``‖outer[i] - center[i]‖`` gives the per-point half-width.
         Points at ``i >= count[e]`` are NaN-padded.
     inner : wp.array
-        Flat ``[E * N_max]`` ``vec2f`` inner boundary points.  Reshape via
-        ``wp.to_torch(...).view(E, N_max, 2)``.  Points at ``i >= count[e]`` are
-        NaN-padded.
+        Flat ``[E * N_max]`` ``vec3f`` inner boundary points (``z = 0``).  Reshape
+        via ``wp.to_torch(...).view(E, N_max, 3)``.  Points at ``i >= count[e]``
+        are NaN-padded.
     tangent : wp.array
-        Flat ``[E * N_max]`` ``vec2f`` unit tangent vectors at each centerline
-        point, derived from central differences.  NaN-padded past ``count[e]``.
+        Flat ``[E * N_max]`` ``vec3f`` unit tangent vectors at each centerline
+        point (``z = 0``), derived from central differences.  NaN-padded past
+        ``count[e]``.
     normal : wp.array
-        Flat ``[E * N_max]`` ``vec2f`` unit left-normals at each centerline point:
-        ``normal = (-tangent.y, tangent.x)`` (``tangent`` rotated +90°).  Which
+        Flat ``[E * N_max]`` ``vec3f`` unit left-normals at each centerline point —
+        still the planar left-normal, now
+        ``normal = (-tangent.y, tangent.x, 0)`` (``tangent`` rotated +90°
+        about +z).  Which
         boundary it faces is winding-dependent (see ``winding``): it points toward
         ``outer`` for clockwise loops and toward ``inner`` for counter-clockwise
         loops.  The ``outer``/``inner`` split itself is winding-agnostic (assigned by

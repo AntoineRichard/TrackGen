@@ -30,9 +30,9 @@ def test_bezier_path_returns_track_with_aligned_boundaries():
     assert isinstance(track, Track)
     # All boundary arrays are wp.array with flat E*N_max vec2f storage; reshape to [E,N,2]
     # via to_t() for shape assertions.
-    outer_t = to_t(track.outer).view(E, N_max, 2)
-    center_t = to_t(track.center).view(E, N_max, 2)
-    inner_t = to_t(track.inner).view(E, N_max, 2)
+    outer_t = to_t(track.outer).view(E, N_max, 3)[..., :2]
+    center_t = to_t(track.center).view(E, N_max, 3)[..., :2]
+    inner_t = to_t(track.inner).view(E, N_max, 3)[..., :2]
     assert outer_t.shape == (E, N_max, 2)
     assert center_t.shape == (E, N_max, 2)
     assert inner_t.shape == (E, N_max, 2)

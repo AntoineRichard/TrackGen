@@ -10,13 +10,16 @@ from track_gen.localize import TrackLocalizer
 
 
 def _positions(pts, device="cpu"):
-    return wp.array(np.asarray(pts, np.float32), dtype=wp.vec2f, device=device)
+    pts = np.asarray(pts, np.float32)
+    z = np.zeros((pts.shape[0], 1), np.float32)
+    return wp.array(np.concatenate([pts, z], axis=1), dtype=wp.vec3f,
+                    device=device)
 
 
 def _real_env(track, e, n_max):
     """(center, arclen, length) of env e without the NaN tail, as float64."""
     m = int(track.count.numpy()[e])
-    center = track.center.numpy().reshape(-1, 2)[e * n_max:e * n_max + m]
+    center = track.center.numpy().reshape(-1, 3)[e * n_max:e * n_max + m, :2]
     arclen = track.arclen.numpy()[e * n_max:e * n_max + m]
     return center.astype(np.float64), arclen.astype(np.float64), \
         float(track.length.numpy()[e])
@@ -39,7 +42,7 @@ def test_generated_tracks_projection_oracle():
     n_max = track.center.shape[0] // E
     loc = TrackLocalizer(track)
     rng = np.random.default_rng(0)
-    center_all = track.center.numpy().reshape(E, n_max, 2)
+    center_all = track.center.numpy().reshape(E, n_max, 3)[..., :2]
 
     checked = 0
     for trial in range(8):
@@ -49,6 +52,7 @@ def test_generated_tracks_projection_oracle():
             pts[e] = center_all[e, i] + rng.normal(0.0, 0.15, 2)
         f = loc.query(_positions(pts))
         s, n, seg = f.s.numpy(), f.n.numpy(), f.segment.numpy()
+        n_up = f.n_up.numpy()
         for e in range(E):
             if not valid[e]:
                 continue
@@ -60,6 +64,8 @@ def test_generated_tracks_projection_oracle():
                 f"trial {trial} env {e}: s {s[e]} vs {s_ref}"
             np.testing.assert_allclose(n[e], n_ref, atol=1e-4,
                                        err_msg=f"trial {trial} env {e}")
+            # Planar track, z = 0 query: vertical offset is exactly zero.
+            assert n_up[e] == 0.0, f"trial {trial} env {e}: n_up {n_up[e]}"
             # Near a shared vertex two adjacent segments tie to float
             # precision; accept either as long as the arc length agrees.
             assert seg[e] == seg_ref or \
@@ -160,9 +166,9 @@ def test_sign_convention_on_generated_tracks():
         valid = track.valid.numpy()
         counts = track.count.numpy()
         n_max = track.center.shape[0] // E
-        center = track.center.numpy().reshape(E, n_max, 2)
-        outer = track.outer.numpy().reshape(E, n_max, 2)
-        inner = track.inner.numpy().reshape(E, n_max, 2)
+        center = track.center.numpy().reshape(E, n_max, 3)[..., :2]
+        outer = track.outer.numpy().reshape(E, n_max, 3)[..., :2]
+        inner = track.inner.numpy().reshape(E, n_max, 3)[..., :2]
         loc = TrackLocalizer(track)
         for boundary, toward in (("outer", outer), ("inner", inner)):
             pts = np.full((E, 2), np.nan, np.float32)
@@ -200,7 +206,7 @@ def test_warm_matches_cold_two_laps_on_generated_tracks():
     assert len(set(counts[valid].tolist())) > 1, \
         "want heterogeneous counts — pick another seed"
     n_max = track.center.shape[0] // E
-    center = track.center.numpy().reshape(E, n_max, 2)
+    center = track.center.numpy().reshape(E, n_max, 3)[..., :2]
     cold = TrackLocalizer(track)
     warm = TrackLocalizer(track, warm_window=8)
     rng = np.random.default_rng(3)

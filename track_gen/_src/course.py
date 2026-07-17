@@ -47,9 +47,9 @@ from .types import GateGenConfig, GateSequence, Track, TrackGenConfig
 
 @wp.kernel
 def _interleave_posts_k(
-    left: wp.array(dtype=wp.vec2f),
-    right: wp.array(dtype=wp.vec2f),
-    posts: wp.array(dtype=wp.vec2f),
+    left: wp.array(dtype=wp.vec3f),
+    right: wp.array(dtype=wp.vec3f),
+    posts: wp.array(dtype=wp.vec3f),
 ):
     i = wp.tid()             # dim = E * max_gates; NaN padding carries over
     posts[2 * i] = left[i]
@@ -270,27 +270,30 @@ class Course:
         known at construction, so shape/dtype/device errors surface at
         ``bind()`` rather than at the first ``step()``."""
         E = self._E
-        self._check_arr("position", a["position"], (E,), wp.vec2f)
+        self._check_arr("position", a["position"], (E,), wp.vec3f)
         if self._needs_boxes():
             nb = (E * self._cfg.max_boxes,)
-            self._check_arr("yaw", a["yaw"], nb, wp.float32)
+            self._check_arr("orientation", a["orientation"], nb, wp.quatf)
             self._check_arr("half_extents", a["half_extents"], nb, wp.vec2f)
             if self._cfg.max_boxes > 1:
-                self._check_arr("box_position", a["box_position"], nb, wp.vec2f)
+                self._check_arr("box_position", a["box_position"], nb, wp.vec3f)
 
     # -- binding ---------------------------------------------------------
 
-    def bind(self, position: wp.array, yaw: "wp.array | None" = None,
+    def bind(self, position: wp.array, orientation: "wp.array | None" = None,
              half_extents: "wp.array | None" = None,
              box_position: "wp.array | None" = None) -> None:
         """Bind stable sim buffers (required before :meth:`step`).
 
-        ``position`` is the ``[E]`` vec2f agent-position buffer driving
-        progress. When a box-collision checker is enabled, ``yaw`` and
-        ``half_extents`` (``[E * max_boxes]``) are required too; with
+        ``position`` is the ``[E]`` vec3f agent-position buffer driving
+        progress. When a box-collision checker is enabled, ``orientation``
+        (``[E * max_boxes]`` quatf box poses) and
+        ``half_extents`` (``[E * max_boxes]`` vec2f, planar boxes) are
+        required too; with
         ``max_boxes == 1`` the same ``position`` buffer serves as the box
         positions, otherwise pass a separate ``box_position``
-        ``[E * max_boxes]`` buffer. May be called before or after the first
+        ``[E * max_boxes]`` vec3f buffer. May be called before or after the
+        first
         ``generate()``; rebinding replaces the previous binding.
 
         Do NOT rebind after capturing ``step()`` into a sim graph: the
@@ -300,15 +303,15 @@ class Course:
         rebind only before (re)capturing.
         """
         needs_boxes = self._needs_boxes()
-        if needs_boxes and (yaw is None or half_extents is None):
+        if needs_boxes and (orientation is None or half_extents is None):
             raise RuntimeError(
-                "this course has a collision checker: bind yaw and "
+                "this course has a collision checker: bind orientation and "
                 "half_extents as well")
         if needs_boxes and self._cfg.max_boxes > 1 and box_position is None:
             raise RuntimeError(
                 "max_boxes > 1: bind a separate box_position "
                 "[E*max_boxes] buffer")
-        args = {"position": position, "yaw": yaw,
+        args = {"position": position, "orientation": orientation,
                 "half_extents": half_extents,
                 "box_position": box_position}
         self._validate_bind_args(args)
@@ -324,7 +327,8 @@ class Course:
         if self.collision is not None:
             box_pos = a["box_position"] if a["box_position"] is not None \
                 else a["position"]
-            self.collision.bind_inputs(box_pos, a["yaw"], a["half_extents"])
+            self.collision.bind_inputs(box_pos, a["orientation"],
+                                       a["half_extents"])
 
     # -- generation + refresh --------------------------------------------
 
@@ -415,7 +419,7 @@ class Course:
             self.checkpoints = CheckpointSet.from_gates(self.result)
             if cfg.post_radius > 0.0:
                 n_slots = int(self.result.position.shape[0])  # E * max_gates
-                self._posts = wp.zeros(2 * n_slots, dtype=wp.vec2f,
+                self._posts = wp.zeros(2 * n_slots, dtype=wp.vec3f,
                                        device=self._device)
                 self._fill_posts()
                 self.collision = DiscChecker(

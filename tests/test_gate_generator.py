@@ -12,11 +12,12 @@ def _make_rng(num_envs: int, seed: int = 0, device: str = "cpu"):
 
 def _assert_generated_gate_fields_are_finite(gates, num_envs: int, max_gates: int):
     fields = [
-        to_t(gates.position).view(num_envs, max_gates, 2),
-        to_t(gates.tangent).view(num_envs, max_gates, 2),
-        to_t(gates.normal).view(num_envs, max_gates, 2),
-        to_t(gates.left).view(num_envs, max_gates, 2),
-        to_t(gates.right).view(num_envs, max_gates, 2),
+        to_t(gates.position).view(num_envs, max_gates, 3),
+        to_t(gates.tangent).view(num_envs, max_gates, 3),
+        to_t(gates.orientation).view(num_envs, max_gates, 4),
+        to_t(gates.half_size).view(num_envs, max_gates, 1),
+        to_t(gates.left).view(num_envs, max_gates, 3),
+        to_t(gates.right).view(num_envs, max_gates, 3),
     ]
     count = to_t(gates.count)
     for e in range(num_envs):
@@ -161,7 +162,7 @@ def test_point_family_gate_generators_emit_finite_native_gates(generator, orderi
         gate_radius=0.0,
     )
     gates = GateGenerator(cfg, _make_rng(E, seed=31)).generate(E)
-    position = to_t(gates.position).view(E, G, 2)
+    position = to_t(gates.position).view(E, G, 3)
     count = to_t(gates.count)
     valid = to_t(gates.valid).bool()
 
@@ -265,7 +266,7 @@ def test_gate_generator_independent_instances_with_same_seed_are_deterministic()
     gates_a = GateGenerator(cfg, _make_rng(E, seed=211)).generate(E)
     gates_b = GateGenerator(cfg, _make_rng(E, seed=211)).generate(E)
 
-    for name in ("position", "tangent", "normal", "left", "right"):
+    for name in ("position", "tangent", "orientation", "half_size", "left", "right"):
         a = to_t(getattr(gates_a, name))
         b = to_t(getattr(gates_b, name))
         assert torch.allclose(a, b, equal_nan=True)
@@ -341,7 +342,7 @@ def test_gate_generator_sphere_solve_repairs_overlapping_native_points(monkeypat
 
     raw_cfg = GateGenConfig(gate_solve_iters=0, **base_kwargs)
     raw_gates = GateGenerator(raw_cfg, _make_rng(1, seed=53)).generate()
-    raw_position = to_t(raw_gates.position).view(1, 4, 2)
+    raw_position = to_t(raw_gates.position).view(1, 4, 3)
     raw_distance = torch.linalg.norm(raw_position[0, 1] - raw_position[0, 0])
     assert to_t(raw_gates.valid).bool().tolist() == [False]
     assert raw_distance < 0.2
@@ -349,8 +350,8 @@ def test_gate_generator_sphere_solve_repairs_overlapping_native_points(monkeypat
     solved_cfg = GateGenConfig(gate_solve_iters=1, **base_kwargs)
     gates = GateGenerator(solved_cfg, _make_rng(1, seed=53)).generate()
 
-    position = to_t(gates.position).view(1, 4, 2)
-    tangent = to_t(gates.tangent).view(1, 4, 2)
+    position = to_t(gates.position).view(1, 4, 3)
+    tangent = to_t(gates.tangent).view(1, 4, 3)
     distance = torch.linalg.norm(position[0, 1] - position[0, 0])
     assert to_t(gates.valid).bool().tolist() == [True]
     assert distance >= 0.2 - 1e-6
@@ -381,7 +382,7 @@ def test_point_family_gate_generators_cuda_capture_reuses_output(generator):
     assert second is first
     assert second.position.ptr == ptr
 
-    position = to_t(second.position).view(E, G, 2)
+    position = to_t(second.position).view(E, G, 3)
     count = to_t(second.count)
     valid = to_t(second.valid).bool()
     assert valid.all()
@@ -457,7 +458,7 @@ def test_distinct_per_env_seeds_produce_diverse_gates():
         device="cpu", gate_radius=0.0,
     )
     gates = GateGenerator(cfg, _make_rng(E, seed=17)).generate(E)
-    position = to_t(gates.position).view(E, G, 2)
+    position = to_t(gates.position).view(E, G, 3)
     count = to_t(gates.count)
 
     diverse = False
@@ -538,18 +539,21 @@ def test_gate_width_flows_through_real_generator_without_crossing_bars():
         device="cpu", gate_radius=0.02, gate_width=width,
     )
     gates = GateGenerator(cfg, _make_rng(E, seed=123)).generate(E)
-    pos = to_t(gates.position).view(E, G, 2)
-    nrm = to_t(gates.normal).view(E, G, 2)
-    left = to_t(gates.left).view(E, G, 2)
-    right = to_t(gates.right).view(E, G, 2)
+    pos = to_t(gates.position).view(E, G, 3)
+    tan = to_t(gates.tangent).view(E, G, 3)
+    left = to_t(gates.left).view(E, G, 3)
+    right = to_t(gates.right).view(E, G, 3)
     count = to_t(gates.count)
     valid = to_t(gates.valid).bool()
 
     assert valid.any(), "expected at least one valid env with gate_width > 0"
     for e in range(E):
         c = int(count[e])
-        assert torch.allclose(left[e, :c], pos[e, :c] + 0.5 * width * nrm[e, :c], atol=1e-5)
-        assert torch.allclose(right[e, :c], pos[e, :c] - 0.5 * width * nrm[e, :c], atol=1e-5)
+        # Planar left axis: the unit tangent rotated +90 deg about +z.
+        nrm = torch.stack([-tan[e, :c, 1], tan[e, :c, 0],
+                           torch.zeros(c)], dim=-1)
+        assert torch.allclose(left[e, :c], pos[e, :c] + 0.5 * width * nrm, atol=1e-5)
+        assert torch.allclose(right[e, :c], pos[e, :c] - 0.5 * width * nrm, atol=1e-5)
         if valid[e]:
             for i in range(c):
                 for j in range(i + 1, c):

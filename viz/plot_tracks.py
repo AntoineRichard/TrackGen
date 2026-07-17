@@ -68,7 +68,7 @@ def make_rng(num_envs: int, seed: int, device: str) -> PerEnvSeededRNG:
 
 
 def _np_loop(arr2d: torch.Tensor) -> tuple[np.ndarray, np.ndarray]:
-    """Tensor [N, 2] -> closed (x, y) numpy arrays with NaN rows dropped."""
+    """Tensor [N, 2 or 3] -> closed (x, y) numpy arrays with NaN rows dropped."""
     pts = arr2d.detach().cpu().numpy()
     pts = pts[np.isfinite(pts).all(axis=1)]
     if pts.shape[0] == 0:
@@ -78,23 +78,23 @@ def _np_loop(arr2d: torch.Tensor) -> tuple[np.ndarray, np.ndarray]:
 
 
 def _track_to_torch(track: Track) -> tuple:
-    """Convert Track wp.array fields to shaped [E, N_max, 2] torch tensors.
+    """Convert Track wp.array fields to shaped [E, N_max, 3] torch tensors.
 
     Returns (center_t, outer_t, inner_t, valid_t, count_t) where the first three
-    are [E, N_max, 2] float32 tensors and valid_t / count_t are [E] tensors.
+    are [E, N_max, 3] float32 tensors (z = 0) and valid_t / count_t are [E] tensors.
     Handles both wp.array (new) and torch.Tensor (oracle/legacy) Track fields.
     """
     if isinstance(track.center, torch.Tensor):
         # Oracle / legacy Track: fields are already torch tensors with [E, N, 2] shape.
         return track.center, track.outer, track.inner, track.valid, track.count
-    # wp.array Track: center is flat [E*N_max] vec2f; count is [E] int32.
+    # wp.array Track: center is flat [E*N_max] vec3f (z = 0); count is [E] int32.
     count_t = wp.to_torch(track.valid)   # [E] int32 (used for E)
     E = count_t.shape[0]
     flat_size = track.center.shape[0]    # E * N_max
     N_max = flat_size // E
-    center_t = wp.to_torch(track.center).view(E, N_max, 2)
-    outer_t = wp.to_torch(track.outer).view(E, N_max, 2)
-    inner_t = wp.to_torch(track.inner).view(E, N_max, 2)
+    center_t = wp.to_torch(track.center).view(E, N_max, 3)
+    outer_t = wp.to_torch(track.outer).view(E, N_max, 3)
+    inner_t = wp.to_torch(track.inner).view(E, N_max, 3)
     valid_t = wp.to_torch(track.valid).bool()
     count_t2 = wp.to_torch(track.count)
     return center_t, outer_t, inner_t, valid_t, count_t2

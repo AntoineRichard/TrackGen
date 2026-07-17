@@ -32,15 +32,20 @@ from track_gen.collision import CollisionChecker
 def _make_boxes(track, E, B, n_max, seed, device):
     """Random oriented boxes near each env's centerline (mixed in/out of band)."""
     r = np.random.default_rng(seed)
-    center = track.center.numpy().reshape(E, n_max, 2)
+    center = track.center.numpy().reshape(E, n_max, 3)[..., :2]
     count = track.count.numpy().astype(np.int64)
     idx = r.integers(0, np.maximum(count, 1)[:, None], size=(E, B))
     pos = center[np.arange(E)[:, None], idx] + r.normal(0.0, 0.05, (E, B, 2))
     pos = np.nan_to_num(pos, nan=0.0).astype(np.float32)  # invalid envs: dummy origin
-    yaw = r.uniform(0.0, 2.0 * np.pi, E * B).astype(np.float32)
+    pos3 = np.concatenate([pos.reshape(-1, 2),
+                           np.zeros((E * B, 1), np.float32)], axis=1)
+    yaw = r.uniform(0.0, 2.0 * np.pi, E * B)
+    quat = np.zeros((E * B, 4), np.float32)
+    quat[:, 2] = np.sin(0.5 * yaw)
+    quat[:, 3] = np.cos(0.5 * yaw)
     he = r.uniform(0.005, 0.05, (E * B, 2)).astype(np.float32)
-    return (wp.array(pos.reshape(-1, 2), dtype=wp.vec2f, device=device),
-            wp.array(yaw, dtype=wp.float32, device=device),
+    return (wp.array(pos3, dtype=wp.vec3f, device=device),
+            wp.array(quat, dtype=wp.quatf, device=device),
             wp.array(he, dtype=wp.vec2f, device=device))
 
 

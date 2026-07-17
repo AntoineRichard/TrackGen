@@ -21,25 +21,26 @@ def _course(collision="segments", **kw):
 
 
 def _buffers():
-    pos = wp.zeros(E, dtype=wp.vec2f, device="cpu")
-    yaw = wp.zeros(E, dtype=wp.float32, device="cpu")
+    pos = wp.zeros(E, dtype=wp.vec3f, device="cpu")
+    orient = wp.array(np.tile(np.array([0.0, 0.0, 0.0, 1.0], np.float32), (E, 1)),
+                      dtype=wp.quatf, device="cpu")
     he = wp.array(np.full((E, 2), 0.02, np.float32), dtype=wp.vec2f, device="cpu")
-    return pos, yaw, he
+    return pos, orient, he
 
 
 def _drive(course, pos_buf, n_steps=40):
     """Walk each valid env along its own centerline; returns final events."""
     track = course.result
     n_max = track.outer.shape[0] // E
-    center = np.nan_to_num(track.center.numpy().reshape(E, n_max, 2), nan=0.0)
+    center = np.nan_to_num(track.center.numpy().reshape(E, n_max, 3), nan=0.0)
     counts = track.count.numpy()
     ev = None
     for s in range(n_steps):
-        step_pos = np.zeros((E, 2), np.float32)
+        step_pos = np.zeros((E, 3), np.float32)
         for e in range(E):
             m = max(int(counts[e]), 1)
             step_pos[e] = center[e, (s * 3) % m]
-        wp.copy(pos_buf, wp.array(step_pos, dtype=wp.vec2f, device="cpu"))
+        wp.copy(pos_buf, wp.array(step_pos, dtype=wp.vec3f, device="cpu"))
         ev = course.step().events
     return ev
 
@@ -65,8 +66,8 @@ def test_import_surface():
 
 def test_end_to_end_generate_step_reset():
     course = _course()
-    pos, yaw, he = _buffers()
-    course.bind(position=pos, yaw=yaw, half_extents=he)
+    pos, orient, he = _buffers()
+    course.bind(position=pos, orientation=orient, half_extents=he)
     track = course.generate()
     assert track is course.result
     assert course.progress is not None and course.collision is not None
@@ -98,8 +99,8 @@ def test_end_to_end_generate_step_reset():
 
 def test_regenerate_refreshes_everything():
     course = _course()
-    pos, yaw, he = _buffers()
-    course.bind(position=pos, yaw=yaw, half_extents=he)
+    pos, orient, he = _buffers()
+    course.bind(position=pos, orientation=orient, half_extents=he)
     course.generate()
     counts1 = course.checkpoints.count.numpy().copy()
     # 40 steps (like _drive's default): envs whose bead count is divisible by the
@@ -118,18 +119,18 @@ def test_regenerate_refreshes_everything():
 
 def test_sdf_mode_rebakes_on_regenerate():
     course = _course(collision="sdf", sdf_resolution=64)
-    pos, yaw, he = _buffers()
-    course.bind(position=pos, yaw=yaw, half_extents=he)
+    pos, orient, he = _buffers()
+    course.bind(position=pos, orientation=orient, half_extents=he)
     track = course.generate()
     valid = track.valid.numpy().astype(bool)
     e = int(np.argmax(valid))
     n_max = track.outer.shape[0] // E
 
     def probe(kind):
-        center = np.nan_to_num(track.center.numpy().reshape(E, n_max, 2), nan=0.0)
-        p = np.zeros((E, 2), np.float32)
-        p[e] = center[e, 0] if kind == "inside" else np.array([50.0, 50.0])
-        wp.copy(pos, wp.array(p, dtype=wp.vec2f, device="cpu"))
+        center = np.nan_to_num(track.center.numpy().reshape(E, n_max, 3), nan=0.0)
+        p = np.zeros((E, 3), np.float32)
+        p[e] = center[e, 0] if kind == "inside" else np.array([50.0, 50.0, 0.0])
+        wp.copy(pos, wp.array(p, dtype=wp.vec3f, device="cpu"))
         return int(course.step().contacts.oob.numpy()[e])
 
     assert probe("inside") == 0
@@ -198,31 +199,31 @@ def test_seed_array_validation():
 
 def test_bind_validates_eagerly_before_generate():
     course = _course(collision="segments")
-    bad = wp.zeros(E + 3, dtype=wp.vec2f, device="cpu")
-    _, yaw, he = _buffers()
+    bad = wp.zeros(E + 3, dtype=wp.vec3f, device="cpu")
+    _, orient, he = _buffers()
     with pytest.raises(ValueError, match="position"):
-        course.bind(position=bad, yaw=yaw, half_extents=he)
+        course.bind(position=bad, orientation=orient, half_extents=he)
 
 
 def test_facade_matches_manual_wiring():
     from track_gen.progress import ProgressTracker
     course = _course(collision="segments")
-    pos, yaw, he = _buffers()
-    course.bind(position=pos, yaw=yaw, half_extents=he)
+    pos, orient, he = _buffers()
+    course.bind(position=pos, orientation=orient, half_extents=he)
     track = course.generate()
     # Twin tracker on the SAME checkpoint set, driven with the same buffer.
     twin = ProgressTracker(course.checkpoints, position=pos)
     all_mask = wp.array(np.ones(E, np.int32), dtype=wp.int32, device="cpu")
     course.reset(all_mask)
     n_max = track.outer.shape[0] // E
-    center = np.nan_to_num(track.center.numpy().reshape(E, n_max, 2), nan=0.0)
+    center = np.nan_to_num(track.center.numpy().reshape(E, n_max, 3), nan=0.0)
     counts = track.count.numpy()
     for s in range(25):
-        step_pos = np.zeros((E, 2), np.float32)
+        step_pos = np.zeros((E, 3), np.float32)
         for e in range(E):
             m = max(int(counts[e]), 1)
             step_pos[e] = center[e, (s * 3) % m]
-        wp.copy(pos, wp.array(step_pos, dtype=wp.vec2f, device="cpu"))
+        wp.copy(pos, wp.array(step_pos, dtype=wp.vec3f, device="cpu"))
         ev_f = course.step().events
         ev_t = twin.update()
         np.testing.assert_array_equal(ev_f.passed.numpy(), ev_t.passed.numpy())

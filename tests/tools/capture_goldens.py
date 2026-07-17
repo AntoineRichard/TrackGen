@@ -2,6 +2,8 @@
 
 Run once BEFORE the vec3f migration; the .npz is committed and never regenerated.
 """
+from pathlib import Path
+
 import numpy as np
 
 from track_gen._src.gate_generator import GateGenerator
@@ -9,11 +11,15 @@ from track_gen._src.rng_utils import PerEnvSeededRNG
 from track_gen._src.track_generator import TrackGenerator
 from track_gen._src.types import GateGenConfig, TrackGenConfig
 
-GOLDEN = "tests/goldens/pre_vec3f.npz"
+GOLDEN = str(Path(__file__).resolve().parents[1] / "goldens" / "pre_vec3f.npz")
 GENERATORS = ("bezier", "hull", "polar", "voronoi", "checkpoint")
 TRACK_FIELDS = ("outer", "center", "inner", "tangent", "normal", "arclen",
                 "length", "valid", "count", "winding")
 GATE_FIELDS = ("position", "tangent", "left", "right", "valid", "count")
+# Fields captured as vec2f pre-migration that are vec3f (z = 0) post-migration;
+# the golden test compares their xy columns exactly and checks z separately.
+VEC3_TRACK = ("outer", "center", "inner", "tangent", "normal")
+VEC3_GATES = ("position", "tangent", "left", "right")
 
 
 def capture() -> dict:

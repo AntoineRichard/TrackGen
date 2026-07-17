@@ -437,7 +437,7 @@ def test_generate_tracks_constant_spacing_smoother_and_valid():
     # Track fields are wp.array; convert to tensors for assertions.
     valid_t = to_t(cs.valid).bool()
     count_t = to_t(cs.count)
-    center_t = wp.to_torch(cs.center).view(E, N_max, 2)
+    center_t = wp.to_torch(cs.center).view(E, N_max, 3)[..., :2]
     assert valid_t.float().mean() > 0.95
     assert valid_t.any(), "need valid tracks to measure smoothness"
     jag = _mean_jag(center_t, count_t)[valid_t]
@@ -469,7 +469,7 @@ def test_inflate_warp_constant_spacing(dev):
                          output_mode="constant_spacing", spacing=0.30, N_max=n_max, device=dev)
     tr = wpl.inflate_warp(buf_wp, cfg, valid=gv_wp, count=cnt_wp)
     # Track fields are wp.array; convert to tensors for assertions.
-    center_t = wp.to_torch(tr.center).view(E, n_max, 2)
+    center_t = wp.to_torch(tr.center).view(E, n_max, 3)[..., :2]
     count_t = to_t(tr.count)
     valid_t = to_t(tr.valid).bool()
     length_t = to_t(tr.length)

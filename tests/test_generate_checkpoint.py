@@ -112,7 +112,7 @@ def test_checkpoint_shape_variety_non_degenerate():
     E = 128
     cfg, gen, track = _run(seed=0, E=E, relax_iters=40)
     N_max = int(cfg.N_max)
-    center = wp.to_torch(track.center).cpu().numpy().reshape(E, N_max, 2)
+    center = wp.to_torch(track.center).cpu().numpy().reshape(E, N_max, 3)[..., :2]
     count = wp.to_torch(track.count).cpu().numpy().astype(int)
     valid = wp.to_torch(track.valid).cpu().numpy().astype(bool)
     comp = np.array([

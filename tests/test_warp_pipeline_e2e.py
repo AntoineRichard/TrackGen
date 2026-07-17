@@ -47,7 +47,7 @@ def test_generate_tracks_e2e(dev):
     assert isinstance(track, Track)
     for field in ("outer", "center", "inner", "tangent", "normal"):
         arr = to_t(getattr(track, field))
-        assert arr.shape == (E * N_max, 2), f"{field} shape mismatch: {arr.shape}"
+        assert arr.shape == (E * N_max, 3), f"{field} shape mismatch: {arr.shape}"
     arclen_t = to_t(track.arclen)
     assert arclen_t.shape == (E * N_max,), f"arclen shape: {arclen_t.shape}"
     length_t = to_t(track.length)
@@ -68,8 +68,8 @@ def test_generate_tracks_e2e(dev):
             f"{dev} count out of range: {cv.min()}..{cv.max()} (N_max={N_max})"
 
     # --- constant width on valid envs, count-aware ---
-    center_th = to_t(track.center).view(E, N_max, 2)
-    outer_th = to_t(track.outer).view(E, N_max, 2)
+    center_th = to_t(track.center).view(E, N_max, 3)[..., :2]
+    outer_th = to_t(track.outer).view(E, N_max, 3)[..., :2]
     w = torch.linalg.norm(outer_th - center_th, dim=-1)  # [E, N_max], NaN-padded
     real = torch.isfinite(center_th).all(dim=-1)  # [E, N_max] real-point mask
     for e in torch.nonzero(valid_t, as_tuple=False).flatten().tolist():

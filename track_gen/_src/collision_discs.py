@@ -1,16 +1,17 @@
 """Box-vs-disc obstacle collision (gate posts, physical cones, point props).
 
-``DiscChecker`` binds a flat ``[E * D]`` vec2f array of disc centers (ALIASED
+``DiscChecker`` binds a flat ``[E * D]`` vec3f array of disc centers (ALIASED
 — regenerated buffers are seen automatically) and a scalar radius, and
 queries batches of oriented boxes exactly like ``CollisionChecker``: hit iff
-the distance from the disc center to the solid OBB is <= radius. The deepest
+the xy distance from the disc center to the solid planar OBB is <= radius
+(collision semantics stay planar; z is ignored). The deepest
 penetrating disc is reported per box.
 
 Disc validity: pass ``count`` (``[E]`` int32 real discs per env) OR rely on
 NaN-marked padding (slots with NaN centers are skipped) — GateSequence
 ``left``/``right`` arrays interleaved as posts work out of the box.
 
-Per-step inputs can be bound at construction (``position=``, ``yaw=``,
+Per-step inputs can be bound at construction (``position=``, ``orientation=``,
 ``half_extents=`` — all three or none): ``query()`` then takes no arguments
 and reads the stable buffers in place (the CUDA-graph pattern).
 
@@ -25,8 +26,9 @@ from dataclasses import dataclass
 import warp as wp
 
 from .collision_geom import (
-    _is_nan2,
+    _is_nan3,
     _point_to_local_box_dist,
+    _quat_yaw,
     _rot2,
     _safe_normalize2,
 )
@@ -78,13 +80,13 @@ class DiscContact:
 
 @wp.kernel
 def _box_query_discs_k(
-    discs: wp.array(dtype=wp.vec2f),
+    discs: wp.array(dtype=wp.vec3f),
     disc_count: wp.array(dtype=wp.int32),
     d_max: int,
     radius: float,
     max_boxes: int,
-    position: wp.array(dtype=wp.vec2f),
-    yaw: wp.array(dtype=wp.float32),
+    position: wp.array(dtype=wp.vec3f),
+    orientation: wp.array(dtype=wp.quatf),
     half_extents: wp.array(dtype=wp.vec2f),
     out_hit: wp.array(dtype=wp.int32),
     out_disc: wp.array(dtype=wp.int32),
@@ -95,15 +97,17 @@ def _box_query_discs_k(
     e = t // max_boxes
     nan2 = wp.vec2f(wp.nan, wp.nan)
 
-    pos = position[t]
-    if _is_nan2(pos) == 1:
+    pos3 = position[t]
+    if _is_nan3(pos3) == 1:
         out_hit[t] = 0
         out_disc[t] = -1
         out_depth[t] = 0.0
         out_nearest[t] = nan2
         return
+    # Planar collision semantics: project the box pose to xy.
+    pos = wp.vec2f(pos3[0], pos3[1])
 
-    yw = yaw[t]
+    yw = _quat_yaw(orientation[t])
     he = half_extents[t]
     nd = disc_count[e]
     if nd > d_max:
@@ -113,8 +117,9 @@ def _box_query_discs_k(
     best = int(-1)
     best_pen = float(0.0)
     for i in range(nd):
-        c = discs[base + i]
-        if _is_nan2(c) == 0:
+        c3 = discs[base + i]
+        if _is_nan3(c3) == 0:
+            c = wp.vec2f(c3[0], c3[1])
             q = _rot2(-yw, c - pos)
             pen = radius - _point_to_local_box_dist(q, he)
             if pen >= 0.0 and (best == -1 or pen > best_pen):
@@ -128,7 +133,8 @@ def _box_query_discs_k(
         out_nearest[t] = nan2
         return
 
-    c = discs[base + best]
+    c3 = discs[base + best]
+    c = wp.vec2f(c3[0], c3[1])
     # Closest point of the box to the disc center, then step back onto the
     # disc boundary toward it (approximate when c is deep inside the box).
     q = _rot2(-yw, c - pos)
@@ -151,12 +157,12 @@ class DiscChecker:
                  num_envs: "int | None" = None,
                  count: "wp.array | None" = None,
                  position: "wp.array | None" = None,
-                 yaw: "wp.array | None" = None,
+                 orientation: "wp.array | None" = None,
                  half_extents: "wp.array | None" = None) -> None:
         """Bind a flat disc array and allocate the result buffers.
 
         Args:
-            discs: ``[E * D]`` vec2f disc centers (ALIASED — regenerated
+            discs: ``[E * D]`` vec3f disc centers (ALIASED — regenerated
                 buffers are seen automatically). NaN-marked slots are
                 skipped.
             radius: shared disc radius (> 0); every disc uses the same
@@ -167,7 +173,7 @@ class DiscChecker:
                 ``count.shape[0]`` when both are given.
             count: optional ``[E]`` int32 real-disc-count array (aliased,
                 stable user buffer); omit to rely on NaN padding alone.
-            position, yaw, half_extents: optional constructor binding
+            position, orientation, half_extents: optional constructor binding
                 (all-or-none); equivalent to calling :meth:`bind_inputs`
                 right after construction.
         """
@@ -203,11 +209,12 @@ class DiscChecker:
                                   device=self._device)
 
         self._bound = None
-        if position is not None or yaw is not None or half_extents is not None:
-            if position is None or yaw is None or half_extents is None:
+        if position is not None or orientation is not None \
+                or half_extents is not None:
+            if position is None or orientation is None or half_extents is None:
                 raise ValueError(
-                    "bind all of position/yaw/half_extents or none")
-            self.bind_inputs(position, yaw, half_extents)
+                    "bind all of position/orientation/half_extents or none")
+            self.bind_inputs(position, orientation, half_extents)
 
         n = E * self._B
         dev = self._device
@@ -218,24 +225,24 @@ class DiscChecker:
             nearest=wp.zeros(n, dtype=wp.vec2f, device=dev),
         )
 
-    def _validate_inputs(self, position, yaw, half_extents) -> None:
+    def _validate_inputs(self, position, orientation, half_extents) -> None:
         n = (self._E * self._B,)
-        _check_arr("position", position, n, wp.vec2f, self._device)
-        _check_arr("yaw", yaw, n, wp.float32, self._device)
+        _check_arr("position", position, n, wp.vec3f, self._device)
+        _check_arr("orientation", orientation, n, wp.quatf, self._device)
         _check_arr("half_extents", half_extents, n, wp.vec2f, self._device)
 
-    def bind_inputs(self, position: wp.array, yaw: wp.array,
+    def bind_inputs(self, position: wp.array, orientation: wp.array,
                     half_extents: wp.array) -> None:
         """Bind (or rebind) stable per-step input buffers (validated once).
 
         After binding, ``query()`` takes no arguments and reads these arrays
         in place; same-``.ptr`` rule applies under CUDA-graph capture.
         """
-        self._validate_inputs(position, yaw, half_extents)
-        self._bound = (position, yaw, half_extents)
+        self._validate_inputs(position, orientation, half_extents)
+        self._bound = (position, orientation, half_extents)
 
     def query(self, position: "wp.array | None" = None,
-              yaw: "wp.array | None" = None,
+              orientation: "wp.array | None" = None,
               half_extents: "wp.array | None" = None) -> DiscContact:
         """Box-vs-disc contact for ``E * max_boxes`` boxes.
 
@@ -244,21 +251,22 @@ class DiscChecker:
         SAME arrays must be used at capture and every replay.
         """
         if self._bound is not None:
-            if position is not None or yaw is not None or half_extents is not None:
+            if position is not None or orientation is not None \
+                    or half_extents is not None:
                 raise ValueError(
                     "checker inputs are bound; call query() with no arguments")
-            position, yaw, half_extents = self._bound
+            position, orientation, half_extents = self._bound
         else:
-            if position is None or yaw is None or half_extents is None:
+            if position is None or orientation is None or half_extents is None:
                 raise ValueError(
-                    "checker is not bound; pass position, yaw and "
+                    "checker is not bound; pass position, orientation and "
                     "half_extents to query()")
-            self._validate_inputs(position, yaw, half_extents)
+            self._validate_inputs(position, orientation, half_extents)
         c = self._contact
         wp.launch(
             _box_query_discs_k, dim=self._E * self._B,
             inputs=[self._discs, self._count, self._D, self._radius, self._B,
-                    position, yaw, half_extents,
+                    position, orientation, half_extents,
                     c.hit, c.disc, c.depth, c.nearest],
             device=self._device,
         )

@@ -50,9 +50,9 @@ def test_hull_end_to_end(dev):
     track = gen.generate(E)
     assert isinstance(track, Track)
 
-    center = to_t(track.center).view(E, N_max, 2)
-    outer = to_t(track.outer).view(E, N_max, 2)
-    inner = to_t(track.inner).view(E, N_max, 2)
+    center = to_t(track.center).view(E, N_max, 3)[..., :2]
+    outer = to_t(track.outer).view(E, N_max, 3)[..., :2]
+    inner = to_t(track.inner).view(E, N_max, 3)[..., :2]
     valid = to_t(track.valid).bool()
     count = to_t(track.count)
 
@@ -133,8 +133,8 @@ def test_hull_differs_from_bezier_cpu():
     base = dict(num_envs=E, num_points=128, N_max=256, device="cpu")
     gb = TrackGenerator(TrackGenConfig(generator="bezier", **base), _make_rng(E, device="cpu"))
     gh = TrackGenerator(TrackGenConfig(generator="hull", **base), _make_rng(E, device="cpu"))
-    cb = to_t(gb.generate(E).center).view(E, 256, 2)
-    ch = to_t(gh.generate(E).center).view(E, 256, 2)
+    cb = to_t(gb.generate(E).center).view(E, 256, 3)[..., :2]
+    ch = to_t(gh.generate(E).center).view(E, 256, 3)[..., :2]
     # Same seeds, same coordinate scale, but the shapes must differ substantially.
     fin = torch.isfinite(cb).all(dim=-1) & torch.isfinite(ch).all(dim=-1)
     assert fin.any()

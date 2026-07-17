@@ -302,16 +302,22 @@ def test_gate_sequence_construct_from_warp_arrays_and_clone():
     wp.init()
     E, G = 2, 8
     gates = GateSequence(
-        position=wp.zeros(E * G, dtype=wp.vec2f),
-        tangent=wp.zeros(E * G, dtype=wp.vec2f),
-        normal=wp.zeros(E * G, dtype=wp.vec2f),
-        left=wp.zeros(E * G, dtype=wp.vec2f),
-        right=wp.zeros(E * G, dtype=wp.vec2f),
+        position=wp.zeros(E * G, dtype=wp.vec3f),
+        tangent=wp.zeros(E * G, dtype=wp.vec3f),
+        orientation=wp.zeros(E * G, dtype=wp.quatf),
+        half_size=wp.zeros(E * G, dtype=wp.float32),
+        left=wp.zeros(E * G, dtype=wp.vec3f),
+        right=wp.zeros(E * G, dtype=wp.vec3f),
         valid=wp.zeros(E, dtype=wp.int32),
         count=wp.zeros(E, dtype=wp.int32),
     )
     assert gates.position.shape == (E * G,)
-    assert gates.tangent.dtype == wp.vec2f
+    assert gates.tangent.dtype == wp.vec3f
+    assert gates.orientation.dtype == wp.quatf
+    assert gates.half_size.dtype == wp.float32
+    assert not hasattr(gates, "normal")
     clone = gates.clone()
     assert clone is not gates
     assert clone.position.ptr != gates.position.ptr
+    assert clone.orientation.ptr != gates.orientation.ptr
+    assert clone.half_size.ptr != gates.half_size.ptr

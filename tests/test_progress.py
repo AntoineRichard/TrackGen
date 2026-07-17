@@ -16,25 +16,32 @@ def _ring_checkpoints(device="cpu"):
     [0.3, 1.3]; tangents CCW. Agent paths on the unit circle cross them."""
     from track_gen.checkpoints import CheckpointSet
     ang = np.deg2rad([0.0, 90.0, 180.0, 270.0])
-    radial = np.stack([np.cos(ang), np.sin(ang)], axis=1).astype(np.float32)
-    tang = np.stack([-np.sin(ang), np.cos(ang)], axis=1).astype(np.float32)
+    zeros = np.zeros((len(ang), 1), np.float32)
+    radial = np.concatenate(
+        [np.stack([np.cos(ang), np.sin(ang)], axis=1).astype(np.float32), zeros],
+        axis=1)
+    tang = np.concatenate(
+        [np.stack([-np.sin(ang), np.cos(ang)], axis=1).astype(np.float32), zeros],
+        axis=1)
 
-    def v2(a):
-        return wp.array(a, dtype=wp.vec2f, device=device)
+    def v3(a):
+        return wp.array(a, dtype=wp.vec3f, device=device)
 
     return CheckpointSet(
-        position=v2(radial * 1.0),
-        left=v2(radial * 0.3),
-        right=v2(radial * 1.3),
-        tangent=v2(tang),
+        position=v3(radial * 1.0),
+        left=v3(radial * 0.3),
+        right=v3(radial * 1.3),
+        tangent=v3(tang),
+        up_half=wp.array(np.full(len(ang), 1.0e30, np.float32),
+                         dtype=wp.float32, device=device),
         count=wp.array(np.array([M], np.int32), dtype=wp.int32, device=device),
     )
 
 
 def _pos(deg):
     a = np.deg2rad(deg)
-    return wp.array(np.array([[np.cos(a), np.sin(a)]], np.float32),
-                    dtype=wp.vec2f, device="cpu")
+    return wp.array(np.array([[np.cos(a), np.sin(a), 0.0]], np.float32),
+                    dtype=wp.vec3f, device="cpu")
 
 
 def test_ccw_lap_event_trace():
@@ -127,7 +134,7 @@ def test_reset_mask_validation():
 
 def test_bound_mode_equivalence_and_errors():
     from track_gen.progress import ProgressTracker
-    buf = wp.zeros(E, dtype=wp.vec2f, device="cpu")
+    buf = wp.zeros(E, dtype=wp.vec3f, device="cpu")
     bound = ProgressTracker(_ring_checkpoints(), position=buf)
     free = ProgressTracker(_ring_checkpoints())
     with pytest.raises(ValueError, match="bound"):
@@ -155,8 +162,9 @@ def test_constructor_rejects_mismatched_checkpoint_set():
     from track_gen.checkpoints import CheckpointSet
     from track_gen.progress import ProgressTracker
     good = _ring_checkpoints()
-    bad = CheckpointSet(position=good.position, left=wp.zeros(2, dtype=wp.vec2f, device="cpu"),
-                        right=good.right, tangent=good.tangent, count=good.count)
+    bad = CheckpointSet(position=good.position, left=wp.zeros(2, dtype=wp.vec3f, device="cpu"),
+                        right=good.right, tangent=good.tangent,
+                        up_half=good.up_half, count=good.count)
     with pytest.raises(ValueError, match="left"):
         ProgressTracker(bad)
 
@@ -177,16 +185,16 @@ def test_zero_checkpoint_env_is_inert():
 def test_bind_after_construction_and_rebind():
     from track_gen.progress import ProgressTracker
     tracker = ProgressTracker(_ring_checkpoints())
-    buf = wp.zeros(E, dtype=wp.vec2f, device="cpu")
+    buf = wp.zeros(E, dtype=wp.vec3f, device="cpu")
     tracker.bind(buf)
     wp.copy(buf, _pos(-22.5))
     tracker.update()                     # bound mode now works
     wp.copy(buf, _pos(22.5))
     ev = tracker.update()
     assert int(ev.passed.numpy()[0]) == 1
-    buf2 = wp.zeros(E, dtype=wp.vec2f, device="cpu")
+    buf2 = wp.zeros(E, dtype=wp.vec3f, device="cpu")
     tracker.bind(buf2)                   # rebinding replaces
     wp.copy(buf2, _pos(67.5))
     tracker.update()                     # reads buf2, no error
     with pytest.raises(ValueError, match="position"):
-        tracker.bind(wp.zeros(E + 1, dtype=wp.vec2f, device="cpu"))
+        tracker.bind(wp.zeros(E + 1, dtype=wp.vec3f, device="cpu"))

@@ -39,7 +39,7 @@ def test_winding_matches_shoelace_sign_on_generated_tracks():
         counts = track.count.numpy()
         winding = track.winding.numpy()
         n_max = track.center.shape[0] // E
-        center = track.center.numpy().reshape(E, n_max, 2)
+        center = track.center.numpy().reshape(E, n_max, 3)[..., :2]
         for e in range(E):
             if not valid[e]:
                 continue
@@ -66,9 +66,9 @@ def test_normal_direction_is_winding_conditional_on_generated_tracks():
         counts = track.count.numpy()
         winding = track.winding.numpy()
         n_max = track.center.shape[0] // E
-        center = track.center.numpy().reshape(E, n_max, 2)
-        outer = track.outer.numpy().reshape(E, n_max, 2)
-        normal = track.normal.numpy().reshape(E, n_max, 2)
+        center = track.center.numpy().reshape(E, n_max, 3)[..., :2]
+        outer = track.outer.numpy().reshape(E, n_max, 3)[..., :2]
+        normal = track.normal.numpy().reshape(E, n_max, 3)[..., :2]
         for e in range(E):
             if not valid[e]:
                 continue

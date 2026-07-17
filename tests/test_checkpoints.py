@@ -13,7 +13,7 @@ RC, RI, RO = 1.0, 0.7, 1.3  # annulus fixture center/inner/outer radii
 
 def _center_perimeter(track, e=0):
     m = int(track.count.numpy()[e])
-    center = track.center.numpy().reshape(-1, N_MAX, 2)[e, :m]
+    center = track.center.numpy().reshape(-1, N_MAX, 3)[e, :m, :2]
     seg = np.linalg.norm(np.roll(center, -1, axis=0) - center, axis=1)
     return float(seg.sum())
 
@@ -34,8 +34,9 @@ def test_sampler_snap_count_and_positions_on_centerline():
     n = int(cps.count.numpy()[0])
     assert n == int(round(perim / spacing))
     np.testing.assert_allclose(sampler.step.numpy()[0], perim / n, rtol=1e-5)
-    pos = cps.position.numpy().reshape(-1, 2)[:n]
-    np.testing.assert_allclose(np.linalg.norm(pos, axis=1), RC, atol=2e-3)
+    pos = cps.position.numpy().reshape(-1, 3)[:n]
+    assert np.all(pos[:, 2] == 0.0)
+    np.testing.assert_allclose(np.linalg.norm(pos[:, :2], axis=1), RC, atol=2e-3)
 
 
 def test_crossing_segments_are_road_cross_sections():
@@ -43,10 +44,12 @@ def test_crossing_segments_are_road_cross_sections():
     track = make_annulus_track(E=1, n=N)
     cps = CheckpointSampler(track, spacing=0.8).sample()
     n = int(cps.count.numpy()[0])
-    left = cps.left.numpy().reshape(-1, 2)[:n]
-    right = cps.right.numpy().reshape(-1, 2)[:n]
-    pos = cps.position.numpy().reshape(-1, 2)[:n]
-    tang = cps.tangent.numpy().reshape(-1, 2)[:n]
+    left = cps.left.numpy().reshape(-1, 3)[:n, :2]
+    right = cps.right.numpy().reshape(-1, 3)[:n, :2]
+    pos = cps.position.numpy().reshape(-1, 3)[:n, :2]
+    tang = cps.tangent.numpy().reshape(-1, 3)[:n, :2]
+    up_half = cps.up_half.numpy()[:n]
+    assert np.all(up_half >= 1.0e29)  # track cross-sections: unbounded (_BIG)
     # left on the inner circle, right on the outer circle, radially aligned
     # with the checkpoint position (annulus: cross-sections are radial).
     np.testing.assert_allclose(np.linalg.norm(left, axis=1), RI, atol=2e-3)
@@ -67,9 +70,12 @@ def test_nan_padding_and_degenerate_env():
     counts = cps.count.numpy()
     assert counts[0] > 0 and counts[1] == 0
     M = sampler._M
-    pos = cps.position.numpy().reshape(-1, 2)
+    pos = cps.position.numpy().reshape(-1, 3)
     assert np.all(np.isnan(pos[counts[0]:M]))       # env 0 tail
     assert np.all(np.isnan(pos[M:2 * M]))           # env 1: all NaN
+    up_half = cps.up_half.numpy()
+    assert np.all(np.isnan(up_half[counts[0]:M]))
+    assert np.all(np.isnan(up_half[M:2 * M]))
 
 
 def test_from_gates_is_zero_copy_alias():
@@ -86,6 +92,7 @@ def test_from_gates_is_zero_copy_alias():
     assert cps.left.ptr == seq.left.ptr
     assert cps.right.ptr == seq.right.ptr
     assert cps.tangent.ptr == seq.tangent.ptr
+    assert cps.up_half.ptr == seq.half_size.ptr
     assert cps.count.ptr == seq.count.ptr
     # Mutating the gate buffer is visible through the set (aliasing contract).
     wp.copy(seq.position, wp.zeros_like(seq.position))

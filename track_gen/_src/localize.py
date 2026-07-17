@@ -41,7 +41,7 @@ from dataclasses import dataclass
 
 import warp as wp
 
-from .collision_geom import _is_nan2, _safe_normalize2
+from .collision_geom import _is_nan3, _safe_normalize3
 from .runtime import _BIG, _check_arr, _init, _sync
 from .types import Track
 
@@ -69,6 +69,10 @@ class TrackFrame:
         is generator-dependent (CCW loops have ``outer`` on the right, CW
         loops on the left); ``|n| <= half_width`` means on the road either
         way. NaN for NaN positions and degenerate tracks.
+    n_up : wp.array
+        ``float32`` — signed vertical offset in the roll-free frame at the
+        foot point; equals ``position.z`` for planar tracks. NaN for NaN
+        positions and degenerate tracks.
     segment : wp.array
         ``int32`` — index ``i`` of the nearest centerline segment (from point
         ``i`` to ``i + 1``, the closing segment being ``count[e] - 1 -> 0``).
@@ -77,6 +81,7 @@ class TrackFrame:
 
     s: wp.array
     n: wp.array
+    n_up: wp.array
     segment: wp.array
 
     def clone(self) -> "TrackFrame":
@@ -84,22 +89,24 @@ class TrackFrame:
         return TrackFrame(
             s=wp.clone(self.s),
             n=wp.clone(self.n),
+            n_up=wp.clone(self.n_up),
             segment=wp.clone(self.segment),
         )
 
 
 @wp.kernel
 def _localize_k(
-    center: wp.array(dtype=wp.vec2f),
+    center: wp.array(dtype=wp.vec3f),
     arclen: wp.array(dtype=wp.float32),
     length: wp.array(dtype=wp.float32),
     count: wp.array(dtype=wp.int32),
     n_max: int,
     warm_window: int,
-    position: wp.array(dtype=wp.vec2f),
+    position: wp.array(dtype=wp.vec3f),
     last_seg: wp.array(dtype=wp.int32),
     out_s: wp.array(dtype=wp.float32),
     out_n: wp.array(dtype=wp.float32),
+    out_n_up: wp.array(dtype=wp.float32),
     out_seg: wp.array(dtype=wp.int32),
 ):
     e = wp.tid()
@@ -107,11 +114,12 @@ def _localize_k(
     m = count[e]
     if m > n_max:
         m = n_max
-    if _is_nan2(p) == 1 or m < 3:
+    if _is_nan3(p) == 1 or m < 3:
         # NaN position pauses the env; degenerate track has no frame. Both
         # drop the warm-start memory so the next real query does a full scan.
         out_s[e] = wp.nan
         out_n[e] = wp.nan
+        out_n_up[e] = wp.nan
         out_seg[e] = -1
         last_seg[e] = -1
         return
@@ -164,17 +172,25 @@ def _localize_k(
     if best_i + 1 < m:
         seg_end = arclen[base + best_i + 1]
 
-    # Signed offset: for a unit tangent t, (t.y, -t.x) points to the RIGHT
-    # of the direction of travel (increasing s). Which boundary that is
-    # depends on the loop's winding — see the TrackFrame docstring.
-    t = _safe_normalize2(ab)
-    n_hat = wp.vec2f(t[1], -t[0])
+    # Signed offsets in the roll-free frame at the foot point: right_hat =
+    # t x up_world points to the RIGHT of the direction of travel (increasing
+    # s) — (t.y, -t.x, 0) for planar tangents. Which boundary that is depends
+    # on the loop's winding — see the TrackFrame docstring.
+    t = _safe_normalize3(ab)
+    right_hat = wp.cross(t, wp.vec3f(0.0, 0.0, 1.0))   # (t.y, -t.x, 0)
+    rl = wp.length(right_hat)
+    if rl < 1.0e-6:
+        right_hat = wp.vec3f(1.0, 0.0, 0.0)            # vertical segment guard
+    else:
+        right_hat = right_hat / rl
+    up_hat = wp.cross(right_hat, t)
 
     s = seg_start + best_u * (seg_end - seg_start)
     if s >= length[e]:
         s = s - length[e]  # u == 1 on the closing segment: wrap the seam
     out_s[e] = s
-    out_n[e] = wp.dot(p - q, n_hat)
+    out_n[e] = wp.dot(p - q, right_hat)
+    out_n_up[e] = wp.dot(p - q, up_hat)
     out_seg[e] = best_i
     last_seg[e] = best_i
 
@@ -227,7 +243,7 @@ class TrackLocalizer:
                 an int >= 1 scans only the ``2 * warm_window + 1`` segments
                 centered on the previous result (per env; the first query
                 after construction or ``reset()`` is always a full scan).
-            position: optional stable ``[E]`` vec2f buffer to bind at
+            position: optional stable ``[E]`` vec3f buffer to bind at
                 construction (bound mode); equivalent to calling
                 :meth:`bind` right after construction.
         """
@@ -257,14 +273,15 @@ class TrackLocalizer:
         self._frame = TrackFrame(
             s=wp.zeros(E, dtype=wp.float32, device=dev),
             n=wp.zeros(E, dtype=wp.float32, device=dev),
+            n_up=wp.zeros(E, dtype=wp.float32, device=dev),
             segment=wp.zeros(E, dtype=wp.int32, device=dev),
         )
 
     def _validate_position(self, position) -> None:
-        _check_arr("position", position, (self._E,), wp.vec2f, self._device)
+        _check_arr("position", position, (self._E,), wp.vec3f, self._device)
 
     def bind(self, position: wp.array) -> None:
-        """Bind (or rebind) a stable ``[E]`` vec2f position buffer.
+        """Bind (or rebind) a stable ``[E]`` vec3f position buffer.
 
         After binding, ``query()`` takes no arguments and reads the buffer
         in place. Validation happens here, once; the array must keep the
@@ -277,7 +294,7 @@ class TrackLocalizer:
         """Localize the batch; returns the localizer's preallocated frame.
 
         Bound mode (constructed with ``position=`` or after :meth:`bind`):
-        call with no arguments. Per-call mode: pass the ``[E]`` vec2f
+        call with no arguments. Per-call mode: pass the ``[E]`` vec3f
         position array — the SAME array (identical ``.ptr``) must be used
         across a CUDA-graph capture and its replays.
 
@@ -312,7 +329,7 @@ class TrackLocalizer:
         wp.launch(
             _localize_k, dim=self._E,
             inputs=[t.center, t.arclen, t.length, t.count, self._n_max,
-                    self._W, pos, self._last, f.s, f.n, f.segment],
+                    self._W, pos, self._last, f.s, f.n, f.n_up, f.segment],
             device=self._device,
         )
         _sync(self._device)
@@ -338,7 +355,7 @@ class TrackLocalizer:
 
 @wp.kernel
 def _curvature_raw_k(
-    center: wp.array(dtype=wp.vec2f),
+    center: wp.array(dtype=wp.vec3f),
     count: wp.array(dtype=wp.int32),
     n_max: int,
     out_kappa: wp.array(dtype=wp.float32),
@@ -362,7 +379,10 @@ def _curvature_raw_k(
     v1 = center[base + i] - center[base + ip]
     v2 = center[base + j] - center[base + i]
     # Discrete curvature: turn angle at point i over the mean incident arc.
-    ang = wp.atan2(v1[0] * v2[1] - v1[1] * v2[0], wp.dot(v1, v2))
+    # The +z cross component keeps the documented CCW-positive sign and is
+    # bit-identical to the legacy 2D scalar cross for planar (z = 0) tracks.
+    cr = wp.cross(v1, v2)
+    ang = wp.atan2(cr[2], wp.dot(v1, v2))
     ds = 0.5 * (wp.length(v1) + wp.length(v2))
     out_kappa[tid] = ang / wp.max(ds, 1.0e-9)
 

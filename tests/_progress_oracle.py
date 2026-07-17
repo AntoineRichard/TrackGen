@@ -4,27 +4,50 @@ from __future__ import annotations
 import numpy as np
 
 
-def _cross(u, v):
-    return u[0] * v[1] - u[1] * v[0]
-
-
-def segs_cross(a, b, c, d):
-    """Strict proper intersection of segments ab and cd."""
-    ab, cd = b - a, d - c
-    o1, o2 = _cross(ab, c - a), _cross(ab, d - a)
-    o3, o4 = _cross(cd, a - c), _cross(cd, b - c)
-    return (((o1 > 0) and (o2 < 0)) or ((o1 < 0) and (o2 > 0))) and \
-           (((o3 > 0) and (o4 < 0)) or ((o3 < 0) and (o4 > 0)))
+def plane_pass(prev, pos, fwd, l, r, v_half):
+    """Mirror of collision_geom._plane_pass: swept segment vs bounded gate
+    plane. +1 forward pass, -1 backward crossing inside the opening, else 0."""
+    prev = np.asarray(prev, float)
+    pos = np.asarray(pos, float)
+    fwd = np.asarray(fwd, float)
+    l = np.asarray(l, float)
+    r = np.asarray(r, float)
+    mid = 0.5 * (l + r)
+    d0 = float(np.dot(prev - mid, fwd))
+    d1 = float(np.dot(pos - mid, fwd))
+    crossing = 0
+    if d0 < 0.0 and d1 >= 0.0:
+        crossing = 1
+    if d0 > 0.0 and d1 <= 0.0:
+        crossing = -1
+    if crossing == 0:
+        return 0
+    t = d0 / (d0 - d1)
+    pi = prev + (pos - prev) * t
+    u_axis = r - l
+    u_len = float(np.linalg.norm(u_axis))
+    if u_len < 1.0e-12:
+        return 0
+    u_axis = u_axis / u_len
+    u = float(np.dot(pi - mid, u_axis))
+    v_axis = np.cross(u_axis, fwd)
+    vl = float(np.linalg.norm(v_axis))
+    v_axis = v_axis / vl if vl >= 1.0e-12 else v_axis * 0.0
+    v = float(np.dot(pi - mid, v_axis))
+    if abs(u) <= 0.5 * u_len and abs(v) <= v_half:
+        return crossing
+    return 0
 
 
 class ProgressOracle:
     """One env's worth of checkpoints; mirrors the kernel's update order."""
 
-    def __init__(self, positions, lefts, rights, tangents):
+    def __init__(self, positions, lefts, rights, tangents, up_halfs):
         self.p = np.asarray(positions, float)
         self.l = np.asarray(lefts, float)
         self.r = np.asarray(rights, float)
         self.t = np.asarray(tangents, float)
+        self.v = np.asarray(up_halfs, float)
         self.n = len(self.p)
         self.reset()
 
@@ -40,14 +63,16 @@ class ProgressOracle:
               "wrong_checkpoint": -1}
         g = self.next
         if self.prev is not None and self.n >= 1:
-            if segs_cross(self.prev, pos, self.l[g], self.r[g]):
-                if np.dot(pos - self.prev, self.t[g]) > 0:
-                    ev["passed"] = 1
-                    ev["checkpoint_passed"] = g
-                else:
-                    ev["wrong_way"] = 1
+            c = plane_pass(self.prev, pos, self.t[g], self.l[g], self.r[g],
+                           self.v[g])
+            if c == 1:
+                ev["passed"] = 1
+                ev["checkpoint_passed"] = g
+            elif c == -1:
+                ev["wrong_way"] = 1
             for i in range(self.n):
-                if i != g and segs_cross(self.prev, pos, self.l[i], self.r[i]):
+                if i != g and plane_pass(self.prev, pos, self.t[i], self.l[i],
+                                         self.r[i], self.v[i]) != 0:
                     ev["wrong_checkpoint"] = i
                     break
         if ev["passed"]:

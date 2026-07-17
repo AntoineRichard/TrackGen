@@ -99,7 +99,7 @@ def test_inflate_warp_matches_oracle(dev):
     if "cuda" in _dev:
         wp.synchronize()
     rs_ref = wp.to_torch(_out_wp).view(E, n_max, 2)  # [E, N, 2] torch
-    rs_wp = wp.to_torch(got.center).view(E, n_max, 2)
+    rs_wp = wp.to_torch(got.center).view(E, n_max, 3)[..., :2]
 
     # Oracle expects torch tensor [E, N, 2]; give it rs_ref.
     cs_center_t = wp.to_torch(cs_center_wp).view(E, n_max, 2)
@@ -118,10 +118,10 @@ def test_inflate_warp_matches_oracle(dev):
         # tangent/normal/outer/inner: compare interior real points against the oracle.
         interior = slice(1, c - 1)
         field_map = {
-            "tangent": (wp.to_torch(got.tangent).view(E, n_max, 2), T),
-            "normal": (wp.to_torch(got.normal).view(E, n_max, 2), Nrm),
-            "outer": (wp.to_torch(got.outer).view(E, n_max, 2), outer),
-            "inner": (wp.to_torch(got.inner).view(E, n_max, 2), inner),
+            "tangent": (wp.to_torch(got.tangent).view(E, n_max, 3)[..., :2], T),
+            "normal": (wp.to_torch(got.normal).view(E, n_max, 3)[..., :2], Nrm),
+            "outer": (wp.to_torch(got.outer).view(E, n_max, 3)[..., :2], outer),
+            "inner": (wp.to_torch(got.inner).view(E, n_max, 3)[..., :2], inner),
         }
         for field, (g_full, ref) in field_map.items():
             g = g_full
@@ -131,8 +131,8 @@ def test_inflate_warp_matches_oracle(dev):
             assert torch.isnan(g[e, c:]).all(), f"{field} pad env{e} on {dev}"
 
         # Frame relations over ALL real points (seam included).
-        tg_full = wp.to_torch(got.tangent).view(E, n_max, 2)
-        ng_full = wp.to_torch(got.normal).view(E, n_max, 2)
+        tg_full = wp.to_torch(got.tangent).view(E, n_max, 3)[..., :2]
+        ng_full = wp.to_torch(got.normal).view(E, n_max, 3)[..., :2]
         tg = tg_full[e, :c]
         ng = ng_full[e, :c]
         assert torch.allclose(torch.linalg.norm(tg, dim=-1),
@@ -144,8 +144,8 @@ def test_inflate_warp_matches_oracle(dev):
         left = torch.stack([-tg[:, 1], tg[:, 0]], dim=-1)
         assert torch.allclose(ng, left, atol=1e-4), f"normal=left(tangent) env{e} on {dev}"
         hw = float(config.half_width)
-        outer_e = wp.to_torch(got.outer).view(E, n_max, 2)[e, :c]
-        inner_e = wp.to_torch(got.inner).view(E, n_max, 2)[e, :c]
+        outer_e = wp.to_torch(got.outer).view(E, n_max, 3)[..., :2][e, :c]
+        inner_e = wp.to_torch(got.inner).view(E, n_max, 3)[..., :2][e, :c]
         rs_e = rs_wp[e, :c]
         assert torch.allclose(outer_e, rs_e + hw * ng, atol=1e-4) or \
                torch.allclose(outer_e, rs_e - hw * ng, atol=1e-4), \

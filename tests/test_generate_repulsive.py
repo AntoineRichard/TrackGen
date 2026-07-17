@@ -245,7 +245,7 @@ def test_repulsive_contract_through_tail(dev):
 
     # (d) NaN-tail contract on the post-tail Track: finite < count[e], NaN after.
     n_max = track.center.shape[0] // E
-    center = to_t(track.center).view(E, n_max, 2)
+    center = to_t(track.center).view(E, n_max, 3)[..., :2]
     count = to_t(track.count)
     valid = to_t(track.valid).bool()
     assert count.shape == (E,) and valid.shape == (E,)

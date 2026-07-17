@@ -14,10 +14,11 @@ def test_annulus_track_layout():
     assert track.outer.shape == (E * N_max,)
     counts = track.count.numpy()
     assert list(counts) == [128, 100, 64]
-    outer = track.outer.numpy().reshape(E, N_max, 2)
-    # Real points on radius 1.3, NaN tail past count[e].
-    r = np.linalg.norm(outer[1, :100], axis=1)
+    outer = track.outer.numpy().reshape(E, N_max, 3)
+    # Real points on radius 1.3 with z = 0, NaN tail past count[e].
+    r = np.linalg.norm(outer[1, :100, :2], axis=1)
     np.testing.assert_allclose(r, 1.3, atol=1e-5)
+    assert np.all(outer[1, :100, 2] == 0.0)
     assert np.all(np.isnan(outer[1, 100:]))
 
 
@@ -46,8 +47,11 @@ def test_oracle_in_hole_and_crossing():
 
 
 def test_make_boxes_nan_padding():
-    pos, yaw, he = make_boxes(2, 4, {(0, 0): (1.0, 0.0, 0.1, 0.05, 0.02)})
-    p = pos.numpy().reshape(-1, 2)
+    pos, quat, he = make_boxes(2, 4, {(0, 0): (1.0, 0.0, 0.1, 0.05, 0.02)})
+    p = pos.numpy().reshape(-1, 3)
     assert not np.any(np.isnan(p[0]))
+    assert p[0, 2] == 0.0
     assert np.all(np.isnan(p[1:]))
-    assert yaw.numpy()[0] == np.float32(0.1)
+    q = quat.numpy().reshape(-1, 4)
+    np.testing.assert_allclose(
+        q[0], [0.0, 0.0, np.sin(0.05), np.cos(0.05)], atol=1e-7)

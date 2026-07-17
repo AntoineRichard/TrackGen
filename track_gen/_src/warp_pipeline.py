@@ -1336,9 +1336,14 @@ class InflateScratch:
     kappa:         [E*N_max] float32 Menger curvature scratch for frame_curvature
                    (kappa is computed by the kernel but unused by the pipeline).
     w:             [E*N_max] float32 per-point half-width buffer for validity_inplace.
+    out2/ctr2/inn2/tan2/nrm2: [E*N_max] vec2f staging buffers the 2D pipeline
+                   kernels write; the final lift kernel copies them into the
+                   public vec3f Track buffers with z = 0. None only on legacy
+                   constructions that never reach inflate_warp.
     """
 
-    __slots__ = ("area_a", "area_b", "kappa", "w")
+    __slots__ = ("area_a", "area_b", "kappa", "w",
+                 "out2", "ctr2", "inn2", "tan2", "nrm2")
 
     def __init__(
         self,
@@ -1346,11 +1351,21 @@ class InflateScratch:
         area_b: "wp.array",
         kappa: "wp.array",
         w: "wp.array",
+        out2: "wp.array | None" = None,
+        ctr2: "wp.array | None" = None,
+        inn2: "wp.array | None" = None,
+        tan2: "wp.array | None" = None,
+        nrm2: "wp.array | None" = None,
     ) -> None:
         self.area_a = area_a
         self.area_b = area_b
         self.kappa = kappa
         self.w = w
+        self.out2 = out2
+        self.ctr2 = ctr2
+        self.inn2 = inn2
+        self.tan2 = tan2
+        self.nrm2 = nrm2
 
 
 class _Scratch:
@@ -1436,7 +1451,8 @@ class _Scratch:
 def _inflate_warp_alloc(config, generator_spec=None):
     """Allocate a Track with pre-sized wp.array buffers for TrackGenerator.__init__.
 
-    Sizes: outer/center/inner/tangent/normal are [E*N_max] vec2f; arclen is
+    Sizes: outer/center/inner/tangent/normal are [E*N_max] vec3f (z = 0, lifted
+    from the internal 2D pipeline); arclen is
     [E*N_max] float32; length/valid/count are [E] float32/int32/int32.
     These are the flat storage shapes — reshape via wp bridge at the boundary.
 
@@ -1458,11 +1474,11 @@ def _inflate_warp_alloc(config, generator_spec=None):
     dev = str(config.device)
     flat = E * n_max
     track = Track(
-        outer=wp.empty(flat, dtype=wp.vec2f, device=dev),
-        center=wp.empty(flat, dtype=wp.vec2f, device=dev),
-        inner=wp.empty(flat, dtype=wp.vec2f, device=dev),
-        tangent=wp.empty(flat, dtype=wp.vec2f, device=dev),
-        normal=wp.empty(flat, dtype=wp.vec2f, device=dev),
+        outer=wp.empty(flat, dtype=wp.vec3f, device=dev),
+        center=wp.empty(flat, dtype=wp.vec3f, device=dev),
+        inner=wp.empty(flat, dtype=wp.vec3f, device=dev),
+        tangent=wp.empty(flat, dtype=wp.vec3f, device=dev),
+        normal=wp.empty(flat, dtype=wp.vec3f, device=dev),
         arclen=wp.empty(flat, dtype=wp.float32, device=dev),
         length=wp.empty(E, dtype=wp.float32, device=dev),
         valid=wp.empty(E, dtype=wp.int32, device=dev),
@@ -1509,6 +1525,11 @@ def _inflate_warp_alloc(config, generator_spec=None):
         area_b=wp.zeros(E, dtype=wp.float32, device=dev),
         kappa=wp.empty(flat, dtype=wp.float32, device=dev),
         w=wp.empty(flat, dtype=wp.float32, device=dev),
+        out2=wp.empty(flat, dtype=wp.vec2f, device=dev),
+        ctr2=wp.empty(flat, dtype=wp.vec2f, device=dev),
+        inn2=wp.empty(flat, dtype=wp.vec2f, device=dev),
+        tan2=wp.empty(flat, dtype=wp.vec2f, device=dev),
+        nrm2=wp.empty(flat, dtype=wp.vec2f, device=dev),
     )
     scratch = _Scratch(
         inflate=inflate, generator_spec=generator_spec, gen=gen, relax=relax,
@@ -1527,6 +1548,23 @@ def _inflate_warp_alloc(config, generator_spec=None):
     return track, scratch
 
 
+@wp.kernel
+def _lift_track_k(
+    out2: wp.array(dtype=wp.vec2f), ctr2: wp.array(dtype=wp.vec2f),
+    inn2: wp.array(dtype=wp.vec2f), tan2: wp.array(dtype=wp.vec2f),
+    nrm2: wp.array(dtype=wp.vec2f),
+    outer: wp.array(dtype=wp.vec3f), center: wp.array(dtype=wp.vec3f),
+    inner: wp.array(dtype=wp.vec3f), tangent: wp.array(dtype=wp.vec3f),
+    normal: wp.array(dtype=wp.vec3f),
+):
+    t = wp.tid()
+    outer[t] = wp.vec3f(out2[t][0], out2[t][1], 0.0)
+    center[t] = wp.vec3f(ctr2[t][0], ctr2[t][1], 0.0)
+    inner[t] = wp.vec3f(inn2[t][0], inn2[t][1], 0.0)
+    tangent[t] = wp.vec3f(tan2[t][0], tan2[t][1], 0.0)
+    normal[t] = wp.vec3f(nrm2[t][0], nrm2[t][1], 0.0)
+
+
 def inflate_warp(center, config, out=None,
                  valid: "wp.array | None" = None,
                  count: "wp.array | None" = None,
@@ -1536,10 +1574,11 @@ def inflate_warp(center, config, out=None,
     Writes results into out's wp.array Track buffers (or allocates a fresh Track).
     All inputs are wp.arrays; center is a flat [E*n_max] vec2f wp.array.
 
-    resample_uniform writes DIRECTLY into out.center; all downstream stages read
-    out.center. The offset stage writes DIRECTLY into out.outer/out.inner.
-    Scratch (area_a/area_b/kappa/w) is passed in via scratch (zero allocation on owned
-    path) or allocated here (the out=None / standalone path).
+    The 2D stages operate on the vec2f staging buffers (scratch.inflate.ctr2/
+    tan2/nrm2/out2/inn2); a final lift kernel copies them into the public vec3f
+    Track buffers with z = 0.
+    Scratch (area_a/area_b/kappa/w + staging) is passed in via scratch (zero
+    allocation on owned path) or allocated here (the out=None / standalone path).
 
     Constant-spacing path (count provided — the pipeline always uses this):
         center is [E*n_max] vec2f flat, NaN-padded (real points in [0, count[e])).
@@ -1585,11 +1624,11 @@ def inflate_warp(center, config, out=None,
     # --- Allocate Track + scratch when not pre-provided ---
     if out is None:
         out = Track(
-            outer=wp.empty(flat, dtype=wp.vec2f, device=dev),
-            center=wp.empty(flat, dtype=wp.vec2f, device=dev),
-            inner=wp.empty(flat, dtype=wp.vec2f, device=dev),
-            tangent=wp.empty(flat, dtype=wp.vec2f, device=dev),
-            normal=wp.empty(flat, dtype=wp.vec2f, device=dev),
+            outer=wp.empty(flat, dtype=wp.vec3f, device=dev),
+            center=wp.empty(flat, dtype=wp.vec3f, device=dev),
+            inner=wp.empty(flat, dtype=wp.vec3f, device=dev),
+            tangent=wp.empty(flat, dtype=wp.vec3f, device=dev),
+            normal=wp.empty(flat, dtype=wp.vec3f, device=dev),
             arclen=wp.empty(flat, dtype=wp.float32, device=dev),
             length=wp.empty(E, dtype=wp.float32, device=dev),
             valid=wp.empty(E, dtype=wp.int32, device=dev),
@@ -1605,6 +1644,11 @@ def inflate_warp(center, config, out=None,
                     area_b=wp.zeros(E, dtype=wp.float32, device=dev),
                     kappa=wp.empty(flat, dtype=wp.float32, device=dev),
                     w=wp.empty(flat, dtype=wp.float32, device=dev),
+                    out2=wp.empty(flat, dtype=wp.vec2f, device=dev),
+                    ctr2=wp.empty(flat, dtype=wp.vec2f, device=dev),
+                    inn2=wp.empty(flat, dtype=wp.vec2f, device=dev),
+                    tan2=wp.empty(flat, dtype=wp.vec2f, device=dev),
+                    nrm2=wp.empty(flat, dtype=wp.vec2f, device=dev),
                 ),
             )
     else:
@@ -1613,6 +1657,16 @@ def inflate_warp(center, config, out=None,
             "inflate_warp(out=...) requires a pre-allocated scratch=_Scratch(...) "
             "(zero-allocation contract); pass scratch alongside out."
         )
+
+    # The 2D pipeline kernels write the vec2f staging buffers; the lift at the
+    # end copies them into the public vec3f Track arrays with z = 0.
+    stag = scratch.inflate
+    if stag.ctr2 is None:
+        stag.out2 = wp.empty(flat, dtype=wp.vec2f, device=dev)
+        stag.ctr2 = wp.empty(flat, dtype=wp.vec2f, device=dev)
+        stag.inn2 = wp.empty(flat, dtype=wp.vec2f, device=dev)
+        stag.tan2 = wp.empty(flat, dtype=wp.vec2f, device=dev)
+        stag.nrm2 = wp.empty(flat, dtype=wp.vec2f, device=dev)
 
     # --- Allocate resample scan scratch (seg/s) from _Scratch or standalone ---
     if scratch.cs_seg is not None and scratch.cs_s is not None:
@@ -1631,8 +1685,8 @@ def inflate_warp(center, config, out=None,
         cnt_wp = wp.empty(E, dtype=wp.int32, device=dev)
         wp.launch(_fill_i32_k, dim=E, inputs=[cnt_wp, N], device=dev)
 
-        # 1. resample_uniform: writes directly into out.center.
-        resample_uniform(center, out.center, N, cnt_wp,
+        # 1. resample_uniform: writes into the vec2f center staging buffer.
+        resample_uniform(center, stag.ctr2, N, cnt_wp,
                          seg_wp=rs_seg_wp, s_wp=rs_s_wp, device=dev)
         _sync(dev)
 
@@ -1646,8 +1700,8 @@ def inflate_warp(center, config, out=None,
         # --- Constant-spacing path: variable count per env, NaN-padded output ---
         cnt_wp = count  # wp.int32 array
 
-        # 1. resample_uniform: writes directly into out.center.
-        resample_uniform(center, out.center, n_max, cnt_wp,
+        # 1. resample_uniform: writes into the vec2f center staging buffer.
+        resample_uniform(center, stag.ctr2, n_max, cnt_wp,
                          seg_wp=rs_seg_wp, s_wp=rs_s_wp, device=dev)
         _sync(dev)
 
@@ -1657,17 +1711,17 @@ def inflate_warp(center, config, out=None,
         # Track.count == per-env real point count.
         wp.copy(out.count, cnt_wp)
 
-    # 2. frame + curvature — in-place directly into out.tangent/out.normal.
-    frame_curvature(out.center, out.tangent, out.normal, scratch.kappa, cnt_wp)
+    # 2. frame + curvature — into the vec2f tangent/normal staging buffers.
+    frame_curvature(stag.ctr2, stag.tan2, stag.nrm2, scratch.kappa, cnt_wp)
 
     # 3. cumulative arc length + total length — in-place into out.arclen/out.length.
-    _arclength(out.center, out.arclen, out.length, cnt_wp)
+    _arclength(stag.ctr2, out.arclen, out.length, cnt_wp)
 
     # 3b. signed loop winding (+1 CCW / -1 CW / 0 degenerate) — in-place into out.winding.
-    _winding(out.center, out.winding, cnt_wp)
+    _winding(stag.ctr2, out.winding, cnt_wp)
 
-    # 4. offset to outer/inner borders — in-place directly into out.outer/out.inner.
-    offset(out.center, out.normal, hw, out.outer, out.inner,
+    # 4. offset to outer/inner borders — into the vec2f outer/inner staging buffers.
+    offset(stag.ctr2, stag.nrm2, hw, stag.out2, stag.inn2,
            scratch.area_a, scratch.area_b, cnt_wp)
 
     # 5. per-track validity gate (in-place: writes directly into out.valid).
@@ -1683,8 +1737,16 @@ def inflate_warp(center, config, out=None,
     has_border = 1 if _bc else 0
 
     # validity_inplace writes into out.valid directly.
-    validity_inplace(out.center, scratch.w, cnt_wp, gv_wp,
-                     out.outer, out.inner, has_border, n_max, out.valid, config)
+    validity_inplace(stag.ctr2, scratch.w, cnt_wp, gv_wp,
+                     stag.out2, stag.inn2, has_border, n_max, out.valid, config)
+
+    # 6. Lift the vec2f staging buffers into the public vec3f Track arrays
+    # (z = 0; NaN xy padding lifts to NaN-xy with z = 0).
+    wp.launch(_lift_track_k, dim=flat,
+              inputs=[stag.out2, stag.ctr2, stag.inn2, stag.tan2, stag.nrm2,
+                      out.outer, out.center, out.inner, out.tangent, out.normal],
+              device=dev)
+    _sync(dev)
 
     return out
 

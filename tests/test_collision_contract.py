@@ -28,10 +28,10 @@ def test_query_validation():
     bad_pos, bad_yaw, _ = make_boxes(2, 3, {})
     with pytest.raises(ValueError, match="position"):
         checker.query(bad_pos, yaw, he)
-    with pytest.raises(ValueError, match="yaw"):
+    with pytest.raises(ValueError, match="orientation"):
         checker.query(pos, bad_yaw, he)
-    with pytest.raises(ValueError, match="yaw"):
-        checker.query(pos, pos, he)  # wrong dtype (vec2f where float32 expected)
+    with pytest.raises(ValueError, match="orientation"):
+        checker.query(pos, pos, he)  # wrong dtype (vec3f where quatf expected)
     with pytest.raises(ValueError, match="position"):
         checker.query(np.zeros((8, 2), np.float32), yaw, he)  # not a wp.array
 
@@ -60,7 +60,7 @@ def test_constructor_binding_parity_with_disc_checker():
     pos, yaw, he = make_boxes(2, 2, {(0, 0): (1.0, 0.0, 0.0, 0.05, 0.03)})
     free = CollisionChecker(track, max_boxes=2)
     bound = CollisionChecker(track, max_boxes=2,
-                             position=pos, yaw=yaw, half_extents=he)
+                             position=pos, orientation=yaw, half_extents=he)
     r_free = free.query(pos, yaw, he).clone()
     r_bound = bound.query()
     np.testing.assert_array_equal(r_bound.oob.numpy(), r_free.oob.numpy())
@@ -102,7 +102,7 @@ def test_generated_tracks_property_oracle():
     n_max = track.outer.shape[0] // E
     checker = CollisionChecker(track, max_boxes=4)
     rng = np.random.default_rng(0)
-    center = track.center.numpy().reshape(E, n_max, 2)
+    center = track.center.numpy().reshape(E, n_max, 3)[..., :2]
     slots = {}
     for e in range(E):
         if not valid[e]:
@@ -118,8 +118,8 @@ def test_generated_tracks_property_oracle():
     contact = checker.query(pos, yaw, he)
     oob = contact.oob.numpy()
     dist = contact.distance.numpy()
-    inner_np = track.inner.numpy().reshape(E, n_max, 2)
-    outer_np = track.outer.numpy().reshape(E, n_max, 2)
+    inner_np = track.inner.numpy().reshape(E, n_max, 3)[..., :2]
+    outer_np = track.outer.numpy().reshape(E, n_max, 3)[..., :2]
     checked = 0
     for (e, b), (px, py, yw, hx, hy) in slots.items():
         m = int(counts[e])

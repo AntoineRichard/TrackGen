@@ -27,9 +27,9 @@ from dataclasses import dataclass
 import numpy as np
 import warp as wp
 
-from .collision_geom import _safe_normalize2
+from .collision_geom import _safe_normalize3
 from .props import _scan_boundary_k
-from .runtime import _init, _sync
+from .runtime import _BIG, _init, _sync
 from .types import GateSequence, Track
 
 
@@ -45,13 +45,18 @@ class CheckpointSet:
     Attributes
     ----------
     position : wp.array
-        ``vec2f`` checkpoint centers. NaN past ``count[e]``.
+        ``vec3f`` checkpoint centers. NaN past ``count[e]``.
     left : wp.array
-        ``vec2f`` crossing-segment endpoints (gate left / track inner).
+        ``vec3f`` crossing-segment endpoints (gate left / track inner).
     right : wp.array
-        ``vec2f`` crossing-segment endpoints (gate right / track outer).
+        ``vec3f`` crossing-segment endpoints (gate right / track outer).
     tangent : wp.array
-        ``vec2f`` unit forward (travel) directions.
+        ``vec3f`` unit forward (travel) directions.
+    up_half : wp.array
+        ``[E * M]`` ``float32`` vertical half-openings for the crossing test:
+        ``_BIG`` (unbounded) for track cross-sections, and the gate's
+        ``half_size`` for gate-derived sets (aliases
+        ``GateSequence.half_size``). NaN past ``count[e]``.
     count : wp.array
         ``[E]`` ``int32`` real checkpoint counts. Meaningful only for envs
         with ``valid[e] == 1`` on the source batch.
@@ -61,6 +66,7 @@ class CheckpointSet:
     left: wp.array
     right: wp.array
     tangent: wp.array
+    up_half: wp.array
     count: wp.array
 
     @classmethod
@@ -68,11 +74,11 @@ class CheckpointSet:
         """Zero-copy view of a :class:`GateSequence` as checkpoints.
 
         Aliases (does not copy) ``position``, ``left``, ``right``,
-        ``tangent``, and ``count``. Progress state bound to this set must be
-        reset after the gates are regenerated.
+        ``tangent``, ``half_size`` (as ``up_half``), and ``count``. Progress
+        state bound to this set must be reset after the gates are regenerated.
         """
         return cls(position=seq.position, left=seq.left, right=seq.right,
-                   tangent=seq.tangent, count=seq.count)
+                   tangent=seq.tangent, up_half=seq.half_size, count=seq.count)
 
     def clone(self) -> "CheckpointSet":
         """Return a deep copy whose Warp buffers do not alias this set."""
@@ -81,6 +87,7 @@ class CheckpointSet:
             left=wp.clone(self.left),
             right=wp.clone(self.right),
             tangent=wp.clone(self.tangent),
+            up_half=wp.clone(self.up_half),
             count=wp.clone(self.count),
         )
 
@@ -115,19 +122,20 @@ def _seg_at_arc(cum: wp.array(dtype=wp.float32), base: int, m: int,
 
 @wp.kernel
 def _place_checkpoints_k(
-    center: wp.array(dtype=wp.vec2f),
-    inner: wp.array(dtype=wp.vec2f),
-    outer: wp.array(dtype=wp.vec2f),
+    center: wp.array(dtype=wp.vec3f),
+    inner: wp.array(dtype=wp.vec3f),
+    outer: wp.array(dtype=wp.vec3f),
     count: wp.array(dtype=wp.int32),
     n_max: int,
     cum: wp.array(dtype=wp.float32),
     cp_count: wp.array(dtype=wp.int32),
     cp_step: wp.array(dtype=wp.float32),
     max_cp: int,
-    out_position: wp.array(dtype=wp.vec2f),
-    out_left: wp.array(dtype=wp.vec2f),
-    out_right: wp.array(dtype=wp.vec2f),
-    out_tangent: wp.array(dtype=wp.vec2f),
+    out_position: wp.array(dtype=wp.vec3f),
+    out_left: wp.array(dtype=wp.vec3f),
+    out_right: wp.array(dtype=wp.vec3f),
+    out_tangent: wp.array(dtype=wp.vec3f),
+    out_up_half: wp.array(dtype=wp.float32),
 ):
     tid = wp.tid()
     e = tid // max_cp
@@ -135,11 +143,12 @@ def _place_checkpoints_k(
 
     n = cp_count[e]
     if k >= n:
-        nan2 = wp.vec2f(wp.nan, wp.nan)
-        out_position[tid] = nan2
-        out_left[tid] = nan2
-        out_right[tid] = nan2
-        out_tangent[tid] = nan2
+        nan3 = wp.vec3f(wp.nan, wp.nan, wp.nan)
+        out_position[tid] = nan3
+        out_left[tid] = nan3
+        out_right[tid] = nan3
+        out_tangent[tid] = nan3
+        out_up_half[tid] = wp.nan
         return
 
     m = count[e]
@@ -162,7 +171,9 @@ def _place_checkpoints_k(
     out_position[tid] = center[base + i] + (center[base + j] - center[base + i]) * t
     out_left[tid] = inner[base + i] + (inner[base + j] - inner[base + i]) * t
     out_right[tid] = outer[base + i] + (outer[base + j] - outer[base + i]) * t
-    out_tangent[tid] = _safe_normalize2(center[base + j] - center[base + i])
+    out_tangent[tid] = _safe_normalize3(center[base + j] - center[base + i])
+    # Track cross-sections are vertically unbounded for the crossing test.
+    out_up_half[tid] = _BIG
 
 
 class CheckpointSampler:
@@ -231,10 +242,11 @@ class CheckpointSampler:
         self.truncated = wp.zeros(E, dtype=wp.int32, device=dev)
         self.step = wp.zeros(E, dtype=wp.float32, device=dev)
         self._set = CheckpointSet(
-            position=wp.zeros(n, dtype=wp.vec2f, device=dev),
-            left=wp.zeros(n, dtype=wp.vec2f, device=dev),
-            right=wp.zeros(n, dtype=wp.vec2f, device=dev),
-            tangent=wp.zeros(n, dtype=wp.vec2f, device=dev),
+            position=wp.zeros(n, dtype=wp.vec3f, device=dev),
+            left=wp.zeros(n, dtype=wp.vec3f, device=dev),
+            right=wp.zeros(n, dtype=wp.vec3f, device=dev),
+            tangent=wp.zeros(n, dtype=wp.vec3f, device=dev),
+            up_half=wp.zeros(n, dtype=wp.float32, device=dev),
             count=wp.zeros(E, dtype=wp.int32, device=dev),
         )
 
@@ -244,7 +256,7 @@ class CheckpointSampler:
         Host-side readback, construction time only.
         """
         E, n_max = self._E, self._n_max
-        pts = self._track.center.numpy().reshape(E, n_max, 2)
+        pts = self._track.center.numpy().reshape(E, n_max, 3)
         counts = self._track.count.numpy()
         valid = self._track.valid.numpy()
         best = 0.0
@@ -276,7 +288,7 @@ class CheckpointSampler:
             _place_checkpoints_k, dim=self._E * self._M,
             inputs=[t.center, t.inner, t.outer, t.count, self._n_max,
                     self._cum, s.count, self.step, self._M,
-                    s.position, s.left, s.right, s.tangent],
+                    s.position, s.left, s.right, s.tangent, s.up_half],
             device=self._device,
         )
         _sync(self._device)

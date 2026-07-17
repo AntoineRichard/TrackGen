@@ -62,7 +62,7 @@ def test_voronoi_end_to_end(dev):
     track = gen.generate(E)
 
     assert isinstance(track, Track)
-    center = to_t(track.center).view(E, n_max, 2)
+    center = to_t(track.center).view(E, n_max, 3)[..., :2]
     valid = to_t(track.valid).bool()
     count = to_t(track.count)
 

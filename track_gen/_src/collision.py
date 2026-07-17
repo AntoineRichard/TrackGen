@@ -23,9 +23,10 @@ from .collision_geom import (
     _box_corner,
     _closest_on_seg,
     _crossing,
-    _is_nan2,
+    _is_nan3,
     _pick4,
     _point_to_local_box_dist,
+    _quat_yaw,
     _rot2,
     _safe_normalize2,
     _seg_hits_aabb,
@@ -83,14 +84,14 @@ class BoxContact:
 
 @wp.kernel
 def _box_query_segments_k(
-    inner: wp.array(dtype=wp.vec2f),
-    outer: wp.array(dtype=wp.vec2f),
-    center: wp.array(dtype=wp.vec2f),
+    inner: wp.array(dtype=wp.vec3f),
+    outer: wp.array(dtype=wp.vec3f),
+    center: wp.array(dtype=wp.vec3f),
     count: wp.array(dtype=wp.int32),
     n_max: int,
     max_boxes: int,
-    position: wp.array(dtype=wp.vec2f),
-    yaw: wp.array(dtype=wp.float32),
+    position: wp.array(dtype=wp.vec3f),
+    orientation: wp.array(dtype=wp.quatf),
     half_extents: wp.array(dtype=wp.vec2f),
     out_oob: wp.array(dtype=wp.int32),
     out_distance: wp.array(dtype=wp.float32),
@@ -102,14 +103,16 @@ def _box_query_segments_k(
     e = t // max_boxes
     nan2 = wp.vec2f(wp.nan, wp.nan)
 
-    pos = position[t]
-    if _is_nan2(pos) == 1:
+    pos3 = position[t]
+    if _is_nan3(pos3) == 1:
         out_oob[t] = 0
         out_distance[t] = wp.nan
         out_nearest[t] = nan2
         out_normal[t] = nan2
         out_boundary[t] = -1
         return
+    # Planar OOB semantics: project the box pose to xy.
+    pos = wp.vec2f(pos3[0], pos3[1])
 
     m = count[e]
     if m > n_max:
@@ -123,7 +126,7 @@ def _box_query_segments_k(
         out_boundary[t] = -1
         return
 
-    yw = yaw[t]
+    yw = _quat_yaw(orientation[t])
     he = half_extents[t]
     ux = _rot2(yw, wp.vec2f(1.0, 0.0))
     uy = _rot2(yw, wp.vec2f(0.0, 1.0))
@@ -158,11 +161,15 @@ def _box_query_segments_k(
         a = wp.vec2f(0.0, 0.0)
         b = wp.vec2f(0.0, 0.0)
         if bnd == 0:
-            a = inner[base + i]
-            b = inner[base + i2]
+            a3 = inner[base + i]
+            b3 = inner[base + i2]
+            a = wp.vec2f(a3[0], a3[1])
+            b = wp.vec2f(b3[0], b3[1])
         else:
-            a = outer[base + i]
-            b = outer[base + i2]
+            a3 = outer[base + i]
+            b3 = outer[base + i2]
+            a = wp.vec2f(a3[0], a3[1])
+            b = wp.vec2f(b3[0], b3[1])
 
         # Box<->segment distance candidates: box corners vs the segment ...
         cand_d = _BIG
@@ -229,14 +236,19 @@ def _box_query_segments_k(
     sa = wp.vec2f(0.0, 0.0)
     sb = wp.vec2f(0.0, 0.0)
     if best_bnd == 0:
-        sa = inner[base + best_i]
-        sb = inner[base + i2]
+        sa3 = inner[base + best_i]
+        sb3 = inner[base + i2]
+        sa = wp.vec2f(sa3[0], sa3[1])
+        sb = wp.vec2f(sb3[0], sb3[1])
     else:
-        sa = outer[base + best_i]
-        sb = outer[base + i2]
+        sa3 = outer[base + best_i]
+        sb3 = outer[base + i2]
+        sa = wp.vec2f(sa3[0], sa3[1])
+        sb = wp.vec2f(sb3[0], sb3[1])
     seg = sb - sa
     nrm = wp.vec2f(-seg[1], seg[0])
-    cpt = center[base + best_i]
+    cpt3 = center[base + best_i]
+    cpt = wp.vec2f(cpt3[0], cpt3[1])
     if wp.length(nrm) < 1.0e-8:
         nrm = cpt - best_pt
     nrm = _safe_normalize2(nrm)
@@ -268,7 +280,7 @@ class CollisionChecker:
     def __init__(self, track: Track, max_boxes: int, method: str = "segments",
                  sdf_resolution: int = 128, sdf_padding: "float | None" = None,
                  position: "wp.array | None" = None,
-                 yaw: "wp.array | None" = None,
+                 orientation: "wp.array | None" = None,
                  half_extents: "wp.array | None" = None) -> None:
         """Bind to a :class:`Track` batch and allocate the result buffers.
 
@@ -287,7 +299,7 @@ class CollisionChecker:
                 (``max(width, height)``) of each env's track, computed at
                 bake time. Pass a positive float to override with a fixed
                 padding for every env.
-            position, yaw, half_extents: optional constructor binding
+            position, orientation, half_extents: optional constructor binding
                 (all-or-none); equivalent to calling :meth:`bind_inputs`
                 right after construction.
         """
@@ -325,11 +337,12 @@ class CollisionChecker:
             boundary=wp.zeros(n, dtype=wp.int32, device=dev),
         )
         self._bound: "tuple | None" = None
-        if position is not None or yaw is not None or half_extents is not None:
-            if position is None or yaw is None or half_extents is None:
+        if position is not None or orientation is not None \
+                or half_extents is not None:
+            if position is None or orientation is None or half_extents is None:
                 raise ValueError(
-                    "bind all of position/yaw/half_extents or none")
-            self.bind_inputs(position, yaw, half_extents)
+                    "bind all of position/orientation/half_extents or none")
+            self.bind_inputs(position, orientation, half_extents)
         if method == "sdf":
             R = int(sdf_resolution)
             self._sdf_resolution = R
@@ -366,13 +379,13 @@ class CollisionChecker:
                   device=self._device)
         _sync(self._device)
 
-    def _validate_inputs(self, position, yaw, half_extents) -> None:
+    def _validate_inputs(self, position, orientation, half_extents) -> None:
         n = (self._E * self._B,)
-        _check_arr("position", position, n, wp.vec2f, self._device)
-        _check_arr("yaw", yaw, n, wp.float32, self._device)
+        _check_arr("position", position, n, wp.vec3f, self._device)
+        _check_arr("orientation", orientation, n, wp.quatf, self._device)
         _check_arr("half_extents", half_extents, n, wp.vec2f, self._device)
 
-    def bind_inputs(self, position: wp.array, yaw: wp.array,
+    def bind_inputs(self, position: wp.array, orientation: wp.array,
                     half_extents: wp.array) -> None:
         """Bind stable per-step input buffers (validated once, here).
 
@@ -381,11 +394,11 @@ class CollisionChecker:
         poses into its stable buffers and replays the captured query. The
         arrays must keep the same ``.ptr`` for the binding's lifetime.
         """
-        self._validate_inputs(position, yaw, half_extents)
-        self._bound = (position, yaw, half_extents)
+        self._validate_inputs(position, orientation, half_extents)
+        self._bound = (position, orientation, half_extents)
 
     def query(self, position: "wp.array | None" = None,
-              yaw: "wp.array | None" = None,
+              orientation: "wp.array | None" = None,
               half_extents: "wp.array | None" = None) -> BoxContact:
         """Compute contact info for ``E * max_boxes`` oriented boxes.
 
@@ -396,17 +409,19 @@ class CollisionChecker:
           arrays must keep the same ``.ptr`` for the binding's lifetime —
           write new poses into them rather than rebinding, e.g. under
           CUDA-graph capture).
-        - Per-call mode: if not bound, pass ``position``, ``yaw`` and
+        - Per-call mode: if not bound, pass ``position``, ``orientation`` and
           ``half_extents`` explicitly on every call.
 
         Args:
-            position: ``[E*max_boxes]`` ``vec2f`` box centers. NaN marks an
+            position: ``[E*max_boxes]`` ``vec3f`` box centers (the query
+                projects to xy; OOB semantics stay planar). NaN marks an
                 inactive slot (NaN outputs, ``oob=0``, ``boundary=-1``).
                 Required in per-call mode; omit in bound mode.
-            yaw: ``[E*max_boxes]`` ``float32`` box orientations (radians).
+            orientation: ``[E*max_boxes]`` ``quatf`` box orientations
+                (``wp.quatf(x, y, z, w)``; the query uses the yaw about +z).
                 Required in per-call mode; omit in bound mode.
-            half_extents: ``[E*max_boxes]`` ``vec2f`` per-box half sizes.
-                Required in per-call mode; omit in bound mode.
+            half_extents: ``[E*max_boxes]`` ``vec2f`` per-box half sizes
+                (planar boxes). Required in per-call mode; omit in bound mode.
 
         Returns:
             The checker's preallocated :class:`BoxContact` (same instance every
@@ -418,16 +433,17 @@ class CollisionChecker:
                 bound).
         """
         if self._bound is not None:
-            if position is not None or yaw is not None or half_extents is not None:
+            if position is not None or orientation is not None \
+                    or half_extents is not None:
                 raise ValueError(
                     "checker inputs are bound; call query() with no arguments")
-            position, yaw, half_extents = self._bound
+            position, orientation, half_extents = self._bound
         else:
-            if position is None or yaw is None or half_extents is None:
+            if position is None or orientation is None or half_extents is None:
                 raise ValueError(
-                    "checker is not bound; pass position, yaw and "
+                    "checker is not bound; pass position, orientation and "
                     "half_extents to query() or call bind_inputs() first")
-            self._validate_inputs(position, yaw, half_extents)
+            self._validate_inputs(position, orientation, half_extents)
         n = self._E * self._B
         t = self._track
         c = self._contact
@@ -435,7 +451,7 @@ class CollisionChecker:
             wp.launch(
                 _box_query_segments_k, dim=n,
                 inputs=[t.inner, t.outer, t.center, t.count, self._n_max, self._B,
-                        position, yaw, half_extents,
+                        position, orientation, half_extents,
                         c.oob, c.distance, c.nearest, c.normal, c.boundary],
                 device=self._device,
             )
@@ -445,7 +461,7 @@ class CollisionChecker:
                 collision_sdf._box_query_sdf_k, dim=n,
                 inputs=[self._sdf_lo, self._sdf_hi, self._sdf_phi, self._sdf_bid,
                         self._sdf_resolution, self._B,
-                        position, yaw, half_extents,
+                        position, orientation, half_extents,
                         c.oob, c.distance, c.nearest, c.normal, c.boundary],
                 device=self._device,
             )

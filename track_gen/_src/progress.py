@@ -2,8 +2,11 @@
 
 ``ProgressTracker`` owns per-env device state (previous position, next
 checkpoint, laps, total progress) and advances it in ONE fused kernel per
-``update()``: swept-segment pass-through detection against the target's
-crossing segment, wrong-way and wrong-checkpoint events, and the distance to
+``update()``: swept-segment plane-crossing detection against the target's
+gate plane within its opening (the left-right extent, and vertically within
+``CheckpointSet.up_half`` — ``_BIG`` keeps track cross-sections unbounded, so
+planar behavior is unchanged for planar motion), wrong-way and
+wrong-checkpoint events, and the distance to
 the next checkpoint center (``dist_to_next``) for delta-distance rewards
 (``r_t = dist[t-1] - dist[t]``, differenced by the caller).
 
@@ -31,7 +34,7 @@ import numpy as np
 import warp as wp
 
 from .checkpoints import CheckpointSet
-from .collision_geom import _is_nan2, _segs_cross
+from .collision_geom import _is_nan3, _plane_pass
 from .runtime import _check_arr, _init, _sync
 
 
@@ -91,14 +94,15 @@ class ProgressEvents:
 
 @wp.kernel
 def _progress_update_k(
-    cp_position: wp.array(dtype=wp.vec2f),
-    cp_left: wp.array(dtype=wp.vec2f),
-    cp_right: wp.array(dtype=wp.vec2f),
-    cp_tangent: wp.array(dtype=wp.vec2f),
+    cp_position: wp.array(dtype=wp.vec3f),
+    cp_left: wp.array(dtype=wp.vec3f),
+    cp_right: wp.array(dtype=wp.vec3f),
+    cp_tangent: wp.array(dtype=wp.vec3f),
+    cp_up_half: wp.array(dtype=wp.float32),
     cp_count: wp.array(dtype=wp.int32),
     max_cp: int,
-    position: wp.array(dtype=wp.vec2f),
-    prev_pos: wp.array(dtype=wp.vec2f),
+    position: wp.array(dtype=wp.vec3f),
+    prev_pos: wp.array(dtype=wp.vec3f),
     next_cp: wp.array(dtype=wp.int32),
     laps: wp.array(dtype=wp.int32),
     progress: wp.array(dtype=wp.int32),
@@ -140,19 +144,22 @@ def _progress_update_k(
         g = 0
 
     prev = prev_pos[e]
-    if _is_nan2(prev) == 0:
-        move = pos - prev
-        if _segs_cross(prev, pos, cp_left[base + g], cp_right[base + g]) == 1:
-            if wp.dot(move, cp_tangent[base + g]) > 0.0:
-                passed = int(1)
-                cp_passed = g
-            else:
-                wway = int(1)
+    if _is_nan3(prev) == 0:
+        c = _plane_pass(prev, pos, cp_tangent[base + g],
+                        cp_left[base + g], cp_right[base + g],
+                        cp_up_half[base + g])
+        if c == 1:
+            passed = int(1)
+            cp_passed = g
+        elif c == -1:
+            wway = int(1)
         # Wrong-checkpoint scan vs the ORIGINAL target g: a double-jump
         # advances g and flags the second crossing in this same update.
         for i in range(n):
             if i != g and wcp == -1:
-                if _segs_cross(prev, pos, cp_left[base + i], cp_right[base + i]) == 1:
+                if _plane_pass(prev, pos, cp_tangent[base + i],
+                               cp_left[base + i], cp_right[base + i],
+                               cp_up_half[base + i]) != 0:
                     wcp = i
 
     ng = g
@@ -183,14 +190,14 @@ def _progress_update_k(
 @wp.kernel
 def _progress_reset_k(
     mask: wp.array(dtype=wp.int32),
-    prev_pos: wp.array(dtype=wp.vec2f),
+    prev_pos: wp.array(dtype=wp.vec3f),
     next_cp: wp.array(dtype=wp.int32),
     laps: wp.array(dtype=wp.int32),
     progress: wp.array(dtype=wp.int32),
 ):
     e = wp.tid()
     if mask[e] != 0:
-        prev_pos[e] = wp.vec2f(wp.nan, wp.nan)
+        prev_pos[e] = wp.vec3f(wp.nan, wp.nan, wp.nan)
         next_cp[e] = 0
         laps[e] = 0
         progress[e] = 0
@@ -200,7 +207,7 @@ class ProgressTracker:
     """Track ordered progress of one agent per env through a CheckpointSet.
 
     See the module docstring for semantics. Construct with ``position=`` (a
-    stable ``[E]`` vec2f wp.array owned by your sim) for bound mode —
+    stable ``[E]`` vec3f wp.array owned by your sim) for bound mode —
     ``update()`` then takes no arguments and reads the buffer in place; or
     leave unbound and pass positions per call. Mixing modes raises
     ``ValueError``.
@@ -216,7 +223,7 @@ class ProgressTracker:
                 ``CheckpointSampler.sample()``). Aliased, not copied — later
                 mutation (e.g. a resampled or regenerated set) is seen on
                 the next ``update()``.
-            position: optional stable ``[E]`` vec2f buffer to bind at
+            position: optional stable ``[E]`` vec3f buffer to bind at
                 construction (bound mode); equivalent to calling
                 :meth:`bind` right after construction.
         """
@@ -229,13 +236,15 @@ class ProgressTracker:
         for name in ("position", "left", "right", "tangent"):
             arr = getattr(checkpoints, name)
             if not isinstance(arr, wp.array) or arr.shape != (stride,) \
-                    or arr.dtype is not wp.vec2f:
+                    or arr.dtype is not wp.vec3f:
                 raise ValueError(
-                    f"checkpoints.{name} must be a [{stride}] vec2f wp.array")
+                    f"checkpoints.{name} must be a [{stride}] vec3f wp.array")
             if str(arr.device) != str(checkpoints.position.device):
                 raise ValueError(
                     f"checkpoints.{name} is on {arr.device}, expected "
                     f"{checkpoints.position.device}")
+        _check_arr("checkpoints.up_half", checkpoints.up_half, (stride,),
+                   wp.float32, str(checkpoints.position.device))
         if checkpoints.count.dtype is not wp.int32 \
                 or str(checkpoints.count.device) != str(checkpoints.position.device):
             raise ValueError(
@@ -251,8 +260,8 @@ class ProgressTracker:
             self.bind(position)
 
         dev = self._device
-        self._prev_pos = wp.array(np.full((E, 2), np.nan, np.float32),
-                                  dtype=wp.vec2f, device=dev)
+        self._prev_pos = wp.array(np.full((E, 3), np.nan, np.float32),
+                                  dtype=wp.vec3f, device=dev)
         self._next = wp.zeros(E, dtype=wp.int32, device=dev)
         self._laps = wp.zeros(E, dtype=wp.int32, device=dev)
         self._progress = wp.zeros(E, dtype=wp.int32, device=dev)
@@ -268,10 +277,10 @@ class ProgressTracker:
         )
 
     def _validate_position(self, position) -> None:
-        _check_arr("position", position, (self._E,), wp.vec2f, self._device)
+        _check_arr("position", position, (self._E,), wp.vec3f, self._device)
 
     def bind(self, position: wp.array) -> None:
-        """Bind (or rebind) a stable ``[E]`` vec2f position buffer.
+        """Bind (or rebind) a stable ``[E]`` vec3f position buffer.
 
         After binding, ``update()`` takes no arguments and reads the buffer
         in place. Validation happens here, once; the array must keep the
@@ -284,7 +293,7 @@ class ProgressTracker:
         """Advance one step; returns the tracker's preallocated events.
 
         Bound mode (constructed with ``position=``): call with no arguments.
-        Per-call mode: pass the ``[E]`` vec2f position array — the SAME
+        Per-call mode: pass the ``[E]`` vec3f position array — the SAME
         array (identical ``.ptr``) must be used across a CUDA-graph capture
         and its replays.
 
@@ -315,7 +324,8 @@ class ProgressTracker:
         ev = self._events
         wp.launch(
             _progress_update_k, dim=self._E,
-            inputs=[c.position, c.left, c.right, c.tangent, c.count, self._M,
+            inputs=[c.position, c.left, c.right, c.tangent, c.up_half,
+                    c.count, self._M,
                     pos, self._prev_pos, self._next, self._laps, self._progress,
                     ev.passed, ev.checkpoint_passed, ev.next_checkpoint,
                     ev.laps, ev.progress, ev.wrong_way, ev.wrong_checkpoint,

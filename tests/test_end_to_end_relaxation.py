@@ -39,8 +39,8 @@ def test_xpbd_pipeline_makes_constant_width_tracks_valid(warp_rng):
     count_t = to_t(track.count)
     # Reshape flat wp.array [E*N_max] vec2f -> [E, N_max, 2] torch for per-env ops.
     N_max = cfg.N_max
-    center_t = wp.to_torch(track.center).view(E, N_max, 2)
-    outer_t = wp.to_torch(track.outer).view(E, N_max, 2)
+    center_t = wp.to_torch(track.center).view(E, N_max, 3)[..., :2]
+    outer_t = wp.to_torch(track.outer).view(E, N_max, 3)[..., :2]
     # Relaxed + constant-width inflation: a large majority must be valid (was ~3% before).
     assert valid_t.float().mean().item() >= 0.9
     # Count-aware output: per-env real-point count is in [1, N_max]; the centerline is

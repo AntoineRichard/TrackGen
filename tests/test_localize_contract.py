@@ -10,7 +10,10 @@ from track_gen.localize import TrackFrame, TrackLocalizer
 
 
 def _positions(pts, device="cpu"):
-    return wp.array(np.asarray(pts, np.float32), dtype=wp.vec2f, device=device)
+    pts = np.asarray(pts, np.float32)
+    z = np.zeros((pts.shape[0], 1), np.float32)
+    return wp.array(np.concatenate([pts, z], axis=1), dtype=wp.vec3f,
+                    device=device)
 
 
 def test_constructor_validation():
@@ -29,7 +32,7 @@ def test_query_validation():
     with pytest.raises(ValueError, match="position"):
         loc.query(wp.zeros(2, dtype=wp.float32))  # wrong dtype
     with pytest.raises(ValueError, match="position"):
-        loc.query(np.zeros((2, 2), np.float32))  # not a wp.array
+        loc.query(np.zeros((2, 3), np.float32))  # not a wp.array
     with pytest.raises(ValueError, match="mask"):
         loc.reset(wp.zeros(3, dtype=wp.int32))  # wrong shape
 
@@ -43,6 +46,7 @@ def test_bound_mode_contracts():
     r_bound = bound.query()
     np.testing.assert_array_equal(r_bound.s.numpy(), r_free.s.numpy())
     np.testing.assert_array_equal(r_bound.n.numpy(), r_free.n.numpy())
+    np.testing.assert_array_equal(r_bound.n_up.numpy(), r_free.n_up.numpy())
     np.testing.assert_array_equal(r_bound.segment.numpy(),
                                   r_free.segment.numpy())
     with pytest.raises(ValueError, match="bound"):
@@ -87,6 +91,7 @@ def test_nan_position_yields_nan_frame():
     pts = np.array([[np.nan, np.nan], [1.0, 0.0]], np.float32)
     f = loc.query(_positions(pts))
     assert np.isnan(f.s.numpy()[0]) and np.isnan(f.n.numpy()[0])
+    assert np.isnan(f.n_up.numpy()[0])
     assert int(f.segment.numpy()[0]) == -1
     assert np.isfinite(f.s.numpy()[1])
     assert int(f.segment.numpy()[1]) >= 0
