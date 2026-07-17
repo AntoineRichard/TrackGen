@@ -7,9 +7,11 @@ invariants that are otherwise the caller's burden:
   (``"segments"`` / ``"sdf"`` / ``None``) -> ``CheckpointSampler`` ->
   ``ProgressTracker``.
 - ``mode="gates"``: GateGenerator -> ``CheckpointSet.from_gates`` ->
-  ``ProgressTracker``; optional ``DiscChecker`` gate-post collision
-  (``post_radius > 0``), with the posts array rebuilt device-side on every
-  regeneration.
+  ``ProgressTracker``, plus a ``CourseLine`` (3D spline centerline through
+  the gates) with a ``TrackLocalizer`` bound to it (``step()`` returns the
+  per-env :class:`TrackFrame`); optional ``DiscChecker`` gate-post collision
+  (``post_radius > 0``), with the posts array and the line rebuilt
+  device-side on every regeneration.
 
 Lifecycle: construct -> ``bind()`` (stable sim buffers, required) ->
 ``generate()`` (whole batch: generator pipeline + coherent refresh + full
@@ -37,7 +39,9 @@ from . import runtime
 from .checkpoints import CheckpointSampler, CheckpointSet
 from .collision import BoxContact, CollisionChecker
 from .collision_discs import DiscChecker, DiscContact
+from .course_line import CourseLine
 from .gate_generator import GateGenerator
+from .localize import TrackFrame, TrackLocalizer
 from .progress import ProgressEvents, ProgressTracker
 from .rng_utils import PerEnvSeededRNG
 from .runtime import _check_arr, _init, set_capturing
@@ -87,6 +91,12 @@ class CourseConfig:
         Track mode only: forwarded to ``CheckpointSampler``.
     max_boxes : int
         Collision query stride (boxes per env). Must be >= 1.
+    samples_per_gate : int
+        Gates mode only: centerline samples per gate for the
+        :class:`CourseLine` spline (>= 2). Default 8.
+    localize_window : int or None
+        Gates mode only: forwarded as ``TrackLocalizer(warm_window=...)``;
+        ``None`` (default) means full cold scans every query.
     """
 
     mode: str
@@ -98,6 +108,8 @@ class CourseConfig:
     checkpoint_spacing: "float | None" = None
     max_checkpoints: "int | None" = None
     max_boxes: int = 1
+    samples_per_gate: int = 8
+    localize_window: "int | None" = None
 
     def __post_init__(self):
         if self.mode not in ("track", "gates"):
@@ -133,6 +145,14 @@ class CourseConfig:
             if self.max_checkpoints is not None and int(self.max_checkpoints) < 3:
                 raise ValueError(
                     f"max_checkpoints must be >= 3, got {self.max_checkpoints!r}")
+            if int(self.samples_per_gate) != 8:
+                raise ValueError(
+                    "samples_per_gate is a gates-mode option (got "
+                    f"{self.samples_per_gate!r})")
+            if self.localize_window is not None:
+                raise ValueError(
+                    "localize_window is a gates-mode option (got "
+                    f"{self.localize_window!r})")
         else:
             if not isinstance(self.gen, GateGenConfig):
                 raise ValueError(
@@ -159,6 +179,15 @@ class CourseConfig:
                     "gates mode requires gen.gate_width > 0: a width-0 gate "
                     "has a degenerate crossing segment and can never be "
                     "passed")
+            if int(self.samples_per_gate) < 2:
+                raise ValueError(
+                    "samples_per_gate must be >= 2, got "
+                    f"{self.samples_per_gate!r}")
+            if self.localize_window is not None \
+                    and int(self.localize_window) < 1:
+                raise ValueError(
+                    "localize_window must be >= 1 (or None for full scans), "
+                    f"got {self.localize_window!r}")
         # max_boxes is the collision-query stride; without a collision checker
         # it is a dead option (track: collision=None; gates: post_radius==0).
         if int(self.max_boxes) > 1:
@@ -185,16 +214,21 @@ class StepResult:
         Progress events for this step.
     contacts : BoxContact or DiscContact or None
         Collision result (``None`` when the course has no collision checker).
+    frame : TrackFrame or None
+        Localization frame on the gates-mode :class:`CourseLine` (``None``
+        in track mode).
     """
 
     events: ProgressEvents
     contacts: "BoxContact | DiscContact | None"
+    frame: "TrackFrame | None"
 
     def clone(self) -> "StepResult":
-        """Deep-copy both sub-results."""
+        """Deep-copy the sub-results."""
         return StepResult(
             events=self.events.clone(),
             contacts=None if self.contacts is None else self.contacts.clone(),
+            frame=None if self.frame is None else self.frame.clone(),
         )
 
 
@@ -206,7 +240,8 @@ class Course:
     / per-env :meth:`reset`. Sub-tools are constructed after the FIRST
     ``generate()`` (their auto-derivations need a real batch) and are
     reachable as attributes (``generator``, ``rng``, ``result``,
-    ``collision``, ``checkpoints``, ``checkpoint_sampler``, ``progress``).
+    ``collision``, ``checkpoints``, ``checkpoint_sampler``, ``progress``,
+    and — gates mode — ``course_line``, ``localizer``).
 
     ``generate()`` is whole-batch by generator design (fixed-batch captured
     pipelines); per-env respawn control is :meth:`reset`'s mask. Results are
@@ -233,6 +268,8 @@ class Course:
 
         self.result: "Track | GateSequence | None" = None
         self.collision: "CollisionChecker | DiscChecker | None" = None
+        self.course_line: "CourseLine | None" = None
+        self.localizer: "TrackLocalizer | None" = None
         self.checkpoints: "CheckpointSet | None" = None
         self.checkpoint_sampler: "CheckpointSampler | None" = None
         self.progress: "ProgressTracker | None" = None
@@ -324,6 +361,8 @@ class Course:
         if a is None:
             return
         self.progress.bind(a["position"])
+        if self.localizer is not None:
+            self.localizer.bind(a["position"])
         if self.collision is not None:
             box_pos = a["box_position"] if a["box_position"] is not None \
                 else a["position"]
@@ -417,6 +456,9 @@ class Course:
                     sdf_resolution=cfg.sdf_resolution or 128)
         else:
             self.checkpoints = CheckpointSet.from_gates(self.result)
+            self.course_line = CourseLine(self.result, cfg.samples_per_gate)
+            self.localizer = TrackLocalizer(self.course_line.track,
+                                            warm_window=cfg.localize_window)
             if cfg.post_radius > 0.0:
                 n_slots = int(self.result.position.shape[0])  # E * max_gates
                 self._posts = wp.zeros(2 * n_slots, dtype=wp.vec3f,
@@ -438,6 +480,9 @@ class Course:
         """Post-generation coherence: resample/bake/posts + full reset."""
         if self.checkpoint_sampler is not None:
             self.checkpoint_sampler.sample()
+        if self.course_line is not None:
+            self.course_line.refresh()  # before the resets: the line must be
+                                         # current before any consumer query
         if isinstance(self.collision, CollisionChecker) \
                 and self.collision._method == "sdf":
             self.collision.bake()  # re-baked on every _refresh() call, incl.
@@ -446,6 +491,8 @@ class Course:
                                     # cost, not a per-step one
         if self._posts is not None:
             self._fill_posts()
+        if self.localizer is not None:
+            self.localizer.reset(self._reset_all_mask)
         self.progress.reset(self._reset_all_mask)
 
     # -- per-step ----------------------------------------------------------
@@ -458,16 +505,21 @@ class Course:
             raise RuntimeError("call bind() before step()")
         events = self.progress.update()
         contacts = self.collision.query() if self.collision is not None else None
+        frame = self.localizer.query() if self.localizer is not None else None
         if self._step_result is None:
-            self._step_result = StepResult(events=events, contacts=contacts)
+            self._step_result = StepResult(events=events, contacts=contacts,
+                                           frame=frame)
         return self._step_result
 
     def reset(self, mask: wp.array) -> None:
-        """Per-env respawn on the SAME course: clears progress state where
+        """Per-env respawn on the SAME course: clears progress state (and,
+        in gates mode, the localizer's warm-start memory) where
         ``mask[e] == 1``. Collision and checkpoints derive from the course
         geometry and are unaffected by respawns."""
         if self.progress is None:
             raise RuntimeError("call generate() before reset()")
         self.progress.reset(mask)
+        if self.localizer is not None:
+            self.localizer.reset(mask)
 
     set_capturing = staticmethod(set_capturing)
