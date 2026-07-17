@@ -25,14 +25,30 @@ Frame plan
   ``relax_smooth_spacing_iters=10`` for p = 0 .. 5.
 * The final frame is held ~2 s (duplicated) so the converged track lingers.
 
+Gate self-collision relaxation video (``--gates``)
+--------------------------------------------------
+``main_gates()`` renders the same deliverable for the GATE self-collision relaxation
+(``docs/_static/relaxation-gates-iterations.mp4``): five gate sequences whose raw anchors
+(``gate_solve_iters=0``) are heavily overlapping, evolving round by round through the
+per-env Gauss-Seidel sphere separation. The snapshot argument is the same: the solve is a
+fixed deterministic round loop — the coincident-pair tie-break angle hash in
+``_relax_gate_spheres_k`` is indexed by the ROUND index ``it``, not by the total budget —
+so a run with ``gate_solve_iters=k`` executes exactly the first ``k`` rounds of a longer
+run, and regenerating the batch per ``k`` yields true snapshots of one trajectory. The
+script asserts the raw anchors are bit-identical across two generations, and only shows
+envs whose state at the round cap equals a much longer run (i.e. the early exit fired).
+
 This module is standalone and is NOT part of ``render_readme_assets()`` (it needs ffmpeg).
 Run from the repository root:
 
-    .venv/bin/python -m viz.render_relaxation_video
+    .venv/bin/python -m viz.render_relaxation_video            # track video
+    .venv/bin/python -m viz.render_relaxation_video --gates    # gate video
 
-Outputs (both under ``docs/_static`` so Sphinx copies them verbatim into the build):
+Outputs (all under ``docs/_static`` so Sphinx copies them verbatim into the build):
     docs/_static/relaxation-iterations.mp4
     docs/_static/relaxation-iterations-poster.png
+    docs/_static/relaxation-gates-iterations.mp4          (--gates)
+    docs/_static/relaxation-gates-iterations-poster.png   (--gates)
 """
 from __future__ import annotations
 
@@ -55,6 +71,8 @@ from viz.plot_tracks import make_rng  # noqa: E402
 OUT_DIR = Path("docs/_static")
 MP4_PATH = OUT_DIR / "relaxation-iterations.mp4"
 POSTER_PATH = OUT_DIR / "relaxation-iterations-poster.png"
+GATES_MP4_PATH = OUT_DIR / "relaxation-gates-iterations.mp4"
+GATES_POSTER_PATH = OUT_DIR / "relaxation-gates-iterations-poster.png"
 
 # Metric benchmark regime — identical to the relaxation still assets in render_readme_assets.
 REGIME = dict(half_width=0.5, scale=10.0, spacing=0.30, N_max=384)
@@ -177,18 +195,280 @@ def _render_frame(path: Path, data: dict, envs: list[int], limits: list[tuple],
     plt.close(fig)
 
 
-def _encode(frame_dir: Path, crf: int) -> None:
+def _encode(frame_dir: Path, crf: int, mp4_path: Path = MP4_PATH,
+            framerate: int = FRAMERATE) -> None:
     cmd = [
         "ffmpeg", "-y", "-loglevel", "error",
-        "-framerate", str(FRAMERATE),
+        "-framerate", str(framerate),
         "-i", str(frame_dir / "frame_%04d.png"),
         "-c:v", "libx264", "-crf", str(crf), "-preset", "slow",
         "-pix_fmt", "yuv420p",
         "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2",
         "-movflags", "+faststart",
-        str(MP4_PATH),
+        str(mp4_path),
     ]
     subprocess.run(cmd, check=True)
+
+
+# --------------------------------------------------------------------------------------
+# Gate self-collision relaxation video (--gates)
+# --------------------------------------------------------------------------------------
+# Illustrative gate geometry: same generator family styling as the README gate strip
+# (viz/render_readme_assets.py) but with a larger gate_radius so the raw anchors overlap
+# densely and the separation is unmistakable frame to frame. gate_width only draws the
+# gate bar; it does not enter the separation target (2 * gate_radius = 0.26).
+GATES_GENERATOR = "bezier"
+GATES_RADIUS = 0.13
+GATES_WIDTH = 0.16
+GATES_MAX_GATES = 32
+GATES_BATCH = 64
+GATES_SEED = 0
+GATES_N_ENVS = 5
+GATES_ROUND_CAP = 24       # upper bound on the displayed round budget K
+GATES_FRAMERATE = 3        # low fps: the visible motion dies in ~8 rounds, let it read
+GATES_HOLD_FRAMES = 6      # ~2 s hold on the converged frame at 3 fps
+GATES_START_HOLD = 2       # extra copies of the raw frame (~1 s total) so it registers
+# Visual convergence tolerance for the per-env stop round and the round budget K. The
+# solve keeps making bit-level float32 micro-moves (1e-4 .. 1e-6) for another ~10 rounds
+# after all visible motion has stopped; at the panel scale (~2.2 world units across ~290
+# px) one pixel is ~8e-3, so 1e-3 is comfortably sub-pixel. Frames past this point are
+# pixel-identical dead time, hence the tolerance.
+GATES_CONV_TOL = 1.0e-3
+
+
+def _gen_gates(solve_iters: int):
+    """One deterministic gate batch at round budget ``solve_iters``; numpy views."""
+    from track_gen import GateGenConfig, GateGenerator
+
+    cfg = GateGenConfig(
+        generator=GATES_GENERATOR,
+        num_envs=GATES_BATCH,
+        device=DEVICE,
+        gate_radius=GATES_RADIUS,
+        gate_width=GATES_WIDTH,
+        max_gates=GATES_MAX_GATES,
+        gate_solve_iters=solve_iters,
+    )
+    rng = make_rng(GATES_BATCH, seed=GATES_SEED, device=DEVICE)
+    gates = GateGenerator(cfg, rng).generate()
+    g = gates.position.shape[0] // GATES_BATCH
+    return dict(
+        position=wp.to_torch(gates.position).cpu().numpy().reshape(GATES_BATCH, g, 2),
+        tangent=wp.to_torch(gates.tangent).cpu().numpy().reshape(GATES_BATCH, g, 2),
+        left=wp.to_torch(gates.left).cpu().numpy().reshape(GATES_BATCH, g, 2),
+        right=wp.to_torch(gates.right).cpu().numpy().reshape(GATES_BATCH, g, 2),
+        valid=wp.to_torch(gates.valid).cpu().numpy().astype(bool),
+        count=wp.to_torch(gates.count).cpu().numpy().astype(int),
+    )
+
+
+def _gates_state(data: dict, e: int) -> np.ndarray:
+    return data["position"][e, : int(data["count"][e])]
+
+
+def _raw_overlap_pairs(data: dict, e: int, target: float) -> int:
+    """Number of gate pairs closer than the separation target — the drama ranking."""
+    p = _gates_state(data, e)
+    n = len(p)
+    return sum(
+        1
+        for i in range(n)
+        for j in range(i + 1, n)
+        if float(np.linalg.norm(p[i] - p[j])) < target
+    )
+
+
+def _choose_gate_envs(seq: list[dict], long: dict, target: float) -> tuple[list[int], list[int]]:
+    """Pick the GATES_N_ENVS envs with the densest raw overlap among envs that are valid
+    at the cap, finite, and CONVERGED (state at the cap equals a much longer run — the
+    early exit fired). Returns (envs, per-env visual stop round: the first round whose
+    state is within GATES_CONV_TOL of the converged state)."""
+    raw, fin = seq[0], seq[-1]
+    rows: list[tuple[int, int, int]] = []
+    for e in range(GATES_BATCH):
+        c = int(raw["count"][e])
+        if c < 4 or not fin["valid"][e] or not np.isfinite(_gates_state(raw, e)).all():
+            continue
+        if not np.array_equal(_gates_state(fin, e), _gates_state(long, e)):
+            continue  # still moving at the round cap — cannot display a converged panel
+        stop = next(
+            k for k in range(len(seq))
+            if float(np.linalg.norm(_gates_state(seq[k], e) - _gates_state(fin, e),
+                                    axis=1).max()) <= GATES_CONV_TOL
+        )
+        rows.append((_raw_overlap_pairs(raw, e, target), stop, e))
+    rows.sort(key=lambda r: (-r[0], r[1], r[2]))
+    chosen = rows[:GATES_N_ENVS]
+    return [e for _, _, e in chosen], [s for _, s, _ in chosen]
+
+
+def _gate_limits(raw: dict, fin: dict, envs: list[int]) -> list[tuple]:
+    """Per-env fixed square (xlim, ylim) from the union of raw and final gate extents
+    (centres +/- gate_radius and the gate-bar endpoints), +10% pad."""
+    limits = []
+    for e in envs:
+        pts = []
+        for src in (raw, fin):
+            c = int(src["count"][e])
+            p = src["position"][e, :c]
+            p = p[np.isfinite(p).all(axis=1)]
+            pts += [p + GATES_RADIUS, p - GATES_RADIUS]
+            for key in ("left", "right"):
+                a = src[key][e, :c]
+                pts.append(a[np.isfinite(a).all(axis=1)])
+        pts = np.vstack(pts)
+        xmin, ymin = pts.min(axis=0)
+        xmax, ymax = pts.max(axis=0)
+        cx, cy = 0.5 * (xmin + xmax), 0.5 * (ymin + ymax)
+        half = 0.5 * max(xmax - xmin, ymax - ymin) * 1.10
+        limits.append(((cx - half, cx + half), (cy - half, cy + half)))
+    return limits
+
+
+def _draw_gate_panel(ax, data: dict, e: int, xlim, ylim, *, converged: bool) -> None:
+    """One env's gate sequence, styled like the README gate strip (dashed sequence line,
+    centre dots, gate_radius circles, tangent ticks, gate-width bars) on FIXED limits."""
+    c = int(data["count"][e])
+    pos = data["position"][e, :c]
+    finite = np.isfinite(pos).all(axis=1)
+    pos = pos[finite]
+    if len(pos) >= 2:
+        closed = np.vstack([pos, pos[0]])
+        ax.plot(closed[:, 0], closed[:, 1], color="0.35", lw=0.7, ls="--", alpha=0.6, zorder=1)
+    for pnt in pos:
+        ax.add_patch(plt.Circle((pnt[0], pnt[1]), GATES_RADIUS, fill=False,
+                                color="#64748b", lw=0.8, alpha=0.85, zorder=2))
+    tan = data["tangent"][e, :c][finite]
+    lft = data["left"][e, :c][finite]
+    rgt = data["right"][e, :c][finite]
+    if len(tan) == len(pos) and len(pos) > 0:
+        ax.quiver(pos[:, 0], pos[:, 1], tan[:, 0], tan[:, 1], angles="xy",
+                  scale_units="xy", scale=12, width=0.005, color="#f97316",
+                  alpha=0.85, zorder=3)
+    if len(lft) == len(rgt) == len(pos):
+        for li, ri in zip(lft, rgt):
+            ax.plot([li[0], ri[0]], [li[1], ri[1]], color="#2563eb", lw=1.3, zorder=3)
+    if len(pos) > 0:
+        ax.scatter(pos[:, 0], pos[:, 1], s=16, color="#111827", zorder=4)
+    if converged:
+        ax.text(0.97, 0.03, "converged", transform=ax.transAxes, ha="right", va="bottom",
+                fontsize=9, fontweight="bold", color="#15803d", zorder=5)
+    ax.set_xlim(*xlim)
+    ax.set_ylim(*ylim)
+    ax.set_aspect("equal")
+    ax.set_xticks([])
+    ax.set_yticks([])
+    for spine in ax.spines.values():
+        spine.set_color("0.8")
+
+
+def _render_gate_frame(path: Path, data: dict, envs: list[int], limits: list[tuple],
+                       stops: list[int], k: int, banner: str, accent: str) -> None:
+    # Fixed figsize + dpi and NO tight bbox -> constant even pixel size (1500 x 360 px).
+    fig, axes = plt.subplots(1, GATES_N_ENVS, figsize=(15.0, 3.6), dpi=100,
+                             facecolor="white")
+    for ax, e, (xlim, ylim), stop in zip(axes, envs, limits, stops):
+        _draw_gate_panel(ax, data, e, xlim, ylim, converged=k >= stop)
+    fig.suptitle(banner, fontsize=15, fontweight="bold", color=accent, y=0.955)
+    fig.subplots_adjust(left=0.008, right=0.992, top=0.84, bottom=0.03, wspace=0.06)
+    fig.savefig(path, facecolor="white")
+    plt.close(fig)
+
+
+def main_gates() -> None:
+    global DEVICE
+    try:
+        import torch
+        DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+    except Exception:
+        DEVICE = "cpu"
+    if shutil.which("ffmpeg") is None:
+        sys.exit("ERROR: ffmpeg not found on PATH — required to encode the video.")
+
+    wp.init()
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    target = 2.0 * GATES_RADIUS
+    print(f"device={DEVICE}  batch={GATES_BATCH}  seed={GATES_SEED}  "
+          f"generator={GATES_GENERATOR}  gate_radius={GATES_RADIUS} (target {target})")
+
+    raw = _gen_gates(0)
+    raw_check = _gen_gates(0)
+    max_diff = float(np.nanmax(np.abs(raw["position"] - raw_check["position"])))
+    if max_diff != 0.0:
+        sys.exit(f"ERROR: raw gate anchors are not deterministic across two runs "
+                 f"(max diff {max_diff}); the per-frame snapshots would not be a true "
+                 f"trajectory. Aborting.")
+    print(f"determinism check OK (raw max diff {max_diff})")
+
+    # Snapshot every round budget once; reuse the batches for env choice AND frames.
+    seq = [raw] + [_gen_gates(k) for k in range(1, GATES_ROUND_CAP + 1)]
+    long = _gen_gates(GATES_ROUND_CAP + 16)
+    envs, stops = _choose_gate_envs(seq, long, target)
+    if len(envs) < GATES_N_ENVS:
+        sys.exit(f"ERROR: only {len(envs)} valid converged envs found "
+                 f"(need {GATES_N_ENVS}); raise GATES_ROUND_CAP or change the config.")
+    K = min(max(stops) + 1, GATES_ROUND_CAP)
+    print(f"chosen envs (densest raw overlap, valid + converged): {envs}")
+    for e, s in zip(envs, stops):
+        print(f"  env {e}: {_raw_overlap_pairs(raw, e, target)} raw overlapping pairs, "
+              f"visually converged (within {GATES_CONV_TOL}) after round {s}")
+    print(f"round budget K = {K}")
+
+    # Monotone stabilization check: once an env is within tolerance of its converged
+    # state it must never leave again — otherwise the "converged" tag would lie.
+    for e, s in zip(envs, stops):
+        for k in range(s, GATES_ROUND_CAP + 1):
+            d = float(np.linalg.norm(_gates_state(seq[k], e) - _gates_state(seq[-1], e),
+                                     axis=1).max())
+            if d > GATES_CONV_TOL:
+                sys.exit(f"ERROR: env {e} left the converged state at round {k} "
+                         f"(dist {d}); stabilization is not monotone. Aborting.")
+    print("monotone stabilization check OK (no env leaves its converged state)")
+
+    limits = _gate_limits(raw, seq[K], envs)
+
+    accent = "#1d4ed8"
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_dir = Path(tmp)
+        idx = 0
+        for k in range(0, K + 1):
+            if k == 0:
+                banner = (f"raw overlapping gate anchors (gate_solve_iters=0)    |    "
+                          f"round 0 / {K}")
+            else:
+                banner = f"gate self-collision relaxation    |    round {k} / {K}"
+            _render_gate_frame(tmp_dir / f"frame_{idx:04d}.png", seq[k], envs, limits,
+                               stops, k, banner, accent)
+            idx += 1
+            if k == 0:
+                # Hold the raw frame ~1 s so the overlap registers before round 1 moves.
+                for _ in range(GATES_START_HOLD):
+                    shutil.copyfile(tmp_dir / "frame_0000.png",
+                                    tmp_dir / f"frame_{idx:04d}.png")
+                    idx += 1
+        last_frame = tmp_dir / f"frame_{idx - 1:04d}.png"
+        print(f"rendered {K + 1} round frames (plus {GATES_START_HOLD}-frame raw hold)")
+
+        for _ in range(GATES_HOLD_FRAMES):
+            shutil.copyfile(last_frame, tmp_dir / f"frame_{idx:04d}.png")
+            idx += 1
+        total = idx
+        print(f"total frames (incl. {GATES_HOLD_FRAMES}-frame hold): {total}")
+
+        # Poster = the final separated frame.
+        shutil.copyfile(last_frame, GATES_POSTER_PATH)
+
+        crf = 23
+        _encode(tmp_dir, crf, GATES_MP4_PATH, GATES_FRAMERATE)
+        while GATES_MP4_PATH.stat().st_size > 4_000_000 and crf < 28:
+            crf += 2
+            print(f"mp4 over 4 MB, re-encoding at crf={crf}")
+            _encode(tmp_dir, crf, GATES_MP4_PATH, GATES_FRAMERATE)
+
+    size = GATES_MP4_PATH.stat().st_size
+    print(f"wrote {GATES_MP4_PATH}  ({size / 1e6:.2f} MB, {total} frames, "
+          f"{total / GATES_FRAMERATE:.1f} s at {GATES_FRAMERATE} fps, crf={crf})")
+    print(f"wrote {GATES_POSTER_PATH}  ({GATES_POSTER_PATH.stat().st_size} bytes)")
 
 
 def main() -> None:
@@ -282,4 +562,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    if "--gates" in sys.argv[1:]:
+        main_gates()
+    else:
+        main()

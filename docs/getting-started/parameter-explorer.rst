@@ -4,6 +4,14 @@ Parameter explorer (UI)
 An interactive Gradio app to see how each parameter affects generation — sliders for the
 regime / shape / resolution / relaxation knobs, a live track grid, and the valid-yield stat.
 
+.. figure:: ../assets/parameter-explorer.png
+   :alt: The Track-gen parameter explorer: control panel of sliders beside a 4x4 grid of generated tracks.
+   :align: center
+
+   The **Tracks** tab: generator / regime / shape / resolution / relaxation controls on the
+   left, a paged grid of freshly generated tracks on the right, and the valid-yield +
+   mean-length / thickness / count stat line computed over the whole batch.
+
 Launching
 ---------
 

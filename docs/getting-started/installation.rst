@@ -30,6 +30,31 @@ From scratch with uv (recommended)
    uv pip install -e ".[ui]"
    uv run python -m viz.param_explorer   # opens a local URL (default http://127.0.0.1:7860)
 
+Add to an existing uv project
+-----------------------------
+
+If you already have a ``uv``-managed project (one with a ``pyproject.toml`` and a
+``uv.lock``), add ``track_gen`` as a dependency with ``uv add`` from inside that project.
+It records the dependency in your ``pyproject.toml``, resolves it into ``uv.lock``, and
+syncs the environment in one step.
+
+.. code-block:: bash
+
+   # from a Git tag/branch (recommended for reproducibility — pin a ref)
+   uv add "git+https://github.com/AntoineRichard/TrackGen.git"
+   uv add "git+https://github.com/AntoineRichard/TrackGen.git@main"
+
+   # with an extra (e.g. the Gradio UI)
+   uv add "track_gen[ui] @ git+https://github.com/AntoineRichard/TrackGen.git"
+
+   # or from a local checkout, tracked as an editable path dependency
+   uv add --editable /path/to/TrackGen
+
+``uv add`` updates ``pyproject.toml`` and ``uv.lock`` for you. To materialise the
+environment from the lockfile later (e.g. on a fresh clone or in CI), run ``uv sync``.
+``warp-lang`` and ``numpy`` come in automatically as core dependencies; request the
+``dev`` or ``ui`` extras only if you need them.
+
 With venv + pip
 ---------------
 

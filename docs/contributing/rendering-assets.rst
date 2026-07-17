@@ -127,6 +127,39 @@ deterministic trajectory; the script asserts the raw (k=0) centerlines are
 bit-identical across two generations and aborts otherwise. Requires a CUDA device or
 CPU (either works) plus ``ffmpeg`` on ``PATH``.
 
+Gate relaxation iteration-evolution video
+-----------------------------------------
+
+The gate relaxation page embeds the same deliverable for the **gate self-collision
+relaxation**, rendered by the same module's ``--gates`` entry point
+(``main_gates()``):
+
+.. code-block:: bash
+
+   .venv/bin/python -m viz.render_relaxation_video --gates
+
+.. list-table::
+   :header-rows: 1
+   :widths: 40 60
+
+   * - File
+     - Contents
+   * - ``docs/_static/relaxation-gates-iterations.mp4``
+     - Five bezier gate sequences with heavily overlapping raw anchors evolving
+       round by round through the per-env Gauss-Seidel sphere separation
+       (illustrative ``gate_radius=0.13``, ``gate_width=0.16``), with per-panel
+       ``converged`` tags once an env's state stops changing. libx264,
+       ``-crf 23``, ~6 s.
+   * - ``docs/_static/relaxation-gates-iterations-poster.png``
+     - The final separated frame, used as the ``<video>`` poster.
+
+Each frame is regenerated with ``gate_solve_iters=k`` and is a true snapshot of the
+same trajectory (the coincident-pair tie-break is indexed by the round, not the total
+budget); the script asserts the raw anchors are bit-identical across two generations,
+shows only envs whose state at the round cap matches a much longer run, and verifies
+no shown env leaves its converged state once reached. Requires a CUDA device or CPU
+(either works) plus ``ffmpeg`` on ``PATH``.
+
 Utilities overview figure
 -------------------------
 

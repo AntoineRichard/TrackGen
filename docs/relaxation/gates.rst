@@ -89,6 +89,24 @@ in-kernel:
 - Each round tracks whether any pair moved; a round that moves nothing triggers an
   **early exit** from the iteration loop (the sequence is already separated).
 
+.. raw:: html
+
+   <video controls loop muted playsinline width="100%" poster="../_static/relaxation-gates-iterations-poster.png">
+     <source src="../_static/relaxation-gates-iterations.mp4" type="video/mp4">
+   </video>
+
+Five bezier gate sequences whose raw anchors (``gate_solve_iters=0``) are heavily
+overlapping (10-15 pairs inside the separation target each), evolving round by round
+through the Gauss-Seidel sphere separation at an illustrative ``gate_radius=0.13``
+(target spacing ``0.26``; the default radius is ``0.025``) with ``gate_width=0.16``
+bars. Because the coincident-pair tie-break is indexed by the **round** index — not the
+total budget — a run with ``gate_solve_iters=k`` executes exactly the first ``k`` rounds
+of a longer run, so each frame is generated afresh at budget ``k`` and is a *true*
+snapshot of the same trajectory (the raw anchors are asserted bit-identical across two
+generations). Each panel gains a ``converged`` tag once its state stops changing — the
+per-env early exit in action; the round budget only bounds the loop. Regenerate with
+``python -m viz.render_relaxation_video --gates`` (needs ffmpeg).
+
 Contrast with the track XPBD solver
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
