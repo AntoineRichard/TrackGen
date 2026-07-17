@@ -63,7 +63,7 @@ E, device = 64, "cuda"                       # or "cpu"
 config = TrackGenConfig(num_envs=E, half_width=0.03, device=device)
 rng = PerEnvSeededRNG(seeds=0, num_envs=E, device=device)
 track = TrackGenerator(config, rng).generate()
-# track.outer / center / inner: [E*N_max] vec2f, NaN-padded, count[e] real points
+# track.outer / center / inner: [E*N_max] vec3f (z=0), NaN-padded, count[e] real points
 ```
 
 …or let one object run the whole loop — generation, out-of-bounds checks,
@@ -74,7 +74,7 @@ from track_gen.course import Course, CourseConfig
 
 course = Course(CourseConfig(mode="track", gen=config, seeds=42,
                              collision="segments", checkpoint_spacing=0.6))
-course.bind(position=robot_pos, yaw=robot_yaw, half_extents=robot_he)
+course.bind(position=robot_pos, orientation=robot_quat, half_extents=robot_he)
 course.generate()                            # whole batch + coherent refresh
 res = course.step()                          # events + contacts, every sim step
 course.reset(done_mask)                      # respawn finished envs

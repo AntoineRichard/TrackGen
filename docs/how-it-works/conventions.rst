@@ -6,9 +6,12 @@ This page documents the low-level conventions shared across all pipeline kernels
 Flat ``[E*N]`` arrays
 ----------------------
 
-Points are flat ``wp.array(dtype=wp.vec2f)`` of length ``E*N`` (or ``E*M``, ``E*P``).
-Per-env scalars are ``[E]`` arrays. There are no nested lists or ragged tensors; every
-buffer is a dense, fixed-shape Warp array.
+Points are flat ``wp.array`` of length ``E*N`` (or ``E*M``, ``E*P``). Internal
+generation and relaxation kernels stage them as ``wp.vec2f``; the public boundary
+arrays (``Track.center/outer/inner``, ``GateSequence.position`` …) surface as
+``wp.vec3f`` after the 3D lift (``z=0`` for the planar track pipeline). Per-env scalars
+are ``[E]`` arrays. There are no nested lists or ragged tensors; every buffer is a
+dense, fixed-shape Warp array.
 
 Thread-per-element and ``e = tid // N``
 ----------------------------------------

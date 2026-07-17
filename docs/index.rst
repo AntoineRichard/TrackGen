@@ -183,6 +183,7 @@ Explore the docs
 
    tutorials/batch-of-tracks
    tutorials/gate-sequences
+   gates-3d
    tutorials/choosing-a-generator
    tutorials/cuda-graph-in-a-sim
 

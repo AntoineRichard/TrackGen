@@ -6,6 +6,12 @@ For drone-style courses where road width is irrelevant, ``track_gen`` provides
 centerline-generator anchors and skips constant-spacing resampling, XPBD
 relaxation, and inflation — making it faster than the full track pipeline.
 
+.. seealso::
+
+   Gate courses are **2.5D**: this tutorial covers the plan-view layout and the runtime
+   loop, while :doc:`/gates-3d` covers altitude — the four ``z_profile`` families, the
+   ``gate_align`` modes, the 3D localizer, and frame collision.
+
 Prerequisites
 -------------
 
@@ -50,8 +56,8 @@ Generating the Gate Sequence
 
    gates = GateGenerator(config, rng).generate()
 
-   position = wp.to_torch(gates.position).view(E, config.max_gates, 2)
-   tangent  = wp.to_torch(gates.tangent).view(E, config.max_gates, 2)
+   position = wp.to_torch(gates.position).view(E, config.max_gates, 3)
+   tangent  = wp.to_torch(gates.tangent).view(E, config.max_gates, 3)
    valid    = wp.to_torch(gates.valid).bool()
 
 ``GateGenerator`` pre-allocates all buffers in ``__init__``, exactly like
@@ -68,19 +74,25 @@ Reading the Output Fields
      - Shape
      - Meaning
    * - ``position``
-     - ``[E, G, 2]``
-     - Gate centers (``G = max_gates``). Slots at index ``i >= count[e]`` hold
-       NaN padding.
+     - ``[E, G, 3]``
+     - ``vec3f`` gate centers (``G = max_gates``). Slots at index
+       ``i >= count[e]`` hold NaN padding.
    * - ``tangent``
-     - ``[E, G, 2]``
-     - Unit tangent at each gate (direction of traversal).
-   * - ``normal``
-     - ``[E, G, 2]``
-     - Unit left-normal at each gate (perpendicular to ``tangent``).
+     - ``[E, G, 3]``
+     - ``vec3f`` unit tangent at each gate (direction of traversal).
+   * - ``orientation``
+     - ``[E, G]`` ``quatf``
+     - Roll-free gate pose ``wp.quatf(x, y, z, w)`` with local x = gate forward,
+       y = left, z = up. Replaces the old planar ``normal`` field; recover the
+       left axis as ``wp.quat_rotate(orientation[e, i], wp.vec3f(0, 1, 0))``.
+   * - ``half_size``
+     - ``[E, G]`` ``float32``
+     - Square-opening half-extent (``0.5 * gate_width``) for each gate.
    * - ``left``, ``right``
-     - ``[E, G, 2]``
-     - Gate endpoints: ``center ± 0.5 * gate_width * normal``. With the default
-       ``gate_width=0.0`` these collapse onto the gate center (point gates).
+     - ``[E, G, 3]``
+     - ``vec3f`` gate endpoints: ``position ± half_size * left_axis``. With the
+       default ``gate_width=0.0`` (hence ``half_size=0``) these collapse onto the
+       gate center (point gates).
    * - ``valid``
      - ``[E]`` bool
      - Per-sequence validity. A positive ``gate_width`` additionally invalidates
@@ -223,19 +235,21 @@ here) for a post-collision penalty:
                                   # checkpoint_spacing here — those are track-mode.
    ))
 
-   # Bind the sim's own buffers: position drives gate progress; yaw + half_extents
-   # are the oriented box tested against the posts. The sim writes these in place
-   # each step. (With post_radius == 0, bind position alone.)
-   position     = wp.zeros(E, dtype=wp.vec2f, device=device)
-   yaw          = wp.zeros(E, dtype=wp.float32, device=device)
+   # Bind the sim's own buffers: position (vec3f) drives gate progress;
+   # orientation (quatf) + half_extents (vec2f) are the oriented box tested
+   # against the posts. The sim writes these in place each step. (With
+   # post_radius == 0, bind position alone.)
+   position     = wp.zeros(E, dtype=wp.vec3f, device=device)
+   orientation  = wp.array(np.tile([0.0, 0.0, 0.0, 1.0], (E, 1)).astype(np.float32),
+                           dtype=wp.quatf, device=device)   # identity quats
    half_extents = wp.array(np.full((E, 2), 0.01, np.float32),
                            dtype=wp.vec2f, device=device)
-   course.bind(position=position, yaw=yaw, half_extents=half_extents)
+   course.bind(position=position, orientation=orientation, half_extents=half_extents)
 
    seq = course.generate()        # whole batch + posts rebuild + progress reset
 
    for step in range(40):
-       # sim.step() writes `position` (and `yaw`) in place here.
+       # sim.step() writes `position` (and `orientation`) in place here.
 
        res    = course.step()                     # events + contacts, no args
        passed = res.events.passed.numpy()         # [E] int32: cleared a gate this step
@@ -310,10 +324,10 @@ Full Example
    rng   = PerEnvSeededRNG(seeds=0, num_envs=E, device=device)
    gates = GateGenerator(config, rng).generate()
 
-   position = wp.to_torch(gates.position).view(E, config.max_gates, 2)
-   tangent  = wp.to_torch(gates.tangent).view(E, config.max_gates, 2)
-   left     = wp.to_torch(gates.left).view(E, config.max_gates, 2)
-   right    = wp.to_torch(gates.right).view(E, config.max_gates, 2)
+   position = wp.to_torch(gates.position).view(E, config.max_gates, 3)
+   tangent  = wp.to_torch(gates.tangent).view(E, config.max_gates, 3)
+   left     = wp.to_torch(gates.left).view(E, config.max_gates, 3)
+   right    = wp.to_torch(gates.right).view(E, config.max_gates, 3)
    valid    = wp.to_torch(gates.valid).bool()
    count    = wp.to_torch(gates.count)
 

@@ -70,9 +70,9 @@ Reading the Output Fields
 
 .. code-block:: python
 
-   center = wp.to_torch(track.center).view(E, config.N_max, 2)
-   outer  = wp.to_torch(track.outer).view(E, config.N_max, 2)
-   inner  = wp.to_torch(track.inner).view(E, config.N_max, 2)
+   center = wp.to_torch(track.center).view(E, config.N_max, 3)
+   outer  = wp.to_torch(track.outer).view(E, config.N_max, 3)
+   inner  = wp.to_torch(track.inner).view(E, config.N_max, 3)
    valid  = wp.to_torch(track.valid).bool()
    count  = wp.to_torch(track.count)
 
@@ -196,7 +196,7 @@ alive. For a persistent tensor, call ``.clone()`` on the PyTorch side as well:
 
 .. code-block:: python
 
-   center_torch = wp.to_torch(track.center).view(E, config.N_max, 2).clone()
+   center_torch = wp.to_torch(track.center).view(E, config.N_max, 3).clone()
 
 Driving Against the Track: Collision for RL
 -------------------------------------------
@@ -233,18 +233,20 @@ checkpoint rewards:
        max_checkpoints=64,
    ))
 
-   # Bind the sim's own buffers: position drives progress; yaw + half_extents are
-   # the oriented collision box. The sim writes these in place each step.
-   position     = wp.zeros(E, dtype=wp.vec2f, device=device)
-   yaw          = wp.zeros(E, dtype=wp.float32, device=device)
+   # Bind the sim's own buffers: position (vec3f) drives progress; orientation
+   # (quatf) + half_extents (vec2f, planar box) are the oriented collision box.
+   # The sim writes these in place each step.
+   position     = wp.zeros(E, dtype=wp.vec3f, device=device)
+   orientation  = wp.array(np.tile([0.0, 0.0, 0.0, 1.0], (E, 1)).astype(np.float32),
+                           dtype=wp.quatf, device=device)   # identity quats
    half_extents = wp.array(np.full((E, 2), 0.02, np.float32),
                            dtype=wp.vec2f, device=device)
-   course.bind(position=position, yaw=yaw, half_extents=half_extents)
+   course.bind(position=position, orientation=orientation, half_extents=half_extents)
 
    track = course.generate()          # whole batch + checkpoint resample + progress reset
 
    for step in range(40):
-       # sim.step() writes `position` (and `yaw`) in place here.
+       # sim.step() writes `position` (and `orientation`) in place here.
 
        res    = course.step()                 # events + contacts, no args
        oob    = res.contacts.oob.numpy()      # [E] int32: 1 == out of the drivable band
@@ -308,9 +310,9 @@ Putting It All Together
    generator = TrackGenerator(config, rng)
    track     = generator.generate()
 
-   center = wp.to_torch(track.center).view(E, config.N_max, 2)
-   outer  = wp.to_torch(track.outer).view(E, config.N_max, 2)
-   inner  = wp.to_torch(track.inner).view(E, config.N_max, 2)
+   center = wp.to_torch(track.center).view(E, config.N_max, 3)
+   outer  = wp.to_torch(track.outer).view(E, config.N_max, 3)
+   inner  = wp.to_torch(track.inner).view(E, config.N_max, 3)
    valid  = wp.to_torch(track.valid).bool()
    count  = wp.to_torch(track.count)
 

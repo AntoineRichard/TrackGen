@@ -116,9 +116,9 @@ onto episode resets.
    # First reset — first call captures the CUDA graph.
    track = gen.generate()
 
-   center = wp.to_torch(track.center).view(E, config.N_max, 2)
-   outer  = wp.to_torch(track.outer).view(E, config.N_max, 2)
-   inner  = wp.to_torch(track.inner).view(E, config.N_max, 2)
+   center = wp.to_torch(track.center).view(E, config.N_max, 3)
+   outer  = wp.to_torch(track.outer).view(E, config.N_max, 3)
+   inner  = wp.to_torch(track.inner).view(E, config.N_max, 3)
    valid  = wp.to_torch(track.valid).bool()
    count  = wp.to_torch(track.count)
 

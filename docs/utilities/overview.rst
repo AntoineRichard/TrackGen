@@ -49,7 +49,7 @@ CUDA graphs
 All utilities preallocate their state and results once (stable pointers) and
 never allocate in the hot path. Per-step inputs can be BOUND once instead of
 passed per call — ``ProgressTracker(cps, position=buf)``,
-``DiscChecker(..., position=..., yaw=..., half_extents=...)``, and
+``DiscChecker(..., position=..., orientation=..., half_extents=...)``, and
 ``CollisionChecker.bind_inputs(...)`` — after which ``update()``/``query()``
 take no arguments and read the buffers in place. Under graph capture this is
 the intended pattern: the sim writes its stable pose buffers, then replays

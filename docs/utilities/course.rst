@@ -18,7 +18,7 @@ regeneration; per-env respawns via a mask):
        collision="segments",          # or "sdf" / None
        checkpoint_spacing=0.6,
    ))
-   course.bind(position=robot_pos, yaw=robot_yaw, half_extents=robot_he)
+   course.bind(position=robot_pos, orientation=robot_quat, half_extents=robot_he)
 
    track = course.generate()          # whole batch + coherent refresh
    for _ in range(steps):
@@ -55,6 +55,12 @@ different contact type depending on the course's collision checker:
 
    res = course.step()
    hit = wp.to_torch(res.contacts.hit)      # DiscContact here, not BoxContact
+
+In gates mode ``StepResult`` also carries a third field, ``res.frame`` — the
+:class:`~track_gen.localize.TrackFrame` localizing the agent on the gate
+``CourseLine`` spline (``s`` arc length, ``n`` signed
+right offset, ``n_up`` signed vertical offset, ``segment`` index). It is
+``None`` in track mode.
 
 Under the hood, two CUDA graphs do the heavy lifting on ``cuda`` devices:
 the generator's own pipeline graph (captured on the first ``generate()``)

@@ -20,9 +20,9 @@ The following minimal example generates a batch of 64 closed-loop race tracks on
    generator = TrackGenerator(config, rng)
    track = generator.generate()  # fixed batch: config.num_envs tracks
 
-   center = wp.to_torch(track.center).view(E, config.N_max, 2)
-   outer = wp.to_torch(track.outer).view(E, config.N_max, 2)
-   inner = wp.to_torch(track.inner).view(E, config.N_max, 2)
+   center = wp.to_torch(track.center).view(E, config.N_max, 3)
+   outer = wp.to_torch(track.outer).view(E, config.N_max, 3)
+   inner = wp.to_torch(track.inner).view(E, config.N_max, 3)
    valid = wp.to_torch(track.valid).bool()
    count = wp.to_torch(track.count)
 
@@ -63,8 +63,8 @@ and skips constant-spacing, XPBD relaxation, and inflation.
    rng = PerEnvSeededRNG(seeds=0, num_envs=E, device=device)
 
    gates = GateGenerator(config, rng).generate()
-   position = wp.to_torch(gates.position).view(E, config.max_gates, 2)
-   tangent = wp.to_torch(gates.tangent).view(E, config.max_gates, 2)
+   position = wp.to_torch(gates.position).view(E, config.max_gates, 3)
+   tangent = wp.to_torch(gates.tangent).view(E, config.max_gates, 3)
    valid = wp.to_torch(gates.valid).bool()
 
 ``GateGenerator`` follows the same fixed-batch contract as ``TrackGenerator``: the output

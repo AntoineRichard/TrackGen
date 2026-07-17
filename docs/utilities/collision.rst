@@ -76,10 +76,10 @@ obstacles. Gate posts are two lines of code:
    from track_gen.collision import DiscChecker
 
    dev = seq.left.device                       # bind posts on the same device
-   posts = np.empty((E, 2 * G, 2), np.float32)
-   posts[:, 0::2] = seq.left.numpy().reshape(E, G, 2)
-   posts[:, 1::2] = seq.right.numpy().reshape(E, G, 2)
-   checker = DiscChecker(wp.array(posts.reshape(-1, 2), dtype=wp.vec2f,
+   posts = np.empty((E, 2 * G, 3), np.float32)
+   posts[:, 0::2] = seq.left.numpy().reshape(E, G, 3)
+   posts[:, 1::2] = seq.right.numpy().reshape(E, G, 3)
+   checker = DiscChecker(wp.array(posts.reshape(-1, 3), dtype=wp.vec3f,
                                   device=dev),
                          radius=0.03, max_boxes=1, num_envs=E)
 
