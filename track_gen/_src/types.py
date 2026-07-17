@@ -871,6 +871,38 @@ class GateGenConfig:
     checkpoint_angle_jitter : float
         *Checkpoint generator only.*  Angular jitter as a fraction of the
         per-checkpoint angular slot.  Default 0.55.
+
+    z_profile : str
+        Per-gate altitude (Z) profile family.  One of ``"flat"`` (default,
+        every real gate at ``z_base``), ``"uniform"`` (i.i.d. uniform in
+        ``[z_min, z_max]``), ``"random_walk"`` (Brownian-bridge walk clamped
+        to ``[z_min, z_max]`` with a per-step grade cap of ``z_max_step``), or
+        ``"noise"`` (periodic harmonic noise around ``z_base``).  Applied by
+        ``warp_zprofile.apply_z_profile`` after XY ordering/relaxation and
+        before the 3D lift; not yet wired into the generation pipeline.
+    z_base : float
+        Baseline altitude for the ``"flat"``, ``"random_walk"``, and
+        ``"noise"`` profiles.  Default 0.0.
+    z_min : float
+        Lower altitude clamp for ``"uniform"``, ``"random_walk"``, and
+        ``"noise"``.  Must be <= ``z_max``.  Default 0.0.
+    z_max : float
+        Upper altitude clamp for ``"uniform"``, ``"random_walk"``, and
+        ``"noise"``.  Must be >= ``z_min``.  Default 0.0.
+    z_max_step : float
+        *Random-walk profile only.*  Maximum |dz| per unit plan-view arc
+        length (a grade cap), applied per random-walk step before the
+        closure bridge.  Must be >= 0.  Default 0.0.
+    z_noise_amplitude : float
+        *Noise profile only.*  Amplitude of the harmonic altitude
+        oscillation around ``z_base``.  Must be >= 0.  Default 0.0.
+    z_noise_harmonics : int
+        *Noise profile only.*  Number of summed harmonics in the periodic
+        noise field.  Must be >= 1.  Default 3.
+    z_valid_grade : float
+        Maximum allowed |dz|/ds grade for post-hoc course validity checking.
+        0 disables the check.  Must be >= 0.  Default 0.0.  (Consumed
+        starting in Task 4; unused by ``warp_zprofile`` itself.)
     """
 
     generator: str = "bezier"
@@ -913,6 +945,15 @@ class GateGenConfig:
     checkpoint_count: int = 12
     checkpoint_radius_min_frac: float = 0.33
     checkpoint_angle_jitter: float = 0.55
+
+    z_profile: str = "flat"
+    z_base: float = 0.0
+    z_min: float = 0.0
+    z_max: float = 0.0
+    z_max_step: float = 0.0
+    z_noise_amplitude: float = 0.0
+    z_noise_harmonics: int = 3
+    z_valid_grade: float = 0.0
 
     def __post_init__(self):
         if int(self.num_envs) < 1:
@@ -993,6 +1034,33 @@ class GateGenConfig:
             raise ValueError(
                 "checkpoint_radius_min_frac must be in [0, 1), got "
                 f"{self.checkpoint_radius_min_frac!r}"
+            )
+        if self.z_profile not in {"flat", "uniform", "random_walk", "noise"}:
+            raise ValueError(
+                "z_profile must be one of "
+                "{'flat', 'uniform', 'random_walk', 'noise'}, got "
+                f"{self.z_profile!r}"
+            )
+        if float(self.z_min) > float(self.z_max):
+            raise ValueError(
+                f"z_min must be <= z_max, got {self.z_min!r} > {self.z_max!r}"
+            )
+        if float(self.z_max_step) < 0.0:
+            raise ValueError(
+                f"z_max_step must be >= 0, got {self.z_max_step!r}"
+            )
+        if float(self.z_noise_amplitude) < 0.0:
+            raise ValueError(
+                "z_noise_amplitude must be >= 0, got "
+                f"{self.z_noise_amplitude!r}"
+            )
+        if int(self.z_noise_harmonics) < 1:
+            raise ValueError(
+                f"z_noise_harmonics must be >= 1, got {self.z_noise_harmonics!r}"
+            )
+        if float(self.z_valid_grade) < 0.0:
+            raise ValueError(
+                f"z_valid_grade must be >= 0, got {self.z_valid_grade!r}"
             )
 
 
