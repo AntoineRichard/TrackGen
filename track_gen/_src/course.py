@@ -357,32 +357,44 @@ class Course:
                 seed_arr = wp.array(int(seeds) + np.arange(self._E),
                                     dtype=wp.int32, device=self._device)
                 self.rng.set_seeds_warp(seed_arr, None)
+        # NOTE: generator.generate() takes runtime._CAPTURE_LOCK internally, so it must
+        # stay OUTSIDE the locked regions below (the lock is not reentrant).
         self.result = self.generator.generate()
         if self.progress is None:
             self._build_subtools()
-            self._refresh()          # eager warmup (also the cpu path;
-                                      # call 1 of 3 below on first cuda generate())
+            if self._is_cuda:
+                # Eager warmup launches ride the shared device stream; hold the
+                # process-wide capture lock so they cannot land inside another
+                # thread's graph capture (see runtime._CAPTURE_LOCK).
+                with runtime._CAPTURE_LOCK:
+                    self._refresh()  # call 1 of 3 below on first cuda generate()
+            else:
+                self._refresh()      # cpu path: eager every call
         elif self._refresh_graph is not None:
-            wp.capture_launch(self._refresh_graph)
-            wp.synchronize()
+            # Replay under the lock: launching a graph into a stream another
+            # thread is capturing is illegal (CUDA error 900).
+            with runtime._CAPTURE_LOCK:
+                wp.capture_launch(self._refresh_graph)
+                wp.synchronize()
         else:
             self._refresh()
         if self._is_cuda and self._refresh_graph is None:
-            prev = runtime._CAPTURING          # save/restore (generators' idiom)
-            set_capturing(True)
-            try:
-                self._refresh()      # warmup, sync-free (call 2 of 3: runs for
+            with runtime._CAPTURE_LOCK:
+                prev = runtime._CAPTURING      # save/restore (generators' idiom;
+                set_capturing(True)             # flag mutations stay under the lock)
+                try:
+                    self._refresh()  # warmup, sync-free (call 2 of 3: runs for
                                       # real, priming any lazy kernel/module
                                       # init before we start recording below)
-                wp.synchronize()
-                with wp.ScopedCapture(device=self._device) as cap:
-                    self._refresh()  # call 3 of 3: RECORDED into the graph,
+                    wp.synchronize()
+                    with wp.ScopedCapture(device=self._device) as cap:
+                        self._refresh()  # call 3 of 3: RECORDED into the graph,
                                       # not executed here; replayed just below
-                self._refresh_graph = cap.graph
-            finally:
-                set_capturing(prev)
-            wp.capture_launch(self._refresh_graph)
-            wp.synchronize()
+                    self._refresh_graph = cap.graph
+                finally:
+                    set_capturing(prev)
+                wp.capture_launch(self._refresh_graph)
+                wp.synchronize()
         return self.result
 
     def _build_subtools(self) -> None:

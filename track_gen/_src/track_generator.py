@@ -22,6 +22,7 @@ import numbers
 
 import warp as wp
 
+from .runtime import _CAPTURE_LOCK
 from .types import Track, TrackGenConfig
 
 __all__ = [
@@ -167,37 +168,52 @@ class TrackGenerator:
                 )
         from . import warp_pipeline
 
-        # Refresh the seed buffer in place from the rng's CURRENT seeds (zero allocation:
-        # wp.copy). The rng holds fixed seeds unless reseeded, so back-to-back generate()
-        # calls are deterministic; reseed the rng to vary the batch. seeds_warp is [E] int32.
-        wp.copy(self._seed_buf, self._rng.seeds_warp)
-
         dev = str(self._config.device)
         _is_cuda = "cuda" in dev
 
-        if _is_cuda and self._capturable:
-            if self._graph is None:
-                # First CUDA call: warm up (loads kernels/modules), then capture.
-                # _CAPTURING suppresses host-blocking syncs during warmup + capture.
-                prev_capturing = warp_pipeline._CAPTURING
-                warp_pipeline._CAPTURING = True
-                try:
-                    for _ in range(3):
-                        self._run()
-                    wp.synchronize()  # OUTSIDE capture: ensure warmup finished
+        if _is_cuda:
+            # Serialize ALL cuda work (seed copy, capture, replay, eager launches)
+            # behind the process-wide capture lock: captures record the device's current
+            # stream, so a concurrent generate() from another thread (e.g. two Gradio
+            # events on one page load) interleaving on that stream corrupts the
+            # recording — CUDA errors 401/900, or an async illegal-access 700 that
+            # poisons the context. The lock also makes the _CAPTURING save/restore
+            # idiom below thread-safe.
+            with _CAPTURE_LOCK:
+                # Refresh the seed buffer in place from the rng's CURRENT seeds (zero
+                # allocation: wp.copy). The rng holds fixed seeds unless reseeded, so
+                # back-to-back generate() calls are deterministic; reseed the rng to
+                # vary the batch. seeds_warp is [E] int32. Inside the lock: the async
+                # copy rides the shared stream and must not land in a foreign capture.
+                wp.copy(self._seed_buf, self._rng.seeds_warp)
+                if self._capturable:
+                    if self._graph is None:
+                        # First CUDA call: warm up (loads kernels/modules), then capture.
+                        # _CAPTURING suppresses host-blocking syncs during warmup + capture.
+                        prev_capturing = warp_pipeline._CAPTURING
+                        warp_pipeline._CAPTURING = True
+                        try:
+                            for _ in range(3):
+                                self._run()
+                            wp.synchronize()  # OUTSIDE capture: ensure warmup finished
 
-                    with wp.ScopedCapture(device=dev) as cap:
-                        self._run()
-                    self._graph = cap.graph
-                finally:
-                    warp_pipeline._CAPTURING = prev_capturing
+                            with wp.ScopedCapture(device=dev) as cap:
+                                self._run()
+                            self._graph = cap.graph
+                        finally:
+                            warp_pipeline._CAPTURING = prev_capturing
 
-            # Replay the captured graph (seed buffer already updated above).
-            wp.capture_launch(self._graph)
-            wp.synchronize()
+                    # Replay the captured graph (seed buffer already updated above).
+                    wp.capture_launch(self._graph)
+                    wp.synchronize()
+                else:
+                    # Eager on CUDA — non-capturable generators (host-driven loops /
+                    # per-call allocation forbidden inside a capture). Still locked:
+                    # eager launches land on the same stream a capture would record.
+                    self._run()
         else:
-            # Eager path — no graph capture. Covers cpu, and non-capturable generators
-            # on CUDA (host-driven loops / per-call allocation forbidden inside a capture).
+            # Eager path on cpu — no graph capture, no shared stream, no lock.
+            wp.copy(self._seed_buf, self._rng.seeds_warp)
             self._run()
 
         return self._track

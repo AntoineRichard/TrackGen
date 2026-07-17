@@ -9,6 +9,7 @@ common ordering, collision, frame, and validity pipeline.
 
 import warp as wp
 
+from .runtime import _CAPTURE_LOCK
 from .types import GateGenConfig, GateSequence
 
 __all__ = ["GateGenConfig", "GateGenerator", "GateSequence"]
@@ -147,32 +148,39 @@ class GateGenerator:
                     f"with num_envs={num_or_ids} instead."
                 )
 
-        wp.copy(self._seed_buf, self._rng.seeds_warp)
-
         dev = str(self._config.device)
         if "cuda" in dev:
-            if self._graph is None:
-                from . import warp_gate, warp_pipeline
+            # Serialize ALL cuda work (seed copy, capture, replay) behind the
+            # process-wide capture lock (shared with TrackGenerator / Course): captures
+            # record the device's current stream, so a concurrent generate() from
+            # another thread interleaving on that stream corrupts the recording — CUDA
+            # errors 401/900, or an async illegal-access 700 that poisons the context.
+            # The lock also makes the _CAPTURING save/restore idiom thread-safe.
+            with _CAPTURE_LOCK:
+                wp.copy(self._seed_buf, self._rng.seeds_warp)
+                if self._graph is None:
+                    from . import warp_gate, warp_pipeline
 
-                prev_gate_capturing = warp_gate._CAPTURING
-                prev_pipeline_capturing = warp_pipeline._CAPTURING
-                warp_gate._CAPTURING = True
-                warp_pipeline._CAPTURING = True
-                try:
-                    for _ in range(3):
-                        self._run()
-                    wp.synchronize()
+                    prev_gate_capturing = warp_gate._CAPTURING
+                    prev_pipeline_capturing = warp_pipeline._CAPTURING
+                    warp_gate._CAPTURING = True
+                    warp_pipeline._CAPTURING = True
+                    try:
+                        for _ in range(3):
+                            self._run()
+                        wp.synchronize()
 
-                    with wp.ScopedCapture(device=dev) as cap:
-                        self._run()
-                    self._graph = cap.graph
-                finally:
-                    warp_gate._CAPTURING = prev_gate_capturing
-                    warp_pipeline._CAPTURING = prev_pipeline_capturing
+                        with wp.ScopedCapture(device=dev) as cap:
+                            self._run()
+                        self._graph = cap.graph
+                    finally:
+                        warp_gate._CAPTURING = prev_gate_capturing
+                        warp_pipeline._CAPTURING = prev_pipeline_capturing
 
-            wp.capture_launch(self._graph)
-            wp.synchronize()
+                wp.capture_launch(self._graph)
+                wp.synchronize()
         else:
+            wp.copy(self._seed_buf, self._rng.seeds_warp)
             self._run()
 
         return self._gate_sequence

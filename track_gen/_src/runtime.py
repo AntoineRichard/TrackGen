@@ -8,8 +8,13 @@ governs the whole family and ONE validator defines the error-message contract.
 
 The generator-owned capture flags in ``warp_pipeline`` / ``warp_gate`` are
 deliberately separate (pipeline-internal) and are NOT routed through here.
+``_CAPTURE_LOCK`` below IS shared with the generators, by design: there is one
+CUDA device stream, so at most one graph capture/replay may be in flight
+process-wide regardless of which family started it.
 """
 from __future__ import annotations
+
+import threading
 
 import warp as wp
 
@@ -17,6 +22,15 @@ _BIG = 1.0e30
 
 _INITED = False
 _CAPTURING = False
+
+# Process-wide mutex serializing every CUDA graph capture AND replay (TrackGenerator,
+# GateGenerator, Course). Captures record the device's current stream; a concurrent
+# capture, replay, or plain kernel launch from another thread lands on that same stream
+# and corrupts the recording (CUDA errors 401/900, or an async illegal-memory-access 700
+# that poisons the context). The _CAPTURING flags above are also only mutated while this
+# lock is held, which makes their save/restore idiom thread-safe. CPU paths never take
+# the lock (nothing to protect; eager execution).
+_CAPTURE_LOCK = threading.Lock()
 
 
 def _init() -> None:
