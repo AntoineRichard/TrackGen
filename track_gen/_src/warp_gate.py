@@ -429,6 +429,7 @@ def _finalize_validity_k(
     min_gates: int,
     center_distance: float,
     gate_width: float,
+    z_valid_grade: float,
     valid: wp.array(dtype=wp.int32),
 ):
     e = wp.tid()
@@ -458,7 +459,12 @@ def _finalize_validity_k(
             )
             if not fields_finite:
                 ok = int(0)
-            tangent_len2 = t[0] * t[0] + t[1] * t[1]
+            # Full 3D tangent norm: with gate_align="full_tangent" a legitimate
+            # near-vertical tangent has a tiny XY norm, so an XY-only length
+            # check would wrongly flag it. The frame kernel's own near-vertical
+            # fallback handles orientation; here we only reject a genuinely
+            # degenerate (zero-length) tangent.
+            tangent_len2 = t[0] * t[0] + t[1] * t[1] + t[2] * t[2]
             if tangent_len2 <= 1.0e-12:
                 ok = int(0)
 
@@ -491,6 +497,22 @@ def _finalize_validity_k(
                                 wp.vec2f(li[0], li[1]), wp.vec2f(ri[0], ri[1]),
                                 wp.vec2f(lj[0], lj[1]), wp.vec2f(rj[0], rj[1])) != 0:
                             ok = int(0)
+
+    # Grade check: reject any course whose |dz|/ds over a plan-view chord
+    # exceeds z_valid_grade. Loops with wraparound (j = (i+1) % cnt) so the
+    # closing chord (gate cnt-1 -> gate 0) is checked too.
+    if z_valid_grade > 0.0:
+        for i in range(max_gates):
+            if i < cnt and cnt >= 2:
+                j = i + 1
+                if j == cnt:
+                    j = 0
+                pi = position[base + i]
+                pj = position[base + j]
+                dxy = wp.sqrt((pj[0] - pi[0]) * (pj[0] - pi[0]) +
+                              (pj[1] - pi[1]) * (pj[1] - pi[1]))
+                if wp.abs(pj[2] - pi[2]) > z_valid_grade * wp.max(dxy, 1.0e-9):
+                    ok = int(0)
 
     valid[e] = ok
 
@@ -685,6 +707,7 @@ def finalize_gate_sequence(
     G = int(config.max_gates)
     dev = str(gates.position.device)
     min_center_distance = _gate_center_distance(config)
+    align_full = int(config.gate_align == "full_tangent")
     if fallbacks is None:
         fallbacks = wp.empty(E, dtype=wp.int32, device=dev)
     wp.launch(_fill_i32_k, dim=E, inputs=[fallbacks, 0], device=dev)
@@ -701,7 +724,7 @@ def finalize_gate_sequence(
             gates.count,
             G,
             float(config.gate_width),
-            0,  # align_full: planar (yaw-only) frames in the 2D pipeline
+            align_full,  # yaw_only (0) planar frames vs full_tangent (1)
             fallbacks,
         ],
         device=dev,
@@ -721,6 +744,7 @@ def finalize_gate_sequence(
             int(config.min_gates),
             float(min_center_distance),
             float(config.gate_width),
+            float(config.z_valid_grade),
             gates.valid,
         ],
         device=dev,
@@ -747,20 +771,23 @@ class _GateStaging:
 def _gate_warp_alloc(config: GateGenConfig, generator_spec):
     """Allocate facade-owned gate output plus pipeline + generator scratch.
 
-    Returns ``(gates, (gen_scratch, pos2, z, fallbacks))``: ``pos2`` is the
-    vec2f staging buffer the 2D kernels write, ``z`` the per-gate elevation
-    profile (zero until a z-profile stage writes it), ``fallbacks`` the
-    per-env frame-fallback counters.
+    Returns ``(gates, (gen_scratch, pos2, z_cum, z, fallbacks))``: ``pos2`` is
+    the vec2f staging buffer the 2D kernels write, ``z_cum`` the per-gate
+    cumulative plan-view arc length scratch the Z profiler needs, ``z`` the
+    per-gate elevation profile written by the Z profiler each run, ``fallbacks``
+    the per-env frame-fallback counters.
     """
+    from . import warp_zprofile
+
     gates = alloc_gate_sequence(config)
     gen_scratch = generator_spec.alloc_scratch(config)
     E = int(config.num_envs)
     G = int(config.max_gates)
     dev = str(config.device)
     pos2 = wp.empty(E * G, dtype=wp.vec2f, device=dev)
-    z = wp.zeros(E * G, dtype=wp.float32, device=dev)
+    z_cum, z = warp_zprofile.alloc_z_scratch(config)
     fallbacks = wp.zeros(E, dtype=wp.int32, device=dev)
-    return gates, (gen_scratch, pos2, z, fallbacks)
+    return gates, (gen_scratch, pos2, z_cum, z, fallbacks)
 
 
 def _run_gate_pipeline(
@@ -779,8 +806,10 @@ def _run_gate_pipeline(
     derived from the lifted positions, and the frame/validity finalization
     runs on the vec3f arrays.
     """
+    from . import warp_zprofile
+
     _init()
-    gen_scratch, pos2, z, fallbacks = scratch
+    gen_scratch, pos2, z_cum, z, fallbacks = scratch
     G = int(config.max_gates)
     dev = str(out.position.device)
     staging = _GateStaging(pos2, out.count)
@@ -789,6 +818,10 @@ def _run_gate_pipeline(
     solve_iters = int(getattr(config, "gate_solve_iters", 0))
     if solve_iters > 0 and min_center_distance > 0.0:
         relax_gate_spheres(pos2, G, out.count, min_center_distance, solve_iters)
+    # Z profile runs on the final ordered/relaxed 2D anchors, before the lift.
+    # It writes every real slot and zeroes padding, so the z scratch is fully
+    # overwritten each run (capture-safe: launches only, no alloc/sync/branch).
+    warp_zprofile.apply_z_profile(config, seed_buf_wp, pos2, out.count, z_cum, z)
     wp.launch(
         _lift_positions_k,
         dim=int(pos2.shape[0]),

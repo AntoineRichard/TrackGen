@@ -92,6 +92,10 @@ class GateGenerator:
         self._gate_sequence, self._scratch = warp_gate._gate_warp_alloc(
             config, generator_spec=generator_spec
         )
+        # Debug-only: per-env [E] int32 counter of frame fallbacks (near-vertical
+        # or degenerate tangents) accumulated during the last generate(). Reset
+        # and rewritten each call; not part of the public GateSequence contract.
+        self.frame_fallbacks: wp.array = self._scratch[4]
 
         self._seed_buf: wp.array = wp.empty(
             int(config.num_envs), dtype=wp.int32, device=str(config.device)

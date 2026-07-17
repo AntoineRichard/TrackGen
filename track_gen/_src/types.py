@@ -903,6 +903,12 @@ class GateGenConfig:
         Maximum allowed |dz|/ds grade for post-hoc course validity checking.
         0 disables the check.  Must be >= 0.  Default 0.0.  (Consumed
         starting in Task 4; unused by ``warp_zprofile`` itself.)
+    gate_align : str
+        Gate-frame alignment mode.  ``"yaw_only"`` (default) keeps gate posts
+        horizontal (the frame forward axis is the plan-view tangent projected
+        onto the XY plane, so left/right posts share the center's altitude);
+        ``"full_tangent"`` aligns the frame forward axis with the full 3D
+        tangent, tilting posts to follow the course slope.
     """
 
     generator: str = "bezier"
@@ -954,6 +960,7 @@ class GateGenConfig:
     z_noise_amplitude: float = 0.0
     z_noise_harmonics: int = 3
     z_valid_grade: float = 0.0
+    gate_align: str = "yaw_only"
 
     def __post_init__(self):
         if int(self.num_envs) < 1:
@@ -1061,6 +1068,11 @@ class GateGenConfig:
         if float(self.z_valid_grade) < 0.0:
             raise ValueError(
                 f"z_valid_grade must be >= 0, got {self.z_valid_grade!r}"
+            )
+        if self.gate_align not in {"yaw_only", "full_tangent"}:
+            raise ValueError(
+                "gate_align must be one of {'yaw_only', 'full_tangent'}, got "
+                f"{self.gate_align!r}"
             )
 
 
