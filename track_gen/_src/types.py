@@ -879,7 +879,8 @@ class GateGenConfig:
         to ``[z_min, z_max]`` with a per-step grade cap of ``z_max_step``), or
         ``"noise"`` (periodic harmonic noise around ``z_base``).  Applied by
         ``warp_zprofile.apply_z_profile`` after XY ordering/relaxation and
-        before the 3D lift; not yet wired into the generation pipeline.
+        before the 3D lift, wired into the generation pipeline by
+        ``warp_gate._run_gate_pipeline``.
     z_base : float
         Baseline altitude for the ``"flat"``, ``"random_walk"``, and
         ``"noise"`` profiles.  Default 0.0.
@@ -890,7 +891,7 @@ class GateGenConfig:
         Upper altitude clamp for ``"uniform"``, ``"random_walk"``, and
         ``"noise"``.  Must be >= ``z_min``.  Default 0.0.
     z_max_step : float
-        *Random-walk profile only.*  Maximum |dz| per unit plan-view arc
+        *Random-walk profile only.*  Maximum ``|dz|`` per unit plan-view arc
         length (a grade cap), applied per random-walk step before the
         closure bridge.  Must be >= 0.  Default 0.0.
     z_noise_amplitude : float
@@ -900,7 +901,7 @@ class GateGenConfig:
         *Noise profile only.*  Number of summed harmonics in the periodic
         noise field.  Must be >= 1.  Default 3.
     z_valid_grade : float
-        Maximum allowed |dz|/ds grade for post-hoc course validity checking.
+        Maximum allowed ``|dz|``/ds grade for post-hoc course validity checking.
         0 disables the check.  Must be >= 0.  Default 0.0.  (Consumed
         starting in Task 4; unused by ``warp_zprofile`` itself.)
     gate_align : str
@@ -1083,8 +1084,9 @@ class GateSequence:
     Gate pose arrays are flat ``[E * max_gates]`` ``vec3f`` buffers; reshape via
     ``wp.to_torch(...).view(E, max_gates, 3)``. ``count[e]`` gives the real gate
     count for environment ``e`` and slots ``i >= count[e]`` are NaN-padded (any
-    NaN component marks a padded slot). The current pipeline is planar: ``z`` is
-    0 for every real slot.
+    NaN component marks a padded slot). Each real slot's ``z`` follows the
+    configured ``GateGenConfig.z_profile``; it is 0 only for the default
+    ``"flat"`` profile at ``z_base=0``.
 
     .. warning::
 

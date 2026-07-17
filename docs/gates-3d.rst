@@ -60,7 +60,7 @@ apply to.
        so the loop is continuous. Each step is capped by a **grade** — the maximum
        ``|dz|`` per unit of plan-view arc length — so altitude changes stay proportional
        to horizontal travel.
-     - ``z_min``, ``z_max``, ``z_max_step`` (grade cap)
+     - ``z_base`` (walk origin), ``z_min``, ``z_max``, ``z_max_step`` (grade cap)
    * - ``"noise"``
      - Periodic harmonic noise oscillating around ``z_base``: a sum of
        ``z_noise_harmonics`` sinusoids of total amplitude ``z_noise_amplitude``, clamped
