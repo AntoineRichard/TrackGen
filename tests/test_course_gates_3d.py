@@ -49,6 +49,40 @@ def test_step_localizes_near_first_gate():
     assert abs(float(frame.n_up.numpy()[e]) - 0.1) < 0.05
 
 
+def test_frame_collision_hits_on_post():
+    from track_gen._src.collision_frames import FrameContact
+    c, pos = _course(frame_collision=True, agent_radius=0.05,
+                     frame_thickness=0.05, frame_depth=0.05)
+    assert isinstance(c.step().contacts, FrameContact)
+    e = int(np.flatnonzero(c.result.valid.numpy())[0])
+    G = c.result.position.shape[0] // E
+    centre = c.result.position.numpy()[e * G]
+    left = c.result.left.numpy()[e * G]
+    hs = float(c.result.half_size.numpy()[e * G])
+    # post centre = gate centre + (hs + thickness/2) along the left axis.
+    axis = (left - centre) / hs
+    p = pos.numpy()
+    p[e] = centre + (hs + 0.025) * axis
+    wp.copy(pos, wp.array(p, dtype=wp.vec3f, device="cpu"))
+    contacts = c.step().contacts
+    assert int(contacts.hit.numpy()[e]) == 1
+    assert float(contacts.depth.numpy()[e]) > 0.0
+
+
+def test_frame_collision_config_validation():
+    gcfg = GateGenConfig(device="cpu", num_envs=E, gate_width=0.2, scale=3.0)
+    frame_kw = dict(frame_collision=True, agent_radius=0.05,
+                    frame_thickness=0.05, frame_depth=0.05)
+    with pytest.raises(ValueError):    # exclusive with post discs
+        CourseConfig(mode="gates", gen=gcfg, post_radius=0.1, **frame_kw)
+    for missing in ("frame_thickness", "frame_depth", "agent_radius"):
+        kw = dict(frame_kw); kw[missing] = 0.0
+        with pytest.raises(ValueError):
+            CourseConfig(mode="gates", gen=gcfg, **kw)
+    with pytest.raises(ValueError):    # frame params need frame_collision
+        CourseConfig(mode="gates", gen=gcfg, frame_thickness=0.05)
+
+
 def test_track_mode_rejects_gate_options():
     from track_gen._src.types import TrackGenConfig
     tcfg = TrackGenConfig(device="cpu", num_envs=E)
@@ -58,6 +92,10 @@ def test_track_mode_rejects_gate_options():
     with pytest.raises(ValueError):
         CourseConfig(mode="track", gen=tcfg, checkpoint_spacing=0.1,
                      localize_window=4)
+    for kw in (dict(frame_collision=True), dict(frame_thickness=0.05),
+               dict(frame_depth=0.05), dict(agent_radius=0.05)):
+        with pytest.raises(ValueError):
+            CourseConfig(mode="track", gen=tcfg, checkpoint_spacing=0.1, **kw)
 
 
 @pytest.mark.cuda

@@ -39,6 +39,7 @@ from . import runtime
 from .checkpoints import CheckpointSampler, CheckpointSet
 from .collision import BoxContact, CollisionChecker
 from .collision_discs import DiscChecker, DiscContact
+from .collision_frames import FrameChecker, FrameContact
 from .course_line import CourseLine
 from .gate_generator import GateGenerator
 from .localize import TrackFrame, TrackLocalizer
@@ -85,6 +86,22 @@ class CourseConfig:
         ``sdf_padding`` itself is not exposed here.
     post_radius : float
         Gates mode only: > 0 enables ``DiscChecker`` gate-post collision.
+    frame_collision : bool
+        Gates mode only: ``True`` enables ``FrameChecker`` sphere-vs-gate-frame
+        collision (each square gate = four thin oriented frame members).
+        Mutually exclusive with ``post_radius > 0`` (choose discs OR frames);
+        requires ``frame_thickness``, ``frame_depth`` and ``agent_radius`` all
+        > 0.
+    frame_thickness : float
+        Gates mode with ``frame_collision`` only (required, > 0): thickness of
+        the frame members (their extent across the opening plane).
+    frame_depth : float
+        Gates mode with ``frame_collision`` only (required, > 0): depth of the
+        frame members along the gate-forward axis.
+    agent_radius : float
+        Gates mode with ``frame_collision`` only (required, > 0): the agent
+        sphere radius for frame collision (posts are exclusive, so this cannot
+        ride ``post_radius``).
     checkpoint_spacing : float or None
         Track mode only (required there): centerline checkpoint spacing.
     max_checkpoints : int or None
@@ -105,6 +122,10 @@ class CourseConfig:
     collision: "str | None" = None
     sdf_resolution: "int | None" = None
     post_radius: float = 0.0
+    frame_collision: bool = False
+    frame_thickness: float = 0.0
+    frame_depth: float = 0.0
+    agent_radius: float = 0.0
     checkpoint_spacing: "float | None" = None
     max_checkpoints: "int | None" = None
     max_boxes: int = 1
@@ -126,6 +147,15 @@ class CourseConfig:
                 raise ValueError(
                     "post_radius applies to gates mode only (got "
                     f"{self.post_radius!r})")
+            if self.frame_collision:
+                raise ValueError(
+                    "frame_collision applies to gates mode only (got "
+                    f"{self.frame_collision!r})")
+            for _name in ("frame_thickness", "frame_depth", "agent_radius"):
+                if float(getattr(self, _name)) != 0.0:
+                    raise ValueError(
+                        f"{_name} applies to gates mode only (got "
+                        f"{getattr(self, _name)!r})")
             if self.collision not in (None, "segments", "sdf"):
                 raise ValueError(
                     "collision must be one of {None, 'segments', 'sdf'}, got "
@@ -174,6 +204,23 @@ class CourseConfig:
             if not (float(self.post_radius) >= 0.0):
                 raise ValueError(
                     f"post_radius must be >= 0, got {self.post_radius!r}")
+            if self.frame_collision and float(self.post_radius) > 0.0:
+                raise ValueError(
+                    "frame_collision and post_radius > 0 are mutually "
+                    "exclusive: choose gate-post discs OR gate frames (got "
+                    f"post_radius={self.post_radius!r})")
+            if self.frame_collision:
+                for _name in ("frame_thickness", "frame_depth", "agent_radius"):
+                    if not (float(getattr(self, _name)) > 0.0):
+                        raise ValueError(
+                            f"frame_collision requires {_name} > 0, got "
+                            f"{getattr(self, _name)!r}")
+            else:
+                for _name in ("frame_thickness", "frame_depth", "agent_radius"):
+                    if float(getattr(self, _name)) != 0.0:
+                        raise ValueError(
+                            f"{_name} requires frame_collision=True (got "
+                            f"{getattr(self, _name)!r})")
             if not (float(self.gen.gate_width) > 0.0):
                 raise ValueError(
                     "gates mode requires gen.gate_width > 0: a width-0 gate "
@@ -212,7 +259,7 @@ class StepResult:
     ----------
     events : ProgressEvents
         Progress events for this step.
-    contacts : BoxContact or DiscContact or None
+    contacts : BoxContact or DiscContact or FrameContact or None
         Collision result (``None`` when the course has no collision checker).
     frame : TrackFrame or None
         Localization frame on the gates-mode :class:`CourseLine` (``None``
@@ -220,7 +267,7 @@ class StepResult:
     """
 
     events: ProgressEvents
-    contacts: "BoxContact | DiscContact | None"
+    contacts: "BoxContact | DiscContact | FrameContact | None"
     frame: "TrackFrame | None"
 
     def clone(self) -> "StepResult":
@@ -267,7 +314,8 @@ class Course:
             self.generator = GateGenerator(config.gen, self.rng)
 
         self.result: "Track | GateSequence | None" = None
-        self.collision: "CollisionChecker | DiscChecker | None" = None
+        self.collision: "CollisionChecker | DiscChecker | FrameChecker | None" \
+            = None
         self.course_line: "CourseLine | None" = None
         self.localizer: "TrackLocalizer | None" = None
         self.checkpoints: "CheckpointSet | None" = None
@@ -298,7 +346,11 @@ class Course:
         self._check_arr("seeds", seeds, (self._E,), wp.int32)
 
     def _needs_boxes(self) -> bool:
+        # Frame collision binds a sphere (position only) — no oriented-box
+        # yaw/half_extents buffers — so it is deliberately excluded here.
         cfg = self._cfg
+        if cfg.mode == "gates" and cfg.frame_collision:
+            return False
         return (cfg.mode == "track" and cfg.collision is not None) or \
                (cfg.mode == "gates" and cfg.post_radius > 0.0)
 
@@ -363,7 +415,12 @@ class Course:
         self.progress.bind(a["position"])
         if self.localizer is not None:
             self.localizer.bind(a["position"])
-        if self.collision is not None:
+        if isinstance(self.collision, FrameChecker):
+            # Sphere-vs-frame: bind the agent position and window the query on
+            # the tracker's live target-checkpoint state (read-only alias).
+            self.collision.bind_inputs(a["position"])
+            self.collision.bind_window(self.progress.next_checkpoint_state)
+        elif self.collision is not None:
             box_pos = a["box_position"] if a["box_position"] is not None \
                 else a["position"]
             self.collision.bind_inputs(box_pos, a["orientation"],
@@ -467,6 +524,11 @@ class Course:
                 self.collision = DiscChecker(
                     self._posts, radius=cfg.post_radius,
                     max_boxes=cfg.max_boxes, num_envs=self._E)
+            elif cfg.frame_collision:
+                self.collision = FrameChecker(
+                    self.result, num_envs=self._E, radius=cfg.agent_radius,
+                    frame_thickness=cfg.frame_thickness,
+                    frame_depth=cfg.frame_depth)
         self.progress = ProgressTracker(self.checkpoints)
         self._apply_bind()
 

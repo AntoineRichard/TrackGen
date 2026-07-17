@@ -276,6 +276,17 @@ class ProgressTracker:
             dist_to_next=wp.zeros(E, dtype=wp.float32, device=dev),
         )
 
+    @property
+    def next_checkpoint_state(self) -> wp.array:
+        """Aliased read-only view of the ``[E]`` int32 current-target state.
+
+        Exposes the tracker's live ``_next`` buffer (updated in place by every
+        ``update()``) for consumers that window their queries around the
+        current target checkpoint (e.g. ``FrameChecker.bind_window``). Do NOT
+        mutate — the tracker owns this state.
+        """
+        return self._next
+
     def _validate_position(self, position) -> None:
         _check_arr("position", position, (self._E,), wp.vec3f, self._device)
 
