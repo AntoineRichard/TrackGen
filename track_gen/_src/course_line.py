@@ -46,10 +46,15 @@ def _sample_line_k(
     if n > max_gates:
         n = max_gates
     m = n * spg
+    degenerate = n < 3 or gate_valid[e] == 0
     if j == 0:
-        count[e] = m
-        valid[e] = gate_valid[e]
-    if j >= m or n < 3 or gate_valid[e] == 0:
+        if degenerate:
+            count[e] = 0
+            valid[e] = 0
+        else:
+            count[e] = m
+            valid[e] = gate_valid[e]
+    if j >= m or degenerate:
         center[tid] = wp.vec3f(wp.nan, wp.nan, wp.nan)
         return
     gbase = e * max_gates

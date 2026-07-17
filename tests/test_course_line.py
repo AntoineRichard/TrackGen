@@ -4,9 +4,52 @@ import warp as wp
 from track_gen._src.course_line import CourseLine
 from track_gen._src.gate_generator import GateGenerator
 from track_gen._src.rng_utils import PerEnvSeededRNG
-from track_gen._src.types import GateGenConfig
+from track_gen._src.types import GateGenConfig, GateSequence
 
 E = 4
+
+
+def _two_gate_seq():
+    """One valid env with count=2 (< 3, below the CR minimum)."""
+    E1, G = 1, 4
+    n = E1 * G
+    nan3 = np.full(3, np.nan, np.float32)
+    pos = np.tile(nan3, (n, 1)); tan = pos.copy()
+    left = pos.copy(); right = pos.copy()
+    quat = np.tile(np.full(4, np.nan, np.float32), (n, 1))
+    hs = np.full(n, np.nan, np.float32)
+    pos[0] = (0, 0, 0); tan[0] = (1, 0, 0)
+    quat[0] = (0, 0, 0, 1)
+    hs[0] = 1.0
+    left[0] = (0, 1, 0); right[0] = (0, -1, 0)
+    pos[1] = (1, 0, 0); tan[1] = (1, 0, 0)
+    quat[1] = (0, 0, 0, 1)
+    hs[1] = 1.0
+    left[1] = (1, 1, 0); right[1] = (1, -1, 0)
+    dev = "cpu"
+    return GateSequence(
+        position=wp.array(pos, dtype=wp.vec3f, device=dev),
+        tangent=wp.array(tan, dtype=wp.vec3f, device=dev),
+        orientation=wp.array(quat, dtype=wp.quatf, device=dev),
+        half_size=wp.array(hs, dtype=wp.float32, device=dev),
+        left=wp.array(left, dtype=wp.vec3f, device=dev),
+        right=wp.array(right, dtype=wp.vec3f, device=dev),
+        valid=wp.array(np.array([1], np.int32), device=dev),
+        count=wp.array(np.array([2], np.int32), device=dev),
+    )
+
+
+def test_n_lt_3_marks_invalid_zero_count():
+    """A valid GateSequence with count=2 (below the CR minimum of 3) must
+    NOT claim CourseLine validity: contract drift here silently NaNs
+    StepResult.frame downstream (see final-review fix)."""
+    seq = _two_gate_seq()
+    line = CourseLine(seq, samples_per_gate=4)
+    line.refresh()
+    assert line.track.valid.numpy()[0] == 0
+    assert line.track.count.numpy()[0] == 0
+    center = line.track.center.numpy()
+    assert np.isnan(center).all()
 
 
 def _seq(**kw):
