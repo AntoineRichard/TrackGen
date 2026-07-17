@@ -31,6 +31,7 @@ pytestmark = [
 
 import warp as wp  # noqa: E402
 from tests._warp_compare import to_t  # noqa: E402
+from track_gen._src.course import Course, CourseConfig  # noqa: E402
 from track_gen._src.gate_generator import GateGenerator  # noqa: E402
 from track_gen._src.rng_utils import PerEnvSeededRNG  # noqa: E402
 from track_gen._src.track_generator import TrackGenerator  # noqa: E402
@@ -58,6 +59,45 @@ def _gen_gates() -> int:
     gates = gen.generate()
     wp.synchronize()
     return int(to_t(gates.valid).sum().item())
+
+
+def _warm_gates_3d_course() -> Course:
+    """Fresh gates-mode 3D Course, warmed SERIALLY: bind, first generate()
+    (subtool allocation + graph A/B capture), first step() (StepResult alloc).
+
+    Mirrors the frame-collision fixture from ``tests/test_course_gates_3d.py``
+    (gate_width=0.2 REQUIRES scale=3.0 to keep the seeds=11 batch valid).
+
+    Warmup is deliberately single-threaded: ``Course._build_subtools`` and the
+    first-call allocations run OUTSIDE ``runtime._CAPTURE_LOCK``, so two
+    threads racing their first generate() can drop a mempool alloc/free into
+    the other thread's capture window (CUDA 700 at ``wp_free_device_async`` or
+    "Failed to allocate", ~25% on an RTX 5000 Ada). That allocation-window gap
+    is a known library limitation documented in the Task 10 report; this test
+    pins down the pattern that IS guaranteed safe — and is the production
+    pattern the lock protects: concurrent replay-path generate() + step() on
+    already-warmed courses.
+    """
+    gcfg = GateGenConfig(device=_DEV, num_envs=_E, gate_width=0.2, scale=3.0,
+                         z_profile="uniform", z_min=0.5, z_max=1.5)
+    course = Course(CourseConfig(mode="gates", gen=gcfg, seeds=11,
+                                 frame_collision=True, agent_radius=0.05,
+                                 frame_thickness=0.05, frame_depth=0.05))
+    pos = wp.zeros(_E, dtype=wp.vec3f, device=_DEV)
+    course.bind(pos)
+    course.generate()
+    course.step()
+    wp.synchronize()
+    return course
+
+
+def _replay_course(course: Course) -> int:
+    """Replay-path generate() (no reseed: zero-alloc graph launch) + step();
+    returns the valid count."""
+    course.generate()
+    course.step()
+    wp.synchronize()
+    return int(to_t(course.result.valid).sum().item())
 
 
 def _run_concurrent(workers) -> tuple[list, dict]:
@@ -104,3 +144,25 @@ def test_concurrent_tracks_and_tracks() -> None:
     assert not errors, f"concurrent generate raised: {errors}"
     assert results["tracks0"] == ref
     assert results["tracks1"] == ref
+
+
+def test_concurrent_gates_3d_courses() -> None:
+    """Two gates-mode 3D Courses run generate() + step() concurrently on cuda.
+
+    Construction/warmup is serialized (see ``_warm_gates_3d_course``); the
+    concurrent phase drives the replay path — locked graph launches for the
+    gate pipeline and the facade's refresh graph, plus the per-step localize /
+    frame-collision / progress kernels — with full thread overlap.
+    """
+    wp.init()
+    c0 = _warm_gates_3d_course()
+    c1 = _warm_gates_3d_course()
+    ref = int(to_t(c0.result.valid).sum().item())
+    assert ref > 0, "warmed gates-3d course produced no valid envs"
+    errors, results = _run_concurrent(
+        [("course0", lambda: _replay_course(c0)),
+         ("course1", lambda: _replay_course(c1))]
+    )
+    assert not errors, f"concurrent gates-3d course raised: {errors}"
+    assert results["course0"] == ref  # deterministic under the fixed seed
+    assert results["course1"] == ref
