@@ -243,8 +243,9 @@ class CourseConfig:
             if not has_checker:
                 raise ValueError(
                     "max_boxes > 1 is a collision-query stride but this course "
-                    "has no collision checker (track: set collision; gates: set "
-                    f"post_radius > 0), got max_boxes={self.max_boxes!r}")
+                    "has no box/disc collision checker (track: set collision; "
+                    "gates: set post_radius > 0 — frame_collision uses sphere "
+                    f"binding and ignores max_boxes), got max_boxes={self.max_boxes!r}")
 
 
 @dataclass

@@ -12,6 +12,7 @@ from dataclasses import dataclass
 
 import warp as wp
 
+from .collision_geom import _is_nan3
 from .runtime import _check_arr, _init, _sync
 from .types import GateSequence
 
@@ -69,7 +70,7 @@ def _frame_query_k(
         return
     base = e * max_gates
     p = position[e]
-    if p[0] != p[0]:
+    if _is_nan3(p) == 1:
         return
     g0 = next_cp[e] - 1
     worst = float(0.0)

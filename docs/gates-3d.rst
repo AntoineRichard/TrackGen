@@ -139,6 +139,11 @@ is a :class:`~track_gen.localize.TrackFrame` localizing the agent on a closed 3D
 of travel), ``n_up`` (signed vertical offset in the roll-free frame at the foot point), and
 ``segment`` (nearest spline segment). In track mode ``res.frame`` is ``None``.
 
+The centerline is sampled at ``samples_per_gate`` uniform *spline-parameter* steps per
+gate segment — not constant 3D arc-length (samples bunch slightly where gates are close
+together). ``arclen`` is nevertheless the true cumulative arc length of the sampled
+polyline, so localization and progress are unaffected.
+
 Frame collision
 ~~~~~~~~~~~~~~~~
 

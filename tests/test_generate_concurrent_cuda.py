@@ -204,9 +204,9 @@ def test_concurrent_gates_3d_fresh_construction() -> None:
     def worker(seed: int) -> None:
         try:
             course, pos = _make_gates_3d_course(seed)   # builds config+Course+bind, NO generate
-            barrier.wait()  # construction done; only generate() overlaps a peer's capture
+            barrier.wait(timeout=60)  # construction done; only generate() overlaps a peer's capture
             course.generate()
-            barrier.wait()  # generate() done; only step()'s unlocked work stays out of overlap
+            barrier.wait(timeout=60)  # generate() done; only step()'s unlocked work stays out of overlap
             course.step()
         except Exception as exc:  # noqa: BLE001 — capture for main-thread assert
             errors.append(exc)
