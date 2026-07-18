@@ -40,7 +40,8 @@ Altitude profiles
 ``TrackGenConfig.z_profile`` selects the altitude family — the identical four
 options and knobs as :doc:`gate courses </gates-3d>` (both configs are read
 through the same ``apply_z_profile`` entry point). All four write every real
-centerline point and leave the padding at ``z = 0``; the ``z_*`` knobs below are
+centerline point and NaN the padding's xy; z carries the flat path's ``z_base``
+(0 by default) at every slot, padding included. The ``z_*`` knobs below are
 inert for the profiles they do not apply to.
 
 .. list-table::
@@ -105,11 +106,12 @@ this directly:
   before the Z profile is even computed — see the stage order above), so a
   collision engine that only understands XY keeps working exactly as before.
 
-Two v1 limitations carry over from the general 2.5D design, listed in full on the
-:doc:`gate courses page </gates-3d>`: plan-view self-crossings are still rejected
-for tracks (unlike gates, a track's plan view is not allowed to cross itself), and
-the elevation stage does not add any tube/banking geometry — a lifted track is a
-ribbon of level cross-sections, not a banked surface.
+One v1 limitation carries over from the general 2.5D design and is listed in full
+on the :doc:`gate courses page </gates-3d>`: plan-view self-crossings are still
+rejected for tracks (unlike gates, a track's plan view is not allowed to cross
+itself). The other 2.5D limitation is specific to this page and the spec's
+non-goals: the elevation stage does not add any tube/banking geometry — a lifted
+track is a ribbon of level cross-sections, not a banked surface.
 
 3D distance semantics
 ----------------------
@@ -155,11 +157,18 @@ on-curve sample in ``"points"`` mode, a chord midpoint in ``"segments"`` mode) �
 no code change is needed to place props on an elevated road; the sampler was
 built vec3f-native alongside the rest of the 2.5D work.
 
+.. admonition:: Breaking changes
+   :class: warning
+
+   ``PropSet.position`` changed from ``vec2f`` to ``vec3f`` as part of the 2.5D
+   work. Downstream code that reshapes it as ``.reshape(-1, 2)`` will break;
+   update it to ``.reshape(-1, 3)``.
+
 Heightfield
 -----------
 
 For external physics solvers that want a grid rather than a polyline,
-``track_gen._src.heightfield.HeightFieldBaker`` bakes each env's road surface
+``track_gen.heightfield.HeightFieldBaker`` bakes each env's road surface
 into a square height grid. It is not driven directly in normal use: set
 ``CourseConfig.heightfield_resolution`` (track mode only, ``>= 8``) and the
 :doc:`Course facade </utilities/course>` builds and re-bakes it on every

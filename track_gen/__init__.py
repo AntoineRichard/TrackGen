@@ -17,6 +17,7 @@ from . import checkpoints
 from . import progress
 from . import localize
 from . import course
+from . import heightfield
 from .course import set_capturing
 
 __all__ = [
@@ -33,6 +34,7 @@ __all__ = [
     "progress",
     "localize",
     "course",
+    "heightfield",
     "set_capturing",
     "__version__",
 ]

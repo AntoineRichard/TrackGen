@@ -16,6 +16,7 @@ def test_public_api_surface_is_exactly_curated():
         "progress",
         "localize",
         "course",
+        "heightfield",
         "set_capturing",
         "__version__",
     }

@@ -1237,7 +1237,8 @@ class Track:
         ``center`` point's altitude at the same index (level cross-sections;
         see :doc:`/tracks-25d`).  Reshape via
         ``wp.to_torch(...).view(E, N_max, 3)``.  Points at ``i >= count[e]`` are
-        NaN-padded (NaN xy, ``z = 0``).
+        NaN-padded (NaN xy; z carries the flat path's ``z_base``, 0 by
+        default).
     center : wp.array
         Flat ``[E * N_max]`` ``vec3f`` centerline points.  ``z`` follows the
         configured ``TrackGenConfig.z_profile`` (see ``outer``).  Reshape via

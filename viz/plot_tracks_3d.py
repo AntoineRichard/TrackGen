@@ -40,7 +40,7 @@ import torch
 import warp as wp
 
 from track_gen import PerEnvSeededRNG
-from track_gen._src.heightfield import HeightFieldBaker
+from track_gen.heightfield import HeightFieldBaker
 from track_gen._src.track_generator import TrackGenerator
 from track_gen._src.types import TrackGenConfig
 
