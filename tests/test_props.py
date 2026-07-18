@@ -43,7 +43,7 @@ def test_points_mode_positions_on_circle_uniform_gaps():
     sampler = PropSampler(track, spacing=0.1, boundary="outer", mode="points")
     props = sampler.sample()
     n = int(props.count.numpy()[0])
-    pos = props.position.numpy().reshape(-1, 2)[:n]
+    pos = props.position.numpy().reshape(-1, 3)[:n, :2]
     # On the outer circle (polyline tolerance).
     np.testing.assert_allclose(np.linalg.norm(pos, axis=1), RO, atol=2e-3)
     # Uniform angular gaps that close the ring: n gaps of 2*pi/n each.
@@ -59,7 +59,7 @@ def test_points_mode_tangent_yaw_length():
     sampler = PropSampler(track, spacing=0.1, boundary="outer", mode="points")
     props = sampler.sample()
     n = int(props.count.numpy()[0])
-    pos = props.position.numpy().reshape(-1, 2)[:n]
+    pos = props.position.numpy().reshape(-1, 3)[:n, :2]
     tang = props.tangent.numpy().reshape(-1, 2)[:n]
     yaw = props.yaw.numpy()[:n]
     length = props.length.numpy()[:n]
@@ -78,7 +78,7 @@ def test_nan_padding_past_count():
     props = sampler.sample()
     n = int(props.count.numpy()[0])
     assert sampler._M > n
-    pos = props.position.numpy().reshape(-1, 2)
+    pos = props.position.numpy().reshape(-1, 3)
     assert np.all(np.isnan(pos[n:]))
     assert np.all(np.isnan(props.yaw.numpy()[n:]))
     assert np.all(np.isnan(props.length.numpy()[n:]))
@@ -90,7 +90,7 @@ def test_segments_mode_chords_and_closure():
     sampler = PropSampler(track, spacing=0.1, boundary="outer", mode="segments")
     props = sampler.sample()
     n = int(props.count.numpy()[0])
-    pos = props.position.numpy().reshape(-1, 2)[:n]
+    pos = props.position.numpy().reshape(-1, 3)[:n, :2]
     tang = props.tangent.numpy().reshape(-1, 2)[:n]
     length = props.length.numpy()[:n]
     # Chord across one arc step of the circle: 2*R*sin(pi/n).
@@ -109,7 +109,7 @@ def test_inner_boundary_sampling():
     track = make_annulus_track(E=1, n=N)
     props = PropSampler(track, spacing=0.1, boundary="inner", mode="points").sample()
     n = int(props.count.numpy()[0])
-    pos = props.position.numpy().reshape(-1, 2)[:n]
+    pos = props.position.numpy().reshape(-1, 3)[:n, :2]
     np.testing.assert_allclose(np.linalg.norm(pos, axis=1), RI, atol=2e-3)
 
 
@@ -124,7 +124,7 @@ def test_truncation_flag_and_closed_ring():
     perim = _outer_perimeter(track)
     np.testing.assert_allclose(props.step.numpy()[0], perim / 10, rtol=1e-5)
     # Still a closed uniform ring at the coarser effective spacing.
-    pos = props.position.numpy().reshape(-1, 2)[:10]
+    pos = props.position.numpy().reshape(-1, 3)[:10, :2]
     ang = np.arctan2(pos[:, 1], pos[:, 0])
     gaps = np.mod(np.diff(np.concatenate([ang, ang[:1]])), 2 * np.pi)
     np.testing.assert_allclose(gaps, 2 * np.pi / 10, atol=5e-3)
@@ -140,7 +140,7 @@ def test_degenerate_env_zero_count_nan():
     assert counts[0] > 0 and counts[1] == 0
     assert np.isnan(props.step.numpy()[1])
     M = sampler._M
-    pos = props.position.numpy().reshape(-1, 2)
+    pos = props.position.numpy().reshape(-1, 3)
     assert np.all(np.isnan(pos[M:2 * M]))  # env 1 slots all NaN
 
 

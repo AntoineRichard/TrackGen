@@ -12,10 +12,12 @@ Two producers:
   are seen automatically. With ``gate_width=0`` the crossing segment is
   degenerate (``left == right``) and pass-through can never trigger.
 - ``CheckpointSampler`` resamples the track CENTERLINE at a coarse user
-  spacing (snap rule as in ``track_gen.props``); because ``Track`` polylines
-  are index-aligned, each checkpoint's crossing segment is the road
-  cross-section: ``left``/``right`` are ``inner``/``outer`` interpolated at
-  the same centerline segment and parameter.
+  spacing (snap rule as in ``track_gen.props``; spacing measures true 3D arc
+  length on lifted tracks — the scan kernel ``_scan_boundary_k`` is shared
+  with ``track_gen.props`` and identical to the planar length when z = 0);
+  because ``Track`` polylines are index-aligned, each checkpoint's crossing
+  segment is the road cross-section: ``left``/``right`` are ``inner``/
+  ``outer`` interpolated at the same centerline segment and parameter.
 
 Results are undefined for envs with ``valid[e] == 0``; callers gate on
 ``Track.valid`` / ``GateSequence.valid`` as everywhere in the library.

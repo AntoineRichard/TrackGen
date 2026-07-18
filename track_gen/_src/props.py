@@ -45,8 +45,9 @@ class PropSet:
     Attributes
     ----------
     position : wp.array
-        ``vec2f`` pose positions: on-curve sample (points mode) or chord
-        midpoint (segments mode). NaN past ``count[e]``.
+        ``vec3f`` pose positions on the (possibly lifted) boundary: on-curve
+        sample (points mode) or chord midpoint (segments mode); z tracks the
+        boundary elevation (0 on flat tracks). NaN past ``count[e]``.
     tangent : wp.array
         ``vec2f`` unit directions: curve tangent at the sample (points) or
         chord direction (segments). NaN past ``count[e]``.
@@ -99,8 +100,9 @@ def _scan_boundary_k(
     out_truncated: wp.array(dtype=wp.int32),
 ):
     """Also launched by ``_src/checkpoints.py`` (CheckpointSampler) — keep the
-    signature and snap semantics in sync. Arc lengths are computed on xy
-    (identical for the z = 0 planar pipeline)."""
+    signature and snap semantics in sync. Arc lengths are the true 3D segment
+    lengths of the (possibly lifted) polyline; on the flat z = 0 pipeline this
+    is identical to the xy length (z contributes 0 to every sum)."""
     e = wp.tid()
     m = count[e]
     if m > n_max:
@@ -117,11 +119,11 @@ def _scan_boundary_k(
     for i in range(1, m):
         p = points[base + i]
         d = p - prev
-        s = s + wp.length(wp.vec2f(d[0], d[1]))
+        s = s + wp.length(d)
         cum[base + i] = s
         prev = p
     dc = points[base] - prev  # closing edge back to point 0
-    perim = s + wp.length(wp.vec2f(dc[0], dc[1]))
+    perim = s + wp.length(dc)
 
     # Snap in float first: float->int32 conversion of out-of-range values
     # (absurdly small spacing) differs between CPU (INT_MIN) and CUDA
@@ -142,14 +144,10 @@ def _scan_boundary_k(
 
 
 @wp.func
-def _sample_at_arc(points: wp.array(dtype=wp.vec3f), cum: wp.array(dtype=wp.float32),
-                   base: int, m: int, perim: float, s: float) -> wp.vec4f:
-    """Point and segment direction at arc position s. Returns (px, py, dx, dy).
-
-    Binary search for the largest i in [0, m-1] with cum[base+i] <= s, then
-    lerp within segment i -> (i+1) mod m (the last segment closes the loop
-    and ends at arc length ``perim``).
-    """
+def _seg_param_at_arc(cum: wp.array(dtype=wp.float32), base: int, m: int,
+                      perim: float, s: float) -> wp.vec2f:
+    # (segment index as float, lerp t) at arc position s — same binary
+    # search contract as checkpoints._seg_at_arc.
     lo = int(0)
     hi = m - 1
     while lo < hi:
@@ -159,24 +157,15 @@ def _sample_at_arc(points: wp.array(dtype=wp.vec3f), cum: wp.array(dtype=wp.floa
         else:
             hi = mid - 1
     i = lo
-    j = i + 1
     seg_end = perim
-    if j < m:
-        seg_end = cum[base + j]
-    else:
-        j = 0
+    if i + 1 < m:
+        seg_end = cum[base + i + 1]
     seg_start = cum[base + i]
     denom = seg_end - seg_start
     t = 0.0
     if denom > 1.0e-12:
         t = wp.clamp((s - seg_start) / denom, 0.0, 1.0)
-    a3 = points[base + i]
-    b3 = points[base + j]
-    a = wp.vec2f(a3[0], a3[1])
-    b = wp.vec2f(b3[0], b3[1])
-    p = a + (b - a) * t
-    d = _safe_normalize2(b - a)
-    return wp.vec4f(p[0], p[1], d[0], d[1])
+    return wp.vec2f(float(i), t)
 
 
 @wp.kernel
@@ -189,7 +178,7 @@ def _place_props_k(
     prop_step: wp.array(dtype=wp.float32),
     max_props: int,
     mode: int,  # 0 = points, 1 = segments
-    out_position: wp.array(dtype=wp.vec2f),
+    out_position: wp.array(dtype=wp.vec3f),
     out_tangent: wp.array(dtype=wp.vec2f),
     out_yaw: wp.array(dtype=wp.float32),
     out_length: wp.array(dtype=wp.float32),
@@ -200,9 +189,8 @@ def _place_props_k(
 
     n = prop_count[e]
     if k >= n:
-        nan2 = wp.vec2f(wp.nan, wp.nan)
-        out_position[t] = nan2
-        out_tangent[t] = nan2
+        out_position[t] = wp.vec3f(wp.nan, wp.nan, wp.nan)
+        out_tangent[t] = wp.vec2f(wp.nan, wp.nan)
         out_yaw[t] = wp.nan
         out_length[t] = wp.nan
         return
@@ -215,10 +203,18 @@ def _place_props_k(
     perim = step * float(n)
 
     if mode == 0:
-        s = float(k) * step
-        smp = _sample_at_arc(points, cum, base, m, perim, s)
-        tang = wp.vec2f(smp[2], smp[3])
-        out_position[t] = wp.vec2f(smp[0], smp[1])
+        it = _seg_param_at_arc(cum, base, m, perim, float(k) * step)
+        i = int(it[0])
+        tt = it[1]
+        j = i + 1
+        if j == m:
+            j = 0
+        a = points[base + i]
+        b = points[base + j]
+        p = a + (b - a) * tt  # lifted 3D sample position
+        d = b - a
+        tang = _safe_normalize2(wp.vec2f(d[0], d[1]))  # planar pose direction
+        out_position[t] = p
         out_tangent[t] = tang
         out_yaw[t] = wp.atan2(tang[1], tang[0])
         out_length[t] = step
@@ -227,16 +223,24 @@ def _place_props_k(
         s1 = 0.0  # slot n-1 chords back to sample 0: the ring closes
         if k + 1 < n:
             s1 = float(k + 1) * step
-        a4 = _sample_at_arc(points, cum, base, m, perim, s0)
-        b4 = _sample_at_arc(points, cum, base, m, perim, s1)
-        p0 = wp.vec2f(a4[0], a4[1])
-        p1 = wp.vec2f(b4[0], b4[1])
-        chord = p1 - p0
-        tang = _safe_normalize2(chord)
+        it0 = _seg_param_at_arc(cum, base, m, perim, s0)
+        it1 = _seg_param_at_arc(cum, base, m, perim, s1)
+        i0 = int(it0[0])
+        j0 = i0 + 1
+        if j0 == m:
+            j0 = 0
+        i1 = int(it1[0])
+        j1 = i1 + 1
+        if j1 == m:
+            j1 = 0
+        p0 = points[base + i0] + (points[base + j0] - points[base + i0]) * it0[1]
+        p1 = points[base + i1] + (points[base + j1] - points[base + i1]) * it1[1]
+        chord = p1 - p0  # 3D chord
+        tang = _safe_normalize2(wp.vec2f(chord[0], chord[1]))  # planar yaw
         out_position[t] = (p0 + p1) * 0.5
         out_tangent[t] = tang
         out_yaw[t] = wp.atan2(tang[1], tang[0])
-        out_length[t] = wp.length(chord)
+        out_length[t] = wp.length(chord)  # 3D chord length (3D-spacing consistent)
 
 
 class PropSampler:
@@ -317,7 +321,7 @@ class PropSampler:
         n = E * self._M
         self._cum = wp.zeros(E * self._n_max, dtype=wp.float32, device=dev)
         self._props = PropSet(
-            position=wp.zeros(n, dtype=wp.vec2f, device=dev),
+            position=wp.zeros(n, dtype=wp.vec3f, device=dev),
             tangent=wp.zeros(n, dtype=wp.vec2f, device=dev),
             yaw=wp.zeros(n, dtype=wp.float32, device=dev),
             length=wp.zeros(n, dtype=wp.float32, device=dev),

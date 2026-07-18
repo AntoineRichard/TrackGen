@@ -79,7 +79,7 @@ def render_utilities_overview(output_dir: Path = Path("docs/assets")) -> Path:
         p = sampler.sample()
         n = int(p.count.numpy()[e])
         sl = slice(e * sampler._M, e * sampler._M + n)
-        return (p.position.numpy().reshape(-1, 2)[sl],
+        return (p.position.numpy().reshape(-1, 3)[sl, :2],
                 p.tangent.numpy().reshape(-1, 2)[sl],
                 p.length.numpy()[sl], n)
 
@@ -220,7 +220,7 @@ def render_boundary_props(output_dir: Path = Path("docs/assets")) -> Path:
         p = sampler.sample()
         n = int(p.count.numpy()[e])
         sl = slice(e * sampler._M, e * sampler._M + n)
-        return (p.position.numpy().reshape(-1, 2)[sl],
+        return (p.position.numpy().reshape(-1, 3)[sl, :2],
                 p.tangent.numpy().reshape(-1, 2)[sl],
                 p.length.numpy()[sl], n)
 

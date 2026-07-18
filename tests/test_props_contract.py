@@ -53,8 +53,9 @@ def test_matches_oracle_on_generated_tracks():
             poly, spacing, 512)
         assert int(props.count.numpy()[e]) == ref_n
         np.testing.assert_allclose(props.step.numpy()[e], ref_step, rtol=1e-4)
-        got = props.position.numpy().reshape(-1, 2)[e * M:e * M + ref_n]
-        np.testing.assert_allclose(got, ref_pos, atol=1e-4,
+        got = props.position.numpy().reshape(-1, 3)[e * M:e * M + ref_n]
+        ref_pos3 = np.column_stack([ref_pos, np.zeros(ref_n)])  # flat: z = 0
+        np.testing.assert_allclose(got, ref_pos3, atol=1e-4,
                                    err_msg=f"env {e} positions")
         got_t = props.tangent.numpy().reshape(-1, 2)[e * M:e * M + ref_n]
         np.testing.assert_allclose(got_t, ref_tang, atol=1e-3,
@@ -70,9 +71,9 @@ def test_segments_are_chords_of_points():
     segs = PropSampler(track, spacing=0.15, mode="segments").sample()
     n = int(pts.count.numpy()[0])
     assert int(segs.count.numpy()[0]) == n
-    p = pts.position.numpy().reshape(-1, 2)[:n]
+    p = pts.position.numpy().reshape(-1, 3)[:n]  # flat fixture: z = 0
     p_next = np.roll(p, -1, axis=0)
-    np.testing.assert_allclose(segs.position.numpy().reshape(-1, 2)[:n],
+    np.testing.assert_allclose(segs.position.numpy().reshape(-1, 3)[:n],
                                (p + p_next) / 2, atol=1e-4)
     np.testing.assert_allclose(segs.length.numpy()[:n],
                                np.linalg.norm(p_next - p, axis=1), atol=1e-4)
