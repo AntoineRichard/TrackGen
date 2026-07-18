@@ -521,6 +521,13 @@ class TrackGenConfig:
     z_noise_harmonics : int
         *Noise profile only.*  Number of summed harmonics in the periodic
         noise field.  Must be >= 1.  Default 3.
+    z_control_points : int
+        Number of arc-length-spaced altitude control knots.  Altitude is decided
+        at these knots and interpolated between them with a periodic monotone
+        cubic, so smoothness is independent of the resampled point count.  Must
+        be >= 3.  Applies to ``z_profile="uniform"`` and ``"random_walk"``;
+        inert for ``"flat"`` (constant) and ``"noise"`` (analytically smooth —
+        use ``z_noise_harmonics`` for its frequency).  Default 10.
     z_valid_grade : float
         Maximum allowed ``|dz|``/ds grade for post-hoc course validity checking,
         where ``ds`` is measured along the PLAN-VIEW (XY) arc length, not the
@@ -663,6 +670,7 @@ class TrackGenConfig:
     z_max_step: float = 0.0
     z_noise_amplitude: float = 0.0
     z_noise_harmonics: int = 3
+    z_control_points: int = 10
     z_valid_grade: float = 0.0
 
     def __post_init__(self):
@@ -846,6 +854,10 @@ class TrackGenConfig:
             raise ValueError(f"spacing must be > 0, got {self.spacing!r}")
 
         _validate_z_fields(self)
+        if int(self.z_control_points) < 3:
+            raise ValueError(
+                "z_control_points must be >= 3, got "
+                f"{self.z_control_points!r}")
 
 
 @dataclass
