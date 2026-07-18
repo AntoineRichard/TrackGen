@@ -61,30 +61,33 @@ def _gen_gates() -> int:
     return int(to_t(gates.valid).sum().item())
 
 
-def _warm_gates_3d_course() -> Course:
-    """Fresh gates-mode 3D Course, warmed SERIALLY: bind, first generate()
-    (subtool allocation + graph A/B capture), first step() (StepResult alloc).
+def _make_gates_3d_course(seed: int) -> tuple[Course, wp.array]:
+    """Fresh gates-mode 3D Course, CONSTRUCTED + bound but NOT generated.
 
     Mirrors the frame-collision fixture from ``tests/test_course_gates_3d.py``
     (gate_width=0.2 REQUIRES scale=3.0 to keep the seeds=11 batch valid).
-
-    Warmup is deliberately single-threaded: ``Course._build_subtools`` and the
-    first-call allocations run OUTSIDE ``runtime._CAPTURE_LOCK``, so two
-    threads racing their first generate() can drop a mempool alloc/free into
-    the other thread's capture window (CUDA 700 at ``wp_free_device_async`` or
-    "Failed to allocate", ~25% on an RTX 5000 Ada). That allocation-window gap
-    is a known library limitation documented in the Task 10 report; this test
-    pins down the pattern that IS guaranteed safe — and is the production
-    pattern the lock protects: concurrent replay-path generate() + step() on
-    already-warmed courses.
+    Returns ``(course, pos)`` so the caller drives the FIRST generate() itself
+    (subtool allocation + graph A/B capture) — the racy first-call path.
     """
     gcfg = GateGenConfig(device=_DEV, num_envs=_E, gate_width=0.2, scale=3.0,
                          z_profile="uniform", z_min=0.5, z_max=1.5)
-    course = Course(CourseConfig(mode="gates", gen=gcfg, seeds=11,
+    course = Course(CourseConfig(mode="gates", gen=gcfg, seeds=seed,
                                  frame_collision=True, agent_radius=0.05,
                                  frame_thickness=0.05, frame_depth=0.05))
     pos = wp.zeros(_E, dtype=wp.vec3f, device=_DEV)
     course.bind(pos)
+    return course, pos
+
+
+def _warm_gates_3d_course() -> Course:
+    """Fresh gates-mode 3D Course, warmed SERIALLY: bind, first generate()
+    (subtool allocation + graph A/B capture), first step() (StepResult alloc).
+
+    Serial warmup gives the replay test already-warmed courses; the racy
+    first-call construction path is covered by
+    ``test_concurrent_gates_3d_fresh_construction``.
+    """
+    course, _ = _make_gates_3d_course(11)
     course.generate()
     course.step()
     wp.synchronize()
@@ -146,8 +149,8 @@ def test_concurrent_tracks_and_tracks() -> None:
     assert results["tracks1"] == ref
 
 
-def test_concurrent_gates_3d_courses() -> None:
-    """Two gates-mode 3D Courses run generate() + step() concurrently on cuda.
+def test_concurrent_gates_3d_replay() -> None:
+    """Two already-warmed gates-mode 3D Courses drive the REPLAY path concurrently on cuda.
 
     Construction/warmup is serialized (see ``_warm_gates_3d_course``); the
     concurrent phase drives the replay path — locked graph launches for the
@@ -166,3 +169,25 @@ def test_concurrent_gates_3d_courses() -> None:
     assert not errors, f"concurrent gates-3d course raised: {errors}"
     assert results["course0"] == ref  # deterministic under the fixed seed
     assert results["course1"] == ref
+
+
+def test_concurrent_gates_3d_fresh_construction() -> None:
+    """Two threads each build a FRESH gates-mode 3D Course and run their
+    FIRST generate() + step() concurrently — construction, subtool
+    allocation, warmup, capture, and replay all racing. This was ~25%
+    CUDA-700 before generate()'s first-call work moved under
+    runtime._CAPTURE_LOCK; it must now be deterministically green."""
+    errors: list = []
+
+    def worker(seed: int) -> None:
+        try:
+            course, pos = _make_gates_3d_course(seed)   # existing helper: builds config+Course+bind, NO generate
+            course.generate()
+            course.step()
+        except Exception as exc:  # noqa: BLE001 — capture for main-thread assert
+            errors.append(exc)
+
+    t1 = threading.Thread(target=worker, args=(11,))
+    t2 = threading.Thread(target=worker, args=(37,))
+    t1.start(); t2.start(); t1.join(); t2.join()
+    assert not errors, errors

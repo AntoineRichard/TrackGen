@@ -448,31 +448,33 @@ class Course:
         ``PropSet.truncated`` for prop rings.
         """
         if seeds is not None:
-            if isinstance(seeds, wp.array):
-                self._validate_seed_array(seeds)
-                self.rng.set_seeds_warp(seeds, None)
-            else:
-                # Mirror PerEnvSeededRNG's int expansion (seed + arange) so
-                # reseeding via int matches constructing a fresh RNG with it.
-                seed_arr = wp.array(int(seeds) + np.arange(self._E),
-                                    dtype=wp.int32, device=self._device)
-                self.rng.set_seeds_warp(seed_arr, None)
+            # Reseed under the lock: seed-array construction and the device
+            # copy in set_seeds_warp ride the shared stream a concurrent
+            # thread may be capturing.
+            with runtime._CAPTURE_LOCK:
+                if isinstance(seeds, wp.array):
+                    self._validate_seed_array(seeds)
+                    self.rng.set_seeds_warp(seeds, None)
+                else:
+                    # Mirror PerEnvSeededRNG's int expansion (seed + arange) so
+                    # reseeding via int matches constructing a fresh RNG with it.
+                    seed_arr = wp.array(int(seeds) + np.arange(self._E),
+                                        dtype=wp.int32, device=self._device)
+                    self.rng.set_seeds_warp(seed_arr, None)
         # NOTE: generator.generate() takes runtime._CAPTURE_LOCK internally, so it must
-        # stay OUTSIDE the locked regions below (the lock is not reentrant).
+        # stay OUTSIDE the locked regions (the lock is not reentrant).
         self.result = self.generator.generate()
         if self.progress is None:
-            self._build_subtools()
-            if self._is_cuda:
-                # Eager warmup launches ride the shared device stream; hold the
-                # process-wide capture lock so they cannot land inside another
-                # thread's graph capture (see runtime._CAPTURE_LOCK).
-                with runtime._CAPTURE_LOCK:
-                    self._refresh()  # call 1 of 3 below on first cuda generate()
-            else:
-                self._refresh()      # cpu path: eager every call
+            # LOCK CONTRACT: every remaining device operation in generate() —
+            # subtool construction (allocations + eager launches), eager
+            # refresh, warmup, capture, replay — holds _CAPTURE_LOCK, so a
+            # concurrent thread's capture never records our allocations or
+            # async frees. Only generator.generate() (self-locking) is outside.
+            with runtime._CAPTURE_LOCK:
+                self._build_subtools()
+                self._refresh()  # eager: cpu every-call path is below; on cuda
+                                  # this is call 1 of 3 (see capture block)
         elif self._refresh_graph is not None:
-            # Replay under the lock: launching a graph into a stream another
-            # thread is capturing is illegal (CUDA error 900).
             with runtime._CAPTURE_LOCK:
                 wp.capture_launch(self._refresh_graph)
                 wp.synchronize()
