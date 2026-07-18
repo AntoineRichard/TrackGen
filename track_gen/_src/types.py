@@ -1231,39 +1231,58 @@ class Track:
     Attributes
     ----------
     outer : wp.array
-        Flat ``[E * N_max]`` ``vec3f`` outer boundary points (``z = 0`` from the
-        2D pipeline).  Reshape via ``wp.to_torch(...).view(E, N_max, 3)``.
-        Points at ``i >= count[e]`` are NaN-padded (NaN xy, ``z = 0``).
+        Flat ``[E * N_max]`` ``vec3f`` outer boundary points.  Each real point's
+        ``z`` follows the configured ``TrackGenConfig.z_profile`` — 0 only for
+        the default ``"flat"`` profile at ``z_base=0`` — and shares the
+        ``center`` point's altitude at the same index (level cross-sections;
+        see :doc:`/tracks-25d`).  Reshape via
+        ``wp.to_torch(...).view(E, N_max, 3)``.  Points at ``i >= count[e]`` are
+        NaN-padded (NaN xy, ``z = 0``).
     center : wp.array
-        Flat ``[E * N_max]`` ``vec3f`` centerline points (``z = 0``).  Reshape via
+        Flat ``[E * N_max]`` ``vec3f`` centerline points.  ``z`` follows the
+        configured ``TrackGenConfig.z_profile`` (see ``outer``).  Reshape via
         ``wp.to_torch(...).view(E, N_max, 3)``.  Index-aligned with ``outer`` and
-        ``inner``; ``‖outer[i] - center[i]‖`` gives the per-point half-width.
-        Points at ``i >= count[e]`` are NaN-padded.
+        ``inner``; ``‖outer[i] - center[i]‖`` gives the per-point half-width
+        (an XY-plane distance: level cross-sections share a Z, so the vertical
+        component cancels).  Points at ``i >= count[e]`` are NaN-padded.
     inner : wp.array
-        Flat ``[E * N_max]`` ``vec3f`` inner boundary points (``z = 0``).  Reshape
+        Flat ``[E * N_max]`` ``vec3f`` inner boundary points.  ``z`` follows the
+        configured ``TrackGenConfig.z_profile`` (see ``outer``).  Reshape
         via ``wp.to_torch(...).view(E, N_max, 3)``.  Points at ``i >= count[e]``
         are NaN-padded.
     tangent : wp.array
         Flat ``[E * N_max]`` ``vec3f`` unit tangent vectors at each centerline
-        point (``z = 0``), derived from central differences.  NaN-padded past
+        point.  For the default ``"flat"`` profile this is the planar tangent
+        (``z = 0``) from central differences over the 2D centerline; for a
+        non-flat ``z_profile`` it is instead a true 3D central difference over
+        the LIFTED centerline (see :doc:`/tracks-25d`).  NaN-padded past
         ``count[e]``.
     normal : wp.array
         Flat ``[E * N_max]`` ``vec3f`` unit left-normals at each centerline point —
-        still the planar left-normal, now
-        ``normal = (-tangent.y, tangent.x, 0)`` (``tangent`` rotated +90°
-        about +z).  Which
-        boundary it faces is winding-dependent (see ``winding``): it points toward
+        still the planar left-normal, always ``z = 0``, computed as
+        ``normal = (-tangent2d.y, tangent2d.x, 0)`` (the PLAN-VIEW tangent rotated
+        +90° about +z) BEFORE the elevation lift.  For a non-flat ``z_profile`` this
+        predates the 3D recompute described under ``tangent``: the two fields are
+        no longer literally related by that rotation formula (``normal``'s XY
+        direction still matches ``tangent``'s XY projection, but ``tangent`` is
+        unit-length in 3D, so its XY projection alone is sub-unit and rotating it
+        will not reproduce a unit ``normal``).  Which boundary it faces is
+        winding-dependent (see ``winding``): it points toward
         ``outer`` for clockwise loops and toward ``inner`` for counter-clockwise
         loops.  The ``outer``/``inner`` split itself is winding-agnostic (assigned by
         signed-area magnitude), so use ``outer``/``inner`` — not the normal's sign —
         to identify the boundaries.  NaN-padded past ``count[e]``.
     arclen : wp.array
         Flat ``[E * N_max]`` ``float32`` cumulative arc length along the centerline
-        at each point.  Reshape via ``wp.to_torch(...).view(E, N_max)``.  NaN-padded
-        past ``count[e]``.
+        at each point.  For the default ``"flat"`` profile this is the plan-view
+        (2D) arc length; for a non-flat ``z_profile`` it is the true 3D arc length
+        of the LIFTED centerline (strictly >= the plan-view length whenever the
+        profile is non-constant; see :doc:`/tracks-25d`).  Reshape via
+        ``wp.to_torch(...).view(E, N_max)``.  NaN-padded past ``count[e]``.
     length : wp.array
         ``[E]`` ``float32`` total arc length (perimeter) of each track's centerline
-        loop.
+        loop — plan-view for the default ``"flat"`` profile, true 3D length
+        otherwise (see ``arclen``).
     valid : wp.array
         ``[E]`` ``int32`` environment validity flags (0 or 1).  A track is valid
         when: turning number ≈ 1, no NaN points, width floor exceeded everywhere,

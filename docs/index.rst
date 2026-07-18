@@ -182,6 +182,7 @@ Explore the docs
    :hidden:
 
    tutorials/batch-of-tracks
+   tracks-25d
    tutorials/gate-sequences
    gates-3d
    tutorials/choosing-a-generator

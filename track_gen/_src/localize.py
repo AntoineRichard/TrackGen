@@ -429,6 +429,22 @@ def curvature(track: Track, window: int = 2) -> wp.array:
     degenerate envs (``count[e] < 3``); results are undefined for envs with
     ``valid[e] == 0``.
 
+    On a flat track (the default ``z_profile``) ``v1``/``v2`` are planar edge
+    vectors and this is exactly the familiar 2D signed curvature. On a lifted
+    track (a non-flat ``z_profile``), ``center`` carries real per-point
+    altitude, so ``v1``/``v2`` are full 3D edge vectors, and the formula picks
+    up grade in two ways: the numerator (``cross(v1, v2)[2]``) is still exactly
+    the PLAN-VIEW cross product (unaffected by z on its own), but the
+    denominator — both ``dot(v1, v2)`` inside the ``atan2`` and the ``ds``
+    normalizer — gains a z contribution. Net effect: a genuine plan-view turn
+    taken on a graded section reports a slightly SMALLER magnitude than the
+    same turn taken flat (the added 3D edge length dilutes it); and a
+    perfectly straight-in-plan-view section with a steep enough grade reversal
+    (a crest or dip sharp enough to flip the sign of ``dot(v1, v2)``) can
+    register as if it were a sharp turn even though the centerline never bends
+    in plan view. Mild grade changes (no sign flip in the dot product) still
+    read as zero curvature, same as flat.
+
     Unlike the per-step utilities, this ALLOCATES its result (and a scratch
     when ``window > 0``) — a per-generation helper: call it after
     ``generate()``, outside capture regions.
@@ -556,6 +572,14 @@ def speed_profile(track: Track, a_lat_max: float, a_accel: float,
     (``v[i]^2 <= v[i+1]^2 + 2 * a_brake * ds``) — each run twice around the
     closed loop so the wrap converges. Speeds are in track units per second
     when the accelerations are in track units per second squared.
+
+    ``ds`` (from ``Track.arclen``/``Track.length``) is the true 3D segment
+    length on a lifted (non-flat ``z_profile``) track, so the accel/brake
+    ramps size their distance budget off the actual climbing/descending path
+    length, not its plan-view projection. The corner-speed limit still comes
+    from ``kappa`` (:func:`curvature`'s default, if not passed in), which on a
+    lifted track can be perturbed by grade as documented there — this function
+    adds no further elevation-specific handling of its own.
 
     Like :func:`curvature`, this ALLOCATES its result — a per-generation
     helper: call it after ``generate()``, outside capture regions.

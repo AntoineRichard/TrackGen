@@ -63,7 +63,8 @@ E, device = 64, "cuda"                       # or "cpu"
 config = TrackGenConfig(num_envs=E, half_width=0.03, device=device)
 rng = PerEnvSeededRNG(seeds=0, num_envs=E, device=device)
 track = TrackGenerator(config, rng).generate()
-# track.outer / center / inner: [E*N_max] vec3f (z=0), NaN-padded, count[e] real points
+# track.outer / center / inner: [E*N_max] vec3f, NaN-padded, count[e] real points
+# (z=0 for the default flat profile; TrackGenConfig.z_profile lifts a real altitude)
 ```
 
 …or let one object run the whole loop — generation, out-of-bounds checks,

@@ -6,8 +6,11 @@ arc-length spacing and emits per-prop instancing poses into a preallocated
 
 - ``"points"``: one pose per sample on the curve (cones, poles, markers).
 - ``"segments"``: one pose per chord between consecutive samples (wall
-  pieces): position = chord midpoint, yaw = chord direction, length = chord
-  length, so a unit-length wall scaled by ``length`` tiles the ring.
+  pieces): position = chord midpoint, yaw = chord direction (plan-view), length
+  = chord length, so a unit-length wall scaled by ``length`` tiles the ring.
+  On a lifted (non-flat ``z_profile``) track, ``length`` is the 3D chord
+  length between the two (possibly different-altitude) samples, not its planar
+  projection — see ``PropSet.length``.
 
 Spacing is snapped per env — ``n = clamp(round(perimeter/spacing), 3,
 max_props)`` at effective step ``perimeter/n`` — so the closed ring has no
@@ -55,7 +58,11 @@ class PropSet:
         ``float32`` heading, ``atan2(tangent.y, tangent.x)``.
     length : wp.array
         ``float32`` per-prop extent: effective arc step (points mode) or
-        chord length (segments mode).
+        chord length (segments mode).  Both are measured along the (possibly
+        lifted) boundary polyline: on a flat track this is a planar distance,
+        and on a non-flat ``z_profile`` track it is the true 3D distance (the
+        3D chord, in segments mode) between samples that may sit at different
+        altitudes.
     count : wp.array
         ``[E]`` ``int32`` real prop counts (0 for degenerate envs). Meaningful
         only for envs with ``valid[e] == 1``.
