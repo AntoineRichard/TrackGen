@@ -76,11 +76,13 @@ inert for the profiles they do not apply to.
        to ``[z_min, z_max]``.
      - ``z_base``, ``z_noise_amplitude``, ``z_noise_harmonics`` (default 3),
        ``z_min``, ``z_max``
-   * - ``z_control_points``
-     - Number of arc-spaced altitude control knots (default 10, must be
-       ≥ 3). Applies to ``uniform`` and ``random_walk``; ``flat`` is constant
-       and ``noise`` uses ``z_noise_harmonics`` for its frequency.
-     - —
+
+``z_control_points`` is not itself a ``z_profile`` — it is the knot-count knob
+used by the ``uniform`` and ``random_walk`` rows above: the number of
+arc-spaced altitude control knots (default 10, must be ≥ 3) those two
+profiles interpolate between. It is inert for ``flat`` (constant altitude,
+no knots) and for ``noise`` (per-point, decided by frequency via
+``z_noise_harmonics`` instead of knot count).
 
 .. note::
 
@@ -105,6 +107,22 @@ segment can overshoot its secant slope by up to 3× (see *Smoothness* below),
 or ``random_walk`` — ``z_valid_grade`` is what actually gates realized
 steepness, and should be set (non-zero) whenever a hard grade limit matters.
 
+.. note::
+
+   **Migration note for existing** ``z_valid_grade`` **users.** The knot-based
+   walk (above) raised the realized per-point grade to roughly 1.5×
+   ``z_max_step`` (up from roughly 1.08× under the old per-point-capped walk).
+   If you already had ``z_valid_grade`` set to a fixed value roughly in the
+   1.1×-1.7× range of your ``z_max_step``, batches will now return noticeably
+   fewer valid envs than before, because more adjacent-point grades cross that
+   threshold. Measured with ``random_walk``, 64 envs: at ``z_max_step=0.3``,
+   ``z_valid_grade=0.35`` went from 63/64 valid to 21/64; at 0.40, from 64/64
+   to 40/64; at 0.45, from 64/64 to 58/64. The default ``z_valid_grade=0``
+   (check disabled) is completely unaffected — no action needed if you never
+   set it. If your ``z_valid_grade`` falls in that affected range, raise it
+   (comfortably above ~1.7× ``z_max_step`` to recover the old acceptance rate)
+   or lower ``z_max_step``.
+
 Smoothness
 ----------
 
@@ -114,13 +132,14 @@ with a periodic monotone cubic (Fritsch-Carlson-limited tangents, wrapping at
 the seam so the loop closes with no discontinuity). Two consequences follow
 directly:
 
-- **Exact bounds, no post-clamp.** Each knot's altitude is already clamped to
-  ``[z_min, z_max]`` (it comes from the same per-point profile kernel, run
-  over the knots instead of the resampled points), and the monotone
-  construction guarantees the interpolant never leaves the interval spanned
-  by its two bracketing knots. So the whole curve stays within
-  ``[z_min, z_max]`` exactly, with no additional clamping step required or
-  applied.
+- **Exact bounds, no post-clamp.** Each knot's altitude is guaranteed to fall
+  in ``[z_min, z_max]`` before interpolation even runs (it comes from the same
+  per-point profile kernel, run over the knots instead of the resampled
+  points): ``uniform`` draws each knot directly in that range, and
+  ``random_walk`` clamps its walk to it. The monotone construction then
+  guarantees the interpolant never leaves the interval spanned by its two
+  bracketing knots. So the whole curve stays within ``[z_min, z_max]``
+  exactly, with no additional clamping step required or applied.
 - **Resolution and bumpiness are decoupled.** Raising the track's resample
   resolution samples the SAME underlying road more finely; it does not add
   new altitude decisions or introduce new bumps, because the road between
@@ -128,6 +147,12 @@ directly:
   the washboard texture that a per-point ``uniform``/``random_walk`` draw
   produces at high resample density — the previous per-point grade cap capped
   local jitter but never removed it.
+
+That decoupling only holds while ``z_control_points`` stays well below the
+resampled point count; a very large ``z_control_points`` starts to
+reintroduce, knot by knot, the same per-point jitter this feature is meant to
+replace (measured: ``z_control_points=200`` on a ~95-point track produces 65
+direction changes along the profile).
 
 The one caveat: monotonicity bounds the interpolant's *range*, not its local
 *slope*. A monotone-cubic segment's realized grade can reach up to 3× its
