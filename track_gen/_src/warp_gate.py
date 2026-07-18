@@ -360,6 +360,7 @@ def _tangents_from_positions_k(
 def _finalize_frame_k(
     position: wp.array(dtype=wp.vec3f),
     tangent: wp.array(dtype=wp.vec3f),
+    forward: wp.array(dtype=wp.vec3f),
     orientation: wp.array(dtype=wp.quatf),
     half_size: wp.array(dtype=wp.float32),
     left: wp.array(dtype=wp.vec3f),
@@ -380,6 +381,7 @@ def _finalize_frame_k(
         nan3 = wp.vec3f(wp.nan, wp.nan, wp.nan)
         position[t] = nan3
         tangent[t] = nan3
+        forward[t] = nan3
         orientation[t] = wp.quatf(wp.nan, wp.nan, wp.nan, wp.nan)
         half_size[t] = wp.nan
         left[t] = nan3
@@ -390,6 +392,7 @@ def _finalize_frame_k(
     fwd = tan
     if align_full == 0:
         fwd = wp.vec3f(tan[0], tan[1], 0.0)
+    fell = int(0)
     horiz2 = fwd[0] * fwd[0] + fwd[1] * fwd[1]
     if horiz2 < 1.0e-10:
         # Near-vertical (full_tangent on a steep segment, or degenerate
@@ -398,6 +401,7 @@ def _finalize_frame_k(
         if fwd[0] * fwd[0] + fwd[1] * fwd[1] < 1.0e-10:
             fwd = wp.vec3f(1.0, 0.0, 0.0)
         wp.atomic_add(fallbacks, e, 1)
+        fell = int(1)
     fwd = _safe_normalize3(fwd)
     q = _frame_quat(fwd)
     hs = 0.5 * gate_width
@@ -409,7 +413,18 @@ def _finalize_frame_k(
         # path: left = p + hs * (-tan.y, tan.x, 0). This also reproduces the
         # legacy degenerate-tangent result (tan == 0 -> left == right == p).
         la = wp.vec3f(-tan[1], tan[0], 0.0)
+    # Pose forward (physical gate-plane normal). VERBATIM tan — never a
+    # re-normalization of it — whenever the pose forward IS the tangent
+    # (full_tangent, or planar yaw_only), so progress plane normals stay
+    # bit-identical to the tangent on those paths.
+    fw = fwd
+    if fell == 0:
+        if align_full == 1:
+            fw = tan
+        elif tan[2] == 0.0:
+            fw = tan
     tangent[t] = tan
+    forward[t] = fw
     orientation[t] = q
     half_size[t] = hs
     left[t] = p + hs * la
@@ -420,6 +435,7 @@ def _finalize_frame_k(
 def _finalize_validity_k(
     position: wp.array(dtype=wp.vec3f),
     tangent: wp.array(dtype=wp.vec3f),
+    forward: wp.array(dtype=wp.vec3f),
     orientation: wp.array(dtype=wp.quatf),
     half_size: wp.array(dtype=wp.float32),
     left: wp.array(dtype=wp.vec3f),
@@ -444,6 +460,7 @@ def _finalize_validity_k(
         if i < cnt:
             p = position[base + i]
             t = tangent[base + i]
+            fw = forward[base + i]
             q = orientation[base + i]
             hs = half_size[base + i]
             li = left[base + i]
@@ -451,6 +468,7 @@ def _finalize_validity_k(
             fields_finite = (
                 wp.isfinite(p[0]) and wp.isfinite(p[1]) and wp.isfinite(p[2]) and
                 wp.isfinite(t[0]) and wp.isfinite(t[1]) and wp.isfinite(t[2]) and
+                wp.isfinite(fw[0]) and wp.isfinite(fw[1]) and wp.isfinite(fw[2]) and
                 wp.isfinite(q[0]) and wp.isfinite(q[1]) and
                 wp.isfinite(q[2]) and wp.isfinite(q[3]) and
                 wp.isfinite(hs) and
@@ -539,6 +557,7 @@ def alloc_gate_sequence(config: GateGenConfig) -> GateSequence:
     gates = GateSequence(
         position=wp.empty(flat, dtype=wp.vec3f, device=dev),
         tangent=wp.empty(flat, dtype=wp.vec3f, device=dev),
+        forward=wp.empty(flat, dtype=wp.vec3f, device=dev),
         orientation=wp.empty(flat, dtype=wp.quatf, device=dev),
         half_size=wp.empty(flat, dtype=wp.float32, device=dev),
         left=wp.empty(flat, dtype=wp.vec3f, device=dev),
@@ -550,6 +569,7 @@ def alloc_gate_sequence(config: GateGenConfig) -> GateSequence:
     nan_q = wp.quatf(wp.nan, wp.nan, wp.nan, wp.nan)
     wp.launch(_fill_vec3_k, dim=flat, inputs=[gates.position, nan3], device=dev)
     wp.launch(_fill_vec3_k, dim=flat, inputs=[gates.tangent, nan3], device=dev)
+    wp.launch(_fill_vec3_k, dim=flat, inputs=[gates.forward, nan3], device=dev)
     wp.launch(_fill_quat_k, dim=flat, inputs=[gates.orientation, nan_q], device=dev)
     wp.launch(_fill_f32_k, dim=flat, inputs=[gates.half_size, wp.nan], device=dev)
     wp.launch(_fill_vec3_k, dim=flat, inputs=[gates.left, nan3], device=dev)
@@ -717,6 +737,7 @@ def finalize_gate_sequence(
         inputs=[
             gates.position,
             gates.tangent,
+            gates.forward,
             gates.orientation,
             gates.half_size,
             gates.left,
@@ -735,6 +756,7 @@ def finalize_gate_sequence(
         inputs=[
             gates.position,
             gates.tangent,
+            gates.forward,
             gates.orientation,
             gates.half_size,
             gates.left,

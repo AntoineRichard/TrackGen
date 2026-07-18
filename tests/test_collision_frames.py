@@ -24,6 +24,7 @@ def _square_gate_seq():
     return GateSequence(
         position=wp.array(pos, dtype=wp.vec3f, device=dev),
         tangent=wp.array(tan, dtype=wp.vec3f, device=dev),
+        forward=wp.array(tan, dtype=wp.vec3f, device=dev),
         orientation=wp.array(quat, dtype=wp.quatf, device=dev),
         half_size=wp.array(hs, dtype=wp.float32, device=dev),
         left=wp.array(left, dtype=wp.vec3f, device=dev),

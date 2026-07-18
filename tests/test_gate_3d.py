@@ -87,6 +87,9 @@ def _run_validity(positions, tangents, cnt, grade, gate_width=0.0,
     G = positions.shape[0]
     pos = wp.array(positions.astype(np.float32), dtype=wp.vec3f, device="cpu")
     tan = wp.array(tangents.astype(np.float32), dtype=wp.vec3f, device="cpu")
+    # forward placeholder: finite, non-degenerate, so only the grade check can
+    # flip validity (mirror the tangent components).
+    fwd = wp.array(tangents.astype(np.float32), dtype=wp.vec3f, device="cpu")
     ident = np.tile(np.array([0.0, 0.0, 0.0, 1.0], np.float32), (G, 1))
     orient = wp.array(ident, dtype=wp.quatf, device="cpu")
     half = wp.zeros(G, dtype=wp.float32, device="cpu")
@@ -98,7 +101,7 @@ def _run_validity(positions, tangents, cnt, grade, gate_width=0.0,
     wp.launch(
         warp_gate._finalize_validity_k,
         dim=1,
-        inputs=[pos, tan, orient, half, left, right, count, G,
+        inputs=[pos, tan, fwd, orient, half, left, right, count, G,
                 int(min_gates), float(center_distance), float(gate_width),
                 float(grade), valid],
         device="cpu",

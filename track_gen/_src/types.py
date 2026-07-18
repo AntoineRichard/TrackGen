@@ -1104,6 +1104,12 @@ class GateSequence:
     tangent : wp.array
         Flat ``[E * max_gates]`` ``vec3f`` unit tangent vectors at each gate centre.
         NaN-padded past ``count[e]``.
+    forward : wp.array
+        Flat ``[E * max_gates]`` ``vec3f`` unit pose forward (x-axis of
+        ``orientation``): the physical gate-plane normal used for pass detection;
+        equals ``tangent`` for ``full_tangent`` and for planar ``yaw_only`` gates,
+        the horizontal projection of ``tangent`` for sloped ``yaw_only`` gates;
+        NaN-padded past ``count[e]``.
     orientation : wp.array
         Flat ``[E * max_gates]`` ``quatf`` gate poses (``wp.quatf(x, y, z, w)``):
         the roll-free frame with local x = gate forward, y = left, z = up.
@@ -1127,6 +1133,7 @@ class GateSequence:
 
     position: wp.array
     tangent: wp.array
+    forward: wp.array
     orientation: wp.array
     half_size: wp.array
     left: wp.array
@@ -1139,6 +1146,7 @@ class GateSequence:
         return GateSequence(
             position=wp.clone(self.position),
             tangent=wp.clone(self.tangent),
+            forward=wp.clone(self.forward),
             orientation=wp.clone(self.orientation),
             half_size=wp.clone(self.half_size),
             left=wp.clone(self.left),

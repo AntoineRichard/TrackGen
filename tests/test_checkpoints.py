@@ -91,7 +91,9 @@ def test_from_gates_is_zero_copy_alias():
     assert cps.position.ptr == seq.position.ptr
     assert cps.left.ptr == seq.left.ptr
     assert cps.right.ptr == seq.right.ptr
-    assert cps.tangent.ptr == seq.tangent.ptr
+    # from_gates aliases the gate's pose forward (physical plane normal) as the
+    # checkpoint tangent, not the 3D spline tangent.
+    assert cps.tangent.ptr == seq.forward.ptr
     assert cps.up_half.ptr == seq.half_size.ptr
     assert cps.count.ptr == seq.count.ptr
     # Mutating the gate buffer is visible through the set (aliasing contract).

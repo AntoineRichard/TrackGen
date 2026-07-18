@@ -51,7 +51,9 @@ class CheckpointSet:
     right : wp.array
         ``vec3f`` crossing-segment endpoints (gate right / track outer).
     tangent : wp.array
-        ``vec3f`` unit forward (travel) directions.
+        ``vec3f`` unit forward (travel) directions. For gate-derived sets this
+        is the gate's ``forward`` (the physical gate-plane normal), not the 3D
+        spline tangent.
     up_half : wp.array
         ``[E * M]`` ``float32`` vertical half-openings for the crossing test:
         ``_BIG`` (unbounded) for track cross-sections, and the gate's
@@ -74,11 +76,12 @@ class CheckpointSet:
         """Zero-copy view of a :class:`GateSequence` as checkpoints.
 
         Aliases (does not copy) ``position``, ``left``, ``right``,
-        ``tangent``, ``half_size`` (as ``up_half``), and ``count``. Progress
-        state bound to this set must be reset after the gates are regenerated.
+        ``forward`` (as ``tangent``: the physical gate-plane normal),
+        ``half_size`` (as ``up_half``), and ``count``. Progress state bound to
+        this set must be reset after the gates are regenerated.
         """
         return cls(position=seq.position, left=seq.left, right=seq.right,
-                   tangent=seq.tangent, up_half=seq.half_size, count=seq.count)
+                   tangent=seq.forward, up_half=seq.half_size, count=seq.count)
 
     def clone(self) -> "CheckpointSet":
         """Return a deep copy whose Warp buffers do not alias this set."""

@@ -125,6 +125,10 @@ motion behaves exactly as before; a gate course, by contrast, will not credit a 
 drone that flies over or under the gate. ``res.events`` still exposes ``passed``,
 ``dist_to_next``, and ``progress`` for reward shaping.
 
+Pass detection uses the gate's *physical* plane — the pose forward — in both alignment
+modes, so a ``yaw_only`` gate on a sloped course is crossed exactly where its upright frame
+stands.
+
 The track frame
 ~~~~~~~~~~~~~~~~
 
