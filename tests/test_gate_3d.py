@@ -111,10 +111,16 @@ def _run_validity(positions, tangents, cnt, grade, gate_width=0.0,
 
 def test_grade_validity_flags_closing_chord():
     # Footgun 3: the grade check wraps around (j = (i+1) % cnt). Build a course
-    # that is FLAT on every open chord but steep across the closing chord
-    # (gate n-1 -> gate 0). With the grade check off it is valid; turning the
-    # check on must flag it invalid, and the ONLY steep chord is the closing
-    # one, so the wraparound term is the sole thing that can flip it.
+    # that is FLAT on the first two open chords but steep across both the
+    # closing chord (gate 3 -> gate 0) and the interior chord 2 -> 3.
+    # NOTE: this does NOT isolate the closing chord on its own -- chord 2->3
+    # is EQUALLY steep (dxy=1, dz=5 => grade 5.0, same as the closing chord
+    # 3->0: dxy=1, dz=5 => grade 5.0) so a mutant kernel that dropped the
+    # wraparound (j = i+1 instead of (i+1) % cnt, skipping the closing chord
+    # entirely) would still flag this env via chord 2->3 alone, and this test
+    # would pass vacuously. It only demonstrates the check fires somewhere on
+    # this geometry; see test_grade_validity_flags_closing_chord_isolated
+    # below for a geometry where only the closing chord can flip validity.
     xy = np.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]])
     zs = np.array([0.0, 0.0, 0.0, 5.0])  # closing chord p3->p0: dz=5 over ds=1
     positions = np.column_stack([xy, zs])
@@ -123,6 +129,32 @@ def test_grade_validity_flags_closing_chord():
     tangents = np.tile(np.array([1.0, 0.0, 0.0]), (4, 1))
     assert _run_validity(positions, tangents, cnt=4, grade=0.0) == 1
     assert _run_validity(positions, tangents, cnt=4, grade=1.0) == 0
+
+
+def test_grade_validity_flags_closing_chord_isolated():
+    # True isolation of the closing chord (gate 3 -> gate 0), unlike the test
+    # above: long interior chords keep every open-chord grade small while the
+    # closing chord is short and steep, so it alone can flip validity.
+    #
+    # gates: p0=(0,0,0), p1=(10,0,0), p2=(10,1,0), p3=(0,1,5)
+    #   chord 0->1: dxy=10, dz=|0-0|=0   -> grade 0/10   = 0.0
+    #   chord 1->2: dxy=1,  dz=|0-0|=0   -> grade 0/1    = 0.0
+    #   chord 2->3: dxy=sqrt((0-10)^2+(1-1)^2)=10, dz=|5-0|=5 -> grade 5/10 = 0.5
+    #   chord 3->0 (closing, wraparound): dxy=sqrt((0-0)^2+(0-1)^2)=1,
+    #                                     dz=|0-5|=5 -> grade 5/1 = 5.0
+    #
+    # So the closing chord (grade 5.0) is far steeper than every open chord
+    # (max 0.5). With z_valid_grade=1.0, only the closing chord's grade
+    # (5.0 > 1.0) violates -> invalid. With the check disabled (0.0) or with
+    # a threshold above the closing chord's grade (6.0 > 5.0), nothing
+    # violates -> valid.
+    xy = np.array([[0.0, 0.0], [10.0, 0.0], [10.0, 1.0], [0.0, 1.0]])
+    zs = np.array([0.0, 0.0, 0.0, 5.0])
+    positions = np.column_stack([xy, zs])
+    tangents = np.tile(np.array([1.0, 0.0, 0.0]), (4, 1))
+    assert _run_validity(positions, tangents, cnt=4, grade=1.0) == 0
+    assert _run_validity(positions, tangents, cnt=4, grade=0.0) == 1
+    assert _run_validity(positions, tangents, cnt=4, grade=6.0) == 1
 
 
 def test_grade_validity_open_chord_still_flagged():

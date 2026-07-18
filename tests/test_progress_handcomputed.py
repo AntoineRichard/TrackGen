@@ -16,7 +16,7 @@ from track_gen._src.checkpoints import CheckpointSet
 from track_gen._src.progress import ProgressTracker
 from track_gen._src.types import GateSequence
 
-E, G = 1, 1
+E = 1
 
 
 def _planar_gate():

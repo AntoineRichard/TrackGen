@@ -173,21 +173,40 @@ def test_concurrent_gates_3d_replay() -> None:
 
 def test_concurrent_gates_3d_fresh_construction() -> None:
     """Two threads each build a FRESH gates-mode 3D Course and run their
-    FIRST generate() + step() concurrently — construction, subtool
-    allocation, warmup, capture, and replay all racing. The ~25% CUDA-700
-    rate is what the ORIGINAL cold-compile root-cause measurement saw
-    (fresh kernel cache widening the capture window); it is not expected
-    to reproduce on a warm-cache machine, where the window is far
-    narrower. The fix here is mechanism-justified rather than reproduced
-    empirically: runtime._CAPTURE_LOCK serializes every capture, replay,
-    and eager-cuda launch, which structurally rules out the race
-    regardless of how often it happens to fire on this machine."""
+    FIRST generate() + step() — construction, subtool allocation, warmup,
+    capture, and replay all racing across threads — but only across the
+    portions covered by the concurrency contract.
+
+    The contract (see runtime._CAPTURE_LOCK) only guarantees that
+    generate()-time device work (subtool allocation, warmup, capture,
+    replay) is safe under concurrent calls; construction and step()-time
+    work are explicitly OUT of contract and may still race a peer's
+    capture window (e.g. an unlocked construction-time or step-time
+    ``wp.synchronize()`` landing inside a peer's Graph A capture). Two
+    ``threading.Barrier(2)`` waits pin this test to the contract: one
+    after construction (so unlocked construction-time device work never
+    overlaps a peer's capture), and one after generate() (so unlocked
+    step()-time device work never overlaps a peer's capture either),
+    while still driving both threads' generate() calls concurrently — the
+    contract-covered overlap this test exists to exercise.
+
+    The ~25% CUDA-700 rate is what the ORIGINAL cold-compile root-cause
+    measurement saw (fresh kernel cache widening the capture window); it
+    is not expected to reproduce on a warm-cache machine, where the
+    window is far narrower. The fix here is mechanism-justified rather
+    than reproduced empirically: runtime._CAPTURE_LOCK serializes every
+    capture, replay, and eager-cuda launch, which structurally rules out
+    the race regardless of how often it happens to fire on this
+    machine."""
     errors: list = []
+    barrier = threading.Barrier(2)
 
     def worker(seed: int) -> None:
         try:
             course, pos = _make_gates_3d_course(seed)   # builds config+Course+bind, NO generate
+            barrier.wait()  # construction done; only generate() overlaps a peer's capture
             course.generate()
+            barrier.wait()  # generate() done; only step()'s unlocked work stays out of overlap
             course.step()
         except Exception as exc:  # noqa: BLE001 — capture for main-thread assert
             errors.append(exc)
