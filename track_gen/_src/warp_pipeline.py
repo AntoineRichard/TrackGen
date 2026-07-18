@@ -1633,26 +1633,38 @@ def _track_frames3_k(
 ):
     # Per-env serial recompute of tangent (3D central diff) + true 3D arc
     # length. Same work distribution as checkpoints/props per-env scans.
+    # Mirrors course_line.py's _line_frames_k: real slots [0, m) get the
+    # central-diff tangent + cumulative arclen; padding slots [m, n_max) are
+    # NaN-filled (per the Track.tangent/arclen NaN-padding contract in
+    # types.py). Degenerate envs (m < 3) NaN-fill the whole row and zero length.
     e = wp.tid()
     base = e * n_max
     m = count[e]
     if m > n_max:
         m = n_max
     if m < 3:
-        return  # degenerate: legacy buffers stay as lifted; valid[e]==0 anyway
+        length[e] = 0.0
+        for i in range(n_max):
+            tangent[base + i] = wp.vec3f(wp.nan, wp.nan, wp.nan)
+            arclen[base + i] = wp.nan
+        return
     acc = float(0.0)
-    for i in range(m):
-        if i > 0:
-            acc = acc + wp.length(center[base + i] - center[base + i - 1])
-        arclen[base + i] = acc
-        prev = ((i - 1) % m + m) % m
-        nxt = (i + 1) % m
-        d = center[base + nxt] - center[base + prev]
-        l = wp.length(d)
-        if l > 1.0e-12:
-            tangent[base + i] = d / l
+    for i in range(n_max):
+        if i < m:
+            if i > 0:
+                acc = acc + wp.length(center[base + i] - center[base + i - 1])
+            arclen[base + i] = acc
+            prev = ((i - 1) % m + m) % m
+            nxt = (i + 1) % m
+            d = center[base + nxt] - center[base + prev]
+            l = wp.length(d)
+            if l > 1.0e-12:
+                tangent[base + i] = d / l
+            else:
+                tangent[base + i] = wp.vec3f(0.0, 0.0, 0.0)
         else:
-            tangent[base + i] = wp.vec3f(0.0, 0.0, 0.0)
+            tangent[base + i] = wp.vec3f(wp.nan, wp.nan, wp.nan)
+            arclen[base + i] = wp.nan
     length[e] = acc + wp.length(center[base] - center[base + m - 1])
 
 
