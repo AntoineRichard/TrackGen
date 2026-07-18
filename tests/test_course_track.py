@@ -205,6 +205,28 @@ def test_bind_validates_eagerly_before_generate():
         course.bind(position=bad, orientation=orient, half_extents=he)
 
 
+def test_heightfield_wiring():
+    course = _course(collision=None, heightfield_resolution=32)
+    pos, _, _ = _buffers()
+    course.bind(position=pos)
+    track = course.generate()
+    assert course.heightfield is not None
+    hf = course.heightfield._hf
+    g = hf.height.numpy().reshape(E, 32, 32)
+    valid = track.valid.numpy().astype(bool)
+    for e in np.flatnonzero(valid):
+        assert np.isfinite(g[e]).all()
+
+
+def test_heightfield_gates_mode_raises():
+    from track_gen.course import CourseConfig
+    from track_gen import GateGenConfig
+    with pytest.raises(ValueError, match="track-mode"):
+        CourseConfig(mode="gates",
+                     gen=GateGenConfig(num_envs=E, device="cpu"),
+                     heightfield_resolution=32)
+
+
 def test_facade_matches_manual_wiring():
     from track_gen.progress import ProgressTracker
     course = _course(collision="segments")

@@ -52,6 +52,31 @@ def test_graph_b_refresh_replay_recomputes():
     assert (course.progress._progress.numpy() == 0).all()
 
 
+def test_heightfield_bake_joins_graph_b_replay():
+    """The heightfield bake joins the captured refresh (Graph B): after the
+    first cuda generate() the grid is captured, and a poisoned buffer is
+    recomputed on the replayed regeneration (proving capture-safety)."""
+    from track_gen._src.heightfield import HeightFieldBaker
+    cfg = CourseConfig(mode="track",
+                       gen=TrackGenConfig(num_envs=E, device=DEV),
+                       seeds=5, collision=None, heightfield_resolution=32,
+                       checkpoint_spacing=0.6, max_checkpoints=64)
+    course = Course(cfg)
+    course.bind(position=wp.zeros(E, dtype=wp.vec3f, device=DEV))
+    course.generate()
+    assert course._refresh_graph is not None
+    assert course.heightfield is not None
+    course.generate(seeds=901)               # replay path
+    # Poison the baked grid, regenerate with new seeds; the replayed refresh
+    # must re-bake it to match a fresh independent baker on the same track.
+    course.heightfield._hf.height.fill_(-12345.0)
+    course.generate(seeds=902)
+    ref = HeightFieldBaker(course.result, 32).bake()
+    np.testing.assert_allclose(
+        course.heightfield._hf.height.numpy(), ref.height.numpy(),
+        rtol=1e-5, equal_nan=True)
+
+
 def test_user_captured_step_matches_eager_twin():
     course_c, pos_c = _bound_course(seeds=5)
     course_e, pos_e = _bound_course(seeds=5)      # identical seeds -> same tracks

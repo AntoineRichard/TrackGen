@@ -42,6 +42,7 @@ from .collision_discs import DiscChecker, DiscContact
 from .collision_frames import FrameChecker, FrameContact
 from .course_line import CourseLine
 from .gate_generator import GateGenerator
+from .heightfield import HeightFieldBaker
 from .localize import TrackFrame, TrackLocalizer
 from .progress import ProgressEvents, ProgressTracker
 from .rng_utils import PerEnvSeededRNG
@@ -84,6 +85,12 @@ class CourseConfig:
         facade always uses ``CollisionChecker``'s AUTO SDF padding
         (``sdf_padding=None``, i.e. 10% of each env's larger AABB extent);
         ``sdf_padding`` itself is not exposed here.
+    heightfield_resolution : int or None
+        Track mode only; when set (``>= 8``), builds a
+        :class:`HeightFieldBaker` exposed as ``course.heightfield`` and
+        re-baked on every ``generate()`` (nearest-edge road-surface grid for
+        external physics solvers). Uses the baker's AUTO padding (10% of each
+        env's larger AABB extent). ``None`` (default) means no heightfield.
     post_radius : float
         Gates mode only: > 0 enables ``DiscChecker`` gate-post collision.
     frame_collision : bool
@@ -121,6 +128,7 @@ class CourseConfig:
     seeds: "int | wp.array" = 0
     collision: "str | None" = None
     sdf_resolution: "int | None" = None
+    heightfield_resolution: "int | None" = None
     post_radius: float = 0.0
     frame_collision: bool = False
     frame_thickness: float = 0.0
@@ -172,6 +180,11 @@ class CourseConfig:
                 if int(self.sdf_resolution) < 8:
                     raise ValueError(
                         f"sdf_resolution must be >= 8, got {self.sdf_resolution!r}")
+            if self.heightfield_resolution is not None \
+                    and int(self.heightfield_resolution) < 8:
+                raise ValueError(
+                    "heightfield_resolution must be >= 8, got "
+                    f"{self.heightfield_resolution!r}")
             if self.max_checkpoints is not None and int(self.max_checkpoints) < 3:
                 raise ValueError(
                     f"max_checkpoints must be >= 3, got {self.max_checkpoints!r}")
@@ -195,6 +208,9 @@ class CourseConfig:
                     f"{self.collision!r})")
             if self.sdf_resolution is not None:
                 raise ValueError("sdf_resolution is a track-mode option")
+            if self.heightfield_resolution is not None:
+                raise ValueError(
+                    "heightfield_resolution is a track-mode option")
             if self.checkpoint_spacing is not None:
                 raise ValueError(
                     "checkpoint_spacing is a track-mode option; gates mode "
@@ -289,7 +305,9 @@ class Course:
     ``generate()`` (their auto-derivations need a real batch) and are
     reachable as attributes (``generator``, ``rng``, ``result``,
     ``collision``, ``checkpoints``, ``checkpoint_sampler``, ``progress``,
-    and — gates mode — ``course_line``, ``localizer``).
+    an optional track-mode ``heightfield`` (when
+    ``heightfield_resolution`` is set), and — gates mode — ``course_line``,
+    ``localizer``).
 
     ``generate()`` is whole-batch by generator design (fixed-batch captured
     pipelines); per-env respawn control is :meth:`reset`'s mask. Results are
@@ -319,6 +337,7 @@ class Course:
             = None
         self.course_line: "CourseLine | None" = None
         self.localizer: "TrackLocalizer | None" = None
+        self.heightfield: "HeightFieldBaker | None" = None
         self.checkpoints: "CheckpointSet | None" = None
         self.checkpoint_sampler: "CheckpointSampler | None" = None
         self.progress: "ProgressTracker | None" = None
@@ -516,6 +535,9 @@ class Course:
                 self.collision = CollisionChecker(
                     self.result, max_boxes=cfg.max_boxes, method="sdf",
                     sdf_resolution=cfg.sdf_resolution or 128)
+            if cfg.heightfield_resolution is not None:
+                self.heightfield = HeightFieldBaker(
+                    self.result, cfg.heightfield_resolution)
         else:
             self.checkpoints = CheckpointSet.from_gates(self.result)
             self.course_line = CourseLine(self.result, cfg.samples_per_gate)
@@ -556,6 +578,9 @@ class Course:
                                     # both real warmup passes before the first
                                     # cuda capture: a one-time construction
                                     # cost, not a per-step one
+        if self.heightfield is not None:
+            self.heightfield.bake()  # nearest-edge road surface; joins the
+                                      # captured refresh alongside the sdf bake
         if self._posts is not None:
             self._fill_posts()
         if self.localizer is not None:
