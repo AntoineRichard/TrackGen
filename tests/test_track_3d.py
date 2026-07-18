@@ -203,7 +203,13 @@ def test_xpbd_solves_in_2d_elevation_applies_after():
         a = getattr(flat, name).numpy()[:, :2]
         b = getattr(hilly, name).numpy()[:, :2]
         np.testing.assert_array_equal(a, b, err_msg=f"{name} xy moved")
-    assert getattr(hilly, "center").numpy()[:, 2].std() > 0.0  # z really varies
+    n_max = hilly.center.shape[0] // E
+    hilly_center = hilly.center.numpy()
+    hilly_count = hilly.count.numpy()
+    for e in np.flatnonzero(hilly.valid.numpy()):
+        m = int(hilly_count[e])
+        z_e = hilly_center[e * n_max:e * n_max + m, 2]
+        assert z_e.std() > 0.0, f"env {e} z is constant"  # z really varies
 
 
 def test_no_overshoot_beyond_extremes():

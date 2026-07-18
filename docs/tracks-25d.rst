@@ -52,37 +52,106 @@ inert for the profiles they do not apply to.
      - Altitude model
      - Knobs
    * - ``"flat"`` (default)
-     - Every real point sits at ``z_base``. With the default ``z_base=0`` this is
-       the old planar track.
+     - Planar. Every real point sits at ``z_base``; with the default
+       ``z_base=0`` this is the old planar track.
      - ``z_base``
    * - ``"uniform"``
-     - Each point's altitude is drawn i.i.d. uniform in ``[z_min, z_max]``.
-     - ``z_min``, ``z_max``
+     - Independent hill heights: ``z_control_points`` arc-spaced knots each
+       draw their own i.i.d. uniform altitude in ``[z_min, z_max]``, and the
+       points between knots are interpolated (see *Smoothness* below).
+     - ``z_min``, ``z_max``, ``z_control_points``
    * - ``"random_walk"``
-     - A Brownian-bridge walk clamped to ``[z_min, z_max]``, closed back to its
-       start so the loop is continuous. Each step is capped by a **grade** — the
-       maximum ``|dz|`` per unit of plan-view arc length — so altitude changes
-       stay proportional to horizontal travel.
-     - ``z_base`` (walk origin), ``z_min``, ``z_max``, ``z_max_step`` (grade cap)
+     - Correlated rolling terrain: a grade-capped walk over the
+       ``z_control_points`` knots, clamped to ``[z_min, z_max]`` and closed
+       back to its start so the loop is continuous (Brownian-bridge drift
+       removal). Each knot-to-knot step is capped by a **grade** — the
+       maximum ``|dz|`` per unit of plan-view arc length between knots — so
+       altitude changes stay proportional to horizontal travel.
+     - ``z_base`` (walk origin), ``z_min``, ``z_max``, ``z_max_step`` (grade
+       cap), ``z_control_points``
    * - ``"noise"``
-     - Periodic harmonic noise oscillating around ``z_base``: a sum of
-       ``z_noise_harmonics`` sinusoids of total amplitude ``z_noise_amplitude``,
-       clamped to ``[z_min, z_max]``.
+     - Smooth periodic terrain with harmonic control: decided per-point (not
+       knot-based) as a sum of ``z_noise_harmonics`` sinusoids of total
+       amplitude ``z_noise_amplitude`` oscillating around ``z_base``, clamped
+       to ``[z_min, z_max]``.
      - ``z_base``, ``z_noise_amplitude``, ``z_noise_harmonics`` (default 3),
        ``z_min``, ``z_max``
+   * - ``z_control_points``
+     - Number of arc-spaced altitude control knots (default 10, must be
+       ≥ 3). Applies to ``uniform`` and ``random_walk``; ``flat`` is constant
+       and ``noise`` uses ``z_noise_harmonics`` for its frequency.
+     - —
 
 .. note::
 
-   ``z_max_step`` is a **grade**, not an absolute step: it bounds ``|dz|`` per
-   unit plan-view arc length between adjacent resampled points, so widely spaced
-   points may still differ in altitude by more than ``z_max_step``.
+   ``z_max_step`` is a **grade**, not an absolute step. Under the knot stage
+   (``uniform``, ``random_walk``) it bounds ``|dz|`` per unit plan-view arc
+   length **between adjacent knots** (``ds = perimeter / z_control_points``),
+   not between adjacent resampled points — so, for a fixed ``z_max_step``, the
+   walk can now swing over a larger total altitude range than it could when
+   the cap applied point-to-point. This is an intentional, user-visible
+   change from the previous per-point grade cap: it is what fixes the
+   washboard texture described below, at the cost of ``z_max_step`` alone no
+   longer bounding how much altitude changes over any one resampled segment.
 
 A profiled batch can also be rejected outright: ``z_valid_grade`` is the maximum
 allowed ``|dz|/ds`` grade between adjacent points, with ``ds`` measured along the
 **plan-view** (XY) arc length — not the 3D lifted length. ``z_valid_grade = 0``
 (the default) disables the check; any steeper adjacent pair marks the whole env
 invalid, on top of the unchanged 2D validity gate (turning number, thickness,
-width floor, optional border self-intersection).
+width floor, optional border self-intersection). Because a monotone-cubic
+segment can overshoot its secant slope by up to 3× (see *Smoothness* below),
+``z_max_step`` alone does not bound the realized per-point grade on ``uniform``
+or ``random_walk`` — ``z_valid_grade`` is what actually gates realized
+steepness, and should be set (non-zero) whenever a hard grade limit matters.
+
+Smoothness
+----------
+
+For ``uniform`` and ``random_walk``, altitude is decided at only
+``z_control_points`` arc-spaced knots per env and interpolated between them
+with a periodic monotone cubic (Fritsch-Carlson-limited tangents, wrapping at
+the seam so the loop closes with no discontinuity). Two consequences follow
+directly:
+
+- **Exact bounds, no post-clamp.** Each knot's altitude is already clamped to
+  ``[z_min, z_max]`` (it comes from the same per-point profile kernel, run
+  over the knots instead of the resampled points), and the monotone
+  construction guarantees the interpolant never leaves the interval spanned
+  by its two bracketing knots. So the whole curve stays within
+  ``[z_min, z_max]`` exactly, with no additional clamping step required or
+  applied.
+- **Resolution and bumpiness are decoupled.** Raising the track's resample
+  resolution samples the SAME underlying road more finely; it does not add
+  new altitude decisions or introduce new bumps, because the road between
+  knots is a fixed cubic, not a fresh per-point draw. This is what eliminates
+  the washboard texture that a per-point ``uniform``/``random_walk`` draw
+  produces at high resample density — the previous per-point grade cap capped
+  local jitter but never removed it.
+
+The one caveat: monotonicity bounds the interpolant's *range*, not its local
+*slope*. A monotone-cubic segment's realized grade can reach up to 3× its
+knot-to-knot secant slope (the same Fritsch-Carlson limiter that kills
+overshoot also sets that bound), so ``z_max_step`` — which only shapes the
+walk *at the knots* — does not bound the steepest per-point grade actually
+realized between them. If a hard steepness limit matters for your use case,
+set ``z_valid_grade`` (non-zero) rather than relying on ``z_max_step`` alone;
+it is checked against the realized per-point grade after interpolation, on
+every adjacent pair.
+
+.. figure:: _static/z-profiles.png
+   :alt: The four z_profile altitude models on the same track layout, each as
+         a plan view colored by z and an elevation profile
+   :align: center
+
+   The four altitude profiles on the SAME plan-view layout and seed, rendered
+   by ``viz/plot_z_profiles.py`` (``z_base=1.0``, ``z_min=0.5``, ``z_max=1.5``,
+   ``z_max_step=0.3``, ``z_noise_amplitude=0.4``, ``z_control_points=10``).
+   ``flat`` is constant; ``uniform``, ``random_walk``, and ``noise`` are all
+   smooth rolling curves (never jittery), but visibly distinct in character —
+   independent knot-to-knot swings, a correlated single-basin walk, and
+   harmonic periodicity respectively. Regenerate with
+   ``python viz/plot_z_profiles.py --out docs/_static/z-profiles.png --seed 5``.
 
 Level cross-sections, and why plan-view collision stays valid
 ---------------------------------------------------------------
