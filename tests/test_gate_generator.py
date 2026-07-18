@@ -104,14 +104,15 @@ def test_cuda_capture_sets_gate_and_pipeline_capture_flags(monkeypatch):
 
     monkeypatch.setattr(warp_gate, "_CAPTURING", False)
     monkeypatch.setattr(warp_pipeline, "_CAPTURING", False)
-    # scratch is the (gen_scratch, pos2, z_cum, z, fallbacks) 5-tuple the real
-    # _gate_warp_alloc returns; GateGenerator reads scratch[4] as frame_fallbacks.
+    # scratch is the (gen_scratch, pos2, cum, perim, z, fallbacks) 6-tuple the
+    # real _gate_warp_alloc returns; GateGenerator reads scratch[5] as
+    # frame_fallbacks (moved from index 4 when the perim slot was added).
     monkeypatch.setattr(
         warp_gate,
         "_gate_warp_alloc",
         lambda config, generator_spec: (
             object(),
-            (object(), object(), object(), object(), object()),
+            (object(), object(), object(), object(), object(), object()),
         ),
     )
 

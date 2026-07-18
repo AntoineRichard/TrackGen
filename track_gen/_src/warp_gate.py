@@ -793,11 +793,16 @@ class _GateStaging:
 def _gate_warp_alloc(config: GateGenConfig, generator_spec):
     """Allocate facade-owned gate output plus pipeline + generator scratch.
 
-    Returns ``(gates, (gen_scratch, pos2, z_cum, z, fallbacks))``: ``pos2`` is
-    the vec2f staging buffer the 2D kernels write, ``z_cum`` the per-gate
-    cumulative plan-view arc length scratch the Z profiler needs, ``z`` the
+    Returns ``(gates, (gen_scratch, pos2, cum, perim, z, fallbacks))``: ``pos2``
+    is the vec2f staging buffer the 2D kernels write, ``cum``/``perim`` the
+    per-gate cumulative plan-view arc length / closed-loop perimeter scratch
+    the Z profiler needs (populated each run via ``gate_cum_perim``), ``z`` the
     per-gate elevation profile written by the Z profiler each run, ``fallbacks``
     the per-env frame-fallback counters.
+
+    NOTE: this scratch tuple grew from a 5-tuple to a 6-tuple with the
+    ``perim`` slot inserted before ``z`` — ``GateGenerator`` reads
+    ``fallbacks`` at index 5 now (was 4); see ``gate_generator.py``.
     """
     from . import warp_zprofile
 
@@ -807,9 +812,9 @@ def _gate_warp_alloc(config: GateGenConfig, generator_spec):
     G = int(config.max_gates)
     dev = str(config.device)
     pos2 = wp.empty(E * G, dtype=wp.vec2f, device=dev)
-    z_cum, z = warp_zprofile.alloc_z_scratch(config)
+    cum, perim, z = warp_zprofile.alloc_z_scratch(E, G, dev)
     fallbacks = wp.zeros(E, dtype=wp.int32, device=dev)
-    return gates, (gen_scratch, pos2, z_cum, z, fallbacks)
+    return gates, (gen_scratch, pos2, cum, perim, z, fallbacks)
 
 
 def _run_gate_pipeline(
@@ -831,7 +836,7 @@ def _run_gate_pipeline(
     from . import warp_zprofile
 
     _init()
-    gen_scratch, pos2, z_cum, z, fallbacks = scratch
+    gen_scratch, pos2, cum, perim, z, fallbacks = scratch
     G = int(config.max_gates)
     dev = str(out.position.device)
     staging = _GateStaging(pos2, out.count)
@@ -843,7 +848,11 @@ def _run_gate_pipeline(
     # Z profile runs on the final ordered/relaxed 2D anchors, before the lift.
     # It writes every real slot and zeroes padding, so the z scratch is fully
     # overwritten each run (capture-safe: launches only, no alloc/sync/branch).
-    warp_zprofile.apply_z_profile(config, seed_buf_wp, pos2, out.count, z_cum, z)
+    # gate_cum_perim derives (cum, perim) from the anchors; flat doesn't need
+    # them (matches the original conditional cum-chords launch).
+    if config.z_profile != "flat":
+        warp_zprofile.gate_cum_perim(pos2, out.count, G, cum, perim)
+    warp_zprofile.apply_z_profile(config, seed_buf_wp, out.count, G, cum, perim, z)
     wp.launch(
         _lift_positions_k,
         dim=int(pos2.shape[0]),

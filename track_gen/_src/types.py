@@ -13,6 +13,43 @@ from dataclasses import dataclass
 import warp as wp
 
 
+def _validate_z_fields(cfg) -> None:
+    """Shared Z-profile validation for ``TrackGenConfig`` and ``GateGenConfig``.
+
+    Operates purely on the eight ``z_*`` attribute names both configs carry
+    on the same terms (profile membership, min/max ordering, non-negative
+    knobs), so a single call site works for either dataclass's
+    ``__post_init__``.
+    """
+    if cfg.z_profile not in {"flat", "uniform", "random_walk", "noise"}:
+        raise ValueError(
+            "z_profile must be one of "
+            "{'flat', 'uniform', 'random_walk', 'noise'}, got "
+            f"{cfg.z_profile!r}"
+        )
+    if float(cfg.z_min) > float(cfg.z_max):
+        raise ValueError(
+            f"z_min must be <= z_max, got {cfg.z_min!r} > {cfg.z_max!r}"
+        )
+    if float(cfg.z_max_step) < 0.0:
+        raise ValueError(
+            f"z_max_step must be >= 0, got {cfg.z_max_step!r}"
+        )
+    if float(cfg.z_noise_amplitude) < 0.0:
+        raise ValueError(
+            "z_noise_amplitude must be >= 0, got "
+            f"{cfg.z_noise_amplitude!r}"
+        )
+    if int(cfg.z_noise_harmonics) < 1:
+        raise ValueError(
+            f"z_noise_harmonics must be >= 1, got {cfg.z_noise_harmonics!r}"
+        )
+    if float(cfg.z_valid_grade) < 0.0:
+        raise ValueError(
+            f"z_valid_grade must be >= 0, got {cfg.z_valid_grade!r}"
+        )
+
+
 @dataclass
 class TrackGenConfig:
     """Single configuration object passed to every stage of the pipeline.
@@ -455,6 +492,39 @@ class TrackGenConfig:
         gate (a self-crossing fat band drives
         ``separation_min → 0 → thickness < half_width → invalid``), so the default
         saves two ``O(N²)`` passes with no change to the valid mask.
+
+    z_profile : str
+        Per-point altitude (Z) profile family, applied along the resampled
+        constant-spacing centerline arc length.  One of ``"flat"`` (default,
+        every real point at ``z_base``), ``"uniform"`` (i.i.d. uniform in
+        ``[z_min, z_max]``), ``"random_walk"`` (Brownian-bridge walk clamped
+        to ``[z_min, z_max]`` with a per-step grade cap of ``z_max_step``), or
+        ``"noise"`` (periodic harmonic noise around ``z_base``).  Applied by
+        ``warp_zprofile.apply_z_profile`` on the resampler's ``(cum, perim)``
+        plan-view arc tables.
+    z_base : float
+        Baseline altitude for the ``"flat"``, ``"random_walk"``, and
+        ``"noise"`` profiles.  Default 0.0.
+    z_min : float
+        Lower altitude clamp for ``"uniform"``, ``"random_walk"``, and
+        ``"noise"``.  Must be <= ``z_max``.  Default 0.0.
+    z_max : float
+        Upper altitude clamp for ``"uniform"``, ``"random_walk"``, and
+        ``"noise"``.  Must be >= ``z_min``.  Default 0.0.
+    z_max_step : float
+        *Random-walk profile only.*  Maximum ``|dz|`` per unit plan-view arc
+        length (a grade cap), applied per random-walk step before the
+        closure bridge.  Must be >= 0.  Default 0.0.
+    z_noise_amplitude : float
+        *Noise profile only.*  Amplitude of the harmonic altitude
+        oscillation around ``z_base``.  Must be >= 0.  Default 0.0.
+    z_noise_harmonics : int
+        *Noise profile only.*  Number of summed harmonics in the periodic
+        noise field.  Must be >= 1.  Default 3.
+    z_valid_grade : float
+        Maximum allowed ``|dz|``/ds grade for post-hoc course validity checking,
+        where ``ds`` is measured along the PLAN-VIEW (XY) arc length, not the
+        3D lifted arc length.  0 disables the check.  Must be >= 0.  Default 0.0.
     """
 
     # --- Generator selection + batching ---
@@ -584,6 +654,16 @@ class TrackGenConfig:
     turning_tol: float = 0.1
     w_floor: float = 1e-3
     validity_border_check: bool = False
+
+    # --- Z-profile (altitude) params, shared with GateGenConfig via _validate_z_fields ---
+    z_profile: str = "flat"
+    z_base: float = 0.0
+    z_min: float = 0.0
+    z_max: float = 0.0
+    z_max_step: float = 0.0
+    z_noise_amplitude: float = 0.0
+    z_noise_harmonics: int = 3
+    z_valid_grade: float = 0.0
 
     def __post_init__(self):
         if int(self.num_envs) < 1:
@@ -764,6 +844,8 @@ class TrackGenConfig:
             self.spacing = 0.6 * self.half_width
         if float(self.spacing) <= 0.0:
             raise ValueError(f"spacing must be > 0, got {self.spacing!r}")
+
+        _validate_z_fields(self)
 
 
 @dataclass
@@ -1043,33 +1125,7 @@ class GateGenConfig:
                 "checkpoint_radius_min_frac must be in [0, 1), got "
                 f"{self.checkpoint_radius_min_frac!r}"
             )
-        if self.z_profile not in {"flat", "uniform", "random_walk", "noise"}:
-            raise ValueError(
-                "z_profile must be one of "
-                "{'flat', 'uniform', 'random_walk', 'noise'}, got "
-                f"{self.z_profile!r}"
-            )
-        if float(self.z_min) > float(self.z_max):
-            raise ValueError(
-                f"z_min must be <= z_max, got {self.z_min!r} > {self.z_max!r}"
-            )
-        if float(self.z_max_step) < 0.0:
-            raise ValueError(
-                f"z_max_step must be >= 0, got {self.z_max_step!r}"
-            )
-        if float(self.z_noise_amplitude) < 0.0:
-            raise ValueError(
-                "z_noise_amplitude must be >= 0, got "
-                f"{self.z_noise_amplitude!r}"
-            )
-        if int(self.z_noise_harmonics) < 1:
-            raise ValueError(
-                f"z_noise_harmonics must be >= 1, got {self.z_noise_harmonics!r}"
-            )
-        if float(self.z_valid_grade) < 0.0:
-            raise ValueError(
-                f"z_valid_grade must be >= 0, got {self.z_valid_grade!r}"
-            )
+        _validate_z_fields(self)
         if self.gate_align not in {"yaw_only", "full_tangent"}:
             raise ValueError(
                 "gate_align must be one of {'yaw_only', 'full_tangent'}, got "

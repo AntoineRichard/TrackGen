@@ -95,7 +95,9 @@ class GateGenerator:
         # Debug-only: per-env [E] int32 counter of frame fallbacks (near-vertical
         # or degenerate tangents) accumulated during the last generate(). Reset
         # and rewritten each call; not part of the public GateSequence contract.
-        self.frame_fallbacks: wp.array = self._scratch[4]
+        # scratch is (gen_scratch, pos2, cum, perim, z, fallbacks) — fallbacks
+        # is at index 5 (moved from 4 when the z-profile perim slot was added).
+        self.frame_fallbacks: wp.array = self._scratch[5]
 
         self._seed_buf: wp.array = wp.empty(
             int(config.num_envs), dtype=wp.int32, device=str(config.device)

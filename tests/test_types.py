@@ -267,6 +267,25 @@ def test_gate_config_validates_num_envs_and_point_family_inputs():
         GateGenConfig(min_num_points=13, max_num_points=9)
 
 
+def test_track_config_z_defaults_instantiate():
+    cfg = TrackGenConfig(device="cpu", num_envs=1)
+    assert cfg.z_profile == "flat"
+    assert cfg.z_base == 0.0
+    assert cfg.z_min == 0.0
+    assert cfg.z_max == 0.0
+    assert cfg.z_max_step == 0.0
+    assert cfg.z_noise_amplitude == 0.0
+    assert cfg.z_noise_harmonics == 3
+    assert cfg.z_valid_grade == 0.0
+
+
+def test_track_config_z_validates():
+    with pytest.raises(ValueError, match="z_profile"):
+        TrackGenConfig(device="cpu", num_envs=1, z_profile="bogus")
+    with pytest.raises(ValueError, match="z_min"):
+        TrackGenConfig(device="cpu", num_envs=1, z_min=2.0, z_max=1.0)
+
+
 def test_track_config_validates_sampler_and_buffer_invariants():
     from track_gen._src.types import TrackGenConfig
     import pytest
