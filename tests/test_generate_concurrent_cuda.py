@@ -174,14 +174,19 @@ def test_concurrent_gates_3d_replay() -> None:
 def test_concurrent_gates_3d_fresh_construction() -> None:
     """Two threads each build a FRESH gates-mode 3D Course and run their
     FIRST generate() + step() concurrently — construction, subtool
-    allocation, warmup, capture, and replay all racing. This was ~25%
-    CUDA-700 before generate()'s first-call work moved under
-    runtime._CAPTURE_LOCK; it must now be deterministically green."""
+    allocation, warmup, capture, and replay all racing. The ~25% CUDA-700
+    rate is what the ORIGINAL cold-compile root-cause measurement saw
+    (fresh kernel cache widening the capture window); it is not expected
+    to reproduce on a warm-cache machine, where the window is far
+    narrower. The fix here is mechanism-justified rather than reproduced
+    empirically: runtime._CAPTURE_LOCK serializes every capture, replay,
+    and eager-cuda launch, which structurally rules out the race
+    regardless of how often it happens to fire on this machine."""
     errors: list = []
 
     def worker(seed: int) -> None:
         try:
-            course, pos = _make_gates_3d_course(seed)   # existing helper: builds config+Course+bind, NO generate
+            course, pos = _make_gates_3d_course(seed)   # builds config+Course+bind, NO generate
             course.generate()
             course.step()
         except Exception as exc:  # noqa: BLE001 — capture for main-thread assert

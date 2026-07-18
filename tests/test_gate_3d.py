@@ -164,3 +164,38 @@ def test_flat_default_matches_2d_goldens():
     for e in np.flatnonzero(seq.valid.numpy()):
         p, _, _, _, _ = _valid_gates(seq, cfg, e)
         np.testing.assert_allclose(p[:, 2], 0.0, atol=0.0)
+
+
+def test_frame_fallback_counter_increments_on_near_vertical():
+    """A near-vertical full_tangent gate must engage the +x fallback and
+    count it; a planar gate in the same launch must not."""
+    from track_gen._src import warp_gate
+    from track_gen._src.collision_geom import _safe_normalize3  # noqa: F401 (kernel dep)
+
+    warp_gate._init()
+    E1, G1 = 1, 2
+    dev = "cpu"
+    nan3 = np.full(3, np.nan, np.float32)
+    pos = wp.array(np.array([[0, 0, 0], [1, 0, 0]], np.float32), dtype=wp.vec3f, device=dev)
+    # gate 0 tangent is (numerically) vertical; gate 1 planar
+    tan = wp.array(np.array([[1e-8, 0, 1], [1, 0, 0]], np.float32), dtype=wp.vec3f, device=dev)
+    forward = wp.array(np.tile(nan3, (G1, 1)), dtype=wp.vec3f, device=dev)
+    quat = wp.array(np.tile(np.full(4, np.nan, np.float32), (G1, 1)), dtype=wp.quatf, device=dev)
+    hs = wp.zeros(G1, dtype=wp.float32, device=dev)
+    left = wp.array(np.tile(nan3, (G1, 1)), dtype=wp.vec3f, device=dev)
+    right = wp.array(np.tile(nan3, (G1, 1)), dtype=wp.vec3f, device=dev)
+    count = wp.array(np.array([2], np.int32), dtype=wp.int32, device=dev)
+    fallbacks = wp.zeros(E1, dtype=wp.int32, device=dev)
+    wp.launch(warp_gate._finalize_frame_k, dim=E1 * G1,
+              inputs=[pos, tan, forward, quat, hs, left, right, count, G1,
+                      0.1, 1, fallbacks], device=dev)
+    assert int(fallbacks.numpy()[0]) == 1  # exactly the vertical gate
+    fwd0 = forward.numpy()[0]
+    np.testing.assert_allclose(fwd0, [1.0, 0.0, 0.0], atol=1e-6)  # +x fallback
+
+
+def test_frame_fallback_counter_zero_on_planar_generation():
+    # A full end-to-end planar generation (default flat z_profile) never
+    # produces a near-vertical tangent, so the fallback must never engage.
+    g, _, _ = _gen(gate_align="full_tangent")
+    assert int(g.frame_fallbacks.numpy().sum()) == 0
