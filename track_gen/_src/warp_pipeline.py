@@ -14,6 +14,7 @@ from __future__ import annotations
 import math
 
 from . import warp_relax  # pure-Warp XPBD setup + solve (cpu+cuda); part of the pure-Warp impl
+from . import warp_zprofile  # pluggable per-point altitude (Z) profiles for the 2.5D lift
 # _separation_band is defined in warp_relax (relaxation owns the band definition); it is
 # imported into this module's namespace so the _validity_k kernel can resolve the @wp.func.
 from .warp_relax import _separation_band  # noqa: F401  (used inside _validity_k)
@@ -634,6 +635,8 @@ def _validity_k(
     turning_tol: float,
     w_floor: float,
     relax_tol: float,
+    z: wp.array(dtype=wp.float32),
+    z_valid_grade: float,
     out: wp.array(dtype=wp.int32),
 ):
     # One thread per env e. Fuses inflation._validity_stage entirely in-kernel:
@@ -683,12 +686,30 @@ def _validity_k(
         if cross != 0:
             border_ok = int(0)
 
+    # --- grade gate (2.5D): reject any segment whose vertical rise over plan-view
+    # run exceeds z_valid_grade. Skipped entirely when z_valid_grade <= 0 (flat
+    # default) so z is read only when a grade cap is configured. z here is the
+    # per-point altitude the profiler wrote; center is the 2D plan-view polyline. ---
+    grade_ok = int(1)
+    if z_valid_grade > 0.0:
+        for i in range(cnt):
+            j = i + 1
+            if j == cnt:
+                j = 0
+            a = center[base + i]
+            b = center[base + j]
+            dx = b[0] - a[0]
+            dy = b[1] - a[1]
+            dxy = wp.sqrt(dx * dx + dy * dy)
+            if wp.abs(z[base + j] - z[base + i]) > z_valid_grade * wp.max(dxy, 1.0e-9):
+                grade_ok = int(0)
+
     # --- generation flag ---
     gv = int(0)
     if gen_valid[e] != 0:
         gv = int(1)
 
-    out[e] = gv & turn_ok & w_ok & no_nan & th_ok & border_ok
+    out[e] = gv & turn_ok & w_ok & no_nan & th_ok & border_ok & grade_ok
 
 @wp.kernel
 def _arclength_k(
@@ -943,7 +964,7 @@ def _run_pipeline(
     # count) off the composite scratch.
     return inflate_warp(
         relax_out, config, out=out, valid=scratch.gen_valid,
-        count=scratch.count, scratch=scratch,
+        count=scratch.count, scratch=scratch, seeds=seed_buf_wp,
     )
 
 
@@ -1129,6 +1150,7 @@ def validity_inplace(
     inner_wp: "wp.array",
     has_border: int,
     n_max: int,
+    z_wp: "wp.array",
     out_valid: "wp.array",
     config,
 ) -> None:
@@ -1146,8 +1168,11 @@ def validity_inplace(
         inner_wp:     [E*n_max] vec2f inner border (flat); ignored when has_border==0.
         has_border:   int flag (1 -> run border self-intersection check, 0 -> skip).
         n_max:        int stride per env in the flat arrays.
+        z_wp:         [E*n_max] float32 per-point altitude (flat); read only when
+                      config.z_valid_grade > 0 (the grade gate), else ignored.
         out_valid:    [E] int32 wp.array to write into (e.g. out.valid).
-        config:       TrackGenConfig (uses half_width, turning_tol, w_floor, relax_tol).
+        config:       TrackGenConfig (uses half_width, turning_tol, w_floor, relax_tol,
+                      z_valid_grade).
     """
     _init()
     E = count_wp.shape[0]
@@ -1158,6 +1183,7 @@ def validity_inplace(
             int(has_border), int(n_max),
             float(config.half_width), float(config.turning_tol),
             float(config.w_floor), float(config.relax_tol),
+            z_wp, float(config.z_valid_grade),
             out_valid,
         ],
         device=str(out_valid.device),
@@ -1340,10 +1366,15 @@ class InflateScratch:
                    kernels write; the final lift kernel copies them into the
                    public vec3f Track buffers with z = 0. None only on legacy
                    constructions that never reach inflate_warp.
+    z:             [E*N_max] float32 per-point altitude scratch for the 2.5D
+                   elevation stage (written by warp_zprofile.apply_z_profile on
+                   the non-flat path; zero-filled at alloc so the flat path and
+                   the grade-validity check read zeros). None on legacy
+                   constructions that never reach inflate_warp.
     """
 
     __slots__ = ("area_a", "area_b", "kappa", "w",
-                 "out2", "ctr2", "inn2", "tan2", "nrm2")
+                 "out2", "ctr2", "inn2", "tan2", "nrm2", "z")
 
     def __init__(
         self,
@@ -1356,6 +1387,7 @@ class InflateScratch:
         inn2: "wp.array | None" = None,
         tan2: "wp.array | None" = None,
         nrm2: "wp.array | None" = None,
+        z: "wp.array | None" = None,
     ) -> None:
         self.area_a = area_a
         self.area_b = area_b
@@ -1366,6 +1398,7 @@ class InflateScratch:
         self.inn2 = inn2
         self.tan2 = tan2
         self.nrm2 = nrm2
+        self.z = z
 
 
 class _Scratch:
@@ -1530,6 +1563,8 @@ def _inflate_warp_alloc(config, generator_spec=None):
         inn2=wp.empty(flat, dtype=wp.vec2f, device=dev),
         tan2=wp.empty(flat, dtype=wp.vec2f, device=dev),
         nrm2=wp.empty(flat, dtype=wp.vec2f, device=dev),
+        # Zero-filled: the flat path never writes z (grade check reads zeros).
+        z=wp.zeros(flat, dtype=wp.float32, device=dev),
     )
     scratch = _Scratch(
         inflate=inflate, generator_spec=generator_spec, gen=gen, relax=relax,
@@ -1553,31 +1588,96 @@ def _lift_track_k(
     out2: wp.array(dtype=wp.vec2f), ctr2: wp.array(dtype=wp.vec2f),
     inn2: wp.array(dtype=wp.vec2f), tan2: wp.array(dtype=wp.vec2f),
     nrm2: wp.array(dtype=wp.vec2f),
+    z_base: float,
     outer: wp.array(dtype=wp.vec3f), center: wp.array(dtype=wp.vec3f),
     inner: wp.array(dtype=wp.vec3f), tangent: wp.array(dtype=wp.vec3f),
     normal: wp.array(dtype=wp.vec3f),
 ):
+    # Flat (constant-altitude) lift: every point gets the same z_base. Only
+    # positions carry z; tangent/normal z stays 0.0. With z_base=0.0 (the flat
+    # default) this writes 0.0 -> bit-identical to the legacy path.
     t = wp.tid()
-    outer[t] = wp.vec3f(out2[t][0], out2[t][1], 0.0)
-    center[t] = wp.vec3f(ctr2[t][0], ctr2[t][1], 0.0)
-    inner[t] = wp.vec3f(inn2[t][0], inn2[t][1], 0.0)
+    outer[t] = wp.vec3f(out2[t][0], out2[t][1], z_base)
+    center[t] = wp.vec3f(ctr2[t][0], ctr2[t][1], z_base)
+    inner[t] = wp.vec3f(inn2[t][0], inn2[t][1], z_base)
     tangent[t] = wp.vec3f(tan2[t][0], tan2[t][1], 0.0)
     normal[t] = wp.vec3f(nrm2[t][0], nrm2[t][1], 0.0)
+
+
+@wp.kernel
+def _lift_track_zvar_k(
+    out2: wp.array(dtype=wp.vec2f), ctr2: wp.array(dtype=wp.vec2f),
+    inn2: wp.array(dtype=wp.vec2f), nrm2: wp.array(dtype=wp.vec2f),
+    z: wp.array(dtype=wp.float32),
+    outer: wp.array(dtype=wp.vec3f), center: wp.array(dtype=wp.vec3f),
+    inner: wp.array(dtype=wp.vec3f), normal: wp.array(dtype=wp.vec3f),
+):
+    # Level cross-sections: all three polylines share the centerline z.
+    # tangent is NOT written here -- _track_frames3_k recomputes it in 3D.
+    t = wp.tid()
+    zt = z[t]
+    outer[t] = wp.vec3f(out2[t][0], out2[t][1], zt)
+    center[t] = wp.vec3f(ctr2[t][0], ctr2[t][1], zt)
+    inner[t] = wp.vec3f(inn2[t][0], inn2[t][1], zt)
+    normal[t] = wp.vec3f(nrm2[t][0], nrm2[t][1], 0.0)
+
+
+@wp.kernel
+def _track_frames3_k(
+    center: wp.array(dtype=wp.vec3f),
+    count: wp.array(dtype=wp.int32),
+    n_max: int,
+    tangent: wp.array(dtype=wp.vec3f),
+    arclen: wp.array(dtype=wp.float32),
+    length: wp.array(dtype=wp.float32),
+):
+    # Per-env serial recompute of tangent (3D central diff) + true 3D arc
+    # length. Same work distribution as checkpoints/props per-env scans.
+    e = wp.tid()
+    base = e * n_max
+    m = count[e]
+    if m > n_max:
+        m = n_max
+    if m < 3:
+        return  # degenerate: legacy buffers stay as lifted; valid[e]==0 anyway
+    acc = float(0.0)
+    for i in range(m):
+        if i > 0:
+            acc = acc + wp.length(center[base + i] - center[base + i - 1])
+        arclen[base + i] = acc
+        prev = ((i - 1) % m + m) % m
+        nxt = (i + 1) % m
+        d = center[base + nxt] - center[base + prev]
+        l = wp.length(d)
+        if l > 1.0e-12:
+            tangent[base + i] = d / l
+        else:
+            tangent[base + i] = wp.vec3f(0.0, 0.0, 0.0)
+    length[e] = acc + wp.length(center[base] - center[base + m - 1])
 
 
 def inflate_warp(center, config, out=None,
                  valid: "wp.array | None" = None,
                  count: "wp.array | None" = None,
-                 scratch: "_Scratch | None" = None):
-    """Pure-Warp inflation: resample -> frame -> offset -> validity -> arclength.
+                 scratch: "_Scratch | None" = None,
+                 seeds: "wp.array | None" = None):
+    """Pure-Warp inflation: resample -> frame -> offset -> z-profile -> validity -> lift.
 
     Writes results into out's wp.array Track buffers (or allocates a fresh Track).
     All inputs are wp.arrays; center is a flat [E*n_max] vec2f wp.array.
 
     The 2D stages operate on the vec2f staging buffers (scratch.inflate.ctr2/
     tan2/nrm2/out2/inn2); a final lift kernel copies them into the public vec3f
-    Track buffers with z = 0.
-    Scratch (area_a/area_b/kappa/w + staging) is passed in via scratch (zero
+    Track buffers. On the flat default (``config.z_profile == "flat"``) the lift
+    writes a constant z (``config.z_base``, 0.0 by default) and the arclen/length/
+    tangent tables stay the byte-identical 2D values from stages 1-5. On a non-flat
+    profile the per-point altitude ``scratch.inflate.z`` is filled by
+    ``warp_zprofile.apply_z_profile`` (from the 2D ``(cum, perim)`` tables still in
+    out.arclen/out.length), the three polylines are lifted level to that z, and
+    ``_track_frames3_k`` recomputes the tangent + true 3D arclen/length (overwriting
+    the 2D tables). A non-flat profile REQUIRES ``seeds`` (the standalone path is
+    flat-only otherwise).
+    Scratch (area_a/area_b/kappa/w/z + staging) is passed in via scratch (zero
     allocation on owned path) or allocated here (the out=None / standalone path).
 
     Constant-spacing path (count provided — the pipeline always uses this):
@@ -1595,13 +1695,28 @@ def inflate_warp(center, config, out=None,
         valid:    [E] int32 wp.array generation flag. Defaults to all-1 when None.
         count:    [E] int32 wp.array real point count. None -> fixed-N path.
         scratch:  Optional _Scratch. Required when out is provided (owned path).
+        seeds:    [E] int32 wp.array per-env base seeds for the z profiler. Required
+                  when config.z_profile != "flat"; ignored on the flat path.
 
     Returns:
         track_gen.types.Track with wp.array fields.
+
+    Raises:
+        ValueError: if config.z_profile != "flat" and seeds is None (the standalone
+            inflate path is flat-only unless seeds are provided).
     """
     from .types import Track  # local import: keep warp_pipeline free of oracle modules
 
     _init()
+
+    # A non-flat elevation profile needs per-env seeds to drive the profiler; the
+    # standalone inflate path (seeds omitted) supports only the flat profile.
+    _z_profile = str(getattr(config, "z_profile", "flat"))
+    if _z_profile != "flat" and seeds is None:
+        raise ValueError(
+            "z_profile != 'flat' requires seeds= (the standalone inflate path is "
+            "flat-only otherwise)"
+        )
 
     # --- Resolve E, n_max, dev from wp.array center ---
     if count is not None:
@@ -1649,6 +1764,7 @@ def inflate_warp(center, config, out=None,
                     inn2=wp.empty(flat, dtype=wp.vec2f, device=dev),
                     tan2=wp.empty(flat, dtype=wp.vec2f, device=dev),
                     nrm2=wp.empty(flat, dtype=wp.vec2f, device=dev),
+                    z=wp.zeros(flat, dtype=wp.float32, device=dev),
                 ),
             )
     else:
@@ -1667,6 +1783,8 @@ def inflate_warp(center, config, out=None,
         stag.inn2 = wp.empty(flat, dtype=wp.vec2f, device=dev)
         stag.tan2 = wp.empty(flat, dtype=wp.vec2f, device=dev)
         stag.nrm2 = wp.empty(flat, dtype=wp.vec2f, device=dev)
+    if stag.z is None:
+        stag.z = wp.zeros(flat, dtype=wp.float32, device=dev)
 
     # --- Allocate resample scan scratch (seg/s) from _Scratch or standalone ---
     if scratch.cs_seg is not None and scratch.cs_s is not None:
@@ -1724,6 +1842,17 @@ def inflate_warp(center, config, out=None,
     offset(stag.ctr2, stag.nrm2, hw, stag.out2, stag.inn2,
            scratch.area_a, scratch.area_b, cnt_wp)
 
+    # 4b. Elevation (2.5D): fill the per-point altitude from the configured profile.
+    # CRITICAL ordering: out.arclen/out.length still hold the 2D (cum, perim) tables
+    # from stage 3 here — the profiler consumes them as its plan-view arc
+    # parameterization, BEFORE _track_frames3_k (stage 6, non-flat) overwrites them
+    # with 3D values. Skipped on the flat path (scratch.z stays zero-filled), which
+    # keeps the arclen/length/tangent tables byte-identical to the legacy 2D path.
+    _is_flat = _z_profile == "flat"
+    if not _is_flat:
+        warp_zprofile.apply_z_profile(
+            config, seeds, cnt_wp, n_max, out.arclen, out.length, stag.z)
+
     # 5. per-track validity gate (in-place: writes directly into out.valid).
     if valid is not None:
         gv_wp = valid  # wp.int32 array
@@ -1736,16 +1865,35 @@ def inflate_warp(center, config, out=None,
     _bc = getattr(config, "validity_border_check", False)
     has_border = 1 if _bc else 0
 
-    # validity_inplace writes into out.valid directly.
+    # validity_inplace writes into out.valid directly. scratch.z drives the grade
+    # gate; on the flat path z is zero-filled and z_valid_grade defaults to 0 -> the
+    # grade branch is a no-op and validity is byte-identical to the legacy path.
     validity_inplace(stag.ctr2, scratch.w, cnt_wp, gv_wp,
-                     stag.out2, stag.inn2, has_border, n_max, out.valid, config)
+                     stag.out2, stag.inn2, has_border, n_max, stag.z,
+                     out.valid, config)
 
-    # 6. Lift the vec2f staging buffers into the public vec3f Track arrays
-    # (z = 0; NaN xy padding lifts to NaN-xy with z = 0).
-    wp.launch(_lift_track_k, dim=flat,
-              inputs=[stag.out2, stag.ctr2, stag.inn2, stag.tan2, stag.nrm2,
-                      out.outer, out.center, out.inner, out.tangent, out.normal],
-              device=dev)
+    # 6. Lift the vec2f staging buffers into the public vec3f Track arrays.
+    if _is_flat:
+        # Flat: constant z = z_base (0.0 by default). arclen/length/tangent keep the
+        # 2D values from stages 2-3 (a constant z-offset changes neither). NaN xy
+        # padding lifts to NaN-xy.
+        wp.launch(_lift_track_k, dim=flat,
+                  inputs=[stag.out2, stag.ctr2, stag.inn2, stag.tan2, stag.nrm2,
+                          float(config.z_base),
+                          out.outer, out.center, out.inner, out.tangent,
+                          out.normal],
+                  device=dev)
+    else:
+        # Non-flat: level cross-sections share the per-point centerline z, then
+        # recompute tangent + true 3D arclen/length (overwriting the 2D tables).
+        wp.launch(_lift_track_zvar_k, dim=flat,
+                  inputs=[stag.out2, stag.ctr2, stag.inn2, stag.nrm2, stag.z,
+                          out.outer, out.center, out.inner, out.normal],
+                  device=dev)
+        wp.launch(_track_frames3_k, dim=E,
+                  inputs=[out.center, cnt_wp, n_max,
+                          out.tangent, out.arclen, out.length],
+                  device=dev)
     _sync(dev)
 
     return out

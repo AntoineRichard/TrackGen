@@ -184,7 +184,9 @@ def validity(center, w, count, gen_valid, config, outer=None, inner=None):
         ob = wp.from_torch(outer.reshape(flat, 2).contiguous(), dtype=wp.vec2f)
         ib = wp.from_torch(inner.reshape(flat, 2).contiguous(), dtype=wp.vec2f)
     out_wp = wp.empty(E, dtype=wp.int32, device=dev)
-    wpl.validity_inplace(cf, wf, cnt_wp, gv_wp, ob, ib, has_border, N, out_wp, config)
+    # z scratch: unused unless config.z_valid_grade > 0 (the grade gate); zero-filled.
+    z_wp = wp.zeros(flat, dtype=wp.float32, device=dev)
+    wpl.validity_inplace(cf, wf, cnt_wp, gv_wp, ob, ib, has_border, N, z_wp, out_wp, config)
     return wp.to_torch(out_wp).bool()
 
 
