@@ -28,8 +28,9 @@ _CAPTURING = False
 # capture, replay, or plain kernel launch from another thread lands on that same stream
 # and corrupts the recording (CUDA errors 401/900, or an async illegal-memory-access 700
 # that poisons the context). The _CAPTURING flags above are also only mutated while this
-# lock is held, which makes their save/restore idiom thread-safe. CPU paths never take
-# the lock (nothing to protect; eager execution).
+# lock is held, which makes their save/restore idiom thread-safe. CPU paths have nothing
+# to protect (eager execution); Course.generate() still takes the lock uniformly there —
+# uncontended, harmless.
 _CAPTURE_LOCK = threading.Lock()
 
 

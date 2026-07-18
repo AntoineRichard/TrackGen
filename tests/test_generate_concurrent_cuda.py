@@ -182,7 +182,11 @@ def test_concurrent_gates_3d_fresh_construction() -> None:
     replay) is safe under concurrent calls; construction and step()-time
     work are explicitly OUT of contract and may still race a peer's
     capture window (e.g. an unlocked construction-time or step-time
-    ``wp.synchronize()`` landing inside a peer's Graph A capture). Two
+    ``wp.synchronize()`` landing inside a peer's Graph A capture) — the
+    generators' capture flags are module-local (``warp_gate._CAPTURING`` /
+    ``warp_pipeline._CAPTURING``), so other modules' ``_sync`` guards
+    (which read ``runtime._CAPTURING``) do not engage during a peer's
+    Graph A capture. Two
     ``threading.Barrier(2)`` waits pin this test to the contract: one
     after construction (so unlocked construction-time device work never
     overlaps a peer's capture), and one after generate() (so unlocked

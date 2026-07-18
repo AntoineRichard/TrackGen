@@ -476,6 +476,8 @@ class Course:
                 self._refresh()  # eager: cpu every-call path is below; on cuda
                                   # this is call 1 of 3 (see capture block)
         elif self._refresh_graph is not None:
+            # Replay under the lock: launching a graph into a stream another thread
+            # is capturing is illegal (CUDA error 900).
             with runtime._CAPTURE_LOCK:
                 wp.capture_launch(self._refresh_graph)
                 wp.synchronize()
