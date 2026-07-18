@@ -1371,10 +1371,18 @@ class InflateScratch:
                    the non-flat path; zero-filled at alloc so the flat path and
                    the grade-validity check read zeros). None on legacy
                    constructions that never reach inflate_warp.
+    knot_cum/knot_count/knot_z: knot-stage scratch for the knot-based elevation
+                   profiles ("uniform"/"random_walk"), from
+                   warp_zprofile.alloc_knot_scratch: knot_cum/knot_z are
+                   [E*z_control_points] float32 (knot arc positions and knot
+                   altitudes), knot_count is [E] int32. None on the flat/noise
+                   paths and on legacy constructions that never reach
+                   inflate_warp.
     """
 
     __slots__ = ("area_a", "area_b", "kappa", "w",
-                 "out2", "ctr2", "inn2", "tan2", "nrm2", "z")
+                 "out2", "ctr2", "inn2", "tan2", "nrm2", "z",
+                 "knot_cum", "knot_count", "knot_z")
 
     def __init__(
         self,
@@ -1388,6 +1396,9 @@ class InflateScratch:
         tan2: "wp.array | None" = None,
         nrm2: "wp.array | None" = None,
         z: "wp.array | None" = None,
+        knot_cum: "wp.array | None" = None,
+        knot_count: "wp.array | None" = None,
+        knot_z: "wp.array | None" = None,
     ) -> None:
         self.area_a = area_a
         self.area_b = area_b
@@ -1399,6 +1410,9 @@ class InflateScratch:
         self.tan2 = tan2
         self.nrm2 = nrm2
         self.z = z
+        self.knot_cum = knot_cum
+        self.knot_count = knot_count
+        self.knot_z = knot_z
 
 
 class _Scratch:
@@ -1479,6 +1493,19 @@ class _Scratch:
                 return getattr(group, name)
         raise AttributeError(
             f"{type(self).__name__!r} object has no attribute {name!r}")
+
+
+def _fill_knot_scratch(stag, config, num_envs, device) -> None:
+    """Attach knot-stage scratch to ``stag`` when the profile is knot-based.
+
+    Construction-time only (config-static branch): the knot buffers must exist
+    before capture so the stage-4b dispatch stays allocation-free. A no-op for
+    the "flat"/"noise" profiles, which never touch the knot stage.
+    """
+    if str(getattr(config, "z_profile", "flat")) in ("uniform", "random_walk"):
+        stag.knot_cum, stag.knot_count, stag.knot_z = \
+            warp_zprofile.alloc_knot_scratch(
+                num_envs, int(config.z_control_points), device)
 
 
 def _inflate_warp_alloc(config, generator_spec=None):
@@ -1566,6 +1593,7 @@ def _inflate_warp_alloc(config, generator_spec=None):
         # Zero-filled: the flat path never writes z (grade check reads zeros).
         z=wp.zeros(flat, dtype=wp.float32, device=dev),
     )
+    _fill_knot_scratch(inflate, config, E, dev)
     scratch = _Scratch(
         inflate=inflate, generator_spec=generator_spec, gen=gen, relax=relax,
         # orchestrator-owned generation output buffers
@@ -1797,6 +1825,8 @@ def inflate_warp(center, config, out=None,
         stag.nrm2 = wp.empty(flat, dtype=wp.vec2f, device=dev)
     if stag.z is None:
         stag.z = wp.zeros(flat, dtype=wp.float32, device=dev)
+    if stag.knot_cum is None:
+        _fill_knot_scratch(stag, config, E, dev)
 
     # --- Allocate resample scan scratch (seg/s) from _Scratch or standalone ---
     if scratch.cs_seg is not None and scratch.cs_s is not None:
@@ -1860,8 +1890,17 @@ def inflate_warp(center, config, out=None,
     # parameterization, BEFORE _track_frames3_k (stage 6, non-flat) overwrites them
     # with 3D values. Skipped on the flat path (scratch.z stays zero-filled), which
     # keeps the arclen/length/tangent tables byte-identical to the legacy 2D path.
+    #
+    # uniform/random_walk decide altitude at z_control_points arc-spaced KNOTS and
+    # interpolate with a periodic monotone cubic, so smoothness is set by the knot
+    # count rather than the resampled point count. noise is analytically smooth
+    # already (its harmonics band-limit it), so it stays per-point.
     _is_flat = _z_profile == "flat"
-    if not _is_flat:
+    if _z_profile in ("uniform", "random_walk"):
+        warp_zprofile.apply_z_profile_knots(
+            config, seeds, cnt_wp, n_max, out.arclen, out.length,
+            stag.knot_cum, stag.knot_count, stag.knot_z, stag.z)
+    elif not _is_flat:
         warp_zprofile.apply_z_profile(
             config, seeds, cnt_wp, n_max, out.arclen, out.length, stag.z)
 

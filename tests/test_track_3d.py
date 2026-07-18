@@ -137,3 +137,94 @@ def test_track_frames3_padding_is_nan_and_degenerate_row_zeroed():
     arc1 = out.arclen.numpy().reshape(E2, N)[1]
     assert np.isnan(tan1).all()
     assert np.isnan(arc1).all()
+
+
+def _turns(z):
+    """Number of direction changes in an elevation series."""
+    return int(np.sum(np.diff(np.sign(np.diff(z))) != 0))
+
+
+def test_smoothness_is_independent_of_resample_density():
+    """THE regression gate. Elevation direction changes must track
+    z_control_points, not the resampled point count: doubling the density
+    must not roughly double the bumps (which is what per-point profiling did).
+    """
+    counts, turns = [], []
+    # 0.035 is about the finest feasible spacing at the default half_width=0.1:
+    # below it the thickness gate rejects every track (flat profile included, so
+    # this is a plan-view constraint, nothing to do with elevation). It still
+    # gives ~1.7x the point count of 0.06, which is the density contrast the
+    # assertions below need.
+    for spacing in (0.06, 0.035):
+        cfg = TrackGenConfig(device="cpu", num_envs=E, spacing=spacing,
+                             z_profile="random_walk", z_base=1.0, z_min=0.2,
+                             z_max=2.0, z_max_step=0.3, z_control_points=8)
+        rng = PerEnvSeededRNG(seeds=1234, num_envs=E, device="cpu")
+        track = TrackGenerator(cfg, rng).generate()
+        e = int(np.flatnonzero(track.valid.numpy())[0])
+        n_max = track.center.shape[0] // E
+        m = int(track.count.numpy()[e])
+        z = track.center.numpy().reshape(E, n_max, 3)[e, :m, 2]
+        counts.append(m)
+        turns.append(_turns(z))
+    assert counts[1] > 1.5 * counts[0], f"densities not distinct: {counts}"
+    assert turns[0] <= 8 and turns[1] <= 8, f"too many turns: {turns}"
+    assert abs(turns[1] - turns[0]) <= 2, f"turns track density: {turns}"
+
+
+def test_uniform_profile_is_smooth_not_jitter():
+    cfg = TrackGenConfig(device="cpu", num_envs=E, z_profile="uniform",
+                         z_min=0.5, z_max=1.5, z_control_points=10)
+    rng = PerEnvSeededRNG(seeds=1234, num_envs=E, device="cpu")
+    track = TrackGenerator(cfg, rng).generate()
+    n_max = track.center.shape[0] // E
+    for e in np.flatnonzero(track.valid.numpy()):
+        m = int(track.count.numpy()[e])
+        z = track.center.numpy().reshape(E, n_max, 3)[e, :m, 2]
+        assert (z >= 0.5 - 1e-5).all() and (z <= 1.5 + 1e-5).all()
+        assert _turns(z) <= 10, f"env {e}: {_turns(z)} turns"
+        assert z.std() > 0.0
+
+
+def test_xpbd_solves_in_2d_elevation_applies_after():
+    """INVARIANT: relaxation runs before elevation exists, so the plan-view
+    geometry must be bit-identical between a flat and a hilly config."""
+    def gen(**kw):
+        cfg = TrackGenConfig(device="cpu", num_envs=E, **kw)
+        rng = PerEnvSeededRNG(seeds=99, num_envs=E, device="cpu")
+        return TrackGenerator(cfg, rng).generate()
+
+    flat = gen()
+    hilly = gen(z_profile="random_walk", z_base=1.0, z_min=0.2, z_max=2.0,
+                z_max_step=0.3)
+    np.testing.assert_array_equal(flat.count.numpy(), hilly.count.numpy())
+    np.testing.assert_array_equal(flat.valid.numpy(), hilly.valid.numpy())
+    for name in ("center", "outer", "inner"):
+        a = getattr(flat, name).numpy()[:, :2]
+        b = getattr(hilly, name).numpy()[:, :2]
+        np.testing.assert_array_equal(a, b, err_msg=f"{name} xy moved")
+    assert getattr(hilly, "center").numpy()[:, 2].std() > 0.0  # z really varies
+
+
+def test_no_overshoot_beyond_extremes():
+    cfg = TrackGenConfig(device="cpu", num_envs=E, z_profile="random_walk",
+                         z_base=1.0, z_min=0.6, z_max=1.4, z_max_step=0.4,
+                         z_control_points=6)
+    rng = PerEnvSeededRNG(seeds=7, num_envs=E, device="cpu")
+    track = TrackGenerator(cfg, rng).generate()
+    n_max = track.center.shape[0] // E
+    for e in np.flatnonzero(track.valid.numpy()):
+        m = int(track.count.numpy()[e])
+        z = track.center.numpy().reshape(E, n_max, 3)[e, :m, 2]
+        assert z.max() <= 1.4 + 1e-5 and z.min() >= 0.6 - 1e-5
+
+
+def test_noise_profile_unchanged_by_control_points():
+    """noise stays analytic per-point: z_control_points must not affect it."""
+    def gen(K):
+        cfg = TrackGenConfig(device="cpu", num_envs=E, z_profile="noise",
+                             z_base=1.0, z_noise_amplitude=0.4, z_min=0.0,
+                             z_max=2.0, z_control_points=K)
+        rng = PerEnvSeededRNG(seeds=21, num_envs=E, device="cpu")
+        return TrackGenerator(cfg, rng).generate().center.numpy()[:, 2]
+    np.testing.assert_array_equal(gen(4), gen(20))

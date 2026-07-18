@@ -346,6 +346,10 @@ def apply_z_profile_knots(config, seeds_wp: wp.array, count: wp.array,
 
     Intended for ``z_profile`` in ``{"uniform", "random_walk"}``; ``"noise"``
     is analytically smooth and should call :func:`apply_z_profile` directly.
+
+    Reads ``config.z_control_points``, so ``config`` must be a
+    :class:`TrackGenConfig`; a ``GateGenConfig`` caller raises a bare
+    ``AttributeError``.
     """
     E = int(config.num_envs)
     K = int(config.z_control_points)
