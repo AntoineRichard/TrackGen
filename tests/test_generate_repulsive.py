@@ -402,21 +402,30 @@ def _grow(seeds: list[int], dev: str = "cpu"):
             gen._scratch.gen.frozen.numpy(), track.valid.numpy())
 
 
-def test_repulsive_freeze_is_absorbing_and_batch_independent():
+@pytest.mark.parametrize("dev", DEVS)
+def test_repulsive_freeze_is_absorbing_and_batch_independent(dev):
     """A frozen env is never touched again, so each env's track depends only on its own
     seed, not on which other envs share the batch.
 
-    Seeds 6..10 all freeze early; seed 5 does not. Before the freeze was absorbing, a
-    batch of only 6..10 stopped at the all-frozen early exit while the batch 3..10 kept
-    resampling its frozen envs until the iteration budget ran out, so the same seed
-    produced different tracks in the two batches. DELIBERATE OUTPUT CHANGE: envs that
+    The big batch needs one env that never freezes (which seeds stay unfrozen is
+    device- and platform-dependent fp32 behaviour, so it is discovered, not hard-coded).
+    The small batch reruns five envs that froze in the big batch. Before the freeze was
+    absorbing, the all-frozen small batch stopped at the global early exit while the big
+    batch kept resampling its frozen envs until the iteration budget ran out, so the same
+    seed produced different tracks in the two batches. DELIBERATE OUTPUT CHANGE: envs that
     froze before the end of the loop now keep their at-freeze shape (they skip the later
     periodic resamples), so their tracks differ slightly from earlier releases; envs that
     never freeze are byte-identical.
     """
-    small_c, small_frozen, small_valid = _grow([6, 7, 8, 9, 10])
-    big_c, big_frozen, big_valid = _grow(list(range(3, 11)))
-    assert small_frozen.all(), "precondition: every env in the small batch freezes"
-    assert not big_frozen.all(), "precondition: the big batch has a never-frozen env"
-    assert np.array_equal(small_c, big_c[3:])
-    assert np.array_equal(small_valid, big_valid[3:])
+    big_seeds = list(range(24))
+    big_c, big_frozen, big_valid = _grow(big_seeds, dev)
+    if big_frozen.all():
+        pytest.skip(f"every env froze on {dev}; nothing keeps the big batch running")
+    rows = np.flatnonzero(big_frozen)[:5]
+    if rows.size < 5:
+        pytest.skip(f"fewer than five envs froze on {dev}")
+
+    small_c, small_frozen, small_valid = _grow([big_seeds[i] for i in rows], dev)
+    assert small_frozen.all(), "freeze decisions must not depend on the batch"
+    assert np.array_equal(small_c, big_c[rows])
+    assert np.array_equal(small_valid, big_valid[rows])
