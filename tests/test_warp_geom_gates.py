@@ -2,7 +2,7 @@ import math, pytest, torch
 pytest.importorskip("warp")
 from tests._oracle import geometry
 from tests._warp_compare import self_intersections, thickness
-DEVS = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
+from tests.conftest import DEVS  # noqa: E402
 
 def _circle(n=256,r=2.0,dev="cpu"):
     t=torch.linspace(0,2*math.pi,n+1,device=dev)[:-1]

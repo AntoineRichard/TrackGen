@@ -14,7 +14,7 @@ pytest.importorskip("warp")
 from tests._warp_compare import corner_sample, _corner_sample_raw
 from track_gen._src.types import TrackGenConfig
 
-DEVS = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
+from tests.conftest import DEVS  # noqa: E402
 
 
 def _bounds(config):

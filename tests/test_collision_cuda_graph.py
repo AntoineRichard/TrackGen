@@ -8,12 +8,8 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-import torch
 
-pytestmark = [
-    pytest.mark.cuda,
-    pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda"),
-]
+pytestmark = pytest.mark.cuda
 
 import warp as wp  # noqa: E402
 from tests._collision_fixtures import make_annulus_track, make_boxes  # noqa: E402

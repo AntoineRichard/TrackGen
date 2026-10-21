@@ -9,7 +9,7 @@ wp.init()
 from track_gen._src import warp_pipeline as wpl
 from tests._oracle.relaxation import _resample_uniform
 
-DEVS = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
+from tests.conftest import DEVS  # noqa: E402
 
 
 def _call_resample_uniform(center: torch.Tensor, n: int,

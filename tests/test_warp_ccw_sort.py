@@ -3,7 +3,7 @@ pytest.importorskip("warp")
 from tests._oracle import geometry
 from tests._warp_compare import ccw_sort
 
-DEVS = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
+from tests.conftest import DEVS  # noqa: E402
 
 
 def _scrambled_env(P, cx, cy, r, scramble, dev):

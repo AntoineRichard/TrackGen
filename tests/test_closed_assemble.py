@@ -23,7 +23,7 @@ from tests._warp_compare import (
     arc_length_resample_warp, self_intersections,
 )
 
-DEVS = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
+from tests.conftest import DEVS  # noqa: E402
 
 
 def _fixed_corners(P: int, device) -> torch.Tensor:

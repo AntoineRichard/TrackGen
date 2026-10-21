@@ -21,7 +21,7 @@ from track_gen._src.types import TrackGenConfig, Track
 from track_gen._src.track_generator import TrackGenerator
 from track_gen._src.rng_utils import PerEnvSeededRNG
 
-DEVS = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
+from tests.conftest import DEVS  # noqa: E402
 
 # The O(N^2)-per-bead XPBD relax is slow on the Warp CPU device at E=64,N=256
 # (tens of seconds). Keep the full E=64 on cuda; shrink E on cpu to stay fast.

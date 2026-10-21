@@ -21,12 +21,10 @@ from __future__ import annotations
 import threading
 
 import pytest
-import torch
 
 pytestmark = [
     pytest.mark.cuda,
     pytest.mark.slow,
-    pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda"),
 ]
 
 import warp as wp  # noqa: E402

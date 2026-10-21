@@ -18,7 +18,7 @@ from track_gen._src import warp_pipeline as wpl  # noqa: E402
 from track_gen._src.types import TrackGenConfig  # noqa: E402
 from tests._warp_compare import corner_count_sample, self_intersections  # noqa: E402
 
-DEVS = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
+from tests.conftest import DEVS  # noqa: E402
 
 
 @pytest.mark.parametrize("dev", DEVS)

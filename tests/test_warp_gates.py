@@ -22,7 +22,7 @@ from tests._oracle.generators import BezierCenterlineGenerator  # noqa: E402
 from tests._warp_compare import gates  # noqa: E402
 from track_gen._src.types import TrackGenConfig  # noqa: E402
 
-DEVS = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
+from tests.conftest import DEVS  # noqa: E402
 
 P = 8  # corners per env (config.max_num_points for this test)
 

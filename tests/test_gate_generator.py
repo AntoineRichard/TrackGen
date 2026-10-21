@@ -368,7 +368,6 @@ def test_gate_generator_sphere_solve_repairs_overlapping_native_points(monkeypat
 
 
 @pytest.mark.cuda
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda")
 @pytest.mark.parametrize("generator", ["bezier", "hull"])
 def test_point_family_gate_generators_cuda_capture_reuses_output(generator):
     E, G = 2, 32

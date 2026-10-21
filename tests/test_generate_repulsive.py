@@ -21,7 +21,7 @@ from track_gen._src.track_generator import Track, TrackGenerator  # noqa: E402
 from track_gen import PerEnvSeededRNG  # noqa: E402
 from tests._warp_compare import to_t  # noqa: E402
 
-DEVS = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
+from tests.conftest import DEVS  # noqa: E402
 
 # A deliberately small config keeps the O(N^2) host-driven optimizer fast enough to run
 # the structural contract on cpu; the default-config yield/compactness bar runs on cuda.
@@ -319,7 +319,7 @@ def test_repulsive_determinism_and_diversity(dev):
     assert not torch.allclose(a[both], c[both], atol=1e-3)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda")
+@pytest.mark.cuda
 def test_repulsive_default_yield_and_shape_cuda():
     """The spike's bar: ~64/64 through the standard tail at E=64 with default config.
 
