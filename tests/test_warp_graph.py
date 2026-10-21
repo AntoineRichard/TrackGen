@@ -1,9 +1,10 @@
 """CUDA-only: automatic CUDA graph capture in TrackGenerator.
 
-``TrackGenerator.generate()`` on a CUDA device captures the pure-Warp pipeline
-(generation -> resample -> relax -> inflate) into a ``wp.Graph`` on the first call via
-``wp.ScopedCapture``, then replays it on every subsequent call. Seeds are written into a
-pre-allocated seed buffer in place before each replay.
+``TrackGenerator.generate()`` on a CUDA device (outside any caller capture) captures the
+pure-Warp pipeline (seed refresh -> generation -> resample -> relax -> inflate) into its own
+``wp.Graph`` (``gen.graph``) on the first call, then replays it on every subsequent call.
+The seed refresh (rng seeds -> pre-allocated seed buffer) is part of the graph, so every
+replay reads the rng's CURRENT seeds.
 
 This test constructs a ``TrackGenerator`` on ``cuda:0``, calls ``generate()`` twice (the
 first captures, the second replays), and asserts:
@@ -123,6 +124,7 @@ def test_noncapturable_generators_excluded():
 @pytest.mark.parametrize("gen_name", _ALL_GENERATORS)
 def test_autocapture_replay_matches_eager(gen_name: str):
     """First generate() captures; second generate() replays; result == eager _run()."""
+    # (construction already ran one real eager pass; it never self-captures)
     E = 64
     cfg = _cfg(E, generator=gen_name)
 
@@ -135,10 +137,16 @@ def test_autocapture_replay_matches_eager(gen_name: str):
     gen._run()
     wp.synchronize()
     ref = _clone_track(gen._track)
+    # Poison the outputs: the replay below must rewrite every field.
+    for name in ref:
+        wp.to_torch(getattr(gen._track, name)).fill_(-7)
+    torch.cuda.synchronize()
 
     # First generate() call: captures the graph (internally), replays, returns self._track.
     # Seeds have not changed so results should match.
+    assert gen.graph is None
     track_a = gen.generate(E)
+    assert gen.graph is not None
     torch.cuda.synchronize()
 
     # track_a should equal the eager reference (same seeds, same pipeline).
@@ -210,13 +218,14 @@ def test_eager_path_unaffected():
 
 
 def test_captured_graph_reads_live_seed_buffer():
-    """Captured graph reads the live seed buffer, not a baked copy of the seeds.
+    """Captured graph reads the rng's live seeds, not a baked copy of them.
 
     Build an eager reference for seed-set B (rngB), capture genA with seed-set A,
-    then overwrite genA's seed buffer with seed-set B and replay.  If the graph
-    correctly reads the live buffer, genA's output after replay must match the
-    seed-B eager reference.  A bug that bakes seeds into the graph at capture time
-    would produce the seed-A result instead and cause this test to fail.
+    then reseed genA's rng IN PLACE with seed-set B and replay the captured graph
+    directly. The graph starts with the device copy rng seeds -> seed buffer, so
+    genA's output after the replay must match the seed-B eager reference. A bug that
+    bakes seeds into the graph at capture time (or keeps the seed refresh outside the
+    graph) would produce the seed-A result instead and fail this test.
     """
     E = 32
     cfg = _cfg(E)
@@ -232,12 +241,13 @@ def test_captured_graph_reads_live_seed_buffer():
     # Capture genA with seed-set A (different seeds).
     rngA = _make_rng(E, seed=111)
     genA = TrackGenerator(cfg, rngA)
-    genA.generate(E)  # first call: warms up + captures graph with seed-set A
+    genA.generate(E)  # first call: captures genA.graph with seed-set A
     torch.cuda.synchronize()
+    assert genA.graph is not None
 
-    # Overwrite genA's seed buffer with seed-set B and replay the captured graph.
-    wp.copy(genA._seed_buf, rngB.seeds_warp)
-    wp.capture_launch(genA._graph)
+    # Reseed genA's rng in place with seed-set B and replay the captured graph.
+    rngA.set_seeds_warp(rngB.seeds_warp, None)
+    wp.capture_launch(genA.graph)
     wp.synchronize()
 
     # genA's Track must now match the seed-B eager reference.

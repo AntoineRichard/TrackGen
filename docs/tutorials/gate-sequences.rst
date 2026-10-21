@@ -60,9 +60,11 @@ Generating the Gate Sequence
    tangent  = wp.to_torch(gates.tangent).view(E, config.max_gates, 3)
    valid    = wp.to_torch(gates.valid).bool()
 
-``GateGenerator`` pre-allocates all buffers in ``__init__``, exactly like
-``TrackGenerator``. On ``cuda``, the first ``generate()`` captures the pipeline
-into a ``wp.Graph``; subsequent calls replay it with updated seeds.
+``GateGenerator`` pre-allocates all buffers in ``__init__`` and runs the pipeline once
+there, exactly like ``TrackGenerator``. On ``cuda``, the first ``generate()`` captures the
+pipeline into a ``wp.Graph``; subsequent calls replay it with updated seeds. Called while
+you capture, ``generate()`` is recorded into your own graph instead (see
+:doc:`/tutorials/cuda-graph-in-a-sim`).
 
 Reading the Output Fields
 --------------------------
@@ -295,9 +297,10 @@ CUDA-graph composability
 
 ``step()`` and ``reset()`` are warp-native and never host-synchronize, so the
 whole step — gate progress update plus post-collision query — records into your
-own sim graph alongside the physics, with no flag to set. Keep writing into the
-SAME bound buffers after capture (rebinding leaves the captured graph reading the
-old pointers). See
+own sim graph alongside the physics, with no flag to set. ``course.regenerate()``
+records into the same graph too, so new gate courses and the steps that drive them can
+replay as one unit. Keep writing into the SAME bound buffers after capture (rebinding
+leaves the captured graph reading the old pointers). See
 :doc:`/tutorials/cuda-graph-in-a-sim` for the capture-and-replay pattern.
 
 Full Example

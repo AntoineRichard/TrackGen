@@ -26,11 +26,13 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import sys
+import threading
 from typing import Iterator, Sequence
 
 import warp as wp
 
 from .._src import runtime as _runtime
+from . import _compat
 
 __all__ = ["LaunchContext", "resolve_stream", "resolve", "is_capturing"]
 
@@ -38,8 +40,46 @@ _AMBIENT: contextvars.ContextVar["LaunchContext | None"] = contextvars.ContextVa
     "track_gen_launch_context", default=None)
 
 
-def _torch_capturing_stream(dev) -> "wp.Stream | None":
-    """torch's current stream on ``dev`` if torch is imported AND capturing there."""
+# One wp.Stream per torch stream handle that is neither Warp's current stream nor
+# the stream of an open Warp capture, kept for the life of the process (see
+# _torch_stream_as_warp). Bounded by the handles torch hands out: its per-device
+# stream pools and graph capture stream, plus any external streams.
+_TORCH_WRAPPERS: "dict[tuple[int, int], wp.Stream]" = {}
+_TORCH_WRAPPERS_LOCK = threading.Lock()
+
+
+def _torch_stream_as_warp(dev, torch_stream) -> "wp.Stream":
+    """A long-lived ``wp.Stream`` for ``torch_stream`` (never a throwaway wrapper).
+
+    ``wp.stream_from_torch`` registers the handle in Warp's native stream table,
+    and the wrapper unregisters it when it is garbage-collected. Unregistering is
+    not reference-counted: it erases the handle's capture state and cached event
+    for the whole process, and clears Warp's native current stream if it has that
+    handle. A wrapper created per call and dropped after it would therefore break
+    a Warp capture open on the same handle (``capture_end`` then fails with
+    "unknown capture stream") or leave Warp's current stream NULL. So reuse, in
+    order: Warp's current stream when it has the handle; the stream an open Warp
+    capture on ``dev`` was started on; otherwise one wrapper per handle cached for
+    the process (it holds the torch stream, so the handle is never recycled).
+    """
+    h = int(torch_stream.cuda_stream or 0)
+    cur = wp.get_stream(dev)
+    if int(cur.cuda_stream or 0) == h:
+        return cur
+    s = _compat.capture_stream(dev, h)
+    if s is not None:
+        return s
+    key = (int(dev.ordinal), h)
+    with _TORCH_WRAPPERS_LOCK:
+        s = _TORCH_WRAPPERS.get(key)
+        if s is None:
+            s = _TORCH_WRAPPERS[key] = wp.stream_from_torch(torch_stream)
+    return s
+
+
+def _torch_capturing(dev) -> "object | None":
+    """torch's current stream (a ``torch.cuda.Stream``) on ``dev`` if torch is
+    imported AND that stream is capturing in the calling thread; else ``None``."""
     torch = sys.modules.get("torch")
     if torch is None or not dev.is_cuda:
         return None
@@ -50,7 +90,19 @@ def _torch_capturing_stream(dev) -> "wp.Stream | None":
             return None
         if not torch.cuda.is_current_stream_capturing():
             return None
-        return wp.stream_from_torch(torch.cuda.current_stream(dev.ordinal))
+        return torch.cuda.current_stream(dev.ordinal)
+    except Exception:  # pragma: no cover - defensive: never let interop break a launch
+        return None
+
+
+def _torch_capturing_stream(dev) -> "wp.Stream | None":
+    """torch's current stream on ``dev`` as a ``wp.Stream``, if torch is imported
+    AND capturing there (see :func:`_torch_stream_as_warp`)."""
+    ts = _torch_capturing(dev)
+    if ts is None:
+        return None
+    try:
+        return _torch_stream_as_warp(dev, ts)
     except Exception:  # pragma: no cover - defensive: never let interop break a launch
         return None
 
@@ -78,7 +130,7 @@ def resolve_stream(device, stream=None, default=None) -> "wp.Stream | None":
         return stream
     if stream == "torch":
         import torch  # noqa: PLC0415 - only when explicitly requested
-        return wp.stream_from_torch(torch.cuda.current_stream(dev.ordinal))
+        return _torch_stream_as_warp(dev, torch.cuda.current_stream(dev.ordinal))
     if default is not None:
         return default
     adopted = _torch_capturing_stream(dev)
@@ -123,9 +175,9 @@ class LaunchContext:
     def current(cls, device) -> "LaunchContext":
         """Context pinned to Warp's CURRENT stream on ``device`` (no adoption).
 
-        For code that must stay on the stream an enclosing Warp capture records
-        (the generator facades' own self-capture), regardless of ambient or
-        torch state.
+        For code that must stay on the stream Warp allocates and zero-fills
+        on (e.g. ``PerEnvSeededRNG`` construction, the facades'
+        backward-compatible ``_run()``), regardless of ambient or torch state.
         """
         dev = wp.get_device(device)
         return cls(dev, wp.get_stream(dev) if dev.is_cuda else None)

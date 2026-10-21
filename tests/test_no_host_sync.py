@@ -2,8 +2,9 @@
 
 Every hot-path entry point must be recordable into a caller's CUDA graph, so none of
 them may host-synchronize or read device data back to the host. That covers the
-pipeline wrappers, every registered generator's ``_run``, every utility's
-query/update/reset/sample/bake/refresh, and ``Course.step``/``reset``. CPU cannot
+pipeline wrappers, every registered generator's ``_run``, the facades'
+``generate()``/``enqueue()``, every utility's query/update/reset/sample/bake/refresh,
+and ``Course.step``/``reset``/``regenerate``/``generate``/``enqueue_generate``. CPU cannot
 capture, so :func:`_probe` replaces ``wp.synchronize*`` and ``wp.array.numpy`` with
 tripwires that record the call and raise. Each driver then runs its entry point under
 the probe, and the test asserts zero calls. Construction (allocation, readback-based
@@ -13,8 +14,9 @@ sizing) runs before the probe and is out of scope.
 function of the pipeline modules is reached by none of them. A new wrapper therefore
 needs a driver here before it can land.
 
-The facades' ``generate()`` keeps its blocking self-capture on CUDA (CPU runs eagerly),
-so it is not a probe target; ``_run`` is.
+The facades' ``generate(sync=True)`` blocks on its own stream outside a capture through
+``track_gen.exec._compat.stream_synchronize`` (a no-op on CPU and while capturing), never
+through ``wp.synchronize*``; on CPU every generation path is probed.
 """
 from __future__ import annotations
 
@@ -241,6 +243,37 @@ def _frames():
     return checker.query
 
 
+def _facade_generate(cls, **kw):
+    def setup():
+        gen = _track_gen(**kw) if cls is TrackGenerator else _gate_gen(**kw)
+
+        def hot():
+            gen.generate()
+            gen.generate(sync=False)
+            gen.enqueue()
+        return hot
+    return setup
+
+
+def _course_regenerate(mode, **kw):
+    def setup():
+        gen = (TrackGenConfig(device=DEV, num_envs=E) if mode == "track"
+               else GateGenConfig(device=DEV, num_envs=E, gate_width=0.2))
+        if mode == "track":
+            kw.setdefault("checkpoint_spacing", 0.3)
+        course = Course(CourseConfig(mode=mode, gen=gen, seeds=3, **kw))
+        seeds = wp.array(np.arange(E, dtype=np.int32) + 17, dtype=wp.int32, device=DEV)
+
+        def hot():
+            course.regenerate()
+            course.generate()
+            course.generate(seeds=5)
+            course.generate(seeds=seeds)
+            course.enqueue_generate()
+        return hot
+    return setup
+
+
 def _course(mode, **kw):
     def setup():
         gen = (TrackGenConfig(device=DEV, num_envs=E) if mode == "track"
@@ -360,6 +393,17 @@ DRIVERS = {
     "course[gates,posts]": _course("gates", post_radius=0.02),
     "course[gates,frames]": _course("gates", frame_collision=True, agent_radius=0.05,
                                     frame_thickness=0.02, frame_depth=0.02),
+    "generate[track]": _facade_generate(TrackGenerator),
+    "generate[gates]": _facade_generate(GateGenerator),
+    "regenerate[track,segments]": _course_regenerate("track", collision="segments",
+                                                     heightfield_resolution=16),
+    "regenerate[track,sdf]": _course_regenerate("track", collision="sdf",
+                                                sdf_resolution=16),
+    "regenerate[gates,posts]": _course_regenerate("gates", post_radius=0.02),
+    "regenerate[gates,frames]": _course_regenerate("gates", frame_collision=True,
+                                                   agent_radius=0.05,
+                                                   frame_thickness=0.02,
+                                                   frame_depth=0.02),
     "wrappers[resample]": _resample_wrappers,
     "wrappers[geometry]": _geometry_wrappers,
     "wrappers[inflate_fixed_n]": _inflate_fixed_n,

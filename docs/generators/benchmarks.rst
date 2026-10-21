@@ -22,9 +22,9 @@ registered generator stays selectable via ``config.generator``.
    production use) and is **not directly comparable** to the other rows.  The figures
    below were taken when it still ran eagerly.  Indicative RTX-4090 wall-clock: ~0.2 s at
    E=64 and ~5 s at E=8192 (~3 ms/track amortized), versus ~2 ms per batch for ``bezier``
-   — roughly **1000×** slower.  On CUDA its first call additionally pays three eager
-   warm-up runs plus the capture of a ~4k-node graph.  The number is also
-   throttle-sensitive (±1.5× from GPU clock/pool state). See
+   — roughly **1000×** slower.  Construction additionally runs one full eager pass (the
+   warm-up), and on CUDA the first ``generate()`` records a ~4k-node graph.  The number
+   is also throttle-sensitive (±1.5× from GPU clock/pool state). See
    :doc:`repulsive` for the full cost discussion and the recommended regeneration-cadence /
    staggered-slice usage.
 

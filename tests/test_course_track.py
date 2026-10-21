@@ -46,13 +46,15 @@ def _drive(course, pos_buf, n_steps=40):
 
 
 def test_lifecycle_errors():
-    from track_gen.course import Course, CourseConfig
+    # Construction generates the first batch and builds every sub-tool, so the
+    # course is usable right away; step() still requires bind(), before and after
+    # any regeneration.
     course = _course()
     mask = wp.zeros(E, dtype=wp.int32, device="cpu")
-    with pytest.raises(RuntimeError, match="generate"):
+    assert course.progress is not None and course.collision is not None
+    with pytest.raises(RuntimeError, match="bind"):
         course.step()
-    with pytest.raises(RuntimeError, match="generate"):
-        course.reset(mask)
+    course.reset(mask)
     course.generate()
     with pytest.raises(RuntimeError, match="bind"):
         course.step()

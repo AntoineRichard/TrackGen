@@ -53,11 +53,12 @@ Generating the Track Batch
    track = generator.generate()
 
 ``TrackGenerator.__init__`` pre-allocates all GPU buffers (generator scratch,
-pipeline scratch, seed buffers, and the persistent ``Track``) exactly once. On
-``cuda``, the first ``generate()`` call warms the kernels, captures the entire
-pipeline into a single replayable ``wp.Graph``, and immediately replays it.
-Subsequent calls copy the updated seeds into the fixed seed buffer and replay the
-same graph.
+pipeline scratch, seed buffers, and the persistent ``Track``) exactly once, then runs
+the pipeline once eagerly to load the kernels, so the ``Track`` already holds a batch.
+On ``cuda``, the first ``generate()`` call captures the entire pipeline into a single
+replayable ``wp.Graph`` and launches it. Subsequent calls replay the same graph, which
+copies the rng's current seeds into the fixed seed buffer on device. ``generate()``
+waits for its stream to finish by default; pass ``sync=False`` to return at once.
 
 .. note::
 
@@ -183,8 +184,9 @@ The same ``TrackGenerator`` API runs on both devices; only the ``device`` string
 in ``TrackGenConfig`` changes. On ``cpu`` every ``generate()`` runs the pipeline
 eagerly (no graph). On ``cuda`` the first call captures the pipeline into a
 replayable ``wp.Graph`` and later calls are fast replays — the natural choice for
-a batched RL loop. See :doc:`/tutorials/cuda-graph-in-a-sim` for the fixed-batch
-contract, capture-vs-replay mechanics, and per-generator replay timings.
+a batched RL loop. Called while you capture, ``generate()`` is instead recorded into
+YOUR graph. See :doc:`/tutorials/cuda-graph-in-a-sim` for the fixed-batch contract,
+both graph modes, and per-generator replay timings.
 
 Buffer Reuse and Snapshots
 --------------------------
@@ -299,9 +301,10 @@ CUDA-graph composability
 
 ``step()`` and ``reset()`` are warp-native and never host-synchronize, so the
 whole step — progress update plus collision query — records into your own sim
-graph alongside the physics, with no flag to set. Keep writing into the SAME
-bound buffers after capture (rebinding leaves the captured graph reading the old
-pointers). See
+graph alongside the physics, with no flag to set. ``course.regenerate()`` records
+into the same graph too, so new courses and the steps that drive them can replay as
+one unit. Keep writing into the SAME bound buffers after capture (rebinding leaves the
+captured graph reading the old pointers). See
 :doc:`/tutorials/cuda-graph-in-a-sim` for the capture-and-replay pattern.
 
 Putting It All Together

@@ -26,9 +26,10 @@ Yu, Schumacher, and Crane, *Repulsive Curves* (SIGGRAPH 2021 / arXiv 2020).
    loop follows a fixed host schedule (stage transitions, resample and stall-check
    cadences depend only on the iteration counter) and converged envs are frozen on device,
    so it is CUDA-graph-captured like the other generators — but every call still runs the
-   full fixed iteration budget (~4k graph nodes at the defaults), and on CUDA the **first**
-   ``generate()`` additionally pays ``TrackGenerator``'s three eager warm-up runs plus the
-   capture of that ~4k-node graph before its first replay.  If you use ``repulsive`` in a
+   full fixed iteration budget (~4k graph nodes at the defaults).  Constructing the
+   ``TrackGenerator`` runs one full eager pass (the warm-up), and on CUDA the **first**
+   ``generate()`` additionally records that ~4k-node graph before its first replay
+   (recording it into your own graph costs the same, once).  If you use ``repulsive`` in a
    training loop, prefer a **slow regeneration cadence** (regenerate a batch every N steps,
    not every step) or **staggered per-env slices** (regenerate a fraction of environments
    per step) rather than calling ``generate()`` every frame.

@@ -13,21 +13,24 @@ invariants that are otherwise the caller's burden:
   (``post_radius > 0``), with the posts array and the line rebuilt
   device-side on every regeneration.
 
-Lifecycle: construct -> ``bind()`` (stable sim buffers, required) ->
-``generate()`` (whole batch: generator pipeline + coherent refresh + full
-progress reset) -> per-step ``step()`` / per-env ``reset(mask)``. Whole-batch
-generation is a generator constraint (the pipelines are fixed-batch captured
-graphs); per-env control lives in ``reset(mask)``.
+Lifecycle: construct (generates the first batch and builds every sub-tool)
+-> ``bind()`` (stable sim buffers, required for ``step()``) -> per-step
+``step()`` / per-env ``reset(mask)``, with whole-batch ``regenerate()`` /
+``generate(seeds=...)`` whenever new courses are wanted. Whole-batch
+generation is a generator constraint (the pipelines are fixed-batch);
+per-env control lives in ``reset(mask)``.
 
-CUDA graphs: the generator keeps its own pipeline graph (Graph A); the
-facade captures the refresh sequence into its own graph on the first cuda
-``generate()`` (Graph B) and replays it afterwards. ``step()``/``reset()``
-are NOT auto-captured — they are capture-ready for the caller's sim graph
-as-is: no utility host-synchronizes, so no flag is needed (the former
-``track_gen.set_capturing`` is a deprecated no-op). Every launch of one
-``step()``/``reset()`` call goes to ONE stream: ``stream=`` when given, else
-an enclosing ``torch.cuda.graph`` capture stream, else Warp's current stream
-(see :mod:`track_gen.exec`).
+CUDA graphs: regeneration is ONE body (generator pipeline + coherent
+refresh: checkpoint resample / sdf + heightfield bake / posts / line, then a
+full progress reset). Inside a caller's capture ``regenerate()`` /
+``generate()`` record it into the caller's graph next to ``step()`` /
+``reset()``; outside a capture the course replays its own graph
+(:attr:`Course.graph`) on CUDA. ``step()``/``reset()`` are never
+self-captured: they are capture-ready for the caller's sim graph as-is (no
+utility host-synchronizes; the former ``track_gen.set_capturing`` is a
+deprecated no-op). Every launch of one call goes to ONE stream: ``stream=``
+when given, else an enclosing ``torch.cuda.graph`` capture stream, else
+Warp's current stream (see :mod:`track_gen.exec`).
 
 Results are undefined for envs with ``valid[e] == 0`` on ``course.result``.
 """
@@ -35,11 +38,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import numpy as np
 import warp as wp
 
 from ..exec.context import LaunchContext, resolve as _resolve_ctx
-from . import runtime
+from ..exec.runner import GraphRunner, ensure_not_capturing
 from .checkpoints import CheckpointSampler, CheckpointSet
 from .collision import BoxContact, CollisionChecker
 from .collision_discs import DiscChecker, DiscContact
@@ -64,6 +66,19 @@ def _interleave_posts_k(
     i = wp.tid()             # dim = E * max_gates; NaN padding carries over
     posts[2 * i] = left[i]
     posts[2 * i + 1] = right[i]
+
+
+@wp.kernel
+def _seed_range_k(base: wp.int32, out: wp.array(dtype=wp.int32)):
+    # out[e] = base + e with int32 wrap-around: PerEnvSeededRNG's int expansion
+    # (seed + arange(E), cast to int32). Unsigned add: no signed-overflow UB.
+    e = wp.tid()
+    out[e] = wp.int32(wp.uint32(base) + wp.uint32(e))
+
+
+def _wrap_int32(value: int) -> int:
+    """``value`` reduced to the int32 range with two's-complement wrap-around."""
+    return ((int(value) + 2**31) % 2**32) - 2**31
 
 
 @dataclass(frozen=True)
@@ -304,18 +319,20 @@ class Course:
     """One object bundling generation, collision, and progress per mode.
 
     Lifecycle: construct -> :meth:`bind` (stable sim buffers; required for
-    :meth:`step`) -> :meth:`generate` (whole batch) -> per-step :meth:`step`
-    / per-env :meth:`reset`. Sub-tools are constructed after the FIRST
-    ``generate()`` (their auto-derivations need a real batch) and are
-    reachable as attributes (``generator``, ``rng``, ``result``,
-    ``collision``, ``checkpoints``, ``checkpoint_sampler``, ``progress``,
-    an optional track-mode ``heightfield`` (when
-    ``heightfield_resolution`` is set), and — gates mode — ``course_line``,
-    ``localizer``).
+    :meth:`step`) -> per-step :meth:`step` / per-env :meth:`reset`, plus
+    whole-batch :meth:`regenerate` / :meth:`generate` for new courses.
+    Construction generates the first batch and builds every sub-tool (their
+    auto-derivations need a real batch, read back on the host once), then
+    runs one real warm-up regeneration; all of it must happen outside any
+    CUDA graph capture. The sub-tools are reachable as attributes right
+    after construction (``generator``, ``rng``, ``result``, ``collision``,
+    ``checkpoints``, ``checkpoint_sampler``, ``progress``, an optional
+    track-mode ``heightfield`` (when ``heightfield_resolution`` is set), and
+    — gates mode — ``course_line``, ``localizer``).
 
-    ``generate()`` is whole-batch by generator design (fixed-batch captured
-    pipelines); per-env respawn control is :meth:`reset`'s mask. Results are
-    undefined for envs with ``valid[e] == 0`` on :attr:`result`.
+    Regeneration is whole-batch by generator design (fixed-batch pipelines);
+    per-env respawn control is :meth:`reset`'s mask. Results are undefined
+    for envs with ``valid[e] == 0`` on :attr:`result`.
     """
 
     def __init__(self, config: CourseConfig) -> None:
@@ -330,14 +347,19 @@ class Course:
         self._is_cuda = device.is_cuda
         if isinstance(config.seeds, wp.array):
             self._validate_seed_array(config.seeds)
+        # Refuse a capture BEFORE the first allocation (the rng's).
+        ensure_not_capturing(device, label=f"course[{config.gen.generator}]")
         self.rng = PerEnvSeededRNG(seeds=config.seeds, num_envs=self._E,
                                    device=self._device)
+        # The generator prepares itself (one real generation), so its result
+        # already holds the batch for the initial seeds.
         if config.mode == "track":
             self.generator = TrackGenerator(config.gen, self.rng)
+            self.result: "Track | GateSequence" = self.generator._track
         else:
             self.generator = GateGenerator(config.gen, self.rng)
+            self.result = self.generator._gate_sequence
 
-        self.result: "Track | GateSequence | None" = None
         self.collision: "CollisionChecker | DiscChecker | FrameChecker | None" \
             = None
         self.course_line: "CourseLine | None" = None
@@ -349,9 +371,44 @@ class Course:
         self._posts: "wp.array | None" = None
         self._bind_args: "dict | None" = None
         self._step_result: "StepResult | None" = None
-        self._refresh_graph = None
         self._reset_all_mask = wp.full(self._E, 1, dtype=wp.int32,
                                        device=self._device)
+        # Persistent [E] int32 buffer for generate(seeds=int): the int is
+        # expanded device-side into it, so a reseed never allocates.
+        self._reseed_buf = wp.empty(self._E, dtype=wp.int32,
+                                    device=self._device)
+
+        gen_runner = self.generator._runner
+        self._runner = GraphRunner(
+            self._device,
+            capturable=gen_runner.capturable,
+            legacy_stream=gen_runner.legacy_stream,
+            owner=self,
+            name=f"course[{config.gen.generator}]",
+        )
+        # Sub-tool construction (allocation + readback-based sizing) happens
+        # here, cold, never inside a capture. The generator's construction
+        # already blocked until its warm-up pass finished, so the readbacks see
+        # the first batch.
+        ctx = self._runner.context()
+        with ctx.scope():
+            self._build_subtools(ctx)
+            # Load the reseed kernel's module now (writes only the scratch
+            # buffer), so a first generate(seeds=int) never loads a module
+            # inside a caller's capture.
+            ctx.launch(_seed_range_k, self._E, [0, self._reseed_buf])
+        # One real warm-up regeneration (generator + refresh) outside any
+        # capture: loads every module the regeneration body uses.
+        self._runner.prepare(self._enqueue_regenerate)
+
+    @property
+    def graph(self) -> "wp.Graph | None":
+        """The course's own regeneration graph (generator pipeline + refresh
+        as ONE graph): captured on the first CUDA :meth:`regenerate` /
+        :meth:`generate` made outside any capture, replayed by later ones.
+        ``None`` on CPU, for a non-capturable generator, and before that
+        call."""
+        return self._runner.graph
 
     # -- validation ------------------------------------------------------
 
@@ -406,9 +463,9 @@ class Course:
         required too; with
         ``max_boxes == 1`` the same ``position`` buffer serves as the box
         positions, otherwise pass a separate ``box_position``
-        ``[E * max_boxes]`` vec3f buffer. May be called before or after the
-        first
-        ``generate()``; rebinding replaces the previous binding.
+        ``[E * max_boxes]`` vec3f buffer. May be called any time after
+        construction (before or after a regeneration); rebinding replaces the
+        previous binding.
 
         Do NOT rebind after capturing ``step()`` into a sim graph: the
         captured graph replays against the buffer pointers live at capture
@@ -453,100 +510,112 @@ class Course:
 
     # -- generation + refresh --------------------------------------------
 
-    def generate(self, seeds: "int | wp.array | None" = None):
-        """Whole-batch (re)generation plus a coherent downstream refresh.
+    def _enqueue_regenerate(self, ctx: LaunchContext) -> None:
+        """The ONE regeneration body: generator pipeline (seed refresh
+        included) then the coherent downstream refresh, all on ``ctx``.
 
-        Optional reseed, generator pipeline (its own captured graph on
-        cuda), then: checkpoint resample / sdf bake / posts rebuild as
-        applicable, and a FULL progress reset (every course changed). On
-        cuda the refresh is captured once into a facade-owned graph and
-        replayed on later calls. Returns :attr:`result`.
+        Run by ``prepare`` (construction), by the eager path, by the
+        self-graph capture and by a caller's recording alike. Zero
+        allocation, host-sync free.
+        """
+        self.generator._enqueue(ctx)
+        self._refresh(ctx)
+
+    def regenerate(self, *, stream=None, sync: bool = True):
+        """Whole-batch regeneration from the rng's CURRENT seeds plus a
+        coherent downstream refresh; returns :attr:`result`.
+
+        The body is the generator pipeline, then checkpoint resample / sdf
+        and heightfield bake / posts and line rebuild as applicable, and a
+        FULL progress (and localizer) reset — every course changed.
+
+        Execution (stream resolved per :mod:`track_gen.exec`):
+
+        - inside a capture on the resolved stream: RECORDED into the
+          caller's graph (e.g. next to :meth:`step` / :meth:`reset`); each
+          replay regenerates from the rng's seeds at replay time;
+        - outside a capture on CUDA: replay of :attr:`graph` (generator +
+          refresh as ONE graph, captured on the first such call);
+        - on CPU, or with a ``capturable=False`` generator: eager.
+
+        Args:
+            stream: optional ``wp.Stream`` (or ``"torch"``) to run on.
+            sync: block the host until the regeneration finished on the
+                resolved stream (default ``True``; never while capturing, nor
+                while torch is capturing in the calling thread).
+
+        Raises:
+            track_gen.exec.NotCapturableError: recording a course whose
+                generator is ``capturable=False`` (before any launch).
+
+        In track mode, also check ``course.checkpoint_sampler.truncated``
+        afterwards: a per-env ``[E]`` int32 flag (1 if ``max_checkpoints``
+        clipped that env's checkpoint ring), mirroring ``PropSet.truncated``
+        for prop rings.
+        """
+        self._runner.run(self._enqueue_regenerate, stream=stream, sync=sync)
+        return self.result
+
+    def enqueue_generate(self, *, stream=None):
+        """Enqueue one regeneration (as :meth:`regenerate`) without
+        self-graphing or blocking: recorded into the caller's capture when
+        the resolved stream is capturing, otherwise eager on that stream.
+        Returns :attr:`result` (stream-ordered)."""
+        self._runner.run(self._enqueue_regenerate, stream=stream, policy="eager")
+        return self.result
+
+    def generate(self, seeds: "int | wp.array | None" = None, *, stream=None,
+                 sync: bool = True):
+        """Optional reseed, then :meth:`regenerate`. Returns :attr:`result`.
+
+        ``seeds`` int ``k`` reseeds every env with ``k + e`` (the same
+        expansion as constructing a fresh ``PerEnvSeededRNG(seeds=k)``),
+        expanded device-side into a persistent buffer: no allocation. A
+        ``wp.array`` must be ``[E]`` int32 on the course device. The reseed
+        and the regeneration run on the SAME resolved stream, so this whole
+        call can be recorded into a caller's capture; note that an int ``k``
+        is then BAKED into the caller's graph (every replay reseeds with
+        ``k``), while a ``wp.array`` is read at replay time (write new seeds
+        into it to vary replays).
 
         Determinism contract: the generators are deterministic under an
         unchanged RNG. Calling ``generate()`` again WITHOUT ``seeds=``
         reproduces the identical batch (plus a full progress reset); pass
         ``seeds=`` to advance the RNG and get new courses.
 
-        In track mode, also check ``course.checkpoint_sampler.truncated``
-        after ``generate()``: a per-env ``[E]`` int32 flag (1 if
-        ``max_checkpoints`` clipped that env's checkpoint ring), mirroring
-        ``PropSet.truncated`` for prop rings.
+        Args:
+            seeds: ``None``, an int, or an ``[E]`` int32 ``wp.array``.
+            stream: optional ``wp.Stream`` (or ``"torch"``) to run on.
+            sync: block the host until done (default ``True``; never while
+                capturing).
         """
-        if seeds is not None:
-            # Reseed under the lock: seed-array construction and the device
-            # copy in set_seeds_warp ride the shared stream a concurrent
-            # thread may be capturing. Same stream as the generator's own seed
-            # copy and pipeline (Warp's current stream), so it orders before
-            # them.
-            with runtime._CAPTURE_LOCK:
-                ctx = LaunchContext.current(self._device)
-                if isinstance(seeds, wp.array):
-                    self._validate_seed_array(seeds)
-                    self.rng.set_seeds_warp(seeds, None, ctx=ctx)
-                else:
-                    # Mirror PerEnvSeededRNG's int expansion (seed + arange) so
-                    # reseeding via int matches constructing a fresh RNG with it.
-                    # Still allocates (PR3 removes it); the upload is
-                    # stream-explicit.
-                    host = wp.array(int(seeds) + np.arange(self._E),
-                                    dtype=wp.int32, device="cpu")
-                    seed_arr = wp.empty(self._E, dtype=wp.int32,
-                                        device=self._device)
-                    ctx.copy(seed_arr, host)
-                    self.rng.set_seeds_warp(seed_arr, None, ctx=ctx)
-        # NOTE: generator.generate() takes runtime._CAPTURE_LOCK internally, so it must
-        # stay OUTSIDE the locked regions (the lock is not reentrant).
-        self.result = self.generator.generate()
-        if self.progress is None:
-            # LOCK CONTRACT: every remaining device operation in generate() —
-            # subtool construction (allocations + eager launches), eager
-            # refresh, warmup, capture, replay — holds _CAPTURE_LOCK, so a
-            # concurrent thread's capture never records our allocations or
-            # async frees. Only generator.generate() (self-locking) is outside.
-            with runtime._CAPTURE_LOCK:
-                # Generation-side work stays on Warp's current stream (the
-                # stream Graph B is captured on), never an adopted torch one;
-                # the scope pins sub-tool constructors (e.g. the sdf bake) too.
-                ctx = LaunchContext.current(self._device)
-                with ctx.scope():
-                    self._build_subtools(ctx=ctx)
-                    self._refresh(ctx=ctx)  # eager: cpu every-call path is
-                                            # below; on cuda this is call 1 of
-                                            # 3 (see capture block)
-        elif self._refresh_graph is not None:
-            # Replay under the lock: launching a graph into a stream another thread
-            # is capturing is illegal (CUDA error 900).
-            with runtime._CAPTURE_LOCK:
-                wp.capture_launch(self._refresh_graph)
-                wp.synchronize()
-        else:
-            self._refresh(ctx=LaunchContext.current(self._device))
-        if self._is_cuda and self._refresh_graph is None:
-            with runtime._CAPTURE_LOCK:
-                # warmup, sync-free (call 2 of 3: runs for real, priming any
-                # lazy kernel/module init before we start recording below)
-                self._refresh(ctx=LaunchContext.current(self._device))
-                wp.synchronize()
-                with wp.ScopedCapture(device=self._device) as cap:
-                    # call 3 of 3: RECORDED into the graph (Warp's current
-                    # stream is the capture stream), not executed here;
-                    # replayed just below
-                    self._refresh(ctx=LaunchContext.current(self._device))
-                self._refresh_graph = cap.graph
-                wp.capture_launch(self._refresh_graph)
-                wp.synchronize()
+        if seeds is None:
+            return self.regenerate(stream=stream, sync=sync)
+        if isinstance(seeds, wp.array):
+            self._validate_seed_array(seeds)
+        ctx = self._runner.context(stream)
+        # The reseed and the regeneration form one unit: same stream, and the
+        # same serialization as the regeneration itself (see GraphRunner.serial).
+        with self._runner.serial(ctx):
+            # Raise (before the reseed launches) where regenerate() would.
+            self._runner.check_record(ctx)
+            if isinstance(seeds, wp.array):
+                self.rng.set_seeds_warp(seeds, None, ctx=ctx)
+            else:
+                ctx.launch(_seed_range_k, self._E,
+                           [_wrap_int32(int(seeds)), self._reseed_buf])
+                self.rng.set_seeds_warp(self._reseed_buf, None, ctx=ctx)
+            self._runner.run(self._enqueue_regenerate, stream=ctx.stream, sync=sync)
         return self.result
 
-    def _build_subtools(self, ctx=None) -> None:
-        """Construct the sub-tools on the first ``generate()``.
+    def _build_subtools(self, ctx: LaunchContext) -> None:
+        """Construct the sub-tools from the first batch (construction only:
+        allocation + readback-based sizing, never inside a capture).
 
         Args:
-            ctx: optional track_gen.exec.LaunchContext; default is
-                ``LaunchContext.current(device)`` (Warp's current stream, the
-                stream the facade's refresh graph is captured on).
+            ctx: the construction launch context (the stream the generator's
+                warm-up pass ran on).
         """
-        if ctx is None:
-            ctx = LaunchContext.current(self._device)
         cfg = self._cfg
         if cfg.mode == "track":
             self.checkpoint_sampler = CheckpointSampler(
@@ -596,17 +665,13 @@ class Course:
         ctx.launch(_interleave_posts_k, int(seq.position.shape[0]),
                    [seq.left, seq.right, self._posts])
 
-    def _refresh(self, ctx=None) -> None:
+    def _refresh(self, ctx: LaunchContext) -> None:
         """Post-generation coherence: resample/bake/posts + full reset.
 
         Args:
-            ctx: optional track_gen.exec.LaunchContext; default is
-                ``LaunchContext.current(device)`` (Warp's current stream: the
-                stream the facade's own refresh graph is captured on, never an
-                adopted torch stream). Every sub-tool runs on ``ctx.stream``.
+            ctx: the regeneration's launch context; every sub-tool runs on
+                ``ctx.stream``.
         """
-        if ctx is None:
-            ctx = LaunchContext.current(self._device)
         s = ctx.stream
         if self.checkpoint_sampler is not None:
             self.checkpoint_sampler.sample(stream=s)
@@ -616,15 +681,13 @@ class Course:
                                                  # consumer query
         if isinstance(self.collision, CollisionChecker) \
                 and self.collision._method == "sdf":
-            self.collision.bake(stream=s)  # re-baked on every _refresh() call,
-                                            # incl. both real warmup passes
-                                            # before the first cuda capture: a
-                                            # one-time construction cost, not a
-                                            # per-step one
+            self.collision.bake(stream=s)  # re-baked on every regeneration
+                                            # (part of the regeneration graph),
+                                            # never per step
         if self.heightfield is not None:
-            self.heightfield.bake(stream=s)  # nearest-edge road surface; joins
-                                              # the captured refresh alongside
-                                              # the sdf bake
+            self.heightfield.bake(stream=s)  # nearest-edge road surface; part
+                                              # of the regeneration graph
+                                              # alongside the sdf bake
         if self._posts is not None:
             self._fill_posts(ctx=ctx)
         if self.localizer is not None:

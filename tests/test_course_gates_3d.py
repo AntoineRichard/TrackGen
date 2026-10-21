@@ -100,9 +100,10 @@ def test_track_mode_rejects_gate_options():
 
 @pytest.mark.cuda
 def test_cuda_gates_graph_replay_refreshes_line_and_frame():
-    """Graph B (captured refresh) must contain the CourseLine resample and
-    the localizer reset: poison both, replay via generate(seeds=...), and
-    check they are recomputed; then step() localizes on the new line."""
+    """The regeneration graph (generator + refresh) must contain the
+    CourseLine resample and the localizer reset: poison both, replay via
+    generate(seeds=...), and check they are recomputed; then step()
+    localizes on the new line."""
     dev = "cuda:0"
     from track_gen._src.course_line import CourseLine
     gcfg = GateGenConfig(device=dev, num_envs=E, gate_width=0.2, scale=3.0,
@@ -112,7 +113,7 @@ def test_cuda_gates_graph_replay_refreshes_line_and_frame():
     pos = wp.zeros(E, dtype=wp.vec3f, device=dev)
     c.bind(pos)
     c.generate()
-    assert c._refresh_graph is not None          # Graph B captured
+    assert c.graph is not None                    # regeneration graph captured
     c.course_line.track.center.fill_(12345.0)    # poison the line ...
     c.localizer._last.fill_(5)                    # ... and the warm memory
     c.generate(seeds=77)                          # replay path

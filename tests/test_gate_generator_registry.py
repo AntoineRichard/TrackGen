@@ -135,8 +135,9 @@ _GATE_DEVS = ["cpu", pytest.param("cuda", marks=pytest.mark.cuda)]
 @pytest.mark.parametrize("dev", _GATE_DEVS)
 def test_noncapturable_gate_generator_runs_eagerly(monkeypatch, dev):
     """A capturable=False gate generator never gets a wp.Graph: its Python body runs
-    exactly once per generate() on every device (a captured path would run it 4x on
-    the first CUDA call -- 3 warm-ups + record -- and 0x on replay)."""
+    once at construction (the warm-up pass) and then exactly once per generate() on
+    every device (a self-graphed path would run it once more to record on the first
+    CUDA call and 0x on every replay)."""
     import dataclasses
 
     import warp as wp
@@ -161,9 +162,10 @@ def test_noncapturable_gate_generator_runs_eagerly(monkeypatch, dev):
     E = 4
     cfg = GateGenConfig(generator="bezier", device=dev, num_envs=E, gate_width=0.05)
     gen = GateGenerator(cfg, PerEnvSeededRNG(seeds=1234, num_envs=E, device=dev))
+    assert len(calls) == 1                   # construction: one real warm-up pass
     first = gen.generate().position.numpy().copy()
     second = gen.generate().position.numpy().copy()
 
-    assert gen._graph is None
-    assert len(calls) == 2
+    assert gen.graph is None
+    assert len(calls) == 3
     np.testing.assert_array_equal(first, second)

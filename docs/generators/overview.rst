@@ -159,8 +159,11 @@ timing the full ``TrackGenerator.generate()`` call — centerline generation plu
 shared resample → XPBD relax → inflate stages — since only the centerline generator
 differs across rows.  *warmed ms/call* is the steady-state mean over 10 replays after a
 warmup call; for the first five rows this is a CUDA-graph replay.  *first
-call (s)* is that warmup call, which pays CUDA-graph capture plus cached Warp module
-load.  Each row was measured twice and agreed within ~10%.
+call (s)* is that warmup call, which paid CUDA-graph capture plus cached Warp module
+load.  (These rows were measured before 0.2.0.dev1, when the first call also ran three
+eager warm-ups.  The single eager warm-up pass and the module load now happen at
+construction, so the first ``generate()`` pays only the capture and one replay.)  Each
+row was measured twice and agreed within ~10%.
 
 .. list-table::
    :header-rows: 1
@@ -199,10 +202,11 @@ load.  Each row was measured twice and agreed within ~10%.
    **eagerly on CUDA every call**, so its *warmed* per-call cost equalled its
    first-call cost (~1.9 s at E=4096) — roughly 150–250× the ms/call of the other
    generators here.  It is now graph-captured, but a replay still executes the full
-   fixed iteration budget, and its first call now also pays three eager warm-up runs
-   plus the capture of a ~4k-node graph, so expect a first call several times the
-   ~1.9 s shown; this row has not been re-measured.  See :doc:`repulsive`
-   for the cost discussion and the recommended slow-cadence / staggered-slice usage.
+   fixed iteration budget.  Construction now runs one full eager pass (the warm-up,
+   roughly the ~1.9 s shown), and the first ``generate()`` on CUDA records a ~4k-node
+   graph before its first replay; this row has not been re-measured.  See
+   :doc:`repulsive` for the cost discussion and the recommended slow-cadence /
+   staggered-slice usage.
 
 The *first call (s)* figures above are taken with Warp's on-disk kernel cache warm
 (capture plus cached module load only); the very first run after a fresh install or a

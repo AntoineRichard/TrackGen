@@ -8,10 +8,12 @@ tracks + yield/quality stats. Launch:  `.venv/bin/python -m viz.param_explorer`
 """
 from __future__ import annotations
 
+import functools
 import logging
 import math
 import os
 import sys
+import threading
 import traceback
 
 _PKG_PARENT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -32,11 +34,29 @@ from track_gen._src.types import TrackGenConfig
 from track_gen._src.track_generator import TrackGenerator
 from track_gen._src.rng_utils import PerEnvSeededRNG
 from track_gen._src import gate_generator_registry, generator_registry, warp_gate
+from track_gen.exec import _compat
 from viz.plot_tracks import draw_track
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 logger = logging.getLogger("param_explorer")
+
+# Gradio runs handlers on a thread pool, and one page load fires the track AND the gate
+# handler at once. Each handler builds a fresh generator, whose first generate() captures
+# its graph once on a (blocking) private stream; a concurrent readback on the legacy
+# default stream (wp.array.numpy(), torch on its default stream) in another handler would
+# invalidate that capture, and wp.synchronize() raises while it is open. Serialize the
+# handlers' GPU work and readbacks.
+_GPU_LOCK = threading.RLock()
+
+
+def _gpu_serialized(fn):
+    """Run ``fn`` under the explorer-wide GPU lock (see ``_GPU_LOCK``)."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with _GPU_LOCK:
+            return fn(*args, **kwargs)
+    return wrapper
 
 
 def _ui_error_message(exc: Exception, context: str) -> str:
@@ -360,7 +380,9 @@ def _stats(track) -> dict:
     out_wp = wp.zeros(E, dtype=wp.float32, device=dev)
     wp.launch(_wpl._thickness_k, dim=E, inputs=[pf, band_wp, n_max, cnt_wp, out_wp], device=dev)
     if "cuda" in dev:
-        wp.synchronize()
+        # Block on the stream the kernel ran on only: wp.synchronize() raises while any
+        # Warp capture is open on the device (e.g. another generator's one-time capture).
+        _compat.stream_synchronize(wp.get_stream(dev))
     th = wp.to_torch(out_wp)
     return {
         "yield": float(valid.float().mean()),
@@ -371,6 +393,7 @@ def _stats(track) -> dict:
     }
 
 
+@_gpu_serialized
 def render_grid(p: dict):
     """Generate a batch, draw page 0, compute stats over the full batch. Returns (Figure, stats dict).
     Any pipeline error is caught and returned as a small error figure + an 'error' stat."""
@@ -681,6 +704,7 @@ def _gate_stats(gates, cfg: GateGenConfig) -> dict:
     }
 
 
+@_gpu_serialized
 def render_gate_grid(p: dict):
     try:
         gates, cfg = generate_gate_batch(p)
@@ -974,6 +998,7 @@ def build_app():
 
                 generator.change(_track_mode_update, [generator], track_mode_outputs)
 
+                @_gpu_serialized
                 def _generate(*vals):
                     p = _collect(*vals)
                     gn = int(p["grid_n"])
@@ -992,6 +1017,7 @@ def build_app():
                                   "mean_len": float("nan"), "mean_thickness": float("nan"), "count": 0}
                         return err_fig, _stats_md(err_st), None, 0, "page 1/1"
 
+                @_gpu_serialized
                 def _go(track, page, gn, delta):
                     if track is None:
                         return gr.update(), page, gr.update()
@@ -1163,6 +1189,7 @@ def build_app():
                         gr.update(visible=visible["checkpoint"]),
                     ]
 
+                @_gpu_serialized
                 def _generate_gates(*vals):
                     p = _collect_gate(*vals)
                     gn = int(p["gate_grid_n"])
@@ -1183,6 +1210,7 @@ def build_app():
                                   "target_center_distance": float("nan")}
                         return err_fig, _gate_stats_md(err_st), None, None, 0, "page 1/1"
 
+                @_gpu_serialized
                 def _go_gates(gates, cfg, page, gn, delta):
                     if gates is None or cfg is None:
                         return gr.update(), page, gr.update()

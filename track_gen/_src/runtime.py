@@ -8,7 +8,8 @@ utilities alike.
 
 Host syncs: pipeline wrappers, generator bodies and utilities never
 host-block (the TrackGenerator / GateGenerator / Course ``generate()``
-facades still do on CUDA, around their self-capture). Every launch is
+facades block on their call's stream only with ``sync=True``, their default,
+and never while that stream is capturing). Every launch is
 stream-ordered, so results are ready for anything that consumes them on the
 same stream, for
 ``wp.array.numpy()`` (a blocking copy), and for torch on its legacy default
@@ -20,13 +21,15 @@ after each library call, so asynchronous CUDA errors surface at the call that
 caused them.
 
 ``_CAPTURING`` is a deprecated, always-False compatibility name (see
-:func:`set_capturing`). ``_CAPTURE_LOCK`` below is shared with the generators
-until their self-capture moves to per-generator streams: at most one
-self-capture/replay may be in flight process-wide regardless of which family
-started it.
+:func:`set_capturing`). ``_CAPTURE_LOCK`` below now only serializes producers
+that contain a legacy-ABI generator plugin (see
+:class:`track_gen.exec.GraphRunner`); everything else self-captures on a
+private per-producer stream without any process-wide lock.
 """
 from __future__ import annotations
 
+import copy
+import dataclasses
 import os
 import threading
 import warnings
@@ -41,15 +44,32 @@ _INITED = False
 # out-of-tree code imports it; set_capturing() no longer changes it.
 _CAPTURING = False
 
-# Process-wide mutex serializing every CUDA graph self-capture AND replay
-# (TrackGenerator, GateGenerator, Course). Their captures record the device's
-# current stream; a concurrent capture, replay, or plain kernel launch from
-# another thread lands on that same stream and corrupts the recording (CUDA
-# errors 401/900, or an async illegal-memory-access 700 that poisons the
-# context). CPU paths have nothing to protect (eager execution);
-# Course.generate() still takes the lock uniformly there — uncontended,
-# harmless.
-_CAPTURE_LOCK = threading.Lock()
+# Process-wide (reentrant) mutex serializing the CUDA work of producers whose
+# body contains a LEGACY generator plugin (no ``accepts_ctx``): such plugins
+# launch on Warp's shared current stream, so their self-graph is captured on
+# that stream and a concurrent capture, replay, or launch from another thread
+# landing on it would corrupt the recording (CUDA errors 401/900, or an async
+# illegal-memory-access 700). ``track_gen.exec.GraphRunner`` takes it for those
+# producers, and for calls of other producers on Warp's current stream while a
+# legacy producer may still self-capture there; everything else runs lock-free.
+_CAPTURE_LOCK = threading.RLock()
+
+
+def _snapshot_config(config):
+    """A deep copy of a config dataclass that SHARES its Warp handles.
+
+    ``copy.deepcopy`` cannot copy a ``wp.Device`` (or ``wp.Stream``): they hold
+    ctypes pointers ("ctypes objects containing pointers cannot be pickled").
+    Such field values are kept by reference; everything else is copied, so later
+    mutation of the original (or of the snapshot) cannot leak across.
+    """
+    memo = {}
+    if dataclasses.is_dataclass(config) and not isinstance(config, type):
+        for f in dataclasses.fields(config):
+            v = getattr(config, f.name, None)
+            if isinstance(v, (wp.Device, wp.Stream)):
+                memo[id(v)] = v
+    return copy.deepcopy(config, memo)
 
 
 def _init() -> None:

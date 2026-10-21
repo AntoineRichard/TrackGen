@@ -88,18 +88,26 @@ def test_gate_generator_rejects_too_small_max_gates(monkeypatch):
         GateGenerator(cfg, rng)
 
 
-def test_cuda_first_generate_warms_up_captures_and_replays(monkeypatch):
-    from track_gen._src import gate_generator as gate_generator_mod
+def test_cuda_prepares_at_construction_then_captures_once_and_replays(monkeypatch):
+    """Execution model on a (fake) CUDA device: construction runs the pipeline once
+    for real (warm-up), the first generate() records it ONCE into the generator's
+    own graph on a private stream and replays it on the call's stream, and later
+    calls only replay (the body never runs again)."""
+    import warp as wp
+
+    from tests._fake_cuda import FakeCuda
     from track_gen._src import warp_gate
 
+    fake = FakeCuda(monkeypatch)
     monkeypatch.setattr(reg, "GATE_GENERATORS", {})
     monkeypatch.setattr(reg, "_LOADED", True)
     reg.register(reg.GateGeneratorSpec(
         name="fake-cuda",
         alloc_scratch=lambda config: object(),
-        generate=lambda seeds_wp, config, out, scratch: None,
+        generate=lambda seeds_wp, config, out, scratch, ctx=None: None,
         max_gates=lambda config: 4,
         supported_orderings=frozenset({"ccw"}),
+        accepts_ctx=True,
     ))
 
     # scratch is the (gen_scratch, pos2, cum, perim, z, fallbacks) 6-tuple the
@@ -117,55 +125,37 @@ def test_cuda_first_generate_warms_up_captures_and_replays(monkeypatch):
     calls = []
 
     def fake_run_gate_pipeline(config, seed_buf_wp, out, scratch, generator_spec, ctx=None):
-        calls.append("run")
+        calls.append((ctx.stream, ctx.capturing))
 
-    class FakeCapture:
-        def __init__(self, device):
-            self.device = device
-            self.graph = object()
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-    launched = []
     monkeypatch.setattr(warp_gate, "_run_gate_pipeline", fake_run_gate_pipeline)
-    monkeypatch.setattr(gate_generator_mod.wp, "empty", lambda *args, **kwargs: object())
-    monkeypatch.setattr(gate_generator_mod.wp, "copy", lambda *args, **kwargs: None)
-    monkeypatch.setattr(gate_generator_mod.wp, "synchronize", lambda: None)
-    monkeypatch.setattr(gate_generator_mod.wp, "ScopedCapture", FakeCapture)
-    monkeypatch.setattr(
-        gate_generator_mod.wp, "capture_launch", lambda graph: launched.append(graph)
-    )
+    monkeypatch.setattr(wp, "empty", lambda *args, **kwargs: object())
+    monkeypatch.setattr(wp, "copy", lambda *args, **kwargs: None)
+    monkeypatch.setattr(wp, "synchronize",
+                        lambda: pytest.fail("generate() must not synchronize every device"))
 
     cfg = GateGenConfig(generator="fake-cuda", device="cuda", num_envs=1)
     # seeds_warp.shape[0] must match num_envs (checked at construction).
     rng = type("Rng", (), {"seeds_warp": type("Seeds", (), {"shape": (1,)})()})()
     gen = GateGenerator(cfg, rng)
 
-    # Resolve the fake "cuda" device as CUDA so the facade takes its capture path.
-    real_get_device = gate_generator_mod.wp.get_device
-    monkeypatch.setattr(
-        gate_generator_mod.wp, "get_device",
-        lambda d=None: (type("Dev", (), {"is_cuda": True})()
-                        if str(d).startswith("cuda") else real_get_device(d)),
-    )
-
-    # The facade pins its own self-capture to Warp's current stream through
-    # LaunchContext.current(dev); the fake device has no stream, so stub it.
-    import types
-    monkeypatch.setattr(
-        gate_generator_mod.LaunchContext, "current",
-        classmethod(lambda cls, d: types.SimpleNamespace(copy=lambda *a, **k: None)),
-    )
+    # Construction: one real eager pass on the resolved (current) stream, no graph.
+    assert calls == [(fake.current, False)]
+    assert gen.graph is None and fake.captures == []
 
     assert gen.generate(1) is gen._gate_sequence
+    # First generate: the body is recorded once on a private stream (not executed),
+    # then the graph is replayed on the call's stream and the host blocks on it.
+    assert len(calls) == 2 and calls[1][1] is True
+    (cap,) = fake.captures
+    assert calls[1][0] is cap.stream and cap.stream is not fake.current
+    assert gen.graph is cap.graph and gen._graph is gen.graph
+    assert fake.launched == [(gen.graph, fake.current)]
+    # construction waits for its warm-up pass; generate() for its replay
+    assert fake.synced == [fake.current] * 2
 
-    # 3 warm-ups + 1 recorded run, then one replay of the captured graph.
-    assert len(calls) == 4
-    assert launched == [gen._graph]
+    gen.generate(1)
+    assert len(calls) == 2                     # replay only
+    assert fake.launched == [(gen.graph, fake.current)] * 2
 
 
 @pytest.mark.parametrize("generator", ["bezier", "hull"])

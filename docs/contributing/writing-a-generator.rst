@@ -84,6 +84,16 @@ only *statistically* reproducible on CUDA rather than bit-identical. Avoid it th
 byte-identical run-to-run on both CPU and CUDA; see
 ``track_gen/_src/warp_generate_repulsive.py``'s module docstring for the full account.
 
+Your ``generate`` body runs once, eagerly, when the ``TrackGenerator`` is constructed (the
+warm-up pass that loads every kernel). After that it runs once per eager call (``cpu``) and
+once per recording: into the generator's own graph on the first ``cuda`` call, or into a
+caller's graph when ``generate()`` is called inside the caller's capture. Replays do not run
+Python at all, so host scalars and Python state freeze at record time. A
+``capturable=False`` generator runs once per call instead, and raises
+``NotCapturableError`` under a caller's capture. See :doc:`/how-it-works/cuda-graph` for
+the full execution model, including the stream rule for plugins that do not set
+``accepts_ctx=True``.
+
 What you do NOT have to guarantee
 ----------------------------------
 
