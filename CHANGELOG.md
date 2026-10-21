@@ -13,12 +13,18 @@ projects that need stability should pin the `v0.1.0` tag.
   could ship with `valid=1`, and on the CUDA graph path nothing reported the truncation. The
   host-side `RuntimeWarning` now fires only in `resample_constant_spacing`'s allocating
   mode; in-place calls (the pipeline path) never read back. Size
-  `N_max >= max(perimeter) / spacing + 1`.
+  `N_max >= max(perimeter) / spacing + 1`. **Action needed:** at `half_width=0.03` the
+  default `N_max=384` covers only ~98% of tracks, so about 2% of envs that used to ship
+  clipped but valid now fail; set `N_max` to at least 512 (see
+  `docs/configuration/tuning.rst`).
 - **The `repulsive` generator is CUDA-graph capturable** (`capturable=True`). The per-window
   host readback and global early exit are gone, and freeze is absorbing, so each env depends
   only on its own seed, not on the rest of the batch. **Output change:** envs that froze
   before the loop ended keep their at-freeze shape and no longer get later periodic
-  resamples. Envs that never freeze are byte-identical.
+  resamples. Envs that never freeze are byte-identical. **Cost:** every call now runs the
+  full fixed iteration budget (there is no all-frozen early exit), and on CUDA the first
+  `generate()` also pays the generator's 3 eager warm-ups plus the capture of a ~4k-node
+  graph; later calls replay that graph.
 - `apply_z_profile` raises `ValueError` on an unknown `z_profile`. It used to fall through
   silently to `"noise"`.
 - `TrackGenerator` raises `ValueError` instead of `AssertionError` for an unsupported
@@ -29,7 +35,6 @@ projects that need stability should pin the `v0.1.0` tag.
 - The pipeline scratch no longer falls through to generator scratch by attribute name, so a
   generator scratch field named `w`, `kappa`, `z`, `area_a` or `area_b` can no longer shadow
   the pipeline's own buffers.
-
 - **Utilities, pipeline wrappers and generator bodies no longer block the host.**
   On CUDA they used to call a global `wp.synchronize()` after their launches. They now only
   enqueue work on the device's current Warp stream. This covers `query()` / `update()` /
@@ -55,6 +60,7 @@ projects that need stability should pin the `v0.1.0` tag.
   `False` and are no longer read. `warp_relax.xpbd_solve_inplace` / `band_l0_inplace` accept
   and ignore `capturing=`. `warp_pipeline._sync` / `_init` and `warp_gate._sync` / `_init`
   remain importable for generator plugins.
+
 ### Packaging
 
 - `warp-lang` is pinned to `>=1.14,<2`.
@@ -71,3 +77,9 @@ projects that need stability should pin the `v0.1.0` tag.
   torch builds. With `TRACKGEN_REQUIRE_CUDA=1`, a skipped `cuda` test fails the session.
 - `tests/test_no_host_sync.py` drives every hot path on CPU with `wp.synchronize*` and
   `wp.array.numpy` replaced by tripwires, and checks that every pipeline wrapper is driven.
+  Every generator hot path, repulsive included, is readback-free, so the known-readback
+  allowlist is empty.
+- `tests/test_shape_variety.py` read the vec3f centerlines as vec2f, which defeated the
+  registry-wide degeneracy gate; fixed, with a self-test that a circle scores ~1.0.
+- New `tests/test_truncation.py` (fail-closed truncation on CPU and under CUDA capture) and
+  repulsive capture/replay and batch-independence tests.

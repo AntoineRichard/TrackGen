@@ -70,11 +70,10 @@ _SYNC_APIS = ("synchronize", "synchronize_device", "synchronize_stream",
 # Known hot-path readbacks, as (api, module, function) -> the PR that removes them.
 # The probe lets these through instead of raising. The test also fails if one is no
 # longer hit, so the entry is removed together with the readback it allows.
-_KNOWN_READBACKS = {
-    # Repulsive's early exit: `if int(s.frozen.numpy().sum()) >= E: break`.
-    # Removed by roadmap PR12 (absorbing freeze, BOUNDED tier).
-    ("wp.array.numpy", "track_gen._src.warp_generate_repulsive", "generate_repulsive_warp"),
-}
+# Host readbacks that hot paths are still allowed to perform. Empty: repulsive's early-exit
+# readback (`if int(s.frozen.numpy().sum()) >= E: break`) was removed by the quick-wins
+# absorbing freeze, so every generator hot path is now readback-free.
+_KNOWN_READBACKS: set = set()
 
 
 @contextlib.contextmanager

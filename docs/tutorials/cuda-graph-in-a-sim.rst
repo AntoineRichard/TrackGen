@@ -3,10 +3,11 @@ Integrating the CUDA Graph into a Batched RL Sim Loop
 
 For generators whose ``GeneratorSpec`` has ``capturable=True``, ``track_gen``
 captures the entire generation pipeline as a single replayable CUDA graph on the
-first ``generate()`` call. The ``repulsive`` generator is
-``capturable=False`` and runs eagerly with host-controlled execution. This page
-explains the fixed-batch contract, capture and replay, reused output buffers, and
-how to slot the generator into a batched reinforcement-learning step loop.
+first ``generate()`` call. All six shipped generators are capturable, including
+``repulsive``; a plugin generator registered with ``capturable=False`` instead
+runs eagerly on CUDA every call. This page explains the fixed-batch contract,
+capture and replay, reused output buffers, and how to slot the generator into a
+batched reinforcement-learning step loop.
 
 The Fixed-Batch Contract
 --------------------------
@@ -27,19 +28,20 @@ On the ``cpu`` device, every ``generate()`` call runs the pipeline eagerly —
 there is no graph.
 
 On ``cuda``, the following applies when the selected generator has
-``capturable=True``. With ``repulsive``, every call instead runs eagerly under
-host control and no CUDA graph is created.
+``capturable=True`` (every shipped generator):
 
-
-1. **First call** — warms the Warp kernels (compiles JIT-specialized CUDA
-   code), captures the full pipeline with ``wp.ScopedCapture``, stores the
-   resulting ``wp.Graph``, and immediately replays it to produce the first
-   batch of tracks.
+1. **First call** — warms the Warp kernels with three eager runs (compiles
+   JIT-specialized CUDA code), captures the full pipeline with
+   ``wp.ScopedCapture``, stores the resulting ``wp.Graph``, and immediately
+   replays it to produce the first batch of tracks.
 2. **Subsequent calls** — copies the current ``rng.seeds_warp`` values into
    the pre-allocated seed buffer on device, then replays the stored graph with
    ``wp.capture_launch``.
 
-Capture works for those generators because their pipeline is **entirely static**:
+The graph belongs to the ``TrackGenerator`` instance: a new instance warms up
+and captures again on its own first call.
+
+Capture works because a capturable generator's pipeline is **entirely static**:
 
 - All buffer shapes and loop counts are fixed at construction time.
 - There is no host-side branching on device tensor data (branching on config
@@ -49,27 +51,36 @@ Capture works for those generators because their pipeline is **entirely static**
 - The pipeline never host-synchronizes or reads device data back (both are
   illegal inside a CUDA graph scope); ordering comes from the stream.
 
+``repulsive`` is the outlier on cost, not on capture: its growth loop runs a
+fixed, host-precomputed iteration schedule with no global early exit, so every
+call pays the full iteration budget (~1000× slower than the other generators),
+and its first call also pays the three eager warm-ups plus capturing a ~4k-node
+graph. Converged envs are frozen on device, so each env still depends only on
+its own seed. See :doc:`/generators/repulsive`.
+
 .. code-block:: python
 
+   import numpy as np
    import warp as wp
    wp.init()
 
    from track_gen import TrackGenerator, TrackGenConfig, PerEnvSeededRNG
 
    E = 512
-   config = TrackGenConfig(num_envs=E, half_width=0.03, device="cuda")
+   # Thin tracks need N_max >= 512: the default 384 covers only ~98% of them, and
+   # truncated tracks fail validity (see Track.truncated and the tuning guide).
+   config = TrackGenConfig(num_envs=E, half_width=0.03, N_max=512, device="cuda")
    rng    = PerEnvSeededRNG(seeds=0, num_envs=E, device="cuda")
 
    gen = TrackGenerator(config, rng)
 
-   # First call: captures the pipeline, replays immediately.
+   # First call: warms up, captures the pipeline, replays immediately.
    track = gen.generate()
 
-   # Subsequent calls: replay only (new seeds are written to the seed buffer
-   # before each replay).
-   rng2   = PerEnvSeededRNG(seeds=42, num_envs=E, device="cuda")
-   gen2   = TrackGenerator(config, rng2)   # fresh RNG, same config
-   track2 = gen2.generate()                # fast replay
+   # Subsequent calls on the SAME generator: replay only (the RNG's current seeds
+   # are written to the seed buffer before each replay).
+   rng.set_seeds_warp(wp.array(42 + np.arange(E), dtype=wp.int32, device="cuda"), None)
+   track = gen.generate()                  # fast replay
 
 Buffer Reuse and ``clone()``
 -----------------------------
@@ -109,7 +120,7 @@ onto episode resets.
    from track_gen import TrackGenerator, TrackGenConfig, PerEnvSeededRNG
 
    E, device = 256, "cuda"
-   config = TrackGenConfig(num_envs=E, half_width=0.03, device=device)
+   config = TrackGenConfig(num_envs=E, half_width=0.03, N_max=512, device=device)
    rng    = PerEnvSeededRNG(seeds=0, num_envs=E, device=device)
    gen    = TrackGenerator(config, rng)
 
@@ -169,8 +180,11 @@ launches and torch on its default stream all see finished data. A consumer on a
 different stream (for example a torch side stream) must order itself explicitly,
 e.g. with ``wp.synchronize_device()`` or a recorded ``wp.Event``. Benchmarks must
 synchronize before reading a timer. For debugging asynchronous CUDA errors, set
-``TRACKGEN_DEBUG_SYNC=1`` to make every library call block on its stream (skipped
-while that stream is capturing).
+``TRACKGEN_DEBUG_SYNC=1`` to make every library call block on its stream. It is
+skipped while that stream (or a Warp capture on the device) is capturing; do not
+combine it with a foreign capture on another stream (e.g. a default
+``torch.cuda.graph``), which it cannot detect and whose capture the sync would
+invalidate.
 
 Performance Notes
 ------------------
@@ -205,6 +219,8 @@ recommended starting point from the benchmark is:
    config = TrackGenConfig(
        num_envs=E,
        half_width=0.03,
+       N_max=512,
+       relax_iters=150,      # the long budget is what makes relax_sep_every=40 safe
        relax_sep_every=40,
        relax_sep_cache_slots=16,
        relax_sep_cache_skin=0.0,
@@ -212,8 +228,9 @@ recommended starting point from the benchmark is:
    )
 
 On the benchmark machine this setting achieved roughly ``0.066 s`` per replay
-versus ``0.366 s`` for the dense baseline at ``E=8192``. Validate yield in your
-target regime before relying on the cache.
+versus ``0.366 s`` for the dense baseline at ``E=8192`` (``relax_iters=150``). Keep
+``relax_sep_every`` well below ``relax_iters``; see :doc:`/configuration/tuning`.
+Validate yield in your target regime before relying on the cache.
 
 CPU Fallback
 -------------
@@ -224,7 +241,7 @@ devices; only the device string in ``TrackGenConfig`` needs to change.
 
 .. code-block:: python
 
-   config_cpu = TrackGenConfig(num_envs=E, half_width=0.03, device="cpu")
+   config_cpu = TrackGenConfig(num_envs=E, half_width=0.03, N_max=512, device="cpu")
    rng_cpu    = PerEnvSeededRNG(seeds=0, num_envs=E, device="cpu")
    gen_cpu    = TrackGenerator(config_cpu, rng_cpu)
    track_cpu  = gen_cpu.generate()   # eager, no graph

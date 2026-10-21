@@ -48,8 +48,9 @@ The Six Generators
        character from the star-shaped families.
    * - ``"repulsive"``
      - Dense, foldy serpentine circuits grown by self-repulsion around random
-       obstacles; the foldiest family by far, but ~1000× slower and not
-       graph-capturable — use only when the shape is worth the generation cost.
+       obstacles; the foldiest family by far, but ~1000× slower (iterative
+       optimizer; full fixed iteration budget every call) — use only when the
+       shape is worth the generation cost.
 
 How to Set the Generator
 --------------------------

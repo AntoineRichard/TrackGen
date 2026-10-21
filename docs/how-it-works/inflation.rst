@@ -43,6 +43,11 @@ Validity gate — ``_validity_k``
 - **Border self-intersections** — only when ``validity_border_check`` is set (**default
   off**). This check is redundant with the thickness/separation gate: a crossing or
   fat-band overlap drives ``separation_min → 0 → thickness < half_width → invalid`` anyway.
+- **Not truncated at** ``N_max`` (``Track.truncated == 0``) — the constant-spacing resample
+  flags any env whose loop needed more than ``N_max`` points; its clamped loop closes with
+  a chord across the dropped arc, so the env fails closed. The flags reach the kernel via
+  ``inflate_warp(..., truncated=...)``; with ``truncated=None`` (the standalone path) no
+  env is treated as truncated.
 
 Index-aligned borders
 ---------------------
@@ -101,6 +106,11 @@ metric checks the minimum over all beads to ensure no inflation collapsed.
      - ``[E]``
      - Signed loop winding: ``+1.0`` CCW, ``-1.0`` CW, ``0.0`` degenerate
        (sign of the centerline's signed area).
+   * - ``truncated``
+     - ``[E]``
+     - ``int32`` N_max truncation flag: ``1`` when the loop needed more than ``N_max``
+       points (``count[e]`` was clamped and the env is invalid). ``None`` on a ``Track``
+       built by the standalone ``inflate_warp`` path.
 
 ``generate()`` always returns the **same** ``Track`` instance with stable ``wp.array``
 pointers. Callers that need a snapshot should use ``Track.clone()``.

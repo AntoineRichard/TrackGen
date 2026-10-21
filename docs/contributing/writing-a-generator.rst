@@ -71,14 +71,16 @@ data. ``TrackGenerator`` then runs it **eagerly** on CUDA every call — the sam
 ``cpu`` — instead of capturing it into a replayable graph; this is a supported, non-error
 path, not a fallback for a broken generator. Rules 1 (pure Warp, no torch) and 4 (fixed-shape
 buffers) still apply: only the *capture* of a static launch topology is waived, not the
-fixed-shape scratch discipline. ``repulsive`` is the only current example: its growth loop
-transitions coarse-to-fine stages and reads back a stall-convergence scalar to drive an early
-exit, both illegal inside a capture region, even though its scratch buffers are still
-allocated once at a fixed max shape. Rule 5 still applies, with a caveat for chaotic
-per-iteration methods: if such a generator accumulates its CUDA gradients via ``atomic_add``,
-the varying float summation order can make a chaotically sensitive flow only *statistically*
-reproducible on CUDA rather than bit-identical. Avoid it the way ``repulsive`` does — its
-gradient is hand-written analytic adjoints (a per-vertex gather, no atomics), so it stays
+fixed-shape scratch discipline. No shipped generator uses ``capturable=False`` today
+(``GateGeneratorSpec`` carries the same flag). Before opting out, see how ``repulsive`` made a
+host-driven loop capturable: its coarse-to-fine stage transitions, resample cadence and
+stall-check cadence form a fixed schedule precomputed on the host from the config alone, and
+the readback-driven early exit was replaced by an absorbing per-env freeze on device (frozen
+envs are skipped by every kernel), so nothing is read back. Rule 5 still applies, with a
+caveat for chaotic per-iteration methods: if such a generator accumulates its CUDA gradients
+via ``atomic_add``, the varying float summation order can make a chaotically sensitive flow
+only *statistically* reproducible on CUDA rather than bit-identical. Avoid it the way
+``repulsive`` does — its gradient is hand-written analytic adjoints (a per-vertex gather, no atomics), so it stays
 byte-identical run-to-run on both CPU and CUDA; see
 ``track_gen/_src/warp_generate_repulsive.py``'s module docstring for the full account.
 

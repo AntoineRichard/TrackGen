@@ -125,8 +125,8 @@ When to Use Which
    * - ``repulsive``
      - Dense, foldy serpentine from self-repulsive growth
      - Very high (~0.15)
-     - Maze-like circuits; **only** when the ~1000× generation cost (non-graph-captured,
-       see :doc:`repulsive`) fits your regeneration cadence
+     - Maze-like circuits; **only** when the ~1000× generation cost (full fixed iteration
+       budget every call, see :doc:`repulsive`) fits your regeneration cadence
 
 Generator Contract
 ------------------
@@ -142,10 +142,10 @@ zero-allocation inside ``generate`` and CUDA-graph-capturable — no host-side r
 host branch on generated tensor data, and no per-environment Python branching inside
 ``generate``.  A generator may instead declare ``capturable=False`` to use host-side
 control flow and per-call allocation; it then runs eagerly on CUDA every call instead of
-being captured into a replayable graph.  Generators set ``out_valid_wp`` to ``1`` for every environment at
-this stage; final geometric validity (turning number, thickness, NaN checks) is decided
-later by the shared post-relax inflation validity gate.  The full contract, hard rules, and
-registration instructions are documented in :doc:`/contributing/writing-a-generator`.
+being captured into a replayable graph.  Generators set ``out_valid_wp`` to ``1`` for
+every environment at this stage; final geometric validity (turning number, thickness, NaN
+checks, ``N_max`` truncation) is decided later by the shared post-relax inflation validity
+gate.  The full contract, hard rules, and registration instructions are documented in :doc:`/contributing/writing-a-generator`.
 
 Benchmarks
 ----------
@@ -199,7 +199,9 @@ load.  Each row was measured twice and agreed within ~10%.
    **eagerly on CUDA every call**, so its *warmed* per-call cost equalled its
    first-call cost (~1.9 s at E=4096) — roughly 150–250× the ms/call of the other
    generators here.  It is now graph-captured, but a replay still executes the full
-   fixed iteration budget; this row has not been re-measured.  See :doc:`repulsive`
+   fixed iteration budget, and its first call now also pays three eager warm-up runs
+   plus the capture of a ~4k-node graph, so expect a first call several times the
+   ~1.9 s shown; this row has not been re-measured.  See :doc:`repulsive`
    for the cost discussion and the recommended slow-cadence / staggered-slice usage.
 
 The *first call (s)* figures above are taken with Warp's on-disk kernel cache warm

@@ -1089,7 +1089,7 @@ def resample_constant_spacing(
 
     Allocating-mode (``out_wp`` or ``count_wp`` omitted -> allocated internally):
         Returns ``(out_wp, count_wp)`` — both freshly-allocated wp.arrays. This
-        branch allocates and reads ``count`` back to the host; do not use inside a
+        branch allocates and reads ``truncated`` back to the host; do not use inside a
         CUDA graph capture region.
 
     ``count[e]`` is capped at ``n_max`` (required for fixed-buffer sizing). An env whose

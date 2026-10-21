@@ -20,9 +20,11 @@ registered generator stays selectable via ``config.generator``.
    fixed iteration budget, so its ``gen_ms_per_call`` is measured on ``cuda`` directly
    rather than ``cpu`` (a CPU run would be even slower and less representative of
    production use) and is **not directly comparable** to the other rows.  The figures
-   below were taken when it still ran eagerly. Indicative RTX-4090 wall-clock: ~0.2 s at E=64 and ~5 s at E=8192
-   (~3 ms/track amortized), versus ~2 ms per batch for ``bezier`` — roughly **1000×**
-   slower. The number is also throttle-sensitive (±1.5× from GPU clock/pool state). See
+   below were taken when it still ran eagerly.  Indicative RTX-4090 wall-clock: ~0.2 s at
+   E=64 and ~5 s at E=8192 (~3 ms/track amortized), versus ~2 ms per batch for ``bezier``
+   — roughly **1000×** slower.  On CUDA its first call additionally pays three eager
+   warm-up runs plus the capture of a ~4k-node graph.  The number is also
+   throttle-sensitive (±1.5× from GPU clock/pool state). See
    :doc:`repulsive` for the full cost discussion and the recommended regeneration-cadence /
    staggered-slice usage.
 
@@ -141,12 +143,21 @@ Metrics Table
        within roughly 242–245 across repeated measurements, since the analytic-adjoint
        gradient makes the flow byte-deterministic — the old tape path spread 525–1060)
 
+.. note::
+
+   The ``repulsive`` row predates v2's fixed-schedule growth loop with an absorbing per-env
+   freeze, which deliberately changes the output of envs that freeze before the loop ends
+   (they no longer receive later periodic resamples, which used to shrink them; envs that
+   never freeze are unchanged).  It has not been re-measured on v2, so treat its metrics
+   — ``mean_length`` and the compactness columns in particular — as indicative.
+
 Metric Definitions
 ------------------
 
 **yield**
    Fraction of generated environments that pass the full post-relax validity gate
-   (turning number, thickness floor, no NaN); higher is better.
+   (turning number, thickness floor, no NaN, not truncated at ``N_max`` —
+   ``Track.truncated == 0``); higher is better.
 
 **pre_relax_self_intersection_rate**
    Fraction of environments whose raw generated centerline contains at least one

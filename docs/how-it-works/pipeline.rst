@@ -33,6 +33,7 @@ Data flow
    centerline[E, num_points, 2]     (every env real) + valid[E] (all True —
      │                                 final geometric validity is decided post-relax by INFLATE)
      │  RESAMPLE   resample_constant_spacing → per-track count[e] = ⌊perimeter/spacing⌋+1, capped at N_max
+     │             + truncated[e] (1 where the cap applied — such envs fail INFLATE's validity)
      ▼
    spaced[E, N_max, 2]              (NaN-padded past each track's count[e])
      │  RELAX      (XPBD: separation + spacing + bending, fixed iters, double-buffered,
@@ -42,7 +43,7 @@ Data flow
      │  INFLATE    resample_uniform (re-uniformize) ─► frame+curvature ─► constant-width offset
      │             ─► validity ─► arclength
      ▼
-   Track(outer, center, inner, tangent, normal, arclen, length, valid, count, winding)
+   Track(outer, center, inner, tangent, normal, arclen, length, valid, count, winding, truncated)
 
 .. figure:: ../assets/readme-pipeline-stages.png
 
@@ -90,7 +91,7 @@ generator's private scratch once, and ``_run_pipeline`` calls the resolved
    * - ``"repulsive"``
      - ``warp_generate_repulsive.py``
      - obstacle-seeded disc → tangent-point/Sobolev growth
-     - host-controlled/eager; no CUDA graph
+     - fixed host schedule with an absorbing per-env stall freeze; graph-capturable, ~1000× slower
 
 Every registered runtime generator follows the same hard contract:
 
@@ -100,13 +101,14 @@ Every registered runtime generator follows the same hard contract:
   generation flags.
 - The hot path is pure Warp, zero allocation, deterministic in ``(seed, config)``, and
   graph-capturable: no host-side retry loop, no host branch on generated tensor data, and
-  no per-env Python branching. **Exception:** ``repulsive`` declares
-  ``GeneratorSpec(capturable=False)`` and is exempt from the allocation and
-  graph-capturable clauses — see :doc:`/generators/repulsive` and the note below.
+  no per-env Python branching. All six shipped generators satisfy it (``capturable=True``),
+  ``repulsive`` included — see :doc:`/generators/repulsive`. Plugins that cannot may set
+  ``GeneratorSpec(capturable=False)`` and then run eagerly on CUDA every call (see
+  :doc:`/contributing/writing-a-generator`).
 - ``out_valid_wp`` is filled with ``1`` by the current runtime generators. It is a stage
-  flag, not the final quality decision. Turning, thickness, NaNs, width floor, and optional
-  border intersections are judged later by ``inflate_warp`` after constant-spacing and XPBD
-  relaxation.
+  flag, not the final quality decision. Turning, thickness, NaNs, width floor, ``N_max``
+  truncation, and optional border intersections are judged later by ``inflate_warp`` after
+  constant-spacing and XPBD relaxation.
 
 Per-generator algorithm details are covered in the individual generator deep-dive pages
 (bezier, hull, polar, voronoi, checkpoint, repulsive).
@@ -117,10 +119,10 @@ Determinism, yield, and FP tolerance
 **Determinism.** Warp's per-env RNG is deterministic, so a given seed buffer reproduces the
 same tracks run-to-run on a device. The ``cpu`` and ``cuda`` RNG streams may differ — each
 device is internally reproducible; cross-device yields are compared statistically, not
-per-env. This holds for **all six** generators including ``repulsive`` (the one
-``capturable=False`` generator): its growth gradient is hand-written analytic adjoints — a
-per-vertex gather with no atomics — so it is byte-identical run-to-run on both ``cpu`` and
-``cuda``, per seed. As with every generator, cross-*device* output is statistically
+per-env. This holds for **all six** generators including ``repulsive`` (the iterative
+optimizer): its growth gradient is hand-written analytic adjoints — a per-vertex gather with
+no atomics — so it is byte-identical run-to-run on both ``cpu`` and ``cuda``, per seed. As
+with every generator, cross-*device* output is statistically
 equivalent (same yield and compactness band) but not bit-identical, since fp32 rounding
 differs between CPU and CUDA. See ``track_gen/_src/warp_generate_repulsive.py``'s module
 docstring for the full account.
@@ -128,7 +130,10 @@ docstring for the full account.
 **Yield.** Relaxed-valid yield is approximately **0.999** end-to-end (E ≥ 2048): ≈ 0.9991
 at the fat-band default (``half_width=0.5``, ``scale=10``, ``spacing=0.30``,
 ``N_max=384``), ≈ 0.9955 at the library default config, ≈ 0.9998 in the thin
-(``half_width=0.03``) regime — all measured at E=8192. Two changes got it there:
+(``half_width=0.03``) regime — all measured at E=8192. The thin-regime figure predates
+fail-closed ``N_max`` truncation: the default ``N_max=384`` covers only ~98% of that
+regime and the rest now fail as truncated, so set ``N_max`` to at least 512 there (see
+:doc:`/configuration/tuning`). Two changes got the yield there:
 
 - **Constant spacing made relaxation lossless.** The old ``fixed``-256 ceiling (≈ 0.68 in
   the fat-band regime) was slow-Jacobi under-convergence from over-resolution, not

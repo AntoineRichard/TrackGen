@@ -60,7 +60,7 @@ wp.init()
 from track_gen import TrackGenerator, TrackGenConfig, PerEnvSeededRNG
 
 E, device = 64, "cuda"                       # or "cpu"
-config = TrackGenConfig(num_envs=E, half_width=0.03, device=device)
+config = TrackGenConfig(num_envs=E, half_width=0.03, N_max=512, device=device)
 rng = PerEnvSeededRNG(seeds=0, num_envs=E, device=device)
 track = TrackGenerator(config, rng).generate()
 # track.outer / center / inner: [E*N_max] vec3f, NaN-padded, count[e] real points

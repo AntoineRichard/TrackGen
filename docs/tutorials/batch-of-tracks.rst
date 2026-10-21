@@ -25,6 +25,9 @@ Building the Track Config and RNG
 ``TrackGenConfig`` holds every generation parameter. The two required fields are
 ``num_envs`` (batch size) and ``device`` (``"cpu"`` or ``"cuda"``).
 ``half_width`` is the road half-width in world units and defaults to ``0.1``.
+The examples below use a thinner ``half_width=0.03`` road, whose finer auto
+spacing needs more points per track, so they also raise ``N_max`` to 512 (see
+*Choosing spacing and N_max* below).
 
 .. code-block:: python
 
@@ -34,7 +37,7 @@ Building the Track Config and RNG
    from track_gen import TrackGenerator, TrackGenConfig, PerEnvSeededRNG
 
    E, device = 64, "cuda"  # or "cpu"
-   config = TrackGenConfig(num_envs=E, half_width=0.03, device=device)
+   config = TrackGenConfig(num_envs=E, half_width=0.03, N_max=512, device=device)
    rng = PerEnvSeededRNG(seeds=0, num_envs=E, device=device)
 
 ``PerEnvSeededRNG`` derives one independent seed per environment from the master
@@ -101,11 +104,17 @@ The full field table:
    * - ``valid``
      - ``[E]`` bool
      - Per-track validity flag. Invalid tracks failed a geometric check
-       (turning, thickness, NaNs, or road self-overlap).
+       (turning, thickness, NaNs, or road self-overlap) or were truncated at
+       ``N_max`` (see ``truncated``).
    * - ``count``
      - ``[E]`` int
      - Real point count per track. Slots at index ``i >= count[e]`` are
        NaN-padded.
+   * - ``truncated``
+     - ``[E]`` int
+     - ``1`` when the track needed more than ``N_max`` points: ``count[e]`` was
+       clamped to ``N_max``, the tail of the loop was dropped, and the track is
+       marked invalid. Raise ``N_max`` (or ``spacing``) if any are set.
 
 Slicing Real Points
 -------------------
@@ -135,7 +144,7 @@ Track Figure
    The end product of ``generate()``: finished constant-width road bands, each a
    filled band between the ``outer`` and ``inner`` borders with the ``center``
    line dashed through it. Every band came from one deterministic batch at the
-   default ``half_width=0.03`` geometry.
+   tutorial's ``half_width=0.03`` geometry.
 
 Choosing ``spacing`` and ``N_max``
 ----------------------------------
@@ -143,8 +152,9 @@ Choosing ``spacing`` and ``N_max``
 The default ``spacing`` is ``None``, which auto-sets to ``0.6 * half_width``.
 ``N_max`` is the per-track point capacity: size it so that
 ``N_max >= max(perimeter) / spacing + 1`` and no track is truncated (truncated tracks
-are flagged in ``Track.truncated`` and marked invalid)
-(the default fat-band configuration leaves ample headroom). A smaller
+are flagged in ``Track.truncated`` and marked invalid). The library default
+``half_width=0.1`` leaves ample headroom, but the default ``N_max=384`` covers only
+~98% of the ``half_width=0.03`` regime, hence ``N_max=512`` in the examples here. A smaller
 ``spacing`` yields a denser, smoother polyline at the cost of more points per
 track (and a larger required ``N_max``); a larger ``spacing`` is cheaper but
 coarser. See :doc:`/how-it-works/resample` for the constant-spacing
@@ -227,7 +237,7 @@ checkpoint rewards:
 
    course = Course(CourseConfig(
        mode="track",
-       gen=TrackGenConfig(num_envs=E, half_width=0.03, device=device),
+       gen=TrackGenConfig(num_envs=E, half_width=0.03, N_max=512, device=device),
        seeds=7,
        collision="segments",          # "segments" (exact) or "sdf"; None = no OOB check
        checkpoint_spacing=0.6,
@@ -305,7 +315,7 @@ Putting It All Together
    from track_gen import TrackGenerator, TrackGenConfig, PerEnvSeededRNG
 
    E, device = 64, "cuda"
-   config = TrackGenConfig(num_envs=E, half_width=0.03, device=device)
+   config = TrackGenConfig(num_envs=E, half_width=0.03, N_max=512, device=device)
    rng    = PerEnvSeededRNG(seeds=0, num_envs=E, device=device)
 
    generator = TrackGenerator(config, rng)

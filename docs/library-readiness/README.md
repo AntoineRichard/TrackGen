@@ -1,5 +1,7 @@
 # TrackGen library-readiness review
 
+> **Status on the `v2` branch.** This review describes `v0.1.0` (`1d8a6e5`). On `v2`, the §1 quick wins and roadmap PR0/PR1 have landed: CI lanes, host syncs and capture flags removed (`set_capturing` is a deprecated no-op), fail-closed truncation (roadmap PR5) and a capturable repulsive generator with an absorbing freeze (the core of roadmap PR12). See `CHANGELOG.md` for what changed; the analysis below is kept as written.
+
 **Date:** 2026-10-21 · **Commit:** `1d8a6e5` · **Scope:** `track_gen/` (~16k lines), tests, benchmarks, viz, docs, packaging
 
 **Questions asked:**

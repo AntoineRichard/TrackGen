@@ -68,7 +68,9 @@ launches, or from torch on its default stream is safe as before. A consumer on
 a DIFFERENT stream (for example a torch side stream) must order itself
 explicitly, e.g. with ``wp.synchronize_device()`` or a recorded ``wp.Event``.
 Set ``TRACKGEN_DEBUG_SYNC=1`` to make every library call block on its stream
-while debugging asynchronous CUDA errors (skipped while a capture is active).
+while debugging asynchronous CUDA errors. It is skipped while the stream (or a Warp
+capture on the device) is capturing; do not combine it with a foreign capture on
+another stream (e.g. a default ``torch.cuda.graph``), which it cannot detect.
 
 After regenerating
 ------------------

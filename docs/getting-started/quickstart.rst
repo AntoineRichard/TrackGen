@@ -14,7 +14,7 @@ The following minimal example generates a batch of 64 closed-loop race tracks on
    from track_gen import TrackGenerator, TrackGenConfig, PerEnvSeededRNG
 
    E, device = 64, "cuda"  # or "cpu"
-   config = TrackGenConfig(num_envs=E, half_width=0.03, device=device)
+   config = TrackGenConfig(num_envs=E, half_width=0.03, N_max=512, device=device)
    rng = PerEnvSeededRNG(seeds=0, num_envs=E, device=device)
 
    generator = TrackGenerator(config, rng)
@@ -34,6 +34,11 @@ graph captures one fixed batch shape. Results are read via ``wp.to_torch``, whic
 a zero-copy view of the underlying Warp array as a PyTorch tensor. The same ``Track``
 instance and Warp buffers are reused on every call, so use ``track.clone()`` when you need
 an independent snapshot.
+
+``N_max`` is the per-track point capacity. The thin ``half_width=0.03`` road needs more
+points per track than the default ``N_max=384`` reliably holds, so the example raises it
+to 512; a track that would overflow ``N_max`` is flagged in ``track.truncated`` and marked
+invalid. See :doc:`/configuration/tuning` for the sizing rule.
 
 Gate sequence generation
 ------------------------

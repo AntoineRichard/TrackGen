@@ -11,8 +11,9 @@ Runtime facade
 
 ``TrackGenerator`` acts as a runtime facade over the pipeline. Its public interface is:
 
-- ``__init__(config)`` — resolves generator, allocates all persistent buffers.
-- ``generate(seeds)`` — runs or replays the pipeline, returns the stable ``Track``.
+- ``__init__(config, rng)`` — resolves generator, allocates all persistent buffers.
+- ``generate()`` — copies the rng's current seeds, runs or replays the pipeline, and
+  returns the stable ``Track``.
 - ``Track.clone()`` — snapshot the current output arrays.
 
 On the Warp ``cpu`` device, every ``generate()`` call runs ``_run_pipeline`` eagerly. On

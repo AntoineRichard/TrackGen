@@ -25,8 +25,10 @@ Yu, Schumacher, and Crane, *Repulsive Curves* (SIGGRAPH 2021 / arXiv 2020).
    for ``bezier`` — **~1000× slower** (measured when it still ran eagerly).  Its growth
    loop follows a fixed host schedule (stage transitions, resample and stall-check
    cadences depend only on the iteration counter) and converged envs are frozen on device,
-   so it is CUDA-graph-captured like the other generators — but each replay still runs the
-   full iteration budget (~4k graph nodes at the defaults).  If you use ``repulsive`` in a
+   so it is CUDA-graph-captured like the other generators — but every call still runs the
+   full fixed iteration budget (~4k graph nodes at the defaults), and on CUDA the **first**
+   ``generate()`` additionally pays ``TrackGenerator``'s three eager warm-up runs plus the
+   capture of that ~4k-node graph before its first replay.  If you use ``repulsive`` in a
    training loop, prefer a **slow regeneration cadence** (regenerate a batch every N steps,
    not every step) or **staggered per-env slices** (regenerate a fraction of environments
    per step) rather than calling ``generate()`` every frame.
@@ -73,8 +75,10 @@ How It Works
    ``repulsive_deactivate_obstacles``, the wall stays live) so the settle phase can close the
    halos left around each disc.  Every ``repulsive_stall_window`` iterations, an env freezes
    once it is past target length **and** its enclosed area (shoelace, reparameterization-
-   invariant) has stopped changing by more than ``repulsive_stall_area_tol``; once every env
-   is frozen the loop exits early.
+   invariant) has stopped changing by more than ``repulsive_stall_area_tol``.  The freeze is
+   decided on device and is absorbing: every later kernel, including the periodic resample,
+   skips a frozen env.  There is no early exit — the loop always runs its full fixed
+   iteration budget, which is cheap once envs are frozen.
 
 5. **Hand off to the standard tail.**
    The final ``N=256`` closed loop is periodically arc-length reparameterized and copied into
@@ -173,7 +177,8 @@ described in the configuration reference.
    Periodic arc-length reparameterization interval (iterations).
 
 ``repulsive_stall_window`` (default 16)
-   Iterations between stall checks / early-exit readbacks.
+   Iterations between per-env stall checks (an env whose area has stopped changing is
+   frozen on device).
 
 ``repulsive_stall_area_tol`` (default 0.05)
    Freeze an env once it is past target length and its enclosed-area relative change over a
@@ -199,9 +204,12 @@ Key contrasts:
 - **Foldiest, most serpentine family (compactness ≈ 0.15).**  The ratcheted overfill forces
   the curve to buckle into dense multi-lobe circuits threading between the obstacles, well
   below the compactness of any of the other five generators.
-- **Host-driven control flow.**  Stage transitions, per-window stall readbacks, and the
-  global early exit are host-side Python, not static Warp launch topology — legal only
-  because the generator is not captured.
+- **Fixed host schedule.**  Stage transitions, the periodic resample (every
+  ``repulsive_resample_every`` iterations) and the stall checks (every
+  ``repulsive_stall_window``) are precomputed on the host from the config and the loop
+  counter alone — never from device data — so the launch sequence is static and replays as
+  one captured graph.  Convergence is handled by the per-env on-device freeze, not by a
+  readback or a global early exit.
 - **~1000× slower.**  See the warning above; this is the dominant practical tradeoff against
   the shape richness.
 - **Determinism.**  Output is **byte-identical per device** — same config and seeds give the
@@ -219,8 +227,8 @@ Fallback and Validity
 
 ``repulsive`` has no generator-local self-intersection fallback: it writes
 ``out_valid_wp = 1`` for every environment and relies entirely on the shared post-relax
-inflation validity gate (turning number, thickness floor, no NaN, width floor).  A
-self-crossing born during growth drives the local thickness toward zero, which the gate
-catches downstream — no generator-side retry is needed.  In the spike's validated
-configuration this yields 64/64 (100%) post-tail, with the XPBD tail doing modest polish
-(opening sub-half-width pinches) rather than untangling gross tangles.
+inflation validity gate (turning number, thickness floor, no NaN, width floor, not
+truncated at ``N_max``).  A self-crossing born during growth drives the local thickness
+toward zero, which the gate catches downstream — no generator-side retry is needed.  In
+the spike's validated configuration this yields 64/64 (100%) post-tail, with the XPBD tail
+doing modest polish (opening sub-half-width pinches) rather than untangling gross tangles.

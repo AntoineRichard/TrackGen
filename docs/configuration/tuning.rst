@@ -67,7 +67,8 @@ A track whose real point count exceeds ``N_max`` is truncated: its closing segme
 would span the dropped arc, so the pipeline flags it (``Track.truncated[e] = 1``) and
 fails it (``Track.valid[e] = 0``). At the library
 defaults (``half_width=0.1``, auto ``spacing=0.06``) the default ``N_max=384``
-gives ample headroom (mean ~141, max ~281 points per track). For a thin-track
+gives ample headroom (max ~141 points per track; full coverage down to
+``half_width≈0.05``, ~281 max). For a thin-track
 regime such as ``half_width=0.03`` (auto ``spacing=0.018``, ~468 max points per
 track), raise ``N_max`` to at least 512 to avoid truncation-driven invalids.
 
