@@ -142,7 +142,8 @@ Choosing ``spacing`` and ``N_max``
 
 The default ``spacing`` is ``None``, which auto-sets to ``0.6 * half_width``.
 ``N_max`` is the per-track point capacity: size it so that
-``N_max >= max(perimeter) / spacing + 1`` and no track is silently truncated
+``N_max >= max(perimeter) / spacing + 1`` and no track is truncated (truncated tracks
+are flagged in ``Track.truncated`` and marked invalid)
 (the default fat-band configuration leaves ample headroom). A smaller
 ``spacing`` yields a denser, smoother polyline at the cost of more points per
 track (and a larger required ``N_max``); a larger ``spacing`` is cheaper but

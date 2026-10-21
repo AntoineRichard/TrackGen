@@ -4,8 +4,7 @@ Generators Overview
 ``track_gen`` ships six registered centerline generators.
 Each generator is pluggable through ``TrackGenConfig.generator`` and follows the same
 pipeline contract: it writes one closed centerline per environment, then the shared
-resample → XPBD relax → inflate → validity stages take over — except ``repulsive``, which
-is not CUDA-graph-capturable (see below).
+resample → XPBD relax → inflate → validity stages take over.
 
 .. figure:: ../assets/readme-generator-grid.png
    :alt: Grid of sample tracks produced by each generator
@@ -85,10 +84,10 @@ self-avoiding while it is confined to a disc domain seeded with random obstacles
 coarse-to-fine (``N = 64 → 128 → 256``) with an area-based stall-stop.  It is the only
 generator built from iterative physical simulation rather than a single deterministic
 sampling + smoothing pass, and produces the foldiest, most serpentine circuits of the six
-(compactness ≈ 0.15).  It is also the first generator that is **not CUDA-graph-capturable**
-(``capturable=False``): its host-side stage transitions and stall-stop readback are illegal
-inside a capture region, so it runs eagerly on CUDA every call —
-roughly **1000× slower** than ``bezier`` (~0.2 s @ E=64, ~5 s @ E=8192 on an RTX 4090).
+(compactness ≈ 0.15).  Its growth loop runs a fixed iteration schedule with an
+absorbing per-env freeze, so it is CUDA-graph-captured like the others, but every call
+still runs the full iteration budget — roughly **1000× slower** than ``bezier``
+(~0.2 s @ E=64, ~5 s @ E=8192 on an RTX 4090, measured when it still ran eagerly).
 Prefer a slow regeneration cadence or staggered per-env slices over calling ``generate()``
 every step. See :doc:`repulsive` for the full deep dive.
 
@@ -137,13 +136,13 @@ It implements two callables: ``alloc_scratch(config)`` allocates fixed-shape,
 generator-private Warp buffers once at construction time, and
 ``generate(seeds_wp, config, out_centerline, out_valid_wp, scratch)`` writes one
 closed centerline per environment into the orchestrator-owned output buffer in place.
-The hot path must be pure Warp and deterministic in ``(seed, config)``.  For the five
-``capturable=True`` generators it must additionally be zero-allocation inside ``generate``
-and CUDA-graph-capturable — no host-side retry loop, no host branch on generated tensor
-data, and no per-environment Python branching inside ``generate``.  A generator may instead
-declare ``capturable=False`` (currently only ``repulsive``) to use host-side control flow
-and per-call allocation; it then runs eagerly on CUDA every call instead of being captured
-into a replayable graph.  Generators set ``out_valid_wp`` to ``1`` for every environment at
+The hot path must be pure Warp and deterministic in ``(seed, config)``.  For
+``capturable=True`` generators (all six shipped ones) it must additionally be
+zero-allocation inside ``generate`` and CUDA-graph-capturable — no host-side retry loop, no
+host branch on generated tensor data, and no per-environment Python branching inside
+``generate``.  A generator may instead declare ``capturable=False`` to use host-side
+control flow and per-call allocation; it then runs eagerly on CUDA every call instead of
+being captured into a replayable graph.  Generators set ``out_valid_wp`` to ``1`` for every environment at
 this stage; final geometric validity (turning number, thickness, NaN checks) is decided
 later by the shared post-relax inflation validity gate.  The full contract, hard rules, and
 registration instructions are documented in :doc:`/contributing/writing-a-generator`.
@@ -159,7 +158,7 @@ metric suite already lives in :doc:`benchmarks`).  All rows were measured on an
 timing the full ``TrackGenerator.generate()`` call — centerline generation plus the
 shared resample → XPBD relax → inflate stages — since only the centerline generator
 differs across rows.  *warmed ms/call* is the steady-state mean over 10 replays after a
-warmup call; for the five capturable generators this is a CUDA-graph replay.  *first
+warmup call; for the first five rows this is a CUDA-graph replay.  *first
 call (s)* is that warmup call, which pays CUDA-graph capture plus cached Warp module
 load.  Each row was measured twice and agreed within ~10%.
 
@@ -196,12 +195,12 @@ load.  Each row was measured twice and agreed within ~10%.
      - ~1.9
      - 0.997
 
-.. [#eager] ``repulsive`` is ``capturable=False``: it runs **eagerly on CUDA every
-   call** with no CUDA-graph replay, so its *warmed* per-call cost equals its
-   first-call cost (~1.9 s at E=4096) and is **not comparable** to the graph-replayed
-   rows — roughly 150–250× the ms/call of the capturable generators here.  See
-   :doc:`repulsive` for the cost discussion and the recommended slow-cadence /
-   staggered-slice usage.
+.. [#eager] Measured when ``repulsive`` was still ``capturable=False`` and ran
+   **eagerly on CUDA every call**, so its *warmed* per-call cost equalled its
+   first-call cost (~1.9 s at E=4096) — roughly 150–250× the ms/call of the other
+   generators here.  It is now graph-captured, but a replay still executes the full
+   fixed iteration budget; this row has not been re-measured.  See :doc:`repulsive`
+   for the cost discussion and the recommended slow-cadence / staggered-slice usage.
 
 The *first call (s)* figures above are taken with Warp's on-disk kernel cache warm
 (capture plus cached module load only); the very first run after a fresh install or a

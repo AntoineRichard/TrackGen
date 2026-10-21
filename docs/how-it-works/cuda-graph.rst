@@ -22,14 +22,12 @@ calls copy the current ``rng.seeds_warp`` values into the pre-allocated seed buf
 replay the stored graph with ``wp.capture_launch``.
 
 This capture-then-replay path applies to generators whose ``GeneratorSpec.capturable`` is
-``True`` (the default; ``bezier``, ``hull``, ``polar``, ``voronoi``, and ``checkpoint``
-today). ``repulsive`` registers ``capturable=False`` — its growth loop transitions
-coarse-to-fine stages and reads back a stall-convergence scalar from the host, both illegal
-inside a capture region — so ``TrackGenerator.generate()`` runs it eagerly on ``cuda`` every
-call, just like ``cpu``, and never builds a ``wp.Graph`` for it. (The per-iteration
-``wp.Tape`` that used to be the interior blocker is gone — the gradient is now hand-written
-analytic adjoints — so capture is now just a wiring exercise.) See
-:doc:`/generators/repulsive` for the cost this forfeits.
+``True`` (the default; every shipped generator today). A generator that registers
+``capturable=False`` runs eagerly on ``cuda`` every call, just like ``cpu``, and never gets
+a ``wp.Graph``; ``GateGeneratorSpec.capturable`` does the same for ``GateGenerator``.
+``repulsive``'s iterative growth loop is captured whole: its schedule depends only on the
+host loop counter, and convergence is an absorbing per-env freeze on device rather than a
+host readback and early exit.
 
 Capture requirements
 --------------------
@@ -70,5 +68,4 @@ call.
 .. note::
 
    ``cpu``-device runs are always eager. The graph capture path is ``cuda``-only, and even
-   on ``cuda`` it only applies to ``capturable=True`` generators — ``repulsive`` runs
-   eagerly on both devices.
+   on ``cuda`` it only applies to ``capturable=True`` generators.

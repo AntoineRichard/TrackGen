@@ -213,13 +213,19 @@ def apply_z_profile(config, seeds_wp: wp.array, count: wp.array, stride: int,
                           float(config.z_base), float(config.z_min),
                           float(config.z_max), float(config.z_max_step), z],
                   device=dev)
-    else:  # "noise" — config validation guarantees membership
+    elif profile == "noise":
         wp.launch(_z_noise_k, dim=E * S,
                   inputs=[seeds_wp, count, S, cum, perim,
                           float(config.z_base), float(config.z_min),
                           float(config.z_max),
                           float(config.z_noise_amplitude),
                           int(config.z_noise_harmonics), z], device=dev)
+    else:
+        # Config validation rejects unknown names at construction, but configs are
+        # mutable; fail loudly rather than silently running some other profile.
+        raise ValueError(
+            f"unknown z_profile {profile!r}; expected one of "
+            f"'flat', 'uniform', 'random_walk', 'noise'")
 
 
 @wp.func

@@ -35,6 +35,35 @@ _GEN_OVERRIDES = {
 }
 
 
+def test_gate_flags_circles():
+    """Self-test: the gate must see a batch of circles as compactness ~1.0, i.e. it reads
+    the vec3f Track geometry correctly (a vec2f reshape of vec3f data scrambles x/y/z)."""
+    from track_gen._src import warp_pipeline
+
+    wp.init()
+    E, N = 4, 128
+    radii = np.array([0.8, 1.0, 1.3, 2.0])
+    ang = np.linspace(0.0, 2.0 * np.pi, N, endpoint=False)
+    pts = np.stack([np.cos(ang), np.sin(ang)], -1)[None] * radii[:, None, None]
+    center = wp.array(pts.reshape(-1, 2).astype(np.float32), dtype=wp.vec2f, device="cpu")
+    cfg = TrackGenConfig(device="cpu", num_envs=E, num_points=N, half_width=0.1)
+    track = warp_pipeline.inflate_warp(center, cfg)
+    assert _median_valid_compactness(track, E) > 0.99
+
+
+def _median_valid_compactness(track, E: int) -> float:
+    center = wp.to_torch(track.center).cpu().numpy().reshape(E, -1, 3)[..., :2]
+    count = wp.to_torch(track.count).cpu().numpy().astype(int)
+    valid = wp.to_torch(track.valid).cpu().numpy().astype(bool)
+    comp = np.array([
+        tm.compactness(center[e, :count[e]])
+        for e in range(E)
+        if valid[e] and count[e] >= 4 and np.isfinite(center[e, :count[e]]).all()
+    ])
+    assert comp.size > 0, "no valid tracks to assess"
+    return float(np.median(comp))
+
+
 def test_no_registered_generator_is_degenerate():
     wp.init()
     for g in generator_registry.available():
@@ -43,16 +72,7 @@ def test_no_registered_generator_is_degenerate():
         cfg = TrackGenConfig(generator=g, device="cpu", num_envs=E, half_width=0.1,
                              relax_iters=40, **over)
         track = TrackGenerator(cfg, PerEnvSeededRNG(seeds=0, num_envs=E, device="cpu")).generate(E)
-        center = wp.to_torch(track.center).cpu().numpy().reshape(E, -1, 2)
-        count = wp.to_torch(track.count).cpu().numpy().astype(int)
-        valid = wp.to_torch(track.valid).cpu().numpy().astype(bool)
-        comp = np.array([
-            tm.compactness(center[e, :count[e]])
-            for e in range(E)
-            if valid[e] and count[e] >= 4 and np.isfinite(center[e, :count[e]]).all()
-        ])
-        assert comp.size > 0, f"{g!r}: no valid tracks to assess"
-        p50 = float(np.median(comp))
+        p50 = _median_valid_compactness(track, E)
         assert p50 < _MEDIAN_COMPACTNESS_MAX, (
             f"{g!r} is degenerate / near-circular: median compactness {p50:.3f} "
             f">= {_MEDIAN_COMPACTNESS_MAX} (1.0 == circle — the polar-0.97 signature)"

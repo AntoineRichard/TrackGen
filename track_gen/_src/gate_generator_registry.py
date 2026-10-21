@@ -12,13 +12,22 @@ from typing import Callable
 
 @dataclasses.dataclass(frozen=True)
 class GateGeneratorSpec:
-    """One registered native gate generator."""
+    """One registered native gate generator.
+
+    capturable: whether ``generate`` obeys the CUDA-graph-capture contract (pure Warp,
+                no host sync, no per-call allocation). Defaults ``True``. A
+                ``capturable=False`` generator may use host-side loop control and
+                per-call allocation; ``GateGenerator`` runs it EAGERLY on CUDA every
+                call (the same code path as ``cpu``), never building a ``wp.Graph``.
+                Mirrors ``GeneratorSpec.capturable``.
+    """
 
     name: str
     alloc_scratch: Callable
     generate: Callable
     max_gates: Callable
     supported_orderings: frozenset[str]
+    capturable: bool = True
 
 
 GATE_GENERATORS: dict[str, GateGeneratorSpec] = {}

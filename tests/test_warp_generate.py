@@ -62,7 +62,7 @@ def test_generate_centerline_warp(dev):
         seeds_wp, config,
         out_centerline=scratch.gen_centerline,
         out_valid_wp=scratch.gen_valid,
-        scratch=scratch,
+        scratch=scratch.gen,
     )
     if "cuda" in dev:
         wp.synchronize()
@@ -91,7 +91,7 @@ def test_generate_centerline_warp(dev):
         seeds_wp2, config,
         out_centerline=scratch2.gen_centerline,
         out_valid_wp=scratch2.gen_valid,
-        scratch=scratch2,
+        scratch=scratch2.gen,
     )
     if "cuda" in dev:
         wp.synchronize()

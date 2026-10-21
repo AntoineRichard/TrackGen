@@ -376,10 +376,12 @@ def _resample_lookup_k(
 @wp.kernel
 def _cs_scan_k(c: wp.array(dtype=wp.vec2f), N: int, spacing: wp.float32, n_max: int,
                seg: wp.array(dtype=wp.float32), s: wp.array(dtype=wp.float32),
-               count: wp.array(dtype=wp.int32)):
+               count: wp.array(dtype=wp.int32), truncated: wp.array(dtype=wp.int32)):
     # One thread per env e. Closed-loop seg lengths + cumulative arc s (len N+1),
     # then count = floor(total/spacing)+1, capped so target (count-1)*spacing < total
-    # and to n_max. Mirrors geometry._resample_one's spacing branch.
+    # and to n_max. Mirrors geometry._resample_one's spacing branch. truncated[e] records
+    # whether the UNCLAMPED count exceeded n_max (the loop's tail was dropped); the
+    # validity gate fails such envs closed.
     e = wp.tid()
     b = e * N
     es = e * (N + 1)
@@ -394,11 +396,13 @@ def _cs_scan_k(c: wp.array(dtype=wp.vec2f), N: int, spacing: wp.float32, n_max: 
     total = wp.float32(acc)
     if not (total > 0.0):      # catches total <= 0 AND NaN (never-accepted envs)
         count[e] = 0
+        truncated[e] = 0
         return
     k = int(wp.floor(total / spacing)) + 1
     while k > 1 and wp.float32(k - 1) * spacing >= total:
         k = k - 1
     count[e] = wp.min(wp.max(k, 1), n_max)
+    truncated[e] = wp.where(k > n_max, int(1), int(0))
 
 @wp.kernel
 def _cs_lookup_k(c: wp.array(dtype=wp.vec2f), seg: wp.array(dtype=wp.float32),
@@ -637,10 +641,12 @@ def _validity_k(
     relax_tol: float,
     z: wp.array(dtype=wp.float32),
     z_valid_grade: float,
+    truncated: wp.array(dtype=wp.int32),
     out: wp.array(dtype=wp.int32),
 ):
     # One thread per env e. Fuses inflation._validity_stage entirely in-kernel:
-    # gen_valid AND turning AND width-floor AND no-NaN AND thickness AND border-simple.
+    # gen_valid AND turning AND width-floor AND no-NaN AND thickness AND border-simple
+    # AND not-truncated.
     # All sub-results are 0/1 int flags (Warp can't AND Python bools in dynamic loops).
     # count[e] real points; NaN padding beyond is ignored in all sub-checks.
     e = wp.tid()
@@ -709,7 +715,12 @@ def _validity_k(
     if gen_valid[e] != 0:
         gv = int(1)
 
-    out[e] = gv & turn_ok & w_ok & no_nan & th_ok & border_ok & grade_ok
+    # --- N_max truncation (fail closed: a clamped loop is a chord across the dropped arc) ---
+    trunc_ok = int(1)
+    if truncated[e] != 0:
+        trunc_ok = int(0)
+
+    out[e] = gv & turn_ok & w_ok & no_nan & th_ok & border_ok & grade_ok & trunc_ok
 
 @wp.kernel
 def _arclength_k(
@@ -917,6 +928,10 @@ def _run_pipeline(
     n_max = int(config.N_max)
     gen = scratch.gen        # generator-private scratch
     relax = scratch.relax    # RelaxScratch — band/L0 + XPBD buffers
+    if out.truncated is None:
+        # Without the flag buffer a truncated track would pass validity (fail open).
+        raise ValueError("_run_pipeline requires out.truncated; allocate out via "
+                         "_inflate_warp_alloc")
 
     # 1. Generate centerline in-place into the orchestrator-owned output buffers.
     generate = generator_spec.generate
@@ -929,7 +944,7 @@ def _run_pipeline(
     resample_constant_spacing(
         scratch.gen_centerline, float(config.spacing), n_max,
         out_wp=scratch.cs_center, count_wp=scratch.count,
-        seg_wp=scratch.cs_seg, s_wp=scratch.cs_s,
+        seg_wp=scratch.cs_seg, s_wp=scratch.cs_s, truncated_wp=out.truncated,
     )
 
     # 3-4. Relaxation (band/L0 setup + XPBD solve) in-place, then choose its input to
@@ -960,11 +975,12 @@ def _run_pipeline(
         relax_out = scratch.cs_center
 
     # 5. Inflate (resample_uniform + frame + offset + validity) in-place. inflate_warp
-    # reads the inflate group (kappa/w/area_a/area_b) + the bridge buffers (cs_seg/cs_s/
-    # count) off the composite scratch.
+    # reads scratch.inflate (kappa/w/area_a/area_b/z + staging) and the bridge buffers
+    # (cs_seg/cs_s/count) off the composite scratch.
     return inflate_warp(
         relax_out, config, out=out, valid=scratch.gen_valid,
         count=scratch.count, scratch=scratch, seeds=seed_buf_wp,
+        truncated=out.truncated,
     )
 
 
@@ -1071,6 +1087,7 @@ def resample_constant_spacing(
     count_wp: "wp.array | None" = None,
     seg_wp: "wp.array | None" = None,
     s_wp: "wp.array | None" = None,
+    truncated_wp: "wp.array | None" = None,
 ) -> "tuple[wp.array, wp.array] | None":
     """Arc-length resample each fully-real closed loop to constant ``spacing``, padded to
     ``n_max`` with NaN.  Matches ``geometry.arc_length_resample(points, spacing=spacing,
@@ -1078,21 +1095,24 @@ def resample_constant_spacing(
 
     ``center`` must be a ``wp.array [E*N] vec2f`` flat.
 
-    In-place mode (all four pre-allocated buffers provided):
-        ``out_wp``   — [E*n_max] wp.vec2f written in-place (center output).
-        ``count_wp`` — [E] wp.int32 written in-place (real point count per env).
-        ``seg_wp``   — [E*N] wp.float32 scan scratch.
-        ``s_wp``     — [E*(N+1)] wp.float32 scan scratch.
-        Returns ``None`` (caller reads out_wp / count_wp directly). This path is
-        zero-alloc and safe inside a CUDA graph capture region.
+    In-place mode (``out_wp`` and ``count_wp`` provided):
+        ``out_wp``       — [E*n_max] wp.vec2f written in-place (center output).
+        ``count_wp``     — [E] wp.int32 written in-place (real point count per env).
+        ``seg_wp``       — [E*N] wp.float32 scan scratch.
+        ``s_wp``         — [E*(N+1)] wp.float32 scan scratch.
+        ``truncated_wp`` — [E] wp.int32 written in-place (1 where the env was truncated).
+        Returns ``None`` (caller reads out_wp / count_wp / truncated_wp directly). With
+        all five buffers provided this path is zero-alloc, does no host readback, and is
+        safe inside a CUDA graph capture region; scratch it is not given is allocated.
 
-    Allocating-mode (any buffer omitted -> allocated internally):
+    Allocating-mode (``out_wp`` or ``count_wp`` omitted -> allocated internally):
         Returns ``(out_wp, count_wp)`` — both freshly-allocated wp.arrays. This
         branch allocates; do not use inside a CUDA graph capture region.
 
-    ``count[e]`` is capped at ``n_max`` (required for fixed-buffer sizing). If the
-    true point count hits N_max, a ``RuntimeWarning`` is emitted on the non-capture
-    path (the cap is silent during CUDA graph replay). The caller MUST choose
+    ``count[e]`` is capped at ``n_max`` (required for fixed-buffer sizing). An env whose
+    true point count exceeds ``n_max`` is flagged ``truncated[e] = 1`` on device; the
+    pipeline's validity gate then fails it. Allocating mode additionally emits a
+    ``RuntimeWarning`` (a host readback); in-place mode never reads back. Choose
     ``N_max >= max(perimeter) / spacing + 1`` across all envs to avoid truncation."""
     _init()
     if count_wp is not None:
@@ -1114,30 +1134,27 @@ def resample_constant_spacing(
         seg_wp = wp.empty(E * N, dtype=wp.float32, device=dev)
     if s_wp is None:
         s_wp = wp.empty(E * (N + 1), dtype=wp.float32, device=dev)
+    if truncated_wp is None:
+        truncated_wp = wp.empty(E, dtype=wp.int32, device=dev)
 
     wp.launch(_cs_scan_k, dim=E, inputs=[center, N, float(spacing), n_max,
-              seg_wp, s_wp, count_wp], device=dev)
+              seg_wp, s_wp, count_wp, truncated_wp], device=dev)
     wp.launch(_cs_lookup_k, dim=E * n_max, inputs=[center, seg_wp, s_wp, N,
               float(spacing), n_max, count_wp, out_wp], device=dev)
     _sync(dev)
 
-    # N_max truncation warning: only on the non-capture path (a host readback is
-    # ILLEGAL during CUDA graph capture and unnecessary on replay — count is fixed).
-    # This is the ONE justified host readback in _src; gated off during capture.
-    if not _CAPTURING:
+    if _allocating:
+        # Convenience path only (it allocates, so it is never on a capture path): warn
+        # on host. The in-place path relies on the device-side truncated flag instead.
         import warnings
-        import numpy as _np
-        max_count = int(_np.max(count_wp.numpy()))
-        if max_count >= n_max:
+        if bool(truncated_wp.numpy().any()):
             warnings.warn(
-                f"constant_spacing: a track's point count hit N_max={n_max} "
+                f"constant_spacing: a track needed more than N_max={n_max} points "
                 f"(spacing={spacing}); it was truncated — increase N_max to avoid "
-                f"truncation. (CUDA graph replay cannot re-check.)",
+                f"truncation.",
                 RuntimeWarning,
                 stacklevel=2,
             )
-
-    if _allocating:
         return out_wp, count_wp
 
 
@@ -1153,8 +1170,10 @@ def validity_inplace(
     z_wp: "wp.array",
     out_valid: "wp.array",
     config,
+    truncated_wp: "wp.array | None" = None,
 ) -> None:
-    """In-place validity gate: writes directly into out_valid ([E] int32 wp.array). Zero alloc.
+    """In-place validity gate: writes directly into out_valid ([E] int32 wp.array). Zero alloc
+    when ``truncated_wp`` is provided.
 
     All arguments are wp.arrays. has_border=0 means the border self-intersection check is
     skipped (outer_wp/inner_wp are ignored by the kernel). n_max must be passed explicitly.
@@ -1173,9 +1192,14 @@ def validity_inplace(
         out_valid:    [E] int32 wp.array to write into (e.g. out.valid).
         config:       TrackGenConfig (uses half_width, turning_tol, w_floor, relax_tol,
                       z_valid_grade).
+        truncated_wp: [E] int32 N_max truncation flags from resample_constant_spacing;
+                      a flagged env is invalid. None -> no env is treated as truncated
+                      (a zero buffer is allocated).
     """
     _init()
     E = count_wp.shape[0]
+    if truncated_wp is None:
+        truncated_wp = wp.zeros(E, dtype=wp.int32, device=str(out_valid.device))
     wp.launch(
         _validity_k, dim=E,
         inputs=[
@@ -1184,6 +1208,7 @@ def validity_inplace(
             float(config.half_width), float(config.turning_tol),
             float(config.w_floor), float(config.relax_tol),
             z_wp, float(config.z_valid_grade),
+            truncated_wp,
             out_valid,
         ],
         device=str(out_valid.device),
@@ -1440,11 +1465,10 @@ class _Scratch:
     count:     [E] int32 — real-point-count output of resample_constant_spacing; also
                threaded through relax -> inflate as Track.count.
 
-    For convenience, attribute access falls through to the sub-groups: ``scratch.relaxed``
-    resolves to ``scratch.relax.relaxed``, ``scratch.kappa`` to ``scratch.inflate.kappa``,
-    etc., so flat-name call sites keep working while the grouping is type-enforced.
-    gen_centerline and gen_valid are direct slots (orchestrator-owned); they do NOT fall
-    through to scratch.gen.
+    Sub-group buffers are reached only through their group (``scratch.relax.relaxed``,
+    ``scratch.inflate.kappa``); there is no flat-name fall-through, so a generator's
+    private scratch field can never shadow a pipeline buffer of the same name. The
+    generator scratch (``.gen``) is opaque to the pipeline.
     """
 
     __slots__ = (
@@ -1477,23 +1501,6 @@ class _Scratch:
         self.cs_s = cs_s
         self.count = count
 
-    def __getattr__(self, name):
-        # Fall through to the per-concern sub-groups so flat-name accesses
-        # (scratch.relaxed, scratch.kappa, ...) keep working.
-        # __getattr__ runs only for names not found via __slots__, so the bridge fields
-        # (gen_centerline, gen_valid, cs_center, cs_seg, cs_s, count) and the sub-group
-        # handles above are never routed here.
-        for group in (self.gen, self.relax, self.inflate):
-            if group is None:
-                continue
-            if name in getattr(group, "__slots__", ()):
-                return getattr(group, name)
-            attrs = getattr(group, "__dict__", None)
-            if attrs is not None and name in attrs:
-                return getattr(group, name)
-        raise AttributeError(
-            f"{type(self).__name__!r} object has no attribute {name!r}")
-
 
 def _fill_knot_scratch(stag, config, num_envs, device) -> None:
     """Attach knot-stage scratch to ``stag`` when the profile is knot-based.
@@ -1513,7 +1520,7 @@ def _inflate_warp_alloc(config, generator_spec=None):
 
     Sizes: outer/center/inner/tangent/normal are [E*N_max] vec3f (z = 0, lifted
     from the internal 2D pipeline); arclen is
-    [E*N_max] float32; length/valid/count are [E] float32/int32/int32.
+    [E*N_max] float32; length/valid/count/truncated are [E] float32/int32/int32/int32.
     These are the flat storage shapes — reshape via wp bridge at the boundary.
 
     Also allocates the composite _Scratch holder: a GenScratch, RelaxScratch and
@@ -1544,6 +1551,7 @@ def _inflate_warp_alloc(config, generator_spec=None):
         valid=wp.empty(E, dtype=wp.int32, device=dev),
         count=wp.empty(E, dtype=wp.int32, device=dev),
         winding=wp.empty(E, dtype=wp.float32, device=dev),
+        truncated=wp.zeros(E, dtype=wp.int32, device=dev),
     )
     if generator_spec is None:
         from . import generator_registry
@@ -1700,7 +1708,8 @@ def inflate_warp(center, config, out=None,
                  valid: "wp.array | None" = None,
                  count: "wp.array | None" = None,
                  scratch: "_Scratch | None" = None,
-                 seeds: "wp.array | None" = None):
+                 seeds: "wp.array | None" = None,
+                 truncated: "wp.array | None" = None):
     """Pure-Warp inflation: resample -> frame -> offset -> z-profile -> validity -> lift.
 
     Writes results into out's wp.array Track buffers (or allocates a fresh Track).
@@ -1737,6 +1746,9 @@ def inflate_warp(center, config, out=None,
         scratch:  Optional _Scratch. Required when out is provided (owned path).
         seeds:    [E] int32 wp.array per-env base seeds for the z profiler. Required
                   when config.z_profile != "flat"; ignored on the flat path.
+        truncated: [E] int32 wp.array N_max truncation flags from
+                  resample_constant_spacing; flagged envs fail validity. None -> no env
+                  is treated as truncated (a zero buffer is allocated).
 
     Returns:
         track_gen.types.Track with wp.array fields.
@@ -1850,8 +1862,8 @@ def inflate_warp(center, config, out=None,
                          seg_wp=rs_seg_wp, s_wp=rs_s_wp, device=dev)
         _sync(dev)
 
-        # Per-point half-width kernel-filled into scratch.w.
-        wp.launch(_fill_f32_k, dim=flat, inputs=[scratch.w, hw], device=dev)
+        # Per-point half-width kernel-filled into the inflate group's w.
+        wp.launch(_fill_f32_k, dim=flat, inputs=[stag.w, hw], device=dev)
 
         # Track.count == N for all envs.
         wp.launch(_fill_i32_k, dim=E, inputs=[out.count, N], device=dev)
@@ -1865,14 +1877,14 @@ def inflate_warp(center, config, out=None,
                          seg_wp=rs_seg_wp, s_wp=rs_s_wp, device=dev)
         _sync(dev)
 
-        # Per-point half-width kernel-filled into scratch.w.
-        wp.launch(_fill_f32_k, dim=flat, inputs=[scratch.w, hw], device=dev)
+        # Per-point half-width kernel-filled into the inflate group's w.
+        wp.launch(_fill_f32_k, dim=flat, inputs=[stag.w, hw], device=dev)
 
         # Track.count == per-env real point count.
         wp.copy(out.count, cnt_wp)
 
     # 2. frame + curvature — into the vec2f tangent/normal staging buffers.
-    frame_curvature(stag.ctr2, stag.tan2, stag.nrm2, scratch.kappa, cnt_wp)
+    frame_curvature(stag.ctr2, stag.tan2, stag.nrm2, stag.kappa, cnt_wp)
 
     # 3. cumulative arc length + total length — in-place into out.arclen/out.length.
     _arclength(stag.ctr2, out.arclen, out.length, cnt_wp)
@@ -1882,13 +1894,13 @@ def inflate_warp(center, config, out=None,
 
     # 4. offset to outer/inner borders — into the vec2f outer/inner staging buffers.
     offset(stag.ctr2, stag.nrm2, hw, stag.out2, stag.inn2,
-           scratch.area_a, scratch.area_b, cnt_wp)
+           stag.area_a, stag.area_b, cnt_wp)
 
     # 4b. Elevation (2.5D): fill the per-point altitude from the configured profile.
     # CRITICAL ordering: out.arclen/out.length still hold the 2D (cum, perim) tables
     # from stage 3 here — the profiler consumes them as its plan-view arc
     # parameterization, BEFORE _track_frames3_k (stage 6, non-flat) overwrites them
-    # with 3D values. Skipped on the flat path (scratch.z stays zero-filled), which
+    # with 3D values. Skipped on the flat path (stag.z stays zero-filled), which
     # keeps the arclen/length/tangent tables byte-identical to the legacy 2D path.
     #
     # uniform/random_walk decide altitude at z_control_points arc-spaced KNOTS and
@@ -1916,12 +1928,12 @@ def inflate_warp(center, config, out=None,
     _bc = getattr(config, "validity_border_check", False)
     has_border = 1 if _bc else 0
 
-    # validity_inplace writes into out.valid directly. scratch.z drives the grade
+    # validity_inplace writes into out.valid directly. stag.z drives the grade
     # gate; on the flat path z is zero-filled and z_valid_grade defaults to 0 -> the
     # grade branch is a no-op and validity is byte-identical to the legacy path.
-    validity_inplace(stag.ctr2, scratch.w, cnt_wp, gv_wp,
+    validity_inplace(stag.ctr2, stag.w, cnt_wp, gv_wp,
                      stag.out2, stag.inn2, has_border, n_max, stag.z,
-                     out.valid, config)
+                     out.valid, config, truncated_wp=truncated)
 
     # 6. Lift the vec2f staging buffers into the public vec3f Track arrays.
     if _is_flat:

@@ -108,4 +108,5 @@ counterpart on both ``cpu`` and ``cuda``:
 
    The Fourier generator lives in ``track_gen._experimental.fourier`` and is
    **unsupported** — it is self-contained, not on the Warp pipeline, and receives no
-   compatibility guarantees.
+   compatibility guarantees.  ``track_gen._experimental`` is not shipped in the wheel;
+   it is importable only from a source checkout.

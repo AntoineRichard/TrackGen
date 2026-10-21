@@ -63,8 +63,9 @@ batch. The formula for the required size is::
 
     N_max >= floor(max_perimeter / spacing) + 1
 
-A track whose real point count exceeds ``N_max`` is silently truncated; the
-closing segment then spans the gap and the track fails validity. At the library
+A track whose real point count exceeds ``N_max`` is truncated: its closing segment
+would span the dropped arc, so the pipeline flags it (``Track.truncated[e] = 1``) and
+fails it (``Track.valid[e] = 0``). At the library
 defaults (``half_width=0.1``, auto ``spacing=0.06``) the default ``N_max=384``
 gives ample headroom (mean ~141, max ~281 points per track). For a thin-track
 regime such as ``half_width=0.03`` (auto ``spacing=0.018``, ~468 max points per

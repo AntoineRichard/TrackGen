@@ -225,11 +225,12 @@ class TrackGenConfig:
 
         .. warning::
 
-            The ``repulsive`` generator is a **host-driven, non-graph-capturable
-            optimizer** — roughly **1000× slower** than ``bezier`` (~0.18 s @ E=64,
-            ~5.1 s @ E=8192 on an RTX 4090, vs ~2 ms for bezier).  It runs eagerly on
-            CUDA every call (no captured replay).  Regenerate on a **slow cadence** or
-            in **staggered per-env slices**, not every frame.
+            The ``repulsive`` generator is an iterative optimizer — roughly **1000×
+            slower** than ``bezier`` (~0.18 s @ E=64, ~5.1 s @ E=8192 on an RTX 4090,
+            vs ~2 ms for bezier; measured when it still ran eagerly).  It is
+            graph-captured on CUDA like the other generators, but the replay still
+            runs its full fixed iteration budget.  Regenerate on a **slow cadence**
+            or in **staggered per-env slices**, not every frame.
     repulsive_grow_mult_max : float
         *Repulsive generator only.*  Upper bound of the target-perimeter multiplier
         draw.  Must be >= ``repulsive_grow_mult_min``.  Overfill ratio ≈
@@ -277,8 +278,8 @@ class TrackGenConfig:
     repulsive_resample_every : int
         *Repulsive generator only.*  Periodic arc-length reparameterization interval.
     repulsive_stall_window : int
-        *Repulsive generator only.*  Iterations between stall checks / early-exit
-        readbacks.
+        *Repulsive generator only.*  Iterations between per-env stall checks (an env
+        whose area has stopped changing is frozen on device).
     repulsive_stall_area_tol : float
         *Repulsive generator only.*  Freeze an env once it is past target length AND
         its enclosed-area relative change over a stall window is below this
@@ -467,7 +468,8 @@ class TrackGenConfig:
         resolve to > 0 after auto-coupling.
     N_max : int
         Output buffer width: maximum constant-spacing points per track.  Tracks
-        whose true ``count[e]`` exceeds ``N_max`` are truncated and fail validity.
+        whose true ``count[e]`` exceeds ``N_max`` are truncated, flagged in
+        ``Track.truncated`` and fail validity.
         Default 384: ample headroom at ``half_width = 0.1`` (spacing ≈ 0.06,
         ~141 max points), full coverage to ``half_width ≈ 0.05`` (~281 max), and
         ~98% of the ``half_width = 0.03`` regime (~468 max).  Raise ``N_max`` or
@@ -1299,7 +1301,8 @@ class Track:
     valid : wp.array
         ``[E]`` ``int32`` environment validity flags (0 or 1).  A track is valid
         when: turning number ≈ 1, no NaN points, width floor exceeded everywhere,
-        minimum thickness ≥ ``(1 − relax_tol) * half_width``, and (when
+        minimum thickness ≥ ``(1 − relax_tol) * half_width``, the track was not
+        truncated at ``N_max`` (see ``truncated``), and (when
         ``validity_border_check=True``) zero border self-intersections.  Convert via
         ``wp.to_torch(...).bool()``.
     count : wp.array
@@ -1313,6 +1316,14 @@ class Track:
         and hull wind clockwise; polar, voronoi and checkpoint wind counter-clockwise),
         so this field lets a consumer orient itself: for a CCW loop ``outer`` lies to
         the right of increasing arc length, for a CW loop to the left.
+    truncated : wp.array or None
+        ``[E]`` ``int32`` N_max truncation flags (0 or 1), written on device by the
+        constant-spacing resample.  ``1`` means the loop needed more than ``N_max``
+        points (``floor(perimeter / spacing) + 1 > N_max``), so ``count[e]`` was
+        clamped to ``N_max`` and the tail of the loop was dropped; such envs always
+        have ``valid == 0``.  Increase ``N_max`` (or ``spacing``) if any are set.
+        ``TrackGenerator`` always allocates it; ``None`` on a ``Track`` built
+        elsewhere (e.g. the standalone ``inflate_warp`` path).
     """
 
     outer: wp.array
@@ -1325,6 +1336,7 @@ class Track:
     valid: wp.array
     count: wp.array
     winding: wp.array
+    truncated: "wp.array | None" = None
 
     def clone(self) -> "Track":
         """Return a fully-owned deep copy of this Track.
@@ -1344,4 +1356,5 @@ class Track:
             valid=wp.clone(self.valid),
             count=wp.clone(self.count),
             winding=wp.clone(self.winding),
+            truncated=None if self.truncated is None else wp.clone(self.truncated),
         )

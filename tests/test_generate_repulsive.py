@@ -2,7 +2,9 @@
 
 Task 3 lands the seed-driven obstacle-layout determinism test first; Task 4 extends
 this module with the full per-generator contract (registration, output shape, closed
-loop, NaN-tail, determinism/diversity, yield, compactness, no-graph on CUDA).
+loop, NaN-tail, determinism/diversity, yield, compactness). The capture tests cover
+the fixed-schedule loop: no host sync or readback, an absorbing freeze (so per-env
+results do not depend on the rest of the batch), and graph capture + replay on CUDA.
 """
 from __future__ import annotations
 
@@ -217,7 +219,7 @@ def test_repulsive_is_registered():
     spec = reg.get("repulsive")
     assert spec.name == "repulsive"
     assert callable(spec.alloc_scratch) and callable(spec.generate)
-    assert spec.capturable is False
+    assert spec.capturable is True
 
 
 @pytest.mark.parametrize("dev", DEVS)
@@ -228,10 +230,19 @@ def test_repulsive_contract_through_tail(dev):
     gen = TrackGenerator(cfg, PerEnvSeededRNG(seeds=3, num_envs=E, device=dev))
     track = gen.generate(E)
     assert isinstance(track, Track)
+    first = track.clone()
 
-    # (h) The CUDA facade must NOT capture a graph for a non-capturable generator.
-    gen.generate(E)  # a second call would replay a captured graph if one existed
-    assert gen._graph is None
+    # (h) On CUDA the facade captures the fixed-schedule growth loop into a graph and
+    # replays it; the replay must reproduce the captured run byte for byte.
+    track = gen.generate(E)
+    if dev == "cuda":
+        assert gen._graph is not None
+    else:
+        assert gen._graph is None
+    assert np.array_equal(track.valid.numpy(), first.valid.numpy())
+    assert np.array_equal(track.count.numpy(), first.count.numpy())
+    assert np.array_equal(np.nan_to_num(track.center.numpy()),
+                          np.nan_to_num(first.center.numpy()))
 
     # (b) Raw generated centerline: [E*num_points, 2], all finite, correct shape.
     gen_center = to_t(gen._scratch.gen_centerline).view(E, N, 2)
@@ -324,8 +335,10 @@ def test_repulsive_default_yield_and_shape_cuda():
     """The spike's bar: ~64/64 through the standard tail at E=64 with default config.
 
     With the analytic-adjoint gradient the CUDA flow is byte-deterministic, so a given seed
-    yields ONE stable answer run-to-run (seed=11 -> a stable 63/64 today; the previous tape
-    path fluctuated 62-64/64 from atomic-gradient noise). The hard gate is the design contract
+    yields ONE stable answer run-to-run (seed=11 gave a stable 63/64 before the freeze became
+    absorbing; envs that freeze early no longer get later periodic resamples, so the exact
+    count may shift by an env or two; the previous tape path fluctuated 62-64/64 from
+    atomic-gradient noise). The hard gate is the design contract
     (> 0.5); the soft gate (>= 58) guards against a genuinely broken port with margin for
     config/seed variation -- not a loosened bar hiding a bad port (the port matches the spike).
     """
@@ -333,7 +346,7 @@ def test_repulsive_default_yield_and_shape_cuda():
     cfg = TrackGenConfig(generator="repulsive", num_envs=E, device="cuda")
     gen = TrackGenerator(cfg, PerEnvSeededRNG(seeds=11, num_envs=E, device="cuda"))
     track = gen.generate(E)
-    assert gen._graph is None  # eager, never captured
+    assert gen._graph is not None  # captured (fixed-schedule loop, no host readback)
 
     valid = to_t(track.valid).bool()
     yield_frac = float(valid.float().mean())
@@ -346,3 +359,64 @@ def test_repulsive_default_yield_and_shape_cuda():
     # Serpentine/foldy band: well below the round-blob gate (0.85).
     assert float(np.median(compactness)) < 0.85, (
         f"median compactness {float(np.median(compactness)):.3f} not in the foldy band")
+
+
+# ===========================================================================
+# Capture readiness: fixed schedule, absorbing freeze
+# ===========================================================================
+
+def test_repulsive_generate_has_no_host_sync_or_readback(monkeypatch):
+    """The growth loop follows a fixed host schedule: no device->host readback, no host
+    sync. Both are illegal inside a CUDA graph capture; on cpu we prove their absence by
+    making every such entry point raise while the generator body runs."""
+    E = 4
+    cfg = TrackGenConfig(generator="repulsive", num_envs=E, device="cpu", **_SMALL)
+    scratch = rep.repulsive_alloc_scratch(cfg)
+    seeds = wp.array(np.arange(E, dtype=np.int32) + 3, dtype=wp.int32, device="cpu")
+    out = wp.empty(E * int(cfg.num_points), dtype=wp.vec2f, device="cpu")
+    valid = wp.empty(E, dtype=wp.int32, device="cpu")
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("host sync/readback inside generate_repulsive_warp")
+
+    monkeypatch.setattr(wp.array, "numpy", forbidden)
+    monkeypatch.setattr(wp, "synchronize", forbidden)
+    monkeypatch.setattr(wp, "synchronize_device", forbidden)
+    monkeypatch.setattr(rep._pipe, "_sync", forbidden)
+    rep.generate_repulsive_warp(seeds, cfg, out, valid, scratch)
+    monkeypatch.undo()
+    assert np.isfinite(out.numpy()).all()
+    assert (valid.numpy() == 1).all()
+
+
+def _grow(seeds: list[int], dev: str = "cpu"):
+    """Run the generator through the tail for explicit per-env seeds; return
+    (gen_centerline [E,N,2], frozen [E], valid [E]) as numpy arrays."""
+    E = len(seeds)
+    cfg = TrackGenConfig(generator="repulsive", num_envs=E, device=dev, **_SMALL)
+    seeds_wp = wp.array(np.asarray(seeds, dtype=np.int32), dtype=wp.int32, device=dev)
+    gen = TrackGenerator(cfg, PerEnvSeededRNG(seeds=seeds_wp, num_envs=E, device=dev))
+    track = gen.generate(E)
+    N = int(cfg.num_points)
+    return (gen._scratch.gen_centerline.numpy().reshape(E, N, 2),
+            gen._scratch.gen.frozen.numpy(), track.valid.numpy())
+
+
+def test_repulsive_freeze_is_absorbing_and_batch_independent():
+    """A frozen env is never touched again, so each env's track depends only on its own
+    seed, not on which other envs share the batch.
+
+    Seeds 6..10 all freeze early; seed 5 does not. Before the freeze was absorbing, a
+    batch of only 6..10 stopped at the all-frozen early exit while the batch 3..10 kept
+    resampling its frozen envs until the iteration budget ran out, so the same seed
+    produced different tracks in the two batches. DELIBERATE OUTPUT CHANGE: envs that
+    froze before the end of the loop now keep their at-freeze shape (they skip the later
+    periodic resamples), so their tracks differ slightly from earlier releases; envs that
+    never freeze are byte-identical.
+    """
+    small_c, small_frozen, small_valid = _grow([6, 7, 8, 9, 10])
+    big_c, big_frozen, big_valid = _grow(list(range(3, 11)))
+    assert small_frozen.all(), "precondition: every env in the small batch freezes"
+    assert not big_frozen.all(), "precondition: the big batch has a never-frozen env"
+    assert np.array_equal(small_c, big_c[3:])
+    assert np.array_equal(small_valid, big_valid[3:])

@@ -122,7 +122,8 @@ def test_relax_solver_energy_raises():
     """TrackGenerator must reject relax_solver != 'xpbd' at construction time."""
     cfg = TrackGenConfig(relax_solver="energy", num_envs=4)
     rng = _make_rng(4)
-    with pytest.raises(AssertionError):
+    # ValueError, not assert: the check must survive ``python -O``.
+    with pytest.raises(ValueError, match="relax_solver"):
         TrackGenerator(cfg, rng)
 
 
@@ -130,7 +131,16 @@ def test_smooth_finish_raises():
     """TrackGenerator must reject smooth_finish=True at construction time."""
     cfg = TrackGenConfig(smooth_finish=True, num_envs=4)
     rng = _make_rng(4)
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValueError, match="smooth_finish"):
+        TrackGenerator(cfg, rng)
+
+
+def test_rng_seed_count_mismatch_raises():
+    """An rng sized for a different batch is rejected at construction (mirrors
+    GateGenerator), not as an opaque wp.copy size error on the first generate()."""
+    cfg = TrackGenConfig(num_envs=4, device="cpu")
+    rng = _make_rng(3)
+    with pytest.raises(ValueError, match="num_envs"):
         TrackGenerator(cfg, rng)
 
 

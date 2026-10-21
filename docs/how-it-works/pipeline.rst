@@ -18,7 +18,7 @@ Goals
 3. **A single replayable CUDA graph for capturable generators.** When
    ``GeneratorSpec.capturable=True``, the pipeline is static (fixed shapes, fixed iteration
    counts, no host-side branching on tensor data) and captures into one replayable CUDA
-   graph. ``repulsive`` is host-controlled/eager and does not capture a CUDA graph.
+   graph. All shipped generators are capturable.
 
 Data flow
 ---------

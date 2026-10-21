@@ -16,11 +16,11 @@ registered generator stays selectable via ``config.generator``.
 
 .. warning::
 
-   ``repulsive`` is a host-driven, non-graph-capturable optimizer: it does not benefit from
-   CUDA-graph replay the way the other five generators do, so its ``gen_ms_per_call`` is
-   measured on ``cuda`` directly rather than ``cpu`` (a CPU eager run would be even slower
-   and less representative of production use) and is **not directly comparable** to the
-   other rows. Indicative RTX-4090 wall-clock: ~0.2 s at E=64 and ~5 s at E=8192
+   ``repulsive`` is an iterative optimizer: even graph-captured, each call runs its full
+   fixed iteration budget, so its ``gen_ms_per_call`` is measured on ``cuda`` directly
+   rather than ``cpu`` (a CPU run would be even slower and less representative of
+   production use) and is **not directly comparable** to the other rows.  The figures
+   below were taken when it still ran eagerly. Indicative RTX-4090 wall-clock: ~0.2 s at E=64 and ~5 s at E=8192
    (~3 ms/track amortized), versus ~2 ms per batch for ``bezier`` — roughly **1000×**
    slower. The number is also throttle-sensitive (±1.5× from GPU clock/pool state). See
    :doc:`repulsive` for the full cost discussion and the recommended regeneration-cadence /
