@@ -30,7 +30,8 @@ import numpy as np
 import warp as wp
 
 from .collision_geom import _safe_normalize2
-from .runtime import _init, _sync
+from ..exec.context import LaunchContext
+from .runtime import _init, _sync  # noqa: F401  (_sync: legacy re-export)
 from .types import Track
 
 
@@ -360,26 +361,31 @@ class PropSampler:
                 "batch to derive a buffer size; pass max_props explicitly")
         return max(3, int(np.ceil(1.5 * best / self._spacing)))
 
-    def sample(self) -> PropSet:
+    def sample(self, stream=None) -> PropSet:
         """Resample the bound boundary; returns the preallocated :class:`PropSet`.
 
         Two kernel launches (scan + place); reads the Track buffers as they
         are NOW, so it reflects the latest ``generate()`` with no rebind.
+
+        Args:
+            stream: optional wp.Stream (or 'torch') to run on; by default the
+                stream is resolved per track_gen.exec (an enclosing
+                torch.cuda.graph capture is adopted, else Warp's current
+                stream).
         """
+        ctx = LaunchContext.for_call(self._device, stream)
         t = self._track
         p = self._props
-        wp.launch(
-            _scan_boundary_k, dim=self._E,
-            inputs=[self._points, t.count, self._n_max, self._spacing, self._M,
-                    self._cum, p.count, p.step, p.truncated],
-            device=self._device,
+        ctx.launch(
+            _scan_boundary_k, self._E,
+            [self._points, t.count, self._n_max, self._spacing, self._M,
+             self._cum, p.count, p.step, p.truncated],
         )
-        wp.launch(
-            _place_props_k, dim=self._E * self._M,
-            inputs=[self._points, t.count, self._n_max, self._cum,
-                    p.count, p.step, self._M, self._mode_int,
-                    p.position, p.tangent, p.yaw, p.length],
-            device=self._device,
+        ctx.launch(
+            _place_props_k, self._E * self._M,
+            [self._points, t.count, self._n_max, self._cum,
+             p.count, p.step, self._M, self._mode_int,
+             p.position, p.tangent, p.yaw, p.length],
         )
-        _sync(self._device)
+        ctx.sync()
         return p

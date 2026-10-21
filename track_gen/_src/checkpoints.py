@@ -31,7 +31,8 @@ import warp as wp
 
 from .collision_geom import _safe_normalize3
 from .props import _scan_boundary_k
-from .runtime import _BIG, _init, _sync
+from ..exec.context import LaunchContext
+from .runtime import _BIG, _init, _sync  # noqa: F401  (_sync: legacy re-export)
 from .types import GateSequence, Track
 
 
@@ -279,22 +280,28 @@ class CheckpointSampler:
                 "max_checkpoints explicitly")
         return max(3, int(np.ceil(1.5 * best / self._spacing)))
 
-    def sample(self) -> CheckpointSet:
-        """Refresh the owned CheckpointSet from the bound Track; returns it."""
+    def sample(self, stream=None) -> CheckpointSet:
+        """Refresh the owned CheckpointSet from the bound Track; returns it.
+
+        Args:
+            stream: optional wp.Stream (or 'torch') to run on; by default the
+                stream is resolved per track_gen.exec (an enclosing
+                torch.cuda.graph capture is adopted, else Warp's current
+                stream).
+        """
+        ctx = LaunchContext.for_call(self._device, stream)
         t = self._track
         s = self._set
-        wp.launch(
-            _scan_boundary_k, dim=self._E,
-            inputs=[t.center, t.count, self._n_max, self._spacing, self._M,
-                    self._cum, s.count, self.step, self.truncated],
-            device=self._device,
+        ctx.launch(
+            _scan_boundary_k, self._E,
+            [t.center, t.count, self._n_max, self._spacing, self._M,
+             self._cum, s.count, self.step, self.truncated],
         )
-        wp.launch(
-            _place_checkpoints_k, dim=self._E * self._M,
-            inputs=[t.center, t.inner, t.outer, t.count, self._n_max,
-                    self._cum, s.count, self.step, self._M,
-                    s.position, s.left, s.right, s.tangent, s.up_half],
-            device=self._device,
+        ctx.launch(
+            _place_checkpoints_k, self._E * self._M,
+            [t.center, t.inner, t.outer, t.count, self._n_max,
+             self._cum, s.count, self.step, self._M,
+             s.position, s.left, s.right, s.tangent, s.up_half],
         )
-        _sync(self._device)
+        ctx.sync()
         return s

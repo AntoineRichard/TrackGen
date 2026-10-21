@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import warp as wp
 
+from ..exec.context import LaunchContext, resolve as _resolve_ctx
 from .collision_geom import _frame_quat, _safe_normalize3
-# Shared runtime helpers; _sync is a debug-only no-op unless TRACKGEN_DEBUG_SYNC=1.
+# Shared runtime helpers. _sync is re-exported for importers only: library code
+# syncs through ctx.sync() (a debug-only no-op unless TRACKGEN_DEBUG_SYNC=1).
 from .runtime import _init, _sync  # noqa: F401
 from .types import GateGenConfig, GateSequence
 
@@ -554,16 +556,18 @@ def alloc_gate_sequence(config: GateGenConfig) -> GateSequence:
     )
     nan3 = wp.vec3f(wp.nan, wp.nan, wp.nan)
     nan_q = wp.quatf(wp.nan, wp.nan, wp.nan, wp.nan)
-    wp.launch(_fill_vec3_k, dim=flat, inputs=[gates.position, nan3], device=dev)
-    wp.launch(_fill_vec3_k, dim=flat, inputs=[gates.tangent, nan3], device=dev)
-    wp.launch(_fill_vec3_k, dim=flat, inputs=[gates.forward, nan3], device=dev)
-    wp.launch(_fill_quat_k, dim=flat, inputs=[gates.orientation, nan_q], device=dev)
-    wp.launch(_fill_f32_k, dim=flat, inputs=[gates.half_size, wp.nan], device=dev)
-    wp.launch(_fill_vec3_k, dim=flat, inputs=[gates.left, nan3], device=dev)
-    wp.launch(_fill_vec3_k, dim=flat, inputs=[gates.right, nan3], device=dev)
-    wp.launch(_fill_i32_k, dim=E, inputs=[gates.valid, 0], device=dev)
-    wp.launch(_fill_i32_k, dim=E, inputs=[gates.count, 0], device=dev)
-    _sync(dev)
+    # Construction-time init: still stream-explicit (resolved once for this call).
+    ctx = LaunchContext.for_call(dev)
+    ctx.launch(_fill_vec3_k, flat, [gates.position, nan3])
+    ctx.launch(_fill_vec3_k, flat, [gates.tangent, nan3])
+    ctx.launch(_fill_vec3_k, flat, [gates.forward, nan3])
+    ctx.launch(_fill_quat_k, flat, [gates.orientation, nan_q])
+    ctx.launch(_fill_f32_k, flat, [gates.half_size, wp.nan])
+    ctx.launch(_fill_vec3_k, flat, [gates.left, nan3])
+    ctx.launch(_fill_vec3_k, flat, [gates.right, nan3])
+    ctx.launch(_fill_i32_k, E, [gates.valid, 0])
+    ctx.launch(_fill_i32_k, E, [gates.count, 0])
+    ctx.sync()
     return gates
 
 
@@ -576,37 +580,41 @@ def order_points(
     ordering: str,
     keys: wp.array,
     dst: wp.array,
+    ctx: "LaunchContext | None" = None,
 ) -> None:
-    """Order source points into a fixed gate buffer and NaN-pad inactive slots."""
+    """Order source points into a fixed gate buffer and NaN-pad inactive slots.
+
+    Args:
+        ctx: optional track_gen.exec.LaunchContext; default resolves the
+            device's stream (see track_gen.exec).
+    """
     _init()
     E = count.shape[0]
     dev = str(dst.device)
+    ctx = _resolve_ctx(ctx, dev)
     src_stride_i = int(src_stride)
     max_gates_i = int(max_gates)
     if ordering == "raw":
-        wp.launch(
+        ctx.launch(
             _order_raw_k,
-            dim=E * max_gates_i,
-            inputs=[src, src_stride_i, count, max_gates_i, dst],
-            device=dev,
+            E * max_gates_i,
+            [src, src_stride_i, count, max_gates_i, dst],
         )
     elif ordering == "ccw":
-        wp.launch(
+        ctx.launch(
             _order_ccw_k,
-            dim=E,
-            inputs=[src, src_stride_i, count, max_gates_i, keys, dst],
-            device=dev,
+            E,
+            [src, src_stride_i, count, max_gates_i, keys, dst],
         )
     elif ordering == "random_pairs":
-        wp.launch(
+        ctx.launch(
             _order_random_pairs_k,
-            dim=E,
-            inputs=[seeds_wp, src, src_stride_i, count, max_gates_i, int(_ORDER_SALT), keys, dst],
-            device=dev,
+            E,
+            [seeds_wp, src, src_stride_i, count, max_gates_i, int(_ORDER_SALT), keys, dst],
         )
     else:
         raise ValueError(f"unsupported gate ordering {ordering!r}")
-    _sync(dev)
+    ctx.sync()
 
 
 def finish_ordered_gates(
@@ -619,6 +627,7 @@ def finish_ordered_gates(
     keys: wp.array,
     out,
     normalize_extent: float | None = None,
+    ctx: "LaunchContext | None" = None,
 ) -> None:
     """Order gates into the 2D staging buffer, optionally normalize, copy count.
 
@@ -627,12 +636,18 @@ def finish_ordered_gates(
     ordering/normalization kernels operate on. Tangents are no longer computed
     here — the pipeline lifts the staged positions to the public vec3f buffers
     and derives tangents from those (see ``_run_gate_pipeline``).
+
+    Args:
+        ctx: optional track_gen.exec.LaunchContext; default resolves the
+            device's stream (see track_gen.exec).
     """
+    ctx = _resolve_ctx(ctx, str(out.position.device))
     G = int(max_gates)
-    order_points(seeds_wp, src, int(src_stride), count, G, ordering, keys, out.position)
+    order_points(seeds_wp, src, int(src_stride), count, G, ordering, keys, out.position,
+                 ctx=ctx)
     if normalize_extent is not None:
-        normalize_positions(out.position, G, count, float(normalize_extent))
-    wp.copy(out.count, count)
+        normalize_positions(out.position, G, count, float(normalize_extent), ctx=ctx)
+    ctx.copy(out.count, count)
 
 
 def normalize_positions(
@@ -640,17 +655,23 @@ def normalize_positions(
     max_gates: int,
     count: wp.array,
     target_extent: float,
+    ctx: "LaunchContext | None" = None,
 ) -> None:
-    """Center and scale each env's real gate positions by bbox extent, then NaN-pad."""
+    """Center and scale each env's real gate positions by bbox extent, then NaN-pad.
+
+    Args:
+        ctx: optional track_gen.exec.LaunchContext; default resolves the
+            device's stream (see track_gen.exec).
+    """
     _init()
     dev = str(position.device)
-    wp.launch(
+    ctx = _resolve_ctx(ctx, dev)
+    ctx.launch(
         _normalize_positions_k,
-        dim=count.shape[0],
-        inputs=[position, int(max_gates), count, float(target_extent)],
-        device=dev,
+        count.shape[0],
+        [position, int(max_gates), count, float(target_extent)],
     )
-    _sync(dev)
+    ctx.sync()
 
 
 def relax_gate_spheres(
@@ -659,19 +680,25 @@ def relax_gate_spheres(
     count: wp.array,
     target_distance: float,
     iterations: int,
+    ctx: "LaunchContext | None" = None,
 ) -> None:
-    """Iteratively separate overlapping gate center spheres/disks in-place."""
+    """Iteratively separate overlapping gate center spheres/disks in-place.
+
+    Args:
+        ctx: optional track_gen.exec.LaunchContext; default resolves the
+            device's stream (see track_gen.exec).
+    """
     _init()
     if float(target_distance) <= 0.0 or int(iterations) <= 0:
         return
     dev = str(position.device)
-    wp.launch(
+    ctx = _resolve_ctx(ctx, dev)
+    ctx.launch(
         _relax_gate_spheres_k,
-        dim=count.shape[0],
-        inputs=[position, int(max_gates), count, float(target_distance), int(iterations)],
-        device=dev,
+        count.shape[0],
+        [position, int(max_gates), count, float(target_distance), int(iterations)],
     )
-    _sync(dev)
+    ctx.sync()
 
 
 def tangents_from_positions(
@@ -679,18 +706,24 @@ def tangents_from_positions(
     tangent: wp.array,
     max_gates: int,
     count: wp.array,
+    ctx: "LaunchContext | None" = None,
 ) -> None:
-    """Write raw central-difference tangents over each env's real count."""
+    """Write raw central-difference tangents over each env's real count.
+
+    Args:
+        ctx: optional track_gen.exec.LaunchContext; default resolves the
+            device's stream (see track_gen.exec).
+    """
     _init()
     dev = str(tangent.device)
+    ctx = _resolve_ctx(ctx, dev)
     G = int(max_gates)
-    wp.launch(
+    ctx.launch(
         _tangents_from_positions_k,
-        dim=count.shape[0] * G,
-        inputs=[position, tangent, G, count],
-        device=dev,
+        count.shape[0] * G,
+        [position, tangent, G, count],
     )
-    _sync(dev)
+    ctx.sync()
 
 
 def _gate_center_distance(config: GateGenConfig) -> float:
@@ -701,6 +734,7 @@ def finalize_gate_sequence(
     gates: GateSequence,
     config: GateGenConfig,
     fallbacks: "wp.array | None" = None,
+    ctx: "LaunchContext | None" = None,
 ) -> None:
     """Normalize tangents, derive gate frames/endpoints, NaN-pad, and validate.
 
@@ -708,20 +742,25 @@ def finalize_gate_sequence(
     (near-vertical/degenerate tangents); it is zeroed here each run. ``None``
     (convenience/test path) allocates a throwaway buffer — pass a persistent
     buffer on capturable paths.
+
+    Args:
+        ctx: optional track_gen.exec.LaunchContext; default resolves the
+            device's stream (see track_gen.exec).
     """
     _init()
     E = gates.count.shape[0]
     G = int(config.max_gates)
     dev = str(gates.position.device)
+    ctx = _resolve_ctx(ctx, dev)
     min_center_distance = _gate_center_distance(config)
     align_full = int(config.gate_align == "full_tangent")
     if fallbacks is None:
         fallbacks = wp.empty(E, dtype=wp.int32, device=dev)
-    wp.launch(_fill_i32_k, dim=E, inputs=[fallbacks, 0], device=dev)
-    wp.launch(
+    ctx.launch(_fill_i32_k, E, [fallbacks, 0])
+    ctx.launch(
         _finalize_frame_k,
-        dim=E * G,
-        inputs=[
+        E * G,
+        [
             gates.position,
             gates.tangent,
             gates.forward,
@@ -735,12 +774,11 @@ def finalize_gate_sequence(
             align_full,  # yaw_only (0) planar frames vs full_tangent (1)
             fallbacks,
         ],
-        device=dev,
     )
-    wp.launch(
+    ctx.launch(
         _finalize_validity_k,
-        dim=E,
-        inputs=[
+        E,
+        [
             gates.position,
             gates.tangent,
             gates.forward,
@@ -756,9 +794,8 @@ def finalize_gate_sequence(
             float(config.z_valid_grade),
             gates.valid,
         ],
-        device=dev,
     )
-    _sync(dev)
+    ctx.sync()
 
 
 class _GateStaging:
@@ -810,6 +847,7 @@ def _run_gate_pipeline(
     out: GateSequence,
     scratch,
     generator_spec,
+    ctx: "LaunchContext | None" = None,
 ) -> GateSequence:
     """Run a native gate generator into ``out`` and finalize the common fields.
 
@@ -819,6 +857,16 @@ def _run_gate_pipeline(
     ``z`` scratch — all zeros until a z-profile stage writes it), tangents are
     derived from the lifted positions, and the frame/validity finalization
     runs on the vec3f arrays.
+
+    Every stage runs on ``ctx``'s stream. A generator whose spec sets
+    ``accepts_ctx`` gets ``ctx=ctx``; a legacy generator runs inside
+    ``ctx.scope()`` so the ``warp_gate`` / ``warp_pipeline`` helpers it calls
+    inherit the stream (its own direct ``wp.launch`` calls still use Warp's
+    current stream).
+
+    Args:
+        ctx: optional track_gen.exec.LaunchContext; default resolves the
+            device's stream (see track_gen.exec).
     """
     from . import warp_zprofile
 
@@ -826,26 +874,33 @@ def _run_gate_pipeline(
     gen_scratch, pos2, cum, perim, z, fallbacks = scratch
     G = int(config.max_gates)
     dev = str(out.position.device)
+    ctx = _resolve_ctx(ctx, dev)
     staging = _GateStaging(pos2, out.count)
-    generator_spec.generate(seed_buf_wp, config, staging, gen_scratch)
+    if getattr(generator_spec, "accepts_ctx", False):
+        generator_spec.generate(seed_buf_wp, config, staging, gen_scratch, ctx=ctx)
+    else:
+        # Legacy plugin: no ctx= keyword. Make ctx ambient so the helpers it calls
+        # with ctx=None resolve to this call's stream.
+        with ctx.scope():
+            generator_spec.generate(seed_buf_wp, config, staging, gen_scratch)
     min_center_distance = _gate_center_distance(config)
     solve_iters = int(getattr(config, "gate_solve_iters", 0))
     if solve_iters > 0 and min_center_distance > 0.0:
-        relax_gate_spheres(pos2, G, out.count, min_center_distance, solve_iters)
+        relax_gate_spheres(pos2, G, out.count, min_center_distance, solve_iters, ctx=ctx)
     # Z profile runs on the final ordered/relaxed 2D anchors, before the lift.
     # It writes every real slot and zeroes padding, so the z scratch is fully
     # overwritten each run (capture-safe: launches only, no alloc/sync/branch).
     # gate_cum_perim derives (cum, perim) from the anchors; flat doesn't need
     # them (matches the original conditional cum-chords launch).
     if config.z_profile != "flat":
-        warp_zprofile.gate_cum_perim(pos2, out.count, G, cum, perim)
-    warp_zprofile.apply_z_profile(config, seed_buf_wp, out.count, G, cum, perim, z)
-    wp.launch(
+        warp_zprofile.gate_cum_perim(pos2, out.count, G, cum, perim, ctx=ctx)
+    warp_zprofile.apply_z_profile(config, seed_buf_wp, out.count, G, cum, perim, z,
+                                  ctx=ctx)
+    ctx.launch(
         _lift_positions_k,
-        dim=int(pos2.shape[0]),
-        inputs=[pos2, z, out.position],
-        device=dev,
+        int(pos2.shape[0]),
+        [pos2, z, out.position],
     )
-    tangents_from_positions(out.position, out.tangent, G, out.count)
-    finalize_gate_sequence(out, config, fallbacks=fallbacks)
+    tangents_from_positions(out.position, out.tangent, G, out.count, ctx=ctx)
+    finalize_gate_sequence(out, config, fallbacks=fallbacks, ctx=ctx)
     return out

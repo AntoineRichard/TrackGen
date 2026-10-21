@@ -20,6 +20,15 @@ class GateGeneratorSpec:
                 per-call allocation; ``GateGenerator`` runs it EAGERLY on CUDA every
                 call (the same code path as ``cpu``), never building a ``wp.Graph``.
                 Mirrors ``GeneratorSpec.capturable``.
+    accepts_ctx: ``True`` when ``generate`` accepts a ``ctx=`` keyword (a
+                ``track_gen.exec.LaunchContext``) and emits all of its device work
+                through it; ``warp_gate._run_gate_pipeline`` then calls
+                ``generate(seeds_wp, config, out, scratch, ctx=ctx)``. Legacy plugins
+                leave it ``False`` and the pipeline runs ``generate`` inside
+                ``ctx.scope()``, so the ``warp_gate`` / ``warp_pipeline`` helpers they
+                call (which default ``ctx=None`` to the ambient context) inherit the
+                call's stream; their own direct ``wp.launch`` calls still go to Warp's
+                current stream. Mirrors ``GeneratorSpec.accepts_ctx``.
     """
 
     name: str
@@ -28,6 +37,7 @@ class GateGeneratorSpec:
     max_gates: Callable
     supported_orderings: frozenset[str]
     capturable: bool = True
+    accepts_ctx: bool = False
 
 
 GATE_GENERATORS: dict[str, GateGeneratorSpec] = {}

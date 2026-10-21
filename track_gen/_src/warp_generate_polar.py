@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import warp as wp
 
+from ..exec.context import LaunchContext, resolve as _resolve_ctx
 from . import warp_pipeline as _pipe
 
 # Target longest-bbox extent (in units of config.scale) the generated loop is normalized
@@ -177,14 +178,19 @@ def polar_alloc_scratch(config):
 
 def generate_polar_warp(seeds_wp: wp.array, config,
                         out_centerline: wp.array, out_valid_wp: wp.array,
-                        scratch) -> None:
+                        scratch, ctx: "LaunchContext | None" = None) -> None:
     """Periodic polar-knot centerline generation - in-place owned path.
 
     Draws per-env radial/angle control knots, evaluates a periodic cubic spline, arc-length
     resamples it to ``config.num_points``, normalizes the output scale, and marks the
     generation stage valid. Pure Warp, zero per-call allocation, graph-capturable.
+
+    Args:
+        ctx: optional track_gen.exec.LaunchContext; default resolves the
+            device's stream (see track_gen.exec).
     """
     _pipe._init()
+    ctx = _resolve_ctx(ctx, str(out_centerline.device))
     assert scratch is not None, "generate_polar_warp requires scratch"
 
     E = int(config.num_envs)
@@ -201,20 +207,17 @@ def generate_polar_warp(seeds_wp: wp.array, config,
     angular_jitter = min(max(float(getattr(config, "polar_angular_jitter", 0.30)), 0.0), 0.45)
     target_extent = float(config.scale) * _BEZIER_EXTENT
 
-    wp.launch(_polar_controls_k, dim=E,
-              inputs=[seeds_wp, K, radial_jitter, angular_jitter, _BASE_RADIUS,
-                      scratch.controls],
-              device=dev)
-    wp.launch(_polar_spline_dense_k, dim=E,
-              inputs=[scratch.controls, K, npseg, scratch.dense],
-              device=dev)
+    ctx.launch(_polar_controls_k, E,
+               [seeds_wp, K, radial_jitter, angular_jitter, _BASE_RADIUS,
+                scratch.controls])
+    ctx.launch(_polar_spline_dense_k, E, [scratch.controls, K, npseg, scratch.dense])
     _pipe._arc_resample_inplace(scratch.dense, M, N,
                                 scratch.arc_real, scratch.arc_seg, scratch.arc_s,
-                                scratch.arc_cr, scratch.arc_co, out_centerline, dev)
-    wp.launch(_normalize_centerline_k, dim=E,
-              inputs=[out_centerline, N, target_extent], device=dev)
-    wp.launch(_pipe._fill_i32_k, dim=E, inputs=[out_valid_wp, 1], device=dev)
-    _pipe._sync(dev)
+                                scratch.arc_cr, scratch.arc_co, out_centerline, dev,
+                                ctx=ctx)
+    ctx.launch(_normalize_centerline_k, E, [out_centerline, N, target_extent])
+    ctx.launch(_pipe._fill_i32_k, E, [out_valid_wp, 1])
+    ctx.sync()
 
 
 from . import generator_registry as _registry  # noqa: E402
@@ -222,4 +225,5 @@ _registry.register(_registry.GeneratorSpec(
     name="polar",
     alloc_scratch=polar_alloc_scratch,
     generate=generate_polar_warp,
+    accepts_ctx=True,
 ))

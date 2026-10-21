@@ -47,6 +47,7 @@ from __future__ import annotations
 import numpy as np
 import warp as wp
 
+from ..exec.context import LaunchContext, resolve as _resolve_ctx
 from . import warp_pipeline as _pipe
 
 # --- Obstacle layout constants (mirror the spike's sample_obstacles reference layout) ---
@@ -167,15 +168,20 @@ def _sample_obstacles_k(
 
 def _sample_obstacles_inplace(seeds_wp: wp.array, config,
                               obs_pts: wp.array, obs_mw: wp.array,
-                              device: str) -> None:
-    """Launch the seed-driven obstacle kernel in place. obs_pts/obs_mw are [E*M]."""
+                              device: str, ctx: "LaunchContext | None" = None) -> None:
+    """Launch the seed-driven obstacle kernel in place. obs_pts/obs_mw are [E*M].
+
+    Args:
+        ctx: optional track_gen.exec.LaunchContext; default resolves the
+            device's stream (see track_gen.exec).
+    """
     _pipe._init()
+    ctx = _resolve_ctx(ctx, device)
     s = _RepulsiveScalars(config)
-    wp.launch(_sample_obstacles_k, dim=s.E,
-              inputs=[seeds_wp, s.r_dom, s.r_init, s.r_frac_lo, s.r_frac_hi, s.c_frac,
-                      s.k_min, s.k_max, s.n_wall, s.n_disc, s.M, float("nan"),
-                      obs_pts, obs_mw],
-              device=device)
+    ctx.launch(_sample_obstacles_k, s.E,
+               [seeds_wp, s.r_dom, s.r_init, s.r_frac_lo, s.r_frac_hi, s.c_frac,
+                s.k_min, s.k_max, s.n_wall, s.n_disc, s.M, float("nan"),
+                obs_pts, obs_mw])
     # No host sync here: the growth-loop launches that consume obs_pts/obs_mw are already
     # stream-ordered after this kernel. (Callers that read obs back on the host, e.g.
     # tests, go through wp.array.numpy(), which synchronizes on its own.)
@@ -739,7 +745,7 @@ def repulsive_alloc_scratch(config):
 
 def generate_repulsive_warp(seeds_wp: wp.array, config,
                             out_centerline: wp.array, out_valid_wp: wp.array,
-                            scratch) -> None:
+                            scratch, ctx: "LaunchContext | None" = None) -> None:
     """Grow E closed centerlines from small circles with the pure-Warp TP-Sobolev flow and
     write the final ``[E*num_points]`` closed loops into ``out_centerline`` (valid=1 for all
     envs; the shared downstream gate decides real validity).
@@ -750,8 +756,13 @@ def generate_repulsive_warp(seeds_wp: wp.array, config,
     hand-written analytic adjoints (per-vertex gather, no atomics), so the flow is
     byte-deterministic per device. Ported from the validated spike ``grow_warp.grow_warp``
     (with the tape replaced).
+
+    Args:
+        ctx: optional track_gen.exec.LaunchContext; default resolves the
+            device's stream (see track_gen.exec).
     """
     _pipe._init()
+    ctx = _resolve_ctx(ctx, str(out_centerline.device))
     assert scratch is not None, "generate_repulsive_warp requires scratch"
     s = scratch
     E = s.E
@@ -777,17 +788,16 @@ def generate_repulsive_warp(seeds_wp: wp.array, config,
     center = s.center
 
     # 1. Seed-driven obstacle layout + per-env target length.
-    _sample_obstacles_inplace(seeds_wp, config, s.obs_pts, s.obs_mw, dev)
+    _sample_obstacles_inplace(seeds_wp, config, s.obs_pts, s.obs_mw, dev, ctx=ctx)
     grow_lo = float(config.repulsive_grow_mult_min)
     grow_hi = float(config.repulsive_grow_mult_max)
-    wp.launch(_seed_lfinal_k, dim=E,
-              inputs=[seeds_wp, s.r_init, grow_lo, grow_hi,
-                      s.L_final, s.L_init, s.L_target, s.reached, s.frozen, s.area_prev],
-              device=dev)
+    ctx.launch(_seed_lfinal_k, E,
+               [seeds_wp, s.r_init, grow_lo, grow_hi,
+                s.L_final, s.L_init, s.L_target, s.reached, s.frozen, s.area_prev])
 
     # 2. Initial circle at the coarsest stage prefix.
     N0 = stages[0]
-    wp.launch(_init_circle_k, dim=(E, N0), inputs=[center, N0, s.r_init], device=dev)
+    ctx.launch(_init_circle_k, (E, N0), [center, N0, s.r_init])
 
     stage_idx = 0
     Ncur = N0
@@ -801,8 +811,8 @@ def generate_repulsive_warp(seeds_wp: wp.array, config,
         _pipe._arc_resample_inplace(
             center[0:E * Ncur], Ncur, Nnew,
             s.arc_real[0:E * Ncur], s.rs_seg[0:E * Ncur], s.rs_s[0:E * (Ncur + 1)],
-            s.arc_cr, s.arc_co, s.rs_out[0:E * Nnew], dev)
-        wp.copy(center, s.rs_out, count=E * Nnew)
+            s.arc_cr, s.arc_co, s.rs_out[0:E * Nnew], dev, ctx=ctx)
+        ctx.copy(center, s.rs_out, count=E * Nnew)
         Ncur = Nnew
 
     for it in range(n_iters):
@@ -813,54 +823,51 @@ def generate_repulsive_warp(seeds_wp: wp.array, config,
         h_wp = s.h_by_n[Ncur]
 
         # 1. ratchet target + deactivation flag
-        wp.launch(_ratchet_k, dim=E, inputs=[s.L_target, s.L_final, growth, s.reached], device=dev)
+        ctx.launch(_ratchet_k, E, [s.L_target, s.L_final, growth, s.reached])
 
         # 2. energy gradient via hand-written analytic adjoints (all 3 terms -> s.grad).
         #    Per-vertex gather, no atomics -> byte-deterministic per device. Per-vertex
         #    tangents/weights are precomputed once (O(E*N)) and shared by both pair kernels.
-        wp.launch(_tangent_weight_k, dim=(E, Ncur),
-                  inputs=[center, Ncur, s.frozen, s.tang, s.wdual], device=dev)
-        wp.launch(_tp_prepass_k, dim=(E, Ncur),
-                  inputs=[center, Ncur, alpha, beta, eps, s.frozen,
-                          s.tang, s.wdual, s.wcoef, s.btan], device=dev)
-        wp.launch(_len_coef_k, dim=E,
-                  inputs=[center, Ncur, s.L_target, s.L_init, w_len, s.frozen,
-                          s.len_coef, s.peri_e], device=dev)
-        wp.launch(_grad_gather_k, dim=(E, Ncur),
-                  inputs=[center, Ncur, alpha, beta, eps, s.tang, s.wdual, s.wcoef, s.btan,
-                          s.obs_pts, s.obs_mw, M, p_exp, s.reached,
-                          n_wall, deac_i, s.len_coef, s.frozen, s.grad], device=dev)
+        ctx.launch(_tangent_weight_k, (E, Ncur), [center, Ncur, s.frozen, s.tang, s.wdual])
+        ctx.launch(_tp_prepass_k, (E, Ncur),
+                   [center, Ncur, alpha, beta, eps, s.frozen,
+                    s.tang, s.wdual, s.wcoef, s.btan])
+        ctx.launch(_len_coef_k, E,
+                   [center, Ncur, s.L_target, s.L_init, w_len, s.frozen,
+                    s.len_coef, s.peri_e])
+        ctx.launch(_grad_gather_k, (E, Ncur),
+                   [center, Ncur, alpha, beta, eps, s.tang, s.wdual, s.wcoef, s.btan,
+                    s.obs_pts, s.obs_mw, M, p_exp, s.reached,
+                    n_wall, deac_i, s.len_coef, s.frozen, s.grad])
 
         # 3. Sobolev precondition g = A^{-1} grad
-        wp.launch(_conv_k, dim=(E, Ncur), inputs=[s.grad, h_wp, Ncur, s.frozen, s.g], device=dev)
+        ctx.launch(_conv_k, (E, Ncur), [s.grad, h_wp, Ncur, s.frozen, s.g])
         # 4. length-gradient Sobolev-orthogonal projection
-        wp.launch(_length_grad_k, dim=(E, Ncur), inputs=[center, Ncur, s.lg], device=dev)
-        wp.launch(_conv_k, dim=(E, Ncur), inputs=[s.lg, h_wp, Ncur, s.frozen, s.ainv_lg], device=dev)
-        wp.launch(_numden_k, dim=E, inputs=[s.g, s.lg, s.ainv_lg, Ncur, s.num, s.den], device=dev)
-        wp.launch(_project_k, dim=(E, Ncur), inputs=[s.g, s.ainv_lg, Ncur, s.num, s.den], device=dev)
+        ctx.launch(_length_grad_k, (E, Ncur), [center, Ncur, s.lg])
+        ctx.launch(_conv_k, (E, Ncur), [s.lg, h_wp, Ncur, s.frozen, s.ainv_lg])
+        ctx.launch(_numden_k, E, [s.g, s.lg, s.ainv_lg, Ncur, s.num, s.den])
+        ctx.launch(_project_k, (E, Ncur), [s.g, s.ainv_lg, Ncur, s.num, s.den])
         # 5. barycenter pin + normalized step
-        wp.launch(_gmean_k, dim=E, inputs=[s.g, Ncur, s.gmean], device=dev)
-        wp.launch(_gmax_msl_k, dim=E, inputs=[s.g, s.gmean, s.peri_e, Ncur, s.gmax, s.msl], device=dev)
-        wp.launch(_step_k, dim=(E, Ncur),
-                  inputs=[center, s.g, s.gmean, s.msl, s.gmax, tau, Ncur, s.frozen], device=dev)
+        ctx.launch(_gmean_k, E, [s.g, Ncur, s.gmean])
+        ctx.launch(_gmax_msl_k, E, [s.g, s.gmean, s.peri_e, Ncur, s.gmax, s.msl])
+        ctx.launch(_step_k, (E, Ncur),
+                   [center, s.g, s.gmean, s.msl, s.gmax, tau, Ncur, s.frozen])
         # 6. hard rescale to the ratcheted target
-        wp.launch(_perim_bc_k, dim=E, inputs=[center, Ncur, s.cur_len, s.bc], device=dev)
-        wp.launch(_rescale_k, dim=(E, Ncur),
-                  inputs=[center, s.bc, s.cur_len, s.L_target, Ncur, s.frozen], device=dev)
+        ctx.launch(_perim_bc_k, E, [center, Ncur, s.cur_len, s.bc])
+        ctx.launch(_rescale_k, (E, Ncur), [center, s.bc, s.cur_len, s.L_target, Ncur, s.frozen])
 
         # 7. periodic arc-length resample (pure Warp). Frozen envs are left untouched
         #    (absorbing freeze); every other kernel above already skips them.
         if (it + 1) % resample_every == 0:
-            wp.launch(_pipe._fill_i32_k, dim=E, inputs=[s.count, Ncur], device=dev)
-            _pipe.resample_uniform(center, s.rs_out, Ncur, s.count, s.rs_seg, s.rs_s, device=dev)
-            wp.launch(_copy_unfrozen_k, dim=(E, Ncur),
-                      inputs=[center, s.rs_out, Ncur, s.frozen], device=dev)
+            ctx.launch(_pipe._fill_i32_k, E, [s.count, Ncur])
+            _pipe.resample_uniform(center, s.rs_out, Ncur, s.count, s.rs_seg, s.rs_s, device=dev,
+                                   ctx=ctx)
+            ctx.launch(_copy_unfrozen_k, (E, Ncur), [center, s.rs_out, Ncur, s.frozen])
 
         # 8. stall-stop: freeze converged envs (device-side; no early exit, see module doc).
         if Ncur == stages[-1] and (it + 1) % stall_window == 0:
-            wp.launch(_freeze_update_k, dim=E,
-                      inputs=[center, Ncur, s.reached, stall_tol, s.area_prev, s.frozen, s.md_out],
-                      device=dev)
+            ctx.launch(_freeze_update_k, E,
+                       [center, Ncur, s.reached, stall_tol, s.area_prev, s.frozen, s.md_out])
 
     # Defense in depth: guarantee the centerline reaches the final stage resolution
     # (stages[-1] == num_points) even if the iteration budget was too small to trigger every
@@ -871,10 +878,11 @@ def generate_repulsive_warp(seeds_wp: wp.array, config,
         _upsample_to_next()
 
     # final periodic resample at Nmax, then hand the closed loop to the standard tail.
-    wp.launch(_pipe._fill_i32_k, dim=E, inputs=[s.count, Ncur], device=dev)
-    _pipe.resample_uniform(center, s.rs_out, Ncur, s.count, s.rs_seg, s.rs_s, device=dev)
-    wp.copy(out_centerline, s.rs_out, count=E * Ncur)
-    wp.launch(_pipe._fill_i32_k, dim=E, inputs=[out_valid_wp, 1], device=dev)
+    ctx.launch(_pipe._fill_i32_k, E, [s.count, Ncur])
+    _pipe.resample_uniform(center, s.rs_out, Ncur, s.count, s.rs_seg, s.rs_s, device=dev,
+                           ctx=ctx)
+    ctx.copy(out_centerline, s.rs_out, count=E * Ncur)
+    ctx.launch(_pipe._fill_i32_k, E, [out_valid_wp, 1])
 
 
 from . import generator_registry as _registry  # noqa: E402
@@ -883,4 +891,5 @@ _registry.register(_registry.GeneratorSpec(
     alloc_scratch=repulsive_alloc_scratch,
     generate=generate_repulsive_warp,
     capturable=True,
+    accepts_ctx=True,
 ))

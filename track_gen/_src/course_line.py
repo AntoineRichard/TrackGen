@@ -11,7 +11,8 @@ capture-safe; call it after every gate regeneration (the facade does).
 """
 import warp as wp
 
-from .runtime import _init, _sync
+from ..exec.context import LaunchContext
+from .runtime import _init, _sync  # noqa: F401  (_sync: legacy re-export)
 from .types import GateSequence, Track
 
 
@@ -142,15 +143,21 @@ class CourseLine:
             winding=wp.zeros(E, dtype=wp.float32, device=dev),
         )
 
-    def refresh(self) -> None:
-        """Resample from the CURRENT gate batch (capture-safe)."""
+    def refresh(self, stream=None) -> None:
+        """Resample from the CURRENT gate batch (capture-safe).
+
+        Args:
+            stream: optional wp.Stream (or 'torch') to run on; by default the
+                stream is resolved per track_gen.exec (an enclosing
+                torch.cuda.graph capture is adopted, else Warp's current
+                stream).
+        """
+        ctx = LaunchContext.for_call(self._device, stream)
         s, t = self._seq, self.track
-        wp.launch(_sample_line_k, dim=self._E * self._n_max,
-                  inputs=[s.position, s.count, s.valid, self._G, self._spg,
-                          t.center, t.count, t.valid],
-                  device=self._device)
-        wp.launch(_line_frames_k, dim=self._E,
-                  inputs=[t.center, t.count, self._n_max,
-                          t.tangent, t.arclen, t.length],
-                  device=self._device)
-        _sync(self._device)
+        ctx.launch(_sample_line_k, self._E * self._n_max,
+                   [s.position, s.count, s.valid, self._G, self._spg,
+                    t.center, t.count, t.valid])
+        ctx.launch(_line_frames_k, self._E,
+                   [t.center, t.count, self._n_max,
+                    t.tangent, t.arclen, t.length])
+        ctx.sync()

@@ -2,6 +2,7 @@ import numpy as np
 
 import warp as wp
 
+from ..exec.context import LaunchContext
 from .rng_kernels import integer, normal, poisson, quaternion, rand_sign_fn, set_states, uniform
 
 
@@ -51,11 +52,14 @@ class PerEnvSeededRNG:
 
         # Auto-initialize states from seeds so that construction alone is sufficient
         # to produce reproducible, seed-determined outputs without a separate set_seeds call.
-        self.set_seeds_warp(self._seeds, None)
+        # Construction runs on Warp's CURRENT stream, the same stream the wp.zeros /
+        # wp.array allocations above were zeroed/uploaded on (no ambient or torch adoption).
+        ctx = LaunchContext.current(device)
+        self.set_seeds_warp(self._seeds, None, ctx=ctx)
         # Mirror states into the double-buffer so a first PARTIAL-ids sample (which only
-        # writes new_states for selected envs, then wp.copy's the WHOLE array back) cannot
+        # writes new_states for selected envs, then copies the WHOLE array back) cannot
         # zero the untouched envs' seed-derived states.
-        wp.copy(self._new_states, self._states)
+        ctx.copy(self._new_states, self._states)
 
     @property
     def seeds_warp(self) -> wp.array:
@@ -75,25 +79,45 @@ class PerEnvSeededRNG:
         else:
             return shape
 
-    def set_seeds_warp(self, seeds: wp.array, ids: wp.array | None) -> None:
+    def _ctx(self, stream, ctx) -> LaunchContext:
+        """The launch context of one public call: ``ctx`` when given, else the
+        context resolved for this RNG's device and ``stream`` (see track_gen.exec)."""
+        if ctx is not None:
+            if stream is not None:
+                raise TypeError("pass either stream= or ctx=, not both")
+            return ctx
+        return LaunchContext.for_call(self._device, stream)
+
+    def set_seeds_warp(self, seeds: wp.array, ids: wp.array | None, stream=None, ctx=None) -> None:
         """Set the seeds for each environment.
         Args:
             seeds: The seeds for each environment.
-            ids: The ids of the environments."""
+            ids: The ids of the environments.
+            stream: optional wp.Stream (or 'torch') to run on; by default the stream is resolved per
+                track_gen.exec (an enclosing torch.cuda.graph capture is adopted, else Warp's current stream).
+            ctx: optional track_gen.exec.LaunchContext to run on instead of ``stream`` (for internal
+                callers that already hold one); default resolves the device's stream (see track_gen.exec).
+        """
+        ctx = self._ctx(stream, ctx)
 
         if ids is None:
             ids = self._ALL_INDICES
 
         num_instances = len(seeds)
-        wp.launch(
-            kernel=set_states,
-            dim=num_instances,
-            inputs=[seeds, self._seeds, self._states, ids],
-            device=self._device,
+        ctx.launch(
+            set_states,
+            num_instances,
+            [seeds, self._seeds, self._states, ids],
         )
 
     def sample_uniform_warp(
-        self, low: float | wp.array, high: float | wp.array, shape: tuple | int, ids: wp.array | None = None
+        self,
+        low: float | wp.array,
+        high: float | wp.array,
+        shape: tuple | int,
+        ids: wp.array | None = None,
+        stream=None,
+        ctx=None,
     ) -> wp.array:
         """Sample from a uniform distribution. Warp implementation.
 
@@ -104,26 +128,46 @@ class PerEnvSeededRNG:
             high: The upper bound of the distribution.
             shape: The shape of the output tensor.
             ids: The ids of the environments.
+            stream: optional wp.Stream (or 'torch') to run on; by default the stream is resolved per
+                track_gen.exec (an enclosing torch.cuda.graph capture is adopted, else Warp's current stream).
+            ctx: optional track_gen.exec.LaunchContext to run on instead of ``stream`` (for internal
+                callers that already hold one); default resolves the device's stream (see track_gen.exec).
         Returns:
             The sampled values."""
+        ctx = self._ctx(stream, ctx)
         if ids is None:
             ids = self._ALL_INDICES
-        return uniform(low, high, self._states, self._new_states, ids, self.to_tuple(shape), self._device)
+        return uniform(low, high, self._states, self._new_states, ids, self.to_tuple(shape), self._device, ctx=ctx)
 
-    def sample_sign_warp(self, dtype: str, shape: tuple | int, ids: wp.array | None = None) -> wp.array:
+    def sample_sign_warp(
+        self, dtype: str, shape: tuple | int, ids: wp.array | None = None, stream=None, ctx=None
+    ) -> wp.array:
         """Sample a sign. Warp implementation.
         Args:
             dtype: The data type of the output tensor.
             shape: The shape of the output tensor.
             ids: The ids of the environments.
+            stream: optional wp.Stream (or 'torch') to run on; by default the stream is resolved per
+                track_gen.exec (an enclosing torch.cuda.graph capture is adopted, else Warp's current stream).
+            ctx: optional track_gen.exec.LaunchContext to run on instead of ``stream`` (for internal
+                callers that already hold one); default resolves the device's stream (see track_gen.exec).
         Returns:
             The sampled values."""
+        ctx = self._ctx(stream, ctx)
         if ids is None:
             ids = self._ALL_INDICES
-        return rand_sign_fn(self._states, self._new_states, ids, self.to_tuple(shape), dtype, self._device)
+        return rand_sign_fn(
+            self._states, self._new_states, ids, self.to_tuple(shape), dtype, self._device, ctx=ctx
+        )
 
     def sample_integer_warp(
-        self, low: int | wp.array, high: int | wp.array, shape: tuple | int, ids: wp.array | None = None
+        self,
+        low: int | wp.array,
+        high: int | wp.array,
+        shape: tuple | int,
+        ids: wp.array | None = None,
+        stream=None,
+        ctx=None,
     ) -> wp.array:
         """Sample for a random integer. Warp implementation.
         Args:
@@ -131,14 +175,25 @@ class PerEnvSeededRNG:
             high: The upper bound of the distribution.
             shape: The shape of the output tensor.
             ids: The ids of the environments.
+            stream: optional wp.Stream (or 'torch') to run on; by default the stream is resolved per
+                track_gen.exec (an enclosing torch.cuda.graph capture is adopted, else Warp's current stream).
+            ctx: optional track_gen.exec.LaunchContext to run on instead of ``stream`` (for internal
+                callers that already hold one); default resolves the device's stream (see track_gen.exec).
         Returns:
             wp.array: The sampled values."""
+        ctx = self._ctx(stream, ctx)
         if ids is None:
             ids = self._ALL_INDICES
-        return integer(low, high, self._states, self._new_states, ids, self.to_tuple(shape), self._device)
+        return integer(low, high, self._states, self._new_states, ids, self.to_tuple(shape), self._device, ctx=ctx)
 
     def sample_normal_warp(
-        self, mean: float | wp.array, std: float | wp.array, shape: tuple | int, ids: wp.array | None = None
+        self,
+        mean: float | wp.array,
+        std: float | wp.array,
+        shape: tuple | int,
+        ids: wp.array | None = None,
+        stream=None,
+        ctx=None,
     ) -> wp.array:
         """Sample from a normal distribution. Warp implementation.
         Args:
@@ -146,31 +201,50 @@ class PerEnvSeededRNG:
             std: The standard deviation of the distribution.
             shape: The shape of the output tensor.
             ids: The ids of the environments.
+            stream: optional wp.Stream (or 'torch') to run on; by default the stream is resolved per
+                track_gen.exec (an enclosing torch.cuda.graph capture is adopted, else Warp's current stream).
+            ctx: optional track_gen.exec.LaunchContext to run on instead of ``stream`` (for internal
+                callers that already hold one); default resolves the device's stream (see track_gen.exec).
         Returns:
             wp.array: The sampled values."""
+        ctx = self._ctx(stream, ctx)
         if ids is None:
             ids = self._ALL_INDICES
-        return normal(mean, std, self._states, self._new_states, ids, self.to_tuple(shape), self._device)
+        return normal(mean, std, self._states, self._new_states, ids, self.to_tuple(shape), self._device, ctx=ctx)
 
-    def sample_poisson_warp(self, lam: float | wp.array, shape: tuple | int, ids: wp.array | None = None) -> wp.array:
+    def sample_poisson_warp(
+        self, lam: float | wp.array, shape: tuple | int, ids: wp.array | None = None, stream=None, ctx=None
+    ) -> wp.array:
         """Sample from a poisson distribution. Warp implementation.
         Args:
             lam: The rate of the distribution.
             shape: The shape of the output tensor.
             ids: The ids of the environments.
+            stream: optional wp.Stream (or 'torch') to run on; by default the stream is resolved per
+                track_gen.exec (an enclosing torch.cuda.graph capture is adopted, else Warp's current stream).
+            ctx: optional track_gen.exec.LaunchContext to run on instead of ``stream`` (for internal
+                callers that already hold one); default resolves the device's stream (see track_gen.exec).
         Returns:
             The sampled values."""
+        ctx = self._ctx(stream, ctx)
         if ids is None:
             ids = self._ALL_INDICES
-        return poisson(lam, self._states, self._new_states, ids, self.to_tuple(shape), self._device)
+        return poisson(lam, self._states, self._new_states, ids, self.to_tuple(shape), self._device, ctx=ctx)
 
-    def sample_quaternion_warp(self, shape: tuple | int, ids: wp.array | None = None) -> wp.array:
+    def sample_quaternion_warp(
+        self, shape: tuple | int, ids: wp.array | None = None, stream=None, ctx=None
+    ) -> wp.array:
         """Sample a quaternion. Warp implementation.
         Args:
             shape: The shape of the output tensor.
             ids: The ids of the environments.
+            stream: optional wp.Stream (or 'torch') to run on; by default the stream is resolved per
+                track_gen.exec (an enclosing torch.cuda.graph capture is adopted, else Warp's current stream).
+            ctx: optional track_gen.exec.LaunchContext to run on instead of ``stream`` (for internal
+                callers that already hold one); default resolves the device's stream (see track_gen.exec).
         Returns:
             wp.array: The sampled values."""
+        ctx = self._ctx(stream, ctx)
         if ids is None:
             ids = self._ALL_INDICES
-        return quaternion(self._states, self._new_states, ids, self.to_tuple(shape), self._device)
+        return quaternion(self._states, self._new_states, ids, self.to_tuple(shape), self._device, ctx=ctx)

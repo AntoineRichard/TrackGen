@@ -26,6 +26,7 @@ import math
 
 import warp as wp
 
+from ..exec.context import LaunchContext, resolve as _resolve_ctx
 from . import warp_pipeline as _pipe
 
 
@@ -505,35 +506,46 @@ def _or_update_k(accept: wp.array(dtype=wp.int32), valid: wp.array(dtype=wp.int3
     if accept[e] != 0:
         valid[e] = 1
 
-def corner_count_sample_inplace(seeds_wp, attempt, config, out_count):
-    """In-place: writes per-env corner counts into out_count ([E] int32 wp.array). Zero alloc."""
-    _pipe._init()
-    E = out_count.shape[0]
-    wp.launch(_corner_count_sample_k, dim=E,
-              inputs=[seeds_wp, int(attempt), int(config.min_num_points),
-                      int(config.max_num_points), out_count],
-              device=str(out_count.device))
-    _pipe._sync(out_count.device)
+def corner_count_sample_inplace(seeds_wp, attempt, config, out_count,
+                                ctx: "LaunchContext | None" = None):
+    """In-place: writes per-env corner counts into out_count ([E] int32 wp.array). Zero alloc.
 
-def style_sample_inplace(seeds_wp, config, rad_out, scale_out, clamp_out):
+    Args:
+        ctx: optional track_gen.exec.LaunchContext; default resolves the
+            device's stream (see track_gen.exec).
+    """
+    _pipe._init()
+    ctx = _resolve_ctx(ctx, str(out_count.device))
+    E = out_count.shape[0]
+    ctx.launch(_corner_count_sample_k, E,
+               [seeds_wp, int(attempt), int(config.min_num_points),
+                int(config.max_num_points), out_count])
+    ctx.sync()
+
+def style_sample_inplace(seeds_wp, config, rad_out, scale_out, clamp_out,
+                         ctx: "LaunchContext | None" = None):
     """In-place per-env style draw (method #1). Writes [E] float32 per-env rad/scale/
     handle_clamp_frac into rad_out/scale_out/clamp_out. Zero alloc.
 
     Each *_range that is None collapses to the corresponding config scalar (lo == hi), so
     that knob is held constant across envs. Only called when config.style_sampling=True.
+
+    Args:
+        ctx: optional track_gen.exec.LaunchContext; default resolves the
+            device's stream (see track_gen.exec).
     """
     _pipe._init()
     E = seeds_wp.shape[0]
     dev = str(rad_out.device)
+    ctx = _resolve_ctx(ctx, dev)
     rad_lo, rad_hi = _range_or_scalar(config.rad_range, float(config.rad))
     scale_lo, scale_hi = _range_or_scalar(config.scale_range, float(config.scale))
     clamp_default = float(getattr(config, "handle_clamp_frac", 1.0e9))
     clamp_lo, clamp_hi = _range_or_scalar(config.handle_clamp_frac_range, clamp_default)
-    wp.launch(_style_sample_k, dim=E,
-              inputs=[seeds_wp, rad_lo, rad_hi, scale_lo, scale_hi, clamp_lo, clamp_hi,
-                      rad_out, scale_out, clamp_out],
-              device=dev)
-    _pipe._sync(rad_out.device)
+    ctx.launch(_style_sample_k, E,
+               [seeds_wp, rad_lo, rad_hi, scale_lo, scale_hi, clamp_lo, clamp_hi,
+                rad_out, scale_out, clamp_out])
+    ctx.sync()
 
 
 def _range_or_scalar(rng, scalar):
@@ -544,7 +556,7 @@ def _range_or_scalar(rng, scalar):
 
 
 def corner_sample_inplace(seeds_wp, attempt, config, out_corners, used_scratch,
-                          scale_per_env=None):
+                          scale_per_env=None, ctx: "LaunchContext | None" = None):
     """In-place: writes [E*P] vec2f into out_corners. used_scratch is [E*P] int32 scratch.
     Zero alloc.
 
@@ -552,6 +564,8 @@ def corner_sample_inplace(seeds_wp, attempt, config, out_corners, used_scratch,
     config.scale scalar is broadcast via the original _corner_sample_k (DEFAULT path,
     byte-for-byte unchanged). When provided, the bit-identical _corner_sample_style_k reads
     scale[e] per env instead.
+    ctx: optional track_gen.exec.LaunchContext; default resolves the
+        device's stream (see track_gen.exec).
     """
     _pipe._init()
     E = seeds_wp.shape[0]
@@ -560,33 +574,39 @@ def corner_sample_inplace(seeds_wp, attempt, config, out_corners, used_scratch,
     nc2 = num_cells * num_cells
     cell_size = config.min_point_distance * 2.0
     dev = str(out_corners.device)
+    ctx = _resolve_ctx(ctx, dev)
     # Fill scratch with -1 (dedup init)
-    wp.launch(_pipe._fill_i32_k, dim=E * P, inputs=[used_scratch, -1], device=dev)
+    ctx.launch(_pipe._fill_i32_k, E * P, [used_scratch, -1])
     if scale_per_env is None:
-        wp.launch(_corner_sample_k, dim=E,
-                  inputs=[seeds_wp, int(attempt), num_cells, nc2, float(cell_size),
-                          float(config.scale), P, used_scratch, out_corners],
-                  device=dev)
+        ctx.launch(_corner_sample_k, E,
+                   [seeds_wp, int(attempt), num_cells, nc2, float(cell_size),
+                    float(config.scale), P, used_scratch, out_corners])
     else:
-        wp.launch(_corner_sample_style_k, dim=E,
-                  inputs=[seeds_wp, int(attempt), num_cells, nc2, float(cell_size),
-                          scale_per_env, P, used_scratch, out_corners],
-                  device=dev)
-    _pipe._sync(out_corners.device)
+        ctx.launch(_corner_sample_style_k, E,
+                   [seeds_wp, int(attempt), num_cells, nc2, float(cell_size),
+                    scale_per_env, P, used_scratch, out_corners])
+    ctx.sync()
 
-def ccw_sort_inplace(corners_wp, count_wp, keys_scratch, out_wp, P):
+def ccw_sort_inplace(corners_wp, count_wp, keys_scratch, out_wp, P,
+                     ctx: "LaunchContext | None" = None):
     """In-place: writes sorted corners into out_wp ([E*P] vec2f). keys_scratch is [E*P] float32.
-    Zero alloc."""
+    Zero alloc.
+
+    Args:
+        ctx: optional track_gen.exec.LaunchContext; default resolves the
+            device's stream (see track_gen.exec).
+    """
     _pipe._init()
     dev = str(out_wp.device)
+    ctx = _resolve_ctx(ctx, dev)
     E = count_wp.shape[0]
-    wp.launch(_ccw_sort_k, dim=E,
-              inputs=[corners_wp, P, count_wp, keys_scratch, out_wp],
-              device=dev)
-    _pipe._sync(out_wp.device)
+    ctx.launch(_ccw_sort_k, E,
+               [corners_wp, P, count_wp, keys_scratch, out_wp])
+    ctx.sync()
 
 def assemble_inplace(corners_wp, count_wp, config, tan_scratch, scale_scratch, out_wp,
-                     rad_per_env=None, clamp_per_env=None):
+                     rad_per_env=None, clamp_per_env=None,
+                     ctx: "LaunchContext | None" = None):
     """In-place: writes dense [E*P*npseg] vec2f into out_wp. Zero alloc.
     tan_scratch: [E*P] vec2f; scale_scratch: [E*P] float32.
 
@@ -595,6 +615,8 @@ def assemble_inplace(corners_wp, count_wp, config, tan_scratch, scale_scratch, o
     original _assemble_k (DEFAULT path, byte-for-byte unchanged). When provided, the
     bit-identical _assemble_style_k reads rad[e]/clamp_frac[e] per env instead. (Both are
     threaded together: the style path always supplies both arrays.)
+    ctx: optional track_gen.exec.LaunchContext; default resolves the
+        device's stream (see track_gen.exec).
     """
     _pipe._init()
     E = count_wp.shape[0]
@@ -604,24 +626,22 @@ def assemble_inplace(corners_wp, count_wp, config, tan_scratch, scale_scratch, o
     p = math.atan(config.edgy) / math.pi + 0.5
     clamp_frac = float(getattr(config, "handle_clamp_frac", 1.0e9))
     dev = str(out_wp.device)
-    wp.launch(_vertex_tangents_k, dim=E * P,
-              inputs=[corners_wp, count_wp, P, float(p), tan_scratch, scale_scratch],
-              device=dev)
+    ctx = _resolve_ctx(ctx, dev)
+    ctx.launch(_vertex_tangents_k, E * P,
+               [corners_wp, count_wp, P, float(p), tan_scratch, scale_scratch])
     if rad_per_env is None and clamp_per_env is None:
-        wp.launch(_assemble_k, dim=E * P * npseg,
-                  inputs=[corners_wp, count_wp, tan_scratch, scale_scratch,
-                          P, npseg, float(config.rad), clamp_frac, out_wp],
-                  device=dev)
+        ctx.launch(_assemble_k, E * P * npseg,
+                   [corners_wp, count_wp, tan_scratch, scale_scratch,
+                    P, npseg, float(config.rad), clamp_frac, out_wp])
     else:
-        wp.launch(_assemble_style_k, dim=E * P * npseg,
-                  inputs=[corners_wp, count_wp, tan_scratch, scale_scratch,
-                          P, npseg, rad_per_env, clamp_per_env, out_wp],
-                  device=dev)
-    _pipe._sync(out_wp.device)
+        ctx.launch(_assemble_style_k, E * P * npseg,
+                   [corners_wp, count_wp, tan_scratch, scale_scratch,
+                    P, npseg, rad_per_env, clamp_per_env, out_wp])
+    ctx.sync()
 
 def generate_centerline_warp(seeds_wp: wp.array, config,
                               out_centerline: wp.array, out_valid_wp: wp.array,
-                              scratch) -> None:
+                              scratch, ctx: "LaunchContext | None" = None) -> None:
     """Single-pass centerline generation — in-place owned path only.
 
     Pure-Warp: sample corners -> sort ccw -> assemble Bezier -> arc-resample -> polygon
@@ -635,8 +655,11 @@ def generate_centerline_warp(seeds_wp: wp.array, config,
         out_valid_wp:  [E] int32 wp.array — filled with 1 (all valid at generation stage).
         scratch:       the generation buffer group exposing the gen_* arrays — a
                        warp_pipeline.GenScratch (the composite _Scratch's ``.gen``).
+        ctx: optional track_gen.exec.LaunchContext; default resolves the
+            device's stream (see track_gen.exec).
     """
     _pipe._init()
+    ctx = _resolve_ctx(ctx, str(out_centerline.device))
 
     assert scratch is not None, "generate_centerline_warp requires scratch"
     E = scratch.gen_count.shape[0]
@@ -656,57 +679,55 @@ def generate_centerline_warp(seeds_wp: wp.array, config,
     if style:
         style_sample_inplace(seeds_wp, config,
                              scratch.gen_style_rad, scratch.gen_style_scale,
-                             scratch.gen_style_clamp)
+                             scratch.gen_style_clamp, ctx=ctx)
         scale_pe = scratch.gen_style_scale
         rad_pe = scratch.gen_style_rad
         clamp_pe = scratch.gen_style_clamp
 
     # Step 1-3: sample corners, sort
-    corner_count_sample_inplace(seeds_wp, 0, config, scratch.gen_count)
+    corner_count_sample_inplace(seeds_wp, 0, config, scratch.gen_count, ctx=ctx)
     corner_sample_inplace(seeds_wp, 0, config, scratch.gen_corners, scratch.gen_used,
-                          scale_per_env=scale_pe)
+                          scale_per_env=scale_pe, ctx=ctx)
     ccw_sort_inplace(scratch.gen_corners, scratch.gen_count, scratch.gen_keys,
-                     scratch.gen_ordered, P)
+                     scratch.gen_ordered, P, ctx=ctx)
 
     # Step 4: assemble Bezier dense -> gen_dense
     assemble_inplace(scratch.gen_ordered, scratch.gen_count, config,
                      scratch.gen_tan, scratch.gen_scale, scratch.gen_dense,
-                     rad_per_env=rad_pe, clamp_per_env=clamp_pe)
+                     rad_per_env=rad_pe, clamp_per_env=clamp_pe, ctx=ctx)
 
     # Step 5: arc-resample Bezier dense -> gen_rs (N points per env)
     _pipe._arc_resample_inplace(scratch.gen_dense, M, N,
                           scratch.gen_arc_real, scratch.gen_arc_seg,
                           scratch.gen_arc_s, scratch.gen_arc_cr,
-                          scratch.gen_arc_co, scratch.gen_rs, dev)
+                          scratch.gen_arc_co, scratch.gen_rs, dev, ctx=ctx)
 
     # Step 6: self-intersections of the Bezier resample -> gen_crossers.
     # gen_arc_co was written by _arc_scan_k: R>=2 -> N, R<2 -> 0. Pass directly as count.
     _pipe.self_intersections_inplace(scratch.gen_rs, scratch.gen_arc_co,
-                               scratch.gen_crossers, N)
+                               scratch.gen_crossers, N, ctx=ctx)
 
     # Step 7: assemble and resample the polygon fallback only for self-crossing envs.
     # Most Bezier centerlines are already simple, so non-crossers skip this fallback work.
-    wp.launch(_assemble_polygon_selected_k, dim=E * M,
-              inputs=[scratch.gen_ordered, scratch.gen_count, P, npseg,
-                      scratch.gen_crossers, scratch.gen_poly],
-              device=dev)
+    ctx.launch(_assemble_polygon_selected_k, E * M,
+               [scratch.gen_ordered, scratch.gen_count, P, npseg,
+                scratch.gen_crossers, scratch.gen_poly])
     _pipe._arc_resample_selected_inplace(
         scratch.gen_poly, scratch.gen_crossers, M, N,
         scratch.gen_arc_real, scratch.gen_arc_seg, scratch.gen_arc_s,
-        scratch.gen_arc_cr, scratch.gen_arc_co, out_centerline, dev,
+        scratch.gen_arc_cr, scratch.gen_arc_co, out_centerline, dev, ctx=ctx,
     )
 
     # Step 8: select: rs if no crossings, rs_poly (= out_centerline temporarily) if crossings.
     # out_centerline aliases rs_poly arg: safe per-thread (each thread reads its own slot
     # then writes it for the crossers>0 branch; reads gen_rs for the else branch).
-    wp.launch(_select_vec2_k, dim=E * N,
-              inputs=[scratch.gen_rs, out_centerline, scratch.gen_crossers, N, out_centerline],
-              device=dev)
+    ctx.launch(_select_vec2_k, E * N,
+               [scratch.gen_rs, out_centerline, scratch.gen_crossers, N, out_centerline])
 
     # Step 9: mark all envs valid (gen gate is always True; inflate does the real gate).
-    wp.launch(_pipe._fill_i32_k, dim=E, inputs=[out_valid_wp, 1], device=dev)
+    ctx.launch(_pipe._fill_i32_k, E, [out_valid_wp, 1])
 
-    _pipe._sync(dev)
+    ctx.sync()
 
 
 def bezier_alloc_scratch(config):
@@ -756,4 +777,5 @@ _registry.register(_registry.GeneratorSpec(
     name="bezier",
     alloc_scratch=bezier_alloc_scratch,
     generate=generate_centerline_warp,
+    accepts_ctx=True,
 ))

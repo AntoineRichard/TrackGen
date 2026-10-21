@@ -6,8 +6,13 @@ kernels that run on BOTH the Warp ``cpu`` device (tests/CI, GPU-free) and ``cuda
 kernel is verified ``allclose`` against the oracle.
 
 Convention: one thread per output element; flat arrays ``[E*N]`` of ``wp.vec2f`` and
-``[E]`` per-env scalars; env index ``e = tid // N``; launch with
-``device=str(tensor.device)``.
+``[E]`` per-env scalars; env index ``e = tid // N``.
+
+Every wrapper emits its device work through a ``track_gen.exec.LaunchContext``
+(``ctx=``): one device, one explicit stream, so a call records into a caller's CUDA
+graph on that stream. ``ctx=None`` resolves the ambient context first (set by an
+enclosing ``LaunchContext.scope()``, e.g. around a legacy generator plugin), then the
+device's stream per ``track_gen.exec``.
 """
 from __future__ import annotations
 
@@ -21,10 +26,12 @@ from .warp_relax import _separation_band  # noqa: F401  (used inside _validity_k
 
 import warp as wp
 
-# _init/_sync are the shared runtime helpers. Wrappers call _sync() after their launches;
-# it is a debug-only no-op unless TRACKGEN_DEBUG_SYNC=1 (see runtime._sync), so every
-# wrapper is host-sync-free and safe to record into a caller's CUDA graph. The names stay
-# importable from here because generator plugins call _pipe._init() / _pipe._sync().
+from ..exec.context import LaunchContext, resolve as _resolve_ctx
+
+# _init/_sync are the shared runtime helpers. Wrappers call ctx.sync() after their
+# launches; it is a debug-only no-op unless TRACKGEN_DEBUG_SYNC=1 (see runtime._sync), so
+# every wrapper is host-sync-free and safe to record into a caller's CUDA graph. The names
+# stay importable from here because generator plugins call _pipe._init() / _pipe._sync().
 from .runtime import _init, _sync  # noqa: F401
 
 # Deprecated: no longer read or written by the library (wrappers do not host-sync, so
@@ -766,31 +773,41 @@ def _fill_i32_k(arr: wp.array(dtype=wp.int32), v: int):
     # One thread per element: constant int fill.
     arr[wp.tid()] = v
 
-def self_intersections_inplace(poly_wp, count_wp, out_wp, n_max):
+def self_intersections_inplace(poly_wp, count_wp, out_wp, n_max,
+                               ctx: "LaunchContext | None" = None):
     """In-place: writes [E] int32 crossing counts into out_wp. Zero alloc.
-    poly_wp: [E*n_max] vec2f; count_wp: [E] int32; out_wp: [E] int32."""
+    poly_wp: [E*n_max] vec2f; count_wp: [E] int32; out_wp: [E] int32.
+
+    Args:
+        ctx: optional track_gen.exec.LaunchContext; default resolves the
+            device's stream (see track_gen.exec).
+    """
     _init()
     E = count_wp.shape[0]
     dev = str(out_wp.device)
-    wp.launch(_fill_i32_k, dim=E, inputs=[out_wp, 0], device=dev)
-    wp.launch(_self_intersections_by_i_k, dim=E * n_max,
-              inputs=[poly_wp, n_max, count_wp, out_wp],
-              device=dev)
-    _sync(out_wp.device)
+    ctx = _resolve_ctx(ctx, dev)
+    ctx.launch(_fill_i32_k, E, [out_wp, 0])
+    ctx.launch(_self_intersections_by_i_k, E * n_max,
+               [poly_wp, n_max, count_wp, out_wp])
+    ctx.sync()
 
 
-def _arc_resample_inplace(points_wp, M, num, real_wp, seg_wp, s_wp, count_r_wp, count_out_wp, out_wp, dev):
+def _arc_resample_inplace(points_wp, M, num, real_wp, seg_wp, s_wp, count_r_wp, count_out_wp, out_wp, dev,
+                          ctx: "LaunchContext | None" = None):
     """In-place NaN-aware arc-length resample. All args are wp.arrays. Zero alloc.
 
     points_wp: [E*M] vec2f input; real_wp: [E*M] vec2f scratch; seg_wp: [E*M] float32 scratch;
     s_wp: [E*(M+1)] float32 scratch; count_r_wp: [E] int32 scratch; count_out_wp: [E] int32 output;
     out_wp: [E*num] vec2f output; dev: warp device string.
+    ctx: optional track_gen.exec.LaunchContext; default resolves the
+        device's stream (see track_gen.exec).
     """
+    ctx = _resolve_ctx(ctx, dev)
     E = points_wp.shape[0] // M
-    wp.launch(_arc_scan_k, dim=E,
-              inputs=[points_wp, M, num, real_wp, seg_wp, s_wp, count_r_wp, count_out_wp], device=dev)
-    wp.launch(_arc_lookup_k, dim=E * num,
-              inputs=[real_wp, seg_wp, s_wp, count_r_wp, M, num, out_wp], device=dev)
+    ctx.launch(_arc_scan_k, E,
+               [points_wp, M, num, real_wp, seg_wp, s_wp, count_r_wp, count_out_wp])
+    ctx.launch(_arc_lookup_k, E * num,
+               [real_wp, seg_wp, s_wp, count_r_wp, M, num, out_wp])
 
 
 def arc_length_resample_inplace(
@@ -804,6 +821,7 @@ def arc_length_resample_inplace(
     count_out_wp: "wp.array",
     out_wp: "wp.array",
     dev: str,
+    ctx: "LaunchContext | None" = None,
 ) -> None:
     """Public in-place NaN-aware arc-length resample. All args are wp.arrays. Zero alloc.
 
@@ -818,22 +836,33 @@ def arc_length_resample_inplace(
     count_out_wp:[E] int32 output (R>=2 -> num, else 0).
     out_wp:      [E*num] vec2f output.
     dev:         Warp device string.
+    ctx: optional track_gen.exec.LaunchContext; default resolves the
+        device's stream (see track_gen.exec).
     """
     _init()
-    _arc_resample_inplace(points_wp, M, num, real_wp, seg_wp, s_wp, count_r_wp, count_out_wp, out_wp, dev)
-    _sync(dev)
+    ctx = _resolve_ctx(ctx, dev)
+    _arc_resample_inplace(points_wp, M, num, real_wp, seg_wp, s_wp, count_r_wp, count_out_wp, out_wp, dev,
+                          ctx=ctx)
+    ctx.sync()
 
 
 def _arc_resample_selected_inplace(
-    points_wp, active_wp, M, num, real_wp, seg_wp, s_wp, count_r_wp, count_out_wp, out_wp, dev
+    points_wp, active_wp, M, num, real_wp, seg_wp, s_wp, count_r_wp, count_out_wp, out_wp, dev,
+    ctx: "LaunchContext | None" = None,
 ):
+    """Selected NaN-aware arc-length resample (launches only). Zero alloc.
+
+    Args:
+        ctx: optional track_gen.exec.LaunchContext; default resolves the
+            device's stream (see track_gen.exec).
+    """
+    ctx = _resolve_ctx(ctx, dev)
     E = points_wp.shape[0] // M
-    wp.launch(_arc_scan_selected_k, dim=E,
-              inputs=[points_wp, active_wp, M, num, real_wp, seg_wp, s_wp,
-                      count_r_wp, count_out_wp], device=dev)
-    wp.launch(_arc_lookup_selected_k, dim=E * num,
-              inputs=[real_wp, seg_wp, s_wp, count_r_wp, active_wp, M, num, out_wp],
-              device=dev)
+    ctx.launch(_arc_scan_selected_k, E,
+               [points_wp, active_wp, M, num, real_wp, seg_wp, s_wp,
+                count_r_wp, count_out_wp])
+    ctx.launch(_arc_lookup_selected_k, E * num,
+               [real_wp, seg_wp, s_wp, count_r_wp, active_wp, M, num, out_wp])
 
 
 def arc_length_resample_selected_inplace(
@@ -848,14 +877,21 @@ def arc_length_resample_selected_inplace(
     count_out_wp: "wp.array",
     out_wp: "wp.array",
     dev: str,
+    ctx: "LaunchContext | None" = None,
 ) -> None:
-    """Selected NaN-aware arc-length resample. Inactive envs leave output untouched."""
+    """Selected NaN-aware arc-length resample. Inactive envs leave output untouched.
+
+    Args:
+        ctx: optional track_gen.exec.LaunchContext; default resolves the
+            device's stream (see track_gen.exec).
+    """
     _init()
+    ctx = _resolve_ctx(ctx, dev)
     _arc_resample_selected_inplace(
         points_wp, active_wp, M, num, real_wp, seg_wp, s_wp,
-        count_r_wp, count_out_wp, out_wp, dev,
+        count_r_wp, count_out_wp, out_wp, dev, ctx=ctx,
     )
-    _sync(dev)
+    ctx.sync()
 
 
 def turning_number_inplace(
@@ -863,6 +899,7 @@ def turning_number_inplace(
     n_max: int,
     count_wp: "wp.array",
     out_wp: "wp.array",
+    ctx: "LaunchContext | None" = None,
 ) -> None:
     """In-place signed total turning of each closed polygon. Zero alloc.
 
@@ -870,15 +907,17 @@ def turning_number_inplace(
     n_max:     int stride per env in the flat array.
     count_wp:  [E] int32 real point count per env.
     out_wp:    [E] float32 output (signed turning in radians per env).
+    ctx: optional track_gen.exec.LaunchContext; default resolves the
+        device's stream (see track_gen.exec).
 
     Pure Warp (cpu+cuda); matches geometry.turning_number to allclose(atol=1e-4).
     """
     _init()
+    ctx = _resolve_ctx(ctx, str(out_wp.device))
     E = count_wp.shape[0]
-    wp.launch(_turning_k, dim=E,
-              inputs=[center_wp, n_max, count_wp, out_wp],
-              device=str(out_wp.device))
-    _sync(out_wp.device)
+    ctx.launch(_turning_k, E,
+               [center_wp, n_max, count_wp, out_wp])
+    ctx.sync()
 
 
 def _run_pipeline(
@@ -887,6 +926,7 @@ def _run_pipeline(
     out: "Track",
     scratch: "_Scratch",
     generator_spec=None,
+    ctx: "LaunchContext | None" = None,
 ) -> "Track":
     """Execute the owned pure-Warp pipeline into pre-allocated buffers. Zero alloc.
 
@@ -894,15 +934,23 @@ def _run_pipeline(
     xpbd_solve_inplace -> inflate_warp. All buffers are pre-allocated in scratch/out.
     Safe to call inside a wp.ScopedCapture region (no host syncs, no allocations).
 
+    Every stage runs on ``ctx``'s stream. A generator whose spec sets ``accepts_ctx``
+    gets ``ctx=ctx``; a legacy generator runs inside ``ctx.scope()`` so the
+    ``warp_pipeline`` helpers it calls inherit the stream (its own direct
+    ``wp.launch`` calls still use Warp's current stream).
+
     Args:
         config:       TrackGenConfig.
         seed_buf_wp:  [E] int32 wp.array — per-env base seeds.
         out:          Pre-allocated Track (wp.array fields) — written in-place.
         scratch:      Pre-allocated _Scratch — all intermediates written in-place.
+        ctx: optional track_gen.exec.LaunchContext; default resolves the
+            device's stream (see track_gen.exec).
 
     Returns:
         out (the same Track instance).
     """
+    ctx = _resolve_ctx(ctx, str(config.device))
     if generator_spec is None:
         generator_spec = getattr(scratch, "generator_spec", None)
     if generator_spec is None:
@@ -919,16 +967,26 @@ def _run_pipeline(
 
     # 1. Generate centerline in-place into the orchestrator-owned output buffers.
     generate = generator_spec.generate
-    generate(seed_buf_wp, config,
-             out_centerline=scratch.gen_centerline,
-             out_valid_wp=scratch.gen_valid,
-             scratch=gen)
+    if getattr(generator_spec, "accepts_ctx", False):
+        generate(seed_buf_wp, config,
+                 out_centerline=scratch.gen_centerline,
+                 out_valid_wp=scratch.gen_valid,
+                 scratch=gen, ctx=ctx)
+    else:
+        # Legacy plugin: no ctx= keyword. Make ctx ambient so the _pipe helpers it
+        # calls with ctx=None resolve to this call's stream.
+        with ctx.scope():
+            generate(seed_buf_wp, config,
+                     out_centerline=scratch.gen_centerline,
+                     out_valid_wp=scratch.gen_valid,
+                     scratch=gen)
 
     # 2. Constant-spacing resample (gen centerline -> bridge buffers).
     resample_constant_spacing(
         scratch.gen_centerline, float(config.spacing), n_max,
         out_wp=scratch.cs_center, count_wp=scratch.count,
         seg_wp=scratch.cs_seg, s_wp=scratch.cs_s, truncated_wp=out.truncated,
+        ctx=ctx,
     )
 
     # 3-4. Relaxation (band/L0 setup + XPBD solve) in-place, then choose its input to
@@ -940,7 +998,7 @@ def _run_pipeline(
         # 3. Relaxation setup: band / L0 (the relax module owns its own setup).
         warp_relax.band_l0_inplace(
             scratch.cs_center, n_max, relax.band, relax.L0,
-            scratch.count, config,
+            scratch.count, config, ctx=ctx,
         )
 
         # 4. XPBD relaxation in-place.
@@ -951,6 +1009,7 @@ def _run_pipeline(
             sep_cache_count_wp=relax.sep_cache_count,
             sep_cache_overflow_wp=relax.sep_cache_overflow,
             cheb_prev_wp=relax.cheb_prev,
+            ctx=ctx,
         )
         relax_out = relax.relaxed
     else:
@@ -962,32 +1021,36 @@ def _run_pipeline(
     return inflate_warp(
         relax_out, config, out=out, valid=scratch.gen_valid,
         count=scratch.count, scratch=scratch, seeds=seed_buf_wp,
-        truncated=out.truncated,
+        truncated=out.truncated, ctx=ctx,
     )
 
 
-def offset(center, Nrm, half_width, out_outer, out_inner, area_a, area_b, count):
+def offset(center, Nrm, half_width, out_outer, out_inner, area_a, area_b, count,
+           ctx: "LaunchContext | None" = None):
     """In-place: writes outer/inner into out_outer/out_inner (wp.array [E*n_max] vec2f),
     using area_a/area_b (wp.array [E] f32) scratch. All args are wp.array; nothing
     allocated. center/Nrm: wp.array [E*n_max] vec2f. count: wp.array [E] int32.
     half_width: float. n_max is inferred from out_outer.shape[0] // count.shape[0].
 
     Pure Warp (cpu+cuda); allclose to oracle to atol=1e-5.
+
+    Args:
+        ctx: optional track_gen.exec.LaunchContext; default resolves the
+            device's stream (see track_gen.exec).
     """
     _init()
+    ctx = _resolve_ctx(ctx, str(out_outer.device))
     E = count.shape[0]
     flat = out_outer.shape[0]
     n_max = flat // E
-    area_a.zero_()
-    area_b.zero_()
-    wp.launch(_offset_build_k, dim=flat,
-              inputs=[center, Nrm, float(half_width), n_max, area_a, area_b, count],
-              device=str(out_outer.device))
-    wp.launch(_offset_assign_k, dim=flat,
-              inputs=[center, Nrm, float(half_width), n_max, area_a, area_b,
-                      out_outer, out_inner, count],
-              device=str(out_outer.device))
-    _sync(out_outer.device)
+    ctx.fill(area_a, 0.0)
+    ctx.fill(area_b, 0.0)
+    ctx.launch(_offset_build_k, flat,
+               [center, Nrm, float(half_width), n_max, area_a, area_b, count])
+    ctx.launch(_offset_assign_k, flat,
+               [center, Nrm, float(half_width), n_max, area_a, area_b,
+                out_outer, out_inner, count])
+    ctx.sync()
 
 
 def frame_curvature(
@@ -996,6 +1059,7 @@ def frame_curvature(
     out_Nrm: "wp.array",
     kappa_scratch: "wp.array",
     count_wp: "wp.array",
+    ctx: "LaunchContext | None" = None,
 ):
     """In-place: writes T/Nrm into out_T/out_Nrm (wp.array [E*n_max] vec2f);
     kappa_scratch (wp.array [E*n_max] float32) receives kappa (unused by pipeline).
@@ -1003,15 +1067,19 @@ def frame_curvature(
     and count_wp.shape[0] (== E).
 
     Pure Warp (cpu+cuda); allclose to oracle to atol=1e-5.
+
+    Args:
+        ctx: optional track_gen.exec.LaunchContext; default resolves the
+            device's stream (see track_gen.exec).
     """
     _init()
+    ctx = _resolve_ctx(ctx, str(out_T.device))
     E = count_wp.shape[0]
     flat = out_T.shape[0]
     n_max = flat // E
-    wp.launch(_frame_k, dim=flat,
-              inputs=[center_wp, n_max, out_T, out_Nrm, kappa_scratch, count_wp],
-              device=str(out_T.device))
-    _sync(out_T.device)
+    ctx.launch(_frame_k, flat,
+               [center_wp, n_max, out_T, out_Nrm, kappa_scratch, count_wp])
+    ctx.sync()
 
 
 def resample_uniform(
@@ -1022,6 +1090,7 @@ def resample_uniform(
     seg_wp: "wp.array | None" = None,
     s_wp: "wp.array | None" = None,
     device: str = "cpu",
+    ctx: "LaunchContext | None" = None,
 ) -> None:
     """Arc-length-uniform resample of each closed loop to n points — in-place.
 
@@ -1041,11 +1110,14 @@ def resample_uniform(
         seg_wp:    [E*n_max] wp.float32 scan scratch (allocated internally if None).
         s_wp:      [E*(n_max+1)] wp.float32 scan scratch (allocated internally if None).
         device:    Warp device string (e.g. "cpu", "cuda:0").
+        ctx: optional track_gen.exec.LaunchContext; default resolves the
+            device's stream (see track_gen.exec).
 
     PARITY INVARIANT: count=full((E,), N) reproduces the former fixed-N behaviour
     bit-exactly.  Pure Warp (cpu+cuda), zero compute outside of Warp kernels.
     """
     _init()
+    ctx = _resolve_ctx(ctx, device)
     E = count_wp.shape[0]
     n_max = n
     flat = E * n_max
@@ -1055,10 +1127,10 @@ def resample_uniform(
     if s_wp is None:
         s_wp = wp.empty(E * (n_max + 1), dtype=wp.float32, device=device)
 
-    wp.launch(_resample_scan_k, dim=E,
-              inputs=[center_wp, n_max, count_wp, seg_wp, s_wp], device=device)
-    wp.launch(_resample_lookup_k, dim=flat,
-              inputs=[center_wp, seg_wp, s_wp, n_max, count_wp, out_wp], device=device)
+    ctx.launch(_resample_scan_k, E,
+               [center_wp, n_max, count_wp, seg_wp, s_wp])
+    ctx.launch(_resample_lookup_k, flat,
+               [center_wp, seg_wp, s_wp, n_max, count_wp, out_wp])
 
 
 def resample_constant_spacing(
@@ -1070,6 +1142,7 @@ def resample_constant_spacing(
     seg_wp: "wp.array | None" = None,
     s_wp: "wp.array | None" = None,
     truncated_wp: "wp.array | None" = None,
+    ctx: "LaunchContext | None" = None,
 ) -> "tuple[wp.array, wp.array] | None":
     """Arc-length resample each fully-real closed loop to constant ``spacing``, padded to
     ``n_max`` with NaN.  Matches ``geometry.arc_length_resample(points, spacing=spacing,
@@ -1096,7 +1169,10 @@ def resample_constant_spacing(
     true point count exceeds ``n_max`` is flagged ``truncated[e] = 1`` on device; the
     pipeline's validity gate then fails it. Allocating mode additionally emits a
     ``RuntimeWarning`` (a host readback); in-place mode never reads back. Choose
-    ``N_max >= max(perimeter) / spacing + 1`` across all envs to avoid truncation."""
+    ``N_max >= max(perimeter) / spacing + 1`` across all envs to avoid truncation.
+
+    ``ctx``: optional track_gen.exec.LaunchContext; default resolves the device's stream
+    (see track_gen.exec)."""
     _init()
     if count_wp is not None:
         E = count_wp.shape[0]
@@ -1107,6 +1183,7 @@ def resample_constant_spacing(
             "resample_constant_spacing: need count_wp or out_wp to infer E from wp.array input")
     N = center.shape[0] // E
     dev = str(center.device)
+    ctx = _resolve_ctx(ctx, dev)
 
     _allocating = out_wp is None or count_wp is None
     if out_wp is None:
@@ -1120,11 +1197,11 @@ def resample_constant_spacing(
     if truncated_wp is None:
         truncated_wp = wp.empty(E, dtype=wp.int32, device=dev)
 
-    wp.launch(_cs_scan_k, dim=E, inputs=[center, N, float(spacing), n_max,
-              seg_wp, s_wp, count_wp, truncated_wp], device=dev)
-    wp.launch(_cs_lookup_k, dim=E * n_max, inputs=[center, seg_wp, s_wp, N,
-              float(spacing), n_max, count_wp, out_wp], device=dev)
-    _sync(dev)
+    ctx.launch(_cs_scan_k, E, [center, N, float(spacing), n_max,
+               seg_wp, s_wp, count_wp, truncated_wp])
+    ctx.launch(_cs_lookup_k, E * n_max, [center, seg_wp, s_wp, N,
+               float(spacing), n_max, count_wp, out_wp])
+    ctx.sync()
 
     if _allocating:
         # Convenience path only (it allocates, so it is never on a capture path): warn
@@ -1154,6 +1231,7 @@ def validity_inplace(
     out_valid: "wp.array",
     config,
     truncated_wp: "wp.array | None" = None,
+    ctx: "LaunchContext | None" = None,
 ) -> None:
     """In-place validity gate: writes directly into out_valid ([E] int32 wp.array). Zero alloc
     when ``truncated_wp`` is provided.
@@ -1178,14 +1256,18 @@ def validity_inplace(
         truncated_wp: [E] int32 N_max truncation flags from resample_constant_spacing;
                       a flagged env is invalid. None -> no env is treated as truncated
                       (a zero buffer is allocated).
+        ctx: optional track_gen.exec.LaunchContext; default resolves the
+            device's stream (see track_gen.exec).
     """
     _init()
+    ctx = _resolve_ctx(ctx, str(out_valid.device))
     E = count_wp.shape[0]
     if truncated_wp is None:
-        truncated_wp = wp.zeros(E, dtype=wp.int32, device=str(out_valid.device))
-    wp.launch(
-        _validity_k, dim=E,
-        inputs=[
+        truncated_wp = wp.empty(E, dtype=wp.int32, device=str(out_valid.device))
+        ctx.fill(truncated_wp, 0)  # zeroed on ctx's stream (wp.zeros memsets the current one)
+    ctx.launch(
+        _validity_k, E,
+        [
             center_wp, w_wp, count_wp, gen_valid_wp, outer_wp, inner_wp,
             int(has_border), int(n_max),
             float(config.half_width), float(config.turning_tol),
@@ -1194,9 +1276,8 @@ def validity_inplace(
             truncated_wp,
             out_valid,
         ],
-        device=str(out_valid.device),
     )
-    _sync(out_valid.device)
+    ctx.sync()
 
 
 def _arclength(
@@ -1204,27 +1285,33 @@ def _arclength(
     out_arclen: "wp.array",
     out_length: "wp.array",
     count_wp: "wp.array",
+    ctx: "LaunchContext | None" = None,
 ):
     """In-place: writes arclen into out_arclen (wp.array [E*n_max] float32) and
     total perimeter into out_length (wp.array [E] float32). All args are wp.array;
     nothing allocated. n_max inferred from out_arclen.shape[0] and count_wp.shape[0].
 
     Pure Warp (cpu+cuda); allclose to oracle to atol~1e-3 (float32 drift).
+
+    Args:
+        ctx: optional track_gen.exec.LaunchContext; default resolves the
+            device's stream (see track_gen.exec).
     """
     _init()
+    ctx = _resolve_ctx(ctx, str(out_arclen.device))
     E = count_wp.shape[0]
     flat = out_arclen.shape[0]
     n_max = flat // E
-    wp.launch(_arclength_k, dim=E,
-              inputs=[center_wp, n_max, count_wp, out_arclen, out_length],
-              device=str(out_arclen.device))
-    _sync(out_arclen.device)
+    ctx.launch(_arclength_k, E,
+               [center_wp, n_max, count_wp, out_arclen, out_length])
+    ctx.sync()
 
 
 def _winding(
     center_wp: "wp.array",
     out_winding: "wp.array",
     count_wp: "wp.array",
+    ctx: "LaunchContext | None" = None,
 ):
     """In-place: writes per-env signed loop winding (+1 CCW / -1 CW / 0 degenerate)
     into out_winding (wp.array [E] float32) from the sign of the centerline's signed
@@ -1232,14 +1319,18 @@ def _winding(
     center_wp.shape[0] and count_wp.shape[0].
 
     Fixed launch (no host branch) -> safe inside a CUDA graph capture region.
+
+    Args:
+        ctx: optional track_gen.exec.LaunchContext; default resolves the
+            device's stream (see track_gen.exec).
     """
     _init()
+    ctx = _resolve_ctx(ctx, str(out_winding.device))
     E = count_wp.shape[0]
     n_max = center_wp.shape[0] // E
-    wp.launch(_winding_k, dim=E,
-              inputs=[center_wp, n_max, count_wp, out_winding],
-              device=str(out_winding.device))
-    _sync(out_winding.device)
+    ctx.launch(_winding_k, E,
+               [center_wp, n_max, count_wp, out_winding])
+    ctx.sync()
 
 
 class GenScratch:
@@ -1692,7 +1783,8 @@ def inflate_warp(center, config, out=None,
                  count: "wp.array | None" = None,
                  scratch: "_Scratch | None" = None,
                  seeds: "wp.array | None" = None,
-                 truncated: "wp.array | None" = None):
+                 truncated: "wp.array | None" = None,
+                 ctx: "LaunchContext | None" = None):
     """Pure-Warp inflation: resample -> frame -> offset -> z-profile -> validity -> lift.
 
     Writes results into out's wp.array Track buffers (or allocates a fresh Track).
@@ -1732,6 +1824,8 @@ def inflate_warp(center, config, out=None,
         truncated: [E] int32 wp.array N_max truncation flags from
                   resample_constant_spacing; flagged envs fail validity. None -> no env
                   is treated as truncated (a zero buffer is allocated).
+        ctx: optional track_gen.exec.LaunchContext; default resolves the
+            device's stream (see track_gen.exec).
 
     Returns:
         track_gen.types.Track with wp.array fields.
@@ -1768,6 +1862,7 @@ def inflate_warp(center, config, out=None,
 
     n_max = center.shape[0] // E
     dev = str(center.device)
+    ctx = _resolve_ctx(ctx, dev)
     hw = float(config.half_width)
     flat = E * n_max
 
@@ -1799,9 +1894,12 @@ def inflate_warp(center, config, out=None,
                     inn2=wp.empty(flat, dtype=wp.vec2f, device=dev),
                     tan2=wp.empty(flat, dtype=wp.vec2f, device=dev),
                     nrm2=wp.empty(flat, dtype=wp.vec2f, device=dev),
-                    z=wp.zeros(flat, dtype=wp.float32, device=dev),
+                    z=wp.empty(flat, dtype=wp.float32, device=dev),
                 ),
             )
+            # Zero on ctx's stream (wp.zeros memsets Warp's current stream): the flat
+            # profile never writes z and the grade check reads it.
+            ctx.fill(scratch.inflate.z, 0.0)
     else:
         # Owned path: the caller MUST pass pre-allocated scratch.
         assert scratch is not None, (
@@ -1819,7 +1917,8 @@ def inflate_warp(center, config, out=None,
         stag.tan2 = wp.empty(flat, dtype=wp.vec2f, device=dev)
         stag.nrm2 = wp.empty(flat, dtype=wp.vec2f, device=dev)
     if stag.z is None:
-        stag.z = wp.zeros(flat, dtype=wp.float32, device=dev)
+        stag.z = wp.empty(flat, dtype=wp.float32, device=dev)
+        ctx.fill(stag.z, 0.0)
     if stag.knot_cum is None:
         _fill_knot_scratch(stag, config, E, dev)
 
@@ -1838,18 +1937,18 @@ def inflate_warp(center, config, out=None,
 
         # Build a full count wp.array (== N for all envs).
         cnt_wp = wp.empty(E, dtype=wp.int32, device=dev)
-        wp.launch(_fill_i32_k, dim=E, inputs=[cnt_wp, N], device=dev)
+        ctx.launch(_fill_i32_k, E, [cnt_wp, N])
 
         # 1. resample_uniform: writes into the vec2f center staging buffer.
         resample_uniform(center, stag.ctr2, N, cnt_wp,
-                         seg_wp=rs_seg_wp, s_wp=rs_s_wp, device=dev)
-        _sync(dev)
+                         seg_wp=rs_seg_wp, s_wp=rs_s_wp, device=dev, ctx=ctx)
+        ctx.sync()
 
         # Per-point half-width kernel-filled into the inflate group's w.
-        wp.launch(_fill_f32_k, dim=flat, inputs=[stag.w, hw], device=dev)
+        ctx.launch(_fill_f32_k, flat, [stag.w, hw])
 
         # Track.count == N for all envs.
-        wp.launch(_fill_i32_k, dim=E, inputs=[out.count, N], device=dev)
+        ctx.launch(_fill_i32_k, E, [out.count, N])
 
     else:
         # --- Constant-spacing path: variable count per env, NaN-padded output ---
@@ -1857,27 +1956,27 @@ def inflate_warp(center, config, out=None,
 
         # 1. resample_uniform: writes into the vec2f center staging buffer.
         resample_uniform(center, stag.ctr2, n_max, cnt_wp,
-                         seg_wp=rs_seg_wp, s_wp=rs_s_wp, device=dev)
-        _sync(dev)
+                         seg_wp=rs_seg_wp, s_wp=rs_s_wp, device=dev, ctx=ctx)
+        ctx.sync()
 
         # Per-point half-width kernel-filled into the inflate group's w.
-        wp.launch(_fill_f32_k, dim=flat, inputs=[stag.w, hw], device=dev)
+        ctx.launch(_fill_f32_k, flat, [stag.w, hw])
 
         # Track.count == per-env real point count.
-        wp.copy(out.count, cnt_wp)
+        ctx.copy(out.count, cnt_wp)
 
     # 2. frame + curvature — into the vec2f tangent/normal staging buffers.
-    frame_curvature(stag.ctr2, stag.tan2, stag.nrm2, stag.kappa, cnt_wp)
+    frame_curvature(stag.ctr2, stag.tan2, stag.nrm2, stag.kappa, cnt_wp, ctx=ctx)
 
     # 3. cumulative arc length + total length — in-place into out.arclen/out.length.
-    _arclength(stag.ctr2, out.arclen, out.length, cnt_wp)
+    _arclength(stag.ctr2, out.arclen, out.length, cnt_wp, ctx=ctx)
 
     # 3b. signed loop winding (+1 CCW / -1 CW / 0 degenerate) — in-place into out.winding.
-    _winding(stag.ctr2, out.winding, cnt_wp)
+    _winding(stag.ctr2, out.winding, cnt_wp, ctx=ctx)
 
     # 4. offset to outer/inner borders — into the vec2f outer/inner staging buffers.
     offset(stag.ctr2, stag.nrm2, hw, stag.out2, stag.inn2,
-           stag.area_a, stag.area_b, cnt_wp)
+           stag.area_a, stag.area_b, cnt_wp, ctx=ctx)
 
     # 4b. Elevation (2.5D): fill the per-point altitude from the configured profile.
     # CRITICAL ordering: out.arclen/out.length still hold the 2D (cum, perim) tables
@@ -1894,10 +1993,10 @@ def inflate_warp(center, config, out=None,
     if _z_profile in ("uniform", "random_walk"):
         warp_zprofile.apply_z_profile_knots(
             config, seeds, cnt_wp, n_max, out.arclen, out.length,
-            stag.knot_cum, stag.knot_count, stag.knot_z, stag.z)
+            stag.knot_cum, stag.knot_count, stag.knot_z, stag.z, ctx=ctx)
     elif not _is_flat:
         warp_zprofile.apply_z_profile(
-            config, seeds, cnt_wp, n_max, out.arclen, out.length, stag.z)
+            config, seeds, cnt_wp, n_max, out.arclen, out.length, stag.z, ctx=ctx)
 
     # 5. per-track validity gate (in-place: writes directly into out.valid).
     if valid is not None:
@@ -1905,7 +2004,7 @@ def inflate_warp(center, config, out=None,
     else:
         # Standalone / test path: allocate a small all-ones temp.
         gv_wp = wp.empty(E, dtype=wp.int32, device=dev)
-        wp.launch(_fill_i32_k, dim=E, inputs=[gv_wp, 1], device=dev)
+        ctx.launch(_fill_i32_k, E, [gv_wp, 1])
 
     # Border self_intersections is optional (config.validity_border_check, default off).
     _bc = getattr(config, "validity_border_check", False)
@@ -1916,31 +2015,28 @@ def inflate_warp(center, config, out=None,
     # grade branch is a no-op and validity is byte-identical to the legacy path.
     validity_inplace(stag.ctr2, stag.w, cnt_wp, gv_wp,
                      stag.out2, stag.inn2, has_border, n_max, stag.z,
-                     out.valid, config, truncated_wp=truncated)
+                     out.valid, config, truncated_wp=truncated, ctx=ctx)
 
     # 6. Lift the vec2f staging buffers into the public vec3f Track arrays.
     if _is_flat:
         # Flat: constant z = z_base (0.0 by default). arclen/length/tangent keep the
         # 2D values from stages 2-3 (a constant z-offset changes neither). NaN xy
         # padding lifts to NaN-xy.
-        wp.launch(_lift_track_k, dim=flat,
-                  inputs=[stag.out2, stag.ctr2, stag.inn2, stag.tan2, stag.nrm2,
-                          float(config.z_base),
-                          out.outer, out.center, out.inner, out.tangent,
-                          out.normal],
-                  device=dev)
+        ctx.launch(_lift_track_k, flat,
+                   [stag.out2, stag.ctr2, stag.inn2, stag.tan2, stag.nrm2,
+                    float(config.z_base),
+                    out.outer, out.center, out.inner, out.tangent,
+                    out.normal])
     else:
         # Non-flat: level cross-sections share the per-point centerline z, then
         # recompute tangent + true 3D arclen/length (overwriting the 2D tables).
-        wp.launch(_lift_track_zvar_k, dim=flat,
-                  inputs=[stag.out2, stag.ctr2, stag.inn2, stag.nrm2, stag.z,
-                          out.outer, out.center, out.inner, out.normal],
-                  device=dev)
-        wp.launch(_track_frames3_k, dim=E,
-                  inputs=[out.center, cnt_wp, n_max,
-                          out.tangent, out.arclen, out.length],
-                  device=dev)
-    _sync(dev)
+        ctx.launch(_lift_track_zvar_k, flat,
+                   [stag.out2, stag.ctr2, stag.inn2, stag.nrm2, stag.z,
+                    out.outer, out.center, out.inner, out.normal])
+        ctx.launch(_track_frames3_k, E,
+                   [out.center, cnt_wp, n_max,
+                    out.tangent, out.arclen, out.length])
+    ctx.sync()
 
     return out
 

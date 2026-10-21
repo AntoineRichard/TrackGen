@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import warp as wp
 
+from ..exec.context import LaunchContext, resolve as _resolve_ctx
 from . import warp_pipeline as _pipe
 
 
@@ -281,19 +282,31 @@ def _assemble_polygon_selected_k(
     out[t] = (1.0 - u) * c0 + u * c1
 
 
-def point_count_sample_inplace(seeds_wp, config, out_count):
-    """In-place: per-env point count in [min_num_points, max_num_points]. Zero alloc."""
+def point_count_sample_inplace(seeds_wp, config, out_count,
+                               ctx: "LaunchContext | None" = None):
+    """In-place: per-env point count in [min_num_points, max_num_points]. Zero alloc.
+
+    Args:
+        ctx: optional track_gen.exec.LaunchContext; default resolves the
+            device's stream (see track_gen.exec).
+    """
     _pipe._init()
+    ctx = _resolve_ctx(ctx, str(out_count.device))
     E = out_count.shape[0]
-    wp.launch(_point_count_sample_k, dim=E,
-              inputs=[seeds_wp, int(config.min_num_points), int(config.max_num_points),
-                      out_count],
-              device=str(out_count.device))
-    _pipe._sync(out_count.device)
+    ctx.launch(_point_count_sample_k, E,
+               [seeds_wp, int(config.min_num_points), int(config.max_num_points),
+                out_count])
+    ctx.sync()
 
 
-def point_sample_inplace(seeds_wp, config, out_points, used_scratch):
-    """In-place: writes [E*P] vec2f random points into out_points. Zero alloc."""
+def point_sample_inplace(seeds_wp, config, out_points, used_scratch,
+                         ctx: "LaunchContext | None" = None):
+    """In-place: writes [E*P] vec2f random points into out_points. Zero alloc.
+
+    Args:
+        ctx: optional track_gen.exec.LaunchContext; default resolves the
+            device's stream (see track_gen.exec).
+    """
     _pipe._init()
     E = seeds_wp.shape[0]
     P = int(config.max_num_points)
@@ -301,12 +314,12 @@ def point_sample_inplace(seeds_wp, config, out_points, used_scratch):
     nc2 = num_cells * num_cells
     cell_size = config.min_point_distance * 2.0
     dev = str(out_points.device)
-    wp.launch(_pipe._fill_i32_k, dim=E * P, inputs=[used_scratch, -1], device=dev)
-    wp.launch(_point_sample_k, dim=E,
-              inputs=[seeds_wp, num_cells, nc2, float(cell_size), float(config.scale),
-                      P, used_scratch, out_points],
-              device=dev)
-    _pipe._sync(out_points.device)
+    ctx = _resolve_ctx(ctx, dev)
+    ctx.launch(_pipe._fill_i32_k, E * P, [used_scratch, -1])
+    ctx.launch(_point_sample_k, E,
+               [seeds_wp, num_cells, nc2, float(cell_size), float(config.scale),
+                P, used_scratch, out_points])
+    ctx.sync()
 
 
 class HullScratch:
@@ -385,7 +398,7 @@ def hull_alloc_scratch(config):
 
 def generate_hull_warp(seeds_wp: wp.array, config,
                        out_centerline: wp.array, out_valid_wp: wp.array,
-                       scratch) -> None:
+                       scratch, ctx: "LaunchContext | None" = None) -> None:
     """Convex-hull + midpoint-displacement centerline generation — in-place owned path.
 
     Pure-Warp: sample points -> angle-sort -> midpoint-displace -> closed Catmull-Rom dense
@@ -399,8 +412,11 @@ def generate_hull_warp(seeds_wp: wp.array, config,
         out_centerline:[E*N] vec2f wp.array — written in-place with the generated centerline.
         out_valid_wp:  [E] int32 wp.array — filled with 1 (all valid at generation stage).
         scratch:       a HullScratch from hull_alloc_scratch.
+        ctx: optional track_gen.exec.LaunchContext; default resolves the
+            device's stream (see track_gen.exec).
     """
     _pipe._init()
+    ctx = _resolve_ctx(ctx, str(out_centerline.device))
     assert scratch is not None, "generate_hull_warp requires scratch"
 
     E = scratch.count.shape[0]
@@ -413,51 +429,49 @@ def generate_hull_warp(seeds_wp: wp.array, config,
     dev = str(out_centerline.device)
 
     # Step 1: sample point count + positions.
-    point_count_sample_inplace(seeds_wp, config, scratch.count)
-    point_sample_inplace(seeds_wp, config, scratch.points, scratch.used)
+    point_count_sample_inplace(seeds_wp, config, scratch.count, ctx=ctx)
+    point_sample_inplace(seeds_wp, config, scratch.points, scratch.used, ctx=ctx)
 
     # Step 2: angle-sort the first m points about their centroid.
-    wp.launch(_angle_sort_k, dim=E,
-              inputs=[scratch.points, P, scratch.count, scratch.keys, scratch.sorted],
-              device=dev)
+    ctx.launch(_angle_sort_k, E,
+               [scratch.points, P, scratch.count, scratch.keys, scratch.sorted])
 
     # Step 3: midpoint-displacement layer -> augmented 2m-vertex loop.
-    wp.launch(_midpoint_displace_k, dim=E,
-              inputs=[scratch.sorted, scratch.count, seeds_wp, P, disp,
-                      scratch.aug, scratch.aug_count],
-              device=dev)
+    ctx.launch(_midpoint_displace_k, E,
+               [scratch.sorted, scratch.count, seeds_wp, P, disp,
+                scratch.aug, scratch.aug_count])
 
     # Step 4: closed Catmull-Rom smoothing -> dense polyline.
-    wp.launch(_catmull_rom_k, dim=E * M,
-              inputs=[scratch.aug, scratch.aug_count, AP, npseg, scratch.dense],
-              device=dev)
+    ctx.launch(_catmull_rom_k, E * M,
+               [scratch.aug, scratch.aug_count, AP, npseg, scratch.dense])
 
     # Step 5: arc-resample the smooth dense polyline -> out_centerline (N points per env).
     _pipe._arc_resample_inplace(scratch.dense, M, N,
                                 scratch.arc_real, scratch.arc_seg, scratch.arc_s,
-                                scratch.arc_cr, scratch.arc_co, out_centerline, dev)
+                                scratch.arc_cr, scratch.arc_co, out_centerline, dev,
+                                ctx=ctx)
 
     # Step 6: self-intersections of the smooth resample -> crossers. scratch.arc_co was
     # written by _arc_scan_k: R>=2 -> N, R<2 -> 0. Pass directly as count.
-    _pipe.self_intersections_inplace(out_centerline, scratch.arc_co, scratch.crossers, N)
+    _pipe.self_intersections_inplace(out_centerline, scratch.arc_co, scratch.crossers, N,
+                                     ctx=ctx)
 
     # Step 7: assemble and resample the augmented polygon fallback only for crossing envs.
     # The selected resampler leaves inactive out_centerline rows untouched, so non-crossers
     # keep their Catmull-Rom result and crossers are overwritten in place.
-    wp.launch(_assemble_polygon_selected_k, dim=E * M,
-              inputs=[scratch.aug, scratch.aug_count, AP, npseg, scratch.crossers,
-                      scratch.dense],
-              device=dev)
+    ctx.launch(_assemble_polygon_selected_k, E * M,
+               [scratch.aug, scratch.aug_count, AP, npseg, scratch.crossers,
+                scratch.dense])
     _pipe._arc_resample_selected_inplace(
         scratch.dense, scratch.crossers, M, N,
         scratch.arc_real, scratch.arc_seg, scratch.arc_s,
-        scratch.arc_cr, scratch.arc_co, out_centerline, dev,
+        scratch.arc_cr, scratch.arc_co, out_centerline, dev, ctx=ctx,
     )
 
     # Step 8: mark all envs valid (gen gate is always True; inflate does the real gate).
-    wp.launch(_pipe._fill_i32_k, dim=E, inputs=[out_valid_wp, 1], device=dev)
+    ctx.launch(_pipe._fill_i32_k, E, [out_valid_wp, 1])
 
-    _pipe._sync(dev)
+    ctx.sync()
 
 
 from . import generator_registry as _registry  # noqa: E402
@@ -465,4 +479,5 @@ _registry.register(_registry.GeneratorSpec(
     name="hull",
     alloc_scratch=hull_alloc_scratch,
     generate=generate_hull_warp,
+    accepts_ctx=True,
 ))

@@ -34,7 +34,8 @@ import warp as wp
 
 from .checkpoints import CheckpointSet
 from .collision_geom import _is_nan3, _plane_pass
-from .runtime import _check_arr, _init, _sync
+from ..exec.context import LaunchContext
+from .runtime import _check_arr, _init, _sync  # noqa: F401  (_sync: legacy re-export)
 
 
 @dataclass
@@ -299,7 +300,8 @@ class ProgressTracker:
         self._validate_position(position)
         self._bound_pos = position
 
-    def update(self, position: "wp.array | None" = None) -> ProgressEvents:
+    def update(self, position: "wp.array | None" = None,
+               stream=None) -> ProgressEvents:
         """Advance one step; returns the tracker's preallocated events.
 
         Bound mode (constructed with ``position=``): call with no arguments.
@@ -316,6 +318,13 @@ class ProgressTracker:
         (it only re-primes ``prev_pos``), and normal crossing detection
         resumes the update after that. Useful for envs mid-teleport or
         awaiting a fresh spawn without a full ``reset()``.
+
+        Args:
+            position: ``[E]`` vec3f positions (per-call mode only).
+            stream: optional wp.Stream (or 'torch') to run on; by default the
+                stream is resolved per track_gen.exec (an enclosing
+                torch.cuda.graph capture is adopted, else Warp's current
+                stream).
         """
         if self._bound_pos is not None:
             if position is not None:
@@ -330,29 +339,37 @@ class ProgressTracker:
                     "construct with position=")
             self._validate_position(position)
             pos = position
+        ctx = LaunchContext.for_call(self._device, stream)
         c = self._cps
         ev = self._events
-        wp.launch(
-            _progress_update_k, dim=self._E,
-            inputs=[c.position, c.left, c.right, c.tangent, c.up_half,
-                    c.count, self._M,
-                    pos, self._prev_pos, self._next, self._laps, self._progress,
-                    ev.passed, ev.checkpoint_passed, ev.next_checkpoint,
-                    ev.laps, ev.progress, ev.wrong_way, ev.wrong_checkpoint,
-                    ev.dist_to_next],
-            device=self._device,
+        ctx.launch(
+            _progress_update_k, self._E,
+            [c.position, c.left, c.right, c.tangent, c.up_half,
+             c.count, self._M,
+             pos, self._prev_pos, self._next, self._laps, self._progress,
+             ev.passed, ev.checkpoint_passed, ev.next_checkpoint,
+             ev.laps, ev.progress, ev.wrong_way, ev.wrong_checkpoint,
+             ev.dist_to_next],
         )
-        _sync(self._device)
+        ctx.sync()
         return ev
 
-    def reset(self, mask: wp.array) -> None:
+    def reset(self, mask: wp.array, stream=None) -> None:
         """Clear state where ``mask[e] == 1`` (``[E]`` int32); arms the NaN
         previous-position sentinel so the next update cannot emit a spurious
-        crossing. Required after regenerating the bound course."""
+        crossing. Required after regenerating the bound course.
+
+        Args:
+            mask: ``[E]`` int32 reset mask.
+            stream: optional wp.Stream (or 'torch') to run on; by default the
+                stream is resolved per track_gen.exec (an enclosing
+                torch.cuda.graph capture is adopted, else Warp's current
+                stream).
+        """
         _check_arr("mask", mask, (self._E,), wp.int32, self._device)
-        wp.launch(
-            _progress_reset_k, dim=self._E,
-            inputs=[mask, self._prev_pos, self._next, self._laps, self._progress],
-            device=self._device,
+        ctx = LaunchContext.for_call(self._device, stream)
+        ctx.launch(
+            _progress_reset_k, self._E,
+            [mask, self._prev_pos, self._next, self._laps, self._progress],
         )
-        _sync(self._device)
+        ctx.sync()

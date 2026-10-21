@@ -116,7 +116,7 @@ def test_cuda_first_generate_warms_up_captures_and_replays(monkeypatch):
 
     calls = []
 
-    def fake_run_gate_pipeline(config, seed_buf_wp, out, scratch, generator_spec):
+    def fake_run_gate_pipeline(config, seed_buf_wp, out, scratch, generator_spec, ctx=None):
         calls.append("run")
 
     class FakeCapture:
@@ -151,6 +151,14 @@ def test_cuda_first_generate_warms_up_captures_and_replays(monkeypatch):
         gate_generator_mod.wp, "get_device",
         lambda d=None: (type("Dev", (), {"is_cuda": True})()
                         if str(d).startswith("cuda") else real_get_device(d)),
+    )
+
+    # The facade pins its own self-capture to Warp's current stream through
+    # LaunchContext.current(dev); the fake device has no stream, so stub it.
+    import types
+    monkeypatch.setattr(
+        gate_generator_mod.LaunchContext, "current",
+        classmethod(lambda cls, d: types.SimpleNamespace(copy=lambda *a, **k: None)),
     )
 
     assert gen.generate(1) is gen._gate_sequence

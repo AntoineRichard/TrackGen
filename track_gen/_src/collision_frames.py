@@ -13,7 +13,8 @@ from dataclasses import dataclass
 import warp as wp
 
 from .collision_geom import _is_nan3
-from .runtime import _check_arr, _init, _sync
+from ..exec.context import LaunchContext
+from .runtime import _check_arr, _init, _sync  # noqa: F401  (_sync: legacy re-export)
 from .types import GateSequence
 
 
@@ -151,15 +152,23 @@ class FrameChecker:
         _check_arr("next_cp", next_cp, (self._E,), wp.int32, self._device)
         self._next = next_cp
 
-    def query(self) -> FrameContact:
+    def query(self, stream=None) -> FrameContact:
+        """Sphere-vs-gate-frame contact on the bound inputs and window.
+
+        Args:
+            stream: optional wp.Stream (or 'torch') to run on; by default the
+                stream is resolved per track_gen.exec (an enclosing
+                torch.cuda.graph capture is adopted, else Warp's current
+                stream).
+        """
         if self._pos is None or self._next is None:
             raise RuntimeError("call bind_inputs() and bind_window() first")
+        ctx = LaunchContext.for_call(self._device, stream)
         s = self._seq
-        wp.launch(_frame_query_k, dim=self._E,
-                  inputs=[s.position, s.orientation, s.half_size, s.count,
-                          s.valid, self._G, self._next, self._window,
-                          self._pos, self._radius, self._thick, self._depth,
-                          self._contact.hit, self._contact.depth],
-                  device=self._device)
-        _sync(self._device)
+        ctx.launch(_frame_query_k, self._E,
+                   [s.position, s.orientation, s.half_size, s.count,
+                    s.valid, self._G, self._next, self._window,
+                    self._pos, self._radius, self._thick, self._depth,
+                    self._contact.hit, self._contact.depth])
+        ctx.sync()
         return self._contact

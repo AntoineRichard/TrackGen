@@ -1,6 +1,44 @@
 # Changelog
 
-## 0.2.0.dev0 (unreleased, `v2` branch)
+## 0.2.0.dev1 (unreleased, `v2` branch)
+
+### Added
+
+- **`track_gen.exec.LaunchContext`** (roadmap PR2): one device and one stream per call.
+  Every launch, copy and fill the library issues now goes through it with an explicit
+  `stream=`, so a call can be recorded into the graph the caller is capturing.
+  - The stream is resolved per call. In priority order: an explicit `stream=` (a
+    `wp.Stream`, or `"torch"`); an enclosing `LaunchContext.scope()`; torch's current
+    stream when torch is capturing on the device (inside `torch.cuda.graph(g)` library
+    calls are recorded into `g`); Warp's current stream.
+  - Per-call methods take `stream=None`: `query` / `update` / `reset` / `sample` /
+    `bake` / `refresh`, `Course.step` / `reset`, and the `PerEnvSeededRNG` samplers.
+    Pipeline and generator helpers take `ctx=None`.
+- `track_gen.ops.fill(ctx, arr, value)`: typed fills on the context's stream. It replaces
+  `array.zero_()` on hot paths; that memset targets Warp's current stream.
+- `GeneratorSpec.accepts_ctx` / `GateGeneratorSpec.accepts_ctx` (default `False`). Built-in
+  generators set it and receive `ctx=`. Legacy plugins run inside `ctx.scope()`, so the
+  `warp_pipeline` helpers they call inherit the stream. Their own direct `wp.launch` calls
+  still use Warp's current stream.
+
+### Behaviour changes
+
+- **Library calls made inside `torch.cuda.graph(g)` are now recorded into `g`.** They used
+  to run eagerly on Warp's stream and were missing from the graph. Calls on a side
+  stream are recorded too: pass `stream=s` or use `LaunchContext(device, s).scope()`.
+- `TrackGenerator` / `GateGenerator` / `Course.generate()` are unchanged in this step:
+  they still self-capture on Warp's current stream (roadmap PR3 changes this).
+
+### Testing
+
+- `tests/test_launch_stream.py` (CPU) fails if any library `wp.launch` / `wp.copy` call
+  omits `stream=`, or any library `zero_()` / `fill_()` runs, across every
+  `test_no_host_sync` driver, construction included.
+- `tests/test_stream_capture_cuda.py` (CUDA) records every track and gate pipeline on a
+  non-current side stream, and `Course.step()` both on an explicit side stream and inside
+  `torch.cuda.graph`. It compares poisoned replays against eager twins.
+
+## 0.2.0.dev0 (2026-10-21, tag `v0.2.0.dev0`)
 
 Development line for the library-readiness roadmap (`docs/library-readiness/`). Racing
 projects that need stability should pin the `v0.1.0` tag.

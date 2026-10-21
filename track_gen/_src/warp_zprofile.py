@@ -24,6 +24,8 @@ caller can then drive the shared profile-select + launch logic in
 """
 import warp as wp
 
+from ..exec.context import LaunchContext, resolve as _resolve_ctx
+
 _P_UNIFORM = 15679
 _P_WALK = 15683
 _P_NOISE = 15731
@@ -172,21 +174,27 @@ def alloc_z_scratch(num_envs: int, stride: int, device):
 
 
 def gate_cum_perim(pos2: wp.array, count: wp.array, max_gates: int,
-                   cum: wp.array, perim: wp.array) -> None:
+                   cum: wp.array, perim: wp.array,
+                   ctx: "LaunchContext | None" = None) -> None:
     """Derive plan-view ``(cum, perim)`` from ordered gate anchors.
 
     Wraps ``_cum_chords_k`` for the gate path: one thread per env, walking the
     ordered anchor chain to accumulate cumulative chord length and close the
     loop into a perimeter. Capture-safe (launch only, no alloc/sync).
+
+    Args:
+        ctx: optional track_gen.exec.LaunchContext; default resolves the
+            device's stream (see track_gen.exec).
     """
     E = int(perim.shape[0])
     dev = str(pos2.device)
-    wp.launch(_cum_chords_k, dim=E,
-              inputs=[pos2, count, int(max_gates), cum, perim], device=dev)
+    ctx = _resolve_ctx(ctx, dev)
+    ctx.launch(_cum_chords_k, E, [pos2, count, int(max_gates), cum, perim])
 
 
 def apply_z_profile(config, seeds_wp: wp.array, count: wp.array, stride: int,
-                    cum: wp.array, perim: wp.array, z: wp.array) -> None:
+                    cum: wp.array, perim: wp.array, z: wp.array,
+                    ctx: "LaunchContext | None" = None) -> None:
     """Fill ``z`` ``[E*stride]`` from the configured profile.
 
     Pure profile-select + launches, capture-safe (no alloc/sync). ``cum``
@@ -195,31 +203,35 @@ def apply_z_profile(config, seeds_wp: wp.array, count: wp.array, stride: int,
     resampler's own arc tables). Reads only the shared ``z_*`` attribute
     names off ``config``, so both ``GateGenConfig`` and ``TrackGenConfig``
     work through this one entry point.
+
+    Args:
+        ctx: optional track_gen.exec.LaunchContext; default resolves the
+            device's stream (see track_gen.exec).
     """
     E = int(config.num_envs)
     S = int(stride)
     dev = str(config.device)
+    ctx = _resolve_ctx(ctx, dev)
     profile = config.z_profile
     if profile == "flat":
-        wp.launch(_z_flat_k, dim=E * S,
-                  inputs=[count, S, float(config.z_base), z], device=dev)
+        ctx.launch(_z_flat_k, E * S,
+                   [count, S, float(config.z_base), z])
     elif profile == "uniform":
-        wp.launch(_z_uniform_k, dim=E * S,
-                  inputs=[seeds_wp, count, S, float(config.z_min),
-                          float(config.z_max), z], device=dev)
+        ctx.launch(_z_uniform_k, E * S,
+                   [seeds_wp, count, S, float(config.z_min),
+                    float(config.z_max), z])
     elif profile == "random_walk":
-        wp.launch(_z_walk_k, dim=E,
-                  inputs=[seeds_wp, count, S, cum, perim,
-                          float(config.z_base), float(config.z_min),
-                          float(config.z_max), float(config.z_max_step), z],
-                  device=dev)
+        ctx.launch(_z_walk_k, E,
+                   [seeds_wp, count, S, cum, perim,
+                    float(config.z_base), float(config.z_min),
+                    float(config.z_max), float(config.z_max_step), z])
     elif profile == "noise":
-        wp.launch(_z_noise_k, dim=E * S,
-                  inputs=[seeds_wp, count, S, cum, perim,
-                          float(config.z_base), float(config.z_min),
-                          float(config.z_max),
-                          float(config.z_noise_amplitude),
-                          int(config.z_noise_harmonics), z], device=dev)
+        ctx.launch(_z_noise_k, E * S,
+                   [seeds_wp, count, S, cum, perim,
+                    float(config.z_base), float(config.z_min),
+                    float(config.z_max),
+                    float(config.z_noise_amplitude),
+                    int(config.z_noise_harmonics), z])
     else:
         # Config validation rejects unknown names at construction, but configs are
         # mutable; fail loudly rather than silently running some other profile.
@@ -339,7 +351,8 @@ def alloc_knot_scratch(num_envs: int, control_points: int, device):
 def apply_z_profile_knots(config, seeds_wp: wp.array, count: wp.array,
                           stride: int, arclen: wp.array, perim: wp.array,
                           knot_cum: wp.array, knot_count: wp.array,
-                          knot_z: wp.array, z: wp.array) -> None:
+                          knot_z: wp.array, z: wp.array,
+                          ctx: "LaunchContext | None" = None) -> None:
     """Knot-based altitude: sample K control knots, then interpolate per point.
 
     Three launches, capture-safe (no alloc, no sync): build the analytic knot
@@ -356,13 +369,17 @@ def apply_z_profile_knots(config, seeds_wp: wp.array, count: wp.array,
     Reads ``config.z_control_points``, so ``config`` must be a
     :class:`TrackGenConfig`; a ``GateGenConfig`` caller raises a bare
     ``AttributeError``.
+
+    Args:
+        ctx: optional track_gen.exec.LaunchContext; default resolves the
+            device's stream (see track_gen.exec).
     """
     E = int(config.num_envs)
     K = int(config.z_control_points)
     dev = str(config.device)
-    wp.launch(_knot_tables_k, dim=E * K,
-              inputs=[perim, K, knot_cum, knot_count], device=dev)
-    apply_z_profile(config, seeds_wp, knot_count, K, knot_cum, perim, knot_z)
-    wp.launch(_pchip_eval_k, dim=E * int(stride),
-              inputs=[arclen, perim, count, int(stride), knot_z, K, z],
-              device=dev)
+    ctx = _resolve_ctx(ctx, dev)
+    ctx.launch(_knot_tables_k, E * K,
+               [perim, K, knot_cum, knot_count])
+    apply_z_profile(config, seeds_wp, knot_count, K, knot_cum, perim, knot_z, ctx=ctx)
+    ctx.launch(_pchip_eval_k, E * int(stride),
+               [arclen, perim, count, int(stride), knot_z, K, z])

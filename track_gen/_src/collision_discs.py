@@ -31,7 +31,8 @@ from .collision_geom import (
     _rot2,
     _safe_normalize2,
 )
-from .runtime import _check_arr, _init, _sync
+from ..exec.context import LaunchContext
+from .runtime import _check_arr, _init, _sync  # noqa: F401  (_sync: legacy re-export)
 
 
 @dataclass
@@ -242,12 +243,19 @@ class DiscChecker:
 
     def query(self, position: "wp.array | None" = None,
               orientation: "wp.array | None" = None,
-              half_extents: "wp.array | None" = None) -> DiscContact:
+              half_extents: "wp.array | None" = None,
+              stream=None) -> DiscContact:
         """Box-vs-disc contact for ``E * max_boxes`` boxes.
 
         Bound mode (inputs bound at construction): call with no arguments.
         Per-call mode: pass all three arrays; under CUDA-graph capture the
         SAME arrays must be used at capture and every replay.
+
+        Args:
+            stream: optional wp.Stream (or 'torch') to run on; by default the
+                stream is resolved per track_gen.exec (an enclosing
+                torch.cuda.graph capture is adopted, else Warp's current
+                stream).
         """
         if self._bound is not None:
             if position is not None or orientation is not None \
@@ -261,13 +269,13 @@ class DiscChecker:
                     "checker is not bound; pass position, orientation and "
                     "half_extents to query()")
             self._validate_inputs(position, orientation, half_extents)
+        ctx = LaunchContext.for_call(self._device, stream)
         c = self._contact
-        wp.launch(
-            _box_query_discs_k, dim=self._E * self._B,
-            inputs=[self._discs, self._count, self._D, self._radius, self._B,
-                    position, orientation, half_extents,
-                    c.hit, c.disc, c.depth, c.nearest],
-            device=self._device,
+        ctx.launch(
+            _box_query_discs_k, self._E * self._B,
+            [self._discs, self._count, self._D, self._radius, self._B,
+             position, orientation, half_extents,
+             c.hit, c.disc, c.depth, c.nearest],
         )
-        _sync(self._device)
+        ctx.sync()
         return c

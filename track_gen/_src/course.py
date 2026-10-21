@@ -24,7 +24,10 @@ facade captures the refresh sequence into its own graph on the first cuda
 ``generate()`` (Graph B) and replays it afterwards. ``step()``/``reset()``
 are NOT auto-captured — they are capture-ready for the caller's sim graph
 as-is: no utility host-synchronizes, so no flag is needed (the former
-``track_gen.set_capturing`` is a deprecated no-op).
+``track_gen.set_capturing`` is a deprecated no-op). Every launch of one
+``step()``/``reset()`` call goes to ONE stream: ``stream=`` when given, else
+an enclosing ``torch.cuda.graph`` capture stream, else Warp's current stream
+(see :mod:`track_gen.exec`).
 
 Results are undefined for envs with ``valid[e] == 0`` on ``course.result``.
 """
@@ -35,6 +38,7 @@ from dataclasses import dataclass
 import numpy as np
 import warp as wp
 
+from ..exec.context import LaunchContext, resolve as _resolve_ctx
 from . import runtime
 from .checkpoints import CheckpointSampler, CheckpointSet
 from .collision import BoxContact, CollisionChecker
@@ -471,17 +475,25 @@ class Course:
         if seeds is not None:
             # Reseed under the lock: seed-array construction and the device
             # copy in set_seeds_warp ride the shared stream a concurrent
-            # thread may be capturing.
+            # thread may be capturing. Same stream as the generator's own seed
+            # copy and pipeline (Warp's current stream), so it orders before
+            # them.
             with runtime._CAPTURE_LOCK:
+                ctx = LaunchContext.current(self._device)
                 if isinstance(seeds, wp.array):
                     self._validate_seed_array(seeds)
-                    self.rng.set_seeds_warp(seeds, None)
+                    self.rng.set_seeds_warp(seeds, None, ctx=ctx)
                 else:
                     # Mirror PerEnvSeededRNG's int expansion (seed + arange) so
                     # reseeding via int matches constructing a fresh RNG with it.
-                    seed_arr = wp.array(int(seeds) + np.arange(self._E),
-                                        dtype=wp.int32, device=self._device)
-                    self.rng.set_seeds_warp(seed_arr, None)
+                    # Still allocates (PR3 removes it); the upload is
+                    # stream-explicit.
+                    host = wp.array(int(seeds) + np.arange(self._E),
+                                    dtype=wp.int32, device="cpu")
+                    seed_arr = wp.empty(self._E, dtype=wp.int32,
+                                        device=self._device)
+                    ctx.copy(seed_arr, host)
+                    self.rng.set_seeds_warp(seed_arr, None, ctx=ctx)
         # NOTE: generator.generate() takes runtime._CAPTURE_LOCK internally, so it must
         # stay OUTSIDE the locked regions (the lock is not reentrant).
         self.result = self.generator.generate()
@@ -492,9 +504,15 @@ class Course:
             # concurrent thread's capture never records our allocations or
             # async frees. Only generator.generate() (self-locking) is outside.
             with runtime._CAPTURE_LOCK:
-                self._build_subtools()
-                self._refresh()  # eager: cpu every-call path is below; on cuda
-                                  # this is call 1 of 3 (see capture block)
+                # Generation-side work stays on Warp's current stream (the
+                # stream Graph B is captured on), never an adopted torch one;
+                # the scope pins sub-tool constructors (e.g. the sdf bake) too.
+                ctx = LaunchContext.current(self._device)
+                with ctx.scope():
+                    self._build_subtools(ctx=ctx)
+                    self._refresh(ctx=ctx)  # eager: cpu every-call path is
+                                            # below; on cuda this is call 1 of
+                                            # 3 (see capture block)
         elif self._refresh_graph is not None:
             # Replay under the lock: launching a graph into a stream another thread
             # is capturing is illegal (CUDA error 900).
@@ -502,28 +520,39 @@ class Course:
                 wp.capture_launch(self._refresh_graph)
                 wp.synchronize()
         else:
-            self._refresh()
+            self._refresh(ctx=LaunchContext.current(self._device))
         if self._is_cuda and self._refresh_graph is None:
             with runtime._CAPTURE_LOCK:
-                self._refresh()  # warmup, sync-free (call 2 of 3: runs for
-                                  # real, priming any lazy kernel/module
-                                  # init before we start recording below)
+                # warmup, sync-free (call 2 of 3: runs for real, priming any
+                # lazy kernel/module init before we start recording below)
+                self._refresh(ctx=LaunchContext.current(self._device))
                 wp.synchronize()
                 with wp.ScopedCapture(device=self._device) as cap:
-                    self._refresh()  # call 3 of 3: RECORDED into the graph,
-                                      # not executed here; replayed just below
+                    # call 3 of 3: RECORDED into the graph (Warp's current
+                    # stream is the capture stream), not executed here;
+                    # replayed just below
+                    self._refresh(ctx=LaunchContext.current(self._device))
                 self._refresh_graph = cap.graph
                 wp.capture_launch(self._refresh_graph)
                 wp.synchronize()
         return self.result
 
-    def _build_subtools(self) -> None:
+    def _build_subtools(self, ctx=None) -> None:
+        """Construct the sub-tools on the first ``generate()``.
+
+        Args:
+            ctx: optional track_gen.exec.LaunchContext; default is
+                ``LaunchContext.current(device)`` (Warp's current stream, the
+                stream the facade's refresh graph is captured on).
+        """
+        if ctx is None:
+            ctx = LaunchContext.current(self._device)
         cfg = self._cfg
         if cfg.mode == "track":
             self.checkpoint_sampler = CheckpointSampler(
                 self.result, cfg.checkpoint_spacing,
                 max_checkpoints=cfg.max_checkpoints)
-            self.checkpoints = self.checkpoint_sampler.sample()
+            self.checkpoints = self.checkpoint_sampler.sample(stream=ctx.stream)
             if cfg.collision == "segments":
                 self.collision = CollisionChecker(
                     self.result, max_boxes=cfg.max_boxes, method="segments")
@@ -543,7 +572,7 @@ class Course:
                 n_slots = int(self.result.position.shape[0])  # E * max_gates
                 self._posts = wp.zeros(2 * n_slots, dtype=wp.vec3f,
                                        device=self._device)
-                self._fill_posts()
+                self._fill_posts(ctx=ctx)
                 self.collision = DiscChecker(
                     self._posts, radius=cfg.post_radius,
                     max_boxes=cfg.max_boxes, num_envs=self._E)
@@ -555,59 +584,99 @@ class Course:
         self.progress = ProgressTracker(self.checkpoints)
         self._apply_bind()
 
-    def _fill_posts(self) -> None:
-        seq = self.result
-        wp.launch(_interleave_posts_k, dim=int(seq.position.shape[0]),
-                  inputs=[seq.left, seq.right, self._posts],
-                  device=self._device)
+    def _fill_posts(self, ctx=None) -> None:
+        """Interleave the gate left/right posts into the disc buffer.
 
-    def _refresh(self) -> None:
-        """Post-generation coherence: resample/bake/posts + full reset."""
+        Args:
+            ctx: optional track_gen.exec.LaunchContext; default resolves the
+                device's stream (see track_gen.exec).
+        """
+        ctx = _resolve_ctx(ctx, self._device)
+        seq = self.result
+        ctx.launch(_interleave_posts_k, int(seq.position.shape[0]),
+                   [seq.left, seq.right, self._posts])
+
+    def _refresh(self, ctx=None) -> None:
+        """Post-generation coherence: resample/bake/posts + full reset.
+
+        Args:
+            ctx: optional track_gen.exec.LaunchContext; default is
+                ``LaunchContext.current(device)`` (Warp's current stream: the
+                stream the facade's own refresh graph is captured on, never an
+                adopted torch stream). Every sub-tool runs on ``ctx.stream``.
+        """
+        if ctx is None:
+            ctx = LaunchContext.current(self._device)
+        s = ctx.stream
         if self.checkpoint_sampler is not None:
-            self.checkpoint_sampler.sample()
+            self.checkpoint_sampler.sample(stream=s)
         if self.course_line is not None:
-            self.course_line.refresh()  # before the resets: the line must be
-                                         # current before any consumer query
+            self.course_line.refresh(stream=s)  # before the resets: the line
+                                                 # must be current before any
+                                                 # consumer query
         if isinstance(self.collision, CollisionChecker) \
                 and self.collision._method == "sdf":
-            self.collision.bake()  # re-baked on every _refresh() call, incl.
-                                    # both real warmup passes before the first
-                                    # cuda capture: a one-time construction
-                                    # cost, not a per-step one
+            self.collision.bake(stream=s)  # re-baked on every _refresh() call,
+                                            # incl. both real warmup passes
+                                            # before the first cuda capture: a
+                                            # one-time construction cost, not a
+                                            # per-step one
         if self.heightfield is not None:
-            self.heightfield.bake()  # nearest-edge road surface; joins the
-                                      # captured refresh alongside the sdf bake
+            self.heightfield.bake(stream=s)  # nearest-edge road surface; joins
+                                              # the captured refresh alongside
+                                              # the sdf bake
         if self._posts is not None:
-            self._fill_posts()
+            self._fill_posts(ctx=ctx)
         if self.localizer is not None:
-            self.localizer.reset(self._reset_all_mask)
-        self.progress.reset(self._reset_all_mask)
+            self.localizer.reset(self._reset_all_mask, stream=s)
+        self.progress.reset(self._reset_all_mask, stream=s)
 
     # -- per-step ----------------------------------------------------------
 
-    def step(self) -> StepResult:
-        """Progress update + collision query on the bound buffers."""
+    def step(self, stream=None) -> StepResult:
+        """Progress update + collision query on the bound buffers.
+
+        Args:
+            stream: optional wp.Stream (or 'torch') to run on; by default the
+                stream is resolved per track_gen.exec (an enclosing
+                torch.cuda.graph capture is adopted, else Warp's current
+                stream).
+                Every sub-tool launch of this call goes to that one stream.
+        """
         if self.progress is None:
             raise RuntimeError("call generate() before step()")
         if self._bind_args is None:
             raise RuntimeError("call bind() before step()")
-        events = self.progress.update()
-        contacts = self.collision.query() if self.collision is not None else None
-        frame = self.localizer.query() if self.localizer is not None else None
+        s = LaunchContext.for_call(self._device, stream).stream
+        events = self.progress.update(stream=s)
+        contacts = self.collision.query(stream=s) \
+            if self.collision is not None else None
+        frame = self.localizer.query(stream=s) \
+            if self.localizer is not None else None
         if self._step_result is None:
             self._step_result = StepResult(events=events, contacts=contacts,
                                            frame=frame)
         return self._step_result
 
-    def reset(self, mask: wp.array) -> None:
+    def reset(self, mask: wp.array, stream=None) -> None:
         """Per-env respawn on the SAME course: clears progress state (and,
         in gates mode, the localizer's warm-start memory) where
         ``mask[e] == 1``. Collision and checkpoints derive from the course
-        geometry and are unaffected by respawns."""
+        geometry and are unaffected by respawns.
+
+        Args:
+            mask: ``[E]`` int32 respawn mask.
+            stream: optional wp.Stream (or 'torch') to run on; by default the
+                stream is resolved per track_gen.exec (an enclosing
+                torch.cuda.graph capture is adopted, else Warp's current
+                stream).
+                Every sub-tool launch of this call goes to that one stream.
+        """
         if self.progress is None:
             raise RuntimeError("call generate() before reset()")
-        self.progress.reset(mask)
+        s = LaunchContext.for_call(self._device, stream).stream
+        self.progress.reset(mask, stream=s)
         if self.localizer is not None:
-            self.localizer.reset(mask)
+            self.localizer.reset(mask, stream=s)
 
     set_capturing = staticmethod(set_capturing)

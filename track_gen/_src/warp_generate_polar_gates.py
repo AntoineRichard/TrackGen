@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import warp as wp
 
+from ..exec.context import LaunchContext, resolve as _resolve_ctx
 from .warp_generate_polar import (
     _BASE_RADIUS,
     _BEZIER_EXTENT,
@@ -35,13 +36,21 @@ def polar_gate_alloc_scratch(config):
     )
 
 
-def generate_polar_gates(seeds_wp, config, out, scratch) -> None:
+def generate_polar_gates(seeds_wp, config, out, scratch,
+                         ctx: "LaunchContext | None" = None) -> None:
+    """Polar control knots -> ordered gate anchors in ``out``.
+
+    Args:
+        ctx: optional track_gen.exec.LaunchContext; default resolves the
+            device's stream (see track_gen.exec).
+    """
     from . import warp_gate
 
     E = int(config.num_envs)
     K = _polar_num_knots(config)
     G = int(config.max_gates)
     dev = str(out.position.device)
+    ctx = _resolve_ctx(ctx, dev)
 
     radial_default = 0.60 * float(getattr(config, "amplitude", 1.0))
     radial_jitter = min(
@@ -54,11 +63,11 @@ def generate_polar_gates(seeds_wp, config, out, scratch) -> None:
     )
     target_extent = float(config.scale) * _BEZIER_EXTENT
 
-    wp.launch(warp_gate._fill_i32_k, dim=E, inputs=[scratch.count, K], device=dev)
-    wp.launch(
+    ctx.launch(warp_gate._fill_i32_k, E, [scratch.count, K])
+    ctx.launch(
         _polar_controls_k,
-        dim=E,
-        inputs=[
+        E,
+        [
             seeds_wp,
             K,
             radial_jitter,
@@ -66,7 +75,6 @@ def generate_polar_gates(seeds_wp, config, out, scratch) -> None:
             _BASE_RADIUS,
             scratch.controls,
         ],
-        device=dev,
     )
     warp_gate.finish_ordered_gates(
         seeds_wp,
@@ -78,6 +86,7 @@ def generate_polar_gates(seeds_wp, config, out, scratch) -> None:
         scratch.keys,
         out,
         normalize_extent=target_extent,
+        ctx=ctx,
     )
 
 
@@ -90,4 +99,5 @@ def register_specs() -> None:
         generate=generate_polar_gates,
         max_gates=_polar_num_knots,
         supported_orderings=frozenset({"ccw", "raw"}),
+        accepts_ctx=True,
     ))

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import warp as wp
 
+from ..exec.context import LaunchContext, resolve as _resolve_ctx
 from .warp_generate_voronoi import (
     _TARGET_EXTENT,
     _sample_sites_k,
@@ -40,7 +41,14 @@ def voronoi_gate_alloc_scratch(config):
     )
 
 
-def generate_voronoi_gates(seeds_wp, config, out, scratch) -> None:
+def generate_voronoi_gates(seeds_wp, config, out, scratch,
+                           ctx: "LaunchContext | None" = None) -> None:
+    """Voronoi anchor sites -> ordered gate anchors in ``out``.
+
+    Args:
+        ctx: optional track_gen.exec.LaunchContext; default resolves the
+            device's stream (see track_gen.exec).
+    """
     from . import warp_gate
 
     E = int(config.num_envs)
@@ -48,6 +56,7 @@ def generate_voronoi_gates(seeds_wp, config, out, scratch) -> None:
     K = int(config.voronoi_control_points)
     G = int(config.max_gates)
     dev = str(out.position.device)
+    ctx = _resolve_ctx(ctx, dev)
 
     layout_mode = _voronoi_layout_mode(getattr(config, "voronoi_site_layout", "void_ring"))
     radial_variation = float(getattr(config, "voronoi_radial_variation", 0.62))
@@ -55,17 +64,16 @@ def generate_voronoi_gates(seeds_wp, config, out, scratch) -> None:
     box_size = 2.0
     target_extent = float(config.scale) * _TARGET_EXTENT
 
-    wp.launch(warp_gate._fill_i32_k, dim=E, inputs=[scratch.count, K], device=dev)
-    wp.launch(
+    ctx.launch(warp_gate._fill_i32_k, E, [scratch.count, K])
+    ctx.launch(
         _sample_sites_k,
-        dim=E,
-        inputs=[seeds_wp, S, layout_mode, box_size, scratch.sites],
-        device=dev,
+        E,
+        [seeds_wp, S, layout_mode, box_size, scratch.sites],
     )
-    wp.launch(
+    ctx.launch(
         _select_anchor_sites_k,
-        dim=E,
-        inputs=[
+        E,
+        [
             seeds_wp,
             scratch.sites,
             S,
@@ -77,7 +85,6 @@ def generate_voronoi_gates(seeds_wp, config, out, scratch) -> None:
             scratch.selected,
             scratch.used,
         ],
-        device=dev,
     )
     warp_gate.finish_ordered_gates(
         seeds_wp,
@@ -89,6 +96,7 @@ def generate_voronoi_gates(seeds_wp, config, out, scratch) -> None:
         scratch.keys,
         out,
         normalize_extent=target_extent,
+        ctx=ctx,
     )
 
 
@@ -101,4 +109,5 @@ def register_specs() -> None:
         generate=generate_voronoi_gates,
         max_gates=lambda config: int(config.voronoi_control_points),
         supported_orderings=frozenset({"ccw", "raw"}),
+        accepts_ctx=True,
     ))

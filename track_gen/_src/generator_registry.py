@@ -34,11 +34,19 @@ class GeneratorSpec:
                    CUDA path. A ``capturable=False`` generator may use host-side loop control
                    and per-call allocation; ``TrackGenerator`` runs it EAGERLY on CUDA every
                    call (the same code path as ``cpu``), never building a ``wp.Graph`` for it.
+    accepts_ctx:   ``True`` when ``generate`` accepts a ``ctx=`` keyword (a
+                   ``track_gen.exec.LaunchContext``) and emits all of its device work through
+                   it; the orchestrator then calls ``generate(..., ctx=ctx)``. Legacy plugins
+                   leave it ``False`` and the orchestrator runs ``generate`` inside
+                   ``ctx.scope()``, so the ``warp_pipeline`` helpers they call (which default
+                   ``ctx=None`` to the ambient context) inherit the call's stream; their own
+                   direct ``wp.launch`` calls still go to Warp's current stream.
     """
     name: str
     alloc_scratch: Callable
     generate: Callable
     capturable: bool = True
+    accepts_ctx: bool = False
 
 
 GENERATORS: dict[str, GeneratorSpec] = {}

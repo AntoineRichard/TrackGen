@@ -42,7 +42,8 @@ from dataclasses import dataclass
 import warp as wp
 
 from .collision_geom import _is_nan3, _safe_normalize3
-from .runtime import _BIG, _check_arr, _init, _sync
+from ..exec.context import LaunchContext, resolve as _resolve_ctx
+from .runtime import _BIG, _check_arr, _init, _sync  # noqa: F401  (_sync: legacy re-export)
 from .types import Track
 
 
@@ -289,7 +290,8 @@ class TrackLocalizer:
         self._validate_position(position)
         self._bound_pos = position
 
-    def query(self, position: "wp.array | None" = None) -> TrackFrame:
+    def query(self, position: "wp.array | None" = None,
+              stream=None) -> TrackFrame:
         """Localize the batch; returns the localizer's preallocated frame.
 
         Bound mode (constructed with ``position=`` or after :meth:`bind`):
@@ -300,6 +302,13 @@ class TrackLocalizer:
         NaN ``position[e]`` yields NaN ``s``/``n`` and ``segment = -1`` for
         that env, and drops its warm-start memory (the next finite query
         does a full scan) — safe for envs mid-teleport or awaiting respawn.
+
+        Args:
+            position: ``[E]`` vec3f positions (per-call mode only).
+            stream: optional wp.Stream (or 'torch') to run on; by default the
+                stream is resolved per track_gen.exec (an enclosing
+                torch.cuda.graph capture is adopted, else Warp's current
+                stream).
 
         Returns:
             The localizer's preallocated :class:`TrackFrame` (same instance
@@ -323,18 +332,18 @@ class TrackLocalizer:
                     "construct with position=")
             self._validate_position(position)
             pos = position
+        ctx = LaunchContext.for_call(self._device, stream)
         t = self._track
         f = self._frame
-        wp.launch(
-            _localize_k, dim=self._E,
-            inputs=[t.center, t.arclen, t.length, t.count, self._n_max,
-                    self._W, pos, self._last, f.s, f.n, f.n_up, f.segment],
-            device=self._device,
+        ctx.launch(
+            _localize_k, self._E,
+            [t.center, t.arclen, t.length, t.count, self._n_max,
+             self._W, pos, self._last, f.s, f.n, f.n_up, f.segment],
         )
-        _sync(self._device)
+        ctx.sync()
         return f
 
-    def reset(self, mask: wp.array) -> None:
+    def reset(self, mask: wp.array, stream=None) -> None:
         """Drop warm-start memory where ``mask[e]`` is nonzero (``[E]`` int32).
 
         The next query for those envs performs a full centerline scan.
@@ -342,14 +351,21 @@ class TrackLocalizer:
         ``warm_window`` is set, and for any env that teleports further than
         the warm window covers. A no-op for cold-scan localizers (but valid
         to call, so regeneration code need not special-case).
+
+        Args:
+            mask: ``[E]`` int32 reset mask.
+            stream: optional wp.Stream (or 'torch') to run on; by default the
+                stream is resolved per track_gen.exec (an enclosing
+                torch.cuda.graph capture is adopted, else Warp's current
+                stream).
         """
         _check_arr("mask", mask, (self._E,), wp.int32, self._device)
-        wp.launch(
-            _localize_reset_k, dim=self._E,
-            inputs=[mask, self._last],
-            device=self._device,
+        ctx = LaunchContext.for_call(self._device, stream)
+        ctx.launch(
+            _localize_reset_k, self._E,
+            [mask, self._last],
         )
-        _sync(self._device)
+        ctx.sync()
 
 
 @wp.kernel
@@ -415,7 +431,7 @@ def _smooth_wrap_k(
     out[tid] = acc / float(span)
 
 
-def curvature(track: Track, window: int = 2) -> wp.array:
+def curvature(track: Track, window: int = 2, ctx=None) -> wp.array:
     """Per-point signed centerline curvature, flat ``[E * N_max]`` float32.
 
     Discrete curvature at point ``i``: the turn angle between the incoming
@@ -452,6 +468,8 @@ def curvature(track: Track, window: int = 2) -> wp.array:
         track: the track batch to read the centerline from.
         window: moving-average half-width in points (>= 0); 0 disables
             smoothing. Default 2 (a 5-tap average).
+        ctx: optional track_gen.exec.LaunchContext; default resolves the
+            device's stream (see track_gen.exec).
 
     Returns:
         A NEW flat ``[E * N_max]`` float32 wp.array of signed curvatures on
@@ -472,22 +490,23 @@ def curvature(track: Track, window: int = 2) -> wp.array:
             f"{E} envs")
     n_max = stride // E
     device = str(track.center.device)
-    raw = wp.zeros(stride, dtype=wp.float32, device=device)
-    wp.launch(
-        _curvature_raw_k, dim=stride,
-        inputs=[track.center, track.count, n_max, raw],
-        device=device,
+    ctx = _resolve_ctx(ctx, device)
+    raw = wp.empty(stride, dtype=wp.float32, device=device)
+    ctx.fill(raw, 0.0)  # on ctx's stream (wp.zeros memsets Warp's current one)
+    ctx.launch(
+        _curvature_raw_k, stride,
+        [track.center, track.count, n_max, raw],
     )
     if int(window) == 0:
-        _sync(device)
+        ctx.sync()
         return raw
-    out = wp.zeros(stride, dtype=wp.float32, device=device)
-    wp.launch(
-        _smooth_wrap_k, dim=stride,
-        inputs=[raw, track.count, n_max, int(window), out],
-        device=device,
+    out = wp.empty(stride, dtype=wp.float32, device=device)
+    ctx.fill(out, 0.0)
+    ctx.launch(
+        _smooth_wrap_k, stride,
+        [raw, track.count, n_max, int(window), out],
     )
-    _sync(device)
+    ctx.sync()
     return out
 
 
@@ -560,7 +579,7 @@ def _speed_profile_k(
 def speed_profile(track: Track, a_lat_max: float, a_accel: float,
                   a_brake: float, v_cap: float,
                   kappa: "wp.array | None" = None,
-                  window: int = 2) -> wp.array:
+                  window: int = 2, ctx=None) -> wp.array:
     """Curvature-limited target speed per centerline point, ``[E * N_max]``.
 
     Three stages, batched per env (one Warp thread per env; the passes are
@@ -596,6 +615,8 @@ def speed_profile(track: Track, a_lat_max: float, a_accel: float,
             profiles). ``None`` (default) computes it internally.
         window: smoothing half-width forwarded to :func:`curvature` when
             ``kappa`` is None; ignored otherwise.
+        ctx: optional track_gen.exec.LaunchContext; default resolves the
+            device's stream (see track_gen.exec).
 
     Returns:
         A NEW flat ``[E * N_max]`` float32 wp.array of target speeds on the
@@ -624,17 +645,18 @@ def speed_profile(track: Track, a_lat_max: float, a_accel: float,
             f"{E} envs")
     n_max = stride // E
     device = str(track.center.device)
+    ctx = _resolve_ctx(ctx, device)
     if kappa is None:
-        kappa = curvature(track, window=window)
+        kappa = curvature(track, window=window, ctx=ctx)
     else:
         _check_arr("kappa", kappa, (stride,), wp.float32, device)
-    out = wp.zeros(stride, dtype=wp.float32, device=device)
-    wp.launch(
-        _speed_profile_k, dim=E,
-        inputs=[kappa, track.arclen, track.length, track.count, n_max,
-                float(a_lat_max), float(a_accel), float(a_brake),
-                float(v_cap), out],
-        device=device,
+    out = wp.empty(stride, dtype=wp.float32, device=device)
+    ctx.fill(out, 0.0)
+    ctx.launch(
+        _speed_profile_k, E,
+        [kappa, track.arclen, track.length, track.count, n_max,
+         float(a_lat_max), float(a_accel), float(a_brake),
+         float(v_cap), out],
     )
-    _sync(device)
+    ctx.sync()
     return out

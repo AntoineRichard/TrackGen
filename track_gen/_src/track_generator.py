@@ -22,6 +22,7 @@ import numbers
 
 import warp as wp
 
+from ..exec.context import LaunchContext
 from .runtime import _CAPTURE_LOCK
 from .types import Track, TrackGenConfig
 
@@ -115,17 +116,26 @@ class TrackGenerator:
         # _graph is None until the first cuda generate() call, which captures it.
         self._graph: "wp.Graph | None" = None
 
-    def _run(self) -> None:
+    def _run(self, ctx: "LaunchContext | None" = None) -> None:
         """Execute the owned pipeline once into self._track / self._scratch off self._seed_buf.
 
         Zero-alloc: all buffers are pre-allocated in __init__. Safe to call during
         wp.ScopedCapture (no host syncs, no allocations inside the capture region).
+
+        Args:
+            ctx: optional track_gen.exec.LaunchContext. Defaults to
+                ``LaunchContext.current(device)``: pinned to Warp's CURRENT stream (no
+                ambient or torch adoption), which is the stream this facade's own
+                ``wp.ScopedCapture`` records, so every launch lands in its graph.
         """
         from . import warp_pipeline
+        if ctx is None:
+            ctx = LaunchContext.current(str(self._config.device))
         warp_pipeline._run_pipeline(
             self._config, self._seed_buf,
             out=self._track, scratch=self._scratch,
             generator_spec=self._generator_spec,
+            ctx=ctx,
         )
 
     def generate(self, num_or_ids=None) -> Track:
@@ -192,7 +202,9 @@ class TrackGenerator:
                 # back-to-back generate() calls are deterministic; reseed the rng to
                 # vary the batch. seeds_warp is [E] int32. Inside the lock: the async
                 # copy rides the shared stream and must not land in a foreign capture.
-                wp.copy(self._seed_buf, self._rng.seeds_warp)
+                # Same stream as _run() (Warp's current stream), so it orders before
+                # the replay / eager launches.
+                LaunchContext.current(dev).copy(self._seed_buf, self._rng.seeds_warp)
                 if self._capturable:
                     if self._graph is None:
                         # First CUDA call: warm up (loads kernels/modules), then capture.
@@ -217,7 +229,7 @@ class TrackGenerator:
                     wp.synchronize()
         else:
             # Eager path on cpu — no graph capture, no shared stream, no lock.
-            wp.copy(self._seed_buf, self._rng.seeds_warp)
+            LaunchContext.current(dev).copy(self._seed_buf, self._rng.seeds_warp)
             self._run()
 
         return self._track

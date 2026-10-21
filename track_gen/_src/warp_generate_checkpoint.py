@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import warp as wp
 
+from ..exec.context import LaunchContext, resolve as _resolve_ctx
 from . import warp_pipeline as _pipe
 
 # Target longest-bbox extent (in units of config.scale) the generated loop is normalized to.
@@ -507,7 +508,7 @@ def checkpoint_alloc_scratch(config):
 
 def generate_checkpoint_warp(seeds_wp: wp.array, config,
                              out_centerline: wp.array, out_valid_wp: wp.array,
-                             scratch) -> None:
+                             scratch, ctx: "LaunchContext | None" = None) -> None:
     """Checkpoint-steering centerline generation — in-place owned path.
 
     Pure-Warp: sample checkpoints -> steer (fixed-N) -> close_heading_ramp -> best-of-K select
@@ -521,11 +522,14 @@ def generate_checkpoint_warp(seeds_wp: wp.array, config,
         out_centerline: [E*num_points] vec2f wp.array — written in-place with the centerline.
         out_valid_wp:   [E] int32 wp.array — filled with 1 (all valid at generation stage).
         scratch:        a CheckpointScratch from checkpoint_alloc_scratch.
+        ctx: optional track_gen.exec.LaunchContext; default resolves the
+            device's stream (see track_gen.exec).
 
     K > 1 / K == 1 and clip_fallback are capture-time Python branches (no per-env host control
     flow), so the captured graph stays fixed and allocation-free.
     """
     _pipe._init()
+    ctx = _resolve_ctx(ctx, str(out_centerline.device))
     assert scratch is not None, "generate_checkpoint_warp requires scratch"
 
     E = int(config.num_envs)
@@ -543,34 +547,27 @@ def generate_checkpoint_warp(seeds_wp: wp.array, config,
     target_extent = float(config.scale) * _BEZIER_EXTENT
 
     # 1. Sample C checkpoints per (env, candidate) slot.
-    wp.launch(_sample_checkpoints_k, dim=EK,
-              inputs=[seeds_wp, K, C, radius_min_frac, angle_jitter, _BASE_RADIUS,
-                      scratch.checkpoints],
-              device=dev)
+    ctx.launch(_sample_checkpoints_k, EK,
+               [seeds_wp, K, C, radius_min_frac, angle_jitter, _BASE_RADIUS,
+                scratch.checkpoints])
 
     # 2. Steer the fixed-N bounded-turn open path per slot.
-    wp.launch(_steer_k, dim=EK,
-              inputs=[scratch.checkpoints, K, C, N, turn_rate, steer_gain, lookahead,
-                      scratch.path],
-              device=dev)
+    ctx.launch(_steer_k, EK,
+               [scratch.checkpoints, K, C, N, turn_rate, steer_gain, lookahead,
+                scratch.path])
 
     # 3. Close each candidate to turning-number-1 (additive heading ramp + displacement close).
-    wp.launch(_close_heading_ramp_k, dim=EK,
-              inputs=[scratch.path, N, scratch.cand],
-              device=dev)
+    ctx.launch(_close_heading_ramp_k, EK, [scratch.path, N, scratch.cand])
 
     # 4. best-of-K selection -> out_centerline. K == 1 is a straight copy (capture-time branch).
     if K == 1:
-        wp.launch(_copy_single_k, dim=E * N,
-                  inputs=[scratch.cand, N, out_centerline],
-                  device=dev)
+        ctx.launch(_copy_single_k, E * N, [scratch.cand, N, out_centerline])
     else:
         # Per-candidate self-intersection count over EK slots (count[slot] == N).
-        wp.launch(_pipe._fill_i32_k, dim=EK, inputs=[scratch.cand_cnt, N], device=dev)
-        _pipe.self_intersections_inplace(scratch.cand, scratch.cand_cnt, scratch.cross, N)
-        wp.launch(_select_best_k, dim=E,
-                  inputs=[scratch.cand, scratch.cross, K, N, out_centerline],
-                  device=dev)
+        ctx.launch(_pipe._fill_i32_k, EK, [scratch.cand_cnt, N])
+        _pipe.self_intersections_inplace(scratch.cand, scratch.cand_cnt, scratch.cross, N,
+                                         ctx=ctx)
+        ctx.launch(_select_best_k, E, [scratch.cand, scratch.cross, K, N, out_centerline])
 
     # 5. OPT-IN single-crossing clip of the selected centerline (capture-time Python branch).
     if bool(getattr(config, "checkpoint_clip_fallback", False)):
@@ -581,23 +578,20 @@ def generate_checkpoint_warp(seeds_wp: wp.array, config,
             "reallocate the generator after changing checkpoint_clip_fallback."
         )
         M = N + 2
-        wp.launch(_clip_assemble_k, dim=E,
-                  inputs=[out_centerline, N, M, scratch.clip_dense],
-                  device=dev)
+        ctx.launch(_clip_assemble_k, E, [out_centerline, N, M, scratch.clip_dense])
         _pipe._arc_resample_inplace(
             scratch.clip_dense, M, N,
             scratch.arc_real, scratch.arc_seg, scratch.arc_s,
-            scratch.arc_cr, scratch.arc_co, out_centerline, dev,
+            scratch.arc_cr, scratch.arc_co, out_centerline, dev, ctx=ctx,
         )
 
     # 6. Normalize the selected centerline's bbox extent to match the bezier baseline.
-    wp.launch(_normalize_centerline_k, dim=E,
-              inputs=[out_centerline, N, target_extent], device=dev)
+    ctx.launch(_normalize_centerline_k, E, [out_centerline, N, target_extent])
 
     # 7. Mark all envs valid (gen gate is always True; inflate does the real gate).
-    wp.launch(_pipe._fill_i32_k, dim=E, inputs=[out_valid_wp, 1], device=dev)
+    ctx.launch(_pipe._fill_i32_k, E, [out_valid_wp, 1])
 
-    _pipe._sync(dev)
+    ctx.sync()
 
 
 from . import generator_registry as _registry  # noqa: E402
@@ -605,4 +599,5 @@ _registry.register(_registry.GeneratorSpec(
     name="checkpoint",
     alloc_scratch=checkpoint_alloc_scratch,
     generate=generate_checkpoint_warp,
+    accepts_ctx=True,
 ))

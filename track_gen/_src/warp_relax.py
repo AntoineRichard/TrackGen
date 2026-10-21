@@ -23,13 +23,16 @@ deadband cannot see while keeping bead uniformity. It is a fixed launch sequence
 
 Both paths run as Warp kernels on BOTH the Warp ``cpu`` device and ``cuda``, are
 strictly in-place and zero-alloc per call (all buffers are pre-allocated by the
-caller; see ``cheb_prev_wp``), never host-synchronize, and import only ``warp`` and
-the leaf ``runtime`` helpers — never the pipeline.
+caller; see ``cheb_prev_wp``), never host-synchronize, and import only ``warp``, the
+leaf ``runtime`` helpers and the ``track_gen.exec`` launch context — never the pipeline.
+Every launch and copy goes through a ``LaunchContext`` (``ctx=``), i.e. onto ONE
+explicit stream, so the solve records into a caller's CUDA graph on that stream.
 """
 from __future__ import annotations
 
 import warp as wp
 
+from ..exec.context import LaunchContext, resolve as _resolve_ctx
 from .runtime import _init, _is_capturing
 
 # Post-solve Taubin smoothing tail: one pass = two half-steps, x += LAMBDA*L(x) then
@@ -341,6 +344,7 @@ def xpbd_solve_inplace(
     sep_cache_count_wp: "wp.array | None" = None,
     sep_cache_overflow_wp: "wp.array | None" = None,
     cheb_prev_wp: "wp.array | None" = None,
+    ctx: "LaunchContext | None" = None,
 ) -> None:
     """Full fixed-iteration XPBD solve — strict in-place, zero per-call allocation.
 
@@ -367,13 +371,16 @@ def xpbd_solve_inplace(
                     broadphase candidates than relax_sep_cache_slots on the latest refresh.
         cheb_prev_wp: [E*n_max] wp.vec2f previous-iterate buffer for Chebyshev
                     acceleration. Required (pre-allocated by the caller) when
-                    config.relax_accel == "chebyshev" and the device's current stream
+                    config.relax_accel == "chebyshev" and the launch stream
                     is capturing a CUDA graph; outside capture a missing buffer is
                     allocated here as a convenience for tests/standalone use. Never
                     read before being written within a solve, so its initial contents
                     are irrelevant (graph-replay safe). Unused when relax_accel == "none".
+        ctx: optional track_gen.exec.LaunchContext; default resolves the
+            device's stream (see track_gen.exec).
     """
     _init()
+    ctx = _resolve_ctx(ctx, str(center_wp.device))
 
     E = count_wp.shape[0]
     hw = float(config.half_width)
@@ -412,7 +419,7 @@ def xpbd_solve_inplace(
         omegas = _cheby_schedule(
             n_iters, float(getattr(config, "relax_cheby_rho", 0.98)), cheby_start)
         if cheb_prev_wp is None:
-            if _is_capturing(dev):
+            if _is_capturing(dev, ctx.stream):
                 # Allocation is illegal during CUDA graph capture; the capture path
                 # must pre-allocate the buffer (the pipeline's RelaxScratch does).
                 raise ValueError(
@@ -423,7 +430,7 @@ def xpbd_solve_inplace(
         prev_wp = cheb_prev_wp
 
     # Copy input into the first position buffer, then ping-pong full position states.
-    wp.copy(relaxed_wp, center_wp)
+    ctx.copy(relaxed_wp, center_wp)
     read_wp = relaxed_wp    # x_cur
     write_wp = db_wp        # x_hat (Jacobi output; blended in place to x_new)
 
@@ -431,20 +438,20 @@ def xpbd_solve_inplace(
         if use_cache:
             if step_i % sep_every == 0:
                 cache_radius = target * (1.0 + cache_skin)
-                wp.launch(_band_fill_k, dim=1, inputs=[sep_cache_overflow_wp, 0], device=dev)
-                wp.launch(_build_sep_cache_kernel, dim=E * n_max,
-                          inputs=[read_wp, band_wp, cache_radius, n_max, cache_slots,
-                                  count_wp, sep_cache_count_wp, sep_cache_idx_wp,
-                                  sep_cache_overflow_wp], device=dev)
-            wp.launch(_step_cached_kernel, dim=E * n_max,
-                      inputs=[read_wp, sep_cache_count_wp, sep_cache_idx_wp, l0_wp,
-                              target, R_min, sr, pr, br, n_max, cache_slots, count_wp,
-                              write_wp], device=dev)
+                ctx.launch(_band_fill_k, 1, [sep_cache_overflow_wp, 0])
+                ctx.launch(_build_sep_cache_kernel, E * n_max,
+                           [read_wp, band_wp, cache_radius, n_max, cache_slots,
+                            count_wp, sep_cache_count_wp, sep_cache_idx_wp,
+                            sep_cache_overflow_wp])
+            ctx.launch(_step_cached_kernel, E * n_max,
+                       [read_wp, sep_cache_count_wp, sep_cache_idx_wp, l0_wp,
+                        target, R_min, sr, pr, br, n_max, cache_slots, count_wp,
+                        write_wp])
         else:
             do_sep = 1 if step_i % sep_every == 0 else 0
-            wp.launch(_step_kernel, dim=E * n_max,
-                      inputs=[read_wp, band_wp, l0_wp, target, R_min, sr, pr, br, do_sep,
-                              n_max, count_wp, write_wp], device=dev)
+            ctx.launch(_step_kernel, E * n_max,
+                       [read_wp, band_wp, l0_wp, target, R_min, sr, pr, br, do_sep,
+                        n_max, count_wp, write_wp])
 
         if use_cheby and step_i >= cheby_start:
             # Blend x_new = f(x_hat=write_wp, x_cur=read_wp, x_prev) in place into
@@ -462,10 +469,10 @@ def xpbd_solve_inplace(
             #     output buffer (fully overwritten by the step kernel before the
             #     blend reads it as x_hat).
             x_prev = read_wp if step_i == cheby_start else prev_wp
-            wp.launch(_accel_blend_kernel, dim=E * n_max,
-                      inputs=[write_wp, read_wp, x_prev,
-                              wp.float32(omegas[step_i]), wp.float32(gamma),
-                              write_wp], device=dev)
+            ctx.launch(_accel_blend_kernel, E * n_max,
+                       [write_wp, read_wp, x_prev,
+                        wp.float32(omegas[step_i]), wp.float32(gamma),
+                        write_wp])
             read_wp, write_wp, prev_wp = write_wp, prev_wp, read_wp
         else:
             read_wp, write_wp = write_wp, read_wp
@@ -480,22 +487,20 @@ def xpbd_solve_inplace(
     # capture safe. Each launch is one swap; the final copy-back below handles any
     # parity of total swaps.
     for _ in range(smooth_passes):
-        wp.launch(_taubin_kernel, dim=E * n_max,
-                  inputs=[read_wp, wp.float32(_TAUBIN_LAMBDA), n_max, count_wp, write_wp],
-                  device=dev)
+        ctx.launch(_taubin_kernel, E * n_max,
+                   [read_wp, wp.float32(_TAUBIN_LAMBDA), n_max, count_wp, write_wp])
         read_wp, write_wp = write_wp, read_wp
-        wp.launch(_taubin_kernel, dim=E * n_max,
-                  inputs=[read_wp, wp.float32(_TAUBIN_MU), n_max, count_wp, write_wp],
-                  device=dev)
+        ctx.launch(_taubin_kernel, E * n_max,
+                   [read_wp, wp.float32(_TAUBIN_MU), n_max, count_wp, write_wp])
         read_wp, write_wp = write_wp, read_wp
     for _ in range(smooth_spacing_iters):
-        wp.launch(_step_kernel, dim=E * n_max,
-                  inputs=[read_wp, band_wp, l0_wp, target, R_min, 0.0, pr, 0.0, 0,
-                          n_max, count_wp, write_wp], device=dev)
+        ctx.launch(_step_kernel, E * n_max,
+                   [read_wp, band_wp, l0_wp, target, R_min, 0.0, pr, 0.0, 0,
+                    n_max, count_wp, write_wp])
         read_wp, write_wp = write_wp, read_wp
 
     if read_wp is not relaxed_wp:
-        wp.copy(relaxed_wp, read_wp)
+        ctx.copy(relaxed_wp, read_wp)
 
 
 @wp.kernel
@@ -512,6 +517,7 @@ def band_l0_inplace(
     count_wp: "wp.array",
     config,
     capturing: bool = False,
+    ctx: "LaunchContext | None" = None,
 ) -> None:
     """Relaxation setup — precompute the per-env separation band + rest length L0.
 
@@ -527,15 +533,18 @@ def band_l0_inplace(
         count_wp:   [E] wp.int32 real bead count per env.
         config:     TrackGenConfig (uses half_width, relax_band).
         capturing:  Deprecated and ignored (this setup never host-synchronizes).
+        ctx: optional track_gen.exec.LaunchContext; default resolves the
+            device's stream (see track_gen.exec).
     """
     _init()
 
     E = count_wp.shape[0]
     dev = str(center_wp.device)
+    ctx = _resolve_ctx(ctx, dev)
     two_hw = 2.0 * float(config.half_width)
-    wp.launch(_band_l0_k, dim=E,
-              inputs=[center_wp, n_max, two_hw, band_wp, l0_wp, count_wp], device=dev)
+    ctx.launch(_band_l0_k, E,
+               [center_wp, n_max, two_hw, band_wp, l0_wp, count_wp])
     if config.relax_band is not None:
-        wp.launch(_band_fill_k, dim=E, inputs=[band_wp, int(config.relax_band)], device=dev)
+        ctx.launch(_band_fill_k, E, [band_wp, int(config.relax_band)])
 
 

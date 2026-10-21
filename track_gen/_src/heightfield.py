@@ -17,7 +17,8 @@ from dataclasses import dataclass
 import warp as wp
 
 from .collision_sdf import _track_aabb_k
-from .runtime import _BIG, _init, _sync
+from ..exec.context import LaunchContext
+from .runtime import _BIG, _init, _sync  # noqa: F401  (_sync: legacy re-export)
 from .types import Track
 
 
@@ -137,17 +138,23 @@ class HeightFieldBaker:
             res=self._res,
         )
 
-    def bake(self) -> HeightField:
-        """Re-bake from the CURRENT track batch; returns the same instance."""
+    def bake(self, stream=None) -> HeightField:
+        """Re-bake from the CURRENT track batch; returns the same instance.
+
+        Args:
+            stream: optional wp.Stream (or 'torch') to run on; by default the
+                stream is resolved per track_gen.exec (an enclosing
+                torch.cuda.graph capture is adopted, else Warp's current
+                stream).
+        """
+        ctx = LaunchContext.for_call(self._device, stream)
         t = self._track
         f = self._hf
-        wp.launch(_track_aabb_k, dim=self._E,
-                  inputs=[t.outer, t.count, self._n_max, self._pad,
-                          self._pad_frac, f.lo, f.hi],
-                  device=self._device)
-        wp.launch(_height_bake_k, dim=self._E * self._res * self._res,
-                  inputs=[t.center, t.count, t.valid, self._n_max, self._res,
-                          f.lo, f.hi, f.height],
-                  device=self._device)
-        _sync(self._device)
+        ctx.launch(_track_aabb_k, self._E,
+                   [t.outer, t.count, self._n_max, self._pad,
+                    self._pad_frac, f.lo, f.hi])
+        ctx.launch(_height_bake_k, self._E * self._res * self._res,
+                   [t.center, t.count, t.valid, self._n_max, self._res,
+                    f.lo, f.hi, f.height])
+        ctx.sync()
         return f

@@ -9,6 +9,7 @@ common ordering, collision, frame, and validity pipeline.
 
 import warp as wp
 
+from ..exec.context import LaunchContext
 from .runtime import _CAPTURE_LOCK
 from .types import GateGenConfig, GateSequence
 
@@ -108,15 +109,28 @@ class GateGenerator:
         )
         self._graph: "wp.Graph | None" = None
 
-    def _run(self) -> None:
+    def _run(self, ctx: "LaunchContext | None" = None) -> None:
+        """Execute the gate pipeline once into ``self._gate_sequence`` off ``self._seed_buf``.
+
+        Zero-alloc and host-sync-free, so it is safe inside ``wp.ScopedCapture``.
+
+        Args:
+            ctx: optional track_gen.exec.LaunchContext. Defaults to
+                ``LaunchContext.current(device)``: pinned to Warp's CURRENT stream (no
+                ambient or torch adoption), which is the stream this facade's own
+                ``wp.ScopedCapture`` records, so every launch lands in its graph.
+        """
         from . import warp_gate
 
+        if ctx is None:
+            ctx = LaunchContext.current(str(self._config.device))
         warp_gate._run_gate_pipeline(
             self._config,
             self._seed_buf,
             out=self._gate_sequence,
             scratch=self._scratch,
             generator_spec=self._generator_spec,
+            ctx=ctx,
         )
 
     def generate(self, num_or_ids=None) -> GateSequence:
@@ -166,7 +180,9 @@ class GateGenerator:
             # another thread interleaving on that stream corrupts the recording — CUDA
             # errors 401/900, or an async illegal-access 700 that poisons the context.
             with _CAPTURE_LOCK:
-                wp.copy(self._seed_buf, self._rng.seeds_warp)
+                # Same stream as _run() (Warp's current stream), so the seed refresh
+                # orders before the replay / eager launches.
+                LaunchContext.current(dev).copy(self._seed_buf, self._rng.seeds_warp)
                 if self._capturable:
                     if self._graph is None:
                         # Warm up (loads kernels/modules), then capture. The gate pipeline
@@ -188,7 +204,7 @@ class GateGenerator:
                     self._run()
                     wp.synchronize()
         else:
-            wp.copy(self._seed_buf, self._rng.seeds_warp)
+            LaunchContext.current(dev).copy(self._seed_buf, self._rng.seeds_warp)
             self._run()
 
         return self._gate_sequence

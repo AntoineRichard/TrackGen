@@ -30,7 +30,8 @@ from .collision_geom import (
     _safe_normalize2,
     _seg_hits_aabb,
 )
-from .runtime import _BIG, _check_arr, _init, _sync
+from ..exec.context import LaunchContext
+from .runtime import _BIG, _check_arr, _init, _sync  # noqa: F401  (_sync: legacy re-export)
 from .types import Track
 
 
@@ -351,31 +352,36 @@ class CollisionChecker:
             self._sdf_bid = wp.zeros(E * R * R, dtype=wp.int8, device=dev)
             self.bake()
 
-    def bake(self) -> None:
+    def bake(self, stream=None) -> None:
         """(Re)bake the per-env SDF grids from the bound Track.
 
         Required after every ``TrackGenerator.generate()`` call when
         ``method="sdf"`` (the segments backend needs no rebake). Pure kernel
         launches — CUDA-graph capturable.
 
+        Args:
+            stream: optional wp.Stream (or 'torch') to run on; by default the
+                stream is resolved per track_gen.exec (an enclosing
+                torch.cuda.graph capture is adopted, else Warp's current
+                stream).
+
         Raises:
             ValueError: if this checker was constructed with ``method="segments"``.
         """
         if self._method != "sdf":
             raise ValueError("bake() is only valid for method='sdf' checkers")
+        ctx = LaunchContext.for_call(self._device, stream)
         from . import collision_sdf
         t = self._track
         E = self._E
         R = self._sdf_resolution
-        wp.launch(collision_sdf._track_aabb_k, dim=E,
-                  inputs=[t.outer, t.count, self._n_max,
-                          self._sdf_padding, 0.1, self._sdf_lo, self._sdf_hi],
-                  device=self._device)
-        wp.launch(collision_sdf._sdf_bake_k, dim=E * R * R,
-                  inputs=[t.inner, t.outer, t.count, self._n_max, R,
-                          self._sdf_lo, self._sdf_hi, self._sdf_phi, self._sdf_bid],
-                  device=self._device)
-        _sync(self._device)
+        ctx.launch(collision_sdf._track_aabb_k, E,
+                   [t.outer, t.count, self._n_max,
+                    self._sdf_padding, 0.1, self._sdf_lo, self._sdf_hi])
+        ctx.launch(collision_sdf._sdf_bake_k, E * R * R,
+                   [t.inner, t.outer, t.count, self._n_max, R,
+                    self._sdf_lo, self._sdf_hi, self._sdf_phi, self._sdf_bid])
+        ctx.sync()
 
     def _validate_inputs(self, position, orientation, half_extents) -> None:
         n = (self._E * self._B,)
@@ -397,7 +403,8 @@ class CollisionChecker:
 
     def query(self, position: "wp.array | None" = None,
               orientation: "wp.array | None" = None,
-              half_extents: "wp.array | None" = None) -> BoxContact:
+              half_extents: "wp.array | None" = None,
+              stream=None) -> BoxContact:
         """Compute contact info for ``E * max_boxes`` oriented boxes.
 
         Two modes:
@@ -420,6 +427,10 @@ class CollisionChecker:
                 Required in per-call mode; omit in bound mode.
             half_extents: ``[E*max_boxes]`` ``vec2f`` per-box half sizes
                 (planar boxes). Required in per-call mode; omit in bound mode.
+            stream: optional wp.Stream (or 'torch') to run on; by default the
+                stream is resolved per track_gen.exec (an enclosing
+                torch.cuda.graph capture is adopted, else Warp's current
+                stream).
 
         Returns:
             The checker's preallocated :class:`BoxContact` (same instance every
@@ -442,26 +453,25 @@ class CollisionChecker:
                     "checker is not bound; pass position, orientation and "
                     "half_extents to query() or call bind_inputs() first")
             self._validate_inputs(position, orientation, half_extents)
+        ctx = LaunchContext.for_call(self._device, stream)
         n = self._E * self._B
         t = self._track
         c = self._contact
         if self._method == "segments":
-            wp.launch(
-                _box_query_segments_k, dim=n,
-                inputs=[t.inner, t.outer, t.center, t.count, self._n_max, self._B,
-                        position, orientation, half_extents,
-                        c.oob, c.distance, c.nearest, c.normal, c.boundary],
-                device=self._device,
+            ctx.launch(
+                _box_query_segments_k, n,
+                [t.inner, t.outer, t.center, t.count, self._n_max, self._B,
+                 position, orientation, half_extents,
+                 c.oob, c.distance, c.nearest, c.normal, c.boundary],
             )
         else:
             from . import collision_sdf
-            wp.launch(
-                collision_sdf._box_query_sdf_k, dim=n,
-                inputs=[self._sdf_lo, self._sdf_hi, self._sdf_phi, self._sdf_bid,
-                        self._sdf_resolution, self._B,
-                        position, orientation, half_extents,
-                        c.oob, c.distance, c.nearest, c.normal, c.boundary],
-                device=self._device,
+            ctx.launch(
+                collision_sdf._box_query_sdf_k, n,
+                [self._sdf_lo, self._sdf_hi, self._sdf_phi, self._sdf_bid,
+                 self._sdf_resolution, self._B,
+                 position, orientation, half_extents,
+                 c.oob, c.distance, c.nearest, c.normal, c.boundary],
             )
-        _sync(self._device)
+        ctx.sync()
         return c

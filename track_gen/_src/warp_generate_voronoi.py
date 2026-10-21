@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import warp as wp
 
+from ..exec.context import LaunchContext, resolve as _resolve_ctx
 from . import warp_pipeline as _pipe
 
 _TARGET_EXTENT = 1.44
@@ -356,9 +357,16 @@ def generate_voronoi_warp(
     out_centerline: wp.array,
     out_valid_wp: wp.array,
     scratch,
+    ctx: "LaunchContext | None" = None,
 ) -> None:
-    """Generate Voronoi-inspired graph-cycle centerlines into owned output buffers."""
+    """Generate Voronoi-inspired graph-cycle centerlines into owned output buffers.
+
+    Args:
+        ctx: optional track_gen.exec.LaunchContext; default resolves the
+            device's stream (see track_gen.exec).
+    """
     _pipe._init()
+    ctx = _resolve_ctx(ctx, str(out_centerline.device))
     assert scratch is not None, "generate_voronoi_warp requires scratch"
 
     E = int(config.num_envs)
@@ -371,45 +379,36 @@ def generate_voronoi_warp(
     box_size = 2.0
     target_extent = float(config.scale) * _TARGET_EXTENT
 
-    wp.launch(_sample_sites_k, dim=E,
-              inputs=[seeds_wp, S, layout_mode, box_size, scratch.sites],
-              device=dev)
-    wp.launch(_select_anchor_sites_k, dim=E,
-              inputs=[
-                  seeds_wp, scratch.sites, S, K, layout_mode, box_size,
-                  radial_variation, angular_jitter, scratch.selected, scratch.used,
-              ],
-              device=dev)
-    wp.launch(_chaikin_once_k, dim=E,
-              inputs=[scratch.selected, K, scratch.aug], device=dev)
-    wp.launch(_catmull_rom_dense_k, dim=E * M,
-              inputs=[scratch.aug, AP, int(config.num_points_per_segment), scratch.dense],
-              device=dev)
+    ctx.launch(_sample_sites_k, E, [seeds_wp, S, layout_mode, box_size, scratch.sites])
+    ctx.launch(_select_anchor_sites_k, E, [
+        seeds_wp, scratch.sites, S, K, layout_mode, box_size,
+        radial_variation, angular_jitter, scratch.selected, scratch.used,
+    ])
+    ctx.launch(_chaikin_once_k, E, [scratch.selected, K, scratch.aug])
+    ctx.launch(_catmull_rom_dense_k, E * M,
+               [scratch.aug, AP, int(config.num_points_per_segment), scratch.dense])
 
     _pipe._arc_resample_inplace(
         scratch.dense, M, N,
         scratch.arc_real, scratch.arc_seg, scratch.arc_s,
-        scratch.arc_cr, scratch.arc_co, out_centerline, dev,
+        scratch.arc_cr, scratch.arc_co, out_centerline, dev, ctx=ctx,
     )
-    wp.launch(_normalize_centerline_k, dim=E,
-              inputs=[out_centerline, N, target_extent], device=dev)
+    ctx.launch(_normalize_centerline_k, E, [out_centerline, N, target_extent])
 
-    _pipe.self_intersections_inplace(out_centerline, scratch.arc_co, scratch.crossers, N)
-    wp.launch(_assemble_polygon_selected_k, dim=E * M,
-              inputs=[
-                  scratch.aug, AP, int(config.num_points_per_segment),
-                  scratch.crossers, scratch.dense,
-              ],
-              device=dev)
+    _pipe.self_intersections_inplace(out_centerline, scratch.arc_co, scratch.crossers, N,
+                                     ctx=ctx)
+    ctx.launch(_assemble_polygon_selected_k, E * M, [
+        scratch.aug, AP, int(config.num_points_per_segment),
+        scratch.crossers, scratch.dense,
+    ])
     _pipe._arc_resample_selected_inplace(
         scratch.dense, scratch.crossers, M, N,
         scratch.arc_real, scratch.arc_seg, scratch.arc_s,
-        scratch.arc_cr, scratch.arc_co, out_centerline, dev,
+        scratch.arc_cr, scratch.arc_co, out_centerline, dev, ctx=ctx,
     )
-    wp.launch(_normalize_centerline_k, dim=E,
-              inputs=[out_centerline, N, target_extent], device=dev)
-    wp.launch(_pipe._fill_i32_k, dim=E, inputs=[out_valid_wp, 1], device=dev)
-    _pipe._sync(dev)
+    ctx.launch(_normalize_centerline_k, E, [out_centerline, N, target_extent])
+    ctx.launch(_pipe._fill_i32_k, E, [out_valid_wp, 1])
+    ctx.sync()
 
 
 from . import generator_registry as _registry  # noqa: E402
@@ -418,4 +417,5 @@ _registry.register(_registry.GeneratorSpec(
     name="voronoi",
     alloc_scratch=voronoi_alloc_scratch,
     generate=generate_voronoi_warp,
+    accepts_ctx=True,
 ))
