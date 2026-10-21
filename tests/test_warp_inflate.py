@@ -41,7 +41,7 @@ from tests._warp_compare import to_t  # noqa: E402
 from track_gen._src import warp_pipeline as wpl  # noqa: E402
 from track_gen._src.types import Track, TrackGenConfig  # noqa: E402
 
-DEVS = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
+from tests.conftest import DEVS  # noqa: E402
 
 
 def _build_center(dev: str) -> torch.Tensor:

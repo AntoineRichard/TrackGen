@@ -331,19 +331,8 @@ def test_order_points_raw_ccw_and_random_pairs_are_deterministic():
     assert torch.equal(to_t(out_rand_a), to_t(out_rand_b))
 
 
-def test_sync_skips_cuda_synchronize_while_capturing(monkeypatch):
-    calls = []
-    previous = warp_gate._CAPTURING
-    monkeypatch.setattr(warp_gate.wp, "synchronize", lambda: calls.append("sync"))
-    try:
-        warp_gate._CAPTURING = True
-        warp_gate._sync("cuda:0")
-        assert calls == []
-
-        warp_gate._CAPTURING = False
-        warp_gate._sync("cpu")
-        assert calls == []
-        warp_gate._sync("cuda:0")
-        assert calls == ["sync"]
-    finally:
-        warp_gate._CAPTURING = previous
+def test_sync_is_the_shared_runtime_helper():
+    # Semantics (debug-only, capture-aware) are covered in test_no_host_sync.py.
+    from track_gen._src import runtime
+    assert warp_gate._sync is runtime._sync
+    assert warp_gate._init is runtime._init

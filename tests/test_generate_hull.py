@@ -21,7 +21,7 @@ from track_gen._src.track_generator import Track, TrackGenConfig, TrackGenerator
 from track_gen._src import generator_registry as reg  # noqa: E402
 from tests._warp_compare import self_intersections, to_t  # noqa: E402
 
-DEVS = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
+from tests.conftest import DEVS  # noqa: E402
 
 
 def _make_rng(num_envs, seed=0, device="cpu"):

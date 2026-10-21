@@ -8,7 +8,7 @@ from tests._oracle import geometry, inflation
 from tests._warp_compare import validity, turning_number
 from track_gen._src.types import TrackGenConfig
 
-DEVS = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
+from tests.conftest import DEVS  # noqa: E402
 
 N = 256
 

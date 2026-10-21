@@ -21,31 +21,15 @@ from .warp_relax import _separation_band  # noqa: F401  (used inside _validity_k
 
 import warp as wp
 
-_INITED = False
+# _init/_sync are the shared runtime helpers. Wrappers call _sync() after their launches;
+# it is a debug-only no-op unless TRACKGEN_DEBUG_SYNC=1 (see runtime._sync), so every
+# wrapper is host-sync-free and safe to record into a caller's CUDA graph. The names stay
+# importable from here because generator plugins call _pipe._init() / _pipe._sync().
+from .runtime import _init, _sync  # noqa: F401
 
-# True only inside a CUDA graph capture region (set by TrackGenerator around the
-# wp.ScopedCapture context). While set, every wrapper's _sync() is a no-op (host-blocking
-# sync is ILLEGAL during CUDA graph capture) and warp_relax.xpbd_solve skips its own
-# wp.synchronize(). Module-global because the whole pipeline (and warp_relax) must agree,
-# and the captured region is single-threaded/serial by construction.
+# Deprecated: no longer read or written by the library (wrappers do not host-sync, so
+# there is nothing to suppress during capture). Kept defined for out-of-tree importers.
 _CAPTURING = False
-
-
-def _init() -> None:
-    """Initialize Warp once (idempotent). Must run before any wp.launch."""
-    global _INITED
-    if not _INITED:
-        wp.init()
-        _INITED = True
-
-
-def _sync(device) -> None:
-    # Skip the host-blocking sync while a graph is being captured (it is illegal there);
-    # the graph records stream ordering, so the sync is unnecessary on replay too.
-    if _CAPTURING:
-        return
-    if "cuda" in str(device):
-        wp.synchronize()
 
 
 @wp.kernel
@@ -956,15 +940,13 @@ def _run_pipeline(
         # 3. Relaxation setup: band / L0 (the relax module owns its own setup).
         warp_relax.band_l0_inplace(
             scratch.cs_center, n_max, relax.band, relax.L0,
-            scratch.count, config, capturing=_CAPTURING,
+            scratch.count, config,
         )
 
-        # 4. XPBD relaxation in-place. Thread the pipeline's capture state in explicitly
-        # so warp_relax decides its host-sync without reaching back into this module.
+        # 4. XPBD relaxation in-place.
         warp_relax.xpbd_solve_inplace(
             scratch.cs_center, relax.relaxed, relax.xpbd_db,
             relax.band, relax.L0, scratch.count, n_max, config,
-            capturing=_CAPTURING,
             sep_cache_idx_wp=relax.sep_cache_idx,
             sep_cache_count_wp=relax.sep_cache_count,
             sep_cache_overflow_wp=relax.sep_cache_overflow,
@@ -1107,7 +1089,8 @@ def resample_constant_spacing(
 
     Allocating-mode (``out_wp`` or ``count_wp`` omitted -> allocated internally):
         Returns ``(out_wp, count_wp)`` — both freshly-allocated wp.arrays. This
-        branch allocates; do not use inside a CUDA graph capture region.
+        branch allocates and reads ``count`` back to the host; do not use inside a
+        CUDA graph capture region.
 
     ``count[e]`` is capped at ``n_max`` (required for fixed-buffer sizing). An env whose
     true point count exceeds ``n_max`` is flagged ``truncated[e] = 1`` on device; the

@@ -177,8 +177,8 @@ def _sample_obstacles_inplace(seeds_wp: wp.array, config,
                       obs_pts, obs_mw],
               device=device)
     # No host sync here: the growth-loop launches that consume obs_pts/obs_mw are already
-    # stream-ordered after this kernel. (Callers that read obs back on the host -- e.g.
-    # tests -- go through wp.array.numpy(), which synchronizes on its own.)
+    # stream-ordered after this kernel. (Callers that read obs back on the host, e.g.
+    # tests, go through wp.array.numpy(), which synchronizes on its own.)
 
 
 # RNG salt for the per-env target-length draw (distinct from the obstacle salt).

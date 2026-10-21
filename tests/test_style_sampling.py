@@ -29,7 +29,7 @@ from track_gen._src import warp_pipeline as wpl  # noqa: E402
 from track_gen._src.types import TrackGenConfig  # noqa: E402
 from benchmarks import track_metrics as tm  # noqa: E402
 
-DEVS = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
+from tests.conftest import DEVS  # noqa: E402
 
 E = 256
 

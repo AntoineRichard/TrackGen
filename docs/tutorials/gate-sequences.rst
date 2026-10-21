@@ -293,11 +293,11 @@ contract that gates reuse.
 CUDA-graph composability
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-``step()`` and ``reset()`` are warp-native and capture-ready: flip the single
-shared capture flag with ``track_gen.set_capturing(True)`` and the whole step —
-gate progress update plus post-collision query — records into your own sim graph
-alongside the physics. Keep writing into the SAME bound buffers after capture
-(rebinding leaves the captured graph reading the old pointers). See
+``step()`` and ``reset()`` are warp-native and never host-synchronize, so the
+whole step — gate progress update plus post-collision query — records into your
+own sim graph alongside the physics, with no flag to set. Keep writing into the
+SAME bound buffers after capture (rebinding leaves the captured graph reading the
+old pointers). See
 :doc:`/tutorials/cuda-graph-in-a-sim` for the capture-and-replay pattern.
 
 Full Example

@@ -10,6 +10,7 @@ import pytest
 import torch
 
 from tests._oracle.geometry import self_intersections
+from tests.conftest import DEVS
 
 
 def test_genuine_crossing_still_detected():
@@ -34,7 +35,7 @@ def test_collinear_simple_loop_not_flagged():
     assert int(self_intersections(loop)[0]) == 0                   # f32 must agree (collinear-robust)
 
 
-@pytest.mark.parametrize("dev", ["cpu"] + (["cuda"] if torch.cuda.is_available() else []))
+@pytest.mark.parametrize("dev", DEVS)
 def test_polygonal_fallback_not_flagged(dev):
     """The corner-polygon fallback is provably simple; neither detector may flag it."""
     pytest.importorskip("warp")

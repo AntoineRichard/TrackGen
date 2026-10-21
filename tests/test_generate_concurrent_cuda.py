@@ -1,9 +1,9 @@
 """CUDA-only: concurrent generate() calls must not corrupt graph capture.
 
 ``TrackGenerator.generate()`` and ``GateGenerator.generate()`` on cuda perform CUDA
-graph capture + replay on the device's shared stream, coordinated by module-global
-``_CAPTURING`` flags. Unsynchronized concurrent calls (e.g. the param explorer's two
-``app.load`` events firing on one page load) used to race the capture window, yielding
+graph capture + replay on the device's shared stream. Unsynchronized concurrent calls
+(e.g. the param explorer's two ``app.load`` events firing on one page load) used to race
+the capture window, yielding
 "Cannot synchronize device ... while graph capture is active", CUDA errors 401/900 at
 ``wp_cuda_graph_begin_capture`` / ``wp_cuda_graph_launch``, or an async illegal-access
 700 that poisons the context. ``runtime._CAPTURE_LOCK`` now serializes every capture,
@@ -21,12 +21,10 @@ from __future__ import annotations
 import threading
 
 import pytest
-import torch
 
 pytestmark = [
     pytest.mark.cuda,
     pytest.mark.slow,
-    pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda"),
 ]
 
 import warp as wp  # noqa: E402
@@ -181,12 +179,8 @@ def test_concurrent_gates_3d_fresh_construction() -> None:
     generate()-time device work (subtool allocation, warmup, capture,
     replay) is safe under concurrent calls; construction and step()-time
     work are explicitly OUT of contract and may still race a peer's
-    capture window (e.g. an unlocked construction-time or step-time
-    ``wp.synchronize()`` landing inside a peer's Graph A capture) — the
-    generators' capture flags are module-local (``warp_gate._CAPTURING`` /
-    ``warp_pipeline._CAPTURING``), so other modules' ``_sync`` guards
-    (which read ``runtime._CAPTURING``) do not engage during a peer's
-    Graph A capture. Two
+    capture window (e.g. construction-time readbacks or allocations
+    landing inside a peer's Graph A capture). Two
     ``threading.Barrier(2)`` waits pin this test to the contract: one
     after construction (so unlocked construction-time device work never
     overlaps a peer's capture), and one after generate() (so unlocked

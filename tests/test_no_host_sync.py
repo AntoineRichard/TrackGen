@@ -1,0 +1,554 @@
+"""No host sync and no host readback on any hot path (CPU probe).
+
+Every hot-path entry point must be recordable into a caller's CUDA graph, so none of
+them may host-synchronize or read device data back to the host. That covers the
+pipeline wrappers, every registered generator's ``_run``, every utility's
+query/update/reset/sample/bake/refresh, and ``Course.step``/``reset``. CPU cannot
+capture, so :func:`_probe` replaces ``wp.synchronize*`` and ``wp.array.numpy`` with
+tripwires that record the call and raise. Each driver then runs its entry point under
+the probe, and the test asserts zero calls. Construction (allocation, readback-based
+sizing) runs before the probe and is out of scope.
+
+``test_every_wrapper_is_driven`` traces the drivers and fails when a module-level
+function of the pipeline modules is reached by none of them. A new wrapper therefore
+needs a driver here before it can land.
+
+The facades' ``generate()`` keeps its blocking self-capture on CUDA (CPU runs eagerly),
+so it is not a probe target; ``_run`` is.
+"""
+from __future__ import annotations
+
+import contextlib
+import inspect
+import sys
+import warnings
+
+import numpy as np
+import pytest
+import warp as wp
+
+from track_gen._src import (
+    gate_generator_registry,
+    generator_registry,
+    localize,
+    runtime,
+    warp_gate,
+    warp_generate,
+    warp_generate_checkpoint,
+    warp_generate_checkpoint_gates,
+    warp_generate_gates,
+    warp_generate_hull,
+    warp_generate_polar,
+    warp_generate_polar_gates,
+    warp_generate_repulsive,
+    warp_generate_voronoi,
+    warp_generate_voronoi_gates,
+    warp_pipeline,
+    warp_relax,
+    warp_zprofile,
+)
+from track_gen._src.checkpoints import CheckpointSampler, CheckpointSet
+from track_gen._src.collision import CollisionChecker
+from track_gen._src.collision_discs import DiscChecker
+from track_gen._src.collision_frames import FrameChecker
+from track_gen._src.course import Course, CourseConfig
+from track_gen._src.course_line import CourseLine
+from track_gen._src.gate_generator import GateGenerator
+from track_gen._src.heightfield import HeightFieldBaker
+from track_gen._src.localize import TrackLocalizer
+from track_gen._src.progress import ProgressTracker
+from track_gen._src.props import PropSampler
+from track_gen._src.rng_utils import PerEnvSeededRNG
+from track_gen._src.track_generator import TrackGenerator
+from track_gen._src.types import GateGenConfig, TrackGenConfig
+
+DEV = "cpu"
+E = 2
+_SYNC_APIS = ("synchronize", "synchronize_device", "synchronize_stream",
+              "synchronize_event")
+
+# Known hot-path readbacks, as (api, module, function) -> the PR that removes them.
+# The probe lets these through instead of raising. The test also fails if one is no
+# longer hit, so the entry is removed together with the readback it allows.
+_KNOWN_READBACKS = {
+    # Repulsive's early exit: `if int(s.frozen.numpy().sum()) >= E: break`.
+    # Removed by roadmap PR12 (absorbing freeze, BOUNDED tier).
+    ("wp.array.numpy", "track_gen._src.warp_generate_repulsive", "generate_repulsive_warp"),
+}
+
+
+@contextlib.contextmanager
+def _probe():
+    """Tripwire every host sync and ``wp.array.numpy`` for the duration of the block.
+
+    Yields the list of known readbacks that were let through. Any other call is
+    recorded and raises, and a call swallowed by a broad ``except`` still fails the
+    final assertion.
+    """
+    hits, allowed = [], []
+    real_numpy = wp.array.numpy
+
+    def tripwire(api, real=None):
+        def call(*args, **kwargs):
+            caller = sys._getframe(1)
+            key = (api, caller.f_globals.get("__name__"), caller.f_code.co_name)
+            if key in _KNOWN_READBACKS and real is not None:
+                allowed.append(key)
+                return real(*args, **kwargs)
+            hits.append(f"{api} from {key[1]}.{key[2]}:{caller.f_lineno}")
+            raise AssertionError(f"host sync/readback on a hot path: {hits[-1]}")
+        return call
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.delenv("TRACKGEN_DEBUG_SYNC", raising=False)
+        for name in _SYNC_APIS:
+            mp.setattr(wp, name, tripwire(f"wp.{name}"))
+        mp.setattr(wp.array, "numpy", tripwire("wp.array.numpy", real_numpy))
+        yield allowed
+    assert hits == []
+
+
+# ---------------------------------------------------------------------------------------
+# Drivers: each setup runs OUTSIDE the probe and returns the hot-path callable to probe.
+# ---------------------------------------------------------------------------------------
+
+def _rng(seed=3):
+    return PerEnvSeededRNG(seeds=seed, num_envs=E, device=DEV)
+
+
+def _track_gen(generator="bezier", **kw):
+    gen = TrackGenerator(TrackGenConfig(generator=generator, device=DEV, num_envs=E, **kw),
+                         _rng())
+    gen.generate()
+    return gen
+
+
+def _gate_gen(generator="bezier", **kw):
+    kw.setdefault("gate_width", 0.2)
+    gen = GateGenerator(GateGenConfig(generator=generator, device=DEV, num_envs=E, **kw),
+                        _rng())
+    gen.generate()
+    return gen
+
+
+def _vec3(n, value=(0.0, 0.0, 0.0)):
+    return wp.array(np.tile(np.asarray(value, np.float32), (n, 1)), dtype=wp.vec3f,
+                    device=DEV)
+
+
+def _boxes(n):
+    ori = wp.array(np.tile([0.0, 0.0, 0.0, 1.0], (n, 1)).astype(np.float32),
+                   dtype=wp.quatf, device=DEV)
+    he = wp.array(np.full((n, 2), 0.02, np.float32), dtype=wp.vec2f, device=DEV)
+    return _vec3(n, (0.1, 0.0, 0.0)), ori, he
+
+
+def _all_mask():
+    return wp.full(E, 1, dtype=wp.int32, device=DEV)
+
+
+def _run_track(generator, **kw):
+    def setup():
+        return _track_gen(generator, **kw)._run
+    return setup
+
+
+def _run_gates(generator, **kw):
+    def setup():
+        return _gate_gen(generator, **kw)._run
+    return setup
+
+
+def _collision(method):
+    def setup():
+        track = _track_gen().generate()
+        checker = CollisionChecker(track, max_boxes=1, method=method, sdf_resolution=16)
+        checker.bind_inputs(*_boxes(E))
+
+        def hot():
+            if method == "sdf":
+                checker.bake()
+            checker.query()
+        return hot
+    return setup
+
+
+def _props():
+    sampler = PropSampler(_track_gen().generate(), spacing=0.2)
+    return sampler.sample
+
+
+def _checkpoints():
+    sampler = CheckpointSampler(_track_gen().generate(), spacing=0.3)
+    return sampler.sample
+
+
+def _progress():
+    tracker = ProgressTracker(CheckpointSampler(_track_gen().generate(), 0.3).sample(),
+                              position=_vec3(E))
+    mask = _all_mask()
+
+    def hot():
+        tracker.update()
+        tracker.reset(mask)
+    return hot
+
+
+def _localizer():
+    loc = TrackLocalizer(_track_gen().generate(), warm_window=4, position=_vec3(E))
+    mask = _all_mask()
+
+    def hot():
+        loc.query()
+        loc.reset(mask)
+    return hot
+
+
+def _localize_profiles():
+    # Module-level helpers. They allocate their outputs (an out= variant is a later
+    # roadmap step) but must not sync or read back.
+    track = _track_gen().generate()
+
+    def hot():
+        kappa = localize.curvature(track)
+        localize.speed_profile(track, 4.0, 2.0, 4.0, 3.0, kappa=kappa)
+    return hot
+
+
+def _heightfield():
+    return HeightFieldBaker(_track_gen(z_profile="uniform").generate(), 16).bake
+
+
+def _course_line():
+    return CourseLine(_gate_gen().generate(), 4).refresh
+
+
+def _discs():
+    seq = _gate_gen().generate()
+    posts = wp.zeros(2 * int(seq.position.shape[0]), dtype=wp.vec3f, device=DEV)
+    pos, ori, he = _boxes(E)
+    checker = DiscChecker(posts, radius=0.05, max_boxes=1, num_envs=E,
+                          position=pos, orientation=ori, half_extents=he)
+    return checker.query
+
+
+def _frames():
+    seq = _gate_gen().generate()
+    checker = FrameChecker(seq, num_envs=E, radius=0.05, frame_thickness=0.02,
+                           frame_depth=0.02)
+    tracker = ProgressTracker(CheckpointSet.from_gates(seq), position=_vec3(E))
+    checker.bind_inputs(_vec3(E))
+    checker.bind_window(tracker.next_checkpoint_state)
+    return checker.query
+
+
+def _course(mode, **kw):
+    def setup():
+        gen = (TrackGenConfig(device=DEV, num_envs=E) if mode == "track"
+               else GateGenConfig(device=DEV, num_envs=E, gate_width=0.2))
+        if mode == "track":
+            kw.setdefault("checkpoint_spacing", 0.3)
+        course = Course(CourseConfig(mode=mode, gen=gen, seeds=3, **kw))
+        pos, ori, he = _boxes(E)
+        if mode == "gates" and not kw.get("post_radius"):
+            course.bind(position=pos)
+        else:
+            course.bind(position=pos, orientation=ori, half_extents=he)
+        course.generate()
+        mask = _all_mask()
+
+        def hot():
+            course.step()
+            course.reset(mask)
+        return hot
+    return setup
+
+
+# Pipeline wrappers that no generator _run reaches, driven directly on a real batch.
+
+def _wrapper_inputs():
+    gen = _track_gen()
+    track, s = gen._track, gen._scratch
+    n_max = int(gen._config.N_max)
+    return gen, track, s, n_max
+
+
+def _resample_wrappers():
+    gen, track, s, n_max = _wrapper_inputs()
+    N = int(gen._config.num_points)
+    sel = wp.full(E, 1, dtype=wp.int32, device=DEV)
+    real = wp.empty(E * N, dtype=wp.vec2f, device=DEV)
+    seg = wp.empty(E * N, dtype=wp.float32, device=DEV)
+    s_cum = wp.empty(E * (N + 1), dtype=wp.float32, device=DEV)
+    cr = wp.empty(E, dtype=wp.int32, device=DEV)
+    co = wp.empty(E, dtype=wp.int32, device=DEV)
+    out = wp.empty(E * N, dtype=wp.vec2f, device=DEV)
+
+    def hot():
+        warp_pipeline.arc_length_resample_inplace(
+            s.gen_centerline, N, N, real, seg, s_cum, cr, co, out, DEV)
+        warp_pipeline.arc_length_resample_selected_inplace(
+            s.gen_centerline, sel, N, N, real, seg, s_cum, cr, co, out, DEV)
+        # In-place mode: never reads count back, even when a track truncates.
+        warp_pipeline.resample_constant_spacing(
+            s.gen_centerline, float(gen._config.spacing), n_max,
+            out_wp=s.cs_center, count_wp=s.count, seg_wp=s.cs_seg, s_wp=s.cs_s)
+    return hot
+
+
+def _geometry_wrappers():
+    gen, track, s, n_max = _wrapper_inputs()
+    flat = E * n_max
+    center2 = s.cs_center
+    T = wp.empty(flat, dtype=wp.vec2f, device=DEV)
+    Nrm = wp.empty(flat, dtype=wp.vec2f, device=DEV)
+    kappa = wp.empty(flat, dtype=wp.float32, device=DEV)
+    outer = wp.empty(flat, dtype=wp.vec2f, device=DEV)
+    inner = wp.empty(flat, dtype=wp.vec2f, device=DEV)
+    area_a = wp.empty(E, dtype=wp.float32, device=DEV)
+    area_b = wp.empty(E, dtype=wp.float32, device=DEV)
+    crossings = wp.empty(E, dtype=wp.int32, device=DEV)
+    turning = wp.empty(E, dtype=wp.float32, device=DEV)
+
+    def hot():
+        warp_pipeline.frame_curvature(center2, T, Nrm, kappa, s.count)
+        warp_pipeline.offset(center2, Nrm, 0.03, outer, inner, area_a, area_b, s.count)
+        warp_pipeline.self_intersections_inplace(center2, s.count, crossings, n_max)
+        warp_pipeline.turning_number_inplace(center2, n_max, s.count, turning)
+    return hot
+
+
+def _inflate_fixed_n():
+    # inflate_warp's count=None convenience path (fixed N == num_points) on a scratch
+    # allocated at construction.
+    cfg = TrackGenConfig(device=DEV, num_envs=E)
+    gen = TrackGenerator(cfg, _rng())
+    gen.generate()
+    N = int(cfg.num_points)
+    out, scratch = warp_pipeline._inflate_warp_alloc(
+        TrackGenConfig(device=DEV, num_envs=E, N_max=N))
+    center = gen._scratch.gen_centerline
+
+    def hot():
+        warp_pipeline.inflate_warp(center, cfg, out=out, scratch=scratch)
+    return hot
+
+
+DRIVERS = {
+    **{f"track_run[{g}]": _run_track(g) for g in generator_registry.available()},
+    "track_run[bezier,z=uniform]": _run_track("bezier", z_profile="uniform"),
+    "track_run[bezier,z=noise]": _run_track("bezier", z_profile="noise"),
+    "track_run[bezier,no-relax]": _run_track("bezier", relax_enable=False),
+    "track_run[bezier,style]": _run_track("bezier", style_sampling=True,
+                                          rad_range=(0.1, 0.3),
+                                          scale_range=(0.9, 1.1)),
+    **{f"gate_run[{g}]": _run_gates(g) for g in gate_generator_registry.available()},
+    "gate_run[bezier,z=uniform]": _run_gates("bezier", z_profile="uniform"),
+    "collision[segments]": _collision("segments"),
+    "collision[sdf]": _collision("sdf"),
+    "props": _props,
+    "checkpoints": _checkpoints,
+    "progress": _progress,
+    "localizer": _localizer,
+    "localize_profiles": _localize_profiles,
+    "heightfield": _heightfield,
+    "course_line": _course_line,
+    "discs": _discs,
+    "frames": _frames,
+    "course[track,segments]": _course("track", collision="segments",
+                                      heightfield_resolution=16),
+    "course[track,sdf]": _course("track", collision="sdf", sdf_resolution=16),
+    "course[gates,posts]": _course("gates", post_radius=0.02),
+    "course[gates,frames]": _course("gates", frame_collision=True, agent_radius=0.05,
+                                    frame_thickness=0.02, frame_depth=0.02),
+    "wrappers[resample]": _resample_wrappers,
+    "wrappers[geometry]": _geometry_wrappers,
+    "wrappers[inflate_fixed_n]": _inflate_fixed_n,
+}
+
+
+@pytest.mark.parametrize("name", sorted(DRIVERS))
+def test_hot_path_has_no_host_sync_or_readback(name):
+    hot = DRIVERS[name]()
+    with _probe() as allowed:
+        hot()
+    expected = {k for k in _KNOWN_READBACKS if name == "track_run[repulsive]"}
+    assert set(allowed) == expected, f"known-readback allowlist out of date: {allowed}"
+
+
+# ---------------------------------------------------------------------------------------
+# Coverage: every module-level function of the pipeline modules is driven above.
+# ---------------------------------------------------------------------------------------
+
+_PIPELINE_MODULES = (
+    warp_pipeline, warp_gate, warp_relax, warp_zprofile, warp_generate,
+    warp_generate_checkpoint, warp_generate_hull, warp_generate_polar,
+    warp_generate_repulsive, warp_generate_voronoi, warp_generate_gates,
+    warp_generate_checkpoint_gates, warp_generate_polar_gates,
+    warp_generate_voronoi_gates,
+)
+
+# Construction-time functions (allocation, registration, host precompute for sizing).
+# They run before any probe and are allowed to allocate or read back.
+_CONSTRUCTION_ONLY = {
+    "track_gen._src.warp_pipeline": {"_inflate_warp_alloc", "_fill_knot_scratch",
+                                     "__getattr__"},
+    "track_gen._src.warp_gate": {"alloc_order_scratch", "alloc_gate_sequence",
+                                 "_gate_warp_alloc"},
+    "track_gen._src.warp_zprofile": {"alloc_z_scratch", "alloc_knot_scratch"},
+    "track_gen._src.warp_generate": {"bezier_alloc_scratch"},
+    "track_gen._src.warp_generate_checkpoint": {"checkpoint_alloc_scratch"},
+    "track_gen._src.warp_generate_hull": {"hull_alloc_scratch"},
+    "track_gen._src.warp_generate_polar": {"polar_alloc_scratch", "_polar_num_knots"},
+    "track_gen._src.warp_generate_repulsive": {"repulsive_alloc_scratch",
+                                               "_sobolev_circulant_row",
+                                               "_stage_schedule"},
+    "track_gen._src.warp_generate_voronoi": {"voronoi_alloc_scratch"},
+    "track_gen._src.warp_generate_gates": {"_point_gate_alloc_scratch",
+                                           "_max_point_gates", "register_specs"},
+    "track_gen._src.warp_generate_checkpoint_gates": {"checkpoint_gate_alloc_scratch",
+                                                      "register_specs"},
+    "track_gen._src.warp_generate_polar_gates": {"polar_gate_alloc_scratch",
+                                                 "register_specs"},
+    "track_gen._src.warp_generate_voronoi_gates": {"voronoi_gate_alloc_scratch",
+                                                   "register_specs"},
+}
+
+
+def _module_functions(mod):
+    return {name for name, obj in vars(mod).items()
+            if inspect.isfunction(obj) and obj.__module__ == mod.__name__}
+
+
+def test_every_wrapper_is_driven():
+    files = {inspect.getfile(m): m.__name__ for m in _PIPELINE_MODULES}
+    driven: set[tuple[str, str]] = set()
+
+    def tracer(frame, event, arg):
+        if event == "call":
+            mod = files.get(frame.f_code.co_filename)
+            if mod is not None:
+                driven.add((mod, frame.f_code.co_name))
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        for setup in DRIVERS.values():
+            hot = setup()
+            sys.setprofile(tracer)
+            try:
+                hot()
+            finally:
+                sys.setprofile(None)
+
+    undriven, stale = [], []
+    for mod in _PIPELINE_MODULES:
+        funcs = _module_functions(mod)
+        exempt = _CONSTRUCTION_ONLY.get(mod.__name__, set())
+        stale += [f"{mod.__name__}.{f}" for f in sorted(exempt - funcs)]
+        undriven += [f"{mod.__name__}.{f}" for f in sorted(funcs - exempt)
+                     if (mod.__name__, f) not in driven]
+    assert not stale, f"_CONSTRUCTION_ONLY names that no longer exist: {stale}"
+    assert not undriven, f"wrappers no driver reaches (add one to DRIVERS): {undriven}"
+
+
+# ---------------------------------------------------------------------------------------
+# The debug sync itself.
+# ---------------------------------------------------------------------------------------
+
+class _FakeStream:
+    def __init__(self, capturing):
+        self.is_capturing = capturing
+
+
+class _FakeDevice:
+    is_cuda = True
+
+    def __init__(self, stream_capturing=False, device_capturing=False):
+        self.stream = _FakeStream(stream_capturing)
+        self.is_capturing = device_capturing or stream_capturing
+
+
+def _fake_cuda(monkeypatch, **kw):
+    dev = _FakeDevice(**kw)
+    synced = []
+    monkeypatch.setattr(runtime.wp, "get_device", lambda d=None: dev)
+    monkeypatch.setattr(runtime.wp, "synchronize_stream", synced.append)
+    monkeypatch.setattr(runtime.wp, "synchronize",
+                        lambda: pytest.fail("_sync must never sync every device"))
+    return dev, synced
+
+
+def test_sync_is_a_noop_without_debug_env(monkeypatch):
+    # Returns before resolving the device: no CUDA call is possible.
+    monkeypatch.setattr(runtime.wp, "get_device",
+                        lambda d=None: pytest.fail("device resolved without debug env"))
+    with _probe():
+        runtime._sync("cuda:0")
+
+
+def test_debug_sync_blocks_on_the_current_stream(monkeypatch):
+    monkeypatch.setenv("TRACKGEN_DEBUG_SYNC", "1")
+    dev, synced = _fake_cuda(monkeypatch)
+    runtime._sync("cuda:0")
+    assert synced == [dev.stream]
+    explicit = _FakeStream(False)
+    runtime._sync("cuda:0", stream=explicit)
+    assert synced == [dev.stream, explicit]
+
+
+@pytest.mark.parametrize("kw", [dict(stream_capturing=True), dict(device_capturing=True)])
+def test_debug_sync_skips_while_capturing(monkeypatch, kw):
+    monkeypatch.setenv("TRACKGEN_DEBUG_SYNC", "1")
+    _, synced = _fake_cuda(monkeypatch, **kw)
+    runtime._sync("cuda:0")
+    assert synced == []
+
+
+def test_debug_sync_is_a_noop_on_cpu(monkeypatch):
+    monkeypatch.setenv("TRACKGEN_DEBUG_SYNC", "1")
+    monkeypatch.setattr(runtime.wp, "synchronize_stream",
+                        lambda s: pytest.fail("synced on cpu"))
+    runtime._sync("cpu")
+
+
+def test_module_syncs_are_the_runtime_helper():
+    # Out-of-tree generator plugins call _pipe._sync / _pipe._init: the names stay.
+    for mod in (warp_pipeline, warp_gate):
+        assert mod._sync is runtime._sync
+        assert mod._init is runtime._init
+        assert mod._CAPTURING is False
+    assert warp_relax._init is runtime._init
+
+
+def test_relax_accepts_and_ignores_capturing():
+    gen = _track_gen()
+    s, relax, cfg = gen._scratch, gen._scratch.relax, gen._config
+    n_max = int(cfg.N_max)
+    with _probe():
+        for capturing in (False, True):
+            warp_relax.band_l0_inplace(s.cs_center, n_max, relax.band, relax.L0, s.count,
+                                       cfg, capturing=capturing)
+            warp_relax.xpbd_solve_inplace(
+                s.cs_center, relax.relaxed, relax.xpbd_db, relax.band, relax.L0,
+                s.count, n_max, cfg, capturing=capturing,
+                sep_cache_idx_wp=relax.sep_cache_idx,
+                sep_cache_count_wp=relax.sep_cache_count,
+                sep_cache_overflow_wp=relax.sep_cache_overflow,
+                cheb_prev_wp=relax.cheb_prev)
+
+
+def test_resample_constant_spacing_reads_back_only_when_allocating():
+    # N_max=64 at spacing 0.06 truncates every track.
+    gen = _track_gen(N_max=64, spacing=0.06)
+    s = gen._scratch
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with _probe():
+            warp_pipeline.resample_constant_spacing(
+                s.gen_centerline, 0.06, 64, out_wp=s.cs_center, count_wp=s.count,
+                seg_wp=s.cs_seg, s_wp=s.cs_s)
+    with pytest.warns(RuntimeWarning, match="N_max=64"):
+        out, count = warp_pipeline.resample_constant_spacing(
+            s.gen_centerline, 0.06, 64, count_wp=None, out_wp=wp.empty(
+                E * 64, dtype=wp.vec2f, device=DEV))
+    assert int(count.numpy().max()) == 64

@@ -177,19 +177,15 @@ class TrackGenerator:
                     f"got num_or_ids={num_or_ids}. "
                     f"Construct a new TrackGenerator with num_envs={num_or_ids} instead."
                 )
-        from . import warp_pipeline
-
         dev = str(self._config.device)
-        _is_cuda = "cuda" in dev
 
-        if _is_cuda:
+        if wp.get_device(dev).is_cuda:
             # Serialize ALL cuda work (seed copy, capture, replay, eager launches)
             # behind the process-wide capture lock: captures record the device's current
             # stream, so a concurrent generate() from another thread (e.g. two Gradio
             # events on one page load) interleaving on that stream corrupts the
             # recording — CUDA errors 401/900, or an async illegal-access 700 that
-            # poisons the context. The lock also makes the _CAPTURING save/restore
-            # idiom below thread-safe.
+            # poisons the context.
             with _CAPTURE_LOCK:
                 # Refresh the seed buffer in place from the rng's CURRENT seeds (zero
                 # allocation: wp.copy). The rng holds fixed seeds unless reseeded, so
@@ -200,19 +196,14 @@ class TrackGenerator:
                 if self._capturable:
                     if self._graph is None:
                         # First CUDA call: warm up (loads kernels/modules), then capture.
-                        # _CAPTURING suppresses host-blocking syncs during warmup + capture.
-                        prev_capturing = warp_pipeline._CAPTURING
-                        warp_pipeline._CAPTURING = True
-                        try:
-                            for _ in range(3):
-                                self._run()
-                            wp.synchronize()  # OUTSIDE capture: ensure warmup finished
+                        # The pipeline never host-syncs, so no flag is needed here.
+                        for _ in range(3):
+                            self._run()
+                        wp.synchronize()  # OUTSIDE capture: ensure warmup finished
 
-                            with wp.ScopedCapture(device=dev) as cap:
-                                self._run()
-                            self._graph = cap.graph
-                        finally:
-                            warp_pipeline._CAPTURING = prev_capturing
+                        with wp.ScopedCapture(device=dev) as cap:
+                            self._run()
+                        self._graph = cap.graph
 
                     # Replay the captured graph (seed buffer already updated above).
                     wp.capture_launch(self._graph)
@@ -221,7 +212,9 @@ class TrackGenerator:
                     # Eager on CUDA — non-capturable generators (host-driven loops /
                     # per-call allocation forbidden inside a capture). Still locked:
                     # eager launches land on the same stream a capture would record.
+                    # Block like the replay branch: the pipeline itself never host-syncs.
                     self._run()
+                    wp.synchronize()
         else:
             # Eager path on cpu — no graph capture, no shared stream, no lock.
             wp.copy(self._seed_buf, self._rng.seeds_warp)

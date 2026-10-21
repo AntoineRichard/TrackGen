@@ -46,8 +46,8 @@ Capture works for those generators because their pipeline is **entirely static**
   fields is resolved before capture).
 - Per-track ``count[e]`` values are device-side data; count-aware kernels keep
   static launch dimensions via ``N_max``.
-- Host-blocking synchronization calls (``wp.synchronize``) are suppressed
-  during capture — they are illegal inside a CUDA graph scope.
+- The pipeline never host-synchronizes or reads device data back (both are
+  illegal inside a CUDA graph scope); ordering comes from the stream.
 
 .. code-block:: python
 
@@ -144,6 +144,33 @@ onto episode resets.
    generator copies the RNG's current seeds into its pre-allocated seed buffer and
    replays the captured graph. Because the persistent ``Track`` buffers retain stable
    addresses, the Torch views above remain bound and do not need to be recreated.
+
+Recording the Per-Step Utilities
+----------------------------------
+
+The runtime utilities (collision, progress, localizer, props, checkpoints,
+height field) and ``Course.step()``/``reset()`` never host-synchronize, so
+their per-step calls record into your own sim graph directly. No flag is
+needed: ``track_gen.set_capturing`` is a deprecated no-op.
+
+.. code-block:: python
+
+   tracker = ProgressTracker(checkpoints, position=sim_pos)  # bind once
+   tracker.update()                                         # warm up outside capture
+   with wp.ScopedCapture(device="cuda") as cap:
+       physics_step()
+       tracker.update()
+   # every sim step:
+   wp.capture_launch(cap.graph)
+
+The same calls outside a capture return without blocking the host. Results are
+ordered by the Warp stream they were launched on: ``.numpy()``, later Warp
+launches and torch on its default stream all see finished data. A consumer on a
+different stream (for example a torch side stream) must order itself explicitly,
+e.g. with ``wp.synchronize_device()`` or a recorded ``wp.Event``. Benchmarks must
+synchronize before reading a timer. For debugging asynchronous CUDA errors, set
+``TRACKGEN_DEBUG_SYNC=1`` to make every library call block on its stream (skipped
+while that stream is capturing).
 
 Performance Notes
 ------------------

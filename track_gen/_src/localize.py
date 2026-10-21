@@ -30,10 +30,10 @@ their results — call them after ``generate()``, outside capture regions.
 
 Layout follows the package conventions: flat ``[E * N_max]`` wp.arrays, NaN
 past ``count[e]``, in-place reuse of the ``TrackFrame`` result across
-``query()`` calls (use ``clone()`` for snapshots), and no host syncs while
-capturing is enabled (``track_gen.set_capturing``) so ``query()``/``reset()``
-are CUDA-graph capturable (fixed iteration bounds, no data-dependent host
-branches). Results are undefined for envs with ``valid[e] == 0``.
+``query()`` calls (use ``clone()`` for snapshots), and no host syncs, so
+``query()``/``reset()`` are CUDA-graph capturable as-is (fixed iteration
+bounds, no data-dependent host branches). Results are undefined for envs
+with ``valid[e] == 0``.
 """
 from __future__ import annotations
 
@@ -214,11 +214,10 @@ class TrackLocalizer:
     callers MUST ``reset()`` all envs after regenerating (cold-scan
     localizers, ``warm_window=None``, need nothing).
 
-    ``query()`` is allocation-free and, under graph capture (enabled via
-    ``track_gen.set_capturing``), host-sync-free (CUDA-graph capturable). In
-    normal (non-capturing) use a ``wp.synchronize()`` follows the launch, per
-    the codebase idiom. ``query()`` returns the same preallocated
-    :class:`TrackFrame` on every call.
+    ``query()`` is allocation-free and host-sync-free (CUDA-graph
+    capturable); its launches are stream-ordered, so a consumer on another
+    stream must order itself explicitly. ``query()`` returns the same
+    preallocated :class:`TrackFrame` on every call.
 
     Warm vs cold results are IDENTICAL whenever the nearest centerline
     segment stays within ``warm_window`` segments of the previous query's

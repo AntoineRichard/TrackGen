@@ -17,7 +17,7 @@ from tests._warp_compare import (  # noqa: E402
     arc_length_resample_warp, turning_number, gates,
 )
 
-DEVS = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
+from tests.conftest import DEVS  # noqa: E402
 
 
 @pytest.mark.parametrize("dev", DEVS)

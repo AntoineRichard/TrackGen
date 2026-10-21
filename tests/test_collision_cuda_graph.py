@@ -1,23 +1,18 @@
 """CUDA-only: CollisionChecker.query()/bake() inside wp.ScopedCapture.
 
 Follows the test_warp_graph.py pattern: whole module skipped without CUDA.
-The _CAPTURING flag suppresses the checker's post-launch wp.synchronize so the
-capture region stays sync-free.
+No capture flag is set: the checker never host-synchronizes, so it records
+into a caller's capture as-is.
 """
 from __future__ import annotations
 
 import numpy as np
 import pytest
-import torch
 
-pytestmark = [
-    pytest.mark.cuda,
-    pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda"),
-]
+pytestmark = pytest.mark.cuda
 
 import warp as wp  # noqa: E402
 from tests._collision_fixtures import make_annulus_track, make_boxes  # noqa: E402
-from track_gen._src import runtime  # noqa: E402
 from track_gen.collision import CollisionChecker  # noqa: E402
 
 DEV = "cuda:0"
@@ -35,15 +30,10 @@ def test_query_graph_replay_matches_eager(method):
 
     eager = checker.query(pos, yaw, he).clone()
 
-    prev = runtime._CAPTURING
-    runtime._CAPTURING = True
-    try:
-        checker.query(pos, yaw, he)  # warmup: modules loaded before capture
-        wp.synchronize()
-        with wp.ScopedCapture(device=DEV) as cap:
-            checker.query(pos, yaw, he)
-    finally:
-        runtime._CAPTURING = prev
+    checker.query(pos, yaw, he)  # warmup: modules loaded before capture
+    wp.synchronize()
+    with wp.ScopedCapture(device=DEV) as cap:
+        checker.query(pos, yaw, he)
 
     # Poison outputs so the comparison proves the REPLAY recomputed them,
     # not that stale pre-capture results survived in the reused buffers.
@@ -64,14 +54,9 @@ def test_bake_graph_capturable():
     checker = CollisionChecker(track, max_boxes=1, method="sdf",
                                sdf_resolution=64)
     phi_eager = checker._sdf_phi.numpy().copy()
-    prev = runtime._CAPTURING
-    runtime._CAPTURING = True
-    try:
-        wp.synchronize()
-        with wp.ScopedCapture(device=DEV) as cap:
-            checker.bake()
-    finally:
-        runtime._CAPTURING = prev
+    wp.synchronize()
+    with wp.ScopedCapture(device=DEV) as cap:
+        checker.bake()
 
     checker._sdf_phi.fill_(12345.0)
 

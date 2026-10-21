@@ -19,9 +19,8 @@ for out-of-bounds queries); this is the rendering/instancing complement.
 
 Layout follows the package conventions: flat ``[E * max_props]`` wp.arrays,
 NaN-padded past ``count[e]``, in-place reuse of the output ``PropSet`` across
-``sample()`` calls (use ``clone()`` for snapshots), and no host syncs while
-capturing is enabled (``track_gen.set_capturing``) so ``sample()`` is
-CUDA-graph capturable.
+``sample()`` calls (use ``clone()`` for snapshots), and no host syncs, so
+``sample()`` is CUDA-graph capturable as-is.
 """
 from __future__ import annotations
 
@@ -255,8 +254,7 @@ class PropSampler:
 
     One sampler binds one :class:`Track`, one boundary curve, one mode, and
     one spacing, so all output shapes are fixed and ``sample()`` is
-    CUDA-graph capturable (allocation-free; host-sync-free while capturing
-    is enabled via ``track_gen.set_capturing``). Because
+    CUDA-graph capturable (allocation-free and host-sync-free). Because
     ``TrackGenerator.generate()`` overwrites its ``Track`` buffers in place,
     every ``sample()`` reads the CURRENT batch — no rebind after
     regeneration. Props are rendering-only; they are not colliders. Results

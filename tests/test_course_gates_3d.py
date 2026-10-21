@@ -103,8 +103,6 @@ def test_cuda_gates_graph_replay_refreshes_line_and_frame():
     """Graph B (captured refresh) must contain the CourseLine resample and
     the localizer reset: poison both, replay via generate(seeds=...), and
     check they are recomputed; then step() localizes on the new line."""
-    if wp.get_cuda_device_count() == 0:
-        pytest.skip("cuda")
     dev = "cuda:0"
     from track_gen._src.course_line import CourseLine
     gcfg = GateGenConfig(device=dev, num_envs=E, gate_width=0.2, scale=3.0,

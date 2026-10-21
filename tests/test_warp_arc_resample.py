@@ -7,7 +7,7 @@ pytest.importorskip("warp")
 from tests._oracle import geometry
 from tests._warp_compare import arc_length_resample_warp
 
-DEVS = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
+from tests.conftest import DEVS  # noqa: E402
 
 
 def _make_batch(dev):

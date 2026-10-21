@@ -8,7 +8,7 @@ wp.init()
 from track_gen._src import warp_pipeline as wpl
 from tests._oracle import geometry, inflation
 
-DEVS = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
+from tests.conftest import DEVS  # noqa: E402
 
 
 def _loop(n=256, r=2.0, dev="cpu"):

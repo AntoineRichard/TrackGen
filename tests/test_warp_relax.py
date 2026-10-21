@@ -3,8 +3,9 @@ import pytest
 import torch
 
 pytest.importorskip("warp")
-if not torch.cuda.is_available():
-    pytest.skip("Warp separation path requires CUDA", allow_module_level=True)
+
+# The Warp separation path and the torch reference both run on CUDA.
+pytestmark = pytest.mark.cuda
 
 from tests._oracle import relaxation, geometry
 from tests._warp_compare import xpbd_solve

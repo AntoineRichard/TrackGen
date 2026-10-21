@@ -1,18 +1,17 @@
-"""CUDA-only: facade Graph B refresh replay + user-captured step()."""
+"""CUDA-only: facade Graph B refresh replay + user-captured step().
+
+The user capture sets no flag: step()/reset() never host-synchronize.
+"""
 from __future__ import annotations
 
 import numpy as np
 import pytest
-import torch
 
-pytestmark = [
-    pytest.mark.cuda,
-    pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda"),
-]
+pytestmark = pytest.mark.cuda
 
 import warp as wp  # noqa: E402
 from track_gen import TrackGenConfig  # noqa: E402
-from track_gen.course import Course, CourseConfig, set_capturing  # noqa: E402
+from track_gen.course import Course, CourseConfig  # noqa: E402
 
 DEV = "cuda:0"
 E = 8
@@ -83,18 +82,14 @@ def test_user_captured_step_matches_eager_twin():
     course_c.generate()
     course_e.generate()
 
-    set_capturing(True)
-    try:
-        course_c.step()                            # warmup
-        wp.synchronize()
-        all_mask = wp.full(E, 1, dtype=wp.int32, device=DEV)
-        course_c.reset(all_mask)
-        course_e.reset(wp.full(E, 1, dtype=wp.int32, device=DEV))
-        wp.synchronize()
-        with wp.ScopedCapture(device=DEV) as cap:
-            course_c.step()
-    finally:
-        set_capturing(False)
+    course_c.step()                                # warmup
+    wp.synchronize()
+    all_mask = wp.full(E, 1, dtype=wp.int32, device=DEV)
+    course_c.reset(all_mask)
+    course_e.reset(wp.full(E, 1, dtype=wp.int32, device=DEV))
+    wp.synchronize()
+    with wp.ScopedCapture(device=DEV) as cap:
+        course_c.step()
 
     n_max = course_c.result.outer.shape[0] // E
     center = np.nan_to_num(

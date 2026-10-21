@@ -187,8 +187,8 @@ class CheckpointSampler:
     One sampler binds one :class:`Track` and one spacing; ``sample()``
     refreshes the owned :class:`CheckpointSet` in place from the CURRENT
     track batch (no rebind after ``generate()``; two kernel launches,
-    allocation-free, CUDA-graph capturable via the shared capture flag —
-    ``track_gen.set_capturing``). Spacing is expected to be coarse —
+    allocation-free and host-sync-free, so CUDA-graph capturable as-is).
+    Spacing is expected to be coarse —
     checkpoint counts similar to gate counts; nothing enforces this.
     Progress state bound to the sampled set must be reset after resampling a
     regenerated track.

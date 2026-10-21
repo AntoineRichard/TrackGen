@@ -56,13 +56,19 @@ the intended pattern: the sim writes its stable pose buffers, then replays
 the captured update. (Per-call mode also works under capture, but the SAME
 arrays must be passed at capture and every replay.)
 
-Outside capture, every utility follows a per-call ``wp.synchronize()`` after
-its kernel launch (blocking, but simple — the codebase idiom). To record
-``query()``/``update()``/``sample()`` into YOUR OWN CUDA graph — instead of
-relying on the :doc:`Course facade </utilities/course>`'s built-in capture — call
-``track_gen.set_capturing(True)`` before opening the capture region so those
-per-call syncs are skipped, then restore it (``set_capturing(False)``, or
-the value you saved beforehand) once the capture region is closed.
+No utility host-synchronizes or reads device data back in
+``query()``/``update()``/``reset()``/``sample()``/``bake()``/``refresh()``:
+each call only enqueues kernels on the device's current Warp stream. They
+therefore record into YOUR OWN CUDA graph as-is, with no flag to set (the
+former ``track_gen.set_capturing`` is a deprecated no-op).
+
+Because the calls no longer block the host, results are ordered by the stream,
+not by the call returning. Reading them with ``.numpy()``, from later Warp
+launches, or from torch on its default stream is safe as before. A consumer on
+a DIFFERENT stream (for example a torch side stream) must order itself
+explicitly, e.g. with ``wp.synchronize_device()`` or a recorded ``wp.Event``.
+Set ``TRACKGEN_DEBUG_SYNC=1`` to make every library call block on its stream
+while debugging asynchronous CUDA errors (skipped while a capture is active).
 
 After regenerating
 ------------------

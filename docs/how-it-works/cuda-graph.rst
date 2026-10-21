@@ -34,9 +34,10 @@ Capture requirements
 
 The capture works because every stage is pure Warp and fixed-shape:
 
-- A module global ``_CAPTURING`` makes every wrapper's ``_sync`` and ``warp_relax``'s
-  final ``wp.synchronize`` a no-op during capture. Host-blocking syncs are illegal inside
-  capture, and the graph records stream ordering.
+- No stage host-synchronizes or reads device data back. Host-blocking syncs are illegal
+  inside capture, and the stream (or the graph) already orders the launches. The
+  wrappers' ``_sync`` hook is a no-op unless ``TRACKGEN_DEBUG_SYNC=1``, and even then it
+  is skipped while the stream is capturing.
 - The seed buffer address is stable; replay reuses the same buffer and reads the new seed
   contents on device.
 - ``output_mode="constant_spacing"`` captures too: per-track ``count[e]`` is device-side
