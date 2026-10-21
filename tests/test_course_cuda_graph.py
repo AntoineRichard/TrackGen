@@ -12,7 +12,6 @@ import pytest
 pytestmark = pytest.mark.cuda
 
 import warp as wp  # noqa: E402
-from track_gen._src import runtime  # noqa: E402
 from tests._collision_fixtures import make_annulus_track, make_boxes  # noqa: E402
 from track_gen.checkpoints import CheckpointSampler  # noqa: E402
 from track_gen.collision import DiscChecker  # noqa: E402
@@ -25,15 +24,10 @@ def test_checkpoint_sample_graph_replay():
     track = make_annulus_track(E=4, n=256, device=DEV)
     sampler = CheckpointSampler(track, spacing=0.8)
     eager = sampler.sample().clone()
-    prev = runtime._CAPTURING
-    runtime._CAPTURING = True
-    try:
+    sampler.sample()
+    wp.synchronize()
+    with wp.ScopedCapture(device=DEV) as cap:
         sampler.sample()
-        wp.synchronize()
-        with wp.ScopedCapture(device=DEV) as cap:
-            sampler.sample()
-    finally:
-        runtime._CAPTURING = prev
     sampler._set.position.fill_(12345.0)
     sampler._set.count.fill_(-7)
     wp.capture_launch(cap.graph)
@@ -52,18 +46,13 @@ def test_progress_update_graph_replay_matches_eager_twin():
     eager = ProgressTracker(cps)
 
     # Capture one bound update (warmup on a twin state, then reset).
-    prev = runtime._CAPTURING
-    runtime._CAPTURING = True
-    try:
+    bound.update()
+    wp.synchronize()
+    mask = wp.full(E, 1, dtype=wp.int32, device=DEV)
+    bound.reset(mask)
+    wp.synchronize()
+    with wp.ScopedCapture(device=DEV) as cap:
         bound.update()
-        wp.synchronize()
-        mask = wp.full(E, 1, dtype=wp.int32, device=DEV)
-        bound.reset(mask)
-        wp.synchronize()
-        with wp.ScopedCapture(device=DEV) as cap:
-            bound.update()
-    finally:
-        runtime._CAPTURING = prev
 
     # Walk the annulus centerline CCW; both trackers see identical positions.
     steps = [np.stack([np.cos(a) * 1.0 * np.ones(E), np.sin(a) * np.ones(E),
@@ -101,15 +90,10 @@ def test_progress_reset_graph_replay():
     assert int(tracker._progress.numpy().sum()) > 0
 
     mask = wp.full(E, 1, dtype=wp.int32, device=DEV)
-    prev = runtime._CAPTURING
-    runtime._CAPTURING = True
-    try:
-        tracker.reset(mask)  # warmup
-        wp.synchronize()
-        with wp.ScopedCapture(device=DEV) as cap:
-            tracker.reset(mask)
-    finally:
-        runtime._CAPTURING = prev
+    tracker.reset(mask)  # warmup
+    wp.synchronize()
+    with wp.ScopedCapture(device=DEV) as cap:
+        tracker.reset(mask)
 
     # Re-advance state so the buffers are non-zero/non-NaN before replay.
     for s in steps:
@@ -132,15 +116,10 @@ def test_disc_query_graph_replay_bound():
     checker = DiscChecker(discs, radius=0.03, max_boxes=B, num_envs=E,
                           position=pos, orientation=orient, half_extents=he)
     eager = checker.query().clone()
-    prev = runtime._CAPTURING
-    runtime._CAPTURING = True
-    try:
+    checker.query()
+    wp.synchronize()
+    with wp.ScopedCapture(device=DEV) as cap:
         checker.query()
-        wp.synchronize()
-        with wp.ScopedCapture(device=DEV) as cap:
-            checker.query()
-    finally:
-        runtime._CAPTURING = prev
     checker._contact.hit.fill_(-7)
     checker._contact.depth.fill_(12345.0)
     wp.capture_launch(cap.graph)

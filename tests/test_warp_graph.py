@@ -188,8 +188,7 @@ def test_autocapture_replay_matches_eager_with_cached_separation():
 
 
 def test_eager_path_unaffected():
-    """The capture flag is False outside a capture region."""
-    assert wpp._CAPTURING is False
+    """generate() on cuda returns full-size buffers; the deprecated flag stays unset."""
     E = 16
     cfg = _cfg(E)
     rng = _make_rng(E, seed=7)

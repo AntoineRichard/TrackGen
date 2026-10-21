@@ -45,8 +45,8 @@ small against ``W * spacing``. Small motion alone does not guarantee it:
 where the loop pinches close to itself, the nearest segment can jump half
 a lap discontinuously, and the warm result then stays on the traveled
 branch (often preferable for racing consumers — ``s`` stays continuous —
-but not the cold answer). Both modes are fixed-bound kernels: no host
-sync, CUDA-graph capturable via ``track_gen.set_capturing``.
+but not the cold answer). Both modes are fixed-bound kernels with no host
+sync, so ``query()``/``reset()`` are CUDA-graph capturable as-is.
 
 The warm memory refers to segment INDICES, so it goes stale when the
 geometry changes: call ``reset(mask)`` for all envs after regenerating the

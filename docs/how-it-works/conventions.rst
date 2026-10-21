@@ -44,7 +44,8 @@ Test and diagnostic wrappers follow the pattern:
 2. Optional ``wp.from_torch(t.reshape(...).contiguous(), dtype=...)`` — bridge from torch
    inputs at the test boundary.
 3. ``wp.launch(kernel, dim=..., device=str(device))`` — launch the Warp kernel.
-4. ``_sync(device)`` — synchronize.
+4. ``_sync(device)`` — debug hook: a no-op unless ``TRACKGEN_DEBUG_SYNC=1``, so the
+   wrapper never host-blocks and stays capture-safe.
 5. Optional torch views via ``wp.to_torch`` — bridge outputs at the test boundary.
 
 In-kernel idioms

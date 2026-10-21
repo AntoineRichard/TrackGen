@@ -9,9 +9,8 @@ for O(1) queries against baked per-env signed-distance grids.
 
 Layout follows the package conventions: flat ``[E * max_boxes]`` wp.arrays,
 NaN for inactive slots, in-place reuse of the output ``BoxContact`` across
-``query()`` calls (use ``clone()`` for snapshots), and no host syncs while
-capturing is enabled (``track_gen.set_capturing``) so ``query()``/``bake()``
-are CUDA-graph capturable.
+``query()`` calls (use ``clone()`` for snapshots), and no host syncs, so
+``query()``/``bake()`` are CUDA-graph capturable as-is.
 """
 from __future__ import annotations
 
@@ -270,11 +269,10 @@ class CollisionChecker:
     no rebind step. The ``sdf`` backend requires ``bake()`` after each
     ``generate()`` call.
 
-    ``query()`` is allocation-free and, under graph capture (enabled via
-    ``track_gen.set_capturing``), host-sync-free (CUDA-graph capturable). In
-    normal (non-capturing) use a ``wp.synchronize()`` follows the launch,
-    per the codebase idiom. ``query()`` returns the same preallocated
-    :class:`BoxContact` on every call.
+    ``query()`` is allocation-free and host-sync-free (CUDA-graph
+    capturable); its launches are stream-ordered, so a consumer on another
+    stream must order itself explicitly. ``query()`` returns the same
+    preallocated :class:`BoxContact` on every call.
     """
 
     def __init__(self, track: Track, max_boxes: int, method: str = "segments",

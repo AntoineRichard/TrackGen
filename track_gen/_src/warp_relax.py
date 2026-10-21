@@ -23,13 +23,14 @@ deadband cannot see while keeping bead uniformity. It is a fixed launch sequence
 
 Both paths run as Warp kernels on BOTH the Warp ``cpu`` device and ``cuda``, are
 strictly in-place and zero-alloc per call (all buffers are pre-allocated by the
-caller; see ``cheb_prev_wp``), and import only ``warp`` — never the pipeline.
+caller; see ``cheb_prev_wp``), never host-synchronize, and import only ``warp`` and
+the leaf ``runtime`` helpers — never the pipeline.
 """
 from __future__ import annotations
 
 import warp as wp
 
-_INITED = False
+from .runtime import _init, _is_capturing
 
 # Post-solve Taubin smoothing tail: one pass = two half-steps, x += LAMBDA*L(x) then
 # x += MU*L(x), with L the circular Laplacian. mu < -lambda is what makes the pass
@@ -357,11 +358,8 @@ def xpbd_solve_inplace(
         n_max:      int buffer stride (== total points per env slot).
         config:     TrackGenConfig (half_width, relax_margin, relax_iters, relax_*_relax,
                     relax_sep_every, relax_sep_cache_slots, relax_sep_cache_skin).
-        capturing:  True while a CUDA graph is being captured. The final host-blocking
-                    wp.synchronize() is then skipped (it is ILLEGAL during capture and
-                    unnecessary on replay, where the graph records stream ordering). The
-                    orchestrator passes its capture state in explicitly so this module
-                    never reaches back into the pipeline for it.
+        capturing:  Deprecated and ignored. The solve never host-synchronizes, so
+                    there is nothing to suppress during CUDA graph capture.
         sep_cache_idx_wp: [E*n_max*relax_sep_cache_slots] int32 candidate indices. Required
                     only when relax_sep_cache_slots > 0 and relax_sep_every > 1.
         sep_cache_count_wp: [E*n_max] int32 candidate count per bead for cached separation.
@@ -369,16 +367,13 @@ def xpbd_solve_inplace(
                     broadphase candidates than relax_sep_cache_slots on the latest refresh.
         cheb_prev_wp: [E*n_max] wp.vec2f previous-iterate buffer for Chebyshev
                     acceleration. Required (pre-allocated by the caller) when
-                    config.relax_accel == "chebyshev" and a CUDA graph is being
-                    captured; outside capture a missing buffer is allocated here as a
-                    convenience for tests/standalone use. Never read before being
-                    written within a solve, so its initial contents are irrelevant
-                    (graph-replay safe). Unused when relax_accel == "none".
+                    config.relax_accel == "chebyshev" and the device's current stream
+                    is capturing a CUDA graph; outside capture a missing buffer is
+                    allocated here as a convenience for tests/standalone use. Never
+                    read before being written within a solve, so its initial contents
+                    are irrelevant (graph-replay safe). Unused when relax_accel == "none".
     """
-    global _INITED
-    if not _INITED:
-        wp.init()
-        _INITED = True
+    _init()
 
     E = count_wp.shape[0]
     hw = float(config.half_width)
@@ -417,7 +412,7 @@ def xpbd_solve_inplace(
         omegas = _cheby_schedule(
             n_iters, float(getattr(config, "relax_cheby_rho", 0.98)), cheby_start)
         if cheb_prev_wp is None:
-            if capturing:
+            if _is_capturing(dev):
                 # Allocation is illegal during CUDA graph capture; the capture path
                 # must pre-allocate the buffer (the pipeline's RelaxScratch does).
                 raise ValueError(
@@ -502,14 +497,6 @@ def xpbd_solve_inplace(
     if read_wp is not relaxed_wp:
         wp.copy(relaxed_wp, read_wp)
 
-    # Skip the host-blocking sync during CUDA graph capture (illegal there; the graph
-    # records stream ordering, so it is unnecessary on replay too). The caller passes
-    # its capture state in -- this module never reads the pipeline's _CAPTURING global.
-    # Gate on cuda like band_l0_inplace: on the cpu device kernels are eager, so a global
-    # wp.synchronize() is pure overhead.
-    if not capturing and "cuda" in dev:
-        wp.synchronize()
-
 
 @wp.kernel
 def _band_fill_k(arr: wp.array(dtype=wp.int32), v: int):
@@ -539,12 +526,9 @@ def band_l0_inplace(
         l0_wp:      [E] wp.float32 output — rest segment length per env.
         count_wp:   [E] wp.int32 real bead count per env.
         config:     TrackGenConfig (uses half_width, relax_band).
-        capturing:  True while a CUDA graph is being captured -> skip the host sync.
+        capturing:  Deprecated and ignored (this setup never host-synchronizes).
     """
-    global _INITED
-    if not _INITED:
-        wp.init()
-        _INITED = True
+    _init()
 
     E = count_wp.shape[0]
     dev = str(center_wp.device)
@@ -553,7 +537,5 @@ def band_l0_inplace(
               inputs=[center_wp, n_max, two_hw, band_wp, l0_wp, count_wp], device=dev)
     if config.relax_band is not None:
         wp.launch(_band_fill_k, dim=E, inputs=[band_wp, int(config.relax_band)], device=dev)
-    if not capturing and "cuda" in dev:
-        wp.synchronize()
 
 

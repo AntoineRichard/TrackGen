@@ -21,31 +21,15 @@ from .warp_relax import _separation_band  # noqa: F401  (used inside _validity_k
 
 import warp as wp
 
-_INITED = False
+# _init/_sync are the shared runtime helpers. Wrappers call _sync() after their launches;
+# it is a debug-only no-op unless TRACKGEN_DEBUG_SYNC=1 (see runtime._sync), so every
+# wrapper is host-sync-free and safe to record into a caller's CUDA graph. The names stay
+# importable from here because generator plugins call _pipe._init() / _pipe._sync().
+from .runtime import _init, _sync  # noqa: F401
 
-# True only inside a CUDA graph capture region (set by TrackGenerator around the
-# wp.ScopedCapture context). While set, every wrapper's _sync() is a no-op (host-blocking
-# sync is ILLEGAL during CUDA graph capture) and warp_relax.xpbd_solve skips its own
-# wp.synchronize(). Module-global because the whole pipeline (and warp_relax) must agree,
-# and the captured region is single-threaded/serial by construction.
+# Deprecated: no longer read or written by the library (wrappers do not host-sync, so
+# there is nothing to suppress during capture). Kept defined for out-of-tree importers.
 _CAPTURING = False
-
-
-def _init() -> None:
-    """Initialize Warp once (idempotent). Must run before any wp.launch."""
-    global _INITED
-    if not _INITED:
-        wp.init()
-        _INITED = True
-
-
-def _sync(device) -> None:
-    # Skip the host-blocking sync while a graph is being captured (it is illegal there);
-    # the graph records stream ordering, so the sync is unnecessary on replay too.
-    if _CAPTURING:
-        return
-    if "cuda" in str(device):
-        wp.synchronize()
 
 
 @wp.kernel
@@ -941,15 +925,13 @@ def _run_pipeline(
         # 3. Relaxation setup: band / L0 (the relax module owns its own setup).
         warp_relax.band_l0_inplace(
             scratch.cs_center, n_max, relax.band, relax.L0,
-            scratch.count, config, capturing=_CAPTURING,
+            scratch.count, config,
         )
 
-        # 4. XPBD relaxation in-place. Thread the pipeline's capture state in explicitly
-        # so warp_relax decides its host-sync without reaching back into this module.
+        # 4. XPBD relaxation in-place.
         warp_relax.xpbd_solve_inplace(
             scratch.cs_center, relax.relaxed, relax.xpbd_db,
             relax.band, relax.L0, scratch.count, n_max, config,
-            capturing=_CAPTURING,
             sep_cache_idx_wp=relax.sep_cache_idx,
             sep_cache_count_wp=relax.sep_cache_count,
             sep_cache_overflow_wp=relax.sep_cache_overflow,
@@ -1088,12 +1070,14 @@ def resample_constant_spacing(
 
     Allocating-mode (any buffer omitted -> allocated internally):
         Returns ``(out_wp, count_wp)`` — both freshly-allocated wp.arrays. This
-        branch allocates; do not use inside a CUDA graph capture region.
+        branch allocates and reads ``count`` back to the host; do not use inside a
+        CUDA graph capture region.
 
     ``count[e]`` is capped at ``n_max`` (required for fixed-buffer sizing). If the
-    true point count hits N_max, a ``RuntimeWarning`` is emitted on the non-capture
-    path (the cap is silent during CUDA graph replay). The caller MUST choose
-    ``N_max >= max(perimeter) / spacing + 1`` across all envs to avoid truncation."""
+    true point count hits N_max, a ``RuntimeWarning`` is emitted in allocating mode
+    only; in-place mode (the pipeline path) never reads back, so the cap is silent
+    there. The caller MUST choose ``N_max >= max(perimeter) / spacing + 1`` across
+    all envs to avoid truncation."""
     _init()
     if count_wp is not None:
         E = count_wp.shape[0]
@@ -1121,10 +1105,10 @@ def resample_constant_spacing(
               float(spacing), n_max, count_wp, out_wp], device=dev)
     _sync(dev)
 
-    # N_max truncation warning: only on the non-capture path (a host readback is
-    # ILLEGAL during CUDA graph capture and unnecessary on replay — count is fixed).
-    # This is the ONE justified host readback in _src; gated off during capture.
-    if not _CAPTURING:
+    if _allocating:
+        # N_max truncation warning: allocating mode only. It already allocates (so it is
+        # never on a capture path), and the caller receives host-facing results anyway.
+        # In-place mode is the pipeline/capture path and must not read back.
         import warnings
         import numpy as _np
         max_count = int(_np.max(count_wp.numpy()))
@@ -1132,12 +1116,10 @@ def resample_constant_spacing(
             warnings.warn(
                 f"constant_spacing: a track's point count hit N_max={n_max} "
                 f"(spacing={spacing}); it was truncated — increase N_max to avoid "
-                f"truncation. (CUDA graph replay cannot re-check.)",
+                f"truncation.",
                 RuntimeWarning,
                 stacklevel=2,
             )
-
-    if _allocating:
         return out_wp, count_wp
 
 

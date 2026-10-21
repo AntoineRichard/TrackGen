@@ -88,9 +88,9 @@ def test_gate_generator_rejects_too_small_max_gates(monkeypatch):
         GateGenerator(cfg, rng)
 
 
-def test_cuda_capture_sets_gate_and_pipeline_capture_flags(monkeypatch):
+def test_cuda_first_generate_warms_up_captures_and_replays(monkeypatch):
     from track_gen._src import gate_generator as gate_generator_mod
-    from track_gen._src import warp_gate, warp_pipeline
+    from track_gen._src import warp_gate
 
     monkeypatch.setattr(reg, "GATE_GENERATORS", {})
     monkeypatch.setattr(reg, "_LOADED", True)
@@ -102,8 +102,6 @@ def test_cuda_capture_sets_gate_and_pipeline_capture_flags(monkeypatch):
         supported_orderings=frozenset({"ccw"}),
     ))
 
-    monkeypatch.setattr(warp_gate, "_CAPTURING", False)
-    monkeypatch.setattr(warp_pipeline, "_CAPTURING", False)
     # scratch is the (gen_scratch, pos2, cum, perim, z, fallbacks) 6-tuple the
     # real _gate_warp_alloc returns; GateGenerator reads scratch[5] as
     # frame_fallbacks (moved from index 4 when the perim slot was added).
@@ -119,8 +117,6 @@ def test_cuda_capture_sets_gate_and_pipeline_capture_flags(monkeypatch):
     calls = []
 
     def fake_run_gate_pipeline(config, seed_buf_wp, out, scratch, generator_spec):
-        assert warp_gate._CAPTURING is True
-        assert warp_pipeline._CAPTURING is True
         calls.append("run")
 
     class FakeCapture:
@@ -149,12 +145,19 @@ def test_cuda_capture_sets_gate_and_pipeline_capture_flags(monkeypatch):
     rng = type("Rng", (), {"seeds_warp": type("Seeds", (), {"shape": (1,)})()})()
     gen = GateGenerator(cfg, rng)
 
+    # Resolve the fake "cuda" device as CUDA so the facade takes its capture path.
+    real_get_device = gate_generator_mod.wp.get_device
+    monkeypatch.setattr(
+        gate_generator_mod.wp, "get_device",
+        lambda d=None: (type("Dev", (), {"is_cuda": True})()
+                        if str(d).startswith("cuda") else real_get_device(d)),
+    )
+
     assert gen.generate(1) is gen._gate_sequence
 
+    # 3 warm-ups + 1 recorded run, then one replay of the captured graph.
     assert len(calls) == 4
     assert launched == [gen._graph]
-    assert warp_gate._CAPTURING is False
-    assert warp_pipeline._CAPTURING is False
 
 
 @pytest.mark.parametrize("generator", ["bezier", "hull"])

@@ -22,9 +22,8 @@ after construction) can never emit a spurious crossing. Callers MUST reset
 after regenerating the bound course. Results are undefined for envs with
 ``valid[e] == 0`` on the source batch.
 
-Like the sibling utilities, ``update()``/``reset()`` perform no host sync
-while capturing is enabled (``track_gen.set_capturing``), so they are
-CUDA-graph capturable.
+Like the sibling utilities, ``update()``/``reset()`` perform no host sync,
+so they are CUDA-graph capturable as-is.
 """
 from __future__ import annotations
 

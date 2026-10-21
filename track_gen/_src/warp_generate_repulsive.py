@@ -173,9 +173,8 @@ def _sample_obstacles_inplace(seeds_wp: wp.array, config,
                       obs_pts, obs_mw],
               device=device)
     # No host sync here: the growth-loop launches that consume obs_pts/obs_mw are already
-    # stream-ordered after this kernel, and generate_repulsive_warp syncs once before the
-    # first host readback. (Callers that read obs back on the host -- e.g. tests -- go through
-    # wp.array.numpy(), which synchronizes on its own.)
+    # stream-ordered after this kernel. (Callers that read obs back on the host, e.g.
+    # tests, go through wp.array.numpy(), which synchronizes on its own.)
 
 
 # RNG salt for the per-env target-length draw (distinct from the obstacle salt).
@@ -781,7 +780,7 @@ def generate_repulsive_warp(seeds_wp: wp.array, config,
         nonlocal stage_idx, Ncur
         stage_idx += 1
         Nnew = stages[stage_idx]
-        _pipe.arc_length_resample_inplace(
+        _pipe._arc_resample_inplace(
             center[0:E * Ncur], Ncur, Nnew,
             s.arc_real[0:E * Ncur], s.rs_seg[0:E * Ncur], s.rs_s[0:E * (Ncur + 1)],
             s.arc_cr, s.arc_co, s.rs_out[0:E * Nnew], dev)
@@ -858,7 +857,6 @@ def generate_repulsive_warp(seeds_wp: wp.array, config,
     _pipe.resample_uniform(center, s.rs_out, Ncur, s.count, s.rs_seg, s.rs_s, device=dev)
     wp.copy(out_centerline, s.rs_out, count=E * Ncur)
     wp.launch(_pipe._fill_i32_k, dim=E, inputs=[out_valid_wp, 1], device=dev)
-    _pipe._sync(dev)
 
 
 from . import generator_registry as _registry  # noqa: E402

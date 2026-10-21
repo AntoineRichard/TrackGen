@@ -38,13 +38,13 @@ bit-reproducible run-to-run on CUDA as well as CPU); only cross-*device* output 
 then only statistically (fp32 rounding). In gates mode the same
 object wraps ``GateGenerator`` + gate progress + optional ``DiscChecker``
 posts (``post_radius > 0``). The underlying tools stay reachable
-(``course.collision``, ``course.progress``, ``course.checkpoints``) and
-``track_gen.set_capturing(True)`` flips the ONE shared capture flag used by
-collision, props, checkpoints, progress, and the facade itself, all at
-once, when you capture ``step()`` into your own sim graph. Once ``step()``
-is captured, keep writing into the SAME bound buffers — rebinding after
-capture leaves the captured graph replaying against the old pointers
-(silently divergent results), so rebind only before (re)capturing.
+(``course.collision``, ``course.progress``, ``course.checkpoints``).
+``step()`` and ``reset()`` never host-synchronize, so they record into your
+own sim graph as-is (no flag; ``track_gen.set_capturing`` is a deprecated
+no-op). Once ``step()`` is captured, keep writing into the SAME bound
+buffers — rebinding after capture leaves the captured graph replaying
+against the old pointers (silently divergent results), so rebind only
+before (re)capturing.
 
 In gates mode with ``post_radius > 0``, ``course.step().contacts`` is a
 :class:`~track_gen.collision.DiscContact` instead of a

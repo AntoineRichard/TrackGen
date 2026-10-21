@@ -22,9 +22,9 @@ graphs); per-env control lives in ``reset(mask)``.
 CUDA graphs: the generator keeps its own pipeline graph (Graph A); the
 facade captures the refresh sequence into its own graph on the first cuda
 ``generate()`` (Graph B) and replays it afterwards. ``step()``/``reset()``
-are NOT auto-captured — they are capture-ready for the caller's sim graph;
-``track_gen.set_capturing(True)`` flips the ONE shared capture flag used by
-collision, props, checkpoints, progress, and this facade, all at once.
+are NOT auto-captured — they are capture-ready for the caller's sim graph
+as-is: no utility host-synchronizes, so no flag is needed (the former
+``track_gen.set_capturing`` is a deprecated no-op).
 
 Results are undefined for envs with ``valid[e] == 0`` on ``course.result``.
 """
@@ -321,8 +321,9 @@ class Course:
         # Canonicalize via Warp: "cuda" -> "cuda:0" so the string matches
         # str(arr.device) in _check_arr (bind/seed validation would otherwise
         # reject cuda:0 buffers when the config used the "cuda" alias).
-        self._device = str(wp.get_device(config.gen.device))
-        self._is_cuda = "cuda" in self._device
+        device = wp.get_device(config.gen.device)
+        self._device = str(device)
+        self._is_cuda = device.is_cuda
         if isinstance(config.seeds, wp.array):
             self._validate_seed_array(config.seeds)
         self.rng = PerEnvSeededRNG(seeds=config.seeds, num_envs=self._E,
@@ -504,19 +505,14 @@ class Course:
             self._refresh()
         if self._is_cuda and self._refresh_graph is None:
             with runtime._CAPTURE_LOCK:
-                prev = runtime._CAPTURING      # save/restore (generators' idiom;
-                set_capturing(True)             # flag mutations stay under the lock)
-                try:
-                    self._refresh()  # warmup, sync-free (call 2 of 3: runs for
-                                      # real, priming any lazy kernel/module
-                                      # init before we start recording below)
-                    wp.synchronize()
-                    with wp.ScopedCapture(device=self._device) as cap:
-                        self._refresh()  # call 3 of 3: RECORDED into the graph,
+                self._refresh()  # warmup, sync-free (call 2 of 3: runs for
+                                  # real, priming any lazy kernel/module
+                                  # init before we start recording below)
+                wp.synchronize()
+                with wp.ScopedCapture(device=self._device) as cap:
+                    self._refresh()  # call 3 of 3: RECORDED into the graph,
                                       # not executed here; replayed just below
-                    self._refresh_graph = cap.graph
-                finally:
-                    set_capturing(prev)
+                self._refresh_graph = cap.graph
                 wp.capture_launch(self._refresh_graph)
                 wp.synchronize()
         return self.result

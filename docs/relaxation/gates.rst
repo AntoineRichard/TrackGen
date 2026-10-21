@@ -180,8 +180,8 @@ The solve is a single ``wp.launch`` of a fixed-shape kernel: the launch dimensio
 sequence is data-independent and captures cleanly into the gate pipeline's ``wp.Graph``.
 The in-kernel early-exit ``break`` is per-thread control flow **inside** the kernel — it
 does not vary the host launch sequence, so it is compatible with capture. As elsewhere in
-``warp_gate.py``, ``_sync`` is a no-op while ``_CAPTURING`` is set, so no host
-synchronization is issued during capture. The separation runs in place on the existing
+``warp_gate.py``, no host synchronization is issued (``_sync`` is a debug-only hook,
+off unless ``TRACKGEN_DEBUG_SYNC=1``). The separation runs in place on the existing
 ``position`` buffer with no per-call allocation.
 
 See also

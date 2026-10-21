@@ -9,26 +9,13 @@ from __future__ import annotations
 import warp as wp
 
 from .collision_geom import _frame_quat, _safe_normalize3
+# Shared runtime helpers; _sync is a debug-only no-op unless TRACKGEN_DEBUG_SYNC=1.
+from .runtime import _init, _sync  # noqa: F401
 from .types import GateGenConfig, GateSequence
 
-_INITED = False
+# Deprecated: no longer read or written by the library. Kept defined for importers.
 _CAPTURING = False
 _ORDER_SALT = 7919
-
-
-def _init() -> None:
-    """Initialize Warp once (idempotent). Must run before any wp.launch."""
-    global _INITED
-    if not _INITED:
-        wp.init()
-        _INITED = True
-
-
-def _sync(device) -> None:
-    if _CAPTURING:
-        return
-    if "cuda" in str(device):
-        wp.synchronize()
 
 
 @wp.func

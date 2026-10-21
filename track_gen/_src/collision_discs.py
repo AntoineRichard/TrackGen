@@ -15,9 +15,8 @@ Per-step inputs can be bound at construction (``position=``, ``orientation=``,
 ``half_extents=`` — all three or none): ``query()`` then takes no arguments
 and reads the stable buffers in place (the CUDA-graph pattern).
 
-Like the sibling ``CollisionChecker``, ``query()`` performs no host sync
-while capturing is enabled (``track_gen.set_capturing``), so it is
-CUDA-graph capturable.
+Like the sibling ``CollisionChecker``, ``query()`` performs no host sync,
+so it is CUDA-graph capturable as-is.
 """
 from __future__ import annotations
 
