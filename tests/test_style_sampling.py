@@ -44,7 +44,7 @@ def _generate(config, dev):
         seeds_wp, config,
         out_centerline=scratch.gen_centerline,
         out_valid_wp=scratch.gen_valid,
-        scratch=scratch,
+        scratch=scratch.gen,
     )
     if "cuda" in dev:
         wp.synchronize()

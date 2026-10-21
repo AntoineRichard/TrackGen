@@ -20,19 +20,16 @@ Yu, Schumacher, and Crane, *Repulsive Curves* (SIGGRAPH 2021 / arXiv 2020).
 
 .. warning::
 
-   ``repulsive`` is a **host-driven, non-graph-capturable optimizer** — it is the first
-   registered generator that does not participate in CUDA-graph capture.  On an RTX 4090 it
-   takes roughly **0.2 s at E=64** and **5 s at E=8192** (~3 ms/track amortized), versus
-   ~2 ms per batch for ``bezier`` — **~1000× slower**.  It runs eagerly on CUDA every call
-   (no captured replay); graph capture of the growth loop is future work (see
-   `warp_generate_repulsive.py`'s module docstring and the design spike): the loop still
-   drives stage transitions, per-window stall readbacks, and the early exit from the host,
-   which is illegal inside a capture region.  (The per-iteration ``wp.Tape`` that used to be
-   the interior blocker is gone — the gradient is now hand-written analytic adjoints — so
-   capture is just a wiring exercise.)  If you use ``repulsive`` in a training loop, prefer a **slow regeneration
-   cadence** (regenerate a batch every N steps, not every step) or **staggered per-env
-   slices** (regenerate a fraction of environments per step) rather than calling
-   ``generate()`` every frame.
+   ``repulsive`` is an **iterative optimizer**.  On an RTX 4090 it takes roughly
+   **0.2 s at E=64** and **5 s at E=8192** (~3 ms/track amortized), versus ~2 ms per batch
+   for ``bezier`` — **~1000× slower** (measured when it still ran eagerly).  Its growth
+   loop follows a fixed host schedule (stage transitions, resample and stall-check
+   cadences depend only on the iteration counter) and converged envs are frozen on device,
+   so it is CUDA-graph-captured like the other generators — but each replay still runs the
+   full iteration budget (~4k graph nodes at the defaults).  If you use ``repulsive`` in a
+   training loop, prefer a **slow regeneration cadence** (regenerate a batch every N steps,
+   not every step) or **staggered per-env slices** (regenerate a fraction of environments
+   per step) rather than calling ``generate()`` every frame.
 
 .. figure:: ../assets/generator-repulsive.png
    :alt: Sample tracks produced by the repulsive generator
@@ -191,10 +188,11 @@ What Makes It Distinct
 -----------------------
 
 ``repulsive`` is the only generator that constructs its output by **iterative physical
-simulation** rather than a single deterministic sampling + smoothing pass, and consequently
-the only one that is **not CUDA-graph-capturable** (``GeneratorSpec(capturable=False)``); see
-:doc:`/how-it-works/cuda-graph` and :doc:`/contributing/writing-a-generator` for the capture
-contract this opts out of.
+simulation** rather than a single deterministic sampling + smoothing pass.  It still meets
+the capture contract (see :doc:`/how-it-works/cuda-graph`): the loop has no host readback,
+and an env whose enclosed area has stalled is frozen on device and never touched again
+(an *absorbing* freeze), so each env's track depends only on its own seed, never on the
+rest of the batch.
 
 Key contrasts:
 

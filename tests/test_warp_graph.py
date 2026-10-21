@@ -35,11 +35,19 @@ from track_gen._src.rng_utils import PerEnvSeededRNG  # noqa: E402
 from track_gen._src.types import Track  # noqa: E402
 
 # Only capturable generators are exercised by the auto-capture-replay suite; a
-# non-capturable generator (e.g. "repulsive") runs eagerly and would attempt an illegal
-# capture here. test_noncapturable_generators_excluded guards that they stay excluded.
+# non-capturable generator runs eagerly and would attempt an illegal capture here.
+# test_noncapturable_generators_excluded guards that they stay excluded. Every shipped
+# generator is capturable (repulsive since its freeze became absorbing).
 _ALL_GENERATORS = [
     n for n in generator_registry.available() if generator_registry.get(n).capturable
 ]
+
+# Per-generator config overrides. repulsive's growth loop is O(E*N^2) per iteration and
+# unrolls to ~4k graph nodes at the default stages; a reduced budget keeps capture cheap
+# while still exercising every stage transition, resample and stall check.
+_GEN_OVERRIDES = {
+    "repulsive": dict(num_points=64, repulsive_stages=(16, 32, 64)),
+}
 
 
 def _cfg(E: int, relax_iters: int = 20, generator: str = "bezier") -> TrackGenConfig:
@@ -50,7 +58,7 @@ def _cfg(E: int, relax_iters: int = 20, generator: str = "bezier") -> TrackGenCo
         spacing=0.6, N_max=256,
         relax_solver="xpbd", smooth_finish=False,
         relax_iters=relax_iters, max_regen_iters=4,
-        generator=generator,
+        generator=generator, **_GEN_OVERRIDES.get(generator, {}),
     )
 
 

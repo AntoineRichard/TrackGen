@@ -7,20 +7,24 @@ confined to a disc domain seeded with per-env random disc obstacles. Coarse-to-f
 serpentine tracks (Henrich et al., *Generating Race Tracks With Repulsive Curves*;
 Yu/Schumacher/Crane, *Repulsive Curves* SIGGRAPH 2021).
 
-This is the FIRST non-CUDA-graph-capturable generator: the growth loop reads back an
-area-convergence scalar every stall window to drive the early exit and transitions the
-coarse-to-fine stages on the host -- both illegal inside a capture region. It registers
-with ``capturable=False`` and ``TrackGenerator`` runs it EAGERLY on CUDA (see the cost
-warning on ``TrackGenConfig.repulsive_grow_mult_min``). The per-iteration ``wp.Tape``
-that used to be the interior capture blocker is GONE (replaced by hand-written analytic
-adjoints below); actual graph capture is now just a wiring exercise (future work).
+**CUDA-graph capturable** (``capturable=True``): the growth loop runs a FIXED host
+schedule -- the iteration budget, the coarse-to-fine stage transitions, the resample
+cadence and the stall-check cadence all depend only on the config and the host loop
+counter, never on device data -- and it issues no host sync or readback. Convergence is
+handled on device: an env whose enclosed area has stalled is frozen, every kernel skips
+frozen envs, and the periodic resample leaves them untouched, so a freeze is ABSORBING and
+the loop simply runs out its budget (cheap once envs are frozen; the O(N^2) kernels
+early-return). Fully unrolled, the captured graph is ~4k nodes at the default config.
+There is no global early exit: it needed a device->host readback, and with an absorbing
+freeze it would not change any result. The per-iteration ``wp.Tape`` that used to be the
+interior capture blocker is GONE (replaced by hand-written analytic adjoints below).
 
 Ported from the validated spike
 ``docs/superpowers/spikes/2026-07-05-repulsive-growth-phase1/grow_warp.py`` (proven 64/64
 through the standard tail). Production changes:
 (a) obstacle layout is a seed-driven Warp kernel (not host torch rejection sampling);
 (b) scratch is allocated once, coarse stages slice the ``[0:E*N_stage]`` prefix;
-(c) the stage upsample uses ``warp_pipeline.arc_length_resample_inplace``.
+(c) the stage upsample uses the non-syncing ``warp_pipeline._arc_resample_inplace``.
 
 **torch-free:** imports only ``warp`` + ``numpy`` (host precompute uses ``numpy.fft``
 for the Sobolev circulant rows and ``numpy.log1p`` for the stage schedule).
@@ -173,9 +177,8 @@ def _sample_obstacles_inplace(seeds_wp: wp.array, config,
                       obs_pts, obs_mw],
               device=device)
     # No host sync here: the growth-loop launches that consume obs_pts/obs_mw are already
-    # stream-ordered after this kernel, and generate_repulsive_warp syncs once before the
-    # first host readback. (Callers that read obs back on the host -- e.g. tests -- go through
-    # wp.array.numpy(), which synchronizes on its own.)
+    # stream-ordered after this kernel. (Callers that read obs back on the host -- e.g.
+    # tests -- go through wp.array.numpy(), which synchronizes on its own.)
 
 
 # RNG salt for the per-env target-length draw (distinct from the obstacle salt).
@@ -601,6 +604,18 @@ def _freeze_update_k(center: wp.array(dtype=wp.vec2f), n: int,
         frozen[e] = 1
 
 
+@wp.kernel
+def _copy_unfrozen_k(dst: wp.array(dtype=wp.vec2f), src: wp.array(dtype=wp.vec2f), n: int,
+                     frozen: wp.array(dtype=wp.int32)):
+    # dst <- src for envs still growing; frozen envs keep their at-freeze shape (absorbing
+    # freeze), so the result never depends on how long the rest of the batch keeps running.
+    e, i = wp.tid()
+    if frozen[e] == 1:
+        return
+    t = e * n + i
+    dst[t] = src[t]
+
+
 # ===========================================================================
 # Host-side spectral filter + stage schedule (numpy only, precomputed once)
 # ===========================================================================
@@ -719,7 +734,7 @@ def repulsive_alloc_scratch(config):
 
 
 # ===========================================================================
-# Host-driven coarse-to-fine growth loop (eager; non-capturable)
+# Fixed-schedule coarse-to-fine growth loop (graph-capturable)
 # ===========================================================================
 
 def generate_repulsive_warp(seeds_wp: wp.array, config,
@@ -729,10 +744,12 @@ def generate_repulsive_warp(seeds_wp: wp.array, config,
     write the final ``[E*num_points]`` closed loops into ``out_centerline`` (valid=1 for all
     envs; the shared downstream gate decides real validity).
 
-    Host-driven (stage transitions, per-window stall readback, early exit) -- illegal inside
-    a CUDA graph capture, hence ``capturable=False``. The gradient is hand-written analytic
-    adjoints (per-vertex gather, no atomics), so the flow is byte-deterministic per device.
-    Ported from the validated spike ``grow_warp.grow_warp`` (with the tape replaced).
+    Fixed host schedule (stage transitions and resample/stall-check cadences depend only on
+    the loop counter), no host sync or readback, absorbing per-env freeze -- so the whole
+    call can be recorded into a CUDA graph (``capturable=True``). The gradient is
+    hand-written analytic adjoints (per-vertex gather, no atomics), so the flow is
+    byte-deterministic per device. Ported from the validated spike ``grow_warp.grow_warp``
+    (with the tape replaced).
     """
     _pipe._init()
     assert scratch is not None, "generate_repulsive_warp requires scratch"
@@ -781,7 +798,7 @@ def generate_repulsive_warp(seeds_wp: wp.array, config,
         nonlocal stage_idx, Ncur
         stage_idx += 1
         Nnew = stages[stage_idx]
-        _pipe.arc_length_resample_inplace(
+        _pipe._arc_resample_inplace(
             center[0:E * Ncur], Ncur, Nnew,
             s.arc_real[0:E * Ncur], s.rs_seg[0:E * Ncur], s.rs_s[0:E * (Ncur + 1)],
             s.arc_cr, s.arc_co, s.rs_out[0:E * Nnew], dev)
@@ -831,19 +848,19 @@ def generate_repulsive_warp(seeds_wp: wp.array, config,
         wp.launch(_rescale_k, dim=(E, Ncur),
                   inputs=[center, s.bc, s.cur_len, s.L_target, Ncur, s.frozen], device=dev)
 
-        # 7. periodic arc-length resample (pure Warp)
+        # 7. periodic arc-length resample (pure Warp). Frozen envs are left untouched
+        #    (absorbing freeze); every other kernel above already skips them.
         if (it + 1) % resample_every == 0:
             wp.launch(_pipe._fill_i32_k, dim=E, inputs=[s.count, Ncur], device=dev)
             _pipe.resample_uniform(center, s.rs_out, Ncur, s.count, s.rs_seg, s.rs_s, device=dev)
-            wp.copy(center, s.rs_out, count=E * Ncur)
+            wp.launch(_copy_unfrozen_k, dim=(E, Ncur),
+                      inputs=[center, s.rs_out, Ncur, s.frozen], device=dev)
 
-        # 8. stall-stop: freeze converged envs, global early exit when all frozen.
+        # 8. stall-stop: freeze converged envs (device-side; no early exit, see module doc).
         if Ncur == stages[-1] and (it + 1) % stall_window == 0:
             wp.launch(_freeze_update_k, dim=E,
                       inputs=[center, Ncur, s.reached, stall_tol, s.area_prev, s.frozen, s.md_out],
                       device=dev)
-            if int(s.frozen.numpy().sum()) >= E:
-                break
 
     # Defense in depth: guarantee the centerline reaches the final stage resolution
     # (stages[-1] == num_points) even if the iteration budget was too small to trigger every
@@ -858,7 +875,6 @@ def generate_repulsive_warp(seeds_wp: wp.array, config,
     _pipe.resample_uniform(center, s.rs_out, Ncur, s.count, s.rs_seg, s.rs_s, device=dev)
     wp.copy(out_centerline, s.rs_out, count=E * Ncur)
     wp.launch(_pipe._fill_i32_k, dim=E, inputs=[out_valid_wp, 1], device=dev)
-    _pipe._sync(dev)
 
 
 from . import generator_registry as _registry  # noqa: E402
@@ -866,5 +882,5 @@ _registry.register(_registry.GeneratorSpec(
     name="repulsive",
     alloc_scratch=repulsive_alloc_scratch,
     generate=generate_repulsive_warp,
-    capturable=False,
+    capturable=True,
 ))

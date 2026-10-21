@@ -19,6 +19,13 @@ docs = ["sphinx", "furo", "sphinx-copybutton", "sphinx-design"]
 
 [tool.setuptools.packages.find]
 include = ["track_gen*"]
+# Prototypes (torch/matplotlib-dependent, unsupported) stay in the source tree only.
+exclude = ["track_gen._experimental*"]
+
+# Also drop them as package data: a stale track_gen.egg-info/SOURCES.txt (e.g. from an
+# earlier editable install) would otherwise re-add the excluded files to the wheel.
+[tool.setuptools.exclude-package-data]
+track_gen = ["_experimental/*"]
 
 [tool.pytest.ini_options]
 markers = [

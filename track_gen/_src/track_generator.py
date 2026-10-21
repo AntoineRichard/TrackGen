@@ -53,7 +53,7 @@ class TrackGenerator:
     device the pipeline runs eagerly.
 
     Only ``relax_solver="xpbd"`` and ``smooth_finish=False`` are supported; construction
-    raises ``AssertionError`` for other combinations.
+    raises ``ValueError`` for other combinations.
     """
 
     def __init__(self, config: TrackGenConfig, rng) -> None:
@@ -66,21 +66,32 @@ class TrackGenerator:
 
         Raises:
             ValueError: if ``rng`` is ``None``.
-            AssertionError: if ``config.relax_solver`` is not ``"xpbd"``, or if
+            ValueError: if the number of seeds in ``rng`` does not match
+                ``config.num_envs``.
+            ValueError: if ``config.relax_solver`` is not ``"xpbd"``, or if
                 ``config.smooth_finish`` is ``True``.
         """
         if rng is None:
             raise ValueError("A random number generator must be provided.")
+        # Catch an env-count mismatch at construction (clear message) rather than as an
+        # opaque wp.copy size error on the first generate() call.
+        if int(rng.seeds_warp.shape[0]) != int(config.num_envs):
+            raise ValueError(
+                f"rng has {int(rng.seeds_warp.shape[0])} seeds but config.num_envs="
+                f"{config.num_envs!r}; construct the rng with num_envs={config.num_envs!r}."
+            )
         from . import generator_registry
         self._generator_spec = generator_registry.get(config.generator)
-        assert config.relax_solver == "xpbd", (
-            f"TrackGenerator only supports relax_solver='xpbd'; "
-            f"got {config.relax_solver!r}."
-        )
-        assert not config.smooth_finish, (
-            "TrackGenerator does not support smooth_finish=True; "
-            "set smooth_finish=False."
-        )
+        if config.relax_solver != "xpbd":
+            raise ValueError(
+                f"TrackGenerator only supports relax_solver='xpbd'; "
+                f"got {config.relax_solver!r}."
+            )
+        if config.smooth_finish:
+            raise ValueError(
+                "TrackGenerator does not support smooth_finish=True; "
+                "set smooth_finish=False."
+            )
         self._config = config
         self._rng = rng
         # Non-capturable generators (host-driven loops / per-call allocation) run eagerly

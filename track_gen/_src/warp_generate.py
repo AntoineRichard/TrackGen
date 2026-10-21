@@ -634,8 +634,7 @@ def generate_centerline_warp(seeds_wp: wp.array, config,
         out_centerline:[E*N] vec2f wp.array — written in-place with the chosen centerline.
         out_valid_wp:  [E] int32 wp.array — filled with 1 (all valid at generation stage).
         scratch:       the generation buffer group exposing the gen_* arrays — a
-                       warp_pipeline.GenScratch (passed by the orchestrator) or the
-                       composite _Scratch (which delegates gen_* to its .gen group).
+                       warp_pipeline.GenScratch (the composite _Scratch's ``.gen``).
     """
     _pipe._init()
 

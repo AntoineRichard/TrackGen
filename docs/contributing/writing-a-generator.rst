@@ -106,10 +106,10 @@ construction remains an offline diagnostic until it can satisfy the same
 fixed-shape Warp contract.  The checkpoint method is the bounded,
 graph-capturable version of the Gymnasium CarRacing checkpoint-steering family:
 fixed-N steering, additive heading-ramp closure, best-of-K selection, and
-optional clip fallback.  The repulsive method is a ``capturable=False``
-self-repulsive curve-growth generator (see :doc:`/generators/repulsive`); it
-is ~1000× slower than the other five and is the one generator not covered by
-CUDA-graph capture.
+optional clip fallback.  The repulsive method is a self-repulsive curve-growth
+generator (see :doc:`/generators/repulsive`); it is ~1000× slower than the other
+five, and stays capturable by running a fixed iteration schedule with an absorbing
+per-env freeze instead of a host-side early exit.
 
 How a generator is judged
 --------------------------

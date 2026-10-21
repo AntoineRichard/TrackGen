@@ -25,8 +25,9 @@ class GateGenerator:
     Use ``GateSequence.clone()`` when an independent snapshot is needed.
 
     On a CUDA device the gate pipeline is auto-captured into a ``wp.Graph`` on the first
-    ``generate()`` call and replayed on subsequent calls. On the Warp ``cpu`` device the
-    pipeline runs eagerly.
+    ``generate()`` call and replayed on subsequent calls, unless the generator registers
+    ``capturable=False``, in which case it runs eagerly on CUDA every call. On the Warp
+    ``cpu`` device the pipeline runs eagerly.
     """
 
     def __init__(self, config: GateGenConfig, rng) -> None:
@@ -85,6 +86,9 @@ class GateGenerator:
         self._config = config
         self._rng = rng
         self._generator_spec = generator_spec
+        # Non-capturable generators (host-driven loops / per-call allocation) run eagerly
+        # on CUDA every call; no wp.Graph is ever built for them.
+        self._capturable = generator_spec.capturable
 
         from . import warp_gate
 
@@ -164,27 +168,32 @@ class GateGenerator:
             # The lock also makes the _CAPTURING save/restore idiom thread-safe.
             with _CAPTURE_LOCK:
                 wp.copy(self._seed_buf, self._rng.seeds_warp)
-                if self._graph is None:
-                    from . import warp_gate, warp_pipeline
+                if self._capturable:
+                    if self._graph is None:
+                        from . import warp_gate, warp_pipeline
 
-                    prev_gate_capturing = warp_gate._CAPTURING
-                    prev_pipeline_capturing = warp_pipeline._CAPTURING
-                    warp_gate._CAPTURING = True
-                    warp_pipeline._CAPTURING = True
-                    try:
-                        for _ in range(3):
-                            self._run()
-                        wp.synchronize()
+                        prev_gate_capturing = warp_gate._CAPTURING
+                        prev_pipeline_capturing = warp_pipeline._CAPTURING
+                        warp_gate._CAPTURING = True
+                        warp_pipeline._CAPTURING = True
+                        try:
+                            for _ in range(3):
+                                self._run()
+                            wp.synchronize()
 
-                        with wp.ScopedCapture(device=dev) as cap:
-                            self._run()
-                        self._graph = cap.graph
-                    finally:
-                        warp_gate._CAPTURING = prev_gate_capturing
-                        warp_pipeline._CAPTURING = prev_pipeline_capturing
+                            with wp.ScopedCapture(device=dev) as cap:
+                                self._run()
+                            self._graph = cap.graph
+                        finally:
+                            warp_gate._CAPTURING = prev_gate_capturing
+                            warp_pipeline._CAPTURING = prev_pipeline_capturing
 
-                wp.capture_launch(self._graph)
-                wp.synchronize()
+                    wp.capture_launch(self._graph)
+                    wp.synchronize()
+                else:
+                    # Eager on CUDA — non-capturable generators. Still locked: eager
+                    # launches land on the same stream a capture would record.
+                    self._run()
         else:
             wp.copy(self._seed_buf, self._rng.seeds_warp)
             self._run()

@@ -77,6 +77,7 @@ relax-friendly rule of thumb) — a fixed spacing default would be wrong as ``ha
 varies. Set it explicitly to override.
 
 **Size** ``N_max ≥ max(perimeter)/spacing + 1``: a track whose true count exceeds
-``N_max`` is silently truncated (its closing segment then spans the gap) and fails validity.
+``N_max`` is truncated (its closing segment would span the gap); the scan flags it in
+``Track.truncated`` and it fails validity.
 The fat-band default (``half_width=0.5``, ``spacing=0.30``, ``N_max=384``) leaves ample
 headroom (mean ≈ 160, max ≈ 270 points/track).

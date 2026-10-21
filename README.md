@@ -25,7 +25,7 @@ seeds[E] ─► generator ─► resample ─► XPBD relax ─► inflate ─�
 
 | | | docs |
 |---|---|---|
-| **Six track generators** | Bezier, checkpoint-steering, hull, polar, Voronoi, and repulsive-growth (a self-repulsive serpentine option, ~1000× slower and not graph-captured) — one config, per-env styles | [Generators](https://antoinerichard.github.io/TrackGen/generators/overview.html) |
+| **Six track generators** | Bezier, checkpoint-steering, hull, polar, Voronoi, and repulsive-growth (a self-repulsive serpentine option, ~1000× slower) — one config, per-env styles | [Generators](https://antoinerichard.github.io/TrackGen/generators/overview.html) |
 | **Relaxation & inflation** | XPBD-relaxed centerlines inflated into constant-width road bands — index-aligned outer/center/inner borders with tangent/normal frames | [How it works](https://antoinerichard.github.io/TrackGen/how-it-works/inflation.html) |
 | **Gate sequences** | Batched gate courses with tangent frames and collision-solved spacing | [Tutorial](https://antoinerichard.github.io/TrackGen/tutorials/gate-sequences.html) |
 | **Out-of-bounds collision** | Oriented boxes vs the drivable band — exact scan or baked SDF — plus disc obstacles (gate posts, cones) | [Collision](https://antoinerichard.github.io/TrackGen/utilities/collision.html) |

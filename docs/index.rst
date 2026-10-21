@@ -67,8 +67,7 @@ Features
    .. grid-item-card:: CUDA-graph capture
 
       The whole pipeline is captured once into a replayable CUDA graph and replayed
-      on every later call for high throughput (all generators except ``repulsive``,
-      which runs eagerly every call — see :doc:`generators/repulsive`).
+      on every later call for high throughput (all six generators).
 
    .. grid-item-card:: Gate sequences
 

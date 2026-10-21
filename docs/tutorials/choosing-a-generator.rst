@@ -13,10 +13,9 @@ generator is selected by passing ``generator=...`` to ``TrackGenConfig`` (or
 
 All six generators are fully supported and deterministic in ``(seed, config)`` — byte-identical
 run-to-run per device (both CPU and CUDA; ``repulsive`` included, via its analytic-adjoint
-gradient). Five of the six —
-every one except ``repulsive`` — are graph-capturable; ``repulsive`` is a host-driven,
-non-graph-capturable optimizer that runs eagerly on CUDA every call and is roughly 1000×
-slower (see :doc:`/generators/repulsive`). The choice is about track *shape variety* and
+gradient). All six are graph-capturable; ``repulsive`` is an iterative optimizer that
+runs its full fixed iteration budget on every call and is roughly 1000× slower (see
+:doc:`/generators/repulsive`). The choice is about track *shape variety* and
 *relaxation cost* (and, for ``repulsive``, generation cost), not correctness.
 
 The Six Generators
@@ -68,7 +67,7 @@ looked up through the production generator registry at ``TrackGenerator``
    E, device = 64, "cuda"
 
    # Switch generators by changing this one field. "repulsive" is ~1000x slower than
-   # the other five (it is not graph-capturable) — see docs/generators/repulsive.rst.
+   # the other five (an iterative optimizer) — see docs/generators/repulsive.rst.
    for name in ("bezier", "hull", "polar", "voronoi", "checkpoint", "repulsive"):
        config = TrackGenConfig(generator=name, num_envs=E, device=device)
        rng    = PerEnvSeededRNG(seeds=0, num_envs=E, device=device)
@@ -86,7 +85,8 @@ To list all registered generators at runtime:
 
    The Fourier generator lives in ``track_gen._experimental`` and is
    **unsupported** — it is not on the Warp pipeline and receives no
-   compatibility guarantees.
+   compatibility guarantees.  It is not shipped in the wheel; import it from a
+   source checkout.
 
 Generator-Specific Parameters
 --------------------------------
@@ -123,6 +123,6 @@ Detailed descriptions of each generator's algorithm, knobs, and tradeoffs:
 - :doc:`/generators/polar` — Polar spline deep dive
 - :doc:`/generators/voronoi` — Voronoi site-field deep dive
 - :doc:`/generators/checkpoint` — Checkpoint-steering deep dive
-- :doc:`/generators/repulsive` — Repulsive-growth deep dive (the non-graph-capturable one)
+- :doc:`/generators/repulsive` — Repulsive-growth deep dive (the slow, iterative one)
 - :doc:`/generators/benchmarks` — Side-by-side quality, diversity, and speed metrics
 - :doc:`/contributing/writing-a-generator` — contract every registered generator must satisfy

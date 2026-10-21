@@ -1,5 +1,6 @@
 import importlib
 
+import numpy as np
 import pytest
 
 from track_gen._src import gate_generator_registry as reg
@@ -108,3 +109,61 @@ def test_all_standard_gate_generators_registered():
     assert reg.get("hull").supported_orderings == frozenset({"ccw", "random_pairs"})
     for name in ("checkpoint", "polar", "voronoi"):
         assert reg.get(name).supported_orderings == frozenset({"ccw", "raw"})
+
+
+def test_gate_generator_spec_capturable_defaults_true():
+    # Mirrors GeneratorSpec: a spec registered without the flag stays on the
+    # capture-then-replay CUDA path.
+    spec = reg.GateGeneratorSpec(
+        name="x",
+        alloc_scratch=lambda config: None,
+        generate=lambda *a: None,
+        max_gates=lambda config: 4,
+        supported_orderings=frozenset({"ccw"}),
+    )
+    assert spec.capturable is True
+
+
+def test_shipped_gate_generators_are_capturable():
+    for name in reg.available():
+        assert reg.get(name).capturable is True, name
+
+
+_GATE_DEVS = ["cpu", pytest.param("cuda", marks=pytest.mark.cuda)]
+
+
+@pytest.mark.parametrize("dev", _GATE_DEVS)
+def test_noncapturable_gate_generator_runs_eagerly(monkeypatch, dev):
+    """A capturable=False gate generator never gets a wp.Graph: its Python body runs
+    exactly once per generate() on every device (a captured path would run it 4x on
+    the first CUDA call -- 3 warm-ups + record -- and 0x on replay)."""
+    import dataclasses
+
+    import warp as wp
+
+    from track_gen._src.gate_generator import GateGenerator
+    from track_gen._src.rng_utils import PerEnvSeededRNG
+    from track_gen._src.types import GateGenConfig
+
+    if dev == "cuda" and not wp.is_cuda_available():
+        pytest.skip("cuda")
+
+    base = reg.get("bezier")
+    calls = []
+
+    def counting_generate(*args, **kwargs):
+        calls.append(1)
+        return base.generate(*args, **kwargs)
+
+    eager = dataclasses.replace(base, generate=counting_generate, capturable=False)
+    monkeypatch.setattr(reg, "GATE_GENERATORS", {**reg.GATE_GENERATORS, "bezier": eager})
+
+    E = 4
+    cfg = GateGenConfig(generator="bezier", device=dev, num_envs=E, gate_width=0.05)
+    gen = GateGenerator(cfg, PerEnvSeededRNG(seeds=1234, num_envs=E, device=dev))
+    first = gen.generate().position.numpy().copy()
+    second = gen.generate().position.numpy().copy()
+
+    assert gen._graph is None
+    assert len(calls) == 2
+    np.testing.assert_array_equal(first, second)

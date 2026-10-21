@@ -113,3 +113,24 @@ def test_apply_z_profile_track_parameterization():
         assert (zz[e, :n] >= 0.0).all() and (zz[e, :n] <= 2.0).all()
         assert zz[e, :n].std() > 0.0
         assert (zz[e, n:] == 0.0).all()
+
+
+def test_apply_z_profile_rejects_unknown_profile():
+    """An unknown profile name raises instead of silently running "noise".
+
+    Config validation rejects bad names at construction, but configs are mutable, so
+    a name set afterwards reaches the dispatcher. It must fail loudly and launch nothing.
+    """
+    cfg = GateGenConfig(device="cpu", num_envs=E, max_gates=G, gate_width=0.05,
+                        z_profile="noise")
+    cfg.z_profile = "bogus"
+    pos_np, counts = _ring()
+    pos2 = wp.array(pos_np, dtype=wp.vec2f, device="cpu")
+    count = wp.array(counts, dtype=wp.int32, device="cpu")
+    seeds = wp.array(np.arange(E, dtype=np.int32) + 7, dtype=wp.int32, device="cpu")
+    cum, perim, z = warp_zprofile.alloc_z_scratch(E, G, "cpu")
+    warp_zprofile.gate_cum_perim(pos2, count, G, cum, perim)
+    z.fill_(-123.0)
+    with pytest.raises(ValueError, match="bogus"):
+        warp_zprofile.apply_z_profile(cfg, seeds, count, G, cum, perim, z)
+    assert (z.numpy() == -123.0).all()
