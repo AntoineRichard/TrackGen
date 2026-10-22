@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.0.dev3 (unreleased, `v2` branch)
+## 0.2.0.dev3 (2026-10-22, tag `v0.2.0.dev3`)
 
 ### Packaging
 
