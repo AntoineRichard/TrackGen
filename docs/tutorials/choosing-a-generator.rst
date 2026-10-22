@@ -75,12 +75,12 @@ looked up through the production generator registry at ``TrackGenerator``
        track  = TrackGenerator(config, rng).generate()
        print(f"{name}: done")
 
-To list all registered generators at runtime:
+To list all registered generators at runtime, installed plugins included:
 
 .. code-block:: python
 
-   from track_gen._src.generator_registry import available
-   print(available())
+   from track_gen.plugin import registry
+   print(registry.available("generator"))
 
 .. note::
 

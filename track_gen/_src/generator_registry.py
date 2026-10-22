@@ -1,25 +1,36 @@
-"""Registry of centerline generators.
+"""Track-generator spec (canonical home of :class:`GeneratorSpec`) and the deprecated
+module-level registry API.
 
 A generator is a (name, alloc_scratch, generate) triple. ``config.generator`` selects
-one by name. ``TrackGenerator`` resolves it once at construction; the orchestrator calls
-the resolved ``generate``. See docs/generator-contract.md for the contract every generator
-implements.
+one by name. ``TrackGenerator`` resolves it once at construction through the public
+registry, :data:`track_gen.plugin.registry` (kind ``"generator"``); the orchestrator
+calls the resolved ``generate``. Built-in generators register explicitly from
+``track_gen._src.builtin_plugins``; third parties use the ``"track_gen.plugins"`` entry
+point (see :mod:`track_gen.plugin`). See docs/contributing/writing-a-generator.rst for
+the contract every generator implements.
 
-This module imports nothing from the package at load time (leaf). Generator modules are
-imported lazily in ``_ensure_loaded`` so each self-registers exactly once, with no import
-cycle (warp_generate imports warp_pipeline, not this module's body).
+Backward-compatibility shims (kept working, deprecated quietly): ``register(spec)``
+(silent overwrite; a ``DeprecationWarning`` when it replaces an existing name),
+``get(name)``, ``available()``, ``_ensure_loaded()`` and ``GENERATORS`` (a read-only
+live view of the registry's generator kind) all delegate to
+:data:`track_gen.plugin.registry`.
+
+This module imports nothing from the package at load time (leaf): the registry is
+imported lazily, so ``track_gen.plugin`` can re-export ``GeneratorSpec`` from here.
 """
 from __future__ import annotations
 
 import dataclasses
-from typing import Callable
+import types
+from typing import Callable, ClassVar
 
 
 @dataclasses.dataclass(frozen=True)
 class GeneratorSpec:
     """One registered generator.
 
-    name:          the ``config.generator`` string that selects it.
+    name:          the ``config.generator`` string that selects it. Third-party names
+                   should be dotted (``"package.name"``).
     alloc_scratch: ``(config) -> scratch`` — allocate this generator's PRIVATE working
                    buffers ONCE (fixed shapes from config, on config.device). The
                    generation OUTPUT buffers (centerline, valid) are owned by the
@@ -42,6 +53,10 @@ class GeneratorSpec:
                    ``ctx=None`` to the ambient context) inherit the call's stream; their own
                    direct ``wp.launch`` calls still go to Warp's current stream.
     """
+
+    #: Registry kind ``track_gen.plugin.registry.add(spec)`` infers for this spec type.
+    registry_kind: ClassVar[str] = "generator"
+
     name: str
     alloc_scratch: Callable
     generate: Callable
@@ -49,38 +64,39 @@ class GeneratorSpec:
     accepts_ctx: bool = False
 
 
-GENERATORS: dict[str, GeneratorSpec] = {}
-_LOADED = False
+def _registry():
+    from ..plugin._registry import registry
+
+    return registry
 
 
 def register(spec: GeneratorSpec) -> None:
-    GENERATORS[spec.name] = spec
+    """Deprecated: use ``track_gen.plugin.registry.add(spec)``.
+
+    Keeps the old semantics (an existing name is overwritten), implemented as
+    ``add(spec, replace=True)`` with a ``DeprecationWarning`` when it replaces one.
+    """
+    _registry()._add_legacy(spec, "generator")
 
 
 def _ensure_loaded() -> None:
-    global _LOADED
-    if _LOADED:
-        return
-    # Importing each generator module runs its module-level register(...) call.
-    # Add one import line per new generator (the only shared touch-point).
-    from . import warp_generate  # noqa: F401  (registers "bezier")
-    from . import warp_generate_polar  # noqa: F401  (registers "polar")
-    from . import warp_generate_hull  # noqa: F401  (registers "hull")
-    from . import warp_generate_voronoi  # noqa: F401  (registers "voronoi")
-    from . import warp_generate_checkpoint  # noqa: F401  (registers "checkpoint")
-    from . import warp_generate_repulsive  # noqa: F401  (registers "repulsive")
-    _LOADED = True
+    _registry()._ensure_loaded()
 
 
 def get(name: str) -> GeneratorSpec:
-    _ensure_loaded()
-    if name not in GENERATORS:
-        raise ValueError(
-            f"unknown generator {name!r}; available: {sorted(GENERATORS)}"
-        )
-    return GENERATORS[name]
+    """Deprecated alias of ``track_gen.plugin.registry.get("generator", name)``."""
+    return _registry().get("generator", name)
 
 
 def available() -> list[str]:
-    _ensure_loaded()
-    return sorted(GENERATORS)
+    """Deprecated alias of ``track_gen.plugin.registry.available("generator")``."""
+    return _registry().available("generator")
+
+
+def __getattr__(name: str):
+    # GENERATORS: read-only live view of the registry's generator kind (loads it).
+    if name == "GENERATORS":
+        reg = _registry()
+        reg._ensure_loaded()
+        return types.MappingProxyType(reg._table("generator"))
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

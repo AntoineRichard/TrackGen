@@ -1,5 +1,6 @@
 import pytest
 
+from tests.conftest import override_spec
 from track_gen._src import generator_registry as reg
 
 
@@ -54,7 +55,7 @@ def test_composite_scratch_has_no_flat_name_fallthrough():
         scratch.kappa
 
 
-def test_generator_scratch_names_do_not_shadow_inflate_buffers(monkeypatch):
+def test_generator_scratch_names_do_not_shadow_inflate_buffers(plugin_registry):
     """A generator scratch exposing fields named like the inflate buffers (w, kappa,
     area_a, area_b, z) must not be read or written by the pipeline tail."""
     import dataclasses
@@ -88,16 +89,17 @@ def test_generator_scratch_names_do_not_shadow_inflate_buffers(monkeypatch):
     ref_center = ref.center.numpy().copy()
     ref_valid = ref.valid.numpy().copy()
 
-    monkeypatch.setitem(reg.GENERATORS, "bezier", decoy_spec)
+    override_spec(plugin_registry, decoy_spec)
     got = TrackGenerator(cfg, PerEnvSeededRNG(seeds=0, num_envs=E, device="cpu")).generate()
 
+    assert set(decoys) == {"w", "kappa", "z", "area_a", "area_b"}, "decoy spec unused"
     for name, arr in decoys.items():
         assert (arr.numpy() == sentinel).all(), f"pipeline wrote generator field {name!r}"
     np.testing.assert_array_equal(got.center.numpy(), ref_center)
     np.testing.assert_array_equal(got.valid.numpy(), ref_valid)
 
 
-def test_track_generator_uses_constructor_resolved_generator():
+def test_track_generator_uses_constructor_resolved_generator(plugin_registry):
     from track_gen._src.rng_utils import PerEnvSeededRNG
     from track_gen._src.track_generator import TrackGenerator
     from track_gen._src.types import TrackGenConfig
@@ -110,12 +112,9 @@ def test_track_generator_uses_constructor_resolved_generator():
     def fail_if_called(*args, **kwargs):
         raise AssertionError("existing TrackGenerator used a later registry entry")
 
-    try:
-        reg.register(reg.GeneratorSpec(
-            name="bezier",
-            alloc_scratch=original.alloc_scratch,
-            generate=fail_if_called,
-        ))
-        gen.generate(1)
-    finally:
-        reg.register(original)
+    override_spec(plugin_registry, reg.GeneratorSpec(
+        name="bezier",
+        alloc_scratch=original.alloc_scratch,
+        generate=fail_if_called,
+    ))
+    gen.generate(1)

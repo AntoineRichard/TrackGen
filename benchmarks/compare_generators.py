@@ -19,7 +19,7 @@ import warp as wp
 from track_gen._src.types import TrackGenConfig
 from track_gen._src.track_generator import TrackGenerator
 from track_gen._src.rng_utils import PerEnvSeededRNG
-from track_gen._src import generator_registry
+from track_gen.plugin import registry
 from benchmarks import track_metrics as tm
 
 _COMPACTNESS_DEGENERATE_THRESHOLD = 0.90
@@ -130,7 +130,7 @@ def compare(names=None, seed_base=0, E=4096, base_config=None) -> list:
     if base_config is None:
         base_config = TrackGenConfig(num_envs=E)
     if names is None:
-        names = generator_registry.available()
+        names = registry.available("generator")
     return [run_generator(n, seed_base, E, base_config) for n in names]
 
 

@@ -954,8 +954,8 @@ def _run_pipeline(
     if generator_spec is None:
         generator_spec = getattr(scratch, "generator_spec", None)
     if generator_spec is None:
-        from . import generator_registry
-        generator_spec = generator_registry.get(config.generator)
+        from ..plugin import registry
+        generator_spec = registry.get("generator", config.generator)
 
     n_max = int(config.N_max)
     gen = scratch.gen        # generator-private scratch
@@ -1630,8 +1630,8 @@ def _inflate_warp_alloc(config, generator_spec=None):
         generation=wp.zeros(E, dtype=wp.int32, device=dev),
     )
     if generator_spec is None:
-        from . import generator_registry
-        generator_spec = generator_registry.get(config.generator)
+        from ..plugin import registry
+        generator_spec = registry.get("generator", config.generator)
     gen = generator_spec.alloc_scratch(config)
     N_gen = int(config.num_points)
     gen_centerline = wp.empty(E * N_gen, dtype=wp.vec2f, device=dev)

@@ -37,7 +37,7 @@ import warp as wp  # noqa: E402
 
 import track_gen.exec as tg_exec  # noqa: E402
 from track_gen import GateGenConfig, PerEnvSeededRNG, TrackGenConfig  # noqa: E402
-from track_gen._src import gate_generator_registry, generator_registry  # noqa: E402
+from track_gen.plugin import GeneratorSpec, registry  # noqa: E402
 from track_gen._src.gate_generator import GateGenerator  # noqa: E402
 from track_gen._src.track_generator import TrackGenerator  # noqa: E402
 from track_gen.course import Course, CourseConfig  # noqa: E402
@@ -235,20 +235,20 @@ def _record_replay_reseed(kind: str, generator: str) -> None:
     _assert_same(out, new, f"{kind}/{generator}: replay after reseed")
 
 
-@pytest.mark.parametrize("generator", generator_registry.available())
+@pytest.mark.parametrize("generator", registry.available("generator"))
 def test_track_generate_records_into_caller_capture(generator):
     """Every registered track generator: ``generate(stream=s)`` inside the caller's
     capture is recorded (no allocation, no capture_launch, no self-capture), replays to
     the eager twin, and the replay reads the rng's live seeds."""
-    if not generator_registry.get(generator).capturable:
+    if not registry.get("generator", generator).capturable:
         pytest.skip(f"{generator!r} is registered capturable=False")
     _record_replay_reseed("track", generator)
 
 
-@pytest.mark.parametrize("generator", gate_generator_registry.available())
+@pytest.mark.parametrize("generator", registry.available("gate_generator"))
 def test_gate_generate_records_into_caller_capture(generator):
     """Every registered gate generator: as the track test."""
-    if not gate_generator_registry.get(generator).capturable:
+    if not registry.get("gate_generator", generator).capturable:
         pytest.skip(f"{generator!r} is registered capturable=False")
     _record_replay_reseed("gate", generator)
 
@@ -354,18 +354,16 @@ def test_self_graph_outside_any_capture_matches_eager_twin(kind):
         _assert_same(out, ref, f"{kind}: self-graph replay {i}")
 
 
-def test_python_body_runs_once_per_recording_and_never_on_replay(monkeypatch):
+def test_python_body_runs_once_per_recording_and_never_on_replay():
     """prepare runs the body once; the self-graph records it once; self-graph replays
     run no Python; a caller recording made AFTER the self-graph exists re-enqueues the
     body (never launches the stored graph) and the caller's replays run no Python."""
     calls = []
-    base = generator_registry.get("polar")
-    monkeypatch.setitem(generator_registry.GENERATORS, "toy-count",
-                        generator_registry.GeneratorSpec(
-                            name="toy-count", alloc_scratch=base.alloc_scratch,
-                            generate=_counting(base.generate, calls),
-                            capturable=True, accepts_ctx=True))
-    gen, _ = _make("track", 11, generator="toy-count")
+    base = registry.get("generator", "polar")
+    registry.add(GeneratorSpec(name="toy.count", alloc_scratch=base.alloc_scratch,
+                               generate=_counting(base.generate, calls),
+                               capturable=True, accepts_ctx=True))
+    gen, _ = _make("track", 11, generator="toy.count")
     ref = _eager_ref("track", 11, generator="polar")
     assert len(calls) == 1, "construction runs exactly one real pass"
     assert gen.graph is None
@@ -374,7 +372,7 @@ def test_python_body_runs_once_per_recording_and_never_on_replay(monkeypatch):
     assert len(calls) == 2, "the first CUDA generate() records the self-graph once"
     g = gen.graph
     assert g is not None
-    _assert_same(out, ref, "toy-count: first call")
+    _assert_same(out, ref, "toy.count: first call")
     for _ in range(3):
         gen.generate()
     assert len(calls) == 2, "self-graph replays must not run the Python body"
@@ -388,7 +386,7 @@ def test_python_body_runs_once_per_recording_and_never_on_replay(monkeypatch):
     for k in range(2):
         _poison_all(out)
         _replay(cap.graph, s)
-        _assert_same(out, ref, f"toy-count: caller replay {k}")
+        _assert_same(out, ref, f"toy.count: caller replay {k}")
     assert len(calls) == 3, "caller replays must not run the Python body"
 
 
@@ -396,32 +394,30 @@ def test_python_body_runs_once_per_recording_and_never_on_replay(monkeypatch):
 # Non-capturable and legacy-plugin generators
 # ---------------------------------------------------------------------------------------
 
-def _register_host_toys(monkeypatch, calls: list) -> None:
-    """Register a non-capturable "toy-host" track AND gate generator (wrapping polar /
-    bezier, so their outputs equal those shipped generators); undone by monkeypatch."""
-    tbase = generator_registry.get("polar")
-    monkeypatch.setitem(generator_registry.GENERATORS, "toy-host",
-                        generator_registry.GeneratorSpec(
-                            name="toy-host", alloc_scratch=tbase.alloc_scratch,
-                            generate=_counting(tbase.generate, calls, host_readback=True),
-                            capturable=False, accepts_ctx=True))
-    gbase = gate_generator_registry.get("bezier")
-    monkeypatch.setitem(gate_generator_registry.GATE_GENERATORS, "toy-host",
-                        dataclasses.replace(
-                            gbase, name="toy-host",
-                            generate=_counting(gbase.generate, calls, host_readback=True),
-                            capturable=False))
+def _register_host_toys(calls: list) -> None:
+    """Register a non-capturable "toy.host" track AND gate generator (wrapping polar /
+    bezier, so their outputs equal those shipped generators); undone by the per-test
+    registry scope (tests/conftest.py)."""
+    tbase = registry.get("generator", "polar")
+    registry.add(GeneratorSpec(name="toy.host", alloc_scratch=tbase.alloc_scratch,
+                               generate=_counting(tbase.generate, calls, host_readback=True),
+                               capturable=False, accepts_ctx=True))
+    gbase = registry.get("gate_generator", "bezier")
+    registry.add(dataclasses.replace(
+        gbase, name="toy.host",
+        generate=_counting(gbase.generate, calls, host_readback=True),
+        capturable=False))
 
 
 @pytest.mark.parametrize("kind", _KINDS)
-def test_non_capturable_generator_refuses_caller_capture_before_any_launch(monkeypatch, kind):
+def test_non_capturable_generator_refuses_caller_capture_before_any_launch(kind):
     """A capturable=False generator runs eagerly outside a capture (never self-graphs);
     inside one, ``generate()`` / ``enqueue()`` raise NotCapturableError naming it before
     any launch: its body never runs, and replaying the caller's graph runs only the
     caller's own work (outputs and seed buffer untouched)."""
     calls = []
-    _register_host_toys(monkeypatch, calls)
-    gen, _ = _make(kind, 11, generator="toy-host")
+    _register_host_toys(calls)
+    gen, _ = _make(kind, 11, generator="toy.host")
     assert len(calls) == 1, "construction runs exactly one real pass"
     ref = _eager_ref(kind, 11, generator="polar" if kind == "track" else "bezier")
 
@@ -429,15 +425,15 @@ def test_non_capturable_generator_refuses_caller_capture_before_any_launch(monke
     wp.synchronize()
     assert len(calls) == 2, "outside a capture the body runs eagerly once per call"
     assert gen.graph is None, "a non-capturable generator never self-graphs"
-    _assert_same(out, ref, f"{kind}: eager toy-host")
+    _assert_same(out, ref, f"{kind}: eager toy.host")
 
     s = _side_stream()
     marker, marker_src = _marker()
     with _recording(s) as cap:
         wp.copy(marker, marker_src, stream=s)     # the caller's own recorded work
-        with pytest.raises(tg_exec.NotCapturableError, match="toy-host"):
+        with pytest.raises(tg_exec.NotCapturableError, match="toy.host"):
             gen.generate(stream=s)
-        with pytest.raises(tg_exec.NotCapturableError, match="toy-host"):
+        with pytest.raises(tg_exec.NotCapturableError, match="toy.host"):
             gen.enqueue(stream=s)
     assert len(calls) == 2, "the generator body ran under the caller's capture"
     assert gen.graph is None
@@ -451,13 +447,13 @@ def test_non_capturable_generator_refuses_caller_capture_before_any_launch(monke
                                       err_msg=f"{kind}: {name} written by the caller's graph")
 
 
-def test_course_with_non_capturable_generator_refuses_caller_capture(monkeypatch):
+def test_course_with_non_capturable_generator_refuses_caller_capture():
     """Course over a capturable=False generator: ``regenerate()`` /
     ``enqueue_generate()`` / ``generate(seeds=)`` raise NotCapturableError under a
     capture before any launch (not even the reseed is recorded); outside a capture
     ``generate(seeds=)`` runs eagerly and never self-graphs."""
     calls = []
-    _register_host_toys(monkeypatch, calls)
+    _register_host_toys(calls)
 
     def cfg(generator, seeds):
         return CourseConfig(mode="track",
@@ -465,18 +461,18 @@ def test_course_with_non_capturable_generator_refuses_caller_capture(monkeypatch
                             seeds=seeds, collision="segments", checkpoint_spacing=0.6,
                             max_checkpoints=64)
 
-    course = Course(cfg("toy-host", 11))
+    course = Course(cfg("toy.host", 11))
     n = len(calls)
     assert n >= 1
     s = _side_stream()
     marker, marker_src = _marker()
     with _recording(s) as cap:
         wp.copy(marker, marker_src, stream=s)
-        with pytest.raises(tg_exec.NotCapturableError, match="toy-host"):
+        with pytest.raises(tg_exec.NotCapturableError, match="toy.host"):
             course.regenerate(stream=s)
-        with pytest.raises(tg_exec.NotCapturableError, match="toy-host"):
+        with pytest.raises(tg_exec.NotCapturableError, match="toy.host"):
             course.enqueue_generate(stream=s)
-        with pytest.raises(tg_exec.NotCapturableError, match="toy-host"):
+        with pytest.raises(tg_exec.NotCapturableError, match="toy.host"):
             course.generate(seeds=3, stream=s)
     assert len(calls) == n, "the generator body ran under the caller's capture"
     assert course.graph is None
@@ -494,7 +490,7 @@ def test_course_with_non_capturable_generator_refuses_caller_capture(monkeypatch
     res = course.generate(seeds=3)
     assert len(calls) == n + 1
     assert course.graph is None, "a non-capturable course never self-graphs"
-    _assert_same(res, Course(cfg("polar", 3)).result, "course over toy-host, seeds=3")
+    _assert_same(res, Course(cfg("polar", 3)).result, "course over toy.host, seeds=3")
 
 
 @wp.kernel
@@ -503,14 +499,14 @@ def _copy_seeds_k(src: wp.array(dtype=wp.int32), dst: wp.array(dtype=wp.int32)):
     dst[e] = src[e]
 
 
-def _register_legacy_toy(monkeypatch, calls: list) -> None:
-    """Register "toy-legacy": a legacy-ABI track plugin (no accepts_ctx) that, like a real
+def _register_legacy_toy(calls: list) -> None:
+    """Register "toy.legacy": a legacy-ABI track plugin (no accepts_ctx) that, like a real
     one, issues its OWN ``wp.launch`` with no ``stream=`` (so on Warp's CURRENT stream):
     it copies the seeds into a private buffer, then runs polar on that copy (polar's
     helpers follow the ambient context the orchestrator sets). Its output therefore
     equals polar's only when that stream-less launch is ordered with the rest of the
-    body. Undone by monkeypatch."""
-    base = generator_registry.get("polar")
+    body. Undone by the per-test registry scope (tests/conftest.py)."""
+    base = registry.get("generator", "polar")
 
     def alloc_scratch(config):
         seeds = wp.zeros(int(config.num_envs), dtype=wp.int32, device=str(config.device))
@@ -524,19 +520,17 @@ def _register_legacy_toy(monkeypatch, calls: list) -> None:
         base.generate(seed_copy, config, out_centerline=out_centerline,
                       out_valid_wp=out_valid_wp, scratch=base_scratch)
 
-    monkeypatch.setitem(generator_registry.GENERATORS, "toy-legacy",
-                        generator_registry.GeneratorSpec(
-                            name="toy-legacy", alloc_scratch=alloc_scratch,
-                            generate=legacy_generate))
+    registry.add(GeneratorSpec(name="toy.legacy", alloc_scratch=alloc_scratch,
+                               generate=legacy_generate))
 
 
-def test_legacy_plugin_records_only_on_warps_current_stream(monkeypatch):
+def test_legacy_plugin_records_only_on_warps_current_stream():
     """A legacy-ABI plugin (no accepts_ctx) launches on Warp's current stream, so
     recording it on another capturing stream raises LegacyPluginStreamError before any
     launch; with the capture stream made current it records and replays correctly."""
     calls = []
-    _register_legacy_toy(monkeypatch, calls)
-    gen, _ = _make("track", 11, generator="toy-legacy")
+    _register_legacy_toy(calls)
+    gen, _ = _make("track", 11, generator="toy.legacy")
     ref = _eager_ref("track", 11, generator="polar")
     out = gen.enqueue()
     wp.synchronize()
@@ -570,16 +564,16 @@ def test_legacy_plugin_records_only_on_warps_current_stream(monkeypatch):
     _assert_same(out2, ref, "legacy plugin: self-graph")
 
 
-def test_legacy_plugin_off_the_current_stream_outside_a_capture(monkeypatch):
+def test_legacy_plugin_off_the_current_stream_outside_a_capture():
     """Outside a capture, a legacy plugin whose call resolves a side stream (constructor
     ``stream=``, explicit ``stream=``) must still have its own stream-less launches
     ordered with the library's stages: the whole body runs on Warp's current stream,
     bracketed by events with the side stream (construction, eager ``enqueue()``), and
     the self-graph replays on the side stream."""
     calls = []
-    _register_legacy_toy(monkeypatch, calls)
+    _register_legacy_toy(calls)
     s = _side_stream()
-    gen, rng = _make("track", 11, generator="toy-legacy", stream=s)   # prepared "on" s
+    gen, rng = _make("track", 11, generator="toy.legacy", stream=s)   # prepared "on" s
     assert len(calls) == 1
     _assert_same(gen._track, _eager_ref("track", 11, generator="polar"),
                  "legacy plugin: construction with stream=side")
@@ -607,16 +601,16 @@ def _torch_cuda():
     return torch
 
 
-@pytest.mark.parametrize("generator", ["polar", "toy-legacy"])
-def test_documented_torch_recipe_leaves_the_wrapper_registered(monkeypatch, generator):
+@pytest.mark.parametrize("generator", ["polar", "toy.legacy"])
+def test_documented_torch_recipe_leaves_the_wrapper_registered(generator):
     """The documented recipe: Warp's current stream = ``wp.stream_from_torch(s)``, then
     ``torch.cuda.graph(g, stream=s)``. Adoption must return THAT wrapper, never a
     throwaway one whose collection would unregister the handle process-wide (Warp's
     native current stream would turn NULL and a later Warp capture on the wrapper would
     fail with "unknown stream"). A second, Warp capture on the same wrapper must work."""
     torch = _torch_cuda()
-    if generator == "toy-legacy":
-        _register_legacy_toy(monkeypatch, [])
+    if generator == "toy.legacy":
+        _register_legacy_toy([])
     gen, _ = _make("track", 11, generator=generator)
     ref = _eager_ref("track", 11, generator="polar")
     ts = torch.cuda.Stream(device=DEV)

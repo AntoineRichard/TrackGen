@@ -20,28 +20,30 @@ import numpy as np  # noqa: E402
 import warp as wp  # noqa: E402
 
 from track_gen import PerEnvSeededRNG, TrackGenConfig, TrackGenerator  # noqa: E402
+from track_gen.plugin import registry  # noqa: E402
 
 OUT_DIR = Path("docs/assets")
 README_PIPELINE_HALF_WIDTH = 0.05
 
-GENERATORS = [
-    ("bezier", "Bezier"),
-    ("checkpoint", "Checkpoint"),
-    ("hull", "Hull"),
-    ("polar", "Polar"),
-    ("voronoi", "Voronoi"),
-    ("repulsive", "Repulsive"),
-]
+# README panel order; a built-in missing from it is appended alphabetically.
+_PANEL_ORDER = ("bezier", "checkpoint", "hull", "polar", "voronoi", "repulsive")
+
+
+def _builtin_panels(kind: str) -> list[tuple[str, str]]:
+    """``(name, label)`` of every BUILT-IN spec of ``kind`` in the public registry, in
+    README panel order. Installed third-party plugins are left out: the README documents
+    what track_gen ships."""
+    names = [n for n in registry.available(kind) if registry.describe(kind, n).builtin]
+    rank = {name: i for i, name in enumerate(_PANEL_ORDER)}
+    names.sort(key=lambda n: (rank.get(n, len(rank)), n))
+    return [(name, name.capitalize()) for name in names]
+
+
+GENERATORS = _builtin_panels("generator")
 
 # GateGenerator does not register "repulsive" (it is not a gate-sequence generator), so the
-# gate-asset strip stays at the original five.
-GATE_GENERATORS = [
-    ("bezier", "Bezier"),
-    ("checkpoint", "Checkpoint"),
-    ("hull", "Hull"),
-    ("polar", "Polar"),
-    ("voronoi", "Voronoi"),
-]
+# gate-asset strip has one panel fewer.
+GATE_GENERATORS = _builtin_panels("gate_generator")
 
 # Illustrative gate geometry for the asset: a non-zero opening so the gate bars are
 # visible, and a radius large enough that raw anchors overlap before the collision solve

@@ -83,10 +83,12 @@ def generate_checkpoint_gates(seeds_wp, config, out, scratch,
     )
 
 
-def register_specs() -> None:
-    from . import gate_generator_registry as _registry
+def register(reg) -> None:
+    """Register the built-in ``"checkpoint"`` gate generator into ``reg`` (called by
+    ``track_gen._src.builtin_plugins``; importing this module registers nothing)."""
+    from .gate_generator_registry import GateGeneratorSpec
 
-    _registry.register(_registry.GateGeneratorSpec(
+    reg.add(GateGeneratorSpec(
         name="checkpoint",
         alloc_scratch=checkpoint_gate_alloc_scratch,
         generate=generate_checkpoint_gates,

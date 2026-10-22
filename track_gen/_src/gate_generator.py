@@ -74,6 +74,10 @@ class GateGenerator:
             ValueError: if ``rng.seeds_warp`` is not an ``[E]`` int32 array on
                 ``config.device`` (it is bound by pointer, so the rng must live on
                 the generator's device).
+            ValueError: if ``config.generator`` is not a registered gate generator
+                (see ``track_gen.plugin.registry.available("gate_generator")``).
+            track_gen.plugin.PluginLoadError: if ``config.generator`` is provided by
+                a third-party plugin that failed to load (quarantined).
             ValueError: if ``config.gate_ordering`` is not supported by the selected
                 gate generator.
             ValueError: if ``config.min_gates`` exceeds the maximum gate count the
@@ -93,9 +97,9 @@ class GateGenerator:
                 f"{config.num_envs!r}; construct the rng with num_envs={config.num_envs!r}."
             )
 
-        from . import gate_generator_registry
+        from ..plugin import registry
 
-        generator_spec = gate_generator_registry.get(config.generator)
+        generator_spec = registry.get("gate_generator", config.generator)
         if config.gate_ordering not in generator_spec.supported_orderings:
             raise ValueError(
                 f"gate generator {config.generator!r} does not support "

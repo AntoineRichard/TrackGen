@@ -67,8 +67,9 @@ class TrackGenConfig:
     ----------
     generator : str
         Registered generator name.  One of ``"bezier"`` (default), ``"hull"``,
-        ``"polar"``, ``"voronoi"``, or ``"checkpoint"``.  Resolved through
-        ``track_gen._src.generator_registry`` at ``TrackGenerator`` construction time.
+        ``"polar"``, ``"voronoi"``, ``"checkpoint"`` or ``"repulsive"``, or a name a
+        plugin registered.  Resolved through ``track_gen.plugin.registry`` (kind
+        ``"generator"``) at ``TrackGenerator`` construction time.
     device : str
         Warp device string: ``"cpu"`` (GPU-free, for tests/CI) or ``"cuda"``
         (captures a replay graph on first ``generate()`` call).
@@ -877,8 +878,9 @@ class GateGenConfig:
     Attributes
     ----------
     generator : str
-        Registered generator name.  One of ``"bezier"`` (default), ``"hull"``,
-        ``"polar"``, ``"voronoi"``, or ``"checkpoint"``.  Selects the anchor
+        Registered gate generator name.  One of ``"bezier"`` (default), ``"hull"``,
+        ``"polar"``, ``"voronoi"``, or ``"checkpoint"``, or a name a plugin registered
+        (``track_gen.plugin.registry``, kind ``"gate_generator"``).  Selects the anchor
         sampling family; only the anchor positions are used as gates.
     device : str
         Warp device string: ``"cpu"`` or ``"cuda"``.

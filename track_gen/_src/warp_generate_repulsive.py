@@ -885,11 +885,15 @@ def generate_repulsive_warp(seeds_wp: wp.array, config,
     ctx.launch(_pipe._fill_i32_k, E, [out_valid_wp, 1])
 
 
-from . import generator_registry as _registry  # noqa: E402
-_registry.register(_registry.GeneratorSpec(
-    name="repulsive",
-    alloc_scratch=repulsive_alloc_scratch,
-    generate=generate_repulsive_warp,
-    capturable=True,
-    accepts_ctx=True,
-))
+def register(reg) -> None:
+    """Register the built-in ``"repulsive"`` track generator into ``reg`` (called by
+    ``track_gen._src.builtin_plugins``; importing this module registers nothing)."""
+    from .generator_registry import GeneratorSpec
+
+    reg.add(GeneratorSpec(
+        name="repulsive",
+        alloc_scratch=repulsive_alloc_scratch,
+        generate=generate_repulsive_warp,
+        capturable=True,
+        accepts_ctx=True,
+    ))

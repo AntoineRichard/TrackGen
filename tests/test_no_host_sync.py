@@ -32,8 +32,6 @@ import pytest
 import warp as wp
 
 from track_gen._src import (
-    gate_generator_registry,
-    generator_registry,
     localize,
     rng_kernels,
     runtime,
@@ -68,6 +66,7 @@ from track_gen._src.track_generator import TrackGenerator
 from track_gen._src.types import GateGenConfig, TrackGenConfig
 from track_gen import seeds as seeds_mod
 from track_gen.ops import reduce as reduce_mod
+from track_gen.plugin import registry
 from track_gen.seeds import SeedState
 
 DEV = "cpu"
@@ -163,6 +162,21 @@ def _run_track(generator, **kw):
 def _run_gates(generator, **kw):
     def setup():
         return _gate_gen(generator, **kw)._run
+    return setup
+
+
+def _run_toy_plugin(kind):
+    """An out-of-tree plugin (tests._plugin_toys, ``accepts_ctx=True``) registered
+    through the public registry: its hot path is held to the same rules. The registry is
+    restored once the generator has resolved its spec."""
+    def setup():
+        from tests._plugin_toys import register_toys
+
+        with registry.scoped():
+            register_toys(registry)
+            if kind == "track":
+                return _track_gen("toy.circle")._run
+            return _gate_gen("toy.ring", gate_ordering="raw")._run
     return setup
 
 
@@ -479,14 +493,16 @@ def _inflate_fixed_n():
 
 
 DRIVERS = {
-    **{f"track_run[{g}]": _run_track(g) for g in generator_registry.available()},
+    **{f"track_run[{g}]": _run_track(g) for g in registry.available("generator")},
+    "track_run[toy.circle plugin]": _run_toy_plugin("track"),
     "track_run[bezier,z=uniform]": _run_track("bezier", z_profile="uniform"),
     "track_run[bezier,z=noise]": _run_track("bezier", z_profile="noise"),
     "track_run[bezier,no-relax]": _run_track("bezier", relax_enable=False),
     "track_run[bezier,style]": _run_track("bezier", style_sampling=True,
                                           rad_range=(0.1, 0.3),
                                           scale_range=(0.9, 1.1)),
-    **{f"gate_run[{g}]": _run_gates(g) for g in gate_generator_registry.available()},
+    **{f"gate_run[{g}]": _run_gates(g) for g in registry.available("gate_generator")},
+    "gate_run[toy.ring plugin]": _run_toy_plugin("gate"),
     "gate_run[bezier,z=uniform]": _run_gates("bezier", z_profile="uniform"),
     "collision[segments]": _collision("segments"),
     "collision[sdf]": _collision("sdf"),
@@ -567,22 +583,23 @@ _CONSTRUCTION_ONLY = {
     "track_gen._src.warp_gate": {"alloc_order_scratch", "alloc_gate_sequence",
                                  "_gate_warp_alloc"},
     "track_gen._src.warp_zprofile": {"alloc_z_scratch", "alloc_knot_scratch"},
-    "track_gen._src.warp_generate": {"bezier_alloc_scratch"},
-    "track_gen._src.warp_generate_checkpoint": {"checkpoint_alloc_scratch"},
-    "track_gen._src.warp_generate_hull": {"hull_alloc_scratch"},
-    "track_gen._src.warp_generate_polar": {"polar_alloc_scratch", "_polar_num_knots"},
+    "track_gen._src.warp_generate": {"bezier_alloc_scratch", "register"},
+    "track_gen._src.warp_generate_checkpoint": {"checkpoint_alloc_scratch", "register"},
+    "track_gen._src.warp_generate_hull": {"hull_alloc_scratch", "register"},
+    "track_gen._src.warp_generate_polar": {"polar_alloc_scratch", "_polar_num_knots",
+                                           "register"},
     "track_gen._src.warp_generate_repulsive": {"repulsive_alloc_scratch",
                                                "_sobolev_circulant_row",
-                                               "_stage_schedule"},
-    "track_gen._src.warp_generate_voronoi": {"voronoi_alloc_scratch"},
+                                               "_stage_schedule", "register"},
+    "track_gen._src.warp_generate_voronoi": {"voronoi_alloc_scratch", "register"},
     "track_gen._src.warp_generate_gates": {"_point_gate_alloc_scratch",
-                                           "_max_point_gates", "register_specs"},
+                                           "_max_point_gates", "register"},
     "track_gen._src.warp_generate_checkpoint_gates": {"checkpoint_gate_alloc_scratch",
-                                                      "register_specs"},
+                                                      "register"},
     "track_gen._src.warp_generate_polar_gates": {"polar_gate_alloc_scratch",
-                                                 "register_specs"},
+                                                 "register"},
     "track_gen._src.warp_generate_voronoi_gates": {"voronoi_gate_alloc_scratch",
-                                                   "register_specs"},
+                                                   "register"},
     # host-side reference/construction helpers (never on a hot path)
     "track_gen.seeds": {"effective_seed", "_wrap_int32", "_is_rng"},
 }

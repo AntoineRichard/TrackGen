@@ -94,10 +94,13 @@ def _max_point_gates(config) -> int:
     return int(config.max_num_points)
 
 
-def register_specs() -> None:
-    from . import gate_generator_registry as _registry
+def register(reg) -> None:
+    """Register the built-in ``"bezier"`` and ``"hull"`` gate generators into ``reg``
+    (called by ``track_gen._src.builtin_plugins``; importing this module registers
+    nothing)."""
+    from .gate_generator_registry import GateGeneratorSpec
 
-    _registry.register(_registry.GateGeneratorSpec(
+    reg.add(GateGeneratorSpec(
         name="bezier",
         alloc_scratch=_point_gate_alloc_scratch,
         generate=generate_bezier_gates,
@@ -106,7 +109,7 @@ def register_specs() -> None:
         accepts_ctx=True,
     ))
 
-    _registry.register(_registry.GateGeneratorSpec(
+    reg.add(GateGeneratorSpec(
         name="hull",
         alloc_scratch=_point_gate_alloc_scratch,
         generate=generate_hull_gates,

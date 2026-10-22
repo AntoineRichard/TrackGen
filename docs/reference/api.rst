@@ -63,6 +63,65 @@ Device ops
 
 .. autofunction:: track_gen.ops.fill
 
+Plugin registry
+---------------
+
+Track and gate generators selected by name, built-ins and installed packages alike (entry
+point group ``track_gen.plugins``); see :doc:`/contributing/writing-a-generator`.
+``track_gen.plugin`` is a subpackage outside ``track_gen.__all__``: import it explicitly.
+Importing ``track_gen`` loads no generator module and no plugin; the registry loads on its
+first lookup.
+
+.. automodule:: track_gen.plugin
+   :no-members:
+
+.. py:data:: track_gen.plugin.API_VERSION
+   :type: int
+   :value: 1
+
+   Version of the plugin API this TrackGen provides. A plugin declares the version it
+   targets as ``track_gen_api = <int>`` in the module its entry point names (or as an
+   attribute of its register callable); a plugin that declares a newer version is
+   quarantined instead of being called.
+
+.. py:data:: track_gen.plugin.ENTRY_POINT_GROUP
+   :type: str
+   :value: "track_gen.plugins"
+
+   The ``importlib.metadata`` entry-point group scanned for third-party plugins.
+
+.. py:data:: track_gen.plugin.POLICY_ENV
+   :type: str
+   :value: "TRACK_GEN_PLUGINS"
+
+   The environment variable selecting the third-party plugin policy: ``warn``
+   (default), ``strict`` or ``off``. Any other value emits a ``RuntimeWarning`` and
+   falls back to ``warn``.
+
+.. py:data:: track_gen.plugin.registry
+   :type: track_gen.plugin.Registry
+
+   The process-global :class:`~track_gen.plugin.Registry`. ``TrackGenerator``,
+   ``GateGenerator`` and ``Course`` resolve ``config.generator`` through it.
+
+.. autoclass:: track_gen.plugin.Registry
+   :members:
+
+.. autoclass:: track_gen.plugin.SpecInfo
+   :no-members:
+
+.. autoclass:: track_gen.plugin.GeneratorSpec
+   :no-members:
+
+.. autoclass:: track_gen.plugin.GateGeneratorSpec
+   :no-members:
+
+.. autoexception:: track_gen.plugin.DuplicateSpecError
+
+.. autoexception:: track_gen.plugin.PluginOverrideWarning
+
+.. autoexception:: track_gen.plugin.PluginLoadError
+
 Torch interop
 -------------
 

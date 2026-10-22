@@ -65,3 +65,45 @@ def test_import_track_gen_and_gate_registry_pull_no_torch_or_scipy():
     ])
     r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
+
+
+def test_import_track_gen_loads_no_plugin_and_no_generator_module():
+    # Plugin discovery is lazy: `import track_gen` (and `import track_gen.plugin`) must not
+    # query the "track_gen.plugins" entry points, load the registry, or import a generator
+    # module. The first registry lookup does all three, still without torch or scipy.
+    # Fresh interpreter: other tests in this session already loaded the registry.
+    import os
+    import subprocess
+    import sys
+
+    code = "\n".join([
+        "import importlib.metadata as md, sys",
+        "queried = []",
+        "real = md.entry_points",
+        "def spy(**params):",
+        "    queried.append(params.get('group'))",
+        "    return real(**params)",
+        "md.entry_points = spy",
+        "def generator_modules():",
+        "    return sorted(m for m in sys.modules if m.startswith('track_gen._src.warp_generate')",
+        "                  or m == 'track_gen._src.builtin_plugins')",
+        "import track_gen",
+        "assert 'track_gen.plugins' not in queried, queried",
+        "assert 'track_gen.plugin' not in sys.modules",
+        "assert not generator_modules(), generator_modules()",
+        "import track_gen.plugin",
+        "assert 'track_gen.plugins' not in queried, queried",
+        "assert not track_gen.plugin.registry._loaded",
+        "assert not generator_modules(), generator_modules()",
+        "names = track_gen.plugin.registry.available('generator')",
+        "assert queried.count('track_gen.plugins') == 1, queried",
+        "assert 'bezier' in names and 'track_gen._src.builtin_plugins' in sys.modules",
+        "leaked = sorted(m for m in sys.modules if m.split('.')[0] in ('torch', 'scipy'))",
+        "assert not leaked, leaked",
+    ])
+    # Discovery must run in the child even though tests/conftest.py defaults
+    # TRACK_GEN_PLUGINS to "off" for this process.
+    env = {k: v for k, v in os.environ.items() if k != "TRACK_GEN_PLUGINS"}
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                       env=env)
+    assert r.returncode == 0, r.stderr

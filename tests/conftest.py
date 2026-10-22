@@ -17,6 +17,13 @@ from __future__ import annotations
 # not shadow the stdlib `types` module.
 import os
 
+# The library's own suite sees only the built-in generators: several tests parametrize
+# over registry.available(...) at collection time, and a third-party plugin installed in
+# the environment must not leak into them. Set before any test module is collected (and
+# before the registry loads). The plugin tests clear it (monkeypatch.delenv) to exercise
+# discovery; export TRACK_GEN_PLUGINS=warn to run the suite with installed plugins.
+os.environ.setdefault("TRACK_GEN_PLUGINS", "off")
+
 import pytest
 
 # Warp >= 1.14 requires wp.init() before interop entry points like wp.from_torch;
@@ -37,6 +44,37 @@ DEVS = ["cpu", pytest.param("cuda", marks=pytest.mark.cuda)]
 _SKIP_REASON = "CUDA not available (wp.is_cuda_available() is False)"
 _cuda_ran = 0
 _cuda_skipped: list[str] = []
+
+
+@pytest.fixture(autouse=True)
+def _isolate_plugin_registry():
+    """Every test runs inside ``track_gen.plugin.registry.scoped()``: whatever a test (or
+    a helper it calls) registers, overrides or unregisters is undone afterwards, so no
+    registration leaks into later tests (or into registry-wide enumerations)."""
+    from track_gen.plugin import registry
+
+    with registry.scoped():
+        yield
+
+
+@pytest.fixture
+def plugin_registry():
+    """The process-global ``track_gen.plugin.registry``, snapshot on entry and restored
+    after the test (``registry.scoped()``): add/override/unregister specs freely."""
+    from track_gen.plugin import registry
+
+    with registry.scoped():
+        yield registry
+
+
+def override_spec(registry, spec, *, kind=None):
+    """Replace an already-registered spec (``replace=True``), asserting the
+    ``PluginOverrideWarning`` it emits. Use inside a ``plugin_registry`` scope."""
+    from track_gen.plugin import PluginOverrideWarning
+
+    with pytest.warns(PluginOverrideWarning):
+        registry.add(spec, kind=kind, replace=True)
+    return spec
 
 
 def pytest_configure(config):

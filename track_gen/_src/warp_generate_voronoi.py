@@ -411,11 +411,14 @@ def generate_voronoi_warp(
     ctx.sync()
 
 
-from . import generator_registry as _registry  # noqa: E402
+def register(reg) -> None:
+    """Register the built-in ``"voronoi"`` track generator into ``reg`` (called by
+    ``track_gen._src.builtin_plugins``; importing this module registers nothing)."""
+    from .generator_registry import GeneratorSpec
 
-_registry.register(_registry.GeneratorSpec(
-    name="voronoi",
-    alloc_scratch=voronoi_alloc_scratch,
-    generate=generate_voronoi_warp,
-    accepts_ctx=True,
-))
+    reg.add(GeneratorSpec(
+        name="voronoi",
+        alloc_scratch=voronoi_alloc_scratch,
+        generate=generate_voronoi_warp,
+        accepts_ctx=True,
+    ))

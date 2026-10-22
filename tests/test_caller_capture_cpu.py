@@ -28,9 +28,11 @@ import pytest
 import warp as wp
 
 from tests._fake_cuda import FakeCuda, FakeGraph, FakeStream, patch_facade_seeds
+from tests.conftest import override_spec
 from track_gen import GateGenConfig, GateGenerator, PerEnvSeededRNG, TrackGenConfig, TrackGenerator
 from track_gen._src import course as course_mod
-from track_gen._src import gate_generator_registry, generator_registry, runtime, warp_gate, warp_pipeline
+from track_gen._src import runtime, warp_gate, warp_pipeline
+from track_gen.plugin import GateGeneratorSpec, GeneratorSpec, registry
 from track_gen.course import Course, CourseConfig
 from track_gen.exec import (
     CaptureError,
@@ -114,18 +116,27 @@ def _assert_same(a, b, fields) -> None:
                                       err_msg=f)
 
 
-def _counting(monkeypatch, registry_mod, table: str, name: str, **replace):
-    """Replace a registered spec by a copy whose generate() counts its calls."""
-    base = registry_mod.get(name)
+def _counting(kind: str, name: str, **replace):
+    """Replace a registered spec by a copy whose generate() counts its calls (undone
+    by the per-test registry scope, see tests/conftest.py)."""
+    base = registry.get(kind, name)
     calls: list = []
 
     def generate(*args, **kwargs):
         calls.append(1)
         return base.generate(*args, **kwargs)
 
-    spec = dataclasses.replace(base, generate=generate, **replace)
-    monkeypatch.setitem(getattr(registry_mod, table), name, spec)
+    override_spec(registry, dataclasses.replace(base, generate=generate, **replace))
     return calls
+
+
+def _put(spec) -> None:
+    """Register ``spec``, replacing a spec of the same name added earlier in the test
+    (undone by the per-test registry scope, see tests/conftest.py)."""
+    kind = type(spec).registry_kind
+    if spec.name in registry.available(kind):
+        registry.unregister(kind, spec.name)
+    registry.add(spec)
 
 
 @pytest.fixture
@@ -703,10 +714,8 @@ _Run = types.SimpleNamespace
 
 
 def _fake_track_facade(monkeypatch, capturable=True, accepts_ctx=True):
-    monkeypatch.setattr(generator_registry, "GENERATORS", {})
-    monkeypatch.setattr(generator_registry, "_LOADED", True)
-    generator_registry.register(generator_registry.GeneratorSpec(
-        name="fake", alloc_scratch=lambda config: object(),
+    _put(GeneratorSpec(
+        name="tests.fake", alloc_scratch=lambda config: object(),
         generate=lambda *a, **k: None, capturable=capturable, accepts_ctx=accepts_ctx))
     runs: list = []
     track = types.SimpleNamespace(generation=None)
@@ -715,15 +724,13 @@ def _fake_track_facade(monkeypatch, capturable=True, accepts_ctx=True):
     monkeypatch.setattr(warp_pipeline, "_run_pipeline",
                         lambda config, seed, out, scratch, generator_spec=None, ctx=None:
                         runs.append(_Run(stream=ctx.stream, capturing=ctx.capturing)))
-    cfg = TrackGenConfig(generator="fake", device="cuda", num_envs=1)
+    cfg = TrackGenConfig(generator="tests.fake", device="cuda", num_envs=1)
     return cfg, runs, track, TrackGenerator
 
 
 def _fake_gate_facade(monkeypatch, capturable=True, accepts_ctx=True):
-    monkeypatch.setattr(gate_generator_registry, "GATE_GENERATORS", {})
-    monkeypatch.setattr(gate_generator_registry, "_LOADED", True)
-    gate_generator_registry.register(gate_generator_registry.GateGeneratorSpec(
-        name="fake", alloc_scratch=lambda config: object(),
+    _put(GateGeneratorSpec(
+        name="tests.fake", alloc_scratch=lambda config: object(),
         generate=lambda *a, **k: None, max_gates=lambda config: 4,
         supported_orderings=frozenset({"ccw"}), capturable=capturable,
         accepts_ctx=accepts_ctx))
@@ -734,7 +741,7 @@ def _fake_gate_facade(monkeypatch, capturable=True, accepts_ctx=True):
     monkeypatch.setattr(warp_gate, "_run_gate_pipeline",
                         lambda config, seed, out, scratch, generator_spec, ctx=None:
                         runs.append(_Run(stream=ctx.stream, capturing=ctx.capturing)))
-    cfg = GateGenConfig(generator="fake", device="cuda", num_envs=1)
+    cfg = GateGenConfig(generator="tests.fake", device="cuda", num_envs=1)
     return cfg, runs, seq, GateGenerator
 
 
@@ -812,7 +819,7 @@ def test_facade_non_capturable(monkeypatch, make):
     assert len(runs) == 2 and fake.captures == [] and fake.launched == []
     assert fake.synced == [fake.current] * 2 and gen.graph is None
     fake.current.is_capturing = True
-    with pytest.raises(NotCapturableError, match="'fake'"):
+    with pytest.raises(NotCapturableError, match="'tests.fake'"):
         gen.generate()
     with pytest.raises(NotCapturableError):
         gen.enqueue()
@@ -882,8 +889,8 @@ def test_course_construction_refuses_a_capture_before_allocating(monkeypatch):
 # Facades on the real CPU device
 # ---------------------------------------------------------------------------------------
 
-def test_track_generator_body_runs_once_at_construction_then_once_per_call(monkeypatch):
-    calls = _counting(monkeypatch, generator_registry, "GENERATORS", "bezier")
+def test_track_generator_body_runs_once_at_construction_then_once_per_call():
+    calls = _counting("generator", "bezier")
     gen = TrackGenerator(_track_cfg(), _rng())
     assert len(calls) == 1
     gen.generate()
@@ -894,8 +901,8 @@ def test_track_generator_body_runs_once_at_construction_then_once_per_call(monke
     assert gen.graph is None and gen._graph is None
 
 
-def test_gate_generator_body_runs_once_at_construction_then_once_per_call(monkeypatch):
-    calls = _counting(monkeypatch, gate_generator_registry, "GATE_GENERATORS", "bezier")
+def test_gate_generator_body_runs_once_at_construction_then_once_per_call():
+    calls = _counting("gate_generator", "bezier")
     gen = GateGenerator(_gate_cfg(), _rng())
     assert len(calls) == 1
     gen.generate()
@@ -1079,8 +1086,8 @@ def test_course_regenerate_and_reseeds_match_a_fresh_course(mode):
     _assert_course_same(c, _course(mode, seeds=2**31 - 2))
 
 
-def test_course_body_counts(monkeypatch):
-    calls = _counting(monkeypatch, generator_registry, "GENERATORS", "bezier")
+def test_course_body_counts():
+    calls = _counting("generator", "bezier")
     c = _course("track")
     # generator prepare + course prepare (one regeneration body each)
     assert len(calls) == 2

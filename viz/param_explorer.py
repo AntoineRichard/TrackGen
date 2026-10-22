@@ -33,7 +33,8 @@ from track_gen import GateGenConfig, GateGenerator
 from track_gen._src.types import TrackGenConfig
 from track_gen._src.track_generator import TrackGenerator
 from track_gen._src.rng_utils import PerEnvSeededRNG
-from track_gen._src import gate_generator_registry, generator_registry, warp_gate
+from track_gen._src import warp_gate
+from track_gen.plugin import PluginLoadError, registry
 from track_gen.exec import _compat
 from viz.plot_tracks import draw_track
 
@@ -442,8 +443,8 @@ def default_gate_params() -> dict:
 
 def gate_supported_orderings(generator: str) -> list[str]:
     try:
-        supported = gate_generator_registry.get(str(generator)).supported_orderings
-    except ValueError as exc:
+        supported = registry.get("gate_generator", str(generator)).supported_orderings
+    except (ValueError, PluginLoadError) as exc:
         logger.warning("gate ordering lookup failed for %r: %s", generator, exc)
         supported = frozenset({"ccw"})
     ordered = [name for name in ("ccw", "raw", "random_pairs") if name in supported]
@@ -785,7 +786,7 @@ def build_app():
                 with gr.Row():
                     with gr.Column(scale=1):
                         gr.Markdown("### Centerline generator")
-                        available_generators = generator_registry.available()
+                        available_generators = registry.available("generator")
                         generator_default = defaults["generator"] if defaults["generator"] in available_generators else "bezier"
                         generator = gr.Dropdown(available_generators, value=generator_default,
                                                 label="generator method")
@@ -1049,7 +1050,7 @@ def build_app():
                 with gr.Row():
                     with gr.Column(scale=1):
                         gr.Markdown("### Gate generator")
-                        gate_available_generators = gate_generator_registry.available()
+                        gate_available_generators = registry.available("gate_generator")
                         gate_generator_default = gate_defaults["gate_generator"] if gate_defaults["gate_generator"] in gate_available_generators else "bezier"
                         gate_mode_visible = gate_visible_sections(gate_generator_default)
                         gate_ordering_choices = gate_supported_orderings(gate_generator_default)

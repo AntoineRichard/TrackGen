@@ -1,6 +1,114 @@
 # Changelog
 
-## 0.2.0.dev1 (unreleased, `v2` branch)
+## 0.2.0.dev2 (unreleased, `v2` branch)
+
+### Added
+
+- **`track_gen.plugin`: one public registry, with entry points** (roadmap PR6). A
+  pip-installable package can add a track or gate generator without importing
+  `track_gen._src` and without editing TrackGen. It declares an entry point,
+  `[project.entry-points."track_gen.plugins"] acme = "acme_tracks:register"`, whose
+  `register(reg)` calls `reg.add(GeneratorSpec(name="acme.wobbly", ...))`;
+  `TrackGenConfig(generator="acme.wobbly")` then selects it. The workflow and the
+  generator contract are in `docs/contributing/writing-a-generator.rst`.
+  - `track_gen.plugin.registry`, the process-wide `Registry`:
+    `add(spec, *, kind=None, replace=False)` (the kind is inferred from a
+    `GeneratorSpec` or `GateGeneratorSpec`, any other spec needs `kind=`: the set of
+    kinds is open), `get(kind, name)`, `available(kind=None)` (sorted; every
+    `"kind:name"` when `kind` is `None`), `describe(kind, name)` (a `SpecInfo`: kind,
+    name, origin module, distribution `(name, version)` of the registering entry point
+    or `None` for a built-in and for a spec added at run time, `capturable`,
+    `accepts_ctx`, `builtin` and `entry_point`), `unregister(kind, name)`,
+    `scoped(*, fresh=False)` (snapshots every kind and restores it on exit, for tests;
+    `fresh=True` starts from an empty, unloaded registry so discovery re-runs) and
+    `quarantined` (a read-only mapping of plugin entry-point name to error text; keys
+    are qualified as `"<distribution>:<entry point>"` when two quarantined plugins share
+    an entry-point name). Adding the identical spec object again is a no-op.
+  - `GeneratorSpec` and `GateGeneratorSpec` re-exported for plugin authors,
+    `API_VERSION` (`1`), `ENTRY_POINT_GROUP` (`"track_gen.plugins"`), `POLICY_ENV`
+    (`"TRACK_GEN_PLUGINS"`), and `DuplicateSpecError` (a `ValueError`),
+    `PluginOverrideWarning` (a `UserWarning`) and `PluginLoadError` (a `RuntimeError`).
+  - Loading is lazy (on the first registry call: `get`, `available`, `describe`, `add`,
+    `unregister`, `quarantined`, `scoped()` or an old `_src` registry shim), runs once
+    per process under a lock, and is idempotent. The built-ins register first, without
+    an entry point, so a source checkout works. Then every entry point of the
+    `track_gen.plugins` group, sorted by distribution name and entry-point name, is
+    loaded and called with the registry. A distribution with unreadable metadata never
+    breaks discovery: its entry point loads with an unknown distribution.
+  - Load policy, from the `TRACK_GEN_PLUGINS` environment variable (case-insensitive).
+    `warn` (default) quarantines a plugin that fails to import or register, takes a
+    name that is already registered without `replace=True`, unregisters a name it did
+    not register, or declares a newer plugin API than `API_VERSION` (`track_gen_api =
+    <int>` in the module its entry point names or on the register callable; an `int`
+    `API_VERSION` there is read as a fallback), with one `RuntimeWarning`, and the other
+    plugins still load. `strict` raises `PluginLoadError` instead. `off` skips
+    third-party discovery. Any other value emits a `RuntimeWarning` and falls back to
+    `warn`. An unknown-name error lists the available names and the quarantined plugins
+    with their errors; asking for a name a quarantined plugin tried to register, or one
+    namespaced under its entry-point name, entry-point module or distribution name,
+    raises `PluginLoadError` chained from its original error.
+  - Third-party names are dotted (`pkg.name`). A name without a dot still registers,
+    with a one-time `UserWarning`. Built-in names are unchanged.
+
+### Behaviour changes
+
+- **Duplicate names raise.** `registry.add` raises `DuplicateSpecError`, naming both
+  origins (the spec's module, and the distribution for a plugin), when the name is
+  already registered in that kind. `replace=True` overrides it and emits a
+  `PluginOverrideWarning` naming both. Built-ins register first, so a plugin that
+  reuses a built-in name without `replace=True` never replaces it: the plugin is
+  quarantined (`warn`) or raises (`strict`).
+- **Built-ins are registered explicitly.** Each shipped generator module now defines a
+  `register(reg)` function instead of registering at import time (the module-level
+  `register(...)` calls and the gate modules' `register_specs()` are gone);
+  `track_gen._src.builtin_plugins.register(reg)` imports the modules and calls them.
+  Importing a generator module no longer registers anything.
+- **The private registries are shims over `track_gen.plugin.registry`.**
+  `track_gen._src.generator_registry` and `gate_generator_registry` still define
+  `GeneratorSpec` / `GateGeneratorSpec` and keep `get`, `available`, `register` and
+  `_ensure_loaded`, which now delegate to the registry. Each old `register(spec)` keeps
+  its duplicate rule: the track registry's overwrites an existing name
+  (`registry.add(spec, replace=True)`); the gate registry's still raises when another
+  module registered the name (now `DuplicateSpecError`, still a `ValueError`) and
+  overwrites a spec from the same module. Both emit a `DeprecationWarning` when they
+  overwrite, and re-registering the identical spec object is a silent no-op.
+  `GENERATORS` and `GATE_GENERATORS` are now read-only views of the registry: code that
+  assigned into them (or reset `_LOADED`) should use `registry.scoped()` and
+  `registry.add(...)`.
+- `TrackGenerator`, `GateGenerator`, `warp_pipeline` and `Course` resolve generator
+  specs through `track_gen.plugin.registry`. `import track_gen` still imports no
+  generator module, loads no plugin and imports neither torch nor scipy. Built-in
+  generator outputs are byte-identical to the previous release.
+
+### Testing
+
+- CPU tests install a fake distribution (a monkeypatched
+  `importlib.metadata.entry_points`) that registers a toy `toy.circle` track generator
+  and a toy gate generator: the facades run them on CPU, `available()` lists them and
+  `describe()` reports the distribution. One test installs a real `dist-info` (with
+  `entry_points.txt`) on `sys.path` and loads it through the real
+  `importlib.metadata`. They also cover duplicates and `replace=True`,
+  a plugin colliding with a built-in (quarantined under `warn`, raising under
+  `strict`), a broken plugin (quarantined, named in the unknown-name error, re-raised
+  when requested by name), `TRACK_GEN_PLUGINS=strict` and `off`, an API-version
+  mismatch (including `track_gen_api` declared in the entry point's package and an
+  unrelated non-int `API_VERSION` that must be ignored), `scoped()` restoring state and
+  the set of kinds, loading once from two threads on a fresh registry, and the old
+  `generator_registry` / `gate_generator_registry` shims. Robustness cases: a
+  distribution with unreadable metadata, two broken plugins sharing an entry-point
+  name, namespace-package attribution, non-string names (`ValueError`), a plugin
+  unregistering a built-in, re-adding the identical spec, an invalid
+  `TRACK_GEN_PLUGINS` value, patching `importlib.metadata.entry_points`, and the
+  pinned `TRACK_GEN_PLUGINS` / `track_gen.plugins` / `API_VERSION` literals.
+- Tests that patched `GENERATORS`, `GATE_GENERATORS` or `_LOADED` now use
+  `registry.scoped()`. `tests/test_gate_generator_registry.py` checks that the built-ins
+  are among the available gate generators instead of pinning the exact list.
+  `tests/test_public_api.py` also asserts that `import track_gen` loads no entry point.
+- `tests/conftest.py` defaults `TRACK_GEN_PLUGINS` to `off` (unless it is already set),
+  so the suite's registry-wide parametrizations see only the built-ins, whatever plugins
+  the environment has installed; the plugin tests clear it.
+
+## 0.2.0.dev1 (2026-10-22, tag `v0.2.0.dev1`)
 
 ### Added
 

@@ -1,9 +1,12 @@
+import dataclasses
 import importlib
 
 import numpy as np
 import pytest
 
+from tests.conftest import override_spec
 from track_gen._src import gate_generator_registry as reg
+from track_gen.plugin import DuplicateSpecError
 
 
 def test_gate_registry_available_returns_a_list():
@@ -17,10 +20,7 @@ def test_unknown_gate_generator_raises_with_available_list():
     assert "available" in str(e.value)
 
 
-def test_duplicate_gate_generator_registration_from_different_module_raises(monkeypatch):
-    monkeypatch.setattr(reg, "GATE_GENERATORS", {})
-    monkeypatch.setattr(reg, "_LOADED", True)
-
+def test_duplicate_gate_generator_registration_from_different_module_raises(plugin_registry):
     def first_generate(seeds_wp, config, out, scratch):
         return None
 
@@ -30,33 +30,55 @@ def test_duplicate_gate_generator_registration_from_different_module_raises(monk
     second_generate.__module__ = "other_gate_module"
 
     spec = reg.GateGeneratorSpec(
-        name="fake",
+        name="tests.fake",
         alloc_scratch=lambda config: object(),
         generate=first_generate,
         max_gates=lambda config: 4,
         supported_orderings=frozenset({"ccw"}),
     )
     duplicate = reg.GateGeneratorSpec(
-        name="fake",
+        name="tests.fake",
         alloc_scratch=lambda config: object(),
         generate=second_generate,
         max_gates=lambda config: 4,
         supported_orderings=frozenset({"ccw"}),
     )
-    reg.register(spec)
+    plugin_registry.add(spec)
+    with pytest.raises(DuplicateSpecError, match="already registered") as e:
+        plugin_registry.add(duplicate)
+    assert isinstance(e.value, ValueError)
+    assert __name__ in str(e.value) and "other_gate_module" in str(e.value)
+    assert reg.get("tests.fake") is spec
+    # registry.add: another spec object from the same module is a duplicate too (no
+    # module-keyed exemption); only replace=True overrides. The identical object again
+    # is a no-op.
+    same_module = dataclasses.replace(spec, max_gates=lambda config: 8)
+    with pytest.raises(DuplicateSpecError):
+        plugin_registry.add(same_module)
+    plugin_registry.add(spec)
+    assert reg.get("tests.fake") is spec
+    # The deprecated reg.register keeps the old gate rule: another module's spec raises
+    # (a ValueError, as before); the same module's overwrites, with a DeprecationWarning.
     with pytest.raises(ValueError, match="already registered"):
         reg.register(duplicate)
+    assert reg.get("tests.fake") is spec
+    with pytest.warns(DeprecationWarning):
+        reg.register(same_module)
+    assert reg.get("tests.fake") is same_module
 
 
 def test_reloading_gate_generator_module_keeps_specs_registered():
+    # Importing (or re-importing) a generator module has no registration side effect.
     from track_gen._src import warp_generate_gates
 
     assert "bezier" in reg.available()
+    before = {name: reg.get(name) for name in ("bezier", "hull")}
     importlib.reload(warp_generate_gates)
 
     names = reg.available()
     assert "bezier" in names
     assert "hull" in names
+    assert {name: reg.get(name) for name in ("bezier", "hull")} == before
 
 
 def test_reloading_structured_gate_generator_modules_keeps_specs_registered():
@@ -79,25 +101,29 @@ def test_reloading_structured_gate_generator_modules_keeps_specs_registered():
     assert "voronoi" in names
 
 
-def test_reloading_registry_repopulates_already_imported_gate_modules():
+def test_fresh_registry_repopulates_already_imported_gate_modules():
+    # Built-ins are registered explicitly on (re)load, whether or not their modules
+    # were imported before: nothing depends on import order or import side effects.
     from track_gen._src import warp_generate_gates  # noqa: F401
     from track_gen._src import warp_generate_checkpoint_gates  # noqa: F401
     from track_gen._src import warp_generate_polar_gates  # noqa: F401
     from track_gen._src import warp_generate_voronoi_gates  # noqa: F401
+    from track_gen.plugin import registry
 
     assert "bezier" in reg.available()
-    importlib.reload(reg)
-
-    names = reg.available()
-    assert "bezier" in names
-    assert "checkpoint" in names
-    assert "hull" in names
-    assert "polar" in names
-    assert "voronoi" in names
+    with registry.scoped(fresh=True):
+        assert not registry._loaded and registry._specs["gate_generator"] == {}
+        names = reg.available()
+        assert "bezier" in names
+        assert "checkpoint" in names
+        assert "hull" in names
+        assert "polar" in names
+        assert "voronoi" in names
 
 
 def test_all_standard_gate_generators_registered():
-    assert reg.available() == ["bezier", "checkpoint", "hull", "polar", "voronoi"]
+    # Superset: installed plugins may add more gate generators.
+    assert {"bezier", "checkpoint", "hull", "polar", "voronoi"} <= set(reg.available())
     for name in ("bezier", "checkpoint", "hull", "polar", "voronoi"):
         spec = reg.get(name)
         assert spec.name == name
@@ -133,7 +159,7 @@ _GATE_DEVS = ["cpu", pytest.param("cuda", marks=pytest.mark.cuda)]
 
 
 @pytest.mark.parametrize("dev", _GATE_DEVS)
-def test_noncapturable_gate_generator_runs_eagerly(monkeypatch, dev):
+def test_noncapturable_gate_generator_runs_eagerly(plugin_registry, dev):
     """A capturable=False gate generator never gets a wp.Graph: its Python body runs
     once at construction (the warm-up pass) and then exactly once per generate() on
     every device (a self-graphed path would run it once more to record on the first
@@ -157,7 +183,7 @@ def test_noncapturable_gate_generator_runs_eagerly(monkeypatch, dev):
         return base.generate(*args, **kwargs)
 
     eager = dataclasses.replace(base, generate=counting_generate, capturable=False)
-    monkeypatch.setattr(reg, "GATE_GENERATORS", {**reg.GATE_GENERATORS, "bezier": eager})
+    override_spec(plugin_registry, eager)
 
     E = 4
     cfg = GateGenConfig(generator="bezier", device=dev, num_envs=E, gate_width=0.05)

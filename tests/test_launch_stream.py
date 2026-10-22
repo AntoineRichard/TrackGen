@@ -5,9 +5,10 @@ lands on the stream being captured. Library code therefore emits work through a
 ``track_gen.exec.LaunchContext``, which passes ``stream=`` to every ``wp.launch`` /
 ``wp.copy`` and never uses ``wp.array.zero_()`` / ``fill_()`` (their memset targets Warp's
 current stream). CPU has no streams, so the probe checks the *call shape*: any
-``wp.launch`` / ``wp.copy`` issued from a ``track_gen`` module without a ``stream=``
-keyword, and any ``zero_()`` / ``fill_()`` issued from one, is a failure. The drivers are
-shared with ``test_no_host_sync`` and the probe covers their construction too.
+``wp.launch`` / ``wp.copy`` issued from a ``track_gen`` module (or from the toy
+out-of-tree plugin, ``tests._plugin_toys``) without a ``stream=`` keyword, and any
+``zero_()`` / ``fill_()`` issued from one, is a failure. The drivers are shared with
+``test_no_host_sync`` and the probe covers their construction too.
 """
 from __future__ import annotations
 
@@ -27,6 +28,11 @@ def _caller():
     return f.f_globals.get("__name__", ""), f.f_code.co_name, f.f_lineno
 
 
+# Library modules plus the out-of-tree toy plugin (tests._plugin_toys, accepts_ctx=True),
+# which is held to the same stream-explicit contract.
+_PROBED = ("track_gen", "tests._plugin_toys")
+
+
 @contextlib.contextmanager
 def _stream_probe():
     bad: list[str] = []
@@ -35,25 +41,25 @@ def _stream_probe():
 
     def launch(*args, **kwargs):
         mod, fn, line = _caller()
-        if mod.startswith("track_gen") and "stream" not in kwargs:
+        if mod.startswith(_PROBED) and "stream" not in kwargs:
             bad.append(f"wp.launch without stream= from {mod}.{fn}:{line}")
         return real_launch(*args, **kwargs)
 
     def copy(*args, **kwargs):
         mod, fn, line = _caller()
-        if mod.startswith("track_gen") and "stream" not in kwargs:
+        if mod.startswith(_PROBED) and "stream" not in kwargs:
             bad.append(f"wp.copy without stream= from {mod}.{fn}:{line}")
         return real_copy(*args, **kwargs)
 
     def zero_(self):
         mod, fn, line = _caller()
-        if mod.startswith("track_gen"):
+        if mod.startswith(_PROBED):
             bad.append(f"array.zero_() from {mod}.{fn}:{line}")
         return real_zero(self)
 
     def fill_(self, value):
         mod, fn, line = _caller()
-        if mod.startswith("track_gen"):
+        if mod.startswith(_PROBED):
             bad.append(f"array.fill_() from {mod}.{fn}:{line}")
         return real_fill(self, value)
 

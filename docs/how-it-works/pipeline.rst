@@ -56,7 +56,8 @@ Registered centerline generators
 ----------------------------------
 
 The centerline generator is pluggable. ``TrackGenerator.__init__`` resolves
-``config.generator`` through ``track_gen._src.generator_registry``, allocates that
+``config.generator`` through ``track_gen.plugin.registry`` (built-ins plus installed
+plugins, see :doc:`/contributing/writing-a-generator`), allocates that
 generator's private scratch once, and ``_run_pipeline`` calls the resolved
 ``GeneratorSpec.generate`` with orchestrator-owned ``out_centerline`` and
 ``out_valid_wp`` buffers. The production runtime registry currently exposes:

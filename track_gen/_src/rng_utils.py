@@ -24,6 +24,7 @@ class PerEnvSeededRNG:
     def __init__(self, seeds: int | wp.array, num_envs: int, device: str):
         """Initialize the random number generator.
 
+
         Args:
             seeds: Per-env seeds. An int scalar seeds the whole BATCH: it expands to
                 distinct per-env seeds ``seed + arange(num_envs)`` so the batch is
@@ -163,6 +164,7 @@ class PerEnvSeededRNG:
         out: "wp.array | None" = None,
     ) -> wp.array:
         """Sample a sign. Warp implementation.
+
         Args:
             dtype: The data type of the output tensor.
             shape: The shape of the output tensor.
@@ -194,6 +196,7 @@ class PerEnvSeededRNG:
         out: "wp.array | None" = None,
     ) -> wp.array:
         """Sample for a random integer. Warp implementation.
+
         Args:
             low: The lower bound of the distribution.
             high: The upper bound of the distribution.
@@ -225,6 +228,7 @@ class PerEnvSeededRNG:
         out: "wp.array | None" = None,
     ) -> wp.array:
         """Sample from a normal distribution. Warp implementation.
+
         Args:
             mean: The mean of the distribution.
             std: The standard deviation of the distribution.
@@ -250,6 +254,7 @@ class PerEnvSeededRNG:
         out: "wp.array | None" = None,
     ) -> wp.array:
         """Sample from a poisson distribution. Warp implementation.
+
         Args:
             lam: The rate of the distribution.
             shape: The shape of the output tensor.
@@ -273,6 +278,7 @@ class PerEnvSeededRNG:
         out: "wp.array | None" = None,
     ) -> wp.array:
         """Sample a quaternion. Warp implementation.
+
         Args:
             shape: The shape of the output tensor.
             ids: The ids of the environments.

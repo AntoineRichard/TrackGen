@@ -57,7 +57,7 @@ class TrackGenerator:
     Generation, resample, relaxation and inflation are all expressed as NVIDIA Warp
     kernels (via ``_run_pipeline``), runnable on the Warp ``cpu`` and ``cuda`` devices.
     ``config.generator`` must be a registered generator (see
-    ``generator_registry.available()``).
+    ``track_gen.plugin.registry.available("generator")``).
 
     The generator is fixed-batch: it always operates on exactly ``config.num_envs``
     environments. The output :class:`Track` is pre-allocated once in ``__init__`` (via
@@ -87,7 +87,8 @@ class TrackGenerator:
         """
         Args:
             config: The pipeline configuration. ``config.generator`` must be a
-                registered generator (see ``generator_registry.available()``). The
+                registered generator (see
+                ``track_gen.plugin.registry.available("generator")``). The
                 generator keeps a private copy (a ``wp.Device`` value is shared, not
                 copied): mutating ``config`` afterwards has no effect.
             rng: A ``PerEnvSeededRNG`` instance on the generator's device; its
@@ -105,6 +106,9 @@ class TrackGenerator:
             ValueError: if ``rng`` is ``None``.
             ValueError: if the number of seeds in ``rng`` does not match
                 ``config.num_envs``.
+            ValueError: if ``config.generator`` is not a registered generator.
+            track_gen.plugin.PluginLoadError: if ``config.generator`` is provided by
+                a third-party plugin that failed to load (quarantined).
             ValueError: if ``rng.seeds_warp`` is not an ``[E]`` int32 array on
                 ``config.device`` (it is bound by pointer, so the rng must live on
                 the generator's device).
@@ -123,8 +127,8 @@ class TrackGenerator:
                 f"rng has {int(rng.seeds_warp.shape[0])} seeds but config.num_envs="
                 f"{config.num_envs!r}; construct the rng with num_envs={config.num_envs!r}."
             )
-        from . import generator_registry
-        self._generator_spec = generator_registry.get(config.generator)
+        from ..plugin import registry
+        self._generator_spec = registry.get("generator", config.generator)
         if config.relax_solver != "xpbd":
             raise ValueError(
                 f"TrackGenerator only supports relax_solver='xpbd'; "
