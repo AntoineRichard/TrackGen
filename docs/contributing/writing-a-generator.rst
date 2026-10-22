@@ -32,7 +32,8 @@ load, a request for one of its names then reports the plugin's error (see
 :ref:`how a quarantined plugin is matched <plugin-quarantine>`).
 
 **2. Write the generator and** ``register`` (``acme_tracks/__init__.py``). This one draws a
-per-env phase from the seed, then writes a three-lobed wobbly circle:
+per-env phase from the seed, writes a three-lobed wobbly circle, and then uses
+``track_gen.ops`` (see :ref:`generator-ops`) to scale it to the size the built-ins use:
 
 .. code-block:: python
 
@@ -40,6 +41,7 @@ per-env phase from the seed, then writes a three-lobed wobbly circle:
 
    import warp as wp
 
+   from track_gen import ops
    from track_gen.exec import resolve
    from track_gen.plugin import GeneratorSpec
 
@@ -56,12 +58,12 @@ per-env phase from the seed, then writes a three-lobed wobbly circle:
 
 
    @wp.kernel
-   def _wobbly_circle_k(phase: wp.array(dtype=wp.float32), n: int, radius: float,
+   def _wobbly_circle_k(phase: wp.array(dtype=wp.float32), n: int,
                         out: wp.array(dtype=wp.vec2f)):
        t = wp.tid()                              # one thread per point: t = e * n + i
        e = t // n
        theta = 6.2831853 * float(t - e * n) / float(n)
-       r = radius * (1.0 + 0.2 * wp.sin(3.0 * theta + phase[e]))
+       r = 1.0 + 0.2 * wp.sin(3.0 * theta + phase[e])
        out[t] = wp.vec2f(r * wp.cos(theta), r * wp.sin(theta))
 
 
@@ -75,9 +77,11 @@ per-env phase from the seed, then writes a three-lobed wobbly circle:
        ctx = resolve(ctx, out_centerline.device)  # the facades always pass ctx
        E, N = int(config.num_envs), int(config.num_points)
        ctx.launch(_phase_k, E, [seeds_wp, SALT, scratch.phase])
-       ctx.launch(_wobbly_circle_k, E * N,
-                  [scratch.phase, N, 0.6 * float(config.scale), out_centerline])
-       ctx.fill(out_valid_wp, 1)
+       ctx.launch(_wobbly_circle_k, E * N, [scratch.phase, N, out_centerline])
+       # Centre each loop and scale its longest side to the size the built-ins use.
+       ops.normalize_extent(ctx, out_centerline, N,
+                            ops.constants.TARGET_EXTENT * float(config.scale))
+       ops.fill(ctx, out_valid_wp, 1)
 
 
    def register(reg):
@@ -190,11 +194,15 @@ the output arrays in place.  Parameters:
      - The call's ``track_gen.exec.LaunchContext`` (one device, one stream), passed when
        the spec sets ``accepts_ctx=True``. Emit every launch, copy, and fill through it.
 
-The loop is closed implicitly: do not repeat point 0 at the end. Size it like the
-built-ins, which center each loop and scale its longest bounding-box side to
-``1.44 * config.scale``; the default ``half_width``, spacing and ``N_max`` are tuned for
-that, and a much larger loop needs more than ``N_max`` resampled points and fails as
-truncated.
+The loop is closed implicitly: do not repeat point 0 at the end. Size it to
+``ops.constants.TARGET_EXTENT * config.scale`` (``1.44`` at scale 1) on its longest
+bounding-box side: ``polar``, ``voronoi`` and ``checkpoint`` center each loop and scale it
+to exactly that, ``bezier`` and ``hull`` land near it by construction of their sampling
+grid (a longest side of about 1.0 to 1.8, not centered), and ``repulsive`` is larger
+(about 2.2). The default ``half_width``, spacing and ``N_max`` are tuned for that size,
+and a much larger loop needs more than ``N_max`` resampled points and fails as truncated.
+``ops.normalize_extent(ctx, out_centerline, N, ops.constants.TARGET_EXTENT *
+config.scale)`` does the sizing in one launch, as in the quick start.
 
 .. _generator-hard-rules:
 
@@ -207,16 +215,18 @@ Five rules must hold for every generator whose ``GeneratorSpec`` uses the defaul
 1. **Pure Warp kernels only.**  Launch through ``ctx.launch``; one env per row.  No
    torch code: TrackGen does not depend on torch.
 2. **Zero dynamic allocation inside** ``generate``.  All buffers come from
-   ``alloc_scratch``.
+   ``alloc_scratch``. ``track_gen.ops`` never allocates: you pass it the working
+   buffers, allocated there.
 3. **CUDA-graph capturable.**  No host sync, no host-side retry loop
    conditioned on generated data, no per-env Python branching inside
    ``generate``.
 4. **Fixed bounds for every loop and buffer.**  Graph capture requires static
    shapes.
 5. **Deterministic in** ``(per-env seed, config)``.  Draw every random number with
-   the Warp RNG from ``seeds_wp[e]``, salted with a constant of your own
-   (``wp.rand_init(seeds[e], SALT)``) so your stream is not correlated with the
-   library's stages for the same seed; the built-ins use ``track_gen._src.rng_*``.
+   the Warp RNG from ``seeds_wp[e]``, salted with a constant of your own so your
+   stream is not correlated with the built-ins' streams for the same seed:
+   ``wp.rand_init(seeds[e], SALT)`` in your own kernels, and a ``(salt, offset)`` pair
+   no built-in uses for the ``track_gen.ops`` samplers (see :ref:`ops-rng-keying`).
    CPU vs CUDA RNG results may differ, as elsewhere in the codebase.
 
 .. _generator-streams:
@@ -226,7 +236,8 @@ Streams: ``accepts_ctx``
 
 Set ``accepts_ctx=True`` and emit all device work through ``ctx``: ``ctx.launch(kernel,
 dim, inputs)``, ``ctx.copy(dst, src)``, ``ctx.fill(arr, value)`` (or
-``track_gen.ops.fill(ctx, arr, value)``), and pass ``ctx=ctx`` to every helper you call.
+``track_gen.ops.fill(ctx, arr, value)``). Every ``track_gen.ops`` op takes ``ctx`` as its
+first argument; pass ``ctx=ctx`` to any other helper that takes it.
 Never call ``arr.zero_()``, ``arr.fill_()``, or a ``wp.launch`` / ``wp.copy`` without
 ``stream=``: they target Warp's current stream, which need not be the stream the call
 resolved (a side stream, or the stream torch is capturing). With ``accepts_ctx=True`` a
@@ -282,10 +293,12 @@ What you do NOT have to guarantee
 
 A simple (non-self-intersecting) loop is preferred but not required.  Local
 fallback is generator-specific: ``bezier``, ``hull``, and ``voronoi`` use
-selected polygon-style rescues; ``checkpoint`` uses best-of-K plus an optional
-clip fallback; ``polar`` has no local fallback.  Residual bad geometry is
-handled by the common post-relax validity gate, which also ANDs in your
-``out_valid_wp`` flag: write ``0`` there to reject an env outright.
+selected polygon-style rescues (``ops.self_intersections`` flags the envs whose smooth
+curve crosses itself, and only those are rebuilt from straight segments and resampled
+with ``ops.arc_resample(..., active=...)``; see :ref:`generator-ops`); ``checkpoint``
+uses best-of-K plus an optional clip fallback; ``polar`` has no local fallback.
+Residual bad geometry is handled by the common post-relax validity gate, which also ANDs
+in your ``out_valid_wp`` flag: write ``0`` there to reject an env outright.
 
 Output must be finite (no NaN) for generated environments.
 
@@ -332,54 +345,359 @@ the same meaning, the same hard rules and the same stream rules, plus:
        gates: ``generate`` emits them in the configured order, and ``GateGenerator``
        raises ``ValueError`` for an ordering not in this set.
 
-Size the anchors like the built-ins: centered, with the longest bounding-box side at
-``1.44 * config.scale``. A ring of eight gates around the same per-env phase, added by the
-same ``register`` function:
+Size the anchors like the ``polar``, ``voronoi`` and ``checkpoint`` gate generators:
+centered, with the longest bounding-box side at ``ops.constants.TARGET_EXTENT *
+config.scale`` (the ``bezier`` and ``hull`` gate generators keep their grid's size). The
+example below is built from
+``track_gen.ops`` the way the built-in ``bezier`` and ``hull`` gate generators are: draw a
+per-env gate count and that many jittered grid points, sort them by angle straight into
+``out.position`` (``angle_sort`` writes NaN into every slot past ``count[e]``, which is the
+padding the contract asks for), then size them. It is added by the same ``register``
+function:
 
 .. code-block:: python
 
    from track_gen.plugin import GateGeneratorSpec
 
-   RING_GATES = 8
+   MIN_GATES, MAX_GATES = 6, 10
 
 
-   @wp.kernel
-   def _ring_gates_k(phase: wp.array(dtype=wp.float32), k: int, g_max: int,
-                     radius: float, position: wp.array(dtype=wp.vec2f),
-                     count: wp.array(dtype=wp.int32)):
-       t = wp.tid()                              # one thread per slot: t = e * g_max + g
-       e = t // g_max
-       g = t - e * g_max
-       if g < k:
-           theta = 6.2831853 * float(g) / float(k) + phase[e]
-           position[t] = wp.vec2f(radius * wp.cos(theta), radius * wp.sin(theta))
-       else:
-           position[t] = wp.vec2f(wp.nan, wp.nan)  # NaN-pad the unused slots
-       if g == 0:
-           count[e] = k
-
-
-   def generate_ring_gates(seeds_wp, config, out, scratch, ctx=None):
-       ctx = resolve(ctx, out.position.device)
+   def alloc_gate_scratch(config):
        E, G = int(config.num_envs), int(config.max_gates)
-       ctx.launch(_phase_k, E, [seeds_wp, SALT, scratch.phase])
-       ctx.launch(_ring_gates_k, E * G,
-                  [scratch.phase, RING_GATES, G, 0.72 * float(config.scale),
-                   out.position, out.count])
+       dev = str(config.device)
+       return SimpleNamespace(
+           points=wp.empty(E * MAX_GATES, dtype=wp.vec2f, device=dev),
+           used=wp.empty(E * MAX_GATES, dtype=wp.int32, device=dev),
+           keys=wp.empty(E * G, dtype=wp.float32, device=dev))
+
+
+   def generate_scatter_gates(seeds_wp, config, out, scratch, ctx=None):
+       ctx = resolve(ctx, out.position.device)
+       G = int(config.max_gates)
+       num_cells, cell = ops.grid_cells(0.1)             # a 5 x 5 grid
+       ops.sample_counts(ctx, seeds_wp, SALT, 101, MIN_GATES, MAX_GATES, out.count)
+       ops.sample_grid_points(ctx, seeds_wp, SALT, 102, MAX_GATES, num_cells, cell, 1.0,
+                              scratch.used, scratch.points)
+       # The built-ins' "ccw" order; slots count[e] .. G-1 are written NaN.
+       ops.angle_sort(ctx, scratch.points, MAX_GATES, scratch.keys, out.position,
+                      count=out.count, out_stride=G)
+       ops.normalize_extent(ctx, out.position, G,
+                            ops.constants.TARGET_EXTENT * float(config.scale),
+                            count=out.count)
 
 
    def register(reg):
        ...  # reg.add(GeneratorSpec(name="acme.wobbly", ...)) as above
        reg.add(GateGeneratorSpec(
-           name="acme.ring",
-           alloc_scratch=alloc_scratch,          # the same [E] phase buffer
-           generate=generate_ring_gates,
-           max_gates=lambda config: RING_GATES,
-           supported_orderings=frozenset({"ccw", "raw"}),  # emitted counter-clockwise
+           name="acme.scatter",
+           alloc_scratch=alloc_gate_scratch,
+           generate=generate_scatter_gates,
+           max_gates=lambda config: MAX_GATES,
+           supported_orderings=frozenset({"ccw"}),   # angle_sort is the "ccw" order
            accepts_ctx=True,
        ))
 
-``GateGenerator(GateGenConfig(generator="acme.ring", ...), rng)`` then selects it.
+``GateGenerator(GateGenConfig(generator="acme.scatter", ...), rng)`` then selects it
+(``gate_ordering`` defaults to ``"ccw"``).
+
+.. _generator-ops:
+
+Building blocks: ``track_gen.ops``
+----------------------------------
+
+The built-in generators are assembled from the device ops in ``track_gen.ops``, and a
+plugin can use the same ones. They take no config object: every size, salt and bound is
+an explicit argument. Every op:
+
+- takes the call's ``LaunchContext`` as its first argument and launches only through it,
+  so its work lands on the call's stream and is recorded into whatever graph is capturing;
+- never allocates, reads back or host-synchronizes, so it is safe inside a capturable
+  ``generate``. Working buffers are arguments: allocate them in ``alloc_scratch``;
+- works on the flat per-env layout of the outputs: env ``e`` owns
+  ``[e*stride, (e+1)*stride)`` of a flat array, and per-env scalars are ``[E]`` arrays.
+  ``E`` is ``src.shape[0] // stride`` for every op that takes an input ``src`` (the
+  samplers take it from ``seeds``), and every other per-env array must be exactly
+  ``[E]``;
+- names its arguments the same way: ``src`` is the input point array and ``stride`` its
+  points per env, ``num`` an exact number of output points per env and ``out_stride`` an
+  output row capacity (NaN-padded past the env's count);
+- takes ``count`` and the env mask ``active`` as keyword-only arguments. Where an op takes
+  a ``count`` array, only the first ``count[e]`` points of a row are real (a count above
+  the stride is clamped to it), and ops that produce points write ``(nan, nan)`` in the
+  slots after them;
+- validates its arguments on the host before launching anything. Data arrays must have
+  the exact shape, the dtype and ``ctx.device``; scratch arrays need the dtype, the
+  device and at least the stated length. A mismatch raises ``ValueError`` naming the
+  argument, except that ``fill`` raises ``TypeError`` for an unsupported dtype and
+  ``any_set`` for an argument that is not an ``int32`` ``wp.array``.
+
+:doc:`/reference/api` documents each op's shapes and semantics. In outline:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 40 60
+
+   * - Op
+     - What it does
+   * - ``sample_counts(ctx, seeds, salt, offset, lo, hi, out)``
+     - One integer in ``[lo, hi]`` per env (how many corners, points or gates).
+   * - ``sample_grid_points(ctx, seeds, salt, offset, num, num_cells, cell_size, scale,
+       used, out)``, ``grid_cells(min_point_distance)``
+     - ``num`` jittered points per env on distinct cells of a grid where possible (the
+       ``bezier`` and ``hull`` sampler). The jitter is an absolute ``[-0.5, 0.5)``, so
+       the points lie in ``[-0.5, (num_cells-1)*cell_size + 0.5) * scale`` and have no
+       minimum spacing; distinct cells are best effort (8 redraws). ``grid_cells``
+       derives the built-in grid from the ``min_point_distance`` config knob (in
+       ``(0, 0.5]``) on the host. ``scale`` is a float or an ``[E]`` array.
+   * - ``angle_sort(ctx, src, stride, keys, out, *, count, out_stride=None)``
+     - The first ``count[e]`` points of each env, sorted by angle around their centroid
+       (ascending ``atan2(x - cx, y - cy)``), NaN after them. This is the order the
+       built-ins emit for ``gate_ordering="ccw"``; in a y-up frame it runs clockwise
+       (``turning_number`` of the result is about ``-2*pi``).
+   * - ``closed_catmull_rom(ctx, src, stride, per_seg, out, *, count=None,
+       endpoint=False)``
+     - ``per_seg`` samples per segment of the closed Catmull-Rom spline through each env's
+       controls; with ``count``, segments past ``count[e]`` are NaN.
+   * - ``closed_polyline(ctx, src, stride, per_seg, out, *, count=None, endpoint=False,
+       active=None)``
+     - The straight closed polyline through the controls, in the same layout. With
+       ``active``, only envs with ``active[e] > 0`` are written: the fallback for envs
+       whose smooth curve self-crossed.
+   * - ``arc_resample(ctx, src, stride, num, scratch, out, count_out, *, active=None)``
+     - ``stride`` points in, ``num`` out per env, evenly spaced by arc length along the
+       closed loop. NaN points are dropped first, so a NaN-padded dense curve resamples
+       cleanly; an env with fewer than two real points gets a NaN row and
+       ``count_out[e] = 0``. With ``active``, every other env's row is left as it was.
+   * - ``resample_uniform(ctx, src, stride, scratch, out, *, count)``
+     - Count-aware evenly-spaced resample: ``count[e]`` points in and out, NaN after them.
+   * - ``resample_constant_spacing(ctx, src, stride, spacing, out_stride, scratch, out,
+       count_out, truncated_out)``
+     - Points every ``spacing`` along each closed loop, up to ``out_stride``, with a
+       per-env count and truncation flag.
+   * - ``self_intersections(ctx, src, stride, out, *, count)``
+     - Proper self-crossings of each closed polygon (``0`` for a simple loop).
+   * - ``turning_number(ctx, src, stride, out, *, count)``,
+       ``thickness(ctx, src, stride, band, out, *, count)``
+     - Total signed turning (``+2*pi`` for a simple counter-clockwise loop) and the
+       thickness (curvature and self-distance bound) of each closed polygon.
+       ``thickness`` excludes vertex pairs within ``band[e]`` points of each other; the
+       built-in validity gate uses ``band = max(1, round(2 * half_width / l0))`` for a
+       mean segment length ``l0``.
+   * - ``normalize_extent(ctx, src, stride, target_extent, *, count=None)``
+     - Centres each env's bounding box and scales it so the longest side is
+       ``target_extent``, in place; with ``count``, only the real points count and the
+       slots after them are written NaN.
+   * - ``fill(ctx, arr, value)``, ``any_set(ctx, mask, flag_out)``
+     - A stream-explicit fill, and a device-side "is any ``mask[e]`` set" flag.
+   * - ``check_array(name, arr, shape, dtype, device)``
+     - The host-side validator the ops use, for your own wrappers.
+
+Device functions for your own kernels are in ``track_gen.ops.funcs``: ``ccw``, ``cross2``,
+``nan0``, ``safe_normalize2``, ``catmull_rom``, ``segments_cross`` and ``hash32``. They are
+the functions the built-in kernels call: the same operations in the same order. On CPU a
+kernel built from them reproduces the built-in arithmetic bit for bit. On CUDA, Warp
+contracts multiply-adds into FMAs by default (``wp.config.fuse_fp``), and which pairs it
+contracts depends on the code around the inlined call, so a differently structured kernel
+can differ in the last bit. ``track_gen.ops.constants.TARGET_EXTENT`` is the size the
+``polar``, ``voronoi`` and ``checkpoint`` generators normalise to.
+
+Scratch
+~~~~~~~
+
+The resample ops take an ``ops.ArcScratch``, which holds the four buffers they work in.
+Allocate it once in ``alloc_scratch`` with ``ops.ArcScratch.alloc(E, stride, device)``
+for ``stride`` input points per env, or wrap buffers you already own (slices included) with
+``ops.ArcScratch(real, seg, s, count_real)``. ``resample_uniform`` and
+``resample_constant_spacing`` use only ``seg`` and ``s``: ``alloc(..., compact=False)``
+leaves the other two ``None``. The remaining scratch arguments (``keys`` of
+``angle_sort``, ``used`` of ``sample_grid_points``) are plain arrays of at least the
+stated length.
+
+A generator from ops
+~~~~~~~~~~~~~~~~~~~~
+
+This generator follows the ``hull`` recipe without its midpoint displacement: sampled
+points sorted into a star-shaped polygon, a smooth spline through them, a straight
+fallback for the envs whose spline crosses itself, and the built-ins' size. Each step is
+one op, and it reuses ``SALT`` and the imports of the quick start:
+
+.. code-block:: python
+
+   K, PER_SEG = 12, 16            # controls per env, dense samples per segment
+   M = K * PER_SEG                # dense points per env
+
+
+   def alloc_star_scratch(config):
+       E, dev = int(config.num_envs), str(config.device)
+       return SimpleNamespace(
+           count=wp.empty(E, dtype=wp.int32, device=dev),
+           used=wp.empty(E * K, dtype=wp.int32, device=dev),
+           points=wp.empty(E * K, dtype=wp.vec2f, device=dev),
+           keys=wp.empty(E * K, dtype=wp.float32, device=dev),
+           ctrl=wp.empty(E * K, dtype=wp.vec2f, device=dev),
+           dense=wp.empty(E * M, dtype=wp.vec2f, device=dev),
+           arc=ops.ArcScratch.alloc(E, M, dev),
+           arc_count=wp.empty(E, dtype=wp.int32, device=dev),
+           crossings=wp.empty(E, dtype=wp.int32, device=dev))
+
+
+   def generate_star(seeds_wp, config, out_centerline, out_valid_wp, scratch, ctx=None):
+       ctx = resolve(ctx, out_centerline.device)
+       N = int(config.num_points)
+       sc = scratch
+       num_cells, cell = ops.grid_cells(0.1)
+       # 1. 6..K jittered grid points per env, sorted by angle into a star-shaped polygon.
+       ops.sample_counts(ctx, seeds_wp, SALT, 103, 6, K, sc.count)
+       ops.sample_grid_points(ctx, seeds_wp, SALT, 104, K, num_cells, cell, 1.0,
+                              sc.used, sc.points)
+       ops.angle_sort(ctx, sc.points, K, sc.keys, sc.ctrl, count=sc.count)  # NaN past count
+       # 2. Closed Catmull-Rom spline through the first count[e] controls (NaN past them).
+       ops.closed_catmull_rom(ctx, sc.ctrl, K, PER_SEG, sc.dense, count=sc.count)
+       # 3. Drop the NaN samples; N points evenly spaced by arc length.
+       ops.arc_resample(ctx, sc.dense, M, N, sc.arc, out_centerline, sc.arc_count)
+       # 4. Envs whose spline crosses itself fall back to the straight polygon.
+       ops.self_intersections(ctx, out_centerline, N, sc.crossings, count=sc.arc_count)
+       ops.closed_polyline(ctx, sc.ctrl, K, PER_SEG, sc.dense, count=sc.count,
+                           active=sc.crossings)
+       ops.arc_resample(ctx, sc.dense, M, N, sc.arc, out_centerline, sc.arc_count,
+                        active=sc.crossings)
+       # 5. The built-ins' size, then the stage flag.
+       ops.normalize_extent(ctx, out_centerline, N,
+                            ops.constants.TARGET_EXTENT * float(config.scale))
+       ops.fill(ctx, out_valid_wp, 1)
+
+It registers like the quick start's generator: ``reg.add(GeneratorSpec(name="acme.star",
+alloc_scratch=alloc_star_scratch, generate=generate_star, accepts_ctx=True))``.
+
+Step 4 rewrites only the rows of the envs that crossed: ``arc_resample(..., active=...)``
+leaves every other row bit for bit and writes ``count_out[e] = 0`` for it. Use the first
+call's ``count_out`` (as ``self_intersections`` does here) before the second call
+overwrites it.
+
+.. _ops-rng-keying:
+
+RNG keying and the built-in salts
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The samplers (``sample_counts``, ``sample_grid_points``) key env ``e``'s stream as
+``wp.rand_init(seeds[e] * salt + offset)`` in int32 wrap-around arithmetic, the keying the
+built-in generators use, and take ``salt`` and ``offset`` as arguments. Give each stream of
+your generator its own pair, and pick salts no built-in uses. At seed 0 every key reduces
+to ``rand_init(offset)`` whatever the salt, so two streams with the same offset coincide
+for that seed: give your streams offsets that differ from each other and from the small
+ones the built-ins use (the examples on this page use 101 to 104). The pairs already
+taken:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 44 18 38
+
+   * - Stream
+     - Salt
+     - Offset
+   * - ``bezier`` corner count
+     - 6151
+     - ``attempt`` (0 in the built-in)
+   * - ``bezier`` corner positions
+     - 9781
+     - ``attempt`` (0 in the built-in)
+   * - ``bezier`` style sampling
+     - 2741
+     - 0
+   * - ``hull`` point count
+     - 5119
+     - 1
+   * - ``hull`` point positions
+     - 7919
+     - 1
+   * - ``hull`` midpoint displacement
+     - 3083
+     - 1
+   * - ``polar`` controls
+     - 7919
+     - 17
+   * - ``voronoi`` sites
+     - 8171
+     - 19
+   * - ``voronoi`` anchors
+     - 3911
+     - 31
+   * - ``checkpoint`` candidate ``k``
+     - 4099
+     - ``k * 2741 + 1``
+   * - ``repulsive`` obstacles
+     - 6247
+     - 23
+   * - ``repulsive`` growth target
+     - 5209
+     - 41
+   * - gate ``"random_pairs"`` ordering, pair ``p``
+     - 3187
+     - ``7919 + p * 104729``
+   * - gate Z profile: uniform (gate ``i``), walk, noise (harmonic ``k``)
+     - 15679, 15683, 15731
+     - ``i``, 0, ``k``
+   * - ``PerEnvSeededRNG`` states
+     - 1
+     - 0
+
+The built-in gate generators reuse the matching track generator's streams. Hashed keying
+that removes the seed-0 collapse (``ops.rng``) is planned for roadmap PR16; it changes the
+built-ins' outputs, so it is not done yet.
+
+Legacy ``_src`` helpers
+~~~~~~~~~~~~~~~~~~~~~~~
+
+Plugins written before ``track_gen.ops`` existed import private helpers from
+``track_gen._src.warp_pipeline`` (usually as ``_pipe``), ``track_gen._src.warp_generate``
+and ``track_gen._src.warp_generate_hull``. They are still importable: each keeps its name
+and parameter list, which
+``tests/test_legacy_plugin_abi.py`` pins for the 0.x series, and now delegates to the same
+kernels as the op that replaces it, so its results are unchanged. They are deprecated in
+favour of ``track_gen.ops`` (they do not warn yet); port a plugin with this table:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 50 50
+
+   * - Legacy helper
+     - Replacement
+   * - ``_pipe._init()``, ``_pipe._sync(device)``
+     - Not needed: the facades initialise Warp before calling ``generate``, and the ops
+       never sync.
+   * - ``_pipe._fill_i32_k`` (a kernel)
+     - ``ops.fill(ctx, arr, value)``
+   * - ``_pipe._ccw`` (a ``wp.func``)
+     - ``ops.funcs.ccw``
+   * - ``_pipe._arc_resample_inplace``, ``_pipe._arc_resample_selected_inplace``
+       (and their ``arc_length_resample_*`` twins)
+     - ``ops.arc_resample(..., active=...)``, with an ``ops.ArcScratch`` wrapping the same
+       four buffers
+   * - ``_pipe.self_intersections_inplace``
+     - ``ops.self_intersections``
+   * - ``_pipe.turning_number_inplace``
+     - ``ops.turning_number``
+   * - ``_pipe.resample_uniform``
+     - ``ops.resample_uniform`` (pass the scratch: the helper allocates when ``seg_wp`` or
+       ``s_wp`` is ``None``, the op never does)
+   * - ``_pipe.resample_constant_spacing``
+     - ``ops.resample_constant_spacing`` (the helper's allocating mode also reads the
+       truncation flag back to warn; the op leaves it on the device)
+   * - ``warp_generate.corner_count_sample_inplace``,
+       ``warp_generate_hull.point_count_sample_inplace``
+     - ``ops.sample_counts`` with the salts above
+   * - ``warp_generate.corner_sample_inplace``,
+       ``warp_generate_hull.point_sample_inplace``
+     - ``ops.grid_cells`` and ``ops.sample_grid_points``
+   * - ``warp_generate.ccw_sort_inplace``
+     - ``ops.angle_sort`` (the helper sorts one point when ``count[e] < 1``; the op
+       treats ``count[e] <= 0`` as empty)
+
+The helpers keep their own conventions: ``ctx=None`` as the last argument (the ambient
+context when omitted), a debug-only ``ctx.sync()`` after their launches, and the config
+objects the samplers read. ``track_gen._src.warp_pipeline.GenScratch`` moved to
+``track_gen._src.warp_generate.GenScratch``; the old name still works and emits a
+``DeprecationWarning``.
 
 Registering and discovery
 -------------------------
@@ -546,17 +864,6 @@ every kind on entry and restores it on exit, so nothing leaks into the next test
            assert "acme.wobbly_variant" in registry.available("generator")
        assert "acme.wobbly_variant" not in registry.available("generator")
 
-Using library internals
-~~~~~~~~~~~~~~~~~~~~~~~
-
-The example above uses public API only. The built-ins also use helpers that are not
-public yet: NaN-aware arc-length resampling (``warp_pipeline._arc_resample_inplace``),
-gate ordering and NaN padding (``warp_gate.finish_ordered_gates``), the ``_fill_i32_k``
-kernel and the ``track_gen._src.rng_*`` samplers. They stay private until roadmap PR7
-publishes them in ``track_gen.ops`` (which today has ``fill``, ``any_set`` and
-``hash32``). A plugin may import them at its own risk: they can change in any 0.x release,
-so pin the TrackGen version if you do, and pass ``ctx=ctx`` to every one that takes it.
-
 The old private registries
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -598,7 +905,14 @@ A generator shipped inside TrackGen follows the same contract. It lives in
 ``track_gen/_src/warp_generate_<name>.py`` (gate variants in
 ``warp_generate_<name>_gates.py``), defines the same ``register(reg)`` function, and is
 listed once in ``track_gen/_src/builtin_plugins.py``, the only shared registration
-touch-point. Built-in names are undotted, and built-ins may use the private helpers above.
+touch-point. Built-in names are undotted. Built-ins use ``track_gen.ops`` for every shared
+step (see :ref:`generator-ops`), like a plugin, and never import ``warp_pipeline``. A
+built-in gate generator that shares a track generator's sampling imports that module's
+public names (``CORNER_SALT``, ``sample_polar_controls``, ...), never its underscore
+kernels or constants. ``tests/test_ops.py`` checks both rules on the source, together with
+the short allow-list of private ``track_gen.ops`` launchers the legacy wrappers use. A
+new built-in RNG stream takes a ``(salt, offset)`` pair that is not in the
+:ref:`table of built-in salts <ops-rng-keying>`, and adds its row there.
 
 How a generator is judged
 -------------------------

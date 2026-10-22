@@ -49,6 +49,62 @@
     raises `PluginLoadError` chained from its original error.
   - Third-party names are dotted (`pkg.name`). A name without a dot still registers,
     with a one-time `UserWarning`. Built-in names are unchanged.
+- **`track_gen.ops`: public device building blocks for generators** (roadmap PR7). The
+  primitives the built-in generators are made of are now public and documented, so a
+  plugin generator no longer needs `track_gen._src` helpers. Every op takes the call's
+  `LaunchContext` first and launches only through it. It never allocates, reads back or
+  host-synchronizes: working buffers are arguments, allocated once in `alloc_scratch`. It
+  takes no config object (sizes, salts and bounds are explicit arguments), uses the flat
+  per-env layout, and validates its arguments on the host before any launch: a wrong
+  type, shape, dtype or device raises `ValueError` naming the argument (except that
+  `fill` raises `TypeError` for an unsupported dtype and `any_set` for an argument that
+  is not an `int32` `wp.array`). The ops modules import only Warp: `import track_gen.ops`
+  loads no generator module and no torch.
+  `docs/contributing/writing-a-generator.rst` gains a "Building blocks" section with a
+  generator assembled from ops only, and `docs/reference/api.rst` documents every op.
+  - One set of conventions: `src` is the input point array and `stride` its points per
+    env, `num` an exact output count per env and `out_stride` an output row capacity;
+    `E` is `src.shape[0] // stride` (the samplers take it from `seeds`) and every other
+    per-env array must be exactly `[E]`; `count` and the env mask `active` are always
+    keyword-only, and a `count[e]` above the stride is clamped to it. `ctx.device` is
+    canonicalised, so a context whose device is `"cuda"` accepts arrays on `cuda:0`.
+  - Resampling: `arc_resample(ctx, src, stride, num, scratch, out, count_out, *,
+    active=None)` is NaN-aware. It drops NaN points, gives a row with fewer than two real
+    points NaN and count 0, and with `active` resamples only the flagged envs, leaving
+    the other rows bit for bit. Also `resample_uniform(ctx, src, stride, scratch, out, *,
+    count)` (NaN after `count[e]`) and `resample_constant_spacing(ctx, src, stride,
+    spacing, out_stride, scratch, out, count_out, truncated_out)` (per-env count and
+    truncation flag, both on device). Their working buffers are an `ArcScratch`:
+    `ArcScratch.alloc(E, stride, device, *, compact=True)`, or wrap arrays you already
+    own. `out` must not alias the scratch, nor `src` for the two count-based resamples.
+  - Geometry: `self_intersections(ctx, src, stride, out, *, count)`,
+    `turning_number(ctx, src, stride, out, *, count)`,
+    `thickness(ctx, src, stride, band, out, *, count)`,
+    `normalize_extent(ctx, src, stride, target_extent, *, count=None)` and
+    `angle_sort(ctx, src, stride, keys, out, *, count, out_stride=None)` (the order the
+    built-ins emit for `gate_ordering="ccw"`, NaN after `count[e]`).
+  - Sampling: `sample_counts(ctx, seeds, salt, offset, lo, hi, out)`,
+    `sample_grid_points(ctx, seeds, salt, offset, num, num_cells, cell_size, scale, used,
+    out)` (a float or a per-env `[E]` scale; distinct cells are best effort and the
+    jitter is an absolute `[-0.5, 0.5)`) and the host helper
+    `grid_cells(min_point_distance)` (the built-in grid; `ValueError` outside
+    `(0, 0.5]`). Streams are keyed as the built-ins key theirs,
+    `wp.rand_init(seeds[e] * salt + offset)` in int32 arithmetic, with the salt and offset
+    as arguments; the generator guide lists the pairs the built-ins use.
+  - Curves: `closed_catmull_rom(ctx, src, stride, per_seg, out, *, count=None,
+    endpoint=False)` and `closed_polyline(ctx, src, stride, per_seg, out, *, count=None,
+    endpoint=False, active=None)`, the straight polyline in the same layout (with
+    `active`, the fallback for flagged envs).
+  - `track_gen.ops.funcs`: the `@wp.func` helpers for plugin kernels, `ccw`, `cross2`,
+    `nan0`, `safe_normalize2`, `catmull_rom`, `segments_cross` and `hash32`. They perform
+    the built-in kernels' operations in the same order: bitwise equal on CPU; on CUDA,
+    FMA contraction can differ when the surrounding kernel differs.
+  - `check_array(name, arr, shape, dtype, device)`, the library's array validator (the
+    facades' `runtime._check_arr` is now this function; it now canonicalises `device`);
+    `track_gen.ops.constants.TARGET_EXTENT` (`1.44`), the longest bounding-box side per
+    unit `scale` that `polar`, `voronoi` and `checkpoint` normalise to; and `ops.fill` now
+    also fills `quatf` arrays (from four components) and raises `ValueError` for an array
+    that is not a `wp.array` or not on `ctx.device`.
 
 ### Behaviour changes
 
@@ -79,6 +135,143 @@
   specs through `track_gen.plugin.registry`. `import track_gen` still imports no
   generator module, loads no plugin and imports neither torch nor scipy. Built-in
   generator outputs are byte-identical to the previous release.
+- **The built-in generators are built from `track_gen.ops`** (roadmap PR7). Every track
+  generator (`bezier`, `hull`, `polar`, `voronoi`, `checkpoint`, `repulsive`) calls the
+  public ops instead of the `warp_pipeline` (`_pipe._*`) helpers, and the gate
+  generators' shared sampling, ordering and normalisation steps run on the same ops. No
+  gate module imports an underscore name from a track generator module any more: what
+  they share is now public in the generator modules (`warp_generate.CORNER_COUNT_SALT` /
+  `CORNER_SALT`, `warp_generate_hull.POINT_COUNT_SALT` / `POINT_SALT` /
+  `POINT_SALT_OFFSET`, `warp_generate_polar.BASE_RADIUS` /
+  `polar_num_knots` / `polar_jitters` / `sample_polar_controls`,
+  `warp_generate_voronoi.BOX_SIZE` / `voronoi_layout_mode` / `sample_voronoi_sites` /
+  `select_voronoi_anchors`, `warp_generate_checkpoint.BASE_RADIUS` /
+  `sample_checkpoint_rings`), which stay in `track_gen._src`. The `bezier` and `hull` gate
+  generators no longer pass a `GateGenConfig` where a `TrackGenConfig` is expected: they
+  call `ops.sample_counts` / `ops.sample_grid_points` with the track generators' salts.
+  Two steps keep a private form: `bezier` and `hull` sort with the `ops.angle_sort`
+  kernel but the legacy count floor of 1 (so their output never depends on
+  `TrackGenConfig`'s `min_num_points >= 2` check, which a config mutated after
+  construction skips), and `polar` keeps its one-thread-per-env spline kernel (see
+  Deferred to PR16). `tests/test_ops.py` checks on the source that no generator module
+  imports `warp_pipeline` or a private `track_gen.ops` name beyond the legacy wrappers'
+  launchers, and that no gate module uses an underscore name of a track generator.
+- **Duplicated kernels are merged where the result is byte-identical**: the count sampler
+  (`bezier`, `hull`); the grid point sampler (`bezier` with a scalar or per-env scale,
+  `hull`); the centroid angle sort (`bezier`, `hull`, the gates' `"ccw"` ordering); the
+  extent normalisation (`polar`, `voronoi`, `checkpoint`, plus the gates' count-aware
+  variant as `normalize_extent(count=...)`); the Catmull-Rom point (`polar`, `voronoi`,
+  `hull`'s inline copy) and the per-sample dense kernels of `voronoi` and `hull`; the
+  polygon fallback (`hull`, `voronoi`);
+  the safe 2-D normalisation (`bezier`, `warp_gate`, `repulsive`'s `_safe_dir`); the
+  `warp_pipeline` and `warp_gate` fill kernels; and the `_ccw`, `_nan0`, `_cross2` and
+  `_proper_segment_intersection` device functions. The resample, self-intersection,
+  turning-number and thickness kernels moved from `warp_pipeline` into `track_gen.ops`
+  unchanged apart from the count clamp below. Built-in outputs are byte-identical to
+  before the port on CPU: a strict byte comparison of a before/after snapshot of every
+  track and gate generator and every legacy helper (including seeds whose `seed * salt`
+  overflows int32, and configurations that force the polygon fallback), and
+  `tests/test_generator_fingerprints.py`. Each merged kernel computes the same operations
+  in the same order and keeps its kernel structure (one thread per sample or per env as
+  before), so CUDA, where Warp contracts multiply-adds into FMAs, should match too; the
+  CUDA comparison has not been run yet and is required before merging.
+- **A `count[e]` above the stride is clamped** in the count-aware resample,
+  self-intersection, turning-number, thickness and curve kernels. It read (and the
+  uniform resample wrote) past the env's row before, into the next env or past the end
+  of the buffer. This also applies to the legacy helpers that share the kernels
+  (`resample_uniform`, `self_intersections_inplace`, `turning_number_inplace`); valid
+  counts give the same results.
+- **The `warp_pipeline` helpers delegate to the ops.** `_arc_resample_inplace`,
+  `_arc_resample_selected_inplace`, `self_intersections_inplace`,
+  `arc_length_resample_inplace`, `arc_length_resample_selected_inplace`,
+  `resample_uniform`, `resample_constant_spacing` and `turning_number_inplace` keep their
+  names, parameter lists, `ctx=None` defaults, allocate-if-`None` branches and debug-sync
+  placement; so do `warp_generate.corner_count_sample_inplace`, `corner_sample_inplace`
+  and `ccw_sort_inplace`, and `warp_generate_hull.point_count_sample_inplace` and
+  `point_sample_inplace`. The kernels and functions that moved out of `warp_pipeline`
+  (`_pipe._fill_i32_k`, `_fill_f32_k`, `_ccw`, `_nan0`, the resample, crossing,
+  turning-number and thickness kernels) are importable under their old names and are now
+  the `track_gen.ops` objects (same argument types and order; their Warp module is now a
+  `track_gen.ops` module). `warp_gate`'s fill kernels are likewise the `ops.fill` kernels,
+  and `warp_gate` now fills through `ops.fill`. Of the generator modules' private names,
+  only those with a same-arithmetic replacement keep resolving:
+  `warp_generate_polar._polar_num_knots` and `_catmull_rom`,
+  `warp_generate_voronoi._voronoi_layout_mode`, and `_safe_normalize2` (`warp_generate`,
+  hence `_pipe._safe_normalize2`, and `warp_gate`) and `warp_generate_repulsive._safe_dir`,
+  all now the public objects.
+- **Removed private names** (never part of the pinned ABI; a plugin that copied a
+  built-in module may have imported them): `warp_generate._corner_count_sample_k`,
+  `_corner_sample_k`, `_corner_sample_style_k` and `_ccw_sort_k` (also reachable as
+  `_pipe.<name>` before); `warp_generate_hull._point_count_sample_k`, `_point_sample_k`,
+  `_angle_sort_k`, `_catmull_rom_k`, `_aug_vertex` and `_assemble_polygon_selected_k`;
+  `warp_generate_polar._normalize_centerline_k`; `warp_generate_voronoi._catmull_rom`,
+  `_aug_at`, `_catmull_rom_dense_k`, `_normalize_centerline_k` and
+  `_assemble_polygon_selected_k`; `warp_generate_checkpoint._normalize_centerline_k`;
+  `warp_gate._order_ccw_k` and `_normalize_positions_k`; and every generator module's
+  `_pipe` attribute (the module no longer imports `warp_pipeline`). Their replacements
+  are the ops in the generator guide's table; the kernels' arguments differ (explicit
+  salts, strides and masks).
+- **`GenScratch` moved** from `warp_pipeline` to `warp_generate`, the module whose
+  scratch it is (see Deprecated).
+- With `TRACKGEN_DEBUG_SYNC=1`, the steps the built-ins now run through `track_gen.ops`
+  no longer debug-sync one by one, since the ops never sync; each built-in `generate`
+  keeps its final debug sync. Without the variable nothing changes (the sync was already
+  a no-op).
+
+### Deprecated
+
+- `track_gen._src.warp_pipeline.GenScratch`: reading it, or
+  `from track_gen._src.warp_pipeline import GenScratch`, emits a `DeprecationWarning` and
+  returns `track_gen._src.warp_generate.GenScratch`. The old name will be removed in 1.0.
+- The private helpers plugins written before `track_gen.ops` call are deprecated in
+  favour of the ops. They do not warn yet and keep working through 0.x:
+  `tests/test_legacy_plugin_abi.py` pins their names and parameter lists. They are
+  `warp_pipeline._init`, `_sync`, `_fill_i32_k`, `_ccw`, `_arc_resample_inplace`,
+  `_arc_resample_selected_inplace`, `arc_length_resample_inplace`,
+  `arc_length_resample_selected_inplace`, `self_intersections_inplace`,
+  `resample_uniform`, `resample_constant_spacing` and `turning_number_inplace`;
+  `warp_generate.corner_count_sample_inplace`, `corner_sample_inplace` and
+  `ccw_sort_inplace`; and `warp_generate_hull.point_count_sample_inplace` and
+  `point_sample_inplace`. The generator guide maps each one to its op.
+
+### Deferred to PR16
+
+Merges and fixes that would change built-in outputs or semantics, left out of PR7 so the
+outputs stay byte-identical:
+
+- **Bezier's polygon fallback stays its own kernel.** Its Bernstein form
+  `(b0 + b1) * c0 + (b2 + b3) * c1` (with the pruned-corner NaN) rounds differently in
+  float32 from the lerp of `ops.closed_polyline`.
+- **Polar's dense spline stays its own kernel** (`_polar_spline_dense_k`, one thread per
+  env looping over the segments). `ops.closed_catmull_rom` (one thread per sample) gives
+  the same values on CPU, but on CUDA the loop structure decides which multiply-adds the
+  compiler contracts into FMAs (loop-invariant terms are hoisted out of the inner loop),
+  so the merge waits for a CUDA comparison.
+- **Hashed RNG keying.** An `ops.rng.init(seed, salt, offset)` keyed as
+  `rand_init(hash32(seed ^ hash32(salt)), offset)` would replace `seed * salt + offset`.
+  At seed 0 every linear key collapses to `rand_init(offset)`, so `bezier`'s count and
+  corner streams are then the same stream (both `rand_init(attempt)`).
+- **Salts reused across generators**: 7919 (`hull` points, `polar` controls, the gate
+  ordering's additive salt) and 2741 (`bezier` style, `checkpoint`'s candidate stride).
+  The fix is a per-program salt registry that rejects collisions.
+- **One endpoint convention for the curves.** `hull` samples each segment
+  endpoint-inclusive (`u = s / (n - 1)`), `polar` and `voronoi` exclusive (`u = s / n`);
+  the curve ops keep both behind `endpoint=`.
+- **`voronoi` normalises its extent twice**: the envs that did not cross are normalised
+  again after the selected fallback resample.
+- **A NaN- and length-aware `resample_constant_spacing` with a per-env `spacing`
+  array** (in the roadmap's PR7 scope). It changes the result on partially-NaN rows, so it
+  lands with the resample stage.
+- **`ccw_sort_inplace` treats `count < 1` as one point.** The legacy helper and the
+  `bezier` / `hull` built-ins keep it (they run the `angle_sort` kernel with a count
+  floor of 1); the public `angle_sort` treats `count <= 0` as an empty row.
+- **One crossing predicate.** `self_intersections` (scale-relative tolerance), the
+  `checkpoint` clip (strict sign test on `ccw`) and gate validity (`segments_cross`)
+  differ on purpose today.
+- Not done because no output would change and nothing needs them yet: merging the
+  selected and unselected arc-resample kernels (it needs a dummy `active` array), reusing
+  the angle sort's centroid in `hull`'s midpoint displacement, and a `funcs.cubic_bezier`
+  for `bezier`'s assembly (roadmap PR8).
 
 ### Testing
 
@@ -107,6 +300,49 @@
 - `tests/conftest.py` defaults `TRACK_GEN_PLUGINS` to `off` (unless it is already set),
   so the suite's registry-wide parametrizations see only the built-ins, whatever plugins
   the environment has installed; the plugin tests clear it.
+- `tests/test_ops.py` (CPU) covers every public op: host-side validation (wrong type,
+  dtype, shape or device, a context on another device, bad scalars), raised before any
+  launch; hand-built semantics (NaN compaction and degenerate rows, `active` rows left
+  bit for bit, count and NaN padding, known crossing counts, the sign of the turning
+  number, the thickness of a circle, the normalised bounding box, sort order and count
+  clamps, sampler ranges, determinism and salts, spline interpolation); **bitwise
+  equivalence** with frozen copies of the kernels each op replaces
+  (`tests/_legacy_kernels_pr7.py`) on random inputs with NaN rows, counts from 0 to past
+  the stride and seeds that overflow `seed * salt`; and a tripwire that fails if an op
+  allocates (with a positive control). It also checks the `__all__` list, the docstrings,
+  the `ops.funcs` functions inside a user kernel, that `runtime._check_arr` is
+  `check_array`, that `import track_gen.ops` loads no generator module and no torch, and
+  that no ops module imports `track_gen._src` or `track_gen.exec` at module level. Also:
+  a `count` above the stride behaves as `count == stride` in every count-aware op, and a
+  subprocess runs those ops in Warp's debug mode (bounds-checked array access); `out`
+  aliasing `src` or the scratch is rejected; device aliases are canonicalised;
+  `grid_cells` and `fill` validate their arguments; and the generator modules' import
+  rules (no `warp_pipeline`, no private `track_gen.ops` name beyond the legacy launchers,
+  no gate module using a track generator's underscore name) are checked on the source.
+- `tests/test_legacy_plugin_abi.py` (CPU) pins the names and parameter lists (name,
+  kind, default) of the legacy helpers as recorded before the port, checks that
+  `_pipe._init` / `_sync` are the runtime helpers, that `_pipe._fill_i32_k` keeps its
+  arguments and launches, that `_pipe._ccw` works in a plugin kernel and that the
+  historical kernel names still resolve, and runs every pinned helper on CPU with
+  `ctx=None` inside `LaunchContext.scope()`, as a legacy plugin calls them. It also
+  covers the `GenScratch` deprecation, `corner_sample_inplace` with a numpy per-env scale
+  (any array Warp's launch accepts, as before), and the legacy private aliases.
+- `tests/test_generator_fingerprints.py` compares sha256 fingerprints of every output
+  field of every built-in track and gate generator (fallback-forcing configurations
+  included) with `tests/goldens/pr7_fingerprints.json`, captured at 1077b18 with
+  `tests/tools/capture_pr7_fingerprints.py`. The file is keyed by platform and Warp
+  version (`darwin-arm64-warp1.18.0` so far) and the test skips on other keys.
+- `tests/test_generator_docs.py` runs the generator guide's three examples (quick start,
+  scatter gates, star generator) from the `.rst` source on CPU, and checks that every
+  private name the `docs/generators/*.rst` pages cite still exists.
+- `tests/test_no_host_sync.py` gains an `ops[all]` driver (every public op, with and
+  without each optional argument) and a `wrappers[legacy_generator]` driver (the legacy
+  samplers and sort, which the built-ins no longer call), and its driven-wrapper check
+  now covers the ops modules. `tests/test_launch_stream.py` reuses the drivers, so every
+  op is also checked for stream-explicit launches, and `test_ops_fill` covers `quatf`.
+- `tests/test_generator_registry.py` reads `GenScratch` from `warp_generate`;
+  `tests/test_generate_repulsive.py` forbids `runtime._sync` instead of the removed
+  `rep._pipe._sync`.
 
 ## 0.2.0.dev1 (2026-10-22, tag `v0.2.0.dev1`)
 

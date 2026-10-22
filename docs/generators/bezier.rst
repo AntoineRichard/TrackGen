@@ -29,19 +29,19 @@ host-side retry loop, no per-environment Python branching:
    others vary.  This Python branch is resolved at CUDA-graph capture time; the
    per-environment values are device arrays and the captured graph remains static.
 
-2. **Corner count.**  ``_corner_count_sample_k`` draws ``count[e]`` uniformly from
-   ``[min_num_points, max_num_points]`` for each environment using RNG salt ``6151``.
+2. **Corner count.**  ``ops.sample_counts`` (salt ``6151``, offset ``0``) draws
+   ``count[e]`` uniformly from ``[min_num_points, max_num_points]`` for each environment.
 
-3. **Corner positions.**  ``_corner_sample_k`` (or ``_corner_sample_style_k`` when
-   style-sampling is active) samples ``max_num_points`` grid cells from a
-   ``num_cells × num_cells`` grid where
+3. **Corner positions.**  ``ops.sample_grid_points`` (salt ``9781``, offset ``0``)
+   samples ``max_num_points`` grid cells from the ``ops.grid_cells(min_point_distance)``
+   grid of ``num_cells × num_cells`` cells, where
    ``num_cells = int(1 / (min_point_distance * 2))``.  Each cell selection uses
    bounded duplicate rejection (up to eight retries per corner) to spread corners
-   across distinct cells, then adds per-axis sub-cell jitter.  Coordinates are
-   multiplied by ``scale`` (or by the per-environment ``scale[e]`` in style mode).
-   RNG salt for positions: ``9781``.
+   across distinct cells, then adds per-axis jitter in ``[-0.5, 0.5)``.  Coordinates are
+   multiplied by ``scale`` (or by the per-environment ``scale[e]`` array in style mode).
 
-4. **Prune-then-sort.**  ``_ccw_sort_k`` sorts only the first ``count[e]`` corners by
+4. **Prune-then-sort.**  The ``ops.angle_sort`` kernel (with the legacy count floor of 1:
+   a count below 1 sorts the first corner) sorts only the first ``count[e]`` corners by
    ``atan2`` angle around the centroid of those same kept corners (not all
    ``max_num_points`` slots), writing NaN past the live count.  Sorting *after*
    pruning matters: sorting all ``max_num_points`` points and keeping a prefix would
@@ -81,16 +81,17 @@ host-side retry loop, no per-environment Python branching:
    In style mode ``_assemble_style_k`` reads ``rad[e]`` and ``handle_clamp_frac[e]``
    from the per-environment device arrays drawn in step 1.
 
-7. **Dense-to-N arc-resample.**  ``_arc_resample_inplace`` converts the dense
+7. **Dense-to-N arc-resample.**  ``ops.arc_resample`` converts the dense
    ``max_num_points × num_points_per_segment`` loop to exactly ``num_points``
    arc-uniformly spaced samples, building cumulative arc length in ``float64`` and
    interpolating with a searchsorted lookup.
 
-8. **Self-intersection check and fallback.**  ``self_intersections_inplace`` counts
+8. **Self-intersection check and fallback.**  ``ops.self_intersections`` counts
    proper crossings on the ``num_points``-point resampled loop.  For environments
    where the Bézier curve self-crosses, ``_assemble_polygon_selected_k`` emits the
-   straight corner polygon (equivalent to ``handle_clamp_frac=0``) and
-   ``_arc_resample_selected_inplace`` overwrites only those rows.
+   straight corner polygon in Bernstein form (equivalent to ``handle_clamp_frac=0``;
+   it rounds differently from ``ops.closed_polyline``'s lerp, so bezier keeps its own
+   kernel) and ``ops.arc_resample(..., active=crossers)`` overwrites only those rows.
    ``_select_vec2_k`` then writes the Bézier result for non-crossers and the polygon
    result for crossers into the output buffer.
 

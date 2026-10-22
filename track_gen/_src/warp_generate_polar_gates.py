@@ -3,13 +3,11 @@ from __future__ import annotations
 
 import warp as wp
 
+from .. import ops
 from ..exec.context import LaunchContext, resolve as _resolve_ctx
-from .warp_generate_polar import (
-    _BASE_RADIUS,
-    _BEZIER_EXTENT,
-    _polar_controls_k,
-    _polar_num_knots,
-)
+from ..ops.constants import TARGET_EXTENT
+from .runtime import _init
+from .warp_generate_polar import polar_jitters, polar_num_knots, sample_polar_controls
 
 
 class PolarGateScratch:
@@ -24,9 +22,9 @@ class PolarGateScratch:
 def polar_gate_alloc_scratch(config):
     from . import warp_gate
 
-    warp_gate._init()
+    _init()
     E = int(config.num_envs)
-    K = _polar_num_knots(config)
+    K = polar_num_knots(config)
     dev = str(config.device)
     count, keys = warp_gate.alloc_order_scratch(config)
     return PolarGateScratch(
@@ -46,36 +44,17 @@ def generate_polar_gates(seeds_wp, config, out, scratch,
     """
     from . import warp_gate
 
-    E = int(config.num_envs)
-    K = _polar_num_knots(config)
+    K = polar_num_knots(config)
     G = int(config.max_gates)
     dev = str(out.position.device)
     ctx = _resolve_ctx(ctx, dev)
 
-    radial_default = 0.60 * float(getattr(config, "amplitude", 1.0))
-    radial_jitter = min(
-        max(float(getattr(config, "polar_radial_jitter", radial_default)), 0.0),
-        0.85,
-    )
-    angular_jitter = min(
-        max(float(getattr(config, "polar_angular_jitter", 0.30)), 0.0),
-        0.45,
-    )
-    target_extent = float(config.scale) * _BEZIER_EXTENT
+    # Same clamped jitters as the polar track generator.
+    radial_jitter, angular_jitter = polar_jitters(config)
+    target_extent = float(config.scale) * TARGET_EXTENT
 
-    ctx.launch(warp_gate._fill_i32_k, E, [scratch.count, K])
-    ctx.launch(
-        _polar_controls_k,
-        E,
-        [
-            seeds_wp,
-            K,
-            radial_jitter,
-            angular_jitter,
-            _BASE_RADIUS,
-            scratch.controls,
-        ],
-    )
+    ops.fill(ctx, scratch.count, K)
+    sample_polar_controls(ctx, seeds_wp, K, radial_jitter, angular_jitter, scratch.controls)
     warp_gate.finish_ordered_gates(
         seeds_wp,
         scratch.controls,
@@ -99,7 +78,7 @@ def register(reg) -> None:
         name="polar",
         alloc_scratch=polar_gate_alloc_scratch,
         generate=generate_polar_gates,
-        max_gates=_polar_num_knots,
+        max_gates=polar_num_knots,
         supported_orderings=frozenset({"ccw", "raw"}),
         accepts_ctx=True,
     ))

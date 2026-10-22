@@ -118,6 +118,7 @@ def test_resolve_stream_rejects_bad_values():
 @pytest.mark.parametrize("dtype,value,expect", [
     (wp.int32, 7, 7), (wp.uint32, 9, 9), (wp.float32, 1.5, 1.5),
     (wp.vec2f, (1.0, 2.0), (1.0, 2.0)), (wp.vec3f, 0.0, (0.0, 0.0, 0.0)),
+    (wp.quatf, (0.0, 0.0, 0.0, 1.0), (0.0, 0.0, 0.0, 1.0)),
 ])
 def test_ops_fill(dtype, value, expect):
     import numpy as np

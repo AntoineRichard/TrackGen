@@ -30,18 +30,25 @@ are capture-time Python branches), deterministic in (seed, config) including bes
 
 Convention (shared with ``warp_pipeline``): one thread per output element; flat arrays
 ``[E*N]`` of ``wp.vec2f`` and ``[E]`` per-env scalars; env index ``e = tid // N``.
+
+The best-of-K crossing count, the clip's arc resample, the extent normalisation and the
+fills are the public ``track_gen.ops`` primitives; the checkpoint draw is exposed as
+:func:`sample_checkpoint_rings` (shared with the checkpoint gate generator).
 """
 from __future__ import annotations
 
 import warp as wp
 
+from .. import ops
 from ..exec.context import LaunchContext, resolve as _resolve_ctx
-from . import warp_pipeline as _pipe
+from ..ops import funcs
+from ..ops.constants import TARGET_EXTENT
+from .runtime import _init
 
-# Target longest-bbox extent (in units of config.scale) the generated loop is normalized to.
-# Matches warp_generate_polar / grammar_proto so half_width / spacing / relax see comparable
-# coordinates across generators.
-_BEZIER_EXTENT = 1.44
+# Legacy private name (value only): the loop is normalised to config.scale * TARGET_EXTENT
+# (the same extent as polar / bezier, so half_width / spacing / relax see comparable
+# coordinates across generators).
+_BEZIER_EXTENT = TARGET_EXTENT
 
 # Independent RNG salt for checkpoint sampling. Distinct from polar (7919), bezier (9781, 6151),
 # and hull (7919, 5119, 3083) so this generator draws a different checkpoint set.
@@ -50,8 +57,10 @@ _CHECKPOINT_SALT = 4099
 # k*_CAND_SALT + 1). A large odd multiplier decorrelates the K candidates (the best-of-K trick).
 _CAND_SALT = 2741
 
-# Base ring radius. The loop is normalized after closure, so this only sets a stable pre-scale.
-_BASE_RADIUS = 1.0
+#: Base ring radius. The loop is normalized after closure, so this only sets a stable
+#: pre-scale.
+BASE_RADIUS = 1.0
+_BASE_RADIUS = BASE_RADIUS  # legacy private name (value only)
 
 
 @wp.kernel
@@ -247,7 +256,7 @@ def _select_best_k(
 ):
     # One thread per env e. Deterministic argmin over this env's K candidates by self-intersection
     # count (ties -> lowest k), copying the chosen candidate into out[e*N .. e*N+N). cross is the
-    # [E*K] per-candidate crossing count computed by self_intersections_inplace over E*K slots.
+    # [E*K] per-candidate crossing count computed by ops.self_intersections over E*K slots.
     e = wp.tid()
     best_k = int(0)
     best_c = cross[e * K + 0]
@@ -272,35 +281,6 @@ def _copy_single_k(
     # (slot == env) straight through. Avoids the per-candidate crossing pass entirely.
     t = wp.tid()
     out[t] = cand[t]
-
-
-@wp.kernel
-def _normalize_centerline_k(
-    points: wp.array(dtype=wp.vec2f),
-    N: int,
-    target_extent: float,
-):
-    # One thread per env e. Center by bbox and scale so each env's longest bbox dimension matches
-    # target_extent (identical to warp_generate_polar._normalize_centerline_k).
-    e = wp.tid()
-    b = e * N
-    min_x = float(1.0e30)
-    max_x = float(-1.0e30)
-    min_y = float(1.0e30)
-    max_y = float(-1.0e30)
-    for i in range(N):
-        p = points[b + i]
-        min_x = wp.min(min_x, p[0])
-        max_x = wp.max(max_x, p[0])
-        min_y = wp.min(min_y, p[1])
-        max_y = wp.max(max_y, p[1])
-    cx = 0.5 * (min_x + max_x)
-    cy = 0.5 * (min_y + max_y)
-    extent = wp.max(max_x - min_x, max_y - min_y)
-    scale = target_extent / wp.max(extent, 1.0e-8)
-    for i in range(N):
-        p = points[b + i]
-        points[b + i] = wp.vec2f((p[0] - cx) * scale, (p[1] - cy) * scale)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -328,7 +308,7 @@ def _clip_assemble_k(
     db = e * M
 
     # --- find first crossing (strict >0 sign-flip predicate, matching the proto's
-    # _find_crossings; intentionally different from the pipeline's self_intersections_inplace
+    # _find_crossings; intentionally different from ops.self_intersections
     # which uses a scale-relative tolerance for best-of-K scoring — not a bug) ---
     found = int(0)
     fi = int(0)
@@ -346,10 +326,10 @@ def _clip_assemble_k(
                     else:
                         Aj = pts[base + j]
                         Bj = pts[base + (j + 1) % N]
-                        d1 = _pipe._ccw(Ai[0], Ai[1], Bi[0], Bi[1], Aj[0], Aj[1])
-                        d2 = _pipe._ccw(Ai[0], Ai[1], Bi[0], Bi[1], Bj[0], Bj[1])
-                        d3 = _pipe._ccw(Aj[0], Aj[1], Bj[0], Bj[1], Ai[0], Ai[1])
-                        d4 = _pipe._ccw(Aj[0], Aj[1], Bj[0], Bj[1], Bi[0], Bi[1])
+                        d1 = funcs.ccw(Ai[0], Ai[1], Bi[0], Bi[1], Aj[0], Aj[1])
+                        d2 = funcs.ccw(Ai[0], Ai[1], Bi[0], Bi[1], Bj[0], Bj[1])
+                        d3 = funcs.ccw(Aj[0], Aj[1], Bj[0], Bj[1], Ai[0], Ai[1])
+                        d4 = funcs.ccw(Aj[0], Aj[1], Bj[0], Bj[1], Bi[0], Bi[1])
                         if ((d1 > 0.0) != (d2 > 0.0)) and ((d3 > 0.0) != (d4 > 0.0)):
                             # Intersection point of segments Ai->Bi and Aj->Bj.
                             rx = Bi[0] - Ai[0]
@@ -435,7 +415,7 @@ class CheckpointScratch:
     path:        [EK*N] vec2f — per-candidate open steered path.
     cand:        [EK*N] vec2f — per-candidate closed centerline (best-of-K input).
     cross:       [EK]   int32 — per-candidate self-intersection count (best-of-K score).
-    cand_cnt:    [EK]   int32 — per-candidate point count (== N) for self_intersections_inplace.
+    cand_cnt:    [EK]   int32 — per-candidate point count (== N) for ops.self_intersections.
     clip_dense:  [E*M]  vec2f — selected-loop clip assembly (NaN-padded); None if no clip.
     arc_real:    [E*M]  vec2f — clip arc-resample compacted-real scratch; None if no clip.
     arc_seg:     [E*M]  float32 — clip arc-resample per-segment length scratch; None if no clip.
@@ -464,12 +444,31 @@ class CheckpointScratch:
         self.arc_co = arc_co
 
 
+def sample_checkpoint_rings(ctx: "LaunchContext", seeds: wp.array, K: int, C: int,
+                            radius_min_frac: float, angle_jitter: float, out: wp.array, *,
+                            base_radius: float = BASE_RADIUS) -> None:
+    """Draw ``K`` candidate rings of ``C`` checkpoints per env into ``out``.
+
+    Slot ``e*K + k`` (env ``e``, candidate ``k``) gets ``C`` checkpoints monotone in
+    angle: checkpoint ``c`` at angle ``2*pi*c/C`` plus a jitter of up to
+    ``angle_jitter`` of the slot ``2*pi/C``, radius uniform in
+    ``[radius_min_frac*base_radius, base_radius)``, from
+    ``wp.rand_init(seeds[e] * 4099 + k * 2741 + 1)``. ``out`` is ``[E*K*C]`` ``vec2f``.
+    One launch (``seeds.shape[0] * K`` threads); no allocation, no host sync, no
+    validation.
+    """
+    K = int(K)
+    ctx.launch(_sample_checkpoints_k, seeds.shape[0] * K,
+               [seeds, K, int(C), float(radius_min_frac), float(angle_jitter),
+                float(base_radius), out])
+
+
 def checkpoint_alloc_scratch(config):
     """Allocate the checkpoint generator's PRIVATE working scratch (one alloc per generator).
 
     Sized by K = config.checkpoint_best_of_k. The clip buffers are allocated only when
     config.checkpoint_clip_fallback is True (the clip is a capture-time Python branch)."""
-    _pipe._init()
+    _init()
     E = int(config.num_envs)
     N = int(config.num_points)
     C = int(config.checkpoint_count)
@@ -528,7 +527,7 @@ def generate_checkpoint_warp(seeds_wp: wp.array, config,
     K > 1 / K == 1 and clip_fallback are capture-time Python branches (no per-env host control
     flow), so the captured graph stays fixed and allocation-free.
     """
-    _pipe._init()
+    _init()
     ctx = _resolve_ctx(ctx, str(out_centerline.device))
     assert scratch is not None, "generate_checkpoint_warp requires scratch"
 
@@ -537,19 +536,17 @@ def generate_checkpoint_warp(seeds_wp: wp.array, config,
     C = int(config.checkpoint_count)
     K = max(int(config.checkpoint_best_of_k), 1)
     EK = E * K
-    dev = str(out_centerline.device)
 
     radius_min_frac = float(config.checkpoint_radius_min_frac)
     angle_jitter = float(config.checkpoint_angle_jitter)
     turn_rate = float(config.checkpoint_turn_rate)
     steer_gain = float(config.checkpoint_steer_gain)
-    lookahead = float(config.checkpoint_lookahead_frac) * _BASE_RADIUS
-    target_extent = float(config.scale) * _BEZIER_EXTENT
+    lookahead = float(config.checkpoint_lookahead_frac) * BASE_RADIUS
+    target_extent = float(config.scale) * TARGET_EXTENT
 
     # 1. Sample C checkpoints per (env, candidate) slot.
-    ctx.launch(_sample_checkpoints_k, EK,
-               [seeds_wp, K, C, radius_min_frac, angle_jitter, _BASE_RADIUS,
-                scratch.checkpoints])
+    sample_checkpoint_rings(ctx, seeds_wp, K, C, radius_min_frac, angle_jitter,
+                            scratch.checkpoints)
 
     # 2. Steer the fixed-N bounded-turn open path per slot.
     ctx.launch(_steer_k, EK,
@@ -564,9 +561,8 @@ def generate_checkpoint_warp(seeds_wp: wp.array, config,
         ctx.launch(_copy_single_k, E * N, [scratch.cand, N, out_centerline])
     else:
         # Per-candidate self-intersection count over EK slots (count[slot] == N).
-        ctx.launch(_pipe._fill_i32_k, EK, [scratch.cand_cnt, N])
-        _pipe.self_intersections_inplace(scratch.cand, scratch.cand_cnt, scratch.cross, N,
-                                         ctx=ctx)
+        ops.fill(ctx, scratch.cand_cnt, N)
+        ops.self_intersections(ctx, scratch.cand, N, scratch.cross, count=scratch.cand_cnt)
         ctx.launch(_select_best_k, E, [scratch.cand, scratch.cross, K, N, out_centerline])
 
     # 5. OPT-IN single-crossing clip of the selected centerline (capture-time Python branch).
@@ -579,17 +575,17 @@ def generate_checkpoint_warp(seeds_wp: wp.array, config,
         )
         M = N + 2
         ctx.launch(_clip_assemble_k, E, [out_centerline, N, M, scratch.clip_dense])
-        _pipe._arc_resample_inplace(
-            scratch.clip_dense, M, N,
-            scratch.arc_real, scratch.arc_seg, scratch.arc_s,
-            scratch.arc_cr, scratch.arc_co, out_centerline, dev, ctx=ctx,
+        ops.arc_resample(
+            ctx, scratch.clip_dense, M, N,
+            ops.ArcScratch(scratch.arc_real, scratch.arc_seg, scratch.arc_s, scratch.arc_cr),
+            out_centerline, scratch.arc_co,
         )
 
     # 6. Normalize the selected centerline's bbox extent to match the bezier baseline.
-    ctx.launch(_normalize_centerline_k, E, [out_centerline, N, target_extent])
+    ops.normalize_extent(ctx, out_centerline, N, target_extent)
 
     # 7. Mark all envs valid (gen gate is always True; inflate does the real gate).
-    ctx.launch(_pipe._fill_i32_k, E, [out_valid_wp, 1])
+    ops.fill(ctx, out_valid_wp, 1)
 
     ctx.sync()
 

@@ -24,7 +24,8 @@ Ported from the validated spike
 through the standard tail). Production changes:
 (a) obstacle layout is a seed-driven Warp kernel (not host torch rejection sampling);
 (b) scratch is allocated once, coarse stages slice the ``[0:E*N_stage]`` prefix;
-(c) the stage upsample uses the non-syncing ``warp_pipeline._arc_resample_inplace``.
+(c) the stage upsample and the periodic resample are the non-syncing
+``track_gen.ops.arc_resample`` / ``track_gen.ops.resample_uniform``.
 
 **torch-free:** imports only ``warp`` + ``numpy`` (host precompute uses ``numpy.fft``
 for the Sobolev circulant rows and ``numpy.log1p`` for the stage schedule).
@@ -47,11 +48,16 @@ from __future__ import annotations
 import numpy as np
 import warp as wp
 
+from .. import ops
 from ..exec.context import LaunchContext, resolve as _resolve_ctx
-from . import warp_pipeline as _pipe
+from ..ops import funcs
+from .runtime import _init
 
 # --- Obstacle layout constants (mirror the spike's sample_obstacles reference layout) ---
 # Independent RNG salt, distinct from the site/anchor/checkpoint/control salts.
+# Legacy private name: the same arithmetic as ops.funcs.safe_normalize2.
+_safe_dir = funcs.safe_normalize2
+
 _OBSTACLE_SALT = 6247
 _N_WALL = 96          # points on the domain-wall ring (weight 1.0)
 _N_DISC = 12          # points per inner-disc ring (weight 0.25)
@@ -175,7 +181,7 @@ def _sample_obstacles_inplace(seeds_wp: wp.array, config,
         ctx: optional track_gen.exec.LaunchContext; default resolves the
             device's stream (see track_gen.exec).
     """
-    _pipe._init()
+    _init()
     ctx = _resolve_ctx(ctx, device)
     s = _RepulsiveScalars(config)
     ctx.launch(_sample_obstacles_k, s.E,
@@ -246,12 +252,6 @@ def _init_circle_k(center: wp.array(dtype=wp.vec2f), n: int, r_init: float):
 # tests/test_generate_repulsive.py::test_analytic_gradient_matches_reference).
 # ===========================================================================
 
-@wp.func
-def _safe_dir(v: wp.vec2f) -> wp.vec2f:
-    # safe_normalize with the oracle's 1e-8 floor (matches geometry.safe_normalize).
-    return v / wp.max(wp.length(v), float(1.0e-8))
-
-
 @wp.kernel
 def _tangent_weight_k(
     center: wp.array(dtype=wp.vec2f), n: int,
@@ -271,7 +271,7 @@ def _tangent_weight_k(
     xv = center[b + v]
     xvn = center[b + (v + 1) % n]
     xvp = center[b + (v + n - 1) % n]
-    tang[b + v] = _safe_dir(xvn - xvp)
+    tang[b + v] = funcs.safe_normalize2(xvn - xvp)
     wdual[b + v] = 0.5 * (wp.length(xvn - xv) + wp.length(xv - xvp))
 
 
@@ -414,8 +414,8 @@ def _grad_gather_k(
     # --- TP weight mechanism (v+-1 stencil over wcoef) ---
     ef = xvn - xv
     eb = xv - xvp
-    def_dir = _safe_dir(ef)
-    deb_dir = _safe_dir(eb)
+    def_dir = funcs.safe_normalize2(ef)
+    deb_dir = funcs.safe_normalize2(eb)
     Wv = wcoef[b + v]
     Wprev = wcoef[b + (v + n - 1) % n]
     Wnext = wcoef[b + (v + 1) % n]
@@ -489,8 +489,8 @@ def _length_grad_k(center: wp.array(dtype=wp.vec2f), n: int, lg: wp.array(dtype=
     # relaxation._length_grad: lg[i] = -u_fwd[i] + u_fwd[i-1], u_fwd[i]=dir(x[i+1]-x[i]).
     e, i = wp.tid()
     b = e * n
-    u_i = _safe_dir(center[b + (i + 1) % n] - center[b + i])
-    u_p = _safe_dir(center[b + i] - center[b + (i + n - 1) % n])
+    u_i = funcs.safe_normalize2(center[b + (i + 1) % n] - center[b + i])
+    u_p = funcs.safe_normalize2(center[b + i] - center[b + (i + n - 1) % n])
     lg[b + i] = -u_i + u_p
 
 
@@ -685,7 +685,7 @@ def repulsive_alloc_scratch(config):
     Sizes every N-dependent buffer at ``Nmax`` and precomputes the host-side Sobolev rows +
     stage schedule + iteration budget from the config's ratchet/stage bounds (no device
     readback needed to size the loop, since ``n_ratchet`` follows from ``grow_mult_max``)."""
-    _pipe._init()
+    _init()
     sc = _RepulsiveScalars(config)
     E = sc.E
     dev = str(config.device)
@@ -761,7 +761,7 @@ def generate_repulsive_warp(seeds_wp: wp.array, config,
         ctx: optional track_gen.exec.LaunchContext; default resolves the
             device's stream (see track_gen.exec).
     """
-    _pipe._init()
+    _init()
     ctx = _resolve_ctx(ctx, str(out_centerline.device))
     assert scratch is not None, "generate_repulsive_warp requires scratch"
     s = scratch
@@ -786,6 +786,8 @@ def generate_repulsive_warp(seeds_wp: wp.array, config,
     n_iters = s.n_iters
 
     center = s.center
+    # Periodic-resample scratch (seg/s only; the [0:E*Ncur] prefix is used per stage).
+    rs_scratch = ops.ArcScratch(None, s.rs_seg, s.rs_s, None)
 
     # 1. Seed-driven obstacle layout + per-env target length.
     _sample_obstacles_inplace(seeds_wp, config, s.obs_pts, s.obs_mw, dev, ctx=ctx)
@@ -808,10 +810,11 @@ def generate_repulsive_warp(seeds_wp: wp.array, config,
         nonlocal stage_idx, Ncur
         stage_idx += 1
         Nnew = stages[stage_idx]
-        _pipe._arc_resample_inplace(
-            center[0:E * Ncur], Ncur, Nnew,
-            s.arc_real[0:E * Ncur], s.rs_seg[0:E * Ncur], s.rs_s[0:E * (Ncur + 1)],
-            s.arc_cr, s.arc_co, s.rs_out[0:E * Nnew], dev, ctx=ctx)
+        ops.arc_resample(
+            ctx, center[0:E * Ncur], Ncur, Nnew,
+            ops.ArcScratch(s.arc_real[0:E * Ncur], s.rs_seg[0:E * Ncur],
+                           s.rs_s[0:E * (Ncur + 1)], s.arc_cr),
+            s.rs_out[0:E * Nnew], s.arc_co)
         ctx.copy(center, s.rs_out, count=E * Nnew)
         Ncur = Nnew
 
@@ -859,9 +862,9 @@ def generate_repulsive_warp(seeds_wp: wp.array, config,
         # 7. periodic arc-length resample (pure Warp). Frozen envs are left untouched
         #    (absorbing freeze); every other kernel above already skips them.
         if (it + 1) % resample_every == 0:
-            ctx.launch(_pipe._fill_i32_k, E, [s.count, Ncur])
-            _pipe.resample_uniform(center, s.rs_out, Ncur, s.count, s.rs_seg, s.rs_s, device=dev,
-                                   ctx=ctx)
+            ops.fill(ctx, s.count, Ncur)
+            ops.resample_uniform(ctx, center[0:E * Ncur], Ncur, rs_scratch,
+                                 s.rs_out[0:E * Ncur], count=s.count)
             ctx.launch(_copy_unfrozen_k, (E, Ncur), [center, s.rs_out, Ncur, s.frozen])
 
         # 8. stall-stop: freeze converged envs (device-side; no early exit, see module doc).
@@ -878,11 +881,11 @@ def generate_repulsive_warp(seeds_wp: wp.array, config,
         _upsample_to_next()
 
     # final periodic resample at Nmax, then hand the closed loop to the standard tail.
-    ctx.launch(_pipe._fill_i32_k, E, [s.count, Ncur])
-    _pipe.resample_uniform(center, s.rs_out, Ncur, s.count, s.rs_seg, s.rs_s, device=dev,
-                           ctx=ctx)
+    ops.fill(ctx, s.count, Ncur)
+    ops.resample_uniform(ctx, center[0:E * Ncur], Ncur, rs_scratch, s.rs_out[0:E * Ncur],
+                         count=s.count)
     ctx.copy(out_centerline, s.rs_out, count=E * Ncur)
-    ctx.launch(_pipe._fill_i32_k, E, [out_valid_wp, 1])
+    ops.fill(ctx, out_valid_wp, 1)
 
 
 def register(reg) -> None:

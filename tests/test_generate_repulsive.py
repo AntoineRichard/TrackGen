@@ -19,6 +19,7 @@ import warp as wp  # noqa: E402
 from track_gen._src.types import TrackGenConfig  # noqa: E402
 from track_gen._src import generator_registry as reg  # noqa: E402
 from track_gen._src import warp_generate_repulsive as rep  # noqa: E402
+from track_gen._src import runtime  # noqa: E402
 from track_gen._src.track_generator import Track, TrackGenerator  # noqa: E402
 from track_gen import PerEnvSeededRNG  # noqa: E402
 from tests._warp_compare import to_t  # noqa: E402
@@ -382,7 +383,9 @@ def test_repulsive_generate_has_no_host_sync_or_readback(monkeypatch):
     monkeypatch.setattr(wp.array, "numpy", forbidden)
     monkeypatch.setattr(wp, "synchronize", forbidden)
     monkeypatch.setattr(wp, "synchronize_device", forbidden)
-    monkeypatch.setattr(rep._pipe, "_sync", forbidden)
+    # The generator's own module no longer holds a warp_pipeline reference (it is built
+    # from track_gen.ops); the debug sync every ctx.sync() funnels into is runtime._sync.
+    monkeypatch.setattr(runtime, "_sync", forbidden)
     rep.generate_repulsive_warp(seeds, cfg, out, valid, scratch)
     monkeypatch.undo()
     assert np.isfinite(out.numpy()).all()

@@ -27,6 +27,34 @@ from .warp_relax import _separation_band  # noqa: F401  (used inside _validity_k
 import warp as wp
 
 from ..exec.context import LaunchContext, resolve as _resolve_ctx
+# The shared primitives live in the public track_gen.ops; the legacy wrappers below keep
+# their names/signatures and delegate to the ops' private launchers. The device
+# functions/kernels are re-imported under their historical names so _validity_k resolves
+# them and legacy plugins can keep using _pipe._ccw / _pipe._fill_i32_k / _pipe._thickness_k.
+from ..ops import resample as _ops_resample
+from ..ops.fill import _fill_f32_k, _fill_i32_k  # noqa: F401
+from ..ops.funcs import ccw as _ccw, nan0 as _nan0  # noqa: F401
+from ..ops.geometry import (  # noqa: F401
+    _self_intersections_by_i_k,
+    _self_intersections_func,
+    _self_intersections_launch,
+    _thickness_func,
+    _thickness_k,
+    _turning_func,
+    _turning_k,
+    _turning_launch,
+)
+from ..ops.resample import (  # noqa: F401
+    ArcScratch as _ArcScratch,
+    _arc_lookup_k,
+    _arc_lookup_selected_k,
+    _arc_scan_k,
+    _arc_scan_selected_k,
+    _cs_lookup_k,
+    _cs_scan_k,
+    _resample_lookup_k,
+    _resample_scan_k,
+)
 
 # _init/_sync are the shared runtime helpers. Wrappers call ctx.sync() after their
 # launches; it is a debug-only no-op unless TRACKGEN_DEBUG_SYNC=1 (see runtime._sync), so
@@ -158,463 +186,6 @@ def _frame_k(c: wp.array(dtype=wp.vec2f), n_max: int,
     area = 0.5 * wp.abs(cross)
     denom = wp.max(wp.length(a) * wp.length(bb) * wp.length(cc), 1.0e-12)
     kappa[t] = 4.0 * area / denom
-
-@wp.func
-def _ccw(ox: float, oy: float, px: float, py: float, qx: float, qy: float) -> float:
-    # Returns (q.y-o.y)*(p.x-o.x) - (p.y-o.y)*(q.x-o.x)
-    return (qy - oy) * (px - ox) - (py - oy) * (qx - ox)
-
-@wp.func
-def _nan0(x: float) -> float:
-    # NaN/inf -> 0.0 guard (nan_to_num equivalent) for the border self-intersection
-    # check. wp.where(cond, if_true, if_false) is the Warp 1.14 non-deprecated select
-    # primitive. A NO-OP for finite inputs.
-    return wp.where(wp.isfinite(x), x, 0.0)
-
-@wp.func
-def _self_intersections_func(poly: wp.array(dtype=wp.vec2f), base: int, N: int) -> int:
-    # Proper-crossing double-loop count for the env whose points start at `base`.
-    # Each coordinate is read through _nan0 (NaN->0 guard), which is a no-op on finite
-    # inputs and reproduces the validity border check's nan_to_num(outer/inner, nan=0.0).
-    count = int(0)
-    for i in range(N):
-        for j in range(i + 1, N):
-            diff = j - i
-            circ_dist = wp.min(diff, N - diff)
-            if circ_dist <= 1:
-                continue
-            Ai = poly[base + i]
-            Bi = poly[base + (i + 1) % N]
-            Aj = poly[base + j]
-            Bj = poly[base + (j + 1) % N]
-            aix = _nan0(Ai[0]); aiy = _nan0(Ai[1])
-            bix = _nan0(Bi[0]); biy = _nan0(Bi[1])
-            ajx = _nan0(Aj[0]); ajy = _nan0(Aj[1])
-            bjx = _nan0(Bj[0]); bjy = _nan0(Bj[1])
-            d1 = _ccw(ajx, ajy, bjx, bjy, aix, aiy)
-            d2 = _ccw(ajx, ajy, bjx, bjy, bix, biy)
-            d3 = _ccw(aix, aiy, bix, biy, ajx, ajy)
-            d4 = _ccw(aix, aiy, bix, biy, bjx, bjy)
-            # Scale-relative collinearity tolerance (matches geometry.SELF_X_REL): a
-            # straddle counts only if both endpoints clear the other segment's line by
-            # more than SELF_X_REL * (that segment length). |d| = len * perp-offset, so
-            # the threshold eps = REL * len^2. Kills the float32 sign-flip false positives
-            # on near-collinear/straight segments without missing genuine crossings.
-            lj2 = (bjx - ajx) * (bjx - ajx) + (bjy - ajy) * (bjy - ajy)
-            li2 = (bix - aix) * (bix - aix) + (biy - aiy) * (biy - aiy)
-            ej = float(1.0e-3) * lj2
-            ei = float(1.0e-3) * li2
-            seg_ij = (d1 > ej and d2 < -ej) or (d1 < -ej and d2 > ej)
-            seg_ji = (d3 > ei and d4 < -ei) or (d3 < -ei and d4 > ei)
-            if seg_ij and seg_ji:
-                count = count + 1
-    return count
-
-@wp.kernel
-def _self_intersections_by_i_k(
-    poly: wp.array(dtype=wp.vec2f),
-    n_max: int,
-    count: wp.array(dtype=wp.int32),
-    out: wp.array(dtype=wp.int32),
-):
-    # One thread per segment start i. This preserves the same pair predicate as
-    # _self_intersections_func, but avoids serializing every O(N^2) pair check onto
-    # one thread per environment. Crossing counts are rare, so atomics are cheap.
-    t = wp.tid()
-    e = t // n_max
-    i = t % n_max
-    N = count[e]
-    if i >= N:
-        return
-
-    base = e * n_max
-    Ai = poly[base + i]
-    Bi = poly[base + (i + 1) % N]
-    aix = _nan0(Ai[0]); aiy = _nan0(Ai[1])
-    bix = _nan0(Bi[0]); biy = _nan0(Bi[1])
-
-    for j in range(i + 1, N):
-        diff = j - i
-        circ_dist = wp.min(diff, N - diff)
-        if circ_dist <= 1:
-            continue
-        Aj = poly[base + j]
-        Bj = poly[base + (j + 1) % N]
-        ajx = _nan0(Aj[0]); ajy = _nan0(Aj[1])
-        bjx = _nan0(Bj[0]); bjy = _nan0(Bj[1])
-        d1 = _ccw(ajx, ajy, bjx, bjy, aix, aiy)
-        d2 = _ccw(ajx, ajy, bjx, bjy, bix, biy)
-        d3 = _ccw(aix, aiy, bix, biy, ajx, ajy)
-        d4 = _ccw(aix, aiy, bix, biy, bjx, bjy)
-        lj2 = (bjx - ajx) * (bjx - ajx) + (bjy - ajy) * (bjy - ajy)
-        li2 = (bix - aix) * (bix - aix) + (biy - aiy) * (biy - aiy)
-        ej = float(1.0e-3) * lj2
-        ei = float(1.0e-3) * li2
-        seg_ij = (d1 > ej and d2 < -ej) or (d1 < -ej and d2 > ej)
-        seg_ji = (d3 > ei and d4 < -ei) or (d3 < -ei and d4 > ei)
-        if seg_ij and seg_ji:
-            wp.atomic_add(out, e, int(1))
-
-@wp.func
-def _thickness_func(pts: wp.array(dtype=wp.vec2f), base: int, N: int, band: int) -> float:
-    # thickness = min(rad_min, 0.5 * sep_min) for the env whose points start at `base`.
-    # sep_min = min pairwise distance over pairs with circ_dist > band;
-    # rad_min  = 1 / max Menger curvature.
-    # --- sep_min: min dist over pairs with circ_dist > band ---
-    sep_min = float(1.0e30)
-    for i in range(N):
-        for j in range(i + 1, N):
-            diff = j - i
-            circ_dist = wp.min(diff, N - diff)
-            if circ_dist > band:
-                pi = pts[base + i]
-                pj = pts[base + j]
-                d = wp.length(pi - pj)
-                sep_min = wp.min(sep_min, d)
-
-    # --- rad_min: 1 / max Menger curvature ---
-    kappa_max = float(0.0)
-    for i in range(N):
-        xp = pts[base + (i + N - 1) % N]
-        xc = pts[base + i]
-        xn = pts[base + (i + 1) % N]
-        a = xc - xp
-        bb = xn - xc
-        cc = xn - xp
-        cross = a[0] * bb[1] - a[1] * bb[0]
-        area = 0.5 * wp.abs(cross)
-        denom = wp.max(wp.length(a) * wp.length(bb) * wp.length(cc), float(1.0e-12))
-        kappa = 4.0 * area / denom
-        kappa_max = wp.max(kappa_max, kappa)
-    rad_min = 1.0 / wp.max(kappa_max, float(1.0e-12))
-
-    return wp.min(rad_min, 0.5 * sep_min)
-
-@wp.kernel
-def _thickness_k(
-    pts: wp.array(dtype=wp.vec2f),
-    band: wp.array(dtype=wp.int32),
-    n_max: int,
-    count: wp.array(dtype=wp.int32),
-    out: wp.array(dtype=wp.float32),
-):
-    # One thread per env e. Delegates to _thickness_func with this env's band.
-    e = wp.tid()
-    out[e] = _thickness_func(pts, e * n_max, count[e], band[e])
-
-@wp.kernel
-def _resample_scan_k(
-    c: wp.array(dtype=wp.vec2f),
-    n_max: int,
-    count: wp.array(dtype=wp.int32),
-    seg: wp.array(dtype=wp.float32),
-    s: wp.array(dtype=wp.float32),
-):
-    # One thread per env e. Segment lengths seg[e*n_max+i]=|c[i+1]-c[i]|
-    # (i+1 wraps via %count[e]) and cumulative arc s[e*(n_max+1)+0]=0,
-    # s[..+i+1]=s[..+i]+seg[i] for i in range(count[e]).
-    # Running sum in float64 to limit accumulation drift.
-    # PARITY: when count[e]==n_max for all e, produces identical output to the
-    # former fixed-N kernel (same float64 accumulation order, same modular indexing).
-    e = wp.tid()
-    cn = count[e]
-    b = e * n_max
-    es = e * (n_max + 1)
-    s[es] = float(0.0)
-    acc = wp.float64(0.0)
-    for i in range(cn):
-        d = c[b + (i + 1) % cn] - c[b + i]
-        l = wp.length(d)
-        seg[b + i] = l
-        acc = acc + wp.float64(l)
-        s[es + i + 1] = wp.float32(acc)
-
-@wp.kernel
-def _resample_lookup_k(
-    c: wp.array(dtype=wp.vec2f),
-    seg: wp.array(dtype=wp.float32),
-    s: wp.array(dtype=wp.float32),
-    n_max: int,
-    count: wp.array(dtype=wp.int32),
-    out: wp.array(dtype=wp.vec2f),
-):
-    # One thread per output slot t; e = t // n_max, k = t % n_max.
-    # k >= count[e] -> NaN pad (padding region).
-    # Otherwise: target tk = k * total / count[e], linear scan then lerp.
-    # PARITY: when count[e]==n_max for all e, result is bit-identical to the
-    # former fixed-N kernel (same formula, same scan bounds, same wrap modulus).
-    t = wp.tid()
-    e = t // n_max
-    k = t % n_max
-    cn = count[e]
-    if k >= cn:
-        out[t] = wp.vec2f(wp.nan, wp.nan)
-        return
-    eb = e * n_max
-    es = e * (n_max + 1)
-    total = s[es + cn]
-    tk = float(k) * total / float(cn)
-    idx = int(0)
-    while idx < cn - 1 and s[es + idx + 1] < tk:
-        idx = idx + 1
-    s0 = s[es + idx]
-    segl = wp.max(seg[eb + idx], float(1.0e-12))
-    frac = wp.clamp((tk - s0) / segl, float(0.0), float(1.0))
-    p0 = c[eb + idx]
-    p1 = c[eb + (idx + 1) % cn]
-    out[t] = p0 + frac * (p1 - p0)
-
-@wp.kernel
-def _cs_scan_k(c: wp.array(dtype=wp.vec2f), N: int, spacing: wp.float32, n_max: int,
-               seg: wp.array(dtype=wp.float32), s: wp.array(dtype=wp.float32),
-               count: wp.array(dtype=wp.int32), truncated: wp.array(dtype=wp.int32)):
-    # One thread per env e. Closed-loop seg lengths + cumulative arc s (len N+1),
-    # then count = floor(total/spacing)+1, capped so target (count-1)*spacing < total
-    # and to n_max. Mirrors geometry._resample_one's spacing branch. truncated[e] records
-    # whether the UNCLAMPED count exceeded n_max (the loop's tail was dropped); the
-    # validity gate fails such envs closed.
-    e = wp.tid()
-    b = e * N
-    es = e * (N + 1)
-    s[es] = float(0.0)
-    acc = wp.float64(0.0)
-    for i in range(N):
-        d = c[b + (i + 1) % N] - c[b + i]
-        l = wp.length(d)
-        seg[b + i] = l
-        acc = acc + wp.float64(l)
-        s[es + i + 1] = wp.float32(acc)
-    total = wp.float32(acc)
-    if not (total > 0.0):      # catches total <= 0 AND NaN (never-accepted envs)
-        count[e] = 0
-        truncated[e] = 0
-        return
-    k = int(wp.floor(total / spacing)) + 1
-    while k > 1 and wp.float32(k - 1) * spacing >= total:
-        k = k - 1
-    count[e] = wp.min(wp.max(k, 1), n_max)
-    truncated[e] = wp.where(k > n_max, int(1), int(0))
-
-@wp.kernel
-def _cs_lookup_k(c: wp.array(dtype=wp.vec2f), seg: wp.array(dtype=wp.float32),
-                 s: wp.array(dtype=wp.float32), N: int, spacing: wp.float32, n_max: int,
-                 count: wp.array(dtype=wp.int32), out: wp.array(dtype=wp.vec2f)):
-    # One thread per OUTPUT slot t (dim = E*n_max). k >= count[e] -> NaN pad.
-    t = wp.tid()
-    e = t // n_max
-    k = t % n_max
-    if k >= count[e]:
-        out[t] = wp.vec2f(wp.nan, wp.nan)
-        return
-    eb = e * N
-    es = e * (N + 1)
-    target = wp.float32(k) * spacing
-    idx = int(0)
-    while idx < N - 1 and s[es + idx + 1] < target:
-        idx = idx + 1
-    s0 = s[es + idx]
-    segl = wp.max(seg[eb + idx], float(1.0e-12))
-    frac = wp.clamp((target - s0) / segl, float(0.0), float(1.0))
-    p0 = c[eb + idx]
-    p1 = c[eb + (idx + 1) % N]
-    out[t] = p0 + frac * (p1 - p0)
-
-@wp.kernel
-def _arc_scan_k(
-    dense: wp.array(dtype=wp.vec2f),
-    M: int,
-    num: int,
-    real_pts: wp.array(dtype=wp.vec2f),
-    seg: wp.array(dtype=wp.float32),
-    s: wp.array(dtype=wp.float32),
-    count_r: wp.array(dtype=wp.int32),
-    count_out: wp.array(dtype=wp.int32),
-):
-    # One thread per env e. NaN-aware generalization of _resample_scan_k: first
-    # COMPACT the real (both-components-finite) points IN ORDER (dropping interior
-    # NaN too, like the oracle's pe[isfinite.all(-1)]), then build the closed-loop
-    # segment lengths and cumulative arc length over those R real points.
-    e = wp.tid()
-    db = e * M
-    rb = e * M
-    es = e * (M + 1)
-
-    # Compaction: walk i=0..M-1, append every finite point in order.
-    r = int(0)
-    for i in range(M):
-        p = dense[db + i]
-        if wp.isfinite(p[0]) and wp.isfinite(p[1]):
-            real_pts[rb + r] = p
-            r = r + 1
-    count_r[e] = r
-    # count_out: R>=2 -> num, else 0.
-    count_out[e] = wp.where(r >= 2, num, 0)
-
-    # R >= 2: closed-loop arc length over real_pts[0..R-1]. seg[j] = |real[(j+1)%R]
-    # - real[j]| (j=R-1 is the wrap |real[0]-real[R-1]|); s[0]=0, s[j+1]=s[j]+seg[j].
-    # Accumulate in float64 to limit accumulation drift.
-    if r >= 2:
-        s[es] = float(0.0)
-        acc = wp.float64(0.0)
-        for j in range(r):
-            nxt = real_pts[rb + (j + 1) % r]
-            l = wp.length(nxt - real_pts[rb + j])
-            seg[rb + j] = l
-            acc = acc + wp.float64(l)
-            s[es + j + 1] = wp.float32(acc)
-    # R < 2: leave seg/s untouched; _arc_lookup_k emits NaN for this env.
-
-@wp.kernel
-def _arc_lookup_k(
-    real_pts: wp.array(dtype=wp.vec2f),
-    seg: wp.array(dtype=wp.float32),
-    s: wp.array(dtype=wp.float32),
-    count_r: wp.array(dtype=wp.int32),
-    M: int,
-    num: int,
-    out: wp.array(dtype=wp.vec2f),
-):
-    # One thread per OUTPUT point t (dim = E*num); e = env index, k = point-within-env.
-    # R = count_r[e]. R < 2 -> NaN (matches _resample_one's degenerate full-NaN row).
-    # Else: linear-scan searchsorted(right=False).clamp(max=R-1) over the closed
-    # real-loop arc length, then lerp. Mirrors _resample_lookup_k with variable R and
-    # the wrap p1 = real[0] for idx == R-1 ((idx+1)%R).
-    t = wp.tid()
-    e = t // num
-    k = t % num
-    rb = e * M
-    es = e * (M + 1)
-
-    r = count_r[e]
-    if r < 2:
-        out[t] = wp.vec2f(wp.nan, wp.nan)
-        return
-
-    total = s[es + r]
-    target = float(k) * total / float(num)
-
-    # Linear scan: first j in [0, R-1] with s[es+j+1] >= target, clamped to R-1.
-    idx = int(0)
-    while idx < r - 1 and s[es + idx + 1] < target:
-        idx = idx + 1
-
-    s0 = s[es + idx]
-    segl = wp.max(seg[rb + idx], float(1.0e-12))
-    frac = wp.clamp((target - s0) / segl, float(0.0), float(1.0))
-
-    p0 = real_pts[rb + idx]
-    p1 = real_pts[rb + (idx + 1) % r]   # closed[idx+1]: real[0] when idx == R-1
-    out[t] = p0 + frac * (p1 - p0)
-
-@wp.kernel
-def _arc_scan_selected_k(
-    dense: wp.array(dtype=wp.vec2f),
-    active: wp.array(dtype=wp.int32),
-    M: int,
-    num: int,
-    real_pts: wp.array(dtype=wp.vec2f),
-    seg: wp.array(dtype=wp.float32),
-    s: wp.array(dtype=wp.float32),
-    count_r: wp.array(dtype=wp.int32),
-    count_out: wp.array(dtype=wp.int32),
-):
-    # Same as _arc_scan_k for active envs. Inactive envs write only their counts,
-    # allowing downstream lookup to skip them and leave output rows untouched.
-    e = wp.tid()
-    if active[e] <= 0:
-        count_r[e] = int(0)
-        count_out[e] = int(0)
-        return
-
-    db = e * M
-    rb = e * M
-    es = e * (M + 1)
-
-    r = int(0)
-    for i in range(M):
-        p = dense[db + i]
-        if wp.isfinite(p[0]) and wp.isfinite(p[1]):
-            real_pts[rb + r] = p
-            r = r + 1
-    count_r[e] = r
-    count_out[e] = wp.where(r >= 2, num, 0)
-
-    if r >= 2:
-        s[es] = float(0.0)
-        acc = wp.float64(0.0)
-        for j in range(r):
-            nxt = real_pts[rb + (j + 1) % r]
-            l = wp.length(nxt - real_pts[rb + j])
-            seg[rb + j] = l
-            acc = acc + wp.float64(l)
-            s[es + j + 1] = wp.float32(acc)
-
-@wp.kernel
-def _arc_lookup_selected_k(
-    real_pts: wp.array(dtype=wp.vec2f),
-    seg: wp.array(dtype=wp.float32),
-    s: wp.array(dtype=wp.float32),
-    count_r: wp.array(dtype=wp.int32),
-    active: wp.array(dtype=wp.int32),
-    M: int,
-    num: int,
-    out: wp.array(dtype=wp.vec2f),
-):
-    t = wp.tid()
-    e = t // num
-    if active[e] <= 0:
-        return
-
-    k = t % num
-    rb = e * M
-    es = e * (M + 1)
-    r = count_r[e]
-    if r < 2:
-        out[t] = wp.vec2f(wp.nan, wp.nan)
-        return
-
-    total = s[es + r]
-    target = float(k) * total / float(num)
-    idx = int(0)
-    while idx < r - 1 and s[es + idx + 1] < target:
-        idx = idx + 1
-
-    s0 = s[es + idx]
-    segl = wp.max(seg[rb + idx], float(1.0e-12))
-    frac = wp.clamp((target - s0) / segl, float(0.0), float(1.0))
-    p0 = real_pts[rb + idx]
-    p1 = real_pts[rb + (idx + 1) % r]
-    out[t] = p0 + frac * (p1 - p0)
-
-@wp.func
-def _turning_func(c: wp.array(dtype=wp.vec2f), base: int, N: int) -> float:
-    # Signed total turning of the closed polygon whose points start at `base`.
-    # Edge angle theta_i = atan2(d_i.y, d_i.x) for raw edge d_i = c[(i+1)%N] - c[i]
-    # (atan2 is scale-invariant, so no normalization is needed; the zero-length
-    # edge gives atan2(0,0)=0, matching the oracle's safe_normalize-then-atan2).
-    # Per edge, dtheta = theta_i - theta_{i-1} wrapped into (-pi, pi] via
-    # atan2(sin, cos); the sum over all edges is the turning number.
-    total = float(0.0)
-    for i in range(N):
-        di = c[base + (i + 1) % N] - c[base + i]
-        ip = (i + N - 1) % N
-        dp = c[base + (ip + 1) % N] - c[base + ip]
-        theta_i = wp.atan2(di[1], di[0])
-        theta_prev = wp.atan2(dp[1], dp[0])
-        dth = theta_i - theta_prev
-        total = total + wp.atan2(wp.sin(dth), wp.cos(dth))
-    return total
-
-@wp.kernel
-def _turning_k(
-    c: wp.array(dtype=wp.vec2f),
-    n_max: int,
-    count: wp.array(dtype=wp.int32),
-    out: wp.array(dtype=wp.float32),
-):
-    # One thread per env e. Delegates to _turning_func over [e*n_max, e*n_max+count[e]).
-    e = wp.tid()
-    out[e] = _turning_func(c, e * n_max, count[e])
 
 @wp.kernel
 def _validity_k(
@@ -763,15 +334,6 @@ def _winding_k(
         area2 = area2 + (p[0] * q[1] - q[0] * p[1])
     out[e] = wp.where(area2 > 0.0, 1.0, wp.where(area2 < 0.0, -1.0, 0.0))
 
-@wp.kernel
-def _fill_f32_k(arr: wp.array(dtype=wp.float32), v: float):
-    # One thread per element: constant float fill.
-    arr[wp.tid()] = v
-
-@wp.kernel
-def _fill_i32_k(arr: wp.array(dtype=wp.int32), v: int):
-    # One thread per element: constant int fill.
-    arr[wp.tid()] = v
 
 def self_intersections_inplace(poly_wp, count_wp, out_wp, n_max,
                                ctx: "LaunchContext | None" = None):
@@ -783,12 +345,9 @@ def self_intersections_inplace(poly_wp, count_wp, out_wp, n_max,
             device's stream (see track_gen.exec).
     """
     _init()
-    E = count_wp.shape[0]
     dev = str(out_wp.device)
     ctx = _resolve_ctx(ctx, dev)
-    ctx.launch(_fill_i32_k, E, [out_wp, 0])
-    ctx.launch(_self_intersections_by_i_k, E * n_max,
-               [poly_wp, n_max, count_wp, out_wp])
+    _self_intersections_launch(ctx, poly_wp, count_wp, n_max, out_wp)
     ctx.sync()
 
 
@@ -803,11 +362,9 @@ def _arc_resample_inplace(points_wp, M, num, real_wp, seg_wp, s_wp, count_r_wp, 
         device's stream (see track_gen.exec).
     """
     ctx = _resolve_ctx(ctx, dev)
-    E = points_wp.shape[0] // M
-    ctx.launch(_arc_scan_k, E,
-               [points_wp, M, num, real_wp, seg_wp, s_wp, count_r_wp, count_out_wp])
-    ctx.launch(_arc_lookup_k, E * num,
-               [real_wp, seg_wp, s_wp, count_r_wp, M, num, out_wp])
+    _ops_resample._arc_resample_launch(
+        ctx, points_wp, M, num, _ArcScratch(real_wp, seg_wp, s_wp, count_r_wp),
+        out_wp, count_out_wp, E=points_wp.shape[0] // M)
 
 
 def arc_length_resample_inplace(
@@ -857,12 +414,9 @@ def _arc_resample_selected_inplace(
             device's stream (see track_gen.exec).
     """
     ctx = _resolve_ctx(ctx, dev)
-    E = points_wp.shape[0] // M
-    ctx.launch(_arc_scan_selected_k, E,
-               [points_wp, active_wp, M, num, real_wp, seg_wp, s_wp,
-                count_r_wp, count_out_wp])
-    ctx.launch(_arc_lookup_selected_k, E * num,
-               [real_wp, seg_wp, s_wp, count_r_wp, active_wp, M, num, out_wp])
+    _ops_resample._arc_resample_launch(
+        ctx, points_wp, M, num, _ArcScratch(real_wp, seg_wp, s_wp, count_r_wp),
+        out_wp, count_out_wp, E=points_wp.shape[0] // M, active=active_wp)
 
 
 def arc_length_resample_selected_inplace(
@@ -914,9 +468,7 @@ def turning_number_inplace(
     """
     _init()
     ctx = _resolve_ctx(ctx, str(out_wp.device))
-    E = count_wp.shape[0]
-    ctx.launch(_turning_k, E,
-               [center_wp, n_max, count_wp, out_wp])
+    _turning_launch(ctx, center_wp, count_wp, n_max, out_wp)
     ctx.sync()
 
 
@@ -1127,10 +679,8 @@ def resample_uniform(
     if s_wp is None:
         s_wp = wp.empty(E * (n_max + 1), dtype=wp.float32, device=device)
 
-    ctx.launch(_resample_scan_k, E,
-               [center_wp, n_max, count_wp, seg_wp, s_wp])
-    ctx.launch(_resample_lookup_k, flat,
-               [center_wp, seg_wp, s_wp, n_max, count_wp, out_wp])
+    _ops_resample._resample_uniform_launch(ctx, center_wp, count_wp, n_max, seg_wp, s_wp,
+                                           out_wp)
 
 
 def resample_constant_spacing(
@@ -1197,10 +747,8 @@ def resample_constant_spacing(
     if truncated_wp is None:
         truncated_wp = wp.empty(E, dtype=wp.int32, device=dev)
 
-    ctx.launch(_cs_scan_k, E, [center, N, float(spacing), n_max,
-               seg_wp, s_wp, count_wp, truncated_wp])
-    ctx.launch(_cs_lookup_k, E * n_max, [center, seg_wp, s_wp, N,
-               float(spacing), n_max, count_wp, out_wp])
+    _ops_resample._constant_spacing_launch(ctx, center, N, spacing, n_max, seg_wp, s_wp,
+                                           out_wp, count_wp, truncated_wp)
     ctx.sync()
 
     if _allocating:
@@ -1333,87 +881,6 @@ def _winding(
     ctx.sync()
 
 
-class GenScratch:
-    """Pre-allocated generation buffers for the bezier generator's PRIVATE working scratch.
-
-    The generation OUTPUT buffers (gen_centerline, gen_valid) are owned by the orchestrator
-    (_Scratch) and passed into generate_centerline_warp; they are NOT part of this class.
-
-    gen_count:     [E] int32 — per-env corner count from corner_count_sample_inplace.
-    gen_corners:   [E*P] vec2f — raw corners from corner_sample_inplace (P=max_num_points).
-    gen_ordered:   [E*P] vec2f — ccw-sorted corners from ccw_sort_inplace.
-    gen_used:      [E*P] int32 — dedup scratch for corner_sample_inplace.
-    gen_keys:      [E*P] float32 — sort-key scratch for ccw_sort_inplace.
-    gen_tan:       [E*P] vec2f — vertex tangents scratch for assemble_inplace.
-    gen_scale:     [E*P] float32 — vertex scale scratch for assemble_inplace.
-    gen_dense:     [E*P*npseg] vec2f — Bezier assembled dense centerline.
-    gen_poly:      [E*P*npseg] vec2f — polygon assembled dense centerline (the
-                   self-crossing fallback, handle_clamp_frac=0).
-    gen_rs:        [E*num_points] vec2f — Bezier arc-resampled N-point centerline.
-    gen_crossers:  [E] int32 — self-intersection counts (fallback select input).
-    gen_arc_real:  [E*P*npseg] vec2f — arc-resample compacted real points scratch.
-    gen_arc_seg:   [E*P*npseg] float32 — arc-resample per-segment length scratch.
-    gen_arc_s:     [E*(P*npseg+1)] float32 — arc-resample cumulative arc-length scratch.
-    gen_arc_cr:    [E] int32 — arc-resample real-point-count scratch.
-    gen_arc_co:    [E] int32 — arc-resample output-count scratch (also used as count=N
-                   input to self_intersections_inplace after the Bezier resample).
-    gen_style_rad:   [E] float32 — per-env rad draw (method #1; only written/read when
-                     config.style_sampling=True, else None/untouched). Optional.
-    gen_style_scale: [E] float32 — per-env scale draw (method #1). Optional.
-    gen_style_clamp: [E] float32 — per-env handle_clamp_frac draw (method #1). Optional.
-    """
-
-    __slots__ = (
-        "gen_count", "gen_corners", "gen_ordered", "gen_used", "gen_keys",
-        "gen_tan", "gen_scale", "gen_dense", "gen_poly",
-        "gen_rs", "gen_crossers",
-        "gen_arc_real", "gen_arc_seg", "gen_arc_s", "gen_arc_cr", "gen_arc_co",
-        "gen_style_rad", "gen_style_scale", "gen_style_clamp",
-    )
-
-    def __init__(
-        self,
-        gen_count: "wp.array",
-        gen_corners: "wp.array",
-        gen_ordered: "wp.array",
-        gen_used: "wp.array",
-        gen_keys: "wp.array",
-        gen_tan: "wp.array",
-        gen_scale: "wp.array",
-        gen_dense: "wp.array",
-        gen_poly: "wp.array",
-        gen_rs: "wp.array",
-        gen_crossers: "wp.array",
-        gen_arc_real: "wp.array",
-        gen_arc_seg: "wp.array",
-        gen_arc_s: "wp.array",
-        gen_arc_cr: "wp.array",
-        gen_arc_co: "wp.array",
-        gen_style_rad: "wp.array | None" = None,
-        gen_style_scale: "wp.array | None" = None,
-        gen_style_clamp: "wp.array | None" = None,
-    ) -> None:
-        self.gen_count = gen_count
-        self.gen_corners = gen_corners
-        self.gen_ordered = gen_ordered
-        self.gen_used = gen_used
-        self.gen_keys = gen_keys
-        self.gen_tan = gen_tan
-        self.gen_scale = gen_scale
-        self.gen_dense = gen_dense
-        self.gen_poly = gen_poly
-        self.gen_rs = gen_rs
-        self.gen_crossers = gen_crossers
-        self.gen_arc_real = gen_arc_real
-        self.gen_arc_seg = gen_arc_seg
-        self.gen_arc_s = gen_arc_s
-        self.gen_arc_cr = gen_arc_cr
-        self.gen_arc_co = gen_arc_co
-        self.gen_style_rad = gen_style_rad
-        self.gen_style_scale = gen_style_scale
-        self.gen_style_clamp = gen_style_clamp
-
-
 class RelaxScratch:
     """Pre-allocated relaxation buffers (band/L0 setup + XPBD solve; warp_relax stage).
 
@@ -1522,7 +989,8 @@ class _Scratch:
     concern so each stage receives only the group it owns:
 
     .generator_spec — GeneratorSpec resolved when this scratch was allocated.
-    .gen      — GenScratch:     generation intermediates (warp_generate).
+    .gen      — the generator's private scratch (its spec's ``alloc_scratch`` result,
+                e.g. ``warp_generate.GenScratch`` for bezier); opaque to the pipeline.
     .relax    — RelaxScratch:   band/L0 + XPBD buffers (warp_relax).
     .inflate  — InflateScratch: offset/frame/validity scratch.
 
@@ -1555,7 +1023,7 @@ class _Scratch:
         self,
         inflate: "InflateScratch",
         generator_spec=None,
-        gen: "GenScratch | None" = None,
+        gen: "object | None" = None,
         relax: "RelaxScratch | None" = None,
         gen_centerline: "wp.array | None" = None,
         gen_valid: "wp.array | None" = None,
@@ -1597,9 +1065,10 @@ def _inflate_warp_alloc(config, generator_spec=None):
     [E*N_max] float32; length/valid/count/truncated are [E] float32/int32/int32/int32.
     These are the flat storage shapes — reshape via wp bridge at the boundary.
 
-    Also allocates the composite _Scratch holder: a GenScratch, RelaxScratch and
-    InflateScratch group plus the bridge buffers (cs_center/cs_seg/cs_s/count), all sized
-    for the owned generate path so every stage runs zero-alloc.
+    Also allocates the composite _Scratch holder: the generator's private scratch
+    (``generator_spec.alloc_scratch``), a RelaxScratch and an InflateScratch group plus
+    the bridge buffers (cs_center/cs_seg/cs_s/count), all sized for the owned generate
+    path so every stage runs zero-alloc.
 
     Args:
         config: TrackGenConfig (uses num_envs, N_max, device).
@@ -2044,14 +1513,24 @@ def inflate_warp(center, config, out=None,
 
 
 # Generation lives in warp_generate (single-pass corner sampling -> Bezier assemble ->
-# arc-resample -> polygon fallback). warp_generate reuses this module's shared low-level
-# primitives (_init/_sync/_fill_i32_k/_arc_resample_inplace/self_intersections_inplace),
-# so the two modules reference each other. Generation symbols are re-exported here LAZILY
+# arc-resample -> polygon fallback). Generation symbols are re-exported here LAZILY
 # (PEP 562 module __getattr__): any name not defined on this module is resolved from
 # warp_generate on first attribute access, so warp_pipeline.<gen-name> keeps working for
 # the orchestrator and the test suite while the import is deferred past module load (which
 # avoids any module-load import cycle regardless of which module is imported first).
+# GenScratch (bezier's private scratch) moved to warp_generate; the old name here warns.
 def __getattr__(name):
+    if name == "GenScratch":
+        import warnings
+        from . import warp_generate
+        warnings.warn(
+            "track_gen._src.warp_pipeline.GenScratch moved to "
+            "track_gen._src.warp_generate.GenScratch; the warp_pipeline name is "
+            "deprecated and will be removed in 1.0",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return warp_generate.GenScratch
     if not name.startswith("__"):
         from . import warp_generate
         try:

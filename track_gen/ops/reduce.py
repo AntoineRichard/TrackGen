@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import warp as wp
 
+from .check import _device_str
 from .fill import fill
 
 __all__ = ["any_set"]
@@ -42,14 +43,15 @@ def any_set(ctx, mask: "wp.array", flag_out: "wp.array") -> None:
         flag_out: ``[1]`` ``int32`` array on the same device.
 
     Raises:
-        TypeError / ValueError: on a wrong type, dtype, shape or device (host-side,
-            before any launch).
+        TypeError: ``mask`` or ``flag_out`` is not an ``int32`` ``wp.array``.
+        ValueError: a wrong shape, or the arrays and ``ctx`` on different devices
+            (host-side, before any launch).
     """
     _check("mask", mask)
     _check("flag_out", flag_out)
     if flag_out.shape[0] != 1:
         raise ValueError(f"flag_out must have shape (1,), got {tuple(flag_out.shape)}")
-    if str(mask.device) != str(flag_out.device) or str(mask.device) != str(ctx.device):
+    if str(mask.device) != str(flag_out.device) or str(mask.device) != _device_str(ctx.device):
         raise ValueError(
             f"mask ({mask.device}), flag_out ({flag_out.device}) and the launch context "
             f"({ctx.device}) must be on the same device")

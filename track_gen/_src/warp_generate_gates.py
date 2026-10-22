@@ -1,9 +1,16 @@
-"""Gate-native generators backed by point-family samplers."""
+"""Gate-native generators backed by point-family samplers.
+
+The anchors come from the same public ``track_gen.ops`` samplers (and RNG salts) the
+bezier/hull track generators use, so a gate layout reproduces the track generator's
+corner/point draw for the same seed.
+"""
 from __future__ import annotations
 
 import warp as wp
 
+from .. import ops
 from ..exec.context import LaunchContext, resolve as _resolve_ctx
+from .runtime import _init
 
 
 class PointGateScratch:
@@ -19,7 +26,7 @@ class PointGateScratch:
 def _point_gate_alloc_scratch(config):
     from . import warp_gate
 
-    warp_gate._init()
+    _init()
     E = int(config.num_envs)
     P = int(config.max_num_points)
     dev = str(config.device)
@@ -45,9 +52,12 @@ def generate_bezier_gates(seeds_wp, config, out, scratch,
     ctx = _resolve_ctx(ctx, str(out.position.device))
     P = int(config.max_num_points)
     G = int(config.max_gates)
-    warp_generate.corner_count_sample_inplace(seeds_wp, 0, config, scratch.count, ctx=ctx)
-    warp_generate.corner_sample_inplace(seeds_wp, 0, config, scratch.points, scratch.used,
-                                        ctx=ctx)
+    num_cells, cell_size = ops.grid_cells(config.min_point_distance)
+    ops.sample_counts(ctx, seeds_wp, warp_generate.CORNER_COUNT_SALT, 0,
+                      int(config.min_num_points), int(config.max_num_points), scratch.count)
+    ops.sample_grid_points(ctx, seeds_wp, warp_generate.CORNER_SALT, 0, P, num_cells,
+                           float(cell_size), float(config.scale), scratch.used,
+                           scratch.points)
     warp_gate.finish_ordered_gates(
         seeds_wp,
         scratch.points,
@@ -69,14 +79,17 @@ def generate_hull_gates(seeds_wp, config, out, scratch,
         ctx: optional track_gen.exec.LaunchContext; default resolves the
             device's stream (see track_gen.exec).
     """
-    from . import warp_gate, warp_generate_hull
+    from . import warp_gate, warp_generate_hull as hull
 
     ctx = _resolve_ctx(ctx, str(out.position.device))
     P = int(config.max_num_points)
     G = int(config.max_gates)
-    warp_generate_hull.point_count_sample_inplace(seeds_wp, config, scratch.count, ctx=ctx)
-    warp_generate_hull.point_sample_inplace(seeds_wp, config, scratch.points, scratch.used,
-                                            ctx=ctx)
+    num_cells, cell_size = ops.grid_cells(config.min_point_distance)
+    ops.sample_counts(ctx, seeds_wp, hull.POINT_COUNT_SALT, hull.POINT_SALT_OFFSET,
+                      int(config.min_num_points), int(config.max_num_points), scratch.count)
+    ops.sample_grid_points(ctx, seeds_wp, hull.POINT_SALT, hull.POINT_SALT_OFFSET, P,
+                           num_cells, float(cell_size), float(config.scale), scratch.used,
+                           scratch.points)
     warp_gate.finish_ordered_gates(
         seeds_wp,
         scratch.points,

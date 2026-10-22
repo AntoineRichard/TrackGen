@@ -64,7 +64,7 @@ def test_generator_scratch_names_do_not_shadow_inflate_buffers(plugin_registry):
     import numpy as np
     import warp as wp
 
-    from track_gen._src import warp_pipeline
+    from track_gen._src import warp_generate
     from track_gen._src.rng_utils import PerEnvSeededRNG
     from track_gen._src.track_generator import TrackGenerator
     from track_gen._src.types import TrackGenConfig
@@ -78,7 +78,7 @@ def test_generator_scratch_names_do_not_shadow_inflate_buffers(plugin_registry):
 
     def alloc_with_decoys(config):
         gs = base.alloc_scratch(config)
-        fields = {k: getattr(gs, k) for k in warp_pipeline.GenScratch.__slots__}
+        fields = {k: getattr(gs, k) for k in warp_generate.GenScratch.__slots__}
         for name, n in (("w", flat), ("kappa", flat), ("z", flat), ("area_a", E), ("area_b", E)):
             decoys[name] = wp.full(n, sentinel, dtype=wp.float32, device="cpu")
             fields[name] = decoys[name]

@@ -23,6 +23,7 @@ through ``wp.synchronize*``; on CPU every generation path is probed.
 from __future__ import annotations
 
 import contextlib
+import importlib
 import inspect
 import sys
 import warnings
@@ -64,7 +65,9 @@ from track_gen._src.props import PropSampler
 from track_gen._src.rng_utils import PerEnvSeededRNG
 from track_gen._src.track_generator import TrackGenerator
 from track_gen._src.types import GateGenConfig, TrackGenConfig
+from track_gen import ops
 from track_gen import seeds as seeds_mod
+from track_gen.exec import LaunchContext
 from track_gen.ops import reduce as reduce_mod
 from track_gen.plugin import registry
 from track_gen.seeds import SeedState
@@ -476,6 +479,86 @@ def _geometry_wrappers():
     return hot
 
 
+def _ops_all():
+    # Every public track_gen.ops op and variant on a small synthetic batch (inputs and
+    # ArcScratch allocated here, outside the probe).
+    E, M, num, n, P, K, ps = 3, 12, 8, 10, 6, 5, 3
+    rs = np.random.default_rng(0)
+    t = np.linspace(0.0, 2.0 * np.pi, M, endpoint=False)
+    dense = np.stack([np.cos(t), np.sin(t)], -1)[None] * rs.uniform(0.5, 2.0, (E, 1, 1))
+    dense = dense.astype(np.float32)
+    dense[1, 3:5] = np.nan
+    v2 = lambda a: wp.array(np.asarray(a, np.float32).reshape(-1, 2), dtype=wp.vec2f,  # noqa: E731
+                            device=DEV)
+    src, loops = v2(dense), v2(dense[:, :n])
+    ctx = LaunchContext.for_call(DEV)
+    sc_m = ops.ArcScratch.alloc(E, M, DEV)
+    sc_n = ops.ArcScratch.alloc(E, n, DEV, compact=False)
+    act, cnt_n = _i32([1, 0, 1]), _i32([n, 4, 0])
+    cnt_p, cnt_k, band = _i32([P, 2, P + 1]), _i32([K, 2, 1]), _i32([1, 1, 1])
+    seeds = _i32([1, 2147483647, -7])
+    pts, ctrl = v2(rs.normal(size=(E * P, 2))), v2(rs.normal(size=(E * K, 2)))
+    scale = wp.array(np.asarray([1.0, 0.5, 2.0], np.float32), dtype=wp.float32, device=DEV)
+    f32 = lambda k: wp.empty(k, dtype=wp.float32, device=DEV)  # noqa: E731
+    i32 = lambda k: wp.empty(k, dtype=wp.int32, device=DEV)  # noqa: E731
+    vv = lambda k: wp.empty(k, dtype=wp.vec2f, device=DEV)  # noqa: E731
+    o_num, o_n, o_cs, o_p, o_p2, o_cr = vv(E * num), vv(E * n), vv(E * 16), vv(E * P), \
+        vv(E * (P + 2)), vv(E * K * ps)
+    co, cs_c, cs_t, xi, o_c, used, flag = i32(E), i32(E), i32(E), i32(E), i32(E), \
+        i32(E * P), i32(1)
+    tf, keys = f32(E), f32(E * (P + 2))
+
+    def hot():
+        ops.arc_resample(ctx, src, M, num, sc_m, o_num, co)
+        ops.arc_resample(ctx, src, M, num, sc_m, o_num, co, active=act)
+        ops.resample_uniform(ctx, loops, n, sc_n, o_n, count=cnt_n)
+        ops.resample_constant_spacing(ctx, loops, n, 0.3, 16, sc_n, o_cs, cs_c, cs_t)
+        ops.self_intersections(ctx, loops, n, xi, count=cnt_n)
+        ops.turning_number(ctx, loops, n, tf, count=cnt_n)
+        ops.thickness(ctx, loops, n, band, tf, count=cnt_n)
+        ops.normalize_extent(ctx, o_n, n, 1.44)
+        ops.normalize_extent(ctx, o_n, n, 1.44, count=cnt_n)
+        ops.angle_sort(ctx, pts, P, keys, o_p, count=cnt_p)
+        ops.angle_sort(ctx, pts, P, keys, o_p2, count=cnt_p, out_stride=P + 2)
+        ops.sample_counts(ctx, seeds, 6151, 0, 2, P, o_c)
+        nc, cell = ops.grid_cells(0.05)
+        ops.sample_grid_points(ctx, seeds, 9781, 0, P, nc, cell, 1.0, used, o_p)
+        ops.sample_grid_points(ctx, seeds, 7919, 1, P, nc, cell, scale, used, o_p)
+        ops.closed_catmull_rom(ctx, ctrl, K, ps, o_cr)
+        ops.closed_catmull_rom(ctx, ctrl, K, ps, o_cr, count=cnt_k, endpoint=True)
+        ops.closed_polyline(ctx, ctrl, K, ps, o_cr)
+        ops.closed_polyline(ctx, ctrl, K, ps, o_cr, active=act)
+        ops.closed_polyline(ctx, ctrl, K, ps, o_cr, count=cnt_k, endpoint=True, active=act)
+        ops.fill(ctx, o_cr, (0.0, 1.0))
+        ops.any_set(ctx, act, flag)
+        ops.check_array("act", act, (E,), wp.int32, DEV)
+    return hot
+
+
+
+def _legacy_generator_wrappers():
+    # The legacy (pre-ops) generator helpers kept for out-of-tree plugins: driven directly
+    # because the built-in generators stop calling them once they use track_gen.ops.
+    cfg = TrackGenConfig(device=DEV, num_envs=E, min_num_points=3, max_num_points=6)
+    P = int(cfg.max_num_points)
+    seeds = _i32([3, 4])
+    count = wp.empty(E, dtype=wp.int32, device=DEV)
+    pts = wp.empty(E * P, dtype=wp.vec2f, device=DEV)
+    srt = wp.empty(E * P, dtype=wp.vec2f, device=DEV)
+    used = wp.empty(E * P, dtype=wp.int32, device=DEV)
+    keys = wp.empty(E * P, dtype=wp.float32, device=DEV)
+    scale = wp.full(E, 1.0, dtype=wp.float32, device=DEV)
+
+    def hot():
+        warp_generate.corner_count_sample_inplace(seeds, 0, cfg, count)
+        warp_generate.corner_sample_inplace(seeds, 0, cfg, pts, used)
+        warp_generate.corner_sample_inplace(seeds, 0, cfg, pts, used, scale_per_env=scale)
+        warp_generate.ccw_sort_inplace(pts, count, keys, srt, P)
+        warp_generate_hull.point_count_sample_inplace(seeds, cfg, count)
+        warp_generate_hull.point_sample_inplace(seeds, cfg, pts, used)
+    return hot
+
+
 def _inflate_fixed_n():
     # inflate_warp's count=None convenience path (fixed N == num_points) on a scratch
     # allocated at construction.
@@ -549,6 +632,8 @@ DRIVERS = {
     "wrappers[resample]": _resample_wrappers,
     "wrappers[geometry]": _geometry_wrappers,
     "wrappers[inflate_fixed_n]": _inflate_fixed_n,
+    "wrappers[legacy_generator]": _legacy_generator_wrappers,
+    "ops[all]": _ops_all,
 }
 
 
@@ -573,6 +658,9 @@ _PIPELINE_MODULES = (
     warp_generate_voronoi_gates,
     # not pipeline stages, but hot paths with module-level wrappers too (PR4)
     rng_kernels, seeds_mod, reduce_mod,
+    # the public track_gen.ops primitives (PR7); ops.fill is shadowed by the function
+    *(importlib.import_module(f"track_gen.ops.{m}")
+      for m in ("check", "resample", "geometry", "sampling", "curves", "fill")),
 )
 
 # Construction-time functions (allocation, registration, host precompute for sizing).
@@ -591,7 +679,8 @@ _CONSTRUCTION_ONLY = {
     "track_gen._src.warp_generate_repulsive": {"repulsive_alloc_scratch",
                                                "_sobolev_circulant_row",
                                                "_stage_schedule", "register"},
-    "track_gen._src.warp_generate_voronoi": {"voronoi_alloc_scratch", "register"},
+    "track_gen._src.warp_generate_voronoi": {"voronoi_alloc_scratch", "_voronoi_layout_mode",
+                                             "register"},
     "track_gen._src.warp_generate_gates": {"_point_gate_alloc_scratch",
                                            "_max_point_gates", "register"},
     "track_gen._src.warp_generate_checkpoint_gates": {"checkpoint_gate_alloc_scratch",

@@ -11,36 +11,33 @@ coordinate range as the bezier baseline.
 The old Fourier radial function path was valid but collapsed toward high-compactness
 near-circles. This module deliberately emphasizes random radial knots and local variation;
 XPBD/inflation remain responsible for the final constant-width validity gate.
+
+The arc resample, extent normalisation and fill are the public ``track_gen.ops``
+primitives; the control-knot draw is exposed as :func:`sample_polar_controls` (shared
+with the polar gate generator). The dense spline keeps its own one-thread-per-env kernel
+(see :data:`_polar_spline_dense_k`).
 """
 from __future__ import annotations
 
 import warp as wp
 
+from .. import ops
 from ..exec.context import LaunchContext, resolve as _resolve_ctx
-from . import warp_pipeline as _pipe
-
-# Target longest-bbox extent (in units of config.scale) the generated loop is normalized
-# to. Chosen to match the bezier baseline's typical per-env longest bbox dimension
-# (~1.44 at scale=1.0), so half_width / spacing / relax see comparable coordinates.
-_BEZIER_EXTENT = 1.44
+from ..ops import funcs
+from ..ops.constants import TARGET_EXTENT
+from .runtime import _init
 
 # Independent RNG streams for controls. The constants are distinct from bezier/hull salts.
 _CONTROL_SALT = 7919
 
-# The curve is normalized after resampling, so base radius only sets a stable pre-scale.
-_BASE_RADIUS = 1.0
+#: Radius of the control ring before normalisation. The curve is normalised after
+#: resampling, so the base radius only sets a stable pre-scale.
+BASE_RADIUS = 1.0
 
-
-@wp.func
-def _catmull_rom(p0: wp.vec2f, p1: wp.vec2f, p2: wp.vec2f, p3: wp.vec2f, u: float) -> wp.vec2f:
-    u2 = u * u
-    u3 = u2 * u
-    return 0.5 * (
-        (2.0 * p1)
-        + (-p0 + p2) * u
-        + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * u2
-        + (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * u3
-    )
+# Legacy private names (values only): the loop is normalised to ``config.scale *
+# TARGET_EXTENT`` (the bezier baseline's typical longest bbox side).
+_BEZIER_EXTENT = TARGET_EXTENT
+_BASE_RADIUS = BASE_RADIUS
 
 
 @wp.kernel
@@ -68,6 +65,10 @@ def _polar_controls_k(
         controls[b + i] = wp.vec2f(r * wp.cos(theta), r * wp.sin(theta))
 
 
+# Legacy private name: the spline basis is ops.funcs.catmull_rom (the same function body).
+_catmull_rom = funcs.catmull_rom
+
+
 @wp.func
 def _control_at(controls: wp.array(dtype=wp.vec2f), b: int, i: int, K: int) -> wp.vec2f:
     return controls[b + (i % K)]
@@ -82,6 +83,12 @@ def _polar_spline_dense_k(
 ):
     # One thread per env e. Evaluate a closed uniform Catmull-Rom spline through the polar
     # controls. Output stride per env is K * samples_per_segment.
+    #
+    # Kept verbatim from 1077b18 instead of ops.closed_catmull_rom (one thread per sample):
+    # the values are bitwise equal on CPU, but on CUDA (fuse_fp) the loop structure decides
+    # which multiply-adds the compiler contracts into FMAs (loop-invariant terms are
+    # hoisted out of the inner loop), so the per-sample kernel is not guaranteed to round
+    # the same. The merge is deferred to roadmap PR16.
     e = wp.tid()
     cb = e * K
     M = K * samples_per_segment
@@ -97,38 +104,6 @@ def _polar_spline_dense_k(
             # final dense point closes back to the first through arc-resample's wrap edge.
             u = float(s) / float(samples_per_segment)
             dense[db + i * samples_per_segment + s] = _catmull_rom(p0, p1, p2, p3, u)
-
-
-@wp.kernel
-def _normalize_centerline_k(
-    points: wp.array(dtype=wp.vec2f),
-    N: int,
-    target_extent: float,
-):
-    # One thread per env e. Center by bbox and scale so each env's longest bbox dimension
-    # exactly matches target_extent after arc resampling.
-    e = wp.tid()
-    b = e * N
-    min_x = float(1.0e30)
-    max_x = float(-1.0e30)
-    min_y = float(1.0e30)
-    max_y = float(-1.0e30)
-
-    for i in range(N):
-        p = points[b + i]
-        min_x = wp.min(min_x, p[0])
-        max_x = wp.max(max_x, p[0])
-        min_y = wp.min(min_y, p[1])
-        max_y = wp.max(max_y, p[1])
-
-    cx = 0.5 * (min_x + max_x)
-    cy = 0.5 * (min_y + max_y)
-    extent = wp.max(max_x - min_x, max_y - min_y)
-    scale = target_extent / wp.max(extent, 1.0e-8)
-
-    for i in range(N):
-        p = points[b + i]
-        points[b + i] = wp.vec2f((p[0] - cx) * scale, (p[1] - cy) * scale)
 
 
 class PolarScratch:
@@ -151,17 +126,64 @@ class PolarScratch:
         self.arc_co = arc_co
 
 
-def _polar_num_knots(config) -> int:
-    # Fall back to the old polar/Fourier knob for config-like objects outside the
-    # dataclass that have not adopted polar_num_knots yet.
+def polar_num_knots(config) -> int:
+    """Number of polar control knots ``K`` for ``config`` (at least 4).
+
+    Reads ``config.polar_num_knots``, falling back to the old polar/Fourier knob
+    ``num_harmonics`` (then 12) for config-like objects that have not adopted it.
+    """
     return max(int(getattr(config, "polar_num_knots", getattr(config, "num_harmonics", 12))), 4)
+
+
+# Legacy private name (kept: older plugins and the gate generator imported it).
+_polar_num_knots = polar_num_knots
+
+
+def polar_jitters(config) -> "tuple[float, float]":
+    """``(radial_jitter, angular_jitter)`` of the polar control draw for ``config``.
+
+    Defaults are deliberately stronger than the old low-pass Fourier path so compactness
+    does not cluster near one. The clamps keep the radius positive (radial jitter
+    ``<= 0.85``) and the angular order monotone (angular jitter ``<= 0.45`` of a knot
+    spacing).
+    """
+    radial_default = 0.60 * float(getattr(config, "amplitude", 1.0))
+    radial_jitter = min(max(float(getattr(config, "polar_radial_jitter", radial_default)), 0.0), 0.85)
+    angular_jitter = min(max(float(getattr(config, "polar_angular_jitter", 0.30)), 0.0), 0.45)
+    return radial_jitter, angular_jitter
+
+
+def sample_polar_controls(ctx: "LaunchContext", seeds: wp.array, K: int,
+                          radial_jitter: float, angular_jitter: float, out: wp.array, *,
+                          base_radius: float = BASE_RADIUS) -> None:
+    """Draw ``K`` angularly sorted polar control knots per env into ``out``.
+
+    Knot ``i`` of env ``e`` sits at angle ``2*pi*(i + d_ang)/K`` and radius
+    ``base_radius * max(1 + d_rad, 0.1)`` with ``d_rad, d_ang`` uniform in
+    ``[-radial_jitter, radial_jitter]`` / ``[-angular_jitter, angular_jitter]``, from
+    ``wp.rand_init(seeds[e] * 7919 + 17)``. With ``angular_jitter < 0.5`` the index order
+    is the angular order. One launch (``E = seeds.shape[0]`` threads); no allocation, no
+    host sync, no validation.
+
+    Args:
+        ctx: the :class:`~track_gen.exec.LaunchContext` to launch on.
+        seeds: ``[E]`` ``int32`` per-env seeds.
+        K: knots per env.
+        radial_jitter: relative radius jitter (see :func:`polar_jitters`).
+        angular_jitter: angle jitter as a fraction of one knot spacing.
+        out: ``[E*K]`` ``vec2f`` control knots.
+        base_radius: ring radius before jitter.
+    """
+    ctx.launch(_polar_controls_k, seeds.shape[0],
+               [seeds, int(K), float(radial_jitter), float(angular_jitter),
+                float(base_radius), out])
 
 
 def polar_alloc_scratch(config):
     """Allocate the polar generator's PRIVATE working scratch (one alloc per generator)."""
-    _pipe._init()
+    _init()
     E = int(config.num_envs)
-    K = _polar_num_knots(config)
+    K = polar_num_knots(config)
     npseg = int(config.num_points_per_segment)
     M = K * npseg
     dev = str(config.device)
@@ -189,34 +211,28 @@ def generate_polar_warp(seeds_wp: wp.array, config,
         ctx: optional track_gen.exec.LaunchContext; default resolves the
             device's stream (see track_gen.exec).
     """
-    _pipe._init()
+    _init()
     ctx = _resolve_ctx(ctx, str(out_centerline.device))
     assert scratch is not None, "generate_polar_warp requires scratch"
 
-    E = int(config.num_envs)
     N = int(config.num_points)
-    K = _polar_num_knots(config)
+    K = polar_num_knots(config)
     npseg = int(config.num_points_per_segment)
     M = K * npseg
-    dev = str(out_centerline.device)
+    radial_jitter, angular_jitter = polar_jitters(config)
+    target_extent = float(config.scale) * TARGET_EXTENT
+    arc = ops.ArcScratch(scratch.arc_real, scratch.arc_seg, scratch.arc_s, scratch.arc_cr)
 
-    # Defaults are deliberately stronger than the old low-pass Fourier path so compactness
-    # does not cluster near one. Clamp keeps radius positive and angular order monotone.
-    radial_default = 0.60 * float(getattr(config, "amplitude", 1.0))
-    radial_jitter = min(max(float(getattr(config, "polar_radial_jitter", radial_default)), 0.0), 0.85)
-    angular_jitter = min(max(float(getattr(config, "polar_angular_jitter", 0.30)), 0.0), 0.45)
-    target_extent = float(config.scale) * _BEZIER_EXTENT
-
-    ctx.launch(_polar_controls_k, E,
-               [seeds_wp, K, radial_jitter, angular_jitter, _BASE_RADIUS,
-                scratch.controls])
-    ctx.launch(_polar_spline_dense_k, E, [scratch.controls, K, npseg, scratch.dense])
-    _pipe._arc_resample_inplace(scratch.dense, M, N,
-                                scratch.arc_real, scratch.arc_seg, scratch.arc_s,
-                                scratch.arc_cr, scratch.arc_co, out_centerline, dev,
-                                ctx=ctx)
-    ctx.launch(_normalize_centerline_k, E, [out_centerline, N, target_extent])
-    ctx.launch(_pipe._fill_i32_k, E, [out_valid_wp, 1])
+    sample_polar_controls(ctx, seeds_wp, K, radial_jitter, angular_jitter, scratch.controls)
+    # Closed Catmull-Rom through the controls, endpoint-excluded within each segment (the
+    # next segment starts at p2; the loop closes through the arc-resample's wrap edge).
+    # Same values as ops.closed_catmull_rom(ctx, controls, K, npseg, dense) on CPU; the
+    # per-env loop kernel is kept for CUDA byte identity (see _polar_spline_dense_k).
+    ctx.launch(_polar_spline_dense_k, int(config.num_envs),
+               [scratch.controls, K, npseg, scratch.dense])
+    ops.arc_resample(ctx, scratch.dense, M, N, arc, out_centerline, scratch.arc_co)
+    ops.normalize_extent(ctx, out_centerline, N, target_extent)
+    ops.fill(ctx, out_valid_wp, 1)
     ctx.sync()
 
 

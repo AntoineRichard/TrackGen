@@ -11,15 +11,27 @@ The implementation deliberately avoids exact Voronoi ridge traversal. Exact Dela
 Voronoi construction and dynamic cycle-basis search are not a good fit for the runtime
 contract. The fixed site field still gives the useful "right number of cells" control,
 while the anchor-snapping cycle is static-shape, allocation-free, and CUDA-graph safe.
+
+The spline evaluation, arc resample, extent normalisation, self-intersection count,
+polygon fallback and fill are the public ``track_gen.ops`` primitives; the site field and
+anchor selection are exposed as :func:`sample_voronoi_sites` /
+:func:`select_voronoi_anchors` (shared with the voronoi gate generator).
 """
 from __future__ import annotations
 
 import warp as wp
 
+from .. import ops
 from ..exec.context import LaunchContext, resolve as _resolve_ctx
-from . import warp_pipeline as _pipe
+from ..ops.constants import TARGET_EXTENT
+from .runtime import _init
 
-_TARGET_EXTENT = 1.44
+# Legacy private name (value only): the loop is normalised to config.scale * TARGET_EXTENT.
+_TARGET_EXTENT = TARGET_EXTENT
+
+#: Side of the square site field (centred at the origin) the built-in generator samples.
+BOX_SIZE = 2.0
+
 _SITE_SALT = 8171
 _ANCHOR_SALT = 3911
 
@@ -41,18 +53,6 @@ def _clamp_f(v: float, lo: float, hi: float) -> float:
 def _angle_delta(a: float, b: float) -> float:
     d = a - b
     return wp.atan2(wp.sin(d), wp.cos(d))
-
-
-@wp.func
-def _catmull_rom(p0: wp.vec2f, p1: wp.vec2f, p2: wp.vec2f, p3: wp.vec2f, u: float) -> wp.vec2f:
-    u2 = u * u
-    u3 = u2 * u
-    return 0.5 * (
-        (2.0 * p1)
-        + (-p0 + p2) * u
-        + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * u2
-        + (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * u3
-    )
 
 
 @wp.kernel
@@ -190,86 +190,6 @@ def _chaikin_once_k(
         aug[abase + 2 * i + 1] = 0.25 * p0 + 0.75 * p1
 
 
-@wp.func
-def _aug_at(aug: wp.array(dtype=wp.vec2f), base: int, i: int, count: int) -> wp.vec2f:
-    return aug[base + (i % count)]
-
-
-@wp.kernel
-def _catmull_rom_dense_k(
-    aug: wp.array(dtype=wp.vec2f),
-    AP: int,
-    npseg: int,
-    dense: wp.array(dtype=wp.vec2f),
-):
-    t = wp.tid()
-    per_env = AP * npseg
-    e = t // per_env
-    rem = t % per_env
-    i = rem // npseg
-    s = rem % npseg
-    base = e * AP
-    p0 = _aug_at(aug, base, i - 1 + AP, AP)
-    p1 = _aug_at(aug, base, i, AP)
-    p2 = _aug_at(aug, base, i + 1, AP)
-    p3 = _aug_at(aug, base, i + 2, AP)
-    u = float(s) / float(npseg)
-    dense[t] = _catmull_rom(p0, p1, p2, p3, u)
-
-
-@wp.kernel
-def _assemble_polygon_selected_k(
-    aug: wp.array(dtype=wp.vec2f),
-    AP: int,
-    npseg: int,
-    active: wp.array(dtype=wp.int32),
-    dense: wp.array(dtype=wp.vec2f),
-):
-    t = wp.tid()
-    per_env = AP * npseg
-    e = t // per_env
-    if active[e] <= 0:
-        return
-    rem = t % per_env
-    i = rem // npseg
-    s = rem % npseg
-    base = e * AP
-    p0 = aug[base + i]
-    p1 = aug[base + (i + 1) % AP]
-    u = float(s) / float(npseg)
-    dense[t] = (1.0 - u) * p0 + u * p1
-
-
-@wp.kernel
-def _normalize_centerline_k(
-    points: wp.array(dtype=wp.vec2f),
-    N: int,
-    target_extent: float,
-):
-    e = wp.tid()
-    base = e * N
-    min_x = float(1.0e30)
-    max_x = float(-1.0e30)
-    min_y = float(1.0e30)
-    max_y = float(-1.0e30)
-
-    for i in range(N):
-        p = points[base + i]
-        min_x = wp.min(min_x, p[0])
-        max_x = wp.max(max_x, p[0])
-        min_y = wp.min(min_y, p[1])
-        max_y = wp.max(max_y, p[1])
-
-    cx = 0.5 * (min_x + max_x)
-    cy = 0.5 * (min_y + max_y)
-    extent = wp.max(max_x - min_x, max_y - min_y)
-    scale = target_extent / wp.max(extent, 1.0e-8)
-
-    for i in range(N):
-        p = points[base + i]
-        points[base + i] = wp.vec2f((p[0] - cx) * scale, (p[1] - cy) * scale)
-
-
 class VoronoiScratch:
     """Private working buffers for the standard ``"voronoi"`` generator."""
 
@@ -305,7 +225,9 @@ class VoronoiScratch:
         self.arc_co = arc_co
 
 
-def _voronoi_layout_mode(name: str) -> int:
+def voronoi_layout_mode(name: str) -> int:
+    """Kernel code of a ``voronoi_site_layout`` name (``"ring"``, ``"void_ring"``,
+    ``"clustered"`` or ``"mixed"``); raises ``ValueError`` for any other name."""
     layouts = {
         "ring": _LAYOUT_RING,
         "void_ring": _LAYOUT_VOID_RING,
@@ -321,6 +243,11 @@ def _voronoi_layout_mode(name: str) -> int:
         ) from exc
 
 
+# Legacy private name (kept like warp_generate_polar._polar_num_knots: the gate generator
+# imported it at 1077b18).
+_voronoi_layout_mode = voronoi_layout_mode
+
+
 def _voronoi_shape(config) -> tuple[int, int, int, int]:
     S = int(getattr(config, "voronoi_num_sites", 256))
     K = int(getattr(config, "voronoi_control_points", 18))
@@ -330,9 +257,41 @@ def _voronoi_shape(config) -> tuple[int, int, int, int]:
     return S, K, AP, M
 
 
+def sample_voronoi_sites(ctx: "LaunchContext", seeds: wp.array, S: int, layout_mode: int,
+                         box_size: float, out_sites: wp.array) -> None:
+    """Sample ``S`` Voronoi cell sites per env into ``out_sites`` (``[E*S]`` ``vec2f``).
+
+    ``layout_mode`` is a :func:`voronoi_layout_mode` code; sites lie in the
+    ``box_size``-wide square (or the annulus of the ring layouts) centred at the origin,
+    drawn from ``wp.rand_init(seeds[e] * 8171 + 19)``. One launch (``E = seeds.shape[0]``
+    threads); no allocation, no host sync, no validation.
+    """
+    ctx.launch(_sample_sites_k, seeds.shape[0],
+               [seeds, int(S), int(layout_mode), float(box_size), out_sites])
+
+
+def select_voronoi_anchors(ctx: "LaunchContext", seeds: wp.array, sites: wp.array, S: int,
+                           K: int, layout_mode: int, box_size: float,
+                           radial_variation: float, angular_jitter: float,
+                           out_selected: wp.array, used: wp.array) -> None:
+    """Snap ``K`` angular anchor targets per env to distinct nearby sites.
+
+    For anchor ``i`` (angle ``rotation + 2*pi*i/K + jitter``, target radius from a
+    seeded low-order radial profile scaled by ``radial_variation``) the cheapest unused
+    site of the env's ``S`` ``sites`` is written to ``out_selected[e*K + i]``; ``used``
+    (``[E*S]`` ``int32`` scratch) marks taken sites. Keyed
+    ``wp.rand_init(seeds[e] * 3911 + 31)``. One launch (``E = seeds.shape[0]``
+    threads); no allocation, no host sync, no validation.
+    """
+    ctx.launch(_select_anchor_sites_k, seeds.shape[0], [
+        seeds, sites, int(S), int(K), int(layout_mode), float(box_size),
+        float(radial_variation), float(angular_jitter), out_selected, used,
+    ])
+
+
 def voronoi_alloc_scratch(config):
     """Allocate private scratch for the standard Voronoi generator."""
-    _pipe._init()
+    _init()
     E = int(config.num_envs)
     S, K, AP, M = _voronoi_shape(config)
     dev = str(config.device)
@@ -365,49 +324,38 @@ def generate_voronoi_warp(
         ctx: optional track_gen.exec.LaunchContext; default resolves the
             device's stream (see track_gen.exec).
     """
-    _pipe._init()
+    _init()
     ctx = _resolve_ctx(ctx, str(out_centerline.device))
     assert scratch is not None, "generate_voronoi_warp requires scratch"
 
     E = int(config.num_envs)
     N = int(config.num_points)
     S, K, AP, M = _voronoi_shape(config)
-    dev = str(out_centerline.device)
-    layout_mode = _voronoi_layout_mode(getattr(config, "voronoi_site_layout", "void_ring"))
+    npseg = int(config.num_points_per_segment)
+    layout_mode = voronoi_layout_mode(getattr(config, "voronoi_site_layout", "void_ring"))
     radial_variation = float(getattr(config, "voronoi_radial_variation", 0.62))
     angular_jitter = float(getattr(config, "voronoi_angular_jitter", 0.08))
-    box_size = 2.0
-    target_extent = float(config.scale) * _TARGET_EXTENT
+    target_extent = float(config.scale) * TARGET_EXTENT
+    arc = ops.ArcScratch(scratch.arc_real, scratch.arc_seg, scratch.arc_s, scratch.arc_cr)
 
-    ctx.launch(_sample_sites_k, E, [seeds_wp, S, layout_mode, box_size, scratch.sites])
-    ctx.launch(_select_anchor_sites_k, E, [
-        seeds_wp, scratch.sites, S, K, layout_mode, box_size,
-        radial_variation, angular_jitter, scratch.selected, scratch.used,
-    ])
+    sample_voronoi_sites(ctx, seeds_wp, S, layout_mode, BOX_SIZE, scratch.sites)
+    select_voronoi_anchors(ctx, seeds_wp, scratch.sites, S, K, layout_mode, BOX_SIZE,
+                           radial_variation, angular_jitter, scratch.selected, scratch.used)
     ctx.launch(_chaikin_once_k, E, [scratch.selected, K, scratch.aug])
-    ctx.launch(_catmull_rom_dense_k, E * M,
-               [scratch.aug, AP, int(config.num_points_per_segment), scratch.dense])
+    # Closed Catmull-Rom over the 2K Chaikin points (endpoint-excluded, u = s/npseg).
+    ops.closed_catmull_rom(ctx, scratch.aug, AP, npseg, scratch.dense)
 
-    _pipe._arc_resample_inplace(
-        scratch.dense, M, N,
-        scratch.arc_real, scratch.arc_seg, scratch.arc_s,
-        scratch.arc_cr, scratch.arc_co, out_centerline, dev, ctx=ctx,
-    )
-    ctx.launch(_normalize_centerline_k, E, [out_centerline, N, target_extent])
+    ops.arc_resample(ctx, scratch.dense, M, N, arc, out_centerline, scratch.arc_co)
+    ops.normalize_extent(ctx, out_centerline, N, target_extent)
 
-    _pipe.self_intersections_inplace(out_centerline, scratch.arc_co, scratch.crossers, N,
-                                     ctx=ctx)
-    ctx.launch(_assemble_polygon_selected_k, E * M, [
-        scratch.aug, AP, int(config.num_points_per_segment),
-        scratch.crossers, scratch.dense,
-    ])
-    _pipe._arc_resample_selected_inplace(
-        scratch.dense, scratch.crossers, M, N,
-        scratch.arc_real, scratch.arc_seg, scratch.arc_s,
-        scratch.arc_cr, scratch.arc_co, out_centerline, dev, ctx=ctx,
-    )
-    ctx.launch(_normalize_centerline_k, E, [out_centerline, N, target_extent])
-    ctx.launch(_pipe._fill_i32_k, E, [out_valid_wp, 1])
+    # Straight-polyline fallback for the envs whose smooth loop self-crosses; the second
+    # normalisation re-applies the bbox rescale to every env.
+    ops.self_intersections(ctx, out_centerline, N, scratch.crossers, count=scratch.arc_co)
+    ops.closed_polyline(ctx, scratch.aug, AP, npseg, scratch.dense, active=scratch.crossers)
+    ops.arc_resample(ctx, scratch.dense, M, N, arc, out_centerline, scratch.arc_co,
+                     active=scratch.crossers)
+    ops.normalize_extent(ctx, out_centerline, N, target_extent)
+    ops.fill(ctx, out_valid_wp, 1)
     ctx.sync()
 
 

@@ -62,7 +62,7 @@ How It Works
    sub-loop is then arc-resampled back to ``num_points``.  This is a capture-time Python
    branch; the CUDA graph stays fixed regardless.
 
-6. **Bounding-box normalization.**  ``_normalize_centerline_k`` centers each environment
+6. **Bounding-box normalization.**  ``ops.normalize_extent`` centers each environment
    by its bounding box and isotropically scales the longest bounding-box dimension to
    ``scale * 1.44``, matching the Bezier baseline's typical longest extent so the shared
    resample, relaxation, and inflate stages see comparable coordinate ranges across

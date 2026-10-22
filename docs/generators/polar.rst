@@ -37,13 +37,15 @@ How It Works
    uniform Catmull-Rom spline through the ``K`` knots, producing
    ``K * num_points_per_segment`` dense samples per environment. Samples are
    endpoint-excluded within each segment; the arc resampler closes the final
-   segment back to the first knot.
+   segment back to the first knot. The values equal
+   ``ops.closed_catmull_rom(ctx, controls, K, num_points_per_segment, dense)``; polar
+   keeps its one-thread-per-environment kernel because on CUDA the loop structure
+   decides which multiply-adds become FMAs.
 
-3. **Arc-length resampling.** ``_arc_resample_inplace`` (from the shared
-   pipeline module) converts the dense periodic spline to exactly
-   ``num_points`` arc-uniformly spaced points.
+3. **Arc-length resampling.** ``ops.arc_resample`` converts the dense periodic spline
+   to exactly ``num_points`` arc-uniformly spaced points.
 
-4. **Bounding-box normalization.** ``_normalize_centerline_k`` centers each
+4. **Bounding-box normalization.** ``ops.normalize_extent`` centers each
    environment's loop by its bounding-box centroid and isotropically rescales
    so the longest bounding-box dimension equals ``scale * 1.44``. The ``1.44``
    constant matches the Bézier baseline's typical per-environment longest
@@ -95,7 +97,7 @@ order without a runtime sort), :math:`\delta_r` is ``polar_radial_jitter``, and
 
 for :math:`u \in [0, 1)` within segment :math:`i`, with indices taken modulo
 :math:`K` for the closed (periodic) loop. This is equivalent to the
-scalar form implemented in ``_catmull_rom``:
+scalar form implemented in ``ops.funcs.catmull_rom``:
 
 .. math::
 
@@ -192,7 +194,7 @@ Fallback and Validity
 ---------------------
 
 The polar generator has **no local fallback**. It does not run
-``self_intersections_inplace`` and does not maintain a backup polygon buffer.
+``ops.self_intersections`` and does not maintain a backup polygon buffer.
 Every environment receives ``out_valid_wp = 1`` at generation time regardless
 of geometry.
 

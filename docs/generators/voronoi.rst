@@ -65,22 +65,24 @@ How It Works
    anchor-snap polygon before spline evaluation.
 
 4. **Closed Catmull-Rom spline.**
-   ``_catmull_rom_dense_k`` evaluates a closed uniform Catmull-Rom spline over the ``AP``
+   ``ops.closed_catmull_rom`` evaluates a closed uniform Catmull-Rom spline over the ``AP``
    augmented vertices, producing a dense ``M = AP × num_points_per_segment``-point loop per
    environment.
 
 5. **Arc-resample and normalize.**
-   ``_arc_resample_inplace`` arc-resamples the dense loop to ``num_points`` uniformly spaced
-   points.  ``_normalize_centerline_k`` then centers the environment's bounding box and
+   ``ops.arc_resample`` arc-resamples the dense loop to ``num_points`` uniformly spaced
+   points.  ``ops.normalize_extent`` then centers the environment's bounding box and
    isotropically rescales the longest dimension to ``scale × 1.44``, matching the shared
    target extent of the other generators.
 
 6. **Fallback for self-crossing smooth loops.**
-   ``self_intersections_inplace`` counts proper crossings on the ``num_points``-point loop.
-   For environments where the smooth loop self-intersects, ``_assemble_polygon_selected_k``
-   emits the straight Chaikin-augmented (``AP``-vertex) polygon by linear interpolation, and
-   ``_arc_resample_selected_inplace`` overwrites those rows with an arc-resampled version of
-   that polygon.  A second ``_normalize_centerline_k`` pass re-applies the bbox rescale.
+   ``ops.self_intersections`` counts proper crossings on the ``num_points``-point loop.
+   For environments where the smooth loop self-intersects,
+   ``ops.closed_polyline(..., active=crossers)`` emits the straight Chaikin-augmented
+   (``AP``-vertex) polygon by linear interpolation, and
+   ``ops.arc_resample(..., active=crossers)`` overwrites those rows with an arc-resampled
+   version of that polygon.  A second ``ops.normalize_extent`` pass re-applies the bbox
+   rescale.
    Non-crossing rows are left untouched.
 
 
@@ -236,7 +238,7 @@ Fallback and Validity
 
 If the Chaikin-smoothed Catmull-Rom loop for an environment self-intersects after
 arc-resampling, the generator falls back to the corresponding Chaikin-augmented
-``AP``-vertex straight polygon, arc-resampled via ``_arc_resample_selected_inplace``.  Only
+``AP``-vertex straight polygon, arc-resampled via ``ops.arc_resample(..., active=...)``.  Only
 the crossing rows are overwritten; non-crossing rows are untouched.  Both the smooth-loop
 and polygon-fallback paths write ``out_valid_wp = 1`` for every environment.
 

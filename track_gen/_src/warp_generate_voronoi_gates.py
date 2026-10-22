@@ -3,12 +3,15 @@ from __future__ import annotations
 
 import warp as wp
 
+from .. import ops
 from ..exec.context import LaunchContext, resolve as _resolve_ctx
+from ..ops.constants import TARGET_EXTENT
+from .runtime import _init
 from .warp_generate_voronoi import (
-    _TARGET_EXTENT,
-    _sample_sites_k,
-    _select_anchor_sites_k,
-    _voronoi_layout_mode,
+    BOX_SIZE,
+    sample_voronoi_sites,
+    select_voronoi_anchors,
+    voronoi_layout_mode,
 )
 
 
@@ -26,7 +29,7 @@ class VoronoiGateScratch:
 def voronoi_gate_alloc_scratch(config):
     from . import warp_gate
 
-    warp_gate._init()
+    _init()
     E = int(config.num_envs)
     S = int(config.voronoi_num_sites)
     K = int(config.voronoi_control_points)
@@ -51,41 +54,21 @@ def generate_voronoi_gates(seeds_wp, config, out, scratch,
     """
     from . import warp_gate
 
-    E = int(config.num_envs)
     S = int(config.voronoi_num_sites)
     K = int(config.voronoi_control_points)
     G = int(config.max_gates)
     dev = str(out.position.device)
     ctx = _resolve_ctx(ctx, dev)
 
-    layout_mode = _voronoi_layout_mode(getattr(config, "voronoi_site_layout", "void_ring"))
+    layout_mode = voronoi_layout_mode(getattr(config, "voronoi_site_layout", "void_ring"))
     radial_variation = float(getattr(config, "voronoi_radial_variation", 0.62))
     angular_jitter = float(getattr(config, "voronoi_angular_jitter", 0.08))
-    box_size = 2.0
-    target_extent = float(config.scale) * _TARGET_EXTENT
+    target_extent = float(config.scale) * TARGET_EXTENT
 
-    ctx.launch(warp_gate._fill_i32_k, E, [scratch.count, K])
-    ctx.launch(
-        _sample_sites_k,
-        E,
-        [seeds_wp, S, layout_mode, box_size, scratch.sites],
-    )
-    ctx.launch(
-        _select_anchor_sites_k,
-        E,
-        [
-            seeds_wp,
-            scratch.sites,
-            S,
-            K,
-            layout_mode,
-            box_size,
-            radial_variation,
-            angular_jitter,
-            scratch.selected,
-            scratch.used,
-        ],
-    )
+    ops.fill(ctx, scratch.count, K)
+    sample_voronoi_sites(ctx, seeds_wp, S, layout_mode, BOX_SIZE, scratch.sites)
+    select_voronoi_anchors(ctx, seeds_wp, scratch.sites, S, K, layout_mode, BOX_SIZE,
+                           radial_variation, angular_jitter, scratch.selected, scratch.used)
     warp_gate.finish_ordered_gates(
         seeds_wp,
         scratch.selected,

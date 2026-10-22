@@ -9,6 +9,16 @@ from __future__ import annotations
 import warp as wp
 
 from ..exec.context import LaunchContext, resolve as _resolve_ctx
+from ..ops import funcs as _funcs
+from ..ops.fill import (  # noqa: F401 - the _fill_*_k names are legacy aliases
+    _fill_f32_k,
+    _fill_i32_k,
+    _fill_quatf_k as _fill_quat_k,
+    _fill_vec2f_k as _fill_vec2_k,
+    _fill_vec3f_k as _fill_vec3_k,
+    fill as _ops_fill,
+)
+from ..ops.geometry import _angle_sort_launch, _normalize_extent_launch
 from .collision_geom import _frame_quat, _safe_normalize3
 # Shared runtime helpers. _sync is re-exported for importers only: library code
 # syncs through ctx.sync() (a debug-only no-op unless TRACKGEN_DEBUG_SYNC=1).
@@ -20,58 +30,13 @@ _CAPTURING = False
 _ORDER_SALT = 7919
 
 
-@wp.func
-def _safe_normalize2(v: wp.vec2f) -> wp.vec2f:
-    return v / wp.max(wp.length(v), 1.0e-8)
-
-
-@wp.func
-def _cross2(a: wp.vec2f, b: wp.vec2f) -> float:
-    return a[0] * b[1] - a[1] * b[0]
-
-
-@wp.func
-def _proper_segment_intersection(a: wp.vec2f, b: wp.vec2f, c: wp.vec2f, d: wp.vec2f) -> int:
-    ab = b - a
-    cd = d - c
-    ac = c - a
-    ad = d - a
-    ca = a - c
-    cb = b - c
-    o1 = _cross2(ab, ac)
-    o2 = _cross2(ab, ad)
-    o3 = _cross2(cd, ca)
-    o4 = _cross2(cd, cb)
-    hit_ab = (o1 > 0.0 and o2 < 0.0) or (o1 < 0.0 and o2 > 0.0)
-    hit_cd = (o3 > 0.0 and o4 < 0.0) or (o3 < 0.0 and o4 > 0.0)
-    if hit_ab and hit_cd:
-        return int(1)
-    return int(0)
-
-
-@wp.kernel
-def _fill_vec2_k(arr: wp.array(dtype=wp.vec2f), value: wp.vec2f):
-    arr[wp.tid()] = value
-
-
-@wp.kernel
-def _fill_vec3_k(arr: wp.array(dtype=wp.vec3f), value: wp.vec3f):
-    arr[wp.tid()] = value
-
-
-@wp.kernel
-def _fill_quat_k(arr: wp.array(dtype=wp.quatf), value: wp.quatf):
-    arr[wp.tid()] = value
-
-
-@wp.kernel
-def _fill_f32_k(arr: wp.array(dtype=wp.float32), value: float):
-    arr[wp.tid()] = value
-
-
-@wp.kernel
-def _fill_i32_k(arr: wp.array(dtype=wp.int32), value: int):
-    arr[wp.tid()] = value
+# Device helpers and fills now live in track_gen.ops (PR7); the historical names are
+# kept as aliases for legacy importers (the validity kernel below still calls
+# _proper_segment_intersection). Fill kernels _fill_vec2_k, _fill_vec3_k, _fill_quat_k,
+# _fill_f32_k, _fill_i32_k are imported above; this module fills through ops.fill.
+_cross2 = _funcs.cross2
+_proper_segment_intersection = _funcs.segments_cross
+_safe_normalize2 = _funcs.safe_normalize2
 
 
 @wp.kernel
@@ -109,55 +74,6 @@ def _order_raw_k(
         dst[dst_base + i] = src[src_base + i]
     else:
         dst[dst_base + i] = wp.vec2f(wp.nan, wp.nan)
-
-
-@wp.kernel
-def _order_ccw_k(
-    src: wp.array(dtype=wp.vec2f),
-    src_stride: int,
-    count: wp.array(dtype=wp.int32),
-    max_gates: int,
-    keys: wp.array(dtype=wp.float32),
-    dst: wp.array(dtype=wp.vec2f),
-):
-    e = wp.tid()
-    src_base = e * src_stride
-    dst_base = e * max_gates
-    m = count[e]
-    if m < 0:
-        m = 0
-    if m > src_stride:
-        m = src_stride
-    if m > max_gates:
-        m = max_gates
-
-    sx = wp.float64(0.0)
-    sy = wp.float64(0.0)
-    for i in range(max_gates):
-        if i < m:
-            p = src[src_base + i]
-            sx = sx + wp.float64(p[0])
-            sy = sy + wp.float64(p[1])
-
-    cx = wp.float32(0.0)
-    cy = wp.float32(0.0)
-    if m > 0:
-        cx = wp.float32(sx / wp.float64(m))
-        cy = wp.float32(sy / wp.float64(m))
-
-    for i in range(max_gates):
-        if i < m:
-            p = src[src_base + i]
-            key = wp.atan2(p[0] - cx, p[1] - cy)
-            j = i - 1
-            while j >= 0 and keys[dst_base + j] > key:
-                keys[dst_base + j + 1] = keys[dst_base + j]
-                dst[dst_base + j + 1] = dst[dst_base + j]
-                j = j - 1
-            keys[dst_base + j + 1] = key
-            dst[dst_base + j + 1] = p
-        else:
-            dst[dst_base + i] = wp.vec2f(wp.nan, wp.nan)
 
 
 @wp.kernel
@@ -211,47 +127,6 @@ def _order_random_pairs_k(
     for i in range(max_gates):
         if i >= m:
             dst[dst_base + i] = wp.vec2f(wp.nan, wp.nan)
-
-
-@wp.kernel
-def _normalize_positions_k(
-    position: wp.array(dtype=wp.vec2f),
-    max_gates: int,
-    count: wp.array(dtype=wp.int32),
-    target_extent: float,
-):
-    e = wp.tid()
-    base = e * max_gates
-    cnt = count[e]
-    if cnt < 0:
-        cnt = 0
-    if cnt > max_gates:
-        cnt = max_gates
-
-    min_x = float(1.0e30)
-    max_x = float(-1.0e30)
-    min_y = float(1.0e30)
-    max_y = float(-1.0e30)
-
-    for i in range(max_gates):
-        if i < cnt:
-            p = position[base + i]
-            min_x = wp.min(min_x, p[0])
-            max_x = wp.max(max_x, p[0])
-            min_y = wp.min(min_y, p[1])
-            max_y = wp.max(max_y, p[1])
-
-    cx = 0.5 * (min_x + max_x)
-    cy = 0.5 * (min_y + max_y)
-    extent = wp.max(max_x - min_x, max_y - min_y)
-    scale = target_extent / wp.max(extent, 1.0e-8)
-
-    for i in range(max_gates):
-        if i < cnt:
-            p = position[base + i]
-            position[base + i] = wp.vec2f((p[0] - cx) * scale, (p[1] - cy) * scale)
-        else:
-            position[base + i] = wp.vec2f(wp.nan, wp.nan)
 
 
 @wp.kernel
@@ -558,15 +433,15 @@ def alloc_gate_sequence(config: GateGenConfig) -> GateSequence:
     nan_q = wp.quatf(wp.nan, wp.nan, wp.nan, wp.nan)
     # Construction-time init: still stream-explicit (resolved once for this call).
     ctx = LaunchContext.for_call(dev)
-    ctx.launch(_fill_vec3_k, flat, [gates.position, nan3])
-    ctx.launch(_fill_vec3_k, flat, [gates.tangent, nan3])
-    ctx.launch(_fill_vec3_k, flat, [gates.forward, nan3])
-    ctx.launch(_fill_quat_k, flat, [gates.orientation, nan_q])
-    ctx.launch(_fill_f32_k, flat, [gates.half_size, wp.nan])
-    ctx.launch(_fill_vec3_k, flat, [gates.left, nan3])
-    ctx.launch(_fill_vec3_k, flat, [gates.right, nan3])
-    ctx.launch(_fill_i32_k, E, [gates.valid, 0])
-    ctx.launch(_fill_i32_k, E, [gates.count, 0])
+    _ops_fill(ctx, gates.position, nan3)
+    _ops_fill(ctx, gates.tangent, nan3)
+    _ops_fill(ctx, gates.forward, nan3)
+    _ops_fill(ctx, gates.orientation, nan_q)
+    _ops_fill(ctx, gates.half_size, wp.nan)
+    _ops_fill(ctx, gates.left, nan3)
+    _ops_fill(ctx, gates.right, nan3)
+    _ops_fill(ctx, gates.valid, 0)
+    _ops_fill(ctx, gates.count, 0)
     ctx.sync()
     return gates
 
@@ -601,11 +476,9 @@ def order_points(
             [src, src_stride_i, count, max_gates_i, dst],
         )
     elif ordering == "ccw":
-        ctx.launch(
-            _order_ccw_k,
-            E,
-            [src, src_stride_i, count, max_gates_i, keys, dst],
-        )
+        # track_gen.ops angle sort (the former _order_ccw_k): m_floor=0 -> count <= 0
+        # gives an all-NaN row.
+        _angle_sort_launch(ctx, src, src_stride_i, count, max_gates_i, keys, dst, 0)
     elif ordering == "random_pairs":
         ctx.launch(
             _order_random_pairs_k,
@@ -666,11 +539,9 @@ def normalize_positions(
     _init()
     dev = str(position.device)
     ctx = _resolve_ctx(ctx, dev)
-    ctx.launch(
-        _normalize_positions_k,
-        count.shape[0],
-        [position, int(max_gates), count, float(target_extent)],
-    )
+    # track_gen.ops.normalize_extent(count=...) (the former _normalize_positions_k).
+    _normalize_extent_launch(ctx, position, int(max_gates), float(target_extent),
+                             count.shape[0], count=count)
     ctx.sync()
 
 
@@ -756,7 +627,7 @@ def finalize_gate_sequence(
     align_full = int(config.gate_align == "full_tangent")
     if fallbacks is None:
         fallbacks = wp.empty(E, dtype=wp.int32, device=dev)
-    ctx.launch(_fill_i32_k, E, [fallbacks, 0])
+    _ops_fill(ctx, fallbacks, 0)
     ctx.launch(
         _finalize_frame_k,
         E * G,

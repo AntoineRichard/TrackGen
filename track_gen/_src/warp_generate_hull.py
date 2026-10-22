@@ -6,8 +6,8 @@ Method (registered as ``"hull"``):
    generator so the coordinate range matches bezier exactly).
 2. Build a hull-like base loop by sorting the first ``m = count[e]`` points ASCENDING by
    their centroid-relative angle (the cheap fixed-shape stand-in for a general convex
-   hull — a true hull algorithm is awkward in fixed-shape Warp). This reuses the bezier
-   ccw-sort pattern.
+   hull — a true hull algorithm is awkward in fixed-shape Warp): the ``ops.angle_sort``
+   kernel with the legacy one-point count floor, the same sort the bezier generator uses.
 3. Insert ONE midpoint-displacement layer: for each edge of the angle-sorted loop, add its
    midpoint displaced along the radial direction (from the centroid) by a random per-edge
    amount in/out. The interleaved ``[v0, mid01, v1, mid12, ...]`` loop has ``2m`` vertices.
@@ -27,113 +27,29 @@ ZERO per-call allocation (all buffers come from ``alloc_scratch``), CUDA-graph-c
 
 Convention (shared with ``warp_pipeline``): one thread per output element; flat arrays
 ``[E*N]`` of ``wp.vec2f`` and ``[E]`` per-env scalars; env index ``e = tid // N``.
+
+Every step except the midpoint displacement is a ``track_gen.ops`` primitive (sampling,
+angle sort, closed Catmull-Rom, arc resample, self-intersections, straight-polyline
+fallback, fill); the angle sort runs the ``ops.angle_sort`` kernel with the legacy
+one-point count floor.
 """
 from __future__ import annotations
 
 import warp as wp
 
+from .. import ops
 from ..exec.context import LaunchContext, resolve as _resolve_ctx
-from . import warp_pipeline as _pipe
+from ..ops.geometry import _angle_sort_launch
+from ..ops.sampling import _sample_counts_launch, _sample_grid_points_launch
+from .runtime import _init
 
-
-@wp.kernel
-def _point_count_sample_k(
-    seeds: wp.array(dtype=wp.int32),
-    min_num: int,
-    max_num: int,
-    out: wp.array(dtype=wp.int32),
-):
-    # One thread per env e. Per-env point count in [min_num, max_num] inclusive from a
-    # single uniform draw. A multiplier (5119) distinct from the position stream's keeps
-    # the count and position RNG streams decorrelated.
-    e = wp.tid()
-    state = wp.rand_init(seeds[e] * 5119 + 1)
-    span = max_num - min_num + 1
-    count = min_num + int(wp.randf(state) * float(span))
-    out[e] = wp.min(count, max_num)
-
-
-@wp.kernel
-def _point_sample_k(
-    seeds: wp.array(dtype=wp.int32),
-    num_cells: int,
-    nc2: int,
-    cell_size: float,
-    scale: float,
-    P: int,
-    used: wp.array(dtype=wp.int32),
-    out: wp.array(dtype=wp.vec2f),
-):
-    # One thread per env e. Samples P points on a num_cells x num_cells grid with a
-    # bounded duplicate-cell rejection (mirrors the bezier corner sampler's spread, same
-    # grid placement * scale so the coordinate range matches bezier). 7919 multiplier is
-    # distinct from bezier's 9781 so the two generators draw different point sets.
-    e = wp.tid()
-    state = wp.rand_init(seeds[e] * 7919 + 1)
-    base = e * P
-    for c in range(P):
-        cell = wp.min(int(wp.randf(state) * float(nc2)), nc2 - 1)
-        for _retry in range(8):
-            dup = int(0)
-            for k in range(c):
-                if used[base + k] == cell:
-                    dup = int(1)
-            if dup == 0:
-                break
-            cell = wp.min(int(wp.randf(state) * float(nc2)), nc2 - 1)
-        used[base + c] = cell
-
-        x = float(cell % num_cells)
-        y = float(cell // num_cells)
-        nx = wp.randf(state) - 0.5
-        ny = wp.randf(state) - 0.5
-        out[base + c] = wp.vec2f((x * cell_size + nx) * scale,
-                                 (y * cell_size + ny) * scale)
-
-
-@wp.kernel
-def _angle_sort_k(
-    points: wp.array(dtype=wp.vec2f),
-    P: int,
-    count: wp.array(dtype=wp.int32),
-    keys: wp.array(dtype=wp.float32),
-    out: wp.array(dtype=wp.vec2f),
-):
-    # One thread per env e. Orders this env's FIRST m = count[e] points ascending by the
-    # centroid-relative angle atan2(dx, dy) (X first, matching the bezier ccw-sort), about
-    # the centroid of those m points. Rows [m, P) are written NaN. Insertion sort reads
-    # only behind its write frontier, so uninitialised keys/out scratch is never consumed.
-    e = wp.tid()
-    base = e * P
-    m = count[e]
-    if m < 1:
-        m = 1
-    if m > P:
-        m = P
-
-    sx = wp.float64(0.0)
-    sy = wp.float64(0.0)
-    for i in range(P):
-        if i < m:
-            p = points[base + i]
-            sx = sx + wp.float64(p[0])
-            sy = sy + wp.float64(p[1])
-    cx = wp.float32(sx / wp.float64(m))
-    cy = wp.float32(sy / wp.float64(m))
-
-    for c in range(P):
-        if c < m:
-            p = points[base + c]
-            key = wp.atan2(p[0] - cx, p[1] - cy)   # X first!
-            j = c - 1
-            while j >= 0 and keys[base + j] > key:
-                keys[base + j + 1] = keys[base + j]
-                out[base + j + 1] = out[base + j]
-                j = j - 1
-            keys[base + j + 1] = key
-            out[base + j + 1] = p
-        else:
-            out[base + c] = wp.vec2f(wp.nan, wp.nan)
+# RNG keying of the point streams (``wp.rand_init(seed * salt + POINT_SALT_OFFSET)``, see
+# :func:`track_gen.ops.sample_counts`). The salts differ from bezier's (6151 / 9781) so the
+# two generators draw different point sets, and from each other so the count and position
+# streams stay decorrelated.
+POINT_COUNT_SALT = 5119
+POINT_SALT = 7919
+POINT_SALT_OFFSET = 1
 
 
 @wp.kernel
@@ -198,90 +114,6 @@ def _midpoint_displace_k(
     out_count[e] = 2 * m
 
 
-@wp.func
-def _aug_vertex(c: wp.array(dtype=wp.vec2f), b: int, i: int, cnt: int) -> wp.vec2f:
-    # Wrap index i into [0, cnt) (the augmented loop is closed) and read that vertex.
-    return c[b + (i % cnt)]
-
-
-@wp.kernel
-def _catmull_rom_k(
-    aug: wp.array(dtype=wp.vec2f),
-    aug_count: wp.array(dtype=wp.int32),
-    AP: int,
-    npseg: int,
-    out: wp.array(dtype=wp.vec2f),
-):
-    # One thread per dense sample t (dim = E * AP * npseg). Decodes (e, segment i, sample
-    # s), evaluates the closed Catmull-Rom spline of segment i (from vertex i to vertex
-    # i+1) at u = s/(npseg-1) using the four control vertices i-1, i, i+1, i+2 (indices
-    # wrapped mod cnt = aug_count[e]). Segments i >= cnt write NaN and drop out via the
-    # arc-resample. AP = 2*P is the augmented-loop stride per env.
-    t = wp.tid()
-    per_env = AP * npseg
-    e = t // per_env
-    rem = t % per_env
-    i = rem // npseg
-    s = rem % npseg
-    b = e * AP
-    cnt = aug_count[e]
-
-    if i >= cnt or cnt < 2:
-        out[t] = wp.vec2f(wp.nan, wp.nan)
-        return
-
-    p0 = _aug_vertex(aug, b, i - 1 + cnt, cnt)
-    p1 = _aug_vertex(aug, b, i, cnt)
-    p2 = _aug_vertex(aug, b, i + 1, cnt)
-    p3 = _aug_vertex(aug, b, i + 2, cnt)
-
-    u = float(s) / float(npseg - 1)
-    u2 = u * u
-    u3 = u2 * u
-    # Uniform Catmull-Rom basis (tension 0.5), passes through p1 (u=0) and p2 (u=1).
-    out[t] = 0.5 * (
-        (2.0 * p1)
-        + (-p0 + p2) * u
-        + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * u2
-        + (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * u3
-    )
-
-
-@wp.kernel
-def _assemble_polygon_selected_k(
-    aug: wp.array(dtype=wp.vec2f),
-    aug_count: wp.array(dtype=wp.int32),
-    AP: int,
-    npseg: int,
-    active: wp.array(dtype=wp.int32),
-    out: wp.array(dtype=wp.vec2f),
-):
-    # Straight-piece fallback over the augmented hull loop, only for envs whose smooth
-    # Catmull-Rom resample self-crossed. Inactive rows are left untouched because the
-    # selected arc-resampler skips them.
-    t = wp.tid()
-    per_env = AP * npseg
-    e = t // per_env
-    if active[e] <= 0:
-        return
-
-    rem = t % per_env
-    i = rem // npseg
-    s = rem % npseg
-    b = e * AP
-    cnt = aug_count[e]
-    cm = wp.max(cnt, 1)
-
-    if i >= cnt or cnt < 2:
-        out[t] = wp.vec2f(wp.nan, wp.nan)
-        return
-
-    c0 = aug[b + i]
-    c1 = aug[b + (i + 1) % cm]
-    u = float(s) / float(npseg - 1)
-    out[t] = (1.0 - u) * c0 + u * c1
-
-
 def point_count_sample_inplace(seeds_wp, config, out_count,
                                ctx: "LaunchContext | None" = None):
     """In-place: per-env point count in [min_num_points, max_num_points]. Zero alloc.
@@ -290,12 +122,12 @@ def point_count_sample_inplace(seeds_wp, config, out_count,
         ctx: optional track_gen.exec.LaunchContext; default resolves the
             device's stream (see track_gen.exec).
     """
-    _pipe._init()
+    _init()
     ctx = _resolve_ctx(ctx, str(out_count.device))
-    E = out_count.shape[0]
-    ctx.launch(_point_count_sample_k, E,
-               [seeds_wp, int(config.min_num_points), int(config.max_num_points),
-                out_count])
+    # Legacy entry point (kept for out-of-tree plugins): ops.sample_counts keyed
+    # seed * POINT_COUNT_SALT + POINT_SALT_OFFSET, without the public op's validation.
+    _sample_counts_launch(ctx, seeds_wp, POINT_COUNT_SALT, POINT_SALT_OFFSET,
+                          int(config.min_num_points), int(config.max_num_points), out_count)
     ctx.sync()
 
 
@@ -307,18 +139,17 @@ def point_sample_inplace(seeds_wp, config, out_points, used_scratch,
         ctx: optional track_gen.exec.LaunchContext; default resolves the
             device's stream (see track_gen.exec).
     """
-    _pipe._init()
-    E = seeds_wp.shape[0]
+    _init()
     P = int(config.max_num_points)
+    # The grid of ops.grid_cells, computed inline without its validation (as at 1077b18).
     num_cells = int(1.0 / (config.min_point_distance * 2))
-    nc2 = num_cells * num_cells
     cell_size = config.min_point_distance * 2.0
-    dev = str(out_points.device)
-    ctx = _resolve_ctx(ctx, dev)
-    ctx.launch(_pipe._fill_i32_k, E * P, [used_scratch, -1])
-    ctx.launch(_point_sample_k, E,
-               [seeds_wp, num_cells, nc2, float(cell_size), float(config.scale),
-                P, used_scratch, out_points])
+    ctx = _resolve_ctx(ctx, str(out_points.device))
+    # Legacy entry point (kept for out-of-tree plugins): ops.sample_grid_points keyed
+    # seed * POINT_SALT + POINT_SALT_OFFSET, without the public op's validation.
+    _sample_grid_points_launch(ctx, seeds_wp, POINT_SALT, POINT_SALT_OFFSET, P, num_cells,
+                               float(cell_size), float(config.scale), used_scratch,
+                               out_points)
     ctx.sync()
 
 
@@ -371,7 +202,7 @@ def hull_alloc_scratch(config):
     The augmented loop has up to 2P vertices (P originals + P displaced midpoints), so the
     augmented / dense / arc-resample buffers are sized for AP = 2P, not P.
     """
-    _pipe._init()
+    _init()
     E = int(config.num_envs)
     P = int(config.max_num_points)
     npseg = int(config.num_points_per_segment)
@@ -415,7 +246,7 @@ def generate_hull_warp(seeds_wp: wp.array, config,
         ctx: optional track_gen.exec.LaunchContext; default resolves the
             device's stream (see track_gen.exec).
     """
-    _pipe._init()
+    _init()
     ctx = _resolve_ctx(ctx, str(out_centerline.device))
     assert scratch is not None, "generate_hull_warp requires scratch"
 
@@ -426,50 +257,50 @@ def generate_hull_warp(seeds_wp: wp.array, config,
     AP = 2 * P
     M = AP * npseg  # dense points per env
     disp = float(getattr(config, "hull_displacement", 0.15))
-    dev = str(out_centerline.device)
+    arc = ops.ArcScratch(scratch.arc_real, scratch.arc_seg, scratch.arc_s, scratch.arc_cr)
 
     # Step 1: sample point count + positions.
-    point_count_sample_inplace(seeds_wp, config, scratch.count, ctx=ctx)
-    point_sample_inplace(seeds_wp, config, scratch.points, scratch.used, ctx=ctx)
+    ops.sample_counts(ctx, seeds_wp, POINT_COUNT_SALT, POINT_SALT_OFFSET,
+                      int(config.min_num_points), int(config.max_num_points), scratch.count)
+    num_cells, cell = ops.grid_cells(config.min_point_distance)
+    ops.sample_grid_points(ctx, seeds_wp, POINT_SALT, POINT_SALT_OFFSET, P, num_cells,
+                           float(cell), float(config.scale), scratch.used, scratch.points)
 
-    # Step 2: angle-sort the first m points about their centroid.
-    ctx.launch(_angle_sort_k, E,
-               [scratch.points, P, scratch.count, scratch.keys, scratch.sorted])
+    # Step 2: angle-sort the first m points about their centroid. This is ops.angle_sort's
+    # kernel with the legacy count floor of 1 (a count < 1 sorts the first point), so the
+    # output does not depend on TrackGenConfig's min_num_points >= 2 check (a config
+    # mutated after construction is not re-validated).
+    _angle_sort_launch(ctx, scratch.points, P, scratch.count, P, scratch.keys,
+                       scratch.sorted, m_floor=1)
 
     # Step 3: midpoint-displacement layer -> augmented 2m-vertex loop.
     ctx.launch(_midpoint_displace_k, E,
                [scratch.sorted, scratch.count, seeds_wp, P, disp,
                 scratch.aug, scratch.aug_count])
 
-    # Step 4: closed Catmull-Rom smoothing -> dense polyline.
-    ctx.launch(_catmull_rom_k, E * M,
-               [scratch.aug, scratch.aug_count, AP, npseg, scratch.dense])
+    # Step 4: closed Catmull-Rom smoothing -> dense polyline over the 2m-vertex loop
+    # (endpoint-inclusive segments, u = s/(npseg-1); segments >= 2m are NaN and drop out
+    # of the arc-resample).
+    ops.closed_catmull_rom(ctx, scratch.aug, AP, npseg, scratch.dense,
+                           count=scratch.aug_count, endpoint=True)
 
     # Step 5: arc-resample the smooth dense polyline -> out_centerline (N points per env).
-    _pipe._arc_resample_inplace(scratch.dense, M, N,
-                                scratch.arc_real, scratch.arc_seg, scratch.arc_s,
-                                scratch.arc_cr, scratch.arc_co, out_centerline, dev,
-                                ctx=ctx)
+    ops.arc_resample(ctx, scratch.dense, M, N, arc, out_centerline, scratch.arc_co)
 
     # Step 6: self-intersections of the smooth resample -> crossers. scratch.arc_co was
-    # written by _arc_scan_k: R>=2 -> N, R<2 -> 0. Pass directly as count.
-    _pipe.self_intersections_inplace(out_centerline, scratch.arc_co, scratch.crossers, N,
-                                     ctx=ctx)
+    # written by the resample: R>=2 -> N, R<2 -> 0. Pass directly as count.
+    ops.self_intersections(ctx, out_centerline, N, scratch.crossers, count=scratch.arc_co)
 
     # Step 7: assemble and resample the augmented polygon fallback only for crossing envs.
     # The selected resampler leaves inactive out_centerline rows untouched, so non-crossers
     # keep their Catmull-Rom result and crossers are overwritten in place.
-    ctx.launch(_assemble_polygon_selected_k, E * M,
-               [scratch.aug, scratch.aug_count, AP, npseg, scratch.crossers,
-                scratch.dense])
-    _pipe._arc_resample_selected_inplace(
-        scratch.dense, scratch.crossers, M, N,
-        scratch.arc_real, scratch.arc_seg, scratch.arc_s,
-        scratch.arc_cr, scratch.arc_co, out_centerline, dev, ctx=ctx,
-    )
+    ops.closed_polyline(ctx, scratch.aug, AP, npseg, scratch.dense, count=scratch.aug_count,
+                        endpoint=True, active=scratch.crossers)
+    ops.arc_resample(ctx, scratch.dense, M, N, arc, out_centerline, scratch.arc_co,
+                     active=scratch.crossers)
 
     # Step 8: mark all envs valid (gen gate is always True; inflate does the real gate).
-    ctx.launch(_pipe._fill_i32_k, E, [out_valid_wp, 1])
+    ops.fill(ctx, out_valid_wp, 1)
 
     ctx.sync()
 

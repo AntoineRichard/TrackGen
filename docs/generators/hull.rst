@@ -26,18 +26,20 @@ per-call allocation and no host-side branching on generated data, making it
 CUDA-graph-capturable.
 
 1. **Point count and position sampling.**
-   ``_point_count_sample_k`` draws a per-environment point count
-   ``m`` from the uniform integer range ``[min_num_points, max_num_points]`` using
-   RNG salt ``5119``.  ``_point_sample_k`` then draws ``P = max_num_points``
-   grid-jittered points per environment from a ``num_cells x num_cells`` grid with
-   bounded duplicate-cell rejection (up to eight retries per point).  The cell size is
-   ``min_point_distance * 2``; each accepted cell receives a sub-cell jitter of
-   ``U(-0.5, 0.5)`` in each axis before being multiplied by ``scale``.  RNG salt
-   ``7919`` is distinct from the Bezier generator's ``9781`` so the two generators
-   draw different point sets even at the same seed.
+   ``ops.sample_counts`` (salt ``5119``, offset ``1``) draws a per-environment point
+   count ``m`` from the uniform integer range ``[min_num_points, max_num_points]``.
+   ``ops.sample_grid_points`` (salt ``7919``, offset ``1``) then draws
+   ``P = max_num_points`` grid-jittered points per environment from the
+   ``ops.grid_cells(min_point_distance)`` grid with bounded duplicate-cell rejection (up
+   to eight retries per point).  The cell size is ``min_point_distance * 2``; each
+   accepted cell receives a jitter of ``U(-0.5, 0.5)`` in each axis before being
+   multiplied by ``scale``.  The salts are distinct from the Bezier generator's
+   (``6151`` / ``9781``) so the two generators draw different point sets even at the
+   same seed.
 
 2. **Angle-sort (hull-like ordering).**
-   ``_angle_sort_k`` computes the centroid of the first ``m`` points and sorts them
+   The ``ops.angle_sort`` kernel (with the legacy count floor of 1, like the Bezier
+   generator) computes the centroid of the first ``m`` points and sorts them
    ascending by ``atan2(dx, dy)`` (x-first convention, matching the Bezier ccw-sort)
    around that centroid.  Entries beyond index ``m`` are written as NaN.  This is an
    insertion sort over a fixed ``P``-length window, so the kernel is single-threaded
@@ -61,7 +63,8 @@ CUDA-graph-capturable.
    is ``2P`` to match the fixed allocation.
 
 4. **Closed Catmull-Rom smoothing.**
-   ``_catmull_rom_k`` evaluates a closed uniform Catmull-Rom spline over the ``2m``
+   ``ops.closed_catmull_rom(..., count=aug_count, endpoint=True)`` evaluates a closed
+   uniform Catmull-Rom spline over the ``2m``
    augmented vertices into a dense buffer of ``2P * num_points_per_segment`` slots per
    environment.  Each segment from vertex ``i`` to vertex ``i+1`` is sampled at
    ``num_points_per_segment`` equally-spaced parameter values ``u = s / (npseg - 1)``.
@@ -70,16 +73,17 @@ CUDA-graph-capturable.
    modulo ``cnt = aug_count[e]``, ensuring the spline closes back to the first vertex.
 
 5. **Arc-resample.**
-   ``_arc_resample_inplace`` (shared with the Bezier generator) converts the dense
+   ``ops.arc_resample`` (shared with the Bezier generator) converts the dense
    Catmull-Rom polyline into exactly ``num_points`` arc-length-uniform output points
    per environment by accumulating segment lengths, building a cumulative arc-length
    table, and interpolating.
 
 6. **Fallback for self-crossers.**
-   ``self_intersections_inplace`` counts proper crossings in the smooth resampled loop.
-   For environments where the smooth result self-crosses, ``_assemble_polygon_selected_k``
-   emits a straight piecewise-linear version of the augmented loop into the dense
-   buffer (only for those rows), and ``_arc_resample_selected_inplace`` overwrites the
+   ``ops.self_intersections`` counts proper crossings in the smooth resampled loop.
+   For environments where the smooth result self-crosses,
+   ``ops.closed_polyline(..., count=aug_count, endpoint=True, active=crossers)`` emits a
+   straight piecewise-linear version of the augmented loop into the dense buffer (only
+   for those rows), and ``ops.arc_resample(..., active=crossers)`` overwrites the
    corresponding output centerline rows in place.  Non-crossing rows are never touched
    by the selected resampler.  XPBD can re-round the straight polygonal fallback
    downstream.
@@ -119,8 +123,9 @@ Expanding the matrix product, the kernel evaluates:
 
 This is the standard tension-0.5 uniform Catmull-Rom formulation: the spline passes
 exactly through ``P_i`` at ``u = 0`` and through ``P_{i+1}`` at ``u = 1``, with
-C1 continuity at every knot.  The source (``_catmull_rom_k``) implements this
-expression directly; the matrix form and the expanded scalar form are equivalent.
+C1 continuity at every knot.  The source (``ops.funcs.catmull_rom``, called by
+``ops.closed_catmull_rom``) implements this expression directly; the matrix form and the
+expanded scalar form are equivalent.
 
 **Midpoint radial displacement.**
 
