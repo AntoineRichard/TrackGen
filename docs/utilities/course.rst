@@ -175,7 +175,7 @@ change (``course.rng.set_seeds_warp``, a write to ``course.rng.seeds_warp``,
 ``course.seeds.reset_epoch()``) takes effect for an env when a masked regeneration
 selects it, or for every env at the next ``regenerate()`` without a mask. Any call with a
 masked env costs a full-batch generation. A masked commit that avoids the recompute is
-planned (roadmap PR10).
+planned (roadmap PR10b).
 
 ``advance=False`` rebuilds the masked envs from their current ``(seed, epoch)``: the same
 course, unless your own kernel wrote new seeds for them into ``course.rng.seeds_warp``

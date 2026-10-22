@@ -800,6 +800,8 @@ class Taubin(plugin.Stage):
         return enqueue
 ```
 
+> **As shipped in PR10a:** `b.write(port)` on a channel the stage also reads returns a NEW version (`b.read` keeps the previous one), and `build` must call `b.write` for every declared write port. Under those semantics this example writes its result into `out = b.write("xy", wp.vec2f, per="cl")` (ping-pong `x -> tmp/out`, ending in `out`) instead of copying back into `x`. Whether PR10b adds an aliasing form (e.g. `b.rewrite(port)`, returning the read buffer) is open; until then an update made only to the read buffer is lost.
+
 Select it with `presets.track(..., relax=("acme.taubin", {"passes": 30}))` or `relax=None`. A generator can declare `preferred={"relax": "none"}`; presets, Course and the explorer honour it. The thickness check reads `cl.half_width` with its own tolerance, so it no longer depends on XPBD's separation target.
 
 **(d) Variable width.** Either the generator writes `raw.half_width` with `interp="linear"` and `provides={"half_width"}`, and the preset picks `width.from_channel`, or a `width` stage writes `cl.half_width` (for example `acme.curvature_scaled`). Downstream:
@@ -838,6 +840,8 @@ class MaxCurvature(plugin.Stage):
             ctx.launch(_kmax_k, b.E, [k, cnt, b.layout.stride, b.param("kappa_max"), bit, fail])
         return enqueue
 ```
+
+> **As shipped in PR10a:** there is no `valid.fail` channel or `fail_bit()` yet (`validity.default` writes the 0/1 `track.valid`), and an in-place stage must write its whole output into `b.write(port)` (a NEW version; see the note under (c)). With those semantics a chained check copies `fail` into its write buffer and ORs its bit there (a copy plus a launch per check); an aliasing write form, decided in PR10b together with `valid.fail`, would make this example run as written.
 
 Enable it with `presets.track(..., checks=("default", "acme.max_curvature"))`. `program.fail_bits` and `Track.fail_bits` name every bit. The built-in `validity.default` keeps the fused `_validity_k` for speed and goldens and owns bits 0-6. The split checks (`validity.turning`, `.finite`, `.thickness`, `.w_floor`, `.border`, `.grade`, `.truncation`) are registered as well, so the default can be replaced.
 

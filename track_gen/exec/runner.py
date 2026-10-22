@@ -127,6 +127,23 @@ def ensure_not_capturing(device, *, default_stream=None, label: str = "") -> Lau
     return ctx
 
 
+def _check_default_stream(device, default_stream) -> None:
+    """The ``default_stream`` rules of :class:`GraphRunner` (host-only): ``None`` or a
+    ``wp.Stream`` of ``device`` (a CPU device accepts any ``wp.Stream`` and ignores
+    it). Raises ``TypeError`` / ``ValueError``."""
+    if default_stream is None:
+        return
+    if not isinstance(default_stream, wp.Stream):
+        raise TypeError(
+            "stream must be a wp.Stream or None; got "
+            f"{type(default_stream).__name__}")
+    dev = wp.get_device(device)
+    if dev.is_cuda and default_stream.device.alias != dev.alias:
+        raise ValueError(
+            f"stream belongs to device {default_stream.device.alias!r}, "
+            f"not {dev.alias!r}")
+
+
 class GraphRunner:
     """Execution policy (record / eager / self-graph) for one producer.
 
@@ -161,15 +178,7 @@ class GraphRunner:
                  default_stream: "wp.Stream | None" = None, owner=None,
                  name: str = "") -> None:
         dev = wp.get_device(device)
-        if default_stream is not None:
-            if not isinstance(default_stream, wp.Stream):
-                raise TypeError(
-                    "stream must be a wp.Stream or None; got "
-                    f"{type(default_stream).__name__}")
-            if dev.is_cuda and default_stream.device.alias != dev.alias:
-                raise ValueError(
-                    f"stream belongs to device {default_stream.device.alias!r}, "
-                    f"not {dev.alias!r}")
+        _check_default_stream(dev, default_stream)
         self._device = dev
         self._capturable = bool(capturable)
         self._legacy_stream = bool(legacy_stream)

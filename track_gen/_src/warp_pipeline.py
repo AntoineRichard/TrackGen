@@ -486,6 +486,11 @@ def _run_pipeline(
     xpbd_solve_inplace -> inflate_warp. All buffers are pre-allocated in scratch/out.
     Safe to call inside a wp.ScopedCapture region (no host syncs, no allocations).
 
+    PR9 composition, kept as the byte-identity reference (``tests/test_pipeline_parity``)
+    and for out-of-tree callers: ``TrackGenerator`` runs a :class:`track_gen.pipeline.
+    Program` of the same stages instead. Removed once the parity tests carry a frozen
+    copy (roadmap PR10b / 1.0).
+
     Every stage runs on ``ctx``'s stream. A generator whose spec sets ``accepts_ctx``
     gets ``ctx=ctx``; a legacy generator runs inside ``ctx.scope()`` so the
     ``warp_pipeline`` helpers it calls inherit the stream (its own direct
@@ -985,9 +990,11 @@ class InflateScratch:
 class _Scratch:
     """Per-concern scratch groups for the in-place pipeline, composed in one holder.
 
-    Owned by TrackGenerator; threaded into each stage on the owned path so the runtime
-    generate() path makes zero per-call allocations. The buffers are grouped by lifetime/
-    concern so each stage receives only the group it owns:
+    The PR9 composition's scratch (:func:`_inflate_warp_alloc`). ``TrackGenerator._scratch``
+    is a ``_Scratch`` VIEW whose attributes alias its pipeline Program's channel versions
+    and stage scratch (``track_gen.pipeline.legacy._scratch_view``), so the names below
+    keep their meaning and :func:`_run_pipeline` still runs on it. The buffers are
+    grouped by lifetime/concern so each stage receives only the group it owns:
 
     .generator_spec — GeneratorSpec resolved when this scratch was allocated.
     .gen      — the generator's private scratch (its spec's ``alloc_scratch`` result,
@@ -1070,7 +1077,12 @@ def _reject_stage_class(generator_spec) -> None:
 
 
 def _inflate_warp_alloc(config, generator_spec=None, *, seed=None):
-    """Allocate a Track with pre-sized wp.array buffers for TrackGenerator.__init__.
+    """Allocate a Track with pre-sized wp.array buffers and the PR9 composite scratch.
+
+    PR9 composition, kept as the byte-identity reference (``tests/test_pipeline_parity``)
+    and for out-of-tree callers: ``TrackGenerator`` runs a :class:`track_gen.pipeline.
+    Program` of the same stages instead. Removed once the parity tests carry a frozen
+    copy (roadmap PR10b / 1.0).
 
     Sizes: outer/center/inner/tangent/normal are [E*N_max] vec3f (z = 0, lifted
     from the internal 2D pipeline); arclen is
@@ -1286,6 +1298,9 @@ def inflate_warp(center, config, out=None,
                  truncated: "wp.array | None" = None,
                  ctx: "LaunchContext | None" = None):
     """Pure-Warp inflation: resample -> frame -> offset -> z-profile -> validity -> lift.
+
+    The tail of the PR9 composition (see :func:`_run_pipeline`); the
+    ``track_gen.pipeline`` built-in stages wrap the same calls one stage each.
 
     Writes results into out's wp.array Track buffers (or allocates a fresh Track).
     All inputs are wp.arrays; center is a flat [E*n_max] vec2f wp.array.

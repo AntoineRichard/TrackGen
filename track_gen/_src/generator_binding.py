@@ -13,7 +13,7 @@ selected generator only, and builds the two config snapshots a facade keeps:
 
 A :class:`~track_gen.plugin.Stage` generator is adapted to the legacy accepts-ctx
 generator ABI by :class:`_StageGenerator` (``alloc`` through a StageBuilder at build,
-``generate`` = the stage's ``enqueue``), so the relax / inflate tail is unchanged.
+``generate`` = the stage's ``enqueue``), so the rest of the track pipeline is unchanged.
 
 Host-only: binding allocates nothing and launches nothing.
 """
@@ -193,7 +193,8 @@ class _BuiltStage:
 
 class _StageGenerator:
     """Adapts a Stage generator to the accepts-ctx ``GeneratorSpec`` call the pipeline
-    makes. Built once (:meth:`build`, from ``_inflate_warp_alloc``)."""
+    makes. Built once (:meth:`build`, by the pipeline's generator slot, or by the PR9
+    ``_inflate_warp_alloc``)."""
 
     accepts_ctx = True
 

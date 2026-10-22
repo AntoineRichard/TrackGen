@@ -175,7 +175,7 @@ the other envs' seeds or epochs since their last generation: a reseed or a
 ``reset_epoch()`` made in between reaches an env at its next masked generation, or every
 env at the next generation without a mask. An all-zero mask is therefore an exact no-op.
 A masked commit that writes only the masked envs, and so avoids relying on the
-recompute, is planned (roadmap PR10).
+recompute, is planned (roadmap PR10b).
 
 ``m`` must be a contiguous ``[E]`` int32 array on the generator's device, passed with
 ``advance=True``; the facade checks both on the host (``ValueError``) before any launch.

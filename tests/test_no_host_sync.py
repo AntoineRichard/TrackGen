@@ -66,7 +66,9 @@ from track_gen._src.rng_utils import PerEnvSeededRNG
 from track_gen._src.track_generator import TrackGenerator
 from track_gen._src.types import GateGenConfig, TrackGenConfig
 from track_gen import ops
+from track_gen import pipeline as pipeline_mod
 from track_gen import seeds as seeds_mod
+from track_gen import stages as stages_mod
 from track_gen.exec import LaunchContext
 from track_gen.ops import reduce as reduce_mod
 from track_gen.plugin import registry
@@ -538,6 +540,37 @@ def _legacy_generator_wrappers():
     return hot
 
 
+def _program_standalone():
+    # A Program built straight from a PipelineSpec (track_gen.pipeline, PR10a): run()
+    # (plain, advancing, masked) and enqueue() on an explicit context.
+    spec = pipeline_mod.legacy.to_pipeline_spec(
+        TrackGenConfig(device=DEV, num_envs=E, z_profile="noise", z_max=0.2,
+                       z_noise_amplitude=0.1))
+    program = pipeline_mod.build(spec, seeds=3)
+    m = _i32([0, 1])
+    ctx = LaunchContext.for_call(DEV)
+
+    def hot():
+        program.run()
+        program.run(advance=True, mask=m, sync=True)
+        program.run(policy="eager")
+        program.enqueue(ctx)
+    return hot
+
+
+def _legacy_pipeline_wrappers():
+    # The PR9 composition (warp_pipeline._run_pipeline -> inflate_warp), kept as the
+    # byte-identity reference, run on a TrackGenerator's _scratch view (relax on).
+    gen = _track_gen()
+    ctx = LaunchContext.for_call(DEV)
+
+    def hot():
+        warp_pipeline._run_pipeline(gen._config, gen._seed_buf, out=gen._track,
+                                    scratch=gen._scratch,
+                                    generator_spec=gen._generator_spec, ctx=ctx)
+    return hot
+
+
 def _inflate_fixed_n():
     # inflate_warp's count=None convenience path (fixed N == num_points) on a scratch
     # allocated at construction.
@@ -611,6 +644,8 @@ DRIVERS = {
     "wrappers[resample]": _resample_wrappers,
     "wrappers[geometry]": _geometry_wrappers,
     "wrappers[inflate_fixed_n]": _inflate_fixed_n,
+    "wrappers[legacy_pipeline]": _legacy_pipeline_wrappers,
+    "program[standalone]": _program_standalone,
     "wrappers[legacy_generator]": _legacy_generator_wrappers,
     "ops[all]": _ops_all,
 }
@@ -641,6 +676,13 @@ _PIPELINE_MODULES = (
     # the public track_gen.ops primitives (PR7); ops.fill is shadowed by the function
     *(importlib.import_module(f"track_gen.ops.{m}")
       for m in ("check", "resample", "geometry", "sampling", "curves", "fill")),
+    # the pipeline planner and the built-in track stages (PR10a): their enqueues are
+    # closures and methods; every module-level function is construction-time
+    pipeline_mod, stages_mod,
+    *(importlib.import_module(f"track_gen.pipeline.{m}")
+      for m in ("spec", "planner", "program", "legacy")),
+    *(importlib.import_module(f"track_gen.stages.{m}")
+      for m in ("channels", "params", "track")),
 )
 
 # Construction-time functions (allocation, registration, host precompute for sizing).
@@ -671,6 +713,20 @@ _CONSTRUCTION_ONLY = {
                                                    "register"},
     # host-side reference/construction helpers (never on a hot path)
     "track_gen.seeds": {"effective_seed", "_wrap_int32", "_is_rng"},
+    # the planner and the stage catalogue (PR10a): build-time only
+    "track_gen.pipeline.spec": {"_frozen_map", "_port_value", "_capacity_value",
+                                "_required"},
+    "track_gen.pipeline.planner": {"build", "_build", "_is_int", "_check_spec_shape",
+                                   "_label", "_resolve", "_plan_channels", "_check_out",
+                                   "_seed_state", "_is_seed_form", "_check_seeds",
+                                   "_check_exports", "_check_flat_lift"},
+    "track_gen.pipeline.legacy": {"to_pipeline_spec", "_to_pipeline_spec",
+                                  "generator_config", "_scratch_view"},
+    "track_gen.stages": {"_check_builtin_stage", "register"},
+    "track_gen.stages.channels": {"_c"},
+    "track_gen.stages.params": {"_check_half_width", "_check_z_range",
+                                "_check_control_points"},
+    "track_gen.stages.track": {"_alloc_track", "_zcfg"},
 }
 
 

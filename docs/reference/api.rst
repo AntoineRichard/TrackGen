@@ -272,23 +272,62 @@ A generator's own parameters, set with ``TrackGenConfig.generator_params`` /
 Stage generators
 ~~~~~~~~~~~~~~~~
 
-The ``Stage`` protocol, generator subset: a ``Stage`` subclass with ``kind="generator"``
-and ``output="centerline"``, registered as a class, that allocates through the
-``StageBuilder`` it is handed and returns an ``enqueue(ctx)`` callable; see
-:ref:`generator-stage-contract`. Gate generator stages (``output="anchors"``) arrive with
-roadmap PR11.
+The ``Stage`` protocol: a ``Stage`` subclass, registered as a class, that allocates
+through the ``StageBuilder`` it is handed and returns an ``enqueue(ctx)`` callable; see
+:ref:`generator-stage-contract`. Plugins register ``kind="generator"`` stages with
+``output="centerline"``; the other track stages (with read ports, ``StageBuilder.read``
+and ``temp_like``) are TrackGen's built-ins until roadmap PR10b (see
+:doc:`/how-it-works/pipeline-preview`). Gate generator stages (``output="anchors"``)
+arrive with roadmap PR11.
 
 .. autoclass:: track_gen.plugin.Stage
    :members: capture_class, capacity, build
 
 .. autoclass:: track_gen.plugin.StageBuilder
-   :members: write, scratch, param, input, salt
+   :members: read, write, temp_like, scratch, param, input, salt
 
 .. autoclass:: track_gen.plugin.CaptureClass
    :no-members:
 
 .. autoclass:: track_gen.plugin.Layout
    :no-members:
+
+Pipeline (preview)
+------------------
+
+.. warning::
+
+   **Preview.** ``track_gen.pipeline`` may change before roadmap PR10b. Only the
+   generator stage can come from a plugin in this release.
+
+The track pipeline as an ordered list of stages: the spec types, the planner and the
+``Program`` it builds; see :doc:`/how-it-works/pipeline-preview`. ``TrackGenerator``
+builds its pipeline with :func:`legacy.to_pipeline_spec
+<track_gen.pipeline.legacy.to_pipeline_spec>` and :func:`~track_gen.pipeline.build`.
+``track_gen.pipeline`` is a subpackage outside ``track_gen.__all__``: import it
+explicitly. ``import track_gen`` does not import it.
+
+.. automodule:: track_gen.pipeline
+   :no-members:
+
+.. autoclass:: track_gen.pipeline.StageRef
+   :no-members:
+
+.. autoclass:: track_gen.pipeline.BatchSpec
+   :no-members:
+
+.. autoclass:: track_gen.pipeline.PipelineSpec
+   :members: ids, replace, insert_after, insert_before, remove, to_dict, from_dict
+
+.. autofunction:: track_gen.pipeline.build
+
+.. autoclass:: track_gen.pipeline.Program
+   :members: run, enqueue, prepare, result, spec, seeds, seed, inputs, params, graph,
+      capturable, capture_class
+
+.. autoexception:: track_gen.pipeline.PlanError
+
+.. autofunction:: track_gen.pipeline.legacy.to_pipeline_spec
 
 Torch interop
 -------------

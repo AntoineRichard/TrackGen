@@ -442,7 +442,7 @@ What happens to each env, and what it costs:
   resample, SDF and height-field bakes, course line, gate posts). Only the masked envs'
   runtime state is reset. A step with at least one masked env therefore costs one
   full-batch generation. A masked commit that skips the recompute of unmasked envs is
-  planned (roadmap PR10).
+  planned (roadmap PR10b).
 - Seeds you write (``course.rng.seeds_warp``, ``course.rng.set_seeds_warp(...)``) and
   epochs you reset (``course.seeds.reset_epoch(...)``) between regenerations take effect
   for an env when a masked regeneration selects it (its new course and its state reset

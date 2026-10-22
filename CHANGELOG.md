@@ -1,6 +1,170 @@
 # Changelog
 
-## 0.2.0.dev2 (unreleased, `v2` branch)
+## 0.2.0.dev3 (unreleased, `v2` branch)
+
+### Added
+
+- **`track_gen.pipeline` (preview): the track pipeline as a list of stages** (roadmap
+  PR10a). The pipeline `TrackGenerator` runs is now described by data: a `PipelineSpec`
+  lists the stages in order, `build()` plans and allocates it once, and a `Program` runs
+  it. Outputs are byte-identical to 0.2.0.dev2. The package is a **preview**: names may
+  change before roadmap PR10b, and only the generator stage can come from a plugin. The
+  new page `docs/how-it-works/pipeline-preview.rst` describes it, and
+  `docs/reference/api.rst` documents it. `track_gen.pipeline` is outside
+  `track_gen.__all__`; `import track_gen` does not import it.
+  - `StageRef(kind, name, params=None, id=None, ports={}, capacity={})`, frozen: one stage
+    slot. `params` is a Params instance, a mapping (coerced and validated at build time)
+    or `None`; `id` (no `"/"`) defaults to `kind` (`slot_id` is `id or kind`); `ports`
+    rewires a local port to another channel of the same dtype and size; `capacity` is
+    the generator's `{"raw": num_points}`, the default raw point count that a Stage
+    generator's `Stage.capacity()` overrides (any other key, or a `capacity` on a
+    non-generator stage, is a `PlanError`).
+  - `BatchSpec(num_envs, device, n_max, closed=True, scale=1.0)`.
+  - `PipelineSpec(batch, stages)`: `ids`, and the pure data operations `replace(id, ref)`
+    (keeps the slot's id when `ref.id` is `None`), `insert_after`, `insert_before` and
+    `remove`, which raise `ValueError` for an unknown id and leave everything else to
+    `build`. `to_dict()` / `from_dict()` (format `"track_gen.pipeline/1"`, JSON-safe, no
+    registry needed to read it back; a missing key raises a `ValueError` naming it);
+    building the round-tripped spec gives byte-identical outputs.
+  - `legacy.to_pipeline_spec(config, *, registry=None)`: the default spec for a
+    `TrackGenConfig`, with the generator's params resolved through `registry`. Its ten
+    stages are `generator` (`generator.<config.generator>`), `resample`
+    (`resample.constant_spacing`), `relax` (`relax.xpbd`, or `relax.none` when
+    `relax_enable=False`), `uniform` (`resample.uniform`), `width` (`width.constant`),
+    `frames` (`frames.default`), `offset` (`offset.default`), `elevation`
+    (`elevation.<z_profile>`), `validity` (`validity.default`) and `lift` (`lift.flat` or
+    `lift.elevated`). Each built-in stage calls the 0.2.0.dev2 wrappers and kernels with
+    the same arguments, and its params keep the flat `TrackGenConfig` field names.
+  - `build(spec, *, registry=None, seeds=None, out=None, stream=None, prepare=True)`, the
+    planner. Before it allocates or launches anything it checks the batch (`num_envs >= 1`,
+    `n_max >= 3`, `closed=True`), unique slot ids with exactly one generator stage, first,
+    with the id `generator`; resolves the generator through `registry` as `TrackGenerator` does and every
+    other stage from TrackGen's built-in catalogue; coerces and validates each stage's
+    params; checks that every stage that has a `half_width` field agrees on it; checks
+    that every channel read has an earlier writer, that a second writer of a channel
+    also reads it, that every `Track` field has a writer, and that `lift.flat` does not
+    follow an elevation other than `elevation.flat`; and checks the `seeds` type. It
+    then builds the `SeedState`, allocates every channel version once
+    (zero-initialised), binds the final version of each exported channel to the `Track`
+    (or to the `out=` Track, checked field by field), namespaces stage scratch as
+    `scratch:<id>/<name>` and calls each stage's `build` once, checking its write ports
+    right after. A broken rule raises `PlanError` (a `ValueError`) naming the stage, its
+    `kind.name`, the port and the channel; params keep their own `ValueError` /
+    `TypeError`, an unknown generator the registry's `ValueError`, and a bad `seeds` a
+    `TypeError`; a build inside a capture raises `CaptureError` before allocating.
+  - `Program`, a `GraphRunner` launchable with the PR3/PR4 rules: `run(*, stream=None,
+    sync=False, advance=False, mask=None, policy="auto")`, `enqueue(ctx, *,
+    advance=False, mask=None)` (seed prologue, parameter latch, every stage in order,
+    `generation` write; no allocation, no host sync), `prepare()`, `result` (the same
+    `Track` forever), `seeds`, `seed`, `inputs`, `params` (keyed by stage id), `graph`,
+    `capturable` and `capture_class`. A Program built with `prepare=False` is prepared
+    by its first `run()` outside a capture; recording it unprepared raises
+    `CaptureError`.
+  - Channels v1: `seed`, `raw.xy`, `gen.valid`, `cl.xy`, `cl.count`, `cl.truncated`,
+    `cl.half_width`, `cl.tangent2`, `cl.normal2`, `cl.kappa`, `cl.arclen2`,
+    `cl.length2`, `cl.winding`, `band.outer2`, `band.inner2`, `cl.z`, `track.count`,
+    `track.valid`, `track.arclen`, `track.length` and
+    `track.outer/center/inner/tangent/normal`. `Track.arclen` / `Track.length` are the
+    3D `track.arclen` / `track.length` of `lift.elevated` when it runs, else the
+    plan-view `cl.arclen2` / `cl.length2` of `frames`. A stage that reads and writes one
+    channel (`relax.xpbd`, `resample.uniform`) gets a new version of it, and must write
+    its whole output there: the pre-relax centerline survives the relax stage.
+- **`StageBuilder.read(port)` and `StageBuilder.temp_like(port)`**, with `Stage.reads` /
+  `Stage.writes` documented as `{local port: channel}` maps and an in-place rewrite
+  declared by naming one channel in both. A PR8 generator `Stage` runs unchanged: a
+  generator still declares no reads, so `read()` raises `ValueError` there, and
+  `temp_like()` returns private scratch shaped like a write port's channel.
+
+### Behaviour changes
+
+- **`TrackGenerator` runs a `Program`.** Construction builds the default spec (the one
+  `legacy.to_pipeline_spec(config)` returns), and `generate()`, `enqueue()` and `Course`
+  run the Program. Outputs are byte-identical (the CPU fingerprint guard is unchanged),
+  the launch sequence is the same (kernel, dimension and scalars, in order) and so is the
+  launch count (152 for a default `bezier` generation at `E=2`), and `Track` array
+  addresses stay stable. The `relax_solver` and `smooth_finish` errors are raised while
+  building the spec, with the same messages, in the same order. `gen.params` still lists
+  only `"generator"`.
+- **`gen._scratch` is a view** of the Program's buffers: the same `_Scratch` field names
+  (`gen_centerline`, `cs_center`, `count`, `relax.relaxed`, `inflate.ctr2`, ...) alias the
+  channel versions and stage scratch. A slot whose stage is absent is `None`
+  (`_scratch.relax` with `relax_enable=False`).
+- **The 0.2.0.dev2 composition stays, unused by the facade.** `warp_pipeline._run_pipeline`,
+  `inflate_warp`, `_inflate_warp_alloc`, `_Scratch`, `RelaxScratch` and `InflateScratch`
+  keep their code and the pinned legacy ABI; the tests use them as the byte-identity
+  reference. They are removed once the parity tests carry a frozen copy.
+- **Memory.** The re-uniformising resample has scratch of its own (`+E*(2*N_max+1)`
+  float32), elevated profiles keep the plan-view arc-length tables apart from the 3D ones
+  (`+E*(N_max+1)` float32), and `relax_enable=False` no longer allocates the relax
+  scratch.
+- **Channel buffers and stage scratch are zero-initialised** at construction (0.2.0.dev2
+  used `wp.empty` for most; the `Track` is allocated as before). No buffer is read before
+  it is written, so outputs do not change.
+- **Registration messages name roadmap PR10b.** `registry.add` still rejects a `Stage`
+  whose kind is not `"generator"`; the message now says third-party stages of other kinds
+  arrive with roadmap PR10b and points at `track_gen.pipeline`. A generator `Stage` with
+  read ports is still rejected, now because a generator reads no channel.
+
+### Deferred to PR10b
+
+- Registering the `relax`, `width`, `elevation`, `validity` and commit kinds in the public
+  registry, third-party stages of those kinds, and `describe()` for them; until then the
+  built-in non-generator stages live in a private catalogue.
+- Presets with replace / insert, a masked commit that writes only the masked envs,
+  `on_invalid`, `valid.fail` with `StageBuilder.fail_bit()`, `Program.tap()`, and
+  removing the PR8 parameter latch. Accumulating fail bits needs a write form that
+  aliases the read buffer of an in-place rewrite (PR10a's `write` always returns a new
+  version); that form is decided with them.
+- Deleting `_run_pipeline`, `inflate_warp`, `_Scratch`, `_StageGenerator` and the
+  `_scratch` view.
+- Later steps: the gate pipeline as stages (PR11); `cl.half_width` consumers, a width
+  stage before relax, and `write(interp=, export=)` (PR13).
+
+### Testing
+
+- `tests/test_pipeline_planner.py`: the default stage list for the flat and elevated
+  profiles and without relax; the `relax_solver` / `smooth_finish` errors; the flat
+  params validating with the `TrackGenConfig` messages; `StageRef` as frozen data; the
+  edit operations; the `to_dict` / `from_dict` round trip (JSON, byte-identical build),
+  a foreign format and missing keys; a standalone `build()` equal to `TrackGenerator`;
+  `out=` binding and mismatch; every `seeds` form, other seed types refused before any
+  allocation and the `SeedState` checks before the `Track`; `run()` preparing a
+  `prepare=False` Program and refusing to record it unprepared; every planner error
+  (unknown kind or name, duplicate ids, the generator slot, a read without an earlier
+  writer, a `Track` field without a writer, `lift.flat` after a non-flat elevation,
+  `capacity` keys, the `half_width` disagreement, port rewiring, batch and params
+  errors), each raised before any allocation; `Channel.per` validation; an elevated
+  lift after a replaced elevation; `build` inside a capture; toy stages injected into the private catalogue
+  (a toy elevation stage end to end, a live dynamic parameter of a stage, the
+  `StageBuilder` rules, the catalogue rules, input and salt collisions, salts keyed by
+  stage id); channel versioning with and without relax and the elevated lift's own arc
+  tables; the `_scratch` view aliases; `gen.params` staying `{"generator"}`; no
+  allocation in `Program.enqueue`; a Stage generator through the Program;
+  `temp_like()` in generator mode; and `import track_gen` not importing the pipeline.
+- `tests/test_pipeline_parity.py`: for every built-in generator (and the bezier, hull
+  and voronoi fallbacks, `style_sampling`, `relax_enable=False`, `z_base`, every
+  `z_profile`, `validity_border_check`, `relax_accel="none"`, `relax_sep_cache_slots=0`,
+  `relax_band=2`, `N_max` truncation, the toy Stage generators and the toy legacy-ABI
+  generators), after a plain and a masked generation, every channel version the Program
+  writes equals, byte for byte on CPU, the buffer of the 0.2.0.dev2 `_run_pipeline` it
+  reproduces, and every `Track` field matches; the launch sequences (op, kernel, dim,
+  scalars) are equal; a default `bezier` generation at `E=2` is still 152 launches.
+- The no-host-sync and launch-stream drivers cover the Program (`program[standalone]`)
+  and the 0.2.0.dev2 composition on a generator's `_scratch` view
+  (`wrappers[legacy_pipeline]`); the pipeline and stage modules are scanned.
+- `tests/test_caller_capture_cpu.py`'s fake facade patches
+  `track_gen.pipeline.legacy._to_pipeline_spec` and `track_gen.stages.track._alloc_track`
+  instead of `_run_pipeline` / `_inflate_warp_alloc`; its assertions are unchanged.
+- CUDA: `tests/test_program_capture_cuda.py` builds a standalone Program (default, noise
+  elevation without relax, random-walk elevation) and checks that it is caller
+  capturable (Warp `ScopedCapture`, a registered `torch.cuda.graph` and a plain one:
+  poisoned replays equal an eager twin, before and after a reseed), that its self-graph
+  replays the eager batch (also for the masked-advance key), and that on CUDA too it is
+  the 0.2.0.dev2 composition byte for byte with the same launch sequence. The existing
+  caller-capture, stream-capture and in-place regeneration CUDA tests cover
+  `TrackGenerator` unchanged.
+
+## 0.2.0.dev2 (2026-10-22, tag `v0.2.0.dev2`)
 
 ### Added
 

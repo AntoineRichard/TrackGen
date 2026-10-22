@@ -280,14 +280,15 @@ def _from_data(tp, v):
     return v
 
 
-def _coerce(cls, value, *, what: str, cfg=None) -> Params:
+def _coerce(cls, value, *, what: str, cfg=None, label: str = "generator_params") -> Params:
     """Resolve a ``generator_params`` value to an instance of ``cls``.
 
     ``None`` -> ``cls.from_legacy(cfg)`` (``cls()`` without a config); an instance of
     ``cls`` -> itself; a mapping -> ``cls(**mapping)`` (unknown keys raise), its values
     converted by annotation (:func:`_from_data`: arrays -> tuples, enum values ->
     members) so a schema-shaped mapping (JSON, YAML, Hydra) gives the same instance.
-    ``what`` names the selection in messages (e.g. ``"generator 'polar'"``).
+    ``what`` names the selection in messages (e.g. ``"generator 'polar'"``), ``label``
+    the argument (``"generator_params"``; a pipeline stage's ``"params"``).
     """
     if value is None:
         params = cls.from_legacy(cfg) if cfg is not None else cls()
@@ -301,10 +302,10 @@ def _coerce(cls, value, *, what: str, cfg=None) -> Params:
         valid = [f.name for f in dataclasses.fields(cls)]
         keys = list(value)
         if cls is NoParams and keys:
-            raise ValueError(f"{what} takes no generator_params; got {sorted(map(str, keys))}")
+            raise ValueError(f"{what} takes no {label}; got {sorted(map(str, keys))}")
         unknown = sorted(str(k) for k in keys if k not in valid)
         if unknown:
-            raise ValueError(f"unknown generator_params for {what}: {unknown}; "
+            raise ValueError(f"unknown {label} for {what}: {unknown}; "
                              f"valid fields: {valid}")
         types_ = {f.name: f.py_type for f in _fields(cls)}
         kwargs = {}
@@ -315,9 +316,9 @@ def _coerce(cls, value, *, what: str, cfg=None) -> Params:
                 raise ValueError(f"{cls.__name__}.{k}: {exc}") from None
         return cls(**kwargs)
     if cls is NoParams:
-        raise TypeError(f"{what} takes no generator_params; got a "
+        raise TypeError(f"{what} takes no {label}; got a "
                         f"{type(value).__name__}")
-    raise TypeError(f"generator_params for {what} must be a {cls.__name__} or a mapping of "
+    raise TypeError(f"{label} for {what} must be a {cls.__name__} or a mapping of "
                     f"its fields, got {type(value).__name__}")
 
 

@@ -362,8 +362,9 @@ instance per generator, with no arguments, and calls ``capacity`` and ``build`` 
    * - ``topology``
      - ``"closed"`` (default) or ``"any"``. Open tracks are not supported in 0.x.
    * - ``reads``, ``provides``
-     - Must stay empty: read ports arrive with roadmap PR10, ``provides`` with PR11 and
-       PR13.
+     - Must stay empty: a generator reads no channel (its seed is ``b.seed``), and
+       ``provides`` arrives with PR11 and PR13. Read ports are for the pipeline's other
+       stages (see :doc:`/how-it-works/pipeline-preview`).
    * - ``api_version``
      - The plugin API version the stage targets (default ``1``). A version above
        ``track_gen.plugin.API_VERSION`` is rejected.
@@ -394,8 +395,9 @@ an ``api_version`` above ``API_VERSION``, a ``capture`` that is not a ``CaptureC
 is ``BOUNDED``, a Params class that breaks the rules above, an ``output`` other than
 ``"centerline"``, a ``writes`` without ``"raw.xy"`` or with another channel (or two ports
 on one channel), a non-empty ``reads`` or ``provides``, or another ``topology``. A Stage of
-any other kind (``"relax"``, ``"elevation"``, ...) is rejected: other kinds arrive with
-roadmap PR10, which will check their ports, channels and topology.
+any other kind (``"relax"``, ``"elevation"``, ...) is rejected: TrackGen's own stages of
+those kinds already make up the pipeline (see :doc:`/how-it-works/pipeline-preview`),
+and third-party ones arrive with roadmap PR10b.
 
 ``build`` and ``enqueue``
 ~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -467,6 +469,11 @@ Call its methods in ``build`` (``write``, ``scratch`` and ``input`` allocate, an
    * - ``scratch(name, dtype, shape)``
      - A private zero-initialised buffer, named ``"scratch:generator/<name>"``. A second
        buffer with the same name raises ``ValueError``.
+   * - ``temp_like(port)``
+     - A private zero-initialised buffer with the dtype and length of a write port's
+       channel (``[E * raw]`` ``wp.vec2f`` for ``"raw.xy"``), allocated as
+       ``scratch("<port>.tmp<k>")``, ``k = 0, 1, ...`` per port: a ping-pong partner for
+       the output. An undeclared port raises ``ValueError``.
    * - ``param(field)``
      - The ``[E]`` working array (``float32`` or ``int32``) of a dynamic field, latched
        from the live array at every generation (see :ref:`generator-runtime-params`).

@@ -153,7 +153,8 @@ Explore the docs
       :link: how-it-works/pipeline
       :link-type: doc
 
-      The pipeline data flow, resample, inflation, and CUDA-graph capture.
+      The pipeline data flow, its stage list (preview), resample, inflation, and
+      CUDA-graph capture.
 
    .. grid-item-card:: Configuration & tuning
       :link: configuration/tuning
@@ -237,6 +238,7 @@ Explore the docs
    :hidden:
 
    how-it-works/pipeline
+   how-it-works/pipeline-preview
    how-it-works/resample
    how-it-works/inflation
    how-it-works/cuda-graph

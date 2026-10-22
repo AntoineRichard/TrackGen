@@ -1,7 +1,10 @@
 """Top-level facade for the batched track generator.
 
-Runs the pure-Warp pipeline (``_run_pipeline``: generation -> resample -> relax ->
-inflate, all NVIDIA Warp kernels) and returns a fully-populated :class:`Track`. The
+Runs the pure-Warp track pipeline (generation -> resample -> relax -> inflate, all
+NVIDIA Warp kernels) and returns a fully-populated :class:`Track`. The pipeline is a
+:class:`track_gen.pipeline.Program` built from ``legacy.to_pipeline_spec(config)``
+(roadmap PR10a): the ordered built-in stages, byte-identical to the 0.2.0.dev2
+composition ``warp_pipeline._run_pipeline``. The
 public dataclasses ``TrackGenConfig`` and ``Track`` live in the dependency-free leaf
 module ``types.py``; this facade re-exports ``TrackGenerator`` as the package's
 top-level entry point.
@@ -31,7 +34,6 @@ Seeds (:mod:`track_gen.seeds`): the generator keys env ``e`` by ``(seed[e], epoc
 so a replayed caller graph produces a NEW batch for them on every replay.
 """
 
-import functools
 import numbers
 import types
 from typing import TYPE_CHECKING
@@ -39,7 +41,7 @@ from typing import TYPE_CHECKING
 import warp as wp
 
 from ..exec.context import LaunchContext
-from ..exec.runner import GraphRunner
+from ..exec.runner import _check_default_stream, ensure_not_capturing
 from ..seeds import SeedState
 from .runtime import _snapshot_config
 from .types import Track, TrackGenConfig
@@ -59,13 +61,15 @@ class TrackGenerator:
     :class:`Track`.
 
     Generation, resample, relaxation and inflation are all expressed as NVIDIA Warp
-    kernels (via ``_run_pipeline``), runnable on the Warp ``cpu`` and ``cuda`` devices.
+    kernels (a :class:`track_gen.pipeline.Program` of the default stage list,
+    ``track_gen.pipeline.legacy.to_pipeline_spec(config)``), runnable on the Warp
+    ``cpu`` and ``cuda`` devices.
     ``config.generator`` must be a registered generator (see
     ``track_gen.plugin.registry.available("generator")``).
 
     The generator is fixed-batch: it always operates on exactly ``config.num_envs``
-    environments. The output :class:`Track` is pre-allocated once in ``__init__`` (via
-    ``_inflate_warp_alloc``) and reused across calls: ``generate()`` always returns
+    environments. The output :class:`Track` is pre-allocated once in ``__init__`` (by
+    the pipeline planner) and reused across calls: ``generate()`` always returns
     the same ``self._track`` instance, writing new results into the same wp.array buffers
     in place. This ensures stable ``.ptr`` pointers so downstream CUDA graph consumers can
     bake the device addresses once. Use ``Track.clone()`` to obtain an independent snapshot.
@@ -137,6 +141,8 @@ class TrackGenerator:
                 f"rng has {int(rng.seeds_warp.shape[0])} seeds but config.num_envs="
                 f"{config.num_envs!r}; construct the rng with num_envs={config.num_envs!r}."
             )
+        from ..pipeline import legacy as _legacy
+        from ..pipeline import planner as _planner
         from ..plugin import registry
         from .generator_binding import _StageGenerator, bind_generator, param_table
 
@@ -145,16 +151,8 @@ class TrackGenerator:
         # generator only. Host-only: nothing is allocated yet.
         binding = bind_generator("generator", config, registry=registry)
         self._generator_spec = binding.pipeline_spec
-        if config.relax_solver != "xpbd":
-            raise ValueError(
-                f"TrackGenerator only supports relax_solver='xpbd'; "
-                f"got {config.relax_solver!r}."
-            )
-        if config.smooth_finish:
-            raise ValueError(
-                "TrackGenerator does not support smooth_finish=True; "
-                "set smooth_finish=False."
-            )
+        # The default stage list (raises the relax_solver / smooth_finish errors).
+        spec = _legacy._to_pipeline_spec(binding.run_config, binding)
         # Snapshots: the pipeline bakes host scalars from the config into its launches
         # (and into any recorded graph), so later mutation of the caller's object must
         # not change what this generator emits. _config is what the pipeline reads (the
@@ -170,54 +168,45 @@ class TrackGenerator:
 
         E = int(config.num_envs)
         dev = str(config.device)
-        self._runner = GraphRunner(
-            dev,
-            capturable=self._capturable,
-            legacy_stream=not binding.accepts_ctx,
-            default_stream=stream,
-            owner=self,
-            name=config.generator,
-        )
         # Refuse a capture BEFORE allocating: the allocations and zero-fills below run
         # on Warp's current stream and would otherwise land in the caller's graph.
-        self._runner.ensure_not_capturing()
-
-        # Pre-allocate the [E] int32 effective-seed buffer on the pipeline device. It is
-        # written from (seeds, epoch) at the start of every generation (inside the
-        # graph); no allocation occurs in the hot path. A Stage generator binds it as
-        # StageBuilder.seed, so it exists before the pipeline is allocated.
-        self._seed_buf: wp.array = wp.empty(E, dtype=wp.int32, device=dev)
-
-        # Pre-allocate the persistent output Track buffers and scratch (one allocation
-        # per generator); all are reused across every generation.
-        from . import warp_pipeline
-        stage = self._generator_spec if isinstance(self._generator_spec, _StageGenerator) \
-            else None
-        self._track: Track
-        self._track, self._scratch = warp_pipeline._inflate_warp_alloc(
-            config, generator_spec=self._generator_spec,
-            **({"seed": self._seed_buf} if stage is not None else {}),
-        )
+        _check_default_stream(dev, stream)
+        ensure_not_capturing(dev, default_stream=stream, label=config.generator)
 
         # Per-env (seed, epoch): the rng's seeds_warp bound by pointer (read live at
         # every generation, never written by the generator) plus an owned epoch. Its
         # methods default to this generator's stream, so they stay ordered with it.
-        self._seed_state: SeedState = SeedState(E, dev, rng, default_stream=stream)
+        seed_state = SeedState(E, dev, rng, default_stream=stream)
+
+        # Plan and allocate the pipeline once: the persistent output Track, the [E]
+        # effective-seed buffer (written from (seeds, epoch) at the start of every
+        # generation, inside the graph), every channel and stage scratch. All are
+        # reused across every generation; the hot path never allocates.
+        program = _planner._build(spec, binding=binding, seeds=seed_state, stream=stream,
+                                  prepare=False, owner=self)
+        self._track: Track = program.result
+        # The PR9 scratch holder, as a view aliasing the program's buffers.
+        self._scratch = _legacy._scratch_view(program)
+        self._seed_buf: wp.array = program.seed
+        self._runner = program.runner
+        self._seed_state: SeedState = seed_state
 
         # Runtime parameters ({"generator": StageParams}: the live [E] arrays of a Stage
         # generator's dynamic fields) and persistent device inputs (stable pointers).
         self._params = param_table(binding, default_stream=stream)
-        self._regen_mask: wp.array = wp.zeros(E, dtype=wp.int32, device=dev)
-        self._inputs = types.MappingProxyType(
-            {"regen_mask": self._regen_mask, **(stage.inputs if stage is not None else {})})
-        # Latch (live -> work) of the dynamic params / inputs, recorded after the
-        # effective-seed prologue of every generation; None for legacy generators.
+        self._inputs = program.inputs
+        self._regen_mask: wp.array = program.inputs["regen_mask"]
+        # Latch (live -> work) of the dynamic params / inputs (the program runs it after
+        # the effective-seed prologue of every generation); None for legacy generators.
+        stage = self._generator_spec if isinstance(self._generator_spec, _StageGenerator) \
+            else None
         self._latch = stage.latch if stage is not None and stage._pairs else None
+        self._program = program
 
         # One real eager generation outside any capture (loads every module the hot
         # path uses; leaves the batch for the rng's current seeds in self._track), then
         # a host wait on its stream: the result is complete when construction returns.
-        self._runner.prepare(self._enqueue)
+        program.prepare()
 
     # -- properties ---------------------------------------------------------------
     @property
@@ -292,7 +281,8 @@ class TrackGenerator:
     def _enqueue(self, ctx: LaunchContext, *, advance: bool = False,
                  mask: "wp.array | None" = None) -> None:
         """Emit one whole generation on ``ctx``: [epoch advance] -> effective seeds
-        -> the pipeline -> ``generation <- epoch``.
+        -> the pipeline -> ``generation <- epoch`` (:meth:`track_gen.pipeline.Program.
+        enqueue`).
 
         The ONLY generation body (prepare, eager, self-graph capture and caller
         recording all run it). Zero allocation and host-sync free; the seed prologue
@@ -309,34 +299,12 @@ class TrackGenerator:
             advance: bump ``epoch[e]`` first (every env, or where ``mask[e] != 0``).
             mask: optional ``[E]`` int32 mask (validated by the caller).
         """
-        from . import warp_pipeline
-        if advance:
-            self.seeds.advance(mask, ctx=ctx)
-        self.seeds.effective(self._seed_buf, mask, ctx=ctx)
-        if self._latch is not None:
-            self._latch(ctx, mask)          # dynamic params / inputs, live -> work
-        warp_pipeline._run_pipeline(
-            self._config, self._seed_buf,
-            out=self._track, scratch=self._scratch,
-            generator_spec=self._generator_spec,
-            ctx=ctx,
-        )
-        if self._track.generation is not None:
-            self.seeds._write_generation(self._track.generation, mask, ctx)
+        self._program.enqueue(ctx, advance=advance, mask=mask)
 
     def _body(self, advance: bool, mask) -> "tuple[object, object]":
         """``(body, self-graph key)`` of one call; validates ``advance``/``mask``
         host-side, before any launch."""
-        if mask is not None:
-            if not advance:
-                raise ValueError(
-                    "mask= selects the envs whose epoch advances; it requires "
-                    "advance=True (without it every env is regenerated identically)")
-            self.seeds.check_mask(mask)
-        if not advance:
-            return self._enqueue, None
-        key = (True, 0 if mask is None else int(mask.ptr))
-        return functools.partial(self._enqueue, advance=True, mask=mask), key
+        return self._program._body(advance, mask)
 
     def _run(self, ctx: "LaunchContext | None" = None) -> None:
         """Backward-compatible alias: run :meth:`_enqueue` on ``ctx`` (default:
@@ -403,7 +371,7 @@ class TrackGenerator:
         to identical values, and their ``generation`` is not written. A reseed or
         ``seeds.reset_epoch()`` therefore reaches an env at its next masked generation,
         or every env at the next generation without a mask. A masked commit that skips
-        the recompute is a later roadmap step (PR10).
+        the recompute is a later roadmap step (PR10b).
 
         Args:
             num_or_ids: Optional. Either ``None`` or the integer batch size. When an

@@ -706,16 +706,27 @@ _Run = types.SimpleNamespace
 
 
 def _fake_track_facade(monkeypatch, capturable=True, accepts_ctx=True):
+    """TrackGenerator runs a track_gen.pipeline Program (PR10a): the seam is a
+    generator-only PipelineSpec (the planner's Track-writer rule is lifted for it) and a
+    fake result Track; the fake generator records the context of every pipeline run
+    (its ctx=, or the ambient scope of a legacy spec)."""
+    from track_gen.pipeline import BatchSpec, PipelineSpec, StageRef, legacy, planner
+    from track_gen.stages import track as stages_track
+
+    runs: list = []
+
+    def generate(*args, ctx=None, **kwargs):
+        ctx = ctx if ctx is not None else LaunchContext.for_call("cuda")
+        runs.append(_Run(stream=ctx.stream, capturing=ctx.capturing))
+
     _put(GeneratorSpec(
         name="tests.fake", alloc_scratch=lambda config: object(),
-        generate=lambda *a, **k: None, capturable=capturable, accepts_ctx=accepts_ctx))
-    runs: list = []
+        generate=generate, capturable=capturable, accepts_ctx=accepts_ctx))
     track = types.SimpleNamespace(generation=None)
-    monkeypatch.setattr(warp_pipeline, "_inflate_warp_alloc",
-                        lambda config, generator_spec=None: (track, object()))
-    monkeypatch.setattr(warp_pipeline, "_run_pipeline",
-                        lambda config, seed, out, scratch, generator_spec=None, ctx=None:
-                        runs.append(_Run(stream=ctx.stream, capturing=ctx.capturing)))
+    monkeypatch.setattr(legacy, "_to_pipeline_spec", lambda cfg, binding: PipelineSpec(
+        BatchSpec(1, "cuda", cfg.N_max), (StageRef("generator", "tests.fake"),)))
+    monkeypatch.setattr(stages_track, "_alloc_track", lambda layout: track)
+    monkeypatch.setattr(planner, "_check_exports", lambda writers: None)
     cfg = TrackGenConfig(generator="tests.fake", device="cuda", num_envs=1)
     return cfg, runs, track, TrackGenerator
 
@@ -855,7 +866,10 @@ def test_facade_construction_refuses_a_capturing_current_stream_before_allocatin
     monkeypatch.setattr(wp, "empty", lambda *a, **k: allocs.append("empty") or object())
     monkeypatch.setattr(wp, "copy", lambda *a, **k: None)
     cfg, runs, _, cls = make(monkeypatch)
-    for mod, name in ((warp_pipeline, "_inflate_warp_alloc"), (warp_gate, "_gate_warp_alloc")):
+    from track_gen.stages import track as stages_track
+
+    for mod, name in ((warp_pipeline, "_inflate_warp_alloc"), (warp_gate, "_gate_warp_alloc"),
+                      (stages_track, "_alloc_track")):
         real = getattr(mod, name)
         monkeypatch.setattr(mod, name,
                             lambda *a, _r=real, _n=name, **k: allocs.append(_n) or _r(*a, **k))

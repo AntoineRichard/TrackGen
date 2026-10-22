@@ -1,11 +1,14 @@
-"""The :class:`Stage` protocol (generator subset) and its :class:`StageBuilder`.
+"""The :class:`Stage` protocol and its :class:`StageBuilder`.
 
 A Stage is a class that allocates everything it needs ONCE, through the
 :class:`StageBuilder` the orchestrator hands to :meth:`Stage.build`, and returns an
 ``enqueue(ctx)`` callable that emits its device work on a
-:class:`~track_gen.exec.LaunchContext`. In this release the orchestrator consumes
-``kind="generator"`` stages with ``output="centerline"``: register the CLASS with
-``registry.add(MyStage)`` and select it with ``TrackGenConfig(generator=MyStage.name)``.
+:class:`~track_gen.exec.LaunchContext`. Third parties register ``kind="generator"``
+stages with ``output="centerline"``: register the CLASS with ``registry.add(MyStage)``
+and select it with ``TrackGenConfig(generator=MyStage.name)``. The other stages of the
+track pipeline (resample, relax, width, frames, offset, elevation, validity, lift) are
+TrackGen's own built-ins in this release (``track_gen.pipeline``, preview); they read and
+write named channels through :meth:`StageBuilder.read` / :meth:`StageBuilder.write`.
 
 A generator stage writes the raw closed centerline (channel ``"raw.xy"``,
 ``[E * raw]`` ``vec2f``, ``raw`` from :meth:`Stage.capacity`, default
@@ -79,17 +82,22 @@ class Stage(abc.ABC):
 
     Class attributes a stage sets:
 
-    - ``kind``: the registry kind, ``"generator"`` (other kinds arrive with roadmap
-      PR10 and are rejected at registration until then).
+    - ``kind``: the registry kind, ``"generator"`` (third-party stages of the other
+      kinds arrive with roadmap PR10b and are rejected at registration until then).
     - ``name``: the registered name; third parties use a dotted ``"package.name"``.
     - ``Params``: the stage's :class:`~track_gen.plugin.Params` class (default
       :class:`~track_gen.plugin.NoParams`).
     - ``capture``: its :class:`CaptureClass` (default ``STATIC``; ``BOUNDED`` is
       rejected until roadmap PR12); override :meth:`capture_class` when it depends on
       the params.
-    - ``reads``: must be empty (read ports arrive with PR10).
-    - ``writes``: ``local port -> channel``; a generator writes ``"raw.xy"``
-      (required) and optionally ``"gen.valid"``.
+    - ``reads``: ``local port -> channel`` the stage reads (:meth:`StageBuilder.read`).
+      Must be empty for a generator.
+    - ``writes``: ``local port -> channel`` the stage writes
+      (:meth:`StageBuilder.write`); a generator writes ``"raw.xy"`` (required) and
+      optionally ``"gen.valid"``. A channel in both ``reads`` and ``writes`` is an
+      in-place rewrite: ``write`` returns a NEW version of the channel (later stages
+      see it), ``read`` the previous one, so the stage writes its whole output into
+      the ``write`` buffer (an update made to the ``read`` buffer is never seen).
     - ``provides``: must be empty (PR11/PR13).
     - ``topology``: ``"closed"`` or ``"any"``.
     - ``output``: ``"centerline"`` for a generator (``"anchors"`` arrives with PR11).
@@ -154,20 +162,19 @@ def _salt_of(stage_id: str, stream: str) -> int:
 class StageBuilder:
     """Handed to :meth:`Stage.build`; created by the orchestrator, never by plugins.
 
-    This release implements the generator subset (:meth:`write`, :meth:`scratch`,
-    :meth:`param`, :meth:`input`, :meth:`salt`); later releases add read ports and
-    more. Every method allocates at build time only, and raises once ``build()``
-    returned.
+    This release implements :meth:`read`, :meth:`write`, :meth:`temp_like`,
+    :meth:`scratch`, :meth:`param`, :meth:`input` and :meth:`salt`. Every method
+    allocates at build time only, and raises once ``build()`` returned.
 
     Attributes:
         E: The number of envs.
         layout: The run's :class:`Layout`.
         device: The ``wp.Device``.
-        stage_id: ``"generator"``.
+        stage_id: The stage's id in the pipeline (``"generator"`` for the generator).
         scale: ``TrackGenConfig.scale`` (a core field, not a generator Param).
         seed: ``[E]`` int32: the effective per-env seed of the current generation
             (seed and epoch folded); read it in ``enqueue``.
-        raw: Points per env of the ``"raw.xy"`` output (a generator-stage attribute).
+        raw: Points per env of the ``"raw.xy"`` channel.
 
     The arrays :meth:`param` and :meth:`input` return are READ-ONLY for the stage:
     never write them (not even as scratch), since a generation's values come from the
@@ -177,7 +184,7 @@ class StageBuilder:
     def __init__(self, *, _token=None, stage, params, layout: Layout, scale: float,
                  seed: "wp.array", raw: int, outputs: Mapping[str, "wp.array"],
                  dynamic: Mapping[str, tuple], reserved_inputs=("regen_mask",),
-                 stage_id: str = _STAGE_ID) -> None:
+                 stage_id: str = _STAGE_ID, plan=None) -> None:
         if _token is not _BUILDER_TOKEN:
             raise TypeError("StageBuilder is created by the orchestrator (TrackGenerator); "
                             "a Stage receives one in build()")
@@ -199,6 +206,11 @@ class StageBuilder:
         self._inputs: dict = {}                       # name -> (live, work)
         self._reserved_inputs = frozenset(reserved_inputs)
         self._salts: dict = {}                        # stream -> salt
+        self._temps: dict = {}                        # port -> temp_like() count
+        # The planner's per-stage view (track_gen.pipeline): resolved ports, channel
+        # versions and the channel catalogue. None for a generator Stage built by the
+        # PR8 adapter: the generator subset below, unchanged.
+        self._plan = plan
         self._closed = False
 
     def __repr__(self) -> str:
@@ -218,13 +230,16 @@ class StageBuilder:
               export=None) -> "wp.array":
         """The output buffer of ``writes[port]``.
 
-        Channels: ``"raw.xy"`` (``wp.vec2f``, ``per="raw"``, ``[E * raw]``) and
-        ``"gen.valid"`` (``wp.int32``, ``per="env"``, ``[E]``). The buffer is owned by
-        the orchestrator and read directly by the next stage (no copy).
+        A generator writes ``"raw.xy"`` (``wp.vec2f``, ``per="raw"``, ``[E * raw]``)
+        and ``"gen.valid"`` (``wp.int32``, ``per="env"``, ``[E]``). ``per`` sizes the
+        buffer: ``"env"`` is ``[E]``, ``"cl"`` is ``[E * N_max]``, ``"raw"`` is
+        ``[E * raw]``. The buffer is owned by the orchestrator and read directly by
+        later stages (no copy). For a channel the stage also reads (an in-place
+        rewrite) it is a NEW version: :meth:`read` keeps returning the previous one.
 
         Raises:
-            ValueError: an undeclared port (lists the declared ones), a channel other
-                than those two, or a second write of the same port.
+            ValueError: an undeclared port (lists the declared ones), a channel the
+                stage may not write, or a second write of the same port.
             TypeError: a ``dtype`` / ``per`` that does not match the channel.
             NotImplementedError: ``interp=`` / ``export=`` (roadmap PR13).
         """
@@ -232,6 +247,8 @@ class StageBuilder:
         if interp is not None or export is not None:
             raise NotImplementedError("StageBuilder.write(interp=, export=) arrives with "
                                       "roadmap PR13")
+        if self._plan is not None:
+            return self._plan_write(port, dtype, per)
         writes = type(self._stage).writes
         if port not in writes:
             raise ValueError(f"stage {type(self._stage).__name__} declares no write port "
@@ -251,6 +268,78 @@ class StageBuilder:
             raise TypeError(f"channel {channel!r} is per={want_per!r}, got per={per!r}")
         self._written[port] = channel
         return self._outputs[channel]
+
+    def _plan_write(self, port: str, dtype, per: str) -> "wp.array":
+        plan = self._plan
+        if port not in plan.writes:
+            raise ValueError(f"stage {self._label()} declares no write port {port!r}; "
+                             f"declared ports: {sorted(plan.writes)}")
+        channel = plan.writes[port]
+        if port in self._written:
+            raise ValueError(f"port {port!r} ({channel!r}) is already written; call "
+                             f"write() once per port")
+        want_dtype, want_per = plan.channel(channel)
+        if dtype is not want_dtype:
+            raise TypeError(f"channel {channel!r} has dtype {want_dtype.__name__}, got "
+                            f"{getattr(dtype, '__name__', dtype)}")
+        if per != want_per:
+            raise TypeError(f"channel {channel!r} is per={want_per!r}, got per={per!r}")
+        arr = plan.write(port)
+        self._written[port] = channel
+        return arr
+
+    def _label(self) -> str:
+        return f"{self.stage_id!r} ({type(self._stage).__name__})"
+
+    def _length(self, per: str) -> int:
+        if per == "env":
+            return self.E
+        if per == "raw":
+            return self.E * self.raw
+        if per == "cl":
+            return self.E * int(self.layout.stride)
+        raise ValueError(f"unknown per={per!r}; expected 'env', 'raw' or 'cl'")
+
+    def read(self, port: str) -> "wp.array":
+        """The buffer of ``reads[port]``: the latest version of its channel written by
+        an EARLIER stage (for a channel this stage also writes, the version before its
+        own). READ-ONLY for the stage.
+
+        Raises:
+            ValueError: an undeclared read port (lists the declared ones). A generator
+                declares none.
+        """
+        self._check_open("read")
+        reads = self._plan.reads if self._plan is not None else {}
+        if port not in reads:
+            raise ValueError(f"stage {self._label()} declares no read port {port!r}; "
+                             f"declared read ports: {sorted(reads)}")
+        return self._plan.read(port)
+
+    def temp_like(self, port: str) -> "wp.array":
+        """A private zero-initialised buffer with the dtype and length of ``port``'s
+        channel (e.g. the ping-pong partner of an in-place rewrite), allocated as
+        :meth:`scratch` ``"<port>.tmp<k>"`` (``k = 0, 1, ...`` per port).
+
+        Raises:
+            ValueError: ``port`` is neither a read nor a write port of the stage.
+        """
+        self._check_open("temp_like")
+        if self._plan is not None:
+            ports = {**self._plan.reads, **self._plan.writes}
+            channel = ports.get(port)
+            info = None if channel is None else self._plan.channel(channel)
+        else:
+            ports = dict(type(self._stage).writes)
+            channel = ports.get(port)
+            info = _GENERATOR_CHANNELS.get(channel)
+        if info is None:
+            raise ValueError(f"stage {self._label()} declares no port {port!r}; declared "
+                             f"ports: {sorted(ports)}")
+        dtype, per = info
+        k = self._temps.get(port, 0)
+        self._temps[port] = k + 1
+        return self.scratch(f"{port}.tmp{k}", dtype, self._length(per))
 
     def scratch(self, name: str, dtype, shape) -> "wp.array":
         """A private zero-initialised buffer, namespaced ``"scratch:<stage_id>/<name>"``.
@@ -368,7 +457,8 @@ def _check_stage(cls, *, kind: "str | None" = None, api_version: int = 1) -> str
                          f"register a GateGeneratorSpec")
     if declared != "generator":
         raise ValueError(f"Stage {label}: Stage kind {declared!r} arrives with roadmap "
-                         f"PR10; this release consumes kind='generator' only")
+                         f"PR10b; this release registers kind='generator' only (the "
+                         f"other track stages are built-ins, see track_gen.pipeline)")
     version = getattr(cls, "api_version", 1)
     if isinstance(version, bool) or not isinstance(version, int) or version > api_version:
         raise ValueError(f"Stage {label}.api_version={version!r}: this track_gen provides "
@@ -397,8 +487,8 @@ def _check_stage(cls, *, kind: "str | None" = None, api_version: int = 1) -> str
     if len(set(channels)) != len(channels):
         raise ValueError(f"Stage {label}.writes maps two ports to one channel: {writes}")
     if dict(cls.reads):
-        raise ValueError(f"Stage {label}.reads must be empty (read ports arrive with "
-                         f"roadmap PR10)")
+        raise ValueError(f"Stage {label}.reads must be empty (a generator reads no "
+                         f"channel)")
     if frozenset(cls.provides):
         raise ValueError(f"Stage {label}.provides must be empty (roadmap PR11/PR13)")
     if cls.topology not in ("closed", "any"):

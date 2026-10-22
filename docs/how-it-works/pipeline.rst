@@ -2,10 +2,13 @@ Pipeline — data-flow overview
 ==============================
 
 The ``track_gen`` pipeline turns a batch of per-environment seeds into a batch of
-``Track`` objects. The whole pipeline lives in
-``track_gen/_src/warp_pipeline.py`` (plus the relaxation solve in
-``track_gen/_src/warp_relax.py``) and is written entirely in
-`NVIDIA Warp <https://github.com/NVIDIA/warp>`_ kernels.
+``Track`` objects. Its kernels live in ``track_gen/_src/warp_pipeline.py`` (plus the
+relaxation solve in ``track_gen/_src/warp_relax.py`` and the elevation profiles in
+``track_gen/_src/warp_zprofile.py``) and are written entirely in
+`NVIDIA Warp <https://github.com/NVIDIA/warp>`_. ``TrackGenerator`` runs them as an
+ordered list of stages, planned once at construction: :doc:`pipeline-preview` describes
+that stage list, the channels each stage reads and writes, and the preview
+``track_gen.pipeline`` API that builds it.
 
 Goals
 -----
@@ -52,6 +55,12 @@ Data flow
 The RELAX stage — the XPBD constraint solve that makes the centerline inflatable —
 has its own section: see :doc:`/relaxation/overview`.
 
+.. seealso::
+
+   :doc:`pipeline-preview` — the same flow as the ten stages ``TrackGenerator`` runs
+   (``generator``, ``resample``, ``relax``, ``uniform``, ``width``, ``frames``,
+   ``offset``, ``elevation``, ``validity``, ``lift``), with their channels.
+
 Registered centerline generators
 ----------------------------------
 
@@ -59,9 +68,10 @@ The centerline generator is pluggable. ``TrackGenerator.__init__`` resolves
 ``config.generator`` through ``track_gen.plugin.registry`` (built-ins plus installed
 plugins, see :doc:`/contributing/writing-a-generator`), resolves and validates its
 parameters (``config.generator_params``, or the flat fields of a built-in), allocates that
-generator's private scratch once, and ``_run_pipeline`` calls the resolved
-``GeneratorSpec.generate`` with orchestrator-owned ``out_centerline`` and
-``out_valid_wp`` buffers. A ``Stage`` generator is adapted to the same call: its
+generator's private scratch once, and the pipeline's ``generator`` stage calls the
+resolved ``GeneratorSpec.generate`` with orchestrator-owned ``out_centerline`` and
+``out_valid_wp`` buffers (the ``raw.xy`` and ``gen.valid`` channels of
+:doc:`pipeline-preview`). A ``Stage`` generator is adapted to the same call: its
 ``build`` runs once against those buffers (``out_centerline`` sized by its raw capacity),
 and its ``enqueue`` runs in place of ``generate``. The production runtime registry
 currently exposes:
@@ -112,8 +122,8 @@ Every registered runtime generator follows the same hard contract:
   :doc:`/contributing/writing-a-generator`).
 - ``out_valid_wp`` is filled with ``1`` by the current runtime generators. It is a stage
   flag, not the final quality decision. Turning, thickness, NaNs, width floor, ``N_max``
-  truncation, and optional border intersections are judged later by ``inflate_warp`` after
-  constant-spacing and XPBD relaxation.
+  truncation, and optional border intersections are judged later by the ``validity``
+  stage, after constant-spacing and XPBD relaxation.
 
 Per-generator algorithm details are covered in the individual generator deep-dive pages
 (bezier, hull, polar, voronoi, checkpoint, repulsive).
@@ -157,8 +167,8 @@ regime and the rest now fail as truncated, so set ``N_max`` to at least 512 ther
   crossings, ``checkpoint`` uses bounded best-of-K selection with an optional
   single-crossing clip fallback, and ``polar`` emits a closed radial spline with no
   generator-local fallback. ``max_regen_iters`` is therefore vestigial on the Warp path:
-  it remains a ``TrackGenConfig`` field for the torch oracle but is ignored by
-  ``_run_pipeline``, and it is deprecated (a non-default value emits a
+  it remains a ``TrackGenConfig`` field for the torch oracle but is ignored by the Warp
+  pipeline, and it is deprecated (a non-default value emits a
   ``DeprecationWarning``; see :ref:`deprecated-config-fields`).
 
 **FP tolerance and hard thresholds.** Validity gates (``th_ok``, ``turn_ok``) are hard
