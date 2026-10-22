@@ -626,6 +626,14 @@ def test_spec_types_are_reexported():
                                    "GateGeneratorSpec", "DuplicateSpecError",
                                    "PluginOverrideWarning", "PluginLoadError",
                                    "API_VERSION", "SpecInfo"}
+    # Roadmap PR8: per-generator Params and the generator subset of Stage.
+    assert set(plugin.__all__) >= {"Params", "NoParams", "static", "dynamic", "CaptureClass",
+                                   "Layout", "Stage", "StageBuilder", "ParamTable",
+                                   "StageParams"}
+    for name in plugin.__all__:
+        assert getattr(plugin, name) is not None, name
+    assert [f.name for f in dataclasses.fields(GeneratorSpec)][-1] == "params"
+    assert [f.name for f in dataclasses.fields(GateGeneratorSpec)][-1] == "params"
     assert issubclass(DuplicateSpecError, ValueError)
     assert issubclass(PluginOverrideWarning, UserWarning)
     assert issubclass(PluginLoadError, RuntimeError)

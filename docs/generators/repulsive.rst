@@ -133,6 +133,12 @@ The following ``TrackGenConfig`` fields are owned by the ``repulsive`` generator
 fields (``num_points``, ``scale``, ``half_width``, etc.) are shared pipeline parameters
 described in the configuration reference.
 
+The generator-specific fields below are also the fields of ``RepulsiveParams``, the
+generator's Params class (core fields such as ``scale`` are not): set them flat or
+through ``generator_params`` (see :ref:`builtin-generator-params`). Their rules are
+checked when the ``TrackGenerator`` is constructed, and only for
+``generator="repulsive"``.
+
 ``repulsive_grow_mult_min`` / ``repulsive_grow_mult_max`` (default 4.5 / 5.5)
    Bounds of the per-env target-perimeter multiplier draw ``U(min, max)``; the grown loop's
    target perimeter is ``grow_mult · 2π·r_init``.  Higher → denser mazes at some yield cost.

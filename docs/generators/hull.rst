@@ -157,6 +157,11 @@ The following ``TrackGenConfig`` fields are consumed by the hull generator.
 For the full parameter reference and default values, see the configuration
 reference in ``docs/reference/``.
 
+The generator-specific fields below are also the fields of ``HullParams``, the
+generator's Params class (core fields such as ``scale`` are not): set them flat or
+through ``generator_params`` (see :ref:`builtin-generator-params`). Their rules are
+checked when the ``TrackGenerator`` is constructed, and only for ``generator="hull"``.
+
 ``min_num_points`` : int
     Minimum number of base corner-anchor points per environment.  Must be >= 2.
     Shared with the Bezier generator.  Larger values guarantee more vertices in

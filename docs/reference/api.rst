@@ -188,7 +188,8 @@ Plugin registry
 ---------------
 
 Track and gate generators selected by name, built-ins and installed packages alike (entry
-point group ``track_gen.plugins``); see :doc:`/contributing/writing-a-generator`.
+point group ``track_gen.plugins``), their parameters and the ``Stage`` protocol; see
+:doc:`/contributing/writing-a-generator`.
 ``track_gen.plugin`` is a subpackage outside ``track_gen.__all__``: import it explicitly.
 Importing ``track_gen`` loads no generator module and no plugin; the registry loads on its
 first lookup.
@@ -242,6 +243,52 @@ first lookup.
 .. autoexception:: track_gen.plugin.PluginOverrideWarning
 
 .. autoexception:: track_gen.plugin.PluginLoadError
+
+Generator parameters
+~~~~~~~~~~~~~~~~~~~~
+
+A generator's own parameters, set with ``TrackGenConfig.generator_params`` /
+``GateGenConfig.generator_params`` and reported by ``SpecInfo.params_schema``; see
+:ref:`generator-params` and :ref:`generator-params-config`. At run time,
+``TrackGenerator.params`` and ``GateGenerator.params`` return a :class:`ParamTable
+<track_gen.plugin.ParamTable>` (see :ref:`generator-runtime-params`).
+
+.. autoclass:: track_gen.plugin.Params
+   :members: validate, from_legacy
+
+.. autoclass:: track_gen.plugin.NoParams
+   :no-members:
+
+.. autofunction:: track_gen.plugin.static
+
+.. autofunction:: track_gen.plugin.dynamic
+
+.. autoclass:: track_gen.plugin.ParamTable
+   :members: set
+
+.. autoclass:: track_gen.plugin.StageParams
+   :members: stage_id, params, set
+
+Stage generators
+~~~~~~~~~~~~~~~~
+
+The ``Stage`` protocol, generator subset: a ``Stage`` subclass with ``kind="generator"``
+and ``output="centerline"``, registered as a class, that allocates through the
+``StageBuilder`` it is handed and returns an ``enqueue(ctx)`` callable; see
+:ref:`generator-stage-contract`. Gate generator stages (``output="anchors"``) arrive with
+roadmap PR11.
+
+.. autoclass:: track_gen.plugin.Stage
+   :members: capture_class, capacity, build
+
+.. autoclass:: track_gen.plugin.StageBuilder
+   :members: write, scratch, param, input, salt
+
+.. autoclass:: track_gen.plugin.CaptureClass
+   :no-members:
+
+.. autoclass:: track_gen.plugin.Layout
+   :no-members:
 
 Torch interop
 -------------

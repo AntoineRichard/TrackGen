@@ -38,10 +38,16 @@ The public interface of both facades:
 - ``seeds`` — the :class:`~track_gen.seeds.SeedState`: per-env seeds (bound to
   ``rng.seeds_warp``) and epochs.
 - ``inputs`` — ``{"regen_mask": ...}``, a persistent, zero-initialised ``[E]`` int32
-  array with a stable address, for your own kernels to write a mask into.
+  array with a stable address, for your own kernels to write a mask into, plus every
+  per-env input a Stage generator declares.
+- ``params`` — ``{"generator": StageParams}``: the resolved generator parameters and, for
+  a Stage generator, the live ``[E]`` array of each dynamic parameter, written in place
+  between or inside replays with no re-capture (see
+  :ref:`generator-runtime-params`).
 - ``config`` — a copy of the construction config (a ``wp.Device`` value is shared, not
-  copied). Mutating it, or the config object you passed in, has no effect on the
-  generator: construct a new one to change settings.
+  copied), with a ``generator_params`` mapping normalised to its Params instance.
+  Mutating it, or the config object you passed in, has no effect on the generator:
+  construct a new one to change settings, or write a dynamic parameter.
 - ``Track.clone()`` / ``GateSequence.clone()`` — snapshot the current output arrays.
 
 Execution modes
@@ -322,9 +328,10 @@ The capture works because every stage is pure Warp and fixed-shape:
   and ``mask``, nor in ``SeedState.advance()`` / ``set()`` / ``reset_epoch()``: every
   buffer is allocated at construction. Recording into your graph works with Warp's mempool
   disabled.
-- The seed buffer, the bound seed array, the epoch array, the result's ``generation`` and
-  ``inputs["regen_mask"]`` have stable addresses; replay reads their current contents on
-  device. A ``mask=`` array is recorded by pointer: rewrite it in place.
+- The seed buffer, the bound seed array, the epoch array, the result's ``generation``,
+  ``inputs["regen_mask"]`` and a Stage generator's dynamic-parameter and input arrays have
+  stable addresses; replay reads their current contents on device. A ``mask=`` array is
+  recorded by pointer: rewrite it in place.
 - ``output_mode="constant_spacing"`` captures too: per-track ``count[e]`` is device-side
   data, and count-aware kernels keep static launch dimensions via ``N_max``.
 - Generator selection and ``relax_enable`` are Python branches resolved before capture. The

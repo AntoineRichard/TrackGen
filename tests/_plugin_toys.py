@@ -150,3 +150,155 @@ def install_entry_points(monkeypatch, *eps: FakeEntryPoint) -> list:
 
     monkeypatch.setattr(_registry, "entry_points", entry_points)
     return calls
+
+
+# ---------------------------------------------------------------------------------------
+# Params / Stage toys (roadmap PR8): public surface only (track_gen.plugin, track_gen.ops)
+# ---------------------------------------------------------------------------------------
+#
+# - ``toy.wobble``: a ``plugin.Stage`` generator with one STATIC field (``lobes``) and one
+#   DYNAMIC field (``amp``, an [E] float32 array read by pointer), a raw capacity of 128
+#   points (!= num_points) and a salted per-env RNG stream.
+# - ``toy.wobble_host``: the same with ``capture = HOST``.
+# - ``toy.wobble_input``: also declares a per-env input ``difficulty`` (default 0.5) that
+#   scales ``amp``.
+# - ``toy.lobed``: a legacy ``GeneratorSpec`` with a static ``params=`` class; its generate
+#   reads ``config.generator_params.lobes``.
+
+import dataclasses as _dc  # noqa: E402
+
+from track_gen import plugin as _plugin  # noqa: E402
+from track_gen.ops import hash32 as _hash32  # noqa: E402
+
+WOBBLE_RAW = 128
+_TWO_PI = wp.constant(6.2831853)
+
+
+@wp.func
+def _wobble_state(seed: wp.int32, salt: wp.uint32):
+    return wp.rand_init(wp.int32(_hash32(wp.uint32(seed) ^ salt) & wp.uint32(0x7FFFFFFF)))
+
+
+@wp.kernel
+def _wobble_k(seed: wp.array(dtype=wp.int32), salt: wp.uint32,
+              amp: wp.array(dtype=wp.float32), lobes: int, n: int, radius: float,
+              xy: wp.array(dtype=wp.vec2f)):
+    t = wp.tid()
+    e = t // n
+    i = t - e * n
+    st = _wobble_state(seed[e], salt)
+    th = _TWO_PI * float(i) / float(n)
+    r = radius * (1.0 + amp[e] * wp.sin(float(lobes) * th + _TWO_PI * wp.randf(st)))
+    xy[t] = wp.vec2f(r * wp.cos(th), r * wp.sin(th))
+
+
+@wp.kernel
+def _wobble_input_k(seed: wp.array(dtype=wp.int32), salt: wp.uint32,
+                    amp: wp.array(dtype=wp.float32), difficulty: wp.array(dtype=wp.float32),
+                    lobes: int, n: int, radius: float, xy: wp.array(dtype=wp.vec2f)):
+    t = wp.tid()
+    e = t // n
+    i = t - e * n
+    st = _wobble_state(seed[e], salt)
+    th = _TWO_PI * float(i) / float(n)
+    a = amp[e] * difficulty[e]
+    r = radius * (1.0 + a * wp.sin(float(lobes) * th + _TWO_PI * wp.randf(st)))
+    xy[t] = wp.vec2f(r * wp.cos(th), r * wp.sin(th))
+
+
+@_dc.dataclass(frozen=True, kw_only=True)
+class ToyWobbleParams(_plugin.Params):
+    lobes: int = _plugin.static(5, lo=2, hi=12, doc="lobes per loop")
+    amp: float = _plugin.dynamic(0.15, lo=0.0, hi=0.4, doc="radial wobble amplitude",
+                                 ui="slider")
+
+
+class ToyWobble(_plugin.Stage):
+    kind = "generator"
+    name = "toy.wobble"
+    output = "centerline"
+    Params = ToyWobbleParams
+    writes = {"xy": "raw.xy", "valid": "gen.valid"}
+    RAW = WOBBLE_RAW                     # != num_points (256): exercises capacity()
+
+    def capacity(self, p, layout):
+        return {"raw": self.RAW}
+
+    def build(self, b, p):
+        xy, ok = b.write("xy", wp.vec2f, per="raw"), b.write("valid", wp.int32)
+        amp, salt = b.param("amp"), b.salt("shape")
+        n, radius, lobes = self.RAW, 0.6 * b.scale, int(p.lobes)
+
+        def enqueue(ctx):
+            ctx.launch(_wobble_k, b.E * n, [b.seed, salt, amp, lobes, n, radius, xy])
+            ctx.fill(ok, 1)
+
+        return enqueue
+
+
+class ToyWobbleHost(ToyWobble):
+    name = "toy.wobble_host"
+    capture = _plugin.CaptureClass.HOST
+
+
+class ToyWobbleInput(ToyWobble):
+    name = "toy.wobble_input"
+
+    def build(self, b, p):
+        xy, ok = b.write("xy", wp.vec2f, per="raw"), b.write("valid", wp.int32)
+        amp, salt = b.param("amp"), b.salt("shape")
+        difficulty = b.input("difficulty", wp.float32, 0.5)
+        n, radius, lobes = self.RAW, 0.6 * b.scale, int(p.lobes)
+
+        def enqueue(ctx):
+            ctx.launch(_wobble_input_k, b.E * n,
+                       [b.seed, salt, amp, difficulty, lobes, n, radius, xy])
+            ctx.fill(ok, 1)
+
+        return enqueue
+
+
+@_dc.dataclass(frozen=True, kw_only=True)
+class ToyLobedParams(_plugin.Params):
+    lobes: int = _plugin.static(4, lo=2, hi=12, doc="lobes per loop")
+    amp: float = _plugin.static(0.1, lo=0.0, hi=0.3, doc="radial amplitude")
+
+
+@wp.kernel
+def _lobed_k(seeds: wp.array(dtype=wp.int32), lobes: int, amp: float, n: int,
+             radius: float, out: wp.array(dtype=wp.vec2f), valid: wp.array(dtype=wp.int32)):
+    e, i = wp.tid()
+    state = wp.rand_init(seeds[e])
+    phase = _TWO_PI * wp.randf(state)
+    t = _TWO_PI * float(i) / float(n)
+    r = radius * (1.0 + amp * wp.sin(float(lobes) * t + phase))
+    out[e * n + i] = wp.vec2f(r * wp.cos(t), r * wp.sin(t))
+    if i == 0:
+        valid[e] = 1
+
+
+def toy_lobed_generate(seeds_wp, config, out_centerline, out_valid_wp, scratch,
+                       ctx: "LaunchContext | None" = None) -> None:
+    ctx = resolve(ctx, str(config.device))
+    p = config.generator_params                 # the resolved ToyLobedParams
+    E, N = int(config.num_envs), int(config.num_points)
+    ctx.launch(_lobed_k, (E, N), [seeds_wp, int(p.lobes), float(p.amp), N,
+                                  _CIRCLE_RADIUS * float(config.scale), out_centerline,
+                                  out_valid_wp])
+
+
+TOY_LOBED = GeneratorSpec(
+    name="toy.lobed",
+    alloc_scratch=toy_circle_alloc_scratch,
+    generate=toy_lobed_generate,
+    accepts_ctx=True,
+    params=ToyLobedParams,
+)
+
+
+def register_stage_toys(reg) -> None:
+    """A second plugin ``register(reg)``: the Stage toys and the legacy ``params=`` toy."""
+    reg.add(ToyWobble)
+    reg.add(ToyWobbleHost)
+    reg.add(ToyWobbleInput)
+    reg.add(TOY_LOBED)

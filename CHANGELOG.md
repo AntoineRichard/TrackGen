@@ -105,6 +105,111 @@
     unit `scale` that `polar`, `voronoi` and `checkpoint` normalise to; and `ops.fill` now
     also fills `quatf` arrays (from four components) and raises `ValueError` for an array
     that is not a `wp.array` or not on `ctx.device`.
+- **Per-generator `Params`, `Stage` generators and `describe()` schemas** (roadmap PR8).
+  A generator declares its own parameters, so a plugin no longer subclasses
+  `TrackGenConfig` to add knobs: users pass
+  `TrackGenConfig(generator="acme.x", generator_params=AcmeParams(m=7.0))`, or a mapping
+  of its fields. `docs/contributing/writing-a-generator.rst` gains a Stage quick start
+  and sections on Params, the Stage contract and its builder, runtime parameters and
+  `describe()`; `docs/configuration/reference.rst` documents `generator_params`, every
+  built-in Params class and the deprecated fields.
+  - `track_gen.plugin.Params`, the base of a stage's parameters: a frozen, keyword-only
+    dataclass whose fields all have defaults. A field is `static(default, *, lo=None,
+    hi=None, choices=None, doc="", ui=None)`, a host value fixed at construction (a plain
+    field counts as static), or `dynamic(default, *, lo=None, hi=None, doc="", ui=None)`,
+    an `[E]` device array per field (`float` -> `wp.float32`, `int` / `bool` ->
+    `wp.int32`) that the stage reads by pointer. `lo` / `hi` are inclusive.
+    `Params.validate(layout)` checks the object's own fields and runs at generator
+    construction, for the selected generator only; `Params.from_legacy(cfg)` gives the
+    instance used when `generator_params` is `None` (`cls()` by default; a plugin
+    migrating off a config subclass overrides it). `NoParams` is the class of a stage
+    without parameters. `registry.add` checks the class: decorated as a frozen
+    dataclass itself, every field with a default inside its own bounds and choices, no
+    field named `validate`, `from_legacy`, `to_dict`, `from_dict`, `replace`, `schema`,
+    `fields` or `describe` or starting with `_` (reserved for later Params helpers), and
+    dynamic fields annotated `float`, `int` or `bool`. A static field annotated `int`,
+    `float` or `bool` must hold a value of that type (`ValueError` otherwise, checked
+    with its bounds); the built-ins' flat Params keep the legacy configs' leniency.
+  - `track_gen.plugin.Stage`, the generator subset of the stage protocol. A `Stage`
+    subclass with `kind = "generator"` and `output = "centerline"` is registered as a
+    class (`registry.add(MyStage)`) and selected by its `name`. It declares a `Params`
+    class, `writes` (local port -> channel: `"raw.xy"`, required, and `"gen.valid"`),
+    a `capture` class, `topology` (`"closed"` or `"any"`) and `api_version`, and
+    implements `build(b, params) -> enqueue(ctx)`, plus optionally `capacity(params,
+    layout)` (`{"raw": n}` raw points per env, any integral `n >= 3`, default
+    `num_points`; another key raises `ValueError`) and `capture_class(params)`. These
+    three receive the params with their static fields only: reading a dynamic field
+    raises `AttributeError` (read it on device through `b.param`), so no host scalar can
+    bake a dynamic value into the launches. `registry.add` checks the declaration
+    (`reads` and `provides` must be empty until PR10 / PR11; a kind other than
+    `"generator"` is rejected until PR10, and `capture=BOUNDED` until PR12).
+  - `track_gen.plugin.StageBuilder`, handed to `build` and created by the orchestrator
+    only: `E`, `layout`, `device`, `stage_id` (`"generator"`), `scale`, `seed` (the
+    `[E]` effective seed of each generation), `raw`; `write(port, dtype, *, per)` (the
+    pipeline-owned output buffer, read without a copy), `scratch(name, dtype, shape)`
+    (zeroed once), `param(field)` (a dynamic field's working array, read-only for the
+    stage), `input(name, dtype, default=0)` (a per-env device input, read-only likewise)
+    and `salt(stream)`
+    (`hash32_host(fnv1a_32(f"{stage_id}/{stream}".encode()))`, frozen for plugin API
+    version 1). `gen.valid` is set to 1 once when a stage never writes it.
+  - `track_gen.plugin.CaptureClass` (`STATIC`; `BOUNDED`, reserved: a stage declaring
+    or returning it is rejected until `ctx.bounded_loop` arrives in PR12; `HOST`, eager
+    on every call and refused by a caller's capture with `NotCapturableError`) and
+    `track_gen.plugin.Layout`
+    (`num_envs`, `stride`, `device`, `closed`), handed to `validate`, `capacity` and the
+    builder.
+  - `TrackGenConfig.generator_params` and `GateGenConfig.generator_params` (the last
+    field of each): `None` (the default: the generator's `from_legacy(config)`; for the
+    built-ins, the flat fields), a Params instance, or a mapping of its fields. A
+    mapping or an instance is the generator's complete parameter set: left-out keys take
+    the class defaults, unknown keys raise `ValueError` listing the valid fields, and a
+    flat field the selected built-in reads must stay at its default (the Params class
+    default, which equals the base config's) or equal the given value. A mapping's
+    values are converted by each field's annotation (arrays to tuples, also inside
+    `T | None`; enum values to members), so a JSON, YAML or Hydra mapping shaped like the
+    schema gives an equal, hashable instance. Resolved and validated when the generator
+    is constructed.
+  - `TrackGenerator.params` and `GateGenerator.params`: a `ParamTable`, the read-only
+    mapping `{"generator": StageParams}` (keyed by stage id, as later multi-stage
+    programs will be; their constructors are private). `StageParams.params` is the
+    resolved Params instance as of construction (initial dynamic values; so is
+    `gen.config`); each dynamic field maps to its live `[E]` array, with a stable pointer;
+    `StageParams.set(field, value, *, stream=None)` (and `ParamTable.set(stage_id, field,
+    value, *, stream=None)`) writes a host scalar (checked against `lo` / `hi`, one fill)
+    or an `[E]` array (one copy, no host sync) in place on the resolved stream: recorded
+    when that stream is capturing, never allocating. Each generation latches the live
+    arrays into the stage's working copies for the envs it regenerates (every env, or
+    `mask[e] != 0`), so a write takes effect at the next generation, including between
+    replays of a caller's CUDA graph without re-capture, and a masked regeneration still
+    leaves the other envs bit for bit. `TrackGenerator.inputs` also lists every
+    `StageBuilder.input`, latched the same way.
+  - `SpecInfo.params_schema`: the JSON schema (draft 2020-12) of the spec's Params
+    class, per field `type`, `default`, `minimum` / `maximum` (from `lo` / `hi`), `enum`
+    (choices), `description` (doc), `x-static` or `x-dynamic` (with `x-dtype`) and `x-ui`;
+    `{}` for a spec without one (a legacy spec without `params=`, or a Stage with
+    `NoParams`). Always `json.dumps`-able. For a Stage, `describe()` reports
+    `capturable` from `capture_class` at the Params defaults (`False` for `HOST`),
+    `accepts_ctx=True`, and the new `SpecInfo` fields `capture`, `output`, `writes` and
+    `provides` (`None`, `None`, `{}` and empty for a spec that is not a Stage).
+  - `GeneratorSpec.params` and `GateGeneratorSpec.params` (a new last field, default
+    `None`): a Params class with static fields only for a callable-based generator, read
+    as `config.generator_params` by `generate`, `alloc_scratch` and `max_gates`.
+  - A Params class for every built-in: track `bezier`, `hull`, `polar`, `voronoi`,
+    `checkpoint`, `repulsive`, and gate `bezier` / `hull`, `polar`, `voronoi`,
+    `checkpoint`. Their fields are the flat config fields each generator reads, with the
+    same names and defaults, all static. The orchestrator writes the resolved values onto
+    its private config copy, so the generators read the same values as before:
+    `polar_num_knots=9`, `generator_params={"polar_num_knots": 9}` and
+    `generator_params=PolarParams(polar_num_knots=9)` give byte-identical outputs.
+    The classes have no public import path: pass a mapping, or use
+    `registry.get(kind, name).params` and `describe(kind, name).params_schema`.
+  - `viz/param_explorer.py` builds controls for plugin generators from their
+    `params_schema` (the built-ins keep their curated layout), and
+    `benchmarks/compare_generators.py` passes each generator its own `generator_params`,
+    so a plugin with a Params class runs from a plain `TrackGenConfig`.
+  - `API_VERSION` stays `1`: all of this is additive. Gate generators stay
+    `GateGeneratorSpec`s: `registry.add` rejects a Stage with `kind="gate_generator"` or
+    `output="anchors"` until roadmap PR11.
 
 ### Behaviour changes
 
@@ -217,6 +322,90 @@
   no longer debug-sync one by one, since the ops never sync; each built-in `generate`
   keeps its final debug sync. Without the variable nothing changes (the sync was already
   a no-op).
+- **Generator-specific validation moved from the configs to generator construction**
+  (roadmap PR8). These rules ran in `TrackGenConfig.__post_init__` /
+  `GateGenConfig.__post_init__` for every config. They now live in the built-in Params
+  classes' `validate()` and raise the same `ValueError`, with the same message and
+  condition, when a `TrackGenerator` or `GateGenerator` (and so a `Course`) is
+  constructed, and only when the generator that owns them is selected:
+  - track `bezier` and `hull`: `min_num_points >= 2`; `max_num_points >= min_num_points`;
+    `0 < min_point_distance <= 0.5`;
+  - track `bezier`, `hull`, `polar` and `voronoi`: `num_points_per_segment >= 2`;
+  - track `voronoi`: `voronoi_control_points >= 6`; `voronoi_num_sites >=
+    voronoi_control_points`; `voronoi_site_layout` in `{ring, void_ring, clustered,
+    mixed}`; `voronoi_radial_variation >= 0`; `voronoi_angular_jitter >= 0`;
+  - track `repulsive`: `repulsive_grow_mult_min >= 1`; `repulsive_grow_mult_max > 1` and
+    `>= repulsive_grow_mult_min`; `repulsive_domain_frac > 0`;
+    `repulsive_domain_init_ratio > 1`; `repulsive_obstacle_count_min >= 1`;
+    `repulsive_obstacle_count_max >= repulsive_obstacle_count_min`;
+    `repulsive_obstacle_radius_min_frac > 0`; `repulsive_obstacle_radius_max_frac >=
+    repulsive_obstacle_radius_min_frac`; `repulsive_ratchet_rate > 0`;
+    `repulsive_alpha > 0`; `repulsive_beta > 0`; `repulsive_stages` non-empty, positive
+    multiples of 4 and
+    strictly increasing; `repulsive_settle_iters`, `repulsive_resample_every` and
+    `repulsive_stall_window >= 1`; and `repulsive_stages[-1] == num_points`, which
+    already applied to `generator="repulsive"` only and now also waits for construction;
+  - track `checkpoint`: `checkpoint_count >= 3`; `checkpoint_best_of_k >= 1`;
+    `checkpoint_radius_min_frac` in `[0, 1)`;
+  - gate `bezier` and `hull`: `min_point_distance > 0`; `min_num_points >= 2`;
+    `max_num_points >= min_num_points`;
+  - gate `voronoi`: `voronoi_control_points >= 3`; `voronoi_num_sites >=
+    voronoi_control_points`; `voronoi_radial_variation >= 0`; `voronoi_angular_jitter >=
+    0`; `voronoi_site_layout` in the same set;
+  - gate `checkpoint`: `checkpoint_count >= 3`; `checkpoint_radius_min_frac` in `[0, 1)`.
+
+  What follows: an invalid knob of a generator that is not selected is now accepted and
+  ignored (`TrackGenConfig(generator="bezier", voronoi_control_points=3)` used to raise);
+  an unknown generator name is reported before any parameter error; so are the facades'
+  own checks: `TrackGenerator` and `GateGenerator` check `rng` (`None`, a wrong seed
+  count) first, and `Course` refuses a capture and allocates its rng first, so a `Course`
+  built with a bad generator knob inside a capture raises `CaptureError` instead of
+  `ValueError`; when several rules
+  fail, the first one reported can differ, since the rules run in the selected
+  generator's `validate()` order (for `repulsive`, `repulsive_stages[-1] == num_points`
+  now runs after the `settle_iters`, `resample_every` and `stall_window` rules); direct
+  callers of the private helpers (`spec.alloc_scratch(cfg)`, `_inflate_warp_alloc`,
+  `_run_pipeline`) no longer get these checks at all; and `viz/param_explorer.py`
+  reports these errors from `generate_batch` instead of `build_config` (its handler
+  already catches `ValueError`). `TrackGenConfig.__post_init__` no longer names any
+  generator. The core rules (`num_envs`, `half_width`, relaxation, smoothing,
+  `output_mode`, spacing, Z, and the gate fields) still run at config construction.
+- **New errors when a generator is constructed:** an unknown key in a `generator_params`
+  mapping (`ValueError` listing the valid fields); a non-empty `generator_params` for a
+  generator without a Params class (`ValueError`, "takes no generator_params"); a Params
+  instance of another generator's class, for example after `dataclasses.replace(cfg,
+  generator=...)` without resetting `generator_params` (`TypeError` naming the expected
+  class); a flat field and `generator_params` setting the selected built-in's knob to
+  different values (`ValueError` naming the fields); a value outside a field's
+  `lo` / `hi` or `choices` (`ValueError`). At config construction, a `generator_params`
+  that is neither `None`, a mapping nor a dataclass instance raises `TypeError`.
+- **The gate-count check sees `generator_params`.** `GateGenerator` checks
+  `supported_orderings` and `min_gates <= max_gates(config) <= config.max_gates` against
+  the resolved config, so `GateGenConfig(generator="polar",
+  generator_params={"polar_num_knots": 9})` makes 9 gates. Messages are unchanged.
+- `TrackGenerator.config` and `GateGenerator.config` return the config as passed, with a
+  mapping `generator_params` normalised to its Params instance: `TrackGenerator(gen.config,
+  rng)` builds the same generator. The pipeline reads a private copy with the resolved
+  built-in Params written onto the flat fields; with `generator_params=None` the two are
+  equal, as before.
+- `SpecInfo` gains five trailing fields with defaults: `params_schema` (`{}`) and
+  `writes` (`{}`), compared by `==` and ignored by `hash()`, and `capture` (`None`),
+  `output` (`None`) and `provides` (empty). `GeneratorSpec` and `GateGeneratorSpec` gain a last field,
+  `params` (default `None`), so positional construction is unchanged.
+- `registry.add` now checks a Stage class's declaration and a spec's `params=` class
+  before registering it; a plugin that fails a check is quarantined under `warn` (raises
+  under `strict`).
+- Code that walks the registry should read capture support from
+  `registry.describe(kind, name).capturable`: a Stage class has no `capturable`,
+  `alloc_scratch` or `generate` attribute. This includes the deprecated
+  `generator_registry.get(name)` and `generator_registry.GENERATORS`, whose values may
+  now be Stage classes. `warp_pipeline._run_pipeline` and
+  `_inflate_warp_alloc` raise `TypeError` for a Stage class ("Stage generators run
+  through TrackGenerator"), and `_inflate_warp_alloc` takes a private `seed=` keyword.
+- `TrackGenerator` allocates its effective-seed buffer before the pipeline buffers, so a
+  Stage can bind it as `StageBuilder.seed`. Built-in and legacy generators add no launch
+  and their outputs are byte-identical (`tests/test_generator_fingerprints.py` passes
+  unchanged).
 
 ### Deprecated
 
@@ -233,6 +422,24 @@
   `warp_generate.corner_count_sample_inplace`, `corner_sample_inplace` and
   `ccw_sort_inplace`; and `warp_generate_hull.point_count_sample_inplace` and
   `point_sample_inplace`. The generator guide maps each one to its op.
+- `TrackGenConfig` fields that `TrackGenerator` never reads (roadmap PR8): `energy_steps`,
+  `energy_lr`, `energy_w_sep`, `energy_w_len`, `energy_w_bend`, `energy_w_anchor`,
+  `tp_iters`, `tp_tau`, `tp_alpha`, `tp_beta`, `smooth_finish`, `smooth_finish_iters`,
+  `smooth_finish_tau`, `relax_chunk_size`, `relax_use_warp`, `max_regen_iters`,
+  `min_angle`, `num_harmonics`, `decay_p`, `amplitude` and `num_centerline_samples`.
+  Setting any of them to a value other than its default (the config class's own, for a
+  subclass) emits one `DeprecationWarning` at config construction naming every such
+  field, attributed to the code constructing the config (also through a subclass's
+  `__post_init__`). Only the torch oracle, a benchmark or
+  `track_gen._experimental.fourier` read them, and setting any of them leaves every
+  built-in's output byte-identical. They will be removed in 1.0; `TrackGenerator` still
+  raises for `smooth_finish=True`, after the warning. `output_mode` is deprecated in the
+  docs only: it already rejects every value but its default, so it never warns. The
+  inert `GateGenConfig` fields (`num_points_per_segment`, `rad`, `edgy`,
+  `handle_clamp_frac`, `hull_displacement`) are not deprecated yet.
+- Subclassing `TrackGenConfig` to add a plugin generator's knobs still works but is
+  superseded by a Params class and `generator_params`. A plugin that moves its knobs to
+  Params can override `Params.from_legacy` to keep reading its users' subclass fields.
 
 ### Deferred to PR16
 
@@ -272,6 +479,26 @@ outputs stay byte-identical:
   selected and unselected arc-resample kernels (it needs a dummy `active` array), reusing
   the angle sort's centroid in `hull`'s midpoint displacement, and a `funcs.cubic_bezier`
   for `bezier`'s assembly (roadmap PR8).
+
+### Deferred to PR10 to PR13
+
+PR8 changes nothing outside the generator stage. Left for later roadmap steps:
+
+- **Gate Stages** (`output="anchors"`) and the stations adapter (PR11). Gate generators
+  get static Params, `generator_params` and schemas now; PR11 accepts `output="anchors"`
+  and reuses the gate Params classes, so `GateGenConfig.generator_params` keeps its
+  meaning.
+- **The rest of the `StageBuilder`** (`read`, `temp_like`, `carried`, `fail_bit`,
+  `state`) and the planner that calls `Stage.build` natively (PR10); `ctx.bounded_loop`
+  for `BOUNDED` and host buffers for `HOST` (PR12); `write(interp=, export=)`, more
+  `raw.*` channels and `provides` (PR13). `state` waits for PR10 because device state
+  mutated on every generation would break masked regeneration until the planner has
+  mask plumbing.
+- **Dynamic built-in knobs.** Every built-in field stays static (their kernels take host
+  scalars, and no kernel arithmetic changes). The relax, inflate, validity and Z stages
+  keep their flat fields and get no Params.
+- `Course`-level `params` / `inputs` members (use `course.generator.params` and
+  `course.generator.inputs`), and `randomize.uniform` writing the dynamic arrays (PR13).
 
 ### Testing
 
@@ -343,6 +570,58 @@ outputs stay byte-identical:
 - `tests/test_generator_registry.py` reads `GenScratch` from `warp_generate`;
   `tests/test_generate_repulsive.py` forbids `runtime._sync` instead of the removed
   `rep._pipe._sync`.
+- `tests/test_plugin_params.py` (CPU): `static` / `dynamic` metadata, `NoParams`, the
+  dtype mapping, every registration rejection (non-frozen or undecorated class, a field
+  without default or with a default out of bounds, a reserved name, a non-numeric
+  dynamic field, a dynamic field on a `GeneratorSpec`), resolution of `None`, mapping
+  and instance values (unknown keys, wrong class), a schema-shaped JSON mapping
+  resolving to an equal, hashable instance (tuples, enums), inclusive `lo` / `hi` with
+  NaN passing, `choices`, the value types of static `int` / `float` / `bool` fields (and
+  the built-ins' leniency), the exact, `json.dumps`-able schema of the toy Params, and
+  the private `StageParams` / `ParamTable` constructors.
+- `tests/test_plugin_stage.py` (CPU): a toy Stage `toy.wobble` (one static and one
+  dynamic field, a raw capacity of 128 points, a salted stream), with `HOST` and
+  per-env-input variants, registered directly and through a fake distribution and run
+  end to end; the declaration checks; `describe()`; `set` with a scalar, a per-env
+  array and a direct write of the live array, each byte-equal to a generator built with
+  that value; `set` rejections; the masked latch (envs left out stay bitwise
+  unchanged); inputs; the salt formula and collisions; `StageBuilder` misuse;
+  `gen.valid` defaulting to 1; the private pipeline helpers refusing a Stage class; a
+  broken Stage plugin quarantined; a Params `validate` running only for the selected
+  generator; `Course` passing `generator_params` through; `build`, `capacity` and
+  `capture_class` refusing dynamic fields; unknown `capacity()` keys and a numpy
+  capacity; and the rejection of other Stage kinds and of `BOUNDED`.
+- `tests/test_generator_params.py` (CPU): for every built-in track and gate generator,
+  `from_legacy` round-trips the flat fields and the flat form, a mapping and an
+  instance give byte-identical outputs; the flat fields each built-in reads; conflicts;
+  `generator_params` as the complete parameter set; switching generators; the
+  unknown-name order; the `config` round trip; the gate count seeing
+  `generator_params`; legacy specs with and without `params=`, and a duck-typed legacy
+  spec with an unrelated `params` attribute; a config-subclass plugin, and a subclass
+  default conflicting with a partial `generator_params`; and the built-in schemas.
+- `tests/test_types.py`: the moved rules are one table, each row checked against the
+  owning generator's construction with its old message, with config construction and a
+  generator that does not own the knob accepting it; one `DeprecationWarning` per dead
+  field (attributed to the caller, also through a subclass's `__post_init__`), silence
+  at defaults (a subclass's own included), and the `generator_params` type check.
+- `tests/test_params_cuda.py` (CUDA): the toy Stage recorded into a caller's graph
+  equals an eager twin; a `set` between replays shows in the next replay with no
+  re-recording; a `set` recorded inside the caller's graph reads its source array at
+  replay; the self-graph reflects a `set`; a recorded masked generation after a write
+  leaves the other envs bitwise unchanged; and a `HOST` stage raises
+  `NotCapturableError` before any launch.
+- `tests/test_plugin_registry.py` checks the new `track_gen.plugin` exports and the
+  trailing `params` field of both spec types. `tests/test_generator_docs.py` also runs
+  the guide's Stage quick start (registers, generates, `set("amp", 0.35)` changes the
+  next generation) and compares its `describe()` schema with the JSON the guide prints,
+  and checks that every built-in Params field is listed in its class's table in
+  `docs/configuration/reference.rst`. `tests/test_param_explorer.py` and
+  `tests/test_compare_generators.py` cover the schema-built controls and per-generator
+  `generator_params`. `tests/test_warp_graph.py`, `tests/test_shape_variety.py` and
+  `tests/test_caller_capture_cuda.py` read `describe().capturable` and pass
+  per-generator overrides as `generator_params`.
+- `tests/test_generator_fingerprints.py` passes unchanged: the flat configs reproduce the
+  PR7 fingerprints of every built-in.
 
 ## 0.2.0.dev1 (2026-10-22, tag `v0.2.0.dev1`)
 

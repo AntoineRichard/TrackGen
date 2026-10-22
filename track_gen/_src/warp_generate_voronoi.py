@@ -362,6 +362,7 @@ def generate_voronoi_warp(
 def register(reg) -> None:
     """Register the built-in ``"voronoi"`` track generator into ``reg`` (called by
     ``track_gen._src.builtin_plugins``; importing this module registers nothing)."""
+    from .builtin_params import VoronoiParams
     from .generator_registry import GeneratorSpec
 
     reg.add(GeneratorSpec(
@@ -369,4 +370,5 @@ def register(reg) -> None:
         alloc_scratch=voronoi_alloc_scratch,
         generate=generate_voronoi_warp,
         accepts_ctx=True,
+        params=VoronoiParams,
     ))

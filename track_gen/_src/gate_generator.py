@@ -15,6 +15,7 @@ owns a device-side epoch that ``generate(advance=True, mask=...)`` advances.
 
 import functools
 import types
+from typing import TYPE_CHECKING
 
 import warp as wp
 
@@ -23,6 +24,9 @@ from ..exec.runner import GraphRunner
 from ..seeds import SeedState
 from .runtime import _snapshot_config
 from .types import GateGenConfig, GateSequence
+
+if TYPE_CHECKING:  # pragma: no cover - track_gen.plugin stays lazy at import time
+    from ..plugin.params import ParamTable
 
 __all__ = ["GateGenConfig", "GateGenerator", "GateSequence"]
 
@@ -78,6 +82,11 @@ class GateGenerator:
                 (see ``track_gen.plugin.registry.available("gate_generator")``).
             track_gen.plugin.PluginLoadError: if ``config.generator`` is provided by
                 a third-party plugin that failed to load (quarantined).
+            ValueError: if a generator-specific rule of the selected gate generator
+                fails (its ``Params.validate``), ``config.generator_params`` has unknown
+                keys or conflicts with the flat fields, or a value is outside its lo/hi.
+            TypeError: if ``config.generator_params`` is not the gate generator's
+                Params class (or a mapping of its fields).
             ValueError: if ``config.gate_ordering`` is not supported by the selected
                 gate generator.
             ValueError: if ``config.min_gates`` exceeds the maximum gate count the
@@ -98,8 +107,15 @@ class GateGenerator:
             )
 
         from ..plugin import registry
+        from .generator_binding import bind_generator, param_table
 
-        generator_spec = registry.get("gate_generator", config.generator)
+        # Resolve the gate generator and its Params (generator_params, or from_legacy of
+        # the flat fields) and run its validation; the ordering / capacity checks below
+        # read the resolved run config (so max_gates sees generator_params).
+        binding = bind_generator("gate_generator", config, registry=registry)
+        generator_spec = binding.pipeline_spec
+        user_config = binding.user_config
+        config = binding.run_config
         if config.gate_ordering not in generator_spec.supported_orderings:
             raise ValueError(
                 f"gate generator {config.generator!r} does not support "
@@ -121,20 +137,24 @@ class GateGenerator:
                 f"{required_max_gates}."
             )
 
-        # Snapshot (see TrackGenerator): host scalars from the config are baked into
-        # the launches and any recorded graph.
-        self._config = _snapshot_config(config)
-        config = self._config
+        # Snapshots (see TrackGenerator): host scalars from the config are baked into
+        # the launches and any recorded graph. _config is what the pipeline reads,
+        # _user_config the config as passed (reported by `config`).
+        self._user_config = user_config
+        self._config = config
         self._rng = rng
         self._generator_spec = generator_spec
         # Non-capturable generators (host-driven loops / per-call allocation) run eagerly
         # on CUDA every call and refuse to be recorded into a caller's graph.
-        self._capturable = generator_spec.capturable
+        self._capturable = binding.capturable
+        # Runtime parameters ({"generator": StageParams}); gate generators' fields are
+        # all static in this release (gate Stages arrive with roadmap PR11).
+        self._params = param_table(binding, default_stream=stream)
 
         self._runner = GraphRunner(
             str(config.device),
             capturable=self._capturable,
-            legacy_stream=not getattr(generator_spec, "accepts_ctx", False),
+            legacy_stream=not binding.accepts_ctx,
             default_stream=stream,
             owner=self,
             name=config.generator,
@@ -174,13 +194,26 @@ class GateGenerator:
     # -- properties ---------------------------------------------------------------
     @property
     def config(self) -> GateGenConfig:
-        """A copy of the configuration this generator was built with (a
-        ``wp.Device`` value is shared, not copied).
+        """A copy of the configuration this generator was built with, as passed (a
+        ``wp.Device`` value is shared, not copied), with a mapping
+        ``generator_params`` normalised to its Params instance:
+        ``GateGenerator(gen.config, rng)`` builds an identical generator, with the
+        construction-time (initial) values of any DYNAMIC parameters. A later
+        ``params[...].set(...)`` is not reflected here: the current values are the live
+        arrays, ``gen.params["generator"][field]``.
 
         Read-only in effect: mutating the returned object (or the object passed to
         the constructor) does not change this generator.
         """
-        return _snapshot_config(self._config)
+        return _snapshot_config(self._user_config)
+
+    @property
+    def params(self) -> "ParamTable":
+        """Runtime parameters, keyed by stage id: ``{"generator": StageParams}``.
+        ``params["generator"].params`` is the resolved Params instance (``None`` for a
+        legacy gate generator without a Params class). Gate generators have no dynamic
+        fields in this release, so ``set`` raises ``KeyError``."""
+        return self._params
 
     @property
     def graph(self) -> "wp.Graph | None":

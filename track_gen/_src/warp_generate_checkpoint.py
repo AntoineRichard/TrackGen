@@ -593,6 +593,7 @@ def generate_checkpoint_warp(seeds_wp: wp.array, config,
 def register(reg) -> None:
     """Register the built-in ``"checkpoint"`` track generator into ``reg`` (called by
     ``track_gen._src.builtin_plugins``; importing this module registers nothing)."""
+    from .builtin_params import CheckpointParams
     from .generator_registry import GeneratorSpec
 
     reg.add(GeneratorSpec(
@@ -600,4 +601,5 @@ def register(reg) -> None:
         alloc_scratch=checkpoint_alloc_scratch,
         generate=generate_checkpoint_warp,
         accepts_ctx=True,
+        params=CheckpointParams,
     ))

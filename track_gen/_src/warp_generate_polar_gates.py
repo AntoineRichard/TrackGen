@@ -72,6 +72,7 @@ def generate_polar_gates(seeds_wp, config, out, scratch,
 def register(reg) -> None:
     """Register the built-in ``"polar"`` gate generator into ``reg`` (called by
     ``track_gen._src.builtin_plugins``; importing this module registers nothing)."""
+    from .builtin_params import PolarGateParams
     from .gate_generator_registry import GateGeneratorSpec
 
     reg.add(GateGeneratorSpec(
@@ -81,4 +82,5 @@ def register(reg) -> None:
         max_gates=polar_num_knots,
         supported_orderings=frozenset({"ccw", "raw"}),
         accepts_ctx=True,
+        params=PolarGateParams,
     ))

@@ -6,12 +6,20 @@ metrics host-side in numpy. Characterizes; never gates.
 
     .venv/bin/python -m benchmarks.compare_generators            # all generators, cpu, E=4096
     .venv/bin/python -m benchmarks.compare_generators --cuda --E 8192
+    .venv/bin/python -m benchmarks.compare_generators --generators polar \\
+        --generator-params '{"polar": {"polar_num_knots": 9}}'
+
+Each generator gets its OWN ``generator_params`` (``None``: its flat-field / default
+Params), so a plugin generator with Params runs from a plain ``TrackGenConfig`` and one
+generator's Params are never carried over to another.
 """
 from __future__ import annotations
 
 import argparse
 import dataclasses
+import json
 import time
+from typing import Any, Mapping
 
 import numpy as np
 import warp as wp
@@ -32,8 +40,16 @@ def _real_points(flat_xy: np.ndarray, e: int, n_max: int, count: int) -> np.ndar
     return flat_xy[base:base + count]
 
 
-def run_generator(name, seed_base, E, base_config) -> dict:
-    cfg = dataclasses.replace(base_config, generator=name, num_envs=E)
+def run_generator(name, seed_base, E, base_config, generator_params=None) -> dict:
+    """Metrics of generator ``name`` over ``E`` envs seeded from ``seed_base``.
+
+    The config is ``base_config`` with ``generator=name``, ``num_envs=E`` and
+    ``generator_params=generator_params`` (a Params instance, a mapping of its fields,
+    or ``None`` for the generator's defaults / flat fields): ``base_config``'s own
+    ``generator_params`` is always replaced, never carried over to ``name``.
+    """
+    cfg = dataclasses.replace(base_config, generator=name, num_envs=E,
+                              generator_params=generator_params)
     n_max = int(cfg.N_max)
     rng = PerEnvSeededRNG(seeds=int(seed_base), num_envs=E, device=str(cfg.device))
     gen = TrackGenerator(cfg, rng)
@@ -126,12 +142,38 @@ def run_generator(name, seed_base, E, base_config) -> dict:
     }
 
 
-def compare(names=None, seed_base=0, E=4096, base_config=None) -> list:
+def compare(names=None, seed_base=0, E=4096, base_config=None,
+            generator_params: "Mapping[str, Any] | None" = None) -> list:
+    """One :func:`run_generator` row per generator (default: every registered one).
+
+    ``generator_params`` maps a generator name to ITS ``generator_params`` (a Params
+    instance or a mapping of its fields); generators left out run with ``None``. A
+    name that is not compared raises ``ValueError`` (a typo would otherwise be
+    silently ignored).
+    """
     if base_config is None:
         base_config = TrackGenConfig(num_envs=E)
     if names is None:
         names = registry.available("generator")
-    return [run_generator(n, seed_base, E, base_config) for n in names]
+    names = list(names)
+    per_generator = dict(generator_params or {})
+    stray = sorted(set(per_generator) - set(names))
+    if stray:
+        raise ValueError(f"generator_params for generators that are not compared: {stray}; "
+                         f"compared: {names}")
+    return [run_generator(n, seed_base, E, base_config, per_generator.get(n))
+            for n in names]
+
+
+def parse_generator_params(text: str) -> dict:
+    """``--generator-params`` JSON: ``{"<generator>": {"<field>": value, ...}, ...}``
+    (values as JSON gives them: the generator converts arrays and enum values by each
+    field's annotation). Raises ``ValueError`` for any other shape."""
+    data = json.loads(text)
+    if not isinstance(data, dict) or not all(isinstance(v, dict) for v in data.values()):
+        raise ValueError('--generator-params must be a JSON object mapping a generator name '
+                         'to an object of its fields, e.g. \'{"polar": {"polar_num_knots": 9}}\'')
+    return {str(k): dict(v) for k, v in data.items()}
 
 
 def format_table(rows) -> str:
@@ -154,7 +196,15 @@ if __name__ == "__main__":
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--cuda", action="store_true")
     ap.add_argument("--generators", nargs="*", default=None)
+    ap.add_argument("--generator-params", default=None, metavar="JSON",
+                    help='per-generator generator_params, e.g. '
+                         '\'{"polar": {"polar_num_knots": 9}}\'')
     a = ap.parse_args()
+    try:
+        gp = parse_generator_params(a.generator_params) if a.generator_params else None
+    except ValueError as exc:
+        ap.error(str(exc))
     cfg = TrackGenConfig(device="cuda" if a.cuda else "cpu", num_envs=a.E)
-    rows = compare(a.generators, seed_base=a.seed, E=a.E, base_config=cfg)
+    rows = compare(a.generators, seed_base=a.seed, E=a.E, base_config=cfg,
+                   generator_params=gp)
     print(format_table(rows))

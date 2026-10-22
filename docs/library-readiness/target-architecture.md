@@ -334,8 +334,11 @@ curvature(ctx, track, *, out); speed_profile(ctx, track, ..., *, out)   # out= v
 check_array(name, arr, shape, dtype, device)                   # public runtime._check_arr
 # ops.funcs (@wp.func): safe_normalize2/3, cross2, ccw, nan0, seg_seg_intersect, catmull_rom, cubic_bezier,
 #                       pchip_tangent, frame_quat, hash32, fail(mask, e, bit)
-# ops.rng: @wp.func init(seed: int32, salt: uint32, offset: int32) -> uint32
-#   = wp.rand_init(int32(hash32(uint32(seed) ^ hash32(salt))), offset). This avoids the seed*K+c collapse at seed 0.
+# ops.rng: @wp.func init(seed: int32, salt: uint32) -> uint32
+#   = wp.rand_init(int32(hash32(uint32(seed) ^ salt) & 0x7FFFFFFF)), with salt a StageBuilder.salt() value
+#   (already hashed: hash32_host(fnv1a_32('<stage_id>/<stream>'))). This is exactly the per-env keying PR8's
+#   generator guide and b.salt docs recommend (frozen for plugin API 1), so plugin streams written against PR8
+#   reproduce bit for bit once ops.rng ships: one keying, not two. It avoids the seed*K+c collapse at seed 0.
 ```
 
 ## 5. L3 `track_gen.plugin`: the extension surface
@@ -414,6 +417,16 @@ registry: Registry
 # Policy: TRACK_GEN_PLUGINS=warn (default; broken plugins are quarantined) | strict (CI) | off.
 # A config that explicitly names a quarantined plugin raises the original error.
 ```
+
+**Commitments of the PR8 generator subset** (PR10 and later extend them; none may be broken):
+- `StageBuilder.raw` (the `"raw.xy"` points per env: `capacity()["raw"]`, else the raw default) is a permanent attribute of generator stages, next to the planned `b.stride_of(port)`.
+- When `capacity()` omits `"raw"`, a generator's raw capacity is `TrackGenConfig.num_points`. `BatchSpec` has no `num_points`, so PR10 carries that default: `legacy.to_pipeline_spec(cfg)` passes `cfg.num_points` as the generator stage's raw default, and the presets take one (256). `capacity()` keys other than `"raw"` are rejected until a release defines them (PR11 adds `gates` / `min_gates`).
+- `capture_class`, `capacity` and `build` receive a static view of the Params: reading a dynamic field raises `AttributeError`. Host scalars come from static fields only (G1).
+- The arrays `b.param()` and `b.input()` return are read-only for the stage. PR8 latches live -> work at the start of each generation (D-f); a stage never observes the difference, so PR10's masked commit can drop the latch. The PR9 kit snapshots those arrays around `enqueue` and fails on any write.
+- `Params` reserves the field names `validate`, `from_legacy`, `to_dict`, `from_dict`, `replace`, `schema`, `fields`, `describe` and every `_`-prefixed name, so later Params helpers (PipelineSpec serialisation) cannot clash with a plugin's field.
+- `generator_params` mappings are converted by annotation (lists -> tuples, enum values -> members), so `PipelineSpec.from_dict` round-trips Params through JSON/YAML.
+- Only `kind="generator"` Stages register (other kinds arrive with PR10, which validates their ports, channels and topology), and `capture=BOUNDED` is rejected until PR12 defines its contract.
+- `describe()` reports `capture` (for the default Params), `output`, `writes` and `provides`, besides `params_schema` (`{}` for no parameters).
 
 ## 6. L4 `track_gen.pipeline`
 
@@ -723,7 +736,7 @@ def _superformula_k(seed: wp.array(dtype=wp.int32), salt: wp.uint32, m: wp.array
     t = wp.tid()
     e = t // n_pts
     i = t - e * n_pts
-    st = rng.init(seed[e], salt, 0)                       # same per-env stream for every i
+    st = rng.init(seed[e], salt)                          # same per-env stream for every i
     phase = wp.randf(st) * 6.2831853
     th = 6.2831853 * float(i) / float(n_pts)
     r = superformula_r(th + phase, m[e], n1[e], n2)       # the plugin's own @wp.func
@@ -942,13 +955,13 @@ class LearnedDecoder(plugin.Stage):     # host-driven
 
 **Topology.** `Layout.closed` is batch-static and passed to kernels as an int. Stages and components declare the topologies they support and reject others loudly at build or attach time. Open topology rolls out per stage after 1.0.
 
-**Seeds.** Each env is keyed by (seed, epoch), folded into `seed` by the prologue. New code uses `ops.rng.init(seed, salt, offset)` with salts hashed from `'<stage_id>/<stream>'` and collision-checked. Built-ins keep their legacy `seed*K+c` keying until 1.0, so goldens stay byte-identical at epoch 0.
+**Seeds.** Each env is keyed by (seed, epoch), folded into `seed` by the prologue. New code uses `ops.rng.init(seed, salt)` (§4) with salts hashed from `'<stage_id>/<stream>'` and collision-checked. Built-ins keep their legacy `seed*K+c` keying until 1.0, so goldens stay byte-identical at epoch 0.
 
 ## 13. Config model
 
 **Three tiers, all frozen, copied and hashable:**
 1. `BatchSpec(num_envs, device, n_max, closed, scale, on_invalid)`. The device is canonicalized with `wp.get_device`, which fixes the `'cuda'` vs `'cuda:0'` mismatch and the substring checks at track_generator.py:171-172.
-2. Per-stage `Params`, owned by each stage. `static` fields (shapes, iteration counts, enums, Python-level branches) are baked. `dynamic` fields become [E] device arrays: generator shape knobs, z ranges and amplitudes, relax margin and rates, and `half_width` within the spacing-derived capacity. Field metadata (`doc`, `ui`, `lo`/`hi`, test overrides, acceptance thresholds) drives `describe()`, the parameter explorer (no more hard-coding at viz/param_explorer.py:58) and the shared tests. Cross-stage values are derived by the planner, for example `spacing = spacing or 0.6 * nominal_half_width`; nothing is mutated in `__post_init__` (types.py:851).
+2. Per-stage `Params`, owned by each stage. The built-in generators' Params keep the flat prefixed field names (`polar_num_knots`, `voronoi_*`, `repulsive_*`; PR8 decision D-b) as their permanent schema through 1.0, so `generator_params` mappings and YAML written against PR8 stay valid; stage-local names would need aliases and are not planned. `static` fields (shapes, iteration counts, enums, Python-level branches) are baked. `dynamic` fields become [E] device arrays: generator shape knobs, z ranges and amplitudes, relax margin and rates, and `half_width` within the spacing-derived capacity. Field metadata (`doc`, `ui`, `lo`/`hi`, test overrides, acceptance thresholds) drives `describe()`, the parameter explorer (no more hard-coding at viz/param_explorer.py:58) and the shared tests. Cross-stage values are derived by the planner, for example `spacing = spacing or 0.6 * nominal_half_width`; nothing is mutated in `__post_init__` (types.py:851).
 3. `PipelineSpec`, built by presets. `to_dict()`/`from_dict()` make it work with Hydra or YAML and make it loggable for reproducibility.
 
 **Legacy.**
@@ -1066,7 +1079,7 @@ Record never calls `capture_launch`: a graph launch is not capturable (error 900
 - `staged_commit` (capture-first). Doubles memory.
 - Recompute-and-trust-determinism.
 
-**RNG scheme:** built-ins keep `seed*K+c` in 0.x; new code uses `ops.rng.init(seed, salt, offset)` with hashed, collision-checked salts; built-ins switch at 1.0 in one deliberate golden re-baseline.
+**RNG scheme:** built-ins keep `seed*K+c` in 0.x; new code uses `ops.rng.init(seed, salt)` (§4, the PR8 keying) with hashed, collision-checked salts; built-ins switch at 1.0 in one deliberate golden re-baseline.
 
 ## D8. Config split
 
@@ -1336,6 +1349,7 @@ It runs over everything registered, so a capture regression fails CI mechanicall
 - **Scope:**
   - `track_gen/testing/{contract,trace,capture,conformance,pytest_plugin}.py`: `check_generator`, `check_stage`, `check_component`, `assert_caller_capturable`, contract guards, LaunchTrace with a pointer allowlist, mempool-off capture, poisoned replay, batch-independence checks, undeclared-write detection.
   - Register a pytest11 plugin.
+  - Stage checks from PR8: snapshot each `b.param()` / `b.input()` working array before `enqueue` and fail on any write.
   - Collapse the duplicated per-generator contract tests (test_generate_polar.py:42-112, test_generate_checkpoint.py:56-102, test_generate_repulsive.py:224-252, …) into a suite parametrized over `registry.available()` that reads public outputs only.
   - Rewrite `docs/contributing/writing-a-generator.rst` against the public API. Add guides for writing a gate generator, a stage and a component, each documenting the execution model.
   - Rewrite `docs/how-it-works/cuda-graph.rst` and `docs/tutorials/cuda-graph-in-a-sim.rst` around G1-G13, with Warp, sim and torch recipes.
@@ -1360,6 +1374,8 @@ It runs over everything registered, so a capture regression fails CI mechanicall
     - `commit`: the only writer of the result; masked; generation; `on_invalid` with keep/poison.
   - `_run_pipeline`/`inflate_warp`/`_Scratch` are deleted once parity holds.
   - `Program.tap()` for viz and benchmarks.
+  - `legacy.to_pipeline_spec` carries `cfg.num_points` as the generator stage's raw default (see the PR8 commitments under §5).
+  - Remove the PR8 live -> work latch of dynamic params and inputs (the masked commit makes it unnecessary), or record that PR13's `randomize.uniform` writes the WORK arrays: the latch runs before every stage, so a randomize stage writing the LIVE arrays would reach the generator one generation late. One of the two must hold before PR13's `randomize.uniform` lands.
 - **Fixes:** HIGH stage sequence hard-coded (relax/inflate/validity not pluggable); HIGH z-profile set closed; MEDIUM validity monolithic single bit; MEDIUM invalid envs leave finite geometry (policy available); LOW benchmarks/viz reach private scratch; LOW no eager CUDA benchmark mode (`policy='eager'`); whole-batch-only regeneration (masked commit makes it exact).
 - **Test gate:**
   - Goldens byte-identical per stage, diffing every Track field against the PR9 baseline on CPU and CUDA.
@@ -1420,7 +1436,7 @@ It runs over everything registered, so a capture regression fails CI mechanicall
     - Capability protocols (HasCenterline, HasBand, HasGates). CourseLine produces a Centerline (course_line.py:132-143).
     - Utilities call `validate()` at construction instead of inferring the stride: props.py:308, checkpoints.py:229, collision.py:318, localize.py:255, heightfield.py:119.
   - New stages:
-    - the `randomize.uniform` stage;
+    - the `randomize.uniform` stage (requires the PR8 latch to be gone, or writes the work arrays: see PR10);
     - the `generator/external` ingestion stage;
     - the `closed` flag plumbed through relax, elevation and utility kernels; only `closed=True` is accepted in 0.x.
 - **Fixes:** HIGH constant half-width and 2D-only output with no attribute channel; MEDIUM Track/GateSequence fixed schemas; MEDIUM utilities infer layout from one field; MEDIUM Track used as universal representation; MEDIUM all knobs are host scalars (dynamic params plus randomize); MEDIUM no public centerline-to-Track ingestion; MEDIUM mixed batches/caller-owned outputs (out=/view); LOW w_floor tautology; LOW clone allocates; LOW style sampling bezier-only.

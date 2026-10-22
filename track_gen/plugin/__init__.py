@@ -44,6 +44,17 @@ module its entry point names, or on the register callable), when it registers a 
 that already exists without ``replace=True`` (built-ins always win unless a plugin
 explicitly overrides them), or when it unregisters a name it did not register.
 
+Parameters and stages. A generator declares its own parameters as a frozen
+:class:`Params` dataclass (fields marked :func:`static` or :func:`dynamic`) and users
+select them with ``TrackGenConfig(generator=..., generator_params=...)`` (an instance or
+a mapping of its fields). A legacy :class:`GeneratorSpec` takes a static Params class
+through ``params=``; a :class:`Stage` subclass (``kind="generator"``,
+``output="centerline"``, registered as a class) allocates through a
+:class:`StageBuilder` and may declare dynamic, per-env params that callers write
+through ``gen.params["generator"]`` without re-capturing a graph.
+:meth:`Registry.describe` reports each spec's Params JSON schema
+(:attr:`SpecInfo.params_schema`).
+
 Quarantine. A quarantined plugin's registrations are rolled back and it is listed in
 :attr:`Registry.quarantined`; an unknown-name error lists the quarantined plugins with
 their errors. Asking for a name the plugin tried to register, or a name namespaced under
@@ -63,17 +74,29 @@ from ._registry import (
     SpecInfo,
     registry,
 )
+from .params import NoParams, ParamTable, Params, StageParams, dynamic, static
+from .stage import CaptureClass, Layout, Stage, StageBuilder
 
 __all__ = [
     "API_VERSION",
     "ENTRY_POINT_GROUP",
     "POLICY_ENV",
+    "CaptureClass",
     "DuplicateSpecError",
     "GateGeneratorSpec",
     "GeneratorSpec",
+    "Layout",
+    "NoParams",
+    "ParamTable",
+    "Params",
     "PluginLoadError",
     "PluginOverrideWarning",
     "Registry",
     "SpecInfo",
+    "Stage",
+    "StageBuilder",
+    "StageParams",
+    "dynamic",
     "registry",
+    "static",
 ]

@@ -29,7 +29,7 @@ import warp as wp  # noqa: E402
 from tests._warp_compare import to_t  # noqa: E402
 from track_gen._src.types import TrackGenConfig  # noqa: E402
 from track_gen._src import warp_pipeline as wpp  # noqa: E402
-from track_gen._src import generator_registry  # noqa: E402
+from track_gen.plugin import registry  # noqa: E402
 from track_gen._src.track_generator import TrackGenerator  # noqa: E402
 from track_gen._src.rng_utils import PerEnvSeededRNG  # noqa: E402
 from track_gen._src.types import Track  # noqa: E402
@@ -37,16 +37,19 @@ from track_gen._src.types import Track  # noqa: E402
 # Only capturable generators are exercised by the auto-capture-replay suite; a
 # non-capturable generator runs eagerly and would attempt an illegal capture here.
 # test_noncapturable_generators_excluded guards that they stay excluded. Every shipped
-# generator is capturable (repulsive since its freeze became absorbing).
+# generator is capturable (repulsive since its freeze became absorbing). describe() reads
+# the flag of a GeneratorSpec and of a Stage generator alike.
 _ALL_GENERATORS = [
-    n for n in generator_registry.available() if generator_registry.get(n).capturable
+    n for n in registry.available("generator") if registry.describe("generator", n).capturable
 ]
 
-# Per-generator config overrides. repulsive's growth loop is O(E*N^2) per iteration and
-# unrolls to ~4k graph nodes at the default stages; a reduced budget keeps capture cheap
-# while still exercising every stage transition, resample and stall check.
+# Per-generator config overrides: core fields stay flat, generator knobs go through
+# generator_params (so an override never leaks into another generator's Params).
+# repulsive's growth loop is O(E*N^2) per iteration and unrolls to ~4k graph nodes at the
+# default stages; a reduced budget keeps capture cheap while still exercising every stage
+# transition, resample and stall check.
 _GEN_OVERRIDES = {
-    "repulsive": dict(num_points=64, repulsive_stages=(16, 32, 64)),
+    "repulsive": dict(num_points=64, generator_params={"repulsive_stages": (16, 32, 64)}),
 }
 
 
@@ -57,7 +60,7 @@ def _cfg(E: int, relax_iters: int = 20, generator: str = "bezier") -> TrackGenCo
         num_envs=E, device="cuda:0", output_mode="constant_spacing",
         spacing=0.6, N_max=256,
         relax_solver="xpbd", smooth_finish=False,
-        relax_iters=relax_iters, max_regen_iters=4,
+        relax_iters=relax_iters,
         generator=generator, **_GEN_OVERRIDES.get(generator, {}),
     )
 
@@ -112,8 +115,8 @@ def _track_allclose(got: Track, ref: dict, atol=1e-4):
 def test_noncapturable_generators_excluded():
     """Non-capturable generators must not enter the auto-capture parametrization."""
     noncapturable = [
-        n for n in generator_registry.available()
-        if not generator_registry.get(n).capturable
+        n for n in registry.available("generator")
+        if not registry.describe("generator", n).capturable
     ]
     for n in noncapturable:
         assert n not in _ALL_GENERATORS, (

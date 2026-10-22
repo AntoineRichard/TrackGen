@@ -111,6 +111,7 @@ def register(reg) -> None:
     """Register the built-in ``"bezier"`` and ``"hull"`` gate generators into ``reg``
     (called by ``track_gen._src.builtin_plugins``; importing this module registers
     nothing)."""
+    from .builtin_params import PointGateParams
     from .gate_generator_registry import GateGeneratorSpec
 
     reg.add(GateGeneratorSpec(
@@ -120,6 +121,7 @@ def register(reg) -> None:
         max_gates=_max_point_gates,
         supported_orderings=frozenset({"ccw", "random_pairs"}),
         accepts_ctx=True,
+        params=PointGateParams,
     ))
 
     reg.add(GateGeneratorSpec(
@@ -129,4 +131,5 @@ def register(reg) -> None:
         max_gates=_max_point_gates,
         supported_orderings=frozenset({"ccw", "random_pairs"}),
         accepts_ctx=True,
+        params=PointGateParams,
     ))

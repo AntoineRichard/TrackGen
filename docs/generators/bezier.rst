@@ -153,6 +153,11 @@ Parameters
 All fields are part of ``TrackGenConfig`` (see the Configuration reference for the
 full list, defaults, and validation rules).
 
+The generator-specific fields below are also the fields of ``BezierParams``, the
+generator's Params class (core fields such as ``scale`` are not): set them flat or
+through ``generator_params`` (see :ref:`builtin-generator-params`). Their rules are
+checked when the ``TrackGenerator`` is constructed, and only for ``generator="bezier"``.
+
 ``min_num_points``
     Minimum corner-anchor count per environment.  Must be >= 2.
 
@@ -170,9 +175,9 @@ full list, defaults, and validation rules).
     ``num_cells = int(1 / (min_point_distance * 2))``.  Must be in ``(0, 0.5]``.
 
 ``min_angle``
-    Minimum interior angle (radians) at constrained corners.  Used by the gate-angle
-    validity kernel; not applied directly to centerline generation on the current
-    single-pass path.
+    Deprecated, and not part of ``BezierParams``: ``TrackGenerator`` never reads it (only
+    a corner-angle kernel the tests launch does). A non-default value emits a
+    ``DeprecationWarning``; the field will be removed in 1.0.
 
 ``rad``
     Handle length as a fraction of the segment chord — the primary curviness dial.
@@ -221,9 +226,9 @@ What Makes It Distinct
 
 The Bezier generator is the **default** and most knob-rich of the six generators:
 
-- **Widest style control.** Nine primary knobs (``min_num_points``, ``max_num_points``,
-  ``num_points_per_segment``, ``min_point_distance``, ``min_angle``, ``rad``, ``edgy``,
-  ``scale``, ``handle_clamp_frac``) plus the opt-in ``style_sampling`` family are all
+- **Widest style control.** Eight primary knobs (``min_num_points``, ``max_num_points``,
+  ``num_points_per_segment``, ``min_point_distance``, ``rad``, ``edgy``, ``scale``,
+  ``handle_clamp_frac``) plus the opt-in ``style_sampling`` family are all
   exclusive to the corner-Bézier representation.  No other generator exposes per-env
   handle geometry or a per-batch style sweep.
 

@@ -7,8 +7,13 @@ both import them without a circular import. Warp is a core dependency (``Track``
 fields are ``wp.array``).
 """
 
+import dataclasses
 import math
+import sys
+import warnings
+from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Any
 
 import warp as wp
 
@@ -50,6 +55,47 @@ def _validate_z_fields(cfg) -> None:
         )
 
 
+def _check_generator_params(cfg) -> None:
+    """Registry-free type check of ``generator_params`` (the generator resolves and
+    validates the value at construction)."""
+    gp = cfg.generator_params
+    if gp is not None and not isinstance(gp, Mapping) and not (
+            dataclasses.is_dataclass(gp) and not isinstance(gp, type)):
+        raise TypeError("generator_params must be a Params instance, a mapping of its "
+                        f"fields, or None; got {type(gp).__name__}")
+
+
+# TrackGenConfig fields TrackGenerator does not use (torch-oracle / experimental only;
+# it only rejects smooth_finish=True): setting one to a value other than its class's
+# default emits a DeprecationWarning. ``output_mode`` is
+# deprecated too, but its own ValueError already rejects every non-default value.
+_DEAD_TRACK_FIELDS = (
+    "energy_steps", "energy_lr", "energy_w_sep", "energy_w_len", "energy_w_bend",
+    "energy_w_anchor", "tp_iters", "tp_tau", "tp_alpha", "tp_beta",
+    "smooth_finish", "smooth_finish_iters", "smooth_finish_tau",
+    "relax_chunk_size", "relax_use_warp", "max_regen_iters", "min_angle",
+    "num_harmonics", "decay_p", "amplitude", "num_centerline_samples",
+)
+
+
+def _warn_dead_fields(cfg) -> None:
+    # Defaults of the config's own class: a subclass that changes one is not "set".
+    defaults = {f.name: f.default for f in dataclasses.fields(type(cfg))}
+    names = [n for n in _DEAD_TRACK_FIELDS if getattr(cfg, n) != defaults[n]]
+    if names:
+        # Point at the code constructing the config: skip every frame of this object's
+        # construction (the generated __init__, and each __post_init__ of a subclass
+        # chain that calls super().__post_init__()).
+        level, frame = 2, sys._getframe(1)
+        while frame is not None and frame.f_locals.get("self") is cfg:
+            frame, level = frame.f_back, level + 1
+        warnings.warn(
+            f"TrackGenConfig fields {names} are deprecated and unused by TrackGenerator "
+            f"(oracle/experimental only; smooth_finish=True is rejected); they will be "
+            f"removed in 1.0",
+            DeprecationWarning, stacklevel=level)
+
+
 @dataclass
 class TrackGenConfig:
     """Single configuration object passed to every stage of the pipeline.
@@ -62,6 +108,21 @@ class TrackGenConfig:
     TrackGenerator**. The Fourier fields (``num_harmonics``, ``decay_p``,
     ``amplitude``, ``num_centerline_samples``) are retained only for compatibility with
     ``track_gen._experimental.fourier`` and older experiment sweeps.
+
+    Per-generator parameters: each generator declares its own Params class
+    (``track_gen.plugin.registry.describe("generator", name).params_schema``). Set
+    them either through the flat fields below (the built-in generators' knobs, e.g.
+    ``polar_num_knots``) or through ``generator_params`` (a Params instance or a mapping
+    of its fields, e.g. ``generator_params={"polar_num_knots": 9}``), not both with
+    different values. The generator-specific rules (``voronoi_control_points >= 6``,
+    the ``repulsive_*`` rules, ...) are checked when the generator is constructed, and
+    only for the selected generator.
+
+    Deprecated (a ``DeprecationWarning`` when set to a non-default value; removed in
+    1.0): ``energy_*``, ``tp_*``, ``smooth_finish*``, ``relax_chunk_size``,
+    ``relax_use_warp``, ``max_regen_iters``, ``min_angle``, ``num_harmonics``,
+    ``decay_p``, ``amplitude``, ``num_centerline_samples`` (and ``output_mode``, which
+    only accepts its default).
 
     Attributes
     ----------
@@ -535,6 +596,17 @@ class TrackGenConfig:
         Maximum allowed ``|dz|``/ds grade for post-hoc course validity checking,
         where ``ds`` is measured along the PLAN-VIEW (XY) arc length, not the
         3D lifted arc length.  0 disables the check.  Must be >= 0.  Default 0.0.
+
+    generator_params : Params, mapping or None
+        The selected generator's parameters.  ``None`` (default): the generator's
+        ``Params.from_legacy(config)`` (for the built-ins, the flat fields above).  A
+        Params instance of the generator's class, or a mapping of its fields (left-out
+        keys take the class defaults; unknown keys raise listing the valid fields):
+        the generator's complete parameter set.  A flat field the selected built-in
+        owns must then stay at its default or equal the given value.  Switching
+        generators means resetting it to ``None``.  Resolved and validated at
+        ``TrackGenerator`` construction; ``TrackGenerator.config`` reports it
+        normalised to the Params instance.
     """
 
     # --- Generator selection + batching ---
@@ -676,123 +748,18 @@ class TrackGenConfig:
     z_control_points: int = 10
     z_valid_grade: float = 0.0
 
+    # --- Per-generator parameters (None | Params instance | mapping of its fields) ---
+    generator_params: Any = None
+
     def __post_init__(self):
         if int(self.num_envs) < 1:
             raise ValueError(f"num_envs must be >= 1, got {self.num_envs!r}")
         if float(self.half_width) <= 0.0:
             raise ValueError(f"half_width must be > 0, got {self.half_width!r}")
-        # Point-family sampler inputs (shared bezier/hull corner sampler). min_point_distance
-        # is a divisor: num_cells = int(1/(min_point_distance*2)) in warp_generate.py, so
-        # values <= 0 or > 0.5 drive a divide-by-zero in the grid kernels; min/max_num_points
-        # feed wp.randi and must be a non-inverted range. GateGenConfig already guards these.
-        if int(self.min_num_points) < 2:
-            raise ValueError(f"min_num_points must be >= 2, got {self.min_num_points!r}")
-        if int(self.max_num_points) < int(self.min_num_points):
-            raise ValueError(
-                "max_num_points must be >= min_num_points, got "
-                f"{self.max_num_points!r} < {self.min_num_points!r}")
-        if not (0.0 < float(self.min_point_distance) <= 0.5):
-            raise ValueError(
-                f"min_point_distance must be in (0, 0.5], got {self.min_point_distance!r}")
-        if int(self.num_points_per_segment) < 2:
-            raise ValueError(
-                f"num_points_per_segment must be >= 2, got {self.num_points_per_segment!r}")
-        if int(self.voronoi_control_points) < 6:
-            raise ValueError(
-                f"voronoi_control_points must be >= 6, got {self.voronoi_control_points!r}")
-        if int(self.voronoi_num_sites) < int(self.voronoi_control_points):
-            raise ValueError(
-                "voronoi_num_sites must be >= voronoi_control_points, got "
-                f"{self.voronoi_num_sites!r} < {self.voronoi_control_points!r}")
-        if self.voronoi_site_layout not in {"ring", "void_ring", "clustered", "mixed"}:
-            raise ValueError(
-                "voronoi_site_layout must be one of "
-                "{'ring', 'void_ring', 'clustered', 'mixed'}, got "
-                f"{self.voronoi_site_layout!r}")
-        if float(self.voronoi_radial_variation) < 0.0:
-            raise ValueError(
-                f"voronoi_radial_variation must be >= 0, got {self.voronoi_radial_variation!r}")
-        if float(self.voronoi_angular_jitter) < 0.0:
-            raise ValueError(
-                f"voronoi_angular_jitter must be >= 0, got {self.voronoi_angular_jitter!r}")
-
-        # Repulsive-growth generator validation (Spec §3.1). Ordered/positive knobs;
-        # the stages schedule is coarse-to-fine (strictly increasing, multiple of 4) and
-        # its last entry is the tail input resolution, so it must equal num_points for
-        # the repulsive generator.
-        # grow_mult_min >= 1 and grow_mult_max > 1: a multiplier <= 1 shrinks (or freezes) the
-        # init circle so the ratchet never grows, which drives the iteration budget
-        # n_ratchet = ceil(log(grow_mult_max)/log1p(rate)) to <= 0 -> a zero-length growth loop
-        # that leaves the centerline mis-strided at the coarsest stage (silent garbage tracks).
-        if float(self.repulsive_grow_mult_min) < 1.0:
-            raise ValueError(
-                f"repulsive_grow_mult_min must be >= 1, got {self.repulsive_grow_mult_min!r}")
-        if float(self.repulsive_grow_mult_max) <= 1.0:
-            raise ValueError(
-                f"repulsive_grow_mult_max must be > 1, got {self.repulsive_grow_mult_max!r}")
-        if float(self.repulsive_grow_mult_max) < float(self.repulsive_grow_mult_min):
-            raise ValueError(
-                "repulsive_grow_mult_max must be >= repulsive_grow_mult_min, got "
-                f"{self.repulsive_grow_mult_max!r} < {self.repulsive_grow_mult_min!r}")
-        if float(self.repulsive_domain_frac) <= 0.0:
-            raise ValueError(
-                f"repulsive_domain_frac must be > 0, got {self.repulsive_domain_frac!r}")
-        if float(self.repulsive_domain_init_ratio) <= 1.0:
-            raise ValueError(
-                "repulsive_domain_init_ratio must be > 1, got "
-                f"{self.repulsive_domain_init_ratio!r}")
-        if int(self.repulsive_obstacle_count_min) < 1:
-            raise ValueError(
-                "repulsive_obstacle_count_min must be >= 1, got "
-                f"{self.repulsive_obstacle_count_min!r}")
-        if int(self.repulsive_obstacle_count_max) < int(self.repulsive_obstacle_count_min):
-            raise ValueError(
-                "repulsive_obstacle_count_max must be >= repulsive_obstacle_count_min, got "
-                f"{self.repulsive_obstacle_count_max!r} < {self.repulsive_obstacle_count_min!r}")
-        if float(self.repulsive_obstacle_radius_min_frac) <= 0.0:
-            raise ValueError(
-                "repulsive_obstacle_radius_min_frac must be > 0, got "
-                f"{self.repulsive_obstacle_radius_min_frac!r}")
-        if (float(self.repulsive_obstacle_radius_max_frac)
-                < float(self.repulsive_obstacle_radius_min_frac)):
-            raise ValueError(
-                "repulsive_obstacle_radius_max_frac must be >= "
-                "repulsive_obstacle_radius_min_frac, got "
-                f"{self.repulsive_obstacle_radius_max_frac!r} < "
-                f"{self.repulsive_obstacle_radius_min_frac!r}")
-        if float(self.repulsive_ratchet_rate) <= 0.0:
-            raise ValueError(
-                f"repulsive_ratchet_rate must be > 0, got {self.repulsive_ratchet_rate!r}")
-        if float(self.repulsive_alpha) <= 0.0:
-            raise ValueError(f"repulsive_alpha must be > 0, got {self.repulsive_alpha!r}")
-        if float(self.repulsive_beta) <= 0.0:
-            raise ValueError(f"repulsive_beta must be > 0, got {self.repulsive_beta!r}")
-        stages = tuple(self.repulsive_stages)
-        if len(stages) == 0:
-            raise ValueError("repulsive_stages must be non-empty")
-        if any(int(s) <= 0 or int(s) % 4 != 0 for s in stages):
-            raise ValueError(
-                f"repulsive_stages entries must be positive multiples of 4, got {stages!r}")
-        if any(int(stages[i]) <= int(stages[i - 1]) for i in range(1, len(stages))):
-            raise ValueError(
-                f"repulsive_stages must be strictly increasing, got {stages!r}")
-        if self.generator == "repulsive" and int(stages[-1]) != int(self.num_points):
-            raise ValueError(
-                "repulsive_stages[-1] must equal num_points for generator='repulsive', got "
-                f"{stages[-1]!r} != {self.num_points!r}")
-        # settle_iters >= 1 keeps the growth loop non-empty even at grow_mult_max just above 1
-        # (n_iters = ceil(n_ratchet*1.6) + settle_iters); resample_every / stall_window feed the
-        # `(it+1) % k` guards in the growth loop, so k=0 would be a ZeroDivisionError mid-generate.
-        if int(self.repulsive_settle_iters) < 1:
-            raise ValueError(
-                f"repulsive_settle_iters must be >= 1, got {self.repulsive_settle_iters!r}")
-        if int(self.repulsive_resample_every) < 1:
-            raise ValueError(
-                f"repulsive_resample_every must be >= 1, got {self.repulsive_resample_every!r}")
-        if int(self.repulsive_stall_window) < 1:
-            raise ValueError(
-                f"repulsive_stall_window must be >= 1, got {self.repulsive_stall_window!r}")
-
+        _check_generator_params(self)
+        # Generator-specific rules (point family, num_points_per_segment, voronoi_*,
+        # repulsive_*, checkpoint_*) live in the generators' Params.validate() and run
+        # at generator construction, for the selected generator only.
         if int(self.relax_sep_every) < 1:
             raise ValueError(f"relax_sep_every must be >= 1, got {self.relax_sep_every!r}")
         if int(self.relax_sep_cache_slots) < 0:
@@ -829,19 +796,6 @@ class TrackGenConfig:
                 "relax_smooth_spacing_iters must be >= 0, got "
                 f"{self.relax_smooth_spacing_iters!r}")
 
-        # Checkpoint-steering generator validation: a loop needs >= 3 checkpoints, the
-        # radius fraction must be a proper sub-unit inner radius, and best-of-K needs >= 1.
-        if int(self.checkpoint_count) < 3:
-            raise ValueError(
-                f"checkpoint_count must be >= 3, got {self.checkpoint_count!r}")
-        if int(self.checkpoint_best_of_k) < 1:
-            raise ValueError(
-                f"checkpoint_best_of_k must be >= 1, got {self.checkpoint_best_of_k!r}")
-        if not (0.0 <= float(self.checkpoint_radius_min_frac) < 1.0):
-            raise ValueError(
-                f"checkpoint_radius_min_frac must be in [0, 1), "
-                f"got {self.checkpoint_radius_min_frac!r}")
-
         # Only constant_spacing is supported: a constant link SIZE (~0.6*half_width) relaxes
         # to smoother, higher-yield tracks than a constant point COUNT, which over-resolves
         # the centerline (jagged XPBD -> folded roads).
@@ -861,6 +815,7 @@ class TrackGenConfig:
             raise ValueError(
                 "z_control_points must be >= 3, got "
                 f"{self.z_control_points!r}")
+        _warn_dead_fields(self)
 
 
 @dataclass
@@ -1008,6 +963,15 @@ class GateGenConfig:
         onto the XY plane, so left/right posts share the center's altitude);
         ``"full_tangent"`` aligns the frame forward axis with the full 3D
         tangent, tilting posts to follow the course slope.
+
+    generator_params : Params, mapping or None
+        The selected gate generator's parameters, as
+        ``TrackGenConfig.generator_params`` (``None``: the flat fields above).  The
+        inert fields (``num_points_per_segment``, ``rad``, ``edgy``,
+        ``handle_clamp_frac``, ``hull_displacement``) belong to no gate generator.
+        The generator-specific rules (point family, ``voronoi_*``, ``checkpoint_*``)
+        are checked at ``GateGenerator`` construction, for the selected generator
+        only; ``max_gates`` sees the resolved values.
     """
 
     generator: str = "bezier"
@@ -1061,6 +1025,9 @@ class GateGenConfig:
     z_valid_grade: float = 0.0
     gate_align: str = "yaw_only"
 
+    # --- Per-generator parameters (None | Params instance | mapping of its fields) ---
+    generator_params: Any = None
+
     def __post_init__(self):
         if int(self.num_envs) < 1:
             raise ValueError(f"num_envs must be >= 1, got {self.num_envs!r}")
@@ -1084,63 +1051,9 @@ class GateGenConfig:
                 "gate_ordering must be one of {'ccw', 'raw', 'random_pairs'}, "
                 f"got {self.gate_ordering!r}"
             )
-        # Point-family (bezier/hull) sampler inputs. These feed the shared corner
-        # sampler, where min_point_distance divides a cell count and the
-        # [min_num_points, max_num_points] range feeds wp.randi; validate them here
-        # so direct API callers get a clean config-time error instead of an opaque
-        # ZeroDivisionError or inverted-range sample deep inside generation.
-        if float(self.min_point_distance) <= 0.0:
-            raise ValueError(
-                f"min_point_distance must be > 0, got {self.min_point_distance!r}"
-            )
-        if int(self.min_num_points) < 2:
-            raise ValueError(
-                f"min_num_points must be >= 2, got {self.min_num_points!r}"
-            )
-        if int(self.max_num_points) < int(self.min_num_points):
-            raise ValueError(
-                "max_num_points must be >= min_num_points, got "
-                f"{self.max_num_points!r} < {self.min_num_points!r}"
-            )
-        # Floor is 3 here, not 6 as in TrackGenConfig: the gate-native Voronoi
-        # generator selects anchor sites and emits them directly as gates, so it
-        # never runs the Chaikin/Catmull-Rom densification that TrackGenConfig's
-        # >= 6 floor protects. Three control points is the smallest non-degenerate
-        # gate ring, which lets callers request short gate sequences.
-        if int(self.voronoi_control_points) < 3:
-            raise ValueError(
-                f"voronoi_control_points must be >= 3, got {self.voronoi_control_points!r}"
-            )
-        if int(self.voronoi_num_sites) < int(self.voronoi_control_points):
-            raise ValueError(
-                "voronoi_num_sites must be >= voronoi_control_points, got "
-                f"{self.voronoi_num_sites!r} < {self.voronoi_control_points!r}"
-            )
-        if float(self.voronoi_radial_variation) < 0.0:
-            raise ValueError(
-                "voronoi_radial_variation must be >= 0, got "
-                f"{self.voronoi_radial_variation!r}"
-            )
-        if float(self.voronoi_angular_jitter) < 0.0:
-            raise ValueError(
-                "voronoi_angular_jitter must be >= 0, got "
-                f"{self.voronoi_angular_jitter!r}"
-            )
-        if self.voronoi_site_layout not in {"ring", "void_ring", "clustered", "mixed"}:
-            raise ValueError(
-                "voronoi_site_layout must be one of "
-                "{'ring', 'void_ring', 'clustered', 'mixed'}, got "
-                f"{self.voronoi_site_layout!r}"
-            )
-        if int(self.checkpoint_count) < 3:
-            raise ValueError(
-                f"checkpoint_count must be >= 3, got {self.checkpoint_count!r}"
-            )
-        if not (0.0 <= float(self.checkpoint_radius_min_frac) < 1.0):
-            raise ValueError(
-                "checkpoint_radius_min_frac must be in [0, 1), got "
-                f"{self.checkpoint_radius_min_frac!r}"
-            )
+        _check_generator_params(self)
+        # Generator-specific rules (point family, voronoi_*, checkpoint_*) live in the
+        # gate generators' Params.validate() and run at GateGenerator construction.
         _validate_z_fields(self)
         if self.gate_align not in {"yaw_only", "full_tangent"}:
             raise ValueError(

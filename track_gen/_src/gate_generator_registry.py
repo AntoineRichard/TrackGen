@@ -40,6 +40,10 @@ class GateGeneratorSpec:
                 call (which default ``ctx=None`` to the ambient context) inherit the
                 call's stream; their own direct ``wp.launch`` calls still go to Warp's
                 current stream. Mirrors ``GeneratorSpec.accepts_ctx``.
+    params:     optional :class:`track_gen.plugin.Params` subclass (static fields only)
+                set through ``GateGenConfig.generator_params``; read as
+                ``config.generator_params`` by ``generate`` / ``alloc_scratch`` /
+                ``max_gates``. Mirrors ``GeneratorSpec.params``.
     """
 
     #: Registry kind ``track_gen.plugin.registry.add(spec)`` infers for this spec type.
@@ -52,6 +56,7 @@ class GateGeneratorSpec:
     supported_orderings: frozenset[str]
     capturable: bool = True
     accepts_ctx: bool = False
+    params: "type | None" = None
 
 
 def _registry():

@@ -52,6 +52,14 @@ class GeneratorSpec:
                    ``ctx.scope()``, so the ``warp_pipeline`` helpers they call (which default
                    ``ctx=None`` to the ambient context) inherit the call's stream; their own
                    direct ``wp.launch`` calls still go to Warp's current stream.
+    params:        optional :class:`track_gen.plugin.Params` subclass (STATIC fields
+                   only) declaring this generator's own parameters. Users set them with
+                   ``TrackGenConfig(generator=name, generator_params=...)`` (an instance
+                   or a mapping of its fields; ``None`` resolves
+                   ``params.from_legacy(config)``). ``generate`` / ``alloc_scratch`` read
+                   the resolved instance as ``config.generator_params``, and
+                   ``registry.describe`` reports its JSON schema. ``None`` (the default):
+                   the generator takes no ``generator_params``.
     """
 
     #: Registry kind ``track_gen.plugin.registry.add(spec)`` infers for this spec type.
@@ -62,6 +70,7 @@ class GeneratorSpec:
     generate: Callable
     capturable: bool = True
     accepts_ctx: bool = False
+    params: "type | None" = None
 
 
 def _registry():
@@ -83,8 +92,13 @@ def _ensure_loaded() -> None:
     _registry()._ensure_loaded()
 
 
-def get(name: str) -> GeneratorSpec:
-    """Deprecated alias of ``track_gen.plugin.registry.get("generator", name)``."""
+def get(name: str) -> "GeneratorSpec | type":
+    """Deprecated alias of ``track_gen.plugin.registry.get("generator", name)``.
+
+    The value may be a :class:`~track_gen.plugin.Stage` CLASS (a Stage plugin), which
+    has no ``generate`` / ``alloc_scratch`` / ``capturable``: read capture support from
+    ``registry.describe("generator", name).capturable``.
+    """
     return _registry().get("generator", name)
 
 
@@ -94,7 +108,9 @@ def available() -> list[str]:
 
 
 def __getattr__(name: str):
-    # GENERATORS: read-only live view of the registry's generator kind (loads it).
+    # GENERATORS: read-only live view of the registry's generator kind (loads it). Its
+    # values may be Stage classes (no generate / alloc_scratch / capturable): enumerators
+    # read registry.describe("generator", name).capturable instead.
     if name == "GENERATORS":
         reg = _registry()
         reg._ensure_loaded()

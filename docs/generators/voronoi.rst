@@ -179,6 +179,12 @@ The following ``TrackGenConfig`` fields are owned by the ``voronoi`` generator. 
 fields (``num_points``, ``num_points_per_segment``, ``scale``, ``half_width``, etc.) are
 shared pipeline parameters described in the configuration reference.
 
+The generator-specific fields below are also the fields of ``VoronoiParams``, the
+generator's Params class (core fields such as ``scale`` are not): set them flat or
+through ``generator_params`` (see :ref:`builtin-generator-params`). Their rules are
+checked when the ``TrackGenerator`` is constructed, and only for
+``generator="voronoi"``. ``VoronoiParams`` also holds ``num_points_per_segment``.
+
 ``voronoi_num_sites`` (``S``, default 256)
    Number of cell sites drawn per environment.  Higher values make the anchor-snap richer
    and improve coverage of the site field, but scale the per-anchor O(S) cost scan linearly.

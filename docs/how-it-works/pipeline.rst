@@ -57,10 +57,14 @@ Registered centerline generators
 
 The centerline generator is pluggable. ``TrackGenerator.__init__`` resolves
 ``config.generator`` through ``track_gen.plugin.registry`` (built-ins plus installed
-plugins, see :doc:`/contributing/writing-a-generator`), allocates that
+plugins, see :doc:`/contributing/writing-a-generator`), resolves and validates its
+parameters (``config.generator_params``, or the flat fields of a built-in), allocates that
 generator's private scratch once, and ``_run_pipeline`` calls the resolved
 ``GeneratorSpec.generate`` with orchestrator-owned ``out_centerline`` and
-``out_valid_wp`` buffers. The production runtime registry currently exposes:
+``out_valid_wp`` buffers. A ``Stage`` generator is adapted to the same call: its
+``build`` runs once against those buffers (``out_centerline`` sized by its raw capacity),
+and its ``enqueue`` runs in place of ``generate``. The production runtime registry
+currently exposes:
 
 .. list-table::
    :header-rows: 1
@@ -154,7 +158,8 @@ regime and the rest now fail as truncated, so set ``N_max`` to at least 512 ther
   single-crossing clip fallback, and ``polar`` emits a closed radial spline with no
   generator-local fallback. ``max_regen_iters`` is therefore vestigial on the Warp path:
   it remains a ``TrackGenConfig`` field for the torch oracle but is ignored by
-  ``_run_pipeline``.
+  ``_run_pipeline``, and it is deprecated (a non-default value emits a
+  ``DeprecationWarning``; see :ref:`deprecated-config-fields`).
 
 **FP tolerance and hard thresholds.** Validity gates (``th_ok``, ``turn_ok``) are hard
 comparisons; near a decision boundary the accepted ~1e-4 Warp-vs-torch drift can flip a

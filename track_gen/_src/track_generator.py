@@ -34,6 +34,7 @@ so a replayed caller graph produces a NEW batch for them on every replay.
 import functools
 import numbers
 import types
+from typing import TYPE_CHECKING
 
 import warp as wp
 
@@ -42,6 +43,9 @@ from ..exec.runner import GraphRunner
 from ..seeds import SeedState
 from .runtime import _snapshot_config
 from .types import Track, TrackGenConfig
+
+if TYPE_CHECKING:  # pragma: no cover - track_gen.plugin stays lazy at import time
+    from ..plugin.params import ParamTable
 
 __all__ = [
     "Track",
@@ -109,6 +113,12 @@ class TrackGenerator:
             ValueError: if ``config.generator`` is not a registered generator.
             track_gen.plugin.PluginLoadError: if ``config.generator`` is provided by
                 a third-party plugin that failed to load (quarantined).
+            ValueError: if a generator-specific rule of the selected generator fails
+                (its ``Params.validate``: e.g. ``voronoi_control_points >= 6``, the
+                ``repulsive_*`` rules), ``config.generator_params`` has unknown keys
+                or conflicts with the flat fields, or a value is outside its lo/hi.
+            TypeError: if ``config.generator_params`` is not the generator's Params
+                class (or a mapping of its fields).
             ValueError: if ``rng.seeds_warp`` is not an ``[E]`` int32 array on
                 ``config.device`` (it is bound by pointer, so the rng must live on
                 the generator's device).
@@ -128,7 +138,13 @@ class TrackGenerator:
                 f"{config.num_envs!r}; construct the rng with num_envs={config.num_envs!r}."
             )
         from ..plugin import registry
-        self._generator_spec = registry.get("generator", config.generator)
+        from .generator_binding import _StageGenerator, bind_generator, param_table
+
+        # Resolve the generator and its Params (generator_params, or from_legacy of the
+        # flat fields) and run the generator-specific validation, for the selected
+        # generator only. Host-only: nothing is allocated yet.
+        binding = bind_generator("generator", config, registry=registry)
+        self._generator_spec = binding.pipeline_spec
         if config.relax_solver != "xpbd":
             raise ValueError(
                 f"TrackGenerator only supports relax_solver='xpbd'; "
@@ -139,22 +155,25 @@ class TrackGenerator:
                 "TrackGenerator does not support smooth_finish=True; "
                 "set smooth_finish=False."
             )
-        # Snapshot: the pipeline bakes host scalars from the config into its launches
+        # Snapshots: the pipeline bakes host scalars from the config into its launches
         # (and into any recorded graph), so later mutation of the caller's object must
-        # not change what this generator emits.
-        self._config = _snapshot_config(config)
+        # not change what this generator emits. _config is what the pipeline reads (the
+        # resolved built-in Params written back onto the flat fields);
+        # _user_config is the config as passed (reported by `config`).
+        self._user_config = binding.user_config
+        self._config = binding.run_config
         config = self._config
         self._rng = rng
         # Non-capturable generators (host-driven loops / per-call allocation) run eagerly
         # on CUDA every call and refuse to be recorded into a caller's graph.
-        self._capturable = self._generator_spec.capturable
+        self._capturable = binding.capturable
 
         E = int(config.num_envs)
         dev = str(config.device)
         self._runner = GraphRunner(
             dev,
             capturable=self._capturable,
-            legacy_stream=not getattr(self._generator_spec, "accepts_ctx", False),
+            legacy_stream=not binding.accepts_ctx,
             default_stream=stream,
             owner=self,
             name=config.generator,
@@ -163,12 +182,21 @@ class TrackGenerator:
         # on Warp's current stream and would otherwise land in the caller's graph.
         self._runner.ensure_not_capturing()
 
-        # Pre-allocate the persistent output Track buffers, scratch, and seed buffer
-        # (one allocation per generator); all are reused across every generation.
+        # Pre-allocate the [E] int32 effective-seed buffer on the pipeline device. It is
+        # written from (seeds, epoch) at the start of every generation (inside the
+        # graph); no allocation occurs in the hot path. A Stage generator binds it as
+        # StageBuilder.seed, so it exists before the pipeline is allocated.
+        self._seed_buf: wp.array = wp.empty(E, dtype=wp.int32, device=dev)
+
+        # Pre-allocate the persistent output Track buffers and scratch (one allocation
+        # per generator); all are reused across every generation.
         from . import warp_pipeline
+        stage = self._generator_spec if isinstance(self._generator_spec, _StageGenerator) \
+            else None
         self._track: Track
         self._track, self._scratch = warp_pipeline._inflate_warp_alloc(
             config, generator_spec=self._generator_spec,
+            **({"seed": self._seed_buf} if stage is not None else {}),
         )
 
         # Per-env (seed, epoch): the rng's seeds_warp bound by pointer (read live at
@@ -176,13 +204,15 @@ class TrackGenerator:
         # methods default to this generator's stream, so they stay ordered with it.
         self._seed_state: SeedState = SeedState(E, dev, rng, default_stream=stream)
 
-        # Pre-allocate the [E] int32 effective-seed buffer on the pipeline device. It is
-        # written from (seeds, epoch) at the start of every generation (inside the
-        # graph); no allocation occurs in the hot path.
-        self._seed_buf: wp.array = wp.empty(E, dtype=wp.int32, device=dev)
-        # Persistent device input (see `inputs`): a stable [E] int32 mask buffer.
+        # Runtime parameters ({"generator": StageParams}: the live [E] arrays of a Stage
+        # generator's dynamic fields) and persistent device inputs (stable pointers).
+        self._params = param_table(binding, default_stream=stream)
         self._regen_mask: wp.array = wp.zeros(E, dtype=wp.int32, device=dev)
-        self._inputs = types.MappingProxyType({"regen_mask": self._regen_mask})
+        self._inputs = types.MappingProxyType(
+            {"regen_mask": self._regen_mask, **(stage.inputs if stage is not None else {})})
+        # Latch (live -> work) of the dynamic params / inputs, recorded after the
+        # effective-seed prologue of every generation; None for legacy generators.
+        self._latch = stage.latch if stage is not None and stage._pairs else None
 
         # One real eager generation outside any capture (loads every module the hot
         # path uses; leaves the batch for the rng's current seeds in self._track), then
@@ -192,14 +222,33 @@ class TrackGenerator:
     # -- properties ---------------------------------------------------------------
     @property
     def config(self) -> TrackGenConfig:
-        """A copy of the configuration this generator was built with (a
-        ``wp.Device`` value is shared, not copied).
+        """A copy of the configuration this generator was built with, as passed (a
+        ``wp.Device`` value is shared, not copied), with a mapping
+        ``generator_params`` normalised to its Params instance:
+        ``TrackGenerator(gen.config, rng)`` builds an identical generator, with the
+        construction-time (initial) values of any DYNAMIC parameters. A later
+        ``params[...].set(...)`` is not reflected here: the current values are the live
+        arrays, ``gen.params["generator"][field]``.
 
         Read-only in effect: mutating the returned object (or the object passed to
         the constructor) does not change this generator. Build a new generator to
-        change the configuration.
+        change the configuration; dynamic parameters change through :attr:`params`.
         """
-        return _snapshot_config(self._config)
+        return _snapshot_config(self._user_config)
+
+    @property
+    def params(self) -> "ParamTable":
+        """Runtime parameters, keyed by stage id: ``{"generator": StageParams}``.
+
+        ``params["generator"].params`` is the resolved Params instance (``None`` for a
+        legacy generator without a Params class). The DYNAMIC fields of a Stage
+        generator map to live ``[E]`` device arrays with stable pointers
+        (``params["generator"]["amp"]``): write them from your own kernels (also inside
+        your graph) or with ``params["generator"].set("amp", value, stream=...)``; the
+        next generation latches them for the envs it regenerates, with no re-capture.
+        The built-in generators' fields are all static (``set`` raises ``KeyError``).
+        """
+        return self._params
 
     @property
     def graph(self) -> "wp.Graph | None":
@@ -228,6 +277,9 @@ class TrackGenerator:
           kernels (e.g. inside your graph) and pass it as
           ``generate(advance=True, mask=gen.inputs["regen_mask"])``; its pointer
           never changes, so the generator's self-graph for it is captured once.
+        - every per-env input a Stage generator declared
+          (``StageBuilder.input(name, ...)``): a live ``[E]`` array, latched at each
+          generation for the envs it regenerates, like a dynamic parameter.
         """
         return self._inputs
 
@@ -261,6 +313,8 @@ class TrackGenerator:
         if advance:
             self.seeds.advance(mask, ctx=ctx)
         self.seeds.effective(self._seed_buf, mask, ctx=ctx)
+        if self._latch is not None:
+            self._latch(ctx, mask)          # dynamic params / inputs, live -> work
         warp_pipeline._run_pipeline(
             self._config, self._seed_buf,
             out=self._track, scratch=self._scratch,

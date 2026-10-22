@@ -71,8 +71,11 @@ def _rng(seed=3, n=E):
 
 
 def _track_kw(g: str) -> dict:
-    # repulsive at its default size is slow on CPU; a small schedule exercises the same code
-    return dict(num_points=64, repulsive_stages=(16, 32, 64)) if g == "repulsive" else {}
+    # repulsive at its default size is slow on CPU; a small schedule exercises the same code.
+    # Core fields flat, generator knobs as generator_params (never reach another generator).
+    if g == "repulsive":
+        return dict(num_points=64, generator_params={"repulsive_stages": (16, 32, 64)})
+    return {}
 
 
 def _track_cfg(g="bezier", n=E):

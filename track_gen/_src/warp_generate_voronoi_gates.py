@@ -86,6 +86,7 @@ def generate_voronoi_gates(seeds_wp, config, out, scratch,
 def register(reg) -> None:
     """Register the built-in ``"voronoi"`` gate generator into ``reg`` (called by
     ``track_gen._src.builtin_plugins``; importing this module registers nothing)."""
+    from .builtin_params import VoronoiGateParams
     from .gate_generator_registry import GateGeneratorSpec
 
     reg.add(GateGeneratorSpec(
@@ -95,4 +96,5 @@ def register(reg) -> None:
         max_gates=lambda config: int(config.voronoi_control_points),
         supported_orderings=frozenset({"ccw", "raw"}),
         accepts_ctx=True,
+        params=VoronoiGateParams,
     ))

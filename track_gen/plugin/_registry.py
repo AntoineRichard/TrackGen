@@ -23,6 +23,14 @@ import types
 import warnings
 from typing import Any, Iterator, Mapping
 
+from .._src.gate_generator_registry import GateGeneratorSpec
+from .._src.generator_registry import GeneratorSpec
+from .params import NoParams, Params, _check_params_class, _schema, _static_view
+from .stage import CaptureClass, Stage, _check_stage, _is_stage
+
+# The legacy spec types that may declare a static Params class through ``params=``.
+_PARAM_SPECS = (GeneratorSpec, GateGeneratorSpec)
+
 __all__ = [
     "API_VERSION",
     "ENTRY_POINT_GROUP",
@@ -84,10 +92,25 @@ class SpecInfo:
         origin: The module that defines the spec's callables.
         distribution: ``(name, version)`` of the distribution whose entry point
             registered the spec; ``None`` for built-ins and for specs added at run time.
-        capturable: The spec's ``capturable`` flag (``True`` when it has none).
+        capturable: The spec's ``capturable`` flag (``True`` when it has none). For a
+            Stage: ``capture != HOST``, computed from the DEFAULT Params; a stage whose
+            :meth:`~track_gen.plugin.Stage.capture_class` depends on its params may
+            differ for other values (the generator reports its own).
         accepts_ctx: The spec's ``accepts_ctx`` flag (``False`` when it has none).
         builtin: ``True`` for the specs shipped with track_gen.
         entry_point: The name of the entry point that registered the spec, or ``None``.
+        params_schema: The JSON schema (draft 2020-12) of the spec's Params class:
+            per field ``type``, ``default``, ``minimum`` / ``maximum`` (from lo / hi),
+            ``enum`` (choices), ``description`` (doc), ``x-static`` or ``x-dynamic``
+            (with ``x-dtype``) and ``x-ui``. ``{}`` for a spec without parameters (a
+            legacy spec without a ``params=`` class, or a Stage with ``NoParams``).
+            Always ``json.dumps``-able.
+        capture: A Stage's :class:`~track_gen.plugin.CaptureClass` for its default
+            Params; ``None`` for a spec that is not a Stage.
+        output: A Stage's ``output`` (``"centerline"``); ``None`` for a spec that is not
+            a Stage.
+        writes: A Stage's ``writes`` (``local port -> channel``); ``{}`` otherwise.
+        provides: A Stage's ``provides``; empty otherwise.
     """
 
     kind: str
@@ -98,6 +121,11 @@ class SpecInfo:
     accepts_ctx: bool
     builtin: bool = False
     entry_point: "str | None" = None
+    params_schema: Mapping[str, Any] = dataclasses.field(default_factory=dict, hash=False)
+    capture: "CaptureClass | None" = None
+    output: "str | None" = None
+    writes: Mapping[str, str] = dataclasses.field(default_factory=dict, hash=False)
+    provides: frozenset = frozenset()
 
 
 @dataclasses.dataclass(frozen=True)
@@ -242,7 +270,11 @@ def _caller_module(depth: int) -> "str | None":
 
 
 def _infer_kind(spec, kind: "str | None") -> str:
-    declared = getattr(spec if isinstance(spec, type) else type(spec), "registry_kind", None)
+    if _is_stage(spec):
+        declared = spec.kind
+    else:
+        declared = getattr(spec if isinstance(spec, type) else type(spec), "registry_kind",
+                           None)
     if kind is None:
         if not declared:
             raise TypeError(
@@ -255,6 +287,27 @@ def _infer_kind(spec, kind: "str | None") -> str:
         raise ValueError(
             f"a {type(spec).__name__} registers as kind {declared!r}, not {kind!r}")
     return kind
+
+
+def _check_spec(spec, kind: "str | None") -> None:
+    """Declaration checks run before a spec is inserted (they raise, which quarantines
+    a plugin under ``warn``): a Stage's rules, and a ``params=`` class's rules."""
+    if isinstance(spec, Stage) or _is_stage(spec):
+        _check_stage(spec, kind=kind, api_version=API_VERSION)
+        return
+    if isinstance(spec, _PARAM_SPECS) and spec.params is not None:
+        _check_params_class(spec.params, allow_dynamic=False,
+                            owner=f"{type(spec).__name__} {spec.name!r}")
+
+
+def _params_class(spec):
+    """The Params class a spec declares (``Stage.Params``, or a legacy spec's
+    ``params=``), or ``None``."""
+    if _is_stage(spec):
+        return spec.Params
+    params_cls = getattr(spec, "params", None) if isinstance(spec, _PARAM_SPECS) else None
+    return params_cls if isinstance(params_cls, type) and issubclass(params_cls, Params) \
+        else None
 
 
 def _spec_name(spec) -> str:
@@ -358,6 +411,11 @@ class Registry:
 
         Third-party names should be dotted (``"package.name"``); a new non-dotted name
         added outside the built-ins emits a one-time ``UserWarning``.
+
+        A :class:`~track_gen.plugin.Stage` is registered as its CLASS (``kind`` comes
+        from ``Stage.kind``); its declaration is checked first (see
+        :mod:`track_gen.plugin.stage`). A spec with a ``params=`` class has the class
+        checked (frozen dataclass, every field with a default, static fields only).
         """
         self._add(spec, kind=kind, replace=replace, legacy=False, stacklevel=3)
 
@@ -420,19 +478,38 @@ class Registry:
 
     def describe(self, kind: str, name: str) -> SpecInfo:
         """Provenance and execution flags of ``(kind, name)`` (see :class:`SpecInfo`).
-        Raises like :meth:`get`."""
+        Raises like :meth:`get`, and ``TypeError`` for a Stage whose ``capture_class``
+        does not return a ``CaptureClass``."""
         with self._lock:
             spec = self.get(kind, name)
             origin = self._meta[kind][name]
+        params_cls = _params_class(spec)
+        stage_info = {}
+        if _is_stage(spec):
+            capture = spec.capture_class(_static_view(params_cls()))
+            if not isinstance(capture, CaptureClass):
+                raise TypeError(f"{spec.__name__}.capture_class() must return a "
+                                f"CaptureClass, got {capture!r}")
+            capturable = capture != CaptureClass.HOST
+            accepts_ctx = True
+            stage_info = dict(capture=capture, output=spec.output,
+                              writes=types.MappingProxyType(dict(spec.writes)),
+                              provides=frozenset(spec.provides))
+        else:
+            capturable = bool(getattr(spec, "capturable", True))
+            accepts_ctx = bool(getattr(spec, "accepts_ctx", False))
+        has_params = params_cls is not None and params_cls is not NoParams
         return SpecInfo(
             kind=kind,
             name=name,
             origin=origin.module,
             distribution=origin.distribution,
-            capturable=bool(getattr(spec, "capturable", True)),
-            accepts_ctx=bool(getattr(spec, "accepts_ctx", False)),
+            capturable=capturable,
+            accepts_ctx=accepts_ctx,
             builtin=origin.builtin,
             entry_point=origin.entry_point,
+            params_schema=_schema(params_cls) if has_params else {},
+            **stage_info,
         )
 
     @property
@@ -489,6 +566,7 @@ class Registry:
     # -- implementation ---------------------------------------------------------------
     def _add(self, spec, *, kind, replace, legacy, stacklevel,
              same_module_only=False) -> None:
+        _check_spec(spec, kind)
         kind = _infer_kind(spec, kind)
         name = _spec_name(spec)
         self._ensure_loaded()

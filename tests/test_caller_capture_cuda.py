@@ -240,7 +240,7 @@ def test_track_generate_records_into_caller_capture(generator):
     """Every registered track generator: ``generate(stream=s)`` inside the caller's
     capture is recorded (no allocation, no capture_launch, no self-capture), replays to
     the eager twin, and the replay reads the rng's live seeds."""
-    if not registry.get("generator", generator).capturable:
+    if not registry.describe("generator", generator).capturable:
         pytest.skip(f"{generator!r} is registered capturable=False")
     _record_replay_reseed("track", generator)
 
@@ -248,7 +248,7 @@ def test_track_generate_records_into_caller_capture(generator):
 @pytest.mark.parametrize("generator", registry.available("gate_generator"))
 def test_gate_generate_records_into_caller_capture(generator):
     """Every registered gate generator: as the track test."""
-    if not registry.get("gate_generator", generator).capturable:
+    if not registry.describe("gate_generator", generator).capturable:
         pytest.skip(f"{generator!r} is registered capturable=False")
     _record_replay_reseed("gate", generator)
 

@@ -508,6 +508,7 @@ def _run_pipeline(
     if generator_spec is None:
         from ..plugin import registry
         generator_spec = registry.get("generator", config.generator)
+    _reject_stage_class(generator_spec)
 
     n_max = int(config.N_max)
     gen = scratch.gen        # generator-private scratch
@@ -1057,7 +1058,18 @@ def _fill_knot_scratch(stag, config, num_envs, device) -> None:
                 num_envs, int(config.z_control_points), device)
 
 
-def _inflate_warp_alloc(config, generator_spec=None):
+def _reject_stage_class(generator_spec) -> None:
+    """A registered Stage CLASS runs only through TrackGenerator (which adapts it);
+    the private helpers would otherwise call a missing ``alloc_scratch``/``generate``."""
+    from ..plugin.stage import _is_stage
+
+    if _is_stage(generator_spec):
+        raise TypeError(
+            f"Stage generators run through TrackGenerator: {generator_spec.__name__} "
+            f"cannot be passed to the private pipeline helpers")
+
+
+def _inflate_warp_alloc(config, generator_spec=None, *, seed=None):
     """Allocate a Track with pre-sized wp.array buffers for TrackGenerator.__init__.
 
     Sizes: outer/center/inner/tangent/normal are [E*N_max] vec3f (z = 0, lifted
@@ -1070,8 +1082,15 @@ def _inflate_warp_alloc(config, generator_spec=None):
     the bridge buffers (cs_center/cs_seg/cs_s/count), all sized for the owned generate
     path so every stage runs zero-alloc.
 
+    A Stage generator (its ``_StageGenerator`` adapter, from
+    ``generator_binding.bind_generator``) is built here instead: the generation output
+    buffers are sized ``[E * adapter.raw_points]`` and handed to ``Stage.build``, and
+    ``scratch.gen`` is the built stage.
+
     Args:
         config: TrackGenConfig (uses num_envs, N_max, device).
+        seed: the ``[E]`` int32 effective-seed buffer a Stage generator binds as
+            ``StageBuilder.seed`` (allocated here when omitted). Unused by legacy specs.
 
     Returns:
         (Track, _Scratch) — both with all arrays on config.device.
@@ -1101,10 +1120,20 @@ def _inflate_warp_alloc(config, generator_spec=None):
     if generator_spec is None:
         from ..plugin import registry
         generator_spec = registry.get("generator", config.generator)
-    gen = generator_spec.alloc_scratch(config)
-    N_gen = int(config.num_points)
-    gen_centerline = wp.empty(E * N_gen, dtype=wp.vec2f, device=dev)
-    gen_valid = wp.empty(E, dtype=wp.int32, device=dev)
+    _reject_stage_class(generator_spec)
+    from .generator_binding import _StageGenerator
+    if isinstance(generator_spec, _StageGenerator):
+        N_gen = int(generator_spec.raw_points)
+        gen_centerline = wp.empty(E * N_gen, dtype=wp.vec2f, device=dev)
+        gen_valid = wp.empty(E, dtype=wp.int32, device=dev)
+        if seed is None:
+            seed = wp.empty(E, dtype=wp.int32, device=dev)
+        gen = generator_spec.build(seed=seed, out_xy=gen_centerline, out_valid=gen_valid)
+    else:
+        gen = generator_spec.alloc_scratch(config)
+        N_gen = int(config.num_points)
+        gen_centerline = wp.empty(E * N_gen, dtype=wp.vec2f, device=dev)
+        gen_valid = wp.empty(E, dtype=wp.int32, device=dev)
     # XPBD cached-contacts perf buffers (from main): sized by config.relax_sep_cache_slots,
     # threaded into RelaxScratch below; None when separation caching is disabled (slots == 0).
     sep_cache_slots = max(0, int(getattr(config, "relax_sep_cache_slots", 0)))

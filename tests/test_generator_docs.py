@@ -1,15 +1,21 @@
-"""The generator docs stay in step with the code (roadmap PR7).
+"""The generator docs stay in step with the code (roadmap PR7, PR8).
 
 * The three code examples of ``docs/contributing/writing-a-generator.rst`` (the quick
   start's wobbly circle, the scatter gate generator and the star generator built from
   ``track_gen.ops``) run on CPU and produce valid tracks and gates.
+* The guide's Stage quick start (``Wobble``) registers, generates, takes a dynamic
+  ``set("amp", ...)``, and ``describe()`` reports the JSON schema the guide prints.
+* ``docs/configuration/reference.rst`` lists every field of every built-in Params class
+  in that class's table.
 * Every private ``_name`` the per-generator pages cite still exists in that generator's
   module (or in ``warp_pipeline``, for the shared stages).
 """
 from __future__ import annotations
 
+import dataclasses
 import importlib
 import importlib.util
+import json
 import pathlib
 import re
 import sys
@@ -25,6 +31,7 @@ from track_gen.plugin import GeneratorSpec, registry
 _DOCS = pathlib.Path(__file__).resolve().parent.parent / "docs"
 _GUIDE = _DOCS / "contributing" / "writing-a-generator.rst"
 _BLOCK = re.compile(r"\.\. code-block:: python\n\n((?:(?:   .*)?\n)+)")
+_JSON_BLOCK = re.compile(r"\.\. code-block:: json\n\n((?:(?:   .*)?\n)+)")
 _GATE_REGISTER = ('def register(reg):\n'
                   '    ...  # reg.add(GeneratorSpec(name="acme.wobbly", ...)) as above\n')
 
@@ -79,6 +86,62 @@ def test_guide_examples_generate_valid_tracks_and_gates(guide_module):
         count = gates.count.numpy()
         assert ((count >= g.MIN_GATES) & (count <= g.MAX_GATES)).all()
         assert gates.valid.numpy().any()
+
+
+def _import_block(tmp_path_factory, source: str, name: str):
+    path = tmp_path_factory.mktemp(name) / f"{name}.py"
+    path.write_text(source)
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@pytest.fixture(scope="module")
+def stage_guide_module(tmp_path_factory):
+    """The guide's Stage quick start as its own module (it defines ``register`` too)."""
+    name = "acme_guide_stage"
+    try:
+        yield _import_block(tmp_path_factory, _guide_block("class Wobble(plugin.Stage)"),
+                            name)
+    finally:
+        sys.modules.pop(name, None)
+
+
+def test_guide_stage_example_runs_and_matches_its_schema(stage_guide_module):
+    g, E = stage_guide_module, 8
+    with registry.scoped():
+        g.register(registry)
+        cfg = TrackGenConfig(generator="acme.wobble", num_envs=E, device="cpu",
+                             generator_params={"lobes": 5})
+        gen = TrackGenerator(cfg, PerEnvSeededRNG(seeds=0, num_envs=E, device="cpu"))
+        track = gen.generate()
+        assert track.valid.numpy().any()
+        before = np.nan_to_num(track.center.numpy()).copy()
+        gen.params["generator"].set("amp", 0.35)          # the guide's usage snippet
+        after = gen.generate()                            # same seeds, the new amp
+        assert not np.array_equal(before, np.nan_to_num(after.center.numpy()))
+        assert gen.generate(advance=True).valid.numpy().any()
+        schema = registry.describe("generator", "acme.wobble").params_schema
+    printed = [json.loads(textwrap.dedent(b)) for b in _JSON_BLOCK.findall(_GUIDE.read_text())]
+    assert [b for b in printed if b.get("title") == "WobbleParams"] == [schema]
+
+
+def test_reference_lists_every_builtin_params_field():
+    from track_gen._src import builtin_params as bp
+
+    text = (_DOCS / "configuration" / "reference.rst").read_text()
+    heads = list(re.finditer(r"^``(\w+Params)`` \(", text, flags=re.M))
+    sections = {}
+    for i, m in enumerate(heads):
+        end = heads[i + 1].start() if i + 1 < len(heads) else text.index("\n.. _", m.end())
+        sections[m.group(1)] = text[m.start():end]
+    assert set(sections) == set(bp.__all__)
+    missing = [f"{cls}.{f.name}" for cls in bp.__all__
+               for f in dataclasses.fields(getattr(bp, cls))
+               if f"``{f.name}``" not in sections[cls]]
+    assert not missing, missing
 
 
 _GENERATOR_MODULES = {

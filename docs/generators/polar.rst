@@ -125,6 +125,11 @@ The following ``TrackGenConfig`` fields are owned and consumed directly by the
 polar generator. For the full field listing and defaults see the configuration
 reference (``docs/configuration/``).
 
+The generator-specific fields below are also the fields of ``PolarParams``, the
+generator's Params class (core fields such as ``scale`` are not): set them flat or
+through ``generator_params`` (see :ref:`builtin-generator-params`). Their rules are
+checked when the ``TrackGenerator`` is constructed, and only for ``generator="polar"``.
+
 ``polar_num_knots``
    Number of polar control knots :math:`K`. More knots allow higher-frequency
    radial variation; fewer produce rounder, more elliptical shapes. Minimum
@@ -133,9 +138,10 @@ reference (``docs/configuration/``).
 ``polar_radial_jitter``
    Maximum fractional radial perturbation :math:`\delta_r` applied to each
    knot. At ``0.0`` all knots sit on ``base_radius`` and the spline is a
-   near-circle. At the implementation default (``0.60 * amplitude``) the
-   generator produces substantial radial variety without collapsing radii.
-   Clamped to ``[0.0, 0.85]``.
+   near-circle. At the default (``0.60``) the generator produces substantial
+   radial variety without collapsing radii. Clamped to ``[0.0, 0.85]``. (The
+   deprecated ``amplitude`` field only matters for a config-like object without
+   ``polar_radial_jitter``, where the fallback is ``0.60 * amplitude``.)
 
 ``polar_angular_jitter``
    Maximum angular offset as a fraction of one knot cell
@@ -150,9 +156,8 @@ reference (``docs/configuration/``).
 
 ``num_points_per_segment``
    Number of dense Catmull-Rom samples emitted per control-knot segment before
-   arc-length resampling. Shared with the hull, voronoi, and checkpoint
-   generators. Higher values improve arc-length accuracy at the cost of scratch
-   buffer size.
+   arc-length resampling. Shared with the bezier, hull and voronoi generators.
+   Higher values improve arc-length accuracy at the cost of scratch buffer size.
 
 What Makes It Distinct
 ----------------------

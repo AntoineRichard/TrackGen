@@ -129,6 +129,12 @@ All parameters below are fields on ``TrackGenConfig`` and apply only when
 ``generator = "checkpoint"``.  See the configuration reference for types, defaults, and
 validation rules.
 
+The generator-specific fields below are also the fields of ``CheckpointParams``, the
+generator's Params class (core fields such as ``scale`` are not): set them flat or
+through ``generator_params`` (see :ref:`builtin-generator-params`). Their rules are
+checked when the ``TrackGenerator`` is constructed, and only for
+``generator="checkpoint"``.
+
 ``checkpoint_count`` (int, default 12)
     Number of radial checkpoints ``C``.  Must be >= 3.  More checkpoints produce wavier
     tracks with more chicanes; fewer produce calmer, rounder loops.  The CarRacing

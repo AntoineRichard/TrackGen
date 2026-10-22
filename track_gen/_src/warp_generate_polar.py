@@ -239,6 +239,7 @@ def generate_polar_warp(seeds_wp: wp.array, config,
 def register(reg) -> None:
     """Register the built-in ``"polar"`` track generator into ``reg`` (called by
     ``track_gen._src.builtin_plugins``; importing this module registers nothing)."""
+    from .builtin_params import PolarParams
     from .generator_registry import GeneratorSpec
 
     reg.add(GeneratorSpec(
@@ -246,4 +247,5 @@ def register(reg) -> None:
         alloc_scratch=polar_alloc_scratch,
         generate=generate_polar_warp,
         accepts_ctx=True,
+        params=PolarParams,
     ))

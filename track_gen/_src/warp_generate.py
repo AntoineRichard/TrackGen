@@ -707,6 +707,7 @@ def bezier_alloc_scratch(config):
 def register(reg) -> None:
     """Register the built-in ``"bezier"`` track generator into ``reg`` (called by
     ``track_gen._src.builtin_plugins``; importing this module registers nothing)."""
+    from .builtin_params import BezierParams
     from .generator_registry import GeneratorSpec
 
     reg.add(GeneratorSpec(
@@ -714,4 +715,5 @@ def register(reg) -> None:
         alloc_scratch=bezier_alloc_scratch,
         generate=generate_centerline_warp,
         accepts_ctx=True,
+        params=BezierParams,
     ))

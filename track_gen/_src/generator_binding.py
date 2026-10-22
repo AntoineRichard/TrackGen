@@ -1,0 +1,292 @@
+"""Resolve ``config.generator`` + ``config.generator_params`` into what a facade runs.
+
+:func:`bind_generator` is the one place that looks a generator up, resolves its Params
+(``generator_params`` or ``Params.from_legacy(config)``), validates them for the
+selected generator only, and builds the two config snapshots a facade keeps:
+
+- ``user_config``: the config AS PASSED, with a dict ``generator_params`` normalised to
+  its Params instance (``TrackGenerator.config`` / ``GateGenerator.config``);
+- ``run_config``: what the pipeline reads. For a built-in (flat-field Params) the
+  resolved fields are written back onto it, so the generator functions keep reading
+  their flat fields and outputs stay byte-identical; ``run_config.generator_params``
+  is the resolved instance (a legacy spec with ``params=`` reads it there).
+
+A :class:`~track_gen.plugin.Stage` generator is adapted to the legacy accepts-ctx
+generator ABI by :class:`_StageGenerator` (``alloc`` through a StageBuilder at build,
+``generate`` = the stage's ``enqueue``), so the relax / inflate tail is unchanged.
+
+Host-only: binding allocates nothing and launches nothing.
+"""
+from __future__ import annotations
+
+import dataclasses
+import numbers
+import types
+from typing import Any, Mapping
+
+import warp as wp
+
+from ..plugin.params import (NoParams, ParamTable, _check_values, _coerce, _fields,
+                             _new_param_table, _new_stage_params, _static_view)
+from ..plugin.stage import CaptureClass, Layout, _close_builder, _is_stage, _new_builder
+from .runtime import _init, _snapshot_config
+
+_STAGE_ID = "generator"
+
+
+@dataclasses.dataclass
+class GeneratorBinding:
+    kind: str                       # "generator" | "gate_generator"
+    name: str
+    spec: object                    # GeneratorSpec | GateGeneratorSpec | type[Stage]
+    params: "Any | None"            # resolved + validated; None: a spec without params=
+    user_config: object             # snapshot as passed (dict -> instance)
+    run_config: object              # snapshot + built-in overlay; .generator_params = params
+    pipeline_spec: object           # what the pipeline calls (the spec, or _StageGenerator)
+    capturable: bool
+    accepts_ctx: bool
+    layout: Layout
+
+
+def _stride(kind: str, config) -> int:
+    return int(config.max_gates) if kind == "gate_generator" else int(config.N_max)
+
+
+def _is_flat(params) -> bool:
+    from .builtin_params import _FlatParams  # noqa: PLC0415
+
+    return isinstance(params, _FlatParams)
+
+
+def bind_generator(kind: str, config, *, registry) -> GeneratorBinding:
+    """Resolve and validate ``config.generator`` / ``config.generator_params``.
+
+    Raises (before the facade allocates anything): the registry's unknown-name /
+    quarantine errors; ``TypeError`` for a wrong Params type; ``ValueError`` for
+    unknown ``generator_params`` keys, a flat / ``generator_params`` conflict, a
+    generator-specific rule (``Params.validate``) or a lo/hi/choices violation.
+    """
+    from ..plugin._registry import _params_class  # noqa: PLC0415 - import cycle
+
+    spec = registry.get(kind, config.generator)
+    stage = _is_stage(spec)
+    # Stage.Params, or the params= class of a GeneratorSpec / GateGeneratorSpec; a
+    # duck-typed legacy spec's own ``params`` attribute is not a Params class.
+    params_cls = _params_class(spec)
+    _init()
+    layout = Layout(int(config.num_envs), _stride(kind, config),
+                    str(wp.get_device(config.device)))
+    given = getattr(config, "generator_params", None)
+    params = None
+    if params_cls is not None or given is not None:
+        params_cls = params_cls or NoParams
+        label = kind.replace("_", " ")
+        params = _coerce(params_cls, given, what=f"{label} {config.generator!r}", cfg=config)
+        flat = _is_flat(params)
+        if flat and given is not None:
+            params._check_no_flat_conflict(config)
+        params.validate(layout)
+        if flat:
+            params._check_legacy_config(config)
+        _check_values(params)
+
+    user = _snapshot_config(config)
+    if given is not None:
+        user.generator_params = params
+    run = _snapshot_config(config)
+    if params is not None:
+        if _is_flat(params):
+            params._apply_legacy(run)
+        run.generator_params = params
+
+    if stage:
+        instance = spec()
+        # build / capacity / capture_class see the static fields only (_static_view).
+        view = _static_view(params)
+        cap = spec.capture_class(view)
+        if not isinstance(cap, CaptureClass):
+            raise TypeError(f"{spec.__name__}.capture_class() must return a CaptureClass, "
+                            f"got {cap!r}")
+        if cap == CaptureClass.BOUNDED:
+            raise ValueError(f"{spec.__name__}.capture_class() returned BOUNDED, which "
+                             f"arrives with roadmap PR12; declare STATIC")
+        capacity = dict(instance.capacity(view, layout) or {})
+        unknown = sorted(str(k) for k in capacity if k != "raw")
+        if unknown:
+            raise ValueError(f"{spec.__name__}.capacity() returned unknown keys {unknown}; "
+                             f"a generator Stage accepts ['raw']")
+        raw = capacity.get("raw", run.num_points)
+        if isinstance(raw, bool) or not isinstance(raw, numbers.Integral) or raw < 3:
+            raise ValueError(f"{spec.__name__}.capacity()['raw'] must be an int >= 3, "
+                             f"got {raw!r}")
+        adapter = _StageGenerator(instance, spec, params, layout, scale=float(run.scale),
+                                  raw_points=int(raw),
+                                  capturable=cap != CaptureClass.HOST)
+        return GeneratorBinding(kind, str(run.generator), spec, params, user, run, adapter,
+                                capturable=adapter.capturable, accepts_ctx=True,
+                                layout=layout)
+    return GeneratorBinding(kind, str(run.generator), spec, params, user, run, spec,
+                            capturable=bool(getattr(spec, "capturable", True)),
+                            accepts_ctx=bool(getattr(spec, "accepts_ctx", False)),
+                            layout=layout)
+
+
+def param_table(binding: GeneratorBinding, *, default_stream=None) -> ParamTable:
+    """``{"generator": StageParams}`` of a bound generator (live dynamic arrays for a
+    Stage generator, none for a legacy spec)."""
+    adapter = binding.pipeline_spec
+    arrays = adapter.param_arrays if isinstance(adapter, _StageGenerator) else {}
+    layout = binding.layout
+    return _new_param_table({_STAGE_ID: _new_stage_params(
+        stage_id=_STAGE_ID, params=binding.params, arrays=arrays, num_envs=layout.num_envs,
+        device=layout.device, default_stream=default_stream)})
+
+
+# ---------------------------------------------------------------------------------------
+# The Stage adapter
+# ---------------------------------------------------------------------------------------
+
+# The latch is a kernel in both forms (not a ctx.copy for the unmasked one), so the
+# warm-up pass (unmasked) loads this module: a later masked generation recorded into a
+# caller's capture then never loads a module while capturing.
+@wp.kernel
+def _latch_all_f32_k(live: wp.array(dtype=wp.float32), work: wp.array(dtype=wp.float32)):
+    e = wp.tid()
+    work[e] = live[e]
+
+
+@wp.kernel
+def _latch_all_i32_k(live: wp.array(dtype=wp.int32), work: wp.array(dtype=wp.int32)):
+    e = wp.tid()
+    work[e] = live[e]
+
+
+@wp.kernel
+def _latch_masked_f32_k(live: wp.array(dtype=wp.float32), mask: wp.array(dtype=wp.int32),
+                        work: wp.array(dtype=wp.float32)):
+    e = wp.tid()
+    if mask[e] != 0:
+        work[e] = live[e]
+
+
+@wp.kernel
+def _latch_masked_i32_k(live: wp.array(dtype=wp.int32), mask: wp.array(dtype=wp.int32),
+                        work: wp.array(dtype=wp.int32)):
+    e = wp.tid()
+    if mask[e] != 0:
+        work[e] = live[e]
+
+
+_LATCH_ALL = {wp.float32: _latch_all_f32_k, wp.int32: _latch_all_i32_k}
+_LATCH_MASKED = {wp.float32: _latch_masked_f32_k, wp.int32: _latch_masked_i32_k}
+
+
+@dataclasses.dataclass
+class _BuiltStage:
+    """What a Stage generator's ``build`` produced (``TrackGenerator._scratch.gen``)."""
+
+    stage: object
+    builder: object
+    enqueue: object
+    scratch: Mapping[str, "wp.array"]
+
+
+class _StageGenerator:
+    """Adapts a Stage generator to the accepts-ctx ``GeneratorSpec`` call the pipeline
+    makes. Built once (:meth:`build`, from ``_inflate_warp_alloc``)."""
+
+    accepts_ctx = True
+
+    def __init__(self, stage, spec, params, layout: Layout, *, scale: float,
+                 raw_points: int, capturable: bool) -> None:
+        self.stage = stage
+        self.spec = spec
+        self.name = str(spec.name)
+        self.params = params
+        self.layout = layout
+        self.scale = float(scale)
+        self.raw_points = int(raw_points)
+        self.capturable = bool(capturable)
+        self.inputs: Mapping[str, wp.array] = types.MappingProxyType({})
+        self.param_arrays: Mapping[str, wp.array] = types.MappingProxyType({})
+        self._pairs: list = []                  # (live, work)
+        self._built: "_BuiltStage | None" = None
+        self._seed = self._out_xy = self._out_valid = None
+        self._enqueue = None
+
+    def __repr__(self) -> str:
+        return f"<Stage generator {self.name!r} ({type(self.stage).__name__})>"
+
+    def alloc_scratch(self, config):
+        raise TypeError("Stage generators allocate through their StageBuilder; they run "
+                        "through TrackGenerator")
+
+    def build(self, *, seed, out_xy, out_valid) -> _BuiltStage:
+        """Allocate the dynamic-param arrays, run ``Stage.build`` on a StageBuilder bound
+        to the orchestrator-owned outputs, and check its post-conditions."""
+        if self._built is not None:
+            raise RuntimeError(f"Stage generator {self.name!r} is already built; its "
+                               f"buffers are bound at build (construct a new generator)")
+        from ..exec.context import LaunchContext  # noqa: PLC0415
+
+        E, dev = self.layout.num_envs, self.layout.device
+        dynamic = {}
+        if self.params is not None:
+            for f in _fields(type(self.params)):
+                if f.kind != "dynamic":
+                    continue
+                value = getattr(self.params, f.name)
+                value = float(value) if f.dtype is wp.float32 else int(value)
+                dynamic[f.name] = (wp.full(E, value, dtype=f.dtype, device=dev),
+                                   wp.full(E, value, dtype=f.dtype, device=dev))
+        view = _static_view(self.params)              # dynamic fields raise
+        b = _new_builder(stage=self.stage, params=view, layout=self.layout,
+                         scale=self.scale, seed=seed, raw=self.raw_points,
+                         outputs={"raw.xy": out_xy, "gen.valid": out_valid},
+                         dynamic=dynamic, stage_id=_STAGE_ID)
+        enqueue = self.stage.build(b, view)
+        _close_builder(b)
+        if not callable(enqueue):
+            raise TypeError(f"{type(self.stage).__name__}.build() must return an "
+                            f"enqueue(ctx) callable, got {enqueue!r}")
+        written = b._written_channels
+        if "raw.xy" not in written:
+            raise ValueError(f"{type(self.stage).__name__}.build() must write 'raw.xy' "
+                             f"(b.write(port, wp.vec2f, per='raw'))")
+        if "gen.valid" not in written:
+            # Nothing else writes it: set it once, at build.
+            LaunchContext.current(dev).fill(out_valid, 1)
+        self._seed, self._out_xy, self._out_valid = seed, out_xy, out_valid
+        self._enqueue = enqueue
+        self.param_arrays = types.MappingProxyType(
+            {name: pair[0] for name, pair in dynamic.items()})
+        self.inputs = types.MappingProxyType(
+            {name: pair[0] for name, pair in b._inputs.items()})
+        self._pairs = list(dynamic.values()) + list(b._inputs.values())
+        self._built = _BuiltStage(stage=self.stage, builder=b, enqueue=enqueue,
+                                  scratch=types.MappingProxyType(dict(b._scratch)))
+        return self._built
+
+    def latch(self, ctx, mask) -> None:
+        """Copy the live dynamic params / inputs into the stage's working copies, for
+        every env (``mask is None``) or where ``mask[e] != 0``: one launch per pair,
+        recorded right after the effective-seed prologue."""
+        E = self.layout.num_envs
+        for live, work in self._pairs:
+            if mask is None:
+                ctx.launch(_LATCH_ALL[work.dtype], E, [live, work])
+            else:
+                ctx.launch(_LATCH_MASKED[work.dtype], E, [live, mask, work])
+
+    def generate(self, seeds_wp, config, out_centerline, out_valid_wp, scratch,
+                 ctx=None) -> None:
+        from ..exec.context import resolve  # noqa: PLC0415
+
+        if self._built is None or out_centerline is not self._out_xy \
+                or out_valid_wp is not self._out_valid:
+            raise RuntimeError(f"Stage generator {self.name!r}: its output buffers are "
+                               f"bound at build; run it through TrackGenerator")
+        ctx = resolve(ctx, self.layout.device)
+        if seeds_wp is not self._seed:
+            ctx.copy(self._seed, seeds_wp)          # private direct calls only
+        self._enqueue(ctx)
