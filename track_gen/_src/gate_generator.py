@@ -174,6 +174,9 @@ class GateGenerator:
         # scratch is (gen_scratch, pos2, cum, perim, z, fallbacks) — fallbacks
         # is at index 5 (moved from 4 when the z-profile perim slot was added).
         self.frame_fallbacks: wp.array = self._scratch[5]
+        # The [E*max_gates] vec2f anchors the generator writes (scratch slot 1, "pos2"),
+        # by name for track_gen.testing, which checks them as the raw output.
+        self._raw_anchors: wp.array = self._scratch[1]
 
         E = int(config.num_envs)
         dev = str(config.device)

@@ -16,7 +16,9 @@
     `GeneratorSpec` or `GateGeneratorSpec`, any other spec needs `kind=`: the set of
     kinds is open), `get(kind, name)`, `available(kind=None)` (sorted; every
     `"kind:name"` when `kind` is `None`), `describe(kind, name)` (a `SpecInfo`: kind,
-    name, origin module, distribution `(name, version)` of the registering entry point
+    name, origin module (the module defining the spec's callables; a `functools.partial`
+    or a decorated function counts as the function it wraps), distribution
+    `(name, version)` of the registering entry point
     or `None` for a built-in and for a spec added at run time, `capturable`,
     `accepts_ctx`, `builtin` and `entry_point`), `unregister(kind, name)`,
     `scoped(*, fresh=False)` (snapshots every kind and restores it on exit, for tests;
@@ -210,6 +212,81 @@
   - `API_VERSION` stays `1`: all of this is additive. Gate generators stay
     `GateGeneratorSpec`s: `registry.add` rejects a Stage with `kind="gate_generator"` or
     `output="anchors"` until roadmap PR11.
+- **`track_gen.testing`: a conformance kit for generator plugins** (roadmap PR9). A
+  plugin author runs one call in their own CI,
+  `check_generator("acme.x", params={...}).raise_for_failures()`, and learns whether the
+  generator honours the contract; TrackGen's own suite runs the same checks over every
+  built-in. The new page `docs/contributing/testing-a-plugin.rst` covers the kit, the
+  writing-a-generator guide links to it, and `docs/reference/api.rst` documents it.
+  `track_gen.testing` is outside `track_gen.__all__`; `import track_gen` does not import
+  it, and importing it imports neither torch nor pytest.
+  - `check_generator(name, params=None, *, devices=None, num_envs=8, seeds=(11, 1009),
+    config=None, capture_modes=CAPTURE_MODES, skip=(), modules=())` and
+    `check_gate_generator(...)`
+    (the same arguments, `config` holding `GateGenConfig` fields) run a registered
+    generator on `cpu`, plus `cuda:0` when Warp sees a CUDA device, and return a
+    `Report`: one `CheckResult(name, device, passed, message, skipped, details)` per
+    check and device, `ok`, `failures`, `failed_names`, `result(name, device=None)`,
+    `raise_for_failures()` (one `AssertionError` listing every failure) and a table as
+    `str()`. `CHECKS[kind]` lists the stable check names in run order: `construct`;
+    `output.shape`, `output.finite` (raw and final output finite for the envs marked
+    valid; the raw output is poisoned before the generation the checks read, so an
+    unwritten point or `out_valid` flag is reported as such), `output.padding` (NaN
+    past `count[e]`), `output.count`, and `output.closed` (the raw loop closes, its
+    closing edge no longer than 3x the median step or 1.5x the longest step, and at
+    least one env is valid) or, for gates, `output.accepted`; `determinism` (two fresh
+    generators, bitwise), `diversity` (over the envs valid in both batches, with the
+    smallest raw-output differences in `details`), `batch_independence` (env `e`
+    alone, inside a larger batch and under a permutation of the other envs' seeds),
+    `statelessness` (repeat calls, reseed and reseed back); on CPU
+    `hot_path.host_sync`, `hot_path.allocation`, `hot_path.stream`, `hot_path.capture`,
+    `hot_path.topology` and `hot_path.buffers` (every pointer owned by the generator,
+    and none shared with a second generator built alike); on CUDA `capture.caller` and
+    `capture.self_graph`. A `capturable=False` generator has the host-sync, allocation,
+    topology, buffers and caller-capture checks reported as skipped. Each failure
+    message names the env, field or call site (`module.function:line`) and the rule
+    broken. `modules=` adds packages for `hot_path.stream` to probe, besides
+    `track_gen` and the generator's own top-level package.
+  - `track_gen.testing.contract`: `hot_path_guard(*, host_sync, allocation, stream,
+    capture, modules=("track_gen",), allow=(), strict=True)` and the single-purpose
+    `no_host_sync()`, `no_allocation()` and `stream_explicit(modules)`, context managers
+    returning a `HotPathGuard`. They record (and, when strict, raise `HotPathViolation`
+    on) `wp.synchronize*`, `wp.array.numpy()` / `list()`, `np.asarray` of a CPU array
+    and a `wp.copy` between two devices; every Warp array allocation (seen at Warp's
+    allocation chokepoint) and every `wp.HashGrid` (and `HashGrid.reserve`),
+    `wp.Mesh`, `wp.Volume` and `wp.Bvh`; a `wp.launch` / `wp.launch_tiled` /
+    `wp.Launch.launch` / `wp.copy` from the probed modules (or from a Warp utility they
+    called) without `stream=`, `wp.array.assign()` / `zero_()` / `fill_()` and
+    `wp.ScopedStream` from them; and nested `ScopedCapture` / `capture_*` calls. Each
+    breach is a `Violation` with its category (`CATEGORIES`), Warp API and call site (a
+    `Site`). The patches are installed while a guard is active, wherever a loaded
+    module binds a Warp entry point (`from warp import launch` included; classes keep
+    their identity, only their `__init__` is wrapped), and dispatch on a context
+    variable, so other threads are not seen; a guard exited in another context than
+    it was entered in still restores Warp.
+  - `track_gen.testing.trace`: `trace_launches()` records every `wp.launch` /
+    `wp.launch_tiled` / `wp.Launch.launch` / `wp.copy` / `wp.array.assign` as a
+    `LaunchRecord` (kernel, dim, stream handle, array pointers, scalar arguments, with
+    a `wp.struct` argument flattened into its fields, call site) in a `LaunchTrace`,
+    with `diff()` / `same_topology()` and `foreign_pointers()`; `buffers_of(obj)`
+    collects the `wp.array`s reachable from a producer (`wp.struct` fields included,
+    registry specs excluded: they are shared by every generator built from them) into
+    a `BufferSet`; `assert_same_topology` and `assert_pointers_within`.
+  - `track_gen.testing.capture` (CUDA): `assert_caller_capturable(producer, *,
+    modes=("warp", "external", "torch"), record=None, twin=None, reseed=None)` records
+    `producer.generate(stream=s)` into a caller's capture on a side stream with the
+    mempool disabled and `wp.capture_launch` forbidden, poisons the outputs with finite,
+    dtype-aware sentinels, replays, and compares with an eager twin before and after a
+    reseed. The torch modes import torch inside the mode, run on the producer's device,
+    and are skipped without torch. Its
+    helpers (`side_stream`, `mempool_disabled`, `capture_launch_forbidden`,
+    `recording`, `poison`, `poison_all`, `result_arrays`) are public.
+  - `track_gen.testing.pytest_plugin`, opt-in (no `pytest11` entry point): load it with
+    `pytest_plugins = ["track_gen.testing.pytest_plugin"]` for the
+    `track_gen_conformance(name, params=None, *, kind="generator", **kwargs)` fixture
+    factory, which fails the test listing every failed check, plus
+    `generator_names(kind, *, builtin=None, exclude=())` and `parametrize_generators(...)`
+    over the registry.
 
 ### Behaviour changes
 
@@ -622,6 +699,85 @@ PR8 changes nothing outside the generator stage. Left for later roadmap steps:
   per-generator overrides as `generator_params`.
 - `tests/test_generator_fingerprints.py` passes unchanged: the flat configs reproduce the
   PR7 fingerprints of every built-in.
+- `tests/test_conformance.py` runs the conformance kit (roadmap PR9). Every built-in
+  track generator (`repulsive` on its small test config and 8 envs, `voronoi` also at
+  64 sites, `hull` and `voronoi` also on the pinned configs their end-to-end tests used:
+  `num_points=128, N_max=256`, voronoi with `half_width=0.1`) and every built-in gate
+  generator (each in its default ordering, `bezier` and `hull` also in `random_pairs`)
+  passes `check_generator` / `check_gate_generator` on 64 envs, on CPU in the fast lane
+  and on `cuda:0` under the `cuda` marker, and keeps the built-ins' promises beyond the
+  contract: every env generator-valid with a finite raw centerline, a finite result
+  before `count[e]` and `count[e] >= 1` for every env, and a raw output that moves by
+  more than `1e-3` between two seeds and between two envs. The plugin toys (`toy.circle`, `toy.lobed`,
+  `toy.wobble` and its `HOST` and per-env-input variants, gate `toy.ring`) pass through
+  the opt-in pytest plugin's `track_gen_conformance` fixture, the `HOST` variant with its
+  waived checks reported as skipped. Fifteen deliberately broken toys
+  (`tests/_broken_toys.py`, each `toy.circle` with one defect) fail exactly the check
+  they break, with a message that locates the defect: a seed readback
+  (`hot_path.host_sync`), a per-call allocation (`hot_path.allocation`), NaN in valid
+  envs (`output.finite`), launch dims that follow a call counter (`hot_path.topology`),
+  env `e` reading env `e + 1`'s seed (`batch_independence`), a legacy spec's `wp.launch`
+  without `stream=` (`hot_path.stream`), a device counter (`statelessness`), ignored seeds
+  (`diversity`), half a circle (`output.closed`), a module-level buffer and a buffer
+  shared through a per-instance scratch object (`hot_path.buffers`), a last point never
+  written (`output.finite`), `out_valid` never written (`output.shape`), a
+  `wp.launch_tiled` without `stream=` and an `out.assign(staging)` (`hot_path.stream`);
+  on CUDA, the readback and the allocation also fail `capture.caller`. Three edge toys
+  that look unusual but conform pass every check: a loop closed by one of its two long
+  straights, envs rejected with NaN and `out_valid = 0`, and a `wp.struct` scratch. The
+  module also covers the kit's arguments, `skip=`, `modules=`, a failed `construct`, the
+  `Report` API and table, the parametrize helpers, the origin of a `functools.partial`
+  generate, every guard category in strict and record modes (a swallowed violation
+  still fails, `allow=`, every allocation path and native object, views not
+  allocating, module prefixes, every launch path: tiled, recorded, `assign`, bound at
+  import, Warp's defining module, a Warp utility; `np.asarray`, other threads unseen,
+  classes kept, Warp restored also after an exit in another context or under a foreign
+  patch, the debug sync switched off), the launch trace (struct arguments flattened)
+  and buffer ownership (registry specs not entered), the gate raw anchors, the capture
+  helpers that run without a GPU, and that `import track_gen` does not import the kit
+  and the kit does not import torch.
+- **Per-generator contract tests folded into the kit.** The tests below duplicated a
+  conformance check, which `tests/test_conformance.py` now runs for every generator;
+  each generator module keeps its algorithm-specific tests (yield, crossing-free loops,
+  shape variety, site counts, ...):
+  - `test_polar_registered`, `test_checkpoint_registered`, `test_hull_is_registered`,
+    `test_voronoi_is_registered`, `test_repulsive_is_registered`: registration and
+    `capturable` are checked by `test_the_builtins_are_all_checked`,
+    `test_builtins_are_capturable_and_stream_explicit` and `construct`;
+  - `test_polar_e2e_centerline_finite_and_n_points`,
+    `test_checkpoint_e2e_centerline_finite`, `test_checkpoint_e2e_n_points_per_env`:
+    `output.shape` and `output.finite` (plus the built-ins' finite raw centerline);
+  - `test_polar_e2e_closed_loop`: `output.closed`;
+  - `test_checkpoint_e2e_valid_count` (now `test_checkpoint_e2e_reasonable_yield`, which
+    keeps the yield assertion) and the count, finite-prefix and NaN-padding assertions
+    of the hull and voronoi end-to-end tests: `output.count`, `output.finite` and
+    `output.padding`, on the same 64 envs and, for hull and voronoi, the same pinned
+    configs; their `count >= 1` for every env (invalid ones included) is
+    `_assert_builtin_promises`' `output.count` minimum;
+  - `test_polar_determinism_same_seed`, `test_checkpoint_determinism_same_seed`,
+    `test_hull_deterministic` (CPU and CUDA), the determinism half of
+    `test_voronoi_deterministic_and_cell_count_changes_tracks_cpu` (now
+    `test_voronoi_cell_count_changes_tracks_cpu`) and
+    `test_gate_generator_independent_instances_with_same_seed_are_deterministic`:
+    `determinism`, on CPU and CUDA;
+  - `test_polar_diversity_different_envs`, `test_checkpoint_different_seeds_differ`,
+    `test_distinct_per_env_seeds_produce_diverse_gates`,
+    `test_different_global_seeds_produce_different_gates`: `diversity`, whose
+    `min_raw_delta` / `min_pair_delta` the built-in tests hold above `1e-3` (the
+    removed tests' `not allclose`);
+  - `test_repulsive_contract_through_tail` and `test_repulsive_determinism_and_diversity`
+    (CPU and CUDA): `output.*`, `determinism`, `diversity`, `statelessness` and, on
+    CUDA, `capture.self_graph`;
+  - `test_repeated_generate_is_deterministic_for_a_fixed_rng` (`test_track_generator_facade.py`)
+    and the repeated-call half of `test_hull_deterministic`: `statelessness`.
+- The private tripwires now come from the kit: `tests/test_no_host_sync.py` and
+  `tests/test_launch_stream.py` use `track_gen.testing.contract` (`no_host_sync` with
+  `allow=` for the known-readback table, `stream_explicit`) instead of their own
+  monkeypatched copies, and keep their drivers and the driven-wrapper check;
+  `tests/test_caller_capture_cuda.py` records with `track_gen.testing.capture`
+  (`side_stream`, `recording`, `poison_all`, ...); `tests/test_caller_capture_cpu.py`
+  and `tests/test_ops.py` use `no_allocation`, which also sees `wp.array(data)` and
+  every factory at Warp's allocation chokepoint.
 
 ## 0.2.0.dev1 (2026-10-22, tag `v0.2.0.dev1`)
 

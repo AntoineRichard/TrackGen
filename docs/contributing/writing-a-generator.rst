@@ -21,6 +21,8 @@ A plugin ships as its own pip-installable package. It imports only public module
 (``track_gen.plugin``, ``track_gen.exec``, ``track_gen.ops``), it does not edit TrackGen,
 and TrackGen finds it through a Python entry point. The shipped generators register through
 a ``register(reg)`` function with the same signature as the one a third party writes.
+Once it runs, ``track_gen.testing`` checks it against the contract on this page in one
+call: see :doc:`testing-a-plugin`.
 
 Quick start: a Stage generator
 ------------------------------
@@ -766,6 +768,11 @@ Five rules must hold for every generator whose ``GeneratorSpec`` uses the defaul
    Stage takes its salts from ``b.salt`` (see :ref:`stage-salts`).
    CPU vs CUDA RNG results may differ, as elsewhere in the codebase.
 
+The conformance kit checks these rules mechanically: ``check_generator`` fails a
+generator that host-syncs, allocates, launches off the call's stream, changes its launch
+sequence from one call to the next, or is not reproducible from its seeds (see
+:doc:`testing-a-plugin`).
+
 .. _generator-streams:
 
 Streams: ``accepts_ctx``
@@ -1396,8 +1403,15 @@ TrackGen's is quarantined with a message saying so, instead of failing later in 
 obvious way. An integer ``API_VERSION`` in the same places is read too, as a fallback; a
 non-integer one (an unrelated constant) is ignored.
 
+.. _plugin-own-tests:
+
 Testing a plugin
 ~~~~~~~~~~~~~~~~
+
+Start with the conformance kit: ``track_gen.testing.check_generator("acme.wobbly")``
+(``check_gate_generator`` for a gate generator) runs every contract check on CPU, and on
+CUDA when a device is present; :doc:`testing-a-plugin` covers it and its pytest plugin.
+The tests below are for what the kit cannot know: your generator's own properties.
 
 Run the plugin's CI with ``TRACK_GEN_PLUGINS=strict`` so a load failure fails the run. On
 CPU the facades run directly (``device="cpu"``), and every rule above holds there too.
@@ -1505,6 +1519,8 @@ field names, holds the generator's rules in ``validate()`` (with ``lo``/``hi`` o
 rule rejects the same bound), and is listed in the
 :ref:`configuration reference <builtin-generator-params>`.
 
+.. _how-a-generator-is-judged:
+
 How a generator is judged
 -------------------------
 
@@ -1513,4 +1529,6 @@ against the existing ones (see the :doc:`Benchmarks page </generators/benchmarks
 numbers and the comparison methodology).
 
 Generators are characterised, never gated: a method that scores worse on yield
-but better on speed or style stays selectable.
+but better on speed or style stays selectable. The contract is gated: every built-in
+passes ``track_gen.testing``'s conformance checks in TrackGen's CI, and a plugin should
+pass them in its own (see :doc:`testing-a-plugin`).

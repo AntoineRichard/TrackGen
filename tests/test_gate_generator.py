@@ -261,27 +261,6 @@ def test_point_family_gate_generators_reject_too_small_max_gates(generator):
         GateGenerator(cfg, _make_rng(1, seed=7))
 
 
-def test_gate_generator_independent_instances_with_same_seed_are_deterministic():
-    E, G = 4, 32
-    cfg = GateGenConfig(
-        generator="bezier",
-        gate_ordering="random_pairs",
-        num_envs=E,
-        max_gates=G,
-        device="cpu",
-        gate_radius=0.0,
-    )
-    gates_a = GateGenerator(cfg, _make_rng(E, seed=211)).generate(E)
-    gates_b = GateGenerator(cfg, _make_rng(E, seed=211)).generate(E)
-
-    for name in ("position", "tangent", "orientation", "half_size", "left", "right"):
-        a = to_t(getattr(gates_a, name))
-        b = to_t(getattr(gates_b, name))
-        assert torch.allclose(a, b, equal_nan=True)
-    assert torch.equal(to_t(gates_a.count), to_t(gates_b.count))
-    assert torch.equal(to_t(gates_a.valid), to_t(gates_b.valid))
-
-
 def test_gate_generator_cpu_reuses_output_instance_and_buffers():
     E, G = 2, 32
     cfg = GateGenConfig(
@@ -449,41 +428,6 @@ def test_generate_rejects_sequence_ids():
     gen = GateGenerator(cfg, _make_rng(4))
     with pytest.raises(TypeError, match="does not accept explicit environment ids"):
         gen.generate([0, 1, 2, 3])
-
-
-def test_distinct_per_env_seeds_produce_diverse_gates():
-    # A single int seed expands to seed + arange(E) per-env seeds. Guard against an
-    # env-collapse regression where every environment generates the identical track,
-    # which would silently destroy batch diversity for RL training.
-    E, G = 8, 32
-    cfg = GateGenConfig(
-        generator="bezier", gate_ordering="ccw", num_envs=E, max_gates=G,
-        device="cpu", gate_radius=0.0,
-    )
-    gates = GateGenerator(cfg, _make_rng(E, seed=17)).generate(E)
-    position = to_t(gates.position).view(E, G, 3)
-    count = to_t(gates.count)
-
-    diverse = False
-    for e in range(1, E):
-        c0, ce = int(count[0]), int(count[e])
-        if c0 != ce or not torch.allclose(
-            position[0, :c0], position[e, :ce], equal_nan=True
-        ):
-            diverse = True
-            break
-    assert diverse, "distinct per-env seeds must yield at least two differing envs"
-
-
-def test_different_global_seeds_produce_different_gates():
-    E, G = 4, 32
-    cfg = GateGenConfig(
-        generator="bezier", gate_ordering="ccw", num_envs=E, max_gates=G,
-        device="cpu", gate_radius=0.0,
-    )
-    a = GateGenerator(cfg, _make_rng(E, seed=1)).generate(E)
-    b = GateGenerator(cfg, _make_rng(E, seed=999)).generate(E)
-    assert not torch.allclose(to_t(a.position), to_t(b.position), equal_nan=True)
 
 
 def test_clone_is_isolated_from_in_place_regenerate():

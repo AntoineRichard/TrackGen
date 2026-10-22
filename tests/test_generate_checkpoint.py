@@ -1,17 +1,20 @@
-"""End-to-end + determinism + shape-variety tests for the ``"checkpoint"`` generator.
+"""End-to-end yield + shape-variety tests for the ``"checkpoint"`` generator.
 
 The checkpoint generator (method #5, CarRacing-style steering) is accepted by:
-  1. e2e — TrackGenerator produces finite centerlines with correct stride and valid tracks.
-  2. determinism — same seed + config yields bit-identical centerlines across two generate() calls.
-  3. non-degenerate / shape-variety — median compactness < 0.65 (checkpoint sits ~0.58).
+  1. e2e — the pipeline keeps a reasonable valid yield.
+  2. non-degenerate / shape-variety — median compactness < 0.65 (checkpoint sits ~0.58).
      NOTE: test_shape_variety.py's test_no_registered_generator_is_degenerate already covers
      every registered generator including "checkpoint" (threshold 0.85). We add a tighter local
      assertion (~0.65) matching checkpoint's actual organic distribution.
      Checkpoint has LOW straight_fraction (no straights by design) — its value is a qualitative
      flowing shape distribution that renders show; a single-metric win vs. bezier/hull/polar is
      NOT asserted here, and should NOT be: that would be a fabricated metric assertion.
-  4. clip-fallback rescues single-crossers — at K=1 (no best-of-K), enabling
+  3. clip-fallback rescues single-crossers — at K=1 (no best-of-K), enabling
      checkpoint_clip_fallback=True yields >= the False case's valid fraction.
+
+The generator contract (finite centerlines with the right stride, count range,
+determinism, diversity, batch independence, the hot path) is checked for every generator
+by the conformance kit, in tests/test_conformance.py.
 """
 from __future__ import annotations
 
@@ -25,7 +28,6 @@ wp.init()
 from track_gen._src.types import TrackGenConfig  # noqa: E402
 from track_gen._src.track_generator import TrackGenerator  # noqa: E402
 from track_gen._src.rng_utils import PerEnvSeededRNG  # noqa: E402
-from track_gen._src import generator_registry  # noqa: E402
 
 
 def _compactness(pts: np.ndarray) -> np.ndarray:
@@ -46,61 +48,15 @@ def _run(seed: int = 0, E: int = 64, **overrides):
     return cfg, gen, track
 
 
-def test_checkpoint_registered():
-    assert "checkpoint" in generator_registry.available()
-    spec = generator_registry.get("checkpoint")
-    assert spec.name == "checkpoint"
-    assert callable(spec.alloc_scratch) and callable(spec.generate)
-
-
-def test_checkpoint_e2e_centerline_finite():
-    """generate() -> finite centerlines with the correct [E*N] stride."""
+def test_checkpoint_e2e_reasonable_yield():
+    """After the full pipeline (generate + inflate), a reasonable fraction is valid (the
+    count range is the conformance kit's output.count check)."""
     cfg, gen, track = _run()
-    N = int(cfg.num_points)
-    gc = wp.to_torch(gen._scratch.gen_centerline).cpu().numpy()
-    assert gc.shape == (cfg.num_envs * N, 2), f"unexpected shape: {gc.shape}"
-    assert np.isfinite(gc).all(), "checkpoint centerline has non-finite values"
-
-
-def test_checkpoint_e2e_n_points_per_env():
-    """Each env contributes exactly N centerline points (no degenerate empties)."""
-    cfg, gen, track = _run()
-    N = int(cfg.num_points)
-    gc = wp.to_torch(gen._scratch.gen_centerline).cpu().numpy().reshape(cfg.num_envs, N, 2)
-    assert gc.shape[1] == N
-
-
-def test_checkpoint_e2e_valid_count():
-    """After full pipeline (generate + inflate), the batch count stays in [1, N_max]."""
-    cfg, gen, track = _run()
-    count = wp.to_torch(track.count).cpu().numpy()
     valid = wp.to_torch(track.valid).cpu().numpy().astype(bool)
-    N_max = int(cfg.N_max)
-    assert np.all(count >= 1) and np.all(count <= N_max), (
-        f"count out of range [1, {N_max}]: min={count.min()}, max={count.max()}"
-    )
     # Reasonable yield: the checkpoint generator is always gen-valid; the pipeline's
     # inflate / relaxation gate sets the final valid fraction.
     yield_frac = float(valid.mean())
     assert yield_frac > 0.3, f"checkpoint valid yield unexpectedly low: {yield_frac:.3f}"
-
-
-def test_checkpoint_determinism_same_seed():
-    """Same seed + config -> bit-identical gen centerline across two TrackGenerator instances."""
-    _, gen_a, _ = _run(seed=42)
-    _, gen_b, _ = _run(seed=42)
-    a = wp.to_torch(gen_a._scratch.gen_centerline).cpu().numpy()
-    b = wp.to_torch(gen_b._scratch.gen_centerline).cpu().numpy()
-    assert np.array_equal(a, b), "checkpoint is not deterministic for the same seed"
-
-
-def test_checkpoint_different_seeds_differ():
-    """Different seeds -> geometrically distinct centerlines per env."""
-    _, gen_a, _ = _run(seed=1)
-    _, gen_b, _ = _run(seed=2)
-    a = wp.to_torch(gen_a._scratch.gen_centerline).cpu().numpy()
-    b = wp.to_torch(gen_b._scratch.gen_centerline).cpu().numpy()
-    assert not np.allclose(a, b), "different seeds produced identical centerlines"
 
 
 def test_checkpoint_shape_variety_non_degenerate():

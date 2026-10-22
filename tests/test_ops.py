@@ -9,7 +9,6 @@ Stream-explicitness and no-host-sync are covered by the ``ops[all]`` driver in
 from __future__ import annotations
 
 import ast
-import contextlib
 import functools
 import importlib
 import inspect
@@ -26,6 +25,7 @@ from tests import _legacy_kernels_pr7 as L
 from track_gen import ops
 from track_gen.exec import LaunchContext
 from track_gen.ops import funcs
+from track_gen.testing.contract import no_allocation
 from track_gen.ops.geometry import (
     _angle_sort_launch,
     _self_intersections_func as _ops_selfx_func,
@@ -1097,36 +1097,12 @@ def test_fill_kernels_bitwise_vs_head(dtype, new_k, old_k, value):
 # no allocation inside an op
 # ---------------------------------------------------------------------------------------
 
-_ALLOCATORS = ("empty", "zeros", "ones", "full", "empty_like", "zeros_like", "ones_like",
-               "full_like", "clone", "from_numpy")
-
-
-@contextlib.contextmanager
 def _no_alloc():
-    """Tripwire every device allocation: ``wp.array(...)`` without ``ptr=`` (views and
-    slices pass ``ptr=``) and the ``wp.empty``/``zeros``/... factories."""
-    hits = []
-    real_init = wp.array.__init__
-
-    def init(self, *args, **kw):
-        if kw.get("ptr") is None and len(args) < 6:
-            hits.append("wp.array(...)")
-            raise AssertionError("device allocation inside an op")
-        return real_init(self, *args, **kw)
-
-    def trip(name):
-        def call(*a, **k):
-            hits.append(f"wp.{name}")
-            raise AssertionError(f"wp.{name} inside an op")
-        return call
-
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(wp.array, "__init__", init)
-        for name in _ALLOCATORS:
-            if hasattr(wp, name):
-                mp.setattr(wp, name, trip(name))
-        yield hits
-    assert hits == []
+    """Tripwire every device allocation (the library guard
+    :func:`track_gen.testing.contract.no_allocation`: Warp's allocation chokepoint, so
+    ``wp.array(data)`` and every ``wp.empty`` / ``zeros`` / ... factory; views and slices
+    do not allocate). Raises at the first allocation, and on exit if one was swallowed."""
+    return no_allocation()
 
 
 def _all_op_calls():

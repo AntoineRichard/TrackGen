@@ -45,6 +45,7 @@ from track_gen.exec import (
 )
 from track_gen.exec import context as context_mod
 from track_gen.exec import runner as runner_mod
+from track_gen.testing.contract import no_allocation
 
 E = 4
 
@@ -140,27 +141,18 @@ def _put(spec) -> None:
 
 
 @pytest.fixture
-def no_alloc(monkeypatch):
-    """Tripwire: record every OWNING wp.array construction (views pass ``ptr=``)."""
-    hits: list = []
-    real_init = wp.array.__init__
-    armed = [False]
-
-    def init(self, *args, **kwargs):
-        if armed[0] and kwargs.get("ptr") is None and len(args) < 6:
-            hits.append((args[:1], {k: v for k, v in kwargs.items() if k != "data"}))
-        return real_init(self, *args, **kwargs)
-
-    monkeypatch.setattr(wp.array, "__init__", init)
+def no_alloc():
+    """Tripwire: record every Warp array allocation (views pass ``ptr=`` and do not
+    allocate). The library guard :func:`track_gen.testing.contract.no_allocation` in
+    record mode; ``with no_alloc as hits`` yields its list of violations."""
 
     class _Ctl:
         def __enter__(self):
-            armed[0] = True
-            return hits
+            self._guard = no_allocation(strict=False)
+            return self._guard.__enter__().violations
 
         def __exit__(self, *exc):
-            armed[0] = False
-            return False
+            return self._guard.__exit__(*exc)
 
     return _Ctl()
 

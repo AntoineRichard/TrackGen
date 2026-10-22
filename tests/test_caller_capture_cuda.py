@@ -6,7 +6,8 @@ caller's capture (a Warp ``ScopedCapture`` on any stream, or ``torch.cuda.graph`
 adoption) and replay correctly, while keeping the self-graph convenience outside any
 capture.
 
-Method (as in tests/test_stream_capture_cuda.py): record on a NON-current side stream,
+Method (as in tests/test_stream_capture_cuda.py; the helpers are the conformance kit's,
+:mod:`track_gen.testing.capture`): record on a NON-current side stream,
 poison the outputs with FINITE sentinels (outputs are NaN-padded and
 ``assert_array_equal`` treats NaN == NaN, so a NaN poison would hide a missed write),
 replay, and compare with an eager twin. Every recording also runs with
@@ -41,6 +42,7 @@ from track_gen.plugin import GeneratorSpec, registry  # noqa: E402
 from track_gen._src.gate_generator import GateGenerator  # noqa: E402
 from track_gen._src.track_generator import TrackGenerator  # noqa: E402
 from track_gen.course import Course, CourseConfig  # noqa: E402
+from track_gen.testing import capture as tg_capture  # noqa: E402
 
 DEV = "cuda:0"
 E = 8
@@ -54,33 +56,13 @@ _COURSE_VARIANTS = ("track-segments", "track-sdf-heightfield", "gates-posts", "g
 
 def _arrays(obj) -> dict:
     """name -> wp.array for every array field of a result dataclass (None fields skipped)."""
-    if obj is None:
-        return {}
-    out = {}
-    for f in dataclasses.fields(obj):
-        v = getattr(obj, f.name)
-        if isinstance(v, wp.array):
-            out[f.name] = v
-    return out
+    return tg_capture.result_arrays(obj)
 
 
-def _poison(arr) -> None:
-    """Fill with a finite, dtype-aware sentinel (on Warp's current stream)."""
-    dt = arr.dtype
-    if dt in (wp.int8, wp.int16, wp.int32, wp.int64):
-        arr.fill_(-7)
-    elif dt in (wp.float16, wp.float32, wp.float64):
-        arr.fill_(-12345.0)
-    else:
-        n = getattr(dt, "_length_", None)
-        arr.fill_(dt(*([-12345.0] * n)) if n else 7)
-
-
-def _poison_all(*objs) -> None:
-    for obj in objs:
-        for arr in _arrays(obj).values():
-            _poison(arr)
-    wp.synchronize()
+# Finite, dtype-aware sentinel on Warp's current stream; all arrays of the given results,
+# then a device sync.
+_poison = tg_capture.poison
+_poison_all = tg_capture.poison_all
 
 
 def _snapshot(obj) -> dict:
@@ -100,54 +82,27 @@ def _differs(a, b) -> bool:
                for k, x in _arrays(a).items())
 
 
-@contextlib.contextmanager
 def _mempool_disabled(device=DEV):
-    was = wp.is_mempool_enabled(device)
-    wp.set_mempool_enabled(device, False)
-    try:
-        yield
-    finally:
-        wp.set_mempool_enabled(device, was)
+    """The Warp mempool disabled on ``device`` for the block."""
+    return tg_capture.mempool_disabled(device)
 
 
-@contextlib.contextmanager
-def _capture_launch_forbidden():
-    """Make track_gen's ``wp.capture_launch`` raise for the duration of the block."""
-    from track_gen.exec import runner
-
-    calls = []
-
-    def _forbidden(*args, **kwargs):
-        calls.append(args)
-        raise AssertionError(
-            "wp.capture_launch called while recording into the caller's capture "
-            "(a graph launch cannot be recorded: CUDA error 900)")
-
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(runner.wp, "capture_launch", _forbidden)
-        if runner.wp is not wp:
-            mp.setattr(wp, "capture_launch", _forbidden)
-        yield calls
-    # Also catches an implementation that swallowed the AssertionError.
-    assert not calls, "wp.capture_launch was called during the caller's recording"
+# ``wp.capture_launch`` (also track_gen.exec.runner's reference) raises for the block,
+# and the block fails on exit if it was called (a swallowed AssertionError included).
+_capture_launch_forbidden = tg_capture.capture_launch_forbidden
 
 
-@contextlib.contextmanager
 def _recording(stream):
     """The caller's Warp capture on ``stream``: mempool disabled, capture_launch forbidden.
 
     Context managers exit in reverse order: the patch is lifted before ``capture_end``
     and the mempool is restored after it.
     """
-    with _mempool_disabled(), wp.ScopedCapture(device=DEV, stream=stream) as cap, \
-            _capture_launch_forbidden():
-        yield cap
+    return tg_capture.recording(DEV, stream)
 
 
 def _side_stream() -> wp.Stream:
-    s = wp.Stream(DEV)
-    assert s.cuda_stream != wp.get_stream(DEV).cuda_stream, "side stream must not be current"
-    return s
+    return tg_capture.side_stream(DEV)
 
 
 def _replay(graph, stream) -> None:

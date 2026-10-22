@@ -7,13 +7,12 @@ lands on the stream being captured. Library code therefore emits work through a
 current stream). CPU has no streams, so the probe checks the *call shape*: any
 ``wp.launch`` / ``wp.copy`` issued from a ``track_gen`` module (or from the toy
 out-of-tree plugin, ``tests._plugin_toys``) without a ``stream=`` keyword, and any
-``zero_()`` / ``fill_()`` issued from one, is a failure. The drivers are shared with
-``test_no_host_sync`` and the probe covers their construction too.
+``zero_()`` / ``fill_()`` (or ``wp.ScopedStream``) issued from one, is a failure. The
+probe is the library guard :func:`track_gen.testing.contract.stream_explicit`. The
+drivers are shared with ``test_no_host_sync`` and the probe covers their construction
+too.
 """
 from __future__ import annotations
-
-import contextlib
-import sys
 
 import pytest
 import warp as wp
@@ -21,62 +20,19 @@ import warp as wp
 from tests.test_no_host_sync import DRIVERS
 from track_gen.exec import LaunchContext, resolve, resolve_stream
 from track_gen.ops import fill
-
-
-def _caller():
-    f = sys._getframe(2)
-    return f.f_globals.get("__name__", ""), f.f_code.co_name, f.f_lineno
-
+from track_gen.testing.contract import stream_explicit
 
 # Library modules plus the out-of-tree toy plugin (tests._plugin_toys, accepts_ctx=True),
 # which is held to the same stream-explicit contract.
 _PROBED = ("track_gen", "tests._plugin_toys")
 
 
-@contextlib.contextmanager
-def _stream_probe():
-    bad: list[str] = []
-    real_launch, real_copy = wp.launch, wp.copy
-    real_zero, real_fill = wp.array.zero_, wp.array.fill_
-
-    def launch(*args, **kwargs):
-        mod, fn, line = _caller()
-        if mod.startswith(_PROBED) and "stream" not in kwargs:
-            bad.append(f"wp.launch without stream= from {mod}.{fn}:{line}")
-        return real_launch(*args, **kwargs)
-
-    def copy(*args, **kwargs):
-        mod, fn, line = _caller()
-        if mod.startswith(_PROBED) and "stream" not in kwargs:
-            bad.append(f"wp.copy without stream= from {mod}.{fn}:{line}")
-        return real_copy(*args, **kwargs)
-
-    def zero_(self):
-        mod, fn, line = _caller()
-        if mod.startswith(_PROBED):
-            bad.append(f"array.zero_() from {mod}.{fn}:{line}")
-        return real_zero(self)
-
-    def fill_(self, value):
-        mod, fn, line = _caller()
-        if mod.startswith(_PROBED):
-            bad.append(f"array.fill_() from {mod}.{fn}:{line}")
-        return real_fill(self, value)
-
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(wp, "launch", launch)
-        mp.setattr(wp, "copy", copy)
-        mp.setattr(wp.array, "zero_", zero_)
-        mp.setattr(wp.array, "fill_", fill_)
-        yield bad
-
-
 @pytest.mark.parametrize("name", sorted(DRIVERS))
 def test_every_library_launch_is_stream_explicit(name):
-    with _stream_probe() as bad:
+    with stream_explicit(_PROBED, strict=False) as guard:
         hot = DRIVERS[name]()      # construction + first generate are probed too
         hot()
-    assert bad == [], "\n".join(sorted(set(bad)))
+    assert guard.ok, "\n".join(sorted({str(v) for v in guard.violations}))
 
 
 # ---------------------------------------------------------------------------------------

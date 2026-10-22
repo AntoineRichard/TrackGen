@@ -1,8 +1,11 @@
 """End-to-end tests for the periodic polar-spline generator (``config.generator="polar"``).
 
 Drives the full pure-Warp pipeline through the public ``TrackGenerator`` facade and
-asserts the polar centerline is finite, has N points per env, closes, yields a
-reasonable valid fraction, and is deterministic in the per-env seed.
+asserts the polar-specific properties: the loops are centred and sized like bezier's,
+are not round blobs, and yield a reasonable valid fraction. The generator contract
+(raw shape and finiteness, closed loop, NaN padding, determinism, diversity, batch
+independence, the hot path) is checked by the conformance kit for every generator,
+in tests/test_conformance.py.
 """
 from __future__ import annotations
 
@@ -15,7 +18,6 @@ import warp as wp  # noqa: E402
 from track_gen._src.types import TrackGenConfig  # noqa: E402
 from track_gen._src.track_generator import TrackGenerator  # noqa: E402
 from track_gen._src.rng_utils import PerEnvSeededRNG  # noqa: E402
-from track_gen._src import generator_registry  # noqa: E402
 
 
 def _compactness(pts: np.ndarray) -> np.ndarray:
@@ -33,31 +35,6 @@ def _run(seed=0, E=64, **overrides):
     gen = TrackGenerator(cfg, rng)
     track = gen.generate(E)
     return cfg, gen, track
-
-
-def test_polar_registered():
-    assert "polar" in generator_registry.available()
-
-
-def test_polar_e2e_centerline_finite_and_n_points():
-    cfg, gen, track = _run()
-    N = int(cfg.num_points)
-    gc = wp.to_torch(gen._scratch.gen_centerline).cpu().numpy()
-    assert gc.shape == (cfg.num_envs * N, 2)
-    assert np.isfinite(gc).all(), "polar gen centerline must be finite"
-    # N points per env (the buffer stride is exactly num_points).
-    gc = gc.reshape(cfg.num_envs, N, 2)
-    assert gc.shape[1] == N
-
-
-def test_polar_e2e_closed_loop():
-    cfg, gen, track = _run()
-    N = int(cfg.num_points)
-    gc = wp.to_torch(gen._scratch.gen_centerline).cpu().numpy().reshape(cfg.num_envs, N, 2)
-    # Closed-ish: the last->first gap is the same order as a typical inter-point step.
-    gap = np.linalg.norm(gc[:, -1] - gc[:, 0], axis=1)
-    step = np.linalg.norm(gc[:, 1] - gc[:, 0], axis=1)
-    assert np.all(gap <= 3.0 * step + 1e-4)
 
 
 def test_polar_e2e_centered_and_sized():
@@ -94,20 +71,3 @@ def test_polar_e2e_reasonable_yield():
     # The polar loop is simple by construction, so yield should be high; we do NOT
     # hard-fail on a tight threshold, only on a clearly-broken (near-zero) yield.
     assert yield_frac > 0.5, f"polar yield unexpectedly low: {yield_frac}"
-
-
-def test_polar_determinism_same_seed():
-    # Same seed -> bit-identical centerline (deterministic in (seed, config)).
-    _, gen_a, _ = _run(seed=7)
-    _, gen_b, _ = _run(seed=7)
-    a = wp.to_torch(gen_a._scratch.gen_centerline).cpu().numpy()
-    b = wp.to_torch(gen_b._scratch.gen_centerline).cpu().numpy()
-    assert np.array_equal(a, b)
-
-
-def test_polar_diversity_different_envs():
-    # Distinct per-env seeds -> distinct loops (phases differ per env).
-    cfg, gen, track = _run(seed=0)
-    N = int(cfg.num_points)
-    gc = wp.to_torch(gen._scratch.gen_centerline).cpu().numpy().reshape(cfg.num_envs, N, 2)
-    assert not np.allclose(gc[0], gc[1])

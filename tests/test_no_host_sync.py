@@ -7,10 +7,11 @@ pipeline wrappers, every registered generator's ``_run``, the facades'
 query/update/reset/sample/bake/refresh, ``Course.step``/``reset``/``regenerate`` (plain,
 ``advance``, masked)/``generate``/``enqueue_generate``, ``SeedState``'s device ops and the
 rng's ``set_seeds_warp`` and ``sample_*_warp(out=...)``. CPU cannot
-capture, so :func:`_probe` replaces ``wp.synchronize*`` and ``wp.array.numpy`` with
-tripwires that record the call and raise. Each driver then runs its entry point under
-the probe, and the test asserts zero calls. Construction (allocation, readback-based
-sizing) runs before the probe and is out of scope.
+capture, so :func:`_probe` (the library guard
+:func:`track_gen.testing.contract.no_host_sync`) replaces ``wp.synchronize*`` and
+``wp.array.numpy`` / ``list`` with tripwires that record the call and raise. Each driver
+then runs its entry point under the probe, and the test asserts zero calls. Construction
+(allocation, readback-based sizing) runs before the probe and is out of scope.
 
 ``test_every_wrapper_is_driven`` traces the drivers and fails when a module-level
 function of the pipeline modules is reached by none of them. A new wrapper therefore
@@ -22,7 +23,6 @@ through ``wp.synchronize*``; on CPU every generation path is probed.
 """
 from __future__ import annotations
 
-import contextlib
 import importlib
 import inspect
 import sys
@@ -71,11 +71,10 @@ from track_gen.exec import LaunchContext
 from track_gen.ops import reduce as reduce_mod
 from track_gen.plugin import registry
 from track_gen.seeds import SeedState
+from track_gen.testing.contract import HotPathGuard, no_host_sync
 
 DEV = "cpu"
 E = 2
-_SYNC_APIS = ("synchronize", "synchronize_device", "synchronize_stream",
-              "synchronize_event")
 
 # Known hot-path readbacks, as (api, module, function) -> the PR that removes them.
 # The probe lets these through instead of raising. The test also fails if one is no
@@ -86,35 +85,15 @@ _SYNC_APIS = ("synchronize", "synchronize_device", "synchronize_stream",
 _KNOWN_READBACKS: set = set()
 
 
-@contextlib.contextmanager
-def _probe():
-    """Tripwire every host sync and ``wp.array.numpy`` for the duration of the block.
+def _probe() -> HotPathGuard:
+    """Tripwire every host sync and host readback for the duration of the block.
 
-    Yields the list of known readbacks that were let through. Any other call is
-    recorded and raises, and a call swallowed by a broad ``except`` still fails the
-    final assertion.
+    The library guard (:func:`track_gen.testing.contract.no_host_sync`): any call is
+    recorded and raises, a call swallowed by a broad ``except`` still fails the block on
+    exit, and the debug sync (``TRACKGEN_DEBUG_SYNC``) is off. The known readbacks in
+    :data:`_KNOWN_READBACKS` are let through and listed in the guard's ``allowed``.
     """
-    hits, allowed = [], []
-    real_numpy = wp.array.numpy
-
-    def tripwire(api, real=None):
-        def call(*args, **kwargs):
-            caller = sys._getframe(1)
-            key = (api, caller.f_globals.get("__name__"), caller.f_code.co_name)
-            if key in _KNOWN_READBACKS and real is not None:
-                allowed.append(key)
-                return real(*args, **kwargs)
-            hits.append(f"{api} from {key[1]}.{key[2]}:{caller.f_lineno}")
-            raise AssertionError(f"host sync/readback on a hot path: {hits[-1]}")
-        return call
-
-    with pytest.MonkeyPatch.context() as mp:
-        mp.delenv("TRACKGEN_DEBUG_SYNC", raising=False)
-        for name in _SYNC_APIS:
-            mp.setattr(wp, name, tripwire(f"wp.{name}"))
-        mp.setattr(wp.array, "numpy", tripwire("wp.array.numpy", real_numpy))
-        yield allowed
-    assert hits == []
+    return no_host_sync(allow=_KNOWN_READBACKS)
 
 
 # ---------------------------------------------------------------------------------------
@@ -640,10 +619,11 @@ DRIVERS = {
 @pytest.mark.parametrize("name", sorted(DRIVERS))
 def test_hot_path_has_no_host_sync_or_readback(name):
     hot = DRIVERS[name]()
-    with _probe() as allowed:
+    with _probe() as guard:
         hot()
     expected = {k for k in _KNOWN_READBACKS if name == "track_run[repulsive]"}
-    assert set(allowed) == expected, f"known-readback allowlist out of date: {allowed}"
+    assert set(guard.allowed) == expected, \
+        f"known-readback allowlist out of date: {guard.allowed}"
 
 
 # ---------------------------------------------------------------------------------------

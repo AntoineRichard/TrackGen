@@ -14,6 +14,7 @@ from __future__ import annotations
 import collections
 import contextlib
 import dataclasses
+import functools
 import importlib.metadata as _metadata
 import os
 import re
@@ -247,14 +248,29 @@ def _entry_point_module(ep) -> str:
         return ""
 
 
+def _defining_function(value):
+    """The function behind a callable: through ``functools.partial`` (``.func``) and
+    decorators (``__wrapped__``)."""
+    for _ in range(32):                      # bounded: a proxy may fake attributes
+        if isinstance(value, functools.partial):
+            value = value.func
+        elif isinstance(value, (types.FunctionType, types.MethodType)) and \
+                getattr(value, "__wrapped__", None) is not None:
+            value = value.__wrapped__
+        else:
+            break
+    return value
+
+
 def _origin_module(spec, fallback: "str | None" = None) -> str:
-    """The module defining the spec's callables; else ``fallback`` (the module that
-    called ``add``); else the spec type's module."""
+    """The module defining the spec's callables (a ``functools.partial`` or a
+    decorated function counts as the function it wraps); else ``fallback`` (the module
+    that called ``add``); else the spec type's module."""
     for attr in ("generate", "alloc_scratch", "max_gates", "build"):
         value = getattr(spec, attr, None)
         if value is None:
             continue
-        module = getattr(value, "__module__", None)
+        module = getattr(_defining_function(value), "__module__", None)
         if isinstance(module, str) and module:
             return module
     if isinstance(spec, type):
