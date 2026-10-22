@@ -6,7 +6,7 @@ graphs, writes between replays) lives in test_params_cuda.py.
 from __future__ import annotations
 
 import dataclasses
-from types import MappingProxyType
+from types import MappingProxyType, SimpleNamespace
 
 import numpy as np
 import pytest
@@ -150,11 +150,75 @@ def test_registration_checks_the_params_class():
         registry.add(_stage(Params=P))
 
 
-def test_a_stage_of_another_kind_is_rejected_until_pr10():
-    S = _stage(kind="relax", output=None, writes={})
-    with pytest.raises(ValueError, match="Stage kind 'relax' arrives with roadmap PR10"):
-        registry.add(S)
-    assert "acme.s" not in registry.available("relax")
+def test_the_track_pipeline_kinds_are_open_and_the_others_are_not():
+    S = _stage(kind="relax", output=None, writes={})            # roadmap PR10b
+    registry.add(S)
+    assert registry.get("relax", "acme.s") is S
+    R = _stage(kind="resample", output=None, writes={})
+    with pytest.raises(ValueError, match=r"Stage S: Stage kind 'resample' is not open to "
+                                         r"plugins; open kinds: \['elevation', "
+                                         r"'generator', 'relax', 'validity', 'width'\]"):
+        registry.add(R)
+    assert "acme.s" not in registry.available("resample")
+
+
+def _pipeline_stage(**attrs):
+    def build(self, b, p):
+        return lambda ctx: None
+
+    ns = dict(kind="relax", name="acme.r", reads={"xy": "cl.xy"}, writes={"xy": "cl.xy"},
+              build=build)
+    ns.update(attrs)
+    return type("R", (Stage,), ns)
+
+
+@pytest.mark.parametrize("attrs,exc,match", [
+    (dict(output="centerline"), ValueError,
+     r"Stage R: output is for generators \(kind 'relax' declares none\)"),
+    (dict(writes={"xy": "cl.bogus"}), ValueError,
+     r"Stage R: unknown channels \['cl.bogus'\]; use catalogue channels or namespaced "
+     r"plugin channels 'cl.<package>.<name>'"),
+    (dict(writes={"xy": "cl.xy", "k": "cl.kappa"}), ValueError,
+     r"Stage R \(kind 'relax'\) writes 'cl.kappa' \(port 'k'\): a relax stage may write "
+     r"\['cl.xy'\] and plugin channels 'cl.<package>.<name>'"),
+    (dict(kind="width", reads={}, writes={"w": "cl.z"}), ValueError,
+     r"\(kind 'width'\) writes 'cl.z' \(port 'w'\): a width stage may write "
+     r"\['cl.half_width'\]"),
+    (dict(kind="elevation", reads={}, writes={"s": "seed"}), ValueError,
+     r"\(kind 'elevation'\) writes 'seed'"),
+    (dict(reads={"a": "cl.xy"}, writes={"b": "cl.xy"}), ValueError,
+     r"Stage R: channel 'cl.xy' is read through port 'a' and written through port 'b'; "
+     r"an in-place rewrite reads and writes it through one port"),
+    (dict(reads={"xy": "cl.count"}, writes={"xy": "cl.xy"}), ValueError,
+     r"port 'xy' reads 'cl.count' and writes 'cl.xy'"),
+    (dict(writes={"a": "cl.xy", "b": "cl.xy"}, reads={}), ValueError,
+     r"writes 'cl.xy' through two ports"),
+    (dict(kind="validity", reads={}, writes={"x": "cl.acme.score"}), ValueError,
+     r"Stage R \(kind 'validity'\) must write 'valid.fail'"),
+    (dict(capture=CaptureClass.BOUNDED), ValueError,
+     "capture=BOUNDED arrives with roadmap PR12"),
+    (dict(writes=[("xy", "cl.xy")]), TypeError, "writes must be a mapping"),
+])
+def test_pipeline_stage_registration_rules(attrs, exc, match):
+    with pytest.raises(exc, match=match):
+        registry.add(_pipeline_stage(**attrs))
+    assert "acme.r" not in registry.available(attrs.get("kind", "relax"))
+
+
+def test_namespaced_plugin_channels_are_accepted():
+    S = _pipeline_stage(writes={"xy": "cl.xy", "aux": "cl.acme.aux"})
+    registry.add(S)
+    V = _pipeline_stage(kind="validity", name="acme.v", reads={"aux": "cl.acme.aux"},
+                        writes={"fail": "valid.fail"})
+    registry.add(V)
+    assert dict(registry.describe("validity", "acme.v").reads) == {"aux": "cl.acme.aux"}
+    for bad in ("cl.acme", "acme.aux", "cl.1x.y", "cl.acme.", "band.acme.aux"):
+        with pytest.raises(ValueError, match="unknown channels"):
+            registry.add(_pipeline_stage(name="acme.bad", writes={"xy": "cl.xy",
+                                                                   "aux": bad}))
+    with pytest.raises(TypeError, match=r"a width spec must be a Stage subclass "
+                                        r"\(registry.add\(MyStage\)\)"):
+        registry.add(SimpleNamespace(name="acme.w"), kind="width")
 
 
 def test_registration_rejects_a_bounded_stage_until_pr12():
@@ -401,7 +465,8 @@ def test_a_salt_collision_raises(monkeypatch):
     (lambda b: b.write("nope", wp.vec2f, per="raw"), ValueError,
      r"declares no write port 'nope'; declared ports: \['ok', 'xy'\]"),
     (lambda b: b.write("xy", wp.vec3f, per="raw"), TypeError, "has dtype vec2f"),
-    (lambda b: b.write("xy", wp.vec2f), TypeError, "is per='raw', got per='env'"),
+    (lambda b: b.write("xy", wp.vec2f, per="env"), TypeError,
+     "is per='raw', got per='env'"),
     (lambda b: (b.write("ok", wp.int32), b.write("ok", wp.int32)), ValueError,
      "already written"),
     (lambda b: b.write("xy", wp.vec2f, per="raw", interp="linear"), NotImplementedError,
@@ -416,6 +481,18 @@ def test_builder_misuse_raises_at_construction(misuse, exc, match):
     _builder_stage("acme.misuse", lambda b, p: misuse(b))
     with pytest.raises(exc, match=match):
         _gen("acme.misuse")
+
+
+def test_builder_write_takes_dtype_and_per_from_the_channel():
+    seen = {}
+
+    def body(b, p):
+        seen["xy"], seen["ok"] = b.write("xy"), b.write("ok")
+
+    _builder_stage("acme.inferred", body)
+    _gen("acme.inferred")
+    assert seen["xy"].dtype is wp.vec2f and seen["ok"].dtype is wp.int32
+    assert seen["ok"].shape == (E,)
 
 
 def test_builder_static_param_and_input_clash():

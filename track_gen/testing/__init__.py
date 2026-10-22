@@ -1,12 +1,13 @@
-"""Conformance kit for generator plugins (and TrackGen's own generators).
+"""Conformance kit for generator and pipeline-stage plugins (and TrackGen's own).
 
-A plugin author runs one call in their own CI and learns whether their generator
-honours the generator contract::
+A plugin author runs one call in their own CI and learns whether their generator (or
+relax / width / elevation / validity stage) honours the contract::
 
-    from track_gen.testing import check_generator
+    from track_gen.testing import check_generator, check_stage
 
     report = check_generator("acme.superformula", params={"m": 7.0})  # cpu (+ cuda:0)
     report.raise_for_failures()
+    check_stage("relax", "acme.taubin").raise_for_failures()
 
 or, in pytest, loads the opt-in plugin (``pytest_plugins =
 ["track_gen.testing.pytest_plugin"]``) and calls the ``track_gen_conformance`` fixture.
@@ -15,7 +16,8 @@ TrackGen's own suite runs the same checks over every registered generator.
 Modules:
 
 - :mod:`~track_gen.testing.conformance`: :func:`check_generator`,
-  :func:`check_gate_generator`, :class:`Report`, :class:`CheckResult`, :data:`CHECKS`;
+  :func:`check_gate_generator`, :func:`check_stage`, :class:`Report`,
+  :class:`CheckResult`, :data:`CHECKS`;
 - :mod:`~track_gen.testing.contract`: hot-path guards (:func:`hot_path_guard`,
   :func:`no_host_sync`, :func:`no_allocation`, :func:`stream_explicit`; each returns
   a :class:`HotPathGuard`, whose breaches are :class:`Violation` s located by a
@@ -30,7 +32,14 @@ Modules:
 torch (only the torch capture modes do, inside the mode).
 """
 from .capture import CAPTURE_MODES, assert_caller_capturable
-from .conformance import CHECKS, CheckResult, Report, check_gate_generator, check_generator
+from .conformance import (
+    CHECKS,
+    CheckResult,
+    Report,
+    check_gate_generator,
+    check_generator,
+    check_stage,
+)
 from .contract import (
     CATEGORIES,
     HotPathGuard,
@@ -71,6 +80,7 @@ __all__ = [
     "buffers_of",
     "check_gate_generator",
     "check_generator",
+    "check_stage",
     "hot_path_guard",
     "no_allocation",
     "no_host_sync",

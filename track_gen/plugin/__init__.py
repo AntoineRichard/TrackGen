@@ -1,4 +1,5 @@
-"""Public extension surface: register track and gate generators without editing track_gen.
+"""Public extension surface: register track and gate generators, and relax / width /
+elevation / validity stages of the track pipeline, without editing track_gen.
 
 A pip-installable package adds generators through an entry point in the
 ``"track_gen.plugins"`` group (:data:`ENTRY_POINT_GROUP`) whose target is a
@@ -54,6 +55,16 @@ through ``params=``; a :class:`Stage` subclass (``kind="generator"``,
 through ``gen.params["generator"]`` without re-capturing a graph.
 :meth:`Registry.describe` reports each spec's Params JSON schema
 (:attr:`SpecInfo.params_schema`).
+
+Pipeline stages (roadmap PR10b). A :class:`Stage` of kind ``"relax"``, ``"width"``,
+``"elevation"`` or ``"validity"`` (registered as a class, like a generator Stage)
+replaces or extends a stage of the track pipeline: select it with
+:func:`track_gen.pipeline.presets.track` (``relax="acme.taubin"``,
+``checks=("default", "acme.max_curvature")``, ...), or with the flat shortcuts
+``TrackGenConfig(relax_solver=...)`` / ``TrackGenConfig(z_profile=...)``. TrackGen's own
+stages of these kinds (``relax.xpbd``, ``elevation.noise``, ``validity.default``, ...)
+are registered with the built-in generators. :func:`track_gen.testing.check_stage` runs
+the conformance checks on one.
 
 Quarantine. A quarantined plugin's registrations are rolled back and it is listed in
 :attr:`Registry.quarantined`; an unknown-name error lists the quarantined plugins with

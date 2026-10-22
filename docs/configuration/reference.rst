@@ -8,6 +8,8 @@ profile, gate counts) apply whatever the generator. A generator's own knobs are 
 the flat fields that carry the same names. This page lists:
 
 - the two config classes and every field (:ref:`config-classes`);
+- how ``relax_solver`` and ``z_profile`` select registered pipeline stages
+  (:ref:`flat-stage-shortcuts`);
 - how ``generator_params`` resolves (:ref:`generator-params-config`);
 - each built-in generator's Params, with defaults and rules
   (:ref:`builtin-generator-params`);
@@ -24,6 +26,74 @@ Config classes
 
 .. autoclass:: track_gen.GateGenConfig
    :no-members:
+
+.. _flat-stage-shortcuts:
+
+Pipeline stages: ``relax_solver`` and ``z_profile``
+---------------------------------------------------
+
+``TrackGenerator(config)`` builds the default pipeline of
+:doc:`/how-it-works/pipeline-preview`, and two flat fields pick its replaceable stages by
+name through the plugin registry (``track_gen.plugin.registry``), the way
+``generator`` picks the generator:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 40 40
+
+   * - Field
+     - Selects
+     - Params of the stage
+   * - ``relax_solver``
+     - The ``relax`` stage registered under that name: ``"xpbd"`` (default) or a
+       plugin's, such as ``"acme.taubin"``. ``relax_enable=False`` selects
+       ``relax.none`` instead (``relax_solver`` is still resolved first).
+     - ``relax.xpbd``: ``half_width`` and the ``relax_*`` fields, as before. A plugin:
+       its ``Params.from_legacy(config)``.
+   * - ``z_profile``
+     - The ``elevation`` stage registered under that name: ``"flat"`` (default),
+       ``"uniform"``, ``"random_walk"``, ``"noise"`` or a plugin's, such as
+       ``"acme.sinusoid_hills"``. Any name other than ``"flat"`` lifts with
+       ``lift.elevated`` (3D tangents and arc length).
+     - The built-ins: the ``z_*`` fields their profile uses, as before. A plugin: its
+       ``Params.from_legacy(config)``, which may map the flat ``z_*`` fields.
+
+``Params.from_legacy`` returns the class defaults unless the plugin overrides it, so a
+plugin stage selected by a flat field runs with its defaults; to pass other values, build
+the pipeline with :ref:`presets.track <pipeline-presets>` (``relax=("acme.taubin",
+{"passes": 20})``) and hand the spec to ``TrackGenerator``. The width and validity
+stages have no flat field: use the preset (``width=...``, ``checks=(...)``).
+
+The names are resolved when the generator is constructed, in the order
+``relax_solver``, ``smooth_finish``, ``z_profile``, after the generator and its
+``generator_params``:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 40 60
+
+   * - Cause
+     - Error at ``TrackGenerator`` construction
+   * - ``relax_solver="energy"`` or ``"tp_sobolev"``
+     - ``ValueError``: an oracle-only backend (``tests/_oracle``), not a relax stage; the
+       message lists the registered relax stages.
+   * - Another unknown ``relax_solver``
+     - ``ValueError``: ``TrackGenConfig.relax_solver: unknown relax 'bogus'; available:
+       ['none', 'xpbd']`` (plus the installed plugins' names).
+   * - An unknown ``z_profile``
+     - ``ValueError``: ``TrackGenConfig.z_profile: unknown elevation 'bogus';
+       available: ['flat', 'noise', 'random_walk', 'uniform']`` (plus the installed
+       plugins' names).
+   * - A name served by a plugin that failed to load
+     - That plugin's ``PluginLoadError``.
+
+``TrackGenConfig`` construction no longer checks ``z_profile`` against a fixed set: it
+only requires a non-empty string, since the registry, not the config, knows the
+installed stages. ``TrackGenConfig(z_profile="bogus")`` therefore constructs, and
+``TrackGenerator`` raises the error above; the ``z_*`` range rules
+(``z_min <= z_max``, ...) still run at config construction. ``GateGenConfig.z_profile``
+keeps its four names, checked at config construction, until the gate pipeline opens
+(roadmap PR11). ``Course`` takes a ``TrackGenConfig``, so both fields work there too.
 
 .. _generator-params-config:
 
@@ -426,8 +496,11 @@ When the rules are checked
 
 Config construction checks the core fields only (for tracks ``num_envs``,
 ``half_width``, the relaxation and smoothing knobs, ``output_mode``, spacing and the Z
-profile; for gates ``num_envs``, the gate counts, radius, width, solver iterations,
-ordering, alignment and the Z profile) and the type of ``generator_params``. The
+fields, with ``z_profile`` only required to be a non-empty string; for gates
+``num_envs``, the gate counts, radius, width, solver iterations, ordering, alignment and
+the Z profile) and the type of ``generator_params``. The ``relax_solver`` and
+``z_profile`` names are resolved by ``TrackGenerator`` (see
+:ref:`flat-stage-shortcuts`). The
 generator-specific rules in the tables above run when the generator is constructed
 (``TrackGenerator``, ``GateGenerator``, and so ``Course``), and only for the selected
 generator: first its ``validate()``, with the same conditions and messages as in

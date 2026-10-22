@@ -1,13 +1,14 @@
 Testing a Plugin
 ================
 
-``track_gen.testing`` is the conformance kit for generator plugins. One call runs a
-registered generator through every check the :doc:`generator contract
+``track_gen.testing`` is the conformance kit for generator and stage plugins. One call
+runs a registered generator through every check the :doc:`generator contract
 <writing-a-generator>` implies: output shapes and NaN padding, determinism, batch
 independence, no hidden state, no host sync or allocation on the hot path, a static
-launch sequence and, on CUDA, recording into a caller's graph. TrackGen's own test suite
-runs the same checks over every built-in generator, so a plugin is held to the standard
-the built-ins meet.
+launch sequence and, on CUDA, recording into a caller's graph. ``check_stage`` does the
+same for a relax, width, elevation or validity stage (see :ref:`kit-check-stage`).
+TrackGen's own test suite runs the same checks over every built-in generator and stage,
+so a plugin is held to the standard the built-ins meet.
 
 The kit checks the contract, not the quality of the tracks: yield, shape variety and
 speed are measured by ``benchmarks/compare_generators.py`` (see
@@ -297,6 +298,95 @@ ones; and ``output.accepted`` (the gate pipeline accepts at least one env) repla
 
    check_gate_generator("acme.scatter").raise_for_failures()
 
+.. _kit-check-stage:
+
+Pipeline stages: ``check_stage``
+--------------------------------
+
+``check_stage`` checks a stage of an open pipeline kind (see
+:doc:`writing-a-stage`) by running it where it belongs: in the default track pipeline
+of ``presets.track``, in the slot of its kind, built through ``TrackGenerator``.
+
+.. code-block:: python
+
+   from track_gen.testing import check_stage
+
+   check_stage("relax", "acme.taubin", {"passes": 4}).raise_for_failures()
+   check_stage("validity", "acme.max_curvature",
+               upstream={"elevation": "acme.sinusoid_hills"}).raise_for_failures()
+
+.. code-block:: python
+
+   check_stage(kind, name, params=None, *, upstream=None, devices=None, num_envs=8,
+               seeds=(11, 1009), capture_modes=("warp", "external", "torch"), skip=(),
+               modules=())
+
+- ``kind`` is ``"relax"``, ``"width"``, ``"elevation"`` or ``"validity"`` (``ValueError``
+  otherwise); ``name`` is looked up in the registry like a generator's (an unknown name
+  raises the registry's ``ValueError``, a quarantined plugin its ``PluginLoadError``).
+- ``params`` is the stage's params: a Params instance, a mapping of its fields, or
+  ``None`` for the defaults.
+- ``upstream`` holds more ``presets.track`` keyword arguments, the rest of the pipeline
+  the stage runs in: ``generator``, ``generator_params``, ``num_points``, ``n_max``,
+  ``half_width``, the other kinds' stages, ``on_invalid``. ``num_envs``, ``device`` and
+  the slot under test (``relax``, ``width`` or ``elevation``) are the kit's and raise
+  ``ValueError``. For a validity stage, ``upstream["checks"]`` lists the checks that run
+  before it (default ``("default",)``), and the stage is appended to them under its own
+  name as id; a validity stage that writes ``valid.fail`` without reading it replaces
+  them instead.
+- ``devices``, ``num_envs`` (at least 2), ``seeds``, ``capture_modes``, ``skip`` and
+  ``modules`` are those of ``check_generator`` (see `Arguments`_).
+
+The report reads like a generator's, under ``CHECKS[kind]``. The checks are those of the
+generator kit, on the whole pipeline's ``Track`` (``output.*`` checks it as
+``check_generator`` does after the pipeline), without ``diversity`` and
+``output.closed`` (the raw loop is the generator's business; a stage need not add
+diversity), plus:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 21 42 37
+
+   * - Check
+     - Passes when
+     - Usual causes of a failure
+   * - ``output.accepted`` (not for validity)
+     - The pipeline with the stage accepts at least one env. When it accepts none, the
+       same pipeline with the slot's neutral built-in (``relax.none``,
+       ``width.constant``, ``elevation.flat``) runs: if that one accepts none either,
+       the check is skipped (the stage did not reject them).
+     - A relax stage that leaves NaNs or self-crossings, a width under ``w_floor``, an
+       elevation steeper than ``z_valid_grade``.
+   * - ``stage.isolation``
+     - After a generation, the stage's write buffers are filled with a poison byte and
+       only its ``enqueue`` re-runs on the same inputs: it changes none of the channel
+       versions it reads and reproduces every version it writes, byte for byte (a slot
+       still holding the poison is reported unwritten). A stage that launches nothing
+       (``elevation.flat``: its output is the buffer's build-time zero) writes nothing
+       to compare.
+     - Writing the buffer ``b.read`` returned (copying a result back into it); reading
+       its own previous output or a scratch value before writing it; an output slot left
+       unwritten (padding included).
+   * - ``validity.bits`` (validity only)
+     - The stage owns at least one fail bit, the bits it does not own are exactly those
+       of the same pipeline without it, and ``Track.valid == (fail_mask == 0)``. Then
+       the stage alone is re-run on a synthetic ``valid.fail`` input holding bits it
+       does not own (alternating patterns over bits 0-30) into a write buffer filled
+       with ``-1``: every env must come out with exactly those bits besides its own.
+       ``details`` holds its bits and the fraction of envs with one of them set.
+       ``validity.default``, which starts the bitmask (the only stage the planner lets
+       do so), must leave ``fail_mask`` with its own bits only.
+     - OR-ing a built-in bit (``fail_in | 1``), clearing bits of earlier checks (writing
+       ``own`` instead of ``fail_in | own``), skipping the envs that pass.
+
+``determinism``, ``batch_independence`` and ``statelessness`` compare whole ``Track``
+batches, ``fail_mask`` included. The ``hot_path.*`` checks guard two generations of the
+whole Program and probe ``track_gen`` and the stage's own top-level package; the
+``capture.*`` checks record the whole Program into a caller's capture
+(``assert_caller_capturable``) and replay its own graph. A ``HOST`` stage makes the
+Program eager, and the checks are waived as for a ``capturable=False`` generator (see
+the skipped checks above).
+
 The pytest plugin
 -----------------
 
@@ -308,11 +398,13 @@ provides:
 
 - the ``track_gen_conformance`` fixture, a factory:
   ``track_gen_conformance(name, params=None, *, kind="generator", **kwargs)`` runs
-  ``check_generator`` (``check_gate_generator`` with ``kind="gate_generator"``) with
-  ``kwargs``, fails the test listing every failed check, and returns the ``Report``;
+  ``check_generator`` (``check_gate_generator`` with ``kind="gate_generator"``,
+  ``check_stage`` with ``kind`` one of ``"relax"``, ``"width"``, ``"elevation"``,
+  ``"validity"``) with ``kwargs``, fails the test listing every failed check, and returns
+  the ``Report``;
 - ``generator_names(kind="generator", *, builtin=None, exclude=())``, the sorted names
-  registered under ``kind`` (``builtin=False`` keeps the third-party ones,
-  ``builtin=True`` the built-ins);
+  registered under ``kind``, a generator kind or one of the four stage kinds
+  (``builtin=False`` keeps the third-party ones, ``builtin=True`` the built-ins);
 - ``parametrize_generators(kind="generator", *, argname="generator", builtin=None,
   exclude=())``, the matching ``pytest.mark.parametrize``. It reads the registry at
   collection time, which loads the installed plugins then.
@@ -519,6 +611,11 @@ What the kit does not see
   kit once per setting that selects a different code path.
 - **Masked regeneration and dynamic parameters.** The kit does not drive
   ``generate(advance=True, mask=...)`` or ``params.set``; test a Stage's dynamic
-  parameters as :ref:`plugin-own-tests` shows.
+  parameters as :ref:`plugin-own-tests` shows. (A masked regeneration is exact by
+  construction: the commit restores the envs outside the mask; see
+  :ref:`pipeline-commit`.)
+- **A stage in another position or pipeline.** ``check_stage`` runs the stage in its
+  default slot of ``presets.track`` with the ``upstream`` you give. A stage you insert
+  elsewhere, or rewire with ``ports``, needs a test of that pipeline.
 - **Track quality.** One valid env is enough for ``output.closed``; yield, shape and
   speed are for ``benchmarks/compare_generators.py``.

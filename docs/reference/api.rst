@@ -187,9 +187,10 @@ Constants
 Plugin registry
 ---------------
 
-Track and gate generators selected by name, built-ins and installed packages alike (entry
-point group ``track_gen.plugins``), their parameters and the ``Stage`` protocol; see
-:doc:`/contributing/writing-a-generator`.
+Track and gate generators and the ``relax``, ``width``, ``elevation`` and ``validity``
+stages of the track pipeline, selected by name, built-ins and installed packages alike
+(entry point group ``track_gen.plugins``), their parameters and the ``Stage`` protocol;
+see :doc:`/contributing/writing-a-generator` and :doc:`/contributing/writing-a-stage`.
 ``track_gen.plugin`` is a subpackage outside ``track_gen.__all__``: import it explicitly.
 Importing ``track_gen`` loads no generator module and no plugin; the registry loads on its
 first lookup.
@@ -224,7 +225,9 @@ first lookup.
    :type: track_gen.plugin.Registry
 
    The process-global :class:`~track_gen.plugin.Registry`. ``TrackGenerator``,
-   ``GateGenerator`` and ``Course`` resolve ``config.generator`` through it.
+   ``GateGenerator`` and ``Course`` resolve ``config.generator`` through it, and
+   ``TrackGenerator`` and :func:`~track_gen.pipeline.build` the pipeline stages of the
+   open kinds (``config.relax_solver`` and ``config.z_profile`` included).
 
 .. autoclass:: track_gen.plugin.Registry
    :members:
@@ -269,22 +272,24 @@ A generator's own parameters, set with ``TrackGenConfig.generator_params`` /
 .. autoclass:: track_gen.plugin.StageParams
    :members: stage_id, params, set
 
-Stage generators
-~~~~~~~~~~~~~~~~
+Stages
+~~~~~~
 
 The ``Stage`` protocol: a ``Stage`` subclass, registered as a class, that allocates
-through the ``StageBuilder`` it is handed and returns an ``enqueue(ctx)`` callable; see
-:ref:`generator-stage-contract`. Plugins register ``kind="generator"`` stages with
-``output="centerline"``; the other track stages (with read ports, ``StageBuilder.read``
-and ``temp_like``) are TrackGen's built-ins until roadmap PR10b (see
-:doc:`/how-it-works/pipeline-preview`). Gate generator stages (``output="anchors"``)
-arrive with roadmap PR11.
+through the ``StageBuilder`` it is handed and returns an ``enqueue(ctx)`` callable.
+Plugins register ``kind="generator"`` stages with ``output="centerline"`` (see
+:ref:`generator-stage-contract`) and stages of the open pipeline kinds ``"relax"``,
+``"width"``, ``"elevation"`` and ``"validity"``, which read channels through
+``StageBuilder.read`` and rewrite them into ``StageBuilder.write`` (see
+:doc:`/contributing/writing-a-stage`). The other track stages are TrackGen's built-ins
+(see :doc:`/how-it-works/pipeline-preview`). Gate generator stages
+(``output="anchors"``) arrive with roadmap PR11.
 
 .. autoclass:: track_gen.plugin.Stage
    :members: capture_class, capacity, build
 
 .. autoclass:: track_gen.plugin.StageBuilder
-   :members: read, write, temp_like, scratch, param, input, salt
+   :members: read, write, temp_like, scratch, param, input, salt, fail_bit
 
 .. autoclass:: track_gen.plugin.CaptureClass
    :no-members:
@@ -297,18 +302,23 @@ Pipeline (preview)
 
 .. warning::
 
-   **Preview.** ``track_gen.pipeline`` may change before roadmap PR10b. Only the
-   generator stage can come from a plugin in this release.
+   **Preview.** ``track_gen.pipeline`` may change before 1.0. ``TrackGenerator`` is the
+   stable entry point; it accepts a ``PipelineSpec`` as well as a ``TrackGenConfig``.
 
-The track pipeline as an ordered list of stages: the spec types, the planner and the
-``Program`` it builds; see :doc:`/how-it-works/pipeline-preview`. ``TrackGenerator``
-builds its pipeline with :func:`legacy.to_pipeline_spec
-<track_gen.pipeline.legacy.to_pipeline_spec>` and :func:`~track_gen.pipeline.build`.
-``track_gen.pipeline`` is a subpackage outside ``track_gen.__all__``: import it
-explicitly. ``import track_gen`` does not import it.
+The track pipeline as an ordered list of stages: the spec types, the presets, the
+planner and the ``Program`` it builds; see :doc:`/how-it-works/pipeline-preview`.
+``TrackGenerator(config)`` builds its pipeline with :func:`legacy.to_pipeline_spec
+<track_gen.pipeline.legacy.to_pipeline_spec>` and :func:`~track_gen.pipeline.build`;
+``TrackGenerator(spec)`` builds the spec it is given, usually from
+:func:`presets.track <track_gen.pipeline.presets.track>`. ``track_gen.pipeline`` is a
+subpackage outside ``track_gen.__all__``: import it explicitly. ``import track_gen``
+does not import it.
 
 .. automodule:: track_gen.pipeline
    :no-members:
+
+Specs
+~~~~~
 
 .. autoclass:: track_gen.pipeline.StageRef
    :no-members:
@@ -319,15 +329,41 @@ explicitly. ``import track_gen`` does not import it.
 .. autoclass:: track_gen.pipeline.PipelineSpec
    :members: ids, replace, insert_after, insert_before, remove, to_dict, from_dict
 
+.. autofunction:: track_gen.pipeline.legacy.to_pipeline_spec
+
+Presets
+~~~~~~~
+
+.. autofunction:: track_gen.pipeline.presets.track
+
+Planner and Program
+~~~~~~~~~~~~~~~~~~~
+
 .. autofunction:: track_gen.pipeline.build
 
 .. autoclass:: track_gen.pipeline.Program
-   :members: run, enqueue, prepare, result, spec, seeds, seed, inputs, params, graph,
-      capturable, capture_class
+   :members: run, enqueue, prepare, result, spec, tap, channels, fail_bits, on_invalid,
+      seeds, seed, inputs, params, graph, capturable, capture_class
 
 .. autoexception:: track_gen.pipeline.PlanError
 
-.. autofunction:: track_gen.pipeline.legacy.to_pipeline_spec
+Fail bits
+~~~~~~~~~
+
+.. py:currentmodule:: track_gen.pipeline
+
+.. py:data:: BUILTIN_FAIL_BITS
+   :type: Mapping[str, int]
+
+   The ``valid.fail`` bits of TrackGen's built-in checks, a read-only mapping:
+   ``{"generator": 0, "turning": 1, "finite": 2, "thickness": 3, "w_floor": 4,
+   "border": 5, "grade": 6, "truncation": 7}``. Bits 8 to 15 are reserved for future
+   built-in checks, 16 to 30 are assigned to plugin checks by
+   :meth:`StageBuilder.fail_bit() <track_gen.plugin.StageBuilder.fail_bit>`, and bit
+   31 is never used. ``Program.fail_bits`` and ``Track.fail_bits`` extend it with the
+   plugin checks of a pipeline; see :ref:`pipeline-fail-bits`.
+
+.. py:currentmodule:: None
 
 Torch interop
 -------------
@@ -346,8 +382,8 @@ import torch.
 Conformance kit
 ---------------
 
-The checks a generator plugin runs in its own CI, and TrackGen runs over every built-in;
-see :doc:`/contributing/testing-a-plugin`. ``track_gen.testing`` is a subpackage outside
+The checks a generator or stage plugin runs in its own CI, and TrackGen runs over every
+built-in; see :doc:`/contributing/testing-a-plugin`. ``track_gen.testing`` is a subpackage outside
 ``track_gen.__all__``: import it explicitly. ``import track_gen`` does not import it,
 and importing it imports neither torch nor pytest.
 
@@ -364,18 +400,21 @@ Conformance checks
 
 .. autofunction:: track_gen.testing.check_gate_generator
 
+.. autofunction:: track_gen.testing.check_stage
+
 .. py:currentmodule:: track_gen.testing
 
 .. py:data:: CHECKS
    :type: Mapping[str, tuple[str, ...]]
 
-   The check names of each registry kind (``"generator"``, ``"gate_generator"``), in
-   run order. A read-only mapping.
+   The check names of each registry kind (``"generator"``, ``"gate_generator"``,
+   ``"relax"``, ``"width"``, ``"elevation"``, ``"validity"``), in run order. A
+   read-only mapping.
 
 .. autoclass:: track_gen.testing.Report
    :members: ok, failures, failed_names, result, raise_for_failures
 
-   ``kind`` and ``name`` identify the generator; ``results`` is the list of
+   ``kind`` and ``name`` identify the generator or stage; ``results`` is the list of
    :class:`CheckResult <track_gen.testing.CheckResult>`, one per check and device.
 
 .. autoclass:: track_gen.testing.CheckResult
@@ -503,14 +542,15 @@ load it with ``pytest_plugins = ["track_gen.testing.pytest_plugin"]`` in a top-l
 
    A pytest fixture whose value is this factory. It runs
    :func:`~track_gen.testing.check_generator` (with ``kind="gate_generator"``,
-   :func:`~track_gen.testing.check_gate_generator`) on ``name`` with ``params`` and
-   ``kwargs``, fails the test listing every failed check unless all pass, and returns
-   the :class:`~track_gen.testing.Report`.
+   :func:`~track_gen.testing.check_gate_generator`; with ``kind`` one of ``"relax"``,
+   ``"width"``, ``"elevation"``, ``"validity"``, :func:`~track_gen.testing.check_stage`)
+   on ``name`` with ``params`` and ``kwargs``, fails the test listing every failed check
+   unless all pass, and returns the :class:`~track_gen.testing.Report`.
 
 .. py:function:: generator_names(kind="generator", *, builtin=None, exclude=()) -> list[str]
 
-   The names registered under ``kind`` (``"generator"`` or ``"gate_generator"``),
-   sorted, without those in ``exclude``. ``builtin=True`` keeps only the built-ins,
+   The names registered under ``kind`` (``"generator"``, ``"gate_generator"`` or one of
+   the four stage kinds), sorted, without those in ``exclude``. ``builtin=True`` keeps only the built-ins,
    ``builtin=False`` only the third-party generators.
 
 .. py:function:: parametrize_generators(kind="generator", *, argname="generator", builtin=None, exclude=())
@@ -528,6 +568,10 @@ Result types
    :no-members:
 
    .. automethod:: clone
+
+   ``fail_mask`` and ``fail_bits`` say why an env is invalid: the bit table is
+   :data:`~track_gen.pipeline.BUILTIN_FAIL_BITS` plus the pipeline's plugin checks (see
+   :ref:`pipeline-fail-bits`).
 
 .. autoclass:: track_gen.GateSequence
    :no-members:

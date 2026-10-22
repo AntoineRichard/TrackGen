@@ -11,8 +11,9 @@ It provides:
 - the ``track_gen_conformance`` fixture: a factory
   ``track_gen_conformance(name, params=None, *, kind="generator", **kwargs) -> Report``
   that runs :func:`~track_gen.testing.check_generator` (``kind="gate_generator"``:
-  :func:`~track_gen.testing.check_gate_generator`) and fails the test, listing every
-  failed check, unless all pass;
+  :func:`~track_gen.testing.check_gate_generator`; ``"relax"`` / ``"width"`` /
+  ``"elevation"`` / ``"validity"``: :func:`~track_gen.testing.check_stage`) and fails
+  the test, listing every failed check, unless all pass;
 - :func:`generator_names` and :func:`parametrize_generators`, to run a test over the
   registered generators::
 
@@ -28,11 +29,11 @@ from typing import Iterable
 
 import pytest
 
-from .conformance import Report, check_gate_generator, check_generator
+from .conformance import Report, check_gate_generator, check_generator, check_stage
 
 __all__ = ["generator_names", "parametrize_generators", "track_gen_conformance"]
 
-_KINDS = ("generator", "gate_generator")
+_KINDS = ("generator", "gate_generator", "relax", "width", "elevation", "validity")
 
 
 def _check_kind(kind: str) -> None:
@@ -42,8 +43,9 @@ def _check_kind(kind: str) -> None:
 
 def generator_names(kind: str = "generator", *, builtin: "bool | None" = None,
                     exclude: Iterable[str] = ()) -> list[str]:
-    """The names registered under ``kind`` (``"generator"`` or ``"gate_generator"``),
-    sorted; ``builtin=True`` / ``False`` keeps only the built-ins / only the others."""
+    """The names registered under ``kind`` (``"generator"``, ``"gate_generator"``,
+    ``"relax"``, ``"width"``, ``"elevation"`` or ``"validity"``), sorted;
+    ``builtin=True`` / ``False`` keeps only the built-ins / only the others."""
     from ..plugin import registry  # noqa: PLC0415
 
     _check_kind(kind)
@@ -67,13 +69,18 @@ def parametrize_generators(kind: str = "generator", *, argname: str = "generator
 def track_gen_conformance():
     """Factory: ``track_gen_conformance(name, params=None, *, kind="generator",
     **kwargs)`` runs the conformance checks (``kwargs`` as
-    :func:`~track_gen.testing.check_generator`), fails the test when one fails, and
-    returns the :class:`~track_gen.testing.Report`."""
+    :func:`~track_gen.testing.check_generator`, or
+    :func:`~track_gen.testing.check_stage` for a pipeline-stage kind), fails the test
+    when one fails, and returns the :class:`~track_gen.testing.Report`."""
 
     def run(name: str, params=None, *, kind: str = "generator", **kwargs) -> Report:
         _check_kind(kind)
-        check = check_generator if kind == "generator" else check_gate_generator
-        report = check(name, params, **kwargs)
+        if kind == "generator":
+            report = check_generator(name, params, **kwargs)
+        elif kind == "gate_generator":
+            report = check_gate_generator(name, params, **kwargs)
+        else:
+            report = check_stage(kind, name, params, **kwargs)
         if not report.ok:
             lines = "\n".join(f"  {r}" for r in report.failures)
             pytest.fail(f"{kind.replace('_', ' ')} {name!r} failed "

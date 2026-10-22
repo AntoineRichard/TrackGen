@@ -505,12 +505,14 @@ def test_masked_generation_in_caller_graph_latches_only_masked_envs():
 
     - masked envs latch 0.3, advance their epoch and equal an ``amp=0.3`` twin advanced
       the same way;
-    - unmasked envs keep their 0.15 work value and stay bitwise unchanged, ``generation``
-      included;
+    - unmasked envs keep their 0.15 work value and stay bitwise unchanged: every replay
+      starts from a poisoned Track (``generation`` aside), and the commit restores the
+      rows it held, so an unmasked env still holds the poison byte for byte, and its
+      ``generation`` its previous epoch;
     - an all-zero mask is an exact no-op.
 
-    After the complement every env has been regenerated at epoch 1, and the whole batch
-    equals the twin's."""
+    After the complement every env has been regenerated at epoch 1, and the rows each env
+    got when it was regenerated equal the twin's final batch."""
     probe = _instrument(ToyWobble, "toy.count")
     gen, _ = _make("toy.count")
     twin, _ = _make(amp=0.3)
@@ -537,12 +539,15 @@ def test_masked_generation_in_caller_graph_latches_only_masked_envs():
 
     epoch = np.zeros(E, np.int32)
     work = _full(_DEFAULT)
-    prev = base
+    # Env e's rows as of the replay that last regenerated it (the construction batch
+    # before): what the batch would hold had nothing been poisoned.
+    regenerated = {k: v.reshape(E, -1).copy() for k, v in base.items()}
     for k, mk in enumerate((_M1, _ZERO, 1 - _M1)):
         label = f"replay {k} mask {mk.tolist()}"
         _write(m, mk)
         _write(m_t, mk)
         _poison_all(out, keep=("generation",))   # written for the masked envs only
+        poisoned = _snapshot(out)
         _replay(cap.graph, s)
         ref_out = twin.enqueue(advance=True, mask=m_t)
         wp.synchronize()
@@ -551,13 +556,16 @@ def test_masked_generation_in_caller_graph_latches_only_masked_envs():
         work = np.where(mk != 0, np.float32(0.3), work).astype(np.float32)
         cur = _snapshot(out)
         masked, unmasked = np.flatnonzero(mk), np.flatnonzero(mk == 0)
-        _assert_host(_rows(cur, unmasked), _rows(prev, unmasked), f"{label}: unmasked envs")
+        _assert_host(_rows(cur, unmasked), _rows(poisoned, unmasked),
+                     f"{label}: unmasked envs (held and restored by the commit)")
         _assert_host(_rows(cur, masked), _rows(ref, masked), f"{label}: masked envs vs twin")
         np.testing.assert_array_equal(probe.work.numpy(), work, err_msg=f"{label}: work")
         np.testing.assert_array_equal(gen.seeds.epoch.numpy(), epoch, err_msg=label)
         np.testing.assert_array_equal(out.generation.numpy(), epoch, err_msg=label)
-        prev = cur
-    _assert_host(prev, ref, "every env regenerated at epoch 1 with amp 0.3")
+        for name, v in cur.items():
+            regenerated[name][masked] = v.reshape(E, -1)[masked]
+    _assert_host({k: v.reshape(-1, *ref[k].shape[1:]) for k, v in regenerated.items()}, ref,
+                 "every env regenerated at epoch 1 with amp 0.3")
     assert probe.calls == 3, "warm-up + construction + the one recording"
 
 

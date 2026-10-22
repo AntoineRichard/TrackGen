@@ -16,7 +16,7 @@
   PR10a). The pipeline `TrackGenerator` runs is now described by data: a `PipelineSpec`
   lists the stages in order, `build()` plans and allocates it once, and a `Program` runs
   it. Outputs are byte-identical to 0.2.0.dev2. The package is a **preview**: names may
-  change before roadmap PR10b, and only the generator stage can come from a plugin. The
+  change before 1.0 (roadmap PR10b, below, opens four more stage kinds to plugins). The
   new page `docs/how-it-works/pipeline-preview.rst` describes it, and
   `docs/reference/api.rst` documents it. `track_gen.pipeline` is outside
   `track_gen.__all__`; `import track_gen` does not import it.
@@ -46,11 +46,13 @@
   - `build(spec, *, registry=None, seeds=None, out=None, stream=None, prepare=True)`, the
     planner. Before it allocates or launches anything it checks the batch (`num_envs >= 1`,
     `n_max >= 3`, `closed=True`), unique slot ids with exactly one generator stage, first,
-    with the id `generator`; resolves the generator through `registry` as `TrackGenerator` does and every
-    other stage from TrackGen's built-in catalogue; coerces and validates each stage's
-    params; checks that every stage that has a `half_width` field agrees on it; checks
-    that every channel read has an earlier writer, that a second writer of a channel
-    also reads it, that every `Track` field has a writer, and that `lift.flat` does not
+    with the id `generator`; resolves the generator through `registry` as
+    `TrackGenerator` does and every other stage from TrackGen's built-in catalogue
+    (since PR10b, the `relax`, `width`, `elevation` and `validity` stages through
+    `registry` too); coerces and validates each stage's params; checks that every stage
+    that has a `half_width` field agrees on it; checks that every channel read has an
+    earlier writer, that a second writer of a channel also reads it, that every `Track`
+    field has a writer, and that `lift.flat` does not
     follow an elevation other than `elevation.flat`; and checks the `seeds` type. It
     then builds the `SeedState`, allocates every channel version once
     (zero-initialised), binds the final version of each exported channel to the `Track`
@@ -63,7 +65,8 @@
   - `Program`, a `GraphRunner` launchable with the PR3/PR4 rules: `run(*, stream=None,
     sync=False, advance=False, mask=None, policy="auto")`, `enqueue(ctx, *,
     advance=False, mask=None)` (seed prologue, parameter latch, every stage in order,
-    `generation` write; no allocation, no host sync), `prepare()`, `result` (the same
+    `generation` write, with PR10b's commit before it; no allocation, no host sync),
+    `prepare()`, `result` (the same
     `Track` forever), `seeds`, `seed`, `inputs`, `params` (keyed by stage id), `graph`,
     `capturable` and `capture_class`. A Program built with `prepare=False` is prepared
     by its first `run()` outside a capture; recording it unprepared raises
@@ -82,6 +85,134 @@
   declared by naming one channel in both. A PR8 generator `Stage` runs unchanged: a
   generator still declares no reads, so `read()` raises `ValueError` there, and
   `temp_like()` returns private scratch shaped like a write port's channel.
+  `StageBuilder.write(port, dtype=None, *, per=None)` takes `dtype` / `per` from the
+  channel when omitted (a catalogue channel, or a plugin channel an earlier stage
+  wrote); explicit values must still match, and a plugin channel's first writer passes
+  `dtype` (`per` still defaults to `"env"`).
+- **Plugin pipeline stages: `relax`, `width`, `elevation` and `validity`** (roadmap
+  PR10b). A plugin registers a `Stage` subclass of one of these kinds with
+  `reg.add(MyStage)`, through the same entry point, registry, quarantine and
+  `describe()` as a generator, and users select it by name. The new guide
+  `docs/contributing/writing-a-stage.rst` walks through a relax stage (Taubin smoothing),
+  a width stage, an elevation stage (sinusoidal hills) and a validity check (maximum
+  curvature).
+  - The built-ins are registered under these kinds by TrackGen's own `register`:
+    `relax:xpbd`, `relax:none`, `width:constant`, `elevation:flat`,
+    `elevation:uniform`, `elevation:random_walk`, `elevation:noise` and
+    `validity:default`. `resample`, `frames`, `offset` and `lift` stay in the private
+    catalogue (not open to plugins).
+  - Registration rules for the four kinds: no `output` and no `provides`; `reads` and
+    `writes` name catalogue channels or namespaced plugin channels `cl.<package>.<name>`;
+    one write port per channel; a rewrite reads and writes a channel through ONE port;
+    each kind writes only its own catalogue channel (`relax` -> `cl.xy`, `width` ->
+    `cl.half_width`, `elevation` -> `cl.z`, `validity` -> `valid.fail`) plus plugin
+    channels; a validity stage writes `valid.fail`. A Stage of another kind is refused
+    as not open to plugins, and a non-Stage spec under one of the four kinds raises
+    `TypeError`. The planner repeats the port and write rules after `StageRef.ports`
+    rewiring, as `PlanError`. `SpecInfo.reads` reports a stage's read ports.
+  - The planner resolves these kinds through the registry (`build(spec,
+    registry=...)`) and keeps the resolved class: an unknown name raises `PlanError`
+    with the registry's list (`stage 'relax' (relax.nope): unknown relax 'nope';
+    available: ['none', 'xpbd']`), a quarantined plugin its `PluginLoadError`. A plugin
+    channel's dtype and size are fixed by its first writer. The Program's capture class
+    is the highest of its stages': a `HOST` stage makes it eager; `BOUNDED` is a
+    `PlanError` (PR12).
+- **`track_gen.pipeline.presets.track(*, num_envs, device, n_max=384, scale=1.0,
+  generator="bezier", generator_params=None, num_points=256, half_width=0.1,
+  spacing=None, relax="xpbd", width="constant", elevation="flat", checks=("default",),
+  on_invalid="keep", z_base=0.0)`**, returning the `PipelineSpec` of a track pipeline. Each stage is
+  a name, a `(name, params)` pair, a `StageRef` (of the matching kind) or `None`
+  (`relax=None` is `relax.none`, `elevation=None` is `elevation.flat`; `width=None` is a
+  `ValueError`); further checks are appended after `validity` under their names (a
+  duplicate id is a `ValueError`). `half_width` is filled into the built-ins that bake
+  it, `spacing` defaults to `0.6 * half_width`, and `lift` is `lift.flat` exactly when
+  the elevation is `elevation.flat`. It is pure data (no registry access), and
+  `presets.track(num_envs=E, device=d)` builds byte-identical to
+  `legacy.to_pipeline_spec(TrackGenConfig(num_envs=E, device=d))`. Combine it with the
+  edit operations, e.g. `.insert_after("validity", StageRef("validity",
+  "acme.max_curvature", id="kmax"))`. `checks` is a sequence whose first selection is
+  `"default"` (a single selection raises `TypeError`, another first check
+  `ValueError`), and params that set a `half_width` other than the preset's raise
+  `ValueError` naming `half_width=`.
+- **`TrackGenerator(config_or_spec, rng=None, *, seeds=None, stream=None)`** accepts a
+  `PipelineSpec` as well as a `TrackGenConfig`. Seeds come from `rng` or from `seeds`
+  (any `SeedState` form; both raise `ValueError`; neither gives env `e` the seed `e`).
+  `gen.config` returns what was passed, so `TrackGenerator(gen.config, rng)` rebuilds
+  an identical generator. `gen.program` (preview) is the `Program`; the new
+  `gen.num_envs`, `gen.device` and `gen.n_max` read the batch whichever form was passed
+  (`gen.config` is a `TrackGenConfig` or a `PipelineSpec`). Any other argument raises
+  `TypeError`. `Course` still takes a `TrackGenConfig`.
+- **Fail bits.** The new `[E]` int32 channel `valid.fail` is a per-env bitmask, bit `i`
+  set when check `i` failed:
+
+  | bits | owner |
+  |---|---|
+  | 0 generator, 1 turning, 2 finite, 3 thickness, 4 w_floor, 5 border, 6 grade, 7 truncation | `validity.default` |
+  | 8-15 | reserved for future built-in checks |
+  | 16-30 | plugin checks, in pipeline order |
+  | 31 | never used |
+
+  `validity.default` keeps the single fused `_validity_k` launch and writes bits 0-7
+  next to its 0/1 flag (an empty loop gets bit 1, plus 0 and 7 when they apply);
+  `track_gen.pipeline.BUILTIN_FAIL_BITS` is that name -> bit table (the border and
+  grade bits are named even when their check is off). A plugin validity stage rewrites
+  `valid.fail` (`fail_out = fail_in | own`) with a bit from the new
+  **`StageBuilder.fail_bit(name=None)`**: 16, 17, ... in pipeline order, named after the
+  stage id by default; a 16th plugin bit, a name taken twice, a validity stage that owns
+  no bit, a plugin reserving built-in bits (built-in-ness is the registry's record of
+  where the class was registered, not its module name) or a pipeline whose `valid.fail`
+  another stage than `validity.default` starts (that would drop the built-in checks, so
+  truncation would fail open) raise `PlanError`, and `fail_bit()` from another kind
+  raises `ValueError`. `Program.fail_bits` and the new
+  **`Track.fail_mask`** (`[E]` int32, `None` on a `Track` built elsewhere) and
+  **`Track.fail_bits`** (name -> bit) expose it; `Track.valid == (fail_mask == 0)`.
+  `Track.clone()` clones `fail_mask`.
+- **The commit, `on_invalid` and exact masked regeneration.** The commit is the
+  Program's epilogue, after the stages and before the `generation` write. The `Track`
+  arrays stay the final channel versions (no copy). Under
+  `generate(advance=True, mask=m)` the stages still recompute and write every env, but
+  a kernel before them holds the `Track` rows of every env with `m[e] == 0` and the
+  commit restores them bit for bit after them: an unmasked env ends the generation with
+  exactly the bytes it had, `generation` included, whatever its recomputation gave, so
+  masked regeneration no longer relies on bitwise determinism (an all-zero mask stays an
+  exact no-op). This is a hold / restore, not a sole-writer commit: within the generation
+  the unmasked rows are overwritten by the recomputation and then restored, both on the
+  generation's stream. Work ordered after the generation on that stream (or after an
+  event recorded on it) never observes them; a reader on another stream without such a
+  dependency can see an unmasked env's recomputed track mid-generation. The commit also
+  derives `Track.valid = (fail_mask == 0)` when a check runs after `validity.default`.
+  The new **`BatchSpec.on_invalid`**
+  (`presets.track(on_invalid=...)`, `Program.on_invalid`) is `"keep"` (default,
+  0.2.0.dev2 behaviour) or `"poison"`: an env with a fail bit set then leaves with
+  `count = 0`, NaN `outer` / `center` / `inner` / `tangent` / `normal` / `arclen`,
+  `length = 0`, `winding = 0` and `valid = 0`, keeping its `fail_mask`, `truncated` and
+  `generation`; valid envs are byte-identical to `"keep"`, and a masked generation
+  poisons masked envs only. `BatchSpec.to_dict()` writes `on_invalid`, and `from_dict()`
+  defaults it to `"keep"` (format unchanged).
+- **`Program.tap(channel, *, after=None)`**: the working buffer of a channel, its final
+  version or the version right after stage `after`; read-only by contract and stable for
+  the Program's lifetime. An intermediate version holds every env's recomputation of
+  the last generation; the final version of a channel the `Track` exports is the
+  `Track`'s own array, so it holds the committed values, except `track.valid` after a
+  plugin check (then `validity.default`'s own flag: read `Track.valid` or
+  `tap("valid.fail") == 0`). `Program.channels` maps each
+  channel to its writers' ids. An unknown channel or stage,
+  or a stage before the channel's first writer, raises `KeyError`.
+  `benchmarks/compare_generators.py` and `viz/render_readme_assets.py` read the
+  intermediate centerlines through it instead of `gen._scratch`.
+- **`track_gen.testing.check_stage(kind, name, params=None, *, upstream=None,
+  devices=None, num_envs=8, seeds=(11, 1009), capture_modes=..., skip=(),
+  modules=())`**, the conformance kit for the four stage kinds: it runs the stage in its
+  slot of `presets.track(**upstream)` through `TrackGenerator` and reports the generator
+  kit's checks on the whole `Track` (without `diversity` and `output.closed`), plus
+  `output.accepted` (relax, width, elevation), `stage.isolation` (re-running only the
+  stage, into write buffers filled with a poison byte, changes none of its inputs and
+  reproduces its outputs, padding included) and, for validity,
+  `validity.bits` (the stage owns a bit and touches no other: re-run alone on a
+  synthetic `valid.fail` holding foreign bits, it must pass them through for every env).
+  `CHECKS` lists the four
+  kinds, and the pytest plugin's `track_gen_conformance(name, kind=...)` and
+  `generator_names(kind)` accept them. Every built-in stage passes.
 
 ### Behaviour changes
 
@@ -89,10 +220,11 @@
   `legacy.to_pipeline_spec(config)` returns), and `generate()`, `enqueue()` and `Course`
   run the Program. Outputs are byte-identical (the CPU fingerprint guard is unchanged),
   the launch sequence is the same (kernel, dimension and scalars, in order) and so is the
-  launch count (152 for a default `bezier` generation at `E=2`), and `Track` array
-  addresses stay stable. The `relax_solver` and `smooth_finish` errors are raised while
-  building the spec, with the same messages, in the same order. `gen.params` still lists
-  only `"generator"`.
+  launch count (152 for a default `bezier` generation at `E=2`, also after PR10b), and
+  `Track` array addresses stay stable. The `relax_solver` and `smooth_finish` errors are
+  raised while building the spec, with the same messages, in the same order (PR10b
+  rewords the `relax_solver` one and adds `z_profile`'s, see below). `gen.params` still
+  lists only `"generator"` for the default pipeline.
 - **`gen._scratch` is a view** of the Program's buffers: the same `_Scratch` field names
   (`gen_centerline`, `cs_center`, `count`, `relax.relaxed`, `inflate.ctr2`, ...) alias the
   channel versions and stage scratch. A slot whose stage is absent is `None`
@@ -108,28 +240,128 @@
 - **Channel buffers and stage scratch are zero-initialised** at construction (0.2.0.dev2
   used `wp.empty` for most; the `Track` is allocated as before). No buffer is read before
   it is written, so outputs do not change.
-- **Registration messages name roadmap PR10b.** `registry.add` still rejects a `Stage`
-  whose kind is not `"generator"`; the message now says third-party stages of other kinds
-  arrive with roadmap PR10b and points at `track_gen.pipeline`. A generator `Stage` with
-  read ports is still rejected, now because a generator reads no channel.
+- **`relax_solver` and `z_profile` resolve through the registry** (roadmap PR10b).
+  `TrackGenConfig.relax_solver` names any registered relax stage (`"xpbd"` default) and
+  `TrackGenConfig.z_profile` any registered elevation stage (`"flat"` default); a plugin
+  stage gets its `Params.from_legacy(config)` and a non-flat elevation lifts with
+  `lift.elevated`. The names are resolved at `TrackGenerator` construction, in the order
+  `relax_solver`, `smooth_finish`, `z_profile`, with new messages:
+  `TrackGenConfig.relax_solver: unknown relax 'bogus'; available: ['none', 'xpbd']`, an
+  oracle-only `"energy"` / `"tp_sobolev"` named as such, and
+  `TrackGenConfig.z_profile: unknown elevation 'bogus'; available: ['flat', 'noise',
+  'random_walk', 'uniform']` (plus installed plugins); a name served by a quarantined
+  plugin raises its `PluginLoadError`. **`TrackGenConfig` construction no longer checks
+  `z_profile` against a fixed set**: `TrackGenConfig(z_profile="bogus")` constructs and
+  `TrackGenerator` raises; the config only requires a non-empty string, and the `z_*`
+  range rules stay. `GateGenConfig.z_profile` keeps its closed set (PR11).
+- **The in-place model is a versioned rewrite, with no aliasing.** A stage rewrites a
+  channel by declaring it in `reads` and `writes` through one port; `b.read(port)` is
+  the previous version and `b.write(port, ...)` a new buffer every later stage reads.
+  The stage writes its whole output there and never writes a read buffer. This is
+  PR10a's behaviour, now the documented model (it keeps the built-ins byte-identical,
+  costs one buffer per rewrite, and makes `tap(after=...)` meaningful). There is no
+  aliasing form (`inplace=`) in this release.
+- **What the commit costs.** An unmasked generation of a pipeline whose last check is
+  `validity.default`, with `on_invalid="keep"` (every default pipeline), launches
+  exactly what it launched before (152 launches for a default `bezier` generation at
+  `E=2`; the parity test is unchanged). A check after `validity.default`, or
+  `on_invalid="poison"`, adds one launch (`E` threads to derive `valid`, `E * N_max` for
+  the poison commit); a masked generation adds two (the hold and the commit, `E * N_max`
+  threads each, however few envs are masked). The held copy of the `Track` adds 64 B per
+  point and 24 B per env (about 100 MB at `E=4096`, `N_max=384`), allocated once at
+  construction for every Program, masked use or not. Outputs of the default pipelines
+  are byte-identical (the fingerprint guard and the parity test are unchanged), and
+  pointers stay stable.
+- **`Track.valid == (fail_mask == 0)`.** `Track.valid` is still `validity.default`'s
+  `track.valid` when it is the last check (equal by construction); after a plugin check
+  the commit derives it from `valid.fail`. `build(..., out=track)` accepts a `track`
+  whose `fail_mask` is `None` (the bitmask then lives in a buffer of the Program).
+- **`_validity_k` gains a trailing `fail` output** (its other arguments, its name and its
+  0/1 output are unchanged); `warp_pipeline.validity_inplace(...)` gains an optional
+  `fail_wp=None` (allocated by the wrapper when `None`), `InflateScratch` an optional
+  `fail` slot that `_inflate_warp_alloc` allocates, and `inflate_warp` passes it, so the
+  0.2.0.dev2 composition stays allocation-free. `gen._scratch.inflate.fail` aliases the
+  Program's `valid.fail`.
+- **`gen.params` lists every stage with a dynamic field**, keyed by stage id, after
+  `"generator"`: still `["generator"]` for the default pipeline (the built-in stages'
+  fields are all static), `["generator", "relax"]` with a relax stage that has one.
+- **`TrackGenerator(config)` accepts `rng=None`** (env `e` gets seed `e`), and a
+  `seeds=` keyword (any `SeedState` form); previously `rng=None` raised `ValueError`.
+- **Registration messages.** A generator `Stage` with read ports is rejected because a
+  generator reads no channel. (PR10a's message for a `Stage` of another kind, "arrives
+  with roadmap PR10b", is gone: PR10b accepts the four pipeline kinds, see Added, and
+  names the kinds that stay closed.)
 
-### Deferred to PR10b
+### Deferred
 
-- Registering the `relax`, `width`, `elevation`, `validity` and commit kinds in the public
-  registry, third-party stages of those kinds, and `describe()` for them; until then the
-  built-in non-generator stages live in a private catalogue.
-- Presets with replace / insert, a masked commit that writes only the masked envs,
-  `on_invalid`, `valid.fail` with `StageBuilder.fail_bit()`, `Program.tap()`, and
-  removing the PR8 parameter latch. Accumulating fail bits needs a write form that
-  aliases the read buffer of an in-place rewrite (PR10a's `write` always returns a new
-  version); that form is decided with them.
+- The gate pipeline as stages, `presets.gates`, the ordering registry and the `stations`
+  adapter; `GateGenConfig.z_profile` keeps its closed set of names (PR11).
+- `BOUNDED` stages and HOST segmentation (PR12): a `HOST` stage makes the whole Program
+  eager in this release.
+- Channel carry-through (`raw.*` -> `cl.*`, `write(interp=, export=)`), `cl.half_width`
+  consumers (offset, XPBD, thickness), a width stage before relax, `Track.half_width` /
+  `Track.attributes`, dropping the per-stage `half_width` fields, `randomize.uniform`
+  and removing the PR8 parameter latch (PR13).
+- Split built-in checks (`validity.turning`, ...), an aliasing in-place write form,
+  opening `resample` / `frames` / `offset` / `lift` to plugins, the commit as a
+  registered kind, a `TrackGenConfig.on_invalid` field, `Course(PipelineSpec)`, and
+  fusing the lift into the commit (which would drop most of the commit's memory).
 - Deleting `_run_pipeline`, `inflate_warp`, `_Scratch`, `_StageGenerator` and the
-  `_scratch` view.
-- Later steps: the gate pipeline as stages (PR11); `cl.half_width` consumers, a width
-  stage before relax, and `write(interp=, export=)` (PR13).
+  `_scratch` view (the parity tests and the fingerprint tool still use them).
+- `on_invalid="poison"` as the default (1.0).
 
 ### Testing
 
+- PR10b: `tests/test_fail_bits.py` (the `BUILTIN_FAIL_BITS` table and the default
+  pipeline's names; `valid == (fail_mask == 0)` for every parity case of
+  `test_pipeline_parity`; each built-in check setting its own bit on hand-built inputs
+  through `validity_inplace(fail_wp=...)`, an empty loop failing `turning`, and
+  `validity_inplace` still running without `fail_wp`; plugin bits assigned in pipeline
+  order; the `fail_bit` errors: name clashes, a 16th plugin bit, a validity stage without
+  a bit, a plugin reserving built-in bits, a call from another kind).
+  `tests/test_commit.py` (the `Track` arrays are the final channel versions; a derived
+  `valid`; a masked regeneration never changing an unmasked env's bytes although a stage's
+  output is perturbed on every call; an all-zero mask writing nothing; masked envs equal
+  to a fresh generator at the same epoch; `"poison"` equal to `"keep"` with the invalid
+  envs poisoned, for a failed check and for truncation, and touching masked envs only
+  under a mask; `TrackLocalizer`, `CollisionChecker`, `CheckpointSampler` and
+  `PropSampler` taking their degenerate paths on a poisoned env; `out=` with and without
+  `fail_mask`; `on_invalid` validation; the launch counts: 152 plain, two more masked,
+  one more with poison or a check after `validity.default`).
+  `tests/test_pipeline_presets.py` (the default preset byte-identical to the config's
+  spec; the stage list; `half_width` reaching every stage that bakes it; every selection
+  form and error; check ids and generator forms; edit operations; the JSON round trip
+  with plugin stages building byte-identical; `TrackGenerator(spec)` equal to
+  `build(spec)` and to the config; the `seeds` forms and argument errors; `gen.params` holding the
+  stages with dynamic fields; a plugin `z_profile` lifting with `lift.elevated`).
+  `tests/test_stage_plugins.py`, with the toy plugins of `tests/_stage_toys.py` (relax
+  `acme.taubin`, elevation `acme.sinusoid_hills`, validity `acme.max_curvature`)
+  installed through a fake entry point: discovery and `describe()`; `scoped()` restoring
+  the stage kinds; each toy byte-equal through the presets and the flat shortcut; the
+  rewrite leaving the version it read intact; live dynamic parameters; the hills
+  altitude against a host evaluation; the curvature bit set exactly where `cl.kappa`
+  exceeds the threshold; two checks getting bits in pipeline order; the three toys in
+  one Program; each toy passing `check_stage`, with params and `upstream`; the broken
+  stages of `tests/_broken_stage_toys.py` (writing a read port, stateful, skipping the
+  padding, OR-ing a built-in bit, dropping earlier bits, writing failing envs only,
+  allocating) failing the named checks; a plugin registering an invalid
+  stage quarantined; unknown names failing at build. Existing files: the open and closed
+  kinds (`test_plugin_stage.py`), open-kind tests moved to a `"banking"` kind
+  (`test_plugin_registry.py`, `test_conformance.py`), a non-Stage spec refused under a
+  pipeline kind, the planner's toy stages registered through `registry.scoped()`
+  (`test_pipeline_planner.py`), the `z_profile` check moved to `TrackGenerator`
+  (`test_types.py`), and the no-host-sync drivers `program[toys,poison]` (plain and
+  masked) and `track_run[z=acme.sinusoid_hills]` with the new modules scanned.
+- PR10b, CUDA (`tests/test_stages_cuda.py`): each toy under `check_stage` on `cuda:0`
+  (caller capture, self-graph; the relax toy on a thinner band so `output.accepted`
+  runs); each toy selected through the presets and recorded into a caller's capture;
+  a dynamic stage parameter written between replays of one recording; one Program with
+  the three toys and `on_invalid="poison"` recorded into a caller's capture, with
+  parameters written inside the graph; the masked commit in a caller's graph (the whole
+  `Track`, `generation` included, is poisoned before each replay: unmasked envs must
+  still hold the poison, masked envs equal an eager twin), also when the relax output
+  is perturbed differently on every replay. The existing in-place regeneration, Program
+  capture, stream capture and CUDA fingerprint tests run unchanged.
 - `tests/test_pipeline_planner.py`: the default stage list for the flat and elevated
   profiles and without relax; the `relax_solver` / `smooth_finish` errors; the flat
   params validating with the `TrackGenConfig` messages; `StageRef` as frozen data; the
@@ -157,6 +389,7 @@
   writes equals, byte for byte on CPU, the buffer of the 0.2.0.dev2 `_run_pipeline` it
   reproduces, and every `Track` field matches; the launch sequences (op, kernel, dim,
   scalars) are equal; a default `bezier` generation at `E=2` is still 152 launches.
+  PR10b leaves the file unchanged.
 - The no-host-sync and launch-stream drivers cover the Program (`program[standalone]`)
   and the 0.2.0.dev2 composition on a generator's `_scratch` view
   (`wrappers[legacy_pipeline]`); the pipeline and stage modules are scanned.

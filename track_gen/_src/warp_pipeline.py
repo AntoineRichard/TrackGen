@@ -205,18 +205,28 @@ def _validity_k(
     z_valid_grade: float,
     truncated: wp.array(dtype=wp.int32),
     out: wp.array(dtype=wp.int32),
+    fail: wp.array(dtype=wp.int32),
 ):
     # One thread per env e. Fuses inflation._validity_stage entirely in-kernel:
     # gen_valid AND turning AND width-floor AND no-NaN AND thickness AND border-simple
     # AND not-truncated.
     # All sub-results are 0/1 int flags (Warp can't AND Python bools in dynamic loops).
     # count[e] real points; NaN padding beyond is ignored in all sub-checks.
+    # fail[e]: one bit per failed sub-check (track_gen.stages.channels.BUILTIN_FAIL_BITS:
+    # 0 generator, 1 turning, 2 finite, 3 thickness, 4 w_floor, 5 border, 6 grade,
+    # 7 truncation). Every sub-flag is 0/1, so out[e] == 1 iff fail[e] == 0.
     e = wp.tid()
     cnt = count[e]
     base = e * n_max
 
     if cnt == 0:
         out[e] = 0
+        f0 = int(2)                  # bit 1 'turning': an empty loop has turning number 0
+        if gen_valid[e] == 0:
+            f0 = f0 | 1              # bit 0 'generator'
+        if truncated[e] != 0:
+            f0 = f0 | 128            # bit 7 'truncation'
+        fail[e] = f0
         return
 
     # --- turning (over cnt real points only) ---
@@ -283,6 +293,25 @@ def _validity_k(
         trunc_ok = int(0)
 
     out[e] = gv & turn_ok & w_ok & no_nan & th_ok & border_ok & grade_ok & trunc_ok
+
+    f = int(0)
+    if gv == 0:
+        f = f | 1                    # 0 generator
+    if turn_ok == 0:
+        f = f | 2                    # 1 turning
+    if no_nan == 0:
+        f = f | 4                    # 2 finite
+    if th_ok == 0:
+        f = f | 8                    # 3 thickness
+    if w_ok == 0:
+        f = f | 16                   # 4 w_floor
+    if border_ok == 0:
+        f = f | 32                   # 5 border (only when has_border == 1)
+    if grade_ok == 0:
+        f = f | 64                   # 6 grade (only when z_valid_grade > 0)
+    if trunc_ok == 0:
+        f = f | 128                  # 7 truncation
+    fail[e] = f
 
 @wp.kernel
 def _arclength_k(
@@ -489,7 +518,7 @@ def _run_pipeline(
     PR9 composition, kept as the byte-identity reference (``tests/test_pipeline_parity``)
     and for out-of-tree callers: ``TrackGenerator`` runs a :class:`track_gen.pipeline.
     Program` of the same stages instead. Removed once the parity tests carry a frozen
-    copy (roadmap PR10b / 1.0).
+    copy (roadmap 1.0).
 
     Every stage runs on ``ctx``'s stream. A generator whose spec sets ``accepts_ctx``
     gets ``ctx=ctx``; a legacy generator runs inside ``ctx.scope()`` so the
@@ -786,9 +815,10 @@ def validity_inplace(
     config,
     truncated_wp: "wp.array | None" = None,
     ctx: "LaunchContext | None" = None,
+    fail_wp: "wp.array | None" = None,
 ) -> None:
     """In-place validity gate: writes directly into out_valid ([E] int32 wp.array). Zero alloc
-    when ``truncated_wp`` is provided.
+    when ``truncated_wp`` and ``fail_wp`` are provided.
 
     All arguments are wp.arrays. has_border=0 means the border self-intersection check is
     skipped (outer_wp/inner_wp are ignored by the kernel). n_max must be passed explicitly.
@@ -812,6 +842,11 @@ def validity_inplace(
                       (a zero buffer is allocated).
         ctx: optional track_gen.exec.LaunchContext; default resolves the
             device's stream (see track_gen.exec).
+        fail_wp:      [E] int32 per-env fail bitmask to write (one bit per failed check,
+                      ``track_gen.pipeline.BUILTIN_FAIL_BITS``; ``out_valid[e] == 1`` iff
+                      ``fail_wp[e] == 0``). None -> a buffer is allocated (and dropped)
+                      on every call: pass one to stay allocation-free (e.g. inside a
+                      capture); ``inflate_warp`` passes ``InflateScratch.fail``.
     """
     _init()
     ctx = _resolve_ctx(ctx, str(out_valid.device))
@@ -819,6 +854,8 @@ def validity_inplace(
     if truncated_wp is None:
         truncated_wp = wp.empty(E, dtype=wp.int32, device=str(out_valid.device))
         ctx.fill(truncated_wp, 0)  # zeroed on ctx's stream (wp.zeros memsets the current one)
+    if fail_wp is None:
+        fail_wp = wp.empty(E, dtype=wp.int32, device=str(out_valid.device))
     ctx.launch(
         _validity_k, E,
         [
@@ -829,6 +866,7 @@ def validity_inplace(
             z_wp, float(config.z_valid_grade),
             truncated_wp,
             out_valid,
+            fail_wp,
         ],
     )
     ctx.sync()
@@ -950,11 +988,15 @@ class InflateScratch:
                    altitudes), knot_count is [E] int32. None on the flat/noise
                    paths and on legacy constructions that never reach
                    inflate_warp.
+    fail:          [E] int32 per-env fail bitmask the validity gate writes
+                   (``validity_inplace(fail_wp=)``). Allocated here (``[E]``, on
+                   ``area_a``'s device) when not given, so ``inflate_warp`` never
+                   allocates it per call.
     """
 
     __slots__ = ("area_a", "area_b", "kappa", "w",
                  "out2", "ctr2", "inn2", "tan2", "nrm2", "z",
-                 "knot_cum", "knot_count", "knot_z")
+                 "knot_cum", "knot_count", "knot_z", "fail")
 
     def __init__(
         self,
@@ -971,6 +1013,7 @@ class InflateScratch:
         knot_cum: "wp.array | None" = None,
         knot_count: "wp.array | None" = None,
         knot_z: "wp.array | None" = None,
+        fail: "wp.array | None" = None,
     ) -> None:
         self.area_a = area_a
         self.area_b = area_b
@@ -985,6 +1028,9 @@ class InflateScratch:
         self.knot_cum = knot_cum
         self.knot_count = knot_count
         self.knot_z = knot_z
+        if fail is None and isinstance(area_a, wp.array):
+            fail = wp.empty(area_a.shape[0], dtype=wp.int32, device=area_a.device)
+        self.fail = fail
 
 
 class _Scratch:
@@ -1082,7 +1128,7 @@ def _inflate_warp_alloc(config, generator_spec=None, *, seed=None):
     PR9 composition, kept as the byte-identity reference (``tests/test_pipeline_parity``)
     and for out-of-tree callers: ``TrackGenerator`` runs a :class:`track_gen.pipeline.
     Program` of the same stages instead. Removed once the parity tests carry a frozen
-    copy (roadmap PR10b / 1.0).
+    copy (roadmap 1.0).
 
     Sizes: outer/center/inner/tangent/normal are [E*N_max] vec3f (z = 0, lifted
     from the internal 2D pipeline); arclen is
@@ -1186,6 +1232,8 @@ def _inflate_warp_alloc(config, generator_spec=None, *, seed=None):
         nrm2=wp.empty(flat, dtype=wp.vec2f, device=dev),
         # Zero-filled: the flat path never writes z (grade check reads zeros).
         z=wp.zeros(flat, dtype=wp.float32, device=dev),
+        # The validity gate's per-env fail bitmask (every env written each call).
+        fail=wp.zeros(E, dtype=wp.int32, device=dev),
     )
     _fill_knot_scratch(inflate, config, E, dev)
     scratch = _Scratch(
@@ -1530,7 +1578,8 @@ def inflate_warp(center, config, out=None,
     # grade branch is a no-op and validity is byte-identical to the legacy path.
     validity_inplace(stag.ctr2, stag.w, cnt_wp, gv_wp,
                      stag.out2, stag.inn2, has_border, n_max, stag.z,
-                     out.valid, config, truncated_wp=truncated, ctx=ctx)
+                     out.valid, config, truncated_wp=truncated, ctx=ctx,
+                     fail_wp=stag.fail)
 
     # 6. Lift the vec2f staging buffers into the public vec3f Track arrays.
     if _is_flat:

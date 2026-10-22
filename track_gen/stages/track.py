@@ -7,8 +7,10 @@ the same scalars as the 0.2.0.dev2 composition (``warp_pipeline._run_pipeline`` 
 is byte-identical to it. The wrappers are looked up on their module at every call (not
 bound at import), so a test that wraps one sees every call.
 
-Not registered in :data:`track_gen.plugin.registry`: :func:`track_gen.stages.register`
-adds them to the private catalogue the planner resolves non-generator stages from.
+The relax / width / elevation / validity stages (:data:`REGISTRY_STAGES`) are registered
+in :data:`track_gen.plugin.registry` (:func:`track_gen.stages.register_builtins`); the
+resample / frames / offset / lift stages (:data:`CATALOGUE_STAGES`) stay in the private
+catalogue (:func:`track_gen.stages.register`).
 """
 from __future__ import annotations
 
@@ -24,12 +26,15 @@ from ..plugin.params import NoParams
 from ..plugin.stage import CaptureClass, Stage
 from . import params as _p
 
-__all__ = ["BUILTIN_STAGES", "TRACK_EXPORTS"]
+__all__ = ["BUILTIN_STAGES", "CATALOGUE_STAGES", "REGISTRY_STAGES", "TRACK_EXPORTS"]
 
 # Track field -> the channels it may come from, in order of preference: the field's
 # buffer is the FINAL version of the first one a stage writes. ``arclen`` / ``length``
 # are the 3D tables of ``lift.elevated`` when it runs, else the plan-view ones of
-# ``frames`` (a flat lift leaves them unchanged).
+# ``frames`` (a flat lift leaves them unchanged). ``valid`` is ``validity.default``'s
+# own flag when that stage is also the last writer of ``valid.fail``, else it is derived
+# by the Program's commit as ``fail_mask == 0`` (``valid.fail``); ``fail_mask`` is the
+# final ``valid.fail``.
 TRACK_EXPORTS = types.MappingProxyType({
     "outer": ("track.outer",),
     "center": ("track.center",),
@@ -39,16 +44,17 @@ TRACK_EXPORTS = types.MappingProxyType({
     "arclen": ("track.arclen", "cl.arclen2"),
     "length": ("track.length", "cl.length2"),
     "winding": ("cl.winding",),
-    "valid": ("track.valid",),
+    "valid": ("track.valid", "valid.fail"),
     "count": ("track.count",),
     "truncated": ("cl.truncated",),
+    "fail_mask": ("valid.fail",),
 })
 
 
 def _alloc_track(layout):
     """The pipeline's result :class:`~track_gen.Track`, allocated exactly as
     ``warp_pipeline._inflate_warp_alloc`` allocates it (``wp.empty`` except the
-    zero-initialised ``truncated`` and ``generation``)."""
+    zero-initialised ``truncated`` and ``generation``), plus the zeroed ``fail_mask``."""
     from .._src.types import Track  # noqa: PLC0415
 
     E, dev = int(layout.num_envs), str(layout.device)
@@ -66,6 +72,7 @@ def _alloc_track(layout):
         winding=wp.empty(E, dtype=wp.float32, device=dev),
         truncated=wp.zeros(E, dtype=wp.int32, device=dev),
         generation=wp.zeros(E, dtype=wp.int32, device=dev),
+        fail_mask=wp.zeros(E, dtype=wp.int32, device=dev),
     )
 
 
@@ -402,7 +409,10 @@ class ElevationNoise(_Builtin):
 # ---------------------------------------------------------------------------------------
 
 class ValidityDefault(_Builtin):
-    """``validity.default``: the fused per-env gate into ``Track.valid``."""
+    """``validity.default``: the fused per-env gate (``_validity_k``, one launch): its
+    0/1 flag into ``track.valid`` and one ``valid.fail`` bit per failed check (bits 0-7,
+    ``BUILTIN_FAIL_BITS``). It initialises ``valid.fail`` (writes it without reading it),
+    so it comes before any plugin check."""
 
     kind = "validity"
     name = "default"
@@ -410,19 +420,24 @@ class ValidityDefault(_Builtin):
     reads = {"xy": "cl.xy", "half_width": "cl.half_width", "count": "cl.count",
              "gen_valid": "gen.valid", "outer": "band.outer2", "inner": "band.inner2",
              "z": "cl.z", "truncated": "cl.truncated"}
-    writes = {"valid": "track.valid"}
+    writes = {"valid": "track.valid", "fail": "valid.fail"}
 
     def build(self, b, p):
+        from .channels import BUILTIN_FAIL_BITS  # noqa: PLC0415
+
         S = int(b.layout.stride)
         xy, w, count = b.read("xy"), b.read("half_width"), b.read("count")
         gen_valid, outer2, inner2 = b.read("gen_valid"), b.read("outer"), b.read("inner")
         z, truncated = b.read("z"), b.read("truncated")
         valid = b.write("valid", wp.int32)
+        fail = b.write("fail", wp.int32)
+        b._reserve_fail_bits(BUILTIN_FAIL_BITS)
         has_border = 1 if getattr(p, "validity_border_check", False) else 0
 
         def enqueue(ctx):
             _wpl.validity_inplace(xy, w, count, gen_valid, outer2, inner2, has_border, S,
-                                  z, valid, p, truncated_wp=truncated, ctx=ctx)
+                                  z, valid, p, truncated_wp=truncated, ctx=ctx,
+                                  fail_wp=fail)
         return enqueue
 
 
@@ -496,8 +511,14 @@ class LiftElevated(_Builtin):
         return enqueue
 
 
-BUILTIN_STAGES = (
-    ConstantSpacing, Xpbd, RelaxNone, Uniform, WidthConstant, FramesDefault,
-    OffsetDefault, ElevationFlat, ElevationUniform, ElevationRandomWalk, ElevationNoise,
-    ValidityDefault, LiftFlat, LiftElevated,
+# The kinds open to plugins: registered in track_gen.plugin.registry.
+REGISTRY_STAGES = (
+    Xpbd, RelaxNone, WidthConstant, ElevationFlat, ElevationUniform, ElevationRandomWalk,
+    ElevationNoise, ValidityDefault,
 )
+# The built-in-only kinds: the private catalogue.
+CATALOGUE_STAGES = (
+    ConstantSpacing, Uniform, FramesDefault, OffsetDefault, LiftFlat, LiftElevated,
+)
+# Every built-in non-generator stage.
+BUILTIN_STAGES = CATALOGUE_STAGES + REGISTRY_STAGES

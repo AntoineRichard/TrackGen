@@ -558,6 +558,37 @@ def _program_standalone():
     return hot
 
 
+def _program_toys_poison():
+    # The three toy pipeline-stage plugins (tests/_stage_toys.py: a relax rewrite, a
+    # salted elevation, a fail-bit check) in one preset with on_invalid="poison", run
+    # plainly (the commit derives valid and poisons) and masked (hold + commit).
+    from tests._stage_toys import HILLS, KMAX, TAUBIN, register
+
+    with registry.scoped():
+        register(registry)
+        spec = pipeline_mod.presets.track(
+            num_envs=E, device=DEV, relax=TAUBIN, elevation=HILLS,
+            checks=("default", (KMAX, {"kappa_max": 20.0})), on_invalid="poison")
+        gen = TrackGenerator(spec, _rng())
+    m = _i32([1, 0])
+
+    def hot():
+        gen.generate()
+        gen.generate(advance=True, mask=m)
+        gen.enqueue(advance=True, mask=gen.inputs["regen_mask"])
+        gen.program.run(policy="eager")
+    return hot
+
+
+def _run_track_plugin_profile():
+    # TrackGenConfig.z_profile naming an elevation plugin (the flat shortcut).
+    from tests._stage_toys import HILLS, register
+
+    with registry.scoped():
+        register(registry)
+        return _track_gen(z_profile=HILLS)._run
+
+
 def _legacy_pipeline_wrappers():
     # The PR9 composition (warp_pipeline._run_pipeline -> inflate_warp), kept as the
     # byte-identity reference, run on a TrackGenerator's _scratch view (relax on).
@@ -646,6 +677,8 @@ DRIVERS = {
     "wrappers[inflate_fixed_n]": _inflate_fixed_n,
     "wrappers[legacy_pipeline]": _legacy_pipeline_wrappers,
     "program[standalone]": _program_standalone,
+    "program[toys,poison]": _program_toys_poison,
+    "track_run[z=acme.sinusoid_hills]": _run_track_plugin_profile,
     "wrappers[legacy_generator]": _legacy_generator_wrappers,
     "ops[all]": _ops_all,
 }
@@ -680,9 +713,9 @@ _PIPELINE_MODULES = (
     # closures and methods; every module-level function is construction-time
     pipeline_mod, stages_mod,
     *(importlib.import_module(f"track_gen.pipeline.{m}")
-      for m in ("spec", "planner", "program", "legacy")),
+      for m in ("spec", "planner", "program", "legacy", "presets")),
     *(importlib.import_module(f"track_gen.stages.{m}")
-      for m in ("channels", "params", "track")),
+      for m in ("channels", "params", "track", "commit")),
 )
 
 # Construction-time functions (allocation, registration, host precompute for sizing).
@@ -719,11 +752,15 @@ _CONSTRUCTION_ONLY = {
     "track_gen.pipeline.planner": {"build", "_build", "_is_int", "_check_spec_shape",
                                    "_label", "_resolve", "_plan_channels", "_check_out",
                                    "_seed_state", "_is_seed_form", "_check_seeds",
-                                   "_check_exports", "_check_flat_lift"},
+                                   "_check_exports", "_check_flat_lift",
+                                   "_capture_class", "_export_sources",
+                                   "_check_fail_start"},
     "track_gen.pipeline.legacy": {"to_pipeline_spec", "_to_pipeline_spec",
-                                  "generator_config", "_scratch_view"},
-    "track_gen.stages": {"_check_builtin_stage", "register"},
-    "track_gen.stages.channels": {"_c"},
+                                  "generator_config", "_scratch_view", "_legacy_params"},
+    "track_gen.pipeline.presets": {"track", "_select", "_is_pair", "_with_half_width",
+                                   "_check_half_width"},
+    "track_gen.stages": {"_check_builtin_stage", "register", "register_builtins"},
+    "track_gen.stages.channels": {"_c", "is_plugin_channel"},
     "track_gen.stages.params": {"_check_half_width", "_check_z_range",
                                 "_check_control_points"},
     "track_gen.stages.track": {"_alloc_track", "_zcfg"},

@@ -439,10 +439,10 @@ What happens to each env, and what it costs:
 - The generator pipeline has fixed shapes, so a masked regeneration still recomputes
   EVERY env. An unmasked env keeps the effective seed its current course was built from
   and is recomputed to identical values, and so is everything derived from it (checkpoint
-  resample, SDF and height-field bakes, course line, gate posts). Only the masked envs'
-  runtime state is reset. A step with at least one masked env therefore costs one
-  full-batch generation. A masked commit that skips the recompute of unmasked envs is
-  planned (roadmap PR10b).
+  resample, SDF and height-field bakes, course line, gate posts); the generator's
+  commit also restores an unmasked env's ``Track`` rows bit for bit after the recompute.
+  Only the masked envs' runtime state is reset. A step with at least one masked env
+  therefore costs one full-batch generation.
 - Seeds you write (``course.rng.seeds_warp``, ``course.rng.set_seeds_warp(...)``) and
   epochs you reset (``course.seeds.reset_epoch(...)``) between regenerations take effect
   for an env when a masked regeneration selects it (its new course and its state reset

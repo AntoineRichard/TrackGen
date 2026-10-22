@@ -1,9 +1,12 @@
 """The process-global :class:`Registry` behind :mod:`track_gen.plugin`.
 
 One registry holds every pluggable spec, keyed by ``(kind, name)``. Kinds are an open
-set of strings: ``"generator"`` (:class:`~track_gen.plugin.GeneratorSpec`) and
-``"gate_generator"`` (:class:`~track_gen.plugin.GateGeneratorSpec`) today; later
-releases add more (``"relax"``, ``"elevation"``, ...).
+set of strings: ``"generator"`` (:class:`~track_gen.plugin.GeneratorSpec` or a
+:class:`~track_gen.plugin.Stage`), ``"gate_generator"``
+(:class:`~track_gen.plugin.GateGeneratorSpec`), and the track-pipeline Stage kinds
+``"relax"``, ``"width"``, ``"elevation"`` and ``"validity"`` (roadmap PR10b; their
+built-ins are registered with the generators). Other kinds hold any object with a
+``name`` (``registry.add(spec, kind=...)``).
 
 Loading (built-ins, then the ``"track_gen.plugins"`` entry points), the
 ``TRACK_GEN_PLUGINS`` policy and quarantine are described in the :mod:`track_gen.plugin`
@@ -27,7 +30,7 @@ from typing import Any, Iterator, Mapping
 from .._src.gate_generator_registry import GateGeneratorSpec
 from .._src.generator_registry import GeneratorSpec
 from .params import NoParams, Params, _check_params_class, _schema, _static_view
-from .stage import CaptureClass, Stage, _check_stage, _is_stage
+from .stage import _OPEN_KINDS, CaptureClass, Stage, _check_stage, _is_stage
 
 # The legacy spec types that may declare a static Params class through ``params=``.
 _PARAM_SPECS = (GeneratorSpec, GateGeneratorSpec)
@@ -108,10 +111,11 @@ class SpecInfo:
             Always ``json.dumps``-able.
         capture: A Stage's :class:`~track_gen.plugin.CaptureClass` for its default
             Params; ``None`` for a spec that is not a Stage.
-        output: A Stage's ``output`` (``"centerline"``); ``None`` for a spec that is not
-            a Stage.
+        output: A Stage's ``output`` (``"centerline"`` for a generator, ``None`` for a
+            track-pipeline stage); ``None`` for a spec that is not a Stage.
         writes: A Stage's ``writes`` (``local port -> channel``); ``{}`` otherwise.
         provides: A Stage's ``provides``; empty otherwise.
+        reads: A Stage's ``reads`` (``local port -> channel``); ``{}`` otherwise.
     """
 
     kind: str
@@ -127,6 +131,7 @@ class SpecInfo:
     output: "str | None" = None
     writes: Mapping[str, str] = dataclasses.field(default_factory=dict, hash=False)
     provides: frozenset = frozenset()
+    reads: Mapping[str, str] = dataclasses.field(default_factory=dict, hash=False)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -305,12 +310,20 @@ def _infer_kind(spec, kind: "str | None") -> str:
     return kind
 
 
-def _check_spec(spec, kind: "str | None") -> None:
+def _check_spec(spec, kind: "str | None", *, builtin: bool = False) -> None:
     """Declaration checks run before a spec is inserted (they raise, which quarantines
-    a plugin under ``warn``): a Stage's rules, and a ``params=`` class's rules."""
+    a plugin under ``warn``): a Stage's rules, a ``params=`` class's rules, and a
+    track-pipeline kind (``relax`` / ``width`` / ``elevation`` / ``validity``) holds
+    Stage classes only."""
     if isinstance(spec, Stage) or _is_stage(spec):
-        _check_stage(spec, kind=kind, api_version=API_VERSION)
+        _check_stage(spec, kind=kind, api_version=API_VERSION, builtin=builtin)
         return
+    declared = getattr(spec if isinstance(spec, type) else type(spec), "registry_kind",
+                       None)
+    target = kind if kind is not None else declared
+    if target in _OPEN_KINDS and (declared is None or declared == target):
+        raise TypeError(f"a {target} spec must be a Stage subclass "
+                        f"(registry.add(MyStage)), got {type(spec).__name__}")
     if isinstance(spec, _PARAM_SPECS) and spec.params is not None:
         _check_params_class(spec.params, allow_dynamic=False,
                             owner=f"{type(spec).__name__} {spec.name!r}")
@@ -409,10 +422,12 @@ class Registry:
         Adding the identical spec object again under the same kind is a no-op.
 
         Args:
-            spec: The spec (``GeneratorSpec``, ``GateGeneratorSpec``, or any object
-                with a ``name``).
-            kind: Inferred for ``GeneratorSpec`` (``"generator"``) and
-                ``GateGeneratorSpec`` (``"gate_generator"``); required otherwise.
+            spec: The spec (a :class:`~track_gen.plugin.Stage` class,
+                ``GeneratorSpec``, ``GateGeneratorSpec``, or any object with a
+                ``name`` under another kind).
+            kind: Inferred for a Stage (``Stage.kind``), ``GeneratorSpec``
+                (``"generator"``) and ``GateGeneratorSpec`` (``"gate_generator"``);
+                required otherwise.
             replace: Replace an existing spec of that name, emitting a
                 :class:`PluginOverrideWarning` that names both origins.
 
@@ -421,7 +436,9 @@ class Registry:
                 different spec object) and ``replace`` is false. Raised from a
                 plugin's ``register(reg)``, it quarantines that plugin (or raises under
                 ``strict``).
-            TypeError: The kind cannot be inferred, or is not a non-empty string.
+            TypeError: The kind cannot be inferred, or is not a non-empty string, or
+                a ``relax`` / ``width`` / ``elevation`` / ``validity`` spec is not a
+                Stage class.
             ValueError: The kind does not match the spec type, or the name is not a
                 non-empty string.
 
@@ -510,7 +527,8 @@ class Registry:
             accepts_ctx = True
             stage_info = dict(capture=capture, output=spec.output,
                               writes=types.MappingProxyType(dict(spec.writes)),
-                              provides=frozenset(spec.provides))
+                              provides=frozenset(spec.provides),
+                              reads=types.MappingProxyType(dict(spec.reads)))
         else:
             capturable = bool(getattr(spec, "capturable", True))
             accepts_ctx = bool(getattr(spec, "accepts_ctx", False))
@@ -582,7 +600,7 @@ class Registry:
     # -- implementation ---------------------------------------------------------------
     def _add(self, spec, *, kind, replace, legacy, stacklevel,
              same_module_only=False) -> None:
-        _check_spec(spec, kind)
+        _check_spec(spec, kind, builtin=self._builtin)
         kind = _infer_kind(spec, kind)
         name = _spec_name(spec)
         self._ensure_loaded()

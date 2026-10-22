@@ -30,13 +30,19 @@ class Program:
     graph on CUDA, or runs eagerly, exactly as ``TrackGenerator.generate`` does.
 
     One generation (:meth:`enqueue`) is: ``[seeds.advance(mask)]`` -> the effective
-    seeds (``seed``) -> the dynamic-parameter / input latch -> every stage in order ->
-    ``result.generation <- epoch``. It allocates nothing and never host-syncs.
+    seeds (``seed``) -> the dynamic-parameter / input latch -> [masked: hold the
+    unmasked envs' ``Track`` rows] -> every stage in order (EVERY env) -> the commit
+    (masked: restore the unmasked envs; derive ``valid``; ``on_invalid="poison"``) ->
+    ``result.generation <- epoch`` (masked envs only, with a mask). It allocates nothing
+    and never host-syncs. See :mod:`track_gen.stages.commit` for what the commit costs
+    (nothing for an unmasked generation of the default pipeline).
     """
 
     def __init__(self, *, _token=None, spec, layout, binding, result, seeds, seed,
                  inputs, params, pairs, enqueues, versions, scratch, stage_ids, kinds,
-                 gen_scratch, stream=None, owner=None) -> None:
+                 gen_scratch, stream=None, owner=None, commit=None, fail_bits=None,
+                 fail_owner=None, capture_class=None, on_invalid: str = "keep",
+                 writers=None, ports=None) -> None:
         if _token is not _PROGRAM_TOKEN:
             raise TypeError("Program is created by track_gen.pipeline.build()")
         import warp as wp  # noqa: PLC0415
@@ -59,10 +65,18 @@ class Program:
         self._stage_ids = tuple(stage_ids)
         self._kinds = dict(kinds)                 # stage_id -> (kind, name)
         self._gen_scratch = gen_scratch           # the generator's private scratch
-        self._capturable = bool(binding.capturable)
+        self._commit = commit                     # stages.commit._Commit, or None
+        self._fail_bits = types.MappingProxyType(dict(fail_bits or {}))
+        self._fail_owner = dict(fail_owner or {})  # bit name -> stage id
+        self._on_invalid = str(on_invalid)
+        self._channel_writers = {ch: tuple(ids) for ch, ids in (writers or {}).items()}
+        self._ports = dict(ports or {})            # stage_id -> (reads, writes)
+        if capture_class is None:
+            capture_class = CaptureClass.STATIC if binding.capturable else \
+                CaptureClass.HOST
+        self._capture_class = CaptureClass(capture_class)
+        self._capturable = self._capture_class != CaptureClass.HOST
         self._legacy_stream = not bool(binding.accepts_ctx)
-        self._capture_class = CaptureClass.STATIC if self._capturable else \
-            CaptureClass.HOST
         self._E = int(layout.num_envs)
         self._runner = GraphRunner(
             self._device, capturable=self._capturable, legacy_stream=self._legacy_stream,
@@ -122,9 +136,29 @@ class Program:
 
     @property
     def capture_class(self):
-        """``CaptureClass.STATIC`` (capturable) or ``HOST`` (eager every call), from
-        the generator; the built-in stages are STATIC."""
+        """``CaptureClass.STATIC`` (capturable) or ``HOST`` (eager every call): the
+        largest of the generator's and every stage's (``Stage.capture_class`` of its
+        params); the built-in stages are STATIC."""
         return self._capture_class
+
+    @property
+    def fail_bits(self) -> Mapping[str, int]:
+        """``name -> bit`` of every ``valid.fail`` bit, in assignment order: the
+        built-in checks' (``BUILTIN_FAIL_BITS``, bits 0-7) then each plugin validity
+        stage's (16, 17, ... in pipeline order). ``Track.fail_bits`` is the same
+        mapping."""
+        return self._fail_bits
+
+    @property
+    def on_invalid(self) -> str:
+        """``"keep"`` or ``"poison"`` (``BatchSpec.on_invalid``)."""
+        return self._on_invalid
+
+    @property
+    def channels(self) -> Mapping[str, "tuple[str, ...]"]:
+        """``channel -> ids of the stages that write it``, in order (``"seed"``:
+        ``("<prologue>",)``)."""
+        return types.MappingProxyType(dict(self._channel_writers))
 
     @property
     def capturable(self) -> bool:
@@ -154,8 +188,13 @@ class Program:
         """Launch one generation on ``ctx`` and return :attr:`result`.
 
         No allocation, no host sync, no branch on device data. With ``mask`` the
-        prologue and the ``generation`` write cover the masked envs only (validate
-        ``mask`` first, as :meth:`run` does).
+        prologue, the commit and the ``generation`` write cover the masked envs only:
+        every other env's ``Track`` rows end the generation bit for bit as they were
+        (validate ``mask`` first, as :meth:`run` does). They are held, recomputed by the
+        stages and restored within the generation, all on ``ctx``'s stream: work
+        ordered after the generation on that stream (or after an event recorded on it)
+        never sees the recomputed rows, a reader on another stream without such a
+        dependency can (see :mod:`track_gen.stages.commit`).
 
         Args:
             ctx: The :class:`~track_gen.exec.LaunchContext` to emit on.
@@ -178,8 +217,13 @@ class Program:
                 ctx.launch(_LATCH_ALL[work.dtype], E, [live, work])
             else:
                 ctx.launch(_LATCH_MASKED[work.dtype], E, [live, mask, work])
+        commit = self._commit
+        if commit is not None and mask is not None:
+            commit.enqueue_hold(ctx, mask)
         for enqueue in self._enqueues:
             enqueue(ctx)
+        if commit is not None:
+            commit.enqueue_commit(ctx, mask)
         result = self._result
         if result.generation is not None:
             seeds._write_generation(result.generation, mask, ctx)
@@ -216,6 +260,15 @@ class Program:
             track_gen.exec.CaptureError: a capture is open (see ``GraphRunner``).
         """
         self._runner.prepare(self.enqueue)
+        if self._commit is not None:
+            # The masked commit's kernels run on masked generations only: load them
+            # now, outside any capture, so a masked generation recorded into a caller's
+            # graph never loads a module while capturing.
+            import warp as wp  # noqa: PLC0415
+
+            from ..stages import commit as _commit_mod  # noqa: PLC0415
+
+            wp.load_module(_commit_mod, device=self._device)
 
     def run(self, *, stream=None, sync: bool = False, advance: bool = False,
             mask: "wp.array | None" = None, policy: str = "auto") -> "Track":
@@ -246,13 +299,33 @@ class Program:
         self._runner.run(body, stream=stream, sync=sync, key=key, policy=policy)
         return self._result
 
-    # -- introspection (tests; a public tap() arrives with roadmap PR10b) ---------
-    def _channel(self, name: str, *, after: "str | None" = None) -> "wp.array":
-        """The version of channel ``name`` visible after stage ``after`` (default: the
-        final version). ``KeyError`` when no such version exists."""
-        versions = self._versions.get(name)
+    # -- introspection --------------------------------------------------------------
+    def tap(self, channel: str, *, after: "str | None" = None) -> "wp.array":
+        """The working buffer of ``channel``: its final version, or the version visible
+        right after stage ``after`` (what the stages after it read).
+
+        Read-only by contract: never write it. Stable for the Program's lifetime; it
+        holds the last generation's values once that generation completed on its
+        stream. Every env is recomputed each generation; the final version of a
+        channel the ``Track`` exports (``track.*``, ``cl.winding``, ``cl.truncated``,
+        ``valid.fail``, and ``cl.arclen2`` / ``cl.length2`` under a flat lift) IS the
+        ``Track``'s array, so it holds the committed values (after a masked
+        regeneration: an unmasked env's previous track; with ``on_invalid="poison"``:
+        the poisoned rows). One exception: ``track.valid`` is ``Track.valid`` only when
+        ``validity.default`` is the last writer of ``valid.fail``. After a plugin check
+        the commit derives ``Track.valid`` from ``valid.fail``, and ``tap("track.valid")``
+        is ``validity.default``'s own 0/1 flag, which ignores the later checks (and
+        poison): read ``Track.valid``, or ``tap("valid.fail") == 0``.
+        ``tap("seed")`` is the effective seed.
+
+        Raises:
+            KeyError: no stage writes ``channel``, ``after`` is not a stage id, or
+                ``channel`` is not written by ``after`` or an earlier stage.
+        """
+        versions = self._versions.get(channel)
         if not versions:
-            raise KeyError(f"no stage writes channel {name!r}")
+            raise KeyError(f"no stage writes channel {channel!r}; channels: "
+                           f"{sorted(self._versions)}")
         if after is None:
             return versions[-1][2]
         if after not in self._stage_ids:
@@ -260,8 +333,12 @@ class Program:
         limit = self._stage_ids.index(after)
         visible = [arr for index, _, arr in versions if index <= limit]
         if not visible:
-            raise KeyError(f"channel {name!r} is not written by {after!r} or earlier")
+            raise KeyError(f"channel {channel!r} is not written by {after!r} or earlier")
         return visible[-1]
+
+    def _channel(self, name: str, *, after: "str | None" = None) -> "wp.array":
+        """Private alias of :meth:`tap` (tests, the ``_scratch`` view)."""
+        return self.tap(name, after=after)
 
     def _channel_or_none(self, name: str, after: "str | None" = None):
         try:

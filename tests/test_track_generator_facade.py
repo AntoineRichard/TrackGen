@@ -119,12 +119,34 @@ def test_generate_reuses_output_buffers():
 
 
 def test_relax_solver_energy_raises():
-    """TrackGenerator must reject relax_solver != 'xpbd' at construction time."""
-    cfg = TrackGenConfig(relax_solver="energy", num_envs=4)
+    """TrackGenerator must reject the oracle-only relax_solver backends at construction
+    time (relax_solver names a registered relax stage, roadmap PR10b)."""
     rng = _make_rng(4)
     # ValueError, not assert: the check must survive ``python -O``.
-    with pytest.raises(ValueError, match="relax_solver"):
-        TrackGenerator(cfg, rng)
+    for name in ("energy", "tp_sobolev"):
+        cfg = TrackGenConfig(relax_solver=name, num_envs=4)
+        with pytest.raises(ValueError, match=(
+                rf"^TrackGenConfig.relax_solver='{name}' is an oracle-only backend "
+                r"\(tests/_oracle\), not a relax stage; TrackGenerator runs a registered "
+                r"relax stage: \['none', 'xpbd'\]$")):
+            TrackGenerator(cfg, rng)
+
+
+def test_relax_solver_and_z_profile_resolve_through_the_registry():
+    rng = _make_rng(4)
+    with pytest.raises(ValueError, match=r"^TrackGenConfig.relax_solver: unknown relax "
+                                         r"'bogus'; available: \['none', 'xpbd'\]$"):
+        TrackGenerator(TrackGenConfig(relax_solver="bogus", num_envs=4), rng)
+    with pytest.raises(ValueError, match=r"^TrackGenConfig.z_profile: unknown elevation "
+                                         r"'bogus'; available: \['flat', 'noise', "
+                                         r"'random_walk', 'uniform'\]$"):
+        TrackGenerator(TrackGenConfig(z_profile="bogus", num_envs=4), rng)
+    # relax_solver is resolved even with relax disabled; relax_enable=False -> relax.none
+    with pytest.raises(ValueError, match="relax_solver: unknown relax"):
+        TrackGenerator(TrackGenConfig(relax_solver="bogus", relax_enable=False,
+                                      num_envs=4), rng)
+    gen = TrackGenerator(TrackGenConfig(relax_enable=False, num_envs=4), rng)
+    assert gen.program._kinds["relax"] == ("relax", "none")
 
 
 def test_smooth_finish_raises():

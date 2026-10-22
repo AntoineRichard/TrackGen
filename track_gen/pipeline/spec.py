@@ -134,6 +134,11 @@ class BatchSpec:
         n_max: Per-env point capacity of the centerline channels (``N_max``).
         closed: Closed loops (``True``; open tracks are refused by ``build``).
         scale: ``TrackGenConfig.scale``, handed to the stages as ``StageBuilder.scale``.
+        on_invalid: What an invalid env (``fail_mask != 0``) leaves in the ``Track``:
+            ``"keep"`` (default: its computed geometry, ``valid = 0``) or
+            ``"poison"`` (``count = 0``, NaN geometry, ``length = winding = 0``, so
+            every utility's degenerate ``count < 3`` path fires; ``fail_mask`` and
+            ``truncated`` are kept).
     """
 
     num_envs: int
@@ -141,11 +146,12 @@ class BatchSpec:
     n_max: int
     closed: bool = True
     scale: float = 1.0
+    on_invalid: str = "keep"
 
     def _to_dict(self) -> dict:
         return {"num_envs": int(self.num_envs), "device": str(self.device),
                 "n_max": int(self.n_max), "closed": bool(self.closed),
-                "scale": float(self.scale)}
+                "scale": float(self.scale), "on_invalid": str(self.on_invalid)}
 
 
 @dataclasses.dataclass(frozen=True)
@@ -235,7 +241,8 @@ class PipelineSpec:
         b = _required(data, "pipeline data", ("batch", "stages"))["batch"]
         _required(b, "batch", ("num_envs", "device", "n_max"))
         batch = BatchSpec(num_envs=b["num_envs"], device=b["device"], n_max=b["n_max"],
-                          closed=b.get("closed", True), scale=b.get("scale", 1.0))
+                          closed=b.get("closed", True), scale=b.get("scale", 1.0),
+                          on_invalid=b.get("on_invalid", "keep"))
         raw_stages = data["stages"]
         if isinstance(raw_stages, (str, bytes)) or not isinstance(raw_stages, (list, tuple)):
             raise ValueError(f"stages must be a list, got {type(raw_stages).__name__}")

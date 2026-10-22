@@ -1,4 +1,4 @@
-"""Explicit registration of the generators shipped with track_gen.
+"""Explicit registration of the generators and stages shipped with track_gen.
 
 :data:`track_gen.plugin.registry` calls :func:`register` once, on its first lookup and
 before any third-party entry point, so the built-ins never need package metadata (a
@@ -10,7 +10,8 @@ from __future__ import annotations
 
 
 def register(reg) -> None:
-    """Register every built-in track generator and gate generator into ``reg``."""
+    """Register every built-in track generator, gate generator and track-pipeline stage
+    (relax / width / elevation / validity) into ``reg``."""
     from . import (
         warp_generate,
         warp_generate_checkpoint,
@@ -37,3 +38,9 @@ def register(reg) -> None:
     warp_generate_polar_gates.register(reg)        # "polar"
     warp_generate_voronoi_gates.register(reg)      # "voronoi"
     warp_generate_checkpoint_gates.register(reg)   # "checkpoint"
+
+    # The track-pipeline stages open to plugins (kinds "relax", "width", "elevation",
+    # "validity"; roadmap PR10b).
+    from ..stages import register_builtins
+
+    register_builtins(reg)

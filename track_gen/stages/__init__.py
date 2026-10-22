@@ -1,10 +1,13 @@
-"""TrackGen's built-in track stages and the channel catalogue (roadmap PR10a, private).
+"""TrackGen's built-in track stages and the channel catalogue (roadmap PR10a/PR10b).
 
-The planner (:func:`track_gen.pipeline.build`) resolves every non-generator stage of a
-``PipelineSpec`` from the catalogue here, keyed ``(kind, name)``. The catalogue is filled
-lazily (once, under a lock) by :func:`register`. It is NOT the public plugin registry:
-third-party stages of these kinds arrive with roadmap PR10b, which moves them into
-:data:`track_gen.plugin.registry` with one ``register(registry)`` call.
+The stages of the four kinds open to plugins (:data:`OPEN_KINDS`: ``relax``, ``width``,
+``elevation``, ``validity``) live in :data:`track_gen.plugin.registry`, next to the
+generators: :func:`register_builtins` adds TrackGen's own (``relax.xpbd``,
+``relax.none``, ``width.constant``, ``elevation.flat`` / ``uniform`` / ``random_walk`` /
+``noise``, ``validity.default``) when the registry loads its built-ins. The other kinds
+(``resample``, ``frames``, ``offset``, ``lift``) are built-in only: the planner resolves
+them from the private catalogue here, keyed ``(kind, name)`` and filled lazily (once,
+under a lock) by :func:`register`.
 """
 from __future__ import annotations
 
@@ -12,17 +15,24 @@ import contextlib
 import threading
 from typing import Iterator
 
-from .channels import CHANNELS, SEED, Channel
+from ..plugin.stage import _OPEN_KINDS
+from .channels import BUILTIN_FAIL_BITS, CHANNELS, FAIL, SEED, Channel
 
-__all__ = ["CHANNELS", "Channel", "SEED", "available", "get", "register", "scoped"]
+__all__ = ["BUILTIN_FAIL_BITS", "CHANNELS", "Channel", "FAIL", "OPEN_KINDS", "SEED",
+           "available", "get", "register", "register_builtins", "scoped"]
+
+#: The track-pipeline kinds third parties register stages of (through
+#: ``track_gen.plugin.registry``).
+OPEN_KINDS = _OPEN_KINDS
 
 _RESERVED_KINDS = ("generator", "gate_generator")
 
 
 def _check_builtin_stage(cls) -> None:
-    """The rules of a catalogue stage: a concrete Stage subclass of a non-generator
-    kind, STATIC, no ``output`` / ``provides``, a valid Params class, catalogue channels
-    only, and a port in both ``reads`` and ``writes`` naming one channel."""
+    """The rules of a catalogue stage: a concrete Stage subclass of a kind that is
+    neither a generator kind nor open to plugins (those live in the plugin registry),
+    STATIC, no ``output`` / ``provides``, a valid Params class, catalogue channels only,
+    and a port in both ``reads`` and ``writes`` naming one channel."""
     from ..plugin.params import _check_params_class  # noqa: PLC0415
     from ..plugin.stage import CaptureClass, Stage  # noqa: PLC0415
 
@@ -35,6 +45,9 @@ def _check_builtin_stage(cls) -> None:
     kind, name = getattr(cls, "kind", None), getattr(cls, "name", None)
     if not isinstance(kind, str) or not kind or kind in _RESERVED_KINDS:
         raise ValueError(f"Stage {label}.kind must be a non-generator kind, got {kind!r}")
+    if kind in OPEN_KINDS:
+        raise ValueError(f"Stage {label}: kind {kind!r} is open to plugins: register it "
+                         f"with track_gen.plugin.registry.add")
     if not isinstance(name, str) or not name:
         raise ValueError(f"Stage {label}.name must be a non-empty string, got {name!r}")
     _check_params_class(cls.Params, owner=f"Stage {label}")
@@ -113,8 +126,18 @@ scoped = _catalogue.scoped
 
 
 def register(catalogue) -> None:
-    """Add every built-in track stage to ``catalogue`` (anything with ``add(cls)``)."""
-    from .track import BUILTIN_STAGES  # noqa: PLC0415
+    """Add the built-in stages of the kinds NOT open to plugins (resample, frames,
+    offset, lift) to ``catalogue`` (anything with ``add(cls)``)."""
+    from .track import CATALOGUE_STAGES  # noqa: PLC0415
 
-    for cls in BUILTIN_STAGES:
+    for cls in CATALOGUE_STAGES:
         catalogue.add(cls)
+
+
+def register_builtins(reg) -> None:
+    """Add TrackGen's relax / width / elevation / validity stages to the plugin
+    registry ``reg`` (called by its built-in load, before any third-party plugin)."""
+    from .track import REGISTRY_STAGES  # noqa: PLC0415
+
+    for cls in REGISTRY_STAGES:
+        reg.add(cls)

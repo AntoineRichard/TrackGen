@@ -5,7 +5,9 @@ The goal: an RL loop keeps everything inside ONE caller graph,
 
 - envs with ``mask[e] != 0`` advance their epoch on device and get a NEW batch on every
   replay (their per-env runtime state is reset); envs with ``mask[e] == 0`` are left
-  bitwise unchanged (the fixed-shape pipeline recomputes them to identical values);
+  bitwise unchanged (the track generator's commit restores the ``Track`` rows it held
+  before the stages, roadmap PR10b; the gate pipeline recomputes them to identical
+  values until its commit, roadmap PR11);
 - an all-zero mask skips the regeneration on device (a CUDA conditional node) inside a
   Warp-registered capture where conditional nodes are supported, and is an exact no-op
   everywhere else (the body then runs unconditionally).
@@ -98,10 +100,19 @@ def _poison(arr) -> None:
         arr.fill_(dt(*([-12345.0] * n)) if n else 7)
 
 
-# ``generation`` is rewritten only for the envs a masked regeneration selects (unmasked envs
-# keep the epoch their output was built from), so it is not part of the "every env is
-# rewritten" poison set; the tests assert it against the expected epochs directly.
+# ``generation`` is written only for the envs a masked regeneration selects (unmasked envs
+# keep the epoch their output was built from), so it is not poisoned; the tests assert it
+# against the expected epochs directly. Every other field is poisoned for EVERY env: a
+# masked env must be rewritten (the poison gone), and an unmasked env must end as
+# :data:`_COMMITS` says (its poisoned bytes kept, or recomputed to the twin's values).
 _PER_ENV_FIELDS = ("generation",)
+
+# Whether the generator commits a masked generation (roadmap PR10b,
+# ``track_gen.stages.commit``): the track pipeline holds every unmasked env's ``Track`` rows
+# before its stages and restores them after, so an unmasked env ends with exactly the bytes
+# it had (a poison included). The gate pipeline has no commit yet (roadmap PR11): it
+# recomputes every env, unmasked ones to identical values.
+_COMMITS = {"track": True, "gate": False}
 
 
 def _poison_all(*objs) -> None:
@@ -144,6 +155,22 @@ def _differs(a, b) -> bool:
 def _rows(arrays: dict) -> dict:
     """name -> [E, -1] host copy: row ``e`` is env ``e``'s slice of an env-major array."""
     return {k: np.array(_host(a), copy=True).reshape(E, -1) for k, a in arrays.items()}
+
+
+def _assert_masked_result(kind: str, out, ref, poisoned: dict, mk, label: str) -> None:
+    """``out`` after a masked generation that started from ``poisoned`` (:func:`_rows`
+    of ``out`` right after :func:`_poison_all`): a masked env equals the eager twin
+    ``ref``; an unmasked env still holds its poisoned bytes on a committing generator
+    (:data:`_COMMITS`), and equals the twin (recomputed) otherwise. ``generation`` is
+    never poisoned, so an unmasked env's ``generation`` is its previous epoch either way."""
+    cur, want = _rows(_arrays(out)), _rows(_arrays(ref))
+    assert cur.keys() == want.keys() == poisoned.keys(), label
+    for e in range(E):
+        held = mk[e] == 0 and _COMMITS[kind]
+        what = "unmasked env, held by the commit" if held else "vs eager twin"
+        for name, r in cur.items():
+            exp = poisoned[name][e] if held else want[name][e]
+            np.testing.assert_array_equal(r[e], exp, err_msg=f"{label}: env {e} ({what}): {name}")
 
 
 @contextlib.contextmanager
@@ -293,8 +320,10 @@ def test_masked_advance_in_caller_graph_gives_a_new_batch_per_replay(kind, mask_
     part of the recording (nothing runs at record time), so 5 replays give 5 distinct new
     batches for the masked envs (epochs 1..5) while the unmasked envs stay bitwise
     unchanged; the mask is read at replay time (an all-zero mask changes nothing, its
-    complement advances the other envs). Every replay equals an eager twin advanced
-    identically, and ``generation`` equals the epoch."""
+    complement advances the other envs). Every replay starts from a fully poisoned
+    output: the masked envs equal an eager twin advanced identically, the unmasked envs
+    keep the poison byte for byte (track: the commit) or equal the twin (gate:
+    recomputed), and ``generation`` equals the epoch."""
     gen, _ = _make(kind, 11)
     twin, _ = _make(kind, 11)
     m = _facade_mask(gen, mask_src)
@@ -324,14 +353,17 @@ def test_masked_advance_in_caller_graph_gives_a_new_batch_per_replay(kind, mask_
         _write(m, mk)
         _write(m_t, mk)
         _poison_all(out)
+        poisoned = _rows(_arrays(out))
         _replay(cap.graph, s)
         ref = twin.enqueue(advance=True, mask=m_t)
         wp.synchronize()
         epoch += mk
         cur = _rows(_arrays(out))
 
-        def check(cur=cur, prev=prev, mk=mk, ref=ref, label=label):
-            _assert_same(out, ref, f"{label}: vs eager twin")
+        def check(cur=cur, prev=prev, poisoned=poisoned, mk=mk, ref=ref, label=label):
+            _assert_masked_result(kind, out, ref, poisoned, mk, label)
+            if _COMMITS[kind]:
+                return
             for e in np.flatnonzero(mk == 0):
                 for name, r in cur.items():
                     np.testing.assert_array_equal(
@@ -359,7 +391,9 @@ def test_self_graphs_are_cached_per_advance_and_mask(kind):
     """Outside any capture ``generate()`` keeps one self-graph PER ``(advance, mask)``
     variant: :attr:`graph` is the plain (no-advance) one and never advances, the masked
     one advances the masked envs on every replay (on any stream), ``advance=True`` without
-    a mask advances every env, and every call equals an eager twin driven the same way."""
+    a mask advances every env, and every call equals an eager twin driven the same way
+    (a masked call: the masked envs do, the unmasked ones as :func:`_assert_masked_result`
+    says, from a fully poisoned output)."""
     gen, _ = _make(kind, 11)
     twin, _ = _make(kind, 11)
     out = _result(gen)
@@ -382,12 +416,16 @@ def test_self_graphs_are_cached_per_advance_and_mask(kind):
     for label, kw, twin_kw, inc in calls:
         label = f"{kind}: {label}"
         _poison_all(out)
+        poisoned = _rows(_arrays(out))
         assert gen.generate(**kw) is out
         wp.synchronize()
         ref = twin.enqueue(**twin_kw)
         wp.synchronize()
         epoch += inc
-        _assert_same(out, ref, label)
+        if "mask" in kw:
+            _assert_masked_result(kind, out, ref, poisoned, inc, label)
+        else:
+            _assert_same(out, ref, label)
         np.testing.assert_array_equal(gen.seeds.epoch.numpy(), epoch, err_msg=label)
         np.testing.assert_array_equal(out.generation.numpy(), epoch, err_msg=label)
         if g0 is None:
@@ -491,7 +529,8 @@ _LINE_FIELDS = ("center", "tangent", "arclen", "length", "valid", "count")
 
 
 def _regenerated(course) -> dict:
-    """Every buffer a regeneration body rewrites for EVERY env (masked or not)."""
+    """Every buffer a regeneration produces, for every env (the generator's result, the
+    refreshed sub-tools); see :func:`_rewritten` for what a masked body rewrites."""
     out = {}
     objs = [("result", course.result), ("checkpoints", course.checkpoints)]
     if course.heightfield is not None:
@@ -506,6 +545,18 @@ def _regenerated(course) -> dict:
         for k in _LINE_FIELDS:
             out[f"line.{k}"] = getattr(course.course_line.track, k)
     return out
+
+
+def _rewritten(course) -> dict:
+    """The buffers a zero-mask regeneration body rewrites for EVERY env (poisoned before
+    a zero-mask replay): :func:`_regenerated`, minus the ``Track`` of a track course. Its
+    generator commits (:data:`_COMMITS`): every unmasked env's ``Track`` rows end the
+    body exactly as they began, so a poisoned ``Track`` would stay poisoned, feed the
+    refresh, and stay so for every env a later masked replay does not select."""
+    regen = _regenerated(course)
+    if _COMMITS["track" if isinstance(course.generator, TrackGenerator) else "gate"]:
+        regen = {k: a for k, a in regen.items() if not k.startswith("result.")}
+    return regen
 
 
 def _runtime(course) -> dict:
@@ -578,12 +629,13 @@ def test_course_masked_regenerate_zero_mask_in_warp_capture(variant, lowering, m
     """``course.regenerate(mask=m, advance=True)`` recorded inside a Warp ScopedCapture on a
     side stream (a registered capture).
 
-    Zero mask: with conditional nodes the body is skipped on device, so poisoned outputs
-    stay poisoned; with the unconditional lowering the body runs and is an exact no-op
-    (poison overwritten by bitwise-identical values). Either way the runtime state and the
-    epochs are untouched. Then ``m[0] = 1``: env 0 gets a new batch (epoch 1) and a reset
-    runtime state, every other env is bitwise what it was before, and everything equals
-    an eager twin regenerated with the same mask."""
+    Zero mask (the :func:`_rewritten` buffers poisoned): with conditional nodes the body
+    is skipped on device, so poisoned outputs stay poisoned; with the unconditional
+    lowering the body runs and is an exact no-op (poison overwritten by bitwise-identical
+    values; a track course's ``Track`` is held and restored by the commit). Either way
+    the runtime state and the epochs are untouched. Then ``m[0] = 1``: env 0 gets a new
+    batch (epoch 1) and a reset runtime state, every other env is bitwise what it was
+    before, and everything equals an eager twin regenerated with the same mask."""
     if lowering == "conditional" and not wp.is_conditional_graph_supported():
         pytest.skip(_NO_CONDITIONAL)
     if lowering == "unconditional":
@@ -607,7 +659,7 @@ def test_course_masked_regenerate_zero_mask_in_warp_capture(variant, lowering, m
 
     # -- zero mask ---------------------------------------------------------------------
     regen = _regenerated(course)
-    for a in regen.values():
+    for a in _rewritten(course).values():
         _poison(a)
     wp.synchronize()
     poisoned = _host_all(regen)
@@ -645,8 +697,8 @@ def test_course_masked_regenerate_under_torch_cuda_graph(variant, registered):
     """Inside ``torch.cuda.graph(g)`` (no ``stream=``: torch's capture stream is adopted):
 
     - WITHOUT registration Warp does not know the capture, so the body is recorded
-      unconditionally: a zero-mask replay overwrites poisoned outputs with exactly the
-      no-op values;
+      unconditionally: a zero-mask replay overwrites the poisoned :func:`_rewritten`
+      outputs with exactly the no-op values;
     - WITH ``track_gen.interop.torch.registered(conditional=True)`` the capture is
       registered, conditional nodes are allowed, and the zero-mask replay skips the body
       on device (poison stays). The regeneration is the last op of the torch graph, as
@@ -699,7 +751,7 @@ def test_course_masked_regenerate_under_torch_cuda_graph(variant, registered):
         torch.cuda.synchronize()
 
     regen = _regenerated(course)
-    for a in regen.values():
+    for a in _rewritten(course).values():
         _poison(a)
     wp.synchronize()
     poisoned = _host_all(regen)

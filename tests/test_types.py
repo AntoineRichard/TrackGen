@@ -4,6 +4,7 @@ import math
 import pytest
 import torch
 
+from track_gen import GateGenConfig, PerEnvSeededRNG, TrackGenerator
 from track_gen._src.types import Track, TrackGenConfig
 
 
@@ -351,10 +352,21 @@ def test_track_config_z_defaults_instantiate():
 
 
 def test_track_config_z_validates():
-    with pytest.raises(ValueError, match="z_profile"):
-        TrackGenConfig(device="cpu", num_envs=1, z_profile="bogus")
+    # z_profile names any registered elevation stage (roadmap PR10b): the config checks
+    # its type only; an unknown name is refused by TrackGenerator, through the registry.
+    cfg = TrackGenConfig(device="cpu", num_envs=1, z_profile="bogus")
+    with pytest.raises(ValueError, match=r"TrackGenConfig.z_profile: unknown elevation "
+                                         r"'bogus'; available: \['flat', 'noise', "
+                                         r"'random_walk', 'uniform'\]"):
+        TrackGenerator(cfg, PerEnvSeededRNG(seeds=1, num_envs=1, device="cpu"))
+    for bad in ("", None, 3):
+        with pytest.raises(ValueError, match="z_profile must be a non-empty string"):
+            TrackGenConfig(device="cpu", num_envs=1, z_profile=bad)
     with pytest.raises(ValueError, match="z_min"):
         TrackGenConfig(device="cpu", num_envs=1, z_min=2.0, z_max=1.0)
+    # gates keep the closed set (gate stages arrive with roadmap PR11)
+    with pytest.raises(ValueError, match="z_profile must be one of"):
+        GateGenConfig(device="cpu", num_envs=1, z_profile="bogus")
 
 
 def test_track_config_validates_sampler_and_buffer_invariants():

@@ -800,7 +800,24 @@ class Taubin(plugin.Stage):
         return enqueue
 ```
 
-> **As shipped in PR10a:** `b.write(port)` on a channel the stage also reads returns a NEW version (`b.read` keeps the previous one), and `build` must call `b.write` for every declared write port. Under those semantics this example writes its result into `out = b.write("xy", wp.vec2f, per="cl")` (ping-pong `x -> tmp/out`, ending in `out`) instead of copying back into `x`. Whether PR10b adds an aliasing form (e.g. `b.rewrite(port)`, returning the read buffer) is open; until then an update made only to the read buffer is lost.
+> **As shipped in PR10b:** the in-place model is a versioned rewrite with no aliasing form. A stage rewrites a channel by declaring it in `reads` and `writes` through ONE port; `b.read(port)` is the previous version and `b.write(port)` a NEW buffer every later stage reads; the stage writes its whole output there and never writes a read buffer (`check_stage`'s `stage.isolation` catches a violation). This example therefore ends in the write buffer instead of copying back into `x`, with no copy:
+>
+> ```python
+> def build(self, b, p):
+>     x, cnt = b.read("xy"), b.read("count")
+>     out, tmp = b.write("xy", wp.vec2f, per="cl"), b.temp_like("xy")
+>     lam, mu, S = b.param("lam"), b.param("mu"), b.layout.stride
+>     steps = [f for _ in range(p.passes) for f in (lam, mu)]          # static trip count -> STATIC
+>     def enqueue(ctx):
+>         src = x
+>         for k, f in enumerate(steps):          # x -> tmp -> out -> tmp -> ... -> out (even count)
+>             dst = tmp if k % 2 == 0 else out
+>             ctx.launch(_laplace_k, b.E * S, [src, cnt, f, S, dst])
+>             src = dst
+>     return enqueue
+> ```
+>
+> See docs/contributing/writing-a-stage.rst. `preferred=` (generator hints) is PR11, and the thickness check reading `cl.half_width` is PR13.
 
 Select it with `presets.track(..., relax=("acme.taubin", {"passes": 30}))` or `relax=None`. A generator can declare `preferred={"relax": "none"}`; presets, Course and the explorer honour it. The thickness check reads `cl.half_width` with its own tolerance, so it no longer depends on XPBD's separation target.
 
@@ -841,7 +858,7 @@ class MaxCurvature(plugin.Stage):
         return enqueue
 ```
 
-> **As shipped in PR10a:** there is no `valid.fail` channel or `fail_bit()` yet (`validity.default` writes the 0/1 `track.valid`), and an in-place stage must write its whole output into `b.write(port)` (a NEW version; see the note under (c)). With those semantics a chained check copies `fail` into its write buffer and ORs its bit there (a copy plus a launch per check); an aliasing write form, decided in PR10b together with `valid.fail`, would make this example run as written.
+> **As shipped in PR10b:** a chained check rewrites `valid.fail` in one kernel: `fail_in, fail_out = b.read("fail"), b.write("fail", wp.int32)` and `fail_out[e] = fail_in[e] | ((kmax > k_max[e]) << bit)` for every env (no copy, no aliasing). `b.fail_bit(name=None)` hands out bits 16-30 in pipeline order (a 16th plugin bit, a taken name, or a validity stage owning no bit is a `PlanError`). `validity.default` keeps the fused `_validity_k` (same launch, byte-identical `valid`) and writes bits 0-7 (generator, turning, finite, thickness, w_floor, border, grade, truncation) into `valid.fail`; the split checks are NOT registered in PR10b (a later PR). The commit is not a registered kind but the Program's epilogue, and PR10b ships the "hold / restore" form: the `Track` arrays stay the final channel versions (`Track.fail_mask` is the final `valid.fail`), a masked generation holds the unmasked envs' rows before the stages and the commit restores them after (exact without bitwise determinism), the commit derives `Track.valid = (fail_mask == 0)` when a check follows `validity.default`, and it applies `on_invalid="poison"`. Cost: no launch for an unmasked default generation (the PR9 launch sequence is unchanged), one for a derived `valid` or poison, two for a masked generation; one held copy of the `Track` (64 B per point + 24 B per env). The sole-writer commit (copying work buffers into the `Track`) remains an option for 1.0.
 
 Enable it with `presets.track(..., checks=("default", "acme.max_curvature"))`. `program.fail_bits` and `Track.fail_bits` name every bit. The built-in `validity.default` keeps the fused `_validity_k` for speed and goldens and owns bits 0-6. The split checks (`validity.turning`, `.finite`, `.thickness`, `.w_floor`, `.border`, `.grade`, `.truncation`) are registered as well, so the default can be replaced.
 
@@ -1375,7 +1392,7 @@ It runs over everything registered, so a capture regression fails CI mechanicall
     - `frames`, `width.constant`, `offset`;
     - `elevation.{flat,uniform,random_walk,noise}`, each with its `parameterization` (deletes the if/elif at warp_zprofile.py:202-222 and the name tuples at warp_pipeline.py:1505, 1899);
     - `validity.default` (fused `_validity_k`) plus the split checks;
-    - `commit`: the only writer of the result; masked; generation; `on_invalid` with keep/poison.
+    - `commit`: the only writer of the result; masked; generation; `on_invalid` with keep/poison. *Shipped in PR10b as the "hold / restore" form instead (byte-identical PR9 launch sequence): the stages write the `Track`, a masked generation holds the unmasked rows and the commit restores them (they are transiently overwritten on the generation's stream); the sole-writer commit remains an option for 1.0.*
   - `_run_pipeline`/`inflate_warp`/`_Scratch` are deleted once parity holds.
   - `Program.tap()` for viz and benchmarks.
   - `legacy.to_pipeline_spec` carries `cfg.num_points` as the generator stage's raw default (see the PR8 commitments under §5).

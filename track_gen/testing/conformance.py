@@ -76,6 +76,30 @@ A ``capturable=False`` generator (eager on CUDA every call) waives
 ``hot_path.host_sync``, ``hot_path.allocation``, ``hot_path.topology``,
 ``hot_path.buffers`` and ``capture.caller`` (reported as skipped); ``capture.self_graph``
 then checks that it never self-graphs.
+
+:func:`check_stage` runs a ``relax`` / ``width`` / ``elevation`` / ``validity`` stage
+inside the default track pipeline (:func:`track_gen.pipeline.presets.track`, the stage
+in its slot; a validity check after ``validity.default``) through the same machinery,
+with these checks (no ``diversity`` / ``output.closed``: they are the generator's
+business):
+
+``output.accepted`` (relax / width / elevation)
+    The pipeline accepts some env (valid fraction > 0). When it accepts none, the same
+    pipeline with the slot's neutral built-in (``relax.none``, ``width.constant``,
+    ``elevation.flat``) is run: if it accepts none either, the check is skipped (the
+    stage did not reject them).
+``stage.isolation``
+    After a generation, re-running ONLY the stage's ``enqueue`` on the same inputs
+    leaves the versions it read unchanged (it never writes a read port) and reproduces
+    the versions it wrote (no stale scratch, no dependency on its own previous output).
+``validity.bits`` (validity)
+    The stage owns at least one fail bit (``StageBuilder.fail_bit``), sets no bit it
+    does not own (the ``fail_mask`` of the pipeline without it, OR its own bits), and
+    ``Track.valid == (fail_mask == 0)``.
+
+``determinism``, ``batch_independence``, ``statelessness``, ``hot_path.*`` and
+``capture.*`` are the generator kit's, on the whole Program (``capturable``: the built
+Program's).
 """
 from __future__ import annotations
 
@@ -101,12 +125,23 @@ __all__ = [
     "Report",
     "check_gate_generator",
     "check_generator",
+    "check_stage",
 ]
 
 _COMMON = ("determinism", "diversity", "batch_independence", "statelessness",
            "hot_path.host_sync", "hot_path.allocation", "hot_path.stream",
            "hot_path.capture", "hot_path.topology", "hot_path.buffers",
            "capture.caller", "capture.self_graph")
+_STAGE_COMMON = ("determinism", "batch_independence", "statelessness",
+                 "hot_path.host_sync", "hot_path.allocation", "hot_path.stream",
+                 "hot_path.capture", "hot_path.topology", "hot_path.buffers",
+                 "capture.caller", "capture.self_graph")
+_STAGE_OUTPUT = ("construct", "output.shape", "output.finite", "output.padding",
+                 "output.count")
+#: The track-pipeline stage kinds :func:`check_stage` runs.
+STAGE_KINDS = ("relax", "width", "elevation", "validity")
+# The neutral built-in of each slot (the output.accepted reference).
+_NEUTRAL = {"relax": "none", "width": "constant", "elevation": "flat"}
 
 #: The check names of each registry kind, in run order.
 CHECKS: Mapping[str, tuple] = types.MappingProxyType({
@@ -114,6 +149,9 @@ CHECKS: Mapping[str, tuple] = types.MappingProxyType({
                   "output.count", "output.closed") + _COMMON,
     "gate_generator": ("construct", "output.shape", "output.finite", "output.padding",
                        "output.count", "output.accepted") + _COMMON,
+    **{k: _STAGE_OUTPUT + ("output.accepted", "stage.isolation") + _STAGE_COMMON
+       for k in ("relax", "width", "elevation")},
+    "validity": _STAGE_OUTPUT + ("stage.isolation", "validity.bits") + _STAGE_COMMON,
 })
 
 _HOT = ("hot_path.host_sync", "hot_path.allocation", "hot_path.stream",
@@ -233,6 +271,8 @@ class Report:
 
 
 def _label(kind: str) -> str:
+    if kind in STAGE_KINDS:
+        return f"{kind} stage"
     return "gate generator" if kind == "gate_generator" else "generator"
 
 
@@ -243,12 +283,13 @@ def _label(kind: str) -> str:
 _TRACK_POINT = {"outer": wp.vec3f, "center": wp.vec3f, "inner": wp.vec3f,
                 "tangent": wp.vec3f, "normal": wp.vec3f, "arclen": wp.float32}
 _TRACK_ENV = {"length": wp.float32, "valid": wp.int32, "count": wp.int32,
-              "winding": wp.float32, "truncated": wp.int32, "generation": wp.int32}
+              "winding": wp.float32, "truncated": wp.int32, "generation": wp.int32,
+              "fail_mask": wp.int32}
 _GATE_POINT = {"position": wp.vec3f, "tangent": wp.vec3f, "forward": wp.vec3f,
                "orientation": wp.quatf, "half_size": wp.float32, "left": wp.vec3f,
                "right": wp.vec3f}
 _GATE_ENV = {"valid": wp.int32, "count": wp.int32, "generation": wp.int32}
-_OPTIONAL = {"truncated", "generation"}
+_OPTIONAL = {"truncated", "generation", "fail_mask"}
 
 
 class _Snapshot:
@@ -346,6 +387,23 @@ def _poison_raw(kind: str, gen) -> None:
         wp.synchronize_device(dev)
 
 
+# stage.isolation fills a stage's write buffers with this byte before re-running it.
+_BYTE_POISON = 0xA5
+
+
+def _byte_poisoned(host: np.ndarray) -> np.ndarray:
+    """A copy of ``host`` with every byte set to :data:`_BYTE_POISON`."""
+    out = np.empty_like(host)
+    out.view(np.uint8)[...] = _BYTE_POISON
+    return out
+
+
+def _is_byte_poison(host: np.ndarray) -> np.ndarray:
+    """Per slot (first axis): every byte is :data:`_BYTE_POISON`."""
+    n = int(host.shape[0])
+    return (np.ascontiguousarray(host).view(np.uint8).reshape(n, -1) == _BYTE_POISON).all(axis=1)
+
+
 def _raw_delta(a: _Snapshot, ea: int, b: _Snapshot, eb: int) -> float:
     """The largest coordinate difference between the raw outputs of env ``ea`` of ``a``
     and env ``eb`` of ``b`` (``inf`` when their gate counts differ)."""
@@ -406,7 +464,8 @@ def _int32(values) -> np.ndarray:
 class _DeviceRun:
     def __init__(self, kind: str, name: str, params, device: str, num_envs: int,
                  seeds_a: np.ndarray, seeds_b: np.ndarray, overrides: Mapping,
-                 info, probe: tuple, modes: tuple, skip: frozenset) -> None:
+                 info, probe: tuple, modes: tuple, skip: frozenset,
+                 stage: "_StageUnderTest | None" = None) -> None:
         self.kind, self.name, self.params = kind, name, params
         self.device = device
         self.E = num_envs
@@ -416,9 +475,14 @@ class _DeviceRun:
         self.probe = probe
         self.modes = modes
         self.skip = skip
+        self.stage = stage
+        # What a snapshot reads: a stage runs inside a TrackGenerator.
+        self.snap_kind = "generator" if stage is not None else kind
         self.is_cuda = wp.get_device(device).is_cuda
         self.results: list = []
         self.snap_b: "_Snapshot | None" = None
+        self.capturable = bool(info.capturable)
+        self.accepts_ctx = bool(info.accepts_ctx)
 
     # -- construction ------------------------------------------------------------
     def make(self, seeds: np.ndarray):
@@ -428,6 +492,10 @@ class _DeviceRun:
         E = int(seeds.shape[0])
         rng = PerEnvSeededRNG(seeds=wp.array(_int32(seeds), dtype=wp.int32, device=dev),
                               num_envs=E, device=dev)
+        if self.stage is not None:
+            from .._src.track_generator import TrackGenerator  # noqa: PLC0415
+
+            return TrackGenerator(self.stage.spec(E, dev), rng)
         kw = dict(self.overrides)
         if self.params is not None:
             kw["generator_params"] = self.params
@@ -452,7 +520,7 @@ class _DeviceRun:
     def snapshot(self, gen) -> _Snapshot:
         if self.is_cuda:
             wp.synchronize_device(self.device)
-        return _Snapshot(self.kind, gen)
+        return _Snapshot(self.snap_kind, gen)
 
     def eager(self, gen) -> None:
         """One EAGER generation (``enqueue()``: never self-captures), then a device sync.
@@ -467,7 +535,7 @@ class _DeviceRun:
 
     def poisoned(self, gen) -> _Snapshot:
         """Poison ``gen``'s raw output, generate once (eagerly), snapshot."""
-        _poison_raw(self.kind, gen)
+        _poison_raw(self.snap_kind, gen)
         self.eager(gen)
         return self.snapshot(gen)
 
@@ -518,12 +586,20 @@ class _DeviceRun:
             for n in names[1:]:
                 self.add(n, True, "not run: construct failed", skipped=True)
             return self.results
-        self.add("construct", True, details={"capturable": self.info.capturable,
-                                             "accepts_ctx": self.info.accepts_ctx})
+        if self.stage is not None:
+            self.capturable = bool(gen.program.capturable)
+            self.accepts_ctx = True
+        self.add("construct", True, details={"capturable": self.capturable,
+                                             "accepts_ctx": self.accepts_ctx})
         out_names = [n for n in names if n.startswith("output.")]
         self.guarded(out_names, lambda: self.output_checks(snap))
+        if self.stage is not None:
+            self.guarded(["stage.isolation"], lambda: [self.stage_isolation(gen)])
+            if self.kind == "validity":
+                self.guarded(["validity.bits"], lambda: [self.validity_bits(gen, snap)])
         self.guarded(["determinism"], lambda: [self.determinism(snap)])
-        self.guarded(["diversity"], lambda: [self.diversity(snap)])
+        if self.stage is None:          # a stage need not add diversity: the generator's
+            self.guarded(["diversity"], lambda: [self.diversity(snap)])
         self.guarded(["batch_independence"], lambda: [self.batch_independence(snap)])
         self.guarded(["statelessness"], lambda: [self.statelessness(gen, snap)])
         if self.is_cuda:
@@ -536,7 +612,7 @@ class _DeviceRun:
     # -- 1. output -------------------------------------------------------------------
     def output_checks(self, s: _Snapshot) -> list:
         E, N = s.E, s.stride
-        track = self.kind == "generator"
+        track = self.snap_kind == "generator"
         out = []
 
         # shape / dtype / flag values
@@ -659,7 +735,10 @@ class _DeviceRun:
 
         # closed loop / accepted
         frac = float(np.mean(s.valid == 1))
-        if track:
+        if self.stage is not None:
+            if "output.accepted" in CHECKS[self.kind]:
+                out.append(self.stage_accepted(frac))
+        elif track:
             bad, worst = [], 0.0
             R = s.raw_stride
             for e in range(E):
@@ -696,6 +775,144 @@ class _DeviceRun:
                                               f"(valid 0/{E})",
                         {"valid_fraction": frac}))
         return out
+
+    # -- stage checks ---------------------------------------------------------------------
+    def stage_accepted(self, frac: float):
+        details = {"valid_fraction": frac}
+        if frac > 0.0:
+            return ("output.accepted", True, "", details)
+        neutral = _NEUTRAL[self.kind]
+        ref = self.stage.reference(self.E, self.device, neutral, self.seeds_a)
+        rfrac = float(np.mean(_Snapshot("generator", ref).valid == 1))
+        details["reference_valid_fraction"] = rfrac
+        if rfrac == 0.0:
+            return ("output.accepted", None,
+                    f"skipped: the pipeline rejects every env (valid 0/{self.E}) with the "
+                    f"neutral {self.kind}.{neutral} too; the stage did not reject them",
+                    details)
+        return ("output.accepted", False,
+                f"the pipeline rejected every env (valid 0/{self.E}) while it accepts "
+                f"{rfrac:.0%} of them with {self.kind}.{neutral} in the slot", details)
+
+    def stage_isolation(self, gen):
+        program = gen.program
+        sid = self.stage.stage_id
+        ids = list(program._stage_ids)
+        i = ids.index(sid)
+        reads, writes = program._ports[sid]
+        before = ids[i - 1]
+        self.eager(gen)
+        read_arrays = {p: program.tap(ch, after=before) for p, ch in reads.items()}
+        write_arrays = {p: program.tap(ch, after=sid) for p, ch in writes.items()}
+        snap_r = {p: a.numpy().tobytes() for p, a in read_arrays.items()}
+        snap_w = {p: a.numpy().copy() for p, a in write_arrays.items()}
+        from ..exec.context import LaunchContext  # noqa: PLC0415
+        from .trace import trace_launches  # noqa: PLC0415
+
+        # Every write slot gets the poison byte first: a slot the stage leaves
+        # unwritten (padding included) keeps it instead of passing as unchanged.
+        for p, a in write_arrays.items():
+            a.assign(_byte_poisoned(snap_w[p]))
+        with trace_launches() as trace:
+            program._enqueues[i](LaunchContext.for_call(self.device))
+        wp.synchronize_device(self.device)
+        bad = []
+        for p, a in read_arrays.items():
+            if a.numpy().tobytes() != snap_r[p]:
+                bad.append(f"the stage wrote its read port {p!r} ({reads[p]}): write into "
+                           f"b.write({p!r})")
+        # A stage that launches nothing (elevation.flat) writes nothing: its outputs are
+        # their build-time zero initialisation, constant by construction.
+        for p, a in (write_arrays.items() if len(trace) else ()):
+            now, was = a.numpy(), snap_w[p]
+            if now.tobytes() == was.tobytes():
+                continue
+            left = np.flatnonzero(_is_byte_poison(now) & ~_is_byte_poison(was))
+            if left.size:
+                bad.append(f"the stage left {left.size} slot(s) of {writes[p]!r} (port "
+                           f"{p!r}) unwritten, first {left[:4].tolist()}: write every "
+                           f"slot, padding included")
+            else:
+                bad.append(f"re-running the stage on the same inputs changed "
+                           f"{writes[p]!r} (port {p!r}): it reads stale scratch or its "
+                           f"own previous output")
+        for p, a in write_arrays.items():        # leave the generation as it was
+            a.assign(snap_w[p])
+        wp.synchronize_device(self.device)
+        return ("stage.isolation", not bad, _list_text(bad),
+                {"reads": sorted(reads.values()), "writes": sorted(writes.values())})
+
+    def validity_bits(self, gen, snap: _Snapshot):
+        program = gen.program
+        sid = self.stage.stage_id
+        own = [n for n, owner in program._fail_owner.items() if owner == sid]
+        if not own:
+            return ("validity.bits", False, "the stage owns no fail bit (call "
+                    "b.fail_bit() in build)", {})
+        own_mask = 0
+        for n in own:
+            own_mask |= 1 << int(program.fail_bits[n])
+        fm = snap.data["fail_mask"].astype(np.int64)
+        valid = snap.data["valid"].astype(np.int64)
+        bad = []
+        if not np.array_equal(valid, (fm == 0).astype(np.int64)):
+            envs = np.flatnonzero(valid != (fm == 0)).tolist()
+            bad.append(f"Track.valid != (fail_mask == 0) for envs {envs[:6]}")
+        details = {"bits": {n: int(program.fail_bits[n]) for n in own},
+                   "own_fraction": float(np.mean((fm & own_mask) != 0))}
+        message = ""
+        if self.stage.initializer:
+            # validity.default: the planner refuses any other stage that starts valid.fail.
+            if np.any(fm & ~own_mask):
+                bad.append("fail_mask holds bits the stage does not own")
+            message = ("the stage initialises valid.fail: no pipeline without it to "
+                       "compare with")
+        else:
+            other = _Snapshot("generator", self.stage.without(self.E, self.device,
+                                                              self.seeds_a))
+            fm0 = other.data["fail_mask"].astype(np.int64)
+            diff = np.flatnonzero((fm & ~own_mask) != fm0).tolist()
+            if diff:
+                bad.append(f"the check changed bits it does not own (envs {diff[:6]}): "
+                           f"OR only (1 << b.fail_bit()) into valid.fail")
+            bad += self._foreign_bits(program, sid, own_mask)
+        return ("validity.bits", not bad, _list_text(bad) if bad else message, details)
+
+    def _foreign_bits(self, program, sid: str, own_mask: int) -> list:
+        """Re-run only the check on a synthetic ``valid.fail`` input that holds bits it
+        does not own (alternating patterns over bits 0-30) into a write buffer filled
+        with ``-1``: every env must come out with exactly those bits besides its own
+        (``fail_out = fail_in | own``). Restores both buffers afterwards."""
+        from ..exec.context import LaunchContext  # noqa: PLC0415
+        from ..stages.channels import FAIL  # noqa: PLC0415
+
+        ids = list(program._stage_ids)
+        i = ids.index(sid)
+        fail_in = program.tap(FAIL, after=ids[i - 1])
+        fail_out = program.tap(FAIL, after=sid)
+        saved_in, saved_out = fail_in.numpy().copy(), fail_out.numpy().copy()
+        pattern = np.where(np.arange(self.E) % 2 == 0, 0x55555555, 0x2AAAAAAA)
+        pattern = pattern.astype(np.int64) & ~own_mask
+        try:
+            fail_in.assign(pattern.astype(np.int32))
+            fail_out.fill_(-1)
+            program._enqueues[i](LaunchContext.for_call(self.device))
+            wp.synchronize_device(self.device)
+            out = fail_out.numpy().astype(np.int64)
+        finally:
+            fail_in.assign(saved_in)
+            fail_out.assign(saved_out)
+            wp.synchronize_device(self.device)
+        bad = []
+        unwritten = np.flatnonzero(out == -1).tolist()
+        if unwritten:
+            bad.append(f"the check left valid.fail unwritten for envs {unwritten[:6]}: "
+                       f"write every env (an env that passes gets fail_in[e])")
+        dropped = np.flatnonzero((out != -1) & ((out & ~own_mask) != pattern)).tolist()
+        if dropped:
+            bad.append(f"the check dropped or changed the bits of earlier checks (envs "
+                       f"{dropped[:6]}): write fail_in[e] | own, not own alone")
+        return bad
 
     # -- 2-4. determinism, diversity, batch independence --------------------------------
     def determinism(self, snap: _Snapshot):
@@ -799,7 +1016,7 @@ class _DeviceRun:
 
     # -- 5. hot path (CPU) --------------------------------------------------------------
     def hot_path(self, gen) -> list:
-        eager = not self.info.capturable
+        eager = not self.capturable
         # A second instance built alike (constructed here: construction may allocate).
         twin = None if eager or self.skipped("hot_path.buffers") else \
             self.make(self.seeds_a)
@@ -809,8 +1026,7 @@ class _DeviceRun:
                 gen.generate()
             with LaunchTrace() as second:
                 gen.generate()
-        waived = ("waived: registered capturable=False (eager every call, may sync and "
-                  "allocate)")
+        waived = ("waived: capturable=False (eager every call, may sync and allocate)")
         out = []
 
         def category(check: str, cat: str, what: str) -> None:
@@ -827,7 +1043,7 @@ class _DeviceRun:
         category("hot_path.allocation", "allocation", "allocation(s)")
         category("hot_path.stream", "stream", "call(s) off the call's stream")
         name, passed, msg, det = out[-1]
-        if not passed and not self.info.accepts_ctx:
+        if not passed and not self.accepts_ctx:
             out[-1] = (name, passed, msg + " A legacy spec (accepts_ctx=False) runs its own "
                        "launches on Warp's current stream: set accepts_ctx=True and emit "
                        "through ctx.", det)
@@ -888,7 +1104,7 @@ class _DeviceRun:
 
     # -- 7. CUDA ------------------------------------------------------------------------
     def capture_caller(self):
-        if not self.info.capturable:
+        if not self.capturable:
             return ("capture.caller", None,
                     "waived: registered capturable=False (refuses a caller's capture)", {})
         gen = self.make(self.seeds_a)
@@ -898,13 +1114,13 @@ class _DeviceRun:
 
     def capture_self_graph(self, snap: _Snapshot):
         gen = self.make(self.seeds_a)
-        result = gen._track if self.kind == "generator" else gen._gate_sequence
+        result = gen._track if self.snap_kind == "generator" else gen._gate_sequence
         bad = []
-        _poison_raw(self.kind, gen)              # as the reference snapshots
+        _poison_raw(self.snap_kind, gen)          # as the reference snapshots
         gen.generate()
-        if self.info.capturable and gen.graph is None:
+        if self.capturable and gen.graph is None:
             bad.append("generate() on CUDA did not capture the generator's own graph")
-        if not self.info.capturable and gen.graph is not None:
+        if not self.capturable and gen.graph is not None:
             bad.append("a capturable=False generator captured a graph")
 
         def compare(ref: _Snapshot, label: str) -> None:
@@ -1045,3 +1261,150 @@ def check_gate_generator(name: str, params=None, *, devices=None, num_envs: int 
     return _check("gate_generator", name, params, devices=devices, num_envs=num_envs,
                   seeds=seeds, config=config, capture_modes=capture_modes, skip=skip,
                   modules=modules)
+
+
+# ---------------------------------------------------------------------------------------
+# Track-pipeline stages
+# ---------------------------------------------------------------------------------------
+
+class _StageUnderTest:
+    """The pipelines :func:`check_stage` builds around one stage."""
+
+    def __init__(self, kind: str, name: str, params, upstream: Mapping, cls) -> None:
+        from ..pipeline.spec import StageRef  # noqa: PLC0415
+        from ..stages.channels import FAIL  # noqa: PLC0415
+
+        self.kind, self.name, self.params = kind, name, params
+        self.upstream = dict(upstream)
+        # A validity stage that starts valid.fail (writes it without reading it): the
+        # planner admits only validity.default there (a plugin one fails construct).
+        self.initializer = kind == "validity" and FAIL in dict(cls.writes).values() \
+            and FAIL not in dict(cls.reads).values()
+        if kind != "validity":
+            self.stage_id = kind
+            self.ref = StageRef(kind, name, params=params)
+        elif self.initializer:
+            self.stage_id = "validity"
+            self.ref = StageRef(kind, name, params=params)
+        else:
+            self.stage_id = name
+            self.ref = StageRef(kind, name, params=params, id=name)
+
+    def _preset(self, E: int, device: str, slot):
+        from ..pipeline import presets  # noqa: PLC0415
+
+        kw = dict(self.upstream)
+        if self.kind != "validity":
+            kw[self.kind] = slot
+        elif self.initializer:
+            kw["checks"] = () if slot is None else (slot,)
+        else:
+            checks = tuple(kw.get("checks", ("default",)))
+            kw["checks"] = checks if slot is None else (*checks, slot)
+        return presets.track(num_envs=E, device=device, **kw)
+
+    def spec(self, E: int, device: str):
+        """The pipeline holding the stage under test."""
+        return self._preset(E, device, self.ref)
+
+    def _generator(self, spec, seeds: np.ndarray, device: str):
+        from .._src.rng_utils import PerEnvSeededRNG  # noqa: PLC0415
+        from .._src.track_generator import TrackGenerator  # noqa: PLC0415
+
+        E = int(seeds.shape[0])
+        rng = PerEnvSeededRNG(seeds=wp.array(_int32(seeds), dtype=wp.int32,
+                                             device=device), num_envs=E, device=device)
+        gen = TrackGenerator(spec, rng)
+        gen.enqueue()
+        wp.synchronize_device(device)
+        return gen
+
+    def reference(self, E: int, device: str, neutral: str, seeds=None):
+        """A generator of the same pipeline with the slot's neutral built-in."""
+        seeds = np.arange(E) if seeds is None else seeds
+        return self._generator(self._preset(E, device, neutral), np.asarray(seeds),
+                               device)
+
+    def without(self, E: int, device: str, seeds: np.ndarray):
+        """A generator of the same pipeline without the validity check under test."""
+        return self._generator(self._preset(E, device, None), seeds, device)
+
+
+def check_stage(kind: str, name: str, params=None, *, upstream: "Mapping | None" = None,
+                devices=None, num_envs: int = 8, seeds: Sequence[int] = (11, 1009),
+                capture_modes: Iterable[str] = CAPTURE_MODES, skip: Iterable[str] = (),
+                modules: Iterable[str] = ()) -> Report:
+    """Run every conformance check (:data:`CHECKS` ``[kind]``) on the registered
+    ``relax`` / ``width`` / ``elevation`` / ``validity`` stage ``name``, inside the
+    default track pipeline (:func:`track_gen.pipeline.presets.track`).
+
+    The stage takes its slot (``relax=``, ``width=``, ``elevation=``); a validity check
+    runs after the default checks (``upstream["checks"]``, default ``("default",)``)
+    with id ``name``, and a validity stage that initialises ``valid.fail`` (writes it
+    without reading it) replaces them.
+
+    Args:
+        kind: ``"relax"``, ``"width"``, ``"elevation"`` or ``"validity"``.
+        name: the registered stage name (``registry.available(kind)``).
+        params: its params (a Params instance or a mapping of its fields); ``None``:
+            the defaults.
+        upstream: more :func:`~track_gen.pipeline.presets.track` keyword arguments
+            (``generator``, ``generator_params``, ``num_points``, ``n_max``,
+            ``half_width``, the other kinds' slots, ``checks`` (the checks BEFORE a
+            validity check under test), ``on_invalid``). ``num_envs``, ``device`` and
+            the slot under test are set by the kit.
+        devices, num_envs, seeds, capture_modes, skip, modules: as
+            :func:`check_generator`.
+
+    Returns:
+        A :class:`Report`; call ``.raise_for_failures()`` to fail on any failed check.
+
+    Raises:
+        ValueError: invalid arguments (an unknown kind, a reserved ``upstream`` key,
+            unknown check names, overlapping seeds, ...).
+        Exceptions of ``registry.describe`` for an unknown or quarantined name
+        (``PluginLoadError`` carries the plugin's load error).
+    """
+    from ..plugin import registry  # noqa: PLC0415
+
+    if kind not in STAGE_KINDS:
+        raise ValueError(f"kind must be one of {list(STAGE_KINDS)}, got {kind!r}")
+    info = registry.describe(kind, name)
+    upstream = dict(upstream or {})
+    reserved = {"num_envs", "device"} | ({kind} if kind != "validity" else set())
+    bad = sorted(set(upstream) & reserved)
+    if bad:
+        raise ValueError(f"upstream= must not set {bad} (the kit sets them)")
+    E = int(num_envs)
+    if E < 2:
+        raise ValueError(f"num_envs must be >= 2 (batch independence compares envs), got "
+                         f"{num_envs!r}")
+    seeds = tuple(int(s) for s in seeds)
+    if len(seeds) != 2:
+        raise ValueError(f"seeds must be two base seeds (batch A, batch B), got {seeds!r}")
+    seeds_a = _int32(seeds[0] + np.arange(E))
+    seeds_b = _int32(seeds[1] + np.arange(E))
+    if set(seeds_a.tolist()) & set(seeds_b.tolist()):
+        raise ValueError(f"seeds={seeds!r}: the per-env seeds {seeds[0]}..{seeds[0] + E - 1}"
+                         f" and {seeds[1]}..{seeds[1] + E - 1} overlap; pick base seeds at "
+                         f"least num_envs apart")
+    skip = frozenset(skip)
+    known = (set(CHECKS[kind]) | {n.split(".")[0] for n in CHECKS[kind]}) - {"construct"}
+    unknown = sorted(skip - known)
+    if unknown:
+        raise ValueError(f"unknown check name(s) in skip: {unknown}; known: "
+                         f"{list(CHECKS[kind])}")
+    modes = tuple(capture_modes)
+    bad_modes = [m for m in modes if m not in CAPTURE_MODES]
+    if bad_modes:
+        raise ValueError(f"unknown capture mode(s) {bad_modes}; known: {CAPTURE_MODES}")
+    if isinstance(modules, str):
+        modules = (modules,)
+    probe = tuple(dict.fromkeys(("track_gen", _top_package(info.origin),
+                                 *(str(m) for m in modules or ()))))
+    stage = _StageUnderTest(kind, name, params, upstream, registry.get(kind, name))
+    results: list = []
+    for dev in _devices(devices):
+        results += _DeviceRun(kind, name, params, dev, E, seeds_a, seeds_b, {}, info,
+                              probe, modes, skip, stage=stage).run()
+    return Report(kind, name, results)

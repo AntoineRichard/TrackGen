@@ -98,8 +98,18 @@ def test_default_stage_list_without_relax():
 
 
 def test_to_pipeline_spec_raises_the_track_generator_errors():
-    with pytest.raises(ValueError, match="only supports relax_solver='xpbd'"):
+    with pytest.raises(ValueError, match=r"TrackGenConfig.relax_solver='energy' is an "
+                                         r"oracle-only backend \(tests/_oracle\), not a "
+                                         r"relax stage; TrackGenerator runs a registered "
+                                         r"relax stage: \['none', 'xpbd'\]"):
         legacy.to_pipeline_spec(_cfg(relax_solver="energy"))
+    with pytest.raises(ValueError, match=r"TrackGenConfig.relax_solver: unknown relax "
+                                         r"'bogus'; available: \['none', 'xpbd'\]"):
+        legacy.to_pipeline_spec(_cfg(relax_solver="bogus"))
+    with pytest.raises(ValueError, match=r"TrackGenConfig.z_profile: unknown elevation "
+                                         r"'bogus'; available: \['flat', 'noise', "
+                                         r"'random_walk', 'uniform'\]"):
+        legacy.to_pipeline_spec(_cfg(z_profile="bogus"))
     with pytest.warns(DeprecationWarning):
         cfg = _cfg(smooth_finish=True)
     with pytest.raises(ValueError, match="smooth_finish=True"):
@@ -295,8 +305,11 @@ def no_alloc(monkeypatch):
 
 @pytest.mark.parametrize("edit,match", [
     (lambda s: s.replace("relax", StageRef("relax", "nope")),
-     r"unknown relax stage 'nope'; built-in relax stages: \['none', 'xpbd'\] "
-     r"\(third-party relax stages arrive with roadmap PR10b\)"),
+     r"stage 'relax' \(relax.nope\): unknown relax 'nope'; available: \['none', "
+     r"'xpbd'\]"),
+    (lambda s: s.replace("frames", StageRef("frames", "nope")),
+     r"unknown frames stage 'nope'; built-in frames stages: \['default'\] \(kind "
+     r"'frames' is not open to plugins\)"),
     (lambda s: s.insert_after("lift", StageRef("paint", "x")),
      r"unknown stage kind 'paint'; kinds: \['generator', 'elevation'"),
     (lambda s: s.insert_after("width", StageRef("width", "constant")),
@@ -319,7 +332,8 @@ def no_alloc(monkeypatch):
                                                        ports={"normal": "cl.kappa"})),
      "cannot be rewired to 'cl.kappa'"),
     (lambda s: s.remove("validity"),
-     r"no stage writes Track.valid \(track.valid\): every Track field needs a writer"),
+     r"no stage writes Track.valid \(track.valid or valid.fail\), Track.fail_mask "
+     r"\(valid.fail\): every Track field needs a writer"),
     (lambda s: s.remove("lift"),
      r"no stage writes Track.outer \(track.outer\), Track.center \(track.center\), "
      r"Track.inner \(track.inner\), Track.tangent \(track.tangent\), Track.normal "
@@ -390,7 +404,8 @@ def test_build_inside_a_capture_raises_before_allocating(monkeypatch):
 
 
 # ---------------------------------------------------------------------------------------
-# Toy stages through the private catalogue
+# Toy stages: through the plugin registry (relax / width / elevation / validity) or the
+# private catalogue (the other kinds)
 # ---------------------------------------------------------------------------------------
 
 @wp.kernel
@@ -452,7 +467,8 @@ class _GainWidth(Stage):
 
 
 def _toy(**attrs):
-    """A toy width stage; ``attrs`` override class attributes / build."""
+    """A toy width stage (registered with ``registry.add``); ``attrs`` override class
+    attributes / build."""
     body = attrs.pop("build", None)
     ns = dict(kind="width", name="test.toy", reads={}, writes={"half_width": "cl.half_width"})
     ns.update(attrs)
@@ -472,8 +488,8 @@ def catalogue():
         yield cat
 
 
-def test_a_toy_elevation_stage_runs_in_the_pipeline(catalogue):
-    catalogue.add(_Ramp)
+def test_a_toy_elevation_stage_runs_in_the_pipeline():
+    registry.add(_Ramp)
     spec = _spec(z_profile="noise", z_max=1.0).replace(
         "elevation", StageRef("elevation", "test.ramp", params={"slope": 0.5}))
     p = build(spec, seeds=3)
@@ -487,8 +503,8 @@ def test_a_toy_elevation_stage_runs_in_the_pipeline(catalogue):
     assert list(p.params) == list(DEFAULT_IDS)
 
 
-def test_a_dynamic_param_of_a_stage_is_live_and_latched(catalogue):
-    catalogue.add(_GainWidth)
+def test_a_dynamic_param_of_a_stage_is_live_and_latched():
+    registry.add(_GainWidth)
     spec = _spec().replace("width", StageRef("width", "test.gain"))
     p = build(spec, seeds=3)
     live = p.params["width"]["gain"]
@@ -501,10 +517,22 @@ def test_a_dynamic_param_of_a_stage_is_live_and_latched(catalogue):
         p.params["width"].set("half_width", 0.3)
 
 
+def test_a_second_writer_must_read_the_channel(catalogue):
+    # A width toy writing cl.xy is refused at registration (the kind write rule); a
+    # catalogue-kind stage reaches the planner's rule.
+    with pytest.raises(ValueError, match=r"Stage Toy \(kind 'width'\) writes 'cl.xy' "
+                                         r"\(port 'half_width'\): a width stage may write "
+                                         r"\['cl.half_width'\] and plugin channels"):
+        registry.add(_toy(writes={"half_width": "cl.xy"}))
+    catalogue.add(_toy(kind="offset", writes={"outer": "band.outer2", "xy": "cl.xy"},
+                       build=lambda self, b, p: (lambda ctx: None)))
+    with pytest.raises(PlanError, match=r"writes 'cl.xy', already written by stage "
+                                        r"'uniform': a second writer must also read the "
+                                        r"channel"):
+        build(_spec().replace("offset", StageRef("offset", "test.toy")))
+
+
 @pytest.mark.parametrize("attrs,exc,match", [
-    (dict(writes={"half_width": "cl.xy"}), PlanError,
-     r"writes 'cl.xy', already written by stage 'uniform': a second writer must also "
-     r"read the channel"),
     (dict(build=lambda self, b, p: (lambda ctx: None)), PlanError,
      r"declares write ports \['half_width'\] but build\(\) did not call b.write"),
     (dict(build=lambda self, b, p: 3), TypeError, "must return an enqueue"),
@@ -512,15 +540,15 @@ def test_a_dynamic_param_of_a_stage_is_live_and_latched(catalogue):
      "channel 'cl.half_width' has dtype float32, got vec2f"),
     (dict(build=lambda self, b, p: b.write("half_width", wp.float32, per="env")), TypeError,
      "channel 'cl.half_width' is per='cl', got per='env'"),
-    (dict(build=lambda self, b, p: b.write("nope", wp.float32)), ValueError,
+    (dict(build=lambda self, b, p: b.write("nope")), ValueError,
      r"declares no write port 'nope'; declared ports: \['half_width'\]"),
     (dict(build=lambda self, b, p: b.read("nope")), ValueError,
      r"declares no read port 'nope'; declared read ports: \[\]"),
     (dict(build=lambda self, b, p: b.temp_like("nope")), ValueError,
      "declares no port 'nope'"),
 ])
-def test_stage_rules(catalogue, attrs, exc, match):
-    catalogue.add(_toy(**attrs))
+def test_stage_rules(attrs, exc, match):
+    registry.add(_toy(**attrs))
     with pytest.raises(exc, match=match):
         build(_spec().replace("width", StageRef("width", "test.toy")))
 
@@ -528,22 +556,24 @@ def test_stage_rules(catalogue, attrs, exc, match):
 def test_catalogue_rules(catalogue):
     for attrs, match in [
         (dict(kind="generator"), "non-generator kind"),
+        (dict(kind="width"), r"kind 'width' is open to plugins: register it with "
+                             r"track_gen.plugin.registry.add"),
         (dict(writes={"z": "cl.bogus"}), r"unknown channels \['cl.bogus'\]"),
         (dict(writes={"s": "seed"}), "only the Program's prologue"),
         (dict(reads={"x": "cl.xy"}, writes={"x": "cl.z"}), "both read and write ports"),
         (dict(capture=CaptureClass.HOST), "STATIC"),
     ]:
         with pytest.raises(ValueError, match=match):
-            catalogue.add(_toy(**attrs))
-    catalogue.add(_toy())
+            catalogue.add(_toy(**{"kind": "frames", **attrs}))
+    catalogue.add(_toy(kind="frames"))
     with pytest.raises(ValueError, match="already in the catalogue"):
-        catalogue.add(_toy())
-    assert "test.toy" in stages.available("width")
-    assert stages.available() == ["elevation", "frames", "lift", "offset", "relax",
-                                  "resample", "validity", "width"]
+        catalogue.add(_toy(kind="frames"))
+    assert "test.toy" in stages.available("frames")
+    assert stages.available() == ["frames", "lift", "offset", "resample"]
+    assert stages.OPEN_KINDS == ("relax", "width", "elevation", "validity")
 
 
-def test_input_and_salt_collisions_across_stages(catalogue, monkeypatch):
+def test_input_and_salt_collisions_across_stages(monkeypatch):
     def with_input(self, b, p):
         b.input("difficulty", wp.float32, 0.5)
         b.salt("noise")
@@ -555,8 +585,8 @@ def test_input_and_salt_collisions_across_stages(catalogue, monkeypatch):
         b.salt("noise")
         return lambda ctx: None
 
-    catalogue.add(_toy(build=with_input))
-    catalogue.add(_toy(name="test.toy2", writes={}, build=input_only))
+    registry.add(_toy(build=with_input))
+    registry.add(_toy(name="test.toy2", writes={}, build=input_only))
     spec = _spec().replace("width", StageRef("width", "test.toy"))
     p = build(spec)
     assert set(p.inputs) == {"regen_mask", "difficulty"}
@@ -566,14 +596,14 @@ def test_input_and_salt_collisions_across_stages(catalogue, monkeypatch):
     from track_gen.plugin import stage as stage_mod
 
     monkeypatch.setattr(stage_mod, "_salt_of", lambda stage_id, stream: 0x1234)
-    catalogue.add(_toy(name="test.toy3", writes={},
-                       build=lambda self, b, p: (b.salt("noise"), lambda ctx: None)[1]))
+    registry.add(_toy(name="test.toy3", writes={},
+                      build=lambda self, b, p: (b.salt("noise"), lambda ctx: None)[1]))
     with pytest.raises(PlanError, match=r"salt stream 'noise' collides with stage "
                                         r"'width' stream 'noise' \(0x00001234\)"):
         build(spec.insert_after("width", StageRef("width", "test.toy3", id="w3")))
 
 
-def test_stage_builder_salt_is_keyed_by_the_stage_id(catalogue):
+def test_stage_builder_salt_is_keyed_by_the_stage_id():
     seen = {}
 
     def record(self, b, p):
@@ -581,7 +611,7 @@ def test_stage_builder_salt_is_keyed_by_the_stage_id(catalogue):
         w = b.write("half_width", wp.float32, per="cl")
         return lambda ctx: ctx.fill(w, 0.1)
 
-    catalogue.add(_toy(build=record))
+    registry.add(_toy(build=record))
     build(_spec().replace("width", StageRef("width", "test.toy")))
     from track_gen.plugin.stage import _salt_of
     assert seen == {"width": _salt_of("width", "noise")}
@@ -781,3 +811,179 @@ def test_import_track_gen_does_not_import_the_pipeline():
             "assert 'track_gen.pipeline' not in sys.modules; "
             "assert 'track_gen.stages' not in sys.modules")
     subprocess.run([sys.executable, "-c", code], check=True)
+
+
+# ---------------------------------------------------------------------------------------
+# Plugin stages: rewiring, plugin channels, capture classes (roadmap PR10b)
+# ---------------------------------------------------------------------------------------
+
+@wp.kernel
+def _fill_gain_k(w: wp.array(dtype=wp.float32)):
+    w[wp.tid()] = 1.0
+
+
+def _stage(kind, name, reads, writes, build_fn=None, **attrs):
+    def build_(self, b, p):
+        if build_fn is not None:
+            return build_fn(self, b, p)
+        for port in writes:
+            ch = writes[port]
+            if ch.startswith("cl.acme."):
+                b.write(port, wp.float32, per="cl")
+            elif ch == "valid.fail":
+                b.fail_bit()
+                b.write(port, wp.int32)
+            else:
+                dtype, per = b._plan.channel(ch)
+                b.write(port, dtype, per=per)
+        return lambda ctx: None
+
+    return type("Toy", (Stage,), dict(kind=kind, name=name, reads=reads, writes=writes,
+                                      build=build_, **attrs))
+
+
+def test_the_rewrite_rule_holds_after_rewiring():
+    registry.add(_stage("relax", "test.r1", {"a": "cl.xy"}, {"b": "cl.acme.out"}))
+    with pytest.raises(PlanError, match=r"stage 'relax' \(relax.test.r1\): channel 'cl.xy' "
+                                        r"is read through port 'a' and written through port "
+                                        r"'b'; an in-place rewrite reads and writes it "
+                                        r"through one port"):
+        build(_spec().replace("relax", StageRef("relax", "test.r1", ports={"b": "cl.xy"})))
+
+
+def test_the_kind_write_rule_holds_after_rewiring():
+    registry.add(_stage("relax", "test.r2", {"xy": "cl.xy"}, {"xy": "cl.xy"}))
+    with pytest.raises(PlanError, match=r"stage 'relax' \(relax.test.r2\) \(kind 'relax'\) "
+                                        r"writes 'band.outer2' \(port 'xy'\): a relax stage "
+                                        r"may write \['cl.xy'\]"):
+        build(_spec().replace("relax", StageRef("relax", "test.r2",
+                                                ports={"xy": "band.outer2"})))
+    # rewiring to a plugin channel is allowed (its writer fixes the dtype)
+    registry.add(_stage("width", "test.w", {}, {"half_width": "cl.half_width",
+                                                "aux": "cl.acme.aux"}))
+    p = build(_spec().replace("width", StageRef("width", "test.w",
+                                                ports={"aux": "cl.acme.gain"})))
+    assert p.channels["cl.acme.gain"] == ("width",)
+    assert p.tap("cl.acme.gain").dtype is wp.float32
+
+
+def test_plugin_channels():
+    def writer(self, b, p):
+        b.write("half_width", wp.float32, per="cl")
+        g = b.write("gain", wp.float32, per="cl")
+        return lambda ctx: ctx.launch(_fill_gain_k, g.shape[0], [g])
+
+    registry.add(_stage("width", "test.gain_w", {}, {"half_width": "cl.half_width",
+                                                     "gain": "cl.acme.gain"}, writer))
+    registry.add(_stage("validity", "test.reader", {"gain": "cl.acme.gain",
+                                                    "fail": "valid.fail"},
+                        {"fail": "valid.fail"}))
+    spec = _spec().replace("width", StageRef("width", "test.gain_w")).insert_after(
+        "validity", StageRef("validity", "test.reader", id="reader"))
+    p = build(spec, seeds=3)
+    assert p.channels["cl.acme.gain"] == ("width",)
+    gain = p.tap("cl.acme.gain")
+    assert gain.shape == (E * 384,) and (gain.numpy() == 1.0).all()
+    # read without an earlier writer
+    with pytest.raises(PlanError, match=r"reads 'cl.acme.gain' \(port 'gain'\), but no "
+                                        r"earlier stage writes it"):
+        build(_spec().insert_after("validity", StageRef("validity", "test.reader",
+                                                        id="reader")))
+
+    # a later writer with another dtype
+    def int_writer(self, b, p):
+        b.write("gain", wp.int32, per="cl")
+        return lambda ctx: None
+
+    registry.add(_stage("width", "test.int_w", {"gain": "cl.acme.gain"},
+                        {"gain": "cl.acme.gain"}, int_writer))
+    with pytest.raises(TypeError, match=r"channel 'cl.acme.gain' has dtype float32, got "
+                                        r"int32"):
+        build(_spec().replace("width", StageRef("width", "test.gain_w")).insert_after(
+            "width", StageRef("width", "test.int_w", id="w2")))
+
+    def raw_writer(self, b, p):
+        b.write("gain", wp.float32, per="raw")
+
+    registry.add(_stage("width", "test.raw_w", {}, {"gain": "cl.acme.raw"}, raw_writer))
+    with pytest.raises(ValueError, match=r"plugin channel 'cl.acme.raw': per must be one of "
+                                         r"\['env', 'cl'\], got 'raw'"):
+        build(_spec().insert_after("width", StageRef("width", "test.raw_w", id="w2")))
+
+    def early_temp(self, b, p):
+        b.temp_like("gain")
+
+    registry.add(_stage("width", "test.temp_w", {}, {"gain": "cl.acme.tmp"}, early_temp))
+    with pytest.raises(ValueError, match=r"temp_like\('gain'\): plugin channel "
+                                         r"'cl.acme.tmp' has no dtype yet"):
+        build(_spec().insert_after("width", StageRef("width", "test.temp_w", id="w2")))
+
+    # dtype / per omitted: taken from the channel once it has one
+    def untyped(self, b, p):
+        b.write("gain")
+        return lambda ctx: None
+
+    registry.add(_stage("width", "test.untyped_w", {"gain": "cl.acme.gain"},
+                        {"gain": "cl.acme.gain"}, untyped))
+    p = build(_spec().replace("width", StageRef("width", "test.gain_w")).insert_after(
+        "width", StageRef("width", "test.untyped_w", id="w2")))
+    assert p.tap("cl.acme.gain").dtype is wp.float32
+    assert p.tap("cl.acme.gain").shape == (E * 384,)
+    registry.add(_stage("width", "test.first_untyped", {}, {"gain": "cl.acme.new"}, untyped))
+    with pytest.raises(TypeError, match=r"plugin channel 'cl.acme.new': its first writer "
+                                        r"passes dtype="):
+        build(_spec().insert_after("width", StageRef("width", "test.first_untyped",
+                                                     id="w2")))
+
+
+def test_a_host_stage_makes_the_program_host():
+    registry.add(_stage("relax", "test.host", {"xy": "cl.xy"}, {"xy": "cl.xy"},
+                        capture=CaptureClass.HOST))
+    spec = _spec().replace("relax", StageRef("relax", "test.host"))
+    p = build(spec, seeds=3)
+    assert not p.capturable and p.capture_class is CaptureClass.HOST
+    gen = TrackGenerator(spec, PerEnvSeededRNG(seeds=3, num_envs=E, device=DEV))
+    assert gen._capturable is False and gen.program.capturable is False
+    assert registry.describe("relax", "test.host").capturable is False
+
+
+def test_a_bounded_capture_class_is_refused_at_plan_time(no_alloc):
+    Bounded = _stage("relax", "test.bounded", {"xy": "cl.xy"}, {"xy": "cl.xy"})
+    Bounded.capture_class = classmethod(lambda cls, params: CaptureClass.BOUNDED)
+    registry.add(Bounded)
+    with pytest.raises(PlanError, match=r"stage 'relax' \(relax.test.bounded\): "
+                                        r"Toy.capture_class\(\) returned BOUNDED: arrives "
+                                        r"with roadmap PR12"):
+        build(_spec().replace("relax", StageRef("relax", "test.bounded")))
+
+
+def test_tap_and_channels():
+    p = build(_spec(), seeds=3)
+    assert p.tap("cl.xy") is p._channel("cl.xy")
+    assert p.tap("cl.xy", after="resample") is not p.tap("cl.xy", after="relax")
+    assert p.tap("seed") is p.seed
+    assert p.channels["seed"] == ("<prologue>",)
+    assert p.channels["cl.xy"] == ("resample", "relax", "uniform")
+    assert p.channels["valid.fail"] == ("validity",)
+    with pytest.raises(KeyError, match=r"no stage writes channel 'cl.bogus'; channels: "
+                                       r"\[.*'cl.xy'"):
+        p.tap("cl.bogus")
+    with pytest.raises(KeyError, match=r"no stage 'nope'; stages: \['generator'"):
+        p.tap("cl.xy", after="nope")
+    with pytest.raises(KeyError, match=r"channel 'cl.xy' is not written by 'generator' or "
+                                       r"earlier"):
+        p.tap("cl.xy", after="generator")
+    with pytest.raises(TypeError):
+        p.channels["x"] = ("y",)                                # read-only
+
+
+def test_open_kinds_resolve_through_the_given_registry():
+    from track_gen.plugin import Registry
+
+    other = Registry()
+    other.add(_stage("relax", "test.elsewhere", {"xy": "cl.xy"}, {"xy": "cl.xy"}))
+    spec = _spec().replace("relax", StageRef("relax", "test.elsewhere"))
+    p = build(spec, registry=other, seeds=3)
+    assert p._kinds["relax"] == ("relax", "test.elsewhere")
+    with pytest.raises(PlanError, match="unknown relax 'test.elsewhere'"):
+        build(spec)

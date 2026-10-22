@@ -42,11 +42,14 @@ import warp as wp
 
 from ..exec.context import LaunchContext
 from ..exec.runner import _check_default_stream, ensure_not_capturing
-from ..seeds import SeedState
+from ..seeds import SeedState, _is_rng
+# isinstance checks use this alias: tests monkeypatch the module's SeedState name.
+from ..seeds import SeedState as _SeedStateType
 from .runtime import _snapshot_config
 from .types import Track, TrackGenConfig
 
 if TYPE_CHECKING:  # pragma: no cover - track_gen.plugin stays lazy at import time
+    from ..pipeline.spec import PipelineSpec
     from ..plugin.params import ParamTable
 
 __all__ = [
@@ -87,36 +90,51 @@ class TrackGenerator:
     mask=...)`` advances the epoch on device to regenerate selected envs, and
     ``Track.generation`` reports the epoch each env was built at.
 
-    Only ``relax_solver="xpbd"`` and ``smooth_finish=False`` are supported; construction
-    raises ``ValueError`` for other combinations.
+    ``TrackGenerator(spec)`` runs any ``track_gen.pipeline.PipelineSpec`` (e.g.
+    :func:`track_gen.pipeline.presets.track` with plugin relax / width / elevation /
+    validity stages); :attr:`program` is the built pipeline.
+
+    ``relax_solver`` and ``z_profile`` name any registered relax / elevation stage;
+    ``smooth_finish=True`` is not supported (construction raises ``ValueError``).
     """
 
-    def __init__(self, config: TrackGenConfig, rng, *, stream: "wp.Stream | None" = None) -> None:
+    def __init__(self, config, rng=None, *, seeds=None,
+                 stream: "wp.Stream | None" = None) -> None:
         """
         Args:
-            config: The pipeline configuration. ``config.generator`` must be a
-                registered generator (see
-                ``track_gen.plugin.registry.available("generator")``). The
-                generator keeps a private copy (a ``wp.Device`` value is shared, not
-                copied): mutating ``config`` afterwards has no effect.
-            rng: A ``PerEnvSeededRNG`` instance on the generator's device; its
-                per-env seed values seed the pipeline's built-in Warp RNG (one base
-                seed per env). Its ``seeds_warp`` array is bound by pointer as
-                :attr:`seeds` (a :class:`~track_gen.seeds.SeedState` that also owns
-                the per-env epoch): the CURRENT seeds are read on every generation
-                (also by every graph replay). The generator never writes them;
-                ``rng.set_seeds_warp`` does, in place.
+            config: A ``TrackGenConfig`` (the default stage list,
+                ``track_gen.pipeline.legacy.to_pipeline_spec(config)``), or a
+                ``track_gen.pipeline.PipelineSpec`` (e.g. from
+                ``track_gen.pipeline.presets.track``) run as given.
+                ``config.generator`` / the spec's generator must be a registered
+                generator (see ``track_gen.plugin.registry.available("generator")``).
+                The generator keeps a private copy (a ``wp.Device`` value is shared,
+                not copied): mutating ``config`` afterwards has no effect.
+            rng: Optional ``PerEnvSeededRNG`` on the generator's device; its per-env
+                seed values seed the pipeline's built-in Warp RNG (one base seed per
+                env). Its ``seeds_warp`` array is bound by pointer as :attr:`seeds`
+                (a :class:`~track_gen.seeds.SeedState` that also owns the per-env
+                epoch): the CURRENT seeds are read on every generation (also by every
+                graph replay). The generator never writes them;
+                ``rng.set_seeds_warp`` does, in place. ``None`` (and no ``seeds``):
+                owned seeds ``0 .. E-1``.
+            seeds: Instead of ``rng``: anything :class:`~track_gen.seeds.SeedState`
+                accepts (an int base seed, an ``[E]`` int32 ``wp.array`` bound by
+                pointer, a ``PerEnvSeededRNG``) or a ``SeedState``.
             stream: optional default ``wp.Stream`` for calls that pass no ``stream=``
                 and run outside an ambient ``LaunchContext`` scope (see
                 :mod:`track_gen.exec`).
 
         Raises:
-            ValueError: if ``rng`` is ``None``.
+            ValueError: if both ``rng`` and ``seeds`` are given.
+            TypeError: if ``config`` is neither a ``TrackGenConfig`` nor a
+                ``PipelineSpec``.
             ValueError: if the number of seeds in ``rng`` does not match
                 ``config.num_envs``.
             ValueError: if ``config.generator`` is not a registered generator.
-            track_gen.plugin.PluginLoadError: if ``config.generator`` is provided by
-                a third-party plugin that failed to load (quarantined).
+            track_gen.plugin.PluginLoadError: if ``config.generator`` (or a stage the
+                spec / ``relax_solver`` / ``z_profile`` names) is provided by a
+                third-party plugin that failed to load (quarantined).
             ValueError: if a generator-specific rule of the selected generator fails
                 (its ``Params.validate``: e.g. ``voronoi_control_points >= 6``, the
                 ``repulsive_*`` rules), ``config.generator_params`` has unknown keys
@@ -126,45 +144,66 @@ class TrackGenerator:
             ValueError: if ``rng.seeds_warp`` is not an ``[E]`` int32 array on
                 ``config.device`` (it is bound by pointer, so the rng must live on
                 the generator's device).
-            ValueError: if ``config.relax_solver`` is not ``"xpbd"``, or if
+            ValueError: if ``config.relax_solver`` is not a registered relax stage
+                (the oracle-only ``"energy"`` / ``"tp_sobolev"`` included), if
+                ``config.z_profile`` is not a registered elevation stage, or if
                 ``config.smooth_finish`` is ``True``.
+            track_gen.pipeline.PlanError: an invalid ``PipelineSpec``.
             track_gen.exec.CaptureError: if the resolved stream or Warp's current
                 stream is capturing (construction allocates and runs a real warm-up
                 pass); raised before anything is allocated.
         """
-        if rng is None:
-            raise ValueError("A random number generator must be provided.")
-        # Catch an env-count mismatch at construction (clear message) rather than as an
-        # opaque wp.copy size error on the first generation.
-        if int(rng.seeds_warp.shape[0]) != int(config.num_envs):
-            raise ValueError(
-                f"rng has {int(rng.seeds_warp.shape[0])} seeds but config.num_envs="
-                f"{config.num_envs!r}; construct the rng with num_envs={config.num_envs!r}."
-            )
+        if rng is not None and seeds is not None:
+            raise ValueError("pass rng= or seeds=, not both")
         from ..pipeline import legacy as _legacy
         from ..pipeline import planner as _planner
+        from ..pipeline.spec import PipelineSpec
         from ..plugin import registry
-        from .generator_binding import _StageGenerator, bind_generator, param_table
+        from ..plugin.params import _new_param_table
+        from .generator_binding import _StageGenerator, bind_generator
+
+        if isinstance(config, PipelineSpec):
+            spec = config
+            _planner._check_spec_shape(spec)
+            E_spec = int(spec.batch.num_envs)
+        elif isinstance(config, TrackGenConfig):
+            spec = None
+            E_spec = int(config.num_envs)
+        else:
+            raise TypeError(f"TrackGenerator expects a TrackGenConfig or a "
+                            f"track_gen.pipeline.PipelineSpec, got {type(config).__name__}")
+        # Catch an env-count mismatch at construction (clear message) rather than as an
+        # opaque wp.copy size error on the first generation.
+        if rng is not None and int(rng.seeds_warp.shape[0]) != E_spec:
+            field = "spec.batch.num_envs" if spec is not None else "config.num_envs"
+            raise ValueError(
+                f"rng has {int(rng.seeds_warp.shape[0])} seeds but {field}="
+                f"{E_spec!r}; construct the rng with num_envs={E_spec!r}."
+            )
 
         # Resolve the generator and its Params (generator_params, or from_legacy of the
         # flat fields) and run the generator-specific validation, for the selected
         # generator only. Host-only: nothing is allocated yet.
-        binding = bind_generator("generator", config, registry=registry)
+        if spec is not None:
+            binding = bind_generator("generator", _legacy.generator_config(spec),
+                                     registry=registry)
+            self._user_config = spec
+        else:
+            binding = bind_generator("generator", config, registry=registry)
+            # The default stage list (raises the relax_solver / z_profile /
+            # smooth_finish errors).
+            spec = _legacy._to_pipeline_spec(binding.run_config, binding)
+            # _user_config is the config as passed (reported by `config`).
+            self._user_config = binding.user_config
         self._generator_spec = binding.pipeline_spec
-        # The default stage list (raises the relax_solver / smooth_finish errors).
-        spec = _legacy._to_pipeline_spec(binding.run_config, binding)
         # Snapshots: the pipeline bakes host scalars from the config into its launches
         # (and into any recorded graph), so later mutation of the caller's object must
         # not change what this generator emits. _config is what the pipeline reads (the
-        # resolved built-in Params written back onto the flat fields);
-        # _user_config is the config as passed (reported by `config`).
-        self._user_config = binding.user_config
+        # resolved built-in Params written back onto the flat fields).
         self._config = binding.run_config
         config = self._config
-        self._rng = rng
-        # Non-capturable generators (host-driven loops / per-call allocation) run eagerly
-        # on CUDA every call and refuse to be recorded into a caller's graph.
-        self._capturable = binding.capturable
+        source = rng if rng is not None else seeds
+        self._rng = source if _is_rng(source) else None
 
         E = int(config.num_envs)
         dev = str(config.device)
@@ -176,24 +215,30 @@ class TrackGenerator:
         # Per-env (seed, epoch): the rng's seeds_warp bound by pointer (read live at
         # every generation, never written by the generator) plus an owned epoch. Its
         # methods default to this generator's stream, so they stay ordered with it.
-        seed_state = SeedState(E, dev, rng, default_stream=stream)
+        seed_state = source if isinstance(source, _SeedStateType) else \
+            SeedState(E, dev, source, default_stream=stream)
 
         # Plan and allocate the pipeline once: the persistent output Track, the [E]
         # effective-seed buffer (written from (seeds, epoch) at the start of every
         # generation, inside the graph), every channel and stage scratch. All are
         # reused across every generation; the hot path never allocates.
         program = _planner._build(spec, binding=binding, seeds=seed_state, stream=stream,
-                                  prepare=False, owner=self)
+                                  prepare=False, owner=self, registry=registry)
         self._track: Track = program.result
         # The PR9 scratch holder, as a view aliasing the program's buffers.
         self._scratch = _legacy._scratch_view(program)
         self._seed_buf: wp.array = program.seed
         self._runner = program.runner
         self._seed_state: SeedState = seed_state
+        # Non-capturable pipelines (a host-driven generator or stage) run eagerly on
+        # CUDA every call and refuse to be recorded into a caller's graph.
+        self._capturable = program.capturable
 
-        # Runtime parameters ({"generator": StageParams}: the live [E] arrays of a Stage
-        # generator's dynamic fields) and persistent device inputs (stable pointers).
-        self._params = param_table(binding, default_stream=stream)
+        # Runtime parameters: the generator's, and every stage with a DYNAMIC field
+        # (live [E] arrays, stable pointers), keyed by stage id.
+        table = program.params
+        self._params = _new_param_table({sid: table[sid] for sid in table
+                                         if sid == "generator" or len(table[sid])})
         self._inputs = program.inputs
         self._regen_mask: wp.array = program.inputs["regen_mask"]
         # Latch (live -> work) of the dynamic params / inputs (the program runs it after
@@ -210,34 +255,62 @@ class TrackGenerator:
 
     # -- properties ---------------------------------------------------------------
     @property
-    def config(self) -> TrackGenConfig:
+    def config(self) -> "TrackGenConfig | PipelineSpec":
         """A copy of the configuration this generator was built with, as passed (a
         ``wp.Device`` value is shared, not copied), with a mapping
-        ``generator_params`` normalised to its Params instance:
-        ``TrackGenerator(gen.config, rng)`` builds an identical generator, with the
-        construction-time (initial) values of any DYNAMIC parameters. A later
-        ``params[...].set(...)`` is not reflected here: the current values are the live
-        arrays, ``gen.params["generator"][field]``.
+        ``generator_params`` normalised to its Params instance; for a generator built
+        from a ``PipelineSpec``, that spec (immutable). ``TrackGenerator(gen.config,
+        rng)`` builds an identical generator, with the construction-time (initial)
+        values of any DYNAMIC parameters. A later ``params[...].set(...)`` is not
+        reflected here: the current values are the live arrays,
+        ``gen.params[stage_id][field]``.
 
         Read-only in effect: mutating the returned object (or the object passed to
         the constructor) does not change this generator. Build a new generator to
         change the configuration; dynamic parameters change through :attr:`params`.
         """
+        from ..pipeline.spec import PipelineSpec
+
+        if isinstance(self._user_config, PipelineSpec):
+            return self._user_config
         return _snapshot_config(self._user_config)
 
     @property
+    def program(self):
+        """The :class:`track_gen.pipeline.Program` this generator runs (preview): its
+        taps (:meth:`~track_gen.pipeline.Program.tap`), fail bits and ``on_invalid``."""
+        return self._program
+
+    @property
     def params(self) -> "ParamTable":
-        """Runtime parameters, keyed by stage id: ``{"generator": StageParams}``.
+        """Runtime parameters, keyed by stage id: ``"generator"``, plus every pipeline
+        stage with a DYNAMIC field (e.g. ``"relax"`` for a relax plugin with one).
 
         ``params["generator"].params`` is the resolved Params instance (``None`` for a
-        legacy generator without a Params class). The DYNAMIC fields of a Stage
-        generator map to live ``[E]`` device arrays with stable pointers
-        (``params["generator"]["amp"]``): write them from your own kernels (also inside
-        your graph) or with ``params["generator"].set("amp", value, stream=...)``; the
-        next generation latches them for the envs it regenerates, with no re-capture.
-        The built-in generators' fields are all static (``set`` raises ``KeyError``).
+        legacy generator without a Params class). The DYNAMIC fields of a Stage map to
+        live ``[E]`` device arrays with stable pointers (``params["generator"]["amp"]``):
+        write them from your own kernels (also inside your graph) or with
+        ``params[stage_id].set("amp", value, stream=...)``; the next generation latches
+        them for the envs it regenerates, with no re-capture. The built-in generators'
+        and stages' fields are all static (``set`` raises ``KeyError``); every stage's
+        resolved params are ``program.params``.
         """
         return self._params
+
+    @property
+    def num_envs(self) -> int:
+        """``E``, the batch size (whether built from a config or a spec)."""
+        return int(self._program.layout.num_envs)
+
+    @property
+    def device(self) -> str:
+        """The Warp device the generator runs on (e.g. ``"cuda:0"``)."""
+        return str(self._program.layout.device)
+
+    @property
+    def n_max(self) -> int:
+        """``N_max``, the per-env point capacity (the ``Track``'s stride)."""
+        return int(self._program.layout.stride)
 
     @property
     def graph(self) -> "wp.Graph | None":
@@ -365,13 +438,17 @@ class TrackGenerator:
         (then the batch equals a fresh generator's for those seeds).
 
         Masked regeneration (``advance=True, mask=m``): envs with ``m[e] != 0`` advance
-        their epoch and get the track of their new ``(seed, epoch)``. Every other env
-        keeps the effective seed its current track was built from: the pipeline is
-        fixed-shape and still recomputes EVERY env, so the unmasked ones are recomputed
-        to identical values, and their ``generation`` is not written. A reseed or
-        ``seeds.reset_epoch()`` therefore reaches an env at its next masked generation,
-        or every env at the next generation without a mask. A masked commit that skips
-        the recompute is a later roadmap step (PR10b).
+        their epoch and get the track of their new ``(seed, epoch)``. Every other env's
+        ``Track`` rows (and ``generation``) end the call bit for bit as they were, by
+        construction (the pipeline is fixed-shape and recomputes every env, then the
+        Program's commit restores the unmasked envs; see
+        :mod:`track_gen.stages.commit`). A reseed or ``seeds.reset_epoch()`` therefore
+        reaches an env at its next masked generation, or every env at the next
+        generation without a mask. Within the call the unmasked rows are overwritten
+        by the recomputation and then restored, both on the generation's stream: read
+        the ``Track`` on that stream (or after an event recorded on it) once the call
+        is enqueued; a reader on another stream with no such dependency may see the
+        recomputed rows of an unmasked env.
 
         Args:
             num_or_ids: Optional. Either ``None`` or the integer batch size. When an

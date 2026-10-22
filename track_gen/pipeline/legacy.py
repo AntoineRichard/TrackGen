@@ -6,6 +6,7 @@ for launch.
 """
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Mapping as _MappingABC
 
 from .spec import BatchSpec, PipelineSpec, StageRef
@@ -17,70 +18,104 @@ def to_pipeline_spec(config, *, registry=None) -> PipelineSpec:
     """The default :class:`~track_gen.pipeline.PipelineSpec` of a ``TrackGenConfig``.
 
     Ids, in order: ``generator``, ``resample`` (``resample.constant_spacing``),
-    ``relax`` (``relax.xpbd``, or ``relax.none`` when ``relax_enable=False``),
+    ``relax`` (``relax.<relax_solver>``, or ``relax.none`` when ``relax_enable=False``),
     ``uniform`` (``resample.uniform``), ``width`` (``width.constant``), ``frames``,
     ``offset``, ``elevation`` (``elevation.<z_profile>``), ``validity`` and ``lift``
     (``lift.flat`` on the flat profile, else ``lift.elevated``). Each stage's params
     are its Params class's ``from_legacy(config)`` (the flat field names); the
-    generator's are its resolved ``generator_params``.
+    generator's are its resolved ``generator_params``. ``relax_solver`` and
+    ``z_profile`` name any stage registered under ``relax`` / ``elevation``; a
+    ``half_width`` field of their Params is ``config.half_width`` (every stage that
+    bakes it shares one value until roadmap PR13).
 
     Args:
         config: A ``TrackGenConfig``.
-        registry: The plugin registry the generator is resolved through (default
-            ``track_gen.plugin.registry``).
+        registry: The plugin registry the generator, ``relax_solver`` and
+            ``z_profile`` are resolved through (default ``track_gen.plugin.registry``).
 
     Raises:
-        ValueError: ``relax_solver != "xpbd"`` or ``smooth_finish=True`` (as
-            ``TrackGenerator``), or the generator's params are invalid.
+        ValueError: an unknown or oracle-only ``relax_solver``, an unknown
+            ``z_profile``, ``smooth_finish=True`` (as ``TrackGenerator``), or the
+            generator's params are invalid.
+        track_gen.plugin.PluginLoadError: ``relax_solver`` / ``z_profile`` names a
+            stage of a quarantined plugin.
     """
     from .._src.generator_binding import bind_generator  # noqa: PLC0415
     from ..plugin import registry as _default_registry  # noqa: PLC0415
 
     reg = _default_registry if registry is None else registry
     binding = bind_generator("generator", config, registry=reg)
-    return _to_pipeline_spec(binding.run_config, binding)
+    return _to_pipeline_spec(binding.run_config, binding, registry=reg)
 
 
-def _to_pipeline_spec(cfg, binding) -> PipelineSpec:
-    """The default spec of the bound run config ``cfg`` (``binding.run_config``)."""
+# The deprecated relaxation backends that only exist as test oracles.
+_ORACLE_SOLVERS = ("energy", "tp_sobolev")
+
+
+def _legacy_params(cls, cfg, what: str):
+    """``cls.Params.from_legacy(cfg)``, with a ``half_width`` field set to
+    ``cfg.half_width``: the planner requires every stage that has one to agree, and a
+    ``from_legacy`` that does not map it would keep the class default."""
+    from ..plugin.params import _coerce  # noqa: PLC0415
+
+    params = _coerce(cls.Params, None, what=what, cfg=cfg)
+    if "half_width" in getattr(type(params), "__dataclass_fields__", {}) \
+            and params.half_width != cfg.half_width:
+        params = dataclasses.replace(params, half_width=cfg.half_width)
+    return params
+
+
+def _to_pipeline_spec(cfg, binding, registry=None) -> PipelineSpec:
+    """The default spec of the bound run config ``cfg`` (``binding.run_config``);
+    ``relax_solver`` / ``z_profile`` are resolved through ``registry`` (default
+    ``track_gen.plugin.registry``)."""
+    from ..plugin import registry as _default_registry  # noqa: PLC0415
     from ..stages import params as sp  # noqa: PLC0415
 
-    if cfg.relax_solver != "xpbd":
+    reg = _default_registry if registry is None else registry
+    solver = cfg.relax_solver
+    if solver in _ORACLE_SOLVERS:
         raise ValueError(
-            f"TrackGenerator only supports relax_solver='xpbd'; "
-            f"got {cfg.relax_solver!r}."
-        )
+            f"TrackGenConfig.relax_solver={solver!r} is an oracle-only backend "
+            f"(tests/_oracle), not a relax stage; TrackGenerator runs a registered relax "
+            f"stage: {reg.available('relax')}")
+    try:
+        relax_cls = reg.get("relax", solver)
+    except ValueError as exc:                 # PluginLoadError (quarantined) passes
+        raise ValueError(f"TrackGenConfig.relax_solver: {exc}") from None
     if cfg.smooth_finish:
         raise ValueError(
             "TrackGenerator does not support smooth_finish=True; "
             "set smooth_finish=False."
         )
+    profile = cfg.z_profile
+    try:
+        elevation_cls = reg.get("elevation", profile)
+    except ValueError as exc:
+        raise ValueError(f"TrackGenConfig.z_profile: {exc}") from None
     batch = BatchSpec(num_envs=int(cfg.num_envs), device=str(cfg.device),
                       n_max=int(cfg.N_max), closed=True, scale=cfg.scale)
-    profile = str(cfg.z_profile)
-    profiles = {
-        "flat": None,
-        "uniform": sp.ElevationUniformParams,
-        "random_walk": sp.ElevationRandomWalkParams,
-        "noise": sp.ElevationNoiseParams,
-    }
-    if profile not in profiles:
-        raise ValueError(f"z_profile must be one of {{'flat', 'uniform', 'random_walk', "
-                         f"'noise'}}, got {cfg.z_profile!r}")
-    elevation = profiles[profile]
+    if not cfg.relax_enable:
+        relax = StageRef("relax", "none")
+    else:
+        relax = StageRef("relax", solver, params=_legacy_params(
+            relax_cls, cfg, f"relax stage {solver!r}"))
+    if profile == "flat":
+        elevation = StageRef("elevation", "flat")
+    else:
+        elevation = StageRef("elevation", profile, params=_legacy_params(
+            elevation_cls, cfg, f"elevation stage {profile!r}"))
     stages = (
         StageRef("generator", binding.name, params=binding.params,
                  capacity={"raw": int(cfg.num_points)}),
         StageRef("resample", "constant_spacing",
                  params=sp.ConstantSpacingParams.from_legacy(cfg)),
-        StageRef("relax", "xpbd", params=sp.XpbdParams.from_legacy(cfg))
-        if cfg.relax_enable else StageRef("relax", "none"),
+        relax,
         StageRef("resample", "uniform", id="uniform"),
         StageRef("width", "constant", params=sp.WidthConstantParams.from_legacy(cfg)),
         StageRef("frames", "default"),
         StageRef("offset", "default", params=sp.OffsetParams.from_legacy(cfg)),
-        StageRef("elevation", profile,
-                 params=None if elevation is None else elevation.from_legacy(cfg)),
+        elevation,
         StageRef("validity", "default", params=sp.ValidityParams.from_legacy(cfg)),
         StageRef("lift", "flat", params=sp.LiftFlatParams.from_legacy(cfg))
         if profile == "flat" else StageRef("lift", "elevated"),
@@ -137,7 +172,8 @@ def _scratch_view(program):
         inn2=ch("band.inner2"), tan2=ch("cl.tangent2"), nrm2=ch("cl.normal2"),
         z=ch("cl.z"), knot_cum=scratch("elevation", "knot_cum"),
         knot_count=scratch("elevation", "knot_count"),
-        knot_z=scratch("elevation", "knot_z"))
+        knot_z=scratch("elevation", "knot_z"),
+        fail=ch("valid.fail", "validity") if "validity" in program._stage_ids else None)
     has_resample = kinds.get("resample") == ("resample", "constant_spacing")
     return _Scratch(
         inflate=inflate, generator_spec=program._binding.pipeline_spec,

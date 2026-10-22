@@ -364,7 +364,7 @@ instance per generator, with no arguments, and calls ``capacity`` and ``build`` 
    * - ``reads``, ``provides``
      - Must stay empty: a generator reads no channel (its seed is ``b.seed``), and
        ``provides`` arrives with PR11 and PR13. Read ports are for the pipeline's other
-       stages (see :doc:`/how-it-works/pipeline-preview`).
+       stages (see :doc:`writing-a-stage`).
    * - ``api_version``
      - The plugin API version the stage targets (default ``1``). A version above
        ``track_gen.plugin.API_VERSION`` is rejected.
@@ -395,9 +395,9 @@ an ``api_version`` above ``API_VERSION``, a ``capture`` that is not a ``CaptureC
 is ``BOUNDED``, a Params class that breaks the rules above, an ``output`` other than
 ``"centerline"``, a ``writes`` without ``"raw.xy"`` or with another channel (or two ports
 on one channel), a non-empty ``reads`` or ``provides``, or another ``topology``. A Stage of
-any other kind (``"relax"``, ``"elevation"``, ...) is rejected: TrackGen's own stages of
-those kinds already make up the pipeline (see :doc:`/how-it-works/pipeline-preview`),
-and third-party ones arrive with roadmap PR10b.
+kind ``"relax"``, ``"width"``, ``"elevation"`` or ``"validity"`` is a pipeline stage,
+checked by the rules of :doc:`writing-a-stage`; any other kind (``"resample"``,
+``"lift"``, ...) is rejected as not open to plugins.
 
 ``build`` and ``enqueue``
 ~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -414,9 +414,10 @@ recording. Replays do not run Python.
 sync; no branch on device data or on ``ctx.capturing`` (a ``HOST`` stage may sync). Per
 env, its output must depend only on ``b.seed[e]``, env ``e``'s dynamic parameters and
 inputs, and the static parameters: carry no state from one generation to the next. A
-masked regeneration recomputes every env and relies on the envs it leaves out reproducing
-their current output bit for bit (see :doc:`/how-it-works/cuda-graph`). A scratch buffer
-is zeroed once, at allocation: write it before you read it.
+masked regeneration recomputes every env, and the commit then restores the ``Track``
+rows of the envs it leaves out (see :ref:`pipeline-commit`); the conformance kit's
+``determinism`` and ``statelessness`` checks still hold a generator to this rule. A scratch buffer is zeroed
+once, at allocation: write it before you read it.
 
 .. _stage-builder:
 
@@ -459,11 +460,12 @@ Call its methods in ``build`` (``write``, ``scratch`` and ``input`` allocate, an
 
    * - Method
      - What it returns
-   * - ``write(port, dtype, *, per="env")``
+   * - ``write(port, dtype=None, *, per=None)``
      - The output buffer of ``writes[port]``: ``[E * raw]`` ``wp.vec2f`` with
        ``per="raw"`` for ``"raw.xy"``, ``[E]`` int32 with ``per="env"`` for
-       ``"gen.valid"``. The pipeline owns it and reads it directly (no copy). Call it once
-       per port. An undeclared port, another channel or a second call raises
+       ``"gen.valid"`` (omitted ``dtype`` / ``per`` are the channel's). The pipeline
+       owns it and reads it directly (no copy). Call it once per port. An undeclared
+       port, another channel or a second call raises
        ``ValueError``, a wrong ``dtype`` or ``per`` ``TypeError``, and ``interp=`` /
        ``export=`` ``NotImplementedError`` (roadmap PR13).
    * - ``scratch(name, dtype, shape)``
@@ -552,8 +554,9 @@ Runtime parameters and inputs
 -----------------------------
 
 ``TrackGenerator.params`` (and ``GateGenerator.params``) is a ``ParamTable``: a read-only
-mapping from stage id to that stage's ``StageParams``. It holds one stage in this release,
-``"generator"``; later releases key every pipeline stage the same way.
+mapping from stage id to that stage's ``StageParams``. ``GateGenerator.params`` holds one
+stage, ``"generator"``; ``TrackGenerator.params`` holds ``"generator"`` and every pipeline
+stage with a dynamic field, keyed by its stage id (see :ref:`stage-runtime-params`).
 
 - ``gen.params["generator"].params`` is the resolved Params instance: the static values and
   the *initial* dynamic values. It is ``None`` for a ``GeneratorSpec`` without ``params=``.
@@ -577,9 +580,9 @@ A write takes effect at the next generation. Each generation first *latches* the
 arrays into the stage's working copies (the arrays ``b.param`` and ``b.input`` returned)
 for the envs it regenerates: every env, or only those with ``mask[e] != 0`` under
 ``generate(advance=True, mask=m)``. An env that a masked regeneration leaves out therefore
-keeps the value its current track was built with, and is recomputed bit for bit. The latch
-costs one small launch per dynamic field or input per generation, for Stage generators
-only. It is an implementation detail: the stage only ever reads the arrays ``b.param``
+keeps the value its current track was built with. The latch costs one small launch per
+dynamic field or input per generation, for Stages only (a ``GeneratorSpec`` has no dynamic
+fields). It is an implementation detail: the stage only ever reads the arrays ``b.param``
 and ``b.input`` returned, and a later release may read the live arrays directly.
 
 .. code-block:: python

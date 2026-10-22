@@ -619,8 +619,10 @@ class Course:
         are recomputed to identical values, even if their seed or epoch changed
         since (``rng.set_seeds_warp``, ``seeds.reset_epoch()``, a write to the
         seed array): such a change reaches an env at its next masked
-        regeneration, or every env at the next one without a mask. A masked
-        commit that avoids the recompute is roadmap PR10. Without ``advance`` a
+        regeneration, or every env at the next one without a mask. On a track
+        course the generator's commit also restores an unmasked env's ``Track``
+        rows bit for bit after the recompute (``track_gen.stages.commit``; the
+        gate pipeline's arrives with roadmap PR11). Without ``advance`` a
         mask respawns the masked envs (as :meth:`reset`) on the course of their
         current ``(seed, epoch)``: the same one unless their seed was
         rewritten.

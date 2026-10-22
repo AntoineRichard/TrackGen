@@ -389,8 +389,8 @@ def test_a_spec_of_another_kind_with_a_params_attribute_is_not_checked():
 
     spec = _types.SimpleNamespace(name="acme.relaxer", params={"iters": 3},
                                   build=lambda *a: None)
-    registry.add(spec, kind="relax")
-    info = registry.describe("relax", "acme.relaxer")
+    registry.add(spec, kind="banking")
+    info = registry.describe("banking", "acme.relaxer")
     assert info.params_schema == {}
 
 

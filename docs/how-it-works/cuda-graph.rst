@@ -168,14 +168,23 @@ Masked regeneration
 ``generate(advance=True, mask=m)`` advances the epoch of the envs with ``m[e] != 0`` only,
 then runs the whole body with the mask: the seed prologue re-derives the effective seed
 of the masked envs only, and only their ``generation`` is written. The pipeline has fixed
-shapes, so it still recomputes EVERY env, but an unmasked env keeps the effective seed
-its current output was built from and is recomputed to identical values (the generators
-are deterministic per device). Only the masked envs get new output, whatever happened to
+shapes, so it still recomputes EVERY env; the ``Track`` rows of the unmasked envs are
+held before the stages and restored, bit for bit, by the commit after them (see
+:ref:`pipeline-commit`). An unmasked env therefore ends the generation with exactly the
+bytes it had, whatever its recomputation gave: masked regeneration does not rely on the
+generators being deterministic. Only the masked envs get new output, whatever happened to
 the other envs' seeds or epochs since their last generation: a reseed or a
 ``reset_epoch()`` made in between reaches an env at its next masked generation, or every
 env at the next generation without a mask. An all-zero mask is therefore an exact no-op.
-A masked commit that writes only the masked envs, and so avoids relying on the
-recompute, is planned (roadmap PR10b).
+A masked generation costs two launches more than a plain one (the hold and the
+commit).
+
+The unmasked rows are still overwritten for a moment: the stages write their
+recomputation, then the commit restores the held bytes, both on the generation's stream.
+Anything ordered after the generation on that stream (including the rest of a caller's
+graph recorded on it, or a stream waiting on an event recorded after it) sees only the
+restored rows. A reader on another stream with no dependency on the generation may see
+an unmasked env's recomputed track mid-generation; order it after the generation.
 
 ``m`` must be a contiguous ``[E]`` int32 array on the generator's device, passed with
 ``advance=True``; the facade checks both on the host (``ValueError``) before any launch.

@@ -48,6 +48,7 @@ from track_gen.testing import (
     buffers_of,
     check_gate_generator,
     check_generator,
+    check_stage,
     hot_path_guard,
     no_allocation,
     no_host_sync,
@@ -294,7 +295,7 @@ def test_the_pytest_fixture_fails_with_every_failed_check(plugin_registry,
                              r"\(s\):\n  \[cpu\] batch_independence: FAIL"):
         track_gen_conformance("broken.batch", devices=CPU)
     with pytest.raises(ValueError, match="kind"):
-        track_gen_conformance("toy.circle", kind="relax")
+        track_gen_conformance("toy.circle", kind="banking")
 
 
 # ---------------------------------------------------------------------------------------
@@ -408,6 +409,44 @@ def test_check_names():
     assert "output.accepted" in CHECKS["gate_generator"]
     assert set(CHECKS["generator"]) - {"output.closed"} == \
         set(CHECKS["gate_generator"]) - {"output.accepted"}
+    # the track-pipeline stage kinds (roadmap PR10b): no diversity / output.closed
+    for kind in ("relax", "width", "elevation"):
+        assert set(CHECKS[kind]) == set(CHECKS["generator"]) - {
+            "output.closed", "diversity"} | {"output.accepted", "stage.isolation"}
+    assert set(CHECKS["validity"]) == set(CHECKS["relax"]) - {"output.accepted"} | {
+        "validity.bits"}
+
+
+# ---------------------------------------------------------------------------------------
+# check_stage over TrackGen's own relax / width / elevation / validity stages (PR10b)
+# ---------------------------------------------------------------------------------------
+
+_STAGE_KINDS = ("relax", "width", "elevation", "validity")
+
+
+@pytest.mark.parametrize("kind,name", [(k, n) for k in _STAGE_KINDS
+                                       for n in registry.available(k)])
+def test_every_builtin_stage_passes_check_stage(kind, name):
+    report = check_stage(kind, name, devices=CPU, num_envs=4)
+    report.raise_for_failures()
+    assert [r.name for r in report] == [n for n in CHECKS[kind]
+                                        if not n.startswith("capture.")]
+    assert registry.describe(kind, name).builtin
+
+
+@pytest.mark.cuda
+@pytest.mark.parametrize("kind,name", [("relax", "xpbd"), ("elevation", "noise"),
+                                       ("validity", "default")])
+def test_builtin_stages_pass_check_stage_on_cuda(kind, name):
+    check_stage(kind, name, devices=CUDA, num_envs=4,
+                capture_modes=("warp",)).raise_for_failures()
+
+
+def test_the_fixture_runs_check_stage(track_gen_conformance):
+    report = track_gen_conformance("default", kind="validity", devices=CPU, num_envs=4,
+                                   skip=("hot_path",))
+    assert report.kind == "validity" and "validity.bits" in [r.name for r in report]
+    assert str(report).startswith("validity stage 'default': ")
 
 
 def test_parametrize_helpers():
@@ -420,7 +459,7 @@ def test_parametrize_helpers():
     mark = parametrize_generators("gate_generator", argname="g")
     assert mark.mark.name == "parametrize" and mark.mark.args == ("g", GATES)
     with pytest.raises(ValueError, match="kind"):
-        generator_names("relax")
+        generator_names("banking")
 
 
 # ---------------------------------------------------------------------------------------

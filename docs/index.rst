@@ -265,6 +265,7 @@ Explore the docs
    :hidden:
 
    contributing/writing-a-generator
+   contributing/writing-a-stage
    contributing/testing-a-plugin
    contributing/dev-setup
    contributing/rendering-assets

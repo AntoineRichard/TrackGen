@@ -446,21 +446,26 @@ def test_builtin_names_never_warn(fresh):
 # ---------------------------------------------------------------------------------------
 
 def test_kinds_are_an_open_set(plugin_registry):
-    relax = types.SimpleNamespace(name="acme.relax")
+    banking = types.SimpleNamespace(name="acme.banking")
     with pytest.raises(TypeError, match="pass kind="):
-        plugin_registry.add(relax)
-    plugin_registry.add(relax, kind="relax")
-    assert plugin_registry.available("relax") == ["acme.relax"]
-    assert "relax:acme.relax" in plugin_registry.available()
-    assert plugin_registry.get("relax", "acme.relax") is relax
-    info = plugin_registry.describe("relax", "acme.relax")
-    assert info.kind == "relax" and info.origin == __name__
+        plugin_registry.add(banking)
+    plugin_registry.add(banking, kind="banking")
+    assert plugin_registry.available("banking") == ["acme.banking"]
+    assert "banking:acme.banking" in plugin_registry.available()
+    assert plugin_registry.get("banking", "acme.banking") is banking
+    info = plugin_registry.describe("banking", "acme.banking")
+    assert info.kind == "banking" and info.origin == __name__
     with pytest.raises(ValueError, match="registers as kind 'generator'"):
         plugin_registry.add(_spec("acme.x"), kind="gate_generator")
-    with pytest.raises(ValueError, match="unknown elevation 'x'.*unknown kind"):
-        plugin_registry.get("elevation", "x")
+    with pytest.raises(ValueError, match="unknown paint 'x'.*unknown kind"):
+        plugin_registry.get("paint", "x")
     with pytest.raises(ValueError, match="non-empty string"):
         plugin_registry.add(_spec(""))
+    # The track-pipeline kinds (roadmap PR10b) hold Stage classes only.
+    with pytest.raises(TypeError, match=r"a relax spec must be a Stage subclass "
+                                        r"\(registry.add\(MyStage\)\), got SimpleNamespace"):
+        plugin_registry.add(types.SimpleNamespace(name="acme.relax"), kind="relax")
+    assert plugin_registry.available("relax") == ["none", "xpbd"]
 
 
 def test_unregister(plugin_registry):
@@ -480,16 +485,18 @@ def test_scoped_restores_every_kind():
         assert reg is registry
         reg.add(TOY_CIRCLE)
         reg.add(TOY_RING)
-        reg.add(types.SimpleNamespace(name="acme.relax"), kind="relax")
+        reg.add(types.SimpleNamespace(name="acme.banking"), kind="banking")
         reg.unregister("generator", "bezier")
+        reg.unregister("relax", "xpbd")
         assert "toy.circle" in view and "bezier" not in view     # the view is live
     assert registry.available() == before
     assert set(registry._specs) == kinds and set(registry._meta) == kinds
     assert registry.get("generator", "bezier") is bezier
     assert "toy.circle" not in view and view["bezier"] is bezier
-    assert registry.available("relax") == []
-    with pytest.raises(ValueError, match="unknown kind 'relax'"):
-        registry.get("relax", "acme.relax")
+    assert registry.available("banking") == []
+    assert registry.available("relax") == ["none", "xpbd"]       # a Stage kind (PR10b)
+    with pytest.raises(ValueError, match="unknown kind 'banking'"):
+        registry.get("banking", "acme.banking")
 
 
 def test_scoped_fresh_restores_the_loaded_state(fresh):

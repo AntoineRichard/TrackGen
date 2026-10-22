@@ -170,12 +170,13 @@ The generator pipeline has fixed shapes, so the regeneration still recomputes EV
 and the refresh (checkpoint resample, SDF and height-field bakes, course line, gate posts)
 covers the whole batch. Unmasked envs keep the effective seed their current course was
 built from (the seed prologue re-derives it for the masked envs only), so they are
-recomputed to identical values, even if their seed or epoch was changed since. Such a
-change (``course.rng.set_seeds_warp``, a write to ``course.rng.seeds_warp``,
+recomputed to identical values, even if their seed or epoch was changed since; on top
+of that, the generator's commit restores an unmasked env's ``Track`` rows bit for bit
+after the recompute (see :ref:`pipeline-commit`). Such a change
+(``course.rng.set_seeds_warp``, a write to ``course.rng.seeds_warp``,
 ``course.seeds.reset_epoch()``) takes effect for an env when a masked regeneration
 selects it, or for every env at the next ``regenerate()`` without a mask. Any call with a
-masked env costs a full-batch generation. A masked commit that avoids the recompute is
-planned (roadmap PR10b).
+masked env costs a full-batch generation.
 
 ``advance=False`` rebuilds the masked envs from their current ``(seed, epoch)``: the same
 course, unless your own kernel wrote new seeds for them into ``course.rng.seeds_warp``

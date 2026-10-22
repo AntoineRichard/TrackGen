@@ -12,21 +12,23 @@ import math
 import sys
 import warnings
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import warp as wp
 
 
-def _validate_z_fields(cfg) -> None:
+def _validate_z_fields(cfg, check_profile: bool = True) -> None:
     """Shared Z-profile validation for ``TrackGenConfig`` and ``GateGenConfig``.
 
     Operates purely on the eight ``z_*`` attribute names both configs carry
     on the same terms (profile membership, min/max ordering, non-negative
     knobs), so a single call site works for either dataclass's
-    ``__post_init__``.
+    ``__post_init__``. ``check_profile=False`` (``TrackGenConfig``) skips the
+    membership check: a track's ``z_profile`` names any registered elevation stage
+    and is resolved through the registry at ``TrackGenerator`` construction.
     """
-    if cfg.z_profile not in {"flat", "uniform", "random_walk", "noise"}:
+    if check_profile and cfg.z_profile not in {"flat", "uniform", "random_walk", "noise"}:
         raise ValueError(
             "z_profile must be one of "
             "{'flat', 'uniform', 'random_walk', 'noise'}, got "
@@ -377,10 +379,14 @@ class TrackGenConfig:
         When ``False``, the constant-spacing centerline is inflated directly; useful
         for ablation studies but typically produces lower-quality tracks.
     relax_solver : str
-        Backend selector.  Only ``"xpbd"`` is used by the runtime path
-        (``TrackGenerator``).  ``"energy"`` (Adam) and ``"tp_sobolev"`` are
-        oracle-only backends in ``tests/_oracle/relaxation.py``; ``TrackGenerator``
-        rejects any solver other than ``"xpbd"`` at construction time.
+        The relax stage ``TrackGenerator`` runs: any registered ``relax`` stage
+        (``track_gen.plugin.registry.available("relax")``; default ``"xpbd"``, the
+        XPBD solver configured by the ``relax_*`` fields below; a plugin stage gets
+        its ``Params.from_legacy(config)``). Resolved at ``TrackGenerator``
+        construction, which raises ``ValueError`` listing the available names for an
+        unknown one.  ``"energy"`` (Adam) and ``"tp_sobolev"`` are oracle-only
+        backends in ``tests/_oracle/relaxation.py``, not relax stages:
+        ``TrackGenerator`` rejects them.
     relax_chunk_size : int or None
         *Energy oracle backend only — not used by the runtime path.*  Env-chunk
         size for the dense ``[E, N, N]`` interaction term in the energy backend.
@@ -558,14 +564,17 @@ class TrackGenConfig:
         saves two ``O(N²)`` passes with no change to the valid mask.
 
     z_profile : str
-        Per-point altitude (Z) profile family, applied along the resampled
-        constant-spacing centerline arc length.  One of ``"flat"`` (default,
-        every real point at ``z_base``), ``"uniform"`` (i.i.d. uniform in
-        ``[z_min, z_max]``), ``"random_walk"`` (Brownian-bridge walk clamped
-        to ``[z_min, z_max]`` with a per-step grade cap of ``z_max_step``), or
-        ``"noise"`` (periodic harmonic noise around ``z_base``).  Applied by
-        ``warp_zprofile.apply_z_profile`` on the resampler's ``(cum, perim)``
-        plan-view arc tables.
+        Per-point altitude (Z) profile: the name of a registered ``elevation``
+        stage (``track_gen.plugin.registry.available("elevation")``), resolved at
+        ``TrackGenerator`` construction (an unknown name raises ``ValueError``
+        listing the available ones; the config itself only checks it is a
+        non-empty string).  The built-ins: ``"flat"`` (default, every real point
+        at ``z_base``), ``"uniform"`` (i.i.d. uniform in ``[z_min, z_max]``),
+        ``"random_walk"`` (Brownian-bridge walk clamped to ``[z_min, z_max]``
+        with a per-step grade cap of ``z_max_step``), or ``"noise"`` (periodic
+        harmonic noise around ``z_base``), applied along the resampled
+        centerline's plan-view arc length.  A plugin profile gets its
+        ``Params.from_legacy(config)`` (it may read the flat ``z_*`` fields).
     z_base : float
         Baseline altitude for the ``"flat"``, ``"random_walk"``, and
         ``"noise"`` profiles.  Default 0.0.
@@ -810,7 +819,10 @@ class TrackGenConfig:
         if float(self.spacing) <= 0.0:
             raise ValueError(f"spacing must be > 0, got {self.spacing!r}")
 
-        _validate_z_fields(self)
+        if not isinstance(self.z_profile, str) or not self.z_profile:
+            raise ValueError(f"z_profile must be a non-empty string (an elevation stage "
+                             f"name), got {self.z_profile!r}")
+        _validate_z_fields(self, check_profile=False)
         if int(self.z_control_points) < 3:
             raise ValueError(
                 "z_control_points must be >= 3, got "
@@ -1265,6 +1277,19 @@ class Track:
         ...)``), so that comparing it on device to a stored copy detects every
         regeneration.  ``TrackGenerator`` always allocates it; ``None`` on a
         ``Track`` built elsewhere.
+    fail_mask : wp.array or None
+        ``[E]`` ``int32`` per-env fail bitmask: bit ``i`` set means check ``i``
+        failed (``fail_bits`` names the bits: the built-in checks' 0-7 are
+        ``generator``, ``turning``, ``finite``, ``thickness``, ``w_floor``,
+        ``border``, ``grade``, ``truncation``; plugin checks own 16-30).  When it
+        is not ``None``, ``valid[e] == (fail_mask[e] == 0)``.  ``TrackGenerator``
+        always allocates it; ``None`` on a ``Track`` built elsewhere (e.g. the
+        standalone ``inflate_warp`` path).
+    fail_bits : Mapping[str, int]
+        ``name -> bit index`` of every bit of ``fail_mask`` the pipeline assigns
+        (``TrackGenerator.program.fail_bits``); the border / grade bits are named
+        even when their check is off (then never set).  Empty on a ``Track`` built
+        elsewhere.
     """
 
     outer: wp.array
@@ -1279,6 +1304,8 @@ class Track:
     winding: wp.array
     truncated: "wp.array | None" = None
     generation: "wp.array | None" = None
+    fail_mask: "wp.array | None" = None
+    fail_bits: Mapping[str, int] = field(default_factory=dict)
 
     def clone(self) -> "Track":
         """Return a fully-owned deep copy of this Track.
@@ -1300,4 +1327,6 @@ class Track:
             winding=wp.clone(self.winding),
             truncated=None if self.truncated is None else wp.clone(self.truncated),
             generation=None if self.generation is None else wp.clone(self.generation),
+            fail_mask=None if self.fail_mask is None else wp.clone(self.fail_mask),
+            fail_bits=self.fail_bits,
         )
