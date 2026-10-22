@@ -85,6 +85,24 @@
 
 ### Behaviour changes
 
+- **The `sdf` box query takes the exact minimum of the interpolated field over the box
+  outline.** It used to take the minimum of 5 bilinear samples (the centre and the 4
+  corners), so it missed an edge crossing a box side while all 4 corners stayed on the
+  road, typically the inner edge at a tight bend: a car box whose side reaches 10 mm into
+  an inner bend read +16 mm. Each side is now split at the grid lines it crosses, and each
+  piece, a quadratic, is minimised in closed form. The centre and corners stay candidates,
+  so `distance` never increases beyond float rounding (at most 1e-7 m on the racing set).
+  `nearest` and `normal` come from the point where the minimum is reached. **`oob` and `distance` change near the edges, so policies trained
+  on the old `sdf` query (rewards or terminations from `oob` / `distance`) should be
+  retrained.** On the racing near-edge set (100 worlds × 1024 car boxes, R=256), flag
+  agreement with the exact backend goes from 99.728% to 99.949%: misses drop from 259 to
+  32, and the 20 false positives are unchanged. The query costs more: ~22–24 µs per
+  CUDA-graph replay for 4096 worlds × 1 car box at R=256 on an RTX 5090 (7.8 µs before),
+  and ~0.041 ms for the default 65,536-box benchmark (~0.018 ms before). It stays
+  allocation-free and capturable. The `segments` backend is unchanged.
+- **`sdf`: a box with non-finite half-extents or yaw reads `oob=1`**, with NaN `distance`,
+  `nearest` and `normal` and `boundary=-1`, as for a degenerate env; the grid is not read.
+  Before, its NaN corners became an `int(NaN)` texel index (undefined behaviour).
 - **`TrackGenerator` runs a `Program`.** Construction builds the default spec (the one
   `legacy.to_pipeline_spec(config)` returns), and `generate()`, `enqueue()` and `Course`
   run the Program. Outputs are byte-identical (the CPU fingerprint guard is unchanged),
@@ -130,6 +148,22 @@
 
 ### Testing
 
+- `tests/test_collision_sdf_outline.py`: the `sdf` outline query. Side crossings with all 4
+  corners on the road: the analytic annulus (inner radius 1 m, R=41 and 256; cpu and cuda),
+  a long box spanning 20 cells, and the tightest bend of racing track 1000000 against an
+  exact reference. Random boxes on a coarse grid, some past the grid edge: `distance`
+  equals the minimum of a dense float64 replica of the interpolated field on the outline,
+  never exceeds the 5-sample minimum, and its argmin, `nearest` and `normal` agree. Boxes
+  partly or fully outside the grid, far away (1e30) or swallowing the track; non-finite
+  half-extents or yaw; degenerate envs; determinism; `oob == (distance < 0)` on the racing
+  near-edge set. Slow: 100 racing worlds × 16 boxes (agreement ≥ 99.95%, measured 100%), and
+  100 × 1024 boxes (99.949%), where every disagreement is checked to be the grid's, with no
+  new false positive against the 5-sample query.
+- `benchmarks/benchmark_collision.py --racing`: racing near-edge mode (bezier tracks at
+  `scale=17`, `half_width=0.5`, `N_max=512`, seeds 1000000 + env; a 0.46 × 0.34 m car box near
+  the edges; R=256): CUDA-graph time per query for both backends and the `sdf` flag
+  agreement, misses and false positives. Both modes now report the graph replay as GPU time
+  from events (the default mode used wall-clock time).
 - `tests/test_pipeline_planner.py`: the default stage list for the flat and elevated
   profiles and without relax; the `relax_solver` / `smooth_finish` errors; the flat
   params validating with the `TrackGenConfig` messages; `StageRef` as frozen data; the

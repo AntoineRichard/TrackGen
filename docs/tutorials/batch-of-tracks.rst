@@ -294,7 +294,7 @@ Collision backend
 
 Track mode accepts ``collision="segments"`` (exact boundary scan, the default —
 no precompute, reads regenerated tracks automatically), ``"sdf"`` (baked
-signed-distance grids: O(1) queries after a per-regeneration bake, worth it when
+signed-distance grids: cheap queries after a per-regeneration bake, worth it when
 a batch serves many queries between regenerations and only the OOB flag and
 approximate clearance are consumed), or ``None`` (progress-only, no OOB check).
 The ``"discs"`` obstacle checker is the separate gate-post collision used in
