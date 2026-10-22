@@ -817,7 +817,8 @@ class _GateStaging:
 def _gate_warp_alloc(config: GateGenConfig, generator_spec):
     """Allocate facade-owned gate output plus pipeline + generator scratch.
 
-    Returns ``(gates, (gen_scratch, pos2, cum, perim, z, fallbacks))``: ``pos2``
+    Returns ``(gates, (gen_scratch, pos2, cum, perim, z, fallbacks))`` (``gates``
+    with its ``generation`` counter allocated, zero-filled): ``pos2``
     is the vec2f staging buffer the 2D kernels write, ``cum``/``perim`` the
     per-gate cumulative plan-view arc length / closed-loop perimeter scratch
     the Z profiler needs (populated each run via ``gate_cum_perim``), ``z`` the
@@ -835,6 +836,8 @@ def _gate_warp_alloc(config: GateGenConfig, generator_spec):
     E = int(config.num_envs)
     G = int(config.max_gates)
     dev = str(config.device)
+    # Written by GateGenerator after every generation (= the env's seed epoch).
+    gates.generation = wp.zeros(E, dtype=wp.int32, device=dev)
     pos2 = wp.empty(E * G, dtype=wp.vec2f, device=dev)
     cum, perim, z = warp_zprofile.alloc_z_scratch(E, G, dev)
     fallbacks = wp.zeros(E, dtype=wp.int32, device=dev)

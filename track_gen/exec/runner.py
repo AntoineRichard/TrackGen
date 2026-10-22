@@ -17,8 +17,11 @@ EAGER               CPU, ``policy="eager"``, or a non-capturable producer
                     outside any capture: the body runs on the resolved
                     stream.
 SELF-GRAPH          CUDA outside any capture: the body is captured ONCE
-                    into :attr:`GraphRunner.graph` on a private stream,
-                    then every call replays it with
+                    per cache key (``run(key=...)``; ``None`` ->
+                    :attr:`GraphRunner.graph`; at most
+                    ``MAX_KEYED_GRAPHS`` other keys, further ones run
+                    eagerly) on a private stream, then every call with
+                    that key replays it with
                     ``wp.capture_launch(graph, stream=resolved)``.
 ==================  ====================================================
 
@@ -41,8 +44,8 @@ at record time.
 Legacy-ABI plugins (no ``accepts_ctx``) launch on Warp's CURRENT stream,
 which is shared by every thread. A producer containing one therefore:
 
-- captures its self-graph on that stream, under the process-wide
-  ``runtime._CAPTURE_LOCK``;
+- captures its (default-key) self-graph on that stream, under the process-wide
+  ``runtime._CAPTURE_LOCK``, and runs any other key eagerly;
 - outside a capture, runs its whole body on that stream when the call
   resolved another one, ordered after and before the resolved stream with
   events (so the plugin's launches and the library's stages stay ordered);
@@ -59,6 +62,7 @@ from __future__ import annotations
 
 import contextlib
 import threading
+import warnings
 import weakref
 
 import warp as wp
@@ -71,6 +75,11 @@ from .errors import CaptureError, LegacyPluginStreamError, NotCapturableError
 __all__ = ["GraphRunner", "ensure_not_capturing"]
 
 _POLICIES = ("auto", "eager")
+
+# At most this many self-graphs per runner for non-None keys (e.g. one per mask
+# pointer). Calls with a further new key run eagerly (one warning per runner), so a
+# caller passing a fresh mask array per call cannot grow the cache without bound.
+MAX_KEYED_GRAPHS = 16
 
 # Capturable legacy-plugin runners on CUDA that have not captured their
 # self-graph yet: each may still open a capture on Warp's shared current stream.
@@ -173,7 +182,10 @@ class GraphRunner:
                 self._owner_ref = weakref.ref(owner)
             except TypeError:  # not weak-referenceable: hold it strongly
                 self._owner_ref = lambda _o=owner: _o
-        self._graph: "wp.Graph | None" = None
+        # Self-graphs by key (``None`` = the producer's default body). One graph per
+        # key, captured on first use and replayed by every later call with that key.
+        self._graphs: "dict[object, wp.Graph]" = {}
+        self._keyed_limit_warned = False
         self._capture_stream: "wp.Stream | None" = None
         self._prepared = False
         self._lock = threading.RLock()
@@ -183,9 +195,19 @@ class GraphRunner:
     # -- state ------------------------------------------------------------------
     @property
     def graph(self) -> "wp.Graph | None":
-        """The self-graph, once captured (first CUDA call outside a capture);
-        ``None`` on CPU, for a non-capturable producer, or before that call."""
-        return self._graph
+        """The default-key self-graph, once captured (first CUDA call with
+        ``key=None`` outside a capture); ``None`` on CPU, for a non-capturable
+        producer, or before that call."""
+        return self._graphs.get(None)
+
+    def graph_for(self, key=None) -> "wp.Graph | None":
+        """The self-graph cached for ``key`` (see :meth:`run`), if captured."""
+        return self._graphs.get(key)
+
+    @property
+    def graph_keys(self) -> tuple:
+        """The keys of every self-graph captured so far (``None`` = default)."""
+        return tuple(self._graphs)
 
     @property
     def device(self):
@@ -276,7 +298,7 @@ class GraphRunner:
         self._prepared = True
 
     def run(self, enqueue, *, stream=None, policy: str = "auto",
-            sync: bool = False) -> LaunchContext:
+            sync: bool = False, key=None) -> LaunchContext:
         """Run ``enqueue`` once under the execution policy; returns the call's
         resolved :class:`LaunchContext`.
 
@@ -289,6 +311,20 @@ class GraphRunner:
             sync: block the host on the resolved stream afterwards; skipped
                 when recording, and while torch is capturing in the calling
                 thread.
+            key: hashable self-graph cache key identifying WHICH body
+                ``enqueue`` is (e.g. ``(advance, mask.ptr)``). The self-graph
+                of a key is captured on its first SELF-GRAPH call and replayed
+                by every later call with an equal key, so equal keys must mean
+                identical bodies (same launches, same buffer pointers).
+                ``None`` (default) is the producer's default body
+                (:attr:`graph`). A non-``None`` key requires :meth:`prepare` to
+                have run (a keyed body may not be idempotent, so it is never
+                used as a warm-up pass). Ignored when recording or eager. A
+                legacy-plugin producer runs non-``None`` keys eagerly (it
+                self-captures on Warp's shared current stream, once). At most
+                :data:`MAX_KEYED_GRAPHS` non-``None`` keys get a self-graph;
+                calls with a further new key run eagerly (with a one-time
+                ``RuntimeWarning``).
         """
         if policy not in _POLICIES:
             raise ValueError(f"policy must be one of {_POLICIES}, got {policy!r}")
@@ -305,12 +341,21 @@ class GraphRunner:
                 if owner is not None:
                     _compat.anchor(ctx.stream, owner)
                 return ctx
-            if not self._device.is_cuda or policy == "eager" or not self._capturable:
-                self._run_eager(enqueue, ctx)       # EAGER
+            if not self._device.is_cuda or policy == "eager" or not self._capturable \
+                    or (key is not None and self._legacy_stream):
+                # EAGER (a legacy producer self-graphs its default body only: another
+                # capture on Warp's shared current stream would reopen the window in
+                # which other calls on that stream must serialize, see serial()).
+                self._run_eager(enqueue, ctx)
             else:
                 # SELF-GRAPH: capture once (private stream), replay on the caller's stream.
-                g = self._graph if self._graph is not None else self._capture(enqueue)
-                wp.capture_launch(g, stream=ctx.stream)
+                g = self._graphs.get(key)
+                if g is None and key is not None and self._keyed_full():
+                    self._run_eager(enqueue, ctx)
+                else:
+                    if g is None:
+                        g = self._capture(enqueue, key)
+                    wp.capture_launch(g, stream=ctx.stream)
             if sync:
                 self._sync(ctx)
         return ctx
@@ -338,6 +383,19 @@ class GraphRunner:
 
     def _owner(self):
         return None if self._owner_ref is None else self._owner_ref()
+
+    def _keyed_full(self) -> bool:
+        """Whether the keyed self-graph cache is full (warns once when it is)."""
+        if sum(k is not None for k in self._graphs) < MAX_KEYED_GRAPHS:
+            return False
+        if not self._keyed_limit_warned:
+            self._keyed_limit_warned = True
+            warnings.warn(
+                f"{self._label()}: {MAX_KEYED_GRAPHS} self-graphs are cached for "
+                "distinct keys (e.g. mask arrays); calls with a new key now run eagerly. "
+                "Pass a stable mask array (e.g. inputs['regen_mask']) instead of a new "
+                "one per call.", RuntimeWarning, stacklevel=4)
+        return True
 
     def _sync(self, ctx: LaunchContext) -> None:
         """Block the host on ``ctx.stream`` unless that would touch a capture."""
@@ -387,13 +445,19 @@ class GraphRunner:
             return _runtime._CAPTURE_LOCK
         return contextlib.nullcontext()
 
-    def _capture(self, enqueue) -> "wp.Graph":
-        """Capture the self-graph once (thread-safe; retried once on failure)."""
+    def _capture(self, enqueue, key=None) -> "wp.Graph":
+        """Capture the self-graph of ``key`` once (thread-safe; retried once on
+        failure)."""
         if not self._prepared:
+            if key is not None:
+                raise RuntimeError(
+                    f"{self._label()}: prepare() must run (with the default body) before "
+                    f"a self-graph is captured for key {key!r}")
             self.prepare(enqueue)
         with self._capture_serial(), self._lock:
-            if self._graph is not None:
-                return self._graph
+            cached = self._graphs.get(key)
+            if cached is not None:
+                return cached
             try:
                 graph = self._capture_once(enqueue)
             except CaptureError:
@@ -404,7 +468,7 @@ class GraphRunner:
                 # the one-time capture window. The failed capture was ended by
                 # ScopedCapture; one retry, then the error propagates.
                 graph = self._capture_once(enqueue)
-            self._graph = graph
+            self._graphs[key] = graph
             _PENDING_LEGACY.discard(self)
             return graph
 

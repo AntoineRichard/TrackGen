@@ -16,6 +16,67 @@ Seeded RNG
 .. autoclass:: track_gen.PerEnvSeededRNG
    :members:
 
+Seed state
+----------
+
+Per-env seeds and device-side epochs, the pair that keys every generation; see
+:doc:`/how-it-works/cuda-graph`.
+
+.. automodule:: track_gen.seeds
+   :no-members:
+
+.. autoclass:: track_gen.seeds.SeedState
+   :members:
+
+.. autofunction:: track_gen.seeds.effective_seed
+
+Execution layer
+---------------
+
+Stream resolution, the record / eager / self-graph policy shared by the producers, the
+device-side conditional skip, and the capture errors; see :doc:`/how-it-works/cuda-graph`.
+
+.. automodule:: track_gen.exec
+   :no-members:
+
+.. autoclass:: track_gen.exec.LaunchContext
+   :members:
+
+.. autoclass:: track_gen.exec.GraphRunner
+   :members:
+
+.. autofunction:: track_gen.exec.resolve_stream
+
+.. autoexception:: track_gen.exec.CaptureError
+
+.. autoexception:: track_gen.exec.NotCapturableError
+
+.. autoexception:: track_gen.exec.LegacyPluginStreamError
+
+Device ops
+----------
+
+.. automodule:: track_gen.ops
+   :no-members:
+
+.. autofunction:: track_gen.ops.any_set
+
+.. autofunction:: track_gen.ops.fill
+
+Torch interop
+-------------
+
+Registering a ``torch.cuda.graph`` capture with Warp, and tying producers' lifetime to a
+torch graph; see :doc:`/tutorials/cuda-graph-in-a-sim`. Importing ``track_gen`` does not
+import torch.
+
+.. automodule:: track_gen.interop.torch
+   :no-members:
+
+.. autofunction:: track_gen.interop.torch.registered
+
+.. autofunction:: track_gen.interop.torch.retain
+
 Result types
 ------------
 

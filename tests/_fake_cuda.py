@@ -116,3 +116,37 @@ class FakeCuda:
     def created(self) -> list:
         """Streams created through ``wp.Stream`` since setup (private capture streams)."""
         return FakeStream.created
+
+
+class FakeSeedState:
+    """Stands in for :class:`track_gen.seeds.SeedState` in facades built on the fake
+    device (the real one allocates). Records the stream of every effective-seed prologue
+    (the FIRST launch of every generator body) in ``sink`` and every advance in
+    ``advanced`` as ``(mask, stream)``."""
+
+    def __init__(self, sink: list, advanced: list) -> None:
+        self.sink = sink
+        self.advanced = advanced
+        self.epoch = object()
+
+    def effective(self, out, mask=None, *, stream=None, ctx=None) -> None:
+        self.sink.append(ctx.stream)
+
+    def advance(self, mask=None, *, stream=None, ctx=None) -> None:
+        self.advanced.append((mask, ctx.stream))
+
+    def check_mask(self, mask, name: str = "mask") -> None:
+        pass
+
+
+def patch_facade_seeds(monkeypatch) -> "tuple[list, list]":
+    """Make both facades build a :class:`FakeSeedState`; returns ``(prologues,
+    advances)``, the lists every fake records into."""
+    from track_gen._src import gate_generator, track_generator
+
+    prologues: list = []
+    advances: list = []
+    for mod in (track_generator, gate_generator):
+        monkeypatch.setattr(mod, "SeedState",
+                            lambda *a, **k: FakeSeedState(prologues, advances))
+    return prologues, advances

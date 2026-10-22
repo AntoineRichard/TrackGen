@@ -27,7 +27,7 @@ import contextlib
 import contextvars
 import sys
 import threading
-from typing import Iterator, Sequence
+from typing import Callable, Iterator, Sequence
 
 import warp as wp
 
@@ -210,6 +210,61 @@ class LaunchContext:
         ``fill_()``, whose memset targets Warp's current stream)."""
         from ..ops.fill import fill  # noqa: PLC0415 - avoid import cycle
         fill(self, arr, value)
+
+    def skip_unless(self, flag: "wp.array", body: "Callable[[LaunchContext], None]") -> None:
+        """Run ``body(self)``, skipped on device when ``flag[0] == 0`` where that is
+        possible; otherwise run it unconditionally.
+
+        CONTRACT: ``body`` must be an exact no-op when ``flag[0] == 0`` (it must
+        leave every buffer bitwise unchanged), because whether the skip happens
+        depends on the capture, not on the data:
+
+        - inside a capture that Warp registered on this context's stream (Warp
+          ``ScopedCapture``, ``capture_begin(external=True)``, or
+          ``track_gen.interop.torch.registered(conditional=True)`` under
+          ``torch.cuda.graph``) on a device with conditional-node support (CUDA
+          Toolkit and driver >= 12.4): ``body`` is recorded under a CUDA
+          conditional node that reads ``flag[0]`` at replay time
+          (``wp.capture_if``);
+        - anywhere else (eager calls, the CPU device, an unregistered
+          ``torch.cuda.graph`` capture or one registered without
+          ``conditional=True``, a stream that only joined a capture registered on
+          another stream, an older driver): ``body`` runs (or is recorded)
+          unconditionally.
+
+        A graph holding a conditional node cannot be used as a CUDA child graph
+        (e.g. ``wp.capture_if(c, on_true=that_graph)``). ``wp.capture_if`` also
+        ends and restarts the stream's capture around the node, which gives it a
+        new CUDA capture id: an external capturer that tracks its capture by id
+        (torch's caching allocator under ``torch.cuda.graph``) loses track of it
+        for the rest of the capture. Hence the opt-in under torch.
+
+        Never takes Warp's eager ``capture_if`` path, which reads the flag back on
+        the host and synchronizes the stream.
+
+        Args:
+            flag: ``[1]`` ``int32`` array on this context's device (e.g. written by
+                :func:`track_gen.ops.any_set` earlier on the same stream).
+            body: ``body(ctx)`` emitting its work through ``ctx`` (this context).
+
+        Raises:
+            TypeError: ``flag`` is not a ``[1]`` int32 ``wp.array``.
+            ValueError: ``flag`` is not on this context's device (``wp.capture_if``
+                would miss the capture and read the flag on the host).
+        """
+        if not isinstance(flag, wp.array) or flag.dtype is not wp.int32 \
+                or tuple(flag.shape) != (1,):
+            raise TypeError("skip_unless: flag must be a [1] int32 wp.array")
+        if str(flag.device) != str(self.device):
+            raise ValueError(
+                f"skip_unless: flag is on {flag.device}, but the launch context is on "
+                f"{self.device}: the flag must be on the context's device")
+        if self.capturing and _compat.conditional_ok(self.device):
+            key = _compat.registered_stream(self.stream)
+            if key is not None and _compat.conditional_allowed(key):
+                wp.capture_if(flag, on_true=lambda: body(self), stream=key)
+                return
+        body(self)
 
     def sync(self) -> None:
         """Debug-only host sync on this stream (``TRACKGEN_DEBUG_SYNC=1``)."""

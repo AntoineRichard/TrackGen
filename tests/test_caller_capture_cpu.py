@@ -27,7 +27,7 @@ import numpy as np
 import pytest
 import warp as wp
 
-from tests._fake_cuda import FakeCuda, FakeGraph, FakeStream
+from tests._fake_cuda import FakeCuda, FakeGraph, FakeStream, patch_facade_seeds
 from track_gen import GateGenConfig, GateGenerator, PerEnvSeededRNG, TrackGenConfig, TrackGenerator
 from track_gen._src import course as course_mod
 from track_gen._src import gate_generator_registry, generator_registry, runtime, warp_gate, warp_pipeline
@@ -709,7 +709,7 @@ def _fake_track_facade(monkeypatch, capturable=True, accepts_ctx=True):
         name="fake", alloc_scratch=lambda config: object(),
         generate=lambda *a, **k: None, capturable=capturable, accepts_ctx=accepts_ctx))
     runs: list = []
-    track = object()
+    track = types.SimpleNamespace(generation=None)
     monkeypatch.setattr(warp_pipeline, "_inflate_warp_alloc",
                         lambda config, generator_spec=None: (track, object()))
     monkeypatch.setattr(warp_pipeline, "_run_pipeline",
@@ -728,7 +728,7 @@ def _fake_gate_facade(monkeypatch, capturable=True, accepts_ctx=True):
         supported_orderings=frozenset({"ccw"}), capturable=capturable,
         accepts_ctx=accepts_ctx))
     runs: list = []
-    seq = object()
+    seq = types.SimpleNamespace(generation=None)
     monkeypatch.setattr(warp_gate, "_gate_warp_alloc",
                         lambda config, generator_spec: (seq, (object(),) * 6))
     monkeypatch.setattr(warp_gate, "_run_gate_pipeline",
@@ -746,10 +746,13 @@ def _fake_rng():
 
 
 def _setup_fake_facade(monkeypatch, make, **kw):
+    """A facade on the fake device. ``copies`` records the stream of every seed prologue
+    (the effective-seed launch that opens every generator body, PR4; a seed copy in PR3)."""
     fake = FakeCuda(monkeypatch)
     monkeypatch.setattr(wp, "empty", lambda *a, **k: object())
-    copies: list = []
-    monkeypatch.setattr(wp, "copy", lambda *a, **k: copies.append(k.get("stream")))
+    monkeypatch.setattr(wp, "zeros", lambda *a, **k: object())
+    monkeypatch.setattr(wp, "copy", lambda *a, **k: pytest.fail("unexpected wp.copy"))
+    copies, _ = patch_facade_seeds(monkeypatch)
     cfg, runs, result, cls = make(monkeypatch, **kw)
     gen = cls(cfg, _fake_rng())
     return fake, gen, runs, copies, result
@@ -758,7 +761,7 @@ def _setup_fake_facade(monkeypatch, make, **kw):
 @pytest.mark.parametrize("make", _FACADES)
 def test_facade_prepares_then_self_graphs_then_replays(monkeypatch, make):
     fake, gen, runs, copies, result = _setup_fake_facade(monkeypatch, make)
-    # construction: ONE real pass (seed copy + pipeline) on the resolved stream
+    # construction: ONE real pass (seed prologue + pipeline) on the resolved stream
     assert len(runs) == 1 and runs[0].stream is fake.current and not runs[0].capturing
     assert copies == [fake.current]
     assert gen.graph is None and fake.captures == []
@@ -766,7 +769,7 @@ def test_facade_prepares_then_self_graphs_then_replays(monkeypatch, make):
 
     assert gen.generate(1) is result
     assert len(runs) == 2 and runs[1].capturing        # recorded into the self-graph
-    assert copies[1] is runs[1].stream                 # seed copy is inside the graph
+    assert copies[1] is runs[1].stream                 # seed prologue is inside the graph
     assert gen.graph is not None and gen._graph is gen.graph
     assert fake.launched == [(gen.graph, fake.current)]
     assert fake.synced == [fake.current] * 2           # sync=True default

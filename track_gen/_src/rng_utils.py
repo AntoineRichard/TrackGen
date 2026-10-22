@@ -54,12 +54,11 @@ class PerEnvSeededRNG:
         # to produce reproducible, seed-determined outputs without a separate set_seeds call.
         # Construction runs on Warp's CURRENT stream, the same stream the wp.zeros /
         # wp.array allocations above were zeroed/uploaded on (no ambient or torch adoption).
+        # set_seeds_warp also mirrors the states into the _new_states double-buffer, so
+        # a first PARTIAL-ids sample (which only writes new_states for the selected envs,
+        # then copies the WHOLE array back) cannot zero the untouched envs' states.
         ctx = LaunchContext.current(device)
         self.set_seeds_warp(self._seeds, None, ctx=ctx)
-        # Mirror states into the double-buffer so a first PARTIAL-ids sample (which only
-        # writes new_states for selected envs, then copies the WHOLE array back) cannot
-        # zero the untouched envs' seed-derived states.
-        ctx.copy(self._new_states, self._states)
 
     @property
     def seeds_warp(self) -> wp.array:
@@ -89,7 +88,17 @@ class PerEnvSeededRNG:
         return LaunchContext.for_call(self._device, stream)
 
     def set_seeds_warp(self, seeds: wp.array, ids: wp.array | None, stream=None, ctx=None) -> None:
-        """Set the seeds for each environment.
+        """Set the seeds for each environment (and re-initialise their RNG states).
+
+        Two operations on the call's stream: the reseed launch, then a copy that
+        mirrors the states into the sampling double-buffer (so a later partial-ids
+        sample cannot revert the reseed). Capturable and allocation-free.
+
+        The new seeds are written into :attr:`seeds_warp` in place. That array is
+        the caller's own when the rng was constructed from a ``wp.array`` (it is
+        bound without a copy), and it is what a generator built on this rng binds
+        and reads at every generation.
+
         Args:
             seeds: The seeds for each environment.
             ids: The ids of the environments.
@@ -109,6 +118,11 @@ class PerEnvSeededRNG:
             num_instances,
             [seeds, self._seeds, self._states, ids],
         )
+        # Mirror the reseeded states into the sampling double-buffer: a sampler writes
+        # new_states only for the envs it samples, then copies the WHOLE buffer back
+        # into states, so a stale new_states would revert this reseed for every env a
+        # later partial-ids sample does not touch.
+        ctx.copy(self._new_states, self._states)
 
     def sample_uniform_warp(
         self,
@@ -118,6 +132,7 @@ class PerEnvSeededRNG:
         ids: wp.array | None = None,
         stream=None,
         ctx=None,
+        out: "wp.array | None" = None,
     ) -> wp.array:
         """Sample from a uniform distribution. Warp implementation.
 
@@ -132,15 +147,20 @@ class PerEnvSeededRNG:
                 track_gen.exec (an enclosing torch.cuda.graph capture is adopted, else Warp's current stream).
             ctx: optional track_gen.exec.LaunchContext to run on instead of ``stream`` (for internal
                 callers that already hold one); default resolves the device's stream (see track_gen.exec).
+            out: optional preallocated output ``wp.array`` of the exact output shape, dtype and
+                device; written in place and returned, so the call allocates nothing (capturable
+                sampling). Validated before any launch (``ValueError`` on a mismatch).
         Returns:
             The sampled values."""
         ctx = self._ctx(stream, ctx)
         if ids is None:
             ids = self._ALL_INDICES
-        return uniform(low, high, self._states, self._new_states, ids, self.to_tuple(shape), self._device, ctx=ctx)
+        return uniform(low, high, self._states, self._new_states, ids, self.to_tuple(shape), self._device,
+                       ctx=ctx, out=out)
 
     def sample_sign_warp(
-        self, dtype: str, shape: tuple | int, ids: wp.array | None = None, stream=None, ctx=None
+        self, dtype: str, shape: tuple | int, ids: wp.array | None = None, stream=None, ctx=None,
+        out: "wp.array | None" = None,
     ) -> wp.array:
         """Sample a sign. Warp implementation.
         Args:
@@ -151,13 +171,16 @@ class PerEnvSeededRNG:
                 track_gen.exec (an enclosing torch.cuda.graph capture is adopted, else Warp's current stream).
             ctx: optional track_gen.exec.LaunchContext to run on instead of ``stream`` (for internal
                 callers that already hold one); default resolves the device's stream (see track_gen.exec).
+            out: optional preallocated output ``wp.array`` of the exact output shape, dtype and
+                device; written in place and returned, so the call allocates nothing (capturable
+                sampling). Validated before any launch (``ValueError`` on a mismatch).
         Returns:
             The sampled values."""
         ctx = self._ctx(stream, ctx)
         if ids is None:
             ids = self._ALL_INDICES
         return rand_sign_fn(
-            self._states, self._new_states, ids, self.to_tuple(shape), dtype, self._device, ctx=ctx
+            self._states, self._new_states, ids, self.to_tuple(shape), dtype, self._device, ctx=ctx, out=out
         )
 
     def sample_integer_warp(
@@ -168,6 +191,7 @@ class PerEnvSeededRNG:
         ids: wp.array | None = None,
         stream=None,
         ctx=None,
+        out: "wp.array | None" = None,
     ) -> wp.array:
         """Sample for a random integer. Warp implementation.
         Args:
@@ -179,12 +203,16 @@ class PerEnvSeededRNG:
                 track_gen.exec (an enclosing torch.cuda.graph capture is adopted, else Warp's current stream).
             ctx: optional track_gen.exec.LaunchContext to run on instead of ``stream`` (for internal
                 callers that already hold one); default resolves the device's stream (see track_gen.exec).
+            out: optional preallocated output ``wp.array`` of the exact output shape, dtype and
+                device; written in place and returned, so the call allocates nothing (capturable
+                sampling). Validated before any launch (``ValueError`` on a mismatch).
         Returns:
             wp.array: The sampled values."""
         ctx = self._ctx(stream, ctx)
         if ids is None:
             ids = self._ALL_INDICES
-        return integer(low, high, self._states, self._new_states, ids, self.to_tuple(shape), self._device, ctx=ctx)
+        return integer(low, high, self._states, self._new_states, ids, self.to_tuple(shape), self._device,
+                       ctx=ctx, out=out)
 
     def sample_normal_warp(
         self,
@@ -194,6 +222,7 @@ class PerEnvSeededRNG:
         ids: wp.array | None = None,
         stream=None,
         ctx=None,
+        out: "wp.array | None" = None,
     ) -> wp.array:
         """Sample from a normal distribution. Warp implementation.
         Args:
@@ -205,15 +234,20 @@ class PerEnvSeededRNG:
                 track_gen.exec (an enclosing torch.cuda.graph capture is adopted, else Warp's current stream).
             ctx: optional track_gen.exec.LaunchContext to run on instead of ``stream`` (for internal
                 callers that already hold one); default resolves the device's stream (see track_gen.exec).
+            out: optional preallocated output ``wp.array`` of the exact output shape, dtype and
+                device; written in place and returned, so the call allocates nothing (capturable
+                sampling). Validated before any launch (``ValueError`` on a mismatch).
         Returns:
             wp.array: The sampled values."""
         ctx = self._ctx(stream, ctx)
         if ids is None:
             ids = self._ALL_INDICES
-        return normal(mean, std, self._states, self._new_states, ids, self.to_tuple(shape), self._device, ctx=ctx)
+        return normal(mean, std, self._states, self._new_states, ids, self.to_tuple(shape), self._device,
+                       ctx=ctx, out=out)
 
     def sample_poisson_warp(
-        self, lam: float | wp.array, shape: tuple | int, ids: wp.array | None = None, stream=None, ctx=None
+        self, lam: float | wp.array, shape: tuple | int, ids: wp.array | None = None, stream=None, ctx=None,
+        out: "wp.array | None" = None,
     ) -> wp.array:
         """Sample from a poisson distribution. Warp implementation.
         Args:
@@ -224,15 +258,19 @@ class PerEnvSeededRNG:
                 track_gen.exec (an enclosing torch.cuda.graph capture is adopted, else Warp's current stream).
             ctx: optional track_gen.exec.LaunchContext to run on instead of ``stream`` (for internal
                 callers that already hold one); default resolves the device's stream (see track_gen.exec).
+            out: optional preallocated output ``wp.array`` of the exact output shape, dtype and
+                device; written in place and returned, so the call allocates nothing (capturable
+                sampling). Validated before any launch (``ValueError`` on a mismatch).
         Returns:
             The sampled values."""
         ctx = self._ctx(stream, ctx)
         if ids is None:
             ids = self._ALL_INDICES
-        return poisson(lam, self._states, self._new_states, ids, self.to_tuple(shape), self._device, ctx=ctx)
+        return poisson(lam, self._states, self._new_states, ids, self.to_tuple(shape), self._device, ctx=ctx, out=out)
 
     def sample_quaternion_warp(
-        self, shape: tuple | int, ids: wp.array | None = None, stream=None, ctx=None
+        self, shape: tuple | int, ids: wp.array | None = None, stream=None, ctx=None,
+        out: "wp.array | None" = None,
     ) -> wp.array:
         """Sample a quaternion. Warp implementation.
         Args:
@@ -242,9 +280,12 @@ class PerEnvSeededRNG:
                 track_gen.exec (an enclosing torch.cuda.graph capture is adopted, else Warp's current stream).
             ctx: optional track_gen.exec.LaunchContext to run on instead of ``stream`` (for internal
                 callers that already hold one); default resolves the device's stream (see track_gen.exec).
+            out: optional preallocated output ``wp.array`` of the exact output shape, dtype and
+                device; written in place and returned, so the call allocates nothing (capturable
+                sampling). Validated before any launch (``ValueError`` on a mismatch).
         Returns:
             wp.array: The sampled values."""
         ctx = self._ctx(stream, ctx)
         if ids is None:
             ids = self._ALL_INDICES
-        return quaternion(self._states, self._new_states, ids, self.to_tuple(shape), self._device, ctx=ctx)
+        return quaternion(self._states, self._new_states, ids, self.to_tuple(shape), self._device, ctx=ctx, out=out)

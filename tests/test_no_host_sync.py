@@ -3,8 +3,10 @@
 Every hot-path entry point must be recordable into a caller's CUDA graph, so none of
 them may host-synchronize or read device data back to the host. That covers the
 pipeline wrappers, every registered generator's ``_run``, the facades'
-``generate()``/``enqueue()``, every utility's query/update/reset/sample/bake/refresh,
-and ``Course.step``/``reset``/``regenerate``/``generate``/``enqueue_generate``. CPU cannot
+``generate()``/``enqueue()`` (plain and ``advance=True, mask=...``), every utility's
+query/update/reset/sample/bake/refresh, ``Course.step``/``reset``/``regenerate`` (plain,
+``advance``, masked)/``generate``/``enqueue_generate``, ``SeedState``'s device ops and the
+rng's ``set_seeds_warp`` and ``sample_*_warp(out=...)``. CPU cannot
 capture, so :func:`_probe` replaces ``wp.synchronize*`` and ``wp.array.numpy`` with
 tripwires that record the call and raise. Each driver then runs its entry point under
 the probe, and the test asserts zero calls. Construction (allocation, readback-based
@@ -33,6 +35,7 @@ from track_gen._src import (
     gate_generator_registry,
     generator_registry,
     localize,
+    rng_kernels,
     runtime,
     warp_gate,
     warp_generate,
@@ -63,6 +66,9 @@ from track_gen._src.props import PropSampler
 from track_gen._src.rng_utils import PerEnvSeededRNG
 from track_gen._src.track_generator import TrackGenerator
 from track_gen._src.types import GateGenConfig, TrackGenConfig
+from track_gen import seeds as seeds_mod
+from track_gen.ops import reduce as reduce_mod
+from track_gen.seeds import SeedState
 
 DEV = "cpu"
 E = 2
@@ -274,6 +280,112 @@ def _course_regenerate(mode, **kw):
     return setup
 
 
+def _i32(values):
+    return wp.array(np.asarray(values, dtype=np.int32), dtype=wp.int32, device=DEV)
+
+
+def _facade_advance(cls, **kw):
+    # generate()/enqueue() with an on-device epoch advance (all envs, masked, the
+    # persistent inputs["regen_mask"]), plus the SeedState ops the facade exposes.
+    def setup():
+        gen = _track_gen(**kw) if cls is TrackGenerator else _gate_gen(**kw)
+        m = _i32([1, 0])
+
+        def hot():
+            gen.generate(advance=True)
+            gen.generate(advance=True, mask=m)
+            gen.generate(advance=True, mask=gen.inputs["regen_mask"], sync=False)
+            gen.enqueue(advance=True, mask=m)
+            gen.enqueue(advance=True)
+            gen.seeds.advance(m)
+            gen.seeds.reset_epoch(m)
+            gen.seeds.reset_epoch()
+        return hot
+    return setup
+
+
+def _course_masked(mode, **kw):
+    # Masked / advancing regeneration (any_set + skip_unless + masked resets), the
+    # persistent regen_mask input, and a reseed (which zeroes the epochs).
+    def setup():
+        gen = (TrackGenConfig(device=DEV, num_envs=E) if mode == "track"
+               else GateGenConfig(device=DEV, num_envs=E, gate_width=0.2))
+        if mode == "track":
+            kw.setdefault("checkpoint_spacing", 0.3)
+        course = Course(CourseConfig(mode=mode, gen=gen, seeds=3, **kw))
+        m = _i32([0, 1])
+        zero = _i32([0, 0])
+
+        def hot():
+            course.regenerate(mask=m, advance=True)
+            course.regenerate(mask=zero, advance=True)
+            course.regenerate(mask=course.inputs["regen_mask"], advance=True, sync=False)
+            course.regenerate(mask=m)
+            course.regenerate(advance=True)
+            course.enqueue_generate(mask=m, advance=True)
+            course.generate(seeds=5)
+        return hot
+    return setup
+
+
+def _seed_state():
+    owned = SeedState(E, DEV, 7)
+    bound = SeedState(E, DEV, _i32([11, 12]))
+    copied = SeedState(E, DEV, _rng(), copy=True)
+    new, sub, ids, m = _i32([3, 4]), _i32([9]), _i32([1]), _i32([1, 0])
+    out = wp.empty(E, dtype=wp.int32, device=DEV)
+
+    def hot():
+        owned.set(new)
+        owned.set(sub, ids)
+        copied.set(new)
+        for st in (owned, bound, copied):
+            st.advance()
+            st.advance(m)
+            st.reset_epoch(m)
+            st.effective(out)
+            st.reset_epoch()
+    return hot
+
+
+def _rng_sample_out():
+    # Every sampler (scalar and tensorized bounds, 1-D/2-D/3-D outputs, all and
+    # partial ids) into preallocated out= buffers, plus both reseed forms.
+    rng = _rng()
+    ids = _i32([1])
+    f32 = lambda n: wp.array(np.full(n, 0.5, np.float32), dtype=wp.float32, device=DEV)  # noqa: E731
+    i32 = lambda n, v: wp.array(np.full(n, v, np.int32), dtype=wp.int32, device=DEV)  # noqa: E731
+    calls = []
+    for shape in ((1,), (3,), (2, 3)):
+        for sel in (None, ids):
+            n = E if sel is None else 1
+            kshape = (n,) if shape[0] == 1 else (n,) + shape
+
+            def buf(dtype, _k=kshape):
+                return wp.empty(_k, dtype=dtype, device=DEV)
+            calls += [
+                (rng.sample_uniform_warp, (0.0, 1.0, shape), sel, buf(wp.float32)),
+                (rng.sample_uniform_warp, (f32(n), f32(n), shape), sel, buf(wp.float32)),
+                (rng.sample_sign_warp, ("int", shape), sel, buf(wp.int32)),
+                (rng.sample_sign_warp, ("float", shape), sel, buf(wp.float32)),
+                (rng.sample_integer_warp, (0, 5, shape), sel, buf(wp.int32)),
+                (rng.sample_integer_warp, (i32(n, 0), i32(n, 5), shape), sel, buf(wp.int32)),
+                (rng.sample_normal_warp, (0.0, 1.0, shape), sel, buf(wp.float32)),
+                (rng.sample_normal_warp, (f32(n), f32(n), shape), sel, buf(wp.float32)),
+                (rng.sample_poisson_warp, (2.0, shape), sel, buf(wp.int32)),
+                (rng.sample_poisson_warp, (f32(n), shape), sel, buf(wp.int32)),
+                (rng.sample_quaternion_warp, (shape,), sel, buf(wp.quatf)),
+            ]
+    seeds, sub = _i32([5, 6]), _i32([8])
+
+    def hot():
+        rng.set_seeds_warp(seeds, None)
+        rng.set_seeds_warp(sub, ids)
+        for fn, args, sel, out in calls:
+            assert fn(*args, ids=sel, out=out) is out
+    return hot
+
+
 def _course(mode, **kw):
     def setup():
         gen = (TrackGenConfig(device=DEV, num_envs=E) if mode == "track"
@@ -404,6 +516,20 @@ DRIVERS = {
                                                    agent_radius=0.05,
                                                    frame_thickness=0.02,
                                                    frame_depth=0.02),
+    "advance[track]": _facade_advance(TrackGenerator),
+    "advance[gates]": _facade_advance(GateGenerator),
+    "regenerate_masked[track,segments]": _course_masked("track", collision="segments",
+                                                        heightfield_resolution=16),
+    "regenerate_masked[track,sdf]": _course_masked("track", collision="sdf",
+                                                   sdf_resolution=16),
+    "regenerate_masked[gates,posts]": _course_masked("gates", post_radius=0.02,
+                                                     localize_window=2),
+    "regenerate_masked[gates,frames]": _course_masked("gates", frame_collision=True,
+                                                      agent_radius=0.05,
+                                                      frame_thickness=0.02,
+                                                      frame_depth=0.02),
+    "seed_state": _seed_state,
+    "rng[sample_out]": _rng_sample_out,
     "wrappers[resample]": _resample_wrappers,
     "wrappers[geometry]": _geometry_wrappers,
     "wrappers[inflate_fixed_n]": _inflate_fixed_n,
@@ -429,6 +555,8 @@ _PIPELINE_MODULES = (
     warp_generate_repulsive, warp_generate_voronoi, warp_generate_gates,
     warp_generate_checkpoint_gates, warp_generate_polar_gates,
     warp_generate_voronoi_gates,
+    # not pipeline stages, but hot paths with module-level wrappers too (PR4)
+    rng_kernels, seeds_mod, reduce_mod,
 )
 
 # Construction-time functions (allocation, registration, host precompute for sizing).
@@ -455,6 +583,8 @@ _CONSTRUCTION_ONLY = {
                                                  "register_specs"},
     "track_gen._src.warp_generate_voronoi_gates": {"voronoi_gate_alloc_scratch",
                                                    "register_specs"},
+    # host-side reference/construction helpers (never on a hot path)
+    "track_gen.seeds": {"effective_seed", "_wrap_int32", "_is_rng"},
 }
 
 

@@ -17,12 +17,24 @@ launch. Verified against Warp 1.14 and 1.18:
 - ``Device.captures`` maps the ``wp.Stream`` a Warp capture was started on to
   its ``wp.Graph`` while that capture is open.
 - ``wp.Graph`` defines no ``__slots__``.
+- ``Device.captures`` is keyed by stream OBJECT (``wp.Stream`` defines no
+  ``__eq__``/``__hash__``): ``wp.capture_if`` / ``capture_end`` look the open
+  capture up with the exact object it was started on, so a second wrapper of the
+  same handle is not found (:func:`registered_stream` recovers that object).
+- ``wp.capture_if`` outside a registered capture reads the condition back on
+  the host (pinned copy + ``synchronize_stream``); callers must only use it on a
+  registered stream (see :func:`conditional_ok`).
 """
 from __future__ import annotations
 
-__all__ = ["registered_graph", "anchor", "capture_stream", "stream_synchronize"]
+__all__ = ["registered_graph", "anchor", "capture_stream", "registered_stream",
+           "conditional_ok", "conditional_allowed", "set_conditional_allowed",
+           "stream_synchronize"]
 
 _OWNERS_ATTR = "_track_gen_owners"
+# Set on the wp.Graph of a registration that must not receive conditional nodes
+# (track_gen.interop.torch.registered() without conditional=True).
+_NO_CONDITIONAL_ATTR = "_track_gen_no_conditional"
 
 # cudaStreamCaptureModeRelaxed (== wp.CaptureMode.RELAXED).
 _CAPTURE_MODE_RELAXED = 2
@@ -94,6 +106,65 @@ def capture_stream(device, handle: int) -> "object | None":
     except (AttributeError, RuntimeError, TypeError):
         return None
     return None
+
+
+def registered_stream(stream) -> "object | None":
+    """The exact ``wp.Stream`` object Warp registered an open capture under for
+    ``stream``'s CUDA handle, or ``None``.
+
+    ``None`` when ``stream`` is ``None``, when no Warp-registered capture is open
+    on that handle (e.g. a plain ``torch.cuda.graph``), or when an internal is
+    missing. The returned object is the key Warp's capture APIs need
+    (``wp.capture_if(..., stream=key)``); it may differ from ``stream`` itself
+    when ``stream`` is another wrapper of the same handle.
+    """
+    if stream is None:
+        return None
+    try:
+        handle = int(stream.cuda_stream or 0)
+        device = stream.device
+    except (AttributeError, TypeError):
+        return None
+    if not handle:
+        return None
+    return capture_stream(device, handle)
+
+
+def conditional_ok(device) -> bool:
+    """Whether ``device`` can record CUDA conditional graph nodes
+    (``wp.capture_if`` inside a capture): a CUDA device, with Warp built against
+    CUDA Toolkit >= 12.4 and a driver >= 12.4. ``False`` on any error."""
+    try:
+        if not getattr(device, "is_cuda", False):
+            return False
+        import warp as wp  # noqa: PLC0415
+        return bool(wp.is_conditional_graph_supported())
+    except Exception:  # pragma: no cover - defensive: never break a launch over a probe
+        return False
+
+
+def set_conditional_allowed(key, allowed: bool) -> None:
+    """Allow or forbid conditional nodes in the open Warp capture registered under
+    the stream object ``key`` (a flag on its ``wp.Graph``, which Warp keeps across
+    the pause/resume of a ``capture_if``). A no-op if nothing is registered under
+    ``key`` or an internal is missing."""
+    try:
+        g = key.device.captures.get(key)
+        if g is not None:
+            g.__dict__[_NO_CONDITIONAL_ATTR] = not allowed
+    except (AttributeError, TypeError):  # pragma: no cover - internals changed
+        return
+
+
+def conditional_allowed(key) -> bool:
+    """Whether the open Warp capture registered under the stream object ``key``
+    accepts conditional nodes (``False`` if none is registered, or it was marked
+    by :func:`set_conditional_allowed`)."""
+    try:
+        g = key.device.captures.get(key)
+    except (AttributeError, TypeError):
+        return False
+    return g is not None and not getattr(g, _NO_CONDITIONAL_ATTR, False)
 
 
 def stream_synchronize(stream) -> None:

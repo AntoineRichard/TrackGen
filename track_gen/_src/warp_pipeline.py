@@ -1626,6 +1626,8 @@ def _inflate_warp_alloc(config, generator_spec=None):
         count=wp.empty(E, dtype=wp.int32, device=dev),
         winding=wp.empty(E, dtype=wp.float32, device=dev),
         truncated=wp.zeros(E, dtype=wp.int32, device=dev),
+        # Written by TrackGenerator after every generation (= the env's seed epoch).
+        generation=wp.zeros(E, dtype=wp.int32, device=dev),
     )
     if generator_spec is None:
         from . import generator_registry

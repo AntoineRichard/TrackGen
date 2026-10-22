@@ -102,6 +102,12 @@ Reading the Output Fields
    * - ``count``
      - ``[E]`` int
      - Real gates per environment. Slots at index ``i >= count[e]`` are NaN-padded.
+   * - ``generation``
+     - ``[E]`` int
+     - The epoch each sequence was generated at: ``0`` until you advance it (e.g.
+       ``generate(advance=True)``), then ``k`` after the ``k``-th advance. A reseed
+       through the rng does not change it (see
+       :doc:`/tutorials/cuda-graph-in-a-sim`).
 
 Slicing Real Gates
 -------------------

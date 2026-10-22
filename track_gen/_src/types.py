@@ -1199,6 +1199,18 @@ class GateSequence:
     count : wp.array
         ``[E]`` ``int32`` real gate counts per env.  All other arrays are NaN-padded
         for slots ``i >= count[e]``.
+    generation : wp.array or None
+        ``[E]`` ``int32``: the seed epoch (``GateGenerator.seeds.epoch``) each
+        env's current gates were built at.  ``0`` until the first advance.  It is
+        the epoch, not a change counter: a reseed at the same epoch
+        (``rng.set_seeds_warp``, ``Course.generate(seeds=...)``) does not change
+        it, and after ``seeds.reset_epoch()`` the same values come back.  Only
+        while epochs are advanced and nothing reseeds or resets them does it
+        change exactly when an env gets a NEW sequence
+        (``generate(advance=True, ...)`` / ``Course.regenerate(advance=True,
+        ...)``), so that comparing it on device to a stored copy detects every
+        regeneration.  ``GateGenerator`` always allocates it; ``None`` on a
+        ``GateSequence`` built elsewhere.
     """
 
     position: wp.array
@@ -1210,6 +1222,7 @@ class GateSequence:
     right: wp.array
     valid: wp.array
     count: wp.array
+    generation: "wp.array | None" = None
 
     def clone(self) -> "GateSequence":
         """Return a deep copy whose Warp buffers do not alias this sequence."""
@@ -1223,6 +1236,7 @@ class GateSequence:
             right=wp.clone(self.right),
             valid=wp.clone(self.valid),
             count=wp.clone(self.count),
+            generation=None if self.generation is None else wp.clone(self.generation),
         )
 
 
@@ -1324,6 +1338,18 @@ class Track:
         have ``valid == 0``.  Increase ``N_max`` (or ``spacing``) if any are set.
         ``TrackGenerator`` always allocates it; ``None`` on a ``Track`` built
         elsewhere (e.g. the standalone ``inflate_warp`` path).
+    generation : wp.array or None
+        ``[E]`` ``int32``: the seed epoch (``TrackGenerator.seeds.epoch``) each
+        env's current track was built at.  ``0`` until the first advance.  It is
+        the epoch, not a change counter: a reseed at the same epoch
+        (``rng.set_seeds_warp``, ``Course.generate(seeds=...)``) does not change
+        it, and after ``seeds.reset_epoch()`` the same values come back.  Only
+        while epochs are advanced and nothing reseeds or resets them does it
+        change exactly when an env gets a NEW track
+        (``generate(advance=True, ...)`` / ``Course.regenerate(advance=True,
+        ...)``), so that comparing it on device to a stored copy detects every
+        regeneration.  ``TrackGenerator`` always allocates it; ``None`` on a
+        ``Track`` built elsewhere.
     """
 
     outer: wp.array
@@ -1337,6 +1363,7 @@ class Track:
     count: wp.array
     winding: wp.array
     truncated: "wp.array | None" = None
+    generation: "wp.array | None" = None
 
     def clone(self) -> "Track":
         """Return a fully-owned deep copy of this Track.
@@ -1357,4 +1384,5 @@ class Track:
             count=wp.clone(self.count),
             winding=wp.clone(self.winding),
             truncated=None if self.truncated is None else wp.clone(self.truncated),
+            generation=None if self.generation is None else wp.clone(self.generation),
         )

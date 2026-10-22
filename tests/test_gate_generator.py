@@ -93,9 +93,11 @@ def test_cuda_prepares_at_construction_then_captures_once_and_replays(monkeypatc
     for real (warm-up), the first generate() records it ONCE into the generator's
     own graph on a private stream and replays it on the call's stream, and later
     calls only replay (the body never runs again)."""
+    import types
+
     import warp as wp
 
-    from tests._fake_cuda import FakeCuda
+    from tests._fake_cuda import FakeCuda, patch_facade_seeds
     from track_gen._src import warp_gate
 
     fake = FakeCuda(monkeypatch)
@@ -117,10 +119,12 @@ def test_cuda_prepares_at_construction_then_captures_once_and_replays(monkeypatc
         warp_gate,
         "_gate_warp_alloc",
         lambda config, generator_spec: (
-            object(),
+            types.SimpleNamespace(generation=None),
             (object(), object(), object(), object(), object(), object()),
         ),
     )
+    # The real SeedState allocates on the (fake) device: stand it in.
+    patch_facade_seeds(monkeypatch)
 
     calls = []
 
@@ -129,6 +133,7 @@ def test_cuda_prepares_at_construction_then_captures_once_and_replays(monkeypatc
 
     monkeypatch.setattr(warp_gate, "_run_gate_pipeline", fake_run_gate_pipeline)
     monkeypatch.setattr(wp, "empty", lambda *args, **kwargs: object())
+    monkeypatch.setattr(wp, "zeros", lambda *args, **kwargs: object())
     monkeypatch.setattr(wp, "copy", lambda *args, **kwargs: None)
     monkeypatch.setattr(wp, "synchronize",
                         lambda: pytest.fail("generate() must not synchronize every device"))

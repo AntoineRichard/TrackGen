@@ -111,6 +111,12 @@ metric checks the minimum over all beads to ensure no inflation collapsed.
      - ``int32`` N_max truncation flag: ``1`` when the loop needed more than ``N_max``
        points (``count[e]`` was clamped and the env is invalid). ``None`` on a ``Track``
        built by the standalone ``inflate_warp`` path.
+   * - ``generation``
+     - ``[E]``
+     - ``int32`` epoch the env's current output was built with
+       (``generation[e] = epoch[e]``, written by every ``TrackGenerator`` generation;
+       ``0`` until the env's epoch is advanced). ``None`` on a ``Track`` built by the
+       standalone ``inflate_warp`` path. See :doc:`/how-it-works/cuda-graph`.
 
 ``generate()`` always returns the **same** ``Track`` instance with stable ``wp.array``
 pointers. Callers that need a snapshot should use ``Track.clone()``.

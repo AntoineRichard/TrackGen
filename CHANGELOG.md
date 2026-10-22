@@ -56,6 +56,86 @@
   - `generate(seeds=None, *, stream=None, sync=True)`.
 - `track_gen.exec.CaptureError`, `NotCapturableError` and `LegacyPluginStreamError`, and
   `track_gen.exec.GraphRunner`, the record / eager / self-graph policy the facades share.
+- **Device-side reseed, masked regeneration and in-graph auto-reset** (roadmap PR4). One
+  caller graph can now hold `[physics] -> course.step() -> done mask ->
+  course.regenerate(mask=done, advance=True)`. Every replay gives new courses to the
+  masked envs and resets their per-env state, with no host involvement.
+  - **`track_gen.seeds.SeedState`**: per-env `seeds` and `epoch`, both `[E]` int32. The
+    seeds are owned (built from `None` or an int, or with `copy=True`) or bound by pointer
+    (a caller `wp.array`, or a `PerEnvSeededRNG`'s `seeds_warp`); `SeedState` and the
+    generators never write bound seeds, and `set()` on them raises `RuntimeError`. (The
+    rng does: `set_seeds_warp`, and so `Course.generate(seeds=...)`, overwrites
+    `rng.seeds_warp` in place, which is the caller's array when the rng or
+    `CourseConfig.seeds` was given a `wp.array`.) The epoch is owned, zero-initialised
+    and changed only on device: `advance(mask=None)`, `reset_epoch(mask=None)` and
+    `set(seeds, ids=None)` are allocation-free launches on the call's stream (by default
+    the `default_stream=` given at construction; the facades pass their own `stream=`),
+    so they can be recorded. `track_gen.seeds.effective_seed(seed, epoch)` is the host
+    twin of the prologue below.
+  - **Effective-seed prologue.** Every generation body opens with one kernel (after the
+    epoch advance, if any) that derives the seed the pipeline reads from `(seed, epoch)`:
+    epoch 0 uses the seed unchanged, any other epoch a MurmurHash3-finaliser hash of the
+    pair (`track_gen.ops.hash32`). The pair fully reproduces an env's output. A masked
+    generation re-derives the masked envs' effective seeds only.
+  - `TrackGenerator` / `GateGenerator`: `seeds` (a `SeedState` bound to
+    `rng.seeds_warp`), `inputs` (`{"regen_mask": ...}`, a persistent zero-initialised
+    `[E]` int32 array with a stable address), `generate(..., advance=False, mask=None)`
+    and `enqueue(..., advance=False, mask=None)`. `advance=True` advances the epoch of
+    every env, or of the envs with `mask[e] != 0`, before generating; `mask` requires
+    `advance=True`, must be a contiguous `[E]` int32 array on the generator's device, and
+    is validated on the host before any launch. With a mask, only the masked envs get new
+    output: the others keep the effective seed their output was built from, so a reseed or
+    epoch reset made in between reaches them at their next masked generation, or at the
+    next one without a mask. Outside a capture each `(advance, mask array)` combination
+    records and caches a self-graph of its own, up to 16 per producer
+    (`track_gen.exec.runner.MAX_KEYED_GRAPHS`; further ones run eagerly with a one-time
+    `RuntimeWarning`), except on a legacy-plugin producer, which runs every
+    `advance`/`mask` variant eagerly; `graph` stays the one of a plain `generate()`.
+    `GraphRunner.run()` takes the cache `key=`.
+  - `Track.generation` / `GateSequence.generation`: `[E]` int32, the epoch each env's
+    current output was built with (the epoch, not a change counter: a reseed does not
+    change it, and an epoch reset brings earlier values back). Optional (default `None`,
+    so results built by hand still construct), allocated by the facades and copied by
+    `clone()`.
+  - `Course.regenerate(*, mask=None, advance=False, stream=None, sync=True)`,
+    `Course.enqueue_generate(*, stream=None, mask=None, advance=False)`, `Course.inputs`
+    (`{"regen_mask": ...}`) and `Course.seeds` (the generator's `SeedState`). With a mask,
+    only the masked envs advance and have their progress (and localizer) state reset;
+    unmasked envs keep their course, derived sub-tool data and runtime state bitwise; an
+    all-zero mask is an exact no-op. Both hold even after an out-of-band reseed or epoch
+    reset, which takes effect for an env when a mask selects it (or for every env at the
+    next unmasked regeneration). Without `advance`, the masked envs are rebuilt from
+    their current `(seed, epoch)` and respawned: they get new courses only if you wrote
+    new seeds for them. The pipeline has fixed shapes, so it still recomputes every env:
+    unmasked envs are recomputed from the effective seed their course was built from, to
+    identical values. A masked commit that skips that recompute is roadmap PR10.
+  - **Conditional skip.** `LaunchContext.skip_unless(flag, body)` and
+    `track_gen.ops.any_set(ctx, mask, flag)`. `Course.regenerate(mask=...)` puts its body
+    behind them, so a step where no env is masked skips the regeneration on device. The
+    skip is a CUDA conditional graph node, used only inside a capture Warp registered on
+    that stream when `wp.is_conditional_graph_supported()` holds (CUDA driver and
+    toolkit 12.4+). Everywhere else the body runs unconditionally, which is correct
+    because it must be an exact no-op when the flag is 0. Warp's eager `capture_if`, which
+    reads the flag back on the host, is never used (a flag on another device raises
+    `ValueError`). A caller graph holding the conditional node cannot be used as a CUDA
+    child graph.
+  - **`track_gen.interop.torch`**: `registered(stream=None, *, graph=None,
+    capture_mode=None, conditional=False)`, entered inside `torch.cuda.graph(g)`,
+    registers torch's capture stream with Warp (an external capture on the library's
+    long-lived wrapper, opened only if neither that handle nor the capture it joined is
+    registered yet) and yields it, so lifetime anchoring works under torch capture; it
+    raises `CaptureError` outside one. `conditional=True` also allows the conditional
+    skip. It is opt-in because a conditional node restarts the stream's capture under a
+    new CUDA capture id, after which torch's caching allocator no longer routes the
+    graph's later torch allocations to its private pool: with `conditional=True`, record
+    the masked regeneration after every torch op that allocates.
+    `retain(torch_graph, *owners)` keeps the owners alive as long as the torch graph
+    (`graph=g` does it for the producers recorded in the block). Torch is imported only
+    when these functions are called; `import track_gen` still does not import it.
+  - `PerEnvSeededRNG.sample_*_warp(..., out=None)`: with `out=`, a preallocated array of
+    the exact output shape, dtype and device (`ValueError` otherwise, before any launch),
+    the samplers write into it and return it instead of allocating, so sampling can be
+    recorded.
 
 ### Behaviour changes
 
@@ -127,6 +207,27 @@
   before launching anything. A plugin without `accepts_ctx=True` raises
   `LegacyPluginStreamError` unless the capture stream is Warp's current stream (recipe in
   the error message and in `docs/how-it-works/cuda-graph.rst`).
+- **The seed copy at the start of every generation is now the effective-seed prologue**
+  (roadmap PR4): one kernel reads the rng's seeds and the generator's epochs instead of a
+  `wp.copy` of `rng.seeds_warp`. At epoch 0, which is where every env stays unless you
+  advance it, it writes the seeds unchanged: generator outputs are byte-identical to the
+  previous release, and the goldens are unchanged.
+- **The rng must live on the generator's device.** The facades now bind
+  `rng.seeds_warp` by pointer (`SeedState`) instead of copying it into their seed buffer
+  every generation, so a `PerEnvSeededRNG` on another device (e.g. a `cuda` rng feeding a
+  `cpu` generator, which used to run) raises `ValueError` at construction. Build the rng
+  on the generator's device.
+- **Reseeding through the rng keeps the epochs.** After an advance,
+  `rng.set_seeds_warp(new, None)` generates the batch of `(new, epoch)`, which differs from
+  a fresh generator seeded with `new`. Call `gen.seeds.reset_epoch()` as well to reproduce
+  a fresh generator. `Course.generate(seeds=...)` now does both: it also zeroes every
+  env's epoch, so it reproduces the courses of a fresh `Course` built with those seeds.
+- **`PerEnvSeededRNG.set_seeds_warp` no longer loses its reseed to a later partial
+  sample.** It now mirrors the new states into the samplers' double buffer. Before, a
+  sample with explicit `ids` copied the whole stale buffer back, so the envs it did not
+  select reverted to stale states from before the reseed. Their later samples therefore
+  differ from earlier releases: they now follow the reseed. Generator outputs are not
+  affected (the pipeline seeds its own RNG from the seeds, not from these states).
 
 ### Testing
 
@@ -153,6 +254,38 @@
   documented `ScopedStream(stream_from_torch(s))` + `torch.cuda.graph(g, stream=s)` recipe
   followed by a second Warp capture on the same wrapper, and a Warp capture on a
   torch-current stream.
+- PR4 CPU tests cover epoch-0 byte identity
+  (`test_epoch0_is_byte_identical_to_the_pr3_seed_copy_path`: every registered track and
+  gate generator, every output field, against the PR3 seed-copy body),
+  `advance(mask)` (masked envs change, unmasked envs stay bitwise identical, `(seed,
+  epoch)` reproduces an env, `generation` equals the epoch), the `SeedState` bound and
+  owned rules, the `set_seeds_warp` mirror fix, sampler `out=` (same values as the
+  allocating call, no allocation), and `Course.regenerate(mask=...)` (masked envs get new
+  courses and a progress reset, unmasked envs and their state are unchanged, an all-zero
+  mask is an exact no-op, also after an out-of-band reseed or epoch reset). The
+  no-host-sync and launch-stream drivers include the advance, masked-regeneration and
+  `out=` paths. On the fake CUDA device: the bounded keyed self-graph cache,
+  `skip_unless` lowering (including a registration that forbids conditionals and the
+  flag device check) and `interop.torch.registered()` (conditional opt-in, a stream that
+  joined a registered capture).
+- `tests/test_inplace_regen_cuda.py` (CUDA) records on a non-current side stream with
+  Warp's mempool disabled and `wp.capture_launch` forbidden, and compares poisoned
+  replays with eager twins driven the same way:
+  - caller graphs holding `generate(advance=True, mask=m)` of both facades (default
+    generator; mask from `inputs["regen_mask"]` or the caller): a new batch per replay
+    for masked envs, unmasked envs bitwise unchanged. A mismatch is an xfail only when the
+    eager reference itself is shown not to be bitwise reproducible;
+  - self-graphs cached per `(advance, mask)`, and an invalid mask refused before any
+    launch under capture;
+  - `Course.regenerate(mask=..., advance=True)` with an all-zero then a partial mask, in
+    the conditional and the forced-unconditional lowerings, and under `torch.cuda.graph`
+    with and without `interop.torch.registered(conditional=True)`, against twins run
+    eagerly (`enqueue_generate()`, never a graph); torch ops that allocate after the
+    regeneration under the default `registered()` keep allocating from the torch graph's
+    pool;
+  - a 100-step RL loop in ONE caller graph (agent stub, `course.step()`, a device done
+    rule writing `inputs["regen_mask"]`, `regenerate(mask=done, advance=True)`) against
+    an eager twin, in track and gates mode and both lowerings.
 
 ## 0.2.0.dev0 (2026-10-21, tag `v0.2.0.dev0`)
 

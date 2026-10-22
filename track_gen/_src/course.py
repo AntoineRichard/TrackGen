@@ -15,17 +15,26 @@ invariants that are otherwise the caller's burden:
 
 Lifecycle: construct (generates the first batch and builds every sub-tool)
 -> ``bind()`` (stable sim buffers, required for ``step()``) -> per-step
-``step()`` / per-env ``reset(mask)``, with whole-batch ``regenerate()`` /
-``generate(seeds=...)`` whenever new courses are wanted. Whole-batch
-generation is a generator constraint (the pipelines are fixed-batch);
-per-env control lives in ``reset(mask)``.
+``step()`` / per-env ``reset(mask)``, with ``regenerate()`` /
+``generate(seeds=...)`` whenever new courses are wanted. Per-env new courses:
+``regenerate(mask=done, advance=True)`` advances the epoch of the masked envs
+on device (see :mod:`track_gen.seeds`), regenerates, refreshes the derived
+sub-tools and resets the masked envs' runtime state (progress, localizer); the
+other envs keep their course and state. The pipelines are fixed-shape, so
+every env is recomputed, and the unmasked ones (which keep the effective seed
+their course was built from) are recomputed to identical values.
 
 CUDA graphs: regeneration is ONE body (generator pipeline + coherent
 refresh: checkpoint resample / sdf + heightfield bake / posts / line, then a
-full progress reset). Inside a caller's capture ``regenerate()`` /
-``generate()`` record it into the caller's graph next to ``step()`` /
-``reset()``; outside a capture the course replays its own graph
-(:attr:`Course.graph`) on CUDA. ``step()``/``reset()`` are never
+progress reset: full, or masked for ``regenerate(mask=...)``). Inside a
+caller's capture ``regenerate()`` / ``generate()`` record it into the
+caller's graph next to ``step()`` / ``reset()`` (an RL auto-reset loop
+``[physics] -> step() -> done mask -> regenerate(mask=done, advance=True)``
+replays entirely on device); outside a capture the course replays its own
+graph (:attr:`Course.graph`, one more per ``(advance, mask)`` variant) on
+CUDA. A masked regeneration is skipped on device when no env is masked,
+where CUDA supports it (see :meth:`Course.regenerate`).
+``step()``/``reset()`` are never
 self-captured: they are capture-ready for the caller's sim graph as-is (no
 utility host-synchronizes; the former ``track_gen.set_capturing`` is a
 deprecated no-op). Every launch of one call goes to ONE stream: ``stream=``
@@ -36,12 +45,15 @@ Results are undefined for envs with ``valid[e] == 0`` on ``course.result``.
 """
 from __future__ import annotations
 
+import functools
+import types
 from dataclasses import dataclass
 
 import warp as wp
 
 from ..exec.context import LaunchContext, resolve as _resolve_ctx
 from ..exec.runner import GraphRunner, ensure_not_capturing
+from ..ops.reduce import any_set
 from .checkpoints import CheckpointSampler, CheckpointSet
 from .collision import BoxContact, CollisionChecker
 from .collision_discs import DiscChecker, DiscContact
@@ -330,9 +342,11 @@ class Course:
     track-mode ``heightfield`` (when ``heightfield_resolution`` is set), and
     — gates mode — ``course_line``, ``localizer``).
 
-    Regeneration is whole-batch by generator design (fixed-batch pipelines);
-    per-env respawn control is :meth:`reset`'s mask. Results are undefined
-    for envs with ``valid[e] == 0`` on :attr:`result`.
+    Regeneration recomputes the whole batch (fixed-batch pipelines); per-env
+    NEW courses come from :meth:`regenerate`'s ``mask`` + ``advance`` (only
+    the masked envs change and are reset), per-env respawns on the SAME
+    course from :meth:`reset`'s mask. Results are undefined for envs with
+    ``valid[e] == 0`` on :attr:`result`.
     """
 
     def __init__(self, config: CourseConfig) -> None:
@@ -377,6 +391,11 @@ class Course:
         # expanded device-side into it, so a reseed never allocates.
         self._reseed_buf = wp.empty(self._E, dtype=wp.int32,
                                     device=self._device)
+        # Persistent device input (see `inputs`) and the [1] int32 "any env
+        # masked" flag of a masked regeneration (written on device).
+        self._regen_mask = wp.zeros(self._E, dtype=wp.int32, device=self._device)
+        self._regen_flag = wp.zeros(1, dtype=wp.int32, device=self._device)
+        self._inputs = types.MappingProxyType({"regen_mask": self._regen_mask})
 
         gen_runner = self.generator._runner
         self._runner = GraphRunner(
@@ -397,6 +416,9 @@ class Course:
             # buffer), so a first generate(seeds=int) never loads a module
             # inside a caller's capture.
             ctx.launch(_seed_range_k, self._E, [0, self._reseed_buf])
+            # Same for the masked regeneration's reduction (writes only the
+            # flag; the mask is all zeros).
+            any_set(ctx, self._regen_mask, self._regen_flag)
         # One real warm-up regeneration (generator + refresh) outside any
         # capture: loads every module the regeneration body uses.
         self._runner.prepare(self._enqueue_regenerate)
@@ -404,11 +426,31 @@ class Course:
     @property
     def graph(self) -> "wp.Graph | None":
         """The course's own regeneration graph (generator pipeline + refresh
-        as ONE graph): captured on the first CUDA :meth:`regenerate` /
-        :meth:`generate` made outside any capture, replayed by later ones.
-        ``None`` on CPU, for a non-capturable generator, and before that
-        call."""
+        as ONE graph) for a plain :meth:`regenerate` / :meth:`generate`:
+        captured on the first such CUDA call made outside any capture,
+        replayed by later ones. ``None`` on CPU, for a non-capturable
+        generator, and before that call. Each ``(advance, mask)`` variant of
+        :meth:`regenerate` caches one more graph."""
         return self._runner.graph
+
+    @property
+    def seeds(self):
+        """The generator's :class:`~track_gen.seeds.SeedState` (the rng's
+        seeds bound by pointer, plus the per-env epoch)."""
+        return self.generator.seeds
+
+    @property
+    def inputs(self) -> "types.MappingProxyType":
+        """Persistent device inputs (stable pointers, allocated at
+        construction):
+
+        - ``"regen_mask"``: ``[E]`` int32, zero-initialised. Write the envs
+          to regenerate from your own kernels (e.g. ``done`` flags inside your
+          sim graph) and pass it as ``regenerate(mask=course.inputs
+          ["regen_mask"], advance=True)``. Its pointer never changes, so the
+          course's self-graph for it is captured once.
+        """
+        return self._inputs
 
     # -- validation ------------------------------------------------------
 
@@ -510,41 +552,122 @@ class Course:
 
     # -- generation + refresh --------------------------------------------
 
-    def _enqueue_regenerate(self, ctx: LaunchContext) -> None:
-        """The ONE regeneration body: generator pipeline (seed refresh
-        included) then the coherent downstream refresh, all on ``ctx``.
+    def _enqueue_regenerate(self, ctx: LaunchContext, *, advance: bool = False,
+                            mask: "wp.array | None" = None) -> None:
+        """The ONE regeneration body, all on ``ctx``.
+
+        ``mask is None``: [advance every env] -> generator pipeline (seed
+        prologue included) -> the coherent downstream refresh with a FULL
+        runtime reset. With a ``mask``: ``any_set(mask)`` into a device flag,
+        then, skipped on device when no env is masked where CUDA supports it
+        (:meth:`LaunchContext.skip_unless`), [advance the masked envs] ->
+        pipeline -> refresh -> runtime reset of the masked envs only.
 
         Run by ``prepare`` (construction), by the eager path, by the
         self-graph capture and by a caller's recording alike. Zero
         allocation, host-sync free.
         """
-        self.generator._enqueue(ctx)
-        self._refresh(ctx)
+        if mask is None:
+            self.generator._enqueue(ctx, advance=advance)
+            self._refresh(ctx)
+            return
+        any_set(ctx, mask, self._regen_flag)
+        ctx.skip_unless(self._regen_flag, functools.partial(
+            self._enqueue_regenerate_masked, advance=advance, mask=mask))
 
-    def regenerate(self, *, stream=None, sync: bool = True):
-        """Whole-batch regeneration from the rng's CURRENT seeds plus a
-        coherent downstream refresh; returns :attr:`result`.
+    def _enqueue_regenerate_masked(self, ctx: LaunchContext, *, advance: bool,
+                                   mask: wp.array) -> None:
+        """Masked regeneration body (an exact no-op when every ``mask[e]`` is
+        0: nothing advances, no effective seed is re-derived, so every env is
+        recomputed from the effective seed its current course was built from,
+        and nothing is reset)."""
+        self.generator._enqueue(ctx, advance=advance, mask=mask)
+        self._refresh_geometry(ctx)
+        self._reset_runtime(ctx, mask)
 
-        The body is the generator pipeline, then checkpoint resample / sdf
-        and heightfield bake / posts and line rebuild as applicable, and a
-        FULL progress (and localizer) reset — every course changed.
+    def _regen_call(self, advance: bool, mask) -> "tuple[object, object]":
+        """``(body, self-graph key)`` of one regeneration; validates ``mask``
+        host-side, before any launch."""
+        if mask is not None:
+            self.seeds.check_mask(mask)   # [E] int32, contiguous, course device
+        advance = bool(advance)
+        if mask is None and not advance:
+            return self._enqueue_regenerate, None
+        key = (advance, 0 if mask is None else int(mask.ptr))
+        return functools.partial(self._enqueue_regenerate, advance=advance,
+                                 mask=mask), key
+
+    def regenerate(self, *, mask: "wp.array | None" = None, advance: bool = False,
+                   stream=None, sync: bool = True):
+        """Regenerate courses plus a coherent downstream refresh; returns
+        :attr:`result`.
+
+        ``mask=None`` (whole batch): the generator pipeline from the current
+        seeds (after advancing EVERY env's epoch when ``advance=True``), then
+        checkpoint resample / sdf and heightfield bake / posts and line
+        rebuild as applicable, and a FULL progress (and localizer) reset —
+        every course changed (or, without ``advance``, was rebuilt
+        identically).
+
+        ``mask`` given (``[E]`` int32 on the course device, read on device):
+        envs with ``mask[e] != 0`` advance their epoch (when ``advance=True``)
+        and get the course of their live ``(seed, epoch)``, and their runtime
+        state is reset (``progress.reset(mask)``, ``localizer.reset(mask)``);
+        envs with ``mask[e] == 0`` keep their course and runtime state. The
+        pipeline is fixed-shape, so it still recomputes every env: unmasked
+        envs keep the effective seed their current course was built from and
+        are recomputed to identical values, even if their seed or epoch changed
+        since (``rng.set_seeds_warp``, ``seeds.reset_epoch()``, a write to the
+        seed array): such a change reaches an env at its next masked
+        regeneration, or every env at the next one without a mask. A masked
+        commit that avoids the recompute is roadmap PR10. Without ``advance`` a
+        mask respawns the masked envs (as :meth:`reset`) on the course of their
+        current ``(seed, epoch)``: the same one unless their seed was
+        rewritten.
+
+        Conditional skip: the masked body runs after a device-side
+        ``any_set(mask)`` under :meth:`track_gen.exec.LaunchContext.skip_unless`.
+        Inside a Warp-registered capture (Warp ``ScopedCapture``, the course's
+        own self-graph, ``capture_begin(external=True)``, or
+        ``track_gen.interop.torch.registered(conditional=True)`` under
+        ``torch.cuda.graph``) with CUDA Toolkit and driver >= 12.4, it is
+        skipped on device when no env is masked; the caller's graph then holds
+        a conditional node, so it can no longer be used as a CUDA child graph.
+        Elsewhere it runs unconditionally, which is correct because an all-zero
+        mask makes it a no-op: nothing advances, nothing is reset, and every
+        env is recomputed from the effective seed its current course was built
+        from (bitwise identical as long as the pipeline is deterministic; its
+        only float atomics, the offset stage's shoelace areas, feed a
+        comparison, not an output).
 
         Execution (stream resolved per :mod:`track_gen.exec`):
 
         - inside a capture on the resolved stream: RECORDED into the
           caller's graph (e.g. next to :meth:`step` / :meth:`reset`); each
-          replay regenerates from the rng's seeds at replay time;
-        - outside a capture on CUDA: replay of :attr:`graph` (generator +
-          refresh as ONE graph, captured on the first such call);
+          replay regenerates from the seeds, epochs and mask at replay time
+          (and, with ``advance``, advances again);
+        - outside a capture on CUDA: replay of a self-graph (generator +
+          refresh as ONE graph, captured on the first call of each
+          ``(advance, mask)`` variant; :attr:`graph` is the plain one);
         - on CPU, or with a ``capturable=False`` generator: eager.
 
         Args:
+            mask: optional contiguous ``[E]`` int32 regeneration mask. Pass a
+                STABLE buffer (e.g. ``inputs["regen_mask"]``): outside a capture
+                each distinct mask pointer captures, and caches, one more
+                self-graph (up to a bound, past which new pointers run
+                eagerly).
+            advance: advance the epoch (of every env, or of the masked envs)
+                on device first, so those envs get new courses. Default
+                ``False`` (rebuild from unchanged seeds and epochs).
             stream: optional ``wp.Stream`` (or ``"torch"``) to run on.
             sync: block the host until the regeneration finished on the
                 resolved stream (default ``True``; never while capturing, nor
                 while torch is capturing in the calling thread).
 
         Raises:
+            ValueError: ``mask`` is not a contiguous ``[E]`` int32 array on the
+                course device (before any launch).
             track_gen.exec.NotCapturableError: recording a course whose
                 generator is ``capturable=False`` (before any launch).
 
@@ -553,15 +676,18 @@ class Course:
         clipped that env's checkpoint ring), mirroring ``PropSet.truncated``
         for prop rings.
         """
-        self._runner.run(self._enqueue_regenerate, stream=stream, sync=sync)
+        body, key = self._regen_call(advance, mask)
+        self._runner.run(body, stream=stream, sync=sync, key=key)
         return self.result
 
-    def enqueue_generate(self, *, stream=None):
-        """Enqueue one regeneration (as :meth:`regenerate`) without
-        self-graphing or blocking: recorded into the caller's capture when
-        the resolved stream is capturing, otherwise eager on that stream.
-        Returns :attr:`result` (stream-ordered)."""
-        self._runner.run(self._enqueue_regenerate, stream=stream, policy="eager")
+    def enqueue_generate(self, *, stream=None, mask: "wp.array | None" = None,
+                         advance: bool = False):
+        """Enqueue one regeneration (as :meth:`regenerate`, same ``mask`` /
+        ``advance``) without self-graphing or blocking: recorded into the
+        caller's capture when the resolved stream is capturing, otherwise
+        eager on that stream. Returns :attr:`result` (stream-ordered)."""
+        body, _ = self._regen_call(advance, mask)
+        self._runner.run(body, stream=stream, policy="eager")
         return self.result
 
     def generate(self, seeds: "int | wp.array | None" = None, *, stream=None,
@@ -579,9 +705,17 @@ class Course:
         into it to vary replays).
 
         Determinism contract: the generators are deterministic under an
-        unchanged RNG. Calling ``generate()`` again WITHOUT ``seeds=``
-        reproduces the identical batch (plus a full progress reset); pass
-        ``seeds=`` to advance the RNG and get new courses.
+        unchanged ``(seed, epoch)``. Calling ``generate()`` again WITHOUT
+        ``seeds=`` reproduces the identical batch (plus a full progress reset);
+        pass ``seeds=`` to reseed and get new courses. A reseed also zeroes
+        every env's epoch (on device, in the same unit), so
+        ``generate(seeds=s)`` reproduces a fresh ``Course`` built with
+        ``seeds=s`` whatever was advanced before.
+
+        The reseed goes through ``course.rng.set_seeds_warp``, which overwrites
+        ``course.rng.seeds_warp`` in place: when ``CourseConfig.seeds`` was a
+        ``wp.array``, that IS your array (the rng binds it without a copy), so
+        ``generate(seeds=...)`` rewrites it.
 
         Args:
             seeds: ``None``, an int, or an ``[E]`` int32 ``wp.array``.
@@ -605,6 +739,7 @@ class Course:
                 ctx.launch(_seed_range_k, self._E,
                            [_wrap_int32(int(seeds)), self._reseed_buf])
                 self.rng.set_seeds_warp(self._reseed_buf, None, ctx=ctx)
+            self.generator.seeds.reset_epoch(ctx=ctx)
             self._runner.run(self._enqueue_regenerate, stream=ctx.stream, sync=sync)
         return self.result
 
@@ -672,6 +807,14 @@ class Course:
             ctx: the regeneration's launch context; every sub-tool runs on
                 ``ctx.stream``.
         """
+        self._refresh_geometry(ctx)
+        self._reset_runtime(ctx, self._reset_all_mask)
+
+    def _refresh_geometry(self, ctx: LaunchContext) -> None:
+        """Rebuild every sub-tool buffer DERIVED from the course geometry
+        (checkpoint resample, course line, sdf / heightfield bake, posts) for
+        the whole batch, on ``ctx.stream``. Deterministic: an env whose
+        geometry did not change gets bitwise-identical derived buffers."""
         s = ctx.stream
         if self.checkpoint_sampler is not None:
             self.checkpoint_sampler.sample(stream=s)
@@ -690,9 +833,15 @@ class Course:
                                               # alongside the sdf bake
         if self._posts is not None:
             self._fill_posts(ctx=ctx)
+
+    def _reset_runtime(self, ctx: LaunchContext, mask: wp.array) -> None:
+        """Reset every stateful sub-tool's per-env runtime state where
+        ``mask[e] != 0`` (progress; the localizer's warm-start memory), on
+        ``ctx.stream``. The other sub-tools derive from the geometry."""
+        s = ctx.stream
         if self.localizer is not None:
-            self.localizer.reset(self._reset_all_mask, stream=s)
-        self.progress.reset(self._reset_all_mask, stream=s)
+            self.localizer.reset(mask, stream=s)
+        self.progress.reset(mask, stream=s)
 
     # -- per-step ----------------------------------------------------------
 
@@ -737,9 +886,6 @@ class Course:
         """
         if self.progress is None:
             raise RuntimeError("call generate() before reset()")
-        s = LaunchContext.for_call(self._device, stream).stream
-        self.progress.reset(mask, stream=s)
-        if self.localizer is not None:
-            self.localizer.reset(mask, stream=s)
+        self._reset_runtime(LaunchContext.for_call(self._device, stream), mask)
 
     set_capturing = staticmethod(set_capturing)

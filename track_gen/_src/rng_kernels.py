@@ -3,6 +3,23 @@ import math
 import warp as wp
 
 from ..exec.context import resolve as _resolve_ctx
+from .runtime import _check_arr
+
+
+def _output(out, shape: tuple, dtype, device) -> wp.array:
+    """The sampler's output buffer: ``out`` when given (validated: exact shape, dtype
+    and device; nothing is allocated), else a fresh ``wp.empty``.
+
+    Args:
+        out: ``None`` or the caller's ``wp.array``.
+        shape: the kernel's output shape ``(len(ids),) + shape`` (or ``(len(ids),)``).
+        dtype: the sampler's output dtype.
+        device: the sampler's device.
+    """
+    if out is None:
+        return wp.empty(shape, dtype=dtype, device=device)
+    _check_arr("out", out, tuple(shape), dtype, str(wp.get_device(device)))
+    return out
 
 
 @wp.func
@@ -114,7 +131,7 @@ def rand_uniform_3D(
 
 def uniform_single(
     low: float, high: float, states: wp.array, new_states: wp.array, ids: wp.array, shape: tuple[int], device="cuda",
-    ctx=None,
+    ctx=None, out=None,
 ) -> wp.array:
     """Sample from a uniform distribution.
     Automatically uses the correct kernel based on the desired shape. It is important to note that the
@@ -129,6 +146,8 @@ def uniform_single(
         shape: The shape of the output tensor.
         device: The device to be used for the computation.
         ctx: optional track_gen.exec.LaunchContext; default resolves the device's stream (see track_gen.exec).
+        out: optional preallocated output array (exact output shape, dtype and device); written in
+            place and returned, so the call allocates nothing (capturable sampling).
     Returns:
         The sampled values.
     """
@@ -138,7 +157,7 @@ def uniform_single(
         kernel_shape = (ids.shape[0],)
     else:
         kernel_shape = (ids.shape[0],) + shape
-    outputs = wp.empty(kernel_shape, dtype=wp.float32, device=device)
+    outputs = _output(out, kernel_shape, wp.float32, device)
     match len(kernel_shape):
         case 1:
             ctx.launch(
@@ -252,7 +271,7 @@ def uniform_tensorized(
     ids: wp.array,
     shape: tuple[int],
     device="cuda",
-    ctx=None,
+    ctx=None, out=None,
 ) -> wp.array:
     """Sample from a uniform distribution.
     Automatically uses the correct kernel based on the desired shape. It is important to note that the
@@ -267,6 +286,8 @@ def uniform_tensorized(
         shape: The shape of the output tensor.
         device: The device to be used for the computation.
         ctx: optional track_gen.exec.LaunchContext; default resolves the device's stream (see track_gen.exec).
+        out: optional preallocated output array (exact output shape, dtype and device); written in
+            place and returned, so the call allocates nothing (capturable sampling).
     Returns:
         The sampled values.
     """
@@ -276,7 +297,7 @@ def uniform_tensorized(
         kernel_shape = (ids.shape[0],)
     else:
         kernel_shape = (ids.shape[0],) + shape
-    outputs = wp.empty(kernel_shape, dtype=wp.float32, device=device)
+    outputs = _output(out, kernel_shape, wp.float32, device)
     match len(kernel_shape):
         case 1:
             ctx.launch(
@@ -310,7 +331,7 @@ def uniform(
     ids: wp.array,
     shape: tuple[int],
     device="cuda",
-    ctx=None,
+    ctx=None, out=None,
 ):
     """Sample from a uniform distribution.
     Dispatches to the scalar or the tensorized sampler; see those for the argument semantics.
@@ -323,14 +344,17 @@ def uniform(
         shape: The shape of the output tensor.
         device: The device to be used for the computation.
         ctx: optional track_gen.exec.LaunchContext; default resolves the device's stream (see track_gen.exec).
+        out: optional preallocated output array (exact output shape, dtype and device); written in
+            place and returned, so the call allocates nothing (capturable sampling).
     Returns:
         The sampled values."""
     if isinstance(low, wp.array) or isinstance(high, wp.array):
         if isinstance(low, float) or isinstance(high, float):
             raise ValueError("The high value must be a tensor if the low value is a tensor.")
-        output = uniform_tensorized(low, high, states, new_states, ids, shape, device=device, ctx=ctx)
+        output = uniform_tensorized(low, high, states, new_states, ids, shape, device=device, ctx=ctx, out=out)
     elif isinstance(low, (int, float)) and isinstance(high, (int, float)):
-        output = uniform_single(float(low), float(high), states, new_states, ids, shape, device=device, ctx=ctx)
+        output = uniform_single(float(low), float(high), states, new_states, ids, shape, device=device, ctx=ctx,
+                                out=out)
     else:
         raise TypeError(
             f"low and high must both be float/int scalars or both wp.array, "
@@ -484,7 +508,7 @@ def rand_sign_3Df(
 
 
 def rand_sign_int(
-    states: wp.array, new_states: wp.array, ids: wp.array, shape: tuple[int], device="cuda", ctx=None
+    states: wp.array, new_states: wp.array, ids: wp.array, shape: tuple[int], device="cuda", ctx=None, out=None
 ) -> wp.array:
     """
     Sample a random sign as a integer.
@@ -498,6 +522,8 @@ def rand_sign_int(
         shape: The shape of the output tensor.
         device: The device to be used for the computation.
         ctx: optional track_gen.exec.LaunchContext; default resolves the device's stream (see track_gen.exec).
+        out: optional preallocated output array (exact output shape, dtype and device); written in
+            place and returned, so the call allocates nothing (capturable sampling).
     Returns:
         The sampled values."""
     ctx = _resolve_ctx(ctx, device)
@@ -506,7 +532,7 @@ def rand_sign_int(
         kernel_shape = (ids.shape[0],)
     else:
         kernel_shape = (ids.shape[0],) + shape
-    outputs = wp.empty(kernel_shape, dtype=wp.int32, device=device)
+    outputs = _output(out, kernel_shape, wp.int32, device)
     match len(kernel_shape):
         case 1:
             ctx.launch(
@@ -533,7 +559,7 @@ def rand_sign_int(
 
 
 def rand_sign_float(
-    states: wp.array, new_states: wp.array, ids: wp.array, shape: tuple[int], device="cuda", ctx=None
+    states: wp.array, new_states: wp.array, ids: wp.array, shape: tuple[int], device="cuda", ctx=None, out=None
 ) -> wp.array:
     """
     Sample a random sign as a float.
@@ -547,6 +573,8 @@ def rand_sign_float(
         shape: The shape of the output tensor.
         device: The device to be used for the computation.
         ctx: optional track_gen.exec.LaunchContext; default resolves the device's stream (see track_gen.exec).
+        out: optional preallocated output array (exact output shape, dtype and device); written in
+            place and returned, so the call allocates nothing (capturable sampling).
     Returns:
         The sampled values."""
     ctx = _resolve_ctx(ctx, device)
@@ -555,7 +583,7 @@ def rand_sign_float(
         kernel_shape = (ids.shape[0],)
     else:
         kernel_shape = (ids.shape[0],) + shape
-    outputs = wp.empty(kernel_shape, dtype=wp.float32, device=device)
+    outputs = _output(out, kernel_shape, wp.float32, device)
     match len(kernel_shape):
         case 1:
             ctx.launch(
@@ -582,7 +610,8 @@ def rand_sign_float(
 
 
 def rand_sign_fn(
-    states: wp.array, new_states: wp.array, ids: wp.array, shape: tuple[int], dtype: str, device="cuda", ctx=None
+    states: wp.array, new_states: wp.array, ids: wp.array, shape: tuple[int], dtype: str, device="cuda", ctx=None,
+    out=None,
 ) -> wp.array:
     """Random sign function. Uses the correct kernel based on the desired dtype.
     Args:
@@ -593,12 +622,14 @@ def rand_sign_fn(
         dtype: The data type of the output tensor.
         device: The device to be used for the computation.
         ctx: optional track_gen.exec.LaunchContext; default resolves the device's stream (see track_gen.exec).
+        out: optional preallocated output array (exact output shape, dtype and device); written in
+            place and returned, so the call allocates nothing (capturable sampling).
     Returns:
         The sampled values."""
     if dtype == "int":
-        return rand_sign_int(states, new_states, ids, shape, device, ctx=ctx)
+        return rand_sign_int(states, new_states, ids, shape, device, ctx=ctx, out=out)
     elif dtype == "float":
-        return rand_sign_float(states, new_states, ids, shape, device, ctx=ctx)
+        return rand_sign_float(states, new_states, ids, shape, device, ctx=ctx, out=out)
     else:
         raise ValueError("Invalid dtype, must be 'int' or 'float'")
 
@@ -746,7 +777,8 @@ def rand_poisson_3D_tensorized(
 
 
 def poisson_single(
-    lam: float, states: wp.array, new_states: wp.array, ids: wp.array, shape: tuple[int], device="cuda", ctx=None
+    lam: float, states: wp.array, new_states: wp.array, ids: wp.array, shape: tuple[int], device="cuda", ctx=None,
+    out=None
 ) -> wp.array:
     """
     Sample a random sign as a integer.
@@ -761,6 +793,8 @@ def poisson_single(
         shape: The shape of the output tensor.
         device: The device to be used for the computation.
         ctx: optional track_gen.exec.LaunchContext; default resolves the device's stream (see track_gen.exec).
+        out: optional preallocated output array (exact output shape, dtype and device); written in
+            place and returned, so the call allocates nothing (capturable sampling).
     Returns:
         The sampled values."""
     ctx = _resolve_ctx(ctx, device)
@@ -769,7 +803,7 @@ def poisson_single(
         kernel_shape = (ids.shape[0],)
     else:
         kernel_shape = (ids.shape[0],) + shape
-    outputs = wp.empty(kernel_shape, dtype=wp.int32, device=device)
+    outputs = _output(out, kernel_shape, wp.int32, device)
     match len(kernel_shape):
         case 1:
             ctx.launch(
@@ -796,7 +830,8 @@ def poisson_single(
 
 
 def poisson_tensorized(
-    lam: wp.array, states: wp.array, new_states: wp.array, ids: wp.array, shape: tuple[int], device="cuda", ctx=None
+    lam: wp.array, states: wp.array, new_states: wp.array, ids: wp.array, shape: tuple[int], device="cuda", ctx=None,
+    out=None
 ) -> wp.array:
     """
     Sample a random sign as a integer.
@@ -811,6 +846,8 @@ def poisson_tensorized(
         shape: The shape of the output tensor.
         device: The device to be used for the computation.
         ctx: optional track_gen.exec.LaunchContext; default resolves the device's stream (see track_gen.exec).
+        out: optional preallocated output array (exact output shape, dtype and device); written in
+            place and returned, so the call allocates nothing (capturable sampling).
     Returns:
         The sampled values."""
     ctx = _resolve_ctx(ctx, device)
@@ -819,7 +856,7 @@ def poisson_tensorized(
         kernel_shape = (ids.shape[0],)
     else:
         kernel_shape = (ids.shape[0],) + shape
-    outputs = wp.empty(kernel_shape, dtype=wp.int32, device=device)
+    outputs = _output(out, kernel_shape, wp.int32, device)
     match len(kernel_shape):
         case 1:
             ctx.launch(
@@ -847,7 +884,7 @@ def poisson_tensorized(
 
 def poisson(
     lam: float | wp.array, states: wp.array, new_states: wp.array, ids: wp.array, shape: tuple[int], device="cuda",
-    ctx=None,
+    ctx=None, out=None,
 ):
     """Sample from a poisson distribution.
     Dispatches to the scalar or the tensorized sampler; see those for the argument semantics.
@@ -859,12 +896,14 @@ def poisson(
         shape: The shape of the output tensor.
         device: The device to be used for the computation.
         ctx: optional track_gen.exec.LaunchContext; default resolves the device's stream (see track_gen.exec).
+        out: optional preallocated output array (exact output shape, dtype and device); written in
+            place and returned, so the call allocates nothing (capturable sampling).
     Returns:
         The sampled values."""
     if isinstance(lam, wp.array):
-        output = poisson_tensorized(lam, states, new_states, ids, shape, device=device, ctx=ctx)
+        output = poisson_tensorized(lam, states, new_states, ids, shape, device=device, ctx=ctx, out=out)
     else:
-        output = poisson_single(lam, states, new_states, ids, shape, device=device, ctx=ctx)
+        output = poisson_single(lam, states, new_states, ids, shape, device=device, ctx=ctx, out=out)
     return output
 
 
@@ -1023,7 +1062,7 @@ def rand_int_3D_tensorized(
 
 def integer_single(
     low: int, high: int, states: wp.array, new_states: wp.array, ids: wp.array, shape: tuple[int], device="cuda",
-    ctx=None,
+    ctx=None, out=None,
 ) -> wp.array:
     """
     Sample a random integer between two bounds.
@@ -1038,6 +1077,8 @@ def integer_single(
         shape: The shape of the output tensor.
         device: The device to be used for the computation.
         ctx: optional track_gen.exec.LaunchContext; default resolves the device's stream (see track_gen.exec).
+        out: optional preallocated output array (exact output shape, dtype and device); written in
+            place and returned, so the call allocates nothing (capturable sampling).
     Returns:
         The sampled values."""
     ctx = _resolve_ctx(ctx, device)
@@ -1046,7 +1087,7 @@ def integer_single(
         kernel_shape = (ids.shape[0],)
     else:
         kernel_shape = (ids.shape[0],) + shape
-    outputs = wp.empty(kernel_shape, dtype=wp.int32, device=device)
+    outputs = _output(out, kernel_shape, wp.int32, device)
     match len(kernel_shape):
         case 1:
             ctx.launch(
@@ -1080,7 +1121,7 @@ def integer_tensorized(
     ids: wp.array,
     shape: tuple[int],
     device="cuda",
-    ctx=None,
+    ctx=None, out=None,
 ) -> wp.array:
     """
     Sample a random integer between two bounds.
@@ -1095,6 +1136,8 @@ def integer_tensorized(
         shape: The shape of the output tensor.
         device: The device to be used for the computation.
         ctx: optional track_gen.exec.LaunchContext; default resolves the device's stream (see track_gen.exec).
+        out: optional preallocated output array (exact output shape, dtype and device); written in
+            place and returned, so the call allocates nothing (capturable sampling).
     Returns:
         The sampled values."""
     ctx = _resolve_ctx(ctx, device)
@@ -1103,7 +1146,7 @@ def integer_tensorized(
         kernel_shape = (ids.shape[0],)
     else:
         kernel_shape = (ids.shape[0],) + shape
-    outputs = wp.empty(kernel_shape, dtype=wp.int32, device=device)
+    outputs = _output(out, kernel_shape, wp.int32, device)
     match len(kernel_shape):
         case 1:
             ctx.launch(
@@ -1137,7 +1180,7 @@ def integer(
     ids: wp.array,
     shape: tuple[int],
     device="cuda",
-    ctx=None,
+    ctx=None, out=None,
 ):
     """Sample a random integer between two bounds.
     Automatically uses the correct kernel based on the desired shape. It is important to note that the
@@ -1152,16 +1195,18 @@ def integer(
         shape: The shape of the output tensor.
         device: The device to be used for the computation.
         ctx: optional track_gen.exec.LaunchContext; default resolves the device's stream (see track_gen.exec).
+        out: optional preallocated output array (exact output shape, dtype and device); written in
+            place and returned, so the call allocates nothing (capturable sampling).
     Returns:
         The sampled values."""
     if isinstance(low, wp.array) or isinstance(high, wp.array):
         if isinstance(low, int) or isinstance(high, int):
             raise ValueError("The high value must be a tensor if the low value is a tensor.")
-        output = integer_tensorized(low, high, states, new_states, ids, shape, device=device, ctx=ctx)
+        output = integer_tensorized(low, high, states, new_states, ids, shape, device=device, ctx=ctx, out=out)
     elif isinstance(low, int) or isinstance(high, int):
         if isinstance(low, wp.array) or isinstance(high, wp.array):
             raise ValueError("The low value must be a tensor if the high value is a tensor.")
-        output = integer_single(low, high, states, new_states, ids, shape, device=device, ctx=ctx)
+        output = integer_single(low, high, states, new_states, ids, shape, device=device, ctx=ctx, out=out)
     return output
 
 
@@ -1322,7 +1367,7 @@ def rand_normal_3D_tensorized(
 
 def normal_single(
     mean: float, std: float, states: wp.array, new_states: wp.array, ids: wp.array, shape: tuple[int], device="cuda",
-    ctx=None,
+    ctx=None, out=None,
 ) -> wp.array:
     """
     Samples a normal distribution between two bounds.
@@ -1338,6 +1383,8 @@ def normal_single(
         shape: The shape of the output tensor.
         device: The device to be used for the computation.
         ctx: optional track_gen.exec.LaunchContext; default resolves the device's stream (see track_gen.exec).
+        out: optional preallocated output array (exact output shape, dtype and device); written in
+            place and returned, so the call allocates nothing (capturable sampling).
     Returns:
         The sampled values."""
     ctx = _resolve_ctx(ctx, device)
@@ -1346,7 +1393,7 @@ def normal_single(
         kernel_shape = (ids.shape[0],)
     else:
         kernel_shape = (ids.shape[0],) + shape
-    outputs = wp.empty(kernel_shape, dtype=wp.float32, device=device)
+    outputs = _output(out, kernel_shape, wp.float32, device)
     match len(kernel_shape):
         case 1:
             ctx.launch(
@@ -1380,7 +1427,7 @@ def normal_tensorized(
     ids: wp.array,
     shape: tuple[int],
     device="cuda",
-    ctx=None,
+    ctx=None, out=None,
 ) -> wp.array:
     """
     Samples a normal distribution between two bounds.
@@ -1396,6 +1443,8 @@ def normal_tensorized(
         shape: The shape of the output tensor.
         device: The device to be used for the computation.
         ctx: optional track_gen.exec.LaunchContext; default resolves the device's stream (see track_gen.exec).
+        out: optional preallocated output array (exact output shape, dtype and device); written in
+            place and returned, so the call allocates nothing (capturable sampling).
     Returns:
         The sampled values."""
     ctx = _resolve_ctx(ctx, device)
@@ -1404,7 +1453,7 @@ def normal_tensorized(
         kernel_shape = (ids.shape[0],)
     else:
         kernel_shape = (ids.shape[0],) + shape
-    outputs = wp.empty(kernel_shape, dtype=wp.float32, device=device)
+    outputs = _output(out, kernel_shape, wp.float32, device)
     match len(kernel_shape):
         case 1:
             ctx.launch(
@@ -1438,7 +1487,7 @@ def normal(
     ids: wp.array,
     shape: tuple[int],
     device="cuda",
-    ctx=None,
+    ctx=None, out=None,
 ):
     """Sample from a normal distribution.
     Dispatches to the scalar or the tensorized sampler; see those for the argument semantics.
@@ -1451,14 +1500,16 @@ def normal(
         shape: The shape of the output tensor.
         device: The device to be used for the computation.
         ctx: optional track_gen.exec.LaunchContext; default resolves the device's stream (see track_gen.exec).
+        out: optional preallocated output array (exact output shape, dtype and device); written in
+            place and returned, so the call allocates nothing (capturable sampling).
     Returns:
         The sampled values."""
     if isinstance(mean, wp.array) or isinstance(std, wp.array):
         if isinstance(mean, float) or isinstance(std, float):
             raise ValueError("The high value must be a tensor if the low value is a tensor.")
-        output = normal_tensorized(mean, std, states, new_states, ids, shape, device=device, ctx=ctx)
+        output = normal_tensorized(mean, std, states, new_states, ids, shape, device=device, ctx=ctx, out=out)
     elif isinstance(mean, (int, float)) and isinstance(std, (int, float)):
-        output = normal_single(float(mean), float(std), states, new_states, ids, shape, device=device, ctx=ctx)
+        output = normal_single(float(mean), float(std), states, new_states, ids, shape, device=device, ctx=ctx, out=out)
     else:
         raise TypeError(
             f"mean and std must both be float/int scalars or both wp.array, "
@@ -1542,7 +1593,7 @@ def rand_quaternion_3D(
 
 
 def quaternion(
-    states: wp.array, new_states: wp.array, ids: wp.array, shape: tuple[int], device="cuda", ctx=None
+    states: wp.array, new_states: wp.array, ids: wp.array, shape: tuple[int], device="cuda", ctx=None, out=None
 ) -> wp.array:
     """Sample from a unit sphere.
     Automatically uses the correct kernel based on the desired shape. It is important to note that the
@@ -1555,6 +1606,8 @@ def quaternion(
         shape: The shape of the output tensor.
         device: The device to be used for the computation.
         ctx: optional track_gen.exec.LaunchContext; default resolves the device's stream (see track_gen.exec).
+        out: optional preallocated output array (exact output shape, dtype and device); written in
+            place and returned, so the call allocates nothing (capturable sampling).
     Returns:
         The sampled values."""
     ctx = _resolve_ctx(ctx, device)
@@ -1563,7 +1616,7 @@ def quaternion(
         kernel_shape = (ids.shape[0],)
     else:
         kernel_shape = (ids.shape[0],) + shape
-    outputs = wp.empty(kernel_shape, dtype=wp.quatf, device=device)
+    outputs = _output(out, kernel_shape, wp.quatf, device)
     match len(kernel_shape):
         case 1:
             ctx.launch(

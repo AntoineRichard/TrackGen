@@ -116,6 +116,12 @@ The full field table:
      - ``1`` when the track needed more than ``N_max`` points: ``count[e]`` was
        clamped to ``N_max``, the tail of the loop was dropped, and the track is
        marked invalid. Raise ``N_max`` (or ``spacing``) if any are set.
+   * - ``generation``
+     - ``[E]`` int
+     - The epoch each track was generated at: ``0`` until you advance it (e.g.
+       ``generate(advance=True)``), then ``k`` after the ``k``-th advance. A reseed
+       through the rng does not change it (see
+       :doc:`/tutorials/cuda-graph-in-a-sim`).
 
 Slicing Real Points
 -------------------
