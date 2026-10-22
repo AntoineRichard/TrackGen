@@ -5,7 +5,8 @@ box, whether the box has left the drivable band (inside the outer loop AND
 outside the inner loop), with full contact info. The default ``segments``
 backend is exact: one Warp thread per box scans the env's boundary segments.
 The ``sdf`` backend (``collision_sdf.py``) trades exactness near boundaries
-for O(1) queries against baked per-env signed-distance grids.
+for cheap queries against baked per-env signed-distance grids: the minimum of
+the interpolated field over the box outline and centre.
 
 Layout follows the package conventions: flat ``[E * max_boxes]`` wp.arrays,
 NaN for inactive slots, in-place reuse of the output ``BoxContact`` across
@@ -53,7 +54,10 @@ class BoxContact:
         ``float32`` signed clearance: positive = margin from the box to the
         nearest boundary; negative = deepest corner penetration when OOB
         (0.0 when the box only edge-crosses a boundary with all corners
-        inside). NaN for inactive slots. Cf. :class:`DiscContact.depth
+        inside). With ``method="sdf"`` it is the minimum of the interpolated
+        signed-distance field over the box outline and centre, so an edge
+        crossing a side reads negative too (``oob == (distance < 0)``).
+        NaN for inactive slots. Cf. :class:`DiscContact.depth
         <track_gen.collision.DiscContact>`, which reports an UNSIGNED
         penetration depth (0.0 = no hit) rather than a signed clearance.
     nearest : wp.array
@@ -62,7 +66,9 @@ class BoxContact:
         ``vec2f`` boundary normal at ``nearest``, pointing INTO the band.
     boundary : wp.array
         ``int32`` — 0 = inner boundary, 1 = outer boundary, -1 = inactive slot
-        or degenerate track (count < 3).
+        or degenerate track (count < 3); with ``method="sdf"`` also -1 for a
+        box whose corners are not finite (NaN or inf half-extents, yaw or
+        position; reported ``oob=1`` with NaN geometry).
     """
 
     oob: wp.array

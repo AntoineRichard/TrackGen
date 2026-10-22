@@ -7,9 +7,11 @@ boundary point, inward normal, and boundary id. It has two Warp backends:
 
 - ``method="segments"`` (default): exact, zero precompute; reads the bound
   ``Track`` buffers directly (fresh after every ``generate()``).
-- ``method="sdf"``: bakes per-env signed-distance grids for O(1) queries;
-  approximate within one grid cell near boundaries and requires ``bake()``
-  after each ``generate()``. Memory ~ ``E * sdf_resolution**2 * 5`` bytes.
+- ``method="sdf"``: bakes per-env signed-distance grids; a query takes the
+  exact minimum of the interpolated field over the box outline, at a cost
+  that grows with the grid cells the outline crosses. Approximate within one
+  grid cell near boundaries; requires ``bake()`` after each ``generate()``.
+  Memory ~ ``E * sdf_resolution**2 * 5`` bytes.
 
 ``DiscChecker`` is a sibling checker in this module, not a third backend of
 ``CollisionChecker``: it answers the same oriented-box query against disc
