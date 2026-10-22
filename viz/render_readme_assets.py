@@ -176,9 +176,9 @@ def _generate(name: str, seed: int, needed: int = 5, overrides: dict | None = No
     rng = PerEnvSeededRNG(seeds=seed, num_envs=batch, device="cpu")
     generator = TrackGenerator(cfg, rng)
     track = generator.generate()
-    scratch = generator._scratch
-    centerline = wp.to_torch(scratch.gen_centerline).cpu().numpy().reshape(batch, cfg.num_points, 2)
-    centerline_valid = wp.to_torch(scratch.gen_valid).cpu().numpy().astype(bool)
+    tap = generator.program.tap
+    centerline = wp.to_torch(tap("raw.xy")).cpu().numpy().reshape(batch, cfg.num_points, 2)
+    centerline_valid = wp.to_torch(tap("gen.valid")).cpu().numpy().astype(bool)
     final_valid = wp.to_torch(track.valid).cpu().numpy().astype(bool)
     chosen = _choose_centerline_examples(centerline, centerline_valid, final_valid, needed)
     return centerline, centerline_valid, chosen
@@ -195,7 +195,7 @@ def _generate_pipeline_sample(name: str = "bezier", seed: int = 100):
     rng = PerEnvSeededRNG(seeds=seed, num_envs=batch, device="cpu")
     generator = TrackGenerator(cfg, rng)
     track = generator.generate()
-    scratch = generator._scratch
+    tap = generator.program.tap
 
     valid_arr = wp.to_torch(track.valid).cpu().numpy().astype(bool)
     count_arr = wp.to_torch(track.count).cpu().numpy().astype(int)
@@ -208,9 +208,9 @@ def _generate_pipeline_sample(name: str = "bezier", seed: int = 100):
             break
 
     count = int(count_arr[env_id])
-    raw = wp.to_torch(scratch.gen_centerline).cpu().numpy().reshape(batch, cfg.num_points, 2)[env_id]
-    cs = wp.to_torch(scratch.cs_center).cpu().numpy().reshape(batch, cfg.N_max, 2)[env_id, :count]
-    relaxed = wp.to_torch(scratch.relax.relaxed).cpu().numpy().reshape(batch, cfg.N_max, 2)[env_id, :count]
+    raw = wp.to_torch(tap("raw.xy")).cpu().numpy().reshape(batch, cfg.num_points, 2)[env_id]
+    cs = wp.to_torch(tap("cl.xy", after="resample")).cpu().numpy().reshape(batch, cfg.N_max, 2)[env_id, :count]
+    relaxed = wp.to_torch(tap("cl.xy", after="relax")).cpu().numpy().reshape(batch, cfg.N_max, 2)[env_id, :count]
     final_center = final_all[env_id, :count]
     outer = wp.to_torch(track.outer).cpu().numpy().reshape(batch, cfg.N_max, 3)[env_id, :count, :2]
     inner = wp.to_torch(track.inner).cpu().numpy().reshape(batch, cfg.N_max, 3)[env_id, :count, :2]

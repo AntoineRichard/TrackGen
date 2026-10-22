@@ -1,8 +1,8 @@
 """Compare centerline generators on quality / diversity / speed (dev tool — NOT runtime).
 
 Runs each registered generator over a fixed seed suite through the full pipeline, reads the
-pre-relax centerline (scratch.cs_center) and post-relax Track in ONE pass, and computes
-metrics host-side in numpy. Characterizes; never gates.
+pre-relax centerline (``gen.program.tap("cl.xy", after="resample")``) and post-relax Track
+in ONE pass, and computes metrics host-side in numpy. Characterizes; never gates.
 
     .venv/bin/python -m benchmarks.compare_generators            # all generators, cpu, E=4096
     .venv/bin/python -m benchmarks.compare_generators --cuda --E 8192
@@ -58,9 +58,10 @@ def run_generator(name, seed_base, E, base_config, generator_params=None) -> dic
     if "cuda" in str(cfg.device):
         wp.synchronize()
 
-    # Read back once. cs_center is the pre-relax constant-spacing centerline (XPBD writes a
-    # separate `relaxed` buffer, so cs_center survives the run). Track.center is post-relax.
-    pre = wp.to_torch(gen._scratch.cs_center).cpu().numpy()
+    # Read back once. The cl.xy version right after the constant-spacing resample is the
+    # pre-relax centerline (the relax stage writes a new version, so it survives the run).
+    # Track.center is post-relax.
+    pre = wp.to_torch(gen.program.tap("cl.xy", after="resample")).cpu().numpy()
     # Track.center is vec3f (z = 0); the metrics are planar — project to xy.
     post = wp.to_torch(track.center).cpu().numpy()[:, :2]
     valid = wp.to_torch(track.valid).cpu().numpy().astype(bool)
