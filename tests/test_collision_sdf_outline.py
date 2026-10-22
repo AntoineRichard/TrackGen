@@ -271,19 +271,21 @@ def test_outline_min_matches_dense_bilinear_reference(dev):
 def test_box_partly_or_fully_outside_grid(dev):
     # Small explicit padding: the grid ends 50 mm outside the outer edge.
     track = make_annulus_track(E=1, n=256, device=dev)
-    checker = _sdf(track, 5, 64, padding=0.05)
-    _, lo, hi, _ = _grid(checker)
+    checker = _sdf(track, 6, 64, padding=0.05)
+    phi, lo, hi, _ = _grid(checker)
     assert hi[0] < 1.36
-    pos, yaw, he = make_boxes(1, 5, {
+    pos, yaw, he = make_boxes(1, 6, {
         (0, 0): (1.33, 0.0, 0.0, 0.10, 0.05),     # straddles the grid edge
-        (0, 1): (1.0e30, 0.0, 0.3, 0.10, 0.05),   # far away (no int overflow)
+        (0, 1): (1.0e30, 0.0, 0.3, 0.10, 0.05),   # far away (sides collapse in float)
         (0, 2): (1.0, 0.0, 0.0, 1.0e3, 1.0e3),    # swallows the whole track
         (0, 3): (1.0, 0.0, 0.0, 0.05, 0.05),      # on the road
         (0, 4): (0.0, 0.0, 0.0, 1.0e37, 1.0e37),  # side span overflows float
+        (0, 5): (0.0, 0.0, 0.3, 1.0e12, 1.0e12),  # grid coords beyond int range
     }, device=dev)
     c = checker.query(pos, yaw, he)
     oob, d = c.oob.numpy(), c.distance.numpy()
-    assert list(oob) == [1, 1, 1, 0, 1]
+    assert list(oob) == [1, 1, 1, 0, 1, 1]
+    assert np.all(d >= phi.min() - 1e-6)
     assert np.all(np.isfinite(d)) and np.array_equal(oob == 1, d < 0.0)
     assert np.all(np.isfinite(c.normal.numpy()))
     # Past the grid edge phi clamps to the edge texel: the flag is exact, the
@@ -294,22 +296,24 @@ def test_box_partly_or_fully_outside_grid(dev):
 
 @pytest.mark.parametrize("dev", DEVS)
 def test_nan_half_extents_and_yaw_are_conservative_oob(dev):
-    # Non-finite half-extents or yaw: oob=1 with NaN geometry (like a
-    # degenerate env), the grid is not sampled; neighbours are unaffected.
+    # Non-finite corners (half-extents, yaw or position): oob=1 with NaN
+    # geometry (like a degenerate env), the grid is not sampled; neighbours
+    # are unaffected. (Warp's clamp used to send a NaN coordinate to texel 0.)
     track = make_annulus_track(E=1, n=256, device=dev)
-    checker = _sdf(track, 5, 64)
-    pos, yaw, he = make_boxes(1, 5, {
+    checker = _sdf(track, 6, 64)
+    pos, yaw, he = make_boxes(1, 6, {
         (0, 0): (1.0, 0.0, 0.0, 0.05, 0.05),
         (0, 1): (1.0, 0.0, 0.0, np.nan, 0.05),
         (0, 2): (1.0, 0.0, 0.0, np.inf, 0.05),
         (0, 3): (1.0, 0.0, np.nan, 0.05, 0.05),
         # slot 4 inactive (NaN position)
+        (0, 5): (np.inf, 0.0, 0.0, 0.05, 0.05),
     }, device=dev)
     c = checker.query(pos, yaw, he)
     oob, d = c.oob.numpy(), c.distance.numpy()
     near, nrm = c.nearest.numpy(), c.normal.numpy()
-    assert list(oob) == [0, 1, 1, 1, 0]
-    assert list(c.boundary.numpy()) == [1, -1, -1, -1, -1]
+    assert list(oob) == [0, 1, 1, 1, 0, 1]
+    assert list(c.boundary.numpy()) == [1, -1, -1, -1, -1, -1]
     assert np.isfinite(d[0]) and np.all(np.isnan(d[1:]))
     assert np.all(np.isnan(near[1:])) and np.all(np.isnan(nrm[1:]))
 

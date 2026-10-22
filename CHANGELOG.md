@@ -100,9 +100,11 @@
   CUDA-graph replay for 4096 worlds × 1 car box at R=256 on an RTX 5090 (7.8 µs before),
   and ~0.041 ms for the default 65,536-box benchmark (~0.018 ms before). It stays
   allocation-free and capturable. The `segments` backend is unchanged.
-- **`sdf`: a box with non-finite half-extents or yaw reads `oob=1`**, with NaN `distance`,
+- **`sdf`: a box whose corners are not finite reads `oob=1`**, with NaN `distance`,
   `nearest` and `normal` and `boundary=-1`, as for a degenerate env; the grid is not read.
-  Before, its NaN corners became an `int(NaN)` texel index (undefined behaviour).
+  This covers NaN or inf half-extents, yaw or position, and corners that overflow float32.
+  Before, Warp's `clamp` sent a NaN grid coordinate to 0, so such a box reported grid texel
+  (0, 0): that texel's phi as `distance`, its boundary id, and a zero normal.
 - **`TrackGenerator` runs a `Program`.** Construction builds the default spec (the one
   `legacy.to_pipeline_spec(config)` returns), and `generate()`, `enqueue()` and `Course`
   run the Program. Outputs are byte-identical (the CPU fingerprint guard is unchanged),

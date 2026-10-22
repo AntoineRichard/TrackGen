@@ -49,7 +49,8 @@ edge texels, and reports the minimum of that interpolated field over the box
 - Past the grid edge the field clamps to the edge texels, which are
   negative, so a box reaching beyond the grid reads OOB; its ``distance`` is
   the edge texel's, not the true depth.
-- A box with non-finite half-extents or yaw reads ``oob = 1`` with NaN
+- A box whose corners are not finite (NaN or inf half-extents, yaw or
+  position, or corners that overflow float32) reads ``oob = 1`` with NaN
   ``distance``, ``nearest`` and ``normal`` and ``boundary = -1``, like an
   env with a degenerate track; the grid is not read.
 

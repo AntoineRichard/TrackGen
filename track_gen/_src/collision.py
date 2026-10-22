@@ -67,8 +67,8 @@ class BoxContact:
     boundary : wp.array
         ``int32`` — 0 = inner boundary, 1 = outer boundary, -1 = inactive slot
         or degenerate track (count < 3); with ``method="sdf"`` also -1 for a
-        box with non-finite half-extents or yaw (reported ``oob=1`` with NaN
-        geometry).
+        box whose corners are not finite (NaN or inf half-extents, yaw or
+        position; reported ``oob=1`` with NaN geometry).
     """
 
     oob: wp.array

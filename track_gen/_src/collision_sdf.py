@@ -321,10 +321,9 @@ def _box_query_sdf_k(
     c2 = _box_corner(pos, ux, uy, he, 2)
     c3 = _box_corner(pos, ux, uy, he, 3)
 
-    # Non-finite half-extents or yaw make every corner non-finite. Such a
-    # box is treated conservatively, like a degenerate env (oob=1, NaN
-    # geometry), and the grid is not sampled: a NaN corner would otherwise
-    # become an int(NaN) texel index.
+    # Non-finite corners (NaN or inf half-extents, yaw or position, or
+    # corners that overflow float) are treated conservatively, like a
+    # degenerate env (oob=1, NaN geometry), and the grid is not sampled.
     if not (wp.isfinite(c0) and wp.isfinite(c1) and wp.isfinite(c2)
             and wp.isfinite(c3)):
         out_oob[t] = 1
