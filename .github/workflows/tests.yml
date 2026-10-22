@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        warp: ["1.14.0", "latest"]  # the pyproject floor and the newest 1.x
+        warp: ["1.18.0", "latest"]  # the pyproject floor and the newest 1.x
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -49,7 +49,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        warp: ["1.14.0", "latest"]
+        warp: ["1.18.0", "latest"]
     env:
       TRACKGEN_REQUIRE_CUDA: "1"
     steps:

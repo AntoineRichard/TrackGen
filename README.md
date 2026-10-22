@@ -7,7 +7,7 @@ native.**
 [![Documentation](https://img.shields.io/badge/docs-antoinerichard.github.io%2FTrackGen-blue)](https://antoinerichard.github.io/TrackGen/)
 [![docs build](https://github.com/AntoineRichard/TrackGen/actions/workflows/docs.yml/badge.svg)](https://github.com/AntoineRichard/TrackGen/actions/workflows/docs.yml)
 ![Python](https://img.shields.io/badge/python-%E2%89%A5%203.10-blue)
-![Warp](https://img.shields.io/badge/warp--lang-%E2%89%A5%201.14-76b900)
+![Warp](https://img.shields.io/badge/warp--lang-%E2%89%A5%201.18-76b900)
 
 Given a batch of per-environment seeds, TrackGen generates `E` closed-loop
 tracks (or gate sequences) in parallel — and then keeps working at sim

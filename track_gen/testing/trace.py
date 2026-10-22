@@ -169,26 +169,8 @@ def _record(call) -> LaunchRecord:
             kernel = getattr(cmd, "kernel", None)
             bounds = getattr(cmd, "bounds", None)
             dim = getattr(bounds, "shape", bounds)
-            values = getattr(cmd, "fwd_args", None)
+            values = cmd.fwd_args                # Python-side args of the recorded launch
             stream = args[1] if len(args) > 1 else kw.get("stream")
-            if values is None:
-                # Warp < 1.15 keeps only the packed ctypes params on a recorded Launch:
-                # params[0] is the launch bounds, then one struct per forward kernel arg
-                # (an array_t carries its device pointer in ``data``; scalars ``value``).
-                module = getattr(getattr(kernel, "module", None), "name", None)
-                key = getattr(kernel, "key", None) or getattr(kernel, "__name__", repr(kernel))
-                name = f"{module}.{key}" if module else str(key)
-                n_fwd = len(getattr(getattr(kernel, "adj", None), "args", ()) or ())
-                arrays, scalars = [], []
-                for i, p in enumerate(list(getattr(cmd, "params", ()) or ())[1:1 + n_fwd]):
-                    if hasattr(p, "data") and hasattr(p, "shape"):
-                        arrays.append((i, int(p.data or 0)))
-                    else:
-                        v = getattr(p, "value", None)
-                        if isinstance(v, (bool, int, float)):
-                            scalars.append((i, v))
-                return LaunchRecord("launch", name, _dim(dim), _stream_handle(stream),
-                                    tuple(arrays), tuple(scalars), call.emitter)
             values = list(values)
         else:
             kernel = args[0] if args else kw.get("kernel")

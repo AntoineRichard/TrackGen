@@ -2,7 +2,7 @@
 
 Everything here is defensive: a Warp release that renames an internal makes
 these helpers degrade (return ``None`` / do nothing) instead of breaking a
-launch. Verified against Warp 1.14 and 1.18:
+launch. Verified against Warp 1.18 (the floor):
 
 - ``warp._src.context.runtime.captures`` maps a capture id to the
   ``wp.Graph`` Warp registered for an active capture (``wp.launch`` finds the
@@ -12,7 +12,7 @@ launch. Verified against Warp 1.14 and 1.18:
   stream without the ``device.is_capturing`` guard of
   ``wp.synchronize_stream``, which raises while ANY Warp-registered capture is
   active on the device, from any thread.
-- ``runtime.core.wp_cuda_thread_exchange_capture_mode(mode)`` (Warp >= 1.18)
+- ``runtime.core.wp_cuda_thread_exchange_capture_mode(mode)``
   swaps the calling thread's CUDA stream-capture interaction mode.
 - ``Device.captures`` maps the ``wp.Stream`` a Warp capture was started on to
   its ``wp.Graph`` while that capture is open.

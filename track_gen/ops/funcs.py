@@ -36,7 +36,7 @@ def ccw(ox: float, oy: float, px: float, py: float, qx: float, qy: float) -> flo
 def nan0(x: float) -> float:
     """``x`` if finite, else ``0.0`` (``nan_to_num``; a no-op on finite inputs)."""
     # NaN/inf -> 0.0 guard (nan_to_num equivalent) for the border self-intersection
-    # check. wp.where(cond, if_true, if_false) is the Warp 1.14 non-deprecated select
+    # check. wp.where(cond, if_true, if_false) is Warp's non-deprecated select
     # primitive. A NO-OP for finite inputs.
     return wp.where(wp.isfinite(x), x, 0.0)
 

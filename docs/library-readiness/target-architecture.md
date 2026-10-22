@@ -986,7 +986,7 @@ class LearnedDecoder(plugin.Stage):     # host-driven
 
 ## D1. Warp version floor
 
-**Decision:** keep `warp-lang>=1.14,<2` for all of 0.x, and raise the floor to `>=1.16` at 1.0. GPU CI runs a {1.14.0, latest} matrix. Documentation states that 1.18+ PyPI wheels need driver R580+ and sm_75+.
+**Decision (updated 2026-10-22, owner decision):** the floor is `warp-lang>=1.18,<2` from 0.2.0.dev3 on; Warp 1.14 is no longer supported and no compatibility code for older Warp is kept. GPU CI runs a {1.18.0, latest} matrix. Documentation states that 1.18+ PyPI wheels need driver R580+ and sm_75+. (Original plan: keep `>=1.14` for all of 0.x and raise to `>=1.16` at 1.0; the Warp-version gates below are therefore always satisfied.)
 
 Feature gates:
 - Conditional lowerings (`skip_unless`, windowed `bounded_loop`) are used only when all of these hold: the capture is Warp-registered, `wp.is_conditional_graph_supported()` is true (toolkit and driver ≥ 12.4), and Warp ≥ 1.16 (the GH-1641 fix).

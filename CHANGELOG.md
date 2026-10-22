@@ -2,6 +2,14 @@
 
 ## 0.2.0.dev3 (unreleased, `v2` branch)
 
+### Packaging
+
+- **`warp-lang` floor raised to 1.18** (`warp-lang>=1.18,<2`); Warp 1.14 is no longer
+  supported. Warp 1.18's PyPI wheels need an NVIDIA driver R580+ and an sm_75+ GPU for the
+  `cuda` device. Compatibility code for older Warp is removed (the conformance kit's
+  recorded-launch fallback), the CI matrix tests {1.18.0, latest}, and the stale Warp 1.14
+  fingerprints are dropped.
+
 ### Added
 
 - **`track_gen.pipeline` (preview): the track pipeline as a list of stages** (roadmap

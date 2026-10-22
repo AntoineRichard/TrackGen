@@ -1,8 +1,10 @@
 Installation
 ============
 
-Python ≥ 3.10. This is a Warp-first library: ``warp-lang`` and ``numpy`` are the only
-required runtime dependencies. ``torch``, ``scipy``, ``matplotlib``, and ``pytest`` live in the
+Python ≥ 3.10 and ``warp-lang`` ≥ 1.18. This is a Warp-first library: ``warp-lang`` and
+``numpy`` are the only required runtime dependencies. Warp 1.18's PyPI wheels need an NVIDIA
+driver R580 or newer and a GPU with compute capability 7.5 (Turing) or newer for the ``cuda``
+device; the ``cpu`` device has no such requirement. ``torch``, ``scipy``, ``matplotlib``, and ``pytest`` live in the
 ``dev`` extra for tests, benchmarks, and oracle comparisons; ``gradio`` lives in the ``ui``
 extra. The runtime path runs on the Warp ``cpu`` device (GPU-free, for tests/CI) and on
 ``cuda``.
