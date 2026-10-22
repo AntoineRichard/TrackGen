@@ -1478,6 +1478,32 @@ It runs over everything registered, so a capture regression fails CI mechanicall
 - **Risk:** medium (Course API). `from_config` and `generate(seeds=)` are kept through 0.x.
 - **Depends on:** PR12, PR14.
 
+### PR15b: Documentation restructure and migration guide
+- **Scope:**
+  - Restructure the doc site around tasks and extension instead of the prototype's internals:
+    - **Getting started:** install (Warp ≥ 1.18; driver R580+ and sm_75+ for the PyPI wheels) and a presets-based quickstart.
+    - **User guide:** generating tracks and gates (presets, `PipelineSpec`, `Params`); `Course` and the runtime utilities; CUDA graphs in a sim loop (caller capture, streams, torch); RL auto-reset with masked regeneration; choosing a generator; collision backends with their accuracy and cost.
+    - **Extending:** generators, gate generators, stages (relax/width/elevation/validity), components, and testing a plugin with `track_gen.testing`.
+    - **Reference:** autodoc of the public modules and the configuration reference.
+    - **Internals:** the current how-it-works pages (resample, XPBD, inflation, validity), kept and updated.
+  - A migration guide from 0.1 to 0.2 covering:
+    - flat config → `Params` / presets;
+    - `set_capturing` deprecated;
+    - the `generate()` semantics (`stream=` / `sync=` / `enqueue()`, warm-up at construction);
+    - truncation now invalidating tracks;
+    - the repulsive output change;
+    - the SDF collision change (option C) and the retraining it implies;
+    - Warp ≥ 1.18;
+    - the private-registry shims.
+  - Promote `pipeline-preview.rst` into the user guide once the pipeline API leaves preview, and fold the per-PR notes into the new structure.
+  - Regenerate stale figures and benchmark tables: the repulsive metrics row, the README batch figure, the collision benchmarks.
+  - Check code snippets in CI (sphinx doctest or executed examples), so examples cannot go stale. Keep `sphinx -W` in CI.
+  - Keep internal planning pages (`docs/superpowers`, `docs/library-readiness`) out of the published site.
+- **Fixes:** docs organized around the prototype's internals; tutorials built on the flat 107-field config; preview-page sprawl; no migration guide; stale figures and benchmarks; unchecked code snippets.
+- **Test gate:** `sphinx -W`, the snippet checks and a link check pass in CI; every public symbol is documented.
+- **Risk:** low (docs only). PR16's 1.0 default changes get a final migration-guide pass in PR16.
+- **Depends on:** PR15, so the public API is stable. It must land before `v2` merges into `main`, which is when its docs get published.
+
 ## Phase 7: 1.0
 
 ### PR16: 1.0 cleanup
@@ -1495,7 +1521,7 @@ It runs over everything registered, so a capture regression fails CI mechanicall
 
 ## Dependency summary
 
-- **Capture track:** PR0 → PR1 → PR2 → PR3 → PR4 → PR10 → {PR11, PR12, PR13} → PR14 → PR15 → PR16.
+- **Capture track:** PR0 → PR1 → PR2 → PR3 → PR4 → PR10 → {PR11, PR12, PR13} → PR14 → PR15 → PR15b (docs) → PR16.
 - **Plugin track:** PR0 → PR6, then PR2 → PR7, then {PR3, PR6, PR7} → PR8 → PR9 → PR10.
 - **Independent:** PR5 after PR1.
 - **First user-visible milestone:** caller capture of every generation API (except repulsive) and of every utility after PR3. Out-of-tree generators without private imports after PR8.

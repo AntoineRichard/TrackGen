@@ -309,6 +309,7 @@ The full roadmap is in [`target-architecture.md`](target-architecture.md#roadmap
 | 4. Open pipeline | PR10 planner and track stages, masked commit · PR11 gate stages, ordering registry, `stations` · PR12 BOUNDED tier, repulsive capturable | Relax/elevation/validity/gate stages are pluggable; repulsive is graphable |
 | 5. Channels | PR13 per-point channels, width registry, `Track.layout/validate/view`, ingestion stage | Variable width, attributes, caller-owned outputs |
 | 6. Components | PR14 `Component` protocol and adapters · PR15 `Course` as composition root, in-graph regeneration | RL-style `[step → done → regenerate(mask)]` entirely in one graph |
+| 6b. Docs | PR15b docs restructure (getting started → user guide → extending → reference → internals), migration guide 0.1 → 0.2, regenerated figures, CI-checked snippets | Docs published with the `v2` merge |
 | 7. 1.0 | PR16 hashed salts, poison default, frozen configs, shims removed, Warp ≥1.16 | Clean surface |
 
 Phases 1–2 and Phase 3 can proceed in parallel; Phase 3 depends only on PR0 and PR2.
