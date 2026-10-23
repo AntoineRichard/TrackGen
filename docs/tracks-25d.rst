@@ -178,6 +178,22 @@ every adjacent pair.
    harmonic periodicity respectively. Regenerate with
    ``python viz/plot_z_profiles.py --out docs/_static/z-profiles.png --seed 5``.
 
+.. _tracks-25d-provided:
+
+Altitude from the generator
+---------------------------
+
+A centerline generator can compute its altitude itself: it writes ``raw.z`` (one value
+per raw point) and declares ``provides={"z"}`` (:ref:`generator-provides`). The pipeline
+then runs no elevation stage. The resamplers carry the altitude to every final point
+(linear interpolation along the loop; through relaxation it stays with its point, see
+:ref:`pipeline-carried-channels`), ``lift.elevated`` lifts the level cross-sections to it
+and recomputes the 3D tangent and arc length, and ``z_valid_grade`` checks it, as for a
+profile. The profile knobs do not apply: ``presets.track(elevation=...)`` with a
+non-flat profile, or a non-zero ``z_base``, raises ``ValueError``. In a gate pipeline
+the same altitude reaches the gates by index, and can space them in 3D
+(:ref:`gates-3d-stations`).
+
 Level cross-sections, and why plan-view collision stays valid
 ---------------------------------------------------------------
 

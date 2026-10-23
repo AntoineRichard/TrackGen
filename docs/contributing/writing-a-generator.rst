@@ -358,17 +358,22 @@ instance per generator, with no arguments, and calls ``capacity`` and ``build`` 
    * - ``Params``
      - The stage's Params class. The default ``NoParams`` takes no ``generator_params``.
    * - ``writes``
-     - ``{local port: channel}``. A generator maps one port to ``"raw.xy"`` (required) and
-       may map one to ``"gen.valid"``.
+     - ``{local port: channel}``. A generator maps one port to ``"raw.xy"`` (required),
+       may map one to ``"gen.valid"``, and one each to ``"raw.z"`` / ``"raw.half_width"``
+       (what it ``provides``) and to its per-point attributes
+       ``"raw.<package>.<name>"`` (see `Per-point attributes`_).
    * - ``capture``
      - A ``CaptureClass``, ``STATIC`` by default (see :ref:`stage-capture-classes`).
    * - ``topology``
      - ``"closed"`` (default) or ``"any"``. Open tracks are not supported in 0.x.
-   * - ``reads``, ``provides``
-     - Must stay empty: a generator reads no channel (its seed is ``b.seed``), and a
-       track generator's ``provides`` arrives with roadmap PR13 (a gate generator's is
-       described in :ref:`gate-generator-stage`). Read ports are for the pipeline's
-       other stages (see :doc:`writing-a-stage`).
+   * - ``reads``
+     - Must stay empty: a generator reads no channel (its seed is ``b.seed``). Read
+       ports are for the pipeline's other stages (see :doc:`writing-a-stage`).
+   * - ``provides``
+     - A subset of ``{"z", "half_width"}`` naming exactly the catalogue attributes it
+       writes (``raw.z``, ``raw.half_width``); empty by default. The pipeline then drops
+       the stage that would compute them (see `Providing altitude and width`_). A gate
+       generator's ``provides`` is described in :ref:`gate-generator-stage`.
    * - ``api_version``
      - The plugin API version the stage targets (default ``1``). A version above
        ``track_gen.plugin.API_VERSION`` is rejected.
@@ -398,8 +403,12 @@ instance, an abstract class, a missing or mismatched ``kind``, an ``api_version`
 ``API_VERSION``, a ``capture`` that is not a ``CaptureClass``, a Params
 class that breaks the rules above, an ``output`` other than ``"centerline"`` (an
 ``output="anchors"`` Stage must declare ``kind="gate_generator"``), a ``writes`` without
-``"raw.xy"`` or with another channel (or two ports on one channel), a non-empty
-``reads`` or ``provides``, a ``preferred`` (gate generators only), or another
+``"raw.xy"`` or with a channel outside ``raw.xy``, ``gen.valid``, ``raw.z``,
+``raw.half_width`` and ``raw.<package>.<name>`` (or two ports on one channel), a
+non-empty ``reads``, a ``provides`` that does not name exactly the catalogue attributes
+written (``Stage X: provides ['z'] must name exactly the catalogue attributes it writes
+(['half_width', 'z']: raw.z -> 'z', raw.half_width -> 'half_width')``), a ``preferred``
+(gate generators only), or another
 ``topology``. A Stage of kind ``"gate_generator"`` is checked by the anchors rules of
 :ref:`gate-generator-stage`, and one of kind ``"relax"``, ``"width"``, ``"elevation"``,
 ``"validity"``, ``"order"`` or ``"stations"`` is a pipeline stage, checked by the rules
@@ -468,14 +477,17 @@ Call its methods in ``build`` (``write``, ``scratch`` and ``input`` allocate, an
 
    * - Method
      - What it returns
-   * - ``write(port, dtype=None, *, per=None)``
+   * - ``write(port, dtype=None, *, per=None, interp=None, export=False)``
      - The output buffer of ``writes[port]``: ``[E * raw]`` ``wp.vec2f`` with
        ``per="raw"`` for ``"raw.xy"``, ``[E]`` int32 with ``per="env"`` for
-       ``"gen.valid"`` (omitted ``dtype`` / ``per`` are the channel's). The pipeline
-       owns it and reads it directly (no copy). Call it once per port. An undeclared
-       port, another channel or a second call raises
-       ``ValueError``, a wrong ``dtype`` or ``per`` ``TypeError``, and ``interp=`` /
-       ``export=`` ``NotImplementedError`` (roadmap PR13).
+       ``"gen.valid"``, ``[E * raw]`` float32 for ``"raw.z"`` / ``"raw.half_width"``
+       (omitted ``dtype`` / ``per`` are the channel's), and ``[E * raw]`` of the
+       ``dtype`` you give for a ``"raw.<package>.<name>"`` attribute, with its
+       ``interp=`` policy (required there) and ``export=`` (see `Per-point
+       attributes`_). The pipeline owns it and reads it directly (no copy). Call it once
+       per port. An undeclared port, another channel or a second call raises
+       ``ValueError``, a wrong ``dtype`` or ``per`` ``TypeError``; the ``interp=`` and
+       ``export=`` rules raise ``TypeError`` / ``ValueError`` as described there.
    * - ``scratch(name, dtype, shape)``
      - A private zero-initialised buffer, named ``"scratch:generator/<name>"``. A second
        buffer with the same name raises ``ValueError``.
@@ -562,6 +574,149 @@ Capture classes
 ``capture_class``, called with the Params defaults, returns ``HOST``; it reflects the
 defaults only, so a stage whose capture class depends on its params can differ for other
 values (``describe().capture`` reports the class for the defaults).
+
+.. _generator-attributes:
+
+Per-point attributes
+--------------------
+
+A generator often knows more about each point than its position: a surface type, a grip
+coefficient, a lane index, a curb flag. It writes each as a **raw attribute**, a channel
+``raw.<package>.<name>`` with one value per raw point, and the pipeline carries it with
+the points: the constant-spacing resample interpolates it onto the beads
+(``cl.<package>.<name>``), it stays attached to its bead through relaxation, and the
+uniform resample interpolates it onto the final points, where an exported one becomes
+``Track.attributes[<package>.<name>]`` (:ref:`pipeline-carried-channels`). This
+generator (with the quick start's imports) writes a lane index and a grip coefficient
+next to its loop:
+
+.. code-block:: python
+
+   @wp.kernel
+   def _ribbon_k(seed: wp.array(dtype=wp.int32), salt: wp.uint32, n: int, r: float,
+                 xy: wp.array(dtype=wp.vec2f), lane: wp.array(dtype=wp.int32),
+                 grip: wp.array(dtype=wp.float32)):
+       t = wp.tid()                                  # one thread per raw point
+       e = t // n
+       i = t - e * n
+       key = hash32(wp.uint32(seed[e]) ^ salt) & wp.uint32(0x7FFFFFFF)
+       phase = 6.2831853 * wp.randf(wp.rand_init(wp.int32(key)))
+       theta = 6.2831853 * float(i) / float(n)
+       rr = r * (1.0 + 0.2 * wp.sin(3.0 * theta + phase))
+       xy[t] = wp.vec2f(rr * wp.cos(theta), rr * wp.sin(theta))
+       lane[t] = (4 * i) // n                        # a per-segment label: 0, 1, 2, 3
+       grip[t] = 0.9 + 0.1 * wp.cos(theta + phase)   # a continuous value
+
+
+   class Ribbon(plugin.Stage):
+       kind = "generator"
+       name = "acme.ribbon"
+       output = "centerline"
+       writes = {"xy": "raw.xy", "valid": "gen.valid",
+                 "lane": "raw.acme.lane", "grip": "raw.acme.grip"}
+
+       def build(self, b, params):
+           n = b.raw
+           xy = b.write("xy", wp.vec2f, per="raw")
+           valid = b.write("valid", wp.int32)
+           lane = b.write("lane", wp.int32, per="raw", interp="previous", export=True)
+           grip = b.write("grip", wp.float32, per="raw", interp="linear", export=True)
+           salt = b.salt("shape")
+           r = 0.5 * ops.constants.TARGET_EXTENT * b.scale
+
+           def enqueue(ctx):
+               ctx.launch(_ribbon_k, b.E * n, [b.seed, salt, n, r, xy, lane, grip])
+               ops.fill(ctx, valid, 1)
+           return enqueue
+
+.. code-block:: python
+
+   gen = TrackGenerator(presets.track(num_envs=64, device="cpu", generator="acme.ribbon"))
+   track = gen.generate()
+   track.attributes["acme.lane"]     # [E * N_max] int32, -1 past count[e]
+   track.attributes["acme.grip"]     # [E * N_max] float32, NaN past count[e]
+   gen.program.attributes["acme.grip"].interp    # 'linear'
+
+The rules:
+
+- **Name and size.** ``raw.<package>.<name>``, at least two identifiers after ``raw.``;
+  ``per`` is ``"raw"`` (fixed by the prefix), the buffer ``[E * raw]``. Write all ``raw``
+  points of every env on every call, like ``raw.xy`` (the kit's ``attributes.written``
+  check poisons the buffer and reports a slot left unwritten).
+- **dtype**: ``float32``, ``int32``, ``vec2f`` or ``vec3f`` (``TypeError`` otherwise).
+- **interp** is required: ``"linear"`` (floats and vectors), ``"nearest"`` (ties go to the
+  segment start), ``"previous"`` (the last source point at or before: per-segment labels)
+  or ``"angle"`` (``float32`` radians, interpolated the short way round; give values in
+  ``[-π, π)``, others are normalised). An ``int32`` attribute takes ``"nearest"`` or
+  ``"previous"``. The table of :ref:`pipeline-carried-channels` gives each formula.
+  ``"linear"`` blends across the closing segment (from the last point back to the first),
+  so an arc fraction that jumps from 1 back to 0 there takes intermediate values: carry a
+  ``(cos, sin)`` pair (``vec2f``) or an ``"angle"`` instead.
+- **export**: ``True`` (or the key itself, ``"acme.grip"``) makes the final version a
+  ``Track.attributes`` entry, keyed by the name without ``raw.``: ``[E * N_max]``, NaN or
+  ``-1`` padding, the same array forever, held and restored by a masked regeneration,
+  emptied by ``on_invalid="poison"``, copied by ``Track.clone()``. Another string raises
+  ``ValueError`` (no renaming). An attribute that is not exported is still carried (a
+  stage can read its ``cl.*`` image, ``width.from_channel`` can make it the width, see
+  :ref:`stage-width`); ``Program.tap`` reads it.
+- **Bead attachment.** Through relaxation an attribute keeps the point it was carried to;
+  XPBD moves points without re-indexing them (:ref:`bead attachment <pipeline-bead-attachment>`). A
+  ``"nearest"`` label boundary moves by up to half a raw step at the first resampling and
+  half a bead step at the second; ``"previous"`` lags by at most a step each time.
+- **Geometry is unchanged.** Carrying attributes never changes the points: the resamplers'
+  table-writing kernels compute the same bytes, so ``acme.ribbon`` with and without its
+  attributes gives the same ``Track`` geometry.
+- **Cost.** Two launches per attribute and generation (one per resampler), the
+  resample tables (12 B per point, per resampler) and one buffer per attribute per
+  point set, plus a held copy of each exported one.
+
+In a gate pipeline (``presets.gates(generator="acme.ribbon", ...)``) the stations carry
+the attributes to the anchors and ``carry.attributes`` to the gate slots, so the exported
+ones appear in ``GateSequence.attributes`` too, with the stations' default ``order.raw``
+(:ref:`pipeline-gate-plugin-channels`). A gate generator writes per-anchor attributes,
+``anchors.<package>.<name>``, the same way (no ``interp=``: they are carried by index, see
+:ref:`gate-generator-stage`).
+
+.. _generator-provides:
+
+Providing altitude and width
+----------------------------
+
+Two attributes have a meaning for the pipeline itself: the altitude and the half-width. A
+generator that computes them writes ``raw.z`` / ``raw.half_width`` (``float32``, one per
+raw point; their policy is ``"linear"``, and passing another ``interp=`` or any
+``export=`` raises) and declares them in ``provides``:
+
+.. code-block:: python
+
+   class HelixLoop(plugin.Stage):
+       kind = "generator"
+       name = "acme.helix_loop"
+       output = "centerline"
+       writes = {"xy": "raw.xy", "z": "raw.z"}
+       provides = frozenset({"z"})        # exactly the catalogue attributes it writes
+
+       def build(self, b, params):
+           xy = b.write("xy", wp.vec2f, per="raw")
+           z = b.write("z", wp.float32, per="raw")
+           ...
+
+The resamplers carry ``raw.z`` to ``cl.z`` and ``raw.half_width`` to ``cl.half_width``,
+and the presets (``presets.track``, ``presets.gates``, ``legacy.to_pipeline_spec``) drop
+the stage that would have written them:
+
+- ``provides={"z"}``: no ``elevation`` stage, ``lift.elevated``; ``Track.center.z`` is
+  your altitude, interpolated, and the grade check (``z_valid_grade``) reads it. Asking
+  for an elevation (``elevation="noise"``, a non-zero ``z_base``) raises ``ValueError``.
+  In a gate pipeline the stations carry it to the gates (``carry.z``) and can space the
+  gates in 3D (``spacing_metric="xyz"``, :ref:`pipeline-stations-xyz`).
+- ``provides={"half_width"}``: no ``width`` stage; XPBD, the band and the checks use your
+  half-width (:ref:`pipeline-width`). A ``width=`` other than the default ``"constant"`` raises ``ValueError``; a
+  hand-built spec can still add a rewrite of ``cl.half_width``. Write a positive value at
+  every point: a point at or below ``w_floor`` fails fail bit 4.
+
+``provides`` must name exactly what ``writes`` holds among ``raw.z`` and
+``raw.half_width`` (``registry.add`` raises otherwise).
 
 .. _generator-runtime-params:
 

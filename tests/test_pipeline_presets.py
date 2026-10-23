@@ -21,13 +21,13 @@ from track_gen.pipeline import (BatchSpec, PipelineSpec, PlanError, StageRef, bu
                                 legacy, presets)
 from track_gen.plugin import registry
 from track_gen.seeds import SeedState
-from track_gen.stages import params as sp
 
 DEV = "cpu"
 E = 3
 FIELDS = ("outer", "center", "inner", "tangent", "normal", "arclen", "length", "valid",
           "count", "winding", "truncated", "generation", "fail_mask")
-IDS = ("generator", "resample", "relax", "uniform", "width", "frames", "offset",
+# Since 0.2.0.dev4 (roadmap PR13a) the width runs before relax.
+IDS = ("generator", "resample", "width", "relax", "uniform", "frames", "offset",
        "elevation", "validity", "lift")
 
 
@@ -84,8 +84,8 @@ def test_the_preset_builds_byte_identical_to_the_config(kw, cfg):
 def test_the_default_stage_list():
     spec = _spec()
     assert [(r.kind, r.name) for r in spec.stages] == [
-        ("generator", "bezier"), ("resample", "constant_spacing"), ("relax", "xpbd"),
-        ("resample", "uniform"), ("width", "constant"), ("frames", "default"),
+        ("generator", "bezier"), ("resample", "constant_spacing"), ("width", "constant"),
+        ("relax", "xpbd"), ("resample", "uniform"), ("frames", "default"),
         ("offset", "default"), ("elevation", "flat"), ("validity", "default"),
         ("lift", "flat")]
     assert spec.batch == BatchSpec(num_envs=E, device=DEV, n_max=384, closed=True,
@@ -99,25 +99,32 @@ def test_the_default_stage_list():
     assert (elevated.stages[9].kind, elevated.stages[9].name) == ("lift", "elevated")
 
 
-def test_half_width_reaches_every_stage_that_bakes_it():
+def test_half_width_reaches_the_width_stage_only():
+    # Since 0.2.0.dev4 cl.half_width is the one per-point half-width: half_width= fills
+    # the width stage (and the default spacing); relax / offset / validity refuse it.
     spec = _spec(half_width=0.2)
     hw = {r.slot_id: r.params.get("half_width") for r in spec.stages
           if isinstance(r.params, dict) or hasattr(r.params, "get")}
-    assert hw["relax"] == hw["width"] == hw["offset"] == hw["validity"] == 0.2
+    assert {k: v for k, v in hw.items() if v is not None} == {"width": 0.2}
+    assert spec.stages[2].slot_id == "width"
     assert dict(spec.stages[1].params) == {"spacing": pytest.approx(0.12)}
     assert dict(_spec(half_width=0.2, spacing=0.05).stages[1].params) == {"spacing": 0.05}
-    # a mapping without half_width gets it, a Params instance is taken as is
-    assert _spec(half_width=0.2, relax=("xpbd", {"relax_iters": 3})).stages[2].params == \
-        {"relax_iters": 3, "half_width": 0.2}
+    # a relax mapping is taken as is (no half_width field any more)
+    assert _spec(half_width=0.2, relax=("xpbd", {"relax_iters": 3})).stages[3].params == \
+        {"relax_iters": 3}
+    for slot, ref in (("relax", StageRef("relax", "xpbd", params={"half_width": 0.2})),
+                      ("offset", StageRef("offset", "default", params={"half_width": 0.2})),
+                      ("validity", StageRef("validity", "default",
+                                            params={"half_width": 0.2}))):
+        with pytest.raises(PlanError, match=rf"stage '{slot}' \({ref.kind}.{ref.name}\): "
+                                            rf"half_width is no longer a "
+                                            rf"{ref.kind}.{ref.name} param \(0.2.0.dev4\)"):
+            build(_spec().replace(slot, ref), seeds=1)
     # params setting another half_width: a preset-level hint, not the planner's error
-    with pytest.raises(ValueError, match=r"relax: relax.xpbd sets half_width=0.1 but "
-                                         r"half_width=0.2; pass half_width=0.1 to "
-                                         r"presets.track"):
-        _spec(half_width=0.2, relax=("xpbd", sp.XpbdParams()))
     with pytest.raises(ValueError, match=r"width: width.constant sets half_width=0.2 but "
                                          r"half_width=0.1; pass half_width=0.2"):
         _spec(width=("constant", {"half_width": 0.2}))
-    assert _spec(half_width=0.2, width=("constant", {"half_width": 0.2})).stages[4].params \
+    assert _spec(half_width=0.2, width=("constant", {"half_width": 0.2})).stages[2].params \
         == {"half_width": 0.2}
 
 
@@ -130,13 +137,13 @@ def test_selection_forms():
     by_pair = _spec(relax=(TAUBIN, {"passes": 2}))
     by_instance = _spec(relax=(TAUBIN, registry.get("relax", TAUBIN).Params(passes=2)))
     by_ref = _spec(relax=StageRef("relax", TAUBIN, params={"passes": 2}))
-    assert by_name.stages[2] == StageRef("relax", TAUBIN)
-    assert by_pair.stages[2] == by_ref.stages[2] == StageRef("relax", TAUBIN,
+    assert by_name.stages[3] == StageRef("relax", TAUBIN)
+    assert by_pair.stages[3] == by_ref.stages[3] == StageRef("relax", TAUBIN,
                                                               params={"passes": 2})
-    assert _resolved(by_pair)[2] == _resolved(by_instance)[2] == _resolved(by_ref)[2]
-    assert _spec(relax=None).stages[2] == StageRef("relax", "none")
+    assert _resolved(by_pair)[3] == _resolved(by_instance)[3] == _resolved(by_ref)[3]
+    assert _spec(relax=None).stages[3] == StageRef("relax", "none")
     assert _spec(elevation=None).stages[7] == StageRef("elevation", "flat")
-    assert _spec(relax=StageRef("relax", TAUBIN, id="smooth")).stages[2].slot_id == "smooth"
+    assert _spec(relax=StageRef("relax", TAUBIN, id="smooth")).stages[3].slot_id == "smooth"
 
 
 def test_selection_errors():
@@ -185,7 +192,7 @@ def test_edit_ops_on_a_preset():
     p = build(spec, seeds=1)
     assert p.fail_bits["kmax"] == 16
     swapped = _spec().replace("relax", StageRef("relax", TAUBIN))
-    assert swapped.stages[2].slot_id == "relax" and swapped.stages[2].name == TAUBIN
+    assert swapped.stages[3].slot_id == "relax" and swapped.stages[3].name == TAUBIN
 
 
 def test_json_round_trip_with_plugin_stages_builds_byte_identical():

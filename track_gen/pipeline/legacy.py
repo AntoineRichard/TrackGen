@@ -21,15 +21,17 @@ def to_pipeline_spec(config, *, registry=None) -> PipelineSpec:
     """The default :class:`~track_gen.pipeline.PipelineSpec` of a ``TrackGenConfig``.
 
     Ids, in order: ``generator``, ``resample`` (``resample.constant_spacing``),
-    ``relax`` (``relax.<relax_solver>``, or ``relax.none`` when ``relax_enable=False``),
-    ``uniform`` (``resample.uniform``), ``width`` (``width.constant``), ``frames``,
-    ``offset``, ``elevation`` (``elevation.<z_profile>``), ``validity`` and ``lift``
-    (``lift.flat`` on the flat profile, else ``lift.elevated``). Each stage's params
-    are its Params class's ``from_legacy(config)`` (the flat field names); the
-    generator's are its resolved ``generator_params``. ``relax_solver`` and
-    ``z_profile`` name any stage registered under ``relax`` / ``elevation``; a
-    ``half_width`` field of their Params is ``config.half_width`` (every stage that
-    bakes it shares one value until roadmap PR13).
+    ``width`` (``width.constant``; since 0.2.0.dev4 before relax), ``relax``
+    (``relax.<relax_solver>``, or ``relax.none`` when ``relax_enable=False``),
+    ``uniform`` (``resample.uniform``), ``frames``, ``offset``, ``elevation``
+    (``elevation.<z_profile>``), ``validity`` and ``lift`` (``lift.flat`` on the flat
+    profile, else ``lift.elevated``). A generator that provides ``"z"`` has no
+    elevation (``lift.elevated``), one that provides ``"half_width"`` no width stage
+    (roadmap PR13a). Each stage's params are its Params class's ``from_legacy(config)``
+    (the flat field names); the generator's are its resolved ``generator_params``.
+    ``relax_solver`` and ``z_profile`` name any stage registered under ``relax`` /
+    ``elevation``; a ``half_width`` field of their Params is ``config.half_width`` (the
+    stages with the field share the nominal width).
 
     Args:
         config: A ``TrackGenConfig``.
@@ -38,8 +40,9 @@ def to_pipeline_spec(config, *, registry=None) -> PipelineSpec:
 
     Raises:
         ValueError: an unknown or oracle-only ``relax_solver``, an unknown
-            ``z_profile``, ``smooth_finish=True`` (as ``TrackGenerator``), or the
-            generator's params are invalid.
+            ``z_profile``, ``smooth_finish=True`` (as ``TrackGenerator``), the
+            generator's params are invalid, or a non-flat ``z_profile`` / non-zero
+            ``z_base`` for a generator that provides ``z``.
         track_gen.plugin.PluginLoadError: ``relax_solver`` / ``z_profile`` names a
             stage of a quarantined plugin.
     """
@@ -103,25 +106,35 @@ def _to_pipeline_spec(cfg, binding, registry=None) -> PipelineSpec:
     else:
         relax = StageRef("relax", solver, params=_legacy_params(
             relax_cls, cfg, f"relax stage {solver!r}"))
+    from ..plugin.stage import _is_stage  # noqa: PLC0415
+
+    provides = frozenset(binding.spec.provides) if _is_stage(binding.spec) \
+        else frozenset()
+    if "z" in provides and (profile != "flat" or float(cfg.z_base) != 0.0):
+        field = f"z_profile={profile!r}" if profile != "flat" else f"z_base={cfg.z_base!r}"
+        raise ValueError(f"TrackGenConfig.{field}: generator {binding.name!r} provides its "
+                         f"own altitudes (z); leave z_profile='flat' and z_base=0.0")
     if profile == "flat":
         elevation = StageRef("elevation", "flat")
     else:
         elevation = StageRef("elevation", profile, params=_legacy_params(
             elevation_cls, cfg, f"elevation stage {profile!r}"))
+    width = () if "half_width" in provides else (
+        StageRef("width", "constant", params=sp.WidthConstantParams.from_legacy(cfg)),)
     stages = (
         StageRef("generator", binding.name, params=binding.params,
                  capacity={"raw": int(cfg.num_points)}),
         StageRef("resample", "constant_spacing",
                  params=sp.ConstantSpacingParams.from_legacy(cfg)),
+        *width,
         relax,
         StageRef("resample", "uniform", id="uniform"),
-        StageRef("width", "constant", params=sp.WidthConstantParams.from_legacy(cfg)),
         StageRef("frames", "default"),
         StageRef("offset", "default", params=sp.OffsetParams.from_legacy(cfg)),
-        elevation,
+        *(() if "z" in provides else (elevation,)),
         StageRef("validity", "default", params=sp.ValidityParams.from_legacy(cfg)),
         StageRef("lift", "flat", params=sp.LiftFlatParams.from_legacy(cfg))
-        if profile == "flat" else StageRef("lift", "elevated"),
+        if profile == "flat" and "z" not in provides else StageRef("lift", "elevated"),
     )
     return PipelineSpec(batch=batch, stages=stages)
 
@@ -267,6 +280,11 @@ def _to_gate_pipeline_spec(cfg, binding, registry=None) -> PipelineSpec:
             f"elevation=...))") from exc
     elevation = StageRef("elevation", profile, params=elevation_params)
     # 4. the stage list
+    from ..stages.channels import is_plugin_channel  # noqa: PLC0415
+
+    attrs = stage and ordering == "raw" and any(
+        is_plugin_channel(ch) and ch.startswith("anchors.")
+        for ch in dict(spec.writes).values())
     stages = _gate_stages(
         StageRef("gate_generator", binding.name, params=binding.params, id="generator"),
         provides=provides,
@@ -274,7 +292,8 @@ def _to_gate_pipeline_spec(cfg, binding, registry=None) -> PipelineSpec:
         normalize=stage and _preferred(spec).get("normalize") == "extent",
         gate_radius=cfg.gate_radius, gate_solve_iters=cfg.gate_solve_iters,
         gate_width=cfg.gate_width, gate_align=cfg.gate_align, elevation_ref=elevation,
-        min_gates=cfg.min_gates, z_valid_grade=cfg.z_valid_grade)
+        min_gates=cfg.min_gates, z_valid_grade=cfg.z_valid_grade,
+        carry_attributes=attrs)
     batch = BatchSpec(num_envs=int(cfg.num_envs), device=str(cfg.device), n_max=384,
                       closed=True, scale=cfg.scale, max_gates=int(cfg.max_gates))
     return PipelineSpec(batch=batch, stages=stages)
@@ -395,7 +414,8 @@ def _scratch_view(program):
         z=ch("cl.z"), knot_cum=scratch("elevation", "knot_cum"),
         knot_count=scratch("elevation", "knot_count"),
         knot_z=scratch("elevation", "knot_z"),
-        fail=ch("valid.fail", "validity") if "validity" in program._stage_ids else None)
+        fail=ch("valid.fail", "validity") if "validity" in program._stage_ids else None,
+        hw_out=ch("track.half_width"))
     has_resample = kinds.get("resample") == ("resample", "constant_spacing")
     return _Scratch(
         inflate=inflate, generator_spec=program._binding.pipeline_spec,

@@ -11,9 +11,19 @@ The relax / width / elevation / validity stages (:data:`REGISTRY_STAGES`) are re
 in :data:`track_gen.plugin.registry` (:func:`track_gen.stages.register_builtins`); the
 resample / frames / offset / lift stages (:data:`CATALOGUE_STAGES`) stay in the private
 catalogue (:func:`track_gen.stages.register`).
+
+Roadmap PR13a: the width runs before relax and ``cl.half_width`` is the one per-point
+half-width ``relax.xpbd``, ``offset.default`` and ``validity.default`` read. A constant
+version (``width.constant``, allocated filled at build, no launch) selects the original
+scalar-argument kernels with that value (byte-identical); any other width runs the
+per-point kernels of :mod:`track_gen._src.warp_width`. The two resamples are the
+carriers of the per-point channels (``raw.*`` attributes -> ``cl.*``, then every ``cl``
+family re-interpolated onto the uniform points; a constant family is re-filled, which is
+0.2.0.dev3's width fill at its old trace position).
 """
 from __future__ import annotations
 
+import dataclasses
 import types
 from typing import Callable
 
@@ -21,7 +31,9 @@ import warp as wp
 
 from .._src import warp_pipeline as _wpl
 from .._src import warp_relax as _relax
+from .._src import warp_width as _width
 from .._src import warp_zprofile as _zprof
+from ..ops import resample as _ops_resample
 from ..plugin.params import NoParams
 from ..plugin.stage import CaptureClass, Stage
 from . import params as _p
@@ -48,13 +60,58 @@ TRACK_EXPORTS = types.MappingProxyType({
     "count": ("track.count",),
     "truncated": ("cl.truncated",),
     "fail_mask": ("valid.fail",),
+    "half_width": ("track.half_width",),
 })
+
+
+def _with_half_width(p, hw: float):
+    """``p``'s fields plus ``half_width = hw`` (the config namespace the original
+    scalar-argument wrappers read: ``float(config.half_width)`` is the same Python float
+    0.2.0.dev3's Params held)."""
+    fields = {f.name: getattr(p, f.name) for f in dataclasses.fields(p)}
+    return types.SimpleNamespace(**fields, half_width=hw)
+
+
+def _tables(b, n_out: int, n_src: int):
+    """A carrier's resample tables (scratch ``tables.i0`` / ``tables.i1`` /
+    ``tables.frac``), initialised to the sentinel at build."""
+    i0 = b._scratch_full("tables.i0", -1, wp.int32, n_out)
+    i1 = b._scratch_full("tables.i1", -1, wp.int32, n_out)
+    frac = b._scratch_full("tables.frac", float("nan"), wp.float32, n_out)
+    return _ops_resample.ResampleTables(i0, i1, frac, n_src)
+
+
+def _carry_ops(b, carried, tables, per: str) -> list:
+    """``enqueue`` callables of a carrier's families, in order: a constant family's
+    fill (``_fill_f32_k``, the image declared constant by the plan), else one
+    ``resample_channels`` carry through ``tables``. Pairs validated here, once."""
+    ops = []
+    for c in carried:
+        src = b.read(c.src_port)
+        dst = b.write(c.dst_port, c.dtype, per=per)
+        if c.constant is not None:
+            value, n = float(c.constant), int(dst.shape[0])
+
+            def fill(ctx, dst=dst, value=value, n=n):
+                ctx.launch(_wpl._fill_f32_k, n, [dst, value])
+            ops.append(fill)
+            continue
+        kernel = _ops_resample._carry_kernel(c.interp, c.dtype)
+        if src.shape[0] != tables.n_src or dst.shape[0] != tables.i0.shape[0]:
+            raise ValueError(f"stage {b.stage_id!r}: carrying {c.src} -> {c.dst}: the "
+                             f"source / output lengths do not match the tables")
+
+        def carry(ctx, src=src, dst=dst, kernel=kernel):
+            _ops_resample._carry_launch(ctx, tables, src, dst, kernel)
+        ops.append(carry)
+    return ops
 
 
 def _alloc_track(layout):
     """The pipeline's result :class:`~track_gen.Track`, allocated exactly as
     ``warp_pipeline._inflate_warp_alloc`` allocates it (``wp.empty`` except the
-    zero-initialised ``truncated`` and ``generation``), plus the zeroed ``fail_mask``."""
+    zero-initialised ``truncated`` and ``generation``; ``half_width`` included), plus
+    the zeroed ``fail_mask``."""
     from .._src.types import Track  # noqa: PLC0415
 
     E, dev = int(layout.num_envs), str(layout.device)
@@ -73,6 +130,7 @@ def _alloc_track(layout):
         truncated=wp.zeros(E, dtype=wp.int32, device=dev),
         generation=wp.zeros(E, dtype=wp.int32, device=dev),
         fail_mask=wp.zeros(E, dtype=wp.int32, device=dev),
+        half_width=wp.empty(flat, dtype=wp.float32, device=dev),
     )
 
 
@@ -105,6 +163,12 @@ class _GeneratorSlot:
         self.binding = binding
         self.name = binding.name
         self.scratch = None            # the generator's private scratch (_scratch.gen)
+        # A Stage generator's raw attributes (roadmap PR13a): one write port each, named
+        # after its channel (the planner carries them; static, before any build).
+        attrs = raw_attributes(binding.spec)
+        if attrs:
+            self.writes = types.MappingProxyType(
+                {"xy": "raw.xy", "valid": "gen.valid", **{ch: ch for ch in attrs}})
 
     def build(self, b, params) -> Callable:
         from .._src.generator_binding import _StageGenerator  # noqa: PLC0415
@@ -115,7 +179,9 @@ class _GeneratorSlot:
         xy = b.write("xy", wp.vec2f, per="raw")
         valid = b.write("valid", wp.int32)
         if isinstance(spec, _StageGenerator):
-            gen = spec.build(seed=seed, out_xy=xy, out_valid=valid)
+            def resolve(channel, dtype, interp, export):
+                return b.write(channel, dtype, per="raw", interp=interp, export=export)
+            gen = spec.build(seed=seed, out_xy=xy, out_valid=valid, resolve=resolve)
         else:
             gen = spec.alloc_scratch(run_cfg)
         self.scratch = gen
@@ -134,19 +200,34 @@ class _GeneratorSlot:
         return enqueue
 
 
+def raw_attributes(spec) -> "list[str]":
+    """The raw attribute channels a centerline generator Stage declares (``raw.z``,
+    ``raw.half_width``, ``raw.<pkg>.<name>``), in declaration order; ``[]`` for a legacy
+    spec."""
+    from ..plugin.stage import _is_raw_attribute, _is_stage  # noqa: PLC0415
+
+    if not _is_stage(spec):
+        return []
+    return [ch for ch in dict(spec.writes).values() if _is_raw_attribute(ch)]
+
+
 # ---------------------------------------------------------------------------------------
 # Resample / relax
 # ---------------------------------------------------------------------------------------
 
 class ConstantSpacing(_Builtin):
     """``resample.constant_spacing``: ``raw.xy`` -> ``cl.xy`` (constant arc step,
-    NaN-padded to ``N_max``), ``cl.count``, ``cl.truncated``."""
+    NaN-padded to ``N_max``), ``cl.count``, ``cl.truncated``. It carries every raw
+    attribute of the generator (``raw.<attr>`` -> ``cl.<attr>``, implicit ports) through
+    its lookup's tables; without any it runs the plain lookup (0.2.0.dev3's trace)."""
 
     kind = "resample"
     name = "constant_spacing"
     Params = _p.ConstantSpacingParams
     reads = {"raw": "raw.xy"}
     writes = {"xy": "cl.xy", "count": "cl.count", "truncated": "cl.truncated"}
+    #: (source domain, destination domain, which families): the planner's carry rule.
+    _carries = ("raw", "cl", "all")
 
     def build(self, b, p):
         S = int(b.layout.stride)
@@ -160,26 +241,42 @@ class ConstantSpacing(_Builtin):
         seg = b.scratch("seg", wp.float32, b.E * m)
         s = b.scratch("s", wp.float32, b.E * (m + 1))
         spacing = float(p.spacing)
+        carried = b._carried()
+        if not carried:
+            def enqueue(ctx):
+                _wpl.resample_constant_spacing(
+                    raw_xy, spacing, S, out_wp=xy, count_wp=count, seg_wp=seg, s_wp=s,
+                    truncated_wp=truncated, ctx=ctx)
+            return enqueue
+        N = int(raw_xy.shape[0]) // b.E
+        tables = _tables(b, b.E * S, int(raw_xy.shape[0]))
+        ops = _carry_ops(b, carried, tables, "cl")
 
         def enqueue(ctx):
-            _wpl.resample_constant_spacing(
-                raw_xy, spacing, S, out_wp=xy, count_wp=count, seg_wp=seg, s_wp=s,
-                truncated_wp=truncated, ctx=ctx)
+            _ops_resample._constant_spacing_launch(ctx, raw_xy, N, spacing, S, seg, s, xy,
+                                                   count, truncated, tables=tables)
+            for op in ops:
+                op(ctx)
+            ctx.sync()              # debug-only (TRACKGEN_DEBUG_SYNC=1)
         return enqueue
 
 
 class Xpbd(_Builtin):
-    """``relax.xpbd``: the XPBD relaxation, an in-place rewrite of ``cl.xy``."""
+    """``relax.xpbd``: the XPBD relaxation, an in-place rewrite of ``cl.xy``, separating
+    the beads by their half-width ``cl.half_width`` (a constant version: the original
+    kernels with that scalar; else the per-bead radii of ``warp_width``)."""
 
     kind = "relax"
     name = "xpbd"
     Params = _p.XpbdParams
-    reads = {"xy": "cl.xy", "count": "cl.count"}
+    reads = {"xy": "cl.xy", "count": "cl.count", "half_width": "cl.half_width"}
     writes = {"xy": "cl.xy"}
 
     def build(self, b, p):
         S = int(b.layout.stride)
         x_in, count = b.read("xy"), b.read("count")
+        w = b.read("half_width")
+        hw = b._constant_of("half_width")
         x_out = b.write("xy", wp.vec2f, per="cl")
         band = b.scratch("band", wp.int32, b.E)
         l0 = b.scratch("L0", wp.float32, b.E)
@@ -194,11 +291,22 @@ class Xpbd(_Builtin):
             cache_overflow = b.scratch("sep_cache_overflow", wp.int32, 1)
         else:
             cache_idx = cache_count = cache_overflow = None
+        if hw is not None:
+            cfg = _with_half_width(p, hw)
+
+            def enqueue(ctx):
+                _relax.band_l0_inplace(x_in, S, band, l0, count, cfg, ctx=ctx)
+                _relax.xpbd_solve_inplace(
+                    x_in, x_out, db, band, l0, count, S, cfg,
+                    sep_cache_idx_wp=cache_idx, sep_cache_count_wp=cache_count,
+                    sep_cache_overflow_wp=cache_overflow, cheb_prev_wp=cheb_prev, ctx=ctx)
+            return enqueue
+        r = b.scratch("xpbd.r", wp.float32, b.E * S)
 
         def enqueue(ctx):
-            _relax.band_l0_inplace(x_in, S, band, l0, count, p, ctx=ctx)
-            _relax.xpbd_solve_inplace(
-                x_in, x_out, db, band, l0, count, S, p,
+            _width.band_l0_w_inplace(x_in, S, w, band, l0, count, p, ctx=ctx)
+            _width.xpbd_solve_w_inplace(
+                x_in, x_out, db, band, l0, count, S, p, w, r,
                 sep_cache_idx_wp=cache_idx, sep_cache_count_wp=cache_count,
                 sep_cache_overflow_wp=cache_overflow, cheb_prev_wp=cheb_prev, ctx=ctx)
         return enqueue
@@ -218,12 +326,17 @@ class RelaxNone(_Builtin):
 
 
 class Uniform(_Builtin):
-    """``resample.uniform``: arc-length-uniform resample of ``cl.xy`` (in place)."""
+    """``resample.uniform``: arc-length-uniform resample of ``cl.xy`` (in place). It
+    re-interpolates every carried centerline family (``cl.half_width``, ``cl.z`` and the
+    images of the generator's raw attributes) onto its points: a constant family (the
+    ``width.constant`` half-width) is re-filled (``_fill_f32_k``, 0.2.0.dev3's width fill
+    at its old trace position), any other is carried through the lookup's tables."""
 
     kind = "resample"
     name = "uniform"
     reads = {"xy": "cl.xy", "count": "cl.count"}
     writes = {"xy": "cl.xy"}
+    _carries = ("cl", "cl", "all")
 
     def build(self, b, p):
         S = int(b.layout.stride)
@@ -234,10 +347,21 @@ class Uniform(_Builtin):
         seg = b.scratch("seg", wp.float32, b.E * S)
         s = b.scratch("s", wp.float32, b.E * (S + 1))
         dev = str(x_in.device)
+        carried = b._carried()
+        tables = None
+        if any(c.constant is None for c in carried):
+            tables = _tables(b, b.E * S, b.E * S)
+        ops = _carry_ops(b, carried, tables, "cl")
 
         def enqueue(ctx):
-            _wpl.resample_uniform(x_in, x_out, S, count, seg_wp=seg, s_wp=s, device=dev,
-                                  ctx=ctx)
+            if tables is None:
+                _wpl.resample_uniform(x_in, x_out, S, count, seg_wp=seg, s_wp=s,
+                                      device=dev, ctx=ctx)
+            else:
+                _ops_resample._resample_uniform_launch(ctx, x_in, count, S, seg, s, x_out,
+                                                       tables=tables)
+            for op in ops:
+                op(ctx)
             ctx.sync()              # debug-only (TRACKGEN_DEBUG_SYNC=1), as inflate_warp
         return enqueue
 
@@ -247,7 +371,9 @@ class Uniform(_Builtin):
 # ---------------------------------------------------------------------------------------
 
 class WidthConstant(_Builtin):
-    """``width.constant``: ``cl.half_width`` filled with ``half_width``."""
+    """``width.constant``: ``cl.half_width`` = ``half_width`` on every point. Launches
+    nothing: its version is allocated filled at build (generation-invariant) and recorded
+    constant, so the consumers run the original kernels with the scalar."""
 
     kind = "width"
     name = "constant"
@@ -255,12 +381,46 @@ class WidthConstant(_Builtin):
     writes = {"half_width": "cl.half_width"}
 
     def build(self, b, p):
-        w = b.write("half_width", wp.float32, per="cl")
-        n = b.E * int(b.layout.stride)
-        hw = float(p.half_width)
+        b._declare_constant("half_width", float(p.half_width))
 
         def enqueue(ctx):
-            ctx.launch(_wpl._fill_f32_k, n, [w, hw])
+            pass
+        return enqueue
+
+
+class WidthFromChannel(_Builtin):
+    """``width.from_channel``: ``cl.half_width = min(max(scale * src, lo), max(hi, lo))``
+    on real points (``lo <= hi`` is checked at build; a run-time ``hi`` below ``lo`` clamps
+    to ``lo``) from a float32 centerline channel wired to the required read port ``src``
+    (``StageRef("width", "from_channel", ports={"src": "cl.<pkg>.<name>"})``, e.g. the
+    carried image of a generator's ``raw.<pkg>.<name>``); a NaN source stays NaN (it
+    fails the width floor), padding NaN."""
+
+    kind = "width"
+    name = "from_channel"
+    Params = _p.WidthFromChannelParams
+    reads = {"src": "cl.*", "count": "cl.count"}
+    writes = {"half_width": "cl.half_width"}
+
+    def build(self, b, p):
+        # (src == cl.half_width, the stage's own output, is refused by the planner.)
+        channel = b._port_channel("src", "read")
+        if b.per_of("src") != "cl":
+            raise ValueError(f"stage {b.stage_id!r} (width.from_channel): src "
+                             f"{channel!r} is per={b.per_of('src')!r}; it reads a "
+                             f"per-point centerline channel (per='cl')")
+        if b.dtype_of("src") is not wp.float32:
+            raise ValueError(f"stage {b.stage_id!r} (width.from_channel): src {channel!r} "
+                             f"has dtype {getattr(b.dtype_of('src'), '__name__', '?')}; "
+                             f"it reads a float32 channel")
+        src, count = b.read("src"), b.read("count")
+        out = b.write("half_width", wp.float32, per="cl")
+        scale, lo, hi = b.param("scale"), b.param("lo"), b.param("hi")
+        S = int(b.layout.stride)
+        n = b.E * S
+
+        def enqueue(ctx):
+            ctx.launch(_width._width_from_channel_k, n, [src, count, scale, lo, hi, S, out])
         return enqueue
 
 
@@ -294,24 +454,36 @@ class FramesDefault(_Builtin):
 
 
 class OffsetDefault(_Builtin):
-    """``offset.default``: the plan-view borders at ``half_width``."""
+    """``offset.default``: the plan-view borders at ``cl.half_width`` (a constant version:
+    the original kernels with that scalar), and ``track.half_width``
+    (``Track.half_width``: the band's half-width on real points, NaN padding)."""
 
     kind = "offset"
     name = "default"
     Params = _p.OffsetParams
-    reads = {"xy": "cl.xy", "normal": "cl.normal2", "count": "cl.count"}
-    writes = {"outer": "band.outer2", "inner": "band.inner2"}
+    reads = {"xy": "cl.xy", "normal": "cl.normal2", "count": "cl.count",
+             "half_width": "cl.half_width"}
+    writes = {"outer": "band.outer2", "inner": "band.inner2",
+              "half_width_out": "track.half_width"}
 
     def build(self, b, p):
         xy, nrm2, count = b.read("xy"), b.read("normal"), b.read("count")
+        w = b.read("half_width")
+        hw = b._constant_of("half_width")
         outer2 = b.write("outer", wp.vec2f, per="cl")
         inner2 = b.write("inner", wp.vec2f, per="cl")
+        hw_out = b.write("half_width_out", wp.float32, per="cl")
         area_a = b.scratch("area_a", wp.float32, b.E)
         area_b = b.scratch("area_b", wp.float32, b.E)
-        hw = float(p.half_width)
+        if hw is not None:
+            def enqueue(ctx):
+                _wpl.offset(xy, nrm2, hw, outer2, inner2, area_a, area_b, count, ctx=ctx,
+                            hw_out=hw_out)
+            return enqueue
 
         def enqueue(ctx):
-            _wpl.offset(xy, nrm2, hw, outer2, inner2, area_a, area_b, count, ctx=ctx)
+            _width.offset_w(xy, nrm2, w, outer2, inner2, area_a, area_b, count,
+                            hw_out=hw_out, ctx=ctx)
         return enqueue
 
 
@@ -431,7 +603,9 @@ class ValidityDefault(_Builtin):
     """``validity.default``: the fused per-env gate (``_validity_k``, one launch): its
     0/1 flag into ``track.valid`` and one ``valid.fail`` bit per failed check (bits 0-7,
     ``BUILTIN_FAIL_BITS``). It initialises ``valid.fail`` (writes it without reading it),
-    so it comes before any plugin check."""
+    so it comes before any plugin check. The thickness (bit 3) and width-floor (bit 4)
+    checks read ``cl.half_width`` on the final points (a constant version: the original
+    kernel with that scalar; else ``warp_width._validity_w_k``, per pair / per point)."""
 
     kind = "validity"
     name = "default"
@@ -448,15 +622,23 @@ class ValidityDefault(_Builtin):
         xy, w, count = b.read("xy"), b.read("half_width"), b.read("count")
         gen_valid, outer2, inner2 = b.read("gen_valid"), b.read("outer"), b.read("inner")
         z, truncated = b.read("z"), b.read("truncated")
+        hw = b._constant_of("half_width")
         valid = b.write("valid", wp.int32)
         fail = b.write("fail", wp.int32)
         b._reserve_fail_bits(BUILTIN_FAIL_BITS)
         has_border = 1 if getattr(p, "validity_border_check", False) else 0
+        if hw is not None:
+            cfg = _with_half_width(p, hw)
+
+            def enqueue(ctx):
+                _wpl.validity_inplace(xy, w, count, gen_valid, outer2, inner2, has_border,
+                                      S, z, valid, cfg, truncated_wp=truncated, ctx=ctx,
+                                      fail_wp=fail)
+            return enqueue
 
         def enqueue(ctx):
-            _wpl.validity_inplace(xy, w, count, gen_valid, outer2, inner2, has_border, S,
-                                  z, valid, p, truncated_wp=truncated, ctx=ctx,
-                                  fail_wp=fail)
+            _width.validity_w_inplace(xy, w, count, gen_valid, outer2, inner2, has_border,
+                                      S, z, valid, p, truncated, fail, ctx=ctx)
         return enqueue
 
 
@@ -532,8 +714,8 @@ class LiftElevated(_Builtin):
 
 # The kinds open to plugins: registered in track_gen.plugin.registry.
 REGISTRY_STAGES = (
-    Xpbd, RelaxNone, WidthConstant, ElevationFlat, ElevationUniform, ElevationRandomWalk,
-    ElevationNoise, ValidityDefault,
+    Xpbd, RelaxNone, WidthConstant, WidthFromChannel, ElevationFlat, ElevationUniform,
+    ElevationRandomWalk, ElevationNoise, ValidityDefault,
 )
 # The built-in-only kinds: the private catalogue.
 CATALOGUE_STAGES = (

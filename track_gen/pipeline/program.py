@@ -21,9 +21,38 @@ if TYPE_CHECKING:  # pragma: no cover
     from ..seeds import SeedState
     from .spec import PipelineSpec
 
-__all__ = ["Program", "Segment"]
+__all__ = ["AttributeInfo", "Program", "Segment"]
 
 _PROGRAM_TOKEN = object()
+
+
+@dataclasses.dataclass(frozen=True)
+class AttributeInfo:
+    """One exported per-point attribute of a :class:`Program` (``Program.attributes``,
+    roadmap PR13a): what ``Track.attributes[key]`` / ``GateSequence.attributes[key]``
+    holds.
+
+    Attributes:
+        key: The result key: the channel name without its domain prefix
+            (``"acme.surface_id"``).
+        channel: The result-domain channel whose final version is the array
+            (``"cl.acme.surface_id"``, ``"gates.acme.tag"``).
+        dtype: The Warp dtype (``wp.float32``, ``wp.int32``, ``wp.vec2f`` or
+            ``wp.vec3f``).
+        interp: The carry policy its generator declared (``"linear"``, ``"nearest"``,
+            ``"previous"``, ``"angle"``), ``None`` for an attribute carried by index
+            only or written by a stage on the result's points.
+        padding: The value past ``count[e]``: NaN for floats (every vector component),
+            ``-1`` for int32.
+        domain: ``"cl"`` (a Track's points) or ``"gates"`` (a GateSequence's slots).
+    """
+
+    key: str
+    channel: str
+    dtype: object
+    interp: "str | None"
+    padding: object
+    domain: str
 
 
 @dataclasses.dataclass(frozen=True)
@@ -80,7 +109,8 @@ class Program:
                  inputs, params, pairs, enqueues, versions, scratch, stage_ids, kinds,
                  gen_scratch, stream=None, owner=None, commit=None, fail_bits=None,
                  fail_owner=None, capture_classes=None, segments=None,
-                 on_invalid: str = "keep", writers=None, ports=None) -> None:
+                 on_invalid: str = "keep", writers=None, ports=None,
+                 attributes=None) -> None:
         if _token is not _PROGRAM_TOKEN:
             raise TypeError("Program is created by track_gen.pipeline.build()")
         import warp as wp  # noqa: PLC0415
@@ -107,6 +137,7 @@ class Program:
         self._on_invalid = str(on_invalid)
         self._channel_writers = {ch: tuple(ids) for ch, ids in (writers or {}).items()}
         self._ports = dict(ports or {})            # stage_id -> (reads, writes)
+        self._attributes = types.MappingProxyType(dict(attributes or {}))
         if capture_classes is None:
             capture_classes = [CaptureClass(binding.capture)] + \
                 [CaptureClass.STATIC] * (len(self._stage_ids) - 1)
@@ -226,8 +257,17 @@ class Program:
     @property
     def channels(self) -> Mapping[str, "tuple[str, ...]"]:
         """``channel -> ids of the stages that write it``, in order (``"seed"``:
-        ``("<prologue>",)``)."""
+        ``("<prologue>",)``), the carriers' implicit writes included (a resample
+        writing the ``cl`` image of a generator's raw attribute)."""
         return types.MappingProxyType(dict(self._channel_writers))
+
+    @property
+    def attributes(self) -> Mapping[str, "AttributeInfo"]:
+        """``key -> AttributeInfo`` of every per-point attribute the result exports
+        (``Track.attributes`` / ``GateSequence.attributes``): the source of truth for
+        what reached the result (gate attributes are best effort). Empty when no stage
+        exports one."""
+        return self._attributes
 
     @property
     def capturable(self) -> bool:

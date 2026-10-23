@@ -1,5 +1,5 @@
 """The channel catalogue of the track and gate pipelines (channels v1, roadmap
-PR10a/PR10b/PR11).
+PR10a/PR10b/PR11/PR13a).
 
 A channel is a named per-env buffer the stages of a :mod:`track_gen.pipeline` program
 read and write. ``per`` sizes it: ``"env"`` is ``[E]``, ``"raw"`` is ``[E * raw]`` (the
@@ -7,9 +7,11 @@ generator's capacity), ``"cl"`` is ``[E * N_max]``, ``"anchors"`` is ``[E * A]``
 the ``capacity()["gates"]`` of the stage that writes the anchors: a gate generator or a
 ``stations`` stage) and ``"gates"`` is ``[E * max_gates]`` (``BatchSpec.max_gates``).
 ``interp`` records how a per-point
-channel is carried through a resample (roadmap PR13; nothing is carried in this
-release). Besides these channels, a plugin stage may read and write its own namespaced
-channels ``cl.<package>.<name>`` (:data:`PLUGIN_CHANNEL`): their dtype and size are
+channel is carried through a resample (roadmap PR13a: ``raw.z`` / ``raw.half_width``
+and the generators' ``raw.<package>.<name>`` attributes are carried to the centerline,
+see :data:`CARRIED_CATALOGUE`). Besides these channels, a plugin may read and write its
+own namespaced channels ``<domain>.<package>.<name>`` (:data:`PLUGIN_CHANNEL`; the
+domain prefix is ``raw``, ``cl``, ``anchors`` or ``gates``): their dtype and size are
 fixed by the first stage that writes one.
 
 :data:`BUILTIN_FAIL_BITS` names the bits of the ``valid.fail`` mask that TrackGen's
@@ -27,8 +29,10 @@ from typing import Mapping
 
 import warp as wp
 
-__all__ = ["BUILTIN_FAIL_BITS", "CHANNELS", "Channel", "ELEVATION_GATE_CHANNELS", "FAIL",
-           "GATE_FAIL_BITS", "PERS", "PLUGIN_CHANNEL", "SEED", "is_plugin_channel"]
+__all__ = ["BUILTIN_FAIL_BITS", "CARRIED_CATALOGUE", "CHANNELS", "Channel", "DOMAINS",
+           "ELEVATION_GATE_CHANNELS", "FAIL", "GATE_FAIL_BITS", "INTERPS", "PERS",
+           "PLUGIN_CHANNEL", "SEED", "channel_domain", "family_key", "is_plugin_channel",
+           "required_port_domain"]
 
 SEED = "seed"          # written by the Program's prologue; no stage writes it
 FAIL = "valid.fail"    # the per-env fail bitmask (Track.fail_mask)
@@ -39,9 +43,25 @@ PERS = ("env", "raw", "cl", "anchors", "gates")   # the sizes a channel may have
 PER_CLASS = {"env": "env", "raw": "raw", "cl": "points", "gates": "points",
              "anchors": "anchors"}
 
-#: A plugin's own channel: ``cl.<package>.<name>`` (at least two dotted components after
-#: ``cl.``, each a Python identifier), never a catalogue name.
-PLUGIN_CHANNEL = re.compile(r"^cl\.[A-Za-z_]\w*(\.[A-Za-z_]\w*)+$")
+#: The point domains a plugin channel may live in (its name's prefix): the generator's
+#: raw loop, the centerline, the anchors and the gate slots.
+DOMAINS = ("raw", "cl", "anchors", "gates")
+#: A plugin's own channel: ``<domain>.<package>.<name>`` with ``<domain>`` one of
+#: :data:`DOMAINS` (at least two dotted components after it, each a Python identifier),
+#: never a catalogue name. The prefix fixes the domain: ``raw.acme.grip`` is written by
+#: a centerline generator and carried to ``cl.acme.grip``; ``gates.acme.x`` lives on the
+#: gate slots.
+PLUGIN_CHANNEL = re.compile(r"^(raw|cl|anchors|gates)\.[A-Za-z_]\w*(\.[A-Za-z_]\w*)+$")
+#: A required read port (``Stage.reads`` value ``"<domain>.*"``): the stage reads a
+#: channel of that domain the user wires with ``StageRef.ports``.
+REQUIRED_PORT = re.compile(r"^(raw|cl|anchors|gates)\.\*$")
+#: The carry policies a generator's raw attribute declares (``StageBuilder.write(...,
+#: interp=)``): see :doc:`/how-it-works/pipeline-preview`.
+INTERPS = ("linear", "nearest", "previous", "angle")
+#: The catalogue channels carried through the resamples (with their ``interp``):
+#: a generator's provided ``raw.z`` / ``raw.half_width`` and the centerline's ``cl.z`` /
+#: ``cl.half_width``, whoever wrote them.
+CARRIED_CATALOGUE = frozenset({"raw.z", "raw.half_width", "cl.z", "cl.half_width"})
 
 #: The fail bits of TrackGen's built-in checks (``validity.default``): ``valid.fail`` bit
 #: ``i`` set means check ``i`` failed. The border (5) and grade (6) bits are named even
@@ -81,6 +101,11 @@ def _c(per, dtype, doc, interp=None) -> Channel:
 CHANNELS: Mapping[str, Channel] = MappingProxyType({
     SEED: _c("env", wp.int32, "The effective per-env seed (seed and epoch folded)."),
     "raw.xy": _c("raw", wp.vec2f, "The generator's raw closed centerline."),
+    "raw.z": _c("raw", wp.float32, "Per-raw-point altitude a centerline generator "
+                                   "provides (carried to cl.z).", "linear"),
+    "raw.half_width": _c("raw", wp.float32, "Per-raw-point half-width a centerline "
+                                            "generator provides (carried to "
+                                            "cl.half_width).", "linear"),
     "gen.valid": _c("env", wp.int32, "The generator's per-env flag (0/1)."),
     "cl.xy": _c("cl", wp.vec2f, "The centerline (constant-spacing, relaxed, uniform)."),
     "cl.count": _c("env", wp.int32, "Real points per env; NaN padding after."),
@@ -96,6 +121,8 @@ CHANNELS: Mapping[str, Channel] = MappingProxyType({
     "band.inner2": _c("cl", wp.vec2f, "Plan-view inner border."),
     "cl.z": _c("cl", wp.float32, "Per-point elevation.", "linear"),
     "track.count": _c("env", wp.int32, "Track.count."),
+    "track.half_width": _c("cl", wp.float32, "Track.half_width: the band's half-width on "
+                                             "real points, NaN padding (offset)."),
     "track.arclen": _c("cl", wp.float32, "Track.arclen: 3D cumulative arc length (lifted)."),
     "track.length": _c("env", wp.float32, "Track.length: 3D loop length (lifted)."),
     "track.valid": _c("env", wp.int32, "validity.default's own 0/1 flag; Track.valid is "
@@ -150,7 +177,35 @@ def is_gate_channel(name) -> bool:
 
 
 def is_plugin_channel(name) -> bool:
-    """Whether ``name`` is a namespaced plugin channel (``cl.<package>.<name>``, not a
-    catalogue name)."""
+    """Whether ``name`` is a namespaced plugin channel (``<domain>.<package>.<name>``, not
+    a catalogue name)."""
     return isinstance(name, str) and name not in CHANNELS \
         and PLUGIN_CHANNEL.match(name) is not None
+
+
+def channel_domain(name) -> "str | None":
+    """The point domain of a plugin channel or of a catalogue channel named after one
+    (``"raw"``, ``"cl"``, ``"anchors"`` or ``"gates"``: the name's prefix), else
+    ``None``."""
+    if not isinstance(name, str):
+        return None
+    head = name.split(".", 1)[0]
+    if head in DOMAINS and (name in CHANNELS or is_plugin_channel(name)):
+        return head
+    return None
+
+
+def family_key(name: str) -> str:
+    """A carried channel's family key: its name without the domain prefix
+    (``raw.acme.grip`` -> ``"acme.grip"``, ``cl.z`` -> ``"z"``)."""
+    return name.split(".", 1)[1]
+
+
+def required_port_domain(name) -> "str | None":
+    """The domain of a required read port value (``"cl.*"`` -> ``"cl"``), else
+    ``None``."""
+    if isinstance(name, str):
+        m = REQUIRED_PORT.match(name)
+        if m is not None:
+            return m.group(1)
+    return None

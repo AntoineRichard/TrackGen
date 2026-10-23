@@ -123,12 +123,14 @@ _ALL = ["ArcScratch", "all_set", "angle_sort", "any_set", "arc_resample", "check
         "closed_catmull_rom", "constants", "fill", "funcs", "grid_cells", "hash32",
         "hash32_host", "normalize_extent", "closed_polyline",
         "resample_constant_spacing", "resample_uniform", "sample_counts",
-        "sample_grid_points", "self_intersections", "thickness", "turning_number"]
+        "sample_grid_points", "self_intersections", "thickness", "turning_number",
+        # roadmap PR13a: carried channels
+        "ResampleTables", "resample_channels"]
 
 _CTX_OPS = ["all_set", "angle_sort", "any_set", "arc_resample", "closed_catmull_rom", "fill",
             "normalize_extent", "closed_polyline", "resample_constant_spacing",
             "resample_uniform", "sample_counts", "sample_grid_points",
-            "self_intersections", "thickness", "turning_number"]
+            "self_intersections", "thickness", "turning_number", "resample_channels"]
 
 
 def test_public_surface():
@@ -152,7 +154,8 @@ def test_every_op_takes_ctx_first_and_documents_shapes(name):
 
 
 def test_arc_scratch_and_helpers_are_documented():
-    for obj in (ops.ArcScratch, ops.ArcScratch.alloc, ops.check_array, ops.grid_cells):
+    for obj in (ops.ArcScratch, ops.ArcScratch.alloc, ops.check_array, ops.grid_cells,
+                ops.ResampleTables, ops.ResampleTables.alloc):
         assert inspect.getdoc(obj), obj
     assert "[>= E*stride]" in inspect.getdoc(ops.ArcScratch)
 

@@ -127,6 +127,29 @@ broke.
      - Writing an open curve, or one that spans less than a full turn. A loop far larger
        than ``TARGET_EXTENT * scale`` needs more than ``N_max`` resampled points, fails
        as truncated, and leaves no valid env (see :ref:`generator-hard-rules`).
+   * - ``attributes.written``
+     - Every slot of every per-point attribute the generator writes (``raw.z``,
+       ``raw.half_width``, ``raw.<package>.<name>``; a gate generator's
+       ``anchors.<package>.<name>``, before its ``anchors.count``) is written, for every
+       env the generator marks valid: the kit poisons those buffers before the
+       generation it checks, as it does the centerline. Skipped ("no attributes") for a
+       generator that writes none.
+     - A launch that covers ``raw.xy`` but not the attribute (a different ``dim``); an
+       attribute written only on some calls (the raw buffers are not cleared between
+       generations).
+   * - ``attributes.carried``
+     - Every exported attribute of the result (``Track.attributes`` /
+       ``GateSequence.attributes``) holds its padding (NaN, or ``-1``) past ``count[e]``
+       and, on the real points of every env the generator marks valid, finite values
+       (floats) that its policy can produce from the env's raw values: ``"linear"``
+       within the env's raw ``[min, max]`` per component (with a slack of 4 float32 ulps
+       of the largest magnitude), ``"nearest"`` / ``"previous"`` (and an attribute
+       carried by index) among the env's raw values, ``"angle"`` in ``[-π, π]``.
+       Skipped when nothing is exported.
+     - A NaN written into a raw attribute (a non-finite real point). It does not
+       catch ``"angle"`` values in degrees (the carry wraps every output into
+       ``[-π, π)``) or a label carried ``"linear"`` (its blends stay within the raw
+       range): those are the rules of :ref:`generator-attributes`.
    * - ``determinism``
      - Two generators built with the same seeds give bitwise identical batches: the raw
        output and every ``Track`` field, NaN padding included.
@@ -391,12 +414,15 @@ the gate kinds, in the default gate pipeline of ``presets.gates``, built through
    check_stage("elevation", "acme.sinusoid_hills").raise_for_failures()
    check_stage("elevation", "acme.sinusoid_hills",
                pipeline="gates").raise_for_failures()
+   check_stage("width", "acme.ripple").raise_for_failures()
+   check_stage("width", "from_channel", ports={"src": "cl.acme.hw"},
+               upstream={"generator": "acme.ribbon"}).raise_for_failures()
 
 .. code-block:: python
 
-   check_stage(kind, name, params=None, *, upstream=None, pipeline=None, devices=None,
-               num_envs=8, seeds=(11, 1009), capture_modes=("warp", "external", "torch"),
-               skip=(), modules=())
+   check_stage(kind, name, params=None, *, upstream=None, ports=None, pipeline=None,
+               devices=None, num_envs=8, seeds=(11, 1009),
+               capture_modes=("warp", "external", "torch"), skip=(), modules=())
 
 - ``kind`` is ``"relax"``, ``"width"``, ``"elevation"``, ``"validity"``, ``"order"`` or
   ``"stations"`` (``ValueError`` otherwise); ``name`` is looked up in the registry like a
@@ -419,6 +445,10 @@ the gate kinds, in the default gate pipeline of ``presets.gates``, built through
   the gate pipeline), and the stage is appended to them under its own
   name as id; a validity stage that writes ``valid.fail`` without reading it replaces
   them instead.
+- ``ports`` is the stage's ``StageRef.ports``: it wires a required read port
+  (``{"src": "cl.acme.hw"}`` for ``width.from_channel``) or rewires another; the channel
+  must exist in the pipeline ``upstream`` describes (here a generator that carries
+  ``raw.acme.hw``).
 - ``devices``, ``num_envs`` (at least 2), ``seeds``, ``capture_modes``, ``skip`` and
   ``modules`` are those of ``check_generator`` (see `Arguments`_).
 
@@ -467,9 +497,24 @@ diversity), plus:
        only.
      - OR-ing a built-in bit (``fail_in | 1``), clearing bits of earlier checks (writing
        ``own`` instead of ``fail_in | own``), skipping the envs that pass.
+   * - ``width.values`` (width only)
+     - The stage's own ``cl.half_width`` version (``tap("cl.half_width",
+       after=<its id>)``) is finite and ``>= 0`` on every real point of every env the
+       generator marks valid; ``details`` holds its minimum and maximum. A half-width
+       under ``w_floor`` is validity's verdict (fail bit 4), not this check's. A width
+       stage that reads ``cl.half_width`` (a rewrite) runs right after
+       ``width.constant``; one with a required read port needs ``ports=``.
+     - A negative or NaN width (a NaN source channel of ``width.from_channel`` included:
+       the generator's ``attributes.carried`` check fails too when the source attribute
+       is exported). A real point left unwritten keeps the buffer's zero, which passes
+       here: ``stage.isolation`` reports it.
 
 ``determinism``, ``batch_independence`` and ``statelessness`` compare whole ``Track``
-batches, ``fail_mask`` included. The ``hot_path.*`` checks guard two generations of the
+batches, ``fail_mask``, ``half_width`` and every attribute included. A relax stage's
+bead-identity contract (point ``i`` out is point ``i`` in, moved; see
+:ref:`the relax contract <stage-relax-contract>`) is documented, not checked: XPBD's own
+drift along the loop reaches the size of an off-by-one shift on some envs, so no
+threshold separates the two. The ``hot_path.*`` checks guard two generations of the
 whole Program and probe ``track_gen`` and the stage's own top-level package; the
 ``capture.*`` checks record the whole Program into a caller's capture
 (``assert_caller_capturable``) and replay its own graph. With a ``HOST`` stage the

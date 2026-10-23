@@ -85,6 +85,62 @@ inert for the profiles they do not apply to.
    plan-view arc length between adjacent gates, so widely spaced gates may still differ
    in altitude by more than ``z_max_step``.
 
+.. _gates-3d-stations:
+
+Gates on a track centerline: 3D spacing
+---------------------------------------
+
+Gates made from a track generator's centerline (``presets.gates(..., source="stations"
+or "relaxed_stations")``, :ref:`pipeline-stations`) are placed at equal arc length along
+the loop. By default that is plan-view arc length, and the altitude is drawn afterwards,
+over the gates, exactly as for an anchors generator. On a course that climbs, equal
+plan-view spacing is not equal flight distance: ``spacing_metric="xyz"`` places the
+stations at equal **3D** arc length instead. That needs the altitude on the loop before
+the stations are placed, from one of two sources:
+
+- a generator that computes its own altitude (``provides={"z"}``,
+  :ref:`generator-provides`);
+- with ``source="relaxed_stations"``, the elevation stage run on the relaxed centerline:
+  ``elevation_on="centerline"``.
+
+The stations then carry the altitude to the gates (``carry.z``, with the stations'
+``order.raw``), and no gate-level elevation runs.
+
+.. code-block:: python
+
+   from track_gen import GateGenerator
+   from track_gen.pipeline import presets
+
+   spec = presets.gates(num_envs=64, device="cuda:0", generator="bezier",
+                        source="relaxed_stations", gates=12,
+                        elevation=("noise", {"z_noise_amplitude": 0.3,
+                                             "z_min": -0.3, "z_max": 0.3}),
+                        spacing_metric="xyz")       # elevation_on defaults to "centerline"
+   gates = GateGenerator(spec).generate()
+
+.. warning::
+
+   ``spacing_metric`` and ``elevation_on`` are separate controls, and ``elevation_on=None``
+   (the default) follows the metric: ``"centerline"`` for ``"xyz"``, ``"gates"`` for
+   ``"xy"``. **Switching the metric with the default** ``elevation_on`` **therefore also
+   moves the elevation** from the gates to the centerline, which changes the course, not
+   only the spacing: a profile drawn along the loop and sampled at the stations instead
+   of one drawn over the gates. For the knot profiles (``uniform``, ``random_walk``) the
+   knots then lie along the loop (``z_control_points`` of them) rather than at the gates.
+   To compare the two metrics on the same altitude model, pass ``elevation_on``
+   explicitly (``elevation_on="centerline"`` with both metrics). Moving a plugin
+   elevation to the centerline also drops its exported channels from
+   ``GateSequence.attributes`` (the stations carry generator attributes only).
+
+``elevation_on="gates"`` with ``"xyz"``, ``elevation_on="centerline"`` with
+``source="stations"`` (a raw loop has no sub-pipeline to elevate), ``"xyz"`` with no
+altitude on the loop (a flat elevation and no ``z`` provider), an explicit
+``elevation_on`` with a ``z`` provider (no elevation runs), ``"xyz"`` with an
+anchors generator, and an explicit order other than ``raw`` with an altitude on the loop
+raise ``ValueError``; :ref:`pipeline-stations-xyz` has the full table. The gate arc
+tables (``gate_arclen``) stay plan-view in every case: they feed the gate elevation, which
+produces the altitude a 3D metric would need.
+
 .. figure:: _static/gate-courses.png
    :alt: Three 3D gate courses, each as a plan view and an elevation profile
    :align: center

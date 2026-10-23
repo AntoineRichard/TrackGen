@@ -1164,6 +1164,15 @@ class GateSequence:
         (``GateGenerator.program.fail_bits``); the crossing / grade bits are named
         even when their check is off (then never set).  Empty on a ``GateSequence``
         built elsewhere.
+    attributes : Mapping[str, wp.array]
+        The per-gate attributes the pipeline exports, keyed by the channel name
+        without its domain prefix (``anchors.acme.tag`` / ``gates.acme.tag`` ->
+        ``"acme.tag"``): flat ``[E * max_gates]`` arrays, NaN (floats) / ``-1``
+        (int32) past ``count[e]``.  Best effort: an attribute with no path to the gate
+        slots (a non-``raw`` order, a plugin stations stage, a channel a stage writes
+        on the centerline, e.g. an elevation with ``elevation_on="centerline"``) is
+        left out (``GateGenerator.program.attributes`` lists what is there).  Empty
+        unless a stage exports one.
     """
 
     position: wp.array
@@ -1178,6 +1187,7 @@ class GateSequence:
     generation: "wp.array | None" = None
     fail_mask: "wp.array | None" = None
     fail_bits: Mapping[str, int] = field(default_factory=dict)
+    attributes: Mapping[str, wp.array] = field(default_factory=dict)
 
     def clone(self) -> "GateSequence":
         """Return a deep copy whose Warp buffers do not alias this sequence."""
@@ -1194,6 +1204,7 @@ class GateSequence:
             generation=None if self.generation is None else wp.clone(self.generation),
             fail_mask=None if self.fail_mask is None else wp.clone(self.fail_mask),
             fail_bits=self.fail_bits,
+            attributes={k: wp.clone(v) for k, v in (self.attributes or {}).items()},
         )
 
 
@@ -1202,8 +1213,8 @@ class Track:
     """Final batched result of the track generation pipeline.
 
     All boundary arrays are index-aligned: ``outer[i]``, ``center[i]`` and
-    ``inner[i]`` share a single cross-section normal. Half-width is not stored;
-    recover it as the outer-center norm along dim=-1.
+    ``inner[i]`` share a single cross-section normal. ``half_width[i]`` is the band's
+    half-width there (``‖outer[i] - center[i]‖`` in plan view).
     Fields are ``wp.array``; convert at the boundary via the wp bridge.
 
     .. warning::
@@ -1320,6 +1331,21 @@ class Track:
         (``TrackGenerator.program.fail_bits``); the border / grade bits are named
         even when their check is off (then never set).  Empty on a ``Track`` built
         elsewhere.
+    half_width : wp.array or None
+        Flat ``[E * N_max]`` ``float32`` half-width of the band at each centerline
+        point (the offset's: ``‖outer[i] - center[i]‖`` in plan view), NaN past
+        ``count[e]``.  The constant ``half_width`` of the config on every real point
+        at constant width (``width.constant``); the per-point width of a width stage
+        or a generator that provides one otherwise.  ``TrackGenerator`` always
+        allocates it; ``None`` on a ``Track`` built elsewhere.
+    attributes : Mapping[str, wp.array]
+        The per-point attributes the pipeline exports (``StageBuilder.write(...,
+        export=True)``), keyed by the channel name without its domain prefix
+        (``raw.acme.surface_id`` -> ``"acme.surface_id"``): flat ``[E * N_max]``
+        arrays of the attribute's dtype, carried to the final points with its
+        ``interp`` policy, NaN (floats) / ``-1`` (int32) past ``count[e]``.  Stable
+        pointers for the generator's lifetime.  Empty unless a stage exports one
+        (``TrackGenerator.program.attributes`` describes them).
     """
 
     outer: wp.array
@@ -1336,6 +1362,8 @@ class Track:
     generation: "wp.array | None" = None
     fail_mask: "wp.array | None" = None
     fail_bits: Mapping[str, int] = field(default_factory=dict)
+    half_width: "wp.array | None" = None
+    attributes: Mapping[str, wp.array] = field(default_factory=dict)
 
     def clone(self) -> "Track":
         """Return a fully-owned deep copy of this Track.
@@ -1359,4 +1387,6 @@ class Track:
             generation=None if self.generation is None else wp.clone(self.generation),
             fail_mask=None if self.fail_mask is None else wp.clone(self.fail_mask),
             fail_bits=self.fail_bits,
+            half_width=None if self.half_width is None else wp.clone(self.half_width),
+            attributes={k: wp.clone(v) for k, v in (self.attributes or {}).items()},
         )

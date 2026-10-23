@@ -70,7 +70,8 @@ _M1 = np.array([1, 0, 1, 0, 0, 1, 0, 1], np.int32)
 # none, so of the envs _M1 selects, 0 and 2 are always poisoned while 5 and 7 are kept
 # unless a built-in check fails them.
 _KAPPA_SPLIT = np.array([0.0, 1.0e6] * (E // 2), np.float32)
-_POINT_FIELDS = ("outer", "center", "inner", "tangent", "normal", "arclen")
+_POINT_FIELDS = ("outer", "center", "inner", "tangent", "normal", "arclen",
+                 "half_width")   # Track.half_width (roadmap PR13a) is poisoned too
 
 
 @pytest.fixture(autouse=True)

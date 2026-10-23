@@ -480,7 +480,8 @@ def test_superformula_stations_emit_their_gate_count(acme):
     stations and some env is valid (the recorded comparisons are not on empty
     sequences)."""
     for source, station, extra in (("auto", "raw", ()),
-                                   ("relaxed_stations", "relaxed", ("resample", "relax"))):
+                                   ("relaxed_stations", "relaxed",
+                                    ("resample", "width", "relax"))):
         spec = _superformula(source)
         assert _ref(spec, "generator").name == SUPERFORMULA, spec.ids
         assert _ref(spec, "stations").name == station, spec.ids

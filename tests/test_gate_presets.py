@@ -117,7 +117,9 @@ def test_source_auto_and_explicit():
     assert (st.stages[0].kind, st.stages[1].name) == ("generator", "raw")
     assert st.stages[1].params == {"gates": 8} and st.batch.max_gates == 8
     rel = _gates(generator=gt.SUPERFORMULA, source="relaxed_stations")
-    assert rel.ids[:5] == ("generator", "resample", "relax", "stations", "order")
+    # Since 0.2.0.dev4 the relaxed_stations sub-pipeline has the width stage (before
+    # relax): width.constant launches nothing, the PR11 trace is unchanged.
+    assert rel.ids[:6] == ("generator", "resample", "width", "relax", "stations", "order")
     assert _ref(rel, "stations").name == "relaxed"
     ref = StageRef("gate_generator", "hull")
     assert _gates(generator=ref).stages[0].slot_id == "generator"
@@ -470,8 +472,8 @@ def test_domain_and_plugin_channel_rules():
                                         r"after rewiring; a stage runs on one point domain"):
         build(_gates(checks=("gate_default", "test.mixed")), seeds=1)
     with pytest.raises(PlanError, match=r"plugin channel 'cl.acme.thing' is a centerline "
-                                        r"channel; gate plugin channels "
-                                        r"\(gates.<pkg>.<name>\) arrive with roadmap PR13"):
+                                        r"channel; a gate-domain stage reads and writes "
+                                        r"gates.<pkg>.<name>"):
         build(_gates(checks=("gate_default", "test.plug")), seeds=1)
     # an elevation port with no gate counterpart
     spec = _gates(elevation="noise").replace("elevation", StageRef(

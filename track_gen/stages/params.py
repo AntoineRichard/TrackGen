@@ -1,11 +1,13 @@
-"""Params classes of the built-in track and gate stages (roadmap PR10a / PR11).
+"""Params classes of the built-in track and gate stages (roadmap PR10a / PR11 / PR13a).
 
 Like the built-in generators' Params (:mod:`track_gen._src.builtin_params`), every class
 keeps the FLAT ``TrackGenConfig`` field names, every field is static, and
-``from_legacy(config)`` copies the flat values (no casts). The stage hands its Params
-instance (or, for elevation, a namespace built from it) to the legacy wrappers as their
-``config`` argument, so the same values reach the same ``float()`` / ``int()``
-conversions and the launches are unchanged.
+``from_legacy(config)`` copies the flat values (no casts), except
+``WidthFromChannelParams`` (dynamic ``scale`` / ``lo`` / ``hi``) and ``StationsParams``
+(``gates``, ``spacing_metric``), which have no ``TrackGenConfig`` counterpart. The stage
+hands its Params instance (or, for elevation, a namespace built from it) to the legacy
+wrappers as their ``config`` argument, so the same values reach the same ``float()`` /
+``int()`` conversions and the launches are unchanged.
 
 ``validate()`` re-runs the ``TrackGenConfig.__post_init__`` rules of the class's own
 fields with the same messages: a spec made from a ``TrackGenConfig`` always passes; the
@@ -20,7 +22,7 @@ import dataclasses
 import numpy as np
 
 from .._src.builtin_params import _FlatParams
-from ..plugin.params import static
+from ..plugin.params import Params, dynamic, static
 
 __all__ = [
     "ConstantSpacingParams",
@@ -37,6 +39,7 @@ __all__ = [
     "StationsParams",
     "ValidityParams",
     "WidthConstantParams",
+    "WidthFromChannelParams",
     "XpbdParams",
 ]
 
@@ -54,7 +57,8 @@ class _StageFlatParams(_FlatParams):
         return cls(**{f.name: getattr(cfg, f.name) for f in dataclasses.fields(cls)
                       if hasattr(cfg, f.name)})
 
-_HW_DOC = "Track half-width (the kernels take it as a host scalar until roadmap PR13)."
+_HW_DOC = ("Track half-width: every point's (cl.half_width; at constant width the "
+           "consumers take it as a host scalar).")
 
 
 def _check_half_width(p) -> None:
@@ -77,9 +81,9 @@ class ConstantSpacingParams(_FlatParams):
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class XpbdParams(_FlatParams):
-    """``relax.xpbd``: the XPBD relaxation (band / rest length setup + solve)."""
+    """``relax.xpbd``: the XPBD relaxation (band / rest length setup + solve). The
+    half-width is ``cl.half_width`` (the width stage runs before relax)."""
 
-    half_width: float = static(0.1, doc=_HW_DOC)
     relax_band: "int | None" = static(None, doc="Separation band override (None: auto).")
     relax_iters: int = static(50, doc="XPBD Jacobi sweeps.")
     relax_margin: float = static(0.15, doc="Separation target margin.")
@@ -100,7 +104,6 @@ class XpbdParams(_FlatParams):
                                                            "(>= 0).")
 
     def validate(self, layout) -> None:
-        _check_half_width(self)
         if int(self.relax_sep_every) < 1:
             raise ValueError(f"relax_sep_every must be >= 1, got {self.relax_sep_every!r}")
         if int(self.relax_sep_cache_slots) < 0:
@@ -141,30 +144,45 @@ class WidthConstantParams(_FlatParams):
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class OffsetParams(_FlatParams):
-    """``offset.default``: the outer / inner borders at ``half_width``."""
+class WidthFromChannelParams(Params):
+    """``width.from_channel``: ``cl.half_width = clamp(scale * src, lo, hi)`` from a
+    float32 per-point channel the user wires (``StageRef.ports={"src": "cl.<pkg>.<name>"}``,
+    e.g. the carried image of a generator's ``raw.<pkg>.<name>``). A NaN source point
+    stays NaN (and fails the width floor). ``lo`` defaults to 0: a source that pinches
+    below ``w_floor`` fails validity bit 4 instead of being clamped away. ``lo <= hi`` is
+    checked at build; a run-time ``hi`` below ``lo`` clamps to ``lo`` (the kernel uses
+    ``max(hi, lo)`` as the upper bound)."""
 
-    half_width: float = static(0.1, doc=_HW_DOC)
+    scale: float = dynamic(1.0, lo=0.0, doc="Factor applied to the source (>= 0).")
+    lo: float = dynamic(0.0, lo=0.0, doc="Lower clamp (>= 0).")
+    hi: float = dynamic(1.0e9, lo=0.0, doc="Upper clamp (>= 0 and >= lo).")
 
     def validate(self, layout) -> None:
-        _check_half_width(self)
+        if float(self.lo) > float(self.hi):
+            raise ValueError(f"lo must be <= hi, got {self.lo!r} > {self.hi!r}")
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class OffsetParams(_FlatParams):
+    """``offset.default``: the outer / inner borders at ``cl.half_width`` (since
+    0.2.0.dev4 the width is the channel, written by the width stage)."""
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class ValidityParams(_FlatParams):
-    """``validity.default``: the fused per-env validity gate."""
+    """``validity.default``: the fused per-env validity gate (the thickness and width
+    floor checks read ``cl.half_width``)."""
 
-    half_width: float = static(0.1, doc=_HW_DOC)
     turning_tol: float = static(0.1, doc="Turning-number tolerance (rad).")
-    w_floor: float = static(1e-3, doc="Width floor of every real point.")
-    relax_tol: float = static(0.02, doc="Thickness tolerance: valid when thickness >= "
-                                        "(1 - relax_tol) * half_width.")
+    w_floor: float = static(1e-3, doc="Width floor: every real point's cl.half_width "
+                                      "must exceed it (bit 4).")
+    relax_tol: float = static(0.02, doc="Thickness tolerance: valid when every point's "
+                                        "clearance >= (1 - relax_tol) * its half-width.")
     z_valid_grade: float = static(0.0, lo=0.0, doc="Maximum |dz|/ds grade (0: off).")
     validity_border_check: bool = static(False, doc="Add the border self-intersection "
                                                     "check.")
 
     def validate(self, layout) -> None:
-        _check_half_width(self)
         if float(self.z_valid_grade) < 0.0:
             raise ValueError(f"z_valid_grade must be >= 0, got {self.z_valid_grade!r}")
 
@@ -330,7 +348,17 @@ class GateValidityParams(_StageFlatParams):
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class StationsParams(_StageFlatParams):
-    """``stations.raw`` / ``stations.relaxed``: ``gates`` anchors at equal plan-view arc
-    length along a centerline loop."""
+    """``stations.raw`` / ``stations.relaxed``: ``gates`` anchors at equal arc length
+    along a centerline loop: plan-view (``spacing_metric="xy"``) or 3D (``"xyz"``, which
+    needs the loop's altitude: a generator that provides ``z``, or an elevation run on
+    the relaxed centerline)."""
 
     gates: int = static(12, lo=3, doc="Stations (anchors) per env (>= 3).")
+    spacing_metric: str = static("xy", choices=("xy", "xyz"),
+                                 doc="Arc length the stations are equally spaced in: "
+                                     "plan view (xy) or 3D (xyz).")
+
+    def validate(self, layout) -> None:
+        if self.spacing_metric not in ("xy", "xyz"):
+            raise ValueError(f"spacing_metric must be 'xy' or 'xyz', got "
+                             f"{self.spacing_metric!r}")

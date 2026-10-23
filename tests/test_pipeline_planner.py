@@ -33,7 +33,8 @@ DEV = "cpu"
 E = 2
 TRACK_FIELDS = ("outer", "center", "inner", "tangent", "normal", "arclen", "length",
                 "valid", "count", "winding", "truncated", "generation")
-DEFAULT_IDS = ("generator", "resample", "relax", "uniform", "width", "frames", "offset",
+# Since 0.2.0.dev4 (roadmap PR13a) the width runs before relax.
+DEFAULT_IDS = ("generator", "resample", "width", "relax", "uniform", "frames", "offset",
                "elevation", "validity", "lift")
 
 
@@ -63,17 +64,18 @@ def test_default_stage_list_flat():
     assert spec.ids == DEFAULT_IDS
     assert _names(spec) == [
         ("generator", "generator.bezier"), ("resample", "resample.constant_spacing"),
-        ("relax", "relax.xpbd"), ("uniform", "resample.uniform"),
-        ("width", "width.constant"), ("frames", "frames.default"),
+        ("width", "width.constant"), ("relax", "relax.xpbd"),
+        ("uniform", "resample.uniform"), ("frames", "frames.default"),
         ("offset", "offset.default"), ("elevation", "elevation.flat"),
         ("validity", "validity.default"), ("lift", "lift.flat")]
     assert spec.batch == BatchSpec(num_envs=E, device="cpu", n_max=384, closed=True,
                                    scale=1.0)
-    gen, resample, relax = spec.stages[:3]
+    gen, resample, width, relax = spec.stages[:4]
     assert dict(gen.capacity) == {"raw": 256}
     assert gen.params == registry.get("generator", "bezier").params.from_legacy(_cfg())
     assert resample.params == sp.ConstantSpacingParams(spacing=0.6 * 0.1)
     assert relax.params == sp.XpbdParams.from_legacy(_cfg())
+    assert width.params == sp.WidthConstantParams(half_width=0.1)
     assert spec.stages[7].params is None
     assert spec.stages[9].params == sp.LiftFlatParams(z_base=0.0)
 
@@ -93,7 +95,7 @@ def test_default_stage_list_elevated(profile, params):
 
 def test_default_stage_list_without_relax():
     spec = _spec(relax_enable=False)
-    assert spec.stages[2] == StageRef("relax", "none")
+    assert spec.stages[3] == StageRef("relax", "none")
     assert spec.ids == DEFAULT_IDS
 
 
@@ -123,7 +125,7 @@ def test_the_flat_params_validate_with_the_config_messages():
     for p, match in [
         (sp.XpbdParams(relax_cheby_rho=1.0), r"relax_cheby_rho must be in \[0, 1\)"),
         (sp.XpbdParams(relax_sep_every=0), "relax_sep_every must be >= 1"),
-        (sp.XpbdParams(half_width=0.0), "half_width must be > 0"),
+        (sp.WidthConstantParams(half_width=0.0), "half_width must be > 0"),
         (sp.ConstantSpacingParams(spacing=0.0), "spacing must be > 0"),
         (sp.ElevationUniformParams(z_min=1.0), "z_min must be <= z_max"),
         (sp.ElevationRandomWalkParams(z_control_points=2), "z_control_points must be >= 3"),
@@ -156,13 +158,13 @@ def test_stage_ref_is_frozen_data():
 def test_edit_operations():
     spec = _spec()
     none = spec.replace("relax", StageRef("relax", "none"))
-    assert none.stages[2] == StageRef("relax", "none") and spec.stages[2].name == "xpbd"
+    assert none.stages[3] == StageRef("relax", "none") and spec.stages[3].name == "xpbd"
     kept = spec.replace("uniform", StageRef("resample", "uniform"))
-    assert kept.stages[3].id == "uniform" and kept.ids == DEFAULT_IDS   # slot id kept
+    assert kept.stages[4].id == "uniform" and kept.ids == DEFAULT_IDS   # slot id kept
     extra = StageRef("width", "constant", id="w2")
-    assert spec.insert_after("width", extra).ids[4:6] == ("width", "w2")
-    assert spec.insert_before("width", extra).ids[4:6] == ("w2", "width")
-    assert spec.remove("relax").ids == DEFAULT_IDS[:2] + DEFAULT_IDS[3:]
+    assert spec.insert_after("width", extra).ids[2:4] == ("width", "w2")
+    assert spec.insert_before("width", extra).ids[2:4] == ("w2", "width")
+    assert spec.remove("relax").ids == DEFAULT_IDS[:3] + DEFAULT_IDS[4:]
     for op in (lambda: spec.remove("nope"), lambda: spec.replace("nope", extra),
                lambda: spec.insert_after("nope", extra),
                lambda: spec.insert_before("nope", extra)):
@@ -178,7 +180,7 @@ def test_edit_operations():
 def test_to_dict_round_trip_is_json_and_byte_identical(kw):
     spec = _spec(**kw)
     d = spec.to_dict()
-    assert d["format"] == "track_gen.pipeline/1"
+    assert d["format"] == "track_gen.pipeline/2"
     text = json.dumps(d)
     back = PipelineSpec.from_dict(json.loads(text))
     assert back.to_dict() == d and back.ids == spec.ids
@@ -320,9 +322,10 @@ def no_alloc(monkeypatch):
     (lambda s: s.remove("frames"),
      r"stage 'offset' \(offset.default\) reads 'cl.normal2' \(port 'normal'\), but no "
      r"earlier stage writes it"),
-    (lambda s: s.replace("width", StageRef("width", "constant",
+    (lambda s: s.replace("relax", StageRef("relax", "xpbd",
                                            params={"half_width": 0.2})),
-     "the stages disagree on half_width"),
+     r"stage 'relax' \(relax.xpbd\): half_width is no longer a relax.xpbd param "
+     r"\(0.2.0.dev4\): the half-width is cl.half_width, written by the width stage"),
     (lambda s: s.replace("offset", dataclasses.replace(s.stages[6], ports={"nope": "cl.xy"})),
      r"ports \['nope'\] are not ports of the stage"),
     (lambda s: s.replace("offset", dataclasses.replace(s.stages[6],
@@ -373,7 +376,7 @@ def test_batch_errors(no_alloc):
 def test_params_errors(no_alloc):
     spec = _spec()
     with pytest.raises(ValueError, match=r"unknown params for stage 'relax' \(relax.xpbd\): "
-                                         r"\['bogus'\]; valid fields: \['half_width'"):
+                                         r"\['bogus'\]; valid fields: \['relax_band'"):
         build(spec.replace("relax", StageRef("relax", "xpbd", params={"bogus": 1})))
     with pytest.raises(TypeError, match="params for stage 'relax' .* must be a XpbdParams"):
         build(spec.replace("relax", StageRef("relax", "xpbd", params=3)))
@@ -509,10 +512,15 @@ def test_a_dynamic_param_of_a_stage_is_live_and_latched():
     p = build(spec, seeds=3)
     live = p.params["width"]["gain"]
     assert live.dtype is wp.float32 and live.shape == (E,)
-    np.testing.assert_allclose(p._channel("cl.half_width").numpy(), 0.1)
+    # The width stage's own version. The final one is the uniform resample's image: a
+    # carry here (NaN past count), a re-fill with hw on every slot at constant width, so
+    # its padding is unspecified; Track.half_width is the NaN-padded field.
+    np.testing.assert_allclose(p._channel("cl.half_width", after="width").numpy(), 0.1)
     p.params["width"].set("gain", 2.0)
     p.run(sync=True)
-    np.testing.assert_allclose(p._channel("cl.half_width").numpy(), 0.2, rtol=1e-6)
+    np.testing.assert_allclose(p._channel("cl.half_width", after="width").numpy(), 0.2,
+                               rtol=1e-6)
+    assert p._writers("cl.half_width") == ("width", "uniform")
     with pytest.raises(KeyError, match="static"):
         p.params["width"].set("half_width", 0.3)
 
@@ -653,7 +661,8 @@ def test_channel_versions_with_relax():
     assert p._writers("cl.xy") == ("resample", "relax", "uniform")
     v = [p._channel("cl.xy", after=sid) for sid in ("resample", "relax", "uniform")]
     assert len({id(a) for a in v}) == 3                    # three buffers (PR9 topology)
-    assert p._channel("cl.xy", after="width") is v[2] and p._channel("cl.xy") is v[2]
+    assert p._channel("cl.xy", after="frames") is v[2] and p._channel("cl.xy") is v[2]
+    assert p._channel("cl.xy", after="width") is v[0]       # width runs before relax
     for ch, field in (("track.outer", "outer"), ("cl.arclen2", "arclen"),
                       ("cl.length2", "length"), ("cl.winding", "winding"),
                       ("track.valid", "valid"), ("track.count", "count"),
@@ -764,8 +773,8 @@ def test_program_state_and_call_errors():
 def test_the_resolved_spec_holds_params_instances():
     spec = _spec().replace("relax", StageRef("relax", "xpbd", params={"relax_iters": 7}))
     p = build(spec, seeds=3)
-    assert p.spec.stages[2].params == sp.XpbdParams(relax_iters=7)
-    assert p.spec.stages[3].params == NoParams()
+    assert p.spec.stages[3].params == sp.XpbdParams(relax_iters=7)
+    assert p.spec.stages[4].params == NoParams()
     assert p.spec.ids == DEFAULT_IDS
 
 

@@ -63,6 +63,10 @@ The half-width at each bead can be recovered as
 ``‖outer[e, i] − center[e, i]‖ = ‖center[e, i] − inner[e, i]‖ = half_width``
 (constant by construction, modulo floating-point rounding). The ``thickness`` validity
 metric checks the minimum over all beads to ensure no inflation collapsed.
+``Track.half_width`` stores it per point (NaN padding). In a pipeline whose width stage
+writes a per-point ``cl.half_width`` (anything but ``width.constant``), the offset, the
+thickness check and the width floor use each point's own half-width instead; see
+:ref:`pipeline-width`.
 
 ``Track`` fields
 ----------------

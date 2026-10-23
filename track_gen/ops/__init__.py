@@ -20,6 +20,9 @@ generator can be assembled from the same documented pieces instead of private
 * ``E`` is ``src.shape[0] // stride`` (which must divide exactly) for every op that
   takes ``src``, and ``seeds.shape[0]`` for the samplers; every other per-env array
   must then be exactly ``[E]``.
+* Carried channels (roadmap PR13a): ``tables=`` (a :class:`ResampleTables`) makes a
+  resample also record where each output point lies on its source loop, and
+  :func:`resample_channels` carries per-point channels through those tables.
 * Count semantics: ``count`` is always keyword-only. Where it is given, only the first
   ``count[e]`` points of a row are real (a count above the stride is clamped to it);
   slots past it are written ``(nan, nan)`` by ops that produce points. Masks are the
@@ -40,11 +43,13 @@ from .fill import fill
 from .geometry import angle_sort, normalize_extent, self_intersections, thickness, turning_number
 from .hash import hash32, hash32_host
 from .reduce import all_set, any_set
-from .resample import ArcScratch, arc_resample, resample_constant_spacing, resample_uniform
+from .resample import (ArcScratch, ResampleTables, arc_resample, resample_channels,
+                       resample_constant_spacing, resample_uniform)
 from .sampling import grid_cells, sample_counts, sample_grid_points
 
 __all__ = [
     "ArcScratch",
+    "ResampleTables",
     "all_set",
     "angle_sort",
     "any_set",
@@ -59,6 +64,7 @@ __all__ = [
     "hash32",
     "hash32_host",
     "normalize_extent",
+    "resample_channels",
     "resample_constant_spacing",
     "resample_uniform",
     "sample_counts",

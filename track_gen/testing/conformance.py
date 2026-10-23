@@ -33,6 +33,18 @@ Checks (:data:`CHECKS`), for a track generator:
     The raw loop closes (the last-to-first gap is at most 3x the median step, or 1.5x
     the longest step between consecutive points) and the pipeline accepts it (valid
     fraction > 0).
+``attributes.written`` / ``attributes.carried`` (roadmap PR13a)
+    For a generator that writes per-point attributes (``raw.z``, ``raw.half_width``,
+    ``raw.<pkg>.<name>``; a gate generator ``anchors.<pkg>.<name>``; skipped "no
+    attributes" otherwise): every raw slot of every attribute is written for every env
+    the generator marks valid (a gate generator: every slot before ``anchors.count``;
+    the raw buffers are poisoned like the centerline), and every EXPORTED result
+    attribute (``Track.attributes`` / ``GateSequence.attributes``) holds its padding
+    (NaN / -1) beyond ``count[e]`` and, on the real points of every env the generator
+    marked valid, finite values; a ``linear`` attribute lies within the env's raw
+    ``[min, max]`` per component (slack ``4 * spacing(float32(max|v|))``), a
+    ``nearest`` / ``previous`` / int32 one (or one carried by index) in the env's raw
+    value set, an ``angle`` one in ``[-pi, pi]``.
 ``determinism``
     Two fresh generators built with the same seeds produce bitwise identical batches
     (raw output and every result field, NaN padding included).
@@ -137,6 +149,12 @@ an ``elevation`` stage on the bezier gate generator's gates, its ports rewired t
     The stage owns at least one fail bit (``StageBuilder.fail_bit``), sets no bit it
     does not own (the ``fail_mask`` of the pipeline without it, OR its own bits), and
     ``Track.valid == (fail_mask == 0)``.
+``width.values`` (width)
+    The stage's version of ``cl.half_width`` (``tap("cl.half_width", after=<id>)``) is
+    finite and ``>= 0`` on every real point of every env the generator marks valid
+    (floor violations are validity's job, bit 4). A width stage that reads
+    ``cl.half_width`` (a rewrite) runs right after ``width.constant``; a required read
+    port (``"cl.*"``) is wired with ``ports=``.
 
 ``determinism``, ``batch_independence``, ``statelessness``, ``hot_path.*`` and
 ``capture.*`` are the generator kit's, on the whole Program (``capturable``: the built
@@ -189,13 +207,16 @@ _NEUTRAL = {"relax": "none", "width": "constant", "elevation": "flat", "order": 
             "stations": "raw"}
 
 #: The check names of each registry kind, in run order.
+_ATTRIBUTES = ("attributes.written", "attributes.carried")
 CHECKS: Mapping[str, tuple] = types.MappingProxyType({
     "generator": ("construct", "output.shape", "output.finite", "output.padding",
-                  "output.count", "output.closed") + _COMMON,
+                  "output.count", "output.closed") + _ATTRIBUTES + _COMMON,
     "gate_generator": ("construct", "output.shape", "output.finite", "output.padding",
-                       "output.count", "output.accepted") + _COMMON,
+                       "output.count", "output.accepted") + _ATTRIBUTES + _COMMON,
     **{k: _STAGE_OUTPUT + ("output.accepted", "stage.isolation") + _STAGE_COMMON
-       for k in ("relax", "width", "elevation", "order", "stations")},
+       for k in ("relax", "elevation", "order", "stations")},
+    "width": _STAGE_OUTPUT + ("output.accepted", "stage.isolation", "width.values")
+    + _STAGE_COMMON,
     "validity": _STAGE_OUTPUT + ("stage.isolation", "validity.bits") + _STAGE_COMMON,
 })
 
@@ -331,7 +352,8 @@ def _label(kind: str) -> str:
 # ---------------------------------------------------------------------------------------
 
 _TRACK_POINT = {"outer": wp.vec3f, "center": wp.vec3f, "inner": wp.vec3f,
-                "tangent": wp.vec3f, "normal": wp.vec3f, "arclen": wp.float32}
+                "tangent": wp.vec3f, "normal": wp.vec3f, "arclen": wp.float32,
+                "half_width": wp.float32}
 _TRACK_ENV = {"length": wp.float32, "valid": wp.int32, "count": wp.int32,
               "winding": wp.float32, "truncated": wp.int32, "generation": wp.int32,
               "fail_mask": wp.int32}
@@ -340,7 +362,9 @@ _GATE_POINT = {"position": wp.vec3f, "tangent": wp.vec3f, "forward": wp.vec3f,
                "right": wp.vec3f}
 _GATE_ENV = {"valid": wp.int32, "count": wp.int32, "generation": wp.int32,
              "fail_mask": wp.int32}
-_OPTIONAL = {"truncated", "generation", "fail_mask"}
+_OPTIONAL = {"truncated", "generation", "fail_mask", "half_width"}
+# The prefix of a raw attribute buffer in a snapshot (``"raw.attr:raw.acme.grip"``).
+_RAW_ATTR = "raw.attr:"
 
 
 def _anchor_capacity(gen) -> "dict | None":
@@ -383,6 +407,7 @@ class _Snapshot:
             if self.capacity is not None:
                 self.anchor_count = gen.program.tap("anchors.count").numpy().astype(
                     np.int64)
+        raw.update({_RAW_ATTR + ch: arr for ch, arr in _attribute_buffers(kind, gen)})
         arrays = {**raw, **result_arrays(result)}
         self.meta = {k: (tuple(int(s) for s in a.shape), a.dtype) for k, a in arrays.items()}
         self.data = {k: a.numpy().copy() for k, a in arrays.items()}
@@ -442,11 +467,51 @@ class _Snapshot:
         return h.hexdigest()
 
 
+def _attribute_buffers(kind: str, gen) -> list:
+    """``(channel, array)`` of a generator's per-point attribute buffers (roadmap
+    PR13a): a centerline generator's ``raw.z`` / ``raw.half_width`` /
+    ``raw.<pkg>.<name>``, a gate generator's ``anchors.<pkg>.<name>`` (its writes, in
+    declaration order); ``[]`` for a stage's pipeline or a legacy spec."""
+    from ..plugin.stage import _is_raw_attribute, _is_stage  # noqa: PLC0415
+    from ..stages.channels import is_plugin_channel  # noqa: PLC0415
+
+    program = getattr(gen, "program", None)
+    if program is None:
+        return []
+    spec = program._binding.spec
+    if not _is_stage(spec):
+        return []
+    out = []
+    for ch in dict(spec.writes).values():
+        ok = _is_raw_attribute(ch) if kind == "generator" else (
+            is_plugin_channel(ch) and ch.startswith("anchors."))
+        if ok:
+            out.append((ch, program.tap(ch, after="generator")))
+    return out
+
+
+def _writes_raw_valid(gen) -> bool:
+    """Whether a centerline generator writes its valid flag on every call: a legacy
+    ``GeneratorSpec`` always does (``out_valid``); a Stage generator only when its build
+    wrote ``gen.valid`` (an optional write: otherwise the binding fills it with 1 once,
+    at build, and the kit must not poison it)."""
+    program = getattr(gen, "program", None)
+    built = getattr(getattr(program, "_binding", None), "pipeline_spec", None)
+    built = getattr(built, "_built", None)
+    if built is None:
+        return True
+    return "gen.valid" in built.builder._written_channels
+
+
 def _raw_buffers(kind: str, gen) -> list:
-    """``(array, is_flag)`` of a producer's raw output buffers."""
+    """``(array, is_flag)`` of a producer's raw output buffers (the attribute buffers
+    included: poisoned like the centerline; ``gen.valid`` only when the generator
+    writes it)."""
+    attrs = [(arr, False) for _, arr in _attribute_buffers(kind, gen)]
     if kind == "generator":
-        return [(gen._scratch.gen_centerline, False), (gen._scratch.gen_valid, True)]
-    return [(gen._raw_anchors, False)]
+        valid = [(gen._scratch.gen_valid, True)] if _writes_raw_valid(gen) else []
+        return [(gen._scratch.gen_centerline, False), *valid, *attrs]
+    return [(gen._raw_anchors, False), *attrs]
 
 
 def _poison_raw(kind: str, gen) -> None:
@@ -456,9 +521,13 @@ def _poison_raw(kind: str, gen) -> None:
         n = int(arr.shape[0])
         if is_flag:
             host = np.full(n, _FLAG_POISON, dtype=np.int32)
+        elif arr.dtype is wp.int32:
+            host = np.full(n, _POINT_POISON_BITS, dtype=np.uint32).view(np.int32)
         else:
             width = int(getattr(arr.dtype, "_length_", 1) or 1)
             host = np.full((n, width), _POINT_POISON_BITS, dtype=np.uint32).view(np.float32)
+            if width == 1:
+                host = host.reshape(n)
         wp.copy(arr, wp.array(host, dtype=arr.dtype, device=arr.device))
         devices.add(str(arr.device))
     for dev in devices:
@@ -678,10 +747,14 @@ class _DeviceRun:
                                              "accepts_ctx": self.accepts_ctx})
         out_names = [n for n in names if n.startswith("output.")]
         self.guarded(out_names, lambda: self.output_checks(snap))
+        if self.stage is None:
+            self.guarded(list(_ATTRIBUTES), lambda: self.attribute_checks(gen, snap))
         if self.stage is not None:
             self.guarded(["stage.isolation"], lambda: [self.stage_isolation(gen)])
             if self.kind == "validity":
                 self.guarded(["validity.bits"], lambda: [self.validity_bits(gen, snap)])
+            if self.kind == "width":
+                self.guarded(["width.values"], lambda: [self.width_values(gen)])
         self.guarded(["determinism"], lambda: [self.determinism(snap)])
         if self.stage is None:          # a stage need not add diversity: the generator's
             self.guarded(["diversity"], lambda: [self.diversity(snap)])
@@ -874,7 +947,140 @@ class _DeviceRun:
                         {"valid_fraction": frac}))
         return out
 
+    # -- attributes (roadmap PR13a) -------------------------------------------------------
+    def attribute_checks(self, gen, s: _Snapshot) -> list:
+        attrs = [ch for ch, _ in _attribute_buffers(self.snap_kind, gen)]
+        if not attrs:
+            return [(n, None, "skipped: no attributes", {}) for n in _ATTRIBUTES]
+        out = []
+        E = s.E
+        track = self.snap_kind == "generator"
+        # written: every raw slot of a generator-valid env (gate generators: before the
+        # env's anchors.count) holds a written value, not the kit's poison.
+        bad = []
+        for ch in attrs:
+            name = _RAW_ATTR + ch
+            for e in range(E):
+                if track:
+                    if s.data["raw.valid"][e] != 1:
+                        continue
+                    left = s.unwritten(name, e)
+                else:
+                    left = s.unwritten(name, e, 0, s.raw_count(e) if s.anchor_count is None
+                                       else int(min(max(s.anchor_count[e], 0),
+                                                    s.raw_stride)))
+                if left.size:
+                    bad.append(f"{ch}: env {e}: {left.size} slot(s) not written, first at "
+                               f"index {int(left[0])} (it still holds the kit's poison)")
+                    break
+        out.append(("attributes.written", not bad,
+                    (_list_text(bad) + ". Write every slot of every attribute on every "
+                     "call (the raw buffers are not cleared between generations).")
+                    if bad else "", {"attributes": attrs}))
+        # carried: the exported result attributes.
+        infos = dict(gen.program.attributes)
+        if not infos:
+            out.append(("attributes.carried", None, "skipped: no exported attribute",
+                        {"attributes": attrs}))
+            return out
+        prefix = "raw." if track else "anchors."
+        bad = []
+        for key, info in sorted(infos.items()):
+            got = s.data.get(f"attributes/{key}")
+            if got is None:
+                bad.append(f"{key}: missing from the result's attributes")
+                continue
+            src_name = _RAW_ATTR + prefix + key
+            src = s.data.get(src_name)
+            problem = self._carried_problem(s, key, info, got, src, src_name, track)
+            if problem:
+                bad.append(problem)
+        out.append(("attributes.carried", not bad, _list_text(bad),
+                    {"exported": sorted(infos)}))
+        return out
+
+    def _carried_problem(self, s: _Snapshot, key: str, info, got, src, src_name,
+                         track: bool) -> str:
+        """The first problem of exported attribute ``key`` (``got``: its result array),
+        or ``""``."""
+        E, S = s.E, s.stride
+        rows = _as_rows(got.reshape(E * S, -1) if got.ndim > 1 else got.reshape(E * S, 1))
+        rows = rows.reshape(E, S, -1)
+        is_int = np.issubdtype(got.dtype, np.integer)
+        for e in range(E):
+            c = s.clamped(e)
+            tail = rows[e, c:]
+            pad_ok = np.all(tail == -1) if is_int else np.all(np.isnan(tail))
+            if not pad_ok:
+                return (f"{key}: env {e}: a slot past count={int(s.count[e])} is not the "
+                        f"padding ({'-1' if is_int else 'NaN'})")
+        if src is None:
+            return ""
+        for e in range(E):
+            if track and s.data["raw.valid"][e] != 1:
+                continue
+            c = s.clamped(e)
+            if c == 0:
+                continue
+            real = rows[e, :c]
+            if not is_int and not np.isfinite(real).all():
+                i = int(np.flatnonzero(~np.isfinite(real).all(axis=1))[0])
+                return f"{key}: env {e}: point {i} (before count={c}) is not finite"
+            n_src = s.raw_stride if track else (
+                s.raw_count(e) if s.anchor_count is None
+                else int(min(max(s.anchor_count[e], 0), s.raw_stride)))
+            raw = _as_rows(np.asarray(s.rows(src_name, e, 0, n_src)).reshape(n_src, -1))
+            if raw.size == 0:
+                continue
+            interp = info.interp
+            if interp == "angle":
+                lim = float(np.float32(np.pi))
+                if np.any(real < -lim) or np.any(real > lim):
+                    return f"{key}: env {e}: an angle outside [-pi, pi]"
+            elif interp == "linear":
+                lo, hi = raw.min(axis=0), raw.max(axis=0)
+                mag = np.maximum(np.abs(lo), np.abs(hi)).astype(np.float32)
+                slack = 4.0 * np.spacing(mag).astype(np.float64)
+                if np.any(real < lo - slack) or np.any(real > hi + slack):
+                    return (f"{key}: env {e}: a linear value outside the env's raw "
+                            f"[min, max] (a linear carry interpolates the raw values)")
+            else:
+                values = {tuple(r) for r in raw.tolist()}
+                outside = [tuple(r) for r in real.tolist() if tuple(r) not in values]
+                if outside:
+                    return (f"{key}: env {e}: {outside[0]} is not one of the env's raw "
+                            f"values (interp={interp!r} never blends)")
+        return ""
+
     # -- stage checks ---------------------------------------------------------------------
+    def width_values(self, gen):
+        program = gen.program
+        sid = self.stage.stage_id
+        w = program.tap("cl.half_width", after=sid).numpy()
+        count = program.tap("cl.count", after=sid).numpy()
+        valid = program.tap("gen.valid").numpy()
+        S = int(w.shape[0]) // self.E
+        rows = w.reshape(self.E, S)
+        bad, lo, hi = [], math.inf, -math.inf
+        for e in range(self.E):
+            if valid[e] != 1:
+                continue
+            c = int(min(max(count[e], 0), S))
+            real = rows[e, :c]
+            if real.size:
+                fin = real[np.isfinite(real)]
+                if fin.size:
+                    lo, hi = min(lo, float(fin.min())), max(hi, float(fin.max()))
+            idx = np.flatnonzero(~(np.isfinite(real) & (real >= 0.0)))
+            if idx.size:
+                bad.append(f"env {e}: cl.half_width[{int(idx[0])}] = {real[idx[0]]!r} "
+                           f"(before count={c}) is not a finite value >= 0")
+        return ("width.values", not bad,
+                _list_text(bad) + (". Write a finite half-width >= 0 on every real point "
+                                   "(the floor is validity's check, bit 4)."
+                                   if bad else ""),
+                {"min": lo, "max": hi})
+
     def stage_accepted(self, frac: float):
         details = {"valid_fraction": frac}
         if frac > 0.0:
@@ -1677,12 +1883,16 @@ class _StageUnderTest:
     """The pipelines :func:`check_stage` builds around one stage."""
 
     def __init__(self, kind: str, name: str, params, upstream: Mapping, cls,
-                 pipeline: "str | None" = None) -> None:
+                 pipeline: "str | None" = None, ports: "Mapping | None" = None) -> None:
         from ..pipeline.spec import StageRef  # noqa: PLC0415
         from ..stages.channels import FAIL  # noqa: PLC0415
 
         self.kind, self.name, self.params = kind, name, params
         self.upstream = dict(upstream)
+        ports = dict(ports or {})
+        # A width stage that reads cl.half_width (a rewrite) runs right after the
+        # neutral width.constant.
+        self.rewrite = kind == "width" and "cl.half_width" in dict(cls.reads).values()
         self.gate = _is_gate_stage(kind, cls) if pipeline is None else pipeline == "gates"
         # A stations stage that reads the relaxed centerline runs on relaxed_stations.
         self.relaxed = kind == "stations" and any(
@@ -1692,15 +1902,15 @@ class _StageUnderTest:
         # one fails construct).
         self.initializer = kind == "validity" and FAIL in dict(cls.writes).values() \
             and FAIL not in dict(cls.reads).values()
-        if kind != "validity":
+        if kind != "validity" and not self.rewrite:
             self.stage_id = kind
-            self.ref = StageRef(kind, name, params=params)
+            self.ref = StageRef(kind, name, params=params, ports=ports)
         elif self.initializer:
             self.stage_id = "validity"
-            self.ref = StageRef(kind, name, params=params)
+            self.ref = StageRef(kind, name, params=params, ports=ports)
         else:
             self.stage_id = name
-            self.ref = StageRef(kind, name, params=params, id=name)
+            self.ref = StageRef(kind, name, params=params, id=name, ports=ports)
 
     def facade(self):
         """The facade class that runs the pipeline (``TrackGenerator`` /
@@ -1718,6 +1928,11 @@ class _StageUnderTest:
 
         kw = dict(self.upstream)
         first = "gate_default" if self.gate else "default"
+        if self.rewrite:
+            spec = presets.track(num_envs=E, device=device, **kw)
+            if slot is None or (isinstance(slot, str) and slot == _NEUTRAL["width"]):
+                return spec
+            return spec.insert_after("width", slot)
         if self.kind != "validity":
             kw[self.kind] = slot
         elif self.initializer:
@@ -1759,6 +1974,7 @@ class _StageUnderTest:
 
 
 def check_stage(kind: str, name: str, params=None, *, upstream: "Mapping | None" = None,
+                ports: "Mapping[str, str] | None" = None,
                 pipeline: "str | None" = None, devices=None, num_envs: int = 8,
                 seeds: Sequence[int] = (11, 1009),
                 capture_modes: Iterable[str] = CAPTURE_MODES, skip: Iterable[str] = (),
@@ -1787,6 +2003,9 @@ def check_stage(kind: str, name: str, params=None, *, upstream: "Mapping | None"
         name: the registered stage name (``registry.available(kind)``).
         params: its params (a Params instance or a mapping of its fields); ``None``:
             the defaults.
+        ports: the stage's ``StageRef.ports`` (wires a required read port, e.g.
+            ``{"src": "cl.acme.hw"}`` for ``width.from_channel``, whose generator then
+            goes in ``upstream``).
         upstream: more :func:`~track_gen.pipeline.presets.track` /
             :func:`~track_gen.pipeline.presets.gates` keyword arguments (``generator``,
             ``generator_params``, ``num_points``, ``n_max``, ``half_width``, the other
@@ -1855,7 +2074,7 @@ def check_stage(kind: str, name: str, params=None, *, upstream: "Mapping | None"
     probe = tuple(dict.fromkeys(("track_gen", _top_package(info.origin),
                                  *(str(m) for m in modules or ()))))
     stage = _StageUnderTest(kind, name, params, upstream, registry.get(kind, name),
-                            pipeline=pipeline)
+                            pipeline=pipeline, ports=ports)
     results: list = []
     for dev in _devices(devices):
         results += _DeviceRun(kind, name, params, dev, E, seeds_a, seeds_b, {}, info,

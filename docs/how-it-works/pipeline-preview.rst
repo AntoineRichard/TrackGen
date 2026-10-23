@@ -38,7 +38,7 @@ explicitly. ``import track_gen`` does not import it.
 
    spec = presets.track(num_envs=64, device="cpu")
    spec.ids
-   # ('generator', 'resample', 'relax', 'uniform', 'width', 'frames', 'offset',
+   # ('generator', 'resample', 'width', 'relax', 'uniform', 'frames', 'offset',
    #  'elevation', 'validity', 'lift')
 
    rng = PerEnvSeededRNG(seeds=1234, num_envs=64, device="cpu")
@@ -46,6 +46,7 @@ explicitly. ``import track_gen`` does not import it.
    track = gen.generate()              # the same Track instance on every call
    track.fail_mask                     # [E] int32: one bit per failed check
    track.fail_bits                     # {'generator': 0, 'turning': 1, ..., 'truncation': 7}
+   track.half_width                    # [E * N_max] float32: the band's half-width
 
    # Other stages: by name, (name, params), a StageRef, or None.
    hilly = presets.track(num_envs=64, device="cpu", relax=None,
@@ -67,10 +68,11 @@ The data model
    stages of one kind need explicit ids (the default list has two ``resample`` stages,
    ``"resample"`` and ``"uniform"``), and the generator's slot is always
    ``"generator"``. ``ports`` rewires a local port to another channel of the same dtype
-   and size. ``capacity`` is the generator's ``{"raw": num_points}``, the DEFAULT raw
-   point count (``BatchSpec`` has no ``num_points``); a Stage generator's own
-   ``Stage.capacity()`` overrides it. ``build`` rejects any other key, and any
-   ``capacity`` on a non-generator stage.
+   and size, and wires a stage's required read ports (``width.from_channel``'s ``src``,
+   see `Required read ports`_). ``capacity`` is the generator's
+   ``{"raw": num_points}``, the DEFAULT raw point count (``BatchSpec`` has no
+   ``num_points``); a Stage generator's own ``Stage.capacity()`` overrides it.
+   ``build`` rejects any other key, and any ``capacity`` on a non-generator stage.
 
 ``BatchSpec(num_envs, device, n_max, closed=True, scale=1.0, on_invalid="keep", max_gates=None)``
    The batch every stage shares: ``E`` envs on one device, the per-env point capacity
@@ -93,12 +95,14 @@ The data model
    ``remove(id)`` return a new spec; ``replace`` keeps the slot's id when ``ref.id`` is
    ``None``. They are pure data operations: an unknown anchor id raises ``ValueError``
    at once, everything else is checked by ``build``. ``to_dict()`` returns a
-   JSON-serialisable dict (``"format": "track_gen.pipeline/1"``; ``on_invalid`` and
+   JSON-serialisable dict (``"format": "track_gen.pipeline/2"``; ``on_invalid`` and
    ``max_gates`` are optional when reading, ``"keep"`` and ``None`` when absent),
    ``from_dict(d)`` reads it back without
    a registry (a missing key raises a ``ValueError`` naming it, such as ``stages[3] is
    missing 'kind'``), and building the round-tripped spec gives byte-identical outputs,
-   plugin stages and their params included.
+   plugin stages and their params included. See `Saved specs: format /1 and /2`_ for
+   the ``/1`` dicts written by 0.2.0.dev3 and by the 0.2.0.dev4 branch before the width
+   moved (roadmap PR11 / PR12, gate specs included).
 
 ``legacy.to_pipeline_spec(config, *, registry=None)``
    The default spec for a ``TrackGenConfig``, the one ``TrackGenerator(config)`` builds
@@ -116,16 +120,55 @@ The data model
    :ref:`gate-capacity-config`). A legacy ``GateGeneratorSpec`` emits its
    ``DeprecationWarning`` here (see `Legacy gate generators`_).
 
+.. _pipeline-spec-format:
+
+Saved specs: format /1 and /2
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+0.2.0.dev4 moved the width stage before ``relax`` and removed the ``half_width`` field
+of ``relax.xpbd``, ``offset.default`` and ``validity.default``: they read the per-point
+``cl.half_width`` instead (see `Width`_). ``to_dict()`` writes
+``"format": "track_gen.pipeline/2"``. ``from_dict`` still reads the
+``"track_gen.pipeline/1"`` dicts written by 0.2.0.dev3 and by the 0.2.0.dev4 branch
+before the width moved (roadmap PR11 / PR12, gate specs included), and migrates them on
+the data, with no registry:
+
+1. the ``half_width`` key is popped from the params of every ``relax.xpbd``,
+   ``offset.default`` and ``validity.default`` stage; a popped value that differs from
+   the width stage's (``width.constant``'s own ``half_width``, or 0.1, the dev3
+   default) raises ``ValueError``;
+2. a ``width`` stage that sits after the first ``relax`` stage and before the first
+   ``frames`` stage (the dev3 slot) moves to just before that ``relax`` stage;
+3. a ``relax.xpbd`` stage with no ``width`` stage before it (a
+   ``source="relaxed_stations"`` gate spec written before the width moved: roadmap
+   PR11 / PR12, format ``/1``) gets a ``width.constant`` inserted before it, with the
+   popped value (or 0.1);
+4. one ``DeprecationWarning`` says that the dict was migrated.
+
+With ``width.constant`` (the dev3 default), the migrated spec builds the Program the
+``/1`` spec built, byte for byte. Another width stage (a plugin, e.g. ``acme.ripple``)
+now runs before ``relax`` and XPBD, the offset and validity read its per-point width,
+so the outputs change (:ref:`pipeline-width`); the warning then names the stage. A
+dev3 width stage placed after ``frames`` (one that read ``cl.kappa``) in a spec whose
+``relax.xpbd`` has no width before it raises ``ValueError``: make it a rewrite of
+``cl.half_width`` after a ``width.constant`` before ``relax``, or move it before
+``relax``. Any other format string raises ``ValueError``. Specs built in Python against 0.2.0.dev3 are not
+migrated (they are not data): they fail at ``build`` with a message that names the
+change, see `Specs written for 0.2.0.dev3`_.
+
 .. _pipeline-presets:
 
 Presets
 -------
 
 ``presets.track(...)`` returns the ``PipelineSpec`` of a track pipeline, with each
-replaceable stage chosen by a keyword. It is pure data: it never touches the registry,
-and an unknown stage name fails at ``build`` (or ``TrackGenerator``) time.
+replaceable stage chosen by a keyword. It reads the registry (``registry``, default
+``track_gen.plugin.registry``) for two things only: whether the generator provides its
+own altitudes or half-widths (`Generator-provided altitude and width`_), and whether the
+width stage has a ``half_width`` field. A name the registry does not know is treated as
+a plain stage, and fails at ``build`` (or ``TrackGenerator``) time.
 ``presets.gates(...)``, the gate pipeline's preset, is described under
-`Gate presets: presets.gates`_; unlike ``presets.track`` it reads the registry.
+`Gate presets: presets.gates`_.
 
 .. code-block:: python
 
@@ -134,12 +177,13 @@ and an unknown stage name fails at ``build`` (or ``TrackGenerator``) time.
                  half_width=0.1, spacing=None,
                  relax="xpbd", width="constant", elevation="flat",
                  checks=("default",), on_invalid="keep",
-                 z_base=0.0) -> PipelineSpec
+                 z_base=0.0, registry=None) -> PipelineSpec
 
 The stages, by id: ``generator``, ``resample`` (``resample.constant_spacing``),
-``relax``, ``uniform`` (``resample.uniform``), ``width``, ``frames``, ``offset``,
-``elevation``, the ``checks`` (the first one's id is ``"validity"``), and ``lift``.
-``presets.track(num_envs=E, device=d)`` builds what
+``width``, ``relax``, ``uniform`` (``resample.uniform``), ``frames``, ``offset``,
+``elevation``, the ``checks`` (the first one's id is ``"validity"``), and ``lift``. A
+generator that provides its half-widths has no ``width`` stage, one that provides its
+altitudes no ``elevation`` stage. ``presets.track(num_envs=E, device=d)`` builds what
 ``legacy.to_pipeline_spec(TrackGenConfig(num_envs=E, device=d))`` builds: the same stage
 list, equal params once resolved, byte-identical outputs.
 
@@ -161,7 +205,9 @@ list, equal params once resolved, byte-identical outputs.
        (``ValueError`` otherwise); without an id it takes the slot's.
    * - ``None``
      - ``relax=None`` is ``relax.none``, ``elevation=None`` is ``elevation.flat``.
-       ``width=None`` raises ``ValueError``: something must write ``cl.half_width``.
+       ``width=None`` raises ``ValueError``: something must write ``cl.half_width``
+       (a generator that provides it drops the slot, see `Generator-provided altitude
+       and width`_).
 
 Anything else raises ``TypeError``, and an empty name ``ValueError``. ``checks`` is a
 sequence of selections whose first is ``"default"`` (``validity.default`` starts
@@ -173,19 +219,27 @@ empty sequence or another first check ``ValueError``. The other arguments:
   carries its own params (passing ``generator_params`` too raises ``ValueError``).
   ``num_points`` becomes the generator slot's ``capacity={"raw": num_points}`` (unless
   the ``StageRef`` sets a capacity).
-- ``half_width`` is filled into the built-in stages that bake it as a host scalar
-  (``relax.xpbd``, ``width.constant``, ``offset.default``, ``validity.default``) when
-  their params, in any selection form, are ``None`` or a mapping without
-  ``half_width``. A Params instance is taken as is. A plugin stage with a
-  ``half_width`` field must be given the same value: the planner requires every stage
-  with that field to agree, until roadmap PR13 makes the kernels read
-  ``cl.half_width``. Params (of any stage) that set another ``half_width`` than the
-  preset's raise ``ValueError`` naming ``half_width=``.
-- ``spacing`` defaults to ``0.6 * half_width``, as in ``TrackGenConfig``.
+- ``half_width`` is the value of the width stage: it is filled into the ``width``
+  selection when that stage's Params class has a ``half_width`` field
+  (``width.constant``, or a plugin's such as ``acme.ripple``) and its params, in any
+  selection form, are ``None`` or a mapping without ``half_width``. A Params instance
+  is taken as is. Width params that set another ``half_width`` than the preset's raise
+  ``ValueError`` naming ``half_width=`` (``width=("constant", {"half_width": 0.2})``
+  with the default ``half_width=0.1``). ``relax.xpbd``, ``offset.default`` and
+  ``validity.default`` have no ``half_width`` field any more: they read
+  ``cl.half_width`` (see `Width`_), and params that set one raise the error of
+  `Specs written for 0.2.0.dev3`_.
+- ``spacing`` defaults to ``0.6 * half_width``, as in ``TrackGenConfig``. For a width
+  stage without a ``half_width`` field (``width.from_channel``) or a generator that
+  provides its half-widths, ``half_width`` is only this nominal width for the default
+  spacing; a ``half_width`` other than the default 0.1 that nothing reads (such a width
+  and an explicit ``spacing``) raises ``ValueError``.
 - ``lift`` is ``lift.flat`` (at ``z_base``, default ``0``, as
   ``TrackGenConfig.z_base``) when the elevation is ``elevation.flat``, else
   ``lift.elevated`` (a nonzero ``z_base`` then raises ``ValueError``: the elevation's
-  own params set its altitude).
+  own params set its altitude). A generator that provides its altitudes gets
+  ``lift.elevated`` and no elevation stage.
+- ``registry`` is the registry the preset reads (default ``track_gen.plugin.registry``).
 - Each further check gets the id ``ref.id or name``. Two checks with the same id raise
   ``ValueError``: give one an explicit ``StageRef(..., id=...)``.
 - ``on_invalid`` is ``"keep"`` or ``"poison"`` (``ValueError`` otherwise).
@@ -232,19 +286,20 @@ Stage kinds
      - where it comes from
    * - ``generator``
      - ``bezier``, ``hull``, ... (:doc:`/generators/overview`)
-     - ``raw.xy``, ``gen.valid``
+     - ``raw.xy``, ``gen.valid``, plus ``raw.z`` / ``raw.half_width`` (what it
+       ``provides``) and ``raw.<package>.<name>`` attributes
      - ``track_gen.plugin.registry`` (:doc:`/contributing/writing-a-generator`)
    * - ``gate_generator``
      - ``bezier``, ``hull``, ``polar``, ``checkpoint``, ``voronoi``
      - ``anchors.xy``, ``anchors.count``, plus the ``anchors.*`` attributes it
-       ``provides``
+       ``provides`` and ``anchors.<package>.<name>`` attributes
      - ``track_gen.plugin.registry`` (:ref:`gate-generator-stage`)
    * - ``relax``
      - ``xpbd``, ``none``
      - ``cl.xy``
      - ``track_gen.plugin.registry``
    * - ``width``
-     - ``constant``
+     - ``constant``, ``from_channel``
      - ``cl.half_width``
      - ``track_gen.plugin.registry``
    * - ``elevation``
@@ -261,7 +316,8 @@ Stage kinds
      - ``track_gen.plugin.registry`` (:ref:`writing-an-ordering`)
    * - ``stations``
      - ``raw``, ``relaxed``
-     - ``anchors.xy``, ``anchors.count``
+     - ``anchors.xy``, ``anchors.count``, plus ``anchors.z`` and
+       ``anchors.<package>.<name>``
      - ``track_gen.plugin.registry``
    * - ``resample``, ``frames``, ``offset``, ``lift``
      - see `The default track stages`_
@@ -273,10 +329,11 @@ Stage kinds
      - their catalogue channels
      - TrackGen's private catalogue (not open to plugins)
 
-A plugin stage of a track kind may also write namespaced plugin channels,
-``cl.<package>.<name>`` (see `Channels`_); gate plugin channels arrive with roadmap
-PR13. The built-ins are registered under their plain names by TrackGen's own
-``register(reg)``, exactly as a plugin registers, so ``registry.available("relax")``
+A plugin stage may also write namespaced plugin channels of its domain:
+``cl.<package>.<name>`` for a track stage, ``gates.<package>.<name>`` for a gate stage
+(see `Plugin channels`_). The built-ins are registered under their plain names by
+TrackGen's own ``register(reg)``, exactly as a plugin registers, so
+``registry.available("relax")``
 lists them with the installed plugins and ``registry.describe("elevation", "noise")``
 reports their reads, writes and params schema.
 
@@ -306,16 +363,21 @@ checks the spec before it allocates or launches anything, then allocates once:
    ``config.generator``. The other stages come from TrackGen's built-in catalogue.
 3. **Params.** Each stage's params are coerced to its Params class and validated (the
    built-ins with the messages ``TrackGenConfig`` / ``GateGenConfig`` use for the same
-   fields). While the kernels still take them as host scalars, every stage that has a
-   ``half_width``, ``gate_width`` or ``gate_radius`` field must agree on its value. In a
-   gate pipeline each stage's ``Layout`` is derived from its ports before its params
-   are validated (see `Two point domains`_).
+   fields). Every stage that has a ``half_width``, ``gate_width`` or ``gate_radius``
+   field must agree on its value: for ``half_width`` that binds ``width.constant`` and
+   the plugin stages that keep such a field (the nominal width; the per-point width is
+   ``cl.half_width``). In a gate pipeline each stage's ``Layout`` is derived from its
+   ports before its params are validated (see `Two point domains`_).
 4. **Channels.** After ``ports`` rewiring, the registration rules hold again (a plugin
    stage writes only what its kind may write, and rewrites a channel through one port;
-   see :ref:`stage-ports-channels`). Walking the stages in order, every channel a stage
+   see :ref:`stage-ports-channels`), and every required read port is wired (`Required
+   read ports`_). The resamplers and the stations get one implicit read and write port
+   per carried channel (`Carried channels`_), so the rules below see the carries too.
+   Walking the stages in order, every channel a stage
    reads must have been written by an earlier stage, and a channel written twice must
    be read by its second writer (an in-place rewrite, see `In-place rewrites`_). No
-   stage writes ``seed``. Every ``Track`` field has a writer (the ``Track`` reads them
+   stage writes ``seed``, and no stage writes ``cl.half_width`` after ``offset``
+   (`Width`_). Every ``Track`` field has a writer (the ``Track`` reads them
    all: removing ``validity`` or ``lift`` is refused), ``valid.fail`` starts at
    ``validity.default`` (a check that writes it without reading it would drop the
    built-in checks, truncation included, and is refused until the split checks
@@ -332,8 +394,9 @@ checks the spec before it allocates or launches anything, then allocates once:
    ``PlanError``, naming every one.
 6. **Allocate.** The ``SeedState`` (its own checks run first), the ``Track`` or the
    ``GateSequence`` (or use the one passed as ``out=``, checked field by field
-   beforehand; its ``generation`` and ``fail_mask`` may be ``None``), the ``[E]``
-   effective-seed buffer, one buffer per
+   beforehand; its ``generation``, ``fail_mask`` and ``half_width`` may be ``None``,
+   and its ``attributes`` may leave keys out, see `Per-point attributes in the
+   result`_), the ``[E]`` effective-seed buffer, one buffer per
    channel version and each stage's scratch, namespaced ``scratch:<id>/<name>``. Then
    each stage's ``build`` runs, once, in pipeline order, against a ``StageBuilder``;
    right after it, every write port the stage declares must have been written, and a
@@ -348,14 +411,19 @@ keep their own type: params raise their own ``ValueError`` / ``TypeError``, an u
 generator raises the registry's ``ValueError``, a quarantined plugin its
 ``PluginLoadError``, and a bad ``seeds`` raises ``TypeError``. The rules only a stage's
 ``build`` reveals (a skipped write port, a validity stage without a fail bit, a 16th
-plugin fail bit, a fail-bit name taken twice) raise ``PlanError`` after allocation.
+plugin fail bit, a fail-bit name taken twice, a stage-written ``cl.*`` plugin channel
+read across the uniform resample: the stale-read rule of `Carried channels`_) raise
+``PlanError`` after allocation, as do the ``interp=`` / ``export=`` rules of
+``b.write``, with their own ``TypeError`` / ``ValueError``.
 ``build`` inside a capture raises ``CaptureError`` before allocating.
 
 .. code-block:: python
 
    build(spec.remove("width"))
-   # PlanError: stage 'validity' (validity.default) reads 'cl.half_width'
-   #   (port 'half_width'), but no earlier stage writes it
+   # PlanError: stage 'relax' (relax.xpbd) reads 'cl.half_width' (port 'half_width'),
+   #   but no earlier stage writes it; the width stage runs before relax since
+   #   0.2.0.dev4 (generator, resample, width, relax, uniform, ...): move it, or insert
+   #   StageRef('width', 'constant') before 'relax'
 
 ``seeds`` is anything ``SeedState`` accepts (``None``, an ``int``, an ``[E]`` int32
 ``wp.array``, a ``PerEnvSeededRNG``) or a ``SeedState`` for the batch. Anything else,
@@ -404,6 +472,8 @@ self-graph rules of :doc:`cuda-graph` exactly as ``TrackGenerator`` does.
   instance.
 - ``tap(channel, *, after=None)``, ``channels``, ``fail_bits`` and ``on_invalid``: see
   `Taps`_, `Fail bits`_ and `The commit`_.
+- ``attributes``: the per-point attributes the result exports, a read-only mapping from
+  key to ``AttributeInfo`` (see `Per-point attributes in the result`_).
 - ``seeds`` (the ``SeedState``), ``seed`` (the ``[E]`` effective seed), ``inputs``
   (``"regen_mask"`` plus the inputs the stages declare), ``params`` (a ``ParamTable``
   keyed by stage id; the built-in stages' fields are all static) and ``graph`` (``None``
@@ -509,6 +579,12 @@ writes as ``{local port: channel}`` maps (``Stage.reads`` / ``Stage.writes``), a
      - raw
      - vec2f
      - The generator's raw closed centerline.
+   * - ``raw.z``, ``raw.half_width``
+     - raw
+     - float32
+     - Altitude and half-width per raw point, written by a generator that ``provides``
+       them (`Generator-provided altitude and width`_); carried to ``cl.z`` /
+       ``cl.half_width`` (``interp="linear"``).
    * - ``gen.valid``
      - env
      - int32
@@ -529,8 +605,9 @@ writes as ``{local port: channel}`` maps (``Stage.reads`` / ``Stage.writes``), a
    * - ``cl.half_width``
      - cl
      - float32
-     - Per-point half-width. In this release only ``validity.default``'s width-floor
-       check reads it; the band offset and XPBD read it from roadmap PR13.
+     - Per-point half-width, written by the width stage (or carried from
+       ``raw.half_width``) before ``relax``, re-interpolated by the uniform resample.
+       ``relax.xpbd``, ``offset.default`` and ``validity.default`` read it (`Width`_).
    * - ``cl.tangent2``, ``cl.normal2``
      - cl
      - vec2f
@@ -555,7 +632,12 @@ writes as ``{local port: channel}`` maps (``Stage.reads`` / ``Stage.writes``), a
    * - ``cl.z``
      - cl
      - float32
-     - Per-point elevation (zero on ``flat``).
+     - Per-point elevation (zero on ``flat``), or the carry of a provided ``raw.z``.
+   * - ``track.half_width``
+     - cl
+     - float32
+     - The band's half-width on the real points, NaN padding (``Track.half_width``),
+       written by ``offset.default``.
    * - ``valid.fail``
      - env
      - int32
@@ -582,20 +664,228 @@ writes as ``{local port: channel}`` maps (``Stage.reads`` / ``Stage.writes``), a
      - vec3f
      - The lifted 3D geometry (the ``Track`` fields of the same names).
 
-**Plugin channels.** A plugin stage may also read and write channels of its own, named
-``cl.<package>.<name>`` (at least two dot-separated identifiers after ``cl.``, such as
-``cl.acme.curvature_rank``), for example to hand a buffer from one of its stages to
-another. Their dtype and size are fixed by their first writer's ``b.write(port, dtype,
-per=...)`` (``per`` is ``"env"`` or ``"cl"``); a later writer must match, and reading one
-needs an earlier writer like any channel. They are not copied to the ``Track``
-(``Track.attributes`` arrives with roadmap PR13); read them with ``Program.tap``.
+.. _pipeline-plugin-channels:
+
+Plugin channels
+~~~~~~~~~~~~~~~
+
+A plugin may also read and write channels of its own, named
+``<domain>.<package>.<name>`` (at least two dot-separated identifiers after the prefix,
+such as ``cl.acme.curvature_rank``), for example to hand a buffer from one of its stages
+to another, or to give the result a per-point attribute. The prefix is the point domain:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 28 22 50
+
+   * - prefix
+     - ``per``
+     - written by
+   * - ``raw.<package>.<name>``
+     - ``"raw"`` (fixed by the prefix)
+     - A centerline generator: a per-point attribute of its raw loop, carried to
+       ``cl.<package>.<name>`` (`Carried channels`_).
+   * - ``cl.<package>.<name>``
+     - ``"cl"`` or ``"env"`` (default ``"env"``)
+     - Any track-domain stage, and the resamplers (the image of a raw attribute).
+   * - ``anchors.<package>.<name>``
+     - ``"anchors"`` (fixed by the prefix)
+     - A gate generator, or a ``stations`` stage (`Gate plugin channels`_).
+   * - ``gates.<package>.<name>``
+     - ``"gates"`` or ``"env"`` (default ``"env"``)
+     - Any gate-domain stage, and ``carry.attributes`` (the image of an anchors
+       attribute).
+
+A channel's dtype and ``per`` are fixed by its first writer's ``b.write(port, dtype,
+per=...)``; a later writer must match, and reading one needs an earlier writer like any
+channel. A stage uses the channels of its own domain: a gate-domain stage with a
+``cl.<package>.<name>`` port raises ``PlanError`` (``plugin channel 'cl.acme.x' is a
+centerline channel; a gate-domain stage reads and writes gates.<pkg>.<name>``), and so
+does a track stage with a ``gates.*`` one. Read any of them with ``Program.tap``; a
+per-point one written with ``export=True`` is also a field of the result (`Per-point
+attributes in the result`_).
+
+.. _pipeline-carried-channels:
+
+Carried channels
+~~~~~~~~~~~~~~~~
+
+The centerline changes point sets twice: the constant-spacing resample maps the
+generator's raw points to the *beads* (``cl.*``), and the uniform resample maps the
+relaxed beads to the final points. A per-point value the generator computes (an
+altitude, a half-width, a surface label) follows the points through both: it is a
+*carried channel*. A carried channel and its images on the later point sets form a
+**family** (``raw.acme.grip -> cl.acme.grip``; ``raw.z -> cl.z``; ``raw.half_width ->
+cl.half_width``; in a gate pipeline also ``-> anchors.acme.grip -> gates.acme.grip``).
+Its dtype, interpolation policy and export flag are fixed by its first writer, the
+generator's ``b.write``, and shared by every image:
+
+.. code-block:: python
+
+   # in a centerline generator whose writes include "grip": "raw.acme.grip"
+   grip = b.write("grip", wp.float32, per="raw", interp="linear", export=True)
+
+A carried channel is ``float32``, ``int32``, ``vec2f`` or ``vec3f`` (``TypeError``
+otherwise). ``interp=`` is required on every ``raw.<package>.<name>`` write (a raw
+channel exists only to be carried), and only there: a stage-written channel is not
+resampled, and ``interp=`` on it raises ``ValueError``. With ``a`` and ``b`` the source
+values at the ends of the source segment and ``f`` the output point's fraction along it:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 14 22 64
+
+   * - ``interp``
+     - dtypes
+     - value
+   * - ``"linear"``
+     - float32, vec2f, vec3f
+     - ``a + f * (b - a)``, the expression the resamplers use for the points, so a
+       carried copy of the source xy reproduces the resampled points byte for byte.
+   * - ``"nearest"``
+     - any
+     - ``a if f <= 0.5 else b`` (a tie goes to the segment start). Labels never blend;
+       a label boundary moves by up to half a source step per resampling.
+   * - ``"previous"``
+     - any
+     - ``a``: a zero-order hold, the value of the last source point at or before the
+       output point. A label boundary lags (never leads) by at most one source step
+       per resampling (a full step only when an output point lands exactly on a source
+       point: the lookup assigns it to the segment that ends there, ``f = 1``). For
+       per-segment labels.
+   * - ``"angle"``
+     - float32 (radians)
+     - ``wrap(a + f * wrap(b - a))``, ``wrap(x) = x - 2π floor((x + π) / 2π)``: the
+       short way round, in ``[-π, π)``. The source values must lie in ``[-π, π)``;
+       others are normalised by the carry. ``f = 1`` need not give ``b`` to the bit.
+
+An ``int32`` channel takes ``"nearest"`` or ``"previous"`` (``TypeError`` otherwise).
+The catalogue families have fixed policies (``raw.z`` and ``raw.half_width`` are
+``"linear"``), and ``interp=`` on a later writer of a family raises ``ValueError``
+(policy and export belong to the first writer).
+
+**Who carries what.** The sets are static: the planner derives them from the declared
+writes and reads before it allocates anything.
+
+- ``resample.constant_spacing`` carries every raw family (every ``raw.*`` channel but
+  ``raw.xy``) to its ``cl.*`` image.
+- ``resample.uniform`` re-interpolates every carried ``cl.*`` family onto the final
+  points, as a new version (a rewrite): ``cl.half_width`` and ``cl.z`` whoever wrote
+  them, and the image of every raw attribute.
+- A relax stage carries nothing (bead attachment, below).
+- ``stations.raw`` and ``stations.relaxed`` carry a family of their source to
+  ``anchors.<attr>`` only when a later stage reads that image (`3D station spacing`_,
+  `Gate plugin channels`_).
+- ``carry.attributes`` copies every ``anchors.<package>.<name>`` to
+  ``gates.<package>.<name>`` by anchor index.
+
+The carriers are writers like any stage: ``Program.channels["cl.half_width"]`` is
+``('width', 'uniform')`` in the default pipeline, and ``tap(channel, after=<carrier>)``
+reads each image.
+
+**How.** A carrying resampler runs a variant of its lookup kernel that also writes the
+*resample tables* (``ops.ResampleTables``): for every output point, the global indices
+``i0`` and ``i1`` of its source segment's ends and its fraction ``frac`` along it. Then
+``ops.resample_channels`` interpolates each family through the tables, one launch per
+family. A carried channel thus uses exactly the segment and fraction of the points
+themselves. A resampler with nothing to carry runs its 0.2.0.dev3 kernels, and a
+constant family costs no interpolation (`Width`_), so the default pipelines launch what
+0.2.0.dev3 launched.
+
+**Padding.** NaN (every component of a float vector) or ``-1`` (``int32``) at every
+slot past ``count[e]``, written by every carrier (an output point outside the real ones
+has the table sentinel ``i0 = i1 = -1``, ``frac = NaN``) and by the commit when it
+poisons an env. One exception: the uniform image of a *constant* ``cl.half_width``
+(``width.constant``) fills its value into every slot, padding included, as 0.2.0.dev3
+did; read ``Track.half_width`` for a NaN-padded half-width.
+
+.. _pipeline-bead-attachment:
+
+**Through relaxation: bead-attached.** A relax stage moves points and never re-indexes
+them: point ``i`` of its output is point ``i`` of its input, moved. A carried channel
+keeps its bead index through any relax stage (no launch, no new version:
+``tap("cl.acme.grip", after="relax")`` is the ``after="resample"`` version), and the
+uniform resample re-interpolates it with the relaxed loop's own tables. So the
+half-width the uniform resample gives a final point is the one XPBD separated that
+point with, and a label (a curb, a surface) stays with the point that carries it.
+Re-assigning attributes by arc fraction after relaxation would decouple them from the
+geometry: XPBD moves beads a long way (a median displacement of 0.085 to 0.55 times the
+two-bead distance per batch, up to 0.89 on single envs, in the measurements behind this
+choice). A relax plugin must keep this contract (a relax stage that resamples internally
+must not be combined with carried channels); the conformance kit does not check it
+(:ref:`the relax contract <stage-relax-contract>`).
+
+**Blending.** ``"linear"`` and ``"angle"`` interpolate across the closing segment (the
+last bead back to bead ``0``), so a sawtooth attribute such as an arc fraction going
+from 0 to 1 takes intermediate values at the seam: carry a ``(cos, sin)`` pair, or use
+``"angle"``. On a truncated env (always invalid) the closing segment is the chord over
+the dropped arc.
+
+**Stage-written channels are not carried.** A ``cl.<package>.<name>`` channel a stage
+writes (``per="cl"``) lives on the points that stage saw. Reading it on the other side of
+the uniform resample (written before ``uniform``, read after it) raises ``PlanError``
+when the reading stage is built: ``stage 'validity_acme' reads cl.acme.curv, written by
+'width' before the uniform resample ('uniform'), which does not carry stage-written
+channels (the values sit on the pre-uniform points): write it after 'uniform', or carry
+it from the generator (raw.acme.curv)``. The commit's read of an exported channel is
+checked the same way. Relax stages do not trigger it (bead attachment), and the gate
+domain has no resampler after the ``gates.*`` channels exist.
+
+**Cost.**
+
+.. list-table::
+   :header-rows: 1
+   :widths: 34 66
+
+   * - carrier
+     - launches added
+   * - ``resample.constant_spacing``
+     - one per raw family; none (the 0.2.0.dev3 kernels) without one.
+   * - ``resample.uniform``
+     - one per non-constant family; a constant ``cl.half_width`` costs the one fill
+       0.2.0.dev3 already launched.
+   * - ``stations.raw``, ``stations.relaxed``
+     - one per family a later stage reads; none (roadmap PR11's ``_stations_k``)
+       otherwise.
+   * - ``carry.attributes``
+     - one per ``anchors.<package>.<name>`` family, on ``[E * G]``.
+
+Memory: the tables, 12 B per output point for each carrying resampler, and one buffer
+per family per carrier, plus a held copy per exported attribute (`The commit`_). A
+generator with four raw attributes adds eight launches to a track generation (two per
+family).
+
+.. _pipeline-required-ports:
+
+Required read ports
+~~~~~~~~~~~~~~~~~~~
+
+A ``reads`` value may name a domain instead of a channel, ``"cl.*"`` or ``"gates.*"``:
+the stage reads a channel the user chooses. Such a port has no default: the
+``StageRef`` must wire it with ``ports`` to a concrete channel of that domain, and the
+planner refuses one left unwired:
+
+.. code-block:: python
+
+   StageRef("width", "from_channel", ports={"src": "cl.acme.hw"})   # wired
+
+   build(presets.track(num_envs=8, device="cpu", generator="acme.ribbon",
+                       width="from_channel"))
+   # PlanError: stage 'width' (width.from_channel): read port 'src' (cl.*) must be
+   #   wired: StageRef('width', 'from_channel', ports={'src': 'cl.<pkg>.<name>'});
+   #   plugin channels written before it: ['cl.acme.grip', 'cl.acme.hw', ...]
+
+A required port is never a write port. ``registry.describe(kind, name).reads`` shows it
+as is (``{"src": "cl.*", "count": "cl.count"}`` for ``width.from_channel``).
 
 The default track stages
 ------------------------
 
 ``legacy.to_pipeline_spec(config)`` and ``presets.track(...)`` produce this list. Every
 stage launches what the 0.2.0.dev2 pipeline launched at the same point, with the same
-arguments.
+arguments: ``width.constant`` launches nothing (its value is filled at build), and the
+uniform resample fills the final ``cl.half_width`` with it, the launch 0.2.0.dev3's width
+stage made at that point (see `Width`_).
 
 .. list-table::
    :header-rows: 1
@@ -608,24 +898,25 @@ arguments.
    * - ``generator``
      - ``generator.<config.generator>``
      - ``seed``
-     - ``raw.xy``, ``gen.valid``
+     - ``raw.xy``, ``gen.valid`` (plus any ``raw.*`` it carries)
    * - ``resample``
      - ``resample.constant_spacing``
-     - ``raw.xy``
-     - ``cl.xy``, ``cl.count``, ``cl.truncated``
-   * - ``relax``
-     - ``relax.<config.relax_solver>`` (``relax.xpbd``), or ``relax.none`` when
-       ``relax_enable=False``
-     - ``cl.xy``, ``cl.count`` (``relax.none``: nothing)
-     - ``cl.xy`` (``relax.none``: nothing)
-   * - ``uniform``
-     - ``resample.uniform``
-     - ``cl.xy``, ``cl.count``
-     - ``cl.xy``
+     - ``raw.xy`` (plus every raw family)
+     - ``cl.xy``, ``cl.count``, ``cl.truncated`` (plus the ``cl.*`` image of every raw
+       family)
    * - ``width``
      - ``width.constant``
      - nothing
      - ``cl.half_width``
+   * - ``relax``
+     - ``relax.<config.relax_solver>`` (``relax.xpbd``), or ``relax.none`` when
+       ``relax_enable=False``
+     - ``cl.xy``, ``cl.count``, ``cl.half_width`` (``relax.none``: nothing)
+     - ``cl.xy`` (``relax.none``: nothing)
+   * - ``uniform``
+     - ``resample.uniform``
+     - ``cl.xy``, ``cl.count``, ``cl.half_width`` (and every carried ``cl.*`` family)
+     - ``cl.xy``, ``cl.half_width`` (and every carried ``cl.*`` family)
    * - ``frames``
      - ``frames.default``
      - ``cl.xy``, ``cl.count``
@@ -633,8 +924,8 @@ arguments.
        ``cl.length2``, ``cl.winding``
    * - ``offset``
      - ``offset.default``
-     - ``cl.xy``, ``cl.normal2``, ``cl.count``
-     - ``band.outer2``, ``band.inner2``
+     - ``cl.xy``, ``cl.normal2``, ``cl.count``, ``cl.half_width``
+     - ``band.outer2``, ``band.inner2``, ``track.half_width``
    * - ``elevation``
      - ``elevation.<config.z_profile>``: ``flat``, ``uniform``, ``random_walk``,
        ``noise`` or a plugin's
@@ -653,12 +944,13 @@ arguments.
        ``track.normal``; ``lift.elevated`` also ``track.arclen``, ``track.length``
 
 Each built-in stage's params keep the flat ``TrackGenConfig`` field names, copied from
-the config: ``resample.constant_spacing`` takes ``spacing``; ``relax.xpbd`` takes
-``half_width`` and the ``relax_*`` fields; ``width.constant`` and ``offset.default`` take
-``half_width``; the elevation stages take the ``z_*`` fields their profile uses;
-``validity.default`` takes ``half_width``, ``turning_tol``, ``w_floor``, ``relax_tol``,
-``z_valid_grade`` and ``validity_border_check``; ``lift.flat`` takes ``z_base``.
-``elevation.flat`` takes ``z_base`` too (the gate altitude; it must be 0 on a track,
+the config: ``resample.constant_spacing`` takes ``spacing``; ``width.constant`` takes
+``half_width``; ``relax.xpbd`` takes the ``relax_*`` fields; the elevation stages take
+the ``z_*`` fields their profile uses; ``validity.default`` takes ``turning_tol``,
+``w_floor``, ``relax_tol``, ``z_valid_grade`` and ``validity_border_check``;
+``lift.flat`` takes ``z_base``. ``relax.xpbd``, ``offset.default`` and
+``validity.default`` took ``half_width`` too in 0.2.0.dev3: they read ``cl.half_width``
+now. ``elevation.flat`` takes ``z_base`` too (the gate altitude; it must be 0 on a track,
 where ``lift.flat`` carries the track's flat altitude). The
 generator's params are its ``generator_params`` (see :ref:`generator-params`). A plugin
 stage named by ``relax_solver`` or ``z_profile`` gets its ``Params.from_legacy(config)``
@@ -702,6 +994,192 @@ ping-pong between ``b.temp_like(port)`` and the write buffer with an even number
 steps ends in the write buffer (see :doc:`/contributing/writing-a-stage`), and a chained
 check is one kernel, ``fail_out[e] = fail_in[e] | bit``.
 
+.. _pipeline-width:
+
+Width
+-----
+
+``cl.half_width`` is the band's per-point half-width, and its only source. The width
+stage writes it on the constant-spacing beads, before ``relax``; XPBD separates the
+beads with it; the uniform resample re-interpolates it onto the final points (it is
+bead-attached, see `Carried channels`_); ``offset.default`` builds the band from it and
+writes ``Track.half_width``; ``validity.default`` checks the band's thickness and its
+floor against it.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 26 52 22
+
+   * - writer
+     - ``cl.half_width``
+     - launches
+   * - ``width.constant``
+     - Its ``half_width`` (static, default 0.1) at every slot.
+     - none: the buffer is filled when it is allocated
+   * - ``width.from_channel``
+     - ``min(max(scale * src, lo), max(hi, lo))`` per real point, from the channel
+       wired to its ``src`` port; a NaN source point stays NaN; NaN padding.
+     - one
+   * - a generator that provides ``half_width``
+     - The carry of its ``raw.half_width`` (no width stage, see `Generator-provided
+       altitude and width`_).
+     - the carry
+   * - a plugin width stage
+     - Whatever it computes (:ref:`stage-width`).
+     - its own
+
+``width.from_channel`` takes ``scale`` (dynamic, default 1.0, ``>= 0``), ``lo``
+(dynamic, default 0.0, ``>= 0``) and ``hi`` (dynamic, default ``1e9``, ``>= 0``), with
+``lo <= hi`` checked at build (a run-time ``hi`` below ``lo`` clamps to ``lo``). Its ``src`` is a required read port (`Required read ports`_): wire it to the
+image of a generator's raw attribute (``raw.acme.hw`` is carried to ``cl.acme.hw``) or to
+a ``per="cl"`` plugin channel written before it. ``build`` refuses a source that is not
+a per-point ``float32`` channel (``ValueError``), and ``cl.half_width`` itself, the
+stage's own output (``PlanError``: rescaling the current width is a rewrite stage of
+its own). ``lo`` defaults to 0 on purpose: a
+source that pinches below ``w_floor`` must fail the floor check, not be clamped away.
+
+.. code-block:: python
+
+   spec = presets.track(
+       num_envs=64, device="cpu", generator="acme.ribbon", half_width=0.1,
+       width=StageRef("width", "from_channel", {"scale": 1.0, "hi": 0.2},
+                      ports={"src": "cl.acme.hw"}))
+
+**Constant width keeps its kernels.** ``width.constant`` declares its value constant (a
+private declaration of the built-in). A consumer that reads a constant ``cl.half_width``
+runs the 0.2.0.dev3 kernels with that value as a host scalar; any other width selects
+per-point kernels when the Program is built:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 22 36 42
+
+   * - consumer
+     - constant width (``hw``)
+     - per-point width (``w_i``)
+   * - ``relax.xpbd``
+     - pair target ``2 hw (1 + margin)``, bend floor ``R_min = hw (1 + margin)``,
+       neighbour band from ``2 hw``
+     - ``r_i = w_i (1 + margin)``, one launch per solve; pair target ``r_i + r_j``,
+       ``R_min = r_i``, neighbour band from ``2 max_i w_i``; the same schedule
+   * - ``offset.default``
+     - ``c ± hw n``
+     - ``c_i ± w_i n_i``
+   * - ``validity.default``, thickness (bit 3)
+     - ``min(curvature radius, half the closest non-neighbour distance) >=
+       (1 - relax_tol) hw``
+     - every non-neighbouring pair ``|p_i - p_j| >= (1 - relax_tol)(w_i + w_j)``, and
+       every point's curvature radius ``>= (1 - relax_tol) w_i``
+   * - ``validity.default``, floor (bit 4)
+     - ``w_i > w_floor`` at every real point
+     - the same
+
+Two kernels, because a target computed in ``float32`` inside the kernel is not
+bit-exact against the host's double-precision scalars of 0.2.0.dev3 (for 24 of 104
+``(half_width, margin)`` pairs tried; at ``half_width=0.07, margin=0.2`` a full solve
+moves 3909 of 12288 points by up to ``6e-3``). The constant path therefore keeps every
+default pipeline byte-identical, and the per-point kernels reproduce the scalar ones at
+constant width when given the same ``float32`` scalars. A plugin width that writes a
+constant value runs the per-point path: its outputs are close to, not equal to,
+``width.constant``'s.
+
+**The floor and the thickness checks read the final points.** Fail bit 4 is set when a
+real final point ``i < count`` has ``not (cl.half_width[i] > w_floor)`` (a NaN fails): the
+band pinches to the floor somewhere. In 0.2.0.dev3 the check compared a constant fill
+with ``w_floor``, the same answer at every point of every env; at constant width it
+still is. Both checks read the half-width the uniform resample carried to the final
+points (``Track.half_width``), the band the ``Track`` has: a pinch on a single bead that
+falls between two final samples is not in the band and does not fail. Two band edges
+overlap exactly when two non-neighbouring centerline points are closer than the sum of
+their half-widths, or a point's curvature radius is below its own half-width: that is
+the per-point thickness test.
+
+**Non-finite widths.** Warp's ``min`` and ``max`` drop a NaN operand, so in the
+per-point kernels a NaN half-width does not enter the neighbour band, gives no bend
+correction and never triggers a separation: XPBD leaves the bead unconstrained. Such an
+env fails bit 4 (``not (NaN > w_floor)``); XPBD does not clamp, the verdict stays
+validity's. A negative half-width fails bit 4 for any ``w_floor >= 0``.
+
+**Placement.** The width stage runs before ``relax``. A stage that writes
+``cl.half_width`` after ``offset`` raises ``PlanError`` (``stage 'X' writes
+cl.half_width after 'offset': the band and Track.half_width come from offset's read, so
+validity would check another width than the band; move it before 'offset'``). A width
+stage after ``uniform`` is legitimate: a rewrite of the final points' half-width, which
+XPBD did not see. That is the recipe for a geometry-dependent width, such as one scaled
+by the curvature ``frames`` computes: keep a nominal width in the width slot, for XPBD,
+and insert the geometry-dependent stage after ``frames`` as a rewrite of
+``cl.half_width``:
+
+.. code-block:: python
+
+   spec = presets.track(num_envs=64, device="cpu", half_width=0.1)
+   spec = spec.insert_after("frames", StageRef("width", "acme.curvature_scaled",
+                                               id="width_kappa"))
+
+:ref:`stage-width` shows how to write width stages, both kinds.
+
+.. _pipeline-provided:
+
+Generator-provided altitude and width
+-------------------------------------
+
+A centerline generator may compute an altitude or a half-width per raw point itself. It
+writes ``raw.z`` or ``raw.half_width`` (``float32``, carried with ``interp="linear"``)
+and declares it in ``provides``, a subset of ``{"z", "half_width"}`` naming exactly what
+it writes. The constant-spacing resample carries them to ``cl.z`` / ``cl.half_width``,
+the uniform resample re-interpolates them, and the stages that read those channels use
+them:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 18 40 42
+
+   * - ``provides``
+     - ``presets.track`` / ``legacy.to_pipeline_spec``
+     - then
+   * - ``"z"``
+     - no ``elevation`` stage; ``lift.elevated``
+     - ``Track.center.z`` is the carried altitude; ``validity.default``'s grade check
+       reads it.
+   * - ``"half_width"``
+     - no ``width`` stage
+     - XPBD, the band and the checks use the carried half-width (the per-point kernels).
+
+The presets refuse the selection a provider replaces: an explicit non-flat elevation or
+a non-zero ``z_base`` (``ValueError: presets.track(elevation='noise'): generator
+'acme.helix_loop' provides its own altitudes (z); leave elevation at its default
+('flat')``), and a ``width=`` other than the default ``"constant"`` (``... provides
+its own half-widths (raw.half_width -> cl.half_width); leave width at its default, or
+add a rewrite of cl.half_width to a hand-built spec``). A hand-built spec that keeps the stage gets the
+planner's second-writer ``PlanError``, with a hint (``generator 'acme.helix_loop'
+provides z (raw.z -> cl.z): drop the elevation stage``). In a gate pipeline, a ``z``
+provider puts the altitude on the loop before the stations (`3D station spacing`_).
+
+.. _pipeline-dev3-specs:
+
+Specs written for 0.2.0.dev3
+----------------------------
+
+The width stage moved and three stages lost a field, so a spec built in Python against
+0.2.0.dev3 may need an edit; a saved dict migrates on its own (`Saved specs: format /1
+and /2`_). ``TrackGenConfig`` users, ``presets.track(half_width=...)`` users and every
+``Track`` consumer are unaffected.
+
+- A ``half_width`` key in the params of ``relax.xpbd``, ``offset.default`` or
+  ``validity.default`` raises, before the params are coerced: ``stage 'relax'
+  (relax.xpbd): half_width is no longer a relax.xpbd param (0.2.0.dev4): the half-width
+  is cl.half_width, written by the width stage (presets.track(half_width=...) /
+  width.constant)``.
+- A spec in the old order (``relax``, ``uniform``, ``width``) has ``relax.xpbd`` read
+  ``cl.half_width`` before any writer: the read error names the new order (the example
+  under `build() and the planner`_). A hand-built ``relaxed_stations`` gate spec written
+  before the width moved (roadmap PR11 / PR12), which had no width stage, gets the same
+  message.
+- An old-order spec without relaxation (``relax.none``, ``uniform``, ``width``, ...)
+  still plans and gives the same bytes, with one launch fewer than in 0.2.0.dev3: its
+  width stage now writes ``cl.half_width`` after the uniform resample, which has no
+  version of it to fill.
+
 .. _pipeline-fail-bits:
 
 Fail bits
@@ -733,10 +1211,14 @@ check, else derived by the commit.
      - a real centerline point is NaN or infinite
    * - 3
      - ``thickness``
-     - the loop's thickness is below ``(1 - relax_tol) * half_width``
+     - the band overlaps itself: at constant width, the loop's thickness is below
+       ``(1 - relax_tol) * half_width``; at a per-point width, two non-neighbouring
+       points are closer than ``(1 - relax_tol)`` times the sum of their half-widths,
+       or a curvature radius is below ``(1 - relax_tol)`` times its point's (`Width`_)
    * - 4
      - ``w_floor``
-     - a real point's ``cl.half_width`` is not above ``w_floor``
+     - a real final point's ``cl.half_width`` (``Track.half_width``) is not above
+       ``w_floor`` (NaN included)
    * - 5
      - ``border``
      - a border self-intersects (only with ``validity_border_check=True``)
@@ -796,8 +1278,10 @@ with no copy. ``Track.arclen`` / ``Track.length`` are ``track.arclen`` /
 ``track.length`` when a stage writes them (``lift.elevated``), else the plan-view
 ``cl.arclen2`` / ``cl.length2`` (``lift.flat``: a constant ``z_base`` changes neither);
 ``Track.fail_mask`` is the final ``valid.fail``; ``Track.valid`` is ``validity.default``'s
-``track.valid`` unless a check runs after it. Intermediate versions get buffers of their
-own. ``Track.generation`` is not a channel.
+``track.valid`` unless a check runs after it; ``Track.half_width`` is ``track.half_width``
+(``offset``), and each ``Track.attributes[key]`` the final version of an exported
+channel (`Per-point attributes in the result`_). Intermediate versions get buffers of
+their own. ``Track.generation`` is not a channel.
 
 The *commit* is the Program's epilogue: it runs after the stages and settles what each
 env's ``Track`` rows hold at the end of the generation. A generation is: advance the
@@ -836,10 +1320,11 @@ what the commit does with an env whose ``fail_mask`` is not zero:
      - its computed geometry, as in 0.2.0.dev2, and ``valid = 0``.
    * - ``"poison"``
      - ``count = 0``; ``outer``, ``center``, ``inner``, ``tangent``, ``normal`` all
-       ``(NaN, NaN, NaN)`` and ``arclen`` NaN on every slot; ``length = 0`` and
-       ``winding = 0`` (what an empty loop gives); ``valid = 0``. ``fail_mask`` and
-       ``truncated`` keep the computed values, so the cause stays readable, and
-       ``generation`` is written as usual.
+       ``(NaN, NaN, NaN)`` and ``arclen`` and ``half_width`` NaN on every slot; every
+       attribute its padding (NaN, or ``-1`` for ``int32``) on every slot;
+       ``length = 0`` and ``winding = 0`` (what an empty loop gives); ``valid = 0``.
+       ``fail_mask`` and ``truncated`` keep the computed values, so the cause stays
+       readable, and ``generation`` is written as usual.
 
 With ``"poison"``, a utility fed the ``Track`` meets an empty track for an invalid env
 instead of finite geometry that failed a check, so its ``count < 3`` handling runs: for
@@ -870,11 +1355,15 @@ default at 1.0.
    * - masked (``advance=True, mask=m``)
      - two (the hold before the stages, the commit after them, ``E * N_max`` threads
        each, however few envs are masked)
+   * - with exported attributes
+     - per attribute: two more for a masked generation (its hold and its commit), one
+       more for an unmasked ``on_invalid="poison"`` one, none otherwise
 
-The held copy costs the size of the ``Track``: 64 B per point (five ``vec3f`` and one
-``float32``) and 24 B per env, about 100 MB at ``E = 4096``, ``N_max = 384``, allocated
-once at build for every Program, whether or not it ever runs a masked generation. The
-``Track`` and every working buffer keep their addresses forever.
+The held copy costs the size of the ``Track``: 68 B per point (five ``vec3f`` and two
+``float32``, ``arclen`` and ``half_width``), plus each exported attribute's size, and 24 B
+per env: about 107 MB at ``E = 4096``, ``N_max = 384``, allocated once at build for
+every Program, whether or not it ever runs a masked generation. The ``Track`` and every
+working buffer keep their addresses forever.
 
 ``Program.on_invalid`` reports the policy. ``TrackGenConfig`` has no ``on_invalid``
 field: build the spec with ``presets.track(..., on_invalid="poison")``, or edit a spec's
@@ -887,6 +1376,69 @@ batch (both are frozen dataclasses):
    spec = legacy.to_pipeline_spec(config)
    spec = dataclasses.replace(spec, batch=dataclasses.replace(spec.batch,
                                                               on_invalid="poison"))
+
+.. _pipeline-attributes:
+
+Per-point attributes in the result
+----------------------------------
+
+``Track.half_width`` is the band's half-width per point, ``[E * N_max]`` ``float32``:
+the value on the real points, NaN on the padding (the constant on every real point at
+constant width). It is ``offset.default``'s ``track.half_width``, so the band and the
+field agree: ``|outer - center| == half_width`` on every real point. It is ``None`` on a
+``Track`` built by hand.
+
+``Track.attributes`` maps a key to the final version of each per-point plugin channel
+exported with ``export=``; the key is the channel's name without its domain prefix:
+
+.. code-block:: python
+
+   # in a generator: writes = {..., "surface": "raw.acme.surface_id"}
+   b.write("surface", wp.int32, per="raw", interp="nearest", export=True)
+
+   track = gen.generate()
+   track.attributes["acme.surface_id"]        # [E * N_max] int32, -1 on the padding
+   info = gen.program.attributes["acme.surface_id"]   # an AttributeInfo
+   info.channel, info.interp, info.padding, info.domain
+   # ('cl.acme.surface_id', 'nearest', -1, 'cl'); info.dtype is wp.int32
+
+- Each array is ``[E * N_max]`` (``[E * G]`` on gates), of the family's dtype, padded
+  with NaN or ``-1``; it is allocated once at build and keeps its address forever, like
+  every ``Track`` array. The mapping is read-only.
+- ``export=True``, or the key itself (``export="acme.surface_id"``): another string
+  raises ``ValueError`` (``export='surface': the key of raw.acme.surface_id is
+  'acme.surface_id' (renaming is not supported)``), another type ``TypeError``.
+- ``export=`` is for per-point plugin channels: a ``raw`` or ``anchors`` family, or a
+  ``cl`` / ``gates`` channel a stage writes with ``per="cl"`` / ``per="gates"``. On a
+  per-env channel it raises ``ValueError`` (``export= needs a per-point channel:
+  per='cl' (got the default per='env')``), on a catalogue family too (``raw.z reaches
+  Track.center.z; export= is for plugin channels``). A later writer of the family may not
+  pass it.
+- An exported raw family reaches ``Track.attributes`` through the resamplers, on every
+  track pipeline. A channel a stage writes is exported as written, so the stale-read rule
+  of `Carried channels`_ applies to the commit's read of it.
+- The commit holds and restores attributes under a masked regeneration and fills them
+  with their padding when it poisons an env (`The commit`_). ``Track.clone()`` copies
+  ``half_width`` and every attribute.
+- ``GateSequence.attributes`` is the same for the gate pipeline's
+  ``gates.<package>.<name>`` channels (`Gate plugin channels`_), with one difference:
+  a family with no index path to the gates is left out (best effort).
+- ``Program.attributes`` maps each key of the result to an ``AttributeInfo`` (``key``,
+  ``channel``, ``dtype``, ``interp``, ``padding``, ``domain``;
+  ``track_gen.pipeline.AttributeInfo``), the policy a consumer that samples an
+  attribute along the track needs (``interp`` is ``None`` for a channel a stage wrote on
+  the result's points, or one carried by index only).
+  ``registry.describe("generator", name)`` lists the raw channels a generator declares
+  (``interp`` and ``export`` are decided in ``build``).
+
+**Caller-owned results** (``build(..., out=...)``) follow one rule for the optional
+fields (``fail_mask``, ``generation``, ``half_width``, attribute keys): a field the caller
+leaves ``None``, or a key it leaves out of ``out.attributes``, is not added to the
+caller's object, and the Program keeps that work buffer for itself (``tap`` reaches it).
+A key of ``out.attributes`` the Program exports is bound after a check (``[E * N_max]``,
+the dtype, the device, contiguous); a key it does not export raises ``ValueError``
+(``out.attributes['x']: this pipeline does not export 'x'; exported: [...] (out= with
+keys from another pipeline is reserved for PR13b's mixed batches)``).
 
 .. _pipeline-taps:
 
@@ -906,6 +1458,8 @@ code:
    relaxed = p.tap("cl.xy", after="relax")
    kappa = p.tap("cl.kappa")
    p.channels["cl.xy"]                            # ('resample', 'relax', 'uniform')
+   beads_hw = p.tap("cl.half_width", after="width")   # the width XPBD separates with
+   p.channels["cl.half_width"]                    # ('width', 'uniform')
 
 - A tap is **read-only** by contract: never write it, the next stage reads it.
 - It is stable: the same array for the Program's lifetime, recordable by pointer.
@@ -983,7 +1537,8 @@ same point, with the same arguments (`Launches`_ lists the one reordering).
    * - ``generator``
      - ``gate_generator.<config.generator>``
      - nothing (its seed is ``b.seed``)
-     - ``anchors.xy``, ``anchors.count``, plus the attributes it provides
+     - ``anchors.xy``, ``anchors.count``, plus the attributes it provides and its
+       ``anchors.<package>.<name>`` channels
    * - ``order``
      - ``order.<config.gate_ordering>`` (``None``: the generator's default order,
        :ref:`pipeline-ordering-registry`)
@@ -998,6 +1553,11 @@ same point, with the same arguments (`Launches`_ lists the one reordering).
      - ``carry.<attr>``, one per attribute the generator provides
      - ``anchors.<attr>``, ``gates.count``
      - ``gates.<attr>``
+   * - *carry_attributes*
+     - ``carry.attributes``, when the generator writes ``anchors.<package>.<name>``
+       channels
+     - every ``anchors.<package>.<name>``, ``gates.count``
+     - the matching ``gates.<package>.<name>``
    * - ``gate_relax``
      - ``gate_relax.spheres``; ``gate_relax.none`` when ``gate_solve_iters == 0`` or
        the float32 target ``2 * gate_radius`` is ``0``
@@ -1063,7 +1623,8 @@ The planner gives each stage its own ``Layout``, derived from its ports before i
 are validated: ``b.layout.stride`` is ``G`` for a gate-domain stage (an anchors
 generator, ``stations.raw``, an order, the gate stages, a validity plugin) and ``N_max``
 for the centerline generator of a stations pipeline and for any stage with a ``cl.*``
-port (the ``resample`` and ``relax`` stages of ``source="relaxed_stations"``,
+port (the ``resample``, ``width`` and ``relax`` stages of ``source="relaxed_stations"``,
+with ``elevation_on="centerline"`` also its ``frames`` and elevation, and
 ``stations.relaxed``). A stage with both ``cl.*`` and ``gates.*`` ports raises
 ``PlanError``: a stage runs on one point domain. Size a buffer from the port, not from the
 layout: ``b.stride_of(port)`` is the row stride of the channel a port is wired to
@@ -1096,6 +1657,13 @@ Gate channels
      - anchors
      - float32, vec3f, float32, float32
      - Per-anchor attributes an anchors generator ``provides`` (`Provided attributes`_).
+       ``anchors.z`` is also the stations' carry of a centerline altitude (`3D station
+       spacing`_).
+   * - ``anchors.<package>.<name>``
+     - anchors
+     - float32, int32, vec2f, vec3f
+     - A plugin attribute per anchor: written by a gate generator, carried by the
+       stations from a centerline family (`Gate plugin channels`_).
    * - ``gates.xy``
      - gates
      - vec2f
@@ -1145,11 +1713,16 @@ Gate channels
      - env
      - int32
      - The fail bitmask, shared with tracks (``GateSequence.fail_mask``).
+   * - ``gates.<package>.<name>``
+     - gates or env
+     - any
+     - A gate-domain plugin channel; exported ones become ``GateSequence.attributes``
+       (`Gate plugin channels`_).
 
 ``GateSequence.generation`` is not a channel. As for tracks, the final version of each
-exported channel *is* the ``GateSequence`` array. Gate plugin channels
-(``gates.<package>.<name>``) arrive with roadmap PR13: a gate-domain stage with a port on
-a ``cl.<package>.<name>`` channel raises ``PlanError``.
+exported channel *is* the ``GateSequence`` array. A gate-domain stage uses
+``gates.<package>.<name>`` plugin channels; a port on a ``cl.<package>.<name>`` channel
+raises ``PlanError`` (`Plugin channels`_).
 
 Anchors generators
 ~~~~~~~~~~~~~~~~~~
@@ -1227,6 +1800,52 @@ other than ``order.raw``. The presets refuse an
 explicit elevation (``ValueError``: ``... provides its own altitudes (z); leave elevation
 at its default ('flat')``), and ``GateGenConfig`` a ``z_profile`` other than ``"flat"`` or a
 non-zero ``z_base``, for a generator that provides ``z``.
+
+.. _pipeline-gate-plugin-channels:
+
+Gate plugin channels
+~~~~~~~~~~~~~~~~~~~~
+
+A gate-domain stage (an elevation, a check, an order plugin) reads and writes its own
+``gates.<package>.<name>`` channels (``per="gates"``, ``[E * G]``, or the default
+``per="env"``, ``[E]``), and exports the per-gate ones to ``GateSequence.attributes``:
+
+.. code-block:: python
+
+   # a gate check: writes = {"fail": "valid.fail", "clearance": "gates.acme.clearance"}
+   clearance = b.write("clearance", wp.float32, per="gates", export=True)
+
+   gates = gen.generate()
+   gates.attributes["acme.clearance"]      # [E * G] float32, NaN on the padding
+
+Per-anchor attributes reach the gate slots by anchor index, as provided attributes do:
+
+- a gate generator writes ``anchors.<package>.<name>`` channels (any dtype of
+  `Carried channels`_, with ``export=`` but no ``interp=``: they are copied, not
+  interpolated); it must declare ``orderings=frozenset({"raw"})``;
+- the built-in stations carry a centerline generator's ``raw.<package>.<name>``
+  attributes (their ``cl.*`` images, for ``stations.relaxed``) to
+  ``anchors.<package>.<name>``, when a later stage reads them;
+- ``carry.attributes``, which ``presets.gates`` inserts after an ``order.raw`` when such
+  channels exist, copies every ``anchors.<package>.<name>`` to
+  ``gates.<package>.<name>`` (padding NaN or ``-1``), one launch per channel, exported
+  or not. After an order other than ``order.raw`` it raises ``PlanError``, as
+  ``carry.<attr>`` does.
+
+An exported per-point attribute of a centerline generator thus reaches
+``GateSequence.attributes`` along ``generator -> stations -> order.raw ->
+carry.attributes``. This is **best effort**: with another order (``order="ccw"``), a
+plugin stations stage, or a per-point channel a stage writes on the centerline (an
+elevation on the relaxed centerline, ``elevation_on="centerline"``, exporting
+``cl.<pkg>.<name>``: the stations carry generator families only) there is no index
+path, and the key is left out of ``GateSequence.attributes`` (``Program.attributes``
+lists the keys that are there); asking
+for it through ``out.attributes`` raises ``ValueError`` (``out.attributes['acme.grip']:
+this pipeline does not export 'acme.grip'; exported: [...]``).
+An ``anchors.*`` attribute a gate generator or a plugin stations stage writes must be
+read by a later stage (``carry.z``, ``carry.attributes``), else ``PlanError`` names the
+writer and the stage to add. The plugin channels of an elevation stage are rewired to
+the gate slots by prefix (`Elevation on gates`_).
 
 .. _pipeline-ordering-registry:
 
@@ -1307,27 +1926,138 @@ generator, ``repulsive`` included, and for third-party ones, with no gate-specif
      - ``generator`` (the centerline generator, ``capacity={"raw": num_points}``), then
        ``stations.raw`` on its raw loop (``raw.xy``).
    * - ``"relaxed_stations"``
-     - The first three stages of ``presets.track`` (``generator``, ``resample``,
-       ``relax``, with the same keywords: ``n_max``, ``num_points``, ``half_width``,
-       ``spacing``, ``relax``), then ``stations.relaxed`` on the relaxed centerline
-       (``cl.xy``). No uniform resample, frames or track validity run.
+     - The stages of ``presets.track`` up to ``relax`` (``generator``, ``resample``,
+       ``width``, ``relax``, with the same keywords: ``n_max``, ``num_points``,
+       ``half_width``, ``spacing``, ``width``, ``relax``; no ``width`` stage for a
+       generator that provides its half-widths), then ``stations.relaxed`` on the
+       relaxed centerline (``cl.xy``). No uniform resample, offset or track validity run
+       (``frames`` and an elevation do with ``elevation_on="centerline"``, see `3D
+       station spacing`_).
    * - ``"auto"`` (default)
      - ``"anchors"`` when the name is registered as a gate generator (the built-in names
        are both kinds: the gate generator wins, as before), else ``"stations"`` when it
        is a track generator, else ``ValueError`` listing both kinds.
 
 Each station ``k`` sits at arc length ``L * k / A`` from point 0 along the closed loop
-(``A = gates``, default 12; ``L`` the loop's plan-view length), so the anchors are in loop
-order and the default order is ``raw``. An env whose generator flagged it invalid, whose
-loop was truncated, or whose length is not positive gets ``anchors.count = 0`` (NaN
-anchors), and fails the ``count`` check. ``capacity()`` is ``{"gates": gates,
-"min_gates": 0}``; ``max_gates`` defaults to ``gates``.
+(``A = gates``, default 12; ``L`` the loop's length, plan-view by default), so the
+anchors are in loop order and the default order is ``raw``. An env whose generator
+flagged it invalid, whose loop was truncated, or whose length is not positive gets
+``anchors.count = 0`` (NaN anchors), and fails the ``count`` check. ``capacity()`` is
+``{"gates": gates, "min_gates": 0}``; ``max_gates`` defaults to ``gates``.
 
-``stations`` and ``gate_arclen`` measure plan-view (xy) arc length, as 0.2.0.dev3 does.
-A selectable metric (``spacing_metric``, ``"xy"`` / ``"xyz"``) arrives with roadmap PR13:
-3D arc length needs an altitude on the centerline before the stations are placed (the
-``raw.z`` / ``cl.z`` carry-through), and gate altitudes are computed *from* the xy arc
-tables.
+The stations carry the centerline's families that a later stage reads to
+``anchors.<attr>``, through the same resample tables as the anchors: the altitude
+(``anchors.z``, read by ``carry.z``) and the plugin attributes (read by
+``carry.attributes``, `Gate plugin channels`_). ``stations.relaxed`` carries the
+``cl.*`` families except ``cl.half_width``.
+
+.. _pipeline-stations-xyz:
+
+3D station spacing
+~~~~~~~~~~~~~~~~~~
+
+``StationsParams.spacing_metric`` chooses the arc length the stations measure:
+``"xy"`` (default, the plan-view length of roadmap PR11's stations, byte for byte) or
+``"xyz"``, the 3D length along the loop, so that the gates are equally spaced in flight
+distance on a course that climbs. ``presets.gates(spacing_metric=...)`` sets it. The ``"xyz"`` branch
+accumulates the segment lengths in ``float64`` (the 3D spacing is equal to well within
+``1e-6``, relative), and carries the altitude to the anchors with ``"linear"``.
+
+3D spacing needs an altitude on the loop *before* the stations are placed. It comes from
+one of two places:
+
+- **the generator**, one that provides ``z`` (``raw.z``, `Generator-provided altitude
+  and width`_), with ``source="stations"`` or ``"relaxed_stations"``;
+- **an elevation stage on the relaxed centerline**, with ``source="relaxed_stations"``,
+  a non-flat elevation and ``elevation_on="centerline"``: the preset runs ``frames`` and
+  the elevation on the relaxed loop, before ``stations.relaxed``.
+
+The stations then carry the altitude to ``anchors.z``, ``order.raw`` keeps the anchor
+index, ``carry.z`` copies it to ``gates.z``, and the gate-level ``gate_arclen`` and
+elevation stages are dropped. ``elevation_on`` (``"gates"`` or ``"centerline"``) chooses
+where the elevation runs, independently of the metric: ``None`` (default) is
+``"centerline"`` for ``"xyz"`` and ``"gates"`` for ``"xy"``. The two are separate
+controls because an elevation on the centerline is a different course: a profile drawn
+along the loop's arc length, sampled at the stations, instead of one drawn over the
+gates (a knot profile such as ``uniform`` then puts its knots along the loop, not at the
+gates). Toggling ``spacing_metric`` with the default ``elevation_on`` therefore also
+moves the elevation; pass ``elevation_on`` explicitly to change one thing at a time. It
+also changes which attributes reach the gates: a plugin elevation's exported channel
+(``cl.acme.slope``, rewired to ``gates.acme.slope`` on gates) is in
+``GateSequence.attributes`` when the elevation runs on the gates, and left out when it
+runs on the centerline (the stations carry generator families only, not channels a
+stage writes); ``Program.attributes`` lists what is there.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 46 54
+
+   * - source, metric, altitude
+     - gate stages
+   * - any source, ``"xy"``, no altitude on the loop (the defaults)
+     - those of roadmap PR11 (gate-level ``gate_arclen`` and ``elevation``);
+       byte-identical to them (golden ``tests/goldens/pr13a_pr11_relaxed_stations.json``;
+       ``relaxed_stations`` gains its ``width`` slot)
+   * - an altitude on the loop (a ``z`` provider, or ``relaxed_stations`` with a
+       non-flat elevation and ``elevation_on="centerline"``), either metric
+     - ``frames`` and the elevation on the centerline (not for a provider), the
+       stations, ``order.raw``, ``carry.z``, ...; no ``gate_arclen`` and no gate-level
+       elevation
+   * - ``"xyz"`` with ``source="stations"``, a non-flat elevation and no ``z`` provider
+     - ``ValueError``: use ``source="relaxed_stations"`` (a raw loop has no
+       sub-pipeline to elevate)
+   * - ``"xyz"`` with no altitude on the loop (a flat elevation and no ``z``
+       provider)
+     - ``ValueError``: use a ``z`` provider, or ``source="relaxed_stations"`` with a
+       non-flat elevation
+   * - ``"xyz"`` with ``elevation_on="gates"`` and no ``z`` provider, or
+       ``elevation_on="centerline"`` with ``source="stations"``
+     - ``ValueError``
+   * - an explicit ``elevation_on`` with a ``z`` provider (no elevation runs)
+     - ``ValueError``: leave ``elevation_on`` at ``None``
+   * - ``spacing_metric="xyz"`` with an anchors generator
+     - ``ValueError`` (``spacing_metric= places stations; gate generator 'bezier'
+       places its own gates``)
+   * - any explicit ``elevation_on`` with an anchors generator
+     - ``ValueError`` (``elevation_on= places the elevation of a relaxed_stations
+       source; gate generator 'bezier' has no centerline``)
+   * - an altitude on the loop and an explicit non-``raw`` order
+     - ``ValueError`` (``generator 'acme.helix_loop' provides z, carried to the gates by
+       index: order='raw' (the stations default)``)
+
+A hand-built spec (not made by the preset) with ``spacing_metric="xyz"`` and no
+altitude on the loop raises ``PlanError`` (``stage 'stations' (stations.raw):
+spacing_metric='xyz' measures 3D arc length along the loop, which carries no altitude:
+use a generator that provides z (raw.z), or source='relaxed_stations' with a non-flat
+elevation``). In a gate pipeline,
+an ``elevation`` slot before the anchors producer keeps its ``cl.*`` ports (it runs on
+the centerline); the gate rewiring of `Elevation on gates`_ applies to the slots after
+it.
+
+.. code-block:: python
+
+   spec = presets.gates(num_envs=64, device="cpu", generator="bezier",
+                        source="relaxed_stations", gates=12,
+                        elevation=("noise", {"z_noise_amplitude": 0.3,
+                                             "z_min": -0.3, "z_max": 0.3}),
+                        spacing_metric="xyz")
+   spec.ids
+   # ('generator', 'resample', 'width', 'relax', 'frames', 'elevation', 'stations',
+   #  'order', 'carry_z', 'gate_relax', 'lift', 'tangents', 'gate_frames', 'validity')
+   # the noise profile runs on the relaxed loop, the stations are 3D-equally spaced
+
+A plugin stations stage gets ``spacing_metric`` filled into its params when its Params
+class has the field; otherwise ``"xyz"`` raises ``ValueError``. Plugin stations stages
+carry no centerline channels in this release: one may write ``anchors.z`` (it is then
+treated as providing the altitude: ``carry.z``, ``order.raw``) and its own
+``anchors.<package>.<name>`` channels, and a generator that provides ``z`` raises
+``ValueError`` with one (``stations 'acme.st' carries no centerline channels (plugin
+carriers are deferred); generator 'acme.helix_loop' provides z``).
+
+``gate_arclen`` measures plan-view arc length, and stays so: its arc table feeds the
+gate elevation that produces ``gates.z``, so a 3D metric there would be circular (and
+whenever an altitude exists upstream, ``gate_arclen`` and the gate elevation are not
+in the pipeline). The spacing is decided where the gates are placed, by the stations.
 
 .. _pipeline-gate-elevation:
 
@@ -1338,7 +2068,10 @@ The gate pipeline runs the same registered ``elevation`` stages as tracks, built
 plugins alike: the planner rewires every ``elevation`` slot of a gate pipeline from the
 centerline channels to their gate counterparts, ``cl.xy -> gates.xy``, ``cl.count ->
 gates.count``, ``cl.arclen2 -> gates.cum``, ``cl.length2 -> gates.perim``, ``cl.z ->
-gates.z`` (``seed`` is unchanged). An explicit ``StageRef.ports`` entry overrides one port.
+gates.z``, and every plugin channel by prefix, ``cl.<package>.<name> ->
+gates.<package>.<name>`` (``seed`` is unchanged). An explicit ``StageRef.ports`` entry
+overrides one port. An ``elevation`` slot placed before the anchors producer (the
+centerline elevation of `3D station spacing`_) is not rewired.
 The presets emit plain ``StageRef("elevation", name, params)``, so
 ``spec.replace("elevation", StageRef("elevation", "acme.sinusoid_hills"))`` works on a
 gate spec whose elevation is already non-flat (e.g. ``presets.gates(...,
@@ -1384,7 +2117,9 @@ Gate presets: ``presets.gates``
                  gate_align="yaw_only", elevation="flat", z_base=0.0,
                  z_valid_grade=0.0, checks=("gate_default",), scale=1.0,
                  on_invalid="keep", n_max=384, num_points=256, half_width=0.1,
-                 spacing=None, relax="xpbd", registry=None) -> PipelineSpec
+                 spacing=None, relax="xpbd", width="constant",
+                 spacing_metric="xy", elevation_on=None,
+                 registry=None) -> PipelineSpec
 
 ``presets.gates(num_envs=E, device=d)`` builds what
 ``legacy.to_gate_pipeline_spec(GateGenConfig(num_envs=E, device=d))`` builds: the same
@@ -1418,10 +2153,15 @@ registry (``registry``, default ``track_gen.plugin.registry``) to see the genera
   ``elevation.flat``'s altitude: a nonzero value with another elevation or with a
   generator that provides ``z`` raises ``ValueError``. ``gate_align`` is ``"yaw_only"``
   or ``"full_tangent"``.
-- ``n_max``, ``num_points``, ``half_width``, ``spacing`` and ``relax`` configure the
-  centerline sub-pipeline: a ``"stations"`` source reads ``n_max`` and ``num_points``, a
-  ``"relaxed_stations"`` source all five, and setting one that the source does not read
-  raises ``ValueError``.
+- ``n_max``, ``num_points``, ``half_width``, ``spacing``, ``relax`` and ``width``
+  configure the centerline sub-pipeline: a ``"stations"`` source reads ``n_max`` and
+  ``num_points``, a ``"relaxed_stations"`` source all six (``width`` as in
+  ``presets.track``), and setting one that the source does not read raises
+  ``ValueError``.
+- ``spacing_metric`` (``"xy"`` or ``"xyz"``) is the stations' arc-length metric, and
+  ``elevation_on`` (``None``, ``"gates"`` or ``"centerline"``) where the elevation runs;
+  both apply to a centerline source, and ``"xyz"`` with an anchors generator raises
+  ``ValueError`` (`3D station spacing`_).
 - ``on_invalid`` is ``"keep"`` or ``"poison"``.
 - A legacy ``GateGeneratorSpec`` orders its own gates: ``order=`` with one raises
   ``ValueError``, choose its ordering with ``GateGenConfig(gate_ordering=...)``.
@@ -1512,17 +2252,20 @@ The gate Program ends with the commit of `The commit`_, over the ``GateSequence`
 - **Masked regeneration is exact.** ``generate(advance=True, mask=m)`` holds the
   ``GateSequence`` rows of every env with ``m[e] == 0`` before the stages and restores
   them after, bit for bit (``position``, ``tangent``, ``forward``, ``left``, ``right``,
-  ``orientation``, ``half_size``, ``count``, ``valid``, ``fail_mask``; ``generation`` is
-  written for the masked envs only).
+  ``orientation``, ``half_size``, ``count``, ``valid``, ``fail_mask``, every attribute;
+  ``generation`` is written for the masked envs only).
 - **Invalid envs.** ``BatchSpec.on_invalid`` applies: ``"keep"`` (default) leaves an invalid env's computed gates and
   ``valid = 0``. ``"poison"`` leaves it with ``count = 0``, every per-gate field NaN
-  (``orientation`` and ``half_size`` included) and ``valid = 0``, keeping ``fail_mask``;
+  (``orientation`` and ``half_size`` included), every attribute its padding and
+  ``valid = 0``, keeping ``fail_mask``;
   ``CheckpointSet.from_gates`` and ``ProgressTracker`` then take their empty-course path
   for that env. There is no ``GateGenConfig.on_invalid``: use ``presets.gates(...,
   on_invalid="poison")`` or edit the spec's batch.
 - **Cost.** As for tracks: no launch for an unmasked default generation, one for a derived
   ``valid`` (a check after ``validity.gate_default``) or for poison, two for a masked
-  generation. The held copy costs 80 B per gate slot and 12 B per env, allocated once.
+  generation, plus per exported attribute two for a masked generation and one for
+  poison. The held copy costs 80 B per gate slot (plus each attribute's size) and 12 B
+  per env, allocated once.
 
 .. _pipeline-gate-launches:
 
@@ -1578,11 +2321,16 @@ before allocating anything when:
   ``min_gates`` (`Anchors generators`_), or ``capacity()`` returns keys other than
   ``gates`` / ``min_gates``, ``gates < 1``, or ``min_gates`` outside ``[0, gates]``;
 - the order stage is one the generator does not accept (`The ordering registry`_);
-- a provided attribute is not read, or a ``carry`` stage follows an order other than
-  ``order.raw`` (`Provided attributes`_);
+- a provided attribute, or an ``anchors.*`` attribute a gate generator or a plugin
+  stations stage writes, is not read, or a ``carry`` stage (``carry.attributes``
+  included) follows an order other than ``order.raw`` (`Provided attributes`_, `Gate
+  plugin channels`_);
+- the stations measure ``spacing_metric="xyz"`` on a loop that carries no altitude
+  (`3D station spacing`_);
 - a stage has both ``cl.*`` and ``gates.*`` ports, a gate-domain stage uses a
-  ``cl.<package>.<name>`` plugin channel, or an elevation port stays on a ``cl.*``
-  channel without gate counterpart (`Two point domains`_, `Elevation on gates`_);
+  ``cl.<package>.<name>`` plugin channel, or an elevation port after the anchors
+  producer stays on a ``cl.*`` channel without gate counterpart (`Two point domains`_,
+  `Elevation on gates`_);
 - stages disagree on ``gate_width`` or ``gate_radius`` (``gate_frames`` bakes the bar
   width, ``gate_relax.spheres`` the separation target, ``validity.gate_default`` both
   checks): one value per pipeline;
@@ -1616,15 +2364,23 @@ legacy gate generators run through an adapter until 1.0``. Port it with
 Not open yet
 ------------
 
-- **Channels and results** (roadmap PR13): per-point channels carried from ``raw.*`` to
-  ``cl.*``, ``cl.half_width`` consumers (a width that varies along the band, a width
-  stage before relax), ``Track.half_width`` and ``Track.attributes``, and the removal of
-  the per-stage ``half_width`` fields and of the parameter latch. For gates: gate plugin
-  channels (``gates.<package>.<name>``) and a ``spacing_metric`` (``"xy"`` /
-  ``"xyz"``: 3D station and arc spacing, which needs ``raw.z`` / ``cl.z`` carried through
-  before the stations).
-- **Gates** (later): composite generators (``Recipe``), attributes provided by
-  ``stations``, ``roll`` on ``gate_frames.default``, ``preferred`` hints for track
+- **Results** (roadmap PR13b): ``Track.layout``, ``validate()``, ``view()`` and
+  ``copy_from()``; a ``clone()`` that iterates the fields; ``out=`` on the facades and
+  ``out.attributes`` with keys from another pipeline (mixed batches); the capability
+  protocols (``HasCenterline``, ``HasBand``, ``HasGates``); utilities that validate
+  their input; ``randomize.uniform`` and the removal of the parameter latch; an
+  ingestion stage for external centerlines; the ``closed`` flag through the kernels.
+- **Channels** (later): carries by plugin stations stages (a public
+  ``StageBuilder.carried()``); carried channels written by a stage rather than the
+  generator (an ``annotate`` kind, ``interp=`` on stage writes); an order that publishes
+  its permutation, so attributes reach the gates through any order;
+  ``ops.arc_resample(tables=)``; a public constant declaration for width stages; an
+  arc-fraction attribute policy; renaming on ``export=``; per-env attributes;
+  ``GateGenConfig.spacing_metric``; an elevation on the raw loop (``"xyz"`` with
+  ``source="stations"`` needs a ``z`` provider); a dynamic ``width.constant``.
+- **Gates** (later): composite generators (``Recipe``), provided attributes other than
+  ``z`` from ``stations`` (``tangent``, ``half_size``, ``roll``), ``roll`` on
+  ``gate_frames.default``, ``preferred`` hints for track
   generators, split gate checks, and a ``GateGenConfig.on_invalid`` field.
 - Opening ``resample``, ``frames``, ``offset`` and ``lift`` to plugins; split built-in
   checks (``validity.turning``, ...); an aliasing in-place write form; a

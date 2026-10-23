@@ -13,6 +13,8 @@ the flat fields that carry the same names. This page lists:
   pipeline's (:ref:`gate-stage-shortcuts`);
 - how a gate generator's capacity meets ``max_gates`` and ``min_gates``
   (:ref:`gate-capacity-config`);
+- the road's half-width, its floor and the gate stations' spacing metric
+  (:ref:`width-config`);
 - how ``generator_params`` resolves (:ref:`generator-params-config`);
 - each built-in generator's Params, with defaults and rules
   (:ref:`builtin-generator-params`);
@@ -74,8 +76,9 @@ name through the plugin registry (``track_gen.plugin.registry``), the way
      - The ``relax`` stage registered under that name: ``"xpbd"`` (default) or a
        plugin's, such as ``"acme.taubin"``. ``relax_enable=False`` selects
        ``relax.none`` instead (``relax_solver`` is still resolved first).
-     - ``relax.xpbd``: ``half_width`` and the ``relax_*`` fields, as before. A plugin:
-       its ``Params.from_legacy(config)``.
+     - ``relax.xpbd``: the ``relax_*`` fields, as before (it reads the half-width from
+       the width stage, see :ref:`width-config`). A plugin: its
+       ``Params.from_legacy(config)``.
    * - ``z_profile``
      - The ``elevation`` stage registered under that name: ``"flat"`` (default),
        ``"uniform"``, ``"random_walk"``, ``"noise"`` or a plugin's, such as
@@ -226,6 +229,74 @@ generator 'polar'; required max_gates 12.`` (``PlanError`` with ``BatchSpec.max_
 ``min_gates`` in the text when a spec is built). So
 ``GateGenConfig(generator="polar", generator_params={"polar_num_knots": 9})`` makes 9
 gates per env.
+
+.. _width-config:
+
+Road width: ``half_width``, ``w_floor`` and the width stage
+-----------------------------------------------------------
+
+``TrackGenConfig.half_width`` is the road's half-width. ``TrackGenerator(config)`` turns
+it into the pipeline's width stage, ``width.constant(half_width=config.half_width)``,
+which writes the per-point half-width ``cl.half_width`` before relaxation; XPBD, the band
+offset and the validity checks all read that channel (see :ref:`pipeline-width`). It also
+sets the default ``spacing`` (``0.6 * half_width``). ``Track.half_width`` reports it per
+point: the constant on the real points, NaN on the padding. The outputs of a
+``TrackGenConfig`` are unchanged from 0.2.0.dev3.
+
+A half-width that varies along the road needs a pipeline spec (the flat config has no
+width shortcut):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 40 60
+
+   * - ``presets.track(...)``
+     - Effect
+   * - ``half_width=0.1`` (default)
+     - The value of ``width.constant``, or of the ``half_width`` field of another width
+       stage that has one (a plugin's), filled when its params do not set it; params
+       that set another value raise ``ValueError``. It also sets the default
+       ``spacing``. With a width stage that has no such field, or a generator that
+       provides its half-widths, it only sets the default spacing, and a ``half_width``
+       other than the default 0.1 with an explicit ``spacing`` raises ``ValueError``
+       (nothing would read it).
+   * - ``width="constant"`` (default)
+     - The width stage: a registered name, ``(name, params)`` or a ``StageRef``, such as
+       ``StageRef("width", "from_channel", {"hi": 0.3}, ports={"src": "cl.acme.hw"})``
+       (a generator's per-point attribute as the width). ``None`` raises
+       ``ValueError``; a ``width`` other than the default ``"constant"`` with a
+       generator that provides ``half_width`` raises too.
+   * - ``registry=None``
+     - The registry the preset reads to see what the generator provides and which
+       width stages have a ``half_width`` field (default ``track_gen.plugin.registry``).
+
+``presets.gates(width=...)`` is the same for a ``source="relaxed_stations"`` gate
+pipeline, whose centerline is relaxed with the width before the stations are placed.
+
+``TrackGenConfig.w_floor`` (``validity.default``'s ``w_floor``) is the smallest
+half-width a valid track may have: fail bit 4 (``w_floor``) is set when a real final
+point's half-width is not above it, or is NaN. At a constant half-width every point
+passes or fails together, as in earlier releases (where the check could only compare the
+configured ``half_width`` with ``w_floor``); with a per-point width it finds the pinch.
+``relax_tol`` is the tolerance of the thickness check (fail bit 3), which compares each
+point's curvature radius and its distance to the non-neighbouring points with the
+half-widths there.
+
+``StationsParams.spacing_metric`` (``presets.gates(spacing_metric=...)``) is the arc
+length the ``stations`` stages measure: ``"xy"`` (default, plan-view) or ``"xyz"`` (3D,
+which needs an altitude on the centerline: a generator that provides ``z``, or
+``source="relaxed_stations"`` with ``elevation_on="centerline"``).
+``presets.gates(elevation_on=...)`` chooses where the elevation runs: ``"gates"`` (on the
+gate slots, the default for ``"xy"``) or ``"centerline"`` (on the relaxed centerline,
+before the stations, the default for ``"xyz"``). ``GateGenConfig`` has no such fields:
+its gate generators place their own gates. See :ref:`pipeline-stations-xyz`.
+
+A pipeline spec saved with ``to_dict()`` carries ``"format": "track_gen.pipeline/2"``.
+``PipelineSpec.from_dict`` still reads the ``/1`` dicts of 0.2.0.dev3 and of the
+0.2.0.dev4 branch before the width moved (gate specs included), migrating them (the
+``half_width`` keys of ``relax.xpbd``, ``offset.default`` and ``validity.default``
+removed, the width stage moved before ``relax``) with one ``DeprecationWarning``; see
+:ref:`pipeline-spec-format`.
 
 .. _generator-params-config:
 

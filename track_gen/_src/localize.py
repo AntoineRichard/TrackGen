@@ -68,8 +68,11 @@ class TrackFrame:
         increasing ``s``), negative to the left. Whether the right side is
         the outer or the inner boundary depends on the loop's winding, which
         is generator-dependent (CCW loops have ``outer`` on the right, CW
-        loops on the left); ``|n| <= half_width`` means on the road either
-        way. NaN for NaN positions and degenerate tracks.
+        loops on the left); ``|n| <= w`` means on the road either way, where
+        ``w`` is ``Track.half_width`` interpolated at the foot point between
+        ``segment`` and ``segment + 1`` (at constant width, ``width.constant``,
+        the configured ``half_width``). NaN for NaN positions and degenerate
+        tracks.
     n_up : wp.array
         ``float32`` — signed vertical offset in the roll-free frame at the
         foot point; equals ``position.z`` for planar tracks. NaN for NaN

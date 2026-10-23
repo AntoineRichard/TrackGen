@@ -31,10 +31,11 @@ from __future__ import annotations
 from ..stages.channels import BUILTIN_FAIL_BITS, GATE_FAIL_BITS
 from . import legacy, presets
 from .planner import PlanError, build
-from .program import Program, Segment
+from .program import AttributeInfo, Program, Segment
 from .spec import BatchSpec, PipelineSpec, StageRef
 
 __all__ = [
+    "AttributeInfo",
     "BUILTIN_FAIL_BITS",
     "BatchSpec",
     "GATE_FAIL_BITS",

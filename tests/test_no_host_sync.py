@@ -49,6 +49,7 @@ from track_gen._src import (
     warp_generate_voronoi_gates,
     warp_pipeline,
     warp_relax,
+    warp_width,
     warp_zprofile,
 )
 from track_gen._src.checkpoints import CheckpointSampler, CheckpointSet
@@ -504,6 +505,13 @@ def _ops_all():
     co, cs_c, cs_t, xi, o_c, used, flag = i32(E), i32(E), i32(E), i32(E), i32(E), \
         i32(E * P), i32(1)
     tf, keys = f32(E), f32(E * (P + 2))
+    # roadmap PR13a: the table-writing resamples and the channel carries
+    tab_u = ops.ResampleTables.alloc(E * n, E * n, DEV)
+    tab_c = ops.ResampleTables.alloc(E * 16, E * n, DEV)
+    ch_f = wp.array(rs.normal(size=E * n).astype(np.float32), dtype=wp.float32, device=DEV)
+    ch_i = wp.array(np.arange(E * n, dtype=np.int32), dtype=wp.int32, device=DEV)
+    o_cf, o_ci, o_cv = f32(E * 16), i32(E * 16), vv(E * 16)
+    o_ua, o_un = f32(E * n), f32(E * n)
 
     def hot():
         ops.arc_resample(ctx, src, M, num, sc_m, o_num, co)
@@ -530,6 +538,12 @@ def _ops_all():
         ops.any_set(ctx, act, flag)
         ops.all_set(ctx, act, flag)
         ops.check_array("act", act, (E,), wp.int32, DEV)
+        ops.resample_uniform(ctx, loops, n, sc_n, o_n, count=cnt_n, tables=tab_u)
+        ops.resample_constant_spacing(ctx, loops, n, 0.3, 16, sc_n, o_cs, cs_c, cs_t,
+                                      tables=tab_c)
+        ops.resample_channels(ctx, tab_c, [(ch_f, o_cf), (ch_i, o_ci), (loops, o_cv)],
+                              ["linear", "nearest", "previous"])
+        ops.resample_channels(ctx, tab_u, [(ch_f, o_ua), (ch_f, o_un)], ["angle", "linear"])
     return hot
 
 
@@ -622,6 +636,92 @@ def _gate_program_toys_poison():
             gen.generate(advance=True, mask=m)
             gen.enqueue(advance=True, mask=gen.inputs["regen_mask"])
             gen.program.run(policy="eager")
+    return hot
+
+
+def _program_channels():
+    # Roadmap PR13a: a generator's carried attributes (tests/_channel_toys.py ribbon: five
+    # exported families + raw.acme.hw), width.from_channel on the carried cl.acme.hw (the
+    # per-point XPBD / offset / validity kernels), on_invalid="poison": plain (the commit
+    # derives valid and poisons, attributes included) and masked (hold + commit per
+    # attribute); a generator that provides its half-widths and one that provides z.
+    from tests._channel_toys import register
+
+    with registry.scoped():
+        register(registry)
+        spec = pipeline_mod.presets.track(
+            num_envs=E, device=DEV, generator="acme.ribbon",
+            width=pipeline_mod.StageRef("width", "from_channel",
+                                        ports={"src": "cl.acme.hw"}),
+            on_invalid="poison")
+        gens = [TrackGenerator(spec, _rng())] + [
+            TrackGenerator(pipeline_mod.presets.track(num_envs=E, device=DEV,
+                                                      generator=name), _rng())
+            for name in ("acme.pinch", "acme.helix_loop")]
+    m = _i32([1, 0])
+
+    def hot():
+        for gen in gens:
+            gen.generate()
+            gen.generate(advance=True, mask=m)
+            gen.enqueue(advance=True, mask=gen.inputs["regen_mask"])
+    return hot
+
+
+def _gate_program_channels():
+    # Roadmap PR13a: stations carrying a generator's attributes to the gates
+    # (carry.attributes), xyz stations on a z-providing loop and on a relaxed centerline
+    # with its elevation, an anchors generator's own attribute; masked and poison.
+    from tests._channel_toys import register
+
+    noise = ("noise", {"z_base": 0.5, "z_max": 1.5, "z_noise_amplitude": 0.5,
+                       "z_noise_harmonics": 4})
+    with registry.scoped():
+        register(registry)
+        specs = [
+            pipeline_mod.presets.gates(num_envs=E, device=DEV, generator="acme.ribbon",
+                                       gates=8, on_invalid="poison"),
+            pipeline_mod.presets.gates(num_envs=E, device=DEV,
+                                       generator="acme.helix_loop", gates=8,
+                                       spacing_metric="xyz"),
+            pipeline_mod.presets.gates(num_envs=E, device=DEV, generator="bezier",
+                                       source="relaxed_stations", gates=8,
+                                       elevation=noise, spacing_metric="xyz"),
+            pipeline_mod.presets.gates(num_envs=E, device=DEV, generator="acme.tagged",
+                                       on_invalid="poison"),
+        ]
+        gens = [GateGenerator(spec, _rng()) for spec in specs]
+    m = _i32([1, 0])
+
+    def hot():
+        for gen in gens:
+            gen.generate()
+            gen.generate(advance=True, mask=m)
+    return hot
+
+
+def _legacy_offset_without_hw_out():
+    # The legacy offset / inflate_warp call forms of 0.2.0.dev3 (no hw_out: a null array
+    # is passed, nothing stored, nothing allocated), on buffers allocated at setup.
+    gen = _track_gen()
+    s = gen._scratch
+    stag = s.inflate
+    dev3 = warp_pipeline.InflateScratch(
+        area_a=stag.area_a, area_b=stag.area_b, kappa=stag.kappa, w=stag.w,
+        out2=stag.out2, ctr2=stag.ctr2, inn2=stag.inn2, tan2=stag.tan2, nrm2=stag.nrm2,
+        z=stag.z, fail=stag.fail)
+    scratch = warp_pipeline._Scratch(inflate=dev3, cs_seg=s.cs_seg, cs_s=s.cs_s)
+    out, _ = warp_pipeline._inflate_warp_alloc(gen._config)
+    center = gen.program.tap("cl.xy", after="relax")
+    count, valid = gen.program.tap("cl.count"), gen.program.tap("gen.valid")
+    ctx = LaunchContext.for_call(DEV)
+
+    def hot():
+        warp_pipeline.offset(stag.ctr2, stag.nrm2, 0.1, stag.out2, stag.inn2,
+                             stag.area_a, stag.area_b, count, ctx=ctx)
+        warp_pipeline.inflate_warp(center, gen._config, out=out, valid=valid,
+                                   count=count, scratch=scratch, seeds=gen._seed_buf,
+                                   truncated=out.truncated, ctx=ctx)
     return hot
 
 
@@ -804,6 +904,9 @@ DRIVERS = {
     "track_run[z=acme.sinusoid_hills]": _run_track_plugin_profile,
     "wrappers[legacy_generator]": _legacy_generator_wrappers,
     "ops[all]": _ops_all,
+    "program[attrs,from_channel,poison,masked]": _program_channels,
+    "gate_program[stations xyz,attrs]": _gate_program_channels,
+    "wrappers[legacy offset/inflate, no hw_out]": _legacy_offset_without_hw_out,
 }
 
 
@@ -827,7 +930,7 @@ def test_hot_path_has_no_host_sync_or_readback(name):
 # ---------------------------------------------------------------------------------------
 
 _PIPELINE_MODULES = (
-    warp_pipeline, warp_gate, warp_relax, warp_zprofile, warp_generate,
+    warp_pipeline, warp_gate, warp_relax, warp_width, warp_zprofile, warp_generate,
     warp_generate_checkpoint, warp_generate_hull, warp_generate_polar,
     warp_generate_repulsive, warp_generate_voronoi, warp_generate_gates,
     warp_generate_checkpoint_gates, warp_generate_polar_gates,
@@ -874,7 +977,11 @@ _CONSTRUCTION_ONLY = {
     "track_gen.seeds": {"effective_seed", "_wrap_int32", "_is_rng"},
     # the planner and the stage catalogue (PR10a): build-time only
     "track_gen.pipeline.spec": {"_frozen_map", "_port_value", "_capacity_value",
-                                "_required", "_thaw"},
+                                "_required", "_thaw",
+                                # PR13a: the track_gen.pipeline/1 migration
+                                "_migrate_v1"},
+    # PR13a: the resample tables / carry kernel lookup are build-time
+    "track_gen.ops.resample": {"_carry_kernel", "_check_tables"},
     "track_gen.pipeline.planner": {"build", "_build", "_is_int", "_check_spec_shape",
                                    "_label", "_resolve", "_plan_channels", "_check_out",
                                    "_seed_state", "_is_seed_form", "_check_seeds",
@@ -890,7 +997,11 @@ _CONSTRUCTION_ONLY = {
                                    "_check_gate_plan", "_check_provided",
                                    "_check_gate_exports", "_check_gate_fail_start",
                                    "_check_arrays", "_check_gate_out", "_result_kind",
-                                   "_missing_hint"},
+                                   "_missing_hint",
+                                   # PR13a: carried channels, attributes, width placement
+                                   "_decl", "_is_raw_family", "_carry_set",
+                                   "_check_width_placement", "_check_out_attributes",
+                                   "_result_attributes"},
     "track_gen.pipeline.legacy": {"to_pipeline_spec", "_to_pipeline_spec",
                                   "generator_config", "_scratch_view", "_legacy_params",
                                   "to_gate_pipeline_spec", "_to_gate_pipeline_spec",
@@ -900,12 +1011,19 @@ _CONSTRUCTION_ONLY = {
                                    "_check_half_width", "gates", "_gate_stages",
                                    "_relax_on", "_is_flat",
                                    "_lookup", "_param", "_with_params",
-                                   "_with_gate_validity", "_check_centerline_args"},
+                                   "_with_gate_validity", "_check_centerline_args",
+                                   # PR13a: providers and the width selection
+                                   "_sel_name", "_provides", "_has_half_width_field"},
     "track_gen.stages": {"_check_builtin_stage", "register", "register_builtins"},
-    "track_gen.stages.channels": {"_c", "is_plugin_channel", "is_gate_channel"},
+    "track_gen.stages.channels": {"_c", "is_plugin_channel", "is_gate_channel",
+                                  "channel_domain", "family_key",
+                                  "required_port_domain"},
     "track_gen.stages.params": {"_check_half_width", "_check_z_range",
                                 "_check_control_points", "_f32_distance"},
-    "track_gen.stages.track": {"_alloc_track", "_zcfg"},
+    "track_gen.stages.track": {"_alloc_track", "_zcfg",
+                               # PR13a: carriers and the constant-width config view
+                               "_with_half_width", "_tables", "_carry_ops",
+                               "raw_attributes"},
     "track_gen.stages.gates": {"_alloc_gate_sequence", "_orderings_of",
                                "_supported_orderings", "_preferred", "_default_order"},
 }

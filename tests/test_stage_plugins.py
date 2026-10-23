@@ -103,8 +103,8 @@ def test_taubin_through_presets_and_the_flat_shortcut_is_byte_equal():
     a = _gen(_spec(relax=TAUBIN))
     b = _gen(TrackGenConfig(device=DEV, num_envs=E, relax_solver=TAUBIN))
     assert _bytes(a._track) == _bytes(b._track)
-    assert b.program.spec.stages[2].params == TaubinParams()
-    assert (b.program.spec.stages[2].kind, b.program.spec.stages[2].name) == \
+    assert b.program.spec.stages[3].params == TaubinParams()
+    assert (b.program.spec.stages[3].kind, b.program.spec.stages[3].name) == \
         ("relax", TAUBIN)
 
 
@@ -127,7 +127,7 @@ def test_the_flat_shortcut_gives_a_plugin_half_width_field_the_config_value():
 
     registry.add(Sep)
     g = _gen(TrackGenConfig(device=DEV, num_envs=E, relax_solver="acme.sep", half_width=0.2))
-    assert g.program.spec.stages[2].params == SepParams(half_width=0.2)
+    assert g.program.spec.stages[3].params == SepParams(half_width=0.2)
 
 
 def test_taubin_is_a_rewrite_that_leaves_the_version_it_read_intact():
@@ -275,7 +275,7 @@ def test_all_three_toys_in_one_program():
     spec = _spec(relax=TAUBIN, elevation=HILLS, checks=("default", KMAX))
     g = _gen(spec)
     assert list(g.params) == ["generator", "relax", "elevation", KMAX]
-    assert g.program.spec.ids == ("generator", "resample", "relax", "uniform", "width",
+    assert g.program.spec.ids == ("generator", "resample", "width", "relax", "uniform",
                                   "frames", "offset", "elevation", "validity", KMAX,
                                   "lift")
     assert g.program.capturable and g.program.capture_class is CaptureClass.STATIC

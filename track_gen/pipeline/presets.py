@@ -2,11 +2,13 @@
 :func:`gates` the default gate one, with one argument per replaceable stage (preview,
 roadmap PR10b / PR11).
 
-:func:`track` is pure data: it never touches the registry, so an unknown stage name
-fails at :func:`track_gen.pipeline.build` (or ``TrackGenerator`` construction) with the
-registry's message. :func:`gates` reads the registry for the generator only (its kind,
-``provides``, orderings and ``preferred``). Edit the result with the
-:class:`PipelineSpec` operations::
+:func:`track` reads the registry only for what shapes the stage list (roadmap PR13a:
+the generator's ``provides``, and whether a width stage's Params has a ``half_width``
+field); an unknown name is not an error there: it fails at
+:func:`track_gen.pipeline.build` (or ``TrackGenerator`` construction) with the
+registry's message. :func:`gates` reads the registry for the generator (its kind,
+``provides``, orderings, ``preferred`` and attributes) and the stations stage's Params.
+Edit the result with the :class:`PipelineSpec` operations::
 
     from track_gen.pipeline import StageRef, presets
 
@@ -33,14 +35,22 @@ __all__ = ["StageSel", "gates", "track"]
 #: A stage selection: a name, a ``(name, params)`` pair or a :class:`StageRef`.
 StageSel = Union[str, tuple, StageRef]
 
-# The built-ins that bake half_width as a host scalar (until roadmap PR13): the preset
-# gives them the pipeline's half_width unless their params set one.
-_HALF_WIDTH_STAGES = {("relax", "xpbd"), ("width", "constant"), ("offset", "default"),
-                      ("validity", "default")}
+# The width stages whose Params class has a half_width field (the preset fills it with
+# the pipeline's half_width unless their params set one): width.constant, and any
+# registered width stage with the field (looked up in the registry).
+_HALF_WIDTH_STAGES = {("width", "constant")}
+# The track preset's default half_width (an explicit other value must reach a stage or
+# the default spacing).
+_DEFAULT_HALF_WIDTH = 0.1
 
 
-def _with_half_width(kind: str, name: str, params, half_width: float):
-    if (kind, name) not in _HALF_WIDTH_STAGES:
+def _with_half_width(kind: str, name: str, params, half_width: float,
+                     fill: "bool | None" = None):
+    """``params`` with ``half_width`` filled in for a width stage whose Params has the
+    field (``fill``; default: the built-in ``width.constant``)."""
+    if fill is None:
+        fill = (kind, name) in _HALF_WIDTH_STAGES
+    if not fill:
         return params
     if params is None:
         return {"half_width": half_width}
@@ -50,9 +60,9 @@ def _with_half_width(kind: str, name: str, params, half_width: float):
 
 
 def _check_half_width(slot: str, ref: StageRef, half_width: float) -> StageRef:
-    """A selection whose params set ``half_width`` must agree with the preset's (one
-    value until roadmap PR13): say so here rather than as the planner's agreement
-    error."""
+    """A selection whose params set ``half_width`` must agree with the preset's (the
+    nominal width every stage with the field shares): say so here rather than as the
+    planner's agreement error."""
     p = ref.params
     if isinstance(p, _MappingABC):
         v = p.get("half_width")
@@ -63,8 +73,8 @@ def _check_half_width(slot: str, ref: StageRef, half_width: float) -> StageRef:
     if isinstance(v, (int, float)) and not isinstance(v, bool) and float(v) != half_width:
         raise ValueError(f"{slot}: {ref.kind}.{ref.name} sets half_width={v!r} but "
                          f"half_width={half_width!r}; pass half_width={v!r} to "
-                         f"presets.track (the stages that bake half_width share one "
-                         f"value until roadmap PR13)")
+                         f"presets.track (the stages with a half_width field share one "
+                         f"nominal value; the per-point width is cl.half_width)")
     return ref
 
 
@@ -74,13 +84,15 @@ def _is_pair(sel) -> bool:
         and not isinstance(sel[1], (str, tuple, StageRef))
 
 
-def _select(slot: str, kind: str, sel, half_width: float) -> StageRef:
-    """``sel`` (a selection form) as a StageRef of ``kind`` (a StageRef keeps its id)."""
+def _select(slot: str, kind: str, sel, half_width: float,
+            fill: "bool | None" = None) -> StageRef:
+    """``sel`` (a selection form) as a StageRef of ``kind`` (a StageRef keeps its id);
+    ``fill``: fill ``half_width`` into its params (see :func:`_with_half_width`)."""
     if isinstance(sel, StageRef):
         if sel.kind != kind:
             raise ValueError(f"{slot}={sel!r}: expected a StageRef of kind {kind!r}")
         return _check_half_width(slot, dataclasses.replace(
-            sel, params=_with_half_width(kind, sel.name, sel.params, half_width)),
+            sel, params=_with_half_width(kind, sel.name, sel.params, half_width, fill)),
             half_width)
     if isinstance(sel, str):
         name, params = sel, None
@@ -92,7 +104,44 @@ def _select(slot: str, kind: str, sel, half_width: float) -> StageRef:
     if not name:
         raise ValueError(f"{slot}: the stage name must be a non-empty string")
     return _check_half_width(slot, StageRef(
-        kind, name, params=_with_half_width(kind, name, params, half_width)), half_width)
+        kind, name, params=_with_half_width(kind, name, params, half_width, fill)),
+        half_width)
+
+
+def _sel_name(sel) -> "str | None":
+    """The stage name of a selection form."""
+    if isinstance(sel, StageRef):
+        return sel.name
+    if isinstance(sel, str):
+        return sel
+    if _is_pair(sel):
+        return sel[0]
+    return None
+
+
+def _provides(reg, kind: str, name: str) -> frozenset:
+    """The ``provides`` of a registered generator Stage (empty for an unknown name or a
+    legacy spec: ``build`` reports an unknown name)."""
+    from ..plugin.stage import _is_stage  # noqa: PLC0415
+
+    try:
+        spec = _lookup(reg, kind, name)
+    except Exception:  # noqa: BLE001 - a quarantined plugin: build reports it
+        return frozenset()
+    return frozenset(spec.provides) if spec is not None and _is_stage(spec) else frozenset()
+
+
+def _has_half_width_field(reg, name: str) -> bool:
+    """Whether width stage ``name``'s Params class has a ``half_width`` field
+    (``width.constant``, a plugin width like ``acme.ripple``)."""
+    if ("width", name) in _HALF_WIDTH_STAGES:
+        return True
+    try:
+        cls = _lookup(reg, "width", name)
+    except Exception:  # noqa: BLE001
+        return False
+    fields = getattr(getattr(cls, "Params", None), "__dataclass_fields__", {})
+    return "half_width" in fields
 
 
 def track(*, num_envs: int, device: str, n_max: int = 384, scale: float = 1.0,
@@ -101,13 +150,20 @@ def track(*, num_envs: int, device: str, n_max: int = 384, scale: float = 1.0,
           spacing: "float | None" = None, relax: "StageSel | None" = "xpbd",
           width: StageSel = "constant", elevation: "StageSel | None" = "flat",
           checks: Sequence[StageSel] = ("default",),
-          on_invalid: str = "keep", z_base: float = 0.0) -> PipelineSpec:
-    """The track pipeline: generator -> resample -> relax -> uniform resample -> width
-    -> frames -> offset -> elevation -> checks -> lift.
+          on_invalid: str = "keep", z_base: float = 0.0, registry=None) -> PipelineSpec:
+    """The track pipeline: generator -> resample -> width -> relax -> uniform resample
+    -> frames -> offset -> elevation -> checks -> lift (since 0.2.0.dev4 the width runs
+    before relax: ``cl.half_width`` is the per-point half-width XPBD, the offset and
+    validity read).
 
     ``presets.track(num_envs=E, device=d)`` equals the spec of
     ``TrackGenerator(TrackGenConfig(num_envs=E, device=d))`` (same stages, equal
     params; byte-identical Tracks).
+
+    A generator that ``provides`` attributes (roadmap PR13a) has the stage computing
+    them dropped: ``"z"`` (its ``raw.z`` is carried to ``cl.z``): no elevation stage,
+    ``lift.elevated``; ``"half_width"`` (``raw.half_width`` -> ``cl.half_width``): no
+    width stage.
 
     Args:
         num_envs: ``E``.
@@ -119,12 +175,15 @@ def track(*, num_envs: int, device: str, n_max: int = 384, scale: float = 1.0,
         generator_params: The generator's params (a Params instance or a mapping;
             ``None``: its defaults).
         num_points: The generator's default raw point count (``capacity["raw"]``).
-        half_width: The track half-width, given to the built-ins that bake it
-            (``relax.xpbd``, ``width.constant``, ``offset.default``,
-            ``validity.default``) unless their params set it (until roadmap PR13).
+        half_width: The track half-width: the value of a width stage whose Params
+            has a ``half_width`` field (``width.constant``, or a plugin's), unless its
+            params set it, and the default spacing. A width stage without the field
+            (``width.from_channel``) or a generator that provides its width takes its
+            width elsewhere: then an explicit ``half_width`` other than 0.1 with an
+            explicit ``spacing`` reaches nothing and raises ``ValueError``.
         spacing: The constant-spacing step (default ``0.6 * half_width``).
         relax: The ``relax`` stage (``None``: ``relax.none``).
-        width: The ``width`` stage.
+        width: The ``width`` stage (runs before relax).
         elevation: The ``elevation`` stage (``None``: ``elevation.flat``). The lift is
             ``lift.flat`` for ``elevation.flat``, else ``lift.elevated``.
         checks: The ``validity`` stages, in order: a sequence of selections whose
@@ -135,13 +194,19 @@ def track(*, num_envs: int, device: str, n_max: int = 384, scale: float = 1.0,
         z_base: The altitude of the flat lift (``elevation.flat``; the flat
             ``TrackGenConfig.z_base``). Another elevation takes its altitude from its
             own params, so a nonzero ``z_base`` with it raises ``ValueError``.
+        registry: The plugin registry the generator's ``provides`` and a width
+            stage's Params are looked up in (default ``track_gen.plugin.registry``;
+            an unknown name is reported by ``build``).
 
     Raises:
         ValueError: an invalid selection (wrong StageRef kind, ``width=None``,
             ``checks`` not starting with ``"default"``, a duplicate check id, an unknown
             ``on_invalid``, ``generator_params`` with a generator StageRef, params
             setting a ``half_width`` other than ``half_width``, ``elevation.flat``
-            params setting a non-zero ``z_base``).
+            params setting a non-zero ``z_base``, a width other than the default, a
+            non-flat elevation or a non-zero ``z_base`` for a generator that provides
+            them, a ``half_width`` that
+            reaches no stage).
         TypeError: a selection of another type, or ``checks`` given as one
             selection instead of a sequence.
     """
@@ -162,13 +227,46 @@ def track(*, num_envs: int, device: str, n_max: int = 384, scale: float = 1.0,
     else:
         raise TypeError(f"generator must be a generator name or a StageRef, got "
                         f"{type(generator).__name__}")
+    from ..plugin import registry as _default_registry  # noqa: PLC0415
+
+    reg = _default_registry if registry is None else registry
+    provides = _provides(reg, "generator", gen.name)
     hw = float(half_width)
     step = 0.6 * hw if spacing is None else spacing
     relax_ref = StageRef("relax", "none") if relax is None else \
         _select("relax", "relax", relax, hw)
     if width is None:
         raise ValueError("width=None: a width stage must write cl.half_width")
-    width_ref = _select("width", "width", width, hw)
+    width_ref = None
+    if "half_width" in provides:
+        if width != "constant":
+            # No preset name: presets.gates(source="relaxed_stations") builds its
+            # centerline through this function too.
+            raise ValueError(f"width={width!r}: generator {gen.name!r} "
+                             f"provides its own half-widths (raw.half_width -> "
+                             f"cl.half_width); leave width at its default, or add a "
+                             f"rewrite of cl.half_width to a hand-built spec")
+        reads_hw = False
+    else:
+        name = _sel_name(width)
+        reads_hw = name is not None and _has_half_width_field(reg, name)
+        width_ref = _select("width", "width", width, hw, fill=reads_hw)
+    if not reads_hw and spacing is not None and hw != _DEFAULT_HALF_WIDTH:
+        what = (f"generator {gen.name!r} provides its own half-widths"
+                if width_ref is None else
+                f"width.{width_ref.name} takes its width from elsewhere (no half_width "
+                f"field)")
+        raise ValueError(f"half_width= sets width.constant's value and the default "
+                         f"spacing; {what} and spacing= is given")
+    if "z" in provides:
+        if elevation is not None and not (isinstance(elevation, str)
+                                          and elevation == "flat"):
+            raise ValueError(f"presets.track(elevation={elevation!r}): generator "
+                             f"{gen.name!r} provides its own altitudes (z); leave "
+                             f"elevation at its default ('flat')")
+        if float(z_base) != 0.0:
+            raise ValueError(f"presets.track(z_base={z_base!r}): generator {gen.name!r} "
+                             f"provides its own altitudes (z); leave z_base=0.0")
     elev_ref = StageRef("elevation", "flat") if elevation is None else \
         _select("elevation", "elevation", elevation, hw)
     if isinstance(checks, (str, StageRef)) or _is_pair(checks):
@@ -202,18 +300,19 @@ def track(*, num_envs: int, device: str, n_max: int = 384, scale: float = 1.0,
                          f"{_param(elev_ref, 'z_base')!r}, which sets gate altitudes (gate "
                          f"pipelines); a track's flat altitude is lift.flat's: pass "
                          f"z_base= to presets.track")
+    provided_z = "z" in provides
     stages = (
         gen,
         StageRef("resample", "constant_spacing", params={"spacing": step}),
+        *(() if width_ref is None else (width_ref,)),
         relax_ref,
         StageRef("resample", "uniform", id="uniform"),
-        width_ref,
         StageRef("frames", "default"),
-        StageRef("offset", "default", params={"half_width": hw}),
-        elev_ref,
+        StageRef("offset", "default"),
+        *(() if provided_z else (elev_ref,)),
         *check_refs,
-        StageRef("lift", "flat", params={"z_base": float(z_base)}) if flat
-        else StageRef("lift", "elevated"),
+        StageRef("lift", "flat", params={"z_base": float(z_base)})
+        if flat and not provided_z else StageRef("lift", "elevated"),
     )
     return PipelineSpec(batch=BatchSpec(num_envs=num_envs, device=device, n_max=n_max,
                                         scale=scale, on_invalid=on_invalid),
@@ -294,7 +393,7 @@ def _with_gate_validity(ref: StageRef, fill: dict,
 # The centerline sub-pipeline's arguments and their defaults, and the sources that
 # read them (an anchors source runs no centerline; stations sample the raw loop).
 _CENTERLINE_ARGS = (("n_max", 384), ("num_points", 256), ("half_width", 0.1),
-                    ("spacing", None), ("relax", "xpbd"))
+                    ("spacing", None), ("relax", "xpbd"), ("width", "constant"))
 _CENTERLINE_READS = {"anchors": (), "stations": ("n_max", "num_points"),
                      "relaxed_stations": tuple(k for k, _ in _CENTERLINE_ARGS)}
 
@@ -321,14 +420,15 @@ def _gate_stages(gen_ref: StageRef, *, provides=frozenset(), upstream=(),
                  gate_width: float = 0.0, gate_align: str = "yaw_only",
                  elevation_ref: "StageRef | None" = None, min_gates: int = 4,
                  z_valid_grade: float = 0.0, validity_ref: "StageRef | None" = None,
-                 checks=()) -> tuple:
+                 checks=(), carry_attributes: bool = False) -> tuple:
     """The gate stage list (shared by :func:`gates` and
     ``legacy.to_gate_pipeline_spec``): generator [-> upstream] [-> stations] [-> order
-    [-> normalize]] [-> carry_*] -> gate_relax [-> gate_arclen -> elevation] -> lift
-    [-> tangents] -> gate_frames -> validity [-> checks]. ``order_ref=None``: a legacy
-    generator that orders its own gates. The stages a generator ``provides`` are
-    dropped (z: gate_arclen + elevation; tangent: tangents) and carried instead;
-    ``half_size`` + ``roll`` select ``gate_frames.posed``."""
+    [-> normalize]] [-> carry_*] [-> carry_attributes] -> gate_relax [-> gate_arclen ->
+    elevation] -> lift [-> tangents] -> gate_frames -> validity [-> checks].
+    ``order_ref=None``: a legacy generator that orders its own gates. The stages a
+    generator ``provides`` are dropped (z: gate_arclen + elevation; tangent: tangents)
+    and carried instead; ``half_size`` + ``roll`` select ``gate_frames.posed``;
+    ``carry_attributes`` carries the per-anchor plugin attributes to the gate slots."""
     provides = frozenset(provides)
     stages = [gen_ref, *upstream]
     if stations_ref is not None:
@@ -340,6 +440,8 @@ def _gate_stages(gen_ref: StageRef, *, provides=frozenset(), upstream=(),
     for attr in _PROVIDABLE:
         if attr in provides:
             stages.append(StageRef("carry", attr, id=f"carry_{attr}"))
+    if carry_attributes:
+        stages.append(StageRef("carry", "attributes", id="carry_attributes"))
     if _relax_on(gate_radius, gate_solve_iters):
         stages.append(StageRef("gate_relax", "spheres", params={
             "gate_radius": gate_radius, "gate_solve_iters": gate_solve_iters}))
@@ -394,7 +496,9 @@ def gates(*, num_envs: int, device: str, generator: "str | StageRef" = "bezier",
           checks: Sequence[StageSel] = ("gate_default",), scale: float = 1.0,
           on_invalid: str = "keep", n_max: int = 384, num_points: int = 256,
           half_width: float = 0.1, spacing: "float | None" = None,
-          relax: "StageSel | None" = "xpbd", registry=None) -> PipelineSpec:
+          relax: "StageSel | None" = "xpbd", width: StageSel = "constant",
+          spacing_metric: str = "xy", elevation_on: "str | None" = None,
+          registry=None) -> PipelineSpec:
     """The gate pipeline: generator -> order -> [normalize] -> gate_relax ->
     [gate_arclen -> elevation] -> lift -> tangents -> gate_frames -> checks.
 
@@ -447,10 +551,21 @@ def gates(*, num_envs: int, device: str, generator: "str | StageRef" = "bezier",
             posed gates) unless its params set them (a Params instance is taken as is).
         scale: ``BatchSpec.scale``.
         on_invalid: ``"keep"`` or ``"poison"``.
-        n_max, num_points, half_width, spacing, relax: The centerline sub-pipeline of a
-            stations source (as :func:`track`): a ``stations`` source reads ``n_max``
-            and ``num_points``, a ``relaxed_stations`` source all five; setting one
-            that the source does not read raises ``ValueError``.
+        n_max, num_points, half_width, spacing, relax, width: The centerline
+            sub-pipeline of a stations source (as :func:`track`): a ``stations``
+            source reads ``n_max`` and ``num_points``, a ``relaxed_stations`` source
+            all six; setting one that the source does not read raises ``ValueError``.
+        spacing_metric: ``"xy"`` (default: the stations are equally spaced in plan
+            view) or ``"xyz"`` (in 3D arc length: the loop needs its altitude, from a
+            generator that provides ``z`` or an elevation run on the relaxed
+            centerline; ``ValueError`` when the loop has none). Filled into the
+            stations stage's params (a stations source only).
+        elevation_on: Where the elevation runs for ``source="relaxed_stations"``:
+            ``"gates"`` (the gates' own profile, after the order) or ``"centerline"``
+            (on the relaxed centerline, before the stations, whose altitude the gates
+            then carry by index). Default: ``"centerline"`` for ``"xyz"``, ``"gates"``
+            for ``"xy"``. An explicit value with a generator that provides ``z`` (no
+            elevation runs) raises ``ValueError``.
         registry: The plugin registry the generator is looked up in (default
             ``track_gen.plugin.registry``).
 
@@ -479,6 +594,11 @@ def gates(*, num_envs: int, device: str, generator: "str | StageRef" = "bezier",
                          f"{gate_align!r}")
     if source not in _SOURCES:
         raise ValueError(f"source must be one of {list(_SOURCES)}, got {source!r}")
+    if spacing_metric not in ("xy", "xyz"):
+        raise ValueError(f"spacing_metric must be 'xy' or 'xyz', got {spacing_metric!r}")
+    if elevation_on not in (None, "centerline", "gates"):
+        raise ValueError(f"elevation_on must be None, 'centerline' or 'gates', got "
+                         f"{elevation_on!r}")
     hw = float(half_width)
     # -- the generator and its source --------------------------------------------------
     if isinstance(generator, StageRef):
@@ -519,8 +639,18 @@ def gates(*, num_envs: int, device: str, generator: "str | StageRef" = "bezier",
                         f"{type(generator).__name__}")
     _check_centerline_args(src, name, dict(n_max=n_max, num_points=num_points,
                                            half_width=half_width, spacing=spacing,
-                                           relax=relax))
+                                           relax=relax, width=width))
     anchors = src == "anchors"
+    if anchors and spacing_metric != "xy":
+        raise ValueError(f"spacing_metric= places stations; gate generator {name!r} "
+                         f"places its own gates")
+    if anchors and elevation_on is not None:
+        raise ValueError(f"elevation_on= places the elevation of a relaxed_stations "
+                         f"source; gate generator {name!r} has no centerline")
+    relaxed = src == "relaxed_stations"
+    explicit_on = elevation_on
+    if elevation_on is None:
+        elevation_on = "centerline" if spacing_metric == "xyz" and relaxed else "gates"
     if anchors:
         if gates is not None:
             raise ValueError("gates= sets the station count of a centerline source; an "
@@ -539,6 +669,32 @@ def gates(*, num_envs: int, device: str, generator: "str | StageRef" = "bezier",
         G = n_st if max_gates is None else max_gates
         stage = True
         spec_cls = None
+        # A centerline generator's provided attributes (roadmap PR13a) and raw plugin
+        # attributes: z on the loop is carried by the stations to the gates (carry.z),
+        # the attributes by carry.attributes.
+        gen_name = gen_in.name if gen_in is not None else name
+        gen_provides = _provides(reg, "generator", gen_name)
+        gen_cls = _lookup(reg, "generator", gen_name)
+        gen_attrs = []
+        if gen_cls is not None and _is_stage(gen_cls):
+            from ..stages.channels import is_plugin_channel  # noqa: PLC0415
+
+            gen_attrs = [ch for ch in dict(gen_cls.writes).values()
+                         if is_plugin_channel(ch) and ch.startswith("raw.")]
+        if explicit_on is not None and "z" in gen_provides:
+            raise ValueError(f"elevation_on={explicit_on!r} places the elevation stage; "
+                             f"generator {gen_name!r} provides its own altitudes (z), so "
+                             f"no elevation runs: leave elevation_on at its default "
+                             f"(None)")
+        if explicit_on == "centerline" and not relaxed:
+            raise ValueError("elevation_on='centerline' runs the elevation on the relaxed "
+                             "centerline: source='relaxed_stations' (a stations source "
+                             "has no centerline sub-pipeline)")
+        if spacing_metric == "xyz" and relaxed and elevation_on == "gates" and \
+                "z" not in gen_provides:
+            raise ValueError("spacing_metric='xyz' needs the loop's altitude before the "
+                             "stations are placed: elevation_on='centerline' (the "
+                             "default for 'xyz')")
     # -- order / normalize ---------------------------------------------------------------
     upstream, stations_ref = (), None
     normalize = False
@@ -549,18 +705,41 @@ def gates(*, num_envs: int, device: str, generator: "str | StageRef" = "bezier",
                              f"ordering with GateGenConfig(gate_ordering=...)")
         order_ref = None
     else:
+        explicit_order = order is not None
         if order is None:
             order = _default_order(spec_cls, reg) if anchors else "raw"
         order_ref = _select("order", "order", order, hw)
         normalize = anchors and _preferred(spec_cls).get("normalize") == "extent"
+    elev_sel_flat = elevation is None or _is_flat(
+        _select("elevation", "elevation", elevation, hw))
+    loop_z = False                  # the stations carry the loop's altitude (carry.z)
     if not anchors:
-        relaxed = src == "relaxed_stations"
+        if spacing_metric == "xyz" and not relaxed and not elev_sel_flat and \
+                "z" not in gen_provides:
+            raise ValueError("spacing_metric='xyz' with an elevation: the elevation must "
+                             "run on the centerline before the stations, which needs "
+                             "source='relaxed_stations' (a stations source places them "
+                             "on the raw loop)")
+        loop_z = "z" in gen_provides or (relaxed and elevation_on == "centerline"
+                                         and not elev_sel_flat)
+        if loop_z and explicit_order and order_ref.name != "raw":
+            what = (f"generator {gen_name!r} provides z" if "z" in gen_provides else
+                    "the centerline elevation's z")
+            raise ValueError(f"{what}, carried to the gates by index: order='raw' (the "
+                             f"stations default)")
         if relaxed:
             track_spec = track(num_envs=num_envs, device=device, n_max=n_max, scale=scale,
                                generator=gen_in if gen_in is not None else name,
                                generator_params=generator_params, num_points=num_points,
-                               half_width=half_width, spacing=spacing, relax=relax)
-            gen_ref, *upstream = track_spec.stages[:3]
+                               half_width=half_width, spacing=spacing, relax=relax,
+                               width=width, registry=reg)
+            ids = [r.slot_id for r in track_spec.stages]
+            gen_ref, *upstream = track_spec.stages[:ids.index("relax") + 1]
+            if loop_z and "z" not in gen_provides:
+                # The elevation on the relaxed centerline (its cl.* ports kept), after
+                # the plan-view frames it reads.
+                upstream += [StageRef("frames", "default"),
+                             _select("elevation", "elevation", elevation, hw)]
             upstream = tuple(upstream)
         elif gen_in is not None:
             gen_ref = gen_in if gen_in.capacity else dataclasses.replace(
@@ -584,17 +763,67 @@ def gates(*, num_envs: int, device: str, generator: "str | StageRef" = "bezier",
                              f"{n_sel!r} but gates={gates!r}; set the station count once")
         elif max_gates is None and isinstance(n_sel, int) and not isinstance(n_sel, bool):
             G = n_sel
+        # spacing_metric: filled into a stations Params with the field (as gates=).
+        m_sel = _param(stations_ref, "spacing_metric")
+        if "spacing_metric" in st_fields:
+            if m_sel is None:
+                if spacing_metric != "xy":
+                    stations_ref = _with_params(stations_ref,
+                                                {"spacing_metric": spacing_metric})
+            elif m_sel != spacing_metric:
+                raise ValueError(f"stations: stations.{stations_ref.name} sets "
+                                 f"spacing_metric={m_sel!r} but spacing_metric="
+                                 f"{spacing_metric!r}; set it once")
+        elif spacing_metric != "xy":
+            raise ValueError(f"spacing_metric={spacing_metric!r}: stations "
+                             f"{stations_ref.name!r} has no spacing_metric parameter")
+        st_builtin = st_cls is not None and stations_ref.name in ("raw", "relaxed")
+        st_writes = dict(getattr(st_cls, "writes", {}) or {}) if st_cls is not None \
+            else {}
+        if not st_builtin and st_cls is not None:
+            if "z" in gen_provides:
+                raise ValueError(f"stations {stations_ref.name!r} carries no centerline "
+                                 f"channels (plugin carriers are deferred); generator "
+                                 f"{gen_name!r} provides z")
+            loop_z = "anchors.z" in st_writes.values()
+            gen_attrs = [ch for ch in st_writes.values() if ch.startswith("anchors.")
+                         and ch not in ("anchors.xy", "anchors.count", "anchors.z")]
+        if spacing_metric == "xyz" and st_builtin and not loop_z:
+            fix = ("a non-flat elevation (it runs on the relaxed centerline)" if relaxed
+                   else "source='relaxed_stations' with a non-flat elevation")
+            raise ValueError(f"spacing_metric='xyz' measures 3D arc length along the "
+                             f"loop, which carries no altitude here (a flat elevation and "
+                             f"generator {gen_name!r} provides no z): use a generator "
+                             f"that provides z (raw.z), or {fix}")
+        if loop_z:
+            provides = frozenset({"z"})
+        carry_attrs = bool(gen_attrs) and order_ref.name == "raw"
     elif stations is not None:
         raise ValueError("stations= selects the stations of a centerline source; an "
                          "anchors generator writes its own anchors")
+    else:
+        carry_attrs = False
+    if anchors and stage:
+        from ..stages.channels import is_plugin_channel  # noqa: PLC0415
+
+        carry_attrs = order_ref is not None and order_ref.name == "raw" and any(
+            is_plugin_channel(ch) and ch.startswith("anchors.")
+            for ch in dict(spec_cls.writes).values())
     # -- elevation / provided attributes -------------------------------------------------
     elev_ref = StageRef("elevation", "flat") if elevation is None else \
         _select("elevation", "elevation", elevation, hw)
     flat = (elev_ref.kind, elev_ref.name) == ("elevation", "flat")
+    if not anchors and "z" in gen_provides and not _is_flat(elev_ref):
+        raise ValueError(f"presets.gates(elevation={elevation!r}): generator {gen_name!r} "
+                         f"provides its own altitudes (z); leave elevation at its "
+                         f"default ('flat')")
     if float(z_base) != 0.0:
         if "z" in provides:
-            raise ValueError(f"presets.gates(z_base={z_base!r}): gate generator {name!r} "
-                             f"provides its own altitudes (z); leave z_base=0.0")
+            who = f"gate generator {name!r}" if anchors else (
+                f"generator {gen_name!r}" if "z" in gen_provides else
+                "the centerline elevation")
+            raise ValueError(f"presets.gates(z_base={z_base!r}): {who} provides its own "
+                             f"altitudes (z); leave z_base=0.0")
         if not flat:
             raise ValueError(f"z_base={z_base!r} is the flat elevation's altitude "
                              f"(elevation='flat'); elevation.{elev_ref.name} takes its "
@@ -604,7 +833,7 @@ def gates(*, num_envs: int, device: str, generator: "str | StageRef" = "bezier",
             raise ValueError(f"elevation: elevation.flat sets z_base={v!r} but z_base="
                              f"{z_base!r}; set the flat altitude once")
         elev_ref = _with_params(elev_ref, {"z_base": float(z_base)})
-    if "z" in provides and not _is_flat(elev_ref):
+    if anchors and "z" in provides and not _is_flat(elev_ref):
         raise ValueError(f"presets.gates(elevation={elevation!r}): gate generator "
                          f"{name!r} provides its own altitudes (z); leave elevation at its "
                          f"default ('flat')")
@@ -634,8 +863,8 @@ def gates(*, num_envs: int, device: str, generator: "str | StageRef" = "bezier",
     if dup is not None:
         raise ValueError(f"checks: duplicate stage id {dup!r}; give one an explicit "
                          f"StageRef(id=...)")
-    width = 0.0 if posed else gate_width
-    vfill = {"min_gates": min_gates, "gate_radius": gate_radius, "gate_width": width,
+    bar_width = 0.0 if posed else gate_width
+    vfill = {"min_gates": min_gates, "gate_radius": gate_radius, "gate_width": bar_width,
              "z_valid_grade": z_valid_grade}
     if posed:
         vfill["check_crossing"] = "always"
@@ -644,9 +873,9 @@ def gates(*, num_envs: int, device: str, generator: "str | StageRef" = "bezier",
     stages = _gate_stages(
         gen_ref, provides=provides, upstream=upstream, stations_ref=stations_ref,
         order_ref=order_ref, normalize=normalize, gate_radius=gate_radius,
-        gate_solve_iters=gate_solve_iters, gate_width=width, gate_align=gate_align,
+        gate_solve_iters=gate_solve_iters, gate_width=bar_width, gate_align=gate_align,
         elevation_ref=elev_ref, min_gates=min_gates, z_valid_grade=z_valid_grade,
-        validity_ref=validity_ref, checks=check_refs[1:])
+        validity_ref=validity_ref, checks=check_refs[1:], carry_attributes=carry_attrs)
     return PipelineSpec(batch=BatchSpec(num_envs=num_envs, device=device, n_max=n_max,
                                         scale=scale, on_invalid=on_invalid, max_gates=G),
                         stages=stages)

@@ -107,3 +107,27 @@ def test_import_track_gen_loads_no_plugin_and_no_generator_module():
     r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
                        env=env)
     assert r.returncode == 0, r.stderr
+
+
+def test_the_channel_carry_surface_is_public():
+    """Roadmap PR13a: the carried-channel ops, the attribute description, the builder's
+    dtype query and the new result fields."""
+    import dataclasses
+    import inspect
+
+    from track_gen import ops, pipeline
+    from track_gen.plugin import StageBuilder
+
+    for name in ("ResampleTables", "resample_channels"):
+        assert name in ops.__all__ and inspect.getdoc(getattr(ops, name)), name
+    assert "AttributeInfo" in pipeline.__all__
+    assert [f.name for f in dataclasses.fields(pipeline.AttributeInfo)] == [
+        "key", "channel", "dtype", "interp", "padding", "domain"]
+    assert inspect.getdoc(StageBuilder.dtype_of)
+    params = inspect.signature(StageBuilder.write).parameters
+    assert params["interp"].default is None and params["export"].default is False
+    track = [f.name for f in dataclasses.fields(track_gen.Track)]
+    assert track[-2:] == ["half_width", "attributes"]             # appended
+    assert [f.name for f in dataclasses.fields(track_gen.GateSequence)][-1] == "attributes"
+    assert "tables" in inspect.signature(ops.resample_uniform).parameters
+    assert "tables" in inspect.signature(ops.resample_constant_spacing).parameters

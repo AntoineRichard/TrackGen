@@ -32,6 +32,7 @@ from ..exec.context import LaunchContext, resolve as _resolve_ctx
 # functions/kernels are re-imported under their historical names so _validity_k resolves
 # them and legacy plugins can keep using _pipe._ccw / _pipe._fill_i32_k / _pipe._thickness_k.
 from ..ops import resample as _ops_resample
+from ..ops.check import check_array as _check_array
 from ..ops.fill import _fill_f32_k, _fill_i32_k  # noqa: F401
 from ..ops.funcs import ccw as _ccw, nan0 as _nan0  # noqa: F401
 from ..ops.geometry import (  # noqa: F401
@@ -121,19 +122,25 @@ def _offset_assign_k(
     outer: wp.array(dtype=wp.vec2f),
     inner: wp.array(dtype=wp.vec2f),
     count: wp.array(dtype=wp.int32),
+    hw_out: wp.array(dtype=wp.float32),
 ):
     # One thread per point t.  Recompute a[t], b[t] (cheap), then assign
     # outer/inner based on which candidate has the larger |signed area|.
     # Padding threads (i >= count[e]) write NaN to outer/inner and return.
+    # hw_out (roadmap PR13a, Track.half_width): stored only when it is non-empty (a null
+    # array, passed as None, stores nothing): half_width on real points, NaN padding.
     t = wp.tid()
     e = t // n_max
     i = t % n_max
+    store = hw_out.shape[0] > 0
 
     # Guard: padding threads write NaN.
     if i >= count[e]:
         nan_val = wp.vec2f(wp.nan, wp.nan)
         outer[t] = nan_val
         inner[t] = nan_val
+        if store:
+            hw_out[t] = wp.nan
         return
 
     ct = center[t]
@@ -148,6 +155,8 @@ def _offset_assign_k(
     else:
         outer[t] = bt
         inner[t] = at
+    if store:
+        hw_out[t] = half_width
 
 @wp.kernel
 def _frame_k(c: wp.array(dtype=wp.vec2f), n_max: int,
@@ -612,8 +621,17 @@ def _run_pipeline(
     )
 
 
+def _check_hw_out(hw_out, out_outer) -> None:
+    """``hw_out`` (the offset's optional ``Track.half_width`` output) is ``None`` or a
+    float32 array of ``out_outer``'s length on its device: the kernel writes
+    ``hw_out[t]`` for every ``t < len(out_outer)`` when it is non-empty."""
+    if hw_out is not None:
+        _check_array("hw_out", hw_out, (int(out_outer.shape[0]),), wp.float32,
+                     out_outer.device)
+
+
 def offset(center, Nrm, half_width, out_outer, out_inner, area_a, area_b, count,
-           ctx: "LaunchContext | None" = None):
+           ctx: "LaunchContext | None" = None, hw_out: "wp.array | None" = None):
     """In-place: writes outer/inner into out_outer/out_inner (wp.array [E*n_max] vec2f),
     using area_a/area_b (wp.array [E] f32) scratch. All args are wp.array; nothing
     allocated. center/Nrm: wp.array [E*n_max] vec2f. count: wp.array [E] int32.
@@ -624,19 +642,27 @@ def offset(center, Nrm, half_width, out_outer, out_inner, area_a, area_b, count,
     Args:
         ctx: optional track_gen.exec.LaunchContext; default resolves the
             device's stream (see track_gen.exec).
+        hw_out: optional [E*n_max] float32 (``Track.half_width``, roadmap PR13a):
+            ``half_width`` on real points, NaN padding. ``None`` (default): nothing is
+            stored and nothing allocated (a null array is passed to the kernel).
+
+    Raises:
+        ValueError: ``hw_out`` is not ``None`` and not a float32 array of
+            ``out_outer``'s length on its device (host-side, before any launch).
     """
     _init()
     ctx = _resolve_ctx(ctx, str(out_outer.device))
     E = count.shape[0]
     flat = out_outer.shape[0]
     n_max = flat // E
+    _check_hw_out(hw_out, out_outer)
     ctx.fill(area_a, 0.0)
     ctx.fill(area_b, 0.0)
     ctx.launch(_offset_build_k, flat,
                [center, Nrm, float(half_width), n_max, area_a, area_b, count])
     ctx.launch(_offset_assign_k, flat,
                [center, Nrm, float(half_width), n_max, area_a, area_b,
-                out_outer, out_inner, count])
+                out_outer, out_inner, count, hw_out])
     ctx.sync()
 
 
@@ -992,11 +1018,14 @@ class InflateScratch:
                    (``validity_inplace(fail_wp=)``). Allocated here (``[E]``, on
                    ``area_a``'s device) when not given, so ``inflate_warp`` never
                    allocates it per call.
+    hw_out:        [E*N_max] float32 ``Track.half_width`` the offset writes (roadmap
+                   PR13a: half_width on real points, NaN padding). ``None`` (the
+                   default, never allocated here): the offset stores nothing.
     """
 
     __slots__ = ("area_a", "area_b", "kappa", "w",
                  "out2", "ctr2", "inn2", "tan2", "nrm2", "z",
-                 "knot_cum", "knot_count", "knot_z", "fail")
+                 "knot_cum", "knot_count", "knot_z", "fail", "hw_out")
 
     def __init__(
         self,
@@ -1014,6 +1043,7 @@ class InflateScratch:
         knot_count: "wp.array | None" = None,
         knot_z: "wp.array | None" = None,
         fail: "wp.array | None" = None,
+        hw_out: "wp.array | None" = None,
     ) -> None:
         self.area_a = area_a
         self.area_b = area_b
@@ -1031,6 +1061,7 @@ class InflateScratch:
         if fail is None and isinstance(area_a, wp.array):
             fail = wp.empty(area_a.shape[0], dtype=wp.int32, device=area_a.device)
         self.fail = fail
+        self.hw_out = hw_out
 
 
 class _Scratch:
@@ -1174,6 +1205,8 @@ def _inflate_warp_alloc(config, generator_spec=None, *, seed=None):
         truncated=wp.zeros(E, dtype=wp.int32, device=dev),
         # Written by TrackGenerator after every generation (= the env's seed epoch).
         generation=wp.zeros(E, dtype=wp.int32, device=dev),
+        # The offset's Track.half_width (InflateScratch.hw_out, roadmap PR13a).
+        half_width=wp.empty(flat, dtype=wp.float32, device=dev),
     )
     if generator_spec is None:
         from ..plugin import registry
@@ -1234,6 +1267,7 @@ def _inflate_warp_alloc(config, generator_spec=None, *, seed=None):
         z=wp.zeros(flat, dtype=wp.float32, device=dev),
         # The validity gate's per-env fail bitmask (every env written each call).
         fail=wp.zeros(E, dtype=wp.int32, device=dev),
+        hw_out=track.half_width,
     )
     _fill_knot_scratch(inflate, config, E, dev)
     scratch = _Scratch(
@@ -1539,7 +1573,8 @@ def inflate_warp(center, config, out=None,
 
     # 4. offset to outer/inner borders — into the vec2f outer/inner staging buffers.
     offset(stag.ctr2, stag.nrm2, hw, stag.out2, stag.inn2,
-           stag.area_a, stag.area_b, cnt_wp, ctx=ctx)
+           stag.area_a, stag.area_b, cnt_wp, ctx=ctx,
+           hw_out=getattr(stag, "hw_out", None))
 
     # 4b. Elevation (2.5D): fill the per-point altitude from the configured profile.
     # CRITICAL ordering: out.arclen/out.length still hold the 2D (cum, perim) tables

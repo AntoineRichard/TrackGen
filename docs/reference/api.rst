@@ -84,6 +84,15 @@ Resampling
 
 .. autofunction:: track_gen.ops.resample_constant_spacing
 
+Carrying per-point channels through a resample (``tables=`` above): the tables record
+where each output point lies on its source loop, and ``resample_channels`` interpolates
+any channel of the source through them; see :ref:`pipeline-carried-channels`.
+
+.. autoclass:: track_gen.ops.ResampleTables
+   :members: alloc
+
+.. autofunction:: track_gen.ops.resample_channels
+
 Polygon geometry
 ~~~~~~~~~~~~~~~~
 
@@ -309,8 +318,8 @@ stage's ``CaptureClass`` is ``STATIC``, ``BOUNDED`` (a loop through
    :members: capture_class, capacity, build
 
 .. autoclass:: track_gen.plugin.StageBuilder
-   :members: read, write, temp_like, stride_of, per_of, scratch, param, input, salt,
-      fail_bit, host_buffer
+   :members: read, write, temp_like, stride_of, per_of, dtype_of, scratch, param, input,
+      salt, fail_bit, host_buffer
 
 .. autoclass:: track_gen.plugin.CaptureClass
    :no-members:
@@ -373,14 +382,31 @@ Planner and Program
 
 .. autoclass:: track_gen.pipeline.Program
    :members: run, enqueue, enqueue_segment, prepare, result, spec, tap, channels,
-      fail_bits, on_invalid, seeds, seed, inputs, params, graph, segment_graphs,
-      capturable, capture_class, segments, host_stage_ids
+      fail_bits, on_invalid, attributes, seeds, seed, inputs, params, graph,
+      segment_graphs, capturable, capture_class, segments, host_stage_ids
 
 .. autoclass:: track_gen.pipeline.Segment
    :members: host
    :exclude-members: index, capture_class, stage_ids
 
+.. autoclass:: track_gen.pipeline.AttributeInfo
+   :no-members:
+
 .. autoexception:: track_gen.pipeline.PlanError
+
+Built-in stage parameters
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The Params of two built-in stages that take more than flat config fields (the others
+keep the ``TrackGenConfig`` / ``GateGenConfig`` field names, see
+:doc:`/how-it-works/pipeline-preview`): ``width.from_channel`` (see
+:ref:`pipeline-width`) and the ``stations`` stages (see :ref:`pipeline-stations-xyz`).
+
+.. autoclass:: track_gen.stages.params.WidthFromChannelParams
+   :no-members:
+
+.. autoclass:: track_gen.stages.params.StationsParams
+   :no-members:
 
 Fail bits
 ~~~~~~~~~
@@ -616,7 +642,9 @@ Result types
 
    ``fail_mask`` and ``fail_bits`` say why an env is invalid: the bit table is
    :data:`~track_gen.pipeline.BUILTIN_FAIL_BITS` plus the pipeline's plugin checks (see
-   :ref:`pipeline-fail-bits`).
+   :ref:`pipeline-fail-bits`). ``half_width`` is the band's per-point half-width, and
+   ``attributes`` the per-point attributes the pipeline exports (see
+   :ref:`pipeline-attributes`).
 
 .. autoclass:: track_gen.GateSequence
    :no-members:
@@ -626,7 +654,8 @@ Result types
    ``fail_mask`` and ``fail_bits`` say why an env is invalid: the bit table is
    :data:`~track_gen.pipeline.GATE_FAIL_BITS` plus the pipeline's plugin checks (see
    :ref:`pipeline-gate-fail-bits`). ``fail_mask`` is ``None`` on a ``GateSequence`` built
-   elsewhere; when it is set, ``valid[e] == (fail_mask[e] == 0)``.
+   elsewhere; when it is set, ``valid[e] == (fail_mask[e] == 0)``. ``attributes`` holds
+   the per-gate attributes the pipeline exports (see :ref:`pipeline-gate-plugin-channels`).
 
 Collision queries
 -----------------

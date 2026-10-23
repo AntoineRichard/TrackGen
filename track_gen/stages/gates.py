@@ -36,6 +36,7 @@ from .._src.collision_geom import _frame_quat, _safe_normalize3
 from ..ops.constants import TARGET_EXTENT
 from ..ops.fill import fill as _ops_fill
 from ..ops.geometry import _angle_sort_launch
+from ..ops.resample import _pad
 from ..plugin.params import NoParams
 from ..plugin.stage import CaptureClass, Stage
 from . import params as _p
@@ -753,53 +754,284 @@ def _stations_k(xy: wp.array(dtype=wp.vec2f), stride: int,
     out_count[e] = A
 
 
+@wp.func
+def _seg3(p0: wp.vec2f, p1: wp.vec2f, z0: float, z1: float) -> float:
+    d = p1 - p0
+    dz = z1 - z0
+    return wp.sqrt(d[0] * d[0] + d[1] * d[1] + dz * dz)
+
+
+@wp.kernel
+def _stations_ex_k(xy: wp.array(dtype=wp.vec2f), z: wp.array(dtype=wp.float32),
+                   use_z: int, stride: int, count: wp.array(dtype=wp.int32),
+                   use_count: int, valid: wp.array(dtype=wp.int32),
+                   truncated: wp.array(dtype=wp.int32), use_truncated: int, A: int,
+                   out: wp.array(dtype=wp.vec2f), out_count: wp.array(dtype=wp.int32),
+                   i0: wp.array(dtype=wp.int32), i1: wp.array(dtype=wp.int32),
+                   frac: wp.array(dtype=wp.float32)):
+    # _stations_k (roadmap PR13a) that also writes the station tables (the GLOBAL source
+    # indices of the segment ends and the fraction along it) for the carries. use_z == 0
+    # is _stations_k's plan-view code verbatim (byte-equal anchors); use_z != 0 spaces
+    # the stations in 3D arc length (segment length sqrt(dx^2 + dy^2 + dz^2), the
+    # perimeter, station and segment positions in float64). Every exit path writes the
+    # tables: the ok == 0 path the sentinels (i0 = i1 = -1, frac = NaN).
+    e = wp.tid()
+    m = stride
+    if use_count != 0:
+        m = wp.max(0, wp.min(count[e], stride))
+    base = e * stride
+    L = float(0.0)
+    L64 = wp.float64(0.0)
+    for i in range(m):
+        j = i + 1
+        if j == m:
+            j = 0
+        if use_z == 0:
+            L = L + wp.length(xy[base + j] - xy[base + i])
+        else:
+            L64 = L64 + wp.float64(_seg3(xy[base + i], xy[base + j], z[base + i],
+                                         z[base + j]))
+    if use_z != 0:
+        L = wp.float32(L64)
+    ok = int(1)
+    if valid[e] == 0 or m < 2:
+        ok = int(0)
+    if use_truncated != 0:
+        if truncated[e] != 0:
+            ok = int(0)
+    if not (L > 0.0):
+        ok = int(0)
+    obase = e * A
+    if ok == 0:
+        out_count[e] = 0
+        for k in range(A):
+            out[obase + k] = wp.vec2f(wp.nan, wp.nan)
+            i0[obase + k] = -1
+            i1[obase + k] = -1
+            frac[obase + k] = wp.nan
+        return
+    seg = int(0)
+    nxt = int(1)
+    if nxt == m:
+        nxt = 0
+    p0 = xy[base]
+    p1 = xy[base + nxt]
+    if use_z == 0:
+        seg_start = float(0.0)
+        seg_len = wp.length(p1 - p0)
+        for k in range(A):
+            s = L * float(k) / float(A)
+            while seg < m - 1 and seg_start + seg_len < s:
+                seg_start = seg_start + seg_len
+                seg = seg + 1
+                nxt = seg + 1
+                if nxt == m:
+                    nxt = 0
+                p0 = xy[base + seg]
+                p1 = xy[base + nxt]
+                seg_len = wp.length(p1 - p0)
+            u = float(0.0)
+            if seg_len > 0.0:
+                u = wp.clamp((s - seg_start) / seg_len, 0.0, 1.0)
+            out[obase + k] = p0 + u * (p1 - p0)
+            i0[obase + k] = base + seg
+            i1[obase + k] = base + nxt
+            frac[obase + k] = u
+    else:
+        ss = wp.float64(0.0)
+        sl = wp.float64(_seg3(p0, p1, z[base], z[base + nxt]))
+        for k in range(A):
+            s64 = L64 * wp.float64(k) / wp.float64(A)
+            while seg < m - 1 and ss + sl < s64:
+                ss = ss + sl
+                seg = seg + 1
+                nxt = seg + 1
+                if nxt == m:
+                    nxt = 0
+                p0 = xy[base + seg]
+                p1 = xy[base + nxt]
+                sl = wp.float64(_seg3(p0, p1, z[base + seg], z[base + nxt]))
+            u = float(0.0)
+            if sl > wp.float64(0.0):
+                u = wp.float32(wp.clamp((s64 - ss) / sl, wp.float64(0.0),
+                                        wp.float64(1.0)))
+            out[obase + k] = p0 + u * (p1 - p0)
+            i0[obase + k] = base + seg
+            i1[obase + k] = base + nxt
+            frac[obase + k] = u
+    out_count[e] = A
+
+
 class _Stations(_Builtin):
     kind = "stations"
     Params = _p.StationsParams
     writes = {"anchors": "anchors.xy", "anchor_count": "anchors.count"}
+    #: (source domain, destination, which families): carried to anchors only when a
+    #: later stage reads them (carry.z, carry.attributes, an explicit read).
+    _carries = (None, "anchors", "read")
 
     def capacity(self, params, layout):
         return {"gates": int(params.gates), "min_gates": 0}
 
+    def _build(self, b, p, *, xy, count, use_count, valid, truncated, use_truncated):
+        from ..stages.track import _carry_ops  # noqa: PLC0415
 
-class StationsRaw(_Stations):
-    """``stations.raw``: ``gates`` anchors at equal arc length on the generator's raw
-    loop (``raw.xy``, every point real), in loop order (default order ``raw``)."""
-
-    name = "raw"
-    reads = {"xy": "raw.xy", "valid": "gen.valid"}
-
-    def build(self, b, p):
-        xy, valid = b.read("xy"), b.read("valid")
         out = b.write("anchors", wp.vec2f, per="anchors")
         out_count = b.write("anchor_count", wp.int32)
         stride, A, E = b.stride_of("xy"), int(p.gates), b.E
+        xyz = str(p.spacing_metric) == "xyz"
+        carried = b._carried()
+        if not carried and not xyz:
+            def enqueue(ctx):
+                ctx.launch(_stations_k, E, [xy, stride, count, use_count, valid,
+                                            truncated, use_truncated, A, out, out_count])
+            return enqueue
+        src_dom = self._carries[0]
+        z = b.read(f"~{src_dom}.z") if xyz else None
+        use_z = 1 if xyz else 0
+        from ..stages.track import _tables  # noqa: PLC0415
+
+        tables = _tables(b, E * A, int(xy.shape[0]))
+        ops = _carry_ops(b, carried, tables, "anchors")
 
         def enqueue(ctx):
-            ctx.launch(_stations_k, E, [xy, stride, valid, 0, valid, valid, 0, A, out,
-                                        out_count])
+            ctx.launch(_stations_ex_k, E,
+                       [xy, z, use_z, stride, count, use_count, valid, truncated,
+                        use_truncated, A, out, out_count, tables.i0, tables.i1,
+                        tables.frac])
+            for op in ops:
+                op(ctx)
         return enqueue
+
+
+class StationsRaw(_Stations):
+    """``stations.raw``: ``gates`` anchors at equal arc length on the generator's raw
+    loop (``raw.xy``, every point real), in loop order (default order ``raw``). It
+    carries the generator's raw attributes that a later stage reads to
+    ``anchors.<attr>`` (``linear`` / ``nearest`` / ... through its tables); with
+    ``spacing_metric="xyz"`` it spaces them in 3D, which needs ``raw.z``."""
+
+    name = "raw"
+    reads = {"xy": "raw.xy", "valid": "gen.valid"}
+    _carries = ("raw", "anchors", "read")
+
+    def build(self, b, p):
+        xy, valid = b.read("xy"), b.read("valid")
+        return self._build(b, p, xy=xy, count=valid, use_count=0, valid=valid,
+                           truncated=valid, use_truncated=0)
 
 
 class StationsRelaxed(_Stations):
     """``stations.relaxed``: ``gates`` anchors at equal arc length on the relaxed
     centerline (``cl.xy`` / ``cl.count``, after the track pipeline's resample and relax
-    stages); a truncated loop yields no station."""
+    stages); a truncated loop yields no station. It carries the centerline families a
+    later stage reads (``cl.z``, the images of the generator's raw attributes; not
+    ``cl.half_width``) to ``anchors.<attr>``; ``spacing_metric="xyz"`` needs ``cl.z``
+    (a generator that provides z, or an elevation on the relaxed centerline)."""
 
     name = "relaxed"
     reads = {"xy": "cl.xy", "count": "cl.count", "valid": "gen.valid",
              "truncated": "cl.truncated"}
+    _carries = ("cl", "anchors", "read")
 
     def build(self, b, p):
         xy, count = b.read("xy"), b.read("count")
         valid, truncated = b.read("valid"), b.read("truncated")
-        out = b.write("anchors", wp.vec2f, per="anchors")
-        out_count = b.write("anchor_count", wp.int32)
-        stride, A, E = b.stride_of("xy"), int(p.gates), b.E
+        return self._build(b, p, xy=xy, count=count, use_count=1, valid=valid,
+                           truncated=truncated, use_truncated=1)
+
+
+# carry.attributes: anchors -> gate slots by index (order.raw), padding past the gate count
+# (NaN / -1). One CONCRETE kernel per dtype (no generic ``Any`` + ``wp.overload`` kernel:
+# Warp 1.18's CPU graph recorder keys a kernel by ``kernel.key``, shared by every overload).
+@wp.kernel
+def _carry_index_f32_k(src: wp.array(dtype=wp.float32), A: int,
+                       count: wp.array(dtype=wp.int32), G: int,
+                       dst: wp.array(dtype=wp.float32)):
+    t = wp.tid()
+    e = t // G
+    i = t - e * G
+    m = count[e]
+    m = wp.max(0, wp.min(m, wp.min(A, G)))
+    if i < m:
+        dst[t] = src[e * A + i]
+    else:
+        dst[t] = _pad(dst[t])
+
+
+@wp.kernel
+def _carry_index_i32_k(src: wp.array(dtype=wp.int32), A: int,
+                       count: wp.array(dtype=wp.int32), G: int,
+                       dst: wp.array(dtype=wp.int32)):
+    t = wp.tid()
+    e = t // G
+    i = t - e * G
+    m = count[e]
+    m = wp.max(0, wp.min(m, wp.min(A, G)))
+    if i < m:
+        dst[t] = src[e * A + i]
+    else:
+        dst[t] = _pad(dst[t])
+
+
+@wp.kernel
+def _carry_index_vec2f_k(src: wp.array(dtype=wp.vec2f), A: int,
+                         count: wp.array(dtype=wp.int32), G: int,
+                         dst: wp.array(dtype=wp.vec2f)):
+    t = wp.tid()
+    e = t // G
+    i = t - e * G
+    m = count[e]
+    m = wp.max(0, wp.min(m, wp.min(A, G)))
+    if i < m:
+        dst[t] = src[e * A + i]
+    else:
+        dst[t] = _pad(dst[t])
+
+
+@wp.kernel
+def _carry_index_vec3f_k(src: wp.array(dtype=wp.vec3f), A: int,
+                         count: wp.array(dtype=wp.int32), G: int,
+                         dst: wp.array(dtype=wp.vec3f)):
+    t = wp.tid()
+    e = t // G
+    i = t - e * G
+    m = count[e]
+    m = wp.max(0, wp.min(m, wp.min(A, G)))
+    if i < m:
+        dst[t] = src[e * A + i]
+    else:
+        dst[t] = _pad(dst[t])
+
+
+_CARRY_INDEX_KERNELS = {wp.float32: _carry_index_f32_k, wp.int32: _carry_index_i32_k,
+                        wp.vec2f: _carry_index_vec2f_k, wp.vec3f: _carry_index_vec3f_k}
+
+
+class CarryAttributes(_Builtin):
+    """``carry.attributes``: every per-anchor plugin attribute (``anchors.<pkg>.<name>``,
+    a gate generator's or carried by the stations) copied to the gate slots BY INDEX
+    (``gates.<pkg>.<name>``; the order must be ``order.raw``), padding NaN / -1. One
+    launch per attribute (implicit ports)."""
+
+    kind = "carry"
+    name = "attributes"
+    reads = {"count": "gates.count"}
+    _carries = ("anchors", "gates", "index")
+
+    def build(self, b, p):
+        count = b.read("count")
+        G, E = int(b.layout.stride), b.E
+        carries = []
+        for c in b._carried():
+            src = b.read(c.src_port)
+            dst = b.write(c.dst_port, c.dtype, per="gates")
+            carries.append((_CARRY_INDEX_KERNELS[src.dtype], src, dst))
+        A = b._plan.length("anchors") // E if carries else 0
 
         def enqueue(ctx):
-            ctx.launch(_stations_k, E, [xy, stride, count, 1, valid, truncated, 1, A,
-                                        out, out_count])
+            for kernel, src, dst in carries:
+                ctx.launch(kernel, E * G, [src, A, count, G, dst])
         return enqueue
 
 
@@ -808,5 +1040,5 @@ REGISTRY_STAGES = (OrderRaw, OrderCcw, OrderRandomPairs, StationsRaw, StationsRe
                    GateValidityDefault)
 # The built-in-only kinds: the private catalogue.
 CATALOGUE_STAGES = (NormalizeExtent, CarryZ, CarryTangent, CarryHalfSize, CarryRoll,
-                    GateRelaxSpheres, GateRelaxNone, GateArclen, LiftGates, TangentsCentral,
-                    GateFramesDefault, GateFramesPosed)
+                    CarryAttributes, GateRelaxSpheres, GateRelaxNone, GateArclen,
+                    LiftGates, TangentsCentral, GateFramesDefault, GateFramesPosed)

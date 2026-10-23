@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
-from typing import Callable, Iterable, Iterator
+from typing import Callable, Iterable, Iterator, Mapping
 
 import numpy as np
 import warp as wp
@@ -61,8 +61,9 @@ _FLOAT_DTYPES = ("float16", "float32", "float64")
 
 def result_arrays(obj) -> dict:
     """``name -> wp.array`` for every array field of a result dataclass (``Track``,
-    ``GateSequence``, ...); ``None`` fields are skipped. A plain mapping of arrays is
-    returned filtered the same way."""
+    ``GateSequence``, ...); ``None`` fields are skipped, and every array of a mapping
+    field (``Track.attributes``) is listed as ``"<field>/<key>"``. A plain mapping of
+    arrays is returned filtered the same way."""
     if obj is None:
         return {}
     if isinstance(obj, dict):
@@ -74,6 +75,10 @@ def result_arrays(obj) -> dict:
         v = getattr(obj, f.name)
         if isinstance(v, wp.array):
             out[f.name] = v
+        elif isinstance(v, Mapping):
+            for k, a in v.items():
+                if isinstance(a, wp.array):
+                    out[f"{f.name}/{k}"] = a
     return out
 
 

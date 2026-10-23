@@ -93,7 +93,10 @@ The ``relax_*`` knobs
      - Scale factor applied to bending/radius-guard corrections. Default 1.5
        (over-corrects slightly to remove sharp corners quickly).
    * - ``relax_margin``
-     - Inflation margin: ``target = 2*half_width*(1+relax_margin)``. Default 0.15.
+     - Inflation margin: ``target = 2*half_width*(1+relax_margin)``. Default 0.15. With
+       a per-point half-width (a width stage other than ``width.constant``, see
+       :ref:`pipeline-width`) the pair target is ``r_i + r_j`` and the bend floor
+       ``r_i``, with ``r_i = w_i*(1+relax_margin)``.
    * - ``relax_band``
      - Override the auto-computed separation exclusion band. Default ``None`` (auto).
    * - ``relax_iters``

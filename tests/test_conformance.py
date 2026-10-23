@@ -138,8 +138,14 @@ def _cpu_names(kind: str) -> list:
     return [n for n in CHECKS[kind] if n not in _CUDA_ONLY]
 
 
+# Roadmap PR13a: the attribute checks are skipped ("no attributes") for a generator that
+# writes no per-point attribute (every built-in).
+_ATTRS = ("attributes.written", "attributes.carried")
+
+
 def _skipped_besides_tiers(report: Report) -> list:
-    return [r.name for r in report if r.skipped and r.name not in _TIERS]
+    return [r.name for r in report if r.skipped and r.name not in _TIERS
+            and not (r.name in _ATTRS and r.message == "skipped: no attributes")]
 
 
 def _assert_builtin_promises(report: Report, device: str) -> None:
@@ -436,12 +442,16 @@ def test_check_names():
     assert "output.accepted" in CHECKS["gate_generator"]
     assert set(CHECKS["generator"]) - {"output.closed"} == \
         set(CHECKS["gate_generator"]) - {"output.accepted"}
-    # the track-pipeline stage kinds (roadmap PR10b): no diversity / output.closed
-    for kind in ("relax", "width", "elevation"):
+    # the track-pipeline stage kinds (roadmap PR10b): no diversity / output.closed /
+    # attributes (the generator's business); a width stage adds width.values (PR13a)
+    for kind in ("relax", "elevation"):
         assert set(CHECKS[kind]) == set(CHECKS["generator"]) - {
-            "output.closed", "diversity"} | {"output.accepted", "stage.isolation"}
+            "output.closed", "diversity", *_ATTRS} | {"output.accepted", "stage.isolation"}
+    assert set(CHECKS["width"]) == set(CHECKS["relax"]) | {"width.values"}
     assert set(CHECKS["validity"]) == set(CHECKS["relax"]) - {"output.accepted"} | {
         "validity.bits"}
+    assert set(_ATTRS) <= set(CHECKS["generator"]) and \
+        set(_ATTRS) <= set(CHECKS["gate_generator"])
 
 
 # ---------------------------------------------------------------------------------------
@@ -451,8 +461,14 @@ def test_check_names():
 _STAGE_KINDS = ("relax", "width", "elevation", "validity")
 
 
+# width.from_channel reads a channel the user wires (a required read port): it runs
+# with a toy generator's carried attribute (test_channel_toys_conform below).
+_NEEDS_PORTS = {("width", "from_channel")}
+
+
 @pytest.mark.parametrize("kind,name", [(k, n) for k in _STAGE_KINDS
-                                       for n in registry.available(k)])
+                                       for n in registry.available(k)
+                                       if (k, n) not in _NEEDS_PORTS])
 def test_every_builtin_stage_passes_check_stage(kind, name):
     report = check_stage(kind, name, devices=CPU, num_envs=4)
     report.raise_for_failures()
@@ -979,6 +995,102 @@ def test_assert_caller_capturable_on_a_builtin(kind):
     assert status["warp"] == "ok"
     assert set(status) == {"warp", "external", "torch"}
     assert gen.graph is None                   # recordings never self-capture
+
+
+# ---------------------------------------------------------------------------------------
+# Roadmap PR13a: attributes and widths (tests/_channel_toys.py)
+# ---------------------------------------------------------------------------------------
+
+@pytest.fixture
+def channel_toys(plugin_registry):
+    from tests import _channel_toys
+
+    _channel_toys.register(plugin_registry)
+    return plugin_registry
+
+
+@pytest.mark.parametrize("name", ["acme.ribbon", "acme.helix_loop", "acme.pinch",
+                                  "acme.ribbon_metres"])
+def test_channel_toy_generators_conform(name, channel_toys):
+    report = check_generator(name, devices=CPU)
+    report.raise_for_failures()
+    assert not report.result("attributes.written").skipped, str(report)
+    carried = report.result("attributes.carried")
+    # helix_loop / pinch provide raw.z / raw.half_width (written, carried into the
+    # Track's own fields): no exported attribute to check
+    assert carried.skipped == (name in ("acme.helix_loop", "acme.pinch")), str(report)
+    if name == "acme.ribbon":
+        assert report.result("attributes.carried").details["exported"] == sorted(
+            ["acme.grip", "acme.lane", "acme.surface_id", "acme.theta", "acme.xy_copy"])
+    if name == "acme.helix_loop":                 # raw.z: written, none exported
+        assert report.result("attributes.written").passed
+    # half_width is an optional Track field the kit checks (shape, padding)
+    assert report.result("output.padding").passed
+
+
+def test_a_generator_that_does_not_write_gen_valid_conforms(channel_toys):
+    """``gen.valid`` is an optional write (the binding sets it to 1 once, at build): the
+    kit does not poison it for a generator that leaves it out (the HelixLoop example of
+    writing-a-generator.rst writes only ``raw.xy`` and ``raw.z``)."""
+    from tests import _channel_toys as toys
+
+    class HelixNoValid(toys.HelixLoop):
+        name = "acme.helix_novalid"
+        writes = {"xy": "raw.xy", "z": "raw.z"}
+
+        def build(self, b, p):
+            xy, z = b.write("xy", wp.vec2f, per="raw"), b.write("z")
+            ok = b.scratch("ok", wp.int32, (b.E,))    # the kernel's flag, not gen.valid
+            salt, seed, n = b.salt("phase"), b.seed, toys.RAW
+            height, base, waves = b.param("height"), b.param("base"), float(p.waves)
+            r = 1.0 * b.scale
+
+            def enqueue(ctx):
+                ctx.launch(toys._circle_attr_k, b.E * n,
+                           [seed, salt, n, r, base, height, waves, xy, ok, z])
+            return enqueue
+
+    channel_toys.add(HelixNoValid)
+    report = check_generator("acme.helix_novalid", devices=CPU)
+    report.raise_for_failures()
+    assert report.result("output.shape").passed
+
+
+def test_an_anchors_attribute_generator_conforms(channel_toys):
+    report = check_gate_generator("acme.tagged", devices=CPU)
+    report.raise_for_failures()
+    for check in _ATTRS:
+        assert not report.result(check).skipped, str(report)
+
+
+def test_a_partially_written_raw_attribute_fails_attributes_written(channel_toys):
+    report = check_generator("acme.ribbon_partial", devices=CPU,
+                             skip=("hot_path", "statelessness", "batch_independence"))
+    assert "attributes.written" in report.failed_names, str(report)
+    msg = report.result("attributes.written").message
+    assert "raw.acme.grip" in msg and "not written" in msg, msg
+
+
+@pytest.mark.parametrize("name,kw", [
+    ("constant", {}),
+    ("from_channel", dict(ports={"src": "cl.acme.hw"},
+                          upstream={"generator": "acme.ribbon"})),
+    ("acme.rescale", {}),
+    ("acme.wave", {}),
+])
+def test_width_stages_conform(name, kw, channel_toys):
+    report = check_stage("width", name, devices=CPU, num_envs=4, **kw)
+    report.raise_for_failures()
+    values = report.result("width.values")
+    assert not values.skipped and values.details["min"] >= 0.0, values
+    assert [r.name for r in report] == _cpu_names("width")
+
+
+def test_a_negative_width_fails_width_values(channel_toys):
+    report = check_stage("width", "acme.negative", devices=CPU, num_envs=4,
+                         skip=("hot_path", "capture"))
+    assert "width.values" in report.failed_names, str(report)
+    assert "is not a finite value >= 0" in report.result("width.values").message
 
 
 # ---------------------------------------------------------------------------------------

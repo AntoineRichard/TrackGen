@@ -129,11 +129,16 @@ def test_registration_rejects_a_wrong_output():
 
 
 @pytest.mark.parametrize("attrs,match", [
-    (dict(writes={"xy": "raw.z"}), "arrive with roadmap PR10/PR13"),
+    (dict(writes={"xy": "raw.z"}), "must map a port to 'raw.xy'"),
+    (dict(writes={"xy": "raw.xy", "k": "cl.kappa"}), "are not generator channels"),
     (dict(writes={"ok": "gen.valid"}), "must map a port to 'raw.xy'"),
     (dict(writes={"a": "raw.xy", "b": "raw.xy"}), "two ports to one channel"),
     (dict(reads={"x": "raw.xy"}), "reads must be empty"),
-    (dict(provides=frozenset({"z"})), "provides must be empty"),
+    # roadmap PR13a: a centerline generator provides exactly the catalogue attributes
+    # it writes (raw.z -> 'z', raw.half_width -> 'half_width').
+    (dict(provides=frozenset({"z"})), r"provides \['z'\] must name exactly the catalogue "
+                                      r"attributes it writes \(\[\]"),
+    (dict(writes={"xy": "raw.xy", "z": "raw.z"}), r"provides \[\] must name exactly"),
     (dict(topology="open"), "topology must be 'closed' or 'any'"),
     (dict(api_version=2), "api_version=2"),
     (dict(capture=1), "must be a CaptureClass"),
@@ -478,8 +483,9 @@ def test_a_salt_collision_raises(monkeypatch):
      "is per='raw', got per='env'"),
     (lambda b: (b.write("ok", wp.int32), b.write("ok", wp.int32)), ValueError,
      "already written"),
-    (lambda b: b.write("xy", wp.vec2f, per="raw", interp="linear"), NotImplementedError,
-     "PR13"),
+    (lambda b: b.write("xy", wp.vec2f, per="raw", interp="linear"), ValueError,
+     r"interp= is for a generator's raw attributes .*raw.xy is resampled by the "
+     r"pipeline itself"),
     (lambda b: b.param("amp"), KeyError, "no dynamic parameter 'amp'"),
     (lambda b: b.input("regen_mask", wp.int32), ValueError, "already exists"),
     (lambda b: b.input("x", wp.vec2f), TypeError, "wp.float32 or wp.int32"),

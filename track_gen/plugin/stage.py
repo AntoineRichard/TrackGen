@@ -26,21 +26,29 @@ gate_relax, gate_arclen, tangents, gate_frames) are TrackGen's built-ins.
 A generator stage writes the raw closed centerline (channel ``"raw.xy"``,
 ``[E * raw]`` ``vec2f``, ``raw`` from :meth:`Stage.capacity`, default
 ``TrackGenConfig.num_points``) and optionally a per-env validity flag (``"gen.valid"``,
-``[E]`` ``int32``; when it is never written the orchestrator sets it to 1 once).
+``[E]`` ``int32``; when it is never written the orchestrator sets it to 1 once). It may
+also write per-point attributes (roadmap PR13a): the altitude ``"raw.z"`` and the
+half-width ``"raw.half_width"`` it ``provides`` (``{"z"}`` / ``{"half_width"}``), and
+its own ``"raw.<package>.<name>"`` channels, each with an ``interp=`` policy; the
+resamples carry every one to the centerline (``cl.<attr>``), and ``export=True`` makes
+one a ``Track.attributes`` entry.
 
 A pipeline stage declares the channels it reads and writes (``reads`` / ``writes``:
 catalogue channels, see :doc:`/how-it-works/pipeline-preview`, or its own namespaced
-channels ``cl.<package>.<name>``). Each kind may write one catalogue channel: ``relax``
-``cl.xy``, ``width`` ``cl.half_width``, ``elevation`` ``cl.z``, ``validity``
-``valid.fail`` (required). A channel the stage also reads (same port) is a rewrite: it
-reads the previous version and writes a NEW buffer (never the read one). A validity
-stage owns at least one fail bit (:meth:`StageBuilder.fail_bit`) and ORs it into
-``valid.fail``.
+channels ``cl.<package>.<name>`` / ``gates.<package>.<name>``; a ``reads`` value
+``"cl.*"`` is a required read port the user wires with ``StageRef.ports``). Each kind
+may write one catalogue channel: ``relax`` ``cl.xy``, ``width`` ``cl.half_width``,
+``elevation`` ``cl.z``, ``validity`` ``valid.fail`` (required). A channel the stage
+also reads (same port) is a rewrite: it reads the previous version and writes a NEW
+buffer (never the read one). A validity stage owns at least one fail bit
+(:meth:`StageBuilder.fail_bit`) and ORs it into ``valid.fail``.
 
 A gate generator stage writes the anchors (``"anchors.xy"``, ``[E * A]`` ``vec2f``, ``A``
 from :meth:`Stage.capacity` ``["gates"]``, and ``"anchors.count"``, ``[E]`` ``int32``),
 plus the per-anchor attributes it ``provides`` (``"anchors.z"``, ``"anchors.tangent"``,
-``"anchors.half_size"``, ``"anchors.roll"``); it declares the orders it supports
+``"anchors.half_size"``, ``"anchors.roll"``) and its own ``"anchors.<package>.<name>"``
+attributes (carried to the gate slots by index: ``orderings={"raw"}``); it declares the
+orders it supports
 (:attr:`Stage.orderings` or :attr:`Stage.excluded_orderings`) and may prefer one
 (:attr:`Stage.preferred`). A legacy :class:`~track_gen.plugin.GateGeneratorSpec` still
 works (deprecated) through an adapter.
@@ -64,27 +72,138 @@ __all__ = ["CaptureClass", "Layout", "Stage", "StageBuilder"]
 
 # The channels a PR8 generator stage may write: name -> (dtype, per).
 _GENERATOR_CHANNELS = {"raw.xy": (wp.vec2f, "raw"), "gen.valid": (wp.int32, "env")}
+# The catalogue attributes a centerline generator may provide (roadmap PR13a): channel ->
+# the ``provides`` name. Carried to cl.<attr> by the constant-spacing resample.
+_RAW_PROVIDABLE = {"raw.z": "z", "raw.half_width": "half_width"}
 _STAGE_ID = "generator"
 _BUILDER_TOKEN = object()
+# The key of the generator slot's attribute resolver in a PR8 adapter builder's outputs:
+# ``resolve(channel, dtype, interp, export) -> wp.array`` (roadmap PR13a).
+_FAMILY_RESOLVER = "<raw attributes>"
+
+
+def _is_raw_attribute(channel) -> bool:
+    """A centerline generator's raw attribute: ``raw.z``, ``raw.half_width`` or a
+    ``raw.<package>.<name>`` plugin channel."""
+    from ..stages.channels import channel_domain, is_plugin_channel  # noqa: PLC0415
+
+    return channel in _RAW_PROVIDABLE or (is_plugin_channel(channel)
+                                          and channel_domain(channel) == "raw")
 
 # The pipeline kinds third parties may register (roadmap PR10b; order / stations: PR11),
 # and the catalogue channels each may write (besides its own plugin channels
-# cl.<pkg>.<name>). An elevation writes cl.z, or gates.z once the planner rewired it.
+# cl.<pkg>.<name> / gates.<pkg>.<name>; a stations stage: anchors.<pkg>.<name>). An
+# elevation writes cl.z, or gates.z once the planner rewired it.
 _OPEN_KINDS = ("relax", "width", "elevation", "validity", "order", "stations")
 _KIND_WRITES = {"relax": ("cl.xy",), "width": ("cl.half_width",),
                 "elevation": ("cl.z", "gates.z"), "validity": ("valid.fail",),
                 "order": ("gates.xy", "gates.count"),
-                "stations": ("anchors.xy", "anchors.count")}
-# The kinds whose every catalogue channel of _KIND_WRITES is required.
-_KIND_WRITES_ALL = ("order", "stations")
+                "stations": ("anchors.xy", "anchors.count", "anchors.z")}
+# The catalogue channels a kind MUST write.
+_KIND_REQUIRED = {"order": ("gates.xy", "gates.count"),
+                  "stations": ("anchors.xy", "anchors.count")}
+# Kept for importers: the kinds with required writes.
+_KIND_WRITES_ALL = tuple(_KIND_REQUIRED)
+# The plugin-channel domains each kind may write (default: the centerline and the gates).
+_KIND_PLUGIN_DOMAINS = {"stations": ("anchors",)}
+_DEFAULT_PLUGIN_DOMAINS = ("cl", "gates")
 # A gate generator's channels: the anchors (required: xy, count) and the per-anchor
 # attributes it may provide.
 _ANCHOR_CHANNELS = ("anchors.xy", "anchors.count", "anchors.z", "anchors.tangent",
                     "anchors.half_size", "anchors.roll")
 _PROVIDABLE = ("z", "tangent", "half_size", "roll")
 _PREFERRED_KEYS = ("order", "normalize")
-# The sizes a plugin channel may have (raw is the generator's).
-_PLUGIN_PERS = ("env", "cl")
+# The sizes a stage-written plugin channel may have (raw / anchors are fixed by the
+# prefix of raw.<pkg>.<name> / anchors.<pkg>.<name>).
+_PLUGIN_PERS = ("env", "cl", "gates")
+# The dtypes of a carried (or exported) attribute, and the policies each admits.
+_FAMILY_DTYPES = (wp.float32, wp.int32, wp.vec2f, wp.vec3f)
+_INTERPS = ("linear", "nearest", "previous", "angle")
+# The result field a catalogue family reaches (export= is for plugin channels).
+_CATALOGUE_FIELD = {"raw.z": "Track.center.z", "cl.z": "Track.center.z",
+                    "raw.half_width": "Track.half_width",
+                    "cl.half_width": "Track.half_width", "anchors.z": "GateSequence.position.z",
+                    "gates.z": "GateSequence.position.z"}
+
+
+def _dtype_name(dtype) -> str:
+    return getattr(dtype, "__name__", str(dtype))
+
+
+def _check_family_write(channel: str, dtype, interp, export, *, first: bool,
+                        per: "str | None" = None) -> "tuple[object, str | None, object]":
+    """The ``interp=`` / ``export=`` rules of a write of ``channel`` (roadmap PR13a);
+    returns ``(dtype, interp, export_key)`` (``export_key``: the result key, or
+    ``None``). ``first``: the channel's first writer (only it may pass them)."""
+    from ..stages.channels import CHANNELS, channel_domain, family_key, is_plugin_channel
+
+    plugin = is_plugin_channel(channel)
+    domain = channel_domain(channel)
+    if not first:
+        if interp is not None or (export is not False and export is not None):
+            what = "interp=" if interp is not None else "export="
+            raise ValueError(f"{channel!r}: {what} belongs to the channel's first writer "
+                             f"(a rewrite inherits its interp and export)")
+        return dtype, None, None
+    # -- interp ----------------------------------------------------------------------
+    raw_family = domain == "raw" and channel != "raw.xy"
+    if raw_family and plugin:
+        if interp is None:
+            raise TypeError(f"raw channel {channel!r}: its writer passes interp= (one of "
+                            f"{list(_INTERPS)}): a raw channel exists to be carried")
+    if interp is not None:
+        if not raw_family:
+            if channel == "raw.xy":
+                raise ValueError("interp= is for a generator's raw attributes (raw.z, "
+                                 "raw.half_width, raw.<package>.<name>); raw.xy is "
+                                 "resampled by the pipeline itself")
+            raise ValueError(f"interp= is declared by the generator's raw write "
+                             f"(raw.<pkg>.<name>); a stage-written channel ({channel!r}) "
+                             f"is not resampled")
+        if interp not in _INTERPS:
+            raise ValueError(f"raw channel {channel!r}: interp must be one of "
+                             f"{list(_INTERPS)}, got {interp!r}")
+        if not plugin and interp != CHANNELS[channel].interp:
+            raise TypeError(f"raw channel {channel!r} is carried with interp="
+                            f"{CHANNELS[channel].interp!r} (a catalogue channel); got "
+                            f"interp={interp!r}")
+    if raw_family and not plugin:
+        interp = CHANNELS[channel].interp
+    carried = raw_family or (plugin and domain == "anchors")
+    if carried and plugin and dtype is not None and dtype not in _FAMILY_DTYPES:
+        raise TypeError(f"{domain} channel {channel!r}: a carried attribute is float32, "
+                        f"int32, vec2f or vec3f, got {_dtype_name(dtype)}")
+    if interp is not None and dtype is not None:
+        if interp in ("linear", "angle") and dtype is wp.int32:
+            raise TypeError(f"raw channel {channel!r}: an int32 attribute is carried with "
+                            f"interp='nearest' or 'previous', got interp={interp!r}")
+        if interp == "angle" and dtype is not wp.float32:
+            raise TypeError(f"raw channel {channel!r}: interp='angle' carries float32 "
+                            f"radians, got {_dtype_name(dtype)}")
+    # -- export ----------------------------------------------------------------------
+    if export is None or export is False:
+        return dtype, interp, None
+    if not isinstance(export, (bool, str)):
+        raise TypeError(f"{channel!r}: export= must be True, False or the channel's key, "
+                        f"got {type(export).__name__}")
+    if not plugin:
+        field = _CATALOGUE_FIELD.get(channel)
+        what = f"reaches {field}" if field else "is a catalogue channel"
+        raise ValueError(f"{channel} {what}; export= is for plugin channels")
+    key = family_key(channel)
+    if isinstance(export, str) and export != key:
+        raise ValueError(f"export={export!r}: the key of {channel} is {key!r} (renaming is "
+                         f"not supported)")
+    if domain in ("cl", "gates") and per not in (None, "cl", "gates"):
+        raise ValueError(f"{channel!r}: export= needs a per-point channel: per='{domain}' "
+                         f"(got per={per!r})")
+    if domain in ("cl", "gates") and per is None:
+        raise ValueError(f"{channel!r}: export= needs a per-point channel: per='{domain}' "
+                         f"(got the default per='env')")
+    if dtype is not None and dtype not in _FAMILY_DTYPES:
+        raise TypeError(f"{channel!r}: an exported attribute is float32, int32, vec2f or "
+                        f"vec3f, got {_dtype_name(dtype)}")
+    return dtype, interp, key
 
 
 class CaptureClass(enum.IntEnum):
@@ -152,16 +271,20 @@ class Stage(abc.ABC):
       Must be empty for a generator.
     - ``writes``: ``local port -> channel`` the stage writes
       (:meth:`StageBuilder.write`); a generator writes ``"raw.xy"`` (required) and
-      optionally ``"gen.valid"``; a gate generator ``"anchors.xy"`` and
-      ``"anchors.count"`` (required) and the attributes it provides. A channel in both
+      optionally ``"gen.valid"`` and its raw attributes (``"raw.z"``,
+      ``"raw.half_width"``, ``"raw.<package>.<name>"``); a gate generator
+      ``"anchors.xy"`` and ``"anchors.count"`` (required), the attributes it provides
+      and its ``"anchors.<package>.<name>"`` attributes. A channel in both
       ``reads`` and ``writes``, through ONE port, is a rewrite: ``write`` returns a NEW
       version of the channel (later stages see it), ``read`` the previous one, so the
       stage writes its whole output into the ``write`` buffer and never writes the
       ``read`` one.
     - ``provides``: a gate generator's per-anchor attributes, a subset of ``{"z",
       "tangent", "half_size", "roll"}`` equal to the ``anchors.<attr>`` channels it
-      writes (the gate preset then drops the stages that would compute them); empty
-      for every other kind.
+      writes (the gate preset then drops the stages that would compute them); a
+      centerline generator's, a subset of ``{"z", "half_width"}`` equal to the
+      ``raw.z`` / ``raw.half_width`` it writes (the presets drop the elevation / the
+      width stage); empty for every other kind.
     - ``orderings`` / ``excluded_orderings`` (gate generators): the ``order`` stages it
       supports: a whitelist (``orderings``, a frozenset of order names), or, with
       ``orderings=None``, every registered order but ``excluded_orderings``. A
@@ -243,7 +366,7 @@ class StageBuilder:
 
     This release implements :meth:`read`, :meth:`write`, :meth:`temp_like`,
     :meth:`scratch`, :meth:`host_buffer`, :meth:`param`, :meth:`input`, :meth:`salt`,
-    :meth:`fail_bit`, :meth:`stride_of` and :meth:`per_of`.
+    :meth:`fail_bit`, :meth:`stride_of`, :meth:`per_of` and :meth:`dtype_of`.
     Every method allocates at build time only, and raises once ``build()`` returned.
 
     Attributes:
@@ -287,6 +410,7 @@ class StageBuilder:
         self._reserved_inputs = frozenset(reserved_inputs)
         self._salts: dict = {}                        # stream -> salt
         self._temps: dict = {}                        # port -> temp_like() count
+        self._families: dict = {}                     # adapter: port -> (channel, dtype)
         # The stage's CaptureClass as the orchestrator resolved it (capture_class() of
         # the static params); None: resolved here on demand (host_buffer).
         self._capture = capture
@@ -309,12 +433,16 @@ class StageBuilder:
     def _written_channels(self) -> frozenset:
         return frozenset(self._written.values())
 
-    def write(self, port: str, dtype=None, *, per: "str | None" = None, interp=None,
-              export=None) -> "wp.array":
+    def write(self, port: str, dtype=None, *, per: "str | None" = None,
+              interp: "str | None" = None, export: "bool | str" = False) -> "wp.array":
         """The output buffer of ``writes[port]``.
 
         A generator writes ``"raw.xy"`` (``wp.vec2f``, ``per="raw"``, ``[E * raw]``)
-        and ``"gen.valid"`` (``wp.int32``, ``per="env"``, ``[E]``). ``per`` sizes the
+        and ``"gen.valid"`` (``wp.int32``, ``per="env"``, ``[E]``), plus its raw
+        attributes (roadmap PR13a): ``"raw.z"`` / ``"raw.half_width"`` (``float32``, the
+        catalogue attributes it ``provides``) and its own ``"raw.<package>.<name>"``
+        channels, each carried to the centerline (``cl.<package>.<name>``) by the
+        resamples with the ``interp`` policy its write declares. ``per`` sizes the
         buffer: ``"env"`` is ``[E]``, ``"cl"`` is ``[E * N_max]``, ``"raw"`` is
         ``[E * raw]``, ``"anchors"`` is ``[E * A]`` and ``"gates"`` is
         ``[E * max_gates]`` (gate pipelines). ``dtype`` / ``per`` are those of the
@@ -323,37 +451,61 @@ class StageBuilder:
         :meth:`stride_of`). The buffer is owned by the orchestrator and read directly by
         later stages (no copy). For a channel the stage also reads (a rewrite) it is a
         NEW version: :meth:`read` keeps returning the previous one. A plugin channel
-        (``cl.<package>.<name>``) takes the ``dtype`` / ``per`` (``"env"`` or ``"cl"``)
-        of its first writer; a later writer must match.
+        (``<domain>.<package>.<name>``) takes the ``dtype`` / ``per`` of its first
+        writer; a later writer must match. The prefix fixes ``per`` for ``raw.*``
+        (``"raw"``) and ``anchors.*`` (``"anchors"``); ``cl.*`` / ``gates.*`` default
+        to ``"env"``.
 
         ``dtype`` and ``per`` may be omitted for a catalogue channel, or a plugin
         channel an earlier stage wrote: they are then the channel's (``b.write("z")``).
-        Given, they must match it. A plugin channel's first writer passes ``dtype``
-        (``per`` defaults to ``"env"``).
+        Given, they must match it. A plugin channel's first writer passes ``dtype``.
+
+        Args:
+            port: A write port of the stage.
+            dtype: The Warp dtype (see above).
+            per: The size (see above).
+            interp: A raw attribute's carry policy (required on every
+                ``raw.<package>.<name>``; ``"linear"``, ``"nearest"``, ``"previous"`` or
+                ``"angle"``): how the resamples carry it to their output points. Only
+                on a generator's raw writes.
+            export: ``True`` (or the channel's key, e.g. ``"acme.surface_id"``) to
+                export a per-point plugin attribute as ``Track.attributes[key]`` /
+                ``GateSequence.attributes[key]`` (key: the channel name without its
+                domain prefix). On per-point plugin channels only (``raw.*``,
+                ``anchors.*``, or ``cl.*`` / ``gates.*`` written with ``per="cl"`` /
+                ``"gates"``), by the channel's first writer.
 
         Raises:
             ValueError: an undeclared port (lists the declared ones), a channel the
-                stage may not write, or a second write of the same port.
-            TypeError: a ``dtype`` / ``per`` that does not match the channel.
-            NotImplementedError: ``interp=`` / ``export=`` (roadmap PR13).
+                stage may not write, a second write of the same port, ``interp=`` on a
+                channel that is not a generator's raw attribute, ``export=`` on a
+                catalogue or per-env channel or naming another key, ``interp=`` /
+                ``export=`` on a rewrite.
+            TypeError: a ``dtype`` / ``per`` that does not match the channel; a raw
+                attribute without ``interp=``, of a dtype other than float32, int32,
+                vec2f or vec3f, or with a policy its dtype does not admit (int32:
+                ``"nearest"`` / ``"previous"``; ``"angle"``: float32).
         """
         self._check_open("write")
-        if interp is not None or export is not None:
-            raise NotImplementedError("StageBuilder.write(interp=, export=) arrives with "
-                                      "roadmap PR13")
         if self._plan is not None:
-            return self._plan_write(port, dtype, per)
+            return self._plan_write(port, dtype, per, interp, export)
         writes = type(self._stage).writes
         if port not in writes:
             raise ValueError(f"stage {type(self._stage).__name__} declares no write port "
                              f"{port!r}; declared ports: {sorted(writes)}")
         channel = writes[port]
-        if channel not in _GENERATOR_CHANNELS:
-            raise ValueError(f"channel {channel!r} arrives with roadmap PR10/PR13; a "
-                             f"generator stage writes {sorted(_GENERATOR_CHANNELS)}")
         if port in self._written:
             raise ValueError(f"port {port!r} ({channel!r}) is already written; call "
                              f"write() once per port")
+        if channel not in _GENERATOR_CHANNELS:
+            if not _is_raw_attribute(channel):
+                raise ValueError(f"channel {channel!r} is not a generator channel; a "
+                                 f"generator stage writes {sorted(_GENERATOR_CHANNELS)} "
+                                 f"and its raw attributes (raw.z, raw.half_width, "
+                                 f"raw.<package>.<name>)")
+            return self._adapter_attribute(port, channel, dtype, per, interp, export)
+        if interp is not None or (export is not False and export is not None):
+            _check_family_write(channel, dtype, interp, export, first=True, per=per)
         want_dtype, want_per = _GENERATOR_CHANNELS[channel]
         dtype = want_dtype if dtype is None else dtype
         per = want_per if per is None else per
@@ -365,7 +517,40 @@ class StageBuilder:
         self._written[port] = channel
         return self._outputs[channel]
 
-    def _plan_write(self, port: str, dtype, per: str) -> "wp.array":
+    def _adapter_attribute(self, port: str, channel: str, dtype, per, interp,
+                           export) -> "wp.array":
+        """A generator's raw attribute on the PR8 adapter path: checked like the
+        planner's write, its buffer from the generator slot's resolver (the planner
+        allocates the channel and records the family), or allocated privately when no
+        pipeline carries it (the PR9 reference composition)."""
+        from ..stages.channels import CHANNELS  # noqa: PLC0415
+
+        if channel in CHANNELS:
+            want = CHANNELS[channel].dtype
+            if dtype is not None and dtype is not want:
+                raise TypeError(f"channel {channel!r} has dtype {want.__name__}, got "
+                                f"{getattr(dtype, '__name__', dtype)}")
+            dtype = want
+        elif dtype is None:
+            raise TypeError(f"plugin channel {channel!r}: its first writer passes dtype=")
+        if per is not None and per != "raw":
+            raise TypeError(f"channel {channel!r} is per='raw' (fixed by its raw. prefix), "
+                            f"got per={per!r}")
+        dtype, interp, key = _check_family_write(channel, dtype, interp, export,
+                                                 first=True, per="raw")
+        resolve = self._outputs.get(_FAMILY_RESOLVER)
+        if resolve is not None:
+            arr = resolve(channel, dtype, interp, export)
+        else:
+            arr = wp.zeros(self.E * self.raw, dtype=dtype, device=self.device)
+        self._families[port] = (channel, dtype)
+        self._written[port] = channel
+        return arr
+
+    def _plan_write(self, port: str, dtype, per: str, interp=None,
+                    export=False, fill=None) -> "wp.array":
+        from ..stages.channels import channel_domain, is_plugin_channel  # noqa: PLC0415
+
         plan = self._plan
         if port not in plan.writes:
             raise ValueError(f"stage {self._label()} declares no write port {port!r}; "
@@ -390,15 +575,35 @@ class StageBuilder:
                     raise TypeError(f"channel {declared!r} is per={d_per!r}, got "
                                     f"per={per!r}")
                 dtype, per = None, None
+        domain = channel_domain(channel)
+        plugin = is_plugin_channel(channel)
+        if (plugin and declared is not None and declared != channel
+                and is_plugin_channel(declared)
+                and {channel_domain(declared), domain} == {"cl", "gates"}
+                and per == channel_domain(declared)):
+            # A per-point plugin channel rewired across point classes (an elevation in a
+            # gate Program: cl.<pkg>.<name> -> gates.<pkg>.<name>): per= names the
+            # DECLARED channel's point class, the buffer is sized by the wired one.
+            per = domain
+        first = plan.is_first_write(channel)
+        if plugin and domain in ("raw", "anchors"):
+            if per is not None and per != domain:
+                raise TypeError(f"channel {channel!r} is per={domain!r} (fixed by its "
+                                f"{domain}. prefix), got per={per!r}")
+            per = domain if info is None else per
+        _, interp, key = _check_family_write(
+            channel, dtype if dtype is not None else (info[0] if info else None), interp,
+            export, first=first, per=per if per is not None or info is None else info[1])
         if info is None:
             # A plugin channel's first writer fixes its dtype and size.
             if dtype is None:
                 raise TypeError(f"plugin channel {channel!r}: its first writer passes "
                                 f"dtype= (and per=, default 'env')")
             per = "env" if per is None else per
-            if per not in _PLUGIN_PERS:
+            allowed = (domain,) if domain in ("raw", "anchors") else ("env", domain)
+            if per not in allowed:
                 raise ValueError(f"plugin channel {channel!r}: per must be one of "
-                                 f"{list(_PLUGIN_PERS)}, got {per!r}")
+                                 f"{list(allowed)}, got {per!r}")
             if not _is_warp_dtype(dtype):
                 raise TypeError(f"plugin channel {channel!r}: dtype must be a Warp "
                                 f"scalar or vector type, got {dtype!r}")
@@ -412,9 +617,55 @@ class StageBuilder:
                             f"{getattr(dtype, '__name__', dtype)}")
         if per != want_per:
             raise TypeError(f"channel {channel!r} is per={want_per!r}, got per={per!r}")
-        arr = plan.write(port)
+        arr = plan.write(port, interp=interp, export=key, fill=fill)
         self._written[port] = channel
         return arr
+
+    def dtype_of(self, port: str):
+        """The Warp dtype of the channel ``port`` is WIRED to (a required read port
+        ``"cl.*"``: the channel ``StageRef.ports`` names).
+
+        Raises:
+            ValueError: an undeclared port, or a plugin channel nobody wrote yet.
+        """
+        channel = self._port_channel(port, "dtype_of")
+        if self._plan is None:
+            fam = self._families.get(port)
+            if fam is not None:
+                return fam[1]
+            return _GENERATOR_CHANNELS[channel][0]
+        info = self._plan.channel(channel)
+        if info is None:
+            raise ValueError(f"stage {self._label()}: dtype_of({port!r}): plugin channel "
+                             f"{channel!r} has no dtype yet")
+        return info[0]
+
+    # -- private (TrackGen's built-in stages) -----------------------------------------
+    def _declare_constant(self, port: str, value: float) -> "wp.array":
+        """Write ``port`` (a float32 ``per="cl"`` channel) as a CONSTANT version: allocated
+        filled with ``value`` at build (no launch), and recorded so a consumer reading it
+        (:meth:`_constant_of`) may take the value as a host scalar. ``width.constant``."""
+        self._check_open("write")
+        if self._plan is None:
+            raise ValueError(f"stage {self._label()}: a constant version belongs to a "
+                             f"pipeline")
+        arr = self._plan_write(port, wp.float32, "cl", fill=float(value))
+        self._plan.declare_constant(arr, float(value))
+        return arr
+
+    def _constant_of(self, port: str) -> "float | None":
+        """The value of the version ``port`` reads when it is a constant one, else
+        ``None``."""
+        if self._plan is None:
+            return None
+        return self._plan.constant_of(self.read(port))
+
+    def _carried(self) -> list:
+        """The families this carrier stage carries (its implicit ``~`` ports), in
+        order: ``_Carry(src_port, dst_port, src, dst, family, constant)``."""
+        if self._plan is None:
+            return []
+        return self._plan.carried()
 
     def _label(self) -> str:
         return f"{self.stage_id!r} ({type(self._stage).__name__})"
@@ -449,6 +700,8 @@ class StageBuilder:
         """
         channel = self._port_channel(port, "per_of")
         if self._plan is None:
+            if port in self._families:
+                return "raw"
             return _GENERATOR_CHANNELS[channel][1]
         info = self._plan.channel(channel)
         if info is None:
@@ -504,6 +757,12 @@ class StageBuilder:
             ports = dict(type(self._stage).writes)
             channel = ports.get(port)
             info = _GENERATOR_CHANNELS.get(channel)
+            if port in self._families:
+                info = (self._families[port][1], "raw")
+            elif channel is not None and info is None and _is_raw_attribute(channel):
+                raise ValueError(f"stage {self._label()}: temp_like({port!r}): raw "
+                                 f"attribute {channel!r} has no dtype yet; call "
+                                 f"b.write({port!r}, dtype, interp=...) first")
         if info is None:
             raise ValueError(f"stage {self._label()} declares no port {port!r}; declared "
                              f"ports: {sorted(ports)}")
@@ -521,6 +780,17 @@ class StageBuilder:
         if key in self._scratch:
             raise ValueError(f"scratch buffer {name!r} is already allocated ({key})")
         arr = wp.zeros(shape, dtype=dtype, device=self.device)
+        self._scratch[key] = arr
+        return arr
+
+    def _scratch_full(self, name: str, value, dtype, shape) -> "wp.array":
+        """:meth:`scratch` allocated filled with ``value`` (``wp.full``, at build;
+        built-in stages only: the carriers' resample-table sentinels)."""
+        self._check_open("scratch")
+        key = f"scratch:{self.stage_id}/{name}"
+        if key in self._scratch:
+            raise ValueError(f"scratch buffer {name!r} is already allocated ({key})")
+        arr = wp.full(shape, value, dtype=dtype, device=self.device)
         self._scratch[key] = arr
         return arr
 
@@ -716,12 +986,15 @@ def _check_stage(cls, *, kind: "str | None" = None, api_version: int = 1,
     if output != "centerline":
         raise ValueError(f"Stage {label}: a generator Stage must declare "
                          f"output='centerline', got {output!r}")
-    writes = dict(cls.writes)
+    writes = _port_map(cls, "writes")
     channels = list(writes.values())
-    bad = sorted(str(c) for c in channels if c not in _GENERATOR_CHANNELS)
+    bad = sorted(str(c) for c in channels
+                 if c not in _GENERATOR_CHANNELS and not _is_raw_attribute(c))
     if bad:
-        raise ValueError(f"Stage {label}.writes: channels {bad} arrive with roadmap "
-                         f"PR10/PR13; a generator writes {sorted(_GENERATOR_CHANNELS)}")
+        raise ValueError(f"Stage {label}.writes: channels {bad} are not generator "
+                         f"channels; a generator writes {sorted(_GENERATOR_CHANNELS)}, the "
+                         f"catalogue attributes it provides {sorted(_RAW_PROVIDABLE)} and "
+                         f"its own raw attributes 'raw.<package>.<name>'")
     if "raw.xy" not in channels:
         raise ValueError(f"Stage {label}.writes must map a port to 'raw.xy'")
     if len(set(channels)) != len(channels):
@@ -729,10 +1002,14 @@ def _check_stage(cls, *, kind: "str | None" = None, api_version: int = 1,
     if dict(cls.reads):
         raise ValueError(f"Stage {label}.reads must be empty (a generator reads no "
                          f"channel)")
-    if frozenset(cls.provides):
-        raise ValueError(f"Stage {label}.provides must be empty (a centerline generator "
-                         f"provides nothing until roadmap PR13; a gate generator's provides "
-                         f"are its per-anchor attributes)")
+    provides = cls.provides
+    if not isinstance(provides, (frozenset, set)):
+        raise TypeError(f"Stage {label}.provides must be a frozenset, got {provides!r}")
+    written = sorted(_RAW_PROVIDABLE[c] for c in channels if c in _RAW_PROVIDABLE)
+    if sorted(map(str, provides)) != written:
+        raise ValueError(f"Stage {label}: provides {sorted(map(str, provides))} must name "
+                         f"exactly the catalogue attributes it writes ({written}: raw.z "
+                         f"-> 'z', raw.half_width -> 'half_width')")
     if cls.topology not in ("closed", "any"):
         raise ValueError(f"Stage {label}.topology must be 'closed' or 'any', got "
                          f"{cls.topology!r}")
@@ -786,12 +1063,17 @@ def _check_gate_generator(cls, label: str) -> None:
     if output != "anchors":
         raise ValueError(f"Stage {label}: a gate generator Stage declares output='anchors',"
                          f" got {output!r}")
+    from ..stages.channels import channel_domain, is_plugin_channel  # noqa: PLC0415
+
     writes = _port_map(cls, "writes")
     channels = list(writes.values())
-    bad = sorted(str(c) for c in channels if c not in _ANCHOR_CHANNELS)
+    attrs = sorted(c for c in channels
+                   if is_plugin_channel(c) and channel_domain(c) == "anchors")
+    bad = sorted(str(c) for c in channels if c not in _ANCHOR_CHANNELS and c not in attrs)
     if bad:
         raise ValueError(f"Stage {label}.writes: channels {bad} are not anchors channels; "
-                         f"a gate generator writes {sorted(_ANCHOR_CHANNELS)}")
+                         f"a gate generator writes {sorted(_ANCHOR_CHANNELS)} and its own "
+                         f"per-anchor attributes 'anchors.<package>.<name>'")
     if "anchors.xy" not in channels or "anchors.count" not in channels:
         raise ValueError(f"Stage {label}.writes must map ports to 'anchors.xy' and "
                          f"'anchors.count'")
@@ -812,6 +1094,10 @@ def _check_gate_generator(cls, label: str) -> None:
         raise ValueError(f"Stage {label} provides per-anchor attributes {sorted(provides)}: "
                          f"they are carried to the gate slots by index, so orderings "
                          f"must be frozenset({{'raw'}})")
+    if attrs and cls.orderings != frozenset({"raw"}):
+        raise ValueError(f"Stage {label} writes per-anchor attributes {attrs}: they are "
+                         f"carried to the gate slots by index (carry.attributes), so "
+                         f"orderings must be frozenset({{'raw'}})")
     if ("half_size" in provides) != ("roll" in provides):
         raise ValueError(f"Stage {label} provides 'half_size' without 'roll' (or 'roll' "
                          f"without 'half_size'): a posed gate frame needs both (write "
@@ -864,37 +1150,56 @@ def _rewrite_problems(label: str, reads: Mapping, writes: Mapping) -> "list[str]
 
 
 def _write_rule_problem(label: str, kind: str, writes: Mapping) -> "str | None":
-    """The per-kind write rule: a ``kind`` stage writes its one catalogue channel and
-    plugin channels only."""
-    from ..stages.channels import is_plugin_channel  # noqa: PLC0415
+    """The per-kind write rule: a ``kind`` stage writes its catalogue channels and plugin
+    channels of its domains only (``cl.*`` / ``gates.*``; a stations stage
+    ``anchors.*``)."""
+    from ..stages.channels import channel_domain, is_plugin_channel  # noqa: PLC0415
 
     allowed = _KIND_WRITES.get(kind, ())
+    domains = _KIND_PLUGIN_DOMAINS.get(kind, _DEFAULT_PLUGIN_DOMAINS)
     for port, ch in writes.items():
-        if ch not in allowed and not is_plugin_channel(ch):
-            return (f"{label} (kind {kind!r}) writes {ch!r} (port {port!r}): a {kind} "
-                    f"stage may write {list(allowed)} and plugin channels "
-                    f"'cl.<package>.<name>'")
-    if kind in _KIND_WRITES_ALL and not set(allowed) <= set(writes.values()):
+        if ch in allowed:
+            continue
+        if is_plugin_channel(ch) and channel_domain(ch) in domains:
+            continue
+        plugins = " or ".join(f"'{d}.<package>.<name>'" for d in domains)
+        return (f"{label} (kind {kind!r}) writes {ch!r} (port {port!r}): a {kind} "
+                f"stage may write {list(allowed)} and plugin channels {plugins}")
+    required = _KIND_REQUIRED.get(kind, ())
+    if required and not set(required) <= set(writes.values()):
         return (f"{label} (kind {kind!r}) must write "
-                f"{' and '.join(repr(c) for c in allowed)}")
+                f"{' and '.join(repr(c) for c in required)}")
     return None
 
 
 def _check_pipeline_stage(cls, kind: str, *, builtin: bool) -> None:
     """The rules of a relax / width / elevation / validity Stage (see the module
     docstring)."""
-    from ..stages.channels import CHANNELS, FAIL, is_plugin_channel  # noqa: PLC0415
+    from ..stages.channels import (CHANNELS, FAIL, is_plugin_channel,  # noqa: PLC0415
+                                   required_port_domain)
 
     label = f"Stage {cls.__name__}"
     if cls.output is not None:
         raise ValueError(f"{label}: output is for generators (kind {kind!r} declares "
                          f"none)")
     reads, writes = _port_map(cls, "reads"), _port_map(cls, "writes")
+    wildcard = sorted(p for p, ch in writes.items() if required_port_domain(ch))
+    if wildcard:
+        raise ValueError(f"{label}: write port {wildcard[0]!r} names "
+                         f"{writes[wildcard[0]]!r}; a '<domain>.*' port is a required READ "
+                         f"port (the user wires it with StageRef.ports)")
     unknown = sorted({ch for ch in (*reads.values(), *writes.values())
-                      if ch not in CHANNELS and not is_plugin_channel(ch)})
+                      if ch not in CHANNELS and not is_plugin_channel(ch)
+                      and not required_port_domain(ch)})
     if unknown:
         raise ValueError(f"{label}: unknown channels {unknown}; use catalogue channels or "
-                         f"namespaced plugin channels 'cl.<package>.<name>'")
+                         f"namespaced plugin channels 'cl.<package>.<name>' (prefix raw., "
+                         f"cl., anchors. or gates.), or a required read port '<domain>.*'")
+    raw = sorted(ch for ch in writes.values()
+                 if is_plugin_channel(ch) and ch.startswith("raw."))
+    if raw:
+        raise ValueError(f"{label} writes {raw[0]!r}: raw.<package>.<name> attributes are "
+                         f"written by a centerline generator only")
     problems = _rewrite_problems(label, reads, writes)
     if problems:
         raise ValueError(problems[0])
@@ -904,12 +1209,14 @@ def _check_pipeline_stage(cls, kind: str, *, builtin: bool) -> None:
             raise ValueError(problem)
     if kind == "validity" and FAIL not in writes.values():
         raise ValueError(f"{label} (kind 'validity') must write {FAIL!r}")
-    if kind in _KIND_WRITES_ALL and not set(_KIND_WRITES[kind]) <= set(writes.values()):
+    required = _KIND_REQUIRED.get(kind, ())
+    if required and not set(required) <= set(writes.values()):
         raise ValueError(f"{label} (kind {kind!r}) must write "
-                         f"{' and '.join(repr(c) for c in _KIND_WRITES[kind])}")
+                         f"{' and '.join(repr(c) for c in required)}")
     if frozenset(cls.provides):
-        raise ValueError(f"{label}.provides must be empty (only a gate generator provides "
-                         f"per-anchor attributes; roadmap PR13 for the others)")
+        raise ValueError(f"{label}.provides must be empty (generators provide attributes: "
+                         f"a centerline generator 'z' / 'half_width', a gate generator its "
+                         f"per-anchor attributes)")
     if cls.topology not in ("closed", "any"):
         raise ValueError(f"{label}.topology must be 'closed' or 'any', got "
                          f"{cls.topology!r}")

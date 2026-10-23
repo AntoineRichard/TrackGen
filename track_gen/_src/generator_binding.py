@@ -34,7 +34,8 @@ import warp as wp
 
 from ..plugin.params import (NoParams, ParamTable, _check_values, _coerce, _fields,
                              _new_param_table, _new_stage_params, _static_view)
-from ..plugin.stage import CaptureClass, Layout, _close_builder, _is_stage, _new_builder
+from ..plugin.stage import (_FAMILY_RESOLVER, CaptureClass, Layout, _close_builder,
+                            _is_stage, _new_builder)
 from .runtime import _init, _snapshot_config
 
 _STAGE_ID = "generator"
@@ -283,9 +284,13 @@ class _StageGenerator:
         raise TypeError("Stage generators allocate through their StageBuilder; they run "
                         "through TrackGenerator")
 
-    def build(self, *, seed, out_xy, out_valid) -> _BuiltStage:
+    def build(self, *, seed, out_xy, out_valid, resolve=None) -> _BuiltStage:
         """Allocate the dynamic-param arrays, run ``Stage.build`` on a StageBuilder bound
-        to the orchestrator-owned outputs, and check its post-conditions."""
+        to the orchestrator-owned outputs, and check its post-conditions. ``resolve``
+        (the pipeline's generator slot, roadmap PR13a): ``resolve(channel, dtype, interp,
+        export) -> wp.array`` allocates a raw attribute (``raw.z``, ``raw.half_width``,
+        ``raw.<pkg>.<name>``) as a pipeline channel; without it (the PR9 reference
+        composition) the builder allocates it privately (nothing carries it there)."""
         if self._built is not None:
             raise RuntimeError(f"Stage generator {self.name!r} is already built; its "
                                f"buffers are bound at build (construct a new generator)")
@@ -302,12 +307,17 @@ class _StageGenerator:
                 dynamic[f.name] = (wp.full(E, value, dtype=f.dtype, device=dev),
                                    wp.full(E, value, dtype=f.dtype, device=dev))
         view = _static_view(self.params)              # dynamic fields raise
+        outputs = {"raw.xy": out_xy, "gen.valid": out_valid}
+        if resolve is not None:
+            outputs[_FAMILY_RESOLVER] = resolve
         b = _new_builder(stage=self.stage, params=view, layout=self.layout,
                          scale=self.scale, seed=seed, raw=self.raw_points,
-                         outputs={"raw.xy": out_xy, "gen.valid": out_valid},
-                         dynamic=dynamic, stage_id=_STAGE_ID, capture=self.capture)
+                         outputs=outputs, dynamic=dynamic, stage_id=_STAGE_ID,
+                         capture=self.capture)
         enqueue = self.stage.build(b, view)
         _close_builder(b)
+        # The resolver is a build-time hook (it holds the pipeline's plan): drop it.
+        b._outputs.pop(_FAMILY_RESOLVER, None)
         if not callable(enqueue):
             raise TypeError(f"{type(self.stage).__name__}.build() must return an "
                             f"enqueue(ctx) callable, got {enqueue!r}")

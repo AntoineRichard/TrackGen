@@ -14,6 +14,14 @@ Stages of the kinds open to plugins (``relax``, ``width``, ``elevation``, ``vali
 ``carry``, ``gate_relax``, ``gate_arclen``, ``tangents``, ``gate_frames``) from
 TrackGen's built-in catalogue.
 
+Channel carry (roadmap PR13a): the resamples and the built-in stations carry the
+per-point channels of their source loop to their output points (``raw.<attr>`` ->
+``cl.<attr>`` -> uniform ``cl.<attr>`` -> ``anchors.<attr>`` -> ``gates.<attr>``). Which
+families each carrier carries is static, computed here from the declared writes and
+reads before any allocation, and appears as the carrier's implicit ports (``~<channel>``)
+in :attr:`Program.channels <track_gen.pipeline.Program.channels>`, the read-before-write
+and second-writer rules and the exports.
+
 Rule 6 (roadmap PR12): the stages are grouped into segments of equal host-ness
 (``CaptureClass.HOST`` vs ``STATIC`` / ``BOUNDED``, :attr:`Program.segments
 <track_gen.pipeline.Program.segments>`); ``PipelineSpec.require_caller_capturable``
@@ -33,6 +41,8 @@ from __future__ import annotations
 import dataclasses
 import numbers
 import types
+from collections.abc import Mapping as _MappingABC
+
 import warp as wp
 
 from .spec import BatchSpec, PipelineSpec, StageRef
@@ -48,7 +58,8 @@ _TRACK_DTYPES = {"vec3f": wp.vec3f, "float32": wp.float32, "int32": wp.int32,
 _ON_INVALID = ("keep", "poison")
 # Params fields baked as host scalars by several stages: one value per pipeline.
 _AGREE = {
-    "half_width": "one value until roadmap PR13",
+    "half_width": "the stages with a half_width field share one value: the nominal width "
+                  "(the per-point width is cl.half_width)",
     "gate_width": "one value per pipeline: gate_frames bakes the bar width, "
                   "validity.gate_default the crossing toggle",
     "gate_radius": "one value per pipeline: gate_relax.spheres separates the gates to "
@@ -227,29 +238,46 @@ class _Slot:
     layout: object = None       # the stage's Layout (its point domain)
     generator: "str | None" = None  # "centerline" | "anchors" | "legacy" | None
     capacity: "dict | None" = None  # an anchors producer's {"gates": A, "min_gates": k}
+    carries: tuple = ()             # the (src, dst) channels a carrier carries
+    centerline: bool = False        # a gate Program's stage before the anchors producer
+
+
+def _decl(s) -> "tuple[dict, dict]":
+    """The declared ``(reads, writes)`` of a slot: its instance's (the generator slot's
+    writes include the generator's raw attributes), else its class's."""
+    src = s.instance if s.instance is not None else s.cls
+    return dict(getattr(src, "reads", {})), dict(getattr(src, "writes", {}))
 
 
 def _effective_ports(cls, ref: StageRef, gate: bool) -> dict:
-    """``StageRef.ports``, plus, for an ``elevation`` stage of a gate Program, the
-    default gate rewiring of its ``cl.*`` ports (explicit ports override it)."""
-    from ..stages.channels import ELEVATION_GATE_CHANNELS  # noqa: PLC0415
+    """``StageRef.ports``, plus, for an ``elevation`` stage of a gate Program that runs
+    on the gates (after the anchors producer), the default gate rewiring of its ``cl.*``
+    ports (explicit ports override it): the catalogue pairs of
+    ``ELEVATION_GATE_CHANNELS``, and plugin channels by prefix (``cl.<pkg>.<name>`` ->
+    ``gates.<pkg>.<name>``)."""
+    from ..stages.channels import ELEVATION_GATE_CHANNELS, is_plugin_channel  # noqa
 
     ports = {}
     if gate and ref.kind == "elevation":
         for p, ch in {**dict(cls.reads), **dict(cls.writes)}.items():
             if ch in ELEVATION_GATE_CHANNELS:
                 ports[p] = ELEVATION_GATE_CHANNELS[ch]
+            elif is_plugin_channel(ch) and ch.startswith("cl."):
+                ports[p] = "gates." + ch[3:]
     ports.update(ref.ports)
     return ports
 
 
 def _domain_layout(slot_cls, ref: StageRef, ports: dict, *, gate: bool, batch,
-                   generator: "str | None"):
+                   generator: "str | None", centerline: bool = False):
     """The stage's :class:`Layout` from its (rewired) ports, before any validation:
     ``N_max`` on a track and for the centerline stages of a gate Program, ``max_gates``
-    for every gate stage."""
+    for every gate stage. ``centerline``: a gate Program's stage before the anchors
+    producer (a ``relaxed_stations`` sub-pipeline stage, e.g. an elevation on the
+    relaxed centerline: its ``cl.*`` ports stay)."""
     from ..plugin.stage import Layout  # noqa: PLC0415
-    from ..stages.channels import CHANNELS, is_gate_channel, is_plugin_channel  # noqa
+    from ..stages.channels import (CHANNELS, channel_domain, is_gate_channel,  # noqa
+                                   is_plugin_channel)
 
     E, dev = int(batch.num_envs), str(wp.get_device(batch.device))
     n_max = int(batch.n_max)
@@ -260,29 +288,36 @@ def _domain_layout(slot_cls, ref: StageRef, ports: dict, *, gate: bool, batch,
     declared = {**dict(slot_cls.reads), **dict(slot_cls.writes)}
     chans = {p: ports.get(p, ch) for p, ch in declared.items()}
     label = _label(ref)
-    gate_chans = [ch for ch in chans.values() if is_gate_channel(ch)]
+    gate_chans = [ch for ch in chans.values() if is_gate_channel(ch) or (
+        is_plugin_channel(ch) and channel_domain(ch) in ("anchors", "gates"))]
     if not gate:
         if gate_chans:
             raise PlanError(f"{label}: channel {gate_chans[0]!r} belongs to the gate "
                             f"pipeline (BatchSpec.max_gates); a track pipeline has none")
         return Layout(E, n_max, dev, True)
-    plugin = [ch for ch in chans.values() if is_plugin_channel(ch)]
-    if gate_chans and plugin:
-        raise PlanError(f"{label}: plugin channel {plugin[0]!r} is a centerline channel; "
-                        f"gate plugin channels (gates.<pkg>.<name>) arrive with roadmap "
-                        f"PR13")
-    cl = [ch for ch in chans.values() if ch in CHANNELS and ch.startswith("cl.")]
-    if ref.kind == "elevation":
+    cl_plugin = [ch for ch in chans.values()
+                 if is_plugin_channel(ch) and channel_domain(ch) == "cl"]
+    cl_cat = [ch for ch in chans.values() if ch in CHANNELS and ch.startswith("cl.")]
+    on_gates = [ch for ch in gate_chans if ch.startswith("gates.")]
+    gates_plugin = [ch for ch in on_gates if is_plugin_channel(ch)]
+    if cl_plugin and on_gates:
+        raise PlanError(f"{label}: plugin channel {cl_plugin[0]!r} is a centerline "
+                        f"channel; a gate-domain stage reads and writes "
+                        f"gates.<pkg>.<name>")
+    if gates_plugin and cl_cat:
+        raise PlanError(f"{label}: plugin channel {gates_plugin[0]!r} is a gate channel; "
+                        f"a centerline stage reads and writes cl.<pkg>.<name>")
+    if ref.kind == "elevation" and not centerline:
         for p, ch in chans.items():
             if ch in CHANNELS and ch.startswith("cl."):
                 raise PlanError(f"{label}: port {p!r} reads {ch!r}, which has no gate "
                                 f"counterpart (the default gate rewiring covers cl.xy, "
                                 f"cl.count, cl.arclen2, cl.length2 and cl.z); wire it "
                                 f"with StageRef(ports=...)")
-    if cl and any(ch.startswith("gates.") for ch in gate_chans):
+    if cl_cat and on_gates:
         raise PlanError(f"{label} has centerline (cl.*) and gate (gates.*) ports after "
                         f"rewiring; a stage runs on one point domain")
-    stride = n_max if cl else int(batch.max_gates)
+    stride = n_max if (cl_cat or cl_plugin) else int(batch.max_gates)
     return Layout(E, stride, dev, True)
 
 
@@ -316,12 +351,17 @@ def _resolve(spec: PipelineSpec, binding, layout, registry=None) -> "list[_Slot]
     from ..plugin.params import _check_values, _coerce, _static_view  # noqa: PLC0415
     from ..plugin.stage import _is_stage  # noqa: PLC0415
     from ..stages.gates import _LegacyGateSlot  # noqa: PLC0415
-    from ..stages.track import ElevationFlat, _GeneratorSlot  # noqa: PLC0415
+    from ..stages.track import (ElevationFlat, OffsetDefault, ValidityDefault,  # noqa
+                                Xpbd, _GeneratorSlot)
 
     reg = _default_registry if registry is None else registry
     batch = spec.batch
     gate = batch.max_gates is not None
     slots = []
+    # A gate Program: whether the anchors producer (a gate generator or a stations stage)
+    # ran: an elevation after it runs on the gates (rewired), one before it on the
+    # relaxed centerline.
+    anchored = False
     for i, ref in enumerate(spec.stages):
         sid = ref.slot_id
         if ref.kind in _GENERATOR_KINDS:
@@ -350,6 +390,7 @@ def _resolve(spec: PipelineSpec, binding, layout, registry=None) -> "list[_Slot]
                 slot.builtin = bool(reg.describe(_GATE_GENERATOR, ref.name).builtin)
                 slot.capacity = _check_capacity(cls, cls().capacity(
                     _static_view(binding.params), slot_layout))
+            anchored = kind in ("anchors", "legacy")
             slots.append(slot)
             continue
         builtin = True
@@ -374,9 +415,20 @@ def _resolve(spec: PipelineSpec, binding, layout, registry=None) -> "list[_Slot]
                 f"{_label(ref)}: unknown {ref.kind} stage {ref.name!r}; built-in "
                 f"{ref.kind} stages: {_stages.available(ref.kind)} (kind {ref.kind!r} is "
                 f"not open to plugins)")
-        ports = _effective_ports(cls, ref, gate)
+        # A gate Program's stage before a later anchors producer (a stations stage)
+        # runs on the centerline; without any anchors producer every stage is a gate
+        # one (the PR11 rewiring, and its hints).
+        centerline = gate and not anchored and any(
+            r.kind == "stations" for r in spec.stages[i + 1:])
+        ports = _effective_ports(cls, ref, gate and not centerline)
         slot_layout = _domain_layout(cls, ref, ports, gate=gate, batch=batch,
-                                     generator=None)
+                                     generator=None, centerline=centerline)
+        if cls in (Xpbd, OffsetDefault, ValidityDefault) and \
+                isinstance(ref.params, _MappingABC) and "half_width" in ref.params:
+            raise PlanError(
+                f"{_label(ref)}: half_width is no longer a {ref.kind}.{ref.name} param "
+                f"(0.2.0.dev4): the half-width is cl.half_width, written by the width "
+                f"stage (presets.track(half_width=...) / width.constant)")
         params = _coerce(cls.Params, ref.params, what=_label(ref), label="params")
         params.validate(slot_layout)
         _check_values(params)
@@ -386,10 +438,11 @@ def _resolve(spec: PipelineSpec, binding, layout, registry=None) -> "list[_Slot]
                             f"(gate pipelines); a track's flat altitude is lift.flat's "
                             f"z_base (presets.track(z_base=...))")
         slot = _Slot(i, sid, ref, cls, None, params, {}, {}, builtin, ports=ports,
-                     layout=slot_layout)
+                     layout=slot_layout, centerline=centerline)
         if "anchors.xy" in {ports.get(p, ch) for p, ch in dict(cls.writes).items()}:
             slot.capacity = _check_capacity(cls, cls().capacity(_static_view(params),
                                                                 slot_layout))
+            anchored = True
         slots.append(slot)
     _check_agreement(slots)
     return slots
@@ -464,7 +517,9 @@ def _check_gate_plan(spec, slots, registry) -> int:
             bad = [o for o in orders if o.cls is not OrderRaw]
             if bad:
                 o = bad[0]
-                raise PlanError(f"{_label(s.ref)} carries anchors.{s.ref.name} by anchor "
+                what = "the anchors attributes" if s.ref.name == "attributes" else \
+                    f"anchors.{s.ref.name}"
+                raise PlanError(f"{_label(s.ref)} carries {what} by anchor "
                                 f"index, which needs order.raw; stage {o.id!r} is "
                                 f"{o.ref.kind}.{o.ref.name} (it permutes the anchors)")
     posed = any(s.cls is GateFramesPosed for s in slots)
@@ -479,7 +534,26 @@ def _check_gate_plan(spec, slots, registry) -> int:
 
 def _check_provided(slots) -> None:
     """A gate generator's provided attribute must be read by a later stage (a hand-built
-    or edited spec cannot silently discard what the generator provides)."""
+    or edited spec cannot silently discard what the generator provides); so must every
+    per-anchor attribute a gate generator or a plugin stations stage writes
+    (``anchors.z``, ``anchors.<pkg>.<name>``: ``carry.z`` / ``carry.attributes``)."""
+    from ..stages.channels import is_plugin_channel  # noqa: PLC0415
+
+    for w in slots:
+        if not (w.generator == "anchors" or (w.ref.kind == "stations" and not w.builtin)):
+            continue
+        later = [s for s in slots if s.index > w.index]
+        for ch in sorted(w.writes.values()):
+            plugin = is_plugin_channel(ch) and ch.startswith("anchors.")
+            stations_z = w.generator is None and ch == "anchors.z"
+            if not (plugin or stations_z):
+                continue
+            if any(ch in s.reads.values() for s in later):
+                continue
+            stage = "carry.attributes" if plugin else "carry.z"
+            raise PlanError(f"{_label(w.ref)} writes {ch}, but no stage reads it: carry it "
+                            f"to the gate slots with {stage} after order.raw "
+                            f"(presets.gates adds it)")
     gen = slots[0]
     if gen.generator != "anchors":
         return
@@ -585,7 +659,11 @@ def _slot_info(s, cap, binding, dev):
 
 
 def _missing_hint(ch: str, s: _Slot, slots, gate: bool) -> str:
-    """A hint for the common gate-pipeline mistakes behind a read nobody wrote."""
+    """A hint for the common mistakes behind a read nobody wrote."""
+    if ch == "cl.half_width":
+        return ("; the width stage runs before relax since 0.2.0.dev4 (generator, "
+                "resample, width, relax, uniform, ...): move it, or insert "
+                "StageRef('width', 'constant') before 'relax'")
     if ch in ("gates.cum", "gates.perim"):
         return ("; insert StageRef('gate_arclen', 'default') before it (presets.gates "
                 "adds it for every elevation but flat)")
@@ -610,31 +688,127 @@ def _missing_hint(ch: str, s: _Slot, slots, gate: bool) -> str:
     return ""
 
 
+# The catalogue attributes a centerline generator provides, and the stage kind a
+# preset drops for each (the second-writer hint).
+_PROVIDED_SLOT = {"cl.z": ("z", "elevation"), "cl.half_width": ("half_width", "width")}
+
+
+def _is_raw_family(ch: str) -> bool:
+    return ch.startswith("raw.") and ch != "raw.xy"
+
+
+def _carry_set(s: _Slot, carries, versions, images, later: set,
+               carry_attr_after: bool) -> "tuple[list, list]":
+    """The ``(src, dst)`` channels carrier ``s`` carries (static: from the channels
+    written before it and the reads after it), and its extra read-only sources (the
+    xyz stations' altitude)."""
+    from ..stages.channels import family_key, is_plugin_channel  # noqa: PLC0415
+
+    src_dom, dst_dom, mode = carries
+    if mode == "index":                     # carry.attributes: anchors -> gates
+        return [(ch, "gates." + family_key(ch)) for ch in versions
+                if ch.startswith("anchors.") and is_plugin_channel(ch)], []
+    if src_dom == "raw":
+        candidates = [ch for ch in versions if _is_raw_family(ch)]
+    else:                                   # cl: the catalogue families and the images
+        candidates = [ch for ch in versions if ch in ("cl.half_width", "cl.z")
+                      or (ch.startswith("cl.") and ch in images)]
+    if mode == "all":                       # the resamples: every family
+        if dst_dom == src_dom:
+            return [(ch, ch) for ch in candidates], []
+        return [(ch, f"{dst_dom}." + family_key(ch)) for ch in candidates], []
+    # stations: a family is carried to anchors only when a later stage reads it.
+    pairs = []
+    for ch in candidates:
+        if ch == "cl.half_width":
+            continue
+        dst = "anchors." + family_key(ch)
+        if dst in later or (is_plugin_channel(ch) and carry_attr_after):
+            pairs.append((ch, dst))
+    extra = []
+    if str(getattr(s.params, "spacing_metric", "xy")) == "xyz":
+        z = f"{src_dom}.z"
+        if z not in versions:
+            raise PlanError(
+                f"{_label(s.ref)}: spacing_metric='xyz' measures 3D arc length along the "
+                f"loop, which carries no altitude: use a generator that provides z "
+                f"(raw.z), or source='relaxed_stations' with a non-flat elevation")
+        if z not in {src for src, _ in pairs}:
+            extra.append(z)
+    return pairs, extra
+
+
 def _plan_channels(slots, gate: bool = False) -> "dict[str, list[str]]":
-    """Resolve the ports and walk the channel versions; returns ``channel -> [writer
-    ids]`` (the seed's writer is the prologue)."""
+    """Resolve the ports (and each carrier's implicit carry ports) and walk the channel
+    versions; returns ``channel -> [writer ids]`` (the seed's writer is the prologue)."""
     from ..plugin.stage import _rewrite_problems, _write_rule_problem  # noqa: PLC0415
     from ..stages import CHANNELS, OPEN_KINDS, SEED  # noqa: PLC0415
-    from ..stages.channels import PER_CLASS, is_plugin_channel  # noqa: PLC0415
+    from ..stages.channels import (PER_CLASS, is_plugin_channel,  # noqa: PLC0415
+                                   required_port_domain)
 
     def known(ch) -> bool:
         return ch in CHANNELS or is_plugin_channel(ch)
 
     versions: dict = {SEED: [_PROLOGUE]}
+    images: dict = {}                    # carried image channel -> carrier id
+    # What every later slot reads (after rewiring), and whether a carry.attributes
+    # follows: the stations carry only the families read downstream.
+    decl_read_sets = []
     for s in slots:
-        ref, cls = s.ref, s.cls
+        r, _ = _decl(s)
+        decl_read_sets.append({s.ports.get(p, ch) for p, ch in r.items()})
+    later_reads, carry_attr_after = [], []
+    acc, flag = set(), False
+    for i in range(len(slots) - 1, -1, -1):
+        later_reads.append(set(acc))
+        carry_attr_after.append(flag)
+        acc |= decl_read_sets[i]
+        if getattr(slots[i].cls, "_carries", (None, None, None))[2] == "index":
+            flag = True
+    later_reads.reverse()
+    carry_attr_after.reverse()
+    for i, s in enumerate(slots):
+        ref = s.ref
         ports = s.ports
-        decl_reads, decl_writes = dict(cls.reads), dict(cls.writes)
+        decl_reads, decl_writes = _decl(s)
         unknown = sorted(p for p in ref.ports if p not in decl_reads and p not in decl_writes)
         if unknown:
             raise PlanError(f"{_label(ref)}: ports {unknown} are not ports of the stage; "
                             f"read ports: {sorted(decl_reads)}, write ports: "
                             f"{sorted(decl_writes)}")
+        for p, ch in decl_reads.items():
+            dom = required_port_domain(ch)
+            if dom is None:
+                continue
+            wired = ref.ports.get(p)
+            if wired is None:
+                example = f"{dom}.<pkg>.<name>"
+                avail = sorted(c for c in versions
+                               if c.startswith(dom + ".") and is_plugin_channel(c))
+                hint = (f"; plugin channels written before it: {avail}" if avail else
+                        f"; the {dom} image of a generator's raw.<pkg>.<name> is "
+                        f"{dom}.<pkg>.<name>")
+                raise PlanError(
+                    f"{_label(ref)}: read port {p!r} ({ch}) must be wired: "
+                    f"StageRef({ref.kind!r}, {ref.name!r}, ports={{{p!r}: {example!r}}})"
+                    f"{hint}")
+            if not wired.startswith(dom + ".") or required_port_domain(wired):
+                raise PlanError(f"{_label(ref)}: read port {p!r} ({ch}) is wired to "
+                                f"{wired!r}, not a {dom} channel")
+            own = next((wp_ for wp_, wch in decl_writes.items()
+                        if ports.get(wp_, wch) == wired), None)
+            if own is not None:
+                raise PlanError(
+                    f"{_label(ref)}: read port {p!r} ({ch}) is wired to {wired!r}, which "
+                    f"the stage itself writes (port {own!r}); a required read port names "
+                    f"another stage's channel. Transforming {wired} in place (e.g. "
+                    f"rescaling the current width) is a rewrite stage: one port that "
+                    f"reads and writes it")
         for p, ch in ports.items():
             if not known(ch):
                 raise PlanError(f"{_label(ref)}: port {p!r} is rewired to unknown channel "
                                 f"{ch!r}; channels: {sorted(CHANNELS)} and plugin "
-                                f"channels 'cl.<package>.<name>'")
+                                f"channels '<domain>.<package>.<name>'")
             declared = decl_reads.get(p, decl_writes.get(p))
             if declared not in CHANNELS or ch not in CHANNELS:
                 continue                  # a plugin channel: its writer fixes the dtype
@@ -653,6 +827,16 @@ def _plan_channels(slots, gate: bool = False) -> "dict[str, list[str]]":
                 problem = _write_rule_problem(_label(ref), ref.kind, writes)
                 if problem is not None:
                     raise PlanError(problem)
+        carries = getattr(s.cls, "_carries", None) if s.generator is None else None
+        if carries is not None:
+            pairs, extra = _carry_set(s, carries, versions, images, later_reads[i],
+                                      carry_attr_after[i])
+            for src, dst in pairs:
+                reads["~" + src] = src
+                writes["~" + dst] = dst
+            for src in extra:
+                reads["~" + src] = src
+            s.carries = tuple(pairs)
         for p, ch in reads.items():
             if not known(ch):
                 raise PlanError(f"{_label(ref)} reads unknown channel {ch!r} (port {p!r})")
@@ -671,27 +855,56 @@ def _plan_channels(slots, gate: bool = False) -> "dict[str, list[str]]":
                                 f"({seen[ch]!r}, {p!r})")
             seen[ch] = p
             if ch in versions and ch not in reads.values():
+                hint = ""
+                if ch in images and ch in _PROVIDED_SLOT and \
+                        f"raw.{_PROVIDED_SLOT[ch][0]}" in versions:
+                    attr, kind = _PROVIDED_SLOT[ch]
+                    hint = (f"; generator {slots[0].ref.name!r} provides {attr} "
+                            f"(raw.{attr} -> {ch}): drop the {kind} stage")
                 raise PlanError(
                     f"{_label(ref)} writes {ch!r}, already written by stage "
                     f"{versions[ch][-1]!r}: a second writer must also read the channel "
-                    f"(an in-place rewrite)")
-        for ch in writes.values():
+                    f"(an in-place rewrite){hint}")
+        for p, ch in writes.items():
             versions.setdefault(ch, []).append(s.id)
+            if p.startswith("~"):
+                images[ch] = s.id
         s.reads, s.writes = reads, writes
+    _check_width_placement(slots)
     return versions
+
+
+def _check_width_placement(slots) -> None:
+    """A ``cl.half_width`` version written after the stage that writes
+    ``track.half_width`` (the offset) would let validity check another width than the
+    band the Track has."""
+    offset = next((s for s in slots if "track.half_width" in s.writes.values()), None)
+    if offset is None:
+        return
+    for s in slots:
+        if s.index > offset.index and "cl.half_width" in s.writes.values():
+            raise PlanError(f"stage {s.id!r} writes cl.half_width after {offset.id!r}: "
+                            f"the band and Track.half_width come from {offset.id}'s read, "
+                            f"so validity would check another width than the band; move "
+                            f"it before {offset.id!r}")
 
 
 # ---------------------------------------------------------------------------------------
 # The result kinds (Track / GateSequence)
 # ---------------------------------------------------------------------------------------
 
+# Result fields a pipeline may leave without a writer (then None / the commit's own).
+_OPTIONAL_EXPORTS = ("half_width",)
+
+
 def _check_exports(writers) -> None:
-    """Every ``Track`` field has a writer: the ``Track`` reads them all."""
+    """Every ``Track`` field has a writer: the ``Track`` reads them all (``half_width``
+    excepted: a pipeline without ``offset.default`` leaves it ``None``)."""
     from ..stages.track import TRACK_EXPORTS  # noqa: PLC0415
 
     missing = [f"Track.{field} ({' or '.join(chs)})"
                for field, chs in TRACK_EXPORTS.items()
-               if not any(ch in writers for ch in chs)]
+               if field not in _OPTIONAL_EXPORTS and not any(ch in writers for ch in chs)]
     if missing:
         raise PlanError(f"no stage writes {', '.join(missing)}: every Track field needs "
                         f"a writer")
@@ -806,16 +1019,36 @@ def _check_arrays(out, want: dict, optional, dev: str) -> None:
                              f"{dev}, got {got}")
 
 
+def _check_out_attributes(out, n: int, dev: str) -> None:
+    """``out.attributes``: a mapping of ``[n]`` contiguous arrays on ``dev`` (keys and
+    dtypes are checked against the exports once the stages are built)."""
+    attrs = getattr(out, "attributes", None)
+    if attrs is None:
+        return
+    if not isinstance(attrs, _MappingABC):
+        raise ValueError(f"out.attributes: expected a mapping of wp.array, got "
+                         f"{type(attrs).__name__}")
+    for key, arr in attrs.items():
+        if not isinstance(arr, wp.array) or tuple(arr.shape) != (n,) or \
+                str(arr.device) != dev or not arr.is_contiguous:
+            got = (getattr(getattr(arr, "dtype", None), "__name__", None),
+                   tuple(getattr(arr, "shape", ())), str(getattr(arr, "device", None)))
+            raise ValueError(f"out.attributes[{key!r}]: expected a contiguous [{n}] array "
+                             f"on {dev}, got {got}")
+
+
 def _check_out(out, layout) -> None:
     """``out=``: every Track field an ``[n]`` contiguous array of the right dtype on the
-    batch's device (``generation`` and ``fail_mask`` may be ``None``)."""
+    batch's device (``generation``, ``fail_mask`` and ``half_width`` may be ``None``)."""
     E, S = int(layout.num_envs), int(layout.stride)
     want = {f: ("vec3f", E * S) for f in ("outer", "center", "inner", "tangent", "normal")}
     want.update(arclen=("float32", E * S), length=("float32", E), winding=("float32", E),
                 valid=("int32", E), count=("int32", E), truncated=("int32", E),
-                generation=("int32", E), fail_mask=("int32", E))
-    _check_arrays(out, want, ("generation", "fail_mask"),
-                  str(wp.get_device(layout.device)))
+                generation=("int32", E), fail_mask=("int32", E),
+                half_width=("float32", E * S))
+    dev = str(wp.get_device(layout.device))
+    _check_arrays(out, want, ("generation", "fail_mask", "half_width"), dev)
+    _check_out_attributes(out, E * S, dev)
 
 
 def _check_gate_out(out, layout) -> None:
@@ -827,8 +1060,9 @@ def _check_gate_out(out, layout) -> None:
     want.update(orientation=("quatf", E * G), half_size=("float32", E * G),
                 valid=("int32", E), count=("int32", E), generation=("int32", E),
                 fail_mask=("int32", E))
-    _check_arrays(out, want, ("generation", "fail_mask"),
-                  str(wp.get_device(layout.device)))
+    dev = str(wp.get_device(layout.device))
+    _check_arrays(out, want, ("generation", "fail_mask"), dev)
+    _check_out_attributes(out, E * G, dev)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -843,6 +1077,7 @@ class _ResultKind:
     alloc: object
     commit_cls: object
     fields: tuple
+    domain: str = "cl"          # the result's point domain (its attributes' prefix)
 
 
 def _result_kind(gate: bool) -> _ResultKind:
@@ -855,7 +1090,7 @@ def _result_kind(gate: bool) -> _ResultKind:
             _gates_mod.GATE_EXPORTS, "gates.valid", _check_gate_exports,
             _check_gate_fail_start, _check_gate_out, _gates_mod._alloc_gate_sequence,
             _commit_mod._GateCommit,
-            (*_commit_mod.GATE_POINT_FIELDS, *_commit_mod.GATE_ENV_FIELDS))
+            (*_commit_mod.GATE_POINT_FIELDS, *_commit_mod.GATE_ENV_FIELDS), "gates")
     return _ResultKind(
         _track_mod.TRACK_EXPORTS, "track.valid", _check_exports, _check_fail_start,
         _check_out, _track_mod._alloc_track, _commit_mod._Commit,
@@ -886,6 +1121,15 @@ class _Plan:
         self.fail_bits: dict = {}             # bit name -> bit index (assignment order)
         self.fail_owner: dict = {}            # bit name -> stage id
         self.bits_of: dict = {}               # stage id -> [bit names]
+        # Roadmap PR13a: the carried families (key -> _Family, fixed by the first
+        # writer), the constant versions (id(array) -> value) and the cl resamplers'
+        # slot indices (the stale-read rule).
+        self.families: dict = {}
+        self.constants: dict = {}
+        self.images: set = set()
+        self.resamplers: tuple = ()
+        self.slot_ids: list = []              # slot index -> stage id
+        self.index_of: dict = {}              # id(array) -> the writer's slot index
 
     def length(self, per: str) -> int:
         E = int(self.layout.num_envs)
@@ -907,6 +1151,21 @@ class _Plan:
     def add(self, channel: str, index: int, stage_id: str, arr) -> None:
         self.current[channel] = arr
         self.versions.setdefault(channel, []).append((index, stage_id, arr))
+        self.index_of[id(arr)] = index
+
+    def declare_constant(self, arr, value: float) -> None:
+        self.constants[id(arr)] = float(value)
+
+    def constant_of(self, arr) -> "float | None":
+        return self.constants.get(id(arr))
+
+    def record_family(self, channel: str, dtype, interp, export, writer: str) -> None:
+        """The first writer of a family channel fixes its dtype / interp / export."""
+        from ..stages.channels import family_key  # noqa: PLC0415
+
+        key = family_key(channel)
+        if key not in self.families:
+            self.families[key] = _Family(key, channel, dtype, interp, export, writer)
 
     def for_stage(self, slot: _Slot) -> "_StagePlan":
         return _StagePlan(self, slot)
@@ -945,6 +1204,33 @@ class _Plan:
             self._claim(slot, str(name), int(bit))
 
 
+@dataclasses.dataclass(frozen=True)
+class _Family:
+    """A carried (or exported) attribute: its dtype, interp and export key, fixed by its
+    first writer and shared by every image."""
+
+    key: str
+    origin: str                 # the first writer's channel (raw.acme.grip, cl.z, ...)
+    dtype: object
+    interp: "str | None"
+    export: "str | None"        # the result key, or None
+    writer: str                 # the first writer's stage id
+
+
+@dataclasses.dataclass(frozen=True)
+class _Carry:
+    """One family a carrier carries (``StageBuilder._carried()``)."""
+
+    src_port: str
+    dst_port: str
+    src: str
+    dst: str
+    key: str
+    dtype: object
+    interp: "str | None"
+    constant: "float | None"    # the source version's constant value
+
+
 class _StagePlan:
     """What a stage's :class:`~track_gen.plugin.StageBuilder` sees of the plan."""
 
@@ -953,9 +1239,8 @@ class _StagePlan:
         self._slot = slot
         self.reads = types.MappingProxyType(dict(slot.reads))
         self.writes = types.MappingProxyType(dict(slot.writes))
-        cls = slot.cls
-        self._declared = {**dict(getattr(cls, "reads", {})),
-                          **dict(getattr(cls, "writes", {}))}
+        decl_reads, decl_writes = _decl(slot)
+        self._declared = {**decl_reads, **decl_writes}
         # The versions written by EARLIER stages (a channel this stage rewrites keeps
         # reading the version before its own).
         self._visible = {ch: plan.current[ch] for ch in slot.reads.values()}
@@ -981,26 +1266,140 @@ class _StagePlan:
         """Fix a plugin channel's dtype and size (its first writer)."""
         self._plan.plugin_channels[name] = (dtype, per)
 
-    def read(self, port: str):
-        return self._visible[self.reads[port]]
+    def is_first_write(self, channel: str) -> bool:
+        """Whether no earlier stage wrote ``channel`` (its first writer fixes its dtype,
+        interp and export)."""
+        return channel not in self._plan.current
 
-    def write(self, port: str):
+    def read(self, port: str):
+        ch = self.reads[port]
+        arr = self._visible[ch]
+        self._check_stale(ch, arr)
+        return arr
+
+    def _check_stale(self, ch: str, arr) -> None:
+        """The stale-read rule: a ``per="cl"`` plugin channel a STAGE wrote (not a
+        carried image) before a cl resampler that lies between its writer and this
+        reader sits on the pre-resample points."""
+        plan, slot = self._plan, self._slot
+        from ..stages.channels import is_plugin_channel  # noqa: PLC0415
+
+        if not (is_plugin_channel(ch) and ch.startswith("cl.")) or ch in plan.images:
+            return
+        info = plan.plugin_channels.get(ch)
+        if info is None or info[1] != "cl":
+            return
+        w = plan.index_of.get(id(arr))
+        if w is None:
+            return
+        between = [u for u in plan.resamplers if w < u < slot.index]
+        if between:
+            writer = next(sid for idx, sid, a in plan.versions[ch] if a is arr)
+            res = plan.slot_ids[between[0]]
+            raise PlanError(
+                f"stage {slot.id!r} reads {ch}, written by {writer!r} before the uniform "
+                f"resample ({res!r}), which does not carry stage-written channels (the "
+                f"values sit on the pre-uniform points): write it after {res!r}, or "
+                f"carry it from the generator (raw.{ch[3:]})")
+
+    def write(self, port: str, *, interp=None, export=None, fill=None):
         plan, slot = self._plan, self._slot
         ch = self.writes[port]
+        dtype, per = self.channel(ch)
         bound = plan.bound.get(ch)
         if bound is not None and plan.final.get(ch) == slot.id:
+            if bound.dtype is not dtype:
+                raise ValueError(
+                    f"out=: the array bound to {ch} has dtype "
+                    f"{getattr(bound.dtype, '__name__', bound.dtype)}; the channel is "
+                    f"{getattr(dtype, '__name__', dtype)}")
             arr = bound
+        elif fill is not None:
+            arr = wp.full(plan.length(per), fill, dtype=dtype, device=plan.device)
         else:
-            dtype, per = self.channel(ch)
             arr = wp.zeros(plan.length(per), dtype=dtype, device=plan.device)
+        first = ch not in plan.current
         plan.add(ch, slot.index, slot.id, arr)
+        from ..stages.channels import CHANNELS, channel_domain  # noqa: PLC0415
+
+        if port.startswith("~"):
+            # A carried image: the family of its source; a constant source stays one.
+            plan.images.add(ch)
+            src = next(src for src, dst in slot.carries if dst == ch)
+            value = plan.constant_of(self._visible.get(src))
+            if value is not None:
+                plan.declare_constant(arr, value)
+        elif first and channel_domain(ch) is not None and per != "env" and (
+                ch not in CHANNELS or ch in ("raw.z", "raw.half_width")):
+            interp = interp if interp is not None else (
+                CHANNELS[ch].interp if ch in CHANNELS else None)
+            plan.record_family(ch, dtype, interp, export, slot.id)
         return arr
+
+    def declare_constant(self, arr, value: float) -> None:
+        self._plan.declare_constant(arr, value)
+
+    def constant_of(self, arr) -> "float | None":
+        return self._plan.constant_of(arr)
+
+    def carried(self) -> list:
+        """The families this carrier carries, in order (``_Carry``)."""
+        from ..stages.channels import CHANNELS, family_key  # noqa: PLC0415
+
+        plan = self._plan
+        out = []
+        for src, dst in self._slot.carries:
+            key = family_key(src)
+            fam = plan.families.get(key)
+            if src in CHANNELS:
+                dtype, interp = CHANNELS[src].dtype, CHANNELS[src].interp
+            elif fam is not None:
+                dtype, interp = fam.dtype, fam.interp
+            else:
+                dtype, interp = plan.plugin_channels[src][0], None
+            out.append(_Carry("~" + src, "~" + dst, src, dst, key, dtype, interp,
+                              plan.constant_of(self._visible[src])))
+        return out
 
     def fail_bit(self, name: str) -> int:
         return self._plan.fail_bit(self._slot, name)
 
     def reserve_fail_bits(self, cls, table) -> None:
         self._plan.reserve_fail_bits(self._slot, cls, table)
+
+
+def _result_attributes(plan: _Plan, kind) -> "tuple[dict, dict]":
+    """``(key -> final array, key -> AttributeInfo)`` of every exported family whose
+    result-domain image exists (``cl.<key>`` for a Track, ``gates.<key>`` for a
+    GateSequence: best effort, an attribute with no path to the gates is left out). An
+    exported channel a STAGE wrote before a cl resampler is refused (the commit's read
+    follows the stale-read rule)."""
+    from .program import AttributeInfo  # noqa: PLC0415
+
+    attrs, infos = {}, {}
+    for key, fam in plan.families.items():
+        if fam.export is None:
+            continue
+        ch = f"{kind.domain}.{key}"
+        arr = plan.current.get(ch)
+        if arr is None:
+            continue
+        if kind.domain == "cl" and ch not in plan.images:
+            w = plan.index_of.get(id(arr), -1)
+            later = [u for u in plan.resamplers if u > w]
+            if later:
+                writer = plan.versions[ch][-1][1]
+                raise PlanError(
+                    f"{ch} is exported, but stage {writer!r} writes it before the uniform "
+                    f"resample ({plan.slot_ids[later[0]]!r}), which does not carry "
+                    f"stage-written channels: write it after "
+                    f"{plan.slot_ids[later[0]]!r}, or carry it from the generator "
+                    f"(raw.{key})")
+        pad = -1 if fam.dtype is wp.int32 else float("nan")
+        attrs[key] = arr
+        infos[key] = AttributeInfo(key=key, channel=ch, dtype=fam.dtype,
+                                   interp=fam.interp, padding=pad, domain=kind.domain)
+    return attrs, infos
 
 
 def _seed_state(seeds, E: int, dev, stream):
@@ -1068,15 +1467,27 @@ def _build(spec: PipelineSpec, *, binding, seeds=None, out=None, stream=None,
     result = out if out is not None else kind.alloc(layout)
     # The final version of each exported channel IS the result's array (no copy).
     sources = _export_sources(writers, kind.exports, kind.own_valid)
+    if out is None and "half_width" in kind.exports and "half_width" not in sources:
+        result.half_width = None          # no offset.default: nothing writes it
     bound = {}
     for field, ch in sources.items():
         arr = getattr(result, field, None)
         if ch is not None and arr is not None:
             bound[ch] = arr
+    # out.attributes: a key whose result-domain channel this pipeline writes is bound
+    # (its dtype checked at the write); the rest are refused once the stages are built.
+    out_attrs = dict(getattr(out, "attributes", None) or {}) if out is not None else {}
+    for key, arr in out_attrs.items():
+        ch = f"{kind.domain}.{key}"
+        if ch in writers:
+            bound[ch] = arr
     seed = wp.empty(E, dtype=wp.int32, device=dev)
     regen_mask = wp.zeros(E, dtype=wp.int32, device=dev)
     plan = _Plan(layout, raw, dev, writers, bound, n_max=int(batch.n_max),
                  max_gates=batch.max_gates, anchors=A)
+    plan.slot_ids = [s.id for s in slots]
+    plan.resamplers = tuple(s.index for s in slots if s.generator is None and getattr(
+        s.cls, "_carries", (None, None, None))[:2] == ("cl", "cl"))
     plan.add("seed", -1, _PROLOGUE, seed)
 
     # -- 7: build every stage, in order ------------------------------------------------
@@ -1150,17 +1561,34 @@ def _build(spec: PipelineSpec, *, binding, seeds=None, out=None, stream=None,
         scratch[s.id] = {k[len(prefix):] if k.startswith(prefix) else k: v
                          for k, v in b._scratch.items()}
 
+    # -- 7b: the exported attributes (roadmap PR13a) ------------------------------------
+    attributes, attribute_info = _result_attributes(plan, kind)
+    extra = sorted(k for k in out_attrs if k not in attributes)
+    if extra:
+        raise ValueError(f"out.attributes[{extra[0]!r}]: this pipeline does not export "
+                         f"{extra[0]!r}; exported: {sorted(attributes)} (out= with keys "
+                         f"from another pipeline is reserved for PR13b's mixed batches)")
+    if out is None and hasattr(result, "attributes"):
+        result.attributes = types.MappingProxyType(dict(attributes))
+
     # -- 8: the commit (every result field has a source; else the result is not ours) --
     commit = None
     fields = kind.fields
-    if all(f in sources for f in fields):
+    if all(f in sources or f in _OPTIONAL_EXPORTS for f in fields):
         # The result's arrays; fail_mask: the final valid.fail version (the result's own
-        # unless out= brought none).
-        targets = {f: getattr(result, f) for f in fields if f != "fail_mask"}
+        # unless out= brought none); half_width: the final track.half_width version
+        # (out= may bring none), or a private buffer when nothing writes it.
+        targets = {f: getattr(result, f) for f in fields
+                   if f not in ("fail_mask", "half_width")}
         targets["fail_mask"] = plan.current[FAIL]
+        if "half_width" in fields:
+            hw = plan.current.get("track.half_width")
+            targets["half_width"] = hw if hw is not None else wp.full(
+                E * S, float("nan"), dtype=wp.float32, device=dev)
         commit = kind.commit_cls(
             targets=targets, E=E, S=S, device=dev, dummy_mask=regen_mask,
-            poison=batch.on_invalid == "poison", derive_valid=sources["valid"] is None)
+            poison=batch.on_invalid == "poison", derive_valid=sources["valid"] is None,
+            attributes=attributes)
     if hasattr(result, "fail_bits"):
         result.fail_bits = types.MappingProxyType(dict(plan.fail_bits))
 
@@ -1181,7 +1609,8 @@ def _build(spec: PipelineSpec, *, binding, seeds=None, out=None, stream=None,
         stream=stream, owner=owner, commit=commit, fail_bits=plan.fail_bits,
         fail_owner=plan.fail_owner, capture_classes=caps,
         segments=_segments(slots, caps), on_invalid=batch.on_invalid, writers=writers,
-        ports={s.id: (dict(s.reads), dict(s.writes)) for s in slots})
+        ports={s.id: (dict(s.reads), dict(s.writes)) for s in slots},
+        attributes=attribute_info)
     if prepare:
         program.prepare()
     return program

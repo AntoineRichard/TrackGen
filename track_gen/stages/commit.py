@@ -23,18 +23,26 @@ commit existed). The commit then fixes, per env, what the generation leaves in t
   flag (equal by construction);
 - ``on_invalid="poison"``: a committed env with ``fail_mask != 0`` leaves with
   ``count = 0``, NaN geometry (``outer`` / ``center`` / ``inner`` / ``tangent`` /
-  ``normal`` / ``arclen``), ``length = winding = 0`` and ``valid = 0`` (its ``fail_mask``
-  and ``truncated`` are kept as diagnostics), so every utility's ``count < 3`` path
-  fires.
+  ``normal`` / ``arclen`` / ``half_width``), ``length = winding = 0`` and ``valid = 0``
+  (its ``fail_mask`` and ``truncated`` are kept as diagnostics), so every utility's
+  ``count < 3`` path fires; every exported attribute row gets its padding (NaN /
+  ``-1``).
 
 Cost: no launch for an unmasked generation of a pipeline whose ``valid`` is
 ``validity.default``'s and ``on_invalid="keep"`` (the default); one launch for an
 unmasked generation otherwise (:func:`_derive_valid_k`, one thread per env, when only
 ``valid`` is derived; :func:`_commit_k` with ``on_invalid="poison"``); two (:func:`_hold_k` +
 :func:`_commit_k`, each over every ``(env, point)``, whatever the number of masked envs)
-for a masked one. Memory: one held copy of the ``Track`` (64 B per point + 24 B per env,
-about 100 MB at ``E = 4096``, ``N_max = 384``), allocated once at build for every
+for a masked one. Memory: one held copy of the ``Track`` (68 B per point + 24 B per env,
+about 107 MB at ``E = 4096``, ``N_max = 384``), allocated once at build for every
 Program, whether or not it is ever run with a mask.
+
+Exported attributes (``Track.attributes`` / ``GateSequence.attributes``, roadmap PR13a)
+are committed by one :class:`_AttrCommit` each, launched right after the result's own
+hold / commit and only when attributes exist: a masked generation adds two launches
+per attribute (hold + restore), an unmasked one under ``on_invalid="poison"`` one per
+attribute, an unmasked ``keep`` (derived ``valid`` included) none; each holds a copy of
+its attribute.
 
 A gate Program (roadmap PR11) commits its ``GateSequence`` the same way
 (:class:`_GateCommit`: :func:`_gate_hold_k` / :func:`_gate_commit_k` over
@@ -49,12 +57,13 @@ import warp as wp
 __all__ = ["ENV_FIELDS", "GATE_ENV_FIELDS", "GATE_POINT_FIELDS", "POINT_FIELDS"]
 
 #: The per-point ``Track`` fields the commit holds / restores / poisons.
-POINT_FIELDS = ("outer", "center", "inner", "tangent", "normal", "arclen")
+POINT_FIELDS = ("outer", "center", "inner", "tangent", "normal", "arclen", "half_width")
 #: The per-env ``Track`` fields the commit holds / restores (``fail_mask`` is the final
 #: ``valid.fail``).
 ENV_FIELDS = ("length", "winding", "count", "valid", "fail_mask", "truncated")
 _DTYPES = {"outer": wp.vec3f, "center": wp.vec3f, "inner": wp.vec3f, "tangent": wp.vec3f,
-           "normal": wp.vec3f, "arclen": wp.float32, "length": wp.float32,
+           "normal": wp.vec3f, "arclen": wp.float32, "half_width": wp.float32,
+           "length": wp.float32,
            "winding": wp.float32, "count": wp.int32, "valid": wp.int32,
            "fail_mask": wp.int32, "truncated": wp.int32}
 #: The per-gate ``GateSequence`` fields the gate commit holds / restores / poisons.
@@ -73,12 +82,14 @@ def _hold_k(mask: wp.array(dtype=wp.int32), S: int,
             outer: wp.array(dtype=wp.vec3f), center: wp.array(dtype=wp.vec3f),
             inner: wp.array(dtype=wp.vec3f), tangent: wp.array(dtype=wp.vec3f),
             normal: wp.array(dtype=wp.vec3f), arclen: wp.array(dtype=wp.float32),
+            half_width: wp.array(dtype=wp.float32),
             length: wp.array(dtype=wp.float32), winding: wp.array(dtype=wp.float32),
             count: wp.array(dtype=wp.int32), valid: wp.array(dtype=wp.int32),
             fail_mask: wp.array(dtype=wp.int32), truncated: wp.array(dtype=wp.int32),
             h_outer: wp.array(dtype=wp.vec3f), h_center: wp.array(dtype=wp.vec3f),
             h_inner: wp.array(dtype=wp.vec3f), h_tangent: wp.array(dtype=wp.vec3f),
             h_normal: wp.array(dtype=wp.vec3f), h_arclen: wp.array(dtype=wp.float32),
+            h_half_width: wp.array(dtype=wp.float32),
             h_length: wp.array(dtype=wp.float32), h_winding: wp.array(dtype=wp.float32),
             h_count: wp.array(dtype=wp.int32), h_valid: wp.array(dtype=wp.int32),
             h_fail_mask: wp.array(dtype=wp.int32), h_truncated: wp.array(dtype=wp.int32)):
@@ -94,6 +105,7 @@ def _hold_k(mask: wp.array(dtype=wp.int32), S: int,
     h_tangent[t] = tangent[t]
     h_normal[t] = normal[t]
     h_arclen[t] = arclen[t]
+    h_half_width[t] = half_width[t]
     if i == 0:
         h_length[e] = length[e]
         h_winding[e] = winding[e]
@@ -108,12 +120,14 @@ def _commit_k(mask: wp.array(dtype=wp.int32), use_mask: int, poison: int, S: int
               h_outer: wp.array(dtype=wp.vec3f), h_center: wp.array(dtype=wp.vec3f),
               h_inner: wp.array(dtype=wp.vec3f), h_tangent: wp.array(dtype=wp.vec3f),
               h_normal: wp.array(dtype=wp.vec3f), h_arclen: wp.array(dtype=wp.float32),
+              h_half_width: wp.array(dtype=wp.float32),
               h_length: wp.array(dtype=wp.float32), h_winding: wp.array(dtype=wp.float32),
               h_count: wp.array(dtype=wp.int32), h_valid: wp.array(dtype=wp.int32),
               h_fail_mask: wp.array(dtype=wp.int32), h_truncated: wp.array(dtype=wp.int32),
               outer: wp.array(dtype=wp.vec3f), center: wp.array(dtype=wp.vec3f),
               inner: wp.array(dtype=wp.vec3f), tangent: wp.array(dtype=wp.vec3f),
               normal: wp.array(dtype=wp.vec3f), arclen: wp.array(dtype=wp.float32),
+              half_width: wp.array(dtype=wp.float32),
               length: wp.array(dtype=wp.float32), winding: wp.array(dtype=wp.float32),
               count: wp.array(dtype=wp.int32), valid: wp.array(dtype=wp.int32),
               fail_mask: wp.array(dtype=wp.int32), truncated: wp.array(dtype=wp.int32)):
@@ -130,6 +144,7 @@ def _commit_k(mask: wp.array(dtype=wp.int32), use_mask: int, poison: int, S: int
             tangent[t] = h_tangent[t]
             normal[t] = h_normal[t]
             arclen[t] = h_arclen[t]
+            half_width[t] = h_half_width[t]
             if i == 0:
                 length[e] = h_length[e]
                 winding[e] = h_winding[e]
@@ -151,6 +166,7 @@ def _commit_k(mask: wp.array(dtype=wp.int32), use_mask: int, poison: int, S: int
         tangent[t] = nan3
         normal[t] = nan3
         arclen[t] = wp.nan
+        half_width[t] = wp.nan
     if i == 0:
         if f == 0:
             valid[e] = 1
@@ -259,6 +275,175 @@ def _gate_commit_k(mask: wp.array(dtype=wp.int32), use_mask: int, poison: int, S
             count[e] = 0
 
 
+# ---------------------------------------------------------------------------------------
+# Exported attributes (roadmap PR13a): one hold / commit per attribute, for float32 /
+# int32 / vec2f / vec3f (padding NaN / -1).
+# ---------------------------------------------------------------------------------------
+
+@wp.func
+def _attr_pad(x: wp.float32) -> wp.float32:
+    return wp.nan
+
+
+@wp.func
+def _attr_pad(x: wp.int32) -> wp.int32:  # noqa: F811 - an overload
+    return -1
+
+
+@wp.func
+def _attr_pad(x: wp.vec2f) -> wp.vec2f:  # noqa: F811
+    return wp.vec2f(wp.nan, wp.nan)
+
+
+@wp.func
+def _attr_pad(x: wp.vec3f) -> wp.vec3f:  # noqa: F811
+    return wp.vec3f(wp.nan, wp.nan, wp.nan)
+
+
+# One CONCRETE hold / commit kernel per dtype (no generic ``Any`` + ``wp.overload``
+# kernels): Warp 1.18's CPU graph recorder keys a kernel by ``kernel.key``, shared by every
+# overload, so a CPU capture launching several dtypes back to back could replay another
+# overload's code.
+@wp.kernel
+def _attr_hold_f32_k(mask: wp.array(dtype=wp.int32), S: int,
+                     arr: wp.array(dtype=wp.float32), held: wp.array(dtype=wp.float32)):
+    # One thread per (env, slot): hold the attribute rows of every UNMASKED env.
+    t = wp.tid()
+    e = t // S
+    if mask[e] != 0:
+        return
+    held[t] = arr[t]
+
+
+@wp.kernel
+def _attr_hold_i32_k(mask: wp.array(dtype=wp.int32), S: int,
+                     arr: wp.array(dtype=wp.int32), held: wp.array(dtype=wp.int32)):
+    # One thread per (env, slot): hold the attribute rows of every UNMASKED env.
+    t = wp.tid()
+    e = t // S
+    if mask[e] != 0:
+        return
+    held[t] = arr[t]
+
+
+@wp.kernel
+def _attr_hold_vec2f_k(mask: wp.array(dtype=wp.int32), S: int,
+                       arr: wp.array(dtype=wp.vec2f), held: wp.array(dtype=wp.vec2f)):
+    # One thread per (env, slot): hold the attribute rows of every UNMASKED env.
+    t = wp.tid()
+    e = t // S
+    if mask[e] != 0:
+        return
+    held[t] = arr[t]
+
+
+@wp.kernel
+def _attr_hold_vec3f_k(mask: wp.array(dtype=wp.int32), S: int,
+                       arr: wp.array(dtype=wp.vec3f), held: wp.array(dtype=wp.vec3f)):
+    # One thread per (env, slot): hold the attribute rows of every UNMASKED env.
+    t = wp.tid()
+    e = t // S
+    if mask[e] != 0:
+        return
+    held[t] = arr[t]
+
+
+@wp.kernel
+def _attr_commit_f32_k(mask: wp.array(dtype=wp.int32), use_mask: int, poison: int,
+                       S: int, fail_mask: wp.array(dtype=wp.int32),
+                       held: wp.array(dtype=wp.float32), arr: wp.array(dtype=wp.float32)):
+    # One thread per (env, slot): restore an unmasked env (masked generation), pad a
+    # committed env whose fail_mask != 0 under poison.
+    t = wp.tid()
+    e = t // S
+    if use_mask != 0:
+        if mask[e] == 0:
+            arr[t] = held[t]
+            return
+    if poison != 0:
+        if fail_mask[e] != 0:
+            arr[t] = _attr_pad(arr[t])
+
+
+@wp.kernel
+def _attr_commit_i32_k(mask: wp.array(dtype=wp.int32), use_mask: int, poison: int,
+                       S: int, fail_mask: wp.array(dtype=wp.int32),
+                       held: wp.array(dtype=wp.int32), arr: wp.array(dtype=wp.int32)):
+    # One thread per (env, slot): restore an unmasked env (masked generation), pad a
+    # committed env whose fail_mask != 0 under poison.
+    t = wp.tid()
+    e = t // S
+    if use_mask != 0:
+        if mask[e] == 0:
+            arr[t] = held[t]
+            return
+    if poison != 0:
+        if fail_mask[e] != 0:
+            arr[t] = _attr_pad(arr[t])
+
+
+@wp.kernel
+def _attr_commit_vec2f_k(mask: wp.array(dtype=wp.int32), use_mask: int, poison: int,
+                         S: int, fail_mask: wp.array(dtype=wp.int32),
+                         held: wp.array(dtype=wp.vec2f), arr: wp.array(dtype=wp.vec2f)):
+    # One thread per (env, slot): restore an unmasked env (masked generation), pad a
+    # committed env whose fail_mask != 0 under poison.
+    t = wp.tid()
+    e = t // S
+    if use_mask != 0:
+        if mask[e] == 0:
+            arr[t] = held[t]
+            return
+    if poison != 0:
+        if fail_mask[e] != 0:
+            arr[t] = _attr_pad(arr[t])
+
+
+@wp.kernel
+def _attr_commit_vec3f_k(mask: wp.array(dtype=wp.int32), use_mask: int, poison: int,
+                         S: int, fail_mask: wp.array(dtype=wp.int32),
+                         held: wp.array(dtype=wp.vec3f), arr: wp.array(dtype=wp.vec3f)):
+    # One thread per (env, slot): restore an unmasked env (masked generation), pad a
+    # committed env whose fail_mask != 0 under poison.
+    t = wp.tid()
+    e = t // S
+    if use_mask != 0:
+        if mask[e] == 0:
+            arr[t] = held[t]
+            return
+    if poison != 0:
+        if fail_mask[e] != 0:
+            arr[t] = _attr_pad(arr[t])
+
+
+#: dtype -> (hold kernel, commit kernel) of an exported attribute.
+_ATTR_KERNELS = {
+    wp.float32: (_attr_hold_f32_k, _attr_commit_f32_k),
+    wp.int32: (_attr_hold_i32_k, _attr_commit_i32_k),
+    wp.vec2f: (_attr_hold_vec2f_k, _attr_commit_vec2f_k),
+    wp.vec3f: (_attr_hold_vec3f_k, _attr_commit_vec3f_k),
+}
+
+
+class _AttrCommit:
+    """The hold / commit of one exported attribute (``[E * S]``)."""
+
+    def __init__(self, key: str, arr, E: int, S: int, device) -> None:
+        self.key = str(key)
+        self.arr = arr
+        self.E, self.S = int(E), int(S)
+        self._hold_k, self._commit_k = _ATTR_KERNELS[arr.dtype]
+        self.held = wp.empty(self.E * self.S, dtype=arr.dtype, device=device)
+
+    def enqueue_hold(self, ctx, mask) -> None:
+        ctx.launch(self._hold_k, self.E * self.S, [mask, self.S, self.arr, self.held])
+
+    def enqueue_commit(self, ctx, mask, dummy_mask, poison: bool, fail_mask) -> None:
+        ctx.launch(self._commit_k, self.E * self.S,
+                   [dummy_mask if mask is None else mask, 0 if mask is None else 1,
+                    1 if poison else 0, self.S, fail_mask, self.held, self.arr])
+
+
 class _Commit:
     """The bound epilogue of one Program (built once by the planner).
 
@@ -272,7 +457,7 @@ class _Commit:
     _dtypes = _DTYPES
 
     def __init__(self, *, targets, E: int, S: int, device, dummy_mask, poison: bool,
-                 derive_valid: bool) -> None:
+                 derive_valid: bool, attributes=None) -> None:
         self.targets = dict(targets)
         self.E, self.S = int(E), int(S)
         self.poison = bool(poison)
@@ -286,6 +471,9 @@ class _Commit:
                      for f in fields}
         self._track = [self.targets[f] for f in fields]
         self._held = [self.hold[f] for f in fields]
+        # key -> the exported attribute's final version (the result's array).
+        self.attributes = [_AttrCommit(k, a, self.E, self.S, device)
+                           for k, a in dict(attributes or {}).items()]
 
     _hold_kernel = _hold_k
     _commit_kernel = _commit_k
@@ -294,6 +482,8 @@ class _Commit:
         """Before the stages of a masked generation: hold the unmasked envs' rows."""
         ctx.launch(self._hold_kernel, self.E * self.S,
                    [mask, self.S, *self._track, *self._held])
+        for a in self.attributes:
+            a.enqueue_hold(ctx, mask)
 
     def enqueue_commit(self, ctx, mask) -> None:
         """After the stages: restore the unmasked envs (masked generation), derive
@@ -310,6 +500,9 @@ class _Commit:
         ctx.launch(self._commit_kernel, self.E * self.S,
                    [self._dummy_mask if mask is None else mask, use_mask,
                     1 if self.poison else 0, self.S, *self._held, *self._track])
+        for a in self.attributes:
+            a.enqueue_commit(ctx, mask, self._dummy_mask, self.poison,
+                             self.targets["fail_mask"])
 
 
 class _GateCommit(_Commit):
