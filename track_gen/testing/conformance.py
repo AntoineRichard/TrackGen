@@ -68,9 +68,12 @@ Checks (:data:`CHECKS`), for a track generator:
     ``generate()`` captures the generator's own graph; its replays (into poisoned
     outputs, before and after a reseed) equal the eager batch.
 
-A gate generator runs the same checks on its ``GateSequence`` (raw output: the ``[E*G]``
-vec2f anchors before ``count[e]``), with ``output.accepted`` (valid fraction > 0) in
-place of ``output.closed`` and ``min_gates <= count[e] <= max_gates`` for valid envs.
+A gate generator runs the same checks on its ``GateSequence`` (raw output: the vec2f
+anchors before ``count[e]``: ``anchors.xy``, ``[E*A]``, for a Stage generator; the
+``[E*G]`` gates a legacy spec writes), with ``output.accepted`` (valid fraction > 0) in
+place of ``output.closed`` and ``min_gates <= count[e] <= max_gates`` for valid envs; a
+Stage generator's ``anchors.count`` must also lie within its ``capacity()``
+(``min_gates <= anchors.count[e] <= gates``) for every env.
 
 A ``capturable=False`` generator (eager on CUDA every call) waives
 ``hot_path.host_sync``, ``hot_path.allocation``, ``hot_path.topology``,
@@ -79,15 +82,20 @@ then checks that it never self-graphs.
 
 :func:`check_stage` runs a ``relax`` / ``width`` / ``elevation`` / ``validity`` stage
 inside the default track pipeline (:func:`track_gen.pipeline.presets.track`, the stage
-in its slot; a validity check after ``validity.default``) through the same machinery,
-with these checks (no ``diversity`` / ``output.closed``: they are the generator's
-business):
+in its slot; a validity check after ``validity.default``), and an ``order`` /
+``stations`` stage (or a validity check that reads gate channels) inside the default
+gate pipeline (:func:`track_gen.pipeline.presets.gates`: an order on the stations of the
+bezier track generator, stations on its raw loop, ``relaxed_stations`` for a stage that
+reads ``cl.*``; a gate check after ``validity.gate_default``; with ``pipeline="gates"``,
+an ``elevation`` stage on the bezier gate generator's gates, its ports rewired to
+``gates.*``), through the same machinery, with these checks (no ``diversity`` /
+``output.closed``: they are the generator's business):
 
-``output.accepted`` (relax / width / elevation)
+``output.accepted`` (relax / width / elevation / order / stations)
     The pipeline accepts some env (valid fraction > 0). When it accepts none, the same
     pipeline with the slot's neutral built-in (``relax.none``, ``width.constant``,
-    ``elevation.flat``) is run: if it accepts none either, the check is skipped (the
-    stage did not reject them).
+    ``elevation.flat``, ``order.raw``, ``stations.raw``) is run: if it accepts none
+    either, the check is skipped (the stage did not reject them).
 ``stage.isolation``
     After a generation, re-running ONLY the stage's ``enqueue`` on the same inputs
     leaves the versions it read unchanged (it never writes a read port) and reproduces
@@ -138,10 +146,11 @@ _STAGE_COMMON = ("determinism", "batch_independence", "statelessness",
                  "capture.caller", "capture.self_graph")
 _STAGE_OUTPUT = ("construct", "output.shape", "output.finite", "output.padding",
                  "output.count")
-#: The track-pipeline stage kinds :func:`check_stage` runs.
-STAGE_KINDS = ("relax", "width", "elevation", "validity")
+#: The pipeline stage kinds :func:`check_stage` runs.
+STAGE_KINDS = ("relax", "width", "elevation", "validity", "order", "stations")
 # The neutral built-in of each slot (the output.accepted reference).
-_NEUTRAL = {"relax": "none", "width": "constant", "elevation": "flat"}
+_NEUTRAL = {"relax": "none", "width": "constant", "elevation": "flat", "order": "raw",
+            "stations": "raw"}
 
 #: The check names of each registry kind, in run order.
 CHECKS: Mapping[str, tuple] = types.MappingProxyType({
@@ -150,7 +159,7 @@ CHECKS: Mapping[str, tuple] = types.MappingProxyType({
     "gate_generator": ("construct", "output.shape", "output.finite", "output.padding",
                        "output.count", "output.accepted") + _COMMON,
     **{k: _STAGE_OUTPUT + ("output.accepted", "stage.isolation") + _STAGE_COMMON
-       for k in ("relax", "width", "elevation")},
+       for k in ("relax", "width", "elevation", "order", "stations")},
     "validity": _STAGE_OUTPUT + ("stage.isolation", "validity.bits") + _STAGE_COMMON,
 })
 
@@ -288,15 +297,31 @@ _TRACK_ENV = {"length": wp.float32, "valid": wp.int32, "count": wp.int32,
 _GATE_POINT = {"position": wp.vec3f, "tangent": wp.vec3f, "forward": wp.vec3f,
                "orientation": wp.quatf, "half_size": wp.float32, "left": wp.vec3f,
                "right": wp.vec3f}
-_GATE_ENV = {"valid": wp.int32, "count": wp.int32, "generation": wp.int32}
+_GATE_ENV = {"valid": wp.int32, "count": wp.int32, "generation": wp.int32,
+             "fail_mask": wp.int32}
 _OPTIONAL = {"truncated", "generation", "fail_mask"}
+
+
+def _anchor_capacity(gen) -> "dict | None":
+    """A gate generator Stage's ``capacity()`` (``None`` for a legacy spec or a stations
+    source)."""
+    from ..plugin.params import _static_view  # noqa: PLC0415
+    from ..plugin.stage import _is_stage  # noqa: PLC0415
+
+    binding = gen.program._binding
+    if binding.kind != "gate_generator" or not _is_stage(binding.spec):
+        return None
+    cap = dict(binding.spec().capacity(_static_view(binding.params), binding.layout))
+    return {"gates": int(cap["gates"]), "min_gates": int(cap.get("min_gates", 0))}
 
 
 class _Snapshot:
     def __init__(self, kind: str, gen) -> None:
         cfg = gen._config
         self.kind = kind
-        self.E = E = int(cfg.num_envs)
+        self.E = E = int(gen.num_envs)
+        self.capacity = None
+        self.anchor_count = None
         if kind == "generator":
             result = gen._track
             raw = {"raw.centerline": gen._scratch.gen_centerline,
@@ -304,17 +329,24 @@ class _Snapshot:
             self.stride = int(cfg.N_max)
             self.raw_stride = int(raw["raw.centerline"].shape[0]) // E
             self.point, self.env_fields = _TRACK_POINT, _TRACK_ENV
+            self.min_count = 3
         else:
             result = gen._gate_sequence
             raw = {"raw.position": gen._raw_anchors}
-            self.stride = self.raw_stride = int(cfg.max_gates)
+            self.stride = int(gen.max_gates)
+            self.raw_stride = int(gen._raw_anchors.shape[0]) // E
             self.point, self.env_fields = _GATE_POINT, _GATE_ENV
+            # Always a GateGenConfig (validity.gate_default's min_gates for a spec).
+            self.min_count = int(cfg.min_gates)
+            self.capacity = _anchor_capacity(gen)
+            if self.capacity is not None:
+                self.anchor_count = gen.program.tap("anchors.count").numpy().astype(
+                    np.int64)
         arrays = {**raw, **result_arrays(result)}
         self.meta = {k: (tuple(int(s) for s in a.shape), a.dtype) for k, a in arrays.items()}
         self.data = {k: a.numpy().copy() for k, a in arrays.items()}
         self.count = self.data["count"].astype(np.int64)
         self.valid = self.data["valid"].astype(np.int64)
-        self.min_count = 3 if kind == "generator" else int(getattr(cfg, "min_gates", 2))
 
     def clamped(self, e: int) -> int:
         return int(min(max(self.count[e], 0), self.stride))
@@ -340,12 +372,17 @@ class _Snapshot:
         stop = n if stop is None else stop
         return a[e * n + start:e * n + stop]
 
+    def raw_count(self, e: int) -> int:
+        """The real raw gate anchors of env ``e`` (``count[e]`` clamped to the raw
+        stride)."""
+        return int(min(max(self.count[e], 0), self.raw_stride))
+
     def env(self, e: int) -> dict:
         """field -> bytes of env ``e`` (gate raw anchors: before ``count[e]`` only)."""
         out = {}
         for name, a in self.data.items():
             if name == "raw.position":
-                out[name] = self.rows(name, e, 0, self.clamped(e)).tobytes()
+                out[name] = self.rows(name, e, 0, self.raw_count(e)).tobytes()
             elif name.startswith("raw.") and a.shape[0] == self.E:
                 out[name] = a[e:e + 1].tobytes()
             elif name.startswith("raw."):
@@ -410,7 +447,7 @@ def _raw_delta(a: _Snapshot, ea: int, b: _Snapshot, eb: int) -> float:
     if a.kind == "generator":
         x, y = a.rows("raw.centerline", ea), b.rows("raw.centerline", eb)
     else:
-        ca, cb = a.clamped(ea), b.clamped(eb)
+        ca, cb = a.raw_count(ea), b.raw_count(eb)
         if ca != cb:
             return math.inf
         x, y = a.rows("raw.position", ea, 0, ca), b.rows("raw.position", eb, 0, cb)
@@ -476,8 +513,10 @@ class _DeviceRun:
         self.modes = modes
         self.skip = skip
         self.stage = stage
-        # What a snapshot reads: a stage runs inside a TrackGenerator.
-        self.snap_kind = "generator" if stage is not None else kind
+        # What a snapshot reads: a stage runs inside a TrackGenerator (a gate stage inside
+        # a GateGenerator).
+        self.snap_kind = kind if stage is None else (
+            "gate_generator" if stage.gate else "generator")
         self.is_cuda = wp.get_device(device).is_cuda
         self.results: list = []
         self.snap_b: "_Snapshot | None" = None
@@ -493,9 +532,7 @@ class _DeviceRun:
         rng = PerEnvSeededRNG(seeds=wp.array(_int32(seeds), dtype=wp.int32, device=dev),
                               num_envs=E, device=dev)
         if self.stage is not None:
-            from .._src.track_generator import TrackGenerator  # noqa: PLC0415
-
-            return TrackGenerator(self.stage.spec(E, dev), rng)
+            return self.stage.facade()(self.stage.spec(E, dev), rng)
         kw = dict(self.overrides)
         if self.params is not None:
             kw["generator_params"] = self.params
@@ -509,11 +546,7 @@ class _DeviceRun:
         from .._src.types import GateGenConfig  # noqa: PLC0415
 
         if "gate_ordering" not in kw:
-            from ..plugin import registry  # noqa: PLC0415
-
-            supported = getattr(registry.get("gate_generator", self.name),
-                                "supported_orderings", None) or {"ccw"}
-            kw["gate_ordering"] = "ccw" if "ccw" in supported else sorted(supported)[0]
+            kw["gate_ordering"] = _default_ordering(self.name)
         return GateGenerator(GateGenConfig(generator=self.name, device=dev, num_envs=E,
                                            **kw), rng)
 
@@ -622,7 +655,7 @@ class _DeviceRun:
             expect["raw.centerline"] = ((E * R,), wp.vec2f)
             expect["raw.valid"] = ((E,), wp.int32)
         else:
-            expect["raw.position"] = ((E * N,), wp.vec2f)
+            expect["raw.position"] = ((E * s.raw_stride,), wp.vec2f)
         expect.update({k: ((E * N,), dt) for k, dt in s.point.items()})
         expect.update({k: ((E,), dt) for k, dt in s.env_fields.items()})
         problems = []
@@ -679,8 +712,8 @@ class _DeviceRun:
             details = {}
             for e in range(E):
                 if s.valid[e] == 1:
-                    rows = s.rows("raw.position", e, 0, s.clamped(e))
-                    unwritten = s.unwritten("raw.position", e, 0, s.clamped(e))
+                    rows = s.rows("raw.position", e, 0, s.raw_count(e))
+                    unwritten = s.unwritten("raw.position", e, 0, s.raw_count(e))
                     if unwritten.size:
                         bad.append(f"valid env {e}: raw gate anchor {int(unwritten[0])} "
                                    f"(before count={int(s.count[e])}) was not written (it "
@@ -730,6 +763,13 @@ class _DeviceRun:
                 bad.append(f"env {e}: count={c} is outside [0, {N}]")
             elif s.valid[e] == 1 and c < lo:
                 bad.append(f"valid env {e}: count={c} < {lo}")
+        if s.capacity is not None:
+            k, A = s.capacity["min_gates"], s.capacity["gates"]
+            for e in range(E):
+                a = int(s.anchor_count[e])
+                if not k <= a <= A:
+                    bad.append(f"env {e}: anchors.count={a} is outside the generator's "
+                               f"capacity [min_gates={k}, gates={A}]")
         out.append(("output.count", not bad, _list_text(bad),
                     {"min": int(s.count.min()), "max": int(s.count.max())}))
 
@@ -783,7 +823,7 @@ class _DeviceRun:
             return ("output.accepted", True, "", details)
         neutral = _NEUTRAL[self.kind]
         ref = self.stage.reference(self.E, self.device, neutral, self.seeds_a)
-        rfrac = float(np.mean(_Snapshot("generator", ref).valid == 1))
+        rfrac = float(np.mean(_Snapshot(self.snap_kind, ref).valid == 1))
         details["reference_valid_fraction"] = rfrac
         if rfrac == 0.0:
             return ("output.accepted", None,
@@ -857,7 +897,8 @@ class _DeviceRun:
         bad = []
         if not np.array_equal(valid, (fm == 0).astype(np.int64)):
             envs = np.flatnonzero(valid != (fm == 0)).tolist()
-            bad.append(f"Track.valid != (fail_mask == 0) for envs {envs[:6]}")
+            what = "GateSequence" if self.snap_kind == "gate_generator" else "Track"
+            bad.append(f"{what}.valid != (fail_mask == 0) for envs {envs[:6]}")
         details = {"bits": {n: int(program.fail_bits[n]) for n in own},
                    "own_fraction": float(np.mean((fm & own_mask) != 0))}
         message = ""
@@ -868,8 +909,8 @@ class _DeviceRun:
             message = ("the stage initialises valid.fail: no pipeline without it to "
                        "compare with")
         else:
-            other = _Snapshot("generator", self.stage.without(self.E, self.device,
-                                                              self.seeds_a))
+            other = _Snapshot(self.snap_kind, self.stage.without(self.E, self.device,
+                                                                 self.seeds_a))
             fm0 = other.data["fail_mask"].astype(np.int64)
             diff = np.flatnonzero((fm & ~own_mask) != fm0).tolist()
             if diff:
@@ -1158,6 +1199,16 @@ def _devices(devices) -> list:
     return [str(wp.get_device(d).alias) for d in devices]
 
 
+def _default_ordering(name: str) -> str:
+    """The kit's ordering of gate generator ``name``: its ``preferred["order"]`` when it
+    supports it, else ``"ccw"`` when supported, else its first supported ordering (the
+    rule ``presets.gates`` applies)."""
+    from ..plugin import registry  # noqa: PLC0415
+    from ..stages.gates import _default_order  # noqa: PLC0415
+
+    return _default_order(registry.get("gate_generator", name), registry)
+
+
 def _top_package(module: str) -> str:
     return module.split(".")[0] if module else ""
 
@@ -1254,10 +1305,11 @@ def check_gate_generator(name: str, params=None, *, devices=None, num_envs: int 
                          config: "Mapping | None" = None,
                          capture_modes: Iterable[str] = CAPTURE_MODES,
                          skip: Iterable[str] = (), modules: Iterable[str] = ()) -> Report:
-    """As :func:`check_generator`, for the registered gate generator ``name``
-    (:data:`CHECKS` ``["gate_generator"]``). ``config`` holds extra ``GateGenConfig``
-    fields; without a ``gate_ordering`` the kit uses ``"ccw"`` when the generator
-    supports it, else its first supported ordering."""
+    """As :func:`check_generator`, for the registered gate generator ``name`` (a
+    ``gate_generator`` Stage or a legacy ``GateGeneratorSpec``; :data:`CHECKS`
+    ``["gate_generator"]``). ``config`` holds extra ``GateGenConfig`` fields; without a
+    ``gate_ordering`` the kit uses the generator's ``preferred["order"]`` when it
+    supports it, else ``"ccw"`` when supported, else its first supported ordering."""
     return _check("gate_generator", name, params, devices=devices, num_envs=num_envs,
                   seeds=seeds, config=config, capture_modes=capture_modes, skip=skip,
                   modules=modules)
@@ -1267,17 +1319,34 @@ def check_gate_generator(name: str, params=None, *, devices=None, num_envs: int 
 # Track-pipeline stages
 # ---------------------------------------------------------------------------------------
 
+def _is_gate_stage(kind: str, cls) -> bool:
+    """Whether :func:`check_stage` runs ``cls`` in the gate pipeline: an ``order`` or
+    ``stations`` stage, or a validity stage that reads a gate channel."""
+    from ..stages.channels import is_gate_channel  # noqa: PLC0415
+
+    if kind in ("order", "stations"):
+        return True
+    chans = {*dict(cls.reads).values(), *dict(cls.writes).values()}
+    return kind == "validity" and any(is_gate_channel(ch) for ch in chans)
+
+
 class _StageUnderTest:
     """The pipelines :func:`check_stage` builds around one stage."""
 
-    def __init__(self, kind: str, name: str, params, upstream: Mapping, cls) -> None:
+    def __init__(self, kind: str, name: str, params, upstream: Mapping, cls,
+                 pipeline: "str | None" = None) -> None:
         from ..pipeline.spec import StageRef  # noqa: PLC0415
         from ..stages.channels import FAIL  # noqa: PLC0415
 
         self.kind, self.name, self.params = kind, name, params
         self.upstream = dict(upstream)
+        self.gate = _is_gate_stage(kind, cls) if pipeline is None else pipeline == "gates"
+        # A stations stage that reads the relaxed centerline runs on relaxed_stations.
+        self.relaxed = kind == "stations" and any(
+            str(ch).startswith("cl.") for ch in dict(cls.reads).values())
         # A validity stage that starts valid.fail (writes it without reading it): the
-        # planner admits only validity.default there (a plugin one fails construct).
+        # planner admits only validity.default / validity.gate_default there (a plugin
+        # one fails construct).
         self.initializer = kind == "validity" and FAIL in dict(cls.writes).values() \
             and FAIL not in dict(cls.reads).values()
         if kind != "validity":
@@ -1290,18 +1359,35 @@ class _StageUnderTest:
             self.stage_id = name
             self.ref = StageRef(kind, name, params=params, id=name)
 
+    def facade(self):
+        """The facade class that runs the pipeline (``TrackGenerator`` /
+        ``GateGenerator``)."""
+        if self.gate:
+            from .._src.gate_generator import GateGenerator  # noqa: PLC0415
+
+            return GateGenerator
+        from .._src.track_generator import TrackGenerator  # noqa: PLC0415
+
+        return TrackGenerator
+
     def _preset(self, E: int, device: str, slot):
         from ..pipeline import presets  # noqa: PLC0415
 
         kw = dict(self.upstream)
+        first = "gate_default" if self.gate else "default"
         if self.kind != "validity":
             kw[self.kind] = slot
         elif self.initializer:
             kw["checks"] = () if slot is None else (slot,)
         else:
-            checks = tuple(kw.get("checks", ("default",)))
+            checks = tuple(kw.get("checks", (first,)))
             kw["checks"] = checks if slot is None else (*checks, slot)
-        return presets.track(num_envs=E, device=device, **kw)
+        if not self.gate:
+            return presets.track(num_envs=E, device=device, **kw)
+        if self.kind in ("order", "stations"):
+            kw.setdefault("source", "relaxed_stations" if self.relaxed else "stations")
+            kw.setdefault("generator", "bezier")
+        return presets.gates(num_envs=E, device=device, **kw)
 
     def spec(self, E: int, device: str):
         """The pipeline holding the stage under test."""
@@ -1309,12 +1395,11 @@ class _StageUnderTest:
 
     def _generator(self, spec, seeds: np.ndarray, device: str):
         from .._src.rng_utils import PerEnvSeededRNG  # noqa: PLC0415
-        from .._src.track_generator import TrackGenerator  # noqa: PLC0415
 
         E = int(seeds.shape[0])
         rng = PerEnvSeededRNG(seeds=wp.array(_int32(seeds), dtype=wp.int32,
                                              device=device), num_envs=E, device=device)
-        gen = TrackGenerator(spec, rng)
+        gen = self.facade()(spec, rng)
         gen.enqueue()
         wp.synchronize_device(device)
         return gen
@@ -1331,28 +1416,45 @@ class _StageUnderTest:
 
 
 def check_stage(kind: str, name: str, params=None, *, upstream: "Mapping | None" = None,
-                devices=None, num_envs: int = 8, seeds: Sequence[int] = (11, 1009),
+                pipeline: "str | None" = None, devices=None, num_envs: int = 8,
+                seeds: Sequence[int] = (11, 1009),
                 capture_modes: Iterable[str] = CAPTURE_MODES, skip: Iterable[str] = (),
                 modules: Iterable[str] = ()) -> Report:
     """Run every conformance check (:data:`CHECKS` ``[kind]``) on the registered
-    ``relax`` / ``width`` / ``elevation`` / ``validity`` stage ``name``, inside the
-    default track pipeline (:func:`track_gen.pipeline.presets.track`).
+    ``relax`` / ``width`` / ``elevation`` / ``validity`` / ``order`` / ``stations`` stage
+    ``name``, inside the default track pipeline (:func:`track_gen.pipeline.presets.track`)
+    or, for an ``order`` / ``stations`` stage and a validity stage that reads gate
+    channels, the default gate pipeline (:func:`track_gen.pipeline.presets.gates`).
+    ``pipeline="gates"`` runs an ``elevation`` stage on gates (``presets.gates(
+    elevation=...)``, its ports rewired to ``gates.*``; the default anchors generator
+    ``bezier`` unless ``upstream`` names another): call it once per pipeline to check
+    both.
 
-    The stage takes its slot (``relax=``, ``width=``, ``elevation=``); a validity check
-    runs after the default checks (``upstream["checks"]``, default ``("default",)``)
-    with id ``name``, and a validity stage that initialises ``valid.fail`` (writes it
-    without reading it) replaces them.
+    The stage takes its slot (``relax=``, ``width=``, ``elevation=``, ``order=``,
+    ``stations=``); a validity check runs after the default checks
+    (``upstream["checks"]``, default ``("default",)`` / ``("gate_default",)``) with id
+    ``name``, and a validity stage that initialises ``valid.fail`` (writes it without
+    reading it) replaces them. An order runs on the stations of the bezier TRACK
+    generator (``source="stations"``: no ordering whitelist), a stations stage on its
+    raw loop (``source="relaxed_stations"`` when it reads ``cl.*``).
 
     Args:
-        kind: ``"relax"``, ``"width"``, ``"elevation"`` or ``"validity"``.
+        kind: ``"relax"``, ``"width"``, ``"elevation"``, ``"validity"``, ``"order"`` or
+            ``"stations"``.
         name: the registered stage name (``registry.available(kind)``).
         params: its params (a Params instance or a mapping of its fields); ``None``:
             the defaults.
-        upstream: more :func:`~track_gen.pipeline.presets.track` keyword arguments
-            (``generator``, ``generator_params``, ``num_points``, ``n_max``,
-            ``half_width``, the other kinds' slots, ``checks`` (the checks BEFORE a
-            validity check under test), ``on_invalid``). ``num_envs``, ``device`` and
-            the slot under test are set by the kit.
+        upstream: more :func:`~track_gen.pipeline.presets.track` /
+            :func:`~track_gen.pipeline.presets.gates` keyword arguments (``generator``,
+            ``generator_params``, ``num_points``, ``n_max``, ``half_width``, the other
+            kinds' slots, ``checks`` (the checks BEFORE a validity check under test),
+            ``on_invalid``, ``source``). ``num_envs``, ``device`` and the slot under
+            test are set by the kit.
+        pipeline: ``None`` (default: the gate pipeline for an ``order`` / ``stations``
+            stage and a validity stage that reads gate channels, else the track
+            pipeline), ``"track"`` or ``"gates"``. ``"gates"`` admits ``elevation``,
+            ``validity``, ``order`` and ``stations`` stages, ``"track"`` ``relax``,
+            ``width``, ``elevation`` and ``validity`` stages.
         devices, num_envs, seeds, capture_modes, skip, modules: as
             :func:`check_generator`.
 
@@ -1360,8 +1462,9 @@ def check_stage(kind: str, name: str, params=None, *, upstream: "Mapping | None"
         A :class:`Report`; call ``.raise_for_failures()`` to fail on any failed check.
 
     Raises:
-        ValueError: invalid arguments (an unknown kind, a reserved ``upstream`` key,
-            unknown check names, overlapping seeds, ...).
+        ValueError: invalid arguments (an unknown kind, a ``pipeline`` the kind does not
+            run in, a reserved ``upstream`` key, unknown check names, overlapping
+            seeds, ...).
         Exceptions of ``registry.describe`` for an unknown or quarantined name
         (``PluginLoadError`` carries the plugin's load error).
     """
@@ -1369,6 +1472,12 @@ def check_stage(kind: str, name: str, params=None, *, upstream: "Mapping | None"
 
     if kind not in STAGE_KINDS:
         raise ValueError(f"kind must be one of {list(STAGE_KINDS)}, got {kind!r}")
+    if pipeline not in (None, "track", "gates"):
+        raise ValueError(f"pipeline must be None, 'track' or 'gates', got {pipeline!r}")
+    if (pipeline == "gates" and kind in ("relax", "width")) or \
+            (pipeline == "track" and kind in ("order", "stations")):
+        raise ValueError(f"pipeline={pipeline!r}: a {kind} stage runs in the "
+                         f"{'track' if pipeline == 'gates' else 'gate'} pipeline only")
     info = registry.describe(kind, name)
     upstream = dict(upstream or {})
     reserved = {"num_envs", "device"} | ({kind} if kind != "validity" else set())
@@ -1402,7 +1511,8 @@ def check_stage(kind: str, name: str, params=None, *, upstream: "Mapping | None"
         modules = (modules,)
     probe = tuple(dict.fromkeys(("track_gen", _top_package(info.origin),
                                  *(str(m) for m in modules or ()))))
-    stage = _StageUnderTest(kind, name, params, upstream, registry.get(kind, name))
+    stage = _StageUnderTest(kind, name, params, upstream, registry.get(kind, name),
+                            pipeline=pipeline)
     results: list = []
     for dev in _devices(devices):
         results += _DeviceRun(kind, name, params, dev, E, seeds_a, seeds_b, {}, info,

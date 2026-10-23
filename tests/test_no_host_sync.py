@@ -580,6 +580,107 @@ def _program_toys_poison():
     return hot
 
 
+def _gate_program_toys_poison():
+    # The gate toys (tests/_gate_toys.py: a provider, a third-party order on a plain
+    # cloud, a gate validity check with a dynamic field) and a track elevation plugin
+    # rewired onto gates, with on_invalid="poison", run plainly (the commit derives valid
+    # and poisons) and masked (hold + commit) (roadmap PR11).
+    from tests import _gate_toys as gt
+    from tests._stage_toys import HILLS, register
+
+    with registry.scoped():
+        gt.register(registry)
+        register(registry)
+        helix = GateGenerator(pipeline_mod.presets.gates(
+            num_envs=E, device=DEV, generator=gt.HELIX_POSED, on_invalid="poison"), _rng())
+        scatter = GateGenerator(pipeline_mod.presets.gates(
+            num_envs=E, device=DEV, generator=gt.SCATTER, order=gt.REVERSE,
+            elevation=HILLS, checks=("gate_default", gt.MAX_HEIGHT),
+            on_invalid="poison"), _rng())
+    m = _i32([1, 0])
+
+    def hot():
+        for gen in (helix, scatter):
+            gen.generate()
+            gen.generate(advance=True, mask=m)
+            gen.enqueue(advance=True, mask=gen.inputs["regen_mask"])
+            gen.program.run(policy="eager")
+    return hot
+
+
+def _gate_run_stations():
+    # Gates through the stations of a third-party TRACK generator (raw and relaxed).
+    from tests import _gate_toys as gt
+
+    with registry.scoped():
+        gt.register(registry)
+        gens = [GateGenerator(pipeline_mod.presets.gates(
+            num_envs=E, device=DEV, generator=gt.SUPERFORMULA, source=source), _rng())
+            for source in ("stations", "relaxed_stations")]
+    m = _i32([1, 0])
+
+    def hot():
+        for gen in gens:
+            gen.generate()
+            gen.generate(advance=True, mask=m)
+    return hot
+
+
+def _gate_wrappers():
+    # The standalone warp_gate wrappers (a hand-built GateSequence), on buffers
+    # allocated at setup.
+    G = 8
+    cfg = GateGenConfig(device=DEV, num_envs=E, max_gates=G, gate_width=0.1)
+    gates = warp_gate.alloc_gate_sequence(cfg)
+    pos2 = wp.array(np.random.default_rng(0).random((E * G, 2)).astype(np.float32),
+                    dtype=wp.vec2f, device=DEV)
+    count = wp.full(E, 6, dtype=wp.int32, device=DEV)
+    fallbacks = wp.zeros(E, dtype=wp.int32, device=DEV)
+    fail = wp.zeros(E, dtype=wp.int32, device=DEV)
+    ctx = LaunchContext.for_call(DEV)
+
+    def hot():
+        warp_gate.normalize_positions(pos2, G, count, 1.0, ctx=ctx)
+        warp_gate.relax_gate_spheres(pos2, G, count, 0.05, 4, ctx=ctx)
+        ctx.launch(warp_gate._lift_positions_k, E * G, [pos2, gates.half_size,
+                                                        gates.position])
+        warp_gate.tangents_from_positions(gates.position, gates.tangent, G, count, ctx=ctx)
+        warp_gate.finalize_gate_sequence(gates, cfg, fallbacks=fallbacks, ctx=ctx,
+                                         fail=fail)
+        # The pre-PR11 call form: the fail bits go to gates.fail_mask.
+        warp_gate.finalize_gate_sequence(gates, cfg, fallbacks=fallbacks, ctx=ctx)
+    return hot
+
+
+def _legacy_gate_wrappers():
+    # The deprecated warp_gate helpers a 0.1 gate plugin calls from generate() (PR11
+    # shims), every ordering, on buffers allocated at setup.
+    import types
+
+    G, A = 8, 6
+    cfg = types.SimpleNamespace(num_envs=E, max_gates=G, device=DEV)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        _, keys = warp_gate.alloc_order_scratch(cfg)
+    src = wp.array(np.random.default_rng(1).random((E * A, 2)).astype(np.float32),
+                   dtype=wp.vec2f, device=DEV)
+    count = wp.full(E, A, dtype=wp.int32, device=DEV)
+    seeds = _i32([3, 4])
+    staging = types.SimpleNamespace(position=wp.zeros(E * G, dtype=wp.vec2f, device=DEV),
+                                    count=wp.zeros(E, dtype=wp.int32, device=DEV))
+    ctx = LaunchContext.for_call(DEV)
+
+    def hot():
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            for ordering in ("raw", "ccw", "random_pairs"):
+                warp_gate.order_points(seeds, src, A, count, G, ordering, keys,
+                                       staging.position, ctx=ctx)
+                warp_gate.finish_ordered_gates(seeds, src, A, count, G, ordering, keys,
+                                               staging, normalize_extent=1.5, ctx=ctx)
+    return hot
+
+
 def _run_track_plugin_profile():
     # TrackGenConfig.z_profile naming an elevation plugin (the flat shortcut).
     from tests._stage_toys import HILLS, register
@@ -678,6 +779,10 @@ DRIVERS = {
     "wrappers[legacy_pipeline]": _legacy_pipeline_wrappers,
     "program[standalone]": _program_standalone,
     "program[toys,poison]": _program_toys_poison,
+    "gate_program[toys,poison]": _gate_program_toys_poison,
+    "gate_run[stations superformula]": _gate_run_stations,
+    "wrappers[gate]": _gate_wrappers,
+    "wrappers[legacy_gate]": _legacy_gate_wrappers,
     "track_run[z=acme.sinusoid_hills]": _run_track_plugin_profile,
     "wrappers[legacy_generator]": _legacy_generator_wrappers,
     "ops[all]": _ops_all,
@@ -715,7 +820,7 @@ _PIPELINE_MODULES = (
     *(importlib.import_module(f"track_gen.pipeline.{m}")
       for m in ("spec", "planner", "program", "legacy", "presets")),
     *(importlib.import_module(f"track_gen.stages.{m}")
-      for m in ("channels", "params", "track", "commit")),
+      for m in ("channels", "params", "track", "commit", "gates")),
 )
 
 # Construction-time functions (allocation, registration, host precompute for sizing).
@@ -723,8 +828,9 @@ _PIPELINE_MODULES = (
 _CONSTRUCTION_ONLY = {
     "track_gen._src.warp_pipeline": {"_inflate_warp_alloc", "_fill_knot_scratch",
                                      "__getattr__"},
-    "track_gen._src.warp_gate": {"alloc_order_scratch", "alloc_gate_sequence",
-                                 "_gate_warp_alloc"},
+    "track_gen._src.warp_gate": {"alloc_gate_sequence", "_gate_center_distance",
+                                 # PR11 deprecated shims: allocation, the old-name alias
+                                 "alloc_order_scratch", "__getattr__"},
     "track_gen._src.warp_zprofile": {"alloc_z_scratch", "alloc_knot_scratch"},
     "track_gen._src.warp_generate": {"bezier_alloc_scratch", "register"},
     "track_gen._src.warp_generate_checkpoint": {"checkpoint_alloc_scratch", "register"},
@@ -736,34 +842,46 @@ _CONSTRUCTION_ONLY = {
                                                "_stage_schedule", "register"},
     "track_gen._src.warp_generate_voronoi": {"voronoi_alloc_scratch", "_voronoi_layout_mode",
                                              "register"},
-    "track_gen._src.warp_generate_gates": {"_point_gate_alloc_scratch",
-                                           "_max_point_gates", "register"},
-    "track_gen._src.warp_generate_checkpoint_gates": {"checkpoint_gate_alloc_scratch",
-                                                      "register"},
-    "track_gen._src.warp_generate_polar_gates": {"polar_gate_alloc_scratch",
-                                                 "register"},
-    "track_gen._src.warp_generate_voronoi_gates": {"voronoi_gate_alloc_scratch",
-                                                   "register"},
+    # PR11: the gate generators are Stages (their enqueues are closures)
+    "track_gen._src.warp_generate_gates": {"register"},
+    "track_gen._src.warp_generate_checkpoint_gates": {"register"},
+    "track_gen._src.warp_generate_polar_gates": {"register"},
+    "track_gen._src.warp_generate_voronoi_gates": {"register"},
     # host-side reference/construction helpers (never on a hot path)
     "track_gen.seeds": {"effective_seed", "_wrap_int32", "_is_rng"},
     # the planner and the stage catalogue (PR10a): build-time only
     "track_gen.pipeline.spec": {"_frozen_map", "_port_value", "_capacity_value",
-                                "_required"},
+                                "_required", "_thaw"},
     "track_gen.pipeline.planner": {"build", "_build", "_is_int", "_check_spec_shape",
                                    "_label", "_resolve", "_plan_channels", "_check_out",
                                    "_seed_state", "_is_seed_form", "_check_seeds",
                                    "_check_exports", "_check_flat_lift",
                                    "_capture_class", "_export_sources",
-                                   "_check_fail_start"},
+                                   "_check_fail_start",
+                                   # PR11: the gate result kind and its rules
+                                   "_bind", "_effective_ports", "_domain_layout",
+                                   "_check_capacity", "_check_agreement",
+                                   "_check_gate_plan", "_check_provided",
+                                   "_check_gate_exports", "_check_gate_fail_start",
+                                   "_check_arrays", "_check_gate_out", "_result_kind",
+                                   "_missing_hint"},
     "track_gen.pipeline.legacy": {"to_pipeline_spec", "_to_pipeline_spec",
-                                  "generator_config", "_scratch_view", "_legacy_params"},
+                                  "generator_config", "_scratch_view", "_legacy_params",
+                                  "to_gate_pipeline_spec", "_to_gate_pipeline_spec",
+                                  "gate_generator_config", "_params_of",
+                                  "_legacy_ordering"},
     "track_gen.pipeline.presets": {"track", "_select", "_is_pair", "_with_half_width",
-                                   "_check_half_width"},
+                                   "_check_half_width", "gates", "_gate_stages",
+                                   "_relax_on", "_is_flat",
+                                   "_lookup", "_param", "_with_params",
+                                   "_with_gate_validity", "_check_centerline_args"},
     "track_gen.stages": {"_check_builtin_stage", "register", "register_builtins"},
-    "track_gen.stages.channels": {"_c", "is_plugin_channel"},
+    "track_gen.stages.channels": {"_c", "is_plugin_channel", "is_gate_channel"},
     "track_gen.stages.params": {"_check_half_width", "_check_z_range",
-                                "_check_control_points"},
+                                "_check_control_points", "_f32_distance"},
     "track_gen.stages.track": {"_alloc_track", "_zcfg"},
+    "track_gen.stages.gates": {"_alloc_gate_sequence", "_orderings_of",
+                               "_supported_orderings", "_preferred", "_default_order"},
 }
 
 

@@ -66,6 +66,19 @@ pipeline into a ``wp.Graph``; subsequent calls replay it with updated seeds. Cal
 you capture, ``generate()`` is recorded into your own graph instead (see
 :doc:`/tutorials/cuda-graph-in-a-sim`).
 
+The pipeline it runs is a list of stages (generator, order, separation, altitude, lift,
+tangents, frames, validity) that :doc:`/how-it-works/pipeline-preview` describes.
+``GateGenerator`` also accepts a spec built with ``presets.gates``, which can, for
+example, place gates at equal arc-length stations along any *track* generator's
+centerline:
+
+.. code-block:: python
+
+   from track_gen.pipeline import presets
+
+   spec = presets.gates(num_envs=E, device=device, generator="repulsive", gates=12)
+   gates = GateGenerator(spec, rng).generate()
+
 Reading the Output Fields
 --------------------------
 
@@ -89,7 +102,8 @@ Reading the Output Fields
        left axis as ``wp.quat_rotate(orientation[e, i], wp.vec3f(0, 1, 0))``.
    * - ``half_size``
      - ``[E, G]`` ``float32``
-     - Square-opening half-extent (``0.5 * gate_width``) for each gate.
+     - Square-opening half-extent for each gate: ``0.5 * gate_width``, where
+       ``gate_width`` is the full bar width (see :ref:`gate-width-config`).
    * - ``left``, ``right``
      - ``[E, G, 3]``
      - ``vec3f`` gate endpoints: ``position ± half_size * left_axis``. With the
@@ -99,6 +113,12 @@ Reading the Output Fields
      - ``[E]`` bool
      - Per-sequence validity. A positive ``gate_width`` additionally invalidates
        any sequence whose gate bars cross.
+   * - ``fail_mask``
+     - ``[E]`` int32
+     - Why a sequence is invalid: one bit per failed check (``count``, ``finite``,
+       ``tangent``, ``spacing``, ``crossing``, ``grade``; ``gates.fail_bits`` maps the
+       names to bits). ``valid`` is ``fail_mask == 0``. See
+       :ref:`pipeline-gate-fail-bits`.
    * - ``count``
      - ``[E]`` int
      - Real gates per environment. Slots at index ``i >= count[e]`` are NaN-padded.
@@ -135,24 +155,33 @@ Gate Ordering per Generator
 -----------------------------
 
 The ordering of gates in the output sequence is controlled by
-``GateGenConfig(gate_ordering=...)``. Not all orderings are supported by every
-generator:
+``GateGenConfig(gate_ordering=...)``. An ordering is a registered ``order`` stage that the
+pipeline applies to the generator's anchors (:ref:`pipeline-ordering-registry`): the
+built-ins are ``"ccw"``, ``"raw"`` and ``"random_pairs"``, and a plugin can register its
+own (:ref:`writing-an-ordering`). The default, ``gate_ordering=None``, is the generator's
+default order: ``"ccw"`` for the five built-ins, ``"raw"`` for a plugin generator that
+accepts only ``"raw"``. Each generator rules out the orderings that make no sense for its
+anchors, and accepts every other one, a plugin's included:
 
 .. list-table::
    :header-rows: 1
 
    * - Generator
-     - Supported orderings
-   * - ``"bezier"``
+     - Anchors
+     - Excluded ordering
+     - Built-in orderings it accepts
+   * - ``"bezier"``, ``"hull"``
+     - an unordered cloud of grid points
+     - ``"raw"``
      - ``"ccw"``, ``"random_pairs"``
-   * - ``"hull"``
-     - ``"ccw"``, ``"random_pairs"``
-   * - ``"polar"``
+   * - ``"polar"``, ``"voronoi"``, ``"checkpoint"``
+     - a loop, in generation order
+     - ``"random_pairs"``
      - ``"ccw"``, ``"raw"``
-   * - ``"voronoi"``
-     - ``"ccw"``, ``"raw"``
-   * - ``"checkpoint"``
-     - ``"ccw"``, ``"raw"``
+
+An unknown ordering raises ``ValueError`` listing the registered orders; one the
+generator does not accept raises ``ValueError`` listing the orders it accepts. Both are
+raised when the ``GateGenerator`` is constructed.
 
 .. note::
 
@@ -184,9 +213,10 @@ be marked invalid.
 
 .. note::
 
-   ``max_gates`` must be at least the chosen generator's reachable gate count.
-   ``min_gates`` rejects a config that the generator cannot satisfy. Both bounds
-   are checked at ``GateGenerator`` construction time.
+   ``max_gates`` must be at least the chosen generator's reachable gate count (its
+   capacity). ``min_gates`` rejects a config that the generator cannot satisfy. Both
+   bounds are checked at ``GateGenerator`` construction time (see
+   :ref:`gate-capacity-config`).
 
 Buffer Reuse and Snapshots
 ---------------------------

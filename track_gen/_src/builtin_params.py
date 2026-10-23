@@ -15,7 +15,9 @@ selected generator. ``lo``/``hi`` are set only where a legacy rule rejects the s
 inclusive bound, so the generic bound check never fires before a legacy message.
 
 Not part of the public API: reach a class through ``registry.get(kind, name).params``
-or ``registry.describe(kind, name).params_schema``, or pass a dict.
+(a track generator's ``GeneratorSpec``), ``registry.get("gate_generator", name).Params``
+(the gate generators are ``gate_generator`` Stages since roadmap PR11) or
+``registry.describe(kind, name).params_schema``, or pass a dict.
 """
 from __future__ import annotations
 

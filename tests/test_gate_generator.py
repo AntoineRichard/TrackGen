@@ -27,10 +27,17 @@ def _assert_generated_gate_fields_are_finite(gates, num_envs: int, max_gates: in
             assert torch.isnan(field[e, c:]).all()
 
 
-def test_gate_generator_requires_rng():
-    cfg = GateGenConfig()
-    with pytest.raises(ValueError, match="random number generator"):
-        GateGenerator(cfg, None)
+def test_gate_generator_rng_is_optional_and_exclusive_with_seeds():
+    # PR11: GateGenerator(config_or_spec, rng=None, *, seeds=None) mirrors TrackGenerator
+    # (the spec's signature): no rng -> owned seeds 0..E-1; rng and seeds together raise.
+    cfg = GateGenConfig(num_envs=3)
+    gen = GateGenerator(cfg)
+    assert gen.seeds.seeds.numpy().tolist() == [0, 1, 2]
+    twin = GateGenerator(cfg, PerEnvSeededRNG(seeds=0, num_envs=3, device="cpu"))
+    assert gen.generate().position.numpy().tobytes() == \
+        twin.generate().position.numpy().tobytes()
+    with pytest.raises(ValueError, match="pass rng= or seeds=, not both"):
+        GateGenerator(cfg, _make_rng(3), seeds=7)
 
 
 def test_gate_generator_unknown_generator_raises_before_warp_gate_import():
@@ -94,38 +101,37 @@ def test_cuda_prepares_at_construction_then_captures_once_and_replays(monkeypatc
     import warp as wp
 
     from tests._fake_cuda import FakeCuda, patch_facade_seeds
-    from track_gen._src import warp_gate
+    from track_gen.pipeline import BatchSpec, PipelineSpec, StageRef, legacy, planner
+    from track_gen.stages import gates as stages_gates
 
     fake = FakeCuda(monkeypatch)
+    calls = []
+
+    def generate(seeds_wp, config, out, scratch, ctx=None):
+        calls.append((ctx.stream, ctx.capturing))
+
     plugin_registry.add(reg.GateGeneratorSpec(
         name="tests.fake-cuda",
         alloc_scratch=lambda config: object(),
-        generate=lambda seeds_wp, config, out, scratch, ctx=None: None,
+        generate=generate,
         max_gates=lambda config: 4,
         supported_orderings=frozenset({"ccw"}),
         accepts_ctx=True,
     ))
 
-    # scratch is the (gen_scratch, pos2, cum, perim, z, fallbacks) 6-tuple the
-    # real _gate_warp_alloc returns; GateGenerator reads scratch[5] as
-    # frame_fallbacks (moved from index 4 when the perim slot was added).
-    monkeypatch.setattr(
-        warp_gate,
-        "_gate_warp_alloc",
-        lambda config, generator_spec: (
-            types.SimpleNamespace(generation=None),
-            (object(), object(), object(), object(), object(), object()),
-        ),
-    )
+    # PR11: GateGenerator runs a gate Program. The seam is a generator-only gate spec
+    # (the planner's GateSequence-writer rule is lifted for it) and a fake result; the
+    # legacy generator records the context of every pipeline run.
+    monkeypatch.setattr(legacy, "_to_gate_pipeline_spec",
+                        lambda cfg, binding, registry=None: PipelineSpec(
+                            BatchSpec(1, "cuda", 384, max_gates=int(cfg.max_gates)),
+                            (StageRef("gate_generator", "tests.fake-cuda",
+                                      id="generator"),)))
+    monkeypatch.setattr(stages_gates, "_alloc_gate_sequence",
+                        lambda layout: types.SimpleNamespace(generation=None))
+    monkeypatch.setattr(planner, "_check_gate_exports", lambda writers: None)
     # The real SeedState allocates on the (fake) device: stand it in.
     patch_facade_seeds(monkeypatch)
-
-    calls = []
-
-    def fake_run_gate_pipeline(config, seed_buf_wp, out, scratch, generator_spec, ctx=None):
-        calls.append((ctx.stream, ctx.capturing))
-
-    monkeypatch.setattr(warp_gate, "_run_gate_pipeline", fake_run_gate_pipeline)
     monkeypatch.setattr(wp, "empty", lambda *args, **kwargs: object())
     monkeypatch.setattr(wp, "zeros", lambda *args, **kwargs: object())
     monkeypatch.setattr(wp, "copy", lambda *args, **kwargs: None)

@@ -18,22 +18,15 @@ from typing import Any
 import warp as wp
 
 
-def _validate_z_fields(cfg, check_profile: bool = True) -> None:
+def _validate_z_fields(cfg) -> None:
     """Shared Z-profile validation for ``TrackGenConfig`` and ``GateGenConfig``.
 
-    Operates purely on the eight ``z_*`` attribute names both configs carry
-    on the same terms (profile membership, min/max ordering, non-negative
-    knobs), so a single call site works for either dataclass's
-    ``__post_init__``. ``check_profile=False`` (``TrackGenConfig``) skips the
-    membership check: a track's ``z_profile`` names any registered elevation stage
-    and is resolved through the registry at ``TrackGenerator`` construction.
+    Operates purely on the ``z_*`` attribute names both configs carry on the same
+    terms (min/max ordering, non-negative knobs), so a single call site works for
+    either dataclass's ``__post_init__``. ``z_profile`` membership is not checked
+    here: in both configs it names any registered elevation stage and is resolved
+    through the registry at ``TrackGenerator`` / ``GateGenerator`` construction.
     """
-    if check_profile and cfg.z_profile not in {"flat", "uniform", "random_walk", "noise"}:
-        raise ValueError(
-            "z_profile must be one of "
-            "{'flat', 'uniform', 'random_walk', 'noise'}, got "
-            f"{cfg.z_profile!r}"
-        )
     if float(cfg.z_min) > float(cfg.z_max):
         raise ValueError(
             f"z_min must be <= z_max, got {cfg.z_min!r} > {cfg.z_max!r}"
@@ -822,7 +815,7 @@ class TrackGenConfig:
         if not isinstance(self.z_profile, str) or not self.z_profile:
             raise ValueError(f"z_profile must be a non-empty string (an elevation stage "
                              f"name), got {self.z_profile!r}")
-        _validate_z_fields(self, check_profile=False)
+        _validate_z_fields(self)
         if int(self.z_control_points) < 3:
             raise ValueError(
                 "z_control_points must be >= 3, got "
@@ -859,17 +852,30 @@ class GateGenConfig:
     max_gates : int
         Maximum real gate count per env.  Must be >= ``min_gates``.
     gate_radius : float
-        Gate detection radius used for gate-constraint solve proximity checks.
-        Must be >= 0.
+        Gate sphere radius: the sphere solve (``gate_relax.spheres``) separates gate
+        centres to ``2 * gate_radius`` and ``validity.gate_default`` rejects real
+        gates closer than that.  Must be >= 0.
     gate_solve_iters : int
-        Number of gate-constraint solve iterations.  Must be >= 0.
+        Maximum sphere-solve sweeps (0 skips the solve).  Must be >= 0.
     gate_width : float
-        Physical gate half-width (visual/collision extent).  Must be >= 0.  Does
-        not affect anchor sampling geometry.
-    gate_ordering : str
-        Gate output ordering.  One of ``"ccw"`` (counter-clockwise sort by angle
-        around the batch centroid; default), ``"raw"`` (generator order as sampled),
-        or ``"random_pairs"`` (random gate pairs for training objectives).
+        FULL physical gate bar width (visual/collision extent):
+        ``GateSequence.half_size = 0.5 * gate_width``, the bar endpoints are
+        ``position +/- half_size * left_axis``, and a width > 0 turns the bar-crossing
+        validity check on.  Must be >= 0.  Does not affect anchor sampling geometry.
+    gate_ordering : str or None
+        Gate output ordering: any registered ``order`` stage the generator supports
+        (``track_gen.plugin.registry.available("order")``; checked at
+        ``GateGenerator`` construction).  Built-ins: ``"ccw"`` (an angle sort around
+        the env's anchor centroid, clockwise in a y-up frame; the name is historical),
+        ``"raw"`` (the generator's own order) and ``"random_pairs"`` (random gate pairs
+        for training objectives).  ``None`` (default): the generator's default order,
+        resolved at ``GateGenerator`` (hence ``Course``) construction by
+        ``legacy.to_gate_pipeline_spec`` with the rule of ``presets.gates(order=None)``
+        and the conformance kit: its ``preferred["order"]`` when it accepts it, else
+        ``"ccw"`` when it accepts it, else the first order it accepts.  That is
+        ``"ccw"`` for the five built-ins, and ``"raw"`` for a generator that provides
+        per-anchor attributes.  The generator's run config (what a legacy
+        ``GateGeneratorSpec`` receives) holds the resolved name, never ``None``.
 
     min_num_points : int
         Minimum corner-anchor count per env for the bezier/hull point sampler.
@@ -938,14 +944,14 @@ class GateGenConfig:
         per-checkpoint angular slot.  Default 0.55.
 
     z_profile : str
-        Per-gate altitude (Z) profile family.  One of ``"flat"`` (default,
-        every real gate at ``z_base``), ``"uniform"`` (i.i.d. uniform in
-        ``[z_min, z_max]``), ``"random_walk"`` (Brownian-bridge walk clamped
-        to ``[z_min, z_max]`` with a per-step grade cap of ``z_max_step``), or
-        ``"noise"`` (periodic harmonic noise around ``z_base``).  Applied by
-        ``warp_zprofile.apply_z_profile`` after XY ordering/relaxation and
-        before the 3D lift, wired into the generation pipeline by
-        ``warp_gate._run_gate_pipeline``.
+        Per-gate altitude (Z) profile: any registered ``elevation`` stage (the same
+        stages as tracks, their ports rewired to the gates; checked at
+        ``GateGenerator`` construction).  Built-ins: ``"flat"`` (default, every real
+        gate at ``z_base``), ``"uniform"`` (i.i.d. uniform in ``[z_min, z_max]``),
+        ``"random_walk"`` (Brownian-bridge walk clamped to ``[z_min, z_max]`` with a
+        per-step grade cap of ``z_max_step``), or ``"noise"`` (periodic harmonic noise
+        around ``z_base``).  The gate pipeline's ``elevation`` stage, after the XY
+        ordering/relaxation and before the 3D lift.
     z_base : float
         Baseline altitude for the ``"flat"``, ``"random_walk"``, and
         ``"noise"`` profiles.  Default 0.0.
@@ -966,9 +972,9 @@ class GateGenConfig:
         *Noise profile only.*  Number of summed harmonics in the periodic
         noise field.  Must be >= 1.  Default 3.
     z_valid_grade : float
-        Maximum allowed ``|dz|``/ds grade for post-hoc course validity checking.
-        0 disables the check.  Must be >= 0.  Default 0.0.  (Consumed
-        starting in Task 4; unused by ``warp_zprofile`` itself.)
+        Maximum allowed ``|dz|``/ds chord grade for the course validity check
+        (``validity.gate_default``).  0 disables the check.  Must be >= 0.
+        Default 0.0.
     gate_align : str
         Gate-frame alignment mode.  ``"yaw_only"`` (default) keeps gate posts
         horizontal (the frame forward axis is the plan-view tangent projected
@@ -995,7 +1001,7 @@ class GateGenConfig:
     gate_radius: float = 0.025
     gate_solve_iters: int = 8
     gate_width: float = 0.0
-    gate_ordering: str = "ccw"
+    gate_ordering: "str | None" = None
 
     # Point-family (bezier/hull) sampler inputs. The gate path only samples corner
     # anchors and emits them as gates; it never runs the Bezier/hull curve assembly,
@@ -1058,14 +1064,17 @@ class GateGenConfig:
             )
         if float(self.gate_width) < 0.0:
             raise ValueError(f"gate_width must be >= 0, got {self.gate_width!r}")
-        if self.gate_ordering not in {"ccw", "raw", "random_pairs"}:
-            raise ValueError(
-                "gate_ordering must be one of {'ccw', 'raw', 'random_pairs'}, "
-                f"got {self.gate_ordering!r}"
-            )
+        if self.gate_ordering is not None and (not isinstance(self.gate_ordering, str)
+                                               or not self.gate_ordering):
+            raise ValueError(f"gate_ordering must be a non-empty string (an order stage "
+                             f"name) or None (the generator's default order), got "
+                             f"{self.gate_ordering!r}")
         _check_generator_params(self)
         # Generator-specific rules (point family, voronoi_*, checkpoint_*) live in the
         # gate generators' Params.validate() and run at GateGenerator construction.
+        if not isinstance(self.z_profile, str) or not self.z_profile:
+            raise ValueError(f"z_profile must be a non-empty string (an elevation stage "
+                             f"name), got {self.z_profile!r}")
         _validate_z_fields(self)
         if self.gate_align not in {"yaw_only", "full_tangent"}:
             raise ValueError(
@@ -1113,7 +1122,8 @@ class GateSequence:
         NaN-padded past ``count[e]``.
     half_size : wp.array
         Flat ``[E * max_gates]`` ``float32`` square-opening half-extents
-        (``0.5 * gate_width``).  NaN-padded past ``count[e]``.
+        (``0.5 * gate_width``, or the generator's own when it provides
+        ``half_size``).  NaN-padded past ``count[e]``.
     left : wp.array
         Flat ``[E * max_gates]`` ``vec3f`` left gate endpoints
         (``position + half_size * left_axis``).  NaN-padded past ``count[e]``.
@@ -1138,6 +1148,19 @@ class GateSequence:
         ...)``), so that comparing it on device to a stored copy detects every
         regeneration.  ``GateGenerator`` always allocates it; ``None`` on a
         ``GateSequence`` built elsewhere.
+    fail_mask : wp.array or None
+        ``[E]`` ``int32`` per-env fail bitmask: bit ``i`` set means check ``i``
+        failed (``fail_bits`` names the bits: ``validity.gate_default``'s 0-5 are
+        ``count``, ``finite``, ``tangent``, ``spacing``, ``crossing``, ``grade``;
+        plugin checks own 16-30).  When it is not ``None``,
+        ``valid[e] == (fail_mask[e] == 0)``.  ``GateGenerator`` and
+        ``warp_gate.alloc_gate_sequence`` always allocate it (``finalize_gate_sequence``
+        writes it); ``None`` on a ``GateSequence`` built by hand.
+    fail_bits : Mapping[str, int]
+        ``name -> bit index`` of every bit of ``fail_mask`` the pipeline assigns
+        (``GateGenerator.program.fail_bits``); the crossing / grade bits are named
+        even when their check is off (then never set).  Empty on a ``GateSequence``
+        built elsewhere.
     """
 
     position: wp.array
@@ -1150,6 +1173,8 @@ class GateSequence:
     valid: wp.array
     count: wp.array
     generation: "wp.array | None" = None
+    fail_mask: "wp.array | None" = None
+    fail_bits: Mapping[str, int] = field(default_factory=dict)
 
     def clone(self) -> "GateSequence":
         """Return a deep copy whose Warp buffers do not alias this sequence."""
@@ -1164,6 +1189,8 @@ class GateSequence:
             valid=wp.clone(self.valid),
             count=wp.clone(self.count),
             generation=None if self.generation is None else wp.clone(self.generation),
+            fail_mask=None if self.fail_mask is None else wp.clone(self.fail_mask),
+            fail_bits=self.fail_bits,
         )
 
 

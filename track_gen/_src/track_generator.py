@@ -129,6 +129,8 @@ class TrackGenerator:
             ValueError: if both ``rng`` and ``seeds`` are given.
             TypeError: if ``config`` is neither a ``TrackGenConfig`` nor a
                 ``PipelineSpec``.
+            ValueError: if ``config`` is a gate pipeline spec (``BatchSpec.max_gates``
+                set: use ``GateGenerator``).
             ValueError: if the number of seeds in ``rng`` does not match
                 ``config.num_envs``.
             ValueError: if ``config.generator`` is not a registered generator.
@@ -165,6 +167,9 @@ class TrackGenerator:
         if isinstance(config, PipelineSpec):
             spec = config
             _planner._check_spec_shape(spec)
+            if spec.batch.max_gates is not None:
+                raise ValueError("TrackGenerator runs a track pipeline; this spec is a gate "
+                                 "pipeline (BatchSpec.max_gates set): use GateGenerator")
             E_spec = int(spec.batch.num_envs)
         elif isinstance(config, TrackGenConfig):
             spec = None

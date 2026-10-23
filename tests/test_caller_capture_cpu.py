@@ -31,7 +31,7 @@ from tests._fake_cuda import FakeCuda, FakeGraph, FakeStream, patch_facade_seeds
 from tests.conftest import override_spec
 from track_gen import GateGenConfig, GateGenerator, PerEnvSeededRNG, TrackGenConfig, TrackGenerator
 from track_gen._src import course as course_mod
-from track_gen._src import runtime, warp_gate, warp_pipeline
+from track_gen._src import runtime, warp_pipeline
 from track_gen.plugin import GateGeneratorSpec, GeneratorSpec, registry
 from track_gen.course import Course, CourseConfig
 from track_gen.exec import (
@@ -732,18 +732,31 @@ def _fake_track_facade(monkeypatch, capturable=True, accepts_ctx=True):
 
 
 def _fake_gate_facade(monkeypatch, capturable=True, accepts_ctx=True):
+    """GateGenerator runs a gate Program (PR11): the seam is a generator-only gate spec
+    (the planner's GateSequence-writer rule is lifted for it) and a fake result; the
+    fake (legacy) gate generator records the context of every pipeline run (its ctx=,
+    or the ambient scope of a legacy spec)."""
+    from track_gen.pipeline import BatchSpec, PipelineSpec, StageRef, legacy, planner
+    from track_gen.stages import gates as stages_gates
+
+    runs: list = []
+
+    def generate(*args, ctx=None, **kwargs):
+        ctx = ctx if ctx is not None else LaunchContext.for_call("cuda")
+        runs.append(_Run(stream=ctx.stream, capturing=ctx.capturing))
+
     _put(GateGeneratorSpec(
         name="tests.fake", alloc_scratch=lambda config: object(),
-        generate=lambda *a, **k: None, max_gates=lambda config: 4,
+        generate=generate, max_gates=lambda config: 4,
         supported_orderings=frozenset({"ccw"}), capturable=capturable,
         accepts_ctx=accepts_ctx))
-    runs: list = []
     seq = types.SimpleNamespace(generation=None)
-    monkeypatch.setattr(warp_gate, "_gate_warp_alloc",
-                        lambda config, generator_spec: (seq, (object(),) * 6))
-    monkeypatch.setattr(warp_gate, "_run_gate_pipeline",
-                        lambda config, seed, out, scratch, generator_spec, ctx=None:
-                        runs.append(_Run(stream=ctx.stream, capturing=ctx.capturing)))
+    monkeypatch.setattr(legacy, "_to_gate_pipeline_spec",
+                        lambda cfg, binding, registry=None: PipelineSpec(
+                            BatchSpec(1, "cuda", 384, max_gates=int(cfg.max_gates)),
+                            (StageRef("gate_generator", "tests.fake", id="generator"),)))
+    monkeypatch.setattr(stages_gates, "_alloc_gate_sequence", lambda layout: seq)
+    monkeypatch.setattr(planner, "_check_gate_exports", lambda writers: None)
     cfg = GateGenConfig(generator="tests.fake", device="cuda", num_envs=1)
     return cfg, runs, seq, GateGenerator
 
@@ -866,9 +879,11 @@ def test_facade_construction_refuses_a_capturing_current_stream_before_allocatin
     monkeypatch.setattr(wp, "empty", lambda *a, **k: allocs.append("empty") or object())
     monkeypatch.setattr(wp, "copy", lambda *a, **k: None)
     cfg, runs, _, cls = make(monkeypatch)
+    from track_gen.stages import gates as stages_gates
     from track_gen.stages import track as stages_track
 
-    for mod, name in ((warp_pipeline, "_inflate_warp_alloc"), (warp_gate, "_gate_warp_alloc"),
+    for mod, name in ((warp_pipeline, "_inflate_warp_alloc"),
+                      (stages_gates, "_alloc_gate_sequence"),
                       (stages_track, "_alloc_track")):
         real = getattr(mod, name)
         monkeypatch.setattr(mod, name,
@@ -907,8 +922,27 @@ def test_track_generator_body_runs_once_at_construction_then_once_per_call():
     assert gen.graph is None and gen._graph is None
 
 
+def _counting_stage(kind: str, name: str):
+    """Replace a registered Stage (the gate built-ins since PR11) by a subclass whose
+    enqueue counts its calls (undone by the per-test registry scope)."""
+    base = registry.get(kind, name)
+    calls: list = []
+
+    class Counting(base):
+        def build(self, b, p):
+            inner = super().build(b, p)
+
+            def enqueue(ctx):
+                calls.append(1)
+                inner(ctx)
+            return enqueue
+
+    override_spec(registry, Counting)
+    return calls
+
+
 def test_gate_generator_body_runs_once_at_construction_then_once_per_call():
-    calls = _counting("gate_generator", "bezier")
+    calls = _counting_stage("gate_generator", "bezier")
     gen = GateGenerator(_gate_cfg(), _rng())
     assert len(calls) == 1
     gen.generate()

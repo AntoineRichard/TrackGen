@@ -23,7 +23,14 @@ from typing import Callable, ClassVar
 
 @dataclasses.dataclass(frozen=True)
 class GateGeneratorSpec:
-    """One registered native gate generator.
+    """One registered native gate generator (the legacy gate generator ABI).
+
+    Deprecated (roadmap PR11): write a Stage with ``kind="gate_generator"`` and
+    ``output="anchors"`` (docs/contributing/writing-a-generator.rst). A
+    ``GateGeneratorSpec`` runs through an adapter stage until 1.0, and binding one
+    emits a ``DeprecationWarning``. Its ``max_gates`` callable is read only as the
+    adapter's capacity (the most gates ``generate`` writes, checked against
+    ``GateGenConfig.min_gates`` / ``max_gates``).
 
     capturable: whether ``generate`` obeys the CUDA-graph-capture contract (pure Warp,
                 no host sync, no per-call allocation). Defaults ``True``. A
@@ -33,9 +40,10 @@ class GateGeneratorSpec:
                 Mirrors ``GeneratorSpec.capturable``.
     accepts_ctx: ``True`` when ``generate`` accepts a ``ctx=`` keyword (a
                 ``track_gen.exec.LaunchContext``) and emits all of its device work
-                through it; ``warp_gate._run_gate_pipeline`` then calls
+                through it; the gate Program's legacy adapter stage
+                (``track_gen.stages.gates._LegacyGateSlot``) then calls
                 ``generate(seeds_wp, config, out, scratch, ctx=ctx)``. Legacy plugins
-                leave it ``False`` and the pipeline runs ``generate`` inside
+                leave it ``False`` and the adapter runs ``generate`` inside
                 ``ctx.scope()``, so the ``warp_gate`` / ``warp_pipeline`` helpers they
                 call (which default ``ctx=None`` to the ambient context) inherit the
                 call's stream; their own direct ``wp.launch`` calls still go to Warp's

@@ -1,4 +1,4 @@
-"""Params classes of the built-in track stages (roadmap PR10a).
+"""Params classes of the built-in track and gate stages (roadmap PR10a / PR11).
 
 Like the built-in generators' Params (:mod:`track_gen._src.builtin_params`), every class
 keeps the FLAT ``TrackGenConfig`` field names, every field is static, and
@@ -9,26 +9,50 @@ conversions and the launches are unchanged.
 
 ``validate()`` re-runs the ``TrackGenConfig.__post_init__`` rules of the class's own
 fields with the same messages: a spec made from a ``TrackGenConfig`` always passes; the
-rules exist for hand-built specs.
+rules exist for hand-built specs. The stage Params map the fields a config HAS
+(``from_legacy`` of a ``GateGenConfig`` leaves ``z_control_points`` and
+``check_crossing`` at their class defaults).
 """
 from __future__ import annotations
 
 import dataclasses
+
+import numpy as np
 
 from .._src.builtin_params import _FlatParams
 from ..plugin.params import static
 
 __all__ = [
     "ConstantSpacingParams",
+    "ElevationFlatParams",
     "ElevationNoiseParams",
     "ElevationRandomWalkParams",
     "ElevationUniformParams",
+    "GateFramesParams",
+    "GateFramesPosedParams",
+    "GateRelaxParams",
+    "GateValidityParams",
     "LiftFlatParams",
     "OffsetParams",
+    "StationsParams",
     "ValidityParams",
     "WidthConstantParams",
     "XpbdParams",
 ]
+
+_ALIGNS = ("yaw_only", "full_tangent")
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class _StageFlatParams(_FlatParams):
+    """A stage's flat Params: ``from_legacy`` copies the fields the config has (a
+    ``TrackGenConfig`` or a ``GateGenConfig``) and leaves the others at their class
+    defaults."""
+
+    @classmethod
+    def from_legacy(cls, cfg):
+        return cls(**{f.name: getattr(cfg, f.name) for f in dataclasses.fields(cls)
+                      if hasattr(cfg, f.name)})
 
 _HW_DOC = "Track half-width (the kernels take it as a host scalar until roadmap PR13)."
 
@@ -156,7 +180,17 @@ def _check_control_points(p) -> None:
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class ElevationUniformParams(_FlatParams):
+class ElevationFlatParams(_StageFlatParams):
+    """``elevation.flat``: every real point at ``z_base``. On a gate pipeline it fills
+    ``gates.z`` with ``z_base`` (``GateGenConfig.z_base``); on a track it must stay 0
+    (the flat lift adds ``presets.track(z_base=...)``)."""
+
+    z_base: float = static(0.0, doc="Altitude of every real gate (gate pipelines; a "
+                                    "track's flat altitude is lift.flat's z_base).")
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class ElevationUniformParams(_StageFlatParams):
     """``elevation.uniform``: i.i.d. knot altitudes in ``[z_min, z_max]``."""
 
     z_min: float = static(0.0, doc="Lower altitude clamp (<= z_max).")
@@ -169,7 +203,7 @@ class ElevationUniformParams(_FlatParams):
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class ElevationRandomWalkParams(_FlatParams):
+class ElevationRandomWalkParams(_StageFlatParams):
     """``elevation.random_walk``: a grade-capped random walk over the knots."""
 
     z_base: float = static(0.0, doc="Baseline altitude.")
@@ -186,7 +220,7 @@ class ElevationRandomWalkParams(_FlatParams):
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class ElevationNoiseParams(_FlatParams):
+class ElevationNoiseParams(_StageFlatParams):
     """``elevation.noise``: periodic harmonic noise around ``z_base``."""
 
     z_base: float = static(0.0, doc="Baseline altitude.")
@@ -210,3 +244,93 @@ class LiftFlatParams(_FlatParams):
     """``lift.flat``: the constant altitude of every point."""
 
     z_base: float = static(0.0, doc="Altitude of every point.")
+
+
+# ---------------------------------------------------------------------------------------
+# The gate pipeline (roadmap PR11)
+# ---------------------------------------------------------------------------------------
+
+def _f32_distance(gate_radius) -> float:
+    """``float32(2 * gate_radius)``: the target distance the relax kernel receives."""
+    return float(np.float32(2.0 * float(gate_radius)))
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class GateRelaxParams(_StageFlatParams):
+    """``gate_relax.spheres``: separate overlapping gate spheres (plan view) to a centre
+    distance of ``2 * gate_radius``, for at most ``gate_solve_iters`` sweeps."""
+
+    gate_radius: float = static(0.025, lo=0.0, doc="Gate sphere radius (the centre "
+                                                   "distance is 2 * gate_radius).")
+    gate_solve_iters: int = static(8, lo=0, doc="Maximum separation sweeps (>= 1).")
+
+    def validate(self, layout) -> None:
+        if int(self.gate_solve_iters) < 1 or not _f32_distance(self.gate_radius) > 0.0:
+            raise ValueError("gate_relax.spheres needs gate_solve_iters >= 1 and a "
+                             "gate_radius whose float32 2*r is > 0; use gate_relax.none "
+                             "to skip the solve")
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class GateFramesParams(_StageFlatParams):
+    """``gate_frames.default``: the gate frames, ``half_size = 0.5 * gate_width``."""
+
+    gate_width: float = static(0.0, lo=0.0, doc="FULL gate bar width (half_size = 0.5 "
+                                                "* gate_width; 0: point gates).")
+    gate_align: str = static("yaw_only", choices=_ALIGNS,
+                             doc="yaw_only (level gates) or full_tangent (tilted).")
+
+    def validate(self, layout) -> None:
+        if float(self.gate_width) < 0.0:
+            raise ValueError(f"gate_width must be >= 0, got {self.gate_width!r}")
+        if self.gate_align not in _ALIGNS:
+            raise ValueError("gate_align must be one of {'yaw_only', 'full_tangent'}, got "
+                             f"{self.gate_align!r}")
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class GateFramesPosedParams(_StageFlatParams):
+    """``gate_frames.posed``: the gate frames of a generator that provides per-gate
+    ``half_size`` and ``roll``."""
+
+    gate_align: str = static("yaw_only", choices=_ALIGNS,
+                             doc="yaw_only (level gates) or full_tangent (tilted).")
+
+    def validate(self, layout) -> None:
+        if self.gate_align not in _ALIGNS:
+            raise ValueError("gate_align must be one of {'yaw_only', 'full_tangent'}, got "
+                             f"{self.gate_align!r}")
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class GateValidityParams(_StageFlatParams):
+    """``validity.gate_default``: the fused per-env gate validity check."""
+
+    min_gates: int = static(4, lo=2, doc="Fewest real gates of a valid env (>= 2).")
+    gate_radius: float = static(0.025, lo=0.0, doc="Gate sphere radius: real gates "
+                                                   "closer than 2 * gate_radius fail.")
+    gate_width: float = static(0.0, lo=0.0, doc="FULL gate bar width; > 0 turns the "
+                                                "bar-crossing check on.")
+    z_valid_grade: float = static(0.0, lo=0.0, doc="Maximum |dz|/ds chord grade (0: "
+                                                   "off).")
+    check_crossing: str = static("width", choices=("width", "always"),
+                                 doc="'width': the crossing check runs when gate_width > "
+                                     "0; 'always': it always runs (posed gates).")
+
+    def validate(self, layout) -> None:
+        if int(self.min_gates) < 2:
+            raise ValueError(f"min_gates must be >= 2, got {self.min_gates!r}")
+        if float(self.gate_radius) < 0.0:
+            raise ValueError(f"gate_radius must be >= 0, got {self.gate_radius!r}")
+        if float(self.gate_width) < 0.0:
+            raise ValueError(f"gate_width must be >= 0, got {self.gate_width!r}")
+        if float(self.z_valid_grade) < 0.0:
+            raise ValueError(f"z_valid_grade must be >= 0, got {self.z_valid_grade!r}")
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class StationsParams(_StageFlatParams):
+    """``stations.raw`` / ``stations.relaxed``: ``gates`` anchors at equal plan-view arc
+    length along a centerline loop."""
+
+    gates: int = static(12, lo=3, doc="Stations (anchors) per env (>= 3).")

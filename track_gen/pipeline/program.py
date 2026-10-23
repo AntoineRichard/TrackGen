@@ -31,11 +31,13 @@ class Program:
 
     One generation (:meth:`enqueue`) is: ``[seeds.advance(mask)]`` -> the effective
     seeds (``seed``) -> the dynamic-parameter / input latch -> [masked: hold the
-    unmasked envs' ``Track`` rows] -> every stage in order (EVERY env) -> the commit
+    unmasked envs' result rows] -> every stage in order (EVERY env) -> the commit
     (masked: restore the unmasked envs; derive ``valid``; ``on_invalid="poison"``) ->
     ``result.generation <- epoch`` (masked envs only, with a mask). It allocates nothing
     and never host-syncs. See :mod:`track_gen.stages.commit` for what the commit costs
-    (nothing for an unmasked generation of the default pipeline).
+    (nothing for an unmasked generation of the default pipeline). The result is a
+    ``Track``, or a ``GateSequence`` for a gate pipeline (``BatchSpec.max_gates`` set,
+    roadmap PR11).
     """
 
     def __init__(self, *, _token=None, spec, layout, binding, result, seeds, seed,
@@ -97,7 +99,9 @@ class Program:
 
     @property
     def layout(self):
-        """The :class:`~track_gen.plugin.Layout` every stage was built with."""
+        """The result's :class:`~track_gen.plugin.Layout`: ``stride`` is ``N_max`` for a
+        track, ``max_gates`` for a gate pipeline (each stage was built with the layout
+        of its own point domain)."""
         return self._layout
 
     @property
@@ -107,7 +111,8 @@ class Program:
 
     @property
     def result(self) -> "Track":
-        """The :class:`~track_gen.Track` every generation writes: the same instance,
+        """The :class:`~track_gen.Track` (a gate pipeline: the
+        :class:`~track_gen.GateSequence`) every generation writes: the same instance,
         with the same array addresses, for the Program's lifetime."""
         return self._result
 
@@ -144,8 +149,9 @@ class Program:
     @property
     def fail_bits(self) -> Mapping[str, int]:
         """``name -> bit`` of every ``valid.fail`` bit, in assignment order: the
-        built-in checks' (``BUILTIN_FAIL_BITS``, bits 0-7) then each plugin validity
-        stage's (16, 17, ... in pipeline order). ``Track.fail_bits`` is the same
+        built-in checks' (``BUILTIN_FAIL_BITS``, bits 0-7; a gate pipeline:
+        ``GATE_FAIL_BITS``, bits 0-5) then each plugin validity stage's (16, 17, ... in
+        pipeline order). ``Track.fail_bits`` / ``GateSequence.fail_bits`` is the same
         mapping."""
         return self._fail_bits
 

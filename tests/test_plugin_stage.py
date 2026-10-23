@@ -111,15 +111,18 @@ def test_registration_rejects_an_instance_and_an_abstract_class():
         registry.add(Abstract)
 
 
-def test_registration_rejects_a_gate_generator_stage():
-    with pytest.raises(ValueError, match="PR11.*GateGeneratorSpec"):
+def test_registration_checks_a_gate_generator_stage():
+    # PR11: gate generators are Stages (kind="gate_generator", output="anchors").
+    with pytest.raises(ValueError, match="a gate generator Stage declares "
+                                         "output='anchors', got 'centerline'"):
         registry.add(_stage(kind="gate_generator"))
     with pytest.raises(ValueError, match="declares kind 'generator', not 'relax'"):
         registry.add(_stage(), kind="relax")
 
 
 def test_registration_rejects_a_wrong_output():
-    with pytest.raises(ValueError, match="output='anchors' arrives with roadmap PR11"):
+    with pytest.raises(ValueError, match="output='anchors' is a gate generator: declare "
+                                         "kind='gate_generator'"):
         registry.add(_stage(output="anchors"))
     with pytest.raises(ValueError, match="must declare output='centerline'"):
         registry.add(_stage(output=None))
@@ -155,9 +158,11 @@ def test_the_track_pipeline_kinds_are_open_and_the_others_are_not():
     registry.add(S)
     assert registry.get("relax", "acme.s") is S
     R = _stage(kind="resample", output=None, writes={})
+    # PR11 opened gate_generator, order and stations.
     with pytest.raises(ValueError, match=r"Stage S: Stage kind 'resample' is not open to "
                                          r"plugins; open kinds: \['elevation', "
-                                         r"'generator', 'relax', 'validity', 'width'\]"):
+                                         r"'gate_generator', 'generator', 'order', "
+                                         r"'relax', 'stations', 'validity', 'width'\]"):
         registry.add(R)
     assert "acme.s" not in registry.available("resample")
 
@@ -738,7 +743,7 @@ def test_a_broken_stage_plugin_is_quarantined(monkeypatch):
             "broken", lambda reg: reg.add(Broken), FakeDist("broken-stage")))
         with pytest.warns(RuntimeWarning, match="quarantined"):
             registry.available("generator")
-        assert "PR11" in registry.quarantined["broken"]
+        assert "output='anchors' is a gate generator" in registry.quarantined["broken"]
 
 
 def test_params_are_validated_only_for_the_selected_generator():

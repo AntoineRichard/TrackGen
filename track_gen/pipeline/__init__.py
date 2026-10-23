@@ -1,4 +1,4 @@
-"""The track pipeline as data (preview, roadmap PR10).
+"""The track and gate pipelines as data (preview, roadmap PR10 / PR11).
 
 A :class:`PipelineSpec` lists the stages of the track pipeline in order
 (:class:`StageRef`: kind, name, params) over one :class:`BatchSpec`. :func:`build` plans
@@ -15,12 +15,19 @@ The ``relax``, ``width``, ``elevation`` and ``validity`` stages come from
 others (``resample``, ``frames``, ``offset``, ``lift``) are TrackGen's built-ins.
 :data:`BUILTIN_FAIL_BITS` names the ``valid.fail`` bits of the built-in checks.
 
+A gate pipeline (``BatchSpec.max_gates`` set; :func:`presets.gates
+<track_gen.pipeline.presets.gates>`, ``GateGenerator(spec)``) builds a Program whose
+result is a ``GateSequence``: a gate generator's anchors (or a track generator's
+stations), an ``order`` stage, the sphere solve, an ``elevation`` stage (the track ones,
+rewired to the gates), the lift, tangents, frames and ``validity.gate_default``
+(:data:`GATE_FAIL_BITS`).
+
 Preview: names and signatures may change before 1.0. ``import track_gen`` does not
 import this package.
 """
 from __future__ import annotations
 
-from ..stages.channels import BUILTIN_FAIL_BITS
+from ..stages.channels import BUILTIN_FAIL_BITS, GATE_FAIL_BITS
 from . import legacy, presets
 from .planner import PlanError, build
 from .program import Program
@@ -29,6 +36,7 @@ from .spec import BatchSpec, PipelineSpec, StageRef
 __all__ = [
     "BUILTIN_FAIL_BITS",
     "BatchSpec",
+    "GATE_FAIL_BITS",
     "PipelineSpec",
     "PlanError",
     "Program",

@@ -6,7 +6,8 @@ runs a registered generator through every check the :doc:`generator contract
 <writing-a-generator>` implies: output shapes and NaN padding, determinism, batch
 independence, no hidden state, no host sync or allocation on the hot path, a static
 launch sequence and, on CUDA, recording into a caller's graph. ``check_stage`` does the
-same for a relax, width, elevation or validity stage (see :ref:`kit-check-stage`).
+same for a relax, width, elevation, validity, order or stations stage (see
+:ref:`kit-check-stage`).
 TrackGen's own test suite runs the same checks over every built-in generator and stage,
 so a plugin is held to the standard the built-ins meet.
 
@@ -113,8 +114,9 @@ broke.
        seeds.
    * - ``output.count``
      - ``0 <= count[e] <= N_max`` for every env, and ``count[e] >= 3`` for valid ones.
-     - As for ``output.padding``. A gate generator: a count outside ``[0, max_gates]``
-       written into ``out.count``.
+     - As for ``output.padding``. A gate generator: a count outside its ``capacity()``
+       written into ``anchors.count`` (a legacy spec: outside ``[0, max_gates]``, into
+       ``out.count``).
    * - ``output.closed``
      - Each valid env's raw loop closes (the gap from its last point back to its first
        is at most 3 times its median step, or 1.5 times its longest step, so a straight
@@ -284,13 +286,20 @@ Gate generators
 
 ``check_gate_generator`` takes the same arguments (``config`` holds ``GateGenConfig``
 fields) and runs the same checks on the ``GateSequence``, listed in
-``CHECKS["gate_generator"]``. The raw output is the ``[E*G]`` ``wp.vec2f`` anchor buffer
-(``G`` is ``config.max_gates``), checked before ``count[e]``; ``output.count`` asks for
-``0 <= count[e] <= max_gates`` for every env and ``count[e] >= min_gates`` for valid
-ones; and ``output.accepted`` (the gate pipeline accepts at least one env) replaces
-``output.closed``. Without a ``gate_ordering`` in
-``config``, the kit uses ``"ccw"`` when the generator supports it, else the first of its
-``supported_orderings``.
+``CHECKS["gate_generator"]``. It checks anchors Stages (:ref:`gate-generator-stage`) and
+legacy ``GateGeneratorSpec`` objects alike (a legacy spec emits its
+``DeprecationWarning``). The raw output is the generator's anchors, checked before
+``count[e]``: ``tap("anchors.xy")``, ``[E*A]`` ``wp.vec2f`` with ``A`` the generator's
+``capacity()["gates"]`` (a legacy spec: the ``[E*G]`` staging buffer, ``G`` =
+``config.max_gates``). ``output.count`` asks for ``0 <= count[e] <= max_gates`` for every
+env and ``count[e] >= min_gates`` for valid ones, and for a Stage also
+``capacity()["min_gates"] <= anchors.count[e] <= capacity()["gates"]`` for every env;
+``output.accepted`` (the gate pipeline accepts at least one env) replaces
+``output.closed``. Without a ``gate_ordering`` in ``config``, the kit uses the
+generator's default order, as ``GateGenConfig(gate_ordering=None)`` does: its
+``preferred["order"]`` when it accepts it, else ``"ccw"`` when it accepts it, else the
+first order it accepts (a legacy spec: ``"ccw"`` if supported, else the first of its
+``supported_orderings``).
 
 .. code-block:: python
 
@@ -305,7 +314,22 @@ Pipeline stages: ``check_stage``
 
 ``check_stage`` checks a stage of an open pipeline kind (see
 :doc:`writing-a-stage`) by running it where it belongs: in the default track pipeline
-of ``presets.track``, in the slot of its kind, built through ``TrackGenerator``.
+of ``presets.track``, in the slot of its kind, built through ``TrackGenerator``; or, for
+the gate kinds, in the default gate pipeline of ``presets.gates``, built through
+``GateGenerator``:
+
+- an ``order`` stage runs as ``order=`` of a stations pipeline (``generator="bezier"``,
+  ``source="stations"``), so no generator's ordering whitelist gets in the way;
+- a ``stations`` stage runs as ``stations=``, on ``source="relaxed_stations"`` when it
+  reads ``cl.*`` channels, else on ``source="stations"``;
+- a ``validity`` stage that reads a ``gates.*`` or ``anchors.*`` channel is appended
+  after ``"gate_default"`` in a gate pipeline; any other runs in the track pipeline;
+- an ``elevation`` stage runs in the track pipeline, or with ``pipeline="gates"`` as
+  ``elevation=`` of the default gate pipeline (the ``bezier`` gate generator unless
+  ``upstream`` names another), its ports rewired to ``gates.*``: the ``output.*``
+  checks read the ``GateSequence`` and ``stage.isolation`` re-runs the stage on
+  ``gates.cum`` / ``gates.perim`` / ``gates.count`` into ``gates.z``. Run it once per
+  pipeline to check both.
 
 .. code-block:: python
 
@@ -314,31 +338,43 @@ of ``presets.track``, in the slot of its kind, built through ``TrackGenerator``.
    check_stage("relax", "acme.taubin", {"passes": 4}).raise_for_failures()
    check_stage("validity", "acme.max_curvature",
                upstream={"elevation": "acme.sinusoid_hills"}).raise_for_failures()
+   check_stage("order", "acme.reverse").raise_for_failures()
+   check_stage("elevation", "acme.sinusoid_hills").raise_for_failures()
+   check_stage("elevation", "acme.sinusoid_hills",
+               pipeline="gates").raise_for_failures()
 
 .. code-block:: python
 
-   check_stage(kind, name, params=None, *, upstream=None, devices=None, num_envs=8,
-               seeds=(11, 1009), capture_modes=("warp", "external", "torch"), skip=(),
-               modules=())
+   check_stage(kind, name, params=None, *, upstream=None, pipeline=None, devices=None,
+               num_envs=8, seeds=(11, 1009), capture_modes=("warp", "external", "torch"),
+               skip=(), modules=())
 
-- ``kind`` is ``"relax"``, ``"width"``, ``"elevation"`` or ``"validity"`` (``ValueError``
-  otherwise); ``name`` is looked up in the registry like a generator's (an unknown name
-  raises the registry's ``ValueError``, a quarantined plugin its ``PluginLoadError``).
+- ``kind`` is ``"relax"``, ``"width"``, ``"elevation"``, ``"validity"``, ``"order"`` or
+  ``"stations"`` (``ValueError`` otherwise); ``name`` is looked up in the registry like a
+  generator's (an unknown name raises the registry's ``ValueError``, a quarantined plugin
+  its ``PluginLoadError``).
 - ``params`` is the stage's params: a Params instance, a mapping of its fields, or
   ``None`` for the defaults.
+- ``pipeline`` is ``None`` (the pipeline the kind belongs to, as above), ``"track"`` or
+  ``"gates"``. ``"gates"`` takes ``elevation``, ``validity``, ``order`` and ``stations``
+  stages, ``"track"`` ``relax``, ``width``, ``elevation`` and ``validity`` stages; any
+  other value or combination raises ``ValueError``.
 - ``upstream`` holds more ``presets.track`` keyword arguments, the rest of the pipeline
   the stage runs in: ``generator``, ``generator_params``, ``num_points``, ``n_max``,
   ``half_width``, the other kinds' stages, ``on_invalid``. ``num_envs``, ``device`` and
   the slot under test (``relax``, ``width`` or ``elevation``) are the kit's and raise
-  ``ValueError``. For a validity stage, ``upstream["checks"]`` lists the checks that run
-  before it (default ``("default",)``), and the stage is appended to them under its own
+  ``ValueError``. For the gate kinds, ``upstream`` holds ``presets.gates`` keyword
+  arguments instead, with the same reserved keys (``order`` or ``stations``). For a
+  validity stage, ``upstream["checks"]`` lists the checks that run
+  before it (default ``("default",)``, or ``("gate_default",)`` for a check that runs in
+  the gate pipeline), and the stage is appended to them under its own
   name as id; a validity stage that writes ``valid.fail`` without reading it replaces
   them instead.
 - ``devices``, ``num_envs`` (at least 2), ``seeds``, ``capture_modes``, ``skip`` and
   ``modules`` are those of ``check_generator`` (see `Arguments`_).
 
 The report reads like a generator's, under ``CHECKS[kind]``. The checks are those of the
-generator kit, on the whole pipeline's ``Track`` (``output.*`` checks it as
+generator kit, on the whole pipeline's ``Track`` or ``GateSequence`` (``output.*`` checks it as
 ``check_generator`` does after the pipeline), without ``diversity`` and
 ``output.closed`` (the raw loop is the generator's business; a stage need not add
 diversity), plus:
@@ -350,10 +386,12 @@ diversity), plus:
    * - Check
      - Passes when
      - Usual causes of a failure
-   * - ``output.accepted`` (not for validity)
+   * - ``output.accepted`` (not for validity; for order and stations, the gate
+       pipeline accepts at least one env)
      - The pipeline with the stage accepts at least one env. When it accepts none, the
        same pipeline with the slot's neutral built-in (``relax.none``,
-       ``width.constant``, ``elevation.flat``) runs: if that one accepts none either,
+       ``width.constant``, ``elevation.flat``, ``order.raw``, ``stations.raw``) runs:
+       if that one accepts none either,
        the check is skipped (the stage did not reject them).
      - A relax stage that leaves NaNs or self-crossings, a width under ``w_floor``, an
        elevation steeper than ``z_valid_grade``.
@@ -369,13 +407,15 @@ diversity), plus:
        unwritten (padding included).
    * - ``validity.bits`` (validity only)
      - The stage owns at least one fail bit, the bits it does not own are exactly those
-       of the same pipeline without it, and ``Track.valid == (fail_mask == 0)``. Then
+       of the same pipeline without it, and ``valid == (fail_mask == 0)`` (on the
+       ``Track`` or the ``GateSequence``). Then
        the stage alone is re-run on a synthetic ``valid.fail`` input holding bits it
        does not own (alternating patterns over bits 0-30) into a write buffer filled
        with ``-1``: every env must come out with exactly those bits besides its own.
        ``details`` holds its bits and the fraction of envs with one of them set.
-       ``validity.default``, which starts the bitmask (the only stage the planner lets
-       do so), must leave ``fail_mask`` with its own bits only.
+       ``validity.default`` and ``validity.gate_default``, which start the bitmask (the
+       only stages the planner lets do so), must leave ``fail_mask`` with their own bits
+       only.
      - OR-ing a built-in bit (``fail_in | 1``), clearing bits of earlier checks (writing
        ``own`` instead of ``fail_in | own``), skipping the envs that pass.
 
@@ -400,10 +440,10 @@ provides:
   ``track_gen_conformance(name, params=None, *, kind="generator", **kwargs)`` runs
   ``check_generator`` (``check_gate_generator`` with ``kind="gate_generator"``,
   ``check_stage`` with ``kind`` one of ``"relax"``, ``"width"``, ``"elevation"``,
-  ``"validity"``) with ``kwargs``, fails the test listing every failed check, and returns
-  the ``Report``;
+  ``"validity"``, ``"order"``, ``"stations"``) with ``kwargs``, fails the test listing
+  every failed check, and returns the ``Report``;
 - ``generator_names(kind="generator", *, builtin=None, exclude=())``, the sorted names
-  registered under ``kind``, a generator kind or one of the four stage kinds
+  registered under ``kind``, a generator kind or one of the six stage kinds
   (``builtin=False`` keeps the third-party ones, ``builtin=True`` the built-ins);
 - ``parametrize_generators(kind="generator", *, argname="generator", builtin=None,
   exclude=())``, the matching ``pytest.mark.parametrize``. It reads the registry at

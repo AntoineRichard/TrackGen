@@ -1,11 +1,15 @@
-"""TrackGen's built-in track stages and the channel catalogue (roadmap PR10a/PR10b).
+"""TrackGen's built-in track and gate stages and the channel catalogue (roadmap
+PR10a/PR10b/PR11).
 
-The stages of the four kinds open to plugins (:data:`OPEN_KINDS`: ``relax``, ``width``,
-``elevation``, ``validity``) live in :data:`track_gen.plugin.registry`, next to the
-generators: :func:`register_builtins` adds TrackGen's own (``relax.xpbd``,
-``relax.none``, ``width.constant``, ``elevation.flat`` / ``uniform`` / ``random_walk`` /
-``noise``, ``validity.default``) when the registry loads its built-ins. The other kinds
-(``resample``, ``frames``, ``offset``, ``lift``) are built-in only: the planner resolves
+The stages of the kinds open to plugins (:data:`OPEN_KINDS`: ``relax``, ``width``,
+``elevation``, ``validity``, ``order``, ``stations``) live in
+:data:`track_gen.plugin.registry`, next to the generators: :func:`register_builtins`
+adds TrackGen's own (``relax.xpbd``, ``relax.none``, ``width.constant``,
+``elevation.flat`` / ``uniform`` / ``random_walk`` / ``noise``, ``validity.default``,
+``validity.gate_default``, ``order.raw`` / ``ccw`` / ``random_pairs``, ``stations.raw``
+/ ``relaxed``) when the registry loads its built-ins. The other kinds (``resample``,
+``frames``, ``offset``, ``lift``, ``normalize``, ``carry``, ``gate_relax``,
+``gate_arclen``, ``tangents``, ``gate_frames``) are built-in only: the planner resolves
 them from the private catalogue here, keyed ``(kind, name)`` and filled lazily (once,
 under a lock) by :func:`register`.
 """
@@ -16,12 +20,13 @@ import threading
 from typing import Iterator
 
 from ..plugin.stage import _OPEN_KINDS
-from .channels import BUILTIN_FAIL_BITS, CHANNELS, FAIL, SEED, Channel
+from .channels import BUILTIN_FAIL_BITS, CHANNELS, FAIL, GATE_FAIL_BITS, SEED, Channel
 
-__all__ = ["BUILTIN_FAIL_BITS", "CHANNELS", "Channel", "FAIL", "OPEN_KINDS", "SEED",
-           "available", "get", "register", "register_builtins", "scoped"]
+__all__ = ["BUILTIN_FAIL_BITS", "CHANNELS", "Channel", "FAIL", "GATE_FAIL_BITS",
+           "OPEN_KINDS", "SEED", "available", "get", "register", "register_builtins",
+           "scoped"]
 
-#: The track-pipeline kinds third parties register stages of (through
+#: The pipeline kinds third parties register stages of (through
 #: ``track_gen.plugin.registry``).
 OPEN_KINDS = _OPEN_KINDS
 
@@ -127,17 +132,25 @@ scoped = _catalogue.scoped
 
 def register(catalogue) -> None:
     """Add the built-in stages of the kinds NOT open to plugins (resample, frames,
-    offset, lift) to ``catalogue`` (anything with ``add(cls)``)."""
-    from .track import CATALOGUE_STAGES  # noqa: PLC0415
+    offset, lift, normalize, carry, gate_relax, gate_arclen, tangents, gate_frames) to
+    ``catalogue`` (anything with ``add(cls)``)."""
+    from . import gates, track  # noqa: PLC0415
 
-    for cls in CATALOGUE_STAGES:
+    for cls in (*track.CATALOGUE_STAGES, *gates.CATALOGUE_STAGES):
         catalogue.add(cls)
 
 
 def register_builtins(reg) -> None:
-    """Add TrackGen's relax / width / elevation / validity stages to the plugin
-    registry ``reg`` (called by its built-in load, before any third-party plugin)."""
-    from .track import REGISTRY_STAGES  # noqa: PLC0415
+    """Add TrackGen's relax / width / elevation / validity / order / stations stages to
+    the plugin registry ``reg`` (called by its built-in load, before any third-party
+    plugin)."""
+    from . import gates, track  # noqa: PLC0415
 
-    for cls in REGISTRY_STAGES:
+    for cls in (*track.REGISTRY_STAGES, *gates.REGISTRY_STAGES):
         reg.add(cls)
+
+
+#: The kinds of the track pipeline's stages (for messages; ``elevation`` and
+#: ``validity`` also run in the gate pipeline).
+TRACK_KINDS = ("elevation", "frames", "lift", "offset", "relax", "resample", "validity",
+               "width")

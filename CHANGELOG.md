@@ -1,5 +1,361 @@
 # Changelog
 
+## 0.2.0.dev4 (unreleased, `v2` branch)
+
+### Added
+
+- **The gate pipeline as stages** (roadmap PR11). `GateGenerator` now runs a `Program`
+  built from a `PipelineSpec`, like `TrackGenerator` since PR10a: same public API and
+  semantics (`generate` / `enqueue`, masked regeneration and the `generation` counter,
+  caller capture, `seeds`, `inputs`, `params`, `graph`), same `GateSequence` fields, and
+  byte-identical outputs for every built-in gate generator (the ten gate fingerprint
+  variants are unchanged). The default stage list is `generator` (anchors) -> `order`
+  -> `normalize` (`polar`, `checkpoint`, `voronoi`) -> `gate_relax` -> `gate_arclen`
+  (non-flat profiles) -> `elevation` -> `lift` -> `tangents` -> `gate_frames` ->
+  `validity`, then the commit. `docs/how-it-works/pipeline-preview.rst` gains "The gate
+  pipeline".
+  - **`BatchSpec.max_gates`** (`None` default: a track pipeline; an int `>= 2`: a gate
+    pipeline whose `Program.result` is a `GateSequence` with that many slots per env).
+    `to_dict` writes it and `from_dict` reads it when present (format unchanged).
+    `build(spec)` accepts both kinds and binds the generator from the first stage's kind.
+  - **`legacy.to_gate_pipeline_spec(config, *, registry=None)`**: the default gate spec
+    for a `GateGenConfig`, the one `GateGenerator(config)` builds.
+  - **`presets.gates(*, num_envs, device, generator="bezier", generator_params=None,
+    source="auto", gates=None, max_gates=None, min_gates=4, order=None, stations=None,
+    gate_radius=0.025, gate_solve_iters=8, gate_width=0.0, gate_align="yaw_only",
+    elevation="flat", z_base=0.0, z_valid_grade=0.0, checks=("gate_default",),
+    scale=1.0, on_invalid="keep", n_max=384, num_points=256, half_width=0.1,
+    spacing=None, relax="xpbd", registry=None)`**. Unlike
+    `presets.track` it reads the registry (the generator's `output`, `provides` and
+    orderings decide the stage list). `presets.gates(num_envs=E, device=d)` builds
+    byte-identical to `legacy.to_gate_pipeline_spec(GateGenConfig(num_envs=E,
+    device=d))`. `order=None` is the generator's default order (its preferred order
+    when it accepts it, else `"ccw"` when it accepts it, else the first order it
+    accepts: the rule of `GateGenConfig.gate_ordering=None` and of the conformance kit
+    too). `z_base` is `elevation.flat`'s altitude
+    (with another elevation or a `z` provider a nonzero value raises, as
+    `presets.track(z_base=)` does). `validity.gate_default` in `checks` gets
+    `min_gates`, `gate_radius`, `gate_width`, `z_valid_grade` (and
+    `check_crossing="always"` for posed gates) unless its params set them, and params
+    setting another `gate_radius` / `gate_width` raise `ValueError` at preset time.
+    `gates=` fills the station count of a `stations` selection that does not set one
+    and must agree with one that does. The centerline arguments (`n_max`, `num_points`,
+    `half_width`, `spacing`, `relax`) raise `ValueError` when set for a source that does
+    not read them (an anchors source reads none, `"stations"` only `n_max` and
+    `num_points`). A `validity.gate_default` `gate_width` for a generator that provides
+    `half_size` raises the provider error (it must stay 0).
+  - **`GateGenerator(config_or_spec, rng=None, *, seeds=None, stream=None)`** accepts a
+    gate `PipelineSpec`; `rng` is optional (env `e` gets seed `e`), `seeds=` takes any
+    `SeedState` form (`rng` and `seeds` together raise `ValueError`). New
+    `gen.program`, `gen.num_envs`, `gen.device`, `gen.max_gates`; `gen.config` returns
+    what was passed. A track spec raises `ValueError` (use `TrackGenerator`), and
+    `TrackGenerator` refuses a gate spec the same way, before binding anything.
+  - Two point domains: anchors (`per="anchors"`, `[E*A]`, `A` = the generator's
+    `capacity()["gates"]`) and gate slots (`per="gates"`, `[E*G]`, `G = max_gates`).
+    Each stage gets its own `Layout`, derived from its ports: `b.layout.stride` is `G`
+    on gate slots and `N_max` for a centerline sub-pipeline. New
+    **`StageBuilder.stride_of(port)`** and **`StageBuilder.per_of(port)`** (the stride
+    and `per` of the channel a port is wired to); `temp_like` works on `anchors.*` and
+    `gates.*` ports.
+  - Channels: `anchors.xy`, `anchors.count`, `anchors.z`, `anchors.tangent`,
+    `anchors.half_size`, `anchors.roll`; `gates.xy`, `gates.count`, `gates.cum`,
+    `gates.perim`, `gates.z`, `gates.position`, `gates.tangent`, `gates.forward`,
+    `gates.left`, `gates.right`, `gates.orientation`, `gates.half_size`, `gates.roll`,
+    `gates.valid`; `valid.fail` is shared with tracks. The final version of each
+    exported channel is the `GateSequence` array; `Program.tap` reads the others
+    (`tap("anchors.xy")`, `tap("gates.xy", after="order")`, ...).
+  - Built-in gate stages, in TrackGen's private catalogue: `normalize.extent`,
+    `carry.{z,tangent,half_size,roll}`, `gate_relax.{spheres,none}`,
+    `gate_arclen.default`, `lift.gates`, `tangents.central`,
+    `gate_frames.{default,posed}`; and registered: `validity.gate_default`,
+    `order.{raw,ccw,random_pairs}`, `stations.{raw,relaxed}`. Each launches the
+    0.2.0.dev3 kernels with the same arguments; `_relax_gate_spheres_k`,
+    `_finalize_frame_k` and `_finalize_validity_k` gained trailing array arguments, and
+    `_finalize_validity_k`'s grade-check wrap is also bounded by `max_gates` (the same
+    arithmetic for every count <= max_gates; see Behaviour changes).
+- **Gate generators are `output="anchors"` Stages.** A `Stage` with
+  `kind="gate_generator"` and `output="anchors"` writes `anchors.xy` and
+  `anchors.count`, and does not order, normalize or lift anything. The five built-ins
+  (`bezier`, `hull`, `polar`, `checkpoint`, `voronoi`) are ported (same modules, so
+  `describe().origin` is unchanged) and no longer call `finish_ordered_gates`.
+  - **`capacity(params, layout) -> {"gates": A, "min_gates": k}`** replaces the
+    overloaded `GateGeneratorSpec.max_gates` callable: `A` is the most anchors per env
+    (their row stride), `k` the fewest. The planner checks `A <= BatchSpec.max_gates`
+    and the validity stage's `min_gates <= A` with the `GateGenConfig` messages.
+  - **`provides`**, a subset of `{"z", "tangent", "half_size", "roll"}` naming exactly
+    the `anchors.*` attributes written (`half_size` with `roll`). The preset drops the
+    stages a generator provides (`z`: `gate_arclen` and `elevation`; `tangent`:
+    `tangents`) and inserts `carry.<attr>` stages that copy the values to the gate
+    slots by anchor index; `half_size` + `roll` select `gate_frames.posed` and
+    `validity.gate_default(check_crossing="always")`. A provided `z` reaches
+    `GateSequence.position.z` and a provided `half_size` `GateSequence.half_size` bit
+    for bit; a provided tangent is normalized. The planner refuses a provided attribute
+    that no stage reads, and a `carry` stage after an order other than `order.raw`;
+    the presets and `GateGenConfig` refuse an explicit elevation (or `z_base`) for a
+    `z` provider and a `gate_width` for a `half_size` provider.
+  - **`Stage.orderings`** (a whitelist, or `None`), **`Stage.excluded_orderings`** (with
+    `orderings=None`: every registered order but these) and **`Stage.preferred`**
+    (`{"order": ..., "normalize": ...}`), reported by `SpecInfo`, plus the resolved
+    **`SpecInfo.supported_orderings`** (sorted; `()` for other kinds), the public way to
+    list a gate generator's orders (`viz/param_explorer.py` uses it). The built-ins exclude
+    instead of whitelisting (`bezier`/`hull` exclude `raw`; `polar`/`checkpoint`/
+    `voronoi` exclude `random_pairs`), so a third-party order runs with all five; with
+    only the built-in orders installed the supported lists are 0.2.0.dev3's. A
+    generator that provides attributes must declare `orderings=frozenset({"raw"})`.
+  - Registration rules for anchors Stages (each a `ValueError`/`TypeError`, quarantine
+    under `warn`), replacing PR10b's "arrives with roadmap PR11" errors: `output` must be
+    `"anchors"` (and a `kind="generator"` Stage with `output="anchors"` is told to
+    declare `kind="gate_generator"`), `reads` empty, `writes` within the anchors channels
+    and including `anchors.xy` / `anchors.count`, `provides` equal to the written
+    attributes, `orderings` / `excluded_orderings` / `preferred` well formed and not
+    both a whitelist and exclusions, `preferred` only on gate generators.
+- **The ordering registry**: the open kind `order`, with the built-ins `order.raw`,
+  `order.ccw` and `order.random_pairs` (0.2.0.dev3's kernels and salt). An order stage
+  writes `gates.xy` and `gates.count` (both required). `GateGenConfig.gate_ordering`
+  and `presets.gates(order=...)` name any registered order the generator accepts;
+  unknown names raise with the registry's list (`GateGenConfig.gate_ordering: unknown
+  order 'spiral'; available: ['ccw', 'random_pairs', 'raw']`), an unsupported one
+  `gate generator 'polar' does not support gate_ordering 'random_pairs'; supported:
+  ['ccw', 'raw'] (its preferred order is 'ccw')` (the hint only when the generator
+  declares a preferred order). The default order is one rule
+  (`stages.gates._default_order`): the generator's `preferred["order"]` when it accepts
+  it, else `"ccw"` when it accepts it, else the first order it accepts.
+  `presets.gates(order=None)`, `GateGenConfig.gate_ordering=None` (the new default, see
+  Behaviour changes) and the conformance kit apply it.
+- **`stations`: gates from any track generator.** `presets.gates(generator=<a track
+  generator>, gates=G)` inserts `stations.raw` (equal arc-length anchors on the raw
+  loop `raw.xy`), or with `source="relaxed_stations"` the first three stages of
+  `presets.track` and `stations.relaxed` (on the relaxed `cl.xy`), then the shared
+  gate stages. `source="auto"` picks the gate generator when the name is one (the
+  built-in names are both kinds), else stations. Works for every built-in track
+  generator, `repulsive` included, and for third-party ones (Stage or
+  `GeneratorSpec`). An env whose generator flagged it invalid, whose loop was
+  truncated, or whose length is not positive gets no anchors (fail bit `count`).
+  `stations` and `gate_arclen` measure plan-view arc length (0.2.0.dev3's); a
+  selectable metric arrives with roadmap PR13 (see Deferred).
+- **Elevation on gates through port rewiring.** The planner rewires every `elevation`
+  slot of a gate pipeline (`cl.xy -> gates.xy`, `cl.count -> gates.count`,
+  `cl.arclen2 -> gates.cum`, `cl.length2 -> gates.perim`, `cl.z -> gates.z`; explicit
+  `StageRef.ports` override), so the built-in profiles and plugin elevation stages
+  (PR10b's `acme.sinusoid_hills` included) run on gates unchanged, selected by
+  `GateGenConfig.z_profile`, `presets.gates(elevation=...)` or `spec.replace(...)` (on
+  a spec whose elevation is already non-flat; a flat gate spec has no `gate_arclen`
+  slot, so also `insert_before("elevation", StageRef("gate_arclen", "default"))`, as the
+  `PlanError` says). No
+  monkeypatch, name tuples or fall-through to noise. `elevation.flat` gains
+  `z_base` (gate altitudes; on a track a non-zero value raises `PlanError` before
+  anything is allocated, and `ValueError` from `presets.track`: `lift.flat`'s `z_base`
+  sets a track's flat altitude) and a `count` read port. On gates, `uniform` /
+  `random_walk` draw one altitude per gate (the gates are the knots:
+  `z_control_points` is not read). A plugin's `Params.from_legacy(config)` receives the
+  `GateGenConfig` through `GateGenConfig.z_profile`; one that reads a
+  `TrackGenConfig`-only field raises `ValueError` naming the field.
+- **Gate fail bits.** `validity.gate_default` keeps the fused `_finalize_validity_k`
+  (`GateSequence.valid` byte-identical) and writes one bit per check into
+  `valid.fail`: 0 `count`, 1 `finite`, 2 `tangent`, 3 `spacing`, 4 `crossing`,
+  5 `grade` (6-15 reserved, 16-30 plugin checks via `StageBuilder.fail_bit()`).
+  **`track_gen.pipeline.GATE_FAIL_BITS`** is that table. New
+  **`GateSequence.fail_mask`** (`[E]` int32; allocated by `GateGenerator` and
+  `warp_gate.alloc_gate_sequence`, `None` on a `GateSequence` built by hand) and
+  **`GateSequence.fail_bits`**; `valid == (fail_mask == 0)`; `clone()` clones
+  `fail_mask`. `validity.gate_default` takes `check_crossing="width"` (default, as
+  before: the crossing check runs when `gate_width > 0`) or `"always"` (posed gates,
+  whose widths come from the generator). `warp_gate.finalize_gate_sequence` gains
+  `fail=None` (`None`: the bits go to `gates.fail_mask`, so the pre-PR11 call with a
+  persistent `fallbacks` still allocates nothing).
+- **The commit for gates.** PR10b's hold / restore commit runs over the
+  `GateSequence`: masked regeneration of gates is exact by construction (unmasked envs
+  keep their bytes), and `BatchSpec.on_invalid="poison"` (`presets.gates(on_invalid=)`)
+  leaves an invalid env with `count = 0`, every per-gate field NaN and `valid = 0`,
+  keeping `fail_mask`. Cost: none for an unmasked default generation, one launch for a
+  derived `valid` or poison, two for a masked generation; the held copy is 80 B per
+  gate slot and 12 B per env.
+- **Conformance kit.** `check_gate_generator` runs anchors Stages and legacy specs alike;
+  its raw output is `tap("anchors.xy")`, `output.count` also checks every env's
+  `anchors.count` against `capacity()`, and the default ordering is the generator's
+  preferred one when it accepts it. `check_stage` accepts the kinds `"order"` and
+  `"stations"` (run in a `presets.gates` stations pipeline) and runs a validity stage
+  that reads gate channels in the default gate pipeline. **`check_stage(...,
+  pipeline="gates")`** runs an `elevation` stage on gates (`presets.gates(elevation=)`,
+  ports rewired), so a plugin elevation is checked in both pipelines. `CHECKS`, the
+  pytest plugin's `track_gen_conformance(kind=...)` and `generator_names(kind)` list the
+  new kinds.
+- **`StageRef` (hence `PipelineSpec`) pickles**: `StageRef.__reduce__` rebuilds the ref
+  from plain dicts (the frozen `MappingProxyType` fields did not pickle; pre-existing);
+  a frozen mapping nested in the params (another ref's params) comes back as a dict.
+- Docs: `docs/contributing/writing-a-stage.rst` gains "Writing a gate generator
+  (anchors)" (a helix that provides its altitudes and tangents) and "Writing an
+  ordering" (a reversed order); the configuration reference documents `gate_ordering`
+  / `z_profile` as registered names and the capacity / `max_gates` / `min_gates`
+  relation; the generator guide, the conformance-kit guide, the gate tutorial,
+  `docs/gates-3d.rst` and `docs/relaxation/gates.rst` describe the gate Program.
+
+### Behaviour changes
+
+- **`GateGenConfig.gate_ordering` and `GateGenConfig.z_profile` are resolved through the
+  registry** at `GateGenerator` (hence `Course`) construction, as `TrackGenConfig`'s
+  `relax_solver` / `z_profile` are since PR10b. Config construction only requires
+  non-empty strings: `GateGenConfig(gate_ordering="spiral")` and
+  `GateGenConfig(z_profile="bogus")` now construct, and `GateGenerator` raises
+  `ValueError` (`GateGenConfig.z_profile: unknown elevation 'bogus'; available:
+  ['flat', 'noise', 'random_walk', 'uniform']`). The `z_*` range rules still run at
+  config construction.
+- **`GateGenConfig.gate_ordering` defaults to `None`**, "the generator's default order"
+  (was `"ccw"`): it is resolved at `GateGenerator` (hence `Course`) construction, before
+  any generator code reads the config, with the rule of `presets.gates(order=None)`
+  (`legacy.to_gate_pipeline_spec` applies the same rule), and the name is written into
+  the generator's run config, so a legacy `GateGeneratorSpec` (its `Params.from_legacy`,
+  `max_gates`, `alloc_scratch`, `generate`), an elevation's `from_legacy` and
+  `GateGenerator._config` never see `None`; `GateGenerator.config` reports the config as
+  passed. The five built-ins resolve to `"ccw"` (same spec, same bytes), and a
+  generator that accepts only `"raw"` (one that provides attributes, a legacy `toy.ring`)
+  now builds without an explicit `gate_ordering`
+  (`GateGenerator(GateGenConfig(generator="acme.helix"))`, and a `CourseConfig` with
+  it). An explicit name keeps its checks and messages; `GateGenConfig(gate_ordering=None)`
+  is accepted where it raised.
+- **`gate_width` is documented as the full bar width** (finding A85): `half_size =
+  0.5 * gate_width`, `left` / `right` at `position ± half_size * left_axis`. The code
+  always did this; the configuration reference, `docs/relaxation/gates.rst` and the
+  `GateGenConfig` docstring called it a half-width.
+- **Launch sequence.** `bezier` / `hull` gate generations launch exactly what they did
+  (14 launches for a default `bezier` / `ccw` generation on CPU). The normalizing
+  generators (`polar`, `checkpoint`, `voronoi`) launch as many (14), with the count
+  copy before the normalization instead of after it: the normalization is a versioned
+  rewrite of `gates.xy`, one out-of-place launch (`_normalize_extent_to_k`, the same
+  arithmetic, dimensions and scalars as 0.2.0.dev3's in-place kernel). The bytes are
+  identical. A `gate_relax.spheres` stage refuses params that would not move anything
+  (`gate_solve_iters == 0` or a float32 `2 * gate_radius` of 0); the presets and
+  `GateGenConfig` select `gate_relax.none` for them, as the old path skipped the
+  launch.
+- **Gate working buffers are zero-initialised** at construction (0.2.0.dev3 used
+  `wp.empty` for the generator scratch). No buffer is read before it is written.
+- **The legacy deprecation fires at bind time, not at registration**, so loading a
+  plugin that registers a `GateGeneratorSpec` (under `-W error` too) stays silent.
+- **Parameter agreement.** PR10b's interim rule (every stage with a `half_width` field
+  agrees) extends to `gate_width` and `gate_radius`: in a gate pipeline,
+  `gate_frames` / `validity.gate_default` agree on `gate_width` and `gate_relax.spheres`
+  / `validity.gate_default` on `gate_radius` (`PlanError` otherwise). The presets pass
+  one value to every stage.
+- `GateGenerator._scratch` (the positional 6-tuple) is gone: read intermediates with
+  `gen.program.tap`. `gen.frame_fallbacks` stays.
+- **The built-in gate generators are Stage classes**: `registry.get("gate_generator",
+  "bezier")` (and `gate_generator_registry.get` / `GATE_GENERATORS`) returns a
+  `kind="gate_generator"` Stage, not a `GateGeneratorSpec`: it has no
+  `supported_orderings`, `max_gates`, `generate` or `alloc_scratch`, and
+  `dataclasses.replace(...)` no longer applies. Read the orders from
+  `registry.describe("gate_generator", name).supported_orderings` and the capacity from
+  `Stage.capacity(params, layout)`; wrap a built-in in a Stage of your own to change its
+  flags.
+- **`elevation.flat` on tracks** now declares a `cl.count` read and carries
+  `ElevationFlatParams(z_base=0.0)` (the resolved `Program.spec` of a default track
+  shows it where it showed `None`). Track bytes are unchanged; a hand-built track spec
+  that places `elevation.flat` before any `cl.count` writer now fails to plan.
+- **The grade check's closing chord stays in the env's row**: in `_finalize_validity_k`
+  the wrap is bounded by `max_gates` as well as by `count`, so a count above
+  `max_gates` (an anchors or order plugin over-reporting it; it fails the `count` bit)
+  no longer reads the next env's gates (or past the buffer) when `z_valid_grade > 0`.
+  The same arithmetic for every `count <= max_gates`: bytes unchanged.
+- **Planner hints** for common gate-pipeline mistakes: a track check (`validity.default`)
+  in a gate pipeline names `validity.gate_default`; a centerline generator without a
+  `stations` stage (or a track spec given `max_gates`) says to insert one; the
+  `min_gates` error of a stations source names the stations stage.
+
+### Deprecated
+
+- **`GateGeneratorSpec`** (the legacy gate generator ABI: `generate(seeds, config, out,
+  scratch[, ctx])` into a staging view, `alloc_scratch`, `max_gates`,
+  `supported_orderings`). It keeps working through an adapter stage that writes
+  `gates.xy` / `gates.count` and orders its own gates (no order or normalize stage
+  follows it); a `capturable=False` spec makes the Program eager, an
+  `accepts_ctx=False` one runs in `ctx.scope()`, as before. Binding one
+  (`GateGenerator`, `Course`, `build`, `legacy.to_gate_pipeline_spec`, the conformance
+  kit) emits a `DeprecationWarning` once per registry and name, attributed to the
+  caller's frame: `GateGeneratorSpec 'toy.ring' (...) is deprecated: write a Stage with
+  kind='gate_generator' and output='anchors' (docs/contributing/writing-a-generator.rst);
+  legacy gate generators run through an adapter until 1.0`. Registration and
+  entry-point loading stay silent. `presets.gates` with a legacy generator refuses
+  `order=` (choose its ordering with `GateGenConfig(gate_ordering=...)`).
+- **The `warp_gate` helpers of 0.1 gate plugins**: `alloc_order_scratch`,
+  `order_points` (the closed-set ordering dispatch), `finish_ordered_gates` and the
+  `_GateStaging` name (moved into the legacy adapter, `track_gen.stages.gates`) are
+  deprecated and removed in 1.0. They keep their 0.2.0.dev3 signatures and bodies and
+  emit a `DeprecationWarning`, so a `GateGeneratorSpec` written to the 0.1 ABI (which
+  calls them from `alloc_scratch` / `generate`) still runs; the library itself no longer
+  calls them (ordering and normalization are pipeline stages). Their signatures are
+  pinned in `tests/test_legacy_plugin_abi.py`.
+
+### Removed
+
+- Private `track_gen._src.warp_gate` names: `_run_gate_pipeline` and `_gate_warp_alloc`
+  (the positional 6-tuple scratch). From the built-in gate modules: `generate_*_gates`,
+  `*_gate_alloc_scratch`, `PointGateScratch` and its siblings, `_max_point_gates`. None
+  was public or called by a legacy plugin; the tests keep a frozen copy of the
+  0.2.0.dev3 gate path (`tests/_legacy_gate_pr11.py`) as the byte-identity reference.
+
+### Deferred
+
+- **`spacing_metric`** (`"xy"` / `"xyz"`: the arc length `stations` and `gate_arclen`
+  measure) moves to roadmap PR13, a deviation from the PR11 roadmap entry: 3D arc
+  length needs an altitude on the centerline before the stations are placed (the
+  `raw.z` / `cl.z` carry-through), and gate altitudes are computed from the xy arc
+  tables. No `spacing_metric` keyword ships; the stages measure plan-view arc length.
+- Gate plugin channels (`gates.<package>.<name>`) (PR13): a gate-domain stage with a
+  `cl.<package>.<name>` port raises `PlanError`.
+- `Recipe` composite generators; attributes provided by `stations`; `roll` on
+  `gate_frames.default`; `preferred` hints for track generators; split gate checks; a
+  `GateGenConfig.on_invalid` field; `Course` built from a `PipelineSpec`.
+- **`Course` with a gate generator that provides `half_size`** (posed gates):
+  `CourseConfig` requires `gen.gate_width > 0` while such a generator refuses any
+  `gate_width`, so the combination cannot be built yet (pinned by a test).
+
+### Testing
+
+- `tests/test_gate_pipeline_parity.py`: every stage boundary of the gate Program
+  (`anchors.*`, `gates.xy` after order / normalize / relax, `gates.cum`, `gates.perim`,
+  `gates.z`, lifted positions, tangents, the final fields, the frame fallbacks) equals a
+  frozen copy of the 0.2.0.dev3 gate path (`tests/_legacy_gate_pr11.py`, pinned to
+  golden digests captured from the live path before it was deleted:
+  `tests/goldens/pr11_gate_stages.json`, tool `tests/tools/capture_pr11_gate_stages.py`)
+  for the five generators x their orderings x four profiles x `gate_solve_iters` {0, 8}
+  x `gate_align` x `gate_width` {0, 0.04}, plus radius-0, scale and `min_gates` cases
+  and the legacy `toy.ring`; masked regeneration; launch sequences equal 0.2.0.dev3's
+  (with the documented normalize reordering). The ten gate fingerprints and
+  `tests/test_pipeline_parity.py` are unchanged.
+- `tests/test_gate_stage_plugins.py` with the toys of `tests/_gate_toys.py`
+  (`acme.helix` providing `z` and `tangent`, `acme.helix_posed` adding `half_size` and
+  `roll`, `acme.scatter`, the order `acme.reverse`, the track generator
+  `acme.superformula`, the gate check `acme.max_height`, and PR10b's
+  `acme.sinusoid_hills` on gates): provides-driven stage lists and bitwise carried
+  values; third-party orders through the config and the preset; stations and relaxed
+  stations spacing; elevation rewiring three ways; the plugin fail bit; every toy
+  through `check_gate_generator` / `check_stage`; registration rules and quarantine;
+  the bind-time deprecation (silent registration, one warning attributed to the test
+  module).
+- `tests/test_gate_presets.py` (preset vs. config invariant, selection forms and
+  errors, sources, order compatibility and the default ordering (`None` resolving to
+  `"ccw"` for every built-in, `"raw"` for a provider),
+  capacity texts, `BatchSpec.max_gates` validation and round trip, the domain, plugin
+  channel, carry, provided-attribute, agreement and posed rules, per-slot layouts,
+  `build` / `TrackGenerator` / `GateGenerator` dispatch) and `tests/test_gate_commit.py`
+  (`GATE_FAIL_BITS`, each bit on hand-built inputs, exact masked regeneration, poison,
+  `CheckpointSet.from_gates` / `ProgressTracker` on a poisoned env, launch counts).
+- Review follow-ups: the 0.1-ABI `warp_gate` helpers pinned and byte-checked against the
+  frozen 0.2.0.dev3 code, and a 0.1-style plugin (`alloc_order_scratch` +
+  `finish_ordered_gates`) through `GateGenerator` equal to the frozen pipeline
+  (`tests/test_legacy_plugin_abi.py`); the bind-time deprecation under an error filter;
+  elevation stages through `check_stage(pipeline="gates")`; a track `from_legacy` on
+  gates; the default-order rule for a provider without a preferred order; the preset's
+  validity / `z_base` / centerline-argument / station-count rules; the planner hints;
+  `SpecInfo.supported_orderings`; spec pickling (nested frozen params included); a
+  legacy `GeneratorSpec` through `stations` and `relaxed_stations`; the default
+  ordering (`None`) seen by a legacy spec and a `Course` with a provider; the posed
+  `validity.gate_default` `gate_width` message; a count above `max_gates` with the grade
+  check (count bit only, no cross-row read); `finalize_gate_sequence` with a persistent
+  `fallbacks` and no `fail=` allocating nothing (and its no-host-sync driver).
+- CUDA (`tests/test_gate_stages_cuda.py`, collects on CPU): stations gates, the helix
+  toys and the five built-ins recorded in a caller's graph equal to eager twins; masked
+  gate regeneration under capture leaves unmasked envs untouched.
+
 ## 0.2.0.dev3 (2026-10-22, tag `v0.2.0.dev3`)
 
 ### Packaging

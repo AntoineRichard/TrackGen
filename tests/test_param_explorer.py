@@ -529,11 +529,13 @@ def test_schema_controls_widget_rules():
 def test_schema_controls_round_trip_builtin_params(kind):
     # The generic path handles every built-in schema too: the controls' initial values,
     # resolved as generator_params, give the Params defaults.
+    from track_gen.plugin._registry import _params_class
     from track_gen.plugin.params import _coerce
 
     for name in registry.available(kind):
         info = registry.describe(kind, name)
-        params_cls = registry.get(kind, name).params
+        # GeneratorSpec.params, or a Stage's Params (the gate built-ins since PR11)
+        params_cls = _params_class(registry.get(kind, name))
         specs = px.schema_controls(info.params_schema)
         assert specs, name
         values = {s.field: s.cast(s.value) for s in specs}

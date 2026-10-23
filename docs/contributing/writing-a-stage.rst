@@ -1,14 +1,24 @@
 Writing a Stage
 ===============
 
-A **stage** is one step of the track pipeline (see :doc:`/how-it-works/pipeline-preview`).
-Besides the generator, four kinds of stage are open to plugins:
+A **stage** is one step of the track pipeline or of the gate pipeline (see
+:doc:`/how-it-works/pipeline-preview`). Besides the generators, six kinds of stage are
+open to plugins:
 
 - ``relax`` reshapes the resampled centerline (``cl.xy``), as the built-in XPBD solver
   does;
 - ``width`` writes the per-point half-width (``cl.half_width``);
-- ``elevation`` writes the per-point altitude (``cl.z``);
-- ``validity`` runs a per-env check and sets a fail bit (``valid.fail``).
+- ``elevation`` writes the per-point altitude (``cl.z``), and the per-gate altitude
+  (``gates.z``) when it runs in a gate pipeline;
+- ``validity`` runs a per-env check and sets a fail bit (``valid.fail``), on a track or
+  on gates;
+- ``order`` puts a gate generator's anchors in course order (``gates.xy``), see
+  `Writing an ordering`_;
+- ``stations`` places gate anchors on a track generator's centerline
+  (``anchors.xy``).
+
+A gate generator is a stage too, of kind ``gate_generator``: see `Writing a gate
+generator (anchors)`_.
 
 A stage is a ``Stage`` subclass, the protocol a generator Stage uses (see
 :ref:`generator-stage-contract`), with read ports. It ships the way a generator ships:
@@ -168,21 +178,34 @@ The open kinds
      - ``cl.count``, ``cl.xy``
      - none
    * - ``elevation``
-     - ``elevation``, after ``offset``
-     - ``cl.z``
+     - ``elevation``, after ``offset`` (gates: after ``gate_relax``, and after
+       ``gate_arclen`` for a non-flat profile)
+     - ``cl.z`` (gates: ``gates.z``, rewired by the planner)
      - ``seed``, ``cl.count``, ``cl.arclen2``, ``cl.length2``
-     - ``z_profile``
+     - ``z_profile`` (both configs)
    * - ``validity``
-     - ``checks``, after ``elevation``
+     - ``checks``, after ``elevation`` (gates: after ``gate_frames``)
      - ``valid.fail``
      - ``valid.fail`` and anything written before it
      - none
+   * - ``order``
+     - ``order`` (gates), after the gate generator
+     - ``gates.xy``, ``gates.count``
+     - ``anchors.xy``, ``anchors.count``, ``seed``
+     - ``GateGenConfig.gate_ordering``
+   * - ``stations``
+     - ``stations`` (gates), after a centerline generator
+     - ``anchors.xy``, ``anchors.count``
+     - ``raw.xy``, ``gen.valid`` (or ``cl.xy``, ``cl.count``, ``cl.truncated``)
+     - none
 
-A stage of these kinds may also write plugin channels, ``cl.<package>.<name>``. Each
-kind's built-ins are registered under plain names (``relax:xpbd``, ``relax:none``,
-``width:constant``, ``elevation:flat`` / ``uniform`` / ``random_walk`` / ``noise``,
-``validity:default``); ``registry.available("elevation")`` lists them with the installed
-plugins.
+A stage of the four track kinds may also write plugin channels, ``cl.<package>.<name>``
+(gate plugin channels arrive with roadmap PR13). Each kind's built-ins are registered
+under plain names (``relax:xpbd``, ``relax:none``, ``width:constant``,
+``elevation:flat`` / ``uniform`` / ``random_walk`` / ``noise``, ``validity:default``,
+``validity:gate_default``, ``order:raw`` / ``ccw`` / ``random_pairs``,
+``stations:raw`` / ``relaxed``); ``registry.available("elevation")`` lists them with the
+installed plugins.
 
 .. _stage-ports-channels:
 
@@ -210,11 +233,17 @@ plugin is then quarantined under ``warn``) when:
   through another (a rewrite reads and writes through **one** port), or a port in both
   maps names two channels;
 - the stage writes a catalogue channel its kind may not write: a relax stage writes
-  ``cl.xy`` only, a width stage ``cl.half_width``, an elevation stage ``cl.z``, a
-  validity stage ``valid.fail`` (plus plugin channels for all four; ``seed`` never). For
-  example ``Stage Taubin (kind 'relax') writes 'cl.kappa' (port 'k'): a relax stage may
-  write ['cl.xy'] and plugin channels 'cl.<package>.<name>'``;
-- a validity stage does not write ``valid.fail``.
+  ``cl.xy`` only, a width stage ``cl.half_width``, an elevation stage ``cl.z`` (or
+  ``gates.z``, the channel the planner rewires it to in a gate pipeline), a
+  validity stage ``valid.fail`` (plus plugin channels for all four; ``seed`` never), an
+  order stage ``gates.xy`` and ``gates.count``, a stations stage ``anchors.xy`` and
+  ``anchors.count``. For example ``Stage Taubin (kind 'relax') writes 'cl.kappa' (port
+  'k'): a relax stage may write ['cl.xy'] and plugin channels 'cl.<package>.<name>'``;
+- a validity stage does not write ``valid.fail``, an order stage does not write both
+  ``gates.xy`` and ``gates.count``, or a stations stage both ``anchors.xy`` and
+  ``anchors.count``;
+- a stage that is not a gate generator declares a non-empty ``preferred`` (a gate
+  generator attribute: ``Stage X.preferred is read for gate generators only``).
 
 A non-Stage spec (a ``GeneratorSpec``-like object) registered under one of these kinds
 raises ``TypeError``: pipeline stages are ``Stage`` subclasses only.
@@ -244,8 +273,16 @@ The builder is the one :ref:`stage-builder` describes, with these differences:
      - The slot id (``"relax"``, ``"elevation"``, or the id a ``StageRef`` gives). It
        keys ``gen.params``, the scratch names and the salts.
    * - ``layout.stride``
-     - ``N_max``: a per-point channel is ``[E * N_max]``, env ``e``'s slots are
-       ``e * N_max`` to ``e * N_max + N_max - 1``, and the first ``count[e]`` are real.
+     - ``N_max`` in a track pipeline: a per-point channel is ``[E * N_max]``, env
+       ``e``'s slots are ``e * N_max`` to ``e * N_max + N_max - 1``, and the first
+       ``count[e]`` are real. In a gate pipeline, ``G = max_gates`` for a stage on the
+       gate slots and ``N_max`` for one with a ``cl.*`` port (see
+       :ref:`pipeline-gates`).
+   * - ``stride_of(port)``, ``per_of(port)``
+     - The row stride (``1`` for an ``[E]`` channel) and the ``per`` of the channel the
+       port is wired to, after ``ports`` rewiring: size reads from them when a stage
+       reads two domains (an order stage reads ``A``-strided anchors and writes
+       ``G``-strided gates).
    * - ``seed``
      - The ``[E]`` effective seed, as for a generator. Declaring a ``seed`` read port
        (``reads = {"seed": "seed"}``) gives the same buffer.
@@ -254,14 +291,17 @@ The builder is the one :ref:`stage-builder` describes, with these differences:
        for this one.
    * - ``write(port, dtype=None, *, per=None)``
      - A new buffer for ``writes[port]``, zero-initialised once, read by every later
-       stage. ``per`` is ``"env"`` (``[E]``) or ``"cl"`` (``[E * N_max]``). For a
+       stage. ``per`` is ``"env"`` (``[E]``) or ``"cl"`` (``[E * N_max]``), and for the
+       gate catalogue ``"anchors"`` (``[E * A]``) or ``"gates"`` (``[E * G]``). For a
        catalogue channel, or a plugin channel an earlier stage wrote, omit both (they
        are the channel's) or pass matching ones (``TypeError`` otherwise); a plugin
        channel's first writer fixes them (``dtype`` required, ``per`` defaults to
-       ``"env"``). Call it once per write port, in ``build``.
+       ``"env"``). A rewired port is checked against the channel the stage declared and
+       sized by the one it is wired to. Call it once per write port, in ``build``.
    * - ``temp_like(port)``
      - A private zero-initialised buffer shaped like a write port's channel (call
-       ``write`` first for a plugin channel): a ping-pong partner.
+       ``write`` first for a plugin channel): a ping-pong partner. It works on
+       ``anchors.*`` and ``gates.*`` ports too.
    * - ``scratch``, ``param``, ``input``, ``salt``
      - As for a generator, namespaced by the stage id: ``scratch:<id>/<name>``, and
        ``salt(stream)`` hashes ``"<id>/<stream>"``, so a stage moved to another slot id
@@ -413,6 +453,24 @@ The random stream is keyed on the effective seed and the stage's salt
 (:ref:`stage-salts`), so env ``e``'s hills change when its seed or epoch changes and
 depend on nothing else.
 
+**On gates.** The same class runs in a gate pipeline, with no change:
+``presets.gates(..., elevation="acme.sinusoid_hills")`` or
+``GateGenConfig(z_profile="acme.sinusoid_hills")``. The planner rewires its ports to the
+gate channels (``cum -> gates.cum``, ``perim -> gates.perim``, ``count -> gates.count``,
+``z -> gates.z``; see :ref:`pipeline-gate-elevation`), ``b.layout.stride`` is then
+``max_gates``, and ``b.write("z", wp.float32, per="cl")`` returns a ``[E * max_gates]``
+buffer: ``per`` is checked against the channel the stage declares. The salt is keyed by
+the slot id, ``"elevation"`` in both pipelines. A stage that sizes buffers itself should
+use ``b.stride_of(port)`` rather than assume ``N_max``. Through
+``GateGenConfig(z_profile=...)``, ``from_legacy(config)`` receives the ``GateGenConfig``:
+only the ``z_*`` fields are shared with ``TrackGenConfig``, so read any other field with
+``getattr(config, name, default)`` (a ``from_legacy`` that reads a ``TrackGenConfig``-only
+field raises ``ValueError`` naming it). Test it on gates with
+``check_stage("elevation", "acme.sinusoid_hills", pipeline="gates")``
+(:ref:`kit-check-stage`).
+
+.. _stage-validity-check:
+
 A validity check
 ----------------
 
@@ -498,6 +556,262 @@ first in ``checks``.
 With ``on_invalid="poison"`` the commit empties every env with a bit set, yours included
 (see :ref:`pipeline-commit`).
 
+**On gates.** A gate check is a validity stage that reads gate channels
+(``gates.position``, ``gates.count``, ...; :ref:`pipeline-gate-channels`) with
+``b.layout.stride == max_gates``, under the same rules: it reads and rewrites
+``valid.fail``, owns bits from 16 on, and follows ``validity.gate_default``, which owns
+bits 0 to 5 (:ref:`pipeline-gate-fail-bits`). Add it with
+``presets.gates(..., checks=("gate_default", "acme.max_height"))``; its bit then shows in
+``GateSequence.fail_mask`` and ``GateSequence.fail_bits``. ``check_stage`` runs a check
+that reads a ``gates.*`` or ``anchors.*`` channel in the default gate pipeline.
+
+.. _gate-generator-stage:
+
+Writing a gate generator (anchors)
+----------------------------------
+
+A gate generator emits *anchors*: the plan-view points the gate pipeline then orders,
+normalizes, separates, elevates, lifts and frames (:ref:`pipeline-gates`). It is a
+``Stage`` with ``kind="gate_generator"`` and ``output="anchors"``. It writes two
+channels, ``anchors.xy`` (``[E * A]`` ``vec2f``, env ``e``'s anchors at ``e * A + i``) and
+``anchors.count`` (``[E]`` ``int32``), and may write per-anchor attributes it
+``provides``. It does not order its anchors (an ``order`` stage does), size them to the
+course extent (``normalize.extent`` does, when it declares
+``preferred={"normalize": "extent"}``), or compute altitudes, tangents and frames.
+
+This one places ``gates`` anchors on a circle with a random phase per env, and provides
+their altitude (a wave that climbs ``turns`` times per lap) and their analytic tangent, so
+the pipeline keeps both instead of running an elevation and a finite-difference tangent:
+
+.. code-block:: python
+
+   import dataclasses
+
+   import warp as wp
+
+   from track_gen import plugin
+   from track_gen.ops.funcs import hash32
+
+
+   @wp.kernel
+   def _helix_k(seed: wp.array(dtype=wp.int32), salt: wp.uint32, A: int, r: float,
+                height: float, turns: int, xy: wp.array(dtype=wp.vec2f),
+                z: wp.array(dtype=wp.float32), tangent: wp.array(dtype=wp.vec3f)):
+       t = wp.tid()                         # one thread per anchor slot: t = e * A + i
+       e = t // A
+       i = t - e * A
+       key = hash32(wp.uint32(seed[e]) ^ salt) & wp.uint32(0x7FFFFFFF)
+       state = wp.rand_init(wp.int32(key))
+       phase = 6.2831853 * wp.randf(state)  # the same draw for every anchor of e
+       s = 6.2831853 * float(i) / float(A)  # lap parameter in [0, 2*pi)
+       u = s + phase
+       w = float(turns) * s
+       xy[t] = wp.vec2f(r * wp.cos(u), r * wp.sin(u))
+       z[t] = height * wp.sin(w)
+       # d(position)/ds; the frames stage normalizes it
+       tangent[t] = wp.vec3f(-r * wp.sin(u), r * wp.cos(u),
+                             height * float(turns) * wp.cos(w))
+
+
+   @dataclasses.dataclass(frozen=True, kw_only=True)
+   class HelixParams(plugin.Params):
+       gates: int = plugin.static(16, lo=4, doc="gates per lap")
+       radius: float = plugin.static(0.8, lo=0.0, doc="loop radius, times scale")
+       height: float = plugin.static(0.3, lo=0.0, doc="altitude amplitude")
+       turns: int = plugin.static(3, lo=1, doc="climbs per lap")
+
+
+   class Helix(plugin.Stage):
+       kind = "gate_generator"
+       name = "acme.helix"
+       output = "anchors"
+       Params = HelixParams
+       writes = {"xy": "anchors.xy", "count": "anchors.count",
+                 "z": "anchors.z", "tangent": "anchors.tangent"}
+       provides = frozenset({"z", "tangent"})
+       orderings = frozenset({"raw"})   # provided attributes travel by anchor index
+       preferred = {"order": "raw"}
+
+       def capacity(self, params, layout):
+           return {"gates": params.gates, "min_gates": params.gates}
+
+       def build(self, b, params):
+           A = int(params.gates)
+           xy = b.write("xy", wp.vec2f, per="anchors")         # [E * A]
+           count = b.write("count", wp.int32)                  # [E]
+           z = b.write("z", wp.float32, per="anchors")
+           tangent = b.write("tangent", wp.vec3f, per="anchors")
+           salt = b.salt("phase")
+           r = float(params.radius) * float(b.scale)
+           height, turns = float(params.height), int(params.turns)
+
+           def enqueue(ctx):
+               ctx.fill(count, A)                              # every env: A anchors
+               ctx.launch(_helix_k, b.E * A,
+                          [b.seed, salt, A, r, height, turns, xy, z, tangent])
+           return enqueue
+
+
+   def register(reg):
+       reg.add(Helix)
+
+Select it through the preset, which reads the generator's declaration to build the
+stage list:
+
+.. code-block:: python
+
+   from track_gen import GateGenConfig, GateGenerator
+   from track_gen.pipeline import presets
+
+   spec = presets.gates(num_envs=1024, device="cuda:0", generator="acme.helix")
+   spec.ids
+   # ('generator', 'order', 'carry_z', 'carry_tangent', 'gate_relax', 'lift',
+   #  'gate_frames', 'validity')
+   gates = GateGenerator(spec).generate()
+
+   # The flat config too: gate_ordering=None (its default) is the generator's
+   # default order, "raw" here.
+   GateGenerator(GateGenConfig(num_envs=1024, device="cuda:0", generator="acme.helix"))
+
+``gate_arclen``, ``elevation`` and ``tangents`` are gone: ``carry.z`` and
+``carry.tangent`` copy the provided values to the gate slots, so ``GateSequence.position``
+has the helix's altitude bit for bit and ``GateSequence.tangent`` its normalized tangent.
+The sphere separation (``gate_relax``) still runs and may move a gate's xy; these gates
+are far apart, so it does not.
+
+The contract:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 22 78
+
+   * - Attribute or method
+     - Meaning
+   * - ``kind``, ``output``
+     - ``"gate_generator"`` and ``"anchors"``. A ``kind="generator"`` stage with
+       ``output="anchors"`` is refused (declare ``kind="gate_generator"``).
+   * - ``name``
+     - The ``GateGenConfig.generator`` (or ``presets.gates(generator=...)``) string.
+       Dotted for third parties.
+   * - ``reads``
+     - Empty: a generator reads no channel; its seed is ``b.seed``.
+   * - ``writes``
+     - ``anchors.xy`` and ``anchors.count`` (both required), plus ``anchors.z``,
+       ``anchors.tangent``, ``anchors.half_size`` and ``anchors.roll`` for the
+       attributes it provides; no other channel.
+   * - ``provides``
+     - Exactly the attributes it writes, a subset of ``{"z", "tangent", "half_size",
+       "roll"}``; ``half_size`` and ``roll`` come together (write ``roll = 0`` for
+       upright gates). See :ref:`pipeline-provides` for what the pipeline drops and
+       what reaches the ``GateSequence``.
+   * - ``orderings``
+     - A whitelist (``frozenset``) of the order names it accepts, or ``None``. A
+       generator that provides attributes must declare ``frozenset({"raw"})``: the
+       attributes are carried by anchor index, and only ``order.raw`` keeps it.
+   * - ``excluded_orderings``
+     - With ``orderings=None``: the orders it refuses, every other registered order
+       being accepted (third-party ones included). The built-ins use it: ``bezier`` and
+       ``hull`` exclude ``raw``, ``polar``, ``checkpoint`` and ``voronoi`` exclude
+       ``random_pairs``. Declare one of the two, not both.
+   * - ``preferred``
+     - ``{"order": name, "normalize": name}``, both optional: the default order of
+       ``presets.gates`` (it must be accepted), and ``"extent"`` to have the pipeline
+       scale the ordered gates to ``TARGET_EXTENT * scale`` as ``polar`` does.
+   * - ``capacity(params, layout)``
+     - ``{"gates": A, "min_gates": k}``: ``A >= 1`` anchors per env at most (the row
+       stride of ``anchors.*``), ``k`` in ``[0, A]`` at least (default ``0``). The planner
+       requires ``A <= max_gates`` and the validity stage's ``min_gates <= A``.
+   * - ``build(b, params)``
+     - As for any stage. ``b.layout.stride`` is ``max_gates``; size the anchors with
+       ``per="anchors"`` (``A``), never with the layout. Write ``count[e]`` and the first
+       ``count[e]`` anchors of every env on every call; the slots after them are never
+       read (write them deterministically, NaN or not, as the built-in samplers do).
+
+Everything else is the generator contract of :ref:`generator-stage-contract`: Params
+(static and dynamic), ``capture`` and ``capture_class``, salts, the hard rules of
+``enqueue``, per-env determinism. ``registry.add`` raises ``TypeError`` or ``ValueError``
+(quarantine under ``warn``) for a declaration that breaks the table, for example
+``Stage Helix provides per-anchor attributes ['tangent', 'z']: they are carried to the gate
+slots by index, so orderings must be frozenset({'raw'})``.
+
+The anchors keep the generator's own order, and the pipeline orders them: an unordered
+cloud (as ``bezier`` emits) excludes ``raw``; a loop in course order (as ``polar``
+emits) excludes ``random_pairs`` and is fine with ``raw`` or ``ccw``. Size the anchors as
+you like: with ``preferred["normalize"] = "extent"`` the pipeline centers them and scales
+the longest bounding-box side to ``ops.constants.TARGET_EXTENT * scale``; without it,
+they are used as written (``bezier`` and ``hull`` keep their grid's size).
+
+Test it with ``check_gate_generator("acme.helix")`` (:doc:`testing-a-plugin`); it also
+checks that every env's ``anchors.count`` lies within ``capacity()``. A legacy
+``GateGeneratorSpec`` keeps working but is deprecated
+(:ref:`gate-generator-contract`).
+
+.. _writing-an-ordering:
+
+Writing an ordering
+-------------------
+
+An ``order`` stage decides the sequence in which the gates are flown. It reads the
+anchors (``A``-strided) and writes the first ``m`` gate slots (``G``-strided) of
+``gates.xy``, NaN after them, where ``m = min(count[e], A, G)``, and ``gates.count``,
+normally a copy of ``anchors.count``. This one flies a generator's own order backwards:
+
+.. code-block:: python
+
+   @wp.kernel
+   def _reverse_k(src: wp.array(dtype=wp.vec2f), A: int, count: wp.array(dtype=wp.int32),
+                  G: int, dst: wp.array(dtype=wp.vec2f)):
+       t = wp.tid()                         # one thread per gate slot: t = e * G + i
+       e = t // G
+       i = t - e * G
+       m = wp.clamp(count[e], 0, wp.min(A, G))
+       if i < m:
+           dst[t] = src[e * A + (m - 1 - i)]
+       else:
+           dst[t] = wp.vec2f(wp.nan, wp.nan)   # padding: every slot is written
+
+
+   class Reverse(plugin.Stage):
+       kind = "order"
+       name = "acme.reverse"
+       reads = {"anchors": "anchors.xy", "n": "anchors.count"}
+       writes = {"xy": "gates.xy", "count": "gates.count"}
+
+       def build(self, b, params):
+           src, n = b.read("anchors"), b.read("n")
+           dst = b.write("xy", wp.vec2f, per="gates")      # [E * G]
+           count = b.write("count", wp.int32)              # [E]
+           A, G = b.stride_of("anchors"), b.stride_of("xy")
+
+           def enqueue(ctx):
+               ctx.launch(_reverse_k, b.E * G, [src, A, n, G, dst])
+               ctx.copy(count, n)
+           return enqueue
+
+The read and write ports have different names: ``anchors.xy`` and ``gates.xy`` are two
+channels, and a port in both maps must name one channel. ``A`` and ``G`` come from
+``b.stride_of``: the anchors are written at the generator's own stride, the gate slots at
+``max_gates``.
+
+Select it by name, with the flat config or the preset:
+
+.. code-block:: python
+
+   GateGenerator(GateGenConfig(num_envs=1024, device="cuda:0", generator="polar",
+                               gate_ordering="acme.reverse"))
+   presets.gates(num_envs=1024, device="cuda:0", generator="polar",
+                 order="acme.reverse")
+
+Every built-in gate generator accepts a third-party order: they declare
+``excluded_orderings``, not a whitelist. A generator with a whitelist (``orderings``, as
+one that provides attributes) accepts only the orders it lists, and the planner refuses
+the others with ``gate generator 'acme.helix' does not support gate_ordering
+'acme.reverse'; supported: ['raw'] (its preferred order is 'raw')``. An order that
+needs randomness reads the ``seed`` channel (``reads = {..., "seed": "seed"}``) and keys
+its stream on ``b.salt(<stream>)`` (:ref:`stage-salts`); the built-in
+``order.random_pairs`` keeps 0.2.0.dev3's fixed salt 7919 for byte identity. Test it
+with ``check_stage("order", "acme.reverse")``.
+
 .. _stage-runtime-params:
 
 Runtime parameters
@@ -522,7 +836,7 @@ Capture classes
 As for a generator (:ref:`stage-capture-classes`): ``STATIC`` (default) for a fixed
 launch sequence; ``HOST`` for a stage that needs host readbacks or host control flow,
 which makes the whole ``Program`` run eagerly on every call and refuse a caller's
-capture; ``BOUNDED`` is rejected until roadmap PR12.
+capture; ``BOUNDED`` is rejected until roadmap PR12. The same holds in a gate pipeline.
 
 Registering and selecting
 -------------------------
@@ -534,21 +848,27 @@ Names follow the generator rules (dotted, prefixed by your entry-point name, see
 ``relax_solver`` that names a stage of a quarantined plugin raises its
 ``PluginLoadError``. ``registry.describe(kind, name)``
 reports a stage's ``reads``, ``writes``, ``capture``, ``capturable`` and
-``params_schema``; ``output`` is ``None``.
+``params_schema``; ``output`` is ``None`` (``"anchors"`` for a gate generator, which also
+reports ``orderings``, ``excluded_orderings`` and ``preferred``).
 
 A stage is selected by:
 
 - ``presets.track(..., relax=..., width=..., elevation=..., checks=(...))``, with a name,
   ``(name, params)`` or a ``StageRef`` (see :ref:`pipeline-presets`);
+- ``presets.gates(..., generator=..., order=..., stations=..., elevation=...,
+  checks=(...))``, with the same forms (see :ref:`pipeline-gate-presets`);
 - the edit operations of any ``PipelineSpec`` (``replace``, ``insert_after``, ...);
 - for relax and elevation, the flat ``TrackGenConfig`` fields ``relax_solver`` and
-  ``z_profile`` (see :ref:`flat-stage-shortcuts`).
+  ``z_profile`` (see :ref:`flat-stage-shortcuts`); for gates, the ``GateGenConfig``
+  fields ``generator``, ``gate_ordering`` and ``z_profile``.
 
 Testing a stage
 ---------------
 
-``track_gen.testing.check_stage`` runs a stage inside the default track pipeline through
-the conformance checks: shapes and NaN padding of the ``Track``, determinism, batch
+``track_gen.testing.check_stage`` runs a stage inside the default track pipeline (an
+``order`` or ``stations`` stage, or a check that reads gate channels, inside the default
+gate pipeline) through the conformance checks: shapes and NaN padding of the ``Track``
+(or ``GateSequence``), determinism, batch
 independence, statelessness, the hot-path guards, caller capture on CUDA, and two
 stage-specific checks, ``stage.isolation`` (the stage writes none of its inputs and
 recomputes its output from them) and, for a validity stage, ``validity.bits``:
@@ -561,6 +881,7 @@ recomputes its output from them) and, for a validity stage, ``validity.bits``:
    check_stage("elevation", "acme.sinusoid_hills").raise_for_failures()
    check_stage("validity", "acme.max_curvature",
                upstream={"elevation": "acme.sinusoid_hills"}).raise_for_failures()
+   check_stage("order", "acme.reverse").raise_for_failures()
 
 See :ref:`kit-check-stage` for the checks and the arguments. Test the stage's own
 properties too: that a ``tap`` of its output matches a NumPy reference on a small batch,

@@ -262,3 +262,138 @@ def test_other_generation_names_still_forward_without_warning():
         assert _pipe.corner_sample_inplace is warp_generate.corner_sample_inplace
     with pytest.raises(AttributeError):
         _pipe.no_such_name  # noqa: B018
+
+
+# ---------------------------------------------------------------------------------------
+# The warp_gate helpers of 0.1 gate plugins (deprecated shims since roadmap PR11)
+# ---------------------------------------------------------------------------------------
+
+from tests import _legacy_gate_pr11 as _gate_ref  # noqa: E402
+from track_gen._src import warp_gate  # noqa: E402
+
+# name -> parameter list at dd181f0 (0.2.0.dev3), as PINNED.
+GATE_PINNED = {
+    "alloc_order_scratch": ["config"],
+    "order_points": ["seeds_wp", "src", "src_stride", "count", "max_gates", "ordering",
+                     "keys", "dst", ("ctx", None)],
+    "finish_ordered_gates": ["seeds_wp", "src", "src_stride", "count", "max_gates",
+                             "ordering", "keys", "out", ("normalize_extent", None),
+                             ("ctx", None)],
+}
+_K_RING = 7
+
+
+@pytest.mark.parametrize("name", list(GATE_PINNED))
+def test_gate_helper_signatures_are_pinned(name):
+    fn = getattr(warp_gate, name)
+    assert callable(fn)
+    assert _params(fn) == _expected(GATE_PINNED[name])
+
+
+def test_gate_staging_name_warns_and_aliases():
+    from track_gen.stages.gates import _GateStaging
+
+    with pytest.warns(DeprecationWarning, match="_GateStaging .*deprecated"):
+        cls = warp_gate._GateStaging
+    assert cls is _GateStaging
+    with pytest.raises(AttributeError):
+        warp_gate.no_such_name  # noqa: B018
+
+
+@pytest.mark.parametrize("ordering", ["raw", "ccw", "random_pairs"])
+def test_gate_helpers_match_the_frozen_dd181f0_code(ordering):
+    """``finish_ordered_gates`` (order + extent normalization + count copy) and
+    ``order_points`` reproduce the frozen 0.2.0.dev3 ordering bit for bit."""
+    import types
+
+    E, A, G = 3, 9, 12
+    rs = np.random.default_rng(5)
+    src = _v2(rs.uniform(-1.0, 1.0, (E * A, 2)))
+    count = _i32([9, 6, 0])
+    seeds = _i32([3, 4, 5])
+    cfg = types.SimpleNamespace(num_envs=E, max_gates=G, device=DEV)
+    with pytest.deprecated_call():
+        cnt_scratch, keys = warp_gate.alloc_order_scratch(cfg)
+    assert (cnt_scratch.shape, keys.shape) == ((E,), (E * G,))
+    ref_ctx = LaunchContext(DEV, None)
+    want = wp.zeros(E * G, dtype=wp.vec2f, device=DEV)
+    ref_keys = wp.zeros(E * G, dtype=wp.float32, device=DEV)
+    _gate_ref._order_points(ref_ctx, seeds, src, A, count, G, ordering, ref_keys, want)
+    got = wp.zeros(E * G, dtype=wp.vec2f, device=DEV)
+    with pytest.deprecated_call():
+        warp_gate.order_points(seeds, src, A, count, G, ordering, keys, got)
+    assert got.numpy().tobytes() == want.numpy().tobytes()
+    from track_gen.ops.geometry import _normalize_extent_launch
+
+    _normalize_extent_launch(ref_ctx, want, G, 1.5, E, count=count)
+    staging = types.SimpleNamespace(position=wp.zeros(E * G, dtype=wp.vec2f, device=DEV),
+                                    count=wp.zeros(E, dtype=wp.int32, device=DEV))
+    with pytest.deprecated_call():
+        warp_gate.finish_ordered_gates(seeds, src, A, count, G, ordering, keys, staging,
+                                       normalize_extent=1.5)
+    assert staging.position.numpy().tobytes() == want.numpy().tobytes()
+    np.testing.assert_array_equal(staging.count.numpy(), count.numpy())
+    with pytest.raises(ValueError, match="unsupported gate ordering 'spiral'"), \
+            pytest.deprecated_call():
+        warp_gate.order_points(seeds, src, A, count, G, "spiral", keys, got)
+
+
+@wp.kernel
+def _ring_points_k(seeds: wp.array(dtype=wp.int32), K: int, out: wp.array(dtype=wp.vec2f)):
+    t = wp.tid()
+    e = t // K
+    i = t - e * K
+    state = wp.rand_init(seeds[e], i)
+    theta = 6.2831853 * float(i) / float(K) + 0.2 * wp.randf(state)
+    r = 1.0 + 0.3 * wp.randf(state)
+    out[t] = wp.vec2f(r * wp.cos(theta), r * wp.sin(theta))
+
+
+def _v01_alloc_scratch(config):
+    import types
+
+    warp_gate._init()
+    count, keys = warp_gate.alloc_order_scratch(config)
+    return types.SimpleNamespace(
+        points=wp.empty(int(config.num_envs) * _K_RING, dtype=wp.vec2f,
+                        device=str(config.device)), count=count, keys=keys)
+
+
+def _v01_generate(seeds_wp, config, out, scratch) -> None:
+    # A 0.1-ABI gate plugin, modelled on the 0.1 built-in polar gate generator: no ctx=,
+    # direct wp.launch calls, then the warp_gate ordering helper.
+    E, G, dev = int(config.num_envs), int(config.max_gates), str(out.position.device)
+    wp.launch(warp_gate._fill_i32_k, dim=E, inputs=[scratch.count, _K_RING], device=dev)
+    wp.launch(_ring_points_k, dim=E * _K_RING, inputs=[seeds_wp, _K_RING, scratch.points],
+              device=dev)
+    warp_gate.finish_ordered_gates(seeds_wp, scratch.points, _K_RING, scratch.count, G,
+                                   str(config.gate_ordering), scratch.keys, out,
+                                   normalize_extent=float(config.scale) * 1.5)
+
+
+@pytest.mark.parametrize("ordering", ["raw", "ccw", "random_pairs"])
+def test_a_v01_gate_plugin_still_runs(ordering, plugin_registry):
+    """A ``GateGeneratorSpec`` written to the 0.1 ABI (``alloc_order_scratch`` in
+    ``alloc_scratch``, ``finish_ordered_gates`` in ``generate``) runs through the legacy
+    adapter, under ``DeprecationWarning``s, byte-identical to the frozen 0.2.0.dev3 gate
+    pipeline running the same plugin."""
+    from track_gen import GateGenConfig, GateGenerator, PerEnvSeededRNG
+    from track_gen._src.gate_generator_registry import GateGeneratorSpec
+
+    spec = GateGeneratorSpec(name="legacy01.ring", alloc_scratch=_v01_alloc_scratch,
+                             generate=_v01_generate, max_gates=lambda config: _K_RING,
+                             supported_orderings=frozenset({"ccw", "raw", "random_pairs"}))
+    plugin_registry.add(spec)
+    E = 4
+    cfg = GateGenConfig(generator="legacy01.ring", gate_ordering=ordering, num_envs=E,
+                        device=DEV, max_gates=8, z_profile="uniform", z_max=0.5)
+    seeds = [11, 12, 13, 14]
+    rng = PerEnvSeededRNG(seeds=_i32(seeds), num_envs=E, device=DEV)
+    with pytest.deprecated_call():
+        gen = GateGenerator(cfg, rng)
+        seq = gen.generate()
+    with pytest.deprecated_call():
+        want = _gate_ref.run_reference_legacy(cfg, spec, seeds)
+    assert (seq.count.numpy() == _K_RING).all() and seq.valid.numpy().any()
+    for f in _gate_ref.FINAL_FIELDS:
+        assert getattr(seq, f).numpy().tobytes() == want[f].tobytes(), f

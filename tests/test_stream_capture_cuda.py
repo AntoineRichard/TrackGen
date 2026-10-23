@@ -21,7 +21,7 @@ import warp as wp  # noqa: E402
 
 from track_gen import GateGenConfig, PerEnvSeededRNG, TrackGenConfig  # noqa: E402
 from track_gen._src import gate_generator_registry, generator_registry  # noqa: E402
-from track_gen._src import warp_gate, warp_pipeline  # noqa: E402
+from track_gen._src import warp_pipeline  # noqa: E402
 from track_gen._src.gate_generator import GateGenerator  # noqa: E402
 from track_gen._src.track_generator import TrackGenerator  # noqa: E402
 from track_gen.course import Course, CourseConfig  # noqa: E402
@@ -95,9 +95,9 @@ def test_gate_pipeline_records_on_side_stream(generator):
     wp.synchronize()
 
     def run():
-        warp_gate._run_gate_pipeline(gen._config, gen._seed_buf, out=gen._gate_sequence,
-                                     scratch=gen._scratch,
-                                     generator_spec=gen._generator_spec, ctx=ctx)
+        # PR11: the gate pipeline is a Program (its stages, the seed prologue and the
+        # commit) emitted on ctx.
+        gen.program.enqueue(ctx)
 
     run()
     wp.synchronize()

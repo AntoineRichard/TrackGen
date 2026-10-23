@@ -12,7 +12,8 @@ It provides:
   ``track_gen_conformance(name, params=None, *, kind="generator", **kwargs) -> Report``
   that runs :func:`~track_gen.testing.check_generator` (``kind="gate_generator"``:
   :func:`~track_gen.testing.check_gate_generator`; ``"relax"`` / ``"width"`` /
-  ``"elevation"`` / ``"validity"``: :func:`~track_gen.testing.check_stage`) and fails
+  ``"elevation"`` / ``"validity"`` / ``"order"`` / ``"stations"``:
+  :func:`~track_gen.testing.check_stage`) and fails
   the test, listing every failed check, unless all pass;
 - :func:`generator_names` and :func:`parametrize_generators`, to run a test over the
   registered generators::
@@ -33,7 +34,8 @@ from .conformance import Report, check_gate_generator, check_generator, check_st
 
 __all__ = ["generator_names", "parametrize_generators", "track_gen_conformance"]
 
-_KINDS = ("generator", "gate_generator", "relax", "width", "elevation", "validity")
+_KINDS = ("generator", "gate_generator", "relax", "width", "elevation", "validity",
+          "order", "stations")
 
 
 def _check_kind(kind: str) -> None:
@@ -44,7 +46,8 @@ def _check_kind(kind: str) -> None:
 def generator_names(kind: str = "generator", *, builtin: "bool | None" = None,
                     exclude: Iterable[str] = ()) -> list[str]:
     """The names registered under ``kind`` (``"generator"``, ``"gate_generator"``,
-    ``"relax"``, ``"width"``, ``"elevation"`` or ``"validity"``), sorted;
+    ``"relax"``, ``"width"``, ``"elevation"``, ``"validity"``, ``"order"`` or
+    ``"stations"``), sorted;
     ``builtin=True`` / ``False`` keeps only the built-ins / only the others."""
     from ..plugin import registry  # noqa: PLC0415
 

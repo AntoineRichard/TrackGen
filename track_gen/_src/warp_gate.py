@@ -1,10 +1,22 @@
-"""Common pure-Warp helpers for native gate sequence generation.
+"""The kernels of the gate pipeline (roadmap PR11: the stages live in
+:mod:`track_gen.stages.gates`).
 
-This module owns only shared gate-buffer utilities: allocation, deterministic point
-ordering, count-aware normalization/tangents, and final frame/validity computation.
-Native gate generators plug into these helpers but live in separate modules.
+This module owns the gate kernels the stages launch (ordering, sphere relaxation, lift,
+tangents, frames, validity) and a few standalone wrappers: allocation
+(:func:`alloc_gate_sequence`), :func:`normalize_positions`, :func:`relax_gate_spheres`,
+:func:`tangents_from_positions` and :func:`finalize_gate_sequence` (frames + validity
+on a hand-built ``GateSequence``). Native gate generators are ``gate_generator``
+Stages in separate modules; ordering, normalization and everything after them are
+stages of the gate :class:`~track_gen.pipeline.Program`.
+
+Deprecated (until 1.0), for legacy ``GateGeneratorSpec`` plugins written to the 0.1 ABI:
+:func:`alloc_order_scratch`, :func:`order_points`, :func:`finish_ordered_gates` and the
+``_GateStaging`` name (now the legacy adapter's staging view,
+``track_gen.stages.gates._GateStaging``).
 """
 from __future__ import annotations
+
+import warnings
 
 import warp as wp
 
@@ -18,7 +30,7 @@ from ..ops.fill import (  # noqa: F401 - the _fill_*_k names are legacy aliases
     _fill_vec3f_k as _fill_vec3_k,
     fill as _ops_fill,
 )
-from ..ops.geometry import _angle_sort_launch, _normalize_extent_launch
+from ..ops.geometry import _angle_sort_launch, _normalize_extent_launch  # noqa: F401
 from .collision_geom import _frame_quat, _safe_normalize3
 # Shared runtime helpers. _sync is re-exported for importers only: library code
 # syncs through ctx.sync() (a debug-only no-op unless TRACKGEN_DEBUG_SYNC=1).
@@ -27,6 +39,7 @@ from .types import GateGenConfig, GateSequence
 
 # Deprecated: no longer read or written by the library. Kept defined for importers.
 _CAPTURING = False
+# The random_pairs order's salt (order.random_pairs).
 _ORDER_SALT = 7919
 
 
@@ -136,8 +149,15 @@ def _relax_gate_spheres_k(
     count: wp.array(dtype=wp.int32),
     target_distance: float,
     iterations: int,
+    src: wp.array(dtype=wp.vec2f),
 ):
+    # ``src`` is the input version (gate_relax.spheres rewrites gates.xy into a new
+    # buffer): the env's row is copied first, before the early return, so the output
+    # version is always the input relaxed (or unchanged). ``src`` may be ``position``.
     e = wp.tid()
+    row = e * max_gates
+    for k in range(max_gates):
+        position[row + k] = src[row + k]
     if target_distance <= 0.0 or iterations <= 0:
         return
 
@@ -234,7 +254,11 @@ def _finalize_frame_k(
     gate_width: float,
     align_full: int,
     fallbacks: wp.array(dtype=wp.int32),
+    position_in: wp.array(dtype=wp.vec3f),
+    tangent_in: wp.array(dtype=wp.vec3f),
 ):
+    # position_in / tangent_in: the input versions (gate_frames rewrites gates.position
+    # and gates.tangent into new buffers); they may be position / tangent themselves.
     t = wp.tid()
     e = t // max_gates
     i = t - e * max_gates
@@ -251,8 +275,8 @@ def _finalize_frame_k(
         left[t] = nan3
         right[t] = nan3
         return
-    p = position[t]
-    tan = _safe_normalize3(tangent[t])
+    p = position_in[t]
+    tan = _safe_normalize3(tangent_in[t])
     fwd = tan
     if align_full == 0:
         fwd = wp.vec3f(tan[0], tan[1], 0.0)
@@ -287,6 +311,7 @@ def _finalize_frame_k(
             fw = tan
         elif tan[2] == 0.0:
             fw = tan
+    position[t] = p
     tangent[t] = tan
     forward[t] = fw
     orientation[t] = q
@@ -311,14 +336,20 @@ def _finalize_validity_k(
     gate_width: float,
     z_valid_grade: float,
     valid: wp.array(dtype=wp.int32),
+    fail: wp.array(dtype=wp.int32),
 ):
+    # ``fail``: one bit per failed check (GATE_FAIL_BITS: count 0, finite 1, tangent 2,
+    # spacing 3, crossing 4, grade 5), so valid[e] == (fail[e] == 0). ``gate_width`` is
+    # read as a toggle only (> 0: run the crossing check).
     e = wp.tid()
     cnt = count[e]
     base = e * max_gates
     ok = int(1)
+    f = int(0)
 
     if cnt < min_gates or cnt > max_gates:
         ok = int(0)
+        f = f | 1
 
     for i in range(max_gates):
         if i < cnt:
@@ -341,6 +372,7 @@ def _finalize_validity_k(
             )
             if not fields_finite:
                 ok = int(0)
+                f = f | 2
             # Full 3D tangent norm: with gate_align="full_tangent" a legitimate
             # near-vertical tangent has a tiny XY norm, so an XY-only length
             # check would wrongly flag it. The frame kernel's own near-vertical
@@ -349,6 +381,7 @@ def _finalize_validity_k(
             tangent_len2 = t[0] * t[0] + t[1] * t[1] + t[2] * t[2]
             if tangent_len2 <= 1.0e-12:
                 ok = int(0)
+                f = f | 4
 
     # CRITICAL for golden parity: pairwise min-distance stays an XY check and
     # the crossing check runs the 2D proper-intersection test on projected
@@ -365,6 +398,7 @@ def _finalize_validity_k(
                     d2 = d[0] * d[0] + d[1] * d[1]
                     if d2 + min_d2_slop < min_d2:
                         ok = int(0)
+                        f = f | 8
 
     if gate_width > 0.0:
         for i in range(max_gates):
@@ -379,15 +413,19 @@ def _finalize_validity_k(
                                 wp.vec2f(li[0], li[1]), wp.vec2f(ri[0], ri[1]),
                                 wp.vec2f(lj[0], lj[1]), wp.vec2f(rj[0], rj[1])) != 0:
                             ok = int(0)
+                            f = f | 16
 
     # Grade check: reject any course whose |dz|/ds over a plan-view chord
     # exceeds z_valid_grade. Loops with wraparound (j = (i+1) % cnt) so the
-    # closing chord (gate cnt-1 -> gate 0) is checked too.
+    # closing chord (gate cnt-1 -> gate 0) is checked too. The wrap is also bounded
+    # by the slot capacity: a count above max_gates (an over-reporting plugin; the
+    # count bit is set above) never reads the next env's row. For cnt <= max_gates
+    # this is the same arithmetic as j == cnt.
     if z_valid_grade > 0.0:
         for i in range(max_gates):
             if i < cnt and cnt >= 2:
                 j = i + 1
-                if j == cnt:
+                if j >= cnt or j >= max_gates:
                     j = 0
                 pi = position[base + i]
                 pj = position[base + j]
@@ -395,24 +433,16 @@ def _finalize_validity_k(
                               (pj[1] - pi[1]) * (pj[1] - pi[1]))
                 if wp.abs(pj[2] - pi[2]) > z_valid_grade * wp.max(dxy, 1.0e-9):
                     ok = int(0)
+                    f = f | 32
 
     valid[e] = ok
-
-
-def alloc_order_scratch(config: GateGenConfig):
-    """Allocate common per-env count and ordering-key scratch for gate generators."""
-    _init()
-    E = int(config.num_envs)
-    G = int(config.max_gates)
-    dev = str(config.device)
-    return (
-        wp.empty(E, dtype=wp.int32, device=dev),
-        wp.empty(E * G, dtype=wp.float32, device=dev),
-    )
+    fail[e] = f
 
 
 def alloc_gate_sequence(config: GateGenConfig) -> GateSequence:
-    """Allocate a fixed-stride gate sequence on ``config.device``."""
+    """Allocate a fixed-stride gate sequence on ``config.device``: NaN per-gate fields,
+    zero ``valid`` / ``count`` and a zero ``fail_mask`` (the buffer
+    :func:`finalize_gate_sequence` writes the fail bits into by default)."""
     _init()
     E = int(config.num_envs)
     G = int(config.max_gates)
@@ -428,6 +458,7 @@ def alloc_gate_sequence(config: GateGenConfig) -> GateSequence:
         right=wp.empty(flat, dtype=wp.vec3f, device=dev),
         valid=wp.empty(E, dtype=wp.int32, device=dev),
         count=wp.empty(E, dtype=wp.int32, device=dev),
+        fail_mask=wp.empty(E, dtype=wp.int32, device=dev),
     )
     nan3 = wp.vec3f(wp.nan, wp.nan, wp.nan)
     nan_q = wp.quatf(wp.nan, wp.nan, wp.nan, wp.nan)
@@ -442,85 +473,9 @@ def alloc_gate_sequence(config: GateGenConfig) -> GateSequence:
     _ops_fill(ctx, gates.right, nan3)
     _ops_fill(ctx, gates.valid, 0)
     _ops_fill(ctx, gates.count, 0)
+    _ops_fill(ctx, gates.fail_mask, 0)
     ctx.sync()
     return gates
-
-
-def order_points(
-    seeds_wp: wp.array,
-    src: wp.array,
-    src_stride: int,
-    count: wp.array,
-    max_gates: int,
-    ordering: str,
-    keys: wp.array,
-    dst: wp.array,
-    ctx: "LaunchContext | None" = None,
-) -> None:
-    """Order source points into a fixed gate buffer and NaN-pad inactive slots.
-
-    Args:
-        ctx: optional track_gen.exec.LaunchContext; default resolves the
-            device's stream (see track_gen.exec).
-    """
-    _init()
-    E = count.shape[0]
-    dev = str(dst.device)
-    ctx = _resolve_ctx(ctx, dev)
-    src_stride_i = int(src_stride)
-    max_gates_i = int(max_gates)
-    if ordering == "raw":
-        ctx.launch(
-            _order_raw_k,
-            E * max_gates_i,
-            [src, src_stride_i, count, max_gates_i, dst],
-        )
-    elif ordering == "ccw":
-        # track_gen.ops angle sort (the former _order_ccw_k): m_floor=0 -> count <= 0
-        # gives an all-NaN row.
-        _angle_sort_launch(ctx, src, src_stride_i, count, max_gates_i, keys, dst, 0)
-    elif ordering == "random_pairs":
-        ctx.launch(
-            _order_random_pairs_k,
-            E,
-            [seeds_wp, src, src_stride_i, count, max_gates_i, int(_ORDER_SALT), keys, dst],
-        )
-    else:
-        raise ValueError(f"unsupported gate ordering {ordering!r}")
-    ctx.sync()
-
-
-def finish_ordered_gates(
-    seeds_wp: wp.array,
-    src: wp.array,
-    src_stride: int,
-    count: wp.array,
-    max_gates: int,
-    ordering: str,
-    keys: wp.array,
-    out,
-    normalize_extent: float | None = None,
-    ctx: "LaunchContext | None" = None,
-) -> None:
-    """Order gates into the 2D staging buffer, optionally normalize, copy count.
-
-    ``out`` is the vec2f staging view handed to generators (``_GateStaging``):
-    ``out.position`` is the flat ``[E * max_gates]`` vec2f scratch the 2D
-    ordering/normalization kernels operate on. Tangents are no longer computed
-    here — the pipeline lifts the staged positions to the public vec3f buffers
-    and derives tangents from those (see ``_run_gate_pipeline``).
-
-    Args:
-        ctx: optional track_gen.exec.LaunchContext; default resolves the
-            device's stream (see track_gen.exec).
-    """
-    ctx = _resolve_ctx(ctx, str(out.position.device))
-    G = int(max_gates)
-    order_points(seeds_wp, src, int(src_stride), count, G, ordering, keys, out.position,
-                 ctx=ctx)
-    if normalize_extent is not None:
-        normalize_positions(out.position, G, count, float(normalize_extent), ctx=ctx)
-    ctx.copy(out.count, count)
 
 
 def normalize_positions(
@@ -567,7 +522,8 @@ def relax_gate_spheres(
     ctx.launch(
         _relax_gate_spheres_k,
         count.shape[0],
-        [position, int(max_gates), count, float(target_distance), int(iterations)],
+        [position, int(max_gates), count, float(target_distance), int(iterations),
+         position],
     )
     ctx.sync()
 
@@ -597,7 +553,8 @@ def tangents_from_positions(
     ctx.sync()
 
 
-def _gate_center_distance(config: GateGenConfig) -> float:
+def _gate_center_distance(config) -> float:
+    """``2 * gate_radius`` of a ``GateGenConfig`` or a Params with ``gate_radius``."""
     return 2.0 * float(config.gate_radius)
 
 
@@ -606,13 +563,20 @@ def finalize_gate_sequence(
     config: GateGenConfig,
     fallbacks: "wp.array | None" = None,
     ctx: "LaunchContext | None" = None,
+    fail: "wp.array | None" = None,
 ) -> None:
-    """Normalize tangents, derive gate frames/endpoints, NaN-pad, and validate.
+    """Normalize tangents, derive gate frames/endpoints, NaN-pad, and validate (in place
+    on a hand-built ``GateSequence``: the ``gate_frames.default`` and
+    ``validity.gate_default`` launches).
 
     ``fallbacks`` is an ``[E]`` int32 scratch counting per-env frame fallbacks
-    (near-vertical/degenerate tangents); it is zeroed here each run. ``None``
-    (convenience/test path) allocates a throwaway buffer — pass a persistent
-    buffer on capturable paths.
+    (near-vertical/degenerate tangents); it is zeroed here each run. ``fail`` receives
+    the per-env fail bits (``track_gen.pipeline.GATE_FAIL_BITS``); ``None`` writes them
+    into ``gates.fail_mask`` (allocated by :func:`alloc_gate_sequence`). ``None``
+    (convenience/test path) allocates a throwaway buffer for ``fallbacks``, and for
+    ``fail`` when ``gates.fail_mask`` is ``None`` too — pass a persistent ``fallbacks``
+    (and a ``GateSequence`` with a ``fail_mask``, or ``fail``) on capturable paths: the
+    call then allocates nothing.
 
     Args:
         ctx: optional track_gen.exec.LaunchContext; default resolves the
@@ -627,6 +591,10 @@ def finalize_gate_sequence(
     align_full = int(config.gate_align == "full_tangent")
     if fallbacks is None:
         fallbacks = wp.empty(E, dtype=wp.int32, device=dev)
+    if fail is None:
+        fail = getattr(gates, "fail_mask", None)
+    if fail is None:
+        fail = wp.empty(E, dtype=wp.int32, device=dev)
     _ops_fill(ctx, fallbacks, 0)
     ctx.launch(
         _finalize_frame_k,
@@ -644,6 +612,8 @@ def finalize_gate_sequence(
             float(config.gate_width),
             align_full,  # yaw_only (0) planar frames vs full_tangent (1)
             fallbacks,
+            gates.position,
+            gates.tangent,
         ],
     )
     ctx.launch(
@@ -664,117 +634,133 @@ def finalize_gate_sequence(
             float(config.gate_width),
             float(config.z_valid_grade),
             gates.valid,
+            fail,
         ],
     )
     ctx.sync()
 
 
-class _GateStaging:
-    """Vec2f staging view handed to generators.
+# ---------------------------------------------------------------------------------------
+# Deprecated 0.1 helpers (until 1.0): the ordering helpers legacy GateGeneratorSpec
+# plugins called from generate(). The 0.2.0.dev3 bodies, verbatim; the built-in gate
+# generators order through the order stages instead (track_gen.stages.gates).
+# ---------------------------------------------------------------------------------------
 
-    ``position`` aliases the pipeline-owned ``[E * max_gates]`` vec2f scratch
-    that the 2D ordering/normalization/relaxation kernels operate on;
-    ``count`` aliases the public ``GateSequence.count``. The pipeline lifts
-    the staged positions into the public vec3f arrays afterwards.
-    """
-
-    __slots__ = ("position", "count")
-
-    def __init__(self, position: wp.array, count: wp.array) -> None:
-        self.position = position
-        self.count = count
+def _deprecated(name: str) -> None:
+    warnings.warn(
+        f"track_gen._src.warp_gate.{name} is deprecated and will be removed in 1.0; "
+        f"write a gate_generator Stage (docs/contributing/writing-a-generator.rst), "
+        f"which the pipeline's order stages order",
+        DeprecationWarning, stacklevel=3)
 
 
-def _gate_warp_alloc(config: GateGenConfig, generator_spec):
-    """Allocate facade-owned gate output plus pipeline + generator scratch.
-
-    Returns ``(gates, (gen_scratch, pos2, cum, perim, z, fallbacks))`` (``gates``
-    with its ``generation`` counter allocated, zero-filled): ``pos2``
-    is the vec2f staging buffer the 2D kernels write, ``cum``/``perim`` the
-    per-gate cumulative plan-view arc length / closed-loop perimeter scratch
-    the Z profiler needs (populated each run via ``gate_cum_perim``), ``z`` the
-    per-gate elevation profile written by the Z profiler each run, ``fallbacks``
-    the per-env frame-fallback counters.
-
-    NOTE: this scratch tuple grew from a 5-tuple to a 6-tuple with the
-    ``perim`` slot inserted before ``z`` — ``GateGenerator`` reads
-    ``fallbacks`` at index 5 now (was 4); see ``gate_generator.py``.
-    """
-    from . import warp_zprofile
-
-    gates = alloc_gate_sequence(config)
-    gen_scratch = generator_spec.alloc_scratch(config)
+def alloc_order_scratch(config: GateGenConfig):
+    """Deprecated (removed in 1.0): allocate the per-env count and ordering-key scratch
+    of a legacy gate generator: ``(count [E] int32, keys [E * max_gates] float32)``."""
+    _deprecated("alloc_order_scratch")
+    _init()
     E = int(config.num_envs)
     G = int(config.max_gates)
     dev = str(config.device)
-    # Written by GateGenerator after every generation (= the env's seed epoch).
-    gates.generation = wp.zeros(E, dtype=wp.int32, device=dev)
-    pos2 = wp.empty(E * G, dtype=wp.vec2f, device=dev)
-    cum, perim, z = warp_zprofile.alloc_z_scratch(E, G, dev)
-    fallbacks = wp.zeros(E, dtype=wp.int32, device=dev)
-    return gates, (gen_scratch, pos2, cum, perim, z, fallbacks)
+    return (
+        wp.empty(E, dtype=wp.int32, device=dev),
+        wp.empty(E * G, dtype=wp.float32, device=dev),
+    )
 
 
-def _run_gate_pipeline(
-    config: GateGenConfig,
-    seed_buf_wp: wp.array,
-    out: GateSequence,
-    scratch,
-    generator_spec,
+def _order_points(seeds_wp, src, src_stride, count, max_gates, ordering, keys, dst,
+                  ctx=None) -> None:
+    _init()
+    E = count.shape[0]
+    dev = str(dst.device)
+    ctx = _resolve_ctx(ctx, dev)
+    src_stride_i = int(src_stride)
+    max_gates_i = int(max_gates)
+    if ordering == "raw":
+        ctx.launch(
+            _order_raw_k,
+            E * max_gates_i,
+            [src, src_stride_i, count, max_gates_i, dst],
+        )
+    elif ordering == "ccw":
+        # track_gen.ops angle sort (the former _order_ccw_k): m_floor=0 -> count <= 0
+        # gives an all-NaN row.
+        _angle_sort_launch(ctx, src, src_stride_i, count, max_gates_i, keys, dst, 0)
+    elif ordering == "random_pairs":
+        ctx.launch(
+            _order_random_pairs_k,
+            E,
+            [seeds_wp, src, src_stride_i, count, max_gates_i, int(_ORDER_SALT), keys, dst],
+        )
+    else:
+        raise ValueError(f"unsupported gate ordering {ordering!r}")
+    ctx.sync()
+
+
+def order_points(
+    seeds_wp: wp.array,
+    src: wp.array,
+    src_stride: int,
+    count: wp.array,
+    max_gates: int,
+    ordering: str,
+    keys: wp.array,
+    dst: wp.array,
     ctx: "LaunchContext | None" = None,
-) -> GateSequence:
-    """Run a native gate generator into ``out`` and finalize the common fields.
-
-    The generator and the shared 2D kernels (ordering, normalization, sphere
-    relaxation) operate on the vec2f ``pos2`` staging buffer; the staged
-    positions are then lifted to the public vec3f ``out.position`` (z from the
-    ``z`` scratch — all zeros until a z-profile stage writes it), tangents are
-    derived from the lifted positions, and the frame/validity finalization
-    runs on the vec3f arrays.
-
-    Every stage runs on ``ctx``'s stream. A generator whose spec sets
-    ``accepts_ctx`` gets ``ctx=ctx``; a legacy generator runs inside
-    ``ctx.scope()`` so the ``warp_gate`` / ``warp_pipeline`` helpers it calls
-    inherit the stream (its own direct ``wp.launch`` calls still use Warp's
-    current stream).
+) -> None:
+    """Deprecated (removed in 1.0): order source points into a fixed gate buffer and
+    NaN-pad inactive slots (``ordering``: ``"raw"``, ``"ccw"`` or ``"random_pairs"``,
+    the kernels of ``order.raw`` / ``order.ccw`` / ``order.random_pairs``).
 
     Args:
         ctx: optional track_gen.exec.LaunchContext; default resolves the
             device's stream (see track_gen.exec).
     """
-    from . import warp_zprofile
+    _deprecated("order_points")
+    _order_points(seeds_wp, src, src_stride, count, max_gates, ordering, keys, dst,
+                  ctx=ctx)
 
-    _init()
-    gen_scratch, pos2, cum, perim, z, fallbacks = scratch
-    G = int(config.max_gates)
-    dev = str(out.position.device)
-    ctx = _resolve_ctx(ctx, dev)
-    staging = _GateStaging(pos2, out.count)
-    if getattr(generator_spec, "accepts_ctx", False):
-        generator_spec.generate(seed_buf_wp, config, staging, gen_scratch, ctx=ctx)
-    else:
-        # Legacy plugin: no ctx= keyword. Make ctx ambient so the helpers it calls
-        # with ctx=None resolve to this call's stream.
-        with ctx.scope():
-            generator_spec.generate(seed_buf_wp, config, staging, gen_scratch)
-    min_center_distance = _gate_center_distance(config)
-    solve_iters = int(getattr(config, "gate_solve_iters", 0))
-    if solve_iters > 0 and min_center_distance > 0.0:
-        relax_gate_spheres(pos2, G, out.count, min_center_distance, solve_iters, ctx=ctx)
-    # Z profile runs on the final ordered/relaxed 2D anchors, before the lift.
-    # It writes every real slot and zeroes padding, so the z scratch is fully
-    # overwritten each run (capture-safe: launches only, no alloc/sync/branch).
-    # gate_cum_perim derives (cum, perim) from the anchors; flat doesn't need
-    # them (matches the original conditional cum-chords launch).
-    if config.z_profile != "flat":
-        warp_zprofile.gate_cum_perim(pos2, out.count, G, cum, perim, ctx=ctx)
-    warp_zprofile.apply_z_profile(config, seed_buf_wp, out.count, G, cum, perim, z,
-                                  ctx=ctx)
-    ctx.launch(
-        _lift_positions_k,
-        int(pos2.shape[0]),
-        [pos2, z, out.position],
-    )
-    tangents_from_positions(out.position, out.tangent, G, out.count, ctx=ctx)
-    finalize_gate_sequence(out, config, fallbacks=fallbacks, ctx=ctx)
-    return out
+
+def finish_ordered_gates(
+    seeds_wp: wp.array,
+    src: wp.array,
+    src_stride: int,
+    count: wp.array,
+    max_gates: int,
+    ordering: str,
+    keys: wp.array,
+    out,
+    normalize_extent: float | None = None,
+    ctx: "LaunchContext | None" = None,
+) -> None:
+    """Deprecated (removed in 1.0): order gates into the 2D staging view ``out`` (the
+    ``_GateStaging`` a legacy ``generate`` receives), optionally normalize them to
+    ``normalize_extent``, copy the count into ``out.count``.
+
+    Args:
+        ctx: optional track_gen.exec.LaunchContext; default resolves the
+            device's stream (see track_gen.exec).
+    """
+    _deprecated("finish_ordered_gates")
+    ctx = _resolve_ctx(ctx, str(out.position.device))
+    G = int(max_gates)
+    _order_points(seeds_wp, src, int(src_stride), count, G, ordering, keys, out.position,
+                  ctx=ctx)
+    if normalize_extent is not None:
+        normalize_positions(out.position, G, count, float(normalize_extent), ctx=ctx)
+    ctx.copy(out.count, count)
+
+
+def __getattr__(name: str):
+    # _GateStaging moved into the legacy adapter (track_gen.stages.gates); the old name
+    # here warns.
+    if name == "_GateStaging":
+        warnings.warn(
+            "track_gen._src.warp_gate._GateStaging moved to the gate pipeline's legacy "
+            "adapter (track_gen.stages.gates._GateStaging); the warp_gate name is "
+            "deprecated and will be removed in 1.0",
+            DeprecationWarning, stacklevel=2)
+        from ..stages.gates import _GateStaging  # noqa: PLC0415
+
+        return _GateStaging
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -480,7 +480,7 @@ def build(spec: PipelineSpec, *, registry: Registry | None = None, seeds: "wp.ar
    - every read has an earlier writer or is a bound input;
    - no two stages write the same channel unless the stage declares an in-place rewrite;
    - topology agrees;
-   - capacities fit (anchors capacity ≤ max_gates and min_count ≥ min_gates, replacing the overloaded `max_gates` at gate_generator.py:71-83);
+   - capacities fit (anchors capacity ≤ max_gates and min_count ≥ min_gates, replacing the overloaded `max_gates` at gate_generator.py:71-83; as shipped in PR11: the planner checks `capacity["gates"] ≤ max_gates` and the validity `min_gates ≤ capacity["gates"]` with the legacy messages, while `capacity["min_gates"]` is a declaration the conformance kit enforces on `anchors.count`);
    - `provides` conflicts are resolved by the preset.
 4. Allocate every channel exactly once and namespace scratch. There is no attribute fall-through, so the `_Scratch.__getattr__` hijack (warp_pipeline.py:1480-1495) cannot happen.
 5. Assign validity bits (built-ins 0-15; plugins 16-30; more than 15 plugin checks is a build error) and salts, rejecting collisions.
@@ -780,6 +780,8 @@ testing.check_generator("acme.superformula")
 - **Native:** a stage with `output="anchors"` writes `anchors.xy` and `anchors.count`, plus optional `anchors.z`, `anchors.tangent`, `anchors.half_size` and `anchors.roll`. Declaring `provides={"z","tangent"}` makes the preset drop the elevation and central-difference tangent stages, fixing the unconditional overwrites at warp_gate.py:853-862. Ordering is a pipeline stage from the `order` registry; generators never call `finish_ordered_gates`. `capacity()` returns `{'gates': G, 'min_gates': k}`.
 - **Composite:** `reg.add(Recipe("acme.super_cr", stages=(StageRef("anchors", "acme.super_anchors"), StageRef("curve", "catmull_rom_closed")), output="centerline"))`.
 
+> **As shipped in PR11:** a gate pipeline is a `PipelineSpec` with `BatchSpec.max_gates` set; one planner serves both result kinds, and `GateGenerator(config_or_spec)` runs a `Program` (default stages `generator -> order -> [normalize] -> gate_relax -> [gate_arclen] -> elevation -> lift -> tangents -> gate_frames -> validity`, byte-identical to the old path). Two point domains: anchors `[E*A]` (`A = capacity()["gates"]`) and gate slots `[E*G]`; each stage gets its own `Layout` and `b.stride_of(port)` / `b.per_of(port)`. Native generators are `kind="gate_generator"`, `output="anchors"` Stages; `provides` attributes are carried to the gate slots by index (`carry.<attr>`), which needs `order.raw`, so providers declare `orderings=frozenset({"raw"})`. Order compatibility is `orderings` (a whitelist) or `excluded_orderings` (the built-ins: bezier/hull exclude `raw`, polar/checkpoint/voronoi exclude `random_pairs`), plus `preferred={"order": ..., "normalize": "extent"}`. `stations.raw` / `stations.relaxed` give gates to every track generator; `spacing_metric` (xy/xyz) moves to PR13 (3D arc length needs z on the centerline before the stations; no `presets.gates(spacing_metric=)` keyword ships). `GateGenConfig.gate_ordering=None` (the default) is the generator's default order, resolved by `legacy.to_gate_pipeline_spec` with the rule of `presets.gates(order=None)` (`"ccw"` for the built-ins). Gate validity writes bits 0-5 (`GATE_FAIL_BITS`) and reuses the PR10b hold / restore commit. `GateGeneratorSpec` runs through an adapter that orders its own gates and warns (DeprecationWarning) when bound. `Recipe` composites are not in PR11. See docs/how-it-works/pipeline-preview.rst, "The gate pipeline".
+
 **(c) Replacing relaxation**
 
 ```python
@@ -844,6 +846,8 @@ class SinusoidHills(plugin.Stage):
 ```
 
 The gates preset rewires the ports automatically: `{cum: gates.cum, perim: gates.perim, count: gates.count, z: gates.z}`. There is no monkeypatch of `apply_z_profile`, no name tuples (warp_pipeline.py:1505, 1899), and no fall-through to noise (warp_zprofile.py:222).
+
+> **As shipped in PR11:** the PLANNER (not the preset) applies the default gate rewiring to every `elevation` slot of a gate pipeline, `{cl.xy: gates.xy, cl.count: gates.count, cl.arclen2: gates.cum, cl.length2: gates.perim, cl.z: gates.z}`, with explicit `StageRef.ports` overriding a port, so hand-built and `.replace(...)`-edited specs work (replacing the elevation of a FLAT gate spec also needs `insert_before("elevation", StageRef("gate_arclen", "default"))`, as the `PlanError` says: a flat spec has no arc tables). There is no `parameterization` attribute and no `b.domain_of`: the PR10b hills stage runs on gates unchanged (`b.layout.stride` is `max_gates` there, and `b.write(port, per="cl")` is checked against the declared channel and sized by the wired one); `b.stride_of(port)` / `b.per_of(port)` are the explicit forms. `GateGenConfig.z_profile` names any registered elevation stage. `elevation.flat` gained `z_base` (gate altitudes).
 
 **(f) Validity check**
 
@@ -1412,7 +1416,7 @@ It runs over everything registered, so a capture regression fails CI mechanicall
   - New stages: `order.{raw,ccw,random_pairs}`, applied by the pipeline; `gate_relax`; `gate_arclen`; elevation reused through port rewiring; `lift`; `tangents`; `gate_frames`; `validity.gate_default`.
   - `provides` (z/tangent/half_size/roll) skips stages; `capacity`/`min_gates` replace the overloaded `max_gates` (gate_generator.py:71-83).
   - New `stations` adapter (and `relaxed_stations`).
-  - `spacing_metric` xy/xyz.
+  - `spacing_metric` xy/xyz (moved to PR13, see Shipped).
   - Deleted: `_GateStaging`, `finish_ordered_gates`, `order_points` dispatch and the positional 6-tuple (warp_gate.py:599-648, 777-864).
 - **Fixes:** HIGH gate contract private and coupled to track internals; HIGH gate contract is 2D anchors only and the pipeline overwrites z/tangent/orientation/size; MEDIUM gate stage sequence and closed-set dispatch; MEDIUM ordering delegated and closed; MEDIUM GateGeneratorSpec undocumented, max_gates overloaded; LOW positional 6-tuple scratch; LOW gate_width doc.
 - **Test gate:**
@@ -1421,6 +1425,7 @@ It runs over everything registered, so a capture regression fails CI mechanicall
   - A toy helix that provides z and tangent skips those stages.
 - **Risk:** medium. The preset must reproduce today's call order (ordering, then normalization).
 - **Depends on:** PR10.
+- **Shipped (0.2.0.dev4):** as scoped, with these decisions: `capacity()` keys `gates` / `min_gates`; built-ins declare `excluded_orderings` so third-party orders run with them; provided attributes need `order.raw`; the legacy `GateGeneratorSpec` adapter orders its own gates and warns at bind time; `finish_ordered_gates`, `order_points`, `alloc_order_scratch` and the `_GateStaging` name stay as deprecated shims for 0.1 gate plugins (removed in 1.0), the library no longer calls them; `spacing_metric` xy/xyz moved to PR13 (it needs z on the centerline before the stations; the stages measure plan-view arc length and `presets.gates` has no `spacing_metric` keyword); `GateGenConfig.gate_ordering` defaults to `None`, the generator's default order (`stages.gates._default_order`, shared with `presets.gates` and the conformance kit), resolved into the run config a legacy spec reads; no `Recipe`. The normalizing generators launch as many kernels as before (the normalization runs out of place after the count copy); bytes identical. Capacities (§6 rule 3) as shipped: the planner checks `capacity()["gates"] <= max_gates` and the validity stage's `min_gates <= capacity()["gates"]` (the legacy messages); `capacity()["min_gates"]` is a declaration the conformance kit enforces on `anchors.count`, and a validity `min_gates` above it is accepted (envs below it fail the `count` bit).
 
 ### PR12: BOUNDED tier, repulsive capturable, Segmented HOST
 - **Scope:**
@@ -1456,6 +1461,7 @@ It runs over everything registered, so a capture regression fails CI mechanicall
     - `Track.half_width`, `attributes`, `layout`, `validate`, `view`, `copy_from`; field-iterating `clone`; `out=` on facades.
     - Capability protocols (HasCenterline, HasBand, HasGates). CourseLine produces a Centerline (course_line.py:132-143).
     - Utilities call `validate()` at construction instead of inferring the stride: props.py:308, checkpoints.py:229, collision.py:318, localize.py:255, heightfield.py:119.
+  - Gates (from PR11): `spacing_metric` xy/xyz for `stations` and `gate_arclen` (moved from PR11: 3D arc length needs z on the centerline, `raw.z` / `cl.z` carried through, before the stations are placed), and gate plugin channels `gates.<package>.<name>`.
   - New stages:
     - the `randomize.uniform` stage (requires the PR8 latch to be gone, or writes the work arrays: see PR10);
     - the `generator/external` ingestion stage;

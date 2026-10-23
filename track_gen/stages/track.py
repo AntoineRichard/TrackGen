@@ -328,23 +328,36 @@ def _zcfg(b, profile: str, p):
 
 
 class ElevationFlat(_Builtin):
-    """``elevation.flat``: ``cl.z`` stays at its zero initialisation (no launch); the
-    flat lift adds ``z_base``."""
+    """``elevation.flat``: on a track, ``cl.z`` stays at its zero initialisation (no
+    launch; the flat lift adds ``z_base``, and the planner refuses a non-zero
+    ``z_base`` here before allocating). On a gate pipeline (``z`` rewired to
+    ``gates.z``) every real gate is at ``z_base`` (``_z_flat_k``)."""
 
     kind = "elevation"
     name = "flat"
+    Params = _p.ElevationFlatParams
+    reads = {"count": "cl.count"}
     writes = {"z": "cl.z"}
 
     def build(self, b, p):
-        b.write("z", wp.float32, per="cl")
+        z = b.write("z", wp.float32, per="cl")
+        if b.per_of("z") != "gates":
+            def enqueue(ctx):
+                pass
+            return enqueue
+        count = b.read("count")
+        G = int(b.layout.stride)
+        zcfg = _zcfg(b, self.name, p)
 
         def enqueue(ctx):
-            pass
+            _zprof.apply_z_profile(zcfg, None, count, G, None, None, z, ctx=ctx)
         return enqueue
 
 
 class _ElevationKnots(_Builtin):
-    """Knot-based profiles: K arc-spaced knots, then a periodic monotone cubic."""
+    """Knot-based profiles: K arc-spaced knots, then a periodic monotone cubic. On a
+    gate pipeline (ports rewired to ``gates.*``) the profile is drawn per gate instead
+    (the gates are already sparse, knot-like anchors), as 0.2.0.dev3 did."""
 
     kind = "elevation"
     reads = {"seed": "seed", "count": "cl.count", "arclen": "cl.arclen2",
@@ -356,6 +369,12 @@ class _ElevationKnots(_Builtin):
         seed = b.read("seed")
         count, arclen, length = b.read("count"), b.read("arclen"), b.read("length")
         z = b.write("z", wp.float32, per="cl")
+        if b.per_of("z") == "gates":
+            zcfg = _zcfg(b, self.name, p)
+
+            def enqueue(ctx):
+                _zprof.apply_z_profile(zcfg, seed, count, S, arclen, length, z, ctx=ctx)
+            return enqueue
         K = int(p.z_control_points)
         knot_cum = b.scratch("knot_cum", wp.float32, b.E * K)
         knot_count = b.scratch("knot_count", wp.int32, b.E)

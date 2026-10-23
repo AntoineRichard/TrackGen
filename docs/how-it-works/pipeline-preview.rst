@@ -5,22 +5,28 @@ Pipeline (preview)
    :class: warning
 
    ``track_gen.pipeline`` is a **preview**: names and signatures may change before 1.0.
-   ``TrackGenerator`` stays the stable entry point. It accepts a ``PipelineSpec`` as well
-   as a ``TrackGenConfig``, and builds its pipeline the way this page describes.
+   ``TrackGenerator`` and ``GateGenerator`` stay the stable entry points. Each accepts a
+   ``PipelineSpec`` as well as its config, and builds its pipeline the way this page
+   describes.
 
 The track pipeline of :doc:`pipeline` is described by data. A ``PipelineSpec`` lists the
 stages in order, ``build()`` plans and allocates it once, and the ``Program`` it returns
 runs the stages, one after another, on every generation; a short epilogue, the *commit*,
 then settles what each env's ``Track`` rows hold. ``TrackGenerator`` turns a config into
 the default ``PipelineSpec`` (``legacy.to_pipeline_spec``), or takes a spec you built,
-usually with ``presets.track``.
+usually with ``presets.track``. The gate pipeline of ``GateGenerator`` is described the
+same way, with its own preset (``presets.gates``) and its own result, a
+``GateSequence`` (see `The gate pipeline`_).
 
-Four stage kinds are open to plugins: ``relax``, ``width``, ``elevation`` and
-``validity``. They are registered, discovered and quarantined like generators (see
-:doc:`/contributing/writing-a-stage`); the other kinds (``resample``, ``frames``,
-``offset``, ``lift``) are TrackGen's own built-ins. The default pipeline's outputs are
-byte-identical to 0.2.0.dev2, with the same launches in the same order; a masked
-regeneration adds two (`The commit`_).
+Six stage kinds are open to plugins: ``relax``, ``width``, ``elevation`` and
+``validity`` in the track pipeline, ``order`` and ``stations`` in the gate pipeline
+(``elevation`` and ``validity`` serve both). They are registered, discovered and
+quarantined like generators (see :doc:`/contributing/writing-a-stage`); the other kinds
+(``resample``, ``frames``, ``offset``, ``lift`` and the gate stages listed under
+`The gate stages`_) are TrackGen's own built-ins. The default track pipeline's outputs
+are byte-identical to 0.2.0.dev2, with the same launches in the same order; a masked
+regeneration adds two (`The commit`_). The default gate pipeline's outputs are
+byte-identical to 0.2.0.dev3 (`Launches`_).
 
 ``track_gen.pipeline`` is a subpackage outside ``track_gen.__all__``: import it
 explicitly. ``import track_gen`` does not import it.
@@ -66,11 +72,16 @@ The data model
    ``Stage.capacity()`` overrides it. ``build`` rejects any other key, and any
    ``capacity`` on a non-generator stage.
 
-``BatchSpec(num_envs, device, n_max, closed=True, scale=1.0, on_invalid="keep")``
+``BatchSpec(num_envs, device, n_max, closed=True, scale=1.0, on_invalid="keep", max_gates=None)``
    The batch every stage shares: ``E`` envs on one device, the per-env point capacity
    ``N_max``, ``TrackGenConfig.scale``, and what the commit does with an invalid env
    (``"keep"`` or ``"poison"``, see `The commit`_). Open tracks (``closed=False``) are
-   refused.
+   refused. ``max_gates`` selects the result: ``None`` (default) builds a track
+   pipeline whose result is a ``Track``; an ``int >= 2`` builds a gate pipeline whose
+   result is a ``GateSequence`` with ``max_gates`` slots per env (``G``, see
+   `The gate pipeline`_). In a gate pipeline ``n_max`` is read only by a centerline
+   source (``source="stations"``: the generator's layout; ``"relaxed_stations"``: also
+   the resample and relax stages); the presets pass 384.
 
 ``PipelineSpec(batch, stages)``
    The batch and the ordered tuple of ``StageRef``. ``ids`` lists the slot ids.
@@ -78,8 +89,9 @@ The data model
    ``remove(id)`` return a new spec; ``replace`` keeps the slot's id when ``ref.id`` is
    ``None``. They are pure data operations: an unknown anchor id raises ``ValueError``
    at once, everything else is checked by ``build``. ``to_dict()`` returns a
-   JSON-serialisable dict (``"format": "track_gen.pipeline/1"``; ``on_invalid`` is
-   optional when reading, ``"keep"`` when absent), ``from_dict(d)`` reads it back without
+   JSON-serialisable dict (``"format": "track_gen.pipeline/1"``; ``on_invalid`` and
+   ``max_gates`` are optional when reading, ``"keep"`` and ``None`` when absent),
+   ``from_dict(d)`` reads it back without
    a registry (a missing key raises a ``ValueError`` naming it, such as ``stages[3] is
    missing 'kind'``), and building the round-tripped spec gives byte-identical outputs,
    plugin stages and their params included.
@@ -91,6 +103,15 @@ The data model
    ``registry``, and raises the ``relax_solver``, ``smooth_finish`` and ``z_profile``
    errors of ``TrackGenerator(config)``.
 
+``legacy.to_gate_pipeline_spec(config, *, registry=None)``
+   The default gate spec for a ``GateGenConfig``, the one ``GateGenerator(config)``
+   builds (see `The gate stages`_). It resolves the gate generator and its params, the
+   ``gate_ordering`` (``None``: the generator's default order) and the ``z_profile``
+   through ``registry``, and raises the errors of ``GateGenerator(config)`` (unknown
+   names, an unsupported ordering, the gate-count checks of
+   :ref:`gate-capacity-config`). A legacy ``GateGeneratorSpec`` emits its
+   ``DeprecationWarning`` here (see `Legacy gate generators`_).
+
 .. _pipeline-presets:
 
 Presets
@@ -99,6 +120,8 @@ Presets
 ``presets.track(...)`` returns the ``PipelineSpec`` of a track pipeline, with each
 replaceable stage chosen by a keyword. It is pure data: it never touches the registry,
 and an unknown stage name fails at ``build`` (or ``TrackGenerator``) time.
+``presets.gates(...)``, the gate pipeline's preset, is described under
+`Gate presets: presets.gates`_; unlike ``presets.track`` it reads the registry.
 
 .. code-block:: python
 
@@ -186,6 +209,9 @@ Running a spec: ``TrackGenerator(spec)``
 
 Everything else (``generate``, ``enqueue``, ``seeds``, ``inputs``, graphs, masked
 regeneration) works as for a config. ``Course`` still takes a ``TrackGenConfig`` only.
+``TrackGenerator`` refuses a gate pipeline's spec (``BatchSpec.max_gates`` set) with a
+``ValueError`` that points at ``GateGenerator``, before it binds any generator.
+``GateGenerator(spec)`` is described under `Running a gate spec: GateGenerator(spec)`_.
 
 .. _pipeline-stage-kinds:
 
@@ -204,6 +230,11 @@ Stage kinds
      - ``bezier``, ``hull``, ... (:doc:`/generators/overview`)
      - ``raw.xy``, ``gen.valid``
      - ``track_gen.plugin.registry`` (:doc:`/contributing/writing-a-generator`)
+   * - ``gate_generator``
+     - ``bezier``, ``hull``, ``polar``, ``checkpoint``, ``voronoi``
+     - ``anchors.xy``, ``anchors.count``, plus the ``anchors.*`` attributes it
+       ``provides``
+     - ``track_gen.plugin.registry`` (:ref:`gate-generator-stage`)
    * - ``relax``
      - ``xpbd``, ``none``
      - ``cl.xy``
@@ -214,23 +245,36 @@ Stage kinds
      - ``track_gen.plugin.registry``
    * - ``elevation``
      - ``flat``, ``uniform``, ``random_walk``, ``noise``
-     - ``cl.z``
+     - ``cl.z`` (``gates.z`` in a gate pipeline, `Elevation on gates`_)
      - ``track_gen.plugin.registry``
    * - ``validity``
-     - ``default``
+     - ``default``, ``gate_default``
      - ``valid.fail``
+     - ``track_gen.plugin.registry``
+   * - ``order``
+     - ``raw``, ``ccw``, ``random_pairs``
+     - ``gates.xy``, ``gates.count``
+     - ``track_gen.plugin.registry`` (:ref:`writing-an-ordering`)
+   * - ``stations``
+     - ``raw``, ``relaxed``
+     - ``anchors.xy``, ``anchors.count``
      - ``track_gen.plugin.registry``
    * - ``resample``, ``frames``, ``offset``, ``lift``
      - see `The default track stages`_
      - their catalogue channels
      - TrackGen's private catalogue (not open to plugins)
+   * - ``normalize``, ``carry``, ``gate_relax``, ``gate_arclen``, ``tangents``,
+       ``gate_frames`` (and ``lift.gates``)
+     - see `The gate stages`_
+     - their catalogue channels
+     - TrackGen's private catalogue (not open to plugins)
 
-A plugin stage of an open kind may also write namespaced plugin channels,
-``cl.<package>.<name>`` (see `Channels`_). The built-ins are registered under their
-plain names by TrackGen's own ``register(reg)``, exactly as a plugin registers, so
-``registry.available("relax")`` lists them with the installed plugins and
-``registry.describe("elevation", "noise")`` reports their reads, writes and params
-schema.
+A plugin stage of a track kind may also write namespaced plugin channels,
+``cl.<package>.<name>`` (see `Channels`_); gate plugin channels arrive with roadmap
+PR13. The built-ins are registered under their plain names by TrackGen's own
+``register(reg)``, exactly as a plugin registers, so ``registry.available("relax")``
+lists them with the installed plugins and ``registry.describe("elevation", "noise")``
+reports their reads, writes and params schema.
 
 The planner resolves a stage of an open kind with ``registry.get(kind, name)`` when it
 builds, and keeps that class: a later registry change never alters a built ``Program``.
@@ -246,17 +290,22 @@ a closed kind lists the catalogue's names and says that the kind is not open to 
 checks the spec before it allocates or launches anything, then allocates once:
 
 1. **Batch and ids.** ``num_envs >= 1``, ``n_max >= 3``, ``closed=True``,
-   ``on_invalid`` in ``("keep", "poison")``; slot ids are unique; exactly one
-   ``generator`` stage, first, with the id ``"generator"``; only the generator has a
-   ``capacity``, and only ``"raw"``; ``seeds`` is one of the forms below.
+   ``on_invalid`` in ``("keep", "poison")``, ``max_gates`` ``None`` or an int ``>= 2``;
+   slot ids are unique; exactly one generator stage (kind ``generator`` or
+   ``gate_generator``), first, with the id ``"generator"``; only the generator has a
+   ``capacity``, and only ``"raw"``; ``seeds`` is one of the forms below. A gate
+   pipeline starts with a ``gate_generator``, or with a ``generator`` followed by a
+   ``stations`` stage; a ``gate_generator`` in a track pipeline is refused.
 2. **Resolve.** The generator and every stage of an open kind are resolved through
    ``registry`` (default ``track_gen.plugin.registry``), the generator exactly as
-   ``TrackGenerator`` resolves ``config.generator``. The other stages come from
-   TrackGen's built-in catalogue.
+   ``TrackGenerator`` (or, for a ``gate_generator``, ``GateGenerator``) resolves
+   ``config.generator``. The other stages come from TrackGen's built-in catalogue.
 3. **Params.** Each stage's params are coerced to its Params class and validated (the
-   built-ins with the messages ``TrackGenConfig`` uses for the same fields). While the
-   kernels still take ``half_width`` as a host scalar, every stage that has a
-   ``half_width`` field must agree on it.
+   built-ins with the messages ``TrackGenConfig`` / ``GateGenConfig`` use for the same
+   fields). While the kernels still take them as host scalars, every stage that has a
+   ``half_width``, ``gate_width`` or ``gate_radius`` field must agree on its value. In a
+   gate pipeline each stage's ``Layout`` is derived from its ports before its params
+   are validated (see `Two point domains`_).
 4. **Channels.** After ``ports`` rewiring, the registration rules hold again (a plugin
    stage writes only what its kind may write, and rewrites a channel through one port;
    see :ref:`stage-ports-channels`). Walking the stages in order, every channel a stage
@@ -267,19 +316,22 @@ checks the spec before it allocates or launches anything, then allocates once:
    ``validity.default`` (a check that writes it without reading it would drop the
    built-in checks, truncation included, and is refused until the split checks
    arrive), and ``lift.flat``, which lifts at a constant ``z_base``, may not follow an
-   elevation other than ``elevation.flat`` (use ``lift.elevated``).
+   elevation other than ``elevation.flat`` (use ``lift.elevated``). A gate pipeline has
+   the same rules for the ``GateSequence`` and ``validity.gate_default``, plus its own
+   (`Planner rules for gate pipelines`_).
 5. **Capture class.** The Program's capture class is the highest of its stages'
    (``STATIC`` < ``HOST``): one ``HOST`` stage makes the whole Program run eagerly and
    refuse caller capture. A stage that returns ``BOUNDED`` raises ``PlanError`` (roadmap
    PR12).
-6. **Allocate.** The ``SeedState`` (its own checks run first), the ``Track`` (or use the
-   one passed as ``out=``, checked field by field beforehand; its ``generation`` and
-   ``fail_mask`` may be ``None``), the ``[E]`` effective-seed buffer, one buffer per
+6. **Allocate.** The ``SeedState`` (its own checks run first), the ``Track`` or the
+   ``GateSequence`` (or use the one passed as ``out=``, checked field by field
+   beforehand; its ``generation`` and ``fail_mask`` may be ``None``), the ``[E]``
+   effective-seed buffer, one buffer per
    channel version and each stage's scratch, namespaced ``scratch:<id>/<name>``. Then
    each stage's ``build`` runs, once, in pipeline order, against a ``StageBuilder``;
    right after it, every write port the stage declares must have been written, and a
    validity stage must own a fail bit (fail bits are handed out in this order, see
-   `Fail bits`_). Last, the commit and its held copy of the ``Track``.
+   `Fail bits`_). Last, the commit and its held copy of the result.
 7. **Program.** With ``prepare=True`` the Program runs once eagerly (the warm-up of
    :doc:`cuda-graph`).
 
@@ -305,7 +357,15 @@ a NumPy array or a list included, raises ``TypeError`` before allocating.
 ``build`` derives the generator's config from the ``BatchSpec`` and the generator's
 ``StageRef`` (its params, and ``capacity["raw"]`` as ``num_points``, 256 when absent).
 That covers the built-ins and Stage generators. A ``GeneratorSpec`` plugin that reads
-config fields outside its Params class needs ``TrackGenerator`` with a config.
+config fields outside its Params class needs ``TrackGenerator`` with a config. A gate
+generator is bound the same way from a ``GateGenConfig`` derived from the spec
+(``num_envs``, ``device``, ``max_gates``, ``scale``, its params, and ``min_gates``,
+``gate_ordering`` and the gate scalars from the stages that hold them); a legacy
+``GateGeneratorSpec`` that reads other config fields needs ``GateGenerator`` with a
+config.
+
+``build`` accepts both kinds of spec: the ``Program`` it returns has a ``Track`` or a
+``GateSequence`` as its ``result``.
 
 The ``Program``
 ---------------
@@ -323,7 +383,8 @@ self-graph rules of :doc:`cuda-graph` exactly as ``TrackGenerator`` does.
 - ``prepare()`` runs the warm-up, when ``build(..., prepare=False)``. Otherwise the
   first ``run()`` outside a capture runs it, and recording a Program that was never
   prepared (``run()`` or ``enqueue()`` inside a capture) raises ``CaptureError``.
-- ``result`` is the ``Track``, the same instance with the same array addresses forever.
+- ``result`` is the ``Track`` (the ``GateSequence`` of a gate pipeline), the same
+  instance with the same array addresses forever.
 - ``spec`` is the resolved spec: every ``StageRef.params`` is the stage's Params
   instance.
 - ``tap(channel, *, after=None)``, ``channels``, ``fail_bits`` and ``on_invalid``: see
@@ -341,7 +402,9 @@ Stages talk through named per-env channels; a stage declares the ones it reads a
 writes as ``{local port: channel}`` maps (``Stage.reads`` / ``Stage.writes``), and
 ``StageBuilder.read(port)`` / ``write(port, dtype, per=...)`` hand it the buffers.
 ``per="env"`` is ``[E]``, ``per="cl"`` is ``[E * N_max]``, ``per="raw"`` is
-``[E * raw]``. The catalogue in this release:
+``[E * raw]``; the gate pipeline adds ``per="anchors"`` (``[E * A]``) and ``per="gates"``
+(``[E * G]``), and its channels (``anchors.*``, ``gates.*``) are listed under
+`Gate channels`_. The track catalogue in this release:
 
 .. list-table::
    :header-rows: 1
@@ -490,7 +553,7 @@ arguments.
    * - ``elevation``
      - ``elevation.<config.z_profile>``: ``flat``, ``uniform``, ``random_walk``,
        ``noise`` or a plugin's
-     - ``seed``, ``cl.count``, ``cl.arclen2``, ``cl.length2`` (``flat``: nothing)
+     - ``seed``, ``cl.count``, ``cl.arclen2``, ``cl.length2`` (``flat``: ``cl.count``)
      - ``cl.z`` (``flat`` launches nothing: it stays zero)
    * - ``validity``
      - ``validity.default``
@@ -509,7 +572,9 @@ the config: ``resample.constant_spacing`` takes ``spacing``; ``relax.xpbd`` take
 ``half_width`` and the ``relax_*`` fields; ``width.constant`` and ``offset.default`` take
 ``half_width``; the elevation stages take the ``z_*`` fields their profile uses;
 ``validity.default`` takes ``half_width``, ``turning_tol``, ``w_floor``, ``relax_tol``,
-``z_valid_grade`` and ``validity_border_check``; ``lift.flat`` takes ``z_base``. The
+``z_valid_grade`` and ``validity_border_check``; ``lift.flat`` takes ``z_base``.
+``elevation.flat`` takes ``z_base`` too (the gate altitude; it must be 0 on a track,
+where ``lift.flat`` carries the track's flat altitude). The
 generator's params are its ``generator_params`` (see :ref:`generator-params`). A plugin
 stage named by ``relax_solver`` or ``z_profile`` gets its ``Params.from_legacy(config)``
 (its defaults unless it maps flat fields).
@@ -773,18 +838,709 @@ code:
 - An unknown channel, an unknown stage, or a stage before the channel's first writer
   raises ``KeyError``.
 
+.. _pipeline-gates:
+
+The gate pipeline
+-----------------
+
+``GateGenerator`` runs a ``Program`` too. Its spec is a *gate pipeline*:
+``BatchSpec.max_gates`` is set, the result is a ``GateSequence``, and the stages take
+gate *anchors*, the plan-view points a generator emits, to ordered, separated,
+elevated, framed and validated gates. Every rule of this page applies to it unchanged
+(the planner, versioned rewrites, fail bits, the commit, taps, capture classes, runtime
+parameters); this section lists what differs.
+
+.. code-block:: python
+
+   from track_gen import GateGenConfig, GateGenerator
+   from track_gen.pipeline import presets
+
+   spec = presets.gates(num_envs=64, device="cpu")     # bezier anchors, ccw order
+   spec.ids
+   # ('generator', 'order', 'gate_relax', 'elevation', 'lift', 'tangents',
+   #  'gate_frames', 'validity')
+
+   gen = GateGenerator(spec)                            # env e gets seed e
+   gates = gen.generate()
+   gates.fail_mask                                      # [E] int32: one bit per failed check
+   gates.fail_bits                                      # {'count': 0, 'finite': 1, ..., 'grade': 5}
+   gen.program.tap("anchors.xy")                        # the anchors, before ordering
+
+   # The same Program from the flat config (byte-identical):
+   GateGenerator(GateGenConfig(num_envs=64, device="cpu"))
+
+   # Another order and elevation, by registered name:
+   presets.gates(num_envs=64, device="cpu", generator="polar", order="raw",
+                 elevation=("noise", {"z_noise_amplitude": 0.3}))
+
+   # Gates for a track generator: arc-length stations on its centerline.
+   presets.gates(num_envs=64, device="cpu", generator="bezier", source="stations",
+                 gates=12)
+
+.. _pipeline-gate-stages:
+
+The gate stages
+~~~~~~~~~~~~~~~
+
+``legacy.to_gate_pipeline_spec(config)`` and ``presets.gates(...)`` produce this list
+from a native gate generator. Stages in *italics* below are present only when their
+condition holds. Every stage launches what the 0.2.0.dev3 gate pipeline launched at the
+same point, with the same arguments (`Launches`_ lists the one reordering).
+
+.. list-table::
+   :header-rows: 1
+   :widths: 11 25 30 34
+
+   * - id
+     - stage
+     - reads
+     - writes
+   * - ``generator``
+     - ``gate_generator.<config.generator>``
+     - nothing (its seed is ``b.seed``)
+     - ``anchors.xy``, ``anchors.count``, plus the attributes it provides
+   * - ``order``
+     - ``order.<config.gate_ordering>`` (``None``: the generator's default order,
+       :ref:`pipeline-ordering-registry`)
+     - ``anchors.xy``, ``anchors.count`` (``random_pairs``: also ``seed``)
+     - ``gates.xy``, ``gates.count``
+   * - *normalize*
+     - ``normalize.extent``, when the generator prefers it (``polar``, ``checkpoint``,
+       ``voronoi``)
+     - ``gates.xy``, ``gates.count``
+     - ``gates.xy`` (a rewrite)
+   * - *carry_<attr>*
+     - ``carry.<attr>``, one per attribute the generator provides
+     - ``anchors.<attr>``, ``gates.count``
+     - ``gates.<attr>``
+   * - ``gate_relax``
+     - ``gate_relax.spheres``; ``gate_relax.none`` when ``gate_solve_iters == 0`` or
+       the float32 target ``2 * gate_radius`` is ``0``
+     - ``gates.xy``, ``gates.count`` (``.none``: nothing)
+     - ``gates.xy`` (a rewrite; ``.none``: nothing)
+   * - *gate_arclen*
+     - ``gate_arclen.default``, unless the elevation is ``flat`` or the generator
+       provides ``z``
+     - ``gates.xy``, ``gates.count``
+     - ``gates.cum``, ``gates.perim``
+   * - *elevation*
+     - ``elevation.<config.z_profile>``, unless the generator provides ``z``
+     - ``seed``, ``gates.count``, ``gates.cum``, ``gates.perim`` (``flat``:
+       ``gates.count``)
+     - ``gates.z``
+   * - ``lift``
+     - ``lift.gates``
+     - ``gates.xy``, ``gates.z``
+     - ``gates.position``
+   * - *tangents*
+     - ``tangents.central``, unless the generator provides ``tangent``
+     - ``gates.position``, ``gates.count``
+     - ``gates.tangent``
+   * - ``gate_frames``
+     - ``gate_frames.default``; ``gate_frames.posed`` when the generator provides
+       ``half_size`` and ``roll``
+     - ``gates.position``, ``gates.tangent``, ``gates.count`` (``.posed``: also
+       ``gates.half_size``, ``gates.roll``)
+     - ``gates.position``, ``gates.tangent`` (rewrites), ``gates.forward``,
+       ``gates.orientation``, ``gates.half_size``, ``gates.left``, ``gates.right``
+   * - ``validity``
+     - ``validity.gate_default``
+     - the seven frame outputs, ``gates.count``
+     - ``gates.valid``, ``valid.fail``
+
+The built-in stages' params keep the flat ``GateGenConfig`` field names, copied from the
+config: ``gate_relax.spheres`` takes ``gate_radius`` and ``gate_solve_iters`` (and refuses
+a pair that would not move anything: use ``gate_relax.none``); ``gate_frames.default``
+takes ``gate_width`` and ``gate_align``, ``gate_frames.posed`` ``gate_align`` only; the
+elevation stages take the ``z_*`` fields their profile uses (``elevation.flat`` takes
+``z_base`` on gates); ``validity.gate_default`` takes ``min_gates``, ``gate_radius``,
+``gate_width``, ``z_valid_grade`` and ``check_crossing`` (see `Gate fail bits`_). The
+generator's params are its ``generator_params``; the order, ``normalize`` and ``carry``
+stages take none (``normalize.extent`` scales to ``ops.constants.TARGET_EXTENT *
+BatchSpec.scale``).
+
+Then the commit (`The gate commit`_) and the ``generation`` write. A legacy
+``GateGeneratorSpec`` replaces ``generator``, ``order`` and ``normalize`` with one
+adapter slot (`Legacy gate generators`_), and a centerline generator replaces
+``generator`` with ``generator`` + ``stations`` (`Stations: gates from any track
+generator`_).
+
+Two point domains
+~~~~~~~~~~~~~~~~~
+
+A gate pipeline has two point domains. The anchors domain is ``[E * A]``, where ``A`` is
+the anchors producer's ``capacity()["gates"]``: a generator writes its anchors at its
+own stride, as it always did. The gate slots are ``[E * G]``, ``G =
+BatchSpec.max_gates``, the ``GateSequence`` layout. The ``order`` stage maps the first
+onto the second; every stage after it works on gate slots.
+
+The planner gives each stage its own ``Layout``, derived from its ports before its params
+are validated: ``b.layout.stride`` is ``G`` for a gate-domain stage (an anchors
+generator, ``stations.raw``, an order, the gate stages, a validity plugin) and ``N_max``
+for the centerline generator of a stations pipeline and for any stage with a ``cl.*``
+port (the ``resample`` and ``relax`` stages of ``source="relaxed_stations"``,
+``stations.relaxed``). A stage with both ``cl.*`` and ``gates.*`` ports raises
+``PlanError``: a stage runs on one point domain. Size a buffer from the port, not from the
+layout: ``b.stride_of(port)`` is the row stride of the channel a port is wired to
+(``raw``, ``N_max``, ``A`` or ``G``; ``1`` for an ``[E]`` channel) and ``b.per_of(port)``
+its ``per``.
+
+.. _pipeline-gate-channels:
+
+Gate channels
+~~~~~~~~~~~~~
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 10 10 50
+
+   * - channel
+     - per
+     - dtype
+     - meaning (``GateSequence`` field it becomes)
+   * - ``anchors.xy``
+     - anchors
+     - vec2f
+     - The generator's (or ``stations``') anchors, in its own order. Slots past
+       ``anchors.count`` are never read.
+   * - ``anchors.count``
+     - env
+     - int32
+     - Real anchors per env.
+   * - ``anchors.z``, ``anchors.tangent``, ``anchors.half_size``, ``anchors.roll``
+     - anchors
+     - float32, vec3f, float32, float32
+     - Per-anchor attributes an anchors generator ``provides`` (`Provided attributes`_).
+   * - ``gates.xy``
+     - gates
+     - vec2f
+     - Plan-view gate centers: ordered (``order``), then normalized, then separated
+       (``gate_relax``), one version each.
+   * - ``gates.count``
+     - env
+     - int32
+     - Real gates per env (``GateSequence.count``); normally a copy of
+       ``anchors.count``.
+   * - ``gates.cum``, ``gates.perim``
+     - gates, env
+     - float32
+     - Plan-view cumulative chord length and loop length: the elevation stages' arc
+       tables.
+   * - ``gates.z``
+     - gates
+     - float32
+     - Per-gate altitude.
+   * - ``gates.position``, ``gates.tangent``
+     - gates
+     - vec3f
+     - Lifted centers and 3D tangents, rewritten by ``gate_frames``
+       (``GateSequence.position``, ``GateSequence.tangent``).
+   * - ``gates.forward``, ``gates.left``, ``gates.right``
+     - gates
+     - vec3f
+     - The frame's forward axis and bar endpoints (the ``GateSequence`` fields).
+   * - ``gates.orientation``
+     - gates
+     - quatf
+     - The gate pose (``GateSequence.orientation``).
+   * - ``gates.half_size``
+     - gates
+     - float32
+     - Opening half-extent (``GateSequence.half_size``).
+   * - ``gates.roll``
+     - gates
+     - float32
+     - A provided roll, carried from ``anchors.roll`` for ``gate_frames.posed``.
+   * - ``gates.valid``
+     - env
+     - int32
+     - ``validity.gate_default``'s own 0/1 flag (``GateSequence.valid`` unless a check
+       runs after it, as ``track.valid``).
+   * - ``valid.fail``
+     - env
+     - int32
+     - The fail bitmask, shared with tracks (``GateSequence.fail_mask``).
+
+``GateSequence.generation`` is not a channel. As for tracks, the final version of each
+exported channel *is* the ``GateSequence`` array. Gate plugin channels
+(``gates.<package>.<name>``) arrive with roadmap PR13: a gate-domain stage with a port on
+a ``cl.<package>.<name>`` channel raises ``PlanError``.
+
+Anchors generators
+~~~~~~~~~~~~~~~~~~
+
+A native gate generator is a ``Stage`` with ``kind="gate_generator"`` and
+``output="anchors"``: it reads no channel, writes ``anchors.xy`` and ``anchors.count``,
+and does not order, normalize or lift anything (:ref:`gate-generator-stage` is the
+guide). Its ``capacity(params, layout)`` returns ``{"gates": A, "min_gates": k}``: ``A``
+is the most anchors it writes per env (its row stride), ``k`` the fewest (default ``0``).
+This replaces the legacy ``GateGeneratorSpec.max_gates`` callable, which meant both "how
+many slots I need" and "how many gates I can make". The planner checks it against the
+batch and the validity stage, with the messages ``GateGenConfig`` users already know:
+
+- ``A > BatchSpec.max_gates``: ``PlanError``: ``... BatchSpec.max_gates=8 is too small for
+  gate generator 'polar'; required max_gates 12.``
+- ``validity.gate_default``'s ``min_gates > A``: ``PlanError``: ``... min_gates=16 is too
+  large for gate generator 'polar'; generator can produce at most 12 gates.``
+
+The five built-ins are anchors generators: ``bezier`` and ``hull`` write an unordered
+cloud of grid points (``A = max_num_points``), ``polar``, ``checkpoint`` and
+``voronoi`` a loop in generation order (``A`` = their knot, checkpoint or control-point
+count) that the pipeline then normalizes to ``TARGET_EXTENT * scale``.
+
+.. _pipeline-provides:
+
+Provided attributes
+~~~~~~~~~~~~~~~~~~~
+
+An anchors generator may also write ``anchors.z``, ``anchors.tangent``,
+``anchors.half_size`` and ``anchors.roll``, declared in ``provides`` (a subset of
+``{"z", "tangent", "half_size", "roll"}`` that names exactly the attributes it writes;
+``half_size`` and ``roll`` come together). The preset then drops the stages that would
+compute them and carries the provided values to the gate slots instead:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 40 40
+
+   * - ``provides``
+     - dropped
+     - added or changed
+   * - ``"z"``
+     - ``gate_arclen``, ``elevation``
+     - ``carry_z`` (``carry.z``)
+   * - ``"tangent"``
+     - ``tangents``
+     - ``carry_tangent`` (``carry.tangent``)
+   * - ``"half_size"``, ``"roll"``
+     - nothing
+     - ``carry_half_size``, ``carry_roll``; ``gate_frames.posed`` instead of
+       ``.default``, and ``validity.gate_default(check_crossing="always")``
+
+The ``carry`` stages copy by anchor index (padding ``0.0`` for ``z`` and ``roll``, NaN for
+the others), so they need the index-preserving ``order.raw``: a generator that provides
+attributes declares ``orderings=frozenset({"raw"})``. What reaches the ``GateSequence``:
+
+- ``z`` becomes ``position.z`` bit for bit;
+- ``tangent`` is normalized by the frames stage (``GateSequence.tangent`` is the
+  normalized ``anchors.tangent``; a unit float32 tangent may change in the last ulp);
+- ``half_size`` becomes ``GateSequence.half_size`` bit for bit, and ``gate_width`` is
+  ignored (a non-zero ``gate_width`` raises ``ValueError``);
+- ``roll`` turns the frame about its forward axis: ``orientation``, ``left`` and
+  ``right`` include it.
+
+The plan-view sphere separation still runs after the generator and may move a gate's
+xy, so a provided ``z`` or ``tangent`` describes the anchor as emitted, not the moved
+gate: pass ``gate_solve_iters=0`` to keep the emitted xy.
+
+The planner holds a hand-built or edited spec to the same rules: a provided attribute
+that no later stage reads raises ``PlanError`` (``stage 'generator'
+(gate_generator.acme.helix) provides 'z' (anchors.z), but no stage reads it; stage
+'elevation' (elevation.noise) writes gates.z instead: carry it with carry.z (presets.gates
+drops the stages a generator provides)``), and so does a ``carry`` stage after an order
+other than ``order.raw``. The presets refuse an
+explicit elevation (``ValueError``: ``... provides its own altitudes (z); leave elevation
+at its default ('flat')``), and ``GateGenConfig`` a ``z_profile`` other than ``"flat"`` or a
+non-zero ``z_base``, for a generator that provides ``z``.
+
+.. _pipeline-ordering-registry:
+
+The ordering registry
+~~~~~~~~~~~~~~~~~~~~~
+
+Ordering is a stage of the open kind ``order``, applied by the pipeline: generators no
+longer order their own anchors. An order stage reads ``anchors.xy`` and
+``anchors.count``, writes the first ``m = min(count, A, G)`` gate slots of ``gates.xy``
+(NaN after them) and ``gates.count``. The built-ins are 0.2.0.dev3's kernels:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 22 78
+
+   * - stage
+     - order
+   * - ``order.raw``
+     - The anchors as the generator emitted them (index-preserving).
+   * - ``order.ccw``
+     - Sorted by angle around each env's centroid. The name is kept for compatibility:
+       the convention is clockwise in standard xy coordinates.
+   * - ``order.random_pairs``
+     - Random gate pairs for training objectives, keyed on the effective seed.
+
+``GateGenConfig.gate_ordering`` and ``presets.gates(order=...)`` name any registered
+order, a third party's included (:ref:`writing-an-ordering`). An unknown name raises
+``ValueError`` with the registry's list (``GateGenConfig.gate_ordering: unknown order
+'spiral'; available: ['ccw', 'random_pairs', 'raw']``), a quarantined plugin its
+``PluginLoadError``.
+
+A generator declares which orders it accepts, in one of two ways:
+
+- ``excluded_orderings`` (with ``orderings=None``): every registered order but these.
+  The built-ins use it: ``bezier`` and ``hull`` exclude ``raw`` (a grid-point cloud has no
+  order of its own), ``polar``, ``checkpoint`` and ``voronoi`` exclude ``random_pairs``.
+  A third-party order therefore runs with every built-in generator.
+- ``orderings``, a whitelist. Generators that provide attributes declare
+  ``frozenset({"raw"})``; a legacy ``GateGeneratorSpec``'s ``supported_orderings`` is
+  one.
+
+``preferred = {"order": name, "normalize": name}`` names the generator's default order
+and its normalization (``preferred["normalize"] = "extent"`` inserts
+``normalize.extent``). An order the generator does not accept raises (``PlanError`` from
+the planner, ``ValueError`` from the config): ``gate generator 'polar' does not support
+gate_ordering 'random_pairs'; supported: ['ccw', 'raw'] (its preferred order is 'ccw')``,
+the hint only when the generator declares a preferred order. With only the built-in orders
+installed the supported lists are those of 0.2.0.dev3.
+
+The default order is one rule, for an anchors generator: its ``preferred["order"]`` when
+it accepts it, else ``"ccw"`` when it accepts it, else the first order it accepts
+(``"raw"`` for stations). ``presets.gates(order=None)``,
+``GateGenConfig.gate_ordering=None`` (the config default, resolved by
+``legacy.to_gate_pipeline_spec`` when ``GateGenerator`` or ``Course`` is constructed)
+and the conformance kit all apply it, so ``GateGenerator(GateGenConfig(
+generator="acme.helix"))`` runs ``order.raw``. The run config (the config a legacy
+``GateGeneratorSpec`` receives) holds the resolved name, never ``None``. For the five
+built-ins the rule gives ``"ccw"``, the 0.2.0.dev3 default. An explicit name is checked
+as before.
+
+.. _pipeline-stations:
+
+Stations: gates from any track generator
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A track generator (``output="centerline"``) makes gates too: ``presets.gates`` inserts a
+``stations`` stage that places ``gates`` anchors at equal arc-length spacing along its
+closed centerline, then the shared gate stages run. It works for every built-in track
+generator, ``repulsive`` included, and for third-party ones, with no gate-specific code.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 22 78
+
+   * - ``source=``
+     - stages before ``order``
+   * - ``"stations"``
+     - ``generator`` (the centerline generator, ``capacity={"raw": num_points}``), then
+       ``stations.raw`` on its raw loop (``raw.xy``).
+   * - ``"relaxed_stations"``
+     - The first three stages of ``presets.track`` (``generator``, ``resample``,
+       ``relax``, with the same keywords: ``n_max``, ``num_points``, ``half_width``,
+       ``spacing``, ``relax``), then ``stations.relaxed`` on the relaxed centerline
+       (``cl.xy``). No uniform resample, frames or track validity run.
+   * - ``"auto"`` (default)
+     - ``"anchors"`` when the name is registered as a gate generator (the built-in names
+       are both kinds: the gate generator wins, as before), else ``"stations"`` when it
+       is a track generator, else ``ValueError`` listing both kinds.
+
+Each station ``k`` sits at arc length ``L * k / A`` from point 0 along the closed loop
+(``A = gates``, default 12; ``L`` the loop's plan-view length), so the anchors are in loop
+order and the default order is ``raw``. An env whose generator flagged it invalid, whose
+loop was truncated, or whose length is not positive gets ``anchors.count = 0`` (NaN
+anchors), and fails the ``count`` check. ``capacity()`` is ``{"gates": gates,
+"min_gates": 0}``; ``max_gates`` defaults to ``gates``.
+
+``stations`` and ``gate_arclen`` measure plan-view (xy) arc length, as 0.2.0.dev3 does.
+A selectable metric (``spacing_metric``, ``"xy"`` / ``"xyz"``) arrives with roadmap PR13:
+3D arc length needs an altitude on the centerline before the stations are placed (the
+``raw.z`` / ``cl.z`` carry-through), and gate altitudes are computed *from* the xy arc
+tables.
+
+.. _pipeline-gate-elevation:
+
+Elevation on gates
+~~~~~~~~~~~~~~~~~~
+
+The gate pipeline runs the same registered ``elevation`` stages as tracks, built-ins and
+plugins alike: the planner rewires every ``elevation`` slot of a gate pipeline from the
+centerline channels to their gate counterparts, ``cl.xy -> gates.xy``, ``cl.count ->
+gates.count``, ``cl.arclen2 -> gates.cum``, ``cl.length2 -> gates.perim``, ``cl.z ->
+gates.z`` (``seed`` is unchanged). An explicit ``StageRef.ports`` entry overrides one port.
+The presets emit plain ``StageRef("elevation", name, params)``, so
+``spec.replace("elevation", StageRef("elevation", "acme.sinusoid_hills"))`` works on a
+gate spec whose elevation is already non-flat (e.g. ``presets.gates(...,
+elevation="noise")``). A flat gate spec has no ``gate_arclen`` slot, so also insert the
+arc tables, as the ``PlanError`` says: ``spec.replace("elevation", StageRef("elevation",
+"acme.sinusoid_hills")).insert_before("elevation", StageRef("gate_arclen",
+"default"))``, which builds the spec of ``presets.gates(elevation="acme.sinusoid_hills")``
+(or build with ``presets.gates(elevation=...)`` directly). A stage that sizes its buffers with ``b.layout.stride`` and
+``b.write("z", wp.float32, per="cl")``, as the hills example of
+:doc:`/contributing/writing-a-stage` does, runs on gates unchanged: ``per`` is checked
+against the port's declared channel and the buffer sized by the wired one.
+
+``GateGenConfig.z_profile`` names any registered elevation stage, as
+``TrackGenConfig.z_profile`` does; a plugin gets its ``Params.from_legacy(config)``,
+where ``config`` is the ``GateGenConfig``: only the ``z_*`` fields are shared with
+``TrackGenConfig``, so a ``from_legacy`` written for tracks should read any other field
+with ``getattr(config, name, default)`` (one that reads a ``TrackGenConfig``-only field
+raises ``ValueError`` naming it). An unknown name raises at ``GateGenerator``
+construction: ``GateGenConfig.z_profile: unknown elevation 'bogus'; available: ['flat',
+'noise', 'random_walk', 'uniform']``. An elevation port left on a ``cl.*`` channel with no
+gate counterpart raises ``PlanError``.
+
+On gates, ``elevation.uniform`` and ``elevation.random_walk`` draw one altitude per gate
+(0.2.0.dev3's gate path): the gates are the knots, so their ``z_control_points`` is not
+read (``GateGenConfig`` has no such field; a value set through ``presets.gates(
+elevation=("uniform", {...}))`` changes nothing). ``elevation.flat`` writes ``z_base``
+into every real gate (``presets.gates(z_base=...)``, ``GateGenConfig.z_base``); on a
+track it launches nothing and ``lift.flat`` adds the altitude, so a non-zero ``z_base``
+on a track's ``elevation.flat`` raises: ``ValueError`` from ``presets.track``,
+``PlanError`` from the planner, before anything is allocated.
+
+.. _pipeline-gate-presets:
+
+Gate presets: ``presets.gates``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: python
+
+   presets.gates(*, num_envs, device, generator="bezier", generator_params=None,
+                 source="auto", gates=None, max_gates=None, min_gates=4,
+                 order=None, stations=None,
+                 gate_radius=0.025, gate_solve_iters=8, gate_width=0.0,
+                 gate_align="yaw_only", elevation="flat", z_base=0.0,
+                 z_valid_grade=0.0, checks=("gate_default",), scale=1.0,
+                 on_invalid="keep", n_max=384, num_points=256, half_width=0.1,
+                 spacing=None, relax="xpbd", registry=None) -> PipelineSpec
+
+``presets.gates(num_envs=E, device=d)`` builds what
+``legacy.to_gate_pipeline_spec(GateGenConfig(num_envs=E, device=d))`` builds: the same
+stage list, equal params once resolved, byte-identical ``GateSequence``. It reads the
+registry (``registry``, default ``track_gen.plugin.registry``) to see the generator's
+``output``, ``provides`` and orderings, which decide the stage list.
+
+- ``generator`` is a name (with ``generator_params``) or a ``StageRef`` of kind
+  ``gate_generator`` or ``generator``; ``source`` is ``"auto"``, ``"anchors"``,
+  ``"stations"`` or ``"relaxed_stations"`` (`Stations: gates from any track
+  generator`_).
+- ``gates`` is the station count of a centerline source (default 12); with an anchors
+  generator it raises ``ValueError`` (the generator decides its own count). It fills the
+  ``gates`` field of a ``stations`` selection that does not set it; a selection that sets
+  another count raises ``ValueError``. ``max_gates`` defaults to 32 for anchors, to the
+  station count for stations.
+- ``order``, ``stations``, ``elevation``, ``relax`` and each entry of ``checks`` take the
+  forms of `Presets`_ (a name, ``(name, params)``, a ``StageRef``, or ``None``:
+  ``elevation=None`` is ``elevation.flat``, ``relax=None`` is ``relax.none``).
+  ``order=None`` is the generator's default order: its preferred order when it accepts
+  it, else ``"ccw"`` when it accepts it, else the first order it accepts (the rule of
+  ``GateGenConfig.gate_ordering=None`` and of the conformance kit). ``checks`` starts
+  with ``"gate_default"``. ``stations=`` with an anchors generator raises
+  ``ValueError`` (it writes its own anchors).
+- ``gate_radius``, ``gate_solve_iters``, ``gate_width``, ``gate_align``, ``z_base``,
+  ``z_valid_grade``, ``min_gates`` and ``scale`` are the ``GateGenConfig`` fields, passed
+  to every stage that takes them (one value per pipeline, see `Planner rules for gate
+  pipelines`_). ``validity.gate_default`` gets them (and ``check_crossing="always"`` for
+  posed gates) unless its params in ``checks`` set them; params setting another
+  ``gate_radius`` or ``gate_width`` raise ``ValueError``. ``z_base`` is
+  ``elevation.flat``'s altitude: a nonzero value with another elevation or with a
+  generator that provides ``z`` raises ``ValueError``. ``gate_align`` is ``"yaw_only"``
+  or ``"full_tangent"``.
+- ``n_max``, ``num_points``, ``half_width``, ``spacing`` and ``relax`` configure the
+  centerline sub-pipeline: a ``"stations"`` source reads ``n_max`` and ``num_points``, a
+  ``"relaxed_stations"`` source all five, and setting one that the source does not read
+  raises ``ValueError``.
+- ``on_invalid`` is ``"keep"`` or ``"poison"``.
+- A legacy ``GateGeneratorSpec`` orders its own gates: ``order=`` with one raises
+  ``ValueError``, choose its ordering with ``GateGenConfig(gate_ordering=...)``.
+
+.. _pipeline-gate-spec:
+
+Running a gate spec: ``GateGenerator(spec)``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``GateGenerator(config_or_spec, rng=None, *, seeds=None, stream=None)`` takes a
+``GateGenConfig`` (as before) or a gate pipeline's ``PipelineSpec``, with the seed rules of
+``TrackGenerator`` (``rng`` or ``seeds``, not both; with neither, env ``e`` gets seed
+``e``). A track pipeline's spec raises ``ValueError`` pointing at ``TrackGenerator``,
+anything else ``TypeError``.
+
+- ``gen.config`` returns what was passed, so ``GateGenerator(gen.config, rng)`` rebuilds
+  an identical generator.
+- ``gen.program`` is the ``Program``; ``gen.num_envs``, ``gen.device`` and
+  ``gen.max_gates`` read the batch whichever form was passed.
+- ``gen.params`` lists ``"generator"`` plus every stage with a dynamic field.
+
+``generate``, ``enqueue``, ``seeds``, ``inputs``, graphs, masked regeneration and
+``Course`` (which builds its ``GateGenerator`` from ``CourseConfig.gen``) work as before.
+
+.. _pipeline-gate-fail-bits:
+
+Gate fail bits
+~~~~~~~~~~~~~~
+
+``validity.gate_default`` keeps 0.2.0.dev3's single fused validity kernel, so
+``GateSequence.valid`` is byte-identical, and writes one bit per check into
+``valid.fail``. ``GateSequence.fail_mask`` is its final version, and ``valid[e] ==
+(fail_mask[e] == 0)``.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 12 16 72
+
+   * - bit
+     - name
+     - set when
+   * - 0
+     - ``count``
+     - ``count < min_gates`` or ``count > max_gates``
+   * - 1
+     - ``finite``
+     - a real gate's position, tangent, forward, orientation, half_size, left or right
+       is NaN or infinite
+   * - 2
+     - ``tangent``
+     - a real gate's 3D tangent has ``dot(t, t) <= 1e-12``
+   * - 3
+     - ``spacing``
+     - two real gates are closer in xy than ``2 * gate_radius``
+   * - 4
+     - ``crossing``
+     - two gate bars cross (only when ``gate_width > 0``, or with
+       ``check_crossing="always"``)
+   * - 5
+     - ``grade``
+     - a chord's ``|dz| / ds`` exceeds ``z_valid_grade`` (only when it is ``> 0``)
+   * - 6-15
+     - reserved
+     - TrackGen's future built-in gate checks
+   * - 16-30
+     - plugin checks
+     - assigned by ``StageBuilder.fail_bit()``, in pipeline order (as for tracks)
+
+``track_gen.pipeline.GATE_FAIL_BITS`` is this table (a read-only mapping, next to
+``BUILTIN_FAIL_BITS``). A gate validity plugin is a ``validity`` stage that reads the gate
+channels it checks and rewrites ``valid.fail`` exactly as a track check does (see
+:ref:`stage-validity-check`); add it with ``presets.gates(...,
+checks=("gate_default", "acme.max_height"))``. In a gate pipeline ``valid.fail`` must
+start at ``validity.gate_default``.
+
+``check_crossing`` is ``"width"`` (default: the crossing check runs when ``gate_width >
+0``, as before) or ``"always"``, which posed gates need: their widths come from the
+generator, not from ``gate_width``. The preset sets it for a generator that provides
+``half_size``, and the planner refuses ``gate_frames.posed`` with ``"width"``.
+
+.. _pipeline-gate-commit:
+
+The gate commit
+~~~~~~~~~~~~~~~
+
+The gate Program ends with the commit of `The commit`_, over the ``GateSequence``:
+
+- **Masked regeneration is exact.** ``generate(advance=True, mask=m)`` holds the
+  ``GateSequence`` rows of every env with ``m[e] == 0`` before the stages and restores
+  them after, bit for bit (``position``, ``tangent``, ``forward``, ``left``, ``right``,
+  ``orientation``, ``half_size``, ``count``, ``valid``, ``fail_mask``; ``generation`` is
+  written for the masked envs only).
+- **Invalid envs.** ``BatchSpec.on_invalid`` applies: ``"keep"`` (default) leaves an invalid env's computed gates and
+  ``valid = 0``. ``"poison"`` leaves it with ``count = 0``, every per-gate field NaN
+  (``orientation`` and ``half_size`` included) and ``valid = 0``, keeping ``fail_mask``;
+  ``CheckpointSet.from_gates`` and ``ProgressTracker`` then take their empty-course path
+  for that env. There is no ``GateGenConfig.on_invalid``: use ``presets.gates(...,
+  on_invalid="poison")`` or edit the spec's batch.
+- **Cost.** As for tracks: no launch for an unmasked default generation, one for a derived
+  ``valid`` (a check after ``validity.gate_default``) or for poison, two for a masked
+  generation. The held copy costs 80 B per gate slot and 12 B per env, allocated once.
+
+.. _pipeline-gate-launches:
+
+Launches
+~~~~~~~~
+
+The default gate Programs launch the kernels of 0.2.0.dev3, with the same dimensions and
+scalars, in the same order (three kernels gained trailing array arguments, and
+``_finalize_validity_k``'s grade-check wrap is also bounded by ``max_gates``: the same
+arithmetic for every count <= max_gates). The one other difference: the normalizing generators (``polar``, ``checkpoint``, ``voronoi``) normalized
+their ordered gates in place before copying the count; the ``normalize`` stage now runs
+after the order stage's count copy, and runs the same arithmetic out of place
+(``_normalize_extent_to_k`` reads the order's ``gates.xy`` and writes its own version:
+same dimensions and scalars, one more array argument). The launch count and the bytes
+are identical.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 64 18 18
+
+   * - generation (CPU, launches per ``generate()``)
+     - 0.2.0.dev3
+     - now
+   * - ``bezier`` / ``hull``, any ordering, flat, ``gate_solve_iters=8``
+     - 14
+     - 14 (identical)
+   * - ``polar`` / ``checkpoint`` / ``voronoi``, flat, ``gate_solve_iters=8``
+     - 14
+     - 14 (the count copy before the normalization)
+   * - masked (``advance=True, mask=m``)
+     - as ``advance=True`` alone (one more than above: the epoch advance)
+     - two more than 0.2.0.dev3 (hold, commit)
+   * - ``on_invalid="poison"``
+     - (not available)
+     - one more (the commit)
+   * - a plugin check after ``validity.gate_default``
+     - (not available)
+     - one more for the commit (the derived ``valid``), plus the check's own launches
+       (and its parameter latch, for a check with dynamic params)
+
+A non-flat elevation adds the ``gate_arclen`` launch, ``gate_solve_iters=0`` drops the
+relax launch, as before.
+
+.. _pipeline-gate-plan-rules:
+
+Planner rules for gate pipelines
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Besides the rules of `build() and the planner`_, a gate pipeline raises ``PlanError``
+before allocating anything when:
+
+- the generator's ``capacity()`` does not fit the batch or the validity stage's
+  ``min_gates`` (`Anchors generators`_), or ``capacity()`` returns keys other than
+  ``gates`` / ``min_gates``, ``gates < 1``, or ``min_gates`` outside ``[0, gates]``;
+- the order stage is one the generator does not accept (`The ordering registry`_);
+- a provided attribute is not read, or a ``carry`` stage follows an order other than
+  ``order.raw`` (`Provided attributes`_);
+- a stage has both ``cl.*`` and ``gates.*`` ports, a gate-domain stage uses a
+  ``cl.<package>.<name>`` plugin channel, or an elevation port stays on a ``cl.*``
+  channel without gate counterpart (`Two point domains`_, `Elevation on gates`_);
+- stages disagree on ``gate_width`` or ``gate_radius`` (``gate_frames`` bakes the bar
+  width, ``gate_relax.spheres`` the separation target, ``validity.gate_default`` both
+  checks): one value per pipeline;
+- ``gate_frames.posed`` runs with ``check_crossing="width"`` (`Gate fail bits`_);
+- a ``GateSequence`` field has no writer, or ``valid.fail`` does not start at
+  ``validity.gate_default``.
+
+.. _pipeline-legacy-gates:
+
+Legacy gate generators
+~~~~~~~~~~~~~~~~~~~~~~
+
+A ``GateGeneratorSpec`` (the 0.2.0.dev3 gate plugin ABI: ``generate(seeds, config, out,
+scratch[, ctx])`` writing ordered plan-view gates into a staging view, ``alloc_scratch``,
+``max_gates``, ``supported_orderings``) keeps working, through an adapter slot that
+writes ``gates.xy`` and ``gates.count`` directly. It orders its own gates as before, so no
+order or normalize stage follows it, and it reads the user's ``GateGenConfig``, exactly
+the fields it read before. A ``capturable=False`` spec makes the Program eager, an
+``accepts_ctx=False`` spec runs inside ``ctx.scope()`` (see :doc:`cuda-graph`).
+
+It is **deprecated**: registering one stays silent, but binding one (``GateGenerator``,
+``Course``, ``build``, ``legacy.to_gate_pipeline_spec``, the conformance kit) emits a
+``DeprecationWarning`` once per registry and name, attributed to the calling code:
+``GateGeneratorSpec 'acme.ring' (...) is deprecated: write a Stage with
+kind='gate_generator' and output='anchors' (docs/contributing/writing-a-generator.rst);
+legacy gate generators run through an adapter until 1.0``. Port it with
+:ref:`gate-generator-stage`.
+
 Not open yet
 ------------
 
-- **Gate pipeline** (roadmap PR11): gate stages, ``presets.gates``, the ordering
-  registry and the ``stations`` adapter; ``GateGenConfig.z_profile`` keeps its closed
-  set of names until then.
 - **Iterative and host-segmented stages** (roadmap PR12): ``BOUNDED`` stages; a
   ``HOST`` stage currently makes the whole Program eager.
 - **Channels and results** (roadmap PR13): per-point channels carried from ``raw.*`` to
   ``cl.*``, ``cl.half_width`` consumers (a width that varies along the band, a width
   stage before relax), ``Track.half_width`` and ``Track.attributes``, and the removal of
-  the per-stage ``half_width`` fields and of the parameter latch.
+  the per-stage ``half_width`` fields and of the parameter latch. For gates: gate plugin
+  channels (``gates.<package>.<name>``) and a ``spacing_metric`` (``"xy"`` /
+  ``"xyz"``: 3D station and arc spacing, which needs ``raw.z`` / ``cl.z`` carried through
+  before the stations).
+- **Gates** (later): composite generators (``Recipe``), attributes provided by
+  ``stations``, ``roll`` on ``gate_frames.default``, ``preferred`` hints for track
+  generators, split gate checks, and a ``GateGenConfig.on_invalid`` field.
 - Opening ``resample``, ``frames``, ``offset`` and ``lift`` to plugins; split built-in
   checks (``validity.turning``, ...); an aliasing in-place write form; a
   ``TrackGenConfig.on_invalid`` field; ``Course`` built from a ``PipelineSpec``.
@@ -792,4 +1548,9 @@ Not open yet
 The 0.2.0.dev2 composition (``warp_pipeline._run_pipeline``, ``inflate_warp``,
 ``_inflate_warp_alloc``) is still importable. ``TrackGenerator`` no longer calls it; the
 tests use it as the byte-identity reference. ``gen._scratch`` is a view of the Program's
-buffers kept for the same reason; new code reads ``gen.program.tap``.
+buffers kept for the same reason; new code reads ``gen.program.tap``. The 0.2.0.dev3 gate
+composition (``warp_gate._run_gate_pipeline``, ``_gate_warp_alloc``) is removed: the
+tests keep a frozen copy as the byte-identity reference, and ``GateGenerator._scratch`` is
+gone (read ``gen.program.tap``). The ``warp_gate`` helpers 0.1 gate plugins call
+(``alloc_order_scratch``, ``order_points``, ``finish_ordered_gates``, ``_GateStaging``)
+stay, deprecated, until 1.0; the library no longer calls them.

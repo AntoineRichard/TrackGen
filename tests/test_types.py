@@ -299,7 +299,7 @@ def test_gate_config_defaults_instantiate():
     assert cfg.gate_radius == 0.025
     assert cfg.gate_solve_iters == 8
     assert cfg.gate_width == 0.0
-    assert cfg.gate_ordering == "ccw"
+    assert cfg.gate_ordering is None        # the generator's default order (PR11)
     assert cfg.max_num_points == 13
     assert cfg.polar_num_knots == 12
     assert cfg.voronoi_control_points == 18
@@ -319,8 +319,19 @@ def test_gate_config_validates_basic_bounds():
         GateGenConfig(gate_solve_iters=-1)
     with pytest.raises(ValueError, match="gate_width"):
         GateGenConfig(gate_width=-1.0)
-    with pytest.raises(ValueError, match="gate_ordering"):
-        GateGenConfig(gate_ordering="spiral")
+    # PR11: gate_ordering names any registered order stage (or None: the generator's
+    # default order): the config checks its type only; an unknown name is refused by
+    # GateGenerator, through the registry.
+    for bad in ("", 3):
+        with pytest.raises(ValueError, match="gate_ordering must be a non-empty string"):
+            GateGenConfig(gate_ordering=bad)
+    assert GateGenConfig(gate_ordering=None).gate_ordering is None
+    from track_gen import GateGenerator
+
+    with pytest.raises(ValueError, match=r"GateGenConfig.gate_ordering: unknown order "
+                                         r"'spiral'; available: \['ccw', 'random_pairs', "
+                                         r"'raw'\]"):
+        GateGenerator(GateGenConfig(gate_ordering="spiral"))
     # The voronoi_* rules moved to the gate generator (GATE_RULES): config time is clean.
     GateGenConfig(voronoi_radial_variation=-0.1)
     GateGenConfig(voronoi_angular_jitter=-0.1)
@@ -364,9 +375,17 @@ def test_track_config_z_validates():
             TrackGenConfig(device="cpu", num_envs=1, z_profile=bad)
     with pytest.raises(ValueError, match="z_min"):
         TrackGenConfig(device="cpu", num_envs=1, z_min=2.0, z_max=1.0)
-    # gates keep the closed set (gate stages arrive with roadmap PR11)
-    with pytest.raises(ValueError, match="z_profile must be one of"):
-        GateGenConfig(device="cpu", num_envs=1, z_profile="bogus")
+    # PR11: a gate z_profile names any registered elevation stage too (same rule).
+    from track_gen import GateGenerator
+
+    gcfg = GateGenConfig(device="cpu", num_envs=1, z_profile="bogus")
+    with pytest.raises(ValueError, match=r"GateGenConfig.z_profile: unknown elevation "
+                                         r"'bogus'; available: \['flat', 'noise', "
+                                         r"'random_walk', 'uniform'\]"):
+        GateGenerator(gcfg)
+    for bad in ("", None, 3):
+        with pytest.raises(ValueError, match="z_profile must be a non-empty string"):
+            GateGenConfig(device="cpu", num_envs=1, z_profile=bad)
 
 
 def test_track_config_validates_sampler_and_buffer_invariants():

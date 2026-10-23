@@ -187,10 +187,11 @@ Constants
 Plugin registry
 ---------------
 
-Track and gate generators and the ``relax``, ``width``, ``elevation`` and ``validity``
-stages of the track pipeline, selected by name, built-ins and installed packages alike
-(entry point group ``track_gen.plugins``), their parameters and the ``Stage`` protocol;
-see :doc:`/contributing/writing-a-generator` and :doc:`/contributing/writing-a-stage`.
+Track and gate generators, the ``relax``, ``width``, ``elevation`` and ``validity``
+stages of the track pipeline and the ``order`` and ``stations`` stages of the gate
+pipeline, selected by name, built-ins and installed packages alike (entry point group
+``track_gen.plugins``), their parameters and the ``Stage`` protocol; see
+:doc:`/contributing/writing-a-generator` and :doc:`/contributing/writing-a-stage`.
 ``track_gen.plugin`` is a subpackage outside ``track_gen.__all__``: import it explicitly.
 Importing ``track_gen`` loads no generator module and no plugin; the registry loads on its
 first lookup.
@@ -226,8 +227,9 @@ first lookup.
 
    The process-global :class:`~track_gen.plugin.Registry`. ``TrackGenerator``,
    ``GateGenerator`` and ``Course`` resolve ``config.generator`` through it, and
-   ``TrackGenerator`` and :func:`~track_gen.pipeline.build` the pipeline stages of the
-   open kinds (``config.relax_solver`` and ``config.z_profile`` included).
+   ``TrackGenerator``, ``GateGenerator`` and :func:`~track_gen.pipeline.build` the
+   pipeline stages of the open kinds (``config.relax_solver``, ``config.z_profile`` and
+   ``GateGenConfig.gate_ordering`` included).
 
 .. autoclass:: track_gen.plugin.Registry
    :members:
@@ -240,6 +242,10 @@ first lookup.
 
 .. autoclass:: track_gen.plugin.GateGeneratorSpec
    :no-members:
+
+   **Deprecated**: binding one (``GateGenerator``, ``Course``, ``build``) emits a
+   ``DeprecationWarning``; it runs through an adapter until 1.0. Write a gate generator
+   ``Stage`` instead (:ref:`gate-generator-stage`).
 
 .. autoexception:: track_gen.plugin.DuplicateSpecError
 
@@ -278,18 +284,20 @@ Stages
 The ``Stage`` protocol: a ``Stage`` subclass, registered as a class, that allocates
 through the ``StageBuilder`` it is handed and returns an ``enqueue(ctx)`` callable.
 Plugins register ``kind="generator"`` stages with ``output="centerline"`` (see
-:ref:`generator-stage-contract`) and stages of the open pipeline kinds ``"relax"``,
-``"width"``, ``"elevation"`` and ``"validity"``, which read channels through
-``StageBuilder.read`` and rewrite them into ``StageBuilder.write`` (see
-:doc:`/contributing/writing-a-stage`). The other track stages are TrackGen's built-ins
-(see :doc:`/how-it-works/pipeline-preview`). Gate generator stages
-(``output="anchors"``) arrive with roadmap PR11.
+:ref:`generator-stage-contract`), ``kind="gate_generator"`` stages with
+``output="anchors"`` (see :ref:`gate-generator-stage`; they also declare
+``provides``, ``orderings`` or ``excluded_orderings``, and ``preferred``), and stages of
+the open pipeline kinds ``"relax"``, ``"width"``, ``"elevation"``, ``"validity"``,
+``"order"`` and ``"stations"``, which read channels through ``StageBuilder.read`` and
+rewrite them into ``StageBuilder.write`` (see :doc:`/contributing/writing-a-stage`). The
+other stages are TrackGen's built-ins (see :doc:`/how-it-works/pipeline-preview`).
 
 .. autoclass:: track_gen.plugin.Stage
    :members: capture_class, capacity, build
 
 .. autoclass:: track_gen.plugin.StageBuilder
-   :members: read, write, temp_like, scratch, param, input, salt, fail_bit
+   :members: read, write, temp_like, stride_of, per_of, scratch, param, input, salt,
+      fail_bit
 
 .. autoclass:: track_gen.plugin.CaptureClass
    :no-members:
@@ -302,15 +310,19 @@ Pipeline (preview)
 
 .. warning::
 
-   **Preview.** ``track_gen.pipeline`` may change before 1.0. ``TrackGenerator`` is the
-   stable entry point; it accepts a ``PipelineSpec`` as well as a ``TrackGenConfig``.
+   **Preview.** ``track_gen.pipeline`` may change before 1.0. ``TrackGenerator`` and
+   ``GateGenerator`` are the stable entry points; each accepts a ``PipelineSpec`` as well
+   as its config.
 
-The track pipeline as an ordered list of stages: the spec types, the presets, the
-planner and the ``Program`` it builds; see :doc:`/how-it-works/pipeline-preview`.
+The track and gate pipelines as ordered lists of stages: the spec types, the presets,
+the planner and the ``Program`` it builds; see :doc:`/how-it-works/pipeline-preview`.
 ``TrackGenerator(config)`` builds its pipeline with :func:`legacy.to_pipeline_spec
 <track_gen.pipeline.legacy.to_pipeline_spec>` and :func:`~track_gen.pipeline.build`;
 ``TrackGenerator(spec)`` builds the spec it is given, usually from
-:func:`presets.track <track_gen.pipeline.presets.track>`. ``track_gen.pipeline`` is a
+:func:`presets.track <track_gen.pipeline.presets.track>`. ``GateGenerator`` does the same
+with :func:`legacy.to_gate_pipeline_spec
+<track_gen.pipeline.legacy.to_gate_pipeline_spec>` and :func:`presets.gates
+<track_gen.pipeline.presets.gates>` (a spec whose ``BatchSpec.max_gates`` is set). ``track_gen.pipeline`` is a
 subpackage outside ``track_gen.__all__``: import it explicitly. ``import track_gen``
 does not import it.
 
@@ -331,10 +343,14 @@ Specs
 
 .. autofunction:: track_gen.pipeline.legacy.to_pipeline_spec
 
+.. autofunction:: track_gen.pipeline.legacy.to_gate_pipeline_spec
+
 Presets
 ~~~~~~~
 
 .. autofunction:: track_gen.pipeline.presets.track
+
+.. autofunction:: track_gen.pipeline.presets.gates
 
 Planner and Program
 ~~~~~~~~~~~~~~~~~~~
@@ -362,6 +378,15 @@ Fail bits
    :meth:`StageBuilder.fail_bit() <track_gen.plugin.StageBuilder.fail_bit>`, and bit
    31 is never used. ``Program.fail_bits`` and ``Track.fail_bits`` extend it with the
    plugin checks of a pipeline; see :ref:`pipeline-fail-bits`.
+
+.. py:data:: GATE_FAIL_BITS
+   :type: Mapping[str, int]
+
+   The ``valid.fail`` bits of ``validity.gate_default``, the gate pipeline's built-in
+   check, a read-only mapping: ``{"count": 0, "finite": 1, "tangent": 2, "spacing": 3,
+   "crossing": 4, "grade": 5}``. Bits 6 to 15 are reserved, 16 to 30 go to plugin checks
+   as for tracks. ``Program.fail_bits`` and ``GateSequence.fail_bits`` extend it with the
+   plugin checks of a gate pipeline; see :ref:`pipeline-gate-fail-bits`.
 
 .. py:currentmodule:: None
 
@@ -408,8 +433,8 @@ Conformance checks
    :type: Mapping[str, tuple[str, ...]]
 
    The check names of each registry kind (``"generator"``, ``"gate_generator"``,
-   ``"relax"``, ``"width"``, ``"elevation"``, ``"validity"``), in run order. A
-   read-only mapping.
+   ``"relax"``, ``"width"``, ``"elevation"``, ``"validity"``, ``"order"``,
+   ``"stations"``), in run order. A read-only mapping.
 
 .. autoclass:: track_gen.testing.Report
    :members: ok, failures, failed_names, result, raise_for_failures
@@ -543,14 +568,15 @@ load it with ``pytest_plugins = ["track_gen.testing.pytest_plugin"]`` in a top-l
    A pytest fixture whose value is this factory. It runs
    :func:`~track_gen.testing.check_generator` (with ``kind="gate_generator"``,
    :func:`~track_gen.testing.check_gate_generator`; with ``kind`` one of ``"relax"``,
-   ``"width"``, ``"elevation"``, ``"validity"``, :func:`~track_gen.testing.check_stage`)
+   ``"width"``, ``"elevation"``, ``"validity"``, ``"order"``, ``"stations"``,
+   :func:`~track_gen.testing.check_stage`)
    on ``name`` with ``params`` and ``kwargs``, fails the test listing every failed check
    unless all pass, and returns the :class:`~track_gen.testing.Report`.
 
 .. py:function:: generator_names(kind="generator", *, builtin=None, exclude=()) -> list[str]
 
    The names registered under ``kind`` (``"generator"``, ``"gate_generator"`` or one of
-   the four stage kinds), sorted, without those in ``exclude``. ``builtin=True`` keeps only the built-ins,
+   the six stage kinds), sorted, without those in ``exclude``. ``builtin=True`` keeps only the built-ins,
    ``builtin=False`` only the third-party generators.
 
 .. py:function:: parametrize_generators(kind="generator", *, argname="generator", builtin=None, exclude=())
@@ -577,6 +603,11 @@ Result types
    :no-members:
 
    .. automethod:: clone
+
+   ``fail_mask`` and ``fail_bits`` say why an env is invalid: the bit table is
+   :data:`~track_gen.pipeline.GATE_FAIL_BITS` plus the pipeline's plugin checks (see
+   :ref:`pipeline-gate-fail-bits`). ``fail_mask`` is ``None`` on a ``GateSequence`` built
+   elsewhere; when it is set, ``valid[e] == (fail_mask[e] == 0)``.
 
 Collision queries
 -----------------

@@ -78,8 +78,12 @@ def test_noise_bounds_and_periodicity_shape():
 
 
 def test_config_validation():
-    with pytest.raises(ValueError):
-        GateGenConfig(device="cpu", num_envs=1, z_profile="bogus")
+    # PR11: an unknown z_profile is refused at GateGenerator construction (any
+    # registered elevation stage is a valid name), as for tracks.
+    from track_gen import GateGenerator
+
+    with pytest.raises(ValueError, match="unknown elevation 'bogus'"):
+        GateGenerator(GateGenConfig(device="cpu", num_envs=1, z_profile="bogus"))
     with pytest.raises(ValueError):
         GateGenConfig(device="cpu", num_envs=1, z_profile="uniform",
                       z_min=2.0, z_max=1.0)

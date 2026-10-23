@@ -350,7 +350,7 @@ The capture works because every stage is pure Warp and fixed-shape:
 Non-capturable and legacy plugin generators
 -------------------------------------------
 
-A generator registered with ``capturable=False`` (``GeneratorSpec`` or
+A generator registered with ``capturable=False`` (``GeneratorSpec`` or the deprecated
 ``GateGeneratorSpec``) runs eagerly on ``cuda`` every call and never gets a self-graph.
 Under a caller's capture, its ``generate()`` and ``enqueue()`` raise ``NotCapturableError``
 before launching anything, so your graph is never left half-recorded.

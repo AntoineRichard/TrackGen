@@ -4,7 +4,6 @@ import importlib
 import numpy as np
 import pytest
 
-from tests.conftest import override_spec
 from track_gen._src import gate_generator_registry as reg
 from track_gen.plugin import DuplicateSpecError
 
@@ -123,18 +122,29 @@ def test_fresh_registry_repopulates_already_imported_gate_modules():
 
 def test_all_standard_gate_generators_registered():
     # Superset: installed plugins may add more gate generators.
+    # PR11: the built-ins are gate_generator Stages (output="anchors"); their orderings
+    # are exclusions (so a third-party order runs with every built-in), which resolve to
+    # 0.2.0.dev3's supported lists while only the built-in orders are registered.
+    from track_gen.plugin import Stage, registry
+    from track_gen.stages.gates import _supported_orderings
+
     assert {"bezier", "checkpoint", "hull", "polar", "voronoi"} <= set(reg.available())
     for name in ("bezier", "checkpoint", "hull", "polar", "voronoi"):
         spec = reg.get(name)
         assert spec.name == name
-        assert callable(spec.alloc_scratch)
-        assert callable(spec.generate)
-        assert callable(spec.max_gates)
+        assert issubclass(spec, Stage)
+        assert spec.kind == "gate_generator" and spec.output == "anchors"
+        info = registry.describe("gate_generator", name)
+        assert info.orderings is None and info.output == "anchors"
 
-    assert reg.get("bezier").supported_orderings == frozenset({"ccw", "random_pairs"})
-    assert reg.get("hull").supported_orderings == frozenset({"ccw", "random_pairs"})
+    for name in ("bezier", "hull"):
+        assert registry.describe("gate_generator", name).excluded_orderings == \
+            frozenset({"raw"})
+        assert _supported_orderings(registry, name) == ["ccw", "random_pairs"]
     for name in ("checkpoint", "polar", "voronoi"):
-        assert reg.get(name).supported_orderings == frozenset({"ccw", "raw"})
+        assert registry.describe("gate_generator", name).excluded_orderings == \
+            frozenset({"random_pairs"})
+        assert _supported_orderings(registry, name) == ["ccw", "raw"]
 
 
 def test_gate_generator_spec_capturable_defaults_true():
@@ -151,8 +161,10 @@ def test_gate_generator_spec_capturable_defaults_true():
 
 
 def test_shipped_gate_generators_are_capturable():
+    from track_gen.plugin import registry
+
     for name in reg.available():
-        assert reg.get(name).capturable is True, name
+        assert registry.describe("gate_generator", name).capturable is True, name
 
 
 _GATE_DEVS = ["cpu", pytest.param("cuda", marks=pytest.mark.cuda)]
@@ -175,7 +187,11 @@ def test_noncapturable_gate_generator_runs_eagerly(plugin_registry, dev):
     if dev == "cuda" and not wp.is_cuda_available():
         pytest.skip("cuda")
 
-    base = reg.get("bezier")
+    from tests._plugin_toys import TOY_RING
+
+    # PR11: the built-ins are Stages (no generate callable to wrap): wrap the legacy
+    # toy.ring spec, which runs through the GateGeneratorSpec adapter.
+    base = TOY_RING
     calls = []
 
     def counting_generate(*args, **kwargs):
@@ -183,10 +199,11 @@ def test_noncapturable_gate_generator_runs_eagerly(plugin_registry, dev):
         return base.generate(*args, **kwargs)
 
     eager = dataclasses.replace(base, generate=counting_generate, capturable=False)
-    override_spec(plugin_registry, eager)
+    plugin_registry.add(eager)
 
     E = 4
-    cfg = GateGenConfig(generator="bezier", device=dev, num_envs=E, gate_width=0.05)
+    cfg = GateGenConfig(generator="toy.ring", gate_ordering="raw", device=dev, num_envs=E,
+                        gate_width=0.05)
     gen = GateGenerator(cfg, PerEnvSeededRNG(seeds=1234, num_envs=E, device=dev))
     assert len(calls) == 1                   # construction: one real warm-up pass
     first = gen.generate().position.numpy().copy()

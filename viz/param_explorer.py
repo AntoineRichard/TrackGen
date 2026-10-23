@@ -626,7 +626,8 @@ def default_gate_params() -> dict:
     cfg = GateGenConfig()
     return {
         "gate_generator": cfg.generator,
-        "gate_ordering": cfg.gate_ordering,
+        "gate_ordering": gate_default_ordering(cfg.generator)
+        if cfg.gate_ordering is None else cfg.gate_ordering,
         "gate_width": 0.05,
         "gate_radius": cfg.gate_radius,
         "gate_solve_iters": cfg.gate_solve_iters,
@@ -653,13 +654,36 @@ def default_gate_params() -> dict:
 
 
 def gate_supported_orderings(generator: str) -> list[str]:
+    """The orders gate generator ``generator`` supports: the built-ins first, in
+    ``("ccw", "raw", "random_pairs")`` order, then plugin orders sorted (roadmap PR11:
+    any registered order stage the generator does not exclude)."""
     try:
-        supported = registry.get("gate_generator", str(generator)).supported_orderings
+        supported = registry.describe("gate_generator", str(generator)).supported_orderings
     except (ValueError, PluginLoadError) as exc:
         logger.warning("gate ordering lookup failed for %r: %s", generator, exc)
-        supported = frozenset({"ccw"})
-    ordered = [name for name in ("ccw", "raw", "random_pairs") if name in supported]
+        supported = ["ccw"]
+    builtin = ("ccw", "raw", "random_pairs")
+    ordered = [name for name in builtin if name in supported]
+    ordered += sorted(name for name in supported if name not in builtin)
     return ordered or ["ccw"]
+
+
+def gate_default_ordering(generator: str) -> str:
+    """The order ``GateGenConfig(gate_ordering=None)`` resolves to for gate generator
+    ``generator`` (the rule of ``presets.gates(order=None)``): its preferred order when it
+    supports it, else ``"ccw"`` when it supports it, else its first supported order."""
+    try:
+        info = registry.describe("gate_generator", str(generator))
+    except (ValueError, PluginLoadError) as exc:
+        logger.warning("gate ordering lookup failed for %r: %s", generator, exc)
+        return "ccw"
+    supported = sorted(info.supported_orderings)
+    preferred = dict(info.preferred or {}).get("order")
+    if preferred in supported:
+        return preferred
+    if "ccw" in supported or not supported:
+        return "ccw"
+    return supported[0]
 
 
 def gate_visible_sections(generator: str) -> dict[str, bool]:
@@ -738,9 +762,10 @@ def build_gate_config(p: dict) -> GateGenConfig:
         max_gates = max(2, max_points)
     radius = float(p["gate_radius"])
     supported_orderings = gate_supported_orderings(generator)
-    ordering = str(p["gate_ordering"])
-    if ordering not in supported_orderings:
-        ordering = supported_orderings[0]
+    ordering = p.get("gate_ordering")
+    if ordering is None or str(ordering) not in supported_orderings:
+        ordering = gate_default_ordering(generator)
+    ordering = str(ordering)
     return GateGenConfig(
         generator=generator,
         gate_ordering=ordering,
@@ -1338,7 +1363,7 @@ def build_app():
                         gate_ordering_choices = gate_supported_orderings(gate_generator_default)
                         gate_ordering_default = gate_defaults["gate_ordering"]
                         if gate_ordering_default not in gate_ordering_choices:
-                            gate_ordering_default = gate_ordering_choices[0]
+                            gate_ordering_default = gate_default_ordering(gate_generator_default)
                         gate_generator = gr.Dropdown(gate_available_generators, value=gate_generator_default,
                                                      label="generator method")
                         gate_ordering = gr.Dropdown(gate_ordering_choices,
@@ -1453,7 +1478,8 @@ def build_app():
 
                 def _gate_mode_update(generator_name, current_ordering):
                     supported = gate_supported_orderings(generator_name)
-                    ordering_value = current_ordering if current_ordering in supported else supported[0]
+                    ordering_value = current_ordering if current_ordering in supported \
+                        else gate_default_ordering(generator_name)
                     visible = gate_visible_sections(generator_name)
                     return [
                         gr.update(choices=supported, value=ordering_value),

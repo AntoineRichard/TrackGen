@@ -24,7 +24,6 @@ explicitly before they are recorded.
 from __future__ import annotations
 
 import contextlib
-import dataclasses
 import gc
 import threading
 import weakref
@@ -38,7 +37,7 @@ import warp as wp  # noqa: E402
 
 import track_gen.exec as tg_exec  # noqa: E402
 from track_gen import GateGenConfig, PerEnvSeededRNG, TrackGenConfig  # noqa: E402
-from track_gen.plugin import GeneratorSpec, registry  # noqa: E402
+from track_gen.plugin import CaptureClass, GeneratorSpec, registry  # noqa: E402
 from track_gen._src.gate_generator import GateGenerator  # noqa: E402
 from track_gen._src.track_generator import TrackGenerator  # noqa: E402
 from track_gen.course import Course, CourseConfig  # noqa: E402
@@ -357,11 +356,23 @@ def _register_host_toys(calls: list) -> None:
     registry.add(GeneratorSpec(name="toy.host", alloc_scratch=tbase.alloc_scratch,
                                generate=_counting(tbase.generate, calls, host_readback=True),
                                capturable=False, accepts_ctx=True))
-    gbase = registry.get("gate_generator", "bezier")
-    registry.add(dataclasses.replace(
-        gbase, name="toy.host",
-        generate=_counting(gbase.generate, calls, host_readback=True),
-        capturable=False))
+    gbase = registry.get("gate_generator", "bezier")   # an anchors Stage (roadmap PR11)
+
+    class HostGates(gbase):
+        name = "toy.host"
+        capture = CaptureClass.HOST
+
+        def build(self, b, p):
+            body = super().build(b, p)
+            seed = b.seed
+
+            def enqueue(ctx):
+                calls.append(1)
+                seed.numpy()   # a blocking host readback: what makes it non-capturable
+                body(ctx)
+            return enqueue
+
+    registry.add(HostGates)
 
 
 @pytest.mark.parametrize("kind", _KINDS)

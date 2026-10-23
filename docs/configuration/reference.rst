@@ -9,7 +9,10 @@ the flat fields that carry the same names. This page lists:
 
 - the two config classes and every field (:ref:`config-classes`);
 - how ``relax_solver`` and ``z_profile`` select registered pipeline stages
-  (:ref:`flat-stage-shortcuts`);
+  (:ref:`flat-stage-shortcuts`), and ``gate_ordering`` and ``z_profile`` the gate
+  pipeline's (:ref:`gate-stage-shortcuts`);
+- how a gate generator's capacity meets ``max_gates`` and ``min_gates``
+  (:ref:`gate-capacity-config`);
 - how ``generator_params`` resolves (:ref:`generator-params-config`);
 - each built-in generator's Params, with defaults and rules
   (:ref:`builtin-generator-params`);
@@ -26,6 +29,29 @@ Config classes
 
 .. autoclass:: track_gen.GateGenConfig
    :no-members:
+
+.. _gate-width-config:
+
+Gate width and radius
+~~~~~~~~~~~~~~~~~~~~~
+
+Two ``GateGenConfig`` fields size a gate, and they are easy to confuse:
+
+- ``gate_width`` is the **full** width of the gate bar, from ``left`` to ``right``:
+  ``GateSequence.half_size`` is ``0.5 * gate_width``, and ``left`` / ``right`` sit at
+  ``position ± half_size * left_axis``. It is not a half-width (earlier documentation
+  said so). The default ``0.0`` makes point gates (``left == right == position``), and
+  the bar-crossing check (fail bit ``crossing``) runs only when it is positive. It does
+  not move the gates.
+- ``gate_radius`` is the radius of the disk each gate center occupies in the plan-view
+  separation: the solve pushes centers to at least ``2 * gate_radius`` apart, and the
+  ``spacing`` check rejects an env whose gates stay closer. It does not size the bar.
+
+In a pipeline spec each value lives in the stages that use it (``gate_frames`` and
+``validity.gate_default`` for ``gate_width``; ``gate_relax.spheres`` and
+``validity.gate_default`` for ``gate_radius``), and the planner requires them to agree.
+A generator that provides its own ``half_size`` refuses a non-zero ``gate_width``
+(``ValueError``); its bar widths come from the generator (:ref:`pipeline-provides`).
 
 .. _flat-stage-shortcuts:
 
@@ -91,9 +117,115 @@ The names are resolved when the generator is constructed, in the order
 only requires a non-empty string, since the registry, not the config, knows the
 installed stages. ``TrackGenConfig(z_profile="bogus")`` therefore constructs, and
 ``TrackGenerator`` raises the error above; the ``z_*`` range rules
-(``z_min <= z_max``, ...) still run at config construction. ``GateGenConfig.z_profile``
-keeps its four names, checked at config construction, until the gate pipeline opens
-(roadmap PR11). ``Course`` takes a ``TrackGenConfig``, so both fields work there too.
+(``z_min <= z_max``, ...) still run at config construction. ``Course`` takes a
+``TrackGenConfig``, so both fields work there too.
+
+.. _gate-stage-shortcuts:
+
+Gate pipeline stages: ``gate_ordering`` and ``z_profile``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``GateGenerator(config)`` builds the default gate pipeline
+(:ref:`pipeline-gate-stages`), and two ``GateGenConfig`` fields pick its replaceable
+stages through the registry, the way ``generator`` picks the gate generator:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 40 40
+
+   * - Field
+     - Selects
+     - Params of the stage
+   * - ``gate_ordering``
+     - The ``order`` stage registered under that name: ``"ccw"``, ``"raw"``,
+       ``"random_pairs"`` or a plugin's, such as ``"acme.reverse"``
+       (:ref:`writing-an-ordering`). It must be one the generator accepts (see below).
+       ``None`` (default): the generator's default order (see below).
+     - None for the built-ins. A plugin order runs with its default Params; pass others
+       with ``presets.gates(order=(name, params))``.
+   * - ``z_profile``
+     - The ``elevation`` stage registered under that name, as for tracks: ``"flat"``
+       (default), ``"uniform"``, ``"random_walk"``, ``"noise"`` or a plugin's, such as
+       ``"acme.sinusoid_hills"``. It runs on the gates
+       (:ref:`pipeline-gate-elevation`).
+     - The built-ins: the ``z_*`` fields their profile uses, as before
+       (``uniform`` / ``random_walk`` draw one altitude per gate: the gates are the
+       knots, so ``z_control_points`` is not read on gates). A plugin: its
+       ``Params.from_legacy(config)``, which receives the ``GateGenConfig`` (only the
+       ``z_*`` fields are shared with ``TrackGenConfig``).
+
+Which orders a generator accepts is its own declaration: every registered order except
+``"raw"`` for ``bezier`` and ``hull`` (an unordered cloud of points), every registered
+order except ``"random_pairs"`` for ``polar``, ``checkpoint`` and ``voronoi`` (a loop in
+generation order), so a plugin's order works with all five. A plugin generator may
+whitelist its orders instead; one that provides its own altitudes or tangents accepts
+``"raw"`` only. ``gate_ordering=None`` (the default) selects the generator's default
+order: its preferred order when it accepts it, else ``"ccw"`` when it accepts it, else
+the first order it accepts, the rule of ``presets.gates(order=None)`` and of the
+conformance kit. That is ``"ccw"`` for the five built-ins (the default of earlier
+releases) and ``"raw"`` for such a provider, so ``GateGenConfig(generator="acme.helix")``
+needs no ``gate_ordering``. The name is resolved when ``GateGenerator`` (hence
+``Course``) is constructed, by ``legacy.to_gate_pipeline_spec``; the generator's run
+config holds it (a legacy ``GateGeneratorSpec`` never reads ``None``), while
+``GateGenerator.config`` reports the config as passed.
+
+As for tracks, the config only requires non-empty strings, and ``GateGenerator`` (hence
+``Course``) resolves the names, after the generator and its ``generator_params``:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 40 60
+
+   * - Cause
+     - Error at ``GateGenerator`` construction
+   * - An unknown ``gate_ordering``
+     - ``ValueError``: ``GateGenConfig.gate_ordering: unknown order 'spiral'; available:
+       ['ccw', 'random_pairs', 'raw']`` (plus the installed plugins' names).
+   * - An order the generator does not accept
+     - ``ValueError``: ``gate generator 'polar' does not support gate_ordering
+       'random_pairs'; supported: ['ccw', 'raw'] (its preferred order is 'ccw')`` (the
+       hint only when the generator declares a preferred order).
+   * - An unknown ``z_profile``
+     - ``ValueError``: ``GateGenConfig.z_profile: unknown elevation 'bogus'; available:
+       ['flat', 'noise', 'random_walk', 'uniform']`` (plus the installed plugins'
+       names).
+   * - A ``z_profile`` other than ``"flat"``, or a non-zero ``z_base``, with a generator
+       that provides its own altitudes
+     - ``ValueError`` naming the generator.
+   * - A name served by a plugin that failed to load
+     - That plugin's ``PluginLoadError``.
+
+``GateGenConfig(gate_ordering="spiral")`` and ``GateGenConfig(z_profile="bogus")``
+therefore construct; before this release both raised at config construction. A legacy
+``GateGeneratorSpec`` orders its own gates: ``gate_ordering`` must be in its
+``supported_orderings``, as before (``None``: ``"ccw"`` when it supports it, else the
+first of them, sorted).
+
+.. _gate-capacity-config:
+
+Gate counts: ``max_gates``, ``min_gates`` and the generator's capacity
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Three numbers bound the gates of an env:
+
+- ``GateGenConfig.max_gates`` (``BatchSpec.max_gates``) is the ``GateSequence`` row
+  stride: the slots per env, NaN past ``count[e]``.
+- The generator's **capacity** is the most anchors it emits per env (a gate generator
+  Stage's ``capacity()["gates"]``, a legacy spec's ``max_gates(config)``): 13 for
+  ``bezier`` and ``hull`` at the default ``max_num_points``, ``polar_num_knots`` for
+  ``polar``, ``checkpoint_count`` for ``checkpoint``, ``voronoi_control_points`` for
+  ``voronoi``. A Stage also declares the fewest it emits (``capacity()["min_gates"]``).
+- ``GateGenConfig.min_gates`` is the validity floor: an env with fewer real gates is
+  invalid (fail bit ``count``).
+
+``GateGenerator`` requires ``min_gates <= capacity <= max_gates``, computed from the
+resolved ``generator_params``:
+``GateGenConfig.min_gates=16 is too large for gate generator 'polar'; generator can
+produce at most 12 gates.`` or ``GateGenConfig.max_gates=8 is too small for gate
+generator 'polar'; required max_gates 12.`` (``PlanError`` with ``BatchSpec.max_gates`` /
+``min_gates`` in the text when a spec is built). So
+``GateGenConfig(generator="polar", generator_params={"polar_num_knots": 9})`` makes 9
+gates per env.
 
 .. _generator-params-config:
 
@@ -161,9 +293,9 @@ Rules:
 - A ``Course`` passes ``generator_params`` through:
   ``CourseConfig(gen=TrackGenConfig(..., generator_params=...))``.
 - ``GateGenConfig.generator_params`` works the same way, and the gate-count check
-  (``min_gates <= max_gates(config) <= config.max_gates``) sees the resolved values:
-  ``GateGenConfig(generator="polar", generator_params={"polar_num_knots": 9})`` makes 9
-  gates.
+  (``min_gates <= capacity <= config.max_gates``, see :ref:`gate-capacity-config`) sees
+  the resolved values: ``GateGenConfig(generator="polar", generator_params={"polar_num_knots":
+  9})`` makes 9 gates.
 
 The built-in Params classes have no public import path: pass a mapping, or reach a class
 through ``track_gen.plugin.registry.get(kind, name).params`` and its schema through
@@ -402,7 +534,11 @@ Track generators
 Gate generators
 ~~~~~~~~~~~~~~~
 
-``PointGateParams`` (``generator="bezier"`` and ``generator="hull"``):
+The built-in gate generators are anchors Stages (:ref:`gate-generator-stage`). Each one's
+capacity (:ref:`gate-capacity-config`) and accepted orders are given with its Params.
+
+``PointGateParams`` (``generator="bezier"`` and ``generator="hull"``; capacity
+``max_num_points``, at least ``min_num_points``; every order except ``"raw"``):
 
 .. list-table::
    :header-rows: 1
@@ -421,7 +557,9 @@ Gate generators
      - ``0.05``
      - ``> 0``
 
-``PolarGateParams`` (``generator="polar"``; one gate per knot):
+``PolarGateParams`` (``generator="polar"``; one gate per knot, capacity
+``polar_num_knots``; every order except ``"random_pairs"``; normalized to
+``TARGET_EXTENT * scale``):
 
 .. list-table::
    :header-rows: 1
@@ -441,7 +579,8 @@ Gate generators
      -
 
 ``VoronoiGateParams`` (``generator="voronoi"``; anchors are emitted directly as gates, so
-three control points suffice):
+three control points suffice; capacity ``voronoi_control_points``; every order except
+``"random_pairs"``; normalized):
 
 .. list-table::
    :header-rows: 1
@@ -466,7 +605,8 @@ three control points suffice):
      - ``0.08``
      - ``>= 0``
 
-``CheckpointGateParams`` (``generator="checkpoint"``; one gate per checkpoint):
+``CheckpointGateParams`` (``generator="checkpoint"``; one gate per checkpoint, capacity
+``checkpoint_count``; every order except ``"random_pairs"``; normalized):
 
 .. list-table::
    :header-rows: 1
@@ -497,10 +637,12 @@ When the rules are checked
 Config construction checks the core fields only (for tracks ``num_envs``,
 ``half_width``, the relaxation and smoothing knobs, ``output_mode``, spacing and the Z
 fields, with ``z_profile`` only required to be a non-empty string; for gates
-``num_envs``, the gate counts, radius, width, solver iterations, ordering, alignment and
-the Z profile) and the type of ``generator_params``. The ``relax_solver`` and
-``z_profile`` names are resolved by ``TrackGenerator`` (see
-:ref:`flat-stage-shortcuts`). The
+``num_envs``, the gate counts, radius, width, solver iterations, alignment and the Z
+fields, with ``z_profile`` only required to be a non-empty string and ``gate_ordering``
+``None`` or a non-empty string)
+and the type of ``generator_params``. The ``relax_solver``, ``gate_ordering`` and
+``z_profile`` names are resolved by ``TrackGenerator`` and ``GateGenerator`` (see
+:ref:`flat-stage-shortcuts` and :ref:`gate-stage-shortcuts`). The
 generator-specific rules in the tables above run when the generator is constructed
 (``TrackGenerator``, ``GateGenerator``, and so ``Course``), and only for the selected
 generator: first its ``validate()``, with the same conditions and messages as in

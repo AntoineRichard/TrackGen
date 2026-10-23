@@ -8,9 +8,18 @@ allocates every channel version once, namespaces each stage's scratch, runs ever
 ports, its fail bits, a plugin channel's dtype) are checked right after the stage's
 ``build`` (a ``PlanError`` raised after allocation).
 
-Stages of the kinds open to plugins (``relax``, ``width``, ``elevation``, ``validity``)
-are resolved through the plugin registry; the others (``resample``, ``frames``,
-``offset``, ``lift``) from TrackGen's built-in catalogue.
+Stages of the kinds open to plugins (``relax``, ``width``, ``elevation``, ``validity``,
+``order``, ``stations``) are resolved through the plugin registry; the others
+(``resample``, ``frames``, ``offset``, ``lift``, and the gate pipeline's ``normalize``,
+``carry``, ``gate_relax``, ``gate_arclen``, ``tangents``, ``gate_frames``) from
+TrackGen's built-in catalogue.
+
+One planner, two result kinds (roadmap PR11): ``BatchSpec.max_gates=None`` plans a
+track Program (its result a ``Track``), an int a gate Program (a ``GateSequence``). In a
+gate Program each stage runs on one point domain: the centerline generator and any
+stage with a ``cl.*`` port on ``N_max`` points, every other stage on ``max_gates`` gate
+slots (``Layout.stride``); the anchors are ``[E * A]`` (``A``: the anchors producer's
+``capacity()["gates"]``).
 """
 from __future__ import annotations
 
@@ -24,9 +33,20 @@ from .spec import BatchSpec, PipelineSpec, StageRef
 __all__ = ["PlanError", "build"]
 
 _GENERATOR = "generator"
+_GATE_GENERATOR = "gate_generator"
+_GENERATOR_KINDS = (_GENERATOR, _GATE_GENERATOR)
 _PROLOGUE = "<prologue>"
-_TRACK_DTYPES = {"vec3f": wp.vec3f, "float32": wp.float32, "int32": wp.int32}
+_TRACK_DTYPES = {"vec3f": wp.vec3f, "float32": wp.float32, "int32": wp.int32,
+                 "quatf": wp.quatf}
 _ON_INVALID = ("keep", "poison")
+# Params fields baked as host scalars by several stages: one value per pipeline.
+_AGREE = {
+    "half_width": "one value until roadmap PR13",
+    "gate_width": "one value per pipeline: gate_frames bakes the bar width, "
+                  "validity.gate_default the crossing toggle",
+    "gate_radius": "one value per pipeline: gate_relax.spheres separates the gates to "
+                   "the distance validity.gate_default checks",
+}
 
 
 class PlanError(ValueError):
@@ -39,28 +59,32 @@ def build(spec: PipelineSpec, *, registry=None, seeds=None, out=None, stream=Non
           prepare: bool = True):
     """Plan, allocate and bind ``spec``; return its :class:`~track_gen.pipeline.Program`.
 
-    The generator (the first stage, ``kind="generator"``) is resolved through
-    ``registry`` exactly as ``TrackGenerator`` resolves ``config.generator``, with the
-    config :func:`track_gen.pipeline.legacy.generator_config` derives from the spec.
-    The ``relax`` / ``width`` / ``elevation`` / ``validity`` stages are resolved through
-    ``registry`` too (the class is captured at build: later registry edits never change
-    a built Program); the others come from TrackGen's built-in catalogue.
+    The generator (the first stage) is resolved through ``registry`` exactly as the
+    facades resolve ``config.generator``: a centerline generator (``kind="generator"``)
+    with the config :func:`track_gen.pipeline.legacy.generator_config` derives from the
+    spec, a gate generator (``kind="gate_generator"``) with
+    :func:`track_gen.pipeline.legacy.gate_generator_config`. The open-kind stages
+    (``relax`` / ``width`` / ``elevation`` / ``validity`` / ``order`` / ``stations``) are
+    resolved through ``registry`` too (the class is captured at build: later registry
+    edits never change a built Program); the others come from TrackGen's built-in
+    catalogue. ``spec.batch.max_gates`` selects the result: a ``Track`` (``None``) or a
+    ``GateSequence``.
 
     Args:
         spec: The :class:`PipelineSpec`.
         registry: The plugin registry (default ``track_gen.plugin.registry``).
         seeds: A ``SeedState``, or anything ``SeedState`` accepts (``None``, an int, an
             ``[E]`` int32 ``wp.array``, a ``PerEnvSeededRNG``).
-        out: Optional pre-allocated ``Track`` to write into (every field checked;
-            ``generation`` and ``fail_mask`` may be ``None``).
+        out: Optional pre-allocated ``Track`` (``GateSequence``) to write into (every
+            field checked; ``generation`` and ``fail_mask`` may be ``None``).
         stream: Optional default ``wp.Stream`` of the Program.
         prepare: Run the warm-up generation (:meth:`Program.prepare`) before returning
             (otherwise the first :meth:`Program.run` does).
 
     Raises:
         PlanError: an invalid spec (see :doc:`/how-it-works/pipeline-preview`), incl.
-            an unknown relax / width / elevation / validity name (the registry's
-            message).
+            an unknown relax / width / elevation / validity / order / stations name
+            (the registry's message).
         ValueError: invalid params (the stage's own message), an unknown generator (the
             registry's message), an ``out=`` or ``seeds`` mismatch.
         TypeError: params or ``seeds`` of the wrong type.
@@ -68,16 +92,27 @@ def build(spec: PipelineSpec, *, registry=None, seeds=None, out=None, stream=Non
             quarantined plugin.
         track_gen.exec.CaptureError: called inside a capture (before allocating).
     """
-    from .._src.generator_binding import bind_generator  # noqa: PLC0415
     from ..plugin import registry as _default_registry  # noqa: PLC0415
-    from . import legacy  # noqa: PLC0415
 
     _check_spec_shape(spec)
     _check_seeds(seeds)
     reg = _default_registry if registry is None else registry
-    binding = bind_generator(_GENERATOR, legacy.generator_config(spec), registry=reg)
+    binding = _bind(spec, reg)
     return _build(spec, binding=binding, seeds=seeds, out=out, stream=stream,
                   prepare=prepare, registry=reg)
+
+
+def _bind(spec: PipelineSpec, registry):
+    """The generator binding of ``spec`` (its first stage): a gate generator through
+    ``legacy.gate_generator_config(spec)``, a centerline generator (a track pipeline, or
+    the stations source of a gate pipeline) through ``legacy.generator_config(spec)``."""
+    from .._src.generator_binding import bind_generator  # noqa: PLC0415
+    from . import legacy  # noqa: PLC0415
+
+    if spec.stages[0].kind == _GATE_GENERATOR:
+        return bind_generator(_GATE_GENERATOR, legacy.gate_generator_config(spec),
+                              registry=registry)
+    return bind_generator(_GENERATOR, legacy.generator_config(spec), registry=registry)
 
 
 # ---------------------------------------------------------------------------------------
@@ -97,6 +132,10 @@ def _check_spec_shape(spec) -> None:
         raise PlanError(f"BatchSpec.num_envs must be an int >= 1, got {batch.num_envs!r}")
     if not _is_int(batch.n_max) or batch.n_max < 3:
         raise PlanError(f"BatchSpec.n_max must be an int >= 3, got {batch.n_max!r}")
+    gate = batch.max_gates is not None
+    if gate and (not _is_int(batch.max_gates) or batch.max_gates < 2):
+        raise PlanError(f"BatchSpec.max_gates must be None (a track pipeline) or an int "
+                        f">= 2, got {batch.max_gates!r}")
     if batch.closed is not True:
         raise PlanError("BatchSpec.closed=False: open tracks arrive after 1.0; closed "
                         "loops only")
@@ -110,16 +149,28 @@ def _check_spec_shape(spec) -> None:
     if dup:
         raise PlanError(f"duplicate stage ids {dup}; give one of them an explicit "
                         f"StageRef(id=...)")
-    gens = [ref.slot_id for ref in spec.stages if ref.kind == _GENERATOR]
-    if spec.stages[0].kind != _GENERATOR:
-        raise PlanError(f"the first stage must be the generator (kind='generator'), "
-                        f"got {spec.stages[0].kind!r}")
+    first = spec.stages[0]
+    if gate:
+        if first.kind not in _GENERATOR_KINDS:
+            raise PlanError(f"the first stage of a gate pipeline must be the generator "
+                            f"(kind='gate_generator', or kind='generator' with a stations "
+                            f"stage), got {first.kind!r}")
+    else:
+        for ref in spec.stages:
+            if ref.kind == _GATE_GENERATOR:
+                raise PlanError(f"{_label(ref)}: a gate generator needs a gate pipeline "
+                                f"(BatchSpec.max_gates)")
+        if first.kind != _GENERATOR:
+            raise PlanError(f"the first stage must be the generator (kind='generator'), "
+                            f"got {first.kind!r}")
+    gens = [ref.slot_id for ref in spec.stages if ref.kind in _GENERATOR_KINDS]
     if len(gens) != 1:
         raise PlanError(f"exactly one generator stage, got {len(gens)}: {gens}")
-    if spec.stages[0].slot_id != _GENERATOR:
+    if first.slot_id != _GENERATOR:
         raise PlanError(f"the generator stage's id must be 'generator', got "
-                        f"{spec.stages[0].slot_id!r}")
-    # capacity: the generator's raw default only (Stage.capacity() overrides it).
+                        f"{first.slot_id!r}")
+    # capacity: the centerline generator's raw default only (Stage.capacity() overrides
+    # it).
     for ref in spec.stages:
         allowed = ("raw",) if ref.kind == _GENERATOR else ()
         bad = sorted(k for k in ref.capacity if k not in allowed)
@@ -161,32 +212,137 @@ class _Slot:
     cls: object                 # the Stage class (or the generator slot's class)
     instance: object
     params: object              # the resolved Params (generator: binding.params)
-    reads: dict                 # port -> channel (after StageRef.ports)
+    reads: dict                 # port -> channel (after the ports)
     writes: dict
     builtin: bool = True        # shipped with track_gen (the registry's own record)
+    ports: dict = dataclasses.field(default_factory=dict)   # effective rewiring
+    layout: object = None       # the stage's Layout (its point domain)
+    generator: "str | None" = None  # "centerline" | "anchors" | "legacy" | None
+    capacity: "dict | None" = None  # an anchors producer's {"gates": A, "min_gates": k}
+
+
+def _effective_ports(cls, ref: StageRef, gate: bool) -> dict:
+    """``StageRef.ports``, plus, for an ``elevation`` stage of a gate Program, the
+    default gate rewiring of its ``cl.*`` ports (explicit ports override it)."""
+    from ..stages.channels import ELEVATION_GATE_CHANNELS  # noqa: PLC0415
+
+    ports = {}
+    if gate and ref.kind == "elevation":
+        for p, ch in {**dict(cls.reads), **dict(cls.writes)}.items():
+            if ch in ELEVATION_GATE_CHANNELS:
+                ports[p] = ELEVATION_GATE_CHANNELS[ch]
+    ports.update(ref.ports)
+    return ports
+
+
+def _domain_layout(slot_cls, ref: StageRef, ports: dict, *, gate: bool, batch,
+                   generator: "str | None"):
+    """The stage's :class:`Layout` from its (rewired) ports, before any validation:
+    ``N_max`` on a track and for the centerline stages of a gate Program, ``max_gates``
+    for every gate stage."""
+    from ..plugin.stage import Layout  # noqa: PLC0415
+    from ..stages.channels import CHANNELS, is_gate_channel, is_plugin_channel  # noqa
+
+    E, dev = int(batch.num_envs), str(wp.get_device(batch.device))
+    n_max = int(batch.n_max)
+    if generator in ("centerline",):
+        return Layout(E, n_max, dev, True)
+    if generator in ("anchors", "legacy"):
+        return Layout(E, int(batch.max_gates), dev, True)
+    declared = {**dict(slot_cls.reads), **dict(slot_cls.writes)}
+    chans = {p: ports.get(p, ch) for p, ch in declared.items()}
+    label = _label(ref)
+    gate_chans = [ch for ch in chans.values() if is_gate_channel(ch)]
+    if not gate:
+        if gate_chans:
+            raise PlanError(f"{label}: channel {gate_chans[0]!r} belongs to the gate "
+                            f"pipeline (BatchSpec.max_gates); a track pipeline has none")
+        return Layout(E, n_max, dev, True)
+    plugin = [ch for ch in chans.values() if is_plugin_channel(ch)]
+    if gate_chans and plugin:
+        raise PlanError(f"{label}: plugin channel {plugin[0]!r} is a centerline channel; "
+                        f"gate plugin channels (gates.<pkg>.<name>) arrive with roadmap "
+                        f"PR13")
+    cl = [ch for ch in chans.values() if ch in CHANNELS and ch.startswith("cl.")]
+    if ref.kind == "elevation":
+        for p, ch in chans.items():
+            if ch in CHANNELS and ch.startswith("cl."):
+                raise PlanError(f"{label}: port {p!r} reads {ch!r}, which has no gate "
+                                f"counterpart (the default gate rewiring covers cl.xy, "
+                                f"cl.count, cl.arclen2, cl.length2 and cl.z); wire it "
+                                f"with StageRef(ports=...)")
+    if cl and any(ch.startswith("gates.") for ch in gate_chans):
+        raise PlanError(f"{label} has centerline (cl.*) and gate (gates.*) ports after "
+                        f"rewiring; a stage runs on one point domain")
+    stride = n_max if cl else int(batch.max_gates)
+    return Layout(E, stride, dev, True)
+
+
+def _check_capacity(cls, cap) -> dict:
+    """An anchors producer's ``capacity()``: ``{"gates": A >= 1, "min_gates": 0..A}``."""
+    name = cls.__name__
+    if not isinstance(cap, dict):
+        try:
+            cap = dict(cap or {})
+        except TypeError:
+            raise ValueError(f"{name}.capacity() must return a mapping, got {cap!r}") \
+                from None
+    unknown = sorted(str(k) for k in cap if k not in ("gates", "min_gates"))
+    if unknown:
+        raise ValueError(f"{name}.capacity() returned unknown keys {unknown}; an anchors "
+                         f"stage accepts ['gates', 'min_gates']")
+    A = cap.get("gates")
+    if not _is_int(A) or A < 1:
+        raise ValueError(f"{name}.capacity()['gates'] must be an int >= 1 (the anchor "
+                         f"rows per env), got {A!r}")
+    k = cap.get("min_gates", 0)
+    if not _is_int(k) or not 0 <= k <= A:
+        raise ValueError(f"{name}.capacity()['min_gates'] must be an int in [0, "
+                         f"{int(A)}], got {k!r}")
+    return {"gates": int(A), "min_gates": int(k)}
 
 
 def _resolve(spec: PipelineSpec, binding, layout, registry=None) -> "list[_Slot]":
     from .. import stages as _stages  # noqa: PLC0415
     from ..plugin import registry as _default_registry  # noqa: PLC0415
-    from ..plugin.params import _check_values, _coerce  # noqa: PLC0415
-    from ..stages.track import _GeneratorSlot  # noqa: PLC0415
+    from ..plugin.params import _check_values, _coerce, _static_view  # noqa: PLC0415
+    from ..plugin.stage import _is_stage  # noqa: PLC0415
+    from ..stages.gates import _LegacyGateSlot  # noqa: PLC0415
+    from ..stages.track import ElevationFlat, _GeneratorSlot  # noqa: PLC0415
 
     reg = _default_registry if registry is None else registry
+    batch = spec.batch
+    gate = batch.max_gates is not None
     slots = []
     for i, ref in enumerate(spec.stages):
         sid = ref.slot_id
-        if ref.kind == _GENERATOR:
+        if ref.kind in _GENERATOR_KINDS:
             if binding.name != ref.name:
                 raise PlanError(f"{_label(ref)}: the bound generator is "
                                 f"{binding.name!r}")
+            if binding.kind != ref.kind:
+                raise PlanError(f"{_label(ref)}: the bound generator is a "
+                                f"{binding.kind.replace('_', ' ')}")
+            if ref.kind == _GENERATOR:
+                kind, cls, inst = "centerline", _GeneratorSlot, _GeneratorSlot(binding)
+            elif _is_stage(binding.spec):
+                kind, cls, inst = "anchors", binding.spec, None
+            else:
+                kind, cls, inst = "legacy", _LegacyGateSlot, _LegacyGateSlot(binding)
+            slot_layout = _domain_layout(cls, ref, {}, gate=gate, batch=batch,
+                                         generator=kind)
             bl = binding.layout
             if (bl.num_envs, bl.stride, bl.device) != \
-                    (layout.num_envs, layout.stride, layout.device):
+                    (slot_layout.num_envs, slot_layout.stride, slot_layout.device):
                 raise PlanError(f"{_label(ref)}: the generator was bound for {bl}, the "
-                                f"batch is {layout}")
-            slots.append(_Slot(i, sid, ref, _GeneratorSlot, _GeneratorSlot(binding),
-                               binding.params, {}, {}))
+                                f"batch is {slot_layout}")
+            slot = _Slot(i, sid, ref, cls, inst, binding.params, {}, {}, layout=slot_layout,
+                         generator=kind)
+            if kind == "anchors":
+                slot.builtin = bool(reg.describe(_GATE_GENERATOR, ref.name).builtin)
+                slot.capacity = _check_capacity(cls, cls().capacity(
+                    _static_view(binding.params), slot_layout))
+            slots.append(slot)
             continue
         builtin = True
         if ref.kind in _stages.OPEN_KINDS:
@@ -198,28 +354,141 @@ def _resolve(spec: PipelineSpec, binding, layout, registry=None) -> "list[_Slot]
         else:
             cls = _stages.get(ref.kind, ref.name)
         if cls is None:
-            kinds = sorted({*(k for k in _stages.available() if k != _GENERATOR),
-                            *_stages.OPEN_KINDS})
-            if ref.kind not in kinds:
+            track_kinds = sorted(_stages.TRACK_KINDS)
+            gate_kinds = sorted({_GATE_GENERATOR, *(
+                k for k in (*_stages.available(), *_stages.OPEN_KINDS)
+                if k not in _stages.TRACK_KINDS and k != _GENERATOR)})
+            if ref.kind not in {*_stages.available(), *_stages.OPEN_KINDS}:
                 raise PlanError(f"{_label(ref)}: unknown stage kind {ref.kind!r}; kinds: "
-                                f"{['generator', *kinds]}")
+                                f"{['generator', *track_kinds]}; gate pipeline kinds: "
+                                f"{gate_kinds}")
             raise PlanError(
                 f"{_label(ref)}: unknown {ref.kind} stage {ref.name!r}; built-in "
                 f"{ref.kind} stages: {_stages.available(ref.kind)} (kind {ref.kind!r} is "
                 f"not open to plugins)")
+        ports = _effective_ports(cls, ref, gate)
+        slot_layout = _domain_layout(cls, ref, ports, gate=gate, batch=batch,
+                                     generator=None)
         params = _coerce(cls.Params, ref.params, what=_label(ref), label="params")
-        params.validate(layout)
+        params.validate(slot_layout)
         _check_values(params)
-        slots.append(_Slot(i, sid, ref, cls, None, params, {}, {}, builtin))
-    # Interim rule (until the kernels read cl.half_width, roadmap PR13): every stage
-    # that bakes half_width as a host scalar agrees on it.
-    hw = {s.id: getattr(s.params, "half_width") for s in slots
-          if s.ref.kind != _GENERATOR and s.params is not None
-          and "half_width" in getattr(type(s.params), "__dataclass_fields__", {})}
-    if len({float(v) for v in hw.values()}) > 1:
-        raise PlanError(f"the stages disagree on half_width: {hw} (one value until "
-                        f"roadmap PR13)")
+        if cls is ElevationFlat and float(params.z_base) != 0.0 \
+                and not str(ports.get("z", "cl.z")).startswith("gates."):
+            raise PlanError(f"{_label(ref)}: z_base={params.z_base!r} sets gate altitudes "
+                            f"(gate pipelines); a track's flat altitude is lift.flat's "
+                            f"z_base (presets.track(z_base=...))")
+        slot = _Slot(i, sid, ref, cls, None, params, {}, {}, builtin, ports=ports,
+                     layout=slot_layout)
+        if "anchors.xy" in {ports.get(p, ch) for p, ch in dict(cls.writes).items()}:
+            slot.capacity = _check_capacity(cls, cls().capacity(_static_view(params),
+                                                                slot_layout))
+        slots.append(slot)
+    _check_agreement(slots)
     return slots
+
+
+def _check_agreement(slots) -> None:
+    """Every stage that bakes ``half_width`` / ``gate_width`` / ``gate_radius`` as a
+    host scalar agrees on its value."""
+    for field, why in _AGREE.items():
+        vals = {s.id: getattr(s.params, field) for s in slots
+                if s.generator is None and s.params is not None
+                and field in getattr(type(s.params), "__dataclass_fields__", {})}
+        if len({float(v) for v in vals.values()}) > 1:
+            raise PlanError(f"the stages disagree on {field}: {vals} ({why})")
+
+
+def _check_gate_plan(spec, slots, registry) -> int:
+    """The gate Program's anchors / order / carry / validity rules (before allocating);
+    returns ``A`` (the anchors' rows per env, 0 without an anchors producer)."""
+    from ..plugin import registry as _default_registry  # noqa: PLC0415
+    from ..stages.gates import GateFramesPosed, GateValidityDefault, OrderRaw  # noqa
+    from ..stages.gates import _orderings_of, _preferred  # noqa: PLC0415
+
+    reg = _default_registry if registry is None else registry
+    G = int(spec.batch.max_gates)
+    gen = slots[0]
+    producers = [s for s in slots if s.capacity is not None]
+    A = producers[0].capacity["gates"] if producers else 0
+    name = gen.ref.name
+    for s in producers:
+        cap = s.capacity["gates"]
+        what = (f"gate generator {s.ref.name!r}" if s.generator == "anchors" else
+                f"{s.ref.kind} stage {s.ref.name!r}")
+        if cap > G:
+            raise PlanError(f"{_label(s.ref)}: BatchSpec.max_gates={G} is too small for "
+                            f"{what}; required max_gates {cap}.")
+    if gen.generator == "legacy":
+        # A legacy spec writes its gates itself: its max_gates(config) callable is its
+        # capacity (0.2.0.dev3's checks).
+        binding = gen.instance.binding
+        A = int(binding.pipeline_spec.max_gates(binding.run_config))
+        if A > G:
+            raise PlanError(f"{_label(gen.ref)}: BatchSpec.max_gates={G} is too small for "
+                            f"gate generator {name!r}; required max_gates {A}.")
+        producers = [gen]
+    if producers:
+        for s in slots:
+            m = getattr(s.params, "min_gates", None) if s.generator is None else None
+            if m is not None and int(m) > A:
+                p = producers[0]
+                if p.generator is not None:
+                    what = (f"gate generator {p.ref.name!r}; generator can produce at "
+                            f"most {A} gates.")
+                else:
+                    what = (f"{p.ref.kind} stage {p.ref.name!r}; it writes at most {A} "
+                            f"anchors per env (its capacity()['gates']).")
+                raise PlanError(f"{_label(s.ref)}: min_gates={m} is too large for {what}")
+    orders = [s for s in slots if s.ref.kind == "order"]
+    if gen.generator == "legacy":
+        A = 0                     # no anchors channel: the legacy spec writes gates.*
+    if gen.generator == "anchors":
+        supported = _orderings_of(gen.cls, reg)
+        preferred = _preferred(gen.cls).get("order")
+        for s in orders:
+            if s.ref.name not in supported:
+                hint = f" (its preferred order is {preferred!r})" if preferred else ""
+                raise PlanError(f"{_label(s.ref)}: gate generator {name!r} does not "
+                                f"support gate_ordering {s.ref.name!r}; supported: "
+                                f"{supported}{hint}")
+    for s in slots:
+        if s.ref.kind == "carry":
+            bad = [o for o in orders if o.cls is not OrderRaw]
+            if bad:
+                o = bad[0]
+                raise PlanError(f"{_label(s.ref)} carries anchors.{s.ref.name} by anchor "
+                                f"index, which needs order.raw; stage {o.id!r} is "
+                                f"{o.ref.kind}.{o.ref.name} (it permutes the anchors)")
+    posed = any(s.cls is GateFramesPosed for s in slots)
+    if posed:
+        for s in slots:
+            if s.cls is GateValidityDefault and s.params.check_crossing == "width":
+                raise PlanError(f"{_label(s.ref)}: posed gates (gate_frames.posed) take "
+                                f"their widths from the generator; set "
+                                f"check_crossing='always'")
+    return A
+
+
+def _check_provided(slots) -> None:
+    """A gate generator's provided attribute must be read by a later stage (a hand-built
+    or edited spec cannot silently discard what the generator provides)."""
+    gen = slots[0]
+    if gen.generator != "anchors":
+        return
+    for attr in sorted(frozenset(gen.cls.provides)):
+        ch = f"anchors.{attr}"
+        if any(ch in s.reads.values() for s in slots[1:]):
+            continue
+        target = f"gates.{attr}"
+        other = next((s for s in slots[1:] if target in s.writes.values()), None)
+        text = (f"{_label(gen.ref)} provides {attr!r} ({ch}), but no stage reads it")
+        if other is not None:
+            text += (f"; stage {other.id!r} ({other.ref.kind}.{other.ref.name}) writes "
+                     f"{target} instead: carry it with carry.{attr} (presets.gates drops "
+                     f"the stages a generator provides)")
+        else:
+            text += f": carry it with carry.{attr}"
+        raise PlanError(text)
 
 
 def _capture_class(slots, binding):
@@ -230,7 +499,7 @@ def _capture_class(slots, binding):
 
     cap = CaptureClass.STATIC if binding.capturable else CaptureClass.HOST
     for s in slots:
-        if s.ref.kind == _GENERATOR:
+        if s.generator is not None:
             continue
         got = s.cls.capture_class(_static_view(s.params))
         if not isinstance(got, CaptureClass):
@@ -243,12 +512,38 @@ def _capture_class(slots, binding):
     return cap
 
 
-def _plan_channels(slots) -> "dict[str, list[str]]":
+def _missing_hint(ch: str, s: _Slot, slots, gate: bool) -> str:
+    """A hint for the common gate-pipeline mistakes behind a read nobody wrote."""
+    if ch in ("gates.cum", "gates.perim"):
+        return ("; insert StageRef('gate_arclen', 'default') before it (presets.gates "
+                "adds it for every elevation but flat)")
+    if not gate:
+        return ""
+    centerline = slots[0].generator == "centerline"
+    has_stations = any(o.ref.kind == "stations" for o in slots)
+    if centerline and not has_stations and (ch.startswith("anchors.")
+                                            or ch.startswith("gates.")):
+        return (f"; generator {slots[0].ref.name!r} is a centerline (track) generator: "
+                f"insert StageRef('stations', 'raw', params={{'gates': G}}) after it "
+                f"(presets.gates(source='stations') does), or set BatchSpec.max_gates="
+                f"None for a track pipeline")
+    if ch.split(".")[0] in ("cl", "band", "track"):
+        if s.ref.kind == "validity":
+            return (f"; validity.{s.ref.name} is a track check; the gate pipeline's "
+                    f"built-in check is validity.gate_default (checks=('gate_default', "
+                    f"...))")
+        return (f"; {s.ref.kind}.{s.ref.name} runs on a centerline: in a gate pipeline it "
+                f"needs the centerline sub-pipeline of presets.gates("
+                f"source='relaxed_stations')")
+    return ""
+
+
+def _plan_channels(slots, gate: bool = False) -> "dict[str, list[str]]":
     """Resolve the ports and walk the channel versions; returns ``channel -> [writer
     ids]`` (the seed's writer is the prologue)."""
     from ..plugin.stage import _rewrite_problems, _write_rule_problem  # noqa: PLC0415
     from ..stages import CHANNELS, OPEN_KINDS, SEED  # noqa: PLC0415
-    from ..stages.channels import is_plugin_channel  # noqa: PLC0415
+    from ..stages.channels import PER_CLASS, is_plugin_channel  # noqa: PLC0415
 
     def known(ch) -> bool:
         return ch in CHANNELS or is_plugin_channel(ch)
@@ -256,13 +551,14 @@ def _plan_channels(slots) -> "dict[str, list[str]]":
     versions: dict = {SEED: [_PROLOGUE]}
     for s in slots:
         ref, cls = s.ref, s.cls
+        ports = s.ports
         decl_reads, decl_writes = dict(cls.reads), dict(cls.writes)
         unknown = sorted(p for p in ref.ports if p not in decl_reads and p not in decl_writes)
         if unknown:
             raise PlanError(f"{_label(ref)}: ports {unknown} are not ports of the stage; "
                             f"read ports: {sorted(decl_reads)}, write ports: "
                             f"{sorted(decl_writes)}")
-        for p, ch in ref.ports.items():
+        for p, ch in ports.items():
             if not known(ch):
                 raise PlanError(f"{_label(ref)}: port {p!r} is rewired to unknown channel "
                                 f"{ch!r}; channels: {sorted(CHANNELS)} and plugin "
@@ -271,13 +567,13 @@ def _plan_channels(slots) -> "dict[str, list[str]]":
             if declared not in CHANNELS or ch not in CHANNELS:
                 continue                  # a plugin channel: its writer fixes the dtype
             a, b = CHANNELS[declared], CHANNELS[ch]
-            if (a.dtype, a.per) != (b.dtype, b.per):
+            if a.dtype is not b.dtype or PER_CLASS[a.per] != PER_CLASS[b.per]:
                 raise PlanError(f"{_label(ref)}: port {p!r} ({declared!r}, "
                                 f"{a.dtype.__name__} per={a.per!r}) cannot be rewired to "
                                 f"{ch!r} ({b.dtype.__name__} per={b.per!r})")
-        reads = {p: ref.ports.get(p, ch) for p, ch in decl_reads.items()}
-        writes = {p: ref.ports.get(p, ch) for p, ch in decl_writes.items()}
-        if ref.ports:
+        reads = {p: ports.get(p, ch) for p, ch in decl_reads.items()}
+        writes = {p: ports.get(p, ch) for p, ch in decl_writes.items()}
+        if ports:
             problems = _rewrite_problems(_label(ref), reads, writes)
             if problems:
                 raise PlanError(problems[0])
@@ -290,7 +586,7 @@ def _plan_channels(slots) -> "dict[str, list[str]]":
                 raise PlanError(f"{_label(ref)} reads unknown channel {ch!r} (port {p!r})")
             if ch not in versions:
                 raise PlanError(f"{_label(ref)} reads {ch!r} (port {p!r}), but no earlier "
-                                f"stage writes it")
+                                f"stage writes it{_missing_hint(ch, s, slots, gate)}")
         seen: dict = {}
         for p, ch in writes.items():
             if not known(ch):
@@ -313,6 +609,10 @@ def _plan_channels(slots) -> "dict[str, list[str]]":
     return versions
 
 
+# ---------------------------------------------------------------------------------------
+# The result kinds (Track / GateSequence)
+# ---------------------------------------------------------------------------------------
+
 def _check_exports(writers) -> None:
     """Every ``Track`` field has a writer: the ``Track`` reads them all."""
     from ..stages.track import TRACK_EXPORTS  # noqa: PLC0415
@@ -325,25 +625,40 @@ def _check_exports(writers) -> None:
                         f"a writer")
 
 
-def _export_sources(writers) -> "dict[str, str | None]":
-    """``Track field -> the channel whose FINAL version is the field's array`` (the
+def _check_gate_exports(writers) -> None:
+    """Every ``GateSequence`` field has a writer."""
+    from ..stages.gates import GATE_EXPORTS  # noqa: PLC0415
+
+    missing = [f"GateSequence.{field} ({' or '.join(chs)})"
+               for field, chs in GATE_EXPORTS.items()
+               if not any(ch in writers for ch in chs)]
+    if missing:
+        raise PlanError(f"no stage writes {', '.join(missing)}: every GateSequence field "
+                        f"needs a writer")
+
+
+def _export_sources(writers, exports=None, own_valid: str = "track.valid") -> \
+        "dict[str, str | None]":
+    """``result field -> the channel whose FINAL version is the field's array`` (the
     first written of its candidates), or ``None`` for a field the commit writes:
-    ``valid`` when ``validity.default`` (``track.valid``) is not also the last writer of
-    ``valid.fail`` (a plugin check ran after it, or none ran). A field without any
-    writer is absent (only reachable when ``_check_exports`` is lifted)."""
+    ``valid`` when the built-in check (``validity.default`` / ``validity.gate_default``,
+    whose own flag is ``own_valid``) is not also the last writer of ``valid.fail`` (a
+    plugin check ran after it, or none ran). A field without any writer is absent (only
+    reachable when the exports check is lifted)."""
     from ..stages.channels import FAIL  # noqa: PLC0415
     from ..stages.track import TRACK_EXPORTS  # noqa: PLC0415
 
+    exports = TRACK_EXPORTS if exports is None else exports
     out: dict = {}
-    for field, chs in TRACK_EXPORTS.items():
+    for field, chs in exports.items():
         if field == "valid":
-            if "track.valid" in writers and FAIL in writers and \
-                    writers["track.valid"][-1] == writers[FAIL][-1]:
-                out[field] = "track.valid"
+            if own_valid in writers and FAIL in writers and \
+                    writers[own_valid][-1] == writers[FAIL][-1]:
+                out[field] = own_valid
             elif FAIL in writers:
                 out[field] = None                     # derived: fail_mask == 0
-            elif "track.valid" in writers:
-                out[field] = "track.valid"
+            elif own_valid in writers:
+                out[field] = own_valid
             continue
         ch = next((c for c in chs if c in writers), None)
         if ch is not None:
@@ -371,6 +686,22 @@ def _check_fail_start(slots, writers) -> None:
             f"split built-in checks")
 
 
+def _check_gate_fail_start(slots, writers) -> None:
+    """``valid.fail`` starts at ``validity.gate_default`` in a gate Program."""
+    from ..stages.channels import FAIL  # noqa: PLC0415
+    from ..stages.gates import GateValidityDefault  # noqa: PLC0415
+
+    first = writers.get(FAIL, (None,))[0]
+    slot = next((s for s in slots if s.id == first), None)
+    if slot is not None and slot.cls is not GateValidityDefault:
+        raise PlanError(
+            f"{_label(slot.ref)} starts valid.fail (writes it without reading it) in "
+            f"place of validity.gate_default, which would drop the built-in count, "
+            f"finite, tangent, spacing, crossing and grade checks; keep 'gate_default' "
+            f"first (checks=('gate_default', {slot.ref.name!r})) and read valid.fail in "
+            f"the check (fail_out = fail_in | own)")
+
+
 def _check_flat_lift(slots) -> None:
     """``lift.flat`` lifts at a constant ``z_base`` and ignores ``cl.z``: refuse it after
     a ``cl.z`` writer other than ``elevation.flat`` (the geometry would be flat while the
@@ -388,18 +719,10 @@ def _check_flat_lift(slots) -> None:
             z_writers.append(s)
 
 
-def _check_out(out, layout) -> None:
-    """``out=``: every Track field an ``[n]`` contiguous array of the right dtype on the
-    batch's device (``generation`` and ``fail_mask`` may be ``None``)."""
-    E, S = int(layout.num_envs), int(layout.stride)
-    want = {f: ("vec3f", E * S) for f in ("outer", "center", "inner", "tangent", "normal")}
-    want.update(arclen=("float32", E * S), length=("float32", E), winding=("float32", E),
-                valid=("int32", E), count=("int32", E), truncated=("int32", E),
-                generation=("int32", E), fail_mask=("int32", E))
-    dev = str(wp.get_device(layout.device))
+def _check_arrays(out, want: dict, optional, dev: str) -> None:
     for field, (dtype, n) in want.items():
         arr = getattr(out, field, None)
-        if arr is None and field in ("generation", "fail_mask"):
+        if arr is None and field in optional:
             continue
         if not isinstance(arr, wp.array):
             raise ValueError(f"out.{field}: expected a wp.array, got {type(arr).__name__}")
@@ -411,6 +734,62 @@ def _check_out(out, layout) -> None:
                              f"{dev}, got {got}")
 
 
+def _check_out(out, layout) -> None:
+    """``out=``: every Track field an ``[n]`` contiguous array of the right dtype on the
+    batch's device (``generation`` and ``fail_mask`` may be ``None``)."""
+    E, S = int(layout.num_envs), int(layout.stride)
+    want = {f: ("vec3f", E * S) for f in ("outer", "center", "inner", "tangent", "normal")}
+    want.update(arclen=("float32", E * S), length=("float32", E), winding=("float32", E),
+                valid=("int32", E), count=("int32", E), truncated=("int32", E),
+                generation=("int32", E), fail_mask=("int32", E))
+    _check_arrays(out, want, ("generation", "fail_mask"),
+                  str(wp.get_device(layout.device)))
+
+
+def _check_gate_out(out, layout) -> None:
+    """``out=`` of a gate Program: every ``GateSequence`` field (``generation`` and
+    ``fail_mask`` may be ``None``)."""
+    E, G = int(layout.num_envs), int(layout.stride)
+    want = {f: ("vec3f", E * G) for f in ("position", "tangent", "forward", "left",
+                                          "right")}
+    want.update(orientation=("quatf", E * G), half_size=("float32", E * G),
+                valid=("int32", E), count=("int32", E), generation=("int32", E),
+                fail_mask=("int32", E))
+    _check_arrays(out, want, ("generation", "fail_mask"),
+                  str(wp.get_device(layout.device)))
+
+
+@dataclasses.dataclass(frozen=True)
+class _ResultKind:
+    """What differs between a track and a gate Program."""
+
+    exports: object
+    own_valid: str
+    check_exports: object
+    check_fail_start: object
+    check_out: object
+    alloc: object
+    commit_cls: object
+    fields: tuple
+
+
+def _result_kind(gate: bool) -> _ResultKind:
+    from ..stages import commit as _commit_mod  # noqa: PLC0415
+    from ..stages import gates as _gates_mod  # noqa: PLC0415
+    from ..stages import track as _track_mod  # noqa: PLC0415
+
+    if gate:
+        return _ResultKind(
+            _gates_mod.GATE_EXPORTS, "gates.valid", _check_gate_exports,
+            _check_gate_fail_start, _check_gate_out, _gates_mod._alloc_gate_sequence,
+            _commit_mod._GateCommit,
+            (*_commit_mod.GATE_POINT_FIELDS, *_commit_mod.GATE_ENV_FIELDS))
+    return _ResultKind(
+        _track_mod.TRACK_EXPORTS, "track.valid", _check_exports, _check_fail_start,
+        _check_out, _track_mod._alloc_track, _commit_mod._Commit,
+        (*_commit_mod.POINT_FIELDS, *_commit_mod.ENV_FIELDS))
+
+
 # ---------------------------------------------------------------------------------------
 # The plan (allocation)
 # ---------------------------------------------------------------------------------------
@@ -419,12 +798,16 @@ class _Plan:
     """Channel versions, exports, plugin channels and fail bits, shared by every
     stage's builder."""
 
-    def __init__(self, layout, raw: int, device, writers, bound) -> None:
+    def __init__(self, layout, raw: int, device, writers, bound, *, n_max=None,
+                 max_gates=None, anchors: int = 0) -> None:
         self.layout = layout
         self.raw = int(raw)
         self.device = device
+        self.n_max = int(layout.stride if n_max is None else n_max)
+        self.max_gates = None if max_gates is None else int(max_gates)
+        self.anchors = int(anchors)
         self.final = {ch: ids[-1] for ch, ids in writers.items()}
-        self.bound = dict(bound)              # exported channel -> Track array
+        self.bound = dict(bound)              # exported channel -> result array
         self.current: dict = {}               # channel -> latest version
         self.versions: dict = {}              # channel -> [(index, stage_id, array)]
         self.plugin_channels: dict = {}       # plugin channel -> (dtype, per)
@@ -439,8 +822,15 @@ class _Plan:
         if per == "raw":
             return E * self.raw
         if per == "cl":
-            return E * int(self.layout.stride)
-        raise ValueError(f"unknown per={per!r}; expected 'env', 'raw' or 'cl'")
+            return E * self.n_max
+        if per == "anchors" and self.anchors > 0:
+            return E * self.anchors
+        if per == "gates" and self.max_gates is not None:
+            return E * self.max_gates
+        if per in ("anchors", "gates"):
+            raise ValueError(f"per={per!r}: this pipeline has no {per} domain")
+        raise ValueError(f"unknown per={per!r}; expected 'env', 'raw', 'cl', 'anchors' "
+                         f"or 'gates'")
 
     def add(self, channel: str, index: int, stage_id: str, arr) -> None:
         self.current[channel] = arr
@@ -491,6 +881,9 @@ class _StagePlan:
         self._slot = slot
         self.reads = types.MappingProxyType(dict(slot.reads))
         self.writes = types.MappingProxyType(dict(slot.writes))
+        cls = slot.cls
+        self._declared = {**dict(getattr(cls, "reads", {})),
+                          **dict(getattr(cls, "writes", {}))}
         # The versions written by EARLIER stages (a channel this stage rewrites keeps
         # reading the version before its own).
         self._visible = {ch: plan.current[ch] for ch in slot.reads.values()}
@@ -504,6 +897,13 @@ class _StagePlan:
         if c is not None:
             return c.dtype, c.per
         return self._plan.plugin_channels.get(name)
+
+    def declared_channel(self, port: str) -> "str | None":
+        """The channel the stage class declares for ``port`` (before any rewiring)."""
+        return self._declared.get(port)
+
+    def length(self, per: str) -> int:
+        return self._plan.length(per)
 
     def define(self, name: str, dtype, per: str) -> None:
         """Fix a plugin channel's dtype and size (its first writer)."""
@@ -548,51 +948,60 @@ def _seed_state(seeds, E: int, dev, stream):
 
 def _build(spec: PipelineSpec, *, binding, seeds=None, out=None, stream=None,
            prepare: bool = True, owner=None, registry=None):
-    """:func:`build` with the generator already bound (``TrackGenerator`` passes its
-    own binding and run config)."""
+    """:func:`build` with the generator already bound (the facades pass their own
+    binding and run config)."""
     from .._src.generator_binding import _StageGenerator, param_table  # noqa: PLC0415
     from ..exec.runner import _check_default_stream, ensure_not_capturing  # noqa: PLC0415
     from ..plugin.params import _fields, _new_param_table, _new_stage_params, \
         _static_view  # noqa: PLC0415
     from ..plugin.stage import Layout, _close_builder, _new_builder  # noqa: PLC0415
-    from ..stages import commit as _commit_mod  # noqa: PLC0415
-    from ..stages import track as _track_mod  # noqa: PLC0415
     from ..stages.channels import FAIL  # noqa: PLC0415
     from .program import _PROGRAM_TOKEN, Program  # noqa: PLC0415
 
     # -- 1-5: host-side checks, nothing allocated --------------------------------------
     _check_spec_shape(spec)
     batch = spec.batch
-    E, S = int(batch.num_envs), int(batch.n_max)
+    gate = batch.max_gates is not None
+    kind = _result_kind(gate)
+    E = int(batch.num_envs)
+    S = int(batch.max_gates) if gate else int(batch.n_max)
     dev = wp.get_device(batch.device)
     layout = Layout(E, S, str(dev), True)
     slots = _resolve(spec, binding, layout, registry)
+    A = _check_gate_plan(spec, slots, registry) if gate else 0
     capture_class = _capture_class(slots, binding)
-    writers = _plan_channels(slots)
-    _check_exports(writers)
-    _check_fail_start(slots, writers)
+    writers = _plan_channels(slots, gate)
+    if gate:
+        _check_provided(slots)
+    kind.check_exports(writers)
+    kind.check_fail_start(slots, writers)
     _check_flat_lift(slots)
     if out is not None:
-        _check_out(out, layout)
+        kind.check_out(out, layout)
     adapter = binding.pipeline_spec if isinstance(binding.pipeline_spec, _StageGenerator) \
         else None
-    raw = int(adapter.raw_points) if adapter is not None else int(binding.run_config.num_points)
+    if adapter is not None:
+        raw = int(adapter.raw_points)
+    else:
+        raw = int(getattr(binding.run_config, "num_points", 0) or 0) \
+            if binding.kind == _GENERATOR else 0
     _check_default_stream(dev, stream)
 
     # -- 6: shared allocations (refuse a capture first; the seeds' own checks next) ---
     ensure_not_capturing(dev, default_stream=stream, label=binding.name)
     seed_state = _seed_state(seeds, E, dev, stream)
-    track = out if out is not None else _track_mod._alloc_track(layout)
-    # The final version of each exported channel IS the Track's array (no copy).
-    sources = _export_sources(writers)
+    result = out if out is not None else kind.alloc(layout)
+    # The final version of each exported channel IS the result's array (no copy).
+    sources = _export_sources(writers, kind.exports, kind.own_valid)
     bound = {}
     for field, ch in sources.items():
-        arr = getattr(track, field, None)
+        arr = getattr(result, field, None)
         if ch is not None and arr is not None:
             bound[ch] = arr
     seed = wp.empty(E, dtype=wp.int32, device=dev)
     regen_mask = wp.zeros(E, dtype=wp.int32, device=dev)
-    plan = _Plan(layout, raw, dev, writers, bound)
+    plan = _Plan(layout, raw, dev, writers, bound, n_max=int(batch.n_max),
+                 max_gates=batch.max_gates, anchors=A)
     plan.add("seed", -1, _PROLOGUE, seed)
 
     # -- 7: build every stage, in order ------------------------------------------------
@@ -601,8 +1010,8 @@ def _build(spec: PipelineSpec, *, binding, seeds=None, out=None, stream=None,
     stage_params = {}
     gen_scratch = None
     for s in slots:
-        is_gen = s.ref.kind == _GENERATOR
-        params = None if is_gen else s.params
+        bound_gen = s.generator in ("centerline", "legacy")
+        params = None if bound_gen else s.params
         dynamic = {}
         if params is not None:
             for f in _fields(type(params)):
@@ -613,8 +1022,8 @@ def _build(spec: PipelineSpec, *, binding, seeds=None, out=None, stream=None,
                 dynamic[f.name] = (wp.full(E, v, dtype=f.dtype, device=dev),
                                    wp.full(E, v, dtype=f.dtype, device=dev))
         view = None if params is None else _static_view(params)
-        instance = s.instance if is_gen else s.cls()
-        b = _new_builder(stage=instance, params=view, layout=layout, scale=batch.scale,
+        instance = s.instance if bound_gen else s.cls()
+        b = _new_builder(stage=instance, params=view, layout=s.layout, scale=batch.scale,
                          seed=seed, raw=raw, outputs={}, dynamic=dynamic, stage_id=s.id,
                          plan=plan.for_stage(s))
         enqueue = instance.build(b, view)
@@ -630,7 +1039,7 @@ def _build(spec: PipelineSpec, *, binding, seeds=None, out=None, stream=None,
             raise PlanError(f"{_label(s.ref)} never called b.fail_bit(): a validity stage "
                             f"owns at least one fail bit")
         enqueues.append(enqueue)
-        if is_gen:
+        if bound_gen:
             gen_scratch = instance.scratch
             if adapter is not None:
                 pairs.extend(adapter._pairs)
@@ -646,6 +1055,9 @@ def _build(spec: PipelineSpec, *, binding, seeds=None, out=None, stream=None,
                 stage_id=s.id, params=s.params,
                 arrays={name: pair[0] for name, pair in dynamic.items()},
                 num_envs=E, device=str(dev), default_stream=stream)
+            if s.generator == "anchors":
+                gen_scratch = types.MappingProxyType(
+                    {k.split("/", 1)[1]: v for k, v in b._scratch.items()})
         for name, arr in stage_inputs.items():
             if name in inputs:
                 raise PlanError(f"{_label(s.ref)}: input {name!r} is declared twice")
@@ -661,28 +1073,31 @@ def _build(spec: PipelineSpec, *, binding, seeds=None, out=None, stream=None,
         scratch[s.id] = {k[len(prefix):] if k.startswith(prefix) else k: v
                          for k, v in b._scratch.items()}
 
-    # -- 8: the commit (every Track field has a source; else the Track is not ours) ----
+    # -- 8: the commit (every result field has a source; else the result is not ours) --
     commit = None
-    fields = (*_commit_mod.POINT_FIELDS, *_commit_mod.ENV_FIELDS)
+    fields = kind.fields
     if all(f in sources for f in fields):
-        # The Track's arrays; fail_mask: the final valid.fail version (the Track's own
+        # The result's arrays; fail_mask: the final valid.fail version (the result's own
         # unless out= brought none).
-        targets = {f: getattr(track, f) for f in fields if f != "fail_mask"}
+        targets = {f: getattr(result, f) for f in fields if f != "fail_mask"}
         targets["fail_mask"] = plan.current[FAIL]
-        commit = _commit_mod._Commit(
+        commit = kind.commit_cls(
             targets=targets, E=E, S=S, device=dev, dummy_mask=regen_mask,
             poison=batch.on_invalid == "poison", derive_valid=sources["valid"] is None)
-    if hasattr(track, "fail_bits"):
-        track.fail_bits = types.MappingProxyType(dict(plan.fail_bits))
+    if hasattr(result, "fail_bits"):
+        result.fail_bits = types.MappingProxyType(dict(plan.fail_bits))
 
     # -- 9: the Program ----------------------------------------------------------------
-    gen_params = param_table(binding, default_stream=stream)[_GENERATOR]
+    if _GENERATOR in stage_params:
+        gen_params = stage_params.pop(_GENERATOR)
+    else:
+        gen_params = param_table(binding, default_stream=stream)[_GENERATOR]
     table = _new_param_table({_GENERATOR: gen_params, **stage_params})
     resolved = PipelineSpec(batch=batch, stages=tuple(
         dataclasses.replace(s.ref, params=s.params) for s in slots))
     program = Program(
         _token=_PROGRAM_TOKEN, spec=resolved, layout=layout, binding=binding,
-        result=track, seeds=seed_state, seed=seed, inputs=inputs, params=table,
+        result=result, seeds=seed_state, seed=seed, inputs=inputs, params=table,
         pairs=pairs, enqueues=enqueues, versions=plan.versions, scratch=scratch,
         stage_ids=[s.id for s in slots],
         kinds={s.id: (s.ref.kind, s.ref.name) for s in slots}, gen_scratch=gen_scratch,

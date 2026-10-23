@@ -2,10 +2,10 @@ Writing a Generator
 ===================
 
 A **track generator** produces the initial closed centerline that the pipeline then
-resamples, relaxes (XPBD), and inflates. A **gate generator** produces the ordered
-plan-view gate anchors that the gate pipeline then spreads, elevates, lifts to 3D, and
-frames. Both are plugins added to the registry of ``track_gen.plugin``. A track generator
-takes one of two forms:
+resamples, relaxes (XPBD), and inflates. A **gate generator** produces the plan-view gate
+anchors that the gate pipeline then orders, spreads, elevates, lifts to 3D, and frames.
+Both are plugins added to the registry of ``track_gen.plugin``. A track generator takes
+one of two forms:
 
 - a ``Stage`` subclass (the recommended form). It declares its own parameters as a
   ``Params`` dataclass, allocates its buffers through a ``StageBuilder``, and may expose
@@ -14,8 +14,11 @@ takes one of two forms:
 - a ``GeneratorSpec``: a few callables (``alloc_scratch``, ``generate``) and flags. It is
   still fully supported, and it can declare a ``Params`` class too (static fields only).
 
-Gate generators are ``GateGeneratorSpec`` objects in this release: gate Stages arrive with
-roadmap PR11.
+A gate generator is a ``Stage`` with ``kind="gate_generator"`` and ``output="anchors"``,
+described in :ref:`gate-generator-stage`; the ``GateGeneratorSpec`` form still runs, but
+it is deprecated (see :ref:`gate-generator-contract`). A track generator also makes gates
+with no code of its own: ``presets.gates`` places arc-length stations on its centerline
+(:ref:`pipeline-stations`).
 
 A plugin ships as its own pip-installable package. It imports only public modules
 (``track_gen.plugin``, ``track_gen.exec``, ``track_gen.ops``), it does not edit TrackGen,
@@ -160,8 +163,8 @@ Quick start: a ``GeneratorSpec`` generator
 
 A ``GeneratorSpec`` wraps two callables: ``alloc_scratch`` allocates the generator's
 buffers once, and ``generate`` writes into the buffers the pipeline passes on every call.
-This is the form every plugin used before ``Stage`` existed, and the form gate generators
-use (see :ref:`gate-generator-contract`). The same wobbly circle, with a fixed shape and
+This is the form every plugin used before ``Stage`` existed, and the form legacy gate
+generators use (deprecated, see :ref:`gate-generator-contract`). The same wobbly circle, with a fixed shape and
 no parameters:
 
 .. code-block:: python
@@ -349,8 +352,9 @@ instance per generator, with no arguments, and calls ``capacity`` and ``build`` 
      - The ``TrackGenConfig.generator`` string that selects it. Dotted for third parties
        (see :ref:`plugin-names`).
    * - ``output``
-     - ``"centerline"``, required for a generator. ``"anchors"`` (a gate generator)
-       arrives with roadmap PR11: register a ``GateGeneratorSpec`` until then.
+     - ``"centerline"``, required for a track generator. A gate generator declares
+       ``kind="gate_generator"`` and ``output="anchors"`` (see
+       :ref:`gate-generator-stage`).
    * - ``Params``
      - The stage's Params class. The default ``NoParams`` takes no ``generator_params``.
    * - ``writes``
@@ -362,9 +366,10 @@ instance per generator, with no arguments, and calls ``capacity`` and ``build`` 
    * - ``topology``
      - ``"closed"`` (default) or ``"any"``. Open tracks are not supported in 0.x.
    * - ``reads``, ``provides``
-     - Must stay empty: a generator reads no channel (its seed is ``b.seed``), and
-       ``provides`` arrives with PR11 and PR13. Read ports are for the pipeline's other
-       stages (see :doc:`writing-a-stage`).
+     - Must stay empty: a generator reads no channel (its seed is ``b.seed``), and a
+       track generator's ``provides`` arrives with roadmap PR13 (a gate generator's is
+       described in :ref:`gate-generator-stage`). Read ports are for the pipeline's
+       other stages (see :doc:`writing-a-stage`).
    * - ``api_version``
      - The plugin API version the stage targets (default ``1``). A version above
        ``track_gen.plugin.API_VERSION`` is rejected.
@@ -390,14 +395,17 @@ WobbleParams)`` still holds; ``gen.params["generator"].params`` is the full inst
 
 ``registry.add`` checks the declaration before it registers the class, and raises
 ``TypeError`` or ``ValueError`` (a plugin is then quarantined under ``warn``) for an
-instance, an abstract class, a missing or mismatched ``kind``, ``kind="gate_generator"``,
-an ``api_version`` above ``API_VERSION``, a ``capture`` that is not a ``CaptureClass`` or
-is ``BOUNDED``, a Params class that breaks the rules above, an ``output`` other than
-``"centerline"``, a ``writes`` without ``"raw.xy"`` or with another channel (or two ports
-on one channel), a non-empty ``reads`` or ``provides``, or another ``topology``. A Stage of
-kind ``"relax"``, ``"width"``, ``"elevation"`` or ``"validity"`` is a pipeline stage,
-checked by the rules of :doc:`writing-a-stage`; any other kind (``"resample"``,
-``"lift"``, ...) is rejected as not open to plugins.
+instance, an abstract class, a missing or mismatched ``kind``, an ``api_version`` above
+``API_VERSION``, a ``capture`` that is not a ``CaptureClass`` or is ``BOUNDED``, a Params
+class that breaks the rules above, an ``output`` other than ``"centerline"`` (an
+``output="anchors"`` Stage must declare ``kind="gate_generator"``), a ``writes`` without
+``"raw.xy"`` or with another channel (or two ports on one channel), a non-empty
+``reads`` or ``provides``, a ``preferred`` (gate generators only), or another
+``topology``. A Stage of kind ``"gate_generator"`` is checked by the anchors rules of
+:ref:`gate-generator-stage`, and one of kind ``"relax"``, ``"width"``, ``"elevation"``,
+``"validity"``, ``"order"`` or ``"stations"`` is a pipeline stage, checked by the rules
+of :doc:`writing-a-stage`; any other kind (``"resample"``, ``"lift"``, ...) is rejected
+as not open to plugins.
 
 ``build`` and ``enqueue``
 ~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -883,12 +891,74 @@ subclass must still fall back to defaults there; a Params class needs nothing mo
 Gate generators
 ---------------
 
-A gate generator writes ordered plan-view gate anchors. The gate pipeline then spreads
-them apart (``gate_solve_iters``), applies the Z profile, lifts them to 3D, derives
-tangents and frames, and decides validity. ``GateGenConfig.generator`` selects one. A
-``GateGeneratorSpec`` (also exported by ``track_gen.plugin``) has the ``name``,
-``alloc_scratch``, ``capturable``, and ``accepts_ctx`` fields of a ``GeneratorSpec``, with
-the same meaning, the same hard rules and the same stream rules, plus:
+A gate generator writes plan-view gate *anchors*. The gate pipeline then orders them (an
+``order`` stage), sizes them when the generator asks for it, spreads them apart
+(``gate_solve_iters``), applies the Z profile, lifts them to 3D, derives tangents and
+frames, and decides validity (:ref:`pipeline-gates`). ``GateGenConfig.generator`` (or
+``presets.gates(generator=...)``) selects one.
+
+Write it as a ``Stage`` with ``kind="gate_generator"`` and ``output="anchors"``: the
+contract, a walkthrough (a generator that provides its own altitudes and tangents) and
+the registration rules are in :ref:`gate-generator-stage`. The example below is built
+from ``track_gen.ops`` the way the built-in ``bezier`` and ``hull`` gate generators are:
+draw a per-env gate count and that many jittered grid points. It does not order or size
+them: it declares the order it prefers and asks the pipeline to normalize the ordered
+gates to ``ops.constants.TARGET_EXTENT * scale``, as ``polar``, ``voronoi`` and
+``checkpoint`` do. It is added by the same ``register`` function:
+
+.. code-block:: python
+
+   MIN_GATES, MAX_GATES = 6, 10
+
+
+   class Scatter(plugin.Stage):
+       kind = "gate_generator"
+       name = "acme.scatter"
+       output = "anchors"
+       writes = {"xy": "anchors.xy", "count": "anchors.count"}
+       excluded_orderings = frozenset({"raw"})        # an unordered cloud
+       preferred = {"order": "ccw", "normalize": "extent"}
+
+       def capacity(self, params, layout):
+           return {"gates": MAX_GATES, "min_gates": MIN_GATES}
+
+       def build(self, b, params):
+           xy = b.write("xy", wp.vec2f, per="anchors")    # [E * MAX_GATES]
+           count = b.write("count", wp.int32)             # [E]
+           used = b.scratch("used", wp.int32, b.E * MAX_GATES)
+           num_cells, cell = ops.grid_cells(0.1)          # a 5 x 5 grid
+           salt = b.salt("points") & 0x7FFFFFFF           # int32 for the ops samplers
+
+           def enqueue(ctx):
+               ops.sample_counts(ctx, b.seed, salt, 101, MIN_GATES, MAX_GATES, count)
+               ops.sample_grid_points(ctx, b.seed, salt, 102, MAX_GATES, num_cells, cell,
+                                      1.0, used, xy)
+           return enqueue
+
+
+   def register(reg):
+       ...  # reg.add(Wobble) as above
+       reg.add(Scatter)
+
+``GateGenerator(GateGenConfig(generator="acme.scatter", ...), rng)`` then selects it
+(``gate_ordering=None``, the default, picks its preferred ``"ccw"``), and so does
+``presets.gates(..., generator="acme.scatter")``. Because it excludes ``"raw"`` instead
+of whitelisting ``"ccw"``, it also runs with ``"random_pairs"`` and with any order a
+plugin registers. ``capacity()`` replaces the legacy ``max_gates`` callable: it is
+checked against ``GateGenConfig.max_gates`` and ``min_gates`` with the same messages
+(:ref:`gate-capacity-config`).
+
+Legacy: ``GateGeneratorSpec`` (deprecated)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Gate generators written for 0.2.0.dev3 and earlier are ``GateGeneratorSpec`` objects
+(also exported by ``track_gen.plugin``). They keep working, unchanged, through an adapter
+stage (:ref:`pipeline-legacy-gates`), and are **deprecated**: registering one is silent,
+but the first ``GateGenerator``, ``Course``, ``build`` or conformance run that binds one
+emits a ``DeprecationWarning`` (once per name), pointing at the code that constructed
+the generator. They run until 1.0. A ``GateGeneratorSpec`` has the ``name``,
+``alloc_scratch``, ``capturable``, and ``accepts_ctx`` fields of a ``GeneratorSpec``,
+with the same meaning, the same hard rules and the same stream rules, plus:
 
 .. list-table::
    :header-rows: 1
@@ -907,74 +977,36 @@ the same meaning, the same hard rules and the same stream rules, plus:
        ``GateGenerator`` raises ``ValueError`` unless ``config.min_gates <=
        max_gates(config) <= config.max_gates``.
    * - ``supported_orderings``
-     - ``frozenset`` of the ``GateGenConfig.gate_ordering`` values (``"ccw"``, ``"raw"``,
-       ``"random_pairs"``) that ``generate`` honours. The pipeline does not reorder the
-       gates: ``generate`` emits them in the configured order, and ``GateGenerator``
-       raises ``ValueError`` for an ordering not in this set.
+     - ``frozenset`` of the ``GateGenConfig.gate_ordering`` values that ``generate``
+       honours. No order stage follows a legacy generator: ``generate`` emits the gates
+       in the configured order, and ``GateGenerator`` raises ``ValueError`` for an
+       ordering not in this set. ``GateGenConfig.gate_ordering=None`` (the default)
+       is resolved first (``"ccw"`` when supported, else the first of this set,
+       sorted): ``config.gate_ordering`` is never ``None`` in ``generate``,
+       ``alloc_scratch``, ``max_gates`` or the ``params`` class's ``from_legacy``.
    * - ``params``
      - Optional: a static ``Params`` class, as for a ``GeneratorSpec``. Users set it with
        ``GateGenConfig.generator_params``, and ``generate``, ``alloc_scratch`` and
        ``max_gates`` read the resolved instance as ``config.generator_params``.
 
-``GateGenerator`` checks ``supported_orderings`` and ``max_gates`` against the resolved
-config, so ``max_gates`` sees the values ``generator_params`` sets. A gate generator cannot
-be a ``Stage`` yet: ``registry.add`` rejects a Stage with ``kind="gate_generator"`` or
-``output="anchors"`` until roadmap PR11.
+To port one to a ``Stage``:
 
-Size the anchors like the ``polar``, ``voronoi`` and ``checkpoint`` gate generators:
-centered, with the longest bounding-box side at ``ops.constants.TARGET_EXTENT *
-config.scale`` (the ``bezier`` and ``hull`` gate generators keep their grid's size). The
-example below is built from
-``track_gen.ops`` the way the built-in ``bezier`` and ``hull`` gate generators are: draw a
-per-env gate count and that many jittered grid points, sort them by angle straight into
-``out.position`` (``angle_sort`` writes NaN into every slot past ``count[e]``, which is the
-padding the contract asks for), then size them. It is added by the same ``register``
-function:
+- move the body of ``generate`` up to (excluding) its ordering into ``build`` /
+  ``enqueue``, writing ``anchors.xy`` at the generator's own stride (``per="anchors"``)
+  instead of ``out.position``, and ``anchors.count`` instead of ``out.count``;
+- drop the ordering (``ops.angle_sort`` is ``order.ccw``) and the extent normalization
+  (declare ``preferred={"normalize": "extent"}``), and declare the orders it accepts
+  with ``excluded_orderings`` (or ``orderings``) and ``preferred={"order": ...}``;
+- turn ``max_gates(config)`` into ``capacity(params, layout) -> {"gates": A,
+  "min_gates": k}``, and ``alloc_scratch`` into ``b.write`` / ``b.scratch`` calls.
 
-.. code-block:: python
-
-   from track_gen.plugin import GateGeneratorSpec
-
-   MIN_GATES, MAX_GATES = 6, 10
-
-
-   def alloc_gate_scratch(config):
-       E, G = int(config.num_envs), int(config.max_gates)
-       dev = str(config.device)
-       return SimpleNamespace(
-           points=wp.empty(E * MAX_GATES, dtype=wp.vec2f, device=dev),
-           used=wp.empty(E * MAX_GATES, dtype=wp.int32, device=dev),
-           keys=wp.empty(E * G, dtype=wp.float32, device=dev))
-
-
-   def generate_scatter_gates(seeds_wp, config, out, scratch, ctx=None):
-       ctx = resolve(ctx, out.position.device)
-       G = int(config.max_gates)
-       num_cells, cell = ops.grid_cells(0.1)             # a 5 x 5 grid
-       ops.sample_counts(ctx, seeds_wp, SALT, 101, MIN_GATES, MAX_GATES, out.count)
-       ops.sample_grid_points(ctx, seeds_wp, SALT, 102, MAX_GATES, num_cells, cell, 1.0,
-                              scratch.used, scratch.points)
-       # The built-ins' "ccw" order; slots count[e] .. G-1 are written NaN.
-       ops.angle_sort(ctx, scratch.points, MAX_GATES, scratch.keys, out.position,
-                      count=out.count, out_stride=G)
-       ops.normalize_extent(ctx, out.position, G,
-                            ops.constants.TARGET_EXTENT * float(config.scale),
-                            count=out.count)
-
-
-   def register(reg):
-       ...  # reg.add(GeneratorSpec(name="acme.wobbly", ...)) as above
-       reg.add(GateGeneratorSpec(
-           name="acme.scatter",
-           alloc_scratch=alloc_gate_scratch,
-           generate=generate_scatter_gates,
-           max_gates=lambda config: MAX_GATES,
-           supported_orderings=frozenset({"ccw"}),   # angle_sort is the "ccw" order
-           accepts_ctx=True,
-       ))
-
-``GateGenerator(GateGenConfig(generator="acme.scatter", ...), rng)`` then selects it
-(``gate_ordering`` defaults to ``"ccw"``).
+The private ``warp_gate`` helpers that 0.1 gate plugins called from ``generate`` and
+``alloc_scratch`` (``alloc_order_scratch``, ``order_points``, ``finish_ordered_gates``
+and the ``_GateStaging`` name) are deprecated and removed in 1.0: until then they keep
+working, with a ``DeprecationWarning``. When porting such a spec, drop the call: the
+pipeline's ``order.raw``, ``order.ccw`` and ``order.random_pairs`` stages are the three
+orderings ``order_points`` dispatched to (``ops.angle_sort`` is ``order.ccw``), and
+``preferred={"normalize": "extent"}`` replaces ``normalize_extent=``.
 
 .. _generator-ops:
 
@@ -1027,8 +1059,8 @@ an explicit argument. Every op:
        ``(0, 0.5]``) on the host. ``scale`` is a float or an ``[E]`` array.
    * - ``angle_sort(ctx, src, stride, keys, out, *, count, out_stride=None)``
      - The first ``count[e]`` points of each env, sorted by angle around their centroid
-       (ascending ``atan2(x - cx, y - cy)``), NaN after them. This is the order the
-       built-ins emit for ``gate_ordering="ccw"``; in a y-up frame it runs clockwise
+       (ascending ``atan2(x - cx, y - cy)``), NaN after them. This is the order
+       ``order.ccw`` (``gate_ordering="ccw"``) produces; in a y-up frame it runs clockwise
        (``turning_number`` of the result is about ``-2*pi``).
    * - ``closed_catmull_rom(ctx, src, stride, per_seg, out, *, count=None,
        endpoint=False)``
@@ -1279,9 +1311,10 @@ Registering and discovery
 -------------------------
 
 ``track_gen.plugin.registry`` is the process-wide ``Registry``. It keys specs by *kind* and
-name. Two kinds exist today: ``"generator"`` (a ``GeneratorSpec`` or a ``Stage`` class)
-and ``"gate_generator"`` (``GateGeneratorSpec``). The set of kinds is open: later releases
-add kinds for other pipeline stages.
+name: ``"generator"`` (a ``GeneratorSpec`` or a ``Stage`` class), ``"gate_generator"``
+(a ``Stage`` class, or a legacy ``GateGeneratorSpec``) and the pipeline stage kinds of
+:doc:`writing-a-stage` (``"relax"``, ``"width"``, ``"elevation"``, ``"validity"``,
+``"order"``, ``"stations"``). The set of kinds is open: later releases add more.
 
 .. list-table::
    :header-rows: 1
@@ -1493,9 +1526,10 @@ Current standard generators
 The standard runtime generators are ``bezier``, ``checkpoint``, ``hull``,
 ``polar``, ``repulsive``, and ``voronoi``.  Call
 ``track_gen.plugin.registry.available("generator")`` for the authoritative list, installed
-plugins included (``available("gate_generator")`` for gate generators). Each built-in is a
-``GeneratorSpec`` (gate: ``GateGeneratorSpec``) with a static Params class whose fields are
-the flat ``TrackGenConfig`` / ``GateGenConfig`` knobs it reads, under the same names; the
+plugins included (``available("gate_generator")`` for gate generators). Each built-in
+track generator is a ``GeneratorSpec`` and each built-in gate generator an anchors
+``Stage``, with a static Params class whose fields are the flat ``TrackGenConfig`` /
+``GateGenConfig`` knobs it reads, under the same names; the
 :ref:`configuration reference <builtin-generator-params>` lists them.
 
 The Voronoi method is implemented as a fixed-budget site-field / graph-cycle
@@ -1513,7 +1547,7 @@ Adding a built-in generator
 ---------------------------
 
 A generator shipped inside TrackGen follows the same contract. It lives in
-``track_gen/_src/warp_generate_<name>.py`` (gate variants in
+``track_gen/_src/warp_generate_<name>.py`` (gate variants, anchors Stages, in
 ``warp_generate_<name>_gates.py``), defines the same ``register(reg)`` function, and is
 listed once in ``track_gen/_src/builtin_plugins.py``, the only shared registration
 touch-point. Built-in names are undotted. Built-ins use ``track_gen.ops`` for every shared

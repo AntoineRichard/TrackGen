@@ -2,134 +2,82 @@
 
 The anchors come from the same public ``track_gen.ops`` samplers (and RNG salts) the
 bezier/hull track generators use, so a gate layout reproduces the track generator's
-corner/point draw for the same seed.
+corner/point draw for the same seed. Both are ``gate_generator`` Stages
+(``output="anchors"``, roadmap PR11): they write an UNORDERED anchor cloud
+(``anchors.xy``, ``max_num_points`` rows per env, and ``anchors.count``); the gate
+pipeline orders it (``order.ccw`` by default; ``order.raw`` is excluded: a cloud has no
+loop order).
 """
 from __future__ import annotations
 
 import warp as wp
 
 from .. import ops
-from ..exec.context import LaunchContext, resolve as _resolve_ctx
-from .runtime import _init
+from ..plugin.stage import CaptureClass, Stage
+from .builtin_params import PointGateParams
 
 
-class PointGateScratch:
-    __slots__ = ("count", "points", "used", "keys")
+class _PointGates(Stage):
+    kind = "gate_generator"
+    output = "anchors"
+    capture = CaptureClass.STATIC
+    Params = PointGateParams
+    writes = {"xy": "anchors.xy", "count": "anchors.count"}
+    excluded_orderings = frozenset({"raw"})
+    preferred = {"order": "ccw"}
 
-    def __init__(self, count, points, used, keys):
-        self.count = count
-        self.points = points
-        self.used = used
-        self.keys = keys
+    # (count salt, count offset, point salt, point offset)
+    def _salts(self) -> "tuple[int, int, int, int]":
+        raise NotImplementedError
 
+    def capacity(self, params, layout):
+        return {"gates": int(params.max_num_points),
+                "min_gates": int(params.min_num_points)}
 
-def _point_gate_alloc_scratch(config):
-    from . import warp_gate
+    def build(self, b, p):
+        count = b.write("count", wp.int32)
+        points = b.write("xy", wp.vec2f, per="anchors")
+        P = int(p.max_num_points)
+        used = b.scratch("used", wp.int32, b.E * P)
+        num_cells, cell_size = ops.grid_cells(p.min_point_distance)
+        count_salt, count_offset, point_salt, point_offset = self._salts()
+        lo, hi = int(p.min_num_points), int(p.max_num_points)
+        scale = float(b.scale)
+        seed = b.seed
 
-    _init()
-    E = int(config.num_envs)
-    P = int(config.max_num_points)
-    dev = str(config.device)
-    count, keys = warp_gate.alloc_order_scratch(config)
-    return PointGateScratch(
-        count=count,
-        points=wp.empty(E * P, dtype=wp.vec2f, device=dev),
-        used=wp.empty(E * P, dtype=wp.int32, device=dev),
-        keys=keys,
-    )
-
-
-def generate_bezier_gates(seeds_wp, config, out, scratch,
-                          ctx: "LaunchContext | None" = None) -> None:
-    """Bezier corner sampling -> ordered gate anchors in ``out``.
-
-    Args:
-        ctx: optional track_gen.exec.LaunchContext; default resolves the
-            device's stream (see track_gen.exec).
-    """
-    from . import warp_gate, warp_generate
-
-    ctx = _resolve_ctx(ctx, str(out.position.device))
-    P = int(config.max_num_points)
-    G = int(config.max_gates)
-    num_cells, cell_size = ops.grid_cells(config.min_point_distance)
-    ops.sample_counts(ctx, seeds_wp, warp_generate.CORNER_COUNT_SALT, 0,
-                      int(config.min_num_points), int(config.max_num_points), scratch.count)
-    ops.sample_grid_points(ctx, seeds_wp, warp_generate.CORNER_SALT, 0, P, num_cells,
-                           float(cell_size), float(config.scale), scratch.used,
-                           scratch.points)
-    warp_gate.finish_ordered_gates(
-        seeds_wp,
-        scratch.points,
-        P,
-        scratch.count,
-        G,
-        str(config.gate_ordering),
-        scratch.keys,
-        out,
-        ctx=ctx,
-    )
+        def enqueue(ctx):
+            ops.sample_counts(ctx, seed, count_salt, count_offset, lo, hi, count)
+            ops.sample_grid_points(ctx, seed, point_salt, point_offset, P, num_cells,
+                                   float(cell_size), scale, used, points)
+        return enqueue
 
 
-def generate_hull_gates(seeds_wp, config, out, scratch,
-                        ctx: "LaunchContext | None" = None) -> None:
-    """Hull random-point sampling -> ordered gate anchors in ``out``.
+class GateBezier(_PointGates):
+    """``"bezier"``: the bezier track generator's corner draw as gate anchors."""
 
-    Args:
-        ctx: optional track_gen.exec.LaunchContext; default resolves the
-            device's stream (see track_gen.exec).
-    """
-    from . import warp_gate, warp_generate_hull as hull
+    name = "bezier"
 
-    ctx = _resolve_ctx(ctx, str(out.position.device))
-    P = int(config.max_num_points)
-    G = int(config.max_gates)
-    num_cells, cell_size = ops.grid_cells(config.min_point_distance)
-    ops.sample_counts(ctx, seeds_wp, hull.POINT_COUNT_SALT, hull.POINT_SALT_OFFSET,
-                      int(config.min_num_points), int(config.max_num_points), scratch.count)
-    ops.sample_grid_points(ctx, seeds_wp, hull.POINT_SALT, hull.POINT_SALT_OFFSET, P,
-                           num_cells, float(cell_size), float(config.scale), scratch.used,
-                           scratch.points)
-    warp_gate.finish_ordered_gates(
-        seeds_wp,
-        scratch.points,
-        P,
-        scratch.count,
-        G,
-        str(config.gate_ordering),
-        scratch.keys,
-        out,
-        ctx=ctx,
-    )
+    def _salts(self):
+        from . import warp_generate
+
+        return warp_generate.CORNER_COUNT_SALT, 0, warp_generate.CORNER_SALT, 0
 
 
-def _max_point_gates(config) -> int:
-    return int(config.max_num_points)
+class GateHull(_PointGates):
+    """``"hull"``: the hull track generator's point draw as gate anchors."""
+
+    name = "hull"
+
+    def _salts(self):
+        from . import warp_generate_hull as hull
+
+        return (hull.POINT_COUNT_SALT, hull.POINT_SALT_OFFSET, hull.POINT_SALT,
+                hull.POINT_SALT_OFFSET)
 
 
 def register(reg) -> None:
     """Register the built-in ``"bezier"`` and ``"hull"`` gate generators into ``reg``
     (called by ``track_gen._src.builtin_plugins``; importing this module registers
     nothing)."""
-    from .builtin_params import PointGateParams
-    from .gate_generator_registry import GateGeneratorSpec
-
-    reg.add(GateGeneratorSpec(
-        name="bezier",
-        alloc_scratch=_point_gate_alloc_scratch,
-        generate=generate_bezier_gates,
-        max_gates=_max_point_gates,
-        supported_orderings=frozenset({"ccw", "random_pairs"}),
-        accepts_ctx=True,
-        params=PointGateParams,
-    ))
-
-    reg.add(GateGeneratorSpec(
-        name="hull",
-        alloc_scratch=_point_gate_alloc_scratch,
-        generate=generate_hull_gates,
-        max_gates=_max_point_gates,
-        supported_orderings=frozenset({"ccw", "random_pairs"}),
-        accepts_ctx=True,
-        params=PointGateParams,
-    ))
+    reg.add(GateBezier)
+    reg.add(GateHull)

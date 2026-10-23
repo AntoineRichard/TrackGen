@@ -110,9 +110,9 @@ _PER_ENV_FIELDS = ("generation",)
 # Whether the generator commits a masked generation (roadmap PR10b,
 # ``track_gen.stages.commit``): the track pipeline holds every unmasked env's ``Track`` rows
 # before its stages and restores them after, so an unmasked env ends with exactly the bytes
-# it had (a poison included). The gate pipeline has no commit yet (roadmap PR11): it
-# recomputes every env, unmasked ones to identical values.
-_COMMITS = {"track": True, "gate": False}
+# it had (a poison included). The gate pipeline commits its ``GateSequence`` the same way
+# since roadmap PR11 (``_GateCommit``).
+_COMMITS = {"track": True, "gate": True}
 
 
 def _poison_all(*objs) -> None:
@@ -549,13 +549,17 @@ def _regenerated(course) -> dict:
 
 def _rewritten(course) -> dict:
     """The buffers a zero-mask regeneration body rewrites for EVERY env (poisoned before
-    a zero-mask replay): :func:`_regenerated`, minus the ``Track`` of a track course. Its
-    generator commits (:data:`_COMMITS`): every unmasked env's ``Track`` rows end the
-    body exactly as they began, so a poisoned ``Track`` would stay poisoned, feed the
-    refresh, and stay so for every env a later masked replay does not select."""
+    a zero-mask replay): :func:`_regenerated`, minus the generator's result (``Track`` /
+    ``GateSequence``) and every buffer aliasing it (a gate course's ``checkpoints`` are
+    zero-copy views of its ``GateSequence``). Its generator commits (:data:`_COMMITS`):
+    every unmasked env's result rows end the body exactly as they began, so a poisoned
+    result would stay poisoned, feed the refresh, and stay so for every env a later
+    masked replay does not select."""
     regen = _regenerated(course)
     if _COMMITS["track" if isinstance(course.generator, TrackGenerator) else "gate"]:
-        regen = {k: a for k, a in regen.items() if not k.startswith("result.")}
+        held = {a.ptr for a in _arrays(course.result).values()}
+        regen = {k: a for k, a in regen.items()
+                 if not k.startswith("result.") and a.ptr not in held}
     return regen
 
 

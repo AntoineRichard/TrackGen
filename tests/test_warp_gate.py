@@ -143,6 +143,24 @@ def test_finalize_invalidates_crossing_gate_segments():
     assert to_t(gates.valid).bool().tolist() == [False]
 
 
+def _order(seeds, src, src_stride, count, max_gates, ordering, keys, dst):
+    """The launch of the ``order.<ordering>`` stage (roadmap PR11 deleted the closed-set
+    ``warp_gate.order_points`` dispatch; the kernels are unchanged)."""
+    from track_gen.exec import LaunchContext
+    from track_gen.ops.geometry import _angle_sort_launch
+
+    ctx = LaunchContext.for_call(str(dst.device))
+    E, A, G = int(count.shape[0]), int(src_stride), int(max_gates)
+    if ordering == "raw":
+        ctx.launch(warp_gate._order_raw_k, E * G, [src, A, count, G, dst])
+    elif ordering == "ccw":
+        _angle_sort_launch(ctx, src, A, count, G, keys, dst, 0)
+    else:
+        assert ordering == "random_pairs"
+        ctx.launch(warp_gate._order_random_pairs_k, E,
+                   [seeds, src, A, count, G, int(warp_gate._ORDER_SALT), keys, dst])
+
+
 def test_order_points_ccw_sorts_by_centroid_angle():
     import warp as wp
 
@@ -156,7 +174,7 @@ def test_order_points_ccw_sorts_by_centroid_angle():
     keys = wp.empty(4, dtype=wp.float32, device="cpu")
     out = wp.empty(4, dtype=wp.vec2f, device="cpu")
 
-    warp_gate.order_points(seeds, src, 4, count, 4, "ccw", keys, out)
+    _order(seeds, src, 4, count, 4, "ccw", keys, out)
 
     expected = torch.tensor([[0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]])
     assert torch.equal(to_t(out), expected)
@@ -183,8 +201,8 @@ def test_order_points_random_pairs_preserves_pair_adjacency_and_singleton():
     out_a = wp.empty(6, dtype=wp.vec2f, device="cpu")
     out_b = wp.empty(6, dtype=wp.vec2f, device="cpu")
 
-    warp_gate.order_points(seeds, src, 6, count, 6, "random_pairs", keys, out_a)
-    warp_gate.order_points(seeds, src, 6, count, 6, "random_pairs", keys, out_b)
+    _order(seeds, src, 6, count, 6, "random_pairs", keys, out_a)
+    _order(seeds, src, 6, count, 6, "random_pairs", keys, out_b)
 
     ordered = to_t(out_a)
     ordered_b = to_t(out_b)
@@ -323,9 +341,9 @@ def test_order_points_raw_ccw_and_random_pairs_are_deterministic():
     out_rand_a = wp.empty(4, dtype=wp.vec2f, device="cpu")
     out_rand_b = wp.empty(4, dtype=wp.vec2f, device="cpu")
 
-    warp_gate.order_points(seeds, src, 4, count, 4, "raw", keys, out_raw)
-    warp_gate.order_points(seeds, src, 4, count, 4, "random_pairs", keys, out_rand_a)
-    warp_gate.order_points(seeds, src, 4, count, 4, "random_pairs", keys, out_rand_b)
+    _order(seeds, src, 4, count, 4, "raw", keys, out_raw)
+    _order(seeds, src, 4, count, 4, "random_pairs", keys, out_rand_a)
+    _order(seeds, src, 4, count, 4, "random_pairs", keys, out_rand_b)
 
     assert torch.equal(to_t(out_raw), to_t(src))
     assert torch.equal(to_t(out_rand_a), to_t(out_rand_b))
@@ -336,3 +354,33 @@ def test_sync_is_the_shared_runtime_helper():
     from track_gen._src import runtime
     assert warp_gate._sync is runtime._sync
     assert warp_gate._init is runtime._init
+
+
+def test_finalize_with_persistent_buffers_allocates_nothing(monkeypatch):
+    """The capturable call form (a persistent ``fallbacks``, no ``fail=``) allocates
+    nothing: the fail bits go to ``gates.fail_mask`` (``alloc_gate_sequence``'s)."""
+    import numpy as np
+    import warp as wp
+
+    gates = _manual_sequence(E=2, G=4)
+    pos = to_t(gates.position).view(2, 4, 3)
+    tan = to_t(gates.tangent).view(2, 4, 3)
+    for e in range(2):
+        pos[e, 0] = torch.tensor([0.0, 0.0, 0.0])
+        pos[e, 1] = torch.tensor([2.0, 0.0, 0.0])
+        tan[e, :2] = torch.tensor([1.0, 0.0, 0.0])
+    to_t(gates.count)[:] = torch.tensor([2, 1], dtype=torch.int32)
+    cfg = GateGenConfig(num_envs=2, max_gates=4, gate_width=0.5, gate_radius=0.0,
+                        min_gates=2)
+    fallbacks = wp.zeros(2, dtype=wp.int32, device="cpu")
+    assert gates.fail_mask is not None
+
+    def no_alloc(*args, **kwargs):
+        raise AssertionError("finalize_gate_sequence allocated a buffer")
+
+    with monkeypatch.context() as m:
+        m.setattr(wp, "empty", no_alloc)
+        m.setattr(wp, "zeros", no_alloc)
+        warp_gate.finalize_gate_sequence(gates, cfg, fallbacks=fallbacks)
+    assert gates.fail_mask.numpy().tolist() == [0, 1]          # env 1: the count bit
+    np.testing.assert_array_equal(gates.valid.numpy(), gates.fail_mask.numpy() == 0)

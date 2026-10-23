@@ -1,11 +1,14 @@
 """Top-level facade for native batched gate sequence generation.
 
 ``GateGenerator`` mirrors the fixed-batch contract of ``TrackGenerator``: construction
-owns persistent output and scratch buffers (and runs one real eager generation), while
-each generation refreshes the per-env effective seeds (rng seeds + epoch) and writes into
-the same ``GateSequence`` instance every call. Native gate generators provide centerline-generator
-anchors through the registry; ``warp_gate`` owns the common ordering, collision, frame,
-and validity pipeline.
+plans and allocates a gate :class:`track_gen.pipeline.Program` once (and runs one real
+eager generation), while each generation refreshes the per-env effective seeds (rng
+seeds + epoch) and writes into the same ``GateSequence`` instance every call. The
+Program is built from ``legacy.to_gate_pipeline_spec(config)`` (roadmap PR11: the
+generator's anchors -> order -> [normalize] -> sphere relax -> [arc length ->
+elevation] -> lift -> tangents -> frames -> validity, byte-identical to 0.2.0.dev3's
+``warp_gate._run_gate_pipeline``), or from any gate ``PipelineSpec``
+(:func:`track_gen.pipeline.presets.gates`).
 
 Execution follows :class:`track_gen.exec.GraphRunner`, exactly like ``TrackGenerator``:
 record into a caller's capture, self-graph replay on CUDA, eager on CPU. Seeding too:
@@ -13,19 +16,22 @@ record into a caller's capture, self-graph replay on CUDA, eager on CPU. Seeding
 owns a device-side epoch that ``generate(advance=True, mask=...)`` advances.
 """
 
-import functools
+import numbers
 import types
 from typing import TYPE_CHECKING
 
 import warp as wp
 
 from ..exec.context import LaunchContext
-from ..exec.runner import GraphRunner
-from ..seeds import SeedState
+from ..exec.runner import _check_default_stream, ensure_not_capturing
+from ..seeds import SeedState, _is_rng
+# isinstance checks use this alias: tests monkeypatch the module's SeedState name.
+from ..seeds import SeedState as _SeedStateType
 from .runtime import _snapshot_config
 from .types import GateGenConfig, GateSequence
 
 if TYPE_CHECKING:  # pragma: no cover - track_gen.plugin stays lazy at import time
+    from ..pipeline.spec import PipelineSpec
     from ..plugin.params import ParamTable
 
 __all__ = ["GateGenConfig", "GateGenerator", "GateSequence"]
@@ -35,44 +41,63 @@ class GateGenerator:
     """Facade for fixed-batch native gate sequence generation.
 
     Mirrors the fixed-batch contract of :class:`~track_gen.TrackGenerator`: construction
-    allocates persistent output and scratch buffers once (via ``warp_gate._gate_warp_alloc``),
-    and every generation refreshes the per-env seed buffer then writes results into the
-    same :class:`~track_gen.GateSequence` instance (stable ``.ptr`` pointers).
-    Use ``GateSequence.clone()`` when an independent snapshot is needed.
+    plans a gate :class:`track_gen.pipeline.Program` and allocates its output and
+    scratch buffers once, and every generation refreshes the per-env seed buffer then
+    writes results into the same :class:`~track_gen.GateSequence` instance (stable
+    ``.ptr`` pointers). Use ``GateSequence.clone()`` when an independent snapshot is
+    needed.
 
     Construction runs one real eager generation (warm-up), so it must happen outside any
     CUDA graph capture. Afterwards ``generate()`` / :meth:`enqueue` can be recorded into a
     caller's CUDA graph; outside a capture ``generate()`` replays the generator's own graph
-    (:attr:`graph`) on CUDA, unless the generator registers ``capturable=False``, in which
-    case it runs eagerly on CUDA every call (and refuses to be recorded). On the Warp
-    ``cpu`` device the pipeline runs eagerly.
+    (:attr:`graph`) on CUDA, unless the generator (or a stage) is not capturable
+    (``capturable=False`` / ``CaptureClass.HOST``), in which case it runs eagerly on CUDA
+    every call (and refuses to be recorded). On the Warp ``cpu`` device the pipeline
+    runs eagerly.
 
     Per-env seeding lives in :attr:`seeds` (a :class:`~track_gen.seeds.SeedState`:
     the rng's seeds bound by pointer plus a device-side epoch); ``generate(advance=True,
     mask=...)`` advances the epoch on device to regenerate selected envs, and
     ``GateSequence.generation`` reports the epoch each env was built at.
+
+    ``GateGenerator(spec)`` runs any gate ``track_gen.pipeline.PipelineSpec`` (e.g.
+    :func:`track_gen.pipeline.presets.gates`, also with a track generator's stations);
+    :attr:`program` is the built pipeline.
     """
 
-    def __init__(self, config: GateGenConfig, rng, *, stream: "wp.Stream | None" = None) -> None:
+    def __init__(self, config, rng=None, *, seeds=None,
+                 stream: "wp.Stream | None" = None) -> None:
         """
         Args:
-            config: The gate generation configuration. ``config.generator`` must be a
-                registered gate generator; ``config.gate_ordering`` must be supported
-                by that generator; and ``config.max_gates`` must satisfy the
-                generator's capacity requirements. The generator keeps a private copy
-                (a ``wp.Device`` value is shared, not copied): mutating ``config``
-                afterwards has no effect.
-            rng: A ``PerEnvSeededRNG`` instance with one seed per configured env, on
-                the generator's device. Its ``seeds_warp`` array is bound by pointer as
+            config: A ``GateGenConfig`` (the default stage list,
+                ``track_gen.pipeline.legacy.to_gate_pipeline_spec(config)``), or a gate
+                ``track_gen.pipeline.PipelineSpec`` (``BatchSpec.max_gates`` set, e.g.
+                from ``track_gen.pipeline.presets.gates``) run as given.
+                ``config.generator`` must be a registered gate generator;
+                ``config.gate_ordering`` a registered order the generator supports
+                (``None``, the default: the generator's default order, ``"ccw"`` for
+                the built-ins);
+                ``config.z_profile`` a registered elevation stage; and
+                ``config.max_gates`` must satisfy the generator's capacity. The
+                generator keeps a private copy (a ``wp.Device`` value is shared, not
+                copied): mutating ``config`` afterwards has no effect.
+            rng: Optional ``PerEnvSeededRNG`` with one seed per configured env, on the
+                generator's device. Its ``seeds_warp`` array is bound by pointer as
                 :attr:`seeds`: the CURRENT seeds are read on every generation (also by
                 every replay). The generator never writes them; ``rng.set_seeds_warp``
-                does, in place.
+                does, in place. ``None`` (and no ``seeds``): owned seeds ``0 .. E-1``.
+            seeds: Instead of ``rng``: anything :class:`~track_gen.seeds.SeedState`
+                accepts (an int base seed, an ``[E]`` int32 ``wp.array`` bound by
+                pointer, a ``PerEnvSeededRNG``) or a ``SeedState``.
             stream: optional default ``wp.Stream`` for calls that pass no ``stream=``
                 and run outside an ambient ``LaunchContext`` scope (see
                 :mod:`track_gen.exec`).
 
         Raises:
-            ValueError: if ``rng`` is ``None``.
+            ValueError: if both ``rng`` and ``seeds`` are given.
+            TypeError: if ``config`` is neither a ``GateGenConfig`` nor a
+                ``PipelineSpec``.
+            ValueError: if ``config`` is a track pipeline spec (``max_gates`` unset).
             ValueError: if the number of seeds in ``rng`` does not match
                 ``config.num_envs``.
             ValueError: if ``rng.seeds_warp`` is not an ``[E]`` int32 array on
@@ -80,143 +105,177 @@ class GateGenerator:
                 the generator's device).
             ValueError: if ``config.generator`` is not a registered gate generator
                 (see ``track_gen.plugin.registry.available("gate_generator")``).
-            track_gen.plugin.PluginLoadError: if ``config.generator`` is provided by
-                a third-party plugin that failed to load (quarantined).
+            track_gen.plugin.PluginLoadError: if ``config.generator`` (or the order /
+                elevation it names) is provided by a third-party plugin that failed to
+                load (quarantined).
             ValueError: if a generator-specific rule of the selected gate generator
                 fails (its ``Params.validate``), ``config.generator_params`` has unknown
                 keys or conflicts with the flat fields, or a value is outside its lo/hi.
             TypeError: if ``config.generator_params`` is not the gate generator's
                 Params class (or a mapping of its fields).
-            ValueError: if ``config.gate_ordering`` is not supported by the selected
-                gate generator.
+            ValueError: if ``config.gate_ordering`` is not a registered order, or not
+                one the selected gate generator supports; if ``config.z_profile`` is not
+                a registered elevation stage.
             ValueError: if ``config.min_gates`` exceeds the maximum gate count the
                 generator can produce, or if ``config.max_gates`` is too small for
                 the generator's required capacity.
+            track_gen.pipeline.PlanError: an invalid ``PipelineSpec``.
             track_gen.exec.CaptureError: if the resolved stream or Warp's current
                 stream is capturing (construction allocates and runs a real warm-up
                 pass); raised before anything is allocated.
         """
-        if rng is None:
-            raise ValueError("A random number generator must be provided.")
+        if rng is not None and seeds is not None:
+            raise ValueError("pass rng= or seeds=, not both")
+        from ..pipeline import legacy as _legacy
+        from ..pipeline import planner as _planner
+        from ..pipeline.spec import PipelineSpec
+        from ..plugin import registry
+        from .generator_binding import bind_generator
+
+        if isinstance(config, PipelineSpec):
+            spec = config
+            _planner._check_spec_shape(spec)
+            if spec.batch.max_gates is None:
+                raise ValueError("GateGenerator runs a gate pipeline (BatchSpec.max_gates "
+                                 "set, e.g. presets.gates); this spec is a track pipeline: "
+                                 "use TrackGenerator")
+            E_spec = int(spec.batch.num_envs)
+        elif isinstance(config, GateGenConfig):
+            spec = None
+            E_spec = int(config.num_envs)
+        else:
+            raise TypeError(f"GateGenerator expects a GateGenConfig or a "
+                            f"track_gen.pipeline.PipelineSpec, got {type(config).__name__}")
         # Catch an env-count mismatch at construction (clear message) rather than as an
         # opaque wp.copy size error on the first generation.
-        if int(rng.seeds_warp.shape[0]) != int(config.num_envs):
+        if rng is not None and int(rng.seeds_warp.shape[0]) != E_spec:
+            field = "spec.batch.num_envs" if spec is not None else "config.num_envs"
             raise ValueError(
-                f"rng has {int(rng.seeds_warp.shape[0])} seeds but config.num_envs="
-                f"{config.num_envs!r}; construct the rng with num_envs={config.num_envs!r}."
+                f"rng has {int(rng.seeds_warp.shape[0])} seeds but {field}="
+                f"{E_spec!r}; construct the rng with num_envs={E_spec!r}."
             )
-
-        from ..plugin import registry
-        from .generator_binding import bind_generator, param_table
 
         # Resolve the gate generator and its Params (generator_params, or from_legacy of
-        # the flat fields) and run its validation; the ordering / capacity checks below
-        # read the resolved run config (so max_gates sees generator_params).
-        binding = bind_generator("gate_generator", config, registry=registry)
-        generator_spec = binding.pipeline_spec
-        user_config = binding.user_config
-        config = binding.run_config
-        if config.gate_ordering not in generator_spec.supported_orderings:
-            raise ValueError(
-                f"gate generator {config.generator!r} does not support "
-                f"gate_ordering {config.gate_ordering!r}; supported: "
-                f"{sorted(generator_spec.supported_orderings)}"
-            )
+        # the flat fields) and run its validation, for the selected generator only;
+        # then the default stage list (the ordering / capacity / z-profile checks read
+        # the resolved run config, so max_gates sees generator_params).
+        if spec is not None:
+            binding = _planner._bind(spec, registry)
+            self._user_config = spec
+            # Always a GateGenConfig (a stations source binds a TrackGenConfig).
+            self._config = _legacy.gate_generator_config(spec, registry=registry)
+        else:
+            binding = bind_generator("gate_generator", config, registry=registry)
+            spec = _legacy._to_gate_pipeline_spec(binding.run_config, binding,
+                                                  registry=registry)
+            # _user_config is the config as passed (reported by `config`); _config the
+            # resolved run config.
+            self._user_config = binding.user_config
+            self._config = binding.run_config
+        self._generator_spec = binding.pipeline_spec
+        # The generator binding's run config: a GateGenConfig for an anchors / legacy
+        # generator, the centerline generator's TrackGenConfig for a stations source.
+        self._generator_config = binding.run_config
+        source = rng if rng is not None else seeds
+        self._rng = source if _is_rng(source) else None
 
-        required_max_gates = int(generator_spec.max_gates(config))
-        if required_max_gates < int(config.min_gates):
-            raise ValueError(
-                f"GateGenConfig.min_gates={config.min_gates!r} is too large for "
-                f"gate generator {config.generator!r}; generator can produce at most "
-                f"{required_max_gates} gates."
-            )
-        if required_max_gates > int(config.max_gates):
-            raise ValueError(
-                f"GateGenConfig.max_gates={config.max_gates!r} is too small for "
-                f"gate generator {config.generator!r}; required max_gates "
-                f"{required_max_gates}."
-            )
-
-        # Snapshots (see TrackGenerator): host scalars from the config are baked into
-        # the launches and any recorded graph. _config is what the pipeline reads,
-        # _user_config the config as passed (reported by `config`).
-        self._user_config = user_config
-        self._config = config
-        self._rng = rng
-        self._generator_spec = generator_spec
-        # Non-capturable generators (host-driven loops / per-call allocation) run eagerly
-        # on CUDA every call and refuse to be recorded into a caller's graph.
-        self._capturable = binding.capturable
-        # Runtime parameters ({"generator": StageParams}); gate generators' fields are
-        # all static in this release (gate Stages arrive with roadmap PR11).
-        self._params = param_table(binding, default_stream=stream)
-
-        self._runner = GraphRunner(
-            str(config.device),
-            capturable=self._capturable,
-            legacy_stream=not binding.accepts_ctx,
-            default_stream=stream,
-            owner=self,
-            name=config.generator,
-        )
+        E = int(spec.batch.num_envs)
+        dev = str(spec.batch.device)
         # Refuse a capture BEFORE allocating (see TrackGenerator).
-        self._runner.ensure_not_capturing()
-
-        from . import warp_gate
-
-        self._gate_sequence: GateSequence
-        self._gate_sequence, self._scratch = warp_gate._gate_warp_alloc(
-            config, generator_spec=generator_spec
-        )
-        # Debug-only: per-env [E] int32 counter of frame fallbacks (near-vertical
-        # or degenerate tangents) accumulated during the last generation. Reset
-        # and rewritten each call; not part of the public GateSequence contract.
-        # scratch is (gen_scratch, pos2, cum, perim, z, fallbacks) — fallbacks
-        # is at index 5 (moved from 4 when the z-profile perim slot was added).
-        self.frame_fallbacks: wp.array = self._scratch[5]
-        # The [E*max_gates] vec2f anchors the generator writes (scratch slot 1, "pos2"),
-        # by name for track_gen.testing, which checks them as the raw output.
-        self._raw_anchors: wp.array = self._scratch[1]
-
-        E = int(config.num_envs)
-        dev = str(config.device)
+        _check_default_stream(dev, stream)
+        ensure_not_capturing(dev, default_stream=stream, label=binding.name)
         # Per-env (seed, epoch): the rng's seeds_warp bound by pointer (never written
         # by the generator) plus an owned epoch (see track_gen.seeds). Its methods
         # default to this generator's stream, so they stay ordered with it.
-        self._seed_state: SeedState = SeedState(E, dev, rng, default_stream=stream)
-        self._seed_buf: wp.array = wp.empty(E, dtype=wp.int32, device=dev)
-        # Persistent device input (see `inputs`): a stable [E] int32 mask buffer.
-        self._regen_mask: wp.array = wp.zeros(E, dtype=wp.int32, device=dev)
-        self._inputs = types.MappingProxyType({"regen_mask": self._regen_mask})
+        seed_state = source if isinstance(source, _SeedStateType) else \
+            SeedState(E, dev, source, default_stream=stream)
+
+        program = _planner._build(spec, binding=binding, seeds=seed_state, stream=stream,
+                                  prepare=False, owner=self, registry=registry)
+        self._program = program
+        self._gate_sequence: GateSequence = program.result
+        self._seed_buf: wp.array = program.seed
+        self._runner = program.runner
+        self._seed_state: SeedState = seed_state
+        # Non-capturable pipelines (a host-driven generator or stage) run eagerly on
+        # CUDA every call and refuse to be recorded into a caller's graph.
+        self._capturable = program.capturable
+        # Runtime parameters: the generator's, and every stage with a DYNAMIC field
+        # (live [E] arrays, stable pointers), keyed by stage id.
+        from ..plugin.params import _new_param_table
+
+        table = program.params
+        self._params = _new_param_table({sid: table[sid] for sid in table
+                                         if sid == "generator" or len(table[sid])})
+        self._inputs = program.inputs
+        self._regen_mask: wp.array = program.inputs["regen_mask"]
+        # Debug-only: per-env [E] int32 counter of frame fallbacks (near-vertical or
+        # degenerate tangents) accumulated during the last generation: the frames
+        # stage's scratch (None when the spec replaced it). Not part of the public
+        # GateSequence contract.
+        self.frame_fallbacks: "wp.array | None" = \
+            program._scratch.get("gate_frames", {}).get("fallbacks")
+        # The generator's raw output, by name for track_gen.testing (the raw output
+        # check): the anchors ([E*A] vec2f), or the gates a legacy spec wrote.
+        self._raw_anchors: wp.array = program._channel_or_none("anchors.xy")
+        if self._raw_anchors is None:
+            self._raw_anchors = program.tap("gates.xy", after="generator")
 
         # One real eager generation outside any capture (loads every module the hot
         # path uses; leaves the batch for the rng's current seeds in the result), then
         # a host wait on its stream: the result is complete when construction returns.
-        self._runner.prepare(self._enqueue)
+        program.prepare()
 
     # -- properties ---------------------------------------------------------------
     @property
-    def config(self) -> GateGenConfig:
+    def config(self) -> "GateGenConfig | PipelineSpec":
         """A copy of the configuration this generator was built with, as passed (a
         ``wp.Device`` value is shared, not copied), with a mapping
-        ``generator_params`` normalised to its Params instance:
-        ``GateGenerator(gen.config, rng)`` builds an identical generator, with the
-        construction-time (initial) values of any DYNAMIC parameters. A later
-        ``params[...].set(...)`` is not reflected here: the current values are the live
-        arrays, ``gen.params["generator"][field]``.
+        ``generator_params`` normalised to its Params instance; for a generator built
+        from a ``PipelineSpec``, that spec (immutable). ``GateGenerator(gen.config,
+        rng)`` builds an identical generator, with the construction-time (initial)
+        values of any DYNAMIC parameters. A later ``params[...].set(...)`` is not
+        reflected here: the current values are the live arrays,
+        ``gen.params[stage_id][field]``.
 
         Read-only in effect: mutating the returned object (or the object passed to
         the constructor) does not change this generator.
         """
+        from ..pipeline.spec import PipelineSpec
+
+        if isinstance(self._user_config, PipelineSpec):
+            return self._user_config
         return _snapshot_config(self._user_config)
 
     @property
+    def program(self):
+        """The :class:`track_gen.pipeline.Program` this generator runs (preview): its
+        taps (:meth:`~track_gen.pipeline.Program.tap`), fail bits and ``on_invalid``."""
+        return self._program
+
+    @property
     def params(self) -> "ParamTable":
-        """Runtime parameters, keyed by stage id: ``{"generator": StageParams}``.
-        ``params["generator"].params`` is the resolved Params instance (``None`` for a
-        legacy gate generator without a Params class). Gate generators have no dynamic
-        fields in this release, so ``set`` raises ``KeyError``."""
+        """Runtime parameters, keyed by stage id: ``"generator"``, plus every pipeline
+        stage with a DYNAMIC field. ``params["generator"].params`` is the resolved
+        Params instance (``None`` for a legacy gate generator without a Params class).
+        The built-in generators' and stages' fields are all static (``set`` raises
+        ``KeyError``); every stage's resolved params are ``program.params``."""
         return self._params
+
+    @property
+    def num_envs(self) -> int:
+        """``E``, the batch size (whether built from a config or a spec)."""
+        return int(self._program.layout.num_envs)
+
+    @property
+    def device(self) -> str:
+        """The Warp device the generator runs on (e.g. ``"cuda:0"``)."""
+        return str(self._program.layout.device)
+
+    @property
+    def max_gates(self) -> int:
+        """``max_gates``, the per-env gate capacity (the ``GateSequence``'s stride)."""
+        return int(self._program.layout.stride)
 
     @property
     def graph(self) -> "wp.Graph | None":
@@ -256,48 +315,26 @@ class GateGenerator:
     def _enqueue(self, ctx: LaunchContext, *, advance: bool = False,
                  mask: "wp.array | None" = None) -> None:
         """Emit one whole gate generation on ``ctx``: [epoch advance] -> effective
-        seeds -> pipeline -> ``generation <- epoch``.
+        seeds -> the pipeline -> ``generation <- epoch``
+        (:meth:`track_gen.pipeline.Program.enqueue`).
 
         The ONLY generation body. Zero allocation and host-sync free; the seed
         prologue is part of it, so a recorded graph reads the live seeds and epochs
         on every replay (and, with ``advance``, advances them on every replay). With
-        a ``mask`` the prologue and the ``generation`` write cover the masked envs
-        only (see TrackGenerator._enqueue).
+        a ``mask`` the unmasked envs' ``GateSequence`` rows end the generation bit for
+        bit as they were (see TrackGenerator._enqueue).
         """
-        from . import warp_gate
-
-        if advance:
-            self.seeds.advance(mask, ctx=ctx)
-        self.seeds.effective(self._seed_buf, mask, ctx=ctx)
-        warp_gate._run_gate_pipeline(
-            self._config,
-            self._seed_buf,
-            out=self._gate_sequence,
-            scratch=self._scratch,
-            generator_spec=self._generator_spec,
-            ctx=ctx,
-        )
-        if self._gate_sequence.generation is not None:
-            self.seeds._write_generation(self._gate_sequence.generation, mask, ctx)
+        self._program.enqueue(ctx, advance=advance, mask=mask)
 
     def _body(self, advance: bool, mask) -> "tuple[object, object]":
         """``(body, self-graph key)`` of one call; validates ``advance``/``mask``
         host-side, before any launch (see TrackGenerator._body)."""
-        if mask is not None:
-            if not advance:
-                raise ValueError(
-                    "mask= selects the envs whose epoch advances; it requires "
-                    "advance=True (without it every env is regenerated identically)")
-            self.seeds.check_mask(mask)
-        if not advance:
-            return self._enqueue, None
-        key = (True, 0 if mask is None else int(mask.ptr))
-        return functools.partial(self._enqueue, advance=True, mask=mask), key
+        return self._program._body(advance, mask)
 
     def _run(self, ctx: "LaunchContext | None" = None) -> None:
         """Backward-compatible alias: run :meth:`_enqueue` on ``ctx`` (default:
         ``LaunchContext.current(device)``, Warp's current stream)."""
-        self._enqueue(ctx or LaunchContext.current(str(self._config.device)))
+        self._enqueue(ctx or LaunchContext.current(self.device))
 
     # -- public calls -------------------------------------------------------------
     def generate(self, num_or_ids=None, *, stream=None, sync: bool = True,
@@ -324,9 +361,9 @@ class GateGenerator:
         Determinism and masked regeneration follow :meth:`TrackGenerator.generate`:
         env ``e`` is keyed by ``(seeds.seeds[e], seeds.epoch[e])``; ``advance=True``
         bumps the epochs (of the envs with ``mask[e] != 0``) on device first; the
-        fixed-shape pipeline still recomputes every env, and the unmasked ones keep
-        the effective seed their current gates were built from, so they are
-        recomputed to identical values (a reseed or epoch reset reaches an env at its
+        fixed-shape pipeline recomputes every env, then the Program's commit restores
+        every unmasked env's ``GateSequence`` rows bit for bit (see
+        :mod:`track_gen.stages.commit`; a reseed or epoch reset reaches an env at its
         next masked generation, or every env at the next one without a mask).
 
         Args:
@@ -360,14 +397,14 @@ class GateGenerator:
                 generator on a stream that is not Warp's current stream.
         """
         if num_or_ids is not None:
-            if not isinstance(num_or_ids, int):
+            if isinstance(num_or_ids, bool) or not isinstance(num_or_ids, numbers.Integral):
                 raise TypeError(
                     "GateGenerator.generate() does not accept explicit environment ids; "
                     "construct a generator with the desired fixed num_envs instead."
                 )
-            if num_or_ids != self._config.num_envs:
+            if int(num_or_ids) != self.num_envs:
                 raise ValueError(
-                    f"GateGenerator is fixed-batch for {self._config.num_envs} envs; "
+                    f"GateGenerator is fixed-batch for {self.num_envs} envs; "
                     f"got num_or_ids={num_or_ids}. Construct a new GateGenerator "
                     f"with num_envs={num_or_ids} instead."
                 )

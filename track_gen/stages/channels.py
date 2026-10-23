@@ -1,16 +1,22 @@
-"""The channel catalogue of the track pipeline (channels v1, roadmap PR10a/PR10b).
+"""The channel catalogue of the track and gate pipelines (channels v1, roadmap
+PR10a/PR10b/PR11).
 
 A channel is a named per-env buffer the stages of a :mod:`track_gen.pipeline` program
 read and write. ``per`` sizes it: ``"env"`` is ``[E]``, ``"raw"`` is ``[E * raw]`` (the
-generator's capacity), ``"cl"`` is ``[E * N_max]``. ``interp`` records how a per-point
+generator's capacity), ``"cl"`` is ``[E * N_max]``, ``"anchors"`` is ``[E * A]`` (``A``:
+the ``capacity()["gates"]`` of the stage that writes the anchors: a gate generator or a
+``stations`` stage) and ``"gates"`` is ``[E * max_gates]`` (``BatchSpec.max_gates``).
+``interp`` records how a per-point
 channel is carried through a resample (roadmap PR13; nothing is carried in this
 release). Besides these channels, a plugin stage may read and write its own namespaced
 channels ``cl.<package>.<name>`` (:data:`PLUGIN_CHANNEL`): their dtype and size are
 fixed by the first stage that writes one.
 
 :data:`BUILTIN_FAIL_BITS` names the bits of the ``valid.fail`` mask that TrackGen's
-built-in checks own (0-15; bits 8-15 are reserved for future built-in checks). Plugin
-validity stages get bits 16-30 from ``StageBuilder.fail_bit``; bit 31 is never used.
+built-in checks own (0-15; bits 8-15 are reserved for future built-in checks), and
+:data:`GATE_FAIL_BITS` the bits of ``validity.gate_default`` in a gate pipeline (0-5;
+6-15 reserved). Plugin validity stages get bits 16-30 from ``StageBuilder.fail_bit``; bit
+31 is never used.
 """
 from __future__ import annotations
 
@@ -21,12 +27,17 @@ from typing import Mapping
 
 import warp as wp
 
-__all__ = ["BUILTIN_FAIL_BITS", "CHANNELS", "Channel", "FAIL", "PERS", "PLUGIN_CHANNEL",
-           "SEED", "is_plugin_channel"]
+__all__ = ["BUILTIN_FAIL_BITS", "CHANNELS", "Channel", "ELEVATION_GATE_CHANNELS", "FAIL",
+           "GATE_FAIL_BITS", "PERS", "PLUGIN_CHANNEL", "SEED", "is_plugin_channel"]
 
 SEED = "seed"          # written by the Program's prologue; no stage writes it
 FAIL = "valid.fail"    # the per-env fail bitmask (Track.fail_mask)
-PERS = ("env", "raw", "cl")   # the sizes a channel may have
+PERS = ("env", "raw", "cl", "anchors", "gates")   # the sizes a channel may have
+#: The point-domain class of each ``per``: a port may be rewired to a channel of the
+#: same dtype and the same class (``cl`` <-> ``gates``: one elevation stage serves the
+#: track's ``[E*N_max]`` points and the gate pipeline's ``[E*max_gates]`` gates).
+PER_CLASS = {"env": "env", "raw": "raw", "cl": "points", "gates": "points",
+             "anchors": "anchors"}
 
 #: A plugin's own channel: ``cl.<package>.<name>`` (at least two dotted components after
 #: ``cl.``, each a Python identifier), never a catalogue name.
@@ -39,6 +50,12 @@ BUILTIN_FAIL_BITS: Mapping[str, int] = MappingProxyType({
     "generator": 0, "turning": 1, "finite": 2, "thickness": 3, "w_floor": 4,
     "border": 5, "grade": 6, "truncation": 7})
 
+#: The fail bits of ``validity.gate_default`` (the fused gate validity check): bit ``i``
+#: set means check ``i`` failed. The crossing (4) and grade (5) bits are named even when
+#: their check is off (then never set).
+GATE_FAIL_BITS: Mapping[str, int] = MappingProxyType({
+    "count": 0, "finite": 1, "tangent": 2, "spacing": 3, "crossing": 4, "grade": 5})
+
 #: The bits plugin validity stages are given, in pipeline order (``StageBuilder.fail_bit``).
 PLUGIN_FAIL_BITS = range(16, 31)
 
@@ -47,7 +64,7 @@ PLUGIN_FAIL_BITS = range(16, 31)
 class Channel:
     """One catalogue entry."""
 
-    per: str                    # "env" | "raw" | "cl"
+    per: str                    # "env" | "raw" | "cl" | "anchors" | "gates"
     dtype: object               # a Warp dtype
     interp: "str | None"
     doc: str
@@ -90,7 +107,46 @@ CHANNELS: Mapping[str, Channel] = MappingProxyType({
     "track.inner": _c("cl", wp.vec3f, "Track.inner (lifted)."),
     "track.tangent": _c("cl", wp.vec3f, "Track.tangent (lifted)."),
     "track.normal": _c("cl", wp.vec3f, "Track.normal (lifted)."),
+    # -- the gate pipeline (roadmap PR11) ------------------------------------------------
+    "anchors.xy": _c("anchors", wp.vec2f, "Gate anchors (a gate generator's or the "
+                                          "stations'), unordered or generator-ordered."),
+    "anchors.count": _c("env", wp.int32, "Real anchors per env."),
+    "anchors.z": _c("anchors", wp.float32, "Per-anchor altitude a generator provides."),
+    "anchors.tangent": _c("anchors", wp.vec3f, "Per-anchor tangent a generator provides."),
+    "anchors.half_size": _c("anchors", wp.float32, "Per-anchor half-size a generator "
+                                                   "provides."),
+    "anchors.roll": _c("anchors", wp.float32, "Per-anchor roll (rad) a generator "
+                                              "provides."),
+    "gates.xy": _c("gates", wp.vec2f, "Ordered gate centres (plan view); NaN padding."),
+    "gates.count": _c("env", wp.int32, "GateSequence.count."),
+    "gates.cum": _c("gates", wp.float32, "Plan-view cumulative chord length per gate."),
+    "gates.perim": _c("env", wp.float32, "Plan-view closed-loop perimeter of the gates."),
+    "gates.z": _c("gates", wp.float32, "Per-gate altitude."),
+    "gates.position": _c("gates", wp.vec3f, "GateSequence.position."),
+    "gates.tangent": _c("gates", wp.vec3f, "GateSequence.tangent."),
+    "gates.forward": _c("gates", wp.vec3f, "GateSequence.forward."),
+    "gates.left": _c("gates", wp.vec3f, "GateSequence.left."),
+    "gates.right": _c("gates", wp.vec3f, "GateSequence.right."),
+    "gates.orientation": _c("gates", wp.quatf, "GateSequence.orientation."),
+    "gates.half_size": _c("gates", wp.float32, "GateSequence.half_size."),
+    "gates.roll": _c("gates", wp.float32, "Per-gate roll (rad), carried from the anchors."),
+    "gates.valid": _c("env", wp.int32, "validity.gate_default's own 0/1 flag; "
+                                       "GateSequence.valid is fail_mask == 0."),
 })
+
+#: The default port rewiring of an ``elevation`` stage in a gate pipeline: the planner
+#: maps each of the stage's ports on one of these centerline channels to its gate
+#: counterpart (an explicit ``StageRef.ports`` entry overrides it).
+ELEVATION_GATE_CHANNELS: Mapping[str, str] = MappingProxyType({
+    "cl.xy": "gates.xy", "cl.count": "gates.count", "cl.arclen2": "gates.cum",
+    "cl.length2": "gates.perim", "cl.z": "gates.z"})
+
+
+def is_gate_channel(name) -> bool:
+    """Whether ``name`` is a catalogue channel of the gate point domains (``anchors.*``
+    / ``gates.*``)."""
+    return isinstance(name, str) and name.startswith(("anchors.", "gates.")) \
+        and name in CHANNELS
 
 
 def is_plugin_channel(name) -> bool:

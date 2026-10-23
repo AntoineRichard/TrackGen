@@ -1,8 +1,8 @@
 """The generator docs stay in step with the code (roadmap PR7, PR8).
 
 * The three code examples of ``docs/contributing/writing-a-generator.rst`` (the quick
-  start's wobbly circle, the scatter gate generator and the star generator built from
-  ``track_gen.ops``) run on CPU and produce valid tracks and gates.
+  start's wobbly circle, the scatter gate generator Stage (roadmap PR11) and the star
+  generator built from ``track_gen.ops``) run on CPU and produce valid tracks and gates.
 * The guide's Stage quick start (``Wobble``) registers, generates, takes a dynamic
   ``set("amp", ...)``, and ``describe()`` reports the JSON schema the guide prints.
 * ``docs/configuration/reference.rst`` lists every field of every built-in Params class
@@ -32,8 +32,12 @@ _DOCS = pathlib.Path(__file__).resolve().parent.parent / "docs"
 _GUIDE = _DOCS / "contributing" / "writing-a-generator.rst"
 _BLOCK = re.compile(r"\.\. code-block:: python\n\n((?:(?:   .*)?\n)+)")
 _JSON_BLOCK = re.compile(r"\.\. code-block:: json\n\n((?:(?:   .*)?\n)+)")
-_GATE_REGISTER = ('def register(reg):\n'
-                  '    ...  # reg.add(GeneratorSpec(name="acme.wobbly", ...)) as above\n')
+# The gate example is a Stage class (PR11) that shares the guide's imports and SALT; its
+# ``register`` (which elides the quick start's registrations) is dropped and the class
+# registered directly.
+_GATE_HEADER = ("import warp as wp\n\nfrom track_gen import ops, plugin\n\n"
+                "SALT = 0x61636D65\n\n")
+_REGISTER = re.compile(r"^def register\(reg\):\n(?:(?:    .*)?\n)*", flags=re.M)
 
 
 def _guide_block(marker: str) -> str:
@@ -48,12 +52,13 @@ def guide_module(tmp_path_factory):
     """The guide's examples as one importable module (Warp kernels need a source file,
     so the blocks are written out and imported rather than exec'd)."""
     quick = _guide_block("def generate(seeds_wp, config, out_centerline")
-    gate = _guide_block("def generate_scatter_gates(")
+    gate = _guide_block("class Scatter(plugin.Stage)")
     star = _guide_block("def generate_star(")
-    assert _GATE_REGISTER in gate
-    gate = gate.replace(_GATE_REGISTER, "def register_gates(reg):\n")
+    assert _REGISTER.search(gate), "the gate example registers its Stage"
+    gate = _REGISTER.sub("", gate)
+    gate = gate + "\n\ndef register_gates(reg):\n    reg.add(Scatter)\n"
     path = tmp_path_factory.mktemp("guide") / "acme_guide_examples.py"
-    path.write_text(quick + "\n\n" + gate + "\n\n" + star + "\n")
+    path.write_text(quick + "\n\n" + star + "\n\n" + _GATE_HEADER + gate + "\n")
     spec = importlib.util.spec_from_file_location("acme_guide_examples", path)
     mod = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = mod

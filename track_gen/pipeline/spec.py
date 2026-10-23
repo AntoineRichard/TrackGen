@@ -32,6 +32,18 @@ def _frozen_map(value, what: str, *, values=None) -> "MappingProxyType":
     return MappingProxyType(out)
 
 
+def _thaw(value):
+    """``value`` with every ``MappingProxyType`` (at any depth inside dict / list /
+    tuple values) turned into a dict: what ``StageRef.__reduce__`` pickles."""
+    if isinstance(value, (MappingProxyType, dict)):
+        return {k: _thaw(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_thaw(v) for v in value]
+    if type(value) is tuple:
+        return tuple(_thaw(v) for v in value)
+    return value
+
+
 def _port_value(k, v):
     if not isinstance(v, str) or not v:
         raise TypeError(f"StageRef.ports[{k!r}] must be a channel name, got {v!r}")
@@ -49,7 +61,8 @@ class StageRef:
     """One stage slot of a :class:`PipelineSpec`.
 
     Attributes:
-        kind: The stage kind (``"generator"``, ``"resample"``, ``"relax"``, ...).
+        kind: The stage kind (``"generator"``, ``"gate_generator"``, ``"resample"``,
+            ``"relax"``, ``"order"``, ...).
         name: The stage name within its kind (``"bezier"``, ``"xpbd"``, ...).
         params: The stage's Params instance, a mapping of its fields (frozen here,
             coerced and validated by ``build``), or ``None`` for its defaults (the
@@ -58,10 +71,11 @@ class StageRef:
             Must not contain ``"/"`` (it namespaces the stage's scratch and salts).
         ports: ``local port -> channel`` rewiring, applied to the stage's read and
             write ports.
-        capacity: The generator's ``{"raw": num_points}``: the DEFAULT raw point count
-            (``num_points``, 256 when absent), which a Stage generator's own
-            ``Stage.capacity()`` overrides. ``build`` rejects any other key, and any
-            capacity on a non-generator stage.
+        capacity: The (centerline) generator's ``{"raw": num_points}``: the DEFAULT raw
+            point count (``num_points``, 256 when absent), which a Stage generator's
+            own ``Stage.capacity()`` overrides. ``build`` rejects any other key, and any
+            capacity on another stage (a gate generator's capacity is its
+            ``Stage.capacity()``).
     """
 
     kind: str
@@ -87,6 +101,15 @@ class StageRef:
                                                       values=_port_value))
         object.__setattr__(self, "capacity", _frozen_map(self.capacity, "capacity",
                                                          values=_capacity_value))
+
+    def __reduce__(self):
+        # The frozen mappings (MappingProxyType) do not pickle: rebuild the ref through
+        # the constructor from plain dicts (it freezes the top level again; a nested
+        # mappingproxy, e.g. another ref's params, comes back as a dict).
+        params = _thaw(self.params) if isinstance(self.params, _MappingABC) \
+            else self.params
+        return (type(self), (self.kind, self.name, params, self.id, dict(self.ports),
+                             dict(self.capacity)))
 
     @property
     def slot_id(self) -> str:
@@ -131,14 +154,19 @@ class BatchSpec:
     Attributes:
         num_envs: ``E``.
         device: The Warp device string.
-        n_max: Per-env point capacity of the centerline channels (``N_max``).
+        n_max: Per-env point capacity of the centerline channels (``N_max``); in a gate
+            pipeline, read only by a centerline sub-pipeline (``stations``).
         closed: Closed loops (``True``; open tracks are refused by ``build``).
         scale: ``TrackGenConfig.scale``, handed to the stages as ``StageBuilder.scale``.
         on_invalid: What an invalid env (``fail_mask != 0``) leaves in the ``Track``:
             ``"keep"`` (default: its computed geometry, ``valid = 0``) or
             ``"poison"`` (``count = 0``, NaN geometry, ``length = winding = 0``, so
             every utility's degenerate ``count < 3`` path fires; ``fail_mask`` and
-            ``truncated`` are kept).
+            ``truncated`` are kept). A gate pipeline: ``count = 0``, every per-gate
+            field NaN, ``valid = 0`` (``fail_mask`` kept).
+        max_gates: ``None`` for a track pipeline (the result is a ``Track``); an int
+            ``>= 2`` makes it a gate pipeline (e.g. :func:`~track_gen.pipeline.presets.
+            gates`), whose result is a ``GateSequence`` of ``max_gates`` slots per env.
     """
 
     num_envs: int
@@ -147,11 +175,13 @@ class BatchSpec:
     closed: bool = True
     scale: float = 1.0
     on_invalid: str = "keep"
+    max_gates: "int | None" = None
 
     def _to_dict(self) -> dict:
         return {"num_envs": int(self.num_envs), "device": str(self.device),
                 "n_max": int(self.n_max), "closed": bool(self.closed),
-                "scale": float(self.scale), "on_invalid": str(self.on_invalid)}
+                "scale": float(self.scale), "on_invalid": str(self.on_invalid),
+                "max_gates": None if self.max_gates is None else int(self.max_gates)}
 
 
 @dataclasses.dataclass(frozen=True)
@@ -242,7 +272,8 @@ class PipelineSpec:
         _required(b, "batch", ("num_envs", "device", "n_max"))
         batch = BatchSpec(num_envs=b["num_envs"], device=b["device"], n_max=b["n_max"],
                           closed=b.get("closed", True), scale=b.get("scale", 1.0),
-                          on_invalid=b.get("on_invalid", "keep"))
+                          on_invalid=b.get("on_invalid", "keep"),
+                          max_gates=b.get("max_gates"))
         raw_stages = data["stages"]
         if isinstance(raw_stages, (str, bytes)) or not isinstance(raw_stages, (list, tuple)):
             raise ValueError(f"stages must be a list, got {type(raw_stages).__name__}")

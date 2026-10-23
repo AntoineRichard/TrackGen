@@ -4,16 +4,24 @@ A Stage is a class that allocates everything it needs ONCE, through the
 :class:`StageBuilder` the orchestrator hands to :meth:`Stage.build`, and returns an
 ``enqueue(ctx)`` callable that emits its device work on a
 :class:`~track_gen.exec.LaunchContext`. Register the CLASS with
-``registry.add(MyStage)``. Third parties register stages of five kinds:
+``registry.add(MyStage)``. Third parties register stages of these kinds:
 
 - ``"generator"`` (``output="centerline"``): the raw closed centerline, selected with
   ``TrackGenConfig(generator=MyStage.name)``;
+- ``"gate_generator"`` (``output="anchors"``, roadmap PR11): gate anchors, selected with
+  ``GateGenConfig(generator=MyStage.name)`` or
+  :func:`track_gen.pipeline.presets.gates`;
 - ``"relax"``, ``"width"``, ``"elevation"``, ``"validity"`` (roadmap PR10b): a stage of
   the track pipeline, selected with :func:`track_gen.pipeline.presets.track` (or the
   flat shortcuts ``TrackGenConfig.relax_solver`` / ``z_profile``). It reads and writes
   named channels through :meth:`StageBuilder.read` / :meth:`StageBuilder.write`.
+  ``elevation`` and ``validity`` stages also run in the gate pipeline (an elevation's
+  ``cl.*`` ports are rewired to their ``gates.*`` counterparts by the planner);
+- ``"order"`` and ``"stations"`` (roadmap PR11): the gate pipeline's ordering (anchors
+  -> gate slots) and the anchors a centerline generator's loop yields.
 
-The other track stages (resample, frames, offset, lift) are TrackGen's built-ins.
+The other track and gate stages (resample, frames, offset, lift, normalize, carry,
+gate_relax, gate_arclen, tangents, gate_frames) are TrackGen's built-ins.
 
 A generator stage writes the raw closed centerline (channel ``"raw.xy"``,
 ``[E * raw]`` ``vec2f``, ``raw`` from :meth:`Stage.capacity`, default
@@ -29,8 +37,13 @@ reads the previous version and writes a NEW buffer (never the read one). A valid
 stage owns at least one fail bit (:meth:`StageBuilder.fail_bit`) and ORs it into
 ``valid.fail``.
 
-Gate generator stages (``output="anchors"``) arrive with roadmap PR11; until then gate
-generators register a :class:`~track_gen.plugin.GateGeneratorSpec`.
+A gate generator stage writes the anchors (``"anchors.xy"``, ``[E * A]`` ``vec2f``, ``A``
+from :meth:`Stage.capacity` ``["gates"]``, and ``"anchors.count"``, ``[E]`` ``int32``),
+plus the per-anchor attributes it ``provides`` (``"anchors.z"``, ``"anchors.tangent"``,
+``"anchors.half_size"``, ``"anchors.roll"``); it declares the orders it supports
+(:attr:`Stage.orderings` or :attr:`Stage.excluded_orderings`) and may prefer one
+(:attr:`Stage.preferred`). A legacy :class:`~track_gen.plugin.GateGeneratorSpec` still
+works (deprecated) through an adapter.
 """
 from __future__ import annotations
 
@@ -54,11 +67,22 @@ _GENERATOR_CHANNELS = {"raw.xy": (wp.vec2f, "raw"), "gen.valid": (wp.int32, "env
 _STAGE_ID = "generator"
 _BUILDER_TOKEN = object()
 
-# The track-pipeline kinds third parties may register (roadmap PR10b), and the one
-# catalogue channel each may write (besides its own plugin channels cl.<pkg>.<name>).
-_OPEN_KINDS = ("relax", "width", "elevation", "validity")
+# The pipeline kinds third parties may register (roadmap PR10b; order / stations: PR11),
+# and the catalogue channels each may write (besides its own plugin channels
+# cl.<pkg>.<name>). An elevation writes cl.z, or gates.z once the planner rewired it.
+_OPEN_KINDS = ("relax", "width", "elevation", "validity", "order", "stations")
 _KIND_WRITES = {"relax": ("cl.xy",), "width": ("cl.half_width",),
-                "elevation": ("cl.z",), "validity": ("valid.fail",)}
+                "elevation": ("cl.z", "gates.z"), "validity": ("valid.fail",),
+                "order": ("gates.xy", "gates.count"),
+                "stations": ("anchors.xy", "anchors.count")}
+# The kinds whose every catalogue channel of _KIND_WRITES is required.
+_KIND_WRITES_ALL = ("order", "stations")
+# A gate generator's channels: the anchors (required: xy, count) and the per-anchor
+# attributes it may provide.
+_ANCHOR_CHANNELS = ("anchors.xy", "anchors.count", "anchors.z", "anchors.tangent",
+                    "anchors.half_size", "anchors.roll")
+_PROVIDABLE = ("z", "tangent", "half_size", "roll")
+_PREFERRED_KEYS = ("order", "normalize")
 # The sizes a plugin channel may have (raw is the generator's).
 _PLUGIN_PERS = ("env", "cl")
 
@@ -87,7 +111,10 @@ class Layout:
 
     Attributes:
         num_envs: ``E``.
-        stride: Output row capacity per env (tracks: ``N_max``; gates: ``max_gates``).
+        stride: Output row capacity per env of the stage's point domain (a track stage
+            and the centerline stages of a gate pipeline: ``N_max``; a gate stage:
+            ``max_gates``). A channel's own row stride is
+            :meth:`StageBuilder.stride_of`.
         device: Canonical device string (``str(wp.get_device(d))``, e.g. ``"cuda:0"``).
         closed: Whether the output loops are closed (always ``True`` in 0.x).
     """
@@ -103,8 +130,9 @@ class Stage(abc.ABC):
 
     Class attributes a stage sets:
 
-    - ``kind``: the registry kind: ``"generator"``, or a track-pipeline kind
-      ``"relax"``, ``"width"``, ``"elevation"`` or ``"validity"``.
+    - ``kind``: the registry kind: ``"generator"``, ``"gate_generator"``, or a pipeline
+      kind ``"relax"``, ``"width"``, ``"elevation"``, ``"validity"``, ``"order"`` or
+      ``"stations"``.
     - ``name``: the registered name; third parties use a dotted ``"package.name"``.
     - ``Params``: the stage's :class:`~track_gen.plugin.Params` class (default
       :class:`~track_gen.plugin.NoParams`).
@@ -115,13 +143,26 @@ class Stage(abc.ABC):
       Must be empty for a generator.
     - ``writes``: ``local port -> channel`` the stage writes
       (:meth:`StageBuilder.write`); a generator writes ``"raw.xy"`` (required) and
-      optionally ``"gen.valid"``. A channel in both ``reads`` and ``writes``, through
-      ONE port, is a rewrite: ``write`` returns a NEW version of the channel (later
-      stages see it), ``read`` the previous one, so the stage writes its whole output
-      into the ``write`` buffer and never writes the ``read`` one.
-    - ``provides``: must be empty (PR11/PR13).
+      optionally ``"gen.valid"``; a gate generator ``"anchors.xy"`` and
+      ``"anchors.count"`` (required) and the attributes it provides. A channel in both
+      ``reads`` and ``writes``, through ONE port, is a rewrite: ``write`` returns a NEW
+      version of the channel (later stages see it), ``read`` the previous one, so the
+      stage writes its whole output into the ``write`` buffer and never writes the
+      ``read`` one.
+    - ``provides``: a gate generator's per-anchor attributes, a subset of ``{"z",
+      "tangent", "half_size", "roll"}`` equal to the ``anchors.<attr>`` channels it
+      writes (the gate preset then drops the stages that would compute them); empty
+      for every other kind.
+    - ``orderings`` / ``excluded_orderings`` (gate generators): the ``order`` stages it
+      supports: a whitelist (``orderings``, a frozenset of order names), or, with
+      ``orderings=None``, every registered order but ``excluded_orderings``. A
+      generator that provides attributes declares ``orderings=frozenset({"raw"})``
+      (they are carried to the gate slots by index).
+    - ``preferred`` (gate generators): ``{"order": name, "normalize": "extent"}``: the
+      order the gate preset picks by default, and whether it normalizes the gates'
+      extent after ordering.
     - ``topology``: ``"closed"`` or ``"any"``.
-    - ``output``: ``"centerline"`` for a generator (``"anchors"`` arrives with PR11);
+    - ``output``: ``"centerline"`` for a generator, ``"anchors"`` for a gate generator;
       ``None`` for the other kinds.
     - ``api_version``: the plugin API version the stage targets (``<= API_VERSION``).
 
@@ -140,6 +181,9 @@ class Stage(abc.ABC):
     reads: ClassVar[Mapping[str, str]] = MappingProxyType({})
     writes: ClassVar[Mapping[str, str]] = MappingProxyType({})
     provides: ClassVar[frozenset] = frozenset()
+    orderings: ClassVar["frozenset[str] | None"] = None
+    excluded_orderings: ClassVar[frozenset] = frozenset()
+    preferred: ClassVar[Mapping[str, str]] = MappingProxyType({})
     topology: ClassVar[str] = "closed"
     output: ClassVar["str | None"] = None
     api_version: ClassVar[int] = 1
@@ -152,7 +196,10 @@ class Stage(abc.ABC):
     def capacity(self, params, layout: Layout) -> Mapping[str, int]:
         """Buffer capacities this stage needs. A generator may return ``{"raw": n}``
         (points per env of its ``"raw.xy"`` output, an integer ``n >= 3``); the default
-        ``{}`` uses ``TrackGenConfig.num_points``. Any other key raises ``ValueError``."""
+        ``{}`` uses ``TrackGenConfig.num_points``. A gate generator (and a ``stations``
+        stage) returns ``{"gates": A, "min_gates": k}``: ``A`` anchor rows per env (the
+        most real anchors it emits, ``>= 1``; it must fit ``max_gates``) and ``k`` the
+        fewest (default 0, at most ``A``). Any other key raises ``ValueError``."""
         return {}
 
     @abc.abstractmethod
@@ -185,7 +232,8 @@ class StageBuilder:
     """Handed to :meth:`Stage.build`; created by the orchestrator, never by plugins.
 
     This release implements :meth:`read`, :meth:`write`, :meth:`temp_like`,
-    :meth:`scratch`, :meth:`param`, :meth:`input`, :meth:`salt` and :meth:`fail_bit`.
+    :meth:`scratch`, :meth:`param`, :meth:`input`, :meth:`salt`, :meth:`fail_bit`,
+    :meth:`stride_of` and :meth:`per_of`.
     Every method allocates at build time only, and raises once ``build()`` returned.
 
     Attributes:
@@ -255,7 +303,11 @@ class StageBuilder:
         A generator writes ``"raw.xy"`` (``wp.vec2f``, ``per="raw"``, ``[E * raw]``)
         and ``"gen.valid"`` (``wp.int32``, ``per="env"``, ``[E]``). ``per`` sizes the
         buffer: ``"env"`` is ``[E]``, ``"cl"`` is ``[E * N_max]``, ``"raw"`` is
-        ``[E * raw]``. The buffer is owned by the orchestrator and read directly by
+        ``[E * raw]``, ``"anchors"`` is ``[E * A]`` and ``"gates"`` is
+        ``[E * max_gates]`` (gate pipelines). ``dtype`` / ``per`` are those of the
+        channel the port DECLARES; a port the planner rewired (an elevation's ``cl.z``
+        on gates) gets a buffer sized for the channel it is wired to (:meth:`per_of`,
+        :meth:`stride_of`). The buffer is owned by the orchestrator and read directly by
         later stages (no copy). For a channel the stage also reads (a rewrite) it is a
         NEW version: :meth:`read` keeps returning the previous one. A plugin channel
         (``cl.<package>.<name>``) takes the ``dtype`` / ``per`` (``"env"`` or ``"cl"``)
@@ -310,6 +362,21 @@ class StageBuilder:
             raise ValueError(f"port {port!r} ({channel!r}) is already written; call "
                              f"write() once per port")
         info = plan.channel(channel)
+        declared = plan.declared_channel(port)
+        if info is not None and declared is not None and declared != channel:
+            # A port rewired to another channel of its point class (cl.z -> gates.z):
+            # dtype / per are checked against the DECLARED channel, the buffer is sized
+            # by the wired one.
+            want = plan.channel(declared)
+            if want is not None:
+                d_dtype, d_per = want
+                if dtype is not None and dtype is not d_dtype:
+                    raise TypeError(f"channel {declared!r} has dtype {d_dtype.__name__}, "
+                                    f"got {getattr(dtype, '__name__', dtype)}")
+                if per is not None and per != d_per:
+                    raise TypeError(f"channel {declared!r} is per={d_per!r}, got "
+                                    f"per={per!r}")
+                dtype, per = None, None
         if info is None:
             # A plugin channel's first writer fixes its dtype and size.
             if dtype is None:
@@ -340,6 +407,8 @@ class StageBuilder:
         return f"{self.stage_id!r} ({type(self._stage).__name__})"
 
     def _length(self, per: str) -> int:
+        if self._plan is not None:
+            return self._plan.length(per)
         if per == "env":
             return self.E
         if per == "raw":
@@ -347,6 +416,43 @@ class StageBuilder:
         if per == "cl":
             return self.E * int(self.layout.stride)
         raise ValueError(f"unknown per={per!r}; expected 'env', 'raw' or 'cl'")
+
+    def _port_channel(self, port: str, what: str) -> str:
+        ports = {**self._plan.reads, **self._plan.writes} if self._plan is not None \
+            else dict(type(self._stage).writes)
+        channel = ports.get(port)
+        if channel is None:
+            raise ValueError(f"stage {self._label()}: {what}({port!r}): no such port; "
+                             f"declared ports: {sorted(ports)}")
+        return channel
+
+    def per_of(self, port: str) -> str:
+        """The ``per`` (``"env"``, ``"raw"``, ``"cl"``, ``"anchors"`` or ``"gates"``) of
+        the channel ``port`` is WIRED to (after any rewiring: an elevation's ``z`` port
+        is ``"gates"`` in a gate pipeline).
+
+        Raises:
+            ValueError: an undeclared port, or a plugin channel nobody wrote yet.
+        """
+        channel = self._port_channel(port, "per_of")
+        if self._plan is None:
+            return _GENERATOR_CHANNELS[channel][1]
+        info = self._plan.channel(channel)
+        if info is None:
+            raise ValueError(f"stage {self._label()}: per_of({port!r}): plugin channel "
+                             f"{channel!r} has no size yet")
+        return info[1]
+
+    def stride_of(self, port: str) -> int:
+        """The row stride (points per env) of the channel ``port`` is WIRED to: ``raw``
+        for ``"raw"``, ``N_max`` for ``"cl"``, ``A`` (the anchors producer's
+        ``capacity()["gates"]``) for ``"anchors"``, ``max_gates`` for ``"gates"``, 1 for
+        ``"env"``. Index env ``e``'s row as ``e * stride_of(port) + i``.
+
+        Raises:
+            ValueError: an undeclared port, or a plugin channel nobody wrote yet.
+        """
+        return self._length(self.per_of(port)) // self.E
 
     def read(self, port: str) -> "wp.array":
         """The buffer of ``reads[port]``: the latest version of its channel written by
@@ -546,13 +652,11 @@ def _check_stage(cls, *, kind: "str | None" = None, api_version: int = 1,
         raise TypeError(f"Stage {label}.kind must be a non-empty string, got {declared!r}")
     if kind is not None and kind != declared:
         raise ValueError(f"Stage {label} declares kind {declared!r}, not {kind!r}")
-    if declared == "gate_generator":
-        raise ValueError(f"Stage {label}: gate generators become Stages in roadmap PR11; "
-                         f"register a GateGeneratorSpec")
-    if declared != "generator" and declared not in _OPEN_KINDS:
+    if declared not in ("generator", "gate_generator") and declared not in _OPEN_KINDS:
         raise ValueError(f"Stage {label}: Stage kind {declared!r} is not open to plugins; "
-                         f"open kinds: {sorted(('generator',) + _OPEN_KINDS)} (the other "
-                         f"track stages are built-ins, see track_gen.pipeline)")
+                         f"open kinds: {sorted(('generator', 'gate_generator') + _OPEN_KINDS)}"
+                         f" (the other track and gate stages are built-ins, see "
+                         f"track_gen.pipeline)")
     version = getattr(cls, "api_version", 1)
     if isinstance(version, bool) or not isinstance(version, int) or version > api_version:
         raise ValueError(f"Stage {label}.api_version={version!r}: this track_gen provides "
@@ -563,13 +667,19 @@ def _check_stage(cls, *, kind: "str | None" = None, api_version: int = 1,
         raise ValueError(f"Stage {label}.capture=BOUNDED arrives with roadmap PR12; "
                          f"declare STATIC")
     _check_params_class(cls.Params, owner=f"Stage {label}")
+    if declared != "gate_generator" and dict(getattr(cls, "preferred", {}) or {}):
+        raise ValueError(f"Stage {label}.preferred is read for gate generators only "
+                         f"(roadmap PR11)")
+    if declared == "gate_generator":
+        _check_gate_generator(cls, label)
+        return declared
     if declared != "generator":
         _check_pipeline_stage(cls, declared, builtin=builtin)
         return declared
     output = cls.output
     if output == "anchors":
-        raise ValueError(f"Stage {label}: output='anchors' arrives with roadmap PR11; "
-                         f"register a GateGeneratorSpec")
+        raise ValueError(f"Stage {label}: output='anchors' is a gate generator: declare "
+                         f"kind='gate_generator'")
     if output != "centerline":
         raise ValueError(f"Stage {label}: a generator Stage must declare "
                          f"output='centerline', got {output!r}")
@@ -587,11 +697,95 @@ def _check_stage(cls, *, kind: "str | None" = None, api_version: int = 1,
         raise ValueError(f"Stage {label}.reads must be empty (a generator reads no "
                          f"channel)")
     if frozenset(cls.provides):
-        raise ValueError(f"Stage {label}.provides must be empty (roadmap PR11/PR13)")
+        raise ValueError(f"Stage {label}.provides must be empty (a centerline generator "
+                         f"provides nothing until roadmap PR13; a gate generator's provides "
+                         f"are its per-anchor attributes)")
     if cls.topology not in ("closed", "any"):
         raise ValueError(f"Stage {label}.topology must be 'closed' or 'any', got "
                          f"{cls.topology!r}")
     return declared
+
+
+def _order_names(value) -> bool:
+    return isinstance(value, frozenset) and all(isinstance(o, str) and o for o in value)
+
+
+def _check_orderings(cls, label: str) -> None:
+    """A gate generator's ``orderings`` / ``excluded_orderings`` / ``preferred``."""
+    orderings, excluded = cls.orderings, cls.excluded_orderings
+    if orderings is not None and (not _order_names(orderings) or not orderings):
+        raise TypeError(f"Stage {label}.orderings must be None or a non-empty frozenset of "
+                        f"order names, got {orderings!r}")
+    if not _order_names(excluded):
+        raise TypeError(f"Stage {label}.excluded_orderings must be a frozenset of order "
+                        f"names, got {excluded!r}")
+    if orderings is not None and excluded:
+        raise ValueError(f"Stage {label}: declare orderings (a whitelist) or "
+                         f"excluded_orderings (with orderings=None), not both")
+    preferred = cls.preferred
+    if not isinstance(preferred, Mapping):
+        raise TypeError(f"Stage {label}.preferred must be a mapping, got "
+                        f"{type(preferred).__name__}")
+    unknown = sorted(str(k) for k in preferred if k not in _PREFERRED_KEYS)
+    if unknown:
+        raise ValueError(f"Stage {label}.preferred: unknown keys {unknown}; keys: "
+                         f"{sorted(_PREFERRED_KEYS)}")
+    order = preferred.get("order")
+    if order is not None:
+        if not isinstance(order, str) or not order:
+            raise ValueError(f"Stage {label}.preferred['order'] must be an order name, got "
+                             f"{order!r}")
+        if orderings is not None and order not in orderings:
+            raise ValueError(f"Stage {label}.preferred['order']={order!r} is not one of "
+                             f"its orderings {sorted(orderings)}")
+        if order in excluded:
+            raise ValueError(f"Stage {label}.preferred['order']={order!r} is one of its "
+                             f"excluded_orderings")
+    normalize = preferred.get("normalize")
+    if normalize is not None and normalize != "extent":
+        raise ValueError(f"Stage {label}.preferred['normalize'] must be 'extent' (the "
+                         f"built-in normalize stage), got {normalize!r}")
+
+
+def _check_gate_generator(cls, label: str) -> None:
+    """The rules of a ``kind="gate_generator"`` Stage (``output="anchors"``)."""
+    output = cls.output
+    if output != "anchors":
+        raise ValueError(f"Stage {label}: a gate generator Stage declares output='anchors',"
+                         f" got {output!r}")
+    writes = _port_map(cls, "writes")
+    channels = list(writes.values())
+    bad = sorted(str(c) for c in channels if c not in _ANCHOR_CHANNELS)
+    if bad:
+        raise ValueError(f"Stage {label}.writes: channels {bad} are not anchors channels; "
+                         f"a gate generator writes {sorted(_ANCHOR_CHANNELS)}")
+    if "anchors.xy" not in channels or "anchors.count" not in channels:
+        raise ValueError(f"Stage {label}.writes must map ports to 'anchors.xy' and "
+                         f"'anchors.count'")
+    if len(set(channels)) != len(channels):
+        raise ValueError(f"Stage {label}.writes maps two ports to one channel: {writes}")
+    if _port_map(cls, "reads"):
+        raise ValueError(f"Stage {label}.reads must be empty (a generator reads no "
+                         f"channel)")
+    provides = cls.provides
+    if not isinstance(provides, (frozenset, set)):
+        raise TypeError(f"Stage {label}.provides must be a frozenset, got {provides!r}")
+    written = {c.split(".", 1)[1] for c in channels} & set(_PROVIDABLE)
+    if set(provides) != written:
+        raise ValueError(f"Stage {label}: provides {sorted(map(str, provides))} must name "
+                         f"exactly the anchors attributes it writes ({sorted(written)})")
+    _check_orderings(cls, label)
+    if provides and cls.orderings != frozenset({"raw"}):
+        raise ValueError(f"Stage {label} provides per-anchor attributes {sorted(provides)}: "
+                         f"they are carried to the gate slots by index, so orderings "
+                         f"must be frozenset({{'raw'}})")
+    if ("half_size" in provides) != ("roll" in provides):
+        raise ValueError(f"Stage {label} provides 'half_size' without 'roll' (or 'roll' "
+                         f"without 'half_size'): a posed gate frame needs both (write "
+                         f"roll = 0 for upright gates)")
+    if cls.topology not in ("closed", "any"):
+        raise ValueError(f"Stage {label}.topology must be 'closed' or 'any', got "
+                         f"{cls.topology!r}")
 
 
 def _port_map(cls, attr: str) -> dict:
@@ -647,6 +841,9 @@ def _write_rule_problem(label: str, kind: str, writes: Mapping) -> "str | None":
             return (f"{label} (kind {kind!r}) writes {ch!r} (port {port!r}): a {kind} "
                     f"stage may write {list(allowed)} and plugin channels "
                     f"'cl.<package>.<name>'")
+    if kind in _KIND_WRITES_ALL and not set(allowed) <= set(writes.values()):
+        return (f"{label} (kind {kind!r}) must write "
+                f"{' and '.join(repr(c) for c in allowed)}")
     return None
 
 
@@ -674,8 +871,12 @@ def _check_pipeline_stage(cls, kind: str, *, builtin: bool) -> None:
             raise ValueError(problem)
     if kind == "validity" and FAIL not in writes.values():
         raise ValueError(f"{label} (kind 'validity') must write {FAIL!r}")
+    if kind in _KIND_WRITES_ALL and not set(_KIND_WRITES[kind]) <= set(writes.values()):
+        raise ValueError(f"{label} (kind {kind!r}) must write "
+                         f"{' and '.join(repr(c) for c in _KIND_WRITES[kind])}")
     if frozenset(cls.provides):
-        raise ValueError(f"{label}.provides must be empty (roadmap PR11/PR13)")
+        raise ValueError(f"{label}.provides must be empty (only a gate generator provides "
+                         f"per-anchor attributes; roadmap PR13 for the others)")
     if cls.topology not in ("closed", "any"):
         raise ValueError(f"{label}.topology must be 'closed' or 'any', got "
                          f"{cls.topology!r}")

@@ -14,6 +14,10 @@ selected generator only, and builds the two config snapshots a facade keeps:
 A :class:`~track_gen.plugin.Stage` generator is adapted to the legacy accepts-ctx
 generator ABI by :class:`_StageGenerator` (``alloc`` through a StageBuilder at build,
 ``generate`` = the stage's ``enqueue``), so the rest of the track pipeline is unchanged.
+A gate generator Stage (``output="anchors"``, roadmap PR11) is bound as is: the planner
+builds it like any other stage of the gate pipeline. Binding a legacy
+:class:`~track_gen.plugin.GateGeneratorSpec` emits a ``DeprecationWarning`` (once per
+registry and name).
 
 Host-only: binding allocates nothing and launches nothing.
 """
@@ -21,7 +25,9 @@ from __future__ import annotations
 
 import dataclasses
 import numbers
+import sys
 import types
+import warnings
 from typing import Any, Mapping
 
 import warp as wp
@@ -58,6 +64,37 @@ def _is_flat(params) -> bool:
     return isinstance(params, _FlatParams)
 
 
+def _outside_track_gen_stacklevel() -> int:
+    """The ``stacklevel`` (for a ``warnings.warn`` in the CALLER of this function) of the
+    first frame outside the ``track_gen`` package: the user's call."""
+    frame, level = sys._getframe(1), 1
+    while frame is not None:
+        name = frame.f_globals.get("__name__", "")
+        if name != "track_gen" and not name.startswith("track_gen."):
+            break
+        frame, level = frame.f_back, level + 1
+    return level
+
+
+def _warn_legacy_gate(registry, name: str) -> None:
+    """The ``GateGeneratorSpec`` deprecation, once per (registry, name), attributed to the
+    user's call (the first frame outside ``track_gen``)."""
+    warned = getattr(registry, "_legacy_gate_warned", None)
+    if warned is None or name in warned:
+        return
+    meta = getattr(registry, "_meta", {}).get("gate_generator", {}).get(name)
+    origin = str(meta) if meta is not None else "a legacy spec"
+    warnings.warn(
+        f"GateGeneratorSpec {name!r} ({origin}) is deprecated: write a Stage with "
+        f"kind='gate_generator' and output='anchors' "
+        f"(docs/contributing/writing-a-generator.rst); legacy gate generators run "
+        f"through an adapter until 1.0",
+        DeprecationWarning, stacklevel=_outside_track_gen_stacklevel())
+    # Marked only once the warning returned: under an error filter every bind raises
+    # (Python's own registries do not record a warning turned into an exception).
+    warned.add(name)
+
+
 def bind_generator(kind: str, config, *, registry) -> GeneratorBinding:
     """Resolve and validate ``config.generator`` / ``config.generator_params``.
 
@@ -70,6 +107,15 @@ def bind_generator(kind: str, config, *, registry) -> GeneratorBinding:
 
     spec = registry.get(kind, config.generator)
     stage = _is_stage(spec)
+    user_config = config
+    if kind == "gate_generator" and getattr(config, "gate_ordering", "") is None:
+        # GateGenConfig.gate_ordering=None: the generator's default order. Resolved here,
+        # before anything reads the config (a legacy spec's Params.from_legacy included),
+        # so no generator code ever sees None; gen.config keeps the config as passed.
+        from ..stages.gates import _default_order  # noqa: PLC0415 - import cycle
+
+        config = _snapshot_config(config)
+        config.gate_ordering = _default_order(spec, registry)
     # Stage.Params, or the params= class of a GeneratorSpec / GateGeneratorSpec; a
     # duck-typed legacy spec's own ``params`` attribute is not a Params class.
     params_cls = _params_class(spec)
@@ -90,7 +136,7 @@ def bind_generator(kind: str, config, *, registry) -> GeneratorBinding:
             params._check_legacy_config(config)
         _check_values(params)
 
-    user = _snapshot_config(config)
+    user = _snapshot_config(user_config)
     if given is not None:
         user.generator_params = params
     run = _snapshot_config(config)
@@ -99,6 +145,19 @@ def bind_generator(kind: str, config, *, registry) -> GeneratorBinding:
             params._apply_legacy(run)
         run.generator_params = params
 
+    if stage and kind == "gate_generator":
+        # An anchors Stage: the planner builds it as a stage of the gate pipeline (its
+        # capacity is checked there); only the Params and the capture class here.
+        cap = spec.capture_class(_static_view(params))
+        if not isinstance(cap, CaptureClass):
+            raise TypeError(f"{spec.__name__}.capture_class() must return a CaptureClass, "
+                            f"got {cap!r}")
+        if cap == CaptureClass.BOUNDED:
+            raise ValueError(f"{spec.__name__}.capture_class() returned BOUNDED, which "
+                             f"arrives with roadmap PR12; declare STATIC")
+        return GeneratorBinding(kind, str(run.generator), spec, params, user, run, spec,
+                                capturable=cap != CaptureClass.HOST, accepts_ctx=True,
+                                layout=layout)
     if stage:
         instance = spec()
         # build / capacity / capture_class see the static fields only (_static_view).
@@ -125,6 +184,8 @@ def bind_generator(kind: str, config, *, registry) -> GeneratorBinding:
         return GeneratorBinding(kind, str(run.generator), spec, params, user, run, adapter,
                                 capturable=adapter.capturable, accepts_ctx=True,
                                 layout=layout)
+    if kind == "gate_generator":
+        _warn_legacy_gate(registry, str(run.generator))
     return GeneratorBinding(kind, str(run.generator), spec, params, user, run, spec,
                             capturable=bool(getattr(spec, "capturable", True)),
                             accepts_ctx=bool(getattr(spec, "accepts_ctx", False)),

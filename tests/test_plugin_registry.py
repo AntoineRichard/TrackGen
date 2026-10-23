@@ -609,12 +609,13 @@ def test_gate_generator_registry_shim(plugin_registry):
         gate_generator_registry.register(same_module)  # same module: overwrites
     assert gate_generator_registry.get("toy.ring") is same_module
     # The old gate rule: another module's spec under a taken name raises (ValueError).
-    hull = gate_generator_registry.get("hull")
-    other = dataclasses.replace(hull, generate=_spec("x", module="other_gates").generate)
-    with pytest.raises(DuplicateSpecError, match="'hull'.*already registered") as e:
+    # (PR11: the built-in gate generators are Stage classes, not GateGeneratorSpecs: the
+    # rule is exercised on the legacy toy.)
+    other = dataclasses.replace(same_module, generate=_spec("x", module="other_gates").generate)
+    with pytest.raises(DuplicateSpecError, match="'toy.ring'.*already registered") as e:
         gate_generator_registry.register(other)
     assert isinstance(e.value, ValueError)
-    assert gate_generator_registry.get("hull") is hull
+    assert gate_generator_registry.get("toy.ring") is same_module
     with pytest.raises(TypeError):
         gate_generator_registry.GATE_GENERATORS["x"] = TOY_RING
     with pytest.raises(ValueError, match="unknown gate generator 'nope'"):

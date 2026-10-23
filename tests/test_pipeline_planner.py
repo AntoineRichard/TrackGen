@@ -569,8 +569,13 @@ def test_catalogue_rules(catalogue):
     with pytest.raises(ValueError, match="already in the catalogue"):
         catalogue.add(_toy(kind="frames"))
     assert "test.toy" in stages.available("frames")
-    assert stages.available() == ["frames", "lift", "offset", "resample"]
-    assert stages.OPEN_KINDS == ("relax", "width", "elevation", "validity")
+    # PR11 added the gate pipeline's built-in kinds and opened order / stations.
+    assert stages.available() == ["carry", "frames", "gate_arclen", "gate_frames",
+                                  "gate_relax", "lift", "normalize", "offset", "resample",
+                                  "tangents"]
+    assert stages.available("lift") == ["elevated", "flat", "gates"]
+    assert stages.OPEN_KINDS == ("relax", "width", "elevation", "validity", "order",
+                                 "stations")
 
 
 def test_input_and_salt_collisions_across_stages(monkeypatch):
@@ -637,9 +642,10 @@ def test_an_elevated_lift_takes_any_elevation():
 def test_channel_per_is_checked():
     from track_gen.stages.channels import Channel
 
+    # PR11 added the gate point domains (anchors, gates).
     with pytest.raises(ValueError, match=r"Channel.per must be one of \('env', 'raw', "
-                                         r"'cl'\), got 'gates'"):
-        Channel(per="gates", dtype=wp.float32, interp=None, doc="")
+                                         r"'cl', 'anchors', 'gates'\), got 'points'"):
+        Channel(per="points", dtype=wp.float32, interp=None, doc="")
 
 
 def test_channel_versions_with_relax():

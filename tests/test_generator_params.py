@@ -74,7 +74,11 @@ def _other(v):
 
 @pytest.mark.parametrize("kind,name,P", ALL_SPECS, ids=[f"{k}-{n}" for k, n, _ in ALL_SPECS])
 def test_builtin_params_class_maps_the_flat_fields(kind, name, P):
-    assert registry.get(kind, name).params is P
+    from track_gen.plugin._registry import _params_class
+
+    # The track built-ins are GeneratorSpecs (params=P); the gate built-ins are
+    # gate_generator Stages since PR11 (Params=P).
+    assert _params_class(registry.get(kind, name)) is P
     Config = TrackGenConfig if kind == "generator" else GateGenConfig
     defaults = Config()
     # Defaults equal the config defaults, and every field is static.

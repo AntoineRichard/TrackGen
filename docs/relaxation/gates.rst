@@ -33,8 +33,8 @@ The sphere model and target distance
 
 Each gate centre is treated as a disk (a 2-D sphere) of radius ``gate_radius``. Two
 gates overlap when their centres are closer than the sum of the two radii, so the
-target centre-to-centre distance is twice the radius. ``_gate_center_distance`` derives
-it from a single config field:
+target centre-to-centre distance is twice the radius, derived from a single config
+field:
 
 .. math::
 
@@ -42,35 +42,40 @@ it from a single config field:
 
 so at the default ``gate_radius = 0.025`` the target centre spacing is ``0.05`` in
 normalized track coordinates. ``gate_radius`` is the only config field that feeds the
-target; ``gate_width`` is a separate visual/collision half-width for the gate bar and
-does **not** enter the separation target.
+target; ``gate_width`` is the separate **full** width of the gate bar (``half_size = 0.5 *
+gate_width``, see :ref:`gate-width-config`) and does **not** enter the separation
+target.
 
 Where it runs in the pipeline
 ------------------------------
 
-The solve is invoked from ``_run_gate_pipeline`` in ``track_gen/_src/warp_gate.py``,
-after the generator has produced ordered, normalized anchors and before frames and
-validity. Every native gate generator (``bezier``, ``hull``, ``polar``, ``voronoi``,
-``checkpoint``) routes through this one path, so the stage order is uniform:
+The solve is the ``gate_relax`` stage of the gate pipeline
+(:ref:`pipeline-gate-stages`): it runs after the gate generator's anchors have been
+ordered (an ``order`` stage) and normalized, and before the altitude profile, tangents,
+frames and validity. Every gate generator, built-in or plugin, and every stations
+source routes through it, so the stage order is uniform:
 
 .. code-block:: text
 
-   raw anchors → ordering (ccw / raw / random_pairs) → bbox normalization
-       → SPHERE RELAXATION → recompute tangents → frames + validity
+   anchors → order (ccw / raw / random_pairs / a plugin's) → bbox normalization
+       → SPHERE RELAXATION (gate_relax) → Z profile → lift → tangents → frames + validity
 
-Concretely, ``_run_gate_pipeline`` calls ``relax_gate_spheres`` only when
-``gate_solve_iters > 0`` and the target distance is positive, then recomputes tangents
-from the moved positions (``tangents_from_positions``) before ``finalize_gate_sequence``
-writes the normals, endpoints, and per-sequence validity. Because separation can push
-gates outward, the final bounding box may expand beyond the normalized extent to satisfy
-the requested spacing.
+Concretely, the slot holds ``gate_relax.spheres`` when ``gate_solve_iters > 0`` and the
+float32 target distance ``2 * gate_radius`` is positive, and ``gate_relax.none`` (no
+launch) otherwise. ``gate_relax.spheres`` writes a new version of ``gates.xy`` (the
+ordered positions stay readable with ``gen.program.tap("gates.xy", after="order")``),
+and the tangents are then computed from the moved positions before the frames stage
+writes the orientations, endpoints, and per-sequence validity. Because separation can
+push gates outward, the final bounding box may expand beyond the normalized extent to
+satisfy the requested spacing.
 
 The solve: per-env sequential Gauss-Seidel
 ------------------------------------------
 
-``relax_gate_spheres`` launches ``_relax_gate_spheres_k`` with **one thread per env**
-(``dim = E``). Each thread owns one gate sequence and runs the whole separation loop
-in-kernel:
+``gate_relax.spheres`` launches ``_relax_gate_spheres_k`` with **one thread per env**
+(``dim = E``). Each thread owns one gate sequence, copies its row of the ordered
+positions into the stage's output, and runs the whole separation loop in-kernel on that
+output:
 
 - For up to ``iterations`` rounds, it scans every ordered gate pair :math:`(i, j)`,
   :math:`j > i`, over the env's real gate ``count``.
@@ -85,7 +90,9 @@ in-kernel:
   where :math:`\hat{n}` is the unit vector from :math:`p_i` to :math:`p_j`.
 - Positions are written back **in place** inside the pair loop, so later pairs in the
   same round already see the corrections applied by earlier pairs. That is
-  **Gauss-Seidel** iteration, unlike the track solver's Jacobi double-buffering.
+  **Gauss-Seidel** iteration, unlike the track solver's Jacobi double-buffering. (In
+  place within the thread's own row of the stage's output: the version the stage read is
+  never written.)
 - Each round tracks whether any pair moved; a round that moves nothing triggers an
   **early exit** from the iteration loop (the sequence is already separated).
 
@@ -166,11 +173,13 @@ The ``gate_solve_iters`` knob
 The iteration budget is ``GateGenConfig.gate_solve_iters`` (default ``8``, validated
 ``>= 0``). It is the ``iterations`` upper bound on the round loop; the early exit means
 well-separated sequences finish in fewer rounds. **Setting ``gate_solve_iters = 0``
-disables the solve entirely** — ``relax_gate_spheres`` returns immediately, and the gate
-generators skip both the separation launch and the tangent recompute. That is the mode
-to use when inspecting the raw ordered, normalized anchors before separation (close gates
-may still overlap). The target distance is governed separately by ``gate_radius``;
-``gate_radius = 0`` also short-circuits the solve.
+disables the solve entirely**: the pipeline selects ``gate_relax.none``, which launches
+nothing, and the gates keep their ordered, normalized positions. That is the mode to use
+when inspecting the raw ordered, normalized anchors before separation (close gates may
+still overlap). The target distance is governed separately by ``gate_radius``;
+``gate_radius = 0`` (any radius whose float32 ``2 * gate_radius`` is ``0``) also selects
+``gate_relax.none``. In a hand-built spec, ``gate_relax.spheres`` refuses such params
+(``ValueError``): select ``gate_relax.none`` instead.
 
 Graph capture and zero-alloc
 ----------------------------
@@ -179,10 +188,9 @@ The solve is a single ``wp.launch`` of a fixed-shape kernel: the launch dimensio
 (``E``) and the ``iterations`` bound come from the config, not from data, so the launch
 sequence is data-independent and captures cleanly into the gate pipeline's ``wp.Graph``.
 The in-kernel early-exit ``break`` is per-thread control flow **inside** the kernel — it
-does not vary the host launch sequence, so it is compatible with capture. As elsewhere in
-``warp_gate.py``, no host synchronization is issued (``_sync`` is a debug-only hook,
-off unless ``TRACKGEN_DEBUG_SYNC=1``). The separation runs in place on the existing
-``position`` buffer with no per-call allocation.
+does not vary the host launch sequence, so it is compatible with capture. No host
+synchronization is issued. The separation writes the stage's own ``gates.xy`` version,
+allocated once when the pipeline is built, with no per-call allocation.
 
 See also
 --------

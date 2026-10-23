@@ -2,11 +2,12 @@
 
 One registry holds every pluggable spec, keyed by ``(kind, name)``. Kinds are an open
 set of strings: ``"generator"`` (:class:`~track_gen.plugin.GeneratorSpec` or a
-:class:`~track_gen.plugin.Stage`), ``"gate_generator"``
-(:class:`~track_gen.plugin.GateGeneratorSpec`), and the track-pipeline Stage kinds
-``"relax"``, ``"width"``, ``"elevation"`` and ``"validity"`` (roadmap PR10b; their
-built-ins are registered with the generators). Other kinds hold any object with a
-``name`` (``registry.add(spec, kind=...)``).
+:class:`~track_gen.plugin.Stage`), ``"gate_generator"`` (a gate generator
+:class:`~track_gen.plugin.Stage`, ``output="anchors"``, or a deprecated
+:class:`~track_gen.plugin.GateGeneratorSpec`), and the pipeline Stage kinds ``"relax"``,
+``"width"``, ``"elevation"``, ``"validity"`` (roadmap PR10b), ``"order"`` and
+``"stations"`` (roadmap PR11; their built-ins are registered with the generators).
+Other kinds hold any object with a ``name`` (``registry.add(spec, kind=...)``).
 
 Loading (built-ins, then the ``"track_gen.plugins"`` entry points), the
 ``TRACK_GEN_PLUGINS`` policy and quarantine are described in the :mod:`track_gen.plugin`
@@ -116,6 +117,16 @@ class SpecInfo:
         writes: A Stage's ``writes`` (``local port -> channel``); ``{}`` otherwise.
         provides: A Stage's ``provides``; empty otherwise.
         reads: A Stage's ``reads`` (``local port -> channel``); ``{}`` otherwise.
+        orderings: A gate generator's order whitelist: a Stage's ``orderings`` (``None``:
+            every registered order but ``excluded_orderings``), a legacy spec's
+            ``frozenset(supported_orderings)``; ``None`` for other specs.
+        excluded_orderings: A gate generator Stage's ``excluded_orderings``.
+        preferred: A gate generator Stage's ``preferred`` (``{"order": ...,
+            "normalize": ...}``); ``{}`` otherwise.
+        supported_orderings: A gate generator's accepted orders, resolved against the
+            registry at ``describe`` time and sorted: its whitelist, or every registered
+            order but its ``excluded_orderings`` (a legacy spec: its
+            ``supported_orderings``); ``()`` for other specs.
     """
 
     kind: str
@@ -132,6 +143,10 @@ class SpecInfo:
     writes: Mapping[str, str] = dataclasses.field(default_factory=dict, hash=False)
     provides: frozenset = frozenset()
     reads: Mapping[str, str] = dataclasses.field(default_factory=dict, hash=False)
+    orderings: "frozenset | None" = None
+    excluded_orderings: frozenset = frozenset()
+    preferred: Mapping[str, str] = dataclasses.field(default_factory=dict, hash=False)
+    supported_orderings: "tuple[str, ...]" = ()
 
 
 @dataclasses.dataclass(frozen=True)
@@ -202,6 +217,7 @@ class _Snapshot:
     quarantine: list
     warned: frozenset
     loaded: bool
+    legacy_gate_warned: frozenset = frozenset()
 
 
 def _dist_text(dist: "tuple[str, str] | None") -> str:
@@ -408,6 +424,8 @@ class Registry:
         self._quarantine: list[_Quarantine] = []      # in load order
         self._quarantined: dict[str, str] = {}        # public view: key -> error text
         self._warned: set = set()
+        # Legacy GateGeneratorSpec names whose bind-time DeprecationWarning was emitted.
+        self._legacy_gate_warned: set = set()
         self._builtin = False
         self._plugin: "_PluginLoad | None" = None
 
@@ -529,9 +547,22 @@ class Registry:
                               writes=types.MappingProxyType(dict(spec.writes)),
                               provides=frozenset(spec.provides),
                               reads=types.MappingProxyType(dict(spec.reads)))
+            if kind == "gate_generator":
+                stage_info.update(
+                    orderings=None if spec.orderings is None else frozenset(spec.orderings),
+                    excluded_orderings=frozenset(spec.excluded_orderings),
+                    preferred=types.MappingProxyType(dict(spec.preferred)))
         else:
             capturable = bool(getattr(spec, "capturable", True))
             accepts_ctx = bool(getattr(spec, "accepts_ctx", False))
+            supported = getattr(spec, "supported_orderings", None) \
+                if kind == "gate_generator" else None
+            if supported is not None:
+                stage_info = dict(orderings=frozenset(supported))
+        if kind == "gate_generator":
+            from ..stages.gates import _orderings_of  # noqa: PLC0415
+
+            stage_info["supported_orderings"] = tuple(_orderings_of(spec, self))
         has_params = params_cls is not None and params_cls is not NoParams
         return SpecInfo(
             kind=kind,
@@ -817,6 +848,7 @@ class Registry:
             quarantine=list(self._quarantine),
             warned=frozenset(self._warned),
             loaded=self._loaded,
+            legacy_gate_warned=frozenset(self._legacy_gate_warned),
         )
 
     def _restore(self, snapshot: _Snapshot, *, tables_only: bool = False) -> None:
@@ -839,6 +871,7 @@ class Registry:
         self._quarantine[:] = snapshot.quarantine
         self._sync_quarantined()
         self._warned = set(snapshot.warned)
+        self._legacy_gate_warned = set(snapshot.legacy_gate_warned)
         self._loaded = snapshot.loaded
 
     def _clear(self) -> None:
@@ -855,6 +888,7 @@ class Registry:
         self._quarantine.clear()
         self._quarantined.clear()
         self._warned = set()
+        self._legacy_gate_warned = set()
         self._loaded = False
 
 

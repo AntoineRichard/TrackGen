@@ -905,8 +905,10 @@ def test_the_gate_raw_anchors_are_named():
     gen = GateGenerator(GateGenConfig(generator="polar", device="cpu", num_envs=3),
                         PerEnvSeededRNG(seeds=5, num_envs=3, device="cpu"))
     anchors = gen._raw_anchors
-    assert anchors is gen._scratch[1]
-    assert anchors.dtype is wp.vec2f and anchors.shape == (3 * gen.config.max_gates,)
+    # PR11: the raw output is the anchors channel (polar: 12 knots per env), not a
+    # positional scratch slot of max_gates rows.
+    assert anchors is gen.program.tap("anchors.xy")
+    assert anchors.dtype is wp.vec2f and anchors.shape == (3 * 12,)
 
 
 def test_poison_is_finite_and_dtype_aware():

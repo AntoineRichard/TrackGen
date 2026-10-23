@@ -21,25 +21,36 @@ separates overlapping gates, and tangents follow. All of that is a plan-view (XY
 computation and stays **bit-identical** to the 2D era.
 
 Altitude is added as a separate stage that runs on the final ordered, relaxed 2D
-anchors — *before* the lift to ``vec3f``. Concretely, in ``_run_gate_pipeline``
-(``track_gen/_src/warp_gate.py``) the stage order is:
+anchors — *before* the lift to ``vec3f``. The gate pipeline is a list of stages
+(:ref:`pipeline-gate-stages`), and its stage ids, in order, are:
 
 .. code-block:: text
 
-   raw anchors → ordering → bbox normalization → SPHERE RELAXATION
-       → Z PROFILE (writes per-gate z) → lift to vec3f → tangents → frames + validity
+   generator (anchors) → order → normalize → gate_relax (SPHERE RELAXATION)
+       → gate_arclen → elevation (Z PROFILE, writes per-gate z) → lift (to vec3f)
+       → tangents → gate_frames → validity
 
-Keeping Z orthogonal to the XY layout is what makes the feature cheap and safe: the
-plan-view generators are untouched, the Z stage is a single data-independent kernel
-launch (graph-capturable, zero per-call allocation), and turning altitude off
-(``z_profile="flat"`` with ``z_base=0``) reproduces the old planar course exactly.
+``normalize`` runs for the generators that ask for it (``polar``, ``voronoi``,
+``checkpoint``), and ``gate_arclen`` (the plan-view arc tables the profiles read) for a
+non-flat profile. Keeping Z orthogonal to the XY layout is what makes the feature cheap
+and safe: the plan-view generators are untouched, the Z stage is a single
+data-independent kernel launch (graph-capturable, zero per-call allocation), and turning
+altitude off (``z_profile="flat"`` with ``z_base=0``) reproduces the old planar course
+exactly.
+
+The ``elevation`` stage is the one tracks use: the pipeline rewires its ports from the
+centerline channels to the gate ones (:ref:`pipeline-gate-elevation`), so a plugin
+elevation runs on gates too. A gate generator that knows its own altitudes and tangents
+*provides* them instead: the pipeline then drops ``gate_arclen``, ``elevation`` and
+``tangents`` and keeps the generator's values (:ref:`pipeline-provides`).
 
 Altitude profiles
 -----------------
 
-``GateGenConfig.z_profile`` selects the altitude family. All four write every real gate
-slot and NaN the padding; the ``z_*`` knobs below are inert for the profiles they do not
-apply to.
+``GateGenConfig.z_profile`` selects the altitude family: one of the four built-ins below,
+or any elevation stage a plugin registers (:ref:`gate-stage-shortcuts`). All four
+built-ins write every real gate slot and NaN the padding; the ``z_*`` knobs below are
+inert for the profiles they do not apply to.
 
 .. list-table::
    :header-rows: 1
@@ -159,7 +170,9 @@ Validity
 
 The 2D layout validity checks are unchanged: a sequence is rejected for the same planar
 reasons as before (degenerate counts, crossing gate bars under a positive ``gate_width``,
-and so on). The 3D pipeline adds one altitude check:
+and so on). ``GateSequence.fail_mask`` says which check rejected an env, one bit per
+check (:ref:`pipeline-gate-fail-bits`). The 3D pipeline adds one altitude check (fail
+bit ``grade``):
 
 - ``z_valid_grade`` — the maximum allowed ``|dz|/ds`` grade between adjacent gates
   (``ds`` = plan-view distance). A sequence with any adjacent pair steeper than this is

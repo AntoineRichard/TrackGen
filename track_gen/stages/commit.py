@@ -35,12 +35,18 @@ unmasked generation otherwise (:func:`_derive_valid_k`, one thread per env, when
 for a masked one. Memory: one held copy of the ``Track`` (64 B per point + 24 B per env,
 about 100 MB at ``E = 4096``, ``N_max = 384``), allocated once at build for every
 Program, whether or not it is ever run with a mask.
+
+A gate Program (roadmap PR11) commits its ``GateSequence`` the same way
+(:class:`_GateCommit`: :func:`_gate_hold_k` / :func:`_gate_commit_k` over
+:data:`GATE_POINT_FIELDS` and :data:`GATE_ENV_FIELDS`); a poisoned gate env leaves with
+``count = 0``, every per-gate field NaN and ``valid = 0`` (``fail_mask`` kept). Its held
+copy is 80 B per gate slot + 12 B per env.
 """
 from __future__ import annotations
 
 import warp as wp
 
-__all__ = ["ENV_FIELDS", "POINT_FIELDS"]
+__all__ = ["ENV_FIELDS", "GATE_ENV_FIELDS", "GATE_POINT_FIELDS", "POINT_FIELDS"]
 
 #: The per-point ``Track`` fields the commit holds / restores / poisons.
 POINT_FIELDS = ("outer", "center", "inner", "tangent", "normal", "arclen")
@@ -51,6 +57,15 @@ _DTYPES = {"outer": wp.vec3f, "center": wp.vec3f, "inner": wp.vec3f, "tangent": 
            "normal": wp.vec3f, "arclen": wp.float32, "length": wp.float32,
            "winding": wp.float32, "count": wp.int32, "valid": wp.int32,
            "fail_mask": wp.int32, "truncated": wp.int32}
+#: The per-gate ``GateSequence`` fields the gate commit holds / restores / poisons.
+GATE_POINT_FIELDS = ("position", "tangent", "forward", "left", "right", "orientation",
+                     "half_size")
+#: The per-env ``GateSequence`` fields the gate commit holds / restores.
+GATE_ENV_FIELDS = ("count", "valid", "fail_mask")
+_GATE_DTYPES = {"position": wp.vec3f, "tangent": wp.vec3f, "forward": wp.vec3f,
+                "left": wp.vec3f, "right": wp.vec3f, "orientation": wp.quatf,
+                "half_size": wp.float32, "count": wp.int32, "valid": wp.int32,
+                "fail_mask": wp.int32}
 
 
 @wp.kernel
@@ -157,6 +172,93 @@ def _derive_valid_k(fail_mask: wp.array(dtype=wp.int32), valid: wp.array(dtype=w
         valid[e] = 0
 
 
+@wp.kernel
+def _gate_hold_k(mask: wp.array(dtype=wp.int32), S: int,
+                 position: wp.array(dtype=wp.vec3f), tangent: wp.array(dtype=wp.vec3f),
+                 forward: wp.array(dtype=wp.vec3f), left: wp.array(dtype=wp.vec3f),
+                 right: wp.array(dtype=wp.vec3f), orientation: wp.array(dtype=wp.quatf),
+                 half_size: wp.array(dtype=wp.float32), count: wp.array(dtype=wp.int32),
+                 valid: wp.array(dtype=wp.int32), fail_mask: wp.array(dtype=wp.int32),
+                 h_position: wp.array(dtype=wp.vec3f), h_tangent: wp.array(dtype=wp.vec3f),
+                 h_forward: wp.array(dtype=wp.vec3f), h_left: wp.array(dtype=wp.vec3f),
+                 h_right: wp.array(dtype=wp.vec3f), h_orientation: wp.array(dtype=wp.quatf),
+                 h_half_size: wp.array(dtype=wp.float32), h_count: wp.array(dtype=wp.int32),
+                 h_valid: wp.array(dtype=wp.int32), h_fail_mask: wp.array(dtype=wp.int32)):
+    # One thread per (env, gate slot): hold the GateSequence rows of every UNMASKED env.
+    t = wp.tid()
+    e = t // S
+    i = t - e * S
+    if mask[e] != 0:
+        return
+    h_position[t] = position[t]
+    h_tangent[t] = tangent[t]
+    h_forward[t] = forward[t]
+    h_left[t] = left[t]
+    h_right[t] = right[t]
+    h_orientation[t] = orientation[t]
+    h_half_size[t] = half_size[t]
+    if i == 0:
+        h_count[e] = count[e]
+        h_valid[e] = valid[e]
+        h_fail_mask[e] = fail_mask[e]
+
+
+@wp.kernel
+def _gate_commit_k(mask: wp.array(dtype=wp.int32), use_mask: int, poison: int, S: int,
+                   h_position: wp.array(dtype=wp.vec3f),
+                   h_tangent: wp.array(dtype=wp.vec3f),
+                   h_forward: wp.array(dtype=wp.vec3f), h_left: wp.array(dtype=wp.vec3f),
+                   h_right: wp.array(dtype=wp.vec3f),
+                   h_orientation: wp.array(dtype=wp.quatf),
+                   h_half_size: wp.array(dtype=wp.float32),
+                   h_count: wp.array(dtype=wp.int32), h_valid: wp.array(dtype=wp.int32),
+                   h_fail_mask: wp.array(dtype=wp.int32),
+                   position: wp.array(dtype=wp.vec3f), tangent: wp.array(dtype=wp.vec3f),
+                   forward: wp.array(dtype=wp.vec3f), left: wp.array(dtype=wp.vec3f),
+                   right: wp.array(dtype=wp.vec3f), orientation: wp.array(dtype=wp.quatf),
+                   half_size: wp.array(dtype=wp.float32), count: wp.array(dtype=wp.int32),
+                   valid: wp.array(dtype=wp.int32), fail_mask: wp.array(dtype=wp.int32)):
+    # One thread per (env, gate slot). fail_mask is the final valid.fail version.
+    t = wp.tid()
+    e = t // S
+    i = t - e * S
+    if use_mask != 0:
+        if mask[e] == 0:
+            position[t] = h_position[t]
+            tangent[t] = h_tangent[t]
+            forward[t] = h_forward[t]
+            left[t] = h_left[t]
+            right[t] = h_right[t]
+            orientation[t] = h_orientation[t]
+            half_size[t] = h_half_size[t]
+            if i == 0:
+                count[e] = h_count[e]
+                valid[e] = h_valid[e]
+                fail_mask[e] = h_fail_mask[e]
+            return
+    f = fail_mask[e]
+    bad = int(0)
+    if poison != 0:
+        if f != 0:
+            bad = int(1)
+    if bad != 0:
+        nan3 = wp.vec3f(wp.nan, wp.nan, wp.nan)
+        position[t] = nan3
+        tangent[t] = nan3
+        forward[t] = nan3
+        left[t] = nan3
+        right[t] = nan3
+        orientation[t] = wp.quatf(wp.nan, wp.nan, wp.nan, wp.nan)
+        half_size[t] = wp.nan
+    if i == 0:
+        if f == 0:
+            valid[e] = 1
+        else:
+            valid[e] = 0
+        if bad != 0:
+            count[e] = 0
+
+
 class _Commit:
     """The bound epilogue of one Program (built once by the planner).
 
@@ -164,6 +266,10 @@ class _Commit:
     final ``valid.fail`` version); ``always``: launch :func:`_commit_k` on unmasked
     generations too (``valid`` derived from ``valid.fail``, or ``on_invalid="poison"``).
     """
+
+    _point_fields = POINT_FIELDS
+    _env_fields = ENV_FIELDS
+    _dtypes = _DTYPES
 
     def __init__(self, *, targets, E: int, S: int, device, dummy_mask, poison: bool,
                  derive_valid: bool) -> None:
@@ -174,16 +280,20 @@ class _Commit:
         self.always = self.poison or self.derive_valid
         self._dummy_mask = dummy_mask
         n = self.E * self.S
-        self.hold = {f: wp.empty(n if f in POINT_FIELDS else self.E, dtype=_DTYPES[f],
-                                 device=device)
-                     for f in (*POINT_FIELDS, *ENV_FIELDS)}
-        fields = (*POINT_FIELDS, *ENV_FIELDS)
+        fields = (*self._point_fields, *self._env_fields)
+        self.hold = {f: wp.empty(n if f in self._point_fields else self.E,
+                                 dtype=self._dtypes[f], device=device)
+                     for f in fields}
         self._track = [self.targets[f] for f in fields]
         self._held = [self.hold[f] for f in fields]
 
+    _hold_kernel = _hold_k
+    _commit_kernel = _commit_k
+
     def enqueue_hold(self, ctx, mask) -> None:
         """Before the stages of a masked generation: hold the unmasked envs' rows."""
-        ctx.launch(_hold_k, self.E * self.S, [mask, self.S, *self._track, *self._held])
+        ctx.launch(self._hold_kernel, self.E * self.S,
+                   [mask, self.S, *self._track, *self._held])
 
     def enqueue_commit(self, ctx, mask) -> None:
         """After the stages: restore the unmasked envs (masked generation), derive
@@ -197,6 +307,17 @@ class _Commit:
                        [self.targets["fail_mask"], self.targets["valid"]])
             return
         use_mask = 0 if mask is None else 1
-        ctx.launch(_commit_k, self.E * self.S,
+        ctx.launch(self._commit_kernel, self.E * self.S,
                    [self._dummy_mask if mask is None else mask, use_mask,
                     1 if self.poison else 0, self.S, *self._held, *self._track])
+
+
+class _GateCommit(_Commit):
+    """The epilogue of a gate Program: :class:`_Commit` over the ``GateSequence``
+    (:data:`GATE_POINT_FIELDS`, :data:`GATE_ENV_FIELDS`; ``S = max_gates``)."""
+
+    _point_fields = GATE_POINT_FIELDS
+    _env_fields = GATE_ENV_FIELDS
+    _dtypes = _GATE_DTYPES
+    _hold_kernel = _gate_hold_k
+    _commit_kernel = _gate_commit_k

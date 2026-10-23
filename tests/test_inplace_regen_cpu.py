@@ -36,7 +36,7 @@ import warp as wp
 from tests._fake_cuda import FakeCuda, FakeGraph, FakeSeedState, FakeStream, patch_facade_seeds
 from tests.test_caller_capture_cpu import _FACADES, _fake_rng
 from track_gen import GateGenConfig, GateGenerator, PerEnvSeededRNG, TrackGenConfig, TrackGenerator
-from track_gen._src import gate_generator_registry, generator_registry, warp_gate, warp_pipeline
+from track_gen._src import gate_generator_registry, generator_registry, warp_pipeline
 from track_gen.course import Course, CourseConfig
 from track_gen.exec import CaptureError, GraphRunner, LaunchContext, _compat
 from track_gen.exec import runner as runner_mod
@@ -318,11 +318,13 @@ def test_epoch0_is_byte_identical_to_the_pr3_seed_copy_path(which, g):
             warp_pipeline._run_pipeline(gen._config, rng.seeds_warp, out=ref, scratch=scratch,
                                         generator_spec=gen._generator_spec, ctx=ctx)
         else:
-            ref, scratch = warp_gate._gate_warp_alloc(gen._config,
-                                                      generator_spec=gen._generator_spec)
-            warp_gate._run_gate_pipeline(gen._config, rng.seeds_warp, out=ref,
-                                         scratch=scratch,
-                                         generator_spec=gen._generator_spec, ctx=ctx)
+            # PR11 deleted _run_gate_pipeline: its frozen copy (tests/_legacy_gate_pr11,
+            # pinned to the dd181f0 digests) is the reference.
+            from tests._legacy_gate_pr11 import run_reference
+
+            taps = run_reference(gen._config, rng.seeds_warp.numpy())
+            ref = types.SimpleNamespace(**{f: wp.array(taps[f], dtype=getattr(out, f).dtype,
+                                                       device=DEV) for f in fields})
         _assert_bytes_equal(out, ref, fields, f"{which}-{g} seed {seed}")
         np.testing.assert_array_equal(out.generation.numpy(), np.zeros(E, np.int32))
         np.testing.assert_array_equal(gen._seed_buf.numpy(), rng.seeds_warp.numpy())
