@@ -18,21 +18,41 @@ class CaptureError(RuntimeError):
 
 
 class NotCapturableError(CaptureError):
-    """A non-capturable producer was asked to record into a caller's capture.
+    """A non-capturable producer was asked to record into a caller's capture (a CUDA
+    graph capture, or a CPU graph capture: ``wp.ScopedCapture("cpu")``).
 
     Raised BEFORE any device work is issued, so the caller's capture is left
-    untouched. Outside a capture the same producer runs eagerly.
+    untouched. Outside a capture the same producer runs: its HOST stages eagerly, the
+    rest of a pipeline from its own graphs (segmented execution, see
+    :class:`~track_gen.exec.GraphRunner`).
+
+    Attributes:
+        name: The producer's name (e.g. the generator name).
+        stage_ids: The ids of the HOST stages that make it non-capturable (``()``
+            when unknown, e.g. a bare ``GraphRunner(capturable=False)``).
     """
 
-    def __init__(self, name: str = "", detail: str = "") -> None:
+    def __init__(self, name: str = "", detail: str = "", *,
+                 stage_ids=()) -> None:
         self.name = name
+        self.stage_ids = tuple(str(s) for s in stage_ids)
         what = repr(name) if name else "this producer"
-        msg = (
-            f"{what} cannot be recorded into a CUDA graph: its generator is "
-            "registered with capturable=False (it may host-synchronize, read back "
-            "or allocate per call). Call it outside the capture (it then runs "
-            "eagerly) or use a capturable generator."
-        )
+        if self.stage_ids:
+            msg = (
+                f"{what} cannot be recorded into a graph capture: HOST stage(s) "
+                f"{list(self.stage_ids)} read device data back or run host control "
+                "flow, so they run eagerly (outside a capture the rest still replays "
+                "from graphs). Call it outside the capture, or use STATIC / BOUNDED "
+                "stages (PipelineSpec(require_caller_capturable=True) rejects HOST "
+                "stages at build)."
+            )
+        else:
+            msg = (
+                f"{what} cannot be recorded into a graph capture: its generator is "
+                "registered with capturable=False (it may host-synchronize, read back "
+                "or allocate per call). Call it outside the capture (it then runs "
+                "eagerly) or use a capturable generator."
+            )
         if detail:
             msg = f"{msg} {detail}"
         super().__init__(msg)

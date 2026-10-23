@@ -189,6 +189,151 @@
   / `z_profile` as registered names and the capacity / `max_gates` / `min_gates`
   relation; the generator guide, the conformance-kit guide, the gate tutorial,
   `docs/gates-3d.rst` and `docs/relaxation/gates.rst` describe the gate Program.
+- **Iterative stages: the `BOUNDED` capture class** (roadmap PR12).
+  **`LaunchContext.bounded_loop(n_iters, body, *, active=None, first_check=0,
+  check_every=1)`** runs `body(ctx, it)` for `it in range(n_iters)`, `it` a static Python
+  int. Iterations `[0, first_check)` always run; the rest form windows of `check_every`
+  iterations (the last one may be shorter), each preceded by a check of `active[0]`, a
+  `[1]` int32 flag the body writes on device on the iteration before the window; a
+  window whose check reads 0 may be skipped, with every later one. The lowering is chosen
+  once per call from the capture state, never from data: (a) a host poll that stops the
+  loop (`cpu`, eager, no CPU graph capture open on the device); (b) one `wp.capture_if`
+  conditional node per window, through `skip_unless`, inside a Warp-registered capture
+  of the context's stream with conditional-node support (CUDA 12.4+: a producer's own
+  graph, `wp.ScopedCapture`, `registered(conditional=True)`); (c) every window
+  unconditionally everywhere else (eager `cuda` calls, plain `torch.cuda.graph`, older
+  drivers, CPU `wp.ScopedCapture("cpu")`, construction and `prepare()`). Under the
+  documented contract (once `active[0]` reads 0, every remaining iteration leaves
+  everything read after the loop bitwise unchanged: an absorbing freeze) the three are
+  bitwise identical, and `n_iters` is a bound. Arguments are checked on the host before
+  any launch (`TypeError` for a non-int or a bool; `ValueError` for a negative count or
+  `check_every < 1`; `active` as `skip_unless` checks its flag). `active=None` is a plain
+  unroll, allowed in any stage.
+  - `capture = CaptureClass.BOUNDED` registers (stages of every open kind and both
+    generator kinds), plans and binds; it was rejected with "arrives with roadmap PR12".
+    A Stage that calls `bounded_loop(active=...)` while declaring `STATIC` raises
+    `ValueError` on its first run, at construction (`... declare capture =
+    CaptureClass.BOUNDED`); a legacy `GeneratorSpec` cannot declare a class and is not
+    checked. The built-in catalogue stages stay `STATIC`.
+  - The host poll is the library's one sanctioned eager readback on a capturable path:
+    the `track_gen.testing` host-sync guard lets it through only when the loop's window
+    driver makes it, and records it in the new `HotPathGuard.sanctioned` (not in
+    `allowed`), as it does a `HOST` stage's `HostOps` operations (see the conformance-kit
+    entry). Any other sync is still a violation: a plugin's own, inside a loop body or a
+    `HOST` stage, and a direct call of the poll function included.
+- **`ops.all_set(ctx, mask, flag_out)`**: `flag_out[0] = 1` if every `mask[e] != 0` (an
+  empty mask: 1), else 0. Two launches (a fill, then an integer `atomic_min`),
+  deterministic, with `any_set`'s validation and messages.
+- **`repulsive` is a `BOUNDED` Stage.** `registry.get("generator", "repulsive")` returns
+  a `Stage` class (`kind="generator"`, `output="centerline"`, `Params = RepulsiveParams`,
+  `capacity() -> {"raw": repulsive_stages[-1]}`), and `describe(...).capture` is
+  `BOUNDED` (`capturable` stays `True`; `origin` is unchanged). Its growth loop is a
+  `ctx.bounded_loop` with `active = any env not frozen`, written right after each stall
+  check, `check_every = repulsive_stall_window` (`W`) and `first_check = W * ceil((s +
+  1) / W)`, `s` the iteration of the last stage transition: 128 at the defaults, 9
+  windows in a 269-iteration bound. Same kernels, order and scalars as before; the new
+  launches (a reset of `active` in the prologue and a refresh after each stall check, 19
+  at the defaults) write only the flag. `generate_repulsive_warp(seeds_wp, config,
+  out_centerline, out_valid_wp, scratch, ctx=None)` keeps its signature and stays
+  importable (the Stage calls it; it derives the windows from the scratch's stage
+  schedule and the generate-time `repulsive_stall_window`), `repulsive_alloc_scratch`
+  gains an `alloc=` hook (the Stage allocates through `b.scratch`) and
+  `RepulsiveScratch` an `active` flag.
+- **HOST stages reach the host through `HostOps`.** **`LaunchContext.host()`** returns
+  the `track_gen.exec.HostOps` of the `HOST` stage running on the context:
+  `read_i32(arr, index=0)`, `readback(src, *, via)` (a NumPy view of `via` shaped like
+  `src`), `upload(dst, data, *, via)` (blocking: `via` is reusable on return) and
+  `sync()`. Every copy runs on the call's stream through a host buffer allocated at build
+  with **`StageBuilder.host_buffer(dtype, shape)`** (pinned on CUDA; `HOST` stages only,
+  `ValueError` otherwise), and every wait is a stream synchronize in relaxed capture
+  mode: nothing allocates per call. On `cuda` a `via` that is not pinned raises
+  `ValueError`. `ctx.host()` raises `ValueError` inside a stage that does not declare
+  `HOST` (naming the stage and its declared class, the error `bounded_loop(active=...)`
+  in a `STATIC` stage and `host_buffer` give too), `CaptureError` outside every pipeline
+  stage, and `NotCapturableError` when the context's stream is capturing or a CPU graph
+  capture is open on the device. The Program runs every stage's `enqueue` inside a
+  per-slot context (private) that carries this and the `bounded_loop` declaration check;
+  it emits nothing. Only a `HOST` slot gets a build-time `[1]` host buffer (`read_i32`);
+  the kit's private forced CUDA poll allocates its pinned buffer on first use.
+- **`track_gen.exec.unconditional()`**: a context manager (thread- and task-local) under
+  which `LaunchContext.skip_unless` records no conditional node, so every
+  `bounded_loop` window (and a masked `Course.regenerate`) is recorded unconditionally
+  into the captures made in the block, with the same results. Use it for a graph you
+  will nest as a CUDA child graph, or for a capture whose stream has a side stream that
+  joined it and is not joined back yet (each `wp.capture_if` ends and resumes the
+  capture, which CUDA refuses with an unjoined fork). A producer's own graph captured in
+  the block is unrolled too; `unconditional(False)` restores the default inside it.
+- **Segmented execution of HOST stages.** The planner groups consecutive stages into
+  segments of equal host-ness (`HOST` vs. `STATIC` / `BOUNDED`). New
+  **`Program.segments`** (a tuple of **`track_gen.pipeline.Segment`**: `index`,
+  `capture_class`, `stage_ids`, `host`), **`Program.host_stage_ids`** and
+  **`Program.enqueue_segment(i, ctx, *, advance=False, mask=None)`** (segment 0 opens
+  with the seed prologue, the last segment closes with the commit and the `generation`
+  write; a `HOST` segment refuses a capturing `ctx`, a capturable one can be recorded
+  into a caller's capture once the Program is prepared). `Program.capture_class` is the
+  highest of its stages' (`STATIC` < `BOUNDED` < `HOST`), and `Program.capturable` means
+  "has no `HOST` stage". Outside a capture on `cuda`, `run()` (hence `generate()`)
+  records each capturable segment into a graph of its own on the first call and then
+  runs the segments in order on the call's stream: `HOST` segments eagerly, the others
+  with `wp.capture_launch` (keyed per `(advance, mask)` like a plain self-graph, within
+  `MAX_KEYED_GRAPHS`). `graph` stays `None` for such a Program. Under a caller's capture,
+  `run`, `enqueue` and `enqueue_segment` of a `HOST` segment raise
+  **`NotCapturableError`** naming the `HOST` stages before any launch: the message lists
+  them and the new **`NotCapturableError.stage_ids`** holds them. Gate pipelines are
+  segmented the same way. **`Program.segment_graphs(key=None)`** (and
+  **`GraphRunner.segment_graphs_for(key=None)`**) return the per-segment self-graphs
+  (`None` at a `HOST` segment); `GraphRunner.graph_for(key)` stays the whole-body graph
+  (`None` for a segmented key). Every segment of one generation takes the same
+  `advance` / `mask`, in order, on one stream (a recorded segment keeps the arguments it
+  was recorded with); that is documented, not checked (a replayed segment runs no
+  Python). With a legacy-ABI generator (`legacy_stream`), `enqueue` and
+  `enqueue_segment(0, ...)` on a stream other than Warp's current one run on the
+  current stream ordered with events (the runner's legacy path), and raise
+  `LegacyPluginStreamError` before any launch when that stream is capturing.
+- **`PipelineSpec(batch, stages, require_caller_capturable=False)`**: `True` makes
+  `build` refuse every `HOST` stage, host-side, before allocating anything, with a
+  `PlanError` naming them (`PipelineSpec.require_caller_capturable=True, but stage(s)
+  'generator' (generator.acme.blob) is HOST (...): use STATIC / BOUNDED stages or drop
+  require_caller_capturable`; a legacy spec is named `'generator' (generator 'acme.old',
+  GeneratorSpec capturable=False)`). A non-bool raises `TypeError`. `to_dict` writes the flag only when
+  it is set (existing dicts are unchanged) and `from_dict` reads it; the edit operations
+  and the resolved `Program.spec` keep it.
+- **Conformance kit.** New checks for every kind, after `statelessness`:
+  `bounded.absorbing` (each generator or stage that runs a `bounded_loop` with `active`,
+  as the probe sees it, whatever it declares: with `active` and the outputs poisoned, an
+  eager generation with the host poll equals one with every window unrolled, raw output,
+  result and the stage's channels, for both batches; "not applicable" without such a
+  loop, "not exercised" when the kit's seeds skip no window), `bounded.lowering` (CUDA:
+  an eager generation with the forced host poll, and replays of a Warp capture with
+  conditional windows and of one with every window unrolled, into poisoned outputs and
+  before and after a reseed, all equal the eager batch; the conditional part skipped
+  with the reason without conditional-node support) and
+  `host.require_caller_capturable` (a pipeline with `HOST` stages rebuilt with the flag
+  raises `PlanError` naming every `host_stage_ids`). The `hot_path.*` calls run with
+  every window unrolled (the superset of what any lowering launches), plus one call with
+  the default lowering whose sanctioned polls `hot_path.host_sync` reports in
+  `details["sanctioned"]`. A pipeline with `HOST` stages waives `hot_path.topology` and
+  `hot_path.buffers` only: `hot_path.host_sync` and `hot_path.allocation` still run, with
+  the `HostOps` operations sanctioned (`HotPathGuard.sanctioned`,
+  `details["host_ops"]`), so a `HOST` stage that calls `.numpy()`,
+  `wp.synchronize*()` or allocates per call itself fails them; a legacy
+  `capturable=False` spec (no `ctx.host()`) still waives all four. For a `HOST`
+  generator, `capture.caller` checks the refusal
+  (`NotCapturableError` naming the `HOST` stages before any launch, the caller graph
+  holding a marker and nothing of the generation, seeds and epochs untouched) and
+  `capture.self_graph` the segmented self-graph (a graph exactly for each capturable
+  segment, replays equal the eager batch). `check_generator("repulsive")` exercises
+  `bounded.absorbing`.
+- Docs: `docs/how-it-works/cuda-graph.rst` gains "Iterative stages (BOUNDED)" (the
+  lowerings, where each applies, the absorbing-freeze contract, the sanctioned poll) and
+  "HOST stages and segments" (segmented execution, refusals, `HostOps`, concurrent
+  captures, the lock rule); `docs/how-it-works/pipeline-preview.rst` "Capture classes
+  and segments" (`Program.segments`, `enqueue_segment`, refusal order,
+  `require_caller_capturable`); `docs/contributing/writing-a-stage.rst` "Writing an
+  iterative (BOUNDED) stage" (a relax stage that freezes converged envs) and "Writing a
+  host-driven (HOST) stage" (a NumPy generator through `HostOps`); the repulsive page
+  "Early exit and capture" (schedule, windows, node counts); the generator and kit
+  guides, the tutorials and the API reference follow.
 
 ### Behaviour changes
 
@@ -259,6 +404,86 @@
   in a gate pipeline names `validity.gate_default`; a centerline generator without a
   `stations` stage (or a track spec given `max_gates`) says to insert one; the
   `min_gates` error of a stations source names the stations stage.
+- **`capturable=False` and `HOST` pipelines replay their capturable part from graphs.**
+  On `cuda` outside a capture, a legacy `GeneratorSpec(capturable=False)` (or
+  `GateGeneratorSpec`) is a `HOST` generator segment followed by a captured tail, and a
+  `HOST` Stage anywhere in the pipeline runs eagerly between the graph launches of the
+  segments around it; before, one `HOST` stage made the whole Program eager. Outputs are
+  unchanged (the same launches in the same order; only where they are recorded changes),
+  `graph` stays `None`, and a caller's capture still raises `NotCapturableError` before
+  any launch. `Course` does not segment: over a `HOST` generator it still runs eagerly.
+- **`repulsive` stops early where it can.** An eager generation on `cpu` stops its
+  growth loop at the first stall window whose check finds every env frozen (with the
+  defaults no earlier than iteration 144 of 269), so the launch count of an eager CPU
+  generation now depends on the data. Its self-graph, and a Warp capture with
+  conditional nodes, skip those windows on device. Eager `cuda` calls (`enqueue()`,
+  `policy="eager"`) run the full bound with no host sync: `TrackGenerator.enqueue`,
+  `GateGenerator.enqueue` and `Program.enqueue` keep "never host-syncs" (a `HOST` stage's
+  own `ctx.host()` waits on the call's stream aside). Construction and `prepare()` run
+  every window (the warm-up loads every kernel a window launches). The outputs are
+  byte-identical to 0.2.0.dev3 in every case (fingerprints unchanged). Its graph now
+  holds conditional nodes in Warp-registered captures (CUDA 12.4+), so, like a masked
+  `Course` regeneration graph, it cannot be used as a CUDA child graph, and recording it
+  into a capture whose stream has an unjoined side-stream fork fails (each window's
+  `wp.capture_if` ends and resumes the capture); record inside
+  `track_gen.exec.unconditional()` to keep 0.2.0.dev3's plain kernel nodes.
+- **A Warp registration of torch's current, capturing stream gets no conditional node
+  unless opted in.** When `wp.capture_begin(stream=..., external=True)` (or
+  `wp.ScopedCapture(external=True)`) registers the `torch.cuda.graph` capture running in
+  the calling thread, `skip_unless` (a masked `Course.regenerate`, every `BOUNDED`
+  window) now records unconditionally, as `interop.torch.registered()` does by default:
+  a conditional node renews the capture id torch's caching allocator tracks. Warp does
+  not record who began a capture, so the same applies to your own `wp.ScopedCapture` of
+  torch's current stream (same bytes, no device-side skip): opt in with
+  `track_gen.exec.conditional()` (new) when torch is not the capturer, or with
+  `registered(conditional=True)` under `torch.cuda.graph`. The library's own graphs (a
+  producer's `graph`, legacy producers included) are marked and unaffected, and Warp
+  captures of other streams are unchanged.
+- **`registry.get("generator", "repulsive")` is a Stage class**, not a `GeneratorSpec`:
+  it has no `capturable`, `generate` or `alloc_scratch` attribute and
+  `dataclasses.replace(...)` no longer applies; read `registry.describe("generator",
+  "repulsive")` (`capture`, `capturable`). A repulsive `TrackGenerator`'s private
+  `gen._scratch.gen` is the built stage, whose buffers are its `scratch` mapping
+  (`"scratch:generator/<name>"`).
+- **The process-wide capture lock** (`runtime._CAPTURE_LOCK`). Every eager run of legacy
+  (`accepts_ctx=False`) code still holds it, since that code launches on Warp's shared
+  current stream. A legacy `capturable=False` producer now holds it only while its
+  `HOST` segment runs, not while its captured tail replays, and a `HOST` Stage (which
+  emits through `ctx`) never takes it, apart from the existing rule for calls on Warp's
+  current stream while a capturable legacy producer has not captured its self-graph yet,
+  which a segmented call re-evaluates before each part (graph launch or `HOST` part).
+- **`LaunchContext.skip_unless` returns a `bool`**: `True` when it recorded the body
+  under a conditional node, `False` when it ran it unconditionally (it returned `None`).
+- **`NotCapturableError(name="", detail="", *, stage_ids=())`**: with stage ids, the
+  message names the `HOST` stages and points at `require_caller_capturable`. Both forms
+  now say "cannot be recorded into a graph capture" (was "a CUDA graph"): the error is
+  also raised for a CPU `wp.ScopedCapture("cpu")`.
+- **`HOST` work refuses a CPU graph capture.** Inside `wp.ScopedCapture("cpu")` (Warp's
+  CPU capture records launches without running them), a producer with a `HOST` stage
+  raises `NotCapturableError` before any launch, and `ctx.host()` raises it too; before,
+  a `capturable=False` producer ran and recorded host reads of stale data.
+  `GraphRunner.check_record` applies the same refusal, so `Course.generate(seeds=...)`
+  raises before its reseed launches. Constructing a producer (`build`, `TrackGenerator`,
+  `GateGenerator`, `Course`, `prepare()`) inside one raises `CaptureError` before
+  allocating, as inside a CUDA capture (it recorded the warm-up instead of running it). A
+  `bounded_loop` recorded there unrolls (never polls). `LaunchContext.capturing` stays
+  `False` on `cpu`.
+- **Refusal order under a caller's capture.** A Program with `HOST` stages raises
+  `NotCapturableError` before the "never prepared" `CaptureError`, so one built with
+  `prepare=False` reports its `HOST` stages; the argument checks (`mask`, `advance`,
+  segment index) still come first.
+
+### Fixed
+
+- Library-readiness findings closed by roadmap PR12: MEDIUM "capturable is
+  all-or-nothing" (segmented `HOST` execution); LOW "capturable=False holds the global
+  lock for seconds" (its captured tail no longer holds it, `HOST` Stages never take it);
+  LOW "capture_while port not a drop-in" and LOW "capture_while fails inside non-Warp
+  captures" (sidestepped: `bounded_loop` puts each window under `skip_unless`, a
+  `capture_if` in Warp-registered captures and an unrolled window everywhere else); LOW
+  "stale capture docs" (`capturable` is no longer described as all-or-nothing, and the
+  repulsive docs describe its early exit). With the absorbing freeze already on `v2`,
+  the repulsive part of CRITICAL "repulsive cannot be graph-captured" is closed.
 
 ### Deprecated
 
@@ -307,6 +532,12 @@
 - **`Course` with a gate generator that provides `half_size`** (posed gates):
   `CourseConfig` requires `gen.gate_width > 0` while such a generator refuses any
   `gate_width`, so the combination cannot be built yet (pinned by a test).
+- From roadmap PR12: a segmented `Course` (over a `HOST` generator it runs eagerly);
+  self-graphs on `cpu` (Warp's CPU graph capture); a public knob for the `bounded_loop`
+  lowering; `capture_while`; a non-blocking `HostOps.upload`; refusing direct host syncs
+  in `HOST` stages at run time (a `.numpy()` or `wp.synchronize()` in a `HOST` stage still
+  runs in 0.x, but the conformance kit fails it in `hot_path.host_sync`, and a per-call
+  allocation in `hot_path.allocation`; only a legacy `capturable=False` spec is waived).
 
 ### Testing
 
@@ -355,6 +586,58 @@
 - CUDA (`tests/test_gate_stages_cuda.py`, collects on CPU): stations gates, the helix
   toys and the five built-ins recorded in a caller's graph equal to eager twins; masked
   gate regeneration under capture leaves unmasked envs untouched.
+- Roadmap PR12 toys (`tests/_bounded_toys.py`, public plugin surface only): the BOUNDED
+  relax smoothers `toy.converging_smooth` (an absorbing per-env convergence freeze) and
+  `toy.leaky_smooth` (the same schedule, not absorbing), the HOST generator
+  `toy.host_circle` and the HOST gate generator `toy.host_ring` (NumPy host RNG through
+  `ctx.host()`), plus deliberately broken variants (an undeclared loop, a body that
+  reads `active` back, a direct call of the poll, an allocation or a readback in the last
+  window only, a HOST relax, a HOST relax that syncs, reads back and allocates outside
+  `ctx.host()`).
+- `tests/test_bounded_loop.py` (CPU): `bounded_loop` semantics (the static `it`, the
+  prefix, short last windows, `first_check` at or past `n_iters`, `check_every = 1`, the
+  stop at the first 0, validation), the lowering policy per capture state (fake CUDA
+  device: eager windows inline with no poll and no sync, one `capture_if` per window in a
+  registered capture, the forced seams, CPU graph captures never polling, `prepare()`
+  unrolling), the STATIC declaration refusal, the loop probe, `ops.all_set`, the
+  sanctioned poll (a plugin's sync in a loop body and a direct poll call are caught), the
+  kit's unrolled hot path catching a last-window allocation or readback, `HostOps` and
+  `StageBuilder.host_buffer` (the declared-class `ValueError` of `ctx.host()`, a pinned
+  `via` on CUDA, a host buffer for HOST slots only and the lazy forced-poll buffer).
+- `tests/test_host_segments.py` (CPU): planner segments (HOST generator, HOST stage in
+  the middle, BOUNDED + STATIC, legacy `capturable=False`, a HOST gate generator),
+  `require_caller_capturable` (every HOST id named before allocating, round trip),
+  eager determinism and `enqueue_segment` equivalence, exact masked regeneration, the
+  refusals before any launch (emulated and real CPU captures, ahead of the unprepared
+  error; `Course.generate(seeds=...)` before its reseed; construction inside a CPU
+  capture), a recordable non-HOST segment, the runner's segmented mode and the
+  capture-lock rule on a fake CUDA device (re-evaluated per part when a legacy producer
+  becomes pending mid-call), `Program.enqueue`'s legacy-stream routing, and the kit on
+  the toys (`toy.leaky_smooth` fails exactly `batch_independence` and
+  `bounded.absorbing`; the HOST toys pass `hot_path.host_sync` / `hot_path.allocation`
+  with their `HostOps` sanctioned; `toy.sneaky_host` fails both).
+- `tests/test_inplace_regen_cpu.py`: `unconditional()` and a hand-made registration of
+  torch's capture keep `skip_unless` unconditional; `registered(conditional=True)`'s
+  explicit marker re-allows it.
+- `tests/test_repulsive_bounded.py` (CPU): the Stage registration, the default schedule
+  (`first_check = 128`, 9 windows) and a property check of the window alignment, the
+  host poll equal to the unrolled loop (small and default configs), the legacy entry
+  equal to the Stage, also with a mismatched stall window, env `e` alone vs. inside a
+  larger batch, and a CPU graph capture replaying the eager batch.
+- CUDA (`tests/test_bounded_host_cuda.py`, collects on CPU): the three lowerings bitwise
+  equal for repulsive and the converging toy (and different for the leaky one), CUDA eager
+  calls never stream-synchronizing, repulsive caller capture and self-graph against
+  eager twins, the self-graph node counts (fewer than 5k unrolled, conditional windows),
+  batch independence in every lowering, segmented HOST execution (tail graph launches,
+  masked regeneration, the refusal before any launch, a caller recording the tail),
+  legacy `capturable=False` segmentation and the capture lock, the HOST gate generator,
+  bounded windows nested in conditional bodies (and in a masked `Course` regeneration),
+  the kit on CUDA, and HOST segments running while another thread captures.
+- Existing tests updated for the new surface (the repulsive Stage, `describe()`, the
+  BOUNDED acceptance, the kit's check list, the no-host-sync drivers). The frozen guards
+  (`tests/test_generator_fingerprints.py` including `track/repulsive/*`,
+  `tests/test_pipeline_parity.py`, `tests/test_gate_pipeline_parity.py` and its golden,
+  the `tests/test_legacy_plugin_abi.py` pins) are unchanged and pass.
 
 ## 0.2.0.dev3 (2026-10-22, tag `v0.2.0.dev3`)
 

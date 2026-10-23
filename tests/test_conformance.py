@@ -125,6 +125,21 @@ _DEFECT = {
 }
 
 
+# The BOUNDED / HOST tier checks (roadmap PR12): skipped "not applicable" for a unit
+# without a bounded loop / a HOST stage.
+_TIERS = ("bounded.absorbing", "bounded.lowering", "host.require_caller_capturable")
+_CUDA_ONLY = ("capture.caller", "capture.self_graph", "bounded.lowering")
+
+
+def _cpu_names(kind: str) -> list:
+    """The checks the kit runs on a CPU device, in order."""
+    return [n for n in CHECKS[kind] if n not in _CUDA_ONLY]
+
+
+def _skipped_besides_tiers(report: Report) -> list:
+    return [r.name for r in report if r.skipped and r.name not in _TIERS]
+
+
 def _assert_builtin_promises(report: Report, device: str) -> None:
     """What every built-in guarantees beyond the contract: every env is generator-valid
     with a finite raw output, the result is finite before count for EVERY env (the
@@ -174,8 +189,16 @@ def test_builtin_generator_conforms_cpu(name, config):
     report = check_generator(name, devices=CPU, config=config,
                              num_envs=_NUM_ENVS_SMALL.get(name, _NUM_ENVS))
     report.raise_for_failures()
-    assert [r.name for r in report] == list(CHECKS["generator"][:-2])   # no capture.*
-    assert not any(r.skipped for r in report)
+    assert [r.name for r in report] == _cpu_names("generator")   # no capture.*
+    assert not _skipped_besides_tiers(report)
+    # No built-in has a HOST stage; repulsive is the BOUNDED one (its loop stops early for
+    # the kit's batch A, so the absorbing probe is exercised).
+    assert report.result("host.require_caller_capturable").skipped
+    absorbing = report.result("bounded.absorbing")
+    assert absorbing.skipped == (name != "repulsive"), absorbing
+    if name == "repulsive":
+        assert absorbing.passed and absorbing.details["skipped"]["A"] >= 1, absorbing
+        assert report.result("hot_path.host_sync").details["sanctioned"] >= 1
     _assert_builtin_promises(report, "cpu")
 
 
@@ -184,7 +207,7 @@ def test_builtin_generator_conforms_cpu(name, config):
 def test_builtin_gate_generator_conforms_cpu(name, config):
     report = check_gate_generator(name, devices=CPU, config=config, num_envs=_NUM_ENVS)
     report.raise_for_failures()
-    assert not any(r.skipped for r in report)
+    assert not _skipped_besides_tiers(report)
     _assert_builtin_promises(report, "cpu")
 
 
@@ -223,12 +246,12 @@ def toys(plugin_registry):
 def test_plugin_toy_conforms_cpu(kind, name, toys, track_gen_conformance):
     report = track_gen_conformance(name, kind=kind, devices=CPU)
     assert report.ok and report.kind == kind and report.name == name
-    if name == "toy.wobble_host":      # capture = HOST: rules 2 and 3 are waived
-        for check in ("hot_path.host_sync", "hot_path.allocation", "hot_path.topology",
-                      "hot_path.buffers"):
+    if name == "toy.wobble_host":      # capture = HOST: topology / buffers are waived
+        for check in ("hot_path.topology", "hot_path.buffers"):
             r = report.result(check)
-            assert r.skipped and "capturable=False" in r.message
-        assert not report.result("hot_path.stream").skipped
+            assert r.skipped and "HOST stage(s) ['generator'] run eagerly" in r.message
+        for check in ("hot_path.host_sync", "hot_path.allocation", "hot_path.stream"):
+            assert not report.result(check).skipped     # a HOST stage may not sync itself
 
 
 @pytest.mark.cuda
@@ -273,7 +296,7 @@ def test_edge_toy_conforms(name, plugin_registry):
     """A closing straight, NaN-rejected envs, a wp.struct scratch: unusual, conforming."""
     register_broken(plugin_registry)
     report = check_generator(name, devices=CPU)
-    assert report.ok and not any(r.skipped for r in report), str(report)
+    assert report.ok and not _skipped_besides_tiers(report), str(report)
     if name == "edge.rejecting":
         assert 0 < report.result("diversity").details["compared"] < 8
 
@@ -305,7 +328,7 @@ def test_the_pytest_fixture_fails_with_every_failed_check(plugin_registry,
 def test_skip_reports_checks_as_skipped(toys):
     report = check_generator("toy.circle", devices=CPU, skip=("diversity", "hot_path"))
     assert report.ok
-    skipped = [r.name for r in report if r.skipped]
+    skipped = [r.name for r in report if r.skipped and "skip=" in r.message]
     assert skipped == ["diversity", "hot_path.host_sync", "hot_path.allocation",
                        "hot_path.stream", "hot_path.capture", "hot_path.topology",
                        "hot_path.buffers"]
@@ -429,8 +452,7 @@ _STAGE_KINDS = ("relax", "width", "elevation", "validity")
 def test_every_builtin_stage_passes_check_stage(kind, name):
     report = check_stage(kind, name, devices=CPU, num_envs=4)
     report.raise_for_failures()
-    assert [r.name for r in report] == [n for n in CHECKS[kind]
-                                        if not n.startswith("capture.")]
+    assert [r.name for r in report] == _cpu_names(kind)
     assert registry.describe(kind, name).builtin
 
 

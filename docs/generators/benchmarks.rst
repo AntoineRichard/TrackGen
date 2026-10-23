@@ -16,14 +16,15 @@ registered generator stays selectable via ``config.generator``.
 
 .. warning::
 
-   ``repulsive`` is an iterative optimizer: even graph-captured, each call runs its full
-   fixed iteration budget, so its ``gen_ms_per_call`` is measured on ``cuda`` directly
-   rather than ``cpu`` (a CPU run would be even slower and less representative of
-   production use) and is **not directly comparable** to the other rows.  The figures
+   ``repulsive`` is an iterative optimizer: even graph-captured, each call runs its
+   iteration budget until every env has frozen, so its ``gen_ms_per_call`` is measured on
+   ``cuda`` directly rather than ``cpu`` (a CPU run would be even slower and less
+   representative of production use) and is **not directly comparable** to the other
+   rows.  The figures
    below were taken when it still ran eagerly.  Indicative RTX-4090 wall-clock: ~0.2 s at
    E=64 and ~5 s at E=8192 (~3 ms/track amortized), versus ~2 ms per batch for ``bezier``
    — roughly **1000×** slower.  Construction additionally runs one full eager pass (the
-   warm-up), and on CUDA the first ``generate()`` records a ~4k-node graph.  The number
+   warm-up), and on CUDA the first ``generate()`` records its graph.  The number
    is also throttle-sensitive (±1.5× from GPU clock/pool state). See
    :doc:`repulsive` for the full cost discussion and the recommended regeneration-cadence /
    staggered-slice usage.

@@ -27,8 +27,8 @@ generator can be assembled from the same documented pieces instead of private
 * Validation is host-side and happens before any launch: data arrays must match their
   exact shape, dtype and ``ctx.device``; scratch arrays need the dtype, the device
   and at least the stated length. Mismatches raise ``ValueError`` naming the argument,
-  except that ``fill`` raises ``TypeError`` for an unsupported dtype and ``any_set`` for
-  an argument that is not an ``int32`` ``wp.array``.
+  except that ``fill`` raises ``TypeError`` for an unsupported dtype and ``any_set`` /
+  ``all_set`` for an argument that is not an ``int32`` ``wp.array``.
 
 Device functions for your own kernels live in :mod:`track_gen.ops.funcs`; shared
 numeric conventions in :mod:`track_gen.ops.constants`.
@@ -39,12 +39,13 @@ from .curves import closed_catmull_rom, closed_polyline
 from .fill import fill
 from .geometry import angle_sort, normalize_extent, self_intersections, thickness, turning_number
 from .hash import hash32, hash32_host
-from .reduce import any_set
+from .reduce import all_set, any_set
 from .resample import ArcScratch, arc_resample, resample_constant_spacing, resample_uniform
 from .sampling import grid_cells, sample_counts, sample_grid_points
 
 __all__ = [
     "ArcScratch",
+    "all_set",
     "angle_sort",
     "any_set",
     "arc_resample",

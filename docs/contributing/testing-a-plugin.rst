@@ -5,7 +5,8 @@ Testing a Plugin
 runs a registered generator through every check the :doc:`generator contract
 <writing-a-generator>` implies: output shapes and NaN padding, determinism, batch
 independence, no hidden state, no host sync or allocation on the hot path, a static
-launch sequence and, on CUDA, recording into a caller's graph. ``check_stage`` does the
+launch sequence, the absorbing freeze of an iterative (``BOUNDED``) loop and, on CUDA,
+recording into a caller's graph. ``check_stage`` does the
 same for a relax, width, elevation, validity, order or stations stage (see
 :ref:`kit-check-stage`).
 TrackGen's own test suite runs the same checks over every built-in generator and stage,
@@ -73,8 +74,9 @@ The checks
 
 Each check has a stable name, so a test can assert which check a generator fails.
 ``track_gen.testing.CHECKS["generator"]`` lists them in run order. Every check runs once
-per device, except that the ``hot_path.*`` checks run on CPU devices only and the
-``capture.*`` checks on CUDA devices only. On CPU every ``generate()`` runs its Python
+per device, except that the ``hot_path.*`` checks and ``host.require_caller_capturable``
+run on CPU devices only and the ``capture.*`` checks and ``bounded.lowering`` on CUDA
+devices only. On CPU every ``generate()`` runs its Python
 eagerly, so the guards see every call it makes; on CUDA the generator replays a graph,
 and recording it into a real capture is the stronger test. A failed check's message
 names the env, the field or the call site (``module.function:line``), and the rule it
@@ -152,12 +154,41 @@ broke.
        written, an output accumulated into, an output slot left unwritten, a Python
        counter, seeds latched at construction instead of read from ``seeds_wp``
        (``b.seed``) at every call.
+   * - ``bounded.absorbing``
+     - For a generator (or the stage under test) that runs a ``ctx.bounded_loop`` with
+       ``active``, whatever capture class it declares: with ``active`` poisoned to ``0`` and the outputs poisoned, an eager
+       generation with the host-poll lowering (a), which stops at the first window
+       whose check reads ``0``, gives the same bytes as one with every window unrolled
+       (c): the raw output, the result and the stage's channels, for batch A then B.
+       Skipped as not applicable when no such loop runs, and as not exercised when no
+       window was skipped for the kit's seeds.
+     - An iteration after the freeze that still writes an output (a kernel without the
+       frozen-env early return, a converged env that keeps moving); ``active`` written
+       only after the first check; Python state the loop body changes and later code
+       reads. The message names the window where (a) stopped and the envs and channels
+       that differ.
+   * - ``bounded.lowering`` (CUDA)
+     - The same loop, in every lowering of :ref:`cuda-graph-bounded`, gives the bytes
+       of an eager generation: the host poll (a), a Warp capture with conditional
+       windows (b, skipped with the reason when ``wp.is_conditional_graph_supported()``
+       is false) and a capture with every window unrolled (c), replayed into poisoned
+       outputs, before and after a reseed.
+     - As for ``bounded.absorbing``, now on the device; a host value baked into one
+       window.
+   * - ``host.require_caller_capturable`` (CPU)
+     - For a pipeline with ``HOST`` stages: building it with
+       ``require_caller_capturable=True`` raises ``PlanError`` naming every one of
+       ``Program.host_stage_ids``. Skipped as not applicable otherwise.
+     - Not a plugin bug: the check covers the planner's refusal. Report a failure.
    * - ``hot_path.host_sync`` (CPU)
      - Two ``generate()`` calls make no ``wp.synchronize*`` call, no host readback
        (``wp.array.numpy()``, ``wp.array.list()``, ``np.asarray`` of an array) and no
-       ``wp.copy`` between two devices.
+       ``wp.copy`` between two devices. The host poll of a ``bounded_loop`` and a
+       ``HOST`` stage's ``HostOps`` operations are the sanctioned readbacks: counted in
+       ``details["sanctioned"]`` / ``details["host_ops"]``, not reported.
      - A readback to branch on generated data or to size a launch. Branch on the device
-       instead (a per-env flag), with fixed bounds.
+       instead (a per-env flag), with fixed bounds; stop a loop with
+       ``ctx.bounded_loop``.
    * - ``hot_path.allocation`` (CPU)
      - Two ``generate()`` calls allocate no Warp array (``wp.empty``, ``zeros``,
        ``full``, ``ones``, ``clone``, ``wp.array(data)``, ``*_like``, ...) and create no
@@ -207,13 +238,31 @@ broke.
      - An output the graph never writes (the poison survives the replay); a host value
        baked at capture.
 
-**Skipped checks.** A generator registered with ``capturable=False`` (a ``Stage`` whose
-capture class is ``HOST``) runs eagerly on every call and may sync and allocate: its
-``hot_path.host_sync``, ``hot_path.allocation``, ``hot_path.topology``,
-``hot_path.buffers`` and ``capture.caller`` are reported as skipped, and
-``capture.self_graph`` checks that it never captures a graph. ``hot_path.stream`` and
-``hot_path.capture`` still apply (see :ref:`generator-capture-opt-out`). When
-``construct`` fails, every other check is reported as not run, and the report fails.
+The ``hot_path.*`` checks run their two generations with every ``bounded_loop`` window
+unrolled, the superset of what any lowering launches, so a sync or an allocation in a
+late window is seen even when the kit's seeds would stop the loop early; one more
+generation with the default lowering reports the sanctioned polls.
+
+.. _kit-host-checks:
+
+**HOST generators and skipped checks.** A ``HOST`` generator (a ``Stage`` whose capture
+class is ``HOST``) runs eagerly on every call, so its launch sequence may depend on host
+data: ``hot_path.topology`` and ``hot_path.buffers`` are reported as skipped ("waived:
+HOST stage(s) [...] run eagerly every call"). ``hot_path.host_sync`` and
+``hot_path.allocation`` still run: the ``ctx.host()`` operations pass (counted in
+``details["host_ops"]``), while a direct ``.numpy()``, a ``wp.synchronize*()`` or a
+per-call allocation in the stage fails. A legacy ``GeneratorSpec`` registered with
+``capturable=False`` cannot use ``ctx.host()``, so its ``hot_path.host_sync`` and
+``hot_path.allocation`` are skipped too ("waived: capturable=False"). ``hot_path.stream``
+and ``hot_path.capture`` always apply (see :ref:`generator-capture-opt-out`). On CUDA,
+``capture.caller`` checks the refusal instead: recorded inside a caller's capture after a
+marker copy, ``generate()`` must raise ``NotCapturableError`` naming the ``HOST`` stages,
+and the replayed caller graph must hold the marker and nothing of the generation (the
+outputs keep their poison, the seeds and epochs are unchanged). ``capture.self_graph``
+checks the segmented self-graph: ``graph`` stays ``None``, a graph exists exactly for
+each capturable segment, and replays into poisoned outputs equal the eager batch, before
+and after a reseed. When ``construct`` fails, every other check is reported as not run,
+and the report fails.
 
 Arguments
 ---------
@@ -423,9 +472,12 @@ diversity), plus:
 batches, ``fail_mask`` included. The ``hot_path.*`` checks guard two generations of the
 whole Program and probe ``track_gen`` and the stage's own top-level package; the
 ``capture.*`` checks record the whole Program into a caller's capture
-(``assert_caller_capturable``) and replay its own graph. A ``HOST`` stage makes the
-Program eager, and the checks are waived as for a ``capturable=False`` generator (see
-the skipped checks above).
+(``assert_caller_capturable``) and replay its own graph. With a ``HOST`` stage the
+Program runs that stage eagerly in its own segment, and the checks change as for a
+``HOST`` generator (see :ref:`HOST generators <kit-host-checks>` above).
+``bounded.absorbing`` and ``bounded.lowering`` probe the loops the stage under test
+runs, so a stage that calls ``bounded_loop(active=...)`` while declaring ``STATIC``
+fails ``construct`` instead (see :ref:`stage-bounded`).
 
 The pytest plugin
 -----------------
@@ -513,6 +565,11 @@ and nested captures or graph launches. ``no_host_sync()``, ``no_allocation()`` a
 - ``allow`` lets known host syncs through, as ``(api, module, function)`` keys
   (``("wp.array.numpy", "acme_tracks.gen", "generate")``), and records them in
   ``guard.allowed``.
+- The host poll of a ``ctx.bounded_loop`` (its lowering on an eager ``cpu`` call, see
+  :ref:`cuda-graph-bounded`) and the operations of a ``HOST`` stage's ``ctx.host()``
+  (``HostOps``) are sanctioned: they go through and are recorded in ``guard.sanctioned``,
+  in neither ``allowed`` nor ``violations``. Any other sync is reported, one made inside
+  a loop body or directly in a ``HOST`` stage included.
 
 The guards patch Warp's entry points while a guard is active, wherever a loaded module
 binds them (``from warp import launch`` at import time included), and dispatch on a
@@ -558,6 +615,11 @@ by every generator built from it.
 there are none), and ``foreign_pointers(buffers)`` the arguments that point outside
 ``buffers``. With ``buffers``, each pointer is compared as the buffer it falls in (its
 label and byte offset), and a pointer outside them as ``"<foreign>"``.
+
+On ``cpu`` a ``bounded_loop`` stops at the first window whose check finds every env
+converged, so the length of an eager trace depends on the data: compare two calls on the
+same seeds, as above. The kit's ``hot_path.topology`` compares calls with every window
+unrolled.
 
 .. _kit-capture:
 
@@ -645,6 +707,10 @@ What the kit does not see
 - **A launch sequence that changes after the first call.** ``hot_path.topology``
   compares two calls made long after construction's warm-up pass: a one-time
   initialisation launch on the first call only is not seen.
+- **A loop that never stops early for the kit's seeds.** ``bounded.absorbing`` can only
+  compare an early stop with the full bound when some window is skipped: with seeds that
+  never converge before ``n_iters`` it reports "not exercised". Pass ``seeds=`` (or
+  params) under which the loop does stop.
 - **CPU against CUDA.** Determinism is checked per device. CPU and CUDA results may
   differ (see :ref:`generator-hard-rules`), and the kit never compares them.
 - **One configuration per call.** The checks exercise the parameters you pass. Run the

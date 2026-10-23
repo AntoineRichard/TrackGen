@@ -50,6 +50,17 @@ the guard exits.
 Guard a call that runs eagerly: on CPU every generation does; on CUDA use
 ``enqueue()`` (a CUDA ``generate()`` replays the generator's own graph, which the
 ``capture`` check reports as a ``wp.capture_launch``).
+
+The host poll of :meth:`LaunchContext.bounded_loop
+<track_gen.exec.LaunchContext.bounded_loop>` (its lowering (a)) is the one sanctioned
+eager readback of a capturable path: it runs only on CPU outside every capture (or under
+the library's private forced-lowering seam). The guard lets it through, and lists it in
+:attr:`HotPathGuard.sanctioned`, only when it comes from the library's poll function
+called by the loop's window driver. A HOST stage's host operations
+(:class:`~track_gen.exec.HostOps`, ``ctx.host()``) are sanctioned the same way: the syncs
+and readbacks the ``HostOps`` methods make themselves pass and are listed in
+``sanctioned``. Any other sync or readback, a plugin's own included (also one made
+inside a loop body or a HOST stage), is a violation.
 """
 from __future__ import annotations
 
@@ -59,6 +70,7 @@ from typing import Iterable, Sequence
 
 import warp as wp
 
+from ..exec import host as _host
 from . import _interpose
 from ._interpose import Site
 
@@ -198,6 +210,10 @@ class HotPathGuard:
         self.violations: list[Violation] = []
         #: The ``allow=`` keys that were hit (let through), in call order.
         self.allowed: list[tuple] = []
+        #: The sanctioned host syncs / readbacks that were let through (their
+        #: ``(api, module, function)`` keys), in call order: ``bounded_loop`` host polls
+        #: and a HOST stage's ``HostOps`` operations.
+        self.sanctioned: list[tuple] = []
         self._cm = None
         self._env: "str | None" = None
 
@@ -207,6 +223,7 @@ class HotPathGuard:
             raise RuntimeError("this HotPathGuard is already active")
         self.violations = []
         self.allowed = []
+        self.sanctioned = []
         if "host_sync" in self.checks:
             self._env = os.environ.pop(_DEBUG_SYNC_ENV, None)
         self._cm = _interpose.listening(self)
@@ -272,6 +289,21 @@ class HotPathGuard:
     def _host_sync(self, call, what: str) -> None:
         caller = call.caller
         key = (call.api, caller.module, caller.function)
+        if _host._POLLING.get() and (caller.module, caller.function) in \
+                _host.SANCTIONED_SITES:
+            # The bounded_loop host poll (lowering (a)): sanctioned only from the
+            # library's poll function, called by the window driver (token set).
+            self.sanctioned.append(key)
+            return
+        slot = _host._SLOT.get()
+        if (caller.module, caller.function) in _host.HOSTOPS_SITES and \
+                slot is not None and slot.is_host:
+            # A HOST stage's HostOps operation (pinned buffers, stream-ordered copies,
+            # a stream wait), inside a running HOST slot: the stage's own syncs and
+            # readbacks are still seen, and so is a HostOps built by hand in a STATIC or
+            # BOUNDED stage.
+            self.sanctioned.append(key)
+            return
         if key in self.allow:
             self.allowed.append(key)
             return

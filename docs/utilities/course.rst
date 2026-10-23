@@ -124,9 +124,10 @@ rebuild, and the progress and localizer reset: full, or limited to the masked en
   Each ``(mask array, advance)`` combination has a self-graph of its own, recorded on its
   first use; ``course.graph`` is the one of a plain ``regenerate()``. With the default
   ``sync=True`` the call waits for its stream before returning.
-- **On** ``cpu``, or with a ``capturable=False`` generator, it runs eagerly. Under a
-  capture, a ``capturable=False`` generator raises ``NotCapturableError`` before launching
-  anything.
+- **On** ``cpu``, or with a generator that has a ``HOST`` stage (a ``capturable=False``
+  plugin), it runs eagerly: a ``Course`` does not split its body into segments as a
+  ``TrackGenerator`` does. Under a capture, such a generator raises
+  ``NotCapturableError`` before launching anything.
 
 That single graph replaces the two graphs of earlier releases (the generator's pipeline
 graph plus a refresh graph replayed after it).

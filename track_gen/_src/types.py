@@ -285,8 +285,11 @@ class TrackGenConfig:
             The ``repulsive`` generator is an iterative optimizer — roughly **1000×
             slower** than ``bezier`` (~0.18 s @ E=64, ~5.1 s @ E=8192 on an RTX 4090,
             vs ~2 ms for bezier; measured when it still ran eagerly).  It is
-            graph-captured on CUDA like the other generators, but the replay still
-            runs its full fixed iteration budget.  Regenerate on a **slow cadence**
+            graph-captured on CUDA like the other generators; its loop has a fixed
+            iteration bound (its own graph on CUDA 12.4+ and eager ``cpu`` calls stop
+            at the first stall window after every env has frozen; eager ``cuda`` calls
+            and plain ``torch.cuda.graph`` captures run the full bound).  Regenerate on
+            a **slow cadence**
             or in **staggered per-env slices**, not every frame.
     repulsive_grow_mult_max : float
         *Repulsive generator only.*  Upper bound of the target-perimeter multiplier

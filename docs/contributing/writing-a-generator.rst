@@ -362,7 +362,6 @@ instance per generator, with no arguments, and calls ``capacity`` and ``build`` 
        may map one to ``"gen.valid"``.
    * - ``capture``
      - A ``CaptureClass``, ``STATIC`` by default (see :ref:`stage-capture-classes`).
-       ``BOUNDED`` is rejected until roadmap PR12.
    * - ``topology``
      - ``"closed"`` (default) or ``"any"``. Open tracks are not supported in 0.x.
    * - ``reads``, ``provides``
@@ -385,7 +384,7 @@ And three methods:
   ``n`` need not be ``num_points``.
 - ``capture_class(cls, params)``, a classmethod, returns the capture class for ``params``.
   The default returns ``capture``; override it when the capture class depends on a
-  parameter. Returning ``BOUNDED`` raises ``ValueError`` until roadmap PR12.
+  parameter.
 
 All three receive the params with their **static fields only**: reading a dynamic field
 there raises ``AttributeError`` ("read it on the device through ``b.param('amp')``"). A
@@ -396,7 +395,7 @@ WobbleParams)`` still holds; ``gen.params["generator"].params`` is the full inst
 ``registry.add`` checks the declaration before it registers the class, and raises
 ``TypeError`` or ``ValueError`` (a plugin is then quarantined under ``warn``) for an
 instance, an abstract class, a missing or mismatched ``kind``, an ``api_version`` above
-``API_VERSION``, a ``capture`` that is not a ``CaptureClass`` or is ``BOUNDED``, a Params
+``API_VERSION``, a ``capture`` that is not a ``CaptureClass``, a Params
 class that breaks the rules above, an ``output`` other than ``"centerline"`` (an
 ``output="anchors"`` Stage must declare ``kind="gate_generator"``), a ``writes`` without
 ``"raw.xy"`` or with another channel (or two ports on one channel), a non-empty
@@ -419,7 +418,8 @@ recording. Replays do not run Python.
 
 ``enqueue`` follows the :ref:`hard rules <generator-hard-rules>`: device work only through
 ``ctx.launch``, ``ctx.copy``, ``ctx.fill`` and ``track_gen.ops``; no allocation; no host
-sync; no branch on device data or on ``ctx.capturing`` (a ``HOST`` stage may sync). Per
+sync; no branch on device data or on ``ctx.capturing`` (a ``HOST`` stage reaches the host
+through ``ctx.host()``, see :ref:`stage-host`). Per
 env, its output must depend only on ``b.seed[e]``, env ``e``'s dynamic parameters and
 inputs, and the static parameters: carry no state from one generation to the next. A
 masked regeneration recomputes every env, and the commit then restores the ``Track``
@@ -542,14 +542,21 @@ Capture classes
      - A fixed launch sequence, captured into the generator's own CUDA graph and recorded
        into callers' graphs: a ``GeneratorSpec`` with ``capturable=True``.
    * - ``BOUNDED``
-     - An iteration with a static bound, through ``ctx.bounded_loop``. Reserved: both
-       arrive with roadmap PR12, and until then a stage that declares or returns
-       ``BOUNDED`` is rejected. Declare ``STATIC``.
+     - An iteration with a static bound and a data-dependent early stop, through
+       ``ctx.bounded_loop`` (``repulsive``). Capturable by anything: a self-graph or a
+       Warp-registered capture with conditional-node support (CUDA 12.4+) skips the
+       converged windows on device; other captures (a plain ``torch.cuda.graph``, older
+       drivers, inside ``track_gen.exec.unconditional()``) and eager ``cuda`` calls run
+       the full bound; an eager ``cpu`` call stops early. The outputs are the same bytes
+       (see :ref:`stage-bounded`). A stage that calls ``bounded_loop(active=...)`` must
+       not declare ``STATIC`` (declare ``BOUNDED``): one declared ``STATIC`` raises
+       ``ValueError`` at construction.
    * - ``HOST``
-     - Host readbacks or host control flow: runs eagerly on every call, on CUDA too, and
-       may sync (a ``GeneratorSpec`` with ``capturable=False``, see
+     - Host readbacks or host control flow, through ``ctx.host()``: runs eagerly on
+       every call, on CUDA too, as its own segment while the rest of the pipeline
+       replays from graphs (a ``GeneratorSpec`` with ``capturable=False`` is one, see
        :ref:`generator-capture-opt-out`). Recording it into a caller's graph raises
-       ``NotCapturableError`` before any launch.
+       ``NotCapturableError`` before any launch (see :ref:`stage-host`).
 
 ``registry.describe(kind, name).capturable`` is ``False`` for a stage whose
 ``capture_class``, called with the Params defaults, returns ``HOST``; it reflects the
@@ -777,7 +784,9 @@ Five rules must hold for every generator whose ``GeneratorSpec`` uses the defaul
    conditioned on generated data, no per-env Python branching inside
    ``generate``.
 4. **Fixed bounds for every loop and buffer.**  Graph capture requires static
-   shapes.
+   shapes. A loop that should stop once every env has converged is a
+   ``ctx.bounded_loop`` with a static bound, in a ``BOUNDED`` Stage (see
+   :ref:`stage-bounded`).
 5. **Deterministic in** ``(per-env seed, config)``.  Draw every random number with
    the Warp RNG from ``seeds_wp[e]``, salted with a constant of your own so your
    stream is not correlated with the built-ins' streams for the same seed:
@@ -820,16 +829,21 @@ Opting out of capture: ``capturable=False``
 ``GeneratorSpec`` also has a ``capturable: bool = True`` field. A generator may instead set
 ``capturable=False`` to opt out of rules 2 and 3: it may allocate per-call and use host-side
 control flow — Python loops driving stage transitions, readbacks that branch on generated
-data. ``TrackGenerator`` then runs it **eagerly** on CUDA every call — the same code path as
-``cpu`` — instead of capturing it into a replayable graph; this is a supported, non-error
-path, not a fallback for a broken generator. Rules 1 (pure Warp, no torch) and 4 (fixed-shape
-buffers) still apply: only the *capture* of a static launch topology is waived, not the
-fixed-shape scratch discipline. No shipped generator uses ``capturable=False`` today
-(``GateGeneratorSpec`` carries the same flag). Before opting out, see how ``repulsive`` made a
-host-driven loop capturable: its coarse-to-fine stage transitions, resample cadence and
-stall-check cadence form a fixed schedule precomputed on the host from the config alone, and
-the readback-driven early exit was replaced by an absorbing per-env freeze on device (frozen
-envs are skipped by every kernel), so nothing is read back. Rule 5 still applies, with a
+data. It is then a ``HOST`` generator: ``TrackGenerator`` runs it **eagerly** on CUDA every
+call — the same code path as ``cpu`` — as the first segment of the pipeline, and replays
+the rest of the pipeline from a graph (see :ref:`cuda-graph-host`); this is a supported,
+non-error path, not a fallback for a broken generator. A caller cannot record it into a
+graph. Rules 1 (pure Warp, no torch) and 4 (fixed-shape buffers) still apply: only the
+*capture* of a static launch topology is waived, not the fixed-shape scratch discipline. No
+shipped generator uses ``capturable=False`` (``GateGeneratorSpec`` carries the same flag); a
+Stage declares ``capture = CaptureClass.HOST`` and reaches the host through ``ctx.host()``
+instead (see :ref:`stage-host`). Before opting out, see how ``repulsive`` made a host-driven
+loop capturable: its coarse-to-fine stage transitions, resample cadence and stall-check
+cadence form a fixed schedule precomputed on the host from the config alone, the
+readback-driven early exit was replaced by an absorbing per-env freeze on device (frozen
+envs are skipped by every kernel), and its growth loop is a ``ctx.bounded_loop`` over that
+freeze, so a self-graph still skips the iterations after every env has frozen, with
+nothing read back (a ``BOUNDED`` Stage, see :ref:`stage-bounded`). Rule 5 still applies, with a
 caveat for chaotic per-iteration methods: if such a generator accumulates its CUDA gradients
 via ``atomic_add``, the varying float summation order can make a chaotically sensitive flow
 only *statistically* reproducible on CUDA rather than bit-identical. Avoid it the way
@@ -845,8 +859,9 @@ warm-up pass that loads every kernel). After that it runs once per eager call (`
 once per recording: into the generator's own graph on the first ``cuda`` call, or into a
 caller's graph when ``generate()`` is called inside the caller's capture. Replays do not run
 Python at all, so host scalars and Python state freeze at record time. A
-``capturable=False`` generator runs once per call instead, and raises
-``NotCapturableError`` under a caller's capture. See :doc:`/how-it-works/cuda-graph` for
+``capturable=False`` generator runs once per call instead (the rest of the pipeline still
+replays from a graph), and raises ``NotCapturableError`` under a caller's capture. See
+:doc:`/how-it-works/cuda-graph` for
 the full execution model, including the stream rule for plugins that do not set
 ``accepts_ctx=True``.
 
@@ -1527,8 +1542,8 @@ The standard runtime generators are ``bezier``, ``checkpoint``, ``hull``,
 ``polar``, ``repulsive``, and ``voronoi``.  Call
 ``track_gen.plugin.registry.available("generator")`` for the authoritative list, installed
 plugins included (``available("gate_generator")`` for gate generators). Each built-in
-track generator is a ``GeneratorSpec`` and each built-in gate generator an anchors
-``Stage``, with a static Params class whose fields are the flat ``TrackGenConfig`` /
+track generator is a ``GeneratorSpec`` (``repulsive``: a ``BOUNDED`` ``Stage``) and each
+built-in gate generator an anchors ``Stage``, with a static Params class whose fields are the flat ``TrackGenConfig`` /
 ``GateGenConfig`` knobs it reads, under the same names; the
 :ref:`configuration reference <builtin-generator-params>` lists them.
 
@@ -1541,7 +1556,8 @@ fixed-N steering, additive heading-ramp closure, best-of-K selection, and
 optional clip fallback.  The repulsive method is a self-repulsive curve-growth
 generator (see :doc:`/generators/repulsive`); it is ~1000× slower than the other
 five, and stays capturable by running a fixed iteration schedule with an absorbing
-per-env freeze instead of a host-side early exit.
+per-env freeze instead of a host-side early exit: its growth loop is a
+``ctx.bounded_loop`` whose self-graph skips the windows after every env has frozen.
 
 Adding a built-in generator
 ---------------------------

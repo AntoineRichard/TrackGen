@@ -200,8 +200,6 @@ def _pipeline_stage(**attrs):
      r"writes 'cl.xy' through two ports"),
     (dict(kind="validity", reads={}, writes={"x": "cl.acme.score"}), ValueError,
      r"Stage R \(kind 'validity'\) must write 'valid.fail'"),
-    (dict(capture=CaptureClass.BOUNDED), ValueError,
-     "capture=BOUNDED arrives with roadmap PR12"),
     (dict(writes=[("xy", "cl.xy")]), TypeError, "writes must be a mapping"),
 ])
 def test_pipeline_stage_registration_rules(attrs, exc, match):
@@ -226,9 +224,15 @@ def test_namespaced_plugin_channels_are_accepted():
         registry.add(SimpleNamespace(name="acme.w"), kind="width")
 
 
-def test_registration_rejects_a_bounded_stage_until_pr12():
-    with pytest.raises(ValueError, match="capture=BOUNDED arrives with roadmap PR12"):
-        registry.add(_stage(capture=CaptureClass.BOUNDED))
+def test_a_bounded_stage_registers():
+    # Roadmap PR12: BOUNDED (a ctx.bounded_loop with active=) is accepted for every kind.
+    S = _stage(capture=CaptureClass.BOUNDED)
+    registry.add(S)
+    info = registry.describe("generator", "acme.s")
+    assert info.capture is CaptureClass.BOUNDED and info.capturable
+    R = _pipeline_stage(capture=CaptureClass.BOUNDED)
+    registry.add(R)
+    assert registry.describe("relax", "acme.r").capture is CaptureClass.BOUNDED
 
 
 # ---------------------------------------------------------------------------------------
@@ -710,8 +714,10 @@ def test_capture_class_may_depend_on_params():
             return CaptureClass.BOUNDED
 
     registry.add(Bounded)
-    with pytest.raises(ValueError, match="returned BOUNDED, which arrives with roadmap PR12"):
-        _gen("acme.bounded")
+    gen = _gen("acme.bounded")             # BOUNDED: capturable (roadmap PR12)
+    assert gen._capturable is True
+    assert gen.program.capture_class is CaptureClass.BOUNDED
+    assert len(gen.program.segments) == 1 and gen.program.host_stage_ids == ()
 
 
 # ---------------------------------------------------------------------------------------

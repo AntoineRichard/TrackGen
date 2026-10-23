@@ -8,9 +8,14 @@ with Warp:
 - lifetime anchoring: a producer recorded into a registered capture is attached to
   the Warp graph object of that capture;
 - device-side conditional skips (:meth:`track_gen.exec.LaunchContext.skip_unless`,
-  used by ``Course.regenerate(mask=...)``), opt-in with ``conditional=True``:
-  otherwise the guarded body is recorded unconditionally (always correct, never
-  skipped).
+  used by ``Course.regenerate(mask=...)`` and by every window of an iterative
+  ``BOUNDED`` stage such as the ``repulsive`` generator), opt-in with
+  ``conditional=True``: otherwise the guarded body is recorded unconditionally
+  (always correct, never skipped). A hand-made Warp registration of torch's capture
+  (``wp.capture_begin(stream=..., external=True)`` on torch's capture stream) gets no
+  conditional node either: opt in through :func:`registered`. (Your own
+  ``wp.ScopedCapture`` of torch's current stream, when torch is not capturing, opts in
+  with :func:`track_gen.exec.conditional`.)
 
 :func:`registered` registers torch's capture with Warp for the duration of a
 ``with`` block; :func:`retain` ties Python objects to the torch graph's lifetime::
@@ -102,18 +107,22 @@ def registered(stream=None, *, graph=None, capture_mode=None,
     ``conditional=True`` caveat: a conditional node (``wp.capture_if``) ends and
     restarts the CUDA capture of the stream, which gives it a new capture id, and
     torch's caching allocator recognises its graph's capture by the id taken at
-    ``capture_begin``. After the first conditional ``Course.regenerate(mask=...)``,
-    torch therefore no longer routes the allocations of later torch ops in the same
-    ``torch.cuda.graph`` to the graph's private pool (they either fail to capture or
-    take blocks from the general pool that eager code may reuse while the graph still
-    writes them), and other torch features that look the capture up by its id may
-    fail. So with ``conditional=True``, record the masked
-    regeneration AFTER every torch op of the graph that allocates (or preallocate
-    their outputs and use ``out=`` / in-place ops), up to the end of the
-    ``torch.cuda.graph`` block, not just of this one. The graph also cannot be used
-    as a CUDA child graph. Without ``conditional=True`` the masked regeneration is
-    recorded unconditionally (an exact no-op on a zero mask, costing a full
-    generation per replay) and torch's capture is never touched.
+    ``capture_begin``. After the first conditional node, torch therefore no longer
+    routes the allocations of later torch ops in the same ``torch.cuda.graph`` to the
+    graph's private pool (they either fail to capture or take blocks from the general
+    pool that eager code may reuse while the graph still writes them), and other torch
+    features that look the capture up by its id may fail. The first conditional node
+    comes with a masked ``Course.regenerate(mask=...)`` or with ANY generation that
+    runs a ``BOUNDED`` stage (the ``repulsive`` generator, a plugin's
+    ``ctx.bounded_loop`` with ``active=``: one conditional node per window), not only
+    with masked regeneration. So with ``conditional=True``, record those calls AFTER
+    every torch op of the graph that allocates (or preallocate their outputs and use
+    ``out=`` / in-place ops), up to the end of the ``torch.cuda.graph`` block, not
+    just of this one. Ending the capture also fails while a side stream that joined it
+    has not been joined back. The graph also cannot be used as a CUDA child graph.
+    Without ``conditional=True`` the masked regeneration and every ``BOUNDED`` window
+    are recorded unconditionally (exact no-ops when skipped would be, costing their
+    full work per replay) and torch's capture is never touched.
 
     Args:
         stream: ``None`` (torch's current stream on the current CUDA device, which
@@ -130,7 +139,8 @@ def registered(stream=None, *, graph=None, capture_mode=None,
             (default, torch's default), ``"thread_local"``, ``"relaxed"``, or a
             ``wp.CaptureMode``.
         conditional: allow ``LaunchContext.skip_unless`` to record CUDA conditional
-            nodes into this registration (default ``False``; see the caveat
+            nodes into this registration (a masked ``Course.regenerate``, every
+            window of a ``BOUNDED`` stage; default ``False``; see the caveat
             above).
 
     Yields:

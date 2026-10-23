@@ -33,8 +33,10 @@ Per-env seeds and device-side epochs, the pair that keys every generation; see
 Execution layer
 ---------------
 
-Stream resolution, the record / eager / self-graph policy shared by the producers, the
-device-side conditional skip, and the capture errors; see :doc:`/how-it-works/cuda-graph`.
+Stream resolution, the record / eager / self-graph policy shared by the producers (segment
+by segment for a pipeline with ``HOST`` stages), the device-side conditional skip, bounded
+loops, the host operations of ``HOST`` stages, and the capture errors; see
+:doc:`/how-it-works/cuda-graph`.
 
 .. automodule:: track_gen.exec
    :no-members:
@@ -45,7 +47,13 @@ device-side conditional skip, and the capture errors; see :doc:`/how-it-works/cu
 .. autoclass:: track_gen.exec.GraphRunner
    :members:
 
+.. autoclass:: track_gen.exec.HostOps
+   :members:
+
 .. autofunction:: track_gen.exec.resolve_stream
+
+.. autofunction:: track_gen.exec.unconditional
+.. autofunction:: track_gen.exec.conditional
 
 .. autoexception:: track_gen.exec.CaptureError
 
@@ -115,6 +123,8 @@ Fills, flags and validation
 .. autofunction:: track_gen.ops.fill
 
 .. autofunction:: track_gen.ops.any_set
+
+.. autofunction:: track_gen.ops.all_set
 
 .. autofunction:: track_gen.ops.check_array
 
@@ -290,14 +300,17 @@ Plugins register ``kind="generator"`` stages with ``output="centerline"`` (see
 the open pipeline kinds ``"relax"``, ``"width"``, ``"elevation"``, ``"validity"``,
 ``"order"`` and ``"stations"``, which read channels through ``StageBuilder.read`` and
 rewrite them into ``StageBuilder.write`` (see :doc:`/contributing/writing-a-stage`). The
-other stages are TrackGen's built-ins (see :doc:`/how-it-works/pipeline-preview`).
+other stages are TrackGen's built-ins (see :doc:`/how-it-works/pipeline-preview`). A
+stage's ``CaptureClass`` is ``STATIC``, ``BOUNDED`` (a loop through
+``LaunchContext.bounded_loop``, see :ref:`stage-bounded`) or ``HOST`` (host work through
+``LaunchContext.host()`` and ``StageBuilder.host_buffer``, see :ref:`stage-host`).
 
 .. autoclass:: track_gen.plugin.Stage
    :members: capture_class, capacity, build
 
 .. autoclass:: track_gen.plugin.StageBuilder
    :members: read, write, temp_like, stride_of, per_of, scratch, param, input, salt,
-      fail_bit
+      fail_bit, host_buffer
 
 .. autoclass:: track_gen.plugin.CaptureClass
    :no-members:
@@ -340,6 +353,7 @@ Specs
 
 .. autoclass:: track_gen.pipeline.PipelineSpec
    :members: ids, replace, insert_after, insert_before, remove, to_dict, from_dict
+   :exclude-members: batch, stages, require_caller_capturable
 
 .. autofunction:: track_gen.pipeline.legacy.to_pipeline_spec
 
@@ -358,8 +372,13 @@ Planner and Program
 .. autofunction:: track_gen.pipeline.build
 
 .. autoclass:: track_gen.pipeline.Program
-   :members: run, enqueue, prepare, result, spec, tap, channels, fail_bits, on_invalid,
-      seeds, seed, inputs, params, graph, capturable, capture_class
+   :members: run, enqueue, enqueue_segment, prepare, result, spec, tap, channels,
+      fail_bits, on_invalid, seeds, seed, inputs, params, graph, segment_graphs,
+      capturable, capture_class, segments, host_stage_ids
+
+.. autoclass:: track_gen.pipeline.Segment
+   :members: host
+   :exclude-members: index, capture_class, stage_ids
 
 .. autoexception:: track_gen.pipeline.PlanError
 

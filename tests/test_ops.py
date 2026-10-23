@@ -119,13 +119,13 @@ def _noisy_loops(rs, E, n, nan_rows=True):
 # public surface
 # ---------------------------------------------------------------------------------------
 
-_ALL = ["ArcScratch", "angle_sort", "any_set", "arc_resample", "check_array",
+_ALL = ["ArcScratch", "all_set", "angle_sort", "any_set", "arc_resample", "check_array",
         "closed_catmull_rom", "constants", "fill", "funcs", "grid_cells", "hash32",
         "hash32_host", "normalize_extent", "closed_polyline",
         "resample_constant_spacing", "resample_uniform", "sample_counts",
         "sample_grid_points", "self_intersections", "thickness", "turning_number"]
 
-_CTX_OPS = ["angle_sort", "any_set", "arc_resample", "closed_catmull_rom", "fill",
+_CTX_OPS = ["all_set", "angle_sort", "any_set", "arc_resample", "closed_catmull_rom", "fill",
             "normalize_extent", "closed_polyline", "resample_constant_spacing",
             "resample_uniform", "sample_counts", "sample_grid_points",
             "self_intersections", "thickness", "turning_number"]
@@ -1144,6 +1144,7 @@ def _all_op_calls():
         ("closed_polyline[count,endpoint,active]", lambda: ops.closed_polyline(ctx, ctrl, K, ps, o_cr, count=cnt_k, endpoint=True, active=act)),
         ("fill", lambda: ops.fill(ctx, o_cr, (0.0, 1.0))),
         ("any_set", lambda: ops.any_set(ctx, act, flag)),
+        ("all_set", lambda: ops.all_set(ctx, act, flag)),
         ("check_array", lambda: ops.check_array("x", act, (E,), wp.int32, DEV)),
     ]
 
@@ -1154,7 +1155,7 @@ _OP_NAMES = (
     "normalize_extent[count]", "angle_sort", "angle_sort[out_stride]", "sample_counts",
     "sample_grid_points", "sample_grid_points[array]", "closed_catmull_rom",
     "closed_catmull_rom[count,endpoint]", "closed_polyline", "closed_polyline[active]",
-    "closed_polyline[count,endpoint,active]", "fill", "any_set", "check_array",
+    "closed_polyline[count,endpoint,active]", "fill", "any_set", "all_set", "check_array",
 )
 
 

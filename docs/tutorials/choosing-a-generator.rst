@@ -13,8 +13,9 @@ generator is selected by passing ``generator=...`` to ``TrackGenConfig`` (or
 
 All six generators are fully supported and deterministic in ``(seed, config)`` — byte-identical
 run-to-run per device (both CPU and CUDA; ``repulsive`` included, via its analytic-adjoint
-gradient). All six are graph-capturable; ``repulsive`` is an iterative optimizer that
-runs its full fixed iteration budget on every call and is roughly 1000× slower (see
+gradient). All six are graph-capturable; ``repulsive`` is an iterative optimizer with a
+fixed iteration bound (its own CUDA graph on CUDA 12.4+ and eager ``cpu`` calls stop at
+the first stall window after every env has converged) and is roughly 1000× slower (see
 :doc:`/generators/repulsive`). The choice is about track *shape variety* and
 *relaxation cost* (and, for ``repulsive``, generation cost), not correctness.
 
@@ -49,8 +50,8 @@ The Six Generators
    * - ``"repulsive"``
      - Dense, foldy serpentine circuits grown by self-repulsion around random
        obstacles; the foldiest family by far, but ~1000× slower (iterative
-       optimizer; full fixed iteration budget every call) — use only when the
-       shape is worth the generation cost.
+       optimizer with a fixed iteration bound) — use only when the shape is worth
+       the generation cost.
 
 How to Set the Generator
 --------------------------

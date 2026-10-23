@@ -191,15 +191,28 @@ class PipelineSpec:
     The editing operations return a NEW spec; they only check that an anchor id
     exists (``ValueError`` listing the ids). Everything else is validated by
     :func:`track_gen.pipeline.build`.
+
+    Attributes:
+        batch: The :class:`BatchSpec`.
+        stages: The ordered :class:`StageRef` slots (the generator first).
+        require_caller_capturable: Refuse, at build (``PlanError`` naming them), any
+            ``CaptureClass.HOST`` stage: the Program is then recordable into a caller's
+            capture as a whole. Default ``False`` (HOST stages run eagerly between the
+            graph launches of the rest; a caller capture of such a Program raises
+            ``NotCapturableError``).
     """
 
     batch: BatchSpec
     stages: "tuple[StageRef, ...]"
+    require_caller_capturable: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.batch, BatchSpec):
             raise TypeError(f"PipelineSpec.batch must be a BatchSpec, got "
                             f"{type(self.batch).__name__}")
+        if not isinstance(self.require_caller_capturable, bool):
+            raise TypeError(f"PipelineSpec.require_caller_capturable must be a bool, got "
+                            f"{type(self.require_caller_capturable).__name__}")
         stages = tuple(self.stages)
         for ref in stages:
             if not isinstance(ref, StageRef):
@@ -254,9 +267,13 @@ class PipelineSpec:
 
     def to_dict(self) -> dict:
         """The spec as JSON data (``"format": "track_gen.pipeline/1"``): Params become
-        ``{field: value}`` (tuples as lists, enums as their values)."""
-        return {"format": FORMAT, "batch": self.batch._to_dict(),
-                "stages": [ref._to_dict() for ref in self.stages]}
+        ``{field: value}`` (tuples as lists, enums as their values);
+        ``"require_caller_capturable": true`` only when it is set."""
+        out = {"format": FORMAT, "batch": self.batch._to_dict(),
+               "stages": [ref._to_dict() for ref in self.stages]}
+        if self.require_caller_capturable:
+            out["require_caller_capturable"] = True
+        return out
 
     @classmethod
     def from_dict(cls, data: Mapping) -> "PipelineSpec":
@@ -283,7 +300,8 @@ class PipelineSpec:
             stages.append(StageRef(kind=s["kind"], name=s["name"], params=s.get("params"),
                                    id=s.get("id"), ports=s.get("ports") or {},
                                    capacity=s.get("capacity") or {}))
-        return cls(batch=batch, stages=tuple(stages))
+        return cls(batch=batch, stages=tuple(stages),
+                   require_caller_capturable=data.get("require_caller_capturable", False))
 
 
 def _required(data, what: str, keys) -> Mapping:

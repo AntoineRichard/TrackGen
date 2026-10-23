@@ -321,7 +321,8 @@ def _grow(seeds: list[int], dev: str = "cpu"):
     track = gen.generate(E)
     N = int(cfg.num_points)
     return (gen._scratch.gen_centerline.numpy().reshape(E, N, 2),
-            gen._scratch.gen.frozen.numpy(), track.valid.numpy())
+            gen._scratch.gen.scratch["scratch:generator/frozen"].numpy(),
+            track.valid.numpy())
 
 
 @pytest.mark.parametrize("dev", DEVS)

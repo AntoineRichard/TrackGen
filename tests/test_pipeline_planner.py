@@ -953,14 +953,17 @@ def test_a_host_stage_makes_the_program_host():
     assert registry.describe("relax", "test.host").capturable is False
 
 
-def test_a_bounded_capture_class_is_refused_at_plan_time(no_alloc):
+def test_a_bounded_capture_class_is_accepted():
+    # Roadmap PR12: a BOUNDED stage shares the capturable segment of the STATIC ones.
     Bounded = _stage("relax", "test.bounded", {"xy": "cl.xy"}, {"xy": "cl.xy"})
     Bounded.capture_class = classmethod(lambda cls, params: CaptureClass.BOUNDED)
     registry.add(Bounded)
-    with pytest.raises(PlanError, match=r"stage 'relax' \(relax.test.bounded\): "
-                                        r"Toy.capture_class\(\) returned BOUNDED: arrives "
-                                        r"with roadmap PR12"):
-        build(_spec().replace("relax", StageRef("relax", "test.bounded")))
+    p = build(_spec().replace("relax", StageRef("relax", "test.bounded")), seeds=3)
+    assert p.capture_class is CaptureClass.BOUNDED and p.capturable
+    assert p.host_stage_ids == () and len(p.segments) == 1
+    (seg,) = p.segments
+    assert seg.capture_class is CaptureClass.BOUNDED and not seg.host
+    assert seg.stage_ids == p._stage_ids
 
 
 def test_tap_and_channels():

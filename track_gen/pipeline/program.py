@@ -1,12 +1,16 @@
 """The :class:`Program`: a built pipeline, run under the ``GraphRunner`` policy."""
 from __future__ import annotations
 
+import dataclasses
 import functools
 import types
 from typing import TYPE_CHECKING, Mapping
 
 from .._src.generator_binding import _LATCH_ALL, _LATCH_MASKED
-from ..exec.runner import GraphRunner
+from ..exec.context import _host_blocked
+from ..exec.errors import LegacyPluginStreamError, NotCapturableError
+from ..exec.runner import GraphRunner, _BodyPart, _is_current, _SegmentedBody
+from ..plugin.stage import CaptureClass
 
 if TYPE_CHECKING:  # pragma: no cover
     import warp as wp
@@ -17,9 +21,33 @@ if TYPE_CHECKING:  # pragma: no cover
     from ..seeds import SeedState
     from .spec import PipelineSpec
 
-__all__ = ["Program"]
+__all__ = ["Program", "Segment"]
 
 _PROGRAM_TOKEN = object()
+
+
+@dataclasses.dataclass(frozen=True)
+class Segment:
+    """One segment of a :class:`Program` (planner rule 6): a maximal run of consecutive
+    stages of one kind, HOST (run eagerly every call) or capturable (STATIC / BOUNDED:
+    replayed from the Program's own graph outside a capture).
+
+    Attributes:
+        index: The segment's position (0 opens with the seed prologue, the last one
+            closes with the commit).
+        capture_class: ``CaptureClass.HOST``, or the largest of its stages' classes
+            (``STATIC`` / ``BOUNDED``).
+        stage_ids: The ids of its stages, in order.
+    """
+
+    index: int
+    capture_class: CaptureClass
+    stage_ids: "tuple[str, ...]"
+
+    @property
+    def host(self) -> bool:
+        """Whether the segment holds HOST stages (it runs eagerly every call)."""
+        return self.capture_class is CaptureClass.HOST
 
 
 class Program:
@@ -34,22 +62,28 @@ class Program:
     unmasked envs' result rows] -> every stage in order (EVERY env) -> the commit
     (masked: restore the unmasked envs; derive ``valid``; ``on_invalid="poison"``) ->
     ``result.generation <- epoch`` (masked envs only, with a mask). It allocates nothing
-    and never host-syncs. See :mod:`track_gen.stages.commit` for what the commit costs
-    (nothing for an unmasked generation of the default pipeline). The result is a
+    and never host-syncs, except inside its HOST stages (their ``ctx.host()``
+    readbacks, uploads and waits on the call's stream). See
+    :mod:`track_gen.stages.commit` for what the commit costs (nothing for an unmasked
+    generation of the default pipeline). The result is a
     ``Track``, or a ``GateSequence`` for a gate pipeline (``BatchSpec.max_gates`` set,
     roadmap PR11).
+
+    A Program whose stages include ``CaptureClass.HOST`` ones is split into
+    :attr:`segments` (consecutive stages of equal host-ness): outside a capture its
+    HOST segments run eagerly and every other segment replays its own graph on CUDA
+    (:meth:`enqueue_segment`); a caller's capture refuses it before any launch
+    (``NotCapturableError`` naming :attr:`host_stage_ids`).
     """
 
     def __init__(self, *, _token=None, spec, layout, binding, result, seeds, seed,
                  inputs, params, pairs, enqueues, versions, scratch, stage_ids, kinds,
                  gen_scratch, stream=None, owner=None, commit=None, fail_bits=None,
-                 fail_owner=None, capture_class=None, on_invalid: str = "keep",
-                 writers=None, ports=None) -> None:
+                 fail_owner=None, capture_classes=None, segments=None,
+                 on_invalid: str = "keep", writers=None, ports=None) -> None:
         if _token is not _PROGRAM_TOKEN:
             raise TypeError("Program is created by track_gen.pipeline.build()")
         import warp as wp  # noqa: PLC0415
-
-        from ..plugin.stage import CaptureClass  # noqa: PLC0415
 
         self._spec = spec
         self._layout = layout
@@ -73,17 +107,31 @@ class Program:
         self._on_invalid = str(on_invalid)
         self._channel_writers = {ch: tuple(ids) for ch, ids in (writers or {}).items()}
         self._ports = dict(ports or {})            # stage_id -> (reads, writes)
-        if capture_class is None:
-            capture_class = CaptureClass.STATIC if binding.capturable else \
-                CaptureClass.HOST
-        self._capture_class = CaptureClass(capture_class)
-        self._capturable = self._capture_class != CaptureClass.HOST
+        if capture_classes is None:
+            capture_classes = [CaptureClass(binding.capture)] + \
+                [CaptureClass.STATIC] * (len(self._stage_ids) - 1)
+        caps = tuple(CaptureClass(c) for c in capture_classes)
+        self._caps = caps                         # stage index -> its CaptureClass
+        if segments is None:
+            segments = (Segment(0, max(caps), self._stage_ids),)
+        self._segments = tuple(segments)
+        # segment index -> the stage indices it runs
+        index = {sid: i for i, sid in enumerate(self._stage_ids)}
+        self._seg_slots = tuple(tuple(index[sid] for sid in seg.stage_ids)
+                                for seg in self._segments)
+        self._host_stage_ids = tuple(sid for sid, c in zip(self._stage_ids, caps)
+                                     if c is CaptureClass.HOST)
+        self._capture_class = max(caps)
+        self._capturable = not self._host_stage_ids
         self._legacy_stream = not bool(binding.accepts_ctx)
         self._E = int(layout.num_envs)
+        # A legacy-ABI generator (stage 0, segment 0) launches on Warp's current stream:
+        # its segment self-captures there unless it is a HOST segment (run eagerly).
         self._runner = GraphRunner(
             self._device, capturable=self._capturable, legacy_stream=self._legacy_stream,
             default_stream=stream, owner=self if owner is None else owner,
-            name=str(binding.name))
+            name=str(binding.name), _host_ids=self._host_stage_ids,
+            _legacy_capture=self._legacy_stream and not self._segments[0].host)
 
     def __repr__(self) -> str:
         return (f"Program(stages={list(self._stage_ids)}, E={self._E}, "
@@ -140,11 +188,26 @@ class Program:
         return self._params
 
     @property
-    def capture_class(self):
-        """``CaptureClass.STATIC`` (capturable) or ``HOST`` (eager every call): the
-        largest of the generator's and every stage's (``Stage.capture_class`` of its
-        params); the built-in stages are STATIC."""
+    def capture_class(self) -> CaptureClass:
+        """The largest of the generator's and every stage's ``CaptureClass``
+        (``Stage.capture_class`` of its params; a legacy spec: ``STATIC``, or ``HOST``
+        with ``capturable=False``): ``STATIC``, ``BOUNDED`` (an iterative stage; still
+        recordable into a caller's capture) or ``HOST`` (see :attr:`segments`). The
+        built-in stages are STATIC."""
         return self._capture_class
+
+    @property
+    def segments(self) -> "tuple[Segment, ...]":
+        """The Program's :class:`Segment` s: maximal runs of consecutive stages of equal
+        host-ness (one segment unless some stage is HOST). Outside a capture each HOST
+        segment runs eagerly and every other segment replays its own graph on CUDA."""
+        return self._segments
+
+    @property
+    def host_stage_ids(self) -> "tuple[str, ...]":
+        """The ids of the ``CaptureClass.HOST`` stages (``()``: the Program is
+        recordable into a caller's capture)."""
+        return self._host_stage_ids
 
     @property
     def fail_bits(self) -> Mapping[str, int]:
@@ -168,7 +231,8 @@ class Program:
 
     @property
     def capturable(self) -> bool:
-        """Whether the Program may be recorded into a caller's capture."""
+        """Whether the Program may be recorded into a caller's capture (it has no HOST
+        stage)."""
         return self._capturable
 
     @property
@@ -185,15 +249,26 @@ class Program:
     @property
     def graph(self) -> "wp.Graph | None":
         """The Program's own CUDA graph for a plain :meth:`run` (``None`` on CPU, for
-        a non-capturable Program, and before the first such CUDA call)."""
+        a Program with HOST stages, whose capturable segments get one graph each, and
+        before the first such CUDA call)."""
         return self._runner.graph
+
+    def segment_graphs(self, key=None) -> "tuple | None":
+        """The per-segment self-graphs of a Program with HOST stages, one per segment
+        in order (``None`` at a HOST segment), for the self-graph key ``key`` (``None``:
+        a plain :meth:`run`; ``(True, mask.ptr or 0)`` for ``advance=True``); ``None``
+        before the first such CUDA call outside a capture, on CPU, and for a Program
+        without HOST stages (see :attr:`graph`)."""
+        return self._runner.segment_graphs_for(key)
 
     # -- the body ---------------------------------------------------------------
     def enqueue(self, ctx: "LaunchContext", *, advance: bool = False,
                 mask: "wp.array | None" = None) -> "Track":
         """Launch one generation on ``ctx`` and return :attr:`result`.
 
-        No allocation, no host sync, no branch on device data. With ``mask`` the
+        No allocation, no branch on device data, and no host sync except inside the
+        HOST stages (their ``ctx.host()`` operations wait on ``ctx``'s stream). With
+        ``mask`` the
         prologue, the commit and the ``generation`` write cover the masked envs only:
         every other env's ``Track`` rows end the generation bit for bit as they were
         (validate ``mask`` first, as :meth:`run` does). They are held, recomputed by the
@@ -207,47 +282,140 @@ class Program:
             advance: Bump ``seeds.epoch`` first (every env, or where ``mask[e] != 0``).
             mask: Optional ``[E]`` int32 mask.
 
+        An iterative (``BOUNDED``) stage runs its full iteration bound when called
+        eagerly on CUDA (its self-graph skips converged windows on device). A legacy-ABI
+        generator (:attr:`legacy_stream`) launches on Warp's current stream: when
+        ``ctx``'s stream is another one, the generation runs on the current stream,
+        ordered after and before ``ctx``'s with events (as ``GraphRunner`` does).
+
         Raises:
+            track_gen.exec.NotCapturableError: the Program has HOST stages and ``ctx`` is
+                capturing (or a CPU graph capture is open on the device); raised before
+                any launch.
+            track_gen.exec.LegacyPluginStreamError: a legacy-ABI generator and ``ctx`` is
+                capturing a stream that is not Warp's current stream.
             track_gen.exec.CaptureError: ``ctx`` is capturing and :meth:`prepare` has
                 not run (the first launches would load modules inside the capture).
         """
+        if self._host_stage_ids and _host_blocked(ctx):
+            raise self._not_capturable(self._host_stage_ids)
         if not self._runner.prepared and ctx.capturing:
             raise self._not_prepared()
+
+        def body(c) -> None:
+            for seg in self._segments:
+                self._enqueue_segment(seg.index, c, advance, mask)
+        self._run_legacy_aware(body, ctx, True)
+        return self._result
+
+    def enqueue_segment(self, i: int, ctx: "LaunchContext", *, advance: bool = False,
+                        mask: "wp.array | None" = None) -> "Track":
+        """Launch segment ``i`` of one generation on ``ctx`` (see :attr:`segments`) and
+        return :attr:`result`. Segment 0 opens with the prologue (``advance``, the
+        effective seeds, the latch, the masked hold), the last one closes with the
+        commit and the ``generation`` write; :meth:`enqueue` runs every segment in
+        order. A segment that is not HOST may be recorded into a caller's capture once
+        the Program is prepared (e.g. record the capturable tail, run the HOST head
+        eagerly).
+
+        One generation is every segment, in order, on one stream, with the SAME
+        ``advance`` and ``mask`` (a recorded segment keeps the arguments it was recorded
+        with: run the eager segments with those). This is not checked: a replayed
+        segment runs no Python, so the Program cannot see which arguments it had.
+        Mixing arguments, running segments out of order or skipping one leaves the
+        result undefined.
+
+        A legacy-ABI generator (:attr:`legacy_stream`) lives in segment 0 and launches on
+        Warp's current stream: there, segment 0 follows the rule of :meth:`enqueue`.
+
+        Raises:
+            IndexError: no segment ``i``.
+            track_gen.exec.NotCapturableError: segment ``i`` is HOST and ``ctx`` is
+                capturing (or a CPU graph capture is open on the device).
+            track_gen.exec.LegacyPluginStreamError: segment 0 holds a legacy-ABI
+                generator and ``ctx`` is capturing a stream that is not Warp's current
+                stream.
+            track_gen.exec.CaptureError: ``ctx`` is capturing and :meth:`prepare` has
+                not run.
+        """
+        if isinstance(i, bool) or not isinstance(i, int) or \
+                not 0 <= i < len(self._segments):
+            raise IndexError(f"no segment {i!r}; the Program has {len(self._segments)}")
+        seg = self._segments[i]
+        if seg.host and _host_blocked(ctx):
+            raise self._not_capturable(tuple(seg.stage_ids))
+        if not self._runner.prepared and ctx.capturing:
+            raise self._not_prepared()
+        self._run_legacy_aware(lambda c: self._enqueue_segment(i, c, advance, mask), ctx,
+                               i == 0)
+        return self._result
+
+    def _run_legacy_aware(self, body, ctx, legacy: bool) -> None:
+        """Run ``body(ctx)``; when it holds the legacy-ABI generator (``legacy``) and
+        ``ctx``'s stream is not Warp's current stream, refuse a capture of that stream,
+        or run the body on the current stream ordered with events (the runner's legacy
+        eager path, under its lock)."""
+        if not (legacy and self._legacy_stream) or ctx.stream is None or \
+                _is_current(ctx.stream, self._device):
+            body(ctx)
+            return
+        if ctx.capturing:
+            raise LegacyPluginStreamError(str(self._binding.name))
+        runner = self._runner
+        with runner._legacy_eager(True):
+            runner._run_eager(body, ctx, legacy=True)
+
+    def _enqueue_segment(self, i: int, ctx, advance: bool, mask) -> None:
+        """Segment ``i``'s launches (no checks): [the prologue] -> its stages -> [the
+        commit and the generation write]."""
         seeds = self._seeds
-        if advance:
-            seeds.advance(mask, ctx=ctx)
-        seeds.effective(self._seed, mask, ctx=ctx)
-        E = self._E
-        for live, work in self._pairs:     # dynamic params / inputs, live -> work
-            if mask is None:
-                ctx.launch(_LATCH_ALL[work.dtype], E, [live, work])
-            else:
-                ctx.launch(_LATCH_MASKED[work.dtype], E, [live, mask, work])
         commit = self._commit
-        if commit is not None and mask is not None:
-            commit.enqueue_hold(ctx, mask)
-        for enqueue in self._enqueues:
-            enqueue(ctx)
-        if commit is not None:
-            commit.enqueue_commit(ctx, mask)
-        result = self._result
-        if result.generation is not None:
-            seeds._write_generation(result.generation, mask, ctx)
-        return result
+        if i == 0:
+            if advance:
+                seeds.advance(mask, ctx=ctx)
+            seeds.effective(self._seed, mask, ctx=ctx)
+            E = self._E
+            for live, work in self._pairs:     # dynamic params / inputs, live -> work
+                if mask is None:
+                    ctx.launch(_LATCH_ALL[work.dtype], E, [live, work])
+                else:
+                    ctx.launch(_LATCH_MASKED[work.dtype], E, [live, mask, work])
+            if commit is not None and mask is not None:
+                commit.enqueue_hold(ctx, mask)
+        enqueues = self._enqueues
+        for j in self._seg_slots[i]:
+            enqueues[j](ctx)
+        if i == len(self._segments) - 1:
+            if commit is not None:
+                commit.enqueue_commit(ctx, mask)
+            result = self._result
+            if result.generation is not None:
+                seeds._write_generation(result.generation, mask, ctx)
 
     def _body(self, advance: bool, mask) -> "tuple[object, object]":
         """``(body, self-graph key)`` of one call; validates ``advance`` / ``mask``
-        host-side, before any launch."""
+        host-side, before any launch. A segmented Program's body is one part per
+        segment (the runner self-graphs the parts that are not HOST)."""
         if mask is not None:
             if not advance:
                 raise ValueError(
                     "mask= selects the envs whose epoch advances; it requires "
                     "advance=True (without it every env is regenerated identically)")
             self._seeds.check_mask(mask)
+        key = (True, 0 if mask is None else int(mask.ptr)) if advance else None
+        if len(self._segments) > 1:
+            kw = {"advance": True, "mask": mask} if advance else {}
+            return _SegmentedBody(
+                _BodyPart(functools.partial(self.enqueue_segment, seg.index, **kw),
+                          host=seg.host,
+                          legacy=self._legacy_stream and seg.index == 0)
+                for seg in self._segments), key
         if not advance:
             return self.enqueue, None
-        key = (True, 0 if mask is None else int(mask.ptr))
         return functools.partial(self.enqueue, advance=True, mask=mask), key
+
+    def _not_capturable(self, stage_ids) -> NotCapturableError:
+        return NotCapturableError(str(self._binding.name), stage_ids=stage_ids)
 
     def _not_prepared(self):
         from ..exec.errors import CaptureError  # noqa: PLC0415
@@ -294,12 +462,19 @@ class Program:
 
         Raises:
             ValueError: an invalid ``mask``.
-            track_gen.exec.NotCapturableError: recording a non-capturable Program.
+            track_gen.exec.NotCapturableError: recording a Program with HOST stages
+                (also one built with ``prepare=False``), before any launch.
             track_gen.exec.CaptureError: recording a Program that was never prepared.
         """
         body, key = self._body(advance, mask)
+        ctx = None
+        if self._host_stage_ids:
+            ctx = self._runner.context(stream)
+            if _host_blocked(ctx):
+                raise self._not_capturable(self._host_stage_ids)
         if not self._runner.prepared:
-            if self._runner.context(stream).capturing:
+            ctx = ctx if ctx is not None else self._runner.context(stream)
+            if ctx.capturing:
                 raise self._not_prepared()
             self.prepare()
         self._runner.run(body, stream=stream, sync=sync, key=key, policy=policy)

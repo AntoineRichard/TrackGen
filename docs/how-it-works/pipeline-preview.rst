@@ -83,8 +83,12 @@ The data model
    source (``source="stations"``: the generator's layout; ``"relaxed_stations"``: also
    the resample and relax stages); the presets pass 384.
 
-``PipelineSpec(batch, stages)``
+``PipelineSpec(batch, stages, require_caller_capturable=False)``
    The batch and the ordered tuple of ``StageRef``. ``ids`` lists the slot ids.
+   ``require_caller_capturable=True`` makes ``build`` reject every ``HOST`` stage (see
+   `Capture classes and segments`_), so the Program can always be recorded into a
+   caller's graph; ``to_dict()`` writes it only when it is set, and the edit operations
+   keep it.
    ``replace(id, ref)``, ``insert_after(id, ref)``, ``insert_before(id, ref)`` and
    ``remove(id)`` return a new spec; ``replace`` keeps the slot's id when ``ref.id`` is
    ``None``. They are pure data operations: an unknown anchor id raises ``ValueError``
@@ -319,10 +323,13 @@ checks the spec before it allocates or launches anything, then allocates once:
    elevation other than ``elevation.flat`` (use ``lift.elevated``). A gate pipeline has
    the same rules for the ``GateSequence`` and ``validity.gate_default``, plus its own
    (`Planner rules for gate pipelines`_).
-5. **Capture class.** The Program's capture class is the highest of its stages'
-   (``STATIC`` < ``HOST``): one ``HOST`` stage makes the whole Program run eagerly and
-   refuse caller capture. A stage that returns ``BOUNDED`` raises ``PlanError`` (roadmap
-   PR12).
+5. **Capture class and segments.** Each stage's capture class comes from its
+   ``capture_class(params)`` (a legacy ``GeneratorSpec`` / ``GateGeneratorSpec``:
+   ``STATIC``, or ``HOST`` with ``capturable=False``). The Program's is the highest
+   (``STATIC`` < ``BOUNDED`` < ``HOST``), and the stages are grouped into segments of
+   equal host-ness (see `Capture classes and segments`_). With
+   ``PipelineSpec.require_caller_capturable=True`` a ``HOST`` stage raises
+   ``PlanError``, naming every one.
 6. **Allocate.** The ``SeedState`` (its own checks run first), the ``Track`` or the
    ``GateSequence`` (or use the one passed as ``out=``, checked field by field
    beforehand; its ``generation`` and ``fail_mask`` may be ``None``), the ``[E]``
@@ -333,7 +340,7 @@ checks the spec before it allocates or launches anything, then allocates once:
    validity stage must own a fail bit (fail bits are handed out in this order, see
    `Fail bits`_). Last, the commit and its held copy of the result.
 7. **Program.** With ``prepare=True`` the Program runs once eagerly (the warm-up of
-   :doc:`cuda-graph`).
+   :doc:`cuda-graph`, with every bounded loop unrolled).
 
 A rule broken in steps 1 to 5 raises ``PlanError``, a ``ValueError`` naming the stage,
 its ``kind.name``, the port and the channel, before anything is allocated. Some errors
@@ -367,6 +374,8 @@ config.
 ``build`` accepts both kinds of spec: the ``Program`` it returns has a ``Track`` or a
 ``GateSequence`` as its ``result``.
 
+.. _pipeline-program:
+
 The ``Program``
 ---------------
 
@@ -374,12 +383,18 @@ The ``Program``
 self-graph rules of :doc:`cuda-graph` exactly as ``TrackGenerator`` does.
 
 - ``run(*, stream=None, sync=False, advance=False, mask=None, policy="auto")`` runs one
-  generation: recorded into the caller's capture, replayed from the Program's own graph,
-  or eager. ``advance`` and ``mask`` mean what they mean for ``generate()``.
+  generation: recorded into the caller's capture, replayed from the Program's own graph
+  (from one graph per capturable segment when it has ``HOST`` stages), or eager.
+  ``advance`` and ``mask`` mean what they mean for ``generate()``.
 - ``enqueue(ctx, *, advance=False, mask=None)`` launches one generation on ``ctx``: the
   seed prologue (advance, effective seed, parameter latch), with a mask the hold of the
   unmasked envs' ``Track`` rows, every stage in order for every env, the commit, and the
-  ``generation`` write. It allocates nothing and never blocks.
+  ``generation`` write. It allocates nothing and never host-syncs (a ``HOST`` stage's
+  own host operations aside); called eagerly on ``cuda``, a ``BOUNDED`` stage runs its
+  full iteration bound (see :ref:`cuda-graph-bounded`). It is every segment's
+  ``enqueue_segment`` in order.
+- ``enqueue_segment(i, ctx, *, advance=False, mask=None)`` launches segment ``i`` only
+  (see `Capture classes and segments`_).
 - ``prepare()`` runs the warm-up, when ``build(..., prepare=False)``. Otherwise the
   first ``run()`` outside a capture runs it, and recording a Program that was never
   prepared (``run()`` or ``enqueue()`` inside a capture) raises ``CaptureError``.
@@ -391,9 +406,79 @@ self-graph rules of :doc:`cuda-graph` exactly as ``TrackGenerator`` does.
   `Taps`_, `Fail bits`_ and `The commit`_.
 - ``seeds`` (the ``SeedState``), ``seed`` (the ``[E]`` effective seed), ``inputs``
   (``"regen_mask"`` plus the inputs the stages declare), ``params`` (a ``ParamTable``
-  keyed by stage id; the built-in stages' fields are all static), ``graph``,
-  ``capturable`` and ``capture_class`` (``STATIC``, or ``HOST`` when a stage or the
-  generator is not capturable).
+  keyed by stage id; the built-in stages' fields are all static) and ``graph`` (``None``
+  for a Program with ``HOST`` stages, whose per-segment graphs ``segment_graphs(key=None)``
+  returns, ``None`` at the ``HOST`` segments).
+- ``capture_class`` (the highest of its stages', ``STATIC`` < ``BOUNDED`` < ``HOST``),
+  ``capturable`` (``True`` when a caller can record it: no ``HOST`` stage),
+  ``host_stage_ids`` and ``segments`` (see `Capture classes and segments`_).
+
+Capture classes and segments
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Every stage has a capture class (:ref:`stage-capture-classes`): ``STATIC`` (a fixed
+launch sequence), ``BOUNDED`` (an iteration with a static bound and a data-dependent
+early stop, through ``ctx.bounded_loop``; capturable by anything, see
+:ref:`cuda-graph-bounded`) or ``HOST`` (host readbacks or host control flow: eager only,
+see :ref:`cuda-graph-host`). The planner groups consecutive stages into **segments**:
+maximal runs whose stages are all ``HOST`` or all capturable, ``STATIC`` and ``BOUNDED``
+together. A Program without ``HOST`` stages has one segment, and runs exactly as a single
+body. ``Program.segments`` is a tuple of ``Segment`` (``track_gen.pipeline.Segment``):
+
+- ``index``, the segment's position;
+- ``capture_class``, ``HOST``, or the highest of its stages' (``STATIC`` or ``BOUNDED``);
+- ``stage_ids``, its slot ids in pipeline order;
+- ``host``, ``True`` for a ``HOST`` segment.
+
+A legacy ``GeneratorSpec(capturable=False)`` gives ``(HOST: generator) + (STATIC: the
+rest)``; a ``HOST`` relax stage between capturable stages gives three segments. Outside a
+capture on ``cuda`` the Program records every capturable segment into a graph of its own
+and runs the ``HOST`` ones eagerly between the graph launches (the segmented self-graph
+of :ref:`cuda-graph-host`). Under a caller's capture, ``run`` and ``enqueue`` of a
+Program with ``HOST`` stages raise ``NotCapturableError`` naming them, before any launch.
+
+``enqueue_segment(i, ctx, *, advance=False, mask=None)`` lets an advanced caller do what
+the segmented self-graph does: record the capturable segments into its own graph and run
+the ``HOST`` segments eagerly.
+
+- Segment ``0`` opens with the seed prologue (the epoch advance, the effective seed, the
+  parameter latch and, with a ``mask``, the hold); the last segment closes with the
+  commit and the ``generation`` write. A one-segment Program does both, and
+  ``enqueue(ctx)`` is every segment in order. Pass the same ``advance`` and ``mask`` to
+  every segment of a generation, on one stream: a recorded segment keeps the arguments
+  it was recorded with, so run the eager segments with those.
+- A ``HOST`` segment raises ``NotCapturableError`` when ``ctx`` is capturing; a capturable
+  segment can be recorded into a caller's capture once the Program is prepared, even when
+  other segments are ``HOST``.
+- Mixing ``advance`` / ``mask`` between the segments of a generation, running them out
+  of order, or skipping one is not checked (a replayed segment runs no Python, so the
+  Program cannot see its arguments) and leaves the output undefined.
+- A legacy-ABI generator (``Program.legacy_stream``) lives in segment ``0`` and launches
+  on Warp's current stream: when ``ctx``'s stream is another one, ``enqueue`` and
+  ``enqueue_segment(0, ...)`` raise ``LegacyPluginStreamError`` if ``ctx`` is capturing,
+  and otherwise run on the current stream, ordered after and before ``ctx``'s stream with
+  events.
+
+The checks run on the host before any launch, in this order: ``run`` validates ``mask``
+and ``advance`` (``ValueError``; ``enqueue`` and ``enqueue_segment`` leave that to their
+caller) and ``enqueue_segment`` its index (``IndexError``); then ``run``, ``enqueue`` and
+``enqueue_segment`` of a ``HOST`` segment refuse a capturing ``ctx``
+(``NotCapturableError``, also for a Program built with ``prepare=False``); then
+recording a Program that was never prepared raises ``CaptureError``.
+
+``PipelineSpec(..., require_caller_capturable=True)`` refuses ``HOST`` stages at build,
+before anything is allocated:
+
+.. code-block:: python
+
+   build(dataclasses.replace(spec, require_caller_capturable=True))
+   # PlanError: PipelineSpec.require_caller_capturable=True, but stage(s) 'generator'
+   #   (generator.acme.blob) is HOST (they read device data back or run host control
+   #   flow, so they run eagerly and refuse a caller's capture): use STATIC / BOUNDED
+   #   stages or drop require_caller_capturable
+
+A legacy ``GeneratorSpec(capturable=False)`` is named ``'generator' (generator 'acme.old',
+GeneratorSpec capturable=False)``.
 
 Channels
 --------
@@ -1515,8 +1600,10 @@ scratch[, ctx])`` writing ordered plan-view gates into a staging view, ``alloc_s
 ``max_gates``, ``supported_orderings``) keeps working, through an adapter slot that
 writes ``gates.xy`` and ``gates.count`` directly. It orders its own gates as before, so no
 order or normalize stage follows it, and it reads the user's ``GateGenConfig``, exactly
-the fields it read before. A ``capturable=False`` spec makes the Program eager, an
-``accepts_ctx=False`` spec runs inside ``ctx.scope()`` (see :doc:`cuda-graph`).
+the fields it read before. A ``capturable=False`` spec is a ``HOST`` generator: it runs
+eagerly as the Program's first segment, ahead of a captured tail (see `Capture classes
+and segments`_); an ``accepts_ctx=False`` spec runs inside ``ctx.scope()`` (see
+:doc:`cuda-graph`).
 
 It is **deprecated**: registering one stays silent, but binding one (``GateGenerator``,
 ``Course``, ``build``, ``legacy.to_gate_pipeline_spec``, the conformance kit) emits a
@@ -1529,8 +1616,6 @@ legacy gate generators run through an adapter until 1.0``. Port it with
 Not open yet
 ------------
 
-- **Iterative and host-segmented stages** (roadmap PR12): ``BOUNDED`` stages; a
-  ``HOST`` stage currently makes the whole Program eager.
 - **Channels and results** (roadmap PR13): per-point channels carried from ``raw.*`` to
   ``cl.*``, ``cl.half_width`` consumers (a width that varies along the band, a width
   stage before relax), ``Track.half_width`` and ``Track.attributes``, and the removal of
@@ -1543,7 +1628,9 @@ Not open yet
   generators, split gate checks, and a ``GateGenConfig.on_invalid`` field.
 - Opening ``resample``, ``frames``, ``offset`` and ``lift`` to plugins; split built-in
   checks (``validity.turning``, ...); an aliasing in-place write form; a
-  ``TrackGenConfig.on_invalid`` field; ``Course`` built from a ``PipelineSpec``.
+  ``TrackGenConfig.on_invalid`` field; ``Course`` built from a ``PipelineSpec``, and a
+  segmented ``Course`` (over a generator with a ``HOST`` stage, ``Course.regenerate()``
+  runs eagerly).
 
 The 0.2.0.dev2 composition (``warp_pipeline._run_pipeline``, ``inflate_warp``,
 ``_inflate_warp_alloc``) is still importable. ``TrackGenerator`` no longer calls it; the

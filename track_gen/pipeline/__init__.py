@@ -6,7 +6,8 @@ it (every channel a stage reads has an earlier writer, every channel is allocate
 each stage's scratch is namespaced, validity stages get their fail bits), runs each
 stage's ``build`` once and returns a :class:`Program`: a ``GraphRunner`` launchable
 whose ``enqueue`` runs the stages in order, recordable into a caller's CUDA graph like
-``TrackGenerator.generate``. :func:`presets.track <track_gen.pipeline.presets.track>`
+``TrackGenerator.generate``; a pipeline with HOST stages runs in :class:`Segment` s
+(its HOST stages eagerly, the rest from graphs). :func:`presets.track <track_gen.pipeline.presets.track>`
 builds the default track spec with one argument per replaceable stage, and
 ``TrackGenerator(spec)`` runs any spec.
 
@@ -30,7 +31,7 @@ from __future__ import annotations
 from ..stages.channels import BUILTIN_FAIL_BITS, GATE_FAIL_BITS
 from . import legacy, presets
 from .planner import PlanError, build
-from .program import Program
+from .program import Program, Segment
 from .spec import BatchSpec, PipelineSpec, StageRef
 
 __all__ = [
@@ -40,6 +41,7 @@ __all__ = [
     "PipelineSpec",
     "PlanError",
     "Program",
+    "Segment",
     "StageRef",
     "build",
     "legacy",

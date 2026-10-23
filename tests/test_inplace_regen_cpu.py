@@ -37,6 +37,8 @@ from tests._fake_cuda import FakeCuda, FakeGraph, FakeSeedState, FakeStream, pat
 from tests.test_caller_capture_cpu import _FACADES, _fake_rng
 from track_gen import GateGenConfig, GateGenerator, PerEnvSeededRNG, TrackGenConfig, TrackGenerator
 from track_gen._src import gate_generator_registry, generator_registry, warp_pipeline
+from track_gen._src.generator_binding import _StageGenerator, bind_generator
+from track_gen.plugin import registry as _plugin_reg
 from track_gen.course import Course, CourseConfig
 from track_gen.exec import CaptureError, GraphRunner, LaunchContext, _compat
 from track_gen.exec import runner as runner_mod
@@ -313,10 +315,17 @@ def test_epoch0_is_byte_identical_to_the_pr3_seed_copy_path(which, g):
         gen.generate()
         ctx = LaunchContext.for_call(DEV)
         if which == "track":
+            spec, kw = gen._generator_spec, {}
+            if isinstance(spec, _StageGenerator):
+                # A Stage generator (repulsive since PR12) is built once per binding: the
+                # PR9 reference binds its own (the adapter copies the seeds it is given).
+                spec = bind_generator("generator", gen._config,
+                                      registry=_plugin_reg).pipeline_spec
+                kw = {"seed": wp.empty(E, dtype=wp.int32, device=DEV)}
             ref, scratch = warp_pipeline._inflate_warp_alloc(
-                gen._config, generator_spec=gen._generator_spec)
+                gen._config, generator_spec=spec, **kw)
             warp_pipeline._run_pipeline(gen._config, rng.seeds_warp, out=ref, scratch=scratch,
-                                        generator_spec=gen._generator_spec, ctx=ctx)
+                                        generator_spec=spec, ctx=ctx)
         else:
             # PR11 deleted _run_gate_pipeline: its frozen copy (tests/_legacy_gate_pr11,
             # pinned to the dd181f0 digests) is the reference.
@@ -1006,6 +1015,57 @@ def test_skip_unless_lowering(monkeypatch, capturing, registered, supported):
     with pytest.raises(ValueError, match="device"):
         ctx.skip_unless(wp.zeros(1, dtype=wp.int32, device=DEV), seen.append)
     assert len(seen) == n and len(calls) == (2 if registered else 1) * int(conditional)
+
+
+def test_skip_unless_opt_outs(monkeypatch):
+    """``track_gen.exec.unconditional()`` keeps conditional nodes out of a registered
+    capture (thread-local, nestable); a hand-made Warp registration of the capture torch
+    is running in this thread (``capture_begin(external=True)`` on torch's capture
+    stream) records unconditionally unless explicitly allowed
+    (``registered(conditional=True)`` sets the marker) or inside ``conditional()`` (an
+    unmarked registration only: an explicit ``False`` marker still wins)."""
+    from track_gen.exec import conditional, unconditional
+    from track_gen.exec import context as context_mod
+
+    ctx, key, calls = _skip_setup(monkeypatch, capturing=True, registered=True,
+                                  supported=True)
+    flag = wp.zeros(1, dtype=wp.int32, device=DEV)
+    flag.device = ctx.device
+    seen: list = []
+    with unconditional():
+        assert ctx.skip_unless(flag, seen.append) is False
+        with unconditional(False):                     # the default again, inside
+            assert ctx.skip_unless(flag, seen.append) is True
+        assert ctx.skip_unless(flag, seen.append) is False
+    assert ctx.skip_unless(flag, seen.append) is True
+    assert len(seen) == 4 and calls == [key, key]
+    # torch capturing the SAME handle in this thread: a hand-made registration
+    torch_stream = types.SimpleNamespace(cuda_stream=key.cuda_stream)
+    monkeypatch.setattr(context_mod, "_torch_capturing", lambda dev: torch_stream)
+    assert _compat.conditional_marked(key) is None
+    assert ctx.skip_unless(flag, seen.append) is False and len(calls) == 2
+    with conditional():                                # the caller vouches: not torch's
+        assert ctx.skip_unless(flag, seen.append) is True and len(calls) == 3
+        with unconditional():                          # unconditional() wins
+            assert ctx.skip_unless(flag, seen.append) is False and len(calls) == 3
+        with conditional(False):                       # the default again, inside
+            assert ctx.skip_unless(flag, seen.append) is False and len(calls) == 3
+    assert ctx.skip_unless(flag, seen.append) is False and len(calls) == 3
+    _compat.set_conditional_allowed(key, True)         # registered(conditional=True)
+    assert _compat.conditional_marked(key) is True
+    assert ctx.skip_unless(flag, seen.append) is True and len(calls) == 4
+    _compat.set_conditional_allowed(key, False)        # registered() default
+    assert _compat.conditional_marked(key) is False
+    assert ctx.skip_unless(flag, seen.append) is False and len(calls) == 4
+    with conditional():                                # never overrides an explicit no
+        assert ctx.skip_unless(flag, seen.append) is False and len(calls) == 4
+    # torch capturing ANOTHER handle: a Warp registration of its own, conditional
+    del key.device.captures[key]
+    other = FakeStream(key.device)
+    other.cuda_stream = ctx.stream.cuda_stream
+    key.device.captures[other] = FakeGraph(other)
+    torch_stream.cuda_stream = 0xDEAD
+    assert ctx.skip_unless(flag, seen.append) is True and calls[-1] is other
 
 
 def test_skip_unless_on_cpu_runs_the_body_and_never_reads_the_flag(monkeypatch):

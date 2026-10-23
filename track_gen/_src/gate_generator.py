@@ -50,10 +50,10 @@ class GateGenerator:
     Construction runs one real eager generation (warm-up), so it must happen outside any
     CUDA graph capture. Afterwards ``generate()`` / :meth:`enqueue` can be recorded into a
     caller's CUDA graph; outside a capture ``generate()`` replays the generator's own graph
-    (:attr:`graph`) on CUDA, unless the generator (or a stage) is not capturable
-    (``capturable=False`` / ``CaptureClass.HOST``), in which case it runs eagerly on CUDA
-    every call (and refuses to be recorded). On the Warp ``cpu`` device the pipeline
-    runs eagerly.
+    (:attr:`graph`) on CUDA. A pipeline with HOST stages (``capturable=False`` /
+    ``CaptureClass.HOST``) runs them eagerly every call and replays the rest from
+    per-segment graphs on CUDA (and refuses to be recorded). On the Warp ``cpu`` device
+    the pipeline runs eagerly.
 
     Per-env seeding lives in :attr:`seeds` (a :class:`~track_gen.seeds.SeedState`:
     the rng's seeds bound by pointer plus a device-side epoch); ``generate(advance=True,
@@ -197,8 +197,9 @@ class GateGenerator:
         self._seed_buf: wp.array = program.seed
         self._runner = program.runner
         self._seed_state: SeedState = seed_state
-        # Non-capturable pipelines (a host-driven generator or stage) run eagerly on
-        # CUDA every call and refuse to be recorded into a caller's graph.
+        # Pipelines with HOST stages (a host-driven generator or stage) run those
+        # eagerly (the rest from per-segment graphs on CUDA) and refuse to be recorded
+        # into a caller's graph.
         self._capturable = program.capturable
         # Runtime parameters: the generator's, and every stage with a DYNAMIC field
         # (live [E] arrays, stable pointers), keyed by stage id.
@@ -281,7 +282,7 @@ class GateGenerator:
     def graph(self) -> "wp.Graph | None":
         """The generator's own CUDA graph for plain ``generate()`` (no ``advance``):
         captured on the first such CUDA call made outside any capture, replayed by
-        every later one. ``None`` on CPU, for a non-capturable generator, and before
+        every later one. ``None`` on CPU, for a pipeline with HOST stages, and before
         that first call. ``generate(advance=True, mask=m)`` uses one more cached
         graph per ``(advance, m.ptr)``."""
         return self._runner.graph
@@ -352,7 +353,8 @@ class GateGenerator:
           (seed refresh included; no sync, no self-capture, no ``wp.capture_launch``);
         - outside a capture on CUDA: replay of :attr:`graph` (captured on the first
           such call) on the resolved stream;
-        - on the Warp ``cpu`` device, or for a ``capturable=False`` generator: eager.
+        - on the Warp ``cpu`` device: eager; a pipeline with HOST stages runs them
+          eagerly and the rest from per-segment graphs on CUDA.
 
         Writes results into ``self._gate_sequence`` in place and returns the SAME
         instance every call (stable ``.ptr`` pointers). Use ``GateSequence.clone()``
@@ -391,8 +393,9 @@ class GateGenerator:
                 environment-id sequence was passed).
             ValueError: if an integer ``num_or_ids`` differs from ``config.num_envs``;
                 if ``mask`` is invalid or given without ``advance=True``.
-            track_gen.exec.NotCapturableError: recording a ``capturable=False``
-                generator into a capture (raised before any launch).
+            track_gen.exec.NotCapturableError: recording a pipeline with HOST stages (a
+                ``capturable=False`` generator) into a capture (raised before any
+                launch, naming them).
             track_gen.exec.LegacyPluginStreamError: recording a legacy plugin
                 generator on a stream that is not Warp's current stream.
         """
@@ -418,16 +421,18 @@ class GateGenerator:
 
         Inside a capture on the resolved stream the generation is recorded into the
         caller's graph; otherwise it runs eagerly on the resolved stream. Never
-        captures :attr:`graph`, never host-syncs. ``advance`` / ``mask`` as in
-        :meth:`generate`.
+        captures :attr:`graph`, never host-syncs (a HOST stage's own ``ctx.host()``
+        waits on the stream aside; a BOUNDED stage runs its full iteration bound when
+        called eagerly on CUDA). ``advance`` / ``mask`` as in :meth:`generate`.
 
         Returns:
             ``self._gate_sequence`` (results are stream-ordered).
 
         Raises:
             ValueError: an invalid ``mask`` (see :meth:`generate`).
-            track_gen.exec.NotCapturableError: recording a ``capturable=False``
-                generator into a capture (raised before any launch).
+            track_gen.exec.NotCapturableError: recording a pipeline with HOST stages (a
+                ``capturable=False`` generator) into a capture (raised before any
+                launch, naming them).
         """
         body, _ = self._body(advance, mask)
         self._runner.run(body, stream=stream, policy="eager")

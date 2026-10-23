@@ -85,9 +85,10 @@ coarse-to-fine (``N = 64 → 128 → 256``) with an area-based stall-stop.  It i
 generator built from iterative physical simulation rather than a single deterministic
 sampling + smoothing pass, and produces the foldiest, most serpentine circuits of the six
 (compactness ≈ 0.15).  Its growth loop runs a fixed iteration schedule with an
-absorbing per-env freeze, so it is CUDA-graph-captured like the others, but every call
-still runs the full iteration budget — roughly **1000× slower** than ``bezier``
-(~0.2 s @ E=64, ~5 s @ E=8192 on an RTX 4090, measured when it still ran eagerly).
+absorbing per-env freeze, so it is CUDA-graph-captured like the others; its graph skips
+the iterations left once every env has frozen, but a generation is still roughly
+**1000× slower** than ``bezier`` (~0.2 s @ E=64, ~5 s @ E=8192 on an RTX 4090, measured
+when it still ran eagerly with its full iteration budget).
 Prefer a slow regeneration cadence or staggered per-env slices over calling ``generate()``
 every step. See :doc:`repulsive` for the full deep dive.
 
@@ -125,8 +126,8 @@ When to Use Which
    * - ``repulsive``
      - Dense, foldy serpentine from self-repulsive growth
      - Very high (~0.15)
-     - Maze-like circuits; **only** when the ~1000× generation cost (full fixed iteration
-       budget every call, see :doc:`repulsive`) fits your regeneration cadence
+     - Maze-like circuits; **only** when the ~1000× generation cost (an iterative
+       optimizer, see :doc:`repulsive`) fits your regeneration cadence
 
 Generator Contract
 ------------------
@@ -141,8 +142,9 @@ The hot path must be pure Warp and deterministic in ``(seed, config)``.  For
 zero-allocation inside ``generate`` and CUDA-graph-capturable — no host-side retry loop, no
 host branch on generated tensor data, and no per-environment Python branching inside
 ``generate``.  A generator may instead declare ``capturable=False`` to use host-side
-control flow and per-call allocation; it then runs eagerly on CUDA every call instead of
-being captured into a replayable graph.  Generators set ``out_valid_wp`` to ``1`` for
+control flow and per-call allocation; it then runs eagerly on CUDA every call, while the
+rest of the pipeline still replays from a graph, and a caller cannot record it into
+theirs.  Generators set ``out_valid_wp`` to ``1`` for
 every environment at this stage; final geometric validity (turning number, thickness, NaN
 checks, ``N_max`` truncation) is decided later by the shared post-relax inflation validity
 gate.  The full contract, hard rules, and registration instructions are documented in :doc:`/contributing/writing-a-generator`.
@@ -201,10 +203,12 @@ row was measured twice and agreed within ~10%.
 .. [#eager] Measured when ``repulsive`` was still ``capturable=False`` and ran
    **eagerly on CUDA every call**, so its *warmed* per-call cost equalled its
    first-call cost (~1.9 s at E=4096) — roughly 150–250× the ms/call of the other
-   generators here.  It is now graph-captured, but a replay still executes the full
-   fixed iteration budget.  Construction now runs one full eager pass (the warm-up,
-   roughly the ~1.9 s shown), and the first ``generate()`` on CUDA records a ~4k-node
-   graph before its first replay; this row has not been re-measured.  See
+   generators here.  It is now graph-captured, and a replay runs the iteration budget
+   only up to the stall window where every env has frozen (CUDA 12.4+ conditional nodes
+   skip the rest on device).  Construction now runs one full eager pass (the warm-up,
+   roughly the ~1.9 s shown), and the first ``generate()`` on CUDA records its graph
+   (~2.1k nodes plus 9 conditional ones; ~4.25k unrolled without conditional support)
+   before its first replay; this row has not been re-measured.  See
    :doc:`repulsive` for the cost discussion and the recommended slow-cadence /
    staggered-slice usage.
 

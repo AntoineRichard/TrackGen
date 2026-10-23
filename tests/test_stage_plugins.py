@@ -295,8 +295,13 @@ def test_each_toy_passes_check_stage(kind, name):
     report = check_stage(kind, name, devices=DEV, num_envs=4)
     report.raise_for_failures()
     names = [r.name for r in report]
-    assert names == [n for n in CHECKS[kind] if not n.startswith("capture.")]
-    assert all(not r.skipped for r in report if r.name != "output.accepted")
+    assert names == [n for n in CHECKS[kind]
+                     if not n.startswith("capture.") and n != "bounded.lowering"]
+    # The BOUNDED / HOST tier checks are "not applicable" to these STATIC stages.
+    tiers = ("bounded.absorbing", "host.require_caller_capturable")
+    assert all(not r.skipped for r in report
+               if r.name != "output.accepted" and r.name not in tiers)
+    assert all(report.result(n).skipped for n in tiers)
 
 
 def test_check_stage_takes_params_and_upstream():

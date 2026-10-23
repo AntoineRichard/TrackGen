@@ -47,13 +47,37 @@ Checks (:data:`CHECKS`), for a track generator:
     ``generate()`` twice with unchanged seeds reproduces the first batch, a reseed
     reproduces a fresh generator with the new seeds, and reseeding back reproduces the
     first batch (no hidden state carried between calls).
+``bounded.absorbing``
+    For a unit whose ``enqueue`` runs a ``ctx.bounded_loop`` with ``active=`` (seen
+    while the unit runs, whatever it declares; skipped "not applicable" otherwise):
+    with every ``active`` flag poisoned to 0 first, an eager generation with the host
+    poll lowering (a), which stops at the first window whose check reads 0, writes the
+    same bytes (raw output, result, the stage's write channels) as one with every
+    window unrolled (c), for batch A and batch B. Fails for a non-absorbing loop (an
+    iteration after ``active[0]`` reads 0 changes an output) and for a body that does
+    not write ``active`` before the first check. Skipped "not exercised" when no
+    window was skipped for the kit's seeds.
+``bounded.lowering`` (CUDA)
+    For the same units: the eager default (c), the forced host poll (a), a Warp capture
+    with conditional windows (b; skipped without conditional-node support) and the same
+    capture unrolled (c), replayed into poisoned outputs, before and after a reseed,
+    are bitwise equal.
+``host.require_caller_capturable`` (CPU)
+    For a pipeline with HOST stages (skipped "not applicable" otherwise): its spec with
+    ``require_caller_capturable=True`` is refused at build with a ``PlanError`` naming
+    every HOST stage.
 ``hot_path.host_sync`` / ``hot_path.allocation`` / ``hot_path.stream`` / ``hot_path.capture`` (CPU)
-    Two ``generate()`` calls under :func:`~track_gen.testing.contract.hot_path_guard`:
+    Two ``generate()`` calls under :func:`~track_gen.testing.contract.hot_path_guard`,
+    every ``ctx.bounded_loop`` unrolled (the superset of what any lowering emits):
     no host sync or readback, no allocation, every launch / copy from track_gen or the
     plugin's package passes ``stream=`` (no ``assign()`` / ``zero_()`` / ``fill_()``),
     no nested capture or graph launch. On CPU the stream check sees that ``stream=`` is
     passed, not which stream (``stream=None`` is what a CPU ``LaunchContext`` passes):
-    a launch on the wrong stream is caught by ``capture.caller`` on CUDA.
+    a launch on the wrong stream is caught by ``capture.caller`` on CUDA. A unit with a
+    bounded loop also runs once with the default lowering: its host polls are the
+    sanctioned readback (``details["sanctioned"]``), any other one fails
+    ``hot_path.host_sync``. A HOST stage's ``ctx.host()`` operations are sanctioned too
+    (``details["host_ops"]``); its own syncs, readbacks and allocations fail.
 ``hot_path.topology`` (CPU)
     The two calls emit the same launch sequence (:class:`~track_gen.testing.trace.LaunchTrace`):
     kernels, dimensions, buffers and scalar arguments.
@@ -63,10 +87,15 @@ Checks (:data:`CHECKS`), for a track generator:
     generator built alike launches on none of the first one's buffers.
 ``capture.caller`` (CUDA)
     :func:`~track_gen.testing.capture.assert_caller_capturable`: recorded into a caller's
-    capture, replays equal the eager batch, before and after a reseed.
+    capture, replays equal the eager batch, before and after a reseed. A pipeline with
+    HOST stages must instead refuse: ``generate(stream=s, advance=True)`` inside a
+    caller's Warp capture raises ``NotCapturableError`` naming every HOST stage before
+    any launch, and the caller's graph replays its own work only (outputs, seeds and
+    epochs untouched).
 ``capture.self_graph`` (CUDA)
-    ``generate()`` captures the generator's own graph; its replays (into poisoned
-    outputs, before and after a reseed) equal the eager batch.
+    ``generate()`` captures the generator's own graph (a pipeline with HOST stages: one
+    graph per non-HOST segment, none at the HOST ones, ``graph`` stays ``None``); its
+    replays (into poisoned outputs, before and after a reseed) equal the eager batch.
 
 A gate generator runs the same checks on its ``GateSequence`` (raw output: the vec2f
 anchors before ``count[e]``: ``anchors.xy``, ``[E*A]``, for a Stage generator; the
@@ -75,10 +104,14 @@ place of ``output.closed`` and ``min_gates <= count[e] <= max_gates`` for valid 
 Stage generator's ``anchors.count`` must also lie within its ``capacity()``
 (``min_gates <= anchors.count[e] <= gates``) for every env.
 
-A ``capturable=False`` generator (eager on CUDA every call) waives
-``hot_path.host_sync``, ``hot_path.allocation``, ``hot_path.topology``,
-``hot_path.buffers`` and ``capture.caller`` (reported as skipped); ``capture.self_graph``
-then checks that it never self-graphs.
+A pipeline with HOST stages (run eagerly, between the graph launches of the rest of the
+pipeline on CUDA) waives ``hot_path.topology`` and ``hot_path.buffers`` (reported as
+skipped: its launches may depend on host data); ``hot_path.host_sync`` and
+``hot_path.allocation`` still run, with the HOST stages' ``ctx.host()`` operations
+sanctioned. A legacy ``capturable=False`` generator spec (which cannot use ``ctx.host()``)
+also waives ``hot_path.host_sync`` and ``hot_path.allocation``. ``capture.caller`` then
+checks that the pipeline refuses a caller's capture and ``capture.self_graph`` its
+segmented self-graphs.
 
 :func:`check_stage` runs a ``relax`` / ``width`` / ``elevation`` / ``validity`` stage
 inside the default track pipeline (:func:`track_gen.pipeline.presets.track`, the stage
@@ -122,8 +155,9 @@ from typing import Any, Iterable, Mapping, Sequence
 import numpy as np
 import warp as wp
 
+from ..exec.context import _force_lowering, _probe_loops
 from .capture import CAPTURE_MODES, _write_seeds, assert_caller_capturable, poison_all
-from .capture import result_arrays
+from .capture import recording, result_arrays, side_stream
 from .contract import _HINTS, HotPathGuard
 from .trace import BufferSet, LaunchTrace, buffers_of
 
@@ -136,11 +170,13 @@ __all__ = [
     "check_stage",
 ]
 
-_COMMON = ("determinism", "diversity", "batch_independence", "statelessness",
+# The BOUNDED / HOST checks (roadmap PR12): not applicable to most units (skipped).
+_TIERS = ("bounded.absorbing", "bounded.lowering", "host.require_caller_capturable")
+_COMMON = ("determinism", "diversity", "batch_independence", "statelessness") + _TIERS + (
            "hot_path.host_sync", "hot_path.allocation", "hot_path.stream",
            "hot_path.capture", "hot_path.topology", "hot_path.buffers",
            "capture.caller", "capture.self_graph")
-_STAGE_COMMON = ("determinism", "batch_independence", "statelessness",
+_STAGE_COMMON = ("determinism", "batch_independence", "statelessness") + _TIERS + (
                  "hot_path.host_sync", "hot_path.allocation", "hot_path.stream",
                  "hot_path.capture", "hot_path.topology", "hot_path.buffers",
                  "capture.caller", "capture.self_graph")
@@ -166,9 +202,14 @@ CHECKS: Mapping[str, tuple] = types.MappingProxyType({
 _HOT = ("hot_path.host_sync", "hot_path.allocation", "hot_path.stream",
         "hot_path.capture", "hot_path.topology", "hot_path.buffers")
 _CAPTURE = ("capture.caller", "capture.self_graph")
-# Waived for a capturable=False generator (eager every call: may sync / allocate).
-_WAIVED_EAGER = ("hot_path.host_sync", "hot_path.allocation", "hot_path.topology",
-                 "hot_path.buffers", "capture.caller")
+# Run on one device kind only.
+_CUDA_ONLY = ("bounded.lowering",)
+_CPU_ONLY = ("host.require_caller_capturable",)
+# Waived for a pipeline with HOST stages (eager every call: its launches may depend on
+# host data), and also the sync / allocation checks for a legacy capturable=False
+# generator spec (it cannot reach the host through ctx.host()).
+_WAIVED_HOST = ("hot_path.topology", "hot_path.buffers")
+_WAIVED_LEGACY = ("hot_path.host_sync", "hot_path.allocation") + _WAIVED_HOST
 _GAP_RATIO = 3.0       # closed loop: last->first gap <= 3x the median step, or
 _GAP_MAX_RATIO = 1.5   # 1.5x the longest step between consecutive points
 # The raw output is poisoned before the generation the checks read: a slot the
@@ -522,6 +563,8 @@ class _DeviceRun:
         self.snap_b: "_Snapshot | None" = None
         self.capturable = bool(info.capturable)
         self.accepts_ctx = bool(info.accepts_ctx)
+        # The unit's bounded loops with active= (seen during its first generation).
+        self.loops: list = []
 
     # -- construction ------------------------------------------------------------
     def make(self, seeds: np.ndarray):
@@ -608,19 +651,28 @@ class _DeviceRun:
                     self.add(name, passed, message, details=details)
 
     # -- run -------------------------------------------------------------------------
+    def unit_id(self) -> str:
+        """The Program slot of the unit under test (``"generator"`` for a generator)."""
+        return "generator" if self.stage is None else self.stage.stage_id
+
     def run(self) -> list:
         names = [n for n in CHECKS[self.kind]
-                 if not (n in _HOT and self.is_cuda) and not (n in _CAPTURE and not self.is_cuda)]
+                 if not (n in _HOT and self.is_cuda) and not (n in _CAPTURE and not self.is_cuda)
+                 and not (n in _CUDA_ONLY and not self.is_cuda)
+                 and not (n in _CPU_ONLY and self.is_cuda)]
         try:
             gen = self.make(self.seeds_a)
-            snap = self.poisoned(gen)
+            with _probe_loops() as loops:
+                snap = self.poisoned(gen)
         except Exception as exc:  # noqa: BLE001
             self.add("construct", False, _exc_text(exc))
             for n in names[1:]:
                 self.add(n, True, "not run: construct failed", skipped=True)
             return self.results
+        self.loops = [r for r in loops if r.stage_id == self.unit_id()]
+        # The Program decides: a pipeline with a HOST stage is not caller-capturable.
+        self.capturable = bool(gen.program.capturable)
         if self.stage is not None:
-            self.capturable = bool(gen.program.capturable)
             self.accepts_ctx = True
         self.add("construct", True, details={"capturable": self.capturable,
                                              "accepts_ctx": self.accepts_ctx})
@@ -635,6 +687,12 @@ class _DeviceRun:
             self.guarded(["diversity"], lambda: [self.diversity(snap)])
         self.guarded(["batch_independence"], lambda: [self.batch_independence(snap)])
         self.guarded(["statelessness"], lambda: [self.statelessness(gen, snap)])
+        self.guarded(["bounded.absorbing"], lambda: [self.bounded_absorbing()])
+        if self.is_cuda:
+            self.guarded(["bounded.lowering"], lambda: [self.bounded_lowering()])
+        else:
+            self.guarded(["host.require_caller_capturable"],
+                         lambda: [self.host_require_caller_capturable(gen)])
         if self.is_cuda:
             self.guarded(["capture.caller"], lambda: [self.capture_caller()])
             self.guarded(["capture.self_graph"], lambda: [self.capture_self_graph(snap)])
@@ -1055,30 +1113,255 @@ class _DeviceRun:
         msg = ("hidden state carried between calls: " + _list_text(bad)) if bad else ""
         return ("statelessness", not bad, msg, {})
 
+    # -- 6b. bounded loops and HOST stages -------------------------------------------------
+    def _unit_channels(self, gen) -> dict:
+        """``channel@stage -> host copy`` of the stage-under-test's write channels (none
+        for a generator: its raw output is in the snapshot)."""
+        if self.stage is None:
+            return {}
+        program = gen.program
+        sid = self.unit_id()
+        _, writes = program._ports[sid]
+        return {f"{ch}@{sid}": program.tap(ch, after=sid).numpy().copy()
+                for ch in writes.values()}
+
+    def _outputs(self, gen) -> "tuple[_Snapshot, dict]":
+        snap = self.snapshot(gen)
+        return snap, self._unit_channels(gen)
+
+    def _output_diff(self, a, b) -> list:
+        """``env e (fields)`` of every env whose outputs differ between ``a`` and ``b``
+        (each a :meth:`_outputs`)."""
+        snap_a, ch_a = a
+        snap_b, ch_b = b
+        out = []
+        for e in range(self.E):
+            fields = []
+            for name, x in ch_a.items():
+                y = ch_b[name]
+                n = int(x.shape[0])
+                stride = n // self.E if n % self.E == 0 else n
+                rows = slice(e * stride, (e + 1) * stride) if stride != n else slice(None)
+                if np.ascontiguousarray(x[rows]).tobytes() != \
+                        np.ascontiguousarray(y[rows]).tobytes():
+                    fields.append(name)
+            fields += _env_diff(snap_a, e, snap_b, e)
+            if fields:
+                out.append(f"env {e} ({_fields_text(fields)})")
+        return out
+
+    def _loops_of(self, records) -> list:
+        sid = self.unit_id()
+        return [r for r in records if r.stage_id == sid]
+
+    @staticmethod
+    def _zero_flags(flags) -> None:
+        devices = set()
+        for arr in flags:
+            arr.zero_()
+            devices.add(str(arr.device))
+        for dev in devices:
+            wp.synchronize_device(dev)
+
+    def bounded_absorbing(self):
+        name = "bounded.absorbing"
+        if not self.loops:
+            return (name, None, "skipped: not applicable (the unit runs no "
+                                "ctx.bounded_loop with active=)", {})
+        details = {"loops": len(self.loops),
+                   "windows": [int(r.windows) for r in self.loops]}
+        problems, skipped = [], {}
+        for label, seeds in (("A", self.seeds_a), ("B", self.seeds_b)):
+            gen = self.make(seeds)
+            with _probe_loops() as records:
+                self.eager(gen)             # this generator's own active flags
+            flags = [r.active for r in self._loops_of(records)]
+            outs, runs = {}, {}
+            for mode in ("poll", "unroll"):
+                # A stale flag: the body must write active before the first check.
+                self._zero_flags(flags)
+                _poison_raw(self.snap_kind, gen)
+                with _force_lowering(mode), _probe_loops() as records:
+                    self.eager(gen)
+                outs[mode] = self._outputs(gen)
+                runs[mode] = self._loops_of(records)
+            skipped[label] = sum(int(r.windows) - int(r.ran) for r in runs["poll"])
+            bad = self._output_diff(outs["poll"], outs["unroll"])
+            if bad:
+                stop = next((r for r in runs["poll"] if r.ran < r.windows),
+                            runs["poll"][0] if runs["poll"] else None)
+                where = (f" the loop stopped at window {int(stop.ran) + 1}/"
+                         f"{int(stop.windows)} (active[0] == 0) and" if stop is not None
+                         and stop.ran < stop.windows else "")
+                problems.append(f"with lowering (a) (batch {label}){where} the outputs "
+                                f"differ from the unrolled lowering (c): "
+                                f"{_list_text(bad, 3)}")
+        details["skipped"] = skipped
+        if problems:
+            return (name, False,
+                    "; ".join(problems) + ". Every iteration after active[0] reads 0 must "
+                    "leave the stage's outputs bitwise unchanged (an absorbing freeze), "
+                    "and the body must write active before the first check.", details)
+        if not any(skipped.values()):
+            return (name, None, "skipped: not exercised (no window was skipped for the "
+                                "kit's seeds)", details)
+        return (name, True, "", details)
+
+    def bounded_lowering(self):
+        name = "bounded.lowering"
+        if not self.loops:
+            return (name, None, "skipped: not applicable (the unit runs no "
+                                "ctx.bounded_loop with active=)", {})
+        dev = wp.get_device(self.device)
+        ref_a = self._outputs_of_fresh(self.seeds_a)
+        ref_b = self._outputs_of_fresh(self.seeds_b)
+        bad, status = [], {}
+
+        def compare(ref, got, label: str) -> None:
+            d = self._output_diff(ref, got)
+            if d:
+                bad.append(f"{label} differs from the eager lowering (c): "
+                           f"{_list_text(d, 2)}")
+
+        # (a): the forced host poll, eager.
+        gen = self.make(self.seeds_a)
+        _poison_raw(self.snap_kind, gen)
+        with _force_lowering("poll"), _probe_loops() as records:
+            self.eager(gen)
+        compare(ref_a, self._outputs(gen), "(a) the host poll")
+        polled = self._loops_of(records)
+        status["a"] = "ok" if any(r.ran < r.windows for r in polled) else \
+            "ok (not exercised: no window skipped)"
+        # (b) conditional windows / (c) unrolled, recorded into a caller's Warp capture.
+        for label, forced in (("b", None), ("c", "unroll")):
+            if not self.capturable:
+                status[label] = ("skipped: the pipeline has HOST stages (it refuses a "
+                                 "caller's capture)")
+                continue
+            if label == "b" and not wp.is_conditional_graph_supported():
+                status[label] = "skipped: no conditional graph support (CUDA >= 12.4)"
+                continue
+            gen = self.make(self.seeds_a)
+            result = gen._track if self.snap_kind == "generator" else gen._gate_sequence
+            s = side_stream(dev)
+            wp.synchronize_device(dev)
+            with _force_lowering(forced), _probe_loops() as records:
+                with recording(dev, s) as cap:
+                    gen.generate(stream=s)
+            if label == "b" and not any(r.lowering == "conditional"
+                                        for r in self._loops_of(records)):
+                status[label] = "skipped: no window was recorded under a conditional node"
+                continue
+
+            def replay(_g=cap.graph, _s=s):
+                _poison_raw(self.snap_kind, gen)
+                poison_all(result)
+                wp.capture_launch(_g, stream=_s)
+                wp.synchronize_device(dev)
+
+            replay()
+            compare(ref_a, self._outputs(gen), f"({label}) a recorded replay")
+            _write_seeds(gen, self.seeds_b)
+            replay()
+            compare(ref_b, self._outputs(gen), f"({label}) a replay after a reseed")
+            _write_seeds(gen, self.seeds_a)
+            status[label] = "ok"
+        return (name, not bad, _list_text(bad), status)
+
+    def _outputs_of_fresh(self, seeds):
+        gen = self.make(seeds)
+        _poison_raw(self.snap_kind, gen)
+        self.eager(gen)
+        return self._outputs(gen)
+
+    def host_require_caller_capturable(self, gen):
+        name = "host.require_caller_capturable"
+        program = gen.program
+        host = tuple(program.host_stage_ids)
+        if not host:
+            return (name, None, "skipped: not applicable (no HOST stage)", {})
+        from ..pipeline import planner  # noqa: PLC0415
+        from ..plugin import registry  # noqa: PLC0415
+
+        spec = dataclasses.replace(program.spec, require_caller_capturable=True)
+        try:
+            # The host-side phase refuses it before anything is allocated.
+            planner._build(spec, binding=program._binding, prepare=False,
+                           registry=registry)
+        except planner.PlanError as exc:
+            msg = str(exc)
+            missing = [sid for sid in host if repr(sid) not in msg]
+            if missing:
+                return (name, False, f"the PlanError does not name HOST stage(s) "
+                                     f"{missing}: {msg}", {"host_stage_ids": list(host)})
+            return (name, True, "", {"host_stage_ids": list(host)})
+        return (name, False, f"PipelineSpec(require_caller_capturable=True) was not "
+                             f"refused although stage(s) {list(host)} are HOST",
+                {"host_stage_ids": list(host)})
+
     # -- 5. hot path (CPU) --------------------------------------------------------------
     def hot_path(self, gen) -> list:
+        from ..plugin.stage import _is_stage  # noqa: PLC0415
+
         eager = not self.capturable
+        binding = gen.program._binding
+        # A legacy capturable=False spec may sync and allocate (it has no ctx.host()).
+        legacy_host = eager and not binding.capturable and not _is_stage(binding.spec)
         # A second instance built alike (constructed here: construction may allocate).
         twin = None if eager or self.skipped("hot_path.buffers") else \
             self.make(self.seeds_a)
         guard = HotPathGuard(modules=self.probe, strict=False)
-        with guard:
+        # Every bounded loop unrolled: the superset of what any lowering emits (a sync or
+        # an allocation in a late window is seen).
+        with _force_lowering("unroll"), guard:
             with LaunchTrace() as first:
                 gen.generate()
             with LaunchTrace() as second:
                 gen.generate()
-        waived = ("waived: capturable=False (eager every call, may sync and allocate)")
+        sanctioned, polled = None, []
+        if self.loops:
+            # One call with the default lowering ((a) on CPU): its host polls are the
+            # sanctioned readback; any other sync there is a violation.
+            extra = HotPathGuard(host_sync=True, allocation=False, stream=False,
+                                 capture=False, strict=False)
+            with extra:
+                gen.generate()
+            sanctioned = len(extra.sanctioned)
+            polled = extra.of("host_sync")
+        if legacy_host:
+            waived = ("waived: capturable=False (a legacy generator spec, eager every "
+                      "call, may sync and allocate)")
+            waived_checks = _WAIVED_LEGACY
+        else:
+            waived = (f"waived: HOST stage(s) {list(gen.program.host_stage_ids)} run "
+                      f"eagerly every call (their launches may depend on host data)")
+            waived_checks = _WAIVED_HOST if eager else ()
         out = []
 
         def category(check: str, cat: str, what: str) -> None:
-            if eager and check in _WAIVED_EAGER:
+            if check in waived_checks:
                 out.append((check, None, waived, {}))
                 return
             found = guard.of(cat)
             uniq = list(dict.fromkeys(str(v) for v in found))
             msg = (f"{len(found)} {what} in two generate() calls: {_list_text(uniq)}. "
                    f"{_HINTS[cat]}") if found else ""
-            out.append((check, not found, msg, {"count": len(found)}))
+            if found and eager and cat in ("host_sync", "allocation"):
+                msg += (" A HOST stage reaches the host only through ctx.host() (HostOps), "
+                        "with buffers from StageBuilder.host_buffer() allocated at build.")
+            details = {"count": len(found)}
+            if cat == "host_sync":
+                details["sanctioned"] = sanctioned
+                if eager:
+                    details["host_ops"] = len(guard.sanctioned)
+                if polled:
+                    extra_uniq = list(dict.fromkeys(str(v) for v in polled))
+                    msg = (msg + " " if msg else "") + (
+                        f"{len(polled)} host sync/readback(s) besides the sanctioned "
+                        f"bounded_loop poll in a generate() call with the default "
+                        f"lowering: {_list_text(extra_uniq)}. {_HINTS[cat]}")
+                    found = found + polled
+            out.append((check, not found, msg, details))
 
         category("hot_path.host_sync", "host_sync", "host sync/readback(s)")
         category("hot_path.allocation", "allocation", "allocation(s)")
@@ -1103,7 +1386,7 @@ class _DeviceRun:
             # they are reached.
             other = HotPathGuard(host_sync=False, allocation=True, stream=False,
                                  capture=False, strict=False)
-            with other, LaunchTrace() as third:
+            with _force_lowering("unroll"), other, LaunchTrace() as third:
                 twin.generate()
             allocated += other.allocated()
             temporary = BufferSet()
@@ -1146,12 +1429,60 @@ class _DeviceRun:
     # -- 7. CUDA ------------------------------------------------------------------------
     def capture_caller(self):
         if not self.capturable:
-            return ("capture.caller", None,
-                    "waived: registered capturable=False (refuses a caller's capture)", {})
+            return self.capture_caller_refused()
         gen = self.make(self.seeds_a)
         status = assert_caller_capturable(gen, modes=self.modes)
         return ("capture.caller", True, ", ".join(f"{m}: {s}" for m, s in status.items()),
                 dict(status))
+
+    def capture_caller_refused(self):
+        """A pipeline with HOST stages under a caller's Warp capture: ``NotCapturableError``
+        naming them before any launch; the caller's graph replays its own work only."""
+        from ..exec.errors import NotCapturableError  # noqa: PLC0415
+
+        gen = self.make(self.seeds_a)
+        host = tuple(gen.program.host_stage_ids)
+        result = gen._track if self.snap_kind == "generator" else gen._gate_sequence
+        dev = wp.get_device(self.device)
+        _poison_raw(self.snap_kind, gen)
+        poison_all(result)
+        before = self.snapshot(gen)
+        seeds0 = gen.seeds.seeds.numpy().copy()
+        epoch0 = gen.seeds.epoch.numpy().copy()
+        marker = wp.zeros(1, dtype=wp.int32, device=dev)
+        source = wp.full(1, 7, dtype=wp.int32, device=dev)
+        s = side_stream(dev)
+        wp.synchronize_device(dev)
+        raised = None
+        with recording(dev, s) as cap:
+            wp.copy(marker, source, stream=s)        # the caller's own recorded work
+            try:
+                gen.generate(stream=s, advance=True)
+            except NotCapturableError as exc:
+                raised = exc
+        wp.capture_launch(cap.graph, stream=s)
+        wp.synchronize_device(dev)
+        bad = []
+        if raised is None:
+            bad.append("generate(stream=s, advance=True) inside a caller's capture did not "
+                       "raise NotCapturableError")
+        else:
+            missing = [sid for sid in host if sid not in raised.stage_ids]
+            if missing:
+                bad.append(f"NotCapturableError does not name HOST stage(s) {missing}")
+        if int(marker.numpy()[0]) != 7:
+            bad.append("the caller's capture did not replay its own work (invalidated)")
+        after = self.snapshot(gen)
+        changed = sorted(k for k in before.data
+                         if before.data[k].tobytes() != after.data[k].tobytes())
+        if changed:
+            bad.append(f"replaying the caller's graph changed the outputs "
+                       f"({_fields_text(changed)}): work was recorded before the refusal")
+        if not np.array_equal(gen.seeds.seeds.numpy(), seeds0) or \
+                not np.array_equal(gen.seeds.epoch.numpy(), epoch0):
+            bad.append("the seeds or epochs changed")
+        return ("capture.caller", not bad, _list_text(bad),
+                {"host_stage_ids": list(host)})
 
     def capture_self_graph(self, snap: _Snapshot):
         gen = self.make(self.seeds_a)
@@ -1161,8 +1492,20 @@ class _DeviceRun:
         gen.generate()
         if self.capturable and gen.graph is None:
             bad.append("generate() on CUDA did not capture the generator's own graph")
-        if not self.capturable and gen.graph is not None:
-            bad.append("a capturable=False generator captured a graph")
+        if not self.capturable:
+            program = gen.program
+            segments = program.segments
+            graphs = program.segment_graphs()
+            if gen.graph is not None:
+                bad.append("a pipeline with HOST stages captured a whole-pipeline graph")
+            if len(segments) > 1:
+                want = [not seg.host for seg in segments]
+                got = None if graphs is None else [g is not None for g in graphs]
+                if got != want:
+                    bad.append(f"the per-segment self-graphs are {got}, expected a graph "
+                               f"exactly at the non-HOST segments {want}")
+            elif graphs is not None:
+                bad.append("a pipeline that is one HOST segment captured a graph")
 
         def compare(ref: _Snapshot, label: str) -> None:
             now = self.snapshot(gen)

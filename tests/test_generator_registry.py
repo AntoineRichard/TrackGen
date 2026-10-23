@@ -18,8 +18,11 @@ def test_generatorspec_has_capturable_default_true():
 
 
 def test_existing_generators_are_capturable():
+    from track_gen.plugin import registry
+
+    # repulsive is a BOUNDED Stage (roadmap PR12): capturable, reported by describe().
     for name in ("bezier", "polar", "hull", "voronoi", "checkpoint", "repulsive"):
-        assert reg.get(name).capturable is True, name
+        assert registry.describe("generator", name).capturable is True, name
 
 
 def test_unknown_generator_raises_with_available_list():

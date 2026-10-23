@@ -164,6 +164,22 @@ def _run_toy_plugin(kind):
     return setup
 
 
+def _run_bounded_toy():
+    """A BOUNDED relax plugin (tests._bounded_toys, ``ctx.bounded_loop``) in the default
+    track pipeline: on CPU its loop's host poll is the one sanctioned readback (the guard
+    lists it in ``sanctioned``, not ``allowed``); the plugin's own launches stay clean."""
+    def setup():
+        from tests._bounded_toys import CONVERGING, register_bounded_toys
+
+        with registry.scoped():
+            register_bounded_toys(registry)
+            gen = TrackGenerator(pipeline_mod.presets.track(num_envs=E, device=DEV,
+                                                            relax=CONVERGING), _rng())
+        gen.generate()
+        return gen._run
+    return setup
+
+
 def _collision(method):
     def setup():
         track = _track_gen().generate()
@@ -512,6 +528,7 @@ def _ops_all():
         ops.closed_polyline(ctx, ctrl, K, ps, o_cr, count=cnt_k, endpoint=True, active=act)
         ops.fill(ctx, o_cr, (0.0, 1.0))
         ops.any_set(ctx, act, flag)
+        ops.all_set(ctx, act, flag)
         ops.check_array("act", act, (E,), wp.int32, DEV)
     return hot
 
@@ -722,6 +739,7 @@ def _inflate_fixed_n():
 DRIVERS = {
     **{f"track_run[{g}]": _run_track(g) for g in registry.available("generator")},
     "track_run[toy.circle plugin]": _run_toy_plugin("track"),
+    "track_run[relax=toy.converging_smooth]": _run_bounded_toy(),
     "track_run[bezier,z=uniform]": _run_track("bezier", z_profile="uniform"),
     "track_run[bezier,z=noise]": _run_track("bezier", z_profile="noise"),
     "track_run[bezier,no-relax]": _run_track("bezier", relax_enable=False),
@@ -797,6 +815,11 @@ def test_hot_path_has_no_host_sync_or_readback(name):
     expected = {k for k in _KNOWN_READBACKS if name == "track_run[repulsive]"}
     assert set(guard.allowed) == expected, \
         f"known-readback allowlist out of date: {guard.allowed}"
+    # The bounded loops' CPU host poll (repulsive, the bounded toy) is sanctioned, not
+    # allowed: the guard lists it apart.
+    if name in ("track_run[repulsive]", "track_run[relax=toy.converging_smooth]"):
+        assert set(guard.sanctioned) == {
+            ("wp.array.numpy", "track_gen.exec.host", "_poll_i32")}, guard.sanctioned
 
 
 # ---------------------------------------------------------------------------------------
@@ -856,7 +879,10 @@ _CONSTRUCTION_ONLY = {
                                    "_label", "_resolve", "_plan_channels", "_check_out",
                                    "_seed_state", "_is_seed_form", "_check_seeds",
                                    "_check_exports", "_check_flat_lift",
-                                   "_capture_class", "_export_sources",
+                                   "_capture_classes", "_export_sources",
+                                   # PR12: capture classes, segments, slot contexts
+                                   "_host_label", "_check_caller_capturable",
+                                   "_segments", "_slot_info",
                                    "_check_fail_start",
                                    # PR11: the gate result kind and its rules
                                    "_bind", "_effective_ports", "_domain_layout",

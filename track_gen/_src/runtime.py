@@ -21,8 +21,8 @@ after each library call, so asynchronous CUDA errors surface at the call that
 caused them.
 
 ``_CAPTURING`` is a deprecated, always-False compatibility name (see
-:func:`set_capturing`). ``_CAPTURE_LOCK`` below now only serializes producers
-that contain a legacy-ABI generator plugin (see
+:func:`set_capturing`). ``_CAPTURE_LOCK`` below now only serializes the legacy-ABI
+generator plugins' use of Warp's shared current stream (see
 :class:`track_gen.exec.GraphRunner`); everything else self-captures on a
 private per-producer stream without any process-wide lock.
 """
@@ -48,14 +48,18 @@ _INITED = False
 # out-of-tree code imports it; set_capturing() no longer changes it.
 _CAPTURING = False
 
-# Process-wide (reentrant) mutex serializing the CUDA work of producers whose
-# body contains a LEGACY generator plugin (no ``accepts_ctx``): such plugins
-# launch on Warp's shared current stream, so their self-graph is captured on
-# that stream and a concurrent capture, replay, or launch from another thread
-# landing on it would corrupt the recording (CUDA errors 401/900, or an async
-# illegal-memory-access 700). ``track_gen.exec.GraphRunner`` takes it for those
-# producers, and for calls of other producers on Warp's current stream while a
-# legacy producer may still self-capture there; everything else runs lock-free.
+# Process-wide (reentrant) mutex serializing the CUDA work of LEGACY generator
+# plugins (no ``accepts_ctx``): such plugins launch on Warp's shared current
+# stream, so their self-graph is captured on that stream and a concurrent
+# capture, replay, or launch from another thread landing on it would corrupt the
+# recording (CUDA errors 401/900, or an async illegal-memory-access 700).
+# ``track_gen.exec.GraphRunner`` holds it while a producer self-captures legacy
+# code on that stream (a capturable legacy producer: its whole call), around
+# every EAGER run of legacy code (a ``capturable=False`` legacy generator: its
+# HOST segment only, not the captured rest of its pipeline), and for calls of
+# other producers on Warp's current stream while a legacy producer may still
+# self-capture there. Everything else, HOST stages that accept ``ctx`` included,
+# runs lock-free.
 _CAPTURE_LOCK = threading.RLock()
 
 

@@ -10,7 +10,7 @@ import warp as wp
 from .check import _device_str
 from .fill import fill
 
-__all__ = ["any_set"]
+__all__ = ["all_set", "any_set"]
 
 
 @wp.kernel
@@ -18,6 +18,13 @@ def _any_set_k(mask: wp.array(dtype=wp.int32), flag: wp.array(dtype=wp.int32)):
     e = wp.tid()
     if mask[e] != 0:
         wp.atomic_max(flag, 0, 1)
+
+
+@wp.kernel
+def _all_set_k(mask: wp.array(dtype=wp.int32), flag: wp.array(dtype=wp.int32)):
+    e = wp.tid()
+    if mask[e] == 0:
+        wp.atomic_min(flag, 0, 0)
 
 
 def _check(name: str, arr, ndim: int = 1) -> None:
@@ -47,6 +54,37 @@ def any_set(ctx, mask: "wp.array", flag_out: "wp.array") -> None:
         ValueError: a wrong shape, or the arrays and ``ctx`` on different devices
             (host-side, before any launch).
     """
+    _check_args(ctx, mask, flag_out)
+    fill(ctx, flag_out, 0)
+    if mask.shape[0] > 0:
+        ctx.launch(_any_set_k, mask.shape[0], [mask, flag_out])
+
+
+def all_set(ctx, mask: "wp.array", flag_out: "wp.array") -> None:
+    """``flag_out[0] = 1`` if every ``mask[e] != 0`` (an empty mask: 1), else ``0`` (on
+    ``ctx``'s stream).
+
+    Two launches, both capturable and allocation-free: set ``flag_out`` to 1, then one
+    thread per element lowers it with an integer ``atomic_min`` where ``mask[e] == 0``
+    (order-independent, so the result is deterministic).
+
+    Args:
+        ctx: the :class:`~track_gen.exec.LaunchContext` to launch on.
+        mask: 1-D ``int32`` array (e.g. an ``[E]`` per-env mask).
+        flag_out: ``[1]`` ``int32`` array on the same device.
+
+    Raises:
+        TypeError: ``mask`` or ``flag_out`` is not an ``int32`` ``wp.array``.
+        ValueError: a wrong shape, or the arrays and ``ctx`` on different devices
+            (host-side, before any launch).
+    """
+    _check_args(ctx, mask, flag_out)
+    fill(ctx, flag_out, 1)
+    if mask.shape[0] > 0:
+        ctx.launch(_all_set_k, mask.shape[0], [mask, flag_out])
+
+
+def _check_args(ctx, mask, flag_out) -> None:
     _check("mask", mask)
     _check("flag_out", flag_out)
     if flag_out.shape[0] != 1:
@@ -55,6 +93,3 @@ def any_set(ctx, mask: "wp.array", flag_out: "wp.array") -> None:
         raise ValueError(
             f"mask ({mask.device}), flag_out ({flag_out.device}) and the launch context "
             f"({ctx.device}) must be on the same device")
-    fill(ctx, flag_out, 0)
-    if mask.shape[0] > 0:
-        ctx.launch(_any_set_k, mask.shape[0], [mask, flag_out])

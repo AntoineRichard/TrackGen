@@ -20,8 +20,10 @@ Goals
    for tests/CI) and on ``cuda`` (production). The same code path serves both.
 3. **A single replayable CUDA graph for capturable generators.** When
    ``GeneratorSpec.capturable=True``, the pipeline is static (fixed shapes, fixed iteration
-   counts, no host-side branching on tensor data) and captures into one replayable CUDA
-   graph. All shipped generators are capturable.
+   bounds, no host-side branching on tensor data) and captures into one replayable CUDA
+   graph. All shipped generators are capturable. A ``HOST`` stage (a
+   ``capturable=False`` generator) runs eagerly between the graphs of the stages around
+   it (see :ref:`cuda-graph-host`).
 
 Data flow
 ---------
@@ -117,9 +119,10 @@ Every registered runtime generator follows the same hard contract:
 - The hot path is pure Warp, zero allocation, deterministic in ``(seed, config)``, and
   graph-capturable: no host-side retry loop, no host branch on generated tensor data, and
   no per-env Python branching. All six shipped generators satisfy it (``capturable=True``),
-  ``repulsive`` included — see :doc:`/generators/repulsive`. Plugins that cannot may set
-  ``GeneratorSpec(capturable=False)`` and then run eagerly on CUDA every call (see
-  :doc:`/contributing/writing-a-generator`).
+  ``repulsive`` included (an iterative ``BOUNDED`` stage) — see
+  :doc:`/generators/repulsive`. Plugins that cannot may set
+  ``GeneratorSpec(capturable=False)`` (a ``HOST`` generator) and then run eagerly on CUDA
+  every call, ahead of a captured tail (see :doc:`/contributing/writing-a-generator`).
 - ``out_valid_wp`` is filled with ``1`` by the current runtime generators. It is a stage
   flag, not the final quality decision. Turning, thickness, NaNs, width floor, ``N_max``
   truncation, and optional border intersections are judged later by the ``validity``

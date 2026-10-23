@@ -22,17 +22,19 @@ Yu, Schumacher, and Crane, *Repulsive Curves* (SIGGRAPH 2021 / arXiv 2020).
 
    ``repulsive`` is an **iterative optimizer**.  On an RTX 4090 it takes roughly
    **0.2 s at E=64** and **5 s at E=8192** (~3 ms/track amortized), versus ~2 ms per batch
-   for ``bezier`` — **~1000× slower** (measured when it still ran eagerly).  Its growth
-   loop follows a fixed host schedule (stage transitions, resample and stall-check
-   cadences depend only on the iteration counter) and converged envs are frozen on device,
-   so it is CUDA-graph-captured like the other generators — but every call still runs the
-   full fixed iteration budget (~4k graph nodes at the defaults).  Constructing the
-   ``TrackGenerator`` runs one full eager pass (the warm-up), and on CUDA the **first**
-   ``generate()`` additionally records that ~4k-node graph before its first replay
-   (recording it into your own graph costs the same, once).  If you use ``repulsive`` in a
-   training loop, prefer a **slow regeneration cadence** (regenerate a batch every N steps,
-   not every step) or **staggered per-env slices** (regenerate a fraction of environments
-   per step) rather than calling ``generate()`` every frame.
+   for ``bezier`` — **~1000× slower** (measured when it still ran eagerly, with its full
+   iteration budget on every call).  Its growth loop follows a fixed host schedule (stage
+   transitions, resample and stall-check cadences depend only on the iteration counter)
+   and converged envs are frozen on device, so it is CUDA-graph-captured like the other
+   generators.  It is a ``BOUNDED`` stage: the loop may stop once every env has frozen,
+   in its own graph on device and in eager ``cpu`` calls, while eager ``cuda`` calls and
+   captures without conditional nodes run the full budget (see `Early exit and
+   capture`_).  Constructing the ``TrackGenerator`` runs one full eager pass (the warm-up),
+   and on CUDA the **first** ``generate()`` additionally records its graph before the
+   first replay (recording it into your own graph costs the same, once).  If you use
+   ``repulsive`` in a training loop, prefer a **slow regeneration cadence** (regenerate a
+   batch every N steps, not every step) or **staggered per-env slices** (regenerate a
+   fraction of environments per step) rather than calling ``generate()`` every frame.
 
 .. figure:: ../assets/generator-repulsive.png
    :alt: Sample tracks produced by the repulsive generator
@@ -78,8 +80,9 @@ How It Works
    once it is past target length **and** its enclosed area (shoelace, reparameterization-
    invariant) has stopped changing by more than ``repulsive_stall_area_tol``.  The freeze is
    decided on device and is absorbing: every later kernel, including the periodic resample,
-   skips a frozen env.  There is no early exit — the loop always runs its full fixed
-   iteration budget, which is cheap once envs are frozen.
+   skips a frozen env.  Once every env of the batch has frozen, the rest of the loop may be
+   skipped (see `Early exit and capture`_): a frozen env's curve no longer changes, so
+   where the loop stops changes no output.
 
 5. **Hand off to the standard tail.**
    The final ``N=256`` closed loop is periodically arc-length reparameterized and copied into
@@ -88,6 +91,74 @@ How It Works
    ``0.6·half_width`` → XPBD relax → inflate → validity) then runs; feeding it a curve at the
    tail's calibrated spacing (rather than the raw ``N=256`` growth resolution) is what lifts
    post-tail yield to the target band.
+
+
+Early exit and capture
+----------------------
+
+``repulsive`` is a ``Stage`` generator with ``capture = CaptureClass.BOUNDED``
+(``registry.describe("generator", "repulsive").capture``): its growth loop is a
+``ctx.bounded_loop`` (see :ref:`cuda-graph-bounded`). The schedule is computed on the
+host from the config:
+
+- ``n_iters = ceil(1.6 · n_ratchet) + repulsive_settle_iters``, with ``n_ratchet =
+  ceil(log(repulsive_grow_mult_max) / log1p(repulsive_ratchet_rate))``: 143 and **269**
+  at the defaults. This is the bound.
+- The stall checks run at the iterations ``it`` with ``(it + 1) % W == 0`` once the last
+  stage (``N = 256``) has started, ``W = repulsive_stall_window``. Right after freezing
+  the stalled envs, each check writes the loop's flag on device:
+  ``active = any env not frozen``.
+- ``first_check = W · ceil((s + 1) / W)``, ``s`` being the iteration of the last stage
+  transition (117 at the defaults), and ``check_every = W``: the loop is checked before
+  the iterations 128, 144, ..., 256, **9 windows** at the defaults (the last one 13
+  iterations long). Every window starts right after a stall check, and no window holds a
+  stage transition.
+
+When the check before a window finds every env frozen, the rest of the loop can be
+skipped: a frozen env is never written again (``_step_k``, ``_rescale_k`` and
+``_copy_unfrozen_k`` return early for it), so the remaining iterations would change only
+scratch. Whether the loop does stop depends on where the generation runs:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 46 54
+
+   * - Call
+     - Growth loop
+   * - Eager on ``cpu`` (every ``generate()``, ``enqueue()``)
+     - Stops at the first window whose check finds every env frozen (a host poll of
+       the flag).
+   * - Eager on ``cuda`` (``enqueue()`` outside a capture, ``policy="eager"``)
+     - Runs all 269 iterations, with no host sync; frozen envs return early in every
+       kernel, so the extra iterations cost launch overhead.
+   * - The generator's own graph, a ``wp.ScopedCapture`` or a capture registered with
+       ``registered(conditional=True)``, with CUDA 12.4+ conditional nodes
+     - One conditional node per window: a replay skips the windows after the batch has
+       frozen, on device.
+   * - Any other capture (a plain ``torch.cuda.graph``, ``registered()`` without
+       ``conditional=True``, older drivers, a recording inside
+       ``track_gen.exec.unconditional()``)
+     - Unrolled: every window is recorded and runs on each replay.
+
+The first check cannot freeze an env at ``repulsive_stall_area_tol < 1`` (the area
+change is measured against 0), so the earliest stop is before iteration 144. The output
+is the same in every case, byte for byte, and equal to 0.2.0.dev3's: an env's track
+depends only on its own seed (env ``e`` is identical at ``E=8`` and inside ``E=64``), and
+the next generation starts from scratch it re-initialises.
+
+The default pipeline records about 4.25k graph nodes with every window unrolled (the
+generator about 4.1k of them), under the 5k the roadmap set; with conditional windows,
+about 2.1k top-level nodes and the 9 conditional nodes that hold the windows. Such a graph
+cannot be used as a CUDA child graph, and recording a conditional window into your Warp
+capture fails while a side stream that joined it has not been joined back (each
+``wp.capture_if`` ends and resumes the capture). Record inside
+``track_gen.exec.unconditional()`` to get the unrolled graph instead (see
+:doc:`/how-it-works/cuda-graph`). Under ``torch.cuda.graph``, windows become conditional
+nodes only inside ``registered(conditional=True)``, never in a hand-made
+``external=True`` registration of torch's capture. The loop
+itself is ``generate_repulsive_warp(seeds_wp, config, out_centerline, out_valid_wp,
+scratch, ctx=None)``, still importable from ``track_gen._src.warp_generate_repulsive``;
+the registered ``Stage`` calls it.
 
 
 Math
@@ -185,7 +256,7 @@ checked when the ``TrackGenerator`` is constructed, and only for
 
 ``repulsive_stall_window`` (default 16)
    Iterations between per-env stall checks (an env whose area has stopped changing is
-   frozen on device).
+   frozen on device), and so the window of the loop's early exit.
 
 ``repulsive_stall_area_tol`` (default 0.05)
    Freeze an env once it is past target length and its enclosed-area relative change over a
@@ -215,8 +286,9 @@ Key contrasts:
   ``repulsive_resample_every`` iterations) and the stall checks (every
   ``repulsive_stall_window``) are precomputed on the host from the config and the loop
   counter alone — never from device data — so the launch sequence is static and replays as
-  one captured graph.  Convergence is handled by the per-env on-device freeze, not by a
-  readback or a global early exit.
+  one captured graph.  Convergence is handled by the per-env on-device freeze, and the
+  early exit by checks of a device flag between stall windows, never by a readback in a
+  captured path.
 - **~1000× slower.**  See the warning above; this is the dominant practical tradeoff against
   the shape richness.
 - **Determinism.**  Output is **byte-identical per device** — same config and seeds give the

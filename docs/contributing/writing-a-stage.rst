@@ -226,7 +226,7 @@ plugin is then quarantined under ``warn``) when:
   ``frames``, ``offset``, ``lift``: "not open to plugins");
 - ``output`` is set (it is for generators), ``provides`` is not empty, ``topology`` is
   not ``"closed"`` or ``"any"``, ``api_version`` is above ``API_VERSION``, ``capture`` is
-  not a ``CaptureClass`` or is ``BOUNDED``, or the Params class breaks the rules of
+  not a ``CaptureClass``, or the Params class breaks the rules of
   :ref:`generator-params`;
 - a channel is neither in the catalogue nor a namespaced plugin channel;
 - two write ports name one channel, or one channel is read through one port and written
@@ -309,12 +309,16 @@ The builder is the one :ref:`stage-builder` describes, with these differences:
    * - ``fail_bit(name=None)``
      - Validity stages only: the index (16 to 30) of a new fail bit this stage owns (see
        `A validity check`_).
+   * - ``host_buffer(dtype, shape)``
+     - ``HOST`` stages only (``ValueError`` otherwise): a host staging buffer for
+       ``ctx.host()``, pinned on ``cuda`` (see `Writing a host-driven (HOST) stage`_).
 
 ``build`` runs once, in pipeline order, after every earlier stage's ``build``. When it
 returns, every declared write port must have been written (``PlanError`` otherwise).
 ``enqueue(ctx)`` follows the generator's :ref:`hard rules <generator-hard-rules>`: device
 work through ``ctx`` and ``track_gen.ops`` only, no allocation, no host sync, no branch
-on device data, a launch sequence fixed at ``build``. Per env, its output must depend
+on device data, a launch sequence fixed at ``build`` (an iteration that stops early is a
+``ctx.bounded_loop``, see `Writing an iterative (BOUNDED) stage`_). Per env, its output must depend
 only on that env's inputs (its rows of the channels it reads, its seed, its dynamic
 parameters and inputs) and the static parameters.
 
@@ -833,10 +837,282 @@ launches and any recorded graph.
 Capture classes
 ---------------
 
-As for a generator (:ref:`stage-capture-classes`): ``STATIC`` (default) for a fixed
-launch sequence; ``HOST`` for a stage that needs host readbacks or host control flow,
-which makes the whole ``Program`` run eagerly on every call and refuse a caller's
-capture; ``BOUNDED`` is rejected until roadmap PR12. The same holds in a gate pipeline.
+As for a generator (:ref:`stage-capture-classes`), and the same in a gate pipeline:
+
+- ``STATIC`` (default): a fixed launch sequence, recorded and replayed like the
+  built-ins.
+- ``BOUNDED``: an iteration with a static bound that may stop early, through
+  ``ctx.bounded_loop``. Capturable by anything: a self-graph, or a Warp-registered
+  capture (``wp.ScopedCapture``, ``wp.capture_begin``, ``registered(conditional=True)``)
+  on CUDA 12.4+, skips the converged windows on device; other captures (a plain
+  ``torch.cuda.graph``, inside ``track_gen.exec.unconditional()``) and eager ``cuda``
+  calls run the full bound (see `Writing an iterative (BOUNDED) stage`_).
+- ``HOST``: host readbacks or host control flow. The stage runs eagerly on every call,
+  as its own segment of the ``Program``: the stages before and after it still replay
+  from graphs. A caller cannot record the Program (``NotCapturableError`` before any
+  launch), and ``PipelineSpec(require_caller_capturable=True)`` refuses it at build (see
+  `Writing a host-driven (HOST) stage`_).
+
+The Program's capture class is the highest of its stages' (``STATIC`` < ``BOUNDED`` <
+``HOST``); ``Program.segments`` shows how the stages are grouped (see
+:doc:`/how-it-works/pipeline-preview`).
+
+.. _stage-bounded:
+
+Writing an iterative (BOUNDED) stage
+------------------------------------
+
+A stage that iterates until each env has converged keeps a static launch sequence by
+writing its loop as ``ctx.bounded_loop(n_iters, body, active=..., first_check=...,
+check_every=...)``: ``n_iters`` bounds the iteration count, ``body(ctx, it)`` emits one
+iteration (``it`` is a plain ``int``), and ``active``, a ``[1]`` int32 flag the body
+writes on device, says whether any env still needs the next window of ``check_every``
+iterations. Where the call runs decides whether the loop really stops early (see
+:ref:`cuda-graph-bounded`): an eager ``cpu`` run polls ``active`` and stops, a self-graph
+or another Warp-registered capture with conditional nodes skips the remaining windows on
+device, every other run executes the full bound. The outputs must be the same bytes in
+every case.
+
+This relax stage moves each env toward a fixed point (a Laplacian smoothing step plus a
+pull back to its input loop, an iteration that contracts) and freezes an env once its
+largest step falls under ``tol``:
+
+.. code-block:: python
+
+   import dataclasses
+
+   import warp as wp
+
+   from track_gen import ops, plugin
+
+
+   @wp.kernel
+   def _step_k(x: wp.array(dtype=wp.vec2f), x0: wp.array(dtype=wp.vec2f),
+               count: wp.array(dtype=wp.int32), S: int, lam: float, pull: float,
+               running: wp.array(dtype=wp.int32), tmp: wp.array(dtype=wp.vec2f),
+               moved: wp.array(dtype=wp.float32)):
+       t = wp.tid()
+       e = t // S
+       i = t - e * S
+       n = count[e]
+       if running[e] == 0 or i >= n:        # a frozen env is never touched again
+           return
+       base = e * S
+       p = x[t]
+       mid = 0.5 * (x[base + (i + n - 1) % n] + x[base + (i + 1) % n])
+       d = lam * (mid - p) + pull * (x0[t] - p)
+       tmp[t] = p + d
+       wp.atomic_max(moved, e, wp.length(d))   # max: independent of the thread order
+
+
+   @wp.kernel
+   def _apply_k(tmp: wp.array(dtype=wp.vec2f), count: wp.array(dtype=wp.int32), S: int,
+                running: wp.array(dtype=wp.int32), x: wp.array(dtype=wp.vec2f)):
+       t = wp.tid()
+       e = t // S
+       if running[e] != 0 and t - e * S < count[e]:
+           x[t] = tmp[t]
+
+
+   @wp.kernel
+   def _freeze_k(moved: wp.array(dtype=wp.float32), tol: float,
+                 running: wp.array(dtype=wp.int32)):
+       e = wp.tid()
+       if moved[e] < tol:
+           running[e] = 0                   # absorbing: nothing sets it back to 1
+
+
+   @dataclasses.dataclass(frozen=True, kw_only=True)
+   class SettleParams(plugin.Params):
+       max_iters: int = plugin.static(64, lo=1, doc="iteration bound")
+       check_every: int = plugin.static(8, lo=1, doc="iterations per window")
+       lam: float = plugin.static(0.3, lo=0.0, hi=0.5, doc="smoothing factor")
+       pull: float = plugin.static(0.2, lo=0.0, hi=0.5, doc="pull back to the input")
+       tol: float = plugin.static(1e-5, lo=0.0, doc="largest step of a settled env")
+
+
+   class Settle(plugin.Stage):
+       kind = "relax"
+       name = "acme.settle"
+       capture = plugin.CaptureClass.BOUNDED   # its loop may stop early
+       Params = SettleParams
+       reads = {"xy": "cl.xy", "count": "cl.count"}
+       writes = {"xy": "cl.xy"}
+
+       def build(self, b, params):
+           x, count = b.read("xy"), b.read("count")
+           out = b.write("xy", wp.vec2f, per="cl")
+           tmp = b.temp_like("xy")
+           running = b.scratch("running", wp.int32, b.E)    # 1 while the env moves
+           moved = b.scratch("moved", wp.float32, b.E)      # its largest step
+           active = b.scratch("active", wp.int32, 1)        # any env still running
+           S, E, K = b.layout.stride, b.E, params.check_every
+           lam, pull, tol = float(params.lam), float(params.pull), float(params.tol)
+
+           def body(ctx, it):
+               ctx.fill(moved, 0.0)
+               ctx.launch(_step_k, E * S,
+                          [out, x, count, S, lam, pull, running, tmp, moved])
+               ctx.launch(_apply_k, E * S, [tmp, count, S, running, out])
+               if (it + 1) % K == 0:                   # the iteration before a window
+                   ctx.launch(_freeze_k, E, [moved, tol, running])
+                   ops.any_set(ctx, running, active)
+
+           def enqueue(ctx):
+               ctx.copy(out, x)                        # the padding too
+               ctx.fill(running, 1)
+               ctx.bounded_loop(params.max_iters, body, active=active,
+                                first_check=K, check_every=K)
+           return enqueue
+
+For eight ``bezier`` tracks (seeds 0 to 7) on ``cpu``, the loop stops after three of its
+seven windows, with the same bytes as all 64 iterations give. Like the Taubin quick
+start, the stage shows the mechanics: it enforces no separation, so at the default
+``half_width`` its tracks fail the thickness check, as they do with ``relax=None``.
+
+The checklist of a ``BOUNDED`` stage:
+
+- **Declare it.** ``capture = plugin.CaptureClass.BOUNDED`` (or a ``capture_class`` that
+  returns it). A stage declared ``STATIC`` that calls ``bounded_loop(active=...)`` raises
+  ``ValueError`` at construction (``... declare capture = CaptureClass.BOUNDED``).
+  ``active=None`` (a plain static unroll) is fine in any stage.
+- **Make the freeze absorbing.** Once ``active`` reads ``0``, every remaining iteration
+  must leave the stage's outputs (and anything it reads after the loop) bitwise
+  unchanged: a per-env flag that only ever goes from running to frozen, and every kernel
+  that writes an output returning early for a frozen env. Scratch the loop alone uses
+  (``moved``, ``active`` here) may differ.
+- **Refresh** ``active`` **on the iteration before each window.** The windows start at
+  ``first_check``, ``first_check + check_every``, ...; the check before the window at
+  ``lo`` reads what iteration ``lo - 1`` wrote. Here ``first_check = check_every = K``
+  and the refresh runs when ``(it + 1) % K == 0``. Write it before the first check, in
+  every generation: a check must never read last generation's value.
+- **Keep the body pure in** ``it``. Branch only on ``it`` and on static params; mutate no
+  Python state that code after the loop reads (the loop may stop at any window), and
+  emit only through the ``ctx`` the body is given.
+- **Keep each window device-only.** Under lowering (b) a window is the body of a CUDA
+  conditional node, which may hold kernel launches, memsets and device-to-device copies
+  only. Launch kernels and use ``ctx.copy`` / ``ctx.fill`` between device arrays on
+  ``ctx``'s stream; no copy to or from host or pinned memory, no event, no other stream
+  (no ``wait_stream`` fork or join). Anything else fails inside ``wp.capture_if`` while
+  the caller's capture is being recorded, so the iterations before the window are
+  already recorded. ``check_stage(..., devices=["cuda:0"])`` (``bounded.lowering``)
+  records every window that way.
+- **Mind the cost.** A self-graph replays a conditional node per window; a caller's plain
+  ``torch.cuda.graph`` (and any eager ``cuda`` call) runs the full ``n_iters``, so pick a
+  bound you can afford, with the per-iteration work of a frozen env reduced to early
+  returns.
+
+``check_stage("relax", "acme.settle")`` checks it like any stage, plus
+``bounded.absorbing`` (the host-poll lowering against the unrolled one, with ``active``
+poisoned)
+and, on CUDA, ``bounded.lowering`` (see :doc:`testing-a-plugin`). A loop that keeps
+moving a converged env also fails ``batch_independence``: under an early stop it moves
+until the WHOLE batch has converged, so its output depends on the other envs.
+
+``ops.any_set(ctx, mask, flag)`` (any env set) and ``ops.all_set(ctx, mask, flag)``
+(every env set) reduce an ``[E]`` int32 mask into the ``[1]`` flag in two launches,
+deterministically. ``repulsive`` is the built-in example: its stall check freezes an env
+on device, and its growth loop is a ``bounded_loop`` over that freeze (see
+:doc:`/generators/repulsive`).
+
+.. _stage-host:
+
+Writing a host-driven (HOST) stage
+----------------------------------
+
+Some work needs the host: a NumPy or SciPy routine, a readback that decides what runs
+next. Declare ``capture = CaptureClass.HOST``. The stage then runs eagerly on every call,
+outside every capture, as its own segment: the stages around it still replay from graphs
+on ``cuda`` (see :ref:`cuda-graph-host`). It reaches the host through ``ctx.host()``, a
+:class:`~track_gen.exec.HostOps`, with staging buffers it allocates at build with
+``b.host_buffer(dtype, shape)`` (pinned on ``cuda``, so nothing allocates per call).
+
+This generator draws each env's loop on the host with NumPy, from the env's effective
+seed:
+
+.. code-block:: python
+
+   import dataclasses
+
+   import numpy as np
+   import warp as wp
+
+   from track_gen import ops, plugin
+
+
+   @dataclasses.dataclass(frozen=True, kw_only=True)
+   class BlobParams(plugin.Params):
+       points: int = plugin.static(64, lo=8, doc="points per loop")
+
+
+   class Blob(plugin.Stage):
+       kind = "generator"
+       name = "acme.blob"
+       output = "centerline"
+       capture = plugin.CaptureClass.HOST      # host RNG: runs eagerly
+       Params = BlobParams
+       writes = {"xy": "raw.xy", "valid": "gen.valid"}
+
+       def capacity(self, params, layout):
+           return {"raw": params.points}
+
+       def build(self, b, params):
+           n, E = params.points, b.E
+           xy = b.write("xy", wp.vec2f, per="raw")         # [E * n] on the device
+           valid = b.write("valid", wp.int32)              # [E]
+           seed_h = b.host_buffer(wp.int32, E)             # host staging buffers
+           xy_h = b.host_buffer(wp.vec2f, E * n)
+           theta = np.linspace(0.0, 2.0 * np.pi, n, endpoint=False)
+           radius = 0.5 * ops.constants.TARGET_EXTENT * b.scale
+
+           def enqueue(ctx):
+               h = ctx.host()
+               seeds = h.readback(b.seed, via=seed_h)      # a NumPy view of seed_h
+               pts = np.empty((E, n, 2), np.float32)
+               for e, s in enumerate(seeds):
+                   rng = np.random.default_rng(int(s) & 0x7FFFFFFF)
+                   lobes, phase = rng.integers(2, 6), rng.uniform(0.0, 2.0 * np.pi)
+                   r = radius * (1.0 + 0.2 * np.sin(lobes * theta + phase))
+                   pts[e, :, 0], pts[e, :, 1] = r * np.cos(theta), r * np.sin(theta)
+               h.upload(xy, pts.reshape(E * n, 2), via=xy_h)   # returns once copied
+               ctx.fill(valid, 1)                          # device work goes through ctx
+           return enqueue
+
+``HostOps`` has four operations, each on the call's stream:
+
+- ``read_i32(arr, index=0)``: one element of an int32 device array, through a
+  one-element host buffer the Program allocates for the stage.
+- ``readback(src, via=...)``: copies ``src`` into ``via`` (a ``host_buffer`` of the same
+  dtype, at least as large), waits, and returns a NumPy view of ``via`` shaped like
+  ``src``, valid until ``via`` is used again.
+- ``upload(dst, data, via=...)``: copies ``data`` into ``via``, then ``via`` into
+  ``dst``, and waits, so ``via`` is free again on return.
+- ``sync()``: waits until the call's stream has drained (a no-op on ``cpu``).
+
+The rules of a ``HOST`` stage:
+
+- ``ctx.host()`` works only inside a ``HOST`` stage's ``enqueue``: a ``STATIC`` or
+  ``BOUNDED`` stage that calls it raises ``ValueError`` on its first run, naming the
+  stage and its declared class (as ``bounded_loop(active=...)`` in a ``STATIC`` stage
+  does), and so does ``b.host_buffer`` in another stage.
+- Never under a capture: a caller's capture of the Program raises ``NotCapturableError``
+  naming the ``HOST`` stages before any launch, and ``ctx.host()`` raises it too.
+- Reach the host only through ``ctx.host()``, with ``via=`` buffers from
+  ``b.host_buffer`` (on ``cuda`` a ``via`` that is not pinned raises ``ValueError``). A
+  direct ``.numpy()``, ``wp.synchronize*()`` or a per-call allocation reads on the wrong
+  stream, may allocate, and can invalidate another thread's CUDA capture: the
+  conformance kit fails ``hot_path.host_sync`` / ``hot_path.allocation`` for them, while
+  the ``HostOps`` operations pass (they are safe while other threads capture on the
+  device).
+- The rest of the contract holds: per-env determinism in the seed, no state carried from
+  one generation to the next, every output slot written on every call.
+
+Users who need to record the whole pipeline into their own graph build it with
+``PipelineSpec(..., require_caller_capturable=True)``, which refuses ``HOST`` stages at
+build with a ``PlanError`` naming them. ``check_generator("acme.blob")`` (or
+``check_stage`` for a pipeline stage) runs the ``HOST`` variants of the checks: eager
+determinism and statelessness, the segmented self-graph against an eager run, and the
+refusals (see :doc:`testing-a-plugin`).
 
 Registering and selecting
 -------------------------
@@ -869,9 +1145,11 @@ Testing a stage
 ``order`` or ``stations`` stage, or a check that reads gate channels, inside the default
 gate pipeline) through the conformance checks: shapes and NaN padding of the ``Track``
 (or ``GateSequence``), determinism, batch
-independence, statelessness, the hot-path guards, caller capture on CUDA, and two
-stage-specific checks, ``stage.isolation`` (the stage writes none of its inputs and
-recomputes its output from them) and, for a validity stage, ``validity.bits``:
+independence, statelessness, the hot-path guards, caller capture on CUDA, the
+``bounded.*`` checks for a stage that runs a ``bounded_loop`` and ``host.*`` for a
+``HOST`` stage, and two stage-specific checks, ``stage.isolation`` (the stage writes none
+of its inputs and recomputes its output from them) and, for a validity stage,
+``validity.bits``:
 
 .. code-block:: python
 

@@ -398,12 +398,15 @@ class Course:
         self._inputs = types.MappingProxyType({"regen_mask": self._regen_mask})
 
         gen_runner = self.generator._runner
+        # A Course over a pipeline with HOST stages runs eagerly (it does not segment)
+        # and refuses a caller's capture naming them.
         self._runner = GraphRunner(
             self._device,
             capturable=gen_runner.capturable,
             legacy_stream=gen_runner.legacy_stream,
             owner=self,
             name=f"course[{config.gen.generator}]",
+            _host_ids=gen_runner._host_ids,
         )
         # Sub-tool construction (allocation + readback-based sizing) happens
         # here, cold, never inside a capture. The generator's construction
@@ -428,8 +431,8 @@ class Course:
         """The course's own regeneration graph (generator pipeline + refresh
         as ONE graph) for a plain :meth:`regenerate` / :meth:`generate`:
         captured on the first such CUDA call made outside any capture,
-        replayed by later ones. ``None`` on CPU, for a non-capturable
-        generator, and before that call. Each ``(advance, mask)`` variant of
+        replayed by later ones. ``None`` on CPU, for a generator pipeline
+        with HOST stages, and before that call. Each ``(advance, mask)`` variant of
         :meth:`regenerate` caches one more graph."""
         return self._runner.graph
 
@@ -651,7 +654,8 @@ class Course:
         - outside a capture on CUDA: replay of a self-graph (generator +
           refresh as ONE graph, captured on the first call of each
           ``(advance, mask)`` variant; :attr:`graph` is the plain one);
-        - on CPU, or with a ``capturable=False`` generator: eager.
+        - on CPU, or with a generator pipeline that has HOST stages (a
+          ``capturable=False`` generator): eager (a Course does not segment).
 
         Args:
             mask: optional contiguous ``[E]`` int32 regeneration mask. Pass a
@@ -671,7 +675,7 @@ class Course:
             ValueError: ``mask`` is not a contiguous ``[E]`` int32 array on the
                 course device (before any launch).
             track_gen.exec.NotCapturableError: recording a course whose
-                generator is ``capturable=False`` (before any launch).
+                generator pipeline has HOST stages (before any launch).
 
         In track mode, also check ``course.checkpoint_sampler.truncated``
         afterwards: a per-env ``[E]`` int32 flag (1 if ``max_checkpoints``

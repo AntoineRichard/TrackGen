@@ -88,15 +88,24 @@ _PLUGIN_PERS = ("env", "cl")
 
 
 class CaptureClass(enum.IntEnum):
-    """How a stage's ``enqueue`` may be captured.
+    """How a stage's ``enqueue`` may be captured (ordered: ``STATIC < BOUNDED < HOST``;
+    a pipeline's class is the largest of its stages').
 
     - ``STATIC``: a fixed launch sequence, capturable by anything.
-    - ``BOUNDED``: a static-bound iteration through ``ctx.bounded_loop``. Reserved: both
-      arrive with roadmap PR12, and until then a stage declaring ``BOUNDED`` (or whose
-      :meth:`Stage.capture_class` returns it) is rejected; declare ``STATIC``.
-    - ``HOST``: host readback / control flow: runs eagerly on every call, and a
-      caller capture raises :class:`~track_gen.exec.NotCapturableError` before any
-      launch. Exempt from the no-sync rule.
+    - ``BOUNDED``: data-dependent convergence with a static bound, through
+      :meth:`LaunchContext.bounded_loop <track_gen.exec.LaunchContext.bounded_loop>`
+      with ``active=``: capturable by anything; its loop may stop early (an eager host
+      poll on CPU, conditional graph nodes inside Warp-registered captures), so every
+      iteration after ``active[0]`` reads 0 must be an exact no-op (an absorbing
+      freeze; the conformance kit checks it).
+    - ``HOST``: host readback / control flow (through :meth:`LaunchContext.host
+      <track_gen.exec.LaunchContext.host>`): runs eagerly on every call, between the
+      graph launches of the rest of its pipeline (segmented execution); a caller
+      capture raises :class:`~track_gen.exec.NotCapturableError` before any launch.
+      It reaches the host only through ``ctx.host()`` (HostOps, over
+      ``StageBuilder.host_buffer`` buffers); a direct ``.numpy()``,
+      ``wp.synchronize*()`` or per-call allocation still fails the conformance kit's
+      ``hot_path.host_sync`` / ``hot_path.allocation``.
     """
 
     STATIC = 0
@@ -136,9 +145,9 @@ class Stage(abc.ABC):
     - ``name``: the registered name; third parties use a dotted ``"package.name"``.
     - ``Params``: the stage's :class:`~track_gen.plugin.Params` class (default
       :class:`~track_gen.plugin.NoParams`).
-    - ``capture``: its :class:`CaptureClass` (default ``STATIC``; ``BOUNDED`` is
-      rejected until roadmap PR12); override :meth:`capture_class` when it depends on
-      the params.
+    - ``capture``: its :class:`CaptureClass` (default ``STATIC``; ``BOUNDED`` for a
+      stage whose ``ctx.bounded_loop`` passes ``active=``, ``HOST`` for one that uses
+      ``ctx.host()``); override :meth:`capture_class` when it depends on the params.
     - ``reads``: ``local port -> channel`` the stage reads (:meth:`StageBuilder.read`).
       Must be empty for a generator.
     - ``writes``: ``local port -> channel`` the stage writes
@@ -207,8 +216,9 @@ class Stage(abc.ABC):
         """Allocate everything through ``b``, ONCE, and return ``enqueue(ctx)``.
 
         ``enqueue`` emits only ``ctx.launch`` / ``ctx.copy`` / ``ctx.fill`` /
-        ``track_gen.ops`` work: no allocation, no host sync, no branch on device data
-        or on ``ctx.capturing`` (a ``HOST`` stage may sync).
+        ``ctx.bounded_loop`` / ``track_gen.ops`` work: no allocation, no host sync, no
+        branch on device data or on ``ctx.capturing`` (a ``HOST`` stage reaches the
+        host through ``ctx.host()``).
         """
 
 
@@ -232,8 +242,8 @@ class StageBuilder:
     """Handed to :meth:`Stage.build`; created by the orchestrator, never by plugins.
 
     This release implements :meth:`read`, :meth:`write`, :meth:`temp_like`,
-    :meth:`scratch`, :meth:`param`, :meth:`input`, :meth:`salt`, :meth:`fail_bit`,
-    :meth:`stride_of` and :meth:`per_of`.
+    :meth:`scratch`, :meth:`host_buffer`, :meth:`param`, :meth:`input`, :meth:`salt`,
+    :meth:`fail_bit`, :meth:`stride_of` and :meth:`per_of`.
     Every method allocates at build time only, and raises once ``build()`` returned.
 
     Attributes:
@@ -254,7 +264,7 @@ class StageBuilder:
     def __init__(self, *, _token=None, stage, params, layout: Layout, scale: float,
                  seed: "wp.array", raw: int, outputs: Mapping[str, "wp.array"],
                  dynamic: Mapping[str, tuple], reserved_inputs=("regen_mask",),
-                 stage_id: str = _STAGE_ID, plan=None) -> None:
+                 stage_id: str = _STAGE_ID, plan=None, capture=None) -> None:
         if _token is not _BUILDER_TOKEN:
             raise TypeError("StageBuilder is created by the orchestrator (TrackGenerator); "
                             "a Stage receives one in build()")
@@ -277,6 +287,9 @@ class StageBuilder:
         self._reserved_inputs = frozenset(reserved_inputs)
         self._salts: dict = {}                        # stream -> salt
         self._temps: dict = {}                        # port -> temp_like() count
+        # The stage's CaptureClass as the orchestrator resolved it (capture_class() of
+        # the static params); None: resolved here on demand (host_buffer).
+        self._capture = capture
         # The planner's per-stage view (track_gen.pipeline): resolved ports, channel
         # versions and the channel catalogue. None for a generator Stage built by the
         # PR8 adapter: the generator subset below, unchanged.
@@ -511,6 +524,29 @@ class StageBuilder:
         self._scratch[key] = arr
         return arr
 
+    def host_buffer(self, dtype, shape) -> "wp.array":
+        """A zero-initialised HOST array (pinned on a CUDA device) for a HOST stage's
+        :class:`~track_gen.exec.HostOps` (``via=`` of ``readback`` / ``upload``).
+
+        Allocated once, here; the stage keeps it in its ``enqueue`` closure.
+
+        Raises:
+            ValueError: the stage's capture class is not ``CaptureClass.HOST``.
+            RuntimeError: called after ``build()`` returned.
+        """
+        self._check_open("host_buffer")
+        cls = type(self._stage)
+        cap = self._capture
+        if cap is None:
+            capture_class = getattr(cls, "capture_class", None)
+            cap = capture_class(self._params) if callable(capture_class) else None
+        if cap is not CaptureClass.HOST:
+            what = cap.name if isinstance(cap, CaptureClass) else repr(cap)
+            raise ValueError(f"StageBuilder.host_buffer() is for HOST stages: stage "
+                             f"{self.stage_id!r} ({cls.__name__}) has capture class "
+                             f"{what}")
+        return wp.zeros(shape, dtype=dtype, device="cpu", pinned=self.device.is_cuda)
+
     def param(self, field: str) -> "wp.array":
         """The stage-side ``[E]`` array of a DYNAMIC Params field (float32 or int32).
 
@@ -663,9 +699,6 @@ def _check_stage(cls, *, kind: "str | None" = None, api_version: int = 1,
                          f"plugin API {api_version}")
     if not isinstance(cls.capture, CaptureClass):
         raise TypeError(f"Stage {label}.capture must be a CaptureClass, got {cls.capture!r}")
-    if cls.capture == CaptureClass.BOUNDED:
-        raise ValueError(f"Stage {label}.capture=BOUNDED arrives with roadmap PR12; "
-                         f"declare STATIC")
     _check_params_class(cls.Params, owner=f"Stage {label}")
     if declared != "gate_generator" and dict(getattr(cls, "preferred", {}) or {}):
         raise ValueError(f"Stage {label}.preferred is read for gate generators only "

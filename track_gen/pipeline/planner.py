@@ -14,6 +14,13 @@ Stages of the kinds open to plugins (``relax``, ``width``, ``elevation``, ``vali
 ``carry``, ``gate_relax``, ``gate_arclen``, ``tangents``, ``gate_frames``) from
 TrackGen's built-in catalogue.
 
+Rule 6 (roadmap PR12): the stages are grouped into segments of equal host-ness
+(``CaptureClass.HOST`` vs ``STATIC`` / ``BOUNDED``, :attr:`Program.segments
+<track_gen.pipeline.Program.segments>`); ``PipelineSpec.require_caller_capturable``
+refuses any HOST stage, host-side. Every stage's ``enqueue`` runs inside its slot context
+(its id and declared capture class: ``ctx.host()`` and the ``ctx.bounded_loop``
+declaration check read it).
+
 One planner, two result kinds (roadmap PR11): ``BatchSpec.max_gates=None`` plans a
 track Program (its result a ``Track``), an int a gate Program (a ``GateSequence``). In a
 gate Program each stage runs on one point domain: the centerline generator and any
@@ -84,7 +91,8 @@ def build(spec: PipelineSpec, *, registry=None, seeds=None, out=None, stream=Non
     Raises:
         PlanError: an invalid spec (see :doc:`/how-it-works/pipeline-preview`), incl.
             an unknown relax / width / elevation / validity / order / stations name
-            (the registry's message).
+            (the registry's message) and a HOST stage under
+            ``PipelineSpec.require_caller_capturable``.
         ValueError: invalid params (the stage's own message), an unknown generator (the
             registry's message), an ``out=`` or ``seeds`` mismatch.
         TypeError: params or ``seeds`` of the wrong type.
@@ -491,25 +499,89 @@ def _check_provided(slots) -> None:
         raise PlanError(text)
 
 
-def _capture_class(slots, binding):
-    """The Program's capture class: the largest of the generator's and every stage's
-    ``capture_class`` of its (static) params. BOUNDED is refused (roadmap PR12)."""
+def _capture_classes(slots, binding) -> list:
+    """Each slot's ``CaptureClass``: the generator's from its binding (a Stage's
+    ``capture_class`` of its static params; a legacy spec: STATIC if ``capturable`` else
+    HOST), every other stage's ``capture_class`` of its (static) params."""
     from ..plugin.params import _static_view  # noqa: PLC0415
     from ..plugin.stage import CaptureClass  # noqa: PLC0415
 
-    cap = CaptureClass.STATIC if binding.capturable else CaptureClass.HOST
+    caps = []
     for s in slots:
         if s.generator is not None:
+            caps.append(CaptureClass(binding.capture))
             continue
         got = s.cls.capture_class(_static_view(s.params))
         if not isinstance(got, CaptureClass):
             raise TypeError(f"{s.cls.__name__}.capture_class() must return a "
                             f"CaptureClass, got {got!r}")
-        if got == CaptureClass.BOUNDED:
-            raise PlanError(f"{_label(s.ref)}: {s.cls.__name__}.capture_class() returned "
-                            f"BOUNDED: arrives with roadmap PR12")
-        cap = max(cap, got)
-    return cap
+        caps.append(got)
+    return caps
+
+
+def _host_label(s, binding) -> str:
+    """How the ``require_caller_capturable`` refusal names a HOST slot."""
+    from ..plugin.stage import _is_stage  # noqa: PLC0415
+
+    if s.generator is not None and not _is_stage(binding.spec):
+        return (f"{s.id!r} ({s.ref.kind} {s.ref.name!r}, {type(binding.spec).__name__} "
+                f"capturable=False)")
+    return f"{s.id!r} ({s.ref.kind}.{s.ref.name})"
+
+
+def _check_caller_capturable(slots, caps, binding) -> None:
+    """``PipelineSpec.require_caller_capturable``: no HOST slot (host-side, before
+    anything is allocated)."""
+    from ..plugin.stage import CaptureClass  # noqa: PLC0415
+
+    host = [_host_label(s, binding) for s, cap in zip(slots, caps)
+            if cap is CaptureClass.HOST]
+    if host:
+        raise PlanError(
+            f"PipelineSpec.require_caller_capturable=True, but stage(s) "
+            f"{', '.join(host)} {'is' if len(host) == 1 else 'are'} HOST (they read "
+            f"device data back or run host control flow, so they run eagerly and refuse "
+            f"a caller's capture): use STATIC / BOUNDED stages or drop "
+            f"require_caller_capturable")
+
+
+def _segments(slots, caps) -> tuple:
+    """Planner rule 6: the maximal runs of consecutive slots of equal host-ness (HOST
+    vs STATIC / BOUNDED), as :class:`~track_gen.pipeline.Segment` s."""
+    from ..plugin.stage import CaptureClass  # noqa: PLC0415
+    from .program import Segment  # noqa: PLC0415
+
+    runs: list = []
+    for s, cap in zip(slots, caps):
+        host = cap is CaptureClass.HOST
+        if runs and runs[-1][0] == host:
+            runs[-1][1].append((s.id, cap))
+        else:
+            runs.append((host, [(s.id, cap)]))
+    return tuple(Segment(i, max(c for _, c in members),
+                         tuple(sid for sid, _ in members))
+                 for i, (_, members) in enumerate(runs))
+
+
+def _slot_info(s, cap, binding, dev):
+    """The per-slot context of ``s`` (``track_gen.exec.host._SlotInfo``): its id, label,
+    declared capture class (``None``: a legacy generator spec, unchecked) and, for a
+    HOST Stage slot, its build-time ``[1]`` int32 host buffer (``HostOps.read_i32``)."""
+    from ..exec.host import _SlotInfo  # noqa: PLC0415
+    from ..plugin.stage import CaptureClass, _is_stage  # noqa: PLC0415
+
+    legacy = s.generator is not None and not _is_stage(binding.spec)
+    if legacy:
+        label = f"{s.ref.kind} {s.ref.name!r} ({type(binding.spec).__name__})"
+        declared = None
+    else:
+        cls = binding.spec if s.generator is not None else s.cls
+        label = f"{s.ref.kind} {s.ref.name!r} ({cls.__module__}.{cls.__qualname__})"
+        declared = cap
+    i32 = None
+    if cap is CaptureClass.HOST and not legacy:
+        i32 = wp.zeros(1, dtype=wp.int32, device="cpu", pinned=dev.is_cuda)
+    return _SlotInfo(s.id, label, declared, str(dev.alias), i32)
 
 
 def _missing_hint(ch: str, s: _Slot, slots, gate: bool) -> str:
@@ -951,6 +1023,7 @@ def _build(spec: PipelineSpec, *, binding, seeds=None, out=None, stream=None,
     """:func:`build` with the generator already bound (the facades pass their own
     binding and run config)."""
     from .._src.generator_binding import _StageGenerator, param_table  # noqa: PLC0415
+    from ..exec.host import _SlotEnqueue  # noqa: PLC0415
     from ..exec.runner import _check_default_stream, ensure_not_capturing  # noqa: PLC0415
     from ..plugin.params import _fields, _new_param_table, _new_stage_params, \
         _static_view  # noqa: PLC0415
@@ -969,7 +1042,9 @@ def _build(spec: PipelineSpec, *, binding, seeds=None, out=None, stream=None,
     layout = Layout(E, S, str(dev), True)
     slots = _resolve(spec, binding, layout, registry)
     A = _check_gate_plan(spec, slots, registry) if gate else 0
-    capture_class = _capture_class(slots, binding)
+    caps = _capture_classes(slots, binding)
+    if spec.require_caller_capturable:
+        _check_caller_capturable(slots, caps, binding)
     writers = _plan_channels(slots, gate)
     if gate:
         _check_provided(slots)
@@ -1009,7 +1084,7 @@ def _build(spec: PipelineSpec, *, binding, seeds=None, out=None, stream=None,
     inputs = {"regen_mask": regen_mask}
     stage_params = {}
     gen_scratch = None
-    for s in slots:
+    for s, cap in zip(slots, caps):
         bound_gen = s.generator in ("centerline", "legacy")
         params = None if bound_gen else s.params
         dynamic = {}
@@ -1025,7 +1100,7 @@ def _build(spec: PipelineSpec, *, binding, seeds=None, out=None, stream=None,
         instance = s.instance if bound_gen else s.cls()
         b = _new_builder(stage=instance, params=view, layout=s.layout, scale=batch.scale,
                          seed=seed, raw=raw, outputs={}, dynamic=dynamic, stage_id=s.id,
-                         plan=plan.for_stage(s))
+                         plan=plan.for_stage(s), capture=cap)
         enqueue = instance.build(b, view)
         _close_builder(b)
         if not callable(enqueue):
@@ -1038,7 +1113,9 @@ def _build(spec: PipelineSpec, *, binding, seeds=None, out=None, stream=None,
         if s.ref.kind == "validity" and not plan.bits_of.get(s.id):
             raise PlanError(f"{_label(s.ref)} never called b.fail_bit(): a validity stage "
                             f"owns at least one fail bit")
-        enqueues.append(enqueue)
+        # Every stage runs inside its slot context (ctx.host(), the bounded_loop
+        # declaration check and host poll); the wrapper itself emits nothing.
+        enqueues.append(_SlotEnqueue(_slot_info(s, cap, binding, dev), enqueue))
         if bound_gen:
             gen_scratch = instance.scratch
             if adapter is not None:
@@ -1093,7 +1170,7 @@ def _build(spec: PipelineSpec, *, binding, seeds=None, out=None, stream=None,
     else:
         gen_params = param_table(binding, default_stream=stream)[_GENERATOR]
     table = _new_param_table({_GENERATOR: gen_params, **stage_params})
-    resolved = PipelineSpec(batch=batch, stages=tuple(
+    resolved = dataclasses.replace(spec, stages=tuple(
         dataclasses.replace(s.ref, params=s.params) for s in slots))
     program = Program(
         _token=_PROGRAM_TOKEN, spec=resolved, layout=layout, binding=binding,
@@ -1102,8 +1179,8 @@ def _build(spec: PipelineSpec, *, binding, seeds=None, out=None, stream=None,
         stage_ids=[s.id for s in slots],
         kinds={s.id: (s.ref.kind, s.ref.name) for s in slots}, gen_scratch=gen_scratch,
         stream=stream, owner=owner, commit=commit, fail_bits=plan.fail_bits,
-        fail_owner=plan.fail_owner, capture_class=capture_class,
-        on_invalid=batch.on_invalid, writers=writers,
+        fail_owner=plan.fail_owner, capture_classes=caps,
+        segments=_segments(slots, caps), on_invalid=batch.on_invalid, writers=writers,
         ports={s.id: (dict(s.reads), dict(s.writes)) for s in slots})
     if prepare:
         program.prepare()

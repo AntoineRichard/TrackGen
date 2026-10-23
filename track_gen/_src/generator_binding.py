@@ -49,9 +49,12 @@ class GeneratorBinding:
     user_config: object             # snapshot as passed (dict -> instance)
     run_config: object              # snapshot + built-in overlay; .generator_params = params
     pipeline_spec: object           # what the pipeline calls (the spec, or _StageGenerator)
-    capturable: bool
+    capturable: bool                # capture != HOST (may be recorded into a caller's graph)
     accepts_ctx: bool
     layout: Layout
+    # The generator's CaptureClass: a Stage's capture_class(static params); a legacy
+    # GeneratorSpec / GateGeneratorSpec: STATIC if capturable else HOST.
+    capture: CaptureClass = CaptureClass.STATIC
 
 
 def _stride(kind: str, config) -> int:
@@ -152,12 +155,9 @@ def bind_generator(kind: str, config, *, registry) -> GeneratorBinding:
         if not isinstance(cap, CaptureClass):
             raise TypeError(f"{spec.__name__}.capture_class() must return a CaptureClass, "
                             f"got {cap!r}")
-        if cap == CaptureClass.BOUNDED:
-            raise ValueError(f"{spec.__name__}.capture_class() returned BOUNDED, which "
-                             f"arrives with roadmap PR12; declare STATIC")
         return GeneratorBinding(kind, str(run.generator), spec, params, user, run, spec,
                                 capturable=cap != CaptureClass.HOST, accepts_ctx=True,
-                                layout=layout)
+                                layout=layout, capture=cap)
     if stage:
         instance = spec()
         # build / capacity / capture_class see the static fields only (_static_view).
@@ -166,9 +166,6 @@ def bind_generator(kind: str, config, *, registry) -> GeneratorBinding:
         if not isinstance(cap, CaptureClass):
             raise TypeError(f"{spec.__name__}.capture_class() must return a CaptureClass, "
                             f"got {cap!r}")
-        if cap == CaptureClass.BOUNDED:
-            raise ValueError(f"{spec.__name__}.capture_class() returned BOUNDED, which "
-                             f"arrives with roadmap PR12; declare STATIC")
         capacity = dict(instance.capacity(view, layout) or {})
         unknown = sorted(str(k) for k in capacity if k != "raw")
         if unknown:
@@ -180,16 +177,18 @@ def bind_generator(kind: str, config, *, registry) -> GeneratorBinding:
                              f"got {raw!r}")
         adapter = _StageGenerator(instance, spec, params, layout, scale=float(run.scale),
                                   raw_points=int(raw),
-                                  capturable=cap != CaptureClass.HOST)
+                                  capturable=cap != CaptureClass.HOST, capture=cap)
         return GeneratorBinding(kind, str(run.generator), spec, params, user, run, adapter,
                                 capturable=adapter.capturable, accepts_ctx=True,
-                                layout=layout)
+                                layout=layout, capture=cap)
     if kind == "gate_generator":
         _warn_legacy_gate(registry, str(run.generator))
+    capturable = bool(getattr(spec, "capturable", True))
     return GeneratorBinding(kind, str(run.generator), spec, params, user, run, spec,
-                            capturable=bool(getattr(spec, "capturable", True)),
+                            capturable=capturable,
                             accepts_ctx=bool(getattr(spec, "accepts_ctx", False)),
-                            layout=layout)
+                            layout=layout,
+                            capture=CaptureClass.STATIC if capturable else CaptureClass.HOST)
 
 
 def param_table(binding: GeneratorBinding, *, default_stream=None) -> ParamTable:
@@ -260,7 +259,7 @@ class _StageGenerator:
     accepts_ctx = True
 
     def __init__(self, stage, spec, params, layout: Layout, *, scale: float,
-                 raw_points: int, capturable: bool) -> None:
+                 raw_points: int, capturable: bool, capture=None) -> None:
         self.stage = stage
         self.spec = spec
         self.name = str(spec.name)
@@ -269,6 +268,7 @@ class _StageGenerator:
         self.scale = float(scale)
         self.raw_points = int(raw_points)
         self.capturable = bool(capturable)
+        self.capture = capture                  # its resolved CaptureClass
         self.inputs: Mapping[str, wp.array] = types.MappingProxyType({})
         self.param_arrays: Mapping[str, wp.array] = types.MappingProxyType({})
         self._pairs: list = []                  # (live, work)
@@ -305,7 +305,7 @@ class _StageGenerator:
         b = _new_builder(stage=self.stage, params=view, layout=self.layout,
                          scale=self.scale, seed=seed, raw=self.raw_points,
                          outputs={"raw.xy": out_xy, "gen.valid": out_valid},
-                         dynamic=dynamic, stage_id=_STAGE_ID)
+                         dynamic=dynamic, stage_id=_STAGE_ID, capture=self.capture)
         enqueue = self.stage.build(b, view)
         _close_builder(b)
         if not callable(enqueue):

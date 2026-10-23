@@ -10,8 +10,8 @@ whole generation pipeline runs as a CUDA graph. Generation can use either of two
   recorded into YOUR graph, next to your physics and the per-step utilities. One
   ``wp.capture_launch`` (or ``g.replay()``) then runs all of it.
 
-A plugin generator registered with ``capturable=False`` runs eagerly on CUDA every call and
-cannot be recorded. This page explains the fixed-batch contract, the warm-up at
+A plugin generator registered with ``capturable=False`` (a ``HOST`` stage) runs eagerly on
+CUDA every call, ahead of the captured rest of its pipeline, and cannot be recorded. This page explains the fixed-batch contract, the warm-up at
 construction, both graph modes, reused output buffers, and how to slot generation into a
 batched reinforcement-learning loop, up to a per-env auto-reset that gives new courses to
 the envs that finished without leaving your step graph (`Per-Env Auto-Reset Inside the
@@ -74,11 +74,13 @@ Capture works because a capturable generator's pipeline is **entirely static**:
   illegal inside a CUDA graph scope); ordering comes from the stream.
 
 ``repulsive`` is the outlier on cost, not on capture: its growth loop runs a
-fixed, host-precomputed iteration schedule with no global early exit, so every
-call pays the full iteration budget (~1000× slower than the other generators).
+fixed, host-precomputed iteration schedule (~1000× slower than the other generators).
+Converged envs are frozen on device, so each env still depends only on its own seed,
+and the loop is a ``ctx.bounded_loop``: its self-graph skips, on device, the stall
+windows left once every env has frozen (CUDA 12.4+ conditional nodes), while a plain
+``torch.cuda.graph`` records, and an eager ``cuda`` call runs, the full iteration bound.
 Its construction pays one full eager run, and its first ``generate()`` on ``cuda``
-records a ~4k-node graph. Converged envs are frozen on device, so each env still
-depends only on its own seed. See :doc:`/generators/repulsive`.
+records its graph. See :doc:`/generators/repulsive`.
 
 .. code-block:: python
 
@@ -231,8 +233,11 @@ The rules:
   keeps the generator's buffers alive with the graph; a ``torch.cuda.graph`` does not, so
   hold on to the generator while you replay it, or tie it to the torch graph with
   ``track_gen.interop.torch.retain(g, gen)``.
-- **Non-capturable generators raise.** A ``capturable=False`` plugin raises
-  ``NotCapturableError`` (from ``track_gen.exec``) before launching anything. A legacy
+- **Non-capturable generators raise.** A ``capturable=False`` plugin (any pipeline
+  with a ``HOST`` stage) raises ``NotCapturableError`` (from ``track_gen.exec``), naming
+  the ``HOST`` stages, before launching anything. Build the pipeline with
+  ``PipelineSpec(..., require_caller_capturable=True)`` to have that refused at
+  construction instead. A legacy
   plugin without ``accepts_ctx=True`` can only be recorded on Warp's current stream and
   raises ``LegacyPluginStreamError`` otherwise; see :doc:`/how-it-works/cuda-graph`.
 

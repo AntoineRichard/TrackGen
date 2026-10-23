@@ -24,17 +24,24 @@ launch. Verified against Warp 1.18 (the floor):
 - ``wp.capture_if`` outside a registered capture reads the condition back on
   the host (pinned copy + ``synchronize_stream``); callers must only use it on a
   registered stream (see :func:`conditional_ok`).
+- ``warp._src.context._get_apic_capture_for_device(device)`` returns the API
+  capture (APIC) a CPU ``wp.ScopedCapture`` opened on ``device`` (process-global:
+  it records every CPU launch from any thread without executing it), ``None``
+  otherwise (see :func:`cpu_capture_active`).
 """
 from __future__ import annotations
 
 __all__ = ["registered_graph", "anchor", "capture_stream", "registered_stream",
-           "conditional_ok", "conditional_allowed", "set_conditional_allowed",
-           "stream_synchronize"]
+           "conditional_ok", "conditional_allowed", "conditional_marked",
+           "set_conditional_allowed", "stream_synchronize", "any_registered_capture",
+           "cpu_capture_active"]
 
 _OWNERS_ATTR = "_track_gen_owners"
-# Set on the wp.Graph of a registration that must not receive conditional nodes
-# (track_gen.interop.torch.registered() without conditional=True).
-_NO_CONDITIONAL_ATTR = "_track_gen_no_conditional"
+# Set on the wp.Graph of a registration whose conditional nodes were decided explicitly:
+# False must not receive any (track_gen.interop.torch.registered() without
+# conditional=True), True opted in (registered(conditional=True)). Unset: Warp's own
+# registrations (ScopedCapture, capture_begin(external=True)).
+_CONDITIONAL_ATTR = "_track_gen_conditional"
 
 # cudaStreamCaptureModeRelaxed (== wp.CaptureMode.RELAXED).
 _CAPTURE_MODE_RELAXED = 2
@@ -144,27 +151,39 @@ def conditional_ok(device) -> bool:
 
 
 def set_conditional_allowed(key, allowed: bool) -> None:
-    """Allow or forbid conditional nodes in the open Warp capture registered under
-    the stream object ``key`` (a flag on its ``wp.Graph``, which Warp keeps across
+    """Explicitly allow or forbid conditional nodes in the open Warp capture registered
+    under the stream object ``key`` (a flag on its ``wp.Graph``, which Warp keeps across
     the pause/resume of a ``capture_if``). A no-op if nothing is registered under
     ``key`` or an internal is missing."""
     try:
         g = key.device.captures.get(key)
         if g is not None:
-            g.__dict__[_NO_CONDITIONAL_ATTR] = not allowed
+            g.__dict__[_CONDITIONAL_ATTR] = bool(allowed)
     except (AttributeError, TypeError):  # pragma: no cover - internals changed
         return
+
+
+def conditional_marked(key) -> "bool | None":
+    """The explicit :func:`set_conditional_allowed` decision of the open Warp capture
+    registered under ``key``; ``None`` when it was never set (or nothing is
+    registered)."""
+    try:
+        g = key.device.captures.get(key)
+    except (AttributeError, TypeError):
+        return None
+    value = None if g is None else getattr(g, _CONDITIONAL_ATTR, None)
+    return None if value is None else bool(value)
 
 
 def conditional_allowed(key) -> bool:
     """Whether the open Warp capture registered under the stream object ``key``
     accepts conditional nodes (``False`` if none is registered, or it was marked
-    by :func:`set_conditional_allowed`)."""
+    off by :func:`set_conditional_allowed`)."""
     try:
         g = key.device.captures.get(key)
     except (AttributeError, TypeError):
         return False
-    return g is not None and not getattr(g, _NO_CONDITIONAL_ATTR, False)
+    return g is not None and getattr(g, _CONDITIONAL_ATTR, True) is not False
 
 
 def stream_synchronize(stream) -> None:
@@ -198,3 +217,45 @@ def stream_synchronize(stream) -> None:
     finally:
         if prev is not None and prev >= 0:
             exchange(prev)
+
+
+def any_registered_capture(device) -> bool:
+    """Whether a Warp-registered capture is open anywhere on the CUDA ``device`` (any
+    stream, any thread); ``False`` for a CPU device or on any error."""
+    try:
+        return bool(getattr(device, "is_cuda", False) and device.captures)
+    except Exception:  # pragma: no cover - defensive: never break a launch over a probe
+        return False
+
+
+def _apic_lookup():
+    """Warp's ``_get_apic_capture_for_device`` (``None`` when the internal is missing)."""
+    try:
+        from warp._src import context as _wctx  # noqa: PLC0415 - current layout
+    except ImportError:  # pragma: no cover - older layout
+        import warp.context as _wctx  # noqa: PLC0415
+    return getattr(_wctx, "_get_apic_capture_for_device", None)
+
+
+def cpu_capture_active(device) -> bool:
+    """Whether a CPU graph capture (Warp's APIC recording, ``wp.ScopedCapture("cpu")``)
+    is open on the CPU ``device``. While it is, CPU launches are RECORDED without being
+    executed, so a host read of device data sees stale values.
+
+    ``False`` for a CUDA device (a CUDA capture is a stream capture, seen by
+    ``LaunchContext.capturing``). When the Warp internal is missing, falls back to
+    ``Device.is_capturing`` (which reports the APIC state on CPU in Warp >= 1.18).
+    """
+    try:
+        if isinstance(device, str):
+            import warp as wp  # noqa: PLC0415
+
+            device = wp.get_device(device)
+        if not getattr(device, "is_cpu", False):
+            return False
+        lookup = _apic_lookup()
+        if lookup is None:  # pragma: no cover - internal renamed
+            return bool(device.is_capturing)
+        return lookup(device) is not None
+    except Exception:  # pragma: no cover - defensive: never break a launch over a probe
+        return False

@@ -29,10 +29,14 @@ The public interface of both facades:
   See `Seeds, epochs and the generation counter`_ and `Masked regeneration`_.
 - ``enqueue(*, stream=None, advance=False, mask=None)`` — the same body, recorded into the
   active capture or run eagerly on the resolved stream. It never builds a self-graph and
-  never blocks.
+  never host-syncs (only a ``HOST`` stage's own host operations block, see `HOST stages
+  and segments`_). An iterative (``BOUNDED``) stage runs its full iteration bound when
+  called eagerly on ``cuda``; its self-graph skips converged windows on device (see
+  `Iterative stages (BOUNDED)`_).
 - ``graph`` — the generator's own ``wp.Graph`` for a plain ``generate()`` (no ``advance``,
   no ``mask``). It is ``None`` until the first such ``cuda`` call outside a capture, and
-  stays ``None`` on ``cpu`` and for non-capturable generators. Every other
+  stays ``None`` on ``cpu`` and for a generator with a ``HOST`` stage, whose capturable
+  segments get graphs of their own (see `HOST stages and segments`_). Every other
   ``(advance, mask)`` combination gets a self-graph of its own (see `Masked
   regeneration`_).
 - ``seeds`` — the :class:`~track_gen.seeds.SeedState`: per-env seeds (bound to
@@ -70,14 +74,21 @@ current stream. The state of that stream picks the mode:
      - Enqueues the seed prologue and the whole pipeline on that stream, so they become
        nodes of the caller's graph. There is no self-capture, no ``wp.capture_launch`` (a
        graph launch cannot be recorded into another capture) and no host sync, whatever
-       ``sync`` says.
+       ``sync`` says. A generator with a ``HOST`` stage raises ``NotCapturableError``
+       instead, before any launch.
    * - Self-graph
-     - ``cuda``, a capturable generator, not capturing.
+     - ``cuda``, not capturing, no ``HOST`` stage.
      - The first call records the body once into the generator's own graph on a private
        stream (one graph per ``(advance, mask)`` combination). Every call then launches
        that graph on the resolved stream with ``wp.capture_launch``.
+   * - Segmented self-graph
+     - ``cuda``, not capturing, a ``HOST`` stage.
+     - The first call records each capturable segment of the body into a graph of its
+       own. Every call then runs the segments in order on the resolved stream: a
+       ``HOST`` segment eagerly, the others with ``wp.capture_launch`` (see `HOST stages
+       and segments`_).
    * - Eager
-     - ``cpu``, a ``capturable=False`` generator, or ``enqueue()`` outside a capture.
+     - ``cpu``, or ``enqueue()`` outside a capture.
      - Launches the pipeline directly on the resolved stream.
 
 The seed prologue (one kernel that derives the seed buffer from ``rng.seeds_warp`` and the
@@ -103,8 +114,10 @@ another stream and is silently missing from your graph. A generator constructed 
 ``stream=`` resolves to that stream before torch's capture stream, so inside
 ``torch.cuda.graph`` pass ``stream="torch"`` to it.
 
-``Course.regenerate()`` follows the same three modes with one body: generation plus the
-downstream refresh (see :doc:`/utilities/course`).
+``Course.regenerate()`` follows the same modes with one body: generation plus the
+downstream refresh (see :doc:`/utilities/course`). It does not segment: over a generator
+with a ``HOST`` stage it runs eagerly outside a capture, and raises
+``NotCapturableError`` inside one.
 
 Seeds, epochs and the generation counter
 ----------------------------------------
@@ -215,21 +228,27 @@ to ``flag[0]``, a ``[1]`` int32 device array. ``track_gen.ops.any_set(ctx, mask,
 writes that flag on device: it zeroes it, then sets it to ``1`` if any ``mask[e] != 0``
 (an integer ``atomic_max``, so the result is deterministic).
 ``Course.regenerate(mask=...)`` puts its whole body, the epoch advance included, behind
-``any_set`` + ``skip_unless``.
+``any_set`` + ``skip_unless``, and ``LaunchContext.bounded_loop`` puts each window of an
+iterative stage behind it (see `Iterative stages (BOUNDED)`_).
+``track_gen.ops.all_set(ctx, mask, flag)`` is the "every env" twin of ``any_set``.
 
 ``skip_unless`` records the body under a CUDA conditional graph node (``wp.capture_if``),
-which skips it on device when ``flag[0] == 0``, only when BOTH of these hold:
+which skips it on device when ``flag[0] == 0``, only when BOTH of these hold (it then
+returns ``True``; ``False`` when it ran the body unconditionally):
 
 - the context's stream is capturing, in a capture that Warp registered on that stream:
-  ``wp.ScopedCapture``, ``wp.capture_begin`` (``external=True`` included), a producer's
-  own self-graph, or a ``torch.cuda.graph`` inside
+  ``wp.ScopedCapture``, ``wp.capture_begin`` (``external=True`` included, except a
+  hand-made registration of the ``torch.cuda.graph`` capture running in the calling
+  thread), a producer's own self-graph, or a ``torch.cuda.graph`` inside
   ``track_gen.interop.torch.registered(conditional=True)``;
 - ``wp.is_conditional_graph_supported()`` is true: the CUDA driver and the CUDA toolkit
   Warp was built with are both 12.4 or newer.
 
-Everywhere else (eager calls, the ``cpu`` device, a plain ``torch.cuda.graph`` or one
-registered without ``conditional=True``, a side stream that only joined a capture
-registered on another stream, an older driver or toolkit) ``body`` runs, or is recorded,
+Everywhere else (eager calls, the ``cpu`` device, a plain ``torch.cuda.graph``, one
+registered without ``conditional=True`` or by hand with
+``wp.capture_begin(stream=..., external=True)`` on torch's capture stream, a side stream
+that only joined a capture registered on another stream, an older driver or toolkit,
+inside ``track_gen.exec.unconditional()``) ``body`` runs, or is recorded,
 unconditionally. It never takes Warp's eager ``capture_if`` path, which reads the flag
 back on the host and synchronizes the stream (``skip_unless`` raises ``ValueError`` for a
 flag that is not on the context's device, where ``capture_if`` would take that path).
@@ -244,8 +263,37 @@ is therefore always correct; it only costs a full generation per replay.
 A graph that holds a conditional node cannot be used as a CUDA child graph: you cannot
 pass it to ``wp.capture_if(cond, on_true=graph)`` or insert it into another graph. If you
 nest your step graph that way, nest through a Python callback instead (record the step's
-calls inside the ``on_true`` callback), or keep the conditional out of it: record the
-masked regeneration without a Warp registration, or use a plain ``regenerate()``.
+calls inside the ``on_true`` callback), or keep the conditional out of it: record inside
+``track_gen.exec.unconditional()``, record without a Warp registration, or use a plain
+``regenerate()``. The same holds for a graph that records a ``BOUNDED`` stage
+(``repulsive``) in a registered capture, and for such a producer's own ``graph``: its
+windows are conditional nodes (unless its first CUDA call, which captures it, ran inside
+``unconditional()``).
+
+``wp.capture_if`` ends the stream's capture and resumes it around each conditional node.
+CUDA refuses to end a capture while a side stream that joined it (``s2.wait_event(...)``
+on an event recorded on the capture stream) has not been joined back
+(``cudaErrorStreamCaptureUnjoined``), and the caller's capture is then invalidated. Join
+every forked stream back before a call that records a conditional node (a masked
+``Course.regenerate``, any generation with a ``BOUNDED`` stage), or record that call
+inside ``unconditional()``:
+
+.. code-block:: python
+
+   from track_gen.exec import unconditional
+
+   with wp.ScopedCapture(device="cuda:0") as cap:
+       with unconditional():           # no conditional node in this recording
+           gen.generate()              # repulsive: every window recorded
+   # cap.graph can be nested as a child graph; the replays give the same bytes
+
+A Warp capture of torch's current stream (``torch.cuda.stream(t)`` +
+``wp.ScopedStream(wp.stream_from_torch(t))`` + ``wp.ScopedCapture()``) records no
+conditional node by default: Warp does not record who began a capture, and a hand-made
+``capture_begin(external=True)`` of a running ``torch.cuda.graph`` must not get one. The
+results are the same; to keep the device-side skips, record inside
+``track_gen.exec.conditional()`` (only when torch is not the capturer). A producer's own
+``graph`` is unaffected.
 
 Under ``torch.cuda.graph``, enter ``track_gen.interop.torch.registered()`` inside the
 torch capture. It resolves torch's current stream to the library's long-lived Warp
@@ -261,8 +309,12 @@ its graph's capture by the id it saw at ``capture_begin``. After the first condi
 node, torch ops later in the same ``torch.cuda.graph`` (inside or after the
 ``registered()`` block) no longer allocate from the graph's private pool: they fail to
 capture or take blocks from the general pool that eager code can reuse while the graph
-still writes them. With ``conditional=True``, record the masked regeneration after every
-torch op that allocates, or preallocate those outputs.
+still writes them. With ``conditional=True``, record the masked regeneration (and any
+generation with a ``BOUNDED`` stage, whose windows are conditional nodes too) after every
+torch op that allocates, or preallocate those outputs. A capture you register by hand
+with ``wp.capture_begin(stream=..., external=True)`` on torch's running capture stream
+follows the same default: no conditional node unless it goes through
+``registered(conditional=True)``.
 
 .. code-block:: python
 
@@ -278,12 +330,100 @@ torch op that allocates, or preallocate those outputs.
 Pass ``capture_mode=`` when torch captures with a non-default ``capture_error_mode``, and
 ``graph=g`` to retain on ``g`` the producers recorded inside the block (see `Lifetime`_).
 
+.. _cuda-graph-bounded:
+
+Iterative stages (BOUNDED)
+--------------------------
+
+A stage whose work is an iteration that may stop early (an optimizer that runs until
+every env has converged) declares ``capture = CaptureClass.BOUNDED`` and emits its loop
+through ``LaunchContext.bounded_loop``:
+
+.. code-block:: python
+
+   ctx.bounded_loop(n_iters, body, *, active=None, first_check=0, check_every=1)
+
+``body(ctx, it)`` runs for ``it`` in ``range(n_iters)``, with ``it`` a plain Python
+``int``: a cadence keyed on it (``if (it + 1) % 25 == 0``) is resolved on the host, and
+the launch sequence of every iteration is static. Iterations ``[0, first_check)`` always
+run. The remaining ones form windows of ``check_every`` iterations (the last one may be
+shorter), each preceded by a check of ``active[0]``, a ``[1]`` int32 array on the
+context's device: when it reads ``0``, that window and every later one may be skipped.
+The body writes ``active`` on device, on the iteration just before each window starts;
+``ops.any_set(ctx, running, active)`` over a per-env "still running" mask is the usual
+way. With ``active=None`` the loop is a plain static unroll (no check, any stage may use
+it).
+
+``n_iters`` is a bound, not a count: how many iterations execute depends on where the call
+runs. The lowering is chosen once per call, from the capture state, never from device data:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 46 54
+
+   * - Where the loop runs
+     - Lowering
+   * - ``cpu``, eager, with no CPU graph capture open on the device
+     - **(a) host poll.** ``active[0]`` is read on the host before each window, and the
+       loop stops at the first ``0``. The read is four bytes, and CPU launches are
+       synchronous.
+   * - ``cuda``, eager: ``enqueue()``, ``policy="eager"``, a keyed-graph overflow, a
+       ``Course`` over a ``HOST`` generator, the ``HOST`` segments of a segmented call
+     - **(c) unrolled.** Every window runs, with no host sync, so ``enqueue()`` keeps its
+       "never host-syncs" contract. A frozen env costs launch overhead only when the
+       stage's kernels return early for it, as ``repulsive``'s do.
+   * - Construction and ``prepare()`` (the warm-up)
+     - **(c) unrolled**, so the warm-up loads every kernel a window can launch.
+   * - Inside a capture that Warp registered on the context's stream (the producer's own
+       self-graph, ``wp.ScopedCapture``, ``wp.capture_begin``,
+       ``registered(conditional=True)``) when ``wp.is_conditional_graph_supported()``
+     - **(b) windowed.** Each window is recorded under a conditional node
+       (``skip_unless``, see `Conditional skip`_): replays skip the converged windows on
+       device.
+   * - Any other capture: a plain ``torch.cuda.graph``, ``registered()`` without
+       ``conditional=True`` (or a hand-made ``external=True`` registration of torch's
+       capture), a side stream that only joined another capture, a driver or toolkit
+       older than 12.4, a CPU ``wp.ScopedCapture("cpu")``, any recording inside
+       ``track_gen.exec.unconditional()``
+     - **(c) unrolled** into the graph.
+
+The three lowerings give bitwise identical results when the loop is **absorbing**: once
+``active[0]`` reads ``0`` at a check, every remaining iteration leaves everything read
+after the loop (the stage's outputs, and any state or scratch it reads later) bitwise
+unchanged. In practice, freeze an env on device when it converges, never unfreeze it
+within the generation, and make every kernel that writes an output return early for a
+frozen env. Two more rules complete the contract: the body writes ``active`` before the
+first check (so a check never reads a value left over from an earlier generation), and it
+never changes Python state that code after the loop reads, since the loop may stop early.
+An absorbing per-env freeze also keeps the stage batch-independent: under (a), a loop that
+keeps moving a converged env does so until the WHOLE batch has converged, so that env's
+output depends on the other envs. The conformance kit checks the contract
+(``bounded.absorbing`` on every device, ``bounded.lowering`` on CUDA; see
+:doc:`/contributing/testing-a-plugin`).
+
+A stage that calls ``bounded_loop(active=...)`` must not declare ``STATIC`` (declare
+``BOUNDED``): one declared ``STATIC`` raises ``ValueError`` (``... declare capture =
+CaptureClass.BOUNDED``) on its first run, at construction. ``BOUNDED`` stages are
+capturable by anything: they share a segment with the ``STATIC`` stages around them, and
+a caller can record them.
+
+The host poll of lowering (a) is the one host readback the library itself performs on a
+capturable path (a ``HOST`` stage's ``ctx.host()`` operations aside), and only on ``cpu``. :func:`~track_gen.testing.no_host_sync` lets it through and
+counts it in ``HotPathGuard.sanctioned`` (not in ``allowed``), as it does a ``HOST``
+stage's ``ctx.host()`` operations; any other sync, including one made inside the loop's
+body, is still a violation. The conformance kit runs its hot-path checks with every
+window unrolled, the superset of what any lowering launches.
+
+``repulsive`` is the built-in ``BOUNDED`` stage: its growth loop checks
+``active = any env not frozen`` every stall window (``check_every = 16``) from
+``first_check = 128``, 9 windows at the defaults (see :doc:`/generators/repulsive`).
+
 Warm-up at construction
 -----------------------
 
-Construction runs the pipeline ONCE eagerly, outside any capture. Launching for real loads
-every kernel module, generic-kernel overload and Warp-internal copy kernel the hot path
-uses, so a later recording (the generator's own or yours) never compiles or loads a module
+Construction runs the pipeline ONCE eagerly, outside any capture, with every window of a
+``bounded_loop`` run. Launching for real loads every kernel module, generic-kernel
+overload and Warp-internal copy kernel the hot path uses, so a later recording (the generator's own or yours) never compiles or loads a module
 mid-capture. The pass also leaves the batch for the rng's current seeds in the result,
 which is valid right after construction: construction blocks until the pass has finished
 on its stream, so a later call on another stream, or a readback, never races it. It
@@ -293,7 +433,9 @@ and a capture under a process-wide lock.
 Construct generators (and ``Course`` objects) before you begin a capture. Construction
 allocates and zero-fills on Warp's current stream, so it raises ``CaptureError`` (from
 ``track_gen.exec``) before allocating anything when the stream it resolves or Warp's
-current stream is capturing, or when torch is capturing in the calling thread.
+current stream is capturing, when torch is capturing in the calling thread, or, on
+``cpu``, when a CPU ``wp.ScopedCapture("cpu")`` is open (it would record the warm-up
+instead of running it).
 
 For plugin authors, a generator's Python body runs as follows:
 
@@ -311,9 +453,9 @@ For plugin authors, a generator's Python body runs as follows:
      - once
      - once, by the launch that follows
    * - Every later self-graph ``generate()``
-     - not at all
+     - not at all (a ``HOST`` stage: once per call)
      - once per call
-   * - Eager call (``cpu``, ``capturable=False``, ``enqueue()``)
+   * - Eager call (``cpu``, ``enqueue()``)
      - once per call
      - once per call
    * - Recording into a caller's graph
@@ -332,7 +474,10 @@ The capture works because every stage is pure Warp and fixed-shape:
 - No stage host-synchronizes or reads device data back. Host-blocking syncs are illegal
   inside capture, and the stream (or the graph) already orders the launches. The
   wrappers' ``_sync`` hook is a no-op unless ``TRACKGEN_DEBUG_SYNC=1``, and even then it
-  is skipped while the stream is capturing.
+  is skipped while the stream is capturing. A ``HOST`` stage is the exception: it runs
+  outside every capture (see `HOST stages and segments`_).
+- A loop with a data-dependent stop is a ``ctx.bounded_loop`` with a static bound and an
+  absorbing freeze (see `Iterative stages (BOUNDED)`_), never a host-side ``while``.
 - Nothing allocates on a ``generate()`` / ``enqueue()`` path, with or without ``advance``
   and ``mask``, nor in ``SeedState.advance()`` / ``set()`` / ``reset_epoch()``: every
   buffer is allocated at construction. Recording into your graph works with Warp's mempool
@@ -347,13 +492,77 @@ The capture works because every stage is pure Warp and fixed-shape:
   captured graph is fixed for that generator's config, and the config is snapshotted at
   construction, so it cannot drift afterwards.
 
-Non-capturable and legacy plugin generators
--------------------------------------------
+.. _cuda-graph-host:
 
-A generator registered with ``capturable=False`` (``GeneratorSpec`` or the deprecated
-``GateGeneratorSpec``) runs eagerly on ``cuda`` every call and never gets a self-graph.
-Under a caller's capture, its ``generate()`` and ``enqueue()`` raise ``NotCapturableError``
-before launching anything, so your graph is never left half-recorded.
+HOST stages and segments
+------------------------
+
+A stage that must read device data back or run host control flow declares ``capture =
+CaptureClass.HOST``; a legacy ``GeneratorSpec`` (or the deprecated ``GateGeneratorSpec``)
+registered with ``capturable=False`` is a ``HOST`` generator too. A ``HOST`` stage runs
+eagerly, outside every capture, on every call. It no longer makes the whole pipeline
+eager: the planner groups the stages into **segments**, maximal runs of consecutive
+stages that are all ``HOST`` or all capturable (``STATIC`` and ``BOUNDED`` stages share a
+segment), and the ``Program`` reports them:
+
+.. code-block:: python
+
+   program = gen.program               # a generator whose "generator" stage is HOST
+   [(s.capture_class.name, s.stage_ids[:2]) for s in program.segments]
+   # [('HOST', ('generator',)), ('STATIC', ('resample', 'relax'))]
+   program.host_stage_ids              # ('generator',)
+   program.capture_class               # CaptureClass.HOST, the highest of its stages'
+   program.capturable                  # False: a caller cannot record it
+
+How such a generator runs:
+
+- **Outside a capture on** ``cuda`` (segmented self-graph): the first call records each
+  capturable segment into a graph of its own, on the private stream. Every call then
+  runs the segments in order on the resolved stream: a ``HOST`` segment eagerly (its
+  Python runs every call), the others with ``wp.capture_launch``. The seed prologue
+  belongs to the first segment, the commit and the ``generation`` write to the last.
+  ``gen.graph`` stays ``None``; masked regeneration keys a set of segment graphs per
+  ``(advance, mask)`` like the plain self-graph (`Masked regeneration`_). A legacy
+  ``capturable=False`` generator thus becomes a ``HOST`` segment followed by a captured
+  tail, with the same outputs as before.
+- **On** ``cpu`` **and with** ``enqueue()``: every segment eagerly, in order.
+- **Under a caller's capture**: ``generate()``, ``enqueue()``, ``Program.run()`` and
+  ``Program.enqueue()`` raise ``NotCapturableError`` before launching anything, so your
+  graph is never left half-recorded. The error names the producer and the ``HOST``
+  stages (its ``stage_ids`` attribute):
+  ``'acme.blob' cannot be recorded into a graph capture: HOST stage(s) ['generator'] read
+  device data back or run host control flow, so they run eagerly ...``. A CPU
+  ``wp.ScopedCapture("cpu")`` counts as a capture here: it records launches without
+  running them, so host reads would see stale data. ``Course.generate(seeds=...)``
+  refuses before its reseed launches.
+
+An advanced caller may record the capturable segments itself and run the ``HOST`` ones
+eagerly, as the segmented self-graph does, with ``Program.enqueue_segment(i, ctx,
+advance=False, mask=None)`` (see :ref:`pipeline-program`). To make sure a pipeline can be
+recorded whole, build it with ``PipelineSpec(..., require_caller_capturable=True)``: the
+planner then rejects every ``HOST`` stage at build, naming them, before allocating
+anything.
+
+A ``HOST`` stage reaches the host through ``ctx.host()``, a
+:class:`~track_gen.exec.HostOps`: ``read_i32(arr, index=0)``, ``readback(src, via=...)``,
+``upload(dst, data, via=...)`` and ``sync()``. Every transfer runs on the call's stream
+through a pinned host buffer the stage allocated at build with
+``StageBuilder.host_buffer(dtype, shape)``, so nothing allocates per call (on ``cuda`` a
+``via=`` buffer that is not pinned raises ``ValueError``). ``ctx.host()`` raises
+``ValueError`` inside a stage that does not declare ``HOST`` (naming it and its class),
+``CaptureError`` outside every pipeline stage, and ``NotCapturableError`` when the call's
+stream is capturing or a CPU graph capture is open on the device. :ref:`stage-host` shows
+a ``HOST`` stage.
+
+A ``HOST`` stage may run while other threads capture on the device, provided it reaches
+the host only through ``ctx.host()`` with ``b.host_buffer`` buffers: its copies are
+stream-ordered asynchronous copies between device memory and pinned host buffers, and its
+syncs run with the thread's capture mode relaxed. A direct ``.numpy()`` or
+``wp.synchronize*()`` in a ``HOST`` stage allocates or syncs in the default mode, and can
+invalidate another thread's capture in torch's default global mode.
+
+Legacy plugin generators
+~~~~~~~~~~~~~~~~~~~~~~~~
 
 A plugin generator that does not set ``accepts_ctx=True`` (the legacy ABI) issues its own
 ``wp.launch`` calls on Warp's current stream rather than on the stream the call resolved.
@@ -408,13 +617,22 @@ its own private stream, so independent generators on different threads run concu
 Each generator (and ``Course``) is single-writer, though. Do not run the same instance
 from two threads, or on two streams, at once; use one instance per concurrent producer.
 
-The exception is a producer built on a legacy plugin (no ``accepts_ctx=True``). It keeps
-the process-wide lock, and its one-time self-capture records Warp's current stream, which
-every thread shares. Until every such producer has captured its self-graph, calls of other
-producers that resolve to Warp's current stream (the default) take the lock too, and
-decide whether they are being recorded only once they hold it; otherwise they could
-mistake the legacy capture for their caller's and record themselves into it. Calls on any
-other stream (``stream=``, a constructor ``stream=``, a scope) stay lock-free.
+The exception is a producer built on a legacy plugin (no ``accepts_ctx=True``). Its legacy
+code launches on Warp's current stream, which every thread shares, so every eager run of
+that code holds the process-wide lock, and a capturable one also holds it for its
+one-time self-capture, which records that shared stream. Until every such capturable
+producer has captured its self-graph, calls of other producers that resolve to Warp's
+current stream (the default) take the lock too, and decide whether they are being
+recorded only once they hold it; otherwise they could mistake the legacy capture for
+their caller's and record themselves into it. Calls on any other stream (``stream=``, a
+constructor ``stream=``, a scope) stay lock-free.
+
+A legacy ``capturable=False`` producer holds the lock only while its ``HOST`` segment (the
+legacy generator) runs, not while the graph of its captured tail replays. A ``HOST``
+stage that emits through ``ctx`` never takes it, apart from the rule above for calls on
+Warp's current stream, which a segmented call applies again before each of its parts (a
+graph launch or a ``HOST`` segment), so a legacy producer constructed by another thread
+in the middle of the call is still serialized against.
 
 Two caveats apply to multi-threaded programs:
 
@@ -452,4 +670,6 @@ rest of your step.
 .. note::
 
    ``cpu``-device runs are always eager. Graph capture, self-graph or caller recording, is
-   ``cuda``-only, and even on ``cuda`` it only applies to ``capturable=True`` generators.
+   ``cuda``-only. On ``cuda``, a ``HOST`` stage always runs eagerly while the rest of its
+   pipeline replays from graphs, and a caller can record only a pipeline without
+   ``HOST`` stages.
