@@ -68,8 +68,10 @@ CUDA = ["cuda:0"]
 # The repulsive generator's host-scheduled growth loop is O(N^2) per step: run the kit on
 # the small config tests/test_generate_repulsive.py uses (the default config is covered
 # by its CUDA yield test), on 8 envs.
+# repulsive: a small config with a loose stall tolerance, so the kit's batches freeze and
+# its loop stops early (the bounded.absorbing probe is exercised) on every platform.
 _CONFIG = {"repulsive": dict(num_points=64, repulsive_stages=(16, 32, 64), N_max=384,
-                             half_width=0.1)}
+                             half_width=0.1, repulsive_stall_area_tol=0.5)}
 # The batch the per-generator contract tests used to check (count range, finite prefix,
 # NaN padding on 64 envs); repulsive keeps the kit's default of 8.
 _NUM_ENVS = 64
@@ -192,12 +194,14 @@ def test_builtin_generator_conforms_cpu(name, config):
     assert [r.name for r in report] == _cpu_names("generator")   # no capture.*
     assert not _skipped_besides_tiers(report)
     # No built-in has a HOST stage; repulsive is the BOUNDED one (its loop stops early for
-    # the kit's batch A, so the absorbing probe is exercised).
+    # at least one of the kit's batches, so the absorbing probe is exercised; which one is
+    # platform-dependent).
     assert report.result("host.require_caller_capturable").skipped
     absorbing = report.result("bounded.absorbing")
     assert absorbing.skipped == (name != "repulsive"), absorbing
     if name == "repulsive":
-        assert absorbing.passed and absorbing.details["skipped"]["A"] >= 1, absorbing
+        assert absorbing.passed and sum(absorbing.details["skipped"].values()) >= 1, \
+            absorbing
         assert report.result("hot_path.host_sync").details["sanctioned"] >= 1
     _assert_builtin_promises(report, "cpu")
 

@@ -24,6 +24,12 @@ from track_gen.plugin import CaptureClass, registry
 
 DEV = "cpu"
 _SMALL = dict(num_points=64, repulsive_stages=(16, 32, 64), N_max=384, half_width=0.1)
+# A loose stall tolerance: every env freezes soon after reaching its length, so the poll
+# skips windows. Which envs freeze, and when, is chaotic in float rounding and so differs
+# between platforms (the CPU trajectories on x86 and arm64 are not bit-equal): the tests
+# that need an early exit find their seed block at runtime (:func:`_early_exit_seeds`).
+_FREEZE = dict(_SMALL, repulsive_stall_area_tol=0.5)
+_SEED_BASES = (11, 111, 1011, 2011, 3011)
 _FIELDS = ("outer", "center", "inner", "tangent", "normal", "arclen", "length", "valid",
            "count", "winding", "truncated")
 
@@ -50,6 +56,19 @@ def _run(gen, mode=None):
         gen.enqueue()
     (rec,) = recs
     return _rows(gen), rec
+
+
+def _early_exit_seeds(E: int, kw: dict) -> np.ndarray:
+    """An ``[E]`` seed block whose every env freezes before the last window ON THIS
+    PLATFORM (the eager poll stops early), searched over :data:`_SEED_BASES`."""
+    tried = []
+    for base in _SEED_BASES:
+        seeds = np.arange(base, base + E, dtype=np.int32)
+        _, rec = _run(_gen(seeds, **kw))
+        if rec.ran < rec.windows:
+            return seeds
+        tried.append((base, rec.ran, rec.windows))
+    pytest.skip(f"no seed block freezes every env early on this platform: {tried}")
 
 
 def _same(a: dict, b: dict, rows_a=slice(None), rows_b=slice(None)) -> bool:
@@ -110,8 +129,8 @@ def test_windows_align_with_stall_checks_and_hold_no_stage_transition():
 
 @pytest.mark.parametrize("config", ["small", "default"])
 def test_the_host_poll_and_the_unrolled_loop_write_the_same_bytes(config):
-    kw = _SMALL if config == "small" else {}
-    gen = _gen(np.arange(11, 19), **kw)
+    kw = _FREEZE if config == "small" else dict(repulsive_stall_area_tol=0.5)
+    gen = _gen(_early_exit_seeds(8, kw), **kw)
     a, rec_a = _run(gen, None)                        # CPU eager default: the poll
     c, rec_c = _run(gen, "unroll")
     assert rec_a.lowering == "poll" and rec_c.lowering == "unroll"
@@ -141,10 +160,10 @@ def test_the_legacy_entry_with_a_mismatched_stall_window(stall_window):
     window (the one that drives the stall checks), and the prologue resets ``active``, so
     the poll stays exact after a generation that froze every env."""
     E = 8
-    seeds = wp.array(np.arange(11, 11 + E, dtype=np.int32), dtype=wp.int32, device=DEV)
-    alloc_cfg = TrackGenConfig(generator="repulsive", device=DEV, num_envs=E, **_SMALL)
+    seeds = wp.array(_early_exit_seeds(E, _FREEZE), dtype=wp.int32, device=DEV)
+    alloc_cfg = TrackGenConfig(generator="repulsive", device=DEV, num_envs=E, **_FREEZE)
     gen_cfg = TrackGenConfig(generator="repulsive", device=DEV, num_envs=E,
-                             repulsive_stall_window=stall_window, **_SMALL)
+                             repulsive_stall_window=stall_window, **_FREEZE)
     s = rep.repulsive_alloc_scratch(alloc_cfg)
     out = wp.zeros(E * 64, dtype=wp.vec2f, device=DEV)
     valid = wp.zeros(E, dtype=wp.int32, device=DEV)
