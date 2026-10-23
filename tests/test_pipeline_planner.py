@@ -577,10 +577,11 @@ def test_catalogue_rules(catalogue):
     with pytest.raises(ValueError, match="already in the catalogue"):
         catalogue.add(_toy(kind="frames"))
     assert "test.toy" in stages.available("frames")
-    # PR11 added the gate pipeline's built-in kinds and opened order / stations.
+    # PR11 added the gate pipeline's built-in kinds and opened order / stations; PR13b
+    # the param writers (randomize.uniform).
     assert stages.available() == ["carry", "frames", "gate_arclen", "gate_frames",
-                                  "gate_relax", "lift", "normalize", "offset", "resample",
-                                  "tangents"]
+                                  "gate_relax", "lift", "normalize", "offset", "randomize",
+                                  "resample", "tangents"]
     assert stages.available("lift") == ["elevated", "flat", "gates"]
     assert stages.OPEN_KINDS == ("relax", "width", "elevation", "validity", "order",
                                  "stations")

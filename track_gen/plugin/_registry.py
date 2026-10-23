@@ -31,7 +31,8 @@ from typing import Any, Iterator, Mapping
 from .._src.gate_generator_registry import GateGeneratorSpec
 from .._src.generator_registry import GeneratorSpec
 from .params import NoParams, Params, _check_params_class, _schema, _static_view
-from .stage import _OPEN_KINDS, CaptureClass, Stage, _check_stage, _is_stage
+from .stage import (_OPEN_KINDS, CaptureClass, Stage, _check_stage, _declared_of,
+                    _is_stage)
 
 # The legacy spec types that may declare a static Params class through ``params=``.
 _PARAM_SPECS = (GeneratorSpec, GateGeneratorSpec)
@@ -114,19 +115,27 @@ class SpecInfo:
             Params; ``None`` for a spec that is not a Stage.
         output: A Stage's ``output`` (``"centerline"`` for a generator, ``None`` for a
             track-pipeline stage); ``None`` for a spec that is not a Stage.
-        writes: A Stage's ``writes`` (``local port -> channel``); ``{}`` otherwise.
-        provides: A Stage's ``provides``; empty otherwise.
+        writes: A Stage's ``writes`` (``local port -> channel``); ``{}`` otherwise. A
+            centerline generator's DECLARED writes for its default Params
+            (:meth:`Stage.declare <track_gen.plugin.Stage.declare>`; other params may
+            declare more, like ``capture``).
+        provides: A Stage's ``provides``; empty otherwise (a centerline generator: its
+            declaration at the default Params).
         reads: A Stage's ``reads`` (``local port -> channel``); ``{}`` otherwise.
         orderings: A gate generator's order whitelist: a Stage's ``orderings`` (``None``:
             every registered order but ``excluded_orderings``), a legacy spec's
             ``frozenset(supported_orderings)``; ``None`` for other specs.
         excluded_orderings: A gate generator Stage's ``excluded_orderings``.
-        preferred: A gate generator Stage's ``preferred`` (``{"order": ...,
-            "normalize": ...}``); ``{}`` otherwise.
+        preferred: A generator Stage's ``preferred`` (a gate generator's ``{"order":
+            ..., "normalize": ...}``, a centerline generator's ``{"relax": ...}``);
+            ``{}`` otherwise.
         supported_orderings: A gate generator's accepted orders, resolved against the
             registry at ``describe`` time and sorted: its whitelist, or every registered
             order but its ``excluded_orderings`` (a legacy spec: its
             ``supported_orderings``); ``()`` for other specs.
+        seeded: A generator's ``seeded`` (``False``: its output does not depend on the
+            seed, e.g. an ingestion generator); ``True`` for a legacy spec and every
+            other kind.
     """
 
     kind: str
@@ -147,6 +156,7 @@ class SpecInfo:
     excluded_orderings: frozenset = frozenset()
     preferred: Mapping[str, str] = dataclasses.field(default_factory=dict, hash=False)
     supported_orderings: "tuple[str, ...]" = ()
+    seeded: bool = True
 
 
 @dataclasses.dataclass(frozen=True)
@@ -543,10 +553,16 @@ class Registry:
                                 f"CaptureClass, got {capture!r}")
             capturable = capture != CaptureClass.HOST
             accepts_ctx = True
+            writes, provides = dict(spec.writes), frozenset(spec.provides)
+            if kind == "generator":
+                writes, provides = _declared_of(spec, params_cls())
             stage_info = dict(capture=capture, output=spec.output,
-                              writes=types.MappingProxyType(dict(spec.writes)),
-                              provides=frozenset(spec.provides),
-                              reads=types.MappingProxyType(dict(spec.reads)))
+                              writes=types.MappingProxyType(dict(writes)),
+                              provides=frozenset(provides),
+                              reads=types.MappingProxyType(dict(spec.reads)),
+                              seeded=bool(getattr(spec, "seeded", True)))
+            if kind == "generator":
+                stage_info["preferred"] = types.MappingProxyType(dict(spec.preferred))
             if kind == "gate_generator":
                 stage_info.update(
                     orderings=None if spec.orderings is None else frozenset(spec.orderings),

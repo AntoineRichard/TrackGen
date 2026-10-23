@@ -638,6 +638,8 @@ def test_out_with_and_without_attributes():
     p2 = build(spec, seeds=1, out=out2)
     assert p2.tap("cl.acme.grip") is mine and out2.attributes == {"acme.grip": mine}
     assert _bytes(mine) == _bytes(p.tap("cl.acme.grip"))
+    # A key this pipeline does not export: refused on a whole result (roadmap PR13b pads
+    # it only on a view of a larger result, a mixed batch: tests/test_results.py).
     out3 = _alloc_track(layout)
     out3.attributes = {"acme.nope": mine}
     with pytest.raises(ValueError, match=r"out.attributes\['acme.nope'\]: this pipeline does "
@@ -650,8 +652,9 @@ def test_out_with_and_without_attributes():
         build(spec, seeds=1, out=out4)
     out5 = _alloc_track(layout)
     out5.attributes = {"acme.surface_id": mine}               # float32 for an int32 family
-    with pytest.raises(ValueError, match=r"out=: the array bound to cl.acme.surface_id has "
-                                         r"dtype float32; the channel is int32"):
+    with pytest.raises(ValueError, match=r"out\.attributes\['acme\.surface_id'\] is "
+                                         r"float32; this pipeline exports "
+                                         r"'acme\.surface_id' as int32"):
         build(spec, seeds=1, out=out5)
 
 

@@ -322,7 +322,10 @@ def test_check_stage_takes_params_and_upstream():
     ("stateful", "elevation", {"stage.isolation", "statelessness"}),
     ("validity", "validity", {"validity.bits"}),
     ("drops_bits", "validity", {"validity.bits"}),
-    ("failures_only", "validity", {"validity.bits", "stage.isolation", "statelessness"}),
+    # output.view (roadmap PR13b): the unwritten envs keep what the CALLER's buffer
+    # held (a poisoned out= view), not the standalone batch's.
+    ("failures_only", "validity", {"validity.bits", "stage.isolation", "statelessness",
+                                   "output.view"}),
     ("padding", "elevation", {"stage.isolation", "statelessness"}),
     ("alloc", "elevation", {"hot_path.allocation"}),
 ])

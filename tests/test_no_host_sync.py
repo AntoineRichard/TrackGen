@@ -820,6 +820,42 @@ def _legacy_pipeline_wrappers():
     return hot
 
 
+def _run_randomized():
+    """Roadmap PR13b: a ``randomize.uniform`` stage drawing a plugin generator's dynamic
+    ``amp`` (toy.wobble) every generation, under a masked advance."""
+    def setup():
+        from tests._plugin_toys import register_stage_toys
+
+        with registry.scoped():
+            register_stage_toys(registry)
+            gen = TrackGenerator(pipeline_mod.presets.track(
+                num_envs=E, device=DEV, generator="toy.wobble",
+                randomize={"generator.amp": (0.05, 0.35)}), _rng())
+        mask = wp.array(np.arange(E) % 2, dtype=wp.int32, device=DEV)
+        ctx = LaunchContext.for_call(DEV)
+
+        def hot():
+            gen._enqueue(ctx, advance=True, mask=mask)
+        return hot
+    return setup
+
+
+def _result_copy(kind):
+    """Roadmap PR13b: ``copy_from`` (the hot-path snapshot) of a whole result and of a
+    view of it, into preallocated results."""
+    def setup():
+        gen = _track_gen() if kind == "track" else _gate_gen("bezier")
+        result = gen.program.result
+        snap = result.clone()
+        half = type(result).alloc(result.view(0, E // 2).layout)
+
+        def hot():
+            snap.copy_from(result)
+            half.copy_from(result.view(0, E // 2))
+        return hot
+    return setup
+
+
 def _inflate_fixed_n():
     # inflate_warp's count=None convenience path (fixed N == num_points) on a scratch
     # allocated at construction.
@@ -839,6 +875,9 @@ def _inflate_fixed_n():
 DRIVERS = {
     **{f"track_run[{g}]": _run_track(g) for g in registry.available("generator")},
     "track_run[toy.circle plugin]": _run_toy_plugin("track"),
+    "track_run[randomize]": _run_randomized(),
+    "copy_from[track]": _result_copy("track"),
+    "copy_from[gates]": _result_copy("gates"),
     "track_run[relax=toy.converging_smooth]": _run_bounded_toy(),
     "track_run[bezier,z=uniform]": _run_track("bezier", z_profile="uniform"),
     "track_run[bezier,z=noise]": _run_track("bezier", z_profile="noise"),
@@ -944,9 +983,10 @@ _PIPELINE_MODULES = (
     # closures and methods; every module-level function is construction-time
     pipeline_mod, stages_mod,
     *(importlib.import_module(f"track_gen.pipeline.{m}")
-      for m in ("spec", "planner", "program", "legacy", "presets")),
+      for m in ("spec", "planner", "program", "legacy", "presets", "ingest")),
     *(importlib.import_module(f"track_gen.stages.{m}")
-      for m in ("channels", "params", "track", "commit", "gates")),
+      for m in ("channels", "params", "track", "commit", "gates", "randomize",
+                "external")),
 )
 
 # Construction-time functions (allocation, registration, host precompute for sizing).
@@ -979,7 +1019,9 @@ _CONSTRUCTION_ONLY = {
     "track_gen.pipeline.spec": {"_frozen_map", "_port_value", "_capacity_value",
                                 "_required", "_thaw",
                                 # PR13a: the track_gen.pipeline/1 migration
-                                "_migrate_v1"},
+                                "_migrate_v1",
+                                # PR13b: params lists canonicalised to tuples
+                                "_canonical_param"},
     # PR13a: the resample tables / carry kernel lookup are build-time
     "track_gen.ops.resample": {"_carry_kernel", "_check_tables"},
     "track_gen.pipeline.planner": {"build", "_build", "_is_int", "_check_spec_shape",
@@ -996,12 +1038,19 @@ _CONSTRUCTION_ONLY = {
                                    "_check_capacity", "_check_agreement",
                                    "_check_gate_plan", "_check_provided",
                                    "_check_gate_exports", "_check_gate_fail_start",
-                                   "_check_arrays", "_check_gate_out", "_result_kind",
+                                   "_check_gate_out", "_result_kind",
                                    "_missing_hint",
                                    # PR13a: carried channels, attributes, width placement
                                    "_decl", "_is_raw_family", "_carry_set",
-                                   "_check_width_placement", "_check_out_attributes",
-                                   "_result_attributes"},
+                                   "_check_width_placement", "_result_attributes",
+                                   # PR13b: out= / views / overlap registry, topology,
+                                   # param writers, the generator slot
+                                   "_check_result_out", "_offset_seeds", "_root_of",
+                                   "_env_span", "_live_overlaps", "_check_overlap",
+                                   "_register_result", "_check_topology", "_stage_class",
+                                   "_ref_param", "_check_param_writers", "_pad_value",
+                                   "_gen_slot", "_draw_bounds", "_is_partial",
+                                   "_plugin_params"},
     "track_gen.pipeline.legacy": {"to_pipeline_spec", "_to_pipeline_spec",
                                   "generator_config", "_scratch_view", "_legacy_params",
                                   "to_gate_pipeline_spec", "_to_gate_pipeline_spec",
@@ -1013,7 +1062,14 @@ _CONSTRUCTION_ONLY = {
                                    "_lookup", "_param", "_with_params",
                                    "_with_gate_validity", "_check_centerline_args",
                                    # PR13a: providers and the width selection
-                                   "_sel_name", "_provides", "_has_half_width_field"},
+                                   "_sel_name", "_provides", "_has_half_width_field",
+                                   # PR13b: declarations, relax="auto", randomize=
+                                   "_declared", "_preferred_relax", "_randomizers",
+                                   "_with_randomizers"},
+    # PR13b: the host loader of the ingestion inputs (cold, blocking by contract)
+    "track_gen.pipeline.ingest": {"load_centerlines", "_program_of", "_envs", "_rows",
+                                  "_sizing", "_perimeter", "_check_values"},
+    "track_gen.stages.external": {"register"},
     "track_gen.stages": {"_check_builtin_stage", "register", "register_builtins"},
     "track_gen.stages.channels": {"_c", "is_plugin_channel", "is_gate_channel",
                                   "channel_domain", "family_key",

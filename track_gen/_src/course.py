@@ -776,7 +776,7 @@ class Course:
         else:
             self.checkpoints = CheckpointSet.from_gates(self.result)
             self.course_line = CourseLine(self.result, cfg.samples_per_gate)
-            self.localizer = TrackLocalizer(self.course_line.track,
+            self.localizer = TrackLocalizer(self.course_line.centerline,
                                             warm_window=cfg.localize_window)
             if cfg.post_radius > 0.0:
                 n_slots = int(self.result.position.shape[0])  # E * max_gates

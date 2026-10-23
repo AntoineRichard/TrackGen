@@ -33,7 +33,10 @@ def _builtin_panels(kind: str) -> list[tuple[str, str]]:
     """``(name, label)`` of every BUILT-IN spec of ``kind`` in the public registry, in
     README panel order. Installed third-party plugins are left out: the README documents
     what track_gen ships."""
-    names = [n for n in registry.available(kind) if registry.describe(kind, n).builtin]
+    # Seed-dependent generators only: an ingestion generator (seeded=False, e.g.
+    # "external") draws nothing to show.
+    names = [n for n in registry.available(kind) if registry.describe(kind, n).builtin
+             and registry.describe(kind, n).seeded]
     rank = {name: i for i, name in enumerate(_PANEL_ORDER)}
     names.sort(key=lambda n: (rank.get(n, len(rank)), n))
     return [(name, name.capitalize()) for name in names]

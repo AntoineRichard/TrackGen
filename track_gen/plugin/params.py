@@ -523,14 +523,21 @@ class StageParams(_MappingABC):
     generation and envs left out of a masked regeneration keep the value their current
     output was built with.
 
+    Unlatched arrays (roadmap PR13b): a field drawn by a ``randomize.*`` stage
+    (:attr:`drawn`) is a single array OWNED by its randomizer and written by it every
+    generation: ``self[field]`` returns it (observable), :meth:`set` raises (set the
+    randomizer's ``lo`` / ``hi`` instead), and a direct write is overwritten by the next
+    draw.
+
     Created by the generator facades, never by user code: the constructor is private
     (it raises ``TypeError``) and may change; the read API is ``[field]``, :meth:`set`,
-    :attr:`params` and :attr:`stage_id`.
+    :attr:`params`, :attr:`stage_id` and :attr:`drawn`.
     """
 
     def __init__(self, *, _token=None, stage_id: str, params: "Params | None",
                  arrays: "Mapping | None" = None, num_envs: int = 0, device=None,
-                 default_stream=None) -> None:
+                 default_stream=None, drawn: "Mapping | None" = None,
+                 bounds: "Mapping | None" = None) -> None:
         if _token is not _TABLE_TOKEN:
             raise TypeError("StageParams is created by the generator facades; read it "
                             "through gen.params[stage_id]")
@@ -541,6 +548,16 @@ class StageParams(_MappingABC):
         self._E = int(num_envs)
         self._device = device
         self._default_stream = default_stream
+        self._drawn = dict(drawn or {})               # field -> randomizer stage id
+        # field -> (lo, hi, what): bounds narrower than the field's own (a randomizer's
+        # lo / hi take the declared range of the field it draws).
+        self._bounds = dict(bounds or {})
+
+    @property
+    def drawn(self) -> Mapping[str, str]:
+        """``field -> id of the randomize stage that draws it`` (empty unless a
+        ``randomize.*`` stage targets this stage)."""
+        return MappingProxyType(dict(self._drawn))
 
     @property
     def stage_id(self) -> str:
@@ -556,6 +573,11 @@ class StageParams(_MappingABC):
         return self._params
 
     def __repr__(self) -> str:
+        if self._drawn:
+            dyn = ", ".join(f"{k}=<drawn by {self._drawn[k]!r}>" if k in self._drawn else k
+                            for k in sorted(self._arrays))
+            return f"StageParams({self._stage_id!r}, dynamic=[{dyn}], " \
+                   f"params={self._params!r})"
         return (f"StageParams({self._stage_id!r}, dynamic={sorted(self._arrays)}, "
                 f"params={self._params!r})")
 
@@ -595,9 +617,16 @@ class StageParams(_MappingABC):
         Raises:
             KeyError: ``field`` is static or unknown.
             ValueError: wrong shape, dtype or device; a value that is neither a
-                ``wp.array`` nor a scalar of the field's type; a scalar outside lo/hi.
+                ``wp.array`` nor a scalar of the field's type; a scalar outside lo/hi
+                (for a randomizer's ``lo`` / ``hi``: outside the declared range of the
+                field it draws).
         """
         arr = self[field]
+        writer = self._drawn.get(field)
+        if writer is not None:
+            raise ValueError(f"{self._stage_id}.{field} is drawn every generation by stage "
+                             f"{writer!r}; set its bounds: params[{writer!r}].set('lo' | "
+                             f"'hi', ...)")
         fld = self._fields[field]
         owner = type(self._params).__name__
         if isinstance(value, wp.array):
@@ -620,6 +649,14 @@ class StageParams(_MappingABC):
             raise ValueError(f"{owner}.{field}: expected a scalar or an [E] wp.array, got "
                              f"{type(value).__name__}")
         _check_dynamic_value(owner, fld, value)
+        extra = self._bounds.get(field)
+        if extra is not None and _is_real(value):
+            lo, hi, what = extra
+            if (lo is not None and value < lo) or (hi is not None and value > hi):
+                raise ValueError(f"{owner}.{field} must be in {_bounds_text(lo, hi)}, the "
+                                 f"declared range of {what} (the field this stage draws: "
+                                 f"a draw past it would pile onto the bound), got "
+                                 f"{value!r}")
         v = float(value) if arr.dtype is wp.float32 else int(value)
         self._ctx(stream).fill(arr, v)
 

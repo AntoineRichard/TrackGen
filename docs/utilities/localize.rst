@@ -24,6 +24,13 @@ consistent with ``Track.arclen``/``Track.length``), signed lateral offset
        frame = loc.query()           # no args: bound mode
        # frame.s [E] float32, frame.n [E] float32, frame.segment [E] int32
 
+``TrackLocalizer`` needs a centerline, not a band: it takes any ``HasCenterline``
+source (a ``Track``, a ``Centerline`` such as a gates-mode
+``course.course_line.centerline``, an env-slice ``view()``, or your own object with
+``center``, ``arclen``, ``length`` and ``count``) and checks those members at
+construction (:ref:`utilities-sources`). ``curvature`` reads ``center`` and ``count``,
+``speed_profile`` also ``arclen`` and ``length``.
+
 ``n`` is positive to the RIGHT of the centerline's direction of travel
 (the direction of increasing ``s``), negative to the left. Whether the
 right side is the outer or the inner boundary depends on the loop's

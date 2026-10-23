@@ -1083,7 +1083,9 @@ def build_app():
                 with gr.Row():
                     with gr.Column(scale=1):
                         gr.Markdown("### Centerline generator")
-                        available_generators = registry.available("generator")
+                        available_generators = [
+                            n for n in registry.available("generator")
+                            if registry.describe("generator", n).seeded]
                         generator_default = defaults["generator"] if defaults["generator"] in available_generators else "bezier"
                         generator = gr.Dropdown(available_generators, value=generator_default,
                                                 label="generator method")

@@ -295,7 +295,7 @@ A generator's own parameters, set with ``TrackGenConfig.generator_params`` /
    :members: set
 
 .. autoclass:: track_gen.plugin.StageParams
-   :members: stage_id, params, set
+   :members: stage_id, params, drawn, set
 
 Stages
 ~~~~~~
@@ -303,7 +303,8 @@ Stages
 The ``Stage`` protocol: a ``Stage`` subclass, registered as a class, that allocates
 through the ``StageBuilder`` it is handed and returns an ``enqueue(ctx)`` callable.
 Plugins register ``kind="generator"`` stages with ``output="centerline"`` (see
-:ref:`generator-stage-contract`), ``kind="gate_generator"`` stages with
+:ref:`generator-stage-contract`; an ingestion generator reads ``per="raw"`` inputs and
+may declare its ports per params with ``declare``, see :ref:`ingestion-generator`), ``kind="gate_generator"`` stages with
 ``output="anchors"`` (see :ref:`gate-generator-stage`; they also declare
 ``provides``, ``orderings`` or ``excluded_orderings``, and ``preferred``), and stages of
 the open pipeline kinds ``"relax"``, ``"width"``, ``"elevation"``, ``"validity"``,
@@ -315,7 +316,13 @@ stage's ``CaptureClass`` is ``STATIC``, ``BOUNDED`` (a loop through
 ``LaunchContext.host()`` and ``StageBuilder.host_buffer``, see :ref:`stage-host`).
 
 .. autoclass:: track_gen.plugin.Stage
-   :members: capture_class, capacity, build
+   :members: capture_class, capacity, build, declare
+
+   Besides ``kind``, ``name``, ``Params``, ``reads``, ``writes``, ``provides``,
+   ``capture``, ``output`` and ``topology``, a stage may set ``seeded`` (``True`` by
+   default; ``False`` for a generator whose output does not depend on the seed, see
+   :ref:`ingestion-generator`) and ``preferred`` (a gate generator's ``"order"`` /
+   ``"normalize"``, a centerline generator's ``"relax"``).
 
 .. autoclass:: track_gen.plugin.StageBuilder
    :members: read, write, temp_like, stride_of, per_of, dtype_of, scratch, param, input,
@@ -324,8 +331,12 @@ stage's ``CaptureClass`` is ``STATIC``, ``BOUNDED`` (a loop through
 .. autoclass:: track_gen.plugin.CaptureClass
    :no-members:
 
-.. autoclass:: track_gen.plugin.Layout
-   :no-members:
+.. py:class:: track_gen.plugin.Layout
+   :no-index:
+
+   The run's shape handed to ``Params.validate``, ``Stage.capacity`` and the
+   ``StageBuilder``: the same class as :class:`track_gen.results.Layout` (see
+   :ref:`results-layout`).
 
 Pipeline (preview)
 ------------------
@@ -381,8 +392,8 @@ Planner and Program
 .. autofunction:: track_gen.pipeline.build
 
 .. autoclass:: track_gen.pipeline.Program
-   :members: run, enqueue, enqueue_segment, prepare, result, spec, tap, channels,
-      fail_bits, on_invalid, attributes, seeds, seed, inputs, params, graph,
+   :members: run, enqueue, enqueue_segment, prepare, result, layout, spec, tap, channels,
+      fail_bits, on_invalid, attributes, seeds, seed, inputs, input_info, params, graph,
       segment_graphs, capturable, capture_class, segments, host_stage_ids
 
 .. autoclass:: track_gen.pipeline.Segment
@@ -392,20 +403,39 @@ Planner and Program
 .. autoclass:: track_gen.pipeline.AttributeInfo
    :no-members:
 
+.. autoclass:: track_gen.pipeline.InputInfo
+   :no-members:
+
 .. autoexception:: track_gen.pipeline.PlanError
+
+Ingestion
+~~~~~~~~~
+
+Loading caller centerlines into a generator that declares the ``centerline.*`` inputs,
+such as the built-in ``external``; see :ref:`ingesting-centerlines`.
+
+.. autofunction:: track_gen.pipeline.load_centerlines
 
 Built-in stage parameters
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The Params of two built-in stages that take more than flat config fields (the others
+The Params of the built-in stages that take more than flat config fields (the others
 keep the ``TrackGenConfig`` / ``GateGenConfig`` field names, see
 :doc:`/how-it-works/pipeline-preview`): ``width.from_channel`` (see
-:ref:`pipeline-width`) and the ``stations`` stages (see :ref:`pipeline-stations-xyz`).
+:ref:`pipeline-width`), the ``stations`` stages (see :ref:`pipeline-stations-xyz`),
+``randomize.uniform`` (see :ref:`config-randomize`) and the ``external`` generator (see
+:ref:`ingesting-centerlines`).
 
 .. autoclass:: track_gen.stages.params.WidthFromChannelParams
    :no-members:
 
 .. autoclass:: track_gen.stages.params.StationsParams
+   :no-members:
+
+.. autoclass:: track_gen.stages.randomize.RandomizeUniformParams
+   :no-members:
+
+.. autoclass:: track_gen.stages.external.ExternalParams
    :no-members:
 
 Fail bits
@@ -632,30 +662,94 @@ load it with ``pytest_plugins = ["track_gen.testing.pytest_plugin"]`` in a top-l
 
 .. py:currentmodule:: None
 
-Result types
-------------
+Results
+-------
 
-.. autoclass:: track_gen.Track
+The result objects, their ``Layout``, the capability protocols the runtime utilities
+accept and the check they run; see :doc:`/how-it-works/results`. ``Track``,
+``GateSequence``, ``Layout`` and the protocols are also importable from ``track_gen``,
+and ``track_gen.plugin.Layout`` is the same class.
+
+.. automodule:: track_gen.results
    :no-members:
 
+.. autoclass:: track_gen.results.Layout
+   :no-members:
+
+.. autoclass:: track_gen.results.Track
+   :no-members:
+
+   .. automethod:: validate
+
+   .. automethod:: view
+
+   .. automethod:: copy_from
+
    .. automethod:: clone
+
+   .. automethod:: alloc
 
    ``fail_mask`` and ``fail_bits`` say why an env is invalid: the bit table is
    :data:`~track_gen.pipeline.BUILTIN_FAIL_BITS` plus the pipeline's plugin checks (see
    :ref:`pipeline-fail-bits`). ``half_width`` is the band's per-point half-width, and
    ``attributes`` the per-point attributes the pipeline exports (see
-   :ref:`pipeline-attributes`).
+   :ref:`pipeline-attributes`). ``layout`` is ``None`` on a ``Track`` built by hand
+   (:ref:`results-layout`).
 
-.. autoclass:: track_gen.GateSequence
+.. autoclass:: track_gen.results.GateSequence
    :no-members:
 
+   .. automethod:: validate
+
+   .. automethod:: view
+
+   .. automethod:: copy_from
+
    .. automethod:: clone
+
+   .. automethod:: alloc
 
    ``fail_mask`` and ``fail_bits`` say why an env is invalid: the bit table is
    :data:`~track_gen.pipeline.GATE_FAIL_BITS` plus the pipeline's plugin checks (see
    :ref:`pipeline-gate-fail-bits`). ``fail_mask`` is ``None`` on a ``GateSequence`` built
    elsewhere; when it is set, ``valid[e] == (fail_mask[e] == 0)``. ``attributes`` holds
    the per-gate attributes the pipeline exports (see :ref:`pipeline-gate-plugin-channels`).
+
+.. autoclass:: track_gen.results.Centerline
+   :no-members:
+
+   .. automethod:: validate
+
+   .. automethod:: view
+
+   .. automethod:: copy_from
+
+   .. automethod:: clone
+
+   .. automethod:: alloc
+
+Capability protocols
+~~~~~~~~~~~~~~~~~~~~
+
+What each runtime utility reads from its source (:ref:`results-protocols`). Shipped
+protocols are frozen: a new capability is a new protocol.
+
+.. autoclass:: track_gen.results.HasCenterline
+   :no-members:
+
+.. autoclass:: track_gen.results.HasBand
+   :no-members:
+
+.. autoclass:: track_gen.results.HasGates
+   :no-members:
+
+.. autoclass:: track_gen.results.HasGateFrames
+   :no-members:
+
+.. autoclass:: track_gen.results.HasGeneration
+   :no-members:
+
+.. autofunction:: track_gen.results.check_source
 
 Collision queries
 -----------------

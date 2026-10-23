@@ -222,7 +222,9 @@ kind's built-ins are registered under plain names (``relax:xpbd``, ``relax:none`
 ``width:constant``, ``width:from_channel``, ``elevation:flat`` / ``uniform`` /
 ``random_walk`` / ``noise``, ``validity:default``, ``validity:gate_default``,
 ``order:raw`` / ``ccw`` / ``random_pairs``, ``stations:raw`` / ``relaxed``);
-``registry.available("elevation")`` lists them with the installed plugins.
+``registry.available("elevation")`` lists them with the installed plugins. The
+``randomize`` kind (``randomize.uniform``, which draws other stages' dynamic fields, see
+:ref:`config-randomize`) is TrackGen's own and not open to plugins in 0.x.
 
 A plugin ``stations`` stage computes what it writes itself: it gets no carried channels
 from the centerline in this release (the built-in stations do, see
@@ -280,8 +282,11 @@ plugin is then quarantined under ``warn``) when:
 - a validity stage does not write ``valid.fail``, an order stage does not write both
   ``gates.xy`` and ``gates.count``, or a stations stage both ``anchors.xy`` and
   ``anchors.count``;
-- a stage that is not a gate generator declares a non-empty ``preferred`` (a gate
-  generator attribute: ``Stage X.preferred is read for gate generators only``).
+- a stage that is not a generator declares a non-empty ``preferred`` (a generator
+  attribute: a gate generator's ``"order"`` / ``"normalize"``, a centerline generator's
+  ``"relax"``), or overrides ``declare()`` (read for centerline generators only in 0.x:
+  ``Stage X.declare() is read for centerline generators only in 0.x``, ``X`` being the
+  Stage class name).
 
 A non-Stage spec (a ``GeneratorSpec``-like object) registered under one of these kinds
 raises ``TypeError``: pipeline stages are ``Stage`` subclasses only.
@@ -353,7 +358,11 @@ The builder is the one :ref:`stage-builder` describes, with these differences:
    * - ``scratch``, ``param``, ``input``, ``salt``
      - As for a generator, namespaced by the stage id: ``scratch:<id>/<name>``, and
        ``salt(stream)`` hashes ``"<id>/<stream>"``, so a stage moved to another slot id
-       draws another random stream.
+       draws another random stream. ``input(name, dtype, default=0)`` is a ``per="env"``
+       ``[E]`` input (``per="raw"`` is for centerline generators). Name an input with a
+       dotted path in your own namespace (``"acme.target_speed"``): input names share one
+       table per Program, ``"regen_mask"`` is reserved and ``centerline.*`` is the
+       ingestion namespace (:ref:`ingesting-centerlines`).
    * - ``fail_bit(name=None)``
      - Validity stages only: the index (16 to 30) of a new fail bit this stage owns (see
        `A validity check`_).
@@ -369,6 +378,22 @@ on device data, a launch sequence fixed at ``build`` (an iteration that stops ea
 ``ctx.bounded_loop``, see `Writing an iterative (BOUNDED) stage`_). Per env, its output must depend
 only on that env's inputs (its rows of the channels it reads, its seed, its dynamic
 parameters and inputs) and the static parameters.
+
+**View safety.** The buffers ``b.write`` returns for the result's channels (the final
+``valid.fail``, an exported attribute, ...) may be views into a larger caller-owned result
+(``out=big.view(e0, e1)``, :ref:`results-mixed-batches`). A kernel is view-safe when it
+indexes only ``[0, shape[0])`` from ``wp.tid()`` and the per-env layout
+(``e * stride + i``, with ``stride`` from ``b.layout`` or ``b.stride_of``), and reaches
+every buffer through its arguments: the bounds-correctness an owned array needs anyway.
+Never derive an index from an array's address or assume a buffer starts an allocation.
+The conformance kit's ``output.view`` check builds every stage with ``out=`` the middle
+of a poisoned larger result and fails a write outside it.
+
+**Topology.** ``topology = "closed"`` (the default) says that the stage assumes closed
+loops (index ``(i + 1) % count`` wraps); ``"any"`` that it works on open curves too. 0.x
+accepts closed loops only: ``BatchSpec(closed=False)`` is refused before any stage is
+bound, naming the stages that declare ``"closed"`` (:ref:`results-topology`), so a
+stage's ``Params.validate`` and ``build`` never see ``b.layout.closed == False`` yet.
 
 .. _stage-width:
 
@@ -1005,6 +1030,16 @@ generation (for the masked envs only, under a masked regeneration); read it in
 Only static fields reach ``build`` and ``capture_class`` (reading a dynamic one raises
 ``AttributeError``): a host value derived from a dynamic field would be baked into the
 launches and any recorded graph.
+
+**Per-env draws.** A dynamic ``float32`` field of your stage can be drawn per env, in
+the graph, at every generation, by the built-in ``randomize.uniform`` stage:
+``presets.track(..., relax="acme.taubin", randomize={"relax.lam": (0.4, 0.6)})``
+(:ref:`config-randomize`).
+The draw is ``lo + u * (hi - lo)`` keyed on the env's effective seed, clamped to the
+field's declared ``lo`` / ``hi``: declare bounds on every field that is safe to
+randomize. Nothing changes in your stage: ``b.param(field)`` returns the drawn ``[E]``
+array, filled before your stage runs in the same generation (it is not latched, and
+``gen.params[...].set`` on it raises). ``int32`` fields cannot be drawn in 0.x.
 
 Capture classes
 ---------------

@@ -228,7 +228,8 @@ def _eager_twin(producer, seeds: np.ndarray):
 def assert_caller_capturable(producer, *, modes: Iterable[str] = CAPTURE_MODES,
                              record: "Callable | None" = None,
                              twin: "Callable | None" = None,
-                             reseed: "np.ndarray | None" = None) -> dict:
+                             reseed: "np.ndarray | None" = None,
+                             seeded: bool = True) -> dict:
     """Record ``producer`` into a caller's capture, replay it and compare with an eager
     twin; reseed between replays and compare again.
 
@@ -246,6 +247,10 @@ def assert_caller_capturable(producer, *, modes: Iterable[str] = CAPTURE_MODES,
             from ``producer.config`` with those seeds, run with ``enqueue()``).
         reseed: the ``[E]`` seeds to reseed to between replays (default: the current
             seeds + 7919).
+        seeded: ``False`` for a producer whose output does not depend on its seeds
+            (an ingestion generator, ``Stage.seeded = False``): the reseed precondition is
+            not required, and the second replay checks that a replay after a reseed still
+            equals the (unchanged) eager batch.
 
     Returns:
         ``{mode: "ok" | "skipped: <reason>"}``.
@@ -254,8 +259,8 @@ def assert_caller_capturable(producer, *, modes: Iterable[str] = CAPTURE_MODES,
         AssertionError: a recording failed, a replay differs from the twin, or the
             recording self-captured or launched a graph.
         ValueError: ``producer`` is not on a CUDA device, its epochs are not 0, an
-            unknown mode, or a reseed that does not change the batch (the reseed
-            comparison would be vacuous).
+            unknown mode, or (``seeded=True``) a reseed that does not change the batch
+            (the reseed comparison would be vacuous).
     """
     modes = tuple(modes)
     unknown = [m for m in modes if m not in CAPTURE_MODES]
@@ -275,7 +280,7 @@ def assert_caller_capturable(producer, *, modes: Iterable[str] = CAPTURE_MODES,
     seeds0 = ((seeds0 + 2**31) % 2**32 - 2**31).astype(np.int32)
     seeds1 = ((seeds1 + 2**31) % 2**32 - 2**31).astype(np.int32)
     ref0, ref1 = twin(seeds0), twin(seeds1)
-    if not _differs(ref0, ref1):
+    if seeded and not _differs(ref0, ref1):
         raise ValueError("reseeding does not change the eager batch: the replay-after-"
                          "reseed comparison would be vacuous")
     graph_before = getattr(producer, "graph", None)

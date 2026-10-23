@@ -1,5 +1,413 @@
 # Changelog
 
+## 0.2.0.dev5 (unreleased, `v2` branch)
+
+### Added
+
+- **The result-object surface** (roadmap PR13b). A new public module,
+  **`track_gen.results`**: `Layout`, `Track`, `GateSequence`, `Centerline`, the
+  capability protocols and `check_source`. `track_gen` re-exports `Track`,
+  `GateSequence`, the new `Layout` and the five protocols (the same objects; also
+  `track_gen.results` itself), and `track_gen.plugin.Layout` is the same `Layout`.
+  `docs/how-it-works/results.rst` describes it all.
+  - **`Layout(num_envs, stride, device, closed=True)`** (moved from `plugin/stage.py` to
+    `_src/types.py`): `num_envs` / `stride` are coerced with `operator.index` (NumPy
+    integers accepted, `bool` refused with `TypeError`, values below 1 `ValueError`),
+    `device` must be a `str` and is stored as given (no device lookup at construction),
+    `closed` must be a `bool`. Every library check compares layouts by their canonical form
+    (the device resolved with `wp.get_device` at check time), so a hand-set
+    `Layout(E, S, "cuda")` matches a pipeline's `"cuda:0"`; every layout the library makes
+    stores the canonical device string.
+  - **`Track.layout` / `GateSequence.layout`**, a trailing field (positional construction
+    keeps working): set on every result a generator, `build`, `view`, `alloc` or `clone`
+    returns, `None` on a hand-built one (a build with `out=` sets it when it is `None`).
+    `Program.layout` is the pipeline's layout.
+  - **`validate(need=()) -> Layout`** on `Track`, `GateSequence` and `Centerline`: every
+    schema field that is not `None` must be a contiguous 1-D array of its dtype,
+    `[E * stride]` per point or `[E]` per env, on the layout's device, and every attribute
+    `[E * stride]` of `float32` / `int32` / `vec2f` / `vec3f`; the layout is the stored one
+    or inferred from `count` and the first per-point field. It raises `ValueError` naming
+    the field, the expected array and the one it got (`Track.inner: expected a contiguous
+    [3072] vec3f ([E*stride] = [8*384]) array on cpu, got shape (3064,) vec3f on cpu`).
+    Host only (a few microseconds), never in a constructor: `Track(...)` still accepts a
+    partial result.
+  - **`view(e0, e1)`**: a zero-copy env-slice view (per-point arrays `[e0*S : e1*S]`,
+    per-env arrays `[e0 : e1]`, attributes alike, `fail_bits` shared, its own `layout`),
+    callable anywhere, views of views included; `IndexError` outside `[0, E)`.
+  - **`copy_from(src, *, stream=None, ctx=None)`**: one copy per held array, no
+    allocation, no host sync, recordable; `src` must be of the same class (`TypeError`);
+    layouts, held fields and attribute dtypes must match (`ValueError`), a partial overlap
+    raises, a self-copy is a no-op,
+    `stream=` with `ctx=` is a `TypeError`. The stream is
+    `ctx`, else `stream=`, the ambient scope, the stream that produced `src` (its
+    generator's default stream), torch's capture stream, Warp's current stream.
+  - **`clone(*, stream=None)`** iterates the schema instead of listing the fields: it
+    allocates on Warp's current stream, makes it wait on the producer's stream
+    (`stream=`, else the generator's default), copies there, then waits for the copies
+    on the host, and keeps `None` fields, the class, `layout` and the shared
+    `fail_bits`. The clone is usable on ANY stream on return. The same bytes on the same
+    stream as before when no producer stream is involved. Documented as cold (it
+    allocates and blocks).
+  - **`alloc(layout, *, attributes=None)`** (classmethod): every field allocated and set to
+    the "no track yet" state (padding, zero counts and flags), on Warp's current stream,
+    then a host wait: usable on ANY stream on return, so `snap = Track.alloc(layout)`
+    then `snap.copy_from(track)` on the generator's stream needs no sync (no late fill
+    lands on the snapshot, and the producer's stream never writes a block the current
+    stream still uses). `attributes` maps plugin keys (`"<package>.<name>"`, else
+    `ValueError`) to `wp` dtypes or their names (`"float32"`, as in
+    `ExternalParams.attributes`). `CaptureError` under a capture. `copy_from` into an
+    `alloc` result is the hot-path snapshot.
+  - **`Centerline`**: a centerline without a road band (`center`, `tangent`, `arclen`,
+    `length`, `count`, `valid`, optional `generation`, `layout`), with the same methods.
+- **Caller-owned results: `out=` on the facades.** `TrackGenerator(..., out=None)` and
+  `GateGenerator(..., out=None)` pass `out` to the planner, like
+  `pipeline.build(out=)`: the Program's result is the caller's object, written from the
+  warm-up on, at stable addresses. `out` is validated in full (messages name
+  `out.<field>`) and its canonical layout must equal the pipeline's
+  (`out: a Track for Layout(4, 384, 'cpu', True); this pipeline writes Layout(8, 384,
+  'cpu', True)`); afterwards `out.layout` (when it was `None`), `out.fail_bits` and its
+  producer stream are set.
+  - **Mixed batches**: several generators write disjoint `big.view(e0, e1)` ranges of one
+    result, recorded in one caller graph, each with its own mask slice; a masked
+    generation of one leaves the others' rows untouched (findings A43, A120).
+  - **Seeds on a view**: with `seeds=None` or an `int`, env `e` of a view starting at env
+    `k` of its root result gets seed `base + k + e`, so a mixed batch is seeded like one
+    batch and two halves of one generator never collide (finding A121); seed arrays,
+    rngs and `SeedState`s are bound as given.
+  - **Disjoint outputs**: a build whose `out=` overlaps the result of a live Program
+    raises `PlanError` (`out: envs [0, 4) of this storage are already written by a live
+    Program ...; to rebuild into the same storage, release the earlier generator /
+    Program first (del gen)`); every build registers its result (weak references, keyed
+    on the allocation of `count`) once its Program is usable (after the warm-up; a
+    facade at the end of its construction), so `build(out=gen.program.result)` raises
+    while `gen` is alive and a build that raised never refuses a retry. The overlap
+    check runs after the capture refusal (its `gc.collect()` never runs in a capture).
+  - **`out.attributes` with keys from another pipeline**, on a view of a larger result
+    (a mixed batch): a key this pipeline exports is bound (as in 0.2.0.dev4); any other
+    key is checked, filled once with its padding at build and never written, so
+    generators that do and do not export an attribute can share its array. Binding is
+    decided at the family's final write, where its export is known, so a family carried
+    without being exported is padded too. On the whole of its allocation an unexported
+    key still raises the 0.2.0.dev4 `ValueError` (typo protection), and an exported key
+    of the wrong dtype reads `out.attributes['acme.tag'] is float32; this pipeline
+    exports 'acme.tag' as int32`.
+- **Capability protocols** in `track_gen.results` (`typing.Protocol`,
+  `runtime_checkable`), each a capability a family of consumers shares (each consumer
+  checks the subset it reads, `members=`), frozen once shipped (a new capability is
+  a new protocol): **`HasCenterline`** (`center`, `arclen`, `length`, `count`),
+  **`HasBand`** (`center`, `outer`, `inner`, `count`, `valid`), **`HasGates`**
+  (`position`, `count`, `valid`), **`HasGateFrames`** (`HasGates` + `forward`, `left`,
+  `right`, `orientation`, `half_size`) and **`HasGeneration`** (`generation`). No
+  protocol has a `layout` member.
+  - **`check_source(obj, protocol, *, consumer, topology="closed", members=None) ->
+    Layout`**: reads the protocol's members (or the `members` a consumer reads) with
+    `getattr`, once (a missing one raises `TypeError` naming them), uses
+    `obj.layout` when it is a `Layout` (a TrackGen result's must be one or `None`; an
+    unrelated `layout` attribute of another object is ignored) or infers it from the
+    checked members only (`count`, else the first per-env member, gives `num_envs`; the
+    first per-point member the stride, `1` when there is none), checks only those
+    members with the `validate()` messages prefixed by the consumer, never calls the
+    object's own `validate`, and refuses an open layout for a closed-only consumer.
+    `protocol` may be a tuple (`(HasCenterline, HasGeneration)`: one call, one layout);
+    a non-protocol raises `TypeError`, `members` outside the protocol `ValueError`.
+  - Every runtime utility checks its source with it at construction, only the members it
+    reads: `CollisionChecker`, `PropSampler`, `CheckpointSampler`, `HeightFieldBaker`
+    (`HasBand`), `TrackLocalizer`, `localize.curvature`, `localize.speed_profile`
+    (`HasCenterline`), `CourseLine` (`HasGates`), `FrameChecker` and
+    `CheckpointSet.from_gates` (`HasGateFrames`). They accept any object with those
+    members (a `Centerline`, a view, a `SimpleNamespace`, a proxy); their signatures are
+    typed with the protocols. `FrameChecker`'s `num_envs` must equal the source's. Each
+    binds the arrays it checked at construction and passes those to every call (stable
+    pointers; a member reassigned on the source later is never read unchecked).
+  - **`CourseLine.centerline`**: a gates-mode `Course` builds its spline as a `Centerline`
+    (no NaN band any more, the same two refresh launches into the same buffers), and its
+    localizer reads it.
+- **`randomize.uniform`**: per-env uniform draws of another stage's dynamic `float32`
+  field, inside the Program, at every generation (finding A15's mechanism; see Deferred
+  for the built-in knobs). **`presets.track(randomize=None)`** and
+  **`presets.gates(randomize=None)`** take `{"<stage id>.<field>": (lo, hi)}` (split at
+  the last dot) or a sequence of `StageRef`s, and insert
+  `StageRef("randomize", "uniform", {"stage": s, "field": f, "lo": lo, "hi": hi},
+  id=f"randomize.{s}.{f}")` right before stage `s`. **`RandomizeUniformParams`**:
+  `stage`, `field` (static), `lo`, `hi` (dynamic, so a curriculum writes
+  `params["randomize.<s>.<f>"]["hi"]` in its own graph).
+  - The draw is `lo + u * (hi - lo)` keyed on the env's effective seed and the
+    randomizer's salt (`b.salt("draw")` under its id), clamped to the target field's
+    declared bounds: deterministic per `(seed, epoch)`, distinct across envs, redrawn by
+    `advance=True` and reseeds, and exact under masks (an unmasked env redraws the same
+    value).
+  - Listing order is execution order: a randomizer is listed before its target, and only
+    the generator's randomizers may precede the generator, which is the first stage that
+    is not a randomizer (planner and legacy sites use one helper instead of
+    `stages[0]`). `PlanError` for a randomizer after its target, another stage before the
+    generator, an unknown or randomizer target, a static / `int32` / unknown field (the
+    static message lists the pipeline's drawable fields and says built-in knobs are
+    static in 0.x), two randomizers on one field, initial bounds outside the field's.
+  - The drawn field is a single unlatched array: `params[s][f]` reads the current draws,
+    `set(f, ...)` raises `ValueError` naming the randomizer, `repr` marks it. The
+    randomizer's `set("lo" | "hi", scalar)` refuses a value outside the drawn field's
+    declared range (an array write is clamped by the kernel, documented). A plugin's
+    static field gets its own refusal (`... is static (declared with plugin.static)`),
+    and a `randomize=` key naming a missing stage says so (`randomize: key
+    'gnerator.amp' names stage 'gnerator', ...`).
+  - Two more launches per randomizer per generation (draw, `lo` / `hi` latch, minus the
+    target's latch); none without one. `to_dict` / `from_dict` round-trip it (format
+    `/2`, an additive kind). The catalogue gains the kind `randomize` (not open to
+    plugins).
+- **The parameter latch stays** (the PR10 question answered): dynamic params and
+  `per="env"` inputs are still snapshotted at the start of each generation; drawn fields
+  and `per="raw"` inputs are **unlatched** (read during the generation), held outside the
+  latch pairs. Documented in `StageParams`, `Program.inputs` / `input_info`, the
+  facades' `params` / `inputs` and the generator guide.
+- **`generator="external"`: ingesting caller centerlines** (finding A42). A built-in
+  `STATIC` Stage (registered through the same `register(reg)` as a plugin, public plugin
+  surface only) that reads `[E * N]` `vec2f` `centerline.xy` and `[E]` `centerline.count`,
+  plus `centerline.z` (`with_z`), `centerline.half_width` (`with_half_width`) and
+  `centerline.<pkg>.<name>` attributes (**`ExternalParams.attributes`**: `(key, dtype,
+  interp)` triples) from `program.inputs`. Each generation copies the inputs into
+  `raw.*` (slots past `count[e]` repeat the last point: exact, the extra segments have
+  zero length), then validates the copies (`3 <= count <= N`, finite points, finite `z`,
+  finite and positive `half_width`; else fail bit 0). The initial inputs are circles of
+  radius `0.6 * scale`. `seeded = False`, `preferred = {"relax": "none"}`, raw capacity
+  `num_points`. It works through `presets.track`, `presets.gates(source="stations" |
+  "relaxed_stations")` and `TrackGenConfig(generator="external")` (which keeps
+  `relax_enable`).
+  - **`track_gen.pipeline.load_centerlines(target, xy, *, count=None, z=None,
+    half_width=None, attributes=None, envs=None, stream=None)`**: loads `[E, m, 2]`,
+    `[E * N, 2]` or a list of `[m_e, 2]` arrays into any generator declaring the
+    `centerline.*` inputs, with host checks (env count, counts, finite values, positive
+    half-width, attribute keys, the kind of every value: numbers, and integers within
+    `int32` for an `int32` attribute, never truncated; undeclared inputs; every declared
+    per-point input given: `z=` for `with_z`, `half_width=` for `with_half_width`, each
+    attribute, else the new rows would keep the previous ones) and a **sizing check**
+    against the Program's spacing and `n_max` (`load_centerlines: env 3: perimeter 4012.0
+    needs 66868 points at spacing 0.06 > n_max 384; ...`); uploads through pinned staging
+    on the stream resolved like `generate`'s (`stream=`, an ambient `LaunchContext.scope`,
+    the generator's constructor `stream=`, torch's capture stream, Warp's current
+    stream), then waits; `CaptureError` under a capture.
+  - **`Program.input_info`** / `gen.input_info`: a mapping from input name to a
+    **`track_gen.pipeline.InputInfo`** (`name`, `dtype`, `per`, `length`, `latched`,
+    `stage_id`).
+- **Plugin surface for ingestion generators** (all public, invariant 4):
+  **`StageBuilder.input(name, dtype, default=0, *, per="env")`**, where `per="raw"`
+  (centerline generators) gives an unlatched `[E * raw]` input of `float32` / `int32` /
+  `vec2f` / `vec3f`; **`Stage.declare(params) -> (writes, provides)`** (default: the class
+  attributes; read for centerline generators only in 0.x, refused at registration on
+  other kinds, validated at bind with the generator port rules, and routed through every
+  site that read `writes` / `provides`: binding, the raw attribute families, the
+  adapter's writes, the presets, `legacy`, `describe` at the default Params);
+  **`Stage.seeded`** (`True` by default; `describe()` reports it for every generator);
+  **`Stage.preferred`** opened to centerline generators with the key `"relax"`.
+  **`presets.track(relax="auto")` / `presets.gates(relax="auto")`** is the new default:
+  the generator's `preferred["relax"]`, else `"xpbd"` (unchanged for every built-in).
+- **Topology** (`closed`): `BatchSpec.closed` must be a `bool` (`PlanError`), and
+  `closed=False` is refused right after the spec's shape checks, before any generator is
+  bound or `Params.validate` runs, from the stage classes, naming the stages whose
+  `Stage.topology` is `"closed"` (every built-in; a legacy `GeneratorSpec` counts as
+  closed). The utilities that read a result declare `topology = "closed"` and
+  `check_source` refuses an open layout. A host-side contract: no kernel takes the flag
+  (see Deferred).
+- **Conformance kit**: `output.shape` also checks the result's canonical layout against
+  `program.layout` and `result.validate()`; new check **`output.view`** (every kind,
+  every device): the pipeline built with `out=` the middle view of a byte-poisoned
+  `alloc` of `E + 2` envs equals the standalone run in the view's rows, after
+  construction and a masked advance, and every byte outside the view keeps its poison;
+  `check_stage` and `check_gate_generator` run it too. `diversity` reports *skipped*
+  for a generator declaring `seeded=False`.
+- Docs: new `docs/how-it-works/results.rst` (data model, `Layout`, schemas, `validate`,
+  views and copies with their stream rules, view safety, `out=` and mixed batches,
+  protocols, `check_source`, topology); the utilities pages ("What a utility reads",
+  `CourseLine.centerline`); `docs/contributing/writing-a-generator.rst` "Ingesting your
+  own centerlines" and "Writing an ingestion generator"; `writing-a-stage.rst` (view
+  safety, topology, input names, per-env draws); `testing-a-plugin.rst` (`output.view`,
+  `seeded=False`); the configuration reference (`relax="auto"`, `randomize=`,
+  `ExternalParams`) and tuning guide (what `randomize=` does not do yet);
+  `pipeline-preview.rst` ("Per-env draws", the latch decision, `input_info`, `out=`);
+  a mixed-batch example in `docs/tutorials/cuda-graph-in-a-sim.rst`; the API reference;
+  `docs/library-readiness/target-architecture.md` (as-shipped notes, roadmap PR13c).
+
+### Behaviour changes
+
+- **`clone()` validates**: a malformed hand-built `Track` / `GateSequence` (a field of
+  the wrong length, dtype or device) now raises `ValueError` instead of being copied
+  blindly. It also allocates on Warp's current stream after waiting on the producer's
+  stream (the same copies as before when the generator has no default stream), and then
+  waits for its copies on the host (on CUDA it now blocks until the clone is complete).
+- **`clone()` inside a capture** (a Warp CPU or CUDA capture, or a torch capture) now
+  raises `CaptureError` before allocating; 0.2.0.dev4's `wp.clone`-based clone could be
+  recorded. Inside a graph, `copy_from` into a preallocated `alloc()` result.
+- **`out=` must be a `Track` / `GateSequence` instance**: an object that merely has the
+  fields (accepted by 0.2.0.dev4) raises `TypeError`.
+- **Building into storage still owned by a live Program raises `PlanError`**, also when
+  rebuilding the same pipeline into the same `out` (allowed by 0.2.0.dev4, e.g. to
+  change static params while keeping the pointers a caller graph holds): drop the
+  earlier generator / Program (`del gen`) before rebuilding into the same result.
+- **The utilities' construction errors changed**: a missing member raises `TypeError`
+  naming it (`CollisionChecker needs a HasBand source (...): Centerline has no 'outer',
+  'inner'`), a mismatched one `ValueError` prefixed by the utility (`CollisionChecker:
+  Track.inner: expected ...`), instead of `track batch layout invalid`. They check every
+  member they read (a mismatched field the old one-field inference missed now raises)
+  and nothing else (a field they do not read is never looked at).
+- **`CourseLine.track` is a `Centerline`** and emits a `DeprecationWarning` (use
+  `CourseLine.centerline`; removed at 1.0): reading its `outer`, `inner`, `normal` or
+  `winding` (NaN / zero placeholders before) raises `AttributeError`, and
+  `isinstance(course_line.track, Track)` is `False`.
+- **`out.attributes` keys the pipeline does not export are padded, not refused, on a
+  view of a larger result** (a mixed batch). On a whole result the 0.2.0.dev4
+  `ValueError` stays (its tail now points to views instead of "reserved for PR13b's
+  mixed batches"), and an exported key of the wrong dtype reads `out.attributes['k'] is
+  float32; this pipeline exports 'k' as int32` (was `out=: the array bound to cl.k has
+  dtype ...`).
+- **`BatchSpec.closed`**: a non-`bool` (`1`, `np.True_`) raises `PlanError`, and the
+  `closed=False` message names the closed-only stages (it still says "open tracks").
+  Both are raised before any generator is bound or any `Params.validate` runs.
+- **`presets.track(relax=)` / `presets.gates(relax=)` default to `"auto"`** (was
+  `"xpbd"`): the same stage for every built-in, `relax.none` for `external`.
+- **`Layout` validates its fields** (`TypeError` / `ValueError` for a `bool` or
+  non-integer count, a value below 1, a non-`str` device, a non-`bool` `closed`), and the
+  planner builds every layout from `BatchSpec.closed`.
+- **The generator is the first stage that is not a randomizer** (it was `stages[0]`):
+  specs without randomizers are unaffected; code that looks the generator up should use
+  `spec.stages[spec.ids.index("generator")]`.
+- **`registry.add` accepts `preferred={"relax": ...}` on centerline generators** (it was
+  gate-generator only) and refuses a `declare()` override on other kinds;
+  `registry.describe` reports `seeded` for every generator and `preferred` for
+  centerline generators, and a Stage generator's `writes` / `provides` as its
+  `declare()` at the default Params.
+- **`FrameChecker(seq, num_envs, ...)`** cross-checks `num_envs` against the source's
+  layout.
+- **`registry.available("generator")` now includes `external`** (`seeded=False`): code
+  that samples generators from that list (domain randomization, benchmarks) gets the
+  same placeholder circles for every seed. Filter on the declaration:
+  `[n for n in registry.available("generator") if registry.describe("generator",
+  n).seeded]` (docs: the generators overview and "Choosing a generator").
+- **Generator enumerations skip `seeded=False` generators**: the parameter explorer's
+  generator list, `benchmarks/compare_generators.py` and the README asset renderer list
+  only seed-dependent generators (`registry.describe("generator", n).seeded`), so
+  `external` does not appear there.
+- **The utilities bind their source's arrays at construction**: a member reassigned on
+  the source object after a utility was built (`track.center = other`) is no longer
+  read by it (0.2.0.dev4 re-read `track.<member>` at every call); write into the arrays
+  instead, or build a new utility.
+
+### Changed (outputs)
+
+None. Every default pipeline (each `TrackGenConfig` / `GateGenConfig`, each preset at its
+defaults, `relax="auto"` included), every fingerprint, the PR10a, PR11 and PR13a parity
+suites and goldens are byte-identical, with the same launch sequences. `clone()` copies the
+same bytes on the same stream when no producer stream is involved, and
+`CourseLine.refresh()` launches the same two kernels into the same buffers.
+
+### Fixed
+
+- Library-readiness findings closed by roadmap PR13b: MEDIUM A22 "Track and
+  GateSequence have fixed schemas" (rest: `layout`, `validate`, the centerline / band
+  split through `Centerline` and the protocols; per-env attributes stay open); MEDIUM A44
+  "utilities infer batch layout from one field" (construction-time member checks); MEDIUM
+  A36 "Track used as a universal representation" (protocols, `Centerline`,
+  `CourseLine.centerline`); MEDIUM A42 "no public centerline -> Track ingestion"
+  (`generator="external"`, `load_centerlines`); MEDIUM A43 "mixed batches / caller-owned
+  outputs" and A120 "the only mixed-batch path is half-capturable" (`out=` views, one
+  caller graph); A121 "seed namespace not partitioned across sub-batches" (seed offsets
+  on views); the `Track` part of LOW A99 "public helpers allocate per call"
+  (`copy_from` into an `alloc` result; `curvature` / `speed_profile` `out=` stay with
+  PR14).
+- Not closed (recorded as open): MEDIUM A15 "all track knobs are host scalars" for the
+  built-in knobs, and LOW A88 "style sampling is bezier-only": `randomize.uniform` ships as
+  the mechanism, but only dynamic fields can be drawn (see Deferred).
+
+### Deprecated
+
+- **`CourseLine.track`**, an alias of `CourseLine.centerline` that emits a
+  `DeprecationWarning` (`CourseLine.track is a Centerline since 0.2.0.dev5 and is
+  deprecated; use CourseLine.centerline (removed at 1.0)`). `Course`, the tests and
+  `viz/plot_gate_courses.py` read `.centerline`.
+
+### Deferred
+
+- **Dynamic built-in knobs: new roadmap PR13c.** Every built-in generator is a legacy
+  `GeneratorSpec` with static params, and every built-in stage field is static except
+  `width.from_channel`'s, so `randomize=` cannot draw a built-in knob
+  (`presets.track(randomize={"generator.rad": ...})` raises `PlanError` listing the
+  drawable fields). PR13c makes the knobs that matter for curriculum / domain
+  randomization dynamic (the elevation ranges and noise amplitude, the built-in
+  generators' size / radius / jitter knobs, through a dynamic-param path for
+  `GeneratorSpec` or ports to Stages), byte-identical at default values with the launch
+  sequences re-pinned deliberately. A15 (for built-in knobs) and A88 stay open until
+  then.
+- **`closed` in the kernels** (a deviation from the PR13 scope, which plumbed it through
+  the relax, elevation and utility kernels): open topology is refused on the host before
+  anything runs, so a kernel argument would be dead code. The fallback, if ever needed:
+  a trailing `closed: int` routed through `ops.funcs` helpers that evaluate today's
+  integer expressions at `closed=1` (bit-identical by construction). Open topology
+  itself is scheduled after 1.0.
+- `build(inputs=)` (binding caller arrays as a Program's inputs); `int32` draws, other
+  distributions and a public sampler API (the randomizer's private param-writer hook is
+  ready; a `params_from=` dataflow binding is the post-0.x direction); `declare()` for
+  gate generators; `Track.capabilities()`; a result's back-reference to its Program
+  (`result._owner`); `GateSequence` ingestion and `track_from_centerlines`; a `Course`
+  over a mixed batch and a `MixedBatch` helper (PR15); dropping `FrameChecker`'s
+  `num_envs` (PR14's adapter); `out=` for `localize.curvature` / `speed_profile`
+  (PR14).
+
+### Testing
+
+- `tests/test_results.py` (CPU): `Layout` identity across the three import paths and its
+  field rules; every facade / `build` result's layout; schema completeness; `validate`
+  parametrized over every field (length, dtype, contiguity), attributes, `need`, a stored
+  layout contradicting `count`, the messages; **a hand-built `Track` with one mismatched
+  field rejected by `validate()` and by every utility at construction for each field it
+  reads**, and accepted by a utility that does not read it; protocols and `check_source`
+  (truth table over `Track`, `GateSequence`, `Centerline`, minimal objects without
+  `layout`, a `__getattr__` proxy, an object with an unrelated `validate`), utilities on
+  `Centerline` / minimal objects byte-equal to the `Track`'s, `CourseLine.centerline` and
+  the `.track` warning; `view` (offsets, layouts, attributes, `None` fields, views of
+  views, bounds, utilities on views == on clones); `copy_from` (rows, no allocation or
+  sync, every error, self-copy, one copy per field); `clone` and `alloc`; `out=` mixed
+  batches (bezier + polar halves == standalone generators through plain, advanced,
+  masked and poisoned generations; gates; a subset of producer configs through
+  `build(out=)` into byte-poisoned parents; default and int seeds on halves == one batch;
+  overlap refusals and release, no entry left by a failed warm-up); `out.attributes`
+  foreign keys padded on views (and a carried unexported family), refused on a whole
+  result; the topology refusals; `check_source` argument checks, tuples of protocols,
+  `HasGeneration` alone, an unrelated `layout` attribute, 2-D members; utilities
+  binding the checked arrays; `alloc` dtype names and plugin keys; `validate(need=str)`;
+  empty `view` ranges.
+- `tests/test_randomize.py` (CPU): preset placement and round trip, every planner error,
+  draws in range / distinct / deterministic, the Track equal to an eager twin given the
+  drawn values, `advance` and masked redraws, the drawn field's `params` behaviour,
+  curriculum bounds (a scalar bound past the field's range refused, an array one
+  clamped), the launch trace (+2), segments with a HOST generator, gate and
+  `width.from_channel` targets, the plugin static-field message, and
+  `import track_gen.stages` not loading `track_gen.pipeline`.
+- `tests/test_external.py` (CPU): registration and `describe`, `declare()` routing (the
+  new toy `acme.declared` and `external` through `presets.track`, `presets.gates` with
+  both station sources and `TrackGenConfig`), analytic circles and ellipses, padding
+  exactness byte for byte against exact-count runs (tracks and stations gates), the
+  kernel order (copies, then validity on the copies), `with_z` / `with_half_width` /
+  attributes, device validation and poison, the host loader (forms, `envs=`, messages,
+  sizing, declared inputs required, value kinds), `input_info`, the spec's JSON round
+  trip by equality, `check_generator("external")` with `diversity` skipped, and the
+  hot-path driver.
+- CUDA (`tests/test_results_cuda.py`, collects on CPU): two generators writing the halves
+  of one `Track` recorded in one caller graph (Warp and torch captures) equal to eager
+  twins on every replay, masked and poisoned variants, a gate mixed batch, `copy_from`
+  recorded, `clone` / `alloc` refused under capture, the stream rules of `clone`,
+  `copy_from` and `alloc` (a fresh `alloc` / `clone` snapshot filled on the producer's
+  stream right away, the current stream held busy), randomize and external recorded in a caller graph (an
+  in-graph writer of `centerline.xy`, `load_centerlines` ordered after an in-flight
+  generation), CUDA layouts given as `"cuda"`, a utility on a view inside a graph, the
+  tutorial's mixed-batch step graph, and the kit on `external`.
+- Existing tests updated where a decision required it: the exported-key dtype message
+  (`tests/test_channels.py`; its unexported key on a whole result keeps the 0.2.0.dev4
+  refusal), seed-dependence enumerations filtered on
+  `describe(...).seeded`, the kit's check lists (`output.view`), the catalogue kinds,
+  `CourseLine.track` -> `.centerline`, the public API list. The frozen guards
+  (`tests/test_generator_fingerprints.py`, `tests/test_pipeline_parity.py`,
+  `tests/test_gate_pipeline_parity.py` and `tests/goldens/pr11_gate_stages.json`,
+  `tests/goldens/pr13a_pr11_relaxed_stations.json` and its test, the
+  `tests/test_legacy_plugin_abi.py` pins) are unchanged and pass.
+
 ## 0.2.0.dev4 (2026-10-23, tag `v0.2.0.dev4`)
 
 ### Added

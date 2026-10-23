@@ -35,9 +35,36 @@ A few principles:
   different configs across parallel workers is the lowest-friction path to a
   broad distribution.
 
+- **Or mix them inside one batch.** Several generators can write disjoint env ranges
+  of one shared ``Track`` (``out=big.view(e0, e1)``), recorded in one graph and read by
+  one set of utilities: see :ref:`results-mixed-batches`.
+
 - **Use the parameter explorer to iterate quickly.** The interactive Gradio UI
   (``.venv/bin/python -m viz.param_explorer``) shows valid-yield and quality stats over a
   full batch in real time, so shape/yield trade-offs are immediately visible.
+
+Per-env parameters: what ``randomize=`` does and does not do
+------------------------------------------------------------
+
+``presets.track(randomize={"<stage>.<field>": (lo, hi)})`` draws a field per env,
+on the device, at every generation (:ref:`config-randomize`). It draws **dynamic**
+``float32`` fields only: those of plugin generators and stages declared with
+``plugin.dynamic``, and ``width.from_channel``'s ``scale`` / ``lo`` / ``hi``. The
+built-in generators' knobs (``rad``, ``polar_radial_jitter``, ``checkpoint_count``, ...)
+and the elevation ranges are **static in 0.x**: ``randomize=`` refuses them with a
+``PlanError`` listing what can be drawn. It is therefore not a domain randomization of
+the built-in generators yet. To vary those per env today:
+
+- use ``bezier``'s ``style_sampling=True`` (per-env ``rad``, ``scale`` and handle clamp,
+  below);
+- mix generators or configurations in one batch (:ref:`results-mixed-batches`), each
+  generator writing its own env range of one ``Track``;
+- or write a plugin generator whose shape knobs are ``plugin.dynamic`` (with declared
+  ``lo`` / ``hi``), and draw them with ``randomize=``, or write them yourself in your own
+  graph for a curriculum (:ref:`generator-runtime-params`).
+
+For a randomized plugin knob, the yield-versus-diversity advice above applies to the
+whole range: check the yield at both ends of ``(lo, hi)``, not only at the middle.
 
 ``half_width`` and ``spacing`` coupling
 ----------------------------------------
@@ -79,6 +106,10 @@ Summary of the coupling rules:
   you lower ``half_width`` or ``spacing``.
 - ``scale`` controls the track coordinate range; doubling ``scale`` roughly
   doubles perimeters, so ``N_max`` scales proportionally.
+- Ingested centerlines (``generator="external"``) are in your data's units, not
+  ``scale``'s: set ``half_width``, ``spacing`` and ``N_max`` for them explicitly.
+  ``load_centerlines`` checks ``N_max >= perimeter / spacing + 1`` per env before
+  uploading (:ref:`ingesting-centerlines`).
 
 Relaxation knobs
 ----------------

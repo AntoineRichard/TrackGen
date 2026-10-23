@@ -19,7 +19,7 @@ import warp as wp
 from .collision_sdf import _track_aabb_k
 from ..exec.context import LaunchContext
 from .runtime import _BIG, _init, _sync  # noqa: F401  (_sync: legacy re-export)
-from .types import Track
+from ..results import HasBand, _check_and_bind
 
 
 @dataclass
@@ -109,7 +109,10 @@ class HeightFieldBaker:
     set). Results are undefined for envs with ``valid[e] == 0`` (baked NaN).
     """
 
-    def __init__(self, track: Track, resolution: int,
+    #: The topologies this component supports (closed loops only in 0.x).
+    topology = "closed"
+
+    def __init__(self, track: HasBand, resolution: int,
                  padding: "float | None" = None) -> None:
         _init()
         if int(resolution) < 8:
@@ -117,18 +120,17 @@ class HeightFieldBaker:
         if padding is not None and not (float(padding) > 0.0):
             raise ValueError(f"padding must be > 0 (or None for auto), got "
                              f"{padding!r}")
-        E = int(track.count.shape[0])
-        stride = int(track.center.shape[0])
-        if E < 1 or stride % E != 0:
-            raise ValueError(
-                f"track batch layout invalid: {stride} slots for {E} envs")
-        self._track = track
+        # The members checked here are the ones bound (read once: stable pointers).
+        lay, self._track = _check_and_bind(track, HasBand, consumer="HeightFieldBaker",
+                                           members=("outer", "center", "count", "valid"),
+                                           topology=self.topology)
+        E = int(lay.num_envs)
         self._E = E
-        self._n_max = stride // E
+        self._n_max = int(lay.stride)
         self._res = int(resolution)
         self._pad = 0.0 if padding is None else float(padding)
         self._pad_frac = 0.1
-        self._device = str(track.center.device)
+        self._device = lay.device
         dev = self._device
         self._hf = HeightField(
             height=wp.zeros(E * self._res * self._res, dtype=wp.float32,

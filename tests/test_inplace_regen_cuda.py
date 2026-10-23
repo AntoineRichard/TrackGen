@@ -543,7 +543,7 @@ def _regenerated(course) -> dict:
         out["posts"] = course._posts
     if course.course_line is not None:
         for k in _LINE_FIELDS:
-            out[f"line.{k}"] = getattr(course.course_line.track, k)
+            out[f"line.{k}"] = getattr(course.course_line.centerline, k)
     return out
 
 
@@ -885,7 +885,7 @@ class _Agents:
     """The caller's per-env agent state (identical device logic for both twins)."""
 
     def __init__(self, course, mode: str, pos: wp.array) -> None:
-        self.line = course.result if mode == "track" else course.course_line.track
+        self.line = course.result if mode == "track" else course.course_line.centerline
         self.n_max = int(self.line.center.shape[0]) // E
         # Below one checkpoint spacing per step (track: ~9 samples between checkpoints at
         # spacing 0.6; gates: 8 line samples per gate), so no checkpoint is jumped over.

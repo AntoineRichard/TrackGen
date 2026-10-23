@@ -77,8 +77,9 @@ The data model
 ``BatchSpec(num_envs, device, n_max, closed=True, scale=1.0, on_invalid="keep", max_gates=None)``
    The batch every stage shares: ``E`` envs on one device, the per-env point capacity
    ``N_max``, ``TrackGenConfig.scale``, and what the commit does with an invalid env
-   (``"keep"`` or ``"poison"``, see `The commit`_). Open tracks (``closed=False``) are
-   refused. ``max_gates`` selects the result: ``None`` (default) builds a track
+   (``"keep"`` or ``"poison"``, see `The commit`_). ``closed`` must be a ``bool``, and
+   open tracks (``closed=False``) are refused, naming the stages that support closed
+   loops only (:ref:`results-topology`). ``max_gates`` selects the result: ``None`` (default) builds a track
    pipeline whose result is a ``Track``; an ``int >= 2`` builds a gate pipeline whose
    result is a ``GateSequence`` with ``max_gates`` slots per env (``G``, see
    `The gate pipeline`_). In a gate pipeline ``n_max`` is read only by a centerline
@@ -175,15 +176,16 @@ a plain stage, and fails at ``build`` (or ``TrackGenerator``) time.
    presets.track(*, num_envs, device, n_max=384, scale=1.0,
                  generator="bezier", generator_params=None, num_points=256,
                  half_width=0.1, spacing=None,
-                 relax="xpbd", width="constant", elevation="flat",
+                 relax="auto", width="constant", elevation="flat",
                  checks=("default",), on_invalid="keep",
-                 z_base=0.0, registry=None) -> PipelineSpec
+                 z_base=0.0, registry=None, randomize=None) -> PipelineSpec
 
 The stages, by id: ``generator``, ``resample`` (``resample.constant_spacing``),
 ``width``, ``relax``, ``uniform`` (``resample.uniform``), ``frames``, ``offset``,
 ``elevation``, the ``checks`` (the first one's id is ``"validity"``), and ``lift``. A
 generator that provides its half-widths has no ``width`` stage, one that provides its
-altitudes no ``elevation`` stage. ``presets.track(num_envs=E, device=d)`` builds what
+altitudes no ``elevation`` stage. Each ``randomize=`` entry adds a
+``randomize.<stage>.<field>`` stage right before its target (`Per-env draws`_). ``presets.track(num_envs=E, device=d)`` builds what
 ``legacy.to_pipeline_spec(TrackGenConfig(num_envs=E, device=d))`` builds: the same stage
 list, equal params once resolved, byte-identical outputs.
 
@@ -203,6 +205,10 @@ list, equal params once resolved, byte-identical outputs.
    * - ``StageRef(kind, name, ...)``
      - Used as given (id and ports included). Its ``kind`` must match the keyword
        (``ValueError`` otherwise); without an id it takes the slot's.
+   * - ``"auto"`` (``relax`` only, the default)
+     - The generator's ``preferred["relax"]`` when it declares one, else ``"xpbd"``:
+       ``relax.xpbd`` for every built-in shape generator, ``relax.none`` for
+       ``external`` (:ref:`config-relax-auto`).
    * - ``None``
      - ``relax=None`` is ``relax.none``, ``elevation=None`` is ``elevation.flat``.
        ``width=None`` raises ``ValueError``: something must write ``cl.half_width``
@@ -243,6 +249,13 @@ empty sequence or another first check ``ValueError``. The other arguments:
 - Each further check gets the id ``ref.id or name``. Two checks with the same id raise
   ``ValueError``: give one an explicit ``StageRef(..., id=...)``.
 - ``on_invalid`` is ``"keep"`` or ``"poison"`` (``ValueError`` otherwise).
+- ``randomize`` is ``None``, a mapping ``{"<stage id>.<field>": (lo, hi)}`` or a
+  sequence of ``StageRef("randomize", "uniform", ...)``: per-env draws of dynamic
+  ``float32`` fields (`Per-env draws`_, :ref:`config-randomize`).
+- ``generator="external"`` ingests centerlines you load (:ref:`ingesting-centerlines`):
+  with ``generator_params={"with_z": True}`` it provides the altitude, with
+  ``{"with_half_width": True}`` the half-width (the preset drops the elevation or width
+  stage), and ``relax="auto"`` runs no relax.
 
 A preset is a starting point: use the edit operations for the rest, for example
 ``presets.track(...).insert_after("validity", StageRef("validity",
@@ -252,8 +265,9 @@ A preset is a starting point: use the edit operations for the rest, for example
 Running a spec: ``TrackGenerator(spec)``
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-``TrackGenerator(config_or_spec, rng=None, *, seeds=None, stream=None)`` takes a
-``TrackGenConfig`` (as before) or a ``PipelineSpec``. Seeds come from ``rng`` (a
+``TrackGenerator(config_or_spec, rng=None, *, seeds=None, stream=None, out=None)``
+takes a ``TrackGenConfig`` (as before) or a ``PipelineSpec``, and ``out=`` a ``Track``
+you own for the Program to write (:ref:`results-out`). Seeds come from ``rng`` (a
 ``PerEnvSeededRNG``) or ``seeds`` (any form ``SeedState`` accepts, see
 `build() and the planner`_), not both (``ValueError``); with neither, env ``e`` gets seed
 ``e``. Anything other than a config or a spec raises ``TypeError``.
@@ -264,6 +278,7 @@ Running a spec: ``TrackGenerator(spec)``
   field (``["generator", "relax"]`` with a relax stage that has one); see
   :ref:`stage-runtime-params`.
 - ``gen.program`` is the ``Program`` (preview): its taps, fail bits and ``on_invalid``.
+- ``gen.input_info`` describes ``gen.inputs`` (``Program.input_info``, :ref:`pipeline-program`).
 
 Everything else (``generate``, ``enqueue``, ``seeds``, ``inputs``, graphs, masked
 regeneration) works as for a config. ``Course`` still takes a ``TrackGenConfig`` only.
@@ -319,6 +334,10 @@ Stage kinds
      - ``anchors.xy``, ``anchors.count``, plus ``anchors.z`` and
        ``anchors.<package>.<name>``
      - ``track_gen.plugin.registry``
+   * - ``randomize``
+     - ``uniform``
+     - another stage's dynamic ``float32`` field (no channel)
+     - TrackGen's private catalogue (not open to plugins; `Per-env draws`_)
    * - ``resample``, ``frames``, ``offset``, ``lift``
      - see `The default track stages`_
      - their catalogue channels
@@ -350,11 +369,15 @@ a closed kind lists the catalogue's names and says that the kind is not open to 
 ``build(spec, *, registry=None, seeds=None, out=None, stream=None, prepare=True)``
 checks the spec before it allocates or launches anything, then allocates once:
 
-1. **Batch and ids.** ``num_envs >= 1``, ``n_max >= 3``, ``closed=True``,
+1. **Batch and ids.** ``num_envs >= 1``, ``n_max >= 3``, ``closed`` a ``bool``,
    ``on_invalid`` in ``("keep", "poison")``, ``max_gates`` ``None`` or an int ``>= 2``;
    slot ids are unique; exactly one generator stage (kind ``generator`` or
-   ``gate_generator``), first, with the id ``"generator"``; only the generator has a
-   ``capacity``, and only ``"raw"``; ``seeds`` is one of the forms below. A gate
+   ``gate_generator``), the first stage that is not a randomizer, with the id
+   ``"generator"`` (only randomizers of the generator's own fields may precede it); only
+   the generator has a ``capacity``, and only ``"raw"``; ``seeds`` is one of the forms
+   below. Then **topology**: with ``closed=False`` the planner looks up every stage's
+   class (nothing is bound or validated yet) and raises, naming those that declare
+   ``topology="closed"`` (:ref:`results-topology`). A gate
    pipeline starts with a ``gate_generator``, or with a ``generator`` followed by a
    ``stations`` stage; a ``gate_generator`` in a track pipeline is refused.
 2. **Resolve.** The generator and every stage of an open kind are resolved through
@@ -384,7 +407,8 @@ checks the spec before it allocates or launches anything, then allocates once:
    arrive), and ``lift.flat``, which lifts at a constant ``z_base``, may not follow an
    elevation other than ``elevation.flat`` (use ``lift.elevated``). A gate pipeline has
    the same rules for the ``GateSequence`` and ``validity.gate_default``, plus its own
-   (`Planner rules for gate pipelines`_).
+   (`Planner rules for gate pipelines`_). Each randomizer is checked against its target
+   (`Per-env draws`_).
 5. **Capture class and segments.** Each stage's capture class comes from its
    ``capture_class(params)`` (a legacy ``GeneratorSpec`` / ``GateGeneratorSpec``:
    ``STATIC``, or ``HOST`` with ``capturable=False``). The Program's is the highest
@@ -393,10 +417,9 @@ checks the spec before it allocates or launches anything, then allocates once:
    ``PipelineSpec.require_caller_capturable=True`` a ``HOST`` stage raises
    ``PlanError``, naming every one.
 6. **Allocate.** The ``SeedState`` (its own checks run first), the ``Track`` or the
-   ``GateSequence`` (or use the one passed as ``out=``, checked field by field
-   beforehand; its ``generation``, ``fail_mask`` and ``half_width`` may be ``None``,
-   and its ``attributes`` may leave keys out, see `Per-point attributes in the
-   result`_), the ``[E]`` effective-seed buffer, one buffer per
+   ``GateSequence`` (or use the one passed as ``out=``, validated beforehand, which may
+   be a view of a larger result written by several generators, see
+   :ref:`results-out`), the ``[E]`` effective-seed buffer, one buffer per
    channel version and each stage's scratch, namespaced ``scratch:<id>/<name>``. Then
    each stage's ``build`` runs, once, in pipeline order, against a ``StageBuilder``;
    right after it, every write port the stage declares must have been written, and a
@@ -427,7 +450,10 @@ read across the uniform resample: the stale-read rule of `Carried channels`_) ra
 
 ``seeds`` is anything ``SeedState`` accepts (``None``, an ``int``, an ``[E]`` int32
 ``wp.array``, a ``PerEnvSeededRNG``) or a ``SeedState`` for the batch. Anything else,
-a NumPy array or a list included, raises ``TypeError`` before allocating.
+a NumPy array or a list included, raises ``TypeError`` before allocating. With ``out=``
+a view starting at env ``k`` of its root result, ``None`` and an ``int`` are offset by
+``k`` (env ``e`` gets ``base + k + e``), so the generators of a mixed batch get the
+seeds one batch would (:ref:`results-mixed-batches`).
 
 ``build`` derives the generator's config from the ``BatchSpec`` and the generator's
 ``StageRef`` (its params, and ``capacity["raw"]`` as ``num_points``, 256 when absent).
@@ -467,7 +493,8 @@ self-graph rules of :doc:`cuda-graph` exactly as ``TrackGenerator`` does.
   first ``run()`` outside a capture runs it, and recording a Program that was never
   prepared (``run()`` or ``enqueue()`` inside a capture) raises ``CaptureError``.
 - ``result`` is the ``Track`` (the ``GateSequence`` of a gate pipeline), the same
-  instance with the same array addresses forever.
+  instance with the same array addresses forever (``out`` when one was passed), and
+  ``layout`` its ``Layout`` (:ref:`results-layout`).
 - ``spec`` is the resolved spec: every ``StageRef.params`` is the stage's Params
   instance.
 - ``tap(channel, *, after=None)``, ``channels``, ``fail_bits`` and ``on_invalid``: see
@@ -475,8 +502,12 @@ self-graph rules of :doc:`cuda-graph` exactly as ``TrackGenerator`` does.
 - ``attributes``: the per-point attributes the result exports, a read-only mapping from
   key to ``AttributeInfo`` (see `Per-point attributes in the result`_).
 - ``seeds`` (the ``SeedState``), ``seed`` (the ``[E]`` effective seed), ``inputs``
-  (``"regen_mask"`` plus the inputs the stages declare), ``params`` (a ``ParamTable``
-  keyed by stage id; the built-in stages' fields are all static) and ``graph`` (``None``
+  (``"regen_mask"`` plus the inputs the stages declare), ``input_info`` (a read-only
+  mapping from each name of ``inputs`` to a ``track_gen.pipeline.InputInfo``: ``name``,
+  ``dtype``, ``per``, ``length``, ``latched``, ``stage_id``), ``params`` (a
+  ``ParamTable`` keyed by stage id; the built-in stages' fields are all static, except
+  ``width.from_channel``'s ``scale`` / ``lo`` / ``hi`` and a randomizer's ``lo`` /
+  ``hi``) and ``graph`` (``None``
   for a Program with ``HOST`` stages, whose per-segment graphs ``segment_graphs(key=None)``
   returns, ``None`` at the ``HOST`` segments).
 - ``capture_class`` (the highest of its stages', ``STATIC`` < ``BOUNDED`` < ``HOST``),
@@ -1431,14 +1462,17 @@ exported with ``export=``; the key is the channel's name without its domain pref
   ``registry.describe("generator", name)`` lists the raw channels a generator declares
   (``interp`` and ``export`` are decided in ``build``).
 
-**Caller-owned results** (``build(..., out=...)``) follow one rule for the optional
-fields (``fail_mask``, ``generation``, ``half_width``, attribute keys): a field the caller
-leaves ``None``, or a key it leaves out of ``out.attributes``, is not added to the
-caller's object, and the Program keeps that work buffer for itself (``tap`` reaches it).
-A key of ``out.attributes`` the Program exports is bound after a check (``[E * N_max]``,
-the dtype, the device, contiguous); a key it does not export raises ``ValueError``
-(``out.attributes['x']: this pipeline does not export 'x'; exported: [...] (out= with
-keys from another pipeline is reserved for PR13b's mixed batches)``).
+**Caller-owned results** (``build(..., out=...)``, ``TrackGenerator(..., out=...)``)
+follow one rule for the optional fields (``fail_mask``, ``generation``, ``half_width``,
+attribute keys): a field the caller leaves ``None``, or a key it leaves
+out of ``out.attributes``, is not added to the caller's object, and the Program keeps that
+work buffer for itself (``tap`` reaches it). A key of ``out.attributes`` the Program
+exports is bound after a check (``[E * N_max]``, the dtype, the device, contiguous). On a
+view of a larger result (a mixed batch), a key it does not export (a family it does not
+write, or one it carries without exporting it) is checked, filled once with its padding
+at build and never written again, so the batch can share one attribute array between
+generators that export it and generators that do not; on a whole result such a key
+raises ``ValueError``, as in 0.2.0.dev4 (:ref:`results-out-attributes`).
 
 .. _pipeline-taps:
 
@@ -1476,6 +1510,69 @@ code:
   to the ids of its writers, in order (``"seed"`` to ``("<prologue>",)``).
 - An unknown channel, an unknown stage, or a stage before the channel's first writer
   raises ``KeyError``.
+
+.. _pipeline-randomize:
+
+Per-env draws
+-------------
+
+A ``randomize.uniform`` stage draws one dynamic ``float32`` field of another stage per
+env, at every generation, inside the Program; ``presets.track(randomize=...)`` and
+``presets.gates(randomize=...)`` insert them (:ref:`config-randomize` has the user-level
+rules, the draw and the curriculum pattern).
+
+.. code-block:: python
+
+   spec = presets.track(num_envs=64, device="cpu", relax="acme.taubin",
+                        randomize={"relax.lam": (0.4, 0.6)})
+   spec.ids
+   # ('generator', 'resample', 'width', 'randomize.relax.lam', 'relax', 'uniform', ...)
+   gen = TrackGenerator(spec)
+   gen.params["randomize.relax.lam"]["hi"]   # [E] float32: the draw's upper bound, writable
+   gen.params["relax"]["lam"]                # [E] float32: this generation's draws
+
+- **Placement.** Listing order is execution order: a randomizer is listed right before
+  its target and runs there, so the target reads this generation's draw. Only the
+  generator's randomizers may precede the generator, which stays the first stage that is
+  not a randomizer (find it with ``spec.stages[spec.ids.index("generator")]``, not
+  ``spec.stages[0]``). ``spec.insert_after("generator", ...)`` still puts a stage right
+  after the generator.
+- **Params.** ``RandomizeUniformParams``: ``stage`` and ``field`` (static: the target),
+  ``lo`` and ``hi`` (dynamic, ``[E]``). The randomizer reads ``seed`` and writes no
+  channel; its salt is ``b.salt("draw")`` under its own id, so two randomizers never
+  share a stream and a randomizer's draw does not depend on its position.
+- **Rules**, checked at build before anything is allocated (``PlanError``): a randomizer
+  listed after its target, a non-randomizer stage or another stage's randomizer before
+  the generator, an unknown or randomizer target, a field that is not a dynamic
+  ``float32`` field of the target (the message lists the drawable fields of the
+  pipeline; every built-in generator and stage field is static except
+  ``width.from_channel``'s), two randomizers on one field, an initial ``(lo, hi)``
+  outside the field's declared bounds.
+- **Segments.** A randomizer is a ``STATIC`` stage, grouped into segments like any other:
+  before a ``HOST`` generator, the generator's randomizers form segment ``0`` (a graph
+  segment that opens with the seed prologue), the generator segment ``1``.
+- **Launches.** Two more per randomizer per generation (the draw, and the latch of its
+  ``lo`` and ``hi``, minus the latch the drawn field no longer needs); none for a
+  pipeline without randomizers, so every default pipeline's launch sequence is
+  unchanged.
+
+**The parameter latch stays.** At the start of every generation the Program copies each
+dynamic parameter's and each ``[E]`` input's live array into the stage's working copy
+(the latch of :ref:`generator-runtime-params`), for the envs it regenerates. It costs
+nothing in the default pipelines and gives a dynamic parameter exact masked-regeneration
+semantics (an env left out keeps the value its rows were built with). A drawn field does
+not go through it: the randomizer writes the one array the target reads, during the
+generation. So there are two kinds of runtime arrays:
+
+- **Latched** (dynamic parameters, ``per="env"`` inputs): snapshotted at the start of a
+  generation; a write takes effect for the envs the next generation regenerates.
+- **Unlatched** (a drawn field, a ``per="raw"`` input such as
+  ``inputs["centerline.xy"]``): read during the generation. A drawn field is owned by its
+  randomizer (``set`` raises, a direct write is overwritten); a ``per="raw"`` input
+  holds your latest write, so write it on the generation's stream or order the two with
+  events.
+
+``Program.input_info`` (``gen.input_info``) says which inputs are latched.
 
 .. _pipeline-gates:
 
@@ -2117,9 +2214,9 @@ Gate presets: ``presets.gates``
                  gate_align="yaw_only", elevation="flat", z_base=0.0,
                  z_valid_grade=0.0, checks=("gate_default",), scale=1.0,
                  on_invalid="keep", n_max=384, num_points=256, half_width=0.1,
-                 spacing=None, relax="xpbd", width="constant",
+                 spacing=None, relax="auto", width="constant",
                  spacing_metric="xy", elevation_on=None,
-                 registry=None) -> PipelineSpec
+                 registry=None, randomize=None) -> PipelineSpec
 
 ``presets.gates(num_envs=E, device=d)`` builds what
 ``legacy.to_gate_pipeline_spec(GateGenConfig(num_envs=E, device=d))`` builds: the same
@@ -2138,7 +2235,8 @@ registry (``registry``, default ``track_gen.plugin.registry``) to see the genera
   station count for stations.
 - ``order``, ``stations``, ``elevation``, ``relax`` and each entry of ``checks`` take the
   forms of `Presets`_ (a name, ``(name, params)``, a ``StageRef``, or ``None``:
-  ``elevation=None`` is ``elevation.flat``, ``relax=None`` is ``relax.none``).
+  ``elevation=None`` is ``elevation.flat``, ``relax=None`` is ``relax.none``; ``relax``
+  defaults to ``"auto"``, the centerline generator's preferred relax, else ``"xpbd"``).
   ``order=None`` is the generator's default order: its preferred order when it accepts
   it, else ``"ccw"`` when it accepts it, else the first order it accepts (the rule of
   ``GateGenConfig.gate_ordering=None`` and of the conformance kit). ``checks`` starts
@@ -2163,6 +2261,12 @@ registry (``registry``, default ``track_gen.plugin.registry``) to see the genera
   both apply to a centerline source, and ``"xyz"`` with an anchors generator raises
   ``ValueError`` (`3D station spacing`_).
 - ``on_invalid`` is ``"keep"`` or ``"poison"``.
+- ``randomize`` is the per-env draws of `Presets`_ (`Per-env draws`_); a randomizer of a
+  gate generator's field (``{"generator.m": (3.0, 9.0)}``) is placed before the
+  generator.
+- ``generator="external"`` with ``source="stations"`` or ``"relaxed_stations"`` places
+  gates on ingested centerlines (:ref:`ingesting-centerlines`); its ``with_z`` altitude
+  and its attributes reach the gates through the stations and ``carry`` stages.
 - A legacy ``GateGeneratorSpec`` orders its own gates: ``order=`` with one raises
   ``ValueError``, choose its ordering with ``GateGenConfig(gate_ordering=...)``.
 
@@ -2171,8 +2275,9 @@ registry (``registry``, default ``track_gen.plugin.registry``) to see the genera
 Running a gate spec: ``GateGenerator(spec)``
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-``GateGenerator(config_or_spec, rng=None, *, seeds=None, stream=None)`` takes a
-``GateGenConfig`` (as before) or a gate pipeline's ``PipelineSpec``, with the seed rules of
+``GateGenerator(config_or_spec, rng=None, *, seeds=None, stream=None, out=None)`` takes
+a ``GateGenConfig`` (as before) or a gate pipeline's ``PipelineSpec`` (and ``out=`` a
+``GateSequence`` you own, :ref:`results-out`), with the seed rules of
 ``TrackGenerator`` (``rng`` or ``seeds``, not both; with neither, env ``e`` gets seed
 ``e``). A track pipeline's spec raises ``ValueError`` pointing at ``TrackGenerator``,
 anything else ``TypeError``.
@@ -2364,12 +2469,14 @@ legacy gate generators run through an adapter until 1.0``. Port it with
 Not open yet
 ------------
 
-- **Results** (roadmap PR13b): ``Track.layout``, ``validate()``, ``view()`` and
-  ``copy_from()``; a ``clone()`` that iterates the fields; ``out=`` on the facades and
-  ``out.attributes`` with keys from another pipeline (mixed batches); the capability
-  protocols (``HasCenterline``, ``HasBand``, ``HasGates``); utilities that validate
-  their input; ``randomize.uniform`` and the removal of the parameter latch; an
-  ingestion stage for external centerlines; the ``closed`` flag through the kernels.
+- **Dynamic built-in knobs** (roadmap PR13c): the built-in generators' shape knobs and
+  the elevation ranges are static, so ``randomize=`` cannot draw them yet; other
+  distributions than uniform, ``int32`` draws and a public sampler API for plugins.
+- **Results and inputs** (later): open topology (``closed=False``) in any stage or
+  utility, and a ``closed`` argument to the kernels (after 1.0); ``build(inputs=)``
+  binding caller arrays as a Program's inputs; ``declare()`` for gate generators; gate
+  ingestion (a ``GateSequence`` from caller arrays); ``Track.capabilities()``; a
+  ``Course`` over a mixed batch (roadmap PR15).
 - **Channels** (later): carries by plugin stations stages (a public
   ``StageBuilder.carried()``); carried channels written by a stage rather than the
   generator (an ``annotate`` kind, ``interp=`` on stage writes); an order that publishes
@@ -2380,8 +2487,8 @@ Not open yet
   ``source="stations"`` needs a ``z`` provider); a dynamic ``width.constant``.
 - **Gates** (later): composite generators (``Recipe``), provided attributes other than
   ``z`` from ``stations`` (``tangent``, ``half_size``, ``roll``), ``roll`` on
-  ``gate_frames.default``, ``preferred`` hints for track
-  generators, split gate checks, and a ``GateGenConfig.on_invalid`` field.
+  ``gate_frames.default``, ``preferred`` hints of track generators for the gate stages
+  (they declare ``"relax"`` only), split gate checks, and a ``GateGenConfig.on_invalid`` field.
 - Opening ``resample``, ``frames``, ``offset`` and ``lift`` to plugins; split built-in
   checks (``validity.turning``, ...); an aliasing in-place write form; a
   ``TrackGenConfig.on_invalid`` field; ``Course`` built from a ``PipelineSpec``, and a

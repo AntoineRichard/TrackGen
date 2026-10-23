@@ -1064,8 +1064,8 @@ def _assert_course_same(a: Course, b: Course) -> None:
                                       _flat(b.checkpoints.position))
     else:
         _assert_same(a.result, b.result, _GATE_FIELDS)
-        np.testing.assert_array_equal(_flat(a.course_line.track.center),
-                                      _flat(b.course_line.track.center))
+        np.testing.assert_array_equal(_flat(a.course_line.centerline.center),
+                                      _flat(b.course_line.centerline.center))
         np.testing.assert_array_equal(_flat(a._posts), _flat(b._posts))
     np.testing.assert_array_equal(a.progress._progress.numpy(), b.progress._progress.numpy())
 

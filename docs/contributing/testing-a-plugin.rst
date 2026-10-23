@@ -96,11 +96,22 @@ broke.
        message names it and where it was raised.
    * - ``output.shape``
      - The raw centerline is ``[E*R]`` ``wp.vec2f`` with ``R >= 3``, the raw validity is
-       ``[E]`` ``int32``, every ``Track`` field has its documented shape and dtype, and
-       both validity arrays hold only ``0`` and ``1``.
+       ``[E]`` ``int32``, every ``Track`` field has its documented shape and dtype, the
+       result's ``layout`` equals the Program's and ``result.validate()`` passes
+       (:ref:`results-validate`), and both validity arrays hold only ``0`` and ``1``.
      - Writing a flag other than ``0`` or ``1`` into ``out_valid`` (a Stage: its
        ``"gen.valid"`` port), or not writing it on every call (the kit's poison, ``7``,
        survives).
+   * - ``output.view``
+     - The pipeline built with ``out=`` the middle view ``big.view(1, E + 1)`` of a
+       byte-poisoned ``Track.alloc`` (``GateSequence.alloc`` for gates) of ``E + 2``
+       envs, attributes included, with the kit's seed array, gives the bytes of the
+       kit's standalone run in the view's rows, after construction and after a masked
+       regeneration (``mask = [1, 0, 1, ...]``), and every byte outside the view keeps
+       its poison (:ref:`results-view-safety`). It runs for every kind:
+       ``check_generator``, ``check_gate_generator`` and ``check_stage``.
+     - A kernel that writes outside ``[0, E * stride)`` of a result array, or derives an
+       index from something other than ``wp.tid()`` and the per-env layout.
    * - ``output.finite``
      - The raw centerline is finite for every env the generator marked valid, and every
        per-point ``Track`` field is finite before ``count[e]`` for every valid env. The
@@ -161,6 +172,8 @@ broke.
        identical. Only envs valid in both batches are compared: two rejected envs may be
        alike. ``details`` holds the smallest raw-output difference found, between the
        two batches (``min_raw_delta``) and between two envs (``min_pair_delta``).
+       Skipped ("generator declares seeded=False") for a generator that declares
+       ``seeded = False``, such as an ingestion generator.
      - A kernel that ignores ``seeds[e]``, or keys every env's stream on the salt only.
    * - ``batch_independence``
      - Env ``e``'s track depends on its own seed only: it is identical when generated

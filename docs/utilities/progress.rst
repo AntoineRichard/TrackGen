@@ -24,6 +24,13 @@ seen automatically). ``CheckpointSampler`` subsamples the CENTERLINE at a
 coarse spacing; because track polylines are index-aligned, each checkpoint's
 crossing segment is the road cross-section between ``inner`` and ``outer``.
 
+Both accept any source with the members they read, checked at construction
+(:ref:`utilities-sources`): ``from_gates`` a ``HasGateFrames`` source (``position``,
+``left``, ``right``, ``forward``, ``half_size``, ``count``), ``CheckpointSampler`` a
+``HasBand`` one (``center``, ``inner``, ``outer``, ``count``, ``valid``); env-slice views
+(``seq.view(e0, e1)``, ``track.view(e0, e1)``) included. ``ProgressTracker`` takes a
+``CheckpointSet``, whose own checks are unchanged.
+
 .. figure:: ../assets/checkpoints-overview.png
    :alt: Track-sourced virtual gates beside gate-sourced checkpoints.
 

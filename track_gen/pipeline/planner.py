@@ -39,8 +39,10 @@ slots (``Layout.stride``); the anchors are ``[E * A]`` (``A``: the anchors produ
 from __future__ import annotations
 
 import dataclasses
+import gc
 import numbers
 import types
+import weakref
 from collections.abc import Mapping as _MappingABC
 
 import warp as wp
@@ -116,6 +118,7 @@ def build(spec: PipelineSpec, *, registry=None, seeds=None, out=None, stream=Non
     _check_spec_shape(spec)
     _check_seeds(seeds)
     reg = _default_registry if registry is None else registry
+    _check_topology(spec, reg)
     binding = _bind(spec, reg)
     return _build(spec, binding=binding, seeds=seeds, out=out, stream=stream,
                   prepare=prepare, registry=reg)
@@ -128,7 +131,7 @@ def _bind(spec: PipelineSpec, registry):
     from .._src.generator_binding import bind_generator  # noqa: PLC0415
     from . import legacy  # noqa: PLC0415
 
-    if spec.stages[0].kind == _GATE_GENERATOR:
+    if spec.stages[spec._generator_index()].kind == _GATE_GENERATOR:
         return bind_generator(_GATE_GENERATOR, legacy.gate_generator_config(spec),
                               registry=registry)
     return bind_generator(_GENERATOR, legacy.generator_config(spec), registry=registry)
@@ -155,9 +158,8 @@ def _check_spec_shape(spec) -> None:
     if gate and (not _is_int(batch.max_gates) or batch.max_gates < 2):
         raise PlanError(f"BatchSpec.max_gates must be None (a track pipeline) or an int "
                         f">= 2, got {batch.max_gates!r}")
-    if batch.closed is not True:
-        raise PlanError("BatchSpec.closed=False: open tracks arrive after 1.0; closed "
-                        "loops only")
+    if type(batch.closed) is not bool:
+        raise PlanError(f"BatchSpec.closed must be a bool, got {batch.closed!r}")
     if batch.on_invalid not in _ON_INVALID:
         raise PlanError(f"BatchSpec.on_invalid must be 'keep' or 'poison', got "
                         f"{batch.on_invalid!r}")
@@ -168,7 +170,19 @@ def _check_spec_shape(spec) -> None:
     if dup:
         raise PlanError(f"duplicate stage ids {dup}; give one of them an explicit "
                         f"StageRef(id=...)")
-    first = spec.stages[0]
+    gi = spec._generator_index()
+    if gi == len(spec.stages):
+        raise PlanError("the pipeline has no generator: every stage is a randomizer; the "
+                        "first stage after them must be the generator")
+    for ref in spec.stages[:gi]:
+        target = _ref_param(ref, "stage")
+        if target != _GENERATOR:
+            where = f"right before stage {target!r}: spec.insert_before({target!r}, ...)" \
+                if isinstance(target, str) and target else "right before its target stage"
+            raise PlanError(f"{_label(ref)} is listed before the generator: only the "
+                            f"generator's randomizers (stage='generator') may precede it; "
+                            f"list it {where}")
+    first = spec.stages[gi]
     if gate:
         if first.kind not in _GENERATOR_KINDS:
             raise PlanError(f"the first stage of a gate pipeline must be the generator "
@@ -197,6 +211,54 @@ def _check_spec_shape(spec) -> None:
             raise PlanError(
                 f"{_label(ref)}: unknown capacity keys {bad}; only the generator takes "
                 f"capacity, and only 'raw' (the default raw point count)")
+
+
+def _ref_param(ref: StageRef, field: str):
+    """``field`` of a StageRef's params (a mapping or a Params instance), or ``None``."""
+    p = ref.params
+    if isinstance(p, _MappingABC):
+        return p.get(field)
+    return getattr(p, field, None) if p is not None else None
+
+
+def _stage_class(ref: StageRef, registry):
+    """The class (or legacy spec) of ``ref`` (host only), or ``None`` when it cannot be
+    looked up (an unknown name: ``_resolve`` reports it)."""
+    from .. import stages as _stages  # noqa: PLC0415
+
+    try:
+        if ref.kind in _GENERATOR_KINDS or ref.kind in _stages.OPEN_KINDS:
+            return registry.get(ref.kind, ref.name)
+        return _stages.get(ref.kind, ref.name)
+    except Exception:  # noqa: BLE001 - unknown / quarantined: reported by _resolve
+        return None
+
+
+def _check_topology(spec: PipelineSpec, registry=None) -> None:
+    """``BatchSpec.closed=False`` is refused in 0.x, right after the spec-shape check:
+    before the generator is bound and before any ``Params.validate`` (the stage CLASSES
+    only), naming the stages that support closed loops only (``Stage.topology``; a legacy
+    generator spec counts as ``"closed"``)."""
+    if spec.batch.closed is not False:
+        return
+    from ..plugin import registry as _default_registry  # noqa: PLC0415
+
+    reg = _default_registry if registry is None else registry
+    closed = []
+    for ref in spec.stages:
+        cls = _stage_class(ref, reg)
+        if cls is None:
+            continue
+        if getattr(cls, "topology", "closed") != "any":
+            what = ref.name if ref.kind in _GENERATOR_KINDS else f"{ref.kind}.{ref.name}"
+            closed.append(f"{ref.slot_id!r} ({what})")
+    if closed:
+        raise PlanError(f"BatchSpec.closed=False: open tracks are not supported in 0.x: "
+                        f"stages {', '.join(closed)} support closed loops only "
+                        f"(Stage.topology='closed'); open topology arrives after 1.0")
+    raise PlanError("BatchSpec.closed=False: open tracks are not supported in 0.x (every "
+                    "stage declares topology='any', but the results, the commit and the "
+                    "utilities assume closed loops); open topology arrives after 1.0")
 
 
 def _is_seed_form(seeds) -> bool:
@@ -281,10 +343,11 @@ def _domain_layout(slot_cls, ref: StageRef, ports: dict, *, gate: bool, batch,
 
     E, dev = int(batch.num_envs), str(wp.get_device(batch.device))
     n_max = int(batch.n_max)
+    closed = bool(batch.closed)
     if generator in ("centerline",):
-        return Layout(E, n_max, dev, True)
+        return Layout(E, n_max, dev, closed)
     if generator in ("anchors", "legacy"):
-        return Layout(E, int(batch.max_gates), dev, True)
+        return Layout(E, int(batch.max_gates), dev, closed)
     declared = {**dict(slot_cls.reads), **dict(slot_cls.writes)}
     chans = {p: ports.get(p, ch) for p, ch in declared.items()}
     label = _label(ref)
@@ -294,7 +357,7 @@ def _domain_layout(slot_cls, ref: StageRef, ports: dict, *, gate: bool, batch,
         if gate_chans:
             raise PlanError(f"{label}: channel {gate_chans[0]!r} belongs to the gate "
                             f"pipeline (BatchSpec.max_gates); a track pipeline has none")
-        return Layout(E, n_max, dev, True)
+        return Layout(E, n_max, dev, closed)
     cl_plugin = [ch for ch in chans.values()
                  if is_plugin_channel(ch) and channel_domain(ch) == "cl"]
     cl_cat = [ch for ch in chans.values() if ch in CHANNELS and ch.startswith("cl.")]
@@ -318,7 +381,7 @@ def _domain_layout(slot_cls, ref: StageRef, ports: dict, *, gate: bool, batch,
         raise PlanError(f"{label} has centerline (cl.*) and gate (gates.*) ports after "
                         f"rewiring; a stage runs on one point domain")
     stride = n_max if (cl_cat or cl_plugin) else int(batch.max_gates)
-    return Layout(E, stride, dev, True)
+    return Layout(E, stride, dev, closed)
 
 
 def _check_capacity(cls, cap) -> dict:
@@ -459,6 +522,11 @@ def _check_agreement(slots) -> None:
             raise PlanError(f"the stages disagree on {field}: {vals} ({why})")
 
 
+def _gen_slot(slots) -> _Slot:
+    """The generator slot (preceded only by its randomizers)."""
+    return next(s for s in slots if s.generator is not None)
+
+
 def _check_gate_plan(spec, slots, registry) -> int:
     """The gate Program's anchors / order / carry / validity rules (before allocating);
     returns ``A`` (the anchors' rows per env, 0 without an anchors producer)."""
@@ -468,7 +536,7 @@ def _check_gate_plan(spec, slots, registry) -> int:
 
     reg = _default_registry if registry is None else registry
     G = int(spec.batch.max_gates)
-    gen = slots[0]
+    gen = _gen_slot(slots)
     producers = [s for s in slots if s.capacity is not None]
     A = producers[0].capacity["gates"] if producers else 0
     name = gen.ref.name
@@ -554,15 +622,16 @@ def _check_provided(slots) -> None:
             raise PlanError(f"{_label(w.ref)} writes {ch}, but no stage reads it: carry it "
                             f"to the gate slots with {stage} after order.raw "
                             f"(presets.gates adds it)")
-    gen = slots[0]
+    gen = _gen_slot(slots)
     if gen.generator != "anchors":
         return
+    after = [s for s in slots if s.index > gen.index]
     for attr in sorted(frozenset(gen.cls.provides)):
         ch = f"anchors.{attr}"
-        if any(ch in s.reads.values() for s in slots[1:]):
+        if any(ch in s.reads.values() for s in after):
             continue
         target = f"gates.{attr}"
-        other = next((s for s in slots[1:] if target in s.writes.values()), None)
+        other = next((s for s in after if target in s.writes.values()), None)
         text = (f"{_label(gen.ref)} provides {attr!r} ({ch}), but no stage reads it")
         if other is not None:
             text += (f"; stage {other.id!r} ({other.ref.kind}.{other.ref.name}) writes "
@@ -669,11 +738,12 @@ def _missing_hint(ch: str, s: _Slot, slots, gate: bool) -> str:
                 "adds it for every elevation but flat)")
     if not gate:
         return ""
-    centerline = slots[0].generator == "centerline"
+    gen = _gen_slot(slots)
+    centerline = gen.generator == "centerline"
     has_stations = any(o.ref.kind == "stations" for o in slots)
     if centerline and not has_stations and (ch.startswith("anchors.")
                                             or ch.startswith("gates.")):
-        return (f"; generator {slots[0].ref.name!r} is a centerline (track) generator: "
+        return (f"; generator {gen.ref.name!r} is a centerline (track) generator: "
                 f"insert StageRef('stations', 'raw', params={{'gates': G}}) after it "
                 f"(presets.gates(source='stations') does), or set BatchSpec.max_gates="
                 f"None for a track pipeline")
@@ -859,7 +929,7 @@ def _plan_channels(slots, gate: bool = False) -> "dict[str, list[str]]":
                 if ch in images and ch in _PROVIDED_SLOT and \
                         f"raw.{_PROVIDED_SLOT[ch][0]}" in versions:
                     attr, kind = _PROVIDED_SLOT[ch]
-                    hint = (f"; generator {slots[0].ref.name!r} provides {attr} "
+                    hint = (f"; generator {_gen_slot(slots).ref.name!r} provides {attr} "
                             f"(raw.{attr} -> {ch}): drop the {kind} stage")
                 raise PlanError(
                     f"{_label(ref)} writes {ch!r}, already written by stage "
@@ -1004,65 +1074,33 @@ def _check_flat_lift(slots) -> None:
             z_writers.append(s)
 
 
-def _check_arrays(out, want: dict, optional, dev: str) -> None:
-    for field, (dtype, n) in want.items():
-        arr = getattr(out, field, None)
-        if arr is None and field in optional:
-            continue
-        if not isinstance(arr, wp.array):
-            raise ValueError(f"out.{field}: expected a wp.array, got {type(arr).__name__}")
-        got = (getattr(arr.dtype, "__name__", str(arr.dtype)), tuple(arr.shape),
-               str(arr.device))
-        if arr.dtype is not _TRACK_DTYPES[dtype] or tuple(arr.shape) != (n,) \
-                or str(arr.device) != dev or not arr.is_contiguous:
-            raise ValueError(f"out.{field}: expected a contiguous [{n}] {dtype} array on "
-                             f"{dev}, got {got}")
+def _check_result_out(out, cls, layout, optional) -> None:
+    """``out=``: a ``cls`` (``Track`` / ``GateSequence``) whose every field validates
+    against the Program's ``layout`` (owner ``out``; the optional fields may be ``None``,
+    ``truncated`` is required), and whose stored layout, when set, is that layout
+    (canonical device)."""
+    from .._src.types import _validate_against  # noqa: PLC0415
 
-
-def _check_out_attributes(out, n: int, dev: str) -> None:
-    """``out.attributes``: a mapping of ``[n]`` contiguous arrays on ``dev`` (keys and
-    dtypes are checked against the exports once the stages are built)."""
-    attrs = getattr(out, "attributes", None)
-    if attrs is None:
-        return
-    if not isinstance(attrs, _MappingABC):
-        raise ValueError(f"out.attributes: expected a mapping of wp.array, got "
-                         f"{type(attrs).__name__}")
-    for key, arr in attrs.items():
-        if not isinstance(arr, wp.array) or tuple(arr.shape) != (n,) or \
-                str(arr.device) != dev or not arr.is_contiguous:
-            got = (getattr(getattr(arr, "dtype", None), "__name__", None),
-                   tuple(getattr(arr, "shape", ())), str(getattr(arr, "device", None)))
-            raise ValueError(f"out.attributes[{key!r}]: expected a contiguous [{n}] array "
-                             f"on {dev}, got {got}")
+    if not isinstance(out, cls):
+        raise TypeError(f"out= must be a {cls.__name__} (this pipeline's result), got "
+                        f"{type(out).__name__}")
+    need = tuple(f for f, _, _ in cls._SCHEMA if f not in optional)
+    _validate_against(out, need, "out", layout, "this pipeline")
 
 
 def _check_out(out, layout) -> None:
-    """``out=``: every Track field an ``[n]`` contiguous array of the right dtype on the
-    batch's device (``generation``, ``fail_mask`` and ``half_width`` may be ``None``)."""
-    E, S = int(layout.num_envs), int(layout.stride)
-    want = {f: ("vec3f", E * S) for f in ("outer", "center", "inner", "tangent", "normal")}
-    want.update(arclen=("float32", E * S), length=("float32", E), winding=("float32", E),
-                valid=("int32", E), count=("int32", E), truncated=("int32", E),
-                generation=("int32", E), fail_mask=("int32", E),
-                half_width=("float32", E * S))
-    dev = str(wp.get_device(layout.device))
-    _check_arrays(out, want, ("generation", "fail_mask", "half_width"), dev)
-    _check_out_attributes(out, E * S, dev)
+    """``out=`` of a track Program (``generation``, ``fail_mask`` and ``half_width`` may
+    be ``None``)."""
+    from .._src.types import Track  # noqa: PLC0415
+
+    _check_result_out(out, Track, layout, ("generation", "fail_mask", "half_width"))
 
 
 def _check_gate_out(out, layout) -> None:
-    """``out=`` of a gate Program: every ``GateSequence`` field (``generation`` and
-    ``fail_mask`` may be ``None``)."""
-    E, G = int(layout.num_envs), int(layout.stride)
-    want = {f: ("vec3f", E * G) for f in ("position", "tangent", "forward", "left",
-                                          "right")}
-    want.update(orientation=("quatf", E * G), half_size=("float32", E * G),
-                valid=("int32", E), count=("int32", E), generation=("int32", E),
-                fail_mask=("int32", E))
-    dev = str(wp.get_device(layout.device))
-    _check_arrays(out, want, ("generation", "fail_mask"), dev)
-    _check_out_attributes(out, E * G, dev)
+    """``out=`` of a gate Program (``generation`` and ``fail_mask`` may be ``None``)."""
+    from .._src.types import GateSequence  # noqa: PLC0415
+
+    _check_result_out(out, GateSequence, layout, ("generation", "fail_mask"))
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1115,6 +1153,10 @@ class _Plan:
         self.anchors = int(anchors)
         self.final = {ch: ids[-1] for ch, ids in writers.items()}
         self.bound = dict(bound)              # exported channel -> result array
+        # Roadmap PR13b: out.attributes, bound lazily (at the final write of their
+        # result-domain channel, iff the family is exported).
+        self.bound_attrs: dict = {}           # result-domain channel -> caller array
+        self.bound_used: set = set()          # the result-domain channels bound
         self.current: dict = {}               # channel -> latest version
         self.versions: dict = {}              # channel -> [(index, stage_id, array)]
         self.plugin_channels: dict = {}       # plugin channel -> (dtype, per)
@@ -1302,17 +1344,36 @@ class _StagePlan:
                 f"values sit on the pre-uniform points): write it after {res!r}, or "
                 f"carry it from the generator (raw.{ch[3:]})")
 
+    def _exports(self, ch: str, port: str, export) -> bool:
+        """Whether the family of result-domain channel ``ch`` is exported, as fixed at
+        this (final) write: by its first writer earlier in the pipeline (a carried image
+        or a rewrite), or by this very write (``export``)."""
+        from ..stages.channels import family_key  # noqa: PLC0415
+
+        fam = self._plan.families.get(family_key(ch))
+        if fam is not None:
+            return fam.export is not None
+        return not port.startswith("~") and export is not None
+
     def write(self, port: str, *, interp=None, export=None, fill=None):
         plan, slot = self._plan, self._slot
         ch = self.writes[port]
         dtype, per = self.channel(ch)
         bound = plan.bound.get(ch)
+        if bound is None and ch in plan.bound_attrs and plan.final.get(ch) == slot.id \
+                and self._exports(ch, port, export):
+            bound = plan.bound_attrs[ch]
+            plan.bound_used.add(ch)
         if bound is not None and plan.final.get(ch) == slot.id:
             if bound.dtype is not dtype:
-                raise ValueError(
-                    f"out=: the array bound to {ch} has dtype "
-                    f"{getattr(bound.dtype, '__name__', bound.dtype)}; the channel is "
-                    f"{getattr(dtype, '__name__', dtype)}")
+                got = getattr(bound.dtype, "__name__", bound.dtype)
+                want = getattr(dtype, "__name__", dtype)
+                if ch in plan.bound_attrs:
+                    key = ch.split(".", 1)[1]
+                    raise ValueError(f"out.attributes[{key!r}] is {got}; this pipeline "
+                                     f"exports {key!r} as {want}")
+                raise ValueError(f"out=: the array bound to {ch} has dtype {got}; the "
+                                 f"channel is {want}")
             arr = bound
         elif fill is not None:
             arr = wp.full(plan.length(per), fill, dtype=dtype, device=plan.device)
@@ -1402,6 +1463,18 @@ def _result_attributes(plan: _Plan, kind) -> "tuple[dict, dict]":
     return attrs, infos
 
 
+def _offset_seeds(seeds, out):
+    """``seeds`` for a Program writing ``out``: ``None`` / an int on a VIEW (``out`` is
+    ``big.view(e0, e1)``) seed env ``e`` of the view with ``base + e0 + e`` (``base``: the
+    int, or 0), so a mixed batch with default seeds is seeded like one batch; every other
+    form is bound as given."""
+    offset = int(getattr(out, "_env_offset", 0) or 0) if out is not None else 0
+    if offset and (seeds is None or (isinstance(seeds, numbers.Integral)
+                                     and not isinstance(seeds, bool))):
+        return (0 if seeds is None else int(seeds)) + offset
+    return seeds
+
+
 def _seed_state(seeds, E: int, dev, stream):
     """The Program's ``SeedState``: built from a seed form, or ``seeds`` itself (checked
     against the batch). ``build`` admits only those (:func:`_check_seeds`);
@@ -1417,29 +1490,199 @@ def _seed_state(seeds, E: int, dev, stream):
     return seeds
 
 
+# ---------------------------------------------------------------------------------------
+# The out= overlap registry (roadmap PR13b): the result storage of every live Program,
+# keyed by the root allocation of its ``count`` array (weak: no state outlives arrays).
+# ---------------------------------------------------------------------------------------
+
+_LIVE_RESULTS: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+
+
+def _root_of(arr):
+    """The allocation ``arr`` is a view of (``arr`` itself when it owns its memory)."""
+    root = arr
+    while isinstance(getattr(root, "_ref", None), wp.array):
+        root = root._ref
+    return root
+
+
+def _env_span(result) -> "tuple[object, int, int]":
+    """``(root, lo, hi)``: the env range of ``result.count`` in its root allocation."""
+    count = result.count
+    root = _root_of(count)
+    item = int(wp.types.type_size_in_bytes(count.dtype))
+    lo = (int(count.ptr or 0) - int(root.ptr or 0)) // item
+    return root, lo, lo + int(count.shape[0])
+
+
+def _is_partial(result) -> bool:
+    """Whether ``result`` covers only part of the allocation its ``count`` lives in (a
+    view of a larger result: a mixed batch's share)."""
+    root, lo, hi = _env_span(result)
+    return lo != 0 or hi != int(root.shape[0])
+
+
+def _live_overlaps(root, lo: int, hi: int) -> list:
+    return [(a, b) for a, b, ref in _LIVE_RESULTS.get(root, ())
+            if ref() is not None and a < hi and lo < b]
+
+
+def _check_overlap(out) -> None:
+    """``out=`` must not overlap the result of a live Program (host only)."""
+    root, lo, hi = _env_span(out)
+    hits = _live_overlaps(root, lo, hi)
+    if hits:
+        gc.collect()              # a discarded Program kept alive by a reference cycle
+        hits = _live_overlaps(root, lo, hi)
+    if hits:
+        a, b = hits[0]
+        raise PlanError(f"out: envs [{lo}, {hi}) of this storage are already written by a "
+                        f"live Program (envs [{a}, {b}) of the same allocation); views "
+                        f"given to different generators must be disjoint; to rebuild "
+                        f"into the same storage, release the earlier generator / Program "
+                        f"first (del gen)")
+
+
+def _register_result(program, result) -> None:
+    """Record ``program``'s result storage once the Program is usable (after its
+    warm-up: a build that raises never blocks a retry with the same ``out=``)."""
+    if not isinstance(getattr(result, "count", None), wp.array):
+        return                    # a test stand-in result (no storage to protect)
+    root, lo, hi = _env_span(result)
+    entries = [e for e in _LIVE_RESULTS.get(root, ()) if e[2]() is not None]
+    entries.append((lo, hi, weakref.ref(program)))
+    _LIVE_RESULTS[root] = entries
+
+
+def _plugin_params(slot) -> bool:
+    """Whether ``slot``'s Params were declared by a plugin (not a built-in stage or
+    generator: the generator slot's ``builtin`` flag is always set, so its Params class
+    decides)."""
+    if slot.generator is not None:
+        return type(slot.params).__module__.split(".", 1)[0] != "track_gen"
+    return not slot.builtin
+
+
+def _check_param_writers(slots) -> list:
+    """The ``randomize.*`` rules (host side, before any allocation): each draws a DYNAMIC
+    float32 field of a later, existing, non-randomizer stage, at most one per field,
+    with an initial range inside the field's declared ``lo`` / ``hi``. Returns
+    ``[(writer slot, target slot, field)]``."""
+    from ..plugin.params import _fields  # noqa: PLC0415
+
+    def dynamic_f32(s):
+        if s.params is None or getattr(s.cls, "_param_writer", False):
+            return []
+        return [f for f in _fields(type(s.params))
+                if f.kind == "dynamic" and f.dtype is wp.float32]
+
+    writers = [s for s in slots if getattr(s.cls, "_param_writer", False)]
+    if not writers:
+        return []
+    by_id = {s.id: s for s in slots}
+    drawable = [f"{s.id}.{f.name}" for s in slots for f in dynamic_f32(s)]
+    out, seen = [], {}
+    for w in writers:
+        target_id, name = str(w.params.stage), str(w.params.field)
+        t = by_id.get(target_id)
+        what = f"{target_id}.{name}"
+        if t is None:
+            raise PlanError(f"{_label(w.ref)} draws {what}, but the pipeline has no stage "
+                            f"{target_id!r}; stages: {[s.id for s in slots]}")
+        if getattr(t.cls, "_param_writer", False):
+            raise PlanError(f"{_label(w.ref)} draws {what}: stage {target_id!r} is a "
+                            f"randomizer; a randomizer draws another stage's params")
+        if t.index < w.index:
+            raise PlanError(f"{_label(w.ref)} draws {what}, so it must be listed before "
+                            f"stage {target_id!r}: spec.insert_before({target_id!r}, ...)")
+        fields = {f.name: f for f in _fields(type(t.params))} if t.params is not None \
+            else {}
+        fld = fields.get(name)
+        if fld is None:
+            dyn = sorted(f.name for f in fields.values() if f.kind == "dynamic")
+            raise PlanError(f"{_label(w.ref)} draws {what}: stage {target_id!r} "
+                            f"({t.ref.kind}.{t.ref.name}) has no param {name!r}; its "
+                            f"dynamic fields: {dyn}")
+        if fld.kind != "dynamic":
+            if _plugin_params(t):
+                raise PlanError(f"{what} is static (declared with plugin.static): only "
+                                f"plugin.dynamic float32 fields can be drawn; drawable "
+                                f"fields in this pipeline: {drawable}")
+            raise PlanError(f"{what} is static: built-in knobs are static in 0.x; dynamic "
+                            f"float32 fields in this pipeline: {drawable} "
+                            f"(randomize.uniform draws plugin Params and "
+                            f"width.from_channel; built-in knobs: roadmap PR13c)")
+        if fld.dtype is not wp.float32:
+            raise PlanError(f"{what} is {fld.dtype.__name__}: randomize.uniform draws "
+                            f"float32 fields in 0.x")
+        if (t.id, name) in seen:
+            raise PlanError(f"stages {seen[(t.id, name)]!r} and {w.id!r} both draw {what}; "
+                            f"at most one randomizer per field")
+        seen[(t.id, name)] = w.id
+        lo, hi = float(w.params.lo), float(w.params.hi)
+        if (fld.lo is not None and lo < fld.lo) or (fld.hi is not None and hi > fld.hi):
+            raise PlanError(f"{_label(w.ref)}: the draw range [{lo}, {hi}] lies outside "
+                            f"{what}'s declared range [{'-inf' if fld.lo is None else fld.lo}"
+                            f", {'inf' if fld.hi is None else fld.hi}]")
+        out.append((w, t, fld))
+    return out
+
+
+def _draw_bounds(slot, drawn_for) -> "dict | None":
+    """A randomizer's ``lo`` / ``hi`` take the declared range of the field it draws, so
+    ``params[rid].set('hi', v)`` refuses a bound the kernel would clamp (a draw past the
+    field's range would pile onto its bound)."""
+    hit = drawn_for.get(slot.id)
+    if hit is None:
+        return None
+    _, f_lo, f_hi = hit
+    if f_lo == -float("inf") and f_hi == float("inf"):
+        return None
+    what = f"{slot.params.stage}.{slot.params.field}"
+    lo = None if f_lo == -float("inf") else f_lo
+    hi = None if f_hi == float("inf") else f_hi
+    return {"lo": (lo, hi, what), "hi": (lo, hi, what)}
+
+
+def _pad_value(dtype):
+    """An attribute's padding: NaN (every component), ``-1`` for int32."""
+    nan = float("nan")
+    if dtype is wp.int32:
+        return -1
+    if dtype is wp.vec2f:
+        return wp.vec2f(nan, nan)
+    if dtype is wp.vec3f:
+        return wp.vec3f(nan, nan, nan)
+    return nan
+
+
 def _build(spec: PipelineSpec, *, binding, seeds=None, out=None, stream=None,
-           prepare: bool = True, owner=None, registry=None):
+           prepare: bool = True, owner=None, registry=None, register: bool = True):
     """:func:`build` with the generator already bound (the facades pass their own
-    binding and run config)."""
+    binding and run config, and ``register=False``: they register the result with
+    :func:`_register_result` once their own construction, warm-up included, is done)."""
     from .._src.generator_binding import _StageGenerator, param_table  # noqa: PLC0415
+    from ..exec.context import LaunchContext  # noqa: PLC0415
     from ..exec.host import _SlotEnqueue  # noqa: PLC0415
     from ..exec.runner import _check_default_stream, ensure_not_capturing  # noqa: PLC0415
     from ..plugin.params import _fields, _new_param_table, _new_stage_params, \
         _static_view  # noqa: PLC0415
     from ..plugin.stage import Layout, _close_builder, _new_builder  # noqa: PLC0415
     from ..stages.channels import FAIL  # noqa: PLC0415
-    from .program import _PROGRAM_TOKEN, Program  # noqa: PLC0415
+    from .program import _PROGRAM_TOKEN, InputInfo, Program  # noqa: PLC0415
 
     # -- 1-5: host-side checks, nothing allocated --------------------------------------
     _check_spec_shape(spec)
+    _check_topology(spec, registry)
     batch = spec.batch
     gate = batch.max_gates is not None
     kind = _result_kind(gate)
     E = int(batch.num_envs)
     S = int(batch.max_gates) if gate else int(batch.n_max)
     dev = wp.get_device(batch.device)
-    layout = Layout(E, S, str(dev), True)
+    layout = Layout(E, S, str(dev), bool(batch.closed))
     slots = _resolve(spec, binding, layout, registry)
+    draws = _check_param_writers(slots)
     A = _check_gate_plan(spec, slots, registry) if gate else 0
     caps = _capture_classes(slots, binding)
     if spec.require_caller_capturable:
@@ -1452,6 +1695,7 @@ def _build(spec: PipelineSpec, *, binding, seeds=None, out=None, stream=None,
     _check_flat_lift(slots)
     if out is not None:
         kind.check_out(out, layout)
+        seeds = _offset_seeds(seeds, out)
     adapter = binding.pipeline_spec if isinstance(binding.pipeline_spec, _StageGenerator) \
         else None
     if adapter is not None:
@@ -1463,6 +1707,8 @@ def _build(spec: PipelineSpec, *, binding, seeds=None, out=None, stream=None,
 
     # -- 6: shared allocations (refuse a capture first; the seeds' own checks next) ---
     ensure_not_capturing(dev, default_stream=stream, label=binding.name)
+    if out is not None:
+        _check_overlap(out)       # after the capture refusal: it may gc.collect()
     seed_state = _seed_state(seeds, E, dev, stream)
     result = out if out is not None else kind.alloc(layout)
     # The final version of each exported channel IS the result's array (no copy).
@@ -1474,34 +1720,50 @@ def _build(spec: PipelineSpec, *, binding, seeds=None, out=None, stream=None,
         arr = getattr(result, field, None)
         if ch is not None and arr is not None:
             bound[ch] = arr
-    # out.attributes: a key whose result-domain channel this pipeline writes is bound
-    # (its dtype checked at the write); the rest are refused once the stages are built.
+    # out.attributes (roadmap PR13b): a key is bound iff this Program exports its family
+    # (decided at the final write of its result-domain channel, where the export is
+    # fixed); every other key is filled once with its padding below and never written.
     out_attrs = dict(getattr(out, "attributes", None) or {}) if out is not None else {}
-    for key, arr in out_attrs.items():
-        ch = f"{kind.domain}.{key}"
-        if ch in writers:
-            bound[ch] = arr
     seed = wp.empty(E, dtype=wp.int32, device=dev)
     regen_mask = wp.zeros(E, dtype=wp.int32, device=dev)
     plan = _Plan(layout, raw, dev, writers, bound, n_max=int(batch.n_max),
                  max_gates=batch.max_gates, anchors=A)
+    plan.bound_attrs = {f"{kind.domain}.{key}": arr for key, arr in out_attrs.items()}
     plan.slot_ids = [s.id for s in slots]
     plan.resamplers = tuple(s.index for s in slots if s.generator is None and getattr(
         s.cls, "_carries", (None, None, None))[:2] == ("cl", "cl"))
     plan.add("seed", -1, _PROLOGUE, seed)
+    # randomize.*: ONE [E] float32 array per drawn field, filled with the target's
+    # resolved value; it replaces the field's latch pair (unlatched, owned by its
+    # randomizer).
+    drawn: dict = {}                      # target id -> {field: array}
+    drawn_by: dict = {}                   # target id -> {field: randomizer id}
+    drawn_for: dict = {}                  # randomizer id -> (array, lo, hi)
+    for w, t, fld in draws:
+        arr = wp.full(E, float(getattr(t.params, fld.name)), dtype=wp.float32, device=dev)
+        drawn.setdefault(t.id, {})[fld.name] = arr
+        drawn_by.setdefault(t.id, {})[fld.name] = w.id
+        f_lo = -float("inf") if fld.lo is None else float(fld.lo)
+        f_hi = float("inf") if fld.hi is None else float(fld.hi)
+        drawn_for[w.id] = (arr, f_lo, f_hi)
 
     # -- 7: build every stage, in order ------------------------------------------------
     enqueues, pairs, scratch, salts = [], [], {}, {}
     inputs = {"regen_mask": regen_mask}
+    input_info = {"regen_mask": InputInfo("regen_mask", wp.int32, "env", E, False, None)}
     stage_params = {}
     gen_scratch = None
     for s, cap in zip(slots, caps):
         bound_gen = s.generator in ("centerline", "legacy")
         params = None if bound_gen else s.params
+        mine = drawn.get(s.id, {})
         dynamic = {}
         if params is not None:
             for f in _fields(type(params)):
                 if f.kind != "dynamic":
+                    continue
+                if f.name in mine:
+                    dynamic[f.name] = (mine[f.name], mine[f.name])
                     continue
                 v = getattr(params, f.name)
                 v = float(v) if f.dtype is wp.float32 else int(v)
@@ -1509,9 +1771,12 @@ def _build(spec: PipelineSpec, *, binding, seeds=None, out=None, stream=None,
                                    wp.full(E, v, dtype=f.dtype, device=dev))
         view = None if params is None else _static_view(params)
         instance = s.instance if bound_gen else s.cls()
+        if bound_gen and s.generator == "centerline":
+            instance.drawn = dict(mine)
         b = _new_builder(stage=instance, params=view, layout=s.layout, scale=batch.scale,
                          seed=seed, raw=raw, outputs={}, dynamic=dynamic, stage_id=s.id,
                          plan=plan.for_stage(s), capture=cap)
+        b._drawn = drawn_for.get(s.id)
         enqueue = instance.build(b, view)
         _close_builder(b)
         if not callable(enqueue):
@@ -1532,17 +1797,22 @@ def _build(spec: PipelineSpec, *, binding, seeds=None, out=None, stream=None,
             if adapter is not None:
                 pairs.extend(adapter._pairs)
                 stage_inputs = dict(adapter.inputs)
+                stage_info = dict(adapter.input_info)
                 stage_salts = dict(adapter._built.builder._salts)
             else:
-                stage_inputs, stage_salts = {}, {}
+                stage_inputs, stage_info, stage_salts = {}, {}, {}
         else:
-            pairs.extend(list(dynamic.values()) + list(b._inputs.values()))
+            pairs.extend([pair for name, pair in dynamic.items() if name not in mine]
+                         + list(b._inputs.values()))
             stage_inputs = {name: pair[0] for name, pair in b._inputs.items()}
+            stage_info = {name: InputInfo(name, pair[0].dtype, "env", E, True, s.id)
+                          for name, pair in b._inputs.items()}
             stage_salts = dict(b._salts)
             stage_params[s.id] = _new_stage_params(
                 stage_id=s.id, params=s.params,
                 arrays={name: pair[0] for name, pair in dynamic.items()},
-                num_envs=E, device=str(dev), default_stream=stream)
+                num_envs=E, device=str(dev), default_stream=stream,
+                drawn=drawn_by.get(s.id), bounds=_draw_bounds(s, drawn_for))
             if s.generator == "anchors":
                 gen_scratch = types.MappingProxyType(
                     {k.split("/", 1)[1]: v for k, v in b._scratch.items()})
@@ -1550,6 +1820,7 @@ def _build(spec: PipelineSpec, *, binding, seeds=None, out=None, stream=None,
             if name in inputs:
                 raise PlanError(f"{_label(s.ref)}: input {name!r} is declared twice")
             inputs[name] = arr
+            input_info[name] = stage_info[name]
         for stream_name, value in stage_salts.items():
             for (other, other_stream), v in salts.items():
                 if v == value:
@@ -1563,13 +1834,29 @@ def _build(spec: PipelineSpec, *, binding, seeds=None, out=None, stream=None,
 
     # -- 7b: the exported attributes (roadmap PR13a) ------------------------------------
     attributes, attribute_info = _result_attributes(plan, kind)
-    extra = sorted(k for k in out_attrs if k not in attributes)
-    if extra:
-        raise ValueError(f"out.attributes[{extra[0]!r}]: this pipeline does not export "
-                         f"{extra[0]!r}; exported: {sorted(attributes)} (out= with keys "
-                         f"from another pipeline is reserved for PR13b's mixed batches)")
     if out is None and hasattr(result, "attributes"):
         result.attributes = types.MappingProxyType(dict(attributes))
+    # out.attributes keys this Program does not bind: padded once, here (on Warp's
+    # current stream, which the warm-up waits on), never written again. Only on a VIEW
+    # of a larger result (a mixed batch, where another generator may export the key):
+    # on the whole of its allocation nobody else writes it, so an unexported key is
+    # refused as in 0.2.0.dev4 (a typo must not silently NaN-fill the caller's buffer).
+    unbound = sorted(k for k in out_attrs if f"{kind.domain}.{k}" not in plan.bound_used)
+    if unbound and not _is_partial(out):
+        raise ValueError(f"out.attributes[{unbound[0]!r}]: this pipeline does not export "
+                         f"{unbound[0]!r}; exported: {sorted(attributes)} (a key another "
+                         f"pipeline exports is padded only on a view of a larger result, "
+                         f"out=big.view(e0, e1): a mixed batch)")
+    for key, arr in out_attrs.items():
+        if f"{kind.domain}.{key}" in plan.bound_used:
+            continue
+        fam = plan.families.get(key)
+        if fam is not None and fam.dtype is not arr.dtype:
+            raise ValueError(f"out.attributes[{key!r}] is "
+                             f"{getattr(arr.dtype, '__name__', arr.dtype)}; this "
+                             f"pipeline's {key!r} attribute is "
+                             f"{getattr(fam.dtype, '__name__', fam.dtype)}")
+        LaunchContext.current(dev).fill(arr, _pad_value(arr.dtype))
 
     # -- 8: the commit (every result field has a source; else the result is not ours) --
     commit = None
@@ -1591,12 +1878,18 @@ def _build(spec: PipelineSpec, *, binding, seeds=None, out=None, stream=None,
             attributes=attributes)
     if hasattr(result, "fail_bits"):
         result.fail_bits = types.MappingProxyType(dict(plan.fail_bits))
+    if getattr(result, "layout", None) is None:
+        result.layout = layout
+    result._producer_stream = stream
+    if out is None:
+        result._env_offset = 0
 
     # -- 9: the Program ----------------------------------------------------------------
     if _GENERATOR in stage_params:
         gen_params = stage_params.pop(_GENERATOR)
     else:
-        gen_params = param_table(binding, default_stream=stream)[_GENERATOR]
+        gen_params = param_table(binding, default_stream=stream,
+                                 drawn=drawn_by.get(_GENERATOR))[_GENERATOR]
     table = _new_param_table({_GENERATOR: gen_params, **stage_params})
     resolved = dataclasses.replace(spec, stages=tuple(
         dataclasses.replace(s.ref, params=s.params) for s in slots))
@@ -1610,7 +1903,11 @@ def _build(spec: PipelineSpec, *, binding, seeds=None, out=None, stream=None,
         fail_owner=plan.fail_owner, capture_classes=caps,
         segments=_segments(slots, caps), on_invalid=batch.on_invalid, writers=writers,
         ports={s.id: (dict(s.reads), dict(s.writes)) for s in slots},
-        attributes=attribute_info)
+        attributes=attribute_info, input_info=input_info)
     if prepare:
         program.prepare()
+    if register:
+        # Only a usable Program holds its storage: a build (or warm-up) that raised
+        # leaves nothing behind that would refuse a retry with the same out=.
+        _register_result(program, result)
     return program

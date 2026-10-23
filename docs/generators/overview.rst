@@ -1,7 +1,9 @@
 Generators Overview
 ===================
 
-``track_gen`` ships six registered centerline generators.
+``track_gen`` ships six procedural centerline generators, plus the ``external``
+ingestion generator, which turns centerlines you load (a dataset, a learned model) into
+tracks and does not depend on the seed (:ref:`ingesting-centerlines`).
 Each generator is pluggable through ``TrackGenConfig.generator`` and follows the same
 pipeline contract: it writes one closed centerline per environment, then the shared
 resample → XPBD relax → inflate → validity stages take over.

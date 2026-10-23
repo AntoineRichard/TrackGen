@@ -32,6 +32,11 @@ def register(reg) -> None:
     warp_generate_voronoi.register(reg)      # "voronoi"
     warp_generate_checkpoint.register(reg)   # "checkpoint"
     warp_generate_repulsive.register(reg)    # "repulsive"
+    # Roadmap PR13b: ingestion of caller-provided centerlines, built from the public
+    # plugin surface only (the same register(reg) a third party writes).
+    from ..stages import external
+
+    external.register(reg)                   # "external"
 
     # Gate generators (kind "gate_generator").
     warp_generate_gates.register(reg)              # "bezier", "hull"

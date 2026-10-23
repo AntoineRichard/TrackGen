@@ -35,7 +35,7 @@ import warp as wp
 from ..plugin.params import (NoParams, ParamTable, _check_values, _coerce, _fields,
                              _new_param_table, _new_stage_params, _static_view)
 from ..plugin.stage import (_FAMILY_RESOLVER, CaptureClass, Layout, _close_builder,
-                            _is_stage, _new_builder)
+                            _declared_of, _is_stage, _new_builder)
 from .runtime import _init, _snapshot_config
 
 _STAGE_ID = "generator"
@@ -56,6 +56,10 @@ class GeneratorBinding:
     # The generator's CaptureClass: a Stage's capture_class(static params); a legacy
     # GeneratorSpec / GateGeneratorSpec: STATIC if capturable else HOST.
     capture: CaptureClass = CaptureClass.STATIC
+    # Roadmap PR13b: a centerline generator Stage's declared (writes, provides) for its
+    # params (Stage.declare); ({}, frozenset()) for a legacy spec.
+    writes: "Mapping[str, str]" = dataclasses.field(default_factory=dict)
+    provides: frozenset = frozenset()
 
 
 def _stride(kind: str, config) -> int:
@@ -176,12 +180,15 @@ def bind_generator(kind: str, config, *, registry) -> GeneratorBinding:
         if isinstance(raw, bool) or not isinstance(raw, numbers.Integral) or raw < 3:
             raise ValueError(f"{spec.__name__}.capacity()['raw'] must be an int >= 3, "
                              f"got {raw!r}")
+        writes, provides = _declared_of(spec, params)
         adapter = _StageGenerator(instance, spec, params, layout, scale=float(run.scale),
                                   raw_points=int(raw),
-                                  capturable=cap != CaptureClass.HOST, capture=cap)
+                                  capturable=cap != CaptureClass.HOST, capture=cap,
+                                  writes=writes)
         return GeneratorBinding(kind, str(run.generator), spec, params, user, run, adapter,
                                 capturable=adapter.capturable, accepts_ctx=True,
-                                layout=layout, capture=cap)
+                                layout=layout, capture=cap, writes=writes,
+                                provides=provides)
     if kind == "gate_generator":
         _warn_legacy_gate(registry, str(run.generator))
     capturable = bool(getattr(spec, "capturable", True))
@@ -192,15 +199,17 @@ def bind_generator(kind: str, config, *, registry) -> GeneratorBinding:
                             capture=CaptureClass.STATIC if capturable else CaptureClass.HOST)
 
 
-def param_table(binding: GeneratorBinding, *, default_stream=None) -> ParamTable:
+def param_table(binding: GeneratorBinding, *, default_stream=None,
+                drawn=None) -> ParamTable:
     """``{"generator": StageParams}`` of a bound generator (live dynamic arrays for a
-    Stage generator, none for a legacy spec)."""
+    Stage generator, none for a legacy spec); ``drawn``: ``field -> randomizer id`` of
+    the fields a ``randomize.*`` stage draws."""
     adapter = binding.pipeline_spec
     arrays = adapter.param_arrays if isinstance(adapter, _StageGenerator) else {}
     layout = binding.layout
     return _new_param_table({_STAGE_ID: _new_stage_params(
         stage_id=_STAGE_ID, params=binding.params, arrays=arrays, num_envs=layout.num_envs,
-        device=layout.device, default_stream=default_stream)})
+        device=layout.device, default_stream=default_stream, drawn=drawn)})
 
 
 # ---------------------------------------------------------------------------------------
@@ -260,7 +269,8 @@ class _StageGenerator:
     accepts_ctx = True
 
     def __init__(self, stage, spec, params, layout: Layout, *, scale: float,
-                 raw_points: int, capturable: bool, capture=None) -> None:
+                 raw_points: int, capturable: bool, capture=None,
+                 writes: "Mapping[str, str] | None" = None) -> None:
         self.stage = stage
         self.spec = spec
         self.name = str(spec.name)
@@ -271,8 +281,12 @@ class _StageGenerator:
         self.capturable = bool(capturable)
         self.capture = capture                  # its resolved CaptureClass
         self.inputs: Mapping[str, wp.array] = types.MappingProxyType({})
+        # name -> pipeline.InputInfo (latched per="env" / unlatched per="raw" inputs)
+        self.input_info: Mapping[str, object] = types.MappingProxyType({})
         self.param_arrays: Mapping[str, wp.array] = types.MappingProxyType({})
-        self._pairs: list = []                  # (live, work)
+        # The generator's declared writes for its params (Stage.declare).
+        self.writes = dict(spec.writes) if writes is None else dict(writes)
+        self._pairs: list = []                  # (live, work): the latched arrays only
         self._built: "_BuiltStage | None" = None
         self._seed = self._out_xy = self._out_valid = None
         self._enqueue = None
@@ -284,23 +298,31 @@ class _StageGenerator:
         raise TypeError("Stage generators allocate through their StageBuilder; they run "
                         "through TrackGenerator")
 
-    def build(self, *, seed, out_xy, out_valid, resolve=None) -> _BuiltStage:
+    def build(self, *, seed, out_xy, out_valid, resolve=None,
+              drawn=None) -> _BuiltStage:
         """Allocate the dynamic-param arrays, run ``Stage.build`` on a StageBuilder bound
         to the orchestrator-owned outputs, and check its post-conditions. ``resolve``
         (the pipeline's generator slot, roadmap PR13a): ``resolve(channel, dtype, interp,
         export) -> wp.array`` allocates a raw attribute (``raw.z``, ``raw.half_width``,
         ``raw.<pkg>.<name>``) as a pipeline channel; without it (the PR9 reference
-        composition) the builder allocates it privately (nothing carries it there)."""
+        composition) the builder allocates it privately (nothing carries it there).
+        ``drawn`` (roadmap PR13b): ``field -> [E] array`` of the dynamic fields a
+        ``randomize.*`` stage draws: that single array replaces the field's latch pair
+        (unlatched)."""
         if self._built is not None:
             raise RuntimeError(f"Stage generator {self.name!r} is already built; its "
                                f"buffers are bound at build (construct a new generator)")
         from ..exec.context import LaunchContext  # noqa: PLC0415
 
         E, dev = self.layout.num_envs, self.layout.device
+        drawn = dict(drawn or {})
         dynamic = {}
         if self.params is not None:
             for f in _fields(type(self.params)):
                 if f.kind != "dynamic":
+                    continue
+                if f.name in drawn:
+                    dynamic[f.name] = (drawn[f.name], drawn[f.name])
                     continue
                 value = getattr(self.params, f.name)
                 value = float(value) if f.dtype is wp.float32 else int(value)
@@ -314,6 +336,7 @@ class _StageGenerator:
                          scale=self.scale, seed=seed, raw=self.raw_points,
                          outputs=outputs, dynamic=dynamic, stage_id=_STAGE_ID,
                          capture=self.capture)
+        b._declared_writes = types.MappingProxyType(dict(self.writes))
         enqueue = self.stage.build(b, view)
         _close_builder(b)
         # The resolver is a build-time hook (it holds the pipeline's plan): drop it.
@@ -330,11 +353,19 @@ class _StageGenerator:
             LaunchContext.current(dev).fill(out_valid, 1)
         self._seed, self._out_xy, self._out_valid = seed, out_xy, out_valid
         self._enqueue = enqueue
+        from ..pipeline.program import InputInfo  # noqa: PLC0415 - import cycle
+
         self.param_arrays = types.MappingProxyType(
             {name: pair[0] for name, pair in dynamic.items()})
         self.inputs = types.MappingProxyType(
-            {name: pair[0] for name, pair in b._inputs.items()})
-        self._pairs = list(dynamic.values()) + list(b._inputs.values())
+            {**{name: pair[0] for name, pair in b._inputs.items()}, **b._raw_inputs})
+        self.input_info = types.MappingProxyType({
+            **{name: InputInfo(name, pair[0].dtype, "env", E, True, _STAGE_ID)
+               for name, pair in b._inputs.items()},
+            **{name: InputInfo(name, arr.dtype, "raw", int(arr.shape[0]), False,
+                               _STAGE_ID) for name, arr in b._raw_inputs.items()}})
+        self._pairs = [pair for name, pair in dynamic.items() if name not in drawn] + \
+            list(b._inputs.values())
         self._built = _BuiltStage(stage=self.stage, builder=b, enqueue=enqueue,
                                   scratch=types.MappingProxyType(dict(b._scratch)))
         return self._built

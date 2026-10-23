@@ -106,7 +106,13 @@ In gates mode ``StepResult`` also carries a third field, ``res.frame`` — the
 :class:`~track_gen.localize.TrackFrame` localizing the agent on the gate
 ``CourseLine`` spline (``s`` arc length, ``n`` signed
 right offset, ``n_up`` signed vertical offset, ``segment`` index). It is
-``None`` in track mode.
+``None`` in track mode. The spline is ``course.course_line.centerline``, a
+:ref:`Centerline <results-protocols>` (``center``, ``tangent``, ``arclen``,
+``length``, ``count``, ``valid`` and a ``layout``), refreshed in place on every
+regeneration; a ``TrackLocalizer`` or ``curvature`` of your own can read it.
+``course.course_line.track`` is a deprecated alias of it (a ``DeprecationWarning``;
+removed at 1.0): it is no longer a ``Track``, so it has no ``outer``, ``inner``,
+``normal`` or ``winding``, which used to be NaN or zero placeholders.
 
 One body, one graph
 -------------------

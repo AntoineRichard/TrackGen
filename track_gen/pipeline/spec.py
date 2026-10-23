@@ -15,6 +15,11 @@ from typing import Any, Mapping
 __all__ = ["BatchSpec", "PipelineSpec", "StageRef"]
 
 FORMAT = "track_gen.pipeline/2"
+#: The stage kinds that write another stage's dynamic params (roadmap PR13b): listed
+#: before their target; only the generator's may precede the generator. Kept here (this
+#: module imports nothing from track_gen) and equal to
+#: ``track_gen.stages.PARAM_WRITER_KINDS`` (a test pins it).
+PARAM_WRITER_KINDS = ("randomize",)
 #: The 0.2.0.dev3 format (``from_dict`` migrates it: the width stage moved before relax
 #: and the half_width params of relax.xpbd / offset.default / validity.default became
 #: the width stage's).
@@ -37,6 +42,15 @@ def _frozen_map(value, what: str, *, values=None) -> "MappingProxyType":
             v = values(k, v)
         out[k] = v
     return MappingProxyType(out)
+
+
+def _canonical_param(k, v):
+    """A params value with every list (at any depth inside lists / tuples) as a tuple:
+    both are JSON arrays and Params coercion converts by annotation, so a spec read back
+    from JSON (``from_dict``) equals the spec written (``to_dict``)."""
+    if isinstance(v, (list, tuple)) and not hasattr(v, "_fields"):
+        return tuple(_canonical_param(k, x) for x in v)
+    return v
 
 
 def _thaw(value):
@@ -103,7 +117,8 @@ class StageRef:
                              f"'/', got {self.id!r}")
         params = self.params
         if isinstance(params, _MappingABC):
-            object.__setattr__(self, "params", _frozen_map(params, "params"))
+            object.__setattr__(self, "params", _frozen_map(params, "params",
+                                                           values=_canonical_param))
         object.__setattr__(self, "ports", _frozen_map(self.ports, "ports",
                                                       values=_port_value))
         object.__setattr__(self, "capacity", _frozen_map(self.capacity, "capacity",
@@ -163,7 +178,9 @@ class BatchSpec:
         device: The Warp device string.
         n_max: Per-env point capacity of the centerline channels (``N_max``); in a gate
             pipeline, read only by a centerline sub-pipeline (``stations``).
-        closed: Closed loops (``True``; open tracks are refused by ``build``).
+        closed: Closed loops: a bool, ``True`` (``closed=False`` is refused by ``build``
+            in 0.x, naming the stages that support closed loops only; every Layout the
+            planner builds carries it).
         scale: ``TrackGenConfig.scale``, handed to the stages as ``StageBuilder.scale``.
         on_invalid: What an invalid env (``fail_mask != 0``) leaves in the ``Track``:
             ``"keep"`` (default: its computed geometry, ``valid = 0``) or
@@ -201,7 +218,9 @@ class PipelineSpec:
 
     Attributes:
         batch: The :class:`BatchSpec`.
-        stages: The ordered :class:`StageRef` slots (the generator first).
+        stages: The ordered :class:`StageRef` slots: the generator first (preceded only
+            by its own randomizers, ``randomize.uniform`` stages drawing its dynamic
+            params).
         require_caller_capturable: Refuse, at build (``PlanError`` naming them), any
             ``CaptureClass.HOST`` stage: the Program is then recordable into a caller's
             capture as a whole. Default ``False`` (HOST stages run eagerly between the
@@ -231,6 +250,15 @@ class PipelineSpec:
     def ids(self) -> "tuple[str, ...]":
         """The slot id of every stage, in order."""
         return tuple(ref.slot_id for ref in self.stages)
+
+    def _generator_index(self) -> int:
+        """The index of the generator slot: the first stage whose kind is not a
+        param writer's (``randomize``; only the generator's randomizers may precede it);
+        ``len(stages)`` when every stage is one."""
+        for i, ref in enumerate(self.stages):
+            if ref.kind not in PARAM_WRITER_KINDS:
+                return i
+        return len(self.stages)
 
     def _index(self, stage_id: str) -> int:
         ids = self.ids

@@ -143,22 +143,33 @@ def _cpu_names(kind: str) -> list:
 _ATTRS = ("attributes.written", "attributes.carried")
 
 
+def _seeded(report: Report) -> bool:
+    """Whether the checked generator's output depends on its seed (roadmap PR13b:
+    ``Stage.seeded``; ``generator/external`` declares ``False``)."""
+    return registry.describe(report.kind, report.name).seeded
+
+
 def _skipped_besides_tiers(report: Report) -> list:
     return [r.name for r in report if r.skipped and r.name not in _TIERS
-            and not (r.name in _ATTRS and r.message == "skipped: no attributes")]
+            and not (r.name in _ATTRS and r.message == "skipped: no attributes")
+            and not (r.name == "diversity" and not _seeded(report))]
 
 
 def _assert_builtin_promises(report: Report, device: str) -> None:
     """What every built-in guarantees beyond the contract: every env is generator-valid
     with a finite raw output, the result is finite before count for EVERY env (the
     contract asks it of valid envs only), every track has at least one point, and a
-    different seed moves the raw output by more than rounding."""
+    different seed moves the raw output by more than rounding (a seed-dependent
+    generator: ``seeded=False`` reports ``diversity`` skipped)."""
     finite = report.result("output.finite", device).details
     assert finite["final_finite_all"], finite
     diversity = report.result("diversity", device)
-    assert diversity.details["compared"] >= 1, diversity
-    assert diversity.details["min_raw_delta"] > 1e-3, diversity
-    assert diversity.details["min_pair_delta"] > 1e-3, diversity
+    if not _seeded(report):
+        assert diversity.skipped and "seeded=False" in diversity.message, diversity
+    else:
+        assert diversity.details["compared"] >= 1, diversity
+        assert diversity.details["min_raw_delta"] > 1e-3, diversity
+        assert diversity.details["min_pair_delta"] > 1e-3, diversity
     if report.kind == "generator":
         assert finite["raw_valid_fraction"] == 1.0, finite
         assert finite["raw_finite_all"], finite

@@ -32,7 +32,7 @@ import warp as wp
 from .collision_geom import _safe_normalize2
 from ..exec.context import LaunchContext
 from .runtime import _init, _sync  # noqa: F401  (_sync: legacy re-export)
-from .types import Track
+from ..results import HasBand, _check_and_bind
 
 
 @dataclass
@@ -273,7 +273,10 @@ class PropSampler:
     gate-derived checkpoint sets.
     """
 
-    def __init__(self, track: Track, spacing: float, boundary: str = "outer",
+    #: The topologies this component supports (closed loops only in 0.x).
+    topology = "closed"
+
+    def __init__(self, track: HasBand, spacing: float, boundary: str = "outer",
                  mode: str = "points", max_props: "int | None" = None) -> None:
         """Bind to a :class:`Track` boundary and allocate the result buffers.
 
@@ -304,20 +307,19 @@ class PropSampler:
         if max_props is not None and int(max_props) < 3:
             raise ValueError(
                 f"max_props must be >= 3 (or None for auto), got {max_props!r}")
-        E = int(track.count.shape[0])
-        stride = int(track.outer.shape[0])
-        if E < 1 or stride % E != 0:
-            raise ValueError(
-                f"track batch layout invalid: outer has {stride} slots for {E} envs")
-        self._track = track
+        # The members checked here are the ones bound (read once: stable pointers).
+        lay, self._track = _check_and_bind(track, HasBand, consumer="PropSampler",
+                                           members=("outer", "inner", "count", "valid"),
+                                           topology=self.topology)
+        E = int(lay.num_envs)
         self._spacing = float(spacing)
         self._boundary = boundary
         self._mode = mode
         self._mode_int = 0 if mode == "points" else 1
         self._E = E
-        self._n_max = stride // E
-        self._points = track.inner if boundary == "inner" else track.outer
-        self._device = str(track.outer.device)
+        self._n_max = int(lay.stride)
+        self._points = self._track.inner if boundary == "inner" else self._track.outer
+        self._device = lay.device
 
         if max_props is None:
             max_props = self._derive_max_props()

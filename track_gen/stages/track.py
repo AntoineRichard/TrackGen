@@ -163,9 +163,12 @@ class _GeneratorSlot:
         self.binding = binding
         self.name = binding.name
         self.scratch = None            # the generator's private scratch (_scratch.gen)
+        # The fields a randomize.* stage draws: field -> [E] array (set by the planner).
+        self.drawn: dict = {}
         # A Stage generator's raw attributes (roadmap PR13a): one write port each, named
-        # after its channel (the planner carries them; static, before any build).
-        attrs = raw_attributes(binding.spec)
+        # after its channel (the planner carries them; static, before any build). Its
+        # DECLARED writes for its params (Stage.declare, roadmap PR13b).
+        attrs = raw_attributes(binding)
         if attrs:
             self.writes = types.MappingProxyType(
                 {"xy": "raw.xy", "valid": "gen.valid", **{ch: ch for ch in attrs}})
@@ -181,7 +184,8 @@ class _GeneratorSlot:
         if isinstance(spec, _StageGenerator):
             def resolve(channel, dtype, interp, export):
                 return b.write(channel, dtype, per="raw", interp=interp, export=export)
-            gen = spec.build(seed=seed, out_xy=xy, out_valid=valid, resolve=resolve)
+            gen = spec.build(seed=seed, out_xy=xy, out_valid=valid, resolve=resolve,
+                             drawn=self.drawn)
         else:
             gen = spec.alloc_scratch(run_cfg)
         self.scratch = gen
@@ -200,15 +204,20 @@ class _GeneratorSlot:
         return enqueue
 
 
-def raw_attributes(spec) -> "list[str]":
-    """The raw attribute channels a centerline generator Stage declares (``raw.z``,
-    ``raw.half_width``, ``raw.<pkg>.<name>``), in declaration order; ``[]`` for a legacy
-    spec."""
+def raw_attributes(binding) -> "list[str]":
+    """The raw attribute channels a bound centerline generator Stage declares for its
+    params (``raw.z``, ``raw.half_width``, ``raw.<pkg>.<name>``; ``Stage.declare``), in
+    declaration order; ``[]`` for a legacy spec. ``binding`` may also be a generator
+    class (its class-level ``writes``)."""
     from ..plugin.stage import _is_raw_attribute, _is_stage  # noqa: PLC0415
 
-    if not _is_stage(spec):
+    if _is_stage(binding):
+        writes = dict(binding.writes)
+    elif _is_stage(getattr(binding, "spec", None)):
+        writes = dict(binding.writes)
+    else:
         return []
-    return [ch for ch in dict(spec.writes).values() if _is_raw_attribute(ch)]
+    return [ch for ch in writes.values() if _is_raw_attribute(ch)]
 
 
 # ---------------------------------------------------------------------------------------

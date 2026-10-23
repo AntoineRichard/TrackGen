@@ -83,6 +83,16 @@ To list all registered generators at runtime, installed plugins included:
    from track_gen.plugin import registry
    print(registry.available("generator"))
 
+The list includes ``external``, which ingests the centerlines you load and ignores the
+seed (every seed gives the same placeholder circle until you load data). To sample
+procedural generators only (domain randomization, benchmarks), keep the seed-dependent
+ones:
+
+.. code-block:: python
+
+   seeded = [n for n in registry.available("generator")
+             if registry.describe("generator", n).seeded]
+
 .. note::
 
    The Fourier generator lives in ``track_gen._experimental`` and is

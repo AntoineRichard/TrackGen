@@ -44,7 +44,7 @@ import warp as wp
 from .collision_geom import _is_nan3, _safe_normalize3
 from ..exec.context import LaunchContext, resolve as _resolve_ctx
 from .runtime import _BIG, _check_arr, _init, _sync  # noqa: F401  (_sync: legacy re-export)
-from .types import Track
+from ..results import HasCenterline, _check_and_bind
 
 
 @dataclass
@@ -235,7 +235,10 @@ class TrackLocalizer:
     ``reset()`` on the affected envs to force a full rescan.
     """
 
-    def __init__(self, track: Track, warm_window: "int | None" = None,
+    #: The topologies this component supports (closed loops only in 0.x).
+    topology = "closed"
+
+    def __init__(self, track: HasCenterline, warm_window: "int | None" = None,
                  position: "wp.array | None" = None) -> None:
         """Bind to a :class:`Track` batch and allocate the result buffers.
 
@@ -255,17 +258,14 @@ class TrackLocalizer:
             raise ValueError(
                 f"warm_window must be >= 1 (or None for full scans), got "
                 f"{warm_window!r}")
-        E = int(track.count.shape[0])
-        stride = int(track.center.shape[0])
-        if E < 1 or stride % E != 0:
-            raise ValueError(
-                f"track batch layout invalid: center has {stride} slots for "
-                f"{E} envs")
-        self._track = track
+        # The members checked here are the ones bound (read once: stable pointers).
+        lay, self._track = _check_and_bind(track, HasCenterline, consumer="TrackLocalizer",
+                                           topology=self.topology)
+        E = int(lay.num_envs)
         self._E = E
-        self._n_max = stride // E
+        self._n_max = int(lay.stride)
         self._W = 0 if warm_window is None else int(warm_window)
-        self._device = str(track.center.device)
+        self._device = lay.device
 
         self._bound_pos: "wp.array | None" = None
         if position is not None:
@@ -434,7 +434,7 @@ def _smooth_wrap_k(
     out[tid] = acc / float(span)
 
 
-def curvature(track: Track, window: int = 2, ctx=None) -> wp.array:
+def curvature(track: HasCenterline, window: int = 2, ctx=None) -> wp.array:
     """Per-point signed centerline curvature, flat ``[E * N_max]`` float32.
 
     Discrete curvature at point ``i``: the turn angle between the incoming
@@ -485,14 +485,12 @@ def curvature(track: Track, window: int = 2, ctx=None) -> wp.array:
     _init()
     if int(window) < 0:
         raise ValueError(f"window must be >= 0, got {window!r}")
-    E = int(track.count.shape[0])
-    stride = int(track.center.shape[0])
-    if E < 1 or stride % E != 0:
-        raise ValueError(
-            f"track batch layout invalid: center has {stride} slots for "
-            f"{E} envs")
-    n_max = stride // E
-    device = str(track.center.device)
+    lay, track = _check_and_bind(track, HasCenterline, consumer="localize.curvature",
+                                 members=("center", "count"))
+    E = int(lay.num_envs)
+    n_max = int(lay.stride)
+    stride = E * n_max
+    device = lay.device
     ctx = _resolve_ctx(ctx, device)
     raw = wp.empty(stride, dtype=wp.float32, device=device)
     ctx.fill(raw, 0.0)  # on ctx's stream (wp.zeros memsets Warp's current one)
@@ -579,7 +577,7 @@ def _speed_profile_k(
                 out_v[base + i] = cap
 
 
-def speed_profile(track: Track, a_lat_max: float, a_accel: float,
+def speed_profile(track: HasCenterline, a_lat_max: float, a_accel: float,
                   a_brake: float, v_cap: float,
                   kappa: "wp.array | None" = None,
                   window: int = 2, ctx=None) -> wp.array:
@@ -640,14 +638,11 @@ def speed_profile(track: Track, a_lat_max: float, a_accel: float,
         raise ValueError(f"a_brake must be >= 0, got {a_brake!r}")
     if not (float(v_cap) > 0.0):
         raise ValueError(f"v_cap must be > 0, got {v_cap!r}")
-    E = int(track.count.shape[0])
-    stride = int(track.center.shape[0])
-    if E < 1 or stride % E != 0:
-        raise ValueError(
-            f"track batch layout invalid: center has {stride} slots for "
-            f"{E} envs")
-    n_max = stride // E
-    device = str(track.center.device)
+    lay, track = _check_and_bind(track, HasCenterline, consumer="localize.speed_profile")
+    E = int(lay.num_envs)
+    n_max = int(lay.stride)
+    stride = E * n_max
+    device = lay.device
     ctx = _resolve_ctx(ctx, device)
     if kappa is None:
         kappa = curvature(track, window=window, ctx=ctx)

@@ -119,16 +119,96 @@ def _sel_name(sel) -> "str | None":
     return None
 
 
-def _provides(reg, kind: str, name: str) -> frozenset:
-    """The ``provides`` of a registered generator Stage (empty for an unknown name or a
-    legacy spec: ``build`` reports an unknown name)."""
-    from ..plugin.stage import _is_stage  # noqa: PLC0415
+def _declared(reg, kind: str, name: str, params=None) -> "tuple[dict, frozenset]":
+    """``(writes, provides)`` of a registered generator Stage for ``params`` (its
+    ``Stage.declare``, roadmap PR13b; the class attributes when ``params`` do not coerce:
+    ``build`` reports them), ``({}, frozenset())`` for an unknown name or a legacy
+    spec."""
+    from ..plugin.params import _coerce  # noqa: PLC0415
+    from ..plugin.stage import _declared_of, _is_stage  # noqa: PLC0415
 
     try:
         spec = _lookup(reg, kind, name)
     except Exception:  # noqa: BLE001 - a quarantined plugin: build reports it
-        return frozenset()
-    return frozenset(spec.provides) if spec is not None and _is_stage(spec) else frozenset()
+        return {}, frozenset()
+    if spec is None or not _is_stage(spec):
+        return {}, frozenset()
+    if kind != "generator":
+        return dict(spec.writes), frozenset(spec.provides)
+    try:
+        resolved = _coerce(spec.Params, params if not isinstance(params, StageRef)
+                           else None, what=f"generator {name!r}")
+        return _declared_of(spec, resolved)
+    except (TypeError, ValueError):
+        return dict(spec.writes), frozenset(spec.provides)
+
+
+def _provides(reg, kind: str, name: str, params=None) -> frozenset:
+    """The ``provides`` of a registered generator Stage for ``params`` (empty for an
+    unknown name or a legacy spec: ``build`` reports an unknown name)."""
+    return _declared(reg, kind, name, params)[1]
+
+
+def _preferred_relax(reg, name: str) -> str:
+    """``relax="auto"``: the generator's ``preferred["relax"]`` (a Stage's), else
+    ``"xpbd"``."""
+    from ..plugin.stage import _is_stage  # noqa: PLC0415
+
+    try:
+        spec = _lookup(reg, "generator", name)
+    except Exception:  # noqa: BLE001 - a quarantined plugin: build reports it
+        return "xpbd"
+    if spec is None or not _is_stage(spec):
+        return "xpbd"
+    return str(dict(getattr(spec, "preferred", {}) or {}).get("relax", "xpbd"))
+
+
+def _randomizers(randomize) -> "list[StageRef]":
+    """``randomize=`` as ``randomize.uniform`` StageRefs: a mapping ``{"<stage>.<field>":
+    (lo, hi)}`` (the key split at its LAST dot: stage ids may contain dots, field names
+    may not), or a sequence of ``StageRef("randomize", ...)``."""
+    if randomize is None:
+        return []
+    if isinstance(randomize, _MappingABC):
+        refs = []
+        for key, rng in randomize.items():
+            if not isinstance(key, str) or "." not in key.strip(".") or key.endswith("."):
+                raise ValueError(f"randomize: key {key!r} must be '<stage id>.<field>' "
+                                 f"(e.g. 'generator.amp')")
+            stage, field = key.rsplit(".", 1)
+            if isinstance(rng, (str, bytes)) or not isinstance(rng, (tuple, list)) or \
+                    len(rng) != 2:
+                raise TypeError(f"randomize[{key!r}] must be a (lo, hi) pair, got {rng!r}")
+            lo, hi = rng
+            refs.append(StageRef("randomize", "uniform",
+                                 params={"stage": stage, "field": field, "lo": float(lo),
+                                         "hi": float(hi)}, id=f"randomize.{key}"))
+        return refs
+    if isinstance(randomize, (str, bytes, StageRef)):
+        raise TypeError(f"randomize must be a mapping {{'<stage>.<field>': (lo, hi)}} or a "
+                        f"sequence of StageRef('randomize', ...), got {randomize!r}")
+    refs = list(randomize)
+    for ref in refs:
+        if not isinstance(ref, StageRef) or ref.kind != "randomize":
+            raise TypeError(f"randomize: expected StageRef('randomize', ...), got {ref!r}")
+    return refs
+
+
+def _with_randomizers(spec: PipelineSpec, randomize) -> PipelineSpec:
+    """``spec`` with each randomizer inserted right before the stage it draws."""
+    for ref in _randomizers(randomize):
+        p = ref.params
+        target = p.get("stage") if isinstance(p, _MappingABC) else getattr(p, "stage", None)
+        if not isinstance(target, str) or not target:
+            raise ValueError(f"randomize: {ref!r} names no target stage (params 'stage')")
+        if target not in spec.ids:
+            field = p.get("field") if isinstance(p, _MappingABC) else getattr(p, "field",
+                                                                              None)
+            raise ValueError(f"randomize: key '{target}.{field}' names stage {target!r}, "
+                             f"which this pipeline does not have; stages: "
+                             f"{list(spec.ids)}")
+        spec = spec.insert_before(target, ref)
+    return spec
 
 
 def _has_half_width_field(reg, name: str) -> bool:
@@ -147,10 +227,11 @@ def _has_half_width_field(reg, name: str) -> bool:
 def track(*, num_envs: int, device: str, n_max: int = 384, scale: float = 1.0,
           generator: "str | StageRef" = "bezier", generator_params=None,
           num_points: int = 256, half_width: float = 0.1,
-          spacing: "float | None" = None, relax: "StageSel | None" = "xpbd",
+          spacing: "float | None" = None, relax: "StageSel | None" = "auto",
           width: StageSel = "constant", elevation: "StageSel | None" = "flat",
           checks: Sequence[StageSel] = ("default",),
-          on_invalid: str = "keep", z_base: float = 0.0, registry=None) -> PipelineSpec:
+          on_invalid: str = "keep", z_base: float = 0.0, registry=None,
+          randomize=None) -> PipelineSpec:
     """The track pipeline: generator -> resample -> width -> relax -> uniform resample
     -> frames -> offset -> elevation -> checks -> lift (since 0.2.0.dev4 the width runs
     before relax: ``cl.half_width`` is the per-point half-width XPBD, the offset and
@@ -182,7 +263,11 @@ def track(*, num_envs: int, device: str, n_max: int = 384, scale: float = 1.0,
             width elsewhere: then an explicit ``half_width`` other than 0.1 with an
             explicit ``spacing`` reaches nothing and raises ``ValueError``.
         spacing: The constant-spacing step (default ``0.6 * half_width``).
-        relax: The ``relax`` stage (``None``: ``relax.none``).
+        relax: The ``relax`` stage (``None``: ``relax.none``). ``"auto"`` (default,
+            roadmap PR13b): the generator's ``preferred["relax"]`` (``"none"`` for
+            ``generator/external``: ingested geometry is not moved), else ``"xpbd"``
+            (every built-in generator: unchanged output). An explicit name overrides it
+            (relax can repair ingested tracks).
         width: The ``width`` stage (runs before relax).
         elevation: The ``elevation`` stage (``None``: ``elevation.flat``). The lift is
             ``lift.flat`` for ``elevation.flat``, else ``lift.elevated``.
@@ -197,6 +282,14 @@ def track(*, num_envs: int, device: str, n_max: int = 384, scale: float = 1.0,
         registry: The plugin registry the generator's ``provides`` and a width
             stage's Params are looked up in (default ``track_gen.plugin.registry``;
             an unknown name is reported by ``build``).
+        randomize: Per-env uniform draws of DYNAMIC float32 params (roadmap PR13b):
+            ``{"<stage id>.<field>": (lo, hi)}`` (e.g. ``{"generator.amp": (0.05,
+            0.35)}`` for a plugin generator's dynamic ``amp``, ``{"width.scale": (0.8,
+            1.2)}`` with ``width.from_channel``) or a sequence of
+            ``StageRef("randomize", "uniform", {...})``. Each becomes a
+            ``randomize.uniform`` stage (id ``"randomize.<stage>.<field>"``) inserted
+            right before its target. Built-in knobs are static in 0.x (the planner
+            refuses them, listing the pipeline's drawable fields).
 
     Raises:
         ValueError: an invalid selection (wrong StageRef kind, ``width=None``,
@@ -230,9 +323,11 @@ def track(*, num_envs: int, device: str, n_max: int = 384, scale: float = 1.0,
     from ..plugin import registry as _default_registry  # noqa: PLC0415
 
     reg = _default_registry if registry is None else registry
-    provides = _provides(reg, "generator", gen.name)
+    provides = _provides(reg, "generator", gen.name, gen.params)
     hw = float(half_width)
     step = 0.6 * hw if spacing is None else spacing
+    if isinstance(relax, str) and relax == "auto":
+        relax = _preferred_relax(reg, gen.name)
     relax_ref = StageRef("relax", "none") if relax is None else \
         _select("relax", "relax", relax, hw)
     if width is None:
@@ -314,9 +409,10 @@ def track(*, num_envs: int, device: str, n_max: int = 384, scale: float = 1.0,
         StageRef("lift", "flat", params={"z_base": float(z_base)})
         if flat and not provided_z else StageRef("lift", "elevated"),
     )
-    return PipelineSpec(batch=BatchSpec(num_envs=num_envs, device=device, n_max=n_max,
+    spec = PipelineSpec(batch=BatchSpec(num_envs=num_envs, device=device, n_max=n_max,
                                         scale=scale, on_invalid=on_invalid),
                         stages=stages)
+    return _with_randomizers(spec, randomize)
 
 
 # ---------------------------------------------------------------------------------------
@@ -393,16 +489,18 @@ def _with_gate_validity(ref: StageRef, fill: dict,
 # The centerline sub-pipeline's arguments and their defaults, and the sources that
 # read them (an anchors source runs no centerline; stations sample the raw loop).
 _CENTERLINE_ARGS = (("n_max", 384), ("num_points", 256), ("half_width", 0.1),
-                    ("spacing", None), ("relax", "xpbd"), ("width", "constant"))
+                    ("spacing", None), ("relax", "auto"), ("width", "constant"))
 _CENTERLINE_READS = {"anchors": (), "stations": ("n_max", "num_points"),
                      "relaxed_stations": tuple(k for k, _ in _CENTERLINE_ARGS)}
 
 
 def _check_centerline_args(src: str, name: str, given: dict) -> None:
     """A centerline argument set (not its default) for a source that does not read it
-    raises."""
+    raises. ``relax="xpbd"`` counts as a default too (what ``"auto"`` resolves to for
+    every built-in generator; the default before 0.2.0.dev5)."""
     for k, default in _CENTERLINE_ARGS:
-        if k in _CENTERLINE_READS[src] or given[k] == default:
+        if k in _CENTERLINE_READS[src] or given[k] == default or \
+                (k == "relax" and given[k] == "xpbd"):
             continue
         if src == "anchors":
             raise ValueError(f"{k}= configures the centerline sub-pipeline of a stations "
@@ -496,9 +594,9 @@ def gates(*, num_envs: int, device: str, generator: "str | StageRef" = "bezier",
           checks: Sequence[StageSel] = ("gate_default",), scale: float = 1.0,
           on_invalid: str = "keep", n_max: int = 384, num_points: int = 256,
           half_width: float = 0.1, spacing: "float | None" = None,
-          relax: "StageSel | None" = "xpbd", width: StageSel = "constant",
+          relax: "StageSel | None" = "auto", width: StageSel = "constant",
           spacing_metric: str = "xy", elevation_on: "str | None" = None,
-          registry=None) -> PipelineSpec:
+          registry=None, randomize=None) -> PipelineSpec:
     """The gate pipeline: generator -> order -> [normalize] -> gate_relax ->
     [gate_arclen -> elevation] -> lift -> tangents -> gate_frames -> checks.
 
@@ -552,7 +650,8 @@ def gates(*, num_envs: int, device: str, generator: "str | StageRef" = "bezier",
         scale: ``BatchSpec.scale``.
         on_invalid: ``"keep"`` or ``"poison"``.
         n_max, num_points, half_width, spacing, relax, width: The centerline
-            sub-pipeline of a stations source (as :func:`track`): a ``stations``
+            sub-pipeline of a stations source (as :func:`track`; ``relax="auto"``: the
+            generator's ``preferred["relax"]``, else ``"xpbd"``): a ``stations``
             source reads ``n_max`` and ``num_points``, a ``relaxed_stations`` source
             all six; setting one that the source does not read raises ``ValueError``.
         spacing_metric: ``"xy"`` (default: the stations are equally spaced in plan
@@ -568,6 +667,10 @@ def gates(*, num_envs: int, device: str, generator: "str | StageRef" = "bezier",
             elevation runs) raises ``ValueError``.
         registry: The plugin registry the generator is looked up in (default
             ``track_gen.plugin.registry``).
+        randomize: Per-env uniform draws of DYNAMIC float32 params, as
+            :func:`track` (e.g. ``{"generator.m": (3.0, 9.0)}`` for a plugin gate
+            generator's dynamic ``m``): each a ``randomize.uniform`` stage inserted right
+            before its target.
 
     Raises:
         ValueError: an unknown generator name, an invalid selection or argument
@@ -673,14 +776,12 @@ def gates(*, num_envs: int, device: str, generator: "str | StageRef" = "bezier",
         # attributes: z on the loop is carried by the stations to the gates (carry.z),
         # the attributes by carry.attributes.
         gen_name = gen_in.name if gen_in is not None else name
-        gen_provides = _provides(reg, "generator", gen_name)
-        gen_cls = _lookup(reg, "generator", gen_name)
-        gen_attrs = []
-        if gen_cls is not None and _is_stage(gen_cls):
-            from ..stages.channels import is_plugin_channel  # noqa: PLC0415
+        gen_params = gen_in.params if gen_in is not None else generator_params
+        gen_writes, gen_provides = _declared(reg, "generator", gen_name, gen_params)
+        from ..stages.channels import is_plugin_channel  # noqa: PLC0415
 
-            gen_attrs = [ch for ch in dict(gen_cls.writes).values()
-                         if is_plugin_channel(ch) and ch.startswith("raw.")]
+        gen_attrs = [ch for ch in gen_writes.values()
+                     if is_plugin_channel(ch) and ch.startswith("raw.")]
         if explicit_on is not None and "z" in gen_provides:
             raise ValueError(f"elevation_on={explicit_on!r} places the elevation stage; "
                              f"generator {gen_name!r} provides its own altitudes (z), so "
@@ -876,6 +977,7 @@ def gates(*, num_envs: int, device: str, generator: "str | StageRef" = "bezier",
         gate_solve_iters=gate_solve_iters, gate_width=bar_width, gate_align=gate_align,
         elevation_ref=elev_ref, min_gates=min_gates, z_valid_grade=z_valid_grade,
         validity_ref=validity_ref, checks=check_refs[1:], carry_attributes=carry_attrs)
-    return PipelineSpec(batch=BatchSpec(num_envs=num_envs, device=device, n_max=n_max,
+    spec = PipelineSpec(batch=BatchSpec(num_envs=num_envs, device=device, n_max=n_max,
                                         scale=scale, on_invalid=on_invalid, max_gates=G),
                         stages=stages)
+    return _with_randomizers(spec, randomize)

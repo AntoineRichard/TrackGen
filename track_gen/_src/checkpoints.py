@@ -33,7 +33,7 @@ from .collision_geom import _safe_normalize3
 from .props import _scan_boundary_k
 from ..exec.context import LaunchContext
 from .runtime import _BIG, _init, _sync  # noqa: F401  (_sync: legacy re-export)
-from .types import GateSequence, Track
+from ..results import HasBand, HasGateFrames, _check_and_bind
 
 
 @dataclass
@@ -75,14 +75,19 @@ class CheckpointSet:
     count: wp.array
 
     @classmethod
-    def from_gates(cls, seq: GateSequence) -> "CheckpointSet":
+    def from_gates(cls, seq: HasGateFrames) -> "CheckpointSet":
         """Zero-copy view of a :class:`GateSequence` as checkpoints.
 
         Aliases (does not copy) ``position``, ``left``, ``right``,
         ``forward`` (as ``tangent``: the physical gate-plane normal),
         ``half_size`` (as ``up_half``), and ``count``. Progress state bound to
-        this set must be reset after the gates are regenerated.
+        this set must be reset after the gates are regenerated. ``seq`` is any
+        :class:`~track_gen.results.HasGateFrames` with those members, checked
+        here (``track_gen.results.check_source``).
         """
+        _, seq = _check_and_bind(seq, HasGateFrames, consumer="CheckpointSet.from_gates",
+                                 members=("position", "left", "right", "forward",
+                                          "half_size", "count"))
         return cls(position=seq.position, left=seq.left, right=seq.right,
                    tangent=seq.forward, up_half=seq.half_size, count=seq.count)
 
@@ -204,7 +209,10 @@ class CheckpointSampler:
     producer is ``PropSampler``, so its diagnostics live on the result).
     """
 
-    def __init__(self, track: Track, spacing: float,
+    #: The topologies this component supports (closed loops only in 0.x).
+    topology = "closed"
+
+    def __init__(self, track: HasBand, spacing: float,
                  max_checkpoints: "int | None" = None) -> None:
         """Bind to a :class:`Track` centerline and allocate the result buffers.
 
@@ -227,16 +235,16 @@ class CheckpointSampler:
             raise ValueError(
                 f"max_checkpoints must be >= 3 (or None for auto), got "
                 f"{max_checkpoints!r}")
-        E = int(track.count.shape[0])
-        stride = int(track.outer.shape[0])
-        if E < 1 or stride % E != 0:
-            raise ValueError(
-                f"track batch layout invalid: outer has {stride} slots for {E} envs")
-        self._track = track
+        # The members checked here are the ones bound (read once: stable pointers).
+        lay, self._track = _check_and_bind(track, HasBand, consumer="CheckpointSampler",
+                                           members=("center", "inner", "outer", "count",
+                                                    "valid"),
+                                           topology=self.topology)
+        E = int(lay.num_envs)
         self._spacing = float(spacing)
         self._E = E
-        self._n_max = stride // E
-        self._device = str(track.outer.device)
+        self._n_max = int(lay.stride)
+        self._device = lay.device
 
         if max_checkpoints is None:
             max_checkpoints = self._derive_max_checkpoints()

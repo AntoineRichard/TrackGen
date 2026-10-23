@@ -103,7 +103,8 @@ class TrackGenerator:
     """
 
     def __init__(self, config, rng=None, *, seeds=None,
-                 stream: "wp.Stream | None" = None) -> None:
+                 stream: "wp.Stream | None" = None,
+                 out: "Track | None" = None) -> None:
         """
         Args:
             config: A ``TrackGenConfig`` (the default stage list,
@@ -128,6 +129,25 @@ class TrackGenerator:
             stream: optional default ``wp.Stream`` for calls that pass no ``stream=``
                 and run outside an ambient ``LaunchContext`` scope (see
                 :mod:`track_gen.exec`).
+            out: optional caller-owned ``Track`` the pipeline writes INTO (roadmap
+                PR13b): the generator's result IS ``out`` (stable caller pointers, so a
+                caller graph built over it keeps working). Every field is checked
+                against the pipeline's layout (``generation`` / ``fail_mask`` may be
+                ``None``, and ``half_width``). A view of a larger result
+                (``out=big.view(e0, e1)``) makes a mixed batch: several generators
+                writing disjoint env ranges of one ``Track`` (overlapping a live
+                generator's result raises ``PlanError``: release a generator
+                before building another into its storage); with ``seeds`` / ``rng``
+                left ``None`` (or an int) env ``e`` of the view is seeded with
+                ``base + e0 + e``, as in one batch. A seed array, a
+                ``PerEnvSeededRNG`` (``PerEnvSeededRNG(seeds=0, num_envs=4)`` holds
+                seeds ``0 .. 3`` for EVERY view it is given to) or a ``SeedState`` is
+                bound as given, with no offset: give each generator of a mixed batch
+                its own seeds (e.g. slices of one seed array). An ``out.attributes``
+                key is bound when this pipeline exports it; on a view, any other key
+                is filled once with its padding (NaN / ``-1``) and never written (on
+                a whole result it raises ``ValueError``). The construction-time
+                warm-up writes into ``out``.
 
         Raises:
             ValueError: if both ``rng`` and ``seeds`` are given.
@@ -171,6 +191,7 @@ class TrackGenerator:
         if isinstance(config, PipelineSpec):
             spec = config
             _planner._check_spec_shape(spec)
+            _planner._check_topology(spec, registry)
             if spec.batch.max_gates is not None:
                 raise ValueError("TrackGenerator runs a track pipeline; this spec is a gate "
                                  "pipeline (BatchSpec.max_gates set): use GateGenerator")
@@ -213,6 +234,9 @@ class TrackGenerator:
         config = self._config
         source = rng if rng is not None else seeds
         self._rng = source if _is_rng(source) else None
+        # out= a view of a larger result: default / int seeds are offset by the view's
+        # first env (a mixed batch is seeded like one batch, roadmap PR13b).
+        source = _planner._offset_seeds(source, out)
 
         E = int(config.num_envs)
         dev = str(config.device)
@@ -232,7 +256,8 @@ class TrackGenerator:
         # generation, inside the graph), every channel and stage scratch. All are
         # reused across every generation; the hot path never allocates.
         program = _planner._build(spec, binding=binding, seeds=seed_state, stream=stream,
-                                  prepare=False, owner=self, registry=registry)
+                                  prepare=False, owner=self, registry=registry, out=out,
+                                  register=False)
         self._track: Track = program.result
         # The PR9 scratch holder, as a view aliasing the program's buffers.
         self._scratch = _legacy._scratch_view(program)
@@ -262,6 +287,9 @@ class TrackGenerator:
         # path uses; leaves the batch for the rng's current seeds in self._track), then
         # a host wait on its stream: the result is complete when construction returns.
         program.prepare()
+        # Only now does this generator hold its result storage (the out= overlap
+        # registry): a construction that raised leaves nothing to refuse a retry.
+        _planner._register_result(program, program.result)
 
     # -- properties ---------------------------------------------------------------
     @property
@@ -302,8 +330,12 @@ class TrackGenerator:
         write them from your own kernels (also inside your graph) or with
         ``params[stage_id].set("amp", value, stream=...)``; the next generation latches
         them for the envs it regenerates, with no re-capture. The built-in generators'
-        and stages' fields are all static (``set`` raises ``KeyError``); every stage's
-        resolved params are ``program.params``.
+        and stages' fields are static (``set`` raises ``KeyError``), except
+        ``width.from_channel``'s ``scale`` / ``lo`` / ``hi`` and a ``randomize.uniform``
+        stage's ``lo`` / ``hi``; every stage's resolved params are ``program.params``. A field a ``randomize.*`` stage draws
+        (``presets.track(randomize=...)``) is an unlatched array owned by that stage:
+        written every generation (``params[stage][field]`` observes the draws), ``set``
+        raises (set the randomizer's ``lo`` / ``hi`` instead).
         """
         return self._params
 
@@ -351,9 +383,21 @@ class TrackGenerator:
           never changes, so the generator's self-graph for it is captured once.
         - every per-env input a Stage generator declared
           (``StageBuilder.input(name, ...)``): a live ``[E]`` array, latched at each
-          generation for the envs it regenerates, like a dynamic parameter.
+          generation for the envs it regenerates, like a dynamic parameter;
+        - every ``per="raw"`` input (``StageBuilder.input(..., per="raw")``, e.g. the
+          ``centerline.*`` inputs of ``generator/external``): an ``[E * raw]`` array
+          the generation READS (unlatched: write it on the generation's stream, or
+          order the streams with events). :attr:`input_info` tells them apart.
         """
         return self._inputs
+
+    @property
+    def input_info(self) -> "types.MappingProxyType":
+        """``name -> track_gen.pipeline.InputInfo`` of every entry of :attr:`inputs`
+        (``program.input_info``, roadmap PR13b): its dtype, ``per`` (``"env"`` /
+        ``"raw"``), length, declaring stage, and whether it is latched at the start of a
+        generation or read during it."""
+        return self._program.input_info
 
     @property
     def _graph(self) -> "wp.Graph | None":

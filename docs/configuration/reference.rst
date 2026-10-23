@@ -15,6 +15,8 @@ the flat fields that carry the same names. This page lists:
   (:ref:`gate-capacity-config`);
 - the road's half-width, its floor and the gate stations' spacing metric
   (:ref:`width-config`);
+- the presets' relax default (:ref:`config-relax-auto`) and per-env draws of dynamic
+  parameters (:ref:`config-randomize`);
 - how ``generator_params`` resolves (:ref:`generator-params-config`);
 - each built-in generator's Params, with defaults and rules
   (:ref:`builtin-generator-params`);
@@ -297,6 +299,101 @@ A pipeline spec saved with ``to_dict()`` carries ``"format": "track_gen.pipeline
 ``half_width`` keys of ``relax.xpbd``, ``offset.default`` and ``validity.default``
 removed, the width stage moved before ``relax``) with one ``DeprecationWarning``; see
 :ref:`pipeline-spec-format`.
+
+.. _config-relax-auto:
+
+The relax stage of a preset: ``relax="auto"``
+---------------------------------------------
+
+``presets.track(relax=...)`` and ``presets.gates(relax=...)`` default to ``"auto"``:
+the generator's preferred relax stage (``Stage.preferred["relax"]``) when it declares
+one, else ``"xpbd"``. No built-in shape generator declares one, so their pipelines are
+unchanged (XPBD, byte for byte); the ingestion generator ``external`` prefers ``"none"``,
+so loaded centerlines are resampled but not moved. An explicit ``relax=`` (a name,
+``(name, params)``, a ``StageRef``, or ``None`` for ``relax.none``) overrides it.
+``TrackGenConfig`` has no ``"auto"``: ``relax_enable`` and ``relax_solver`` select the
+stage as before.
+
+.. _config-randomize:
+
+Per-env randomization: ``randomize=``
+-------------------------------------
+
+``presets.track(randomize=...)`` and ``presets.gates(randomize=...)`` draw dynamic
+parameters per env, on the device, at every generation: each env gets its own value of a
+field, drawn uniformly in a range, inside the Program (and so inside a recorded graph).
+
+.. code-block:: python
+
+   spec = presets.track(
+       num_envs=4096, device="cuda:0",
+       generator=StageRef("generator", "acme.superformula"),
+       randomize={"generator.m": (3.0, 9.0),          # "<stage id>.<field>": (lo, hi)
+                  "generator.n1": (0.2, 0.8)},
+   )
+
+**What can be drawn: dynamic ``float32`` fields.** A field declared with
+``plugin.dynamic`` (a plugin generator's or stage's) and the three dynamic fields of the
+built-in ``width.from_channel`` (``width.scale``, ``width.lo``, ``width.hi``). **The
+built-in generators' and stages' knobs are static in 0.x** (``rad``,
+``polar_radial_jitter``, the elevation ranges, ...): naming one raises ``PlanError``,
+which lists the fields of the pipeline that can be drawn (``generator.rad is static:
+built-in knobs are static in 0.x; dynamic float32 fields in this pipeline: [...]``). So
+``randomize=`` is per-env sampling of *dynamic* fields, not yet a domain randomization of
+the built-in generators; for those, mix generators or configurations in one batch
+(:ref:`results-mixed-batches`) or use ``bezier``'s ``style_sampling``. ``int32`` fields
+cannot be drawn in 0.x either.
+
+**The form.** A mapping from ``"<stage id>.<field>"`` (split at the last dot: stage ids
+may contain dots, field names may not) to ``(lo, hi)``, or a sequence of ``StageRef``\ s
+of kind ``randomize``. Each entry becomes a stage
+``StageRef("randomize", "uniform", {"stage": s, "field": f, "lo": lo, "hi": hi},
+id=f"randomize.{s}.{f}")`` inserted right **before** stage ``s``: listing order is
+execution order, so the draw is written before its target reads it, in the same
+generation. ``to_dict`` / ``from_dict`` round-trip it (format ``/2``, unchanged). In a
+spec you build by hand, use ``spec.insert_before("generator", StageRef("randomize",
+"uniform", {...}, id=...))``; ``RandomizeUniformParams`` has ``stage`` and ``field``
+(static) and ``lo`` and ``hi`` (dynamic, default ``0.0`` and ``1.0``).
+
+**The draw.** Env ``e`` gets ``lo[e] + u * (hi[e] - lo[e])``, ``u`` uniform in ``[0,
+1)``, from a stream keyed on its effective seed and the randomizer's salt (hashed from its
+stage id), then clamped to the target field's declared ``lo`` / ``hi``. So the draws are
+deterministic per ``(seed, epoch)``, differ across envs and across randomizers, and
+change with ``advance=True`` (each replay of a graph that records
+``generate(advance=True)`` redraws) or a reseed. A NaN bound gives NaN (the target's
+own checks then fail the env).
+
+**Bounds and curricula.** The randomizer's ``lo`` and ``hi`` are dynamic: write
+``gen.params["randomize.generator.m"]["hi"]`` (or ``.set("hi", ...)``), in your own graph
+too, and the next generation draws in the new range. The initial range must lie within
+the target field's declared bounds, and ``lo <= hi`` (``PlanError`` / ``ValueError`` at
+build). At run time ``set("lo" | "hi", value)`` checks a scalar against the same
+declared bounds (``ValueError``). An array write (``set`` with an array, or your own
+kernel) is not checked: a range wider than the field's bounds is clamped to them, so the
+excess piles onto the bound (the draws are no longer uniform).
+
+**Masks.** Under ``generate(advance=True, mask=m)`` the masked envs get new draws; the
+others keep their effective seed and bounds, so they redraw the same values and their
+rows are restored by the commit: nothing changes for them.
+
+**The drawn field** is owned by its randomizer: ``gen.params["generator"]["m"]`` is the
+``[E]`` array of the current draws (read it to log what each env was built with), but
+``set("m", ...)`` raises and a direct write is overwritten at the next generation (see
+:ref:`generator-runtime-params`).
+
+**Rules** (each a ``PlanError`` at build, before anything is allocated): a randomizer
+listed after its target; a stage other than the generator's randomizers before the
+generator (the generator stays the first stage that is not a randomizer, with id
+``"generator"``); an unknown target stage or field; a target that is itself a
+randomizer; a static, ``int32`` or unknown field; two randomizers on one field. A
+``randomize=`` key naming a stage the preset does not have raises ``ValueError``
+(``randomize: key 'gnerator.amp' names stage 'gnerator', which this pipeline does not
+have; stages: [...]``).
+
+**Cost.** Two more launches per randomizer per generation, net: the draw and the latch
+of its ``lo`` and ``hi``, minus the latch the drawn field no longer needs. A pipeline
+without a randomizer launches what it launched before. ``TrackGenConfig`` has no
+``randomize``.
 
 .. _generator-params-config:
 
@@ -601,6 +698,37 @@ Track generators
    * - ``repulsive_deactivate_obstacles``
      - ``True``
      -
+
+``ExternalParams`` (``generator="external"``, the ingestion generator of
+:ref:`ingesting-centerlines`; ``track_gen.stages.external.ExternalParams``). It has no
+flat field: set it with ``generator_params``. Every field is static.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 24 18 58
+
+   * - Field
+     - Default
+     - Rule
+   * - ``with_z``
+     - ``False``
+     - ``True`` adds the input ``centerline.z`` and makes the generator provide ``z``
+       (no elevation stage)
+   * - ``with_half_width``
+     - ``False``
+     - ``True`` adds the input ``centerline.half_width`` and makes it provide
+       ``half_width`` (no width stage)
+   * - ``attributes``
+     - ``()``
+     - ``(key, dtype, interp)`` triples: ``key`` a unique plugin key
+       ``<package>.<name>``, ``dtype`` one of ``"float32"``, ``"int32"``,
+       ``"vec2f"``, ``"vec3f"``, ``interp`` a policy valid for that dtype
+
+Its raw capacity is ``num_points`` (``TrackGenConfig.num_points``,
+``presets.track(num_points=)``): the most points per env you can load.
+``TrackGenConfig(generator="external", generator_params={...})`` works through the
+legacy path; there the config's ``relax_enable`` (``True`` by default) decides whether
+XPBD runs, whereas the presets run no relax for it by default (:ref:`config-relax-auto`).
 
 Gate generators
 ~~~~~~~~~~~~~~~

@@ -239,6 +239,7 @@ Explore the docs
 
    how-it-works/pipeline
    how-it-works/pipeline-preview
+   how-it-works/results
    how-it-works/resample
    how-it-works/inflation
    how-it-works/cuda-graph

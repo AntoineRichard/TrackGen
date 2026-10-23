@@ -21,7 +21,7 @@ if TYPE_CHECKING:  # pragma: no cover
     from ..seeds import SeedState
     from .spec import PipelineSpec
 
-__all__ = ["AttributeInfo", "Program", "Segment"]
+__all__ = ["AttributeInfo", "InputInfo", "Program", "Segment"]
 
 _PROGRAM_TOKEN = object()
 
@@ -53,6 +53,35 @@ class AttributeInfo:
     interp: "str | None"
     padding: object
     domain: str
+
+
+@dataclasses.dataclass(frozen=True)
+class InputInfo:
+    """One persistent device input of a :class:`Program` (``Program.input_info``,
+    roadmap PR13b): what ``Program.inputs[name]`` is and how a generation reads it.
+
+    Attributes:
+        name: The input's name (``"regen_mask"``, a stage's ``StageBuilder.input`` name;
+            ``"centerline.xy"``, ... for an ingestion generator).
+        dtype: The Warp dtype.
+        per: ``"env"`` (``[E]``) or ``"raw"`` (``[E * raw]``, a centerline generator's
+            per-point input).
+        length: The array's length.
+        latched: ``True``: snapshotted (latched) at the start of every generation for
+            the envs it regenerates, like a dynamic param (a write takes effect at the
+            next generation); ``False``: read DURING the generation (a ``per="raw"``
+            input, ``"regen_mask"``), so a writer must be stream-ordered with the
+            generation (the same stream, or events).
+        stage_id: The id of the stage that declared it (``None`` for
+            ``"regen_mask"``).
+    """
+
+    name: str
+    dtype: object
+    per: str
+    length: int
+    latched: bool
+    stage_id: "str | None"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -110,7 +139,7 @@ class Program:
                  gen_scratch, stream=None, owner=None, commit=None, fail_bits=None,
                  fail_owner=None, capture_classes=None, segments=None,
                  on_invalid: str = "keep", writers=None, ports=None,
-                 attributes=None) -> None:
+                 attributes=None, input_info=None) -> None:
         if _token is not _PROGRAM_TOKEN:
             raise TypeError("Program is created by track_gen.pipeline.build()")
         import warp as wp  # noqa: PLC0415
@@ -123,6 +152,7 @@ class Program:
         self._seeds = seeds
         self._seed = seed
         self._inputs = types.MappingProxyType(dict(inputs))
+        self._input_info = types.MappingProxyType(dict(input_info or {}))
         self._params = params
         self._pairs = list(pairs)                 # (live, work) latch pairs, in order
         self._enqueues = list(enqueues)           # one per stage, in order
@@ -209,13 +239,30 @@ class Program:
     @property
     def inputs(self) -> Mapping:
         """Persistent device inputs: ``"regen_mask"`` (``[E]`` int32, zeroed) and every
-        input a stage declared (``StageBuilder.input``). Stable pointers."""
+        input a stage declared (``StageBuilder.input``). Stable pointers.
+
+        Latched inputs (``per="env"``) are snapshotted at the start of a generation, so
+        a write takes effect for the envs the next generation regenerates. Unlatched
+        inputs (``per="raw"``, e.g. an ingestion generator's ``centerline.*``) are read
+        DURING the generation: write them on the generation's stream (or order the
+        streams with events). :attr:`input_info` tells them apart."""
         return self._inputs
+
+    @property
+    def input_info(self) -> Mapping[str, "InputInfo"]:
+        """``name -> InputInfo`` of every entry of :attr:`inputs` (its dtype, ``per``,
+        length, declaring stage, and whether it is LATCHED at the start of a generation
+        or read during it)."""
+        return self._input_info
 
     @property
     def params(self) -> "ParamTable":
         """Runtime parameters keyed by stage id (live ``[E]`` arrays of the dynamic
-        fields; the built-in stages' fields are all static)."""
+        fields; the built-in stages' fields are static, except ``width.from_channel``'s
+        ``scale`` / ``lo`` / ``hi`` and a ``randomize.uniform`` stage's ``lo`` /
+        ``hi``). A field drawn by a
+        ``randomize.*`` stage maps to its drawn array (written every generation by the
+        randomizer; ``set`` raises)."""
         return self._params
 
     @property

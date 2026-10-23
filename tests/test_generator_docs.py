@@ -135,17 +135,22 @@ def test_guide_stage_example_runs_and_matches_its_schema(stage_guide_module):
 
 def test_reference_lists_every_builtin_params_field():
     from track_gen._src import builtin_params as bp
+    from track_gen.stages.external import ExternalParams
 
+    # The built-in generators' Params: the flat ones, and (roadmap PR13b) the ingestion
+    # generator's (a Stage: generator="external").
+    classes = {name: getattr(bp, name) for name in bp.__all__}
+    classes["ExternalParams"] = ExternalParams
     text = (_DOCS / "configuration" / "reference.rst").read_text()
     heads = list(re.finditer(r"^``(\w+Params)`` \(", text, flags=re.M))
     sections = {}
     for i, m in enumerate(heads):
         end = heads[i + 1].start() if i + 1 < len(heads) else text.index("\n.. _", m.end())
         sections[m.group(1)] = text[m.start():end]
-    assert set(sections) == set(bp.__all__)
-    missing = [f"{cls}.{f.name}" for cls in bp.__all__
-               for f in dataclasses.fields(getattr(bp, cls))
-               if f"``{f.name}``" not in sections[cls]]
+    assert set(sections) == set(classes)
+    missing = [f"{name}.{f.name}" for name, cls in classes.items()
+               for f in dataclasses.fields(cls)
+               if f"``{f.name}``" not in sections[name]]
     assert not missing, missing
 
 

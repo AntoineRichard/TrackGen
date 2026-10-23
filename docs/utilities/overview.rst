@@ -36,12 +36,103 @@ Every utility follows the same contracts, so learning one teaches all:
   result object every call, overwritten in place; call ``clone()`` for a
   snapshot.
 - **Eager, NaN-proof validation** — shapes, dtypes, and devices are checked
-  when you construct or bind, never in the hot path.
+  when you construct or bind, never in the hot path: the members of the source a
+  utility reads, and the arrays you bind (see `What a utility reads`_).
+- **Any source with the right members** — a utility takes a ``Track``, a
+  ``GateSequence``, a ``Centerline``, an env-slice ``view()`` of one, or your own
+  object with the members it reads (the capability protocols of
+  :ref:`results-protocols`).
 - **Input binding** — latch a tool onto your sim's stable pose buffers once
   (constructor kwargs or ``bind``/``bind_inputs``) and call
   ``update()``/``query()`` with no arguments thereafter.
 - **Undefined for invalid envs** — gate on ``valid`` from the generator
   result, as everywhere in the library.
+
+.. _utilities-sources:
+
+What a utility reads
+--------------------
+
+Each utility names the capability it needs as a protocol of ``track_gen.results``
+(:ref:`results-protocols`) and, at construction, checks exactly the members it reads,
+through :func:`~track_gen.results.check_source`: each must exist, be a contiguous 1-D
+array of its schema dtype, ``[E * stride]`` per point or ``[E]`` per env, on one device.
+The layout comes from the source's ``layout`` when it is a ``Layout``, else is inferred
+from ``count`` and the first per-point member (an unrelated ``layout`` attribute of your
+own object is ignored). Members the utility does not read are never looked at, so a
+``Track`` with a placeholder ``winding`` works with a ``CollisionChecker``.
+
+**The arrays are bound at construction.** A utility reads each member it checked once,
+when it is built, and passes those arrays (stable pointers) to every call, eager or
+recorded in your graph: reassigning a member of the source afterwards (or a proxy that
+would compute a new array on each access) changes nothing, and nothing unchecked ever
+reaches a kernel. Write new data INTO the source's arrays (a generator does), or build a
+new utility for new arrays.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 28 16 56
+
+   * - Utility
+     - Protocol
+     - Members checked (= read)
+   * - ``CollisionChecker`` (both methods)
+     - ``HasBand``
+     - ``center``, ``outer``, ``inner``, ``count``
+   * - ``PropSampler``
+     - ``HasBand``
+     - ``outer``, ``inner``, ``count``, ``valid``
+   * - ``CheckpointSampler``
+     - ``HasBand``
+     - ``center``, ``inner``, ``outer``, ``count``, ``valid``
+   * - ``HeightFieldBaker``
+     - ``HasBand``
+     - ``outer``, ``center``, ``count``, ``valid``
+   * - ``TrackLocalizer``
+     - ``HasCenterline``
+     - ``center``, ``arclen``, ``length``, ``count``
+   * - ``localize.curvature``
+     - ``HasCenterline``
+     - ``center``, ``count``
+   * - ``localize.speed_profile``
+     - ``HasCenterline``
+     - ``center``, ``count``, ``arclen``, ``length``
+   * - ``CheckpointSet.from_gates``
+     - ``HasGateFrames``
+     - ``position``, ``left``, ``right``, ``forward``, ``half_size``, ``count``
+   * - ``FrameChecker`` (internal to a gates-mode ``Course`` in 0.x)
+     - ``HasGateFrames``
+     - ``position``, ``orientation``, ``half_size``, ``count``, ``valid`` (its
+       ``num_envs`` argument must equal the source's)
+   * - ``DiscChecker``, ``ProgressTracker``
+     - none
+     - raw arrays (``DiscChecker``) or a ``CheckpointSet`` (``ProgressTracker``),
+       checked as before
+
+A source that lacks a member raises ``TypeError`` naming it, and a member of the wrong
+shape, dtype or device ``ValueError``, prefixed by the utility:
+
+.. code-block:: text
+
+   TypeError: CollisionChecker needs a HasBand source (center, outer, inner, count, valid):
+     Centerline has no 'outer', 'inner'
+   ValueError: CollisionChecker: Track.inner: expected a contiguous [3072] vec3f
+     ([E*stride] = [8*384]) array on cpu, got shape (3064,) vec3f on cpu
+
+These replace the earlier ``track batch layout invalid`` errors, which inferred the
+stride from one field and could miss a mismatched one. A ``Centerline`` (for example
+``course.course_line.centerline`` in gates mode) works with ``TrackLocalizer``,
+``curvature`` and ``speed_profile``; the band utilities refuse it with the ``TypeError``
+above.
+
+**Views.** A utility built on ``track.view(e0, e1)`` reads that env range exactly as it
+would read an owned copy of the same rows, and a utility built on a mixed batch's shared
+result reads every env (:ref:`results-mixed-batches`).
+
+**Topology.** Every utility that reads a result supports closed loops only (its
+``topology`` class attribute is ``"closed"``) and refuses a source whose
+``layout.closed`` is ``False`` (:ref:`results-topology`). ``DiscChecker`` reads raw
+disc arrays and has no topology.
 
 CUDA graphs
 -----------

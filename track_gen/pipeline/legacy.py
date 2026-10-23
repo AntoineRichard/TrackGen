@@ -106,10 +106,8 @@ def _to_pipeline_spec(cfg, binding, registry=None) -> PipelineSpec:
     else:
         relax = StageRef("relax", solver, params=_legacy_params(
             relax_cls, cfg, f"relax stage {solver!r}"))
-    from ..plugin.stage import _is_stage  # noqa: PLC0415
-
-    provides = frozenset(binding.spec.provides) if _is_stage(binding.spec) \
-        else frozenset()
+    # The generator's DECLARED provides for its params (Stage.declare, roadmap PR13b).
+    provides = frozenset(getattr(binding, "provides", frozenset()) or frozenset())
     if "z" in provides and (profile != "flat" or float(cfg.z_base) != 0.0):
         field = f"z_profile={profile!r}" if profile != "flat" else f"z_base={cfg.z_base!r}"
         raise ValueError(f"TrackGenConfig.{field}: generator {binding.name!r} provides its "
@@ -147,7 +145,7 @@ def generator_config(spec: PipelineSpec):
     that reads other config fields needs ``TrackGenerator``."""
     from .._src.types import TrackGenConfig  # noqa: PLC0415
 
-    ref, batch = spec.stages[0], spec.batch
+    ref, batch = spec.stages[spec._generator_index()], spec.batch
     params = ref.params
     if isinstance(params, _MappingABC):
         params = dict(params)               # the config is deep-copied: no mappingproxy
@@ -324,9 +322,10 @@ def gate_generator_config(spec: PipelineSpec, *, registry=None):
 
     batch = spec.batch
     G = int(batch.max_gates)
-    first = spec.stages[0]
+    gi = spec._generator_index()
+    first = spec.stages[gi]
     by_kind: dict = {}
-    for ref in spec.stages[1:]:
+    for ref in spec.stages[gi + 1:]:
         by_kind.setdefault((ref.kind, ref.name), ref)
         by_kind.setdefault(ref.kind, ref)
     kw: dict = dict(generator=first.name, device=batch.device, num_envs=batch.num_envs,

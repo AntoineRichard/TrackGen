@@ -20,6 +20,10 @@ it is deprecated (see :ref:`gate-generator-contract`). A track generator also ma
 with no code of its own: ``presets.gates`` places arc-length stations on its centerline
 (:ref:`pipeline-stations`).
 
+Centerlines that come from elsewhere (a dataset, a learned model, a hand-drawn track)
+need no generator code either: the built-in ``external`` generator reads them from
+device arrays you fill, see :ref:`ingesting-centerlines`.
+
 A plugin ships as its own pip-installable package. It imports only public modules
 (``track_gen.plugin``, ``track_gen.exec``, ``track_gen.ops``), it does not edit TrackGen,
 and TrackGen finds it through a Python entry point. The shipped generators register through
@@ -365,7 +369,21 @@ instance per generator, with no arguments, and calls ``capacity`` and ``build`` 
    * - ``capture``
      - A ``CaptureClass``, ``STATIC`` by default (see :ref:`stage-capture-classes`).
    * - ``topology``
-     - ``"closed"`` (default) or ``"any"``. Open tracks are not supported in 0.x.
+     - ``"closed"`` (default) or ``"any"``. Open tracks are not supported in 0.x: a
+       pipeline built with ``BatchSpec(closed=False)`` is refused before any stage is
+       bound, naming the stages that declare ``"closed"`` (:ref:`results-topology`).
+   * - ``seeded``
+     - ``True`` (default): the output depends on the seed. Declare ``False`` for a
+       generator whose output is the same for every seed (an ingestion generator, see
+       `Writing an ingestion generator`_); the conformance kit then reports its
+       ``diversity`` check as skipped instead of failing it, and ``describe()`` reports
+       it. A ``GeneratorSpec`` counts as seeded.
+   * - ``preferred``
+     - ``{}`` by default. A centerline generator may set the single key ``"relax"``: the
+       relax stage presets use when ``relax="auto"`` (their default), a registered relax
+       name or ``"none"`` (``{"relax": "none"}`` keeps the generator's points as they
+       are; ``"auto"`` is reserved). A gate generator's keys are ``"order"`` and
+       ``"normalize"`` (:ref:`gate-generator-stage`).
    * - ``reads``
      - Must stay empty: a generator reads no channel (its seed is ``b.seed``). Read
        ports are for the pipeline's other stages (see :doc:`writing-a-stage`).
@@ -378,10 +396,18 @@ instance per generator, with no arguments, and calls ``capacity`` and ``build`` 
      - The plugin API version the stage targets (default ``1``). A version above
        ``track_gen.plugin.API_VERSION`` is rejected.
 
-And three methods:
+And four methods:
 
 - ``build(self, b, params) -> enqueue`` (abstract) allocates everything through ``b``,
   once, and returns ``enqueue(ctx)``.
+- ``declare(cls, params) -> (writes, provides)``, a classmethod, returns the ports the
+  stage writes and the attributes it provides for these ``params``. The default returns
+  the class attributes ``writes`` and ``provides``; override it when they depend on a
+  static parameter (an attribute written only when a flag is set: see `Writing an
+  ingestion generator`_). It is read for centerline generators only in 0.x (overriding it
+  on another kind raises at registration), and checked against the generator rules
+  below when the pipeline binds the generator. ``registry.describe`` reports the
+  declaration at the default Params.
 - ``capacity(self, params, layout)`` returns the buffer sizes the stage needs. A generator
   may return ``{"raw": n}``, its ``"raw.xy"`` points per env (an integer ``n >= 3``, a
   numpy integer included); the default ``{}`` means ``TrackGenConfig.num_points``. Any
@@ -391,7 +417,7 @@ And three methods:
   The default returns ``capture``; override it when the capture class depends on a
   parameter.
 
-All three receive the params with their **static fields only**: reading a dynamic field
+All four receive the params with their **static fields only**: reading a dynamic field
 there raises ``AttributeError`` ("read it on the device through ``b.param('amp')``"). A
 host scalar computed from a dynamic field would be baked into the launches (and into any
 recorded graph), so a later ``set`` would silently do nothing. ``isinstance(params,
@@ -408,8 +434,8 @@ class that breaks the rules above, an ``output`` other than ``"centerline"`` (an
 non-empty ``reads``, a ``provides`` that does not name exactly the catalogue attributes
 written (``Stage X: provides ['z'] must name exactly the catalogue attributes it writes
 (['half_width', 'z']: raw.z -> 'z', raw.half_width -> 'half_width')``), a ``preferred``
-(gate generators only), or another
-``topology``. A Stage of kind ``"gate_generator"`` is checked by the anchors rules of
+with a key other than ``"relax"`` (or a value that is not a string), a ``seeded`` that is
+not a ``bool``, or another ``topology``. A Stage of kind ``"gate_generator"`` is checked by the anchors rules of
 :ref:`gate-generator-stage`, and one of kind ``"relax"``, ``"width"``, ``"elevation"``,
 ``"validity"``, ``"order"`` or ``"stations"`` is a pipeline stage, checked by the rules
 of :doc:`writing-a-stage`; any other kind (``"resample"``, ``"lift"``, ...) is rejected
@@ -501,13 +527,18 @@ Call its methods in ``build`` (``write``, ``scratch`` and ``input`` allocate, an
        from the live array at every generation (see :ref:`generator-runtime-params`).
        **Read-only** for the stage: never write it, not even as scratch. A static field
        raises ``KeyError`` (read it from ``params``), and so does an unknown one.
-   * - ``input(name, dtype, default=0)``
-     - A per-env device input that is not a parameter (a difficulty level your training
-       loop computes, say): a live ``[E]`` array published as ``gen.inputs[name]`` and
-       filled with ``default``, and the working copy this returns, latched like a dynamic
-       parameter and **read-only** for the stage likewise. ``dtype`` is ``wp.float32`` or
-       ``wp.int32``; a name that exists already (``"regen_mask"`` included) raises
-       ``ValueError``.
+   * - ``input(name, dtype, default=0, *, per="env")``
+     - A device input that is not a parameter, published as ``gen.inputs[name]`` and
+       filled with ``default``. ``per="env"`` (default): a live ``[E]`` array (a
+       difficulty level your training loop computes, say) of ``wp.float32`` or
+       ``wp.int32``, and the working copy this returns, latched like a dynamic parameter.
+       ``per="raw"`` (centerline generators only): one ``[E * raw]`` array of
+       ``wp.float32``, ``wp.int32``, ``wp.vec2f`` or ``wp.vec3f``, **not latched**: this
+       returns the published array itself, read during the generation (see
+       `Writing an ingestion generator`_). Either is **read-only** for the stage. Name
+       inputs with dotted paths in your stage's own namespace (``"acme.difficulty"``);
+       ``centerline.*`` is the ingestion namespace. A name that exists already
+       (``"regen_mask"`` included) raises ``ValueError``.
    * - ``salt(stream)``
      - A ``uint32`` salt for one random stream (see :ref:`stage-salts`).
 
@@ -752,8 +783,28 @@ for the envs it regenerates: every env, or only those with ``mask[e] != 0`` unde
 ``generate(advance=True, mask=m)``. An env that a masked regeneration leaves out therefore
 keeps the value its current track was built with. The latch costs one small launch per
 dynamic field or input per generation, for Stages only (a ``GeneratorSpec`` has no dynamic
-fields). It is an implementation detail: the stage only ever reads the arrays ``b.param``
-and ``b.input`` returned, and a later release may read the live arrays directly.
+fields). The stage only ever reads the arrays ``b.param`` and ``b.input`` returned.
+
+**Unlatched arrays.** Two kinds of array are read *during* the generation instead of
+being snapshotted at its start: a dynamic field drawn per env by a ``randomize.uniform``
+stage (:ref:`config-randomize`), and a ``per="raw"`` input (`Writing an ingestion
+generator`_). ``b.param`` / ``b.input`` return the published array itself for them.
+
+- A drawn field is **owned by its randomizer**: it is rewritten at every generation,
+  before the generator runs, so a direct write (through ``gen.params``, or a torch view
+  of the array) is overwritten. ``set`` raises ``ValueError`` (``generator.amp is drawn
+  every generation by stage 'randomize.generator.amp'; set its bounds:
+  params['randomize.generator.amp'].set('lo' | 'hi', ...)``), and ``repr`` of the
+  ``StageParams`` marks it (``amp=<drawn by 'randomize.generator.amp'>``), and
+  ``gen.params["generator"].drawn`` maps each drawn field to its randomizer's id. The
+  array still reads back the values the current batch was built with.
+- A ``per="raw"`` input holds your latest write, not what each env's current rows were
+  built from, so order your writes with the generation: on its stream, or with events.
+
+``gen.input_info`` (``Program.input_info``) tells them apart: a mapping from each name
+of ``gen.inputs`` to a ``track_gen.pipeline.InputInfo`` (``name``, ``dtype``, ``per``,
+``length``, ``latched``, ``stage_id``). ``regen_mask`` is listed as unlatched (the mask
+is read during the generation it is passed to) with no stage.
 
 .. code-block:: python
 
@@ -770,12 +821,246 @@ and ``b.input`` returned, and a later release may read the live arrays directly.
    wp.capture_launch(capture.graph, stream=s)     # every replay reads amp anew
 
 **Inputs.** ``gen.inputs`` lists ``"regen_mask"`` and every ``b.input`` the generator
-declared. Each is a live ``[E]`` array with a stable pointer, latched like a dynamic
-parameter: write it in place, as you write ``regen_mask``, and the next generation reads
-it.
+declared. Each is a live array with a stable pointer: a ``per="env"`` input is ``[E]``
+and latched like a dynamic parameter (write it in place, as you write ``regen_mask``,
+and the next generation reads it); a ``per="raw"`` one is ``[E * raw]`` and unlatched
+(above).
 
 A ``Course`` has no parameter table of its own: use ``course.generator.params`` and
 ``course.generator.inputs``.
+
+.. _ingesting-centerlines:
+
+Ingesting your own centerlines
+------------------------------
+
+The built-in generator ``external`` runs centerlines you supply (from a dataset, a
+learned model, a hand-drawn track) through the standard pipeline: resample, width,
+checks, band, elevation and lift, and the gate stations. It reads them from device
+arrays the Program owns, ``gen.inputs["centerline.*"]``, which you fill from the host
+with ``track_gen.pipeline.load_centerlines`` or from your own kernels, inside your own
+graph too.
+
+.. code-block:: python
+
+   import numpy as np
+   from track_gen import TrackGenerator
+   from track_gen.pipeline import load_centerlines, presets
+
+   # A 4 km circuit in metres: spacing, half-width and capacity in the data's units.
+   spec = presets.track(num_envs=64, device="cuda:0", generator="external",
+                        num_points=1024,      # raw capacity N: points per env you can load
+                        n_max=2048,           # >= perimeter / spacing + 1
+                        spacing=2.0, half_width=6.0)
+   gen = TrackGenerator(spec)
+
+   loops = [np.load(f"track_{i}.npy") for i in range(64)]   # [m_e, 2] each, m_e <= 1024
+   load_centerlines(gen, loops)                               # pads, sets the counts
+   track = gen.generate()
+
+**Inputs.** The generator declares, in ``gen.inputs`` (``N`` is the raw capacity,
+``num_points``):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 24 16 30
+
+   * - Input
+     - Shape, dtype
+     - When
+     - Initial value
+   * - ``centerline.xy``
+     - ``[E * N]`` ``vec2f``
+     - always
+     - a circle of radius ``0.6 * scale`` per env
+   * - ``centerline.count``
+     - ``[E]`` ``int32``
+     - always
+     - ``N``
+   * - ``centerline.z``
+     - ``[E * N]`` ``float32``
+     - ``with_z=True``
+     - ``0``
+   * - ``centerline.half_width``
+     - ``[E * N]`` ``float32``
+     - ``with_half_width=True``
+     - ``0.1 * scale``, a placeholder: load yours
+   * - ``centerline.<package>.<name>``
+     - ``[E * N]`` of its dtype
+     - one per entry of ``attributes``
+     - ``0``
+
+So a fresh generator builds valid circles at the default ``scale``, ``half_width`` and
+``spacing``. With settings in your data's units (as in the example above: ``spacing=2.0``,
+``half_width=6.0``), the placeholder circle is far too small for the spacing and every
+env fails (fail bit ``turning``) until you load your centerlines: load them before the
+first ``generate()``. Env ``e``'s loop is the first ``count[e]``
+points of its row (``3 <= count[e] <= N``), in order, closed implicitly (do not repeat
+the first point). ``gen.input_info`` describes each input; ``centerline.count`` is
+latched like any ``[E]`` input, the per-point inputs are not (see the unlatched arrays
+of :ref:`generator-runtime-params`).
+
+**Parameters** (``ExternalParams``, all static, through ``generator_params``):
+
+- ``with_z`` (``False``): read ``centerline.z`` as the altitude. The generator then
+  provides ``z`` (:ref:`generator-provides`): no elevation stage, ``lift.elevated``.
+- ``with_half_width`` (``False``): read ``centerline.half_width`` as the road's
+  half-width per point; it provides ``half_width``: no width stage, XPBD (if any), the
+  band and the checks use it.
+- ``attributes`` (``()``): one ``(key, dtype, interp)`` triple per per-point attribute
+  to carry into ``Track.attributes``, such as ``("acme.surface", "int32", "nearest")``.
+  ``key`` is a plugin key ``<package>.<name>``; ``dtype`` is ``"float32"``,
+  ``"int32"``, ``"vec2f"`` or ``"vec3f"``; ``interp`` a policy valid for it
+  (:ref:`generator-attributes`). Keys must be unique.
+
+**Each generation**, the generator first copies its inputs into the pipeline's raw
+channels, then checks the copies:
+
+1. The count is the one latched at the start of the generation, ``m = count[e]``
+   (clamped to ``[1, N]`` for the copy).
+2. ``centerline.xy`` is copied into ``raw.xy``, the slots past ``m`` filled with the
+   last real point; ``z``, ``half_width`` and each attribute alike.
+3. The env is valid (``gen.valid``) when ``3 <= count[e] <= N``, its first ``m`` points
+   are finite and, when present, its ``z`` is finite and its ``half_width`` finite and
+   ``> 0``. Otherwise it fails fail bit 0 (``generator``), and with
+   ``on_invalid="poison"`` its rows are poisoned.
+
+Repeating the last point is exact: the extra points are zero-length segments, which add
+exactly nothing to the arc-length sums of the resampler (and the stations skip them), so
+a row padded past ``count[e]`` builds the same bytes as a row with exactly ``count[e]``
+points. Validity always describes the data the pipeline consumed, because each input is
+read once, before anything else reads it. The generator launches ``1`` count latch, ``1
++ with_z + with_half_width + len(attributes)`` copies and ``1`` validity kernel per
+generation; it does not depend on the seed (``describe("generator",
+"external").seeded`` is ``False``), so ``advance=True`` rebuilds the same tracks unless
+the inputs changed.
+
+**Sizing and units.** TrackGen has no unit: ``half_width``, ``spacing`` and the
+coordinates of your data are in the same unit. The constant-spacing resample needs
+``floor(L / spacing) + 1`` points for a loop of perimeter ``L``, at most ``n_max``:
+
+.. code-block:: text
+
+   n_max >= L_max / spacing + 1
+
+A loop that needs more is truncated and fails (fail bit ``truncation``). The default
+``spacing`` is ``0.6 * half_width`` and the default ``n_max`` 384: right for the
+built-ins' unit-sized loops, far too small for a 4 km circuit in metres. Set ``spacing``,
+``half_width`` and ``n_max`` explicitly, as in the example, and ``num_points`` to the
+longest row you load.
+
+**Relaxation is off by default.** ``presets.track`` and ``presets.gates`` take
+``relax="auto"`` (their default), which picks the generator's preferred relax stage:
+``external`` prefers ``"none"``, so your points are resampled but not moved. Pass
+``relax="xpbd"`` to let XPBD repair ingested loops (it separates points closer than the
+road's width, and can move every point). ``TrackGenConfig(generator="external")``
+follows the config's ``relax_enable`` (``True`` by default): set
+``relax_enable=False`` to keep the points there too.
+
+**Loading from the host.**
+
+.. code-block:: python
+
+   load_centerlines(target, xy, *, count=None, z=None, half_width=None,
+                    attributes=None, envs=None, stream=None) -> None
+
+- ``target`` is a ``TrackGenerator``, a ``GateGenerator`` or a ``Program`` (anything
+  else raises ``TypeError``) whose inputs include ``centerline.xy``: any generator that
+  declares the ``centerline.*`` inputs, built in or third party. Another raises
+  ``ValueError`` (``load_centerlines: this generator has no 'centerline.xy' input: its
+  generator is 'bezier' (ingestion: generator='external')``).
+- ``xy`` holds one row per loaded env: an ``[E, m, 2]`` array (every row ``m`` points),
+  an ``[E * N, 2]`` array (rows of ``N``), or a sequence of ``E`` arrays ``[m_e, 2]``
+  (NumPy, or anything ``np.asarray`` reads). ``count=`` (``[E]`` ints) gives each row's
+  real points; by default a row's length (a longer row is cut to its count). Rows are
+  padded here with their last point. ``z`` and ``half_width`` follow the form of ``xy``
+  without its last axis, and ``attributes`` maps each ingested key to rows of its dtype.
+  ``envs=`` (distinct env indices) loads those rows only, ``E`` being then the number of
+  indices: for example the envs a masked regeneration will rebuild.
+- Every per-point input the generator was built with is loaded with the rows:
+  ``z=`` for ``with_z``, ``half_width=`` for ``with_half_width``, each ingested attribute
+  in ``attributes=``. Leaving one out raises ``ValueError`` (``load_centerlines:
+  generator 'external' was built with_z: pass z= for the loaded rows (otherwise the input
+  keeps the previous rows)``): the new loop would otherwise get the previous loop's
+  altitude, width or tags.
+- It checks on the host, with a message naming the env: the row count, ``3 <= m_e <=
+  N``, finite points, altitudes and half-widths, ``half_width > 0``, the kind of every
+  value (real numbers; integers within the ``int32`` range for an ``int32`` attribute,
+  so a float is never silently truncated: ``load_centerlines: env 0:
+  attributes['acme.id'] is an int32 attribute; got float64 values (pass integers)``), the
+  attribute keys, inputs the generator was not built with (``z=`` without ``with_z``),
+  and the **sizing** above (``load_centerlines: env 3: perimeter 4012.0 needs 66868
+  points at spacing 0.06 > n_max 384; set spacing / n_max, or rescale the data
+  (half_width and spacing are in the data's units)``). The sizing check reads the
+  Program's ``resample.constant_spacing`` spacing; it is exact with relax off and a close
+  estimate with relax on (the device's ``truncated`` flag stays authoritative).
+- It uploads through host staging memory (pinned on CUDA), one copy per input (per row
+  with ``envs=``), counts included, on the stream resolved like ``generate``'s
+  (``stream=``, an ambient ``LaunchContext.scope``, the generator's constructor
+  ``stream=``, torch's capture stream, Warp's current stream, in that order), and then
+  waits for the copies: a ``gen.generate(sync=False)`` in flight on that stream is never
+  overwritten. Inside a scope on another stream than the generator's, or after a
+  ``gen.generate(stream=t)``, pass ``stream=`` (or order the streams with events) to keep
+  that guarantee. It allocates and blocks, so keep it outside the hot path; under a
+  capture it raises ``CaptureError`` before any copy.
+
+**Writing the inputs in your own graph.** ``gen.inputs["centerline.xy"]`` (and the
+others) are stable device arrays: a kernel of yours, a learned model's output copied in,
+or a torch view can write them, recorded in your graph before ``gen.generate``. Since
+the per-point inputs are not latched, write them on the generation's stream (or order
+the two with events). A masked regeneration rebuilds the masked envs from the current
+inputs and restores the others, so write new rows for the envs you mask.
+
+**Gates.** ``presets.gates(generator="external", source="stations")`` (or
+``"relaxed_stations"``) places gates on ingested centerlines; ingested ``z`` and
+attributes reach the gates through the stations and ``carry`` stages
+(:ref:`pipeline-stations-xyz`).
+
+.. _ingestion-generator:
+
+Writing an ingestion generator
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``external`` is written against the public plugin surface only, so a third-party
+ingestion generator (one that decodes a compressed format on device, say) can do the
+same:
+
+- **Per-point inputs**: ``b.input(name, dtype, default, per="raw")`` returns an
+  ``[E * raw]`` array the caller fills, published in ``gen.inputs`` and read during the
+  generation (unlatched). Name them ``centerline.xy``, ``centerline.count``,
+  ``centerline.z``, ``centerline.half_width`` and ``centerline.<package>.<name>`` to make
+  your generator loadable by ``load_centerlines``; otherwise use your own namespace.
+  Copy them into your ``raw.*`` outputs first and validate the copies, so validity
+  describes exactly what the pipeline consumed.
+- **Parameter-dependent outputs**: override ``declare(params)`` to return the
+  ``writes`` and ``provides`` your static parameters select (``external`` adds
+  ``raw.z`` / ``"z"`` when ``with_z`` is set, and a ``raw.<package>.<name>`` port per
+  attribute), and write exactly those ports in ``build``.
+- **No seed**: declare ``seeded = False`` when the output does not depend on the seed.
+- **No relax by default**: declare ``preferred = {"relax": "none"}`` when your points
+  must not move; a user still gets XPBD with ``relax="xpbd"``.
+
+.. code-block:: python
+
+   class Decoded(plugin.Stage):
+       kind, name, output = "generator", "acme.decoded", "centerline"
+       Params = DecodedParams                     # static: with_z
+       writes = {"xy": "raw.xy", "valid": "gen.valid"}
+       seeded = False
+       preferred = {"relax": "none"}
+
+       @classmethod
+       def declare(cls, params):
+           if params.with_z:
+               return {**cls.writes, "z": "raw.z"}, frozenset({"z"})
+           return cls.writes, frozenset()
+
+       def build(self, b, params):
+           code = b.input("acme.code", wp.int32, 0, per="raw")   # the caller's data
+           xy = b.write("xy", wp.vec2f, per="raw")
+           ok = b.write("valid", wp.int32)
+           z = b.write("z", wp.float32, per="raw") if params.with_z else None
+           ...
 
 .. _generator-describe:
 
@@ -828,8 +1113,11 @@ given for dynamic fields, and ``x-ui`` when ``ui`` is set.
 ``describe()`` also reports ``capturable`` and ``accepts_ctx`` for both forms: a Stage
 always accepts a ``ctx``, and is capturable unless its capture class is ``HOST``. For a
 Stage it also reports ``capture`` (the ``CaptureClass`` for the Params defaults),
-``output``, ``writes`` and ``provides``; they are ``None``, ``None``, ``{}`` and empty for
-a ``GeneratorSpec``. Code that walks the registry should read these from ``describe()``:
+``output``, ``writes`` and ``provides`` (its ``declare()`` at the Params defaults) and
+``preferred``; they are ``None``, ``None``, ``{}``, empty and empty for a
+``GeneratorSpec``. ``seeded`` is reported for every generator (``True`` for a
+``GeneratorSpec``): code that enumerates generators to check seed dependence filters on
+it. Code that walks the registry should read these from ``describe()``:
 a Stage class has no ``capturable`` or ``alloc_scratch`` attribute (and
 ``registry.get`` returns the class).
 
@@ -1694,13 +1982,15 @@ Current standard generators
 ---------------------------
 
 The standard runtime generators are ``bezier``, ``checkpoint``, ``hull``,
-``polar``, ``repulsive``, and ``voronoi``.  Call
+``polar``, ``repulsive``, and ``voronoi``, plus ``external``, which draws nothing: it
+ingests the centerlines you load (`Ingesting your own centerlines`_).  Call
 ``track_gen.plugin.registry.available("generator")`` for the authoritative list, installed
 plugins included (``available("gate_generator")`` for gate generators). Each built-in
 track generator is a ``GeneratorSpec`` (``repulsive``: a ``BOUNDED`` ``Stage``) and each
 built-in gate generator an anchors ``Stage``, with a static Params class whose fields are the flat ``TrackGenConfig`` /
 ``GateGenConfig`` knobs it reads, under the same names; the
-:ref:`configuration reference <builtin-generator-params>` lists them.
+:ref:`configuration reference <builtin-generator-params>` lists them. ``external`` is a
+``STATIC`` ``Stage`` with its own ``ExternalParams`` (no flat field).
 
 The Voronoi method is implemented as a fixed-budget site-field / graph-cycle
 generator rather than exact Voronoi ridge walking; exact Delaunay/Voronoi

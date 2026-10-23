@@ -19,7 +19,9 @@ Checks (:data:`CHECKS`), for a track generator:
     a first ``generate()`` (into a poisoned raw output: the batch the checks read).
 ``output.shape``
     The raw output (the ``[E*R]`` vec2f centerline and the ``[E]`` int32 validity flags)
-    and every ``Track`` field have the documented shape and dtype; flags are 0 or 1.
+    and every ``Track`` field have the documented shape and dtype; flags are 0 or 1; the
+    result's ``layout`` is the Program's (canonical device) and ``result.validate()``
+    passes (roadmap PR13b).
 ``output.finite``
     The raw centerline is finite for every env the generator marked valid, and the final
     ``Track`` is finite before ``count[e]`` for every valid env. The raw output is
@@ -33,6 +35,13 @@ Checks (:data:`CHECKS`), for a track generator:
     The raw loop closes (the last-to-first gap is at most 3x the median step, or 1.5x
     the longest step between consecutive points) and the pipeline accepts it (valid
     fraction > 0).
+``output.view`` (roadmap PR13b; every kind)
+    The unit's pipeline built with ``out=`` the middle view ``big.view(1, E + 1)`` of a
+    byte-poisoned result of ``E + 2`` envs (with the kit's explicit seeds) writes exactly
+    the bytes of the standalone batch into the view, after construction and after a
+    masked advance, and leaves every byte outside it untouched: a kernel that indexes
+    past ``[0, E)`` of a result array (or reads a result buffer it did not write) fails
+    here. ``check_stage`` builds the stage's composed pipeline the same way.
 ``attributes.written`` / ``attributes.carried`` (roadmap PR13a)
     For a generator that writes per-point attributes (``raw.z``, ``raw.half_width``,
     ``raw.<pkg>.<name>``; a gate generator ``anchors.<pkg>.<name>``; skipped "no
@@ -51,7 +60,9 @@ Checks (:data:`CHECKS`), for a track generator:
 ``diversity``
     Different seeds produce different tracks: no env repeats under a disjoint set of
     seeds, and no two envs of one batch are identical (envs valid in both batches only:
-    two rejected envs may legitimately be alike).
+    two rejected envs may legitimately be alike). Reported skipped for a generator that
+    declares ``seeded = False`` (an ingestion generator: its output does not depend on
+    the seed).
 ``batch_independence``
     Env ``e``'s track depends on its own seed only: it is identical alone (``E = 1``),
     inside a larger batch, and when the other envs' seeds are permuted.
@@ -210,14 +221,16 @@ _NEUTRAL = {"relax": "none", "width": "constant", "elevation": "flat", "order": 
 _ATTRIBUTES = ("attributes.written", "attributes.carried")
 CHECKS: Mapping[str, tuple] = types.MappingProxyType({
     "generator": ("construct", "output.shape", "output.finite", "output.padding",
-                  "output.count", "output.closed") + _ATTRIBUTES + _COMMON,
+                  "output.count", "output.closed", "output.view") + _ATTRIBUTES + _COMMON,
     "gate_generator": ("construct", "output.shape", "output.finite", "output.padding",
-                       "output.count", "output.accepted") + _ATTRIBUTES + _COMMON,
-    **{k: _STAGE_OUTPUT + ("output.accepted", "stage.isolation") + _STAGE_COMMON
-       for k in ("relax", "elevation", "order", "stations")},
-    "width": _STAGE_OUTPUT + ("output.accepted", "stage.isolation", "width.values")
+                       "output.count", "output.accepted", "output.view") + _ATTRIBUTES
+    + _COMMON,
+    **{k: _STAGE_OUTPUT + ("output.accepted", "output.view", "stage.isolation")
+       + _STAGE_COMMON for k in ("relax", "elevation", "order", "stations")},
+    "width": _STAGE_OUTPUT + ("output.accepted", "output.view", "stage.isolation",
+                              "width.values") + _STAGE_COMMON,
+    "validity": _STAGE_OUTPUT + ("output.view", "stage.isolation", "validity.bits")
     + _STAGE_COMMON,
-    "validity": _STAGE_OUTPUT + ("stage.isolation", "validity.bits") + _STAGE_COMMON,
 })
 
 _HOT = ("hot_path.host_sync", "hot_path.allocation", "hot_path.stream",
@@ -490,6 +503,35 @@ def _attribute_buffers(kind: str, gen) -> list:
     return out
 
 
+def _seeded(spec) -> bool:
+    """Whether a generator's output depends on its seed (``Stage.seeded``; a legacy spec:
+    ``True``)."""
+    return bool(getattr(spec, "seeded", True)) if spec is not None else True
+
+
+def _layout_problems(gen) -> "list[str]":
+    """``output.shape``'s layout rules (roadmap PR13b): the result's ``layout`` is the
+    Program's (canonical device) and the result validates."""
+    from .._src.types import _fmt_layout, _layout_key  # noqa: PLC0415
+
+    program = getattr(gen, "program", None)
+    result = getattr(program, "result", None)
+    if result is None or not hasattr(result, "validate"):
+        return []
+    lay = getattr(result, "layout", None)
+    problems = []
+    if lay is None:
+        problems.append("the result has no layout (the planner sets it)")
+    elif _layout_key(lay) != _layout_key(program.layout):
+        problems.append(f"the result's layout {_fmt_layout(lay)} is not the Program's "
+                        f"{_fmt_layout(program.layout)}")
+    try:
+        result.validate()
+    except (TypeError, ValueError) as exc:
+        problems.append(f"the result does not validate: {exc}")
+    return problems
+
+
 def _writes_raw_valid(gen) -> bool:
     """Whether a centerline generator writes its valid flag on every call: a legacy
     ``GeneratorSpec`` always does (``out_valid``); a Stage generator only when its build
@@ -634,9 +676,12 @@ class _DeviceRun:
         self.accepts_ctx = bool(info.accepts_ctx)
         # The unit's bounded loops with active= (seen during its first generation).
         self.loops: list = []
+        self.gen_spec = None            # the bound generator spec (seeded=, ...)
 
     # -- construction ------------------------------------------------------------
-    def make(self, seeds: np.ndarray):
+    def make(self, seeds: np.ndarray, out=None):
+        """A generator of the unit for ``seeds`` (``out=``: writing into a caller-owned
+        result, the ``output.view`` check)."""
         from .._src.rng_utils import PerEnvSeededRNG  # noqa: PLC0415
 
         dev = self.device
@@ -644,7 +689,7 @@ class _DeviceRun:
         rng = PerEnvSeededRNG(seeds=wp.array(_int32(seeds), dtype=wp.int32, device=dev),
                               num_envs=E, device=dev)
         if self.stage is not None:
-            return self.stage.facade()(self.stage.spec(E, dev), rng)
+            return self.stage.facade()(self.stage.spec(E, dev), rng, out=out)
         kw = dict(self.overrides)
         if self.params is not None:
             kw["generator_params"] = self.params
@@ -653,14 +698,14 @@ class _DeviceRun:
             from .._src.types import TrackGenConfig  # noqa: PLC0415
 
             return TrackGenerator(TrackGenConfig(generator=self.name, device=dev,
-                                                 num_envs=E, **kw), rng)
+                                                 num_envs=E, **kw), rng, out=out)
         from .._src.gate_generator import GateGenerator  # noqa: PLC0415
         from .._src.types import GateGenConfig  # noqa: PLC0415
 
         if "gate_ordering" not in kw:
             kw["gate_ordering"] = _default_ordering(self.name)
         return GateGenerator(GateGenConfig(generator=self.name, device=dev, num_envs=E,
-                                           **kw), rng)
+                                           **kw), rng, out=out)
 
     def snapshot(self, gen) -> _Snapshot:
         if self.is_cuda:
@@ -739,14 +784,16 @@ class _DeviceRun:
                 self.add(n, True, "not run: construct failed", skipped=True)
             return self.results
         self.loops = [r for r in loops if r.stage_id == self.unit_id()]
+        self.gen_spec = gen.program._binding.spec
         # The Program decides: a pipeline with a HOST stage is not caller-capturable.
         self.capturable = bool(gen.program.capturable)
         if self.stage is not None:
             self.accepts_ctx = True
         self.add("construct", True, details={"capturable": self.capturable,
                                              "accepts_ctx": self.accepts_ctx})
-        out_names = [n for n in names if n.startswith("output.")]
-        self.guarded(out_names, lambda: self.output_checks(snap))
+        out_names = [n for n in names if n.startswith("output.") and n != "output.view"]
+        self.guarded(out_names, lambda: self.output_checks(snap, gen))
+        self.guarded(["output.view"], lambda: [self.output_view(gen)])
         if self.stage is None:
             self.guarded(list(_ATTRIBUTES), lambda: self.attribute_checks(gen, snap))
         if self.stage is not None:
@@ -774,7 +821,7 @@ class _DeviceRun:
         return self.results
 
     # -- 1. output -------------------------------------------------------------------
-    def output_checks(self, s: _Snapshot) -> list:
+    def output_checks(self, s: _Snapshot, gen=None) -> list:
         E, N = s.E, s.stride
         track = self.snap_kind == "generator"
         out = []
@@ -814,6 +861,8 @@ class _DeviceRun:
                 vals = vals[vals != _FLAG_POISON]
             if not set(vals.tolist()) <= {0, 1}:
                 problems.append(f"{k} holds {vals.tolist()} (flags must be 0 or 1)")
+        if gen is not None:
+            problems += _layout_problems(gen)
         out.append(("output.shape", not problems, _list_text(problems), {}))
 
         # finite (raw for generator-valid envs; final before count for valid envs)
@@ -948,6 +997,62 @@ class _DeviceRun:
         return out
 
     # -- attributes (roadmap PR13a) -------------------------------------------------------
+    def output_view(self, gen):
+        """``output.view``: the unit's pipeline built with ``out=`` the middle view
+        ``big.view(1, E + 1)`` of a byte-poisoned result of ``E + 2`` envs (explicit
+        seeds: no env offset applies) writes exactly the standalone batch's bytes into
+        the view, after construction and after a masked advance, and never a byte
+        outside it (a kernel indexing past ``[0, E)`` of a result array fails here)."""
+        from .._src.types import Layout  # noqa: PLC0415
+
+        program = gen.program
+        cls = type(program.result)._RESULT_BASE
+        E, S = self.E, int(program.layout.stride)
+        attrs = {k: info.dtype for k, info in program.attributes.items()}
+        big = cls.alloc(Layout(E + 2, S, self.device), attributes=attrs)
+        if self.is_cuda:
+            wp.synchronize_device(self.device)
+        arrays = result_arrays(big)
+        for arr in arrays.values():
+            arr.assign(_byte_poisoned(arr.numpy()))
+        view = big.view(1, E + 1)
+        twin = self.make(self.seeds_a)
+        sub = self.make(self.seeds_a, out=view)
+        problems: list = []
+
+        def compare(label: str) -> None:
+            if self.is_cuda:
+                wp.synchronize_device(self.device)
+            want = result_arrays(twin.program.result)
+            got = result_arrays(view)
+            for name, ref in want.items():
+                mine = got.get(name)
+                if mine is None:
+                    continue
+                if mine.numpy().tobytes() != ref.numpy().tobytes():
+                    problems.append(f"{label}: {name} of the view differs from the "
+                                    f"standalone batch")
+            for name, arr in arrays.items():
+                host = arr.numpy()
+                per = S if int(host.shape[0]) == (E + 2) * S else 1
+                outside = np.concatenate([host[:per], host[(E + 1) * per:]])
+                if not _is_byte_poison(outside).all():
+                    problems.append(f"{label}: {name} was written outside the view (env 0 "
+                                    f"or {E + 1} of a {E + 2}-env result): a kernel "
+                                    f"indexes past [0, E) of a result array")
+        compare("construct")
+        mask = np.zeros(E, np.int32)
+        mask[::2] = 1
+        for g in (twin, sub):
+            g.enqueue(advance=True, mask=wp.array(mask, dtype=wp.int32,
+                                                  device=self.device))
+        compare("masked advance")
+        msg = _list_text(problems)
+        if problems:
+            msg += (". Index every result array from element 0 of the array you are "
+                    "given (e * stride + i): out= may be a view of a larger result")
+        return ("output.view", not problems, msg, {"envs": E})
+
     def attribute_checks(self, gen, s: _Snapshot) -> list:
         attrs = [ch for ch, _ in _attribute_buffers(self.snap_kind, gen)]
         if not attrs:
@@ -1229,6 +1334,9 @@ class _DeviceRun:
         return ("determinism", not bad, msg, {})
 
     def diversity(self, snap: _Snapshot):
+        if not _seeded(self.gen_spec):
+            return ("diversity", None, "skipped: generator declares seeded=False (its "
+                    "output does not depend on the seed)", {"compared": 0})
         other = self.snap_b = self.fresh(self.seeds_b)
         # Only envs valid in both batches: a generator may reject an env by writing
         # NaN (or nothing) and 0 to out_valid, and two rejected envs can be alike.
@@ -1637,7 +1745,8 @@ class _DeviceRun:
         if not self.capturable:
             return self.capture_caller_refused()
         gen = self.make(self.seeds_a)
-        status = assert_caller_capturable(gen, modes=self.modes)
+        status = assert_caller_capturable(gen, modes=self.modes,
+                                          seeded=_seeded(self.gen_spec))
         return ("capture.caller", True, ", ".join(f"{m}: {s}" for m, s in status.items()),
                 dict(status))
 

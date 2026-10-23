@@ -1,19 +1,26 @@
 """Resampled 3D centerline through a gate sequence (closed Catmull-Rom).
 
-``CourseLine`` gives gates mode a Track-shaped centerline so the standard
-Track consumers (``TrackLocalizer``; later the corridor tube) work unchanged:
-``center``/``tangent``/``arclen``/``length``/``count``/``valid`` are real,
-``outer``/``inner``/``normal`` are NaN (no road band), ``winding`` is 0.
+``CourseLine`` gives gates mode a centerline (``CourseLine.centerline``, a
+:class:`track_gen.results.Centerline`) so the centerline consumers
+(``TrackLocalizer``, ``localize.curvature`` / ``speed_profile``: anything that reads a
+:class:`~track_gen.results.HasCenterline`) work unchanged: ``center`` / ``tangent`` /
+``arclen`` / ``length`` / ``count`` / ``valid``. It has no road band: a consumer that
+needs one (``CollisionChecker``, ``HeightFieldBaker``: ``HasBand``) refuses it at
+construction. ``CourseLine.track`` is a deprecated alias of ``centerline`` (a
+``DeprecationWarning``; removed at 1.0).
 
 count[e] = samples_per_gate * gate_count[e]; N_max = samples_per_gate *
 max_gates. ``refresh()`` is two kernel launches, allocation-free and
 capture-safe; call it after every gate regeneration (the facade does).
 """
+import warnings
+
 import warp as wp
 
 from ..exec.context import LaunchContext
+from ..results import HasGates, _check_and_bind
 from .runtime import _init, _sync  # noqa: F401  (_sync: legacy re-export)
-from .types import GateSequence, Track
+from .types import Centerline, Layout
 
 
 @wp.func
@@ -109,39 +116,57 @@ def _line_frames_k(
 
 
 class CourseLine:
-    """See module docstring."""
+    """See module docstring.
 
-    def __init__(self, seq: GateSequence, samples_per_gate: int = 8) -> None:
+    Args:
+        seq: The gates (any :class:`~track_gen.results.HasGates`: ``position``,
+            ``count``, ``valid``; a ``GateSequence`` or a view of one).
+        samples_per_gate: Centerline samples per gate (>= 2).
+
+    Attributes:
+        centerline: The :class:`~track_gen.results.Centerline` ``refresh()`` writes
+            (stable pointers; ``layout = Layout(E, samples_per_gate * max_gates,
+            device)``).
+    """
+
+    #: The topologies this component supports (closed loops only in 0.x).
+    topology = "closed"
+
+    def __init__(self, seq: HasGates, samples_per_gate: int = 8) -> None:
         _init()
         if int(samples_per_gate) < 2:
             raise ValueError(
                 f"samples_per_gate must be >= 2, got {samples_per_gate!r}")
-        E = int(seq.count.shape[0])
-        stride = int(seq.position.shape[0])
-        if E < 1 or stride % E != 0:
-            raise ValueError(
-                f"gate batch layout invalid: {stride} slots for {E} envs")
-        self._seq = seq
+        # The members checked here are the ones bound (read once: stable pointers).
+        lay, self._seq = _check_and_bind(seq, HasGates, consumer="CourseLine",
+                                         topology=self.topology)
+        E = int(lay.num_envs)
         self._E = E
-        self._G = stride // E
+        self._G = int(lay.stride)
         self._spg = int(samples_per_gate)
         self._n_max = self._G * self._spg
-        self._device = str(seq.position.device)
+        self._device = lay.device
         dev = self._device
         n = E * self._n_max
-        nan3 = float("nan")
-        self.track = Track(
-            outer=wp.full(n, wp.vec3f(nan3, nan3, nan3), device=dev),
+        self.centerline = Centerline(
             center=wp.zeros(n, dtype=wp.vec3f, device=dev),
-            inner=wp.full(n, wp.vec3f(nan3, nan3, nan3), device=dev),
             tangent=wp.zeros(n, dtype=wp.vec3f, device=dev),
-            normal=wp.full(n, wp.vec3f(nan3, nan3, nan3), device=dev),
             arclen=wp.zeros(n, dtype=wp.float32, device=dev),
             length=wp.zeros(E, dtype=wp.float32, device=dev),
-            valid=wp.zeros(E, dtype=wp.int32, device=dev),
             count=wp.zeros(E, dtype=wp.int32, device=dev),
-            winding=wp.zeros(E, dtype=wp.float32, device=dev),
+            valid=wp.zeros(E, dtype=wp.int32, device=dev),
+            layout=Layout(E, self._n_max, dev, True),
         )
+
+    @property
+    def track(self) -> Centerline:
+        """Deprecated alias of :attr:`centerline` (a ``Centerline`` since 0.2.0.dev5, no
+        longer a ``Track``: it has no ``outer`` / ``inner`` / ``normal`` /
+        ``winding``); removed at 1.0."""
+        warnings.warn("CourseLine.track is a Centerline since 0.2.0.dev5 and is "
+                      "deprecated; use CourseLine.centerline (removed at 1.0)",
+                      DeprecationWarning, stacklevel=2)
+        return self.centerline
 
     def refresh(self, stream=None) -> None:
         """Resample from the CURRENT gate batch (capture-safe).
@@ -153,7 +178,7 @@ class CourseLine:
                 stream).
         """
         ctx = LaunchContext.for_call(self._device, stream)
-        s, t = self._seq, self.track
+        s, t = self._seq, self.centerline
         ctx.launch(_sample_line_k, self._E * self._n_max,
                    [s.position, s.count, s.valid, self._G, self._spg,
                     t.center, t.count, t.valid])

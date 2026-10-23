@@ -552,6 +552,46 @@ stream), with the regeneration running unconditionally. Notes:
 - Importing ``track_gen`` does not import torch; ``track_gen.interop.torch`` imports it
   only when one of its functions is called.
 
+A Mixed Batch in One Graph
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Envs from different generators can share one ``Track`` and one step graph: each
+``TrackGenerator`` writes an env-slice view of a preallocated result (``out=``), and the
+utilities read the whole result. A ``Course`` builds its own generator, so wire the
+utilities by hand:
+
+.. code-block:: python
+
+   from track_gen import TrackGenerator
+   from track_gen.collision import CollisionChecker
+   from track_gen.pipeline import presets
+   from track_gen.results import Layout, Track
+
+   big = Track.alloc(Layout(E, 384, device))           # cold: before any capture
+   half = E // 2
+   seeds = seeds_for(0)                                # [E] int32: one array, sliced per generator
+   gens = [TrackGenerator(presets.track(num_envs=half, device=device, generator=g),
+                          seeds=seeds[k * half:(k + 1) * half],
+                          out=big.view(k * half, (k + 1) * half))
+           for k, g in enumerate(("bezier", "polar"))]
+   collision = CollisionChecker(big, max_boxes=1)      # reads all E envs
+
+   s = wp.Stream(device)
+   with wp.ScopedCapture(stream=s) as cap:
+       sim_step(pos, quat, stream=s)
+       contacts = collision.query(pos, quat, he, stream=s)  # he: [E] vec2f, above
+       update_done(contacts, done, stream=s)           # done: your [E] int32 mask
+       for k, gen in enumerate(gens):
+           gen.generate(stream=s, advance=True, mask=done[k * half:(k + 1) * half])
+   step = cap.graph
+
+Each generator regenerates the masked envs of its own range and leaves every other row
+untouched; views given to two live generators must be disjoint (the build raises
+otherwise). Every generator of the batch uses the same ``n_max``. Pass each one its slice
+of one seed array, as above (with ``seeds=None`` or an ``int``, the seeds are offset by the
+view's first env, so the batch is still seeded like one batch). See
+:ref:`results-mixed-batches` for the rules.
+
 Recording the Per-Step Utilities
 ----------------------------------
 

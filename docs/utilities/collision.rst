@@ -24,6 +24,12 @@ between regenerations.
    The full per-box contact report: OOB flag (color), signed clearance
    (label), nearest boundary point (dotted) and inward normal (arrow).
 
+``CollisionChecker(track, ...)`` takes any ``HasBand`` source (a ``Track``, a
+``track.view(e0, e1)``, or an object with ``center``, ``outer``, ``inner``, ``count``
+and ``valid``) and checks the members it reads, ``center``, ``outer``, ``inner`` and
+``count``, at construction (:ref:`utilities-sources`). A ``Centerline`` has no band and
+is refused with a ``TypeError``.
+
 What the ``sdf`` query computes
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -130,7 +136,8 @@ obstacles. Gate posts are two lines of code:
                          radius=0.03, max_boxes=1, num_envs=E)
 
 NaN padding in the gate arrays carries over and NaN discs are skipped, so no
-per-env count bookkeeping is needed. A hit reports the deepest disc; for
+per-env count bookkeeping is needed. ``DiscChecker`` takes raw disc arrays, not a result
+object, so no source check or topology applies to it. A hit reports the deepest disc; for
 interleaved posts, ``gate = disc // 2``.
 
 ``posts`` is a host-side snapshot taken via ``.numpy()`` — it does NOT alias

@@ -302,3 +302,76 @@ def register_stage_toys(reg) -> None:
     reg.add(ToyWobbleHost)
     reg.add(ToyWobbleInput)
     reg.add(TOY_LOBED)
+
+
+# ---------------------------------------------------------------------------------------
+# Roadmap PR13b: a centerline generator whose declared writes depend on its params
+# (Stage.declare): raw.z (provides z) and raw.acme.tag only when ``tagged`` is set.
+# ---------------------------------------------------------------------------------------
+
+DECLARED = "acme.declared"
+
+
+@wp.kernel
+def _declared_k(seed: wp.array(dtype=wp.int32), salt: wp.uint32, lobes: int, n: int,
+                radius: float, xy: wp.array(dtype=wp.vec2f)):
+    t = wp.tid()
+    e = t // n
+    i = t - e * n
+    st = _wobble_state(seed[e], salt)
+    th = _TWO_PI * float(i) / float(n)
+    r = radius * (1.0 + 0.15 * wp.sin(float(lobes) * th + _TWO_PI * wp.randf(st)))
+    xy[t] = wp.vec2f(r * wp.cos(th), r * wp.sin(th))
+
+
+@wp.kernel
+def _declared_attrs_k(n: int, z: wp.array(dtype=wp.float32),
+                      tag: wp.array(dtype=wp.int32)):
+    t = wp.tid()
+    i = t - (t // n) * n
+    z[t] = 0.2 + 0.1 * wp.sin(_TWO_PI * float(i) / float(n))
+    tag[t] = (4 * i) // n                    # labels 0..3 along the loop
+
+
+@_dc.dataclass(frozen=True, kw_only=True)
+class ToyDeclaredParams(_plugin.Params):
+    lobes: int = _plugin.static(5, lo=2, hi=12, doc="lobes per loop")
+    tagged: bool = _plugin.static(False, doc="also write raw.z and raw.acme.tag")
+
+
+class ToyDeclared(_plugin.Stage):
+    kind = "generator"
+    name = DECLARED
+    output = "centerline"
+    Params = ToyDeclaredParams
+    writes = {"xy": "raw.xy", "valid": "gen.valid"}
+    seeded = True
+
+    @classmethod
+    def declare(cls, params):
+        writes, provides = dict(cls.writes), frozenset()
+        if params.tagged:
+            writes.update(z="raw.z", tag="raw.acme.tag")
+            provides = frozenset({"z"})
+        return writes, provides
+
+    def build(self, b, p):
+        xy, ok = b.write("xy", wp.vec2f, per="raw"), b.write("valid", wp.int32)
+        salt, n, radius, lobes = b.salt("shape"), b.raw, 0.6 * b.scale, int(p.lobes)
+        z = tag = None
+        if p.tagged:
+            z = b.write("z", wp.float32, per="raw")
+            tag = b.write("tag", wp.int32, per="raw", interp="nearest", export=True)
+
+        def enqueue(ctx):
+            ctx.launch(_declared_k, b.E * n, [b.seed, salt, lobes, n, radius, xy])
+            if z is not None:
+                ctx.launch(_declared_attrs_k, b.E * n, [n, z, tag])
+            ctx.fill(ok, 1)
+
+        return enqueue
+
+
+def register_declared(reg) -> None:
+    """Register ``acme.declared`` (roadmap PR13b: ``Stage.declare``)."""
+    reg.add(ToyDeclared)

@@ -19,6 +19,11 @@ doubled prop. ``PropSet.count``/``truncated``/``step`` report what was
 actually placed; see the left panels of the overview figure on
 :doc:`the utilities overview </utilities/overview>`.
 
+``PropSampler(track, ...)`` takes any ``HasBand`` source (a ``Track``, a
+``track.view(e0, e1)``, or an object with the members) and checks what it reads,
+``outer``, ``inner``, ``count`` and ``valid``, at construction (see
+:ref:`utilities-sources`).
+
 Props are rendering-only by design. To make point props physical (cones a
 vehicle can clip), feed their positions to
 :class:`track_gen.collision.DiscChecker` — see

@@ -9,6 +9,14 @@ def test_public_api_surface_is_exactly_curated():
         "GateGenerator",
         "GateGenConfig",
         "GateSequence",
+        # Roadmap PR13b: the result layout, the capability protocols and their module.
+        "Layout",
+        "HasBand",
+        "HasCenterline",
+        "HasGateFrames",
+        "HasGates",
+        "HasGeneration",
+        "results",
         "PerEnvSeededRNG",
         "collision",
         "props",
@@ -127,7 +135,9 @@ def test_the_channel_carry_surface_is_public():
     params = inspect.signature(StageBuilder.write).parameters
     assert params["interp"].default is None and params["export"].default is False
     track = [f.name for f in dataclasses.fields(track_gen.Track)]
-    assert track[-2:] == ["half_width", "attributes"]             # appended
-    assert [f.name for f in dataclasses.fields(track_gen.GateSequence)][-1] == "attributes"
+    # appended (PR13a: half_width, attributes; PR13b: layout)
+    assert track[-3:] == ["half_width", "attributes", "layout"]
+    assert [f.name for f in dataclasses.fields(track_gen.GateSequence)][-2:] == [
+        "attributes", "layout"]
     assert "tables" in inspect.signature(ops.resample_uniform).parameters
     assert "tables" in inspect.signature(ops.resample_constant_spacing).parameters

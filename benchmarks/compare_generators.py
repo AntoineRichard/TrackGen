@@ -155,7 +155,10 @@ def compare(names=None, seed_base=0, E=4096, base_config=None,
     if base_config is None:
         base_config = TrackGenConfig(num_envs=E)
     if names is None:
-        names = registry.available("generator")
+        # Seed-dependent generators only (an ingestion generator, seeded=False, has no
+        # random tracks to compare).
+        names = [n for n in registry.available("generator")
+                 if registry.describe("generator", n).seeded]
     names = list(names)
     per_generator = dict(generator_params or {})
     stray = sorted(set(per_generator) - set(names))

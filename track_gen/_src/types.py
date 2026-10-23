@@ -9,7 +9,9 @@ fields are ``wp.array``).
 
 import dataclasses
 import math
+import operator
 import sys
+import types
 import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -1086,6 +1088,627 @@ class GateGenConfig:
             )
 
 
+# ---------------------------------------------------------------------------------------
+# Layout and the result schemas (roadmap PR13b)
+# ---------------------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class Layout:
+    """The shape of a batch: the envs, the per-env row capacity, the device and the
+    topology. Handed to :meth:`Params.validate <track_gen.plugin.Params.validate>`,
+    :meth:`Stage.capacity <track_gen.plugin.Stage.capacity>` and the
+    :class:`~track_gen.plugin.StageBuilder`, and carried by every result
+    (``Track.layout``, ``GateSequence.layout``, ``Centerline.layout``).
+
+    ``track_gen.results.Layout``, ``track_gen.Layout`` and
+    ``track_gen.plugin.Layout`` are this class.
+
+    Attributes:
+        num_envs: ``E`` (an int ``>= 1``; numpy integers are accepted).
+        stride: The per-env row capacity (an int ``>= 1``): ``N_max`` for a ``Track``
+            (and a track stage), ``max_gates`` for a ``GateSequence`` (and a gate
+            stage), and for a ``Centerline`` its own capacity (``max_gates *
+            samples_per_gate`` for a gates-mode ``Course``'s
+            ``CourseLine.centerline``). A channel's own row stride is
+            :meth:`StageBuilder.stride_of <track_gen.plugin.StageBuilder.stride_of>`.
+        device: The device string, stored AS GIVEN (``"cuda"`` stays ``"cuda"``). The
+            layouts TrackGen makes (the planner, ``alloc``, ``view``, an inferred one)
+            store the canonical ``str(wp.get_device(d))`` (``"cuda:0"``), so ``==``
+            holds between them; the library's own checks compare the canonical device,
+            so a hand-set ``Layout(E, S, "cuda")`` matches ``"cuda:0"``.
+        closed: Whether the loops are closed. Only ``True`` is supported in 0.x (a
+            ``BatchSpec(closed=False)`` is refused by the planner, a source with
+            ``closed=False`` by every utility).
+
+    Raises:
+        TypeError: a non-integer (or bool) ``num_envs`` / ``stride``, a non-str
+            ``device``, a non-bool ``closed``.
+        ValueError: ``num_envs < 1`` or ``stride < 1``.
+    """
+
+    num_envs: int
+    stride: int
+    device: str
+    closed: bool = True
+
+    def __post_init__(self) -> None:
+        for name in ("num_envs", "stride"):
+            v = getattr(self, name)
+            if isinstance(v, bool):
+                raise TypeError(f"Layout.{name} must be an int, got {v!r}")
+            try:
+                iv = operator.index(v)
+            except TypeError:
+                raise TypeError(f"Layout.{name} must be an int, got "
+                                f"{type(v).__name__}") from None
+            if iv < 1:
+                raise ValueError(f"Layout.{name} must be >= 1, got {iv}")
+            object.__setattr__(self, name, int(iv))
+        if not isinstance(self.device, str):
+            raise TypeError(f"Layout.device must be a device string, got "
+                            f"{type(self.device).__name__}")
+        if not isinstance(self.closed, bool):
+            raise TypeError(f"Layout.closed must be a bool, got {self.closed!r}")
+
+
+def _canonical_device(device: str) -> str:
+    return str(wp.get_device(device))
+
+
+def _layout_key(layout: Layout) -> tuple:
+    """The library's comparison key of a layout: the canonical device (evaluated now)."""
+    return (int(layout.num_envs), int(layout.stride), _canonical_device(layout.device),
+            bool(layout.closed))
+
+
+def _fmt_layout(layout: Layout) -> str:
+    return (f"Layout({layout.num_envs}, {layout.stride}, {layout.device!r}, "
+            f"{layout.closed})")
+
+
+def _dtype_name(dtype) -> str:
+    return getattr(dtype, "__name__", str(dtype))
+
+
+# (field, per, dtype), in dataclass field order; per: "point" ([E*stride]) or "env" ([E]).
+_TRACK_SCHEMA = (
+    ("outer", "point", wp.vec3f), ("center", "point", wp.vec3f),
+    ("inner", "point", wp.vec3f), ("tangent", "point", wp.vec3f),
+    ("normal", "point", wp.vec3f), ("arclen", "point", wp.float32),
+    ("length", "env", wp.float32), ("valid", "env", wp.int32),
+    ("count", "env", wp.int32), ("winding", "env", wp.float32),
+    ("truncated", "env", wp.int32), ("generation", "env", wp.int32),
+    ("fail_mask", "env", wp.int32), ("half_width", "point", wp.float32),
+)
+_TRACK_OPTIONAL = frozenset({"truncated", "generation", "fail_mask", "half_width"})
+_GATE_SCHEMA = (
+    ("position", "point", wp.vec3f), ("tangent", "point", wp.vec3f),
+    ("forward", "point", wp.vec3f), ("orientation", "point", wp.quatf),
+    ("half_size", "point", wp.float32), ("left", "point", wp.vec3f),
+    ("right", "point", wp.vec3f), ("valid", "env", wp.int32),
+    ("count", "env", wp.int32), ("generation", "env", wp.int32),
+    ("fail_mask", "env", wp.int32),
+)
+_GATE_OPTIONAL = frozenset({"generation", "fail_mask"})
+_CENTERLINE_SCHEMA = (
+    ("center", "point", wp.vec3f), ("tangent", "point", wp.vec3f),
+    ("arclen", "point", wp.float32), ("length", "env", wp.float32),
+    ("count", "env", wp.int32), ("valid", "env", wp.int32),
+    ("generation", "env", wp.int32),
+)
+_CENTERLINE_OPTIONAL = frozenset({"generation"})
+# Every result member by name (one per-domain / dtype per name across the three schemas):
+# what track_gen.results.check_source checks a protocol member against.
+_MEMBER_SCHEMA = {name: (per, dt) for schema in (_TRACK_SCHEMA, _GATE_SCHEMA,
+                                                 _CENTERLINE_SCHEMA)
+                  for name, per, dt in schema}
+# The non-array metadata fields of the result dataclasses.
+_RESULT_METADATA = ("fail_bits", "attributes", "layout")
+# The attribute dtypes (Track.attributes / GateSequence.attributes).
+_ATTR_DTYPES = (wp.float32, wp.int32, wp.vec2f, wp.vec3f)
+_ATTR_DTYPES_TEXT = "float32 / int32 / vec2f / vec3f"
+
+
+def _form(per: str, E: int, S: int) -> str:
+    return f"[E*stride] = [{E}*{S}]" if per == "point" else f"[E] = [{E}]"
+
+
+def _got(arr) -> str:
+    if not isinstance(arr, wp.array):
+        return type(arr).__name__
+    extra = "" if arr.is_contiguous else " (not contiguous)"
+    return f"shape {tuple(int(s) for s in arr.shape)} {_dtype_name(arr.dtype)} on " \
+           f"{arr.device}{extra}"
+
+
+def _array_ok(arr, n: int, dtype, dev: str) -> bool:
+    return isinstance(arr, wp.array) and arr.ndim == 1 and int(arr.shape[0]) == n \
+        and (dtype is None or arr.dtype is dtype) and str(arr.device) == dev \
+        and arr.is_contiguous
+
+
+def _check_flat(arr, owner: str, name: str, per: str) -> None:
+    """A result array is flat 1-D storage: name a multi-dimensional one plainly (the
+    natural ``[E, S]`` user layout) instead of reporting a shape mismatch."""
+    if isinstance(arr, wp.array) and arr.ndim != 1:
+        form = "[E*stride]" if per == "point" else "[E]"
+        raise ValueError(f"{owner}.{name}: expected a flat 1-D {form} array, got a "
+                         f"{arr.ndim}-D array of shape {tuple(int(s) for s in arr.shape)} "
+                         f"(flatten it, e.g. arr.reshape((-1,)))")
+
+
+def _infer_layout(obj, owner: str, schema, prefer: str) -> Layout:
+    """``obj``'s layout from the members of ``schema`` only (``(name, per, dtype)``):
+    ``E`` from ``count`` when it is one of them (else from the first per-env member),
+    ``stride`` from the first per-point member (``prefer`` first; ``1`` when there is
+    none: the stride is then undefined), ``closed=True``, the device of the member that
+    gave ``E``."""
+    names = [n for n, _, _ in schema]
+    env_names = (["count"] if "count" in names else []) + \
+        [n for n, per, _ in schema if per == "env" and n != "count"]
+    for n in env_names:
+        _check_flat(getattr(obj, n, None), owner, n, "env")
+    key = next((n for n in env_names if isinstance(getattr(obj, n, None), wp.array)), None)
+    if key is None:
+        want = env_names[0] if env_names else "count"
+        raise ValueError(f"{owner}.{want}: expected an [E] wp.array (it gives num_envs), "
+                         f"got {type(getattr(obj, want, None)).__name__}")
+    ref = getattr(obj, key)
+    if int(ref.shape[0]) < 1:
+        raise ValueError(f"{owner}.{key}: expected a non-empty [E] array, got "
+                         f"{_got(ref)}")
+    E = int(ref.shape[0])
+    points = [n for n, per, _ in schema if per == "point"]
+    order = ([prefer] if prefer in points else []) + [n for n in points if n != prefer]
+    for n in order:
+        _check_flat(getattr(obj, n, None), owner, n, "point")
+    anchor = next((n for n in order if isinstance(getattr(obj, n, None), wp.array)), None)
+    S = 1
+    if anchor is not None:
+        arr = getattr(obj, anchor)
+        n = int(arr.shape[0])
+        if n < E or n % E:
+            raise ValueError(f"{owner}.{anchor}: {n} slots is not a multiple of "
+                             f"num_envs={E} ({key} has {E} entries)")
+        S = n // E
+    return Layout(E, S, str(ref.device), True)
+
+
+def _check_members(obj, owner: str, layout: Layout, members, *, need=(),
+                   consumer: "str | None" = None) -> None:
+    """Check each of ``members`` (``(name, per, dtype)``) of ``obj`` against ``layout``:
+    a 1-D contiguous array of its dtype, ``[E*stride]`` or ``[E]``, on the layout's
+    (canonical) device. ``None`` passes unless the member is in ``need``."""
+    E, S = int(layout.num_envs), int(layout.stride)
+    dev = _canonical_device(layout.device)
+    for name, per, dtype in members:
+        arr = getattr(obj, name, None)
+        if arr is None:
+            if name in need:
+                who = consumer or "this consumer"
+                raise ValueError(f"{owner}.{name} is None; {who} needs it")
+            continue
+        _check_flat(arr, owner, name, per)
+        n = E * S if per == "point" else E
+        if not _array_ok(arr, n, dtype, dev):
+            raise ValueError(f"{owner}.{name}: expected a contiguous [{n}] "
+                             f"{_dtype_name(dtype)} ({_form(per, E, S)}) array on {dev}, "
+                             f"got {_got(arr)}")
+
+
+def _check_attributes(obj, owner: str, layout: Layout) -> None:
+    attrs = getattr(obj, "attributes", None)
+    if attrs is None:
+        return
+    if not isinstance(attrs, Mapping):
+        raise ValueError(f"{owner}.attributes: expected a mapping of wp.array, got "
+                         f"{type(attrs).__name__}")
+    n = int(layout.num_envs) * int(layout.stride)
+    dev = _canonical_device(layout.device)
+    for key, arr in attrs.items():
+        if not _array_ok(arr, n, None, dev) or arr.dtype not in _ATTR_DTYPES:
+            raise ValueError(f"{owner}.attributes[{key!r}]: expected a contiguous [{n}] "
+                             f"array of {_ATTR_DTYPES_TEXT} on {dev}, got {_got(arr)}")
+
+
+def _stored_layout(obj, owner: str) -> "Layout | None":
+    lay = getattr(obj, "layout", None)
+    if lay is not None and not isinstance(lay, Layout):
+        raise TypeError(f"{owner}.layout must be a track_gen.Layout or None, got "
+                        f"{type(lay).__name__}")
+    return lay
+
+
+def _validate(self, need=()) -> Layout:
+    """Check every field of this result against its layout; return the layout.
+
+    The layout is :attr:`layout` when set, else inferred (``num_envs`` from
+    ``count``, ``stride`` from the first per-point field, the device of ``count``,
+    ``closed=True``; nothing is mutated). Then every array field that is not ``None``
+    must be a contiguous 1-D array of its dtype, ``[E * stride]`` (per point) or
+    ``[E]`` (per env), on the layout's device (compared canonically: ``"cuda"`` ==
+    ``"cuda:0"``), and every ``attributes`` entry a contiguous ``[E * stride]``
+    float32 / int32 / vec2f / vec3f array on that device. Host only (a few
+    microseconds): no device work, safe inside a capture.
+
+    Args:
+        need: Field names that must not be ``None`` (an optional field a consumer
+            reads).
+
+    Returns:
+        The stored or inferred :class:`~track_gen.results.Layout`.
+
+    Raises:
+        ValueError: the first field that does not match, naming it and the expected
+            shape (e.g. ``Track.inner: expected a contiguous [3072] vec3f
+            ([E*stride] = [8*384]) array on cpu, got shape (3064,) vec3f on cpu``); a
+            field of ``need`` that is ``None``; a ``count`` that is not an array.
+        TypeError: :attr:`layout` is neither a ``Layout`` nor ``None``.
+    """
+    return _validate_against(self, need, None, None)
+
+
+def _validate_against(self, need, _owner: "str | None",
+                      _layout: "Layout | None", _consumer: "str | None" = None) -> Layout:
+    """:meth:`validate`, naming the result ``_owner`` in messages (``"out"`` for the
+    planner's ``out=`` check) and against ``_layout`` (the Program's) when given: a
+    stored layout must then equal it (canonical device). ``_consumer`` names who needs
+    a ``need`` field that is ``None``."""
+    cls = type(self)
+    owner = _owner or cls._RESULT_NAME
+    if isinstance(need, str):
+        need = (need,)
+    stored = _stored_layout(self, owner)
+    if _layout is not None and stored is not None and \
+            _layout_key(stored) != _layout_key(_layout):
+        raise ValueError(f"{owner}: a {cls._RESULT_NAME} for {_fmt_layout(stored)}; this "
+                         f"pipeline writes {_fmt_layout(_layout)}")
+    lay = _layout if _layout is not None else stored
+    if lay is None:
+        lay = _infer_layout(self, owner, cls._SCHEMA, cls._ANCHOR)
+    unknown = [n for n in need if n not in {f for f, _, _ in cls._SCHEMA}]
+    if unknown:
+        raise ValueError(f"{cls._RESULT_NAME}.validate(need=...): unknown fields "
+                         f"{unknown}")
+    if not isinstance(getattr(self, "count", None), wp.array):
+        raise ValueError(f"{owner}.count: expected an [E] int32 wp.array, got "
+                         f"{type(getattr(self, 'count', None)).__name__}")
+    _check_members(self, owner, lay, cls._SCHEMA, need=tuple(need), consumer=_consumer)
+    _check_attributes(self, owner, lay)
+    return lay
+
+
+def _check_env_range(name: str, e0, e1, E: int) -> "tuple[int, int]":
+    for v in (e0, e1):
+        if isinstance(v, bool):
+            raise TypeError(f"{name}.view(): env indices must be ints, got {v!r}")
+    try:
+        a, b = operator.index(e0), operator.index(e1)
+    except TypeError:
+        raise TypeError(f"{name}.view(): env indices must be ints, got {e0!r}, "
+                        f"{e1!r}") from None
+    if not (0 <= a <= E and 0 <= b <= E):
+        raise IndexError(f"{name}.view({a}, {b}): env range outside [0, {E})")
+    if a >= b:
+        raise IndexError(f"{name}.view({a}, {b}): empty env range: need e0 < e1")
+    return int(a), int(b)
+
+
+def _view(self, e0: int, e1: int):
+    """A zero-copy view of envs ``[e0, e1)`` of this result.
+
+    Every array is a slice of this result's array (per point ``[e0 * stride : e1 *
+    stride]``, per env ``[e0 : e1]``): the same memory, read and written in place, and
+    kept alive by the view. ``None`` fields stay ``None``; ``attributes`` are sliced
+    alike; ``fail_bits`` is shared; ``layout`` is ``Layout(e1 - e0, stride, device,
+    closed)``. A view is a result like any other: every TrackGen kernel indexes it from
+    its own element 0, so it can be generated into (``TrackGenerator(..., out=
+    big.view(0, 4))``: mixed batches), consumed by the utilities, copied, cloned and
+    viewed again. No device work and no allocation: callable inside a capture.
+
+    Raises:
+        IndexError: unless ``0 <= e0 < e1 <= num_envs``.
+        TypeError: non-integer indices.
+        ValueError: this result does not validate (:meth:`validate`).
+    """
+    lay = self.validate()
+    E, S = int(lay.num_envs), int(lay.stride)
+    a, b = _check_env_range(type(self)._RESULT_NAME, e0, e1, E)
+    kw = {}
+    for name, per, _ in type(self)._SCHEMA:
+        arr = getattr(self, name, None)
+        if arr is None:
+            kw[name] = None
+        elif per == "point":
+            kw[name] = arr[a * S:b * S]
+        else:
+            kw[name] = arr[a:b]
+    if hasattr(self, "attributes"):
+        kw["attributes"] = types.MappingProxyType(
+            {k: v[a * S:b * S] for k, v in dict(self.attributes or {}).items()})
+    if hasattr(self, "fail_bits"):
+        kw["fail_bits"] = self.fail_bits
+    kw["layout"] = Layout(b - a, S, _canonical_device(lay.device), lay.closed)
+    out = dataclasses.replace(self, **kw)
+    out._env_offset = int(getattr(self, "_env_offset", 0)) + a
+    out._producer_stream = getattr(self, "_producer_stream", None)
+    return out
+
+
+def _span(arr) -> "tuple[int, int]":
+    p = int(arr.ptr or 0)
+    return p, p + int(arr.shape[0]) * int(wp.types.type_size_in_bytes(arr.dtype))
+
+
+def _copy_pairs(self, src) -> list:
+    """The ``(name, dst, src)`` copies of ``self.copy_from(src)`` (checked)."""
+    cls = type(self)
+    name = cls._RESULT_NAME
+    pairs = []
+    for f, _, _ in cls._SCHEMA:
+        d = getattr(self, f, None)
+        if d is None:
+            continue
+        s = getattr(src, f, None)
+        if s is None:
+            raise ValueError(f"{name}.copy_from: src.{f} is None, but this {name} holds "
+                             f"{f}")
+        pairs.append((f, d, s))
+    mine = dict(getattr(self, "attributes", None) or {})
+    theirs = dict(getattr(src, "attributes", None) or {})
+    for k, d in mine.items():
+        s = theirs.get(k)
+        if s is None:
+            raise ValueError(f"{name}.copy_from: src has no attribute {k!r} "
+                             f"(attributes: {sorted(theirs)})")
+        if s.dtype is not d.dtype:
+            raise ValueError(f"{name}.copy_from: attributes[{k!r}] is "
+                             f"{_dtype_name(d.dtype)} here, {_dtype_name(s.dtype)} in "
+                             f"src")
+        pairs.append((f"attributes[{k!r}]", d, s))
+    out = []
+    for f, d, s in pairs:
+        if d is s:
+            continue
+        (d0, d1), (s0, s1) = _span(d), _span(s)
+        if (d0, d1) == (s0, s1):
+            continue                       # the same memory: nothing to copy
+        if d0 < s1 and s0 < d1:
+            raise ValueError(f"{name}.copy_from: {f} partially overlaps src.{f} (a view "
+                             f"of the same memory at another env offset)")
+        out.append((f, d, s))
+    return out
+
+
+def _copy_from(self, src, *, stream=None, ctx=None) -> None:
+    """Copy every field this result holds from ``src`` (same class, same layout).
+
+    One stream-ordered device copy per held field (a field ``None`` here is skipped)
+    and per ``attributes`` key of this result (``src`` may hold more keys). No
+    allocation and no host sync, so it is the hot-path form of a snapshot (copy into a
+    preallocated :meth:`alloc` result) and it records into a caller's capture (memcpy
+    nodes). Host metadata (``fail_bits``, ``layout``) is not copied. ``t.copy_from(t)``
+    is a no-op.
+
+    The copies run on ``ctx``, else ``stream=`` > an ambient ``LaunchContext.scope`` >
+    the stream that produced ``src`` (the generator's constructor ``stream=``) > an
+    enclosing torch capture > Warp's current stream. ``copy_from`` only knows the
+    producer's DEFAULT stream: pass the stream you generated on (or order the streams
+    with events) when a generation ran elsewhere.
+
+    Args:
+        src: A result of the same class (``Track`` / ``GateSequence`` /
+            ``Centerline``).
+        stream: Optional ``wp.Stream`` (or ``"torch"``).
+        ctx: Optional :class:`~track_gen.exec.LaunchContext` (not with ``stream=``).
+
+    Raises:
+        TypeError: ``src`` is not of this result class; ``stream=`` and ``ctx=``
+            together.
+        ValueError: either side does not validate; the layouts differ (canonical
+            device); a field held here is ``None`` in ``src``; an attribute key here is
+            missing from ``src`` or has another dtype; a partial overlap of a field
+            with its source.
+    """
+    from ..exec.context import LaunchContext  # noqa: PLC0415
+
+    cls = type(self)
+    base = cls._RESULT_BASE
+    name = cls._RESULT_NAME
+    if not isinstance(src, base):
+        raise TypeError(f"{name}.copy_from: src must be a {name}, got "
+                        f"{type(src).__name__}")
+    if stream is not None and ctx is not None:
+        raise TypeError("pass either stream= or ctx=, not both")
+    a = self.validate()
+    b = src.validate()
+    if _layout_key(a) != _layout_key(b):
+        raise ValueError(f"{name}.copy_from: layouts differ: this {name} is "
+                         f"{_fmt_layout(a)}, src is {_fmt_layout(b)}")
+    pairs = _copy_pairs(self, src)
+    if ctx is None:
+        ctx = LaunchContext.for_call(_canonical_device(a.device), stream,
+                                     default=getattr(src, "_producer_stream", None))
+    for _, d, s in pairs:
+        ctx.copy(d, s)
+
+
+def _refuse_capture(dev, ctxs, what: str, message: "str | None" = None) -> None:
+    """``CaptureError`` when an allocation on Warp's current stream (or the work of
+    ``ctxs``) would land in a capture (``message``: the error text)."""
+    from ..exec import _compat  # noqa: PLC0415
+    from ..exec.context import _torch_capturing  # noqa: PLC0415
+    from ..exec.errors import CaptureError  # noqa: PLC0415
+
+    capturing = any(c.capturing for c in ctxs)
+    if dev.is_cuda:
+        capturing = capturing or wp.get_stream(dev).is_capturing or \
+            _torch_capturing(dev) is not None
+    else:
+        capturing = capturing or _compat.cpu_capture_active(dev)
+    if capturing:
+        raise CaptureError(message or (
+            f"{what} allocates on Warp's current stream: call it outside any capture "
+            f"(inside one, copy_from into a preallocated result, e.g. from "
+            f"{what.split('.')[0]}.alloc)"))
+
+
+def _empty_like(self, lay: Layout, dev):
+    kw = {}
+    E, S = int(lay.num_envs), int(lay.stride)
+    for name, per, dtype in type(self)._SCHEMA:
+        arr = getattr(self, name, None)
+        kw[name] = None if arr is None else wp.empty(E * S if per == "point" else E,
+                                                     dtype=dtype, device=dev)
+    if hasattr(self, "attributes"):
+        kw["attributes"] = {k: wp.empty(E * S, dtype=v.dtype, device=dev)
+                            for k, v in dict(self.attributes or {}).items()}
+    if hasattr(self, "fail_bits"):
+        kw["fail_bits"] = self.fail_bits
+    kw["layout"] = Layout(E, S, str(dev), lay.closed)
+    return dataclasses.replace(self, **kw)
+
+
+def _clone(self, *, stream=None):
+    """A fully-owned deep copy (new memory for every held field and attribute).
+
+    COLD: allocates and blocks every call (use :meth:`copy_from` into a preallocated
+    :meth:`alloc` result on a hot path). Allocated and copied on Warp's CURRENT stream
+    (where ``wp.empty`` allocates), then a host wait on that stream: the clone is
+    complete when it returns, so it is safe to read or write on ANY stream right away
+    (``.numpy()``, a utility, ``copy_from`` on a generator's stream). When the result
+    was produced on another stream (``stream=``, else an ambient scope, else the
+    generator's constructor ``stream=``), Warp's current stream first waits on it.
+    ``None`` fields stay ``None``, ``attributes`` are copied, ``fail_bits`` is shared
+    (an immutable mapping), ``layout`` is set; the class (a subclass) is kept.
+
+    Args:
+        stream: The stream that PRODUCED this result (``wp.Stream`` or ``"torch"``),
+            e.g. ``track = gen.generate(stream=s, sync=False);
+            snap = track.clone(stream=s)``.
+
+    Raises:
+        track_gen.exec.CaptureError: inside any capture (Warp CPU / CUDA or torch),
+            before allocating; inside a graph, ``copy_from`` into a preallocated
+            :meth:`alloc` result instead.
+        ValueError: this result does not validate (a malformed hand-built result).
+    """
+    from ..exec import _compat  # noqa: PLC0415
+    from ..exec.context import LaunchContext  # noqa: PLC0415
+
+    lay = self.validate()
+    dev = wp.get_device(lay.device)
+    producer = LaunchContext.for_call(dev, stream,
+                                      default=getattr(self, "_producer_stream", None))
+    current = LaunchContext.current(dev)
+    _refuse_capture(dev, (producer, current), f"{type(self)._RESULT_NAME}.clone()")
+    out = _empty_like(self, lay, dev)
+    if dev.is_cuda and producer.stream is not None and current.stream is not None and \
+            int(producer.stream.cuda_stream or 0) != int(current.stream.cuda_stream or 0):
+        current.stream.wait_stream(producer.stream)
+    out.copy_from(self, ctx=current)
+    if dev.is_cuda:
+        # The memory was handed out in the current stream's order: complete the copies
+        # (and that stream's earlier work on recycled blocks) before any other stream
+        # touches the clone.
+        _compat.stream_synchronize(current.stream)
+    return out
+
+
+# The padding of an allocated result: per point NaN (int32: -1), per env 0.
+def _padding(per: str, dtype):
+    nan = float("nan")
+    if per == "env":
+        return 0 if dtype is wp.int32 else 0.0
+    if dtype is wp.int32:
+        return -1
+    if dtype is wp.float32:
+        return nan
+    if dtype is wp.quatf:
+        return wp.quatf(nan, nan, nan, nan)
+    if dtype is wp.vec2f:
+        return wp.vec2f(nan, nan)
+    return wp.vec3f(nan, nan, nan)
+
+
+def _alloc(cls, layout: Layout, *, attributes=None):
+    """A result with every field allocated, in the "no track yet" state.
+
+    Per-point fields (and attributes) hold their padding (NaN; ``-1`` for int32),
+    ``count`` / ``valid`` / ``truncated`` / ``generation`` / ``fail_mask`` are 0,
+    ``length`` / ``winding`` 0; ``layout`` is ``layout`` with the canonical device;
+    ``fail_bits`` is empty. Allocation and fills run on Warp's CURRENT stream (like
+    ``wp.full``), then a host wait on it: the result is complete when it returns, so it
+    can be read or written on ANY stream right away (``snap.copy_from(track)`` on a
+    generator's stream, ``TrackGenerator(..., out=big.view(0, 4), stream=s)``).
+    COLD: allocates and blocks.
+
+    Args:
+        layout: The :class:`~track_gen.results.Layout` (``num_envs``, ``stride``,
+            ``device``, ``closed``).
+        attributes: Optional ``{key: dtype}`` of ``attributes`` to allocate (``Track``
+            and ``GateSequence``): ``key`` a plugin key ``"<package>.<name>"``, ``dtype``
+            ``wp.float32``, ``wp.int32``, ``wp.vec2f`` or ``wp.vec3f`` (or its name,
+            ``"float32"``, as in ``ExternalParams.attributes``).
+
+    Raises:
+        TypeError: ``layout`` is not a ``Layout``; an attribute dtype outside the
+            four; ``attributes`` on a ``Centerline``.
+        ValueError: an attribute key that is not ``"<package>.<name>"``.
+        track_gen.exec.CaptureError: inside a capture (before allocating).
+    """
+    from ..exec import _compat  # noqa: PLC0415
+    from ..exec.context import LaunchContext  # noqa: PLC0415
+    from ..stages.channels import is_plugin_channel  # noqa: PLC0415
+
+    if not isinstance(layout, Layout):
+        raise TypeError(f"{cls._RESULT_NAME}.alloc: layout must be a track_gen.Layout, "
+                        f"got {type(layout).__name__}")
+    attrs = dict(attributes or {})
+    has_attrs = "attributes" in {f.name for f in dataclasses.fields(cls)}
+    if attrs and not has_attrs:
+        raise TypeError(f"{cls._RESULT_NAME}.alloc: a {cls._RESULT_NAME} has no "
+                        f"attributes")
+    by_name = {_dtype_name(dt): dt for dt in _ATTR_DTYPES}
+    for k, dt in list(attrs.items()):
+        if not isinstance(k, str) or not k:
+            raise TypeError(f"{cls._RESULT_NAME}.alloc: attribute keys are non-empty "
+                            f"strings, got {k!r}")
+        if not is_plugin_channel(f"raw.{k}"):
+            raise ValueError(f"{cls._RESULT_NAME}.alloc: attribute key {k!r} must be a "
+                             f"plugin key '<package>.<name>' (e.g. 'acme.grip')")
+        if isinstance(dt, str) and dt in by_name:
+            attrs[k] = dt = by_name[dt]
+        if dt not in _ATTR_DTYPES:
+            got = f"the str {dt!r}" if isinstance(dt, str) else _dtype_name(dt)
+            raise TypeError(f"{cls._RESULT_NAME}.alloc: attributes[{k!r}] must be "
+                            f"{_ATTR_DTYPES_TEXT} (a wp dtype or its name), got {got}")
+    dev = wp.get_device(layout.device)
+    ctx = LaunchContext.current(dev)
+    _refuse_capture(dev, (ctx,), f"{cls._RESULT_NAME}.alloc()")
+    E, S = int(layout.num_envs), int(layout.stride)
+    kw = {}
+    for name, per, dtype in cls._SCHEMA:
+        arr = wp.empty(E * S if per == "point" else E, dtype=dtype, device=dev)
+        ctx.fill(arr, _padding(per, dtype))
+        kw[name] = arr
+    if has_attrs:
+        out_attrs = {}
+        for k, dt in attrs.items():
+            arr = wp.empty(E * S, dtype=dt, device=dev)
+            ctx.fill(arr, _padding("point", dt))
+            out_attrs[k] = arr
+        kw["attributes"] = out_attrs
+    if "fail_bits" in {f.name for f in dataclasses.fields(cls)}:
+        kw["fail_bits"] = {}
+    kw["layout"] = Layout(E, S, str(dev), layout.closed)
+    if dev.is_cuda:
+        # Complete the fills (and the current stream's earlier work on recycled blocks)
+        # before another stream writes the result: it is usable on any stream.
+        _compat.stream_synchronize(ctx.stream)
+    return cls(**kw)
+
+
 @dataclass
 class GateSequence:
     """Batched fixed-stride gate result returned by ``GateGenerator``.
@@ -1173,6 +1796,17 @@ class GateSequence:
         on the centerline, e.g. an elevation with ``elevation_on="centerline"``) is
         left out (``GateGenerator.program.attributes`` lists what is there).  Empty
         unless a stage exports one.
+    layout : Layout or None
+        The batch's :class:`~track_gen.results.Layout` (``stride`` = ``max_gates``),
+        set on every ``GateSequence`` TrackGen makes (a generator's result, a
+        :meth:`view`, :meth:`clone`, :meth:`alloc`); ``None`` on one built by hand
+        (:meth:`validate` infers it).
+
+    Methods (roadmap PR13b; see :mod:`track_gen.results`): :meth:`validate` (check every
+    field against the layout), :meth:`view` (a zero-copy env slice, e.g. ``out=`` of a
+    mixed batch), :meth:`copy_from` (stream-ordered copies, no allocation),
+    :meth:`clone` (an owned copy; allocates) and :meth:`alloc` (a fully allocated
+    result).
     """
 
     position: wp.array
@@ -1189,23 +1823,17 @@ class GateSequence:
     fail_bits: Mapping[str, int] = field(default_factory=dict)
     attributes: Mapping[str, wp.array] = field(default_factory=dict)
 
-    def clone(self) -> "GateSequence":
-        """Return a deep copy whose Warp buffers do not alias this sequence."""
-        return GateSequence(
-            position=wp.clone(self.position),
-            tangent=wp.clone(self.tangent),
-            forward=wp.clone(self.forward),
-            orientation=wp.clone(self.orientation),
-            half_size=wp.clone(self.half_size),
-            left=wp.clone(self.left),
-            right=wp.clone(self.right),
-            valid=wp.clone(self.valid),
-            count=wp.clone(self.count),
-            generation=None if self.generation is None else wp.clone(self.generation),
-            fail_mask=None if self.fail_mask is None else wp.clone(self.fail_mask),
-            fail_bits=self.fail_bits,
-            attributes={k: wp.clone(v) for k, v in (self.attributes or {}).items()},
-        )
+    layout: "Layout | None" = None
+
+    _RESULT_NAME = "GateSequence"
+    _SCHEMA = _GATE_SCHEMA
+    _OPTIONAL = _GATE_OPTIONAL
+    _ANCHOR = "position"
+    validate = _validate
+    view = _view
+    copy_from = _copy_from
+    clone = _clone
+    alloc = classmethod(_alloc)
 
 
 @dataclass
@@ -1222,7 +1850,8 @@ class Track:
         ``TrackGenerator.generate()`` returns the SAME ``Track`` instance on every
         call and overwrites its buffers in place.  A reference held across two
         ``generate()`` calls will see mutated data.  Call ``Track.clone()`` to obtain
-        a fully-owned deep copy before the next call.
+        a fully-owned deep copy before the next call (or ``copy_from`` into a
+        preallocated ``Track.alloc`` result: no allocation, capture-safe).
 
     Attributes
     ----------
@@ -1346,6 +1975,17 @@ class Track:
         ``interp`` policy, NaN (floats) / ``-1`` (int32) past ``count[e]``.  Stable
         pointers for the generator's lifetime.  Empty unless a stage exports one
         (``TrackGenerator.program.attributes`` describes them).
+    layout : Layout or None
+        The batch's :class:`~track_gen.results.Layout` (``num_envs``, ``stride`` =
+        ``N_max``, ``device``, ``closed``), set on every ``Track`` TrackGen makes (a
+        generator's result, a :meth:`view`, :meth:`clone`, :meth:`alloc`); ``None`` on
+        one built by hand (:meth:`validate` infers it).
+
+    Methods (roadmap PR13b; see :mod:`track_gen.results`): :meth:`validate` (check every
+    field against the layout), :meth:`view` (a zero-copy env slice, e.g. ``out=`` of a
+    mixed batch), :meth:`copy_from` (stream-ordered copies, no allocation: the hot-path
+    snapshot), :meth:`clone` (an owned copy; allocates) and :meth:`alloc` (a fully
+    allocated result).
     """
 
     outer: wp.array
@@ -1364,29 +2004,63 @@ class Track:
     fail_bits: Mapping[str, int] = field(default_factory=dict)
     half_width: "wp.array | None" = None
     attributes: Mapping[str, wp.array] = field(default_factory=dict)
+    layout: "Layout | None" = None
 
-    def clone(self) -> "Track":
-        """Return a fully-owned deep copy of this Track.
+    _RESULT_NAME = "Track"
+    _SCHEMA = _TRACK_SCHEMA
+    _OPTIONAL = _TRACK_OPTIONAL
+    _ANCHOR = "center"
+    validate = _validate
+    view = _view
+    copy_from = _copy_from
+    clone = _clone
+    alloc = classmethod(_alloc)
 
-        Each field is cloned via ``wp.clone`` (torch-free), so the returned Track owns
-        independent buffers unaffected by future ``generate()`` calls that overwrite
-        this instance in place.
-        """
-        return Track(
-            outer=wp.clone(self.outer),
-            center=wp.clone(self.center),
-            inner=wp.clone(self.inner),
-            tangent=wp.clone(self.tangent),
-            normal=wp.clone(self.normal),
-            arclen=wp.clone(self.arclen),
-            length=wp.clone(self.length),
-            valid=wp.clone(self.valid),
-            count=wp.clone(self.count),
-            winding=wp.clone(self.winding),
-            truncated=None if self.truncated is None else wp.clone(self.truncated),
-            generation=None if self.generation is None else wp.clone(self.generation),
-            fail_mask=None if self.fail_mask is None else wp.clone(self.fail_mask),
-            fail_bits=self.fail_bits,
-            half_width=None if self.half_width is None else wp.clone(self.half_width),
-            attributes={k: wp.clone(v) for k, v in (self.attributes or {}).items()},
-        )
+
+@dataclass
+class Centerline:
+    """A batched closed 3D centerline without a road band (roadmap PR13b).
+
+    What a gates-mode ``Course`` threads through its gates
+    (``course.course_line.centerline``; the course line is internal to ``Course`` in
+    0.x): the members a centerline consumer reads
+    (:class:`~track_gen.results.HasCenterline`: ``TrackLocalizer``,
+    ``localize.curvature`` / ``speed_profile``), with the same flat storage as a
+    :class:`Track`: per-point arrays ``[E * stride]`` (NaN past ``count[e]``), per-env
+    arrays ``[E]``.
+
+    Attributes:
+        center: ``[E * stride]`` ``vec3f`` centerline points.
+        tangent: ``[E * stride]`` ``vec3f`` unit tangents.
+        arclen: ``[E * stride]`` ``float32`` cumulative arc length.
+        length: ``[E]`` ``float32`` loop length.
+        count: ``[E]`` ``int32`` real point counts.
+        valid: ``[E]`` ``int32`` validity flags (0 / 1).
+        generation: ``[E]`` ``int32`` generation epoch, or ``None``.
+        layout: Its :class:`~track_gen.results.Layout` (``None`` on one built by hand:
+            :meth:`validate` infers it).
+    """
+
+    center: wp.array
+    tangent: wp.array
+    arclen: wp.array
+    length: wp.array
+    count: wp.array
+    valid: wp.array
+    generation: "wp.array | None" = None
+    layout: "Layout | None" = None
+
+    _RESULT_NAME = "Centerline"
+    _SCHEMA = _CENTERLINE_SCHEMA
+    _OPTIONAL = _CENTERLINE_OPTIONAL
+    _ANCHOR = "center"
+    validate = _validate
+    view = _view
+    copy_from = _copy_from
+    clone = _clone
+    alloc = classmethod(_alloc)
+
+
+GateSequence._RESULT_BASE = GateSequence
+Track._RESULT_BASE = Track
+Centerline._RESULT_BASE = Centerline

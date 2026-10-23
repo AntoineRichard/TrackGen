@@ -56,13 +56,13 @@ works (deprecated) through an adapter.
 from __future__ import annotations
 
 import abc
-import dataclasses
 import enum
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Callable, ClassVar, Mapping
 
 import warp as wp
 
+from .._src.types import Layout
 from .params import NoParams, _fields
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -95,6 +95,10 @@ def _is_raw_attribute(channel) -> bool:
 # cl.<pkg>.<name> / gates.<pkg>.<name>; a stations stage: anchors.<pkg>.<name>). An
 # elevation writes cl.z, or gates.z once the planner rewired it.
 _OPEN_KINDS = ("relax", "width", "elevation", "validity", "order", "stations")
+# The stage kinds that write another stage's dynamic params (roadmap PR13b; built-in
+# only in 0.x): re-exported as track_gen.stages.PARAM_WRITER_KINDS. Equal to
+# track_gen.pipeline.spec.PARAM_WRITER_KINDS (kept there import-free; a test pins it).
+_PARAM_WRITER_KINDS = ("randomize",)
 _KIND_WRITES = {"relax": ("cl.xy",), "width": ("cl.half_width",),
                 "elevation": ("cl.z", "gates.z"), "validity": ("valid.fail",),
                 "order": ("gates.xy", "gates.count"),
@@ -232,27 +236,6 @@ class CaptureClass(enum.IntEnum):
     HOST = 2
 
 
-@dataclasses.dataclass(frozen=True)
-class Layout:
-    """The run's shape, handed to :meth:`Params.validate`, :meth:`Stage.capacity` and
-    the :class:`StageBuilder`.
-
-    Attributes:
-        num_envs: ``E``.
-        stride: Output row capacity per env of the stage's point domain (a track stage
-            and the centerline stages of a gate pipeline: ``N_max``; a gate stage:
-            ``max_gates``). A channel's own row stride is
-            :meth:`StageBuilder.stride_of`.
-        device: Canonical device string (``str(wp.get_device(d))``, e.g. ``"cuda:0"``).
-        closed: Whether the output loops are closed (always ``True`` in 0.x).
-    """
-
-    num_envs: int
-    stride: int
-    device: str
-    closed: bool = True
-
-
 class Stage(abc.ABC):
     """Base of a pipeline stage.
 
@@ -290,10 +273,16 @@ class Stage(abc.ABC):
       ``orderings=None``, every registered order but ``excluded_orderings``. A
       generator that provides attributes declares ``orderings=frozenset({"raw"})``
       (they are carried to the gate slots by index).
-    - ``preferred`` (gate generators): ``{"order": name, "normalize": "extent"}``: the
+    - ``preferred``: a gate generator's ``{"order": name, "normalize": "extent"}`` (the
       order the gate preset picks by default, and whether it normalizes the gates'
-      extent after ordering.
-    - ``topology``: ``"closed"`` or ``"any"``.
+      extent after ordering); a centerline generator's ``{"relax": name}`` (roadmap
+      PR13b: the relax stage ``presets.track(relax="auto")`` picks, ``"none"`` for an
+      ingestion generator whose geometry must not move).
+    - ``seeded`` (roadmap PR13b): ``False`` for a generator whose output does not depend
+      on the seed (an ingestion generator): the conformance kit reports ``diversity``
+      as skipped; default ``True``.
+    - ``topology``: ``"closed"`` or ``"any"`` (the topologies the stage supports;
+      ``BatchSpec.closed=False`` is refused in 0.x, naming the closed-only stages).
     - ``output``: ``"centerline"`` for a generator, ``"anchors"`` for a gate generator;
       ``None`` for the other kinds.
     - ``api_version``: the plugin API version the stage targets (``<= API_VERSION``).
@@ -319,11 +308,27 @@ class Stage(abc.ABC):
     topology: ClassVar[str] = "closed"
     output: ClassVar["str | None"] = None
     api_version: ClassVar[int] = 1
+    seeded: ClassVar[bool] = True
 
     @classmethod
     def capture_class(cls, params) -> CaptureClass:
         """The stage's capture class for ``params`` (default: :attr:`capture`)."""
         return cls.capture
+
+    @classmethod
+    def declare(cls, params) -> "tuple[Mapping[str, str], frozenset]":
+        """``(writes, provides)`` for these params (default: the class's
+        :attr:`writes` and :attr:`provides`).
+
+        Read for centerline generators only in 0.x (roadmap PR13b): a generator whose
+        raw attributes depend on its params (an ingestion generator writes ``raw.z``
+        only when it is given altitudes) overrides it; the declaration is checked at
+        bind time with the class rules (``raw.xy`` mapped, ``provides`` naming exactly
+        the catalogue attributes written) and routes the presets (dropped stages,
+        carried attributes) and the planner. ``params`` holds the static fields only.
+        Overriding it on another kind is refused at registration.
+        """
+        return dict(cls.writes), frozenset(cls.provides)
 
     def capacity(self, params, layout: Layout) -> Mapping[str, int]:
         """Buffer capacities this stage needs. A generator may return ``{"raw": n}``
@@ -407,7 +412,12 @@ class StageBuilder:
         self._written: dict = {}                      # port -> channel
         self._scratch: dict = {}                      # "scratch:<id>/<name>" -> array
         self._inputs: dict = {}                       # name -> (live, work)
+        self._raw_inputs: dict = {}                   # name -> array (per="raw", unlatched)
         self._reserved_inputs = frozenset(reserved_inputs)
+        # Roadmap PR13b: a randomizer's target (array, field lo, field hi), set by the
+        # planner; the generator's declared writes (Stage.declare) on the adapter path.
+        self._drawn = None
+        self._declared_writes: "Mapping[str, str] | None" = None
         self._salts: dict = {}                        # stream -> salt
         self._temps: dict = {}                        # port -> temp_like() count
         self._families: dict = {}                     # adapter: port -> (channel, dtype)
@@ -489,7 +499,7 @@ class StageBuilder:
         self._check_open("write")
         if self._plan is not None:
             return self._plan_write(port, dtype, per, interp, export)
-        writes = type(self._stage).writes
+        writes = self._stage_writes()
         if port not in writes:
             raise ValueError(f"stage {type(self._stage).__name__} declares no write port "
                              f"{port!r}; declared ports: {sorted(writes)}")
@@ -670,6 +680,20 @@ class StageBuilder:
     def _label(self) -> str:
         return f"{self.stage_id!r} ({type(self._stage).__name__})"
 
+    def _stage_writes(self) -> Mapping[str, str]:
+        """The generator's write ports on the PR8 adapter path: its declaration for its
+        params (``Stage.declare``), else the class's ``writes``."""
+        if self._declared_writes is not None:
+            return self._declared_writes
+        return type(self._stage).writes
+
+    def _drawn_target(self) -> "tuple[wp.array, float, float]":
+        """A randomizer's target: ``(the drawn [E] float32 array, the field's declared
+        lo, hi)`` (private: ``randomize.*`` is built-in only in 0.x)."""
+        if self._drawn is None:
+            raise ValueError(f"stage {self._label()} draws no field (not a randomizer)")
+        return self._drawn
+
     def _length(self, per: str) -> int:
         if self._plan is not None:
             return self._plan.length(per)
@@ -683,7 +707,7 @@ class StageBuilder:
 
     def _port_channel(self, port: str, what: str) -> str:
         ports = {**self._plan.reads, **self._plan.writes} if self._plan is not None \
-            else dict(type(self._stage).writes)
+            else dict(self._stage_writes())
         channel = ports.get(port)
         if channel is None:
             raise ValueError(f"stage {self._label()}: {what}({port!r}): no such port; "
@@ -754,7 +778,7 @@ class StageBuilder:
                                  f"channel {channel!r} has no dtype yet; call "
                                  f"b.write({port!r}, dtype, per=...) first")
         else:
-            ports = dict(type(self._stage).writes)
+            ports = dict(self._stage_writes())
             channel = ports.get(port)
             info = _GENERATOR_CHANNELS.get(channel)
             if port in self._families:
@@ -822,8 +846,9 @@ class StageBuilder:
 
         This is the working copy, latched from the live array the user writes
         (``gen.params[stage_id][field]``) at the start of every generation, for the
-        envs that generation regenerates. READ-ONLY for the stage: never write it (a
-        later release reads the live array directly).
+        envs that generation regenerates. A field a ``randomize.*`` stage draws is the
+        drawn array itself (unlatched: written by the randomizer earlier in the same
+        generation). READ-ONLY for the stage: never write it.
 
         Raises:
             KeyError: ``field`` is static ("read it from params") or unknown (lists the
@@ -838,30 +863,61 @@ class StageBuilder:
         raise KeyError(f"no dynamic parameter {field!r}; dynamic fields: "
                        f"{sorted(self._dynamic)}")
 
-    def input(self, name: str, dtype, default=0) -> "wp.array":
-        """A per-env device input: a stable LIVE ``[E]`` array exposed as
-        ``gen.inputs[name]`` (filled with ``default``), latched into the returned
-        working copy at every generation like a dynamic param. The returned array is
-        READ-ONLY for the stage, like :meth:`param`'s.
+    def input(self, name: str, dtype, default=0, *, per: str = "env") -> "wp.array":
+        """A persistent device input exposed as ``gen.inputs[name]`` (and
+        ``Program.input_info[name]``), filled with ``default``.
+
+        - ``per="env"`` (default): a stable LIVE ``[E]`` ``float32`` / ``int32`` array,
+          LATCHED into the returned working copy at every generation like a dynamic
+          param (a write takes effect for the envs the next generation regenerates).
+        - ``per="raw"`` (roadmap PR13b; centerline generators only): a stable ``[E *
+          raw]`` ``float32`` / ``int32`` / ``vec2f`` / ``vec3f`` array, UNLATCHED: the
+          returned array IS the input, read during the generation (the caller writes
+          it on the generation's stream, or orders the streams with events). The
+          ingestion inputs (``centerline.*``) are of this kind.
+
+        The returned array is READ-ONLY for the stage, like :meth:`param`'s. Name the
+        input with a dotted path in the stage's own namespace (``centerline.*`` is the
+        ingestion namespace :func:`track_gen.pipeline.load_centerlines` reads).
 
         Args:
             name: The input's name (``"regen_mask"`` and existing names clash).
-            dtype: ``wp.float32`` or ``wp.int32``.
-            default: The initial value of every env.
+            dtype: ``wp.float32`` or ``wp.int32`` (``per="raw"``: also ``wp.vec2f`` /
+                ``wp.vec3f``).
+            default: The initial value of every element (a scalar; a vector input
+                broadcasts it to every component).
+            per: ``"env"`` or ``"raw"``.
 
         Raises:
             TypeError: another dtype.
-            ValueError: a name clash.
+            ValueError: a name clash; an unknown ``per``; ``per="raw"`` on a stage that
+                is not a centerline generator.
         """
         self._check_open("input")
-        if dtype is not wp.float32 and dtype is not wp.int32:
-            raise TypeError(f"input {name!r}: dtype must be wp.float32 or wp.int32, got "
+        if per not in ("env", "raw"):
+            raise ValueError(f"input {name!r}: per must be 'env' or 'raw', got {per!r}")
+        allowed = (wp.float32, wp.int32) if per == "env" else _FAMILY_DTYPES
+        if dtype not in allowed:
+            what = "wp.float32 or wp.int32" if per == "env" else \
+                "wp.float32, wp.int32, wp.vec2f or wp.vec3f"
+            raise TypeError(f"input {name!r}: dtype must be {what} (per={per!r}), got "
                             f"{getattr(dtype, '__name__', dtype)}")
         if not isinstance(name, str) or not name:
             raise ValueError(f"input name must be a non-empty string, got {name!r}")
-        if name in self._reserved_inputs or name in self._inputs:
+        if name in self._reserved_inputs or name in self._inputs or \
+                name in self._raw_inputs:
             raise ValueError(f"input {name!r} already exists (reserved: "
                              f"{sorted(self._reserved_inputs)})")
+        if per == "raw":
+            kind = getattr(self._stage, "kind", None)
+            if kind != "generator":
+                raise ValueError(f"stage {self._label()}: input {name!r}: per='raw' is for "
+                                 f"centerline generators (kind 'generator'); this stage is "
+                                 f"kind {kind!r}")
+            value = int(default) if dtype is wp.int32 else float(default)
+            arr = wp.full(self.E * self.raw, value, dtype=dtype, device=self.device)
+            self._raw_inputs[name] = arr
+            return arr
         value = float(default) if dtype is wp.float32 else int(default)
         live = wp.full(self.E, value, dtype=dtype, device=self.device)
         work = wp.full(self.E, value, dtype=dtype, device=self.device)
@@ -970,9 +1026,20 @@ def _check_stage(cls, *, kind: "str | None" = None, api_version: int = 1,
     if not isinstance(cls.capture, CaptureClass):
         raise TypeError(f"Stage {label}.capture must be a CaptureClass, got {cls.capture!r}")
     _check_params_class(cls.Params, owner=f"Stage {label}")
-    if declared != "gate_generator" and dict(getattr(cls, "preferred", {}) or {}):
+    if not isinstance(getattr(cls, "seeded", True), bool):
+        raise TypeError(f"Stage {label}.seeded must be a bool, got {cls.seeded!r}")
+    if declared != "generator" and _overrides_declare(cls):
+        raise ValueError(f"Stage {label}.declare() is read for centerline generators only "
+                         f"in 0.x")
+    if declared not in ("gate_generator", "generator") and \
+            dict(getattr(cls, "preferred", {}) or {}):
         raise ValueError(f"Stage {label}.preferred is read for gate generators only "
-                         f"(roadmap PR11)")
+                         f"(roadmap PR11) and centerline generators ('relax', roadmap "
+                         f"PR13b)")
+    if declared == "relax" and getattr(cls, "name", None) == "auto":
+        raise ValueError(f"Stage {label}: the relax name 'auto' is reserved "
+                         f"(presets.track(relax='auto') picks the generator's preferred "
+                         f"relax)")
     if declared == "gate_generator":
         _check_gate_generator(cls, label)
         return declared
@@ -986,34 +1053,93 @@ def _check_stage(cls, *, kind: "str | None" = None, api_version: int = 1,
     if output != "centerline":
         raise ValueError(f"Stage {label}: a generator Stage must declare "
                          f"output='centerline', got {output!r}")
+    _check_centerline_preferred(cls, label)
     writes = _port_map(cls, "writes")
-    channels = list(writes.values())
-    bad = sorted(str(c) for c in channels
-                 if c not in _GENERATOR_CHANNELS and not _is_raw_attribute(c))
-    if bad:
-        raise ValueError(f"Stage {label}.writes: channels {bad} are not generator "
-                         f"channels; a generator writes {sorted(_GENERATOR_CHANNELS)}, the "
-                         f"catalogue attributes it provides {sorted(_RAW_PROVIDABLE)} and "
-                         f"its own raw attributes 'raw.<package>.<name>'")
-    if "raw.xy" not in channels:
-        raise ValueError(f"Stage {label}.writes must map a port to 'raw.xy'")
-    if len(set(channels)) != len(channels):
-        raise ValueError(f"Stage {label}.writes maps two ports to one channel: {writes}")
     if dict(cls.reads):
         raise ValueError(f"Stage {label}.reads must be empty (a generator reads no "
                          f"channel)")
-    provides = cls.provides
-    if not isinstance(provides, (frozenset, set)):
-        raise TypeError(f"Stage {label}.provides must be a frozenset, got {provides!r}")
-    written = sorted(_RAW_PROVIDABLE[c] for c in channels if c in _RAW_PROVIDABLE)
-    if sorted(map(str, provides)) != written:
-        raise ValueError(f"Stage {label}: provides {sorted(map(str, provides))} must name "
-                         f"exactly the catalogue attributes it writes ({written}: raw.z "
-                         f"-> 'z', raw.half_width -> 'half_width')")
+    _check_generator_ports(f"Stage {label}", writes, cls.provides)
     if cls.topology not in ("closed", "any"):
         raise ValueError(f"Stage {label}.topology must be 'closed' or 'any', got "
                          f"{cls.topology!r}")
     return declared
+
+
+def _overrides_declare(cls) -> bool:
+    """Whether ``cls`` overrides :meth:`Stage.declare`."""
+    fn = getattr(cls, "declare", None)
+    return getattr(fn, "__func__", fn) is not Stage.declare.__func__
+
+
+def _check_centerline_preferred(cls, label: str) -> None:
+    """A centerline generator's ``preferred``: only ``{"relax": name}`` (a relax stage
+    name or ``"none"``; ``"auto"`` is reserved)."""
+    preferred = getattr(cls, "preferred", {}) or {}
+    if not isinstance(preferred, Mapping):
+        raise TypeError(f"Stage {label}.preferred must be a mapping, got "
+                        f"{type(preferred).__name__}")
+    unknown = sorted(str(k) for k in preferred if k != "relax")
+    if unknown:
+        raise ValueError(f"Stage {label}.preferred: unknown keys {unknown}; a centerline "
+                         f"generator's key is 'relax'")
+    relax = preferred.get("relax")
+    if relax is not None and (not isinstance(relax, str) or not relax or relax == "auto"):
+        raise ValueError(f"Stage {label}.preferred['relax'] must be a relax stage name or "
+                         f"'none', got {relax!r}")
+
+
+def _check_generator_ports(label: str, writes: Mapping, provides) -> None:
+    """The port rules of a centerline generator's ``writes`` / ``provides`` (its class
+    attributes at registration, its :meth:`Stage.declare` result at bind time)."""
+    channels = list(writes.values())
+    bad = sorted(str(c) for c in channels
+                 if c not in _GENERATOR_CHANNELS and not _is_raw_attribute(c))
+    if bad:
+        raise ValueError(f"{label}.writes: channels {bad} are not generator "
+                         f"channels; a generator writes {sorted(_GENERATOR_CHANNELS)}, the "
+                         f"catalogue attributes it provides {sorted(_RAW_PROVIDABLE)} and "
+                         f"its own raw attributes 'raw.<package>.<name>'")
+    if "raw.xy" not in channels:
+        raise ValueError(f"{label}.writes must map a port to 'raw.xy'")
+    if len(set(channels)) != len(channels):
+        raise ValueError(f"{label}.writes maps two ports to one channel: {dict(writes)}")
+    if not isinstance(provides, (frozenset, set)):
+        raise TypeError(f"{label}.provides must be a frozenset, got {provides!r}")
+    written = sorted(_RAW_PROVIDABLE[c] for c in channels if c in _RAW_PROVIDABLE)
+    if sorted(map(str, provides)) != written:
+        raise ValueError(f"{label}: provides {sorted(map(str, provides))} must name "
+                         f"exactly the catalogue attributes it writes ({written}: raw.z "
+                         f"-> 'z', raw.half_width -> 'half_width')")
+
+
+def _declared_of(spec, params) -> "tuple[Mapping[str, str], frozenset]":
+    """``(writes, provides)`` of a centerline generator for ``params`` (roadmap PR13b):
+    a Stage's :meth:`Stage.declare` (``params``: its static view), a legacy spec's
+    nothing (``({}, frozenset())``). Every read of a generator's declared ports goes
+    through here."""
+    if not _is_stage(spec):
+        return {}, frozenset()
+    if spec.kind != "generator" or not _overrides_declare(spec):
+        return dict(spec.writes), frozenset(spec.provides)
+    from .params import _static_view  # noqa: PLC0415
+
+    view = _static_view(params if params is not None else spec.Params())
+    got = spec.declare(view)
+    try:
+        writes, provides = got
+    except (TypeError, ValueError):
+        raise TypeError(f"{spec.__name__}.declare() must return (writes, provides), got "
+                        f"{got!r}") from None
+    if not isinstance(writes, Mapping):
+        raise TypeError(f"{spec.__name__}.declare(): writes must be a mapping of ports to "
+                        f"channels, got {type(writes).__name__}")
+    provides = frozenset(provides) if isinstance(provides, (set, frozenset)) else provides
+    for port, ch in writes.items():
+        if not isinstance(port, str) or not port or not isinstance(ch, str) or not ch:
+            raise TypeError(f"{spec.__name__}.declare(): writes must map non-empty port "
+                            f"names to channel names, got {port!r}: {ch!r}")
+    _check_generator_ports(f"Stage {spec.__name__}.declare()", writes, provides)
+    return dict(writes), provides
 
 
 def _order_names(value) -> bool:

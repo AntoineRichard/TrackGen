@@ -1,6 +1,9 @@
 """TrackGen's built-in track and gate stages and the channel catalogue (roadmap
 PR10a/PR10b/PR11).
 
+Roadmap PR13b: the ``randomize`` kind (:data:`PARAM_WRITER_KINDS`; ``randomize.uniform``)
+writes another stage's dynamic params; built-in only in 0.x, in the private catalogue.
+
 The stages of the kinds open to plugins (:data:`OPEN_KINDS`: ``relax``, ``width``,
 ``elevation``, ``validity``, ``order``, ``stations``) live in
 :data:`track_gen.plugin.registry`, next to the generators: :func:`register_builtins`
@@ -19,16 +22,19 @@ import contextlib
 import threading
 from typing import Iterator
 
-from ..plugin.stage import _OPEN_KINDS
+from ..plugin.stage import _OPEN_KINDS, _PARAM_WRITER_KINDS
 from .channels import BUILTIN_FAIL_BITS, CHANNELS, FAIL, GATE_FAIL_BITS, SEED, Channel
 
 __all__ = ["BUILTIN_FAIL_BITS", "CHANNELS", "Channel", "FAIL", "GATE_FAIL_BITS",
-           "OPEN_KINDS", "SEED", "available", "get", "register", "register_builtins",
-           "scoped"]
+           "OPEN_KINDS", "PARAM_WRITER_KINDS", "SEED", "available", "get", "register",
+           "register_builtins", "scoped"]
 
 #: The pipeline kinds third parties register stages of (through
 #: ``track_gen.plugin.registry``).
 OPEN_KINDS = _OPEN_KINDS
+#: The stage kinds that write another stage's dynamic params (``randomize``): listed
+#: before their target; only the generator's may precede the generator.
+PARAM_WRITER_KINDS = _PARAM_WRITER_KINDS
 
 _RESERVED_KINDS = ("generator", "gate_generator")
 
@@ -134,9 +140,10 @@ def register(catalogue) -> None:
     """Add the built-in stages of the kinds NOT open to plugins (resample, frames,
     offset, lift, normalize, carry, gate_relax, gate_arclen, tangents, gate_frames) to
     ``catalogue`` (anything with ``add(cls)``)."""
-    from . import gates, track  # noqa: PLC0415
+    from . import gates, randomize, track  # noqa: PLC0415
 
-    for cls in (*track.CATALOGUE_STAGES, *gates.CATALOGUE_STAGES):
+    for cls in (*track.CATALOGUE_STAGES, *gates.CATALOGUE_STAGES,
+                *randomize.CATALOGUE_STAGES):
         catalogue.add(cls)
 
 

@@ -7,7 +7,7 @@ dependency — this is a Warp-first library, so the surface is imported eagerly.
 """
 
 from ._version import __version__
-from ._src.types import GateGenConfig, GateSequence, Track, TrackGenConfig
+from ._src.types import GateGenConfig, GateSequence, Layout, Track, TrackGenConfig
 from ._src.track_generator import TrackGenerator
 from ._src.gate_generator import GateGenerator
 from ._src.rng_utils import PerEnvSeededRNG
@@ -18,6 +18,9 @@ from . import progress
 from . import localize
 from . import course
 from . import heightfield
+from . import results
+from .results import (HasBand, HasCenterline, HasGateFrames, HasGates,
+                      HasGeneration)
 from .course import set_capturing
 
 __all__ = [
@@ -27,6 +30,13 @@ __all__ = [
     "GateGenerator",
     "GateGenConfig",
     "GateSequence",
+    "Layout",
+    "HasBand",
+    "HasCenterline",
+    "HasGateFrames",
+    "HasGates",
+    "HasGeneration",
+    "results",
     "PerEnvSeededRNG",
     "collision",
     "props",

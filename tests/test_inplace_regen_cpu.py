@@ -112,7 +112,10 @@ def _assert_bytes_equal(a, b, fields, label=""):
             f"{label}: field {f} differs"
 
 
-GENERATORS = ([("track", g) for g in generator_registry.available()]
+# Seed-dependent generators only: an ingestion generator (seeded=False, "external") does
+# not change with its epoch (roadmap PR13b; its masked reloads are tests/test_external.py).
+GENERATORS = ([("track", g) for g in generator_registry.available()
+               if _plugin_reg.describe("generator", g).seeded]
               + [("gates", g) for g in gate_generator_registry.available()])
 GEN_IDS = [f"{w}-{g}" for w, g in GENERATORS]
 
@@ -612,7 +615,7 @@ def _course_buffers(c: Course) -> dict:
     if c.heightfield is not None:
         out.update(_dc(c.heightfield._hf, "hf."))
     if c.course_line is not None:
-        out.update(_dc(c.course_line.track, "line."))
+        out.update(_dc(c.course_line.centerline, "line."))
     if c._posts is not None:
         out["posts"] = c._posts
     return out

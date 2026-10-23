@@ -69,6 +69,8 @@ def _median_valid_compactness(track, E: int) -> float:
 def test_no_registered_generator_is_degenerate():
     wp.init()
     for g in registry.available("generator"):
+        if not registry.describe("generator", g).seeded:
+            continue                  # an ingestion generator draws no random shape
         over = dict(_GEN_OVERRIDES.get(g, {}))
         E = int(over.pop("num_envs", 256))
         cfg = TrackGenConfig(generator=g, device="cpu", num_envs=E, half_width=0.1,

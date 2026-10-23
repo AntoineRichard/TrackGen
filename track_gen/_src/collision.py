@@ -33,7 +33,7 @@ from .collision_geom import (
 )
 from ..exec.context import LaunchContext
 from .runtime import _BIG, _check_arr, _init, _sync  # noqa: F401  (_sync: legacy re-export)
-from .types import Track
+from ..results import HasBand, _check_and_bind
 
 
 @dataclass
@@ -282,7 +282,10 @@ class CollisionChecker:
     preallocated :class:`BoxContact` on every call.
     """
 
-    def __init__(self, track: Track, max_boxes: int, method: str = "segments",
+    #: The topologies this component supports (closed loops only in 0.x).
+    topology = "closed"
+
+    def __init__(self, track: HasBand, max_boxes: int, method: str = "segments",
                  sdf_resolution: int = 128, sdf_padding: "float | None" = None,
                  position: "wp.array | None" = None,
                  orientation: "wp.array | None" = None,
@@ -320,17 +323,16 @@ class CollisionChecker:
         if sdf_padding is not None and float(sdf_padding) <= 0.0:
             raise ValueError(
                 f"sdf_padding must be > 0 (or None for auto), got {sdf_padding!r}")
-        E = int(track.count.shape[0])
-        stride = int(track.outer.shape[0])
-        if E < 1 or stride % E != 0:
-            raise ValueError(
-                f"track batch layout invalid: outer has {stride} slots for {E} envs")
-        self._track = track
+        # The members checked here are the ones bound (read once: stable pointers).
+        lay, self._track = _check_and_bind(track, HasBand, consumer="CollisionChecker",
+                                           members=("center", "outer", "inner", "count"),
+                                           topology=self.topology)
+        E = int(lay.num_envs)
         self._method = method
         self._E = E
-        self._n_max = stride // E
+        self._n_max = int(lay.stride)
         self._B = int(max_boxes)
-        self._device = str(track.outer.device)
+        self._device = lay.device
 
         n = E * self._B
         dev = self._device

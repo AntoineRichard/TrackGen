@@ -23,6 +23,13 @@ stations), an ``order`` stage, the sphere solve, an ``elevation`` stage (the tra
 rewired to the gates), the lift, tangents, frames and ``validity.gate_default``
 (:data:`GATE_FAIL_BITS`).
 
+Roadmap PR13b: ``build(spec, out=...)`` (and the facades' ``out=``) writes into a
+caller-owned result, a :meth:`view <track_gen.Track.view>` of a larger one included
+(mixed batches); ``randomize.uniform`` stages (``presets.track(randomize=...)``) draw
+dynamic params per env in the graph; ``generator="external"`` ingests caller-provided
+centerlines through ``Program.inputs`` (:class:`InputInfo`), loaded with
+:func:`load_centerlines`.
+
 Preview: names and signatures may change before 1.0. ``import track_gen`` does not
 import this package.
 """
@@ -30,8 +37,9 @@ from __future__ import annotations
 
 from ..stages.channels import BUILTIN_FAIL_BITS, GATE_FAIL_BITS
 from . import legacy, presets
+from .ingest import load_centerlines
 from .planner import PlanError, build
-from .program import AttributeInfo, Program, Segment
+from .program import AttributeInfo, InputInfo, Program, Segment
 from .spec import BatchSpec, PipelineSpec, StageRef
 
 __all__ = [
@@ -39,6 +47,7 @@ __all__ = [
     "BUILTIN_FAIL_BITS",
     "BatchSpec",
     "GATE_FAIL_BITS",
+    "InputInfo",
     "PipelineSpec",
     "PlanError",
     "Program",
@@ -46,5 +55,6 @@ __all__ = [
     "StageRef",
     "build",
     "legacy",
+    "load_centerlines",
     "presets",
 ]

@@ -15,7 +15,7 @@ import warp as wp
 from .collision_geom import _is_nan3
 from ..exec.context import LaunchContext
 from .runtime import _check_arr, _init, _sync  # noqa: F401  (_sync: legacy re-export)
-from .types import GateSequence
+from ..results import HasGateFrames, _check_and_bind
 
 
 @dataclass
@@ -112,9 +112,16 @@ def _frame_query_k(
 
 
 class FrameChecker:
-    """See module docstring. Mirrors DiscChecker's bind/query lifecycle."""
+    """See module docstring. Mirrors DiscChecker's bind/query lifecycle.
 
-    def __init__(self, seq: GateSequence, num_envs: int, radius: float,
+    ``seq`` is any :class:`~track_gen.results.HasGateFrames` (it reads ``position``,
+    ``orientation``, ``half_size``, ``count`` and ``valid``), checked at construction;
+    ``num_envs`` must equal its ``num_envs``."""
+
+    #: The topologies this component supports (closed loops only in 0.x).
+    topology = "closed"
+
+    def __init__(self, seq: HasGateFrames, num_envs: int, radius: float,
                  frame_thickness: float, frame_depth: float,
                  window: int = 4) -> None:
         _init()
@@ -125,18 +132,21 @@ class FrameChecker:
         if int(window) < 1:
             raise ValueError(f"window must be >= 1, got {window!r}")
         E = int(num_envs)
-        stride = int(seq.position.shape[0])
-        if E < 1 or stride % E != 0:
-            raise ValueError(
-                f"gate batch layout invalid: {stride} slots for {E} envs")
-        self._seq = seq
+        # The members checked here are the ones bound (read once: stable pointers).
+        lay, bound = _check_and_bind(seq, HasGateFrames, consumer="FrameChecker",
+                                     members=("position", "orientation", "half_size",
+                                              "count", "valid"), topology=self.topology)
+        if E != int(lay.num_envs):
+            raise ValueError(f"FrameChecker: num_envs={num_envs!r}, but the gates hold "
+                             f"{lay.num_envs} envs")
+        self._seq = bound
         self._E = E
-        self._G = stride // E
+        self._G = int(lay.stride)
         self._radius = float(radius)
         self._thick = float(frame_thickness)
         self._depth = float(frame_depth)
         self._window = int(window)
-        self._device = str(seq.position.device)
+        self._device = lay.device
         self._pos: "wp.array | None" = None
         self._next: "wp.array | None" = None
         self._contact = FrameContact(

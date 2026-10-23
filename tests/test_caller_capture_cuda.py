@@ -189,7 +189,8 @@ def _record_replay_reseed(kind: str, generator: str) -> None:
     _assert_same(out, new, f"{kind}/{generator}: replay after reseed")
 
 
-@pytest.mark.parametrize("generator", registry.available("generator"))
+@pytest.mark.parametrize("generator", [g for g in registry.available("generator")
+                                       if registry.describe("generator", g).seeded])
 def test_track_generate_records_into_caller_capture(generator):
     """Every registered track generator: ``generate(stream=s)`` inside the caller's
     capture is recorded (no allocation, no capture_launch, no self-capture), replays to

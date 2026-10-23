@@ -27,7 +27,7 @@ def test_gates_course_has_localizer_and_line():
     c, _ = _course()
     assert c.course_line is not None
     assert c.localizer is not None
-    assert int(c.course_line.track.valid.numpy().sum()) \
+    assert int(c.course_line.centerline.valid.numpy().sum()) \
         == int(c.result.valid.numpy().sum())
 
 
@@ -43,7 +43,7 @@ def test_step_localizes_near_first_gate():
     frame = res.frame
     assert frame is not None
     # foot point at gate 0 => s near 0 (mod length), n_up near +0.1
-    L = float(c.course_line.track.length.numpy()[e])
+    L = float(c.course_line.centerline.length.numpy()[e])
     s = float(frame.s.numpy()[e])
     assert min(s, L - s) < 0.2 * L
     assert abs(float(frame.n_up.numpy()[e]) - 0.1) < 0.05
@@ -114,13 +114,13 @@ def test_cuda_gates_graph_replay_refreshes_line_and_frame():
     c.bind(pos)
     c.generate()
     assert c.graph is not None                    # regeneration graph captured
-    c.course_line.track.center.fill_(12345.0)    # poison the line ...
+    c.course_line.centerline.center.fill_(12345.0)    # poison the line ...
     c.localizer._last.fill_(5)                    # ... and the warm memory
     c.generate(seeds=77)                          # replay path
     ref = CourseLine(c.result, 8)
     ref.refresh()
-    np.testing.assert_allclose(c.course_line.track.center.numpy(),
-                               ref.track.center.numpy(), rtol=1e-5,
+    np.testing.assert_allclose(c.course_line.centerline.center.numpy(),
+                               ref.centerline.center.numpy(), rtol=1e-5,
                                equal_nan=True)
     assert (c.localizer._last.numpy() == -1).all()
 
@@ -134,7 +134,7 @@ def test_cuda_gates_graph_replay_refreshes_line_and_frame():
     wp.copy(pos, wp.array(p, dtype=wp.vec3f, device=dev))
     frame = c.step().frame
     assert frame is not None
-    L = float(c.course_line.track.length.numpy()[e])
+    L = float(c.course_line.centerline.length.numpy()[e])
     s = float(frame.s.numpy()[e])
     assert min(s, L - s) < 0.2 * L
     assert abs(float(frame.n_up.numpy()[e]) - 0.1) < 0.05
