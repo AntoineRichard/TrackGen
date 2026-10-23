@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.0.dev4 (unreleased, `v2` branch)
+## 0.2.0.dev4 (2026-10-23, tag `v0.2.0.dev4`)
 
 ### Added
 
