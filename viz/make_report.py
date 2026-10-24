@@ -34,9 +34,7 @@ from matplotlib.backends.backend_pdf import PdfPages
 
 import warp as wp
 
-from track_gen._src.types import TrackGenConfig
-from track_gen._src.track_generator import TrackGenerator
-from track_gen._src.rng_utils import PerEnvSeededRNG
+from track_gen import PerEnvSeededRNG, TrackGenConfig, TrackGenerator
 
 OUT_PDF = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out", "track_gen_report.pdf")
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"

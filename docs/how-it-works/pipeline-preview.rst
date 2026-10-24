@@ -2758,7 +2758,9 @@ Not open yet
   utility, and a ``closed`` argument to the kernels (after 1.0); ``build(inputs=)``
   binding caller arrays as a Program's inputs; ``declare()`` for gate generators; gate
   ingestion (a ``GateSequence`` from caller arrays); ``Track.capabilities()``; a
-  ``Course`` over a mixed batch (roadmap PR15).
+  ready-made mixed-batch producer (``pipeline.MixedBatch``: a ``Course`` drives any object
+  with the ``track_gen.pipeline.Producer`` surface since 0.2.0.dev6, so a mixed batch of
+  ``out=`` views can be wrapped by hand, :doc:`/utilities/composing-a-course`).
 - **Channels** (later): carries by plugin stations stages (a public
   ``StageBuilder.carried()``); carried channels written by a stage rather than the
   generator (an ``annotate`` kind, ``interp=`` on stage writes); an order that publishes

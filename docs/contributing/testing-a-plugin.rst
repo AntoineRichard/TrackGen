@@ -677,16 +677,30 @@ their pointers.
        wrapped utility's rebind flag armed and unarmed (:ref:`component-rebind`).
    * - ``hot_path.buffers`` (CPU)
      - Every launched pointer belongs to the component, its upstream, its read target,
-       its inputs or the masks.
+       its inputs or the masks; and ``on_generate(ctx, None)``, ``on_generate(ctx, m)``
+       and ``reset(ctx, m)``, traced separately, reference no pointer of a bound input
+       (a ``Course`` runs them in a self-graph keyed on ``advance`` and the mask only:
+       :ref:`component-course-contract`). An input reached through an upstream result
+       that aliases it fails too: the kit binds the same arrays to the upstream.
    * - ``capture.caller`` (CUDA)
      - Per capture mode: on a component whose hot methods never ran eagerly, records
-       ``[producer.enqueue(advance, mask=done) -> chain on_generate(ctx, done) -> chain
-       reset(ctx, done) -> chain step(ctx)]`` on a side stream (mempool disabled,
-       ``capture_launch`` forbidden) and replays it ``steps`` times against an eager
-       twin, poisoning the owned arrays in both runs before each iteration.
+       the chain a ``Course`` records, ``any_set(ctx, done, flag)``, then
+       ``ctx.skip_unless(flag, [producer.enqueue(advance=True, mask=done) -> chain
+       on_generate(ctx, done) -> chain reset(ctx, done)])``, then ``chain step(ctx)``,
+       on a side stream (mempool disabled, ``capture_launch`` forbidden) and replays it
+       ``steps`` times against an eager twin running the same chain. Every fourth
+       ``done`` mask is all zero, so the skipped branch replays too. Before every
+       iteration the owned arrays of the component under test are poisoned in both
+       runs. Where the capture allows conditional nodes (``warp`` mode with
+       ``wp.is_conditional_graph_supported()``) the skippable part is a
+       conditional-node body: a copy to or from host or pinned memory, an event or
+       another stream in ``on_generate`` / ``reset`` fails here, and on an all-zero
+       ``done`` the eager twin skips that part as the replay does (an array that only
+       ``on_generate`` writes keeps the poison in both runs); elsewhere it is recorded
+       unconditionally, as a ``Course`` records it there, and both runs execute it.
    * - ``capture.self_reset`` (CUDA)
-     - As ``regenerate.self_reset``, recorded: the graph without ``reset`` equals the
-       eager twin with it.
+     - As ``regenerate.self_reset``, recorded (the same chain without ``reset``): the
+       graph equals the eager twin with ``reset``.
 
 A component that declares no read (``DiscCollision`` on raw disc arrays) and gives the
 same bytes on an empty read target reports ``requires.complete``, ``topology`` and

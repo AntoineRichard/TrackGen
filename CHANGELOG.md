@@ -5,13 +5,21 @@
 Roadmap PR14: the component protocol (`track_gen.tools`) and the adapters of the runtime
 utilities, static capacities from the generator's plan, generation-aware self-reset, one
 invalid-env sentinel table, `out=` on `curvature()` / `speed_profile()`, and
-`check_component` in the conformance kit. Generator outputs and launch sequences do not
-change; the utilities' outputs for valid envs are byte-identical.
+`check_component` in the conformance kit. Roadmap PR15: `Course` as the composition root
+(`Course(generator, components)` over any producer, the presets `Course.track` /
+`Course.gates` / `Course.from_config`, `StepResult` mapping access by component name,
+`bind(**arrays)` routed by declared inputs, the regeneration as one graph over every
+component with a stable `inputs["reset_mask"]`, the course anchoring its components).
+Generator outputs and launch sequences do not change; the utilities' outputs for valid
+envs are byte-identical; `Course(CourseConfig)` keeps its outputs and launch sequences
+(PR15 changes none of them; construction launch streams under an ambient scope
+excepted: migration item 20).
 
 ### Migration (`Course` and runtime-utility users)
 
 Downstream code that uses `Course` / `CourseConfig` or the runtime utilities sees the
-changes below. Each one is detailed further down (Added, Behaviour changes).
+changes below. Each one is detailed further down (Added, Behaviour changes). Items 1-8
+come from roadmap PR14, items 9-20 from roadmap PR15.
 
 **1. Invalid envs read like poisoned envs in every utility.** For an env whose result has
 `valid[e] == 0`, every utility now writes what it writes for an env with no track
@@ -201,6 +209,197 @@ still resets explicitly (no change in its outputs); a direct user who regenerate
 the gates' `valid` (it scanned `2 * max_gates` posts, skipping the NaN padding): the same
 contacts for valid envs, item 1 for invalid ones.
 
+**PR15: `Course` as the composition root.** For `Course(CourseConfig)` code, **outputs
+and launch sequences do not change** (construction and every call: byte-identical state
+after every step and identical launch traces, buffer roles included, on ten track and
+gates variants; CPU goldens `tests/goldens/pr15_course.json` taken at the PR14 commit),
+except on CUDA for a course built inside an ambient `LaunchContext.scope(other)` on a
+stream other than Warp's current one, whose construction launches change streams (item
+20), **no warning is added**, and every 0.2.0.dev5 / PR14 `Course` test passes
+unchanged. What you can observe:
+
+**9. The constructor signature** is `Course(generator=None, components=(), *,
+stream=None, prepare=True, config=None)`. `Course(cfg)` and `Course(config=cfg)` (the
+0.x forms) build exactly the 0.x course, silently: they are `Course.from_config(cfg)`.
+`Course(cfg, components)`, `stream=` or `prepare=False` with a `CourseConfig` raise
+`TypeError` (as before, with another message). `inspect.signature(Course)` changes.
+**Subclasses:** every front door now runs `__init__` (the presets call `cls(generator,
+components, stream=..., prepare=...)`), so a subclass's `__init__` runs for
+`MyCourse.track(...)` too and must accept that signature; one written as
+`__init__(self, config)` keeps working for `MyCourse(cfg)` and `MyCourse.from_config(cfg)`
+(it calls `cls(config)`); the presets need the new signature.
+
+**10. `StepResult` gains read-only mapping access** (it does not become a `Mapping`):
+`res[name]` (a `KeyError` listing the entries), `res.get(name, default=None)`,
+`keys()`, `values()`, `items()`, `name in res`, `dict(res)`. The entries are the
+per-step components by name; on a config course exactly the sources of the 0.x fields:
+track `progress` [, `collision`]; gates `progress` [, `collision`], `localizer`
+(`res.events is res["progress"]`, `res.contacts is res["collision"]`, `res.frame is
+res["localizer"]`).
+
+- **Unchanged:** the dataclass and its four fields (`dataclasses.fields`, `asdict`,
+  positional construction, `==`), the annotations (`events: ProgressEvents`), truthiness
+  (always `True`), `iter(res)` (`TypeError`), `isinstance(res, collections.abc.Mapping)`
+  (`False`), the `repr` (the dataclass-generated one, on every course, so `pprint` and
+  `rich` lay it out as before), `clone()`. Generic tree utilities that test `Mapping`
+  before dataclasses (Lightning's `apply_to_collection` / `move_data_to_device`,
+  `dm-tree`'s `map_structure`) see the dataclass they saw, and the mapping access on
+  what they return agrees with its fields: assigning a 0.x field (`res.events = x`, as
+  they do on their copy) updates its entry on that instance only (`None` removes it;
+  copy on write, so a `copy.copy` shares nothing it reassigns).
+- **Visible:** `vars(res)` gains `_items` (the entries, a plain instance attribute);
+  `dataclasses.replace(res, ...)` rebuilds from the four fields, so it keeps the 0.x
+  entries only (on a config course: all of them); duck-typed code that probes `keys()` /
+  `__getitem__` now finds them, so `**res` and `dict.update(res)` succeed (they raised
+  `TypeError`); `hasattr(res, "__iter__")` is `True` (the attribute is `None`, so
+  `iter(res)` still raises); `isinstance(res, collections.abc.Container)` is `True`
+  (`__contains__`). Logging or serialization helpers that sniff these to pick a code
+  path take another one. A hand-built `StepResult(events, contacts, frame, valid)` gets
+  the entries of its non-`None` fields under `progress` / `collision` / `localizer`.
+
+**11. `course.inputs` gains `"reset_mask"`**: an `[E]` int32 array, zeroed at
+construction, with a stable address, for your kernels to write the mask of
+`reset(mask)` into (`course.reset(course.inputs["reset_mask"])`). Code that expects
+exactly one key, or iterates `inputs`, sees two. One more `[E]` int32 allocation at
+construction (no launch).
+
+**12. `reset(mask=None, stream=None)`**: the mask is optional; `None` resets every env.
+
+**13. `bind(position, orientation=None, half_extents=None, box_position=None,
+**arrays)`**: same positional order and the same 0.x checks and messages first
+(`RuntimeError` for a missing `orientation` / `half_extents` / `box_position`, the
+shape / dtype / device `ValueError`s). On a config course `bind()` still raises
+`TypeError` (now the library's `"Course.bind() missing 1 required argument:
+'position'"`) and `bind(None)` the 0.x error (`RuntimeError` when the course has a box
+/ disc collision checker, else `ValueError`). An unknown keyword raises
+`TypeError("Course.bind: unknown inputs [...] (component inputs: [...])")` instead of
+Python's unexpected-keyword `TypeError` (same type, another message); the name of a
+generator input raises `TypeError` with the in-place recipe (Deferred). A
+refused bind, including a component's `on_bind` raising part-way (the component that
+raised is bound again to its previous arrays too), leaves every previous binding in
+place and the rebind-after-capture warning armed: a later real rebind after a capture
+still warns.
+
+**14. New public members** on every course: `components` (a read-only `name ->
+component` mapping, in execution order), `prepare()`, and the classmethods `from_config`,
+`track`, `gates`. A subclass that defines class attributes or methods of these names
+shadows them, but `components` is a read-only property: assigning an instance attribute
+of that name (`self.components = [...]` in a subclass's `__init__`, a plausible name for
+reward or observation parts) now raises `AttributeError` (Python 3.11+: `property
+'components' of ... object has no setter`; 3.10: `can't set attribute 'components'`);
+rename yours. Likewise `TrackGenerator.rng` / `GateGenerator.rng`
+are read-only properties now (the `PerEnvSeededRNG` the facade was built with, else
+`None`): `gen.rng = ...`, or a facade subclass that stores `self.rng`, raises
+`AttributeError`; keep your rng under another name.
+
+**15. Lifetime.** `step()` and `reset()` recorded into a capture Warp registered
+(`wp.ScopedCapture`, `wp.capture_begin`, `interop.torch.registered()`) now anchor the
+course on that graph, as `regenerate` / `generate` / `enqueue_generate` already did: a
+graph that records only `step()` / `reset()` keeps the course, its generator, its
+components and its bound arrays alive. The arrays a recorded call reads that the course
+does not own are anchored with it: `step()` the binding it read (`course._bind_args`;
+after a rebind the course drops its references to the old arrays, the graph keeps
+them), `reset(mask)`, `regenerate(mask=)` and `enqueue_generate(mask=)` your mask,
+`generate(seeds=array)` your seed array. A CPU graph (`wp.ScopedCapture("cpu")`) needs
+no anchor (Warp keeps every array its recorded launches touch); the course object itself
+is released there. A plain `torch.cuda.graph` still needs `interop.torch.retain(g,
+course, ...)` (pass those arrays too).
+
+**16. Private internals** (some tests and downstream code read them) keep their meaning:
+`_cfg`, `_runner`, `_components`, `_by_name`, `_posts`, `_step_result`, `_device`, `_E`,
+`_needs_boxes()`, `_refresh_geometry(ctx, mask)`, `_reset_runtime(ctx, mask)`,
+`_refresh`, `_fill_posts`, `_enqueue_regenerate`, `_regen_call`,
+`_validate_seed_array`, `_check_arr`. **Changed:**
+
+- `_reset_order` is removed: resets run over every component in reverse order (the same
+  launches: localizer, then progress).
+- `_build_subtools` is removed (its work moved into the common setup): a subclass
+  override or a monkeypatch of it no longer runs.
+- `_apply_bind` is no longer called by `bind()` or by construction (routing moved into
+  `_bind`): calling it re-routes the last binding, but a subclass override or a
+  monkeypatch of it no longer runs.
+- The regeneration body calls `generator.program.enqueue` directly: an override or a
+  monkeypatch of the facade's `_enqueue` no longer runs.
+- `_cp_default` is replaced by the checkpoint component's `defaulted`. The checkpoint
+  component of a config course with a defaulted capacity is built with
+  `max_checkpoints="auto"` (its `max_checkpoints` attribute reads `"auto"`;
+  `course.checkpoint_sampler.max_checkpoints` is the same int as before).
+- `_step_result` exists from construction (the first `step()` created it).
+- `_bind_args` holds only the arrays given to the last successful `bind` (`{name:
+  array}`, no `None` values, extra keywords included): it was a dict of the four 0.x
+  names with `None` for an absent one, so `course._bind_args["box_position"]` (or
+  `["orientation"]` on a course without collision) now raises `KeyError`; use `.get(name)`.
+- `_bind(position, orientation, half_extents, box_position)` (PR14) is `_bind(given)`,
+  `given` a `{name: array}` dict: a subclass override of the old signature breaks.
+- New attributes: `_producer`, `_needs_bind`, `_superseded` (a `bool`), `_reset_mask`,
+  `_gen_inputs`, `_components_view`, `_zero_mask` (an array with `prepare=False`, else
+  `None`). New methods: `_setup`, `_init_from_config`, `_set_legacy_attributes`, `_ctx`,
+  `_ready`, `_check_owner`, `_check_mask` (and the classmethod `StepResult._of`). A
+  subclass that defines a method or an attribute of one of these names now shadows the
+  library's (`__init__` calls `self._setup(...)`, `step()` calls `self._ctx(stream)`):
+  rename yours.
+
+**17. The bezier `style_sampling` `DeprecationWarning` text**: its `Course` clause
+("Course (until it accepts a generator, PR15): keep style_sampling, or draw per-env sizes
+yourself ...") now reads "Course: with style_sampling=False,
+Course.track(legacy.to_pipeline_spec(cfg).with_randomize({'generator.size': (a / scale,
+b / scale)}), checkpoint_spacing=...) (track_gen.pipeline.legacy), or draw per-env sizes
+yourself ...". Filters that match the warning's category or its first sentence are
+unaffected.
+
+**18. One course per generator.** Building a `Course` over a generator that a live course
+drives (the same object: producers are tracked by identity, never by `==` / `hash`)
+takes it over once the construction completes: the older course raises `RuntimeError`
+at its next `step`, `reset`, `regenerate`, `enqueue_generate` or `generate` (its
+components would read a source the newer course regenerates). A construction that raises
+(a warning turned into an error by `-W error` included) takes nothing over. A config
+course builds its own generator, so only `Course(old.generator, ...)` reaches this.
+Rebuilding a course over the same generator (`c = Course(gen, ...)` run twice) works.
+
+**19. Moving to the presets (optional; `CourseConfig` stays through 0.x, not
+deprecated).** `Course.track` / `Course.gates` build the components a config course
+builds (`docs/utilities/composing-a-course.rst`):
+
+| `CourseConfig` | `Course.track` / `Course.gates` |
+|---|---|
+| `mode="track"` / `"gates"` | the preset |
+| `gen` | `source` (a config, a `PipelineSpec`, or a built `TrackGenerator` / `GateGenerator` / `Program`) |
+| `seeds` (int / array) | `seeds=` (int / array). `course.rng` is `None` unless `seeds=PerEnvSeededRNG(...)`: read `course.seeds.seeds` for logging. With a bound array and no rng, `generate(seeds=)` raises `RuntimeError` (the library never writes a bound seed array): pass `seeds=PerEnvSeededRNG(seeds=arr, ...)` to keep the 0.x write-in-place |
+| `checkpoint_spacing`, `max_checkpoints` | the same names (track) |
+| `collision` (default `None`) | `collision=` (default `None`, not `"segments"`): `"segments"` / `"sdf"` / a component named `"collision"` |
+| `sdf_resolution`, `max_boxes` (track) | `collision=tools.BandCollision(method, max_boxes=k[, sdf_resolution=R])`, `method` `"segments"` or `"sdf"` (the string form `collision="segments"` means `max_boxes=1`) |
+| `heightfield_resolution` | `extra=[tools.HeightFieldBake(R)]` |
+| `post_radius`, `max_boxes` (gates) | `collision=r`, or `collision=tools.DiscCollision(r, max_boxes=k)` |
+| `frame_collision`, `agent_radius`, `frame_thickness`, `frame_depth` | `collision=tools.FrameCollision(agent_radius, frame_thickness, frame_depth)` |
+| `samples_per_gate`, `localize_window` | the same names (gates) |
+| `bind(position, orientation, half_extents, box_position)` | the same call; names no component declares are ignored. The errors are the components': a missing `orientation` / `half_extents` of a box or disc collision raises `TypeError("collision: missing inputs [...]")` (a config course: the 0.x `RuntimeError`), and `None` means "not given" (`bind(None)` raises `TypeError("progress: missing inputs ['position']")`, a config course: the 0.x `RuntimeError` / `ValueError`): code that catches `RuntimeError` / `ValueError` there catches `TypeError` after moving |
+
+- `Course.gates(cfg, collision=r, seeds=PerEnvSeededRNG(seeds=s, num_envs=E,
+  device=d))` is byte-identical to `Course(CourseConfig(mode="gates", gen=cfg, seeds=s,
+  post_radius=r))`.
+- A preset's `BandCollision` / `HeightFieldBake` read the plan's largest size
+  (`size_hi="auto"`) and warn at construction when the SDF / heightfield resolution
+  does not cover it; a config course never warns (Behaviour changes). The check reads
+  the construction range only: a curriculum that later widens
+  `params["randomize.generator.size"]`'s `hi` is not checked again, so pass the
+  curriculum's final `hi` as `size_hi=`.
+- **The size curriculum without `style_sampling`** (removed at 1.0, roadmap PR16): with
+  `style_sampling=False` and `scale_range=(a, b)` translated as in the warning,
+  `Course.track(legacy.to_pipeline_spec(cfg).with_randomize({"generator.size": (a /
+  scale, b / scale)}), checkpoint_spacing=...)`.
+- The clip warning of a defaulted checkpoint capacity reads `"...; pass a larger
+  max_checkpoints"` on a preset (a config course keeps `"...; pass a larger
+  CourseConfig.max_checkpoints"`).
+
+**20. Construction streams under an ambient scope (CUDA).** A `Course(CourseConfig)`
+built inside an ambient `LaunchContext.scope(other)`, on a stream other than Warp's
+current one, now attaches its components on Warp's current stream, ordered after and
+before `other` (`other` waits for it before the warm-up), as a `stream=` course does:
+0.2.0.dev5 / PR14 attached on `other`, racing the components' own `wp.zeros` memsets on
+Warp's current stream. The kernels and the outputs are the same; the streams of those
+construction launches change (the CPU goldens cannot see streams). Every call after
+construction runs on the stream it ran on before.
+
 ### Added
 
 - **`track_gen.tools`** (public, in `track_gen.__all__`; `import track_gen` imports it and
@@ -268,7 +467,8 @@ contacts for valid envs, item 1 for invalid ones.
     reference_resolution=128)` emit a `UserWarning` at `attach` when `resolution <
     ceil(reference_resolution * size_hi)`, naming the resolution that keeps the accuracy
     and its memory; a lower `reference_resolution` accepts a coarser grid; `size_hi <= 1`
-    and `segments` never warn. `Course` declares no `size_hi` (PR15).
+    and `segments` never warn. Since PR15 the default is `size_hi="auto"` (the plan's
+    bound, below); `Course(CourseConfig)` passes `size_hi=None`.
 - **Protocols** `HasValidity` (`valid`) and `HasCheckpoints` (`position`, `left`,
   `right`, `tangent`, `up_half`, `count`: what `ProgressTracker` reads), frozen, in
   `track_gen.results.__all__` and re-exported by `track_gen`; `up_half` joins the member
@@ -318,6 +518,114 @@ contacts for valid envs, item 1 for invalid ones.
   `invalid.sentinel` run for every component, `regenerate.self_reset` for every stateful
   one whose read target carries `generation` (`optional` declarations included)
   (`docs/contributing/testing-a-plugin.rst`).
+- **`Course(generator, components=(), *, stream=None, prepare=True)`** (roadmap PR15;
+  `docs/utilities/composing-a-course.rst`): a course over any producer, a
+  `TrackGenerator`, a `GateGenerator`, a built `Program` (one built with
+  `prepare=False` is prepared first) or any object with the `Producer` surface, and any
+  components. A config or a `PipelineSpec` there raises `TypeError` naming the preset; a
+  producer missing a required member, or a component missing one of `attach`, `bind`,
+  `on_generate`, `step`, `reset`, raises `TypeError` listing them; an already-attached
+  component raises `ValueError` (build a new one).
+  - **Ordering**: a stable topological sort of each component's `after` and `source`
+    over the given order (an ordered list, every config course's included, is kept);
+    `attach`, `on_generate` and `step` run in that order, `reset` in reverse order.
+    Duplicate names, an `after` / `source` naming no component of the course and cycles
+    raise `ValueError` naming them; a name that is not a non-empty `str`, `TypeError`.
+  - **`course.components`**: a read-only `name -> component` mapping in execution order.
+    The 0.x attributes exist on every course: `progress`, `collision`, `heightfield`,
+    `localizer`: the `utility` of the component of that name; `checkpoint_sampler`: of
+    `checkpoints` (`course.checkpoints` is that component's `result`); `course_line`: of
+    `centerline`; `None` when absent.
+  - **`bind(**arrays)` routed by declared inputs**: one array to every component that
+    declares its name; `InputSpec.default` routes (`box_position` from `position`), an
+    explicit name beating a default route; every route validated before anything is
+    rebound, and the components already rebound and the refusing one restored (with
+    their rebind-after-capture probes) when an `on_bind` refuses; the
+    four 0.x names accepted on every course and ignored when undeclared; any other
+    unknown name a `TypeError`. A name declared by a component and by the generator
+    raises `ValueError` at construction. `step()` raises `RuntimeError("call bind()
+    before step()")` while a required input is unbound.
+  - **The regeneration body over every component**: `producer.enqueue(ctx, advance,
+    mask)`, then `on_generate(ctx, mask)` for each component, then `reset(ctx, mask)` in
+    reverse order; with a mask, `any_set(mask)` first and the rest under
+    `ctx.skip_unless`, so an all-zero mask is skipped on device where the capture allows
+    conditional nodes and is an exact identity everywhere else. Self-graphed as ONE graph
+    per `(advance, mask array)` key (the 0.x keys) or recorded into the caller's capture.
+  - **`StepResult` entries**: the result of every component that overrides
+    `Component.step` (per-step work), by name; per-generation components (checkpoints,
+    course line, bakes, props) through `course.components[name].result`. The 0.x fields
+    are the entries named `progress` / `collision` / `localizer` (`None` when absent).
+    `clone()` deep-copies every entry (a `wp.array`, an object with `clone()`, a
+    dataclass's `wp.array` fields; `TypeError` naming the component otherwise).
+  - **`prepare=False`** skips the construction warm-up: the first regeneration call
+    outside a capture prepares, one inside a capture raises `CaptureError`, and
+    **`course.prepare()`** prepares explicitly (a no-op once prepared). The warm-up of an
+    unprepared course runs the masked body on an all-zero private mask, so it changes no
+    env's course or state, after steps too.
+  - **A default stream**: `stream=s`, else the producer's `default_stream` (a generator
+    built with `stream=s`). Construction attaches the components on Warp's current
+    stream (where their allocations happen) after `s`'s work, then orders `s` after it.
+    A call without `stream=` while another stream is capturing (Warp's current stream,
+    or torch's in this thread; the library's own self-captures excluded) raises
+    `CaptureError` instead of running eagerly on `s`, outside the caller's graph: record
+    such a course with `stream=`.
+  - **`generate(seeds=)`** follows the seed owner's rule: through the course's rng when
+    it has one (the 0.x path, launch for launch); `SeedState.set` on seeds the generator
+    owns (a copy and zeroed epochs: the courses of a fresh course with those seeds);
+    `RuntimeError` for seeds bound to a caller array with no rng (with the
+    `PerEnvSeededRNG` recipe); `TypeError` for a producer without `SeedState`. The
+    refusals come before any launch.
+- **Presets** `Course.track(source, *, checkpoint_spacing, collision=None,
+  max_checkpoints=None, extra=(), seeds=None, stream=None, prepare=True)` and
+  `Course.gates(source, *, collision=None, samples_per_gate=8, localize_window=None,
+  extra=(), seeds=None, stream=None, prepare=True)`, and **`Course.from_config(config)`**
+  (`== Course(config)`). `source`: a config or a `PipelineSpec` (built by the preset
+  with `seeds=` / `stream=`), or a built `TrackGenerator` / `GateGenerator` / `Program`
+  of the family (`seeds=` / `stream=` with one: `TypeError`; the other family:
+  `TypeError` naming the other preset). Components: track `checkpoints`
+  (`tools.Checkpoints(spacing, max_checkpoints=M or "auto")`), `progress`, [`collision`];
+  gates `checkpoints` (`GateCheckpoints`), `centerline` (`CenterlineFromGates`),
+  `progress`, [`collision`], `localizer` (`Localizer(warm_window=localize_window,
+  source="centerline")`); then `extra`. `collision=`: track `"segments"` / `"sdf"` (a
+  `BandCollision`) or a component; gates a post radius (a `DiscCollision`) or a component
+  (`tools.FrameCollision(...)`); a component there must be named `"collision"`
+  (`ValueError`). Host checks before any generator is built: `checkpoint_spacing > 0`,
+  the `collision` value, a post radius `> 0`, `max_checkpoints >= 3`, the family, `extra`
+  sorted with the preset's own names, and in gates `samples_per_gate >= 2`,
+  `localize_window >= 1` and the construction `gate_frames.gate_width > 0` (read from
+  the config, the spec or the built generator; when a randomizer draws the width, its
+  construction `lo > 0` instead);
+  `gates` then narrows `gate_width` to `> 0` as a config course does, on a built
+  generator too.
+- **`course.inputs["reset_mask"]`**: a stable `[E]` int32 mask for `reset(mask)`, next to
+  `"regen_mask"`; **`reset(mask=None)`** resets every env.
+- **`track_gen.pipeline.Producer`** (in `track_gen.pipeline.__all__`): a documented
+  `typing.Protocol` (never `isinstance`-checked) of what a course reads from its
+  generator: required `result`,
+  `layout`, `enqueue(ctx, *, advance=False, mask=None)` (masked: unmasked rows bit for
+  bit, an exact no-op on an all-zero mask, runnable inside a CUDA conditional-node body);
+  optional `seeds`, `capture_class`, `prepared` / `prepare()`, `default_stream`,
+  `capacity`, `bounds`, `inputs` / `input_info`. `Program` satisfies it.
+- **`Program.prepared`** and **`Program.default_stream`** (read-only), and a read-only
+  **`rng`** on `TrackGenerator` / `GateGenerator` (the `PerEnvSeededRNG` it was built
+  with, else `None`), so a course reads no private member of a producer.
+- **`ComponentContext.bounds`** (`ComponentContext(layout, capacity=None, *, ctx=None,
+  bounds=None)`): a read-only mapping of the plan's declared bounds, separate
+  from `capacity` (which the kit's `capacity.clamp` scales). One key, `size_hi`: a
+  `randomize` stage's construction `hi` on `generator.size`, else the generator's
+  construction `size`. `for_producer` fills it, and reads a producer's own `capacity` /
+  `bounds` members before its plan.
+- **`tools.Checkpoints(max_checkpoints="auto")`**: the plan bound, else the readback of
+  the batch it attaches to (once, at attach); `defaulted` tells how a capacity the
+  component chose itself was chosen (`None` for an explicit one). The presets and
+  `Course(CourseConfig)` use it, and the course's clip warning applies to every
+  checkpoint component whose capacity it chose (`None` or `"auto"`), whatever the front
+  door. `None` keeps its PR14 meaning (the plan bound, else `ValueError`).
+- **`size_hi="auto"`** (the new default of `tools.BandCollision` and
+  `tools.HeightFieldBake`): `cc.bounds["size_hi"]`, so a preset or composed course with
+  `collision="sdf"`, `collision=tools.BandCollision("sdf", ...)` or
+  `extra=[tools.HeightFieldBake(R)]` warns at construction when `R <
+  ceil(reference_resolution * size_hi)`. `Course(CourseConfig)` passes `size_hi=None`.
 
 ### Behaviour changes
 
@@ -369,11 +677,104 @@ Beyond the migration items above (which apply to the utilities used directly too
   (or a CPU capture) is capturing, and set a host flag. It changes no launch (a kit check
   compares the traces with the flag set and unset).
 
+- **`Course` is the composition root** (PR15): every front door ends in one setup over a
+  producer and an ordered component list, `on_generate` / `step` in execution order and
+  the resets over every component in reverse order (stateless components emit nothing,
+  so a config course resets localizer, then progress, as before: the 0.2.0.dev5 order of
+  PR14 is now this rule rather than a per-mode list). The regeneration body calls the
+  producer's `enqueue` (`program.enqueue` for a facade, which is what the facade's
+  `_enqueue` called).
+- **The component contract in a course** (`docs/contributing/writing-a-component.rst`,
+  "Contract in a Course"): (1) `on_generate` and `reset` read and write no bound input
+  (the course's self-graph runs them keyed on `(advance, mask)` only; read inputs in
+  `step`; a respawn snapshot of an input belongs in `step`, armed by `reset`); (2) they
+  run inside a CUDA conditional-node body (the masked regeneration, in the course's own
+  graph and in Warp-registered caller captures), so they may emit only kernels,
+  `ctx.fill` and device-to-device `ctx.copy` on `ctx`'s stream (no copy to or from host
+  or pinned memory, no event, no other stream); (3) `reset` reads only its own state
+  and the mask (resets run in reverse order). A component that overrides `step` is a
+  `StepResult` entry. Every built-in adapter complies.
+- **`check_component` enforces the first two** (still 20 checks, the same names):
+  `hot_path.buffers` traces `on_generate(ctx, None)`, `on_generate(ctx, m)` and
+  `reset(ctx, m)` separately and fails one that references a bound input's pointer
+  (also through an upstream result aliasing it); `capture.caller` and
+  `capture.self_reset` record the chain as a course does (`any_set(ctx, done, flag)`,
+  then `ctx.skip_unless(flag, [producer.enqueue(advance=True, mask=done), chain
+  on_generate, chain reset])`, then `chain step`) in every mode, with an all-zero `done`
+  every fourth step so the skipped branch replays (the owned arrays are poisoned in both
+  runs before every step, as in PR14, and on such a step the eager twin skips the
+  masked part exactly when the capture recorded it under a conditional node, so an
+  array that only `on_generate` writes keeps the poison in both runs). A PR14 component
+  that read an input in `on_generate` / `reset`, or used a host copy there, now fails
+  them.
+- **A refused conditional body** (Warp's check of a `capture_if` body) is re-raised by
+  the course as `CaptureError` naming its components, with the
+  `track_gen.exec.unconditional()` escape hatch.
+- **`BandCollision` / `HeightFieldBake` default to `size_hi="auto"`** (PR14 components,
+  unreleased): attached through `ComponentContext.for_producer` they read the plan's
+  `size_hi`, so a coarse SDF / heightfield grid under a `generator.size` randomizer (or
+  a construction `size > 1`) now warns at attach; `size_hi=None` disables the check.
+- **`ComponentContext`'s `ctx` rule**: attach on the stream where allocations happen
+  (Warp's current stream), after the producer's work; a context on another stream races
+  the attach's own `wp.zeros` / `wp.full`. A `Course` with a default stream does this
+  itself (docstring and guide; the PR14 text said "or pass the producer's stream").
+- **Construction order on CUDA**: an open capture is refused before the producer's own
+  `prepare()` runs (an unprepared `Program` or third-party producer launches nothing
+  into the caller's capture); a course whose stream differs from its producer's
+  `default_stream` (`Course(gen, comps, stream=s1)` over `TrackGenerator(...,
+  stream=s2)`) makes `s1` wait for `s2` before the attach phase and the warm-up, so
+  producer work still pending on `s2` (`gen.generate(sync=False)`) comes first; a
+  `Course(CourseConfig)` built inside an ambient `LaunchContext.scope(other)` on another
+  stream than Warp's current one attaches its components on Warp's current stream,
+  ordered after and before `other`, as a `stream=` course does (d58ac55 attached on
+  `other`, racing the components' own `wp.zeros` memsets on the current stream): the
+  outputs are unchanged, the streams of that construction's launches change (migration
+  item 20).
+- **The producer surface is read strictly**: a facade's `program` is unwrapped only
+  when it is a `Program`, and its `rng` is used only when it is a `PerEnvSeededRNG`, so
+  a third-party producer's unrelated `program` / `rng` attributes are ignored
+  (`course.rng` is then `None`). `generate(seeds=)` raises `TypeError` before any launch
+  for a producer without `SeedState`, also when it has an rng.
+- **Preset arguments get clear errors before anything is built**: `Course.gates(...,
+  collision="posts")` / `collision=True` and `Course.track(..., collision=True)` (or a
+  number) raise `ValueError("collision must be ...")`; `checkpoint_spacing` must be a
+  number (`None` or a string: `ValueError`, not a bare `float()` error);
+  `max_checkpoints="auto"` is accepted as `None`, another string or a `bool` raises
+  `ValueError`; a single component as `extra` raises `TypeError` (as
+  `Course(generator, component)` does).
+- **`Course.gates` with a randomized bar width**: when a randomizer draws
+  `gate_frames.gate_width` (`spec.with_randomize({"gate_frames.gate_width": (lo,
+  hi)})`), its construction `lo` must be `> 0` and the construction width is not
+  checked (`presets.gates(gate_width=0.0)` with such a randomizer builds; a `lo` of 0,
+  whose draws could give never-passable gates, is refused).
+- **Defaults kept against the roadmap sketch**: `regenerate(advance=False)` (the sketch's
+  `advance=True` would change every `regenerate()` of every 0.x course) and `sync=True`;
+  `Course.track`'s `collision=None` (as `CourseConfig.collision`; the sketch said
+  `"segments"`, which would add a collision checker the config did not have and make
+  `bind(position)` raise).
+- **The parameter explorer and the benchmarks use the public API only**
+  (`viz/param_explorer.py`, `benchmarks/*.py`): imports from `track_gen`, `track_gen.ops`
+  and `track_gen.exec` instead of `track_gen._src`; the explorer's thickness statistic
+  through `ops.thickness` (the same kernel and arguments) and its gate-center target as
+  `2 * gate_radius`; the collision benchmark's SDF cell size from public data (the
+  documented auto padding rule on `track.outer` / `track.count`, a float64 recomputation
+  of the same box). Their outputs do not change beyond float rounding of that metric.
+  The other `viz/` scripts (`make_report`, `plot_ablations`, `plot_tracks`,
+  `plot_tracks_3d`, `plot_z_profiles`, `plot_gate_courses`) import the generators,
+  configs, `Track` and `PerEnvSeededRNG` from `track_gen` too; `plot_gate_courses` keeps
+  `track_gen._src.course_line` for `CourseLine`, which has no public path.
+
 ### Changed (outputs)
 
 - Generator outputs: none. Fingerprints, the PR10a / PR11 / PR13a parity suites and
   goldens, the PR9 boundary bytes and every launch sequence of every pipeline are
   byte-identical.
+- `Course(CourseConfig)` (PR15): none. Byte-identical state after every step and
+  identical launch traces against the PR14 commit (`tests/goldens/pr15_course.json`, ten
+  track and gates variants: construction, a bind and 40 steps with every 0.x call
+  interleaved; the launch digests are checked on every platform, the state digests on
+  platforms with an entry). Construction launch streams under an ambient scope excepted:
+  migration item 20.
 - Utilities, valid envs: none. Every utility's outputs for a valid env are byte-identical
   to 0.2.0.dev5 at the same capacities (CPU goldens taken at the 0.2.0.dev5 commit, and
   the twelve edited kernels' 0.2.0.dev5 copies launched next to the new ones on the same
@@ -386,24 +787,42 @@ Beyond the migration items above (which apply to the utilities used directly too
 
 - Library-readiness findings closed by roadmap PR14: MEDIUM A34 "no common utility
   protocol; Course hard-codes the tool set" (`track_gen.tools`, `Course` drives adapters
-  through one lifecycle; `Course(generator, components)` is PR15); MEDIUM A38 "no
+  through one lifecycle; `Course(generator, components)` completes it in PR15); MEDIUM A38 "no
   regeneration signal" (generation-aware self-reset; the sampler's set carries the
   generation of its ring); MEDIUM A49 "utilities disagree on invalid envs" (one sentinel
   table, `StepResult.valid`, the posts' `DiscChecker` given count and `valid`); LOW A131
   "the invalid-env path is undocumented, untested, and contradicted by the tutorials"
   (the sentinel table in the docs, the RL loops gated on `valid`, forced-invalid tests);
-  the rebind part of LOW A92 (`RebindAfterCaptureWarning`; the stable reset mask is PR15);
+  the rebind part of LOW A92 (`RebindAfterCaptureWarning`; the stable reset mask: PR15);
   LOW A99 "public helpers allocate per call" (`curvature` / `speed_profile` `out=`;
   `rng.sample_uniform_warp(out=)` stays open); LOW A100 "sampler capacities sized by host
   readback" (the plan's `max_loop_length`, the `Course` default, the components).
+- Library-readiness findings closed by roadmap PR15: MEDIUM A33 "Course hard-codes two
+  generator families and a fixed set of runtime utilities" (`Course(generator,
+  components)`, the presets); MEDIUM A34 (completed); MEDIUM A35 "Course cannot be given
+  a generator, RNG or result source" (any producer, the `Producer` protocol, presets
+  over built generators and Programs, `seeds=` including a `PerEnvSeededRNG`); LOW A54
+  "whole-batch-only regeneration" (the course level: one masked body over every
+  component, skipped on device for an all-zero mask, `inputs["regen_mask"]` /
+  `inputs["reset_mask"]`); LOW A86 "gate collision is hard-wired" (`Course.gates(...,
+  collision=)` takes any collision component); the reset-mask part of LOW A92; LOW A93
+  "CourseConfig is monolithic" (components that validate themselves, the presets;
+  `CourseConfig` stays for 0.x); LOW A94 "bind() hard-codes one agent model"
+  (`bind(**arrays)` routed by declared `InputSpec`s); the private-module reaches of LOW
+  A108 / A111 (the explorer and the benchmarks use the public API); D13 / G6 "Course
+  anchors its components" (`step()` / `reset()` anchor too).
 
 ### Deferred
 
-- **Roadmap PR15**: `Course(generator, components)` and its topological ordering of
-  `after` / `source` (the seam is `track_gen._src.course._components_for`),
-  `Course.bind(**arrays)` routed by declared inputs, `inputs["reset_mask"]`, the
-  `StepResult` Mapping view (the dataclass fields stay), routing a size randomizer's `hi`
-  to `size_hi`, Course anchoring its components (G6).
+- **Generator-input binding through `Course.bind`** (roadmap PR15, deferred): a dotted
+  generator input name (`bind(**{"centerline.xy": a})`) raises `TypeError` with the
+  recipe: write `course.generator.inputs[name]` in place (a stable array that every
+  regeneration and every replay reads). Pointer binding arrives with `build(inputs=)`,
+  and `bind` routes dotted names then, with no copy and no self-graph key change.
+- `pipeline.MixedBatch`: not shipped; the `Producer` protocol allows it.
+- `Course.describe()`; per-component invalid flags in `StepResult`; deprecating
+  `CourseConfig` (roadmap PR16's decision); the default-stream capture guard on the
+  generator facades.
 - A typing-only `SupportsComponent` protocol for static duck typing; a component registry
   kind; fused step kernels.
 - Removing the legacy readback sizing of `CheckpointSampler` / `PropSampler` (not
@@ -459,6 +878,67 @@ Beyond the migration items above (which apply to the utilities used directly too
   `tests/test_generator_fingerprints.py` and its goldens, the PR9 boundary bytes,
   `tests/test_gate_pipeline_parity.py`, the PR13a golden and the
   `tests/test_legacy_plugin_abi.py` pins.
+- PR15, CPU: `tests/test_course_composition.py`: the constructors (`Course(cfg)`,
+  `Course(config=cfg)`, `from_config`: same type and bytes; every `TypeError`; a
+  subclass's `__init__` for every front door); the presets (names and order,
+  `Course.track` == a hand composition, `Course.gates(..., seeds=rng)` == the config
+  course, built `TrackGenerator` / `Program` sources, `seeds=` / `stream=` refused with
+  them, the other family refused, the `collision=` slot name, one capacity path across
+  front doors incl. the elevated readback, the clip warning texts, `gate_width == 0`
+  refused before any generator is built, `size_hi` warnings); ordering (sorting,
+  stability, every error, attached components, `step` forward and `reset` reverse by
+  `trace_launches`); `bind` (routing, defaults, the 0.x names, unknown and generator
+  names, atomicity on a refused route and a refusing `on_bind`, construction-time
+  conflicts, the config course's `bind()` / `bind(None)`); supersession; `StepResult`
+  (entries, mapping methods, not a `Mapping`, truthiness, `iter`, fields, repr,
+  `replace`, `clone`, positional construction); the body structure; the all-zero mask
+  identity on every buffer; the RL graph twin recorded into `wp.ScopedCapture("cpu")`
+  == the eager twin every step (track preset + Localizer + `CurvatureLookahead`, gates
+  preset); the toy with public imports only (an AST check); the contract checks (a toy
+  reading `position` in `on_generate` / `reset` fails exactly `hot_path.buffers`; no
+  regeneration body or `reset` of the composed built-in courses references a bound
+  array); a minimal producer (`result`, `layout`, `enqueue` only; `HOST` refused under a
+  capture); `generate(seeds=)` on owned, rng-held, bound and missing seeds;
+  `prepare=False` / `prepare()`; the hot-path guard; the CPU graph lifetime. After the
+  PR15 review: a refusing `on_bind` that pinned an array first is restored and a later
+  rebind after a capture still warns; a construction that raises (warnings as errors)
+  supersedes nothing, and supersession follows producer identity (value-hashed and
+  unhashable producers); `StepResult` fields and entries stay in sync (`copy.copy` plus
+  a reassignment, Lightning's deepcopy-with-memo plus `setattr`), its repr is the
+  dataclass one (`pprint`'s layout); a randomized gate width checked on its `lo`; the
+  presets' argument errors; unrelated `program` / `rng` producer attributes ignored, a
+  missing `SeedState` refused before any launch with an rng; an open capture refused
+  before a third-party producer's `prepare()`; what each recorded call anchors (the
+  binding, masks, seeds). `test_config_course_launches_match_the_pr14_goldens` (every
+  platform) and `test_config_course_states_match_the_pr14_goldens` (platforms with an
+  entry) recompute `tests/goldens/pr15_course.json` (written at the PR14 commit by
+  `tests/tools/make_pr15_course_goldens.py`: per-call launch-trace digests with buffer
+  roles, kept per platform and once more under the platform-independent key
+  `"topology"`, and per-step state digests, ten variants). To add a platform's state
+  digests (the Linux GPU workstation, Linux CI), run the tool there from a d58ac55 tree
+  (its docstring gives the commands) and merge the new entry.
+- PR15, CUDA (`tests/test_course_composition_cuda.py`, collects on CPU): the roadmap
+  gate, an RL graph `[physics stub, course.step(), done kernel,
+  course.regenerate(mask=course.inputs["regen_mask"], advance=True)]` replayed 200 steps
+  == an eager twin in track and gates modes, under `wp.ScopedCapture`, a plain
+  `torch.cuda.graph` and `interop.torch.registered(graph=g)` with and without
+  `conditional=True` (the `_regen_flag` conditional counted, anchoring checked); one
+  self-graph per key (a third-party component inside its conditional body); both
+  lowerings of the zero-mask body; lifetime; the conditional-body contract (a component
+  that copies from a pinned host array or records an event in `on_generate` fails
+  `check_component`'s `capture.caller`, the course refuses it with a `CaptureError`
+  naming its components, `exec.unconditional()` runs it); a course with a
+  default stream (its calls default to it; `CaptureError` without `stream=` under
+  another capture, recording with it); attach ordering on a busy current stream, and
+  on a producer stream still busy with an advancing generation (`wait_stream` spy, ==
+  a twin); a recorded `[step, reset(m), regenerate(mask=m')]` anchoring the binding and
+  both masks (alive after a rebind and every caller reference dropped, freed with the
+  graph); the host cost of `step()`'s anchor and default-stream probes (printed ratio).
+- PR15 edits no existing test file: every `Course` test of 0.2.0.dev5 and PR14 passes
+  unchanged on the new root. The shared toys (`tests/_component_toys.py`) gain the two
+  that read a bound input in the regeneration body (each fails exactly
+  `hot_path.buffers`), and the guide's `CurvatureLookahead` takes its namespaced default
+  name, `"acme.lookahead"`.
 
 ## 0.2.0.dev5 (2026-10-24, tag `v0.2.0.dev5`)
 

@@ -4,7 +4,8 @@ The Course facade
 The :doc:`runtime utilities </utilities/overview>` can be wired by hand — or bundled by
 ``track_gen.course.Course``, which owns the orchestration invariants
 (rebake/resample/posts rebuild and a progress reset on every regeneration, full or
-limited to the envs a mask selects; per-env respawns via a mask):
+limited to the envs a mask selects; per-env respawns via a mask). A ``CourseConfig``
+builds the 0.x course, whose loop is unchanged since 0.2.0.dev5:
 
 .. code-block:: python
 
@@ -47,6 +48,29 @@ limited to the envs a mask selects; per-env respawns via a mask):
    course.regenerate()                # or: rebuild from the rng's current seeds
    course.regenerate(advance=True)    # or: next epoch for everyone, same seeds
 
+Since 0.2.0.dev6 a ``Course`` is a composition root: a generator plus an ordered list
+of components (:mod:`track_gen.tools`). The same course comes from a preset, and any
+generator takes any components, your own included (:doc:`/utilities/composing-a-course`):
+
+.. code-block:: python
+
+   from track_gen import TrackGenConfig, TrackGenerator, tools
+
+   course = Course.track(TrackGenConfig(num_envs=E, device="cuda"),
+                         checkpoint_spacing=0.6, collision="segments", seeds=42)
+   course = Course(TrackGenerator(TrackGenConfig(num_envs=E, device="cuda"), seeds=42),
+                   [tools.Checkpoints(0.6, max_checkpoints="auto"), tools.Progress(),
+                    tools.BandCollision("segments"), tools.Localizer()])
+
+``Course(cfg)`` (also ``Course(config=cfg)``) is ``Course.from_config(cfg)``: it builds
+the components of the :ref:`migration table <course-config-migration>` (with
+``size_hi=None``, so no resolution warning, and its own ``PerEnvSeededRNG``), with the
+outputs and launches it had before roadmap PR15 (0.2.0.dev6 at PR14; relative to
+0.2.0.dev5, see the CHANGELOG migration items 1-8: invalid envs, the default checkpoint
+capacity). A preset's ``course.rng`` is ``None`` unless you pass
+``seeds=PerEnvSeededRNG(...)`` (``course.seeds`` holds the seeds either way); the
+:ref:`migration table <course-config-migration>` maps every ``CourseConfig`` field.
+
 An env whose course failed a check (``res.valid[e] == 0``: 0.4 to 1.6 % of the envs of
 the default ``hull``, ``checkpoint`` and ``repulsive`` generators) reads ``oob = 1`` and
 frozen progress at every step (`Invalid envs`_): gate everything on ``valid``, end the
@@ -69,13 +93,16 @@ all-zero mask is skipped on device (`Masked regeneration`_,
 
 Construction does the cold work, outside any capture. It builds the rng and the
 generator, whose own construction runs the pipeline once, so ``course.result`` holds the
-first batch. It then builds every sub-tool (first sample, bakes and course-line refresh
-included, on the course's stream) and runs the regenerate body once more as its warm-up.
-Expect a construction cost of roughly two generations, which matters for ``repulsive``.
-Every sub-tool exists right after construction, so ``step()`` and ``reset()`` only need a
-prior ``bind()``. Construct the course before you begin a capture: construction raises
+first batch. It then attaches every component (first sample, bakes and course-line
+refresh included) and runs the regenerate body once more as its warm-up. Expect a
+construction cost of roughly two generations, which matters for ``repulsive``. Every
+sub-tool exists right after construction, so ``step()`` and ``reset()`` only need a prior
+``bind()``. Construct the course before you begin a capture: construction raises
 ``CaptureError``, before allocating anything, when its stream or Warp's current stream is
-capturing.
+capturing. ``Course(generator, components, prepare=False)`` and the presets'
+``prepare=False`` skip the warm-up; ``course.prepare()`` runs it later, and the first
+regeneration call outside a capture runs it by itself (inside one it raises
+``CaptureError``). It changes no env's course or state (:ref:`composing-a-course`).
 
 The checkpoint ring is sized from the generator's plan, not from a batch: it holds
 ``max_checkpoints`` slots per env, by default the plan's size-independent bound (see
@@ -115,9 +142,18 @@ regeneration`_).
 - ``enqueue_generate(*, stream=None, mask=None, advance=False)`` runs the same body as
   ``regenerate()``. Under a capture it is recorded; outside one it runs eagerly on the
   resolved stream, never building a self-graph and never blocking.
-- ``inputs`` is ``{"regen_mask": ...}``: a persistent, zero-initialised ``[E]`` int32
-  array with a stable address, for your kernels to write the mask of
-  ``regenerate(mask=...)`` into.
+- ``inputs`` is ``{"regen_mask": ..., "reset_mask": ...}``: two persistent,
+  zero-initialised ``[E]`` int32 arrays with stable addresses, for your kernels to write
+  the masks of ``regenerate(mask=...)`` and ``reset(mask)`` into (``"reset_mask"`` since
+  0.2.0.dev6).
+- ``reset(mask=None, stream=None)`` respawns the masked envs on the SAME course (their
+  progress and localizer state); ``mask=None`` (since 0.2.0.dev6) means every env.
+- ``bind(position, orientation=None, half_extents=None, box_position=None, **arrays)``
+  binds the sim buffers: each array goes to every component that declares its name
+  (``position`` to progress, the localizer and your components; ``box_position`` defaults
+  to ``position`` at one box). The four named arguments are accepted on every course and
+  ignored when no component declares them; another unknown name raises ``TypeError``. A
+  refused bind changes no binding (:ref:`composing-a-course`).
 - ``seeds`` is the generator's :class:`~track_gen.seeds.SeedState` (the same object as
   ``course.generator.seeds``), holding each env's seed (bound to
   ``course.rng.seeds_warp``) and epoch; ``result.generation`` (``[E]`` int32) is the
@@ -137,7 +173,9 @@ posts (``post_radius > 0``). The underlying tools stay reachable
 ``course.checkpoint_sampler``, ``course.localizer``, ``course.course_line``,
 ``course.heightfield``), with the same types as before: since 0.2.0.dev6 the course
 builds them as the components of ``track_gen.tools`` (:ref:`utilities-components`) and
-drives them through one lifecycle, in the same launch order.
+drives them through one lifecycle, in the same launch order. ``course.components`` maps
+each component's name to it, in execution order; to add your own, see
+:doc:`/utilities/composing-a-course`.
 ``step()`` and ``reset()`` never host-synchronize, so they record into your
 own sim graph as-is (no flag; ``track_gen.set_capturing`` is a deprecated
 no-op). Once ``step()`` is captured, keep writing into the SAME bound
@@ -150,7 +188,15 @@ it when you re-record on purpose). Binding the same arrays again is silent.
 ``StepResult`` has four fields: ``events`` (``ProgressEvents``), ``contacts`` (the
 collision result or ``None``), ``frame`` (gates mode, else ``None``) and ``valid``, the
 generator result's ``[E]`` int32 ``valid`` (the same array, ``course.result.valid``;
-``clone()`` copies it).
+``clone()`` copies it). Since 0.2.0.dev6 it also reads like a mapping from component name
+to that component's per-step result: ``res["progress"] is res.events``,
+``res["collision"] is res.contacts``, ``res["localizer"] is res.frame``, plus
+``res.get(name)``, ``keys()``, ``values()``, ``items()``, ``name in res`` and
+``dict(res)``. On a ``CourseConfig`` course the keys are exactly those of the non-``None``
+fields (``progress`` and ``collision`` in track mode; ``localizer`` too in gates mode).
+It is not a ``collections.abc.Mapping``: ``bool(res)`` stays ``True``, ``iter(res)``
+raises ``TypeError``, and the dataclass fields, ``==`` and the repr are unchanged
+(:ref:`composing-a-course`).
 
 In gates mode with ``post_radius > 0``, ``course.step().contacts`` is a
 :class:`~track_gen.collision.DiscContact` instead of a
@@ -270,7 +316,9 @@ One body, one graph
 ``regenerate()`` runs ONE body: the generator pipeline, then the post-generation
 refresh (checkpoint resample, SDF and height-field rebakes, course-line refresh, gate-post
 rebuild, and the progress and localizer reset: full, or limited to the masked envs with
-``mask=``). Where it runs depends on the resolved stream:
+``mask=``). In component terms: the generator's ``enqueue``, every component's
+``on_generate`` in execution order, then every component's ``reset`` in reverse order
+(:ref:`composing-a-course`). Where it runs depends on the resolved stream:
 
 - **Inside your capture** (``wp.ScopedCapture``, ``wp.capture_begin(external=True)`` or
   ``torch.cuda.graph``) the body is recorded into YOUR graph, so new courses and the
@@ -377,14 +425,24 @@ including the ``torch.cuda.graph`` variant.
 Lifetime
 --------
 
-Recording ``regenerate()`` / ``generate()`` / ``enqueue_generate()`` into a Warp capture
-(``wp.ScopedCapture`` or ``wp.capture_begin``) anchors the course to that graph, so its
-buffers live as long as the graph. A graph that records only ``step()`` / ``reset()`` does
-not anchor anything, and neither does a ``torch.cuda.graph``: keep ``course`` alive for as
-long as you replay such a graph, or call ``track_gen.interop.torch.retain(g, course)`` to
-tie it to the torch graph ``g``. When ``max_checkpoints`` came from the readback
-(`Checkpoint capacity`_), check ``course.checkpoint_sampler.truncated`` after
-regenerating onto much longer tracks (a larger ``size``, above).
+Recording any course call (``step()``, ``reset()``, ``regenerate()``, ``generate()``,
+``enqueue_generate()``) into a capture Warp registered (``wp.ScopedCapture``,
+``wp.capture_begin``, ``track_gen.interop.torch.registered()``) anchors the course, and
+with it the generator, every component and every bound array, to that graph, so its
+buffers live as long as the graph (since 0.2.0.dev6 for a graph that records only
+``step()`` / ``reset()``). A CPU graph (``wp.ScopedCapture("cpu")``) keeps the arrays its
+launches touch by itself. Warp does not see a plain ``torch.cuda.graph``: keep ``course``
+alive for as long as you replay one, or call ``track_gen.interop.torch.retain(g,
+course)`` to tie it to the torch graph ``g``.
+
+One course drives a generator: building another ``Course`` over ``course.generator``
+takes it over, and the older course then raises ``RuntimeError`` at its next call
+(:ref:`composing-a-course`). A ``CourseConfig`` course builds its own generator, so this
+only concerns ``Course(old.generator, ...)``.
+
+When ``max_checkpoints`` came from the readback (`Checkpoint capacity`_), check
+``course.checkpoint_sampler.truncated`` after regenerating onto much longer tracks (a
+larger ``size``, above).
 
 .. _course-invalid-envs:
 

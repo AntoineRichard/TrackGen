@@ -11,11 +11,11 @@ allocates and synchronizes nothing, so it records into your CUDA graph as-is.
 
 ``track_gen.tools`` holds the base class (``Component``), what ``attach`` is given
 (``ComponentContext``), the declaration of a bound input (``InputSpec``) and ten adapters,
-one per built-in utility (`The built-in adapters`_). In 0.2.0.dev6 ``Course`` builds its
-sub-tools as these adapters internally; a ``Course`` that takes your components
-(``Course(generator, components)``) is roadmap PR15. Until then you attach and drive a
-component yourself (`Driving it by hand`_), and ``track_gen.testing.check_component``
-checks it against the contract on this page (`Checking it`_).
+one per built-in utility (`The built-in adapters`_). A ``Course`` takes your components
+next to its own (`Using it in a Course`_, :doc:`/utilities/composing-a-course`) and
+drives them; you can also attach and drive one yourself (`Without a Course`_).
+``track_gen.testing.check_component`` checks a component against the contract on this
+page (`Checking it`_).
 
 A component imports only public modules: ``track_gen.tools``, ``track_gen.results``,
 ``track_gen.exec``, the utility modules (``track_gen.localize``, ...) and Warp.
@@ -74,7 +74,8 @@ generation (``localize.curvature`` into a buffer it owns) and, every step, reads
        optional = (HasValidity,)            # valid: read when the source has it
        inputs = types.MappingProxyType({"position": InputSpec(wp.vec3f, doc="the agent")})
 
-       def __init__(self, ahead=6, *, window=2, localizer="localizer", name="lookahead"):
+       def __init__(self, ahead=6, *, window=2, localizer="localizer",
+                    name="acme.lookahead"):
            self.ahead, self.window, self.name = int(ahead), int(window), name
            self.localizer = localizer
            self.after = (localizer,)        # reads that component's TrackFrame
@@ -113,11 +114,50 @@ state between steps (``stateful`` stays ``False``, so ``reset`` is the inherited
 Its one input, ``position``, is the same array the ``Localizer`` reads: a composition
 root binds one array to every component that declares the name. ``on_generate``
 recomputes the whole batch, which leaves the rows of an unmasked env unchanged after a
-masked regeneration, as the contract requires. TrackGen's own suite runs this class
+masked regeneration, as the contract requires; it reads no bound input (`Contract in a
+Course`_). Its name is namespaced (``"acme.lookahead"``), as plugin names are, so it
+never collides with a built-in component's. TrackGen's own suite runs this class
 (``tests/_component_toys.py``) through every check of ``check_component``.
 
-Driving it by hand
-------------------
+Using it in a Course
+--------------------
+
+Pass it to a preset in ``extra`` (or to ``Course(generator, components)``). The course
+sorts the components by their ``after`` / ``source`` names, attaches them, routes one
+``bind`` to every declared input, refreshes them in its regeneration body and returns
+each per-step result by name:
+
+.. code-block:: python
+
+   import warp as wp
+
+   from track_gen import TrackGenConfig, tools
+   from track_gen.course import Course
+
+   from acme_tools.lookahead import CurvatureLookahead
+
+   course = Course.track(TrackGenConfig(num_envs=64, device="cuda:0"),
+                         checkpoint_spacing=0.6, collision="segments", seeds=0,
+                         extra=[CurvatureLookahead(ahead=6), tools.Localizer()])
+   course.bind(position=pos, orientation=quat, half_extents=he)   # your stable buffers
+   done = course.inputs["regen_mask"]                              # your kernels write it
+
+   with wp.ScopedCapture(device="cuda:0") as cap:
+       sim_step(pos)                                     # your physics
+       res = course.step()                               # every step, in order
+       look = res["acme.lookahead"]                      # look.kappa, look.distance
+       update_done(res, done)                            # your kernel
+       course.regenerate(mask=done, advance=True)        # new courses + refresh + resets
+   step = cap.graph
+
+The regeneration body runs ``on_generate`` for every component in execution order and
+``reset`` in reverse order, inside a CUDA conditional node where the capture allows one:
+see `Contract in a Course`_ for what that asks of your hot methods, and
+:doc:`/utilities/composing-a-course` for the course side (ordering, ``bind`` routing,
+``StepResult`` access, lifetime).
+
+Without a Course
+----------------
 
 ``ComponentContext.for_producer`` reads the generator's layout and its static capacities;
 ``add`` checks each component's declaration against what it reads, then attaches it:
@@ -159,7 +199,7 @@ Driving it by hand
 
 The order is the composition root's job: ``on_generate`` and ``step`` in attach order
 (upstream first), ``reset`` for the stateful components after a regeneration and on
-respawns. A component never calls another one.
+respawns (a ``Course`` resets in reverse order). A component never calls another one.
 
 Checking it
 -----------
@@ -180,7 +220,12 @@ check of :ref:`kit-check-component` on ``cpu``, and on ``cuda:0`` when Warp sees
 The factories take the ``ComponentContext``, so a component that owns device arrays from
 construction can build them for the kit's device and ``num_envs``. In pytest, the opt-in
 plugin's ``track_gen_check_component`` fixture runs the same call and fails the test
-listing every failed check.
+listing every failed check. Two checks enforce the `Contract in a Course`_:
+``hot_path.buffers`` fails an ``on_generate`` or ``reset`` that references a bound input,
+and on CUDA ``capture.caller`` records the chain as a ``Course`` records its masked
+regeneration (``any_set`` of the done mask, then ``skip_unless`` around the producer's
+masked ``enqueue``, ``on_generate`` and ``reset``), so an operation a conditional body
+cannot hold fails there.
 
 The base class
 --------------
@@ -300,6 +345,50 @@ branch in Python on device data or on ``ctx.capturing``; never change Python sta
 changes a later emission. **Stable results:** ``result`` and every array reachable from
 it are allocated in ``attach`` (or aliased from the read target) and never replaced.
 
+.. _component-course-contract:
+
+Contract in a Course
+~~~~~~~~~~~~~~~~~~~~
+
+A ``Course`` runs ``on_generate`` and ``reset`` inside its regeneration body, which it
+records once into its own graph (keyed on ``advance`` and the mask array only) and, for a
+masked regeneration, under a CUDA conditional node. That adds four rows to the contract:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 22 52 26
+
+   * - Rule
+     - Contract
+     - Enforced by
+   * - ``on_generate`` / ``reset``: inputs
+     - Read and write no bound input (``step`` reads them): the course's self-graph would
+       bake the input arrays of its recording, and the regenerated data would depend on
+       the agent's state at regeneration time. A respawn snapshot of an input (``reset``
+       copying ``position``) belongs in ``step``: ``reset`` arms a per-env flag that the
+       next ``step`` consumes.
+     - ``hot_path.buffers`` (CPU): ``on_generate(ctx, None)``, ``on_generate(ctx, m)``
+       and ``reset(ctx, m)`` are traced separately and fail when one references a bound
+       input's pointer (also through an upstream result that aliases it)
+   * - ``on_generate`` / ``reset``: conditional body
+     - They run inside a CUDA conditional-node body (the masked regeneration, in the
+       course's own graph and in Warp-registered caller captures): kernels, ``ctx.fill``
+       and device-to-device ``ctx.copy`` on ``ctx``'s stream only. No copy to or from
+       host or pinned memory, no event, no other stream.
+     - ``capture.caller`` (CUDA, ``warp`` mode) records the chain under
+       ``skip_unless``; the course re-raises Warp's refusal as ``CaptureError`` naming
+       its components
+   * - ``reset``: what it reads
+     - Only its own state and the mask, never another component's result or state: a
+       course resets in reverse execution order, so a component is reset before the
+       components it reads.
+     - documented (the built-in resets write constants under the mask)
+   * - ``StepResult`` entry
+     - A component that overrides ``step`` is an entry of ``StepResult`` (its
+       ``result``, under its ``name``); a per-generation component keeps the base
+       ``step`` and is read through ``course.components[name].result``.
+     - ``result.stable`` (``step()`` returns ``result``)
+
 Read targets
 ------------
 
@@ -339,15 +428,22 @@ passes ``count``): no allocation for the missing member, the same launch either 
 
 .. code-block:: python
 
-   ComponentContext(layout, capacity=None, *, ctx=None)
+   ComponentContext(layout, capacity=None, *, ctx=None, bounds=None)
    ComponentContext.for_producer(producer, *, ctx=None)
 
 - ``layout``: the producer's :class:`~track_gen.results.Layout`.
 - ``capacity``: a read-only mapping of static capacities (below).
+- ``bounds``: a read-only mapping of the plan's declared bounds (not capacities, so the
+  kit never clamps them). One key in 0.x, ``size_hi``: the largest course size of the
+  plan, a ``randomize`` stage's construction ``hi`` on ``generator.size``, else the
+  generator's construction ``size``. ``BandCollision`` and ``HeightFieldBake`` read it
+  with their default ``size_hi="auto"``.
 - ``ctx``: the cold :class:`~track_gen.exec.LaunchContext` of ``attach``. ``None`` means
   ``LaunchContext.for_call(layout.device)``: an enclosing ``ctx.scope()``, else Warp's
-  current stream. Attach after the producer's work has completed, or pass the producer's
-  stream.
+  current stream. ``attach`` allocates and zero-fills on Warp's current stream
+  (``wp.zeros`` / ``wp.full``), so attach on that stream, after the producer's work has
+  completed: a context on another stream races its own allocations. A ``Course`` with a
+  default stream does this for you.
 - ``component(name)``: an attached component (``KeyError`` listing the attached ones).
 - ``add(component, source)``: (1) every name in ``after`` and ``source`` is attached and
   ``name`` is free (``ValueError``); (2) an input name an attached component also
@@ -355,11 +451,16 @@ passes ``count``): no allocation for the missing member, the same launch either 
   checks the read target (a producer result must hold the context's batch: same
   ``num_envs`` and device, else ``ValueError``), sets ``component.layout``; (4) calls
   ``attach``; (5) registers the component and returns it.
-- ``for_producer(producer)``: a ``TrackGenerator``, a ``GateGenerator``, a ``Program`` or
-  a ``Course`` (its generator). It reads the producer's ``layout``, ``spec`` and
-  ``params``, never its device arrays. A result (``gen.generate()``'s ``Track``) has no
-  plan and raises ``TypeError``: for a hand-built source, construct
-  ``ComponentContext(layout, {...})`` yourself.
+- ``for_producer(producer)``: a ``TrackGenerator``, a ``GateGenerator``, a ``Program``, a
+  ``Course`` (its generator), or any producer (``track_gen.pipeline.Producer``) that
+  declares ``capacity`` and / or ``bounds``. It always reads the producer's ``layout``,
+  then its own ``capacity`` / ``bounds`` when it has them, else its plan (``spec`` and
+  ``params``), never its device arrays. Only a real ``Course`` is unwrapped to its
+  generator and only a real ``Program`` (a facade's ``program``) is a plan: a third-party
+  producer's attribute that merely shares one of those names is its own business. A producer with neither a plan nor those members
+  raises ``TypeError``: build ``ComponentContext(producer.layout)`` yourself, as a
+  ``Course`` does. So does a result (``gen.generate()``'s ``Track``): for a hand-built
+  source, construct ``ComponentContext(layout, {...})`` yourself.
 
 **Capacities.** One key in 0.x, ``max_loop_length``: an upper bound, with measured
 headroom, on the 3D length of the centerline and of either boundary loop of every valid
@@ -513,7 +614,7 @@ and method; ``adapter.result`` is that utility's ``.result``.
      - Wraps
      - Reads: ``requires`` / ``optional``
      - Inputs, state
-   * - ``BandCollision(method="segments", *, max_boxes=1, sdf_resolution=128, sdf_padding=None, size_hi=None, reference_resolution=128)``
+   * - ``BandCollision(method="segments", *, max_boxes=1, sdf_resolution=128, sdf_padding=None, size_hi="auto", reference_resolution=128)``
      - ``CollisionChecker``
      - course: ``HasBand`` / none
      - ``box_position`` (default ``position`` at one box), ``orientation``,
@@ -533,7 +634,7 @@ and method; ``adapter.result`` is that utility's ``.result``.
      - ``PropSampler``
      - course: ``HasBand`` / none
      - none; stateless; ``on_generate`` samples
-   * - ``Checkpoints(spacing, *, max_checkpoints=None)``
+   * - ``Checkpoints(spacing, *, max_checkpoints=None)`` (or ``"auto"``)
      - ``CheckpointSampler``
      - course: ``HasBand`` / ``HasGeneration``
      - none; stateless; ``on_generate`` samples
@@ -551,7 +652,7 @@ and method; ``adapter.result`` is that utility's ``.result``.
      - course or ``source``'s result: ``HasCenterline`` / ``HasValidity``,
        ``HasGeneration``
      - ``position``; stateful (both modes), self-resets
-   * - ``HeightFieldBake(resolution, *, padding=None, size_hi=None, reference_resolution=128)``
+   * - ``HeightFieldBake(resolution, *, padding=None, size_hi="auto", reference_resolution=128)``
      - ``HeightFieldBaker``
      - course: ``HasBand`` / none
      - none; stateless; ``on_generate`` bakes
@@ -565,9 +666,16 @@ read target (``Progress``, ``Localizer``), and a dependency read through ``after
 named by its role (``FrameCollision(progress=...)``). ``Props`` and ``Checkpoints`` size
 their ring from ``cc.capacity["max_loop_length"]`` when their capacity is ``None``
 (``max(3, ceil(max_loop_length / spacing))``) and raise ``ValueError`` without the key.
-``BandCollision(method="sdf")`` and ``HeightFieldBake`` take the largest course size they
-will see (``size_hi``) and warn at ``attach`` when the grid is too coarse for it
-(:ref:`collision-resolution-check`).
+``Checkpoints(max_checkpoints="auto")`` (what the ``Course`` presets and
+``Course(CourseConfig)`` use) takes the same bound and, without the key, reads the batch
+it attaches to back once (the ``CourseConfig`` readback of elevated configs); its
+``defaulted`` attribute says how a capacity it chose itself was chosen (``None`` for an
+explicit one), and a ``Course`` warns once when such a capacity clips a valid env of the
+first batch. ``BandCollision(method="sdf")`` and ``HeightFieldBake`` take the largest
+course size they will see (``size_hi``) and warn at ``attach`` when the grid is too
+coarse for it (:ref:`collision-resolution-check`); the default ``size_hi="auto"`` reads
+``cc.bounds["size_hi"]`` (no warning without the key, or at ``size_hi <= 1``), and
+``size_hi=None`` turns the check off, as ``Course(CourseConfig)`` does.
 
 TrackGen's own suite runs ``check_component`` over every adapter (on CPU, and on
 ``cuda:0`` in its GPU lane).

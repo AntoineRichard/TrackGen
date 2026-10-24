@@ -568,6 +568,15 @@ def test_each_broken_toy_fails_exactly_its_check(toy):
     assert report.failed_names == [toys.EXPECTED[toy]], str(report)
 
 
+@pytest.mark.parametrize("toy", list(toys.GENERATION_WRITTEN), ids=lambda c: c.__name__)
+def test_components_with_an_array_only_on_generate_writes_pass_every_check(toy):
+    """The toys ``tests/test_components_cuda.py`` runs through ``capture.caller`` (an
+    array that only ``on_generate`` writes; one duck-typed) are correct components."""
+    report = check_component(lambda cc, t=toy: t(), devices=[DEV], num_envs=E, steps=16)
+    report.raise_for_failures()
+    assert report.result("regenerate.masked").details["masked_rows_changed"] > 0
+
+
 def test_the_writing_a_component_toy_passes_every_check():
     report = check_component(lambda cc: toys.CurvatureLookahead(ahead=5),
                              upstream=[lambda cc: tools.Localizer(warm_window=3)],

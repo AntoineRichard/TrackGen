@@ -30,6 +30,11 @@ dynamic params per env in the graph; ``generator="external"`` ingests caller-pro
 centerlines through ``Program.inputs`` (:class:`InputInfo`), loaded with
 :func:`load_centerlines`.
 
+Roadmap PR15: :class:`Producer` documents the generator surface a ``Course`` drives
+(``result``, ``layout``, ``enqueue(ctx, *, advance, mask)``, and optional members): a
+``Program`` implements it, and so can a third-party producer (e.g. a mixed batch of
+generators writing views of one result; ``MixedBatch`` itself is not shipped).
+
 Preview: names and signatures may change before 1.0. ``import track_gen`` does not
 import this package.
 """
@@ -39,6 +44,7 @@ from ..stages.channels import BUILTIN_FAIL_BITS, GATE_FAIL_BITS
 from . import legacy, presets
 from .ingest import load_centerlines
 from .planner import PlanError, build
+from .producer import Producer
 from .program import AttributeInfo, InputInfo, Program, Segment
 from .spec import BatchSpec, PipelineSpec, StageRef
 
@@ -50,6 +56,7 @@ __all__ = [
     "InputInfo",
     "PipelineSpec",
     "PlanError",
+    "Producer",
     "Program",
     "Segment",
     "StageRef",

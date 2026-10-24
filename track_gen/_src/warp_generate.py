@@ -859,8 +859,10 @@ _STYLE_DEPRECATION = (
     "knobs with randomize= instead (scale_range=(a, b) -> {'generator.size': (a / scale, "
     "b / scale)}, rad_range -> {'generator.rad': ...}, handle_clamp_frac_range -> "
     "{'generator.handle_clamp_frac': ...}; set style_sampling=False and use "
-    "PipelineSpec.with_randomize for a config-built pipeline). Course (until it accepts "
-    "a generator, PR15): keep style_sampling, or draw per-env sizes yourself and call "
+    "PipelineSpec.with_randomize for a config-built pipeline). Course: with "
+    "style_sampling=False, Course.track(legacy.to_pipeline_spec(cfg).with_randomize("
+    "{'generator.size': (a / scale, b / scale)}), checkpoint_spacing=...) "
+    "(track_gen.pipeline.legacy), or draw per-env sizes yourself and call "
     "course.generator.params['generator'].set('size', arr) before regenerate)")
 
 

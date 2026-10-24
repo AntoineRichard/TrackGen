@@ -231,6 +231,7 @@ Explore the docs
    utilities/progress
    utilities/localize
    utilities/course
+   utilities/composing-a-course
 
 .. toctree::
    :maxdepth: 1

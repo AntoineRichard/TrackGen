@@ -34,9 +34,12 @@ from __future__ import annotations
 __all__ = ["registered_graph", "anchor", "capture_stream", "registered_stream",
            "conditional_ok", "conditional_allowed", "conditional_marked",
            "set_conditional_allowed", "stream_synchronize", "any_registered_capture",
-           "cpu_capture_active"]
+           "cpu_capture_active", "mark_library_capture", "library_capture"]
 
 _OWNERS_ATTR = "_track_gen_owners"
+# Set on the wp.Graph of a capture the library opened itself (GraphRunner's self-captures,
+# roadmap PR15): a course's default-stream guard does not count it as the caller's.
+_SELF_ATTR = "_track_gen_self"
 # Set on the wp.Graph of a registration whose conditional nodes were decided explicitly:
 # False must not receive any (track_gen.interop.torch.registered() without
 # conditional=True), True opted in (registered(conditional=True)). Unset: Warp's own
@@ -184,6 +187,26 @@ def conditional_allowed(key) -> bool:
     except (AttributeError, TypeError):
         return False
     return g is not None and getattr(g, _CONDITIONAL_ATTR, True) is not False
+
+
+def mark_library_capture(key) -> None:
+    """Mark the open Warp capture registered under the stream object ``key`` as one the
+    library opened itself (a ``GraphRunner`` self-capture). A no-op if nothing is
+    registered under ``key`` or an internal is missing."""
+    try:
+        g = key.device.captures.get(key)
+        if g is not None:
+            g.__dict__[_SELF_ATTR] = True
+    except (AttributeError, TypeError):  # pragma: no cover - internals changed
+        return
+
+
+def library_capture(stream) -> bool:
+    """Whether ``stream``'s active capture is one the library opened itself
+    (:func:`mark_library_capture`); ``False`` when it is not capturing, the capture is
+    not Warp-registered, or an internal is missing."""
+    g = registered_graph(stream)
+    return bool(g is not None and getattr(g, _SELF_ATTR, False))
 
 
 def stream_synchronize(stream) -> None:

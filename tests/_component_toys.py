@@ -2,7 +2,11 @@
 
 Each ``Broken*`` toy breaks exactly ONE clause of the component contract and must fail
 exactly the matching check of ``track_gen.testing.check_component``
-(:data:`EXPECTED`). :class:`CurvatureLookahead` is the writing-a-component toy: public
+(:data:`EXPECTED`; roadmap PR15 adds the two that read a bound input in the regeneration
+body). :data:`GENERATION_WRITTEN` (roadmap PR15) holds correct components whose result
+has an array that only ``on_generate`` writes (a duck-typed per-generation one, a
+per-step one exposing a per-generation table): they pass every check, ``capture.caller``
+on CUDA included. :class:`CurvatureLookahead` is the writing-a-component toy: public
 imports only (``track_gen.tools``, ``track_gen.results``, ``track_gen.localize``), it
 overrides ``attach`` / ``on_bind`` / the hot methods and passes every check.
 """
@@ -471,6 +475,42 @@ class BrokenSkipsAttachGenerate(_MeanX):
         return self.result
 
 
+@wp.kernel
+def _peek_k(position: wp.array(dtype=wp.vec3f), scratch: wp.array(dtype=wp.float32)):
+    e = wp.tid()
+    scratch[e] = position[e][0]
+
+
+class BrokenReadsInputInGenerate(_MeanX):
+    """Launches on its bound ``position`` in ``on_generate`` (into a private scratch, so
+    its outputs are unaffected): a Course's regeneration self-graph would bake the input
+    (``hot_path.buffers``, roadmap PR15)."""
+
+    inputs = {"position": tools.InputSpec(wp.vec3f)}
+
+    def attach(self, source, cc) -> None:
+        E, dev = int(self.layout.num_envs), self.layout.device
+        self._pos = wp.zeros(E, dtype=wp.vec3f, device=dev)     # until bound
+        self._scratch = wp.zeros(E, dtype=wp.float32, device=dev)
+        super().attach(source, cc)
+
+    def on_bind(self, position) -> None:
+        self._pos = position
+
+    def on_generate(self, ctx, mask) -> None:
+        ctx.launch(_peek_k, self._E, [self._pos, self._scratch])
+
+
+class BrokenReadsInputInReset(BrokenReadsInputInGenerate):
+    """The same launch in ``reset`` instead (``hot_path.buffers``)."""
+
+    def on_generate(self, ctx, mask) -> None:
+        pass
+
+    def reset(self, ctx, mask) -> None:
+        ctx.launch(_peek_k, self._E, [self._pos, self._scratch])
+
+
 #: toy -> the one check it must fail.
 EXPECTED = {
     BrokenAllocates: "hot_path.allocation",
@@ -491,7 +531,90 @@ EXPECTED = {
     BrokenNoSelfReset: "regenerate.self_reset",
     BrokenHiddenStateTuple: "statelessness",
     BrokenSkipsAttachGenerate: "construct",
+    BrokenReadsInputInGenerate: "hot_path.buffers",
+    BrokenReadsInputInReset: "hot_path.buffers",
 }
+
+
+# ---------------------------------------------------------------------------------------
+# Correct components with an array that only on_generate writes (capture.caller on CUDA:
+# a replay whose conditional node skips on_generate keeps its previous bytes there)
+# ---------------------------------------------------------------------------------------
+
+class DuckPerGeneration:
+    """Duck-typed (no ``tools.Component`` base), per generation: per env, the mean x of
+    the centerline's real points (NaN for an invalid env), recomputed for the whole batch
+    in ``on_generate`` (unmasked envs get their own bytes again); ``step`` returns the
+    result unchanged. A duck-typed component defines its own ``step``, so a course counts
+    it as per-step (a ``StepResult`` entry) although ``step`` writes nothing."""
+
+    name = "acme.duck_mean_x"
+    source = None
+    requires = (HasCenterline, HasValidity)
+    optional = ()
+    topology = "closed"
+    stateful = False
+    inputs: dict = {}
+    after = ()
+    layout = None
+    result = None
+
+    def attach(self, source, cc) -> None:
+        lay = self.layout
+        self._E, self._S = int(lay.num_envs), int(lay.stride)
+        self._src = (source.center, source.count, source.valid)
+        self.result = Value(wp.zeros(self._E, dtype=wp.float32, device=lay.device))
+        self.on_generate(cc.ctx, None)
+        wp.load_module(__name__, device=lay.device)
+
+    def bind(self, **arrays) -> None:
+        if arrays:
+            raise TypeError(f"{self.name}: unknown inputs {sorted(arrays)} (declared: [])")
+
+    def on_generate(self, ctx, mask) -> None:
+        center, count, valid = self._src
+        ctx.launch(_mean_x_k, self._E, [center, count, valid, 1, self._S,
+                                        self.result.value])
+
+    def step(self, ctx):
+        return self.result
+
+    def reset(self, ctx, mask) -> None:
+        pass
+
+
+@dataclasses.dataclass
+class ValueAndTable:
+    """``value``: per step; ``table``: per generation."""
+
+    value: wp.array
+    table: wp.array
+
+
+class PerStepWithTable(_MeanX):
+    """Per step (``_MeanX``'s ``step`` rewrites ``value`` for every env), and its result
+    also exposes ``table``, the same means recomputed for the whole batch in
+    ``on_generate`` only (as a lookahead exposing its curvature table would)."""
+
+    name = "acme.mean_x_table"
+
+    def attach(self, source, cc) -> None:
+        lay = self.layout
+        self._E, self._S = int(lay.num_envs), int(lay.stride)
+        self._src = (source.center, source.count, source.valid)
+        self.result = ValueAndTable(wp.zeros(self._E, dtype=wp.float32, device=lay.device),
+                                    wp.zeros(self._E, dtype=wp.float32, device=lay.device))
+        self.on_generate(cc.ctx, None)
+        wp.load_module(__name__, device=lay.device)
+
+    def on_generate(self, ctx, mask) -> None:
+        center, count, valid = self._src
+        ctx.launch(_mean_x_k, self._E, [center, count, valid, 1, self._S,
+                                        self.result.table])
+
+
+#: Correct components whose result holds an array that only ``on_generate`` writes.
+GENERATION_WRITTEN = (DuckPerGeneration, PerStepWithTable)
 
 
 # ---------------------------------------------------------------------------------------
@@ -531,7 +654,9 @@ class CurvatureLookahead(tools.Component):
     """The curvature ``ahead`` centerline points past the agent: reads the track
     (``HasCenterline``; ``valid`` when present, through ``curvature``) and the
     ``Localizer`` named ``localizer`` (``after``); per generation ``curvature(...,
-    out=, scratch=)`` into its own arrays, per step one kernel."""
+    out=, scratch=)`` into its own arrays, per step one kernel. Named
+    ``"acme.lookahead"`` (a third-party name: a package prefix), it is an entry of a
+    course's ``StepResult`` (it overrides ``step``)."""
 
     stateful = False
     requires = (HasCenterline,)
@@ -539,7 +664,7 @@ class CurvatureLookahead(tools.Component):
     inputs = {"position": tools.InputSpec(wp.vec3f, doc="the agent")}
 
     def __init__(self, ahead: int = 6, *, window: int = 2, localizer: str = "localizer",
-                 name: str = "lookahead") -> None:
+                 name: str = "acme.lookahead") -> None:
         if int(ahead) < 0:
             raise ValueError(f"ahead must be >= 0, got {ahead!r}")
         self.ahead, self.window, self.name = int(ahead), int(window), name

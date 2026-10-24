@@ -425,9 +425,13 @@ Planner and Program
 .. autofunction:: track_gen.pipeline.build
 
 .. autoclass:: track_gen.pipeline.Program
-   :members: run, enqueue, enqueue_segment, prepare, result, layout, spec, tap, channels,
-      fail_bits, on_invalid, attributes, seeds, seed, inputs, input_info, params, graph,
-      segment_graphs, capturable, capture_class, segments, host_stage_ids
+   :members: run, enqueue, enqueue_segment, prepare, prepared, default_stream, result,
+      layout, spec, tap, channels, fail_bits, on_invalid, attributes, seeds, seed, inputs,
+      input_info, params, graph, segment_graphs, capturable, capture_class, segments,
+      host_stage_ids
+
+.. autoclass:: track_gen.pipeline.Producer
+   :no-members:
 
 .. autoclass:: track_gen.pipeline.Segment
    :members: host
@@ -983,8 +987,11 @@ Each adapter wraps one legacy utility (``.utility``) and exposes its result
 Course facade
 -------------
 
-One object bundling generation, collision, and progress per mode; see the
-:doc:`Course facade page </utilities/course>` for the lifecycle.
+The composition root: a generator (any :class:`~track_gen.pipeline.Producer`) plus an
+ordered list of components, with the presets ``Course.track`` / ``Course.gates`` and the
+0.x ``Course(CourseConfig)`` (``Course.from_config``; ``config=`` is the 0.x keyword of
+the constructor). See the :doc:`Course facade page </utilities/course>` for the lifecycle
+and :doc:`/utilities/composing-a-course` for composing your own.
 
 .. automodule:: track_gen.course
    :no-members:
@@ -997,6 +1004,16 @@ One object bundling generation, collision, and progress per mode; see the
 
 .. autoclass:: track_gen.course.StepResult
    :no-members:
+
+   .. automethod:: __getitem__
+
+   .. automethod:: get
+
+   .. automethod:: keys
+
+   .. automethod:: values
+
+   .. automethod:: items
 
    .. automethod:: clone
 

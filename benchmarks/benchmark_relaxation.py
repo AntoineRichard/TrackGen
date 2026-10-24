@@ -14,7 +14,7 @@ from __future__ import annotations
 import argparse, time
 import torch
 
-from track_gen._src.types import TrackGenConfig
+from track_gen import TrackGenConfig
 from tests._oracle import relaxation, geometry, inflation
 from tests._oracle.generators import BezierCenterlineGenerator
 
@@ -29,7 +29,7 @@ class _Cfg:
 def _gen_simple_tracks(E, N, scale, device, seed):
     """Generate E simple, arc-length-uniform Bezier centerlines (needs warp RNG)."""
     import warp as wp; wp.init()
-    from track_gen._src.rng_utils import PerEnvSeededRNG
+    from track_gen import PerEnvSeededRNG
     kept = []
     s = seed
     while len(kept) < E:

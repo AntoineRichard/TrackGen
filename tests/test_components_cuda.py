@@ -51,7 +51,11 @@ and the shipped CPU suites; the CPU lane only collects this module):
    on a ``Track``, a ``Centerline`` and a ``MinimalCenterline`` (no ``valid``).
 6. ``check_component`` passes for every built-in adapter on ``cuda:0`` (``capture.caller``
    in the Warp mode, and in the torch modes when torch with CUDA is installed;
-   ``capture.self_reset`` for every stateful adapter).
+   ``capture.self_reset`` for every stateful adapter), and (roadmap PR15) for the correct
+   toys whose result holds an array that only ``on_generate`` writes (a duck-typed
+   per-generation component, a per-step one exposing a per-generation table): on an
+   all-zero ``done`` the replay's conditional node skips ``on_generate`` and the kit's
+   eager twin skips it too.
 7. ``RebindAfterCaptureWarning`` with real captures (Warp and torch): rebinding other
    arrays after a hot method was recorded warns once at the caller's line (``Course.bind``,
    a utility's ``bind``, a component's ``bind``), the same arrays and eager-only use are
@@ -82,6 +86,7 @@ pytestmark = pytest.mark.cuda
 
 import warp as wp  # noqa: E402
 
+from tests import _component_toys as _toys  # noqa: E402
 from tests._pr14_base_kernels import BASE_KERNELS as _BASE  # noqa: E402
 from tests._results_helpers import MinimalCenterline  # noqa: E402
 from track_gen import GateGenConfig, PerEnvSeededRNG, TrackGenConfig, tools  # noqa: E402
@@ -1503,6 +1508,22 @@ def test_builtin_component_passes_check_component_on_cuda(cid):
         assert got == "ok" or got.startswith("skipped"), f"{mode}: {got}\n{report}"
     if not report.result("reset.exact", DEV).skipped:
         assert not report.result("capture.self_reset", DEV).skipped, str(report)
+
+
+@pytest.mark.parametrize("toy", list(_toys.GENERATION_WRITTEN), ids=lambda c: c.__name__)
+def test_capture_caller_passes_a_component_with_an_array_only_on_generate_writes(toy):
+    """A correct component whose result holds an array that only ``on_generate`` writes
+    (for the whole batch): ``DuckPerGeneration`` (duck-typed, so counted as per-step,
+    its ``step`` returning the result unchanged) and ``PerStepWithTable`` (a per-step
+    ``value`` plus a per-generation ``table``). ``capture.caller`` in the ``warp`` mode
+    passes: where conditional nodes are supported, the replay skips ``on_generate`` on
+    every all-zero ``done`` (the poison stays in that array) and the kit's eager twin
+    skips it too; elsewhere both run it."""
+    report = check_component(lambda cc, t=toy: t(), source="track", devices=[DEV],
+                             modes=("warp",))
+    report.raise_for_failures()
+    cap = report.result("capture.caller", DEV)
+    assert not cap.skipped and cap.details.get("warp") == "ok", str(report)
 
 
 # ---------------------------------------------------------------------------------------

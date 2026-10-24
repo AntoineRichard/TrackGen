@@ -24,9 +24,7 @@ from typing import Any, Mapping
 import numpy as np
 import warp as wp
 
-from track_gen._src.types import TrackGenConfig
-from track_gen._src.track_generator import TrackGenerator
-from track_gen._src.rng_utils import PerEnvSeededRNG
+from track_gen import PerEnvSeededRNG, TrackGenConfig, TrackGenerator
 from track_gen.plugin import registry
 from benchmarks import track_metrics as tm
 

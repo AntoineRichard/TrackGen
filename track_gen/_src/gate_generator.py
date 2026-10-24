@@ -324,6 +324,13 @@ class GateGenerator:
         return self._runner.graph
 
     @property
+    def rng(self) -> "PerEnvSeededRNG | None":
+        """The ``PerEnvSeededRNG`` the generator was built with (``rng=``, or ``seeds=`` a
+        ``PerEnvSeededRNG``), else ``None`` (read-only; roadmap PR15). Its
+        ``set_seeds_warp`` rewrites the seeds :attr:`seeds` reads, in place."""
+        return self._rng
+
+    @property
     def seeds(self) -> SeedState:
         """The per-env :class:`~track_gen.seeds.SeedState`: the rng's ``seeds_warp``
         bound by pointer (never written by the generator) plus the device-side

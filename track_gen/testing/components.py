@@ -119,16 +119,32 @@ Checks (:data:`~track_gen.testing.CHECKS` ``["component"]``), per device:
     reporting ``capturing``) vs unarmed: the documented G1 exception changes no emission.
 ``hot_path.buffers`` (CPU)
     Every pointer the hot calls launch on belongs to the component, its upstream, the
-    source, the inputs or the masks (:func:`~track_gen.testing.buffers_of`).
+    source, the inputs or the masks (:func:`~track_gen.testing.buffers_of`); and (roadmap
+    PR15) ``on_generate(ctx, None)``, ``on_generate(ctx, m)`` and ``reset(ctx, m)``
+    launch on no pointer of a bound input (a ``Course`` runs them in its regeneration
+    body, whose self-graph is keyed on ``(advance, mask)`` only and would bake the
+    input: read inputs in ``step``; a respawn snapshot of an input belongs in ``step``,
+    with ``reset`` arming a per-env flag that ``step`` consumes). The upstream
+    components are bound to the same input arrays, so an input reached through an
+    upstream result that aliases it is caught too.
 ``capture.caller`` (CUDA)
     Per mode of ``modes`` (``"warp"``, ``"external"``, ``"torch"``): on a chain whose hot
-    methods never ran eagerly, ``[producer.enqueue(advance=True, mask=done) -> chain
-    on_generate(ctx, done) -> chain reset(ctx, done) -> chain step(ctx)]`` recorded on a
-    side stream (mempool disabled, ``wp.capture_launch`` forbidden) and replayed
-    ``steps`` times with host-written inputs and a deterministic ``done`` schedule; an
-    eager twin runs the same calls; before each replay / eager iteration the owned arrays
-    of the component under test are poisoned in BOTH runs; equal every step.
-    ``details[mode]``: ``"ok"`` or ``"skipped: <reason>"`` (torch modes without torch).
+    methods never ran eagerly, the chain a ``Course`` records (roadmap PR15):
+    ``[any_set(done) -> flag; ctx.skip_unless(flag, [producer.enqueue(advance=True,
+    mask=done) -> chain on_generate(ctx, done) -> chain reset(ctx, done)]) -> chain
+    step(ctx)]``, recorded on a side stream (mempool disabled, ``wp.capture_launch``
+    forbidden) and replayed ``steps`` times with host-written inputs and a deterministic
+    ``done`` schedule whose every fourth mask is all zero (the skipped branch replays);
+    the masked part is a CUDA conditional-node body where the capture allows one
+    (``"warp"`` with CUDA >= 12.4; unconditional otherwise), so ``on_generate`` /
+    ``reset`` must emit only kernels, fills and device-to-device copies on ``ctx``'s
+    stream; an eager twin runs the same chain, skipping the masked part on an all-zero
+    ``done`` exactly when the capture recorded it under a conditional node (the replay
+    skips it there), so both runs skip or run the same ``on_generate`` / ``reset``;
+    before each replay / eager iteration the owned arrays of the component under test
+    are poisoned in BOTH runs (a skipped ``on_generate`` leaves the poison in both);
+    equal every step. ``details[mode]``: ``"ok"`` or ``"skipped: <reason>"`` (torch
+    modes without torch).
 ``capture.self_reset`` (CUDA, as ``regenerate.self_reset``)
     The same graph without the chain's ``reset``: equal to the eager twin WITH it.
 
@@ -150,13 +166,14 @@ import numpy as np
 import warp as wp
 
 from ..exec.context import LaunchContext
+from ..ops.reduce import any_set
 from ..results import Layout, _members_of
 from .capture import (CAPTURE_MODES, _torch_cuda, capture_launch_forbidden,
                       mempool_disabled, poison, recording, result_arrays, side_stream)
 from .conformance import (_COMPONENT_CHECKS, CheckResult, Report, _devices, _exc_text,
                           _top_package)
 from .contract import HotPathGuard
-from .trace import LaunchTrace, buffers_of
+from .trace import BufferSet, LaunchTrace, buffers_of
 
 __all__ = ["check_component"]
 
@@ -330,6 +347,39 @@ def _geometry(src) -> "tuple[np.ndarray, np.ndarray, bool]":
     cnt = src.count.numpy()
     E = int(cnt.shape[0])
     return pts.reshape(E, -1, 3), cnt, gates
+
+
+def _done_schedule(i: int, E: int) -> list:
+    """The capture checks' ``done`` mask of step ``i``: env ``e`` where ``(i + e) % 5 ==
+    0``, all zero every fourth step (the conditional body is skipped on those
+    replays)."""
+    if i % 4 == 3:
+        return [0] * E
+    return [1 if (i + e) % 5 == 0 else 0 for e in range(E)]
+
+
+def _caller_chain(ctx, run, program, done, flag, *, reset: bool,
+                  skip: bool = False) -> bool:
+    """The chain the capture checks record, as a ``Course`` records its regeneration and
+    step (roadmap PR15): ``any_set(done)`` into ``flag``, then, under
+    ``ctx.skip_unless(flag, ...)`` (a CUDA conditional node where the capture allows
+    one), the producer's masked advancing generation, the chain's ``on_generate(done)``
+    and (``reset``) ``reset(done)``; then the chain's ``step``.
+
+    ``skip``: leave the masked part out (the eager twin of a replay whose conditional
+    node skips it: an all-zero ``done``). Returns what ``skip_unless`` returned: whether
+    the masked part was recorded under a conditional node (``False`` when skipped)."""
+    any_set(ctx, done, flag)
+
+    def regenerate(c) -> None:
+        program.enqueue(c, advance=True, mask=done)
+        run.on_generate(c, done)
+        if reset:
+            run.reset(c, done)
+
+    conditional = False if skip else bool(ctx.skip_unless(flag, regenerate))
+    run.step(ctx)
+    return conditional
 
 
 class _Kit:
@@ -1129,15 +1179,35 @@ class _DeviceRun:
         calls = self._hot_calls(run)
         allowed = buffers_of(run.comp, *run.upstream, run.source, run.target, run.inputs,
                              self._hot_mask)
-        trace = LaunchTrace()
-        with trace:
-            for _, f in calls:
+        inputs = BufferSet()
+        for k, a in run.inputs.items():
+            inputs.add(a, k)
+        traces = []
+        for label, f in calls:
+            t = LaunchTrace()
+            with t:
                 f()
-        foreign = trace.foreign_pointers(allowed)
+            traces.append((label, t))
+        foreign = [x for _, t in traces for x in t.foreign_pointers(allowed)]
         assert not foreign, (f"{len(foreign)} pointer(s) outside the component / upstream / "
                              f"source / inputs, e.g. {foreign[0][0].kernel} argument "
                              f"{foreign[0][1]}")
-        return f"{len(trace)} launches/copies"
+        # Roadmap PR15: the regeneration-body methods read no bound input.
+        for label, t in traces:
+            if label.startswith("step"):
+                continue
+            for r in t:
+                for i, ptr in r.arrays:
+                    loc = inputs.locate(ptr) if ptr else None
+                    if loc is not None:
+                        method = label.split("(")[0]
+                        raise AssertionError(
+                            f"{method} launches with bound input {loc[0]!r} ({label}: "
+                            f"{r.kernel} argument {i}): the course self-graph would bake "
+                            f"it (the regeneration body is keyed on (advance, mask) "
+                            f"only); read inputs in step() (a respawn snapshot: reset "
+                            f"arms a per-env flag that step consumes)")
+        return f"{sum(len(t) for _, t in traces)} launches/copies"
 
     # -- capture.* (CUDA) ---------------------------------------------------------------
     def _capture(self, *, with_reset: bool) -> dict:
@@ -1154,14 +1224,17 @@ class _DeviceRun:
             rc, rt = self.run_on(pc), self.run_on(pt)
             done_c = wp.zeros(E, dtype=wp.int32, device=self.device)
             done_t = wp.zeros(E, dtype=wp.int32, device=self.device)
+            flag_c = wp.zeros(1, dtype=wp.int32, device=self.device)
+            flag_t = wp.zeros(1, dtype=wp.int32, device=self.device)
+            # Load the any_set modules outside the capture (a zero mask: writes the flag).
+            any_set(LaunchContext.for_call(self.device), done_t, flag_t)
             self.sync()
 
-            def body(ctx, run=rc, prod=pc, done=done_c, reset=with_reset):
-                prod.enqueue(stream=ctx.stream, advance=True, mask=done)
-                run.on_generate(ctx, done)
-                if reset:
-                    run.reset(ctx, done)
-                run.step(ctx)
+            recorded: dict = {}
+
+            def body(ctx, run=rc, prod=pc, done=done_c, flag=flag_c, reset=with_reset):
+                recorded["conditional"] = _caller_chain(ctx, run, prod.program, done,
+                                                        flag, reset=reset)
 
             if mode == "warp":
                 s = side_stream(self.dev)
@@ -1193,8 +1266,13 @@ class _DeviceRun:
                         _g.replay()
                         _torch.cuda.synchronize(_ordinal)
             ectx = LaunchContext.for_call(self.device)
+            # Under a conditional node the replay skips the masked part on an all-zero
+            # done: the eager twin skips it then too, so a whole-batch on_generate (or one
+            # writing an array that step does not rewrite) leaves the poison in both runs.
+            conditional = bool(recorded.get("conditional"))
             for i in range(self.kit.steps):
-                done = _i32([1 if (i + e) % 5 == 0 else 0 for e in range(E)], self.device)
+                sched = _done_schedule(i, E)
+                done = _i32(sched, self.device)
                 wp.copy(done_c, done)
                 wp.copy(done_t, done)
                 self.kit.drive(rt, i)
@@ -1203,10 +1281,8 @@ class _DeviceRun:
                     poison(a)
                 self.sync()
                 replay()
-                pt.enqueue(stream=ectx.stream, advance=True, mask=done_t)
-                rt.on_generate(ectx, done_t)
-                rt.reset(ectx, done_t)
-                rt.step(ectx)
+                _caller_chain(ectx, rt, pt.program, done_t, flag_t, reset=True,
+                              skip=conditional and not any(sched))
                 self.sync()
                 bad = _diff(_snap(rc.owned), _snap(rt.owned))
                 assert not bad, (f"{mode} capture: replay {i} differs from the eager twin "

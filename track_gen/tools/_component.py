@@ -130,6 +130,18 @@ class Component:
     ``mask[e] == 0`` bitwise unchanged (a whole-batch recompute qualifies); ``step``
     returns :attr:`result`; ``reset(ctx, mask)`` clears the per-env runtime state where
     ``mask[e] != 0`` and nothing else (a stateless component emits nothing).
+
+    In a ``Course`` (roadmap PR15): ``on_generate`` and ``reset`` run in the masked
+    regeneration body, under a CUDA conditional node where the capture allows one, so
+    they read and write no bound input (``step`` reads them; a respawn snapshot of an
+    input belongs in ``step``: ``reset`` arms a per-env flag that the next ``step``
+    consumes) and emit only kernels, ``ctx.fill`` and device-to-device ``ctx.copy`` on
+    ``ctx``'s stream (no copy to or from host or pinned memory, no event, no other
+    stream); ``reset`` reads only the component's own state and the mask (resets run in
+    reverse order, before the components they read); a component that overrides
+    ``step`` is an entry of the course's ``StepResult`` (its :attr:`result`), one that
+    keeps the base ``step`` (per-generation work) is read through
+    ``course.components[name].result``.
     """
 
     # -- declaration ---------------------------------------------------------------
@@ -177,27 +189,7 @@ class Component:
         if self.layout is None:
             raise RuntimeError(f"{self.name}: bind() before attach (attach it with "
                                f"ComponentContext.add first)")
-        inputs = dict(self.inputs)
-        sources = {s.default for s in inputs.values() if s.default is not None}
-        unknown = sorted(k for k in arrays if k not in inputs and k not in sources)
-        if unknown:
-            raise TypeError(f"{self.name}: unknown inputs {unknown} (declared: "
-                            f"{sorted(inputs)})")
-        routed = {}
-        for k, spec in inputs.items():
-            if k not in arrays and spec.default is not None and spec.default in arrays:
-                arrays[k] = arrays[spec.default]
-                routed[k] = spec.default
-        missing = sorted(k for k, s in inputs.items()
-                         if s.required and arrays.get(k) is None)
-        if missing:
-            raise TypeError(f"{self.name}: missing inputs {missing}")
-        declared = {k: arrays.get(k) for k in inputs}
-        for k, arr in declared.items():
-            if arr is not None:
-                label = k if k not in routed else f"{k} (routed from {routed[k]})"
-                inputs[k].check(label, arr, self.layout, consumer=self.name)
-        self.on_bind(**declared)
+        self.on_bind(**_route(self, arrays))
 
     def on_bind(self, **arrays: wp.array) -> None:
         """Hook: the checked input arrays (pin them; an absent optional input is
@@ -254,6 +246,100 @@ def _check_declaration(comp) -> "tuple[tuple, tuple]":
             _declared_protocols(getattr(comp, "optional", ()), "optional", owner))
 
 
+def _route(comp, arrays: Mapping) -> dict:
+    """The validation half of :meth:`Component.bind`: route ``InputSpec.default`` (an
+    input not given takes the array of its ``default`` name), refuse unknown names and
+    missing required ones (``TypeError``), check each array against its spec on
+    ``comp.layout`` (``ValueError``; a routed input's message names the argument it was
+    routed from). Returns ``{input name: array or None}`` (what ``on_bind`` receives);
+    binds nothing."""
+    inputs = dict(comp.inputs)
+    arrays = dict(arrays)
+    sources = {s.default for s in inputs.values() if s.default is not None}
+    unknown = sorted(k for k in arrays if k not in inputs and k not in sources)
+    if unknown:
+        raise TypeError(f"{comp.name}: unknown inputs {unknown} (declared: "
+                        f"{sorted(inputs)})")
+    routed = {}
+    for k, spec in inputs.items():
+        if k not in arrays and spec.default is not None and spec.default in arrays:
+            arrays[k] = arrays[spec.default]
+            routed[k] = spec.default
+    missing = sorted(k for k, s in inputs.items() if s.required and arrays.get(k) is None)
+    if missing:
+        raise TypeError(f"{comp.name}: missing inputs {missing}")
+    declared = {k: arrays.get(k) for k in inputs}
+    for k, arr in declared.items():
+        if arr is not None:
+            label = k if k not in routed else f"{k} (routed from {routed[k]})"
+            inputs[k].check(label, arr, comp.layout, consumer=comp.name)
+    return declared
+
+
+def _deps(comp) -> tuple:
+    """The names a component reads: ``after`` + its ``source`` (when not ``None``)."""
+    after = tuple(getattr(comp, "after", ()) or ())
+    src = getattr(comp, "source", None)
+    return after + ((src,) if src is not None else ())
+
+
+def _order(components) -> list:
+    """The components in execution order (roadmap PR15): a stable topological sort of
+    ``after`` + ``source`` over the given order (Kahn's algorithm, picking at each step
+    the first remaining component whose dependencies are placed: the identity on an
+    already-ordered list).
+
+    Raises:
+        TypeError: a ``name`` that is not a non-empty ``str``, or a malformed ``after``.
+        ValueError: two components share a name, a component reads a name that is not
+            one of the components, or the dependencies form a cycle.
+    """
+    comps = list(components)
+    names = []
+    for c in comps:
+        n = getattr(c, "name", None)
+        if not isinstance(n, str) or not n:
+            raise TypeError(f"{type(c).__name__}.name must be a non-empty str, got {n!r}")
+        after = getattr(c, "after", ()) or ()
+        if isinstance(after, str) or not all(isinstance(a, str) for a in after):
+            raise TypeError(f"{type(c).__name__}.after must be a tuple of component "
+                            f"names, got {after!r}")
+        names.append(n)
+    seen, dup = set(), None
+    for n in names:
+        if n in seen:
+            dup = n
+            break
+        seen.add(n)
+    if dup is not None:
+        raise ValueError(f"Course: two components are named {dup!r}; component names "
+                         f"must be unique (components: {names})")
+    for c in comps:
+        for d in _deps(c):
+            if d not in seen:
+                raise ValueError(f"Course: component {c.name!r} reads {d!r} (after / "
+                                 f"source), which is not one of its components {names}")
+    placed, out, rest = set(), [], list(comps)
+    while rest:
+        for i, c in enumerate(rest):
+            if all(d in placed for d in _deps(c)):
+                out.append(c)
+                placed.add(c.name)
+                del rest[i]
+                break
+        else:
+            raise ValueError(f"Course: components {[c.name for c in rest]} depend on each "
+                             f"other (after / source form a cycle)")
+    return out
+
+
+def _per_step(comp) -> bool:
+    """Whether ``comp`` has per-step output (a ``StepResult`` entry): it overrides
+    :meth:`Component.step` (a duck-typed component defines its own ``step`` and
+    counts)."""
+    return getattr(type(comp), "step", None) is not Component.step
+
+
 def _check_target(target, requires: tuple, optional: tuple, *, consumer: str,
                   topology: str, layout: Layout) -> "Layout | None":
     """Check ``target`` against the declared protocols: every member of ``requires``
@@ -308,12 +394,20 @@ class ComponentContext:
             :meth:`for_producer`). Hand-built sources pass their own.
         ctx: The launch context of the cold work of ``attach`` (default:
             ``LaunchContext.for_call(layout.device)``: an enclosing ``ctx.scope()``,
-            else Warp's current stream). Attach after the producer's work completed, or
-            pass the producer's stream.
+            else Warp's current stream). Attach on the stream where allocations happen
+            (Warp's current stream: ``attach`` allocates and zero-fills there, then
+            launches its first ``on_generate`` on ``ctx``; a context on another stream
+            races its own allocations), after the producer's work completed on it (or
+            make that stream wait for the producer's).
+        bounds: Declared bounds of the producer's plan (``name -> number``, roadmap
+            PR15; see :meth:`for_producer`): ``size_hi``, the largest course size the
+            plan can draw. Read by ``BandCollision`` / ``HeightFieldBake`` with
+            ``size_hi="auto"``. Hand-built sources pass their own (default: none).
     """
 
     def __init__(self, layout: Layout, capacity: "Mapping[str, float] | None" = None, *,
-                 ctx: "LaunchContext | None" = None) -> None:
+                 ctx: "LaunchContext | None" = None,
+                 bounds: "Mapping[str, float] | None" = None) -> None:
         if not isinstance(layout, Layout):
             raise TypeError(f"ComponentContext: layout must be a track_gen.Layout, got "
                             f"{type(layout).__name__}")
@@ -323,6 +417,13 @@ class ComponentContext:
                     not isinstance(v, numbers.Real) or not math.isfinite(float(v)) or \
                     float(v) <= 0.0:
                 raise ValueError(f"ComponentContext: capacity {k!r} must be a finite "
+                                 f"number > 0, got {v!r}")
+        bnd = dict(bounds or {})
+        for k, v in bnd.items():
+            if not isinstance(k, str) or isinstance(v, bool) or \
+                    not isinstance(v, numbers.Real) or not math.isfinite(float(v)) or \
+                    float(v) <= 0.0:
+                raise ValueError(f"ComponentContext: bound {k!r} must be a finite "
                                  f"number > 0, got {v!r}")
         if ctx is None:
             ctx = LaunchContext.for_call(layout.device)
@@ -334,6 +435,7 @@ class ComponentContext:
                              f"layout on {layout.device!r}")
         self._layout = layout
         self._capacity = types.MappingProxyType(cap)
+        self._bounds = types.MappingProxyType(bnd)
         self._ctx = ctx
         self._components: dict = {}
 
@@ -353,6 +455,14 @@ class ComponentContext:
         of either boundary loop of every valid env (see :meth:`for_producer`); a
         consumer sizes from it, clamps to its own capacity and reports truncation."""
         return self._capacity
+
+    @property
+    def bounds(self) -> Mapping:
+        """The producer's declared bounds (read-only mapping, roadmap PR15; see
+        :meth:`for_producer`). ``size_hi``: the largest course size the plan can draw (a
+        size randomizer's construction ``hi``, else the generator's construction
+        ``size``); absent when the plan declares no size."""
+        return self._bounds
 
     @property
     def ctx(self) -> LaunchContext:
@@ -442,9 +552,19 @@ class ComponentContext:
         of its plan (no device readback).
 
         ``producer`` is a ``TrackGenerator`` / ``GateGenerator`` (its ``program``), a
-        built ``Program``, or a ``Course`` (its ``generator``); its ``spec`` / ``params``
-        / ``layout`` are read. A result (``gen.generate()``'s ``Track``) has no plan:
-        build a ``ComponentContext(track.layout, capacity)`` for a hand-built source.
+        built ``Program``, a ``Course`` (its ``generator``), or any object with the
+        ``track_gen.pipeline.Producer`` surface that declares ``capacity`` and / or
+        ``bounds`` itself (read before the plan, roadmap PR15); its ``spec`` /
+        ``params`` / ``layout`` are read. A result (``gen.generate()``'s ``Track``) has
+        no plan: build a ``ComponentContext(track.layout, capacity)`` for a hand-built
+        source.
+
+        Bound ``size_hi`` (roadmap PR15, :attr:`bounds`): the construction ``hi`` of a
+        ``randomize`` stage drawing ``size`` (``generator.size`` / ``normalize.size``;
+        the largest of them), else the construction ``size`` of the generator (or of the
+        ``normalize`` stage of a ring gate pipeline); omitted when the plan has no size
+        (``external``, a legacy spec). It is the declared bound, never a current value:
+        a later ``set("hi", ...)`` or ``set("size", ...)`` curriculum is not seen.
 
         Capacity key ``max_loop_length`` (0.x): ``1.5 * N_max * spacing + dZ`` from the
         ``("resample", "constant_spacing")`` slot's ``spacing`` and the batch's
@@ -472,26 +592,46 @@ class ComponentContext:
         the constant-spacing resample, and without that resample (gate pipelines).
 
         Raises:
-            TypeError: ``producer`` has no plan (a ``Track`` or another result) or no
-                ``Layout``.
+            TypeError: ``producer`` has no plan and declares neither ``capacity`` nor
+                ``bounds`` (a ``Track`` or another result, a minimal producer), or it
+                has no ``Layout``.
         """
-        obj = producer
-        if not hasattr(obj, "program") and not hasattr(obj, "spec") and \
-                hasattr(obj, "generator"):
-            obj = obj.generator                     # a Course: its generator's plan
-        prog = getattr(obj, "program", obj)
+        from .._src.course import Course  # noqa: PLC0415 - import cycle
+        from ..pipeline.program import Program  # noqa: PLC0415 - keeps import cheap
+
+        # Strict unwrapping: only a real Course gives its generator, and only a real
+        # Program is a plan (an unrelated `generator` / `program` / `spec` attribute of a
+        # third-party producer is its own business: its capacity / bounds are read).
+        obj = producer.generator if isinstance(producer, Course) else producer
+        inner = getattr(obj, "program", None)
+        prog = inner if isinstance(inner, Program) else obj
         what = type(producer).__name__
-        if getattr(prog, "spec", None) is None:
+        own_cap = getattr(prog, "capacity", None)
+        own_bounds = getattr(prog, "bounds", None)
+        for label, own in (("capacity", own_cap), ("bounds", own_bounds)):
+            if own is not None and not isinstance(own, Mapping):
+                raise TypeError(f"ComponentContext.for_producer: {what}.{label} must be "
+                                f"a mapping of name -> number, got {type(own).__name__}")
+        # A plan: a Program (or an object with its spec / params surface). A producer's
+        # own capacity / bounds win over it anyway.
+        planned = isinstance(prog, Program) or getattr(prog, "spec", None) is not None
+        if not planned and own_cap is None and own_bounds is None:
             noun = "track" if what == "Track" else "result"
             raise TypeError(f"ComponentContext.for_producer takes a TrackGenerator / "
                             f"GateGenerator / Program, got {what}: pass the generator, "
                             f"or use ComponentContext({noun}.layout, capacity) for a "
-                            f"hand-built source")
+                            f"hand-built source (a track_gen.pipeline.Producer without "
+                            f"a plan qualifies when it declares capacity and / or "
+                            f"bounds)")
         layout = getattr(prog, "layout", None)
         if not isinstance(layout, Layout):
             raise TypeError(f"ComponentContext.for_producer: {what} has no Layout (pass "
                             f"a generator or a built Program)")
-        return cls(layout, _plan_capacity(prog), ctx=ctx)
+        capacity = dict(own_cap) if own_cap is not None else \
+            (_plan_capacity(prog) if planned else {})
+        bounds = dict(own_bounds) if own_bounds is not None else \
+            (_plan_bounds(prog) if planned else {})
+        return cls(layout, capacity, ctx=ctx, bounds=bounds)
 
 
 # ---------------------------------------------------------------------------------------
@@ -563,6 +703,45 @@ def _elevation_variation(ref, params, base: float) -> "float | None":
         if _finite(a_hi):
             cands.append(4.0 * float(a_hi) * H / sum(1.0 / k for k in range(1, H + 1)))
     return min(cands) if cands else None
+
+
+#: The stage slots whose ``size`` field is the course size (roadmap PR13d): the track
+#: and bezier / hull gate generators' ``generator.size``, the ring gate pipelines'
+#: ``normalize.size``.
+_SIZE_SLOTS = ("generator", "normalize")
+
+
+def _plan_bounds(prog) -> dict:
+    """``{"size_hi": ...}`` of a built Program's plan, or ``{}`` (see
+    :meth:`ComponentContext.for_producer`)."""
+    spec = getattr(prog, "spec", None)
+    stages = list(getattr(spec, "stages", None) or ())
+    drawn = []
+    for ref in stages:
+        p = ref.params
+        if ref.kind == "randomize" and getattr(p, "field", None) == "size" and \
+                getattr(p, "stage", None) in _SIZE_SLOTS:
+            hi = getattr(p, "hi", None)
+            if isinstance(hi, numbers.Real) and math.isfinite(float(hi)) and \
+                    float(hi) > 0.0:
+                drawn.append(float(hi))
+    if drawn:
+        return {"size_hi": max(drawn)}
+    params = getattr(prog, "params", None)
+    for slot in _SIZE_SLOTS:
+        size = None
+        try:
+            table = params[slot] if params is not None and slot in params else None
+            size = getattr(getattr(table, "params", None), "size", None)
+        except (KeyError, TypeError):
+            size = None
+        if size is None:
+            ref = next((r for r in stages if r.slot_id == slot), None)
+            size = getattr(getattr(ref, "params", None), "size", None)
+        if isinstance(size, numbers.Real) and not isinstance(size, bool) and \
+                math.isfinite(float(size)) and float(size) > 0.0:
+            return {"size_hi": float(size)}
+    return {}
 
 
 def _plan_capacity(prog) -> dict:

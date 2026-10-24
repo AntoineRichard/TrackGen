@@ -1243,10 +1243,12 @@ and ``handle_clamp_frac_range`` (since 0.2.0.dev5; removed in 1.0, roadmap PR16,
 attributed to your code, whose text gives the migration: ``scale_range=(a, b)`` ->
 ``randomize={"generator.size": (a / scale, b / scale)}``, ``rad_range`` ->
 ``"generator.rad"``, ``handle_clamp_frac_range`` -> ``"generator.handle_clamp_frac"``,
-and for ``Course`` (which takes no ``randomize=`` before roadmap PR15) keeping
-``style_sampling`` or writing ``course.generator.params["generator"].set("size", arr)``
-before ``regenerate`` (:ref:`bezier-style-vs-randomize`). Constructing the config does
-not warn.
+and for ``Course`` (since 0.2.0.dev6 it takes a spec) a preset over the randomized spec
+built with ``style_sampling=False``,
+``Course.track(legacy.to_pipeline_spec(cfg).with_randomize({"generator.size": (a / scale,
+b / scale)}), checkpoint_spacing=...)``, or per-env sizes written with
+``course.generator.params["generator"].set("size", arr)`` before ``regenerate``
+(:ref:`bezier-style-vs-randomize`). Constructing the config does not warn.
 
 **Inert pipeline params:** ``validity.gate_default``'s ``gate_width`` and
 ``check_crossing`` (since 0.2.0.dev5 the stage checks bar crossings per env from the bars

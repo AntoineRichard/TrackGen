@@ -338,6 +338,21 @@ class Program:
         return self._runner
 
     @property
+    def prepared(self) -> bool:
+        """Whether :meth:`prepare` ran (one real generation outside any capture;
+        ``build(..., prepare=True)`` and the facades run it). Part of the
+        ``track_gen.pipeline.Producer`` surface (roadmap PR15)."""
+        return self._runner.prepared
+
+    @property
+    def default_stream(self) -> "wp.Stream | None":
+        """The stream calls run on when they pass no ``stream=`` and no ambient scope
+        applies (``build(..., stream=)``, the facades' ``stream=``; ``None``: resolved
+        per :mod:`track_gen.exec`). Part of the ``track_gen.pipeline.Producer`` surface
+        (roadmap PR15)."""
+        return self._runner.default_stream
+
+    @property
     def graph(self) -> "wp.Graph | None":
         """The Program's own CUDA graph for a plain :meth:`run` (``None`` on CPU, for
         a Program with HOST stages, whose capturable segments get one graph each, and

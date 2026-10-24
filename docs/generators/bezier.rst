@@ -401,7 +401,7 @@ Style sampling (deprecated) and its migration
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 ``style_sampling`` is **deprecated** since 0.2.0.dev5 and will be removed in 1.0 (roadmap
-PR16, after ``Course`` accepts a generator, roadmap PR15). Building a ``bezier`` generator
+PR16; ``Course`` accepts a spec or a generator since 0.2.0.dev6). Building a ``bezier`` generator
 with it emits one ``DeprecationWarning`` per build, attributed to your code (not one per
 generation; ``TrackGenConfig(...)`` itself does not warn). Python's default filters
 hide a ``DeprecationWarning`` attributed to an imported module (a gym env, a training
@@ -451,12 +451,14 @@ package) rather than the script you run: run your tests with
 - **Do not combine them.** With ``style_sampling`` and ``scale_range`` set, a
   ``generator.size`` randomizer draws a second per-env size that multiplies the first;
   the build emits a ``UserWarning`` (set ``style_sampling=False``).
-- **Course** takes a ``TrackGenConfig`` and no ``randomize=`` before roadmap PR15: keep
-  ``style_sampling`` there, or draw the sizes yourself and write them,
-  ``course.generator.params["generator"].set("size", sizes)`` (an ``[E]`` ``float32``
-  array), before ``course.regenerate()``. At flat elevation the default
-  ``CourseConfig.max_checkpoints`` holds every size since 0.2.0.dev6
-  (:ref:`tuning-size-utilities`).
+- **Course**: since 0.2.0.dev6 build it from the randomized spec of a config with
+  ``style_sampling=False``, ``Course.track(legacy.to_pipeline_spec(cfg).with_randomize(
+  {"generator.size": (a / scale, b / scale)}), checkpoint_spacing=...)``
+  (:doc:`/utilities/composing-a-course`). A
+  ``CourseConfig`` course takes no ``randomize=``: there, draw the sizes yourself and
+  write them, ``course.generator.params["generator"].set("size", sizes)`` (an ``[E]``
+  ``float32`` array), before ``course.regenerate()``. At flat elevation the default
+  checkpoint capacity holds every size since 0.2.0.dev6 (:ref:`tuning-size-utilities`).
 
 Until it is removed, ``style_sampling`` keeps its bytes, and ``size`` composes with it
 (the corners get ``scale[e] * size[e]``). Under ``style_sampling=True`` a knob with a

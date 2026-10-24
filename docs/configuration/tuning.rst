@@ -494,8 +494,12 @@ small and grows must not outrun them while the tracks stay valid:
   128² grids at ``E = 8192`` become ~6 GB at ``size_hi = 3``). Or use the exact
   ``segments`` backend. The components ``tools.BandCollision(method="sdf",
   size_hi=...)`` and ``tools.HeightFieldBake(..., size_hi=...)`` warn at ``attach`` when
-  the rule is broken (:ref:`collision-resolution-check`); a ``Course`` declares no
-  ``size_hi`` before roadmap PR15, so it does not warn.
+  the rule is broken (:ref:`collision-resolution-check`). Their default
+  ``size_hi="auto"`` reads the plan's bound (a ``generator.size`` randomizer's
+  construction ``hi``, else the construction ``size``), so a ``Course`` built with
+  ``Course.track`` or ``Course(generator, components)`` warns
+  (:doc:`/utilities/composing-a-course`); ``Course(CourseConfig)`` declares no
+  ``size_hi`` and does not warn.
 
 ``half_width`` and ``spacing`` coupling
 ----------------------------------------

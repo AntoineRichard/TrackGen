@@ -15,7 +15,8 @@ import warnings
 
 import warp as wp
 
-from .._src.checkpoints import CheckpointSampler, CheckpointSet
+from .._src.checkpoints import (CheckpointSampler, CheckpointSet,
+                                _readback_max_checkpoints)
 from .._src.collision import CollisionChecker
 from .._src.collision_discs import DiscChecker
 from .._src.collision_frames import FrameChecker
@@ -26,6 +27,7 @@ from .._src.progress import ProgressTracker
 from .._src.props import PropSampler
 from ..results import (HasBand, HasCenterline, HasCheckpoints, HasGateFrames, HasGates,
                        HasGeneration, HasValidity)
+from ..exec import _compat
 from ._component import Component, InputSpec, _user_stacklevel
 
 __all__ = ["BandCollision", "CenterlineFromGates", "Checkpoints", "DiscCollision",
@@ -38,6 +40,14 @@ def _load_modules(device, *modules: str) -> None:
     first hot call can be recorded into a capture with no eager call before."""
     for m in modules:
         wp.load_module(m, device=device)
+
+
+def _resolve_size_hi(size_hi, cc):
+    """``size_hi`` as given, or (``"auto"``) the producer's declared bound
+    ``cc.bounds["size_hi"]`` (``None`` when it declares none)."""
+    if size_hi != "auto":
+        return size_hi
+    return dict(getattr(cc, "bounds", None) or {}).get("size_hi")
 
 
 def _boxes(max_boxes: int) -> "types.MappingProxyType":
@@ -93,7 +103,10 @@ def _check_resolution(owner: str, resolution: int, size_hi, reference_resolution
 
 
 def _check_size_hi(size_hi, reference_resolution) -> None:
-    if size_hi is not None and not float(size_hi) > 0.0:
+    if isinstance(size_hi, str):
+        if size_hi != "auto":
+            raise ValueError(f"size_hi must be > 0, None or 'auto', got {size_hi!r}")
+    elif size_hi is not None and not float(size_hi) > 0.0:
         raise ValueError(f"size_hi must be > 0 (or None), got {size_hi!r}")
     if isinstance(reference_resolution, bool) or int(reference_resolution) < 1:
         raise ValueError(f"reference_resolution must be an int >= 1, got "
@@ -113,14 +126,16 @@ class BandCollision(Component):
     (``[E * max_boxes]``). ``on_generate``: the SDF bake (``method="sdf"``); ``step``:
     ``query`` -> ``BoxContact``. With ``size_hi`` (the largest size a size curriculum
     will reach) an ``"sdf"`` grid below ``ceil(reference_resolution * size_hi)`` texels
-    per side warns at attach.
+    per side warns at attach. ``size_hi="auto"`` (the default, roadmap PR15) reads the
+    producer's declared bound (``cc.bounds["size_hi"]``: a size randomizer's
+    construction ``hi``, else the construction ``size``); ``None`` declares none.
     """
 
     requires = (HasBand,)
 
     def __init__(self, method: str = "segments", *, max_boxes: int = 1,
                  sdf_resolution: int = 128, sdf_padding: "float | None" = None,
-                 size_hi: "float | None" = None, reference_resolution: int = 128,
+                 size_hi: "float | str | None" = "auto", reference_resolution: int = 128,
                  name: str = "collision") -> None:
         if method not in ("segments", "sdf"):
             raise ValueError(f"method must be one of {{'segments', 'sdf'}}, got {method!r}")
@@ -143,7 +158,8 @@ class BandCollision(Component):
 
     def attach(self, source, cc) -> None:
         if self.method == "sdf":
-            _check_resolution("BandCollision", self.sdf_resolution, self.size_hi,
+            _check_resolution("BandCollision", self.sdf_resolution,
+                              _resolve_size_hi(self.size_hi, cc),
                               self.reference_resolution, 5, self.layout.num_envs)
         with cc.ctx.scope():   # the sdf constructor's own bake IS the cold on_generate
             self.utility = CollisionChecker(source, self.max_boxes, self.method,
@@ -343,33 +359,63 @@ class Props(Component):
         self.utility.sample(ctx=ctx)
 
 
+#: :attr:`Checkpoints.defaulted` values: how a capacity the component chose was found.
+_DEFAULTED_PLAN = "the plan bound ceil(max_loop_length / checkpoint_spacing)"
+_DEFAULTED_READBACK = "read back from the construction batch"
+
+
 class Checkpoints(Component):
     """Track checkpoints (wraps :class:`~track_gen.checkpoints.CheckpointSampler`).
 
     Read target: the producer's result (``HasBand``; ``generation`` read when present).
-    Capacity: ``max_checkpoints``, or ``max(3, ceil(max_loop_length / spacing))`` from
-    the producer's plan (``ValueError`` without it). ``on_generate``: ``sample`` (the
-    set's ``valid`` / ``generation`` are written with its rows); ``step``: the
-    ``CheckpointSet``.
+    Capacity: ``max_checkpoints`` (an int ``>= 3``); ``None``: ``max(3,
+    ceil(max_loop_length / spacing))`` from the producer's plan (``ValueError`` without
+    it); ``"auto"`` (roadmap PR15): that plan bound, else, when the plan declares none
+    (an elevated config, a variable width, a plugin geometry stage), the readback of the
+    batch it attaches to (``ceil(1.5 * max valid centerline perimeter / spacing)``, one
+    cold host read; the ``CheckpointSampler(max_checkpoints=None)`` default).
+    :attr:`defaulted` says how a capacity it chose itself was found (``None`` for an
+    explicit int); the sampler's ``max_checkpoints`` is the capacity used.
+    ``on_generate``: ``sample`` (the set's ``valid`` / ``generation`` are written with
+    its rows); ``step``: the ``CheckpointSet``.
     """
 
     requires = (HasBand,)
     optional = (HasGeneration,)
 
-    def __init__(self, spacing: float, *, max_checkpoints: "int | None" = None,
+    def __init__(self, spacing: float, *, max_checkpoints: "int | str | None" = None,
                  name: str = "checkpoints") -> None:
         if not (float(spacing) > 0.0):
             raise ValueError(f"spacing must be > 0, got {spacing!r}")
-        if max_checkpoints is not None and int(max_checkpoints) < 3:
+        if isinstance(max_checkpoints, str):
+            if max_checkpoints != "auto":
+                raise ValueError(f"max_checkpoints must be an int >= 3, None (the plan "
+                                 f"bound) or 'auto', got {max_checkpoints!r}")
+        elif max_checkpoints is not None and int(max_checkpoints) < 3:
             raise ValueError(f"max_checkpoints must be >= 3 (or None for the plan bound), "
                              f"got {max_checkpoints!r}")
         self.spacing = float(spacing)
         self.max_checkpoints = max_checkpoints
         self.name = name
+        #: How the capacity was chosen when the component chose it (``max_checkpoints``
+        #: ``None`` / ``"auto"``): ``"the plan bound ..."`` or ``"read back from the
+        #: construction batch"``; ``None`` for an explicit capacity (set by ``attach``).
+        self.defaulted: "str | None" = None
 
     def attach(self, source, cc) -> None:
-        M = _capacity("Checkpoints", "max_checkpoints", self.max_checkpoints,
-                      self.spacing, cc)
+        given = self.max_checkpoints
+        auto = isinstance(given, str)
+        if auto and cc.capacity.get("max_loop_length") is None:
+            lay = self.layout
+            if cc.ctx.stream is not None:      # the batch is complete on cc.ctx's stream
+                _compat.stream_synchronize(cc.ctx.stream)
+            M = _readback_max_checkpoints(source, int(lay.num_envs), int(lay.stride),
+                                          self.spacing)
+            self.defaulted = _DEFAULTED_READBACK
+        else:
+            M = _capacity("Checkpoints", "max_checkpoints", None if auto else given,
+                          self.spacing, cc)
+            self.defaulted = _DEFAULTED_PLAN if auto or given is None else None
         with cc.ctx.scope():
             self.utility = CheckpointSampler(source, self.spacing, max_checkpoints=M)
         self.result = self.utility.result
@@ -426,13 +472,14 @@ class HeightFieldBake(Component):
 
     Read target: the producer's result (``HasBand``). ``on_generate``: ``bake``. With
     ``size_hi`` a grid below ``ceil(reference_resolution * size_hi)`` texels per side
-    warns at attach.
+    warns at attach; ``size_hi="auto"`` (the default, roadmap PR15) reads the
+    producer's declared bound (``cc.bounds["size_hi"]``), ``None`` declares none.
     """
 
     requires = (HasBand,)
 
     def __init__(self, resolution: int, *, padding: "float | None" = None,
-                 size_hi: "float | None" = None, reference_resolution: int = 128,
+                 size_hi: "float | str | None" = "auto", reference_resolution: int = 128,
                  name: str = "heightfield") -> None:
         if int(resolution) < 8:
             raise ValueError(f"resolution must be >= 8, got {resolution!r}")
@@ -446,7 +493,8 @@ class HeightFieldBake(Component):
         self.name = name
 
     def attach(self, source, cc) -> None:
-        _check_resolution("HeightFieldBake", self.resolution, self.size_hi,
+        _check_resolution("HeightFieldBake", self.resolution,
+                          _resolve_size_hi(self.size_hi, cc),
                           self.reference_resolution, 4, self.layout.num_envs)
         with cc.ctx.scope():
             self.utility = HeightFieldBaker(source, self.resolution, self.padding)

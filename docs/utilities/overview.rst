@@ -351,9 +351,9 @@ Components
 ``track_gen.tools`` wraps each utility in a component: one lifecycle (``attach`` once,
 ``bind``, then the hot ``on_generate(ctx, mask)`` / ``step(ctx)`` / ``reset(ctx, mask)``),
 a declared read target and declared inputs, checked when it is attached through a
-``ComponentContext``. ``Course`` builds and drives its sub-tools this way (internally in
-0.2.0.dev6; ``Course(generator, components)`` is roadmap PR15), and
-:doc:`/contributing/writing-a-component` shows how to write your own.
+``ComponentContext``. ``Course`` builds and drives its sub-tools this way, and takes your
+own components next to them (:doc:`/utilities/composing-a-course`);
+:doc:`/contributing/writing-a-component` shows how to write one.
 
 .. list-table::
    :header-rows: 1

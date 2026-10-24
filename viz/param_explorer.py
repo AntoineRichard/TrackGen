@@ -38,13 +38,10 @@ import torch
 
 import warp as wp
 
-from track_gen import GateGenConfig, GateGenerator
-from track_gen._src.types import TrackGenConfig
-from track_gen._src.track_generator import TrackGenerator
-from track_gen._src.rng_utils import PerEnvSeededRNG
-from track_gen._src import warp_gate
+from track_gen import (GateGenConfig, GateGenerator, PerEnvSeededRNG, TrackGenConfig,
+                       TrackGenerator, ops)
+from track_gen.exec import LaunchContext
 from track_gen.plugin import PluginLoadError, registry
-from track_gen.exec import _compat
 from viz.plot_tracks import draw_track
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -581,21 +578,17 @@ def _stats(track) -> dict:
     hw = _estimate_half_width(t.outer, t.center, valid)
     cnt = t.count.clamp_min(1)
     band = (2.0 * hw / (t.length / cnt.float()).clamp_min(1e-9)).round().to(torch.int32).clamp_min(1)
-    # thickness: call the kernel in-place via wp.array (_thickness_k from warp_pipeline)
-    from track_gen._src import warp_pipeline as _wpl
+    # thickness: the public op (the validity gate's kernel) on the xy projection.
     E, n_max, _ = t.center.shape
     dev = str(t.center.device)
-    # _thickness_k is an internal 2D kernel: feed it the xy projection.
     pf = wp.from_torch(t.center[..., :2].reshape(E * n_max, 2).contiguous(), dtype=wp.vec2f)
     band_wp = wp.from_torch(band.contiguous(), dtype=wp.int32)
     cnt_wp = wp.from_torch(t.count.to(torch.int32).contiguous(), dtype=wp.int32)
     out_wp = wp.zeros(E, dtype=wp.float32, device=dev)
-    wp.launch(_wpl._thickness_k, dim=E, inputs=[pf, band_wp, n_max, cnt_wp, out_wp], device=dev)
-    if "cuda" in dev:
-        # Block on the stream the kernel ran on only: wp.synchronize() raises while any
-        # Warp capture is open on the device (e.g. another generator's one-time capture).
-        _compat.stream_synchronize(wp.get_stream(dev))
-    th = wp.to_torch(out_wp)
+    ops.thickness(LaunchContext.for_call(dev), pf, n_max, band_wp, out_wp, count=cnt_wp)
+    # A blocking readback (the explorer's GPU work is serialized by _GPU_LOCK, so no
+    # capture is open on the device while it runs).
+    th = torch.from_numpy(out_wp.numpy()).to(valid.device)
     return {
         "yield": float(valid.float().mean()),
         "n_valid": n,
@@ -796,7 +789,8 @@ def build_gate_config(p: dict) -> GateGenConfig:
 
 
 def _gate_center_target(cfg: GateGenConfig) -> float:
-    return warp_gate._gate_center_distance(cfg)
+    """The validity gate's minimum gate-center distance: ``2 * gate_radius``."""
+    return 2.0 * float(cfg.gate_radius)
 
 
 def generate_gate_batch(p: dict):

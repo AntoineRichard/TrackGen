@@ -29,9 +29,7 @@ import warp as wp
 
 wp.init()
 
-from track_gen._src.types import TrackGenConfig
-from track_gen._src.track_generator import TrackGenerator
-from track_gen._src.rng_utils import PerEnvSeededRNG
+from track_gen import PerEnvSeededRNG, TrackGenConfig, TrackGenerator
 
 E = 8192
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"

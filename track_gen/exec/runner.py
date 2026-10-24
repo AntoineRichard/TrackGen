@@ -675,6 +675,10 @@ class GraphRunner:
             # records Warp's current stream and that is torch's current stream): allow
             # conditional nodes explicitly, so ctx.skip_unless / bounded_loop windows do
             # not fall back to the torch-capture heuristic (unconditional() still wins).
-            _compat.set_conditional_allowed(_compat.registered_stream(s), True)
+            key = _compat.registered_stream(s)
+            _compat.set_conditional_allowed(key, True)
+            # The library's own capture: a course's default-stream guard (roadmap PR15)
+            # never mistakes it for a caller's capture of Warp's current stream.
+            _compat.mark_library_capture(key)
             enqueue(ctx)
         return cap.graph

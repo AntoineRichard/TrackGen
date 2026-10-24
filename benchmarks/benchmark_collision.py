@@ -32,9 +32,7 @@ import numpy as np
 import torch
 import warp as wp
 
-from track_gen._src.rng_utils import PerEnvSeededRNG
-from track_gen._src.track_generator import TrackGenerator
-from track_gen._src.types import TrackGenConfig
+from track_gen import PerEnvSeededRNG, TrackGenConfig, TrackGenerator
 from track_gen.collision import CollisionChecker
 
 
@@ -242,13 +240,11 @@ def run_racing_benchmark(E=4096, B=1, device="cuda", sdf_resolution=256,
     o_ap = approx.oob.numpy()[mask].astype(bool)
     d_ex = exact.distance.numpy()[mask]
     d_ap = approx.distance.numpy()[mask]
-    lo = sdf._sdf_lo.numpy().reshape(-1, 2)[valid]
-    hi = sdf._sdf_hi.numpy().reshape(-1, 2)[valid]
     fp = ~o_ex & o_ap
     m = {
         "device": device, "E": E, "B": B, "sdf_resolution": sdf_resolution,
         "boxes": int(mask.sum()), "valid_envs": int(valid.sum()),
-        "cell_median": float(np.median(np.max(hi - lo, axis=1) / sdf_resolution)),
+        "cell_median": float(np.median(_sdf_extent(track)[valid] / sdf_resolution)),
         "oob_rate": float(o_ex.mean()),
         "agreement": float((o_ex == o_ap).mean()),
         "fn": int(np.sum(o_ex & ~o_ap)),
@@ -265,6 +261,24 @@ def run_racing_benchmark(E=4096, B=1, device="cuda", sdf_resolution=256,
         m["seg_graph_s"], m["seg_graph_p95_s"] = _time_graph(
             seg.query, min(iters, 200), warmup, dev)
     return m
+
+
+def _sdf_extent(track) -> np.ndarray:
+    """``[E]`` larger side of each env's SDF grid box, from public data: the documented
+    auto rule (``sdf_padding=None``) pads the plan-view AABB of the env's outer boundary
+    (its first ``count`` points) by ``0.1 *`` its larger extent on each side."""
+    E = int(track.count.shape[0])
+    outer = track.outer.numpy().reshape(E, -1, 3)
+    count = track.count.numpy()
+    out = np.full(E, 2.0, np.float64)       # the box of a degenerate env: (-1, -1)-(1, 1)
+    for e in range(E):
+        n = int(min(max(int(count[e]), 0), outer.shape[1]))
+        if n < 3:
+            continue
+        xy = outer[e, :n, :2]
+        ext = float(np.max(xy.max(axis=0) - xy.min(axis=0)))
+        out[e] = ext * (1.0 + 2.0 * 0.1)
+    return out
 
 
 def _print_racing(m):

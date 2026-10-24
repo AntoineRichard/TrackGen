@@ -37,10 +37,8 @@ import torch
 
 import warp as wp
 
-from track_gen import PerEnvSeededRNG
-from track_gen._src.course_line import CourseLine
-from track_gen._src.gate_generator import GateGenerator
-from track_gen._src.types import GateGenConfig
+from track_gen import GateGenConfig, GateGenerator, PerEnvSeededRNG
+from track_gen._src.course_line import CourseLine   # no public path yet
 
 OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out")
 
