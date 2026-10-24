@@ -248,13 +248,16 @@
     the stations alike): `z_min`, `z_max` (`uniform`, `random_walk`, `noise`; unbounded),
     `z_max_step` (`random_walk`, `>= 0`), `z_noise_amplitude` (`noise`, `>= 0`).
   - **Static, deliberately** (open question 5 answered for the built-ins): every count,
-    size, enum or Python branch (`min_num_points`, `polar_num_knots`, `checkpoint_count`,
-    `voronoi_site_layout`, ...), `half_width`, `spacing`, `edgy` (its host `atan`
-    transform is not reproducible in a kernel bit for bit), the core `scale`, `z_base`,
+    size, enum or Python branch (`max_num_points`, `polar_num_knots`, `checkpoint_count`,
+    `voronoi_site_layout`, ...; `bezier` / `hull`'s `min_num_points` became a dynamic
+    `int32` in PR13d, below), `half_width`, `spacing`, `edgy` (its host `atan`
+    transform is not reproducible in a kernel bit for bit), the core `scale` (PR13d adds
+    the per-env `size` factor), `z_base`,
     `z_noise_harmonics`, `z_control_points`, `checkpoint_steer_gain` and
     `checkpoint_lookahead_frac` (path-tracer internals), the relax / validity /
     gate-geometry knobs, the width stages' knobs (except `width.from_channel`'s `scale` /
-    `lo` / `hi`, dynamic since 0.2.0.dev4) and every `repulsive` knob. Naming one in `randomize=` raises
+    `lo` / `hi`, dynamic since 0.2.0.dev4) and every `repulsive` growth knob. Naming one
+    in `randomize=` raises
     `PlanError` (`generator.edgy is a static field (build a new generator to change
     it; its stage's documentation says why it is static): dynamic float32 fields in
     this pipeline: [...]`); each generator page says why its static knobs are static.
@@ -304,7 +307,8 @@
     (`z_min > z_max` written into the arrays) is not refused and behaves as the scalar
     kernels did (`uniform` draws in `[z_max, z_min]`, `random_walk` / `noise` give
     `z_max`). The rules are stated once in the tuning guide (`tuning-per-env`).
-  - **`style_sampling` composes with the dynamic fields** (kept, not deprecated): a
+  - **`style_sampling` composes with the dynamic fields** (kept by PR13c; deprecated by
+    PR13d, see Deprecated): a
     `rad` / `handle_clamp_frac` with a `*_range` is drawn by the style kernel straight
     into the knob's parameter array, which is unlatched and reported as drawn by the
     stage itself (`StageParams.drawn` maps it to the stage's own id, `"generator"`, so
@@ -312,7 +316,7 @@
     generator's style_sampling (rad_range)>`), so
     `params["generator"]["rad"]` holds each env's style draw; a knob whose range is
     `None` is an ordinary dynamic field (`set` and `randomize=` work on it).
-    `scale_range` is unchanged (static).
+    `scale_range` is unchanged (static; PR13d's `size` composes with it).
   - **Built-in static views refuse host reads of dynamic fields**: in `build` the
     built-in Params' dynamic names hold a sentinel whose numeric conversions,
     comparisons (`==` / `!=` and so `in` included), hashing and arithmetic raise
@@ -346,6 +350,132 @@
   (`params.per_env`); the API reference;
   `docs/library-readiness/target-architecture.md` (PR13c as shipped, new roadmap
   PR13d).
+
+- **Per-env size and the remaining difficulty axes** (roadmap PR13d; the size, corner
+  count and gate size axes of finding A15, and the end of A88). Each new axis is a
+  dynamic field, so caller-graph curricula reach it and `randomize=` draws the `float32`
+  ones; every default is byte-identical.
+  - **`size`**: a per-env multiplier of the plan view (`float32`, default `1.0`, bounds
+    `[0.1, 10]`), the last field of `BezierParams`, `HullParams`, `PolarParams`,
+    `VoronoiParams`, `CheckpointParams`, `RepulsiveParams`, `PointGateParams` and the
+    new `NormalizeExtentParams` (`track_gen.stages.params`; `normalize.extent` had no
+    Params). It acts where each generator applies `scale`, right after it: the corner
+    grid of `bezier` / `hull` and their gate generators (`((x * cell_size + jitter) *
+    scale) * size[e]`: at `scale = 1`, `size = s` is bitwise `scale = s`), the
+    normalization target of `polar`, `voronoi` (both normalizations) and `checkpoint`
+    (`f32(scale * TARGET_EXTENT) * size[e]`, within one `float32` rounding of `scale =
+    s`), the gate pipeline's `normalize.extent` stage for the `polar`, `voronoi` and
+    `checkpoint` gate generators, and `repulsive`'s output (its `scale` sets a physics
+    domain, so the copy of the grown loop into `raw.xy` multiplies its finite values:
+    `raw.xy` at size `s` is `f32(raw.xy(1) * s)` bit for bit, a point with a non-finite
+    component is copied unscaled (a NaN bit for bit, its payload included), and the
+    growth does not depend on the size). Keys:
+    `generator.size` (track generators, the `bezier` / `hull` gate generators, the
+    track generator of `source="stations"` gates), `normalize.size` (the `polar`,
+    `voronoi` and `checkpoint` gate generators). Bit-exact at `1.0` on CPU and CUDA: the
+    product never feeds an addition, so no FMA contraction is created or removed (a CPU
+    test locks the generated CUDA source of each twin). It scales the plan view only:
+    `half_width`, `spacing`, `gate_radius`, `gate_width` and z (`z_min` / `z_max`,
+    amplitudes, `z_valid_grade`) stay absolute, so `uniform` / `noise` grades fall as
+    `~1 / size` (documented). **`external` has no `size`**: it ingests the caller's
+    geometry as given (scale `centerline.xy` in your graph); `generator.size`,
+    `set("size")` and a flat `size` on it raise with that hint, and its launch sequence
+    is unchanged. Each generator page lists the size's yield and truncation point.
+  - **The sizing rule** (the tuning guide's "Size: the sizing rule" and "Size and the
+    utilities"): size changes no buffer and no launch, and a track that outgrows `n_max`
+    is truncated and fails validity (PR5). `n_max >= size_hi * L_max / spacing + 1`
+    and `num_points >= size_hi * L_max / spacing`, with `L_max` measured per generator
+    (the longest loop of 8192 envs; at the default `n_max = 384`, truncation starts at
+    about size 2.6 for `bezier`, 2.8 `hull`, 3.7 `polar`, 4.6 `voronoi`, 3.2
+    `checkpoint` and 1.6 `repulsive`); the
+    checkpoint and prop rings of a size curriculum need `max_checkpoints = ceil(1.5 *
+    n_max * spacing / checkpoint_spacing)` (and the same for `max_props`), and the SDF /
+    heightfield grids `R >= R_ref * size_hi`.
+  - **A build-time truncation `UserWarning`**: a `generator.size` randomizer whose `hi`,
+    or a construction value, would truncate the generator's nominal longest loop at the
+    pipeline's `n_max` warns once, naming the `n_max` that fits (`generator.size drawn
+    up to 2.0 truncates at n_max=384 (nominal raw perimeter ~29.7 > (n_max - 1) * spacing
+    = 22.98): raise n_max to >= 496 or lower the range; truncated envs fail
+    validity`). The nominal loop is exact for `repulsive` (from its params); for the
+    others it is the measured longest loop of 8192 envs at the defaults (so it fires
+    from the documented "truncates from" size; a larger batch can truncate a few envs
+    just below it), scaled by `bezier` / `hull`'s `max_num_points`,
+    `hull_displacement` (its randomizer's `hi` when drawn) and `style_sampling`'s
+    `scale_range`. It is not checked when `polar`'s `polar_num_knots` /
+    `polar_radial_jitter`, `voronoi`'s `voronoi_num_sites` / `voronoi_control_points` /
+    `voronoi_angular_jitter`, or `checkpoint`'s `checkpoint_count` /
+    `checkpoint_radius_min_frac` / `checkpoint_angle_jitter` / `checkpoint_steer_gain` /
+    `checkpoint_lookahead_frac` / `checkpoint_best_of_k` differ from their defaults or
+    are drawn (the other knobs keep the check), nor for plugins or a `set()`
+    curriculum. Also a `UserWarning` when `style_sampling`'s `scale_range` and a
+    `generator.size` randomizer are both active (two per-env size draws multiply).
+  - **`TrackGenConfig.size` / `GateGenConfig.size`** (flat, default `1.0`, just before
+    `generator_params`): the initial size, and the only construction-time route for
+    `Course`. `GateGenConfig.size` reaches `normalize.size` for the ring gate generators
+    (the normalize `StageRef` gets `params={"size": ...}` only when it is not `1.0`, so
+    the default `presets.*` spec dicts and the ring gates' normalize `StageRef` are
+    unchanged; a config-built spec dict gains `size`, see Behaviour changes). A plugin
+    Stage whose Params declare `size` as a dynamic `float` and whose `from_legacy`
+    leaves it at its default receives the flat value (as `half_width` is mapped; a
+    static or `int` field named `size` is the plugin's own: the flat `size` and
+    `presets.*(size=)` never write it, and a value other than `1.0` raises); a gate
+    generator re-normalized by `normalize.extent` (one that declares `size` included)
+    has the flat size routed to `normalize.size`, with a build-time `UserWarning` for a
+    `generator.size` randomizer or construction value on it (the normalization erases
+    it).
+    **`presets.track(size=1.0)` /
+    `presets.gates(size=1.0)`**, next to `scale=`, routed to `generator.size` or
+    `normalize.size`; `size=1.0` adds nothing to the spec.
+  - **`size=` on `ops.sample_grid_points` and `ops.normalize_extent`** (keyword-only,
+    `[E]` `float32`, each value clamped at use to the new public
+    **`ops.constants.SIZE_BOUNDS`** `(0.1, 10.0)`, the convention a plugin's own `size`
+    field imports); `size=None` runs the unchanged kernels and a size-1 array gives
+    their bytes. Twins: `_sample_grid_points_sized_k`,
+    `_sample_grid_points_scaled_sized_k`, `_normalize_extent_sized_k` (no `count`
+    variant: `normalize_extent(count=..., size=...)` raises `ValueError`).
+  - **A dynamic corner count**: `bezier` / `hull`'s `min_num_points` is a dynamic
+    `int32` field (latched by `_latch_all_i32_k`; the count twin `_sample_counts_dyn_k`
+    clamps it to `[2, max_num_points]` at use). `max_num_points` stays static (it sizes
+    the buffers). Per env the count is uniform on `[clamp(min_e, 2, max), max]` from the
+    same draw and over one fixed set of corner positions, so raising it never lowers an
+    env's count and the axis only narrows toward `max_num_points` (documented, with the
+    curriculum recipe). `set` takes an `int` in `[2, max_num_points]`; `randomize=` does
+    not draw it (`int32`). The gate generators' `min_num_points` stays static (their
+    `min_gates` capacity).
+  - **A dynamic gate bar width**: `gate_frames.default`'s `gate_width` (key
+    `gate_frames.gate_width`, the full bar width, `>= 0`), read per env by
+    `_finalize_frame_dyn_k`. **`validity.gate_default` checks bar crossings per env**
+    (`_finalize_validity_bars_k`): the crossing loop runs for each env with a real gate
+    of non-zero `half_size` (a NaN counts), so a run-time width (drawn, or set from
+    point gates) is checked as a width built in, and point-gate envs skip the loop. Its
+    valid and fail bits equal the 0.2.0.dev4 kernel's wherever its check was on, and
+    the check-off kernel's for every env without bars. Yields (valid at width 0.2 /
+    0.5, `E = 512`): `bezier` 0.51 / 0.04, `hull` 0.48 / 0.02, `polar` 1.00 / 0.55,
+    `voronoi` 0.81 / 0.04, `checkpoint` 0.83 / 0.28.
+  - **`StageParams.in_effect(field, *, out=None, stream=None)`**: the `[E]` values the
+    stage READ for its current rows (the latched work copy, or the drawn array), for
+    curriculum bookkeeping under masked regeneration; without `out=` the internal array
+    (zero-copy, a stable pointer, read-only by contract), with `out=` one recordable copy
+    into the caller's `[E]` array on the resolved stream. **`StageParams.bounds(field)`**:
+    the `(lo, hi)` a built-in kernel clamps an array value to (declared, narrowed per
+    instance: `min_num_points` `(2, max_num_points)`), so the value used is
+    `clamp(in_effect(f), *bounds(f))`. A latched field is current once segment 0 has run,
+    a drawn one once its randomizer's segment has.
+  - **Hints**: the `KeyError` of `StageParams` and the randomize `PlanError`s name the
+    key that holds an axis (`generator.size` on a ring gate pipeline -> `normalize.size`;
+    external: scale `centerline.xy`; a gate generator's `min_num_points` is its gate
+    count capacity, not per env in 0.x).
+  - Docs: the generator pages (size, the corner count, the `style_sampling` migration,
+    `repulsive`'s "Per-env size"), the generators overview, the tuning guide ("Size: the
+    sizing rule", "Size and the utilities", the `in_effect` / `bounds` recipe replacing
+    "keep your own per-env copy", the difficulty-axis table: Course size, Corner count,
+    Gate bar width, Gate count), the gate tutorial ("Per-env bar width and course
+    size"), `docs/gates-3d.rst`, `docs/tracks-25d.rst`, the configuration reference
+    ("Course size", the Params tables, the deprecated and inert fields),
+    `pipeline-preview.rst` (dynamic built-ins, `in_effect`, the gate validity and
+    launch tables), `writing-a-generator.rst` ("A per-env size": the plugin convention
+    and the FMA rule), `testing-a-plugin.rst`, the utilities pages (`Course`, props,
+    collision), the API reference and `docs/library-readiness/target-architecture.md`.
 
 ### Behaviour changes
 
@@ -499,6 +629,112 @@
 - **The conformance kit runs `params.per_env`**: a plugin with a dynamic field whose
   kernel reads `param[0]` (or a host copy) instead of `param[e]`, or writes its
   parameter array, now fails it.
+- **Launch sequences re-pinned again by PR13d (bytes unchanged).** The new latched
+  fields add one latch launch each, in the block right after the effective seed (slot
+  order, then field order; `min_num_points` first, through `_latch_all_i32_k`, `size`
+  last of its generator), and the knob readers are replaced in place by their twins:
+  `_sample_counts_k` -> `_sample_counts_dyn_k` (its `lo` scalar becomes the array),
+  `_finalize_frame_k` -> `_finalize_frame_dyn_k` (its `gate_width` scalar becomes the
+  array), `_finalize_validity_k` -> `_finalize_validity_bars_k` (its crossing-toggle
+  scalar dropped, every gate pipeline), and the size twins `_sample_grid_points_sized_k`,
+  `_sample_grid_points_scaled_sized_k`, `_normalize_extent_sized_k`,
+  `_normalize_extent_to_sized_k` keep every scalar and append the `[E]` size array;
+  `repulsive`'s final copy becomes the `_copy_sized_k` launch. Launches per `generate()`
+  (CPU), 0.2.0.dev4 -> PR13c -> 0.2.0.dev5: default track (`bezier`, flat) 152 -> 154 ->
+  156; `hull` 151 -> 152 -> 154; `polar` 143 -> 145 -> 146; `voronoi` 151 -> 153 -> 154;
+  `checkpoint` 146 -> 149 -> 150; `bezier` + `style_sampling` with all three ranges /
+  one of `rad_range`, `handle_clamp_frac_range` / `scale_range` only 153 -> 153 / 154 /
+  155 -> 155 / 156 / 157; `bezier` + elevation `uniform` / `random_walk` / `noise` 156 /
+  156 / 154 -> 160 / 161 / 159 -> 162 / 163 / 161; `repulsive` +1; `external`
+  unchanged (20); the default gate pipeline (`bezier` / `hull`) 14 -> 14 -> 16; gates
+  `polar` / `checkpoint` 14 -> 16 -> 18, `voronoi` 15 -> 17 -> 19; `presets.gates(
+  source="stations")` (`bezier`, 12 gates) 27 -> 29 -> 32. A masked generation runs the
+  same latches as `_latch_masked_*`, so its hold moves (default track: index 6;
+  default gates: index 4). The re-pinned tests, through one rule
+  (`tests/_pr13d_delta.py`, layered on `tests/_pr13c_delta.py`, which checks the latch
+  block's start, its exact dtype sequence computed from the declarations and the masked
+  records, per pipeline): `tests/test_pipeline_parity.py`
+  (`test_default_bezier_launch_count`: 156), `tests/test_commit.py::test_launch_counts`
+  (156; masked 159 with the hold at index 6; poison 157; a check after validity 159),
+  `tests/test_gate_commit.py::test_launch_counts` (16; `polar` 18; masked 19 with the
+  hold at index 4; poison 17; checked 19), `tests/test_gate_pipeline_parity.py`
+  (`_expected_launches` on its unchanged golden; `..._emits_16_records`) and the launch
+  tables of `tests/test_dynamic_knobs.py`.
+- **`validity.gate_default` checks crossings per env**, and its `gate_width` and
+  `check_crossing` are **inert** (both values select the per-env check; kept so specs and
+  dicts load, removed in PR16). The planner no longer refuses `gate_frames.posed` with
+  `check_crossing="width"` (it builds and checks crossings, the bytes of `"always"`).
+  The planner still requires `gate_frames` and `validity` to start from the same
+  `gate_width` when validity's is set (see below; the message's reason is updated: one
+  initial bar width per pipeline).
+  Every PR13c-legal spec keeps its valid and fail bits.
+- **`gen.params` of every built-in gate pipeline lists `"gate_frames"`** (its
+  `gate_width`), and the `polar`, `voronoi` and `checkpoint` gate pipelines list
+  `"normalize"` (its `size`); `gen.params["generator"]` of `repulsive` and of the
+  `bezier` / `hull` gate generators holds `size`, of `bezier` / `hull` also
+  `min_num_points` (an `int32` array).
+- **`min_num_points` of `bezier` / `hull` is checked as an `int32`**: `set` refuses a
+  scalar outside `[2, max_num_points]` (`BezierParams.min_num_points must be in [2, 13],
+  at most max_num_points (the static corner capacity), got 40`), any `float` (`9.0`
+  included: `... is dynamic and must be an int, got 9.0`) and a `bool`; it takes a
+  Python `int` or a NumPy integer. Construction still converts a value `int()` accepts
+  (YAML's `9.0`, a NumPy integer, `"9"`), and still refuses `min_num_points=True` (its
+  `>= 2` check, as before). The bounds error's
+  last clause is the full reason
+  (a randomizer's reads `the declared range of X (...)`). Host reads of `size`,
+  `min_num_points` and `gate_width` from a built-in's static view raise the PR13c
+  `TypeError`.
+- **New errors.** `ValueError` for a `size` other than `1.0` that no stage can apply:
+  `legacy.to_pipeline_spec` / `to_gate_pipeline_spec` when no stage of the resolved spec
+  declares `size` (a plugin generator without it, a legacy `GeneratorSpec`, `external`,
+  a legacy `GateGeneratorSpec`), the frozen module functions (`generate_*_warp`) given a
+  config with `size != 1`, and `presets.track(generator="external", size=...)`;
+  `presets.track` / `presets.gates` with both `size=` and `generator_params={"size":
+  ...}`; `ops.normalize_extent(count=..., size=...)`. `PlanError` for
+  `randomize={"generator.min_num_points": ...}` (an `int32` field) and for
+  `generator.size` where another key holds the size (with the hint).
+- **New warnings**: `style_sampling`'s `DeprecationWarning` (see Deprecated), the
+  build-time truncation `UserWarning` for a size range and the composed-size-draw
+  `UserWarning` (Added).
+- **Spec dicts that carry a built-in Params instance gain a `size` entry**: every
+  config-built spec (`legacy.to_pipeline_spec(TrackGenConfig(generator=g))` for
+  `bezier`, `hull`, `polar`, `voronoi`, `checkpoint` and `repulsive`;
+  `legacy.to_gate_pipeline_spec(GateGenConfig(generator=g))` for the `bezier` / `hull`
+  gate generators) and any spec built with a `BezierParams`, `HullParams`,
+  `PolarParams`, `VoronoiParams`, `CheckpointParams`, `RepulsiveParams` or
+  `PointGateParams` instance writes `"size": 1.0` in the generator's params, and
+  `min_num_points` is written as the coerced `int` (a YAML `9.0` becomes `9`). Output
+  bytes are unchanged, and dicts written by 0.2.0.dev4 still load, but a dict written by
+  0.2.0.dev5 from such a spec does not build on 0.2.0.dev4 (`unknown generator_params
+  ... ['size']`), and `describe()` / dict diffs used for experiment tracking change. The
+  `presets.*` dicts and the normalize `StageRef` are unchanged.
+- **`TrackGenConfig` / `GateGenConfig` gain a public field named `size`** (the course
+  size): a config subclass that declares its own `size` field (an arena size, say) must
+  rename it, since the built-in Params read the flat field by name (`BezierParams.size
+  must be in [0.1, 10.0], got 64.0`) and the frozen `generate_*_warp` refuse a `size`
+  other than 1 (a non-numeric one with `config.size='...' is not a number; ... rename a
+  config subclass field named size`).
+- **`validity.gate_default`'s `gate_width` takes part in the planner's agreement check
+  only when set** (to a value other than its default `0`): a hand-built spec that
+  widens `gate_frames.default` alone builds (the inert copy no longer contradicts it),
+  while two explicit, different widths still raise `the stages disagree on
+  gate_width`.
+- **`StageParams.set` names the merged range** of a field with per-instance bounds:
+  `set("min_num_points", 1)` reads `must be in [2, 13], at most max_num_points ...` (the
+  range `bounds()` reports), not the declared `[2, inf]`.
+- **`Course` in gates mode refuses `set("gate_width", v)` with `v <= 0`** on
+  `course.generator.params["gate_frames"]` (a width-0 gate can never be passed); an
+  `[E]` array is still not range-checked (a value `<= 0` is used as 0).
+- **More hints**: `randomize={"validity.gate_width": ...}` / `check_crossing` (inert
+  fields), `generator.scale` and `generator_params={"scale": ...}` (the per-env
+  multiplier is `size`), `randomize={"normalize.size": ...}` on a gate pipeline without
+  `normalize` (use `generator.size`), and `generator_params={"size": ...}` on the
+  `polar` / `voronoi` / `checkpoint` gate generators (use `normalize.size`, initial
+  value `GateGenConfig.size`); a legacy spec without `size` is told to port to a Stage.
+- **The conformance kit's `params.per_env` runs for more built-ins**: `repulsive` and
+  the `bezier` / `hull` gate generators (on `size`), and `bezier` / `hull` on their
+  `int32` `min_num_points`; `external` still skips it. Third-party plugins are
+  unaffected.
 
 ### Changed (outputs)
 
@@ -512,7 +748,11 @@ sequences of the generators and elevations that have them (latches and array-rea
 kernels: see Behaviour changes). One unreachable-in-practice exception: under
 `style_sampling` with a knob's range `None` and that knob set to `-0.0` (`rad=-0.0`),
 a coordinate that is exactly zero may now carry the sign `-0.0` (the collapsed style draw
-used to give `+0.0`).
+used to give `+0.0`). The PR13d axes change no byte of any configuration that PR13c
+accepted (fingerprints, the PR10a / PR11 / PR13a parity suites and goldens, the
+`style_sampling` bytes): new outputs come only through the new dynamic fields (`size`,
+the corner count, the bar width at run time), and the per-env crossing check takes the
+decisions of the 0.2.0.dev4 kernel wherever a bar width was built in.
 
 ### Fixed
 
@@ -534,8 +774,12 @@ used to give `+0.0`).
   launches, or is transformed on the host); LOW A88 "style sampling is bezier-only",
   closed as *generalized by randomize* (every built-in sampling generator, `bezier`,
   `hull`, `polar`, `voronoi` and `checkpoint`, has drawable knobs;
-  `style_sampling` stays for `scale_range` until per-env size, roadmap PR13d, and the
-  duplicated scalar kernels serve only the frozen legacy functions, removed at 1.0).
+  the duplicated scalar kernels serve only the frozen legacy functions, removed at 1.0).
+- Closed by roadmap PR13d: the size, corner-count and gate-size axes of MEDIUM A15 (a
+  per-env `size` on every built-in generator but `external`, a dynamic `int32`
+  `min_num_points` for `bezier` / `hull`, `gate_frames.default`'s `gate_width` with a
+  per-env crossing check); LOW A88 completed (`scale_range` has a replacement,
+  `generator.size`, and `style_sampling` is deprecated).
 
 ### Deprecated
 
@@ -548,46 +792,76 @@ used to give `+0.0`).
   that returns `.Params` and emits a `DeprecationWarning` (`registry.get('generator',
   'polar').params is deprecated: use .Params (removed in 1.0)`), attributed to the
   calling code. `repulsive` and the gate generators never had it as Stages.
-
-### Superseded (still supported, no warning)
-
-- **`style_sampling`'s `rad_range` and `handle_clamp_frac_range`** are superseded by
-  `randomize={"generator.rad": (lo, hi), "generator.handle_clamp_frac": (lo, hi)}` (the
-  same uniform distributions, different random streams, so different tracks).
-  `style_sampling` and `scale_range` stay fully supported: `style_sampling` is deprecated
-  in the release that ships per-env size (roadmap PR13d, `scale_range` ->
-  `randomize={"generator.size": ...}`) and removed only after that warning release.
+- **`bezier`'s `style_sampling`** and its `rad_range`, `scale_range` and
+  `handle_clamp_frac_range` (roadmap PR13d; superseded since PR13c for the two knob
+  ranges). Building a `bezier` generator with `style_sampling=True` emits one
+  `DeprecationWarning` per build (not per generation), attributed to the first frame
+  outside `track_gen`: `bezier's style_sampling is deprecated and will be removed in 1.0:
+  draw per-env knobs with randomize= instead (scale_range=(a, b) -> {'generator.size':
+  (a / scale, b / scale)}, rad_range -> {'generator.rad': ...}, handle_clamp_frac_range
+  -> {'generator.handle_clamp_frac': ...}; set style_sampling=False and use
+  PipelineSpec.with_randomize for a config-built pipeline). Course (until it accepts a
+  generator, PR15): keep style_sampling, or draw per-env sizes yourself and call
+  course.generator.params['generator'].set('size', arr) before regenerate (size
+  Course's max_checkpoints for the largest size: ceil(1.5 * N_max * spacing /
+  checkpoint_spacing), see CourseConfig.max_checkpoints)`.
+  `TrackGenConfig(...)`, `PipelineSpec.from_dict` (loading; building warns) and the
+  frozen legacy entry points do not warn. It keeps working, with its bytes, until its
+  removal in 1.0 (roadmap PR16), after `Course` accepts a generator (PR15). A
+  `DeprecationWarning` attributed to a module other than `__main__`
+  (a gym env, a training package) is hidden by Python's default filters: run your tests
+  with `-W default::DeprecationWarning`.
 
   ```python
-  # style sampling (still supported)
-  TrackGenConfig(style_sampling=True, rad_range=(0.1, 0.35), handle_clamp_frac_range=(0.3, 0.9))
-  # randomize: same distributions, other draws
-  presets.track(num_envs=E, device=d, randomize={"generator.rad": (0.1, 0.35),
-                                                 "generator.handle_clamp_frac": (0.3, 0.9)})
-  # from a config
-  TrackGenerator(legacy.to_pipeline_spec(cfg).with_randomize(
-      {"generator.rad": (0.1, 0.35), "generator.handle_clamp_frac": (0.3, 0.9)}), rng)
+  # before (deprecated)
+  TrackGenConfig(style_sampling=True, scale_range=(0.8, 1.2), rad_range=(0.1, 0.35))
+  # after: the same uniform distributions, other draws
+  presets.track(num_envs=E, device=d,
+                randomize={"generator.size": (0.8, 1.2), "generator.rad": (0.1, 0.35)})
+  # from a config: style_sampling=False, explicitly (no double draw)
+  cfg = TrackGenConfig(style_sampling=False, ...)
+  TrackGenerator(legacy.to_pipeline_spec(cfg).with_randomize({"generator.size": (0.8, 1.2)}), rng)
+  # Course (until PR15): keep style_sampling, or
+  course.generator.params["generator"].set("size", my_sizes)   # [E] float32, then regenerate
   ```
+
+  Exact at equal values (each env's style draws written into `size` / `rad` /
+  `handle_clamp_frac` give the style run's bytes), but the randomizers draw on another
+  random stream, so per-seed tracks change: fixed evaluation sets built with
+  `style_sampling` need re-baselining. `scale_range=(a, b)` with `scale != 1` maps to
+  `(a / scale, b / scale)`, which must lie in `[0.1, 10]`. A `Course` user who switches
+  to `set("size", arr)` sizes `max_checkpoints` for the largest size.
 
 ### Deferred
 
-- **Per-env size and the rest of the built-in difficulty axes: new roadmap PR13d** (a
-  deviation from the PR13c scope, which listed "size" knobs). A dynamic per-generator
-  `size` multiplier (`float32`, default `1.0`, `lo > 0`, declared `hi`) applied last, so
-  exact at `1.0` and byte-identical at the defaults (its only capacity effect is
-  truncation against `n_max` under constant spacing, flagged and failed closed), then the
-  deprecation of `style_sampling` (`scale_range` -> `generator.size`); a dynamic corner
-  count (`int32` `min_num_points` for `bezier` / `hull`, bounded by the static maximum);
-  `gate_frames.default`'s `gate_width` (+1 latch on every gate pipeline, the default
-  included); a read-only `StageParams.in_effect(field)` (the values the current rows were
-  built with, for curriculum bookkeeping). Until then the core `scale` is static
-  (`style_sampling`'s `scale_range` is the per-env size path).
+- **Per-env size and the rest of the built-in difficulty axes moved from PR13c to a new
+  roadmap PR13d** (a deviation from the PR13c scope, which listed "size" knobs), which
+  ships in this release (Added). Its own deviations from its roadmap entry: the gate
+  bar width is crossing-checked per env by the validity kernel instead of a static
+  `> 0` toggle (a run-time width would otherwise go unchecked), so the default gate
+  pipeline gains two latches (its generator's `size` and `gate_width`: 14 -> 16, not 15);
+  `external` gets no `size` (it would move ingested world coordinates about the data's
+  origin); `StageParams.in_effect` gains `out=` and a `bounds()` companion.
+- From PR13d, not done: `int32` and categorical draws (a public sampler API); **a dynamic
+  corner-count upper bound** (a curriculum gap: the corner axis only narrows toward
+  `max_num_points`); dynamic `polar` / `voronoi` / `checkpoint` counts and the gate count
+  (they size buffers); a `size=` on further public ops (`ops.closed_catmull_rom`); a
+  fused per-dtype latch launch.
+- **Roadmap PR14** gains: `Course` / `CheckpointSampler` / `PropSampler` capacities from
+  the size-independent bound `ceil(1.5 * n_max * spacing / checkpoint_spacing)` instead
+  of a readback of the construction batch (the default `Course`'s buffer shapes change
+  there, at checkpoint spacing 0.5: from a count read back from the construction batch,
+  e.g. 20 for 32 `bezier` envs at size 1 or 13 for a 1-env default `Course`, to the
+  fixed 70), and a
+  construction-time SDF-resolution check in the collision adapter.
 - **Roadmap PR16** gains: `edgy` dynamic (its in-kernel transform is not bit-exact
   against the host's, free under the golden re-baseline); the removal of the scalar
-  kernels and legacy module functions, of the deprecated `.params` alias and of
-  `style_sampling` (only after PR13d's warning release).
-- Unslotted: the `repulsive` knobs; `gate_radius` and the relax / validity tolerances;
-  `int32` and categorical draws (layouts, counts); a fused per-dtype latch launch;
+  kernels and legacy module functions, of the deprecated `.params` alias, of
+  `style_sampling` (only after this warning release and after PR15, so `Course` users
+  have a replacement) and of `validity.gate_default`'s inert `gate_width` /
+  `check_crossing`.
+- Unslotted: the `repulsive` growth knobs; `gate_radius` and the relax / validity
+  tolerances; categorical draws (layouts);
   `checkpoint_steer_gain` / `checkpoint_lookahead_frac` (only with a measured difficulty
   effect).
 - **`closed` in the kernels** (a deviation from the PR13 scope, which plumbed it through
@@ -672,6 +946,69 @@ used to give `+0.0`).
   expectations are re-pinned, above), `tests/goldens/pr11_gate_stages.json`,
   `tests/goldens/pr13a_pr11_relaxed_stations.json` and its test,
   `tests/test_style_sampling.py` and the `tests/test_legacy_plugin_abi.py` pins.
+- `tests/test_difficulty_axes.py` (CPU, roadmap PR13d): the declarations (`size` on
+  exactly the eight Params classes, last, `[0.1, 10]`; `min_num_points` dynamic `int32`
+  on `bezier` / `hull` only; `gate_width` dynamic on `gate_frames`, static on
+  `validity`), the flat `size` routes and a default spec dict without it; the public ops'
+  `size=` (argument checks, size-1 bytes, clamping, `count` + `size` refused); each
+  twin against its original (the count twin in and out of range, the sized grid and
+  normalize twins at size 1 and per env against `scale * s`, the frame twin, the
+  validity twin against the PR11 kernel with the toggle on and off on real outputs of
+  the five gate generators and on posed-like half sizes `{0, +, -, NaN}`,
+  `_copy_sized_k` on discriminating payloads: signalling and quiet NaNs, subnormals,
+  `±inf`, with a negative control); a lock on the generated CUDA source of each pair
+  (equal reduced operation sequences and `mul -> add/sub` edges) and on
+  `_copy_sized_k`'s structure; per env equal to per-env scalar runs (size on every
+  generator, `bezier` with `scale_range`, `repulsive`, the corner count, size on the
+  gate generators and `normalize.size`, `gate_width` with the valid and fail bits of
+  pipelines built with each width); `repulsive`'s exact output scaling; size against
+  scale; `randomize=` on the new axes against eager twins (plain and masked), the plan
+  rules, the truncation and composed-draw warnings; the launch deltas of every pipeline
+  through `tests/_pr13d_delta.py` (plain and masked); `in_effect` / `bounds` (latched and
+  drawn fields, masked advances, `out=` eagerly and in a caller capture, out-of-range
+  writes, segmented Programs); the `style_sampling` warning (once per construction, at
+  the caller's line) and the migration's exactness; bounds and types; the static-view
+  sentinels; capacity (`repulsive` at size 2 fails closed, a truncating
+  `relaxed_stations` source, a `Course` sized with the `n_max` bound under a size
+  curriculum); the legacy surfaces and their `ValueError`s; the kit on `repulsive` and
+  the `bezier` / `hull` gates; presets `size=`; the hints; posed gates with
+  `check_crossing="width"`.
+- CUDA (`tests/test_difficulty_axes_cuda.py`, collects on CPU): each twin against its
+  original on the device, on the inputs a real generation handed it (the validity twin
+  against the PR11 kernel with the toggle on and off, on real gates and posed-like half
+  sizes); `_copy_sized_k` against its device contract (finite values bitwise at size 1
+  and `f32(v * s)` otherwise, a non-finite point unscaled) and NaN payloads kept
+  bitwise (signalling and non-default quiet NaNs; a hard assertion); per env against per-env scalar
+  runs (every axis, out-of-range arrays clamped, `repulsive`'s exact output scaling);
+  the per-env crossing check against pipelines built with each width;
+  `presets.track(randomize={"generator.size": ...})` for every generator and
+  `presets.gates(randomize=...)` on `generator.size`, `normalize.size` and
+  `gate_frames.gate_width`, recorded with `generate(stream=s, advance=True)` and
+  `in_effect(out=...)` in one caller graph, every replay equal to eager twins (crossing
+  bits included); `in_effect` under masked regeneration in a caller graph; a curriculum
+  writing `size`, `min_num_points` and `gate_width` (values out of bounds included) in a
+  Warp capture and a registered `torch.cuda.graph`, every replay equal to the eager twin
+  at `clamp(in_effect, *bounds)`; the kit on `cuda:0`.
+- Existing tests updated where PR13d required it: the launch re-pins above
+  (`tests/test_pipeline_parity.py`, `tests/test_commit.py`, `tests/test_gate_commit.py`,
+  `tests/test_gate_pipeline_parity.py`, `tests/test_dynamic_knobs.py`, through
+  `tests/_pr13d_delta.py` on `tests/_pr13c_delta.py`); the dynamic-field and
+  static-field tables (`tests/test_dynamic_knobs.py`, `tests/test_generator_params.py`);
+  the drawable-field lists (`tests/test_randomize.py`: `generator.size` is drawable); the
+  kit's expectations (`tests/test_conformance.py`: `params.per_env` now also runs for
+  `repulsive` and the `bezier` / `hull` gate generators, so for all five gate
+  generators); `tests/test_gate_presets.py` (posed gates with
+  `check_crossing="width"` now build); `tests/test_no_host_sync.py` (the frozen
+  `generate_repulsive_warp`, the ops' `size=`); `tests/test_gate_stages_cuda.py` (the
+  frame twin's name); and a filter for the `style_sampling` deprecation where a test
+  still exercises it (`tests/test_style_sampling.py`, `tests/test_pipeline_planner.py`,
+  around the capture in `tests/tools/capture_pr7_fingerprints.py`, ...).
+  The byte guards pass with their content unchanged:
+  `tests/test_generator_fingerprints.py` and its goldens, the PR9 boundary bytes, `tests/test_gate_pipeline_parity.py` (taps
+  and frozen reference; only its launch expectations follow the rule) and
+  `tests/goldens/pr11_gate_stages.json`, `tests/goldens/pr13a_pr11_relaxed_stations.json`
+  and its test, the bytes of `tests/test_style_sampling.py` and the
+  `tests/test_legacy_plugin_abi.py` pins.
 - `tests/test_results.py` (CPU): `Layout` identity across the three import paths and its
   field rules; every facade / `build` result's layout; schema completeness; `validate`
   parametrized over every field (length, dtype, contiguity), attributes, `need`, a stored

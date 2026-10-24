@@ -91,7 +91,11 @@ draws them per env at every generation, and a curriculum writes
 ``gen.params["elevation"][...]`` from its own graph. Which knob sets the difficulty for
 each profile, the window it needs and the crossing rules are on the track page
 (:ref:`tracks-25d-per-env`); the gate generators' own dynamic knobs are listed in
-:ref:`generators-per-env`.
+:ref:`generators-per-env`, and the per-env bar width and course size in
+:ref:`gate-width-per-env`. The course size (``generator.size`` or ``normalize.size``)
+scales the plan view, not the altitude: the gates spread out while ``z`` keeps its range,
+so the grades between adjacent gates fall and the ``z_valid_grade`` check passes more envs
+at a larger size (:ref:`tuning-size`).
 
 .. _gates-3d-stations:
 
@@ -233,8 +237,9 @@ Validity
 --------
 
 The 2D layout validity checks are unchanged: a sequence is rejected for the same planar
-reasons as before (degenerate counts, crossing gate bars under a positive ``gate_width``,
-and so on). ``GateSequence.fail_mask`` says which check rejected an env, one bit per
+reasons as before (degenerate counts, crossing gate bars in an env whose bars have a
+positive width, and so on). ``GateSequence.fail_mask`` says which check rejected an env,
+one bit per
 check (:ref:`pipeline-gate-fail-bits`). The 3D pipeline adds one altitude check (fail
 bit ``grade``):
 

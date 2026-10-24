@@ -17,6 +17,11 @@ host scalars) does not latch: for the ``z_*`` cases the expected sequence is the
 reference's with the elevation's latch records (uniform 2, random_walk 3, noise 3)
 inserted after the generator's and its ``_z_*_k`` record renamed to the array-reading
 twin (knob scalars dropped). Output bytes are unchanged at every boundary.
+
+Roadmap PR13d re-pin (deliberate, ``tests/_pr13d_delta.py``): the bezier / hull
+``min_num_points`` (int32) and every generator's ``size`` are dynamic too (both sides run
+the Stage and its latches: the sequence test is unchanged); the default bezier count
+moves 154 -> 156 (``test_default_bezier_launch_count``).
 """
 from __future__ import annotations
 
@@ -26,13 +31,18 @@ import warp as wp
 
 from tests._plugin_toys import (TOY_CIRCLE, register_stage_toys,
                                 toy_circle_alloc_scratch, toy_circle_generate)
-from tests._pr13c_delta import ELEVATION_LATCHES, LATCH_ALL, pr13c_sequence
+from tests._pr13c_delta import ELEVATION_LATCHES, pr13c_sequence
+from tests._pr13d_delta import LATCH_ALL
 from track_gen import PerEnvSeededRNG, TrackGenConfig, TrackGenerator
 from track_gen._src import warp_pipeline
 from track_gen._src.generator_binding import _StageGenerator, bind_generator
 from track_gen.exec import LaunchContext
 from track_gen.plugin import GeneratorSpec, registry
 from track_gen.testing.trace import trace_launches
+
+# Roadmap PR13d: bezier's style_sampling (the bezier_style case) is deprecated.
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:bezier's style_sampling is deprecated:DeprecationWarning")
 
 DEV = "cpu"
 SEEDS = [0, 1, 7, 99991, 2147483647, 1000003]
@@ -243,14 +253,16 @@ def test_the_program_emits_the_pr9_launch_sequence(case, monkeypatch):
 
 
 def test_default_bezier_launch_count():
-    """The default bezier pipeline: the effective-seed launch + the two latches of the
-    dynamic ``rad`` / ``handle_clamp_frac`` (roadmap PR13c re-pin: 152 -> 154) + 150
-    pipeline launches / copies + the generation copy = 154 (independent of E)."""
+    """The default bezier pipeline: the effective-seed launch + the latches of its
+    dynamic fields + 150 pipeline launches / copies + the generation copy (independent of
+    E). Roadmap PR13c re-pin: 152 -> 154 (``rad`` / ``handle_clamp_frac``); roadmap
+    PR13d re-pin: 154 -> 156 (``min_num_points`` int32 first, ``size`` last: the block
+    ``[i32, f32, f32, f32]``; the corner count is the array-reading twin)."""
     gen = TrackGenerator(TrackGenConfig(device=DEV, num_envs=2),
                          PerEnvSeededRNG(seeds=3, num_envs=2, device=DEV))
     with trace_launches() as t:
         gen.generate()
-    assert len(t) == 154
+    assert len(t) == 156
     assert t[0].kernel.endswith("_effective_seed_k") and t[-1].op == "copy"
-    assert [r.kernel for r in t[1:3]] == [LATCH_ALL] * 2
-    assert t[3].kernel.endswith("_sample_counts_k")
+    assert [r.kernel for r in t[1:5]] == [LATCH_ALL["i32"]] + [LATCH_ALL["f32"]] * 3
+    assert t[5].kernel.endswith("_sample_counts_dyn_k")

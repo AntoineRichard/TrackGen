@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 import warp as wp
 
+from tests._pr13d_delta import assert_latch_block
 from tests._stage_toys import KMAX, register
 from track_gen import PerEnvSeededRNG, TrackGenConfig, TrackGenerator
 from track_gen._src import warp_pipeline
@@ -321,29 +322,35 @@ def _kernels(trace) -> list:
 def test_launch_counts():
     # Roadmap PR13c re-pin (deliberate): the default bezier generator latches its two
     # dynamic knobs (rad, handle_clamp_frac) after the effective seed: every count +2
-    # (152 -> 154; masked: the hold moves from index 2 to 4).
+    # (152 -> 154; masked: the hold moves from index 2 to 4). Roadmap PR13d re-pin
+    # (deliberate, tests/_pr13d_delta.py): + min_num_points (int32, first) and size
+    # (last): 154 -> 156; masked 159, the hold at 6; poison 157; checked 159.
     ctx = LaunchContext.for_call(DEV)
     default = _gen(_spec())
     with trace_launches() as plain:
         default.program.enqueue(ctx)
-    assert len(plain) == 154                                    # 0.2.0.dev2's 152 + 2
+    assert len(plain) == 156                                    # 0.2.0.dev2's 152 + 4
     assert "_hold_k" not in _kernels(plain) and "_commit_k" not in _kernels(plain)
     with trace_launches() as masked:
         default.program.enqueue(ctx, advance=True, mask=_i32(MASK))
     k = _kernels(masked)
-    assert len(masked) == 154 + 1 + 2                          # + the epoch advance
+    assert len(masked) == 156 + 1 + 2                          # + the epoch advance
     assert k.count("_hold_k") == 1 and k.count("_commit_k") == 1
-    assert k[2:4] == ["_latch_masked_f32_k"] * 2               # the generator's knobs
-    assert k.index("_hold_k") == 4                             # advance, seed, 2 latches
+    # the generator's dynamic fields: min_num_points, rad, handle_clamp_frac, size
+    assert k[2:6] == ["_latch_masked_i32_k"] + ["_latch_masked_f32_k"] * 3
+    assert k.index("_hold_k") == 6                             # advance, seed, 4 latches
     assert k[-2] == "_commit_k" and k[-1] == "_copy_masked_k"   # then generation
+    assert assert_latch_block(default.program, plain, masked) == ["i32", "f32", "f32",
+                                                                  "f32"]
     poison = _gen(_spec(on_invalid="poison"))
     with trace_launches() as t:
         poison.program.enqueue(ctx)
-    assert len(t) == 155 and _kernels(t)[-2] == "_commit_k"
+    assert len(t) == 157 and _kernels(t)[-2] == "_commit_k"
     checked = _gen(_spec(checks=("default", KMAX)))
     with trace_launches() as t:
         checked.program.enqueue(ctx)
     # + the kappa_max latch, the check, the commit (valid only: one thread per env)
-    assert len(t) == 154 + 3 and _kernels(t)[-2] == "_derive_valid_k"
+    assert len(t) == 156 + 3 and _kernels(t)[-2] == "_derive_valid_k"
     assert t[-2].dim == (E,), t[-2].dim
-    assert _kernels(t)[1:4] == ["_latch_all_f32_k"] * 3 and "_kmax_k" in _kernels(t)
+    assert _kernels(t)[1:6] == ["_latch_all_i32_k"] + ["_latch_all_f32_k"] * 4 and \
+        "_kmax_k" in _kernels(t)

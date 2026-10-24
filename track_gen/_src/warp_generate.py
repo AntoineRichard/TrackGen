@@ -14,6 +14,9 @@ Roadmap PR13c: the registered ``"bezier"`` generator is the :class:`Bezier` Stag
 ``rad`` / ``handle_clamp_frac`` are dynamic (per-env arrays, :func:`_assemble_dyn_k`);
 ``generate_centerline_warp`` / ``bezier_alloc_scratch`` keep their signatures and the
 scalar kernels (the legacy path) on the same private core, :func:`_enqueue_bezier`.
+Roadmap PR13d: ``min_num_points`` (int32, the count twin ``_sample_counts_dyn_k``) and
+``size`` (the corner grid's sized twin, applied after ``scale``) are dynamic too, and
+``style_sampling`` is deprecated (one ``DeprecationWarning`` per built Stage).
 
 Convention (shared with ``warp_pipeline``): one thread per output element; flat arrays
 ``[E*N]`` of ``wp.vec2f`` and ``[E]`` per-env scalars; env index ``e = tid // N``;
@@ -27,6 +30,7 @@ vertex tangents, cubic assembly and its polygon fallback) live here.
 from __future__ import annotations
 
 import math
+import warnings
 
 import warp as wp
 
@@ -37,7 +41,8 @@ from ..ops.geometry import _angle_sort_launch
 from ..ops.sampling import _sample_counts_launch, _sample_grid_points_launch
 from ..plugin.stage import CaptureClass, Stage
 from .builtin_params import BezierParams, _declared_bounds
-from .builtin_stage import DeprecatedParamsAlias, check_dyn, default_alloc, run_view
+from .builtin_stage import (DeprecatedParamsAlias, check_dyn, check_no_size,
+                            default_alloc, run_view)
 from .runtime import _init
 
 # RNG keying of the corner streams (``wp.rand_init(seed * salt + attempt)``, see
@@ -546,8 +551,8 @@ def assemble_inplace(corners_wp, count_wp, config, tan_scratch, scale_scratch, o
                     P, npseg, rad_per_env, clamp_per_env, out_wp])
     ctx.sync()
 
-#: The dynamic fields of the Bezier Stage (roadmap PR13c), in Params order.
-_DYNAMIC = ("rad", "handle_clamp_frac")
+#: The dynamic fields of the Bezier Stage (roadmap PR13c / PR13d), in Params order.
+_DYNAMIC = ("min_num_points", "rad", "handle_clamp_frac", "size")
 _RAD_BOUNDS = _declared_bounds(BezierParams, "rad")
 _CLAMP_BOUNDS = _declared_bounds(BezierParams, "handle_clamp_frac")
 _UNBOUNDED = (-math.inf, math.inf)
@@ -577,6 +582,7 @@ def generate_centerline_warp(seeds_wp: wp.array, config,
             device's stream (see track_gen.exec).
     """
     _init()
+    check_no_size(config, "generate_centerline_warp")
     ctx = _resolve_ctx(ctx, str(out_centerline.device))
     assert scratch is not None, "generate_centerline_warp requires scratch"
     _enqueue_bezier(seeds_wp, config, out_centerline, out_valid_wp, scratch, ctx, None)
@@ -585,11 +591,14 @@ def generate_centerline_warp(seeds_wp: wp.array, config,
 def _enqueue_bezier(seeds_wp, config, out_centerline, out_valid_wp, scratch, ctx,
                     dyn) -> None:
     """The bezier generator's launches on ``ctx``: ``dyn=None`` (the legacy path:
-    ``config.rad`` / ``handle_clamp_frac`` host scalars, :func:`style_sample_inplace` /
-    :func:`assemble_inplace`, unchanged), or ``{"rad": [E], "handle_clamp_frac": [E]}``
-    (the Stage: :func:`_assemble_dyn_k`; under ``style_sampling`` a knob with a range is
-    drawn by the style kernel straight into its array, a knob without one reads its
-    latched array and the draw writes a placeholder into the private scratch)."""
+    ``config.min_num_points`` / ``rad`` / ``handle_clamp_frac`` host scalars,
+    :func:`style_sample_inplace` / :func:`assemble_inplace`, unchanged), or the four
+    dynamic fields' ``[E]`` arrays ``{"min_num_points", "rad", "handle_clamp_frac",
+    "size"}`` (the Stage: the count twin, the sized corner grid and
+    :func:`_assemble_dyn_k`; under ``style_sampling`` a knob with a range is drawn by the
+    style kernel straight into its array, a knob without one reads its latched array and
+    the draw writes a placeholder into the private scratch; the style ``scale`` draw
+    composes with ``size``)."""
     check_dyn(dyn, _DYNAMIC, "bezier")
     E = scratch.gen_count.shape[0]
     N = int(config.num_points)
@@ -645,12 +654,23 @@ def _enqueue_bezier(seeds_wp, config, out_centerline, out_valid_wp, scratch, ctx
     # legacy count floor of 1 (a count < 1 sorts the first corner), so the output does not
     # depend on TrackGenConfig's min_num_points >= 2 check (a config mutated after
     # construction is not re-validated).
-    ops.sample_counts(ctx, seeds_wp, CORNER_COUNT_SALT, 0, int(config.min_num_points),
-                      int(config.max_num_points), scratch.gen_count)
+    if dyn is None:
+        ops.sample_counts(ctx, seeds_wp, CORNER_COUNT_SALT, 0, int(config.min_num_points),
+                          int(config.max_num_points), scratch.gen_count)
+    else:
+        # Roadmap PR13d: the per-env min_num_points (clamped to [2, max] at use).
+        _sample_counts_launch(ctx, seeds_wp, CORNER_COUNT_SALT, 0, dyn["min_num_points"],
+                              int(config.max_num_points), scratch.gen_count)
     num_cells, cell = ops.grid_cells(config.min_point_distance)
-    ops.sample_grid_points(ctx, seeds_wp, CORNER_SALT, 0, P, num_cells, float(cell),
-                           scale_pe if style else float(config.scale),
-                           scratch.gen_used, scratch.gen_corners)
+    if dyn is None:
+        ops.sample_grid_points(ctx, seeds_wp, CORNER_SALT, 0, P, num_cells, float(cell),
+                               scale_pe if style else float(config.scale),
+                               scratch.gen_used, scratch.gen_corners)
+    else:
+        # Roadmap PR13d: the per-env size, applied after scale (the style draw's too).
+        ops.sample_grid_points(ctx, seeds_wp, CORNER_SALT, 0, P, num_cells, float(cell),
+                               scale_pe if style else float(config.scale),
+                               scratch.gen_used, scratch.gen_corners, size=dyn["size"])
     _angle_sort_launch(ctx, scratch.gen_corners, P, scratch.gen_count, P, scratch.gen_keys,
                        scratch.gen_ordered, m_floor=1)
 
@@ -832,11 +852,27 @@ def _alloc_bezier_scratch(config, alloc=None):
     )
 
 
+#: The deprecation of bezier's ``style_sampling`` (roadmap PR13d), emitted once per
+#: built Stage.
+_STYLE_DEPRECATION = (
+    "bezier's style_sampling is deprecated and will be removed in 1.0: draw per-env "
+    "knobs with randomize= instead (scale_range=(a, b) -> {'generator.size': (a / scale, "
+    "b / scale)}, rad_range -> {'generator.rad': ...}, handle_clamp_frac_range -> "
+    "{'generator.handle_clamp_frac': ...}; set style_sampling=False and use "
+    "PipelineSpec.with_randomize for a config-built pipeline). Course (until it accepts "
+    "a generator, PR15): keep style_sampling, or draw per-env sizes yourself and call "
+    "course.generator.params['generator'].set('size', arr) before regenerate (size "
+    "Course's max_checkpoints for the largest size: ceil(1.5 * N_max * spacing / "
+    "checkpoint_spacing), see CourseConfig.max_checkpoints)")
+
+
 class Bezier(Stage):
     """``"bezier"``: the corner-sampled cubic-Bezier track generator
     (:func:`generate_centerline_warp`) as a ``kind="generator"`` Stage (roadmap PR13c).
     ``rad`` / ``handle_clamp_frac`` are dynamic: per-env arrays read by
-    :func:`_assemble_dyn_k`, clamped to their declared bounds at use."""
+    :func:`_assemble_dyn_k`, clamped to their declared bounds at use. Roadmap PR13d:
+    ``min_num_points`` (int32) and ``size`` too, and a ``style_sampling`` build warns
+    (``DeprecationWarning``, attributed to the caller)."""
 
     kind = "generator"
     name = "bezier"
@@ -848,6 +884,11 @@ class Bezier(Stage):
     params = DeprecatedParamsAlias()
 
     def build(self, b, p):
+        if bool(p.style_sampling):
+            from .generator_binding import _outside_track_gen_stacklevel  # noqa: PLC0415
+
+            warnings.warn(_STYLE_DEPRECATION, DeprecationWarning,
+                          stacklevel=_outside_track_gen_stacklevel())
         cfg = run_view(p, b)
         scratch = _alloc_bezier_scratch(cfg, b.scratch)
         xy = b.write("xy", wp.vec2f, per="raw")

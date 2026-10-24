@@ -40,8 +40,10 @@ from __future__ import annotations
 
 import dataclasses
 import gc
+import math
 import numbers
 import types
+import warnings
 import weakref
 from collections.abc import Mapping as _MappingABC
 
@@ -62,8 +64,10 @@ _ON_INVALID = ("keep", "poison")
 _AGREE = {
     "half_width": "the stages with a half_width field share one value: the nominal width "
                   "(the per-point width is cl.half_width)",
-    "gate_width": "one value per pipeline: gate_frames bakes the bar width, "
-                  "validity.gate_default the crossing toggle",
+    "gate_width": "one value per pipeline: the initial bar width, where "
+                  "gate_frames.default's per-env width starts (validity.gate_default's "
+                  "copy is inert since 0.2.0.dev5: leave it at its default 0, or remove "
+                  "it; removed in PR16)",
     "gate_radius": "one value per pipeline: gate_relax.spheres separates the gates to "
                    "the distance validity.gate_default checks",
 }
@@ -512,12 +516,22 @@ def _resolve(spec: PipelineSpec, binding, layout, registry=None) -> "list[_Slot]
 
 
 def _check_agreement(slots) -> None:
-    """Every stage that bakes ``half_width`` / ``gate_width`` / ``gate_radius`` as a
-    host scalar agrees on its value."""
+    """Every stage that bakes ``half_width`` / ``gate_radius`` as a host scalar agrees
+    on its value; ``gate_width``: the stages' INITIAL values agree (roadmap PR13d:
+    ``gate_frames.default``'s is the initial per-env width; ``validity.gate_default``'s
+    is inert, so it takes part only when set to a value other than its default 0: a
+    pre-0.2.0.dev5 spec whose two widths disagree)."""
     for field, why in _AGREE.items():
-        vals = {s.id: getattr(s.params, field) for s in slots
-                if s.generator is None and s.params is not None
-                and field in getattr(type(s.params), "__dataclass_fields__", {})}
+        vals = {}
+        for s in slots:
+            fields = getattr(type(s.params), "__dataclass_fields__", {})
+            if s.generator is not None or s.params is None or field not in fields:
+                continue
+            v = getattr(s.params, field)
+            if field in getattr(type(s.params), "_inert_fields", ()) and \
+                    v == fields[field].default:
+                continue
+            vals[s.id] = v
         if len({float(v) for v in vals.values()}) > 1:
             raise PlanError(f"the stages disagree on {field}: {vals} ({why})")
 
@@ -531,8 +545,7 @@ def _check_gate_plan(spec, slots, registry) -> int:
     """The gate Program's anchors / order / carry / validity rules (before allocating);
     returns ``A`` (the anchors' rows per env, 0 without an anchors producer)."""
     from ..plugin import registry as _default_registry  # noqa: PLC0415
-    from ..stages.gates import GateFramesPosed, GateValidityDefault, OrderRaw  # noqa
-    from ..stages.gates import _orderings_of, _preferred  # noqa: PLC0415
+    from ..stages.gates import OrderRaw, _orderings_of, _preferred  # noqa: PLC0415
 
     reg = _default_registry if registry is None else registry
     G = int(spec.batch.max_gates)
@@ -590,13 +603,8 @@ def _check_gate_plan(spec, slots, registry) -> int:
                 raise PlanError(f"{_label(s.ref)} carries {what} by anchor "
                                 f"index, which needs order.raw; stage {o.id!r} is "
                                 f"{o.ref.kind}.{o.ref.name} (it permutes the anchors)")
-    posed = any(s.cls is GateFramesPosed for s in slots)
-    if posed:
-        for s in slots:
-            if s.cls is GateValidityDefault and s.params.check_crossing == "width":
-                raise PlanError(f"{_label(s.ref)}: posed gates (gate_frames.posed) take "
-                                f"their widths from the generator; set "
-                                f"check_crossing='always'")
+    # Roadmap PR13d: validity.gate_default checks the bars of every env that has one
+    # (its check_crossing is inert), so posed gates need no check_crossing='always'.
     return A
 
 
@@ -1600,6 +1608,10 @@ def _check_param_writers(slots) -> list:
         _check_draws([], slots)
         return []
     by_id = {s.id: s for s in slots}
+
+    def hint(t, field: str) -> str:
+        h = _stage_hints(t, slots).get(field)
+        return f" ({h})" if h else ""
     drawable = [f"{s.id}.{f.name}" for s in slots for f in dynamic_f32(s)]
     out, seen = [], {}
     for t, name, _ in _self_drawn(slots):
@@ -1624,15 +1636,16 @@ def _check_param_writers(slots) -> list:
             dyn = sorted(f.name for f in fields.values() if f.kind == "dynamic")
             raise PlanError(f"{_label(w.ref)} draws {what}: stage {target_id!r} "
                             f"({t.ref.kind}.{t.ref.name}) has no param {name!r}; its "
-                            f"dynamic fields: {dyn}")
+                            f"dynamic fields: {dyn}{hint(t, name)}")
         if fld.kind != "dynamic":
             if _plugin_params(t):
                 raise PlanError(f"{what} is static (declared with plugin.static): only "
                                 f"plugin.dynamic float32 fields can be drawn; drawable "
-                                f"fields in this pipeline: {drawable}")
+                                f"fields in this pipeline: {drawable}{hint(t, name)}")
             raise PlanError(f"{what} is a static field (build a new generator to change "
                             f"it; its stage's documentation says why it is static): "
-                            f"dynamic float32 fields in this pipeline: {drawable}")
+                            f"dynamic float32 fields in this pipeline: {drawable}"
+                            f"{hint(t, name)}")
         if fld.dtype is not wp.float32:
             raise PlanError(f"{what} is {fld.dtype.__name__}: randomize.uniform draws "
                             f"float32 fields in 0.x")
@@ -1690,7 +1703,7 @@ def _check_draws(draws, slots) -> None:
 def _draw_bounds(slot, drawn_for) -> "dict | None":
     """A randomizer's ``lo`` / ``hi`` take the declared range of the field it draws, so
     ``params[rid].set('hi', v)`` refuses a bound the kernel would clamp (a draw past the
-    field's range would pile onto its bound)."""
+    field's range would pile onto its bound). ``field -> (lo, hi, reason)``."""
     hit = drawn_for.get(slot.id)
     if hit is None:
         return None
@@ -1700,7 +1713,119 @@ def _draw_bounds(slot, drawn_for) -> "dict | None":
     what = f"{slot.params.stage}.{slot.params.field}"
     lo = None if f_lo == -float("inf") else f_lo
     hi = None if f_hi == float("inf") else f_hi
-    return {"lo": (lo, hi, what), "hi": (lo, hi, what)}
+    reason = (f"the declared range of {what} (the field this stage draws: a draw past it "
+              f"would pile onto the bound)")
+    return {"lo": (lo, hi, reason), "hi": (lo, hi, reason)}
+
+
+def _stage_bounds(slot, drawn_for) -> dict:
+    """The per-instance bounds of a stage's StageParams (roadmap PR13d): its Params'
+    ``_instance_bounds()`` (bezier / hull's ``min_num_points <= max_num_points``) and a
+    randomizer's :func:`_draw_bounds`."""
+    from ..plugin.params import _instance_bounds  # noqa: PLC0415
+
+    return {**_instance_bounds(slot.params), **(_draw_bounds(slot, drawn_for) or {})}
+
+
+#: Roadmap PR13d: the hint of ``generator.size`` on a gate generator whose gates a
+#: ``normalize.extent`` stage re-normalizes (its size is the normalize stage's).
+_RENORMALIZED_HINT = ("this gate generator is re-normalized by normalize.extent: use "
+                      "normalize.size")
+
+
+def _stage_hints(slot, slots) -> dict:
+    """``field -> hint`` appended to the ``KeyError`` (``StageParams``) and the
+    ``PlanError`` (a randomizer) of a per-env use of a field the stage has not as a
+    dynamic one (roadmap PR13d): its Params' ``_field_hints`` (external's ``size``, a
+    point gate generator's ``min_num_points``), and ``size`` of a gate generator without
+    one whose gates ``normalize.extent`` re-normalizes. No alias: one key per array."""
+    from ..plugin.params import _declares_size, _field_hints  # noqa: PLC0415
+    from ..stages.gates import NormalizeExtent  # noqa: PLC0415
+
+    hints = _field_hints(slot.params)
+    if slot.generator == "anchors" and not _declares_size(type(slot.params)) and \
+            any(s.cls is NormalizeExtent for s in slots):
+        hints.setdefault("size", _RENORMALIZED_HINT)
+    return hints
+
+
+def _check_renormalized_size(slots, draws) -> None:
+    """Roadmap PR13d: one build-time ``UserWarning`` when a gate generator that declares
+    ``size`` but whose gates ``normalize.extent`` re-normalizes gets a ``generator.size``
+    randomizer or a construction value other than 1: the normalization rescales its
+    gates to ``normalize.size``, so its own size has no effect (beyond rounding). A
+    ``set()`` is not checked."""
+    from ..plugin.params import _declares_size  # noqa: PLC0415
+    from ..stages.gates import NormalizeExtent  # noqa: PLC0415
+
+    gen = _gen_slot(slots)
+    params = gen.params
+    if gen.generator != "anchors" or params is None or \
+            not _declares_size(type(params)) or \
+            not any(s.cls is NormalizeExtent for s in slots):
+        return
+    drawn = any(t is gen and fld.name == "size" for _, t, fld in draws)
+    try:
+        one = float(params.size) == 1.0
+    except (TypeError, ValueError):
+        one = True
+    if not drawn and one:
+        return
+    from .._src.generator_binding import _outside_track_gen_stacklevel  # noqa: PLC0415
+
+    what = "a generator.size randomizer" if drawn else f"generator.size={params.size!r}"
+    warnings.warn(f"{what} has no effect on gate generator {gen.ref.name!r}: "
+                  f"{_RENORMALIZED_HINT} (the normalization rescales its gates to "
+                  f"normalize.size)", UserWarning, stacklevel=_outside_track_gen_stacklevel())
+
+
+def _check_size_truncation(spec, slots, draws) -> None:
+    """Roadmap PR13d: one build-time ``UserWarning`` when the centerline generator's
+    ``size`` (a randomizer's ``hi``, else a construction value other than 1) exceeds
+    ``(n_max - 1) * spacing / L_nom``, ``L_nom`` the generator's nominal maximum raw
+    perimeter at size 1 (the built-ins' private ``_nominal_perimeter(scale, drawn)``:
+    repulsive exact from its params, the others the measured longest loop at their
+    default shape knobs, scaled by bezier / hull's corner capacity, hull's displacement
+    and bezier's style ``scale_range``; ``None`` where a shape knob it does not model
+    differs from its default, and for a generator without one: not checked). Truncated
+    envs fail validity (fail-closed); ``set()`` curricula and caller-graph writes are
+    not checked. A heuristic: a warning, never an error."""
+    gen = _gen_slot(slots)
+    params = gen.params
+    if gen.generator != "centerline" or params is None or \
+            "size" not in getattr(type(params), "__dataclass_fields__", {}):
+        return
+    hook = getattr(params, "_nominal_perimeter", None)
+    resample = next((s for s in slots if (s.ref.kind, s.ref.name)
+                     == ("resample", "constant_spacing")), None)
+    if not callable(hook) or resample is None:
+        return
+    drawn = {fld.name: float(w.params.hi) for w, t, fld in draws if t is gen}
+    nominal = hook(float(spec.batch.scale), drawn)
+    spacing = float(getattr(resample.params, "spacing", 0.0) or 0.0)
+    if nominal is None or not 0.0 < nominal < math.inf or not 0.0 < spacing < math.inf:
+        return
+    if "size" in drawn:
+        size = drawn["size"]
+        what = f"generator.size drawn up to {size!r}"
+    else:
+        size = float(params.size)
+        if size == 1.0:
+            return
+        what = f"generator.size={size!r}"
+    n_max = int(spec.batch.n_max)
+    room = (n_max - 1) * spacing
+    # NaN-safe: a NaN size (a legal dynamic value: those envs fail validity) is not
+    # checked.
+    if not size * nominal > room or not math.isfinite(size):
+        return
+    from .._src.generator_binding import _outside_track_gen_stacklevel  # noqa: PLC0415
+
+    need = int(math.ceil(size * nominal / spacing)) + 1
+    warnings.warn(f"{what} truncates at n_max={n_max} (nominal raw perimeter "
+                  f"~{size * nominal:.1f} > (n_max - 1) * spacing = {room:.2f}): raise "
+                  f"n_max to >= {need} or lower the range; truncated envs fail validity",
+                  UserWarning, stacklevel=_outside_track_gen_stacklevel())
 
 
 def _pad_value(dtype):
@@ -1742,6 +1867,8 @@ def _build(spec: PipelineSpec, *, binding, seeds=None, out=None, stream=None,
     layout = Layout(E, S, str(dev), bool(batch.closed))
     slots = _resolve(spec, binding, layout, registry)
     draws = _check_param_writers(slots)
+    _check_size_truncation(spec, slots, draws)
+    _check_renormalized_size(slots, draws)
     A = _check_gate_plan(spec, slots, registry) if gate else 0
     caps = _capture_classes(slots, binding)
     if spec.require_caller_capturable:
@@ -1877,7 +2004,9 @@ def _build(spec: PipelineSpec, *, binding, seeds=None, out=None, stream=None,
                 stage_id=s.id, params=s.params,
                 arrays={name: pair[0] for name, pair in dynamic.items()},
                 num_envs=E, device=str(dev), default_stream=stream,
-                drawn=drawn_by.get(s.id), bounds=_draw_bounds(s, drawn_for))
+                drawn=drawn_by.get(s.id), bounds=_stage_bounds(s, drawn_for),
+                effective={name: pair[1] for name, pair in dynamic.items()},
+                hints=_stage_hints(s, slots))
             if s.generator == "anchors":
                 gen_scratch = types.MappingProxyType(
                     {k.split("/", 1)[1]: v for k, v in b._scratch.items()})
@@ -1954,7 +2083,8 @@ def _build(spec: PipelineSpec, *, binding, seeds=None, out=None, stream=None,
         gen_params = stage_params.pop(_GENERATOR)
     else:
         gen_params = param_table(binding, default_stream=stream,
-                                 drawn=drawn_by.get(_GENERATOR))[_GENERATOR]
+                                 drawn=drawn_by.get(_GENERATOR),
+                                 hints=_stage_hints(_gen_slot(slots), slots))[_GENERATOR]
     table = _new_param_table({_GENERATOR: gen_params, **stage_params})
     resolved = dataclasses.replace(spec, stages=tuple(
         dataclasses.replace(s.ref, params=s.params) for s in slots))

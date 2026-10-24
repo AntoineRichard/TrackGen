@@ -69,6 +69,15 @@ The building blocks the built-in generators are made of, public for plugin gener
 import only Warp and each other, so importing ``track_gen.ops`` loads no generator module
 and no torch.
 
+``sample_grid_points`` and ``normalize_extent`` take a keyword-only ``size=``: an ``[E]``
+``float32`` per-env size multiplier (the built-in generators' ``size``,
+:ref:`tuning-size`), each value clamped at use to
+:data:`~track_gen.ops.constants.SIZE_BOUNDS`. ``size=None`` (the default) runs the
+unchanged kernels, and a size-1 array gives the same bytes; ``normalize_extent`` refuses
+``size=`` with ``count=`` (``ValueError``). A plugin generator declares its own ``size``
+with ``SIZE_BOUNDS`` and passes ``b.param("size")`` to the op that applies its ``scale``
+(:ref:`generator-size-convention`).
+
 .. automodule:: track_gen.ops
    :no-members:
 
@@ -191,8 +200,9 @@ Device functions: ``track_gen.ops.funcs``
 
 These are the operations the built-in kernels perform, in the same order. A plugin
 kernel built from them matches the built-ins bit for bit on CPU. On CUDA, Warp compiles
-with FMA contraction on by default (``wp.config.fuse_fp``), and which multiply-add pairs
-become FMAs depends on the code around the inlined call, so a differently structured
+with FMA contraction on by default (the module option ``fuse_fp``, default ``True``;
+``wp.set_module_options({"fuse_fp": ...})``), and which multiply-add pairs become FMAs
+depends on the code around the inlined call, so a differently structured
 kernel can differ in the last bit.
 
 Constants
@@ -202,6 +212,8 @@ Constants
    :no-members:
 
 .. autodata:: track_gen.ops.constants.TARGET_EXTENT
+
+.. autodata:: track_gen.ops.constants.SIZE_BOUNDS
 
 Plugin registry
 ---------------
@@ -295,12 +307,15 @@ A generator's own parameters, set with ``TrackGenConfig.generator_params`` /
    :members: set
 
 .. autoclass:: track_gen.plugin.StageParams
-   :members: stage_id, params, drawn, set
+   :members: stage_id, params, drawn, set, in_effect, bounds
 
 The built-in generators' and elevation stages' Params have dynamic fields too (the
-generators' shape knobs, ``z_min`` / ``z_max`` / ``z_max_step`` /
-``z_noise_amplitude``), with declared bounds: see :ref:`builtin-generator-params` and
-:ref:`generators-per-env`. Reach a built-in generator's class with
+generators' shape knobs and ``size``, ``bezier`` / ``hull``'s ``int32``
+``min_num_points``, ``z_min`` / ``z_max`` / ``z_max_step`` / ``z_noise_amplitude``, the
+gate pipelines' ``normalize.size`` and ``gate_frames.gate_width``), with declared bounds:
+see :ref:`builtin-generator-params` and :ref:`generators-per-env`. ``in_effect`` and
+``bounds`` are the curriculum bookkeeping of :ref:`the tuning guide <tuning-in-effect>`.
+Reach a built-in generator's class with
 ``registry.get("generator", name).Params``; ``.params`` still works for ``bezier``,
 ``hull``, ``polar``, ``voronoi`` and ``checkpoint`` (their 0.2.0.dev4
 ``GeneratorSpec`` attribute) but emits a ``DeprecationWarning`` and is removed in 1.0.
@@ -440,12 +455,17 @@ keep the ``TrackGenConfig`` / ``GateGenConfig`` field names, see
 :doc:`/how-it-works/pipeline-preview`): ``width.from_channel`` (see
 :ref:`pipeline-width`), the ``stations`` stages (see :ref:`pipeline-stations-xyz`),
 ``randomize.uniform`` (see :ref:`config-randomize`) and the ``external`` generator (see
-:ref:`ingesting-centerlines`).
+:ref:`ingesting-centerlines`), and ``normalize.extent``'s, whose one field is the per-env
+course size of the ``polar``, ``voronoi`` and ``checkpoint`` gate generators (key
+``normalize.size``, set by ``GateGenConfig.size``; see :ref:`config-size`).
 
 .. autoclass:: track_gen.stages.params.WidthFromChannelParams
    :no-members:
 
 .. autoclass:: track_gen.stages.params.StationsParams
+   :no-members:
+
+.. autoclass:: track_gen.stages.params.NormalizeExtentParams
    :no-members:
 
 .. autoclass:: track_gen.stages.randomize.RandomizeUniformParams

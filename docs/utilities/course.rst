@@ -44,6 +44,19 @@ Sub-tools are sized from that construction batch (``config.seeds``), not from a 
 the shape of every checkpoints array): pass ``max_checkpoints`` explicitly for sizing
 that does not depend on the seeds.
 
+**A size curriculum.** The construction batch is built at the configured ``size``
+(``TrackGenConfig.size``, the only construction-time route, default ``1.0``). If a
+curriculum later grows the per-env size
+(``course.generator.params["generator"].set("size", arr)`` before ``regenerate``), the
+tracks outgrow an auto-derived ``max_checkpoints``: the rings are clipped
+(``course.checkpoint_sampler.truncated``) while the tracks stay valid, and progress and
+lap rewards read the clipped rings. Pass ``max_checkpoints = ceil(1.5 * n_max * spacing /
+checkpoint_spacing)``, a capacity that holds every track that is not truncated at any
+size, or construct with ``size`` at the curriculum's largest value and ``set`` it down.
+The SDF and heightfield grids cover each env's bounding box at a fixed resolution, so
+their cells grow with the size: raise ``sdf_resolution`` / ``heightfield_resolution``
+with it, or use ``collision="segments"`` (:ref:`tuning-size-utilities`).
+
 The generator pipelines are fixed-batch, so every regeneration recomputes the whole
 batch. Per-env control is ``reset(mask)`` (respawn on the same course) and
 ``regenerate(mask=...)`` (new courses for the masked envs only, see `Masked
@@ -101,6 +114,13 @@ different contact type depending on the course's collision checker:
 
    res = course.step()
    hit = wp.to_torch(res.contacts.hit)      # DiscContact here, not BoxContact
+
+**Gate width in gates mode.** A width-0 gate has a degenerate crossing segment and can
+never be passed, so gates mode requires ``gen.gate_width > 0`` at construction. Since
+0.2.0.dev5 the bar width is per env (``course.generator.params["gate_frames"]``, a
+curriculum or a randomizer): a scalar ``set("gate_width", v)`` with ``v <= 0`` is refused,
+but an ``[E]`` array is not range-checked (no host read), and a value ``<= 0`` is used as
+``0``: keep every env's width ``> 0``, or those envs' gates can never be passed.
 
 In gates mode ``StepResult`` also carries a third field, ``res.frame`` — the
 :class:`~track_gen.localize.TrackFrame` localizing the agent on the gate
@@ -230,7 +250,8 @@ buffers live as long as the graph. A graph that records only ``step()`` / ``rese
 not anchor anything, and neither does a ``torch.cuda.graph``: keep ``course`` alive for as
 long as you replay such a graph, or call ``track_gen.interop.torch.retain(g, course)`` to
 tie it to the torch graph ``g``. When ``max_checkpoints`` is auto-derived, check
-``course.checkpoint_sampler.truncated`` after regenerating onto much longer tracks.
+``course.checkpoint_sampler.truncated`` after regenerating onto much longer tracks (a
+larger ``size``, above).
 
 API: :class:`track_gen.course.Course`,
 :class:`track_gen.course.CourseConfig` — see the

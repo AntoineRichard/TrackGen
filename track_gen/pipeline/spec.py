@@ -327,7 +327,10 @@ class PipelineSpec:
         Args:
             randomize: ``{"<stage id>.<field>": (lo, hi)}`` (the key split at its LAST
                 dot) or a sequence of ``StageRef("randomize", "uniform", {...})``;
-                ``None`` returns this spec.
+                ``None`` returns this spec. Roadmap PR13d: the course size is
+                ``"generator.size"`` (the track generators but ``external``, the bezier
+                / hull gate generators) or ``"normalize.size"`` (the polar / voronoi /
+                checkpoint gate pipelines), the bar width ``"gate_frames.gate_width"``.
 
         Raises:
             ValueError: a malformed key, a target stage the spec does not have (lists
@@ -436,6 +439,21 @@ def _draw_target(ref: StageRef) -> "tuple":
     return getattr(p, "stage", None), getattr(p, "field", None)
 
 
+def _normalize_size_hint(spec: PipelineSpec) -> str:
+    """Roadmap PR13d: the hint of a ``normalize.size`` randomizer on a pipeline without a
+    normalize stage: a gate generator that is not re-normalized holds its size; a
+    centerline generator's per-env size is its own ``generator.size`` (``external`` has
+    none: no hint)."""
+    gen = next((r for sid, r in zip(spec.ids, spec.stages) if sid == "generator"), None)
+    if gen is None or (gen.kind, gen.name) == ("generator", "external"):
+        return ""
+    if gen.kind == "gate_generator":
+        return ("; this gate generator is not re-normalized and holds its size: use "
+                "generator.size, where it declares one (a legacy GateGeneratorSpec has "
+                "none)")
+    return "; a centerline generator's per-env size is generator.size, where it declares one"
+
+
 def _with_randomizers(spec: PipelineSpec, randomize) -> PipelineSpec:
     """``spec`` with each randomizer inserted right before the stage it draws
     (:meth:`PipelineSpec.with_randomize`); a field (or a stage id) the spec already has
@@ -445,9 +463,11 @@ def _with_randomizers(spec: PipelineSpec, randomize) -> PipelineSpec:
         if not isinstance(target, str) or not target:
             raise ValueError(f"randomize: {ref!r} names no target stage (params 'stage')")
         if target not in spec.ids:
+            hint = _normalize_size_hint(spec) if (target, field) == \
+                ("normalize", "size") else ""
             raise ValueError(f"randomize: key '{target}.{field}' names stage {target!r}, "
                              f"which this pipeline does not have; stages: "
-                             f"{list(spec.ids)}")
+                             f"{list(spec.ids)}{hint}")
         for sid, old in zip(spec.ids, spec.stages):
             if old.kind not in PARAM_WRITER_KINDS:
                 continue

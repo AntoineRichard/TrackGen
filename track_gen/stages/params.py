@@ -8,8 +8,12 @@ values (no casts), except ``WidthFromChannelParams`` (dynamic ``scale`` / ``lo``
 the elevation profiles' altitude window and shape knobs (roadmap PR13c: ``z_min`` /
 ``z_max`` of ``elevation.uniform`` / ``random_walk`` / ``noise``, ``z_max_step`` and
 ``z_noise_amplitude``; per-env arrays, latched each generation, read by the
-``warp_zprofile`` twins). The stage hands its Params instance (or, for elevation, a
-namespace built from its static view) to the legacy wrappers as their ``config``
+``warp_zprofile`` twins), ``normalize.extent``'s ``size`` and ``gate_frames.default``'s
+``gate_width`` (roadmap PR13d: the course size of the polar / voronoi / checkpoint gate
+generators and the per-env bar width; ``validity.gate_default``'s ``gate_width`` /
+``check_crossing`` are inert since then: it checks the bars of every env per env).
+The stage hands its Params instance (or, for elevation, a namespace built from its
+static view) to the legacy wrappers as their ``config``
 argument, so the same values reach the same ``float()`` / ``int()`` conversions and the
 launches are unchanged.
 
@@ -27,6 +31,7 @@ import warnings
 import numpy as np
 
 from .._src.builtin_params import _FlatParams
+from ..ops.constants import SIZE_BOUNDS
 from ..plugin.params import Params, dynamic, static
 
 __all__ = [
@@ -40,6 +45,7 @@ __all__ = [
     "GateRelaxParams",
     "GateValidityParams",
     "LiftFlatParams",
+    "NormalizeExtentParams",
     "OffsetParams",
     "StationsParams",
     "ValidityParams",
@@ -366,11 +372,24 @@ class GateRelaxParams(_StageFlatParams):
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class GateFramesParams(_StageFlatParams):
-    """``gate_frames.default``: the gate frames, ``half_size = 0.5 * gate_width``."""
+class NormalizeExtentParams(_StageFlatParams):
+    """``normalize.extent``: the per-env size of the normalized gate layout (roadmap
+    PR13d; ``GateGenConfig.size`` for the polar / voronoi / checkpoint gate
+    generators)."""
 
-    gate_width: float = static(0.0, lo=0.0, doc="FULL gate bar width (half_size = 0.5 "
-                                                "* gate_width; 0: point gates).")
+    size: float = dynamic(1.0, lo=SIZE_BOUNDS[0], hi=SIZE_BOUNDS[1],
+                          doc="Per-env size multiplier of the target extent (scale * "
+                              "TARGET_EXTENT * size; per env; 1: unchanged).")
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class GateFramesParams(_StageFlatParams):
+    """``gate_frames.default``: the gate frames, ``half_size = 0.5 * gate_width``
+    (``gate_width`` dynamic since roadmap PR13d: the initial value of a per-env width)."""
+
+    gate_width: float = dynamic(0.0, lo=0.0, doc="FULL gate bar width (half_size = 0.5 "
+                                                 "* gate_width; 0: point gates; per "
+                                                 "env).")
     gate_align: str = static("yaw_only", choices=_ALIGNS,
                              doc="yaw_only (level gates) or full_tangent (tilted).")
 
@@ -398,18 +417,33 @@ class GateFramesPosedParams(_StageFlatParams):
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class GateValidityParams(_StageFlatParams):
-    """``validity.gate_default``: the fused per-env gate validity check."""
+    """``validity.gate_default``: the fused per-env gate validity check. Since roadmap
+    PR13d the bar-crossing check runs per env on every env with a non-zero bar, so
+    ``gate_width`` and ``check_crossing`` are INERT (kept so specs and dicts load; a
+    ``gate_width`` other than its default 0 must still equal ``gate_frames``' initial
+    width; removed in PR16)."""
+
+    #: Inert since 0.2.0.dev5: left out of the planner's agreement check at the default.
+    _inert_fields = ("gate_width", "check_crossing")
+    _field_hints = {
+        "gate_width": "inert since 0.2.0.dev5: the per-env bar width is "
+                      "gate_frames.gate_width",
+        "check_crossing": "inert since 0.2.0.dev5: the bars of every env that has one "
+                          "are checked",
+    }
 
     min_gates: int = static(4, lo=2, doc="Fewest real gates of a valid env (>= 2).")
     gate_radius: float = static(0.025, lo=0.0, doc="Gate sphere radius: real gates "
                                                    "closer than 2 * gate_radius fail.")
-    gate_width: float = static(0.0, lo=0.0, doc="FULL gate bar width; > 0 turns the "
-                                                "bar-crossing check on.")
+    gate_width: float = static(0.0, lo=0.0, doc="Inert since 0.2.0.dev5 (the crossing "
+                                                "check runs per env on non-zero bars); "
+                                                "if set, equals gate_frames' initial "
+                                                "width.")
     z_valid_grade: float = static(0.0, lo=0.0, doc="Maximum |dz|/ds chord grade (0: "
                                                    "off).")
     check_crossing: str = static("width", choices=("width", "always"),
-                                 doc="'width': the crossing check runs when gate_width > "
-                                     "0; 'always': it always runs (posed gates).")
+                                 doc="Inert since 0.2.0.dev5: both values check the bars "
+                                     "of every env that has one (removed in PR16).")
 
     def validate(self, layout) -> None:
         if int(self.min_gates) < 2:

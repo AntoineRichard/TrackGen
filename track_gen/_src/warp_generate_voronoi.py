@@ -33,7 +33,8 @@ from ..exec.context import LaunchContext, resolve as _resolve_ctx
 from ..ops.constants import TARGET_EXTENT
 from ..plugin.stage import CaptureClass, Stage
 from .builtin_params import VoronoiParams, _declared_bounds
-from .builtin_stage import DeprecatedParamsAlias, check_dyn, default_alloc, run_view
+from .builtin_stage import (DeprecatedParamsAlias, check_dyn, check_no_size,
+                            default_alloc, run_view)
 from .runtime import _init
 
 # Legacy private name (value only): the loop is normalised to config.scale * TARGET_EXTENT.
@@ -406,7 +407,7 @@ def select_voronoi_anchors_per_env(ctx: "LaunchContext", seeds: wp.array,
 
 
 #: The dynamic fields of the Voronoi Stage (roadmap PR13c), in Params order.
-_DYNAMIC = ("voronoi_radial_variation", "voronoi_angular_jitter")
+_DYNAMIC = ("voronoi_radial_variation", "voronoi_angular_jitter", "size")
 
 
 def voronoi_alloc_scratch(config):
@@ -456,6 +457,7 @@ def generate_voronoi_warp(
             device's stream (see track_gen.exec).
     """
     _init()
+    check_no_size(config, "generate_voronoi_warp")
     ctx = _resolve_ctx(ctx, str(out_centerline.device))
     assert scratch is not None, "generate_voronoi_warp requires scratch"
     _enqueue_voronoi(seeds_wp, config, out_centerline, out_valid_wp, scratch, ctx, None)
@@ -465,7 +467,8 @@ def _enqueue_voronoi(seeds_wp, config, out_centerline, out_valid_wp, scratch, ct
                      dyn) -> None:
     """The voronoi generator's launches on ``ctx``: ``dyn=None`` (the legacy path:
     ``config``'s radial variation / angular jitter, :func:`select_voronoi_anchors`) or
-    their ``[E]`` arrays (the Stage: :func:`select_voronoi_anchors_per_env`)."""
+    their and ``size``'s ``[E]`` arrays (the Stage: :func:`select_voronoi_anchors_per_env`,
+    and both normalizations to ``scale * TARGET_EXTENT * size[e]``, roadmap PR13d)."""
     check_dyn(dyn, _DYNAMIC, "voronoi")
     E = int(config.num_envs)
     N = int(config.num_points)
@@ -492,7 +495,10 @@ def _enqueue_voronoi(seeds_wp, config, out_centerline, out_valid_wp, scratch, ct
     ops.closed_catmull_rom(ctx, scratch.aug, AP, npseg, scratch.dense)
 
     ops.arc_resample(ctx, scratch.dense, M, N, arc, out_centerline, scratch.arc_co)
-    ops.normalize_extent(ctx, out_centerline, N, target_extent)
+    if dyn is None:
+        ops.normalize_extent(ctx, out_centerline, N, target_extent)
+    else:   # roadmap PR13d: the per-env size multiplies the target extent
+        ops.normalize_extent(ctx, out_centerline, N, target_extent, size=dyn["size"])
 
     # Straight-polyline fallback for the envs whose smooth loop self-crosses; the second
     # normalisation re-applies the bbox rescale to every env.
@@ -500,7 +506,10 @@ def _enqueue_voronoi(seeds_wp, config, out_centerline, out_valid_wp, scratch, ct
     ops.closed_polyline(ctx, scratch.aug, AP, npseg, scratch.dense, active=scratch.crossers)
     ops.arc_resample(ctx, scratch.dense, M, N, arc, out_centerline, scratch.arc_co,
                      active=scratch.crossers)
-    ops.normalize_extent(ctx, out_centerline, N, target_extent)
+    if dyn is None:
+        ops.normalize_extent(ctx, out_centerline, N, target_extent)
+    else:   # roadmap PR13d: the per-env size multiplies the target extent
+        ops.normalize_extent(ctx, out_centerline, N, target_extent, size=dyn["size"])
     ops.fill(ctx, out_valid_wp, 1)
     ctx.sync()
 

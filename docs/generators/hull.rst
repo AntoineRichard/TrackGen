@@ -27,13 +27,16 @@ CUDA-graph-capturable.
 
 1. **Point count and position sampling.**
    ``ops.sample_counts`` (salt ``5119``, offset ``1``) draws a per-environment point
-   count ``m`` from the uniform integer range ``[min_num_points, max_num_points]``.
+   count ``m`` from the uniform integer range ``[min_num_points, max_num_points]`` (the
+   Stage reads env ``e``'s ``min_num_points`` from its per-env array, clamped to ``[2,
+   max_num_points]``).
    ``ops.sample_grid_points`` (salt ``7919``, offset ``1``) then draws
    ``P = max_num_points`` grid-jittered points per environment from the
    ``ops.grid_cells(min_point_distance)`` grid with bounded duplicate-cell rejection (up
    to eight retries per point).  The cell size is ``min_point_distance * 2``; each
    accepted cell receives a jitter of ``U(-0.5, 0.5)`` in each axis before being
-   multiplied by ``scale``.  The salts are distinct from the Bezier generator's
+   multiplied by ``scale``, then by the env's ``size[e]``.  The salts are distinct from
+   the Bezier generator's
    (``6151`` / ``9781``) so the two generators draw different point sets even at the
    same seed.
 
@@ -169,6 +172,7 @@ checked when the ``TrackGenerator`` is constructed, and only for ``generator="hu
     Minimum number of base corner-anchor points per environment.  Must be >= 2.
     Shared with the Bezier generator.  Larger values guarantee more vertices in
     the base loop, producing more complex shapes even at small ``hull_displacement``.
+    Dynamic, an ``int32`` per env in ``[2, max_num_points]`` (below).
 
 ``max_num_points`` : int
     Maximum number of corner-anchor points.  Also sets ``P``, the fixed allocation
@@ -190,7 +194,12 @@ checked when the ``TrackGenerator`` is constructed, and only for ``generator="hu
 ``scale`` : float
     Isotropic scale multiplier applied to all sampled corner positions.  Shared with
     the Bezier generator; scales the coordinate range seen by the downstream
-    constant-spacing, XPBD-relax, and inflate stages.
+    constant-spacing, XPBD-relax, and inflate stages. A core field, static.
+
+``size`` : float
+    Per-env size multiplier of the plan view, applied to the corners right after
+    ``scale`` (as for ``bezier``: at ``scale = 1``, ``size = s`` is bitwise ``scale =
+    s``). Default ``1.0``. Dynamic, in ``[0.1, 10]`` (below).
 
 ``hull_displacement`` : float
     *Hull generator only.*  Maximum per-edge radial midpoint displacement expressed
@@ -205,13 +214,14 @@ checked when the ``TrackGenerator`` is constructed, and only for ``generator="hu
 Per-env (dynamic) parameters
 ----------------------------
 
-``hull_displacement`` is a **dynamic** field of ``HullParams``: a per-env ``[E]``
-``float32`` array, initialised from the configured value. Draw it per env with
+``hull_displacement`` and ``size`` are **dynamic** ``float32`` fields of ``HullParams``,
+and ``min_num_points`` a dynamic ``int32`` one: per-env ``[E]`` arrays, initialised from
+the configured values. Draw the ``float32`` ones per env with
 ``presets.track(generator="hull", randomize={"generator.hull_displacement": (lo,
-hi)})``, write it with ``gen.params["generator"].set("hull_displacement", ...)`` or from
-your own graph (a curriculum): see :ref:`tuning-per-env`. A scalar outside the bounds
-raises ``ValueError``; an array value outside them is clamped to them when the kernel
-reads it.
+hi)})``, write any of them with ``gen.params["generator"].set("hull_displacement", ...)``
+or from your own graph (a curriculum): see :ref:`tuning-per-env`. A scalar outside the
+bounds raises ``ValueError``; an array value outside them is clamped to them when the
+kernel reads it.
 
 .. list-table::
    :header-rows: 1
@@ -230,14 +240,43 @@ reads it.
      - the whole range; above 1 a midpoint could be pushed past the centroid, hence
        the bound
      - 0.98 / 0.98 / 0.88
+   * - ``size`` (``generator.size``)
+     - ``1.0``
+     - ``[0.1, 10]``
+     - higher: a longer course relative to the (absolute) road width
+     - about ``[0.75, 2.8]`` at the default ``n_max`` (384): from about ``2.8`` the
+       longest tracks of a large batch truncate; small sizes lose yield to the road
+       width
+     - 0.83 / 0.99 / 1.00 at 0.5 / 1 / 2 (1.00 at 3)
+   * - ``min_num_points`` (``set`` only: ``int32``)
+     - ``9``
+     - ``[2, max_num_points]``
+     - higher: more base corners
+     - the whole range; it only narrows the count toward ``max_num_points``
+     - 0.96 / 0.99 / 0.98 at 2 / 9 / 13
 
 *Yield* is the fraction of valid tracks with the default pipeline, ``E = 128``, seeds
-``0..127`` (CPU), with the knob set to the value for every env.
+``0..127`` (CPU), with the knob set to the value for every env (``size``: ``E = 256``,
+``min_num_points``: ``E = 512``, seeds ``7919 * e + 13``).
 
-**Static knobs, and why.** ``min_num_points`` / ``max_num_points`` (``max`` sizes the
-point buffers; a dynamic corner count is planned for roadmap PR13d),
+**Size** multiplies the corner grid right after ``scale``, before the midpoint
+displacement and the spline, exactly as for ``bezier`` (:ref:`bezier-dynamic`): the plan
+view scales, the road width, spacing and z stay absolute, and a larger course needs more
+points. The longest default ``hull`` loop of 8192 envs is 8.30 (p99 6.90) at ``scale =
+1``; with the default ``n_max = 384`` and spacing ``0.06`` truncation (a failed env)
+starts at about ``size = 2.8``. Size ``n_max`` and ``num_points`` for the largest size
+with the rule of :ref:`tuning-size`.
+
+**Corner count.** ``min_num_points`` behaves as ``bezier``'s (:ref:`bezier-corner-count`):
+the count is uniform in ``[clamp(min_e, 2, max_num_points), max_num_points]`` per env,
+from the same draw, over one fixed set of corner positions, so the axis only narrows the
+count toward the static ``max_num_points``; ``set`` refuses a scalar outside ``[2,
+max_num_points]``; it cannot be drawn by ``randomize=`` (``int32``). The augmented loop
+has ``2 * count[e]`` vertices.
+
+**Static knobs, and why.** ``max_num_points`` (sizes the point buffers),
 ``num_points_per_segment`` (sizes the dense buffer), ``min_point_distance`` (sets the
-point grid on the host) and the core ``scale`` (per-env size: PR13d).
+point grid on the host) and the core ``scale`` (per-env: ``size``).
 
 What Makes It Distinct
 ----------------------

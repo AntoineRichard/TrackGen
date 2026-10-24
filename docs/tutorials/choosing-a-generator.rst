@@ -106,8 +106,8 @@ Generator-Specific Parameters
 Each generator has its own set of shape knobs. A few examples:
 
 - ``"bezier"`` — ``min_num_points``, ``max_num_points``, ``rad``, ``edgy``,
-  ``handle_clamp_frac``, ``style_sampling`` (and the ``*_range`` fields that
-  go with it).
+  ``handle_clamp_frac``, ``style_sampling`` (deprecated, with the ``*_range`` fields
+  that go with it: use ``randomize=``).
 - ``"hull"`` — ``hull_displacement`` (controls the strength of midpoint lobes
   and pinches).
 - ``"polar"`` — ``polar_num_knots``, ``polar_radial_jitter``,
@@ -128,9 +128,12 @@ the ``generator`` string.
 Ten shape knobs, ``rad``, ``handle_clamp_frac``, ``hull_displacement``,
 ``polar_radial_jitter``, ``polar_angular_jitter``, ``voronoi_radial_variation``,
 ``voronoi_angular_jitter``, ``checkpoint_radius_min_frac``, ``checkpoint_angle_jitter``
-and ``checkpoint_turn_rate``, are per-env (the other knobs, ``edgy`` and ``scale``
-included, are static): ``randomize=`` draws them for every env at every generation, and a curriculum can move them without
-rebuilding the generator (:ref:`generators-per-env`, :ref:`tuning-per-env`).
+and ``checkpoint_turn_rate``, are per-env, and so are every generator's ``size`` (but
+``external``'s, which has none) and ``bezier`` / ``hull``'s corner count
+``min_num_points`` (an ``int32`` you write; the other knobs, ``edgy`` and ``scale``
+included, are static): ``randomize=`` draws the ``float32`` ones for every env at every
+generation, and a curriculum can move them all without rebuilding the generator
+(:ref:`generators-per-env`, :ref:`tuning-per-env`).
 
 Deep-Dive References
 ----------------------

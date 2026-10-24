@@ -88,6 +88,11 @@ def _seed_range_k(base: wp.int32, out: wp.array(dtype=wp.int32)):
     out[e] = wp.int32(wp.uint32(base) + wp.uint32(e))
 
 
+#: The smallest positive float32 (2**-149): Course gates mode's floor of
+#: ``gate_frames.gate_width``.
+_F32_MIN_POSITIVE = 2.0 ** -149
+
+
 def _wrap_int32(value: int) -> int:
     """``value`` reduced to the int32 range with two's-complement wrap-around."""
     return ((int(value) + 2**31) % 2**32) - 2**31
@@ -105,7 +110,12 @@ class CourseConfig:
     gen : TrackGenConfig or GateGenConfig
         Generator config; its type must match ``mode``. ``num_envs`` and
         ``device`` are taken from here. Gates mode requires
-        ``gen.gate_width > 0`` (a width-0 gate can never be crossed).
+        ``gen.gate_width > 0`` (a width-0 gate can never be crossed). The
+        width is per env since 0.2.0.dev5 (``gate_frames.gate_width``): a
+        scalar ``set`` of a value ``<= 0`` is refused, but an ``[E]`` array
+        written after construction is not range-checked (a value ``<= 0`` is
+        used as 0): keep it ``> 0``, or those envs' gates can never be
+        passed.
     seeds : int or wp.array
         Initial per-env RNG seeding (forwarded to ``PerEnvSeededRNG``).
     collision : str or None
@@ -143,7 +153,12 @@ class CourseConfig:
     checkpoint_spacing : float or None
         Track mode only (required there): centerline checkpoint spacing.
     max_checkpoints : int or None
-        Track mode only: forwarded to ``CheckpointSampler``.
+        Track mode only: forwarded to ``CheckpointSampler`` (``None``: sized once from
+        the construction generation). Under a per-env size curriculum (roadmap PR13d:
+        ``generator.size`` set larger after construction) pass the size-independent
+        bound ``ceil(1.5 * N_max * spacing / checkpoint_spacing)``, or construct with
+        ``TrackGenConfig.size`` at the curriculum's largest size: a derived ring sized at
+        a smaller size clips the checkpoints of larger tracks.
     max_boxes : int
         Collision query stride (boxes per env). Must be >= 1.
     samples_per_gate : int
@@ -373,6 +388,14 @@ class Course:
         else:
             self.generator = GateGenerator(config.gen, self.rng)
             self.result = self.generator._gate_sequence
+            # Roadmap PR13d: gate_frames.gate_width is per env; keep the construction
+            # check's invariant for a scalar set() (an array is not range-checked: a
+            # value <= 0 is used as 0, and those envs' gates can never be passed).
+            frames = self.generator.params.get("gate_frames")
+            if frames is not None and "gate_width" in frames:
+                frames._narrow("gate_width", _F32_MIN_POSITIVE, None,
+                               "> 0 in Course gates mode (a width-0 gate has a "
+                               "degenerate crossing segment and can never be passed)")
 
         self.collision: "CollisionChecker | DiscChecker | FrameChecker | None" \
             = None

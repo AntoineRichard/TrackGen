@@ -76,6 +76,11 @@ from track_gen.plugin import registry
 from track_gen.seeds import SeedState
 from track_gen.testing.contract import HotPathGuard, no_host_sync
 
+# Roadmap PR13d: bezier's style_sampling is deprecated (one DeprecationWarning per built
+# generator); this module still exercises it.
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:bezier's style_sampling is deprecated:DeprecationWarning")
+
 DEV = "cpu"
 E = 2
 
@@ -497,6 +502,8 @@ def _ops_all():
     seeds = _i32([1, 2147483647, -7])
     pts, ctrl = v2(rs.normal(size=(E * P, 2))), v2(rs.normal(size=(E * K, 2)))
     scale = wp.array(np.asarray([1.0, 0.5, 2.0], np.float32), dtype=wp.float32, device=DEV)
+    # roadmap PR13d: the per-env size of the grid / normalize ops (the sized twins)
+    size = wp.array(np.asarray([1.0, 0.5, 20.0], np.float32), dtype=wp.float32, device=DEV)
     f32 = lambda k: wp.empty(k, dtype=wp.float32, device=DEV)  # noqa: E731
     i32 = lambda k: wp.empty(k, dtype=wp.int32, device=DEV)  # noqa: E731
     vv = lambda k: wp.empty(k, dtype=wp.vec2f, device=DEV)  # noqa: E731
@@ -523,12 +530,16 @@ def _ops_all():
         ops.thickness(ctx, loops, n, band, tf, count=cnt_n)
         ops.normalize_extent(ctx, o_n, n, 1.44)
         ops.normalize_extent(ctx, o_n, n, 1.44, count=cnt_n)
+        ops.normalize_extent(ctx, o_n, n, 1.44, size=size)
         ops.angle_sort(ctx, pts, P, keys, o_p, count=cnt_p)
         ops.angle_sort(ctx, pts, P, keys, o_p2, count=cnt_p, out_stride=P + 2)
         ops.sample_counts(ctx, seeds, 6151, 0, 2, P, o_c)
         nc, cell = ops.grid_cells(0.05)
         ops.sample_grid_points(ctx, seeds, 9781, 0, P, nc, cell, 1.0, used, o_p)
         ops.sample_grid_points(ctx, seeds, 7919, 1, P, nc, cell, scale, used, o_p)
+        ops.sample_grid_points(ctx, seeds, 9781, 0, P, nc, cell, 1.0, used, o_p, size=size)
+        ops.sample_grid_points(ctx, seeds, 7919, 1, P, nc, cell, scale, used, o_p,
+                               size=size)
         ops.closed_catmull_rom(ctx, ctrl, K, ps, o_cr)
         ops.closed_catmull_rom(ctx, ctrl, K, ps, o_cr, count=cnt_k, endpoint=True)
         ops.closed_polyline(ctx, ctrl, K, ps, o_cr)
@@ -568,6 +579,25 @@ def _legacy_generator_wrappers():
         warp_generate.ccw_sort_inplace(pts, count, keys, srt, P)
         warp_generate_hull.point_count_sample_inplace(seeds, cfg, count)
         warp_generate_hull.point_sample_inplace(seeds, cfg, pts, used)
+    return hot
+
+
+def _legacy_repulsive():
+    # Roadmap PR13d: the Repulsive Stage runs the private core (track_run[repulsive]);
+    # the frozen generate_repulsive_warp is driven directly (its bounded loop's CPU host
+    # poll is sanctioned).
+    from track_gen._src import warp_generate_repulsive as rep  # noqa: PLC0415
+
+    cfg = TrackGenConfig(generator="repulsive", device=DEV, num_envs=E, num_points=64,
+                         repulsive_stages=(16, 32, 64))
+    scratch = rep.repulsive_alloc_scratch(cfg)
+    out = wp.empty(E * 64, dtype=wp.vec2f, device=DEV)
+    valid = wp.empty(E, dtype=wp.int32, device=DEV)
+    seeds = _i32([3, 4])
+    ctx = LaunchContext.for_call(DEV)
+
+    def hot():
+        rep.generate_repulsive_warp(seeds, cfg, out, valid, scratch, ctx=ctx)
     return hot
 
 
@@ -970,6 +1000,7 @@ DRIVERS = {
     "track_run[z=acme.sinusoid_hills]": _run_track_plugin_profile,
     "wrappers[legacy_generator]": _legacy_generator_wrappers,
     "wrappers[legacy generator specs]": _legacy_generator_specs,
+    "wrappers[legacy repulsive]": _legacy_repulsive,
     "ops[all]": _ops_all,
     "program[attrs,from_channel,poison,masked]": _program_channels,
     "gate_program[stations xyz,attrs]": _gate_program_channels,
@@ -987,7 +1018,8 @@ def test_hot_path_has_no_host_sync_or_readback(name):
         f"known-readback allowlist out of date: {guard.allowed}"
     # The bounded loops' CPU host poll (repulsive, the bounded toy) is sanctioned, not
     # allowed: the guard lists it apart.
-    if name in ("track_run[repulsive]", "track_run[relax=toy.converging_smooth]"):
+    if name in ("track_run[repulsive]", "track_run[relax=toy.converging_smooth]",
+                "wrappers[legacy repulsive]"):
         assert set(guard.sanctioned) == {
             ("wp.array.numpy", "track_gen.exec.host", "_poll_i32")}, guard.sanctioned
 
@@ -1059,7 +1091,9 @@ _CONSTRUCTION_ONLY = {
                                 # PR13b: params lists canonicalised to tuples
                                 "_canonical_param",
                                 # PR13c: randomize= (PipelineSpec.with_randomize)
-                                "_randomizers", "_with_randomizers", "_draw_target"},
+                                "_randomizers", "_with_randomizers", "_draw_target",
+                                # PR13d: the normalize.size hint
+                                "_normalize_size_hint"},
     # PR13a: the resample tables / carry kernel lookup are build-time
     "track_gen.ops.resample": {"_carry_kernel", "_check_tables"},
     "track_gen.pipeline.planner": {"build", "_build", "_is_int", "_check_spec_shape",
@@ -1090,12 +1124,17 @@ _CONSTRUCTION_ONLY = {
                                    "_gen_slot", "_draw_bounds", "_is_partial",
                                    "_plugin_params",
                                    # PR13c: self-drawn fields, cross-field draw rules
-                                   "_self_drawn", "_check_draws"},
+                                   "_self_drawn", "_check_draws",
+                                   # PR13d: instance bounds, field hints, truncation
+                                   "_stage_bounds", "_stage_hints",
+                                   "_check_size_truncation", "_check_renormalized_size"},
     "track_gen.pipeline.legacy": {"to_pipeline_spec", "_to_pipeline_spec",
                                   "generator_config", "_scratch_view", "_legacy_params",
                                   "to_gate_pipeline_spec", "_to_gate_pipeline_spec",
                                   "gate_generator_config", "_params_of",
-                                  "_legacy_ordering"},
+                                  "_legacy_ordering",
+                                  # PR13d: the flat size routes
+                                  "_check_flat_size"},
     "track_gen.pipeline.presets": {"track", "_select", "_is_pair", "_with_half_width",
                                    "_check_half_width", "gates", "_gate_stages",
                                    "_relax_on", "_is_flat",
@@ -1104,7 +1143,10 @@ _CONSTRUCTION_ONLY = {
                                    # PR13a: providers and the width selection
                                    "_sel_name", "_provides", "_has_half_width_field",
                                    # PR13b: declarations, relax="auto"
-                                   "_declared", "_preferred_relax"},
+                                   "_declared", "_preferred_relax",
+                                   # PR13d: presets(size=)
+                                   "_size_fields", "_with_size", "_is_one",
+                                   "_size_remedy"},
     # PR13b: the host loader of the ingestion inputs (cold, blocking by contract)
     "track_gen.pipeline.ingest": {"load_centerlines", "_program_of", "_envs", "_rows",
                                   "_sizing", "_perimeter", "_check_values"},

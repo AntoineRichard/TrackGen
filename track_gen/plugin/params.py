@@ -217,6 +217,18 @@ def _fields(cls) -> "tuple[_Field, ...]":
     return tuple(out)
 
 
+def _declares_size(cls) -> bool:
+    """Roadmap PR13d: whether a Params class follows the per-env ``size`` convention (a
+    dynamic ``float`` field ``size``, ``plugin.dynamic(1.0, lo=SIZE_BOUNDS[0],
+    hi=SIZE_BOUNDS[1])``). A static or ``int`` field named ``size`` is the plugin's own
+    (e.g. an arena cell count): the flat ``size`` and ``presets.track / gates(size=)``
+    never write it."""
+    if not isinstance(cls, type) or not dataclasses.is_dataclass(cls):
+        return False
+    fld = next((f for f in _fields(cls) if f.name == "size"), None)
+    return fld is not None and fld.kind == "dynamic" and fld.dtype is wp.float32
+
+
 def _check_params_class(cls, *, allow_dynamic: bool = True, owner: str = "") -> None:
     """The registration rules of a Params class (raises TypeError / ValueError)."""
     where = f" (declared by {owner})" if owner else ""
@@ -311,8 +323,11 @@ def _coerce(cls, value, *, what: str, cfg=None, label: str = "generator_params")
             raise ValueError(f"{what} takes no {label}; got {sorted(map(str, keys))}")
         unknown = sorted(str(k) for k in keys if k not in valid)
         if unknown:
+            hints = getattr(cls, "_field_hints", None)
+            hints = dict(hints) if isinstance(hints, _MappingABC) else {}
+            extra = "".join(f"; {k}: {hints[k]}" for k in unknown if hints.get(k))
             raise ValueError(f"unknown {label} for {what}: {unknown}; "
-                             f"valid fields: {valid}")
+                             f"valid fields: {valid}{extra}")
         types_ = {f.name: f.py_type for f in _fields(cls)}
         kwargs = {}
         for k, v in value.items():
@@ -617,15 +632,23 @@ class StageParams(_MappingABC):
     draw. Bezier's ``style_sampling`` ranges draw their knobs the same way, by the stage
     itself (roadmap PR13c: ``drawn["rad"] == "generator"``, the stage's own id).
 
+    Curriculum bookkeeping (roadmap PR13d): :meth:`in_effect` returns the ``[E]`` values
+    the stage READ for the current rows of each env (the latched working copy, or the
+    drawn array), so a masked regeneration's unmasked envs report what their rows were
+    built with; :meth:`bounds` the ``(lo, hi)`` a built-in kernel clamps a value to where
+    it reads it (the value USED is ``clamp(in_effect, *bounds)``).
+
     Created by the generator facades, never by user code: the constructor is private
     (it raises ``TypeError``) and may change; the read API is ``[field]``, :meth:`set`,
-    :attr:`params`, :attr:`stage_id` and :attr:`drawn`.
+    :meth:`in_effect`, :meth:`bounds`, :attr:`params`, :attr:`stage_id` and
+    :attr:`drawn`.
     """
 
     def __init__(self, *, _token=None, stage_id: str, params: "Params | None",
                  arrays: "Mapping | None" = None, num_envs: int = 0, device=None,
                  default_stream=None, drawn: "Mapping | None" = None,
-                 bounds: "Mapping | None" = None) -> None:
+                 bounds: "Mapping | None" = None, effective: "Mapping | None" = None,
+                 hints: "Mapping | None" = None) -> None:
         if _token is not _TABLE_TOKEN:
             raise TypeError("StageParams is created by the generator facades; read it "
                             "through gen.params[stage_id]")
@@ -637,9 +660,24 @@ class StageParams(_MappingABC):
         self._device = device
         self._default_stream = default_stream
         self._drawn = dict(drawn or {})   # field -> the drawing stage's id (maybe its own)
-        # field -> (lo, hi, what): bounds narrower than the field's own (a randomizer's
-        # lo / hi take the declared range of the field it draws).
+        # field -> (lo, hi, reason): bounds narrower than the field's own (a randomizer's
+        # lo / hi take the declared range of the field it draws; roadmap PR13d: bezier /
+        # hull's min_num_points is at most max_num_points), checked by set() on a scalar.
         self._bounds = dict(bounds or {})
+        # field -> the array the stage READS during a generation (roadmap PR13d): the
+        # latched working copy, or the drawn array itself (in_effect).
+        self._effective = dict(effective or {})
+        # field -> a hint appended to the KeyError of a static / unknown field (roadmap
+        # PR13d: e.g. external has no size).
+        self._hints = dict(hints or {})
+
+    def _narrow(self, field: str, lo, hi, reason: str) -> None:
+        """Add a per-instance bound ``(lo, hi, reason)`` to the dynamic ``field``: a
+        facade's own invariant (roadmap PR13d: ``Course`` gates mode keeps
+        ``gate_frames.gate_width > 0``), checked by :meth:`set` on a scalar and reported
+        by :meth:`bounds`. Private."""
+        self[field]
+        self._bounds[field] = (lo, hi, reason)
 
     @property
     def drawn(self) -> Mapping[str, str]:
@@ -682,6 +720,10 @@ class StageParams(_MappingABC):
         return (f"StageParams({self._stage_id!r}, dynamic={sorted(self._arrays)}, "
                 f"params={self._params!r})")
 
+    def _hint(self, field: str) -> str:
+        hint = self._hints.get(field)
+        return f" ({hint})" if hint else ""
+
     def __getitem__(self, field: str) -> "wp.array":
         arr = self._arrays.get(field)
         if arr is not None:
@@ -689,9 +731,98 @@ class StageParams(_MappingABC):
         if field in self._fields:
             raise KeyError(f"{field!r} is a static parameter of stage {self._stage_id!r}: "
                            f"static: build a new generator to change it (read it from "
-                           f".params)")
+                           f".params){self._hint(field)}")
         raise KeyError(f"stage {self._stage_id!r} has no dynamic parameter {field!r}; "
-                       f"dynamic fields: {sorted(self._arrays)}")
+                       f"dynamic fields: {sorted(self._arrays)}{self._hint(field)}")
+
+    def in_effect(self, field: str, *, out: "wp.array | None" = None,
+                  stream=None) -> "wp.array":
+        """The ``[E]`` values this stage READ for the current rows of each env
+        (roadmap PR13d): for a latched field the stage's working copy (the latch writes it
+        at the start of every generation, for every env or only the masked ones, so an
+        env left out of a masked regeneration keeps the value its rows were built with);
+        for a drawn field (a ``randomize.*`` target, or a knob bezier's
+        ``style_sampling`` draws) the drawn array itself. Same dtype as ``self[field]``.
+
+        Values read, not values used: an array written out of range is returned as
+        written; a built-in stage clamps it to :meth:`bounds` where it reads it, so the
+        value it USED is ``clamp(in_effect(field), *bounds(field))`` (equal to
+        ``in_effect`` for every in-range write, scalar :meth:`set` and randomizer
+        draw). Exceptions: ``width.from_channel`` reads its ``scale`` / ``lo`` / ``hi``
+        as written (it clamps its output), a randomizer its ``lo`` / ``hi`` (it clamps
+        its draw), bezier's ``style_sampling`` draws are not bounded, and ``Course``
+        gates mode's floor ``gate_frames.gate_width > 0`` is checked by :meth:`set` on
+        a scalar only (an array value is clamped to the declared ``0``).
+
+        Timing: the values are written on the generation's stream. A latched field is
+        current once the generation's first segment ran (the latch is its prologue); a
+        drawn field once the segment holding its randomizer ran (before that, the
+        previous generation's draws). Read it on that stream (a later launch or capture
+        node, or ``out=`` with ``stream=``) or after waiting for the generation; between
+        a :meth:`set` and the next generation it holds the old values; before any
+        generation, the initial value.
+
+        Args:
+            field: A dynamic field of this stage.
+            out: Optional ``[E]`` contiguous array of the field's dtype on the
+                generator's device: one copy into it, enqueued on the resolved stream
+                (as :meth:`set`; capturable), and ``out`` is returned. Without it the
+                INTERNAL array is returned (zero-copy, stable pointer): it aliases the
+                stage's state, so never write it (a write changes what unmasked envs
+                report and what a randomizer's unmasked envs redraw).
+            stream: Optional ``wp.Stream`` (or ``"torch"``) for the ``out=`` copy.
+
+        Raises:
+            KeyError: ``field`` is static or unknown.
+            ValueError: ``out`` of the wrong shape, dtype, device or layout.
+        """
+        live = self[field]
+        arr = self._effective.get(field, live)
+        if out is None:
+            return arr
+        owner = type(self._params).__name__ if self._params is not None else \
+            self._stage_id
+        if not isinstance(out, wp.array):
+            raise ValueError(f"{owner}.{field}: out must be a wp.array, got "
+                             f"{type(out).__name__}")
+        if out.dtype is not arr.dtype:
+            raise ValueError(f"{owner}.{field}: out must be a {arr.dtype.__name__} array, "
+                             f"got {getattr(out.dtype, '__name__', out.dtype)}")
+        if tuple(out.shape) != (self._E,):
+            raise ValueError(f"{owner}.{field}: out must have shape ({self._E},), got "
+                             f"{tuple(out.shape)}")
+        if str(out.device) != str(arr.device):
+            raise ValueError(f"{owner}.{field}: out is on {out.device}, the generator on "
+                             f"{arr.device}")
+        if not out.is_contiguous:
+            raise ValueError(f"{owner}.{field}: out must be contiguous")
+        self._ctx(stream).copy(out, arr)
+        return out
+
+    def bounds(self, field: str) -> "tuple":
+        """``(lo, hi)`` a value of the dynamic ``field`` is held to (roadmap PR13d): its
+        declared bounds, narrowed per instance (bezier / hull's ``min_num_points``:
+        ``(2, max_num_points)``; a randomizer's ``lo`` / ``hi``: the drawn field's
+        declared range); ``None`` for an open side. :meth:`set` refuses a scalar
+        outside them, and the built-in generator, elevation, ``normalize.extent`` and
+        ``gate_frames`` stages clamp an array value to them where they read it
+        (comparisons: a NaN passes; the exceptions are listed in :meth:`in_effect`).
+
+        Raises:
+            KeyError: ``field`` is static or unknown.
+        """
+        self[field]
+        fld = self._fields.get(field)
+        lo = None if fld is None else fld.lo
+        hi = None if fld is None else fld.hi
+        extra = self._bounds.get(field)
+        if extra is not None:
+            e_lo, e_hi = extra[0], extra[1]
+            if e_lo is not None and (lo is None or e_lo > lo):
+                lo = e_lo
+            if e_hi is not None and (hi is None or e_hi < hi):
+                hi = e_hi
+        return (lo, hi)
 
     def __iter__(self) -> Iterator[str]:
         return iter(self._arrays)
@@ -720,9 +851,10 @@ class StageParams(_MappingABC):
             ValueError: wrong shape, dtype or device; a value that is neither a
                 ``wp.array`` nor a scalar of the field's type; a scalar outside lo/hi
                 (compared in float32 for a float32 field; for a randomizer's ``lo`` /
-                ``hi``: outside the declared range of the field it draws); a field
-                drawn every generation (by a randomizer, or by the stage itself:
-                bezier's ``style_sampling`` ranges).
+                ``hi``: outside the declared range of the field it draws; for bezier /
+                hull's ``min_num_points``: above ``max_num_points``; see
+                :meth:`bounds`); a field drawn every generation (by a randomizer, or by
+                the stage itself: bezier's ``style_sampling`` ranges).
 
         An array is not range-checked: a built-in stage clamps each value to the
         field's declared bounds where it reads it (roadmap PR13c).
@@ -760,15 +892,17 @@ class StageParams(_MappingABC):
         if isinstance(value, (str, bytes)) or not isinstance(value, numbers.Number):
             raise ValueError(f"{owner}.{field}: expected a scalar or an [E] wp.array, got "
                              f"{type(value).__name__}")
-        _check_dynamic_value(owner, fld, value)
         extra = self._bounds.get(field)
-        if extra is not None and _is_real(value):
-            lo, hi, what = extra
-            if _out_of_range(value, lo, hi, arr.dtype is wp.float32):
-                raise ValueError(f"{owner}.{field} must be in {_bounds_text(lo, hi)}, the "
-                                 f"declared range of {what} (the field this stage draws: "
-                                 f"a draw past it would pile onto the bound), got "
-                                 f"{value!r}")
+        if extra is None:
+            _check_dynamic_value(owner, fld, value)
+        else:
+            # Per-instance bounds: the type check, then the merged range of bounds() with
+            # the instance's reason, so every refusal names the same range.
+            _check_dynamic_value(owner, dataclasses.replace(fld, lo=None, hi=None), value)
+            lo, hi = self.bounds(field)
+            if _is_real(value) and _out_of_range(value, lo, hi, arr.dtype is wp.float32):
+                raise ValueError(f"{owner}.{field} must be in {_bounds_text(lo, hi)}, "
+                                 f"{extra[2]}, got {value!r}")
         v = float(value) if arr.dtype is wp.float32 else int(value)
         self._ctx(stream).fill(arr, v)
 
@@ -824,6 +958,23 @@ def _self_draw(params, field: str) -> "tuple[str, str] | None":
     if rng is None:
         return None
     return (str(getattr(type(params), "_self_draw_switch", "sampling")), str(rng))
+
+
+def _instance_bounds(params) -> "dict[str, tuple]":
+    """``field -> (lo, hi, reason)`` of the per-instance bounds of a stage's Params (the
+    private hook ``_instance_bounds()``, roadmap PR13d: bezier / hull's
+    ``min_num_points`` is at most ``max_num_points``); empty without one."""
+    fn = getattr(params, "_instance_bounds", None)
+    return dict(fn()) if params is not None and callable(fn) else {}
+
+
+def _field_hints(params) -> "dict[str, str]":
+    """``field -> hint`` a Params class appends to the errors of a per-env read of one of
+    its static or missing fields (the private class attribute ``_field_hints``, roadmap
+    PR13d: external has no ``size``; a point gate generator's ``min_num_points`` is its
+    gate count capacity); empty without one."""
+    hints = getattr(type(params), "_field_hints", None) if params is not None else None
+    return dict(hints) if isinstance(hints, _MappingABC) else {}
 
 
 def _new_stage_params(**kwargs) -> StageParams:

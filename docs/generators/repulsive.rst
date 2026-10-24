@@ -266,6 +266,47 @@ checked when the ``TrackGenerator`` is constructed, and only for
    Zero the inner-disc obstacle weights once an env reaches its target length (the wall
    stays live), closing the disc halos during the settle phase.
 
+``size`` (default 1.0)
+   Per-env size multiplier of the output, the generator's one dynamic field, in
+   ``[0.1, 10]`` (`Per-env size`_).
+
+.. _repulsive-dynamic:
+
+Per-env size
+------------
+
+``size`` is a **dynamic** ``float32`` field of ``RepulsiveParams``: a per-env ``[E]``
+array, initialised from the configured value (``TrackGenConfig.size``, default ``1.0``).
+Draw it per env with ``presets.track(generator="repulsive",
+randomize={"generator.size": (lo, hi)})``, or write it with
+``gen.params["generator"].set("size", ...)`` or from your own graph (:ref:`tuning-per-env`).
+Every other ``repulsive`` knob is static: they set the growth schedule on the host.
+
+- **Where it acts.** ``scale`` sets the physics domain of the growth (the domain and
+  seed-circle radii; the energy's regularizer ``eps`` is absolute), so a size inside the
+  flow would change the shapes, not scale them. ``size`` multiplies the **output**
+  instead: the copy of the grown loop into ``raw.xy`` (``_copy_sized_k``) writes
+  ``xy * size[e]``. So ``raw.xy`` at size ``s`` is ``f32(raw.xy(1) * s)``, bit for bit,
+  and the growth itself, its early exit and its cost do not depend on ``size``. At
+  ``size = 1`` every finite point is copied bit for bit (subnormals and ``-0.0``
+  included). A point with a non-finite component (an env whose flow diverged, which
+  fails validity anyway) is copied unscaled at every size: its finite component and
+  ``±inf`` bit for bit, a NaN bit for bit too (its payload included: the multiplied
+  operand is never the copied value, so no compiler select fold can quiet it; asserted
+  on CPU and by the CUDA test suite). The per-env array is clamped to ``[0.1, 10]`` where the kernel reads
+  it.
+- **It truncates early.** ``repulsive`` loops are long: the target perimeter is at most
+  ``repulsive_grow_mult_max * 2 * pi * r_init``, ``14.83`` at the defaults (14.48
+  measured). With the default ``n_max = 384`` and spacing ``0.06``, ``size`` above about
+  ``1.6`` truncates the longest loops (at ``size = 2`` every env is truncated and fails
+  validity). Raise ``n_max`` (and ``num_points``) with the rule of :ref:`tuning-size`:
+  ``n_max >= size_hi * 14.83 * scale / spacing + 1``. A ``generator.size`` randomizer or
+  a construction value whose ``hi`` would truncate emits a ``UserWarning`` when the
+  pipeline is built, with the ``n_max`` that fits (computed exactly from these
+  parameters).
+- **Launches.** One latch launch per generation; the copy becomes a kernel launch in the
+  same position (it was a memcpy).
+
 
 What Makes It Distinct
 -----------------------

@@ -4,7 +4,8 @@ Each is a ``wp.Function``: call it from inside your own ``@wp.kernel`` (or anoth
 ``@wp.func``), e.g. ``from track_gen.ops import funcs`` then ``funcs.catmull_rom(...)``
 in the kernel body. They are the device functions the built-in generators use: the
 same operations in the same order. On CPU a plugin kernel that composes them reproduces
-the built-in arithmetic bit for bit. On CUDA (``wp.config.fuse_fp``, on by default)
+the built-in arithmetic bit for bit. On CUDA (the module option ``fuse_fp``, default
+``True``; ``wp.set_module_options({"fuse_fp": ...})``)
 the compiler may contract a multiply and an add into one FMA, and which pairs it
 contracts depends on the code around the inlined call, so a different surrounding
 kernel can round differently in the last bit.

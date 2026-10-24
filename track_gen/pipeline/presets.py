@@ -177,7 +177,80 @@ def _has_half_width_field(reg, name: str) -> bool:
     return "half_width" in fields
 
 
+#: Roadmap PR13d: why a generator without a ``size`` field cannot take a per-env size.
+_SIZE_REMEDY = ("a per-env size is a generator field: declare size = plugin.dynamic(1.0, "
+                "lo=SIZE_BOUNDS[0], hi=SIZE_BOUNDS[1]) and pass b.param('size') to the op "
+                "that applies its scale")
+
+
+#: ... and why a legacy spec cannot (its ``params=`` class takes static fields only).
+_LEGACY_SIZE_REMEDY = ("a legacy GeneratorSpec / GateGeneratorSpec has no per-env size: "
+                       "port it to a Stage (docs/contributing/writing-a-generator.rst), "
+                       "then declare size")
+
+
+def _size_remedy(spec) -> str:
+    """The remedy of a generator without ``size``: ``_SIZE_REMEDY`` for a Stage (or an
+    unknown ``spec=None``), ``_LEGACY_SIZE_REMEDY`` for a legacy spec."""
+    from ..plugin.stage import _is_stage  # noqa: PLC0415
+
+    return _SIZE_REMEDY if spec is None or _is_stage(spec) else _LEGACY_SIZE_REMEDY
+
+
+def _size_fields(reg, kind: str, name: str) -> "tuple[bool, str] | None":
+    """``(declares size, hint)`` of a registered generator's Params class (roadmap
+    PR13d), or ``None`` for an unknown name (``build`` reports it). Declares: a ``size``
+    field that follows the convention (a dynamic ``float``); a static or ``int`` one is
+    the plugin's own and is never written."""
+    from ..plugin._registry import _params_class  # noqa: PLC0415
+    from ..plugin.params import _declares_size  # noqa: PLC0415
+
+    cls = _lookup(reg, kind, name)
+    if cls is None:
+        return None
+    params_cls = _params_class(cls)
+    hints = getattr(params_cls, "_field_hints", None) if params_cls else None
+    hint = hints.get("size") if isinstance(hints, _MappingABC) else None
+    return _declares_size(params_cls), hint or _size_remedy(cls)
+
+
+def _with_size(ref: StageRef, size, *, declares: "bool | None",
+               hint: str = _SIZE_REMEDY, what: str = "generator") -> StageRef:
+    """``presets.track / gates(size=)`` (roadmap PR13d): ``ref`` with the INITIAL per-env
+    ``size`` in its params (a mapping or ``None``: added; a Params instance: replaced);
+    ``size=1.0`` leaves ``ref`` unchanged (the spec dict stays the same). ``declares``:
+    whether its Params declare ``size`` (``None``: unknown, ``build`` reports it)."""
+    if _is_one(size):
+        return ref
+    p = ref.params
+    if isinstance(p, _MappingABC) and "size" in p:
+        raise ValueError(f"size={size!r} and the {what}'s params set size={p['size']!r}: "
+                         f"give size once")
+    if declares is False:
+        raise ValueError(f"size={size!r}: {what} {ref.name!r} declares no size ({hint})")
+    if p is not None and not isinstance(p, _MappingABC):
+        from ..plugin.params import _declares_size  # noqa: PLC0415
+
+        if not _declares_size(type(p)):
+            raise ValueError(f"size={size!r}: {what} {ref.name!r} declares no size "
+                             f"({hint})")
+        if not _is_one(p.size):
+            raise ValueError(f"size={size!r} and the {what}'s params set size={p.size!r}: "
+                             f"give size once")
+        return dataclasses.replace(ref, params=dataclasses.replace(p, size=size))
+    return _with_params(ref, {"size": size})
+
+
+def _is_one(v) -> bool:
+    """``v == 1`` for a real number (a non-number is left to the Params checks)."""
+    try:
+        return float(v) == 1.0
+    except (TypeError, ValueError):
+        return False
+
+
 def track(*, num_envs: int, device: str, n_max: int = 384, scale: float = 1.0,
+          size: float = 1.0,
           generator: "str | StageRef" = "bezier", generator_params=None,
           num_points: int = 256, half_width: float = 0.1,
           spacing: "float | None" = None, relax: "StageSel | None" = "auto",
@@ -204,6 +277,13 @@ def track(*, num_envs: int, device: str, n_max: int = 384, scale: float = 1.0,
         device: The Warp device.
         n_max: Per-env point capacity (``N_max``).
         scale: ``TrackGenConfig.scale``.
+        size: The INITIAL per-env course size (roadmap PR13d): the generator's dynamic
+            ``size`` (``generator.size``; ``TrackGenConfig.size``), a multiplier applied
+            where the generator applies ``scale`` (the plan view only: widths and z are
+            absolute). ``1.0`` (default) adds nothing to the spec. A generator that
+            declares no ``size`` (``external``) raises ``ValueError``, as does a
+            ``size`` in its params too. Per-env values: ``gen.params["generator"]``,
+            ``randomize={"generator.size": (lo, hi)}``. Size up with ``n_max``.
         generator: A registered generator name, or a ``StageRef("generator", ...)``
             (then pass its params inside it).
         generator_params: The generator's params (a Params instance or a mapping;
@@ -280,6 +360,10 @@ def track(*, num_envs: int, device: str, n_max: int = 384, scale: float = 1.0,
     from ..plugin import registry as _default_registry  # noqa: PLC0415
 
     reg = _default_registry if registry is None else registry
+    if not _is_one(size):
+        found = _size_fields(reg, "generator", gen.name)
+        gen = _with_size(gen, size, declares=None if found is None else found[0],
+                         hint=_SIZE_REMEDY if found is None else found[1])
     provides = _provides(reg, "generator", gen.name, gen.params)
     hw = float(half_width)
     step = 0.6 * hw if spacing is None else spacing
@@ -475,7 +559,7 @@ def _gate_stages(gen_ref: StageRef, *, provides=frozenset(), upstream=(),
                  gate_width: float = 0.0, gate_align: str = "yaw_only",
                  elevation_ref: "StageRef | None" = None, min_gates: int = 4,
                  z_valid_grade: float = 0.0, validity_ref: "StageRef | None" = None,
-                 checks=(), carry_attributes: bool = False) -> tuple:
+                 checks=(), carry_attributes: bool = False, size: float = 1.0) -> tuple:
     """The gate stage list (shared by :func:`gates` and
     ``legacy.to_gate_pipeline_spec``): generator [-> upstream] [-> stations] [-> order
     [-> normalize]] [-> carry_*] [-> carry_attributes] -> gate_relax [-> gate_arclen ->
@@ -483,7 +567,8 @@ def _gate_stages(gen_ref: StageRef, *, provides=frozenset(), upstream=(),
     ``order_ref=None``: a legacy generator that orders its own gates. The stages a
     generator ``provides`` are dropped (z: gate_arclen + elevation; tangent: tangents)
     and carried instead; ``half_size`` + ``roll`` select ``gate_frames.posed``;
-    ``carry_attributes`` carries the per-anchor plugin attributes to the gate slots."""
+    ``carry_attributes`` carries the per-anchor plugin attributes to the gate slots.
+    ``size`` (roadmap PR13d): the initial ``normalize.size`` (params only when not 1)."""
     provides = frozenset(provides)
     stages = [gen_ref, *upstream]
     if stations_ref is not None:
@@ -491,7 +576,8 @@ def _gate_stages(gen_ref: StageRef, *, provides=frozenset(), upstream=(),
     if order_ref is not None:
         stages.append(order_ref)
         if normalize:
-            stages.append(StageRef("normalize", "extent"))
+            stages.append(StageRef("normalize", "extent") if _is_one(size) else
+                          StageRef("normalize", "extent", params={"size": size}))
     for attr in _PROVIDABLE:
         if attr in provides:
             stages.append(StageRef("carry", attr, id=f"carry_{attr}"))
@@ -549,6 +635,7 @@ def gates(*, num_envs: int, device: str, generator: "str | StageRef" = "bezier",
           gate_align: str = "yaw_only", elevation: "StageSel | None" = "flat",
           z_base: float = 0.0, z_valid_grade: float = 0.0,
           checks: Sequence[StageSel] = ("gate_default",), scale: float = 1.0,
+          size: float = 1.0,
           on_invalid: str = "keep", n_max: int = 384, num_points: int = 256,
           half_width: float = 0.1, spacing: "float | None" = None,
           relax: "StageSel | None" = "auto", width: StageSel = "constant",
@@ -569,8 +656,8 @@ def gates(*, num_envs: int, device: str, generator: "str | StageRef" = "bezier",
     registered as a gate generator (the built-in names are both: anchors win), else
     ``"stations"``. A generator that ``provides`` per-anchor attributes has the stages
     computing them dropped (``z``: gate_arclen and elevation; ``tangent``: tangents;
-    ``half_size`` + ``roll``: ``gate_frames.posed`` and
-    ``validity.gate_default(check_crossing="always")``).
+    ``half_size`` + ``roll``: ``gate_frames.posed``; ``validity.gate_default`` checks
+    the bars of every env that has one, whatever its ``check_crossing``).
 
     Args:
         num_envs: ``E``.
@@ -602,9 +689,21 @@ def gates(*, num_envs: int, device: str, generator: "str | StageRef" = "bezier",
         z_valid_grade: The validity grade cap (0: off).
         checks: The ``validity`` stages: ``"gate_default"`` first, plugin checks after.
             ``validity.gate_default`` gets ``min_gates``, ``gate_radius``,
-            ``gate_width`` and ``z_valid_grade`` (and ``check_crossing="always"`` for
-            posed gates) unless its params set them (a Params instance is taken as is).
+            ``gate_width`` and ``z_valid_grade`` unless its params set them (a Params
+            instance is taken as is). Its ``gate_width`` and ``check_crossing`` are
+            inert since 0.2.0.dev5 (the bars of every env that has one are checked);
+            posed gates still get ``check_crossing="always"``, filled only so that
+            existing posed specs stay identical.
         scale: ``BatchSpec.scale``.
+        size: The INITIAL per-env course size (roadmap PR13d; ``GateGenConfig.size``),
+            routed to the stage that holds it: ``normalize.size`` for a gate generator
+            re-normalized by ``normalize.extent`` (``polar`` / ``voronoi`` /
+            ``checkpoint``; also one that declares a ``size`` of its own, which the
+            normalization erases), else ``generator.size`` for a gate generator that
+            declares it (``bezier`` / ``hull``) and for a stations source's track
+            generator. ``1.0``
+            (default) adds nothing to the spec; a generator with neither raises
+            ``ValueError``, as does a ``size`` in its params too.
         on_invalid: ``"keep"`` or ``"poison"``.
         n_max, num_points, half_width, spacing, relax, width: The centerline
             sub-pipeline of a stations source (as :func:`track`; ``relax="auto"``: the
@@ -726,6 +825,7 @@ def gates(*, num_envs: int, device: str, generator: "str | StageRef" = "bezier",
         stage = _is_stage(spec_cls)
         provides = frozenset(spec_cls.provides) if stage else frozenset()
         G = 32 if max_gates is None else max_gates
+        gen_declares_size = _size_fields(reg, "gate_generator", name)
     else:
         n_st = 12 if gates is None else gates
         provides = frozenset()
@@ -790,6 +890,7 @@ def gates(*, num_envs: int, device: str, generator: "str | StageRef" = "bezier",
                              f"stations default)")
         if relaxed:
             track_spec = track(num_envs=num_envs, device=device, n_max=n_max, scale=scale,
+                               size=size,
                                generator=gen_in if gen_in is not None else name,
                                generator_params=generator_params, num_points=num_points,
                                half_width=half_width, spacing=spacing, relax=relax,
@@ -808,6 +909,11 @@ def gates(*, num_envs: int, device: str, generator: "str | StageRef" = "bezier",
         else:
             gen_ref = StageRef("generator", name, params=generator_params,
                                capacity={"raw": int(num_points)})
+        if not relaxed and not _is_one(size):
+            found = _size_fields(reg, "generator", gen_ref.name)
+            gen_ref = _with_size(gen_ref, size,
+                                 declares=None if found is None else found[0],
+                                 hint=_SIZE_REMEDY if found is None else found[1])
         default_st = "relaxed" if relaxed else "raw"
         stations_ref = _select("stations", "stations",
                                stations if stations is not None else default_st, hw)
@@ -928,15 +1034,36 @@ def gates(*, num_envs: int, device: str, generator: "str | StageRef" = "bezier",
     vfill = {"min_gates": min_gates, "gate_radius": gate_radius, "gate_width": bar_width,
              "z_valid_grade": z_valid_grade}
     if posed:
+        # Inert since 0.2.0.dev5 (the bars are checked per env): filled only so existing
+        # posed specs (and their dicts) stay identical.
         vfill["check_crossing"] = "always"
     validity_ref = _with_gate_validity(check_refs[0], vfill,
                                        posed_by=name if posed else None)
+    # The per-env size (roadmap PR13d): a gate generator re-normalized by
+    # normalize.extent has it there (the normalization erases a size of its own, declared
+    # or not); any other gate generator holds it (no alias: one key per array).
+    normalize_size = 1.0
+    if anchors and not _is_one(size):
+        declares, hint = gen_declares_size if gen_declares_size is not None else \
+            (None, _SIZE_REMEDY)
+        if not normalize:
+            gen_ref = _with_size(gen_ref, size, declares=declares, hint=hint,
+                                 what="gate generator")
+        else:
+            # A static or int size (not the convention, declares is False) is the
+            # plugin's own field: the flat size goes to normalize.size regardless.
+            v = _param(gen_ref, "size") if declares is not False else None
+            if v is not None and not _is_one(v):
+                raise ValueError(f"size={size!r} and the gate generator's params set "
+                                 f"size={v!r}: give size once")
+            normalize_size = size
     stages = _gate_stages(
         gen_ref, provides=provides, upstream=upstream, stations_ref=stations_ref,
         order_ref=order_ref, normalize=normalize, gate_radius=gate_radius,
         gate_solve_iters=gate_solve_iters, gate_width=bar_width, gate_align=gate_align,
         elevation_ref=elev_ref, min_gates=min_gates, z_valid_grade=z_valid_grade,
-        validity_ref=validity_ref, checks=check_refs[1:], carry_attributes=carry_attrs)
+        validity_ref=validity_ref, checks=check_refs[1:], carry_attributes=carry_attrs,
+        size=normalize_size)
     spec = PipelineSpec(batch=BatchSpec(num_envs=num_envs, device=device, n_max=n_max,
                                         scale=scale, on_invalid=on_invalid, max_gates=G),
                         stages=stages)

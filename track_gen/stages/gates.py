@@ -6,6 +6,12 @@ A gate :class:`~track_gen.pipeline.Program` (``BatchSpec.max_gates`` set, e.g.
     generator -> order -> [normalize] -> [carry_*] -> gate_relax -> [gate_arclen]
       -> [elevation] -> lift -> [tangents] -> gate_frames -> validity
 
+Roadmap PR13d: ``normalize.extent`` has Params (its dynamic ``size``),
+``gate_frames.default``'s ``gate_width`` is dynamic and ``validity.gate_default`` checks
+bar crossings per env (its twins: ``_normalize_extent_to_sized_k``,
+``warp_gate._finalize_frame_dyn_k``, ``warp_gate._finalize_validity_bars_k``; the
+default outputs are byte-identical).
+
 Each stage wraps the 0.2.0.dev3 ``warp_gate._run_gate_pipeline`` launches verbatim (the
 same kernels, dims and scalars; three kernels gained trailing input / fail arrays,
 ``_finalize_validity_k``'s grade-check wrap is also bounded by ``max_gates`` (the same
@@ -33,7 +39,7 @@ import warp as wp
 from .._src import warp_gate as _wg
 from .._src import warp_zprofile as _zprof
 from .._src.collision_geom import _frame_quat, _safe_normalize3
-from ..ops.constants import TARGET_EXTENT
+from ..ops.constants import SIZE_BOUNDS, TARGET_EXTENT
 from ..ops.fill import fill as _ops_fill
 from ..ops.geometry import _angle_sort_launch
 from ..ops.resample import _pad
@@ -299,14 +305,71 @@ def _normalize_extent_to_k(
             dst[base + i] = wp.vec2f(wp.nan, wp.nan)
 
 
+_C_SIZE_LO = wp.constant(wp.float32(SIZE_BOUNDS[0]))
+_C_SIZE_HI = wp.constant(wp.float32(SIZE_BOUNDS[1]))
+
+
+@wp.kernel
+def _normalize_extent_to_sized_k(
+    src: wp.array(dtype=wp.vec2f),
+    max_gates: int,
+    count: wp.array(dtype=wp.int32),
+    target_extent: float,
+    dst: wp.array(dtype=wp.vec2f),
+    size_e: wp.array(dtype=wp.float32),
+):
+    # Roadmap PR13d: _normalize_extent_to_k to the extent target_extent * size[e] (the
+    # per-env size, clamped to SIZE_BOUNDS by comparisons, folded into the finite scalar
+    # target before the division; the per-gate arithmetic verbatim).
+    e = wp.tid()
+    size = size_e[e]
+    size = wp.where(size < _C_SIZE_LO, _C_SIZE_LO, size)
+    size = wp.where(size > _C_SIZE_HI, _C_SIZE_HI, size)
+    target_extent = target_extent * size
+    base = e * max_gates
+    cnt = count[e]
+    if cnt < 0:
+        cnt = 0
+    if cnt > max_gates:
+        cnt = max_gates
+
+    min_x = float(1.0e30)
+    max_x = float(-1.0e30)
+    min_y = float(1.0e30)
+    max_y = float(-1.0e30)
+
+    for i in range(max_gates):
+        if i < cnt:
+            p = src[base + i]
+            min_x = wp.min(min_x, p[0])
+            max_x = wp.max(max_x, p[0])
+            min_y = wp.min(min_y, p[1])
+            max_y = wp.max(max_y, p[1])
+
+    cx = 0.5 * (min_x + max_x)
+    cy = 0.5 * (min_y + max_y)
+    extent = wp.max(max_x - min_x, max_y - min_y)
+    scale = target_extent / wp.max(extent, 1.0e-8)
+
+    for i in range(max_gates):
+        if i < cnt:
+            p = src[base + i]
+            dst[base + i] = wp.vec2f((p[0] - cx) * scale, (p[1] - cy) * scale)
+        else:
+            dst[base + i] = wp.vec2f(wp.nan, wp.nan)
+
+
 class NormalizeExtent(_Builtin):
     """``normalize.extent``: centre each env's gates and scale them to the extent
-    ``BatchSpec.scale * TARGET_EXTENT`` (a rewrite of ``gates.xy``, one out-of-place
-    launch); the gate preset adds it after the order of a generator whose
-    ``preferred["normalize"]`` is ``"extent"`` (polar, checkpoint, voronoi)."""
+    ``BatchSpec.scale * TARGET_EXTENT * size[e]`` (a rewrite of ``gates.xy``, one
+    out-of-place launch); the gate preset adds it after the order of a generator whose
+    ``preferred["normalize"]`` is ``"extent"`` (polar, checkpoint, voronoi). Roadmap
+    PR13d: its dynamic ``size`` (``normalize.size``, default 1: unchanged bytes) is the
+    course size of those gate generators."""
 
     kind = "normalize"
     name = "extent"
+    Params = _p.NormalizeExtentParams
     reads = {"xy": "gates.xy", "count": "gates.count"}
     writes = {"xy": "gates.xy"}
 
@@ -315,9 +378,11 @@ class NormalizeExtent(_Builtin):
         x_out = b.write("xy", wp.vec2f, per="gates")
         G, E = int(b.layout.stride), b.E
         target = float(b.scale) * TARGET_EXTENT
+        size = b.param("size")
 
         def enqueue(ctx):
-            ctx.launch(_normalize_extent_to_k, E, [x_in, G, count, float(target), x_out])
+            ctx.launch(_normalize_extent_to_sized_k, E,
+                       [x_in, G, count, float(target), x_out, size])
         return enqueue
 
 
@@ -612,7 +677,9 @@ class GateFramesDefault(_Frames):
     """``gate_frames.default``: unit tangent, pose forward, orientation (yaw only or
     full tangent), ``half_size = 0.5 * gate_width`` and the bar endpoints; NaN padding
     (rewrites ``gates.position`` / ``gates.tangent``). Counts frame fallbacks per env
-    into the ``fallbacks`` scratch (``GateGenerator.frame_fallbacks``)."""
+    into the ``fallbacks`` scratch (``GateGenerator.frame_fallbacks``). Roadmap PR13d:
+    ``gate_width`` is dynamic (per env, clamped to ``>= 0`` at use:
+    ``_finalize_frame_dyn_k``)."""
 
     name = "default"
     Params = _p.GateFramesParams
@@ -620,12 +687,12 @@ class GateFramesDefault(_Frames):
     def build(self, b, p):
         pos_in, tan_in, count, out, fallbacks = self._io(b)
         G, E = int(b.layout.stride), b.E
-        width = float(p.gate_width)
+        width = b.param("gate_width")
         align_full = int(p.gate_align == "full_tangent")
 
         def enqueue(ctx):
             _ops_fill(ctx, fallbacks, 0)
-            ctx.launch(_wg._finalize_frame_k, E * G,
+            ctx.launch(_wg._finalize_frame_dyn_k, E * G,
                        [*out, count, G, width, align_full, fallbacks, pos_in, tan_in])
         return enqueue
 
@@ -658,10 +725,17 @@ class GateFramesPosed(_Frames):
 # ---------------------------------------------------------------------------------------
 
 class GateValidityDefault(_Builtin):
-    """``validity.gate_default``: the fused per-env gate check (``_finalize_validity_k``,
-    one launch): its 0/1 flag into ``gates.valid`` and one ``valid.fail`` bit per failed
-    check (``GATE_FAIL_BITS``: count, finite, tangent, spacing, crossing, grade). It
-    starts ``valid.fail``, so it comes before any plugin check."""
+    """``validity.gate_default``: the fused per-env gate check (one launch): its 0/1
+    flag into ``gates.valid`` and one ``valid.fail`` bit per failed check
+    (``GATE_FAIL_BITS``: count, finite, tangent, spacing, crossing, grade). It starts
+    ``valid.fail``, so it comes before any plugin check.
+
+    Roadmap PR13d: the bar-crossing check runs per env, for every env with a real gate of
+    non-zero ``half_size`` (``_finalize_validity_bars_k``: the bars of a run-time
+    ``gate_frames.gate_width`` and posed gates alike), deciding exactly as the PR11
+    kernel with the crossing check on (a zero-width bar never crosses); its params'
+    ``gate_width`` and ``check_crossing`` are inert (kept so specs load; removed in
+    PR16)."""
 
     kind = "validity"
     name = "gate_default"
@@ -683,13 +757,13 @@ class GateValidityDefault(_Builtin):
         G, E = int(b.layout.stride), b.E
         min_gates = int(p.min_gates)
         distance = float(_wg._gate_center_distance(p))
-        # The kernel reads its gate_width argument as a toggle only (> 0: crossing).
-        crossing = float(p.gate_width) if p.check_crossing == "width" else 1.0
         grade = float(p.z_valid_grade)
+        # Roadmap PR13d: no static crossing toggle (gate_width / check_crossing are
+        # inert): the kernel checks the bars of every env that has one.
 
         def enqueue(ctx):
-            ctx.launch(_wg._finalize_validity_k, E,
-                       [*ins, G, min_gates, distance, crossing, grade, valid, fail])
+            ctx.launch(_wg._finalize_validity_bars_k, E,
+                       [*ins, G, min_gates, distance, grade, valid, fail])
         return enqueue
 
 

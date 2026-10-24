@@ -32,6 +32,12 @@ points keep the scalar kernels. Covered here (design section 9.2):
 15. the legacy surfaces (the PR9 composition, frozen signatures, a ``GeneratorSpec``
     with dynamic Params refused);
 16. the kit's ``params.per_env`` on toys reading ``m[0]`` / writing their param array.
+
+Roadmap PR13d (``tests/test_difficulty_axes.py`` covers its axes): every built-in
+generator but ``external`` and the bezier / hull gate generators declare a dynamic
+``size``, bezier / hull's ``min_num_points`` is a dynamic int32; the declared sets, the
+launch deltas (the rule of ``tests/_pr13d_delta.py``), the ``dyn`` key sets, the kit skip
+and ``style_sampling``'s deprecation are updated here accordingly.
 """
 from __future__ import annotations
 
@@ -49,9 +55,9 @@ import numpy as np
 import pytest
 import warp as wp
 
-from tests._pr13c_delta import (ELEVATION_LATCHES, GATE_GENERATOR_LATCHES,
-                                GENERATOR_LATCHES, LATCH_ALL, LATCH_MASKED,
-                                pr13c_sequence)
+from tests._pr13d_delta import (ELEVATION_LATCHES, GENERATOR_LATCHES,
+                                assert_latch_block, gate_latches, latch_dtypes,
+                                pr13d_sequence)
 from track_gen import (GateGenConfig, GateGenerator, PerEnvSeededRNG, TrackGenConfig,
                        TrackGenerator)
 from track_gen import plugin
@@ -69,9 +75,14 @@ from track_gen.plugin import GeneratorSpec, registry
 from track_gen.plugin.params import _DynamicField, _fields, _static_view
 from track_gen.plugin.stage import _is_stage
 from track_gen.stages.track import _zcfg
-from track_gen.testing import check_generator
+from track_gen.testing import check_generator, check_stage
 from track_gen.testing.capture import result_arrays
 from track_gen.testing.trace import trace_launches
+
+# Roadmap PR13d: bezier's style_sampling is deprecated (one DeprecationWarning per built
+# generator); this module still exercises it.
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:bezier's style_sampling is deprecated:DeprecationWarning")
 
 DEV = "cpu"
 E = 8
@@ -81,17 +92,24 @@ SEEDS = np.array([0, 1, 7, 99991, 2147483647, 1000003, 123456789, 46341], np.int
 SEEDS_B = np.arange(E, dtype=np.int32) * 7919 + 3
 INF = math.inf
 
-#: The dynamic set (design section 2.2): (kind, name) -> {field: (lo, hi)}.
+#: The dynamic set (design section 2.2; roadmap PR13d: size, min_num_points): (kind,
+#: name) -> {field: (lo, hi)}.
+_SIZE = {"size": (0.1, 10.0)}
 DYNAMIC = {
-    ("generator", "bezier"): {"rad": (0.0, 1.0), "handle_clamp_frac": (0.0, None)},
-    ("generator", "hull"): {"hull_displacement": (0.0, 1.0)},
+    ("generator", "bezier"): {"rad": (0.0, 1.0), "handle_clamp_frac": (0.0, None),
+                              "min_num_points": (2, None), **_SIZE},
+    ("generator", "hull"): {"hull_displacement": (0.0, 1.0), "min_num_points": (2, None),
+                            **_SIZE},
     ("generator", "polar"): {"polar_radial_jitter": (0.0, 0.85),
-                             "polar_angular_jitter": (0.0, 0.45)},
+                             "polar_angular_jitter": (0.0, 0.45), **_SIZE},
     ("generator", "voronoi"): {"voronoi_radial_variation": (0.0, 0.85),
-                               "voronoi_angular_jitter": (0.0, math.pi)},
+                               "voronoi_angular_jitter": (0.0, math.pi), **_SIZE},
     ("generator", "checkpoint"): {"checkpoint_radius_min_frac": (0.0, 1.0),
                                   "checkpoint_angle_jitter": (0.0, 1.0),
-                                  "checkpoint_turn_rate": (0.0, math.pi)},
+                                  "checkpoint_turn_rate": (0.0, math.pi), **_SIZE},
+    ("generator", "repulsive"): dict(_SIZE),
+    ("gate_generator", "bezier"): dict(_SIZE),
+    ("gate_generator", "hull"): dict(_SIZE),
     ("gate_generator", "polar"): {"polar_radial_jitter": (0.0, 0.85),
                                   "polar_angular_jitter": (0.0, 0.45)},
     ("gate_generator", "voronoi"): {"voronoi_radial_variation": (0.0, 0.85),
@@ -104,9 +122,11 @@ DYNAMIC = {
     ("elevation", "noise"): {"z_min": (None, None), "z_max": (None, None),
                              "z_noise_amplitude": (0.0, None)},
 }
-#: Units without any dynamic field.
-STATIC_ONLY = [("generator", "repulsive"), ("gate_generator", "bezier"),
-               ("gate_generator", "hull"), ("elevation", "flat")]
+#: Units without any dynamic field (roadmap PR13d: repulsive and the bezier / hull gate
+#: generators have size).
+STATIC_ONLY = [("elevation", "flat")]
+#: The dynamic int32 fields (roadmap PR13d); every other dynamic field is float32.
+INT32 = {"min_num_points"}
 
 #: Per generator: each knob's four values inside its effective range (rad below the
 #: default clamp 0.4, voronoi_angular_jitter in its useful [0, 0.5]).
@@ -257,16 +277,18 @@ def test_the_dynamic_set_and_its_bounds(unit):
     assert got == want, f"{kind}.{name}: {got}"
     for f in _fields(cls):
         if f.kind == "dynamic":
-            assert f.dtype is wp.float32, f.name
+            assert f.dtype is (wp.int32 if f.name in INT32 else wp.float32), f.name
     schema = registry.describe(kind, name).params_schema
     for field, prop in schema.get("properties", {}).items():
         if field in want:
             lo, hi = want[field]
-            assert prop["x-dynamic"] is True and prop["x-dtype"] == "float32", field
+            dtype = "int32" if field in INT32 else "float32"
+            assert prop["x-dynamic"] is True and prop["x-dtype"] == dtype, field
             assert prop.get("minimum") == lo and prop.get("maximum") == hi, (field, prop)
-            # The bounds compare in float32 (a read-back value at a bound is in range).
-            assert prop.get("x-bounds") == ("float32" if (lo, hi) != (None, None)
-                                             else None), (field, prop)
+            # The float32 bounds compare in float32 (a read-back value at a bound is in
+            # range); an int32 field's compare exactly.
+            want_b = "float32" if (lo, hi) != (None, None) and dtype == "float32" else None
+            assert prop.get("x-bounds") == want_b, (field, prop)
         else:
             assert prop.get("x-static") is True, field
 
@@ -277,7 +299,10 @@ def test_checkpoint_steering_internals_and_edgy_stay_static():
             "checkpoint_best_of_k", "checkpoint_clip_fallback"} <= static
     bez = {f.name: f.kind for f in _fields(bp.BezierParams)}
     assert bez["edgy"] == "static" and bez["style_sampling"] == "static"
-    assert all(f.kind == "static" for f in _fields(bp.RepulsiveParams))
+    assert bez["max_num_points"] == "static"
+    # Roadmap PR13d: repulsive's only dynamic field is its size (its solver knobs stay
+    # static).
+    assert [f.name for f in _fields(bp.RepulsiveParams) if f.kind == "dynamic"] == ["size"]
 
 
 @pytest.mark.parametrize("name", sorted(GEN_KNOBS))
@@ -869,23 +894,25 @@ def test_inert_window_warns_at_construction(profile, knob):
 
 _STYLE3 = dict(style_sampling=True, rad_range=(0.1, 0.35), scale_range=(0.8, 1.2),
                handle_clamp_frac_range=(0.3, 0.9))
-#: case -> (TrackGenConfig kwargs, the 0.2.0.dev5 PR13b count, the PR13c count).
+#: case -> (TrackGenConfig kwargs, the 0.2.0.dev5 PR13b count, the PR13c count, the
+#: PR13d count). Roadmap PR13d re-pin (deliberate): + min_num_points / size latches.
 LAUNCH_TABLE = {
-    "bezier": (dict(generator="bezier"), 152, 154),
-    "bezier_style_all": (_STYLE3, 153, 153),
-    "bezier_style_rad": (dict(style_sampling=True, rad_range=(0.1, 0.35)), 153, 154),
+    "bezier": (dict(generator="bezier"), 152, 154, 156),
+    "bezier_style_all": (_STYLE3, 153, 153, 155),
+    "bezier_style_rad": (dict(style_sampling=True, rad_range=(0.1, 0.35)), 153, 154, 156),
     "bezier_style_clamp": (dict(style_sampling=True, handle_clamp_frac_range=(0.3, 0.9)),
-                           153, 154),
-    "bezier_style_none": (dict(style_sampling=True, scale_range=(0.8, 1.2)), 153, 155),
-    "hull": (dict(generator="hull"), 151, 152),
-    "voronoi": (dict(generator="voronoi"), 151, 153),
-    "polar": (dict(generator="polar"), 143, 145),
-    "checkpoint": (dict(generator="checkpoint"), 146, 149),
+                           153, 154, 156),
+    "bezier_style_none": (dict(style_sampling=True, scale_range=(0.8, 1.2)), 153, 155,
+                          157),
+    "hull": (dict(generator="hull"), 151, 152, 154),
+    "voronoi": (dict(generator="voronoi"), 151, 153, 154),
+    "polar": (dict(generator="polar"), 143, 145, 146),
+    "checkpoint": (dict(generator="checkpoint"), 146, 149, 150),
     "checkpoint_k1_clip": (dict(generator="checkpoint", checkpoint_best_of_k=1,
-                                checkpoint_clip_fallback=True), 146, 149),
-    "z_uniform": (dict(_ZU), 156, 160),
-    "z_random_walk": (dict(_ZW), 156, 161),
-    "z_noise": (dict(_ZN), 154, 159),
+                                checkpoint_clip_fallback=True), 146, 149, 150),
+    "z_uniform": (dict(_ZU), 156, 160, 162),
+    "z_random_walk": (dict(_ZW), 156, 161, 163),
+    "z_noise": (dict(_ZN), 154, 159, 161),
 }
 
 
@@ -916,22 +943,26 @@ def _style_fixups(rows: list, cfg) -> list:
 
 
 @pytest.mark.parametrize("case", sorted(LAUNCH_TABLE))
+@pytest.mark.filterwarnings("ignore:bezier's style_sampling is deprecated")
 def test_launch_delta_against_the_legacy_composition(case):
     """One generation's trace == the legacy (scalar) PR9 composition's under the PR13c
-    rule (latches after the effective seed, knob kernels renamed to their twins), with
-    the design section 4 counts; masked: the latches are masked, right after the
-    effective seed, before the hold (+3: advance, hold, commit)."""
-    kw, head, pr13c = LAUNCH_TABLE[case]
+    rule then the PR13d one (``tests/_pr13d_delta.py``: the latch block computed from
+    the declarations after the effective seed, the knob / count / sized kernels renamed
+    to their twins), with the design section 6.2 counts; masked: the latches are masked,
+    right after the effective seed, before the hold (+3: advance, hold, commit)."""
+    kw, head, _pr13c, pr13d = LAUNCH_TABLE[case]
     cfg = _tcfg(**kw)
     gen = TrackGenerator(cfg, _rng())
     ctx = LaunchContext.for_call(DEV)
     with trace_launches() as program:
         gen.program.enqueue(ctx)
     got = _rows(program)
-    gen_latches = GENERATOR_LATCHES[cfg.generator]
-    if cfg.style_sampling:
-        gen_latches = (cfg.rad_range is None) + (cfg.handle_clamp_frac_range is None)
-    n_latch = gen_latches + ELEVATION_LATCHES[cfg.z_profile]
+    latches = latch_dtypes(gen.program)
+    gen_latches = list(GENERATOR_LATCHES[cfg.generator])
+    if cfg.style_sampling:                     # a ranged knob is drawn, not latched
+        gen_latches = ["i32"] + ["f32"] * ((cfg.rad_range is None) +
+                                           (cfg.handle_clamp_frac_range is None) + 1)
+    assert latches == gen_latches + list(ELEVATION_LATCHES[cfg.z_profile]), latches
     track, scratch = warp_pipeline._inflate_warp_alloc(cfg)
     seed = wp.empty(E, dtype=wp.int32, device=DEV)
     with trace_launches() as pr9:
@@ -939,28 +970,25 @@ def test_launch_delta_against_the_legacy_composition(case):
         warp_pipeline._run_pipeline(cfg, seed, out=track, scratch=scratch, ctx=ctx)
         gen.seeds._write_generation(track.generation, None, ctx)
     legacy_rows = _rows(pr9)
-    if head is not None:
-        assert len(legacy_rows) == head, f"{case}: HEAD emitted {len(legacy_rows)}"
-        assert len(got) == pr13c == head + n_latch, (case, len(got))
-    want = _style_fixups(pr13c_sequence(legacy_rows, n_latch, E), cfg)
+    assert len(legacy_rows) == head, f"{case}: HEAD emitted {len(legacy_rows)}"
+    assert len(got) == pr13d == head + len(latches), (case, len(got))
+    want = _style_fixups(pr13d_sequence(legacy_rows, latches, E, legacy=True), cfg)
     assert len(got) == len(want), f"{case}: {len(got)} vs {len(want)}"
     first = next((i for i, (a, b) in enumerate(zip(got, want)) if a != b), None)
     assert first is None, f"{case}: record {first}: {got[first]} vs {want[first]}"
-    assert [r[1] for r in got[1:1 + n_latch]] == [LATCH_ALL] * n_latch
     # masked
     mask = wp.array(np.arange(E) % 2, dtype=wp.int32, device=DEV)
     with trace_launches() as masked:
         gen.program.enqueue(ctx, advance=True, mask=mask)
-    names = [r.kernel.rsplit(".", 1)[-1] for r in masked]
     assert len(masked) == len(got) + 3, case
-    assert names[1] == "_effective_seed_masked_k", names[:4]
-    assert [r.kernel for r in list(masked)[2:2 + n_latch]] == [LATCH_MASKED] * n_latch
-    assert names[2 + n_latch] == "_hold_k" and names.count(LATCH_ALL.rsplit(".", 1)[1]) == 0
+    assert_latch_block(gen.program, program, masked)
 
 
+#: Roadmap PR13d re-pin (deliberate): + the generator's / normalize's size and
+#: gate_frames.gate_width latches (+2 each).
 _GATE_TABLE = {
-    "bezier/ccw/flat": 14, "polar/ccw/flat": 16, "checkpoint/ccw/flat": 16,
-    "voronoi/ccw/flat": 17, "polar/raw/flat": 16, "hull/ccw/flat": 14,
+    "bezier/ccw/flat": 16, "polar/ccw/flat": 18, "checkpoint/ccw/flat": 18,
+    "voronoi/ccw/flat": 19, "polar/raw/flat": 18, "hull/ccw/flat": 16,
 }
 
 
@@ -969,10 +997,11 @@ _GATE_TABLE = {
                                                         "bezier/ccw/uniform",
                                                         "checkpoint/ccw/random_walk"])
 def test_gate_launch_deltas(case):
-    """The gate pipelines: the generator's latches (polar / checkpoint / voronoi: 2) and
-    the elevation's (uniform 2, random_walk 3, noise 3) follow the effective seed; the
-    knob kernels are the twins; the default pipeline keeps its 14 records; a case of
-    the PR11 golden equals its recorded count plus the latches."""
+    """The gate pipelines: the latches of the generator (bezier / hull: size; polar /
+    checkpoint / voronoi: 2 jitters), normalize.size, the elevation (uniform 2,
+    random_walk 3, noise 3) and gate_frames.gate_width follow the effective seed (plain
+    and masked, ``tests/_pr13d_delta.py``); the knob kernels are the twins; the default
+    pipeline emits 16 records (roadmap PR13d re-pin)."""
     name, ordering, z = case.split("/")
     zkw = {"flat": {}, "uniform": dict(z_profile="uniform", z_max=1.5),
            "random_walk": dict(z_profile="random_walk", z_max=1.5, z_max_step=0.3),
@@ -982,9 +1011,13 @@ def test_gate_launch_deltas(case):
     with trace_launches() as t:
         gen.generate()
     names = [r.kernel.rsplit(".", 1)[-1] for r in t]
-    n = GATE_GENERATOR_LATCHES[name] + ELEVATION_LATCHES[z]
+    mask = wp.array(np.arange(E) % 2, dtype=wp.int32, device=DEV)
+    with trace_launches() as masked:
+        gen.program.enqueue(LaunchContext.for_call(DEV), advance=True, mask=mask)
     assert names[0] == "_effective_seed_k"
-    assert names[1:1 + n] == ["_latch_all_f32_k"] * n and names[1 + n] != "_latch_all_f32_k"
+    assert assert_latch_block(gen.program, t, masked) == gate_latches(name, z)
+    assert "_finalize_validity_bars_k" in names and "_finalize_validity_k" not in names
+    assert "_finalize_frame_dyn_k" in names and "_finalize_frame_k" not in names
     if case in _GATE_TABLE:
         assert len(t) == _GATE_TABLE[case]
     twin = {"polar": "_polar_controls_dyn_k", "checkpoint": "_sample_checkpoints_dyn_k",
@@ -1015,20 +1048,36 @@ def test_gate_launch_counts_are_the_pr11_golden_plus_the_latches(case):
                                         device=DEV))
     with trace_launches() as t:
         gen.generate()
-    n = GATE_GENERATOR_LATCHES[name] + ELEVATION_LATCHES[z]
-    assert len(t) == len(golden["launches"][case]) + n
+    n = gate_latches(name, z)
+    assert latch_dtypes(gen.program) == n
+    assert len(t) == len(golden["launches"][case]) + len(n)
 
 
-def test_repulsive_and_the_default_gates_gain_no_latch():
+def test_repulsive_and_the_default_gates_gain_exactly_the_pr13d_latches():
+    """Roadmap PR13d: repulsive latches its size (+1, the final copy is the sized
+    copy), the default gates the bezier gate generator's size and gate_frames.gate_width
+    (14 -> 16); external gains none (no size)."""
     gen = TrackGenerator(_tcfg(generator="repulsive", num_points=64,
                                repulsive_stages=(16, 32, 64)), _rng())
     with trace_launches() as t:
         gen.generate()
-    assert "_latch_all_f32_k" not in [r.kernel.rsplit(".", 1)[-1] for r in t]
+    names = [r.kernel.rsplit(".", 1)[-1] for r in t]
+    assert names[1] == "_latch_all_f32_k" and names.count("_latch_all_f32_k") == 1
+    assert names.count("_copy_sized_k") == 1
     gates = GateGenerator(_gcfg(), _rng())
     with trace_launches() as t:
         gates.generate()
-    assert len(t) == 14
+    assert len(t) == 16
+    assert latch_dtypes(gates.program) == ["f32", "f32"]
+    ext = TrackGenerator(presets.track(num_envs=E, device=DEV, generator="external"),
+                         _rng())
+    with trace_launches() as t:
+        ext.generate()
+    assert len(t) == 20
+    # Only its latched centerline.count input (unchanged since PR13b): no size.
+    assert latch_dtypes(ext.program) == ["i32"] and "size" not in ext.params["generator"]
+    assert [r.kernel.rsplit(".", 1)[-1] for r in t if "_latch_" in r.kernel] == \
+        ["_latch_all_i32_k"]
 
 
 # ---------------------------------------------------------------------------------------
@@ -1240,14 +1289,16 @@ def test_the_legacy_branch_of_a_core_raises_on_the_stage_view():
 
 
 _CORES = {
-    "bezier": (wg_bezier._enqueue_bezier, ("rad", "handle_clamp_frac")),
-    "hull": (wg_hull._enqueue_hull, ("hull_displacement",)),
-    "polar": (wg_polar._enqueue_polar, ("polar_radial_jitter", "polar_angular_jitter")),
+    "bezier": (wg_bezier._enqueue_bezier, ("min_num_points", "rad", "handle_clamp_frac",
+                                           "size")),
+    "hull": (wg_hull._enqueue_hull, ("min_num_points", "hull_displacement", "size")),
+    "polar": (wg_polar._enqueue_polar, ("polar_radial_jitter", "polar_angular_jitter",
+                                        "size")),
     "voronoi": (wg_voronoi._enqueue_voronoi, ("voronoi_radial_variation",
-                                               "voronoi_angular_jitter")),
+                                               "voronoi_angular_jitter", "size")),
     "checkpoint": (wg_checkpoint._enqueue_checkpoint, ("checkpoint_radius_min_frac",
                                                         "checkpoint_angle_jitter",
-                                                        "checkpoint_turn_rate")),
+                                                        "checkpoint_turn_rate", "size")),
 }
 
 
@@ -1287,9 +1338,13 @@ def test_style_sampling_bytes_equal_the_legacy_path(combo, seeds):
     s = SEEDS if seeds == "fingerprint" else SEEDS_B
     ranges = _STYLE_COMBOS[combo]
     cfg = _tcfg(style_sampling=True, **ranges)
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")                  # no deprecation, no warning
+    with warnings.catch_warnings(record=True) as rec:
+        warnings.simplefilter("always")
         gen = TrackGenerator(cfg, _rng(s))
+    # Roadmap PR13d: exactly one warning, the deprecation (attributed to this caller).
+    assert [(w.category, str(w.message).split(":")[0], w.filename) for w in rec] == \
+        [(DeprecationWarning, "bezier's style_sampling is deprecated and will be "
+                              "removed in 1.0", __file__)]
     gen.generate()
     scratch = wg_bezier.bezier_alloc_scratch(cfg)
     out = wp.empty(E * 256, dtype=wp.vec2f, device=DEV)
@@ -1586,8 +1641,9 @@ def test_the_legacy_signatures_are_frozen():
 
 
 def test_a_generator_spec_with_dynamic_params_is_refused():
-    with pytest.raises(TypeError, match=r"BezierParams\.rad .* is dynamic: dynamic fields "
-                                        r"need a Stage"):
+    # Roadmap PR13d: its first dynamic field is min_num_points (a base-class field).
+    with pytest.raises(TypeError, match=r"BezierParams\.min_num_points .* is dynamic: "
+                                        r"dynamic fields need a Stage"):
         registry.add(GeneratorSpec(name="acme.legacy_bezier",
                                    alloc_scratch=wg_bezier.bezier_alloc_scratch,
                                    generate=wg_bezier.generate_centerline_warp,
@@ -1684,9 +1740,17 @@ def test_the_kit_params_per_env_check(plugin_registry, name, kernel, fails):
 
 
 def test_the_kit_params_per_env_skips_units_without_dynamic_params():
+    # Roadmap PR13d: repulsive has a dynamic size, so params.per_env runs (and passes);
+    # a unit without any dynamic field (elevation.flat) skips.
     report = check_generator("repulsive", devices=[DEV], num_envs=2,
                              config=dict(num_points=64, repulsive_stages=(16, 32, 64)),
                              skip=("hot_path", "statelessness", "batch_independence",
                                    "determinism", "diversity", "output"))
+    per_env = report.result("params.per_env", DEV)
+    assert not per_env.skipped and per_env.passed, str(report)
+    assert per_env.details["fields"] == ["size"]
+    report = check_stage("elevation", "flat", devices=[DEV],
+                         skip=("hot_path", "statelessness", "batch_independence",
+                               "determinism", "output"))
     per_env = report.result("params.per_env", DEV)
     assert per_env.skipped and per_env.message == "skipped: no dynamic parameters"

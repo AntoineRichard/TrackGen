@@ -25,9 +25,9 @@ A few principles:
   knobs per env with ``randomize=`` (`Per-env parameters: randomization and
   curricula`_): ``rad`` / ``handle_clamp_frac`` for the Bezier generator,
   ``polar_radial_jitter`` for polar, ``checkpoint_radius_min_frac`` for checkpoint, and
-  so on. For the Bezier generator, also widen ``[min_num_points, max_num_points]``
-  (and use ``style_sampling=True`` with ``scale_range`` for per-env size). For the
-  checkpoint generator, increase ``checkpoint_count``; for polar, ``polar_num_knots``.
+  so on, and ``generator.size`` for a per-env course size (`Size: the sizing rule`_). For
+  the Bezier and hull generators, also widen ``[min_num_points, max_num_points]``. For
+  the checkpoint generator, increase ``checkpoint_count``; for polar, ``polar_num_knots``.
   Wider shape ranges can introduce harder-to-relax geometries, so watch yield when you
   push these.
 
@@ -50,9 +50,10 @@ A few principles:
 Per-env parameters: randomization and curricula
 -----------------------------------------------
 
-A **dynamic** parameter is a per-env ``[E]`` ``float32`` array the kernels read at every
-generation. You can draw it per env with ``randomize=``, or write it yourself (a
-curriculum), with no rebuild and no re-capture. The dynamic fields are:
+A **dynamic** parameter is a per-env ``[E]`` array (``float32``, or ``int32`` for a
+count) the kernels read at every generation. You can draw a ``float32`` one per env with
+``randomize=``, or write any of them yourself (a curriculum), with no rebuild and no
+re-capture. The dynamic fields are:
 
 - the built-in generators' shape knobs: ``rad`` and ``handle_clamp_frac`` (``bezier``),
   ``hull_displacement`` (``hull``), ``polar_radial_jitter`` and
@@ -62,16 +63,28 @@ curriculum), with no rebuild and no re-capture. The dynamic fields are:
   voronoi and checkpoint **gate** generators have the same ring knobs (not
   ``checkpoint_turn_rate``: they do not steer). Each generator page gives their bounds,
   effective range and measured yield (:ref:`generators-per-env`);
+- the course **size** (``size``, ``[0.1, 10]``) of every built-in generator but
+  ``external``: ``generator.size`` on tracks and on the ``bezier`` / ``hull`` gate
+  generators, ``normalize.size`` (the ``normalize.extent`` stage) for the ``polar``,
+  ``voronoi`` and ``checkpoint`` gate generators (`Size: the sizing rule`_);
+- the **corner count** of ``bezier`` and ``hull``: ``min_num_points``, an ``int32`` in
+  ``[2, max_num_points]`` that you write (``set`` or your kernel); ``randomize=`` does
+  not draw ``int32`` fields (:ref:`bezier-corner-count`);
+- the gate **bar width**, ``gate_frames.default``'s ``gate_width`` (key
+  ``gate_frames.gate_width``, ``>= 0``; :ref:`gate-width-per-env`);
 - the elevation profiles' ``z_min`` and ``z_max`` (``uniform``, ``random_walk``,
   ``noise``), ``z_max_step`` (``random_walk``) and ``z_noise_amplitude`` (``noise``), on
   tracks, on gates and on the centerline before the stations alike;
 - ``width.from_channel``'s ``scale``, ``lo`` and ``hi``, and every field a plugin
   declares with ``plugin.dynamic``.
 
-Everything else is static (point and knot counts, ``half_width``, ``spacing``,
-``edgy``, ``scale``, ``z_base``, the relax and validity tolerances, the ``repulsive``
-knobs): build a new generator to change it. Naming a static field in ``randomize=``
-raises ``PlanError`` listing the fields of the pipeline that can be drawn.
+Everything else is static (``max_num_points``, knot, anchor and checkpoint counts,
+``half_width``, ``spacing``, ``n_max``, ``edgy``, the core ``scale``, ``z_base``, the
+relax and validity tolerances, the ``repulsive`` growth knobs, the gate generators'
+``min_num_points``): build a new generator to change it. Naming a static field in
+``randomize=`` raises ``PlanError`` listing the fields of the pipeline that can be drawn
+(with a hint where another key holds the axis: ``generator.size`` on a ``polar`` gate
+pipeline names ``normalize.size``).
 
 **Randomize.** ``presets.track(randomize={"<stage id>.<field>": (lo, hi)})`` draws each
 env's value uniformly in ``[lo, hi)`` at every generation (:ref:`config-randomize`). The
@@ -143,6 +156,10 @@ a value read back from an array is always accepted. An **array** value (an ``[E]
 kernel clamps it to the bounds when it reads it (a NaN passes through, and an unbounded
 side, such as ``z_min``'s or ``handle_clamp_frac``'s upper one, is not clamped). So a
 curriculum may overshoot a bound without failing; the excess piles onto the bound.
+``gen.params[stage].bounds(field)`` returns the ``(lo, hi)`` a value is held to (``None``
+for an open side), narrowed per generator where the static configuration narrows it:
+``min_num_points``' are ``(2, max_num_points)``, and ``set`` refuses a scalar outside
+them.
 
 **Check the yield at both ends of every range.** Many knobs lose yield, or stop
 mattering, well inside their bounds: ``rad`` has no effect above ``handle_clamp_frac``
@@ -190,13 +207,55 @@ A crossing you write yourself at run time is not refused: ``uniform`` then draws
 ``[z_max, z_min]``, ``random_walk`` and ``noise`` return ``z_max`` everywhere (exactly
 what the scalar kernels did).
 
-**Masked regeneration.** At the start of a generation the Program copies (*latches*)
-the live arrays into the working copies the kernels read, for the envs it regenerates
-only. Under ``generate(advance=True, mask=m)`` an env left out keeps the value its
-current track was built with, so the live array may already hold a newer value than
-that env's track: for bookkeeping (which difficulty is each env running?) keep your own
-per-env copy of what you wrote when you regenerated it. A drawn field is not latched:
-``gen.params["generator"][field]`` holds the draw each env's track was built with.
+.. _tuning-in-effect:
+
+**Masked regeneration and bookkeeping: in_effect.** At the start of a generation the
+Program copies (*latches*) the live arrays into the working copies the kernels read, for
+the envs it regenerates only. Under ``generate(advance=True, mask=m)`` an env left out
+keeps the value its current track was built with, so the live array may already hold a
+newer value than that env's track. ``gen.params[stage].in_effect(field)`` answers "which
+difficulty is each env running?": the ``[E]`` values the stage **read** for each env's
+current rows (the working copy of a latched field; the drawn array of a field a
+randomizer, or ``style_sampling``, draws):
+
+.. code-block:: python
+
+   p = gen.params["generator"]
+   p.set("size", next_sizes)                    # the curriculum's next level, [E] float32
+   gen.generate(advance=True, mask=done)        # only the done envs pick it up
+   built = p.in_effect("size")                  # [E]: what each env's current track read
+   p.in_effect("size", out=my_log)              # or: one copy into your own [E] array
+   p.bounds("size")                             # (0.1, 10.0): what a built-in clamps to
+
+- **A view, or a copy.** Without ``out=`` it returns the internal array: no copy, a
+  stable pointer, usable in your graph. Read it, never write it: a write (an in-place
+  torch op on ``wp.to_torch(...)`` included) changes what the unmasked envs report, and
+  what a randomizer redraws for them. With ``out=`` (a contiguous ``[E]`` array of the
+  field's dtype on the generator's device; ``ValueError`` otherwise) it enqueues one copy
+  into it, on the stream ``set`` would use (``stream=``, the ambient scope, the
+  generator's stream), recordable in your graph, and returns ``out``. ``KeyError`` for a
+  static or unknown field.
+- **Values read, values used.** An array value is not range-checked, and the built-in
+  generator, elevation, ``normalize`` and ``gate_frames`` stages clamp it to
+  ``bounds(field)`` where they read it. So the value a built-in kernel **used** is
+  ``clamp(in_effect(f), *bounds(f))``: equal to ``in_effect(f)`` for every in-range
+  array, every scalar ``set`` (checked on the host) and every randomizer draw (clamped
+  when drawn). Write in-range values, or book the clamp. Exceptions, used as written:
+  ``width.from_channel``'s ``scale`` / ``lo`` / ``hi`` (it clamps its output), a
+  randomizer's ``lo`` / ``hi`` (it clamps its draw), ``style_sampling``'s draws, and, in
+  a ``Course`` in gates mode, ``gate_frames.gate_width`` (its floor ``> 0`` is checked
+  by ``set`` on a scalar only: an array value ``<= 0`` is used as ``0``).
+- **When it is current.** The arrays are written on the generation's stream: read them
+  on that stream (a later launch or node of the same graph, ``out=`` there) or after
+  waiting for the generation. A latched field is current once segment ``0`` has run
+  (the latch is its prologue); a drawn field once the segment holding its randomizer has
+  run (behind a ``HOST`` stage that is a later segment, and until then the array holds
+  the previous generation's draws). Between a ``set`` and the next generation,
+  ``in_effect`` returns the old values; before any generation, the initial value.
+
+A drawn field is redrawn for every env, but an env left out of a masked generation keeps
+its effective seed and its latched ``lo`` / ``hi``, so it redraws the same bits:
+``in_effect`` of a drawn field is the draw each env's track was built with too.
 
 **Segmented Programs.** In a Program with a ``HOST`` stage (a ``HOST`` plugin generator
 or relax stage), the latch runs at the start of segment ``0``. A write must be enqueued
@@ -205,8 +264,7 @@ graph applies one generation later (:ref:`pipeline-segments`).
 
 **What stays static, and how to vary it anyway.** Mix generators or configurations in
 one batch (:ref:`results-mixed-batches`), each writing its own env range of one
-``Track``; use ``bezier``'s ``style_sampling=True`` with ``scale_range`` for per-env
-size; or write a plugin generator whose knobs are ``plugin.dynamic`` (with declared
+``Track``, or write a plugin generator whose knobs are ``plugin.dynamic`` (with declared
 ``lo`` / ``hi``, :ref:`generator-runtime-params`).
 
 .. _tuning-difficulty-axes:
@@ -219,7 +277,8 @@ Difficulty axes and the knobs that reach them
    :widths: 20 80
 
    * - Axis
-     - ``randomize=`` key, by generator (or why it cannot be drawn yet)
+     - ``randomize=`` key, by generator (or how else to reach it, or why it cannot be
+       reached yet)
    * - Curviness, corner sharpness
      - ``generator.rad`` (lower: sharper) and ``generator.handle_clamp_frac`` (bezier);
        ``generator.checkpoint_turn_rate`` (higher: sharper kinks; checkpoint)
@@ -233,22 +292,205 @@ Difficulty axes and the knobs that reach them
        ``generator.hull_displacement`` (pinches; hull)
    * - Hills
      - ``elevation.z_max`` with ``z_min`` fixed (``uniform``);
-       ``elevation.z_noise_amplitude`` in a wide symmetric window (``noise``)
+       ``elevation.z_noise_amplitude`` in a wide symmetric window (``noise``). Their
+       grades fall as ``~1 / size``: scale the height with the size to keep them
+       (`Size: the sizing rule`_)
    * - Grade
-     - ``elevation.z_max_step`` in a wide window (``random_walk``)
-   * - Size
-     - not reachable in 0.2.0.dev5: a per-env ``generator.size`` is planned (roadmap
-       PR13d); today, ``bezier``'s ``style_sampling`` with ``scale_range``
+     - ``elevation.z_max_step`` in a wide window (``random_walk``; a grade cap, the same
+       at every size)
+   * - Course size
+     - ``generator.size`` (``bezier``, ``hull``, ``polar``, ``voronoi``,
+       ``checkpoint``, ``repulsive``; the ``bezier`` / ``hull`` gate generators and the
+       track generator of ``source="stations"`` gates); ``normalize.size`` (the
+       ``polar``, ``voronoi`` and ``checkpoint`` gate generators); none for
+       ``external`` (scale your ``centerline.xy``). Higher: a longer course relative to
+       the absolute road width; size ``n_max`` for its ``hi`` (`Size: the sizing
+       rule`_)
    * - Corner count
-     - not reachable in 0.2.0.dev5: a dynamic ``min_num_points`` for ``bezier`` /
-       ``hull`` is planned (PR13d); the knot, anchor and checkpoint counts size buffers
+     - ``set`` or your kernel only (``int32``): ``bezier`` / ``hull``
+       ``min_num_points`` (higher: more corners). It narrows the count toward the
+       static ``max_num_points`` only (:ref:`bezier-corner-count`): build with
+       ``max_num_points`` at the hardest count, and size ``n_max`` for its longer loops
+       (`Size: the sizing rule`_; the build-time warning scales its nominal loop by
+       ``(max_num_points / 13) ** 0.6``); the knot, anchor and checkpoint counts size
+       buffers
    * - Corner asymmetry
      - not reachable in 0.2.0.dev5: ``bezier``'s ``edgy`` (roadmap PR16)
-   * - Gate size
-     - not reachable in 0.2.0.dev5: ``gate_frames.default``'s ``gate_width`` (PR13d)
+   * - Gate bar width
+     - ``gate_frames.gate_width`` (every built-in gate generator): the opening the agent
+       passes through. Wider: easier to pass through, but fewer valid courses (the bars
+       cross; a larger size restores the yield, :ref:`gate-width-per-env`); narrower:
+       harder. Keep it ``> 0`` for an agent (a width-0 gate can never be passed). Its
+       crossings are checked per env
+   * - Gate count
+     - not reachable in 0.x: a gate generator's ``min_num_points`` / knot, anchor or
+       checkpoint count is its gate capacity (``min_gates`` / ``max_gates``)
 
 The gate pipelines take the same keys for the polar, voronoi and checkpoint ring knobs
 and the elevation (``presets.gates(randomize=...)``).
+
+.. _tuning-size:
+
+Size: the sizing rule
+~~~~~~~~~~~~~~~~~~~~~
+
+``size`` is a per-env factor on the core ``scale``, applied where each generator applies
+``scale``: the corner grid of ``bezier`` and ``hull`` (and their gate generators), the
+normalization target of ``polar``, ``voronoi`` and ``checkpoint`` (on gates, the
+``normalize.extent`` stage), the output of ``repulsive`` (whose ``scale`` sets its
+physics domain instead). At ``size = 1`` every output is byte-identical to a pipeline
+without it; ``bezier`` / ``hull`` at ``scale = 1`` and ``size = s`` are bitwise ``scale =
+s``, the normalized generators within one ``float32`` rounding of it. ``external`` has
+no ``size``: it ingests your geometry as given (a size would move a circuit ingested in
+world coordinates about the data's origin); scale ``centerline.xy`` in your own graph.
+
+- **Initial value**: ``TrackGenConfig.size`` / ``GateGenConfig.size`` (the only
+  construction-time route for ``Course``), ``presets.track(size=)`` /
+  ``presets.gates(size=)``; per env: ``randomize={"generator.size": (lo, hi)}`` (or
+  ``normalize.size``), ``gen.params["generator"].set("size", ...)``, your kernel. It is
+  not the batch size (``num_envs``).
+- **A route that cannot apply it raises** ``ValueError`` instead of ignoring it: a flat
+  ``size != 1`` with a generator that declares no ``size`` (``external``, a plugin whose
+  Params lack it, a legacy ``GeneratorSpec``), ``presets.track(generator="external",
+  size=2.0)``, ``size=`` together with ``generator_params={"size": ...}``, and the
+  frozen legacy module functions (``generate_*_warp``) given a config with ``size !=
+  1``.
+
+**Plan view only.** ``size`` scales xy. The widths (``half_width``, ``spacing``, the relax
+bands, ``gate_radius``, ``gate_width``) and z (``z_min`` / ``z_max``, the noise
+amplitude, ``z_valid_grade``) are absolute: ``size`` is the "course larger relative to
+the car" axis. So:
+
+- under constant spacing a larger course has more points (the rule below), and small
+  sizes lose yield to the absolute road width (self-overlap after the offset): for
+  ``bezier``, 0.945 valid at ``size = 0.5``;
+- ``elevation.uniform`` places its knots at arc fractions and ``noise`` runs its harmonics
+  in normalized arc length, so their **grades fall as** ``~1 / size`` (``uniform`` with
+  ``z_max = 0.3``: median per-track maximum grade 0.666 / 0.337 / 0.225 at size 1 / 2 /
+  3): scale ``z_max`` / ``z_noise_amplitude`` with the size to keep the grade.
+  ``random_walk``'s ``z_max_step`` is a grade cap per unit arc and does not depend on
+  the size. On gates the spacing grows with the size, so the ``z_valid_grade`` check
+  passes more envs. A joint size and hills curriculum is therefore not orthogonal.
+
+**Truncation.** Size changes no buffer and no launch. The constant-spacing resample emits
+``floor(size * L / spacing) + 1`` points (``L`` the raw perimeter at size 1) into
+``n_max`` slots; a track that needs more is flagged in ``Track.truncated`` and fails
+validity (rows kept or poisoned by ``on_invalid``). A gate pipeline with
+``source="relaxed_stations"`` fails the same way (its centerline is resampled into
+``n_max``); anchor-sourced gates have a fixed count and are not affected (their spacing
+grows). At the defaults (``n_max = 384``, ``half_width = 0.1``, spacing ``0.06``; CPU),
+the longest loop (rounded up) and its p99 over 8192 envs (seeds ``0..4095`` and
+``7919 * e + 13`` for ``e < 4096``) and the yields over ``E = 256`` (seeds
+``7919 * e + 13``); ``repulsive``: both over ``E = 32``, seeds ``7919 * e + 13``:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 16 26 24 34
+
+   * - generator
+     - longest raw loop at size 1 (p99)
+     - ``n_max = 384`` truncates from
+     - valid at size 0.5 / 1 / 2 / 3
+   * - ``bezier``
+     - 8.68 (7.17)
+     - ~2.6
+     - 0.945 / 1.000 / 0.996 / 0.996
+   * - ``hull``
+     - 8.30 (6.90)
+     - ~2.8
+     - 0.828 / 0.992 / 1.000 / 1.000
+   * - ``polar``
+     - 6.24 (5.67)
+     - ~3.7
+     - 0.961 / 1.000 / 1.000 / 1.000
+   * - ``voronoi``
+     - 5.01 (4.78)
+     - ~4.6
+     - 0.996 / 1.000 / 1.000 / 1.000
+   * - ``checkpoint``
+     - 7.26 (6.18)
+     - ~3.2
+     - 0.902 / 0.992 / 0.996 / 0.992
+   * - ``repulsive``
+     - 14.48 (bound 14.83)
+     - ~1.6
+     - — / 1.000 / 0.000 (every env truncated) / —
+
+**The sizing rule**, for a size range up to ``size_hi`` (``L_max`` from the table, times
+``scale``, or measured on your configuration with ``gen.program.tap("raw.xy")``):
+
+1. ``n_max >= size_hi * L_max / spacing + 1`` (else truncation, a failed env);
+2. ``num_points >= size_hi * L_max / spacing``: the raw loop keeps its static
+   ``num_points``, so its point spacing is ``size * L / num_points`` (``bezier``, 256
+   points: median per-env largest raw segment 0.019 / 0.038 / 0.057 at size 1 / 2 / 3,
+   against the output spacing 0.06); a coarser raw loop makes the constant-spacing
+   resample interpolate a polyline;
+3. the utilities' capacities and resolutions (`Size and the utilities`_).
+
+**Build-time warning.** When the pipeline is built, a ``generator.size`` randomizer whose
+``hi`` (or a construction value) would truncate the generator's nominal longest loop
+emits one ``UserWarning`` naming the ``n_max`` that fits (``... raise n_max to >= 496 or
+lower the range; truncated envs fail validity``). The nominal loop is exact for
+``repulsive`` (from its parameters); for the others it is the longest loop of the table
+(so the warning fires from the "truncates from" column), scaled by the knobs that
+lengthen it: ``bezier`` / ``hull``'s ``max_num_points`` (``(max_num_points / 13) **
+0.6`` above 13), ``hull_displacement`` (its initial value or the ``hi`` of its
+randomizer: ``1 + 0.6 * (d - 0.15)`` above 0.15) and ``style_sampling``'s
+``scale_range``. It is not checked when ``polar``'s ``polar_num_knots`` /
+``polar_radial_jitter``, ``voronoi``'s ``voronoi_num_sites`` /
+``voronoi_control_points`` / ``voronoi_angular_jitter``, or ``checkpoint``'s
+``checkpoint_count`` / ``checkpoint_radius_min_frac`` / ``checkpoint_angle_jitter`` /
+``checkpoint_steer_gain`` / ``checkpoint_lookahead_frac`` / ``checkpoint_best_of_k``
+differ from their defaults or are drawn (the other knobs keep the check), nor for a
+plugin generator. The longest loop is the maximum of 8192 envs: a larger batch can have
+a longer one, so a few of its envs can truncate just below the threshold (fail-closed).
+It is a heuristic, so a warning, never
+an error, and a curriculum written with ``set`` or from your graph is not checked: size
+``n_max`` for its largest value yourself (measure ``L_max`` with
+``gen.program.tap("raw.xy")``).
+
+.. _tuning-size-utilities:
+
+Size and the utilities
+~~~~~~~~~~~~~~~~~~~~~~
+
+The runtime utilities size some buffers and grids once, from the batch they are built
+on. A size curriculum that starts small and grows outruns them while the tracks stay
+valid:
+
+- **Checkpoint and prop rings.** ``CheckpointSampler`` / ``PropSampler`` with
+  ``max_checkpoints=None`` / ``max_props=None`` size their rings once, at construction,
+  from the bound batch (``ceil(1.5 * longest perimeter / spacing)``), and ``Course``
+  builds its ``CheckpointSampler`` from its construction generation. Grown tracks then
+  get clipped rings (``checkpoint_sampler.truncated``), and progress and lap rewards read
+  them (``bezier``, ``E = 32``, seeds ``7919 * e + 13``, checkpoint spacing 0.5, 20
+  checkpoints derived at size 1: truncated on 0 / 0 / 44 / 94 % of the valid envs at
+  size 1 / 1.5 / 2 / 2.5). Pass a capacity that holds every track that is not
+  truncated, whatever its size:
+
+  .. code-block:: text
+
+     max_checkpoints = ceil(1.5 * n_max * spacing / checkpoint_spacing)
+     max_props       = ceil(1.5 * n_max * spacing / prop_spacing)
+
+  A track that fits ``n_max`` has a plan-view perimeter below ``n_max * spacing``; the
+  ``1.5`` covers the 3D length under elevation and a boundary's extra ``~2 pi *
+  half_width`` (measured: at most 0.90 of ``n_max * spacing`` just below truncation,
+  elevation included). At the defaults that is 70 checkpoints at spacing 0.5. Or, with no
+  new number: construct with ``TrackGenConfig.size = size_hi``, then ``set`` the size
+  down. The derived default is unchanged in 0.2.0.dev5 (switching it would change the
+  default ``Course``'s buffer shapes): roadmap PR14 derives the capacities from
+  ``n_max``.
+- **SDF and heightfield grids.** The ``sdf`` collision backend and the heightfield baker
+  cover each env's bounding box with a fixed ``R x R`` grid, so the cells grow with the
+  size while the road stays absolute (``bezier``, ``R = 128``: 12.3 / 6.7 / 4.5 cells
+  across the road at size 1 / 2 / 3; OOB flags agree with ``segments`` on 99.93 / 99.80
+  / 99.68 % of the boxes). Collision accuracy then varies per env with the difficulty.
+  Rule: ``sdf_resolution`` / ``heightfield_resolution >= R_ref * size_hi``, ``R_ref`` the
+  resolution accurate enough at size 1; memory grows as ``size_hi^2`` (the ~670 MB of
+  128² grids at ``E = 8192`` become ~6 GB at ``size_hi = 3``). Or use the exact
+  ``segments`` backend. No warning is emitted (a ``Course`` sees no randomizer before
+  roadmap PR15).
 
 ``half_width`` and ``spacing`` coupling
 ----------------------------------------
@@ -270,7 +512,8 @@ XPBD solver enough room to converge within the default iteration budget.
    to override, leave ``spacing=None`` and let the auto-coupling handle it.
 
 The ``N_max`` buffer must be large enough to hold the longest track in the
-batch. The formula for the required size is::
+batch (at its largest ``size``: :ref:`tuning-size`). The formula for the required size
+is::
 
     N_max >= floor(max_perimeter / spacing) + 1
 
@@ -289,7 +532,8 @@ Summary of the coupling rules:
 - ``N_max`` must satisfy ``N_max >= max_perimeter / spacing + 1``; raise it when
   you lower ``half_width`` or ``spacing``.
 - ``scale`` controls the track coordinate range; doubling ``scale`` roughly
-  doubles perimeters, so ``N_max`` scales proportionally.
+  doubles perimeters, so ``N_max`` scales proportionally. The per-env ``size`` does the
+  same per env: size ``N_max`` (and ``num_points``) for its largest value.
 - Ingested centerlines (``generator="external"``) are in your data's units, not
   ``scale``'s: set ``half_width``, ``spacing`` and ``N_max`` for them explicitly.
   ``load_centerlines`` checks ``N_max >= perimeter / spacing + 1`` per env before
@@ -463,12 +707,13 @@ Bezier (``generator="bezier"``)
   shorter adjacent edge.
 - ``min_num_points`` / ``max_num_points`` (default 9–13) control the corner
   count per env. A wider range increases diversity; many corners with high
-  ``rad`` can push more tracks into the polygon fallback.
-- To let each env draw its own style, randomize ``rad`` and ``handle_clamp_frac``
-  (``randomize={"generator.rad": (0.1, 0.4)}``; keep ``rad``'s range at or below the
-  clamp, the lowest clamp draw if you draw it too) and, for per-env size, enable
-  ``style_sampling=True`` with ``scale_range``. ``style_sampling``'s ``rad_range`` and
-  ``handle_clamp_frac_range`` still work, but ``randomize=`` supersedes them
+  ``rad`` can push more tracks into the polygon fallback. ``min_num_points`` is
+  per env (``int32``): a curriculum raises it toward ``max_num_points``
+  (:ref:`bezier-corner-count`).
+- To let each env draw its own style, randomize ``rad``, ``handle_clamp_frac`` and
+  ``size`` (``randomize={"generator.rad": (0.1, 0.4), "generator.size": (0.8, 1.2)}``;
+  keep ``rad``'s range at or below the clamp, the lowest clamp draw if you draw it too).
+  ``style_sampling`` and its ranges are deprecated: they map one to one onto these keys
   (:ref:`bezier-style-vs-randomize`).
 
 Hull (``generator="hull"``)

@@ -76,7 +76,8 @@ How It Works
    ``ops.arc_resample`` arc-resamples the dense loop to ``num_points`` uniformly spaced
    points.  ``ops.normalize_extent`` then centers the environment's bounding box and
    isotropically rescales the longest dimension to ``scale × 1.44``, matching the shared
-   target extent of the other generators.
+   target extent of the other generators, times the env's ``size[e]``
+   (``ops.normalize_extent(..., size=...)``).
 
 6. **Fallback for self-crossing smooth loops.**
    ``ops.self_intersections`` counts proper crossings on the ``num_points``-point loop.
@@ -85,7 +86,7 @@ How It Works
    (``AP``-vertex) polygon by linear interpolation, and
    ``ops.arc_resample(..., active=crossers)`` overwrites those rows with an arc-resampled
    version of that polygon.  A second ``ops.normalize_extent`` pass re-applies the bbox
-   rescale.
+   rescale (to the same per-env target).
    Non-crossing rows are left untouched.
 
 
@@ -215,15 +216,19 @@ checked when the ``TrackGenerator`` is constructed, and only for
    keep anchors close to their ideal evenly-spaced sectors; larger values break the rotational
    regularity. Dynamic, in ``[0, pi]``; the useful range is much smaller (below).
 
+``size`` (default 1.0)
+   Per-env size multiplier: both normalizations scale env ``e``'s longest bounding-box
+   side to ``f32(scale * 1.44) * size[e]``. Dynamic, in ``[0.1, 10]`` (below).
+
 .. _voronoi-dynamic:
 
 Per-env (dynamic) parameters
 ----------------------------
 
-``voronoi_radial_variation`` and ``voronoi_angular_jitter`` are **dynamic** fields of
-``VoronoiParams`` (and of ``VoronoiGateParams``: the voronoi gate generator selects its
-anchors with the same kernel): per-env ``[E]`` ``float32`` arrays, initialised from the
-configured values. Draw them per env with ``presets.track(generator="voronoi",
+``voronoi_radial_variation``, ``voronoi_angular_jitter`` and ``size`` are **dynamic**
+fields of ``VoronoiParams`` (the first two also of ``VoronoiGateParams``: the voronoi gate
+generator selects its anchors with the same kernel): per-env ``[E]`` ``float32`` arrays,
+initialised from the configured values. Draw them per env with ``presets.track(generator="voronoi",
 randomize={"generator.voronoi_radial_variation": (lo, hi)})`` (``presets.gates`` takes
 the same keys), write them with ``gen.params["generator"].set(...)`` or from your own
 graph (a curriculum): see :ref:`tuning-per-env`. A scalar outside the bounds raises
@@ -253,10 +258,18 @@ graph (a curriculum): see :ref:`tuning-per-env`. A scalar outside the bounds rai
      - **about** ``[0, 0.5]``: ``pi`` only bounds what is legal (``±pi`` spans the
        circle), the yield collapses well before it
      - 1.00 / 1.00 / 0.00
+   * - ``size`` (``generator.size``)
+     - ``1.0``
+     - ``[0.1, 10]``
+     - higher: a longer course relative to the (absolute) road width
+     - about ``[0.5, 4.6]`` at the default ``n_max`` (384): from about ``4.6`` the
+       longest tracks of a large batch truncate
+     - 0.996 / 1.00 / 1.00 at 0.5 / 1 / 2 (1.00 at 3)
 
 *Yield* is the fraction of valid tracks with the default pipeline, ``E = 128``, seeds
-``0..127`` (CPU), with the knob set to the value for every env. For
-``voronoi_angular_jitter`` it falls fast past ``0.3`` (every layout):
+``0..127`` (CPU), with the knob set to the value for every env (``size``: ``E = 256``,
+seeds ``7919 * e + 13``). For ``voronoi_angular_jitter`` it falls fast past ``0.3``
+(every layout):
 
 .. list-table::
    :header-rows: 1
@@ -284,11 +297,22 @@ graph (a curriculum): see :ref:`tuning-per-env`. A scalar outside the bounds rai
 Keep a randomized or curriculum range within about ``[0, 0.5]``, and check the yield at
 both ends of it.
 
+**Size** scales the normalization target of both normalizations (step 5 and the
+fallback's): env ``e``'s longest bounding-box side is ``f32(scale * 1.44) * size[e]``,
+within one ``float32`` rounding of ``scale = s`` at ``size = s``, and bitwise unchanged
+at ``size = 1``. It scales the plan view only (road width, spacing and z stay absolute).
+The longest default ``voronoi`` loop of 8192 envs is 5.01 (p99 4.78) at ``scale = 1``:
+with the default ``n_max = 384`` and spacing ``0.06`` truncation (a failed env) starts
+at about ``size = 4.6``. Size ``n_max`` and
+``num_points`` for the largest size with the rule of :ref:`tuning-size`. On **gates**
+the size is the ``normalize.extent`` stage's (key ``normalize.size``), as for ``polar``
+(:ref:`polar-dynamic`).
+
 **Static knobs, and why.** ``voronoi_num_sites`` and ``voronoi_control_points`` (size
 the site, anchor and dense buffers and the launch dimensions), ``voronoi_site_layout``
 (an enum the kernels branch on; categorical draws are not planned yet),
 ``num_points_per_segment`` (sizes the dense buffer) and the core ``scale`` (a host
-product with the target extent; per-env size is planned for roadmap PR13d).
+product with the target extent; per-env: ``size``).
 
 
 What Makes It Distinct

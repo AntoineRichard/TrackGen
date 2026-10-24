@@ -9,6 +9,7 @@ PR11): the gate stage list reproduces the 0.2.0.dev3 ``warp_gate._run_gate_pipel
 from __future__ import annotations
 
 import dataclasses
+import math
 from collections.abc import Mapping as _MappingABC
 
 from .spec import BatchSpec, PipelineSpec, StageRef
@@ -42,8 +43,10 @@ def to_pipeline_spec(config, *, registry=None) -> PipelineSpec:
         TypeError: ``config`` is a ``GateGenConfig`` (use :func:`to_gate_pipeline_spec`).
         ValueError: an unknown or oracle-only ``relax_solver``, an unknown
             ``z_profile``, ``smooth_finish=True`` (as ``TrackGenerator``), the
-            generator's params are invalid, or a non-flat ``z_profile`` / non-zero
-            ``z_base`` for a generator that provides ``z``.
+            generator's params are invalid, a non-flat ``z_profile`` / non-zero
+            ``z_base`` for a generator that provides ``z``, or (roadmap PR13d) a
+            ``size`` other than 1 for a generator that declares no ``size`` (or whose
+            Params do not map it).
         track_gen.plugin.PluginLoadError: ``relax_solver`` / ``z_profile`` names a
             stage of a quarantined plugin.
     """
@@ -62,6 +65,44 @@ def to_pipeline_spec(config, *, registry=None) -> PipelineSpec:
 
 # The deprecated relaxation backends that only exist as test oracles.
 _ORACLE_SOLVERS = ("energy", "tp_sobolev")
+
+
+def _check_flat_size(label: str, cfg, what: str, name: str, params,
+                     routed: bool = False, spec=None) -> None:
+    """Roadmap PR13d: a flat ``size`` other than 1 that no stage of the resolved spec
+    applies raises (``routed``: ``normalize.extent`` holds it). The generator applies it
+    when its resolved Params declare ``size`` with that value (the built-ins'
+    ``from_legacy`` maps the flat field); a generator without the field (``external``,
+    a plugin, a legacy spec) cannot."""
+    from .._src.builtin_params import _as_float  # noqa: PLC0415
+    from ..plugin.params import _declares_size, _f32, _field_hints, _is_real  # noqa: PLC0415
+    from .presets import _size_remedy  # noqa: PLC0415
+
+    size = _as_float(getattr(cfg, "size", 1.0))
+    if routed or not _is_real(size) or size == 1.0:
+        return
+    if "size" in getattr(type(params), "__dataclass_fields__", {}) and \
+            not _declares_size(type(params)):
+        # A static or int size (not the convention) is the plugin's own field: it never
+        # applies the flat size, whatever value it holds.
+        raise ValueError(f"{label}.size={cfg.size!r}: {what} {name!r}'s Params do not "
+                         f"map the flat size (its size is {params.size!r}); its size field "
+                         f"is not the per-env size, a dynamic float")
+    if "size" in getattr(type(params), "__dataclass_fields__", {}):
+        own = _as_float(params.size)
+        # Two NaNs are the same value here (the Params' own policy decides on a NaN).
+        if _is_real(own) and _f32(own) != _f32(size) and \
+                not (math.isnan(own) and math.isnan(size)):
+            # A static or int size (not the convention) is the plugin's own field.
+            remedy = (f"pass it in generator_params={{'size': {cfg.size!r}}}"
+                      if _declares_size(type(params)) else
+                      "its size field is not the per-env size, a dynamic float")
+            raise ValueError(f"{label}.size={cfg.size!r}: {what} {name!r}'s Params do not "
+                             f"map the flat size (its size is {params.size!r}); {remedy}")
+        return
+    hint = _field_hints(params).get("size") or _size_remedy(spec)
+    raise ValueError(f"{label}.size={cfg.size!r}: {what} {name!r} declares no size "
+                     f"({hint})")
 
 
 def _legacy_params(cls, cfg, what: str):
@@ -123,6 +164,8 @@ def _to_pipeline_spec(cfg, binding, registry=None) -> PipelineSpec:
     else:
         elevation = StageRef("elevation", profile, params=_legacy_params(
             elevation_cls, cfg, f"elevation stage {profile!r}"))
+    _check_flat_size("TrackGenConfig", cfg, "generator", binding.name, binding.params,
+                     spec=binding.spec)
     width = () if "half_width" in provides else (
         StageRef("width", "constant", params=sp.WidthConstantParams.from_legacy(cfg)),)
     stages = (
@@ -191,7 +234,9 @@ def to_gate_pipeline_spec(config, *, registry=None) -> PipelineSpec:
             ``max_gates`` incompatible with the generator's capacity; an explicit
             ``z_profile`` / ``z_base`` / ``gate_width`` for a generator that provides
             them; invalid generator params; an elevation plugin whose
-            ``Params.from_legacy`` reads a field ``GateGenConfig`` lacks.
+            ``Params.from_legacy`` reads a field ``GateGenConfig`` lacks; (roadmap
+            PR13d) a ``size`` other than 1 no stage applies (a gate generator without
+            ``size`` and no ``normalize.extent``: e.g. a legacy spec).
         track_gen.plugin.PluginLoadError: a name of a quarantined plugin.
     """
     from .._src.generator_binding import bind_generator  # noqa: PLC0415
@@ -289,15 +334,23 @@ def _to_gate_pipeline_spec(cfg, binding, registry=None) -> PipelineSpec:
     attrs = stage and ordering == "raw" and any(
         is_plugin_channel(ch) and ch.startswith("anchors.")
         for ch in dict(spec.writes).values())
+    normalize = stage and _preferred(spec).get("normalize") == "extent"
+    # Roadmap PR13d: GateGenConfig.size reaches normalize.extent when the gates are
+    # re-normalized (polar / voronoi / checkpoint; also a generator declaring a size of
+    # its own, which the normalization erases), else the generator (its Params declare
+    # size: bezier / hull).
+    routed = normalize
+    _check_flat_size("GateGenConfig", cfg, "gate generator", binding.name,
+                     binding.params, routed=routed, spec=binding.spec)
     stages = _gate_stages(
         StageRef("gate_generator", binding.name, params=binding.params, id="generator"),
         provides=provides,
         order_ref=StageRef("order", ordering) if stage else None,
-        normalize=stage and _preferred(spec).get("normalize") == "extent",
+        normalize=normalize,
         gate_radius=cfg.gate_radius, gate_solve_iters=cfg.gate_solve_iters,
         gate_width=cfg.gate_width, gate_align=cfg.gate_align, elevation_ref=elevation,
         min_gates=cfg.min_gates, z_valid_grade=cfg.z_valid_grade,
-        carry_attributes=attrs)
+        carry_attributes=attrs, size=getattr(cfg, "size", 1.0) if routed else 1.0)
     batch = BatchSpec(num_envs=int(cfg.num_envs), device=str(cfg.device), n_max=384,
                       closed=True, scale=cfg.scale, max_gates=int(cfg.max_gates))
     return PipelineSpec(batch=batch, stages=stages)

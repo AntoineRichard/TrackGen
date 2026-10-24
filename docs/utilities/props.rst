@@ -19,6 +19,12 @@ doubled prop. ``PropSet.count``/``truncated``/``step`` report what was
 actually placed; see the left panels of the overview figure on
 :doc:`the utilities overview </utilities/overview>`.
 
+``max_props=None`` sizes the ring once, at construction, from the bound batch. Tracks
+that grow later (a per-env ``size`` curriculum) then get clipped rings (``truncated``,
+at a coarser step): pass ``max_props = ceil(1.5 * n_max * spacing / prop_spacing)``,
+which holds the boundary of every track that is not truncated, at any size
+(:ref:`tuning-size-utilities`).
+
 ``PropSampler(track, ...)`` takes any ``HasBand`` source (a ``Track``, a
 ``track.view(e0, e1)``, or an object with the members) and checks what it reads,
 ``outer``, ``inner``, ``count`` and ``valid``, at construction (see

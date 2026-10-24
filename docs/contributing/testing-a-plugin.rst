@@ -202,8 +202,13 @@ broke.
        declaration order, so a window such as ``[z_min, z_max]`` opens), and ``int32``
        fields by ``-1``, ``0``, ``+1`` (a ``bool`` alternates). The live arrays and the
        stage's latched copies must read back what was set; the initial values are
-       restored afterwards. Skipped ("no dynamic parameters") for a stage without one
-       (a ``GeneratorSpec``, ``repulsive``, ``bezier`` / ``hull`` gates, most stages).
+       restored afterwards. A ``size`` field with the convention bounds ``[0.1, 10]``
+       (:ref:`generator-size-convention`) reaches about ``3.5`` at ``E = 4``: an env
+       that truncates at that size still compares bitwise. Skipped ("no dynamic
+       parameters") for a stage without one (a ``GeneratorSpec``, ``external``, most
+       stages); every other built-in generator runs it (``repulsive`` and the ``bezier``
+       / ``hull`` gate generators on ``size``, ``bezier`` / ``hull`` also on their
+       ``int32`` ``min_num_points``).
      - A kernel reading ``param[0]`` (or any fixed env) instead of ``param[e]``; a
        dynamic value copied to the host at build and passed as a scalar; a stage that
        writes its parameter array. The message names the envs and the result fields that

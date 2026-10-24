@@ -48,7 +48,8 @@ from ..ops.geometry import _angle_sort_launch
 from ..ops.sampling import _sample_counts_launch, _sample_grid_points_launch
 from ..plugin.stage import CaptureClass, Stage
 from .builtin_params import HullParams, _declared_bounds
-from .builtin_stage import DeprecatedParamsAlias, check_dyn, default_alloc, run_view
+from .builtin_stage import (DeprecatedParamsAlias, check_dyn, check_no_size,
+                            default_alloc, run_view)
 from .runtime import _init
 
 # RNG keying of the point streams (``wp.rand_init(seed * salt + POINT_SALT_OFFSET)``, see
@@ -262,7 +263,7 @@ class HullScratch:
 
 
 #: The dynamic fields of the Hull Stage (roadmap PR13c).
-_DYNAMIC = ("hull_displacement",)
+_DYNAMIC = ("min_num_points", "hull_displacement", "size")
 
 
 def hull_alloc_scratch(config):
@@ -327,6 +328,7 @@ def generate_hull_warp(seeds_wp: wp.array, config,
             device's stream (see track_gen.exec).
     """
     _init()
+    check_no_size(config, "generate_hull_warp")
     ctx = _resolve_ctx(ctx, str(out_centerline.device))
     assert scratch is not None, "generate_hull_warp requires scratch"
     _enqueue_hull(seeds_wp, config, out_centerline, out_valid_wp, scratch, ctx, None)
@@ -335,8 +337,10 @@ def generate_hull_warp(seeds_wp: wp.array, config,
 def _enqueue_hull(seeds_wp, config, out_centerline, out_valid_wp, scratch, ctx,
                   dyn) -> None:
     """The hull generator's launches on ``ctx``: ``dyn=None`` (the legacy path:
-    ``config.hull_displacement``, :func:`_midpoint_displace_k`) or
-    ``{"hull_displacement": [E]}`` (the Stage: :func:`_midpoint_displace_dyn_k`)."""
+    ``config.min_num_points`` / ``hull_displacement``, the scalar kernels) or the three
+    dynamic fields' ``[E]`` arrays ``{"min_num_points", "hull_displacement", "size"}``
+    (the Stage: the count twin, the sized point grid and
+    :func:`_midpoint_displace_dyn_k`)."""
     check_dyn(dyn, _DYNAMIC, "hull")
     E = scratch.count.shape[0]
     N = int(config.num_points)
@@ -347,11 +351,25 @@ def _enqueue_hull(seeds_wp, config, out_centerline, out_valid_wp, scratch, ctx,
     arc = ops.ArcScratch(scratch.arc_real, scratch.arc_seg, scratch.arc_s, scratch.arc_cr)
 
     # Step 1: sample point count + positions.
-    ops.sample_counts(ctx, seeds_wp, POINT_COUNT_SALT, POINT_SALT_OFFSET,
-                      int(config.min_num_points), int(config.max_num_points), scratch.count)
+    if dyn is None:
+        ops.sample_counts(ctx, seeds_wp, POINT_COUNT_SALT, POINT_SALT_OFFSET,
+                          int(config.min_num_points), int(config.max_num_points),
+                          scratch.count)
+    else:
+        # Roadmap PR13d: the per-env min_num_points (clamped to [2, max] at use).
+        _sample_counts_launch(ctx, seeds_wp, POINT_COUNT_SALT, POINT_SALT_OFFSET,
+                              dyn["min_num_points"], int(config.max_num_points),
+                              scratch.count)
     num_cells, cell = ops.grid_cells(config.min_point_distance)
-    ops.sample_grid_points(ctx, seeds_wp, POINT_SALT, POINT_SALT_OFFSET, P, num_cells,
-                           float(cell), float(config.scale), scratch.used, scratch.points)
+    if dyn is None:
+        ops.sample_grid_points(ctx, seeds_wp, POINT_SALT, POINT_SALT_OFFSET, P, num_cells,
+                               float(cell), float(config.scale), scratch.used,
+                               scratch.points)
+    else:
+        # Roadmap PR13d: the per-env size, applied after scale.
+        ops.sample_grid_points(ctx, seeds_wp, POINT_SALT, POINT_SALT_OFFSET, P, num_cells,
+                               float(cell), float(config.scale), scratch.used,
+                               scratch.points, size=dyn["size"])
 
     # Step 2: angle-sort the first m points about their centroid. This is ops.angle_sort's
     # kernel with the legacy count floor of 1 (a count < 1 sorts the first point), so the
@@ -402,7 +420,8 @@ class Hull(Stage):
     """``"hull"``: the convex-hull + midpoint-displacement track generator
     (:func:`generate_hull_warp`) as a ``kind="generator"`` Stage (roadmap PR13c).
     ``hull_displacement`` is dynamic: a per-env array read by
-    :func:`_midpoint_displace_dyn_k`, clamped to ``[0, 1]`` at use."""
+    :func:`_midpoint_displace_dyn_k`, clamped to ``[0, 1]`` at use. Roadmap PR13d:
+    ``min_num_points`` (int32) and ``size`` too."""
 
     kind = "generator"
     name = "hull"

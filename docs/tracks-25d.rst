@@ -237,6 +237,12 @@ Rules:
   in :ref:`tuning-per-env`.
 - ``z_max_step`` and ``z_noise_amplitude`` are bounded below by ``0``: a negative scalar
   raises ``ValueError``, a negative array value is clamped to ``0``.
+- The per-env course size (``generator.size``, :ref:`tuning-size`) scales the plan view,
+  not z. ``uniform`` places its knots at arc fractions and ``noise`` runs its harmonics
+  in normalized arc length, so their grades fall as ``~1 / size`` (``uniform``, ``z_max =
+  0.3``: median per-track maximum grade 0.666 / 0.337 / 0.225 at size 1 / 2 / 3): scale
+  ``z_max`` / ``z_noise_amplitude`` with the size to keep the grade. ``random_walk``'s
+  ``z_max_step`` is a grade cap per unit arc, the same at every size.
 
 The defaults (``flat``, or any profile at its configured values) give the same bytes as
 before: the kernels read the knobs from the arrays with the same arithmetic. The legacy
@@ -374,6 +380,11 @@ baker's convention), and texel ``(x, y)`` centers map to world coordinates as:
 
 with ``lo``/``hi`` the per-env ``[E]`` ``vec2f`` AABB corners (``HeightField.lo``/
 ``HeightField.hi``) and ``res`` the grid resolution (``HeightField.res``).
+
+The grid spans each env's own bounding box, so under a per-env ``size`` its texels grow
+with the course while the road keeps its width: raise ``heightfield_resolution`` with the
+largest size (``R >= R_ref * size_hi``, memory ``~size_hi^2`` times;
+:ref:`tuning-size-utilities`).
 
 .. figure:: _static/tracks-25d.png
    :alt: Three 2.5D tracks, each as a plan view, an elevation profile, and a

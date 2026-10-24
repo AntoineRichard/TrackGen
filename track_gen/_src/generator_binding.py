@@ -32,7 +32,8 @@ from typing import Any, Mapping
 
 import warp as wp
 
-from ..plugin.params import (NoParams, ParamTable, _check_values, _coerce, _fields,
+from ..plugin.params import (NoParams, ParamTable, _check_values, _coerce,
+                             _declares_size, _field_hints, _fields, _instance_bounds,
                              _new_param_table, _new_stage_params, _static_view)
 from ..plugin.stage import (_FAMILY_RESOLVER, CaptureClass, Layout, _close_builder,
                             _declared_of, _is_stage, _new_builder)
@@ -103,6 +104,39 @@ def _warn_legacy_gate(registry, name: str) -> None:
     warned.add(name)
 
 
+def _with_flat_size(params, config, spec, kind: str):
+    """Roadmap PR13d: the flat ``config.size`` (the INITIAL per-env size) on a plugin
+    Stage's Params that declare ``size`` and that ``from_legacy`` left at the class
+    default, as the built-ins' ``from_legacy`` maps it (the plugin ``size`` convention);
+    the way ``legacy._legacy_params`` maps ``half_width``. Not on
+    a gate generator re-normalized by ``normalize.extent``: that stage holds its size.
+    Only a field that follows the convention (a dynamic ``float``, ``_declares_size``):
+    a static or ``int`` ``size`` is the plugin's own, and ``_check_flat_size`` reports
+    the mismatch."""
+    fields = getattr(type(params), "__dataclass_fields__", {})
+    size = getattr(config, "size", 1.0)
+    if not _declares_size(type(params)) or isinstance(size, bool):
+        return params
+    try:
+        if float(size) == 1.0:
+            return params
+    except (TypeError, ValueError, OverflowError):
+        return params                    # left to the converters' checks
+    if params.size != fields["size"].default or _size_erased(spec, kind):
+        return params                    # from_legacy chose its own value
+    return dataclasses.replace(params, size=size)
+
+
+def _size_erased(spec, kind: str) -> bool:
+    """A gate generator whose gates ``normalize.extent`` re-normalizes: the
+    normalization erases a size of its own (the flat size goes to ``normalize.size``)."""
+    if kind != "gate_generator":
+        return False
+    from ..stages.gates import _preferred  # noqa: PLC0415 - import cycle
+
+    return _preferred(spec).get("normalize") == "extent"
+
+
 def bind_generator(kind: str, config, *, registry) -> GeneratorBinding:
     """Resolve and validate ``config.generator`` / ``config.generator_params``.
 
@@ -137,6 +171,8 @@ def bind_generator(kind: str, config, *, registry) -> GeneratorBinding:
         label = kind.replace("_", " ")
         params = _coerce(params_cls, given, what=f"{label} {config.generator!r}", cfg=config)
         flat = _is_flat(params)
+        if given is None and stage and not flat:
+            params = _with_flat_size(params, config, spec, kind)
         if flat and given is not None:
             params._check_no_flat_conflict(config)
         params.validate(layout)
@@ -151,6 +187,17 @@ def bind_generator(kind: str, config, *, registry) -> GeneratorBinding:
     if params is not None:
         if _is_flat(params):
             params._apply_legacy(run)
+        from ..plugin.params import _declares_size  # noqa: PLC0415
+
+        size_field = getattr(type(params), "__dataclass_fields__", {}).get("size")
+        # Only a size that follows the per-env convention (a dynamic float) is ever
+        # written: a static or int size is the plugin's own field.
+        if given is None and size_field is not None and _declares_size(type(params)) and \
+                params.size != size_field.default and _size_erased(spec, kind):
+            # Roadmap PR13d: a from_legacy that mapped the flat size onto a size the
+            # normalization erases; the run config keeps it (normalize.size's initial
+            # value), the generator's own stays at its default (one key per array).
+            params = dataclasses.replace(params, size=size_field.default)
         run.generator_params = params
 
     if stage and kind == "gate_generator":
@@ -200,16 +247,22 @@ def bind_generator(kind: str, config, *, registry) -> GeneratorBinding:
 
 
 def param_table(binding: GeneratorBinding, *, default_stream=None,
-                drawn=None) -> ParamTable:
+                drawn=None, hints=None) -> ParamTable:
     """``{"generator": StageParams}`` of a bound generator (live dynamic arrays for a
     Stage generator, none for a legacy spec); ``drawn``: ``field -> randomizer id`` of
-    the fields a ``randomize.*`` stage draws."""
+    the fields a ``randomize.*`` stage draws. Roadmap PR13d: the arrays the stage reads
+    (``in_effect``: the working copies, the drawn arrays), its Params' per-instance bounds
+    and field hints (``hints`` adds to them)."""
     adapter = binding.pipeline_spec
-    arrays = adapter.param_arrays if isinstance(adapter, _StageGenerator) else {}
+    stage = isinstance(adapter, _StageGenerator)
+    arrays = adapter.param_arrays if stage else {}
+    work = adapter.work_arrays if stage else {}
     layout = binding.layout
     return _new_param_table({_STAGE_ID: _new_stage_params(
         stage_id=_STAGE_ID, params=binding.params, arrays=arrays, num_envs=layout.num_envs,
-        device=layout.device, default_stream=default_stream, drawn=drawn)})
+        device=layout.device, default_stream=default_stream, drawn=drawn,
+        bounds=_instance_bounds(binding.params), effective=work,
+        hints={**_field_hints(binding.params), **dict(hints or {})})})
 
 
 # ---------------------------------------------------------------------------------------
@@ -284,6 +337,9 @@ class _StageGenerator:
         # name -> pipeline.InputInfo (latched per="env" / unlatched per="raw" inputs)
         self.input_info: Mapping[str, object] = types.MappingProxyType({})
         self.param_arrays: Mapping[str, wp.array] = types.MappingProxyType({})
+        # field -> the array the stage reads (its working copy, or the drawn array):
+        # StageParams.in_effect (roadmap PR13d).
+        self.work_arrays: Mapping[str, wp.array] = types.MappingProxyType({})
         # The generator's declared writes for its params (Stage.declare).
         self.writes = dict(spec.writes) if writes is None else dict(writes)
         self._pairs: list = []                  # (live, work): the latched arrays only
@@ -364,6 +420,8 @@ class _StageGenerator:
 
         self.param_arrays = types.MappingProxyType(
             {name: pair[0] for name, pair in dynamic.items()})
+        self.work_arrays = types.MappingProxyType(
+            {name: pair[1] for name, pair in dynamic.items()})
         self.inputs = types.MappingProxyType(
             {**{name: pair[0] for name, pair in b._inputs.items()}, **b._raw_inputs})
         self.input_info = types.MappingProxyType({

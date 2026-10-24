@@ -137,11 +137,16 @@ class TrackGenConfig:
 
     min_num_points : int
         Minimum Bezier/hull corner-anchor count per env.  Must be >= 2.  Shared
-        by the ``"bezier"`` and ``"hull"`` generators; feeds ``wp.randi`` with the
-        range ``[min_num_points, max_num_points]``.
+        by the ``"bezier"`` and ``"hull"`` generators: each env's count is uniform on
+        ``[min_num_points, max_num_points]``.  Dynamic (roadmap PR13d): the initial
+        value of the generator's per-env ``int32`` ``min_num_points``
+        (``gen.params["generator"].set("min_num_points", k)`` checks ``[2,
+        max_num_points]``; an array is clamped to it at use).  Raising it only
+        narrows the count toward ``max_num_points``.
     max_num_points : int
         Maximum corner-anchor count per env.  Must be >= ``min_num_points``.  A
-        wider range adds more per-env diversity in corner count.
+        wider range adds more per-env diversity in corner count.  Static (it sizes
+        the corner buffers).
     num_points_per_segment : int
         Dense Bezier (or Catmull-Rom) samples emitted per corner-to-corner segment
         before arc-resampling to ``num_points``.  Must be >= 2; higher values give
@@ -238,6 +243,11 @@ class TrackGenConfig:
         draws its own values from the ``*_range`` fields via the per-env Warp RNG, so
         a single batch spans a *family* of styles.  Resolved at CUDA-graph capture time (a Python branch);
         per-env values are device data so the captured graph remains fixed.
+        **Deprecated** (roadmap PR13d; a ``DeprecationWarning`` once per built
+        generator, removed in PR16): draw per-env knobs with ``randomize=`` instead
+        (``scale_range=(a, b)`` -> ``{"generator.size": (a / scale, b / scale)}``,
+        ``rad_range`` -> ``{"generator.rad": ...}``, ``handle_clamp_frac_range`` ->
+        ``{"generator.handle_clamp_frac": ...}``).
     rad_range : tuple of float or None
         ``(lo, hi)`` range for per-env ``rad`` when ``style_sampling=True``.
         ``None`` leaves ``rad`` to its per-env array (the configured ``rad`` unless
@@ -245,7 +255,9 @@ class TrackGenConfig:
         ``randomize={"generator.rad": (lo, hi)}`` (roadmap PR13c; still supported).
     scale_range : tuple of float or None
         ``(lo, hi)`` range for per-env ``scale`` when ``style_sampling=True``.
-        ``None`` collapses to the scalar ``scale`` for all envs.
+        ``None`` collapses to the scalar ``scale`` for all envs.  Deprecated with
+        ``style_sampling``: ``randomize={"generator.size": (lo / scale, hi /
+        scale)}`` (the draws compose multiplicatively with ``size``).
     handle_clamp_frac_range : tuple of float or None
         ``(lo, hi)`` range for per-env ``handle_clamp_frac`` when
         ``style_sampling=True``.  ``None`` leaves ``handle_clamp_frac`` to its
@@ -626,6 +638,19 @@ class TrackGenConfig:
         where ``ds`` is measured along the PLAN-VIEW (XY) arc length, not the
         3D lifted arc length.  0 disables the check.  Must be >= 0.  Default 0.0.
 
+    size : float
+        Per-env course-size multiplier (roadmap PR13d): the INITIAL value of the
+        selected generator's dynamic ``size`` (``generator.size``; per-env values:
+        ``gen.params["generator"]``, ``randomize={"generator.size": (lo, hi)}``),
+        applied where the generator applies ``scale`` (bezier / hull: the corner
+        grid, so it equals ``scale`` there at ``scale=1``; polar / voronoi /
+        checkpoint: the normalization target; repulsive: its output).  It scales the
+        plan view only: ``half_width``, ``spacing`` and every ``z_*`` stay absolute.
+        Not the batch size (``num_envs``).  In ``[0.1, 10]``, default 1.0; a generator
+        that declares no ``size`` (``external``, a plugin without the field) refuses
+        a value other than 1.  The only construction-time route for ``Course``.  Size
+        up with ``N_max`` (truncated envs fail validity).
+
     generator_params : Params, mapping or None
         The selected generator's parameters.  ``None`` (default): the generator's
         ``Params.from_legacy(config)`` (for the built-ins, the flat fields above).  A
@@ -777,6 +802,9 @@ class TrackGenConfig:
     z_control_points: int = 10
     z_valid_grade: float = 0.0
 
+    # --- Per-env size (roadmap PR13d): the initial value of the dynamic size ---
+    size: float = 1.0
+
     # --- Per-generator parameters (None | Params instance | mapping of its fields) ---
     generator_params: Any = None
 
@@ -887,8 +915,11 @@ class GateGenConfig:
     gate_width : float
         FULL physical gate bar width (visual/collision extent):
         ``GateSequence.half_size = 0.5 * gate_width``, the bar endpoints are
-        ``position +/- half_size * left_axis``, and a width > 0 turns the bar-crossing
-        validity check on.  Must be >= 0.  Does not affect anchor sampling geometry.
+        ``position +/- half_size * left_axis``, and every env with a bar of non-zero
+        half-size is bar-crossing checked.  Must be >= 0.  Does not affect anchor
+        sampling geometry.  Dynamic (roadmap PR13d): the initial value of
+        ``gate_frames.default``'s per-env ``gate_width``
+        (``gen.params["gate_frames"]``, ``randomize={"gate_frames.gate_width": ...}``).
     gate_ordering : str or None
         Gate output ordering: any registered ``order`` stage the generator supports
         (``track_gen.plugin.registry.available("order")``; checked at
@@ -1018,6 +1049,17 @@ class GateGenConfig:
         ``"full_tangent"`` aligns the frame forward axis with the full 3D
         tangent, tilting posts to follow the course slope.
 
+    size : float
+        Per-env course-size multiplier (roadmap PR13d): the INITIAL value of the
+        dynamic ``size`` of the stage that holds it: ``generator.size`` for the
+        ``"bezier"`` / ``"hull"`` gate generators (the anchor grid, after ``scale``),
+        ``normalize.size`` for ``"polar"`` / ``"voronoi"`` / ``"checkpoint"`` (the
+        normalization target).  It scales the gate layout's plan view only:
+        ``gate_radius``, ``gate_width`` and the ``z_*`` fields stay absolute.  Not the
+        batch size (``num_envs``).  In ``[0.1, 10]``, default 1.0; a pipeline with no
+        stage declaring ``size`` (a legacy gate generator) refuses a value other
+        than 1.
+
     generator_params : Params, mapping or None
         The selected gate generator's parameters, as
         ``TrackGenConfig.generator_params`` (``None``: the flat fields above).  The
@@ -1078,6 +1120,9 @@ class GateGenConfig:
     z_noise_harmonics: int = 3
     z_valid_grade: float = 0.0
     gate_align: str = "yaw_only"
+
+    # --- Per-env size (roadmap PR13d): the initial value of the dynamic size ---
+    size: float = 1.0
 
     # --- Per-generator parameters (None | Params instance | mapping of its fields) ---
     generator_params: Any = None

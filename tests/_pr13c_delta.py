@@ -15,6 +15,10 @@ trace (HEAD: the scalar kernels, which the frozen legacy entry points still laun
 Shared by ``tests/test_pipeline_parity.py``, ``tests/test_gate_pipeline_parity.py``
 (goldens not re-captured: the rule is applied to the recorded dd181f0 sequence) and
 ``tests/test_dynamic_knobs.py``.
+
+The counts below are PR13c's. Roadmap PR13d layers its rule on this one
+(``tests/_pr13d_delta.py``: dtype-aware latch blocks computed from the declarations,
+the count / sized / frame / validity twins, repulsive's sized copy).
 """
 from __future__ import annotations
 

@@ -139,7 +139,8 @@ def test_the_planner_rules():
                                         r"pipeline: \['generator\.amp'\]$"):
         build(_with(base, _r(field="lobes"), "generator"))
     # Roadmap PR13c: bezier's rad is a dynamic built-in knob (it builds); a static
-    # built-in knob is refused with the static-knob message.
+    # built-in knob is refused with the static-knob message. Roadmap PR13d: size is a
+    # drawable field too (min_num_points is dynamic but int32: not listed).
     build(presets.track(num_envs=E, device=DEV, randomize={"generator.rad": (0.2, 0.3)}))
     edgy = presets.track(num_envs=E, device=DEV, randomize={"generator.edgy": (0.2, 0.3)})
     with pytest.raises(PlanError, match=r"^generator\.edgy is a static field \(build a "
@@ -147,7 +148,8 @@ def test_the_planner_rules():
                                         r"documentation says why it is static\): dynamic "
                                         r"float32 fields in this pipeline: "
                                         r"\['generator\.rad', "
-                                        r"'generator\.handle_clamp_frac'\]$"):
+                                        r"'generator\.handle_clamp_frac', "
+                                        r"'generator\.size'\]$"):
         build(edgy)
     with pytest.raises(PlanError, match=r"^relax\.relax_iters is a static field \(build "
                                         r"a new generator"):

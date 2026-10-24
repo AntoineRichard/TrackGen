@@ -29,6 +29,11 @@ from track_gen.plugin.stage import CaptureClass, StageBuilder
 from track_gen.stages import params as sp
 from track_gen.testing.contract import no_allocation
 
+# Roadmap PR13d: bezier's style_sampling is deprecated (one DeprecationWarning per built
+# generator); this module still exercises it.
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:bezier's style_sampling is deprecated:DeprecationWarning")
+
 DEV = "cpu"
 E = 2
 TRACK_FIELDS = ("outer", "center", "inner", "tangent", "normal", "arclen", "length",

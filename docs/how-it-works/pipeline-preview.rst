@@ -174,7 +174,7 @@ a plain stage, and fails at ``build`` (or ``TrackGenerator``) time.
 
 .. code-block:: python
 
-   presets.track(*, num_envs, device, n_max=384, scale=1.0,
+   presets.track(*, num_envs, device, n_max=384, scale=1.0, size=1.0,
                  generator="bezier", generator_params=None, num_points=256,
                  half_width=0.1, spacing=None,
                  relax="auto", width="constant", elevation="flat",
@@ -226,6 +226,11 @@ empty sequence or another first check ``ValueError``. The other arguments:
   carries its own params (passing ``generator_params`` too raises ``ValueError``).
   ``num_points`` becomes the generator slot's ``capacity={"raw": num_points}`` (unless
   the ``StageRef`` sets a capacity).
+- ``size`` is the generator's initial per-env course size (its dynamic ``size``,
+  ``generator.size``; :ref:`tuning-size`): ``1.0`` adds nothing to the spec, another
+  value goes into the generator's params. A generator that declares no ``size``
+  (``external``) raises ``ValueError`` with a hint, and so does a ``size`` given both here
+  and in ``generator_params`` (give it once).
 - ``half_width`` is the value of the width stage: it is filled into the ``width``
   selection when that stage's Params class has a ``half_width`` field
   (``width.constant``, or a plugin's such as ``acme.ripple``) and its params, in any
@@ -388,7 +393,9 @@ checks the spec before it allocates or launches anything, then allocates once:
 3. **Params.** Each stage's params are coerced to its Params class and validated (the
    built-ins with the messages ``TrackGenConfig`` / ``GateGenConfig`` use for the same
    fields). Every stage that has a ``half_width``, ``gate_width`` or ``gate_radius``
-   field must agree on its value: for ``half_width`` that binds ``width.constant`` and
+   field must agree on its value (for ``gate_width``, a dynamic per-env field of
+   ``gate_frames.default`` since 0.2.0.dev5, on its initial value): for ``half_width``
+   that binds ``width.constant`` and
    the plugin stages that keep such a field (the nominal width; the per-point width is
    ``cl.half_width``). In a gate pipeline each stage's ``Layout`` is derived from its
    ports before its params are validated (see `Two point domains`_).
@@ -1389,9 +1396,9 @@ default at 1.0.
      - launches added
    * - unmasked, ``on_invalid="keep"``, ``validity.default`` the last check (the
        default pipelines)
-     - none (154 launches for a default ``bezier`` generation: the 0.2.0.dev2 sequence
-       plus the latches of ``rad`` and ``handle_clamp_frac``, `Dynamic built-in
-       knobs`_)
+     - none (156 launches for a default ``bezier`` generation: the 0.2.0.dev2 sequence
+       plus the latches of ``min_num_points``, ``rad``, ``handle_clamp_frac`` and
+       ``size``, `Dynamic built-in knobs`_)
    * - unmasked, with a check after ``validity.default``
      - one (``valid`` derived, ``E`` threads)
    * - unmasked, ``on_invalid="poison"``
@@ -1572,8 +1579,9 @@ rules, the draw and the curriculum pattern).
 **The parameter latch stays.** At the start of every generation the Program copies each
 dynamic parameter's and each ``[E]`` input's live array into the stage's working copy
 (the latch of :ref:`generator-runtime-params`), for the envs it regenerates. It costs
-one small launch per latched dynamic field (two in the default ``bezier`` pipeline) and
-gives a dynamic parameter exact masked-regeneration semantics (an env left out keeps the value its rows were built with). A drawn field does
+one small launch per latched dynamic field (four in the default ``bezier`` pipeline, two
+in the default gate pipeline) and gives a dynamic parameter exact masked-regeneration
+semantics (an env left out keeps the value its rows were built with). A drawn field does
 not go through it: the randomizer writes the one array the target reads, during the
 generation. So there are two kinds of runtime arrays:
 
@@ -1587,6 +1595,31 @@ generation. So there are two kinds of runtime arrays:
 
 ``Program.input_info`` (``gen.input_info``) says which inputs are latched.
 
+.. _pipeline-in-effect:
+
+**What each env was built with: StageParams.in_effect.**
+``gen.params[stage].in_effect(field)`` returns the ``[E]`` array the stage **read** for
+the current rows: the working
+copy of a latched field (the latch writes it for every env, or only the masked ones), the
+drawn array of a drawn field. Without ``out=`` it is that internal array (zero-copy, a
+stable pointer, recordable; read-only by contract: a write changes what the unmasked envs
+report and what a randomizer redraws for them); ``in_effect(field, out=arr)`` enqueues
+one copy into your ``[E]`` array of the field's dtype and device, on the stream ``set``
+would use, and returns it. ``StageParams.bounds(field)`` gives the ``(lo, hi)`` a
+built-in kernel clamps an array value to where it reads it (declared, narrowed per
+instance: ``min_num_points``' upper bound is ``max_num_points``; a randomizer's ``lo`` /
+``hi`` are the drawn field's range), so the value a built-in kernel used is
+``clamp(in_effect(f), *bounds(f))`` (exceptions, used as written:
+``width.from_channel``'s knobs, a randomizer's ``lo`` / ``hi``, ``style_sampling``'s
+draws, ``Course`` gates mode's ``gate_width`` floor). Timing, per field: a latched field
+is current once segment ``0`` has run (the latch is its prologue); a drawn field once
+the segment that holds its randomizer has run (behind a ``HOST`` stage that is a later
+segment, and until then the array holds the previous generation's draws). Both are
+written on the generation's stream: read them there or after waiting for it.
+``KeyError`` for a static or unknown field (with a hint where another key holds the
+axis). See :ref:`the tuning guide <tuning-in-effect>` for the exceptions and the
+curriculum recipe.
+
 .. _pipeline-dynamic-builtins:
 
 Dynamic built-in knobs
@@ -1594,8 +1627,9 @@ Dynamic built-in knobs
 
 The five sampling generators (``bezier``, ``hull``, ``polar``, ``voronoi``,
 ``checkpoint``) are ``kind="generator"``, ``capture=STATIC`` Stages (Stages like
-``repulsive``, a ``BOUNDED`` Stage, and the gate generators), and their shape knobs and
-the elevation ranges are dynamic ``float32`` fields:
+``repulsive``, a ``BOUNDED`` Stage, and the gate generators), and their shape knobs, their
+per-env ``size`` (every built-in generator but ``external``), ``bezier`` / ``hull``'s
+corner count, the elevation ranges and two gate stages' fields are dynamic:
 
 .. list-table::
    :header-rows: 1
@@ -1605,22 +1639,40 @@ the elevation ranges are dynamic ``float32`` fields:
      - dynamic fields (bounds)
      - kernel that reads them
    * - ``generator``: ``bezier``
-     - ``rad`` ``[0, 1]``, ``handle_clamp_frac`` ``>= 0``
-     - ``_assemble_dyn_k``
+     - ``min_num_points`` (``int32``, ``[2, max_num_points]``), ``rad`` ``[0, 1]``,
+       ``handle_clamp_frac`` ``>= 0``, ``size`` ``[0.1, 10]``
+     - ``_sample_counts_dyn_k``, ``_assemble_dyn_k``, ``_sample_grid_points_sized_k``
+       (under ``style_sampling``: ``_sample_grid_points_scaled_sized_k``)
    * - ``generator``: ``hull``
-     - ``hull_displacement`` ``[0, 1]``
-     - ``_midpoint_displace_dyn_k``
+     - ``min_num_points``, ``hull_displacement`` ``[0, 1]``, ``size``
+     - ``_sample_counts_dyn_k``, ``_midpoint_displace_dyn_k``,
+       ``_sample_grid_points_sized_k``
+   * - ``generator``: ``bezier`` / ``hull`` gates
+     - ``size``
+     - ``_sample_grid_points_sized_k``
    * - ``generator``: ``polar`` (track and gates)
-     - ``polar_radial_jitter`` ``[0, 0.85]``, ``polar_angular_jitter`` ``[0, 0.45]``
-     - ``_polar_controls_dyn_k``
+     - ``polar_radial_jitter`` ``[0, 0.85]``, ``polar_angular_jitter`` ``[0, 0.45]``;
+       ``size`` (tracks)
+     - ``_polar_controls_dyn_k``; ``_normalize_extent_sized_k``
    * - ``generator``: ``voronoi`` (track and gates)
      - ``voronoi_radial_variation`` ``[0, 0.85]``, ``voronoi_angular_jitter``
-       ``[0, pi]``
-     - ``_select_anchor_sites_dyn_k``
+       ``[0, pi]``; ``size`` (tracks)
+     - ``_select_anchor_sites_dyn_k``; ``_normalize_extent_sized_k`` (both
+       normalizations)
    * - ``generator``: ``checkpoint`` (track and gates)
      - ``checkpoint_radius_min_frac`` ``[0, 1]``, ``checkpoint_angle_jitter``
-       ``[0, 1]``; ``checkpoint_turn_rate`` ``[0, pi]`` (tracks)
-     - ``_sample_checkpoints_dyn_k``, ``_steer_dyn_k``
+       ``[0, 1]``; ``checkpoint_turn_rate`` ``[0, pi]`` and ``size`` (tracks)
+     - ``_sample_checkpoints_dyn_k``, ``_steer_dyn_k``; ``_normalize_extent_sized_k``
+   * - ``generator``: ``repulsive``
+     - ``size``
+     - ``_copy_sized_k`` (the copy of the grown loop into ``raw.xy``)
+   * - ``normalize``: ``extent`` (the ``polar`` / ``voronoi`` / ``checkpoint`` gate
+       pipelines)
+     - ``size``
+     - ``_normalize_extent_to_sized_k``
+   * - ``gate_frames``: ``default`` (every built-in gate pipeline)
+     - ``gate_width`` ``>= 0`` (the full bar width)
+     - ``_finalize_frame_dyn_k``
    * - ``elevation``: ``uniform``
      - ``z_min``, ``z_max`` (unbounded)
      - ``_z_uniform_dyn_k``
@@ -1634,12 +1686,13 @@ the elevation ranges are dynamic ``float32`` fields:
 The elevation stages are the same classes on a track (knots for ``uniform`` and
 ``random_walk``, per point for ``noise``), on gates (per gate, `Elevation on gates`_) and
 on the relaxed centerline before the stations (`3D station spacing`_), so the same keys
-(``"elevation.z_max"``) work in all three. Every other built-in field is static: a count
-or size, an enum or Python branch, ``edgy`` (transformed on the host in double
-precision), the core ``scale``, ``z_base``, ``z_noise_harmonics``, ``z_control_points``,
-the relax, validity and gate-geometry knobs, the width stages' knobs (except
-``width.from_channel``'s ``scale`` / ``lo`` / ``hi``, dynamic since 0.2.0.dev4), every
-``repulsive`` knob.
+(``"elevation.z_max"``) work in all three. Every other built-in field is static: a
+count or buffer size (``max_num_points``, the gate generators' ``min_num_points``), an
+enum or Python branch, ``edgy`` (transformed on the host in double precision), the core
+``scale``, ``z_base``, ``z_noise_harmonics``, ``z_control_points``, the relax and
+validity knobs, ``gate_radius``, the width stages' knobs (except ``width.from_channel``'s
+``scale`` / ``lo`` / ``hi``, dynamic since 0.2.0.dev4), the ``repulsive`` growth knobs.
+``external`` has no dynamic field: it ingests your geometry as given.
 
 - **Kernels.** Each kernel above loads its env's knobs once, clamps them to the declared
   bounds with comparisons (so a NaN, and every in-range value, signed zeros included,
@@ -1649,25 +1702,49 @@ the relax, validity and gate-geometry knobs, the width stages' knobs (except
   ``style_sampling`` draw (whose ranges were never bounded) is used as drawn. The scalar
   kernels stay, unchanged, for the frozen legacy entry points (``generate_*_warp``,
   ``apply_z_profile*``, the ``sample_*`` helpers); they go at 1.0.
-- **Bounds.** A scalar is checked on the host, in ``float32`` (construction, ``set``, a
-  randomizer's initial range); an array value is clamped when the kernel reads it.
+- **Size twins.** ``size`` multiplies where ``scale`` already acts, after it: the corner
+  grid ``((x * cell_size + jitter) * scale) * size[e]``, or the scalar normalization
+  target ``target * size[e]`` before its division. Neither product feeds an addition, so
+  a size of ``1`` is bit-exact on CPU and CUDA (no FMA contraction is created or
+  removed; a CPU test locks the generated CUDA source of each pair). ``repulsive``'s
+  copy multiplies only finite values (``where(size == 1 or not finite, v, w * size)``
+  with ``w`` the finite-gated value), so a size-1 copy keeps every finite value bit for
+  bit, and a non-finite point is copied unscaled at every size (a NaN bit for bit, its
+  payload included).
+- **Corner count twin.** ``_sample_counts_dyn_k`` loads env ``e``'s ``min_num_points``,
+  clamps it to ``[2, max_num_points]`` and draws the count as the scalar kernel does.
+- **Bounds.** A scalar is checked on the host, in ``float32`` for a ``float32`` field
+  (construction, ``set``, a randomizer's initial range); an array value is clamped when
+  the kernel reads it. ``StageParams.bounds(field)`` reports them, narrowed per instance
+  (``min_num_points``: ``(2, max_num_points)``, which ``set`` also enforces).
 - **Cross-field rules** (at build, through each Params class's private
   ``_check_draws`` hook, called for every stage that defines it, drawn or not):
   crossing ``z_min`` / ``z_max`` randomizers raise ``PlanError``; an inert elevation
-  window and a ``rad`` drawn above the clamp emit a ``UserWarning``. The rules are in
-  :ref:`tuning-per-env`.
-- **style_sampling.** A ``rad`` / ``handle_clamp_frac`` with a ``*_range`` is drawn by
-  ``bezier``'s style kernel straight into its parameter array: unlatched, reported in
-  ``StageParams.drawn`` as drawn by the stage itself (``drawn["rad"] == "generator"``),
-  ``set`` raises and a randomizer on it is a ``PlanError``. One with a range of ``None``
-  is latched like any dynamic field.
+  window and a ``rad`` drawn above the clamp emit a ``UserWarning``, and so do a
+  ``generator.size`` range (or construction value) that would truncate the nominal
+  longest loop at the pipeline's ``n_max``, and a ``generator.size`` randomizer combined
+  with ``style_sampling``'s ``scale_range``. The rules are in :ref:`tuning-per-env` and
+  :ref:`tuning-size`.
+- **style_sampling** (deprecated since 0.2.0.dev5). A ``rad`` / ``handle_clamp_frac``
+  with a ``*_range`` is drawn by ``bezier``'s style kernel straight into its parameter
+  array: unlatched, reported in ``StageParams.drawn`` as drawn by the stage itself
+  (``drawn["rad"] == "generator"``), ``set`` raises and a randomizer on it is a
+  ``PlanError``. One with a range of ``None`` is latched like any dynamic field.
+  ``size`` composes with the ``scale_range`` draw (``scale[e] * size[e]``).
 - **Launches.** One latch launch per latched dynamic field per generation, right after
-  the effective seed (and the advance), in slot order then field order; a drawn field
-  has none. Each kernel above replaces its scalar twin at the same position, with the
-  same dimensions, arrays and other scalars: in a launch trace its record is renamed and
-  its knob scalars become arrays (``_assemble_dyn_k`` also takes the four bound
-  scalars; under ``style_sampling``, ``_style_sample_k``'s range scalars for a knob
-  without a range become ``0.0`` placeholders).
+  the effective seed (and the advance), in slot order then field order (an ``int32``
+  field through ``_latch_all_i32_k``, a ``float32`` one through ``_latch_all_f32_k``;
+  masked, the ``_latch_masked_*`` kernels); a drawn field has none. Each kernel above
+  replaces its scalar twin at the same position, with the same dimensions, arrays and
+  other scalars: in a launch trace its record is renamed and its knob scalars become
+  arrays (``_assemble_dyn_k`` also takes the four bound scalars; under
+  ``style_sampling``, ``_style_sample_k``'s range scalars for a knob without a range
+  become ``0.0`` placeholders). The size twins keep every scalar and append the ``[E]``
+  size array; ``_sample_counts_dyn_k`` and ``_finalize_frame_dyn_k`` take the array in
+  place of the scalar (``lo``, ``gate_width``); ``repulsive``'s final copy becomes the
+  ``_copy_sized_k`` launch; every gate pipeline's validity kernel is
+  ``_finalize_validity_bars_k``, which drops the crossing toggle scalar (`Gate fail
+  bits`_).
 
 .. list-table::
    :header-rows: 1
@@ -1679,53 +1756,65 @@ the relax, validity and gate-geometry knobs, the width stages' knobs (except
      - added
    * - default track (``bezier``, flat)
      - 152
-     - 154
-     - 2
+     - 156
+     - 4
    * - ``bezier`` with ``style_sampling``: all three ranges / one of ``rad_range``,
-       ``handle_clamp_frac_range`` / neither
+       ``handle_clamp_frac_range`` / ``scale_range`` only
      - 153
-     - 153 / 154 / 155
-     - 0 / 1 / 2
+     - 155 / 156 / 157
+     - 2 / 3 / 4
    * - ``hull``
      - 151
-     - 152
-     - 1
+     - 154
+     - 3
    * - ``polar``
      - 143
-     - 145
-     - 2
+     - 146
+     - 3
    * - ``voronoi``
      - 151
-     - 153
-     - 2
+     - 154
+     - 3
    * - ``checkpoint``
      - 146
-     - 149
-     - 3
+     - 150
+     - 4
    * - ``bezier`` + elevation ``uniform`` / ``random_walk`` / ``noise``
      - 156 / 156 / 154
-     - 160 / 161 / 159
-     - 4 / 5 / 5
-   * - ``repulsive``, ``external``
+     - 162 / 163 / 161
+     - 6 / 7 / 7
+   * - ``repulsive``
+     -
+     -
+     - 1 (the ``size`` latch; the final copy is a kernel launch instead of a memcpy)
+   * - ``external``
      - unchanged
      -
      - 0
    * - gates: ``bezier`` / ``hull`` (the default gate pipeline)
      - 14
-     - 14
-     - 0
+     - 16
+     - 2 (``size``, ``gate_width``)
    * - gates: ``polar`` / ``checkpoint``
      - 14
-     - 16
-     - 2
+     - 18
+     - 4 (two ring knobs, ``normalize.size``, ``gate_width``)
    * - gates: ``voronoi``
      - 15
-     - 17
-     - 2
+     - 19
+     - 4
+   * - gates: ``source="stations"`` (``bezier``, 12 gates)
+     - 27
+     - 32
+     - 5 (the track generator's four, ``gate_width``)
    * - gates: elevation ``uniform`` / ``random_walk`` / ``noise``
      -
      -
      - 2 / 3 / 3 more
+
+With a mask, the same latches run as ``_latch_masked_*`` launches after the advance and
+the masked effective seed, and the hold comes right after them (the default track's
+hold at index 6, the default gates' at index 4).
 
 .. _pipeline-gates:
 
@@ -1850,10 +1939,14 @@ a pair that would not move anything: use ``gate_relax.none``); ``gate_frames.def
 takes ``gate_width`` and ``gate_align``, ``gate_frames.posed`` ``gate_align`` only; the
 elevation stages take the ``z_*`` fields their profile uses (``elevation.flat`` takes
 ``z_base`` on gates); ``validity.gate_default`` takes ``min_gates``, ``gate_radius``,
-``gate_width``, ``z_valid_grade`` and ``check_crossing`` (see `Gate fail bits`_). The
-generator's params are its ``generator_params``; the order, ``normalize`` and ``carry``
-stages take none (``normalize.extent`` scales to ``ops.constants.TARGET_EXTENT *
-BatchSpec.scale``).
+``gate_width``, ``z_valid_grade`` and ``check_crossing`` (see `Gate fail bits`_; its
+``gate_width`` and ``check_crossing`` are inert since 0.2.0.dev5). ``gate_frames.default``'s
+``gate_width`` is a dynamic per-env field (:ref:`gate-width-per-env`). The generator's
+params are its ``generator_params``; the order and ``carry`` stages take none, and
+``normalize.extent`` takes ``size`` (``NormalizeExtentParams``, a dynamic per-env
+multiplier, default ``1.0``, ``GateGenConfig.size`` for the ``polar``, ``voronoi`` and
+``checkpoint`` gate generators): it scales to ``ops.constants.TARGET_EXTENT *
+BatchSpec.scale * size[e]``.
 
 Then the commit (`The gate commit`_) and the ``generation`` write. A legacy
 ``GateGeneratorSpec`` replaces ``generator``, ``order`` and ``normalize`` with one
@@ -2369,7 +2462,7 @@ Gate presets: ``presets.gates``
                  order=None, stations=None,
                  gate_radius=0.025, gate_solve_iters=8, gate_width=0.0,
                  gate_align="yaw_only", elevation="flat", z_base=0.0,
-                 z_valid_grade=0.0, checks=("gate_default",), scale=1.0,
+                 z_valid_grade=0.0, checks=("gate_default",), scale=1.0, size=1.0,
                  on_invalid="keep", n_max=384, num_points=256, half_width=0.1,
                  spacing=None, relax="auto", width="constant",
                  spacing_metric="xy", elevation_on=None,
@@ -2402,12 +2495,20 @@ registry (``registry``, default ``track_gen.plugin.registry``) to see the genera
 - ``gate_radius``, ``gate_solve_iters``, ``gate_width``, ``gate_align``, ``z_base``,
   ``z_valid_grade``, ``min_gates`` and ``scale`` are the ``GateGenConfig`` fields, passed
   to every stage that takes them (one value per pipeline, see `Planner rules for gate
-  pipelines`_). ``validity.gate_default`` gets them (and ``check_crossing="always"`` for
-  posed gates) unless its params in ``checks`` set them; params setting another
-  ``gate_radius`` or ``gate_width`` raise ``ValueError``. ``z_base`` is
+  pipelines`_; ``gate_width`` is the initial value of ``gate_frames.default``'s per-env
+  width). ``validity.gate_default`` gets them (and ``check_crossing="always"`` for
+  posed gates, inert since 0.2.0.dev5) unless its params in ``checks`` set them; params
+  setting another ``gate_radius`` or ``gate_width`` raise ``ValueError``. ``z_base`` is
   ``elevation.flat``'s altitude: a nonzero value with another elevation or with a
   generator that provides ``z`` raises ``ValueError``. ``gate_align`` is ``"yaw_only"``
   or ``"full_tangent"``.
+- ``size`` is the initial per-env course size (:ref:`gate-width-per-env`), routed to the
+  stage that holds it: the generator's params (``generator.size``) for the ``bezier`` /
+  ``hull`` gate generators and for the track generator of a ``"stations"`` /
+  ``"relaxed_stations"`` source, ``normalize.extent``'s (``normalize.size``) for the
+  ``polar``, ``voronoi`` and ``checkpoint`` gate generators. ``1.0`` adds nothing to the
+  spec; a generator with neither raises ``ValueError``, as does a ``size`` in its
+  ``generator_params`` too.
 - ``n_max``, ``num_points``, ``half_width``, ``spacing``, ``relax`` and ``width``
   configure the centerline sub-pipeline: a ``"stations"`` source reads ``n_max`` and
   ``num_points``, a ``"relaxed_stations"`` source all six (``width`` as in
@@ -2455,7 +2556,10 @@ Gate fail bits
 
 ``validity.gate_default`` keeps 0.2.0.dev3's single fused validity kernel, so
 ``GateSequence.valid`` is byte-identical, and writes one bit per check into
-``valid.fail``. ``GateSequence.fail_mask`` is its final version, and ``valid[e] ==
+``valid.fail``. Since 0.2.0.dev5 it launches the kernel's per-env twin,
+``_finalize_validity_bars_k``, which decides the crossing check per env (below) and
+takes the same decisions wherever 0.2.0.dev4 checked crossings.
+``GateSequence.fail_mask`` is its final version, and ``valid[e] ==
 (fail_mask[e] == 0)``.
 
 .. list-table::
@@ -2480,8 +2584,8 @@ Gate fail bits
      - two real gates are closer in xy than ``2 * gate_radius``
    * - 4
      - ``crossing``
-     - two gate bars cross (only when ``gate_width > 0``, or with
-       ``check_crossing="always"``)
+     - two gate bars cross (checked in each env that has a real gate with a non-zero
+       ``half_size``, a NaN included)
    * - 5
      - ``grade``
      - a chord's ``|dz| / ds`` exceeds ``z_valid_grade`` (only when it is ``> 0``)
@@ -2499,10 +2603,20 @@ channels it checks and rewrites ``valid.fail`` exactly as a track check does (se
 checks=("gate_default", "acme.max_height"))``. In a gate pipeline ``valid.fail`` must
 start at ``validity.gate_default``.
 
-``check_crossing`` is ``"width"`` (default: the crossing check runs when ``gate_width >
-0``, as before) or ``"always"``, which posed gates need: their widths come from the
-generator, not from ``gate_width``. The preset sets it for a generator that provides
-``half_size``, and the planner refuses ``gate_frames.posed`` with ``"width"``.
+**The crossing check runs per env** (since 0.2.0.dev5). While it scans an env's real
+gates for the other checks, the kernel notes whether any has a non-zero ``half_size`` (a
+NaN counts as non-zero); only then does it run the pairwise bar-crossing loop. A
+zero-width bar has ``left == right == position``, and a degenerate segment never crosses,
+so skipping the loop for a point-gate env changes no decision: the valid and fail bits are
+those of 0.2.0.dev4's kernel with the check on, wherever it was on, and with it off for
+every env without bars. So a run-time bar width (``gate_frames.gate_width`` drawn or set
+from point gates, :ref:`gate-width-per-env`) is checked like a width built in, and the
+default point-gate pipelines pay nothing (one compare per real gate in an existing loop).
+``check_crossing`` (``"width"`` or ``"always"``) and ``validity.gate_default``'s
+``gate_width`` are **inert** since 0.2.0.dev5: both values select the per-env check, and
+they are kept so specs and dicts load (removed in roadmap PR16). Posed gates (a generator
+that provides ``half_size``) are checked the same way under either value; the planner no
+longer refuses ``gate_frames.posed`` with ``"width"``.
 
 .. _pipeline-gate-commit:
 
@@ -2553,14 +2667,15 @@ are identical.
      - now
    * - ``bezier`` / ``hull``, any ordering, flat, ``gate_solve_iters=8``
      - 14
-     - 14 (identical)
+     - 14 (identical), 16 since 0.2.0.dev5 (the latches of ``size`` and
+       ``gate_frames.gate_width``, `Dynamic built-in knobs`_)
    * - ``polar`` / ``checkpoint``, flat, ``gate_solve_iters=8``
      - 14
-     - 14 (the count copy before the normalization), 16 since 0.2.0.dev5 (the latches
-       of the two dynamic knobs, `Dynamic built-in knobs`_)
+     - 14 (the count copy before the normalization), 18 since 0.2.0.dev5 (the latches
+       of the two ring knobs, ``normalize.size`` and ``gate_frames.gate_width``)
    * - ``voronoi``, flat, ``gate_solve_iters=8``
      - 15
-     - 15, 17 since 0.2.0.dev5
+     - 15, 19 since 0.2.0.dev5
    * - masked (``advance=True, mask=m``)
      - as ``advance=True`` alone (one more than above: the epoch advance)
      - two more than 0.2.0.dev3 (hold, commit)
@@ -2599,10 +2714,11 @@ before allocating anything when:
   ``cl.<package>.<name>`` plugin channel, or an elevation port after the anchors
   producer stays on a ``cl.*`` channel without gate counterpart (`Two point domains`_,
   `Elevation on gates`_);
-- stages disagree on ``gate_width`` or ``gate_radius`` (``gate_frames`` bakes the bar
-  width, ``gate_relax.spheres`` the separation target, ``validity.gate_default`` both
-  checks): one value per pipeline;
-- ``gate_frames.posed`` runs with ``check_crossing="width"`` (`Gate fail bits`_);
+- stages disagree on ``gate_width`` or ``gate_radius`` (``gate_frames`` holds the
+  initial bar width, ``gate_relax.spheres`` the separation target,
+  ``validity.gate_default`` a copy of each): one initial value per pipeline
+  (``validity.gate_default``'s ``gate_width`` is inert since 0.2.0.dev5, and the
+  per-env width starts at ``gate_frames.default``'s);
 - a ``GateSequence`` field has no writer, or ``valid.fail`` does not start at
   ``validity.gate_default``.
 
@@ -2632,11 +2748,11 @@ legacy gate generators run through an adapter until 1.0``. Port it with
 Not open yet
 ------------
 
-- **More dynamic built-in knobs** (roadmap PR13d): a per-env ``size`` multiplier for
-  every generator (``style_sampling``'s ``scale_range`` until then), a dynamic corner
-  count (``min_num_points``), ``gate_frames.default``'s ``gate_width`` and
-  ``StageParams.in_effect``; ``edgy`` (PR16). Other distributions than uniform,
-  ``int32`` and categorical draws, and a public sampler API for plugins.
+- **More dynamic built-in knobs**: ``edgy`` (PR16); a dynamic corner-count upper bound
+  (the corner axis only narrows toward ``max_num_points``); per-env knot, anchor,
+  checkpoint and gate counts (they size buffers). Other distributions than uniform,
+  ``int32`` and categorical draws, and a public sampler API for plugins. A ``size=`` on
+  further public ops (``ops.closed_catmull_rom``).
 - **Results and inputs** (later): open topology (``closed=False``) in any stage or
   utility, and a ``closed`` argument to the kernels (after 1.0); ``build(inputs=)``
   binding caller arrays as a Program's inputs; ``declare()`` for gate generators; gate

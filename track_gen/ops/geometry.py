@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 import warp as wp
 
 from .check import _check_1d, _check_float, _check_int, _check_min, check_array
+from .constants import SIZE_BOUNDS
 from .fill import _fill_i32_k
 from .funcs import ccw as _ccw
 from .funcs import nan0 as _nan0
@@ -273,6 +274,49 @@ def _normalize_extent_count_k(
             position[base + i] = wp.vec2f(wp.nan, wp.nan)
 
 
+_C_SIZE_LO = wp.constant(wp.float32(SIZE_BOUNDS[0]))
+_C_SIZE_HI = wp.constant(wp.float32(SIZE_BOUNDS[1]))
+
+
+@wp.kernel
+def _normalize_extent_sized_k(
+    points: wp.array(dtype=wp.vec2f),
+    N: int,
+    target_extent: float,
+    size_e: wp.array(dtype=wp.float32),
+):
+    # Roadmap PR13d: _normalize_extent_k to the extent target_extent * size[e] (the
+    # per-env size, clamped to SIZE_BOUNDS by comparisons, folded into the finite scalar
+    # target before the division; the per-point arithmetic is the scalar kernel's
+    # verbatim, so size 1 is bit-exact and no FMA contraction changes).
+    e = wp.tid()
+    size = size_e[e]
+    size = wp.where(size < _C_SIZE_LO, _C_SIZE_LO, size)
+    size = wp.where(size > _C_SIZE_HI, _C_SIZE_HI, size)
+    target_extent = target_extent * size
+    b = e * N
+    min_x = float(1.0e30)
+    max_x = float(-1.0e30)
+    min_y = float(1.0e30)
+    max_y = float(-1.0e30)
+
+    for i in range(N):
+        p = points[b + i]
+        min_x = wp.min(min_x, p[0])
+        max_x = wp.max(max_x, p[0])
+        min_y = wp.min(min_y, p[1])
+        max_y = wp.max(max_y, p[1])
+
+    cx = 0.5 * (min_x + max_x)
+    cy = 0.5 * (min_y + max_y)
+    extent = wp.max(max_x - min_x, max_y - min_y)
+    scale = target_extent / wp.max(extent, 1.0e-8)
+
+    for i in range(N):
+        p = points[b + i]
+        points[b + i] = wp.vec2f((p[0] - cx) * scale, (p[1] - cy) * scale)
+
+
 @wp.kernel
 def _angle_sort_k(
     src: wp.array(dtype=wp.vec2f),
@@ -354,6 +398,11 @@ def _normalize_extent_launch(ctx, pts, stride, target_extent, E, count=None) -> 
     else:
         ctx.launch(_normalize_extent_count_k, E,
                    [pts, stride, count, float(target_extent)])
+
+
+def _normalize_extent_sized_launch(ctx, pts, stride, target_extent, E, size) -> None:
+    # Roadmap PR13d: the per-env size twin (no count variant: no built-in needs one).
+    ctx.launch(_normalize_extent_sized_k, E, [pts, stride, float(target_extent), size])
 
 
 def _angle_sort_launch(ctx, src, stride, count, out_stride, keys, out, m_floor) -> None:
@@ -477,7 +526,8 @@ def thickness(ctx: "LaunchContext", src: "wp.array", stride: int, band: "wp.arra
 
 
 def normalize_extent(ctx: "LaunchContext", src: "wp.array", stride: int,
-                     target_extent: float, *, count: "wp.array | None" = None) -> None:
+                     target_extent: float, *, count: "wp.array | None" = None,
+                     size: "wp.array | None" = None) -> None:
     """Centre each env's bounding box at the origin and scale it uniformly so its
     longest side equals ``target_extent`` (in place).
 
@@ -487,6 +537,13 @@ def normalize_extent(ctx: "LaunchContext", src: "wp.array", stride: int,
     ``clamp(count[e], 0, stride)`` points are used and the remaining slots are
     written NaN. One launch (``E`` threads); no allocation, no host sync.
 
+    ``size`` (roadmap PR13d) is a per-env size multiplier of the target: env ``e``'s
+    longest side becomes ``target_extent * size[e]``, each value clamped at use to
+    :data:`track_gen.ops.constants.SIZE_BOUNDS` (by comparisons: a NaN passes). The
+    size multiplies the finite scalar target before the division (no per-point
+    arithmetic changes), so a size-1 array gives the ``size=None`` bytes exactly, on CPU
+    and CUDA; ``size=None`` runs the unchanged kernels.
+
     Args:
         ctx: the :class:`~track_gen.exec.LaunchContext` to launch on.
         src: ``[E*stride]`` ``vec2f`` points, modified in place; ``E`` is
@@ -495,17 +552,26 @@ def normalize_extent(ctx: "LaunchContext", src: "wp.array", stride: int,
         target_extent: longest bbox side after scaling (finite), e.g.
             ``ops.constants.TARGET_EXTENT * config.scale``.
         count: optional ``[E]`` ``int32`` real points per env (keyword-only).
+        size: optional ``[E]`` ``float32`` per-env size multiplier of the target
+            (keyword-only), on the op's device; not combinable with ``count``.
 
     Raises:
-        ValueError: a wrong type, shape, dtype or device, or ``src.shape[0]`` not a
-            multiple of ``stride``.
+        ValueError: a wrong type, shape, dtype or device, ``src.shape[0]`` not a
+            multiple of ``stride``, or ``count`` and ``size`` both given.
     """
     dev = ctx.device
     stride = _check_int("stride", stride, 1)
     target_extent = _check_float("target_extent", target_extent)
     E = _env_count(src, stride, dev)
+    if count is not None and size is not None:
+        raise ValueError("normalize_extent: size= with count= is not supported (no "
+                         "counted variant of the per-env size)")
     if count is not None:
         check_array("count", count, (E,), wp.int32, dev)
+    if size is not None:
+        check_array("size", size, (E,), wp.float32, dev)
+        _normalize_extent_sized_launch(ctx, src, stride, target_extent, E, size)
+        return
     _normalize_extent_launch(ctx, src, stride, target_extent, E, count=count)
 
 

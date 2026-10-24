@@ -103,7 +103,8 @@ Reading the Output Fields
    * - ``half_size``
      - ``[E, G]`` ``float32``
      - Square-opening half-extent for each gate: ``0.5 * gate_width``, where
-       ``gate_width`` is the full bar width (see :ref:`gate-width-config`).
+       ``gate_width`` is the full bar width (see :ref:`gate-width-config`), per env
+       (`Per-env bar width and course size`_).
    * - ``left``, ``right``
      - ``[E, G, 3]``
      - ``vec3f`` gate endpoints: ``position ± half_size * left_axis``. With the
@@ -111,8 +112,8 @@ Reading the Output Fields
        gate center (point gates).
    * - ``valid``
      - ``[E]`` bool
-     - Per-sequence validity. A positive ``gate_width`` additionally invalidates
-       any sequence whose gate bars cross.
+     - Per-sequence validity. A sequence with bars (a gate with a non-zero
+       ``half_size``) is also invalid when two of its gate bars cross.
    * - ``fail_mask``
      - ``[E]`` int32
      - Why a sequence is invalid: one bit per failed check (``count``, ``finite``,
@@ -201,9 +202,9 @@ solve. The anchors are still ordered and bounding-box normalized — they are ju
 not spread apart yet, so close gates may overlap.
 
 When ``gate_solve_iters > 0``, the collision solve may expand the final bounding
-box when necessary to satisfy the requested ``gate_radius``. A positive
-``gate_width`` causes any sequence whose gate bars still cross after the solve to
-be marked invalid.
+box when necessary to satisfy the requested ``gate_radius``. A sequence with a
+positive bar width whose gate bars still cross after the solve is marked invalid (the
+check runs per env: `Per-env bar width and course size`_).
 
 .. seealso::
 
@@ -217,6 +218,145 @@ be marked invalid.
    capacity). ``min_gates`` rejects a config that the generator cannot satisfy. Both
    bounds are checked at ``GateGenerator`` construction time (see
    :ref:`gate-capacity-config`).
+
+.. _gate-width-per-env:
+
+Per-env bar width and course size
+---------------------------------
+
+**Bar width.** ``gate_width`` is a dynamic field of the ``gate_frames.default`` stage (since
+0.2.0.dev5): a per-env ``[E]`` ``float32`` array, the **full** bar width (``>= 0``;
+``half_size = 0.5 * gate_width``), initialised from ``GateGenConfig.gate_width`` or
+``presets.gates(gate_width=)``. Draw it per env, or change it with a curriculum (start
+wide, then narrow it), with no rebuild:
+
+.. code-block:: python
+
+   from track_gen.pipeline import presets
+
+   # every env draws its own bar width at every generation
+   gen = GateGenerator(presets.gates(num_envs=E, device=device,
+                                     randomize={"gate_frames.gate_width": (0.0, 0.3)}))
+
+   # or a curriculum: start with wide gates (easy to pass through), narrow them later;
+   # a larger size keeps the yield of wide bars (below)
+   gen = GateGenerator(presets.gates(num_envs=E, device=device, gate_width=0.4,
+                                     size=2.0))
+   gen.params["gate_frames"].set("gate_width", 0.2)       # a scalar, or an [E] array
+   gen.generate(advance=True)
+
+``gate_width`` is the opening the agent passes through (the posts and frame members sit
+at its ends): a wider gate is easier to fly through, a narrower one harder, and a
+width-0 (point) gate can never be passed. Only the generation yield moves the other way:
+wide bars cross more often (below).
+
+A negative array value is clamped to ``0`` where the kernel reads it (a negative scalar
+raises ``ValueError``; in a ``Course`` in gates mode, a scalar ``<= 0`` too). The bars are
+absolute: they do not grow with the course size.
+
+**The crossing check runs per env.** ``validity.gate_default`` checks bar crossings (fail
+bit ``crossing``) for every env that has a real gate with a non-zero ``half_size`` (a
+NaN counts as non-zero), and skips the check for the others. So a curriculum that starts
+from point gates is checked as soon as its bars widen, with the same decisions as a
+pipeline built with that width, and point-gate envs cost nothing (bars of width zero never
+cross). ``validity.gate_default``'s own ``gate_width`` and ``check_crossing`` are inert
+since 0.2.0.dev5 (kept so existing specs load, removed in roadmap PR16); left at its
+default ``0`` it takes no part in the planner's agreement check, and set to another
+value it must equal ``gate_frames.default``'s initial ``gate_width`` (the presets and
+``GateGenConfig`` set both). Posed gates (a generator that provides ``half_size``)
+are checked the same way, with ``check_crossing="width"`` as well as ``"always"``.
+
+**Yield.** Wide bars cross often, so check the yield at the ``hi`` of your range. Valid
+fraction of the default gate pipelines by bar width (CPU, ``E = 512``, the widths mixed
+per env in one batch):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 28 24 24 24
+
+   * - generator
+     - ``gate_width = 0``
+     - ``0.2``
+     - ``0.5``
+   * - ``bezier``
+     - 1.000
+     - 0.508
+     - 0.039
+   * - ``hull``
+     - 1.000
+     - 0.477
+     - 0.023
+   * - ``polar``
+     - 1.000
+     - 1.000
+     - 0.555
+   * - ``voronoi``
+     - 1.000
+     - 0.812
+     - 0.039
+   * - ``checkpoint``
+     - 1.000
+     - 0.828
+     - 0.281
+
+(``bezier`` alone, every env at one width: 0.88 at ``0.1``, 0.25 at ``0.3``.)
+
+These yields are at ``size = 1``. The bars cross when they are wide relative to the gate
+spacing, and the spacing grows with the course size while the bars stay absolute, so
+**raising the size together with** ``gate_width`` **keeps the yield**: wide gates are
+usable on every generator at a larger size. Valid fraction of pipelines built at one
+width and one size (CPU, ``E = 256``):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 40 20 20 20
+
+   * - generator, ``gate_width``
+     - ``size = 1``
+     - ``2``
+     - ``3``
+   * - ``bezier``, ``0.3``
+     - 0.27
+     - 0.71
+     - 0.87
+   * - ``bezier``, ``0.5``
+     - 0.04
+     - 0.39
+     - 0.66
+   * - ``hull``, ``0.3``
+     - 0.29
+     - 0.71
+     - 0.87
+   * - ``polar``, ``0.5``
+     - 0.53
+     - 0.98
+     - 1.00
+   * - ``voronoi``, ``0.3``
+     - 0.46
+     - 0.90
+     - 0.95
+   * - ``checkpoint``, ``0.3``
+     - 0.69
+     - 0.92
+     - 0.95
+
+**Course size.** The gate generators have a per-env ``size`` too, under one of two keys:
+``generator.size`` for the ``bezier`` and ``hull`` gate generators (it scales their
+corner grid) and for the track generator of ``source="stations"`` / ``"relaxed_stations"``
+gates; ``normalize.size`` for ``polar``, ``voronoi`` and ``checkpoint`` (their anchors are
+re-normalized by the ``normalize.extent`` stage, which holds the size):
+
+.. code-block:: python
+
+   presets.gates(num_envs=E, device=device, randomize={"generator.size": (0.8, 1.5)})
+   presets.gates(num_envs=E, device=device, generator="polar",
+                 randomize={"normalize.size": (0.8, 1.5)})
+
+The wrong key raises with a hint naming the right one; ``GateGenConfig.size`` and
+``presets.gates(size=)`` set the initial value under the right key. The size scales the
+gate positions, not ``gate_radius`` or the bars. The gate **count** is not a per-env axis
+in 0.x: a gate generator's ``min_num_points`` (``bezier``, ``hull``) or knot, anchor or
+checkpoint count is its gate capacity. See :ref:`tuning-per-env`.
 
 Buffer Reuse and Snapshots
 ---------------------------
@@ -245,7 +385,8 @@ In ``mode="gates"`` the gates themselves become the checkpoints
 ``collision=`` option. Gate-post collision is opt-in via ``post_radius > 0``: a
 ``DiscChecker`` over the gate-bar endpoints (``left``/``right``), with the posts
 array rebuilt device-side on every regeneration. It requires ``gate_width > 0``
-(a width-0 gate has no bar and no posts to hit).
+(a width-0 gate has no bar and no posts to hit): the configured width, checked when the
+``Course`` is constructed.
 
 Build a ``Course`` in gates mode, ``bind`` the sim's own state buffers (they are
 read in place every step), ``generate`` the batch, then in the step loop read

@@ -65,6 +65,15 @@ cell (a strip of off-road between two parts of the track, a sharp corner)
 can vanish from the interpolated field, and a boundary loop lying entirely
 inside a box, away from its outline and centre, is not seen.
 
+The grid covers each env's own bounding box, so a larger course (a per-env ``size``,
+:ref:`tuning-size`) gets larger cells while the road keeps its width: with ``bezier`` at
+``R = 128``, 12.3 / 6.7 / 4.5 cells across the road at size 1 / 2 / 3, and OOB flags
+agreeing with ``segments`` on 99.93 / 99.80 / 99.68 % of the boxes. Under a size
+curriculum, accuracy therefore varies per env with the difficulty. Keep
+``sdf_resolution >= R_ref * size_hi`` (``R_ref`` the resolution accurate enough at size
+1; the memory grows as ``size_hi^2``: the ~670 MB of 128² grids at ``E = 8192`` become
+~6 GB at ``size_hi = 3``), or use ``segments``, which is exact at every size.
+
 Performance
 -----------
 

@@ -150,8 +150,8 @@ def _seeded(report: Report) -> bool:
 
 
 # Roadmap PR13c: params.per_env is skipped ("no dynamic parameters") for a unit whose
-# stage has no dynamic field nobody draws (repulsive, external, the bezier / hull gate
-# generators, most toys).
+# stage has no dynamic field nobody draws (external, most toys; roadmap PR13d: repulsive
+# and the bezier / hull gate generators have a dynamic size, so it runs for them).
 _PER_ENV = "params.per_env"
 _NO_DYNAMIC = "skipped: no dynamic parameters"
 
@@ -163,9 +163,10 @@ def _skipped_besides_tiers(report: Report) -> list:
             and not (r.name == "diversity" and not _seeded(report))]
 
 
-# The built-ins whose stage has dynamic params (roadmap PR13c): params.per_env runs.
-_DYNAMIC_TRACK = {"bezier", "hull", "polar", "voronoi", "checkpoint"}
-_DYNAMIC_GATES = {"polar", "voronoi", "checkpoint"}
+# The built-ins whose stage has dynamic params (roadmap PR13c; PR13d: + repulsive and the
+# bezier / hull gate generators, their size): params.per_env runs.
+_DYNAMIC_TRACK = {"bezier", "hull", "polar", "voronoi", "checkpoint", "repulsive"}
+_DYNAMIC_GATES = {"bezier", "hull", "polar", "voronoi", "checkpoint"}
 
 
 def _assert_builtin_promises(report: Report, device: str) -> None:

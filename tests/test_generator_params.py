@@ -28,6 +28,11 @@ from track_gen._src import builtin_params as bp
 from track_gen._src.generator_binding import bind_generator
 from track_gen.plugin import GeneratorSpec, registry
 
+# Roadmap PR13d: bezier's style_sampling is deprecated (one DeprecationWarning per built
+# generator); this module still exercises it.
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:bezier's style_sampling is deprecated:DeprecationWarning")
+
 E = 4
 DEV = "cpu"
 TRACK_FIELDS = ("outer", "center", "inner", "tangent", "normal", "arclen", "length",
@@ -47,13 +52,19 @@ GATE_PARAMS = {
 ALL_SPECS = [("generator", n, P) for n, P in TRACK_PARAMS.items()] + \
             [("gate_generator", n, P) for n, P in GATE_PARAMS.items()]
 # Roadmap PR13c: the dynamic knobs of each built-in (every other field is static).
+# Roadmap PR13d: + size (every built-in track generator, the bezier / hull gate
+# generators) and bezier / hull's min_num_points (int32).
 DYNAMIC = {
-    ("generator", "bezier"): {"rad", "handle_clamp_frac"},
-    ("generator", "hull"): {"hull_displacement"},
-    ("generator", "polar"): {"polar_radial_jitter", "polar_angular_jitter"},
-    ("generator", "voronoi"): {"voronoi_radial_variation", "voronoi_angular_jitter"},
+    ("generator", "bezier"): {"min_num_points", "rad", "handle_clamp_frac", "size"},
+    ("generator", "hull"): {"min_num_points", "hull_displacement", "size"},
+    ("generator", "polar"): {"polar_radial_jitter", "polar_angular_jitter", "size"},
+    ("generator", "voronoi"): {"voronoi_radial_variation", "voronoi_angular_jitter",
+                               "size"},
     ("generator", "checkpoint"): {"checkpoint_radius_min_frac", "checkpoint_angle_jitter",
-                                  "checkpoint_turn_rate"},
+                                  "checkpoint_turn_rate", "size"},
+    ("generator", "repulsive"): {"size"},
+    ("gate_generator", "bezier"): {"size"},
+    ("gate_generator", "hull"): {"size"},
     ("gate_generator", "polar"): {"polar_radial_jitter", "polar_angular_jitter"},
     ("gate_generator", "voronoi"): {"voronoi_radial_variation", "voronoi_angular_jitter"},
     ("gate_generator", "checkpoint"): {"checkpoint_radius_min_frac",
@@ -112,12 +123,14 @@ def test_builtin_params_class_maps_the_flat_fields(kind, name, P):
     params._apply_legacy(target)
     for k, v in changed.items():
         assert getattr(target, k) == v, k
-    # The schema is JSON: the PR13c knobs dynamic (float32), every other field static.
+    # The schema is JSON: the PR13c / PR13d knobs dynamic (float32; min_num_points
+    # int32), every other field static.
     schema = registry.describe(kind, name).params_schema
     assert list(schema["properties"]) == [f.name for f in dataclasses.fields(P)]
     for field, prop in schema["properties"].items():
         if field in dynamic:
-            assert prop.get("x-dynamic") is True and prop["x-dtype"] == "float32", field
+            dtype = "int32" if field == "min_num_points" else "float32"
+            assert prop.get("x-dynamic") is True and prop["x-dtype"] == dtype, field
         else:
             assert prop.get("x-static") is True, field
     json.dumps(schema)
@@ -307,19 +320,22 @@ def test_config_round_trips_and_params_are_resolved():
         assert getattr(a, f).numpy().tobytes() == getattr(b, f).numpy().tobytes(), f
     # Flat configs: the reported Params are from_legacy of the flat fields; the hull
     # displacement is dynamic since roadmap PR13c (latched; its live array holds the
-    # flat value and set() writes it), the corner counts stay static.
+    # flat value and set() writes it); since roadmap PR13d min_num_points (int32) and
+    # size too, while max_num_points (the corner capacity) stays static.
     flat = TrackGenConfig(generator="hull", num_envs=E, hull_displacement=0.3)
     gen = TrackGenerator(flat, _rng())
     assert gen.params["generator"].params == bp.HullParams.from_legacy(flat)
     assert gen.config == flat                                         # generator_params None
     assert gen.config.generator_params is None
-    assert list(gen.params["generator"]) == ["hull_displacement"]
+    assert list(gen.params["generator"]) == ["min_num_points", "hull_displacement", "size"]
     live = gen.params["generator"]["hull_displacement"]
     assert live.numpy().tolist() == [np.float32(0.3)] * E
     gen.params["generator"].set("hull_displacement", 0.2)
     assert live.numpy().tolist() == [np.float32(0.2)] * E
+    gen.params["generator"].set("min_num_points", 5)
+    assert gen.params["generator"]["min_num_points"].numpy().tolist() == [5] * E
     with pytest.raises(KeyError, match="static"):
-        gen.params["generator"].set("min_num_points", 5)
+        gen.params["generator"].set("max_num_points", 12)
     assert gen._latch is not None
 
 
@@ -416,6 +432,7 @@ def test_builtin_schemas():
     assert props["voronoi_control_points"]["type"] == "integer"
     dyn = DYNAMIC[("generator", "voronoi")]
     assert all(p.get("x-static") is True for k, p in props.items() if k not in dyn)
+    assert (props["size"]["minimum"], props["size"]["maximum"]) == (0.1, 10.0)  # PR13d
     assert props["voronoi_angular_jitter"]["x-dynamic"] is True          # roadmap PR13c
     assert (props["voronoi_angular_jitter"]["minimum"],
             props["voronoi_angular_jitter"]["maximum"]) == (0.0, math.pi)

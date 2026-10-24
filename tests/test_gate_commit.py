@@ -1,8 +1,10 @@
 """Gate validity as fail bits and the gate commit (roadmap PR11, CPU).
 
-``validity.gate_default`` keeps the fused ``_finalize_validity_k`` (``valid`` byte for
-byte) and writes one ``valid.fail`` bit per failed check (``GATE_FAIL_BITS``); plugin
-gate checks take bits 16-30. The gate Program commits its ``GateSequence`` with the
+``validity.gate_default`` keeps the fused validity kernel (``valid`` byte for byte;
+roadmap PR13d: ``_finalize_validity_bars_k``, the bar-crossing check per env on the envs
+with a non-zero bar, deciding as the PR11 ``_finalize_validity_k`` with the check on) and
+writes one ``valid.fail`` bit per failed check (``GATE_FAIL_BITS``); plugin gate checks
+take bits 16-30. The gate Program commits its ``GateSequence`` with the
 PR10b hold / restore epilogue: a masked regeneration never writes an unmasked env (also
 when the stages recompute it differently), an all-zero mask is an exact no-op, and
 ``on_invalid="poison"`` leaves an invalid env with ``count = 0``, NaN per-gate fields and
@@ -15,6 +17,7 @@ import pytest
 import warp as wp
 
 from tests import _gate_toys as gt
+from tests._pr13d_delta import assert_latch_block
 from track_gen import GateGenConfig, GateGenerator, PerEnvSeededRNG
 from track_gen._src import warp_gate
 from track_gen.checkpoints import CheckpointSet
@@ -291,37 +294,47 @@ def _kernels(trace) -> list:
 
 
 def test_launch_counts():
+    # Roadmap PR13d re-pin (deliberate, tests/_pr13d_delta.py): the bezier gate
+    # generator's size and gate_frames.default's gate_width are dynamic (+2 latches:
+    # 14 -> 16; polar 16 -> 18; masked 19, the hold at 4; poison 17; checked 19), and
+    # the validity record is _finalize_validity_bars_k (the crossing toggle dropped).
     ctx = LaunchContext.for_call(DEV)
     default = _gen()
     with trace_launches() as plain:
         default.program.enqueue(ctx)
-    assert len(plain) == 14                                      # 0.2.0.dev3's count
+    assert len(plain) == 16                                      # 0.2.0.dev3's 14 + 2
     assert "_gate_hold_k" not in _kernels(plain) and "_gate_commit_k" not in _kernels(plain)
+    assert _kernels(plain)[1:3] == ["_latch_all_f32_k"] * 2      # size, gate_width
+    assert "_finalize_validity_bars_k" in _kernels(plain)
+    assert "_finalize_validity_k" not in _kernels(plain)
     polar = _gen(generator="polar")
     with trace_launches() as t:
         polar.program.enqueue(ctx)
     # The normalization runs out of place: no extra copy. Roadmap PR13c re-pin
-    # (deliberate): + the latches of the two dynamic jitters (14 -> 16).
-    assert len(t) == 16
-    assert _kernels(t)[1:3] == ["_latch_all_f32_k"] * 2
+    # (deliberate): + the latches of the two dynamic jitters (14 -> 16); PR13d: +
+    # normalize.size and gate_frames.gate_width (16 -> 18).
+    assert len(t) == 18
+    assert _kernels(t)[1:5] == ["_latch_all_f32_k"] * 4
     with trace_launches() as masked:
         default.program.enqueue(ctx, advance=True, mask=_i32(MASK))
     k = _kernels(masked)
-    assert len(masked) == 14 + 1 + 2                            # + the epoch advance
+    assert len(masked) == 16 + 1 + 2                            # + the epoch advance
     assert k.count("_gate_hold_k") == 1 and k.count("_gate_commit_k") == 1
-    assert k.index("_gate_hold_k") == 2                         # advance, seed, hold
+    assert k[2:4] == ["_latch_masked_f32_k"] * 2
+    assert k.index("_gate_hold_k") == 4                         # advance, seed, 2, hold
     assert k[-2] == "_gate_commit_k" and k[-1] == "_copy_masked_k"
+    assert assert_latch_block(default.program, plain, masked) == ["f32", "f32"]
     poison = _gen(on_invalid="poison")
     with trace_launches() as t:
         poison.program.enqueue(ctx)
-    assert len(t) == 15 and _kernels(t)[-2] == "_gate_commit_k"
+    assert len(t) == 17 and _kernels(t)[-2] == "_gate_commit_k"
     checked = _gen(checks=("gate_default", gt.MAX_HEIGHT))
     with trace_launches() as t:
         checked.program.enqueue(ctx)
     # + the z_cap latch, the check, the commit (valid only: one thread per env)
-    assert len(t) == 14 + 3 and _kernels(t)[-2] == "_derive_valid_k"
+    assert len(t) == 16 + 3 and _kernels(t)[-2] == "_derive_valid_k"
     assert t[-2].dim == (E,)
-    assert _kernels(t)[1] == "_latch_all_f32_k" and "_max_height_k" in _kernels(t)
+    assert _kernels(t)[1:4] == ["_latch_all_f32_k"] * 3 and "_max_height_k" in _kernels(t)
 
 
 def test_frame_fallbacks_is_the_frames_scratch():

@@ -44,7 +44,9 @@ so at the default ``gate_radius = 0.025`` the target centre spacing is ``0.05`` 
 normalized track coordinates. ``gate_radius`` is the only config field that feeds the
 target; ``gate_width`` is the separate **full** width of the gate bar (``half_size = 0.5 *
 gate_width``, see :ref:`gate-width-config`) and does **not** enter the separation
-target.
+target. Neither does the per-env course size (``generator.size`` / ``normalize.size``):
+it spreads the anchors before the solve, while ``gate_radius`` stays absolute, so a
+larger course has fewer overlapping gates to separate (:ref:`gate-width-per-env`).
 
 Where it runs in the pipeline
 ------------------------------

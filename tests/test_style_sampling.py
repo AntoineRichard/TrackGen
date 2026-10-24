@@ -31,6 +31,11 @@ from benchmarks import track_metrics as tm  # noqa: E402
 
 from tests.conftest import DEVS  # noqa: E402
 
+# Roadmap PR13d: bezier's style_sampling is deprecated (one DeprecationWarning per built
+# generator); this module still exercises it.
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:bezier's style_sampling is deprecated:DeprecationWarning")
+
 E = 256
 
 

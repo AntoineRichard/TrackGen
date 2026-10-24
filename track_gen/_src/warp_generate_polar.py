@@ -33,7 +33,8 @@ from ..ops import funcs
 from ..ops.constants import TARGET_EXTENT
 from ..plugin.stage import CaptureClass, Stage
 from .builtin_params import PolarParams, _declared_bounds
-from .builtin_stage import DeprecatedParamsAlias, check_dyn, default_alloc, run_view
+from .builtin_stage import (DeprecatedParamsAlias, check_dyn, check_no_size,
+                            default_alloc, run_view)
 from .runtime import _init
 
 # Independent RNG streams for controls. The constants are distinct from bezier/hull salts.
@@ -256,7 +257,7 @@ def sample_polar_controls_per_env(ctx: "LaunchContext", seeds: wp.array, K: int,
 
 
 #: The dynamic fields of the Polar Stage (roadmap PR13c), in Params order.
-_DYNAMIC = ("polar_radial_jitter", "polar_angular_jitter")
+_DYNAMIC = ("polar_radial_jitter", "polar_angular_jitter", "size")
 
 
 def polar_alloc_scratch(config):
@@ -303,6 +304,7 @@ def generate_polar_warp(seeds_wp: wp.array, config,
             device's stream (see track_gen.exec).
     """
     _init()
+    check_no_size(config, "generate_polar_warp")
     ctx = _resolve_ctx(ctx, str(out_centerline.device))
     assert scratch is not None, "generate_polar_warp requires scratch"
     _enqueue_polar(seeds_wp, config, out_centerline, out_valid_wp, scratch, ctx, None)
@@ -312,7 +314,8 @@ def _enqueue_polar(seeds_wp, config, out_centerline, out_valid_wp, scratch, ctx,
                    dyn) -> None:
     """The polar generator's launches on ``ctx``: ``dyn=None`` (the legacy path:
     :func:`polar_jitters` of ``config``, :func:`sample_polar_controls`) or the jitters'
-    ``[E]`` arrays (the Stage: :func:`sample_polar_controls_per_env`)."""
+    and ``size``'s ``[E]`` arrays (the Stage: :func:`sample_polar_controls_per_env`, and
+    the normalization to ``scale * TARGET_EXTENT * size[e]``, roadmap PR13d)."""
     check_dyn(dyn, _DYNAMIC, "polar")
     N = int(config.num_points)
     K = polar_num_knots(config)
@@ -335,7 +338,10 @@ def _enqueue_polar(seeds_wp, config, out_centerline, out_valid_wp, scratch, ctx,
     ctx.launch(_polar_spline_dense_k, int(config.num_envs),
                [scratch.controls, K, npseg, scratch.dense])
     ops.arc_resample(ctx, scratch.dense, M, N, arc, out_centerline, scratch.arc_co)
-    ops.normalize_extent(ctx, out_centerline, N, target_extent)
+    if dyn is None:
+        ops.normalize_extent(ctx, out_centerline, N, target_extent)
+    else:   # roadmap PR13d: the per-env size multiplies the target extent
+        ops.normalize_extent(ctx, out_centerline, N, target_extent, size=dyn["size"])
     ops.fill(ctx, out_valid_wp, 1)
     ctx.sync()
 

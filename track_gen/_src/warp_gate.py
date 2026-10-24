@@ -9,6 +9,11 @@ on a hand-built ``GateSequence``). Native gate generators are ``gate_generator``
 Stages in separate modules; ordering, normalization and everything after them are
 stages of the gate :class:`~track_gen.pipeline.Program`.
 
+Roadmap PR13d: ``gate_frames.default`` launches :func:`_finalize_frame_dyn_k` (its
+``gate_width`` per env) and ``validity.gate_default`` :func:`_finalize_validity_bars_k`
+(the bar-crossing check per env, on the envs with a non-zero bar); the PR11 kernels
+stay for :func:`finalize_gate_sequence` (one static width) and the frozen references.
+
 Deprecated (until 1.0), for legacy ``GateGeneratorSpec`` plugins written to the 0.1 ABI:
 :func:`alloc_order_scratch`, :func:`order_points`, :func:`finish_ordered_gates` and the
 ``_GateStaging`` name (now the legacy adapter's staging view,
@@ -320,6 +325,92 @@ def _finalize_frame_k(
     right[t] = p - hs * la
 
 
+_C_WIDTH_LO = wp.constant(wp.float32(0.0))
+
+
+@wp.kernel
+def _finalize_frame_dyn_k(
+    position: wp.array(dtype=wp.vec3f),
+    tangent: wp.array(dtype=wp.vec3f),
+    forward: wp.array(dtype=wp.vec3f),
+    orientation: wp.array(dtype=wp.quatf),
+    half_size: wp.array(dtype=wp.float32),
+    left: wp.array(dtype=wp.vec3f),
+    right: wp.array(dtype=wp.vec3f),
+    count: wp.array(dtype=wp.int32),
+    max_gates: int,
+    gate_width_e: wp.array(dtype=wp.float32),
+    align_full: int,
+    fallbacks: wp.array(dtype=wp.int32),
+    position_in: wp.array(dtype=wp.vec3f),
+    tangent_in: wp.array(dtype=wp.vec3f),
+):
+    # Roadmap PR13d: _finalize_frame_k with gate_width read per env (gate_frames.default's
+    # dynamic bar width, clamped to [0, inf) by a comparison: a NaN passes), then the
+    # scalar body verbatim.
+    t = wp.tid()
+    e = t // max_gates
+    gate_width = gate_width_e[e]
+    gate_width = wp.where(gate_width < _C_WIDTH_LO, _C_WIDTH_LO, gate_width)
+    i = t - e * max_gates
+    cnt = count[e]
+    if cnt < 0:
+        cnt = 0
+    if i >= cnt or i >= max_gates:
+        nan3 = wp.vec3f(wp.nan, wp.nan, wp.nan)
+        position[t] = nan3
+        tangent[t] = nan3
+        forward[t] = nan3
+        orientation[t] = wp.quatf(wp.nan, wp.nan, wp.nan, wp.nan)
+        half_size[t] = wp.nan
+        left[t] = nan3
+        right[t] = nan3
+        return
+    p = position_in[t]
+    tan = _safe_normalize3(tangent_in[t])
+    fwd = tan
+    if align_full == 0:
+        fwd = wp.vec3f(tan[0], tan[1], 0.0)
+    fell = int(0)
+    horiz2 = fwd[0] * fwd[0] + fwd[1] * fwd[1]
+    if horiz2 < 1.0e-10:
+        # Near-vertical (full_tangent on a steep segment, or degenerate
+        # tangent): fall back to the horizontal tangent direction, then +x.
+        fwd = wp.vec3f(tan[0], tan[1], 0.0)
+        if fwd[0] * fwd[0] + fwd[1] * fwd[1] < 1.0e-10:
+            fwd = wp.vec3f(1.0, 0.0, 0.0)
+        wp.atomic_add(fallbacks, e, 1)
+        fell = int(1)
+    fwd = _safe_normalize3(fwd)
+    q = _frame_quat(fwd)
+    hs = 0.5 * gate_width
+    la = wp.quat_rotate(q, wp.vec3f(0.0, 1.0, 0.0))
+    if align_full == 0 and tan[2] == 0.0:
+        # Planar tangent, yaw-only frame: the left axis is analytic. Using it
+        # directly (instead of the quat round-trip, which is only equal to
+        # within rounding) keeps left/right bit-identical to the legacy 2D
+        # path: left = p + hs * (-tan.y, tan.x, 0). This also reproduces the
+        # legacy degenerate-tangent result (tan == 0 -> left == right == p).
+        la = wp.vec3f(-tan[1], tan[0], 0.0)
+    # Pose forward (physical gate-plane normal). VERBATIM tan — never a
+    # re-normalization of it — whenever the pose forward IS the tangent
+    # (full_tangent, or planar yaw_only), so progress plane normals stay
+    # bit-identical to the tangent on those paths.
+    fw = fwd
+    if fell == 0:
+        if align_full == 1:
+            fw = tan
+        elif tan[2] == 0.0:
+            fw = tan
+    position[t] = p
+    tangent[t] = tan
+    forward[t] = fw
+    orientation[t] = q
+    half_size[t] = hs
+    left[t] = p + hs * la
+    right[t] = p - hs * la
+
+
 @wp.kernel
 def _finalize_validity_k(
     position: wp.array(dtype=wp.vec3f),
@@ -401,6 +492,130 @@ def _finalize_validity_k(
                         f = f | 8
 
     if gate_width > 0.0:
+        for i in range(max_gates):
+            if i < cnt:
+                li = left[base + i]
+                ri = right[base + i]
+                for j in range(i + 1, max_gates):
+                    if j < cnt:
+                        lj = left[base + j]
+                        rj = right[base + j]
+                        if _proper_segment_intersection(
+                                wp.vec2f(li[0], li[1]), wp.vec2f(ri[0], ri[1]),
+                                wp.vec2f(lj[0], lj[1]), wp.vec2f(rj[0], rj[1])) != 0:
+                            ok = int(0)
+                            f = f | 16
+
+    # Grade check: reject any course whose |dz|/ds over a plan-view chord
+    # exceeds z_valid_grade. Loops with wraparound (j = (i+1) % cnt) so the
+    # closing chord (gate cnt-1 -> gate 0) is checked too. The wrap is also bounded
+    # by the slot capacity: a count above max_gates (an over-reporting plugin; the
+    # count bit is set above) never reads the next env's row. For cnt <= max_gates
+    # this is the same arithmetic as j == cnt.
+    if z_valid_grade > 0.0:
+        for i in range(max_gates):
+            if i < cnt and cnt >= 2:
+                j = i + 1
+                if j >= cnt or j >= max_gates:
+                    j = 0
+                pi = position[base + i]
+                pj = position[base + j]
+                dxy = wp.sqrt((pj[0] - pi[0]) * (pj[0] - pi[0]) +
+                              (pj[1] - pi[1]) * (pj[1] - pi[1]))
+                if wp.abs(pj[2] - pi[2]) > z_valid_grade * wp.max(dxy, 1.0e-9):
+                    ok = int(0)
+                    f = f | 32
+
+    valid[e] = ok
+    fail[e] = f
+
+
+@wp.kernel
+def _finalize_validity_bars_k(
+    position: wp.array(dtype=wp.vec3f),
+    tangent: wp.array(dtype=wp.vec3f),
+    forward: wp.array(dtype=wp.vec3f),
+    orientation: wp.array(dtype=wp.quatf),
+    half_size: wp.array(dtype=wp.float32),
+    left: wp.array(dtype=wp.vec3f),
+    right: wp.array(dtype=wp.vec3f),
+    count: wp.array(dtype=wp.int32),
+    max_gates: int,
+    min_gates: int,
+    center_distance: float,
+    z_valid_grade: float,
+    valid: wp.array(dtype=wp.int32),
+    fail: wp.array(dtype=wp.int32),
+):
+    # Roadmap PR13d: _finalize_validity_k without the static crossing toggle (its
+    # gate_width argument): the bar-crossing check runs PER ENV, for an env with a real
+    # gate of non-zero half_size (a NaN counts: conservative). Exact against the toggle-on
+    # kernel: a zero half-size bar is degenerate (left == right == position) and never
+    # properly crosses, so skipping the loop changes no decision; at gate_width 0 (every
+    # half_size 0) it decides as the toggle-off kernel. Every other check verbatim.
+    e = wp.tid()
+    cnt = count[e]
+    base = e * max_gates
+    ok = int(1)
+    f = int(0)
+    bars = int(0)
+
+    if cnt < min_gates or cnt > max_gates:
+        ok = int(0)
+        f = f | 1
+
+    for i in range(max_gates):
+        if i < cnt:
+            p = position[base + i]
+            t = tangent[base + i]
+            fw = forward[base + i]
+            q = orientation[base + i]
+            hs = half_size[base + i]
+            li = left[base + i]
+            ri = right[base + i]
+            if hs != 0.0:
+                bars = int(1)
+            fields_finite = (
+                wp.isfinite(p[0]) and wp.isfinite(p[1]) and wp.isfinite(p[2]) and
+                wp.isfinite(t[0]) and wp.isfinite(t[1]) and wp.isfinite(t[2]) and
+                wp.isfinite(fw[0]) and wp.isfinite(fw[1]) and wp.isfinite(fw[2]) and
+                wp.isfinite(q[0]) and wp.isfinite(q[1]) and
+                wp.isfinite(q[2]) and wp.isfinite(q[3]) and
+                wp.isfinite(hs) and
+                wp.isfinite(li[0]) and wp.isfinite(li[1]) and wp.isfinite(li[2]) and
+                wp.isfinite(ri[0]) and wp.isfinite(ri[1]) and wp.isfinite(ri[2])
+            )
+            if not fields_finite:
+                ok = int(0)
+                f = f | 2
+            # Full 3D tangent norm: with gate_align="full_tangent" a legitimate
+            # near-vertical tangent has a tiny XY norm, so an XY-only length
+            # check would wrongly flag it. The frame kernel's own near-vertical
+            # fallback handles orientation; here we only reject a genuinely
+            # degenerate (zero-length) tangent.
+            tangent_len2 = t[0] * t[0] + t[1] * t[1] + t[2] * t[2]
+            if tangent_len2 <= 1.0e-12:
+                ok = int(0)
+                f = f | 4
+
+    # CRITICAL for golden parity: pairwise min-distance stays an XY check and
+    # the crossing check runs the 2D proper-intersection test on projected
+    # endpoints — identical decisions to the legacy vec2f pipeline.
+    min_d2 = center_distance * center_distance
+    min_d2_slop = 1.0e-6 * wp.max(float(1.0), min_d2)
+    for i in range(max_gates):
+        if i < cnt:
+            pi = position[base + i]
+            for j in range(i + 1, max_gates):
+                if j < cnt:
+                    pj = position[base + j]
+                    d = pj - pi
+                    d2 = d[0] * d[0] + d[1] * d[1]
+                    if d2 + min_d2_slop < min_d2:
+                        ok = int(0)
+                        f = f | 8
+
+    if bars != 0:
         for i in range(max_gates):
             if i < cnt:
                 li = left[base + i]

@@ -68,7 +68,7 @@ How It Works
    by its bounding box and isotropically scales the longest bounding-box dimension to
    ``scale * 1.44``, matching the Bezier baseline's typical longest extent so the shared
    resample, relaxation, and inflate stages see comparable coordinate ranges across
-   generators.
+   generators, times the env's ``size[e]`` (``ops.normalize_extent(..., size=...)``).
 
 The frozen legacy entry point ``generate_checkpoint_warp`` launches the scalar kernels
 ``_sample_checkpoints_k`` and ``_steer_k`` with the host values: the same arithmetic, the
@@ -192,14 +192,18 @@ checked when the ``TrackGenerator`` is constructed, and only for
     Must be set consistently between ``alloc_scratch`` and ``generate`` since the clip
     buffers are only allocated when the flag is ``True`` at alloc time.
 
+``size`` (float, default 1.0)
+    Per-env size multiplier: env ``e``'s longest bounding-box side becomes
+    ``f32(scale * 1.44) * size[e]``. Dynamic, in ``[0.1, 10]`` (below).
+
 .. _checkpoint-dynamic:
 
 Per-env (dynamic) parameters
 ----------------------------
 
-``checkpoint_radius_min_frac``, ``checkpoint_angle_jitter`` and
-``checkpoint_turn_rate`` are **dynamic** fields of ``CheckpointParams`` (the first two
-also of ``CheckpointGateParams``: the checkpoint gate generator samples its ring with
+``checkpoint_radius_min_frac``, ``checkpoint_angle_jitter``,
+``checkpoint_turn_rate`` and ``size`` are **dynamic** fields of ``CheckpointParams`` (the
+first two also of ``CheckpointGateParams``: the checkpoint gate generator samples its ring with
 the same kernel, and has no steering walk): per-env ``[E]`` ``float32`` arrays,
 initialised from the configured values. Draw them per env with
 ``presets.track(generator="checkpoint",
@@ -237,16 +241,36 @@ graph (a curriculum): see :ref:`tuning-per-env`. A scalar outside the bounds rai
      - higher: sharper kinks allowed (a looser curvature bound)
      - the whole range
      - 0.95 / 1.00 / 1.00
+   * - ``size`` (``generator.size``)
+     - ``1.0``
+     - ``[0.1, 10]``
+     - higher: a longer course relative to the (absolute) road width
+     - about ``[0.75, 3.2]`` at the default ``n_max`` (384): from about ``3.2`` the
+       longest tracks of a large batch truncate; small sizes lose yield to the road
+       width
+     - 0.90 / 0.99 / 1.00 at 0.5 / 1 / 2 (0.99 at 3)
 
 *Yield* is the fraction of valid tracks with the default pipeline, ``E = 128``, seeds
-``0..127`` (CPU), with the knob set to the value for every env.
+``0..127`` (CPU), with the knob set to the value for every env (``size``: ``E = 256``,
+seeds ``7919 * e + 13``).
+
+**Size** scales the normalization target: env ``e``'s loop is centred and scaled so its
+longest bounding-box side is ``f32(scale * 1.44) * size[e]``, within one ``float32``
+rounding of ``scale = s`` at ``size = s``, and bitwise unchanged at ``size = 1``. It
+scales the plan view only (road width, spacing and z stay absolute). The longest default
+``checkpoint`` loop of 8192 envs is 7.26 (p99 6.18) at ``scale = 1``: with the default
+``n_max = 384`` and spacing ``0.06`` truncation (a failed env) starts at about ``size =
+3.2``. Size
+``n_max`` and ``num_points`` for the largest size with the rule of :ref:`tuning-size`. On
+**gates** the size is the ``normalize.extent`` stage's (key ``normalize.size``), as for
+``polar`` (:ref:`polar-dynamic`).
 
 **Static knobs, and why.** ``checkpoint_count`` and ``checkpoint_best_of_k`` (size the
 buffers and the launch dimensions), ``checkpoint_clip_fallback`` (a Python branch and
 its buffers), ``checkpoint_steer_gain`` and ``checkpoint_lookahead_frac`` (internals of
 the path tracer that keep the walk closing one lap, with no measured difficulty effect;
 they can become dynamic later without breaking anything) and the core ``scale`` (a host
-product with the target extent; per-env size is planned for roadmap PR13d).
+product with the target extent; per-env: ``size``).
 
 What Makes It Distinct
 ----------------------

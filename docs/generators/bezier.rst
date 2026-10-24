@@ -6,10 +6,12 @@ It samples a set of random grid-jittered corner anchors, sorts them by angle aro
 their centroid to form a simple star-shaped polygon, and assembles a closed cubic
 Bézier spline through those corners.  Handle lengths are proportional to
 ``rad * chord`` and adaptively clamped so that no handle overshoots a nearby corner.
-Its two handle knobs, ``rad`` and ``handle_clamp_frac``, are per-env (dynamic)
-parameters: ``randomize=`` draws them and a curriculum can write them from its own graph
-(`Per-env (dynamic) parameters`_). The older per-environment style draw
-(``style_sampling``) is still supported, and remains the way to vary ``scale`` per env.
+Its two handle knobs (``rad``, ``handle_clamp_frac``), its corner count
+(``min_num_points``) and its size (``size``) are per-env (dynamic) parameters:
+``randomize=`` draws the ``float32`` ones and a curriculum can write all four from its own
+graph (`Per-env (dynamic) parameters`_). The older per-environment style draw
+(``style_sampling``) is deprecated since 0.2.0.dev5 (`Style sampling (deprecated) and
+its migration`_).
 Any smooth curve that still self-crosses after clamping is rescued by its provably
 simple corner polygon, which the downstream XPBD solver re-rounds.
 
@@ -25,7 +27,7 @@ How It Works
 The generator runs a fixed sequence of Warp kernels in a single pass — no
 host-side retry loop, no per-environment Python branching:
 
-1. **Optional style draw.**  When ``style_sampling=True``, a dedicated kernel
+1. **Optional style draw (deprecated).**  When ``style_sampling=True``, a dedicated kernel
    (``_style_sample_k``) draws per-environment ``rad``, ``scale``, and
    ``handle_clamp_frac`` values from their respective ``*_range`` fields using RNG salt
    ``2741``.  A ranged ``rad`` / ``handle_clamp_frac`` is drawn straight into that
@@ -38,6 +40,9 @@ host-side retry loop, no per-environment Python branching:
 
 2. **Corner count.**  ``ops.sample_counts`` (salt ``6151``, offset ``0``) draws
    ``count[e]`` uniformly from ``[min_num_points, max_num_points]`` for each environment.
+   The Stage launches its array-reading twin, which reads env ``e``'s ``min_num_points``
+   from the per-env array and clamps it to ``[2, max_num_points]`` (`Corner count`_);
+   the draw itself is unchanged.
 
 3. **Corner positions.**  ``ops.sample_grid_points`` (salt ``9781``, offset ``0``)
    samples ``max_num_points`` grid cells from the ``ops.grid_cells(min_point_distance)``
@@ -45,7 +50,10 @@ host-side retry loop, no per-environment Python branching:
    ``num_cells = int(1 / (min_point_distance * 2))``.  Each cell selection uses
    bounded duplicate rejection (up to eight retries per corner) to spread corners
    across distinct cells, then adds per-axis jitter in ``[-0.5, 0.5)``.  Coordinates are
-   multiplied by ``scale`` (or by the per-environment ``scale[e]`` array in style mode).
+   multiplied by ``scale`` (or by the per-environment ``scale[e]`` array in style mode),
+   then by the env's ``size[e]``: ``((x * cell_size + jitter) * scale) * size[e]``
+   (``ops.sample_grid_points(..., size=...)``; `Size`_). Everything downstream runs on
+   the scaled corners.
 
 4. **Prune-then-sort.**  The ``ops.angle_sort`` kernel (with the legacy count floor of 1:
    a count below 1 sorts the first corner) sorts only the first ``count[e]`` corners by
@@ -170,7 +178,8 @@ through ``generator_params`` (see :ref:`builtin-generator-params`). Their rules 
 checked when the ``TrackGenerator`` is constructed, and only for ``generator="bezier"``.
 
 ``min_num_points``
-    Minimum corner-anchor count per environment.  Must be >= 2.
+    Minimum corner-anchor count per environment.  Must be >= 2 (and ``<=
+    max_num_points``). Dynamic, an ``int32`` per env (`Corner count`_).
 
 ``max_num_points``
     Maximum corner-anchor count per environment.  A wider range adds more
@@ -205,7 +214,14 @@ checked when the ``TrackGenerator`` is constructed, and only for ``generator="be
 ``scale``
     Isotropic scale multiplier applied to sampled corner positions.  Scales all
     track coordinates; interacts with ``spacing`` and ``half_width`` through the
-    coordinate range.
+    coordinate range. A core field (``TrackGenConfig.scale``), static; ``size`` is its
+    per-env factor.
+
+``size``
+    Per-env size multiplier of the plan view, applied right after ``scale``: at
+    ``scale = 1``, ``size = s`` places exactly the corners ``scale = s`` does. Default
+    ``1.0`` (unchanged output). Dynamic, in ``[0.1, 10]`` (`Size`_). The flat
+    ``TrackGenConfig.size`` is its initial value.
 
 ``handle_clamp_frac``
     Adaptive handle clamp.  Each corner's handle is capped at
@@ -219,38 +235,42 @@ checked when the ``TrackGenerator`` is constructed, and only for ``generator="be
     Opt-in per-environment Bézier style randomisation (default ``False``).  When
     ``True``, each environment draws its own ``rad``, ``scale``, and
     ``handle_clamp_frac`` from the ``*_range`` fields, so a single batch spans a
-    family of styles. Still supported; for ``rad`` and ``handle_clamp_frac`` it is
-    superseded by ``randomize=`` (`Style sampling and randomize`_).
+    family of styles. **Deprecated** since 0.2.0.dev5 (a ``DeprecationWarning`` when the
+    generator is built; removed in 1.0, roadmap PR16): use ``randomize=`` on ``size``,
+    ``rad`` and ``handle_clamp_frac`` (`Style sampling (deprecated) and its
+    migration`_).
 
 ``rad_range``
     ``(lo, hi)`` range for per-environment ``rad`` when ``style_sampling=True``.
     ``None`` leaves ``rad`` to its per-env parameter array (every env at the configured
-    ``rad`` unless you ``set`` or randomize it). Superseded by
+    ``rad`` unless you ``set`` or randomize it). Deprecated with ``style_sampling``:
     ``randomize={"generator.rad": (lo, hi)}``.
 
 ``scale_range``
     ``(lo, hi)`` range for per-environment ``scale`` when ``style_sampling=True``.
-    ``None`` collapses to the scalar ``scale`` for all environments. Fully supported:
-    it is the only per-env size control until roadmap PR13d.
+    ``None`` collapses to the scalar ``scale`` for all environments. Deprecated with
+    ``style_sampling``: ``randomize={"generator.size": (lo / scale, hi / scale)}``.
 
 ``handle_clamp_frac_range``
     ``(lo, hi)`` range for per-environment ``handle_clamp_frac`` when
     ``style_sampling=True``.  ``None`` leaves the clamp to its per-env parameter array.
-    Superseded by ``randomize={"generator.handle_clamp_frac": (lo, hi)}``.
+    Deprecated with ``style_sampling``: ``randomize={"generator.handle_clamp_frac": (lo,
+    hi)}``.
 
 .. _bezier-dynamic:
 
 Per-env (dynamic) parameters
 ----------------------------
 
-``rad`` and ``handle_clamp_frac`` are **dynamic** fields of ``BezierParams``: each is a
-per-env ``[E]`` ``float32`` array, initialised from the configured value. Draw them per
-env with ``presets.track(randomize={"generator.rad": (lo, hi)})``, write them with
+``rad``, ``handle_clamp_frac`` and ``size`` are **dynamic** ``float32`` fields of
+``BezierParams``, and ``min_num_points`` a dynamic ``int32`` one: each is a per-env
+``[E]`` array, initialised from the configured value. Draw the ``float32`` ones per env
+with ``presets.track(randomize={"generator.rad": (lo, hi)})``, write any of them with
 ``gen.params["generator"].set("rad", value_or_array)``, or from a kernel in your own CUDA
 graph (a curriculum): see :ref:`tuning-per-env`. A scalar outside the bounds raises
 ``ValueError`` (at construction, or from ``set``); an array value outside them (a
 ``set`` with an ``[E]`` array, your own kernel) is clamped to them when the kernel reads
-it.
+it (``gen.params["generator"].bounds(field)`` returns them).
 
 .. list-table::
    :header-rows: 1
@@ -274,9 +294,25 @@ it.
      - lower: near-polygonal (every handle bound by its shorter edge)
      - ``[0, ~rad]``; a very large value disables the clamp
      - 1.00 at ``0``, ``0.4`` and ``1e9``
+   * - ``size`` (``generator.size``)
+     - ``1.0``
+     - ``[0.1, 10]``
+     - higher: a longer course relative to the (absolute) road width
+     - about ``[0.5, 2.6]`` at the default ``n_max`` (384): from about ``2.6`` the
+       longest tracks of a large batch truncate (`Size`_); small sizes lose yield to
+       the road width
+     - 0.945 / 1.00 / 0.996 at 0.5 / 1 / 2 (0.996 at 3, 0.4% truncated)
+   * - ``min_num_points`` (``set`` only: ``int32``)
+     - ``9``
+     - ``[2, max_num_points]``
+     - higher: more corners, longer tracks (mean length 3.90 at 2, 5.53 at 13)
+     - the whole range; it only narrows the count toward ``max_num_points``
+       (`Corner count`_)
+     - 0.94 / 1.00 / 1.00 at 2 / 9 / 13
 
 *Yield* is the fraction of valid tracks with the default pipeline, ``E = 128``, seeds
-``0..127`` (CPU), with the knob set to the value for every env.
+``0..127`` (CPU), with the knob set to the value for every env (``size``: ``E = 256``,
+``min_num_points``: ``E = 512``, seeds ``7919 * e + 13``).
 
 **Mind the clamp.** Each handle is ``min(rad * chord, handle_clamp_frac *
 shorter_edge)``, and the shorter incident edge is never longer than the chord, so
@@ -287,53 +323,150 @@ you draw ``handle_clamp_frac`` too, keep ``hi(rad) <= lo(handle_clamp_frac)``, o
 that ``rad`` is inert in the envs where its draw lands at or above the clamp's. The
 build warns about a ``rad`` range above the clamp (:ref:`tuning-per-env`).
 
-**Static knobs, and why.** ``min_num_points`` / ``max_num_points`` (``max`` sizes the
-corner buffers; a dynamic corner count is planned for roadmap PR13d),
+Size
+~~~~
+
+``size`` multiplies the corner grid right after ``scale``, so every corner, and
+everything built from the corners (handles, chords, the dense curve, the polygon
+fallback), is scaled by it. At ``scale = 1``, ``size = s`` gives exactly the bytes of
+``scale = s``; at ``size = 1`` the bytes are those of a pipeline without it. It scales
+the **plan view only**: ``half_width``, ``spacing``, the relax tolerances, z (the
+elevation window and amplitude, ``z_valid_grade``) stay absolute, so ``size`` is the
+"course larger relative to the car" axis, and a larger course gets more points at the
+same spacing. The per-env array is clamped to ``[0.1, 10]`` where the kernel reads it.
+
+Size changes no buffer and no launch. The constant-spacing resample needs
+``floor(size * L / spacing) + 1`` points for a raw loop of perimeter ``L`` at size 1,
+into ``n_max`` slots: a track that needs more is truncated and **fails** validity
+(``Track.truncated``, fail bit ``truncation``). The longest default ``bezier`` loop of
+8192 envs is 8.68 (p99 7.17) at ``scale = 1``, so with the default ``n_max = 384`` and
+spacing ``0.06``, truncation starts at about ``size = 2.6``. The sizing rule for a range
+up to ``size_hi`` (:ref:`tuning-size`):
+
+- ``n_max >= size_hi * L_max / spacing + 1``, with ``L_max`` about ``8.7 * scale``;
+- ``num_points >= size_hi * L_max / spacing``: the raw loop keeps its ``num_points``, so
+  a larger course has a coarser raw loop (median per-env largest raw segment 0.019 /
+  0.038 / 0.057 at size 1 / 2 / 3, against the output spacing 0.06);
+- the utilities' capacities and resolutions (checkpoint and prop rings, SDF and
+  heightfield grids): :ref:`tuning-size-utilities`.
+
+A ``generator.size`` randomizer (or a construction value) whose ``hi`` would truncate
+the nominal longest loop emits a ``UserWarning`` when the pipeline is built, naming the
+``n_max`` that fits. The nominal loop is the longest one above (8.68, the longest of
+8192 envs: a larger batch can truncate a few envs just below it), scaled by
+``(max_num_points / 13) ** 0.6`` for a larger corner capacity (the corner-count recipe
+below) and taking the ``hi`` of ``style_sampling``'s ``scale_range``; a curriculum
+written with ``set`` is not checked.
+
+.. _bezier-corner-count:
+
+Corner count
+~~~~~~~~~~~~
+
+``min_num_points`` is a dynamic ``int32`` field: write it per env with
+``gen.params["generator"].set("min_num_points", k)`` (a Python ``int``, or an ``[E]``
+``wp.int32`` array) or from your own kernel. ``max_num_points`` stays static: it sizes
+the corner buffers. Per env, the count is drawn uniformly in ``[min_e, max_num_points]``
+(``min_e`` clamped to ``[2, max_num_points]`` where the kernel reads it), from the same
+single random draw, so raising ``min_e`` never lowers an env's count. The corner
+positions are drawn for all ``max_num_points`` slots whatever the count, so changing the
+count adds or drops corners of one fixed set.
+
+- **The axis narrows toward ``max_num_points`` only.** ``min_num_points = 2`` with the
+  default ``max_num_points = 13`` still gives counts uniform on ``2..13``: the easy end of
+  a corner-count curriculum includes max-corner tracks. Build with ``max_num_points`` at
+  the curriculum's highest count and accept the full range at its easy end; fewer
+  corners than that at the easy end needs a smaller ``max_num_points`` (another
+  generator). A dynamic upper bound is not available in 0.x.
+- ``set`` takes a Python ``int`` or a NumPy integer: it refuses a scalar outside
+  ``[2, max_num_points]`` (``ValueError`` naming ``max_num_points``), any ``float``
+  (``9.0`` included) and a ``bool``; construction still converts a value ``int()``
+  accepts (a configured ``9.0`` from YAML, a NumPy integer, ``"9"``), as before.
+- ``randomize={"generator.min_num_points": ...}`` raises ``PlanError``: ``randomize``
+  draws ``float32`` fields only in 0.x (the count is already a per-env draw).
+- The ``bezier`` and ``hull`` **gate** generators keep a static ``min_num_points``: it is
+  their minimum gate count (``capacity()["min_gates"]``), and the gate count is not a
+  per-env axis in 0.x.
+
+**Static knobs, and why.** ``max_num_points`` (sizes the corner buffers),
 ``num_points_per_segment`` (sizes the dense buffer and its loops),
 ``min_point_distance`` (sets the corner grid on the host), ``edgy`` (turned into
 ``atan(edgy) / pi + 0.5`` on the host in double precision, which a kernel cannot
 reproduce bit for bit: planned for PR16), the ``style_sampling`` fields (a Python branch
-and host ranges) and the core ``scale`` (per-env size: PR13d; until then
-``scale_range``).
+and host ranges) and the core ``scale`` (per-env: ``size``).
 
 .. _bezier-style-vs-randomize:
 
-Style sampling and randomize
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Style sampling (deprecated) and its migration
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-``style_sampling`` is kept, and not deprecated in this release. Its ``rad_range`` and
-``handle_clamp_frac_range`` are superseded by ``randomize=`` on the two dynamic fields
-(the same uniform distributions, drawn from different random streams, so the tracks
-differ); ``scale_range`` has no replacement until per-env size ships (roadmap PR13d,
-which will deprecate ``style_sampling``):
+``style_sampling`` is **deprecated** since 0.2.0.dev5 and will be removed in 1.0 (roadmap
+PR16, after ``Course`` accepts a generator, roadmap PR15). Building a ``bezier`` generator
+with it emits one ``DeprecationWarning`` per build, attributed to your code (not one per
+generation; ``TrackGenConfig(...)`` itself does not warn). Python's default filters
+hide a ``DeprecationWarning`` attributed to an imported module (a gym env, a training
+package) rather than the script you run: run your tests with
+``-W default::DeprecationWarning`` to see it. Its three ranges map to
+``randomize=`` on dynamic fields:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 40 60
+
+   * - ``style_sampling`` range
+     - ``randomize=`` entry
+   * - ``scale_range=(a, b)``
+     - ``"generator.size": (a / scale, b / scale)`` (inside ``[0.1, 10]``)
+   * - ``rad_range=(a, b)``
+     - ``"generator.rad": (a, b)``
+   * - ``handle_clamp_frac_range=(a, b)``
+     - ``"generator.handle_clamp_frac": (a, b)``
 
 .. code-block:: python
 
-   # style sampling (still supported)
-   TrackGenConfig(style_sampling=True, rad_range=(0.1, 0.35),
+   # before (deprecated)
+   TrackGenConfig(style_sampling=True, scale_range=(0.8, 1.2), rad_range=(0.1, 0.35),
                   handle_clamp_frac_range=(0.3, 0.9))
 
-   # randomize: the same distributions, other draws (the style ranges, for comparison:
-   # rad is inert in the envs where its draw lands at or above the clamp's, see above)
+   # after: the same distributions, other draws (rad is inert in the envs where its
+   # draw lands at or above the clamp's, see above)
    spec = presets.track(num_envs=E, device=device,
-                        randomize={"generator.rad": (0.1, 0.35),
+                        randomize={"generator.size": (0.8, 1.2),
+                                   "generator.rad": (0.1, 0.35),
                                    "generator.handle_clamp_frac": (0.3, 0.9)})
 
-   # randomize on a pipeline built from a config
+   # after, for a pipeline built from a config: style_sampling=False, explicitly
+   cfg = TrackGenConfig(style_sampling=False, num_envs=E, device=device)
    gen = TrackGenerator(
        legacy.to_pipeline_spec(cfg).with_randomize(
-           {"generator.rad": (0.1, 0.35), "generator.handle_clamp_frac": (0.3, 0.9)}),
+           {"generator.size": (0.8, 1.2), "generator.rad": (0.1, 0.35),
+            "generator.handle_clamp_frac": (0.3, 0.9)}),
        rng)
 
-Under ``style_sampling=True`` a knob with a range is **drawn by the style kernel**: its
+- **Exact at equal values, not per seed.** Writing each env's style draw into the
+  dynamic fields (``size[e]`` the ``scale_range`` draw at ``scale = 1``) gives the
+  style run's bytes. The randomizers draw from the same uniform distributions but on
+  another random stream, so each seed gets a different track: fixed evaluation sets
+  built with ``style_sampling`` need re-baselining.
+- **Do not combine them.** With ``style_sampling`` and ``scale_range`` set, a
+  ``generator.size`` randomizer draws a second per-env size that multiplies the first;
+  the build emits a ``UserWarning`` (set ``style_sampling=False``).
+- **Course** takes a ``TrackGenConfig`` and no ``randomize=`` before roadmap PR15: keep
+  ``style_sampling`` there, or draw the sizes yourself and write them,
+  ``course.generator.params["generator"].set("size", sizes)`` (an ``[E]`` ``float32``
+  array), before ``course.regenerate()``. Size ``CourseConfig.max_checkpoints`` for the
+  largest size (:ref:`tuning-size-utilities`).
+
+Until it is removed, ``style_sampling`` keeps its bytes, and ``size`` composes with it
+(the corners get ``scale[e] * size[e]``). Under ``style_sampling=True`` a knob with a
+range is **drawn by the style kernel**: its
 parameter array holds each env's draw after a generation (read it to log what each env
 was built with), ``gen.params["generator"].drawn`` maps it to the stage's own id
 (``"generator"``), ``set`` on it raises ``ValueError`` (``generator.rad is drawn every
 generation by the generator's style_sampling (rad_range); set rad_range=None to set
 it``), and a randomizer on it is a ``PlanError``. A knob whose range is ``None`` stays an
 ordinary dynamic field:
-``set`` and ``randomize=`` work on it. The bytes of every ``style_sampling``
-configuration are unchanged.
+``set`` and ``randomize=`` work on it.
 
 What Makes It Distinct
 ----------------------
@@ -344,9 +477,9 @@ The Bezier generator is the **default** and most knob-rich of the six generators
   ``num_points_per_segment``, ``min_point_distance``, ``rad``, ``edgy``, ``scale``,
   ``handle_clamp_frac``) plus the opt-in ``style_sampling`` family are all
   exclusive to the corner-Bézier representation.  No other generator exposes handle
-  geometry, and only ``style_sampling`` varies ``scale`` per env (every built-in
-  sampling generator, ``bezier``, ``hull``, ``polar``, ``voronoi`` and ``checkpoint``,
-  has per-env shape knobs for ``randomize=``).
+  geometry (every built-in sampling generator, ``bezier``, ``hull``, ``polar``,
+  ``voronoi`` and ``checkpoint``, has per-env shape knobs and a per-env ``size`` for
+  ``randomize=``).
 
 - **Cubic Bézier representation.** Compared to the **hull** generator (which uses a
   closed uniform Catmull-Rom spline) and the **polar** generator (also Catmull-Rom),

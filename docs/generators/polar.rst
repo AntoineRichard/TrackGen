@@ -51,7 +51,9 @@ How It Works
 
 4. **Bounding-box normalization.** ``ops.normalize_extent`` centers each
    environment's loop by its bounding-box centroid and isotropically rescales
-   so the longest bounding-box dimension equals ``scale * 1.44``. The ``1.44``
+   so the longest bounding-box dimension equals ``scale * 1.44``, times the env's
+   ``size[e]`` (``ops.normalize_extent(..., size=...)``; `Per-env (dynamic)
+   parameters`_). The ``1.44``
    constant matches the Bézier baseline's typical per-environment longest
    bounding-box extent at ``scale = 1.0``, ensuring that ``half_width``,
    constant spacing, and XPBD relaxation see comparable coordinate ranges
@@ -118,9 +120,10 @@ that:
 
 .. math::
 
-   \max(\Delta x,\, \Delta y) = \texttt{scale} \times 1.44
+   \max(\Delta x,\, \Delta y) = \texttt{scale} \times 1.44 \times \texttt{size}[e]
 
-where :math:`\Delta x = x_\max - x_\min` and :math:`\Delta y = y_\max - y_\min`.
+where :math:`\Delta x = x_\max - x_\min` and :math:`\Delta y = y_\max - y_\min`
+(``size[e] = 1`` by default).
 
 Parameters
 ----------
@@ -160,7 +163,11 @@ checked when the ``TrackGenerator`` is constructed, and only for ``generator="po
 ``scale``
    Global coordinate scale shared across all generators. The polar generator
    normalizes its longest bounding-box axis to ``scale * 1.44``. Larger values
-   produce physically larger tracks.
+   produce physically larger tracks. A core field, static.
+
+``size``
+   Per-env size multiplier: env ``e``'s longest bounding-box side becomes
+   ``f32(scale * 1.44) * size[e]``. Default ``1.0``. Dynamic, in ``[0.1, 10]`` (below).
 
 ``num_points_per_segment``
    Number of dense Catmull-Rom samples emitted per control-knot segment before
@@ -172,10 +179,10 @@ checked when the ``TrackGenerator`` is constructed, and only for ``generator="po
 Per-env (dynamic) parameters
 ----------------------------
 
-``polar_radial_jitter`` and ``polar_angular_jitter`` are **dynamic** fields of
-``PolarParams`` (and of ``PolarGateParams``: the polar gate generator draws its knots
-with the same kernel): per-env ``[E]`` ``float32`` arrays, initialised from the
-configured values. Draw them per env with ``presets.track(generator="polar",
+``polar_radial_jitter``, ``polar_angular_jitter`` and ``size`` are **dynamic** fields of
+``PolarParams`` (the two jitters also of ``PolarGateParams``: the polar gate generator
+draws its knots with the same kernel): per-env ``[E]`` ``float32`` arrays, initialised
+from the configured values. Draw them per env with ``presets.track(generator="polar",
 randomize={"generator.polar_radial_jitter": (lo, hi)})`` (``presets.gates`` takes the
 same keys), write them with ``gen.params["generator"].set(...)`` or from your own graph
 (a curriculum): see :ref:`tuning-per-env`.
@@ -209,14 +216,34 @@ relied on the clamp (``polar_radial_jitter=1.0``) now fails, and setting the bou
      - higher: more irregular knot spacing
      - the whole range (the bound keeps the knots in angular order)
      - 1.00 / 1.00 / 1.00
+   * - ``size`` (``generator.size``)
+     - ``1.0``
+     - ``[0.1, 10]``
+     - higher: a longer course relative to the (absolute) road width
+     - about ``[0.5, 3.7]`` at the default ``n_max`` (384): from about ``3.7`` the
+       longest tracks of a large batch truncate; small sizes lose yield to the road
+       width
+     - 0.96 / 1.00 / 1.00 at 0.5 / 1 / 2 (1.00 at 3)
 
 *Yield* is the fraction of valid tracks with the default pipeline, ``E = 128``, seeds
-``0..127`` (CPU), with the knob set to the value for every env.
+``0..127`` (CPU), with the knob set to the value for every env (``size``: ``E = 256``,
+seeds ``7919 * e + 13``).
+
+**Size** scales the normalization target: env ``e``'s loop is centred and scaled so its
+longest bounding-box side is ``f32(scale * 1.44) * size[e]``, within one ``float32``
+rounding of ``scale = s`` at ``size = s`` (at ``size = 1`` the bytes are unchanged). It
+scales the plan view only (road width, spacing and z stay absolute), so a larger course
+needs more points: the longest default ``polar`` loop of 8192 envs is 6.24 (p99 5.67)
+at ``scale = 1``, and with the default ``n_max = 384`` and spacing ``0.06`` truncation
+(a failed env) starts at about ``size = 3.7``. Size ``n_max`` and ``num_points`` for the
+largest size with the rule of :ref:`tuning-size`. On **gates**, the polar gate
+generator has no ``size``: its anchors are re-normalized by the gate pipeline's
+``normalize.extent`` stage, whose ``size`` is the key (``presets.gates(generator="polar",
+randomize={"normalize.size": (lo, hi)})``; ``generator.size`` raises with that hint).
 
 **Static knobs, and why.** ``polar_num_knots`` (sizes the knot and dense buffers and
 the launch dimensions), ``num_points_per_segment`` (sizes the dense buffer) and the core
-``scale`` (a host product with the target extent; per-env size is planned for roadmap
-PR13d).
+``scale`` (a host product with the target extent; per-env: ``size``).
 
 What Makes It Distinct
 ----------------------

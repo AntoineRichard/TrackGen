@@ -33,6 +33,12 @@ validity is computed on the COPIES: ``gen.valid[e] = 1`` iff ``3 <= count[e] <= 
 the first ``count[e]`` points are finite and, when present, ``z`` is finite and
 ``half_width`` finite and ``> 0`` (else fail bit 0, ``"generator"``; poisoned with
 ``on_invalid="poison"``).
+
+No per-env ``size`` (roadmap PR13d): the ingested geometry is taken as given (a size
+would scale it about the data's own origin while its altitude, half-width and attributes
+stay, and :func:`~track_gen.pipeline.load_centerlines`' host sizing check could not see
+it). Scale ``centerline.xy`` in your own graph; ``generator.size`` (a randomizer,
+``set("size")``, a flat ``TrackGenConfig.size`` other than 1) raises with that hint.
 """
 from __future__ import annotations
 
@@ -56,6 +62,11 @@ PREFIX = "centerline."
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class ExternalParams(Params):
     """``generator/external``: which per-point channels the caller provides."""
+
+    #: Appended to the KeyError / PlanError / ValueError of a ``size`` on external
+    #: (roadmap PR13d: it has none).
+    _field_hints = {"size": "external ingests your geometry as given: scale "
+                            "centerline.xy in your graph"}
 
     with_z: bool = static(False, doc="inputs['centerline.z'] gives the altitude "
                                      "(provides z)")

@@ -22,6 +22,11 @@ from track_gen._src import warp_pipeline
 from track_gen.pipeline import BUILTIN_FAIL_BITS, PlanError, StageRef, build, presets
 from track_gen.plugin import Stage, registry
 
+# Roadmap PR13d: bezier's style_sampling is deprecated (one DeprecationWarning per built
+# generator); this module still exercises it.
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:bezier's style_sampling is deprecated:DeprecationWarning")
+
 DEV = "cpu"
 E = 2
 

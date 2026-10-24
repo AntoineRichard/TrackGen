@@ -6,7 +6,9 @@ corner/point draw for the same seed. Both are ``gate_generator`` Stages
 (``output="anchors"``, roadmap PR11): they write an UNORDERED anchor cloud
 (``anchors.xy``, ``max_num_points`` rows per env, and ``anchors.count``); the gate
 pipeline orders it (``order.ccw`` by default; ``order.raw`` is excluded: a cloud has no
-loop order).
+loop order). Roadmap PR13d: their dynamic ``size`` multiplies the anchor grid after
+``scale`` (``ops.sample_grid_points(..., size=)``); ``min_num_points`` stays static (it is
+the gate count capacity, ``min_gates``).
 """
 from __future__ import annotations
 
@@ -44,11 +46,12 @@ class _PointGates(Stage):
         lo, hi = int(p.min_num_points), int(p.max_num_points)
         scale = float(b.scale)
         seed = b.seed
+        size = b.param("size")
 
         def enqueue(ctx):
             ops.sample_counts(ctx, seed, count_salt, count_offset, lo, hi, count)
             ops.sample_grid_points(ctx, seed, point_salt, point_offset, P, num_cells,
-                                   float(cell_size), scale, used, points)
+                                   float(cell_size), scale, used, points, size=size)
         return enqueue
 
 

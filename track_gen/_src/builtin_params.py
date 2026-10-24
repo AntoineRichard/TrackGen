@@ -5,6 +5,15 @@ legacy error messages and ``generator_params={"polar_num_knots": 9}`` read the s
 The orchestrator resolves the Params (``from_legacy`` when ``generator_params`` is
 ``None``) and writes them back onto its private run snapshot (``_apply_legacy``).
 
+Roadmap PR13d: every built-in track generator and the ``bezier`` / ``hull`` gate
+generators declare a dynamic ``size`` (float32 in :data:`track_gen.ops.constants.
+SIZE_BOUNDS`, default 1.0, the LAST field: the flat ``TrackGenConfig.size`` /
+``GateGenConfig.size``), applied where the generator applies ``scale``; bezier / hull's
+``min_num_points`` is a dynamic ``int32`` (clamped to ``[2, max_num_points]`` at use,
+``set`` checks it through the per-instance bound of ``_instance_bounds()``). A dynamic
+``int32`` field's non-bool value is coerced with ``int()`` at construction (the legacy
+``int(config.x)`` read: a YAML ``9.0``, a ``numpy.int64``, ``"9"``).
+
 Roadmap PR13c: the knobs that shape the output and are read only inside kernels are
 DYNAMIC (per-env ``[E]`` float32 arrays with declared ``lo`` / ``hi``): bezier ``rad``
 / ``handle_clamp_frac``, ``hull_displacement``, the polar jitters, the voronoi radial
@@ -37,7 +46,9 @@ from __future__ import annotations
 import dataclasses
 import math
 import warnings
+from collections.abc import Mapping
 
+from ..ops.constants import _MIN_COUNT_LO, SIZE_BOUNDS
 from ..plugin.params import Params, _f32, _fields, _is_real, _out_of_range, dynamic, static
 
 __all__ = [
@@ -67,6 +78,7 @@ def _norm(v):
 
 
 _DYNAMIC_F32: dict = {}
+_DYNAMIC_I32: dict = {}
 
 
 def _dynamic_f32(cls) -> "tuple[str, ...]":
@@ -81,6 +93,60 @@ def _dynamic_f32(cls) -> "tuple[str, ...]":
     return names
 
 
+def _dynamic_i32(cls) -> "tuple[str, ...]":
+    """The dynamic int32 (non-bool) field names of a Params class (cached per class)."""
+    names = _DYNAMIC_I32.get(cls)
+    if names is None:
+        import warp as wp  # noqa: PLC0415
+
+        names = tuple(f.name for f in _fields(cls)
+                      if f.kind == "dynamic" and f.dtype is wp.int32
+                      and f.py_type is not bool)
+        _DYNAMIC_I32[cls] = names
+    return names
+
+
+#: Roadmap PR13d hints (appended to the errors of a per-env use, or an unknown
+#: ``generator_params`` key, of a field the Params class has not as a dynamic one).
+_SCALE_HINT = ("the core scale is static (TrackGenConfig.scale / BatchSpec.scale); the "
+               "per-env multiplier is size")
+_RENORMALIZED_SIZE_HINT = ("this gate generator is re-normalized by normalize.extent: use "
+                           "normalize.size, whose initial value is GateGenConfig.size / "
+                           "presets.gates(size=)")
+
+
+def _corner_factor(p) -> float:
+    """How the longest bezier / hull loop grows with the static corner capacity:
+    ``(max_num_points / 13) ** 0.6`` above the default 13 (measured on CPU, E=512: the
+    longest loop x1.11 / 1.17 / 1.29 / 1.54 / 1.93 at 16 / 20 / 24 / 30 / 40 corners;
+    the factor is at or above each), 1 below it."""
+    return max(1.0, float(p.max_num_points) / 13.0) ** 0.6
+
+
+#: The longest raw loop at ``size = 1``, ``scale = 1`` and the default shape knobs, per
+#: built-in (roadmap PR13d; the tuning guide's table, its "truncates from" column is
+#: ``22.98 / L``): the maximum over 8192 envs on CPU (seeds ``0..4095`` and ``7919 * e +
+#: 13`` for ``e < 4096``), rounded up. A larger batch can have a longer one.
+_LONGEST_LOOP = {"bezier": 8.68, "hull": 8.30, "polar": 6.24, "voronoi": 5.01,
+                 "checkpoint": 7.26}
+
+
+def _shape_at_default(p, names, drawn) -> bool:
+    """The loop-shape knobs ``names`` at their class defaults and not drawn per env:
+    where the nominal longest loop was measured (a knob that lengthens the loop past it
+    turns the truncation warning off rather than letting it under-estimate)."""
+    fields = type(p).__dataclass_fields__
+    return all(n not in drawn and getattr(p, n) == fields[n].default for n in names)
+
+
+def _size_field():
+    """The per-env ``size`` multiplier (roadmap PR13d): dynamic float32 in
+    :data:`~track_gen.ops.constants.SIZE_BOUNDS`, default 1.0, declared LAST."""
+    return dynamic(1.0, lo=SIZE_BOUNDS[0], hi=SIZE_BOUNDS[1],
+                   doc="Per-env size multiplier of the plan view, applied after scale "
+                       "(per env; 1: unchanged; z and widths are absolute).")
+
+
 def _is_bool_like(v) -> bool:
     """A Python / numpy bool, or a numpy array / torch tensor of a bool dtype (checked by
     name: torch is not imported)."""
@@ -89,6 +155,20 @@ def _is_bool_like(v) -> bool:
     dtype = getattr(v, "dtype", None)
     return dtype is not None and (getattr(dtype, "kind", None) == "b"
                                   or str(dtype) == "torch.bool")
+
+
+def _as_int(v):
+    """A dynamic int32 field's value as the legacy ``int(config.x)`` read it: a value
+    ``int()`` accepts (a YAML ``9.0``, a ``numpy.int64``, ``"9"``) becomes that ``int``;
+    a bool (Python, numpy or a bool array / tensor), an ``int`` and anything ``int()``
+    refuses are returned unchanged (the generic value check then rejects a bool or a
+    non-integer)."""
+    if type(v) is int or _is_bool_like(v):
+        return v
+    try:
+        return int(v)
+    except (TypeError, ValueError, OverflowError):
+        return v
 
 
 def _as_float(v):
@@ -127,6 +207,11 @@ class _FlatParams(Params):
             c = _as_float(v)
             if c is not v:
                 object.__setattr__(self, name, c)
+        for name in _dynamic_i32(type(self)):          # roadmap PR13d: legacy int() reads
+            v = getattr(self, name)
+            c = _as_int(v)
+            if c is not v:
+                object.__setattr__(self, name, c)
 
     @classmethod
     def from_legacy(cls, cfg):
@@ -148,16 +233,20 @@ class _FlatParams(Params):
         conflicts with a ``generator_params`` that leaves it at the class default."""
         defaults = {f.name: f.default for f in dataclasses.fields(type(self))}
         dyn = set(_dynamic_f32(type(self)))
+        dyn_i = set(_dynamic_i32(type(self)))
 
         def differs(n, ref) -> bool:
             # A flat dynamic value compares after the construction coercion, in float32
             # (the value its array holds), so np.float32(0.4) / torch.tensor(0.4) equal
-            # 0.4 as they did under NumPy 2's comparison rules.
+            # 0.4 as they did under NumPy 2's comparison rules; a dynamic int32 one after
+            # int() (roadmap PR13d: YAML 9.0 / numpy.int64(9) equal 9).
             v = getattr(cfg, n)
             if n in dyn:
                 v = _as_float(v)
                 if _is_real(v) and _is_real(ref):
                     return _f32(v) != _f32(ref)
+            if n in dyn_i:
+                v, ref = _as_int(v), _as_int(ref)
             return _norm(v) != _norm(ref)
 
         bad = sorted(
@@ -174,6 +263,19 @@ class _FlatParams(Params):
     def _check_legacy_config(self, cfg) -> None:
         """Cross-field rules that need the (core) config; none by default."""
 
+    def _instance_bounds(self) -> dict:
+        """``field -> (lo, hi, reason)``: per-instance bounds narrower than a dynamic
+        field's declared ones, checked by ``StageParams.set`` on a scalar and reported by
+        ``StageParams.bounds`` (roadmap PR13d); none by default."""
+        return {}
+
+    def _nominal_perimeter(self, scale: float, drawn: "Mapping[str, float]") -> \
+            "float | None":
+        """A nominal maximum raw-loop perimeter at ``size == 1`` for the planner's
+        truncation warning (roadmap PR13d), or ``None`` (not checked). ``drawn``: the
+        largest initial value (a randomizer's ``hi``) of each field drawn per env."""
+        return None
+
 
 # ---------------------------------------------------------------------------------------
 # Track generators
@@ -189,9 +291,12 @@ def _check_num_points_per_segment(p) -> None:
 class _PointFamilyParams(_FlatParams):
     """The corner sampler shared by ``"bezier"`` and ``"hull"``."""
 
-    min_num_points: int = static(9, lo=2, doc="Minimum corner-anchor count per env.")
+    min_num_points: int = dynamic(9, lo=_MIN_COUNT_LO,
+                                  doc="Minimum corner count (per env; each env's count "
+                                      "is uniform on [min, max_num_points]; clamped to "
+                                      "max_num_points at use).")
     max_num_points: int = static(13, doc="Maximum corner-anchor count per env "
-                                         "(>= min_num_points).")
+                                         "(>= min_num_points; sizes the corner buffers).")
     num_points_per_segment: int = static(30, lo=2, doc="Dense samples per "
                                                        "corner-to-corner segment.")
     min_point_distance: float = static(0.05, hi=0.5, doc="Minimum grid-cell spacing for "
@@ -210,6 +315,14 @@ class _PointFamilyParams(_FlatParams):
             raise ValueError(
                 f"min_point_distance must be in (0, 0.5], got {self.min_point_distance!r}")
         _check_num_points_per_segment(self)
+
+    _field_hints = {"scale": _SCALE_HINT}
+
+    def _instance_bounds(self) -> dict:
+        # The per-env corner count's upper end is the static corner capacity.
+        return {"min_num_points": (_MIN_COUNT_LO, int(self.max_num_points),
+                                   "at most max_num_points (the static corner "
+                                   "capacity)")}
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -232,9 +345,18 @@ class BezierParams(_PointFamilyParams):
         None, doc="(lo, hi) per-env scale range when style_sampling.")
     handle_clamp_frac_range: "tuple[float, float] | None" = static(
         None, doc="(lo, hi) per-env handle_clamp_frac range when style_sampling.")
+    size: float = _size_field()
 
     #: The switch named in the messages about a knob the stage draws itself.
     _self_draw_switch = "style_sampling"
+
+    def _nominal_perimeter(self, scale: float, drawn: "Mapping[str, float]") -> float:
+        # The measured longest raw loop at the defaults (_LONGEST_LOOP), times the
+        # largest per-env scale (style_sampling's scale_range replaces scale) and the
+        # corner-capacity factor. rad / handle_clamp_frac move it by at most ~3%.
+        if bool(self.style_sampling) and self.scale_range is not None:
+            scale = float(self.scale_range[1])
+        return _LONGEST_LOOP["bezier"] * float(scale) * _corner_factor(self)
 
     def _self_drawn(self) -> "dict[str, str]":
         """``field -> range field`` of the dynamic knobs ``style_sampling`` draws itself
@@ -258,7 +380,18 @@ class BezierParams(_PointFamilyParams):
         the fields a randomizer draws): a ``rad`` randomizer reaching above every value
         ``handle_clamp_frac`` can take (its drawn ``hi``, or its value when not drawn)
         warns, since ``rad`` has no effect there (the handle is ``min(rad * chord,
-        clamp * shorter edge)`` and the shorter edge is at most the chord)."""
+        clamp * shorter edge)`` and the shorter edge is at most the chord). Roadmap
+        PR13d: a ``size`` randomizer next to ``style_sampling``'s ``scale_range`` warns
+        (two per-env size draws compose)."""
+        if "size" in randomized and bool(params.style_sampling) and \
+                params.scale_range is not None:
+            from .generator_binding import _outside_track_gen_stacklevel  # noqa: PLC0415
+
+            warnings.warn(
+                "two per-env size draws compose multiplicatively: style_sampling's "
+                "scale_range x generator.size; set style_sampling=False (scale_range=(a, "
+                "b) -> {'generator.size': (a / scale, b / scale)})", UserWarning,
+                stacklevel=_outside_track_gen_stacklevel())
         rad = ranges.get("rad")
         if rad is None or "rad" not in randomized:
             return
@@ -285,6 +418,16 @@ class HullParams(_PointFamilyParams):
     hull_displacement: float = dynamic(0.15, lo=0.0, hi=1.0,
                                        doc="Maximum per-edge radial midpoint displacement "
                                            "fraction (per env).")
+    size: float = _size_field()
+
+    def _nominal_perimeter(self, scale: float, drawn: "Mapping[str, float]") -> float:
+        # Measured longest loop at the defaults (_LONGEST_LOOP), times the
+        # corner-capacity factor and a linear bound on hull_displacement above its
+        # default 0.15 (its initial value or a randomizer's hi; measured x1.07 / x1.36
+        # longest, x1.10 / x1.52 p99 at 0.5 / 1.0).
+        d = float(drawn.get("hull_displacement", self.hull_displacement))
+        return _LONGEST_LOOP["hull"] * float(scale) * _corner_factor(self) * \
+            (1.0 + 0.6 * max(0.0, d - 0.15))
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -302,10 +445,21 @@ class PolarParams(_FlatParams):
     polar_angular_jitter: float = dynamic(0.30, lo=0.0, hi=0.45,
                                           doc="Angular knot jitter as a fraction of a knot "
                                               "spacing (per env).")
+    size: float = _size_field()
+
+    _field_hints = {"scale": _SCALE_HINT}
 
     def validate(self, layout) -> None:
         _check_num_points_per_segment(self)
         _check_polar_jitters(self)
+
+    def _nominal_perimeter(self, scale: float, drawn: "Mapping[str, float]") -> \
+            "float | None":
+        # Measured longest loop at the defaults (_LONGEST_LOOP); more knots (x1.50 at
+        # 24) or a larger radial jitter (x1.10 at 0.85) lengthen it: not checked then.
+        if not _shape_at_default(self, ("polar_num_knots", "polar_radial_jitter"), drawn):
+            return None
+        return _LONGEST_LOOP["polar"] * float(scale)
 
 
 def _check_polar_jitters(p) -> None:
@@ -365,12 +519,24 @@ class VoronoiParams(_FlatParams):
     voronoi_angular_jitter: float = dynamic(0.08, lo=0.0, hi=math.pi,
                                             doc="Angular jitter of anchor sector targets "
                                                 "(rad, per env; useful up to ~0.5).")
+    size: float = _size_field()
+
+    _field_hints = {"scale": _SCALE_HINT}
 
     def validate(self, layout) -> None:
         _check_num_points_per_segment(self)
         _check_voronoi_shape(self, 6)
         _check_voronoi_layout(self)
         _check_voronoi_variation(self)
+
+    def _nominal_perimeter(self, scale: float, drawn: "Mapping[str, float]") -> \
+            "float | None":
+        # Measured longest loop at the defaults (_LONGEST_LOOP); the angular jitter
+        # (x2.5 at 1.5), the anchor and site counts lengthen it: not checked then.
+        if not _shape_at_default(self, ("voronoi_angular_jitter", "voronoi_control_points",
+                                        "voronoi_num_sites"), drawn):
+            return None
+        return _LONGEST_LOOP["voronoi"] * float(scale)
 
 
 def _check_checkpoint_count(p) -> None:
@@ -407,6 +573,9 @@ class CheckpointParams(_FlatParams):
     checkpoint_best_of_k: int = static(4, lo=1, doc="Best-of-K candidate count.")
     checkpoint_clip_fallback: bool = static(False, doc="Clip the first self-crossing of "
                                                        "the selected centerline.")
+    size: float = _size_field()
+
+    _field_hints = {"scale": _SCALE_HINT}
 
     def validate(self, layout) -> None:
         _check_checkpoint_count(self)
@@ -414,6 +583,19 @@ class CheckpointParams(_FlatParams):
             raise ValueError(
                 f"checkpoint_best_of_k must be >= 1, got {self.checkpoint_best_of_k!r}")
         _check_checkpoint_radius(self)
+
+    def _nominal_perimeter(self, scale: float, drawn: "Mapping[str, float]") -> \
+            "float | None":
+        # Measured longest loop at the defaults (_LONGEST_LOOP); each placement /
+        # steering knob moves it by up to ~12% (radius_min_frac 0, best_of_k 1): not
+        # checked then.
+        if not _shape_at_default(self, ("checkpoint_count", "checkpoint_radius_min_frac",
+                                        "checkpoint_angle_jitter",
+                                        "checkpoint_steer_gain",
+                                        "checkpoint_lookahead_frac",
+                                        "checkpoint_best_of_k"), drawn):
+            return None
+        return _LONGEST_LOOP["checkpoint"] * float(scale)
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -457,6 +639,18 @@ class RepulsiveParams(_FlatParams):
     repulsive_deactivate_obstacles: bool = static(True, doc="Zero the obstacle weights "
                                                             "once an env reaches its "
                                                             "target length.")
+    size: float = _size_field()
+
+    _field_hints = {"scale": _SCALE_HINT}
+
+    def _nominal_perimeter(self, scale: float, drawn: "Mapping[str, float]") -> float:
+        # Exact from the static params: the largest target perimeter the growth draws,
+        # grow_mult_max * 2 pi r_init (r_init = domain_frac * P_ref / init_ratio).
+        from .warp_generate_repulsive import _DOMAIN_SCALE_REF  # noqa: PLC0415
+
+        r_init = float(self.repulsive_domain_frac) * _DOMAIN_SCALE_REF * float(scale) / \
+            float(self.repulsive_domain_init_ratio)
+        return float(self.repulsive_grow_mult_max) * 2.0 * math.pi * r_init
 
     def validate(self, layout) -> None:
         # grow_mult_min >= 1 and grow_mult_max > 1: a multiplier <= 1 never grows, which
@@ -543,11 +737,19 @@ class PointGateParams(_FlatParams):
     """Parameters of the ``"bezier"`` and ``"hull"`` gate generators (the corner
     sampler; the curve knobs are inert for gates)."""
 
-    min_num_points: int = static(9, lo=2, doc="Minimum corner-anchor count per env.")
+    min_num_points: int = static(9, lo=2, doc="Minimum corner-anchor count per env (the "
+                                              "gate count capacity, min_gates).")
     max_num_points: int = static(13, doc="Maximum corner-anchor count per env "
                                          "(>= min_num_points).")
     min_point_distance: float = static(0.05, doc="Minimum grid-cell spacing for anchor "
                                                  "sampling (> 0).")
+    size: float = _size_field()
+
+    #: Appended to the KeyError / PlanError of a per-env read of a static field
+    #: (roadmap PR13d).
+    _field_hints = {"min_num_points": "on gate generators it is the gate count capacity "
+                                      "(min_gates): not per env in 0.x",
+                    "scale": _SCALE_HINT}
 
     def validate(self, layout) -> None:
         if float(self.min_point_distance) <= 0.0:
@@ -566,6 +768,9 @@ class PointGateParams(_FlatParams):
 class PolarGateParams(_FlatParams):
     """Parameters of the ``"polar"`` gate generator."""
 
+    #: No size: the normalize.extent stage re-normalizing its gates holds it.
+    _field_hints = {"size": _RENORMALIZED_SIZE_HINT}
+
     polar_num_knots: int = static(12, doc="Periodic cubic-spline control knots (= gates).")
     polar_radial_jitter: float = dynamic(0.60, lo=0.0, hi=0.85,
                                          doc="Radial knot jitter as a fraction of the base "
@@ -582,6 +787,9 @@ class PolarGateParams(_FlatParams):
 class VoronoiGateParams(_FlatParams):
     """Parameters of the ``"voronoi"`` gate generator (anchors are emitted directly as
     gates, so three control points suffice)."""
+
+    #: No size: the normalize.extent stage re-normalizing its gates holds it.
+    _field_hints = {"size": _RENORMALIZED_SIZE_HINT}
 
     voronoi_num_sites: int = static(256, doc="Total cell sites (>= voronoi_control_points).")
     voronoi_site_layout: str = static("void_ring", choices=_LAYOUTS,
@@ -611,6 +819,9 @@ class VoronoiGateParams(_FlatParams):
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class CheckpointGateParams(_FlatParams):
     """Parameters of the ``"checkpoint"`` gate generator."""
+
+    #: No size: the normalize.extent stage re-normalizing its gates holds it.
+    _field_hints = {"size": _RENORMALIZED_SIZE_HINT}
 
     checkpoint_count: int = static(12, lo=3, doc="Number of radial checkpoints (= gates).")
     checkpoint_radius_min_frac: float = dynamic(0.33, lo=0.0, hi=1.0,

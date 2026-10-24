@@ -53,7 +53,8 @@ from ..ops import funcs
 from ..ops.constants import TARGET_EXTENT
 from ..plugin.stage import CaptureClass, Stage
 from .builtin_params import CheckpointParams, _declared_bounds
-from .builtin_stage import DeprecatedParamsAlias, check_dyn, default_alloc, run_view
+from .builtin_stage import (DeprecatedParamsAlias, check_dyn, check_no_size,
+                            default_alloc, run_view)
 from .runtime import _init
 
 # Legacy private name (value only): the loop is normalised to config.scale * TARGET_EXTENT
@@ -590,7 +591,8 @@ def sample_checkpoint_rings_per_env(ctx: "LaunchContext", seeds: wp.array, K: in
 
 
 #: The dynamic fields of the Checkpoint Stage (roadmap PR13c), in Params order.
-_DYNAMIC = ("checkpoint_radius_min_frac", "checkpoint_angle_jitter", "checkpoint_turn_rate")
+_DYNAMIC = ("checkpoint_radius_min_frac", "checkpoint_angle_jitter", "checkpoint_turn_rate",
+            "size")
 
 
 def checkpoint_alloc_scratch(config):
@@ -669,6 +671,7 @@ def generate_checkpoint_warp(seeds_wp: wp.array, config,
     flow), so the captured graph stays fixed and allocation-free.
     """
     _init()
+    check_no_size(config, "generate_checkpoint_warp")
     ctx = _resolve_ctx(ctx, str(out_centerline.device))
     assert scratch is not None, "generate_checkpoint_warp requires scratch"
     _enqueue_checkpoint(seeds_wp, config, out_centerline, out_valid_wp, scratch, ctx, None)
@@ -678,8 +681,9 @@ def _enqueue_checkpoint(seeds_wp, config, out_centerline, out_valid_wp, scratch,
                         dyn) -> None:
     """The checkpoint generator's launches on ``ctx``: ``dyn=None`` (the legacy path:
     ``config``'s knobs, :func:`sample_checkpoint_rings` and :func:`_steer_k`) or the
-    radius / angle jitter / turn rate ``[E]`` arrays (the Stage:
-    :func:`sample_checkpoint_rings_per_env` and :func:`_steer_dyn_k`)."""
+    radius / angle jitter / turn rate / ``size`` ``[E]`` arrays (the Stage:
+    :func:`sample_checkpoint_rings_per_env`, :func:`_steer_dyn_k` and the normalization
+    to ``scale * TARGET_EXTENT * size[e]``, roadmap PR13d)."""
     check_dyn(dyn, _DYNAMIC, "checkpoint")
     E = int(config.num_envs)
     N = int(config.num_points)
@@ -741,7 +745,10 @@ def _enqueue_checkpoint(seeds_wp, config, out_centerline, out_valid_wp, scratch,
         )
 
     # 6. Normalize the selected centerline's bbox extent to match the bezier baseline.
-    ops.normalize_extent(ctx, out_centerline, N, target_extent)
+    if dyn is None:
+        ops.normalize_extent(ctx, out_centerline, N, target_extent)
+    else:   # roadmap PR13d: the per-env size multiplies the target extent
+        ops.normalize_extent(ctx, out_centerline, N, target_extent, size=dyn["size"])
 
     # 7. Mark all envs valid (gen gate is always True; inflate does the real gate).
     ops.fill(ctx, out_valid_wp, 1)

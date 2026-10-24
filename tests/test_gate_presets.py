@@ -342,10 +342,16 @@ def test_gate_relax_params():
 
 
 def test_parameter_agreement():
+    # Roadmap PR13d: validity.gate_default's gate_width is inert; at its default 0 it takes
+    # no part in the agreement (gate_frames alone sets the initial bar width) ...
     spec = _gates().replace("gate_frames", StageRef("gate_frames", "default",
                                                     params={"gate_width": 0.05}))
+    build(spec, seeds=1)
+    # ... while two explicit, different widths still disagree.
+    spec = spec.replace("validity", StageRef("validity", "gate_default",
+                                             params={"gate_width": 0.1}))
     with pytest.raises(PlanError, match=r"the stages disagree on gate_width: \{'gate_frames':"
-                                        r" 0.05, 'validity': 0.0\} \(one value per pipeline"):
+                                        r" 0.05, 'validity': 0.1\} \(one value per pipeline"):
         build(spec, seeds=1)
     spec = _gates().replace("validity", StageRef("validity", "gate_default",
                                                  params={"gate_radius": 0.03}))
@@ -354,13 +360,33 @@ def test_parameter_agreement():
         build(spec, seeds=1)
 
 
-def test_posed_frames_need_check_crossing_always():
-    spec = _gates(generator=gt.HELIX_POSED).replace(
-        "validity", StageRef("validity", "gate_default"))
-    with pytest.raises(PlanError, match=r"stage 'validity' \(validity.gate_default\): posed "
-                                        r"gates \(gate_frames.posed\) take their widths from "
-                                        r"the generator; set check_crossing='always'"):
-        build(spec, seeds=1)
+def test_posed_frames_need_no_check_crossing_always():
+    """Roadmap PR13d (inverted): validity.gate_default checks the bars of every env
+    that has one, so ``check_crossing`` is inert and a posed pipeline with the default
+    ``"width"`` builds and checks its crossings: the same bytes as ``"always"`` (what
+    the preset sets)."""
+    always = _gates(generator=gt.HELIX_POSED)
+    assert dict(_ref(always, "validity").params)["check_crossing"] == "always"
+    width = always.replace("validity", StageRef("validity", "gate_default"))
+    a = GateGenerator(always, _rng())
+    w = GateGenerator(width, _rng())
+    seq = w.generate()
+    assert _bytes(seq) == _bytes(a.generate())
+    assert np.any(seq.half_size.numpy() != 0.0)                     # real bars
+    # ... checked as the PR11 kernel with the crossing check on decides.
+    from track_gen._src import warp_gate
+
+    vp = dict(_ref(width, "validity").params or {})
+    G = seq.position.shape[0] // E
+    valid = wp.empty(E, dtype=wp.int32, device="cpu")
+    fail = wp.empty(E, dtype=wp.int32, device="cpu")
+    wp.launch(warp_gate._finalize_validity_k, E,
+              [seq.position, seq.tangent, seq.forward, seq.orientation, seq.half_size,
+               seq.left, seq.right, seq.count, G, int(vp.get("min_gates", 4)),
+               2.0 * float(vp.get("gate_radius", 0.025)), 1.0,
+               float(vp.get("z_valid_grade", 0.0)), valid, fail], device="cpu")
+    assert fail.numpy().tolist() == seq.fail_mask.numpy().tolist()
+    assert valid.numpy().tolist() == seq.valid.numpy().tolist()
 
 
 # ---------------------------------------------------------------------------------------

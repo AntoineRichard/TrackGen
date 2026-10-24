@@ -59,8 +59,10 @@ import warp as wp
 from .. import ops
 from ..exec.context import LaunchContext, resolve as _resolve_ctx
 from ..ops import funcs
+from ..ops.constants import SIZE_BOUNDS
 from ..plugin.stage import CaptureClass, Stage
 from .builtin_params import RepulsiveParams
+from .builtin_stage import check_no_size
 from .runtime import _init
 
 # --- Obstacle layout constants (mirror the spike's sample_obstacles reference layout) ---
@@ -787,6 +789,32 @@ def _first_check(stage_starts, stall_window: int) -> int:
 
 
 # ===========================================================================
+# The sized output copy (roadmap PR13d)
+# ===========================================================================
+
+_C_SIZE_LO = wp.constant(wp.float32(SIZE_BOUNDS[0]))
+_C_SIZE_HI = wp.constant(wp.float32(SIZE_BOUNDS[1]))
+
+
+@wp.kernel
+def _copy_sized_k(src: wp.array(dtype=wp.vec2f), n: int,
+                  size_e: wp.array(dtype=wp.float32), out: wp.array(dtype=wp.vec2f)):
+    # out = src * size[e] (size clamped to SIZE_BOUNDS by comparisons), and EXACTLY src
+    # at size 1 or for a non-finite point (any bit pattern: NaN payloads included). The
+    # multiplied operand w is the finite-gated value, never the selected v: no select
+    # fold can turn the size-1 copy into a multiply of a NaN (design PR13d section 1.3).
+    t = wp.tid()
+    e = t // n
+    size = size_e[e]
+    size = wp.where(size < _C_SIZE_LO, _C_SIZE_LO, size)
+    size = wp.where(size > _C_SIZE_HI, _C_SIZE_HI, size)
+    v = src[t]
+    fin = wp.isfinite(v[0]) and wp.isfinite(v[1])
+    w = wp.where(fin, v, wp.vec2f(0.0, 0.0))
+    out[t] = wp.where(size == 1.0 or not fin, v, w * size)
+
+
+# ===========================================================================
 # Fixed-schedule coarse-to-fine growth loop (a bounded loop: capture class BOUNDED)
 # ===========================================================================
 
@@ -807,15 +835,27 @@ def generate_repulsive_warp(seeds_wp: wp.array, config,
     hand-written analytic adjoints (per-vertex gather, no atomics), so the flow is
     byte-deterministic per device. Ported from the validated spike ``grow_warp.grow_warp``
     (with the tape replaced). The registered generator is the :class:`Repulsive` Stage,
-    which calls this function.
+    which runs the same private core with its per-env ``size`` (roadmap PR13d); this
+    frozen entry point has none and refuses a config whose ``size`` is not 1.
 
     Args:
         ctx: optional track_gen.exec.LaunchContext; default resolves the
             device's stream (see track_gen.exec).
     """
     _init()
+    check_no_size(config, "generate_repulsive_warp")
     ctx = _resolve_ctx(ctx, str(out_centerline.device))
     assert scratch is not None, "generate_repulsive_warp requires scratch"
+    _generate_repulsive(seeds_wp, config, out_centerline, out_valid_wp, scratch, ctx, None)
+
+
+def _generate_repulsive(seeds_wp, config, out_centerline, out_valid_wp, scratch, ctx,
+                        size) -> None:
+    """The repulsive generator's launches on ``ctx`` (the private core of
+    :func:`generate_repulsive_warp` and the :class:`Repulsive` Stage). ``size``: ``None``
+    (the frozen entry point: the final copy is a ``ctx.copy``) or the Stage's ``[E]``
+    float32 ``size`` (roadmap PR13d: the final copy is :func:`_copy_sized_k`, an exact
+    scaling of the grown loop: its growth does not see the size)."""
     s = scratch
     E = s.E
     dev = str(out_centerline.device)
@@ -956,7 +996,10 @@ def generate_repulsive_warp(seeds_wp: wp.array, config,
     ops.fill(ctx, s.count, Ncur)
     ops.resample_uniform(ctx, center[0:E * Ncur], Ncur, rs_scratch, s.rs_out[0:E * Ncur],
                          count=s.count)
-    ctx.copy(out_centerline, s.rs_out, count=E * Ncur)
+    if size is None:
+        ctx.copy(out_centerline, s.rs_out, count=E * Ncur)
+    else:
+        ctx.launch(_copy_sized_k, E * Ncur, [s.rs_out, Ncur, size, out_centerline])
     ops.fill(ctx, out_valid_wp, 1)
 
 
@@ -967,7 +1010,9 @@ def generate_repulsive_warp(seeds_wp: wp.array, config,
 class Repulsive(Stage):
     """``"repulsive"``: the repulsive-growth track generator (:func:`generate_repulsive_warp`)
     as a ``kind="generator"`` Stage of capture class ``BOUNDED`` (its growth loop is a
-    ``ctx.bounded_loop`` with an absorbing per-env freeze)."""
+    ``ctx.bounded_loop`` with an absorbing per-env freeze). Roadmap PR13d: its dynamic
+    ``size`` scales the grown loop in the final copy (:func:`_copy_sized_k`;
+    ``raw.xy(s) == f32(raw.xy(1) * s)``)."""
 
     kind = "generator"
     name = "repulsive"
@@ -984,10 +1029,13 @@ class Repulsive(Stage):
     @staticmethod
     def _run_view(params, *, num_envs: int, scale: float, device: str):
         """What :func:`repulsive_alloc_scratch` and :func:`generate_repulsive_warp` read:
-        every RepulsiveParams field, plus ``num_envs``, ``scale`` and ``device``."""
+        every static RepulsiveParams field, plus ``num_envs``, ``scale`` and ``device``
+        (the dynamic ``size`` is read on the device)."""
         view = types.SimpleNamespace(num_envs=int(num_envs), scale=float(scale),
                                      device=str(device))
         for name in RepulsiveParams.__dataclass_fields__:
+            if name == "size":
+                continue
             setattr(view, name, getattr(params, name))
         return view
 
@@ -997,9 +1045,13 @@ class Repulsive(Stage):
         xy = b.write("xy", wp.vec2f, per="raw")
         valid = b.write("valid", wp.int32)
         seed = b.seed
+        size = b.param("size")
+        dev = str(xy.device)
 
         def enqueue(ctx):
-            generate_repulsive_warp(seed, cfg, xy, valid, scratch, ctx=ctx)
+            _init()
+            _generate_repulsive(seed, cfg, xy, valid, scratch, _resolve_ctx(ctx, dev),
+                                size)
         return enqueue
 
 

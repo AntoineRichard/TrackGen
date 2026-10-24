@@ -773,7 +773,11 @@ channels, ``anchors.xy`` (``[E * A]`` ``vec2f``, env ``e``'s anchors at ``e * A 
 ``anchors.count`` (``[E]`` ``int32``), and may write per-anchor attributes it
 ``provides``. It does not order its anchors (an ``order`` stage does), size them to the
 course extent (``normalize.extent`` does, when it declares
-``preferred={"normalize": "extent"}``), or compute altitudes, tangents and frames.
+``preferred={"normalize": "extent"}``; the stage's dynamic ``size``, key
+``normalize.size``, is then the pipeline's per-env course size), or compute altitudes,
+tangents and frames. A gate generator that sizes its own anchors instead declares a
+``size`` field by the convention of :ref:`generator-size-convention` (key
+``generator.size``, as the ``bezier`` / ``hull`` gate generators).
 
 This one places ``gates`` anchors on a circle with a random phase per env, and provides
 their altitude (a wave that climbs ``turns`` times per lap) and their analytic tangent, so
@@ -1031,7 +1035,11 @@ run. The latch runs at the start of segment ``0``, so in a Program with a ``HOST
 stage a write recorded after segment ``0`` applies at the next generation
 (:ref:`pipeline-segments`). The built-in elevation stages work the same way: their
 ``z_min`` / ``z_max`` (and ``z_max_step``, ``z_noise_amplitude``) are dynamic,
-``gen.params["elevation"]["z_max"]`` (:ref:`tracks-25d-per-env`).
+``gen.params["elevation"]["z_max"]`` (:ref:`tracks-25d-per-env`), and so are the gate
+stages' ``normalize.size`` and ``gate_frames.gate_width`` (:ref:`gate-width-per-env`).
+``gen.params[stage_id].in_effect(field)`` returns the values the stage read for each
+env's current rows (its working copy), and ``bounds(field)`` the declared range
+(:ref:`the tuning guide <tuning-in-effect>`).
 
 Only static fields reach ``build`` and ``capture_class`` (reading a dynamic one raises
 ``AttributeError``): a host value derived from a dynamic field would be baked into the

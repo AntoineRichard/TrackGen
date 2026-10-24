@@ -841,6 +841,74 @@ and the next generation reads it); a ``per="raw"`` one is ``[E * raw]`` and unla
 A ``Course`` has no parameter table of its own: use ``course.generator.params`` and
 ``course.generator.inputs``.
 
+**What each env was built with.** ``gen.params["generator"].in_effect("amp")`` returns
+the ``[E]`` values the stage read for each env's current rows (the latched working copy,
+or the drawn array), and ``bounds("amp")`` the declared ``(lo, hi)``: the curriculum
+bookkeeping under masked regeneration of :ref:`the tuning guide <tuning-in-effect>`.
+
+.. _generator-size-convention:
+
+A per-env size
+~~~~~~~~~~~~~~
+
+The built-in generators have a per-env course size, ``size`` (``generator.size``,
+:ref:`tuning-size`), which ``TrackGenConfig.size``, ``presets.track(size=)`` and
+``randomize={"generator.size": ...}`` set. A plugin generator gets the same axis by
+declaring the field with the convention bounds,
+``track_gen.ops.constants.SIZE_BOUNDS``, and passing it to the op that applies its
+``scale``:
+
+.. code-block:: python
+
+   from track_gen.ops.constants import SIZE_BOUNDS
+
+   @dataclasses.dataclass(frozen=True, kw_only=True)
+   class BlobParams(plugin.Params):
+       lobes: int = plugin.static(3, lo=2, hi=12)
+       size: float = plugin.dynamic(1.0, lo=SIZE_BOUNDS[0], hi=SIZE_BOUNDS[1],
+                                    doc="per-env size multiplier of the plan view")
+
+   # in build(): read it by pointer, hand it to the op that applies scale
+   size = b.param("size")                                   # [E] float32
+   extent = ops.constants.TARGET_EXTENT * b.scale
+   ...
+   ops.normalize_extent(ctx, xy, n, extent, size=size)      # inside enqueue(ctx)
+
+- ``ops.normalize_extent(..., size=)`` scales env ``e``'s longest side to
+  ``target_extent * size[e]``; ``ops.sample_grid_points(..., size=)`` multiplies each
+  point by ``size[e]`` after ``scale``. Both clamp the value to ``SIZE_BOUNDS`` (by
+  comparisons: a NaN passes), and a size-1 array gives exactly the bytes of
+  ``size=None``, on CPU and CUDA.
+- The flat ``TrackGenConfig.size`` / ``GateGenConfig.size`` reaches the field too: when
+  your ``Params.from_legacy`` leaves ``size`` at its default (the default
+  ``from_legacy`` returns ``cls()``), the flat value is set on it, as ``half_width`` is.
+- Without a ``size`` field, a flat ``TrackGenConfig.size`` other than ``1.0`` with your
+  generator raises ``ValueError`` (naming the declaration above), and
+  ``randomize={"generator.size": ...}`` raises ``PlanError``: a size is never silently
+  dropped. A ``size`` field that is static or an ``int`` (an arena cell count, say) is
+  your own: the flat ``size`` and ``presets.track / gates(size=)`` never write it, and
+  a value other than ``1.0`` raises. A legacy ``GeneratorSpec`` / ``GateGeneratorSpec`` cannot take one (its
+  ``params=`` class is static only): port it to a Stage first.
+- **A gate generator whose gates are re-normalized** (``preferred["normalize"] ==
+  "extent"``, as the ``polar`` / ``voronoi`` / ``checkpoint`` gate generators) needs no
+  ``size``: ``normalize.extent`` rescales its gates to ``scale * TARGET_EXTENT *
+  normalize.size``, which erases any size of its own. ``GateGenConfig.size`` and
+  ``presets.gates(size=)`` go to ``normalize.size`` for it even when it declares
+  ``size``, and a ``generator.size`` randomizer or construction value on it emits a
+  ``UserWarning`` at build (a ``set`` is not checked).
+- **In your own kernel**, multiply by the size where the product does not feed an
+  addition or a subtraction: after your ``* scale`` product (when a constructor or a
+  store consumes it), or folded into a scalar target before a division, as the two ops
+  do. Warp compiles CUDA with FMA contraction on (the module option ``fuse_fp``,
+  default ``True``; ``wp.set_module_options({"fuse_fp": ...})``): a multiply whose
+  result feeds an add may become an FMA, so a ``* size`` inserted on that edge
+  turns ``fma(a, b, c)`` into ``round(round(a * b) + c)`` and changes the last bit at
+  ``size = 1``, while ``x * 1.0`` alone is exact.
+- Scale the plan view only (keep widths and z absolute, as the built-ins do). A larger
+  course needs more points: ``n_max >= size_hi * L_max / spacing + 1``, and a raw
+  ``num_points`` that keeps the raw loop finer than the output spacing
+  (:ref:`tuning-size`).
+
 .. _ingesting-centerlines:
 
 Ingesting your own centerlines
@@ -960,6 +1028,12 @@ A loop that needs more is truncated and fails (fail bit ``truncation``). The def
 built-ins' unit-sized loops, far too small for a 4 km circuit in metres. Set ``spacing``,
 ``half_width`` and ``n_max`` explicitly, as in the example, and ``num_points`` to the
 longest row you load.
+
+``external`` has no per-env ``size``: it ingests your geometry as given (a size would
+scale a circuit about your data's origin, and the sizing check above could not see it).
+To vary the size, scale ``centerline.xy`` in your own graph before the generation;
+``TrackGenConfig.size`` other than ``1.0``, ``presets.track(generator="external",
+size=...)`` and ``randomize={"generator.size": ...}`` raise with that hint.
 
 **Relaxation is off by default.** ``presets.track`` and ``presets.gates`` take
 ``relax="auto"`` (their default), which picks the generator's preferred relax stage:
@@ -1525,13 +1599,15 @@ an explicit argument. Every op:
    * - ``sample_counts(ctx, seeds, salt, offset, lo, hi, out)``
      - One integer in ``[lo, hi]`` per env (how many corners, points or gates).
    * - ``sample_grid_points(ctx, seeds, salt, offset, num, num_cells, cell_size, scale,
-       used, out)``, ``grid_cells(min_point_distance)``
+       used, out, *, size=None)``, ``grid_cells(min_point_distance)``
      - ``num`` jittered points per env on distinct cells of a grid where possible (the
        ``bezier`` and ``hull`` sampler). The jitter is an absolute ``[-0.5, 0.5)``, so
        the points lie in ``[-0.5, (num_cells-1)*cell_size + 0.5) * scale`` and have no
        minimum spacing; distinct cells are best effort (8 redraws). ``grid_cells``
        derives the built-in grid from the ``min_point_distance`` config knob (in
-       ``(0, 0.5]``) on the host. ``scale`` is a float or an ``[E]`` array.
+       ``(0, 0.5]``) on the host. ``scale`` is a float or an ``[E]`` array; ``size``
+       an optional ``[E]`` per-env multiplier applied after it
+       (:ref:`generator-size-convention`).
    * - ``angle_sort(ctx, src, stride, keys, out, *, count, out_stride=None)``
      - The first ``count[e]`` points of each env, sorted by angle around their centroid
        (ascending ``atan2(x - cx, y - cy)``), NaN after them. This is the order
@@ -1566,10 +1642,12 @@ an explicit argument. Every op:
        ``thickness`` excludes vertex pairs within ``band[e]`` points of each other; the
        built-in validity gate uses ``band = max(1, round(2 * half_width / l0))`` for a
        mean segment length ``l0``.
-   * - ``normalize_extent(ctx, src, stride, target_extent, *, count=None)``
+   * - ``normalize_extent(ctx, src, stride, target_extent, *, count=None,
+       size=None)``
      - Centres each env's bounding box and scales it so the longest side is
-       ``target_extent``, in place; with ``count``, only the real points count and the
-       slots after them are written NaN.
+       ``target_extent`` (times ``size[e]`` with an ``[E]`` ``size``), in place; with
+       ``count``, only the real points count and the slots after them are written NaN
+       (``count`` and ``size`` together raise ``ValueError``).
    * - ``fill(ctx, arr, value)``, ``any_set(ctx, mask, flag_out)``
      - A stream-explicit fill, and a device-side "is any ``mask[e]`` set" flag.
    * - ``check_array(name, arr, shape, dtype, device)``
@@ -1579,8 +1657,9 @@ Device functions for your own kernels are in ``track_gen.ops.funcs``: ``ccw``, `
 ``nan0``, ``safe_normalize2``, ``catmull_rom``, ``segments_cross`` and ``hash32``. They are
 the functions the built-in kernels call: the same operations in the same order. On CPU a
 kernel built from them reproduces the built-in arithmetic bit for bit. On CUDA, Warp
-contracts multiply-adds into FMAs by default (``wp.config.fuse_fp``), and which pairs it
-contracts depends on the code around the inlined call, so a differently structured kernel
+contracts multiply-adds into FMAs by default (the module option ``fuse_fp``, default
+``True``; ``wp.set_module_options({"fuse_fp": ...})``), and which pairs it contracts
+depends on the code around the inlined call, so a differently structured kernel
 can differ in the last bit. ``track_gen.ops.constants.TARGET_EXTENT`` is the size the
 ``polar``, ``voronoi`` and ``checkpoint`` generators normalise to.
 
@@ -2096,6 +2175,22 @@ it as a kernel argument fails the launch (Warp's ``RuntimeError``, chained from 
 ``TypeError``), so a knob routed through the host by mistake fails instead of baking the
 default. Run ``check_generator`` on it: its ``params.per_env`` check sets every dynamic
 field per env and compares each env with a scalar run.
+
+A new built-in that applies ``scale`` also declares ``size`` (``_size_field()`` in
+``builtin_params.py``, the last field) and applies it where it applies ``scale``: through
+``ops.sample_grid_points(..., size=)`` / ``ops.normalize_extent(..., size=)``, or in its
+own kernel by the FMA rule of :ref:`generator-size-convention`, with a CPU test on the
+generated CUDA source of the sized twin. Its Params return a nominal longest raw
+perimeter at size 1 from the private ``_nominal_perimeter(scale, drawn)`` hook (the
+measured longest loop at the default shape knobs, scaled by the knobs that lengthen it,
+or an exact bound; ``None`` where a knob it does not model differs from its default;
+``drawn`` maps each randomized field to its randomizer's ``hi``), which the planner's
+truncation warning reads. A dynamic
+``int32`` knob (a count that sizes no buffer, like ``min_num_points``) is latched by the
+``int32`` latch and clamped at use with comparisons; a bound that depends on a static
+field (``min_num_points <= max_num_points``) comes from the private
+``_instance_bounds()`` hook, so ``set`` refuses a scalar past it and
+``StageParams.bounds`` reports it.
 
 .. _how-a-generator-is-judged:
 

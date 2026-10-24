@@ -461,7 +461,8 @@ def test_provided_attributes_reach_the_sequence_under_capture(acme, name):
     ``tangents``, inserts ``carry.<attr>`` per provided attribute after ``order.raw``,
     and (posed) selects ``gate_frames.posed``. Recorded into the caller's graph, every
     replay (also after a reseed) carries the provided values of THAT replay into the
-    GateSequence unchanged (``carry.*`` and ``_finalize_frame[_posed]_k`` on CUDA)."""
+    GateSequence unchanged (``carry.*`` and ``_finalize_frame_posed_k`` /
+    ``_finalize_frame_dyn_k`` on CUDA)."""
     attrs = _PROVIDES[name]
     spec = _gates(generator=name)
     for dropped in ("gate_arclen", "elevation", "tangents"):
