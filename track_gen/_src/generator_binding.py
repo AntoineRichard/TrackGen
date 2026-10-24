@@ -308,7 +308,9 @@ class _StageGenerator:
         composition) the builder allocates it privately (nothing carries it there).
         ``drawn`` (roadmap PR13b): ``field -> [E] array`` of the dynamic fields a
         ``randomize.*`` stage draws: that single array replaces the field's latch pair
-        (unlatched)."""
+        (unlatched). A field the stage draws itself (roadmap PR13c: bezier's
+        ``style_sampling`` ranges, ``Params._self_drawn()``) gets such an array here
+        when the planner did not pass one (the PR9 reference composition)."""
         if self._built is not None:
             raise RuntimeError(f"Stage generator {self.name!r} is already built; its "
                                f"buffers are bound at build (construct a new generator)")
@@ -316,6 +318,11 @@ class _StageGenerator:
 
         E, dev = self.layout.num_envs, self.layout.device
         drawn = dict(drawn or {})
+        self_drawn = getattr(self.params, "_self_drawn", None)
+        for name in (self_drawn() if callable(self_drawn) else {}):
+            if name not in drawn:
+                drawn[name] = wp.full(E, float(getattr(self.params, name)),
+                                      dtype=wp.float32, device=dev)
         dynamic = {}
         if self.params is not None:
             for f in _fields(type(self.params)):

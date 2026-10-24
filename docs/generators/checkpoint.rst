@@ -16,15 +16,17 @@ snapping between corner anchor points.
 How It Works
 ------------
 
-1. **Sample checkpoint ring.**  ``_sample_checkpoints_k`` draws ``C = checkpoint_count``
+1. **Sample checkpoint ring.**  ``_sample_checkpoints_dyn_k`` draws ``C = checkpoint_count``
    checkpoints, one per angular slot, at angles ``2*pi*c/C + jitter`` (bounded by
    ``checkpoint_angle_jitter * slot``, approximately angle-ordered so the steered path winds
    exactly once around) on radii drawn uniformly from
    ``[checkpoint_radius_min_frac * R, R]`` with ``R = 1``.  The sampling is repeated
    independently for each of the ``K`` decorrelated candidates using per-candidate RNG
-   salt offsets.
+   salt offsets.  ``checkpoint_radius_min_frac`` and ``checkpoint_angle_jitter`` are env
+   ``e``'s values from the per-env parameter arrays (`Per-env (dynamic) parameters`_).
 
-2. **Fixed N-step bounded-turn steering walk.**  ``_steer_k`` walks a fixed
+2. **Fixed N-step bounded-turn steering walk.**  ``_steer_dyn_k`` (env ``e``'s
+   ``checkpoint_turn_rate`` from its per-env array) walks a fixed
    ``num_points``-step open path.  The step length ``dl = ring_perimeter / N`` (where
    ``ring_perimeter`` is the closed polygon perimeter over the sampled checkpoints) pins
    the walk to approximately one full lap without an over-generate-and-trim step.  The
@@ -68,6 +70,10 @@ How It Works
    resample, relaxation, and inflate stages see comparable coordinate ranges across
    generators.
 
+The frozen legacy entry point ``generate_checkpoint_warp`` launches the scalar kernels
+``_sample_checkpoints_k`` and ``_steer_k`` with the host values: the same arithmetic, the
+same bytes.
+
 Math
 ----
 
@@ -84,8 +90,10 @@ at angle and radius:
    r_c \sim U\!\left(\,f \cdot R,\; R\right),
    \qquad f = \texttt{checkpoint\_radius\_min\_frac},\quad R = 1
 
-The jitter bound keeps the sequence strictly angle-monotone (no angular slot is crossed),
-so the steered path is guaranteed to wind once around.
+A jitter of at most 0.5 keeps the sequence strictly angle-monotone (no angular slot is
+crossed), so the steered path is guaranteed to wind once around; above 0.5 (the default
+is 0.55) adjacent checkpoints may swap angular order (``checkpoint_angle_jitter``
+below).
 
 **Steering step.**  The step length is fixed to the checkpoint polygon perimeter divided by
 ``N``:
@@ -142,13 +150,16 @@ checked when the ``TrackGenerator`` is constructed, and only for
 
 ``checkpoint_radius_min_frac`` (float, default 0.33)
     Inner-radius fraction for checkpoint placement.  Checkpoint radii are drawn from
-    ``U(checkpoint_radius_min_frac * R, R)`` with ``R = 1``.  Must be in ``[0, 1)``.
-    The CarRacing canonical value 0.33 gives the characteristic inlets.
+    ``U(checkpoint_radius_min_frac * R, R)`` with ``R = 1``.  Must be in ``[0, 1)`` at
+    construction (a run-time value may reach ``1``, see below).
+    The CarRacing canonical value 0.33 gives the characteristic inlets. Dynamic.
 
 ``checkpoint_angle_jitter`` (float, default 0.55)
     Angular jitter as a fraction of the per-checkpoint angular slot ``2*pi/C``.
-    Must be below 1.0 (enforced in Python before launch) so each checkpoint stays within
-    its nominal angular slot. Values above 0.5 allow adjacent checkpoints to swap angular
+    Dynamic, in ``[0, 1]`` (a value outside raises ``ValueError`` at construction; it
+    was not checked before); below 1 each checkpoint stays near its slot (within one
+    slot of its nominal angle).
+    Values above 0.5 allow adjacent checkpoints to swap angular
     positions; the steering walk still completes approximately one lap by chasing checkpoints
     in index order, but strict angle-monotonicity is not guaranteed at the default of 0.55.
     Larger values produce more irregular spacing and more varied corner geometry.
@@ -156,6 +167,7 @@ checked when the ``TrackGenerator`` is constructed, and only for
 ``checkpoint_turn_rate`` (float, default 0.42)
     Maximum heading change in radians per steering step.  Bounds path curvature: too
     large allows sharp kinks; too small prevents the path from tracking tight inlets.
+    Dynamic, in ``[0, pi]`` (a value outside raises ``ValueError`` at construction).
 
 ``checkpoint_steer_gain`` (float, default 0.65)
     Proportional steering gain toward the current target bearing.  Coupled to one lap by
@@ -179,6 +191,62 @@ checked when the ``TrackGenerator`` is constructed, and only for
     longer simple sub-loop is kept, and it is arc-resampled back to ``num_points``.
     Must be set consistently between ``alloc_scratch`` and ``generate`` since the clip
     buffers are only allocated when the flag is ``True`` at alloc time.
+
+.. _checkpoint-dynamic:
+
+Per-env (dynamic) parameters
+----------------------------
+
+``checkpoint_radius_min_frac``, ``checkpoint_angle_jitter`` and
+``checkpoint_turn_rate`` are **dynamic** fields of ``CheckpointParams`` (the first two
+also of ``CheckpointGateParams``: the checkpoint gate generator samples its ring with
+the same kernel, and has no steering walk): per-env ``[E]`` ``float32`` arrays,
+initialised from the configured values. Draw them per env with
+``presets.track(generator="checkpoint",
+randomize={"generator.checkpoint_radius_min_frac": (lo, hi)})`` (``presets.gates`` takes
+the ring keys), write them with ``gen.params["generator"].set(...)`` or from your own
+graph (a curriculum): see :ref:`tuning-per-env`. A scalar outside the bounds raises
+``ValueError``; an array value outside them is clamped to them when the kernel reads it.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 28 9 10 20 20 13
+
+   * - Field (``randomize=`` key)
+     - Default
+     - Bounds
+     - Harder / more varied when
+     - Effective range
+     - Yield at lo / default / hi
+   * - ``checkpoint_radius_min_frac`` (``generator.checkpoint_radius_min_frac``)
+     - ``0.33``
+     - ``[0, 1]``
+     - lower: deeper inlets
+     - the construction rule ``[0, 1)`` still applies to the configured value; at ``1``
+       every checkpoint sits on the outer ring
+     - 1.00 / 1.00 / 0.66 (at 0.99)
+   * - ``checkpoint_angle_jitter`` (``generator.checkpoint_angle_jitter``)
+     - ``0.55``
+     - ``[0, 1]``
+     - higher: more irregular spacing
+     - the whole range (below 1 each checkpoint stays within one slot of its nominal angle)
+     - 0.99 / 1.00 / 0.99
+   * - ``checkpoint_turn_rate`` (``generator.checkpoint_turn_rate``; tracks only)
+     - ``0.42``
+     - ``[0, pi]``
+     - higher: sharper kinks allowed (a looser curvature bound)
+     - the whole range
+     - 0.95 / 1.00 / 1.00
+
+*Yield* is the fraction of valid tracks with the default pipeline, ``E = 128``, seeds
+``0..127`` (CPU), with the knob set to the value for every env.
+
+**Static knobs, and why.** ``checkpoint_count`` and ``checkpoint_best_of_k`` (size the
+buffers and the launch dimensions), ``checkpoint_clip_fallback`` (a Python branch and
+its buffers), ``checkpoint_steer_gain`` and ``checkpoint_lookahead_frac`` (internals of
+the path tracer that keep the walk closing one lap, with no measured difficulty effect;
+they can become dynamic later without breaking anything) and the core ``scale`` (a host
+product with the target extent; per-env size is planned for roadmap PR13d).
 
 What Makes It Distinct
 ----------------------

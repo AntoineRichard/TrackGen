@@ -70,6 +70,19 @@ Checks (:data:`CHECKS`), for a track generator:
     ``generate()`` twice with unchanged seeds reproduces the first batch, a reseed
     reproduces a fresh generator with the new seeds, and reseeding back reproduces the
     first batch (no hidden state carried between calls).
+``params.per_env`` (roadmap PR13c; every kind)
+    For the unit's stage (the generator, or the stage under test) with dynamic fields
+    that no randomizer draws (skipped "no dynamic parameters" otherwise): every such
+    field is set to a per-env ``[E]`` array (float32: ``d + s * 0.25 * span * (e + 1) /
+    E``, clamped to the declared bounds, toward the farther bound, ``span = hi - lo`` or,
+    with a bound missing, ``max(|d|, 0.1)``: away from a field's one bound, alternating
+    directions for fields without bounds; int32: ``d + (e % 3) - 1``, bool:
+    ``(d + e) % 2``), one generation (eager, same seeds);
+    then, for each env ``e``, every field is set to env ``e``'s value as a scalar and
+    env ``e`` of that generation must equal env ``e`` of the per-env one, bitwise (raw
+    output and every result field). The live arrays (and the stage's latched copies)
+    must read back what was set: a stage reads ``param[e]``, never ``param[0]`` or a
+    host copy, and never writes its param arrays. The fields are restored afterwards.
 ``bounded.absorbing``
     For a unit whose ``enqueue`` runs a ``ctx.bounded_loop`` with ``active=`` (seen
     while the unit runs, whatever it declares; skipped "not applicable" otherwise):
@@ -201,11 +214,13 @@ __all__ = [
 
 # The BOUNDED / HOST checks (roadmap PR12): not applicable to most units (skipped).
 _TIERS = ("bounded.absorbing", "bounded.lowering", "host.require_caller_capturable")
-_COMMON = ("determinism", "diversity", "batch_independence", "statelessness") + _TIERS + (
+_COMMON = ("determinism", "diversity", "batch_independence", "statelessness",
+           "params.per_env") + _TIERS + (
            "hot_path.host_sync", "hot_path.allocation", "hot_path.stream",
            "hot_path.capture", "hot_path.topology", "hot_path.buffers",
            "capture.caller", "capture.self_graph")
-_STAGE_COMMON = ("determinism", "batch_independence", "statelessness") + _TIERS + (
+_STAGE_COMMON = ("determinism", "batch_independence", "statelessness",
+                 "params.per_env") + _TIERS + (
                  "hot_path.host_sync", "hot_path.allocation", "hot_path.stream",
                  "hot_path.capture", "hot_path.topology", "hot_path.buffers",
                  "capture.caller", "capture.self_graph")
@@ -646,6 +661,82 @@ def _int32(values) -> np.ndarray:
     return ((v + 2**31) % 2**32 - 2**31).astype(np.int32)
 
 
+def _undrawn_dynamic(sp) -> list:
+    """The dynamic fields of a ``StageParams`` that nothing draws (no randomizer, not
+    the stage itself), in declaration order; ``[]`` without a Params instance."""
+    from ..plugin.params import _fields  # noqa: PLC0415
+
+    if sp is None or sp.params is None:
+        return []
+    drawn = set(sp.drawn)
+    return [f for f in _fields(type(sp.params))
+            if f.kind == "dynamic" and f.name not in drawn and f.name in sp]
+
+
+def _per_env_values(fields, params, E: int) -> dict:
+    """``field -> [E]`` values of the ``params.per_env`` check (see :data:`CHECKS`):
+    every env differs, each value inside the field's declared bounds."""
+    out, unbounded = {}, 0
+    for f in fields:
+        d = getattr(params, f.name)
+        if f.dtype is wp.int32:
+            d = int(d)
+            if f.py_type is bool:
+                v = np.array([(d + e) % 2 for e in range(E)], np.int64)
+            else:
+                v = np.array([d + (e % 3) - 1 for e in range(E)], np.int64)
+            lo = -2**31 if f.lo is None else int(math.ceil(float(f.lo)))
+            hi = 2**31 - 1 if f.hi is None else int(math.floor(float(f.hi)))
+            out[f.name] = np.clip(v, lo, hi).astype(np.int32)
+            continue
+        d = float(d)
+        lo = None if f.lo is None else float(f.lo)
+        hi = None if f.hi is None else float(f.hi)
+        if lo is not None and hi is not None:
+            span = hi - lo
+            sign = 1.0 if hi - d >= d - lo else -1.0
+        else:
+            span = max(abs(d), 0.1)
+            if lo is not None:
+                sign = 1.0
+            elif hi is not None:
+                sign = -1.0
+            else:
+                sign = -1.0 if unbounded % 2 == 0 else 1.0
+                unbounded += 1
+        v = d + sign * 0.25 * span * (np.arange(E, dtype=np.float64) + 1.0) / E
+        if lo is not None:
+            v = np.maximum(v, lo)
+        if hi is not None:
+            v = np.minimum(v, hi)
+        out[f.name] = v.astype(np.float32)
+    return out
+
+
+def _work_arrays(program, live: Mapping) -> dict:
+    """``field -> the stage's latched working copy`` of each live param array (the
+    Program's latch pairs)."""
+    pairs = getattr(program, "_pairs", ())
+    out = {}
+    for n, arr in live.items():
+        for lv, wk in pairs:
+            if lv is arr:
+                out[n] = wk
+                break
+    return out
+
+
+def _written_params(sp, work: Mapping, values: Mapping) -> list:
+    """The fields whose live array or latched copy no longer holds ``values``."""
+    bad = []
+    for n, v in values.items():
+        want = np.ascontiguousarray(v).tobytes()
+        arrays = [sp[n]] + ([work[n]] if n in work else [])
+        if any(a.numpy().tobytes() != want for a in arrays):
+            bad.append(n)
+    return bad
+
+
 # ---------------------------------------------------------------------------------------
 # One device
 # ---------------------------------------------------------------------------------------
@@ -807,6 +898,7 @@ class _DeviceRun:
             self.guarded(["diversity"], lambda: [self.diversity(snap)])
         self.guarded(["batch_independence"], lambda: [self.batch_independence(snap)])
         self.guarded(["statelessness"], lambda: [self.statelessness(gen, snap)])
+        self.guarded(["params.per_env"], lambda: [self.params_per_env(gen)])
         self.guarded(["bounded.absorbing"], lambda: [self.bounded_absorbing()])
         if self.is_cuda:
             self.guarded(["bounded.lowering"], lambda: [self.bounded_lowering()])
@@ -1426,6 +1518,55 @@ class _DeviceRun:
                        f"batch (envs {d[:6]})")
         msg = ("hidden state carried between calls: " + _list_text(bad)) if bad else ""
         return ("statelessness", not bad, msg, {})
+
+    # -- 6a. per-env dynamic params (roadmap PR13c) ----------------------------------------
+    def params_per_env(self, gen):
+        name = "params.per_env"
+        sid = self.unit_id()
+        table = gen.params
+        sp = table[sid] if sid in table else None
+        fields = _undrawn_dynamic(sp)
+        if not fields:
+            return (name, None, "skipped: no dynamic parameters", {})
+        values = _per_env_values(fields, sp.params, self.E)
+        work = _work_arrays(gen.program, {n: sp[n] for n in values})
+        initial = {f.name: getattr(sp.params, f.name) for f in fields}
+        bad, written = [], []
+        try:
+            arrays = {n: wp.array(v, dtype=sp[n].dtype, device=self.device)
+                      for n, v in values.items()}
+            for n, arr in arrays.items():
+                sp.set(n, arr)
+            self.eager(gen)
+            ref = self.snapshot(gen)
+            written = _written_params(sp, work, values)
+            del arrays
+            for e in range(self.E):
+                for n, v in values.items():
+                    sp.set(n, v[e].item())
+                self.eager(gen)
+                now = self.snapshot(gen)
+                d = _env_diff(ref, e, now, e)
+                if d:
+                    bad.append(f"env {e}: {_fields_text(d)}")
+            last = {n: np.full(self.E, v[self.E - 1], dtype=v.dtype)
+                    for n, v in values.items()}
+            written += [n for n in _written_params(sp, work, last) if n not in written]
+        finally:
+            for n, v in initial.items():
+                sp.set(n, v)
+            if self.is_cuda:
+                wp.synchronize_device(self.device)
+        problems = []
+        if bad:
+            problems.append(f"set per env, env e differs from a run with e's values as "
+                            f"scalars ({_list_text(bad, 3)}): a per-env dynamic field must "
+                            f"be read as param[e], never param[0] or on the host")
+        if written:
+            problems.append(f"the stage wrote its param array(s) {written} (READ-ONLY for "
+                            f"the stage: the generation's values come from the live arrays)")
+        details = {"fields": sorted(values), "stage": sid}
+        return (name, not problems, "; ".join(problems), details)
 
     # -- 6b. bounded loops and HOST stages -------------------------------------------------
     def _unit_channels(self, gen) -> dict:

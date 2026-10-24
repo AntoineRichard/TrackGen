@@ -3,7 +3,10 @@
 One ring of ``checkpoint_count`` radial checkpoints (the checkpoint track generator's
 draw), in loop order (``anchors.xy``); the gate pipeline orders them (``order.ccw`` by
 default, ``order.raw`` keeps the loop order; ``order.random_pairs`` is excluded) and
-normalizes their extent (``preferred["normalize"] = "extent"``).
+normalizes their extent (``preferred["normalize"] = "extent"``). The radius fraction and
+angle jitter are dynamic (roadmap PR13c): per-env arrays drawn by
+:func:`~track_gen._src.warp_generate_checkpoint.sample_checkpoint_rings_per_env`,
+clamped to the declared bounds at use.
 """
 from __future__ import annotations
 
@@ -12,7 +15,7 @@ import warp as wp
 from .. import ops
 from ..plugin.stage import CaptureClass, Stage
 from .builtin_params import CheckpointGateParams
-from .warp_generate_checkpoint import sample_checkpoint_rings
+from .warp_generate_checkpoint import sample_checkpoint_rings_per_env
 
 
 class GateCheckpoint(Stage):
@@ -35,15 +38,15 @@ class GateCheckpoint(Stage):
         count = b.write("count", wp.int32)
         checkpoints = b.write("xy", wp.vec2f, per="anchors")
         C = int(p.checkpoint_count)
-        radius_min_frac = float(p.checkpoint_radius_min_frac)
-        angle_jitter = float(p.checkpoint_angle_jitter)
+        radius_min_frac = b.param("checkpoint_radius_min_frac")
+        angle_jitter = b.param("checkpoint_angle_jitter")
         seed = b.seed
 
         def enqueue(ctx):
             ops.fill(ctx, count, C)
             # One candidate ring per env (K = 1): the track generator's checkpoint draw.
-            sample_checkpoint_rings(ctx, seed, 1, C, radius_min_frac, angle_jitter,
-                                    checkpoints)
+            sample_checkpoint_rings_per_env(ctx, seed, 1, C, radius_min_frac, angle_jitter,
+                                            checkpoints)
         return enqueue
 
 

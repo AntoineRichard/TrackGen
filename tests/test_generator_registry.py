@@ -5,10 +5,17 @@ from track_gen._src import generator_registry as reg
 
 
 def test_bezier_is_registered():
+    # Roadmap PR13c: the built-in track generators are generator Stages (like repulsive
+    # since PR12); the frozen legacy entry points stay importable.
+    from track_gen._src import builtin_params, warp_generate
+    from track_gen.plugin.stage import _is_stage
+
     assert "bezier" in reg.available()
     spec = reg.get("bezier")
-    assert spec.name == "bezier"
-    assert callable(spec.alloc_scratch) and callable(spec.generate)
+    assert _is_stage(spec) and spec.name == "bezier" and spec.kind == "generator"
+    assert spec.Params is builtin_params.BezierParams
+    assert callable(warp_generate.bezier_alloc_scratch)
+    assert callable(warp_generate.generate_centerline_warp)
 
 
 def test_generatorspec_has_capturable_default_true():
@@ -75,7 +82,11 @@ def test_generator_scratch_names_do_not_shadow_inflate_buffers(plugin_registry):
     E = 4
     cfg = TrackGenConfig(num_envs=E, device="cpu")
     flat = E * int(cfg.N_max)
-    base = reg.get("bezier")
+    # The legacy bezier spec over the frozen public functions (the registered "bezier"
+    # is a Stage since roadmap PR13c).
+    base = reg.GeneratorSpec(name="bezier", alloc_scratch=warp_generate.bezier_alloc_scratch,
+                             generate=warp_generate.generate_centerline_warp,
+                             accepts_ctx=True)
     sentinel = -7.0
     decoys = {}
 
@@ -107,17 +118,18 @@ def test_track_generator_uses_constructor_resolved_generator(plugin_registry):
     from track_gen._src.track_generator import TrackGenerator
     from track_gen._src.types import TrackGenConfig
 
+    from track_gen._src import warp_generate
+
     cfg = TrackGenConfig(num_envs=1, device="cpu")
     rng = PerEnvSeededRNG(seeds=0, num_envs=1, device="cpu")
     gen = TrackGenerator(cfg, rng)
-    original = reg.get("bezier")
 
     def fail_if_called(*args, **kwargs):
         raise AssertionError("existing TrackGenerator used a later registry entry")
 
     override_spec(plugin_registry, reg.GeneratorSpec(
         name="bezier",
-        alloc_scratch=original.alloc_scratch,
+        alloc_scratch=warp_generate.bezier_alloc_scratch,
         generate=fail_if_called,
     ))
     gen.generate(1)

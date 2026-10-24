@@ -49,7 +49,10 @@ How It Works
      (source: ``_sample_sites_k``, line 78, ``wp.randf(state) < 0.65``).
 
 2. **Select anchor sites.**
-   ``_select_anchor_sites_k`` draws ``K = voronoi_control_points`` angular sector targets.
+   ``_select_anchor_sites_dyn_k`` draws ``K = voronoi_control_points`` angular sector
+   targets, with env ``e``'s ``voronoi_radial_variation`` and ``voronoi_angular_jitter``
+   read from the per-env parameter arrays (the frozen legacy ``generate_voronoi_warp``
+   launches the scalar ``_select_anchor_sites_k``: same arithmetic, same bytes).
    A global random rotation ``ρ`` is applied; sector ``i`` is centered at angle
    ``ρ + (2π/K)·i`` and jittered by ``εᵢ ∈ [-j, +j]`` where ``j = voronoi_angular_jitter``.
    Each target also has a radial component: a multi-harmonic profile ``φ(θ)`` (see Math
@@ -202,12 +205,90 @@ checked when the ``TrackGenerator`` is constructed, and only for
 ``voronoi_radial_variation`` (default 0.62)
    Amplitude of the per-anchor radius modulation.  At 0 all anchor targets sit at the same
    base radius (0.34·L); at larger values the multi-harmonic profile drives anchors to vary
-   between 0.16·L and 0.52·L, producing more irregular, non-circular layouts.
+   between 0.16·L and 0.52·L, producing more irregular, non-circular layouts. The kernel
+   uses ``min(voronoi_radial_variation * boost, 0.85)`` with a per-layout ``boost >= 1``,
+   so the effect saturates at ``0.85 / boost`` and nothing changes above ``0.85``:
+   dynamic, in ``[0, 0.85]`` (a larger value raises ``ValueError`` at construction).
 
 ``voronoi_angular_jitter`` (default 0.08)
    Maximum angular perturbation (in radians) applied to each sector target.  Small values
    keep anchors close to their ideal evenly-spaced sectors; larger values break the rotational
-   regularity.
+   regularity. Dynamic, in ``[0, pi]``; the useful range is much smaller (below).
+
+.. _voronoi-dynamic:
+
+Per-env (dynamic) parameters
+----------------------------
+
+``voronoi_radial_variation`` and ``voronoi_angular_jitter`` are **dynamic** fields of
+``VoronoiParams`` (and of ``VoronoiGateParams``: the voronoi gate generator selects its
+anchors with the same kernel): per-env ``[E]`` ``float32`` arrays, initialised from the
+configured values. Draw them per env with ``presets.track(generator="voronoi",
+randomize={"generator.voronoi_radial_variation": (lo, hi)})`` (``presets.gates`` takes
+the same keys), write them with ``gen.params["generator"].set(...)`` or from your own
+graph (a curriculum): see :ref:`tuning-per-env`. A scalar outside the bounds raises
+``ValueError``; an array value outside them is clamped to them when the kernel reads it.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 26 9 11 20 21 13
+
+   * - Field (``randomize=`` key)
+     - Default
+     - Bounds
+     - Harder / more varied when
+     - Effective range
+     - Yield at lo / default / hi
+   * - ``voronoi_radial_variation`` (``generator.voronoi_radial_variation``)
+     - ``0.62``
+     - ``[0, 0.85]``
+     - higher: stronger radial modulation, less circular layouts
+     - saturates at ``0.85 / boost`` (``0.85`` for ``"ring"``, about ``0.77`` for the
+       default ``"void_ring"``)
+     - 1.00 / 1.00 / 1.00
+   * - ``voronoi_angular_jitter`` (``generator.voronoi_angular_jitter``)
+     - ``0.08``
+     - ``[0, pi]``
+     - higher: more irregular anchor spacing
+     - **about** ``[0, 0.5]``: ``pi`` only bounds what is legal (``±pi`` spans the
+       circle), the yield collapses well before it
+     - 1.00 / 1.00 / 0.00
+
+*Yield* is the fraction of valid tracks with the default pipeline, ``E = 128``, seeds
+``0..127`` (CPU), with the knob set to the value for every env. For
+``voronoi_angular_jitter`` it falls fast past ``0.3`` (every layout):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 28 9 9 9 9 9 9 9 9
+
+   * - ``voronoi_angular_jitter``
+     - 0.08
+     - 0.2
+     - 0.3
+     - 0.5
+     - 0.8
+     - 1.2
+     - 1.6
+     - pi
+   * - yield (the four layouts)
+     - 1.00
+     - 1.00
+     - 0.97-0.99
+     - 0.71-0.85
+     - 0.29-0.38
+     - 0.03-0.05
+     - 0.00-0.01
+     - 0.00
+
+Keep a randomized or curriculum range within about ``[0, 0.5]``, and check the yield at
+both ends of it.
+
+**Static knobs, and why.** ``voronoi_num_sites`` and ``voronoi_control_points`` (size
+the site, anchor and dense buffers and the launch dimensions), ``voronoi_site_layout``
+(an enum the kernels branch on; categorical draws are not planned yet),
+``num_points_per_segment`` (sizes the dense buffer) and the core ``scale`` (a host
+product with the target extent; per-env size is planned for roadmap PR13d).
 
 
 What Makes It Distinct

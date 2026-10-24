@@ -310,7 +310,7 @@ def test_static_values_must_match_an_int_float_or_bool_annotation():
 
 
 def test_builtin_flat_params_keep_the_legacy_value_types():
-    params_cls = registry.get("generator", "bezier").params
+    params_cls = registry.get("generator", "bezier").Params      # a Stage since PR13c
     _check_values(params_cls(min_num_points=9.0))                  # accepted, as before
 
 
@@ -338,7 +338,7 @@ def test_schema_of_the_toy_params_matches_exactly():
                       "description": "lobes per loop", "x-static": True},
             "amp": {"type": "number", "default": 0.15, "minimum": 0.0, "maximum": 0.4,
                     "description": "radial wobble amplitude", "x-dynamic": True,
-                    "x-dtype": "float32", "x-ui": "slider"}}}
+                    "x-dtype": "float32", "x-bounds": "float32", "x-ui": "slider"}}}
     assert json.loads(json.dumps(schema)) == schema
 
 

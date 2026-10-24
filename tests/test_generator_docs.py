@@ -6,7 +6,8 @@
 * The guide's Stage quick start (``Wobble``) registers, generates, takes a dynamic
   ``set("amp", ...)``, and ``describe()`` reports the JSON schema the guide prints.
 * ``docs/configuration/reference.rst`` lists every field of every built-in Params class
-  in that class's table.
+  in that class's table, its Kind column naming each field static or dynamic (roadmap
+  PR13c).
 * Every private ``_name`` the per-generator pages cite still exists in that generator's
   module (or in ``warp_pipeline``, for the shared stages).
 """
@@ -152,6 +153,53 @@ def test_reference_lists_every_builtin_params_field():
                for f in dataclasses.fields(cls)
                if f"``{f.name}``" not in sections[name]]
     assert not missing, missing
+
+
+def _list_table_rows(section: str) -> "list[list[str]]":
+    """The rows of the ``.. list-table::`` directives of a reference section, each a
+    list of stripped cell texts (``* - a`` / ``  - b`` lines)."""
+    rows, cur = [], None
+    for line in section.splitlines():
+        m = re.match(r"^\s*\* - ?(.*)$", line)
+        if m:
+            cur = [m.group(1).strip()]
+            rows.append(cur)
+            continue
+        m = re.match(r"^\s{2,}- ?(.*)$", line)
+        if m and cur is not None:
+            cur.append(m.group(1).strip())
+    return rows
+
+
+def test_reference_tables_mark_each_builtin_field_static_or_dynamic():
+    """Roadmap PR13c: each built-in generator Params table has a Kind column; every
+    field it lists is ``static`` or ``dynamic`` as the class declares it, and every
+    dynamic field has a row (a static field may be listed in the prose instead, e.g.
+    hull's shared corner-sampler fields)."""
+    from track_gen._src import builtin_params as bp
+    from track_gen.plugin.params import _fields
+
+    text = (_DOCS / "configuration" / "reference.rst").read_text()
+    heads = list(re.finditer(r"^``(\w+Params)`` \(", text, flags=re.M))
+    bad = []
+    for i, m in enumerate(heads):
+        name = m.group(1)
+        if name not in bp.__all__:
+            continue
+        end = heads[i + 1].start() if i + 1 < len(heads) else text.index("\n.. _", m.end())
+        rows = _list_table_rows(text[m.start():end])
+        header = next((r for r in rows if "Kind" in r), None)
+        if header is None:
+            bad.append(f"{name}: no Kind column")
+            continue
+        k = header.index("Kind")
+        kinds = {r[0].strip("`"): r[k] for r in rows if r is not header and len(r) > k}
+        for f in _fields(getattr(bp, name)):
+            listed = kinds.get(f.name)
+            if (listed is None and f.kind == "dynamic") or \
+                    (listed is not None and listed != f.kind):
+                bad.append(f"{name}.{f.name}: {listed!r} != {f.kind!r}")
+    assert not bad, bad
 
 
 _GENERATOR_MODULES = {

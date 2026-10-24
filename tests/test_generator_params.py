@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import math
 
 import numpy as np
 import pytest
@@ -45,6 +46,19 @@ GATE_PARAMS = {
 }
 ALL_SPECS = [("generator", n, P) for n, P in TRACK_PARAMS.items()] + \
             [("gate_generator", n, P) for n, P in GATE_PARAMS.items()]
+# Roadmap PR13c: the dynamic knobs of each built-in (every other field is static).
+DYNAMIC = {
+    ("generator", "bezier"): {"rad", "handle_clamp_frac"},
+    ("generator", "hull"): {"hull_displacement"},
+    ("generator", "polar"): {"polar_radial_jitter", "polar_angular_jitter"},
+    ("generator", "voronoi"): {"voronoi_radial_variation", "voronoi_angular_jitter"},
+    ("generator", "checkpoint"): {"checkpoint_radius_min_frac", "checkpoint_angle_jitter",
+                                  "checkpoint_turn_rate"},
+    ("gate_generator", "polar"): {"polar_radial_jitter", "polar_angular_jitter"},
+    ("gate_generator", "voronoi"): {"voronoi_radial_variation", "voronoi_angular_jitter"},
+    ("gate_generator", "checkpoint"): {"checkpoint_radius_min_frac",
+                                       "checkpoint_angle_jitter"},
+}
 
 
 def _rng(n=E, seed=5):
@@ -76,15 +90,16 @@ def _other(v):
 def test_builtin_params_class_maps_the_flat_fields(kind, name, P):
     from track_gen.plugin._registry import _params_class
 
-    # The track built-ins are GeneratorSpecs (params=P); the gate built-ins are
+    # The track built-ins are generator Stages since PR13c, the gate built-ins
     # gate_generator Stages since PR11 (Params=P).
     assert _params_class(registry.get(kind, name)) is P
     Config = TrackGenConfig if kind == "generator" else GateGenConfig
     defaults = Config()
-    # Defaults equal the config defaults, and every field is static.
+    dynamic = DYNAMIC.get((kind, name), set())
+    # Defaults equal the config defaults; every field is static but the PR13c knobs.
     for f in dataclasses.fields(P):
         assert getattr(P(), f.name) == getattr(defaults, f.name), f.name
-        assert f.metadata["tg"] == "static"
+        assert f.metadata["tg"] == ("dynamic" if f.name in dynamic else "static"), f.name
     assert P.from_legacy(defaults) == P()
     # from_legacy round-trips non-default flat values (raw, no casts) ...
     changed = {f.name: _other(getattr(defaults, f.name)) for f in dataclasses.fields(P)}
@@ -97,10 +112,14 @@ def test_builtin_params_class_maps_the_flat_fields(kind, name, P):
     params._apply_legacy(target)
     for k, v in changed.items():
         assert getattr(target, k) == v, k
-    # The schema is JSON, with every field static.
+    # The schema is JSON: the PR13c knobs dynamic (float32), every other field static.
     schema = registry.describe(kind, name).params_schema
     assert list(schema["properties"]) == [f.name for f in dataclasses.fields(P)]
-    assert all(p.get("x-static") is True for p in schema["properties"].values())
+    for field, prop in schema["properties"].items():
+        if field in dynamic:
+            assert prop.get("x-dynamic") is True and prop["x-dtype"] == "float32", field
+        else:
+            assert prop.get("x-static") is True, field
     json.dumps(schema)
 
 
@@ -134,9 +153,11 @@ def _track(cfg, n, crossers=False):
     tg = TrackGenerator(cfg, _rng(n))
     track = tg.generate()
     if crossers:            # some env took the polygon fallback (as in the PR7 fingerprints)
-        g = tg._scratch.gen
-        c = getattr(g, "gen_crossers", None)
-        assert ((g.crossers if c is None else c).numpy() > 0).any()
+        # The built-in Stage's private scratch (roadmap PR13c: "scratch:generator/<slot>")
+        scratch = tg._scratch.gen.scratch
+        c = scratch.get("scratch:generator/gen_crossers",
+                        scratch.get("scratch:generator/crossers"))
+        assert (c.numpy() > 0).any()
     return {f: getattr(track, f).numpy().tobytes() for f in TRACK_FIELDS}
 
 
@@ -284,16 +305,22 @@ def test_config_round_trips_and_params_are_resolved():
     a, b = gen.generate(), again.generate()
     for f in TRACK_FIELDS:
         assert getattr(a, f).numpy().tobytes() == getattr(b, f).numpy().tobytes(), f
-    # Flat configs: the reported Params are from_legacy of the flat fields.
+    # Flat configs: the reported Params are from_legacy of the flat fields; the hull
+    # displacement is dynamic since roadmap PR13c (latched; its live array holds the
+    # flat value and set() writes it), the corner counts stay static.
     flat = TrackGenConfig(generator="hull", num_envs=E, hull_displacement=0.3)
     gen = TrackGenerator(flat, _rng())
     assert gen.params["generator"].params == bp.HullParams.from_legacy(flat)
     assert gen.config == flat                                         # generator_params None
     assert gen.config.generator_params is None
-    assert list(gen.params["generator"]) == []
+    assert list(gen.params["generator"]) == ["hull_displacement"]
+    live = gen.params["generator"]["hull_displacement"]
+    assert live.numpy().tolist() == [np.float32(0.3)] * E
+    gen.params["generator"].set("hull_displacement", 0.2)
+    assert live.numpy().tolist() == [np.float32(0.2)] * E
     with pytest.raises(KeyError, match="static"):
-        gen.params["generator"].set("hull_displacement", 0.2)
-    assert gen._latch is None
+        gen.params["generator"].set("min_num_points", 5)
+    assert gen._latch is not None
 
 
 # ---------------------------------------------------------------------------------------
@@ -387,7 +414,11 @@ def test_builtin_schemas():
     assert props["voronoi_site_layout"]["type"] == "string"
     assert props["voronoi_control_points"]["minimum"] == 6
     assert props["voronoi_control_points"]["type"] == "integer"
-    assert all(p["x-static"] is True for p in props.values())
+    dyn = DYNAMIC[("generator", "voronoi")]
+    assert all(p.get("x-static") is True for k, p in props.items() if k not in dyn)
+    assert props["voronoi_angular_jitter"]["x-dynamic"] is True          # roadmap PR13c
+    assert (props["voronoi_angular_jitter"]["minimum"],
+            props["voronoi_angular_jitter"]["maximum"]) == (0.0, math.pi)
     gate = registry.describe("gate_generator", "voronoi").params_schema["properties"]
     assert gate["voronoi_control_points"]["minimum"] == 3
     rep = registry.describe("generator", "repulsive").params_schema["properties"]
@@ -397,4 +428,6 @@ def test_builtin_schemas():
     assert bez["rad_range"]["type"] == ["array", "null"]
     assert bez["min_point_distance"]["maximum"] == 0.5
     polar = registry.describe("generator", "polar").params_schema["properties"]
-    assert "minimum" not in polar["polar_radial_jitter"]       # the generator clamps it
+    # The generator's former clamp is the declared bound (roadmap PR13c).
+    assert (polar["polar_radial_jitter"]["minimum"],
+            polar["polar_radial_jitter"]["maximum"]) == (0.0, 0.85)

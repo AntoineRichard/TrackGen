@@ -50,7 +50,8 @@ explicitly. ``import track_gen`` does not import it.
 
    # Other stages: by name, (name, params), a StageRef, or None.
    hilly = presets.track(num_envs=64, device="cpu", relax=None,
-                         elevation=("noise", {"z_noise_amplitude": 0.3}))
+                         elevation=("noise", {"z_min": -0.3, "z_max": 0.3,
+                                              "z_noise_amplitude": 0.3}))
    # Edit operations on any spec:
    strict = spec.insert_after("validity",
                               StageRef("validity", "acme.max_curvature", id="kmax"))
@@ -505,14 +506,18 @@ self-graph rules of :doc:`cuda-graph` exactly as ``TrackGenerator`` does.
   (``"regen_mask"`` plus the inputs the stages declare), ``input_info`` (a read-only
   mapping from each name of ``inputs`` to a ``track_gen.pipeline.InputInfo``: ``name``,
   ``dtype``, ``per``, ``length``, ``latched``, ``stage_id``), ``params`` (a
-  ``ParamTable`` keyed by stage id; the built-in stages' fields are all static, except
-  ``width.from_channel``'s ``scale`` / ``lo`` / ``hi`` and a randomizer's ``lo`` /
-  ``hi``) and ``graph`` (``None``
+  ``ParamTable`` keyed by stage id; the dynamic fields of the built-ins are the
+  generators' shape knobs, the elevation stages' ``z_min`` / ``z_max`` /
+  ``z_max_step`` / ``z_noise_amplitude``, ``width.from_channel``'s ``scale`` / ``lo`` /
+  ``hi`` and a randomizer's ``lo`` / ``hi``, see `Dynamic built-in knobs`_) and
+  ``graph`` (``None``
   for a Program with ``HOST`` stages, whose per-segment graphs ``segment_graphs(key=None)``
   returns, ``None`` at the ``HOST`` segments).
 - ``capture_class`` (the highest of its stages', ``STATIC`` < ``BOUNDED`` < ``HOST``),
   ``capturable`` (``True`` when a caller can record it: no ``HOST`` stage),
   ``host_stage_ids`` and ``segments`` (see `Capture classes and segments`_).
+
+.. _pipeline-segments:
 
 Capture classes and segments
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -544,7 +549,9 @@ the ``HOST`` segments eagerly.
 
 - Segment ``0`` opens with the seed prologue (the epoch advance, the effective seed, the
   parameter latch and, with a ``mask``, the hold); the last segment closes with the
-  commit and the ``generation`` write. A one-segment Program does both, and
+  commit and the ``generation`` write. So a write to any dynamic parameter must be
+  enqueued before segment ``0`` to apply to that generation: one recorded in a later
+  segment's graph (after the latch) applies at the next generation. A one-segment Program does both, and
   ``enqueue(ctx)`` is every segment in order. Pass the same ``advance`` and ``mask`` to
   every segment of a generation, on one stream: a recorded segment keeps the arguments
   it was recorded with, so run the eager segments with those.
@@ -916,7 +923,10 @@ The default track stages
 stage launches what the 0.2.0.dev2 pipeline launched at the same point, with the same
 arguments: ``width.constant`` launches nothing (its value is filled at build), and the
 uniform resample fills the final ``cl.half_width`` with it, the launch 0.2.0.dev3's width
-stage made at that point (see `Width`_).
+stage made at that point (see `Width`_). The one exception is the dynamic built-in knobs
+of 0.2.0.dev5 (`Dynamic built-in knobs`_): their latch launches, and kernels that read
+the knobs from ``[E]`` arrays instead of scalar arguments, with the same arithmetic and
+the same bytes.
 
 .. list-table::
    :header-rows: 1
@@ -981,7 +991,9 @@ the ``z_*`` fields their profile uses; ``validity.default`` takes ``turning_tol`
 ``w_floor``, ``relax_tol``, ``z_valid_grade`` and ``validity_border_check``;
 ``lift.flat`` takes ``z_base``. ``relax.xpbd``, ``offset.default`` and
 ``validity.default`` took ``half_width`` too in 0.2.0.dev3: they read ``cl.half_width``
-now. ``elevation.flat`` takes ``z_base`` too (the gate altitude; it must be 0 on a track,
+now. The elevation stages' ``z_min`` and ``z_max`` (and ``z_max_step`` for
+``random_walk``, ``z_noise_amplitude`` for ``noise``) are dynamic (`Dynamic built-in
+knobs`_). ``elevation.flat`` takes ``z_base`` too (the gate altitude; it must be 0 on a track,
 where ``lift.flat`` carries the track's flat altitude). The
 generator's params are its ``generator_params`` (see :ref:`generator-params`). A plugin
 stage named by ``relax_solver`` or ``z_profile`` gets its ``Params.from_legacy(config)``
@@ -1377,8 +1389,9 @@ default at 1.0.
      - launches added
    * - unmasked, ``on_invalid="keep"``, ``validity.default`` the last check (the
        default pipelines)
-     - none: the 0.2.0.dev2 launch sequence (152 launches for a default ``bezier``
-       generation at ``E = 2``)
+     - none (154 launches for a default ``bezier`` generation: the 0.2.0.dev2 sequence
+       plus the latches of ``rad`` and ``handle_clamp_frac``, `Dynamic built-in
+       knobs`_)
    * - unmasked, with a check after ``validity.default``
      - one (``valid`` derived, ``E`` threads)
    * - unmasked, ``on_invalid="poison"``
@@ -1545,22 +1558,22 @@ rules, the draw and the curriculum pattern).
   listed after its target, a non-randomizer stage or another stage's randomizer before
   the generator, an unknown or randomizer target, a field that is not a dynamic
   ``float32`` field of the target (the message lists the drawable fields of the
-  pipeline; every built-in generator and stage field is static except
-  ``width.from_channel``'s), two randomizers on one field, an initial ``(lo, hi)``
-  outside the field's declared bounds.
+  pipeline: see `Dynamic built-in knobs`_ for the built-ins'), two randomizers on one
+  field, a field ``bezier``'s ``style_sampling`` draws, an initial ``(lo, hi)`` outside
+  the field's declared bounds (compared in ``float32``), and the cross-field rules of
+  `Dynamic built-in knobs`_ (crossing ``z_min`` / ``z_max`` draws).
 - **Segments.** A randomizer is a ``STATIC`` stage, grouped into segments like any other:
   before a ``HOST`` generator, the generator's randomizers form segment ``0`` (a graph
   segment that opens with the seed prologue), the generator segment ``1``.
 - **Launches.** Two more per randomizer per generation (the draw, and the latch of its
   ``lo`` and ``hi``, minus the latch the drawn field no longer needs); none for a
-  pipeline without randomizers, so every default pipeline's launch sequence is
-  unchanged.
+  pipeline without randomizers.
 
 **The parameter latch stays.** At the start of every generation the Program copies each
 dynamic parameter's and each ``[E]`` input's live array into the stage's working copy
 (the latch of :ref:`generator-runtime-params`), for the envs it regenerates. It costs
-nothing in the default pipelines and gives a dynamic parameter exact masked-regeneration
-semantics (an env left out keeps the value its rows were built with). A drawn field does
+one small launch per latched dynamic field (two in the default ``bezier`` pipeline) and
+gives a dynamic parameter exact masked-regeneration semantics (an env left out keeps the value its rows were built with). A drawn field does
 not go through it: the randomizer writes the one array the target reads, during the
 generation. So there are two kinds of runtime arrays:
 
@@ -1568,11 +1581,151 @@ generation. So there are two kinds of runtime arrays:
   generation; a write takes effect for the envs the next generation regenerates.
 - **Unlatched** (a drawn field, a ``per="raw"`` input such as
   ``inputs["centerline.xy"]``): read during the generation. A drawn field is owned by its
-  randomizer (``set`` raises, a direct write is overwritten); a ``per="raw"`` input
-  holds your latest write, so write it on the generation's stream or order the two with
-  events.
+  randomizer, or by ``bezier``'s ``style_sampling`` for a knob with a range (``set``
+  raises, a direct write is overwritten); a ``per="raw"`` input holds your latest write,
+  so write it on the generation's stream or order the two with events.
 
 ``Program.input_info`` (``gen.input_info``) says which inputs are latched.
+
+.. _pipeline-dynamic-builtins:
+
+Dynamic built-in knobs
+~~~~~~~~~~~~~~~~~~~~~~
+
+The five sampling generators (``bezier``, ``hull``, ``polar``, ``voronoi``,
+``checkpoint``) are ``kind="generator"``, ``capture=STATIC`` Stages (Stages like
+``repulsive``, a ``BOUNDED`` Stage, and the gate generators), and their shape knobs and
+the elevation ranges are dynamic ``float32`` fields:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 46 24
+
+   * - stage id: stage
+     - dynamic fields (bounds)
+     - kernel that reads them
+   * - ``generator``: ``bezier``
+     - ``rad`` ``[0, 1]``, ``handle_clamp_frac`` ``>= 0``
+     - ``_assemble_dyn_k``
+   * - ``generator``: ``hull``
+     - ``hull_displacement`` ``[0, 1]``
+     - ``_midpoint_displace_dyn_k``
+   * - ``generator``: ``polar`` (track and gates)
+     - ``polar_radial_jitter`` ``[0, 0.85]``, ``polar_angular_jitter`` ``[0, 0.45]``
+     - ``_polar_controls_dyn_k``
+   * - ``generator``: ``voronoi`` (track and gates)
+     - ``voronoi_radial_variation`` ``[0, 0.85]``, ``voronoi_angular_jitter``
+       ``[0, pi]``
+     - ``_select_anchor_sites_dyn_k``
+   * - ``generator``: ``checkpoint`` (track and gates)
+     - ``checkpoint_radius_min_frac`` ``[0, 1]``, ``checkpoint_angle_jitter``
+       ``[0, 1]``; ``checkpoint_turn_rate`` ``[0, pi]`` (tracks)
+     - ``_sample_checkpoints_dyn_k``, ``_steer_dyn_k``
+   * - ``elevation``: ``uniform``
+     - ``z_min``, ``z_max`` (unbounded)
+     - ``_z_uniform_dyn_k``
+   * - ``elevation``: ``random_walk``
+     - ``z_min``, ``z_max``, ``z_max_step`` ``>= 0``
+     - ``_z_walk_dyn_k``
+   * - ``elevation``: ``noise``
+     - ``z_min``, ``z_max``, ``z_noise_amplitude`` ``>= 0``
+     - ``_z_noise_dyn_k``
+
+The elevation stages are the same classes on a track (knots for ``uniform`` and
+``random_walk``, per point for ``noise``), on gates (per gate, `Elevation on gates`_) and
+on the relaxed centerline before the stations (`3D station spacing`_), so the same keys
+(``"elevation.z_max"``) work in all three. Every other built-in field is static: a count
+or size, an enum or Python branch, ``edgy`` (transformed on the host in double
+precision), the core ``scale``, ``z_base``, ``z_noise_harmonics``, ``z_control_points``,
+the relax, validity and gate-geometry knobs, the width stages' knobs (except
+``width.from_channel``'s ``scale`` / ``lo`` / ``hi``, dynamic since 0.2.0.dev4), every
+``repulsive`` knob.
+
+- **Kernels.** Each kernel above loads its env's knobs once, clamps them to the declared
+  bounds with comparisons (so a NaN, and every in-range value, signed zeros included,
+  passes bit for bit; an unbounded side is not clamped), then runs the body of the scalar
+  kernel it replaces, verbatim: the same arithmetic, so every configuration gives the
+  bytes it gave in 0.2.0.dev4. ``bezier`` passes its bounds as arguments, so a
+  ``style_sampling`` draw (whose ranges were never bounded) is used as drawn. The scalar
+  kernels stay, unchanged, for the frozen legacy entry points (``generate_*_warp``,
+  ``apply_z_profile*``, the ``sample_*`` helpers); they go at 1.0.
+- **Bounds.** A scalar is checked on the host, in ``float32`` (construction, ``set``, a
+  randomizer's initial range); an array value is clamped when the kernel reads it.
+- **Cross-field rules** (at build, through each Params class's private
+  ``_check_draws`` hook, called for every stage that defines it, drawn or not):
+  crossing ``z_min`` / ``z_max`` randomizers raise ``PlanError``; an inert elevation
+  window and a ``rad`` drawn above the clamp emit a ``UserWarning``. The rules are in
+  :ref:`tuning-per-env`.
+- **style_sampling.** A ``rad`` / ``handle_clamp_frac`` with a ``*_range`` is drawn by
+  ``bezier``'s style kernel straight into its parameter array: unlatched, reported in
+  ``StageParams.drawn`` as drawn by the stage itself (``drawn["rad"] == "generator"``),
+  ``set`` raises and a randomizer on it is a ``PlanError``. One with a range of ``None``
+  is latched like any dynamic field.
+- **Launches.** One latch launch per latched dynamic field per generation, right after
+  the effective seed (and the advance), in slot order then field order; a drawn field
+  has none. Each kernel above replaces its scalar twin at the same position, with the
+  same dimensions, arrays and other scalars: in a launch trace its record is renamed and
+  its knob scalars become arrays (``_assemble_dyn_k`` also takes the four bound
+  scalars; under ``style_sampling``, ``_style_sample_k``'s range scalars for a knob
+  without a range become ``0.0`` placeholders).
+
+.. list-table::
+   :header-rows: 1
+   :widths: 58 14 14 14
+
+   * - generation (CPU, launches per ``generate()``)
+     - 0.2.0.dev4
+     - 0.2.0.dev5
+     - added
+   * - default track (``bezier``, flat)
+     - 152
+     - 154
+     - 2
+   * - ``bezier`` with ``style_sampling``: all three ranges / one of ``rad_range``,
+       ``handle_clamp_frac_range`` / neither
+     - 153
+     - 153 / 154 / 155
+     - 0 / 1 / 2
+   * - ``hull``
+     - 151
+     - 152
+     - 1
+   * - ``polar``
+     - 143
+     - 145
+     - 2
+   * - ``voronoi``
+     - 151
+     - 153
+     - 2
+   * - ``checkpoint``
+     - 146
+     - 149
+     - 3
+   * - ``bezier`` + elevation ``uniform`` / ``random_walk`` / ``noise``
+     - 156 / 156 / 154
+     - 160 / 161 / 159
+     - 4 / 5 / 5
+   * - ``repulsive``, ``external``
+     - unchanged
+     -
+     - 0
+   * - gates: ``bezier`` / ``hull`` (the default gate pipeline)
+     - 14
+     - 14
+     - 0
+   * - gates: ``polar`` / ``checkpoint``
+     - 14
+     - 16
+     - 2
+   * - gates: ``voronoi``
+     - 15
+     - 17
+     - 2
+   * - gates: elevation ``uniform`` / ``random_walk`` / ``noise``
+     -
+     -
+     - 2 / 3 / 3 more
 
 .. _pipeline-gates:
 
@@ -1607,7 +1760,8 @@ parameters); this section lists what differs.
 
    # Another order and elevation, by registered name:
    presets.gates(num_envs=64, device="cpu", generator="polar", order="raw",
-                 elevation=("noise", {"z_noise_amplitude": 0.3}))
+                 elevation=("noise", {"z_min": -0.3, "z_max": 0.3,
+                                      "z_noise_amplitude": 0.3}))
 
    # Gates for a track generator: arc-length stations on its centerline.
    presets.gates(num_envs=64, device="cpu", generator="bezier", source="stations",
@@ -2198,7 +2352,10 @@ elevation=("uniform", {...}))`` changes nothing). ``elevation.flat`` writes ``z_
 into every real gate (``presets.gates(z_base=...)``, ``GateGenConfig.z_base``); on a
 track it launches nothing and ``lift.flat`` adds the altitude, so a non-zero ``z_base``
 on a track's ``elevation.flat`` raises: ``ValueError`` from ``presets.track``,
-``PlanError`` from the planner, before anything is allocated.
+``PlanError`` from the planner, before anything is allocated. The dynamic fields of the
+elevation stages (``z_min``, ``z_max``, ``z_max_step``, ``z_noise_amplitude``) are per
+env on gates too, under the same stage id: ``presets.gates(randomize={"elevation.z_max":
+(lo, hi)})`` (`Dynamic built-in knobs`_).
 
 .. _pipeline-gate-presets:
 
@@ -2397,9 +2554,13 @@ are identical.
    * - ``bezier`` / ``hull``, any ordering, flat, ``gate_solve_iters=8``
      - 14
      - 14 (identical)
-   * - ``polar`` / ``checkpoint`` / ``voronoi``, flat, ``gate_solve_iters=8``
+   * - ``polar`` / ``checkpoint``, flat, ``gate_solve_iters=8``
      - 14
-     - 14 (the count copy before the normalization)
+     - 14 (the count copy before the normalization), 16 since 0.2.0.dev5 (the latches
+       of the two dynamic knobs, `Dynamic built-in knobs`_)
+   * - ``voronoi``, flat, ``gate_solve_iters=8``
+     - 15
+     - 15, 17 since 0.2.0.dev5
    * - masked (``advance=True, mask=m``)
      - as ``advance=True`` alone (one more than above: the epoch advance)
      - two more than 0.2.0.dev3 (hold, commit)
@@ -2412,7 +2573,9 @@ are identical.
        (and its parameter latch, for a check with dynamic params)
 
 A non-flat elevation adds the ``gate_arclen`` launch, ``gate_solve_iters=0`` drops the
-relax launch, as before.
+relax launch, as before; a non-flat elevation also adds, since 0.2.0.dev5, its latch
+launches (2 for ``uniform``, 3 for ``random_walk`` / ``noise``; see
+`Dynamic built-in knobs`_).
 
 .. _pipeline-gate-plan-rules:
 
@@ -2469,9 +2632,11 @@ legacy gate generators run through an adapter until 1.0``. Port it with
 Not open yet
 ------------
 
-- **Dynamic built-in knobs** (roadmap PR13c): the built-in generators' shape knobs and
-  the elevation ranges are static, so ``randomize=`` cannot draw them yet; other
-  distributions than uniform, ``int32`` draws and a public sampler API for plugins.
+- **More dynamic built-in knobs** (roadmap PR13d): a per-env ``size`` multiplier for
+  every generator (``style_sampling``'s ``scale_range`` until then), a dynamic corner
+  count (``min_num_points``), ``gate_frames.default``'s ``gate_width`` and
+  ``StageParams.in_effect``; ``edgy`` (PR16). Other distributions than uniform,
+  ``int32`` and categorical draws, and a public sampler API for plugins.
 - **Results and inputs** (later): open topology (``closed=False``) in any stage or
   utility, and a ``closed`` argument to the kernels (after 1.0); ``build(inputs=)``
   binding caller arrays as a Program's inputs; ``declare()`` for gate generators; gate

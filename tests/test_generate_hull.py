@@ -20,7 +20,7 @@ wp.init()
 
 from track_gen import PerEnvSeededRNG  # noqa: E402
 from track_gen._src.track_generator import Track, TrackGenConfig, TrackGenerator  # noqa: E402
-from track_gen._src import generator_registry as reg  # noqa: E402
+from track_gen._src import warp_generate_hull  # noqa: E402
 from tests._warp_compare import self_intersections, to_t  # noqa: E402
 
 from tests.conftest import DEVS  # noqa: E402
@@ -54,15 +54,15 @@ def test_hull_generation_polygon_fallback_removes_self_crossers(dev):
     gen-valid, finite, and nearly always simple before relaxation/inflation."""
     E = 256
     cfg = TrackGenConfig(generator="hull", num_envs=E, num_points=128, device=dev)
-    spec = reg.get("hull")
-    scratch = spec.alloc_scratch(cfg)
+    # The frozen legacy entry points (the registered "hull" is a Stage since PR13c).
+    scratch = warp_generate_hull.hull_alloc_scratch(cfg)
 
     seeds_t = torch.arange(E, dtype=torch.int32, device=dev)
     seeds_wp = wp.from_torch(seeds_t, dtype=wp.int32)
     out = wp.empty(E * int(cfg.num_points), dtype=wp.vec2f, device=dev)
     valid_wp = wp.empty(E, dtype=wp.int32, device=dev)
 
-    spec.generate(seeds_wp, cfg, out, valid_wp, scratch)
+    warp_generate_hull.generate_hull_warp(seeds_wp, cfg, out, valid_wp, scratch)
     if "cuda" in dev:
         wp.synchronize()
 

@@ -3,7 +3,9 @@
 The ``polar_num_knots`` control knots of the polar track generator, in loop order
 (``anchors.xy``); the gate pipeline orders them (``order.ccw`` by default, ``order.raw``
 keeps the loop order; ``order.random_pairs`` is excluded) and normalizes their extent
-(``preferred["normalize"] = "extent"``).
+(``preferred["normalize"] = "extent"``). The jitters are dynamic (roadmap PR13c): per-env
+arrays drawn by :func:`~track_gen._src.warp_generate_polar.sample_polar_controls_per_env`
+(the track generator's kernel), clamped to the declared bounds at use.
 """
 from __future__ import annotations
 
@@ -12,7 +14,7 @@ import warp as wp
 from .. import ops
 from ..plugin.stage import CaptureClass, Stage
 from .builtin_params import PolarGateParams
-from .warp_generate_polar import polar_jitters, polar_num_knots, sample_polar_controls
+from .warp_generate_polar import polar_num_knots, sample_polar_controls_per_env
 
 
 class GatePolar(Stage):
@@ -35,13 +37,15 @@ class GatePolar(Stage):
         count = b.write("count", wp.int32)
         controls = b.write("xy", wp.vec2f, per="anchors")
         K = polar_num_knots(p)
-        # Same clamped jitters as the polar track generator.
-        radial_jitter, angular_jitter = polar_jitters(p)
+        # Per-env jitters, clamped at use like the polar track generator's.
+        radial_jitter = b.param("polar_radial_jitter")
+        angular_jitter = b.param("polar_angular_jitter")
         seed = b.seed
 
         def enqueue(ctx):
             ops.fill(ctx, count, K)
-            sample_polar_controls(ctx, seed, K, radial_jitter, angular_jitter, controls)
+            sample_polar_controls_per_env(ctx, seed, K, radial_jitter, angular_jitter,
+                                          controls)
         return enqueue
 
 

@@ -190,6 +190,24 @@ broke.
        written, an output accumulated into, an output slot left unwritten, a Python
        counter, seeds latched at construction instead of read from ``seeds_wp``
        (``b.seed``) at every call.
+   * - ``params.per_env``
+     - For the stage under test (the generator, or the stage ``check_stage`` checks),
+       every dynamic field that is not drawn is set per env with an ``[E]`` array, and
+       each env's rows equal those of a generation with the fields set to that env's
+       values as scalars, bitwise, for every env (``1 + E`` eager generations, the same
+       seeds). The values move each field from its initial value toward its farther
+       declared bound (``d + 0.25 * span * (e + 1) / E``, rounded to ``float32`` and
+       clamped; a field with a missing bound uses ``span = max(|d|, 0.1)`` and moves
+       away from its one declared bound, a field with no bound alternates down / up in
+       declaration order, so a window such as ``[z_min, z_max]`` opens), and ``int32``
+       fields by ``-1``, ``0``, ``+1`` (a ``bool`` alternates). The live arrays and the
+       stage's latched copies must read back what was set; the initial values are
+       restored afterwards. Skipped ("no dynamic parameters") for a stage without one
+       (a ``GeneratorSpec``, ``repulsive``, ``bezier`` / ``hull`` gates, most stages).
+     - A kernel reading ``param[0]`` (or any fixed env) instead of ``param[e]``; a
+       dynamic value copied to the host at build and passed as a scalar; a stage that
+       writes its parameter array. The message names the envs and the result fields that
+       differ.
    * - ``bounded.absorbing``
      - For a generator (or the stage under test) that runs a ``ctx.bounded_loop`` with
        ``active``, whatever capture class it declares: with ``active`` poisoned to ``0`` and the outputs poisoned, an eager
@@ -774,8 +792,9 @@ What the kit does not see
 - **One configuration per call.** The checks exercise the parameters you pass. Run the
   kit once per setting that selects a different code path.
 - **Masked regeneration and dynamic parameters.** The kit does not drive
-  ``generate(advance=True, mask=...)`` or ``params.set``; test a Stage's dynamic
-  parameters as :ref:`plugin-own-tests` shows. (A masked regeneration is exact by
+  ``generate(advance=True, mask=...)``, and ``params.per_env`` only checks that each env
+  reads its own value of each dynamic field, at one set of values, eagerly; test what a
+  value change does (and a curriculum in a graph) as :ref:`plugin-own-tests` shows. (A masked regeneration is exact by
   construction: the commit restores the envs outside the mask; see
   :ref:`pipeline-commit`.)
 - **A stage in another position or pipeline.** ``check_stage`` runs the stage in its

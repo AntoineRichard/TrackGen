@@ -19,6 +19,10 @@ deriving from :class:`Params`; every field needs a default::
 
 A field without :func:`static` / :func:`dynamic` metadata counts as static.
 
+Bounds of a dynamic ``float32`` field are checked in float32 (roadmap PR13c): a value is
+in range iff ``f32(lo) <= f32(v) <= f32(hi)`` (the value the ``[E]`` array holds; NaN
+passes), at construction, by :meth:`StageParams.set` and on a randomizer's range.
+
 Users select the values with ``TrackGenConfig(generator=..., generator_params=...)``:
 ``None`` (the class's :meth:`Params.from_legacy` of the flat config, ``cls()`` by
 default), an instance of the class, or a mapping of its fields (unknown keys raise and
@@ -28,6 +32,7 @@ from __future__ import annotations
 
 import dataclasses
 import enum
+import math
 import numbers
 import sys
 import types
@@ -37,6 +42,7 @@ from collections.abc import Sequence as _SequenceABC
 from types import MappingProxyType
 from typing import Any, Iterator, Mapping
 
+import numpy as np
 import warp as wp
 
 __all__ = ["NoParams", "ParamTable", "Params", "StageParams", "dynamic", "static"]
@@ -353,11 +359,35 @@ def _check_dynamic_value(owner: str, fld: _Field, v) -> None:
     _check_bounds(owner, fld, v)
 
 
+def _f32(v) -> "float | None":
+    """``v`` rounded to float32, as a Python float (``None`` stays ``None``): the value
+    an ``[E]`` float32 array holds after ``set(v)`` (``inf`` past the float32 range)."""
+    if v is None:
+        return None
+    try:
+        x = float(v)
+    except OverflowError:                    # an int beyond the float64 range
+        x = math.copysign(math.inf, v)
+    with np.errstate(over="ignore"):
+        return float(np.float32(x))
+
+
+def _out_of_range(v, lo, hi, f32: bool) -> bool:
+    """``v < lo or v > hi`` (a ``None`` bound is open; a NaN passes, exactly like the
+    legacy comparisons); in float32 when ``f32`` (roadmap PR13c: a dynamic float32
+    field is in range iff ``f32(lo) <= f32(v) <= f32(hi)``)."""
+    if f32:
+        v, lo, hi = _f32(v), _f32(lo), _f32(hi)
+    return (lo is not None and v < lo) or (hi is not None and v > hi)
+
+
 def _check_bounds(owner: str, fld: _Field, v) -> None:
-    # `v < lo` / `v > hi`: a NaN passes, exactly like the legacy comparisons.
+    # `v < lo` / `v > hi`: a NaN passes, exactly like the legacy comparisons. A dynamic
+    # float32 field compares in float32 (the value its array holds).
     if not _is_real(v):
         return
-    if (fld.lo is not None and v < fld.lo) or (fld.hi is not None and v > fld.hi):
+    f32 = fld.kind == "dynamic" and fld.dtype is wp.float32
+    if _out_of_range(v, fld.lo, fld.hi, f32):
         raise ValueError(f"{owner}.{fld.name} must be in {_bounds_text(fld.lo, fld.hi)}, "
                          f"got {v!r}")
 
@@ -384,6 +414,40 @@ def _check_values(params) -> None:
                              f"got {v!r}")
 
 
+class _DynamicField:
+    """What a built-in stage's static view binds to each DYNAMIC field name (roadmap
+    PR13c): any host read of it raises ``TypeError`` (``float()``, ``int()``, ``bool()``,
+    comparisons, ``==`` / ``!=`` (hence ``in``), ``hash()`` (hence a dict lookup),
+    arithmetic), including through ``getattr(view, name, default)``, which the plugin
+    view's ``AttributeError`` would let through to the default; passed as a kernel
+    argument it fails the launch (Warp's ``RuntimeError``, chained from that
+    ``TypeError``). A built-in reads its dynamic fields on the device
+    (``StageBuilder.param``); a missed routing raises instead of baking a host value.
+    Identity and type checks (``x is None``, ``isinstance(x, float)``) cannot be
+    intercepted: they see the sentinel."""
+
+    __slots__ = ("_what",)
+
+    def __init__(self, what: str) -> None:
+        self._what = str(what)
+
+    def _raise(self, *args, **kwargs):
+        raise TypeError(f"{self._what} is dynamic: a built-in stage reads it on the device "
+                        f"through b.param(...)")
+
+    __float__ = __int__ = __index__ = __bool__ = __complex__ = _raise
+    __round__ = __trunc__ = __floor__ = __ceil__ = _raise
+    __lt__ = __le__ = __gt__ = __ge__ = __eq__ = __ne__ = _raise
+    __hash__ = _raise
+    __add__ = __radd__ = __sub__ = __rsub__ = __mul__ = __rmul__ = _raise
+    __truediv__ = __rtruediv__ = __floordiv__ = __rfloordiv__ = _raise
+    __mod__ = __rmod__ = __divmod__ = __rdivmod__ = __pow__ = __rpow__ = _raise
+    __neg__ = __pos__ = __abs__ = _raise
+
+    def __repr__(self) -> str:
+        return f"<dynamic {self._what}>"
+
+
 def _static_view(params):
     """``params`` as :meth:`Stage.build`, :meth:`Stage.capacity` and
     :meth:`Stage.capture_class` see it: an instance of a generated subclass of its class
@@ -393,11 +457,30 @@ def _static_view(params):
     the device through ``StageBuilder.param``; a host scalar derived from it at build
     would be baked into the launches and ignore every later ``set``. ``params`` itself
     when the class has no dynamic field.
+
+    A class that sets the private flag ``_poison_dynamic`` (the built-in flat Params,
+    roadmap PR13c) binds a :class:`_DynamicField` sentinel to each dynamic name instead:
+    ``getattr(view, name, default)`` returns it and its first use raises ``TypeError``.
     """
     cls = type(params)
     dyn = frozenset(f.name for f in _fields(cls) if f.kind == "dynamic")
     if not dyn:
         return params
+    if getattr(cls, "_poison_dynamic", False):
+        def __repr__(self):
+            parts = ", ".join(f"{f.name}=<dynamic>" if f.name in dyn
+                              else f"{f.name}={getattr(self, f.name)!r}"
+                              for f in dataclasses.fields(cls))
+            return f"{cls.__qualname__}({parts})"
+
+        ns = {"__repr__": __repr__, "__module__": cls.__module__,
+              "__qualname__": cls.__qualname__}
+        view = object.__new__(type(cls.__name__, (cls,), ns))
+        for f in dataclasses.fields(cls):
+            value = _DynamicField(f"{cls.__name__}.{f.name}") if f.name in dyn \
+                else getattr(params, f.name)
+            object.__setattr__(view, f.name, value)
+        return view
 
     def _dynamic_attr(name):
         def get(self):
@@ -497,6 +580,10 @@ def _schema(cls) -> dict:
         if fld.kind == "dynamic":
             prop["x-dynamic"] = True
             prop["x-dtype"] = "float32" if fld.dtype is wp.float32 else "int32"
+            if fld.dtype is wp.float32 and (fld.lo is not None or fld.hi is not None):
+                # minimum / maximum compare in float32 (f32(lo) <= f32(v) <= f32(hi),
+                # roadmap PR13c): a read-back float32 value at a bound is in range.
+                prop["x-bounds"] = "float32"
         else:
             prop["x-static"] = True
         if fld.ui is not None:
@@ -527,7 +614,8 @@ class StageParams(_MappingABC):
     (:attr:`drawn`) is a single array OWNED by its randomizer and written by it every
     generation: ``self[field]`` returns it (observable), :meth:`set` raises (set the
     randomizer's ``lo`` / ``hi`` instead), and a direct write is overwritten by the next
-    draw.
+    draw. Bezier's ``style_sampling`` ranges draw their knobs the same way, by the stage
+    itself (roadmap PR13c: ``drawn["rad"] == "generator"``, the stage's own id).
 
     Created by the generator facades, never by user code: the constructor is private
     (it raises ``TypeError``) and may change; the read API is ``[field]``, :meth:`set`,
@@ -548,15 +636,18 @@ class StageParams(_MappingABC):
         self._E = int(num_envs)
         self._device = device
         self._default_stream = default_stream
-        self._drawn = dict(drawn or {})               # field -> randomizer stage id
+        self._drawn = dict(drawn or {})   # field -> the drawing stage's id (maybe its own)
         # field -> (lo, hi, what): bounds narrower than the field's own (a randomizer's
         # lo / hi take the declared range of the field it draws).
         self._bounds = dict(bounds or {})
 
     @property
     def drawn(self) -> Mapping[str, str]:
-        """``field -> id of the randomize stage that draws it`` (empty unless a
-        ``randomize.*`` stage targets this stage)."""
+        """``field -> id of the stage that draws it`` every generation: a
+        ``randomize.*`` stage targeting this stage, or :attr:`stage_id` itself for a
+        field the stage draws itself (bezier's ``style_sampling`` ranges, roadmap
+        PR13c). Every value is a key of ``gen.params``; empty when nothing draws this
+        stage's fields."""
         return MappingProxyType(dict(self._drawn))
 
     @property
@@ -572,10 +663,20 @@ class StageParams(_MappingABC):
         current values are the live arrays, ``self[field]``."""
         return self._params
 
+    def _drawn_text(self, field: str) -> str:
+        """Who draws ``field``, for ``repr``: the randomizer's id (``'randomize.x'``) or,
+        for a field the stage draws itself, ``the generator's style_sampling
+        (rad_range)``."""
+        writer = self._drawn[field]
+        own = _self_draw(self._params, field) if writer == self._stage_id else None
+        if own is not None:
+            return f"the generator's {own[0]} ({own[1]})"
+        return repr(writer)
+
     def __repr__(self) -> str:
         if self._drawn:
-            dyn = ", ".join(f"{k}=<drawn by {self._drawn[k]!r}>" if k in self._drawn else k
-                            for k in sorted(self._arrays))
+            dyn = ", ".join(f"{k}=<drawn by {self._drawn_text(k)}>" if k in self._drawn
+                            else k for k in sorted(self._arrays))
             return f"StageParams({self._stage_id!r}, dynamic=[{dyn}], " \
                    f"params={self._params!r})"
         return (f"StageParams({self._stage_id!r}, dynamic={sorted(self._arrays)}, "
@@ -618,12 +719,23 @@ class StageParams(_MappingABC):
             KeyError: ``field`` is static or unknown.
             ValueError: wrong shape, dtype or device; a value that is neither a
                 ``wp.array`` nor a scalar of the field's type; a scalar outside lo/hi
-                (for a randomizer's ``lo`` / ``hi``: outside the declared range of the
-                field it draws).
+                (compared in float32 for a float32 field; for a randomizer's ``lo`` /
+                ``hi``: outside the declared range of the field it draws); a field
+                drawn every generation (by a randomizer, or by the stage itself:
+                bezier's ``style_sampling`` ranges).
+
+        An array is not range-checked: a built-in stage clamps each value to the
+        field's declared bounds where it reads it (roadmap PR13c).
         """
         arr = self[field]
         writer = self._drawn.get(field)
         if writer is not None:
+            own = _self_draw(self._params, field) if writer == self._stage_id else None
+            if own is not None:              # drawn by the stage itself (style_sampling)
+                how, rng = own
+                raise ValueError(f"{self._stage_id}.{field} is drawn every generation by "
+                                 f"the generator's {how} ({rng}); set {rng}=None to set "
+                                 f"it")
             raise ValueError(f"{self._stage_id}.{field} is drawn every generation by stage "
                              f"{writer!r}; set its bounds: params[{writer!r}].set('lo' | "
                              f"'hi', ...)")
@@ -652,7 +764,7 @@ class StageParams(_MappingABC):
         extra = self._bounds.get(field)
         if extra is not None and _is_real(value):
             lo, hi, what = extra
-            if (lo is not None and value < lo) or (hi is not None and value > hi):
+            if _out_of_range(value, lo, hi, arr.dtype is wp.float32):
                 raise ValueError(f"{owner}.{field} must be in {_bounds_text(lo, hi)}, the "
                                  f"declared range of {what} (the field this stage draws: "
                                  f"a draw past it would pile onto the bound), got "
@@ -695,6 +807,23 @@ class ParamTable(_MappingABC):
     def set(self, stage_id: str, field: str, value, *, stream=None) -> None:
         """``self[stage_id].set(field, value, stream=stream)``."""
         self[stage_id].set(field, value, stream=stream)
+
+
+def _self_drawn(params) -> "dict[str, str]":
+    """``field -> range field`` of the dynamic fields a stage draws itself every
+    generation (the private Params hook ``_self_drawn()``, roadmap PR13c: bezier's
+    ``style_sampling`` ranges, e.g. ``{"rad": "rad_range"}``); empty without one."""
+    fn = getattr(params, "_self_drawn", None)
+    return dict(fn()) if params is not None and callable(fn) else {}
+
+
+def _self_draw(params, field: str) -> "tuple[str, str] | None":
+    """``(switch, range field)`` when the stage draws ``field`` itself (bezier:
+    ``("style_sampling", "rad_range")``), else ``None``."""
+    rng = _self_drawn(params).get(field)
+    if rng is None:
+        return None
+    return (str(getattr(type(params), "_self_draw_switch", "sampling")), str(rng))
 
 
 def _new_stage_params(**kwargs) -> StageParams:

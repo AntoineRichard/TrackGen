@@ -549,8 +549,7 @@ def _run_pipeline(
     if generator_spec is None:
         generator_spec = getattr(scratch, "generator_spec", None)
     if generator_spec is None:
-        from ..plugin import registry
-        generator_spec = registry.get("generator", config.generator)
+        generator_spec = _registered_generator_spec(config.generator)
     _reject_stage_class(generator_spec)
 
     n_max = int(config.N_max)
@@ -1142,6 +1141,53 @@ def _fill_knot_scratch(stag, config, num_envs, device) -> None:
                 num_envs, int(config.z_control_points), device)
 
 
+# The legacy GeneratorSpecs of the built-in track generators (roadmap PR13c): built
+# lazily over their frozen public functions, for the PR9 reference composition only.
+_LEGACY_SPECS: dict = {}
+_LEGACY_FUNCTIONS = {
+    "bezier": ("warp_generate", "bezier_alloc_scratch", "generate_centerline_warp"),
+    "hull": ("warp_generate_hull", "hull_alloc_scratch", "generate_hull_warp"),
+    "polar": ("warp_generate_polar", "polar_alloc_scratch", "generate_polar_warp"),
+    "voronoi": ("warp_generate_voronoi", "voronoi_alloc_scratch", "generate_voronoi_warp"),
+    "checkpoint": ("warp_generate_checkpoint", "checkpoint_alloc_scratch",
+                   "generate_checkpoint_warp"),
+}
+
+
+def _legacy_generator_spec(name: str):
+    """The pre-PR13c ``GeneratorSpec`` of built-in track generator ``name`` (its frozen
+    public ``*_alloc_scratch`` / ``generate_*_warp``: host scalars, the scalar kernels),
+    or ``None``. The registered generators are Stages since roadmap PR13c; this private
+    table serves the PR9 reference composition (``_inflate_warp_alloc`` /
+    ``_run_pipeline`` with ``generator_spec=None``). Removed with the legacy wrappers
+    (roadmap PR16)."""
+    spec = _LEGACY_SPECS.get(name)
+    if spec is None and name in _LEGACY_FUNCTIONS:
+        import importlib  # noqa: PLC0415
+
+        from .generator_registry import GeneratorSpec  # noqa: PLC0415
+
+        module, alloc, generate = _LEGACY_FUNCTIONS[name]
+        mod = importlib.import_module(f"{__package__}.{module}")
+        spec = GeneratorSpec(name=name, alloc_scratch=getattr(mod, alloc),
+                             generate=getattr(mod, generate), accepts_ctx=True)
+        _LEGACY_SPECS[name] = spec
+    return spec
+
+
+def _registered_generator_spec(name: str):
+    """``registry.get("generator", name)``; a built-in track generator's Stage class
+    resolves to its legacy spec (:func:`_legacy_generator_spec`)."""
+    from ..plugin import registry
+    from ..plugin.stage import _is_stage
+
+    spec = registry.get("generator", name)
+    if _is_stage(spec) and str(getattr(spec, "__module__", "")).startswith(
+            f"{__package__}.warp_generate"):
+        spec = _legacy_generator_spec(name) or spec
+    return spec
+
+
 def _reject_stage_class(generator_spec) -> None:
     """A registered Stage CLASS runs only through TrackGenerator (which adapts it);
     the private helpers would otherwise call a missing ``alloc_scratch``/``generate``."""
@@ -1209,8 +1255,7 @@ def _inflate_warp_alloc(config, generator_spec=None, *, seed=None):
         half_width=wp.empty(flat, dtype=wp.float32, device=dev),
     )
     if generator_spec is None:
-        from ..plugin import registry
-        generator_spec = registry.get("generator", config.generator)
+        generator_spec = _registered_generator_spec(config.generator)
     _reject_stage_class(generator_spec)
     from .generator_binding import _StageGenerator
     if isinstance(generator_spec, _StageGenerator):

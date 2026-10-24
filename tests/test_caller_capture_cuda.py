@@ -38,6 +38,7 @@ import warp as wp  # noqa: E402
 import track_gen.exec as tg_exec  # noqa: E402
 from track_gen import GateGenConfig, PerEnvSeededRNG, TrackGenConfig  # noqa: E402
 from track_gen.plugin import CaptureClass, GeneratorSpec, registry  # noqa: E402
+from track_gen._src import warp_pipeline  # noqa: E402
 from track_gen._src.gate_generator import GateGenerator  # noqa: E402
 from track_gen._src.track_generator import TrackGenerator  # noqa: E402
 from track_gen.course import Course, CourseConfig  # noqa: E402
@@ -309,12 +310,19 @@ def test_self_graph_outside_any_capture_matches_eager_twin(kind):
         _assert_same(out, ref, f"{kind}: self-graph replay {i}")
 
 
+def _polar_spec() -> GeneratorSpec:
+    """The polar generator's legacy ``GeneratorSpec`` over its frozen public functions
+    (``polar_alloc_scratch`` / ``generate_polar_warp``): the registered ``"polar"`` is a
+    generator Stage since roadmap PR13c (no ``alloc_scratch`` / ``generate``)."""
+    return warp_pipeline._legacy_generator_spec("polar")
+
+
 def test_python_body_runs_once_per_recording_and_never_on_replay():
     """prepare runs the body once; the self-graph records it once; self-graph replays
     run no Python; a caller recording made AFTER the self-graph exists re-enqueues the
     body (never launches the stored graph) and the caller's replays run no Python."""
     calls = []
-    base = registry.get("generator", "polar")
+    base = _polar_spec()
     registry.add(GeneratorSpec(name="toy.count", alloc_scratch=base.alloc_scratch,
                                generate=_counting(base.generate, calls),
                                capturable=True, accepts_ctx=True))
@@ -353,7 +361,7 @@ def _register_host_toys(calls: list) -> None:
     """Register a non-capturable "toy.host" track AND gate generator (wrapping polar /
     bezier, so their outputs equal those shipped generators); undone by the per-test
     registry scope (tests/conftest.py)."""
-    tbase = registry.get("generator", "polar")
+    tbase = _polar_spec()
     registry.add(GeneratorSpec(name="toy.host", alloc_scratch=tbase.alloc_scratch,
                                generate=_counting(tbase.generate, calls, host_readback=True),
                                capturable=False, accepts_ctx=True))
@@ -473,7 +481,7 @@ def _register_legacy_toy(calls: list) -> None:
     helpers follow the ambient context the orchestrator sets). Its output therefore
     equals polar's only when that stream-less launch is ordered with the rest of the
     body. Undone by the per-test registry scope (tests/conftest.py)."""
-    base = registry.get("generator", "polar")
+    base = _polar_spec()
 
     def alloc_scratch(config):
         seeds = wp.zeros(int(config.num_envs), dtype=wp.int32, device=str(config.device))

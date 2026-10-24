@@ -11,7 +11,10 @@ relax / width / elevation / validity stage) honours the contract::
 
 or, in pytest, loads the opt-in plugin (``pytest_plugins =
 ["track_gen.testing.pytest_plugin"]``) and calls the ``track_gen_conformance`` fixture.
-TrackGen's own suite runs the same checks over every registered generator.
+TrackGen's own suite runs the same checks over every registered generator. Among them,
+``params.per_env`` (roadmap PR13c) sets every dynamic param of the unit's stage per env
+and checks that env ``e`` equals a run with ``e``'s values as scalars (a stage must read
+``param[e]``, never ``param[0]`` or a host copy, and never write its param arrays).
 
 Modules:
 

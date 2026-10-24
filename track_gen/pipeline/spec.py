@@ -300,6 +300,47 @@ class PipelineSpec:
         del stages[i]
         return self._with(stages)
 
+    def with_randomize(self, randomize) -> "PipelineSpec":
+        """This spec with per-env uniform draws of DYNAMIC float32 params (roadmap
+        PR13b / PR13c): each a ``randomize.uniform`` stage (id
+        ``"randomize.<stage>.<field>"``) inserted right before the stage it draws.
+
+        The helper behind ``presets.track(randomize=)`` / ``presets.gates(randomize=)``,
+        for a spec built any other way, e.g. from a config::
+
+            cfg = TrackGenConfig(num_envs=E, device=d, z_profile="uniform", z_max=0.6)
+            spec = legacy.to_pipeline_spec(cfg).with_randomize(
+                {"generator.rad": (0.1, 0.35), "elevation.z_max": (0.2, 0.6)})
+            gen = TrackGenerator(spec, rng)
+            # a GateGenConfig: its gate spec, then GateGenerator
+            gcfg = GateGenConfig(num_envs=E, device=d, generator="polar")
+            spec = legacy.to_gate_pipeline_spec(gcfg).with_randomize(
+                {"generator.polar_radial_jitter": (0.2, 0.8)})
+            gen = GateGenerator(spec, rng)
+
+        A field the spec already randomizes is refused, not replaced: to change a draw
+        range (e.g. at a curriculum phase), replace that randomizer,
+        ``spec.replace("randomize.generator.rad", StageRef("randomize", "uniform",
+        {"stage": "generator", "field": "rad", "lo": 0.1, "hi": 0.4}))``, or write its
+        live ``lo`` / ``hi`` (``gen.params["randomize.generator.rad"].set("hi", 0.4)``).
+
+        Args:
+            randomize: ``{"<stage id>.<field>": (lo, hi)}`` (the key split at its LAST
+                dot) or a sequence of ``StageRef("randomize", "uniform", {...})``;
+                ``None`` returns this spec.
+
+        Raises:
+            ValueError: a malformed key, a target stage the spec does not have (lists
+                the stage ids), or a field (or a stage id) the spec already has a
+                randomizer for.
+            TypeError: a range that is not a ``(lo, hi)`` pair, or a sequence item
+                that is not a ``StageRef("randomize", ...)``.
+
+        The field's rules (dynamic, float32, the range inside its declared bounds, the
+        cross-field rules) are checked by :func:`track_gen.pipeline.build`.
+        """
+        return _with_randomizers(self, randomize)
+
     def to_dict(self) -> dict:
         """The spec as JSON data (``"format": "track_gen.pipeline/2"``): Params become
         ``{field: value}`` (tuples as lists, enums as their values);
@@ -354,6 +395,73 @@ class PipelineSpec:
                                    capacity=s.get("capacity") or {}))
         return cls(batch=batch, stages=tuple(stages),
                    require_caller_capturable=data.get("require_caller_capturable", False))
+
+
+def _randomizers(randomize) -> "list[StageRef]":
+    """``randomize=`` as ``randomize.uniform`` StageRefs: a mapping ``{"<stage>.<field>":
+    (lo, hi)}`` (the key split at its LAST dot: stage ids may contain dots, field names
+    may not), or a sequence of ``StageRef("randomize", ...)``."""
+    if randomize is None:
+        return []
+    if isinstance(randomize, _MappingABC):
+        refs = []
+        for key, rng in randomize.items():
+            if not isinstance(key, str) or "." not in key.strip(".") or key.endswith("."):
+                raise ValueError(f"randomize: key {key!r} must be '<stage id>.<field>' "
+                                 f"(e.g. 'generator.amp')")
+            stage, field = key.rsplit(".", 1)
+            if isinstance(rng, (str, bytes)) or not isinstance(rng, (tuple, list)) or \
+                    len(rng) != 2:
+                raise TypeError(f"randomize[{key!r}] must be a (lo, hi) pair, got {rng!r}")
+            lo, hi = rng
+            refs.append(StageRef("randomize", "uniform",
+                                 params={"stage": stage, "field": field, "lo": float(lo),
+                                         "hi": float(hi)}, id=f"randomize.{key}"))
+        return refs
+    if isinstance(randomize, (str, bytes, StageRef)):
+        raise TypeError(f"randomize must be a mapping {{'<stage>.<field>': (lo, hi)}} or a "
+                        f"sequence of StageRef('randomize', ...), got {randomize!r}")
+    refs = list(randomize)
+    for ref in refs:
+        if not isinstance(ref, StageRef) or ref.kind != "randomize":
+            raise TypeError(f"randomize: expected StageRef('randomize', ...), got {ref!r}")
+    return refs
+
+
+def _draw_target(ref: StageRef) -> "tuple":
+    """``(stage, field)`` a randomizer StageRef names (``None`` where it names none)."""
+    p = ref.params
+    if isinstance(p, _MappingABC):
+        return p.get("stage"), p.get("field")
+    return getattr(p, "stage", None), getattr(p, "field", None)
+
+
+def _with_randomizers(spec: PipelineSpec, randomize) -> PipelineSpec:
+    """``spec`` with each randomizer inserted right before the stage it draws
+    (:meth:`PipelineSpec.with_randomize`); a field (or a stage id) the spec already has
+    a randomizer for is refused."""
+    for ref in _randomizers(randomize):
+        target, field = _draw_target(ref)
+        if not isinstance(target, str) or not target:
+            raise ValueError(f"randomize: {ref!r} names no target stage (params 'stage')")
+        if target not in spec.ids:
+            raise ValueError(f"randomize: key '{target}.{field}' names stage {target!r}, "
+                             f"which this pipeline does not have; stages: "
+                             f"{list(spec.ids)}")
+        for sid, old in zip(spec.ids, spec.stages):
+            if old.kind not in PARAM_WRITER_KINDS:
+                continue
+            if _draw_target(old) == (target, field):
+                what = f"'{target}.{field}' is already drawn by stage {sid!r}"
+            elif sid == ref.slot_id:
+                what = f"the spec already has a randomizer with id {sid!r}"
+            else:
+                continue
+            raise ValueError(f"randomize: {what}; replace it, spec.replace({sid!r}, "
+                             f"StageRef('randomize', 'uniform', {{...}})), or remove it "
+                             f"first (spec.remove({sid!r}))")
+        spec = spec.insert_before(target, ref)
+    return spec
 
 
 def _migrate_v1(data: Mapping) -> dict:

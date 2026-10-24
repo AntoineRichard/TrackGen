@@ -16,6 +16,13 @@ The spline evaluation, arc resample, extent normalisation, self-intersection cou
 polygon fallback and fill are the public ``track_gen.ops`` primitives; the site field and
 anchor selection are exposed as :func:`sample_voronoi_sites` /
 :func:`select_voronoi_anchors` (shared with the voronoi gate generator).
+
+Roadmap PR13c: the registered ``"voronoi"`` generator is the :class:`Voronoi` Stage,
+whose radial variation / angular jitter are dynamic (per-env arrays,
+:func:`select_voronoi_anchors_per_env`, clamped to the declared bounds at use);
+``generate_voronoi_warp`` / ``voronoi_alloc_scratch`` / ``select_voronoi_anchors`` keep
+their signatures and the scalar kernel on the same private core,
+:func:`_enqueue_voronoi`.
 """
 from __future__ import annotations
 
@@ -24,6 +31,9 @@ import warp as wp
 from .. import ops
 from ..exec.context import LaunchContext, resolve as _resolve_ctx
 from ..ops.constants import TARGET_EXTENT
+from ..plugin.stage import CaptureClass, Stage
+from .builtin_params import VoronoiParams, _declared_bounds
+from .builtin_stage import DeprecatedParamsAlias, check_dyn, default_alloc, run_view
 from .runtime import _init
 
 # Legacy private name (value only): the loop is normalised to config.scale * TARGET_EXTENT.
@@ -121,6 +131,94 @@ def _select_anchor_sites_k(
     used: wp.array(dtype=wp.int32),
 ):
     e = wp.tid()
+    sbase = e * S
+    kbase = e * K
+    state = wp.rand_init(seeds[e] * _ANCHOR_SALT + 31)
+    two_pi = 2.0 * wp.pi
+    sector = two_pi / float(K)
+    rotation = wp.randf(state) * two_pi
+    p0 = wp.randf(state) * two_pi
+    p1 = wp.randf(state) * two_pi
+    p2 = wp.randf(state) * two_pi
+    p3 = wp.randf(state) * two_pi
+
+    for j in range(S):
+        used[sbase + j] = 0
+
+    layout_boost = float(1.0)
+    if layout_mode == _LAYOUT_VOID_RING:
+        layout_boost = 1.10
+    elif layout_mode == _LAYOUT_CLUSTERED:
+        layout_boost = 1.16
+    elif layout_mode == _LAYOUT_MIXED:
+        layout_boost = 1.06
+    amp = _clamp_f(radial_variation * layout_boost, 0.0, 0.85)
+
+    for i in range(K):
+        jitter = (2.0 * wp.randf(state) - 1.0) * angular_jitter
+        theta = rotation + sector * float(i) + jitter
+        profile = (
+            0.62 * wp.sin(2.0 * theta + p0)
+            + 0.44 * wp.cos(3.0 * theta + p1)
+            + 0.26 * wp.sin(5.0 * theta + p2)
+            + 0.18 * wp.cos(7.0 * theta + p3)
+        ) / 1.50
+        target_r = 0.34 * box_size * (1.0 + amp * profile)
+        target_r = _clamp_f(target_r, 0.16 * box_size, 0.52 * box_size)
+
+        best = int(0)
+        best_cost = float(1.0e30)
+        for j in range(S):
+            site = sites[sbase + j]
+            site_r = wp.length(site)
+            site_theta = wp.atan2(site[1], site[0])
+            angle_cost = wp.abs(_angle_delta(site_theta, theta)) / wp.max(sector, 1.0e-6)
+            radius_cost = wp.abs(site_r - target_r) / wp.max(0.13 * box_size, 1.0e-6)
+            used_cost = wp.where(used[sbase + j] > 0, 1000.0, 0.0)
+            cost = angle_cost + radius_cost + used_cost
+            if cost < best_cost:
+                best_cost = cost
+                best = j
+
+        used[sbase + best] = 1
+        selected[kbase + i] = sites[sbase + best]
+
+
+# The declared bounds of VoronoiParams' radial variation / angular jitter (the twin's
+# clamp, float32; VoronoiGateParams declares the same ones).
+_RV_LO = wp.constant(wp.float32(_declared_bounds(VoronoiParams,
+                                                 "voronoi_radial_variation")[0]))
+_RV_HI = wp.constant(wp.float32(_declared_bounds(VoronoiParams,
+                                                 "voronoi_radial_variation")[1]))
+_AJ_LO = wp.constant(wp.float32(_declared_bounds(VoronoiParams,
+                                                 "voronoi_angular_jitter")[0]))
+_AJ_HI = wp.constant(wp.float32(_declared_bounds(VoronoiParams,
+                                                 "voronoi_angular_jitter")[1]))
+
+
+@wp.kernel
+def _select_anchor_sites_dyn_k(
+    seeds: wp.array(dtype=wp.int32),
+    sites: wp.array(dtype=wp.vec2f),
+    S: int,
+    K: int,
+    layout_mode: int,
+    box_size: float,
+    rv_e: wp.array(dtype=wp.float32),
+    aj_e: wp.array(dtype=wp.float32),
+    selected: wp.array(dtype=wp.vec2f),
+    used: wp.array(dtype=wp.int32),
+):
+    # _select_anchor_sites_k with the radial variation / angular jitter read per env
+    # (roadmap PR13c): each loaded once and clamped to its declared bounds by comparisons
+    # (NaN and every in-range value pass bit for bit), then the scalar kernel's body.
+    e = wp.tid()
+    radial_variation = rv_e[e]
+    radial_variation = wp.where(radial_variation < _RV_LO, _RV_LO, radial_variation)
+    radial_variation = wp.where(radial_variation > _RV_HI, _RV_HI, radial_variation)
+    angular_jitter = aj_e[e]
+    angular_jitter = wp.where(angular_jitter < _AJ_LO, _AJ_LO, angular_jitter)
+    angular_jitter = wp.where(angular_jitter > _AJ_HI, _AJ_HI, angular_jitter)
     sbase = e * S
     kbase = e * K
     state = wp.rand_init(seeds[e] * _ANCHOR_SALT + 31)
@@ -289,24 +387,53 @@ def select_voronoi_anchors(ctx: "LaunchContext", seeds: wp.array, sites: wp.arra
     ])
 
 
+def select_voronoi_anchors_per_env(ctx: "LaunchContext", seeds: wp.array,
+                                   sites: wp.array, S: int, K: int, layout_mode: int,
+                                   box_size: float, radial_variation: wp.array,
+                                   angular_jitter: wp.array, out_selected: wp.array,
+                                   used: wp.array) -> None:
+    """:func:`select_voronoi_anchors` with per-env knobs (roadmap PR13c): ``[E]``
+    ``float32`` arrays, env ``e`` selecting with ``radial_variation[e]`` /
+    ``angular_jitter[e]``, each clamped at use to the voronoi generator's declared
+    bounds (``[0, 0.85]`` / ``[0, pi]``, compared in float32; a NaN passes). With every
+    value inside its bounds, env ``e`` equals :func:`select_voronoi_anchors` at the
+    scalars. One launch (``E = seeds.shape[0]`` threads); no allocation, no host sync.
+    """
+    ctx.launch(_select_anchor_sites_dyn_k, seeds.shape[0], [
+        seeds, sites, int(S), int(K), int(layout_mode), float(box_size),
+        radial_variation, angular_jitter, out_selected, used,
+    ])
+
+
+#: The dynamic fields of the Voronoi Stage (roadmap PR13c), in Params order.
+_DYNAMIC = ("voronoi_radial_variation", "voronoi_angular_jitter")
+
+
 def voronoi_alloc_scratch(config):
     """Allocate private scratch for the standard Voronoi generator."""
+    return _alloc_voronoi_scratch(config)
+
+
+def _alloc_voronoi_scratch(config, alloc=None):
+    """:func:`voronoi_alloc_scratch` with every buffer from ``alloc(name, dtype, n)``
+    (named after its :class:`VoronoiScratch` slot; default ``wp.empty`` on
+    ``config.device``). The Stage passes its ``StageBuilder.scratch``."""
     _init()
+    alloc = default_alloc(config) if alloc is None else alloc
     E = int(config.num_envs)
     S, K, AP, M = _voronoi_shape(config)
-    dev = str(config.device)
     return VoronoiScratch(
-        sites=wp.empty(E * S, dtype=wp.vec2f, device=dev),
-        used=wp.empty(E * S, dtype=wp.int32, device=dev),
-        selected=wp.empty(E * K, dtype=wp.vec2f, device=dev),
-        aug=wp.empty(E * AP, dtype=wp.vec2f, device=dev),
-        dense=wp.empty(E * M, dtype=wp.vec2f, device=dev),
-        crossers=wp.empty(E, dtype=wp.int32, device=dev),
-        arc_real=wp.empty(E * M, dtype=wp.vec2f, device=dev),
-        arc_seg=wp.empty(E * M, dtype=wp.float32, device=dev),
-        arc_s=wp.empty(E * (M + 1), dtype=wp.float32, device=dev),
-        arc_cr=wp.empty(E, dtype=wp.int32, device=dev),
-        arc_co=wp.empty(E, dtype=wp.int32, device=dev),
+        sites=alloc("sites", wp.vec2f, E * S),
+        used=alloc("used", wp.int32, E * S),
+        selected=alloc("selected", wp.vec2f, E * K),
+        aug=alloc("aug", wp.vec2f, E * AP),
+        dense=alloc("dense", wp.vec2f, E * M),
+        crossers=alloc("crossers", wp.int32, E),
+        arc_real=alloc("arc_real", wp.vec2f, E * M),
+        arc_seg=alloc("arc_seg", wp.float32, E * M),
+        arc_s=alloc("arc_s", wp.float32, E * (M + 1)),
+        arc_cr=alloc("arc_cr", wp.int32, E),
+        arc_co=alloc("arc_co", wp.int32, E),
     )
 
 
@@ -320,6 +447,10 @@ def generate_voronoi_warp(
 ) -> None:
     """Generate Voronoi-inspired graph-cycle centerlines into owned output buffers.
 
+    The legacy entry point (frozen signature; the knobs of ``config`` as host scalars):
+    the registered ``"voronoi"`` generator is the :class:`Voronoi` Stage on the same
+    private core (roadmap PR13c).
+
     Args:
         ctx: optional track_gen.exec.LaunchContext; default resolves the
             device's stream (see track_gen.exec).
@@ -327,20 +458,35 @@ def generate_voronoi_warp(
     _init()
     ctx = _resolve_ctx(ctx, str(out_centerline.device))
     assert scratch is not None, "generate_voronoi_warp requires scratch"
+    _enqueue_voronoi(seeds_wp, config, out_centerline, out_valid_wp, scratch, ctx, None)
 
+
+def _enqueue_voronoi(seeds_wp, config, out_centerline, out_valid_wp, scratch, ctx,
+                     dyn) -> None:
+    """The voronoi generator's launches on ``ctx``: ``dyn=None`` (the legacy path:
+    ``config``'s radial variation / angular jitter, :func:`select_voronoi_anchors`) or
+    their ``[E]`` arrays (the Stage: :func:`select_voronoi_anchors_per_env`)."""
+    check_dyn(dyn, _DYNAMIC, "voronoi")
     E = int(config.num_envs)
     N = int(config.num_points)
     S, K, AP, M = _voronoi_shape(config)
     npseg = int(config.num_points_per_segment)
     layout_mode = voronoi_layout_mode(getattr(config, "voronoi_site_layout", "void_ring"))
-    radial_variation = float(getattr(config, "voronoi_radial_variation", 0.62))
-    angular_jitter = float(getattr(config, "voronoi_angular_jitter", 0.08))
     target_extent = float(config.scale) * TARGET_EXTENT
     arc = ops.ArcScratch(scratch.arc_real, scratch.arc_seg, scratch.arc_s, scratch.arc_cr)
 
     sample_voronoi_sites(ctx, seeds_wp, S, layout_mode, BOX_SIZE, scratch.sites)
-    select_voronoi_anchors(ctx, seeds_wp, scratch.sites, S, K, layout_mode, BOX_SIZE,
-                           radial_variation, angular_jitter, scratch.selected, scratch.used)
+    if dyn is None:
+        radial_variation = float(getattr(config, "voronoi_radial_variation", 0.62))
+        angular_jitter = float(getattr(config, "voronoi_angular_jitter", 0.08))
+        select_voronoi_anchors(ctx, seeds_wp, scratch.sites, S, K, layout_mode, BOX_SIZE,
+                               radial_variation, angular_jitter, scratch.selected,
+                               scratch.used)
+    else:
+        select_voronoi_anchors_per_env(ctx, seeds_wp, scratch.sites, S, K, layout_mode,
+                                       BOX_SIZE, dyn["voronoi_radial_variation"],
+                                       dyn["voronoi_angular_jitter"], scratch.selected,
+                                       scratch.used)
     ctx.launch(_chaikin_once_k, E, [scratch.selected, K, scratch.aug])
     # Closed Catmull-Rom over the 2K Chaikin points (endpoint-excluded, u = s/npseg).
     ops.closed_catmull_rom(ctx, scratch.aug, AP, npseg, scratch.dense)
@@ -359,16 +505,37 @@ def generate_voronoi_warp(
     ctx.sync()
 
 
-def register(reg) -> None:
-    """Register the built-in ``"voronoi"`` track generator into ``reg`` (called by
-    ``track_gen._src.builtin_plugins``; importing this module registers nothing)."""
-    from .builtin_params import VoronoiParams
-    from .generator_registry import GeneratorSpec
+class Voronoi(Stage):
+    """``"voronoi"``: the Voronoi / graph-cycle track generator
+    (:func:`generate_voronoi_warp`) as a ``kind="generator"`` Stage (roadmap PR13c).
+    ``voronoi_radial_variation`` / ``voronoi_angular_jitter`` are dynamic: per-env
+    arrays read by :func:`select_voronoi_anchors_per_env`, clamped to ``[0, 0.85]`` /
+    ``[0, pi]`` at use."""
 
-    reg.add(GeneratorSpec(
-        name="voronoi",
-        alloc_scratch=voronoi_alloc_scratch,
-        generate=generate_voronoi_warp,
-        accepts_ctx=True,
-        params=VoronoiParams,
-    ))
+    kind = "generator"
+    name = "voronoi"
+    output = "centerline"
+    capture = CaptureClass.STATIC
+    Params = VoronoiParams
+    writes = {"xy": "raw.xy", "valid": "gen.valid"}
+    #: Deprecated (0.2.0.dev4's ``GeneratorSpec.params``): use ``Params``.
+    params = DeprecatedParamsAlias()
+
+    def build(self, b, p):
+        cfg = run_view(p, b)
+        scratch = _alloc_voronoi_scratch(cfg, b.scratch)
+        xy = b.write("xy", wp.vec2f, per="raw")
+        valid = b.write("valid", wp.int32)
+        dyn = {k: b.param(k) for k in _DYNAMIC}
+        seed = b.seed
+
+        def enqueue(ctx):
+            _enqueue_voronoi(seed, cfg, xy, valid, scratch, ctx, dyn)
+        return enqueue
+
+
+def register(reg) -> None:
+    """Register the built-in ``"voronoi"`` track generator (the :class:`Voronoi` Stage)
+    into ``reg`` (called by ``track_gen._src.builtin_plugins``; importing this module
+    registers nothing)."""
+    reg.add(Voronoi)

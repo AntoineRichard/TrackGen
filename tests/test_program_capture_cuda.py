@@ -19,7 +19,8 @@ import warp as wp
 
 from track_gen import PerEnvSeededRNG, TrackGenConfig, TrackGenerator
 from track_gen._src import warp_pipeline
-from track_gen._src.generator_binding import bind_generator
+from tests._pr13c_delta import ELEVATION_LATCHES, pr13c_sequence
+from track_gen._src.generator_binding import _StageGenerator, bind_generator
 from track_gen.exec import LaunchContext
 from track_gen.pipeline import build, legacy
 from track_gen.plugin import registry
@@ -90,19 +91,32 @@ def test_the_program_is_the_pr9_composition_on_cuda(name):
                          PerEnvSeededRNG(seeds=3, num_envs=E, device=DEV))
     cfg = gen._config
     spec = bind_generator("generator", cfg, registry=registry).pipeline_spec
-    ref, scratch = warp_pipeline._inflate_warp_alloc(cfg, generator_spec=spec)
     seed = wp.empty(E, dtype=wp.int32, device=DEV)
+    # A Stage generator binds its seed buffer at build (no seed copy in the trace).
+    kw = {"seed": seed} if isinstance(spec, _StageGenerator) else {}
+    ref, scratch = warp_pipeline._inflate_warp_alloc(cfg, generator_spec=spec, **kw)
     ctx = LaunchContext.for_call(DEV)
     with trace_launches() as program:
         gen._program.enqueue(ctx)
+    # Roadmap PR13c: the built-in generator is a Stage (both sides run it; its dynamic
+    # knobs' latches by adapter.latch); the elevation's dynamic z knobs are latched by
+    # the Program only and its kernel is the array-reading twin (tests/_pr13c_delta.py).
+    adapter = spec if isinstance(spec, _StageGenerator) else None
     with trace_launches() as pr9:
         gen.seeds.effective(seed, None, ctx=ctx)
+        if adapter is not None and adapter._pairs:
+            adapter.latch(ctx, None)
         warp_pipeline._run_pipeline(cfg, seed, out=ref, scratch=scratch,
                                     generator_spec=spec, ctx=ctx)
         gen.seeds._write_generation(ref.generation, None, ctx)
     wp.synchronize_device(DEV)
     topo = [(r.op, r.kernel, r.dim, r.scalars) for r in program]
-    assert topo == [(r.op, r.kernel, r.dim, r.scalars) for r in pr9]
+    want = [(r.op, r.kernel, r.dim, r.scalars) for r in pr9]
+    n_z = ELEVATION_LATCHES[str(cfg.z_profile)]
+    if n_z:
+        n_gen = len(adapter._pairs) if adapter is not None else 0
+        want = pr13c_sequence(want, n_z, E, insert_after=n_gen)
+    assert topo == want
     for f in ("outer", "center", "inner", "tangent", "normal", "arclen", "length",
               "valid", "count", "winding", "truncated", "generation"):
         assert getattr(gen._track, f).numpy().tobytes() == \

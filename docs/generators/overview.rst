@@ -23,9 +23,10 @@ bezier
 Samples random grid-jittered corners, sorts them by angle around their centroid,
 and assembles a closed cubic Bézier spline.  Handle lengths are proportional to
 ``rad * chord`` and clamped by ``handle_clamp_frac`` so handles cannot overshoot
-nearby corners.  Optional ``style_sampling`` draws per-environment ``rad``,
-``scale``, and ``handle_clamp_frac`` from configured ranges, broadening the shape
-family without changing the representation.  Self-crossing smooth curves fall back
+nearby corners.  ``rad`` and ``handle_clamp_frac`` are per-env knobs (below); the
+older ``style_sampling`` draws per-environment ``rad``, ``scale``, and
+``handle_clamp_frac`` from configured ranges, broadening the shape family without
+changing the representation.  Self-crossing smooth curves fall back
 to their provably simple corner polygon, which XPBD re-rounds.
 See :doc:`bezier` for the full deep dive.
 
@@ -131,16 +132,70 @@ When to Use Which
      - Maze-like circuits; **only** when the ~1000× generation cost (an iterative
        optimizer, see :doc:`repulsive`) fits your regeneration cadence
 
+.. _generators-per-env:
+
+Per-env shape knobs
+-------------------
+
+Each of the five sampling generators has shape knobs that are **dynamic**: per-env
+``[E]`` arrays that ``randomize=`` draws at every generation and that a curriculum can
+write from its own CUDA graph, without rebuilding anything. The elevation profiles have
+them too (``z_min``, ``z_max``, ``z_max_step``, ``z_noise_amplitude``).
+
+.. list-table::
+   :header-rows: 1
+   :widths: 16 46 38
+
+   * - Generator
+     - Dynamic knobs (``randomize=`` key ``"generator.<knob>"``)
+     - Details
+   * - ``bezier``
+     - ``rad``, ``handle_clamp_frac``
+     - :ref:`bezier-dynamic`
+   * - ``hull``
+     - ``hull_displacement``
+     - :ref:`hull-dynamic`
+   * - ``polar``
+     - ``polar_radial_jitter``, ``polar_angular_jitter`` (also the gate generator)
+     - :ref:`polar-dynamic`
+   * - ``voronoi``
+     - ``voronoi_radial_variation``, ``voronoi_angular_jitter`` (also the gate
+       generator)
+     - :ref:`voronoi-dynamic`
+   * - ``checkpoint``
+     - ``checkpoint_radius_min_frac``, ``checkpoint_angle_jitter`` (also the gate
+       generator), ``checkpoint_turn_rate``
+     - :ref:`checkpoint-dynamic`
+   * - ``repulsive``
+     - none
+     - its knobs feed a host schedule
+
+.. code-block:: python
+
+   from track_gen import TrackGenerator
+   from track_gen.pipeline import presets
+
+   spec = presets.track(num_envs=4096, device="cuda:0", generator="polar",
+                        randomize={"generator.polar_radial_jitter": (0.3, 0.85)})
+   gen = TrackGenerator(spec)          # each env draws its own jitter every generation
+
+Everything that sizes a buffer or fixes a launch (point and knot counts, ``half_width``,
+``spacing``), ``edgy``, ``scale`` and the ``repulsive`` knobs stay static: build a new
+generator to change them. Each generator page lists its knobs' bounds, effective range
+and measured yield; :ref:`tuning-per-env` covers randomization and curricula.
+
 Generator Contract
 ------------------
 
-A generator produces the initial closed centerline fed to the shared pipeline.
+The built-in generators are ``Stage`` classes (:ref:`generator-stage-contract`);
+plugins can also use the original two-callable ``GeneratorSpec`` contract summarised
+here. A generator produces the initial closed centerline fed to the shared pipeline.
 It implements two callables: ``alloc_scratch(config)`` allocates fixed-shape,
 generator-private Warp buffers once at construction time, and
 ``generate(seeds_wp, config, out_centerline, out_valid_wp, scratch)`` writes one
 closed centerline per environment into the orchestrator-owned output buffer in place.
 The hot path must be pure Warp and deterministic in ``(seed, config)``.  For
-``capturable=True`` generators (all six shipped ones) it must additionally be
+``capturable=True`` generators it must additionally be
 zero-allocation inside ``generate`` and CUDA-graph-capturable — no host-side retry loop, no
 host branch on generated tensor data, and no per-environment Python branching inside
 ``generate``.  A generator may instead declare ``capturable=False`` to use host-side

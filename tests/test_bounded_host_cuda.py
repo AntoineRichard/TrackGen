@@ -63,6 +63,7 @@ import track_gen.exec as tg_exec  # noqa: E402
 from tests import _bounded_toys  # noqa: E402
 from track_gen import GateGenConfig, PerEnvSeededRNG, TrackGenConfig  # noqa: E402
 from track_gen._src import runtime as tg_runtime  # noqa: E402
+from track_gen._src import warp_pipeline  # noqa: E402
 from track_gen._src.gate_generator import GateGenerator  # noqa: E402
 from track_gen._src.track_generator import TrackGenerator  # noqa: E402
 from track_gen.course import Course, CourseConfig  # noqa: E402
@@ -1016,7 +1017,9 @@ def test_legacy_non_capturable_generator_is_a_host_segment_with_a_captured_tail(
     is pending)."""
     monkeypatch.setattr(runner_mod, "_PENDING_LEGACY", weakref.WeakSet())
     gc.collect()
-    base = registry.get("generator", "polar")
+    # The polar generator's legacy GeneratorSpec over its frozen public functions (the
+    # registered "polar" is a generator Stage since roadmap PR13c).
+    base = warp_pipeline._legacy_generator_spec("polar")
     probes: list = []
 
     def alloc_scratch(config):

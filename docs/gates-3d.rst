@@ -85,6 +85,14 @@ inert for the profiles they do not apply to.
    plan-view arc length between adjacent gates, so widely spaced gates may still differ
    in altitude by more than ``z_max_step``.
 
+``z_min``, ``z_max``, ``z_max_step`` and ``z_noise_amplitude`` are per-env (dynamic)
+parameters, as on tracks: ``presets.gates(randomize={"elevation.z_max": (lo, hi)})``
+draws them per env at every generation, and a curriculum writes
+``gen.params["elevation"][...]`` from its own graph. Which knob sets the difficulty for
+each profile, the window it needs and the crossing rules are on the track page
+(:ref:`tracks-25d-per-env`); the gate generators' own dynamic knobs are listed in
+:ref:`generators-per-env`.
+
 .. _gates-3d-stations:
 
 Gates on a track centerline: 3D spacing

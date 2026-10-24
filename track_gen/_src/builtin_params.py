@@ -1,12 +1,24 @@
 """Params classes of the built-in track and gate generators.
 
 Each class keeps the FLAT ``TrackGenConfig`` / ``GateGenConfig`` field names (so the
-legacy error messages and ``generator_params={"polar_num_knots": 9}`` read the same),
-and every field is static (the built-in kernels take host scalars). The generator
-functions keep reading the flat config fields: the orchestrator resolves the Params
-(``from_legacy`` when ``generator_params`` is ``None``) and writes them back onto its
-private run snapshot (``_apply_legacy``), so the values the kernels see are exactly
-the flat ones and outputs stay byte-identical.
+legacy error messages and ``generator_params={"polar_num_knots": 9}`` read the same).
+The orchestrator resolves the Params (``from_legacy`` when ``generator_params`` is
+``None``) and writes them back onto its private run snapshot (``_apply_legacy``).
+
+Roadmap PR13c: the knobs that shape the output and are read only inside kernels are
+DYNAMIC (per-env ``[E]`` float32 arrays with declared ``lo`` / ``hi``): bezier ``rad``
+/ ``handle_clamp_frac``, ``hull_displacement``, the polar jitters, the voronoi radial
+variation / angular jitter and the checkpoint radius / angle jitter / turn rate (the
+gate generators' copies of the polar / voronoi / checkpoint ones too). The generator
+Stages read them on the device (``StageBuilder.param``) through array-reading twins of
+their kernels, clamped to the declared bounds at use; the initial value is the field's
+value (a flat config's knob), so default outputs are byte-identical. Every other field
+(counts, sizes, enums, branches, host-transformed or solver knobs) is static. The
+static view a built-in Stage builds from binds a poison sentinel to each dynamic name
+(``_poison_dynamic``): any host read raises. A dynamic field's value that is not a
+bool and that ``float()`` accepts (a YAML ``"1e9"``, a 0-d numpy array, a torch scalar)
+is coerced to a ``float`` at construction (``__post_init__``), as the legacy
+``float(config.x)`` reads accepted it; a bool is rejected.
 
 ``validate()`` holds the generator-specific rules that ``TrackGenConfig.__post_init__``
 / ``GateGenConfig.__post_init__`` used to run for every config: same conditions, same
@@ -14,16 +26,19 @@ messages, same order. They now run at generator construction, and only for the
 selected generator. ``lo``/``hi`` are set only where a legacy rule rejects the same
 inclusive bound, so the generic bound check never fires before a legacy message.
 
-Not part of the public API: reach a class through ``registry.get(kind, name).params``
-(a track generator's ``GeneratorSpec``), ``registry.get("gate_generator", name).Params``
-(the gate generators are ``gate_generator`` Stages since roadmap PR11) or
-``registry.describe(kind, name).params_schema``, or pass a dict.
+Not part of the public API: reach a class through ``registry.get(kind, name).Params``
+(the built-in track generators are ``generator`` Stages since roadmap PR13c, the gate
+generators ``gate_generator`` Stages since PR11; the track generators' deprecated
+``.params`` alias warns) or ``registry.describe(kind, name).params_schema``, or pass a
+dict.
 """
 from __future__ import annotations
 
 import dataclasses
+import math
+import warnings
 
-from ..plugin.params import Params, static
+from ..plugin.params import Params, _f32, _fields, _is_real, _out_of_range, dynamic, static
 
 __all__ = [
     "BezierParams",
@@ -51,11 +66,67 @@ def _norm(v):
     return v
 
 
+_DYNAMIC_F32: dict = {}
+
+
+def _dynamic_f32(cls) -> "tuple[str, ...]":
+    """The dynamic float32 field names of a Params class (cached per class)."""
+    names = _DYNAMIC_F32.get(cls)
+    if names is None:
+        import warp as wp  # noqa: PLC0415
+
+        names = tuple(f.name for f in _fields(cls)
+                      if f.kind == "dynamic" and f.dtype is wp.float32)
+        _DYNAMIC_F32[cls] = names
+    return names
+
+
+def _is_bool_like(v) -> bool:
+    """A Python / numpy bool, or a numpy array / torch tensor of a bool dtype (checked by
+    name: torch is not imported)."""
+    if isinstance(v, bool) or type(v).__name__ == "bool_":
+        return True
+    dtype = getattr(v, "dtype", None)
+    return dtype is not None and (getattr(dtype, "kind", None) == "b"
+                                  or str(dtype) == "torch.bool")
+
+
+def _as_float(v):
+    """A dynamic float32 field's value as the legacy ``float(config.x)`` read it: a
+    value ``float()`` accepts (a numeric string such as PyYAML's ``"1e9"``, a 0-d numpy
+    array, a torch scalar tensor, an int) becomes that ``float``; a bool (Python, numpy
+    or a bool array / tensor), a ``float`` and anything ``float()`` refuses are returned
+    unchanged (the generic value check then rejects a bool or a non-number)."""
+    if type(v) is float or _is_bool_like(v):
+        return v
+    try:
+        return float(v)
+    except (TypeError, ValueError, OverflowError):
+        return v
+
+
+def _declared_bounds(cls, name: str) -> "tuple[float, float]":
+    """``(lo, hi)`` of a dynamic field as float32-clamp bounds (``-inf`` / ``inf`` for an
+    undeclared side): the one source of the twins' clamp constants."""
+    meta = cls.__dataclass_fields__[name].metadata
+    lo, hi = meta.get("lo"), meta.get("hi")
+    return (-math.inf if lo is None else float(lo), math.inf if hi is None else float(hi))
+
+
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class _FlatParams(Params):
     """Built-in Params whose field names ARE the flat config field names."""
 
     _lenient_static_types = True        # the legacy flat values are not type-checked
+    # The static view binds a raising sentinel to each dynamic name (plugin.params).
+    _poison_dynamic = True
+
+    def __post_init__(self) -> None:
+        for name in _dynamic_f32(type(self)):
+            v = getattr(self, name)
+            c = _as_float(v)
+            if c is not v:
+                object.__setattr__(self, name, c)
 
     @classmethod
     def from_legacy(cls, cfg):
@@ -76,11 +147,24 @@ class _FlatParams(Params):
         value. A config subclass that changes the default of such a field therefore
         conflicts with a ``generator_params`` that leaves it at the class default."""
         defaults = {f.name: f.default for f in dataclasses.fields(type(self))}
+        dyn = set(_dynamic_f32(type(self)))
+
+        def differs(n, ref) -> bool:
+            # A flat dynamic value compares after the construction coercion, in float32
+            # (the value its array holds), so np.float32(0.4) / torch.tensor(0.4) equal
+            # 0.4 as they did under NumPy 2's comparison rules.
+            v = getattr(cfg, n)
+            if n in dyn:
+                v = _as_float(v)
+                if _is_real(v) and _is_real(ref):
+                    return _f32(v) != _f32(ref)
+            return _norm(v) != _norm(ref)
+
         bad = sorted(
             n for n in self._names()
             if hasattr(cfg, n)
-            and _norm(getattr(cfg, n)) != _norm(defaults[n])
-            and _norm(getattr(cfg, n)) != _norm(getattr(self, n)))
+            and differs(n, defaults[n])
+            and differs(n, getattr(self, n)))
         if bad:
             raise ValueError(
                 f"generator_params and the flat {type(cfg).__name__} fields {bad} both "
@@ -132,11 +216,14 @@ class _PointFamilyParams(_FlatParams):
 class BezierParams(_PointFamilyParams):
     """Parameters of the ``"bezier"`` track generator."""
 
-    rad: float = static(0.4, doc="Cubic-Bezier handle length as a fraction of the "
-                                 "segment chord.")
+    rad: float = dynamic(0.4, lo=0.0, hi=1.0,
+                         doc="Cubic-Bezier handle length as a fraction of the segment "
+                             "chord (per env; inert at or above handle_clamp_frac).")
     edgy: float = static(0.0, doc="Corner-tangent blend weight.")
-    handle_clamp_frac: float = static(0.4, doc="Adaptive Bezier-handle clamp (fraction "
-                                               "of the shorter incident edge).")
+    handle_clamp_frac: float = dynamic(0.4, lo=0.0,
+                                       doc="Adaptive Bezier-handle clamp (fraction of the "
+                                           "shorter incident edge; per env; very large "
+                                           "disables it).")
     style_sampling: bool = static(False, doc="Per-env style randomisation from the "
                                              "*_range fields.")
     rad_range: "tuple[float, float] | None" = static(
@@ -146,30 +233,93 @@ class BezierParams(_PointFamilyParams):
     handle_clamp_frac_range: "tuple[float, float] | None" = static(
         None, doc="(lo, hi) per-env handle_clamp_frac range when style_sampling.")
 
+    #: The switch named in the messages about a knob the stage draws itself.
+    _self_draw_switch = "style_sampling"
+
+    def _self_drawn(self) -> "dict[str, str]":
+        """``field -> range field`` of the dynamic knobs ``style_sampling`` draws itself
+        every generation (those whose ``*_range`` is given, e.g. ``{"rad":
+        "rad_range"}``): the planner makes each a single unlatched array the style
+        kernel writes, reported in ``StageParams.drawn`` as drawn by the stage itself
+        (roadmap PR13c)."""
+        if not bool(self.style_sampling):
+            return {}
+        out = {}
+        if self.rad_range is not None:
+            out["rad"] = "rad_range"
+        if self.handle_clamp_frac_range is not None:
+            out["handle_clamp_frac"] = "handle_clamp_frac_range"
+        return out
+
+    @classmethod
+    def _check_draws(cls, params, ranges, randomized) -> None:
+        """Plan-time rule on this stage's drawn fields (``ranges``: ``field -> (lo,
+        hi)`` of its randomizers and self-drawn fields, possibly empty; ``randomized``:
+        the fields a randomizer draws): a ``rad`` randomizer reaching above every value
+        ``handle_clamp_frac`` can take (its drawn ``hi``, or its value when not drawn)
+        warns, since ``rad`` has no effect there (the handle is ``min(rad * chord,
+        clamp * shorter edge)`` and the shorter edge is at most the chord)."""
+        rad = ranges.get("rad")
+        if rad is None or "rad" not in randomized:
+            return
+        drawn = ranges.get("handle_clamp_frac")
+        clamp = float(params.handle_clamp_frac) if drawn is None else float(drawn[1])
+        if float(rad[1]) > clamp:
+            from .generator_binding import _outside_track_gen_stacklevel  # noqa: PLC0415
+
+            what = f"handle_clamp_frac={clamp!r}" if drawn is None else \
+                f"the handle_clamp_frac draws' hi {clamp!r}"
+            warnings.warn(
+                f"generator.rad is drawn up to {rad[1]!r}, above {what}: rad has no "
+                f"effect at or above handle_clamp_frac (the handle is min(rad * chord, "
+                f"handle_clamp_frac * shorter edge)); keep hi(rad) <= lo(handle_clamp_frac)"
+                f", or accept that rad is inert in the envs where rad >= "
+                f"handle_clamp_frac", UserWarning,
+                stacklevel=_outside_track_gen_stacklevel())
+
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class HullParams(_PointFamilyParams):
     """Parameters of the ``"hull"`` track generator."""
 
-    hull_displacement: float = static(0.15, doc="Maximum per-edge radial midpoint "
-                                                "displacement fraction.")
+    hull_displacement: float = dynamic(0.15, lo=0.0, hi=1.0,
+                                       doc="Maximum per-edge radial midpoint displacement "
+                                           "fraction (per env).")
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class PolarParams(_FlatParams):
-    """Parameters of the ``"polar"`` track generator (the polar_* knobs are clamped by
-    the generator, so they carry no bounds)."""
+    """Parameters of the ``"polar"`` track generator (the jitters' bounds are the
+    generator's former clamps: ``0.85`` keeps the radius positive, ``0.45`` the knot
+    order)."""
 
     num_points_per_segment: int = static(30, lo=2, doc="Dense samples per knot segment.")
     polar_num_knots: int = static(12, doc="Periodic cubic-spline control knots "
                                           "(clamped to >= 4).")
-    polar_radial_jitter: float = static(0.60, doc="Radial knot jitter as a fraction of "
-                                                  "the base radius (clamped to [0, 0.85]).")
-    polar_angular_jitter: float = static(0.30, doc="Angular knot jitter as a fraction of "
-                                                   "a half cell (clamped to [0, 0.45]).")
+    polar_radial_jitter: float = dynamic(0.60, lo=0.0, hi=0.85,
+                                         doc="Radial knot jitter as a fraction of the base "
+                                             "radius (per env).")
+    polar_angular_jitter: float = dynamic(0.30, lo=0.0, hi=0.45,
+                                          doc="Angular knot jitter as a fraction of a knot "
+                                              "spacing (per env).")
 
     def validate(self, layout) -> None:
         _check_num_points_per_segment(self)
+        _check_polar_jitters(self)
+
+
+def _check_polar_jitters(p) -> None:
+    """The polar jitters' bounds, with the 0.2.0.dev4 migration in the message (it
+    clamped a value outside to the bound; roadmap PR13c rejects it). Compared in
+    float32, like the generic bound check that follows; a bool or a non-number is left
+    to it."""
+    for name, hi in (("polar_radial_jitter", 0.85), ("polar_angular_jitter", 0.45)):
+        v = getattr(p, name)
+        if _is_real(v) and _out_of_range(v, 0.0, hi, True):
+            near = 0.0 if _f32(v) < 0.0 else hi
+            raise ValueError(
+                f"{name} must be in [0, {hi}], got {v!r} (0.2.0.dev4 clamped it to that "
+                f"range: set {name}={near} for the same output)")
 
 
 def _check_voronoi_layout(p) -> None:
@@ -209,10 +359,12 @@ class VoronoiParams(_FlatParams):
                                       doc="Site distribution layout.")
     voronoi_control_points: int = static(18, lo=6, doc="Angular anchor sites selected "
                                                        "from the site field.")
-    voronoi_radial_variation: float = static(0.62, lo=0.0, doc="Radial modulation of "
-                                                               "anchor targets.")
-    voronoi_angular_jitter: float = static(0.08, lo=0.0, doc="Angular jitter of anchor "
-                                                             "sector targets.")
+    voronoi_radial_variation: float = dynamic(0.62, lo=0.0, hi=0.85,
+                                              doc="Radial modulation of anchor targets "
+                                                  "(per env; saturates by 0.85).")
+    voronoi_angular_jitter: float = dynamic(0.08, lo=0.0, hi=math.pi,
+                                            doc="Angular jitter of anchor sector targets "
+                                                "(rad, per env; useful up to ~0.5).")
 
     def validate(self, layout) -> None:
         _check_num_points_per_segment(self)
@@ -238,13 +390,17 @@ class CheckpointParams(_FlatParams):
     """Parameters of the ``"checkpoint"`` track generator."""
 
     checkpoint_count: int = static(12, lo=3, doc="Number of radial checkpoints.")
-    checkpoint_radius_min_frac: float = static(0.33, lo=0.0, doc="Inner-radius fraction "
-                                                                 "of checkpoint placement, "
-                                                                 "in [0, 1).")
-    checkpoint_angle_jitter: float = static(0.55, doc="Angular jitter as a fraction of "
-                                                      "the per-checkpoint slot.")
-    checkpoint_turn_rate: float = static(0.42, doc="Maximum heading change (rad) per "
-                                                   "steering step.")
+    checkpoint_radius_min_frac: float = dynamic(0.33, lo=0.0, hi=1.0,
+                                                doc="Inner-radius fraction of checkpoint "
+                                                    "placement (per env; the configured "
+                                                    "value in [0, 1), set / randomize "
+                                                    "up to the bound 1).")
+    checkpoint_angle_jitter: float = dynamic(0.55, lo=0.0, hi=1.0,
+                                             doc="Angular jitter as a fraction of the "
+                                                 "per-checkpoint slot (per env).")
+    checkpoint_turn_rate: float = dynamic(0.42, lo=0.0, hi=math.pi,
+                                          doc="Maximum heading change (rad) per steering "
+                                              "step (per env).")
     checkpoint_steer_gain: float = static(0.65, doc="Proportional steering gain, in (0, 1].")
     checkpoint_lookahead_frac: float = static(0.16, doc="Advance-to-next threshold as a "
                                                         "fraction of the outer radius.")
@@ -411,10 +567,15 @@ class PolarGateParams(_FlatParams):
     """Parameters of the ``"polar"`` gate generator."""
 
     polar_num_knots: int = static(12, doc="Periodic cubic-spline control knots (= gates).")
-    polar_radial_jitter: float = static(0.60, doc="Radial knot jitter as a fraction of "
-                                                  "the base radius.")
-    polar_angular_jitter: float = static(0.30, doc="Angular knot jitter as a fraction of "
-                                                   "a half cell.")
+    polar_radial_jitter: float = dynamic(0.60, lo=0.0, hi=0.85,
+                                         doc="Radial knot jitter as a fraction of the base "
+                                             "radius (per env).")
+    polar_angular_jitter: float = dynamic(0.30, lo=0.0, hi=0.45,
+                                          doc="Angular knot jitter as a fraction of a knot "
+                                              "spacing (per env).")
+
+    def validate(self, layout) -> None:
+        _check_polar_jitters(self)
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -427,10 +588,12 @@ class VoronoiGateParams(_FlatParams):
                                       doc="Site distribution layout.")
     voronoi_control_points: int = static(18, lo=3, doc="Anchor sites selected from the "
                                                        "site field (= gates).")
-    voronoi_radial_variation: float = static(0.62, lo=0.0, doc="Radial modulation of "
-                                                               "anchor targets.")
-    voronoi_angular_jitter: float = static(0.08, lo=0.0, doc="Angular jitter of anchor "
-                                                             "sector targets.")
+    voronoi_radial_variation: float = dynamic(0.62, lo=0.0, hi=0.85,
+                                              doc="Radial modulation of anchor targets "
+                                                  "(per env).")
+    voronoi_angular_jitter: float = dynamic(0.08, lo=0.0, hi=math.pi,
+                                            doc="Angular jitter of anchor sector targets "
+                                                "(rad, per env).")
 
     def validate(self, layout) -> None:
         _check_voronoi_shape(self, 3)
@@ -450,11 +613,14 @@ class CheckpointGateParams(_FlatParams):
     """Parameters of the ``"checkpoint"`` gate generator."""
 
     checkpoint_count: int = static(12, lo=3, doc="Number of radial checkpoints (= gates).")
-    checkpoint_radius_min_frac: float = static(0.33, lo=0.0, doc="Inner-radius fraction "
-                                                                 "of checkpoint placement, "
-                                                                 "in [0, 1).")
-    checkpoint_angle_jitter: float = static(0.55, doc="Angular jitter as a fraction of "
-                                                      "the per-checkpoint slot.")
+    checkpoint_radius_min_frac: float = dynamic(0.33, lo=0.0, hi=1.0,
+                                                doc="Inner-radius fraction of checkpoint "
+                                                    "placement (per env; the configured "
+                                                    "value in [0, 1), set / randomize "
+                                                    "up to the bound 1).")
+    checkpoint_angle_jitter: float = dynamic(0.55, lo=0.0, hi=1.0,
+                                             doc="Angular jitter as a fraction of the "
+                                                 "per-checkpoint slot (per env).")
 
     def validate(self, layout) -> None:
         _check_checkpoint_count(self)

@@ -125,6 +125,13 @@ alongside the shared pipeline fields. Unrelated generator fields are silently
 ignored, so you can prepare a single config with all knobs set and switch only
 the ``generator`` string.
 
+Ten shape knobs, ``rad``, ``handle_clamp_frac``, ``hull_displacement``,
+``polar_radial_jitter``, ``polar_angular_jitter``, ``voronoi_radial_variation``,
+``voronoi_angular_jitter``, ``checkpoint_radius_min_frac``, ``checkpoint_angle_jitter``
+and ``checkpoint_turn_rate``, are per-env (the other knobs, ``edgy`` and ``scale``
+included, are static): ``randomize=`` draws them for every env at every generation, and a curriculum can move them without
+rebuilding the generator (:ref:`generators-per-env`, :ref:`tuning-per-env`).
+
 Deep-Dive References
 ----------------------
 

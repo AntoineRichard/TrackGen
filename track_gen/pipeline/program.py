@@ -258,9 +258,13 @@ class Program:
     @property
     def params(self) -> "ParamTable":
         """Runtime parameters keyed by stage id (live ``[E]`` arrays of the dynamic
-        fields; the built-in stages' fields are static, except ``width.from_channel``'s
-        ``scale`` / ``lo`` / ``hi`` and a ``randomize.uniform`` stage's ``lo`` /
-        ``hi``). A field drawn by a
+        fields). The dynamic fields of the built-ins are the generators' shape knobs
+        (``rad``, ``handle_clamp_frac``, ``hull_displacement``, the polar, voronoi and
+        checkpoint knobs), the elevation stages' ``z_min`` / ``z_max`` / ``z_max_step``
+        / ``z_noise_amplitude``, ``width.from_channel``'s ``scale`` / ``lo`` / ``hi``
+        and a ``randomize.uniform`` stage's ``lo`` / ``hi`` (see
+        :ref:`tuning-per-env`); every other field is static (``set`` raises
+        ``KeyError``; build a new generator to change it). A field drawn by a
         ``randomize.*`` stage maps to its drawn array (written every generation by the
         randomizer; ``set`` raises)."""
         return self._params

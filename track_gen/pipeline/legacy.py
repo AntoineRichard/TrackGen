@@ -39,6 +39,7 @@ def to_pipeline_spec(config, *, registry=None) -> PipelineSpec:
             ``z_profile`` are resolved through (default ``track_gen.plugin.registry``).
 
     Raises:
+        TypeError: ``config`` is a ``GateGenConfig`` (use :func:`to_gate_pipeline_spec`).
         ValueError: an unknown or oracle-only ``relax_solver``, an unknown
             ``z_profile``, ``smooth_finish=True`` (as ``TrackGenerator``), the
             generator's params are invalid, or a non-flat ``z_profile`` / non-zero
@@ -47,8 +48,13 @@ def to_pipeline_spec(config, *, registry=None) -> PipelineSpec:
             stage of a quarantined plugin.
     """
     from .._src.generator_binding import bind_generator  # noqa: PLC0415
+    from .._src.types import GateGenConfig  # noqa: PLC0415
     from ..plugin import registry as _default_registry  # noqa: PLC0415
 
+    if isinstance(config, GateGenConfig):
+        raise TypeError("legacy.to_pipeline_spec takes a TrackGenConfig; use "
+                        "legacy.to_gate_pipeline_spec for a GateGenConfig (and "
+                        "GateGenerator for its spec)")
     reg = _default_registry if registry is None else registry
     binding = bind_generator("generator", config, registry=reg)
     return _to_pipeline_spec(binding.run_config, binding, registry=reg)

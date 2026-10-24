@@ -329,13 +329,20 @@ class TrackGenerator:
         live ``[E]`` device arrays with stable pointers (``params["generator"]["amp"]``):
         write them from your own kernels (also inside your graph) or with
         ``params[stage_id].set("amp", value, stream=...)``; the next generation latches
-        them for the envs it regenerates, with no re-capture. The built-in generators'
-        and stages' fields are static (``set`` raises ``KeyError``), except
-        ``width.from_channel``'s ``scale`` / ``lo`` / ``hi`` and a ``randomize.uniform``
-        stage's ``lo`` / ``hi``; every stage's resolved params are ``program.params``. A field a ``randomize.*`` stage draws
-        (``presets.track(randomize=...)``) is an unlatched array owned by that stage:
-        written every generation (``params[stage][field]`` observes the draws), ``set``
-        raises (set the randomizer's ``lo`` / ``hi`` instead).
+        them for the envs it regenerates, with no re-capture.
+
+        The dynamic fields of the built-ins are the generators' shape knobs (``rad``,
+        ``handle_clamp_frac``, ``hull_displacement``, the polar, voronoi and checkpoint
+        knobs), the elevation stages' ``z_min`` / ``z_max`` / ``z_max_step`` /
+        ``z_noise_amplitude``, ``width.from_channel``'s ``scale`` / ``lo`` / ``hi`` and
+        a ``randomize.uniform`` stage's ``lo`` / ``hi`` (see :ref:`tuning-per-env`);
+        every other field is static (``set`` raises ``KeyError``; build a new generator
+        to change it). Every stage's resolved params are ``program.params``.
+
+        A field a ``randomize.*`` stage draws (``presets.track(randomize=...)``) is an
+        unlatched array owned by that stage: written every generation
+        (``params[stage][field]`` observes the draws), ``set`` raises (set the
+        randomizer's ``lo`` / ``hi`` instead).
         """
         return self._params
 

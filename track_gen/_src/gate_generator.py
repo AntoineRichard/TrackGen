@@ -287,12 +287,16 @@ class GateGenerator:
         """Runtime parameters, keyed by stage id: ``"generator"``, plus every pipeline
         stage with a DYNAMIC field. ``params["generator"].params`` is the resolved
         Params instance (``None`` for a legacy gate generator without a Params class).
-        The built-in generators' and stages' fields are static (``set`` raises
-        ``KeyError``), except ``width.from_channel``'s ``scale`` / ``lo`` / ``hi`` and a
-        ``randomize.uniform`` stage's ``lo`` / ``hi``; every stage's resolved params are
-        ``program.params``. A field a
-        ``randomize.*`` stage draws is an unlatched array owned by that stage (written
-        every generation; ``set`` raises: set the randomizer's ``lo`` / ``hi``)."""
+        The dynamic fields of the built-ins are the generators' shape knobs (``rad``,
+        ``handle_clamp_frac``, ``hull_displacement``, the polar, voronoi and checkpoint
+        ring knobs), the elevation stages' ``z_min`` / ``z_max`` / ``z_max_step`` /
+        ``z_noise_amplitude``, ``width.from_channel``'s ``scale`` / ``lo`` / ``hi`` and
+        a ``randomize.uniform`` stage's ``lo`` / ``hi`` (see :ref:`tuning-per-env`);
+        every other field is static (``set`` raises ``KeyError``; build a new generator
+        to change it). Every stage's resolved params are ``program.params``.
+        A field a ``randomize.*`` stage draws is an unlatched array owned by that stage
+        (written every generation; ``set`` raises: set the randomizer's ``lo`` /
+        ``hi``)."""
         return self._params
 
     @property

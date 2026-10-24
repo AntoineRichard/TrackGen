@@ -502,10 +502,18 @@ class OffsetDefault(_Builtin):
 
 def _zcfg(b, profile: str, p):
     """The namespace the z-profile wrappers read (``num_envs``, ``device``,
-    ``z_profile`` and the profile's ``z_*`` fields), built once."""
+    ``z_profile`` and the profile's ``z_*`` fields), built once. ``p`` is the static
+    view: a dynamic field (roadmap PR13c: ``z_min`` / ``z_max`` / ``z_max_step`` /
+    ``z_noise_amplitude``) holds the raising sentinel, so a missed ``dyn`` routing
+    raises instead of reading a host copy."""
     fields = {f: getattr(p, f) for f in p.__dataclass_fields__}
     return types.SimpleNamespace(num_envs=b.E, device=b.layout.device, z_profile=profile,
                                  **fields)
+
+
+def _zdyn(b, profile: str) -> dict:
+    """The profile's dynamic fields -> their ``[E]`` arrays (``b.param``)."""
+    return {f: b.param(f) for f in _zprof._DYNAMIC[profile]}
 
 
 class ElevationFlat(_Builtin):
@@ -538,7 +546,9 @@ class ElevationFlat(_Builtin):
 class _ElevationKnots(_Builtin):
     """Knot-based profiles: K arc-spaced knots, then a periodic monotone cubic. On a
     gate pipeline (ports rewired to ``gates.*``) the profile is drawn per gate instead
-    (the gates are already sparse, knot-like anchors), as 0.2.0.dev3 did."""
+    (the gates are already sparse, knot-like anchors), as 0.2.0.dev3 did. The
+    profile's ``z_*`` window / grade are dynamic (roadmap PR13c: per-env arrays, the
+    ``warp_zprofile`` twins)."""
 
     kind = "elevation"
     reads = {"seed": "seed", "count": "cl.count", "arclen": "cl.arclen2",
@@ -550,11 +560,12 @@ class _ElevationKnots(_Builtin):
         seed = b.read("seed")
         count, arclen, length = b.read("count"), b.read("arclen"), b.read("length")
         z = b.write("z", wp.float32, per="cl")
+        dyn = _zdyn(b, self.name)
         if b.per_of("z") == "gates":
             zcfg = _zcfg(b, self.name, p)
 
             def enqueue(ctx):
-                _zprof.apply_z_profile(zcfg, seed, count, S, arclen, length, z, ctx=ctx)
+                _zprof._apply_z_profile(zcfg, seed, count, S, arclen, length, z, ctx, dyn)
             return enqueue
         K = int(p.z_control_points)
         knot_cum = b.scratch("knot_cum", wp.float32, b.E * K)
@@ -563,8 +574,8 @@ class _ElevationKnots(_Builtin):
         zcfg = _zcfg(b, self.name, p)
 
         def enqueue(ctx):
-            _zprof.apply_z_profile_knots(zcfg, seed, count, S, arclen, length, knot_cum,
-                                         knot_count, knot_z, z, ctx=ctx)
+            _zprof._apply_z_profile_knots(zcfg, seed, count, S, arclen, length, knot_cum,
+                                          knot_count, knot_z, z, ctx, dyn)
         return enqueue
 
 
@@ -583,7 +594,8 @@ class ElevationRandomWalk(_ElevationKnots):
 
 
 class ElevationNoise(_Builtin):
-    """``elevation.noise``: periodic harmonic noise, per point."""
+    """``elevation.noise``: periodic harmonic noise, per point (``z_min`` / ``z_max`` /
+    ``z_noise_amplitude`` dynamic, roadmap PR13c)."""
 
     kind = "elevation"
     name = "noise"
@@ -598,9 +610,10 @@ class ElevationNoise(_Builtin):
         count, arclen, length = b.read("count"), b.read("arclen"), b.read("length")
         z = b.write("z", wp.float32, per="cl")
         zcfg = _zcfg(b, self.name, p)
+        dyn = _zdyn(b, self.name)
 
         def enqueue(ctx):
-            _zprof.apply_z_profile(zcfg, seed, count, S, arclen, length, z, ctx=ctx)
+            _zprof._apply_z_profile(zcfg, seed, count, S, arclen, length, z, ctx, dyn)
         return enqueue
 
 

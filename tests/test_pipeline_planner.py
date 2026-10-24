@@ -72,7 +72,7 @@ def test_default_stage_list_flat():
                                    scale=1.0)
     gen, resample, width, relax = spec.stages[:4]
     assert dict(gen.capacity) == {"raw": 256}
-    assert gen.params == registry.get("generator", "bezier").params.from_legacy(_cfg())
+    assert gen.params == registry.get("generator", "bezier").Params.from_legacy(_cfg())
     assert resample.params == sp.ConstantSpacingParams(spacing=0.6 * 0.1)
     assert relax.params == sp.XpbdParams.from_legacy(_cfg())
     assert width.params == sp.WidthConstantParams(half_width=0.1)

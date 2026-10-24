@@ -15,7 +15,11 @@ dd181f0 code PR11 edited or deleted; the unchanged kernels imported live):
 - ``test_launch_sequence_matches_head``: the same kernels, dims and scalars, in the same
   order (polar / checkpoint / voronoi: the normalization moved after the count copy and
   runs out of place, ``_normalize_extent_to_k``: the one sequence delta of PR11; the
-  launch count is unchanged).
+  launch count is unchanged). Roadmap PR13c re-pin (deliberate, the rule of
+  ``tests/_pr13c_delta.py`` applied to the recorded sequence; the golden is not
+  re-captured): the polar / checkpoint / voronoi gate generators latch their two dynamic
+  knobs and launch the anchor twin (+2), the noise elevation latches its three (+3) and
+  launches ``_z_noise_dyn_k``.
 
 Float results depend on the platform and the Warp version: the golden is keyed by the PR7
 platform key and the digest tests skip on a key it does not hold (the tap-vs-reference
@@ -28,6 +32,7 @@ import pytest
 import warp as wp
 
 from tests import _legacy_gate_pr11 as ref_mod
+from tests._pr13c_delta import ELEVATION_LATCHES, GATE_GENERATOR_LATCHES, pr13c_sequence
 from tests.tools import capture_pr11_gate_stages as tool
 from track_gen import GateGenConfig, GateGenerator, PerEnvSeededRNG
 from track_gen.seeds import effective_seed
@@ -145,8 +150,12 @@ def _expected_launches(case: str, rows: list) -> list:
     """The dd181f0 sequence; a normalizing generator's ``[normalize, copy(count)]``
     becomes ``[copy(count), normalize]`` (the order stage copies the count, then the
     normalize stage runs the same arithmetic out of place, ``_normalize_extent_to_k``:
-    same dims and scalars, one more array argument), so the launch count is unchanged."""
+    same dims and scalars, one more array argument), so PR11 left the launch count
+    unchanged. Roadmap PR13c: the latches of the generator's and the elevation's dynamic
+    knobs follow the effective seed, and their kernels are the array-reading twins."""
     gen = case.split("/")[0]
+    n_latch = GATE_GENERATOR_LATCHES[gen] + ELEVATION_LATCHES[case.split("/")[2]]
+    rows = pr13c_sequence(rows, n_latch, E)
     if gen not in tool.NORMALIZING:
         return rows
     i = next(k for k, r in enumerate(rows) if r[1].endswith("_normalize_extent_count_k"))

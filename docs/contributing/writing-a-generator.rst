@@ -273,7 +273,10 @@ static):
 
 The keyword arguments describe the field. ``lo`` and ``hi`` are inclusive bounds: a value
 with ``v < lo`` or ``v > hi`` raises ``ValueError`` at construction (a NaN passes, as with
-any comparison), and so does a scalar ``set`` outside them. A field annotated ``int``,
+any comparison), and so does a scalar ``set`` outside them. For a dynamic ``float``
+field the comparison is made in ``float32``, the precision of its array
+(``f32(lo) <= f32(v) <= f32(hi)``), so a value read back from the array is always
+accepted. A field annotated ``int``,
 ``float`` or ``bool`` must hold a value of that type, static or dynamic: an integral (not
 a bool) for ``int``, any real (not a bool) for ``float``, a bool (or ``0`` / ``1``) for
 ``bool``; anything else, such as the string ``"70"``, raises ``ValueError``. ``choices`` lists the values a
@@ -295,7 +298,9 @@ check is quarantined under ``warn``):
   Params helpers);
 - a dynamic field is annotated ``float``, ``int`` or ``bool``;
 - the ``params=`` class of a ``GeneratorSpec`` or ``GateGeneratorSpec`` has static fields
-  only: a dynamic field needs a Stage's ``b.param``.
+  only: a dynamic field needs a Stage's ``b.param``. This includes the built-ins' classes,
+  which have dynamic fields since 0.2.0.dev5: a ``GeneratorSpec(...,
+  params=registry.get("generator", "bezier").Params)`` is refused (``TypeError``).
 
 Two methods can be overridden:
 
@@ -524,8 +529,10 @@ Call its methods in ``build`` (``write``, ``scratch`` and ``input`` allocate, an
        the output. An undeclared port raises ``ValueError``.
    * - ``param(field)``
      - The ``[E]`` working array (``float32`` or ``int32``) of a dynamic field, latched
-       from the live array at every generation (see :ref:`generator-runtime-params`).
-       **Read-only** for the stage: never write it, not even as scratch. A static field
+       from the live array at every generation (see :ref:`generator-runtime-params`; for
+       a drawn field, the unlatched array its writer fills during the generation).
+       Read each env's own entry, ``param[e]``: the kit's ``params.per_env`` check fails
+       a kernel that reads ``param[0]`` or a host copy. **Read-only** for the stage: never write it, not even as scratch. A static field
        raises ``KeyError`` (read it from ``params``), and so does an unknown one.
    * - ``input(name, dtype, default=0, *, per="env")``
      - A device input that is not a parameter, published as ``gen.inputs[name]`` and
@@ -755,21 +762,24 @@ Runtime parameters and inputs
 -----------------------------
 
 ``TrackGenerator.params`` (and ``GateGenerator.params``) is a ``ParamTable``: a read-only
-mapping from stage id to that stage's ``StageParams``. ``GateGenerator.params`` holds one
-stage, ``"generator"``; ``TrackGenerator.params`` holds ``"generator"`` and every pipeline
-stage with a dynamic field, keyed by its stage id (see :ref:`stage-runtime-params`).
+mapping from stage id to that stage's ``StageParams``. Both hold ``"generator"`` and every
+pipeline stage with a dynamic field (an ``"elevation"`` with a non-flat profile, a
+randomizer), keyed by its stage id (see :ref:`stage-runtime-params`).
 
 - ``gen.params["generator"].params`` is the resolved Params instance: the static values and
   the *initial* dynamic values. It is ``None`` for a ``GeneratorSpec`` without ``params=``.
 - ``gen.params["generator"]`` maps each **dynamic** field to its *live* ``[E]`` device
   array. The pointer is stable for the generator's lifetime, so your own kernels can write
   it, inside your own CUDA graph too. A static field raises ``KeyError`` ("build a new
-  generator to change it"). The built-in generators' fields are all static.
+  generator to change it"). The built-in generators' shape knobs are dynamic too (each
+  generator page lists them, :ref:`generators-per-env`).
 - ``gen.params["generator"].set(field, value, *, stream=None)``, or
   ``gen.params.set("generator", field, value, stream=...)``, writes the live array in
-  place. A host scalar is checked against ``lo``/``hi`` on the host, then broadcast with
-  one fill. An ``[E]`` contiguous ``wp.array`` of the field's dtype on the generator's
-  device is copied with one copy, with no range check and no host sync. Either way it is
+  place. A host scalar is checked against ``lo``/``hi`` on the host (in ``float32`` for
+  a ``float`` field), then broadcast with one fill. An ``[E]`` contiguous ``wp.array`` of
+  the field's dtype on the generator's device is copied with one copy, with no range
+  check and no host sync (the built-in stages clamp such values to the declared bounds
+  when their kernels read them; a plugin decides what an out-of-range value means). Either way it is
   an enqueue on the resolved stream (``stream=``, then the ambient scope, the generator's
   constructor stream, torch's capture stream and Warp's current stream) and never
   allocates. Inside a capture it is recorded: a scalar is baked into the caller's graph,
@@ -787,8 +797,10 @@ fields). The stage only ever reads the arrays ``b.param`` and ``b.input`` return
 
 **Unlatched arrays.** Two kinds of array are read *during* the generation instead of
 being snapshotted at its start: a dynamic field drawn per env by a ``randomize.uniform``
-stage (:ref:`config-randomize`), and a ``per="raw"`` input (`Writing an ingestion
-generator`_). ``b.param`` / ``b.input`` return the published array itself for them.
+stage (:ref:`config-randomize`) or, for ``bezier``'s ``rad`` / ``handle_clamp_frac``
+with a ``*_range``, by its ``style_sampling``, and a ``per="raw"`` input (`Writing an
+ingestion generator`_). ``b.param`` / ``b.input`` return the published array itself for
+them.
 
 - A drawn field is **owned by its randomizer**: it is rewritten at every generation,
   before the generator runs, so a direct write (through ``gen.params``, or a torch view
@@ -1082,7 +1094,7 @@ way). The quick start's ``WobbleParams`` gives:
                 "description": "lobes per loop", "x-static": true},
       "amp": {"type": "number", "default": 0.2, "minimum": 0.0, "maximum": 0.4,
               "description": "radial wobble amplitude", "x-dynamic": true,
-              "x-dtype": "float32", "x-ui": "slider"}}}
+              "x-dtype": "float32", "x-bounds": "float32", "x-ui": "slider"}}}
 
 Each field's ``type`` comes from its annotation:
 
@@ -1108,7 +1120,12 @@ Each field's ``type`` comes from its annotation:
 ``default`` is the field's default (tuples as lists), ``minimum`` and ``maximum`` come from
 ``lo`` and ``hi``, ``enum`` from ``choices`` and ``description`` from ``doc`` (left out
 when empty). Exactly one of ``x-static`` and ``x-dynamic`` is ``true``; ``x-dtype`` is
-given for dynamic fields, and ``x-ui`` when ``ui`` is set.
+given for dynamic fields, and ``x-ui`` when ``ui`` is set. ``"x-bounds": "float32"``
+marks a dynamic ``float32`` field with a ``minimum`` or ``maximum``: TrackGen compares
+its values with them in ``float32`` (``f32(minimum) <= f32(v) <= f32(maximum)``), so a
+value read back from the array at a bound (``float(np.float32(0.85))``, slightly above
+``0.85``) is in range; a generic JSON-schema validator compares in float64 and refuses
+it.
 
 ``describe()`` also reports ``capturable`` and ``accepts_ctx`` for both forms: a Stage
 always accepts a ``ctx``, and is capturable unless its capture class is ``HOST``. For a
@@ -1711,6 +1728,8 @@ The built-in gate generators reuse the matching track generator's streams. Hashe
 that removes the seed-0 collapse (``ops.rng``) is planned for roadmap PR16; it changes the
 built-ins' outputs, so it is not done yet.
 
+.. _legacy-src-helpers:
+
 Legacy ``_src`` helpers
 ~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -1764,6 +1783,17 @@ context when omitted), a debug-only ``ctx.sync()`` after their launches, and the
 objects the samplers read. ``track_gen._src.warp_pipeline.GenScratch`` moved to
 ``track_gen._src.warp_generate.GenScratch``; the old name still works and emits a
 ``DeprecationWarning``.
+
+The built-in generators' module functions keep their 0.2.0.dev4 signatures and scalar
+kernels (their bytes are pinned by the fingerprint tests): ``generate_centerline_warp``
+and ``bezier_alloc_scratch``, ``generate_hull_warp`` / ``hull_alloc_scratch``,
+``generate_polar_warp`` / ``polar_alloc_scratch``, ``generate_voronoi_warp`` /
+``voronoi_alloc_scratch``, ``generate_checkpoint_warp`` / ``checkpoint_alloc_scratch``,
+``warp_zprofile.apply_z_profile`` / ``apply_z_profile_knots``, and the float sampling
+helpers ``sample_polar_controls`` (which still expects pre-clamped jitters),
+``sample_checkpoint_rings`` and ``select_voronoi_anchors``. The registered generators
+are Stages that no longer call them (they launch the array-reading twins). They go at
+1.0, except the sampling helpers' ``*_per_env`` forms.
 
 Registering and discovery
 -------------------------
@@ -1986,11 +2016,18 @@ The standard runtime generators are ``bezier``, ``checkpoint``, ``hull``,
 ingests the centerlines you load (`Ingesting your own centerlines`_).  Call
 ``track_gen.plugin.registry.available("generator")`` for the authoritative list, installed
 plugins included (``available("gate_generator")`` for gate generators). Each built-in
-track generator is a ``GeneratorSpec`` (``repulsive``: a ``BOUNDED`` ``Stage``) and each
-built-in gate generator an anchors ``Stage``, with a static Params class whose fields are the flat ``TrackGenConfig`` /
-``GateGenConfig`` knobs it reads, under the same names; the
-:ref:`configuration reference <builtin-generator-params>` lists them. ``external`` is a
-``STATIC`` ``Stage`` with its own ``ExternalParams`` (no flat field).
+track generator is a ``Stage`` class (``STATIC``; ``repulsive``: ``BOUNDED``) and each
+built-in gate generator an anchors ``Stage``, with a Params class whose fields are the
+flat ``TrackGenConfig`` / ``GateGenConfig`` knobs it reads, under the same names: its
+shape knobs are dynamic, the rest static (the
+:ref:`configuration reference <builtin-generator-params>` lists them).
+``registry.get("generator", "polar")`` is that class: its parameters are ``.Params``.
+``bezier``, ``hull``, ``polar``, ``voronoi`` and ``checkpoint`` were ``GeneratorSpec``\ s
+until 0.2.0.dev4, so for them ``.params`` (the spec attribute) still returns ``.Params``
+with a ``DeprecationWarning``, until 1.0; their ``.generate`` / ``.alloc_scratch`` are gone
+(the module functions ``generate_*_warp`` / ``*_alloc_scratch`` remain, see
+:ref:`legacy-src-helpers`). ``external`` is a ``STATIC`` ``Stage`` with its own ``ExternalParams`` (no
+flat field).
 
 The Voronoi method is implemented as a fixed-budget site-field / graph-cycle
 generator rather than exact Voronoi ridge walking; exact Delaunay/Voronoi
@@ -2014,15 +2051,51 @@ listed once in ``track_gen/_src/builtin_plugins.py``, the only shared registrati
 touch-point. Built-in names are undotted. Built-ins use ``track_gen.ops`` for every shared
 step (see :ref:`generator-ops`), like a plugin, and never import ``warp_pipeline``. A
 built-in gate generator that shares a track generator's sampling imports that module's
-public names (``CORNER_SALT``, ``sample_polar_controls``, ...), never its underscore
-kernels or constants. ``tests/test_ops.py`` checks both rules on the source, together with
+public names (``CORNER_SALT``, ``sample_polar_controls_per_env``, ...), never its
+underscore kernels or constants. ``tests/test_ops.py`` checks both rules on the source, together with
 the short allow-list of private ``track_gen.ops`` launchers the legacy wrappers use. A
 new built-in RNG stream takes a ``(salt, offset)`` pair that is not in the
 :ref:`table of built-in salts <ops-rng-keying>`, and adds its row there. The built-ins'
 Params classes live in ``track_gen/_src/builtin_params.py``: each keeps the flat config
-field names, holds the generator's rules in ``validate()`` (with ``lo``/``hi`` only where a
-rule rejects the same bound), and is listed in the
+field names, holds the generator's rules in ``validate()`` (with ``lo``/``hi`` on a static
+field only where a rule rejects the same bound), and is listed in the
 :ref:`configuration reference <builtin-generator-params>`.
+
+A new built-in generator is a ``Stage`` (``kind="generator"``, ``output="centerline"``),
+like the shipped ones. Its knobs follow one rule: a ``float`` knob that only kernels read
+(no host arithmetic before the launch other than the conversion to ``float32`` or an
+exact clamp), that sizes no buffer and fixes no launch, loop count or Python branch, and
+that shapes the output (not a rigid offset, a solver constant or a path-tracer
+internal) is ``dynamic``, with declared ``lo`` / ``hi``; everything else is static. A
+dynamic knob is read in the kernel:
+
+- load each env's value once into a local at the top of the thread, before any loop,
+  named as the scalar it replaces, so the arithmetic that follows is unchanged;
+- clamp it to the declared bounds with **comparisons**, ``x = wp.where(x < lo, lo, x)``
+  then ``wp.where(x > hi, hi, x)``, with the bounds as ``wp.constant``\ s built from the
+  field declaration: a NaN and every in-range value (signed zeros included) pass bit for
+  bit. Do not use ``wp.min`` / ``wp.max``: on CUDA they lower to ``fminf`` / ``fmaxf``,
+  whose result for ``(-0.0, +0.0)`` is unspecified;
+- leave an unbounded side unclamped.
+
+While a generator still has a frozen legacy entry point (the shipped five keep
+``generate_*_warp`` and ``*_alloc_scratch`` until 1.0), keep its scalar kernel
+untouched and add the array-reading twin beside it (``_polar_controls_dyn_k`` beside
+``_polar_controls_k``): the Stage launches the twin, the legacy function the scalar
+kernel, and both call one private core, ``_enqueue_<name>(..., dyn)``, whose ``dyn`` is
+``None`` or a mapping with exactly the generator's dynamic fields. A CPU test compares
+the generated CUDA source of each pair (the same arithmetic operations, in the same
+order) until the scalar kernels go. A sampling helper that a gate generator shares is
+public, in a float form (``sample_polar_controls``, frozen) and an ``[E]``-array form
+(``sample_polar_controls_per_env``, ``sample_checkpoint_rings_per_env``,
+``select_voronoi_anchors_per_env``) that clamps to the declared bounds the same way.
+The built-in Params set a private flag that makes each dynamic name of the static view
+(what ``build`` receives) a sentinel: any host read (``float(view.rad)``,
+``getattr(view, "rad", 0.4)`` followed by arithmetic) raises ``TypeError``, and passing
+it as a kernel argument fails the launch (Warp's ``RuntimeError``, chained from that
+``TypeError``), so a knob routed through the host by mistake fails instead of baking the
+default. Run ``check_generator`` on it: its ``params.per_env`` check sets every dynamic
+field per env and compares each env with a scalar run.
 
 .. _how-a-generator-is-judged:
 

@@ -48,8 +48,11 @@ CUDA-graph-capturable.
    fixed-shape stand-in that gives a topologically simple ordered polygon.
 
 3. **Midpoint-displacement layer.**
-   ``_midpoint_displace_k`` interleaves each adjacent pair of angle-sorted vertices
-   with one displaced edge midpoint, producing an augmented loop of ``2m`` vertices:
+   ``_midpoint_displace_dyn_k`` interleaves each adjacent pair of angle-sorted vertices
+   with one displaced edge midpoint, producing an augmented loop of ``2m`` vertices
+   (it reads env ``e``'s ``hull_displacement`` from the per-env parameter array; the
+   frozen legacy ``generate_hull_warp`` launches the scalar ``_midpoint_displace_k``,
+   same arithmetic, same bytes):
 
    .. code-block:: text
 
@@ -195,7 +198,46 @@ checked when the ``TrackGenerator`` is constructed, and only for ``generator="hu
     ``0.15``.  At ``0.0`` the midpoints remain on the edges and the method collapses
     toward a plain angle-sorted loop.  Typical range ``[0.1, 0.4]``; larger values
     produce stronger lobes, pinches, and straight sections at the cost of a higher
-    downstream relaxation and thickness burden.
+    downstream relaxation and thickness burden. Dynamic, in ``[0, 1]`` (below).
+
+.. _hull-dynamic:
+
+Per-env (dynamic) parameters
+----------------------------
+
+``hull_displacement`` is a **dynamic** field of ``HullParams``: a per-env ``[E]``
+``float32`` array, initialised from the configured value. Draw it per env with
+``presets.track(generator="hull", randomize={"generator.hull_displacement": (lo,
+hi)})``, write it with ``gen.params["generator"].set("hull_displacement", ...)`` or from
+your own graph (a curriculum): see :ref:`tuning-per-env`. A scalar outside the bounds
+raises ``ValueError``; an array value outside them is clamped to them when the kernel
+reads it.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 24 9 10 22 22 13
+
+   * - Field (``randomize=`` key)
+     - Default
+     - Bounds
+     - Harder / more varied when
+     - Effective range
+     - Yield at lo / default / hi
+   * - ``hull_displacement`` (``generator.hull_displacement``)
+     - ``0.15``
+     - ``[0, 1]``
+     - higher: lobier, more irregular, tighter pinches
+     - the whole range; above 1 a midpoint could be pushed past the centroid, hence
+       the bound
+     - 0.98 / 0.98 / 0.88
+
+*Yield* is the fraction of valid tracks with the default pipeline, ``E = 128``, seeds
+``0..127`` (CPU), with the knob set to the value for every env.
+
+**Static knobs, and why.** ``min_num_points`` / ``max_num_points`` (``max`` sizes the
+point buffers; a dynamic corner count is planned for roadmap PR13d),
+``num_points_per_segment`` (sizes the dense buffer), ``min_point_distance`` (sets the
+point grid on the host) and the core ``scale`` (per-env size: PR13d).
 
 What Makes It Distinct
 ----------------------

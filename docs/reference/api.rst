@@ -297,6 +297,14 @@ A generator's own parameters, set with ``TrackGenConfig.generator_params`` /
 .. autoclass:: track_gen.plugin.StageParams
    :members: stage_id, params, drawn, set
 
+The built-in generators' and elevation stages' Params have dynamic fields too (the
+generators' shape knobs, ``z_min`` / ``z_max`` / ``z_max_step`` /
+``z_noise_amplitude``), with declared bounds: see :ref:`builtin-generator-params` and
+:ref:`generators-per-env`. Reach a built-in generator's class with
+``registry.get("generator", name).Params``; ``.params`` still works for ``bezier``,
+``hull``, ``polar``, ``voronoi`` and ``checkpoint`` (their 0.2.0.dev4
+``GeneratorSpec`` attribute) but emits a ``DeprecationWarning`` and is removed in 1.0.
+
 Stages
 ~~~~~~
 
@@ -323,6 +331,13 @@ stage's ``CaptureClass`` is ``STATIC``, ``BOUNDED`` (a loop through
    default; ``False`` for a generator whose output does not depend on the seed, see
    :ref:`ingestion-generator`) and ``preferred`` (a gate generator's ``"order"`` /
    ``"normalize"``, a centerline generator's ``"relax"``).
+
+   Every built-in generator is a ``Stage`` class: ``registry.get("generator",
+   "bezier")`` (``hull``, ``polar``, ``voronoi``, ``checkpoint``: ``STATIC``;
+   ``repulsive``: ``BOUNDED``; ``external``) and ``registry.get("gate_generator",
+   name)``. Their module functions (``generate_*_warp``, ``*_alloc_scratch``, the
+   ``sample_*`` helpers and their ``*_per_env`` forms) are not public API; see
+   :ref:`legacy-src-helpers`.
 
 .. autoclass:: track_gen.plugin.StageBuilder
    :members: read, write, temp_like, stride_of, per_of, dtype_of, scratch, param, input,
@@ -372,7 +387,8 @@ Specs
    :no-members:
 
 .. autoclass:: track_gen.pipeline.PipelineSpec
-   :members: ids, replace, insert_after, insert_before, remove, to_dict, from_dict
+   :members: ids, replace, insert_after, insert_before, remove, with_randomize, to_dict,
+      from_dict
    :exclude-members: batch, stages, require_caller_capturable
 
 .. autofunction:: track_gen.pipeline.legacy.to_pipeline_spec

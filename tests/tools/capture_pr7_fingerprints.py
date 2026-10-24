@@ -20,6 +20,7 @@ import hashlib
 import json
 import platform
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 
 import numpy as np
@@ -67,6 +68,20 @@ def _sha(arr: np.ndarray) -> str:
     return h.hexdigest()
 
 
+def _crossers(g):
+    """The polygon-fallback crossing counts of a generator's private scratch: a legacy
+    scratch group (``gen_crossers`` / ``crossers``, 1077b18 .. 0.2.0.dev4) or, since
+    roadmap PR13c, the Stage's built scratch (``scratch["scratch:generator/<slot>"]``)."""
+    scratch = getattr(g, "scratch", None)
+    if isinstance(scratch, Mapping):
+        for name in ("gen_crossers", "crossers"):
+            arr = scratch.get(f"scratch:generator/{name}")
+            if arr is not None:
+                return arr
+    crossers = getattr(g, "gen_crossers", None)
+    return g.crossers if crossers is None else crossers
+
+
 def compute() -> dict:
     from track_gen._src.gate_generator import GateGenerator
     from track_gen._src.rng_utils import PerEnvSeededRNG
@@ -94,9 +109,7 @@ def compute() -> dict:
         tg = TrackGenerator(cfg, PerEnvSeededRNG(seeds=fb_seeds, num_envs=FALLBACK_E,
                                                  device="cpu"))
         track = tg.generate()
-        g = tg._scratch.gen
-        crossers = getattr(g, "gen_crossers", None)
-        crossers = g.crossers if crossers is None else crossers
+        crossers = _crossers(tg._scratch.gen)
         assert (crossers.numpy() > 0).any(), f"{case}: no env took the polygon fallback"
         for f in TRACK_FIELDS:
             out[f"track/{case}/{f}"] = _sha(getattr(track, f).numpy())

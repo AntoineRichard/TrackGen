@@ -77,6 +77,10 @@ inert for the profiles they do not apply to.
      - ``z_base``, ``z_noise_amplitude``, ``z_noise_harmonics`` (default 3),
        ``z_min``, ``z_max``
 
+``z_min``, ``z_max``, ``z_max_step`` and ``z_noise_amplitude`` are per-env (dynamic)
+parameters of the elevation stages: see `Per-env altitude: randomization and
+curricula`_.
+
 ``z_control_points`` is not itself a ``z_profile`` — it is the knot-count knob
 used by the ``uniform`` and ``random_walk`` rows above: the number of
 arc-spaced altitude control knots (default 10, must be ≥ 3) those two
@@ -177,6 +181,66 @@ every adjacent pair.
    independent knot-to-knot swings, a correlated single-basin walk, and
    harmonic periodicity respectively. Regenerate with
    ``python viz/plot_z_profiles.py --out docs/_static/z-profiles.png --seed 5``.
+
+.. _tracks-25d-per-env:
+
+Per-env altitude: randomization and curricula
+---------------------------------------------
+
+In the pipeline (``TrackGenerator``, ``presets.track(elevation=...)``) the profile is
+the ``elevation`` stage, and four of its knobs are **dynamic**: per-env ``[E]``
+``float32`` arrays, initialised from the configured values, that ``randomize=`` draws at
+every generation and that a curriculum can write from its own graph
+(:ref:`tuning-per-env`). The rest (``z_base``, ``z_control_points``,
+``z_noise_harmonics``) is static, as is validity's ``z_valid_grade``.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 18 34 48
+
+   * - ``z_profile``
+     - Dynamic fields (bounds)
+     - The difficulty knob, and the window it needs
+   * - ``"uniform"``
+     - ``z_min``, ``z_max`` (unbounded)
+     - ``z_max`` (higher: bigger hills), with ``z_min`` fixed at the ground
+   * - ``"random_walk"``
+     - ``z_min``, ``z_max``; ``z_max_step`` (``>= 0``)
+     - ``z_max_step`` (higher: steeper grades), in a wide window: at ``z_min == z_max``
+       the walk cannot move
+   * - ``"noise"``
+     - ``z_min``, ``z_max``; ``z_noise_amplitude`` (``>= 0``)
+     - ``z_noise_amplitude`` (higher: bigger hills), in a wide window symmetric around
+       ``z_base`` (``z_min = -z_max`` at ``z_base = 0``): the default ``[0, 0]`` makes it
+       inert and ``[0, z_max]`` clips the negative half of every hill
+
+.. code-block:: python
+
+   from track_gen.pipeline import presets
+
+   spec = presets.track(
+       num_envs=4096, device="cuda:0",
+       elevation=("noise", {"z_min": -0.3, "z_max": 0.3, "z_noise_amplitude": 0.1}),
+       randomize={"elevation.z_noise_amplitude": (0.0, 0.3)},
+   )
+
+The randomize keys are ``"elevation.<field>"``; ``gen.params["elevation"]["z_max"]`` is
+the live array a curriculum writes. The same stage classes run on gates and on the
+centerline before the stations, so the same keys work in ``presets.gates`` (:doc:`gate
+courses </gates-3d>`).
+
+Rules:
+
+- ``z_min <= z_max`` is still checked for the configured values. An inert window warns
+  when the pipeline is built, randomizers on ``z_min`` / ``z_max`` that can cross raise
+  ``PlanError``, and a crossing written at run time is not refused: the exact rules are
+  in :ref:`tuning-per-env`.
+- ``z_max_step`` and ``z_noise_amplitude`` are bounded below by ``0``: a negative scalar
+  raises ``ValueError``, a negative array value is clamped to ``0``.
+
+The defaults (``flat``, or any profile at its configured values) give the same bytes as
+before: the kernels read the knobs from the arrays with the same arithmetic. The legacy
+entry points ``apply_z_profile`` / ``apply_z_profile_knots`` keep their scalar kernels.
 
 .. _tracks-25d-provided:
 

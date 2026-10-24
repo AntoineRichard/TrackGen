@@ -16,6 +16,12 @@ The arc resample, extent normalisation and fill are the public ``track_gen.ops``
 primitives; the control-knot draw is exposed as :func:`sample_polar_controls` (shared
 with the polar gate generator). The dense spline keeps its own one-thread-per-env kernel
 (see :data:`_polar_spline_dense_k`).
+
+Roadmap PR13c: the registered ``"polar"`` generator is the :class:`Polar` Stage, whose
+jitters are dynamic (per-env arrays, :func:`sample_polar_controls_per_env`, clamped to
+the declared bounds, the former host clamp, at use); ``generate_polar_warp`` /
+``polar_alloc_scratch`` / ``sample_polar_controls`` keep their signatures and the scalar
+kernel on the same private core, :func:`_enqueue_polar`.
 """
 from __future__ import annotations
 
@@ -25,6 +31,9 @@ from .. import ops
 from ..exec.context import LaunchContext, resolve as _resolve_ctx
 from ..ops import funcs
 from ..ops.constants import TARGET_EXTENT
+from ..plugin.stage import CaptureClass, Stage
+from .builtin_params import PolarParams, _declared_bounds
+from .builtin_stage import DeprecatedParamsAlias, check_dyn, default_alloc, run_view
 from .runtime import _init
 
 # Independent RNG streams for controls. The constants are distinct from bezier/hull salts.
@@ -53,6 +62,48 @@ def _polar_controls_k(
     # fraction of one knot spacing and is clamped by Python to < 0.5, so the fixed index
     # order remains the sorted angular order without a dynamic sort.
     e = wp.tid()
+    state = wp.rand_init(seeds[e] * _CONTROL_SALT + 17)
+    b = e * K
+    two_pi = 2.0 * wp.pi
+
+    for i in range(K):
+        radial_delta = (2.0 * wp.randf(state) - 1.0) * radial_jitter
+        angle_delta = (2.0 * wp.randf(state) - 1.0) * angular_jitter
+        r = base_radius * wp.max(1.0 + radial_delta, 0.1)
+        theta = two_pi * (float(i) + angle_delta) / float(K)
+        controls[b + i] = wp.vec2f(r * wp.cos(theta), r * wp.sin(theta))
+
+
+# The declared bounds of PolarParams' jitters (the twin's clamp, float32; the polar gate
+# generator's PolarGateParams declares the same ones).
+_RADIAL_LO = wp.constant(wp.float32(_declared_bounds(PolarParams, "polar_radial_jitter")[0]))
+_RADIAL_HI = wp.constant(wp.float32(_declared_bounds(PolarParams, "polar_radial_jitter")[1]))
+_ANGULAR_LO = wp.constant(wp.float32(
+    _declared_bounds(PolarParams, "polar_angular_jitter")[0]))
+_ANGULAR_HI = wp.constant(wp.float32(
+    _declared_bounds(PolarParams, "polar_angular_jitter")[1]))
+
+
+@wp.kernel
+def _polar_controls_dyn_k(
+    seeds: wp.array(dtype=wp.int32),
+    K: int,
+    radial_e: wp.array(dtype=wp.float32),
+    angular_e: wp.array(dtype=wp.float32),
+    base_radius: float,
+    controls: wp.array(dtype=wp.vec2f),
+):
+    # _polar_controls_k with the jitters read per env (roadmap PR13c): each loaded once and
+    # clamped to its declared bounds by comparisons (== polar_jitters()'s host clamp after
+    # float32 rounding; NaN passes like Python's min(max(nan, lo), hi)), then the scalar
+    # kernel's body verbatim.
+    e = wp.tid()
+    radial_jitter = radial_e[e]
+    radial_jitter = wp.where(radial_jitter < _RADIAL_LO, _RADIAL_LO, radial_jitter)
+    radial_jitter = wp.where(radial_jitter > _RADIAL_HI, _RADIAL_HI, radial_jitter)
+    angular_jitter = angular_e[e]
+    angular_jitter = wp.where(angular_jitter < _ANGULAR_LO, _ANGULAR_LO, angular_jitter)
+    angular_jitter = wp.where(angular_jitter > _ANGULAR_HI, _ANGULAR_HI, angular_jitter)
     state = wp.rand_init(seeds[e] * _CONTROL_SALT + 17)
     b = e * K
     two_pi = 2.0 * wp.pi
@@ -179,22 +230,58 @@ def sample_polar_controls(ctx: "LaunchContext", seeds: wp.array, K: int,
                 float(base_radius), out])
 
 
+def sample_polar_controls_per_env(ctx: "LaunchContext", seeds: wp.array, K: int,
+                                  radial_jitter: wp.array, angular_jitter: wp.array,
+                                  out: wp.array, *,
+                                  base_radius: float = BASE_RADIUS) -> None:
+    """:func:`sample_polar_controls` with per-env jitters (roadmap PR13c): ``[E]``
+    ``float32`` arrays, env ``e`` drawing with ``radial_jitter[e]`` /
+    ``angular_jitter[e]``, each clamped at use to the polar generator's declared bounds
+    (``[0, 0.85]`` / ``[0, 0.45]``, compared in float32; a NaN passes). With every
+    value inside its bounds, env ``e`` equals :func:`sample_polar_controls` at the scalar
+    ``float(radial_jitter[e])`` / ``float(angular_jitter[e])``. One launch
+    (``E = seeds.shape[0]`` threads); no allocation, no host sync.
+
+    Args:
+        ctx: the :class:`~track_gen.exec.LaunchContext` to launch on.
+        seeds: ``[E]`` ``int32`` per-env seeds.
+        K: knots per env.
+        radial_jitter: ``[E]`` ``float32`` relative radius jitter.
+        angular_jitter: ``[E]`` ``float32`` angle jitter (fraction of a knot spacing).
+        out: ``[E*K]`` ``vec2f`` control knots.
+        base_radius: ring radius before jitter.
+    """
+    ctx.launch(_polar_controls_dyn_k, seeds.shape[0],
+               [seeds, int(K), radial_jitter, angular_jitter, float(base_radius), out])
+
+
+#: The dynamic fields of the Polar Stage (roadmap PR13c), in Params order.
+_DYNAMIC = ("polar_radial_jitter", "polar_angular_jitter")
+
+
 def polar_alloc_scratch(config):
     """Allocate the polar generator's PRIVATE working scratch (one alloc per generator)."""
+    return _alloc_polar_scratch(config)
+
+
+def _alloc_polar_scratch(config, alloc=None):
+    """:func:`polar_alloc_scratch` with every buffer from ``alloc(name, dtype, n)``
+    (named after its :class:`PolarScratch` slot; default ``wp.empty`` on
+    ``config.device``). The Stage passes its ``StageBuilder.scratch``."""
     _init()
+    alloc = default_alloc(config) if alloc is None else alloc
     E = int(config.num_envs)
     K = polar_num_knots(config)
     npseg = int(config.num_points_per_segment)
     M = K * npseg
-    dev = str(config.device)
     return PolarScratch(
-        controls=wp.empty(E * K, dtype=wp.vec2f, device=dev),
-        dense=wp.empty(E * M, dtype=wp.vec2f, device=dev),
-        arc_real=wp.empty(E * M, dtype=wp.vec2f, device=dev),
-        arc_seg=wp.empty(E * M, dtype=wp.float32, device=dev),
-        arc_s=wp.empty(E * (M + 1), dtype=wp.float32, device=dev),
-        arc_cr=wp.empty(E, dtype=wp.int32, device=dev),
-        arc_co=wp.empty(E, dtype=wp.int32, device=dev),
+        controls=alloc("controls", wp.vec2f, E * K),
+        dense=alloc("dense", wp.vec2f, E * M),
+        arc_real=alloc("arc_real", wp.vec2f, E * M),
+        arc_seg=alloc("arc_seg", wp.float32, E * M),
+        arc_s=alloc("arc_s", wp.float32, E * (M + 1)),
+        arc_cr=alloc("arc_cr", wp.int32, E),
+        arc_co=alloc("arc_co", wp.int32, E),
     )
 
 
@@ -207,6 +294,10 @@ def generate_polar_warp(seeds_wp: wp.array, config,
     resamples it to ``config.num_points``, normalizes the output scale, and marks the
     generation stage valid. Pure Warp, zero per-call allocation, graph-capturable.
 
+    The legacy entry point (frozen signature; :func:`polar_jitters` of ``config`` as host
+    scalars): the registered ``"polar"`` generator is the :class:`Polar` Stage on the same
+    private core (roadmap PR13c).
+
     Args:
         ctx: optional track_gen.exec.LaunchContext; default resolves the
             device's stream (see track_gen.exec).
@@ -214,16 +305,29 @@ def generate_polar_warp(seeds_wp: wp.array, config,
     _init()
     ctx = _resolve_ctx(ctx, str(out_centerline.device))
     assert scratch is not None, "generate_polar_warp requires scratch"
+    _enqueue_polar(seeds_wp, config, out_centerline, out_valid_wp, scratch, ctx, None)
 
+
+def _enqueue_polar(seeds_wp, config, out_centerline, out_valid_wp, scratch, ctx,
+                   dyn) -> None:
+    """The polar generator's launches on ``ctx``: ``dyn=None`` (the legacy path:
+    :func:`polar_jitters` of ``config``, :func:`sample_polar_controls`) or the jitters'
+    ``[E]`` arrays (the Stage: :func:`sample_polar_controls_per_env`)."""
+    check_dyn(dyn, _DYNAMIC, "polar")
     N = int(config.num_points)
     K = polar_num_knots(config)
     npseg = int(config.num_points_per_segment)
     M = K * npseg
-    radial_jitter, angular_jitter = polar_jitters(config)
     target_extent = float(config.scale) * TARGET_EXTENT
     arc = ops.ArcScratch(scratch.arc_real, scratch.arc_seg, scratch.arc_s, scratch.arc_cr)
 
-    sample_polar_controls(ctx, seeds_wp, K, radial_jitter, angular_jitter, scratch.controls)
+    if dyn is None:
+        radial_jitter, angular_jitter = polar_jitters(config)
+        sample_polar_controls(ctx, seeds_wp, K, radial_jitter, angular_jitter,
+                              scratch.controls)
+    else:
+        sample_polar_controls_per_env(ctx, seeds_wp, K, dyn["polar_radial_jitter"],
+                                      dyn["polar_angular_jitter"], scratch.controls)
     # Closed Catmull-Rom through the controls, endpoint-excluded within each segment (the
     # next segment starts at p2; the loop closes through the arc-resample's wrap edge).
     # Same values as ops.closed_catmull_rom(ctx, controls, K, npseg, dense) on CPU; the
@@ -236,16 +340,37 @@ def generate_polar_warp(seeds_wp: wp.array, config,
     ctx.sync()
 
 
-def register(reg) -> None:
-    """Register the built-in ``"polar"`` track generator into ``reg`` (called by
-    ``track_gen._src.builtin_plugins``; importing this module registers nothing)."""
-    from .builtin_params import PolarParams
-    from .generator_registry import GeneratorSpec
+class Polar(Stage):
+    """``"polar"``: the periodic polar-knot track generator (:func:`generate_polar_warp`)
+    as a ``kind="generator"`` Stage (roadmap PR13c). ``polar_radial_jitter`` /
+    ``polar_angular_jitter`` are dynamic: per-env arrays read by
+    :func:`sample_polar_controls_per_env`, clamped to ``[0, 0.85]`` / ``[0, 0.45]`` at
+    use."""
 
-    reg.add(GeneratorSpec(
-        name="polar",
-        alloc_scratch=polar_alloc_scratch,
-        generate=generate_polar_warp,
-        accepts_ctx=True,
-        params=PolarParams,
-    ))
+    kind = "generator"
+    name = "polar"
+    output = "centerline"
+    capture = CaptureClass.STATIC
+    Params = PolarParams
+    writes = {"xy": "raw.xy", "valid": "gen.valid"}
+    #: Deprecated (0.2.0.dev4's ``GeneratorSpec.params``): use ``Params``.
+    params = DeprecatedParamsAlias()
+
+    def build(self, b, p):
+        cfg = run_view(p, b)
+        scratch = _alloc_polar_scratch(cfg, b.scratch)
+        xy = b.write("xy", wp.vec2f, per="raw")
+        valid = b.write("valid", wp.int32)
+        dyn = {k: b.param(k) for k in _DYNAMIC}
+        seed = b.seed
+
+        def enqueue(ctx):
+            _enqueue_polar(seed, cfg, xy, valid, scratch, ctx, dyn)
+        return enqueue
+
+
+def register(reg) -> None:
+    """Register the built-in ``"polar"`` track generator (the :class:`Polar` Stage) into
+    ``reg`` (called by ``track_gen._src.builtin_plugins``; importing this module
+    registers nothing)."""
+    reg.add(Polar)

@@ -300,7 +300,10 @@ def test_launch_counts():
     polar = _gen(generator="polar")
     with trace_launches() as t:
         polar.program.enqueue(ctx)
-    assert len(t) == 14             # the normalization runs out of place: no extra copy
+    # The normalization runs out of place: no extra copy. Roadmap PR13c re-pin
+    # (deliberate): + the latches of the two dynamic jitters (14 -> 16).
+    assert len(t) == 16
+    assert _kernels(t)[1:3] == ["_latch_all_f32_k"] * 2
     with trace_launches() as masked:
         default.program.enqueue(ctx, advance=True, mask=_i32(MASK))
     k = _kernels(masked)

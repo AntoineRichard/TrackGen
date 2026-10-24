@@ -7,6 +7,16 @@ a masked advance), runs ``_run_pipeline`` on fresh PR9 buffers from the same eff
 seeds, and compares every channel version the Program wrote with the PR9 buffer it
 reproduces (raw bytes: NaN padding compares too). The launch sequences (op, kernel,
 dims, scalar arguments) of one generation are equal as well, so no launch moved.
+
+Roadmap PR13c re-pin (deliberate, ``tests/_pr13c_delta.py``): the built-in generators are
+Stages whose dynamic knobs are latched; the reference binds the generator through
+``bind_generator(...).pipeline_spec`` (the same Stage, its latches run by
+``adapter.latch``), so its generator half is Stage vs Stage. The elevation stages'
+``z_*`` knobs are dynamic too, which the PR9 composition (``apply_z_profile*`` with
+host scalars) does not latch: for the ``z_*`` cases the expected sequence is the
+reference's with the elevation's latch records (uniform 2, random_walk 3, noise 3)
+inserted after the generator's and its ``_z_*_k`` record renamed to the array-reading
+twin (knob scalars dropped). Output bytes are unchanged at every boundary.
 """
 from __future__ import annotations
 
@@ -16,6 +26,7 @@ import warp as wp
 
 from tests._plugin_toys import (TOY_CIRCLE, register_stage_toys,
                                 toy_circle_alloc_scratch, toy_circle_generate)
+from tests._pr13c_delta import ELEVATION_LATCHES, LATCH_ALL, pr13c_sequence
 from track_gen import PerEnvSeededRNG, TrackGenConfig, TrackGenerator
 from track_gen._src import warp_pipeline
 from track_gen._src.generator_binding import _StageGenerator, bind_generator
@@ -196,6 +207,17 @@ def _topology(trace) -> list:
     return [(r.op, r.kernel, r.dim, r.scalars) for r in trace]
 
 
+def _pr13c_elevation_delta(case: str, rows: list, n_gen_latches: int, E: int) -> list:
+    """The PR9 reference sequence under the PR13c rule for the elevation (the generator
+    half needs nothing: both sides run the Stage): the elevation's latch records after
+    the generator's, its ``_z_*_k`` renamed to the twin."""
+    n = ELEVATION_LATCHES[CASES[case].get("z_profile", "flat")]
+    if not n:
+        return rows
+    first = next(i for i, r in enumerate(rows) if r[1].endswith("_effective_seed_k"))
+    return pr13c_sequence(rows, n, E, insert_after=first + n_gen_latches)
+
+
 @pytest.mark.parametrize("case", sorted(CASES))
 def test_the_program_emits_the_pr9_launch_sequence(case, monkeypatch):
     gen = _make(case)
@@ -211,18 +233,24 @@ def test_the_program_emits_the_pr9_launch_sequence(case, monkeypatch):
         warp_pipeline._run_pipeline(ref.cfg, ref.seed, out=ref.track, scratch=ref.scratch,
                                     generator_spec=ref.spec, ctx=ctx)
         gen.seeds._write_generation(ref.track.generation, None, ctx)
-    got, want = _topology(program), _topology(pr9)
+    got = _topology(program)
+    want = _pr13c_elevation_delta(case, _topology(pr9),
+                                  len(adapter._pairs) if adapter is not None else 0,
+                                  int(gen._config.num_envs))
     assert len(got) == len(want), f"{case}: {len(got)} launches vs PR9's {len(want)}"
     first = next((i for i, (a, b) in enumerate(zip(got, want)) if a != b), None)
     assert first is None, f"{case}: launch {first} differs: {got[first]} vs {want[first]}"
 
 
-def test_default_bezier_launch_count_is_unchanged():
-    """The default bezier pipeline: the effective-seed launch + 150 pipeline launches /
-    copies + the generation copy = 152, exactly what PR9 emitted (independent of E)."""
+def test_default_bezier_launch_count():
+    """The default bezier pipeline: the effective-seed launch + the two latches of the
+    dynamic ``rad`` / ``handle_clamp_frac`` (roadmap PR13c re-pin: 152 -> 154) + 150
+    pipeline launches / copies + the generation copy = 154 (independent of E)."""
     gen = TrackGenerator(TrackGenConfig(device=DEV, num_envs=2),
                          PerEnvSeededRNG(seeds=3, num_envs=2, device=DEV))
     with trace_launches() as t:
         gen.generate()
-    assert len(t) == 152
+    assert len(t) == 154
     assert t[0].kernel.endswith("_effective_seed_k") and t[-1].op == "copy"
+    assert [r.kernel for r in t[1:3]] == [LATCH_ALL] * 2
+    assert t[3].kernel.endswith("_sample_counts_k")

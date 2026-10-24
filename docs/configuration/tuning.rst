@@ -21,13 +21,15 @@ A few principles:
   sweeps and it does not restrict shapes. See
   :doc:`/relaxation/convergence` for the measured yield-vs-sweeps curves.
 
-- **Widen the generator's shape range for diversity.** For the Bezier generator,
-  widen ``[min_num_points, max_num_points]`` and enable ``style_sampling=True``
-  with ``rad_range``, ``scale_range``, and ``handle_clamp_frac_range``. For the
-  checkpoint generator, increase ``checkpoint_count`` or widen
-  ``checkpoint_radius_min_frac``. For the polar generator, increase
-  ``polar_radial_jitter`` or ``polar_num_knots``. Wider shape ranges can
-  introduce harder-to-relax geometries, so watch yield when you push these.
+- **Widen the generator's shape range for diversity.** Draw the generator's dynamic
+  knobs per env with ``randomize=`` (`Per-env parameters: randomization and
+  curricula`_): ``rad`` / ``handle_clamp_frac`` for the Bezier generator,
+  ``polar_radial_jitter`` for polar, ``checkpoint_radius_min_frac`` for checkpoint, and
+  so on. For the Bezier generator, also widen ``[min_num_points, max_num_points]``
+  (and use ``style_sampling=True`` with ``scale_range`` for per-env size). For the
+  checkpoint generator, increase ``checkpoint_count``; for polar, ``polar_num_knots``.
+  Wider shape ranges can introduce harder-to-relax geometries, so watch yield when you
+  push these.
 
 - **Mix generators across workers** rather than pushing a single generator to
   its limits. Each centerline generator (``"bezier"``, ``"hull"``, ``"polar"``,
@@ -43,28 +45,210 @@ A few principles:
   (``.venv/bin/python -m viz.param_explorer``) shows valid-yield and quality stats over a
   full batch in real time, so shape/yield trade-offs are immediately visible.
 
-Per-env parameters: what ``randomize=`` does and does not do
-------------------------------------------------------------
+.. _tuning-per-env:
 
-``presets.track(randomize={"<stage>.<field>": (lo, hi)})`` draws a field per env,
-on the device, at every generation (:ref:`config-randomize`). It draws **dynamic**
-``float32`` fields only: those of plugin generators and stages declared with
-``plugin.dynamic``, and ``width.from_channel``'s ``scale`` / ``lo`` / ``hi``. The
-built-in generators' knobs (``rad``, ``polar_radial_jitter``, ``checkpoint_count``, ...)
-and the elevation ranges are **static in 0.x**: ``randomize=`` refuses them with a
-``PlanError`` listing what can be drawn. It is therefore not a domain randomization of
-the built-in generators yet. To vary those per env today:
+Per-env parameters: randomization and curricula
+-----------------------------------------------
 
-- use ``bezier``'s ``style_sampling=True`` (per-env ``rad``, ``scale`` and handle clamp,
-  below);
-- mix generators or configurations in one batch (:ref:`results-mixed-batches`), each
-  generator writing its own env range of one ``Track``;
-- or write a plugin generator whose shape knobs are ``plugin.dynamic`` (with declared
-  ``lo`` / ``hi``), and draw them with ``randomize=``, or write them yourself in your own
-  graph for a curriculum (:ref:`generator-runtime-params`).
+A **dynamic** parameter is a per-env ``[E]`` ``float32`` array the kernels read at every
+generation. You can draw it per env with ``randomize=``, or write it yourself (a
+curriculum), with no rebuild and no re-capture. The dynamic fields are:
 
-For a randomized plugin knob, the yield-versus-diversity advice above applies to the
-whole range: check the yield at both ends of ``(lo, hi)``, not only at the middle.
+- the built-in generators' shape knobs: ``rad`` and ``handle_clamp_frac`` (``bezier``),
+  ``hull_displacement`` (``hull``), ``polar_radial_jitter`` and
+  ``polar_angular_jitter`` (``polar``), ``voronoi_radial_variation`` and
+  ``voronoi_angular_jitter`` (``voronoi``), ``checkpoint_radius_min_frac``,
+  ``checkpoint_angle_jitter`` and ``checkpoint_turn_rate`` (``checkpoint``). The polar,
+  voronoi and checkpoint **gate** generators have the same ring knobs (not
+  ``checkpoint_turn_rate``: they do not steer). Each generator page gives their bounds,
+  effective range and measured yield (:ref:`generators-per-env`);
+- the elevation profiles' ``z_min`` and ``z_max`` (``uniform``, ``random_walk``,
+  ``noise``), ``z_max_step`` (``random_walk``) and ``z_noise_amplitude`` (``noise``), on
+  tracks, on gates and on the centerline before the stations alike;
+- ``width.from_channel``'s ``scale``, ``lo`` and ``hi``, and every field a plugin
+  declares with ``plugin.dynamic``.
+
+Everything else is static (point and knot counts, ``half_width``, ``spacing``,
+``edgy``, ``scale``, ``z_base``, the relax and validity tolerances, the ``repulsive``
+knobs): build a new generator to change it. Naming a static field in ``randomize=``
+raises ``PlanError`` listing the fields of the pipeline that can be drawn.
+
+**Randomize.** ``presets.track(randomize={"<stage id>.<field>": (lo, hi)})`` draws each
+env's value uniformly in ``[lo, hi)`` at every generation (:ref:`config-randomize`). The
+generator's stage id is ``"generator"``, the elevation's ``"elevation"``, in
+``presets.track`` and ``presets.gates`` alike:
+
+.. code-block:: python
+
+   from track_gen import TrackGenerator
+   from track_gen.pipeline import presets
+
+   spec = presets.track(
+       num_envs=4096, device="cuda:0", generator="polar",
+       elevation=("noise", {"z_min": -0.3, "z_max": 0.3, "z_noise_amplitude": 0.1}),
+       randomize={"generator.polar_radial_jitter": (0.3, 0.85),
+                  "elevation.z_noise_amplitude": (0.0, 0.3)},
+   )
+   gen = TrackGenerator(spec)
+   gen.params["generator"]["polar_radial_jitter"]   # [E]: what each env was drawn
+
+For a pipeline built from a ``TrackGenConfig``, add the randomizers to its spec:
+``TrackGenerator(legacy.to_pipeline_spec(cfg).with_randomize({...}), rng)``; from a
+``GateGenConfig``:
+``GateGenerator(legacy.to_gate_pipeline_spec(gcfg).with_randomize({...}), rng)``
+(``PipelineSpec.with_randomize`` is what the presets call; the configs have no
+``randomize`` field). A field the spec already randomizes is refused: to change its
+range for a curriculum phase, ``spec.replace(...)`` that randomizer or write its live
+``lo`` / ``hi`` (below).
+
+**Curricula.** ``gen.params[stage][field]`` is the live ``[E]`` array of a dynamic field,
+at a stable address. Write it with ``gen.params[stage].set(field, value)`` (a scalar for
+every env, or an ``[E]`` ``wp.float32`` array), or from a kernel recorded in your own
+graph before ``generate()``: the next generation reads it. A field you write must not be
+drawn by a randomizer (below), so this curriculum's generator, unlike the one above,
+draws only the hill amplitude and leaves ``polar_radial_jitter`` and ``z_max`` to the
+curriculum kernel:
+
+.. code-block:: python
+
+   import warp as wp
+
+   spec = presets.track(
+       num_envs=E, device="cuda:0", generator="polar",
+       elevation=("noise", {"z_min": -0.3, "z_max": 0.3, "z_noise_amplitude": 0.1}),
+       randomize={"elevation.z_noise_amplitude": (0.0, 0.3)},   # not the jitter
+   )
+   gen = TrackGenerator(spec)
+   rjit = gen.params["generator"]["polar_radial_jitter"]     # [E] float32, stable
+   z_max = gen.params["elevation"]["z_max"]
+
+   with wp.ScopedCapture(stream=s) as capture:
+       wp.launch(difficulty_k, dim=E, inputs=[success_rate, rjit, z_max], stream=s)
+       gen.generate(advance=True, stream=s)
+   wp.capture_launch(capture.graph, stream=s)   # each replay reads the new values
+
+A field drawn by a randomizer belongs to it: ``set`` raises and a direct write is
+overwritten at the next generation (with the generator of the randomize example above,
+the kernel's ``polar_radial_jitter`` write would be lost). Move the draw instead, by
+writing the randomizer's bounds,
+``gen.params["randomize.generator.polar_radial_jitter"]["hi"]`` (a curriculum on a
+distribution; keep it in ``[lo, 0.85]``).
+
+**One rule for bounds.** A dynamic built-in knob declares its bounds (each generator
+page lists them). A **scalar** is checked on the host: a value outside the bounds raises
+``ValueError``, at construction, from ``set``, and for a randomizer's initial range
+(``PlanError``). The comparison is made in ``float32``, the precision the array holds, so
+a value read back from an array is always accepted. An **array** value (an ``[E]``
+``set``, your own kernel, a randomizer's draw from bounds you wrote) is not checked: the
+kernel clamps it to the bounds when it reads it (a NaN passes through, and an unbounded
+side, such as ``z_min``'s or ``handle_clamp_frac``'s upper one, is not clamped). So a
+curriculum may overshoot a bound without failing; the excess piles onto the bound.
+
+**Check the yield at both ends of every range.** Many knobs lose yield, or stop
+mattering, well inside their bounds: ``rad`` has no effect above ``handle_clamp_frac``
+(drawing both independently leaves ``rad`` inert in every env where it lands at or
+above the clamp: keep ``hi(rad) <= lo(handle_clamp_frac)``; a ``generator.rad``
+randomizer whose ``hi`` exceeds every value the clamp can take, its drawn ``hi`` or its
+value, emits a ``UserWarning`` when the pipeline is built),
+``voronoi_angular_jitter`` is legal up to ``pi`` but its yield is at most 0.85 from
+``0.5`` (0.71-0.85 by layout) and near zero from ``1.2``, ``checkpoint_radius_min_frac`` at ``0.99`` keeps two
+thirds of the tracks. The yield-versus-diversity advice above applies to the whole
+range, not its middle.
+
+**Elevation: the knob that sets the difficulty depends on the profile.** The window
+``[z_min, z_max]`` clips every profile, so:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 18 36 46
+
+   * - Profile
+     - Difficulty knob
+     - Window
+   * - ``uniform``
+     - ``z_max`` (higher: bigger hills)
+     - keep ``z_min`` fixed (at the ground) and draw or raise ``z_max``
+   * - ``random_walk``
+     - ``z_max_step`` (higher: steeper grades)
+     - a wide window: at ``z_min == z_max`` (the default ``[0, 0]``) the walk cannot
+       move, and ``z_max_step`` has no effect
+   * - ``noise``
+     - ``z_noise_amplitude`` (higher: bigger hills)
+     - a wide window **symmetric around** ``z_base`` (``z_min = -z_max`` at
+       ``z_base = 0``): the default ``[0, 0]`` makes the amplitude inert, and ``[0,
+       z_max]`` clips the negative half of every hill
+
+When the pipeline is built, an inert window emits a ``UserWarning``: ``z_min == z_max``
+with neither drawn, while ``z_max_step`` (``random_walk``) or ``z_noise_amplitude``
+(``noise``) can be positive (its configured value, or the ``hi`` of its randomizer). A
+window drawn by randomizers is open and does not warn; a window you open only at run
+time (``set``) cannot be seen then, so a curriculum starting flat gets the warning.
+Randomizers on ``z_min`` and
+``z_max`` that could cross (``hi`` of ``z_min`` above ``lo`` of ``z_max``, or one drawn
+range crossing the other's fixed value) raise ``PlanError`` when the pipeline is built.
+A crossing you write yourself at run time is not refused: ``uniform`` then draws in
+``[z_max, z_min]``, ``random_walk`` and ``noise`` return ``z_max`` everywhere (exactly
+what the scalar kernels did).
+
+**Masked regeneration.** At the start of a generation the Program copies (*latches*)
+the live arrays into the working copies the kernels read, for the envs it regenerates
+only. Under ``generate(advance=True, mask=m)`` an env left out keeps the value its
+current track was built with, so the live array may already hold a newer value than
+that env's track: for bookkeeping (which difficulty is each env running?) keep your own
+per-env copy of what you wrote when you regenerated it. A drawn field is not latched:
+``gen.params["generator"][field]`` holds the draw each env's track was built with.
+
+**Segmented Programs.** In a Program with a ``HOST`` stage (a ``HOST`` plugin generator
+or relax stage), the latch runs at the start of segment ``0``. A write must be enqueued
+before segment ``0`` to apply to that generation; a write recorded in a later segment's
+graph applies one generation later (:ref:`pipeline-segments`).
+
+**What stays static, and how to vary it anyway.** Mix generators or configurations in
+one batch (:ref:`results-mixed-batches`), each writing its own env range of one
+``Track``; use ``bezier``'s ``style_sampling=True`` with ``scale_range`` for per-env
+size; or write a plugin generator whose knobs are ``plugin.dynamic`` (with declared
+``lo`` / ``hi``, :ref:`generator-runtime-params`).
+
+.. _tuning-difficulty-axes:
+
+Difficulty axes and the knobs that reach them
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 80
+
+   * - Axis
+     - ``randomize=`` key, by generator (or why it cannot be drawn yet)
+   * - Curviness, corner sharpness
+     - ``generator.rad`` (lower: sharper) and ``generator.handle_clamp_frac`` (bezier);
+       ``generator.checkpoint_turn_rate`` (higher: sharper kinks; checkpoint)
+   * - Irregularity
+     - ``generator.hull_displacement`` (hull); ``generator.polar_angular_jitter``
+       (polar); ``generator.voronoi_angular_jitter`` (voronoi, up to about ``0.5``);
+       ``generator.checkpoint_angle_jitter`` (checkpoint)
+   * - Eccentricity, inlets
+     - ``generator.polar_radial_jitter`` (polar); ``generator.voronoi_radial_variation``
+       (voronoi); ``generator.checkpoint_radius_min_frac`` (lower: deeper; checkpoint);
+       ``generator.hull_displacement`` (pinches; hull)
+   * - Hills
+     - ``elevation.z_max`` with ``z_min`` fixed (``uniform``);
+       ``elevation.z_noise_amplitude`` in a wide symmetric window (``noise``)
+   * - Grade
+     - ``elevation.z_max_step`` in a wide window (``random_walk``)
+   * - Size
+     - not reachable in 0.2.0.dev5: a per-env ``generator.size`` is planned (roadmap
+       PR13d); today, ``bezier``'s ``style_sampling`` with ``scale_range``
+   * - Corner count
+     - not reachable in 0.2.0.dev5: a dynamic ``min_num_points`` for ``bezier`` /
+       ``hull`` is planned (PR13d); the knot, anchor and checkpoint counts size buffers
+   * - Corner asymmetry
+     - not reachable in 0.2.0.dev5: ``bezier``'s ``edgy`` (roadmap PR16)
+   * - Gate size
+     - not reachable in 0.2.0.dev5: ``gate_frames.default``'s ``gate_width`` (PR13d)
+
+The gate pipelines take the same keys for the polar, voronoi and checkpoint ring knobs
+and the elevation (``presets.gates(randomize=...)``).
 
 ``half_width`` and ``spacing`` coupling
 ----------------------------------------
@@ -280,9 +464,12 @@ Bezier (``generator="bezier"``)
 - ``min_num_points`` / ``max_num_points`` (default 9–13) control the corner
   count per env. A wider range increases diversity; many corners with high
   ``rad`` can push more tracks into the polygon fallback.
-- Enable ``style_sampling=True`` with ``rad_range``, ``scale_range``, and
-  ``handle_clamp_frac_range`` to let each env draw its own style, broadening the
-  family without adding a separate config.
+- To let each env draw its own style, randomize ``rad`` and ``handle_clamp_frac``
+  (``randomize={"generator.rad": (0.1, 0.4)}``; keep ``rad``'s range at or below the
+  clamp, the lowest clamp draw if you draw it too) and, for per-env size, enable
+  ``style_sampling=True`` with ``scale_range``. ``style_sampling``'s ``rad_range`` and
+  ``handle_clamp_frac_range`` still work, but ``randomize=`` supersedes them
+  (:ref:`bezier-style-vs-randomize`).
 
 Hull (``generator="hull"``)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -300,8 +487,9 @@ Polar (``generator="polar"``)
   spline has. More knots add higher-frequency features.
 - ``polar_radial_jitter`` (default 0.60) is the fractional radial jitter per
   knot. Larger values produce more eccentric shapes.
-- ``polar_angular_jitter`` (default 0.30) adds angular irregularity. The
-  implementation clamps it so knots stay in sorted angular order.
+- ``polar_angular_jitter`` (default 0.30) adds angular irregularity. It is
+  bounded to ``[0, 0.45]`` so knots stay in sorted angular order
+  (``polar_radial_jitter`` to ``[0, 0.85]``): a value outside raises ``ValueError``.
 - The polar generator has no local fallback: any rare bad geometry is handled
   by the shared post-relaxation validity gate, so unusually high jitter at low
   ``relax_iters`` may reduce yield.
@@ -319,6 +507,9 @@ Voronoi (``generator="voronoi"``)
   raise the relaxation burden.
 - ``voronoi_radial_variation`` (default 0.62) controls how eccentric the anchor
   ring is. At 0 all anchors are placed at a uniform annulus radius.
+- ``voronoi_angular_jitter`` (default 0.08, radians) breaks the rotational regularity.
+  Keep it below about ``0.3`` for full yield: it drops to 0.71-0.85 at ``0.5`` and near
+  zero from ``1.2``.
 - Higher ``voronoi_num_sites`` enriches the anchor snap targets but increases
   the all-sites scan cost per bead.
 

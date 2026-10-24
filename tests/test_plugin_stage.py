@@ -258,9 +258,15 @@ def test_describe_a_stage_generator(toys):
     S = _stage()
     registry.add(S)
     assert registry.describe("generator", "acme.s").params_schema == {}   # NoParams
-    legacy = registry.describe("generator", "bezier")
+    # A legacy GeneratorSpec (the toy with params=; "bezier" is a Stage since roadmap
+    # PR13c, described like any other).
+    legacy = registry.describe("generator", "toy.lobed")
     assert legacy.capture is None and legacy.output is None
     assert dict(legacy.writes) == {} and legacy.provides == frozenset()
+    bezier = registry.describe("generator", "bezier")
+    assert bezier.capture is CaptureClass.STATIC and bezier.output == "centerline"
+    assert dict(bezier.writes) == {"xy": "raw.xy", "valid": "gen.valid"}
+    assert bezier.builtin and bezier.params_schema["properties"]["rad"]["x-dynamic"]
 
 
 # ---------------------------------------------------------------------------------------

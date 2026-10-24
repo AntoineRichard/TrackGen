@@ -16,7 +16,6 @@ poisoned replays, torch adoption) lives in ``tests/test_caller_capture_cuda.py``
 from __future__ import annotations
 
 import contextlib
-import dataclasses
 import gc
 import sys
 import threading
@@ -115,20 +114,6 @@ def _assert_same(a, b, fields) -> None:
     for f in fields:
         np.testing.assert_array_equal(getattr(a, f).numpy(), getattr(b, f).numpy(),
                                       err_msg=f)
-
-
-def _counting(kind: str, name: str, **replace):
-    """Replace a registered spec by a copy whose generate() counts its calls (undone
-    by the per-test registry scope, see tests/conftest.py)."""
-    base = registry.get(kind, name)
-    calls: list = []
-
-    def generate(*args, **kwargs):
-        calls.append(1)
-        return base.generate(*args, **kwargs)
-
-    override_spec(registry, dataclasses.replace(base, generate=generate, **replace))
-    return calls
 
 
 def _put(spec) -> None:
@@ -911,7 +896,7 @@ def test_course_construction_refuses_a_capture_before_allocating(monkeypatch):
 # ---------------------------------------------------------------------------------------
 
 def test_track_generator_body_runs_once_at_construction_then_once_per_call():
-    calls = _counting("generator", "bezier")
+    calls = _counting_stage("generator", "bezier")
     gen = TrackGenerator(_track_cfg(), _rng())
     assert len(calls) == 1
     gen.generate()
@@ -923,8 +908,9 @@ def test_track_generator_body_runs_once_at_construction_then_once_per_call():
 
 
 def _counting_stage(kind: str, name: str):
-    """Replace a registered Stage (the gate built-ins since PR11) by a subclass whose
-    enqueue counts its calls (undone by the per-test registry scope)."""
+    """Replace a registered Stage (the gate built-ins since PR11, the track built-ins
+    since PR13c) by a subclass whose enqueue counts its calls (undone by the per-test
+    registry scope)."""
     base = registry.get(kind, name)
     calls: list = []
 
@@ -1127,7 +1113,7 @@ def test_course_regenerate_and_reseeds_match_a_fresh_course(mode):
 
 
 def test_course_body_counts():
-    calls = _counting("generator", "bezier")
+    calls = _counting_stage("generator", "bezier")
     c = _course("track")
     # generator prepare + course prepare (one regeneration body each)
     assert len(calls) == 2

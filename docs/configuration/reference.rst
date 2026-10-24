@@ -332,17 +332,66 @@ field, drawn uniformly in a range, inside the Program (and so inside a recorded 
                   "generator.n1": (0.2, 0.8)},
    )
 
-**What can be drawn: dynamic ``float32`` fields.** A field declared with
-``plugin.dynamic`` (a plugin generator's or stage's) and the three dynamic fields of the
-built-in ``width.from_channel`` (``width.scale``, ``width.lo``, ``width.hi``). **The
-built-in generators' and stages' knobs are static in 0.x** (``rad``,
-``polar_radial_jitter``, the elevation ranges, ...): naming one raises ``PlanError``,
-which lists the fields of the pipeline that can be drawn (``generator.rad is static:
-built-in knobs are static in 0.x; dynamic float32 fields in this pipeline: [...]``). So
-``randomize=`` is per-env sampling of *dynamic* fields, not yet a domain randomization of
-the built-in generators; for those, mix generators or configurations in one batch
-(:ref:`results-mixed-batches`) or use ``bezier``'s ``style_sampling``. ``int32`` fields
-cannot be drawn in 0.x either.
+**What can be drawn: dynamic ``float32`` fields.**
+
+.. list-table::
+   :header-rows: 1
+   :widths: 28 72
+
+   * - Stage
+     - Keys
+   * - ``bezier``
+     - ``generator.rad``, ``generator.handle_clamp_frac``
+   * - ``hull``
+     - ``generator.hull_displacement``
+   * - ``polar`` (tracks and gates)
+     - ``generator.polar_radial_jitter``, ``generator.polar_angular_jitter``
+   * - ``voronoi`` (tracks and gates)
+     - ``generator.voronoi_radial_variation``, ``generator.voronoi_angular_jitter``
+   * - ``checkpoint`` (tracks and gates)
+     - ``generator.checkpoint_radius_min_frac``, ``generator.checkpoint_angle_jitter``,
+       and on tracks ``generator.checkpoint_turn_rate``
+   * - ``elevation.uniform`` / ``.random_walk`` / ``.noise`` (tracks and gates)
+     - ``elevation.z_min``, ``elevation.z_max``; ``elevation.z_max_step``
+       (``random_walk``); ``elevation.z_noise_amplitude`` (``noise``)
+   * - ``width.from_channel``
+     - ``width.scale``, ``width.lo``, ``width.hi``
+   * - a plugin generator or stage
+     - every field it declares with ``plugin.dynamic`` (``float32``)
+
+The bounds, effective ranges and measured yields of the generators' knobs are on their
+pages (:ref:`generators-per-env`); :ref:`tuning-per-env` covers which elevation knob to
+draw for each profile. Every other built-in field is static (counts and sizes, ``edgy``,
+``scale``, ``z_base``, the relax and validity knobs, ``repulsive``): naming one raises
+``PlanError``, which lists the fields of the pipeline that can be drawn
+(``generator.edgy is a static field (build a new generator to change it; its stage's
+documentation says why it is static): dynamic float32 fields in this pipeline:
+[...]``; each generator page says why its static knobs are static). For those, mix generators or configurations in one batch
+(:ref:`results-mixed-batches`), or use ``bezier``'s ``style_sampling`` with
+``scale_range`` for per-env size. ``int32`` fields cannot be drawn in 0.x.
+
+**A pipeline built from a config.** ``PipelineSpec.with_randomize(randomize)`` returns
+the spec with the randomizers inserted, exactly as the presets do (the presets call it):
+
+.. code-block:: python
+
+   from track_gen import GateGenConfig, GateGenerator, TrackGenConfig, TrackGenerator
+   from track_gen.pipeline import legacy
+
+   cfg = TrackGenConfig(generator="polar", num_envs=4096, device="cuda:0")
+   spec = legacy.to_pipeline_spec(cfg).with_randomize(
+       {"generator.polar_radial_jitter": (0.3, 0.85)})
+   gen = TrackGenerator(spec)        # or TrackGenerator(spec, rng) with your seeds
+
+   # A GateGenConfig: its gate spec (legacy.to_pipeline_spec refuses it), GateGenerator.
+   gcfg = GateGenConfig(generator="polar", num_envs=4096, device="cuda:0")
+   gates = GateGenerator(legacy.to_gate_pipeline_spec(gcfg).with_randomize(
+       {"generator.polar_radial_jitter": (0.3, 0.85)}))
+
+``TrackGenConfig`` and ``GateGenConfig`` have no ``randomize`` field. A field the spec
+already randomizes is refused (``ValueError``): to change a draw range, replace that
+randomizer (``spec.replace("randomize.generator.rad", StageRef("randomize", "uniform",
+{...}))``) or write its live ``lo`` / ``hi``.
 
 **The form.** A mapping from ``"<stage id>.<field>"`` (split at the last dot: stage ids
 may contain dots, field names may not) to ``(lo, hi)``, or a sequence of ``StageRef``\ s
@@ -368,9 +417,11 @@ own checks then fail the env).
 too, and the next generation draws in the new range. The initial range must lie within
 the target field's declared bounds, and ``lo <= hi`` (``PlanError`` / ``ValueError`` at
 build). At run time ``set("lo" | "hi", value)`` checks a scalar against the same
-declared bounds (``ValueError``). An array write (``set`` with an array, or your own
-kernel) is not checked: a range wider than the field's bounds is clamped to them, so the
-excess piles onto the bound (the draws are no longer uniform).
+declared bounds (``ValueError``). These checks compare in ``float32``, as the arrays
+hold the values. An array write (``set`` with an array, or your own kernel) is not
+checked: a range wider than the field's bounds is clamped to them, so the excess piles
+onto the bound (the draws are no longer uniform). A one-sided field (``z_max_step``,
+``handle_clamp_frac``) is clamped on its declared side only.
 
 **Masks.** Under ``generate(advance=True, mask=m)`` the masked envs get new draws; the
 others keep their effective seed and bounds, so they redraw the same values and their
@@ -385,8 +436,15 @@ rows are restored by the commit: nothing changes for them.
 listed after its target; a stage other than the generator's randomizers before the
 generator (the generator stays the first stage that is not a randomizer, with id
 ``"generator"``); an unknown target stage or field; a target that is itself a
-randomizer; a static, ``int32`` or unknown field; two randomizers on one field. A
-``randomize=`` key naming a stage the preset does not have raises ``ValueError``
+randomizer; a static, ``int32`` or unknown field; two randomizers on one field; a
+``bezier`` knob that ``style_sampling`` draws (``rad`` with a ``rad_range``,
+``handle_clamp_frac`` with a ``handle_clamp_frac_range``: ``generator.rad is drawn by
+the generator's style_sampling (rad_range): set rad_range=None to randomize it``);
+randomizers
+on ``elevation.z_min`` and ``elevation.z_max`` that can cross. A ``rad`` randomizer
+above the clamp and an inert elevation window emit a ``UserWarning`` (the exact rules:
+:ref:`tuning-per-env`). A ``randomize=`` key naming a stage the preset does not have
+raises ``ValueError``
 (``randomize: key 'gnerator.amp' names stage 'gnerator', which this pipeline does not
 have; stages: [...]``).
 
@@ -430,7 +488,7 @@ These three configs build identical generators:
    from track_gen import TrackGenConfig
    from track_gen.plugin import registry
 
-   PolarParams = registry.get("generator", "polar").params
+   PolarParams = registry.get("generator", "polar").Params
 
    TrackGenConfig(generator="polar", polar_num_knots=9)
    TrackGenConfig(generator="polar", generator_params={"polar_num_knots": 9})
@@ -466,7 +524,10 @@ Rules:
   9})`` makes 9 gates.
 
 The built-in Params classes have no public import path: pass a mapping, or reach a class
-through ``track_gen.plugin.registry.get(kind, name).params`` and its schema through
+through ``track_gen.plugin.registry.get(kind, name).Params`` (every built-in generator is
+a ``Stage`` class; the 0.2.0.dev4 spelling ``.params`` still works for ``bezier``,
+``hull``, ``polar``, ``voronoi`` and ``checkpoint`` but emits a ``DeprecationWarning``
+and is removed in 1.0) and its schema through
 ``registry.describe(kind, name).params_schema``. Their field names are the flat ones,
 prefixes included (``polar_num_knots``, ``voronoi_control_points``, ``repulsive_*``), and
 they are the built-ins' permanent parameter names through 1.0: ``generator_params``
@@ -480,11 +541,39 @@ as ``StageBuilder.scale``, and ``num_points`` is its default raw point count.
 Built-in generator parameters
 -----------------------------
 
-Every field is static, its default is the config field's default, and the rule in the last
-column is checked when the generator is constructed, with the same message as before
-(``lo``/``hi`` in the schema mirror these rules). A field without a rule is used as given;
-where the generator clamps a value, the description says so. The descriptions of each knob
-are on the generator pages (:doc:`/generators/overview`).
+Each field's default is the config field's default, and the rule in the last column is
+checked when the generator is constructed, with the same message as before (``lo``/``hi``
+in the schema mirror these rules). A field without a rule is used as given; where the
+generator clamps a value, the description says so. The descriptions of each knob are on
+the generator pages (:doc:`/generators/overview`).
+
+**Kind.** A *static* field is a host value: build a new generator to change it. A
+*dynamic* field (since 0.2.0.dev5) is a per-env ``[E]`` ``float32`` array, initialised
+from the configured value, that ``randomize=`` can draw (:ref:`config-randomize`) and a
+curriculum can write (``gen.params["generator"].set(...)``, or its own kernel; see
+:ref:`tuning-per-env`). Its rule is its declared bounds, reported in the schema
+(``minimum`` / ``maximum``, ``x-dynamic``, and ``"x-bounds": "float32"``: the bounds
+compare in ``float32``, so a JSON-schema validator that compares in float64 refuses a
+read-back value just above a bound that TrackGen accepts):
+
+- a scalar outside them raises ``ValueError``, at construction (after the legacy rules,
+  so ``checkpoint_radius_min_frac`` still reports ``must be in [0, 1)`` first: its
+  configured value must stay below 1, its run-time values may reach it) and from
+  ``set``. The comparison is made in ``float32``, the precision the array holds (so
+  ``float(np.float32(0.85))``, slightly above ``0.85``, is accepted);
+- an array value outside them (an ``[E]`` ``set``, a caller kernel) is clamped to them
+  when the kernel reads it;
+- a ``bool`` is refused, and a value ``float()`` accepts (a numeric string such as
+  YAML's ``"1e9"``, a 0-d numpy array, a torch scalar tensor) is converted to a
+  ``float``, as 0.2.0.dev4 did.
+
+Rejected since 0.2.0.dev5 (each accepted, and used, before): ``rad`` outside ``[0, 1]``;
+a negative ``handle_clamp_frac``; ``hull_displacement`` outside ``[0, 1]``;
+``polar_radial_jitter`` outside ``[0, 0.85]`` and ``polar_angular_jitter`` outside
+``[0, 0.45]`` (they were clamped to these ranges: set the bound itself for the same
+output); ``voronoi_radial_variation`` above ``0.85`` (no effect beyond it);
+``voronoi_angular_jitter`` above ``pi``; ``checkpoint_angle_jitter`` outside ``[0, 1]``;
+``checkpoint_turn_rate`` outside ``[0, pi]``; a ``bool`` for any dynamic field.
 
 Track generators
 ~~~~~~~~~~~~~~~~
@@ -493,43 +582,55 @@ Track generators
 
 .. list-table::
    :header-rows: 1
-   :widths: 36 18 46
+   :widths: 34 14 12 40
 
    * - Field
      - Default
+     - Kind
      - Rule
    * - ``min_num_points``
      - ``9``
+     - static
      - ``>= 2``
    * - ``max_num_points``
      - ``13``
+     - static
      - ``>= min_num_points``
    * - ``num_points_per_segment``
      - ``30``
+     - static
      - ``>= 2``
    * - ``min_point_distance``
      - ``0.05``
+     - static
      - in ``(0, 0.5]``
    * - ``rad``
      - ``0.4``
-     -
+     - dynamic
+     - in ``[0, 1]``
    * - ``edgy``
      - ``0.0``
+     - static
      -
    * - ``handle_clamp_frac``
      - ``0.4``
-     -
+     - dynamic
+     - ``>= 0``
    * - ``style_sampling``
      - ``False``
+     - static
      -
    * - ``rad_range``
      - ``None``
+     - static
      - ``(lo, hi)`` or ``None``
    * - ``scale_range``
      - ``None``
+     - static
      - ``(lo, hi)`` or ``None``
    * - ``handle_clamp_frac_range``
      - ``None``
+     - static
      - ``(lo, hi)`` or ``None``
 
 ``HullParams`` (``generator="hull"``): ``min_num_points``, ``max_num_points``,
@@ -538,165 +639,208 @@ Track generators
 
 .. list-table::
    :header-rows: 1
-   :widths: 36 18 46
+   :widths: 34 14 12 40
 
    * - Field
      - Default
+     - Kind
      - Rule
    * - ``hull_displacement``
      - ``0.15``
-     -
+     - dynamic
+     - in ``[0, 1]``
 
 ``PolarParams`` (``generator="polar"``):
 
 .. list-table::
    :header-rows: 1
-   :widths: 36 18 46
+   :widths: 34 14 12 40
 
    * - Field
      - Default
+     - Kind
      - Rule
    * - ``num_points_per_segment``
      - ``30``
+     - static
      - ``>= 2``
    * - ``polar_num_knots``
      - ``12``
+     - static
      - none (the generator clamps it to ``>= 4``)
    * - ``polar_radial_jitter``
      - ``0.60``
-     - none (clamped to ``[0, 0.85]``)
+     - dynamic
+     - in ``[0, 0.85]`` (it was clamped to it)
    * - ``polar_angular_jitter``
      - ``0.30``
-     - none (clamped to ``[0, 0.45]``)
+     - dynamic
+     - in ``[0, 0.45]`` (it was clamped to it)
 
 ``VoronoiParams`` (``generator="voronoi"``):
 
 .. list-table::
    :header-rows: 1
-   :widths: 36 18 46
+   :widths: 34 14 12 40
 
    * - Field
      - Default
+     - Kind
      - Rule
    * - ``num_points_per_segment``
      - ``30``
+     - static
      - ``>= 2``
    * - ``voronoi_num_sites``
      - ``256``
+     - static
      - ``>= voronoi_control_points``
    * - ``voronoi_site_layout``
      - ``"void_ring"``
+     - static
      - one of ``"ring"``, ``"void_ring"``, ``"clustered"``, ``"mixed"``
    * - ``voronoi_control_points``
      - ``18``
+     - static
      - ``>= 6``
    * - ``voronoi_radial_variation``
      - ``0.62``
-     - ``>= 0``
+     - dynamic
+     - in ``[0, 0.85]``
    * - ``voronoi_angular_jitter``
      - ``0.08``
-     - ``>= 0``
+     - dynamic
+     - in ``[0, pi]``
 
 ``CheckpointParams`` (``generator="checkpoint"``):
 
 .. list-table::
    :header-rows: 1
-   :widths: 36 18 46
+   :widths: 34 14 12 40
 
    * - Field
      - Default
+     - Kind
      - Rule
    * - ``checkpoint_count``
      - ``12``
+     - static
      - ``>= 3``
    * - ``checkpoint_radius_min_frac``
      - ``0.33``
-     - in ``[0, 1)``
+     - dynamic
+     - in ``[0, 1)`` (bounds ``[0, 1]``)
    * - ``checkpoint_angle_jitter``
      - ``0.55``
-     -
+     - dynamic
+     - in ``[0, 1]``
    * - ``checkpoint_turn_rate``
      - ``0.42``
-     -
+     - dynamic
+     - in ``[0, pi]``
    * - ``checkpoint_steer_gain``
      - ``0.65``
+     - static
      -
    * - ``checkpoint_lookahead_frac``
      - ``0.16``
+     - static
      -
    * - ``checkpoint_best_of_k``
      - ``4``
+     - static
      - ``>= 1``
    * - ``checkpoint_clip_fallback``
      - ``False``
+     - static
      -
 
 ``RepulsiveParams`` (``generator="repulsive"``):
 
 .. list-table::
    :header-rows: 1
-   :widths: 36 18 46
+   :widths: 34 14 12 40
 
    * - Field
      - Default
+     - Kind
      - Rule
    * - ``repulsive_grow_mult_min``
      - ``4.5``
+     - static
      - ``>= 1``
    * - ``repulsive_grow_mult_max``
      - ``5.5``
+     - static
      - ``> 1`` and ``>= repulsive_grow_mult_min``
    * - ``repulsive_domain_frac``
      - ``0.35``
+     - static
      - ``> 0``
    * - ``repulsive_domain_init_ratio``
      - ``4.0``
+     - static
      - ``> 1``
    * - ``repulsive_obstacle_count_min``
      - ``8``
+     - static
      - ``>= 1``
    * - ``repulsive_obstacle_count_max``
      - ``12``
+     - static
      - ``>= repulsive_obstacle_count_min``
    * - ``repulsive_obstacle_radius_min_frac``
      - ``0.02``
+     - static
      - ``> 0``
    * - ``repulsive_obstacle_radius_max_frac``
      - ``0.045``
+     - static
      - ``>= repulsive_obstacle_radius_min_frac``
    * - ``repulsive_ratchet_rate``
      - ``0.012``
+     - static
      - ``> 0``
    * - ``repulsive_alpha``
      - ``3.0``
+     - static
      - ``> 0``
    * - ``repulsive_beta``
      - ``6.0``
+     - static
      - ``> 0``
    * - ``repulsive_tau``
      - ``0.4``
+     - static
      -
    * - ``repulsive_w_len``
      - ``30.0``
+     - static
      -
    * - ``repulsive_stages``
      - ``(64, 128, 256)``
+     - static
      - non-empty, positive multiples of 4, strictly increasing; the last equals
        ``num_points``
    * - ``repulsive_settle_iters``
      - ``40``
+     - static
      - ``>= 1``
    * - ``repulsive_resample_every``
      - ``25``
+     - static
      - ``>= 1``
    * - ``repulsive_stall_window``
      - ``16``
+     - static
      - ``>= 1``
    * - ``repulsive_stall_area_tol``
      - ``0.05``
+     - static
      -
    * - ``repulsive_deactivate_obstacles``
      - ``True``
+     - static
      -
 
 ``ExternalParams`` (``generator="external"``, the ingestion generator of
@@ -705,21 +849,25 @@ flat field: set it with ``generator_params``. Every field is static.
 
 .. list-table::
    :header-rows: 1
-   :widths: 24 18 58
+   :widths: 22 14 10 54
 
    * - Field
      - Default
+     - Kind
      - Rule
    * - ``with_z``
      - ``False``
+     - static
      - ``True`` adds the input ``centerline.z`` and makes the generator provide ``z``
        (no elevation stage)
    * - ``with_half_width``
      - ``False``
+     - static
      - ``True`` adds the input ``centerline.half_width`` and makes it provide
        ``half_width`` (no width stage)
    * - ``attributes``
      - ``()``
+     - static
      - ``(key, dtype, interp)`` triples: ``key`` a unique plugin key
        ``<package>.<name>``, ``dtype`` one of ``"float32"``, ``"int32"``,
        ``"vec2f"``, ``"vec3f"``, ``interp`` a policy valid for that dtype
@@ -741,19 +889,23 @@ capacity (:ref:`gate-capacity-config`) and accepted orders are given with its Pa
 
 .. list-table::
    :header-rows: 1
-   :widths: 36 18 46
+   :widths: 34 14 12 40
 
    * - Field
      - Default
+     - Kind
      - Rule
    * - ``min_num_points``
      - ``9``
+     - static
      - ``>= 2``
    * - ``max_num_points``
      - ``13``
+     - static
      - ``>= min_num_points``
    * - ``min_point_distance``
      - ``0.05``
+     - static
      - ``> 0``
 
 ``PolarGateParams`` (``generator="polar"``; one gate per knot, capacity
@@ -762,20 +914,24 @@ capacity (:ref:`gate-capacity-config`) and accepted orders are given with its Pa
 
 .. list-table::
    :header-rows: 1
-   :widths: 36 18 46
+   :widths: 34 14 12 40
 
    * - Field
      - Default
+     - Kind
      - Rule
    * - ``polar_num_knots``
      - ``12``
+     - static
      -
    * - ``polar_radial_jitter``
      - ``0.60``
-     -
+     - dynamic
+     - in ``[0, 0.85]`` (it was clamped to it)
    * - ``polar_angular_jitter``
      - ``0.30``
-     -
+     - dynamic
+     - in ``[0, 0.45]`` (it was clamped to it)
 
 ``VoronoiGateParams`` (``generator="voronoi"``; anchors are emitted directly as gates, so
 three control points suffice; capacity ``voronoi_control_points``; every order except
@@ -783,46 +939,56 @@ three control points suffice; capacity ``voronoi_control_points``; every order e
 
 .. list-table::
    :header-rows: 1
-   :widths: 36 18 46
+   :widths: 34 14 12 40
 
    * - Field
      - Default
+     - Kind
      - Rule
    * - ``voronoi_num_sites``
      - ``256``
+     - static
      - ``>= voronoi_control_points``
    * - ``voronoi_site_layout``
      - ``"void_ring"``
+     - static
      - one of ``"ring"``, ``"void_ring"``, ``"clustered"``, ``"mixed"``
    * - ``voronoi_control_points``
      - ``18``
+     - static
      - ``>= 3``
    * - ``voronoi_radial_variation``
      - ``0.62``
-     - ``>= 0``
+     - dynamic
+     - in ``[0, 0.85]``
    * - ``voronoi_angular_jitter``
      - ``0.08``
-     - ``>= 0``
+     - dynamic
+     - in ``[0, pi]``
 
 ``CheckpointGateParams`` (``generator="checkpoint"``; one gate per checkpoint, capacity
 ``checkpoint_count``; every order except ``"random_pairs"``; normalized):
 
 .. list-table::
    :header-rows: 1
-   :widths: 36 18 46
+   :widths: 34 14 12 40
 
    * - Field
      - Default
+     - Kind
      - Rule
    * - ``checkpoint_count``
      - ``12``
+     - static
      - ``>= 3``
    * - ``checkpoint_radius_min_frac``
      - ``0.33``
-     - in ``[0, 1)``
+     - dynamic
+     - in ``[0, 1)`` (bounds ``[0, 1]``)
    * - ``checkpoint_angle_jitter``
      - ``0.55``
-     -
+     - dynamic
+     - in ``[0, 1]``
 
 The ``GateGenConfig`` fields ``num_points_per_segment``, ``rad``, ``edgy``,
 ``handle_clamp_frac`` and ``hull_displacement`` belong to no gate generator: they are
@@ -891,7 +1057,10 @@ rule. The new errors, all at generator construction unless noted:
    * - A flat field and ``generator_params`` setting the selected built-in's knob to
        different values
      - ``ValueError`` naming the fields
-   * - A value outside a field's ``lo``/``hi`` or ``choices``
+   * - A value outside a field's ``lo``/``hi`` or ``choices`` (for a dynamic field,
+       compared in ``float32``; since 0.2.0.dev5 the bounds of the dynamic fields above)
+     - ``ValueError``
+   * - A ``bool`` for a dynamic field (0.2.0.dev5)
      - ``ValueError``
    * - A ``generator_params`` that is not ``None``, a mapping or a dataclass instance
      - ``TypeError``, at config construction

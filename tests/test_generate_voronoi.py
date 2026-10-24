@@ -17,7 +17,7 @@ pytest.importorskip("warp")
 import warp as wp  # noqa: E402
 
 from track_gen import PerEnvSeededRNG  # noqa: E402
-from track_gen._src import generator_registry as reg  # noqa: E402
+from track_gen._src import warp_generate_voronoi  # noqa: E402
 from track_gen._src.track_generator import Track, TrackGenConfig, TrackGenerator  # noqa: E402
 from tests._warp_compare import self_intersections, to_t  # noqa: E402
 
@@ -74,14 +74,14 @@ def test_voronoi_generation_outputs_simple_finite_centerlines(dev):
         num_points=128,
         device=dev,
     )
-    spec = reg.get("voronoi")
-    scratch = spec.alloc_scratch(cfg)
+    # The frozen legacy entry points (the registered "voronoi" is a Stage since PR13c).
+    scratch = warp_generate_voronoi.voronoi_alloc_scratch(cfg)
     seeds_t = torch.arange(E, dtype=torch.int32, device=dev)
     seeds_wp = wp.from_torch(seeds_t, dtype=wp.int32)
     out = wp.empty(E * int(cfg.num_points), dtype=wp.vec2f, device=dev)
     valid_wp = wp.empty(E, dtype=wp.int32, device=dev)
 
-    spec.generate(seeds_wp, cfg, out, valid_wp, scratch)
+    warp_generate_voronoi.generate_voronoi_warp(seeds_wp, cfg, out, valid_wp, scratch)
     if "cuda" in dev:
         wp.synchronize()
 

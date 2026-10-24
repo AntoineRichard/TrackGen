@@ -6,7 +6,10 @@ It samples a set of random grid-jittered corner anchors, sorts them by angle aro
 their centroid to form a simple star-shaped polygon, and assembles a closed cubic
 Bézier spline through those corners.  Handle lengths are proportional to
 ``rad * chord`` and adaptively clamped so that no handle overshoots a nearby corner.
-An optional per-environment style draw broadens the shape family within a single batch.
+Its two handle knobs, ``rad`` and ``handle_clamp_frac``, are per-env (dynamic)
+parameters: ``randomize=`` draws them and a curriculum can write them from its own graph
+(`Per-env (dynamic) parameters`_). The older per-environment style draw
+(``style_sampling``) is still supported, and remains the way to vary ``scale`` per env.
 Any smooth curve that still self-crosses after clamping is rescued by its provably
 simple corner polygon, which the downstream XPBD solver re-rounds.
 
@@ -22,12 +25,16 @@ How It Works
 The generator runs a fixed sequence of Warp kernels in a single pass — no
 host-side retry loop, no per-environment Python branching:
 
-1. **Optional style draw.**  When ``style_sampling=True``, a dedicated kernel draws
-   per-environment ``rad``, ``scale``, and ``handle_clamp_frac`` values from their
-   respective ``*_range`` fields using RNG salt ``2741``.  A range of ``None``
-   collapses to the corresponding scalar, so individual knobs can stay fixed while
-   others vary.  This Python branch is resolved at CUDA-graph capture time; the
-   per-environment values are device arrays and the captured graph remains static.
+1. **Optional style draw.**  When ``style_sampling=True``, a dedicated kernel
+   (``_style_sample_k``) draws per-environment ``rad``, ``scale``, and
+   ``handle_clamp_frac`` values from their respective ``*_range`` fields using RNG salt
+   ``2741``.  A ranged ``rad`` / ``handle_clamp_frac`` is drawn straight into that
+   knob's per-env parameter array, which then reports the draw
+   (``gen.params["generator"]["rad"]``); a knob whose range is ``None`` is not drawn and
+   reads its own per-env parameter array, like a generation without style sampling. A
+   ``scale_range`` of ``None`` collapses to the scalar ``scale``.  This Python branch is
+   resolved at CUDA-graph capture time; the per-environment values are device arrays
+   and the captured graph remains static.
 
 2. **Corner count.**  ``ops.sample_counts`` (salt ``6151``, offset ``0``) draws
    ``count[e]`` uniformly from ``[min_num_points, max_num_points]`` for each environment.
@@ -54,7 +61,7 @@ host-side retry loop, no per-environment Python branching:
    ``edgy=0``, ``p=0.5`` gives a symmetric bisector tangent.  It also records each
    corner's shorter incident edge length for the adaptive clamp (step 6).
 
-6. **Cubic Bézier assembly.**  ``_assemble_k`` emits ``num_points_per_segment`` dense
+6. **Cubic Bézier assembly.**  ``_assemble_dyn_k`` emits ``num_points_per_segment`` dense
    samples for each closed edge (corner ``i`` to corner ``(i+1) % count[e]``),
    including the wrap-around closing edge.  For each segment the handle lengths are
    computed as:
@@ -78,8 +85,12 @@ host-side retry loop, no per-environment Python branching:
       P_2 = c_1 - \hat{t}_1 \cdot h_1
 
    and the segment is evaluated via the standard Bernstein basis (see Math section).
-   In style mode ``_assemble_style_k`` reads ``rad[e]`` and ``handle_clamp_frac[e]``
-   from the per-environment device arrays drawn in step 1.
+   ``rad`` and ``handle_clamp_frac`` are env ``e``'s values, read from the per-env
+   arrays (step 1's draws for a ranged knob in style mode) and clamped to the declared
+   bounds (`Per-env (dynamic) parameters`_; a style draw is used as drawn).  The frozen
+   legacy entry point ``generate_centerline_warp`` keeps the scalar kernels
+   ``_assemble_k`` and, in style mode, ``_assemble_style_k``; the arithmetic is the
+   same, so both give the same bytes.
 
 7. **Dense-to-N arc-resample.**  ``ops.arc_resample`` converts the dense
    ``max_num_points × num_points_per_segment`` loop to exactly ``num_points``
@@ -183,6 +194,7 @@ checked when the ``TrackGenerator`` is constructed, and only for ``generator="be
     Handle length as a fraction of the segment chord — the primary curviness dial.
     Only live when ``rad <= handle_clamp_frac``; if ``rad`` exceeds the clamp,
     ``handle_clamp_frac`` binds every segment and ``rad`` has no independent effect.
+    Dynamic, in ``[0, 1]`` (see below).
 
 ``edgy``
     Corner-tangent blend weight.  Converted as ``p = atan(edgy) / π + 0.5``.
@@ -200,26 +212,128 @@ checked when the ``TrackGenerator`` is constructed, and only for ``generator="be
     ``handle_clamp_frac × (its shorter incident edge)`` to prevent overshoot past
     a nearby corner.  Set equal to ``rad`` (the default ``0.4``) so the clamp only
     trims genuine overshoot; set below ``rad`` to bind every handle regardless of
-    ``rad`` (near-polygonal tracks); set very large to disable.
+    ``rad`` (near-polygonal tracks); set very large to disable. Dynamic, ``>= 0``
+    (see below).
 
 ``style_sampling``
     Opt-in per-environment Bézier style randomisation (default ``False``).  When
     ``True``, each environment draws its own ``rad``, ``scale``, and
     ``handle_clamp_frac`` from the ``*_range`` fields, so a single batch spans a
-    family of styles.
+    family of styles. Still supported; for ``rad`` and ``handle_clamp_frac`` it is
+    superseded by ``randomize=`` (`Style sampling and randomize`_).
 
 ``rad_range``
     ``(lo, hi)`` range for per-environment ``rad`` when ``style_sampling=True``.
-    ``None`` collapses to the scalar ``rad`` for all environments.
+    ``None`` leaves ``rad`` to its per-env parameter array (every env at the configured
+    ``rad`` unless you ``set`` or randomize it). Superseded by
+    ``randomize={"generator.rad": (lo, hi)}``.
 
 ``scale_range``
     ``(lo, hi)`` range for per-environment ``scale`` when ``style_sampling=True``.
-    ``None`` collapses to the scalar ``scale`` for all environments.
+    ``None`` collapses to the scalar ``scale`` for all environments. Fully supported:
+    it is the only per-env size control until roadmap PR13d.
 
 ``handle_clamp_frac_range``
     ``(lo, hi)`` range for per-environment ``handle_clamp_frac`` when
-    ``style_sampling=True``.  ``None`` collapses to the scalar ``handle_clamp_frac``
-    for all environments.
+    ``style_sampling=True``.  ``None`` leaves the clamp to its per-env parameter array.
+    Superseded by ``randomize={"generator.handle_clamp_frac": (lo, hi)}``.
+
+.. _bezier-dynamic:
+
+Per-env (dynamic) parameters
+----------------------------
+
+``rad`` and ``handle_clamp_frac`` are **dynamic** fields of ``BezierParams``: each is a
+per-env ``[E]`` ``float32`` array, initialised from the configured value. Draw them per
+env with ``presets.track(randomize={"generator.rad": (lo, hi)})``, write them with
+``gen.params["generator"].set("rad", value_or_array)``, or from a kernel in your own CUDA
+graph (a curriculum): see :ref:`tuning-per-env`. A scalar outside the bounds raises
+``ValueError`` (at construction, or from ``set``); an array value outside them (a
+``set`` with an ``[E]`` array, your own kernel) is clamped to them when the kernel reads
+it.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 22 9 12 22 22 13
+
+   * - Field (``randomize=`` key)
+     - Default
+     - Bounds
+     - Harder / more varied when
+     - Effective range
+     - Yield at lo / default / hi
+   * - ``rad`` (``generator.rad``)
+     - ``0.4``
+     - ``[0, 1]``
+     - lower: sharper, more polygonal corners
+     - ``[0, handle_clamp_frac]``: above the clamp ``rad`` has no effect
+     - 1.00 / 1.00 / 1.00
+   * - ``handle_clamp_frac`` (``generator.handle_clamp_frac``)
+     - ``0.4``
+     - ``>= 0``
+     - lower: near-polygonal (every handle bound by its shorter edge)
+     - ``[0, ~rad]``; a very large value disables the clamp
+     - 1.00 at ``0``, ``0.4`` and ``1e9``
+
+*Yield* is the fraction of valid tracks with the default pipeline, ``E = 128``, seeds
+``0..127`` (CPU), with the knob set to the value for every env.
+
+**Mind the clamp.** Each handle is ``min(rad * chord, handle_clamp_frac *
+shorter_edge)``, and the shorter incident edge is never longer than the chord, so
+``rad >= handle_clamp_frac`` leaves ``rad`` inert: the defaults (``rad =
+handle_clamp_frac = 0.4``) sit exactly at saturation. To vary curviness, keep the
+``rad`` range at or below the clamp (``randomize={"generator.rad": (0.1, 0.4)}``); when
+you draw ``handle_clamp_frac`` too, keep ``hi(rad) <= lo(handle_clamp_frac)``, or accept
+that ``rad`` is inert in the envs where its draw lands at or above the clamp's. The
+build warns about a ``rad`` range above the clamp (:ref:`tuning-per-env`).
+
+**Static knobs, and why.** ``min_num_points`` / ``max_num_points`` (``max`` sizes the
+corner buffers; a dynamic corner count is planned for roadmap PR13d),
+``num_points_per_segment`` (sizes the dense buffer and its loops),
+``min_point_distance`` (sets the corner grid on the host), ``edgy`` (turned into
+``atan(edgy) / pi + 0.5`` on the host in double precision, which a kernel cannot
+reproduce bit for bit: planned for PR16), the ``style_sampling`` fields (a Python branch
+and host ranges) and the core ``scale`` (per-env size: PR13d; until then
+``scale_range``).
+
+.. _bezier-style-vs-randomize:
+
+Style sampling and randomize
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``style_sampling`` is kept, and not deprecated in this release. Its ``rad_range`` and
+``handle_clamp_frac_range`` are superseded by ``randomize=`` on the two dynamic fields
+(the same uniform distributions, drawn from different random streams, so the tracks
+differ); ``scale_range`` has no replacement until per-env size ships (roadmap PR13d,
+which will deprecate ``style_sampling``):
+
+.. code-block:: python
+
+   # style sampling (still supported)
+   TrackGenConfig(style_sampling=True, rad_range=(0.1, 0.35),
+                  handle_clamp_frac_range=(0.3, 0.9))
+
+   # randomize: the same distributions, other draws (the style ranges, for comparison:
+   # rad is inert in the envs where its draw lands at or above the clamp's, see above)
+   spec = presets.track(num_envs=E, device=device,
+                        randomize={"generator.rad": (0.1, 0.35),
+                                   "generator.handle_clamp_frac": (0.3, 0.9)})
+
+   # randomize on a pipeline built from a config
+   gen = TrackGenerator(
+       legacy.to_pipeline_spec(cfg).with_randomize(
+           {"generator.rad": (0.1, 0.35), "generator.handle_clamp_frac": (0.3, 0.9)}),
+       rng)
+
+Under ``style_sampling=True`` a knob with a range is **drawn by the style kernel**: its
+parameter array holds each env's draw after a generation (read it to log what each env
+was built with), ``gen.params["generator"].drawn`` maps it to the stage's own id
+(``"generator"``), ``set`` on it raises ``ValueError`` (``generator.rad is drawn every
+generation by the generator's style_sampling (rad_range); set rad_range=None to set
+it``), and a randomizer on it is a ``PlanError``. A knob whose range is ``None`` stays an
+ordinary dynamic field:
+``set`` and ``randomize=`` work on it. The bytes of every ``style_sampling``
+configuration are unchanged.
 
 What Makes It Distinct
 ----------------------
@@ -229,8 +343,10 @@ The Bezier generator is the **default** and most knob-rich of the six generators
 - **Widest style control.** Eight primary knobs (``min_num_points``, ``max_num_points``,
   ``num_points_per_segment``, ``min_point_distance``, ``rad``, ``edgy``, ``scale``,
   ``handle_clamp_frac``) plus the opt-in ``style_sampling`` family are all
-  exclusive to the corner-Bézier representation.  No other generator exposes per-env
-  handle geometry or a per-batch style sweep.
+  exclusive to the corner-Bézier representation.  No other generator exposes handle
+  geometry, and only ``style_sampling`` varies ``scale`` per env (every built-in
+  sampling generator, ``bezier``, ``hull``, ``polar``, ``voronoi`` and ``checkpoint``,
+  has per-env shape knobs for ``randomize=``).
 
 - **Cubic Bézier representation.** Compared to the **hull** generator (which uses a
   closed uniform Catmull-Rom spline) and the **polar** generator (also Catmull-Rom),

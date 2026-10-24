@@ -1025,7 +1025,13 @@ the live ``[E]`` array, and ``gen.params["relax"].set("lam", 0.6)`` writes it, o
 resolved stream, recordable inside a caller's graph. The new value is used from the next
 generation. ``b.param`` returns the stage's working copy, latched at the start of every
 generation (for the masked envs only, under a masked regeneration); read it in
-``enqueue``, never write it.
+``enqueue``, never write it, and read each env's own entry (``param[e]``): the kit's
+``params.per_env`` check sets the field per env and compares every env with a scalar
+run. The latch runs at the start of segment ``0``, so in a Program with a ``HOST``
+stage a write recorded after segment ``0`` applies at the next generation
+(:ref:`pipeline-segments`). The built-in elevation stages work the same way: their
+``z_min`` / ``z_max`` (and ``z_max_step``, ``z_noise_amplitude``) are dynamic,
+``gen.params["elevation"]["z_max"]`` (:ref:`tracks-25d-per-env`).
 
 Only static fields reach ``build`` and ``capture_class`` (reading a dynamic one raises
 ``AttributeError``): a host value derived from a dynamic field would be baked into the

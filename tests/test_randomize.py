@@ -138,12 +138,19 @@ def test_the_planner_rules():
                                         r"fields can be drawn; drawable fields in this "
                                         r"pipeline: \['generator\.amp'\]$"):
         build(_with(base, _r(field="lobes"), "generator"))
-    bez = presets.track(num_envs=E, device=DEV, randomize={"generator.rad": (0.2, 0.3)})
-    with pytest.raises(PlanError, match=r"generator\.rad is static: built-in knobs are "
-                                        r"static in 0\.x; dynamic float32 fields in this "
-                                        r"pipeline: \[\]"):
-        build(bez)
-    with pytest.raises(PlanError, match=r"^relax\.relax_iters is static: built-in knobs"):
+    # Roadmap PR13c: bezier's rad is a dynamic built-in knob (it builds); a static
+    # built-in knob is refused with the static-knob message.
+    build(presets.track(num_envs=E, device=DEV, randomize={"generator.rad": (0.2, 0.3)}))
+    edgy = presets.track(num_envs=E, device=DEV, randomize={"generator.edgy": (0.2, 0.3)})
+    with pytest.raises(PlanError, match=r"^generator\.edgy is a static field \(build a "
+                                        r"new generator to change it; its stage's "
+                                        r"documentation says why it is static\): dynamic "
+                                        r"float32 fields in this pipeline: "
+                                        r"\['generator\.rad', "
+                                        r"'generator\.handle_clamp_frac'\]$"):
+        build(edgy)
+    with pytest.raises(PlanError, match=r"^relax\.relax_iters is a static field \(build "
+                                        r"a new generator"):
         build(_with(base, _r("relax", "relax_iters"), "relax"))
     rib = presets.track(num_envs=E, device=DEV, generator="acme.ribbon",
                         width=StageRef("width", "from_channel",

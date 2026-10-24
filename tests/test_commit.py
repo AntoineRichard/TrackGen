@@ -319,27 +319,31 @@ def _kernels(trace) -> list:
 
 
 def test_launch_counts():
+    # Roadmap PR13c re-pin (deliberate): the default bezier generator latches its two
+    # dynamic knobs (rad, handle_clamp_frac) after the effective seed: every count +2
+    # (152 -> 154; masked: the hold moves from index 2 to 4).
     ctx = LaunchContext.for_call(DEV)
     default = _gen(_spec())
     with trace_launches() as plain:
         default.program.enqueue(ctx)
-    assert len(plain) == 152                                    # 0.2.0.dev2's count
+    assert len(plain) == 154                                    # 0.2.0.dev2's 152 + 2
     assert "_hold_k" not in _kernels(plain) and "_commit_k" not in _kernels(plain)
     with trace_launches() as masked:
         default.program.enqueue(ctx, advance=True, mask=_i32(MASK))
     k = _kernels(masked)
-    assert len(masked) == 152 + 1 + 2                          # + the epoch advance
+    assert len(masked) == 154 + 1 + 2                          # + the epoch advance
     assert k.count("_hold_k") == 1 and k.count("_commit_k") == 1
-    assert k.index("_hold_k") == 2                             # advance, seed, hold
+    assert k[2:4] == ["_latch_masked_f32_k"] * 2               # the generator's knobs
+    assert k.index("_hold_k") == 4                             # advance, seed, 2 latches
     assert k[-2] == "_commit_k" and k[-1] == "_copy_masked_k"   # then generation
     poison = _gen(_spec(on_invalid="poison"))
     with trace_launches() as t:
         poison.program.enqueue(ctx)
-    assert len(t) == 153 and _kernels(t)[-2] == "_commit_k"
+    assert len(t) == 155 and _kernels(t)[-2] == "_commit_k"
     checked = _gen(_spec(checks=("default", KMAX)))
     with trace_launches() as t:
         checked.program.enqueue(ctx)
     # + the kappa_max latch, the check, the commit (valid only: one thread per env)
-    assert len(t) == 152 + 3 and _kernels(t)[-2] == "_derive_valid_k"
+    assert len(t) == 154 + 3 and _kernels(t)[-2] == "_derive_valid_k"
     assert t[-2].dim == (E,), t[-2].dim
-    assert _kernels(t)[1] == "_latch_all_f32_k" and "_kmax_k" in _kernels(t)
+    assert _kernels(t)[1:4] == ["_latch_all_f32_k"] * 3 and "_kmax_k" in _kernels(t)

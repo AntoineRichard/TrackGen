@@ -17,17 +17,21 @@ centroid correction, or polygon fallback is required.
 How It Works
 ------------
 
-1. **Control knot sampling.** The kernel ``_polar_controls_k`` draws
+1. **Control knot sampling.** The kernel ``_polar_controls_dyn_k`` draws
    ``K = polar_num_knots`` control knots using an RNG stream seeded by
    ``seeds[e] * 7919 + 17`` (salt ``7919`` is the polar stream constant;
-   ``+17`` is the control-specific offset). For each knot index
+   ``+17`` is the control-specific offset). It first reads env ``e``'s
+   ``radial_jitter`` and ``angular_jitter`` from the per-env parameter arrays and clamps
+   them to their bounds, ``[0, 0.85]`` and ``[0, 0.45]`` (the frozen legacy
+   ``generate_polar_warp`` clamps on the host instead and launches the scalar
+   ``_polar_controls_k``: the same values, the same bytes). For each knot index
    ``i`` in ``0 … K-1``:
 
    - The nominal angle is ``2π i / K``.
    - A bounded angular offset ``angle_delta`` is drawn from
-     ``(-angular_jitter, +angular_jitter)`` and added: if the jitter fraction
-     is kept below ``0.5`` (enforced by Python before launch), the fixed index
-     order remains the sorted angular order without a runtime sort.
+     ``(-angular_jitter, +angular_jitter)`` and added: because the jitter fraction
+     is at most ``0.45``, below ``0.5``, the fixed index order remains the sorted
+     angular order without a runtime sort.
    - A radial offset ``radial_delta`` is drawn from
      ``(-radial_jitter, +radial_jitter)`` and applied relative to
      ``base_radius = 1.0``. The radius is clamped to at least ``0.1 *
@@ -72,8 +76,8 @@ Math
    r_i = R_\text{base} \cdot \max\!\bigl(1 + \epsilon_i^{(r)},\; 0.1\bigr),
    \qquad |\epsilon_i^{(r)}| \leq \delta_r
 
-where :math:`\alpha` is the dimensionless ``polar_angular_jitter`` fraction (clamped to
-``[0, 0.45]``, strictly below ``0.5`` so the fixed index order remains the sorted angular
+where :math:`\alpha` is the dimensionless ``polar_angular_jitter`` fraction (bounded
+to ``[0, 0.45]``, strictly below ``0.5`` so the fixed index order remains the sorted angular
 order without a runtime sort), :math:`\delta_r` is ``polar_radial_jitter``, and
 :math:`R_\text{base} = 1.0` (a pre-normalization working radius). The Cartesian knot position is:
 
@@ -139,15 +143,19 @@ checked when the ``TrackGenerator`` is constructed, and only for ``generator="po
    Maximum fractional radial perturbation :math:`\delta_r` applied to each
    knot. At ``0.0`` all knots sit on ``base_radius`` and the spline is a
    near-circle. At the default (``0.60``) the generator produces substantial
-   radial variety without collapsing radii. Clamped to ``[0.0, 0.85]``. (The
-   deprecated ``amplitude`` field only matters for a config-like object without
-   ``polar_radial_jitter``, where the fallback is ``0.60 * amplitude``.)
+   radial variety without collapsing radii. Dynamic, in ``[0, 0.85]``: a value
+   outside raises ``ValueError`` at construction (0.2.0.dev4 accepted it and clamped
+   it; set the bound itself for the same output). (The deprecated ``amplitude``
+   field only matters to the legacy ``generate_polar_warp`` called with a config-like
+   object without ``polar_radial_jitter``, where the fallback is
+   ``0.60 * amplitude``.)
 
 ``polar_angular_jitter``
    Maximum angular offset as a fraction of one knot cell
-   (:math:`2\pi / K`). Kept strictly below ``0.5`` (clamped to ``[0.0,
-   0.45]``) so the fixed knot indices remain in sorted angular order without a
-   runtime sort. Default: ``0.30``.
+   (:math:`2\pi / K`). Kept strictly below ``0.5`` so the fixed knot indices remain
+   in sorted angular order without a runtime sort: dynamic, in ``[0, 0.45]``, and a
+   value outside raises ``ValueError`` at construction (it was clamped). Default:
+   ``0.30``.
 
 ``scale``
    Global coordinate scale shared across all generators. The polar generator
@@ -158,6 +166,57 @@ checked when the ``TrackGenerator`` is constructed, and only for ``generator="po
    Number of dense Catmull-Rom samples emitted per control-knot segment before
    arc-length resampling. Shared with the bezier, hull and voronoi generators.
    Higher values improve arc-length accuracy at the cost of scratch buffer size.
+
+.. _polar-dynamic:
+
+Per-env (dynamic) parameters
+----------------------------
+
+``polar_radial_jitter`` and ``polar_angular_jitter`` are **dynamic** fields of
+``PolarParams`` (and of ``PolarGateParams``: the polar gate generator draws its knots
+with the same kernel): per-env ``[E]`` ``float32`` arrays, initialised from the
+configured values. Draw them per env with ``presets.track(generator="polar",
+randomize={"generator.polar_radial_jitter": (lo, hi)})`` (``presets.gates`` takes the
+same keys), write them with ``gen.params["generator"].set(...)`` or from your own graph
+(a curriculum): see :ref:`tuning-per-env`.
+
+**The clamp is now a bound.** The generator always clamped these jitters to
+``[0, 0.85]`` and ``[0, 0.45]``; those are now their declared bounds. A scalar outside
+them raises ``ValueError`` (at construction, or from ``set``): a configuration that
+relied on the clamp (``polar_radial_jitter=1.0``) now fails, and setting the bound
+(``0.85``) gives exactly its old output. An array value outside them (an ``[E]``
+``set``, your own kernel) is clamped when the kernel reads it, as before.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 26 9 11 21 20 13
+
+   * - Field (``randomize=`` key)
+     - Default
+     - Bounds
+     - Harder / more varied when
+     - Effective range
+     - Yield at lo / default / hi
+   * - ``polar_radial_jitter`` (``generator.polar_radial_jitter``)
+     - ``0.60``
+     - ``[0, 0.85]``
+     - higher: more eccentric shapes, deeper inlets
+     - the whole range (the bound keeps every radius positive)
+     - 1.00 / 1.00 / 0.98
+   * - ``polar_angular_jitter`` (``generator.polar_angular_jitter``)
+     - ``0.30``
+     - ``[0, 0.45]``
+     - higher: more irregular knot spacing
+     - the whole range (the bound keeps the knots in angular order)
+     - 1.00 / 1.00 / 1.00
+
+*Yield* is the fraction of valid tracks with the default pipeline, ``E = 128``, seeds
+``0..127`` (CPU), with the knob set to the value for every env.
+
+**Static knobs, and why.** ``polar_num_knots`` (sizes the knot and dense buffers and
+the launch dimensions), ``num_points_per_segment`` (sizes the dense buffer) and the core
+``scale`` (a host product with the target extent; per-env size is planned for roadmap
+PR13d).
 
 What Makes It Distinct
 ----------------------

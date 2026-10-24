@@ -149,10 +149,23 @@ def _seeded(report: Report) -> bool:
     return registry.describe(report.kind, report.name).seeded
 
 
+# Roadmap PR13c: params.per_env is skipped ("no dynamic parameters") for a unit whose
+# stage has no dynamic field nobody draws (repulsive, external, the bezier / hull gate
+# generators, most toys).
+_PER_ENV = "params.per_env"
+_NO_DYNAMIC = "skipped: no dynamic parameters"
+
+
 def _skipped_besides_tiers(report: Report) -> list:
     return [r.name for r in report if r.skipped and r.name not in _TIERS
             and not (r.name in _ATTRS and r.message == "skipped: no attributes")
+            and not (r.name == _PER_ENV and r.message == _NO_DYNAMIC)
             and not (r.name == "diversity" and not _seeded(report))]
+
+
+# The built-ins whose stage has dynamic params (roadmap PR13c): params.per_env runs.
+_DYNAMIC_TRACK = {"bezier", "hull", "polar", "voronoi", "checkpoint"}
+_DYNAMIC_GATES = {"polar", "voronoi", "checkpoint"}
 
 
 def _assert_builtin_promises(report: Report, device: str) -> None:
@@ -210,6 +223,8 @@ def test_builtin_generator_conforms_cpu(name, config):
     report.raise_for_failures()
     assert [r.name for r in report] == _cpu_names("generator")   # no capture.*
     assert not _skipped_besides_tiers(report)
+    per_env = report.result(_PER_ENV)
+    assert per_env.skipped == (name not in _DYNAMIC_TRACK), per_env
     # No built-in has a HOST stage; repulsive is the BOUNDED one (its loop stops early for
     # at least one of the kit's batches, so the absorbing probe is exercised; which one is
     # platform-dependent).
@@ -229,6 +244,8 @@ def test_builtin_gate_generator_conforms_cpu(name, config):
     report = check_gate_generator(name, devices=CPU, config=config, num_envs=_NUM_ENVS)
     report.raise_for_failures()
     assert not _skipped_besides_tiers(report)
+    per_env = report.result(_PER_ENV)
+    assert per_env.skipped == (name not in _DYNAMIC_GATES), per_env
     _assert_builtin_promises(report, "cpu")
 
 

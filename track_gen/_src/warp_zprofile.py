@@ -21,6 +21,15 @@ gate anchors via ``gate_cum_perim`` (which wraps ``_cum_chords_k``); the
 track path passes the constant-spacing resampler's own 2D arc tables. Either
 caller can then drive the shared profile-select + launch logic in
 ``apply_z_profile``.
+
+Roadmap PR13c: the elevation stages' ``z_min`` / ``z_max`` (and ``z_max_step``,
+``z_noise_amplitude``) are dynamic per-env arrays. The stages run the private cores
+:func:`_apply_z_profile` / :func:`_apply_z_profile_knots` with ``dyn`` (those arrays),
+which launch the array-reading twins (``_z_uniform_dyn_k``, ``_z_walk_dyn_k``,
+``_z_noise_dyn_k``: each knob loaded once, the grade / amplitude clamped to their
+declared ``lo = 0`` by a comparison, then the scalar kernel's body); the frozen public
+:func:`apply_z_profile` / :func:`apply_z_profile_knots` read the host scalars of
+``config`` and launch the scalar kernels (``dyn=None``).
 """
 import warp as wp
 
@@ -30,6 +39,12 @@ _P_UNIFORM = 15679
 _P_WALK = 15683
 _P_NOISE = 15731
 _TWO_PI = 6.2831853071795864
+# The declared lower bound of z_max_step / z_noise_amplitude (stages.params; float32).
+_ZERO = wp.constant(wp.float32(0.0))
+#: The dynamic fields of each profile's elevation stage (roadmap PR13c).
+_DYNAMIC = {"flat": (), "uniform": ("z_min", "z_max"),
+            "random_walk": ("z_min", "z_max", "z_max_step"),
+            "noise": ("z_min", "z_max", "z_noise_amplitude")}
 
 
 @wp.kernel
@@ -159,6 +174,106 @@ def _z_noise_k(seeds: wp.array(dtype=wp.int32),
     z[t] = wp.clamp(zz, z_min, z_max)
 
 
+@wp.kernel
+def _z_uniform_dyn_k(seeds: wp.array(dtype=wp.int32),
+                     count: wp.array(dtype=wp.int32), max_gates: int,
+                     zmin_e: wp.array(dtype=wp.float32), zmax_e: wp.array(dtype=wp.float32),
+                     z: wp.array(dtype=wp.float32)):
+    # _z_uniform_k with z_min / z_max read per env (roadmap PR13c; no declared bounds).
+    t = wp.tid()
+    e = t // max_gates
+    i = t - e * max_gates
+    if i >= count[e]:
+        z[t] = 0.0
+        return
+    z_min = zmin_e[e]
+    z_max = zmax_e[e]
+    state = wp.rand_init(seeds[e] * _P_UNIFORM + i)
+    z[t] = z_min + wp.randf(state) * (z_max - z_min)
+
+
+@wp.kernel
+def _z_walk_dyn_k(seeds: wp.array(dtype=wp.int32),
+                  count: wp.array(dtype=wp.int32), max_gates: int,
+                  cum: wp.array(dtype=wp.float32),
+                  perim: wp.array(dtype=wp.float32),
+                  z_base: float, zmin_e: wp.array(dtype=wp.float32),
+                  zmax_e: wp.array(dtype=wp.float32), step_e: wp.array(dtype=wp.float32),
+                  z: wp.array(dtype=wp.float32)):
+    # _z_walk_k with z_min / z_max / the grade cap read per env (roadmap PR13c): loaded
+    # once; the grade clamped to its declared lo = 0 by a comparison.
+    e = wp.tid()
+    z_min = zmin_e[e]
+    z_max = zmax_e[e]
+    max_grade = step_e[e]
+    max_grade = wp.where(max_grade < _ZERO, _ZERO, max_grade)
+    base = e * max_gates
+    n = count[e]
+    if n > max_gates:
+        n = max_gates
+    if n < 1:
+        return
+    state = wp.rand_init(seeds[e] * _P_WALK)
+    acc = float(0.0)
+    for i in range(n):
+        if i > 0:
+            ds = cum[base + i] - cum[base + i - 1]
+            acc = acc + (2.0 * wp.randf(state) - 1.0) * max_grade * ds
+        z[base + i] = acc
+    p_e = perim[e]
+    drift = acc
+    for i in range(n):
+        frac = 0.0
+        if p_e > 1.0e-9:
+            frac = cum[base + i] / p_e
+        z[base + i] = wp.clamp(z_base + z[base + i] - drift * frac,
+                               z_min, z_max)
+    for i in range(n, max_gates):
+        z[base + i] = 0.0
+
+
+@wp.kernel
+def _z_noise_dyn_k(seeds: wp.array(dtype=wp.int32),
+                   count: wp.array(dtype=wp.int32), max_gates: int,
+                   cum: wp.array(dtype=wp.float32),
+                   perim: wp.array(dtype=wp.float32),
+                   z_base: float, zmin_e: wp.array(dtype=wp.float32),
+                   zmax_e: wp.array(dtype=wp.float32),
+                   amp_e: wp.array(dtype=wp.float32), harmonics: int,
+                   z: wp.array(dtype=wp.float32)):
+    # _z_noise_k with z_min / z_max / the amplitude read per env (roadmap PR13c): loaded
+    # once; the amplitude clamped to its declared lo = 0 by a comparison.
+    t = wp.tid()
+    e = t // max_gates
+    i = t - e * max_gates
+    z_min = zmin_e[e]
+    z_max = zmax_e[e]
+    amplitude = amp_e[e]
+    amplitude = wp.where(amplitude < _ZERO, _ZERO, amplitude)
+    n = count[e]
+    if n > max_gates:
+        n = max_gates
+    if i >= n:
+        z[t] = 0.0
+        return
+    base = e * max_gates
+    p_e = perim[e]
+    frac = 0.0
+    if p_e > 1.0e-9:
+        frac = cum[base + i] / p_e
+    acc = float(0.0)
+    norm = float(0.0)
+    for k in range(harmonics):
+        state = wp.rand_init(seeds[e] * _P_NOISE + k)
+        a = wp.randf(state)
+        phase = wp.randf(state) * _TWO_PI
+        w = 1.0 / float(k + 1)
+        acc = acc + a * w * wp.sin(_TWO_PI * float(k + 1) * frac + phase)
+        norm = norm + w
+    zz = z_base + amplitude * acc / wp.max(norm, 1.0e-9)
+    z[t] = wp.clamp(zz, z_min, z_max)
+
+
 def alloc_z_scratch(num_envs: int, stride: int, device):
     """``(cum, perim, z)`` float32 scratch, zero-initialized.
 
@@ -208,11 +323,44 @@ def apply_z_profile(config, seeds_wp: wp.array, count: wp.array, stride: int,
         ctx: optional track_gen.exec.LaunchContext; default resolves the
             device's stream (see track_gen.exec).
     """
+    ctx = _resolve_ctx(ctx, str(config.device))
+    _apply_z_profile(config, seeds_wp, count, stride, cum, perim, z, ctx, None)
+
+
+def _check_dyn(profile, dyn) -> None:
+    if dyn is None:
+        return
+    want = set(_DYNAMIC.get(profile, ()))
+    keys = set(dyn)
+    if keys != want:
+        raise ValueError(f"elevation {profile!r}: dyn must map exactly the dynamic fields "
+                         f"{sorted(want)} to their [E] arrays (or be None); missing "
+                         f"{sorted(want - keys)}, extra {sorted(map(str, keys - want))}")
+
+
+def _apply_z_profile(config, seeds_wp, count, stride, cum, perim, z, ctx, dyn) -> None:
+    """:func:`apply_z_profile` on a resolved ``ctx``: ``dyn=None`` (the legacy path: the
+    ``z_*`` host scalars of ``config``, the scalar kernels) or exactly the profile's
+    dynamic fields mapped to their ``[E]`` float32 arrays (the elevation stages: the
+    ``_dyn`` twins; ``z_base`` / ``z_noise_harmonics`` stay ``config`` reads)."""
+    profile = config.z_profile
+    _check_dyn(profile, dyn)
     E = int(config.num_envs)
     S = int(stride)
-    dev = str(config.device)
-    ctx = _resolve_ctx(ctx, dev)
-    profile = config.z_profile
+    if dyn:
+        if profile == "uniform":
+            ctx.launch(_z_uniform_dyn_k, E * S,
+                       [seeds_wp, count, S, dyn["z_min"], dyn["z_max"], z])
+        elif profile == "random_walk":
+            ctx.launch(_z_walk_dyn_k, E,
+                       [seeds_wp, count, S, cum, perim, float(config.z_base),
+                        dyn["z_min"], dyn["z_max"], dyn["z_max_step"], z])
+        elif profile == "noise":
+            ctx.launch(_z_noise_dyn_k, E * S,
+                       [seeds_wp, count, S, cum, perim, float(config.z_base),
+                        dyn["z_min"], dyn["z_max"], dyn["z_noise_amplitude"],
+                        int(config.z_noise_harmonics), z])
+        return
     if profile == "flat":
         ctx.launch(_z_flat_k, E * S,
                    [count, S, float(config.z_base), z])
@@ -374,12 +522,20 @@ def apply_z_profile_knots(config, seeds_wp: wp.array, count: wp.array,
         ctx: optional track_gen.exec.LaunchContext; default resolves the
             device's stream (see track_gen.exec).
     """
+    ctx = _resolve_ctx(ctx, str(config.device))
+    _apply_z_profile_knots(config, seeds_wp, count, stride, arclen, perim, knot_cum,
+                           knot_count, knot_z, z, ctx, None)
+
+
+def _apply_z_profile_knots(config, seeds_wp, count, stride, arclen, perim, knot_cum,
+                           knot_count, knot_z, z, ctx, dyn) -> None:
+    """:func:`apply_z_profile_knots` on a resolved ``ctx``, the knot profile run by
+    :func:`_apply_z_profile` with ``dyn`` (``None``: the legacy scalar path)."""
+    _check_dyn(config.z_profile, dyn)
     E = int(config.num_envs)
     K = int(config.z_control_points)
-    dev = str(config.device)
-    ctx = _resolve_ctx(ctx, dev)
     ctx.launch(_knot_tables_k, E * K,
                [perim, K, knot_cum, knot_count])
-    apply_z_profile(config, seeds_wp, knot_count, K, knot_cum, perim, knot_z, ctx=ctx)
+    _apply_z_profile(config, seeds_wp, knot_count, K, knot_cum, perim, knot_z, ctx, dyn)
     ctx.launch(_pchip_eval_k, E * int(stride),
                [arclen, perim, count, int(stride), knot_z, K, z])

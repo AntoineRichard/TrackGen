@@ -13,7 +13,8 @@ Edit the result with the :class:`PipelineSpec` operations::
     from track_gen.pipeline import StageRef, presets
 
     spec = presets.track(num_envs=1024, device="cuda:0", relax="acme.taubin",
-                         elevation=("noise", {"z_max": 0.3, "z_noise_amplitude": 0.2}),
+                         elevation=("noise", {"z_min": -0.3, "z_max": 0.3,
+                                              "z_noise_amplitude": 0.2}),
                          checks=("default", ("acme.max_curvature", {"kappa_max": 40.0})))
     spec = spec.insert_after("validity", StageRef("validity", "acme.other", id="other"))
     gen = TrackGenerator(spec)
@@ -163,54 +164,6 @@ def _preferred_relax(reg, name: str) -> str:
     return str(dict(getattr(spec, "preferred", {}) or {}).get("relax", "xpbd"))
 
 
-def _randomizers(randomize) -> "list[StageRef]":
-    """``randomize=`` as ``randomize.uniform`` StageRefs: a mapping ``{"<stage>.<field>":
-    (lo, hi)}`` (the key split at its LAST dot: stage ids may contain dots, field names
-    may not), or a sequence of ``StageRef("randomize", ...)``."""
-    if randomize is None:
-        return []
-    if isinstance(randomize, _MappingABC):
-        refs = []
-        for key, rng in randomize.items():
-            if not isinstance(key, str) or "." not in key.strip(".") or key.endswith("."):
-                raise ValueError(f"randomize: key {key!r} must be '<stage id>.<field>' "
-                                 f"(e.g. 'generator.amp')")
-            stage, field = key.rsplit(".", 1)
-            if isinstance(rng, (str, bytes)) or not isinstance(rng, (tuple, list)) or \
-                    len(rng) != 2:
-                raise TypeError(f"randomize[{key!r}] must be a (lo, hi) pair, got {rng!r}")
-            lo, hi = rng
-            refs.append(StageRef("randomize", "uniform",
-                                 params={"stage": stage, "field": field, "lo": float(lo),
-                                         "hi": float(hi)}, id=f"randomize.{key}"))
-        return refs
-    if isinstance(randomize, (str, bytes, StageRef)):
-        raise TypeError(f"randomize must be a mapping {{'<stage>.<field>': (lo, hi)}} or a "
-                        f"sequence of StageRef('randomize', ...), got {randomize!r}")
-    refs = list(randomize)
-    for ref in refs:
-        if not isinstance(ref, StageRef) or ref.kind != "randomize":
-            raise TypeError(f"randomize: expected StageRef('randomize', ...), got {ref!r}")
-    return refs
-
-
-def _with_randomizers(spec: PipelineSpec, randomize) -> PipelineSpec:
-    """``spec`` with each randomizer inserted right before the stage it draws."""
-    for ref in _randomizers(randomize):
-        p = ref.params
-        target = p.get("stage") if isinstance(p, _MappingABC) else getattr(p, "stage", None)
-        if not isinstance(target, str) or not target:
-            raise ValueError(f"randomize: {ref!r} names no target stage (params 'stage')")
-        if target not in spec.ids:
-            field = p.get("field") if isinstance(p, _MappingABC) else getattr(p, "field",
-                                                                              None)
-            raise ValueError(f"randomize: key '{target}.{field}' names stage {target!r}, "
-                             f"which this pipeline does not have; stages: "
-                             f"{list(spec.ids)}")
-        spec = spec.insert_before(target, ref)
-    return spec
-
-
 def _has_half_width_field(reg, name: str) -> bool:
     """Whether width stage ``name``'s Params class has a ``half_width`` field
     (``width.constant``, a plugin width like ``acme.ripple``)."""
@@ -282,14 +235,18 @@ def track(*, num_envs: int, device: str, n_max: int = 384, scale: float = 1.0,
         registry: The plugin registry the generator's ``provides`` and a width
             stage's Params are looked up in (default ``track_gen.plugin.registry``;
             an unknown name is reported by ``build``).
-        randomize: Per-env uniform draws of DYNAMIC float32 params (roadmap PR13b):
-            ``{"<stage id>.<field>": (lo, hi)}`` (e.g. ``{"generator.amp": (0.05,
-            0.35)}`` for a plugin generator's dynamic ``amp``, ``{"width.scale": (0.8,
-            1.2)}`` with ``width.from_channel``) or a sequence of
+        randomize: Per-env uniform draws of DYNAMIC float32 params (roadmap PR13b /
+            PR13c): ``{"<stage id>.<field>": (lo, hi)}`` (e.g. ``{"generator.rad":
+            (0.1, 0.35)}`` or ``{"generator.polar_radial_jitter": (0.2, 0.8),
+            "elevation.z_max": (0.2, 0.6)}`` (with a non-flat elevation) on the
+            built-ins' dynamic knobs,
+            ``{"generator.amp": (0.05, 0.35)}`` for a plugin generator's,
+            ``{"width.scale": (0.8, 1.2)}`` with ``width.from_channel``) or a sequence of
             ``StageRef("randomize", "uniform", {...})``. Each becomes a
             ``randomize.uniform`` stage (id ``"randomize.<stage>.<field>"``) inserted
-            right before its target. Built-in knobs are static in 0.x (the planner
-            refuses them, listing the pipeline's drawable fields).
+            right before its target (:meth:`PipelineSpec.with_randomize`). The range
+            must lie inside the field's declared bounds; a static knob is refused at
+            build (listing the pipeline's drawable fields).
 
     Raises:
         ValueError: an invalid selection (wrong StageRef kind, ``width=None``,
@@ -412,7 +369,7 @@ def track(*, num_envs: int, device: str, n_max: int = 384, scale: float = 1.0,
     spec = PipelineSpec(batch=BatchSpec(num_envs=num_envs, device=device, n_max=n_max,
                                         scale=scale, on_invalid=on_invalid),
                         stages=stages)
-    return _with_randomizers(spec, randomize)
+    return spec.with_randomize(randomize)
 
 
 # ---------------------------------------------------------------------------------------
@@ -668,9 +625,12 @@ def gates(*, num_envs: int, device: str, generator: "str | StageRef" = "bezier",
         registry: The plugin registry the generator is looked up in (default
             ``track_gen.plugin.registry``).
         randomize: Per-env uniform draws of DYNAMIC float32 params, as
-            :func:`track` (e.g. ``{"generator.m": (3.0, 9.0)}`` for a plugin gate
-            generator's dynamic ``m``): each a ``randomize.uniform`` stage inserted right
-            before its target.
+            :func:`track` (e.g. ``{"generator.polar_radial_jitter": (0.2, 0.8)}`` on the
+            polar gate generator, ``{"elevation.z_noise_amplitude": (0.1, 0.6)}`` with
+            an open window such as ``elevation=("noise", {"z_min": -0.5, "z_max":
+            0.5})`` (the default ``[0, 0]`` window clamps every hill away), or
+            ``{"generator.m": (3.0, 9.0)}`` for a plugin gate generator's dynamic
+            ``m``): each a ``randomize.uniform`` stage inserted right before its target.
 
     Raises:
         ValueError: an unknown generator name, an invalid selection or argument
@@ -980,4 +940,4 @@ def gates(*, num_envs: int, device: str, generator: "str | StageRef" = "bezier",
     spec = PipelineSpec(batch=BatchSpec(num_envs=num_envs, device=device, n_max=n_max,
                                         scale=scale, on_invalid=on_invalid, max_gates=G),
                         stages=stages)
-    return _with_randomizers(spec, randomize)
+    return spec.with_randomize(randomize)

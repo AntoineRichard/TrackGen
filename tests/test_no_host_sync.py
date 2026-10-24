@@ -571,6 +571,33 @@ def _legacy_generator_wrappers():
     return hot
 
 
+def _legacy_generator_specs():
+    # Roadmap PR13c: the built-in track generators are Stages (their private cores are
+    # driven by track_run[<gen>]); their frozen legacy entry points (generate_*_warp over
+    # *_alloc_scratch, the scalar kernels and sampling helpers, bezier's style draw) and
+    # the scalar knot z-profile path run through the PR9 composition with the private
+    # legacy specs (warp_pipeline._legacy_generator_spec).
+    configs = [TrackGenConfig(generator=g, device=DEV, num_envs=E)
+               for g in ("bezier", "hull", "polar", "voronoi", "checkpoint")]
+    configs += [
+        TrackGenConfig(generator="bezier", device=DEV, num_envs=E, style_sampling=True,
+                       rad_range=(0.1, 0.3), scale_range=(0.9, 1.1)),
+        TrackGenConfig(generator="checkpoint", device=DEV, num_envs=E,
+                       checkpoint_clip_fallback=True, checkpoint_best_of_k=1),
+        TrackGenConfig(device=DEV, num_envs=E, z_profile="uniform", z_max=0.2),
+        TrackGenConfig(device=DEV, num_envs=E, z_profile="random_walk", z_min=-0.2,
+                       z_max=0.2, z_max_step=0.3),
+    ]
+    seeds = _i32([3, 4])
+    runs = [(cfg, *warp_pipeline._inflate_warp_alloc(cfg)) for cfg in configs]
+    ctx = LaunchContext.for_call(DEV)
+
+    def hot():
+        for cfg, track, scratch in runs:
+            warp_pipeline._run_pipeline(cfg, seeds, out=track, scratch=scratch, ctx=ctx)
+    return hot
+
+
 def _program_standalone():
     # A Program built straight from a PipelineSpec (track_gen.pipeline, PR10a): run()
     # (plain, advancing, masked) and enqueue() on an explicit context.
@@ -942,6 +969,7 @@ DRIVERS = {
     "wrappers[legacy_gate]": _legacy_gate_wrappers,
     "track_run[z=acme.sinusoid_hills]": _run_track_plugin_profile,
     "wrappers[legacy_generator]": _legacy_generator_wrappers,
+    "wrappers[legacy generator specs]": _legacy_generator_specs,
     "ops[all]": _ops_all,
     "program[attrs,from_channel,poison,masked]": _program_channels,
     "gate_program[stations xyz,attrs]": _gate_program_channels,
@@ -993,21 +1021,29 @@ _PIPELINE_MODULES = (
 # They run before any probe and are allowed to allocate or read back.
 _CONSTRUCTION_ONLY = {
     "track_gen._src.warp_pipeline": {"_inflate_warp_alloc", "_fill_knot_scratch",
-                                     "__getattr__"},
+                                     "__getattr__",
+                                     # PR13c: the private legacy-spec table (built-ins)
+                                     "_legacy_generator_spec",
+                                     "_registered_generator_spec"},
     "track_gen._src.warp_gate": {"alloc_gate_sequence", "_gate_center_distance",
                                  # PR11 deprecated shims: allocation, the old-name alias
                                  "alloc_order_scratch", "__getattr__"},
     "track_gen._src.warp_zprofile": {"alloc_z_scratch", "alloc_knot_scratch"},
-    "track_gen._src.warp_generate": {"bezier_alloc_scratch", "register"},
-    "track_gen._src.warp_generate_checkpoint": {"checkpoint_alloc_scratch", "register"},
-    "track_gen._src.warp_generate_hull": {"hull_alloc_scratch", "register"},
-    "track_gen._src.warp_generate_polar": {"polar_alloc_scratch", "_polar_num_knots",
-                                           "register"},
+    # PR13c: the built-in Stages' private scratch allocators (_alloc_<gen>_scratch)
+    "track_gen._src.warp_generate": {"bezier_alloc_scratch", "_alloc_bezier_scratch",
+                                     "register"},
+    "track_gen._src.warp_generate_checkpoint": {"checkpoint_alloc_scratch",
+                                                "_alloc_checkpoint_scratch", "register"},
+    "track_gen._src.warp_generate_hull": {"hull_alloc_scratch", "_alloc_hull_scratch",
+                                          "register"},
+    "track_gen._src.warp_generate_polar": {"polar_alloc_scratch", "_alloc_polar_scratch",
+                                           "_polar_num_knots", "register"},
     "track_gen._src.warp_generate_repulsive": {"repulsive_alloc_scratch",
                                                "_sobolev_circulant_row",
                                                "_stage_schedule", "register"},
-    "track_gen._src.warp_generate_voronoi": {"voronoi_alloc_scratch", "_voronoi_layout_mode",
-                                             "register"},
+    "track_gen._src.warp_generate_voronoi": {"voronoi_alloc_scratch",
+                                             "_alloc_voronoi_scratch",
+                                             "_voronoi_layout_mode", "register"},
     # PR11: the gate generators are Stages (their enqueues are closures)
     "track_gen._src.warp_generate_gates": {"register"},
     "track_gen._src.warp_generate_checkpoint_gates": {"register"},
@@ -1021,7 +1057,9 @@ _CONSTRUCTION_ONLY = {
                                 # PR13a: the track_gen.pipeline/1 migration
                                 "_migrate_v1",
                                 # PR13b: params lists canonicalised to tuples
-                                "_canonical_param"},
+                                "_canonical_param",
+                                # PR13c: randomize= (PipelineSpec.with_randomize)
+                                "_randomizers", "_with_randomizers", "_draw_target"},
     # PR13a: the resample tables / carry kernel lookup are build-time
     "track_gen.ops.resample": {"_carry_kernel", "_check_tables"},
     "track_gen.pipeline.planner": {"build", "_build", "_is_int", "_check_spec_shape",
@@ -1050,7 +1088,9 @@ _CONSTRUCTION_ONLY = {
                                    "_register_result", "_check_topology", "_stage_class",
                                    "_ref_param", "_check_param_writers", "_pad_value",
                                    "_gen_slot", "_draw_bounds", "_is_partial",
-                                   "_plugin_params"},
+                                   "_plugin_params",
+                                   # PR13c: self-drawn fields, cross-field draw rules
+                                   "_self_drawn", "_check_draws"},
     "track_gen.pipeline.legacy": {"to_pipeline_spec", "_to_pipeline_spec",
                                   "generator_config", "_scratch_view", "_legacy_params",
                                   "to_gate_pipeline_spec", "_to_gate_pipeline_spec",
@@ -1063,9 +1103,8 @@ _CONSTRUCTION_ONLY = {
                                    "_with_gate_validity", "_check_centerline_args",
                                    # PR13a: providers and the width selection
                                    "_sel_name", "_provides", "_has_half_width_field",
-                                   # PR13b: declarations, relax="auto", randomize=
-                                   "_declared", "_preferred_relax", "_randomizers",
-                                   "_with_randomizers"},
+                                   # PR13b: declarations, relax="auto"
+                                   "_declared", "_preferred_relax"},
     # PR13b: the host loader of the ingestion inputs (cold, blocking by contract)
     "track_gen.pipeline.ingest": {"load_centerlines", "_program_of", "_envs", "_rows",
                                   "_sizing", "_perimeter", "_check_values"},
@@ -1075,8 +1114,10 @@ _CONSTRUCTION_ONLY = {
                                   "channel_domain", "family_key",
                                   "required_port_domain"},
     "track_gen.stages.params": {"_check_half_width", "_check_z_range",
-                                "_check_control_points", "_f32_distance"},
-    "track_gen.stages.track": {"_alloc_track", "_zcfg",
+                                "_check_control_points", "_f32_distance",
+                                # PR13c: plan-time draw rules, inert-window warnings
+                                "_check_z_draws", "_warn_inert"},
+    "track_gen.stages.track": {"_alloc_track", "_zcfg", "_zdyn",
                                # PR13a: carriers and the constant-width config view
                                "_with_half_width", "_tables", "_carry_ops",
                                "raw_attributes"},

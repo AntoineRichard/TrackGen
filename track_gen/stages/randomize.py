@@ -9,9 +9,16 @@ draws are deterministic per ``(seed, epoch)``, differ across envs, are redrawn b
 ``advance=True`` (every replay of a caller graph) and reach the target in the SAME
 generation. Its ``lo`` / ``hi`` are dynamic (a curriculum writes them, in its own graph
 too). A drawn field is a single UNLATCHED array owned by the randomizer
-(``params[stage][field]`` observes it; ``set`` raises). Built-in knobs are static in 0.x:
-the drawable fields are the dynamic float32 fields of plugin Params and
-``width.from_channel``'s ``scale`` / ``lo`` / ``hi``.
+(``params[stage][field]`` observes it; ``set`` raises). The drawable fields are the
+dynamic float32 fields of the pipeline: the built-in generators' shape knobs and the
+elevation profiles' window / grade / amplitude (roadmap PR13c, e.g.
+``"generator.rad"``, ``"generator.polar_radial_jitter"``, ``"elevation.z_max"``),
+plugin Params' and ``width.from_channel``'s ``scale`` / ``lo`` / ``hi``. The initial
+range must lie inside the field's declared bounds (compared in float32) and the draws
+are clamped to them. A knob bezier's ``style_sampling`` draws (its ``*_range`` set) is
+not drawable (set the range to ``None``): ``style_sampling``'s ``rad_range`` /
+``handle_clamp_frac_range`` are superseded by ``randomize={"generator.rad": ...,
+"generator.handle_clamp_frac": ...}`` (different random streams, same distributions).
 """
 from __future__ import annotations
 

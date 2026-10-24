@@ -160,7 +160,9 @@ class TrackGenConfig:
         curviness dial.  Typical range ``[0.2, 0.6]``.  Only live when
         ``rad <= handle_clamp_frac``; if ``rad`` exceeds the clamp,
         ``handle_clamp_frac`` binds every segment and ``rad`` has no effect (see
-        ``handle_clamp_frac``).
+        ``handle_clamp_frac``).  Must be in ``[0, 1]``.  Dynamic (roadmap PR13c):
+        the initial value of the generator's per-env ``rad``
+        (``gen.params["generator"]["rad"]``, ``randomize={"generator.rad": ...}``).
     edgy : float
         Corner-tangent blend weight.  Converted internally as
         ``p = atan(edgy) / pi + 0.5``.  At 0.0 (default), ``p = 0.5`` gives a
@@ -177,14 +179,15 @@ class TrackGenConfig:
         trims genuine overshoot; set below ``rad`` to bind every handle regardless
         of ``rad`` (producing near-polygonal tracks); set very large to disable.
         Tracks that still self-cross after clamping fall back to their corner
-        polygon (~5% at 0.4), which XPBD re-rounds.
+        polygon (~5% at 0.4), which XPBD re-rounds.  Must be >= 0.  Dynamic
+        (per env, like ``rad``).
 
     hull_displacement : float
         *Hull generator only.*  Maximum per-edge radial midpoint displacement as a
         fraction of the centroid-to-midpoint distance.  At 0.0 the method collapses
         toward a plain angle-sorted loop; larger values (typical range ``[0.1, 0.4]``)
         bulge or pinch lobes for more racing-shape variety, at the cost of a higher
-        downstream relaxation burden.
+        downstream relaxation burden.  Must be in ``[0, 1]``; dynamic (per env).
 
     checkpoint_count : int
         *Checkpoint generator only.*  Number of radial checkpoints (``C``).  Must
@@ -193,14 +196,19 @@ class TrackGenConfig:
     checkpoint_radius_min_frac : float
         Inner-radius fraction for checkpoint placement.  Checkpoint radii are drawn
         from ``U(checkpoint_radius_min_frac * R, R)`` where ``R = 1``.  Must be in
-        ``[0, 1)``.  The CarRacing canonical value 0.33 gives the inlets.
+        ``[0, 1)``.  The CarRacing canonical value 0.33 gives the inlets.  Dynamic
+        (per env): ``set`` and ``randomize=`` accept the declared bound ``1.0``
+        (every checkpoint on the outer radius), and a per-env array value is clamped
+        to ``[0, 1]``; the configured value keeps the legacy ``[0, 1)`` rule.
     checkpoint_angle_jitter : float
         Angular jitter as a fraction of the per-checkpoint angular slot
-        (``slot = 2*pi/C``).  Kept below 1.0 so the checkpoint sequence stays
-        angle-monotone, ensuring the steered path winds once around.  Default 0.55.
+        (``slot = 2*pi/C``).  Must be in ``[0, 1]`` (dynamic, per env); below 1 each
+        checkpoint stays near its slot; above 0.5 adjacent checkpoints may swap
+        angular order.  Default 0.55.
     checkpoint_turn_rate : float
         Maximum heading change (radians) per steering step.  Bounds path curvature;
-        too large allows kinks, too small prevents tracking the inlets.  Default 0.42.
+        too large allows kinks, too small prevents tracking the inlets.  Must be in
+        ``[0, pi]``; dynamic (per env).  Default 0.42.
     checkpoint_steer_gain : float
         Proportional steering gain toward the current target bearing, in ``(0, 1]``.
         Controls how aggressively the heading chases each checkpoint per step, coupled
@@ -224,33 +232,42 @@ class TrackGenConfig:
 
     style_sampling : bool
         Opt-in per-env Bezier style randomisation (default ``False``).  When
-        ``False``, the scalar ``rad`` / ``scale`` / ``handle_clamp_frac`` are used
-        for all envs unchanged.  When ``True``, each env draws its own values from
-        the ``*_range`` fields via the per-env Warp RNG, so a single batch spans a
-        *family* of styles.  Resolved at CUDA-graph capture time (a Python branch);
+        ``False``, ``scale`` is the scalar for all envs and ``rad`` /
+        ``handle_clamp_frac`` are their per-env dynamic arrays (the configured value
+        in every env unless you ``set`` or randomize them).  When ``True``, each env
+        draws its own values from the ``*_range`` fields via the per-env Warp RNG, so
+        a single batch spans a *family* of styles.  Resolved at CUDA-graph capture time (a Python branch);
         per-env values are device data so the captured graph remains fixed.
     rad_range : tuple of float or None
         ``(lo, hi)`` range for per-env ``rad`` when ``style_sampling=True``.
-        ``None`` collapses to the scalar ``rad`` for all envs.
+        ``None`` leaves ``rad`` to its per-env array (the configured ``rad`` unless
+        you ``set`` or randomize it).  Superseded by
+        ``randomize={"generator.rad": (lo, hi)}`` (roadmap PR13c; still supported).
     scale_range : tuple of float or None
         ``(lo, hi)`` range for per-env ``scale`` when ``style_sampling=True``.
         ``None`` collapses to the scalar ``scale`` for all envs.
     handle_clamp_frac_range : tuple of float or None
         ``(lo, hi)`` range for per-env ``handle_clamp_frac`` when
-        ``style_sampling=True``.  ``None`` collapses to the scalar
-        ``handle_clamp_frac`` for all envs.
+        ``style_sampling=True``.  ``None`` leaves ``handle_clamp_frac`` to its
+        per-env array (the configured value unless you ``set`` or randomize it).
+        Superseded by
+        ``randomize={"generator.handle_clamp_frac": (lo, hi)}`` (roadmap PR13c;
+        still supported).
 
     polar_num_knots : int
         *Polar generator only.*  Number of periodic cubic-spline control knots.
         More knots add higher-frequency shape variety.  Default 12.
     polar_radial_jitter : float
         *Polar generator only.*  Radial jitter magnitude for polar control knots, as
-        a fraction of the base radius.  Clamped internally to keep radii positive;
-        larger values produce more eccentric track shapes.  Default 0.60.
+        a fraction of the base radius.  Must be in ``[0, 0.85]`` (keeps radii
+        positive; since 0.2.0.dev5 a value outside is rejected instead of clamped);
+        larger values produce more eccentric track shapes.  Dynamic (per env).
+        Default 0.60.
     polar_angular_jitter : float
-        *Polar generator only.*  Angular jitter per polar knot, as a fraction of a
-        half angular cell, so the sorted order is preserved without a runtime sort.
-        Larger values add more angular irregularity.  Default 0.30.
+        *Polar generator only.*  Angular jitter per polar knot, as a fraction of one
+        knot spacing (``2*pi/K``), so the sorted order is preserved without a runtime
+        sort.  Must be in ``[0, 0.45]`` (rejected outside since 0.2.0.dev5).  Larger values
+        add more angular irregularity.  Dynamic (per env).  Default 0.30.
 
     voronoi_num_sites : int
         *Voronoi generator only.*  Total cell sites in the fixed site field.  Must
@@ -270,12 +287,14 @@ class TrackGenConfig:
         the downstream relaxation burden.
     voronoi_radial_variation : float
         *Voronoi generator only.*  Radial modulation of anchor target positions.
-        Must be >= 0.  At 0, all targets are placed at a uniform annulus radius;
-        larger values allow more eccentric loops.  Default 0.62.
+        Must be in ``[0, 0.85]``.  At 0, all targets are placed at a uniform annulus
+        radius; larger values allow more eccentric loops.  Dynamic (per env).
+        Default 0.62.
     voronoi_angular_jitter : float
-        *Voronoi generator only.*  Angular jitter for anchor sector targets, as a
-        fraction of a full sector.  Must be >= 0.  Larger values randomise the
-        angular spacing of targets.  Default 0.08.
+        *Voronoi generator only.*  Angular jitter of the anchor sector targets, in
+        radians (added to each target angle).  Must be in ``[0, pi]`` (useful up to
+        ~0.5).  Larger values randomise the angular spacing of targets.  Dynamic
+        (per env).  Default 0.08.
 
     repulsive_grow_mult_min : float
         *Repulsive generator only.*  Lower bound of the per-env target-perimeter
@@ -578,17 +597,20 @@ class TrackGenConfig:
         ``"noise"`` profiles.  Default 0.0.
     z_min : float
         Lower altitude clamp for ``"uniform"``, ``"random_walk"``, and
-        ``"noise"``.  Must be <= ``z_max``.  Default 0.0.
+        ``"noise"``.  Must be <= ``z_max``.  Default 0.0.  Dynamic (roadmap PR13c:
+        the elevation stage's per-env ``gen.params["elevation"]["z_min"]``).
     z_max : float
         Upper altitude clamp for ``"uniform"``, ``"random_walk"``, and
-        ``"noise"``.  Must be >= ``z_min``.  Default 0.0.
+        ``"noise"``.  Must be >= ``z_min``.  Default 0.0.  Dynamic (per env).
     z_max_step : float
         *Random-walk profile only.*  Maximum ``|dz|`` per unit plan-view arc
         length (a grade cap), applied per random-walk step before the
-        closure bridge.  Must be >= 0.  Default 0.0.
+        closure bridge.  Must be >= 0.  Default 0.0.  Dynamic (per env); inert
+        in a closed window ``z_min == z_max``.
     z_noise_amplitude : float
         *Noise profile only.*  Amplitude of the harmonic altitude
-        oscillation around ``z_base``.  Must be >= 0.  Default 0.0.
+        oscillation around ``z_base``.  Must be >= 0.  Default 0.0.  Dynamic
+        (per env); clipped by the window: use a wide, symmetric one.
     z_noise_harmonics : int
         *Noise profile only.*  Number of summed harmonics in the periodic
         noise field.  Must be >= 1.  Default 3.
@@ -915,10 +937,12 @@ class GateGenConfig:
         Default 12.
     polar_radial_jitter : float
         *Polar generator only.*  Radial jitter magnitude for polar control knots,
-        as a fraction of the base radius.  Default 0.60.
+        as a fraction of the base radius.  Must be in ``[0, 0.85]``; dynamic (per
+        env, roadmap PR13c).  Default 0.60.
     polar_angular_jitter : float
-        *Polar generator only.*  Angular jitter per polar knot, as a fraction of a
-        half angular cell.  Default 0.30.
+        *Polar generator only.*  Angular jitter per polar knot, as a fraction of one
+        knot spacing (``2*pi/K``).  Must be in ``[0, 0.45]``; dynamic (per env).
+        Default 0.30.
 
     voronoi_num_sites : int
         *Voronoi generator only.*  Total cell sites in the fixed site field.  Must
@@ -933,20 +957,23 @@ class GateGenConfig:
         floor for Chaikin/Catmull-Rom densification).
     voronoi_radial_variation : float
         *Voronoi generator only.*  Radial modulation of anchor target positions.
-        Must be >= 0.  Default 0.62.
+        Must be in ``[0, 0.85]``; dynamic (per env).  Default 0.62.
     voronoi_angular_jitter : float
-        *Voronoi generator only.*  Angular jitter for anchor sector targets.  Must
-        be >= 0.  Default 0.08.
+        *Voronoi generator only.*  Angular jitter of the anchor sector targets, in
+        radians.  Must be in ``[0, pi]`` (useful up to ~0.5); dynamic (per env).
+        Default 0.08.
 
     checkpoint_count : int
         *Checkpoint generator only.*  Number of radial checkpoints.  Must be >= 3.
         Default 12.
     checkpoint_radius_min_frac : float
         *Checkpoint generator only.*  Inner-radius fraction for checkpoint
-        placement.  Must be in ``[0, 1)``.  Default 0.33.
+        placement.  Must be in ``[0, 1)``; dynamic (per env; ``set`` /
+        ``randomize=`` accept the declared bound ``1.0``).  Default 0.33.
     checkpoint_angle_jitter : float
         *Checkpoint generator only.*  Angular jitter as a fraction of the
-        per-checkpoint angular slot.  Default 0.55.
+        per-checkpoint angular slot.  Must be in ``[0, 1]``; dynamic (per env).
+        Default 0.55.
 
     z_profile : str
         Per-gate altitude (Z) profile: any registered ``elevation`` stage (the same
@@ -962,17 +989,21 @@ class GateGenConfig:
         ``"noise"`` profiles.  Default 0.0.
     z_min : float
         Lower altitude clamp for ``"uniform"``, ``"random_walk"``, and
-        ``"noise"``.  Must be <= ``z_max``.  Default 0.0.
+        ``"noise"``.  Must be <= ``z_max``.  Default 0.0.  Dynamic (per env, the
+        elevation stage's ``gen.params["elevation"]["z_min"]``).
     z_max : float
         Upper altitude clamp for ``"uniform"``, ``"random_walk"``, and
-        ``"noise"``.  Must be >= ``z_min``.  Default 0.0.
+        ``"noise"``.  Must be >= ``z_min``.  Default 0.0.  Dynamic (per env).
     z_max_step : float
         *Random-walk profile only.*  Maximum ``|dz|`` per unit plan-view arc
         length (a grade cap), applied per random-walk step before the
-        closure bridge.  Must be >= 0.  Default 0.0.
+        closure bridge.  Must be >= 0.  Default 0.0.  Dynamic (per env); inert
+        in a closed window ``z_min == z_max``.
     z_noise_amplitude : float
         *Noise profile only.*  Amplitude of the harmonic altitude
-        oscillation around ``z_base``.  Must be >= 0.  Default 0.0.
+        oscillation around ``z_base``.  Must be >= 0.  Default 0.0.  Dynamic
+        (per env); inert in a closed window ``z_min == z_max``: use a wide,
+        symmetric one.
     z_noise_harmonics : int
         *Noise profile only.*  Number of summed harmonics in the periodic
         noise field.  Must be >= 1.  Default 3.

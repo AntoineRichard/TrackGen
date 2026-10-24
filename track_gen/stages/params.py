@@ -1,13 +1,17 @@
 """Params classes of the built-in track and gate stages (roadmap PR10a / PR11 / PR13a).
 
 Like the built-in generators' Params (:mod:`track_gen._src.builtin_params`), every class
-keeps the FLAT ``TrackGenConfig`` field names, every field is static, and
-``from_legacy(config)`` copies the flat values (no casts), except
-``WidthFromChannelParams`` (dynamic ``scale`` / ``lo`` / ``hi``) and ``StationsParams``
-(``gates``, ``spacing_metric``), which have no ``TrackGenConfig`` counterpart. The stage
-hands its Params instance (or, for elevation, a namespace built from it) to the legacy
-wrappers as their ``config`` argument, so the same values reach the same ``float()`` /
-``int()`` conversions and the launches are unchanged.
+keeps the FLAT ``TrackGenConfig`` field names and ``from_legacy(config)`` copies the flat
+values (no casts), except ``WidthFromChannelParams`` (dynamic ``scale`` / ``lo`` /
+``hi``) and ``StationsParams`` (``gates``, ``spacing_metric``), which have no
+``TrackGenConfig`` counterpart. Every field is static except ``width.from_channel``'s and
+the elevation profiles' altitude window and shape knobs (roadmap PR13c: ``z_min`` /
+``z_max`` of ``elevation.uniform`` / ``random_walk`` / ``noise``, ``z_max_step`` and
+``z_noise_amplitude``; per-env arrays, latched each generation, read by the
+``warp_zprofile`` twins). The stage hands its Params instance (or, for elevation, a
+namespace built from its static view) to the legacy wrappers as their ``config``
+argument, so the same values reach the same ``float()`` / ``int()`` conversions and the
+launches are unchanged.
 
 ``validate()`` re-runs the ``TrackGenConfig.__post_init__`` rules of the class's own
 fields with the same messages: a spec made from a ``TrackGenConfig`` always passes; the
@@ -18,6 +22,7 @@ rules exist for hand-built specs. The stage Params map the fields a config HAS
 from __future__ import annotations
 
 import dataclasses
+import warnings
 
 import numpy as np
 
@@ -197,6 +202,48 @@ def _check_control_points(p) -> None:
         raise ValueError(f"z_control_points must be >= 3, got {p.z_control_points!r}")
 
 
+def _warn_inert(p, ranges, knob: str, what: str) -> None:
+    """A ``knob`` that can be positive (its drawn ``hi``, or its value when not drawn)
+    has no effect in a window closed at plan time (``z_min == z_max``, neither drawn):
+    the profile is clamped to ``[z_min, z_max]``. A window opened at run time by
+    ``set`` cannot be seen here."""
+    drawn = ranges.get(knob)
+    if "z_min" in ranges or "z_max" in ranges or float(p.z_min) != float(p.z_max):
+        return
+    if (float(drawn[1]) if drawn is not None else float(getattr(p, knob))) > 0.0:
+        from .._src.generator_binding import _outside_track_gen_stacklevel  # noqa: PLC0415
+
+        value = f"={getattr(p, knob)!r}" if drawn is None else \
+            f" drawn in [{drawn[0]}, {drawn[1]}]"
+        warnings.warn(f"{what}: {knob}{value} has no effect in the window "
+                      f"z_min == z_max == {p.z_max!r} (the profile is clamped to "
+                      f"[z_min, z_max]); open the window (e.g. a symmetric z_min < 0 < "
+                      f"z_max, or draw z_min / z_max), unless you open it at run time "
+                      f"with set()", UserWarning, stacklevel=_outside_track_gen_stacklevel())
+
+
+def _check_z_draws(params, ranges) -> None:
+    """Randomizers on ``z_min`` / ``z_max`` must not cross (roadmap PR13c): a run-time
+    ``z_min > z_max`` gives draws in ``[z_max, z_min]`` (uniform) or ``z = z_max``
+    (random_walk / noise: the clamp returns ``hi``). ``ranges``: ``field -> (lo, hi)``
+    of the stage's drawn fields (empty when none)."""
+    zmin, zmax = ranges.get("z_min"), ranges.get("z_max")
+    if zmin is not None and zmax is not None:
+        if float(zmin[1]) > float(zmax[0]):
+            raise ValueError(f"the z_min draws [{zmin[0]}, {zmin[1]}] and z_max draws "
+                             f"[{zmax[0]}, {zmax[1]}] can cross (hi(z_min) > lo(z_max)); a "
+                             f"run-time z_min > z_max inverts the window: keep "
+                             f"hi(z_min) <= lo(z_max)")
+    elif zmin is not None and float(zmin[1]) > float(params.z_max):
+        raise ValueError(f"the z_min draws [{zmin[0]}, {zmin[1]}] can exceed "
+                         f"z_max={params.z_max!r}; a run-time z_min > z_max inverts the "
+                         f"window: keep hi(z_min) <= z_max")
+    elif zmax is not None and float(zmax[0]) < float(params.z_min):
+        raise ValueError(f"the z_max draws [{zmax[0]}, {zmax[1]}] can fall below "
+                         f"z_min={params.z_min!r}; a run-time z_max < z_min inverts the "
+                         f"window: keep lo(z_max) >= z_min")
+
+
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class ElevationFlatParams(_StageFlatParams):
     """``elevation.flat``: every real point at ``z_base``. On a gate pipeline it fills
@@ -207,27 +254,39 @@ class ElevationFlatParams(_StageFlatParams):
                                     "track's flat altitude is lift.flat's z_base).")
 
 
+_ZMIN_DOC = "Lower altitude clamp (<= z_max; per env)."
+_ZMAX_DOC = "Upper altitude clamp (per env)."
+
+
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class ElevationUniformParams(_StageFlatParams):
-    """``elevation.uniform``: i.i.d. knot altitudes in ``[z_min, z_max]``."""
+    """``elevation.uniform``: i.i.d. knot altitudes in ``[z_min, z_max]`` (``z_min`` /
+    ``z_max`` dynamic: the difficulty knob is ``z_max`` with ``z_min`` fixed)."""
 
-    z_min: float = static(0.0, doc="Lower altitude clamp (<= z_max).")
-    z_max: float = static(0.0, doc="Upper altitude clamp.")
+    z_min: float = dynamic(0.0, doc=_ZMIN_DOC)
+    z_max: float = dynamic(0.0, doc=_ZMAX_DOC)
     z_control_points: int = static(10, lo=3, doc="Arc-spaced altitude knots (>= 3).")
 
     def validate(self, layout) -> None:
         _check_z_range(self)
         _check_control_points(self)
 
+    @classmethod
+    def _check_draws(cls, params, ranges, randomized) -> None:
+        _check_z_draws(params, ranges)
+
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class ElevationRandomWalkParams(_StageFlatParams):
-    """``elevation.random_walk``: a grade-capped random walk over the knots."""
+    """``elevation.random_walk``: a grade-capped random walk over the knots
+    (``z_min`` / ``z_max`` / ``z_max_step`` dynamic: the difficulty knob is
+    ``z_max_step`` in a wide window)."""
 
     z_base: float = static(0.0, doc="Baseline altitude.")
-    z_min: float = static(0.0, doc="Lower altitude clamp (<= z_max).")
-    z_max: float = static(0.0, doc="Upper altitude clamp.")
-    z_max_step: float = static(0.0, lo=0.0, doc="Grade cap |dz| per unit arc (>= 0).")
+    z_min: float = dynamic(0.0, doc=_ZMIN_DOC)
+    z_max: float = dynamic(0.0, doc=_ZMAX_DOC)
+    z_max_step: float = dynamic(0.0, lo=0.0, doc="Grade cap |dz| per unit arc (>= 0; per "
+                                                 "env).")
     z_control_points: int = static(10, lo=3, doc="Arc-spaced altitude knots (>= 3).")
 
     def validate(self, layout) -> None:
@@ -236,15 +295,25 @@ class ElevationRandomWalkParams(_StageFlatParams):
             raise ValueError(f"z_max_step must be >= 0, got {self.z_max_step!r}")
         _check_control_points(self)
 
+    @classmethod
+    def _check_draws(cls, params, ranges, randomized) -> None:
+        # Plan time (every build, drawn or not): crossing draws, then an inert grade
+        # cap in a closed window.
+        _check_z_draws(params, ranges)
+        _warn_inert(params, ranges, "z_max_step", "elevation.random_walk")
+
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class ElevationNoiseParams(_StageFlatParams):
-    """``elevation.noise``: periodic harmonic noise around ``z_base``."""
+    """``elevation.noise``: periodic harmonic noise around ``z_base`` (``z_min`` /
+    ``z_max`` / ``z_noise_amplitude`` dynamic: the difficulty knob is
+    ``z_noise_amplitude`` in a wide, symmetric window)."""
 
     z_base: float = static(0.0, doc="Baseline altitude.")
-    z_min: float = static(0.0, doc="Lower altitude clamp (<= z_max).")
-    z_max: float = static(0.0, doc="Upper altitude clamp.")
-    z_noise_amplitude: float = static(0.0, lo=0.0, doc="Oscillation amplitude (>= 0).")
+    z_min: float = dynamic(0.0, doc=_ZMIN_DOC)
+    z_max: float = dynamic(0.0, doc=_ZMAX_DOC)
+    z_noise_amplitude: float = dynamic(0.0, lo=0.0, doc="Oscillation amplitude (>= 0; per "
+                                                        "env).")
     z_noise_harmonics: int = static(3, lo=1, doc="Summed harmonics (>= 1).")
 
     def validate(self, layout) -> None:
@@ -255,6 +324,13 @@ class ElevationNoiseParams(_StageFlatParams):
         if int(self.z_noise_harmonics) < 1:
             raise ValueError(
                 f"z_noise_harmonics must be >= 1, got {self.z_noise_harmonics!r}")
+
+    @classmethod
+    def _check_draws(cls, params, ranges, randomized) -> None:
+        # Plan time (every build, drawn or not): crossing draws, then an inert
+        # amplitude in a closed window.
+        _check_z_draws(params, ranges)
+        _warn_inert(params, ranges, "z_noise_amplitude", "elevation.noise")
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)

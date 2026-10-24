@@ -123,8 +123,8 @@
     (no NaN band any more, the same two refresh launches into the same buffers), and its
     localizer reads it.
 - **`randomize.uniform`**: per-env uniform draws of another stage's dynamic `float32`
-  field, inside the Program, at every generation (finding A15's mechanism; see Deferred
-  for the built-in knobs). **`presets.track(randomize=None)`** and
+  field, inside the Program, at every generation (finding A15's mechanism; the built-in
+  knobs it can draw are the dynamic built-in knobs below). **`presets.track(randomize=None)`** and
   **`presets.gates(randomize=None)`** take `{"<stage id>.<field>": (lo, hi)}` (split at
   the last dot) or a sequence of `StageRef`s, and insert
   `StageRef("randomize", "uniform", {"stage": s, "field": f, "lo": lo, "hi": hi},
@@ -141,8 +141,8 @@
     is not a randomizer (planner and legacy sites use one helper instead of
     `stages[0]`). `PlanError` for a randomizer after its target, another stage before the
     generator, an unknown or randomizer target, a static / `int32` / unknown field (the
-    static message lists the pipeline's drawable fields and says built-in knobs are
-    static in 0.x), two randomizers on one field, initial bounds outside the field's.
+    static message lists the pipeline's drawable fields), two randomizers on one field,
+    initial bounds outside the field's.
   - The drawn field is a single unlatched array: `params[s][f]` reads the current draws,
     `set(f, ...)` raises `ValueError` naming the randomizer, `repr` marks it. The
     randomizer's `set("lo" | "hi", scalar)` refuses a value outside the drawn field's
@@ -226,6 +226,127 @@
   a mixed-batch example in `docs/tutorials/cuda-graph-in-a-sim.rst`; the API reference;
   `docs/library-readiness/target-architecture.md` (as-shipped notes, roadmap PR13c).
 
+- **Dynamic built-in knobs** (roadmap PR13c; findings A15 for the built-in knobs and
+  A88). The knobs that matter for curriculum and domain randomization are DYNAMIC
+  `float32` fields (per-env `[E]` arrays with declared bounds), so `randomize=` and
+  caller-graph curricula reach them: `presets.track(generator="polar",
+  randomize={"generator.polar_radial_jitter": (0.3, 0.85)})`,
+  `gen.params["elevation"].set("z_max", per_env)`, or a kernel in the caller's graph
+  writing `gen.params["generator"]["rad"]`.
+  - **Generators** (the randomize key is `"generator.<field>"`): `bezier` `rad`
+    `[0, 1]`, `handle_clamp_frac` `>= 0`; `hull` `hull_displacement` `[0, 1]`; `polar`
+    `polar_radial_jitter` `[0, 0.85]`, `polar_angular_jitter` `[0, 0.45]`; `voronoi`
+    `voronoi_radial_variation` `[0, 0.85]`, `voronoi_angular_jitter` `[0, pi]`;
+    `checkpoint` `checkpoint_radius_min_frac` `[0, 1]`, `checkpoint_angle_jitter`
+    `[0, 1]`, `checkpoint_turn_rate` `[0, pi]`. The polar, voronoi and checkpoint
+    **gate** generators share the ring knobs (same kernels; `checkpoint_turn_rate` is
+    track-only). Each generator page lists its knobs with their bounds, the direction
+    that makes tracks harder, the effective range and the measured yield at both bounds
+    (e.g. `rad` has no effect above `handle_clamp_frac`; `voronoi_angular_jitter` is
+    legal up to `pi` but useful to about `0.5`).
+  - **Elevation** (key `"elevation.<field>"`, tracks, gates and the centerline before
+    the stations alike): `z_min`, `z_max` (`uniform`, `random_walk`, `noise`; unbounded),
+    `z_max_step` (`random_walk`, `>= 0`), `z_noise_amplitude` (`noise`, `>= 0`).
+  - **Static, deliberately** (open question 5 answered for the built-ins): every count,
+    size, enum or Python branch (`min_num_points`, `polar_num_knots`, `checkpoint_count`,
+    `voronoi_site_layout`, ...), `half_width`, `spacing`, `edgy` (its host `atan`
+    transform is not reproducible in a kernel bit for bit), the core `scale`, `z_base`,
+    `z_noise_harmonics`, `z_control_points`, `checkpoint_steer_gain` and
+    `checkpoint_lookahead_frac` (path-tracer internals), the relax / validity /
+    gate-geometry knobs, the width stages' knobs (except `width.from_channel`'s `scale` /
+    `lo` / `hi`, dynamic since 0.2.0.dev4) and every `repulsive` knob. Naming one in `randomize=` raises
+    `PlanError` (`generator.edgy is a static field (build a new generator to change
+    it; its stage's documentation says why it is static): dynamic float32 fields in
+    this pipeline: [...]`); each generator page says why its static knobs are static.
+  - **Bounds: one rule.** A scalar (construction, `StageParams.set`, a randomizer's
+    initial range) is checked on the host in `float32` (`f32(lo) <= f32(v) <= f32(hi)`);
+    an array value (an `[E]` `set`, a caller kernel, a draw from bounds written at run
+    time) is clamped to the declared bounds when the kernel reads it (NaN passes; an
+    unbounded side is not clamped). Each array-reading kernel loads its env's knobs once,
+    clamps them with comparisons (not `wp.min` / `wp.max`, whose CUDA lowering leaves
+    the sign of a zero unspecified) and runs the scalar kernel's body verbatim, so every
+    configuration keeps its bytes.
+  - **The five generators are Stages**: `bezier`, `hull`, `polar`, `voronoi` and
+    `checkpoint` are `kind="generator"`, `output="centerline"`, `capture=STATIC` Stages
+    (Stages like `repulsive`, a `BOUNDED` Stage since 0.2.0.dev4), registered as
+    classes;
+    `registry.get("generator", "polar").Params` is their Params class (see Deprecated for
+    `.params`). Their module functions keep their frozen signatures and scalar kernels:
+    `generate_centerline_warp` / `bezier_alloc_scratch`, `generate_hull_warp`,
+    `generate_polar_warp`, `generate_voronoi_warp`, `generate_checkpoint_warp` and
+    their `*_alloc_scratch`, `warp_zprofile.apply_z_profile` / `apply_z_profile_knots`,
+    and the float helpers `sample_polar_controls`, `sample_checkpoint_rings`,
+    `select_voronoi_anchors`; the Stages and the legacy functions share private cores.
+  - **`sample_polar_controls_per_env`, `sample_checkpoint_rings_per_env`,
+    `select_voronoi_anchors_per_env`**: the gate generators' shared sampling helpers
+    with `[E]` `float32` arrays for the knobs (clamped to the declared bounds at use).
+    They live in the generator modules, outside the public API, and outlive the float
+    forms.
+  - **`PipelineSpec.with_randomize(randomize)`** (public): the spec with each
+    randomizer inserted right before its target, exactly as `presets.track` /
+    `presets.gates` do (they now call it); the same mapping or `StageRef` forms, the same
+    errors, plus one: a field the spec already randomizes is refused (`ValueError`
+    naming that randomizer; `spec.replace` it, or write its live `lo` / `hi`). A
+    pipeline built from a config gets randomizers in one call:
+    `TrackGenerator(legacy.to_pipeline_spec(cfg).with_randomize({...}), rng)`, or
+    `GateGenerator(legacy.to_gate_pipeline_spec(gcfg).with_randomize({...}), rng)` for a
+    `GateGenConfig`. The configs still have no `randomize` field.
+  - **Plan-time rules on built-in knobs** (when the pipeline is built, for every stage
+    with the rule, randomized or not): `PlanError` when randomizers on `z_min` and
+    `z_max` can cross (`hi(z_min) > lo(z_max)`, or one drawn range crossing the other's
+    fixed value); a `UserWarning` when a `generator.rad` randomizer's `hi` exceeds every
+    value `handle_clamp_frac` can take (its drawn `hi`, by a randomizer or
+    `style_sampling`, or its value), since `rad` is inert above it; a `UserWarning` for
+    an inert elevation window: `z_min == z_max`, neither drawn, with `z_noise_amplitude`
+    (`noise`) or `z_max_step` (`random_walk`) able to be positive (configured, or the
+    `hi` of its randomizer). A window drawn by randomizers does not warn; one opened
+    only at run time with `set` cannot be seen at build. A run-time crossing
+    (`z_min > z_max` written into the arrays) is not refused and behaves as the scalar
+    kernels did (`uniform` draws in `[z_max, z_min]`, `random_walk` / `noise` give
+    `z_max`). The rules are stated once in the tuning guide (`tuning-per-env`).
+  - **`style_sampling` composes with the dynamic fields** (kept, not deprecated): a
+    `rad` / `handle_clamp_frac` with a `*_range` is drawn by the style kernel straight
+    into the knob's parameter array, which is unlatched and reported as drawn by the
+    stage itself (`StageParams.drawn` maps it to the stage's own id, `"generator"`, so
+    every `drawn` value is a key of `gen.params`; `repr` says `rad=<drawn by the
+    generator's style_sampling (rad_range)>`), so
+    `params["generator"]["rad"]` holds each env's style draw; a knob whose range is
+    `None` is an ordinary dynamic field (`set` and `randomize=` work on it).
+    `scale_range` is unchanged (static).
+  - **Built-in static views refuse host reads of dynamic fields**: in `build` the
+    built-in Params' dynamic names hold a sentinel whose numeric conversions,
+    comparisons (`==` / `!=` and so `in` included), hashing and arithmetic raise
+    `TypeError` (`<Params>.<field> is dynamic: a
+    built-in stage reads it on the device through b.param(...)`), so a knob routed
+    through the host by mistake fails instead of silently using the default
+    (`getattr(view, name, default)` returns the sentinel). Plugin Params keep the
+    documented `AttributeError`. Identity and type checks (`x is None`,
+    `isinstance(x, float)`) cannot be intercepted.
+- **Conformance kit: `params.per_env`** (every kind, after `statelessness`, every
+  device): every dynamic field of the stage under test that is not drawn is set per env
+  (each moved from its initial value toward its farther declared bound, a field with one
+  bound away from it, fields with no bound alternating down / up), and env `e` of that generation must equal, bitwise, env `e` of
+  a generation with the fields set to `e`'s values as scalars; the live arrays must read
+  back what was set. Skipped ("no dynamic parameters") without one. It passes for every
+  built-in.
+- Docs: each generator page gains "Per-env (dynamic) parameters" (bounds, `randomize=`
+  key, harder-when, effective range, yield at the bounds, why each other knob is static);
+  `docs/generators/overview.rst` ("Per-env shape knobs"); the tuning guide's "Per-env
+  parameters: randomization and curricula" (randomize on built-in knobs, curricula
+  through `gen.params`, the bounds rule, yields, per-profile elevation knobs and
+  windows, masked-regeneration bookkeeping, segmented-Program timing) and its
+  difficulty-axis table; `docs/tracks-25d.rst` ("Per-env altitude") and
+  `docs/gates-3d.rst`; the configuration reference (a "Kind" column in the built-in
+  Params tables, the bounds and rejections, `registry.get(kind, name).Params`, the
+  drawable built-in fields and `PipelineSpec.with_randomize` in `randomize=`);
+  `pipeline-preview.rst` ("Dynamic built-in knobs", launch counts, segment-0 latch
+  timing); `writing-a-generator.rst` (built-ins are Stages, "Adding a built-in
+  generator": the dynamic-knob rule and the array-reading twin pattern, the legacy
+  module functions); `writing-a-stage.rst` and `testing-a-plugin.rst`
+  (`params.per_env`); the API reference;
+  `docs/library-readiness/target-architecture.md` (PR13c as shipped, new roadmap
+  PR13d).
+
 ### Behaviour changes
 
 - **`clone()` validates**: a malformed hand-built `Track` / `GateSequence` (a field of
@@ -290,13 +411,108 @@
   read by it (0.2.0.dev4 re-read `track.<member>` at every call); write into the arrays
   instead, or build a new utility.
 
+- **The five built-in sampling generators are Stage classes** (roadmap PR13c):
+  `registry.get("generator", g)` (and `generator_registry.get(g)`, `GENERATORS[g]`)
+  returns a class for `bezier`, `hull`, `polar`, `voronoi` and `checkpoint`, not a
+  `GeneratorSpec` instance: use `.Params` (`.params` warns, see Deprecated); the spec's
+  other attributes are gone without a deprecation: `.generate` / `.alloc_scratch` (call
+  the module's `generate_*_warp` / `*_alloc_scratch`, unchanged) and `.capturable` /
+  `.accepts_ctx` (read `registry.describe("generator", g).capturable` /
+  `.accepts_ctx`, both `True`). `registry.describe(...)` keeps `capturable`,
+  `accepts_ctx`, `builtin`, `seeded` and the origin, now reports the Stage fields for
+  the five (`capture=CaptureClass.STATIC` instead of `None`, `output="centerline"`
+  instead of `None`, `writes={"xy": "raw.xy", "valid": "gen.valid"}` instead of `{}`),
+  and its params schema marks the dynamic fields (`x-dynamic`, `minimum` / `maximum`,
+  `"x-bounds": "float32"`). `registry.add(GeneratorSpec(...,
+  params=registry.get("generator", "bezier").Params))` raises `TypeError` (a
+  `GeneratorSpec` params class takes static fields only). Their scratch buffers are now the Stage's (`"scratch:generator/<name>"`, e.g.
+  `gen_crossers`, listed by the kit's `buffers_of`); the private `gen._scratch.gen` is a
+  built stage. The PR9 reference composition (`warp_pipeline._inflate_warp_alloc` /
+  `_run_pipeline` with `generator_spec=None`) looks the built-ins up in a private table
+  of the legacy functions.
+- **Newly rejected built-in values** (`ValueError` when the generator is constructed,
+  after the legacy rules, which keep their messages and order): `rad` outside `[0, 1]`;
+  `handle_clamp_frac < 0`; `hull_displacement` outside `[0, 1]`;
+  **`polar_radial_jitter` outside `[0, 0.85]` and `polar_angular_jitter` outside
+  `[0, 0.45]` (a break: 0.2.0.dev4 documented and applied a clamp to these ranges; set
+  the bound itself, e.g. `polar_radial_jitter=0.85` for `1.0`, for exactly the old
+  output; the `ValueError` says so: `polar_radial_jitter must be in [0, 0.85], got 1.0
+  (0.2.0.dev4 clamped it to that range: set polar_radial_jitter=0.85 for the same
+  output)`)**; `voronoi_radial_variation > 0.85` (no effect beyond it for any layout);
+  `voronoi_angular_jitter > pi`; `checkpoint_angle_jitter` outside `[0, 1]`;
+  `checkpoint_turn_rate` outside `[0, pi]`; a `bool` for any of the 14 dynamic built-in
+  fields (`rad=True` was accepted), a numpy bool or a bool array / tensor included.
+  `checkpoint_radius_min_frac` keeps its legacy `[0, 1)` rule for the configured value,
+  while `set` / `randomize=` accept its declared bound `1` (every checkpoint on the
+  outer radius). Every default and every value in the docs,
+  examples, benchmarks and the parameter explorer's sliders lies inside. A value
+  0.2.0.dev4 accepted through `float()` is still accepted: a non-bool numeric string
+  (YAML's `"1e9"` for `handle_clamp_frac`), a 0-d numpy array or a torch scalar tensor
+  is converted to a `float`, on every construction path.
+- **Bounds of every dynamic `float32` field (plugin ones included) are compared in
+  `float32`** (construction, `StageParams.set(scalar)`, a randomizer's range): looser
+  than 0.2.0.dev4's float64 comparison by less than half an ulp at a bound, so a value
+  read back from an array (`float(np.float32(0.85))`) is accepted. Nothing accepted
+  before is refused. The params schema marks such bounds `"x-bounds": "float32"` (a
+  generic JSON-schema validator compares in float64 and refuses that read-back value);
+  a flat dynamic knob compares with `generator_params` in `float32` as well, so a
+  `np.float32(0.4)` or `torch.tensor(0.4)` flat value equal to the default or to the
+  `generator_params` value is no conflict (as under NumPy 2's comparison rules).
+- **Array values of the built-in dynamic fields are clamped to the declared bounds** when
+  the kernels read them (an `[E]` `set` or a caller kernel is not range-checked).
+- **`style_sampling`'s ranged knobs are reported as drawn**: with `rad_range` (or
+  `handle_clamp_frac_range`) set, `gen.params["generator"]["rad"]` exists and holds each
+  env's draw, `params["generator"].drawn["rad"] == "generator"` (the stage itself),
+  `set("rad", ...)` raises `ValueError` (`generator.rad is drawn every
+  generation by the generator's style_sampling (rad_range); set rad_range=None to set
+  it`), and `randomize={"generator.rad": ...}` is a `PlanError` (`generator.rad is drawn
+  by the generator's style_sampling (rad_range): set rad_range=None to randomize it`).
+- **New warnings and plan errors**: the `UserWarning`s and `PlanError`s of the
+  randomizer rules and inert elevation windows (Added); the static-field `PlanError` for
+  a built-in knob says it is static and where to read why (it said "built-in knobs are
+  static in 0.x"). `legacy.to_pipeline_spec` given a `GateGenConfig` raises `TypeError`
+  pointing to `legacy.to_gate_pipeline_spec` (it failed with an `AttributeError` on
+  `N_max`).
+- **Launch sequences (re-pinned deliberately; bytes unchanged).** One latch launch per
+  latched dynamic field per generation, right after the effective seed (drawn fields
+  have none), and each knob-reading kernel replaced by its array-reading twin at the same
+  position (`_assemble_k` / `_assemble_style_k` -> `_assemble_dyn_k`,
+  `_midpoint_displace_dyn_k`, `_polar_controls_dyn_k`, `_select_anchor_sites_dyn_k`,
+  `_sample_checkpoints_dyn_k`, `_steer_dyn_k`, `_z_uniform_dyn_k`, `_z_walk_dyn_k`,
+  `_z_noise_dyn_k`), same dimensions and arrays, the knob scalars now arrays
+  (`_assemble_dyn_k` also takes its four bound scalars). Launches per `generate()` (CPU):
+  default track (`bezier`, flat) 152 -> 154; `bezier` + `style_sampling` with all three
+  ranges 153 -> 153, with one of `rad_range` / `handle_clamp_frac_range` 153 -> 154,
+  with neither 153 -> 155; `hull` 151 -> 152; `polar` 143 -> 145; `voronoi` 151 -> 153;
+  `checkpoint` (any `checkpoint_best_of_k`, clip or not) 146 -> 149; `bezier` +
+  elevation `uniform` / `random_walk` / `noise` 156 / 156 / 154 -> 160 / 161 / 159;
+  `repulsive`, `external` and the default gate pipeline (`bezier` / `hull`, 14)
+  unchanged; gates `polar` / `checkpoint` 14 -> 16, `voronoi` 15 -> 17, plus 2 / 3 / 3
+  with a `uniform` / `random_walk` / `noise` elevation. The re-pinned tests:
+  `tests/test_pipeline_parity.py` (`test_default_bezier_launch_count`, 154; the PR9
+  sequence test's four elevation cases through one shared delta helper),
+  `tests/test_commit.py::test_launch_counts` (154; masked `154 + 1 + 2` with the hold at
+  index 4; poison 155; a check after validity `154 + 3`),
+  `tests/test_gate_commit.py::test_launch_counts` (polar 14 -> 16) and
+  `tests/test_gate_pipeline_parity.py::_expected_launches` (+2 and the twin for polar /
+  checkpoint / voronoi, +3 for `noise`; its golden JSON is unchanged).
+- **The conformance kit runs `params.per_env`**: a plugin with a dynamic field whose
+  kernel reads `param[0]` (or a host copy) instead of `param[e]`, or writes its
+  parameter array, now fails it.
+
 ### Changed (outputs)
 
 None. Every default pipeline (each `TrackGenConfig` / `GateGenConfig`, each preset at its
 defaults, `relax="auto"` included), every fingerprint, the PR10a, PR11 and PR13a parity
-suites and goldens are byte-identical, with the same launch sequences. `clone()` copies the
-same bytes on the same stream when no producer stream is involved, and
-`CourseLine.refresh()` launches the same two kernels into the same buffers.
+suites and goldens are byte-identical. `clone()` copies the same bytes on the same stream
+when no producer stream is involved, and `CourseLine.refresh()` launches the same two
+kernels into the same buffers. The dynamic built-in knobs (PR13c) keep the bytes of every
+configuration 0.2.0.dev5 still accepts, `style_sampling` included, but change the launch
+sequences of the generators and elevations that have them (latches and array-reading
+kernels: see Behaviour changes). One unreachable-in-practice exception: under
+`style_sampling` with a knob's range `None` and that knob set to `-0.0` (`rad=-0.0`),
+a coordinate that is exactly zero may now carry the sign `-0.0` (the collapsed style draw
+used to give `+0.0`).
 
 ### Fixed
 
@@ -312,9 +528,14 @@ same bytes on the same stream when no producer stream is involved, and
   on views); the `Track` part of LOW A99 "public helpers allocate per call"
   (`copy_from` into an `alloc` result; `curvature` / `speed_profile` `out=` stay with
   PR14).
-- Not closed (recorded as open): MEDIUM A15 "all track knobs are host scalars" for the
-  built-in knobs, and LOW A88 "style sampling is bezier-only": `randomize.uniform` ships as
-  the mechanism, but only dynamic fields can be drawn (see Deferred).
+- Closed by roadmap PR13c: MEDIUM A15 "all track knobs are host scalars" for the
+  built-in knobs (the generators' shape knobs and the elevation ranges are dynamic, drawn
+  by `randomize=` and writable from a caller graph; what stays static sizes buffers or
+  launches, or is transformed on the host); LOW A88 "style sampling is bezier-only",
+  closed as *generalized by randomize* (every built-in sampling generator, `bezier`,
+  `hull`, `polar`, `voronoi` and `checkpoint`, has drawable knobs;
+  `style_sampling` stays for `scale_range` until per-env size, roadmap PR13d, and the
+  duplicated scalar kernels serve only the frozen legacy functions, removed at 1.0).
 
 ### Deprecated
 
@@ -322,19 +543,53 @@ same bytes on the same stream when no producer stream is involved, and
   `DeprecationWarning` (`CourseLine.track is a Centerline since 0.2.0.dev5 and is
   deprecated; use CourseLine.centerline (removed at 1.0)`). `Course`, the tests and
   `viz/plot_gate_courses.py` read `.centerline`.
+- **`registry.get("generator", g).params`** for `g` in `bezier`, `hull`, `polar`,
+  `voronoi`, `checkpoint` (the 0.2.0.dev4 `GeneratorSpec` attribute): a class attribute
+  that returns `.Params` and emits a `DeprecationWarning` (`registry.get('generator',
+  'polar').params is deprecated: use .Params (removed in 1.0)`), attributed to the
+  calling code. `repulsive` and the gate generators never had it as Stages.
+
+### Superseded (still supported, no warning)
+
+- **`style_sampling`'s `rad_range` and `handle_clamp_frac_range`** are superseded by
+  `randomize={"generator.rad": (lo, hi), "generator.handle_clamp_frac": (lo, hi)}` (the
+  same uniform distributions, different random streams, so different tracks).
+  `style_sampling` and `scale_range` stay fully supported: `style_sampling` is deprecated
+  in the release that ships per-env size (roadmap PR13d, `scale_range` ->
+  `randomize={"generator.size": ...}`) and removed only after that warning release.
+
+  ```python
+  # style sampling (still supported)
+  TrackGenConfig(style_sampling=True, rad_range=(0.1, 0.35), handle_clamp_frac_range=(0.3, 0.9))
+  # randomize: same distributions, other draws
+  presets.track(num_envs=E, device=d, randomize={"generator.rad": (0.1, 0.35),
+                                                 "generator.handle_clamp_frac": (0.3, 0.9)})
+  # from a config
+  TrackGenerator(legacy.to_pipeline_spec(cfg).with_randomize(
+      {"generator.rad": (0.1, 0.35), "generator.handle_clamp_frac": (0.3, 0.9)}), rng)
+  ```
 
 ### Deferred
 
-- **Dynamic built-in knobs: new roadmap PR13c.** Every built-in generator is a legacy
-  `GeneratorSpec` with static params, and every built-in stage field is static except
-  `width.from_channel`'s, so `randomize=` cannot draw a built-in knob
-  (`presets.track(randomize={"generator.rad": ...})` raises `PlanError` listing the
-  drawable fields). PR13c makes the knobs that matter for curriculum / domain
-  randomization dynamic (the elevation ranges and noise amplitude, the built-in
-  generators' size / radius / jitter knobs, through a dynamic-param path for
-  `GeneratorSpec` or ports to Stages), byte-identical at default values with the launch
-  sequences re-pinned deliberately. A15 (for built-in knobs) and A88 stay open until
-  then.
+- **Per-env size and the rest of the built-in difficulty axes: new roadmap PR13d** (a
+  deviation from the PR13c scope, which listed "size" knobs). A dynamic per-generator
+  `size` multiplier (`float32`, default `1.0`, `lo > 0`, declared `hi`) applied last, so
+  exact at `1.0` and byte-identical at the defaults (its only capacity effect is
+  truncation against `n_max` under constant spacing, flagged and failed closed), then the
+  deprecation of `style_sampling` (`scale_range` -> `generator.size`); a dynamic corner
+  count (`int32` `min_num_points` for `bezier` / `hull`, bounded by the static maximum);
+  `gate_frames.default`'s `gate_width` (+1 latch on every gate pipeline, the default
+  included); a read-only `StageParams.in_effect(field)` (the values the current rows were
+  built with, for curriculum bookkeeping). Until then the core `scale` is static
+  (`style_sampling`'s `scale_range` is the per-env size path).
+- **Roadmap PR16** gains: `edgy` dynamic (its in-kernel transform is not bit-exact
+  against the host's, free under the golden re-baseline); the removal of the scalar
+  kernels and legacy module functions, of the deprecated `.params` alias and of
+  `style_sampling` (only after PR13d's warning release).
+- Unslotted: the `repulsive` knobs; `gate_radius` and the relax / validity tolerances;
+  `int32` and categorical draws (layouts, counts); a fused per-dtype latch launch;
+  `checkpoint_steer_gain` / `checkpoint_lookahead_frac` (only with a measured difficulty
+  effect).
 - **`closed` in the kernels** (a deviation from the PR13 scope, which plumbed it through
   the relax, elevation and utility kernels): open topology is refused on the host before
   anything runs, so a kernel argument would be dead code. The fallback, if ever needed:
@@ -352,6 +607,71 @@ same bytes on the same stream when no producer stream is involved, and
 
 ### Testing
 
+- `tests/test_dynamic_knobs.py` (CPU): the declarations (each Params class's exact
+  dynamic set with bounds and `float32` dtype, the schema, the Stage classes and the
+  deprecated `.params`); each array-reading kernel against its scalar kernel (defaults,
+  non-default values, the bounds, `-0.0`, NaN, per-env arrays row by row, out-of-range
+  arrays equal to the scalar kernel at the bound, `_assemble_dyn_k` with unbounded
+  bounds against `_assemble_style_k`); each generator with per-env arrays against
+  `TrackGenerator(TrackGenConfig(knob=v_e))` row `e` (8 fingerprint seeds) with
+  non-vacuity; each Stage's raw output against its legacy `generate_*_warp`; the gate
+  generators and elevations (tracks, gates, centerline stations) per env; `randomize=`
+  on built-in knobs (env `e` equal to an eager twin set to the drawn values, masked
+  advances, the static-field and bounds errors, `PipelineSpec.with_randomize` equal to
+  the presets' insertion, a second randomizer on a field refused, the `GateGenConfig`
+  route); the cross-field rules and inert-window warnings (configured and randomized
+  knobs, a rad draw above a drawn clamp, windows opened by randomizers, gates); the launch
+  deltas for every row of the table above (plain and masked, one helper shared with the
+  parity tests); bounds and types (each new rejection, the polar migration message,
+  `float32` acceptance at a bound, bools including numpy / torch ones, `"1e9"` / 0-d
+  numpy / torch coercion, `np.float32` / torch flat knobs against `generator_params`);
+  the static-view sentinels for every
+  built-in; `style_sampling` (bytes for every range combination, drawn reporting, `set`
+  / randomize refusals, `set` on a `None`-range knob); a lock on the generated CUDA
+  source of each scalar / twin kernel pair (same arithmetic operations, in order) and
+  one on their Python source (the twin's body, once its knob loads, comparison clamps
+  and env index are dropped and its locals renamed, is the scalar kernel's body
+  statement for statement: operands, operand order, constants and indices; six
+  mutants that keep the operation sequence fail it); the
+  one-generation lag of a write recorded after segment 0 of a segmented Program; the
+  legacy surfaces (`_run_pipeline` per generator, frozen signatures, a `GeneratorSpec`
+  with `BezierParams` refused); the kit's `params.per_env` (passes for the built-ins and
+  the dynamic toys, skipped without dynamic fields, fails a toy reading `m[0]` or
+  writing its parameter array).
+- CUDA (`tests/test_dynamic_knobs_cuda.py`, collects on CPU): each twin against its
+  scalar kernel on the device; every generator and elevation (non-default values)
+  against the legacy scalar path; gates end to end against the frozen PR11 reference;
+  `presets.track` / `presets.gates(randomize=...)` on built-in knobs recorded in a
+  caller graph, every replay equal to an eager twin set to the replay's draws, masked
+  advances; a curriculum kernel writing `params["generator"]["rad"]` and
+  `params["elevation"]["z_max"]` (one value out of bounds) in the caller's graph; the
+  kit with `params.per_env` on `cuda:0`.
+- Existing tests updated where PR13c required it: the launch re-pins above, through one
+  delta helper (`tests/_pr13c_delta.py`, also used by the CUDA PR9-sequence test in
+  `tests/test_program_capture_cuda.py`); the kit's check lists and per-unit expectations
+  (`tests/test_conformance.py`: `params.per_env` runs for the five track and three ring
+  gate generators, is skipped elsewhere); `tests/test_randomize.py` (`generator.rad` now
+  builds; the static refusal uses `generator.edgy` / `relax.relax_iters` and the new
+  message); `tests/test_generator_params.py` (crossers through the Stage scratch, the
+  flat hull case's dynamic `hull_displacement`); `tests/test_generator_registry.py`
+  (the Stage classes; decoy / override specs built from the frozen functions);
+  `tests/test_generate_hull.py` / `tests/test_generate_voronoi.py` (they call the frozen
+  `*_alloc_scratch` / `generate_*_warp`); `tests/test_plugin_stage.py` (a legacy
+  `GeneratorSpec` described through a toy; `bezier` described as a Stage);
+  `tests/test_caller_capture_cpu.py` (the call-counting override of `bezier` is a Stage
+  subclass); `.params` -> `.Params` in `tests/test_plugin_params.py` and
+  `tests/test_pipeline_planner.py`; the CUDA toys' legacy specs built from the frozen
+  functions (`tests/test_caller_capture_cuda.py`, `tests/test_bounded_host_cuda.py`);
+  `tests/test_no_host_sync.py` (the private cores through the Stage probes, the frozen
+  legacy entry points through the private legacy specs);
+  `tests/test_generator_docs.py` (the reference tables' "Kind" column);
+  `tests/tools/capture_pr7_fingerprints.py` (crossers from either scratch form). The
+  byte guards pass unchanged: `tests/test_generator_fingerprints.py` and its goldens,
+  the boundary bytes of `tests/test_pipeline_parity.py` and the taps and frozen
+  reference of `tests/test_gate_pipeline_parity.py` (only their launch-sequence
+  expectations are re-pinned, above), `tests/goldens/pr11_gate_stages.json`,
+  `tests/goldens/pr13a_pr11_relaxed_stations.json` and its test,
+  `tests/test_style_sampling.py` and the `tests/test_legacy_plugin_abi.py` pins.
 - `tests/test_results.py` (CPU): `Layout` identity across the three import paths and its
   field rules; every facade / `build` result's layout; schema completeness; `validate`
   parametrized over every field (length, dtype, contiguity), attributes, `need`, a stored
