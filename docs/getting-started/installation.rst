@@ -52,8 +52,8 @@ repository. ``uv add`` records the dependency in your ``pyproject.toml``, resolv
 
 .. code-block:: bash
 
-   # pin a ref (a tag, branch or commit) for reproducible installs
-   uv add "git+https://github.com/AntoineRichard/TrackGen.git@main"
+   # pin a release tag for reproducible installs (or a branch / commit, e.g. @main)
+   uv add "git+https://github.com/AntoineRichard/TrackGen.git@v0.2.0"
 
    # with an extra (here the Gradio parameter explorer's)
    uv add "track_gen[ui] @ git+https://github.com/AntoineRichard/TrackGen.git@main"
@@ -67,7 +67,7 @@ With pip:
 
 .. code-block:: bash
 
-   pip install "track_gen @ git+https://github.com/AntoineRichard/TrackGen.git@main"
+   pip install "track_gen @ git+https://github.com/AntoineRichard/TrackGen.git@v0.2.0"
 
 From a checkout
 ---------------

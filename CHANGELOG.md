@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.0 (2026-10-24, tag `v0.2.0`)
+
+The first release of the 0.2 line: everything in 0.2.0.dev0 to 0.2.0.dev6 below (the
+`v2` branch, merged into `main`). Upgrading from 0.1: the migration guide
+(`docs/upgrading/from-0.1.rst`, "Upgrading from 0.1" on the documentation site), organised
+by impact: silent changes first. Highlights: every generation, course and utility can be
+recorded into your CUDA graph; one plugin registry with entry points and a conformance kit;
+a pluggable track and gate pipeline (generators, relax, width, elevation, validity,
+ordering, stations); per-point channels and variable width; per-env dynamic knobs, size and
+curricula in the graph; `Course` as a composition root over components; invalid envs read
+as sentinels (gate on `StepResult.valid`); the SDF box query takes the exact minimum over
+the box outline; Warp >= 1.18. 0.2 is the warning release for the 1.0 removals listed in
+the migration guide.
+
 ## 0.2.0.dev6 (2026-10-24, tag `v0.2.0.dev6`)
 
 Roadmap PR14: the component protocol (`track_gen.tools`) and the adapters of the runtime

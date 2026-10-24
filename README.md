@@ -50,8 +50,9 @@ Python ≥ 3.10; `numpy` and `warp-lang` ≥ 1.18 are the only runtime deps. The
 wheels); the `cpu` device runs anywhere.
 
 ```bash
-uv add "git+https://github.com/AntoineRichard/TrackGen.git@main"                    # into a uv project
-pip install "track_gen @ git+https://github.com/AntoineRichard/TrackGen.git@main"   # or with pip
+uv add "git+https://github.com/AntoineRichard/TrackGen.git@v0.2.0"                    # a release (recommended)
+pip install "track_gen @ git+https://github.com/AntoineRichard/TrackGen.git@v0.2.0"   # or with pip
+uv add "git+https://github.com/AntoineRichard/TrackGen.git@main"                      # or the latest main
 ```
 
 From a checkout: `uv venv --python 3.12 && uv pip install -e ".[dev]"`.
