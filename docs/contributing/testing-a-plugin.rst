@@ -8,7 +8,8 @@ independence, no hidden state, no host sync or allocation on the hot path, a sta
 launch sequence, the absorbing freeze of an iterative (``BOUNDED``) loop and, on CUDA,
 recording into a caller's graph. ``check_stage`` does the
 same for a relax, width, elevation, validity, order or stations stage (see
-:ref:`kit-check-stage`).
+:ref:`kit-check-stage`), and ``check_component`` for a runtime component (see
+:ref:`kit-check-component`).
 TrackGen's own test suite runs the same checks over every built-in generator and stage,
 so a plugin is held to the standard the built-ins meet.
 
@@ -560,6 +561,141 @@ Program runs that stage eagerly in its own segment, and the checks change as for
 runs, so a stage that calls ``bounded_loop(active=...)`` while declaring ``STATIC``
 fails ``construct`` instead (see :ref:`stage-bounded`).
 
+.. _kit-check-component:
+
+Runtime components: ``check_component``
+---------------------------------------
+
+``check_component`` checks a component of ``track_gen.tools`` (see
+:doc:`writing-a-component`): your own, or one of the built-in adapters, which TrackGen's
+suite checks the same way.
+
+.. code-block:: python
+
+   check_component(factory, *, source="track", upstream=(), devices=None, num_envs=8,
+                   steps=32, seeds=None, drive=None, modes=CAPTURE_MODES) -> Report
+
+- ``factory(cc)`` returns a fresh, unattached component; ``cc`` is the
+  ``ComponentContext`` it will be attached to (its ``layout`` and ``capacity``), so a
+  component that owns device arrays from construction can build them for the kit's device
+  and ``num_envs``. ``upstream`` holds the factories of the components it reads
+  (``after``, ``source``), attached first, in order.
+- ``source`` is ``"track"`` (``presets.track``, the default), ``"gates"``
+  (``presets.gates(gate_width=0.1)``: passable gates), or a ``PipelineSpec`` /
+  ``TrackGenConfig`` / ``GateGenConfig`` (its ``num_envs`` and ``device`` replaced). The
+  kit builds the producer with explicit seeds (``seeds=None``: ``7 * e + 3``) and
+  ``on_invalid="keep"``, and attaches the chain through
+  ``ComponentContext.for_producer``.
+- ``drive(step, inputs, source)`` writes the bound inputs before each step. Every input
+  name the chain declares gets one ``[E * slots]`` array per run. By default ``position``
+  walks along the course (the centerline, or between consecutive gates) with lateral
+  offsets that leave the road (or the gate opening) now and then, ``box_position`` is
+  that point plus per-slot offsets (every fourth slot inactive, NaN, on some steps),
+  ``orientation`` the yaw of the motion and ``half_extents`` ``(0.03, 0.015)``; any other
+  input needs ``drive=`` (``construct`` fails naming it).
+
+Every check drives the whole chain in order, upstream first (``on_generate``, ``reset``,
+``step`` of each component, inside the recorded graph too), and compares only the
+component under test. The kit finds every ``wp.array`` reachable from its ``result``
+(dataclass fields, mapping values, named-tuple, tuple and list items, ``__slots__`` and
+attributes, recursively; nested names are dotted) and classifies each by pointer:
+**aliased** when it belongs to the read target, an upstream result or the producer's
+result, **owned** otherwise. Only owned arrays are poisoned and compared; aliased ones must keep
+their pointers.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 26 74
+
+   * - Check
+     - What it does
+   * - ``construct``
+     - Attaches the chain; checks the declaration's types (``name``, ``source``,
+       ``requires`` / ``optional`` protocols, ``topology``, ``inputs`` of ``InputSpec``,
+       ``after``), that ``layout`` and ``result`` are set (the result exposes at least
+       one ``wp.array``) and that the source has a valid env (``details["valid_envs"]``;
+       with none, every check would be vacuous: pass another source or seeds), binds the
+       inputs, runs ``on_generate(ctx, None)`` and ``reset(ctx, all)``. Then the attach
+       contract: a chain attached now, without that warm-up, steps to the same owned
+       bytes (``attach`` must end with ``on_generate(cc.ctx, None)`` and initialise the
+       per-env state as ``reset`` does).
+   * - ``requires.complete``
+     - A proxy of the read target exposing only the declared members (``requires``,
+       ``optional``, ``layout``) gives the same owned bytes over the trajectory; without
+       a required member ``cc.add`` raises ``TypeError``; without an optional one it
+       attaches. A component that declares no read at all (no ``requires``,
+       ``optional`` or ``source``) is attached to an empty read target (a ``layout``
+       only): it must attach and give the same owned bytes, then the check is skipped
+       ("reads no source"); reading an undeclared member fails here.
+   * - ``topology``
+     - A read target whose ``layout`` is a ``closed=False`` copy: ``"closed"`` must
+       raise ``ValueError``, ``"any"`` must attach. Needs ``requires`` or ``optional``.
+   * - ``result.stable``
+     - ``step()`` returns ``component.result``; owned arrays keep their pointers through
+       ``on_generate``, ``reset`` and ``step``; aliased arrays are the upstream's.
+   * - ``determinism``
+     - Two producers and chains with the same seeds and drive: identical owned bytes at
+       every step.
+   * - ``statelessness`` (``stateful=False``)
+     - After a history of steps, ``step`` equals a fresh component's first ``step`` on
+       the same inputs.
+   * - ``reset.exact`` (``stateful=True``)
+     - ``reset(ctx, m)`` mid-trajectory: from then on the masked envs equal a fresh
+       component's, the unmasked envs a never-reset twin's, every step.
+   * - ``regenerate.masked``
+     - The producer advanced with a mask, then the chain's ``on_generate(ctx, m)`` and
+       ``reset(ctx, m)``: unmasked envs equal a never-advanced twin, masked envs a fresh
+       chain attached to a twin advanced before attach (``details["masked_rows_changed"]``
+       reports non-vacuity).
+   * - ``regenerate.self_reset``
+     - Stateful components that read a source whose read target carries ``generation``
+       (an ``optional=(HasGeneration,)`` declaration alone qualifies): the same run
+       without ``reset`` gives the same bytes. Not applicable otherwise.
+   * - ``invalid.sentinel``
+     - Half the envs failed by the commit's own kernel, once keeping their geometry
+       (``valid = 0``) and once poisoned: identical owned outputs over the trajectory (an
+       invalid env reads like a poisoned one). Not applicable when the result has
+       aliased arrays and no owned one (its consumers are checked with it upstream).
+   * - ``capacity.clamp``
+     - Components that read a ``cc.capacity`` key, attached with the key scaled down (by
+       4, or more until some env truncates when the result or the utility exposes
+       ``truncated``): each env's owned rows equal those of the same chain on that env's
+       one-env view (no write past its own rows), and some env reports truncation.
+   * - ``source.view``
+     - Attached to ``big.view(1, E + 1)`` of a byte-poisoned ``E + 2`` result holding the
+       batch: equals the standalone run, and no byte of ``big`` changes (a component
+       never writes its source, nor outside its env range). Needs ``requires`` or
+       ``optional``.
+   * - ``hot_path.host_sync`` / ``.allocation`` / ``.stream`` / ``.capture`` (CPU)
+     - ``on_generate`` (unmasked and masked), ``reset`` and two ``step`` calls under
+       :func:`~track_gen.testing.hot_path_guard`, probing ``track_gen`` and the
+       component's own top-level package, on a chain whose hot methods never ran (a
+       throwaway chain loaded the modules): work done only on a first call (a lazy
+       allocation, a one-time readback or launch) fails.
+   * - ``hot_path.topology`` (CPU)
+     - Two calls of each hot method emit the same launch trace; ``step`` also with the
+       wrapped utility's rebind flag armed and unarmed (:ref:`component-rebind`).
+   * - ``hot_path.buffers`` (CPU)
+     - Every launched pointer belongs to the component, its upstream, its read target,
+       its inputs or the masks.
+   * - ``capture.caller`` (CUDA)
+     - Per capture mode: on a component whose hot methods never ran eagerly, records
+       ``[producer.enqueue(advance, mask=done) -> chain on_generate(ctx, done) -> chain
+       reset(ctx, done) -> chain step(ctx)]`` on a side stream (mempool disabled,
+       ``capture_launch`` forbidden) and replays it ``steps`` times against an eager
+       twin, poisoning the owned arrays in both runs before each iteration.
+   * - ``capture.self_reset`` (CUDA)
+     - As ``regenerate.self_reset``, recorded: the graph without ``reset`` equals the
+       eager twin with it.
+
+A component that declares no read (``DiscCollision`` on raw disc arrays) and gives the
+same bytes on an empty read target reports ``requires.complete``, ``topology`` and
+``source.view`` as skipped ("reads no source"), never passed; ``regenerate.masked`` and
+``invalid.sentinel`` run for every component (trivially passing for one that reads
+nothing). One that reads another component's result (``source=``) without declaring a
+protocol of it skips ``requires.complete``, ``topology`` and ``source.view`` (nothing to
+check them against). ``CHECKS["component"]`` lists the names in run order.
+
 The pytest plugin
 -----------------
 
@@ -575,6 +711,8 @@ provides:
   ``check_stage`` with ``kind`` one of ``"relax"``, ``"width"``, ``"elevation"``,
   ``"validity"``, ``"order"``, ``"stations"``) with ``kwargs``, fails the test listing
   every failed check, and returns the ``Report``;
+- the ``track_gen_check_component`` fixture, a factory:
+  ``track_gen_check_component(factory, **kwargs)`` runs ``check_component`` the same way;
 - ``generator_names(kind="generator", *, builtin=None, exclude=())``, the sorted names
   registered under ``kind``, a generator kind or one of the six stage kinds
   (``builtin=False`` keeps the third-party ones, ``builtin=True`` the built-ins);

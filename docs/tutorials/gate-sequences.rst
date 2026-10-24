@@ -42,7 +42,7 @@ Building the Gate Config
        gate_ordering="random_pairs",
        num_envs=E,
        max_gates=32,
-       gate_width=0.4,
+       gate_width=0.1,
        gate_radius=0.025,
        gate_solve_iters=8,
        device=device,
@@ -390,8 +390,9 @@ array rebuilt device-side on every regeneration. It requires ``gate_width > 0``
 
 Build a ``Course`` in gates mode, ``bind`` the sim's own state buffers (they are
 read in place every step), ``generate`` the batch, then in the step loop read
-the progress ``events`` for gate rewards and ``contacts`` (a ``DiscContact``
-here) for a post-collision penalty:
+the progress ``events`` for gate rewards, ``contacts`` (a ``DiscContact``
+here) for a post-collision penalty, and ``valid`` to leave out the envs whose gate
+sequence is invalid:
 
 .. code-block:: python
 
@@ -406,8 +407,8 @@ here) for a post-collision penalty:
 
    course = Course(CourseConfig(
        mode="gates",
-       gen=GateGenConfig(num_envs=E, gate_width=0.4, gate_radius=0.025,
-                         max_gates=32, device=device),
+       gen=GateGenConfig(num_envs=E, gate_width=0.1, gate_radius=0.025,
+                         max_gates=32, device=device),   # 0.4-wide bars cross at size 1
        seeds=7,
        post_radius=0.03,          # > 0 enables DiscChecker gate-post collision;
                                   # 0 (default) = progress-only. No collision= /
@@ -426,22 +427,34 @@ here) for a post-collision penalty:
    course.bind(position=position, orientation=orientation, half_extents=half_extents)
 
    seq = course.generate()        # whole batch + posts rebuild + progress reset
+   regen = course.inputs["regen_mask"]            # stable [E] int32 mask for regenerate(mask=)
 
    for step in range(40):
        # sim.step() writes `position` (and `orientation`) in place here.
 
-       res    = course.step()                     # events + contacts, no args
+       res    = course.step()                     # events + contacts + frame + valid
+       valid  = res.valid.numpy() != 0            # [E] bool: False == invalid gate sequence
        passed = res.events.passed.numpy()         # [E] int32: cleared a gate this step
        dist   = res.events.dist_to_next.numpy()   # [E] float32: distance to next gate
+       laps   = res.events.laps.numpy()           # [E] int32: laps completed
        hit    = res.contacts.hit.numpy()          # [E] int32: 1 == box touched a post
        disc   = res.contacts.disc.numpy()         # [E] int32: deepest post, -1 == none
+       s      = res.frame.s.numpy()               # [E] float32: arc length on the course line
 
-       reward = 10.0 * passed - 5.0 * hit         # gate bonus, post penalty (shaping)
+       # Gate on `valid` with a select, never a multiply: NaN * 0 is NaN.
+       reward = np.where(valid, 10.0 * passed - 5.0 * hit, 0.0)   # gate bonus, post penalty
+       obs_s  = np.where(valid, s, 0.0)                            # NaN-free observation
+       done   = (hit != 0) | (laps >= 2) | ~valid                  # done |= 1 - valid
 
-   # Per-env respawn on the SAME course: clear progress only where mask[e] == 1.
-   done = np.zeros(E, np.int32)
-   done[0] = 1
-   course.reset(wp.array(done, dtype=wp.int32, device=device))
+       if done.any():
+           regen.assign(done.astype(np.int32))
+           course.regenerate(mask=regen, advance=True)   # NEW gate courses for the done envs
+           # ...and respawn those envs' agents on their new course in your sim.
+
+   # Per-env respawn on the SAME course (a valid env that crashed): clear its progress.
+   respawn = np.zeros(E, np.int32)
+   respawn[0] = 1
+   course.reset(wp.array(respawn, dtype=wp.int32, device=device))
 
    # New courses for everyone: whole-batch regenerate + full progress reset.
    # The posts are rebuilt device-side onto the new gates automatically.
@@ -457,14 +470,29 @@ current target gate). ``res.contacts`` is a
 ``nearest`` drive a contact response. With ``post_radius == 0`` the course is
 progress-only and ``res.contacts is None``.
 
+``res.valid`` is the generator's ``[E]`` validity (``seq.valid``; ``fail_mask`` says
+which check failed). The bar width sets how many courses are valid: with the ``bezier``
+gate generator at size 1, 62 of 64 envs (seeds 7) at ``gate_width=0.1``, 5 of 64 at
+``0.4`` (crossing bars, fail bit 4; see the yield tables above). An invalid env reads
+like an env with no gates: no post hit, frozen
+progress (``passed = 0``, ``dist_to_next = 0``), a NaN ``frame`` (``segment = -1``).
+Ungated, its frozen progress and NaN frame would reach the reward and the observation at
+every step, and ``reset`` would respawn it on the same invalid course forever: end it
+and regenerate it with ``advance=True``, as above. ``regenerate(mask=...)`` recomputes the
+whole batch on every eager call, even with no env masked, so only call it when one is.
+An all-zero mask is skipped on device only in a CUDA graph recorded through a capture
+Warp registered, with conditional nodes (CUDA driver and toolkit >= 12.4); a CPU capture
+or a plain ``torch.cuda.graph`` reruns it on every replay
+(:doc:`/tutorials/cuda-graph-in-a-sim`).
+
 Post collision backend
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
 Gates mode has no out-of-bounds band — there is nothing to leave — so the only
 collision is the optional gate posts. ``post_radius > 0`` builds a
-``DiscChecker`` over the interleaved ``left``/``right`` bar endpoints; NaN
-padding past each env's real gate count carries over and NaN posts are skipped,
-so no per-env count bookkeeping is needed. See
+``DiscChecker`` over the interleaved ``left``/``right`` bar endpoints, rebuilt on device
+at every regeneration with each env's post count (``2 * count``) and the gates'
+``valid``: only the real posts are scanned, and an invalid env reports no hit. See
 :doc:`/utilities/collision` for the disc-obstacle checker (the same one makes
 cones physical) and :doc:`/utilities/progress` for the checkpoint/reward
 contract that gates reuse.
@@ -477,7 +505,8 @@ whole step — gate progress update plus post-collision query — records into y
 own sim graph alongside the physics, with no flag to set. ``course.regenerate()``
 records into the same graph too, so new gate courses and the steps that drive them can
 replay as one unit. Keep writing into the SAME bound buffers after capture (rebinding
-leaves the captured graph reading the old pointers). See
+leaves the captured graph reading the old pointers, and emits a
+``RebindAfterCaptureWarning``). See
 :doc:`/tutorials/cuda-graph-in-a-sim` for the capture-and-replay pattern.
 
 Full Example
@@ -496,7 +525,7 @@ Full Example
        gate_ordering="random_pairs",
        num_envs=E,
        max_gates=32,
-       gate_width=0.4,
+       gate_width=0.1,
        gate_radius=0.025,
        gate_solve_iters=8,
        device=device,

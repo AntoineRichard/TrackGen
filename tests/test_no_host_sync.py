@@ -232,18 +232,76 @@ def _localizer():
 
 
 def _localize_profiles():
-    # Module-level helpers. They allocate their outputs (an out= variant is a later
-    # roadmap step) but must not sync or read back.
+    # Module-level helpers. Without out= they allocate their outputs but must not sync
+    # or read back; the out= forms (roadmap PR14) are also allocation-free (see
+    # test_localize_profiles_out_forms_pass_the_full_guard).
     track = _track_gen().generate()
+    n = int(track.center.shape[0])
+    k, sc, v = (wp.empty(n, dtype=wp.float32, device=DEV) for _ in range(3))
 
     def hot():
         kappa = localize.curvature(track)
         localize.speed_profile(track, 4.0, 2.0, 4.0, 3.0, kappa=kappa)
+        localize.curvature(track, out=k, scratch=sc)
+        localize.speed_profile(track, 4.0, 2.0, 4.0, 3.0, kappa=k, out=v)
     return hot
+
+
+def _minimal_centerline(src):
+    """Only the ``HasCenterline`` members of ``src`` (no ``valid``, no ``layout``)."""
+    import types
+
+    return types.SimpleNamespace(center=src.center, arclen=src.arclen, length=src.length,
+                                 count=src.count)
+
+
+@pytest.mark.parametrize("source", ["track", "centerline", "minimal"])
+def test_localize_profiles_out_forms_pass_the_full_guard(source):
+    """Roadmap PR14: ``curvature(out=, scratch=)`` / ``speed_profile(kappa=, out=)``
+    allocate nothing, sync nothing and launch on the call's stream (the full hot-path
+    guard), on a ``Track``, a ``Centerline`` and a minimal centerline without ``valid``
+    (its absent ``valid`` costs no allocation: the kernels get ``count`` as a dummy)."""
+    from track_gen.testing import hot_path_guard
+
+    if source == "centerline":
+        line = CourseLine(_gate_gen().generate(), 4)
+        line.refresh()
+        src = line.centerline
+    else:
+        src = _track_gen().generate()
+        if source == "minimal":
+            src = _minimal_centerline(src)
+    n = int(src.center.shape[0])
+    k, sc, v = (wp.empty(n, dtype=wp.float32, device=DEV) for _ in range(3))
+    ctx = LaunchContext.for_call(DEV)
+    localize.curvature(src, 2, ctx, out=k, scratch=sc)            # warm (module loads)
+    localize.speed_profile(src, 4.0, 2.0, 4.0, 3.0, kappa=k, ctx=ctx, out=v)
+    with hot_path_guard() as guard:
+        for window in (0, 2):
+            assert localize.curvature(src, window, ctx, out=k, scratch=sc) is k
+        assert localize.speed_profile(src, 4.0, 2.0, 4.0, 3.0, kappa=k, ctx=ctx,
+                                      out=v) is v
+    assert not guard.violations, guard.violations
 
 
 def _heightfield():
     return HeightFieldBaker(_track_gen(z_profile="uniform").generate(), 16).bake
+
+
+def _commit_envs_driver():
+    # Roadmap PR14: the private helper the component kit's invalid.sentinel check uses
+    # (fail envs of a committed result after the fact) launches only.
+    from track_gen.stages.commit import _commit_envs
+
+    track = _track_gen().generate().clone()
+    seq = _gate_gen().generate().clone()
+    fail = wp.array(np.arange(E, dtype=np.int32) % 2, dtype=wp.int32, device=DEV)
+    ctx = LaunchContext.for_call(DEV)
+
+    def hot():
+        _commit_envs(track, fail, poison=False, ctx=ctx)
+        _commit_envs(seq, fail, poison=True, ctx=ctx)
+    return hot
 
 
 def _course_line():
@@ -953,6 +1011,7 @@ DRIVERS = {
     "localizer": _localizer,
     "localize_profiles": _localize_profiles,
     "heightfield": _heightfield,
+    "commit[_commit_envs]": _commit_envs_driver,
     "course_line": _course_line,
     "discs": _discs,
     "frames": _frames,

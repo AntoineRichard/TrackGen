@@ -19,8 +19,9 @@ from . import localize
 from . import course
 from . import heightfield
 from . import results
-from .results import (HasBand, HasCenterline, HasGateFrames, HasGates,
-                      HasGeneration)
+from . import tools
+from .results import (HasBand, HasCenterline, HasCheckpoints, HasGateFrames, HasGates,
+                      HasGeneration, HasValidity)
 from .course import set_capturing
 
 __all__ = [
@@ -33,10 +34,13 @@ __all__ = [
     "Layout",
     "HasBand",
     "HasCenterline",
+    "HasCheckpoints",
     "HasGateFrames",
     "HasGates",
     "HasGeneration",
+    "HasValidity",
     "results",
+    "tools",
     "PerEnvSeededRNG",
     "collision",
     "props",

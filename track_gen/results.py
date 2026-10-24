@@ -25,10 +25,17 @@ object with those members (a ``Track``, a ``Centerline``, a user's own object):
 ``HeightFieldBaker``), ``HasGates`` (a gates-mode ``Course``'s course line),
 ``HasGateFrames`` (its frame checker, ``CheckpointSet.from_gates``) and
 ``HasGeneration`` (generation-aware consumers; checked together with another protocol:
-``check_source(obj, (HasCenterline, HasGeneration), ...)``). A shipped protocol never
-changes: a new capability is a new protocol, composed with the existing ones. The
-library never relies on ``isinstance`` against them (their runtime semantics differ
-across Python versions): consumers check their source with :func:`check_source`.
+``check_source(obj, (HasCenterline, HasGeneration), ...)``), ``HasValidity`` (the per-env
+``valid`` flags, roadmap PR14) and ``HasCheckpoints`` (an ordered checkpoint set: what
+``ProgressTracker`` reads, roadmap PR14). A shipped protocol never changes: a new
+capability is a new protocol, composed with the existing ones. The library never relies
+on ``isinstance`` against them (their runtime semantics differ across Python versions):
+consumers check their source with :func:`check_source`.
+
+Optional reads (roadmap PR14): a consumer that reads a member only when the source has
+it (``valid``: the invalid-env sentinels; ``generation``: the generation-aware
+self-reset) names it in ``check_source(..., optional=...)``: a present member is checked
+like a required one (same messages), a missing (or ``None``) one is skipped.
 """
 from __future__ import annotations
 
@@ -46,9 +53,11 @@ __all__ = [
     "GateSequence",
     "HasBand",
     "HasCenterline",
+    "HasCheckpoints",
     "HasGateFrames",
     "HasGates",
     "HasGeneration",
+    "HasValidity",
     "Layout",
     "Track",
     "check_source",
@@ -111,6 +120,30 @@ class HasGeneration(Protocol):
     generation: wp.array  #: ``[E]`` int32
 
 
+@runtime_checkable
+class HasValidity(Protocol):
+    """The per-env validity flags (``[E]`` int32, 1 = valid): a ``Track`` /
+    ``GateSequence`` / ``Centerline`` / ``CheckpointSet`` whose ``valid`` is set (roadmap
+    PR14). Per env only, so check it together with the protocol that gives the stride:
+    ``check_source(obj, (HasCenterline, HasValidity), optional=("valid",), ...)``."""
+
+    valid: wp.array       #: ``[E]`` int32
+
+
+@runtime_checkable
+class HasCheckpoints(Protocol):
+    """An ordered per-env checkpoint set: what ``ProgressTracker`` reads (roadmap PR14).
+    ``CheckpointSet`` satisfies it (``CheckpointSampler``'s set, or
+    ``CheckpointSet.from_gates`` of a ``GateSequence``)."""
+
+    position: wp.array    #: ``[E * stride]`` vec3f checkpoint centers
+    left: wp.array        #: ``[E * stride]`` vec3f crossing-segment endpoints
+    right: wp.array       #: ``[E * stride]`` vec3f
+    tangent: wp.array     #: ``[E * stride]`` vec3f unit forward directions
+    up_half: wp.array     #: ``[E * stride]`` float32 vertical half-openings
+    count: wp.array       #: ``[E]`` int32
+
+
 _MEMBERS: dict = {}
 
 
@@ -158,10 +191,11 @@ def _source_layout(obj, owner: str) -> "Layout | None":
 
 
 def _check_and_bind(obj, protocol, *, consumer: str, topology: str = "closed",
-                    members: "tuple[str, ...] | None" = None):
+                    members: "tuple[str, ...] | None" = None, optional=()):
     """:func:`check_source`, also returning the checked members as read (a
     ``SimpleNamespace``): what a consumer binds at construction, so it never reads (or
-    validates) a member twice."""
+    validates) a member twice. An ``optional`` member the source lacks is ``None`` in
+    the namespace."""
     if topology not in ("closed", "any"):
         raise ValueError(f"topology must be 'closed' or 'any', got {topology!r}")
     group = _protocols(protocol)
@@ -169,6 +203,11 @@ def _check_and_bind(obj, protocol, *, consumer: str, topology: str = "closed",
     for p in group:
         every.extend(n for n in _members_of(p) if n not in every)
     label = " + ".join(p.__name__ for p in group)
+    opt = (optional,) if isinstance(optional, str) else tuple(optional)
+    bad_opt = [n for n in opt if n not in every]
+    if bad_opt:
+        raise ValueError(f"check_source: optional members {bad_opt} are not members of "
+                         f"{label} ({', '.join(every)})")
     if members is None:
         names = tuple(every)
     else:
@@ -176,26 +215,37 @@ def _check_and_bind(obj, protocol, *, consumer: str, topology: str = "closed",
             members = (members,)
         names = tuple(members)
         extra = [n for n in names if n not in every]
-        if extra or not names:
+        if extra or not (names or opt):
             bad = list(extra or names)
             raise ValueError(f"check_source: members {bad} are not members of {label} "
                              f"({', '.join(every)})")
-    unknown = [n for n in names if n not in _MEMBER_SCHEMA]
+    required = tuple(n for n in names if n not in opt)
+    unknown = [n for n in required + opt if n not in _MEMBER_SCHEMA]
     if unknown:
         raise ValueError(f"check_source: {label} has members {unknown} that no TrackGen "
                          f"result schema defines (a protocol member is a field of Track, "
                          f"GateSequence or Centerline)")
     owner = type(obj).__name__
-    values = {n: getattr(obj, n, None) for n in names}       # each member read ONCE
-    missing = [n for n in names if values[n] is None]
+    values = {n: getattr(obj, n, None) for n in required + opt}  # each member read ONCE
+    missing = [n for n in required if values[n] is None]
     if missing:
-        raise TypeError(f"{consumer} needs a {label} source ({', '.join(every)}): {owner} "
-                        f"has no {', '.join(repr(m) for m in missing)}")
+        # Name the protocols and members that are required; the optional ones apart.
+        need = [p.__name__ for p in group if any(n not in opt for n in _members_of(p))]
+        listed = ", ".join(n for n in every if n not in opt)
+        if opt:
+            listed += f"; optional: {', '.join(opt)}"
+        raise TypeError(f"{consumer} needs a {' + '.join(need) or label} source "
+                        f"({listed}): {owner} has no "
+                        f"{', '.join(repr(m) for m in missing)}")
     bound = types.SimpleNamespace(**values)
-    schema = tuple((n, *_MEMBER_SCHEMA[n]) for n in names)
+    checked = required + tuple(n for n in opt if values[n] is not None)
+    schema = tuple((n, *_MEMBER_SCHEMA[n]) for n in checked)
     try:
         lay = _source_layout(obj, owner)
         if lay is None:
+            if not schema:
+                raise ValueError(f"{owner} has none of the optional members "
+                                 f"{list(opt)} and no layout: nothing gives its shape")
             prefer = next((n for n, per, _ in schema if per == "point"), "center")
             lay = _infer_layout(bound, owner, schema, prefer)
         _check_members(bound, owner, lay, schema, consumer=consumer)
@@ -211,7 +261,7 @@ def _check_and_bind(obj, protocol, *, consumer: str, topology: str = "closed",
 
 
 def check_source(obj, protocol, *, consumer: str, topology: str = "closed",
-                 members: "tuple[str, ...] | None" = None) -> Layout:
+                 members: "tuple[str, ...] | None" = None, optional=()) -> Layout:
     """Check that ``obj`` holds what a consumer reads; return its :class:`Layout`.
 
     The members of ``protocol`` (or the narrower ``members``) are read with ``getattr``
@@ -239,6 +289,10 @@ def check_source(obj, protocol, *, consumer: str, topology: str = "closed",
         topology: The consumer's topology: ``"closed"`` refuses a source whose layout
             has ``closed=False``; ``"any"`` accepts both.
         members: The members the consumer reads when it is a subset of the protocol's.
+        optional: Members of ``protocol`` read only when present (roadmap PR14): each
+            one the source has (not ``None``) is checked like a required member (same
+            messages), a missing one is skipped (``valid`` / ``generation``: a consumer
+            then falls back to "every env valid" / "no self-reset").
 
     Returns:
         The source's :class:`Layout` (canonical device).
@@ -247,10 +301,11 @@ def check_source(obj, protocol, *, consumer: str, topology: str = "closed",
         TypeError: ``protocol`` is not a capability protocol (or a tuple of them); a
             missing member (naming the protocol, its members and the missing ones); a
             TrackGen result whose ``layout`` is neither a ``Layout`` nor ``None``.
-        ValueError: ``members`` that are not members of ``protocol``; a member that
+        ValueError: ``members`` (or ``optional``) that are not members of ``protocol``;
+            a member that
             does not match (``CollisionChecker: Track.inner: expected a contiguous
             [3072] vec3f ([E*stride] = [8*384]) array on cpu, got shape (3064,) vec3f on
             cpu``); a ``closed=False`` source for a closed-only consumer.
     """
     return _check_and_bind(obj, protocol, consumer=consumer, topology=topology,
-                           members=members)[0]
+                           members=members, optional=optional)[0]

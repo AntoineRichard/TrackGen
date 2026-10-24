@@ -1382,9 +1382,10 @@ that env ``TrackLocalizer`` returns a NaN ``s`` and ``segment = -1``,
 ``CollisionChecker`` reports ``oob = 1`` with ``boundary = -1`` and a NaN distance, and
 ``CheckpointSampler`` and ``PropSampler`` place no point. Valid envs are byte-identical
 under both policies, and a masked generation poisons only
-the masked envs (the others are restored). Results for invalid envs remain undefined for
-the utilities: keep gating on ``Track.valid``. ``"poison"`` is planned to become the
-default at 1.0.
+the masked envs (the others are restored). Since 0.2.0.dev6 the utilities answer an
+invalid env the same way under both policies (:ref:`utilities-invalid-envs`); keep gating
+rewards and observations on ``valid``. ``"poison"`` is planned to become the default at
+1.0.
 
 **Cost.** The commit launches only when it has work to do:
 

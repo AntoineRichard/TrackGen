@@ -17,6 +17,11 @@ def test_public_api_surface_is_exactly_curated():
         "HasGates",
         "HasGeneration",
         "results",
+        # Roadmap PR14: the component protocol and adapters, the validity and checkpoint
+        # protocols.
+        "tools",
+        "HasValidity",
+        "HasCheckpoints",
         "PerEnvSeededRNG",
         "collision",
         "props",

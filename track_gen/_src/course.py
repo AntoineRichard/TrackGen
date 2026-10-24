@@ -41,20 +41,30 @@ deprecated no-op). Every launch of one call goes to ONE stream: ``stream=``
 when given, else an enclosing ``torch.cuda.graph`` capture stream, else
 Warp's current stream (see :mod:`track_gen.exec`).
 
-Results are undefined for envs with ``valid[e] == 0`` on ``course.result``.
+Since roadmap PR14 the sub-tools are built and driven through the component adapters
+of :mod:`track_gen.tools` (``course._components``, private; the public attributes keep
+their types), and an env with ``valid[e] == 0`` on ``course.result`` reads like a
+poisoned one in every sub-tool (``oob = 1`` with NaN geometry, no post hits, frozen
+progress with ``dist_to_next = 0``, NaN localization, ``checkpoints.count = 0``):
+gate rewards and observations on :attr:`StepResult.valid` and give such envs a new
+course (``regenerate(mask=done, advance=True)``).
 """
 from __future__ import annotations
 
 import functools
+import math
 import types
+import warnings
 from dataclasses import dataclass
 
 import warp as wp
 
-from ..exec.context import LaunchContext, resolve as _resolve_ctx
+from ..exec.context import (LaunchContext, _rebind_close, _rebind_open,
+                            resolve as _resolve_ctx)
 from ..exec.runner import GraphRunner, ensure_not_capturing
 from ..ops.reduce import any_set
-from .checkpoints import CheckpointSampler, CheckpointSet
+from .. import tools as _tools
+from .checkpoints import CheckpointSampler, CheckpointSet, _readback_max_checkpoints
 from .collision import BoxContact, CollisionChecker
 from .collision_discs import DiscChecker, DiscContact
 from .collision_frames import FrameChecker, FrameContact
@@ -67,17 +77,6 @@ from .rng_utils import PerEnvSeededRNG
 from .runtime import _check_arr, _init, set_capturing
 from .track_generator import TrackGenerator
 from .types import GateGenConfig, GateSequence, Track, TrackGenConfig
-
-
-@wp.kernel
-def _interleave_posts_k(
-    left: wp.array(dtype=wp.vec3f),
-    right: wp.array(dtype=wp.vec3f),
-    posts: wp.array(dtype=wp.vec3f),
-):
-    i = wp.tid()             # dim = E * max_gates; NaN padding carries over
-    posts[2 * i] = left[i]
-    posts[2 * i + 1] = right[i]
 
 
 @wp.kernel
@@ -153,12 +152,18 @@ class CourseConfig:
     checkpoint_spacing : float or None
         Track mode only (required there): centerline checkpoint spacing.
     max_checkpoints : int or None
-        Track mode only: forwarded to ``CheckpointSampler`` (``None``: sized once from
-        the construction generation). Under a per-env size curriculum (roadmap PR13d:
-        ``generator.size`` set larger after construction) pass the size-independent
-        bound ``ceil(1.5 * N_max * spacing / checkpoint_spacing)``, or construct with
-        ``TrackGenConfig.size`` at the curriculum's largest size: a derived ring sized at
-        a smaller size clips the checkpoints of larger tracks.
+        Track mode only: the checkpoint capacity per env (``>= 3``), forwarded to
+        ``CheckpointSampler``. ``None`` (default; roadmap PR14): the plan's
+        size-independent bound ``max(3, ceil(max_loop_length / checkpoint_spacing))``
+        with ``max_loop_length = 1.5 * N_max * spacing + dZ``
+        (:meth:`track_gen.tools.ComponentContext.for_producer`; 70 at the
+        ``TrackGenConfig`` defaults and ``checkpoint_spacing=0.5``), or, when the plan
+        declares none (an elevation whose ``z_min`` / ``z_max`` declare no range, a
+        variable width, a plugin geometry stage), the construction batch's readback as
+        before (``ceil(1.5 * max valid centerline perimeter / checkpoint_spacing)``).
+        A defaulted capacity that clips a valid env of the first batch warns
+        (``UserWarning``) at construction. To keep the 0.2.0.dev5 shape, pass the
+        capacity it printed (``course.checkpoints.position.shape[0] // num_envs``).
     max_boxes : int
         Collision query stride (boxes per env). Must be >= 1.
     samples_per_gate : int
@@ -327,18 +332,30 @@ class StepResult:
     frame : TrackFrame or None
         Localization frame on the gates-mode :class:`CourseLine` (``None``
         in track mode).
+    valid : wp.array or None
+        ``[E]`` int32 validity of each env's course (roadmap PR14): an alias of
+        ``course.result.valid`` (``None`` only on a hand-built instance). The other
+        fields of an env with ``valid[e] == 0`` hold the invalid-env sentinels (see
+        :class:`Course`): gate rewards and observations on it with a select
+        (``where(valid, x, 0)``, never a multiply: ``NaN * 0`` is NaN) and end such
+        episodes. It is producer state and live: never write into it (exclude it from
+        code that zeroes or poisons the step outputs; ``dataclasses.fields`` lists it),
+        and read it before a ``regenerate`` in the same iteration, which rewrites it
+        for the regenerated envs (or ``clone()`` the result).
     """
 
     events: ProgressEvents
     contacts: "BoxContact | DiscContact | FrameContact | None"
     frame: "TrackFrame | None"
+    valid: "wp.array | None" = None
 
     def clone(self) -> "StepResult":
-        """Deep-copy the sub-results."""
+        """Deep-copy the sub-results (and ``valid``)."""
         return StepResult(
             events=self.events.clone(),
             contacts=None if self.contacts is None else self.contacts.clone(),
             frame=None if self.frame is None else self.frame.clone(),
+            valid=None if self.valid is None else wp.clone(self.valid),
         )
 
 
@@ -360,8 +377,18 @@ class Course:
     Regeneration recomputes the whole batch (fixed-batch pipelines); per-env
     NEW courses come from :meth:`regenerate`'s ``mask`` + ``advance`` (only
     the masked envs change and are reset), per-env respawns on the SAME
-    course from :meth:`reset`'s mask. Results are undefined for envs with
-    ``valid[e] == 0`` on :attr:`result`.
+    course from :meth:`reset`'s mask.
+
+    Invalid envs (``valid[e] == 0`` on :attr:`result`; roadmap PR14): every sub-tool
+    answers as for a poisoned env (``course.checkpoints.count = 0`` with NaN slots,
+    ``oob = 1`` with NaN geometry, no post hit, frozen progress with ``dist_to_next =
+    0``, NaN ``s`` / ``n``, a NaN heightfield with the box ``(-1, -1)-(1, 1)``).
+    :attr:`StepResult.valid` carries the mask: set ``done |= 1 - valid`` and give those
+    envs a NEW course with ``regenerate(mask=done, advance=True)`` (``reset`` would
+    respawn them on the same invalid course).
+
+    The sub-tools are built and driven through the adapters of :mod:`track_gen.tools`
+    (``_components``, private; ``Course(generator, components)`` is roadmap PR15).
     """
 
     def __init__(self, config: CourseConfig) -> None:
@@ -448,6 +475,7 @@ class Course:
         # One real warm-up regeneration (generator + refresh) outside any
         # capture: loads every module the regeneration body uses.
         self._runner.prepare(self._enqueue_regenerate)
+        self._warn_clipped_default()
 
     @property
     def graph(self) -> "wp.Graph | None":
@@ -539,8 +567,20 @@ class Course:
         captured graph replays against the buffer pointers live at capture
         time, so a later rebind leaves it reading the old buffers (silently
         divergent results) — keep writing into the SAME bound buffers and
-        rebind only before (re)capturing.
+        rebind only before (re)capturing. Since roadmap PR14 such a rebind
+        (other arrays, after ``step()`` ran while its stream or a CPU graph
+        capture was capturing) warns once,
+        :class:`~track_gen.exec.RebindAfterCaptureWarning`; rebinding the same
+        arrays is silent. The recipe "rebind, then record again" warns once
+        too: filter the category when you re-record on purpose.
         """
+        token, hits = _rebind_open()
+        try:
+            self._bind(position, orientation, half_extents, box_position)
+        finally:
+            _rebind_close(token, hits, stacklevel=2)
+
+    def _bind(self, position, orientation, half_extents, box_position) -> None:
         needs_boxes = self._needs_boxes()
         if needs_boxes and (orientation is None or half_extents is None):
             raise RuntimeError(
@@ -559,22 +599,19 @@ class Course:
             self._apply_bind()
 
     def _apply_bind(self) -> None:
+        """Route the bound arrays to every component by its declared inputs (a name that
+        is only an input's ``default`` is routed by ``Component.bind``: ``box_position``
+        defaults to ``position`` with one box per env)."""
         a = self._bind_args
         if a is None:
             return
-        self.progress.bind(a["position"])
-        if self.localizer is not None:
-            self.localizer.bind(a["position"])
-        if isinstance(self.collision, FrameChecker):
-            # Sphere-vs-frame: bind the agent position and window the query on
-            # the tracker's live target-checkpoint state (read-only alias).
-            self.collision.bind_inputs(a["position"])
-            self.collision.bind_window(self.progress.next_checkpoint_state)
-        elif self.collision is not None:
-            box_pos = a["box_position"] if a["box_position"] is not None \
-                else a["position"]
-            self.collision.bind_inputs(box_pos, a["orientation"],
-                                       a["half_extents"])
+        given = {k: v for k, v in a.items() if v is not None}
+        for comp in self._components:
+            if not comp.inputs:
+                continue
+            routes = set(comp.inputs) | {s.default for s in comp.inputs.values()
+                                         if s.default is not None}
+            comp.bind(**{k: v for k, v in given.items() if k in routes})
 
     # -- generation + refresh --------------------------------------------
 
@@ -608,7 +645,7 @@ class Course:
         recomputed from the effective seed its current course was built from,
         and nothing is reset)."""
         self.generator._enqueue(ctx, advance=advance, mask=mask)
-        self._refresh_geometry(ctx)
+        self._refresh_geometry(ctx, mask)
         self._reset_runtime(ctx, mask)
 
     def _regen_call(self, advance: bool, mask) -> "tuple[object, object]":
@@ -773,61 +810,79 @@ class Course:
         return self.result
 
     def _build_subtools(self, ctx: LaunchContext) -> None:
-        """Construct the sub-tools from the first batch (construction only:
-        allocation + readback-based sizing, never inside a capture).
+        """Build the sub-tools: the ordered component adapters of
+        :func:`_components_for`, attached through a
+        :class:`~track_gen.tools.ComponentContext` of the generator (its plan's static
+        capacities) on the construction context (construction only, never inside a
+        capture); the legacy attributes are set from them.
 
         Args:
             ctx: the construction launch context (the stream the generator's
                 warm-up pass ran on).
         """
         cfg = self._cfg
-        if cfg.mode == "track":
-            self.checkpoint_sampler = CheckpointSampler(
-                self.result, cfg.checkpoint_spacing,
-                max_checkpoints=cfg.max_checkpoints)
-            self.checkpoints = self.checkpoint_sampler.sample(stream=ctx.stream)
-            if cfg.collision == "segments":
-                self.collision = CollisionChecker(
-                    self.result, max_boxes=cfg.max_boxes, method="segments")
-            elif cfg.collision == "sdf":
-                self.collision = CollisionChecker(
-                    self.result, max_boxes=cfg.max_boxes, method="sdf",
-                    sdf_resolution=cfg.sdf_resolution or 128)
-            if cfg.heightfield_resolution is not None:
-                self.heightfield = HeightFieldBaker(
-                    self.result, cfg.heightfield_resolution)
-        else:
-            self.checkpoints = CheckpointSet.from_gates(self.result)
-            self.course_line = CourseLine(self.result, cfg.samples_per_gate)
-            self.localizer = TrackLocalizer(self.course_line.centerline,
-                                            warm_window=cfg.localize_window)
-            if cfg.post_radius > 0.0:
-                n_slots = int(self.result.position.shape[0])  # E * max_gates
-                self._posts = wp.zeros(2 * n_slots, dtype=wp.vec3f,
-                                       device=self._device)
-                self._fill_posts(ctx=ctx)
-                self.collision = DiscChecker(
-                    self._posts, radius=cfg.post_radius,
-                    max_boxes=cfg.max_boxes, num_envs=self._E)
-            elif cfg.frame_collision:
-                self.collision = FrameChecker(
-                    self.result, num_envs=self._E, radius=cfg.agent_radius,
-                    frame_thickness=cfg.frame_thickness,
-                    frame_depth=cfg.frame_depth)
-        self.progress = ProgressTracker(self.checkpoints)
+        cc = _tools.ComponentContext.for_producer(self.generator, ctx=ctx)
+        M = cfg.max_checkpoints
+        self._cp_default = None
+        if cfg.mode == "track" and M is None:
+            L = cc.capacity.get("max_loop_length")
+            if L is not None:
+                M = max(3, math.ceil(float(L) / float(cfg.checkpoint_spacing)))
+                self._cp_default = "the plan bound ceil(max_loop_length / " \
+                    "checkpoint_spacing)"
+            else:   # the plan declares no bound: read the first batch back (as before)
+                lay = self.result.layout
+                M = _readback_max_checkpoints(self.result, int(lay.num_envs),
+                                              int(lay.stride),
+                                              float(cfg.checkpoint_spacing))
+                self._cp_default = "read back from the construction batch"
+        self._components = []
+        for comp in _components_for(cfg, M):
+            cc.add(comp, self.result)
+            self._components.append(comp)
+        by = {c.name: c for c in self._components}
+        self._by_name = by
+        self.progress = by["progress"].utility
+        self.checkpoints = by["checkpoints"].result
+        self.checkpoint_sampler = by["checkpoints"].utility   # None in gates mode
+        coll = by.get("collision")
+        self.collision = None if coll is None else coll.utility
+        self._posts = None if coll is None else getattr(coll, "posts", None)
+        self.heightfield = by["heightfield"].utility if "heightfield" in by else None
+        self.course_line = by["centerline"].utility if "centerline" in by else None
+        self.localizer = by["localizer"].utility if "localizer" in by else None
+        # Runtime resets in the 0.x order: the localizer's warm memory, then progress.
+        self._reset_order = [by[n] for n in ("localizer", "progress") if n in by]
         self._apply_bind()
 
+    def _warn_clipped_default(self) -> None:
+        """After the warm-up regeneration (synced): warn once when a DEFAULTED
+        checkpoint capacity clips a valid env of the first batch (one cold readback of
+        two ``[E]`` int32 arrays; never with an explicit ``max_checkpoints``)."""
+        if self._cp_default is None:
+            return
+        tr = self.checkpoint_sampler.truncated.numpy()
+        va = self.result.valid.numpy()
+        n = int(((tr != 0) & (va != 0)).sum())
+        if n:
+            warnings.warn(
+                f"Course: the default max_checkpoints="
+                f"{self.checkpoint_sampler.max_checkpoints} ({self._cp_default}) clips "
+                f"the checkpoint ring of {n} valid env(s) of the first batch "
+                f"(checkpoint_sampler.truncated); pass a larger CourseConfig."
+                f"max_checkpoints", UserWarning, stacklevel=_tools._component.
+                _user_stacklevel())
+
     def _fill_posts(self, ctx=None) -> None:
-        """Interleave the gate left/right posts into the disc buffer.
+        """Interleave the gate left/right posts into the disc buffer (the post
+        collision adapter's ``on_generate``).
 
         Args:
             ctx: optional track_gen.exec.LaunchContext; default resolves the
                 device's stream (see track_gen.exec).
         """
         ctx = _resolve_ctx(ctx, self._device)
-        seq = self.result
-        ctx.launch(_interleave_posts_k, int(seq.position.shape[0]),
-                   [seq.left, seq.right, self._posts])
+        self._by_name["collision"].on_generate(ctx, None)
 
     def _refresh(self, ctx: LaunchContext) -> None:
         """Post-generation coherence: resample/bake/posts + full reset.
@@ -839,38 +894,21 @@ class Course:
         self._refresh_geometry(ctx)
         self._reset_runtime(ctx, self._reset_all_mask)
 
-    def _refresh_geometry(self, ctx: LaunchContext) -> None:
+    def _refresh_geometry(self, ctx: LaunchContext, mask=None) -> None:
         """Rebuild every sub-tool buffer DERIVED from the course geometry
-        (checkpoint resample, course line, sdf / heightfield bake, posts) for
-        the whole batch, on ``ctx.stream``. Deterministic: an env whose
-        geometry did not change gets bitwise-identical derived buffers."""
-        s = ctx.stream
-        if self.checkpoint_sampler is not None:
-            self.checkpoint_sampler.sample(stream=s)
-        if self.course_line is not None:
-            self.course_line.refresh(stream=s)  # before the resets: the line
-                                                 # must be current before any
-                                                 # consumer query
-        if isinstance(self.collision, CollisionChecker) \
-                and self.collision._method == "sdf":
-            self.collision.bake(stream=s)  # re-baked on every regeneration
-                                            # (part of the regeneration graph),
-                                            # never per step
-        if self.heightfield is not None:
-            self.heightfield.bake(stream=s)  # nearest-edge road surface; part
-                                              # of the regeneration graph
-                                              # alongside the sdf bake
-        if self._posts is not None:
-            self._fill_posts(ctx=ctx)
+        (checkpoint resample, course line, sdf / heightfield bake, posts): each
+        component's ``on_generate``, in list order, on ``ctx.stream``. Each recomputes
+        the whole batch: an env whose geometry did not change gets bitwise-identical
+        derived buffers."""
+        for comp in self._components:
+            comp.on_generate(ctx, mask)
 
     def _reset_runtime(self, ctx: LaunchContext, mask: wp.array) -> None:
         """Reset every stateful sub-tool's per-env runtime state where
-        ``mask[e] != 0`` (progress; the localizer's warm-start memory), on
+        ``mask[e] != 0`` (the localizer's warm-start memory, then progress), on
         ``ctx.stream``. The other sub-tools derive from the geometry."""
-        s = ctx.stream
-        if self.localizer is not None:
-            self.localizer.reset(mask, stream=s)
-        self.progress.reset(mask, stream=s)
+        for comp in self._reset_order:
+            comp.reset(ctx, mask)
 
     # -- per-step ----------------------------------------------------------
 
@@ -888,15 +926,16 @@ class Course:
             raise RuntimeError("call generate() before step()")
         if self._bind_args is None:
             raise RuntimeError("call bind() before step()")
-        s = LaunchContext.for_call(self._device, stream).stream
-        events = self.progress.update(stream=s)
-        contacts = self.collision.query(stream=s) \
-            if self.collision is not None else None
-        frame = self.localizer.query(stream=s) \
-            if self.localizer is not None else None
+        ctx = LaunchContext.for_call(self._device, stream)
+        for comp in self._components:     # progress, collision, localizer (list order)
+            comp.step(ctx)
         if self._step_result is None:
-            self._step_result = StepResult(events=events, contacts=contacts,
-                                           frame=frame)
+            by = self._by_name
+            self._step_result = StepResult(
+                events=by["progress"].result,
+                contacts=by["collision"].result if "collision" in by else None,
+                frame=by["localizer"].result if "localizer" in by else None,
+                valid=self.result.valid)
         return self._step_result
 
     def reset(self, mask: wp.array, stream=None) -> None:
@@ -918,3 +957,28 @@ class Course:
         self._reset_runtime(LaunchContext.for_call(self._device, stream), mask)
 
     set_capturing = staticmethod(set_capturing)
+
+
+def _components_for(cfg: CourseConfig, max_checkpoints: "int | None") -> list:
+    """The ordered component adapters of a :class:`CourseConfig` (the roadmap PR15
+    seam). ``on_generate`` and ``step`` run in this order (step: progress, collision,
+    localizer, as in 0.x)."""
+    if cfg.mode == "track":
+        comps = [_tools.Checkpoints(cfg.checkpoint_spacing,
+                                    max_checkpoints=max_checkpoints),
+                 _tools.Progress()]
+        if cfg.collision is not None:
+            comps.append(_tools.BandCollision(cfg.collision, max_boxes=cfg.max_boxes,
+                                              sdf_resolution=cfg.sdf_resolution or 128))
+        if cfg.heightfield_resolution is not None:
+            comps.append(_tools.HeightFieldBake(cfg.heightfield_resolution))
+        return comps
+    comps = [_tools.GateCheckpoints(), _tools.CenterlineFromGates(cfg.samples_per_gate),
+             _tools.Progress()]
+    if cfg.post_radius > 0.0:
+        comps.append(_tools.DiscCollision(cfg.post_radius, max_boxes=cfg.max_boxes))
+    elif cfg.frame_collision:
+        comps.append(_tools.FrameCollision(cfg.agent_radius, cfg.frame_thickness,
+                                           cfg.frame_depth))
+    comps.append(_tools.Localizer(warm_window=cfg.localize_window, source="centerline"))
+    return comps

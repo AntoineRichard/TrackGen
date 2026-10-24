@@ -216,7 +216,9 @@ is a :class:`~track_gen.localize.TrackFrame` localizing the agent on a closed 3D
 ``CourseLine`` spline (a periodic Catmull-Rom curve through the gate centers). It carries
 ``s`` (arc length along the spline), ``n`` (signed lateral offset, positive to the right
 of travel), ``n_up`` (signed vertical offset in the roll-free frame at the foot point), and
-``segment`` (nearest spline segment). In track mode ``res.frame`` is ``None``.
+``segment`` (nearest spline segment). In track mode ``res.frame`` is ``None``. For an
+invalid sequence (``res.valid[e] == 0``) the frame is NaN with ``segment = -1``
+(:ref:`utilities-invalid-envs`).
 
 The centerline is sampled at ``samples_per_gate`` uniform *spline-parameter* steps per
 gate segment — not constant 3D arc-length (samples bunch slightly where gates are close

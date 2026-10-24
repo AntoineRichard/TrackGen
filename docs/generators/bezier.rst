@@ -454,8 +454,9 @@ package) rather than the script you run: run your tests with
 - **Course** takes a ``TrackGenConfig`` and no ``randomize=`` before roadmap PR15: keep
   ``style_sampling`` there, or draw the sizes yourself and write them,
   ``course.generator.params["generator"].set("size", sizes)`` (an ``[E]`` ``float32``
-  array), before ``course.regenerate()``. Size ``CourseConfig.max_checkpoints`` for the
-  largest size (:ref:`tuning-size-utilities`).
+  array), before ``course.regenerate()``. At flat elevation the default
+  ``CourseConfig.max_checkpoints`` holds every size since 0.2.0.dev6
+  (:ref:`tuning-size-utilities`).
 
 Until it is removed, ``style_sampling`` keeps its bytes, and ``size`` composes with it
 (the corners get ``scale[e] * size[e]``). Under ``style_sampling=True`` a knob with a

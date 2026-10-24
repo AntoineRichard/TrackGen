@@ -861,9 +861,7 @@ _STYLE_DEPRECATION = (
     "{'generator.handle_clamp_frac': ...}; set style_sampling=False and use "
     "PipelineSpec.with_randomize for a config-built pipeline). Course (until it accepts "
     "a generator, PR15): keep style_sampling, or draw per-env sizes yourself and call "
-    "course.generator.params['generator'].set('size', arr) before regenerate (size "
-    "Course's max_checkpoints for the largest size: ceil(1.5 * N_max * spacing / "
-    "checkpoint_spacing), see CourseConfig.max_checkpoints)")
+    "course.generator.params['generator'].set('size', arr) before regenerate)")
 
 
 class Bezier(Stage):

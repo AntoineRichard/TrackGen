@@ -21,6 +21,10 @@ Layout follows the package conventions: flat ``[E * max_props]`` wp.arrays,
 NaN-padded past ``count[e]``, in-place reuse of the output ``PropSet`` across
 ``sample()`` calls (use ``clone()`` for snapshots), and no host syncs, so
 ``sample()`` is CUDA-graph capturable as-is.
+
+Invalid envs (roadmap PR14): an env with ``valid[e] == 0`` reads like a poisoned one
+(``count = 0``, ``step`` NaN, ``truncated = 0``, NaN slots), whatever the source's
+``on_invalid``.
 """
 from __future__ import annotations
 
@@ -30,7 +34,7 @@ import numpy as np
 import warp as wp
 
 from .collision_geom import _safe_normalize2
-from ..exec.context import LaunchContext
+from ..exec.context import LaunchContext, _call_context  # noqa: F401  (LaunchContext: re-export)
 from .runtime import _init, _sync  # noqa: F401  (_sync: legacy re-export)
 from ..results import HasBand, _check_and_bind
 
@@ -64,8 +68,8 @@ class PropSet:
         3D chord, in segments mode) between samples that may sit at different
         altitudes.
     count : wp.array
-        ``[E]`` ``int32`` real prop counts (0 for degenerate envs). Meaningful
-        only for envs with ``valid[e] == 1``.
+        ``[E]`` ``int32`` real prop counts (0 for degenerate and, since roadmap PR14,
+        invalid envs: ``valid[e] == 0`` on the source).
     truncated : wp.array
         ``[E]`` ``int32`` — 1 if ``max_props`` clipped this env's ring (the
         ring still closes, at a coarser effective spacing).
@@ -98,6 +102,7 @@ class PropSet:
 def _scan_boundary_k(
     points: wp.array(dtype=wp.vec3f),
     count: wp.array(dtype=wp.int32),
+    valid: wp.array(dtype=wp.int32),
     n_max: int,
     spacing: float,
     max_props: int,
@@ -109,12 +114,13 @@ def _scan_boundary_k(
     """Also launched by ``_src/checkpoints.py`` (CheckpointSampler) — keep the
     signature and snap semantics in sync. Arc lengths are the true 3D segment
     lengths of the (possibly lifted) polyline; on the flat z = 0 pipeline this
-    is identical to the xy length (z contributes 0 to every sum)."""
+    is identical to the xy length (z contributes 0 to every sum). An invalid env
+    (``valid[e] == 0``, roadmap PR14) takes the degenerate branch, as if poisoned."""
     e = wp.tid()
     m = count[e]
     if m > n_max:
         m = n_max
-    if m < 3:
+    if m < 3 or valid[e] == 0:
         out_count[e] = 0
         out_step[e] = wp.nan
         out_truncated[e] = 0
@@ -258,11 +264,9 @@ class PropSampler:
     CUDA-graph capturable (allocation-free and host-sync-free). Because
     ``TrackGenerator.generate()`` overwrites its ``Track`` buffers in place,
     every ``sample()`` reads the CURRENT batch — no rebind after
-    regeneration. Props are rendering-only; they are not colliders. Results
-    for envs with ``valid[e] == 0`` are undefined — an invalid track can
-    still have >= 3 boundary points and will yield well-formed-looking props
-    with no NaN signal; callers must gate on ``Track.valid``, as everywhere
-    in the library.
+    regeneration. Props are rendering-only; they are not colliders. An env with
+    ``valid[e] == 0`` gets no props (``count = 0``, NaN slots: the sentinel of a
+    poisoned env, roadmap PR14), whatever the source's ``on_invalid``.
 
     ``PropSet.truncated``/``PropSet.step`` live on the RESULT because
     ``PropSampler`` is the ONLY producer of a ``PropSet`` — unlike
@@ -292,8 +296,13 @@ class PropSampler:
             mode: ``"points"`` (default, one pose per sample) or
                 ``"segments"`` (one pose per chord between samples).
             max_props: buffer capacity per env; ``None`` (default) derives
-                it from the CURRENT batch (see :meth:`_derive_max_props`).
-                Must be >= 3 when given explicitly.
+                it from the CURRENT batch (see :meth:`_derive_max_props`: a
+                construction-time readback, kept as a supported convenience).
+                Must be >= 3 when given explicitly. The size-independent bound
+                ``max(3, ceil(max_loop_length / spacing))`` from the producer's plan
+                (roadmap PR14) is the default of the component route:
+                ``track_gen.tools.Props(spacing)`` attached through
+                ``ComponentContext.for_producer(generator)``.
         """
         _init()
         if not (float(spacing) > 0.0):
@@ -338,6 +347,17 @@ class PropSampler:
             step=wp.zeros(E, dtype=wp.float32, device=dev),
         )
 
+    @property
+    def max_props(self) -> int:
+        """The per-env capacity (slots per env) of the :class:`PropSet` (read-only)."""
+        return self._M
+
+    @property
+    def result(self) -> PropSet:
+        """The preallocated :class:`PropSet` :meth:`sample` refreshes and returns (the
+        same instance for the sampler's lifetime)."""
+        return self._props
+
     def _derive_max_props(self) -> int:
         """Slots to cover the batch bound NOW: ceil(1.5 * max perimeter / spacing).
 
@@ -363,7 +383,7 @@ class PropSampler:
                 "batch to derive a buffer size; pass max_props explicitly")
         return max(3, int(np.ceil(1.5 * best / self._spacing)))
 
-    def sample(self, stream=None) -> PropSet:
+    def sample(self, stream=None, *, ctx=None) -> PropSet:
         """Resample the bound boundary; returns the preallocated :class:`PropSet`.
 
         Two kernel launches (scan + place); reads the Track buffers as they
@@ -374,13 +394,15 @@ class PropSampler:
                 stream is resolved per track_gen.exec (an enclosing
                 torch.cuda.graph capture is adopted, else Warp's current
                 stream).
+            ctx: optional :class:`~track_gen.exec.LaunchContext` on the sampler's
+                device to emit on (exclusive with ``stream=``: ``TypeError``).
         """
-        ctx = LaunchContext.for_call(self._device, stream)
+        ctx = _call_context(self._device, stream, ctx)
         t = self._track
         p = self._props
         ctx.launch(
             _scan_boundary_k, self._E,
-            [self._points, t.count, self._n_max, self._spacing, self._M,
+            [self._points, t.count, t.valid, self._n_max, self._spacing, self._M,
              self._cum, p.count, p.step, p.truncated],
         )
         ctx.launch(

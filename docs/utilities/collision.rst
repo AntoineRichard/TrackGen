@@ -27,8 +27,18 @@ between regenerations.
 ``CollisionChecker(track, ...)`` takes any ``HasBand`` source (a ``Track``, a
 ``track.view(e0, e1)``, or an object with ``center``, ``outer``, ``inner``, ``count``
 and ``valid``) and checks the members it reads, ``center``, ``outer``, ``inner`` and
-``count``, at construction (:ref:`utilities-sources`). A ``Centerline`` has no band and
-is refused with a ``TypeError``.
+``count``, plus ``valid`` when present, at construction (:ref:`utilities-sources`). A
+``Centerline`` has no band and is refused with a ``TypeError``. ``checker.method`` reads
+the backend (``"segments"`` or ``"sdf"``), and ``checker.result`` the ``BoxContact``
+every ``query()`` returns.
+
+**Invalid envs.** Since 0.2.0.dev6 an env with ``valid[e] == 0`` reads like an env with no
+track, with both backends: every active box gets ``oob = 1``, NaN ``distance`` /
+``nearest`` / ``normal`` and ``boundary = -1`` (it used to get the answer on the failed
+geometry). The SDF bake writes NaN texels and a ``(-1, -1)``-``(1, 1)`` box for it, whose
+queries reach the same answer. Inactive box slots (a NaN position) keep ``oob = 0``.
+An RL loop that penalises ``oob`` or ends episodes on it must gate on ``valid``
+(:ref:`utilities-invalid-envs`).
 
 What the ``sdf`` query computes
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -65,6 +75,11 @@ cell (a strip of off-road between two parts of the track, a sharp corner)
 can vanish from the interpolated field, and a boundary loop lying entirely
 inside a box, away from its outline and centre, is not seen.
 
+.. _collision-resolution-check:
+
+Grid resolution and course size
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 The grid covers each env's own bounding box, so a larger course (a per-env ``size``,
 :ref:`tuning-size`) gets larger cells while the road keeps its width: with ``bezier`` at
 ``R = 128``, 12.3 / 6.7 / 4.5 cells across the road at size 1 / 2 / 3, and OOB flags
@@ -73,6 +88,14 @@ curriculum, accuracy therefore varies per env with the difficulty. Keep
 ``sdf_resolution >= R_ref * size_hi`` (``R_ref`` the resolution accurate enough at size
 1; the memory grows as ``size_hi^2``: the ~670 MB of 128² grids at ``E = 8192`` become
 ~6 GB at ``size_hi = 3``), or use ``segments``, which is exact at every size.
+
+The components check it for you: ``tools.BandCollision(method="sdf", size_hi=...)`` and
+``tools.HeightFieldBake(resolution, size_hi=...)`` emit a ``UserWarning`` at ``attach``
+when ``resolution < ceil(reference_resolution * size_hi)`` (``reference_resolution``
+defaults to 128, the resolution the accuracy figures here were measured at), naming the
+resolution that keeps the accuracy and its memory. To accept a coarser grid on purpose,
+pass a lower ``reference_resolution``; ``size_hi <= 1`` and ``method="segments"`` never
+warn. ``Course`` declares no ``size_hi`` in 0.2.0.dev6.
 
 Performance
 -----------
@@ -149,11 +172,19 @@ per-env count bookkeeping is needed. ``DiscChecker`` takes raw disc arrays, not 
 object, so no source check or topology applies to it. A hit reports the deepest disc; for
 interleaved posts, ``gate = disc // 2``.
 
+Two optional per-env arrays narrow the scan: ``count=`` (``[E]`` int32, the real discs
+of each env: only those are scanned) and, since 0.2.0.dev6, ``valid=`` (``[E]`` int32,
+checked at construction and read in place): an env with ``valid[e] == 0`` reports no hit
+(``hit = 0``, ``disc = -1``, ``depth = 0``, NaN ``nearest``). For gate posts pass the
+sequence's ``valid`` (and ``2 * count``, as a ``Course`` does).
+
 ``posts`` is a host-side snapshot taken via ``.numpy()`` — it does NOT alias
 ``seq.left``/``seq.right``, so a later regeneration is invisible to it;
 rebuild ``posts`` (repeat this recipe) after every ``generate()``. The
 ``Course`` facade's built-in ``post_radius`` option does this rebuild
-device-side, automatically, on every ``generate()``.
+device-side, automatically, on every ``generate()``, and so does the
+``tools.DiscCollision(radius)`` component in its posts mode (it reads the gates, builds
+the posts and their count on device in ``on_generate``, and passes the gates' ``valid``).
 
 .. figure:: ../assets/disc-collision.png
    :alt: Gate posts as disc obstacles with boxes colored by hit.

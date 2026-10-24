@@ -21,6 +21,8 @@ Modules:
 - :mod:`~track_gen.testing.conformance`: :func:`check_generator`,
   :func:`check_gate_generator`, :func:`check_stage`, :class:`Report`,
   :class:`CheckResult`, :data:`CHECKS`;
+- :mod:`~track_gen.testing.components`: :func:`check_component` (roadmap PR14: a
+  :class:`~track_gen.tools.Component`, yours or a built-in adapter);
 - :mod:`~track_gen.testing.contract`: hot-path guards (:func:`hot_path_guard`,
   :func:`no_host_sync`, :func:`no_allocation`, :func:`stream_explicit`; each returns
   a :class:`HotPathGuard`, whose breaches are :class:`Violation` s located by a
@@ -35,6 +37,7 @@ Modules:
 torch (only the torch capture modes do, inside the mode).
 """
 from .capture import CAPTURE_MODES, assert_caller_capturable
+from .components import check_component
 from .conformance import (
     CHECKS,
     CheckResult,
@@ -81,6 +84,7 @@ __all__ = [
     "assert_pointers_within",
     "assert_same_topology",
     "buffers_of",
+    "check_component",
     "check_gate_generator",
     "check_generator",
     "check_stage",

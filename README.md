@@ -77,9 +77,19 @@ course = Course(CourseConfig(mode="track", gen=config, seeds=42,
                              collision="segments", checkpoint_spacing=0.6))
 course.bind(position=robot_pos, orientation=robot_quat, half_extents=robot_he)
 course.generate()                            # whole batch + coherent refresh
-res = course.step()                          # events + contacts, every sim step
-course.reset(done_mask)                      # respawn finished envs
+res = course.step()                          # events + contacts + valid, every sim step
+course.reset(crash_mask)                     # respawn VALID envs that crashed, same course
+if done_any:                                 # a host read: only when an env is done
+    course.regenerate(mask=done_mask, advance=True)  # new courses there (done |= 1 - valid)
 ```
+
+An env whose course failed a check (`res.valid[e] == 0`) reads `oob = 1` and frozen
+progress: gate rewards and observations on `res.valid` and regenerate it
+([invalid envs](https://antoinerichard.github.io/TrackGen/utilities/course.html#invalid-envs)).
+Run eagerly, `regenerate(mask=...)` costs a full generation even with an all-zero mask,
+hence the `if`: only in a CUDA graph recorded through a capture Warp registered, with
+conditional nodes (CUDA >= 12.4), is an all-zero mask skipped on device
+([the step loop](https://antoinerichard.github.io/TrackGen/utilities/course.html)).
 
 More: [batch generation](https://antoinerichard.github.io/TrackGen/tutorials/batch-of-tracks.html) ·
 [runtime utilities](https://antoinerichard.github.io/TrackGen/utilities/overview.html) ·

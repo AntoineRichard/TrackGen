@@ -13,7 +13,8 @@ from dataclasses import dataclass
 import warp as wp
 
 from .collision_geom import _is_nan3
-from ..exec.context import LaunchContext
+from ..exec.context import (LaunchContext, _call_context, _note_rebind,  # noqa: F401
+                            _probe_recorded)
 from .runtime import _check_arr, _init, _sync  # noqa: F401  (_sync: legacy re-export)
 from ..results import HasGateFrames, _check_and_bind
 
@@ -149,20 +150,35 @@ class FrameChecker:
         self._device = lay.device
         self._pos: "wp.array | None" = None
         self._next: "wp.array | None" = None
+        self._recorded = False
         self._contact = FrameContact(
             hit=wp.zeros(E, dtype=wp.int32, device=self._device),
             depth=wp.zeros(E, dtype=wp.float32, device=self._device))
 
+    @property
+    def result(self) -> FrameContact:
+        """The preallocated :class:`FrameContact` :meth:`query` writes and returns (the
+        same instance for the checker's lifetime)."""
+        return self._contact
+
     def bind_inputs(self, position: wp.array) -> None:
+        """Bind the stable ``[E]`` vec3f agent-position buffer (replacing it after
+        ``query()`` was recorded into a capture warns:
+        :class:`~track_gen.exec.RebindAfterCaptureWarning`)."""
         _check_arr("position", position, (self._E,), wp.vec3f, self._device)
+        old = None if self._pos is None else (self._pos,)
+        _note_rebind(self, old, (position,), "query", stacklevel=2)
         self._pos = position
 
     def bind_window(self, next_cp: wp.array) -> None:
-        """Bind the [E] int32 current-target buffer (ProgressTracker state)."""
+        """Bind the [E] int32 current-target buffer (ProgressTracker state, e.g.
+        ``ProgressTracker.result.next_checkpoint``)."""
         _check_arr("next_cp", next_cp, (self._E,), wp.int32, self._device)
+        old = None if self._next is None else (self._next,)
+        _note_rebind(self, old, (next_cp,), "query", stacklevel=2)
         self._next = next_cp
 
-    def query(self, stream=None) -> FrameContact:
+    def query(self, stream=None, *, ctx=None) -> FrameContact:
         """Sphere-vs-gate-frame contact on the bound inputs and window.
 
         Args:
@@ -170,10 +186,13 @@ class FrameChecker:
                 stream is resolved per track_gen.exec (an enclosing
                 torch.cuda.graph capture is adopted, else Warp's current
                 stream).
+            ctx: optional :class:`~track_gen.exec.LaunchContext` on the checker's
+                device to emit on (exclusive with ``stream=``: ``TypeError``).
         """
         if self._pos is None or self._next is None:
             raise RuntimeError("call bind_inputs() and bind_window() first")
-        ctx = LaunchContext.for_call(self._device, stream)
+        ctx = _call_context(self._device, stream, ctx)
+        _probe_recorded(self, ctx)
         s = self._seq
         ctx.launch(_frame_query_k, self._E,
                    [s.position, s.orientation, s.half_size, s.count,

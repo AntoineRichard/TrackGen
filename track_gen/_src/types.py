@@ -1278,6 +1278,9 @@ _CENTERLINE_OPTIONAL = frozenset({"generation"})
 _MEMBER_SCHEMA = {name: (per, dt) for schema in (_TRACK_SCHEMA, _GATE_SCHEMA,
                                                  _CENTERLINE_SCHEMA)
                   for name, per, dt in schema}
+# Roadmap PR14: a CheckpointSet's per-checkpoint vertical half-opening
+# (track_gen.results.HasCheckpoints; the set's other members share the names above).
+_MEMBER_SCHEMA["up_half"] = ("point", wp.float32)
 # The non-array metadata fields of the result dataclasses.
 _RESULT_METADATA = ("fail_bits", "attributes", "layout")
 # The attribute dtypes (Track.attributes / GateSequence.attributes).

@@ -229,8 +229,8 @@ object, so you never wire those together by hand. Its lifecycle is
 
 Build a ``Course`` in track mode, ``bind`` the sim's own state buffers (they are
 read in place every step), ``generate`` the batch, then in the step loop read
-``contacts.oob`` for the out-of-bounds flag and the progress ``events`` for
-checkpoint rewards:
+``contacts.oob`` for the out-of-bounds flag, the progress ``events`` for
+checkpoint rewards, and ``valid`` to leave out the envs whose track is invalid:
 
 .. code-block:: python
 
@@ -249,7 +249,6 @@ checkpoint rewards:
        seeds=7,
        collision="segments",          # "segments" (exact) or "sdf"; None = no OOB check
        checkpoint_spacing=0.6,
-       max_checkpoints=64,
    ))
 
    # Bind the sim's own buffers: position (vec3f) drives progress; orientation
@@ -263,21 +262,31 @@ checkpoint rewards:
    course.bind(position=position, orientation=orientation, half_extents=half_extents)
 
    track = course.generate()          # whole batch + checkpoint resample + progress reset
+   regen = course.inputs["regen_mask"]    # stable [E] int32 mask for regenerate(mask=)
 
    for step in range(40):
        # sim.step() writes `position` (and `orientation`) in place here.
 
-       res    = course.step()                 # events + contacts, no args
+       res    = course.step()                 # events + contacts + valid, no args
+       valid  = res.valid.numpy() != 0        # [E] bool: False == this env's track is invalid
        oob    = res.contacts.oob.numpy()      # [E] int32: 1 == out of the drivable band
        passed = res.events.passed.numpy()     # [E] int32: crossed a checkpoint this step
        dist   = res.events.dist_to_next.numpy()   # [E] float32: distance to next checkpoint
 
-       reward = 10.0 * passed - 5.0 * oob     # pass bonus, OOB penalty (reward shaping)
+       # Gate on `valid` with a select, never a multiply: NaN * 0 is NaN.
+       reward  = np.where(valid, 10.0 * passed - 5.0 * oob, 0.0)    # pass bonus, OOB penalty
+       obs_d   = np.where(valid, dist, 0.0)                          # NaN-free observation
+       done    = (oob != 0) | ~valid                                 # done |= 1 - valid
 
-   # Per-env respawn on the SAME course: clear progress only where mask[e] == 1.
-   done = np.zeros(E, np.int32)
-   done[0] = 1
-   course.reset(wp.array(done, dtype=wp.int32, device=device))
+       if done.any():
+           regen.assign(done.astype(np.int32))
+           course.regenerate(mask=regen, advance=True)   # NEW courses for the done envs
+           # ...and respawn those envs' agents on their new course in your sim.
+
+   # Per-env respawn on the SAME course (a valid env that crashed): clear its progress.
+   respawn = np.zeros(E, np.int32)
+   respawn[0] = 1
+   course.reset(wp.array(respawn, dtype=wp.int32, device=device))
 
    # New courses for everyone: whole-batch regenerate + full progress reset.
    course.generate(seeds=123)
@@ -288,6 +297,26 @@ point, and the inward ``normal`` for contact response). ``res.events`` gives the
 progress signals — ``passed`` for a pass bonus, ``dist_to_next`` for a
 negative-delta-distance shaping term, and ``progress`` for the total checkpoints
 cleared since the last reset.
+
+``res.valid`` is the generator's ``[E]`` validity. A track can fail a geometric check
+(at the default ``TrackGenConfig``: 0.4 to 1.6 % of the envs of ``hull``, ``checkpoint``
+and ``repulsive``, none of ``bezier``, ``polar`` and ``voronoi`` at size 1; 19 % of
+``bezier`` at size 4, truncated), and an invalid env
+reads like an env with no track: ``oob = 1`` and NaN ``distance`` / ``nearest`` /
+``normal``, frozen progress (``passed = 0``, ``dist_to_next = 0``), no checkpoints. Left
+ungated, it would be penalised and ended at every step, and ``reset`` would respawn it
+on the same invalid track forever: end it and regenerate it with ``advance=True``, as
+above. ``dist_to_next`` is NaN only for a valid env with no checkpoints.
+``regenerate(mask=...)`` recomputes the whole batch on every eager call, even with no env
+masked, so only call it when one is. An all-zero mask is skipped on device only in a CUDA
+graph recorded through a capture Warp registered, with conditional nodes (CUDA driver
+and toolkit >= 12.4); a CPU capture or a plain ``torch.cuda.graph`` reruns it on every
+replay (:doc:`/tutorials/cuda-graph-in-a-sim`).
+
+The checkpoint ring holds ``max_checkpoints`` slots per env, by default the plan's
+size-independent bound (at these settings ``ceil(1.5 * 512 * 0.018 / 0.6) = 24``; see
+:ref:`course-checkpoint-capacity`). Pass ``max_checkpoints`` to choose the shape
+yourself.
 
 Collision backend
 ~~~~~~~~~~~~~~~~~~
@@ -310,7 +339,7 @@ whole step — progress update plus collision query — records into your own si
 graph alongside the physics, with no flag to set. ``course.regenerate()`` records
 into the same graph too, so new courses and the steps that drive them can replay as
 one unit. Keep writing into the SAME bound buffers after capture (rebinding leaves the
-captured graph reading the old pointers). See
+captured graph reading the old pointers, and emits a ``RebindAfterCaptureWarning``). See
 :doc:`/tutorials/cuda-graph-in-a-sim` for the capture-and-replay pattern.
 
 Putting It All Together

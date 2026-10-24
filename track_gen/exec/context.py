@@ -29,6 +29,7 @@ import dataclasses
 import numbers
 import sys
 import threading
+import warnings
 from typing import Callable, Iterator, Sequence
 
 import warp as wp
@@ -36,7 +37,7 @@ import warp as wp
 from .._src import runtime as _runtime
 from . import _compat
 from . import host as _host
-from .errors import CaptureError, NotCapturableError
+from .errors import CaptureError, NotCapturableError, RebindAfterCaptureWarning
 
 __all__ = ["LaunchContext", "resolve_stream", "resolve", "is_capturing", "unconditional",
            "conditional"]
@@ -644,3 +645,92 @@ class LaunchContext:
 def resolve(ctx: "LaunchContext | None", device) -> LaunchContext:
     """``ctx`` if given, else :meth:`LaunchContext.for_call` on ``device``."""
     return ctx if ctx is not None else LaunchContext.for_call(device)
+
+
+def _call_context(device, stream=None, ctx: "LaunchContext | None" = None
+                  ) -> LaunchContext:
+    """The context of a utility's hot call (roadmap PR14): ``ctx`` when given (it must be
+    a :class:`LaunchContext` on ``device``), else ``LaunchContext.for_call(device,
+    stream)``.
+
+    Raises:
+        TypeError: both ``stream=`` and ``ctx=`` are given, or ``ctx`` is not a
+            ``LaunchContext``.
+        ValueError: ``ctx`` is on another device.
+    """
+    if ctx is None:
+        return LaunchContext.for_call(device, stream)
+    if stream is not None:
+        raise TypeError("pass stream= or ctx=, not both (ctx= already pins the stream)")
+    if not isinstance(ctx, LaunchContext):
+        raise TypeError(f"ctx must be a track_gen.exec.LaunchContext, got "
+                        f"{type(ctx).__name__}")
+    dev = wp.get_device(device)
+    if ctx.device.alias != dev.alias:
+        raise ValueError(f"ctx is on {ctx.device.alias!r}, but this utility's arrays are "
+                         f"on {dev.alias!r}")
+    return ctx
+
+
+# -- the rebind-after-capture warning (roadmap PR14, a documented G1 exception) ----------
+#
+# A utility with bound inputs keeps ``_recorded`` (False until one of its hot methods that
+# reads them ran while ``_host_blocked(ctx)``: the stream was capturing, or a CPU graph
+# capture was open). The probe changes no emission; once armed it stops probing. A bind
+# that replaces a pointer while armed warns (once per public call: nested binds report to
+# the outermost one through _REBIND_HITS) and clears the flag.
+_REBIND_HITS: contextvars.ContextVar["list | None"] = contextvars.ContextVar(
+    "track_gen_rebind_hits", default=None)
+
+
+def _probe_recorded(owner, ctx) -> None:
+    """Arm ``owner._recorded`` when ``ctx`` is recording (one probe per call until armed;
+    host flag only: no emission depends on it)."""
+    if not owner._recorded and _host_blocked(ctx):
+        owner._recorded = True
+
+
+def _rebind_open() -> "tuple[object, list]":
+    """Open a rebind scope: ``(token, hits)``; ``token`` is ``None`` inside an enclosing
+    scope (whose owner warns)."""
+    hits = _REBIND_HITS.get()
+    if hits is not None:
+        return None, hits
+    hits = []
+    return _REBIND_HITS.set(hits), hits
+
+
+def _rebind_close(token, hits: list, stacklevel: int) -> None:
+    """Close a scope opened by :func:`_rebind_open`; the outermost one warns once (at
+    ``stacklevel`` counted from its caller's frame)."""
+    if token is None:
+        return
+    _REBIND_HITS.reset(token)
+    if hits:
+        warnings.warn(_rebind_text(*hits[0]), RebindAfterCaptureWarning,
+                      stacklevel=stacklevel + 1)
+
+
+def _rebind_text(owner: str, method: str) -> str:
+    return (f"{owner}: rebinding after {method}() was recorded into a capture: that graph "
+            f"keeps reading the arrays bound when it was recorded; record it again after "
+            f"rebinding (this warning also fires once on that recipe; filter "
+            f"track_gen.exec.RebindAfterCaptureWarning if you re-record)")
+
+
+def _note_rebind(owner, old, new, method: str, stacklevel: int) -> None:
+    """A bind of ``owner`` replaces the arrays ``old`` (a tuple, or ``None``: first bind)
+    with ``new``: when ``owner._recorded`` is armed and a pointer changes, report it
+    (warn at ``stacklevel`` from the caller of the bind, or to an enclosing scope) and
+    clear the flag."""
+    if not getattr(owner, "_recorded", False) or old is None:
+        return
+    if all(int(a.ptr) == int(b.ptr) for a, b in zip(old, new)):
+        return
+    owner._recorded = False
+    hits = _REBIND_HITS.get()
+    item = (type(owner).__name__, method)
+    if hits is not None:
+        hits.append(item)
+        return
+    warnings.warn(_rebind_text(*item), RebindAfterCaptureWarning, stacklevel=stacklevel + 1)

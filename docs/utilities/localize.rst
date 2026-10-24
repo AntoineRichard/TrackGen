@@ -29,7 +29,9 @@ source (a ``Track``, a ``Centerline`` such as a gates-mode
 ``course.course_line.centerline``, an env-slice ``view()``, or your own object with
 ``center``, ``arclen``, ``length`` and ``count``) and checks those members at
 construction (:ref:`utilities-sources`). ``curvature`` reads ``center`` and ``count``,
-``speed_profile`` also ``arclen`` and ``length``.
+``speed_profile`` also ``arclen`` and ``length``. All three read ``valid`` when the source
+has it, and the localizer ``generation`` too (checked the same way; a malformed one raises
+at construction).
 
 ``n`` is positive to the RIGHT of the centerline's direction of travel
 (the direction of increasing ``s``), negative to the left. Whether the
@@ -38,7 +40,9 @@ winding, which is generator-dependent (e.g. polar loops wind CCW — outer
 on the right; bezier loops wind CW — outer on the left); either way
 ``|n| <= half_width`` means the point is on the road. NaN positions yield
 NaN frames (``segment == -1``) — the same pause semantics as the sibling
-utilities.
+utilities. So do invalid envs (``valid[e] == 0``) since 0.2.0.dev6: NaN ``s`` / ``n`` /
+``n_up``, ``segment = -1``, and the warm memory is dropped
+(:ref:`utilities-invalid-envs`).
 
 Warm starts
 -----------
@@ -56,16 +60,25 @@ but not the cold answer). Both modes are fixed-bound kernels with no host
 sync, so ``query()``/``reset()`` are CUDA-graph capturable as-is.
 
 The warm memory refers to segment INDICES, so it goes stale when the
-geometry changes: call ``reset(mask)`` for all envs after regenerating the
-bound track, and for any env that teleports beyond the window. Cold-scan
-localizers (``warm_window=None``) need neither.
+geometry changes: reset it for the regenerated envs, and call ``reset(mask)`` for any env
+that teleports beyond the window. Cold-scan localizers (``warm_window=None``) need
+neither.
+
+After a regeneration the localizer resets itself: it keeps a ``seen_generation`` per env
+and, at the top of every ``query()``, drops the warm memory of every env whose source's
+``generation`` changed, on device, exactly as ``reset(mask)`` would (so an explicit reset
+changes nothing). A source without ``generation`` never self-resets. ``generation`` is the
+epoch: a regeneration without ``advance``, a bare reseed, or ``reset_epoch()`` followed by
+as many advances leaves it equal, so call ``reset(mask)`` after those
+(:ref:`utilities-self-reset`).
 
 Curvature & speed profiles
 --------------------------
 
-Two per-generation helpers share the module (they ALLOCATE their results —
-call them after ``generate()``, outside capture regions, unlike the
-allocation-free ``query()``):
+Two per-generation helpers share the module. By default they ALLOCATE their result (and
+``curvature`` a scratch when ``window > 0``): call them after ``generate()``, outside
+capture regions. With ``out=`` they write into your arrays instead, allocate nothing,
+never synchronize, and record into a graph like ``query()``:
 
 .. code-block:: python
 
@@ -75,6 +88,26 @@ allocation-free ``query()``):
    v_ref = speed_profile(track, a_lat_max=6.0,       # [E*N_max] target speeds
                          a_accel=3.0, a_brake=5.0,
                          v_cap=4.0, kappa=kappa)     # kappa= optional reuse
+
+   # allocation-free, recordable: preallocate once, refresh after every generation
+   E, N_max = track.layout.num_envs, track.layout.stride    # [E * stride] per array
+   k = wp.empty(E * N_max, dtype=wp.float32, device=track.layout.device)
+   tmp = wp.empty(E * N_max, dtype=wp.float32, device=track.layout.device)
+   v = wp.empty(E * N_max, dtype=wp.float32, device=track.layout.device)
+   curvature(track, out=k, scratch=tmp)              # returns k
+   speed_profile(track, 6.0, 3.0, 5.0, 4.0, kappa=k, out=v)
+
+- ``out`` is a contiguous ``[E * stride]`` ``float32`` array on the source's device
+  (``track.layout``; the stride is ``N_max`` for a ``Track``), returned as is. The same kernels run on the same inputs, so the values are byte-identical to the
+  allocating form.
+- ``curvature(out=)`` with ``window > 0`` needs ``scratch=`` (the same shape, not aliasing
+  ``out``; ``ValueError`` otherwise); with ``window == 0`` it is ignored.
+- ``speed_profile(out=)`` needs ``kappa=`` (``ValueError``: compute it with
+  ``curvature(track, out=k, scratch=s)``).
+- Both take ``ctx=`` (a :class:`~track_gen.exec.LaunchContext`) like the other hot
+  methods.
+
+An invalid env (``valid[e] == 0``) gets a NaN row in both, like an env with no track.
 
 ``curvature`` is the discrete turn angle over the mean incident edge length
 with a wrap-aware moving average (``window=2`` by default); positive where

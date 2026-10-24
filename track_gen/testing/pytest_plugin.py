@@ -15,6 +15,10 @@ It provides:
   ``"elevation"`` / ``"validity"`` / ``"order"`` / ``"stations"``:
   :func:`~track_gen.testing.check_stage`) and fails
   the test, listing every failed check, unless all pass;
+- the ``track_gen_check_component`` fixture (roadmap PR14): a factory
+  ``track_gen_check_component(factory, **kwargs) -> Report`` that runs
+  :func:`~track_gen.testing.check_component` and fails the test, listing every failed
+  check, unless all pass;
 - :func:`generator_names` and :func:`parametrize_generators`, to run a test over the
   registered generators::
 
@@ -30,9 +34,11 @@ from typing import Iterable
 
 import pytest
 
+from .components import check_component
 from .conformance import Report, check_gate_generator, check_generator, check_stage
 
-__all__ = ["generator_names", "parametrize_generators", "track_gen_conformance"]
+__all__ = ["generator_names", "parametrize_generators", "track_gen_check_component",
+           "track_gen_conformance"]
 
 _KINDS = ("generator", "gate_generator", "relax", "width", "elevation", "validity",
           "order", "stations")
@@ -89,6 +95,24 @@ def track_gen_conformance():
             pytest.fail(f"{kind.replace('_', ' ')} {name!r} failed "
                         f"{len(report.failures)} conformance check(s):\n{lines}",
                         pytrace=False)
+        return report
+
+    return run
+
+
+@pytest.fixture
+def track_gen_check_component():
+    """Factory: ``track_gen_check_component(factory, **kwargs)`` runs
+    :func:`~track_gen.testing.check_component` (``kwargs`` as there: ``source``,
+    ``upstream``, ``devices``, ...), fails the test when a check fails, and returns the
+    :class:`~track_gen.testing.Report`."""
+
+    def run(factory, **kwargs) -> Report:
+        report = check_component(factory, **kwargs)
+        if not report.ok:
+            lines = "\n".join(f"  {r}" for r in report.failures)
+            pytest.fail(f"component {report.name!r} failed {len(report.failures)} "
+                        f"check(s):\n{lines}", pytrace=False)
         return report
 
     return run

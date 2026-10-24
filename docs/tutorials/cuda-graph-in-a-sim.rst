@@ -294,7 +294,7 @@ single caller graph can hold new courses AND the sim steps that drive them:
        course.regenerate()                     # generation + refresh, recorded
        for _ in range(K):
            sim_step(pos, quat)                 # your physics: writes the bound buffers
-           res = course.step()                 # progress events + contacts
+           res = course.step()                 # progress events + contacts + valid
            update_done(res, done)              # your kernel: done[e] = 1 respawns env e
            course.reset(done)                  # respawn on the SAME course
    episode = cap.graph
@@ -309,7 +309,13 @@ Notes on the pattern:
 
 - ``res`` is the course's stable ``StepResult``: every replay rewrites its arrays in place.
   Keep writing into the SAME bound buffers; rebinding after the capture leaves the graph
-  reading the old pointers.
+  reading the old pointers (``course.bind`` then emits a ``RebindAfterCaptureWarning``:
+  record the graph again).
+- An env whose course is invalid (``res.valid[e] == 0``) stays invalid until the next
+  ``regenerate()`` of this pattern: ``course.reset(done)`` respawns it on the same course,
+  where it reads ``oob = 1`` and frozen progress at every step. Zero its reward and
+  observations with a select (`Per-Env Auto-Reset Inside the Graph`_ has the kernel), or
+  give it a new course in the step graph with a masked regeneration.
 - Gates mode (``mode="gates"``) records the same way.
 - If episodes are long, or you regenerate less often than you step, record
   ``course.regenerate()`` into a graph of its own and launch it only at episode
@@ -409,16 +415,39 @@ involvement between steps:
   `Skipping the regeneration on device`_), and runs as an exact no-op everywhere else.
 
 Build the course and bind your stable buffers as in `The Recommended Sim-Loop Pattern`_,
-then record one step:
+then write the reward and the done mask with one kernel of your own, gated on
+``res.valid``:
 
 .. code-block:: python
 
+   @wp.kernel
+   def reward_and_done(valid: wp.array(dtype=wp.int32), oob: wp.array(dtype=wp.int32),
+                       passed: wp.array(dtype=wp.int32), dist: wp.array(dtype=wp.float32),
+                       laps: wp.array(dtype=wp.int32), max_laps: int,
+                       reward: wp.array(dtype=wp.float32), obs_dist: wp.array(dtype=wp.float32),
+                       done: wp.array(dtype=wp.int32)):
+       e = wp.tid()
+       ok = valid[e] != 0
+       r = 10.0 * float(passed[e]) - 5.0 * float(oob[e])
+       reward[e] = wp.where(ok, r, 0.0)        # a select: never r * float(valid[e])
+       obs_dist[e] = wp.where(ok, dist[e], 0.0)
+       d = 0
+       if oob[e] != 0 or laps[e] >= max_laps:
+           d = 1
+       if not ok:
+           d = 1                               # done |= 1 - valid
+       done[e] = d                             # EVERY entry, every step
+
    done = course.inputs["regen_mask"]          # stable [E] int32, zero-initialised
+   reward = wp.zeros(E, dtype=wp.float32, device=device)
+   obs_dist = wp.zeros(E, dtype=wp.float32, device=device)
 
    with wp.ScopedCapture(device=device) as cap:
        sim_step(pos, quat)                     # your physics: writes the bound buffers
-       res = course.step()                     # progress events + contacts
-       update_done(res, done)                  # your kernel: writes done[e] for EVERY env
+       res = course.step()                     # progress events + contacts + valid
+       wp.launch(reward_and_done, E,
+                 [res.valid, res.contacts.oob, res.events.passed, res.events.dist_to_next,
+                  res.events.laps, 3, reward, obs_dist, done], device=device)
        course.regenerate(mask=done, advance=True)  # new courses where done[e] != 0
        respawn(done, pos, quat)                # your kernel: restart masked envs on them
    step = cap.graph
@@ -427,7 +456,22 @@ then record one step:
        wp.capture_launch(step)                 # no host work between steps
 
 ``regenerate(mask=...)`` resets the masked envs itself, so this graph needs no
-``course.reset(done)``. The rules for the mask:
+``course.reset(done)``. Read ``reward`` and ``obs_dist`` (and the rest of your
+observations) BEFORE the regeneration in the graph, as here: after it, a masked env's
+arrays describe its new course.
+
+**Why the select and the ``valid`` term.** An invalid env (``res.valid[e] == 0``: its
+course failed a check, 0.4 to 1.6 % of the envs of the default ``hull``, ``checkpoint``
+and ``repulsive`` generators) reads ``oob = 1`` and frozen progress with
+``dist_to_next = 0`` at every step, and its other geometric outputs are NaN (the
+localizer's frame in gates mode, the contact's ``distance`` / ``nearest`` / ``normal``).
+Without ``done |= 1 - valid`` it would be penalised every step and never leave its
+course; ``course.reset(done)`` would respawn it on the same invalid course forever. A
+multiply does not mask a NaN (``NaN * 0`` is NaN), and one NaN env makes a batch mean NaN:
+use ``wp.where`` / ``torch.where``. A done env's new course can be invalid again: the next
+step marks it done again. See :ref:`utilities-invalid-envs` for every field.
+
+The rules for the mask:
 
 - It is a contiguous ``[E]`` int32 array on the course device (checked on the host
   before anything launches); nonzero entries select envs. ``course.inputs["regen_mask"]`` is a ready-made,
@@ -521,7 +565,10 @@ duration of the block, allows the conditional node in it, and yields the stream 
        with registered(conditional=True) as s:  # torch's capture stream, known to Warp
            sim_step(pos, quat, stream=s)       # your own Warp launches go to s
            res = course.step()                 # library calls adopt it on their own
-           update_done(res, done, stream=s)
+           wp.launch(reward_and_done, E,       # the kernel above
+                     [res.valid, res.contacts.oob, res.events.passed,
+                      res.events.dist_to_next, res.events.laps, 3, reward, obs_dist, done],
+                     stream=s)
            course.regenerate(mask=done, advance=True)
            respawn(done, pos, quat, stream=s)  # Warp only: no torch allocation after it
    retain(g, course)                           # course now lives as long as g

@@ -370,7 +370,9 @@ plan-view distance: on-road texels get the exact road surface, and off-road
 texels continue the nearest edge's height outward, so the surface has no cliff
 at the road edge. Flat tracks bake a constant ``z_base`` sheet; invalid or
 degenerate envs (``Track.valid[e] == 0`` or fewer than 3 real points) bake
-``NaN`` across the whole env. The per-env world AABB is the plan-view band's
+``NaN`` across the whole env, with the placeholder box ``lo = (-1, -1)``,
+``hi = (1, 1)`` (since 0.2.0.dev6; an invalid env used to keep its failed band's box).
+The per-env world AABB is the plan-view band's
 bounding box plus padding (AUTO: 10% of the env's larger extent, matching the SDF
 baker's convention), and texel ``(x, y)`` centers map to world coordinates as:
 
@@ -384,7 +386,20 @@ with ``lo``/``hi`` the per-env ``[E]`` ``vec2f`` AABB corners (``HeightField.lo`
 The grid spans each env's own bounding box, so under a per-env ``size`` its texels grow
 with the course while the road keeps its width: raise ``heightfield_resolution`` with the
 largest size (``R >= R_ref * size_hi``, memory ``~size_hi^2`` times;
-:ref:`tuning-size-utilities`).
+:ref:`tuning-size-utilities`). The ``tools.HeightFieldBake(resolution, size_hi=...)``
+component warns at ``attach`` when the resolution is below that rule
+(:ref:`collision-resolution-check`).
+
+**Elevation and the utilities' capacities.** The checkpoint and prop rings are sized from
+the plan's ``max_loop_length = 1.5 * N_max * spacing + dZ``, with ``dZ`` a bound on the
+elevation's climbs taken from the declared ranges of the elevation knobs
+(:doc:`/contributing/writing-a-component`). ``z_min`` / ``z_max`` are dynamic knobs with no
+declared range, so an elevated ``TrackGenConfig`` declares no bound unless
+``z_valid_grade > 0`` (``dZ = z_valid_grade * 1.5 * N_max * spacing``): a ``Course`` then
+sizes its checkpoints from the construction batch, as in 0.2.0.dev5
+(:ref:`course-checkpoint-capacity`), and ``tools.Checkpoints`` / ``tools.Props`` need an
+explicit capacity. ``1.5 * N_max * spacing`` alone does not bound an elevated loop: with
+``uniform`` z in ``[0, 8]`` the longest centerline reached 1.275 times it.
 
 .. figure:: _static/tracks-25d.png
    :alt: Three 2.5D tracks, each as a plan view, an elevation profile, and a

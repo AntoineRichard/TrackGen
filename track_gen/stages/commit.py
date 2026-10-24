@@ -514,3 +514,57 @@ class _GateCommit(_Commit):
     _dtypes = _GATE_DTYPES
     _hold_kernel = _gate_hold_k
     _commit_kernel = _gate_commit_k
+
+
+# ---------------------------------------------------------------------------------------
+# Failing envs after the fact (roadmap PR14; private: the component kit's
+# invalid.sentinel check and the library's tests)
+# ---------------------------------------------------------------------------------------
+
+@wp.kernel
+def _fail_envs_k(fail: wp.array(dtype=wp.int32), fail_mask: wp.array(dtype=wp.int32)):
+    # One thread per env: OR bit 0 into the fail mask of every env with fail[e] != 0.
+    e = wp.tid()
+    if fail[e] != 0:
+        fail_mask[e] = fail_mask[e] | 1
+
+
+def _commit_envs(result, fail, *, poison: bool, ctx) -> None:
+    """Fail the envs with ``fail[e] != 0`` of a committed ``Track`` / ``GateSequence``
+    (``fail_mask |= 1``) and run the commit's own kernel over every env (``use_mask=0``),
+    then the attribute commits: ``valid`` becomes ``fail_mask == 0`` everywhere; with
+    ``poison`` every env whose ``fail_mask != 0`` gets the poisoned rows (``count = 0``,
+    NaN geometry, attribute padding), without it the geometry is kept (what
+    ``on_invalid="keep"`` leaves). Private (``check_component``'s ``invalid.sentinel``
+    builds K and P with it); host checks, then launches on ``ctx`` only.
+
+    Args:
+        result: A ``Track`` or ``GateSequence`` (a view works) with ``fail_mask`` and
+            every committed field set.
+        fail: ``[E]`` int32 on the result's device.
+        poison: ``on_invalid="poison"`` semantics.
+        ctx: The :class:`~track_gen.exec.LaunchContext` to launch on.
+    """
+    from .._src.types import GateSequence  # noqa: PLC0415 - avoid an import cycle
+
+    lay = result.validate()
+    E, S = int(lay.num_envs), int(lay.stride)
+    gates = isinstance(result, GateSequence)
+    fields = (GATE_POINT_FIELDS + GATE_ENV_FIELDS) if gates else (POINT_FIELDS + ENV_FIELDS)
+    arrays = [getattr(result, f, None) for f in fields]
+    missing = [f for f, a in zip(fields, arrays) if a is None]
+    if missing:
+        raise ValueError(f"_commit_envs: {type(result).__name__} has no {missing}")
+    if not isinstance(fail, wp.array) or fail.dtype is not wp.int32 or \
+            tuple(fail.shape) != (E,) or str(fail.device) != str(result.count.device):
+        raise ValueError(f"_commit_envs: fail must be an [{E}] int32 array on "
+                         f"{result.count.device}")
+    fm = result.fail_mask
+    ctx.launch(_fail_envs_k, E, [fail, fm])
+    kernel = _gate_commit_k if gates else _commit_k
+    p = 1 if poison else 0
+    # use_mask=0: the held arrays are never read (the targets stand in for them).
+    ctx.launch(kernel, E * S, [fail, 0, p, S, *arrays, *arrays])
+    for arr in dict(getattr(result, "attributes", None) or {}).values():
+        _, commit = _ATTR_KERNELS[arr.dtype]
+        ctx.launch(commit, E * S, [fail, 0, p, S, fm, arr, arr])

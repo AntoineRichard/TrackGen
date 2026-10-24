@@ -1,5 +1,465 @@
 # Changelog
 
+## 0.2.0.dev6 (unreleased, `v2` branch)
+
+Roadmap PR14: the component protocol (`track_gen.tools`) and the adapters of the runtime
+utilities, static capacities from the generator's plan, generation-aware self-reset, one
+invalid-env sentinel table, `out=` on `curvature()` / `speed_profile()`, and
+`check_component` in the conformance kit. Generator outputs and launch sequences do not
+change; the utilities' outputs for valid envs are byte-identical.
+
+### Migration (`Course` and runtime-utility users)
+
+Downstream code that uses `Course` / `CourseConfig` or the runtime utilities sees the
+changes below. Each one is detailed further down (Added, Behaviour changes).
+
+**1. Invalid envs read like poisoned envs in every utility.** For an env whose result has
+`valid[e] == 0`, every utility now writes what it writes for an env with no track
+(`count = 0`, NaN geometry), whatever the generator's `on_invalid`.
+`TrackGenConfig` / `GateGenConfig` expose no `on_invalid`, so **every `Course` runs on
+`"keep"` and sees this change**; so does every direct utility on such a result.
+
+- How many envs: measured at the defaults (`E = 256`, seeds 0, CPU): `bezier`, `polar`,
+  `voronoi` 0 %; `hull` 1.2 % (3 envs, thickness); `checkpoint` 0.4 % (1 env, turning
+  and thickness); `repulsive` 1.6 % (4 envs, thickness, one also turning). `bezier` at
+  size 4: 19 % (49 envs, truncated at `N_max`); none at sizes 1 to 3. Gates mode
+  depends on the bar width, up to 91 % of the batch: **see item 2**. Rates grow with the
+  size and other settings that truncate or thin the tracks: measure yours with
+  `(course.result.valid.numpy() == 0).mean()`.
+- Every field that changes for an invalid env (`Course` attribute, then the utility):
+
+  | Field | 0.2.0.dev6 | 0.2.0.dev5 (`"keep"`) |
+  |---|---|---|
+  | `res.contacts` (track mode, `BoxContact`; `CollisionChecker`, both methods) | `oob = 1`, NaN `distance` / `nearest` / `normal`, `boundary = -1` | the answer on the failed geometry |
+  | SDF bake (`collision="sdf"`) | NaN texels, boundary id `-1`, box `(-1, -1)`-`(1, 1)` | the failed band's field and box |
+  | `res.contacts` (gates mode, posts, `DiscContact`) | `hit = 0`, `disc = -1`, `depth = 0`, NaN `nearest` | hits on the invalid gates' posts |
+  | `res.events` (`ProgressEvents`) | frozen: `next_checkpoint` / `laps` / `progress` keep their values, `passed = 0`, `checkpoint_passed = -1`, `wrong_way = 0`, `wrong_checkpoint = -1`, **`dist_to_next = 0`** | tracking on the invalid course (or, with no checkpoints, NaN `dist_to_next`) |
+  | A `TrackLocalizer` you build on a `Track` (e.g. `TrackLocalizer(course.result)` in track mode) | NaN `s` / `n` / `n_up`, `segment = -1` | the projection on the invalid centerline |
+  | `course.checkpoints` (track mode, sampled) | `count = 0`, NaN slots, `valid = 0`; the sampler's `step` NaN, `truncated = 0` | the invalid track's ring |
+  | `course.heightfield.result` (the `HeightField`; also what `bake()` returns) | NaN `height` (as before), `lo = (-1, -1)`, `hi = (1, 1)` | NaN heights, the failed band's box |
+  | `PropSampler` | `count = 0`, NaN poses, `step` NaN, `truncated = 0` | the invalid track's ring |
+  | `localize.curvature` / `speed_profile` | NaN rows | values |
+
+  Unchanged: `FrameContact` (gates mode, frames: already `hit = 0`, `depth = 0`), the
+  course line (`course.course_line.centerline`: already `count = 0`, NaN), so `res.frame`
+  (gates mode: the localizer reads the course line: already NaN `s` / `n` / `n_up`,
+  `segment = -1`), `CheckpointSet.from_gates` (a view of the gates). With
+  `on_invalid="poison"` (a `presets` pipeline) the only change is `dist_to_next`: NaN
+  -> 0.
+- `valid` is the invalid-env signal (new: `StepResult.valid`, `CheckpointSet.valid`).
+  `dist_to_next` now means two things: `0` for an invalid env, NaN for a VALID env with
+  no checkpoints (a hand-built set without `valid`). Code that detected a poisoned env
+  through `isnan(dist_to_next)` must read `valid`.
+- What breaks in an RL loop: a loop that penalises `oob` or ends episodes on it without
+  gating on `valid` penalises / ends the invalid envs at every step, and
+  `course.reset(done)` respawns them on the same invalid course forever; a NaN in one
+  env's observation makes a batch mean NaN. **The recipe** (the docs' four RL loops,
+  `docs/utilities/course.rst`, `tutorials/batch-of-tracks.rst`,
+  `tutorials/gate-sequences.rst`, `tutorials/cuda-graph-in-a-sim.rst`, are rewritten
+  with it):
+
+  ```python
+  res = course.step()
+  valid = wp.to_torch(res.valid).bool()           # read it before regenerate (it is live)
+  reward = torch.where(valid, reward, 0.0)        # a select: never reward * valid (NaN * 0 is NaN)
+  obs = torch.where(valid[:, None], obs, 0.0)
+  done = done | ~valid                            # done |= 1 - valid
+  if done.any():                                  # a host read; see below
+      wp.to_torch(course.inputs["regen_mask"]).copy_(done.int())
+      course.regenerate(mask=course.inputs["regen_mask"], advance=True)  # a NEW course for done envs
+  ```
+
+  In a Warp kernel: `wp.where(valid[e] != 0, r, 0.0)`. Guard the eager call: a
+  `regenerate(mask=...)` reruns the whole generator pipeline whenever it runs, even with
+  an all-zero mask (on CPU at `E = 256` the step loop gets about two orders of magnitude
+  slower). The unguarded call belongs in a CUDA graph recorded through a capture Warp
+  registered (`wp.ScopedCapture`, `wp.capture_begin`, the course's self-graph, or a
+  `torch.cuda.graph` inside `track_gen.interop.torch.registered(conditional=True)`) with
+  conditional nodes (`wp.is_conditional_graph_supported()`: CUDA driver and toolkit
+  >= 12.4), where an all-zero mask is skipped on device; anywhere else (eager, a CPU
+  capture, a plain `torch.cuda.graph`, an older CUDA) it costs a full generation per call
+  (`docs/tutorials/cuda-graph-in-a-sim.rst`). Keep `course.reset(mask)` for valid envs
+  that crashed (respawn on the same course); never for an invalid one.
+
+**2. Gates mode: the bar width decides how many envs are valid.** Every gate pipeline
+checks each env's bars for crossings (fail bit 4, the per-env check of 0.2.0.dev5).
+0.2.0.dev5 still tracked such an env (progress, post hits); 0.2.0.dev6 freezes it and it
+hits nothing (item 1), so an invalid env is a slot your agents cannot train on until it
+is regenerated. Measured invalid fraction (`GateGenConfig` defaults, `E = 256`, seeds 7,
+CPU):
+
+| Gate generator | `gate_width` 0.05 | 0.1 | 0.2 | 0.3 | 0.4 |
+|---|---|---|---|---|---|
+| `bezier` (the default), `scale = 1` | 0 % | 8 % | 50 % | 78 % | 91 % |
+| `hull`, `scale = 1` | 0 % | 9 % | 48 % | 76 % | 91 % |
+| `voronoi`, `scale = 1` | 0 % | 1 % | 17 % | 46 % | 80 % |
+| `checkpoint`, `scale = 1` | 0 % | 3 % | 13 % | 30 % | 48 % |
+| `polar`, `scale = 1` | 0 % | 0 % | 0 % | 5 % | 18 % |
+| `bezier`, `scale = 2` | 0 % | 2 % | 15 % | 34 % | 51 % |
+| `bezier`, `scale = 3` | 0 % | 0 % | 4 % | 16 % | 29 % |
+
+- **The gates tutorial and the quickstart used `gate_width = 0.4` before 0.2.0.dev6**:
+  copied as is, about 91 % of a `bezier` batch at `scale = 1` is invalid (59 of 64 envs
+  at `E = 64`, `Course(seeds=7)`; 60 of 64 for the tutorial's generator examples,
+  `PerEnvSeededRNG(seeds=0)`). Their `gate_width = 0.4` examples now use 0.1 (the
+  configuration and Full Example of `tutorials/gate-sequences.rst`, its `Course`
+  example, `getting-started/quickstart.rst`): 2 of 64 for the `Course`, 8 of 64 for the
+  generator examples. The bar-width curriculum example keeps 0.4 at `size = 2.0`. With
+  the recipe of item 1 at `gate_width = 0.2`, about half of the batch is regenerated at
+  every step.
+- Lower `gate_width`, or raise `scale` (the gates spread out, so wider bars fit), and
+  check the fraction after construction: `(course.result.valid.numpy() == 0).mean()`.
+
+**3. The default `CourseConfig.max_checkpoints` is the plan's bound.** `None` (the
+default) now gives `max(3, ceil(max_loop_length / checkpoint_spacing))` with
+`max_loop_length = 1.5 * N_max * spacing + dZ` read from the generator's plan (no
+readback; `dZ = 0` at flat elevation), instead of `ceil(1.5 * longest valid centerline of
+the construction batch / checkpoint_spacing)`.
+
+- Numbers at the `TrackGenConfig` defaults (`N_max = 384`, `spacing = 0.06`, flat:
+  `max_loop_length = 34.56`): **70** checkpoints at `checkpoint_spacing = 0.5` (0.2.0.dev5:
+  13 for `E = 1`, 17 for `E = 6` or 8, 19 for `E = 32`, 15 to 23 across the five
+  sampling generators at `E = 64`, seeds 0), **58** at 0.6, **116** at 0.3 (was 29 at
+  `E = 6`), 35 at 1.0. It no longer depends on the seeds, the batch or the course size.
+- Memory: every `course.checkpoints` array grows to `[E * M]` (52 bytes per slot and env:
+  `position`, `left`, `right`, `tangent`, `up_half`; plus 8 bytes per env for the new
+  `valid` / `generation`): 28.4 MiB at `E = 8192`, `M = 70`, against 7.7 MiB at
+  `M = 19`. The bound scales with `N_max * spacing`: `N_max = 2048`, `spacing = 0.02`,
+  `checkpoint_spacing = 0.05` gives `M = 1229`, 262 MB at `E = 4096`. The sampling kernel
+  launches `E * M` threads.
+- Outputs: an env's real rows, count, progress and laps do not depend on `M` while its
+  ring fits, so every env that fit the 0.2.0.dev5 capacity is byte-identical. Envs the
+  old capacity clipped (`course.checkpoint_sampler.truncated == 1`; a size curriculum
+  constructed at size 1: 44 % / 94 % of the valid `bezier` envs at size 2 / 2.5) now get
+  their full ring, so their progress and laps change.
+- When the plan declares no bound, `Course` keeps the 0.2.0.dev5 readback: an elevation
+  whose z knobs declare no range and no `z_valid_grade` (every elevated
+  `TrackGenConfig`: `z_min` / `z_max` are unbounded dynamic knobs, so an elevated default
+  course keeps exactly its 0.2.0.dev5 capacity), a generator that provides its own
+  altitudes (`provides` `z`) without a `z_valid_grade` or its own half-widths
+  (`provides` `half_width`), a width other than `width.constant`, a plugin geometry stage
+  after the constant-spacing resample. The built-in `validity.default`'s `z_valid_grade
+  = g > 0` declares a bound (`dZ = g * 1.5 * N_max * spacing`: `M = 277` at `g = 3`,
+  `checkpoint_spacing = 0.5`).
+- A new `UserWarning`, once at construction, when the defaulted capacity (bound or
+  readback) clips a valid env of the construction batch (a cold readback of two `[E]`
+  int32 arrays, after the warm-up). Never with an explicit `max_checkpoints`.
+- **To keep the 0.2.0.dev5 shape**, pass the old capacity explicitly: print
+  `course.checkpoints.position.shape[0] // E` under 0.2.0.dev5 and pass it as
+  `CourseConfig(max_checkpoints=...)`. An explicit `max_checkpoints` behaves as before.
+  `course.checkpoint_sampler.max_checkpoints` reads the capacity in use.
+
+**4. New fields** (additive; positional construction unchanged):
+`StepResult.valid` (the generator result's `[E]` int32 `valid`, the same array;
+`clone()` copies it); `course.checkpoints.valid` / `.generation` (`[E]` int32: owned and
+written by the sampler with its ring in track mode, the gates' arrays in gates mode);
+`course.course_line.centerline.generation` (an `[E]` int32 written at every refresh from
+the gates' `generation`; was `None`).
+
+- **`StepResult.valid` is producer state**: it aliases `course.result.valid`, and in gates
+  mode `course.checkpoints.valid` / `.generation` alias the `GateSequence`'s. Never write
+  into them, and exclude them from code that zeroes or poisons step outputs:
+  `dataclasses.fields(StepResult)` and `track_gen.testing.capture.result_arrays(res)`
+  now list `valid` (that helper returned `{}` for a `StepResult` before). A masked
+  regeneration restores only the masked envs, so an overwritten `valid` stays wrong for
+  the others.
+- **It is live**: after a `regenerate(mask=...)` in the same iteration it describes the NEW
+  courses, while `events` / `contacts` / `frame` still describe the step. Read it before
+  regenerating (as the recipe does), or `clone()` the result.
+- **Generic field iteration**: `StepResult` gains a raw `wp.array` field next to its
+  result dataclasses, and `CheckpointSet` two per-env `[E]` fields next to its `[E * M]`
+  ones: code that recurses into every `StepResult` field as a dataclass, or reshapes
+  every `CheckpointSet` field to `(E, M, ...)`, must special-case them.
+- **New read-only properties**: `.result` on every utility, `CollisionChecker.method`,
+  `CheckpointSampler.max_checkpoints`, `PropSampler.max_props`, `CourseLine.result`. A
+  subclass or wrapper that assigned attributes of those names (`self.result = ...`) now
+  gets `AttributeError`: rename them.
+
+**5. Rebinding after a capture warns.** `Course.bind` and the utilities' `bind` /
+`bind_inputs` / `bind_window` emit `track_gen.exec.RebindAfterCaptureWarning` (a
+`UserWarning` subclass) when a bound array is replaced after a hot method ran while its
+stream (or a CPU capture on its device) was capturing: the recorded graph keeps reading
+the old arrays. Record the graph again after rebinding. Binding the same arrays again is
+silent. The recipe "rebind, then record again" warns once too: filter it
+(`warnings.simplefilter("ignore", RebindAfterCaptureWarning)`) when you re-record on
+purpose. A test suite that turns warnings into errors (`-W error`) sees it.
+
+**6. Progress and the localizer reset themselves after a regeneration.** `ProgressTracker`
+(through its `CheckpointSet.generation`) and `TrackLocalizer` (through its source's
+`generation`) reset an env's runtime state on device at the first `update()` / `query()`
+after its `generation` (its epoch) changed, exactly as `reset(mask)` would. `Course`
+still resets explicitly (no change in its outputs); a direct user who regenerated with
+`advance=True` and deliberately kept the progress state now sees it reset.
+
+**7. Malformed optional members raise at construction.** A hand-built source whose
+`valid` or `generation` is present but of the wrong shape, dtype or device now raises
+(`ValueError` / `TypeError`, the required members' messages) in `CollisionChecker`,
+`TrackLocalizer`, `curvature`, `speed_profile`, `CheckpointSampler`, `CourseLine`,
+`CheckpointSet.from_gates` and `ProgressTracker` (on its set); they used to be ignored.
+
+**8. Gates-mode post collision** scans each env's `2 * count[e]` real posts and is given
+the gates' `valid` (it scanned `2 * max_gates` posts, skipping the NaN padding): the same
+contacts for valid envs, item 1 for invalid ones.
+
+### Added
+
+- **`track_gen.tools`** (public, in `track_gen.__all__`; `import track_gen` imports it and
+  still loads no generator or plugin module): the component protocol of the runtime
+  utilities (`docs/contributing/writing-a-component.rst`).
+  - **`Component`**, a plain base class (not a `typing.Protocol`: the library duck-types
+    components and never `isinstance`-checks them) with immutable defaults: the
+    declaration (`name`, `source` (the read target: `None` for the course result, else
+    the name of the component whose `result` it reads), `requires` / `optional`
+    (protocols of `track_gen.results`, strict / read when present), `topology`,
+    `stateful`, `inputs`, `after`), the attributes `layout` (set before `attach`) and
+    `result`, and the lifecycle `attach(source, cc)` (cold, once: ends with one
+    `on_generate(cc.ctx, None)` and loads its hot kernels' modules), `bind(**arrays)`
+    (validates, routes defaults, then calls the `on_bind` hook; a routed input's error
+    names the argument it came from), and the hot `on_generate(ctx, mask)`, `step(ctx)`
+    and `reset(ctx, mask)`.
+  - **`ComponentContext(layout, capacity=None, *, ctx=None)`**: what `attach` is given
+    (`layout`, a read-only `capacity`, the cold `ctx`, `component(name)`, `names`), and
+    `add(component, source)`, which checks dependencies, unique names and input
+    conflicts, resolves the read target, checks it with `check_source` against
+    `requires` (strict) and `optional` (present members; with `optional` alone, against
+    the target's layout or, without one, the layout its present members give: `num_envs`
+    from `count` or a per-env member, the stride from a per-point member, e.g. `M` on a
+    `CheckpointSet`; the context's fills what they do not), refuses a producer-result
+    target of another batch (`num_envs` or device: `ValueError`), sets
+    `component.layout`, then attaches.
+    **`ComponentContext.for_producer(producer, *, ctx=None)`** takes a `TrackGenerator`,
+    a `GateGenerator`, a `Program` or a `Course` (its generator) and reads its layout and
+    plan (never its arrays); a result (a `Track`) raises `TypeError` (it has no plan:
+    `ComponentContext(track.layout, capacity)` for a hand-built source).
+  - **The capacity key `max_loop_length`** = `1.5 * N_max * spacing + dZ`: a bound with
+    measured headroom on the 3D length of the centerline and either boundary loop of
+    every valid env. `dZ` from the elevation knobs' declared `bounds()`: 0 when flat,
+    `K * (z_max_hi - z_min_lo)` for `uniform` / `random_walk`, the smaller of
+    `2 * H * range` and `4 * A_hi * H / H_H` for `noise`, `g * 1.5 * N_max * spacing`
+    with the built-in `validity.default`'s `z_valid_grade = g > 0` (a plugin check's
+    field of that name does not count). Omitted (consumers need an explicit capacity)
+    when no term is finite, when the generator provides its altitudes (`provides` `z`:
+    `lift.elevated` with no elevation stage) and no grade is declared, when no
+    `width.constant` follows the resample (another width, or a generator that provides
+    `half_width`: both unbounded per point), with a plugin geometry stage after the
+    constant-spacing resample, or without that resample (gate pipelines, `external`). 34.56 at the `TrackGenConfig` defaults, 38.4 for
+    `presets.track(n_max=512, spacing=0.05)`.
+  - **`InputSpec(dtype, slots=1, required=True, default=None, doc="")`** (frozen; `doc`
+    not compared): a bound input, `[E * slots]` of `dtype`. `default` names the input
+    used when this one is not given (`box_position` defaults to `position` at one box);
+    an absent optional input (`required=False`) reaches `on_bind` as `None`.
+  - **Ten adapters**, each wrapping one legacy utility (`adapter.utility`, an adapter
+    attribute outside the component contract, every legacy name kept; `adapter.result`
+    its `.result`): `BandCollision` (`CollisionChecker`),
+    `DiscCollision` (`DiscChecker`; posts mode builds the gate posts and their count on
+    device and passes the gates' `valid`; raw mode, `topology="any"`), `FrameCollision`
+    (`FrameChecker`, `num_envs` from the layout, windowed on the progress component's
+    public `next_checkpoint`), `Props` (`PropSampler`), `Checkpoints`
+    (`CheckpointSampler`), `GateCheckpoints` (`CheckpointSet.from_gates`, zero copy),
+    `Progress` (`ProgressTracker`, reading the component named by `source=`, default
+    `"checkpoints"`; `checkpoints=` is a 0.x alias), `Localizer`
+    (`TrackLocalizer`, stateful in both modes), `HeightFieldBake` (`HeightFieldBaker`)
+    and `CenterlineFromGates` (`CourseLine`, the roadmap's `centerline_from_gates`: its
+    `result` is the `Centerline`). `Props` / `Checkpoints` with no capacity take
+    `max(3, ceil(max_loop_length / spacing))` (`ValueError` naming `max_props` /
+    `max_checkpoints` without the key).
+  - **The SDF / heightfield resolution check**: `BandCollision(method="sdf", size_hi=,
+    reference_resolution=128)` and `HeightFieldBake(..., size_hi=,
+    reference_resolution=128)` emit a `UserWarning` at `attach` when `resolution <
+    ceil(reference_resolution * size_hi)`, naming the resolution that keeps the accuracy
+    and its memory; a lower `reference_resolution` accepts a coarser grid; `size_hi <= 1`
+    and `segments` never warn. `Course` declares no `size_hi` (PR15).
+- **Protocols** `HasValidity` (`valid`) and `HasCheckpoints` (`position`, `left`,
+  `right`, `tangent`, `up_half`, `count`: what `ProgressTracker` reads), frozen, in
+  `track_gen.results.__all__` and re-exported by `track_gen`; `up_half` joins the member
+  schema (per point, `float32`). **`check_source(..., optional=())`**: members checked
+  when present (the required members' rules and messages), never required.
+- **`ctx=`** (keyword-only, a `LaunchContext`) on every hot method of the utilities
+  (`query`, `update`, `reset`, `sample`, `bake`, `refresh`); with `stream=` a
+  `TypeError`, on another device a `ValueError`.
+- **`.result`** (read-only) on every utility: the preallocated result its hot method
+  returns. **`CollisionChecker.method`** (read-only). **`CheckpointSampler.max_checkpoints`**
+  and **`PropSampler.max_props`** (read-only).
+- **`DiscChecker(..., valid=None)`**: an `[E]` int32 validity, checked and read in place;
+  an env with `valid[e] == 0` reports no hit.
+- **`CheckpointSet.valid` / `.generation`**: optional trailing fields (`[E]` int32); the
+  sampler owns and writes both at `sample()` (`_place_checkpoints_k`, no new launch),
+  `from_gates` aliases the gates' (or leaves `None`); `clone()` copies them.
+- **`StepResult.valid`** (trailing field), `course.course_line.centerline.generation`.
+- **`out=` for `localize.curvature(track, window=2, ctx=None, *, out=None,
+  scratch=None)` and `speed_profile(..., ctx=None, *, out=None)`**: the same kernels into
+  caller arrays (contiguous `[E * N_max]` `float32` on the track's device), no
+  allocation, no fill, no host sync, recordable; byte-identical to the allocating form.
+  `curvature(out=)` with `window > 0` needs `scratch=` (not aliasing `out`);
+  `speed_profile(out=)` needs `kappa=`. Without `out=` both allocate as before.
+- **Generation-aware self-reset** in `ProgressTracker` and `TrackLocalizer`: an owned
+  `seen_generation` `[E]` per env, compared with the read `generation` at the top of the
+  step kernel; a changed env first gets exactly `reset(mask)`'s writes (idempotent with an
+  explicit reset). The tracker reads the `CheckpointSet`'s `generation`, written by the
+  sampler at `sample()`, so an `update()` between a regeneration and the resample does not
+  reset against the old ring.
+- **`track_gen.exec.RebindAfterCaptureWarning`** (`UserWarning`), exported by
+  `track_gen.exec`.
+- **`track_gen.testing.check_component(factory, *, source="track", upstream=(),
+  devices=None, num_envs=8, steps=32, seeds=None, drive=None, modes=CAPTURE_MODES)`**:
+  the conformance kit for components (`construct`, `requires.complete`, `topology`,
+  `result.stable`, `determinism`, `statelessness` / `reset.exact`, `regenerate.masked`,
+  `regenerate.self_reset`, `invalid.sentinel`, `capacity.clamp`, `source.view`, the
+  `hot_path.*` checks, and on CUDA `capture.caller` / `capture.self_reset`), with
+  `CHECKS["component"]` and the pytest fixture `track_gen_check_component(factory,
+  **kw)`. Every `wp.array` reachable from the result (dataclasses, mappings, named and
+  plain tuples, lists, `__slots__` and attributes, recursively) is found, owned and
+  aliased ones told apart by pointer; only owned arrays are poisoned and compared.
+  `construct` also checks the attach contract (a chain attached without a warm-up steps
+  like a warmed one) and refuses a source with no valid env (every check would be
+  vacuous); the `hot_path.*` guard covers a chain's FIRST hot calls (a throwaway chain
+  loads the modules); a component that declares no read is attached to an empty read
+  target (reading one fails `requires.complete`); `regenerate.masked` and
+  `invalid.sentinel` run for every component, `regenerate.self_reset` for every stateful
+  one whose read target carries `generation` (`optional` declarations included)
+  (`docs/contributing/testing-a-plugin.rst`).
+
+### Behaviour changes
+
+Beyond the migration items above (which apply to the utilities used directly too):
+
+- **`Course` builds its sub-tools as `track_gen.tools` adapters** (`course._components`,
+  private) and drives them through one lifecycle: `on_generate` and `step` in list order,
+  resets in the 0.2.0.dev5 order (localizer, then progress). Every public and tested
+  attribute (`collision`, `checkpoints`, `checkpoint_sampler`, `progress`, `localizer`,
+  `course_line`, `heightfield`) keeps its type and object; the launch order after
+  construction is unchanged. Construction adds cold work before the warm-up
+  regeneration: the first heightfield bake and course-line refresh at attach, and the
+  module loads of the step kernels.
+- **A default-capacity track `Course` at flat elevation no longer raises** when its
+  construction batch has no valid env (0.2.0.dev5: `ValueError: max_checkpoints=None needs
+  at least one valid env in the bound track batch`; e.g. `hull`, `E = 1`, seeds 13 or
+  22): the capacity no longer comes from the batch, so it constructs (`M` from the plan
+  bound) and the invalid envs read the sentinels (Migration item 1). The readback
+  fallback (an elevation without declared bounds) still raises.
+- **`check_source`'s missing-member message names the optional members apart**: a
+  consumer that reads optional members reports `needs a HasBand source (center, outer,
+  inner, count; optional: valid): ...` (0.2.0.dev5 listed every member of every protocol
+  as if required, e.g. `(center, outer, inner, count, valid)`). Only the text changes.
+- **The legacy constructors keep their sizing**: `CheckpointSampler(track, spacing)` /
+  `PropSampler(track, spacing)` with `max_* = None` still read the bound batch back once
+  at construction (a supported legacy convenience, not deprecated). The plan bound is the
+  default of the components and of `Course`.
+- **Optional members read once**: `valid` (now also read by `CollisionChecker`,
+  `TrackLocalizer`, `curvature`, `speed_profile`, `CheckpointSet.from_gates`) and
+  `generation` (`TrackLocalizer`, `CheckpointSampler`, `CourseLine`, `from_gates`), and the
+  set's `valid` / `generation` (`ProgressTracker`), are checked at construction when
+  present and bound like the required members; absent, every env is valid and nothing
+  self-resets.
+- **`generation` is the epoch** for the self-reset: an advancing regeneration changes it
+  for the envs it advances; a regeneration without `advance` does not; a reseed changes it
+  only when it zeroes a non-zero epoch (`Course.generate(seeds=)`, `SeedState.set`), not
+  on a bare `rng.set_seeds_warp`; `reset_epoch()` followed by the same number of advances
+  between two updates leaves it equal. Callers that reseed or roll epochs back must still
+  `reset(mask)` (`Course` does).
+- **`ProgressTracker` re-arms its previous position on invalid envs** (NaN), so an env
+  that becomes valid again without a generation change (an un-advanced regeneration, a
+  reseed at epoch 0, a `copy_from` of a valid snapshot) cannot emit a spurious crossing.
+- **The bezier `style_sampling` `DeprecationWarning`** drops its clause "size Course's
+  max_checkpoints for the largest size: ceil(1.5 * N_max * spacing / checkpoint_spacing),
+  see CourseConfig.max_checkpoints" (now the default at flat elevation).
+- **A deliberate exception to the hot-path rules**: the hot methods of the five utilities
+  with bound inputs (`CollisionChecker`, `DiscChecker`, `FrameChecker`,
+  `ProgressTracker`, `TrackLocalizer`) probe, until it is set once, whether their stream
+  (or a CPU capture) is capturing, and set a host flag. It changes no launch (a kit check
+  compares the traces with the flag set and unset).
+
+### Changed (outputs)
+
+- Generator outputs: none. Fingerprints, the PR10a / PR11 / PR13a parity suites and
+  goldens, the PR9 boundary bytes and every launch sequence of every pipeline are
+  byte-identical.
+- Utilities, valid envs: none. Every utility's outputs for a valid env are byte-identical
+  to 0.2.0.dev5 at the same capacities (CPU goldens taken at the 0.2.0.dev5 commit, and
+  the twelve edited kernels' 0.2.0.dev5 copies launched next to the new ones on the same
+  inputs: on CPU in `tests/test_components.py`, on `cuda:0` in
+  `tests/test_components_cuda.py`). A default `Course`'s checkpoint arrays change shape (Migration
+  item 3); their real rows do not, except for rings the old capacity clipped.
+- Utilities, invalid envs: the sentinel table (Migration item 1).
+
+### Fixed
+
+- Library-readiness findings closed by roadmap PR14: MEDIUM A34 "no common utility
+  protocol; Course hard-codes the tool set" (`track_gen.tools`, `Course` drives adapters
+  through one lifecycle; `Course(generator, components)` is PR15); MEDIUM A38 "no
+  regeneration signal" (generation-aware self-reset; the sampler's set carries the
+  generation of its ring); MEDIUM A49 "utilities disagree on invalid envs" (one sentinel
+  table, `StepResult.valid`, the posts' `DiscChecker` given count and `valid`); LOW A131
+  "the invalid-env path is undocumented, untested, and contradicted by the tutorials"
+  (the sentinel table in the docs, the RL loops gated on `valid`, forced-invalid tests);
+  the rebind part of LOW A92 (`RebindAfterCaptureWarning`; the stable reset mask is PR15);
+  LOW A99 "public helpers allocate per call" (`curvature` / `speed_profile` `out=`;
+  `rng.sample_uniform_warp(out=)` stays open); LOW A100 "sampler capacities sized by host
+  readback" (the plan's `max_loop_length`, the `Course` default, the components).
+
+### Deferred
+
+- **Roadmap PR15**: `Course(generator, components)` and its topological ordering of
+  `after` / `source` (the seam is `track_gen._src.course._components_for`),
+  `Course.bind(**arrays)` routed by declared inputs, `inputs["reset_mask"]`, the
+  `StepResult` Mapping view (the dataclass fields stay), routing a size randomizer's `hi`
+  to `size_hi`, Course anchoring its components (G6).
+- A typing-only `SupportsComponent` protocol for static duck typing; a component registry
+  kind; fused step kernels.
+- Removing the legacy readback sizing of `CheckpointSampler` / `PropSampler` (not
+  planned; it would need a warning release first).
+- Declared bounds on the elevation's `z_min` / `z_max` (so that elevated
+  `TrackGenConfig`s get a `max_loop_length`), and a bound for variable width.
+
+### Testing
+
+- `tests/test_components.py` (CPU): the base class, `ComponentContext` and `InputSpec`
+  (immutable defaults, `bind` errors, default routing and optional inputs, `add`'s
+  dependency, duplicate-name, input-conflict, optional-only and other-batch errors,
+  read-target resolution, `for_producer`'s keys for flat, elevated, randomized, graded,
+  variable-width, attribute-provider and gate plans and its `TypeError` on a `Track`,
+  `import track_gen` loading no pipeline or plugin module); `check_component` for every
+  built-in adapter; negative kit tests with toys that each fail exactly their check
+  (first-call-only work, undeclared reads, a stateful optional-only component without
+  self-reset, a named-tuple result, an attach without its closing `on_generate`); the
+  `CurvatureLookahead` toy of the guide (public imports only) passing every check; byte
+  identity of every utility for valid envs (CPU goldens `tests/goldens/pr14_utilities.json`
+  taken at 0.2.0.dev5 by `tests/tools/make_pr14_goldens.py`, and the 0.2.0.dev5 kernels
+  frozen in `tests/_pr14_base_kernels.py` launched next to the new ones); the
+  adapter-driven `Course` against a hand-wired composition of the legacy utilities (8
+  variants, 40 steps), `StepResult.valid`, the posts' count / valid, the course line's
+  generation, the default checkpoint shapes (70 / 58 / 116 at spacing 0.5 / 0.6 / 0.3),
+  real rows equal at the old capacity, the elevated readback fallback and the clip
+  warning; the self-reset (masked and full advances, with and without reset, the
+  `generate()` / `sample()` ordering, reseeds and the epoch ABA case); the sentinels
+  (invalid == poisoned for every utility and adapter, the table values, inactive box
+  slots, poison mode, no event on re-validation); capacities and the resolution warning;
+  `out=` (bytes, hot-path guard on a `Track`, a `Centerline` and a source without
+  `valid`, errors); `ctx=`; the rebind warning (a capturing context, a CPU capture,
+  stacklevels, silence on the same arrays); the `CheckpointSet` fields; the docs' RL loop
+  on a `Course` with one env forced invalid (no NaN reaches the reward or the
+  observation, the env is done, one advancing masked regeneration takes it out);
+  `check_source(optional=)`.
+- CUDA (`tests/test_components_cuda.py`, collects on CPU): `check_component` for every
+  adapter on `cuda:0` (`capture.caller` in the warp / external / torch modes,
+  `capture.self_reset`); the eager-vs-captured trajectory twin in track and gates modes
+  (`wp.ScopedCapture` and a registered `torch.cuda.graph`; 200 steps of `[course.step();
+  course.regenerate(mask=..., advance=True)]` with host-written positions and a done
+  schedule; only the step outputs are poisoned before each replay, the producer state and
+  the sub-tools' buffers are compared unpoisoned); the old-vs-new kernel identity, the
+  sentinels and the self-reset on `cuda:0`; `curvature(out=)` / `speed_profile(out=)`
+  recorded; the rebind warning under a real capture and the probe's host cost on
+  `Course.step` (printed ratio).
+- Existing tests updated where PR14 required it: `tests/test_public_api.py` (`tools`,
+  `HasValidity`, `HasCheckpoints` in `track_gen.__all__`); `tests/test_results.py` (the
+  consumers' read tuples gain their optional members, so a malformed optional member is
+  rejected at construction); `tests/test_no_host_sync.py` (the `out=` forms under the
+  full guard); `tests/test_difficulty_axes.py` (the `style_sampling` warning's parts; a
+  default-capacity `Course` under a size curriculum). The byte guards pass unchanged:
+  `tests/test_generator_fingerprints.py` and its goldens, the PR9 boundary bytes,
+  `tests/test_gate_pipeline_parity.py`, the PR13a golden and the
+  `tests/test_legacy_plugin_abi.py` pins.
+
 ## 0.2.0.dev5 (2026-10-24, tag `v0.2.0.dev5`)
 
 ### Added

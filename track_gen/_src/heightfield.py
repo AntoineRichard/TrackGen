@@ -17,7 +17,7 @@ from dataclasses import dataclass
 import warp as wp
 
 from .collision_sdf import _track_aabb_k
-from ..exec.context import LaunchContext
+from ..exec.context import LaunchContext, _call_context  # noqa: F401  (LaunchContext: re-export)
 from .runtime import _BIG, _init, _sync  # noqa: F401  (_sync: legacy re-export)
 from ..results import HasBand, _check_and_bind
 
@@ -32,7 +32,8 @@ class HeightField:
         ``[e, y, x]``).
     lo, hi : wp.array
         ``[E]`` vec2f world AABB corners; texel (x, y) center is at
-        ``lo + ((x, y) + 0.5) / res * (hi - lo)``.
+        ``lo + ((x, y) + 0.5) / res * (hi - lo)``. ``(-1, -1)`` / ``(1, 1)`` for
+        degenerate and (roadmap PR14) invalid envs.
     res : int
         Grid resolution per side.
     """
@@ -106,7 +107,8 @@ class HeightFieldBaker:
     Lifecycle mirrors the SDF baker: construct once (allocates), ``bake()``
     after every regeneration (kernel launches only; the facade does this in
     its captured refresh when ``CourseConfig.heightfield_resolution`` is
-    set). Results are undefined for envs with ``valid[e] == 0`` (baked NaN).
+    set). An env with ``valid[e] == 0`` bakes NaN heights with the box
+    ``(-1, -1)-(1, 1)``: the bake of a poisoned env (roadmap PR14).
     """
 
     #: The topologies this component supports (closed loops only in 0.x).
@@ -140,7 +142,13 @@ class HeightFieldBaker:
             res=self._res,
         )
 
-    def bake(self, stream=None) -> HeightField:
+    @property
+    def result(self) -> HeightField:
+        """The preallocated :class:`HeightField` :meth:`bake` refreshes and returns (the
+        same instance for the baker's lifetime)."""
+        return self._hf
+
+    def bake(self, stream=None, *, ctx=None) -> HeightField:
         """Re-bake from the CURRENT track batch; returns the same instance.
 
         Args:
@@ -148,12 +156,14 @@ class HeightFieldBaker:
                 stream is resolved per track_gen.exec (an enclosing
                 torch.cuda.graph capture is adopted, else Warp's current
                 stream).
+            ctx: optional :class:`~track_gen.exec.LaunchContext` on the baker's
+                device to emit on (exclusive with ``stream=``: ``TypeError``).
         """
-        ctx = LaunchContext.for_call(self._device, stream)
+        ctx = _call_context(self._device, stream, ctx)
         t = self._track
         f = self._hf
         ctx.launch(_track_aabb_k, self._E,
-                   [t.outer, t.count, self._n_max, self._pad,
+                   [t.outer, t.count, t.valid, 1, self._n_max, self._pad,
                     self._pad_frac, f.lo, f.hi])
         ctx.launch(_height_bake_k, self._E * self._res * self._res,
                    [t.center, t.count, t.valid, self._n_max, self._res,

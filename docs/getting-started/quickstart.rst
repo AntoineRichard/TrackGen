@@ -60,7 +60,7 @@ and skips constant-spacing, XPBD relaxation, and inflation.
        gate_ordering="random_pairs",
        num_envs=E,
        max_gates=32,
-       gate_width=0.4,
+       gate_width=0.1,
        gate_radius=0.025,
        gate_solve_iters=8,
        device=device,

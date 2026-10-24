@@ -454,33 +454,36 @@ an error, and a curriculum written with ``set`` or from your graph is not checke
 Size and the utilities
 ~~~~~~~~~~~~~~~~~~~~~~
 
-The runtime utilities size some buffers and grids once, from the batch they are built
-on. A size curriculum that starts small and grows outruns them while the tracks stay
-valid:
+The runtime utilities size some buffers and grids once. A size curriculum that starts
+small and grows must not outrun them while the tracks stay valid:
 
-- **Checkpoint and prop rings.** ``CheckpointSampler`` / ``PropSampler`` with
-  ``max_checkpoints=None`` / ``max_props=None`` size their rings once, at construction,
-  from the bound batch (``ceil(1.5 * longest perimeter / spacing)``), and ``Course``
-  builds its ``CheckpointSampler`` from its construction generation. Grown tracks then
-  get clipped rings (``checkpoint_sampler.truncated``), and progress and lap rewards read
-  them (``bezier``, ``E = 32``, seeds ``7919 * e + 13``, checkpoint spacing 0.5, 20
-  checkpoints derived at size 1: truncated on 0 / 0 / 44 / 94 % of the valid envs at
-  size 1 / 1.5 / 2 / 2.5). Pass a capacity that holds every track that is not
-  truncated, whatever its size:
+- **Checkpoint and prop rings.** Since 0.2.0.dev6 ``Course`` and the components
+  ``tools.Checkpoints`` / ``tools.Props`` size their rings from the generator's plan, with
+  no readback (:ref:`course-checkpoint-capacity`):
 
   .. code-block:: text
 
-     max_checkpoints = ceil(1.5 * n_max * spacing / checkpoint_spacing)
-     max_props       = ceil(1.5 * n_max * spacing / prop_spacing)
+     max_checkpoints = max(3, ceil(max_loop_length / checkpoint_spacing))
+     max_props       = max(3, ceil(max_loop_length / prop_spacing))
+     max_loop_length = 1.5 * n_max * spacing + dZ
 
   A track that fits ``n_max`` has a plan-view perimeter below ``n_max * spacing``; the
-  ``1.5`` covers the 3D length under elevation and a boundary's extra ``~2 pi *
-  half_width`` (measured: at most 0.90 of ``n_max * spacing`` just below truncation,
-  elevation included). At the defaults that is 70 checkpoints at spacing 0.5. Or, with no
-  new number: construct with ``TrackGenConfig.size = size_hi``, then ``set`` the size
-  down. The derived default is unchanged in 0.2.0.dev5 (switching it would change the
-  default ``Course``'s buffer shapes): roadmap PR14 derives the capacities from
-  ``n_max``.
+  ``1.5`` covers the relax growth and a boundary's extra ``~2 pi * half_width``
+  (measured: at most 0.90 of ``n_max * spacing`` just below truncation), and ``dZ`` the
+  elevation's climbs, from the declared ranges of the elevation knobs (``0`` when flat).
+  At the defaults that is 70 checkpoints at spacing 0.5, at every size. A plan without a
+  declared elevation range (``z_min`` / ``z_max`` declare none; ``z_valid_grade > 0``
+  gives one), with a variable width, a generator that provides its own altitudes (no
+  grade) or half-widths, or a plugin geometry stage declares no bound: there
+  ``Course`` reads its construction batch back, as before, and the components need an
+  explicit capacity. The legacy ``CheckpointSampler(track, spacing)`` /
+  ``PropSampler(track, spacing)`` with ``max_* = None`` also keep the readback
+  (``ceil(1.5 * longest valid perimeter / spacing)`` over the bound batch). A readback
+  taken at size 1 clips the grown tracks' rings (``truncated``), and progress and lap
+  rewards read them (``bezier``, ``E = 32``, seeds ``7919 * e + 13``, checkpoint spacing
+  0.5, 20 checkpoints derived at size 1: truncated on 0 / 0 / 44 / 94 % of the valid envs
+  at size 1 / 1.5 / 2 / 2.5): pass the bound explicitly there, or construct with
+  ``TrackGenConfig.size = size_hi`` and ``set`` the size down.
 - **SDF and heightfield grids.** The ``sdf`` collision backend and the heightfield baker
   cover each env's bounding box with a fixed ``R x R`` grid, so the cells grow with the
   size while the road stays absolute (``bezier``, ``R = 128``: 12.3 / 6.7 / 4.5 cells
@@ -489,8 +492,10 @@ valid:
   Rule: ``sdf_resolution`` / ``heightfield_resolution >= R_ref * size_hi``, ``R_ref`` the
   resolution accurate enough at size 1; memory grows as ``size_hi^2`` (the ~670 MB of
   128² grids at ``E = 8192`` become ~6 GB at ``size_hi = 3``). Or use the exact
-  ``segments`` backend. No warning is emitted (a ``Course`` sees no randomizer before
-  roadmap PR15).
+  ``segments`` backend. The components ``tools.BandCollision(method="sdf",
+  size_hi=...)`` and ``tools.HeightFieldBake(..., size_hi=...)`` warn at ``attach`` when
+  the rule is broken (:ref:`collision-resolution-check`); a ``Course`` declares no
+  ``size_hi`` before roadmap PR15, so it does not warn.
 
 ``half_width`` and ``spacing`` coupling
 ----------------------------------------

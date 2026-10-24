@@ -8,6 +8,9 @@ limited to the envs a mask selects; per-env respawns via a mask):
 
 .. code-block:: python
 
+   import torch
+   import warp as wp
+
    from track_gen import TrackGenConfig
    from track_gen.course import Course, CourseConfig
 
@@ -19,43 +22,76 @@ limited to the envs a mask selects; per-env respawns via a mask):
        checkpoint_spacing=0.6,
    ))                                 # first batch + sub-tools are ready here
    course.bind(position=robot_pos, orientation=robot_quat, half_extents=robot_he)
+   done = course.inputs["regen_mask"]                # stable [E] int32 regeneration mask
+   crash = wp.zeros(E, dtype=wp.int32, device="cuda")              # stable respawn mask
 
    for _ in range(steps):
        sim.step()                     # writes the bound buffers in place
-       res = course.step()            # events + contacts, no args
-       course.reset(done_mask)        # respawn finished envs on the same course
-       # or: course.regenerate(mask=done_mask, advance=True)  -> on a NEW course
+       res = course.step()            # events + contacts + valid, no args
+       valid = wp.to_torch(res.valid).bool()         # False: this env's course is invalid
+       oob = wp.to_torch(res.contacts.oob).bool()
+       passed = wp.to_torch(res.events.passed).float()
+       dist = wp.to_torch(res.events.dist_to_next)
+       reward = torch.where(valid, 10.0 * passed - 5.0 * oob.float(), 0.0)  # a select, never "* valid"
+       obs_dist = torch.where(valid, dist, 0.0)      # no NaN reaches the policy
+       crashed = oob & valid                         # a valid env that crashed: same course
+       finished = (wp.to_torch(res.events.laps) >= 3) | ~valid       # done |= 1 - valid
+       if crashed.any():                             # host reads: see below
+           wp.to_torch(crash).copy_(crashed.int())
+           course.reset(crash)                       # respawn on the SAME course
+       if finished.any():
+           wp.to_torch(done).copy_(finished.int())
+           course.regenerate(mask=done, advance=True)   # NEW courses (and resets) where done
+       respawn(crashed | finished)    # your code: restart those envs' agents
    course.generate(seeds=next_seed)   # new courses for everyone
    course.regenerate()                # or: rebuild from the rng's current seeds
    course.regenerate(advance=True)    # or: next epoch for everyone, same seeds
 
+An env whose course failed a check (``res.valid[e] == 0``: 0.4 to 1.6 % of the envs of
+the default ``hull``, ``checkpoint`` and ``repulsive`` generators) reads ``oob = 1`` and
+frozen progress at every step (`Invalid envs`_): gate everything on ``valid``, end the
+episode, and give it a new course. ``course.reset(mask)`` respawns the masked envs on the
+SAME course, which suits a valid env that crashed (this loop keeps a crashed episode's
+course; put ``crashed`` into ``finished`` instead to give it a new one); an invalid env
+respawned that way stays invalid. ``res.valid`` is live: read it before
+``regenerate``, which rewrites it for the regenerated envs.
+
+The ``if`` guards read the masks back on the host. They matter: run eagerly, a
+``regenerate(mask=...)`` reruns the whole generator pipeline whenever it is called, even
+with an all-zero mask. Call it unconditionally only in a CUDA graph recorded through a
+capture Warp registered (``wp.ScopedCapture``, ``wp.capture_begin``, the course's
+self-graph, or a ``torch.cuda.graph`` inside
+``track_gen.interop.torch.registered(conditional=True)``) with conditional nodes
+(``wp.is_conditional_graph_supported()``: CUDA driver and toolkit >= 12.4), where an
+all-zero mask is skipped on device (`Masked regeneration`_,
+:doc:`/tutorials/cuda-graph-in-a-sim`). Anywhere else (eager, a CPU capture, a plain
+``torch.cuda.graph``, an older CUDA) it costs a full generation per call.
+
 Construction does the cold work, outside any capture. It builds the rng and the
 generator, whose own construction runs the pipeline once, so ``course.result`` holds the
-first batch. It then sizes and builds every sub-tool from that real batch (the read-backs
-that size them happen only here) and runs the regenerate body once more as its warm-up.
+first batch. It then builds every sub-tool (first sample, bakes and course-line refresh
+included, on the course's stream) and runs the regenerate body once more as its warm-up.
 Expect a construction cost of roughly two generations, which matters for ``repulsive``.
 Every sub-tool exists right after construction, so ``step()`` and ``reset()`` only need a
 prior ``bind()``. Construct the course before you begin a capture: construction raises
 ``CaptureError``, before allocating anything, when its stream or Warp's current stream is
 capturing.
 
-Sub-tools are sized from that construction batch (``config.seeds``), not from a later
-``generate(seeds=...)``. That includes an auto-derived ``max_checkpoints`` (and with it
-the shape of every checkpoints array): pass ``max_checkpoints`` explicitly for sizing
-that does not depend on the seeds.
+The checkpoint ring is sized from the generator's plan, not from a batch: it holds
+``max_checkpoints`` slots per env, by default the plan's size-independent bound (see
+`Checkpoint capacity`_). Only when the plan declares no bound does the course read the
+construction batch (``config.seeds``) back to size it, as every 0.2.0.dev5 course did.
 
 **A size curriculum.** The construction batch is built at the configured ``size``
-(``TrackGenConfig.size``, the only construction-time route, default ``1.0``). If a
-curriculum later grows the per-env size
-(``course.generator.params["generator"].set("size", arr)`` before ``regenerate``), the
-tracks outgrow an auto-derived ``max_checkpoints``: the rings are clipped
-(``course.checkpoint_sampler.truncated``) while the tracks stay valid, and progress and
-lap rewards read the clipped rings. Pass ``max_checkpoints = ceil(1.5 * n_max * spacing /
-checkpoint_spacing)``, a capacity that holds every track that is not truncated at any
-size, or construct with ``size`` at the curriculum's largest value and ``set`` it down.
-The SDF and heightfield grids cover each env's bounding box at a fixed resolution, so
-their cells grow with the size: raise ``sdf_resolution`` / ``heightfield_resolution``
-with it, or use ``collision="segments"`` (:ref:`tuning-size-utilities`).
+(``TrackGenConfig.size``, the only construction-time route, default ``1.0``); a
+curriculum grows it later (``course.generator.params["generator"].set("size", arr)``
+before ``regenerate``). At flat elevation the default ``max_checkpoints`` already holds
+every track that is not truncated, at any size. With elevation and no declared z range,
+the readback sizes the ring at the construction size: pass ``max_checkpoints``
+(`Checkpoint capacity`_), or construct at the largest size and ``set`` it down. The SDF
+and heightfield grids cover each env's bounding box at a fixed resolution, so their cells
+grow with the size: raise ``sdf_resolution`` / ``heightfield_resolution`` with it, or use
+``collision="segments"`` (:ref:`tuning-size-utilities`).
 
 The generator pipelines are fixed-batch, so every regeneration recomputes the whole
 batch. Per-env control is ``reset(mask)`` (respawn on the same course) and
@@ -97,13 +133,24 @@ gradient makes it bit-reproducible run-to-run on CUDA as well as CPU); only cros
 output differs, and then only statistically (fp32 rounding). In gates mode the same
 object wraps ``GateGenerator`` + gate progress + optional ``DiscChecker``
 posts (``post_radius > 0``). The underlying tools stay reachable
-(``course.collision``, ``course.progress``, ``course.checkpoints``).
+(``course.collision``, ``course.progress``, ``course.checkpoints``,
+``course.checkpoint_sampler``, ``course.localizer``, ``course.course_line``,
+``course.heightfield``), with the same types as before: since 0.2.0.dev6 the course
+builds them as the components of ``track_gen.tools`` (:ref:`utilities-components`) and
+drives them through one lifecycle, in the same launch order.
 ``step()`` and ``reset()`` never host-synchronize, so they record into your
 own sim graph as-is (no flag; ``track_gen.set_capturing`` is a deprecated
 no-op). Once ``step()`` is captured, keep writing into the SAME bound
-buffers — rebinding after capture leaves the captured graph replaying
-against the old pointers (silently divergent results), so rebind only
-before (re)capturing.
+buffers: rebinding after capture leaves the captured graph replaying
+against the old pointers. ``course.bind(...)`` with other arrays after ``step()`` ran
+under a capture emits ``track_gen.exec.RebindAfterCaptureWarning`` (a ``UserWarning``):
+record the graph again after rebinding (the warning fires once on that recipe too; filter
+it when you re-record on purpose). Binding the same arrays again is silent.
+
+``StepResult`` has four fields: ``events`` (``ProgressEvents``), ``contacts`` (the
+collision result or ``None``), ``frame`` (gates mode, else ``None``) and ``valid``, the
+generator result's ``[E]`` int32 ``valid`` (the same array, ``course.result.valid``;
+``clone()`` copies it).
 
 In gates mode with ``post_radius > 0``, ``course.step().contacts`` is a
 :class:`~track_gen.collision.DiscContact` instead of a
@@ -132,7 +179,90 @@ right offset, ``n_up`` signed vertical offset, ``segment`` index). It is
 regeneration; a ``TrackLocalizer`` or ``curvature`` of your own can read it.
 ``course.course_line.track`` is a deprecated alias of it (a ``DeprecationWarning``;
 removed at 1.0): it is no longer a ``Track``, so it has no ``outer``, ``inner``,
-``normal`` or ``winding``, which used to be NaN or zero placeholders.
+``normal`` or ``winding``, which used to be NaN or zero placeholders. Since 0.2.0.dev6 its
+``generation`` is set (an ``[E]`` int32 written at every refresh from the gates'
+``generation``), so a ``TrackLocalizer`` of your own on it resets itself after a
+regeneration (:ref:`utilities-self-reset`).
+
+The gate posts' ``DiscChecker`` is given the gates' count and ``valid``: it scans the
+``2 * count[e]`` real posts of each env (it used to scan ``2 * max_gates``, skipping the
+NaN padding) and reports no hit for an invalid env.
+
+.. _course-checkpoint-capacity:
+
+Checkpoint capacity
+-------------------
+
+``CourseConfig.max_checkpoints`` (track mode) is the number of checkpoint slots per env:
+``course.checkpoints`` arrays are ``[E * max_checkpoints]``, and a ring longer than that
+is clipped (``course.checkpoint_sampler.truncated[e] == 1``). ``None`` (the default) is,
+since 0.2.0.dev6, the **plan's bound**, read from the generator's plan with no readback:
+
+.. code-block:: text
+
+   max_checkpoints = max(3, ceil(max_loop_length / checkpoint_spacing))
+   max_loop_length = 1.5 * N_max * spacing + dZ
+
+``max_loop_length`` bounds the 3D length of the centerline of every env that is not
+truncated (``ComponentContext.for_producer``, :doc:`/contributing/writing-a-component`):
+``N_max * spacing`` bounds its plan view, the ``1.5`` is measured headroom for the relax
+growth and a boundary's extra ``2 pi * half_width``, and ``dZ`` (``0`` at flat elevation)
+bounds the elevation's climbs from the declared ranges of its knobs. It does not depend on
+the seeds, the batch, or the course ``size``. At the ``TrackGenConfig`` defaults
+(``N_max = 384``, ``spacing = 0.06``, flat: ``max_loop_length = 34.56``):
+
+.. list-table::
+   :header-rows: 1
+
+   * - ``checkpoint_spacing``
+     - default since 0.2.0.dev6
+     - 0.2.0.dev5 default (read back from the construction batch, seeds 0)
+   * - 0.3
+     - 116
+     - 29 (``E = 6``)
+   * - 0.5
+     - 70
+     - 13 (``E = 1``), 17 (``E = 6`` / ``8``), 19 (``E = 32``), 15 to 23 across the five
+       sampling generators at ``E = 64``
+   * - 0.6
+     - 58
+     -
+   * - 1.0
+     - 35
+     -
+
+- **What changes.** The shapes of ``course.checkpoints`` (``position``, ``left``,
+  ``right``, ``tangent``, ``up_half``: 52 bytes per slot and env, plus 8 bytes per env for
+  the set's ``valid`` / ``generation``): 28.4 MiB at ``E = 8192`` and 70 slots, against
+  7.7 MiB at 19. The bound grows with ``N_max * spacing``: ``N_max = 2048``,
+  ``spacing = 0.02`` and ``checkpoint_spacing = 0.05`` give 1229 slots, 262 MB at
+  ``E = 4096``; pass a smaller ``max_checkpoints`` there.
+- **What does not.** An env's real rows, its count and its progress are the same at any
+  capacity its ring fits: every env that fit the 0.2.0.dev5 capacity is byte-identical.
+  The envs the old capacity clipped (a size curriculum: 44 % / 94 % of the valid ``bezier``
+  envs at size 2 / 2.5 with a size-1 construction) now get their full ring, so their
+  progress and laps change.
+- **When the plan declares no bound**, the course keeps the 0.2.0.dev5 readback
+  (``ceil(1.5 * longest valid centerline / checkpoint_spacing)`` over the construction
+  batch): an elevation whose z knobs declare no range and no ``z_valid_grade`` (every
+  elevated ``TrackGenConfig``: ``z_min`` / ``z_max`` are unbounded dynamic knobs), a
+  generator that provides its own altitudes (``provides`` ``z``) without a
+  ``z_valid_grade`` or its own half-widths (``provides`` ``half_width``), a width other
+  than ``width.constant``, a plugin geometry stage after the constant-spacing resample.
+  ``TrackGenConfig.z_valid_grade = g > 0`` declares one
+  (``dZ = g * 1.5 * N_max * spacing``: 277 slots at ``g = 3``,
+  ``checkpoint_spacing = 0.5``).
+- **A warning.** When the default (the bound or the readback) clips a valid env of the
+  construction batch, the constructor emits one ``UserWarning`` (it reads two ``[E]``
+  arrays back, once, after the warm-up). An explicit ``max_checkpoints`` never warns.
+- ``course.checkpoint_sampler.max_checkpoints`` reads the capacity in use.
+
+**To keep the 0.2.0.dev5 shapes** (a policy whose input size depends on them, code that
+reshapes ``course.checkpoints.position`` with a hard-coded count), pass the old capacity
+explicitly: run once under 0.2.0.dev5 and print
+``course.checkpoints.position.shape[0] // E``, then pass that number as
+``CourseConfig(max_checkpoints=...)``. The rows are the same; the rings it clips are
+clipped as before.
 
 One body, one graph
 -------------------
@@ -165,7 +295,7 @@ graph plus a refresh graph replayed after it).
        for _ in range(K):
            sim_step()                 # your physics: writes the bound buffers
            res = course.step()
-           course.reset(done_mask)
+           course.reset(done_mask)    # valid envs that crashed: same course
    episode = cap.graph
 
    course.rng.set_seeds_warp(new_seeds, None)   # in place: the replay reads it
@@ -188,7 +318,9 @@ leaves the others alone, so an RL step graph can auto-reset finished envs on dev
 
 - **Masked envs** advance their epoch (with ``advance=True``), get the course of their
   new ``(seed, epoch)``, and have their runtime state reset as ``reset(m)`` would reset
-  it: progress, and the localizer in gates mode.
+  it: progress, and the localizer in gates mode. A masked env whose new course is
+  invalid again reads ``valid = 0`` at the next step: the loop above marks it done
+  again.
 - **Unmasked envs** keep their course, the sub-tool data derived from it, and their
   progress and localizer state, bitwise.
 - **An all-zero mask** makes the call an exact no-op.
@@ -202,8 +334,9 @@ of that, the generator's commit restores an unmasked env's ``Track`` rows bit fo
 after the recompute (see :ref:`pipeline-commit`). Such a change
 (``course.rng.set_seeds_warp``, a write to ``course.rng.seeds_warp``,
 ``course.seeds.reset_epoch()``) takes effect for an env when a masked regeneration
-selects it, or for every env at the next ``regenerate()`` without a mask. Any call with a
-masked env costs a full-batch generation.
+selects it, or for every env at the next ``regenerate()`` without a mask. Every call
+that is not skipped on device (below) costs a full-batch generation, even with no env
+masked.
 
 ``advance=False`` rebuilds the masked envs from their current ``(seed, epoch)``: the same
 course, unless your own kernel wrote new seeds for them into ``course.rng.seeds_warp``
@@ -221,7 +354,7 @@ capture, each new array also records a new self-graph).
    with wp.ScopedCapture(device="cuda") as cap:
        sim_step()                     # your physics: writes the bound buffers
        res = course.step()
-       update_done(res, done)         # your kernel: done[e] = 1 for finished envs, else 0
+       update_done(res, done)         # your kernel: done[e] = finished or res.valid[e] == 0
        course.regenerate(mask=done, advance=True)   # new courses + resets where done[e]
    step = cap.graph                   # one replay = one RL step, auto-reset included
 
@@ -249,9 +382,45 @@ Recording ``regenerate()`` / ``generate()`` / ``enqueue_generate()`` into a Warp
 buffers live as long as the graph. A graph that records only ``step()`` / ``reset()`` does
 not anchor anything, and neither does a ``torch.cuda.graph``: keep ``course`` alive for as
 long as you replay such a graph, or call ``track_gen.interop.torch.retain(g, course)`` to
-tie it to the torch graph ``g``. When ``max_checkpoints`` is auto-derived, check
-``course.checkpoint_sampler.truncated`` after regenerating onto much longer tracks (a
-larger ``size``, above).
+tie it to the torch graph ``g``. When ``max_checkpoints`` came from the readback
+(`Checkpoint capacity`_), check ``course.checkpoint_sampler.truncated`` after
+regenerating onto much longer tracks (a larger ``size``, above).
+
+.. _course-invalid-envs:
+
+Invalid envs
+------------
+
+``TrackGenConfig`` / ``GateGenConfig`` expose no ``on_invalid``: a ``Course`` always runs
+on ``"keep"``, so an invalid env keeps its failed geometry in ``course.result``. Since
+0.2.0.dev6 every sub-tool answers for it as for an env with no course
+(:ref:`utilities-invalid-envs`):
+
+- ``contacts`` (track mode, ``BoxContact``): ``oob = 1``, NaN ``distance`` /
+  ``nearest`` / ``normal``, ``boundary = -1``;
+- ``contacts`` (gates mode, posts, ``DiscContact``): ``hit = 0``, ``disc = -1``,
+  ``depth = 0``, NaN ``nearest``; (frames, ``FrameContact``): ``hit = 0``, as before;
+- ``events``: frozen (``next_checkpoint`` / ``laps`` / ``progress`` keep their values,
+  ``passed = 0``, ``checkpoint_passed = -1``, ``wrong_way = 0``,
+  ``wrong_checkpoint = -1``) with ``dist_to_next = 0``;
+- ``frame`` (gates mode): NaN ``s`` / ``n`` / ``n_up``, ``segment = -1``, as before (the
+  localizer reads the course line);
+- ``course.checkpoints`` (track mode): ``count = 0``, NaN slots, ``valid = 0``;
+- ``course.heightfield.result`` (the ``HeightField``; also what ``bake()`` returns): NaN
+  ``height``, ``lo = (-1, -1)``, ``hi = (1, 1)``;
+- ``course.course_line.centerline``: ``count = 0``, NaN, as before.
+
+``res.valid`` is the signal: gate rewards and observations on it with a select, set
+``done |= 1 - valid``, and regenerate the done envs with ``advance=True`` (the loop at the
+top of this page). Measured at the defaults (``E = 256``, seeds 0): no invalid env for
+``bezier``, ``polar`` and ``voronoi``; 1.2 % for ``hull``, 0.4 % for ``checkpoint``,
+1.6 % for ``repulsive``; ``bezier`` at size 4: 19 % (truncated at ``N_max``; none at size
+3 or below). Truncation grows with the size: size ``N_max`` for the largest one
+(:ref:`tuning-size`). In gates mode the bar width decides it (crossing bars, fail bit 4):
+with the default ``bezier`` gate generator at ``scale = 1`` (``E = 256``, seeds 7), 8 % at
+``gate_width = 0.1``, 50 % at 0.2 and 91 % at 0.4 (``polar``: 0 %, 0 %, 18 %); lower the
+width or raise ``scale``, and check ``(course.result.valid.numpy() == 0).mean()`` after
+construction.
 
 API: :class:`track_gen.course.Course`,
 :class:`track_gen.course.CourseConfig` — see the

@@ -12,6 +12,12 @@ Layout follows the package conventions: flat ``[E * max_boxes]`` wp.arrays,
 NaN for inactive slots, in-place reuse of the output ``BoxContact`` across
 ``query()`` calls (use ``clone()`` for snapshots), and no host syncs, so
 ``query()``/``bake()`` are CUDA-graph capturable as-is.
+
+Invalid envs (roadmap PR14): when the source has ``valid``, an env with ``valid[e] ==
+0`` reads like a poisoned (degenerate) one with both backends: every active box gets
+``oob = 1``, NaN ``distance`` / ``nearest`` / ``normal`` and ``boundary = -1`` (the SDF
+bake writes NaN phi, ``bid = -1`` and the box ``(-1, -1)-(1, 1)``); inactive slots (NaN
+position) keep ``oob = 0``.
 """
 from __future__ import annotations
 
@@ -31,7 +37,8 @@ from .collision_geom import (
     _safe_normalize2,
     _seg_hits_aabb,
 )
-from ..exec.context import LaunchContext
+from ..exec.context import (LaunchContext, _call_context, _note_rebind,  # noqa: F401
+                            _probe_recorded)
 from .runtime import _BIG, _check_arr, _init, _sync  # noqa: F401  (_sync: legacy re-export)
 from ..results import HasBand, _check_and_bind
 
@@ -65,8 +72,9 @@ class BoxContact:
     normal : wp.array
         ``vec2f`` boundary normal at ``nearest``, pointing INTO the band.
     boundary : wp.array
-        ``int32`` — 0 = inner boundary, 1 = outer boundary, -1 = inactive slot
-        or degenerate track (count < 3); with ``method="sdf"`` also -1 for a
+        ``int32`` — 0 = inner boundary, 1 = outer boundary, -1 = inactive slot,
+        degenerate track (count < 3) or invalid env (``valid[e] == 0``, roadmap
+        PR14); with ``method="sdf"`` also -1 for a
         box whose corners are not finite (NaN or inf half-extents, yaw or
         position; reported ``oob=1`` with NaN geometry).
     """
@@ -94,6 +102,8 @@ def _box_query_segments_k(
     outer: wp.array(dtype=wp.vec3f),
     center: wp.array(dtype=wp.vec3f),
     count: wp.array(dtype=wp.int32),
+    valid: wp.array(dtype=wp.int32),
+    has_valid: int,
     n_max: int,
     max_boxes: int,
     position: wp.array(dtype=wp.vec3f),
@@ -123,6 +133,9 @@ def _box_query_segments_k(
     m = count[e]
     if m > n_max:
         m = n_max
+    if has_valid != 0:
+        if valid[e] == 0:
+            m = 0   # an invalid env reads like a poisoned one (roadmap PR14)
     if m < 3:
         # Degenerate/invalid track: conservative OOB, NaN geometry.
         out_oob[t] = 1
@@ -279,7 +292,11 @@ class CollisionChecker:
     ``query()`` is allocation-free and host-sync-free (CUDA-graph
     capturable); its launches are stream-ordered, so a consumer on another
     stream must order itself explicitly. ``query()`` returns the same
-    preallocated :class:`BoxContact` on every call.
+    preallocated :class:`BoxContact` on every call (:attr:`result`).
+
+    The source's ``valid`` is read when present (checked at construction like the
+    required members; roadmap PR14): an invalid env reads as out of bounds with NaN
+    geometry (see the module docstring).
     """
 
     #: The topologies this component supports (closed loops only in 0.x).
@@ -326,9 +343,10 @@ class CollisionChecker:
         # The members checked here are the ones bound (read once: stable pointers).
         lay, self._track = _check_and_bind(track, HasBand, consumer="CollisionChecker",
                                            members=("center", "outer", "inner", "count"),
-                                           topology=self.topology)
+                                           optional=("valid",), topology=self.topology)
         E = int(lay.num_envs)
         self._method = method
+        self._recorded = False
         self._E = E
         self._n_max = int(lay.stride)
         self._B = int(max_boxes)
@@ -360,7 +378,22 @@ class CollisionChecker:
             self._sdf_bid = wp.zeros(E * R * R, dtype=wp.int8, device=dev)
             self.bake()
 
-    def bake(self, stream=None) -> None:
+    @property
+    def method(self) -> str:
+        """The backend: ``"segments"`` or ``"sdf"`` (read-only)."""
+        return self._method
+
+    @property
+    def result(self) -> BoxContact:
+        """The preallocated :class:`BoxContact` :meth:`query` writes and returns (the
+        same instance for the checker's lifetime)."""
+        return self._contact
+
+    def _valid_args(self) -> tuple:
+        t = self._track
+        return (t.count, 0) if t.valid is None else (t.valid, 1)
+
+    def bake(self, stream=None, *, ctx=None) -> None:
         """(Re)bake the per-env SDF grids from the bound Track.
 
         Required after every ``TrackGenerator.generate()`` call when
@@ -372,22 +405,25 @@ class CollisionChecker:
                 stream is resolved per track_gen.exec (an enclosing
                 torch.cuda.graph capture is adopted, else Warp's current
                 stream).
+            ctx: optional :class:`~track_gen.exec.LaunchContext` on the checker's
+                device to emit on (exclusive with ``stream=``: ``TypeError``).
 
         Raises:
             ValueError: if this checker was constructed with ``method="segments"``.
         """
         if self._method != "sdf":
             raise ValueError("bake() is only valid for method='sdf' checkers")
-        ctx = LaunchContext.for_call(self._device, stream)
+        ctx = _call_context(self._device, stream, ctx)
         from . import collision_sdf
         t = self._track
         E = self._E
         R = self._sdf_resolution
+        valid, has_valid = self._valid_args()
         ctx.launch(collision_sdf._track_aabb_k, E,
-                   [t.outer, t.count, self._n_max,
+                   [t.outer, t.count, valid, has_valid, self._n_max,
                     self._sdf_padding, 0.1, self._sdf_lo, self._sdf_hi])
         ctx.launch(collision_sdf._sdf_bake_k, E * R * R,
-                   [t.inner, t.outer, t.count, self._n_max, R,
+                   [t.inner, t.outer, t.count, valid, has_valid, self._n_max, R,
                     self._sdf_lo, self._sdf_hi, self._sdf_phi, self._sdf_bid])
         ctx.sync()
 
@@ -404,15 +440,19 @@ class CollisionChecker:
         After binding, ``query()`` takes no arguments and reads these arrays
         in place each call — the natural CUDA-graph pattern: the sim writes
         poses into its stable buffers and replays the captured query. The
-        arrays must keep the same ``.ptr`` for the binding's lifetime.
+        arrays must keep the same ``.ptr`` for the binding's lifetime: replacing
+        one after ``query()`` was recorded into a capture warns
+        (:class:`~track_gen.exec.RebindAfterCaptureWarning`).
         """
         self._validate_inputs(position, orientation, half_extents)
-        self._bound = (position, orientation, half_extents)
+        new = (position, orientation, half_extents)
+        _note_rebind(self, self._bound, new, "query", stacklevel=2)
+        self._bound = new
 
     def query(self, position: "wp.array | None" = None,
               orientation: "wp.array | None" = None,
               half_extents: "wp.array | None" = None,
-              stream=None) -> BoxContact:
+              stream=None, *, ctx=None) -> BoxContact:
         """Compute contact info for ``E * max_boxes`` oriented boxes.
 
         Two modes:
@@ -439,6 +479,8 @@ class CollisionChecker:
                 stream is resolved per track_gen.exec (an enclosing
                 torch.cuda.graph capture is adopted, else Warp's current
                 stream).
+            ctx: optional :class:`~track_gen.exec.LaunchContext` on the checker's
+                device to emit on (exclusive with ``stream=``: ``TypeError``).
 
         Returns:
             The checker's preallocated :class:`BoxContact` (same instance every
@@ -461,14 +503,17 @@ class CollisionChecker:
                     "checker is not bound; pass position, orientation and "
                     "half_extents to query() or call bind_inputs() first")
             self._validate_inputs(position, orientation, half_extents)
-        ctx = LaunchContext.for_call(self._device, stream)
+        ctx = _call_context(self._device, stream, ctx)
+        _probe_recorded(self, ctx)
         n = self._E * self._B
         t = self._track
         c = self._contact
         if self._method == "segments":
+            valid, has_valid = self._valid_args()
             ctx.launch(
                 _box_query_segments_k, n,
-                [t.inner, t.outer, t.center, t.count, self._n_max, self._B,
+                [t.inner, t.outer, t.center, t.count, valid, has_valid,
+                 self._n_max, self._B,
                  position, orientation, half_extents,
                  c.oob, c.distance, c.nearest, c.normal, c.boundary],
             )

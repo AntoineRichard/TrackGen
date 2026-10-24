@@ -37,6 +37,8 @@ from .runtime import _BIG
 def _track_aabb_k(
     outer: wp.array(dtype=wp.vec3f),
     count: wp.array(dtype=wp.int32),
+    valid: wp.array(dtype=wp.int32),
+    has_valid: int,
     n_max: int,
     padding: float,   # explicit per-side padding; <= 0 selects auto mode
     pad_frac: float,  # auto padding as a fraction of the larger AABB extent
@@ -47,6 +49,9 @@ def _track_aabb_k(
     m = count[e]
     if m > n_max:
         m = n_max
+    if has_valid != 0:
+        if valid[e] == 0:
+            m = 0   # an invalid env reads like a poisoned one (roadmap PR14)
     if m < 3:
         lo[e] = wp.vec2f(-1.0, -1.0)
         hi[e] = wp.vec2f(1.0, 1.0)
@@ -74,6 +79,8 @@ def _sdf_bake_k(
     inner: wp.array(dtype=wp.vec3f),
     outer: wp.array(dtype=wp.vec3f),
     count: wp.array(dtype=wp.int32),
+    valid: wp.array(dtype=wp.int32),
+    has_valid: int,
     n_max: int,
     res: int,
     lo: wp.array(dtype=wp.vec2f),
@@ -91,6 +98,9 @@ def _sdf_bake_k(
     m = count[e]
     if m > n_max:
         m = n_max
+    if has_valid != 0:
+        if valid[e] == 0:
+            m = 0   # an invalid env reads like a poisoned one (roadmap PR14)
     if m < 3:
         phi[t] = wp.nan
         bid[t] = wp.int8(-1)

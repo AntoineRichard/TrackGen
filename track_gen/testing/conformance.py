@@ -12,6 +12,9 @@ implies (see ``docs/contributing/writing-a-generator.rst``) and returns a
 Every check runs per device. A check is a named :class:`CheckResult`; its name is stable,
 so a test can assert exactly which check a broken generator fails.
 
+Components (roadmap PR14) are checked by :func:`track_gen.testing.check_component`
+(:mod:`track_gen.testing.components`; ``CHECKS["component"]``).
+
 Checks (:data:`CHECKS`), for a track generator:
 
 ``construct``
@@ -234,6 +237,13 @@ _NEUTRAL = {"relax": "none", "width": "constant", "elevation": "flat", "order": 
 
 #: The check names of each registry kind, in run order.
 _ATTRIBUTES = ("attributes.written", "attributes.carried")
+#: The checks of :func:`track_gen.testing.check_component` (roadmap PR14), in run order.
+_COMPONENT_CHECKS = ("construct", "requires.complete", "topology", "result.stable",
+                     "determinism", "statelessness", "reset.exact", "regenerate.masked",
+                     "regenerate.self_reset", "invalid.sentinel", "capacity.clamp",
+                     "source.view", "hot_path.host_sync", "hot_path.allocation",
+                     "hot_path.stream", "hot_path.capture", "hot_path.topology",
+                     "hot_path.buffers", "capture.caller", "capture.self_reset")
 CHECKS: Mapping[str, tuple] = types.MappingProxyType({
     "generator": ("construct", "output.shape", "output.finite", "output.padding",
                   "output.count", "output.closed", "output.view") + _ATTRIBUTES + _COMMON,
@@ -246,6 +256,7 @@ CHECKS: Mapping[str, tuple] = types.MappingProxyType({
                               "width.values") + _STAGE_COMMON,
     "validity": _STAGE_OUTPUT + ("output.view", "stage.isolation", "validity.bits")
     + _STAGE_COMMON,
+    "component": _COMPONENT_CHECKS,
 })
 
 _HOT = ("hot_path.host_sync", "hot_path.allocation", "hot_path.stream",
@@ -372,6 +383,8 @@ class Report:
 def _label(kind: str) -> str:
     if kind in STAGE_KINDS:
         return f"{kind} stage"
+    if kind == "component":
+        return "component"
     return "gate generator" if kind == "gate_generator" else "generator"
 
 

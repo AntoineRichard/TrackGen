@@ -267,6 +267,7 @@ Explore the docs
 
    contributing/writing-a-generator
    contributing/writing-a-stage
+   contributing/writing-a-component
    contributing/testing-a-plugin
    contributing/dev-setup
    contributing/rendering-assets

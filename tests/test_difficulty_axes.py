@@ -1475,10 +1475,12 @@ def test_style_sampling_warns_once_per_construction_at_the_callers_line():
     assert msg.startswith("bezier's style_sampling is deprecated and will be removed in 1.0")
     for part in ("{'generator.size': (a / scale, b / scale)}", "{'generator.rad': ...}",
                  "{'generator.handle_clamp_frac': ...}", "PipelineSpec.with_randomize",
-                 "course.generator.params['generator'].set('size', arr)",
-                 "size Course's max_checkpoints for the largest size: ceil(1.5 * N_max * "
-                 "spacing / checkpoint_spacing), see CourseConfig.max_checkpoints"):
+                 "course.generator.params['generator'].set('size', arr) before "
+                 "regenerate)"):
         assert part in msg, part
+    # Roadmap PR14: Course's default max_checkpoints IS the size-independent bound at flat
+    # elevation, so the advice to size it is gone.
+    assert "max_checkpoints" not in msg
     # none without style_sampling, nor from the config itself
     with warnings.catch_warnings(record=True) as rec:
         warnings.simplefilter("always")
@@ -1661,17 +1663,21 @@ def test_a_relaxed_stations_source_fails_closed_on_a_truncated_loop():
     assert (seq.valid.numpy()[truncated] == 0).all()
 
 
-def test_the_checkpoint_bound_holds_under_a_size_curriculum():
+@pytest.mark.parametrize("explicit", [True, False], ids=["explicit", "default"])
+def test_the_checkpoint_bound_holds_under_a_size_curriculum(explicit):
     """A Course whose ``max_checkpoints`` is ``ceil(1.5 * n_max * spacing /
     checkpoint_spacing)`` never clips a valid track's checkpoint ring as its size grows
-    from 1 to 2.5 (the derived default, sized at construction, would)."""
+    from 1 to 2.5 (the readback default of 0.2.0.dev5, sized at construction, would).
+    Roadmap PR14: that bound IS the default at flat elevation (``max_checkpoints=None``)."""
     from track_gen.course import Course, CourseConfig
 
     n, spacing_cp = 16, 0.5
     cfg = _tcfg(num_envs=n)
     bound = math.ceil(1.5 * cfg.N_max * cfg.spacing / spacing_cp)
     course = Course(CourseConfig(mode="track", gen=cfg, seeds=_seeds(np.arange(n) * 7 + 1),
-                                 checkpoint_spacing=spacing_cp, max_checkpoints=bound))
+                                 checkpoint_spacing=spacing_cp,
+                                 max_checkpoints=bound if explicit else None))
+    assert course.checkpoint_sampler.max_checkpoints == bound
     for s in (1.0, 1.5, 2.0, 2.5):
         course.generator.params["generator"].set("size", s)
         course.regenerate()

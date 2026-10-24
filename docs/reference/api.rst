@@ -61,6 +61,8 @@ loops, the host operations of ``HOST`` stages, and the capture errors; see
 
 .. autoexception:: track_gen.exec.LegacyPluginStreamError
 
+.. autoexception:: track_gen.exec.RebindAfterCaptureWarning
+
 Device ops
 ----------
 
@@ -540,12 +542,15 @@ Conformance checks
 
 .. py:currentmodule:: track_gen.testing
 
+.. autofunction:: track_gen.testing.check_component
+
 .. py:data:: CHECKS
    :type: Mapping[str, tuple[str, ...]]
 
    The check names of each registry kind (``"generator"``, ``"gate_generator"``,
    ``"relax"``, ``"width"``, ``"elevation"``, ``"validity"``, ``"order"``,
-   ``"stations"``), in run order. A read-only mapping.
+   ``"stations"``) and of ``"component"`` (:func:`check_component`), in run order. A
+   read-only mapping.
 
 .. autoclass:: track_gen.testing.Report
    :members: ok, failures, failed_names, result, raise_for_failures
@@ -684,6 +689,13 @@ load it with ``pytest_plugins = ["track_gen.testing.pytest_plugin"]`` in a top-l
    on ``name`` with ``params`` and ``kwargs``, fails the test listing every failed check
    unless all pass, and returns the :class:`~track_gen.testing.Report`.
 
+.. py:function:: track_gen_check_component(factory, **kwargs)
+
+   A pytest fixture whose value is this factory. It runs
+   :func:`~track_gen.testing.check_component` on ``factory`` with ``kwargs``, fails the
+   test listing every failed check unless all pass, and returns the
+   :class:`~track_gen.testing.Report`.
+
 .. py:function:: generator_names(kind="generator", *, builtin=None, exclude=()) -> list[str]
 
    The names registered under ``kind`` (``"generator"``, ``"gate_generator"`` or one of
@@ -785,6 +797,12 @@ protocols are frozen: a new capability is a new protocol.
 .. autoclass:: track_gen.results.HasGeneration
    :no-members:
 
+.. autoclass:: track_gen.results.HasValidity
+   :no-members:
+
+.. autoclass:: track_gen.results.HasCheckpoints
+   :no-members:
+
 .. autofunction:: track_gen.results.check_source
 
 Collision queries
@@ -835,8 +853,8 @@ Boundary props
 
 Rendering-only instancing poses along track boundaries — cone lines
 (``mode="points"``) and wall pieces (``mode="segments"``). Complementary to
-the collision utility: props never collide. Results for invalid envs
-(``Track.valid == 0``) are undefined — always gate on ``valid``.
+the collision utility: props never collide. An invalid env (``Track.valid == 0``) gets
+no props (``count = 0``), like an env with no track (:ref:`utilities-invalid-envs`).
 
 .. automodule:: track_gen.props
    :no-members:
@@ -903,6 +921,64 @@ per-generation curvature and speed-profile helpers.
 .. autofunction:: track_gen.localize.curvature
 
 .. autofunction:: track_gen.localize.speed_profile
+
+Components
+----------
+
+The component protocol and the adapters of the runtime utilities; see
+:doc:`/contributing/writing-a-component` and :ref:`utilities-components`.
+``import track_gen`` imports ``track_gen.tools`` (``track_gen.tools`` is in
+``track_gen.__all__``).
+
+.. automodule:: track_gen.tools
+   :no-members:
+
+.. autoclass:: track_gen.tools.Component
+   :members:
+
+.. autoclass:: track_gen.tools.ComponentContext
+   :members:
+
+.. autoclass:: track_gen.tools.InputSpec
+   :no-members:
+
+   .. automethod:: check
+
+Adapters
+~~~~~~~~
+
+Each adapter wraps one legacy utility (``.utility``) and exposes its result
+(``.result``).
+
+.. autoclass:: track_gen.tools.BandCollision
+   :no-members:
+
+.. autoclass:: track_gen.tools.DiscCollision
+   :no-members:
+
+.. autoclass:: track_gen.tools.FrameCollision
+   :no-members:
+
+.. autoclass:: track_gen.tools.Props
+   :no-members:
+
+.. autoclass:: track_gen.tools.Checkpoints
+   :no-members:
+
+.. autoclass:: track_gen.tools.GateCheckpoints
+   :no-members:
+
+.. autoclass:: track_gen.tools.Progress
+   :no-members:
+
+.. autoclass:: track_gen.tools.Localizer
+   :no-members:
+
+.. autoclass:: track_gen.tools.HeightFieldBake
+   :no-members:
+
+.. autoclass:: track_gen.tools.CenterlineFromGates
+   :no-members:
 
 Course facade
 -------------

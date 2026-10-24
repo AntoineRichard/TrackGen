@@ -223,30 +223,33 @@ def _hand(track, **kw):
     return _replace(track, layout=None, **kw)
 
 
+# Roadmap PR14: the optional members a utility reads when present (``valid``: the
+# invalid-env sentinels; ``generation``: the self-reset, or the copy into an owned
+# result) are checked at construction like the required ones, so they are listed too.
 _TRACK_CONSUMERS = {
     "CollisionChecker": (lambda t: CollisionChecker(t, 1),
-                         ("center", "outer", "inner", "count")),
+                         ("center", "outer", "inner", "count", "valid")),
     "CollisionChecker[sdf]": (lambda t: CollisionChecker(t, 1, method="sdf",
                                                          sdf_resolution=8),
-                              ("center", "outer", "inner", "count")),
+                              ("center", "outer", "inner", "count", "valid")),
     "PropSampler": (lambda t: PropSampler(t, 0.2), ("outer", "inner", "count", "valid")),
     "CheckpointSampler": (lambda t: CheckpointSampler(t, 0.2),
-                          ("center", "inner", "outer", "count", "valid")),
+                          ("center", "inner", "outer", "count", "valid", "generation")),
     "HeightFieldBaker": (lambda t: HeightFieldBaker(t, 8),
                          ("outer", "center", "count", "valid")),
     "TrackLocalizer": (lambda t: TrackLocalizer(t), ("center", "arclen", "length",
-                                                     "count")),
-    "localize.curvature": (lambda t: curvature(t), ("center", "count")),
+                                                     "count", "valid", "generation")),
+    "localize.curvature": (lambda t: curvature(t), ("center", "count", "valid")),
     "localize.speed_profile": (lambda t: speed_profile(t, 1.0, 1.0, 1.0, 5.0),
-                               ("center", "arclen", "length", "count")),
+                               ("center", "arclen", "length", "count", "valid")),
 }
 _GATE_CONSUMERS = {
-    "CourseLine": (lambda g: CourseLine(g), ("position", "count", "valid")),
+    "CourseLine": (lambda g: CourseLine(g), ("position", "count", "valid", "generation")),
     "FrameChecker": (lambda g: FrameChecker(g, E, 0.05, 0.01, 0.01),
                      ("position", "orientation", "half_size", "count", "valid")),
     "CheckpointSet.from_gates": (lambda g: CheckpointSet.from_gates(g),
                                  ("position", "left", "right", "forward", "half_size",
-                                  "count")),
+                                  "count", "valid", "generation")),
 }
 _TRACK_CASES = [(c, f) for c, (_, fs) in _TRACK_CONSUMERS.items() for f in fs]
 _GATE_CASES = [(c, f) for c, (_, fs) in _GATE_CONSUMERS.items() for f in fs]
@@ -343,8 +346,8 @@ def test_band_consumers_accept_a_minimal_band_and_refuse_a_centerline(track, gat
     assert b.distance.numpy().tobytes() == da.tobytes()
     line = CourseLine(gates).centerline
     with pytest.raises(TypeError, match=r"^CollisionChecker needs a HasBand source "
-                                        r"\(center, outer, inner, count, valid\): "
-                                        r"Centerline has no 'outer', 'inner'$"):
+                                        r"\(center, outer, inner, count; optional: "
+                                        r"valid\): Centerline has no 'outer', 'inner'$"):
         CollisionChecker(line, 1)
     with pytest.raises(TypeError, match=r"^HeightFieldBaker needs a HasBand source .*: "
                                         r"Centerline has no 'outer'"):

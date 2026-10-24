@@ -12,10 +12,10 @@ capability protocols the runtime utilities accept.
 
 ``track_gen.results`` is the module of all of it: ``Layout``, ``Track``,
 ``GateSequence``, ``Centerline``, the protocols ``HasCenterline``, ``HasBand``,
-``HasGates``, ``HasGateFrames`` and ``HasGeneration``, and ``check_source``.
-``track_gen`` re-exports ``Track``, ``GateSequence``, ``Layout`` and the five protocols
-(the same objects), and ``track_gen.plugin.Layout`` (the shape a stage is built for) is
-the same ``Layout``.
+``HasGates``, ``HasGateFrames``, ``HasGeneration``, ``HasValidity`` and
+``HasCheckpoints``, and ``check_source``. ``track_gen`` re-exports ``Track``,
+``GateSequence``, ``Layout`` and the seven protocols (the same objects), and
+``track_gen.plugin.Layout`` (the shape a stage is built for) is the same ``Layout``.
 
 .. code-block:: python
 
@@ -460,17 +460,31 @@ needs only those:
      - a gates-mode ``Course``'s frame checker, ``CheckpointSet.from_gates``
    * - ``HasGeneration``
      - ``generation``
-     - generation-aware consumers (roadmap PR14), checked together with another
-       protocol: ``check_source(obj, (HasCenterline, HasGeneration), ...)``
+     - read when present (an optional member) by ``CheckpointSampler``,
+       ``TrackLocalizer``, ``ProgressTracker`` (on its set), ``CourseLine`` and
+       ``CheckpointSet.from_gates``: the self-reset signal
+       (:ref:`utilities-self-reset`)
+   * - ``HasValidity`` (0.2.0.dev6)
+     - ``valid``
+     - read when present by ``CollisionChecker``, ``TrackLocalizer``, ``curvature``,
+       ``speed_profile``, ``CheckpointSet.from_gates`` and ``ProgressTracker`` (on its
+       set): the invalid-env signal (:ref:`utilities-invalid-envs`)
+   * - ``HasCheckpoints`` (0.2.0.dev6)
+     - ``position``, ``left``, ``right``, ``tangent``, ``up_half``, ``count``
+     - ``ProgressTracker``: a ``CheckpointSet`` (``up_half`` is a per-point ``float32``
+       member of the schema)
 
 The course line (``CourseLine``) and the frame checker (``FrameChecker``) are internal
-to ``Course`` in 0.x (no public import path); the other consumers are public.
+to ``Course`` in 0.x (no public import path; their components ``CenterlineFromGates`` and
+``FrameCollision`` in ``track_gen.tools`` are public); the other consumers are public.
 
-A ``Track`` satisfies ``HasCenterline`` and ``HasBand``, a ``GateSequence``
-``HasGates`` and ``HasGateFrames``, a ``Centerline`` ``HasCenterline``; each satisfies
-``HasGeneration`` when its ``generation`` is set. Any object with the members works: your
-own dataclass, a ``SimpleNamespace``, a proxy. No protocol has a ``layout`` member:
-a source without one gets its layout inferred.
+A ``Track`` satisfies ``HasCenterline``, ``HasBand`` and ``HasValidity``, a
+``GateSequence`` ``HasGates``, ``HasGateFrames`` and ``HasValidity``, a ``Centerline``
+``HasCenterline`` and ``HasValidity``, a ``CheckpointSet`` ``HasCheckpoints`` (and
+``HasValidity`` when its ``valid`` is set); each satisfies ``HasGeneration`` when its
+``generation`` is set. Any object with the members works: your own dataclass, a
+``SimpleNamespace``, a proxy. No protocol has a ``layout`` member: a source without one
+gets its layout inferred.
 
 **Shipped protocols are frozen.** Their members never change; a new capability is a
 new protocol (a later ``HasWidth`` or ``HasAttributes``), and a consumer that needs two
@@ -501,10 +515,12 @@ is a deprecated alias of ``centerline`` (it emits a ``DeprecationWarning``; remo
 
 .. code-block:: python
 
-   check_source(obj, protocol, *, consumer, topology="closed", members=None) -> Layout
+   check_source(obj, protocol, *, consumer, topology="closed", members=None,
+                optional=()) -> Layout
 
-The check every utility runs at construction, public so that your own utilities (and
-roadmap PR14's components) validate their sources with the same rules and messages:
+The check every utility runs at construction, public so that your own utilities (and the
+components of ``track_gen.tools``, :doc:`/contributing/writing-a-component`) validate
+their sources with the same rules and messages:
 
 1. ``protocol`` is a capability protocol of ``track_gen.results``, or a tuple of them
    (``(HasCenterline, HasGeneration)``: their members are checked together, against one
@@ -514,7 +530,8 @@ roadmap PR14's components) validate their sources with the same rules and messag
 2. Each member of ``protocol`` (or of ``members``, the subset a consumer reads) is read
    with ``getattr``, once; missing (or ``None``) ones raise
    ``TypeError`` (``CollisionChecker needs a HasBand source (center, outer, inner,
-   count, valid): Centerline has no 'outer', 'inner'``).
+   count; optional: valid): Centerline has no 'outer', 'inner'``: the members the
+   consumer reads only when present are listed apart, after ``optional:``).
 3. The layout is ``obj.layout`` when it is a ``Layout``. On a ``Track``,
    ``GateSequence`` or ``Centerline`` it must be a ``Layout`` or ``None``
    (``TypeError`` otherwise); another object's ``layout`` attribute that is not a
@@ -528,11 +545,19 @@ roadmap PR14's components) validate their sources with the same rules and messag
    looked at, and the object's own ``validate`` method, if any, is never called.
 5. With ``topology="closed"``, a source whose layout says ``closed=False`` raises
    ``ValueError`` (`Topology`_).
+6. ``optional`` (0.2.0.dev6) names members of ``protocol`` that may be absent: each one
+   that is present (not ``None``) is checked like the others, with the same messages; an
+   absent one raises nothing. A consumer reads the absent ones as its documented
+   fallback (``valid``: every env valid; ``generation``: no self-reset). The components'
+   ``optional`` protocols use it (``check_source(obj, (HasCenterline, HasValidity,
+   HasGeneration), ..., optional=("valid", "generation"))``).
 
 It returns the layout (with the canonical device). The utilities pass ``members=`` when
 they read fewer members than the protocol lists (``CollisionChecker``, ``PropSampler``,
-``HeightFieldBaker``, ``FrameChecker``, ``CheckpointSet.from_gates``, ``curvature``); see
-:doc:`/utilities/overview`. A utility **binds** the arrays it checked at construction and
+``HeightFieldBaker``, ``FrameChecker``, ``CheckpointSet.from_gates``, ``curvature``) and
+``optional=`` for the members they read when present (``valid``, ``generation``); see
+:doc:`/utilities/overview`. A malformed optional member therefore raises at construction
+since 0.2.0.dev6 (it used to be ignored). A utility **binds** the arrays it checked at construction and
 uses those on every call: reassigning a member of the source afterwards has no effect
 (rebuild the utility), and a proxy computing its members is read once.
 

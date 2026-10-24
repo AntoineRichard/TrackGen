@@ -2,11 +2,28 @@
 
 All of them derive from :class:`CaptureError`, itself a ``RuntimeError`` (Warp
 reports capture failures as ``RuntimeError`` too), so callers can catch the
-whole family at once.
+whole family at once. :class:`RebindAfterCaptureWarning` is a warning (roadmap PR14).
 """
 from __future__ import annotations
 
-__all__ = ["CaptureError", "NotCapturableError", "LegacyPluginStreamError"]
+__all__ = ["CaptureError", "NotCapturableError", "LegacyPluginStreamError",
+           "RebindAfterCaptureWarning"]
+
+
+class RebindAfterCaptureWarning(UserWarning):
+    """A bound input array was replaced after a hot method that reads it was recorded
+    into a capture (roadmap PR14).
+
+    The recorded graph keeps reading the arrays that were bound when it was recorded, so
+    after a rebind its replays silently read the old buffers. Emitted (once per bind
+    call) by ``Course.bind``, ``Component.bind`` and the utilities' ``bind`` /
+    ``bind_inputs`` / ``bind_window`` when a pointer changes after their ``query()`` /
+    ``update()`` ran while its stream (or a CPU graph capture) was capturing; rebinding
+    the same arrays is silent. The documented recipe "rebind, then record again" also
+    warns once: filter this category when you re-record on purpose::
+
+        warnings.simplefilter("ignore", track_gen.exec.RebindAfterCaptureWarning)
+    """
 
 
 class CaptureError(RuntimeError):
