@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.0.dev6 (unreleased, `v2` branch)
+## 0.2.0.dev6 (2026-10-24, tag `v0.2.0.dev6`)
 
 Roadmap PR14: the component protocol (`track_gen.tools`) and the adapters of the runtime
 utilities, static capacities from the generator's plan, generation-aware self-reset, one
