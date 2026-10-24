@@ -668,7 +668,18 @@ def test_ctx_host_outside_a_host_slot_raises():
         _in_slot(_host_slot(None), lambda c: c.host())
 
 
+def _skip_without_pinned_memory() -> None:
+    """These tests fake a CUDA device but allocate real pinned host memory, which needs a
+    CUDA driver: skip on a CPU-only host whose Warp cannot pin (Warp on macOS falls back
+    to pageable memory and runs them)."""
+    try:
+        wp.zeros(1, dtype=wp.int32, device="cpu", pinned=True)
+    except RuntimeError as exc:
+        pytest.skip(f"pinned host memory is unavailable here ({exc})")
+
+
 def test_host_ops_require_a_pinned_via_on_cuda(monkeypatch):
+    _skip_without_pinned_memory()
     """On CUDA a ``via`` must be pinned (a ``StageBuilder.host_buffer``): a pageable
     host array (e.g. allocated per call) is refused."""
     from tests._fake_cuda import FakeCuda
@@ -688,6 +699,7 @@ def test_host_ops_require_a_pinned_via_on_cuda(monkeypatch):
 def test_only_host_slots_get_a_build_time_host_buffer(monkeypatch):
     """A HOST slot gets its ``[1]`` buffer at build; a BOUNDED slot none (production never
     polls on CUDA): the forced CUDA poll allocates a pinned one on first use, once."""
+    _skip_without_pinned_memory()
     gen = _gen(T.CONVERGING)
     infos = {e.info.stage_id: e.info for e in gen.program._enqueues}
     assert all(i.i32 is None for i in infos.values())

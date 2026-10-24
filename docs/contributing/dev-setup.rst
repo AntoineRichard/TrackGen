@@ -81,6 +81,17 @@ none ran, so a missing GPU can never pass silently.
 
    TRACKGEN_REQUIRE_CUDA=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest -q -m cuda -ra
 
+Byte goldens and the host
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The byte-identity goldens (``tests/goldens/``) are keyed by platform (OS, architecture and
+Warp version), but a few fields also depend on the machine that captured them: the
+``checkpoint`` track generator's path tracer is chaotic, so last-ulp differences of the C
+library's transcendental functions or of the CPU's code generation grow into visible
+differences between two ``x86_64`` hosts. ``TRACKGEN_SKIP_HOST_SENSITIVE_GOLDENS=1``
+leaves those fields out and compares every other one; CI sets it, because its runners are
+not the capture machines. Leave it unset on the machine a golden was captured on.
+
 Pytest markers
 --------------
 

@@ -46,6 +46,11 @@ jobs:
           fi
           python -c "import warp; print('warp-lang', warp.__version__)"
       - name: Test
+        # The runners are not the machines the byte goldens were captured on: leave out
+        # the host-sensitive fields (the checkpoint track generator's chaotic path tracer
+        # amplifies last-ulp libm / codegen differences); every other field is compared.
+        env:
+          TRACKGEN_SKIP_HOST_SENSITIVE_GOLDENS: "1"
         run: pytest -m "not cuda and not slow and not benchmark" -ra
 
   # GPU lane: needs a self-hosted runner with an NVIDIA GPU, so it is OFF by default.

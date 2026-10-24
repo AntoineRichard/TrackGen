@@ -8,6 +8,7 @@ row is NaN. Everything else stays bit-exact.
 """
 import numpy as np
 
+from tests.test_generator_fingerprints import HOST_SENSITIVE, _host_sensitive_skipped
 from tests.tools.capture_goldens import GOLDEN, VEC3_GATES, VEC3_TRACK, capture
 
 
@@ -15,6 +16,8 @@ def test_pipelines_match_pre_vec3f_goldens():
     golden = np.load(GOLDEN)
     fresh = capture()
     for key in golden.files:
+        if _host_sensitive_skipped() and key.startswith(HOST_SENSITIVE):
+            continue                    # see tests/test_generator_fingerprints.py
         kind, _, field = key.split("/")
         g = golden[key]
         f = fresh[key]
