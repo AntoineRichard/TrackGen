@@ -1,7 +1,7 @@
 """Batched box-vs-track out-of-bounds queries (segments backend + facade).
 
-``CollisionChecker`` binds to a :class:`Track` batch and answers, per oriented
-box, whether the box has left the drivable band (inside the outer loop AND
+``CollisionChecker`` binds to a :class:`~track_gen.results.Track` batch and answers, per
+oriented box, whether the box has left the drivable band (inside the outer loop AND
 outside the inner loop), with full contact info. The default ``segments``
 backend is exact: one Warp thread per box scans the env's boundary segments.
 The ``sdf`` backend (``collision_sdf.py``) trades exactness near boundaries
@@ -73,10 +73,9 @@ class BoxContact:
         ``vec2f`` boundary normal at ``nearest``, pointing INTO the band.
     boundary : wp.array
         ``int32`` — 0 = inner boundary, 1 = outer boundary, -1 = inactive slot,
-        degenerate track (count < 3) or invalid env (``valid[e] == 0``, roadmap
-        PR14); with ``method="sdf"`` also -1 for a
-        box whose corners are not finite (NaN or inf half-extents, yaw or
-        position; reported ``oob=1`` with NaN geometry).
+        degenerate track (count < 3) or invalid env (``valid[e] == 0``); with
+        ``method="sdf"`` also -1 for a box whose corners are not finite (NaN or inf
+        half-extents, yaw or position; reported ``oob=1`` with NaN geometry).
     """
 
     oob: wp.array
@@ -282,7 +281,8 @@ def _box_query_segments_k(
 
 
 class CollisionChecker:
-    """Batched box-vs-track out-of-bounds checker bound to a :class:`Track`.
+    """Batched box-vs-track out-of-bounds checker bound to a
+    :class:`~track_gen.results.Track`.
 
     Because ``TrackGenerator.generate()`` overwrites its ``Track`` buffers in
     place, the ``segments`` backend always reads the CURRENT track batch with
@@ -295,7 +295,7 @@ class CollisionChecker:
     preallocated :class:`BoxContact` on every call (:attr:`result`).
 
     The source's ``valid`` is read when present (checked at construction like the
-    required members; roadmap PR14): an invalid env reads as out of bounds with NaN
+    required members): an invalid env reads as out of bounds with NaN
     geometry (see the module docstring).
     """
 
@@ -307,7 +307,8 @@ class CollisionChecker:
                  position: "wp.array | None" = None,
                  orientation: "wp.array | None" = None,
                  half_extents: "wp.array | None" = None) -> None:
-        """Bind to a :class:`Track` batch and allocate the result buffers.
+        """Bind to a :class:`~track_gen.results.Track` batch and allocate the result
+        buffers.
 
         Args:
             track: the bound track batch; the ``segments`` backend reads its
@@ -380,7 +381,7 @@ class CollisionChecker:
 
     @property
     def method(self) -> str:
-        """The backend: ``"segments"`` or ``"sdf"`` (read-only)."""
+        """The backend, ``"segments"`` or ``"sdf"`` (read-only)."""
         return self._method
 
     @property

@@ -2,7 +2,8 @@ Gate relaxation — collision solve
 =================================
 
 Drone-style gate sequences (``GateGenerator``, tutorial at
-:doc:`/tutorials/gate-sequences`) run their own **gate self-collision relaxation**, separate
+:doc:`/tutorials/gate-sequences`) run their own **gate self-collision relaxation**, a
+:term:`stage` separate
 from the XPBD track relaxation documented on the other pages in this section. It is a
 small per-env pairwise separation that pushes overlapping gates apart before tangents
 and frames are computed. This page covers why it exists, the sphere model and its
@@ -12,8 +13,9 @@ controls it, and how it behaves under CUDA-graph capture.
 Why gates need it
 -----------------
 
-The gate path does **not** run resample, XPBD relaxation, or inflation — it emits the
-centerline-generator corner anchors directly as gate centres. Raw anchors routinely land close
+A gate pipeline over a native gate generator does **not** run resample, XPBD
+relaxation, or inflation: it emits the generator's anchors directly as gate centres
+(a stations source runs the track stages first, :ref:`pipeline-stations`). Raw anchors routinely land close
 together or exactly coincident (two sampled anchors in the same grid cell, a
 tight-corner cluster). Without separation the resulting sequence has gates overlapping
 in the plane: unusable as a drone course, and — with a positive ``gate_width`` — prone
@@ -59,7 +61,8 @@ source routes through it, so the stage order is uniform:
 
 .. code-block:: text
 
-   anchors → order (ccw / raw / random_pairs / a plugin's) → bbox normalization
+   anchors → order (ccw / raw / random_pairs / a plugin's) → bbox normalization (polar,
+       checkpoint, voronoi)
        → SPHERE RELAXATION (gate_relax) → Z profile → lift → tangents → frames + validity
 
 Concretely, the slot holds ``gate_relax.spheres`` when ``gate_solve_iters > 0`` and the

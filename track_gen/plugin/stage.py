@@ -34,7 +34,7 @@ resamples carry every one to the centerline (``cl.<attr>``), and ``export=True``
 one a ``Track.attributes`` entry.
 
 A pipeline stage declares the channels it reads and writes (``reads`` / ``writes``:
-catalogue channels, see :doc:`/how-it-works/pipeline-preview`, or its own namespaced
+catalogue channels, see :doc:`/how-it-works/pipeline-stages`, or its own namespaced
 channels ``cl.<package>.<name>`` / ``gates.<package>.<name>``; a ``reads`` value
 ``"cl.*"`` is a required read port the user wires with ``StageRef.ports``). Each kind
 may write one catalogue channel: ``relax`` ``cl.xy``, ``width`` ``cl.half_width``,
@@ -275,10 +275,10 @@ class Stage(abc.ABC):
       (they are carried to the gate slots by index).
     - ``preferred``: a gate generator's ``{"order": name, "normalize": "extent"}`` (the
       order the gate preset picks by default, and whether it normalizes the gates'
-      extent after ordering); a centerline generator's ``{"relax": name}`` (roadmap
-      PR13b: the relax stage ``presets.track(relax="auto")`` picks, ``"none"`` for an
-      ingestion generator whose geometry must not move).
-    - ``seeded`` (roadmap PR13b): ``False`` for a generator whose output does not depend
+      extent after ordering); a centerline generator's ``{"relax": name}`` (the relax
+      stage ``presets.track(relax="auto")`` picks, ``"none"`` for an ingestion
+      generator whose geometry must not move).
+    - ``seeded``: ``False`` for a generator whose output does not depend
       on the seed (an ingestion generator): the conformance kit reports ``diversity``
       as skipped; default ``True``.
     - ``topology``: ``"closed"`` or ``"any"`` (the topologies the stage supports;
@@ -320,7 +320,7 @@ class Stage(abc.ABC):
         """``(writes, provides)`` for these params (default: the class's
         :attr:`writes` and :attr:`provides`).
 
-        Read for centerline generators only in 0.x (roadmap PR13b): a generator whose
+        Read for centerline generators only in 0.x: a generator whose
         raw attributes depend on its params (an ingestion generator writes ``raw.z``
         only when it is given altitudes) overrides it; the declaration is checked at
         bind time with the class rules (``raw.xy`` mapped, ``provides`` naming exactly
@@ -376,7 +376,7 @@ class StageBuilder:
 
     Attributes:
         E: The number of envs.
-        layout: The run's :class:`Layout`.
+        layout: The run's :class:`~track_gen.results.Layout`.
         device: The ``wp.Device``.
         stage_id: The stage's id in the pipeline (``"generator"`` for the generator).
         scale: ``TrackGenConfig.scale`` (a core field, not a generator Param).
@@ -449,7 +449,7 @@ class StageBuilder:
 
         A generator writes ``"raw.xy"`` (``wp.vec2f``, ``per="raw"``, ``[E * raw]``)
         and ``"gen.valid"`` (``wp.int32``, ``per="env"``, ``[E]``), plus its raw
-        attributes (roadmap PR13a): ``"raw.z"`` / ``"raw.half_width"`` (``float32``, the
+        attributes: ``"raw.z"`` / ``"raw.half_width"`` (``float32``, the
         catalogue attributes it ``provides``) and its own ``"raw.<package>.<name>"``
         channels, each carried to the centerline (``cl.<package>.<name>``) by the
         resamples with the ``interp`` policy its write declares. ``per`` sizes the
@@ -870,7 +870,7 @@ class StageBuilder:
         - ``per="env"`` (default): a stable LIVE ``[E]`` ``float32`` / ``int32`` array,
           LATCHED into the returned working copy at every generation like a dynamic
           param (a write takes effect for the envs the next generation regenerates).
-        - ``per="raw"`` (roadmap PR13b; centerline generators only): a stable ``[E *
+        - ``per="raw"`` (centerline generators only): a stable ``[E *
           raw]`` ``float32`` / ``int32`` / ``vec2f`` / ``vec3f`` array, UNLATCHED: the
           returned array IS the input, read during the generation (the caller writes
           it on the generation's stream, or orders the streams with events). The

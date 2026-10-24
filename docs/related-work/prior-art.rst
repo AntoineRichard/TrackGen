@@ -102,7 +102,7 @@ cases that are challenging, valid, diverse, or personalized.
 - **Togelius, De Nardi, Lucas, "Towards Automatic Personalised Content Creation for
   Racing Games" (IEEE CIG 2007).**
 
-  - Link via 2024 paper bibliography: https://ar5iv.org/html/2408.06346v1
+  - Link via 2024 paper bibliography: https://ar5iv.labs.arxiv.org/html/2408.06346v1
   - Representation/objective: racetracks generated according to a player/fun model
     inspired by Koster's theory of fun.
   - Method family: early search-based / experience-driven PCG for racing games.
@@ -120,20 +120,20 @@ fitness, player model, novelty/diversity, and expressive range.
 - **Togelius, Yannakakis, Stanley, Browne, "Search-Based Procedural Content Generation:
   A Taxonomy and Survey" (2011).**
 
-  - Link via bibliography: https://ar5iv.org/html/2408.06346v1
+  - Link via bibliography: https://ar5iv.labs.arxiv.org/html/2408.06346v1
   - Relevance: frames track generation as search in content space with a fitness
     function.
 
 - **Yannakakis and Togelius, "Experience-Driven Procedural Content Generation" (2011).**
 
-  - Link via bibliography: https://ar5iv.org/html/2408.06346v1
+  - Link via bibliography: https://ar5iv.labs.arxiv.org/html/2408.06346v1
   - Relevance: player-experience model becomes the objective; used later in racing
     affect/arousal work.
 
 - **Hendrikx, Meijer, van der Velden, Iosup, "Procedural Content Generation for Games:
   A Survey" (2013).**
 
-  - Link via bibliography: https://ar5iv.org/html/2408.06346v1
+  - Link via bibliography: https://ar5iv.labs.arxiv.org/html/2408.06346v1
   - Relevance: broad PCG taxonomy; useful context, not a direct geometric solution.
 
 

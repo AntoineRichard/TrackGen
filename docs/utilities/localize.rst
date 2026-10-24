@@ -9,18 +9,52 @@ three against the same batched ``Track`` buffers as the sibling utilities.
 The (s, n) frame
 ----------------
 
-``TrackLocalizer`` projects one point per env onto the centerline and
+``TrackLocalizer`` projects one point per :term:`env` onto the centerline and
 returns a ``TrackFrame`` — arc length ``s`` (same units as the track,
 consistent with ``Track.arclen``/``Track.length``), signed lateral offset
 ``n``, and the nearest centerline segment index:
 
 .. code-block:: python
 
-   from track_gen.localize import TrackLocalizer
+   import warp as wp
 
-   loc = TrackLocalizer(track, position=robot_pos)   # latch onto sim buffer
-   for _ in range(steps):
-       sim.step()                    # writes robot_pos in place
+   from track_gen import TrackGenerator
+   from track_gen.localize import TrackLocalizer
+   from track_gen.pipeline import presets
+
+   E, device = 64, "cuda:0"                     # or "cpu"
+   track = TrackGenerator(presets.track(num_envs=E, device=device)).generate()
+
+``robot_pos`` is your sim's stable ``[E]`` position buffer, which ``sim_step`` (your
+physics) writes in place. Bind it once, then query with no arguments:
+
+.. snippet: setup
+
+   @wp.kernel
+   def _walk_k(center: wp.array(dtype=wp.vec3f), count: wp.array(dtype=wp.int32),
+               stride: int, t: wp.array(dtype=wp.int32), pos: wp.array(dtype=wp.vec3f)):
+       e = wp.tid()
+       n = count[e]
+       if n > 0:
+           pos[e] = center[e * stride + (t[0] * 2) % n] + wp.vec3f(0.0, 0.01, 0.0)
+
+   @wp.kernel
+   def _tick_k(t: wp.array(dtype=wp.int32)):
+       t[0] = t[0] + 1
+
+   _t = wp.zeros(1, dtype=wp.int32, device=device)
+   robot_pos = wp.zeros(E, dtype=wp.vec3f, device=device)
+
+   def sim_step():
+       wp.launch(_walk_k, E, [track.center, track.count, track.layout.stride, _t, robot_pos],
+                 device=device)
+       wp.launch(_tick_k, 1, [_t], device=device)
+
+.. code-block:: python
+
+   loc = TrackLocalizer(track, position=robot_pos)   # bind your sim's buffer once
+   for _ in range(10):
+       sim_step()                    # your physics: writes robot_pos in place
        frame = loc.query()           # no args: bound mode
        # frame.s [E] float32, frame.n [E] float32, frame.segment [E] int32
 
@@ -29,8 +63,8 @@ source (a ``Track``, a ``Centerline`` such as a gates-mode
 ``course.course_line.centerline``, an env-slice ``view()``, or your own object with
 ``center``, ``arclen``, ``length`` and ``count``) and checks those members at
 construction (:ref:`utilities-sources`). ``curvature`` reads ``center`` and ``count``,
-``speed_profile`` also ``arclen`` and ``length``. All three read ``valid`` when the source
-has it, and the localizer ``generation`` too (checked the same way; a malformed one raises
+``speed_profile`` also ``arclen`` and ``length``. All three read :term:`valid` when the
+source has it, and the localizer :term:`generation` too (checked the same way; a malformed one raises
 at construction).
 
 ``n`` is positive to the RIGHT of the centerline's direction of travel
@@ -40,8 +74,8 @@ winding, which is generator-dependent (e.g. polar loops wind CCW — outer
 on the right; bezier loops wind CW — outer on the left); either way
 ``|n| <= half_width`` means the point is on the road. NaN positions yield
 NaN frames (``segment == -1``) — the same pause semantics as the sibling
-utilities. So do invalid envs (``valid[e] == 0``) since 0.2.0.dev6: NaN ``s`` / ``n`` /
-``n_up``, ``segment = -1``, and the warm memory is dropped
+utilities. So do :term:`invalid envs <invalid env>` (``valid[e] == 0``): NaN ``s`` /
+``n`` / ``n_up``, ``segment = -1``, and the warm memory is dropped
 (:ref:`utilities-invalid-envs`).
 
 Warm starts
@@ -68,7 +102,7 @@ After a regeneration the localizer resets itself: it keeps a ``seen_generation``
 and, at the top of every ``query()``, drops the warm memory of every env whose source's
 ``generation`` changed, on device, exactly as ``reset(mask)`` would (so an explicit reset
 changes nothing). A source without ``generation`` never self-resets. ``generation`` is the
-epoch: a regeneration without ``advance``, a bare reseed, or ``reset_epoch()`` followed by
+:term:`epoch`: a regeneration without ``advance``, a bare reseed, or ``reset_epoch()`` followed by
 as many advances leaves it equal, so call ``reset(mask)`` after those
 (:ref:`utilities-self-reset`).
 
@@ -76,8 +110,8 @@ Curvature & speed profiles
 --------------------------
 
 Two per-generation helpers share the module. By default they ALLOCATE their result (and
-``curvature`` a scratch when ``window > 0``): call them after ``generate()``, outside
-capture regions. With ``out=`` they write into your arrays instead, allocate nothing,
+``curvature`` a scratch when ``window > 0``): call them after ``generate()``, outside any
+:term:`capture`. With ``out=`` they write into your arrays instead, allocate nothing,
 never synchronize, and record into a graph like ``query()``:
 
 .. code-block:: python
@@ -98,7 +132,8 @@ never synchronize, and record into a graph like ``query()``:
    speed_profile(track, 6.0, 3.0, 5.0, 4.0, kappa=k, out=v)
 
 - ``out`` is a contiguous ``[E * stride]`` ``float32`` array on the source's device
-  (``track.layout``; the stride is ``N_max`` for a ``Track``), returned as is. The same kernels run on the same inputs, so the values are byte-identical to the
+  (``track.layout``; the stride is :term:`N_max` for a ``Track``), returned as is. The
+  same kernels run on the same inputs, so the values are byte-identical to the
   allocating form.
 - ``curvature(out=)`` with ``window > 0`` needs ``scratch=`` (the same shape, not aliasing
   ``out``; ``ValueError`` otherwise); with ``window == 0`` it is ignored.

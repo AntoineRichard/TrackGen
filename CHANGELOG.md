@@ -13,7 +13,10 @@ component with a stable `inputs["reset_mask"]`, the course anchoring its compone
 Generator outputs and launch sequences do not change; the utilities' outputs for valid
 envs are byte-identical; `Course(CourseConfig)` keeps its outputs and launch sequences
 (PR15 changes none of them; construction launch streams under an ambient scope
-excepted: migration item 20).
+excepted: migration item 20). Roadmap PR15b: the documentation restructure and the
+0.1 -> 0.2 migration guide (`docs/upgrading/from-0.1.rst`), with the documentation
+examples run in the CPU test lane and a link check; docs, docs tooling and CI only (the
+library diff is docstrings and comments: see Documentation).
 
 ### Migration (`Course` and runtime-utility users)
 
@@ -131,7 +134,7 @@ the construction batch / checkpoint_spacing)`.
   `E = 6`), 35 at 1.0. It no longer depends on the seeds, the batch or the course size.
 - Memory: every `course.checkpoints` array grows to `[E * M]` (52 bytes per slot and env:
   `position`, `left`, `right`, `tangent`, `up_half`; plus 8 bytes per env for the new
-  `valid` / `generation`): 28.4 MiB at `E = 8192`, `M = 70`, against 7.7 MiB at
+  `valid` / `generation`): 28.5 MiB at `E = 8192`, `M = 70`, against 7.8 MiB at
   `M = 19`. The bound scales with `N_max * spacing`: `N_max = 2048`, `spacing = 0.02`,
   `checkpoint_spacing = 0.05` gives `M = 1229`, 262 MB at `E = 4096`. The sampling kernel
   launches `E * M` threads.
@@ -690,10 +693,12 @@ Beyond the migration items above (which apply to the utilities used directly too
   `step`; a respawn snapshot of an input belongs in `step`, armed by `reset`); (2) they
   run inside a CUDA conditional-node body (the masked regeneration, in the course's own
   graph and in Warp-registered caller captures), so they may emit only kernels,
-  `ctx.fill` and device-to-device `ctx.copy` on `ctx`'s stream (no copy to or from host
-  or pinned memory, no event, no other stream); (3) `reset` reads only its own state
-  and the mask (resets run in reverse order). A component that overrides `step` is a
-  `StepResult` entry. Every built-in adapter complies.
+  `ctx.fill` and device-to-device `ctx.copy` on `ctx`'s stream (no copy to or from
+  pageable host memory, no event, no other stream; CUDA accepts a copy from pinned,
+  device-mapped host memory, measured on a GB10, but keep the body to device memory for
+  portability); (3) `reset` reads only its own state and the mask (resets run in reverse
+  order). A component that overrides `step` is a `StepResult` entry. Every built-in
+  adapter complies.
 - **`check_component` enforces the first two** (still 20 checks, the same names):
   `hot_path.buffers` traces `on_generate(ctx, None)`, `on_generate(ctx, m)` and
   `reset(ctx, m)` separately and fails one that references a bound input's pointer
@@ -705,8 +710,8 @@ Beyond the migration items above (which apply to the utilities used directly too
   runs before every step, as in PR14, and on such a step the eager twin skips the
   masked part exactly when the capture recorded it under a conditional node, so an
   array that only `on_generate` writes keeps the poison in both runs). A PR14 component
-  that read an input in `on_generate` / `reset`, or used a host copy there, now fails
-  them.
+  that read an input in `on_generate` / `reset`, or used a pageable-host copy there, now
+  fails them.
 - **A refused conditional body** (Warp's check of a `capture_if` body) is re-raised by
   the course as `CaptureError` naming its components, with the
   `track_gen.exec.unconditional()` escape hatch.
@@ -783,6 +788,119 @@ Beyond the migration items above (which apply to the utilities used directly too
   item 3); their real rows do not, except for rings the old capacity clipped.
 - Utilities, invalid envs: the sentinel table (Migration item 1).
 
+### Documentation (roadmap PR15b)
+
+The site is published from `main` when `v2` merges; there are no versioned docs.
+
+- **Structure.** Nine sections (Getting started, Upgrading, Generating tracks and gates;
+  Courses, simulators and RL; Extending TrackGen, Reference, Internals, Development,
+  Background) and a landing page with four reading orders (training an RL agent,
+  building datasets, writing a plugin, upgrading from 0.1). New pages:
+  `getting-started/concepts` (the data flow and a glossary of 23 terms),
+  `upgrading/from-0.1`, `user-guide/generating`, `user-guide/curricula`,
+  `user-guide/rl-auto-reset`, `contributing/writing-a-gate-generator`,
+  `contributing/packaging-a-plugin`, `contributing/plugin-abis` ("GeneratorSpec and the
+  0.1 plugin ABIs", with a status table), `how-it-works/gate-pipeline`, and one
+  reference page per area (`reference/results`, `pipeline`, `plugin`, `ops`, `runtime`,
+  `exec`, `testing`; `reference/api` keeps the module map, the top-level names, an
+  errors-and-warnings table and the environment variables). The pipeline preview page is
+  promoted: its user-facing parts moved into the user guide and the rest is
+  `how-it-works/pipeline-stages`; `how-it-works/results` is `user-guide/results`. Every
+  page URL published from `main` (43) keeps its path, and every section label of the
+  previous site is kept; deep links into `reference/api.html#...` move to the
+  per-module pages.
+- **Content.** Presets first everywhere (`presets.track` / `presets.gates`,
+  `Course.track` / `Course.gates`), results read with `.numpy()` (torch in interop
+  sections), every RL loop gated on `valid`. New homes: "Invalid envs"
+  (`user-guide/results.html#invalid-envs`: fail bits, causes, the knob that lowers each,
+  `keep` vs `poison`, measured rates), the bar width vs invalid fraction table
+  (`tutorials/gate-sequences`, re-measured by a checked example), the rules for
+  recording into your graph and a capture troubleshooting table
+  (`tutorials/cuda-graph-in-a-sim`), RL auto-reset (the two masks, the host and
+  in-graph recipes, cost), collision backends (choosing, CPU accuracy, cost), the
+  built-in stage catalogue, and the curricula page (dynamic knobs, `randomize=`, live
+  params, size, a course curriculum). No roadmap ids, `0.2.0.devN` versions or
+  "preview" notes outside `upgrading/*`; the per-release "as shipped" notes are folded
+  into the pages as current behaviour.
+- **Migration guide** (`upgrading/from-0.1`): an upgrade procedure, a triage table
+  (silent changes first, with the patterns to grep your code for), 25 items in four
+  groups (12 silent changes, 7 breaking, 4 deprecations, 2 optional) each with who it
+  affects and before / after code, the smaller changes, a table for users of the
+  0.2.0.devN previews (with the spec `/1` -> `/2` section), what 1.0 removes and what did
+  not change. Each of the 212 migration-relevant bullets of the 0.2.0.dev0 to dev6
+  entries was classified (audience, kind) and placed; the 0.1 behaviour it states was
+  measured on `v0.1.0` and on this tree, on CPU.
+- **Checked examples** (`tests/_doc_snippets.py`, `tests/test_doc_snippets.py`, in the
+  CPU lane): every `code-block:: python` under `docs/`, every python fence of
+  `README.md` and the examples in the public docstrings run, the `"cuda"` literals
+  rewritten to `"cpu"` inside `wp.ScopedDevice("cpu")`. Metadata is an RST comment
+  (`.. snippet: group= requires= register= setup after cuda slow skip=<reason>
+  expect-warning= expect-error=`); `cuda` groups run only in the GPU lane; a
+  `DeprecationWarning` / `FutureWarning` attributed to an example fails it (also in a
+  block that expects another warning; `expect-warning` needs that category attributed to
+  the example, and `expect-*` refuse the root classes); a group is stopped after 120 s
+  (a `BaseException`, so an `except Exception` cannot swallow it), and the `linecache`
+  entries it replaced are restored afterwards. A Python block in a form the extractor
+  does not run (`code:: python`, `code-block:: python3` / `py`, an indented or `py`
+  fence) is refused, and a skipped block that uses a CUDA-only API must be a `cuda`
+  group instead. Today: 230 blocks on 45 pages (30 docs pages, the README, 14 modules'
+  docstrings), 203 run and 27 skipped with a reason (12 signature listings, 9
+  plugin-package layouts, 4 fragments, 2 0.1 "before" blocks); 111 groups, 7 of them
+  `cuda`.
+- **Build checks** (`docs/_ext/trackgen_docscheck.py`, failing `sphinx -W`): every
+  public symbol documented (the 30 public modules of
+  `docs/_ext/trackgen_public_modules.py`, every name of their `__all__`, member
+  docstrings, members inherited from private bases; every non-underscore module
+  classified public or internal; exemptions with reasons in `docs/conf.py`); no roadmap /
+  version jargon outside `upgrading/*`, docstrings included; every data file present.
+  Nitpicky mode is on (third-party targets ignored by pattern; two type-annotation
+  targets in `docs/_tools/nitpick_allowlist.txt`, applied by the extension, which fails a
+  full build on an entry that no longer silences anything). User pages also keep the
+  internal terms `self-graph` and `plan bound` out (internals and `reference/exec`
+  excepted); the `_modules/` source listings of `sphinx.ext.viewcode` show the library's
+  comments as they are and are only counted. `docs/_tools/build_ci_env.py` runs the
+  build on the checkout (its root first on `sys.path`, as `python -m sphinx` from the
+  root) without pytest, torch, scipy and matplotlib, as the docs workflow does. The
+  `docs` extra pins `sphinx>=8.1,<10`.
+- **Links.** `.github/workflows/linkcheck.yml` (new): `sphinx -b linkcheck` weekly and on
+  dispatch (strict), on pull requests touching `docs/` (informational), with a summary of
+  the broken links (`docs/_tools/linkcheck_summary.py`, which marks the links expected to
+  be broken until v2 merges, such as `blob/main/CHANGELOG.md`); it never gates the
+  deploy. `README.md`'s links into the site are checked against the build
+  (`docs/_tools/check_readme_anchors.py`) and, offline, against the sources
+  (`tests/test_docs_links.py`).
+- **Workflows.** `docs.yml` builds with `-E`, checks that the internal pages stay out of
+  the site and the README anchors, uploads the Pages artifact on pushes only, grants
+  `pages` / `id-token` to the deploy job only, and cancels superseded pull-request runs
+  only (a push to main runs to its deploy). `tests.yml`: `workflow_dispatch`, and
+  `timeout-minutes: 30` on the CPU job (the examples ride its existing `-m "not cuda and not slow and not benchmark"`
+  run, their `cuda` groups the GPU lane's `-m cuda`).
+- **Internal pages** stay in the repository and out of the site: `exclude_patterns`
+  gains `library-readiness/**`, `code-review-*.md` and the tooling directories
+  (`_ext`, `_tools`, `_data`); nothing was moved or deleted.
+- **Figures and tables.** Every generated number the docs show lives in `docs/_data/`
+  (pulled in with `csv-table :file:` / `literalinclude` / `include`, never retyped; the
+  command of each file is in `docs/_data/README.md` and
+  `contributing/rendering-assets`). Re-measured on CPU: the generator metrics
+  (`generators/benchmarks`) and the collision accuracy. Re-rendered on CPU:
+  `docs/assets/generator-repulsive.png` and `docs/assets/readme-generator-grid.png`, the
+  only CPU figures whose pixels change with the code. Deviation from the roadmap: the
+  README's figure (`readme-generator-strip.png`) is not stale (main's and this tree's
+  code render it pixel-identically on one machine), so it is kept; the figures that
+  differ from a fresh render on arm64 differ for `v0.1.0`'s code too (platform), and are
+  kept. The GPU tables were measured on an NVIDIA GB10 (`docs/_data/machine-cuda.txt`).
+- **Library diff: docstrings and comments only** (an `ast.dump` comparison with
+  docstrings stripped matches the PR15 tree for all 51 changed `track_gen` files). The
+  rendered docstrings lose their roadmap / version notes; the "Preview: names and
+  signatures may change before 1.0" note of `track_gen.pipeline` is replaced by the
+  deprecation-policy statement; 18 member docstrings are added (and `from_legacy` on the
+  Params bases); docstring citations of moved pages point at labels
+  (`testing/conformance.py`, `testing/components.py`) or at
+  `docs/contributing/plugin-abis.rst` (`_src/generator_registry.py`). No message
+  changes: the three library messages that send gate-generator authors to
+  `docs/contributing/writing-a-generator.rst` stay valid through its "Gate generators"
+  pointer section.
+
 ### Fixed
 
 - Library-readiness findings closed by roadmap PR14: MEDIUM A34 "no common utility
@@ -829,6 +947,16 @@ Beyond the migration items above (which apply to the utilities used directly too
   planned; it would need a warning release first).
 - Declared bounds on the elevation's `z_min` / `z_max` (so that elevated
   `TrackGenConfig`s get a `max_loop_length`), and a bound for variable width.
+- PR15b, GPU: the GPU tables of `docs/_data/` were measured on an NVIDIA GB10 (an
+  integrated-memory GPU); re-measure them on a discrete GPU when one is available (the
+  commands are in `docs/_data/README.md`). Every documentation example, the `cuda`
+  groups included, passes on that GPU (246 groups).
+- PR15b, not done: a built copy of the 0.1 docs (the migration guide links the
+  `v0.1.0` documentation sources); the two nitpick allowlist entries (type annotations
+  naming private classes) go by 1.0; three planner messages still cite the release that
+  introduced a rule ("since 0.2.0.dev4" / "dev5"), and the docs quote them without it.
+- The migration guide links the changelog on `main`, which has none until `v2` merges:
+  the link check reports it on pull requests (informational) until then.
 
 ### Testing
 
@@ -925,20 +1053,39 @@ Beyond the migration items above (which apply to the utilities used directly too
   `conditional=True` (the `_regen_flag` conditional counted, anchoring checked); one
   self-graph per key (a third-party component inside its conditional body); both
   lowerings of the zero-mask body; lifetime; the conditional-body contract (a component
-  that copies from a pinned host array or records an event in `on_generate` fails
-  `check_component`'s `capture.caller`, the course refuses it with a `CaptureError`
-  naming its components, `exec.unconditional()` runs it); a course with a
-  default stream (its calls default to it; `CaptureError` without `stream=` under
-  another capture, recording with it); attach ordering on a busy current stream, and
-  on a producer stream still busy with an advancing generation (`wait_stream` spy, ==
-  a twin); a recorded `[step, reset(m), regenerate(mask=m')]` anchoring the binding and
-  both masks (alive after a rebind and every caller reference dropped, freed with the
-  graph); the host cost of `step()`'s anchor and default-stream probes (printed ratio).
+  that records an event in `on_generate` fails `check_component`'s `capture.caller`, the
+  course refuses it with a `CaptureError` naming its components, `exec.unconditional()`
+  runs it; a copy from a pinned host array is accepted by CUDA, so it is no offence); a
+  course with a default stream (its calls default to it; `CaptureError` without
+  `stream=` under another capture, recording with it); attach ordering on a busy current
+  stream, and on a producer stream still busy with an advancing generation (`wait_stream`
+  spy, == a twin); a recorded `[step, reset(m), regenerate(mask=m')]` anchoring the
+  binding and both masks (alive after a rebind and every caller reference dropped, freed
+  with the graph); the host cost of `step()`'s anchor and default-stream probes (printed
+  ratio).
 - PR15 edits no existing test file: every `Course` test of 0.2.0.dev5 and PR14 passes
   unchanged on the new root. The shared toys (`tests/_component_toys.py`) gain the two
   that read a bound input in the regeneration body (each fails exactly
   `hot_path.buffers`), and the guide's `CurvatureLookahead` takes its namespaced default
   name, `"acme.lookahead"`.
+- PR15b (CPU lane, no Sphinx needed): `tests/test_doc_snippets.py` runs every group of
+  every page (`test_snippets_cpu[<page>::<group>]`; `test_snippets_cuda[...]` in the GPU
+  lane) and checks the metadata grammar and layout on every page
+  (`test_snippet_metadata`: unknown or misplaced tokens, a comment docutils would render
+  as text, dangling `requires=`, an f-string containing `cuda` in a CPU group, the
+  retired `page-pending` marker); its unit tests run the grammar and the runner on
+  synthetic pages (`setup` / `after` / `register=` / `expect-*`, `requires=` and its
+  cycles, docstring extraction, a deprecation attributed to an example failing it, the
+  `wp.config` restore in a fresh interpreter, the refused block forms, a specific
+  `expect-warning`, the timeout under `except Exception`, the `linecache` restore). `tests/test_docs_links.py`: the README's
+  links into the site map to pages, its relative paths exist, no page links into the
+  excluded directories. `tests/test_docs_tools.py` (fixtures in `tests/fixtures/docs_tools/`):
+  `md_table_to_csv` on a real `compare_generators` output with Warp's banner,
+  `strip_warp_log`, `check_readme_anchors`, `linkcheck_summary` (expected-broken links
+  marked), the package blocker and checkout resolution of `build_ci_env` and the page
+  owners of `check_labels`. `tests/test_generator_docs.py`
+  reads the `Scatter` gate generator from `contributing/writing-a-gate-generator.rst`.
+  The docs build (`sphinx -W`, nitpicky, the docscheck) runs in `docs.yml`.
 
 ## 0.2.0.dev5 (2026-10-24, tag `v0.2.0.dev5`)
 

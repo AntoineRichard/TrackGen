@@ -25,8 +25,8 @@ from typing import Callable, ClassVar
 class GateGeneratorSpec:
     """One registered native gate generator (the legacy gate generator ABI).
 
-    Deprecated (roadmap PR11): write a Stage with ``kind="gate_generator"`` and
-    ``output="anchors"`` (docs/contributing/writing-a-generator.rst). A
+    Deprecated: write a Stage with ``kind="gate_generator"`` and
+    ``output="anchors"`` (:ref:`writing-a-gate-generator`). A
     ``GateGeneratorSpec`` runs through an adapter stage until 1.0, and binding one
     emits a ``DeprecationWarning``. Its ``max_gates`` callable is read only as the
     adapter's capacity (the most gates ``generate`` writes, checked against

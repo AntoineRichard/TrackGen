@@ -3,30 +3,54 @@ on:
   push:
     branches: [main]
   pull_request:
+# Read-only by default; only the deploy job gets the Pages permissions.
 permissions:
   contents: read
-  pages: write
-  id-token: write
+# Cancel superseded pull-request builds; let a push to main finish (and deploy).
 concurrency:
   group: docs-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      # The docs extra only (sphinx and the theme extensions): no pytest, torch, scipy or
+      # matplotlib. `python docs/_tools/build_ci_env.py` reproduces this environment locally.
       - run: pip install -e ".[docs]"
-      - run: python -m sphinx -W --keep-going -b html docs docs/_build/html
+      # -W: every warning fails, including nitpicky cross-references and the
+      # docs/_ext/trackgen_docscheck.py findings (every public symbol documented, no
+      # roadmap / version jargon outside upgrading/*, every data file present).
+      # -E: always re-read every page (an incremental build can pass falsely).
+      - name: Build
+        run: python -m sphinx -W --keep-going -E -b html docs docs/_build/html
+      - name: Internal pages stay out of the site
+        run: |
+          for d in superpowers library-readiness; do
+            if [ -e "docs/_build/html/$d" ]; then echo "::error::docs/$d was published"; exit 1; fi
+          done
+          if ls docs/_build/html | grep -q '^code-review'; then
+            echo "::error::a code-review page was published"; exit 1
+          fi
+      - name: README links into the site resolve
+        run: python docs/_tools/check_readme_anchors.py docs/_build/html README.md
       - uses: actions/upload-pages-artifact@v3
+        if: github.event_name == 'push'
         with:
           path: docs/_build/html
+  # External links are checked by linkcheck.yml (weekly, on dispatch, and informational on
+  # pull requests touching the docs); they never gate the deploy.
   deploy:
     needs: build
-    if: github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

@@ -28,8 +28,8 @@ _PROGRAM_TOKEN = object()
 
 @dataclasses.dataclass(frozen=True)
 class AttributeInfo:
-    """One exported per-point attribute of a :class:`Program` (``Program.attributes``,
-    roadmap PR13a): what ``Track.attributes[key]`` / ``GateSequence.attributes[key]``
+    """One exported per-point attribute of a :class:`Program` (``Program.attributes``):
+    what ``Track.attributes[key]`` / ``GateSequence.attributes[key]``
     holds.
 
     Attributes:
@@ -57,8 +57,8 @@ class AttributeInfo:
 
 @dataclasses.dataclass(frozen=True)
 class InputInfo:
-    """One persistent device input of a :class:`Program` (``Program.input_info``,
-    roadmap PR13b): what ``Program.inputs[name]`` is and how a generation reads it.
+    """One persistent device input of a :class:`Program` (``Program.input_info``): what
+    ``Program.inputs[name]`` is and how a generation reads it.
 
     Attributes:
         name: The input's name (``"regen_mask"``, a stage's ``StageBuilder.input`` name;
@@ -122,10 +122,9 @@ class Program:
     ``result.generation <- epoch`` (masked envs only, with a mask). It allocates nothing
     and never host-syncs, except inside its HOST stages (their ``ctx.host()``
     readbacks, uploads and waits on the call's stream). See
-    :mod:`track_gen.stages.commit` for what the commit costs (nothing for an unmasked
+    ``track_gen.stages.commit`` for what the commit costs (nothing for an unmasked
     generation of the default pipeline). The result is a
-    ``Track``, or a ``GateSequence`` for a gate pipeline (``BatchSpec.max_gates`` set,
-    roadmap PR11).
+    ``Track``, or a ``GateSequence`` for a gate pipeline (``BatchSpec.max_gates`` set).
 
     A Program whose stages include ``CaptureClass.HOST`` ones is split into
     :attr:`segments` (consecutive stages of equal host-ness): outside a capture its
@@ -201,16 +200,16 @@ class Program:
     # -- state ------------------------------------------------------------------
     @property
     def spec(self) -> "PipelineSpec":
-        """The resolved spec: every ``StageRef.params`` is the stage's Params instance
-        (the generator's: its resolved Params, ``None`` for a legacy spec without
+        """The resolved spec, in which every ``StageRef.params`` is the stage's Params
+        instance (the generator's resolved Params; ``None`` for a legacy spec without
         one)."""
         return self._spec
 
     @property
     def layout(self):
-        """The result's :class:`~track_gen.plugin.Layout`: ``stride`` is ``N_max`` for a
-        track, ``max_gates`` for a gate pipeline (each stage was built with the layout
-        of its own point domain)."""
+        """The result's :class:`~track_gen.results.Layout`, whose ``stride`` is ``N_max``
+        for a track and ``max_gates`` for a gate pipeline (each stage was built with the
+        layout of its own point domain)."""
         return self._layout
 
     @property
@@ -220,9 +219,9 @@ class Program:
 
     @property
     def result(self) -> "Track":
-        """The :class:`~track_gen.Track` (a gate pipeline: the
-        :class:`~track_gen.GateSequence`) every generation writes: the same instance,
-        with the same array addresses, for the Program's lifetime."""
+        """The :class:`~track_gen.results.Track` (a gate pipeline: the
+        :class:`~track_gen.results.GateSequence`) every generation writes: the same
+        instance, with the same array addresses, for the Program's lifetime."""
         return self._result
 
     @property
@@ -238,7 +237,7 @@ class Program:
 
     @property
     def inputs(self) -> Mapping:
-        """Persistent device inputs: ``"regen_mask"`` (``[E]`` int32, zeroed) and every
+        """The persistent device inputs, ``"regen_mask"`` (``[E]`` int32, zeroed) and every
         input a stage declared (``StageBuilder.input``). Stable pointers.
 
         Latched inputs (``per="env"``) are snapshotted at the start of a generation, so
@@ -341,15 +340,15 @@ class Program:
     def prepared(self) -> bool:
         """Whether :meth:`prepare` ran (one real generation outside any capture;
         ``build(..., prepare=True)`` and the facades run it). Part of the
-        ``track_gen.pipeline.Producer`` surface (roadmap PR15)."""
+        ``track_gen.pipeline.Producer`` surface."""
         return self._runner.prepared
 
     @property
     def default_stream(self) -> "wp.Stream | None":
         """The stream calls run on when they pass no ``stream=`` and no ambient scope
         applies (``build(..., stream=)``, the facades' ``stream=``; ``None``: resolved
-        per :mod:`track_gen.exec`). Part of the ``track_gen.pipeline.Producer`` surface
-        (roadmap PR15)."""
+        per :mod:`track_gen.exec`). Part of the ``track_gen.pipeline.Producer``
+        surface."""
         return self._runner.default_stream
 
     @property
@@ -360,8 +359,9 @@ class Program:
         return self._runner.graph
 
     def segment_graphs(self, key=None) -> "tuple | None":
-        """The per-segment self-graphs of a Program with HOST stages, one per segment
-        in order (``None`` at a HOST segment), for the self-graph key ``key`` (``None``:
+        """The per-segment CUDA graphs of a Program with HOST stages (its own graph, cut
+        at each HOST segment), one per segment in order (``None`` at a HOST segment),
+        for the graph key ``key`` (``None``:
         a plain :meth:`run`; ``(True, mask.ptr or 0)`` for ``advance=True``); ``None``
         before the first such CUDA call outside a capture, on CPU, and for a Program
         without HOST stages (see :attr:`graph`)."""
@@ -381,7 +381,7 @@ class Program:
         stages and restored within the generation, all on ``ctx``'s stream: work
         ordered after the generation on that stream (or after an event recorded on it)
         never sees the recomputed rows, a reader on another stream without such a
-        dependency can (see :mod:`track_gen.stages.commit`).
+        dependency can (see ``track_gen.stages.commit``).
 
         Args:
             ctx: The :class:`~track_gen.exec.LaunchContext` to emit on.
@@ -389,7 +389,8 @@ class Program:
             mask: Optional ``[E]`` int32 mask.
 
         An iterative (``BOUNDED``) stage runs its full iteration bound when called
-        eagerly on CUDA (its self-graph skips converged windows on device). A legacy-ABI
+        eagerly on CUDA (its own CUDA graph skips converged windows on device). A
+        legacy-ABI
         generator (:attr:`legacy_stream`) launches on Warp's current stream: when
         ``ctx``'s stream is another one, the generation runs on the current stream,
         ordered after and before ``ctx``'s with events (as ``GraphRunner`` does).
@@ -564,7 +565,8 @@ class Program:
             advance: Bump the epoch first (see ``TrackGenerator.generate``).
             mask: Optional ``[E]`` int32 mask of the envs to advance; requires
                 ``advance=True``.
-            policy: ``"auto"`` or ``"eager"`` (never self-graph).
+            policy: ``"auto"`` or ``"eager"`` (never builds the Program's own CUDA
+                graph).
 
         Raises:
             ValueError: an invalid ``mask``.

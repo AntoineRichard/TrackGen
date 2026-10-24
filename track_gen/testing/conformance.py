@@ -1,18 +1,19 @@
 """Does a generator honour the contract? ``check_generator`` / ``check_gate_generator``.
 
 One call runs a registered generator through every check the generator contract
-implies (see ``docs/contributing/writing-a-generator.rst``) and returns a
-:class:`Report`::
+implies (see :ref:`generator-stage-contract` and :ref:`generator-hard-rules`) and returns
+a :class:`Report` (here for the built-in ``polar``; a plugin passes its own registered
+name)::
 
     from track_gen.testing import check_generator
 
-    report = check_generator("acme.superformula", params={"m": 7.0})  # cpu (+ cuda:0)
+    report = check_generator("polar", params={"polar_num_knots": 9})  # cpu (+ cuda:0)
     report.raise_for_failures()
 
 Every check runs per device. A check is a named :class:`CheckResult`; its name is stable,
 so a test can assert exactly which check a broken generator fails.
 
-Components (roadmap PR14) are checked by :func:`track_gen.testing.check_component`
+Components are checked by :func:`track_gen.testing.check_component`
 (:mod:`track_gen.testing.components`; ``CHECKS["component"]``).
 
 Checks (:data:`CHECKS`), for a track generator:
@@ -24,7 +25,7 @@ Checks (:data:`CHECKS`), for a track generator:
     The raw output (the ``[E*R]`` vec2f centerline and the ``[E]`` int32 validity flags)
     and every ``Track`` field have the documented shape and dtype; flags are 0 or 1; the
     result's ``layout`` is the Program's (canonical device) and ``result.validate()``
-    passes (roadmap PR13b).
+    passes.
 ``output.finite``
     The raw centerline is finite for every env the generator marked valid, and the final
     ``Track`` is finite before ``count[e]`` for every valid env. The raw output is
@@ -38,14 +39,14 @@ Checks (:data:`CHECKS`), for a track generator:
     The raw loop closes (the last-to-first gap is at most 3x the median step, or 1.5x
     the longest step between consecutive points) and the pipeline accepts it (valid
     fraction > 0).
-``output.view`` (roadmap PR13b; every kind)
+``output.view`` (every kind)
     The unit's pipeline built with ``out=`` the middle view ``big.view(1, E + 1)`` of a
     byte-poisoned result of ``E + 2`` envs (with the kit's explicit seeds) writes exactly
     the bytes of the standalone batch into the view, after construction and after a
     masked advance, and leaves every byte outside it untouched: a kernel that indexes
     past ``[0, E)`` of a result array (or reads a result buffer it did not write) fails
     here. ``check_stage`` builds the stage's composed pipeline the same way.
-``attributes.written`` / ``attributes.carried`` (roadmap PR13a)
+``attributes.written`` / ``attributes.carried``
     For a generator that writes per-point attributes (``raw.z``, ``raw.half_width``,
     ``raw.<pkg>.<name>``; a gate generator ``anchors.<pkg>.<name>``; skipped "no
     attributes" otherwise): every raw slot of every attribute is written for every env
@@ -73,7 +74,7 @@ Checks (:data:`CHECKS`), for a track generator:
     ``generate()`` twice with unchanged seeds reproduces the first batch, a reseed
     reproduces a fresh generator with the new seeds, and reseeding back reproduces the
     first batch (no hidden state carried between calls).
-``params.per_env`` (roadmap PR13c; every kind)
+``params.per_env`` (every kind)
     For the unit's stage (the generator, or the stage under test) with dynamic fields
     that no randomizer draws (skipped "no dynamic parameters" otherwise): every such
     field is set to a per-env ``[E]`` array (float32: ``d + s * 0.25 * span * (e + 1) /
@@ -106,7 +107,7 @@ Checks (:data:`CHECKS`), for a track generator:
     ``require_caller_capturable=True`` is refused at build with a ``PlanError`` naming
     every HOST stage.
 ``hot_path.host_sync`` / ``hot_path.allocation`` / ``hot_path.stream`` / ``hot_path.capture`` (CPU)
-    Two ``generate()`` calls under :func:`~track_gen.testing.contract.hot_path_guard`,
+    Two ``generate()`` calls under :func:`~track_gen.testing.hot_path_guard`,
     every ``ctx.bounded_loop`` unrolled (the superset of what any lowering emits):
     no host sync or readback, no allocation, every launch / copy from track_gen or the
     plugin's package passes ``stream=`` (no ``assign()`` / ``zero_()`` / ``fill_()``),
@@ -122,10 +123,10 @@ Checks (:data:`CHECKS`), for a track generator:
     kernels, dimensions, buffers and scalar arguments.
 ``hot_path.buffers`` (CPU)
     Every pointer launched on belongs to the generator (its result, scratch, seed and
-    parameter buffers; see :func:`~track_gen.testing.trace.buffers_of`), and a second
+    parameter buffers; see :func:`~track_gen.testing.buffers_of`), and a second
     generator built alike launches on none of the first one's buffers.
 ``capture.caller`` (CUDA)
-    :func:`~track_gen.testing.capture.assert_caller_capturable`: recorded into a caller's
+    :func:`~track_gen.testing.assert_caller_capturable`: recorded into a caller's
     capture, replays equal the eager batch, before and after a reseed. A pipeline with
     HOST stages must instead refuse: ``generate(stream=s, advance=True)`` inside a
     caller's Warp capture raises ``NotCapturableError`` naming every HOST stage before
@@ -149,17 +150,18 @@ skipped: its launches may depend on host data); ``hot_path.host_sync`` and
 ``hot_path.allocation`` still run, with the HOST stages' ``ctx.host()`` operations
 sanctioned. A legacy ``capturable=False`` generator spec (which cannot use ``ctx.host()``)
 also waives ``hot_path.host_sync`` and ``hot_path.allocation``. ``capture.caller`` then
-checks that the pipeline refuses a caller's capture and ``capture.self_graph`` its
-segmented self-graphs.
+checks that the pipeline refuses a caller's capture and ``capture.self_graph`` the
+per-segment CUDA graphs it builds of its own outside a capture.
 
-:func:`check_stage` runs a ``relax`` / ``width`` / ``elevation`` / ``validity`` stage
-inside the default track pipeline (:func:`track_gen.pipeline.presets.track`, the stage
-in its slot; a validity check after ``validity.default``), and an ``order`` /
-``stations`` stage (or a validity check that reads gate channels) inside the default
-gate pipeline (:func:`track_gen.pipeline.presets.gates`: an order on the stations of the
-bezier track generator, stations on its raw loop, ``relaxed_stations`` for a stage that
-reads ``cl.*``; a gate check after ``validity.gate_default``; with ``pipeline="gates"``,
-an ``elevation`` stage on the bezier gate generator's gates, its ports rewired to
+:func:`~track_gen.testing.check_stage` runs a ``relax`` / ``width`` / ``elevation`` /
+``validity`` stage inside the default track pipeline
+(:func:`track_gen.pipeline.presets.track`, the stage in its slot; a validity check after
+``validity.default``), and an ``order`` / ``stations`` stage (or a validity check that
+reads gate channels) inside the default gate pipeline
+(:func:`track_gen.pipeline.presets.gates`: an order on the stations of the bezier track
+generator, stations on its raw loop, ``relaxed_stations`` for a stage that reads
+``cl.*``; a gate check after ``validity.gate_default``; with ``pipeline="gates"``, an
+``elevation`` stage on the bezier gate generator's gates, its ports rewired to
 ``gates.*``), through the same machinery, with these checks (no ``diversity`` /
 ``output.closed``: they are the generator's business):
 
@@ -237,7 +239,7 @@ _NEUTRAL = {"relax": "none", "width": "constant", "elevation": "flat", "order": 
 
 #: The check names of each registry kind, in run order.
 _ATTRIBUTES = ("attributes.written", "attributes.carried")
-#: The checks of :func:`track_gen.testing.check_component` (roadmap PR14), in run order.
+#: The checks of :func:`track_gen.testing.check_component`, in run order.
 _COMPONENT_CHECKS = ("construct", "requires.complete", "topology", "result.stable",
                      "determinism", "statelessness", "reset.exact", "regenerate.masked",
                      "regenerate.self_reset", "invalid.sentinel", "capacity.clamp",
@@ -306,6 +308,7 @@ class CheckResult:
 
     @property
     def status(self) -> str:
+        """``"PASS"``, ``"FAIL"`` or ``"SKIP"`` (a skipped check also has ``passed``)."""
         return "SKIP" if self.skipped else ("PASS" if self.passed else "FAIL")
 
     def __str__(self) -> str:
@@ -2092,7 +2095,7 @@ def check_generator(name: str, params=None, *, devices=None, num_envs: int = 8,
             slow generator fast); ``generator``, ``device`` and ``num_envs`` are set by
             the kit.
         capture_modes: the modes of ``capture.caller`` (see
-            :func:`~track_gen.testing.capture.assert_caller_capturable`).
+            :func:`~track_gen.testing.assert_caller_capturable`).
         skip: check names (or a prefix such as ``"hot_path"``) to report as skipped.
         modules: more dotted module prefixes for ``hot_path.stream`` to probe, besides
             ``track_gen`` and the top-level package of the module defining the
@@ -2103,9 +2106,10 @@ def check_generator(name: str, params=None, *, devices=None, num_envs: int = 8,
         A :class:`Report`; call ``.raise_for_failures()`` to fail on any failed check.
 
     Raises:
-        ValueError: invalid arguments (unknown check names, overlapping seeds, ...).
-        Exceptions of ``registry.describe`` for an unknown or quarantined name
-        (``PluginLoadError`` carries the plugin's load error).
+        ValueError: invalid arguments (unknown check names, overlapping seeds, ...), or
+            an unknown generator name.
+        track_gen.plugin.PluginLoadError: the name belongs to a quarantined plugin
+            (chained from the plugin's load error).
     """
     return _check("generator", name, params, devices=devices, num_envs=num_envs,
                   seeds=seeds, config=config, capture_modes=capture_modes, skip=skip,
@@ -2289,9 +2293,9 @@ def check_stage(kind: str, name: str, params=None, *, upstream: "Mapping | None"
     Raises:
         ValueError: invalid arguments (an unknown kind, a ``pipeline`` the kind does not
             run in, a reserved ``upstream`` key, unknown check names, overlapping
-            seeds, ...).
-        Exceptions of ``registry.describe`` for an unknown or quarantined name
-        (``PluginLoadError`` carries the plugin's load error).
+            seeds, ...), or an unknown stage name.
+        track_gen.plugin.PluginLoadError: the name belongs to a quarantined plugin
+            (chained from the plugin's load error).
     """
     from ..plugin import registry  # noqa: PLC0415
 

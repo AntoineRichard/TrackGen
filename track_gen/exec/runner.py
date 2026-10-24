@@ -292,22 +292,31 @@ class GraphRunner:
 
     @property
     def device(self):
+        """The producer's Warp device (a ``warp.context.Device``)."""
         return self._device
 
     @property
     def capturable(self) -> bool:
+        """Whether the body may be recorded into a caller's capture (the constructor's
+        ``capturable``); ``False`` runs eagerly and raises
+        :class:`~track_gen.exec.NotCapturableError` inside a capture."""
         return self._capturable
 
     @property
     def legacy_stream(self) -> bool:
+        """Whether the body holds a legacy-ABI plugin that launches on Warp's current
+        stream (the constructor's ``legacy_stream``)."""
         return self._legacy_stream
 
     @property
     def default_stream(self) -> "wp.Stream | None":
+        """The stream used when a call passes none and no ambient context applies
+        (``None`` on CPU, or when the constructor got none)."""
         return self._default_stream
 
     @property
     def name(self) -> str:
+        """The label used in error messages (the constructor's ``name``)."""
         return self._name
 
     @property
@@ -437,7 +446,7 @@ class GraphRunner:
                 used as a warm-up pass). Ignored when recording or eager. A
                 legacy-plugin producer runs non-``None`` keys eagerly (it
                 self-captures on Warp's shared current stream, once). At most
-                :data:`MAX_KEYED_GRAPHS` non-``None`` keys get a self-graph;
+                ``MAX_KEYED_GRAPHS`` (16) non-``None`` keys get a self-graph;
                 calls with a further new key run eagerly (with a one-time
                 ``RuntimeWarning``).
         """

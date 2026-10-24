@@ -1,10 +1,9 @@
 """``TrackGenConfig`` / ``GateGenConfig`` <-> ``PipelineSpec``: the default stage lists.
 
-:func:`to_pipeline_spec` is what ``TrackGenerator`` builds. The stage list reproduces
-the 0.2.0.dev2 composition (``warp_pipeline._run_pipeline`` + ``inflate_warp``) launch
-for launch. :func:`to_gate_pipeline_spec` is what ``GateGenerator`` builds (roadmap
-PR11): the gate stage list reproduces the 0.2.0.dev3 ``warp_gate._run_gate_pipeline``
-(the same kernels, dims and scalars).
+:func:`to_pipeline_spec` is what ``TrackGenerator(config)`` builds, and
+:func:`to_gate_pipeline_spec` what ``GateGenerator(config)`` builds: the default track
+and gate stage lists, with each stage's params read from the config's flat fields. A
+config keeps the outputs it had before the pipeline existed, launch for launch.
 """
 from __future__ import annotations
 
@@ -22,13 +21,13 @@ def to_pipeline_spec(config, *, registry=None) -> PipelineSpec:
     """The default :class:`~track_gen.pipeline.PipelineSpec` of a ``TrackGenConfig``.
 
     Ids, in order: ``generator``, ``resample`` (``resample.constant_spacing``),
-    ``width`` (``width.constant``; since 0.2.0.dev4 before relax), ``relax``
+    ``width`` (``width.constant``, before relax), ``relax``
     (``relax.<relax_solver>``, or ``relax.none`` when ``relax_enable=False``),
     ``uniform`` (``resample.uniform``), ``frames``, ``offset``, ``elevation``
     (``elevation.<z_profile>``), ``validity`` and ``lift`` (``lift.flat`` on the flat
     profile, else ``lift.elevated``). A generator that provides ``"z"`` has no
-    elevation (``lift.elevated``), one that provides ``"half_width"`` no width stage
-    (roadmap PR13a). Each stage's params are its Params class's ``from_legacy(config)``
+    elevation (``lift.elevated``), one that provides ``"half_width"`` no width stage.
+    Each stage's params are its Params class's ``from_legacy(config)``
     (the flat field names); the generator's are its resolved ``generator_params``.
     ``relax_solver`` and ``z_profile`` name any stage registered under ``relax`` /
     ``elevation``; a ``half_width`` field of their Params is ``config.half_width`` (the
@@ -44,7 +43,7 @@ def to_pipeline_spec(config, *, registry=None) -> PipelineSpec:
         ValueError: an unknown or oracle-only ``relax_solver``, an unknown
             ``z_profile``, ``smooth_finish=True`` (as ``TrackGenerator``), the
             generator's params are invalid, a non-flat ``z_profile`` / non-zero
-            ``z_base`` for a generator that provides ``z``, or (roadmap PR13d) a
+            ``z_base`` for a generator that provides ``z``, or a
             ``size`` other than 1 for a generator that declares no ``size`` (or whose
             Params do not map it).
         track_gen.plugin.PluginLoadError: ``relax_solver`` / ``z_profile`` names a
@@ -234,8 +233,8 @@ def to_gate_pipeline_spec(config, *, registry=None) -> PipelineSpec:
             ``max_gates`` incompatible with the generator's capacity; an explicit
             ``z_profile`` / ``z_base`` / ``gate_width`` for a generator that provides
             them; invalid generator params; an elevation plugin whose
-            ``Params.from_legacy`` reads a field ``GateGenConfig`` lacks; (roadmap
-            PR13d) a ``size`` other than 1 no stage applies (a gate generator without
+            ``Params.from_legacy`` reads a field ``GateGenConfig`` lacks; a ``size``
+            other than 1 no stage applies (a gate generator without
             ``size`` and no ``normalize.extent``: e.g. a legacy spec).
         track_gen.plugin.PluginLoadError: a name of a quarantined plugin.
     """

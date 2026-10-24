@@ -1,0 +1,13 @@
+# Nitpick allowlist: cross-reference targets that do not resolve yet, as (type, target)
+# pairs, read by docs/conf.py into trackgen_nitpick_allowlist (applied by
+# docs/_ext/trackgen_docscheck.py, which fails a full build on an entry that silences
+# nothing). Generated from a
+# nitpicky build of the tree (every entry comes from autodoc output: docstrings,
+# signatures, show-inheritance bases); third-party targets are ignored by pattern in
+# conf.py instead. Owner in Phase 1: the reference writer, who may only REMOVE entries
+# (fix the docstring or document the target). The list goes to zero by 1.0.
+#
+# Regenerate (only to shrink it): build with this file emptied of entries, then keep the
+# "reference target not found" pairs of the build's output that still apply.
+py:class track_gen._src.collision_frames.FrameContact
+py:class track_gen.exec.host._SlotInfo

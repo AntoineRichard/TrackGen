@@ -1,19 +1,19 @@
 """Top-level facade for the batched track generator.
 
 Runs the pure-Warp track pipeline (generation -> resample -> relax -> inflate, all
-NVIDIA Warp kernels) and returns a fully-populated :class:`Track`. The pipeline is a
-:class:`track_gen.pipeline.Program` built from ``legacy.to_pipeline_spec(config)``
-(roadmap PR10a): the ordered built-in stages, byte-identical to the 0.2.0.dev2
-composition ``warp_pipeline._run_pipeline``. The
-public dataclasses ``TrackGenConfig`` and ``Track`` live in the dependency-free leaf
-module ``types.py``; this facade re-exports ``TrackGenerator`` as the package's
-top-level entry point.
+NVIDIA Warp kernels) and returns a fully-populated :class:`~track_gen.results.Track`.
+The pipeline is a :class:`track_gen.pipeline.Program` built from
+``legacy.to_pipeline_spec(config)`` (roadmap PR10a): the ordered built-in stages,
+byte-identical to the 0.2.0.dev2 composition ``warp_pipeline._run_pipeline``. The public
+dataclasses ``TrackGenConfig`` and ``Track`` live in the dependency-free leaf module
+``types.py``; this facade re-exports ``TrackGenerator`` as the package's top-level entry
+point.
 
-TrackGenerator pre-allocates a single :class:`Track` instance in ``__init__`` and
-returns the SAME instance from every ``generate()`` call (stable ``.ptr`` pointers).
-The generator operates on a fixed configured batch (``config.num_envs``) and the same
-persistent ``Track`` is reused across calls; callers that need a snapshot must use
-``Track.clone()``.
+TrackGenerator pre-allocates a single :class:`~track_gen.results.Track` instance in
+``__init__`` and returns the SAME instance from every ``generate()`` call (stable
+``.ptr`` pointers). The generator operates on a fixed configured batch
+(``config.num_envs``) and the same persistent ``Track`` is reused across calls; callers
+that need a snapshot must use ``Track.clone()``.
 
 Execution (see :class:`track_gen.exec.GraphRunner`): construction runs ONE real eager
 generation (``prepare``: loads every kernel the hot path uses, and leaves the batch for
@@ -65,7 +65,7 @@ __all__ = [
 
 class TrackGenerator:
     """Top-level facade: run the pure-Warp track-generation pipeline and return a
-    :class:`Track`.
+    :class:`~track_gen.results.Track`.
 
     Generation, resample, relaxation and inflation are all expressed as NVIDIA Warp
     kernels (a :class:`track_gen.pipeline.Program` of the default stage list,
@@ -75,11 +75,12 @@ class TrackGenerator:
     ``track_gen.plugin.registry.available("generator")``).
 
     The generator is fixed-batch: it always operates on exactly ``config.num_envs``
-    environments. The output :class:`Track` is pre-allocated once in ``__init__`` (by
-    the pipeline planner) and reused across calls: ``generate()`` always returns
-    the same ``self._track`` instance, writing new results into the same wp.array buffers
-    in place. This ensures stable ``.ptr`` pointers so downstream CUDA graph consumers can
-    bake the device addresses once. Use ``Track.clone()`` to obtain an independent snapshot.
+    environments. The output :class:`~track_gen.results.Track` is pre-allocated once in
+    ``__init__`` (by the pipeline planner) and reused across calls: ``generate()``
+    always returns the same ``self._track`` instance, writing new results into the same
+    wp.array buffers in place. This ensures stable ``.ptr`` pointers so downstream CUDA
+    graph consumers can bake the device addresses once. Use ``Track.clone()`` to obtain
+    an independent snapshot.
 
     Construction runs one real eager generation (warm-up: every kernel the hot path uses
     is loaded, and the result already holds the batch for the rng's current seeds), so
@@ -129,8 +130,8 @@ class TrackGenerator:
             stream: optional default ``wp.Stream`` for calls that pass no ``stream=``
                 and run outside an ambient ``LaunchContext`` scope (see
                 :mod:`track_gen.exec`).
-            out: optional caller-owned ``Track`` the pipeline writes INTO (roadmap
-                PR13b): the generator's result IS ``out`` (stable caller pointers, so a
+            out: optional caller-owned ``Track`` the pipeline writes INTO: the
+                generator's result IS ``out`` (stable caller pointers, so a
                 caller graph built over it keeps working). Every field is checked
                 against the pipeline's layout (``generation`` / ``fail_mask`` may be
                 ``None``, and ``half_width``). A view of a larger result
@@ -315,14 +316,14 @@ class TrackGenerator:
 
     @property
     def program(self):
-        """The :class:`track_gen.pipeline.Program` this generator runs (preview): its
+        """The :class:`track_gen.pipeline.Program` this generator runs: its
         taps (:meth:`~track_gen.pipeline.Program.tap`), fail bits and ``on_invalid``."""
         return self._program
 
     @property
     def params(self) -> "ParamTable":
-        """Runtime parameters, keyed by stage id: ``"generator"``, plus every pipeline
-        stage with a DYNAMIC field (e.g. ``"relax"`` for a relax plugin with one).
+        """The runtime parameters, keyed by stage id (``"generator"``, plus every pipeline
+        stage with a DYNAMIC field, e.g. ``"relax"`` for a relax plugin with one).
 
         ``params["generator"].params`` is the resolved Params instance (``None`` for a
         legacy generator without a Params class). The DYNAMIC fields of a Stage map to
@@ -374,7 +375,7 @@ class TrackGenerator:
     @property
     def rng(self) -> "PerEnvSeededRNG | None":
         """The ``PerEnvSeededRNG`` the generator was built with (``rng=``, or ``seeds=`` a
-        ``PerEnvSeededRNG``), else ``None`` (read-only; roadmap PR15). Its
+        ``PerEnvSeededRNG``), else ``None`` (read-only). Its
         ``set_seeds_warp`` rewrites the seeds :attr:`seeds` reads, in place."""
         return self._rng
 
@@ -394,7 +395,7 @@ class TrackGenerator:
         - ``"regen_mask"``: ``[E]`` int32, zero-initialised. Write it from your own
           kernels (e.g. inside your graph) and pass it as
           ``generate(advance=True, mask=gen.inputs["regen_mask"])``; its pointer
-          never changes, so the generator's self-graph for it is captured once.
+          never changes, so the generator's own CUDA graph for it is captured once.
         - every per-env input a Stage generator declared
           (``StageBuilder.input(name, ...)``): a live ``[E]`` array, latched at each
           generation for the envs it regenerates, like a dynamic parameter;
@@ -408,7 +409,7 @@ class TrackGenerator:
     @property
     def input_info(self) -> "types.MappingProxyType":
         """``name -> track_gen.pipeline.InputInfo`` of every entry of :attr:`inputs`
-        (``program.input_info``, roadmap PR13b): its dtype, ``per`` (``"env"`` /
+        (``program.input_info``): its dtype, ``per`` (``"env"`` /
         ``"raw"``), length, declaring stage, and whether it is latched at the start of a
         generation or read during it."""
         return self._program.input_info
@@ -513,7 +514,7 @@ class TrackGenerator:
         ``Track`` rows (and ``generation``) end the call bit for bit as they were, by
         construction (the pipeline is fixed-shape and recomputes every env, then the
         Program's commit restores the unmasked envs; see
-        :mod:`track_gen.stages.commit`). A reseed or ``seeds.reset_epoch()`` therefore
+        ``track_gen.stages.commit``). A reseed or ``seeds.reset_epoch()`` therefore
         reaches an env at its next masked generation, or every env at the next
         generation without a mask. Within the call the unmasked rows are overwritten
         by the recomputation and then restored, both on the generation's stream: read
@@ -539,11 +540,12 @@ class TrackGenerator:
                 replay) time. Requires ``advance=True``. ``None`` advances every env.
                 Pass a STABLE buffer (e.g. ``inputs["regen_mask"]``): outside a
                 capture each distinct mask pointer captures, and caches, one more
-                self-graph.
+                graph of the generator's own.
 
         Returns:
-            ``self._track`` — the same :class:`Track` instance every call (stable
-            pointers); ``Track.generation`` holds the per-env epoch it was built at.
+            ``self._track`` — the same :class:`~track_gen.results.Track` instance every
+            call (stable pointers); ``Track.generation`` holds the per-env epoch it was
+            built at.
 
         Raises:
             TypeError: if ``num_or_ids`` is an explicit environment-id sequence.
@@ -563,14 +565,15 @@ class TrackGenerator:
 
     def enqueue(self, *, stream=None, advance: bool = False,
                 mask: "wp.array | None" = None) -> Track:
-        """Enqueue one generation without self-graphing or blocking.
+        """Enqueue one generation without building the generator's own CUDA graph or
+        blocking.
 
         Inside a capture on the resolved stream the generation is recorded into the
         caller's graph (as :meth:`generate`); otherwise it runs eagerly on the resolved
         stream. Never captures :attr:`graph`, never host-syncs (a HOST stage's own
         ``ctx.host()`` waits on the stream aside; an iterative, BOUNDED stage runs its
-        full iteration bound when called eagerly on CUDA; its self-graph skips converged
-        windows on device). ``advance`` / ``mask`` as in :meth:`generate`.
+        full iteration bound when called eagerly on CUDA; its own CUDA graph skips
+        converged windows on device). ``advance`` / ``mask`` as in :meth:`generate`.
 
         Returns:
             ``self._track`` (results are stream-ordered).

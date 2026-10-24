@@ -131,7 +131,7 @@ class Component:
     returns :attr:`result`; ``reset(ctx, mask)`` clears the per-env runtime state where
     ``mask[e] != 0`` and nothing else (a stateless component emits nothing).
 
-    In a ``Course`` (roadmap PR15): ``on_generate`` and ``reset`` run in the masked
+    In a ``Course``: ``on_generate`` and ``reset`` run in the masked
     regeneration body, under a CUDA conditional node where the capture allows one, so
     they read and write no bound input (``step`` reads them; a respawn snapshot of an
     input belongs in ``step``: ``reset`` arms a per-env flag that the next ``step``
@@ -400,8 +400,8 @@ class ComponentContext:
             launches its first ``on_generate`` on ``ctx``; a context on another stream
             races its own allocations), after the producer's work completed on it (or
             make that stream wait for the producer's).
-        bounds: Declared bounds of the producer's plan (``name -> number``, roadmap
-            PR15; see :meth:`for_producer`): ``size_hi``, the largest course size the
+        bounds: Declared bounds of the producer's plan (``name -> number``; see
+            :meth:`for_producer`): ``size_hi``, the largest course size the
             plan can draw. Read by ``BandCollision`` / ``HeightFieldBake`` with
             ``size_hi="auto"``. Hand-built sources pass their own (default: none).
     """
@@ -459,9 +459,9 @@ class ComponentContext:
 
     @property
     def bounds(self) -> Mapping:
-        """The producer's declared bounds (read-only mapping, roadmap PR15; see
-        :meth:`for_producer`). ``size_hi``: the largest course size the plan can draw (a
-        size randomizer's construction ``hi``, else the generator's construction
+        """The producer's declared bounds (read-only mapping; see :meth:`for_producer`).
+        ``size_hi``: the largest course size the plan can draw (a size randomizer's
+        construction ``hi``, else the generator's construction
         ``size``); absent when the plan declares no size."""
         return self._bounds
 
@@ -555,12 +555,12 @@ class ComponentContext:
         ``producer`` is a ``TrackGenerator`` / ``GateGenerator`` (its ``program``), a
         built ``Program``, a ``Course`` (its ``generator``), or any object with the
         ``track_gen.pipeline.Producer`` surface that declares ``capacity`` and / or
-        ``bounds`` itself (read before the plan, roadmap PR15); its ``spec`` /
+        ``bounds`` itself (read before the plan); its ``spec`` /
         ``params`` / ``layout`` are read. A result (``gen.generate()``'s ``Track``) has
         no plan: build a ``ComponentContext(track.layout, capacity)`` for a hand-built
         source.
 
-        Bound ``size_hi`` (roadmap PR15, :attr:`bounds`): the construction ``hi`` of a
+        Bound ``size_hi`` (:attr:`bounds`): the construction ``hi`` of a
         ``randomize`` stage drawing ``size`` (``generator.size`` / ``normalize.size``;
         the largest of them), else the construction ``size`` of the generator (or of the
         ``normalize`` stage of a ring gate pipeline); omitted when the plan has no size

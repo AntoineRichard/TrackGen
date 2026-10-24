@@ -8,7 +8,9 @@ radially displaced midpoint to introduce lobes and pinches, and then smooths the
 loop with a closed uniform Catmull-Rom spline.  The key identity of the method is
 the midpoint-displacement layer: without it the output would collapse toward a plain
 angle-sorted polygon; with it the generator produces the pronounced lobes, tight pinches,
-and extended straights that give racing tracks their character.
+and extended straights that give racing tracks their character. It writes one closed
+centerline per :term:`env` at every :term:`generation`, and its shape knobs are per-env
+:term:`dynamic fields <dynamic field>` (`Per-env (dynamic) parameters`_).
 
 .. figure:: ../assets/generator-hull.png
    :alt: Sample tracks produced by the hull generator

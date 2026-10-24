@@ -1,9 +1,24 @@
+.. _writing-a-stage:
+
 Writing a Stage
 ===============
 
-A **stage** is one step of the track pipeline or of the gate pipeline (see
-:doc:`/how-it-works/pipeline-preview`). Besides the generators, six kinds of stage are
-open to plugins:
+.. admonition:: Before you start
+
+   - **What you write:** a ``Stage`` subclass of one of the open kinds below (a relax,
+     width, elevation, validity, order or stations stage), optionally its ``Params``
+     class, and a ``reg.add(...)`` line in your package's ``register(reg)``.
+   - **What you need to know:** the generator guide (:ref:`writing-a-generator`):
+     ``Params``, the ``StageBuilder``, salts, capture classes and the hard rules of
+     ``enqueue`` are the same for every stage, and only what differs is repeated here.
+     Where your stage runs and what it reads: :ref:`pipeline-stages` and
+     :ref:`pipeline-stage-kinds`.
+   - **How you test it:** ``track_gen.testing.check_stage`` runs it in the default
+     pipeline through the conformance checks (:ref:`kit-check-stage`).
+
+A :term:`stage` is one step of the track pipeline or of the gate pipeline (see
+:ref:`pipeline-stages` and :ref:`gate-pipeline`). Besides the generators, six kinds of
+stage are open to plugins:
 
 - ``relax`` reshapes the resampled centerline (``cl.xy``), as the built-in XPBD solver
   does;
@@ -11,27 +26,24 @@ open to plugins:
   the checks read;
 - ``elevation`` writes the per-point altitude (``cl.z``), and the per-gate altitude
   (``gates.z``) when it runs in a gate pipeline;
-- ``validity`` runs a per-env check and sets a fail bit (``valid.fail``), on a track or
-  on gates;
+- ``validity`` runs a check per :term:`env` and sets one of the :term:`fail bits`
+  (``valid.fail``), on a track or on gates;
 - ``order`` puts a gate generator's anchors in course order (``gates.xy``), see
-  `Writing an ordering`_;
+  :ref:`writing-an-ordering`;
 - ``stations`` places gate anchors on a track generator's centerline
   (``anchors.xy``).
 
-A gate generator is a stage too, of kind ``gate_generator``: see `Writing a gate
-generator (anchors)`_.
+A gate generator is a stage too, of kind ``gate_generator``, and the ``order`` kind is
+described with it: see :ref:`writing-a-gate-generator`.
 
 A stage is a ``Stage`` subclass, the protocol a generator Stage uses (see
-:ref:`generator-stage-contract`), with read ports. It ships the way a generator ships:
-in its own pip-installable package, found through the ``track_gen.plugins`` entry point,
-registered by the same ``register(reg)`` function, which may add generators and stages
-alike. It imports only public modules (``track_gen.plugin``, ``track_gen.exec``,
-``track_gen.ops``), and ``track_gen.testing.check_stage`` checks it against the contract
-on this page (see :ref:`kit-check-stage`).
-
-This page assumes the :doc:`generator guide <writing-a-generator>`: Params, the
-``StageBuilder``, salts, capture classes and the hard rules of ``enqueue`` are the same
-for every stage, and only what differs is repeated here.
+:ref:`generator-stage-contract`), with read ports: it reads and writes
+:term:`channels <channel>`. It ships the way a generator ships: in its own
+pip-installable package, found through the ``track_gen.plugins`` entry point, registered
+by the same ``register(reg)`` function, which may add generators and stages alike
+(:ref:`packaging-a-plugin`). It imports only public modules (``track_gen.plugin``,
+``track_gen.exec``, ``track_gen.ops``), and ``track_gen.testing.check_stage`` checks it
+against the contract on this page (see :ref:`kit-check-stage`).
 
 Quick start: a relax stage
 --------------------------
@@ -39,7 +51,8 @@ Quick start: a relax stage
 Taubin smoothing alternates a shrinking Laplacian step (``lam > 0``) and an inflating one
 (``mu < 0``), which smooths a closed polyline without shrinking it. It makes a relax
 stage with one static parameter (the number of passes, which fixes the launch count) and
-two dynamic ones (the step factors, per env, changeable at run time).
+two :term:`dynamic fields <dynamic field>` (the step factors, per env, changeable at run
+time).
 
 **1. Declare the entry point**, as for a generator (skip it if the package already has
 one; one ``register`` adds everything):
@@ -50,6 +63,8 @@ one; one ``register`` adds everything):
    acme = "acme_tracks:register"
 
 **2. Write the stage and register it** (``acme_tracks/taubin.py``):
+
+.. snippet: group=taubin register=register
 
 .. code-block:: python
 
@@ -118,18 +133,20 @@ the buffer it reads. The steps alternate between ``tmp`` and ``out`` and their n
 even, so the last one lands in ``out`` with no copy. ``passes`` is static: it fixes the
 number of launches, which a recorded graph replays forever.
 
-**3. Select it.** Through a preset, by name, with params as a mapping or a
+**3. Select it.** Through a :term:`preset`, by name, with params as a mapping or a
 ``TaubinParams``:
+
+.. snippet: group=taubin
 
 .. code-block:: python
 
-   from track_gen import PerEnvSeededRNG, TrackGenerator
+   from track_gen import TrackGenerator
    from track_gen.pipeline import presets
 
-   rng = PerEnvSeededRNG(seeds=0, num_envs=1024, device="cuda:0")
-   spec = presets.track(num_envs=1024, device="cuda:0",
+   device = "cuda:0"  # or "cpu"
+   spec = presets.track(num_envs=64, device=device,
                         relax=("acme.taubin", {"passes": 20}))
-   gen = TrackGenerator(spec, rng)
+   gen = TrackGenerator(spec)
    track = gen.generate()
 
    gen.params["relax"].set("lam", 0.6)     # every env, from the next generation on
@@ -138,12 +155,18 @@ number of launches, which a recorded graph replays forever.
 Or through the flat config, whose ``relax_solver`` names any registered relax stage (it
 then takes ``TaubinParams.from_legacy(config)``, its defaults here):
 
+.. snippet: group=taubin
+
 .. code-block:: python
 
    from track_gen import TrackGenConfig
 
-   gen = TrackGenerator(TrackGenConfig(num_envs=1024, device="cuda:0",
-                                       relax_solver="acme.taubin"), rng)
+   gen = TrackGenerator(TrackGenConfig(num_envs=64, device=device,
+                                       relax_solver="acme.taubin"))
+
+.. snippet: after
+
+   assert gen.params["relax"].params.passes == 10
 
 The rest of the pipeline is unchanged: the uniform resample, frames, offsets, elevation,
 validity and lift run on the smoothed loop, and ``gen.program.tap("cl.xy",
@@ -241,7 +264,7 @@ Ports and channels
 
 ``reads`` and ``writes`` map a **local port** (the name your ``build`` uses) to a
 **channel** (the pipeline's name for a buffer). The channels are those of the catalogue
-(see :doc:`/how-it-works/pipeline-preview`) and your own namespaced ones, such as
+(see :doc:`/how-it-works/pipeline-stages`) and your own namespaced ones, such as
 ``cl.acme.rank``: a domain prefix, then at least two dot-separated identifiers. The
 prefix is the point domain (:ref:`pipeline-plugin-channels`): ``cl.`` for the track
 kinds, ``gates.`` for a stage on the gate slots, ``anchors.`` for a stations stage
@@ -408,7 +431,9 @@ checks hold the band to it (see :ref:`pipeline-width`). Its real points are the 
 ``count[e]`` of each env's row.
 
 **A writer.** This one narrows the road ``waves`` times per lap, by a per-env fraction
-``depth``:
+``depth`` (with the quick start's imports):
+
+.. snippet: group=ripple requires=contributing/writing-a-stage#taubin register=register
 
 .. code-block:: python
 
@@ -451,6 +476,16 @@ checks hold the band to it (see :ref:`pipeline-width`). Its real points are the 
                ctx.launch(_ripple_k, b.E * S, [count, hw, waves, depth, S, w])
            return enqueue
 
+
+   def register(reg):
+       reg.add(Ripple)
+
+.. snippet: after
+
+   _gen = TrackGenerator(presets.track(num_envs=8, device="cpu", width="acme.ripple",
+                                       half_width=0.15))
+   assert _gen.params["width"].params.half_width == 0.15
+
 Select it with ``presets.track(..., width="acme.ripple")`` (there is no flat-config
 shortcut for widths). Its ``half_width`` field is the nominal width, and the preset fills
 it: ``presets.track(..., width="acme.ripple", half_width=0.15)`` runs
@@ -465,6 +500,8 @@ and a stretch narrowed below ``w_floor`` fails fail bit 4 on the final points.
 
 **A rewrite.** A width stage that reads ``cl.half_width`` and writes it through the same
 port rewrites the width an earlier stage wrote. This one scales it by a per-env factor:
+
+.. snippet: group=rescale requires=contributing/writing-a-stage#taubin register=register
 
 .. code-block:: python
 
@@ -501,8 +538,27 @@ port rewrites the width an earlier stage wrote. This one scales it by a per-env 
                ctx.launch(_rescale_k, b.E * S, [w_in, count, k, S, w_out])
            return enqueue
 
-Insert it after the width slot: ``spec.insert_after("width", StageRef("width",
-"acme.rescale", {"factor": 0.8}, id="rescale"))``. The rewritten width is no longer
+
+   def register(reg):
+       reg.add(Rescale)
+
+Insert it after the width slot:
+
+.. snippet: group=rescale
+
+.. code-block:: python
+
+   from track_gen.pipeline import StageRef
+
+   spec = presets.track(num_envs=64, device=device).insert_after(
+       "width", StageRef("width", "acme.rescale", {"factor": 0.8}, id="rescale"))
+   gen = TrackGenerator(spec)
+
+.. snippet: after
+
+   assert "rescale" in spec.ids and gen.params["rescale"].params.factor == 0.8
+
+The rewritten width is no longer
 ``width.constant``'s constant, so XPBD, ``offset`` and ``validity`` run their per-point
 kernels: the outputs are close to, not byte-equal to, those of
 ``presets.track(half_width=0.08, spacing=0.06)`` (the rescaled spec keeps the default
@@ -515,15 +571,21 @@ channel the width, scaled and clamped per env
 (``min(max(scale * src, lo), max(hi, lo))``: ``lo <= hi`` is checked at build, a
 run-time ``hi`` below ``lo`` clamps to ``lo``; NaN kept). Its ``src`` is a required
 read port: wire it to the channel. With a generator that writes a per-point
-``raw.acme.hw`` attribute (the guide's ``acme.ribbon`` with one more
-``float32`` write, carried to ``cl.acme.hw``, see :ref:`generator-attributes`):
+``raw.acme.hw`` attribute (the generator guide's ``acme.ribbon``, carried to
+``cl.acme.hw``, see :ref:`generator-attributes`):
+
+.. snippet: group=from-channel requires=contributing/writing-a-stage#rescale,contributing/writing-a-generator#ribbon
 
 .. code-block:: python
 
    spec = presets.track(
-       num_envs=1024, device="cuda:0", generator="acme.ribbon",
+       num_envs=64, device="cuda:0", generator="acme.ribbon",
        width=StageRef("width", "from_channel", {"lo": 0.0, "hi": 0.3},
                       ports={"src": "cl.acme.hw"}))
+
+.. snippet: after
+
+   assert TrackGenerator(spec).generate().valid.numpy().any()
 
 A generator that knows its half-widths can also provide them (``raw.half_width``,
 :ref:`generator-provides`): the width slot then goes away, with no stage at all.
@@ -562,9 +624,11 @@ The built-in XPBD separates two beads ``i`` and ``j`` to ``r_i + r_j``, with ``r
 w_i * (1 + margin)``, and keeps every bead's curvature radius above ``r_i``; the
 per-point thickness check asks ``|p_i - p_j| >= (1 - relax_tol) (w_i + w_j)`` of every
 non-neighbouring pair. A plugin that reads the array is right at every width. The
-built-ins also keep their 0.2.0.dev3 scalar kernels for a constant width, chosen from
-``width.constant``'s private declaration (:ref:`pipeline-width`); that choice is not
-open to plugins in this release.
+built-ins also keep scalar-width kernels for a constant width (a host scalar computed in
+double precision, which the per-point kernels' ``float32`` reads do not reproduce bit
+for bit), chosen from ``width.constant``'s private declaration (:ref:`pipeline-width`);
+that choice is not open to plugins, so a plugin width that writes a constant value runs
+the per-point kernels.
 
 An elevation stage
 ------------------
@@ -574,6 +638,8 @@ length (``cl.arclen2``, cumulative, and ``cl.length2``, the lap length) that ``f
 writes before it. The lift then builds level cross-sections at that altitude, and the 3D
 tangent and arc length. This one draws a random phase per env and makes ``waves``
 sinusoidal hills per lap with a per-env amplitude:
+
+.. snippet: group=hills requires=contributing/writing-a-stage#taubin register=register
 
 .. code-block:: python
 
@@ -627,6 +693,18 @@ sinusoidal hills per lap with a per-env amplitude:
                           [b.seed, salt, cum, perim, count, amp, waves, base, S, z])
            return enqueue
 
+
+   def register(reg):
+       reg.add(SinusoidHills)
+
+.. snippet: after
+
+   _spec = presets.track(num_envs=8, device="cpu", elevation="acme.sinusoid_hills")
+   assert TrackGenerator(_spec).generate().valid.numpy().any()
+   _gen = TrackGenerator(TrackGenConfig(num_envs=8, device="cpu",
+                                        z_profile="acme.sinusoid_hills"))
+   assert _gen.params["elevation"].params.base == 0.0
+
 Select it with ``presets.track(..., elevation="acme.sinusoid_hills")``, or with
 ``TrackGenConfig(z_profile="acme.sinusoid_hills")``: ``z_profile`` names any registered
 elevation stage, and a plugin's Params come from its ``from_legacy(config)``, which may
@@ -667,6 +745,8 @@ and writes the result to a new version. ``b.fail_bit()`` assigns the bit: 16 for
 first plugin check of a pipeline, 17 for the next, in pipeline order. Pass it to the
 kernel as a host scalar:
 
+.. snippet: group=kmax requires=contributing/writing-a-stage#taubin register=register
+
 .. code-block:: python
 
    @wp.kernel
@@ -706,19 +786,30 @@ kernel as a host scalar:
                ctx.launch(_kmax_k, b.E, [kappa, count, k_max, S, bit, fail_in, fail_out])
            return enqueue
 
+
+   def register(reg):
+       reg.add(MaxCurvature)
+
 Add it after the built-in checks:
+
+.. snippet: group=kmax
 
 .. code-block:: python
 
    from track_gen.pipeline import StageRef, presets
 
-   spec = presets.track(num_envs=1024, device="cuda:0",
+   spec = presets.track(num_envs=64, device="cuda:0",
                         checks=("default", ("acme.max_curvature", {"kappa_max": 8.0})))
-   gen = TrackGenerator(spec, rng)
+   gen = TrackGenerator(spec)
    gen.program.fail_bits      # {'generator': 0, ..., 'truncation': 7, 'acme.max_curvature': 16}
 
    # or into any spec, under an id of your choice:
    spec = spec.insert_after("validity", StageRef("validity", "acme.max_curvature", id="kmax"))
+
+.. snippet: after
+
+   assert gen.program.fail_bits["acme.max_curvature"] == 16
+   assert "kmax" in TrackGenerator(spec).program.fail_bits
 
 ``Track.valid`` is ``fail_mask == 0``, so the check rejects envs like the built-in ones,
 and ``Track.fail_mask`` tells which check rejected each env. The rules of fail bits:
@@ -761,262 +852,6 @@ by the commit with the other fields (:ref:`pipeline-gate-plugin-channels`). A tr
 does the same with a ``cl.acme.<name>`` channel and ``per="cl"``, written after
 ``uniform`` (on the final points), into ``Track.attributes``.
 
-.. _gate-generator-stage:
-
-Writing a gate generator (anchors)
-----------------------------------
-
-A gate generator emits *anchors*: the plan-view points the gate pipeline then orders,
-normalizes, separates, elevates, lifts and frames (:ref:`pipeline-gates`). It is a
-``Stage`` with ``kind="gate_generator"`` and ``output="anchors"``. It writes two
-channels, ``anchors.xy`` (``[E * A]`` ``vec2f``, env ``e``'s anchors at ``e * A + i``) and
-``anchors.count`` (``[E]`` ``int32``), and may write per-anchor attributes it
-``provides``. It does not order its anchors (an ``order`` stage does), size them to the
-course extent (``normalize.extent`` does, when it declares
-``preferred={"normalize": "extent"}``; the stage's dynamic ``size``, key
-``normalize.size``, is then the pipeline's per-env course size), or compute altitudes,
-tangents and frames. A gate generator that sizes its own anchors instead declares a
-``size`` field by the convention of :ref:`generator-size-convention` (key
-``generator.size``, as the ``bezier`` / ``hull`` gate generators).
-
-This one places ``gates`` anchors on a circle with a random phase per env, and provides
-their altitude (a wave that climbs ``turns`` times per lap) and their analytic tangent, so
-the pipeline keeps both instead of running an elevation and a finite-difference tangent:
-
-.. code-block:: python
-
-   import dataclasses
-
-   import warp as wp
-
-   from track_gen import plugin
-   from track_gen.ops.funcs import hash32
-
-
-   @wp.kernel
-   def _helix_k(seed: wp.array(dtype=wp.int32), salt: wp.uint32, A: int, r: float,
-                height: float, turns: int, xy: wp.array(dtype=wp.vec2f),
-                z: wp.array(dtype=wp.float32), tangent: wp.array(dtype=wp.vec3f)):
-       t = wp.tid()                         # one thread per anchor slot: t = e * A + i
-       e = t // A
-       i = t - e * A
-       key = hash32(wp.uint32(seed[e]) ^ salt) & wp.uint32(0x7FFFFFFF)
-       state = wp.rand_init(wp.int32(key))
-       phase = 6.2831853 * wp.randf(state)  # the same draw for every anchor of e
-       s = 6.2831853 * float(i) / float(A)  # lap parameter in [0, 2*pi)
-       u = s + phase
-       w = float(turns) * s
-       xy[t] = wp.vec2f(r * wp.cos(u), r * wp.sin(u))
-       z[t] = height * wp.sin(w)
-       # d(position)/ds; the frames stage normalizes it
-       tangent[t] = wp.vec3f(-r * wp.sin(u), r * wp.cos(u),
-                             height * float(turns) * wp.cos(w))
-
-
-   @dataclasses.dataclass(frozen=True, kw_only=True)
-   class HelixParams(plugin.Params):
-       gates: int = plugin.static(16, lo=4, doc="gates per lap")
-       radius: float = plugin.static(0.8, lo=0.0, doc="loop radius, times scale")
-       height: float = plugin.static(0.3, lo=0.0, doc="altitude amplitude")
-       turns: int = plugin.static(3, lo=1, doc="climbs per lap")
-
-
-   class Helix(plugin.Stage):
-       kind = "gate_generator"
-       name = "acme.helix"
-       output = "anchors"
-       Params = HelixParams
-       writes = {"xy": "anchors.xy", "count": "anchors.count",
-                 "z": "anchors.z", "tangent": "anchors.tangent"}
-       provides = frozenset({"z", "tangent"})
-       orderings = frozenset({"raw"})   # provided attributes travel by anchor index
-       preferred = {"order": "raw"}
-
-       def capacity(self, params, layout):
-           return {"gates": params.gates, "min_gates": params.gates}
-
-       def build(self, b, params):
-           A = int(params.gates)
-           xy = b.write("xy", wp.vec2f, per="anchors")         # [E * A]
-           count = b.write("count", wp.int32)                  # [E]
-           z = b.write("z", wp.float32, per="anchors")
-           tangent = b.write("tangent", wp.vec3f, per="anchors")
-           salt = b.salt("phase")
-           r = float(params.radius) * float(b.scale)
-           height, turns = float(params.height), int(params.turns)
-
-           def enqueue(ctx):
-               ctx.fill(count, A)                              # every env: A anchors
-               ctx.launch(_helix_k, b.E * A,
-                          [b.seed, salt, A, r, height, turns, xy, z, tangent])
-           return enqueue
-
-
-   def register(reg):
-       reg.add(Helix)
-
-Select it through the preset, which reads the generator's declaration to build the
-stage list:
-
-.. code-block:: python
-
-   from track_gen import GateGenConfig, GateGenerator
-   from track_gen.pipeline import presets
-
-   spec = presets.gates(num_envs=1024, device="cuda:0", generator="acme.helix")
-   spec.ids
-   # ('generator', 'order', 'carry_z', 'carry_tangent', 'gate_relax', 'lift',
-   #  'gate_frames', 'validity')
-   gates = GateGenerator(spec).generate()
-
-   # The flat config too: gate_ordering=None (its default) is the generator's
-   # default order, "raw" here.
-   GateGenerator(GateGenConfig(num_envs=1024, device="cuda:0", generator="acme.helix"))
-
-``gate_arclen``, ``elevation`` and ``tangents`` are gone: ``carry.z`` and
-``carry.tangent`` copy the provided values to the gate slots, so ``GateSequence.position``
-has the helix's altitude bit for bit and ``GateSequence.tangent`` its normalized tangent.
-The sphere separation (``gate_relax``) still runs and may move a gate's xy; these gates
-are far apart, so it does not.
-
-The contract:
-
-.. list-table::
-   :header-rows: 1
-   :widths: 22 78
-
-   * - Attribute or method
-     - Meaning
-   * - ``kind``, ``output``
-     - ``"gate_generator"`` and ``"anchors"``. A ``kind="generator"`` stage with
-       ``output="anchors"`` is refused (declare ``kind="gate_generator"``).
-   * - ``name``
-     - The ``GateGenConfig.generator`` (or ``presets.gates(generator=...)``) string.
-       Dotted for third parties.
-   * - ``reads``
-     - Empty: a generator reads no channel; its seed is ``b.seed``.
-   * - ``writes``
-     - ``anchors.xy`` and ``anchors.count`` (both required), plus ``anchors.z``,
-       ``anchors.tangent``, ``anchors.half_size`` and ``anchors.roll`` for the
-       attributes it provides, and its own per-anchor attributes
-       ``anchors.<package>.<name>`` (``float32``, ``int32``, ``vec2f`` or ``vec3f``;
-       ``export=True`` makes one a ``GateSequence.attributes`` entry, see
-       :ref:`pipeline-gate-plugin-channels`); no other channel.
-   * - ``provides``
-     - Exactly the attributes it writes, a subset of ``{"z", "tangent", "half_size",
-       "roll"}``; ``half_size`` and ``roll`` come together (write ``roll = 0`` for
-       upright gates). See :ref:`pipeline-provides` for what the pipeline drops and
-       what reaches the ``GateSequence``.
-   * - ``orderings``
-     - A whitelist (``frozenset``) of the order names it accepts, or ``None``. A
-       generator that provides attributes, or writes ``anchors.<package>.<name>``
-       channels, must declare ``frozenset({"raw"})``: the attributes are carried by
-       anchor index (``carry.<attr>``, ``carry.attributes``), and only ``order.raw``
-       keeps it.
-   * - ``excluded_orderings``
-     - With ``orderings=None``: the orders it refuses, every other registered order
-       being accepted (third-party ones included). The built-ins use it: ``bezier`` and
-       ``hull`` exclude ``raw``, ``polar``, ``checkpoint`` and ``voronoi`` exclude
-       ``random_pairs``. Declare one of the two, not both.
-   * - ``preferred``
-     - ``{"order": name, "normalize": name}``, both optional: the default order of
-       ``presets.gates`` (it must be accepted), and ``"extent"`` to have the pipeline
-       scale the ordered gates to ``TARGET_EXTENT * scale`` as ``polar`` does.
-   * - ``capacity(params, layout)``
-     - ``{"gates": A, "min_gates": k}``: ``A >= 1`` anchors per env at most (the row
-       stride of ``anchors.*``), ``k`` in ``[0, A]`` at least (default ``0``). The planner
-       requires ``A <= max_gates`` and the validity stage's ``min_gates <= A``.
-   * - ``build(b, params)``
-     - As for any stage. ``b.layout.stride`` is ``max_gates``; size the anchors with
-       ``per="anchors"`` (``A``), never with the layout. Write ``count[e]`` and the first
-       ``count[e]`` anchors of every env on every call; the slots after them are never
-       read (write them deterministically, NaN or not, as the built-in samplers do).
-
-Everything else is the generator contract of :ref:`generator-stage-contract`: Params
-(static and dynamic), ``capture`` and ``capture_class``, salts, the hard rules of
-``enqueue``, per-env determinism. ``registry.add`` raises ``TypeError`` or ``ValueError``
-(quarantine under ``warn``) for a declaration that breaks the table, for example
-``Stage Helix provides per-anchor attributes ['tangent', 'z']: they are carried to the gate
-slots by index, so orderings must be frozenset({'raw'})``.
-
-The anchors keep the generator's own order, and the pipeline orders them: an unordered
-cloud (as ``bezier`` emits) excludes ``raw``; a loop in course order (as ``polar``
-emits) excludes ``random_pairs`` and is fine with ``raw`` or ``ccw``. Size the anchors as
-you like: with ``preferred["normalize"] = "extent"`` the pipeline centers them and scales
-the longest bounding-box side to ``ops.constants.TARGET_EXTENT * scale``; without it,
-they are used as written (``bezier`` and ``hull`` keep their grid's size).
-
-Test it with ``check_gate_generator("acme.helix")`` (:doc:`testing-a-plugin`); it also
-checks that every env's ``anchors.count`` lies within ``capacity()``. A legacy
-``GateGeneratorSpec`` keeps working but is deprecated
-(:ref:`gate-generator-contract`).
-
-.. _writing-an-ordering:
-
-Writing an ordering
--------------------
-
-An ``order`` stage decides the sequence in which the gates are flown. It reads the
-anchors (``A``-strided) and writes the first ``m`` gate slots (``G``-strided) of
-``gates.xy``, NaN after them, where ``m = min(count[e], A, G)``, and ``gates.count``,
-normally a copy of ``anchors.count``. This one flies a generator's own order backwards:
-
-.. code-block:: python
-
-   @wp.kernel
-   def _reverse_k(src: wp.array(dtype=wp.vec2f), A: int, count: wp.array(dtype=wp.int32),
-                  G: int, dst: wp.array(dtype=wp.vec2f)):
-       t = wp.tid()                         # one thread per gate slot: t = e * G + i
-       e = t // G
-       i = t - e * G
-       m = wp.clamp(count[e], 0, wp.min(A, G))
-       if i < m:
-           dst[t] = src[e * A + (m - 1 - i)]
-       else:
-           dst[t] = wp.vec2f(wp.nan, wp.nan)   # padding: every slot is written
-
-
-   class Reverse(plugin.Stage):
-       kind = "order"
-       name = "acme.reverse"
-       reads = {"anchors": "anchors.xy", "n": "anchors.count"}
-       writes = {"xy": "gates.xy", "count": "gates.count"}
-
-       def build(self, b, params):
-           src, n = b.read("anchors"), b.read("n")
-           dst = b.write("xy", wp.vec2f, per="gates")      # [E * G]
-           count = b.write("count", wp.int32)              # [E]
-           A, G = b.stride_of("anchors"), b.stride_of("xy")
-
-           def enqueue(ctx):
-               ctx.launch(_reverse_k, b.E * G, [src, A, n, G, dst])
-               ctx.copy(count, n)
-           return enqueue
-
-The read and write ports have different names: ``anchors.xy`` and ``gates.xy`` are two
-channels, and a port in both maps must name one channel. ``A`` and ``G`` come from
-``b.stride_of``: the anchors are written at the generator's own stride, the gate slots at
-``max_gates``.
-
-Select it by name, with the flat config or the preset:
-
-.. code-block:: python
-
-   GateGenerator(GateGenConfig(num_envs=1024, device="cuda:0", generator="polar",
-                               gate_ordering="acme.reverse"))
-   presets.gates(num_envs=1024, device="cuda:0", generator="polar",
-                 order="acme.reverse")
-
-Every built-in gate generator accepts a third-party order: they declare
-``excluded_orderings``, not a whitelist. A generator with a whitelist (``orderings``, as
-one that provides attributes) accepts only the orders it lists, and the planner refuses
-the others with ``gate generator 'acme.helix' does not support gate_ordering
-'acme.reverse'; supported: ['raw'] (its preferred order is 'raw')``. An order that
-needs randomness reads the ``seed`` channel (``reads = {..., "seed": "seed"}``) and keys
-its stream on ``b.salt(<stream>)`` (:ref:`stage-salts`); the built-in
-``order.random_pairs`` keeps 0.2.0.dev3's fixed salt 7919 for byte identity. Test it
-with ``check_stage("order", "acme.reverse")``.
-
 .. _stage-runtime-params:
 
 Runtime parameters
@@ -1027,11 +862,12 @@ A stage's dynamic parameters work as a generator's (see
 ``"generator"`` and every stage with a dynamic field, ``gen.params["relax"]["lam"]`` is
 the live ``[E]`` array, and ``gen.params["relax"].set("lam", 0.6)`` writes it, on the
 resolved stream, recordable inside a caller's graph. The new value is used from the next
-generation. ``b.param`` returns the stage's working copy, latched at the start of every
-generation (for the masked envs only, under a masked regeneration); read it in
+generation. ``b.param`` returns the stage's working copy, copied from the live array at
+the start of every generation (for the masked envs only, under a masked regeneration;
+:ref:`how the copy works <pipeline-latch>`); read it in
 ``enqueue``, never write it, and read each env's own entry (``param[e]``): the kit's
 ``params.per_env`` check sets the field per env and compares every env with a scalar
-run. The latch runs at the start of segment ``0``, so in a Program with a ``HOST``
+run. The copy runs at the start of segment ``0``, so in a Program with a ``HOST``
 stage a write recorded after segment ``0`` applies at the next generation
 (:ref:`pipeline-segments`). The built-in elevation stages work the same way: their
 ``z_min`` / ``z_max`` (and ``z_max_step``, ``z_noise_amplitude``) are dynamic,
@@ -1052,7 +888,7 @@ the graph, at every generation, by the built-in ``randomize.uniform`` stage:
 The draw is ``lo + u * (hi - lo)`` keyed on the env's effective seed, clamped to the
 field's declared ``lo`` / ``hi``: declare bounds on every field that is safe to
 randomize. Nothing changes in your stage: ``b.param(field)`` returns the drawn ``[E]``
-array, filled before your stage runs in the same generation (it is not latched, and
+array, filled before your stage runs in the same generation (it is not copied, and
 ``gen.params[...].set`` on it raises). ``int32`` fields cannot be drawn in 0.x.
 
 Capture classes
@@ -1063,11 +899,12 @@ As for a generator (:ref:`stage-capture-classes`), and the same in a gate pipeli
 - ``STATIC`` (default): a fixed launch sequence, recorded and replayed like the
   built-ins.
 - ``BOUNDED``: an iteration with a static bound that may stop early, through
-  ``ctx.bounded_loop``. Capturable by anything: a self-graph, or a Warp-registered
-  capture (``wp.ScopedCapture``, ``wp.capture_begin``, ``registered(conditional=True)``)
-  on CUDA 12.4+, skips the converged windows on device; other captures (a plain
-  ``torch.cuda.graph``, inside ``track_gen.exec.unconditional()``) and eager ``cuda``
-  calls run the full bound (see `Writing an iterative (BOUNDED) stage`_).
+  ``ctx.bounded_loop``. Recordable by anything: the generator's own graph, or a
+  Warp-registered capture (``wp.ScopedCapture``, ``wp.capture_begin``,
+  ``registered(conditional=True)``) on CUDA 12.4+, skips the converged windows on device
+  (a :term:`conditional node`); other captures (a plain ``torch.cuda.graph``, inside
+  ``track_gen.exec.unconditional()``) and eager ``cuda`` calls run the full bound (see
+  `Writing an iterative (BOUNDED) stage`_).
 - ``HOST``: host readbacks or host control flow. The stage runs eagerly on every call,
   as its own segment of the ``Program``: the stages before and after it still replay
   from graphs. A caller cannot record the Program (``NotCapturableError`` before any
@@ -1076,7 +913,7 @@ As for a generator (:ref:`stage-capture-classes`), and the same in a gate pipeli
 
 The Program's capture class is the highest of its stages' (``STATIC`` < ``BOUNDED`` <
 ``HOST``); ``Program.segments`` shows how the stages are grouped (see
-:doc:`/how-it-works/pipeline-preview`).
+:doc:`/how-it-works/pipeline-stages`).
 
 .. _stage-bounded:
 
@@ -1089,14 +926,16 @@ check_every=...)``: ``n_iters`` bounds the iteration count, ``body(ctx, it)`` em
 iteration (``it`` is a plain ``int``), and ``active``, a ``[1]`` int32 flag the body
 writes on device, says whether any env still needs the next window of ``check_every``
 iterations. Where the call runs decides whether the loop really stops early (see
-:ref:`cuda-graph-bounded`): an eager ``cpu`` run polls ``active`` and stops, a self-graph
-or another Warp-registered capture with conditional nodes skips the remaining windows on
-device, every other run executes the full bound. The outputs must be the same bytes in
-every case.
+:ref:`cuda-graph-bounded`): an eager ``cpu`` run polls ``active`` and stops, the
+generator's own graph or another Warp-registered capture with conditional nodes skips the
+remaining windows on device, every other run executes the full bound. The outputs must
+be the same bytes in every case.
 
 This relax stage moves each env toward a fixed point (a Laplacian smoothing step plus a
 pull back to its input loop, an iteration that contracts) and freezes an env once its
 largest step falls under ``tol``:
+
+.. snippet: group=settle register=register
 
 .. code-block:: python
 
@@ -1186,6 +1025,22 @@ largest step falls under ``tol``:
                                 first_check=K, check_every=K)
            return enqueue
 
+
+   def register(reg):
+       reg.add(Settle)
+
+.. snippet: after
+
+   from track_gen import TrackGenerator
+   from track_gen.pipeline import presets
+   from track_gen.testing import check_stage, trace_launches
+
+   _gen = TrackGenerator(presets.track(num_envs=8, device="cpu", relax="acme.settle"))
+   with trace_launches() as _trace:
+       _gen.generate()
+   assert sum(k.endswith("_step_k") for k in _trace.kernels()) == 8 + 3 * 8
+   assert check_stage("relax", "acme.settle").result("bounded.absorbing").status == "PASS"
+
 For eight ``bezier`` tracks (seeds 0 to 7) on ``cpu``, the loop stops after three of its
 seven windows, with the same bytes as all 64 iterations give. Like the Taubin quick
 start, the stage shows the mechanics: it enforces no separation, so at the default
@@ -1197,11 +1052,12 @@ The checklist of a ``BOUNDED`` stage:
   returns it). A stage declared ``STATIC`` that calls ``bounded_loop(active=...)`` raises
   ``ValueError`` at construction (``... declare capture = CaptureClass.BOUNDED``).
   ``active=None`` (a plain static unroll) is fine in any stage.
-- **Make the freeze absorbing.** Once ``active`` reads ``0``, every remaining iteration
-  must leave the stage's outputs (and anything it reads after the loop) bitwise
-  unchanged: a per-env flag that only ever goes from running to frozen, and every kernel
-  that writes an output returning early for a frozen env. Scratch the loop alone uses
-  (``moved``, ``active`` here) may differ.
+- **Make the freeze absorbing** (once frozen, an env never changes again). Once
+  ``active`` reads ``0``, every remaining iteration must leave the stage's outputs (and
+  anything it reads after the loop) bitwise unchanged: a per-env flag that only ever
+  goes from running to frozen, and every kernel that writes an output returning early
+  for a frozen env. Scratch the loop alone uses (``moved``, ``active`` here) may
+  differ.
 - **Refresh** ``active`` **on the iteration before each window.** The windows start at
   ``first_check``, ``first_check + check_every``, ...; the check before the window at
   ``lo`` reads what iteration ``lo - 1`` wrote. Here ``first_check = check_every = K``
@@ -1213,12 +1069,15 @@ The checklist of a ``BOUNDED`` stage:
 - **Keep each window device-only.** Under lowering (b) a window is the body of a CUDA
   conditional node, which may hold kernel launches, memsets and device-to-device copies
   only. Launch kernels and use ``ctx.copy`` / ``ctx.fill`` between device arrays on
-  ``ctx``'s stream; no copy to or from host or pinned memory, no event, no other stream
-  (no ``wait_stream`` fork or join). Anything else fails inside ``wp.capture_if`` while
-  the caller's capture is being recorded, so the iterations before the window are
-  already recorded. ``check_stage(..., devices=["cuda:0"])`` (``bounded.lowering``)
-  records every window that way.
-- **Mind the cost.** A self-graph replays a conditional node per window; a caller's plain
+  ``ctx``'s stream; no copy to or from pageable host memory, no event, no other stream
+  (no ``wait_stream`` fork or join). CUDA accepts a copy from pinned, device-mapped host
+  memory in the body, but keep windows to device memory for portability. Anything else
+  fails inside ``wp.capture_if`` while the caller's capture is being recorded, so the
+  iterations before the window are already recorded.
+  ``check_stage(..., devices=["cuda:0"])`` (``bounded.lowering``) records every window
+  that way.
+- **Mind the cost.** The generator's own graph replays a conditional node per window; a
+  caller's plain
   ``torch.cuda.graph`` (and any eager ``cuda`` call) runs the full ``n_iters``, so pick a
   bound you can afford, with the per-iteration work of a frozen env reduced to early
   returns.
@@ -1250,6 +1109,8 @@ on ``cuda`` (see :ref:`cuda-graph-host`). It reaches the host through ``ctx.host
 
 This generator draws each env's loop on the host with NumPy, from the env's effective
 seed:
+
+.. snippet: group=blob register=register
 
 .. code-block:: python
 
@@ -1299,6 +1160,20 @@ seed:
                ctx.fill(valid, 1)                          # device work goes through ctx
            return enqueue
 
+
+   def register(reg):
+       reg.add(Blob)
+
+.. snippet: after
+
+   from track_gen import TrackGenerator
+   from track_gen.pipeline import presets
+
+   _gen = TrackGenerator(presets.track(num_envs=8, device="cpu", generator="acme.blob"))
+   assert _gen.generate().valid.numpy().any()
+   from track_gen.testing import check_generator
+   check_generator("acme.blob").raise_for_failures()
+
 ``HostOps`` has four operations, each on the call's stream:
 
 - ``read_i32(arr, index=0)``: one element of an int32 device array, through a
@@ -1332,23 +1207,17 @@ Users who need to record the whole pipeline into their own graph build it with
 ``PipelineSpec(..., require_caller_capturable=True)``, which refuses ``HOST`` stages at
 build with a ``PlanError`` naming them. ``check_generator("acme.blob")`` (or
 ``check_stage`` for a pipeline stage) runs the ``HOST`` variants of the checks: eager
-determinism and statelessness, the segmented self-graph against an eager run, and the
-refusals (see :doc:`testing-a-plugin`).
+determinism and statelessness, the segmented graphs against an eager run, and the
+refusals (see :ref:`the HOST checks <kit-host-checks>`).
 
-Registering and selecting
--------------------------
+Selecting a stage
+-----------------
 
-``register(reg)`` adds stage classes with ``reg.add(MyStage)``, next to any generators.
-Names follow the generator rules (dotted, prefixed by your entry-point name, see
-:ref:`plugin-names`), and so do duplicates, loading and quarantine (see
-:ref:`how a quarantined plugin is matched <plugin-quarantine>`): a ``z_profile`` or
-``relax_solver`` that names a stage of a quarantined plugin raises its
-``PluginLoadError``. ``registry.describe(kind, name)``
-reports a stage's ``reads``, ``writes``, ``capture``, ``capturable`` and
-``params_schema``; ``output`` is ``None`` (``"anchors"`` for a gate generator, which also
-reports ``orderings``, ``excluded_orderings`` and ``preferred``).
-
-A stage is selected by:
+``register(reg)`` adds stage classes with ``reg.add(MyStage)``, next to any generators;
+names, duplicates, loading and quarantine follow the rules of :ref:`packaging-a-plugin`
+(dotted names, :ref:`plugin-names`). ``registry.describe(kind, name)`` reports a stage's
+``reads``, ``writes``, ``capture``, ``capturable`` and ``params_schema``. A stage is
+selected by:
 
 - ``presets.track(..., relax=..., width=..., elevation=..., checks=(...))``, with a name,
   ``(name, params)`` or a ``StageRef`` (see :ref:`pipeline-presets`);
@@ -1372,6 +1241,8 @@ independence, statelessness, the hot-path guards, caller capture on CUDA, the
 of its inputs and recomputes its output from them), for a validity stage
 ``validity.bits``, and for a width stage ``width.values``:
 
+.. snippet: group=testing requires=contributing/writing-a-stage#from-channel,contributing/writing-a-stage#ripple,contributing/writing-a-stage#hills,contributing/writing-a-stage#kmax,contributing/writing-a-gate-generator#reverse
+
 .. code-block:: python
 
    from track_gen.testing import check_stage
@@ -1385,7 +1256,9 @@ of its inputs and recomputes its output from them), for a validity stage
                upstream={"elevation": "acme.sinusoid_hills"}).raise_for_failures()
    check_stage("order", "acme.reverse").raise_for_failures()
 
-See :ref:`kit-check-stage` for the checks and the arguments. Test the stage's own
-properties too: that a ``tap`` of its output matches a NumPy reference on a small batch,
-that a dynamic parameter set with ``gen.params[...].set`` takes effect, that a check sets
-its bit exactly where it should (:ref:`plugin-own-tests` shows the patterns).
+See :ref:`kit-check-stage` for the checks and the arguments (``check_stage("order",
+"acme.reverse")`` checks the ordering of :ref:`writing-an-ordering`). Test the stage's
+own properties too: that a ``tap`` of its output matches a NumPy reference on a small
+batch (:ref:`pipeline-taps`), that a dynamic parameter set with ``gen.params[...].set``
+takes effect, that a check sets its bit exactly where it should (:ref:`plugin-own-tests`
+shows the patterns).

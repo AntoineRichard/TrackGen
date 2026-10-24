@@ -2,7 +2,7 @@
 
 All of them derive from :class:`CaptureError`, itself a ``RuntimeError`` (Warp
 reports capture failures as ``RuntimeError`` too), so callers can catch the
-whole family at once. :class:`RebindAfterCaptureWarning` is a warning (roadmap PR14).
+whole family at once. :class:`RebindAfterCaptureWarning` is a warning.
 """
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ __all__ = ["CaptureError", "NotCapturableError", "LegacyPluginStreamError",
 
 class RebindAfterCaptureWarning(UserWarning):
     """A bound input array was replaced after a hot method that reads it was recorded
-    into a capture (roadmap PR14).
+    into a capture.
 
     The recorded graph keeps reading the arrays that were bound when it was recorded, so
     after a rebind its replays silently read the old buffers. Emitted (once per bind
@@ -21,6 +21,10 @@ class RebindAfterCaptureWarning(UserWarning):
     ``update()`` ran while its stream (or a CPU graph capture) was capturing; rebinding
     the same arrays is silent. The documented recipe "rebind, then record again" also
     warns once: filter this category when you re-record on purpose::
+
+        import warnings
+
+        import track_gen.exec
 
         warnings.simplefilter("ignore", track_gen.exec.RebindAfterCaptureWarning)
     """
@@ -93,9 +97,11 @@ class LegacyPluginStreamError(CaptureError):
             "stream. Make the capture stream Warp's current stream for the "
             "duration of the capture: capture Warp's current stream (a plain "
             "`wp.ScopedCapture(device)`), or, for torch.cuda.graph, pass it an "
-            "explicit capture stream s and make that stream current first: "
-            "`with wp.ScopedStream(wp.stream_from_torch(s)): with "
-            "torch.cuda.graph(g, stream=s): ...` (a plain `torch.cuda.graph(g)` "
+            "explicit capture stream s and make that stream current first, through "
+            "ONE wrapper you keep for the stream's lifetime: `ws = "
+            "wp.stream_from_torch(s)` once, then `with wp.ScopedStream(ws): with "
+            "torch.cuda.graph(g, stream=s): ...` (a throwaway wrapper unregisters "
+            "the stream when it is collected; a plain `torch.cuda.graph(g)` "
             "captures on torch's internal stream, which cannot be made current "
             "beforehand). Porting the plugin to accept ctx= removes the "
             "restriction."

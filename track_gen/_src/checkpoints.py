@@ -67,17 +67,16 @@ class CheckpointSet:
         ``GateSequence.half_size``). NaN past ``count[e]``.
     count : wp.array
         ``[E]`` ``int32`` real checkpoint counts (a sampler's set: 0 for an invalid
-        env, roadmap PR14).
+        env).
     valid : wp.array or None
-        ``[E]`` ``int32`` validity of the course the rows were built from (roadmap
-        PR14): owned by ``CheckpointSampler`` (written by ``sample()``, so ``count``,
-        the rows, ``valid`` and ``generation`` always describe the same ring), the
-        gates' own ``valid`` for :meth:`from_gates`. ``None`` on a hand-built set (then
-        every env is treated as valid). ``ProgressTracker`` freezes an env whose
-        ``valid`` is 0.
+        ``[E]`` ``int32`` validity of the course the rows were built from: owned by
+        ``CheckpointSampler`` (written by ``sample()``, so ``count``, the rows,
+        ``valid`` and ``generation`` always describe the same ring), the gates' own
+        ``valid`` for :meth:`from_gates`. ``None`` on a hand-built set (then every env
+        is treated as valid). ``ProgressTracker`` freezes an env whose ``valid`` is 0.
     generation : wp.array or None
-        ``[E]`` ``int32`` generation (epoch) of the course the rows were built from
-        (roadmap PR14): owned by ``CheckpointSampler`` (written by ``sample()``, 0 when
+        ``[E]`` ``int32`` generation (epoch) of the course the rows were built from:
+        owned by ``CheckpointSampler`` (written by ``sample()``, 0 when
         its track has none), the gates' own ``generation`` for :meth:`from_gates`.
         ``ProgressTracker`` resets an env's state when it changes (self-reset).
         ``None``: never.
@@ -94,12 +93,12 @@ class CheckpointSet:
 
     @classmethod
     def from_gates(cls, seq: HasGateFrames) -> "CheckpointSet":
-        """Zero-copy view of a :class:`GateSequence` as checkpoints.
+        """Zero-copy view of a :class:`~track_gen.results.GateSequence` as checkpoints.
 
         Aliases (does not copy) ``position``, ``left``, ``right``,
         ``forward`` (as ``tangent``: the physical gate-plane normal),
-        ``half_size`` (as ``up_half``), ``count`` and, when the source has them
-        (roadmap PR14), ``valid`` and ``generation``. ``seq`` is any
+        ``half_size`` (as ``up_half``), ``count`` and, when the source has them,
+        ``valid`` and ``generation``. ``seq`` is any
         :class:`~track_gen.results.HasGateFrames` with those members, checked
         here (``track_gen.results.check_source``; ``valid`` / ``generation`` are
         checked when present). A ``ProgressTracker`` on the set resets an env's state
@@ -254,7 +253,7 @@ def _readback_max_checkpoints(track, E: int, n_max: int, spacing: float) -> int:
 class CheckpointSampler:
     """Resample a track's centerline into coarse course checkpoints.
 
-    One sampler binds one :class:`Track` and one spacing; ``sample()``
+    One sampler binds one :class:`~track_gen.results.Track` and one spacing; ``sample()``
     refreshes the owned :class:`CheckpointSet` in place from the CURRENT
     track batch (no rebind after ``generate()``; two kernel launches,
     allocation-free and host-sync-free, so CUDA-graph capturable as-is).
@@ -267,7 +266,7 @@ class CheckpointSampler:
     (``[E]`` int32, 1 if ``max_checkpoints`` clipped the ring) and ``step``
     (``[E]`` float32 effective arc spacing). An env with ``valid[e] == 0`` reads like a
     poisoned one (``count = 0``, ``step`` NaN, ``truncated = 0``, NaN slots, the set's
-    ``valid = 0``; roadmap PR14). They live here rather than on
+    ``valid = 0``). They live here rather than on
     ``CheckpointSet`` because the set has a SECOND, sampling-free producer
     (``CheckpointSet.from_gates``) that has no truncation or step concept —
     keeping the diagnostics on the sampler avoids meaningless fields on
@@ -280,7 +279,8 @@ class CheckpointSampler:
 
     def __init__(self, track: HasBand, spacing: float,
                  max_checkpoints: "int | None" = None) -> None:
-        """Bind to a :class:`Track` centerline and allocate the result buffers.
+        """Bind to a :class:`~track_gen.results.Track` centerline and allocate the
+        result buffers.
 
         Args:
             track: the bound track batch; ``sample()`` reads its centerline
@@ -291,16 +291,16 @@ class CheckpointSampler:
                 snap rule as ``track_gen.props``).
             max_checkpoints: buffer capacity per env; ``None`` (default)
                 derives it from the CURRENT batch (see
-                :meth:`_derive_max_checkpoints`: a construction-time readback, kept
+                ``_derive_max_checkpoints``: a construction-time readback, kept
                 as a supported convenience). Must be >= 3 when given explicitly.
                 The size-independent bound ``max(3, ceil(max_loop_length /
-                spacing))`` from the producer's plan (roadmap PR14) is the default of
+                spacing))`` from the producer's plan is the default of
                 the component route (``track_gen.tools.Checkpoints(spacing)``
                 attached through ``ComponentContext.for_producer(generator)``) and of
                 ``Course``.
 
         The track's ``generation`` is read when present (checked like the required
-        members; roadmap PR14): ``sample()`` copies it (and ``valid``) into the set.
+        members): ``sample()`` copies it (and ``valid``) into the set.
         """
         _init()
         if not (float(spacing) > 0.0):

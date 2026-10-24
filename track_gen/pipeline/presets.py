@@ -1,27 +1,30 @@
-"""Preset pipelines: :func:`track` builds the default track :class:`PipelineSpec` and
-:func:`gates` the default gate one, with one argument per replaceable stage (preview,
-roadmap PR10b / PR11).
+"""Preset pipelines: :func:`track` builds the default track
+:class:`~track_gen.pipeline.PipelineSpec` and
+:func:`gates` the default gate one, with one argument per replaceable stage.
 
-:func:`track` reads the registry only for what shapes the stage list (roadmap PR13a:
-the generator's ``provides``, and whether a width stage's Params has a ``half_width``
-field); an unknown name is not an error there: it fails at
-:func:`track_gen.pipeline.build` (or ``TrackGenerator`` construction) with the
-registry's message. :func:`gates` reads the registry for the generator (its kind,
-``provides``, orderings, ``preferred`` and attributes) and the stations stage's Params.
-Edit the result with the :class:`PipelineSpec` operations::
-
-    from track_gen.pipeline import StageRef, presets
-
-    spec = presets.track(num_envs=1024, device="cuda:0", relax="acme.taubin",
-                         elevation=("noise", {"z_min": -0.3, "z_max": 0.3,
-                                              "z_noise_amplitude": 0.2}),
-                         checks=("default", ("acme.max_curvature", {"kappa_max": 40.0})))
-    spec = spec.insert_after("validity", StageRef("validity", "acme.other", id="other"))
-    gen = TrackGenerator(spec)
+:func:`track` reads the registry only for what shapes the stage list (the generator's
+``provides``, and whether a width stage's Params has a ``half_width`` field); an
+unknown name is not an error there: it fails at :func:`track_gen.pipeline.build` (or
+``TrackGenerator`` construction) with the registry's message. :func:`gates` reads the
+registry for the generator (its kind, ``provides``, orderings, ``preferred`` and
+attributes) and the stations stage's Params.
 
 A stage is selected as a name (``"xpbd"``), a ``(name, params)`` pair (params: a
 Params instance, a mapping of its fields, or ``None`` for its defaults) or a
-:class:`StageRef` of the slot's kind.
+:class:`~track_gen.pipeline.StageRef` of the slot's kind; a plugin's stage is selected
+the same way, by its registered name (``relax="acme.taubin"``). Edit the result with the
+:class:`~track_gen.pipeline.PipelineSpec` operations::
+
+    from track_gen import TrackGenerator
+    from track_gen.pipeline import StageRef, presets
+
+    spec = presets.track(num_envs=64, device="cuda:0",
+                         relax=("xpbd", {"relax_iters": 40}),
+                         elevation=StageRef("elevation", "noise",
+                                            {"z_min": -0.3, "z_max": 0.3,
+                                             "z_noise_amplitude": 0.2}))
+    spec = spec.with_randomize({"generator.rad": (0.2, 0.4)})
+    gen = TrackGenerator(spec)
 """
 from __future__ import annotations
 
@@ -177,7 +180,7 @@ def _has_half_width_field(reg, name: str) -> bool:
     return "half_width" in fields
 
 
-#: Roadmap PR13d: why a generator without a ``size`` field cannot take a per-env size.
+#: Why a generator without a ``size`` field cannot take a per-env size.
 _SIZE_REMEDY = ("a per-env size is a generator field: declare size = plugin.dynamic(1.0, "
                 "lo=SIZE_BOUNDS[0], hi=SIZE_BOUNDS[1]) and pass b.param('size') to the op "
                 "that applies its scale")
@@ -259,15 +262,15 @@ def track(*, num_envs: int, device: str, n_max: int = 384, scale: float = 1.0,
           on_invalid: str = "keep", z_base: float = 0.0, registry=None,
           randomize=None) -> PipelineSpec:
     """The track pipeline: generator -> resample -> width -> relax -> uniform resample
-    -> frames -> offset -> elevation -> checks -> lift (since 0.2.0.dev4 the width runs
-    before relax: ``cl.half_width`` is the per-point half-width XPBD, the offset and
-    validity read).
+    -> frames -> offset -> elevation -> checks -> lift (the width runs before relax:
+    ``cl.half_width`` is the per-point half-width XPBD, the offset and validity read).
 
-    ``presets.track(num_envs=E, device=d)`` equals the spec of
-    ``TrackGenerator(TrackGenConfig(num_envs=E, device=d))`` (same stages, equal
-    params; byte-identical Tracks).
+    ``presets.track(num_envs=E, device=d)`` has the stages of the spec
+    ``TrackGenerator(TrackGenConfig(num_envs=E, device=d))`` builds, and the generators
+    produce byte-identical Tracks (the two specs do not compare equal: the preset's
+    stages carry plain values or no params where the config's carry Params instances).
 
-    A generator that ``provides`` attributes (roadmap PR13a) has the stage computing
+    A generator that ``provides`` attributes has the stage computing
     them dropped: ``"z"`` (its ``raw.z`` is carried to ``cl.z``): no elevation stage,
     ``lift.elevated``; ``"half_width"`` (``raw.half_width`` -> ``cl.half_width``): no
     width stage.
@@ -277,7 +280,7 @@ def track(*, num_envs: int, device: str, n_max: int = 384, scale: float = 1.0,
         device: The Warp device.
         n_max: Per-env point capacity (``N_max``).
         scale: ``TrackGenConfig.scale``.
-        size: The INITIAL per-env course size (roadmap PR13d): the generator's dynamic
+        size: The INITIAL per-env course size: the generator's dynamic
             ``size`` (``generator.size``; ``TrackGenConfig.size``), a multiplier applied
             where the generator applies ``scale`` (the plan view only: widths and z are
             absolute). ``1.0`` (default) adds nothing to the spec. A generator that
@@ -296,8 +299,8 @@ def track(*, num_envs: int, device: str, n_max: int = 384, scale: float = 1.0,
             width elsewhere: then an explicit ``half_width`` other than 0.1 with an
             explicit ``spacing`` reaches nothing and raises ``ValueError``.
         spacing: The constant-spacing step (default ``0.6 * half_width``).
-        relax: The ``relax`` stage (``None``: ``relax.none``). ``"auto"`` (default,
-            roadmap PR13b): the generator's ``preferred["relax"]`` (``"none"`` for
+        relax: The ``relax`` stage (``None``: ``relax.none``). ``"auto"`` (default):
+            the generator's ``preferred["relax"]`` (``"none"`` for
             ``generator/external``: ingested geometry is not moved), else ``"xpbd"``
             (every built-in generator: unchanged output). An explicit name overrides it
             (relax can repair ingested tracks).
@@ -315,8 +318,8 @@ def track(*, num_envs: int, device: str, n_max: int = 384, scale: float = 1.0,
         registry: The plugin registry the generator's ``provides`` and a width
             stage's Params are looked up in (default ``track_gen.plugin.registry``;
             an unknown name is reported by ``build``).
-        randomize: Per-env uniform draws of DYNAMIC float32 params (roadmap PR13b /
-            PR13c): ``{"<stage id>.<field>": (lo, hi)}`` (e.g. ``{"generator.rad":
+        randomize: Per-env uniform draws of DYNAMIC float32 params:
+            ``{"<stage id>.<field>": (lo, hi)}`` (e.g. ``{"generator.rad":
             (0.1, 0.35)}`` or ``{"generator.polar_radial_jitter": (0.2, 0.8),
             "elevation.z_max": (0.2, 0.6)}`` (with a non-flat elevation) on the
             built-ins' dynamic knobs,
@@ -324,8 +327,9 @@ def track(*, num_envs: int, device: str, n_max: int = 384, scale: float = 1.0,
             ``{"width.scale": (0.8, 1.2)}`` with ``width.from_channel``) or a sequence of
             ``StageRef("randomize", "uniform", {...})``. Each becomes a
             ``randomize.uniform`` stage (id ``"randomize.<stage>.<field>"``) inserted
-            right before its target (:meth:`PipelineSpec.with_randomize`). The range
-            must lie inside the field's declared bounds; a static knob is refused at
+            right before its target
+            (:meth:`~track_gen.pipeline.PipelineSpec.with_randomize`). The range must
+            lie inside the field's declared bounds; a static knob is refused at
             build (listing the pipeline's drawable fields).
 
     Raises:
@@ -691,11 +695,11 @@ def gates(*, num_envs: int, device: str, generator: "str | StageRef" = "bezier",
             ``validity.gate_default`` gets ``min_gates``, ``gate_radius``,
             ``gate_width`` and ``z_valid_grade`` unless its params set them (a Params
             instance is taken as is). Its ``gate_width`` and ``check_crossing`` are
-            inert since 0.2.0.dev5 (the bars of every env that has one are checked);
+            inert (the bars of every env that has one are checked);
             posed gates still get ``check_crossing="always"``, filled only so that
             existing posed specs stay identical.
         scale: ``BatchSpec.scale``.
-        size: The INITIAL per-env course size (roadmap PR13d; ``GateGenConfig.size``),
+        size: The INITIAL per-env course size (``GateGenConfig.size``),
             routed to the stage that holds it: ``normalize.size`` for a gate generator
             re-normalized by ``normalize.extent`` (``polar`` / ``voronoi`` /
             ``checkpoint``; also one that declares a ``size`` of its own, which the

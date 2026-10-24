@@ -1,9 +1,10 @@
 """Record a producer into a caller's CUDA graph and check the replays (CUDA only).
 
-:func:`assert_caller_capturable` is the GPU half of the hot-path contract: it records a
-producer's generation (``producer.generate(stream=s)`` by default) into a capture the
-CALLER owns, then replays that graph and compares every output with an eager twin. The
-recording uses the discipline TrackGen's own capture tests use:
+:func:`~track_gen.testing.assert_caller_capturable` is the GPU half of the hot-path
+contract: it records a producer's generation (``producer.generate(stream=s)`` by
+default) into a capture the CALLER owns, then replays that graph and compares every
+output with an eager twin. The recording uses the discipline TrackGen's own capture
+tests use:
 
 - a side stream that is not Warp's current stream (so work that ignores the call's
   stream escapes the capture and is caught);

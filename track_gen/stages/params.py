@@ -1,17 +1,17 @@
-"""Params classes of the built-in track and gate stages (roadmap PR10a / PR11 / PR13a).
+"""Params classes of the built-in track and gate stages.
 
-Like the built-in generators' Params (:mod:`track_gen._src.builtin_params`), every class
+Like the built-in generators' Params, every class
 keeps the FLAT ``TrackGenConfig`` field names and ``from_legacy(config)`` copies the flat
 values (no casts), except ``WidthFromChannelParams`` (dynamic ``scale`` / ``lo`` /
 ``hi``) and ``StationsParams`` (``gates``, ``spacing_metric``), which have no
 ``TrackGenConfig`` counterpart. Every field is static except ``width.from_channel``'s and
-the elevation profiles' altitude window and shape knobs (roadmap PR13c: ``z_min`` /
-``z_max`` of ``elevation.uniform`` / ``random_walk`` / ``noise``, ``z_max_step`` and
+the elevation profiles' altitude window and shape knobs (``z_min`` / ``z_max`` of
+``elevation.uniform`` / ``random_walk`` / ``noise``, ``z_max_step`` and
 ``z_noise_amplitude``; per-env arrays, latched each generation, read by the
 ``warp_zprofile`` twins), ``normalize.extent``'s ``size`` and ``gate_frames.default``'s
-``gate_width`` (roadmap PR13d: the course size of the polar / voronoi / checkpoint gate
-generators and the per-env bar width; ``validity.gate_default``'s ``gate_width`` /
-``check_crossing`` are inert since then: it checks the bars of every env per env).
+``gate_width`` (the course size of the polar / voronoi / checkpoint gate generators and
+the per-env bar width; ``validity.gate_default``'s ``gate_width`` / ``check_crossing``
+are inert: it checks the bars of every env per env).
 The stage hands its Params instance (or, for elevation, a namespace built from its
 static view) to the legacy wrappers as their ``config``
 argument, so the same values reach the same ``float()`` / ``int()`` conversions and the
@@ -65,6 +65,9 @@ class _StageFlatParams(_FlatParams):
 
     @classmethod
     def from_legacy(cls, cfg):
+        """An instance holding the values of the config fields of the same names, for
+        the fields ``cfg`` (a ``TrackGenConfig`` or a ``GateGenConfig``) has; the others
+        keep their class defaults."""
         return cls(**{f.name: getattr(cfg, f.name) for f in dataclasses.fields(cls)
                       if hasattr(cfg, f.name)})
 
@@ -175,8 +178,8 @@ class WidthFromChannelParams(Params):
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class OffsetParams(_FlatParams):
-    """``offset.default``: the outer / inner borders at ``cl.half_width`` (since
-    0.2.0.dev4 the width is the channel, written by the width stage)."""
+    """``offset.default``: the outer / inner borders at ``cl.half_width`` (the per-point
+    half-width channel the width stage writes)."""
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -373,9 +376,8 @@ class GateRelaxParams(_StageFlatParams):
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class NormalizeExtentParams(_StageFlatParams):
-    """``normalize.extent``: the per-env size of the normalized gate layout (roadmap
-    PR13d; ``GateGenConfig.size`` for the polar / voronoi / checkpoint gate
-    generators)."""
+    """``normalize.extent``: the per-env size of the normalized gate layout
+    (``GateGenConfig.size`` for the polar / voronoi / checkpoint gate generators)."""
 
     size: float = dynamic(1.0, lo=SIZE_BOUNDS[0], hi=SIZE_BOUNDS[1],
                           doc="Per-env size multiplier of the target extent (scale * "
@@ -385,7 +387,7 @@ class NormalizeExtentParams(_StageFlatParams):
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class GateFramesParams(_StageFlatParams):
     """``gate_frames.default``: the gate frames, ``half_size = 0.5 * gate_width``
-    (``gate_width`` dynamic since roadmap PR13d: the initial value of a per-env width)."""
+    (``gate_width`` is dynamic: the initial value of a per-env width)."""
 
     gate_width: float = dynamic(0.0, lo=0.0, doc="FULL gate bar width (half_size = 0.5 "
                                                  "* gate_width; 0: point gates; per "
@@ -417,13 +419,13 @@ class GateFramesPosedParams(_StageFlatParams):
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class GateValidityParams(_StageFlatParams):
-    """``validity.gate_default``: the fused per-env gate validity check. Since roadmap
-    PR13d the bar-crossing check runs per env on every env with a non-zero bar, so
-    ``gate_width`` and ``check_crossing`` are INERT (kept so specs and dicts load; a
-    ``gate_width`` other than its default 0 must still equal ``gate_frames``' initial
-    width; removed in PR16)."""
+    """``validity.gate_default``: the fused per-env gate validity check. The bar-crossing
+    check runs per env on every env with a non-zero bar, so ``gate_width`` and
+    ``check_crossing`` are INERT (kept so specs and dicts load; a ``gate_width`` other
+    than its default 0 must still equal ``gate_frames``' initial width; removed in
+    1.0)."""
 
-    #: Inert since 0.2.0.dev5: left out of the planner's agreement check at the default.
+    #: Inert: left out of the planner's agreement check at the default.
     _inert_fields = ("gate_width", "check_crossing")
     _field_hints = {
         "gate_width": "inert since 0.2.0.dev5: the per-env bar width is "

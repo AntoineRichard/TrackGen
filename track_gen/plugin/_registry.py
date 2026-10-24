@@ -475,7 +475,7 @@ class Registry:
 
         A :class:`~track_gen.plugin.Stage` is registered as its CLASS (``kind`` comes
         from ``Stage.kind``); its declaration is checked first (see
-        :mod:`track_gen.plugin.stage`). A spec with a ``params=`` class has the class
+        ``track_gen.plugin.stage``). A spec with a ``params=`` class has the class
         checked (frozen dataclass, every field with a default, static fields only).
         """
         self._add(spec, kind=kind, replace=replace, legacy=False, stacklevel=3)

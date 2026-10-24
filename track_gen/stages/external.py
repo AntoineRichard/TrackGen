@@ -1,4 +1,4 @@
-"""``generator/external``: ingest caller-provided centerlines (roadmap PR13b).
+"""``generator/external``: ingest caller-provided centerlines.
 
 A centerline generator Stage (``kind="generator"``, ``name="external"``) that reads the
 raw closed centerline of every env from device inputs the caller fills
@@ -7,7 +7,8 @@ numpy data outside the hot path, or the caller's own graph writes them on the
 generation's stream), so a centerline from elsewhere (a dataset, a learned model, a
 hand-drawn track) runs through the standard pipeline (resample, width, frames, offset,
 validity, gates through stations, ...). Built only from the public plugin surface:
-``StageBuilder.input(per="raw")``, :meth:`Stage.declare`, ``Stage.seeded = False`` and
+``StageBuilder.input(per="raw")``,
+:meth:`Stage.declare <track_gen.plugin.Stage.declare>`, ``Stage.seeded = False`` and
 ``Stage.preferred = {"relax": "none"}`` (``presets.track(relax="auto")`` runs no relax:
 the ingested geometry is not moved; pass ``relax="xpbd"`` to repair it).
 
@@ -34,7 +35,7 @@ the first ``count[e]`` points are finite and, when present, ``z`` is finite and
 ``half_width`` finite and ``> 0`` (else fail bit 0, ``"generator"``; poisoned with
 ``on_invalid="poison"``).
 
-No per-env ``size`` (roadmap PR13d): the ingested geometry is taken as given (a size
+No per-env ``size``: the ingested geometry is taken as given (a size
 would scale it about the data's own origin while its altitude, half-width and attributes
 stay, and :func:`~track_gen.pipeline.load_centerlines`' host sizing check could not see
 it). Scale ``centerline.xy`` in your own graph; ``generator.size`` (a randomizer,
@@ -64,7 +65,7 @@ class ExternalParams(Params):
     """``generator/external``: which per-point channels the caller provides."""
 
     #: Appended to the KeyError / PlanError / ValueError of a ``size`` on external
-    #: (roadmap PR13d: it has none).
+    #: (it has none).
     _field_hints = {"size": "external ingests your geometry as given: scale "
                             "centerline.xy in your graph"}
 
@@ -211,6 +212,10 @@ class External(Stage):
 
     @classmethod
     def declare(cls, params):
+        """``(writes, provides)`` for these params: ``raw.xy`` and ``gen.valid`` always;
+        ``raw.z`` and ``provides`` ``z`` with ``with_z``; ``raw.half_width`` and
+        ``provides`` ``half_width`` with ``with_half_width``; one ``raw.<key>`` per
+        declared attribute (see :meth:`track_gen.plugin.Stage.declare`)."""
         writes = dict(cls.writes)
         provides = set()
         if params.with_z:

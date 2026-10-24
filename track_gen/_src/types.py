@@ -138,7 +138,7 @@ class TrackGenConfig:
     min_num_points : int
         Minimum Bezier/hull corner-anchor count per env.  Must be >= 2.  Shared
         by the ``"bezier"`` and ``"hull"`` generators: each env's count is uniform on
-        ``[min_num_points, max_num_points]``.  Dynamic (roadmap PR13d): the initial
+        ``[min_num_points, max_num_points]``.  Dynamic: the initial
         value of the generator's per-env ``int32`` ``min_num_points``
         (``gen.params["generator"].set("min_num_points", k)`` checks ``[2,
         max_num_points]``; an array is clamped to it at use).  Raising it only
@@ -165,7 +165,7 @@ class TrackGenConfig:
         curviness dial.  Typical range ``[0.2, 0.6]``.  Only live when
         ``rad <= handle_clamp_frac``; if ``rad`` exceeds the clamp,
         ``handle_clamp_frac`` binds every segment and ``rad`` has no effect (see
-        ``handle_clamp_frac``).  Must be in ``[0, 1]``.  Dynamic (roadmap PR13c):
+        ``handle_clamp_frac``).  Must be in ``[0, 1]``.  Dynamic:
         the initial value of the generator's per-env ``rad``
         (``gen.params["generator"]["rad"]``, ``randomize={"generator.rad": ...}``).
     edgy : float
@@ -243,8 +243,8 @@ class TrackGenConfig:
         draws its own values from the ``*_range`` fields via the per-env Warp RNG, so
         a single batch spans a *family* of styles.  Resolved at CUDA-graph capture time (a Python branch);
         per-env values are device data so the captured graph remains fixed.
-        **Deprecated** (roadmap PR13d; a ``DeprecationWarning`` once per built
-        generator, removed in PR16): draw per-env knobs with ``randomize=`` instead
+        **Deprecated** (a ``DeprecationWarning`` once per built generator;
+        removed in 1.0): draw per-env knobs with ``randomize=`` instead
         (``scale_range=(a, b)`` -> ``{"generator.size": (a / scale, b / scale)}``,
         ``rad_range`` -> ``{"generator.rad": ...}``, ``handle_clamp_frac_range`` ->
         ``{"generator.handle_clamp_frac": ...}``).
@@ -252,7 +252,7 @@ class TrackGenConfig:
         ``(lo, hi)`` range for per-env ``rad`` when ``style_sampling=True``.
         ``None`` leaves ``rad`` to its per-env array (the configured ``rad`` unless
         you ``set`` or randomize it).  Superseded by
-        ``randomize={"generator.rad": (lo, hi)}`` (roadmap PR13c; still supported).
+        ``randomize={"generator.rad": (lo, hi)}`` (still supported).
     scale_range : tuple of float or None
         ``(lo, hi)`` range for per-env ``scale`` when ``style_sampling=True``.
         ``None`` collapses to the scalar ``scale`` for all envs.  Deprecated with
@@ -263,8 +263,7 @@ class TrackGenConfig:
         ``style_sampling=True``.  ``None`` leaves ``handle_clamp_frac`` to its
         per-env array (the configured value unless you ``set`` or randomize it).
         Superseded by
-        ``randomize={"generator.handle_clamp_frac": (lo, hi)}`` (roadmap PR13c;
-        still supported).
+        ``randomize={"generator.handle_clamp_frac": (lo, hi)}`` (still supported).
 
     polar_num_knots : int
         *Polar generator only.*  Number of periodic cubic-spline control knots.
@@ -272,13 +271,13 @@ class TrackGenConfig:
     polar_radial_jitter : float
         *Polar generator only.*  Radial jitter magnitude for polar control knots, as
         a fraction of the base radius.  Must be in ``[0, 0.85]`` (keeps radii
-        positive; since 0.2.0.dev5 a value outside is rejected instead of clamped);
+        positive; a value outside is rejected, not clamped);
         larger values produce more eccentric track shapes.  Dynamic (per env).
         Default 0.60.
     polar_angular_jitter : float
         *Polar generator only.*  Angular jitter per polar knot, as a fraction of one
         knot spacing (``2*pi/K``), so the sorted order is preserved without a runtime
-        sort.  Must be in ``[0, 0.45]`` (rejected outside since 0.2.0.dev5).  Larger values
+        sort.  Must be in ``[0, 0.45]`` (rejected outside, not clamped).  Larger values
         add more angular irregularity.  Dynamic (per env).  Default 0.30.
 
     voronoi_num_sites : int
@@ -315,9 +314,9 @@ class TrackGenConfig:
 
         .. warning::
 
-            The ``repulsive`` generator is an iterative optimizer — roughly **1000×
-            slower** than ``bezier`` (~0.18 s @ E=64, ~5.1 s @ E=8192 on an RTX 4090,
-            vs ~2 ms for bezier; measured when it still ran eagerly).  It is
+            The ``repulsive`` generator is an iterative optimizer — about **two orders
+            of magnitude slower** than ``bezier`` (its cost table is in
+            :doc:`/generators/repulsive`).  It is
             graph-captured on CUDA like the other generators; its loop has a fixed
             iteration bound (its own graph on CUDA 12.4+ and eager ``cpu`` calls stop
             at the first stall window after every env has frozen; eager ``cuda`` calls
@@ -609,8 +608,8 @@ class TrackGenConfig:
         ``"noise"`` profiles.  Default 0.0.
     z_min : float
         Lower altitude clamp for ``"uniform"``, ``"random_walk"``, and
-        ``"noise"``.  Must be <= ``z_max``.  Default 0.0.  Dynamic (roadmap PR13c:
-        the elevation stage's per-env ``gen.params["elevation"]["z_min"]``).
+        ``"noise"``.  Must be <= ``z_max``.  Default 0.0.  Dynamic (the
+        elevation stage's per-env ``gen.params["elevation"]["z_min"]``).
     z_max : float
         Upper altitude clamp for ``"uniform"``, ``"random_walk"``, and
         ``"noise"``.  Must be >= ``z_min``.  Default 0.0.  Dynamic (per env).
@@ -639,7 +638,7 @@ class TrackGenConfig:
         3D lifted arc length.  0 disables the check.  Must be >= 0.  Default 0.0.
 
     size : float
-        Per-env course-size multiplier (roadmap PR13d): the INITIAL value of the
+        Per-env course-size multiplier: the INITIAL value of the
         selected generator's dynamic ``size`` (``generator.size``; per-env values:
         ``gen.params["generator"]``, ``randomize={"generator.size": (lo, hi)}``),
         applied where the generator applies ``scale`` (bezier / hull: the corner
@@ -651,7 +650,7 @@ class TrackGenConfig:
         a value other than 1.  The only construction-time route for ``Course``.  Size
         up with ``N_max`` (truncated envs fail validity).
 
-    generator_params : Params, mapping or None
+    generator_params : Params, Mapping or None
         The selected generator's parameters.  ``None`` (default): the generator's
         ``Params.from_legacy(config)`` (for the built-ins, the flat fields above).  A
         Params instance of the generator's class, or a mapping of its fields (left-out
@@ -917,7 +916,7 @@ class GateGenConfig:
         ``GateSequence.half_size = 0.5 * gate_width``, the bar endpoints are
         ``position +/- half_size * left_axis``, and every env with a bar of non-zero
         half-size is bar-crossing checked.  Must be >= 0.  Does not affect anchor
-        sampling geometry.  Dynamic (roadmap PR13d): the initial value of
+        sampling geometry.  Dynamic: the initial value of
         ``gate_frames.default``'s per-env ``gate_width``
         (``gen.params["gate_frames"]``, ``randomize={"gate_frames.gate_width": ...}``).
     gate_ordering : str or None
@@ -969,7 +968,7 @@ class GateGenConfig:
     polar_radial_jitter : float
         *Polar generator only.*  Radial jitter magnitude for polar control knots,
         as a fraction of the base radius.  Must be in ``[0, 0.85]``; dynamic (per
-        env, roadmap PR13c).  Default 0.60.
+        env).  Default 0.60.
     polar_angular_jitter : float
         *Polar generator only.*  Angular jitter per polar knot, as a fraction of one
         knot spacing (``2*pi/K``).  Must be in ``[0, 0.45]``; dynamic (per env).
@@ -1050,7 +1049,7 @@ class GateGenConfig:
         tangent, tilting posts to follow the course slope.
 
     size : float
-        Per-env course-size multiplier (roadmap PR13d): the INITIAL value of the
+        Per-env course-size multiplier: the INITIAL value of the
         dynamic ``size`` of the stage that holds it: ``generator.size`` for the
         ``"bezier"`` / ``"hull"`` gate generators (the anchor grid, after ``scale``),
         ``normalize.size`` for ``"polar"`` / ``"voronoi"`` / ``"checkpoint"`` (the
@@ -1060,7 +1059,7 @@ class GateGenConfig:
         stage declaring ``size`` (a legacy gate generator) refuses a value other
         than 1.
 
-    generator_params : Params, mapping or None
+    generator_params : Params, Mapping or None
         The selected gate generator's parameters, as
         ``TrackGenConfig.generator_params`` (``None``: the flat fields above).  The
         inert fields (``num_points_per_segment``, ``rad``, ``edgy``,
@@ -1806,6 +1805,12 @@ class GateSequence:
         ``generate()`` calls will see mutated data.  Call ``GateSequence.clone()`` to
         obtain a fully-owned deep copy before the next call.
 
+    Methods (see :mod:`track_gen.results`): :meth:`validate` (check every
+    field against the layout), :meth:`view` (a zero-copy env slice, e.g. ``out=`` of a
+    mixed batch), :meth:`copy_from` (stream-ordered copies, no allocation),
+    :meth:`clone` (an owned copy; allocates) and :meth:`alloc` (a fully allocated
+    result).
+
     Attributes
     ----------
     position : wp.array
@@ -1880,12 +1885,6 @@ class GateSequence:
         set on every ``GateSequence`` TrackGen makes (a generator's result, a
         :meth:`view`, :meth:`clone`, :meth:`alloc`); ``None`` on one built by hand
         (:meth:`validate` infers it).
-
-    Methods (roadmap PR13b; see :mod:`track_gen.results`): :meth:`validate` (check every
-    field against the layout), :meth:`view` (a zero-copy env slice, e.g. ``out=`` of a
-    mixed batch), :meth:`copy_from` (stream-ordered copies, no allocation),
-    :meth:`clone` (an owned copy; allocates) and :meth:`alloc` (a fully allocated
-    result).
     """
 
     position: wp.array
@@ -1931,6 +1930,12 @@ class Track:
         ``generate()`` calls will see mutated data.  Call ``Track.clone()`` to obtain
         a fully-owned deep copy before the next call (or ``copy_from`` into a
         preallocated ``Track.alloc`` result: no allocation, capture-safe).
+
+    Methods (see :mod:`track_gen.results`): :meth:`validate` (check every
+    field against the layout), :meth:`view` (a zero-copy env slice, e.g. ``out=`` of a
+    mixed batch), :meth:`copy_from` (stream-ordered copies, no allocation: the hot-path
+    snapshot), :meth:`clone` (an owned copy; allocates) and :meth:`alloc` (a fully
+    allocated result).
 
     Attributes
     ----------
@@ -2059,12 +2064,6 @@ class Track:
         ``N_max``, ``device``, ``closed``), set on every ``Track`` TrackGen makes (a
         generator's result, a :meth:`view`, :meth:`clone`, :meth:`alloc`); ``None`` on
         one built by hand (:meth:`validate` infers it).
-
-    Methods (roadmap PR13b; see :mod:`track_gen.results`): :meth:`validate` (check every
-    field against the layout), :meth:`view` (a zero-copy env slice, e.g. ``out=`` of a
-    mixed batch), :meth:`copy_from` (stream-ordered copies, no allocation: the hot-path
-    snapshot), :meth:`clone` (an owned copy; allocates) and :meth:`alloc` (a fully
-    allocated result).
     """
 
     outer: wp.array
@@ -2098,15 +2097,15 @@ class Track:
 
 @dataclass
 class Centerline:
-    """A batched closed 3D centerline without a road band (roadmap PR13b).
+    """A batched closed 3D centerline without a road band.
 
     What a gates-mode ``Course`` threads through its gates
     (``course.course_line.centerline``; the course line is internal to ``Course`` in
     0.x): the members a centerline consumer reads
     (:class:`~track_gen.results.HasCenterline`: ``TrackLocalizer``,
     ``localize.curvature`` / ``speed_profile``), with the same flat storage as a
-    :class:`Track`: per-point arrays ``[E * stride]`` (NaN past ``count[e]``), per-env
-    arrays ``[E]``.
+    :class:`~track_gen.results.Track`: per-point arrays ``[E * stride]`` (NaN past
+    ``count[e]``), per-env arrays ``[E]``.
 
     Attributes:
         center: ``[E * stride]`` ``vec3f`` centerline points.

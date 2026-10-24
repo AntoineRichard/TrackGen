@@ -106,7 +106,7 @@ def build(spec: PipelineSpec, *, registry=None, seeds=None, out=None, stream=Non
             (otherwise the first :meth:`Program.run` does).
 
     Raises:
-        PlanError: an invalid spec (see :doc:`/how-it-works/pipeline-preview`), incl.
+        PlanError: an invalid spec (see :doc:`/how-it-works/pipeline-stages`), incl.
             an unknown relax / width / elevation / validity / order / stations name
             (the registry's message) and a HOST stage under
             ``PipelineSpec.require_caller_capturable``.

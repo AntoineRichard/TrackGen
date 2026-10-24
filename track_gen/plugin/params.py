@@ -115,7 +115,7 @@ class Params:
         the generic ``lo`` / ``hi`` / ``choices`` checks. The default does nothing.
 
         Args:
-            layout: The run's :class:`~track_gen.plugin.Layout` (``num_envs``,
+            layout: The run's :class:`~track_gen.results.Layout` (``num_envs``,
                 ``stride``, ``device``).
         """
 
@@ -625,14 +625,14 @@ class StageParams(_MappingABC):
     generation and envs left out of a masked regeneration keep the value their current
     output was built with.
 
-    Unlatched arrays (roadmap PR13b): a field drawn by a ``randomize.*`` stage
+    Unlatched arrays: a field drawn by a ``randomize.*`` stage
     (:attr:`drawn`) is a single array OWNED by its randomizer and written by it every
     generation: ``self[field]`` returns it (observable), :meth:`set` raises (set the
     randomizer's ``lo`` / ``hi`` instead), and a direct write is overwritten by the next
     draw. Bezier's ``style_sampling`` ranges draw their knobs the same way, by the stage
-    itself (roadmap PR13c: ``drawn["rad"] == "generator"``, the stage's own id).
+    itself (``drawn["rad"] == "generator"``, the stage's own id).
 
-    Curriculum bookkeeping (roadmap PR13d): :meth:`in_effect` returns the ``[E]`` values
+    Curriculum bookkeeping: :meth:`in_effect` returns the ``[E]`` values
     the stage READ for the current rows of each env (the latched working copy, or the
     drawn array), so a masked regeneration's unmasked envs report what their rows were
     built with; :meth:`bounds` the ``(lo, hi)`` a built-in kernel clamps a value to where
@@ -683,8 +683,8 @@ class StageParams(_MappingABC):
     def drawn(self) -> Mapping[str, str]:
         """``field -> id of the stage that draws it`` every generation: a
         ``randomize.*`` stage targeting this stage, or :attr:`stage_id` itself for a
-        field the stage draws itself (bezier's ``style_sampling`` ranges, roadmap
-        PR13c). Every value is a key of ``gen.params``; empty when nothing draws this
+        field the stage draws itself (bezier's ``style_sampling`` ranges). Every value
+        is a key of ``gen.params``; empty when nothing draws this
         stage's fields."""
         return MappingProxyType(dict(self._drawn))
 
@@ -737,8 +737,8 @@ class StageParams(_MappingABC):
 
     def in_effect(self, field: str, *, out: "wp.array | None" = None,
                   stream=None) -> "wp.array":
-        """The ``[E]`` values this stage READ for the current rows of each env
-        (roadmap PR13d): for a latched field the stage's working copy (the latch writes it
+        """The ``[E]`` values this stage READ for the current rows of each env: for a
+        latched field the stage's working copy (the latch writes it
         at the start of every generation, for every env or only the masked ones, so an
         env left out of a masked regeneration keeps the value its rows were built with);
         for a drawn field (a ``randomize.*`` target, or a knob bezier's
@@ -800,7 +800,7 @@ class StageParams(_MappingABC):
         return out
 
     def bounds(self, field: str) -> "tuple":
-        """``(lo, hi)`` a value of the dynamic ``field`` is held to (roadmap PR13d): its
+        """``(lo, hi)`` a value of the dynamic ``field`` is held to: its
         declared bounds, narrowed per instance (bezier / hull's ``min_num_points``:
         ``(2, max_num_points)``; a randomizer's ``lo`` / ``hi``: the drawn field's
         declared range); ``None`` for an open side. :meth:`set` refuses a scalar
@@ -857,7 +857,7 @@ class StageParams(_MappingABC):
                 the stage itself: bezier's ``style_sampling`` ranges).
 
         An array is not range-checked: a built-in stage clamps each value to the
-        field's declared bounds where it reads it (roadmap PR13c).
+        field's declared bounds where it reads it.
         """
         arr = self[field]
         writer = self._drawn.get(field)
@@ -913,8 +913,9 @@ class StageParams(_MappingABC):
 
 
 class ParamTable(_MappingABC):
-    """``stage_id -> StageParams`` (``gen.params``). The PR8 facades hold exactly one
-    stage, ``"generator"``. Created by the generator facades, never by user code (the
+    """``stage_id -> StageParams`` (``gen.params``): ``"generator"``, plus every pipeline
+    stage with a dynamic field (a randomizer, an elevation profile with its altitude
+    knobs, ``gate_frames``, ...). Created by the generator facades, never by user code (the
     constructor is private and may change)."""
 
     def __init__(self, *, _token=None, stages: "Mapping[str, StageParams]") -> None:

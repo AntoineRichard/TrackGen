@@ -125,7 +125,7 @@ class CourseConfig:
         Generator config; its type must match ``mode``. ``num_envs`` and
         ``device`` are taken from here. Gates mode requires
         ``gen.gate_width > 0`` (a width-0 gate can never be crossed). The
-        width is per env since 0.2.0.dev5 (``gate_frames.gate_width``): a
+        width is per env (``gate_frames.gate_width``): a
         scalar ``set`` of a value ``<= 0`` is refused, but an ``[E]`` array
         written after construction is not range-checked (a value ``<= 0`` is
         used as 0): keep it ``> 0``, or those envs' gates can never be
@@ -142,10 +142,10 @@ class CourseConfig:
         ``sdf_padding`` itself is not exposed here.
     heightfield_resolution : int or None
         Track mode only; when set (``>= 8``), builds a
-        :class:`HeightFieldBaker` exposed as ``course.heightfield`` and
-        re-baked on every ``generate()`` (nearest-edge road-surface grid for
-        external physics solvers). Uses the baker's AUTO padding (10% of each
-        env's larger AABB extent). ``None`` (default) means no heightfield.
+        :class:`~track_gen.heightfield.HeightFieldBaker` exposed as
+        ``course.heightfield`` and re-baked on every ``generate()`` (nearest-edge
+        road-surface grid for external physics solvers). Uses the baker's AUTO padding
+        (10% of each env's larger AABB extent). ``None`` (default) means no heightfield.
     post_radius : float
         Gates mode only: > 0 enables ``DiscChecker`` gate-post collision.
     frame_collision : bool
@@ -168,22 +168,23 @@ class CourseConfig:
         Track mode only (required there): centerline checkpoint spacing.
     max_checkpoints : int or None
         Track mode only: the checkpoint capacity per env (``>= 3``), forwarded to
-        ``CheckpointSampler``. ``None`` (default; roadmap PR14): the plan's
+        ``CheckpointSampler``. ``None`` (default): the plan's
         size-independent bound ``max(3, ceil(max_loop_length / checkpoint_spacing))``
         with ``max_loop_length = 1.5 * N_max * spacing + dZ``
         (:meth:`track_gen.tools.ComponentContext.for_producer`; 70 at the
         ``TrackGenConfig`` defaults and ``checkpoint_spacing=0.5``), or, when the plan
         declares none (an elevation whose ``z_min`` / ``z_max`` declare no range, a
-        variable width, a plugin geometry stage), the construction batch's readback as
-        before (``ceil(1.5 * max valid centerline perimeter / checkpoint_spacing)``).
+        variable width, a plugin geometry stage), the construction batch's readback
+        (``ceil(1.5 * max valid centerline perimeter / checkpoint_spacing)``).
         A defaulted capacity that clips a valid env of the first batch warns
-        (``UserWarning``) at construction. To keep the 0.2.0.dev5 shape, pass the
-        capacity it printed (``course.checkpoints.position.shape[0] // num_envs``).
+        (``UserWarning``) at construction. To keep a fixed shape (the capacity an
+        earlier release derived from the batch, for example), pass it explicitly
+        (``course.checkpoints.position.shape[0] // num_envs`` reads the current one).
     max_boxes : int
         Collision query stride (boxes per env). Must be >= 1.
     samples_per_gate : int
         Gates mode only: centerline samples per gate for the
-        :class:`CourseLine` spline (>= 2). Default 8.
+        ``CourseLine`` spline (>= 2). Default 8.
     localize_window : int or None
         Gates mode only: forwarded as ``TrackLocalizer(warm_window=...)``;
         ``None`` (default) means full cold scans every query.
@@ -367,7 +368,7 @@ class StepResult:
     same underlying buffers) is returned on every ``step()``; use :meth:`clone` for
     snapshots.
 
-    Since roadmap PR15 it also gives read-only mapping access to the result of every
+    It also gives read-only mapping access to the result of every
     per-step component (one that overrides ``Component.step``), by component name, in
     execution order: ``res["progress"]``, ``res.get(name)``, ``keys()``, ``values()``,
     ``items()``, ``name in res``, ``dict(res)``. Per-generation components (checkpoints,
@@ -384,14 +385,15 @@ class StepResult:
     events : ProgressEvents
         Progress events for this step: ``res["progress"]`` (``None`` on a course without
         a component named ``progress``).
-    contacts : BoxContact or DiscContact or FrameContact or None
-        Collision result: ``res["collision"]`` (``None`` when the course has no
-        component named ``collision``).
+    contacts : object or None
+        Collision result (a ``BoxContact``, a ``DiscContact`` or a ``FrameContact``):
+        ``res["collision"]`` (``None`` when the course has no component named
+        ``collision``).
     frame : TrackFrame or None
         Localization frame: ``res["localizer"]`` (``None`` without a component named
         ``localizer``: the 0.x track mode).
     valid : wp.array or None
-        ``[E]`` int32 validity of each env's course (roadmap PR14): an alias of
+        ``[E]`` int32 validity of each env's course: an alias of
         ``course.result.valid`` (``None`` only on a hand-built instance, or for a
         producer whose result has no ``valid``). The other fields of an env with
         ``valid[e] == 0`` hold the invalid-env sentinels (see :class:`Course`): gate
@@ -635,9 +637,9 @@ def _check_components(components) -> None:
 # ---------------------------------------------------------------------------------------
 
 class Course:
-    """The composition root: one producer and its runtime components (roadmap PR15).
+    """The composition root: one producer and its runtime components.
 
-    Three front doors (all run ``__init__``, so a subclass initializes normally):
+    Three ways to build one (all run ``__init__``, so a subclass initializes normally):
 
     - ``Course(generator, components=(), *, stream=None, prepare=True)``: ``generator``
       is any producer (a ``TrackGenerator``, a ``GateGenerator``, a built
@@ -689,7 +691,7 @@ class Course:
     Under a plain ``torch.cuda.graph``, keep the course and those arrays alive
     (``track_gen.interop.torch.retain(g, course, ...)``).
 
-    Invalid envs (``valid[e] == 0`` on :attr:`result`; roadmap PR14): every built-in
+    Invalid envs (``valid[e] == 0`` on ``course.result``): every built-in
     component answers as for a poisoned env (``course.checkpoints.count = 0`` with NaN
     slots, ``oob = 1`` with NaN geometry, no post hit, frozen progress with
     ``dist_to_next = 0``, NaN ``s`` / ``n``, a NaN heightfield with the box ``(-1, -1)-(1,
@@ -756,9 +758,8 @@ class Course:
     @classmethod
     def from_config(cls, config: "CourseConfig") -> "Course":
         """The 0.x course of a :class:`CourseConfig` (``Course(config)`` is an alias):
-        the generator, components, outputs and launches it had before roadmap PR15
-        (0.2.0.dev6 at PR14); relative to 0.2.0.dev5, see the CHANGELOG migration items
-        1-8 (invalid envs, the default checkpoint capacity).
+        the generator and the components the config selects. For what changed since
+        0.1 (invalid envs, the default checkpoint capacity), see :ref:`upgrading-course`.
 
         Raises:
             TypeError: ``config`` is not a ``CourseConfig``.
@@ -787,7 +788,8 @@ class Course:
                 ``course.collision``; e.g. ``tools.BandCollision("sdf",
                 sdf_resolution=256, max_boxes=2)``).
             max_checkpoints: The checkpoint capacity per env (an int ``>= 3``); ``None``
-                or ``"auto"``: the plan bound, else the readback of the construction batch
+                or ``"auto"``: sized for the longest track the generator can produce, else
+                the readback of the construction batch
                 (``tools.Checkpoints(max_checkpoints="auto")``), with a ``UserWarning``
                 when it clips a valid env of the first batch.
             extra: More components, a sequence (sorted with the preset's by their
@@ -1138,8 +1140,8 @@ class Course:
         - ``"regen_mask"``: ``[E]`` int32, zero-initialised. Write the envs to regenerate
           from your own kernels (e.g. ``done`` flags inside your sim graph) and pass it as
           ``regenerate(mask=course.inputs["regen_mask"], advance=True)``. Its pointer
-          never changes, so the course's self-graph for it is captured once.
-        - ``"reset_mask"``: ``[E]`` int32, zero-initialised (roadmap PR15): the envs to
+          never changes, so the course's own CUDA graph for it is captured once.
+        - ``"reset_mask"``: ``[E]`` int32, zero-initialised: the envs to
           respawn on their current course, passed as
           ``reset(course.inputs["reset_mask"])``.
 
@@ -1241,12 +1243,11 @@ class Course:
         Do NOT rebind after capturing ``step()`` into a sim graph: the captured graph
         replays against the buffer pointers live at capture time, so a later rebind
         leaves it reading the old buffers (silently divergent results) — keep writing into
-        the SAME bound buffers and rebind only before (re)capturing. Since roadmap PR14
-        such a rebind (other arrays, after ``step()`` ran while its stream or a CPU graph
-        capture was capturing) warns once,
-        :class:`~track_gen.exec.RebindAfterCaptureWarning`; rebinding the same arrays is
-        silent. The recipe "rebind, then record again" warns
-        once too: filter the category when you re-record on purpose. The course's own
+        the SAME bound buffers and rebind only before (re)capturing. Such a rebind
+        (other arrays, after ``step()`` ran while its stream or a CPU graph capture was
+        capturing) warns once, :class:`~track_gen.exec.RebindAfterCaptureWarning`;
+        rebinding the same arrays is silent. The recipe "rebind, then record again"
+        warns once too: filter the category when you re-record on purpose. The course's own
         regeneration graphs never read bound inputs, so they stay valid.
 
         The generator's inputs (``course.generator.inputs``, e.g. ``"centerline.xy"`` of
@@ -1499,7 +1500,7 @@ class Course:
     def regenerate(self, *, mask: "wp.array | None" = None, advance: bool = False,
                    stream=None, sync: bool = True):
         """Regenerate courses plus a coherent refresh of every component; returns
-        :attr:`result`.
+        ``result``.
 
         ``mask=None`` (whole batch): the producer's generation from the current seeds
         (after advancing EVERY env's epoch when ``advance=True``), then every component's
@@ -1526,7 +1527,7 @@ class Course:
 
         Conditional skip: the masked body runs after a device-side ``any_set(mask)``
         under :meth:`track_gen.exec.LaunchContext.skip_unless`. Inside a Warp-registered
-        capture (Warp ``ScopedCapture``, the course's own self-graph,
+        capture (Warp ``ScopedCapture``, the course's own CUDA graph,
         ``capture_begin(external=True)``, or
         ``track_gen.interop.torch.registered(conditional=True)`` under
         ``torch.cuda.graph``) with CUDA Toolkit and driver >= 12.4, it is skipped on
@@ -1546,9 +1547,9 @@ class Course:
         - inside a capture on the resolved stream: RECORDED into the caller's graph (e.g.
           next to :meth:`step` / :meth:`reset`); each replay regenerates from the seeds,
           epochs and mask at replay time (and, with ``advance``, advances again);
-        - outside a capture on CUDA: replay of a self-graph (producer + refresh as ONE
-          graph, captured on the first call of each ``(advance, mask)`` variant;
-          :attr:`graph` is the plain one);
+        - outside a capture on CUDA: replay of the course's own CUDA graph (producer +
+          refresh as ONE graph, captured on the first call of each ``(advance, mask)``
+          variant; :attr:`graph` is the plain one);
         - on CPU, or with a producer that has HOST stages: eager (a Course does not
           segment).
 
@@ -1557,8 +1558,8 @@ class Course:
         Args:
             mask: optional contiguous ``[E]`` int32 regeneration mask. Pass a STABLE
                 buffer (e.g. ``inputs["regen_mask"]``): outside a capture each distinct
-                mask pointer captures, and caches, one more self-graph (up to a bound,
-                past which new pointers run eagerly).
+                mask pointer captures, and caches, one more graph of the course's own
+                (up to a bound, past which new pointers run eagerly).
             advance: advance the epoch (of every env, or of the masked envs) on device
                 first, so those envs get new courses. Default ``False`` (rebuild from
                 unchanged seeds and epochs).
@@ -1594,9 +1595,10 @@ class Course:
     def enqueue_generate(self, *, stream=None, mask: "wp.array | None" = None,
                          advance: bool = False):
         """Enqueue one regeneration (as :meth:`regenerate`, same ``mask`` / ``advance``)
-        without self-graphing or blocking: recorded into the caller's capture when the
-        resolved stream is capturing, otherwise eager on that stream. Returns
-        :attr:`result` (stream-ordered)."""
+        without building the course's own CUDA graph or blocking: recorded into the
+        caller's capture when the resolved stream is capturing, otherwise eager on that
+        stream. Returns
+        ``result`` (stream-ordered)."""
         self._check_owner()
         body, _ = self._regen_call(advance, mask)
         ctx = self._ctx(stream)
@@ -1608,7 +1610,7 @@ class Course:
 
     def generate(self, seeds: "int | wp.array | None" = None, *, stream=None,
                  sync: bool = True):
-        """Optional reseed, then :meth:`regenerate`. Returns :attr:`result`.
+        """Optional reseed, then :meth:`regenerate`. Returns ``result``.
 
         ``seeds`` int ``k`` reseeds every env with ``k + e`` (the same expansion as
         constructing a fresh ``PerEnvSeededRNG(seeds=k)``), expanded device-side into a
@@ -1626,7 +1628,7 @@ class Course:
         so ``generate(seeds=s)`` reproduces a fresh course built with ``seeds=s``
         whatever was advanced before.
 
-        Who writes the seeds follows their owner's rule: with :attr:`rng` (a config
+        Who writes the seeds follows their owner's rule: with ``rng`` (a config
         course, or a generator built with a ``PerEnvSeededRNG``) the reseed goes through
         ``rng.set_seeds_warp``, which overwrites ``rng.seeds_warp`` in place: when
         ``CourseConfig.seeds`` was a ``wp.array``, that IS your array (the rng binds it

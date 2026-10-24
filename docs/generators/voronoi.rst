@@ -8,9 +8,11 @@ production distillation of the Voronoi / random-geometric prototype: the useful 
 of cells" control is retained through the fixed site field, while exact Delaunay / Voronoi
 ridge traversal and dynamic cycle extraction — which are incompatible with the fixed-shape
 CUDA-graph contract — are replaced by a static angular-snap cycle that is allocation-free and
-deterministic in ``(seed, config)``.  Of the five registered generators, ``voronoi`` yields the
-highest typical compactness (~0.73) and effectively eliminates pre-relax self-intersections
-without a generation retry loop.
+deterministic in ``(seed, config)`` (:term:`seed`).  Of the five sampling generators,
+``voronoi`` yields the highest typical compactness (:doc:`benchmarks`) and effectively
+eliminates pre-relax self-intersections without a generation retry loop. It writes one
+closed centerline per :term:`env` at every :term:`generation`, and its shape knobs are
+per-env :term:`dynamic fields <dynamic field>` (`Per-env (dynamic) parameters`_).
 
 .. figure:: ../assets/generator-voronoi.png
    :alt: Sample tracks produced by the voronoi generator
@@ -325,7 +327,8 @@ pure random Cartesian or polar coordinates, which gives the family a characteris
 
 Key contrasts:
 
-- **Highest compactness (~0.73).**  The ``void_ring`` default biases sites into an annular
+- **Highest compactness** of the sampling generators (:doc:`benchmarks`).  The
+  ``void_ring`` default biases sites into an annular
   band and selects anchors around the full perimeter, consistently producing compact,
   looping layouts with high area-to-perimeter ratios.
 

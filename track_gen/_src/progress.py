@@ -81,8 +81,7 @@ class ProgressEvents:
         (either direction; first in index order), -1 otherwise.
     dist_to_next : wp.array
         ``float32`` — ``|position - next checkpoint center|`` after any advance.
-        NaN for a (valid) env with no checkpoints; 0 for an invalid env (frozen,
-        roadmap PR14).
+        NaN for a (valid) env with no checkpoints; 0 for an invalid env (frozen).
     """
 
     passed: wp.array
@@ -260,7 +259,8 @@ class ProgressTracker:
 
     def __init__(self, checkpoints: CheckpointSet,
                  position: "wp.array | None" = None) -> None:
-        """Bind to a :class:`CheckpointSet` and allocate the tracker's state.
+        """Bind to a :class:`~track_gen.checkpoints.CheckpointSet` and allocate the
+        tracker's state.
 
         Args:
             checkpoints: the ordered per-env checkpoint set to track against
@@ -269,8 +269,8 @@ class ProgressTracker:
                 :class:`~track_gen.results.HasCheckpoints`). Aliased, not copied —
                 later mutation (e.g. a resampled or regenerated set) is seen on
                 the next ``update()``. Its ``valid`` / ``generation`` are read when
-                present (``[E]`` int32 on the set's device, checked here; roadmap
-                PR14): invalid envs are frozen, and an env resets by itself when its
+                present (``[E]`` int32 on the set's device, checked here): invalid
+                envs are frozen, and an env resets by itself when its
                 ``generation`` changes. The state of that check starts at the set's
                 ``generation`` now (a device copy on the call's stream: the ambient
                 context or Warp's current stream), so the first ``update()`` does not

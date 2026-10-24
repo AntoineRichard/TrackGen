@@ -389,7 +389,7 @@ def sample_grid_points(ctx: "LaunchContext", seeds: "wp.array", salt: int, offse
     :func:`grid_cells` for the built-in grid. Two launches (fill, ``E`` threads); no
     allocation, no host sync.
 
-    ``size`` (roadmap PR13d) is a per-env size multiplier applied LAST: env ``e``'s
+    ``size`` is a per-env size multiplier applied LAST: env ``e``'s
     points are ``((x * cell_size + nx) * scale) * size[e]``, each value clamped at use to
     :data:`track_gen.ops.constants.SIZE_BOUNDS` (by comparisons: a NaN passes).
     ``size=None`` runs the unchanged kernels (same launches, same bytes); a size-1 array

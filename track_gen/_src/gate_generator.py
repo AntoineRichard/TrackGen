@@ -43,7 +43,7 @@ class GateGenerator:
     Mirrors the fixed-batch contract of :class:`~track_gen.TrackGenerator`: construction
     plans a gate :class:`track_gen.pipeline.Program` and allocates its output and
     scratch buffers once, and every generation refreshes the per-env seed buffer then
-    writes results into the same :class:`~track_gen.GateSequence` instance (stable
+    writes results into the same :class:`~track_gen.results.GateSequence` instance (stable
     ``.ptr`` pointers). Use ``GateSequence.clone()`` when an independent snapshot is
     needed.
 
@@ -93,8 +93,8 @@ class GateGenerator:
             stream: optional default ``wp.Stream`` for calls that pass no ``stream=``
                 and run outside an ambient ``LaunchContext`` scope (see
                 :mod:`track_gen.exec`).
-            out: optional caller-owned ``GateSequence`` the pipeline writes INTO (roadmap
-                PR13b): the generator's result IS ``out`` (stable caller pointers, so a
+            out: optional caller-owned ``GateSequence`` the pipeline writes INTO: the
+                generator's result IS ``out`` (stable caller pointers, so a
                 caller graph built over it keeps working). Every field is checked
                 against the pipeline's layout (``generation`` / ``fail_mask`` may be
                 ``None``). A view of a larger result
@@ -278,14 +278,14 @@ class GateGenerator:
 
     @property
     def program(self):
-        """The :class:`track_gen.pipeline.Program` this generator runs (preview): its
+        """The :class:`track_gen.pipeline.Program` this generator runs: its
         taps (:meth:`~track_gen.pipeline.Program.tap`), fail bits and ``on_invalid``."""
         return self._program
 
     @property
     def params(self) -> "ParamTable":
-        """Runtime parameters, keyed by stage id: ``"generator"``, plus every pipeline
-        stage with a DYNAMIC field. ``params["generator"].params`` is the resolved
+        """The runtime parameters, keyed by stage id (``"generator"``, plus every pipeline
+        stage with a DYNAMIC field). ``params["generator"].params`` is the resolved
         Params instance (``None`` for a legacy gate generator without a Params class).
         The dynamic fields of the built-ins are the generators' shape knobs (``rad``,
         ``handle_clamp_frac``, ``hull_displacement``, the polar, voronoi and checkpoint
@@ -326,7 +326,7 @@ class GateGenerator:
     @property
     def rng(self) -> "PerEnvSeededRNG | None":
         """The ``PerEnvSeededRNG`` the generator was built with (``rng=``, or ``seeds=`` a
-        ``PerEnvSeededRNG``), else ``None`` (read-only; roadmap PR15). Its
+        ``PerEnvSeededRNG``), else ``None`` (read-only). Its
         ``set_seeds_warp`` rewrites the seeds :attr:`seeds` reads, in place."""
         return self._rng
 
@@ -346,7 +346,7 @@ class GateGenerator:
         - ``"regen_mask"``: ``[E]`` int32, zero-initialised. Write it from your own
           kernels and pass it as ``generate(advance=True,
           mask=gen.inputs["regen_mask"])``; its pointer never changes, so the
-          generator's self-graph for it is captured once.
+          generator's own CUDA graph for it is captured once.
         - every input a stage declared (``StageBuilder.input``): a latched ``[E]``
           input (snapshotted at the start of a generation), or an UNLATCHED
           ``per="raw"`` input of a centerline generator (``centerline.*`` of
@@ -359,7 +359,7 @@ class GateGenerator:
     @property
     def input_info(self) -> "types.MappingProxyType":
         """``name -> track_gen.pipeline.InputInfo`` of every entry of :attr:`inputs`
-        (``program.input_info``, roadmap PR13b): its dtype, ``per`` (``"env"`` /
+        (``program.input_info``): its dtype, ``per`` (``"env"`` /
         ``"raw"``), length, declaring stage, and whether it is latched at the start of a
         generation or read during it."""
         return self._program.input_info
@@ -422,7 +422,7 @@ class GateGenerator:
         bumps the epochs (of the envs with ``mask[e] != 0``) on device first; the
         fixed-shape pipeline recomputes every env, then the Program's commit restores
         every unmasked env's ``GateSequence`` rows bit for bit (see
-        :mod:`track_gen.stages.commit`; a reseed or epoch reset reaches an env at its
+        ``track_gen.stages.commit``; a reseed or epoch reset reaches an env at its
         next masked generation, or every env at the next one without a mask).
 
         Args:
@@ -438,12 +438,12 @@ class GateGenerator:
             mask: optional ``[E]`` int32 advance mask on the generator's device (read
                 on device); requires ``advance=True``; ``None`` advances every env.
                 Pass a stable buffer (e.g. ``inputs["regen_mask"]``): each distinct
-                pointer captures and caches one more self-graph.
+                pointer captures and caches one more graph of the generator's own.
 
         Returns:
-            ``self._gate_sequence`` — the same :class:`~track_gen.GateSequence` instance
-            every call (stable pointers); ``GateSequence.generation`` holds the per-env
-            epoch it was built at.
+            ``self._gate_sequence`` — the same :class:`~track_gen.results.GateSequence`
+            instance every call (stable pointers); ``GateSequence.generation`` holds the
+            per-env epoch it was built at.
 
         Raises:
             TypeError: if ``num_or_ids`` is not an ``int`` (i.e. an explicit
@@ -474,7 +474,8 @@ class GateGenerator:
 
     def enqueue(self, *, stream=None, advance: bool = False,
                 mask: "wp.array | None" = None) -> GateSequence:
-        """Enqueue one generation without self-graphing or blocking.
+        """Enqueue one generation without building the generator's own CUDA graph or
+        blocking.
 
         Inside a capture on the resolved stream the generation is recorded into the
         caller's graph; otherwise it runs eagerly on the resolved stream. Never

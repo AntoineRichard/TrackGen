@@ -20,7 +20,7 @@ generator can be assembled from the same documented pieces instead of private
 * ``E`` is ``src.shape[0] // stride`` (which must divide exactly) for every op that
   takes ``src``, and ``seeds.shape[0]`` for the samplers; every other per-env array
   must then be exactly ``[E]``.
-* Carried channels (roadmap PR13a): ``tables=`` (a :class:`ResampleTables`) makes a
+* Carried channels: ``tables=`` (a :class:`ResampleTables`) makes a
   resample also record where each output point lies on its source loop, and
   :func:`resample_channels` carries per-point channels through those tables.
 * Count semantics: ``count`` is always keyword-only. Where it is given, only the first

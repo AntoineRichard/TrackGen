@@ -3,20 +3,26 @@ elevation / validity stages of the track pipeline, without editing track_gen.
 
 A pip-installable package adds generators through an entry point in the
 ``"track_gen.plugins"`` group (:data:`ENTRY_POINT_GROUP`) whose target is a
-``register(registry)`` callable::
+``register(registry)`` callable. In the plugin package's ``pyproject.toml``:
 
-    # pyproject.toml of the plugin package
+.. code-block:: toml
+
     [project.entry-points."track_gen.plugins"]
     acme = "acme_tracks:register"
 
-    # acme_tracks/__init__.py
-    from track_gen.plugin import GeneratorSpec
+and in ``acme_tracks/__init__.py`` (``Superformula`` is the package's generator, a
+:class:`Stage` subclass; a :class:`GeneratorSpec` registers the same way):
+
+.. snippet: skip=plugin-package
+
+.. code-block:: python
+
+    from acme_tracks.superformula import Superformula
 
     track_gen_api = 1     # optional: the plugin API version this package targets
 
     def register(reg):
-        reg.add(GeneratorSpec(name="acme.superformula", alloc_scratch=alloc,
-                              generate=generate, accepts_ctx=True))
+        reg.add(Superformula)     # the class, not an instance
 
 after which ``TrackGenConfig(generator="acme.superformula")`` selects it. Names:
 third-party names should be dotted (``"package.name"``); a non-dotted one registers with
@@ -56,7 +62,7 @@ through ``gen.params["generator"]`` without re-capturing a graph.
 :meth:`Registry.describe` reports each spec's Params JSON schema
 (:attr:`SpecInfo.params_schema`).
 
-Pipeline stages (roadmap PR10b). A :class:`Stage` of kind ``"relax"``, ``"width"``,
+Pipeline stages. A :class:`Stage` of kind ``"relax"``, ``"width"``,
 ``"elevation"`` or ``"validity"`` (registered as a class, like a generator Stage)
 replaces or extends a stage of the track pipeline: select it with
 :func:`track_gen.pipeline.presets.track` (``relax="acme.taubin"``,

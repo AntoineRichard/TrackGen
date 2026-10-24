@@ -40,8 +40,9 @@ What this module proves on ``cuda:0`` (the CPU proofs are
    ``capture.caller`` (``warp`` mode; it passes every other check), and the course's
    keyed self-graph and a caller's ``ScopedCapture`` refuse it with a ``CaptureError``
    naming the component; under ``exec.unconditional()`` the same course regenerates
-   (== an eager twin). Two offences: a copy from a PINNED host array (the design's toy)
-   and an external event record.
+   (== an eager twin). The offence: an external event record (a copy from pinned,
+   device-mapped host memory is accepted by CUDA in a conditional body, so the contract
+   forbids pageable-host copies, events and other streams).
 6. **The default-stream guard (B.11).** A course with a default stream
    (``Course.track(cfg, stream=s)``, or ``Course(TrackGenerator(cfg, stream=s), ...)``)
    runs ``step`` / ``reset`` / ``enqueue_generate`` / the self-graph replays on ``s``;
@@ -881,24 +882,6 @@ def test_a_recorded_call_anchors_the_binding_and_the_masks_it_reads():
 # 5. The conditional-body contract (C.2): a refused component
 # ---------------------------------------------------------------------------------------
 
-class _CopiesFromPinnedHost(_toys._MeanX):
-    """A correct per-step component (the kit's ``_MeanX`` baseline: the mean x of the
-    centerline, NaN for an invalid env) whose ``on_generate`` also copies a constant
-    table from a PINNED host array into its own device buffer."""
-
-    name = "acme.pinned_copy"
-
-    def attach(self, source, cc) -> None:
-        E_, dev = int(self.layout.num_envs), self.layout.device
-        self._table_host = wp.array(np.arange(E_, dtype=np.float32), dtype=wp.float32,
-                                    device="cpu", pinned=True)
-        self._table = wp.zeros(E_, dtype=wp.float32, device=dev)
-        super().attach(source, cc)           # runs the first on_generate
-
-    def on_generate(self, ctx, mask) -> None:
-        ctx.copy(self._table, self._table_host)
-
-
 class _RecordsAnEvent(_toys._MeanX):
     """The same baseline whose ``on_generate`` records an (external) event on ``ctx``'s
     stream: an event-record node inside a capture."""
@@ -923,8 +906,7 @@ _OFFENCES = {"event-record": _RecordsAnEvent}
 @pytest.mark.parametrize("offence", sorted(_OFFENCES))
 def test_a_component_a_conditional_body_cannot_hold_is_refused(offence):
     """A component whose ``on_generate`` emits an operation a CUDA conditional-node body
-    cannot hold (C.2: a copy from pinned host memory; an external event record), correct
-    otherwise:
+    cannot hold (C.2: an external event record), correct otherwise:
 
     - ``check_component(..., devices=["cuda:0"], modes=("warp",))`` fails exactly
       ``capture.caller`` (its ``warp`` mode records the course's ``any_set`` +
@@ -935,23 +917,14 @@ def test_a_component_a_conditional_body_cannot_hold_is_refused(offence):
       nothing and cache no graph;
     - the same call inside ``track_gen.exec.unconditional()`` runs (captured inline),
       and its graph then replays outside the block: equal to an eager twin, masked and
-      zero-mask calls.
-
-    If the ``pinned-copy`` variant is accepted, CUDA allowed the copy inside the body
-    (its programming guide permits pinned device-mapped host memory in conditional
-    bodies, and Warp's body check accepts memcpy nodes): then the C.2 row "no copy to or
-    from host or pinned memory" is stricter than the hardware, and the event-record
-    variant is the negative toy."""
+      zero-mask calls."""
     if not wp.is_conditional_graph_supported():
         pytest.skip(_NO_CONDITIONAL)
     toy_cls = _OFFENCES[offence]
-    hint = (" (CUDA accepted a pinned-host copy inside a conditional body: relax C.2's "
-            "'no copy to or from host or pinned memory' and keep the event-record toy)"
-            if offence == "pinned-copy" else "")
     report = check_component(lambda cc: toy_cls(), source="track", devices=[DEV],
                              modes=("warp",))
     cap = report.result("capture.caller", DEV)
-    assert not cap.passed and not cap.skipped, f"capture.caller passed{hint}\n{report}"
+    assert not cap.passed and not cap.skipped, f"capture.caller passed\n{report}"
     assert "conditional" in cap.message.lower(), \
         f"capture.caller must name the conditional body: {cap.message!r}"
     assert report.failed_names == ["capture.caller"], str(report)

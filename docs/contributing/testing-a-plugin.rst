@@ -1,17 +1,30 @@
+.. _testing-a-plugin:
+
 Testing a Plugin
 ================
 
-``track_gen.testing`` is the conformance kit for generator and stage plugins. One call
-runs a registered generator through every check the :doc:`generator contract
-<writing-a-generator>` implies: output shapes and NaN padding, determinism, batch
-independence, no hidden state, no host sync or allocation on the hot path, a static
-launch sequence, the absorbing freeze of an iterative (``BOUNDED``) loop and, on CUDA,
-recording into a caller's graph. ``check_stage`` does the
-same for a relax, width, elevation, validity, order or stations stage (see
-:ref:`kit-check-stage`), and ``check_component`` for a runtime component (see
-:ref:`kit-check-component`).
-TrackGen's own test suite runs the same checks over every built-in generator and stage,
-so a plugin is held to the standard the built-ins meet.
+.. admonition:: Before you start
+
+   - **What you write:** one conformance test per plugin name (a ``check_*`` call, or the
+     pytest fixture), plus tests of your plugin's own properties.
+   - **What you need to know:** the contract of what you test: a track generator
+     (:ref:`writing-a-generator`), a gate generator (:ref:`writing-a-gate-generator`), a
+     pipeline stage (:ref:`writing-a-stage`) or a component
+     (:ref:`writing-a-component`).
+   - **What to run:** a CPU job on every pull request and, if you can, a CUDA job
+     (`A CI recipe`_), both with ``TRACK_GEN_PLUGINS=strict``.
+
+``track_gen.testing`` is the conformance kit for generator, :term:`stage` and
+:term:`component` plugins. One call runs a registered generator through every check the
+:ref:`generator contract <generator-stage-contract>` implies: output shapes and NaN
+padding, determinism, batch independence, no hidden state, no host sync or allocation on
+the hot path, a static launch sequence, the freeze of an iterative (``BOUNDED``) loop
+and, on CUDA, recording into a caller's graph (a :term:`capture`). ``check_gate_generator``
+does the same for a gate generator, ``check_stage`` for a relax, width, elevation,
+validity, order or stations stage (see :ref:`kit-check-stage`), and ``check_component``
+for a runtime component (see :ref:`kit-check-component`). TrackGen's own test suite runs
+the same checks over every built-in generator and stage, so a plugin is held to the
+standard the built-ins meet. The kit's functions are listed in :ref:`reference-testing`.
 
 The kit checks the contract, not the quality of the tracks: yield, shape variety and
 speed are measured by ``benchmarks/compare_generators.py`` (see
@@ -26,6 +39,10 @@ explicitly. ``import track_gen`` does not load it, and importing it imports neit
 Quick start
 -----------
 
+With the Stage quick start's ``acme.wobble`` registered (:ref:`writing-a-generator`):
+
+.. snippet: group=quick requires=contributing/writing-a-generator#wobble
+
 .. code-block:: python
 
    from track_gen.testing import check_generator
@@ -38,25 +55,34 @@ installed (its entry point registers it) or registered by hand first, as in the
 :doc:`generator guide <writing-a-generator>`. It runs every check on ``cpu``, and on
 ``cuda:0`` too when Warp sees a CUDA device, and returns a ``Report``.
 ``raise_for_failures()`` raises one ``AssertionError`` listing every failed check, and
-``print(report)`` prints the whole table (here on a machine without CUDA):
+``print(report)`` prints the whole table (here on a machine without CUDA; a skipped check
+says why):
 
 .. code-block:: text
 
-   generator 'acme.wobble': 16/16 checks passed
-     cpu  construct            PASS
-     cpu  output.shape         PASS
-     cpu  output.finite        PASS
+   generator 'acme.wobble': 18/18 checks passed, 4 skipped
+     cpu  construct                       PASS
+     cpu  output.shape                    PASS
      ...
-     cpu  hot_path.topology    PASS
-     cpu  hot_path.buffers     PASS
+     cpu  attributes.written              SKIP  skipped: no attributes
+     ...
+     cpu  params.per_env                  PASS
+     cpu  bounded.absorbing               SKIP  skipped: not applicable (the unit runs no ctx.bounded_loop with active=)
+     ...
+     cpu  hot_path.topology               PASS
+     cpu  hot_path.buffers                PASS
 
 In pytest, load the kit's plugin from your top-level ``conftest.py`` and call the
 ``track_gen_conformance`` fixture, which fails the test with the same list:
+
+.. snippet: group=fixture
 
 .. code-block:: python
 
    # conftest.py
    pytest_plugins = ["track_gen.testing.pytest_plugin"]
+
+.. snippet: group=fixture
 
 .. code-block:: python
 
@@ -65,8 +91,7 @@ In pytest, load the kit's plugin from your top-level ``conftest.py`` and call th
        track_gen_conformance("acme.wobble", params={"lobes": 5})
 
 Run that job with ``TRACK_GEN_PLUGINS=strict``, so a plugin that fails to load fails the
-run instead of being quarantined with a warning (see :ref:`quarantined plugins
-<plugin-quarantine>`).
+run instead of being quarantined with a warning (see :ref:`plugin-quarantine`).
 
 .. _conformance-checks:
 
@@ -138,7 +163,8 @@ broke.
        pipeline accepts at least one env.
      - Writing an open curve, or one that spans less than a full turn. A loop far larger
        than ``TARGET_EXTENT * scale`` needs more than ``N_max`` resampled points, fails
-       as truncated, and leaves no valid env (see :ref:`generator-hard-rules`).
+       as truncated, and leaves no valid env (see "The raw loop" in
+       :ref:`generator-stage-contract`).
    * - ``attributes.written``
      - Every slot of every per-point attribute the generator writes (``raw.z``,
        ``raw.half_width``, ``raw.<package>.<name>``; a gate generator's
@@ -189,7 +215,7 @@ broke.
        reproduces the first batch.
      - State carried from one call to the next: a scratch buffer read before it is
        written, an output accumulated into, an output slot left unwritten, a Python
-       counter, seeds latched at construction instead of read from ``seeds_wp``
+       counter, seeds copied at construction instead of read from ``seeds_wp``
        (``b.seed``) at every call.
    * - ``params.per_env``
      - For the stage under test (the generator, or the stage ``check_stage`` checks),
@@ -202,7 +228,7 @@ broke.
        away from its one declared bound, a field with no bound alternates down / up in
        declaration order, so a window such as ``[z_min, z_max]`` opens), and ``int32``
        fields by ``-1``, ``0``, ``+1`` (a ``bool`` alternates). The live arrays and the
-       stage's latched copies must read back what was set; the initial values are
+       stage's working copies must read back what was set; the initial values are
        restored afterwards. A ``size`` field with the convention bounds ``[0.1, 10]``
        (:ref:`generator-size-convention`) reaches about ``3.5`` at ``E = 4``: an env
        that truncates at that size still compares bitwise. Skipped ("no dynamic
@@ -319,13 +345,15 @@ and ``hot_path.capture`` always apply (see :ref:`generator-capture-opt-out`). On
 marker copy, ``generate()`` must raise ``NotCapturableError`` naming the ``HOST`` stages,
 and the replayed caller graph must hold the marker and nothing of the generation (the
 outputs keep their poison, the seeds and epochs are unchanged). ``capture.self_graph``
-checks the segmented self-graph: ``graph`` stays ``None``, a graph exists exactly for
-each capturable segment, and replays into poisoned outputs equal the eager batch, before
-and after a reseed. When ``construct`` fails, every other check is reported as not run,
+checks the generator's own graphs, one per segment: ``graph`` stays ``None``, a graph
+exists exactly for each capturable segment, and replays into poisoned outputs equal the
+eager batch, before and after a reseed. When ``construct`` fails, every other check is reported as not run,
 and the report fails.
 
 Arguments
 ---------
+
+.. snippet: skip=signature
 
 .. code-block:: python
 
@@ -370,22 +398,24 @@ when ``device`` is ``None``). A ``CheckResult`` has ``name``, ``device``, ``pass
 as ``valid_fraction`` for ``output.closed``) and ``status`` (``"PASS"``, ``"FAIL"`` or
 ``"SKIP"``).
 
-Here is the report of a generator that reads its phase array back with ``.numpy()``,
-allocates a temporary with ``wp.empty`` and copies it into the output with a bare
-``wp.copy``, all inside ``generate`` (messages shortened):
+Here is the report of a ``GeneratorSpec`` that reads its phase array back with
+``.numpy()``, allocates a temporary with ``wp.empty`` and copies it into the output with
+a bare ``wp.copy``, all inside ``generate`` (messages shortened):
 
 .. code-block:: text
 
-   generator 'acme.broken': 13/16 checks passed
-     cpu  construct            PASS
+   generator 'acme.broken': 14/17 checks passed, 5 skipped
+     cpu  construct                       PASS
      ...
-     cpu  statelessness        PASS
-     cpu  hot_path.host_sync   FAIL  2 host sync/readback(s) in two generate() calls: wp.array.numpy() from acme_broken.generate:31. A capturable hot path must not synchronize ...
-     cpu  hot_path.allocation  FAIL  2 allocation(s) in two generate() calls: wp.empty() from acme_broken.generate:33. A capturable hot path must not allocate ...
-     cpu  hot_path.stream      FAIL  2 call(s) off the call's stream in two generate() calls: wp.copy without stream= from acme_broken.generate:35. Emit device work through the LaunchContext ...
-     cpu  hot_path.capture     PASS
-     cpu  hot_path.topology    PASS
-     cpu  hot_path.buffers     PASS
+     cpu  statelessness                   PASS
+     cpu  params.per_env                  SKIP  skipped: no dynamic parameters
+     ...
+     cpu  hot_path.host_sync              FAIL  2 host sync/readback(s) in two generate() calls: wp.array.numpy() from acme_broken.generate:35. A capturable hot path must not synchronize ...
+     cpu  hot_path.allocation             FAIL  2 allocation(s) in two generate() calls: wp.empty() from acme_broken.generate:37. A capturable hot path must not allocate ...
+     cpu  hot_path.stream                 FAIL  2 call(s) off the call's stream in two generate() calls: wp.copy without stream= from acme_broken.generate:39. Emit device work through the LaunchContext ...
+     cpu  hot_path.capture                PASS
+     cpu  hot_path.topology               PASS
+     cpu  hot_path.buffers                PASS
 
 The hot path runs twice, so each breach is counted twice. Each message names the line to
 fix and ends with the rule it breaks and how to comply.
@@ -408,7 +438,10 @@ env and ``count[e] >= min_gates`` for valid ones, and for a Stage also
 generator's default order, as ``GateGenConfig(gate_ordering=None)`` does: its
 ``preferred["order"]`` when it accepts it, else ``"ccw"`` when it accepts it, else the
 first order it accepts (a legacy spec: ``"ccw"`` if supported, else the first of its
-``supported_orderings``).
+``supported_orderings``). With the gate generator guide's ``acme.scatter``
+(:ref:`writing-a-gate-generator`):
+
+.. snippet: group=gates requires=contributing/writing-a-gate-generator#scatter
 
 .. code-block:: python
 
@@ -440,6 +473,10 @@ the gate kinds, in the default gate pipeline of ``presets.gates``, built through
   ``gates.cum`` / ``gates.perim`` / ``gates.count`` into ``gates.z``. Run it once per
   pipeline to check both.
 
+With the stages of :ref:`writing-a-stage` and :ref:`writing-an-ordering` registered:
+
+.. snippet: group=stages requires=contributing/writing-a-stage#testing
+
 .. code-block:: python
 
    from track_gen.testing import check_stage
@@ -454,6 +491,8 @@ the gate kinds, in the default gate pipeline of ``presets.gates``, built through
    check_stage("width", "acme.ripple").raise_for_failures()
    check_stage("width", "from_channel", ports={"src": "cl.acme.hw"},
                upstream={"generator": "acme.ribbon"}).raise_for_failures()
+
+.. snippet: skip=signature
 
 .. code-block:: python
 
@@ -570,6 +609,8 @@ Runtime components: ``check_component``
 :doc:`writing-a-component`): your own, or one of the built-in adapters, which TrackGen's
 suite checks the same way.
 
+.. snippet: skip=signature
+
 .. code-block:: python
 
    check_component(factory, *, source="track", upstream=(), devices=None, num_envs=8,
@@ -679,7 +720,7 @@ their pointers.
      - Every launched pointer belongs to the component, its upstream, its read target,
        its inputs or the masks; and ``on_generate(ctx, None)``, ``on_generate(ctx, m)``
        and ``reset(ctx, m)``, traced separately, reference no pointer of a bound input
-       (a ``Course`` runs them in a self-graph keyed on ``advance`` and the mask only:
+       (a ``Course`` runs them in its own graph keyed on ``advance`` and the mask only:
        :ref:`component-course-contract`). An input reached through an upstream result
        that aliases it fails too: the kit binds the same arrays to the upstream.
    * - ``capture.caller`` (CUDA)
@@ -693,11 +734,13 @@ their pointers.
        iteration the owned arrays of the component under test are poisoned in both
        runs. Where the capture allows conditional nodes (``warp`` mode with
        ``wp.is_conditional_graph_supported()``) the skippable part is a
-       conditional-node body: a copy to or from host or pinned memory, an event or
-       another stream in ``on_generate`` / ``reset`` fails here, and on an all-zero
-       ``done`` the eager twin skips that part as the replay does (an array that only
-       ``on_generate`` writes keeps the poison in both runs); elsewhere it is recorded
-       unconditionally, as a ``Course`` records it there, and both runs execute it.
+       conditional-node body: a copy to or from pageable host memory, an event or
+       another stream in ``on_generate`` / ``reset`` fails here (CUDA accepts a copy
+       from pinned, device-mapped host memory there; keep the body to device memory
+       for portability), and on an all-zero ``done`` the eager twin skips that part as
+       the replay does (an array that only ``on_generate`` writes keeps the poison in
+       both runs); elsewhere it is recorded unconditionally, as a ``Course`` records it
+       there, and both runs execute it.
    * - ``capture.self_reset`` (CUDA)
      - As ``regenerate.self_reset``, recorded (the same chain without ``reset``): the
        graph equals the eager twin with ``reset``.
@@ -733,6 +776,8 @@ provides:
 - ``parametrize_generators(kind="generator", *, argname="generator", builtin=None,
   exclude=())``, the matching ``pytest.mark.parametrize``. It reads the registry at
   collection time, which loads the installed plugins then.
+
+.. snippet: group=pytest-plugin
 
 .. code-block:: python
 
@@ -777,11 +822,16 @@ checks report: host syncs and readbacks, Warp allocations, work off the call's s
 and nested captures or graph launches. ``no_host_sync()``, ``no_allocation()`` and
 ``stream_explicit(modules)`` watch one kind each.
 
+.. snippet: group=guards requires=contributing/writing-a-generator#wobble
+
 .. code-block:: python
 
+   from track_gen import TrackGenerator
+   from track_gen.pipeline import presets
    from track_gen.testing import hot_path_guard
 
-   gen = TrackGenerator(config, rng)         # construction may allocate and sync
+   gen = TrackGenerator(presets.track(num_envs=8, device="cpu", generator="acme.wobble"))
+   # construction may allocate and sync; the generations after it may not
    with hot_path_guard(modules=("track_gen", "acme_tracks")):
        gen.generate()                        # raises HotPathViolation at the first breach
 
@@ -831,6 +881,8 @@ input buffers) into a ``BufferSet``, against which pointers are checked. It does
 enter a registry spec (``GeneratorSpec``): what a spec's functions close over is shared
 by every generator built from it.
 
+.. snippet: group=guards
+
 .. code-block:: python
 
    from track_gen.testing import (assert_pointers_within, assert_same_topology,
@@ -877,12 +929,15 @@ recording follows the discipline of TrackGen's own capture tests:
 - the producer is reseeded between replays, and the replay after the reseed must equal a
   twin built with the new seeds: the graph reads the live seeds.
 
+.. snippet: group=caller-capture cuda requires=contributing/writing-a-generator#wobble
+
 .. code-block:: python
 
+   from track_gen import TrackGenerator
+   from track_gen.pipeline import presets
    from track_gen.testing import assert_caller_capturable
 
-   config = TrackGenConfig(generator="acme.wobble", num_envs=8, device="cuda:0")
-   gen = TrackGenerator(config, PerEnvSeededRNG(seeds=0, num_envs=8, device="cuda:0"))
+   gen = TrackGenerator(presets.track(num_envs=8, device="cuda:0", generator="acme.wobble"))
    status = assert_caller_capturable(gen)   # {"warp": "ok", "external": "ok", "torch": "ok"}
 
 ``modes`` selects the captures: ``"warp"`` (a ``wp.ScopedCapture`` on the side stream),
@@ -901,6 +956,68 @@ built from (``side_stream``, ``mempool_disabled``,
 ``result_arrays``) are public in ``track_gen.testing.capture`` for custom capture
 tests; :doc:`/how-it-works/cuda-graph` describes the execution model they test.
 
+.. _plugin-own-tests:
+
+Testing your plugin's own properties
+------------------------------------
+
+The kit checks the contract; what your generator is meant to draw, or what your stage is
+meant to compute, needs tests of its own. Write them as ordinary tests on CPU
+(``device="cpu"``: every rule of the contract holds there too), and wrap any test that
+adds, replaces or removes specs in ``registry.scoped()``, which snapshots every kind on
+entry and restores it on exit, so nothing leaks into the next test. With the two quick
+starts of :ref:`writing-a-generator` (``acme.wobbly``, a ``GeneratorSpec``, and
+``acme.wobble``, a Stage):
+
+.. snippet: group=own-tests requires=contributing/writing-a-generator#spec,contributing/writing-a-generator#wobble
+
+.. code-block:: python
+
+   import dataclasses
+
+   import numpy as np
+
+   from track_gen import TrackGenerator
+   from track_gen.pipeline import presets
+   from track_gen.plugin import registry
+
+
+   def _gen(name, **params):
+       return TrackGenerator(presets.track(num_envs=8, device="cpu", generator=name,
+                                           generator_params=params or None))
+
+
+   def test_wobbly_runs_on_cpu():
+       assert _gen("acme.wobbly").generate().valid.numpy().all()
+
+
+   def test_a_variant_without_leaking_it():
+       with registry.scoped():
+           base = registry.get("generator", "acme.wobbly")
+           registry.add(dataclasses.replace(base, name="acme.wobbly_variant"))
+           assert "acme.wobbly_variant" in registry.available("generator")
+       assert "acme.wobbly_variant" not in registry.available("generator")
+
+
+   def test_amp_takes_effect_at_the_next_generation():
+       gen = _gen("acme.wobble")
+       gen.params["generator"].set("amp", 0.3)
+       np.testing.assert_array_equal(gen.generate().center.numpy(),
+                                     _gen("acme.wobble", amp=0.3).generate().center.numpy())
+
+.. snippet: after
+
+   test_wobbly_runs_on_cpu()
+   test_a_variant_without_leaking_it()
+   test_amp_takes_effect_at_the_next_generation()
+
+A variant of a Stage is a subclass with another ``name``. Test a dynamic parameter
+against a generator built with the same value, as above: a ``set`` followed by a
+generation must give its output bit for bit. For a stage, compare a ``tap`` of its output
+(:ref:`pipeline-taps`) with a NumPy reference on a small batch, and for a check, that it
+sets its bit exactly where it should. That the installed entry point registers your
+names is a test of the package (:ref:`packaging-a-plugin`).
+
 A CI recipe
 -----------
 
@@ -916,8 +1033,8 @@ without a GPU; the CUDA lane runs the same tests on a GPU runner, where the defa
    # CUDA lane, on a GPU runner (install torch with CUDA for the torch capture modes)
    TRACK_GEN_PLUGINS=strict python -m pytest -q
 
-Keep the tests that check your generator's own properties next to the conformance test:
-:ref:`plugin-own-tests` shows the registry and parameter patterns.
+Keep the tests that check your plugin's own properties (`Testing your plugin's own
+properties`_) next to the conformance test.
 
 What the kit does not see
 -------------------------

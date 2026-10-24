@@ -189,8 +189,9 @@ class BatchSpec:
             ``truncated`` are kept). A gate pipeline: ``count = 0``, every per-gate
             field NaN, ``valid = 0`` (``fail_mask`` kept).
         max_gates: ``None`` for a track pipeline (the result is a ``Track``); an int
-            ``>= 2`` makes it a gate pipeline (e.g. :func:`~track_gen.pipeline.presets.
-            gates`), whose result is a ``GateSequence`` of ``max_gates`` slots per env.
+            ``>= 2`` makes it a gate pipeline (e.g.
+            :func:`~track_gen.pipeline.presets.gates`), whose result is a ``GateSequence``
+            of ``max_gates`` slots per env.
     """
 
     num_envs: int
@@ -301,13 +302,19 @@ class PipelineSpec:
         return self._with(stages)
 
     def with_randomize(self, randomize) -> "PipelineSpec":
-        """This spec with per-env uniform draws of DYNAMIC float32 params (roadmap
-        PR13b / PR13c): each a ``randomize.uniform`` stage (id
-        ``"randomize.<stage>.<field>"``) inserted right before the stage it draws.
+        """This spec with per-env uniform draws of DYNAMIC float32 params: each a
+        ``randomize.uniform`` stage (id ``"randomize.<stage>.<field>"``) inserted right
+        before the stage it draws.
 
         The helper behind ``presets.track(randomize=)`` / ``presets.gates(randomize=)``,
         for a spec built any other way, e.g. from a config::
 
+            from track_gen import (GateGenConfig, GateGenerator, PerEnvSeededRNG,
+                                   TrackGenConfig, TrackGenerator)
+            from track_gen.pipeline import legacy
+
+            E, d = 64, "cuda:0"
+            rng = PerEnvSeededRNG(seeds=0, num_envs=E, device=d)
             cfg = TrackGenConfig(num_envs=E, device=d, z_profile="uniform", z_max=0.6)
             spec = legacy.to_pipeline_spec(cfg).with_randomize(
                 {"generator.rad": (0.1, 0.35), "elevation.z_max": (0.2, 0.6)})
@@ -327,10 +334,10 @@ class PipelineSpec:
         Args:
             randomize: ``{"<stage id>.<field>": (lo, hi)}`` (the key split at its LAST
                 dot) or a sequence of ``StageRef("randomize", "uniform", {...})``;
-                ``None`` returns this spec. Roadmap PR13d: the course size is
-                ``"generator.size"`` (the track generators but ``external``, the bezier
-                / hull gate generators) or ``"normalize.size"`` (the polar / voronoi /
-                checkpoint gate pipelines), the bar width ``"gate_frames.gate_width"``.
+                ``None`` returns this spec. The course size is ``"generator.size"`` (the
+                track generators but ``external``, the bezier / hull gate generators) or
+                ``"normalize.size"`` (the polar / voronoi / checkpoint gate pipelines),
+                the bar width ``"gate_frames.gate_width"``.
 
         Raises:
             ValueError: a malformed key, a target stage the spec does not have (lists
@@ -359,18 +366,18 @@ class PipelineSpec:
         """Read :meth:`to_dict` data back (params stay mappings; ``build`` coerces
         them). No registry is needed.
 
-        ``track_gen.pipeline/1`` data (0.2.0.dev3, and v2 before PR13a) is migrated,
+        ``track_gen.pipeline/1`` data (written by earlier releases) is migrated,
         with one ``DeprecationWarning``: the ``half_width`` params of ``relax.xpbd`` /
         ``offset.default`` / ``validity.default`` are dropped (each must equal the width
         stage's ``half_width``, else ``ValueError``), every width stage between the
         first relax and the first frames stage moves to just before that relax, and a
         ``relax.xpbd`` without a width stage before it (a ``relaxed_stations`` gate spec
-        written before PR13a, format /1) gets ``width.constant`` with that half-width.
+        in format /1) gets ``width.constant`` with that half-width.
         With ``width.constant`` (or no width stage) the migrated spec builds the outputs
         of the /1 spec byte for byte; another width stage now runs before relax and is
         read per point by XPBD and the offset, so its outputs change (the warning says
         so). A width stage after the first frames stage of a spec whose ``relax.xpbd``
-        has no width before it (a dev3 width reading ``cl.kappa``) is refused with
+        has no width before it (an earlier width stage reading ``cl.kappa``) is refused with
         ``ValueError``: it cannot be both the width XPBD reads and a stage after
         frames."""
         if not isinstance(data, _MappingABC):

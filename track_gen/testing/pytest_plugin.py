@@ -15,7 +15,7 @@ It provides:
   ``"elevation"`` / ``"validity"`` / ``"order"`` / ``"stations"``:
   :func:`~track_gen.testing.check_stage`) and fails
   the test, listing every failed check, unless all pass;
-- the ``track_gen_check_component`` fixture (roadmap PR14): a factory
+- the ``track_gen_check_component`` fixture: a factory
   ``track_gen_check_component(factory, **kwargs) -> Report`` that runs
   :func:`~track_gen.testing.check_component` and fails the test, listing every failed
   check, unless all pass;

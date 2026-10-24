@@ -1,4 +1,4 @@
-"""Components: runtime consumers of a generator's result (roadmap PR14).
+"""Components: runtime consumers of a generator's result.
 
 A :class:`Component` declares what it reads (``requires`` / ``optional`` capability
 protocols of its read target, ``source``, ``topology``), what it is bound to (``inputs``:
@@ -9,8 +9,15 @@ methods (``on_generate``, ``step``, ``reset``) launch through the
 :class:`~track_gen.exec.LaunchContext` they are given, allocate nothing and never
 synchronize, so a ``Course`` (or your sim loop) can record them into a CUDA graph::
 
-    from track_gen import tools
+    import warp as wp
+
+    from track_gen import TrackGenerator, tools
     from track_gen.exec import LaunchContext
+    from track_gen.pipeline import presets
+
+    E, device = 64, "cuda:0"
+    gen = TrackGenerator(presets.track(num_envs=E, device=device))
+    pos = wp.zeros(E, dtype=wp.vec3f, device=device)       # your agents' positions
 
     track = gen.generate()                                 # the producer's result
     cc = tools.ComponentContext.for_producer(gen)          # layout + plan capacities

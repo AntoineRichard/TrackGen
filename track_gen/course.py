@@ -1,6 +1,6 @@
 """Public course facade: a generator and its runtime components in one object.
 
-:class:`Course` is the composition root (roadmap PR15): ``Course(generator,
+:class:`Course` is the composition root: ``Course(generator,
 components)`` over any producer and any :mod:`track_gen.tools` components, the presets
 ``Course.track`` / ``Course.gates``, and ``Course.from_config(CourseConfig)`` (the 0.x
 ``Course(CourseConfig)``, unchanged). See :class:`Course` for the lifecycle (construct ->

@@ -16,14 +16,16 @@ A :class:`SeedState` holds two ``[E]`` ``int32`` arrays:
   :meth:`SeedState.set`), so it can be driven from inside a CUDA graph.
 
 Every generation first folds the two into an EFFECTIVE seed per env
-(``_effective_seed_k``, the first launch of every generator body)::
+(``_effective_seed_k``, the first launch of every generator body):
+
+.. code-block:: text
 
     effective = seed                                       if epoch == 0
               = hash32(u32(seed) ^ hash32(u32(epoch) * 0x9E3779B9)) & 0x7FFFFFFF
                                                            otherwise
 
-Epoch 0 leaves the seed unchanged, so a never-advanced env generates exactly what
-it did before epochs existed (goldens are byte-identical). A MASKED generation
+Epoch 0 leaves the seed unchanged, so a never-advanced env generates exactly what its
+base seed alone gives. A MASKED generation
 (``effective(out, mask=m)``) re-derives the effective seed of the envs with
 ``m[e] != 0`` only: every other env keeps the effective seed its current output
 was built from, so it is recomputed to identical values whatever happened to its
@@ -252,10 +254,13 @@ class SeedState:
 
     @property
     def num_envs(self) -> int:
+        """The number of environments ``E`` (the length of :attr:`seeds` and
+        :attr:`epoch`)."""
         return self._E
 
     @property
     def device(self) -> str:
+        """The Warp device of the state, as a string (``"cpu"``, ``"cuda:0"``)."""
         return self._device
 
     def __repr__(self) -> str:
@@ -272,8 +277,9 @@ class SeedState:
 
     def check_mask(self, mask, name: str = "mask") -> None:
         """Validate a contiguous ``[E]`` int32 mask on this state's device
-        (host-side). Contiguous, because the producers cache a self-graph per mask
-        POINTER: two views with one pointer and different strides would share it."""
+        (host-side). Contiguous, because the producers cache one CUDA graph of their
+        own per mask POINTER: two views with one pointer and different strides would
+        share it."""
         _check_arr(name, mask, (self._E,), wp.int32, self._device)
         if not mask.is_contiguous:
             raise ValueError(f"{name} must be a contiguous array (got strides "

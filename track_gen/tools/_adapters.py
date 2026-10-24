@@ -126,7 +126,7 @@ class BandCollision(Component):
     (``[E * max_boxes]``). ``on_generate``: the SDF bake (``method="sdf"``); ``step``:
     ``query`` -> ``BoxContact``. With ``size_hi`` (the largest size a size curriculum
     will reach) an ``"sdf"`` grid below ``ceil(reference_resolution * size_hi)`` texels
-    per side warns at attach. ``size_hi="auto"`` (the default, roadmap PR15) reads the
+    per side warns at attach. ``size_hi="auto"`` (the default) reads the
     producer's declared bound (``cc.bounds["size_hi"]``: a size randomizer's
     construction ``hi``, else the construction ``size``); ``None`` declares none.
     """
@@ -370,11 +370,11 @@ class Checkpoints(Component):
     Read target: the producer's result (``HasBand``; ``generation`` read when present).
     Capacity: ``max_checkpoints`` (an int ``>= 3``); ``None``: ``max(3,
     ceil(max_loop_length / spacing))`` from the producer's plan (``ValueError`` without
-    it); ``"auto"`` (roadmap PR15): that plan bound, else, when the plan declares none
+    it); ``"auto"``: that bound, else, when the plan declares none
     (an elevated config, a variable width, a plugin geometry stage), the readback of the
     batch it attaches to (``ceil(1.5 * max valid centerline perimeter / spacing)``, one
     cold host read; the ``CheckpointSampler(max_checkpoints=None)`` default).
-    :attr:`defaulted` says how a capacity it chose itself was found (``None`` for an
+    ``defaulted`` says how a capacity it chose itself was found (``None`` for an
     explicit int); the sampler's ``max_checkpoints`` is the capacity used.
     ``on_generate``: ``sample`` (the set's ``valid`` / ``generation`` are written with
     its rows); ``step``: the ``CheckpointSet``.
@@ -441,8 +441,8 @@ class GateCheckpoints(Component):
 
 
 class CenterlineFromGates(Component):
-    """A 3D centerline through the gates (wraps ``CourseLine``; the roadmap's
-    ``centerline_from_gates``): its result is the ``Centerline``.
+    """A 3D centerline through the gates (wraps ``CourseLine``): its result is the
+    ``Centerline``.
 
     Read target: the producer's gates (``HasGates``; ``generation`` read when present,
     copied into the line's own). ``on_generate``: ``refresh``.
@@ -472,7 +472,7 @@ class HeightFieldBake(Component):
 
     Read target: the producer's result (``HasBand``). ``on_generate``: ``bake``. With
     ``size_hi`` a grid below ``ceil(reference_resolution * size_hi)`` texels per side
-    warns at attach; ``size_hi="auto"`` (the default, roadmap PR15) reads the
+    warns at attach; ``size_hi="auto"`` (the default) reads the
     producer's declared bound (``cc.bounds["size_hi"]``), ``None`` declares none.
     """
 

@@ -68,8 +68,8 @@ class PropSet:
         3D chord, in segments mode) between samples that may sit at different
         altitudes.
     count : wp.array
-        ``[E]`` ``int32`` real prop counts (0 for degenerate and, since roadmap PR14,
-        invalid envs: ``valid[e] == 0`` on the source).
+        ``[E]`` ``int32`` real prop counts (0 for degenerate and invalid envs:
+        ``valid[e] == 0`` on the source).
     truncated : wp.array
         ``[E]`` ``int32`` — 1 if ``max_props`` clipped this env's ring (the
         ring still closes, at a coarser effective spacing).
@@ -259,14 +259,14 @@ def _place_props_k(
 class PropSampler:
     """Resample one track boundary into instancing poses at a set spacing.
 
-    One sampler binds one :class:`Track`, one boundary curve, one mode, and
-    one spacing, so all output shapes are fixed and ``sample()`` is
-    CUDA-graph capturable (allocation-free and host-sync-free). Because
-    ``TrackGenerator.generate()`` overwrites its ``Track`` buffers in place,
-    every ``sample()`` reads the CURRENT batch — no rebind after
-    regeneration. Props are rendering-only; they are not colliders. An env with
-    ``valid[e] == 0`` gets no props (``count = 0``, NaN slots: the sentinel of a
-    poisoned env, roadmap PR14), whatever the source's ``on_invalid``.
+    One sampler binds one :class:`~track_gen.results.Track`, one boundary curve, one
+    mode, and one spacing, so all output shapes are fixed and ``sample()`` is CUDA-graph
+    capturable (allocation-free and host-sync-free). Because
+    ``TrackGenerator.generate()`` overwrites its ``Track`` buffers in place, every
+    ``sample()`` reads the CURRENT batch — no rebind after regeneration. Props are
+    rendering-only; they are not colliders. An env with ``valid[e] == 0`` gets no props
+    (``count = 0``, NaN slots: the sentinel of a poisoned env), whatever the source's
+    ``on_invalid``.
 
     ``PropSet.truncated``/``PropSet.step`` live on the RESULT because
     ``PropSampler`` is the ONLY producer of a ``PropSet`` — unlike
@@ -282,7 +282,8 @@ class PropSampler:
 
     def __init__(self, track: HasBand, spacing: float, boundary: str = "outer",
                  mode: str = "points", max_props: "int | None" = None) -> None:
-        """Bind to a :class:`Track` boundary and allocate the result buffers.
+        """Bind to a :class:`~track_gen.results.Track` boundary and allocate the result
+        buffers.
 
         Args:
             track: the bound track batch; ``sample()`` reads its buffers
@@ -296,11 +297,11 @@ class PropSampler:
             mode: ``"points"`` (default, one pose per sample) or
                 ``"segments"`` (one pose per chord between samples).
             max_props: buffer capacity per env; ``None`` (default) derives
-                it from the CURRENT batch (see :meth:`_derive_max_props`: a
+                it from the CURRENT batch (see ``_derive_max_props``: a
                 construction-time readback, kept as a supported convenience).
                 Must be >= 3 when given explicitly. The size-independent bound
                 ``max(3, ceil(max_loop_length / spacing))`` from the producer's plan
-                (roadmap PR14) is the default of the component route:
+                is the default of the component route:
                 ``track_gen.tools.Props(spacing)`` attached through
                 ``ComponentContext.for_producer(generator)``.
         """

@@ -5,7 +5,9 @@ The checkpoint generator produces organic, continuously undulating closed loops 
 a bounded-turn path through a ring of random radial checkpoints.  It is the only generator
 in ``track_gen`` that derives its shape from a proportional-gain steering walk, making it the
 natural fit for CarRacing-style circuits that flow continuously around the track rather than
-snapping between corner anchor points.
+snapping between corner anchor points. It writes one closed centerline per :term:`env` at
+every :term:`generation`, and its shape knobs are per-env :term:`dynamic fields <dynamic
+field>` (`Per-env (dynamic) parameters`_).
 
 .. figure:: ../assets/generator-checkpoint.png
    :alt: Sample tracks produced by the checkpoint generator

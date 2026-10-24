@@ -20,13 +20,12 @@ Yu, Schumacher, and Crane, *Repulsive Curves* (SIGGRAPH 2021 / arXiv 2020).
 
 .. warning::
 
-   ``repulsive`` is an **iterative optimizer**.  On an RTX 4090 it takes roughly
-   **0.2 s at E=64** and **5 s at E=8192** (~3 ms/track amortized), versus ~2 ms per batch
-   for ``bezier`` — **~1000× slower** (measured when it still ran eagerly, with its full
-   iteration budget on every call).  Its growth loop follows a fixed host schedule (stage
+   ``repulsive`` is an **iterative optimizer**: a generation costs far more than any other
+   generator's (`Cost`_).  Its growth loop follows a fixed host schedule (stage
    transitions, resample and stall-check cadences depend only on the iteration counter)
-   and converged envs are frozen on device, so it is CUDA-graph-captured like the other
-   generators.  It is a ``BOUNDED`` stage: the loop may stop once every env has frozen,
+   and converged :term:`envs <env>` are frozen on device, so it is recorded into CUDA
+   graphs like the other generators.  It is an iterative stage (``BOUNDED``,
+   :ref:`cuda-graph-bounded`): the loop may stop once every env has frozen,
    in its own graph on device and in eager ``cpu`` calls, while eager ``cuda`` calls and
    captures without conditional nodes run the full budget (see `Early exit and
    capture`_).  Constructing the ``TrackGenerator`` runs one full eager pass (the warm-up),
@@ -79,7 +78,7 @@ How It Works
    halos left around each disc.  Every ``repulsive_stall_window`` iterations, an env freezes
    once it is past target length **and** its enclosed area (shoelace, reparameterization-
    invariant) has stopped changing by more than ``repulsive_stall_area_tol``.  The freeze is
-   decided on device and is absorbing: every later kernel, including the periodic resample,
+   decided on device and is permanent: every later kernel, including the periodic resample,
    skips a frozen env.  Once every env of the batch has frozen, the rest of the loop may be
    skipped (see `Early exit and capture`_): a frozen env's curve no longer changes, so
    where the loop stops changes no output.
@@ -142,12 +141,12 @@ scratch. Whether the loop does stop depends on where the generation runs:
 
 The first check cannot freeze an env at ``repulsive_stall_area_tol < 1`` (the area
 change is measured against 0), so the earliest stop is before iteration 144. The output
-is the same in every case, byte for byte, and equal to 0.2.0.dev3's: an env's track
-depends only on its own seed (env ``e`` is identical at ``E=8`` and inside ``E=64``), and
+is the same in every case, byte for byte: an env's track depends only on its own
+:term:`seed` (env ``e`` is identical at ``E=8`` and inside ``E=64``), and
 the next generation starts from scratch it re-initialises.
 
 The default pipeline records about 4.25k graph nodes with every window unrolled (the
-generator about 4.1k of them), under the 5k the roadmap set; with conditional windows,
+generator about 4.1k of them); with conditional windows,
 about 2.1k top-level nodes and the 9 conditional nodes that hold the windows. Such a graph
 cannot be used as a CUDA child graph, and recording a conditional window into your Warp
 capture fails while a side stream that joined it has not been joined back (each
@@ -159,6 +158,28 @@ nodes only inside ``registered(conditional=True)``, never in a hand-made
 itself is ``generate_repulsive_warp(seeds_wp, config, out_centerline, out_valid_wp,
 scratch, ctx=None)``, still importable from ``track_gen._src.warp_generate_repulsive``;
 the registered ``Stage`` calls it.
+
+
+
+Cost
+----
+
+One ``TrackGenerator.generate()`` call on CUDA, measured at two batch sizes with the
+default configuration (the mean of five calls after two warm ones, each a replay of the
+generator's own graph):
+
+.. csv-table:: ``repulsive`` generation cost on CUDA (ms per ``generate()``)
+   :file: ../_data/cost-repulsive-cuda.csv
+   :header-rows: 1
+
+Machine:
+
+.. include:: ../_data/machine-cuda.txt
+
+Compare with the sampling generators in :ref:`the catalogue's cost table
+<generators-overview>`. Constructing the ``TrackGenerator`` runs one full eager pass
+(the warm-up), and on CUDA the first ``generate()`` also records the graph. The commands
+that write the table are in ``docs/_data/README.md``.
 
 
 Math
@@ -304,8 +325,8 @@ Every other ``repulsive`` knob is static: they set the growth schedule on the ho
   a construction value whose ``hi`` would truncate emits a ``UserWarning`` when the
   pipeline is built, with the ``n_max`` that fits (computed exactly from these
   parameters).
-- **Launches.** One latch launch per generation; the copy becomes a kernel launch in the
-  same position (it was a memcpy).
+- **Launches.** One latch launch per generation (:ref:`pipeline-latch`); the final copy
+  into ``raw.xy`` is the ``_copy_sized_k`` launch.
 
 
 What Makes It Distinct
@@ -314,13 +335,13 @@ What Makes It Distinct
 ``repulsive`` is the only generator that constructs its output by **iterative physical
 simulation** rather than a single deterministic sampling + smoothing pass.  It still meets
 the capture contract (see :doc:`/how-it-works/cuda-graph`): the loop has no host readback,
-and an env whose enclosed area has stalled is frozen on device and never touched again
-(an *absorbing* freeze), so each env's track depends only on its own seed, never on the
-rest of the batch.
+and an env whose enclosed area has stalled is frozen on device and never touched again,
+so each env's track depends only on its own seed, never on the
+rest of the batch (stored datasets of an earlier release: :ref:`upgrading-repulsive`).
 
 Key contrasts:
 
-- **Foldiest, most serpentine family (compactness ≈ 0.15).**  The ratcheted overfill forces
+- **Foldiest, most serpentine family** (the lowest compactness, :doc:`benchmarks`).  The ratcheted overfill forces
   the curve to buckle into dense multi-lobe circuits threading between the obstacles, well
   below the compactness of any of the other five generators.
 - **Fixed host schedule.**  Stage transitions, the periodic resample (every
@@ -330,8 +351,8 @@ Key contrasts:
   one captured graph.  Convergence is handled by the per-env on-device freeze, and the
   early exit by checks of a device flag between stall windows, never by a readback in a
   captured path.
-- **~1000× slower.**  See the warning above; this is the dominant practical tradeoff against
-  the shape richness.
+- **Far slower.**  See `Cost`_; this is the dominant practical tradeoff against the
+  shape richness.
 - **Determinism.**  Output is **byte-identical per device** — same config and seeds give the
   same centerline run-to-run, bit for bit, on **both CPU and CUDA**.  The gradient is
   hand-written analytic adjoints (a per-vertex gather with no atomics), so there is no

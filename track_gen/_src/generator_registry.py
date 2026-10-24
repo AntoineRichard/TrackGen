@@ -6,8 +6,8 @@ one by name. ``TrackGenerator`` resolves it once at construction through the pub
 registry, :data:`track_gen.plugin.registry` (kind ``"generator"``); the orchestrator
 calls the resolved ``generate``. Built-in generators register explicitly from
 ``track_gen._src.builtin_plugins``; third parties use the ``"track_gen.plugins"`` entry
-point (see :mod:`track_gen.plugin`). See docs/contributing/writing-a-generator.rst for
-the contract every generator implements.
+point (see :mod:`track_gen.plugin`). See docs/contributing/plugin-abis.rst for the
+contract a ``GeneratorSpec`` generator implements.
 
 Backward-compatibility shims (kept working, deprecated quietly): ``register(spec)``
 (silent overwrite; a ``DeprecationWarning`` when it replaces an existing name),

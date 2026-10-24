@@ -1,4 +1,4 @@
-"""The :class:`Producer` protocol: what a ``Course`` drives (roadmap PR15)."""
+"""The :class:`Producer` protocol: what a ``Course`` drives."""
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Protocol
@@ -60,13 +60,19 @@ class Producer(Protocol):
 
     @property
     def result(self) -> object:
+        """The result that every generation writes (the same instance, with the same
+        array addresses, for the producer's lifetime)."""
         ...
 
     @property
     def layout(self) -> "Layout":
+        """The result's :class:`~track_gen.results.Layout`."""
         ...
 
     def enqueue(self, ctx: "LaunchContext", *, advance: bool = False,
                 mask: "wp.array | None" = None) -> object:
+        """Enqueue one generation on ``ctx``: allocation-free and host-sync free; with
+        ``advance``, bump the epochs first; with ``mask``, leave the unmasked envs' rows
+        bit for bit as they were (see the class docstring)."""
         ...
 

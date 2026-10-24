@@ -1,10 +1,10 @@
 """Track-frame localization: centerline projection, curvature, speed profiles.
 
-``TrackLocalizer`` binds to a :class:`Track` batch and answers, for one point
-per env, WHERE it is in the track's own frame: arc length ``s`` along the
-centerline, signed lateral offset ``n``, and the centerline segment index.
-This is the standard (s, n) Frenet-style parameterization racing controllers
-and reward shapers consume every sim step.
+``TrackLocalizer`` binds to a :class:`~track_gen.results.Track` batch and answers, for
+one point per env, WHERE it is in the track's own frame: arc length ``s`` along the
+centerline, signed lateral offset ``n``, and the centerline segment index. This is the
+standard (s, n) Frenet-style parameterization racing controllers and reward shapers
+consume every sim step.
 
 Two search modes, one kernel:
 
@@ -70,7 +70,7 @@ class TrackFrame:
         ``float32`` — arc length along the centerline at the projected point,
         in ``[0, Track.length[e])``, same units as the track coordinates.
         NaN for NaN positions, degenerate tracks (count < 3) and invalid envs
-        (``valid[e] == 0`` on a source with ``valid``, roadmap PR14).
+        (``valid[e] == 0`` on a source with ``valid``).
     n : wp.array
         ``float32`` — signed lateral offset from the centerline: positive to
         the RIGHT of the centerline's direction of travel (the direction of
@@ -242,8 +242,8 @@ class TrackLocalizer:
     place, ``query()`` always reads the CURRENT track batch — but a
     warm-started localizer remembers segment indices of the OLD geometry. When the
     source has ``generation`` (a ``Track``, a ``CourseLine`` centerline) the localizer
-    drops that memory by itself for every env whose ``generation`` changed (roadmap
-    PR14); otherwise, and after a reseed or an epoch roll-back (which may leave
+    drops that memory by itself for every env whose ``generation`` changed;
+    otherwise, and after a reseed or an epoch roll-back (which may leave
     ``generation`` unchanged), callers MUST ``reset()`` the affected envs (cold-scan
     localizers, ``warm_window=None``, need nothing).
 
@@ -269,7 +269,8 @@ class TrackLocalizer:
 
     def __init__(self, track: HasCenterline, warm_window: "int | None" = None,
                  position: "wp.array | None" = None) -> None:
-        """Bind to a :class:`Track` batch and allocate the result buffers.
+        """Bind to a :class:`~track_gen.results.Track` batch and allocate the result
+        buffers.
 
         Args:
             track: the bound track batch; ``query()`` reads its centerline
@@ -283,7 +284,7 @@ class TrackLocalizer:
                 :meth:`bind` right after construction.
 
         The source's ``valid`` and ``generation`` are read when present (checked like
-        the required members; roadmap PR14): invalid envs get the poisoned-env frame,
+        the required members): invalid envs get the poisoned-env frame,
         and an env's warm memory is dropped when its ``generation`` changes (the
         check starts from the source's ``generation`` now: a device copy on the call's
         stream, the ambient context or Warp's current stream).
@@ -546,7 +547,7 @@ def curvature(track: HasCenterline, window: int = 2, ctx=None, *,
     where the centerline turns counter-clockwise — a CCW circle of radius
     ``R`` gives ``kappa ~ +1/R`` everywhere. NaN past ``count[e]``, for
     degenerate envs (``count[e] < 3``) and, when the source has ``valid``, for
-    invalid envs (``valid[e] == 0``: the row of a poisoned env, roadmap PR14).
+    invalid envs (``valid[e] == 0``: the row of a poisoned env).
 
     On a flat track (the default ``z_profile``) ``v1``/``v2`` are planar edge
     vectors and this is exactly the familiar 2D signed curvature. On a lifted
@@ -565,10 +566,10 @@ def curvature(track: HasCenterline, window: int = 2, ctx=None, *,
     read as zero curvature, same as flat.
 
     Without ``out`` this ALLOCATES its result (and a scratch when ``window > 0``):
-    call it after ``generate()``, outside capture regions. With ``out`` (roadmap PR14)
-    it writes the caller's arrays: allocation-free, host-sync-free and recordable into
-    a capture (e.g. once per regeneration, next to the regeneration in a graph), with
-    bytes identical to the allocating form.
+    call it after ``generate()``, outside capture regions. With ``out`` it writes the
+    caller's arrays: allocation-free, host-sync-free and recordable into a capture (e.g.
+    once per regeneration, next to the regeneration in a graph), with bytes identical to
+    the allocating form.
 
     Args:
         track: the track batch to read the centerline from (any
@@ -737,7 +738,7 @@ def speed_profile(track: HasCenterline, a_lat_max: float, a_accel: float,
 
     Without ``out`` this ALLOCATES its result (and the curvature when ``kappa`` is not
     given): call it after ``generate()``, outside capture regions. With ``out``
-    (roadmap PR14; ``kappa`` required, e.g. from ``curvature(track, out=k,
+    (``kappa`` required, e.g. from ``curvature(track, out=k,
     scratch=s)``) it writes the caller's array: allocation-free, host-sync-free and
     recordable, with bytes identical to the allocating form.
 
@@ -764,8 +765,7 @@ def speed_profile(track: HasCenterline, a_lat_max: float, a_accel: float,
     Returns:
         ``out``, or a NEW flat ``[E * N_max]`` float32 wp.array of target speeds on
         the track's device, NaN past ``count[e]``, for degenerate envs
-        (``count[e] < 3``) and, when the source has ``valid``, for invalid envs
-        (roadmap PR14).
+        (``count[e] < 3``) and, when the source has ``valid``, for invalid envs.
 
     Raises:
         ValueError: on a non-positive ``a_lat_max`` / ``v_cap``, a negative

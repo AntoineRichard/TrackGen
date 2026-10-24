@@ -186,8 +186,8 @@ class DiscChecker:
             position, orientation, half_extents: optional constructor binding
                 (all-or-none); equivalent to calling :meth:`bind_inputs`
                 right after construction.
-            valid: optional ``[E]`` int32 per-env validity (aliased, stable buffer;
-                roadmap PR14): an env with ``valid[e] == 0`` has no discs.
+            valid: optional ``[E]`` int32 per-env validity (aliased, stable
+                buffer): an env with ``valid[e] == 0`` has no discs.
         """
         _init()
         if not (float(radius) > 0.0):

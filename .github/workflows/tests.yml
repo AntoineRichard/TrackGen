@@ -3,6 +3,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Manual runs, e.g. the CPU lane of a branch on Linux before it is opened as a PR.
+  workflow_dispatch: {}
 permissions:
   contents: read
 concurrency:
@@ -10,10 +12,19 @@ concurrency:
   cancel-in-progress: true
 jobs:
   # CPU lane: every PR. Runs the whole suite on the Warp cpu device; tests that need a
-  # GPU carry the `cuda` marker and are deselected here.
+  # GPU carry the `cuda` marker and are deselected here. It includes the documentation
+  # checks that need no Sphinx: every python example of docs/, README.md and the public
+  # docstrings runs (tests/test_doc_snippets.py: "cuda" literals rewritten to "cpu";
+  # groups marked `cuda` run in the GPU lane, `slow` ones nowhere by default), the
+  # snippet metadata, the README links into the published docs and the docs tools
+  # (tests/test_docs_links.py, tests/test_docs_tools.py). The Sphinx build itself is
+  # docs.yml; the external link check is linkcheck.yml.
   cpu:
     name: cpu (warp ${{ matrix.warp }})
     runs-on: ubuntu-latest
+    # A hung example is stopped by the snippet runner (120 s per group); this is the
+    # backstop for the whole job.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -67,6 +78,8 @@ jobs:
             pip install "warp-lang==${{ matrix.warp }}"
           fi
           python -c "import warp; warp.init(); print('warp-lang', warp.__version__, 'cuda', warp.is_cuda_available())"
+      # Includes the documentation examples' `cuda` groups (tests/test_doc_snippets.py,
+      # unmodified, on the default CUDA device).
       - name: Test
         run: |
           . .venv/bin/activate

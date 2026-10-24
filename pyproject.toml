@@ -17,7 +17,10 @@ dependencies = ["numpy", "warp-lang>=1.18,<2"]
 [project.optional-dependencies]
 dev = ["pytest", "matplotlib", "scipy", "torch"]
 ui = ["gradio"]
-docs = ["sphinx", "furo", "sphinx-copybutton", "sphinx-design"]
+# docs: the build runs with -W, nitpicky and a local extension (docs/_ext) that uses
+# Sphinx events and its inventory API, so a new Sphinx major is taken deliberately:
+# raise the bound after a local `python docs/_tools/build_ci_env.py` build passes.
+docs = ["sphinx>=8.1,<10", "furo", "sphinx-copybutton", "sphinx-design"]
 
 [tool.setuptools.packages.find]
 include = ["track_gen*"]

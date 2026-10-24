@@ -1,5 +1,5 @@
-"""The result objects (L1): :class:`Track`, :class:`GateSequence`, :class:`Centerline`,
-their :class:`Layout`, the capability protocols and :func:`check_source` (roadmap PR13b).
+"""The result objects: :class:`Track`, :class:`GateSequence`, :class:`Centerline`, their
+:class:`Layout`, the capability protocols and :func:`check_source`.
 
 Every result is flat, fixed-stride device storage: per-point arrays ``[E * stride]``
 (NaN past ``count[e]``; int32 ``-1``) and per-env arrays ``[E]``, described by a
@@ -26,13 +26,13 @@ object with those members (a ``Track``, a ``Centerline``, a user's own object):
 ``HasGateFrames`` (its frame checker, ``CheckpointSet.from_gates``) and
 ``HasGeneration`` (generation-aware consumers; checked together with another protocol:
 ``check_source(obj, (HasCenterline, HasGeneration), ...)``), ``HasValidity`` (the per-env
-``valid`` flags, roadmap PR14) and ``HasCheckpoints`` (an ordered checkpoint set: what
-``ProgressTracker`` reads, roadmap PR14). A shipped protocol never changes: a new
+``valid`` flags) and ``HasCheckpoints`` (an ordered checkpoint set: what
+``ProgressTracker`` reads). A shipped protocol never changes: a new
 capability is a new protocol, composed with the existing ones. The library never relies
 on ``isinstance`` against them (their runtime semantics differ across Python versions):
 consumers check their source with :func:`check_source`.
 
-Optional reads (roadmap PR14): a consumer that reads a member only when the source has
+Optional reads: a consumer that reads a member only when the source has
 it (``valid``: the invalid-env sentinels; ``generation``: the generation-aware
 self-reset) names it in ``check_source(..., optional=...)``: a present member is checked
 like a required one (same messages), a missing (or ``None``) one is skipped.
@@ -123,8 +123,8 @@ class HasGeneration(Protocol):
 @runtime_checkable
 class HasValidity(Protocol):
     """The per-env validity flags (``[E]`` int32, 1 = valid): a ``Track`` /
-    ``GateSequence`` / ``Centerline`` / ``CheckpointSet`` whose ``valid`` is set (roadmap
-    PR14). Per env only, so check it together with the protocol that gives the stride:
+    ``GateSequence`` / ``Centerline`` / ``CheckpointSet`` whose ``valid`` is set. Per env
+    only, so check it together with the protocol that gives the stride:
     ``check_source(obj, (HasCenterline, HasValidity), optional=("valid",), ...)``."""
 
     valid: wp.array       #: ``[E]`` int32
@@ -132,7 +132,7 @@ class HasValidity(Protocol):
 
 @runtime_checkable
 class HasCheckpoints(Protocol):
-    """An ordered per-env checkpoint set: what ``ProgressTracker`` reads (roadmap PR14).
+    """An ordered per-env checkpoint set: what ``ProgressTracker`` reads.
     ``CheckpointSet`` satisfies it (``CheckpointSampler``'s set, or
     ``CheckpointSet.from_gates`` of a ``GateSequence``)."""
 
@@ -289,7 +289,7 @@ def check_source(obj, protocol, *, consumer: str, topology: str = "closed",
         topology: The consumer's topology: ``"closed"`` refuses a source whose layout
             has ``closed=False``; ``"any"`` accepts both.
         members: The members the consumer reads when it is a subset of the protocol's.
-        optional: Members of ``protocol`` read only when present (roadmap PR14): each
+        optional: Members of ``protocol`` read only when present: each
             one the source has (not ``None``) is checked like a required member (same
             messages), a missing one is skipped (``valid`` / ``generation``: a consumer
             then falls back to "every env valid" / "no self-reset").

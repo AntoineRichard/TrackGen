@@ -1,8 +1,10 @@
 """The generator docs stay in step with the code (roadmap PR7, PR8).
 
-* The three code examples of ``docs/contributing/writing-a-generator.rst`` (the quick
-  start's wobbly circle, the scatter gate generator Stage (roadmap PR11) and the star
-  generator built from ``track_gen.ops``) run on CPU and produce valid tracks and gates.
+* The three code examples of the generator guides (the quick start's wobbly circle and
+  the star generator built from ``track_gen.ops`` in
+  ``docs/contributing/writing-a-generator.rst``, the scatter gate generator Stage (roadmap
+  PR11) in ``docs/contributing/writing-a-gate-generator.rst``) run on CPU and produce
+  valid tracks and gates.
 * The guide's Stage quick start (``Wobble``) registers, generates, takes a dynamic
   ``set("amp", ...)``, and ``describe()`` reports the JSON schema the guide prints.
 * ``docs/configuration/reference.rst`` lists every field of every built-in Params class
@@ -31,6 +33,7 @@ from track_gen.plugin import GeneratorSpec, registry
 
 _DOCS = pathlib.Path(__file__).resolve().parent.parent / "docs"
 _GUIDE = _DOCS / "contributing" / "writing-a-generator.rst"
+_GATE_GUIDE = _DOCS / "contributing" / "writing-a-gate-generator.rst"
 _BLOCK = re.compile(r"\.\. code-block:: python\n\n((?:(?:   .*)?\n)+)")
 _JSON_BLOCK = re.compile(r"\.\. code-block:: json\n\n((?:(?:   .*)?\n)+)")
 # The gate example is a Stage class (PR11) that shares the guide's imports and SALT; its
@@ -41,8 +44,8 @@ _GATE_HEADER = ("import warp as wp\n\nfrom track_gen import ops, plugin\n\n"
 _REGISTER = re.compile(r"^def register\(reg\):\n(?:(?:    .*)?\n)*", flags=re.M)
 
 
-def _guide_block(marker: str) -> str:
-    blocks = [textwrap.dedent(b) for b in _BLOCK.findall(_GUIDE.read_text())]
+def _guide_block(marker: str, guide: pathlib.Path = _GUIDE) -> str:
+    blocks = [textwrap.dedent(b) for b in _BLOCK.findall(guide.read_text())]
     hits = [b for b in blocks if marker in b]
     assert len(hits) == 1, f"expected one python block containing {marker!r}"
     return hits[0]
@@ -53,7 +56,7 @@ def guide_module(tmp_path_factory):
     """The guide's examples as one importable module (Warp kernels need a source file,
     so the blocks are written out and imported rather than exec'd)."""
     quick = _guide_block("def generate(seeds_wp, config, out_centerline")
-    gate = _guide_block("class Scatter(plugin.Stage)")
+    gate = _guide_block("class Scatter(plugin.Stage)", _GATE_GUIDE)
     star = _guide_block("def generate_star(")
     assert _REGISTER.search(gate), "the gate example registers its Stage"
     gate = _REGISTER.sub("", gate)

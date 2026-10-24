@@ -6,9 +6,10 @@ Results: Track, GateSequence, Centerline
 A generator's output is a *result object*: a ``Track`` (``TrackGenerator``), a
 ``GateSequence`` (``GateGenerator``) or a ``Centerline`` (a centerline with no road band,
 such as the spline a gates-mode ``Course`` threads through its gates). This page describes
-their data model, the ``Layout`` that gives their shape, the methods that check, slice,
-copy and allocate them, caller-owned results (``out=``) and mixed batches, and the
-capability protocols the runtime utilities accept.
+their data model, how to read them on the host, :ref:`invalid envs <invalid-envs>`, the
+``Layout`` that gives their shape, the methods that check, slice, copy and allocate them,
+caller-owned results (``out=``) and mixed batches, and the capability protocols the
+runtime utilities accept.
 
 ``track_gen.results`` is the module of all of it: ``Layout``, ``Track``,
 ``GateSequence``, ``Centerline``, the protocols ``HasCenterline``, ``HasBand``,
@@ -23,9 +24,9 @@ capability protocols the runtime utilities accept.
    from track_gen.pipeline import presets
    from track_gen.results import Layout, Track
 
-   gen = TrackGenerator(presets.track(num_envs=8, device="cpu"))
+   gen = TrackGenerator(presets.track(num_envs=8, device="cuda:0"))  # or "cpu"
    track = gen.generate()           # the generator's result (the same object every call)
-   track.layout                     # Layout(num_envs=8, stride=384, device='cpu', closed=True)
+   track.layout                     # Layout(num_envs=8, stride=384, device='cuda:0', closed=True)
    track.validate()                 # the same Layout: every field checked
    half = track.view(0, 4)          # envs 0..3, zero-copy
    snap = Track.alloc(track.layout) # preallocated, cold
@@ -37,7 +38,7 @@ The data model
 Every array of a result is a flat, contiguous, 1-D Warp array on one device, in one of
 two forms:
 
-- **per point**, ``[E * stride]``: env ``e`` owns the rows ``e * stride`` to
+- **per point**, ``[E * stride]``: :term:`env` ``e`` owns the rows ``e * stride`` to
   ``e * stride + stride - 1``, and its first ``count[e]`` rows are real. The rows past
   ``count[e]`` hold the padding: NaN in the ``float32`` fields and in every component of
   a float attribute, ``-1`` in an ``int32`` attribute, and NaN in the x and y of the
@@ -45,8 +46,8 @@ two forms:
   stage wrote there (with ``elevation="flat"``: ``z_base`` in ``outer`` / ``center`` /
   ``inner``, 0 in ``tangent`` / ``normal``), so test ``i >= count[e]`` or ``isnan(x)``,
   not every component. ``GateSequence`` fields, a ``Centerline`` and an ``alloc()``
-  result are NaN in every component. ``stride`` is the per-env row capacity: ``N_max``
-  for a ``Track``, ``max_gates`` for a ``GateSequence``, and for a ``Centerline`` its own
+  result are NaN in every component. ``stride`` is the per-env row capacity:
+  :term:`N_max` for a ``Track``, ``max_gates`` for a ``GateSequence``, and for a ``Centerline`` its own
   capacity (``max_gates * samples_per_gate`` for a gates-mode ``Course``'s
   ``CourseLine.centerline``).
 - **per env**, ``[E]``: ``count``, ``valid``, ``length``, ``winding``, ``generation``,
@@ -57,11 +58,50 @@ with the same array addresses on every call: a CUDA graph recorded against it st
 valid for the generator's lifetime. ``fail_bits`` (the names of ``fail_mask``'s bits),
 ``attributes`` (the per-point plugin attributes the pipeline exports, see
 :ref:`pipeline-attributes`) and ``layout`` are metadata, not device arrays.
+``generation`` (its :term:`generation`) is the :term:`epoch` each env's rows were built with
+(:ref:`generating-seeds`); ``valid``, ``fail_mask`` and ``truncated`` are covered in
+`Invalid envs`_.
+
+Reading results on the host
+---------------------------
+
+``.numpy()`` copies an array to the host (it waits for the device). Reshape a per-point
+field to ``[E, stride, 3]`` and keep each env's first ``count[e]`` rows; skip the
+invalid envs:
+
+.. code-block:: python
+
+   from track_gen import TrackGenerator
+   from track_gen.pipeline import presets
+
+   E, device = 64, "cuda:0"  # or "cpu"
+
+   gen = TrackGenerator(presets.track(num_envs=E, device=device))
+   track = gen.generate()
+   S = gen.n_max                                  # the stride of a Track
+
+   center = track.center.numpy().reshape(E, S, 3)  # vec3f -> (x, y, z)
+   count = track.count.numpy()                     # [E] real points per env
+   valid = track.valid.numpy() != 0                # [E] bool
+
+   loops = [center[e, :count[e]] for e in range(E) if valid[e]]   # [count[e], 3] each
+
+.. snippet: after
+
+   assert len(loops) == int(valid.sum()) and all(len(l) >= 3 for l in loops)
+
+The same holds for a ``GateSequence`` with ``stride = max_gates``
+(``seq.position.numpy().reshape(E, G, 3)``), and for torch with ``wp.to_torch``
+(zero-copy, on the device: :doc:`/tutorials/batch-of-tracks`). The arrays are rewritten
+in place by the next generation: copy what you keep (``.numpy()`` copies; on the device,
+``clone`` or ``copy_from``, `Views, copies and snapshots`_).
 
 .. _results-layout:
 
 ``Layout``
 ----------
+
+.. snippet: skip=signature
 
 .. code-block:: python
 
@@ -153,7 +193,7 @@ It raises ``ValueError`` with the field, what was expected and what it got:
    Track.half_width is None; this consumer needs it
 
 ``validate`` runs on the host only (a few microseconds), launches nothing, never syncs
-and never mutates the result, so it is safe anywhere, a capture included. It is
+and never mutates the result, so it is safe anywhere, a :term:`capture` included. It is
 **explicit**: constructing a ``Track(...)`` by hand checks nothing (a partial ``Track``
 is a legal value), and the library calls ``validate`` where every field is about to be
 used: ``out=``, ``view``, ``copy_from`` and ``clone``. The runtime utilities check only
@@ -195,7 +235,7 @@ Views, copies and snapshots
    object). It validates first, so a malformed hand-built result raises. It **allocates
    and blocks on every call**: keep it off the hot path, and use ``copy_from`` into an
    ``alloc`` result instead. It raises ``CaptureError`` before allocating under any
-   capture (a Warp CPU or CUDA capture of Warp's current stream or of the producer's
+   capture (a Warp CPU or CUDA capture of Warp's current stream or of the generator's
    stream, or a torch capture): inside a graph, ``copy_from`` into a preallocated
    ``alloc`` result.
 
@@ -218,20 +258,18 @@ follows:
   default stream of the generator whose result it is (``TrackGenerator(...,
   stream=s)``), and a view inherits it; a hand-built or ``alloc`` result has none. When
   you generated on another stream (``gen.generate(stream=t)``), pass ``stream=t`` or
-  order the streams with events: ``copy_from`` only knows the producer's default.
+  order the streams with events: ``copy_from`` only knows the generator's default.
 - ``clone`` allocates on Warp's current stream (where ``wp.empty`` allocates), makes it
-  wait on the producer's stream (``stream=`` names the producer; else the ambient scope,
-  the generator's default, torch, current), copies on Warp's current stream, then waits
+  wait on the generator's stream (``stream=`` names it; else the ambient scope, the
+  generator's default, torch, current), copies on Warp's current stream, then waits
   for those copies on the host. The clone is therefore **usable on any stream** as soon
   as it returns: read it (``.numpy()``, a utility), or ``copy_from`` into it on a
-  generator's stream. Outside a capture and with no producer stream involved, it copies
-  the same bytes on the same stream as the 0.2.0.dev4 ``clone`` (and then waits for
-  them).
+  generator's stream.
 - ``alloc`` allocates and fills on Warp's current stream (no ambient or torch stream is
   adopted), like ``wp.full``, then waits for the fills on the host: the result is
   **usable on any stream** on return. ``snap = Track.alloc(track.layout)`` followed by
-  ``snap.copy_from(track)`` on the producer's stream needs no sync of yours (the fills
-  cannot land after the copies, and the producer's stream never writes memory Warp's
+  ``snap.copy_from(track)`` on the generator's stream needs no sync of yours (the fills
+  cannot land after the copies, and the generator's stream never writes memory Warp's
   current stream is still using), nor does a generator later built with ``out=`` a view
   of it on another stream.
 
@@ -274,7 +312,7 @@ first row and whose length is the view's. It is view-safe when it touches only i
 in ``[0, shape[0])`` derived from ``wp.tid()`` and the per-env layout (``e * S + i``),
 reaches every buffer through its arguments and assumes nothing about two arguments being
 distinct allocations: the bounds-correctness every kernel already needs on an owned array
-of the same shape. Every TrackGen kernel that takes a result array (the producers: the
+of the same shape. Every TrackGen kernel that takes a result array (the writers: the
 arc-length, winding, offset, validity, lift, frames, resample-scan and attribute-carry
 kernels, the commit's hold / restore / poison kernels, the gate frame, validity, relax
 and elevation kernels, the seed-generation copy; the consumers: every runtime utility)
@@ -296,8 +334,7 @@ of yours that reads them keeps working. The checks run on the host, before anyth
 allocated:
 
 1. ``out`` is a ``Track`` (a ``GateSequence`` for a gate pipeline) instance, else
-   ``TypeError``: an object that merely has the fields is refused (0.2.0.dev4 accepted
-   one).
+   ``TypeError``: an object that merely has the fields is refused.
 2. ``out.validate()`` passes, with every required field present, and its canonical
    layout equals the pipeline's (``ValueError``: ``out: a Track for Layout(4, 384,
    'cpu', True); this pipeline writes Layout(8, 384, 'cpu', True)``). Messages name the
@@ -309,8 +346,8 @@ allocated:
 5. ``out`` may not overlap the result of a live Program (`Disjoint outputs`_).
 
 After the build, ``out.layout`` is set when it was ``None``, ``out.fail_bits`` names the
-pipeline's bits, and the generator's default stream is recorded as ``out``'s producer
-stream (for ``copy_from`` and ``clone``). A view keeps its parent's memory alive, so
+pipeline's bits, and the generator's default stream is recorded as the stream that
+produced ``out`` (for ``copy_from`` and ``clone``). A view keeps its parent's memory alive, so
 ``out=big.view(...)`` needs nothing else to stay valid.
 
 .. _results-mixed-batches:
@@ -329,7 +366,7 @@ of utilities and recorded into one graph.
    from track_gen.pipeline import presets
    from track_gen.results import Layout, Track
 
-   E, dev = 8, "cuda:0"
+   E, dev = 8, "cuda:0"  # or "cpu"
    seeds = wp.array(list(range(100, 100 + E)), dtype=wp.int32, device=dev)
    done = wp.zeros(E, dtype=wp.int32, device=dev)       # your done mask
 
@@ -339,15 +376,15 @@ of utilities and recorded into one graph.
    b = TrackGenerator(presets.track(num_envs=4, device=dev, generator="polar"),
                       seeds=seeds[4:8], out=big.view(4, 8))
 
-   s = wp.Stream(dev)
-   with wp.ScopedCapture(stream=s) as cap:              # one caller graph
-       a.generate(stream=s, advance=True, mask=done[0:4])
-       b.generate(stream=s, advance=True, mask=done[4:8])
-   wp.capture_launch(cap.graph, stream=s)               # big holds both halves
+   with wp.ScopedCapture(device=dev) as cap:            # one graph of yours
+       a.generate(advance=True, mask=done[0:4])
+       b.generate(advance=True, mask=done[4:8])
+   done.fill_(1)
+   wp.capture_launch(cap.graph)                         # big holds both halves, regenerated
 
 - **One stride.** Every generator of the batch uses the same ``n_max`` (the same
   ``max_gates`` for gates), the stride of ``big``.
-- **Seeds.** Pass each generator its ``[E_i]`` slice of one seed array, as above (a slice
+- **Seeds.** Pass each generator its ``[E_i]`` slice of one :term:`seed` array, as above (a slice
   is bound by pointer, like any seed array). With ``seeds=None`` or an ``int``, env ``e``
   of a view starting at env ``k`` of its root result gets seed ``base + k + e`` (``base``
   is the ``int``, or ``0``): a mixed batch with default seeds is seeded like one batch,
@@ -388,8 +425,7 @@ usable (after its warm-up; a facade after its whole construction), so
 raised registers nothing (a retry with the same ``out=`` is not refused). Once a Program
 is garbage (``del gen``), its range is free again: to rebuild into the same storage
 (new static params, keeping the pointers a graph of yours holds), drop the earlier
-generator first. 0.2.0.dev4 allowed two live Programs over one ``out``. The check is
-keyed on ``count``: two hand-built results that share per-point storage but have
+generator first. The check is keyed on ``count``: two hand-built results that share per-point storage but have
 separate ``count`` arrays are not detected.
 
 .. _results-out-attributes:
@@ -400,7 +436,7 @@ Attributes of a caller-owned result
 On a view of a larger result, ``out.attributes`` may hold any keys, so a mixed batch can
 share one attribute array between generators that export it and generators that do not:
 
-- A key **this pipeline exports** (an exported per-point plugin channel, see
+- A key **this pipeline exports** (an exported per-point plugin :term:`channel`, see
   :ref:`pipeline-attributes`) is bound: its final version is ``out``'s array (the dtype
   must be the family's, ``ValueError`` otherwise), it is listed in
   ``Program.attributes``, and the commit holds, restores and poisons it.
@@ -416,7 +452,7 @@ share one attribute array between generators that export it and generators that 
 
 On the **whole** of its allocation (``out`` is not a view of a larger result, or a view
 of all its envs), no other generator can write a key, so a key this pipeline does not
-export is refused, as in 0.2.0.dev4 (``ValueError: out.attributes['acme.gripp']: this
+export is refused (``ValueError: out.attributes['acme.gripp']: this
 pipeline does not export 'acme.gripp'; exported: ['acme.grip'] ...``): a misspelled key
 is reported instead of NaN-filling your buffer. An exported key of the wrong dtype
 raises ``ValueError`` (``out.attributes['acme.tag'] is float32; this pipeline exports
@@ -464,12 +500,12 @@ needs only those:
        ``TrackLocalizer``, ``ProgressTracker`` (on its set), ``CourseLine`` and
        ``CheckpointSet.from_gates``: the self-reset signal
        (:ref:`utilities-self-reset`)
-   * - ``HasValidity`` (0.2.0.dev6)
+   * - ``HasValidity``
      - ``valid``
      - read when present by ``CollisionChecker``, ``TrackLocalizer``, ``curvature``,
        ``speed_profile``, ``CheckpointSet.from_gates`` and ``ProgressTracker`` (on its
        set): the invalid-env signal (:ref:`utilities-invalid-envs`)
-   * - ``HasCheckpoints`` (0.2.0.dev6)
+   * - ``HasCheckpoints``
      - ``position``, ``left``, ``right``, ``tangent``, ``up_half``, ``count``
      - ``ProgressTracker``: a ``CheckpointSet`` (``up_half`` is a per-point ``float32``
        member of the schema)
@@ -503,15 +539,15 @@ A centerline without a road band: ``center``, ``tangent`` (``[E * S]`` ``vec3f``
 (optional) and ``layout``, with ``validate``, ``view``, ``copy_from``, ``clone`` and
 ``alloc`` as above. A gates-mode ``Course`` localizes its agent on
 ``course.course_line.centerline``, a ``Centerline`` sampled from a closed Catmull-Rom
-spline through the gate centers (:doc:`/gates-3d`). ``CourseLine.track``, which used to
-return a ``Track`` with NaN ``outer`` / ``inner`` / ``normal`` and a zero ``winding``,
-is a deprecated alias of ``centerline`` (it emits a ``DeprecationWarning``; removed at
-1.0).
+spline through the gate centers (:doc:`/gates-3d`). ``CourseLine.track`` is a
+deprecated alias of ``centerline`` (it emits a ``DeprecationWarning``; removed in 1.0).
 
 .. _results-check-source:
 
 ``check_source``
 ~~~~~~~~~~~~~~~~
+
+.. snippet: skip=signature
 
 .. code-block:: python
 
@@ -545,7 +581,7 @@ their sources with the same rules and messages:
    looked at, and the object's own ``validate`` method, if any, is never called.
 5. With ``topology="closed"``, a source whose layout says ``closed=False`` raises
    ``ValueError`` (`Topology`_).
-6. ``optional`` (0.2.0.dev6) names members of ``protocol`` that may be absent: each one
+6. ``optional`` names members of ``protocol`` that may be absent: each one
    that is present (not ``None``) is checked like the others, with the same messages; an
    absent one raises nothing. A consumer reads the absent ones as its documented
    fallback (``valid``: every env valid; ``generation``: no self-reset). The components'
@@ -556,8 +592,8 @@ It returns the layout (with the canonical device). The utilities pass ``members=
 they read fewer members than the protocol lists (``CollisionChecker``, ``PropSampler``,
 ``HeightFieldBaker``, ``FrameChecker``, ``CheckpointSet.from_gates``, ``curvature``) and
 ``optional=`` for the members they read when present (``valid``, ``generation``); see
-:doc:`/utilities/overview`. A malformed optional member therefore raises at construction
-since 0.2.0.dev6 (it used to be ignored). A utility **binds** the arrays it checked at construction and
+:doc:`/utilities/overview`. A malformed optional member therefore raises at
+construction. A utility **binds** the arrays it checked at construction and
 uses those on every call: reassigning a member of the source afterwards has no effect
 (rebuild the utility), and a proxy computing its members is read once.
 
@@ -586,3 +622,166 @@ contract, checked before anything runs (no kernel takes it):
   copy across topologies (the layouts differ).
 
 Open tracks are scheduled after 1.0.
+
+.. _invalid-envs:
+
+Invalid envs
+------------
+
+An :term:`invalid env` is an env whose result failed a check: its :term:`valid` flag is
+0 (``valid[e] == 0``), and
+``fail_mask[e]`` holds one bit per failed check (:term:`fail bits`; ``valid[e] ==
+(fail_mask[e] == 0)``). Every env is generated and checked on its own, so an invalid env
+never affects the others, and the generator never retries: the env stays invalid, at its
+index, until a later generation gives it a new seed or :term:`epoch`
+(``generate(advance=True, mask=...)``, :ref:`rl-masked-regeneration`).
+
+**Fail bits.** ``result.fail_bits`` (and ``gen.program.fail_bits``) maps each bit's name to
+its position. The built-in checks of a track pipeline:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 6 13 33 48
+
+   * - bit
+     - name
+     - set when
+     - typical cause, and the knob that lowers it
+   * - 0
+     - ``generator``
+     - the generator flagged this env
+     - ``external``: fewer than 3 or more than ``num_points`` loaded points, or a
+       non-finite point (:ref:`ingesting-centerlines`); a plugin generator: see its
+       documentation
+   * - 1
+     - ``turning``
+     - the loop is not one simple closed turn (also set for an env with no points)
+     - a raw loop that crosses itself and that the relax could not open: raise
+       ``relax_iters`` (:doc:`/configuration/tuning`), or regenerate the env
+   * - 2
+     - ``finite``
+     - a point is NaN or infinite
+     - a NaN parameter or ingested data
+   * - 3
+     - ``thickness``
+     - the road band overlaps itself
+     - a road too wide for the course: lower ``half_width``, raise ``size`` or ``scale``
+       (:ref:`tuning-size`), raise ``relax_iters``
+   * - 4
+     - ``w_floor``
+     - a point's half-width is at or below ``w_floor``
+     - a per-point width stage that writes a zero width
+   * - 5
+     - ``border``
+     - a border crosses itself (only with ``validity_border_check=True``)
+     - as ``thickness``
+   * - 6
+     - ``grade``
+     - a segment is steeper than ``z_valid_grade`` (only when it is ``> 0``)
+     - a hilly elevation on a small course: lower the hills or raise ``size``
+       (:doc:`/tracks-25d`)
+   * - 7
+     - ``truncation``
+     - the loop needed more than ``N_max`` points (``truncated[e] == 1``)
+     - ``n_max`` too small for the perimeter: ``n_max >= longest perimeter / spacing + 1``,
+       so raise ``n_max`` when you lower ``half_width`` or ``spacing`` or raise ``size``
+       (:ref:`tuning-size`)
+
+A gate pipeline's bits are ``count`` (0: fewer than ``min_gates`` or more than
+``max_gates`` real gates), ``finite`` (1), ``tangent`` (2: a degenerate tangent),
+``spacing`` (3: two gates closer than ``2 * gate_radius``), ``crossing`` (4: two gate
+bars cross, the common one: lower ``gate_width`` or raise ``size``,
+:ref:`gate-width-invalid-fraction`) and ``grade`` (5). Plugin checks take bits 16 to
+30, named in ``fail_bits`` (:ref:`pipeline-fail-bits`, :ref:`pipeline-gate-fail-bits`).
+
+.. code-block:: python
+
+   import numpy as np
+   from track_gen import TrackGenerator
+   from track_gen.pipeline import presets
+
+   E, device = 64, "cuda:0"  # or "cpu"
+
+   gen = TrackGenerator(presets.track(num_envs=E, device=device, half_width=0.03))
+   track = gen.generate()
+
+   invalid = track.valid.numpy() == 0
+   print(f"{invalid.mean():.1%} invalid")            # 1.6% invalid: check it after construction
+   fail = track.fail_mask.numpy()
+   for name, bit in track.fail_bits.items():         # why, per check
+       n = int(((fail >> bit) & 1).sum())
+       if n:
+           print(f"{name}: {n} envs")                # here: truncation: 1 envs
+
+.. snippet: after
+
+   assert invalid.sum() == ((fail >> track.fail_bits["truncation"]) & 1).sum()
+
+**What an invalid env's result holds.** ``on_invalid`` (``presets.track(on_invalid=...)``
+and ``presets.gates(on_invalid=...)``; a config always uses ``"keep"``) chooses:
+
+- ``"keep"`` (the default): the env keeps the geometry it computed, with ``valid = 0``.
+  The rows are finite and may look usable: read ``valid`` before using them.
+- ``"poison"``: the env reads like an env with no track: ``count = 0``; every per-point
+  field NaN on every slot (``outer``, ``center``, ``inner``, ``tangent``, ``normal``,
+  ``arclen``, ``half_width``; for gates every per-gate field, ``orientation`` and
+  ``half_size`` included) and every attribute its padding; ``length = 0`` and
+  ``winding = 0``; ``valid = 0``. ``fail_mask`` and ``truncated`` keep their values, so
+  the cause stays readable, and ``generation`` is written as usual.
+
+Either way the runtime utilities treat an invalid env as an env with no track: off the
+road for a band collision (``oob = 1``, NaN ``distance``), no post or frame hit, frozen
+progress with ``dist_to_next = 0``, no checkpoints. :ref:`utilities-invalid-envs` lists
+what each utility reports.
+
+**How many envs.** Measured at the preset defaults (``E = 256``, seeds ``0..255``, CPU):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 42 18 40
+
+   * - configuration
+     - invalid
+     - fail bits
+   * - ``bezier``, ``polar``, ``voronoi``
+     - 0 %
+     -
+   * - ``hull``
+     - 1.2 % (3 envs)
+     - ``thickness``
+   * - ``checkpoint``
+     - 0.4 % (1 env)
+     - ``turning``, ``thickness``
+   * - ``repulsive``
+     - 1.6 % (4 envs)
+     - ``thickness`` (one also ``turning``)
+   * - ``bezier`` at ``size`` 2 or 3
+     - 0 %
+     -
+   * - ``bezier`` at ``size = 4``
+     - 19 % (49 envs)
+     - ``truncation`` (three also ``thickness``)
+   * - ``bezier``, ``half_width=0.03`` (default ``n_max=384``)
+     - 3.1 % (8 envs)
+     - ``truncation``
+   * - ``bezier``, ``half_width=0.03``, ``n_max=512``
+     - 0 %
+     -
+
+Gates depend on the bar width: from 0 % for point gates to most of the batch for wide
+bars (:ref:`gate-width-invalid-fraction`). Rates grow with every setting that truncates
+the loop or thins the course relative to the road: measure yours with
+``(track.valid.numpy() == 0).mean()`` after construction (``course.result.valid`` for a
+``Course``).
+
+**Lowering it.** Size ``n_max`` for your longest loop (truncation is the most common
+cause outside gates; the build warns when a ``size`` range would truncate,
+:ref:`tuning-size`), keep the road narrow relative to the course (``half_width`` against
+``size`` and ``scale``), keep gate bars narrow relative to the gate spacing, and give
+the relax enough iterations. The invalid fraction that remains is the price of a
+batch with no retry: regenerate those envs.
+
+**In a loop.** Gate every reward, observation and termination on ``valid``, with a
+select (``np.where(valid, r, 0.0)``, never ``r * valid``: a NaN times zero is NaN), and
+give an invalid env a new course with a masked regeneration rather than a respawn on the
+same one: :ref:`rl-valid-recipe` has the recipe, :ref:`rl-auto-reset` the loop.

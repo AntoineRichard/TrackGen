@@ -215,6 +215,9 @@ class _FlatParams(Params):
 
     @classmethod
     def from_legacy(cls, cfg):
+        """An instance holding the values of the config fields of the same names (every
+        field of this class is a flat ``TrackGenConfig`` / ``GateGenConfig`` field),
+        uncast."""
         # Raw values, no casts: the run snapshot then carries exactly the flat values.
         return cls(**{f.name: getattr(cfg, f.name) for f in dataclasses.fields(cls)})
 

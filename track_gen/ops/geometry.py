@@ -537,7 +537,7 @@ def normalize_extent(ctx: "LaunchContext", src: "wp.array", stride: int,
     ``clamp(count[e], 0, stride)`` points are used and the remaining slots are
     written NaN. One launch (``E`` threads); no allocation, no host sync.
 
-    ``size`` (roadmap PR13d) is a per-env size multiplier of the target: env ``e``'s
+    ``size`` is a per-env size multiplier of the target: env ``e``'s
     longest side becomes ``target_extent * size[e]``, each value clamped at use to
     :data:`track_gen.ops.constants.SIZE_BOUNDS` (by comparisons: a NaN passes). The
     size multiplies the finite scalar target before the division (no per-point

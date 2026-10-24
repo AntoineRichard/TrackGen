@@ -6,7 +6,9 @@ centerlines by placing a fixed number of control knots in polar coordinates,
 fitting a periodic cubic spline through them, and normalizing the result to a
 shared coordinate extent. Because the representation starts in polar form, the
 loop is smooth and centered by construction — no post-generation sorting,
-centroid correction, or polygon fallback is required.
+centroid correction, or polygon fallback is required. It writes one closed centerline per
+:term:`env` at every :term:`generation`, and its jitters and size are per-env
+:term:`dynamic fields <dynamic field>` (`Per-env (dynamic) parameters`_).
 
 .. figure:: ../assets/generator-polar.png
    :alt: Sample tracks produced by the polar generator
@@ -147,8 +149,8 @@ checked when the ``TrackGenerator`` is constructed, and only for ``generator="po
    knot. At ``0.0`` all knots sit on ``base_radius`` and the spline is a
    near-circle. At the default (``0.60``) the generator produces substantial
    radial variety without collapsing radii. Dynamic, in ``[0, 0.85]``: a value
-   outside raises ``ValueError`` at construction (0.2.0.dev4 accepted it and clamped
-   it; set the bound itself for the same output). (The deprecated ``amplitude``
+   outside raises ``ValueError`` at construction (:ref:`upgrading-bounds`). (The
+   deprecated ``amplitude``
    field only matters to the legacy ``generate_polar_warp`` called with a config-like
    object without ``polar_radial_jitter``, where the fallback is
    ``0.60 * amplitude``.)
@@ -157,7 +159,7 @@ checked when the ``TrackGenerator`` is constructed, and only for ``generator="po
    Maximum angular offset as a fraction of one knot cell
    (:math:`2\pi / K`). Kept strictly below ``0.5`` so the fixed knot indices remain
    in sorted angular order without a runtime sort: dynamic, in ``[0, 0.45]``, and a
-   value outside raises ``ValueError`` at construction (it was clamped). Default:
+   value outside raises ``ValueError`` at construction. Default:
    ``0.30``.
 
 ``scale``
@@ -187,12 +189,11 @@ randomize={"generator.polar_radial_jitter": (lo, hi)})`` (``presets.gates`` take
 same keys), write them with ``gen.params["generator"].set(...)`` or from your own graph
 (a curriculum): see :ref:`tuning-per-env`.
 
-**The clamp is now a bound.** The generator always clamped these jitters to
-``[0, 0.85]`` and ``[0, 0.45]``; those are now their declared bounds. A scalar outside
-them raises ``ValueError`` (at construction, or from ``set``): a configuration that
-relied on the clamp (``polar_radial_jitter=1.0``) now fails, and setting the bound
-(``0.85``) gives exactly its old output. An array value outside them (an ``[E]``
-``set``, your own kernel) is clamped when the kernel reads it, as before.
+**Bounds.** The jitters' declared bounds are ``[0, 0.85]`` and ``[0, 0.45]``, the
+ranges the kernel clamps them to. A scalar outside them raises ``ValueError`` (at
+construction, or from ``set``); setting the bound itself (``0.85``) gives what the clamp
+of a larger value gives (:ref:`upgrading-bounds`). An array value outside them (an
+``[E]`` ``set``, your own kernel) is clamped when the kernel reads it.
 
 .. list-table::
    :header-rows: 1
@@ -257,11 +258,11 @@ coordinates from the start:
   loop is smooth and centered by construction and requires no centroid
   correction.
 
-- **Smoothest output, lowest XPBD burden.** Because every knot is already in
+- **Smooth output, low XPBD burden.** Because every knot is already in
   angular order and the spline is closed and uniformly parameterized, the
   pre-relax geometry is consistently smooth with no tendency toward figure-eight
-  crossings. This translates to the lowest per-step XPBD displacement of the
-  six generators.
+  crossings. This translates to a low XPBD displacement (the
+  ``xpbd_displacement`` column of :doc:`benchmarks`).
 
 - **No local fallback, fastest hot path.** Bézier detects self-crossings and
   falls back to a corner polygon; hull and voronoi fall back to their anchor

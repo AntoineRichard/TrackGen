@@ -1,559 +1,308 @@
-Integrating the CUDA Graph into a Batched RL Sim Loop
-=======================================================
+.. _cuda-graph-sim-loop:
 
-Every shipped generator, ``repulsive`` included, has ``capturable=True``: on ``cuda`` its
-whole generation pipeline runs as a CUDA graph. Generation can use either of two graphs:
+CUDA graphs in a sim loop
+=========================
 
-- **Its own graph (self-graph).** ``generate()`` called outside any capture records the
-  pipeline once into the generator's own ``wp.Graph`` and replays it on every call.
+Every built-in generator, ``repulsive`` included, can be recorded into a CUDA graph.
+Generation runs from one of two graphs:
+
+- **The generator's own CUDA graph.** On ``cuda``, ``generate()`` called outside any
+  :term:`capture` records the generation once into the generator's own ``wp.Graph``
+  (``gen.graph``) and replays it on every later call.
 - **Your graph.** ``generate()`` (or ``Course.regenerate()``) called while you capture is
   recorded into YOUR graph, next to your physics and the per-step utilities. One
   ``wp.capture_launch`` (or ``g.replay()``) then runs all of it.
 
-A plugin generator registered with ``capturable=False`` (a ``HOST`` stage) runs eagerly on
-CUDA every call, ahead of the captured rest of its pipeline, and cannot be recorded. This page explains the fixed-batch contract, the warm-up at
-construction, both graph modes, reused output buffers, and how to slot generation into a
-batched reinforcement-learning loop, up to a per-env auto-reset that gives new courses to
-the envs that finished without leaving your step graph (`Per-Env Auto-Reset Inside the
-Graph`_). :doc:`/how-it-works/cuda-graph` has the full execution model.
+A plugin generator with a step that runs on the host (one registered with
+``capturable=False``) runs that step eagerly on every call and cannot be recorded into
+your graph. This page covers the fixed batch, construction and the generator's own graph,
+recording generation and a :term:`course` into your graph (with ``torch.cuda.graph`` and
+on a side stream), a mixed batch, the per-step utilities, the rules for recording, and
+what to do when a recording fails. Per-env auto-reset inside the graph has its own page,
+:doc:`/user-guide/rl-auto-reset`; :doc:`/how-it-works/cuda-graph` has the execution model.
 
-The Fixed-Batch Contract
---------------------------
+.. contents:: On this page
+   :local:
+   :depth: 1
 
-``TrackGenerator`` is **fixed-batch**: the batch size ``E = config.num_envs`` is
-set at construction time and cannot change between calls. For a capturable generator,
-the CUDA graph records one fixed execution with fixed-shape tensors. Passing a different
-batch size at replay time is not possible — construct a new ``TrackGenerator`` instead.
+A fixed batch
+-------------
 
-All pre-allocated buffers (generator scratch, pipeline scratch, seed buffer,
-the persistent ``Track``) are created once in ``__init__``. Their shapes and
-device addresses are stable for the lifetime of the ``TrackGenerator`` object.
-The generator keeps a private copy of its config: changing the config object afterwards
-has no effect.
+A generator is **fixed-batch**: its number of :term:`envs <env>`, :term:`E`, is set at
+construction and cannot change between calls. A CUDA graph records one fixed execution
+over fixed-shape arrays, so a different batch size needs a new generator.
 
-Construction, Self-Graph, and Replay
---------------------------------------
+Every buffer (scratch, seeds, epochs, the result ``Track``) is allocated once, at
+construction; shapes and device addresses stay stable for the generator's lifetime. The
+generator keeps a private copy of its config: changing the config object afterwards has
+no effect. Change a :term:`dynamic field` through ``gen.params[...]`` instead
+(:ref:`curricula`), or build a new generator for a static one.
 
-Construction runs the pipeline **once eagerly**, outside any capture. That pass loads every
-Warp kernel the hot path uses, so no later recording compiles anything, and it leaves the
-batch for the rng's current seeds in the result: the ``Track`` is valid right after
-construction (construction blocks until that pass has finished). Construct generators
-before you begin a capture: construction raises ``CaptureError``, before allocating
-anything, when its stream or Warp's current stream is capturing.
-
-On the ``cpu`` device every ``generate()`` call then runs the pipeline eagerly — there is
-no graph.
-
-On ``cuda``, outside any capture:
-
-1. **First call** — records the pipeline once into the generator's own graph
-   (``gen.graph``) on a private stream, then launches it.
-2. **Every later call** — launches that graph with ``wp.capture_launch`` on the call's
-   stream.
-
-The seed prologue, the kernel that opens the generation body, is part of the graph. It
-derives each env's seed from ``rng.seeds_warp`` and the env's epoch (zero until you
-advance it, see `Per-Env Auto-Reset Inside the Graph`_), so every replay generates from
-the rng's CURRENT seeds and the CURRENT epochs. By default ``generate()`` then waits for
-its stream to finish (a wait on that one stream, not a device-wide
-``wp.synchronize()``). ``generate(sync=False)`` returns at once, and the results are
-ordered on the stream like every other library call.
-
-The graph belongs to the ``TrackGenerator`` instance: a new instance records its own on its
-own first call.
-
-Capture works because a capturable generator's pipeline is **entirely static**:
-
-- All buffer shapes and loop counts are fixed at construction time, and nothing allocates
-  per call.
-- There is no host-side branching on device tensor data (branching on config
-  fields is resolved before capture).
-- Per-track ``count[e]`` values are device-side data; count-aware kernels keep
-  static launch dimensions via ``N_max``.
-- The pipeline never host-synchronizes or reads device data back (both are
-  illegal inside a CUDA graph scope); ordering comes from the stream.
-
-``repulsive`` is the outlier on cost, not on capture: its growth loop runs a
-fixed, host-precomputed iteration schedule (~1000× slower than the other generators).
-Converged envs are frozen on device, so each env still depends only on its own seed,
-and the loop is a ``ctx.bounded_loop``: its self-graph skips, on device, the stall
-windows left once every env has frozen (CUDA 12.4+ conditional nodes), while a plain
-``torch.cuda.graph`` records, and an eager ``cuda`` call runs, the full iteration bound.
-Its construction pays one full eager run, and its first ``generate()`` on ``cuda``
-records its graph. See :doc:`/generators/repulsive`.
-
-.. code-block:: python
-
-   import numpy as np
-   import warp as wp
-   wp.init()
-
-   from track_gen import TrackGenerator, TrackGenConfig, PerEnvSeededRNG
-
-   E = 512
-   # Thin tracks need N_max >= 512: the default 384 covers only ~98% of them, and
-   # truncated tracks fail validity (see Track.truncated and the tuning guide).
-   config = TrackGenConfig(num_envs=E, half_width=0.03, N_max=512, device="cuda")
-   rng    = PerEnvSeededRNG(seeds=0, num_envs=E, device="cuda")
-
-   gen = TrackGenerator(config, rng)       # runs the pipeline once: gen's Track is valid
-   assert gen.graph is None
-
-   # First call: records the self-graph, then launches it.
-   track = gen.generate()
-   assert gen.graph is not None
-
-   # Later calls on the SAME generator replay the graph, which reads the rng's current
-   # seeds: reseed in place to get a new batch.
-   rng.set_seeds_warp(wp.array(42 + np.arange(E), dtype=wp.int32, device="cuda"), None)
-   track = gen.generate()                  # replay; returns once the stream is done
-   track = gen.generate(sync=False)        # replay; returns at once (stream-ordered)
-
-   # Or keep the seeds and advance every env's epoch on device: a new batch, no reseed.
-   # (advance=True has a self-graph of its own, recorded on its first call.)
-   track = gen.generate(advance=True)
-
-Buffer Reuse and ``clone()``
------------------------------
-
-``generate()`` always returns the **same** ``Track`` instance with the **same**
-underlying Warp array pointers. The arrays are overwritten in-place on every
-call. If you read the arrays after a second ``generate()`` call without cloning,
-you will see the second batch's data, not the first.
-
-For a sim loop that needs to keep the previous episode's tracks while generating
-a new batch, use ``track.clone()`` before the next call:
-
-.. code-block:: python
-
-   track = gen.generate()
-   saved = track.clone()   # independent copy; safe to store across generate()
-
-   track = gen.generate()  # overwrites gen's internal buffers
-   # saved still holds the first batch's data
-
-The same pattern applies to ``GateGenerator`` and ``GateSequence.clone()``.
-
-A Self-Graph Episode Loop
----------------------------
-
-The simplest loop leaves generation outside your graph: the generator replays its own
-graph at each episode boundary, and the full batch is regenerated together. For envs that
-finish at different steps, see `Per-Env Auto-Reset Inside the Graph`_.
-
-.. code-block:: python
-
-   import warp as wp
-   import numpy as np
-   wp.init()
-   import torch
-
-   from track_gen import TrackGenerator, TrackGenConfig, PerEnvSeededRNG
-
-   E, device = 256, "cuda"
-   config = TrackGenConfig(num_envs=E, half_width=0.03, N_max=512, device=device)
-   rng    = PerEnvSeededRNG(seeds=0, num_envs=E, device=device)
-   gen    = TrackGenerator(config, rng)
-
-   # First reset: the first call records the self-graph.
-   track = gen.generate()
-
-   center = wp.to_torch(track.center).view(E, config.N_max, 3)
-   outer  = wp.to_torch(track.outer).view(E, config.N_max, 3)
-   inner  = wp.to_torch(track.inner).view(E, config.N_max, 3)
-   valid  = wp.to_torch(track.valid).bool()
-   count  = wp.to_torch(track.count)
-
-   # --- Sim step loop ---
-   for episode in range(1000):
-
-       # Work with the current tracks.  All views above stay valid until the
-       # next generate() call.  Clone if you need them to survive past that.
-       obs = center[:, :int(count.max()), :]   # example: max-length slice
-
-       # ... run RL steps ...
-
-       # On episode boundary: generate a fresh batch (fast CUDA graph replay).
-       new_seeds = wp.array(episode + 1 + np.arange(E), dtype=wp.int32, device=device)
-       rng.set_seeds_warp(new_seeds, None)
-       track = gen.generate()
-
-.. note::
-
-   Keep one ``TrackGenerator`` and its existing ``PerEnvSeededRNG`` alive across
-   episodes. Build a per-environment ``wp.int32`` seed array, call
-   ``rng.set_seeds_warp(new_seeds, None)``, then call ``gen.generate()``. The
-   replayed graph derives the seeds from the RNG's current seeds on device, into the
-   pre-allocated seed buffer. ``gen.generate(advance=True)`` is the reseed-free
-   alternative: it advances every env's epoch on device instead. Because the persistent
-   ``Track`` buffers retain stable addresses, the Torch views above remain bound and do
-   not need to be recreated.
-
-Recording Generation into Your Own Graph
+Construction and the generator's own graph
 ------------------------------------------
 
-Call ``generate()`` while you capture, and it is recorded into your graph: the seed
-prologue and every pipeline launch become nodes of YOUR graph. Nothing is self-captured,
-nothing is launched with ``wp.capture_launch`` (a graph launch cannot be recorded into
-another capture), and nothing blocks the host, whatever ``sync`` says. Recording allocates
-nothing, so it also works with Warp's mempool disabled.
+Construction runs the generation **once, eagerly**, outside any capture. That pass loads
+every Warp kernel the hot path uses, so no later recording compiles anything, and it
+leaves the batch for the current :term:`seeds <seed>` in the result: the ``Track`` is
+ready right after construction (construction waits until that pass has finished).
+Construct generators before you begin a capture: construction raises ``CaptureError``,
+before allocating anything, when its stream or Warp's current stream is capturing.
 
-.. code-block:: python
+After construction:
 
-   gen = TrackGenerator(config, rng)           # build OUTSIDE the capture
+- **On** ``cpu`` every ``generate()`` runs the generation eagerly; there is no CUDA graph
+  (a CPU capture still records it into yours, below).
+- **On** ``cuda``, outside any capture, the first call records the generation into the
+  generator's own graph (``gen.graph``) on a private stream, then launches it; every later
+  call launches that graph on the call's stream.
 
-   with wp.ScopedCapture(device="cuda") as cap:
-       physics_step()                          # your kernels
-       track = gen.generate()                  # recorded, not executed
-   graph = cap.graph
-
-   for episode in range(num_episodes):
-       # seeds_for(ep): an [E] int32 wp.array of new seeds (see the Course example)
-       rng.set_seeds_warp(seeds_for(episode), None)   # in place; the graph reads it
-       wp.capture_launch(graph)
-
-The rules:
-
-- **The stream decides.** A call is recorded when the stream it resolves is capturing. A
-  plain ``wp.ScopedCapture(device)`` captures Warp's current stream, which is what a call
-  without ``stream=`` resolves to, and inside ``torch.cuda.graph(g)`` torch's capture
-  stream is adopted automatically. When you capture a side stream, pass it
-  (``gen.generate(stream=s)``) or wrap the calls in ``LaunchContext(device, s).scope()``.
-  A call that resolves to a stream that is NOT capturing runs there and is silently
-  missing from your graph.
-- **Seeds and epochs are read live.** Every replay generates from the rng's current seeds
-  and the generator's current epochs (``gen.seeds.epoch``). Reseed between replays with
-  ``rng.set_seeds_warp(new_seeds, None)``, or record that call into the graph against a
-  stable seed array that you rewrite in place. Or record ``gen.generate(advance=True)``:
-  each replay then advances every env's epoch on device and builds a new batch, with no
-  host work between replays.
-- **Host values are frozen.** Python scalars and Python-side state are baked in at record
-  time; anything that must change between replays has to be device data.
-- **Keep the generator alive.** A Warp capture (``wp.ScopedCapture``, ``wp.capture_begin``)
-  keeps the generator's buffers alive with the graph; a ``torch.cuda.graph`` does not, so
-  hold on to the generator while you replay it, or tie it to the torch graph with
-  ``track_gen.interop.torch.retain(g, gen)``.
-- **Non-capturable generators raise.** A ``capturable=False`` plugin (any pipeline
-  with a ``HOST`` stage) raises ``NotCapturableError`` (from ``track_gen.exec``), naming
-  the ``HOST`` stages, before launching anything. Build the pipeline with
-  ``PipelineSpec(..., require_caller_capturable=True)`` to have that refused at
-  construction instead. A legacy
-  plugin without ``accepts_ctx=True`` can only be recorded on Warp's current stream and
-  raises ``LegacyPluginStreamError`` otherwise; see :doc:`/how-it-works/cuda-graph`.
-
-``gen.enqueue(stream=None)`` records exactly like ``generate()`` under a capture. Outside
-one it runs the pipeline eagerly on the resolved stream: it never builds a self-graph and
-never blocks.
-
-The Recommended Sim-Loop Pattern
-----------------------------------
-
-With a :doc:`Course </utilities/course>`, ``course.regenerate()`` is ONE body: whole-batch
-generation plus the coherent refresh (checkpoint resample, SDF and height-field bakes, gate
-posts, full progress reset). It records into your graph exactly like ``generate()``, so a
-single caller graph can hold new courses AND the sim steps that drive them:
-
-1. Build everything outside the capture: the ``Course`` (construction runs the pipeline
-   eagerly, sizes the sub-tools from that real batch and warms the regenerate body), your
-   stable sim buffers, and the ``bind()``.
-2. Record one graph with ``course.regenerate()`` followed by the per-step
-   ``course.step()`` / ``course.reset(mask)`` calls around your physics.
-3. Replay it, reseeding the rng in place between replays to get new courses.
+The first step of every generation derives each env's seed from its base seed and its
+:term:`epoch`, on device, so every replay generates from the CURRENT seeds and epochs
+(``track.generation`` records the epoch, the :term:`generation`, of each env's track).
+By default ``generate()`` then waits for its stream to finish (a wait on that one stream,
+not a device-wide ``wp.synchronize()``); ``generate(sync=False)`` returns at once, the
+results being ordered on the stream like every other library call.
 
 .. code-block:: python
 
    import numpy as np
    import warp as wp
-   wp.init()
 
-   from track_gen import TrackGenConfig
-   from track_gen.course import Course, CourseConfig
+   from track_gen import TrackGenerator
+   from track_gen.pipeline import presets
 
-   E, K, device = 256, 64, "cuda:0"            # K control steps per recorded episode
+   E, device = 64, "cuda:0"                     # or "cpu"
+   # Thin tracks need n_max >= 512: the default 384 truncates some of them, and a
+   # truncated track is invalid.
+   spec = presets.track(num_envs=E, device=device, half_width=0.03, n_max=512)
+   seeds = wp.array(np.arange(E, dtype=np.int32), device=device)   # bound by pointer
+   gen = TrackGenerator(spec, seeds=seeds)      # runs one generation: the batch is ready
 
-   def seeds_for(ep):                          # [E] int32 seeds for episode ep
-       return wp.array(ep * E + np.arange(E), dtype=wp.int32, device=device)
+   track = gen.generate()                       # cuda: records gen.graph, then launches it
+   seeds.assign(np.arange(E, dtype=np.int32) + 1000)   # new seeds, written in place
+   track = gen.generate()                       # replays the graph: reads the new seeds
+   track = gen.generate(sync=False)             # returns at once (stream-ordered)
+   track = gen.generate(advance=True)           # next epoch for every env: a new batch,
+                                                # no reseed (a graph of its own)
+
+A ``PerEnvSeededRNG`` works the same way: pass it as ``seeds=`` (or as the second
+argument) and reseed with ``rng.set_seeds_warp(new_seeds, None)``.
+
+The generation can be recorded because it is **entirely static**:
+
+- all buffer shapes and loop counts are fixed at construction, and nothing allocates per
+  call;
+- there is no host-side branching on device data (choices that depend on the config are
+  made at construction);
+- each track's ``count[e]`` is device data, and kernels that depend on it keep static
+  launch dimensions through :term:`N_max`;
+- nothing host-synchronizes or reads device data back; ordering comes from the stream.
+
+``repulsive`` stands out by its cost, not by its recording: its growth loop runs a fixed
+iteration bound, two orders of magnitude more work than the other generators (its own
+cost table is in :doc:`/generators/repulsive`). Each env stops changing once it
+converges, independently of the rest of the batch, so each env still depends only on its
+own seed. Its own graph on ``cuda`` skips, on device, the iterations left once every env
+has converged (CUDA 12.4+ :term:`conditional nodes <conditional node>`), while a plain
+``torch.cuda.graph`` records the full bound and an eager call on ``cuda`` runs it (an
+eager ``cpu`` call stops at the first check that finds every env converged). Its
+construction pays one full run; see :doc:`/generators/repulsive`.
+
+Buffer reuse and ``clone()``
+----------------------------
+
+``generate()`` always returns the **same** ``Track`` instance, with the **same** Warp
+arrays, overwritten in place on every call. Arrays read after a second call hold the
+second batch. To keep a batch while generating the next one, ``clone()`` it first:
+
+.. code-block:: python
+
+   track = gen.generate()
+   saved = track.clone()                        # an independent copy
+   track = gen.generate(advance=True)           # overwrites gen's buffers
+   # saved still holds the first batch
+
+.. snippet: after
+
+   assert not np.array_equal(saved.center.numpy(), track.center.numpy(), equal_nan=True)
+
+The same holds for ``GateGenerator`` and ``GateSequence.clone()``. ``clone()`` allocates,
+so call it outside your capture (inside one, it raises ``CaptureError``; copy into a
+preallocated result with ``copy_from`` instead, :ref:`results`). On ``cpu``,
+``.numpy()`` is a view of the live array, not a copy: copy it to keep its values.
+
+An episode loop on the generator's own graph
+--------------------------------------------
+
+The simplest loop leaves generation outside your graph: at each episode boundary the
+generator replays its own graph, and the whole batch is regenerated together.
+
+.. code-block:: python
+
+   for episode in range(3):
+       track = gen.generate(advance=True)       # a new batch per episode
+       valid = track.valid.numpy() != 0         # gate everything on valid
+       count = track.count.numpy()
+       center = track.center.numpy().reshape(E, -1, 3)   # NaN past count[e]
+       # ... run the episode on the valid envs ...
+
+Gate everything on :term:`valid`. Read results with ``.numpy()`` (a copy on ``cuda``, a
+view on ``cpu``), or keep zero-copy torch views
+(``wp.to_torch(track.center).view(E, gen.n_max, 3)``): the buffers keep their addresses,
+so views made once stay bound across calls. An env with ``valid[e] == 0`` is an
+:term:`invalid env`: see :ref:`invalid-envs`. For envs that finish at different steps,
+see :doc:`/user-guide/rl-auto-reset`.
+
+Recording generation into your graph
+------------------------------------
+
+Call ``generate()`` while you capture, and it is recorded into your graph: the seed step
+and every launch of the generation become nodes of YOUR graph. Nothing is launched from
+the generator's own graph (a graph launch cannot be recorded into another capture), and
+nothing blocks the host, whatever ``sync`` says. Recording allocates nothing, so it also
+works with Warp's mempool disabled.
+
+.. snippet: setup
+
+   @wp.kernel
+   def _physics_k(pos: wp.array(dtype=wp.vec3f)):
+       e = wp.tid()
+       pos[e] = pos[e] + wp.vec3f(0.001, 0.0, 0.0)
+
+   _body = wp.zeros(E, dtype=wp.vec3f, device=device)
+
+   def physics_step():
+       wp.launch(_physics_k, E, [_body], device=device)
+
+.. code-block:: python
+
+   with wp.ScopedCapture(device=device) as cap:     # gen was built OUTSIDE the capture
+       physics_step()                              # your kernels
+       track = gen.generate()                      # recorded, not executed
+   graph = cap.graph
+
+   for episode in range(3):
+       seeds.assign(np.arange(E, dtype=np.int32) + 2000 + episode * E)  # the graph reads it
+       wp.capture_launch(graph)
+
+``wp.ScopedCapture`` records on ``cpu`` too (Warp records the launches and
+``wp.capture_launch`` replays them), so the same code runs on a CPU machine.
+``gen.enqueue(stream=None)`` records exactly like ``generate()`` under a capture; outside
+one it runs the generation eagerly on the resolved stream, never builds the generator's
+own graph and never blocks. Every replay generates from the seeds and epochs at replay
+time; :ref:`capture-rules` lists everything that decides what a recording does.
+
+The recommended pattern with a course
+-------------------------------------
+
+With a :doc:`course </utilities/course>`, ``course.regenerate()`` is ONE body: the
+generation plus the refresh of every utility (checkpoint resample, SDF and height-field
+bakes, gate posts, progress reset). It records into your graph exactly like
+``generate()``, so one graph can hold new courses AND the sim steps that drive them:
+
+1. Build everything outside the capture: the course (construction runs the generation and
+   a warm-up), your stable sim buffers, and the ``bind()``.
+2. Record one graph with ``course.regenerate(advance=True)`` followed by the per-step
+   ``course.step()`` / ``course.reset(mask)`` calls around your physics.
+3. Replay it: each replay advances every env's epoch on device and builds new courses.
+
+.. snippet: setup
+
+   @wp.kernel
+   def _sim_k(center: wp.array(dtype=wp.vec3f), stride: int, t: wp.array(dtype=wp.int32),
+              pos: wp.array(dtype=wp.vec3f)):
+       e = wp.tid()
+       pos[e] = center[e * stride + t[0]]
+
+   @wp.kernel
+   def _tick_k(t: wp.array(dtype=wp.int32)):
+       t[0] = (t[0] + 1) % 200
+
+   @wp.kernel
+   def _crash_k(oob: wp.array(dtype=wp.int32), valid: wp.array(dtype=wp.int32),
+                crashed: wp.array(dtype=wp.int32)):
+       e = wp.tid()
+       crashed[e] = wp.where(oob[e] != 0 and valid[e] != 0, 1, 0)
+
+   _t = wp.zeros(1, dtype=wp.int32, device=device)
+
+   def sim_step(pos, quat, stream=None):
+       r = course.result
+       wp.launch(_sim_k, E, [r.center, r.layout.stride, _t, pos], device=device,
+                 stream=stream)
+       wp.launch(_tick_k, 1, [_t], device=device, stream=stream)
+
+   def update_crashed(res, crashed, stream=None):
+       wp.launch(_crash_k, E, [res.contacts.oob, res.valid, crashed], device=device,
+                 stream=stream)
+
+.. code-block:: python
+
+   from track_gen.course import Course
+
+   K = 64                                       # sim steps per recorded episode
 
    # 1. Build everything OUTSIDE the capture.
-   course = Course(CourseConfig(
-       mode="track",
-       gen=TrackGenConfig(num_envs=E, half_width=0.03, N_max=512, device=device),
-       seeds=0,
-       collision="segments",
-       checkpoint_spacing=0.6,
-   ))
-   # Your sim's stable buffers, written in place every step.
-   pos  = wp.zeros(E, dtype=wp.vec3f, device=device)
+   course = Course.track(spec, checkpoint_spacing=0.6, collision="segments", seeds=0)
+   pos = wp.zeros(E, dtype=wp.vec3f, device=device)          # your sim's stable buffers
    quat = wp.full(E, wp.quat_identity(), dtype=wp.quatf, device=device)
-   he   = wp.full(E, wp.vec2f(0.02, 0.01), dtype=wp.vec2f, device=device)
-   done = wp.zeros(E, dtype=wp.int32, device=device)   # your per-env respawn mask
+   he = wp.full(E, wp.vec2f(0.02, 0.01), dtype=wp.vec2f, device=device)
    course.bind(position=pos, orientation=quat, half_extents=he)
+   crashed = course.inputs["reset_mask"]        # stable [E] int32: 1 respawns env e
 
    # 2. Record one episode: new courses for the whole batch, then K sim steps.
    with wp.ScopedCapture(device=device) as cap:
-       course.regenerate()                     # generation + refresh, recorded
+       course.regenerate(advance=True)          # generation + refresh, recorded
        for _ in range(K):
-           sim_step(pos, quat)                 # your physics: writes the bound buffers
-           res = course.step()                 # progress events + contacts + valid
-           update_done(res, done)              # your kernel: done[e] = 1 respawns env e
-           course.reset(done)                  # respawn on the SAME course
+           sim_step(pos, quat)                  # your physics: writes the bound buffers
+           res = course.step()                  # progress events + contacts + valid
+           update_crashed(res, crashed)         # your kernel: a valid env that left the road
+           course.reset(crashed)                # respawn on the SAME course
    episode = cap.graph
 
-   # 3. Replay. The graph reads the rng's live seeds: reseed in place first.
-   for ep in range(1, num_episodes + 1):
-       course.rng.set_seeds_warp(seeds_for(ep), None)
+   # 3. Replay: every replay builds new courses and runs K steps.
+   for _ in range(3):
        wp.capture_launch(episode)
        # res.events / res.contacts now hold the last recorded step's results
+
+.. snippet: after
+
+   assert int(course.result.generation.numpy()[0]) == 3
 
 Notes on the pattern:
 
 - ``res`` is the course's stable ``StepResult``: every replay rewrites its arrays in place.
   Keep writing into the SAME bound buffers; rebinding after the capture leaves the graph
-  reading the old pointers (``course.bind`` then emits a ``RebindAfterCaptureWarning``:
+  reading the old arrays (``course.bind`` then emits ``RebindAfterCaptureWarning``:
   record the graph again).
-- An env whose course is invalid (``res.valid[e] == 0``) stays invalid until the next
-  ``regenerate()`` of this pattern: ``course.reset(done)`` respawns it on the same course,
-  where it reads ``oob = 1`` and frozen progress at every step. Zero its reward and
-  observations with a select (`Per-Env Auto-Reset Inside the Graph`_ has the kernel), or
-  give it a new course in the step graph with a masked regeneration.
-- Gates mode (``mode="gates"``) records the same way.
+- An invalid env (``res.valid[e] == 0``) stays invalid until the next regeneration of this
+  pattern: ``course.reset(crashed)`` would respawn it on the same course, where it reads
+  ``oob = 1`` and frozen progress at every step. Gate its reward and observations on
+  ``valid`` with a select, or give it a new course in the step graph with a masked
+  regeneration (:ref:`rl-in-graph`).
+- Gates courses (``Course.gates``) record the same way.
 - If episodes are long, or you regenerate less often than you step, record
-  ``course.regenerate()`` into a graph of its own and launch it only at episode
-  boundaries. Both graphs work on the same course buffers.
-- To reseed inside the graph, record ``course.generate(seeds=seed_buf)`` in place of
-  ``course.regenerate()``, with ``seed_buf`` a stable ``[E]`` int32 array that you rewrite
-  in place between replays (a kernel of yours, or a ``wp.to_torch`` view). Do not pass an
-  ``int`` under a capture: it is baked into the graph, so every replay reseeds with the
-  same value and rebuilds the same courses.
-- ``course.regenerate()`` called outside a capture replays the course's own graph
-  (``course.graph``) instead; ``course.enqueue_generate()`` records or runs eagerly and
-  never builds that graph.
-- To vary the courses without touching the seeds, record
-  ``course.regenerate(advance=True)``: every replay advances each env's epoch on device.
-  To give new courses only to the envs that finished, inside the step graph, see
-  `Per-Env Auto-Reset Inside the Graph`_.
+  ``course.regenerate(advance=True)`` into a graph of its own and launch it only at
+  episode boundaries. Both graphs work on the same course buffers.
+- To choose the seeds, record ``course.generate(seeds=seed_buf)`` in place of
+  ``course.regenerate(advance=True)``, with ``seed_buf`` a stable ``[E]`` int32 array
+  that you rewrite in place between replays. Do not pass an ``int`` under a capture: it is
+  baked into the graph, so every replay reseeds with the same value and rebuilds the same
+  courses.
+- ``course.regenerate()`` called outside a capture replays the course's own CUDA graph
+  (``course.graph``) on ``cuda``; ``course.enqueue_generate()`` records under a capture,
+  runs eagerly outside one, and never builds that graph.
 
 ``torch.cuda.graph`` variant
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Inside ``torch.cuda.graph(g)``, every library call that names no stream adopts torch's
-capture stream, so the same body records into ``g`` without any ``stream=`` argument:
+capture stream, so the same body records into ``g`` without any ``stream=`` argument.
+Your own Warp launches must target that stream too: get it from
+:func:`track_gen.interop.torch.registered`, which yields the library's long-lived Warp
+wrapper of torch's capture stream:
 
-.. code-block:: python
-
-   import torch
-
-   g = torch.cuda.CUDAGraph()
-   with torch.cuda.graph(g):
-       course.regenerate()                     # adopted: recorded into g
-       for _ in range(K):
-           sim_step()                          # your physics, on torch's capture stream
-           res = course.step()
-           update_done(res, done)
-           course.reset(done)
-
-   for ep in range(1, num_episodes + 1):
-       course.rng.set_seeds_warp(seeds_for(ep), None, stream="torch")  # replay's stream
-       g.replay()
-
-Your own Warp launches inside ``torch.cuda.graph`` must target the capture stream as well
-(``stream=wp.stream_from_torch()``). Warp does not see torch graphs, so nothing ties the
-course's buffers to ``g``: keep ``course`` alive for as long as you replay ``g``, or call
-``track_gen.interop.torch.retain(g, course)`` once after the capture.
-
-Side-stream variant
-~~~~~~~~~~~~~~~~~~~~
-
-To capture a stream that is not Warp's current one, every library call must land on it.
-Enter ``LaunchContext(device, s).scope()`` once, or pass ``stream=s`` to each call:
-
-.. code-block:: python
-
-   from track_gen.exec import LaunchContext
-
-   s = wp.Stream(device)
-   with wp.ScopedCapture(device=device, stream=s) as cap:
-       with LaunchContext(device, s).scope():  # every library call below resolves to s
-           course.regenerate()
-           for _ in range(K):
-               sim_step(pos, quat, stream=s)   # your launches still need stream=s
-               res = course.step()
-               update_done(res, done, stream=s)
-               course.reset(done)
-   episode = cap.graph
-   # Explicit form, without the scope:
-   #   course.regenerate(stream=s); course.step(stream=s); course.reset(done, stream=s)
-
-   for ep in range(1, num_episodes + 1):
-       with wp.ScopedStream(s):   # the seed upload, the reseed and the temporary's free ride s
-           course.rng.set_seeds_warp(seeds_for(ep), None)
-       wp.capture_launch(episode, stream=s)
-
-``seeds_for(ep)`` builds its array with ``wp.array(...)``, which uploads on Warp's CURRENT
-stream and frees the temporary there afterwards. Passing only ``stream=s`` to
-``set_seeds_warp`` would read it on ``s`` with nothing ordering the two streams, so make
-``s`` current for the whole statement (or fill a preallocated seed buffer on ``s``).
-
-Without the scope or ``stream=s``, a call resolves to Warp's current stream, which is not
-capturing: it runs there, outside your graph.
-
-Per-Env Auto-Reset Inside the Graph
--------------------------------------
-
-In an RL loop, envs finish at different steps.
-``course.regenerate(mask=done, advance=True)`` gives a new course to exactly the envs
-with ``done[e] != 0``, and it records into your step graph next to ``course.step()``.
-One replay of that graph is then one full RL step, auto-reset included, with no host
-involvement between steps:
-
-- **Masked envs** (``mask[e] != 0``) advance their epoch, so they get a new course, and
-  their per-env runtime state is reset as ``course.reset(mask)`` would reset it (progress,
-  and the localizer in gates mode).
-- **Unmasked envs** (``mask[e] == 0``) are left unchanged: their course, the sub-tool data
-  derived from it and their progress state come out bitwise the same.
-- **No env masked:** the regeneration is skipped on device where CUDA supports it (see
-  `Skipping the regeneration on device`_), and runs as an exact no-op everywhere else.
-
-Build the course and bind your stable buffers as in `The Recommended Sim-Loop Pattern`_,
-then write the reward and the done mask with one kernel of your own, gated on
-``res.valid``:
-
-.. code-block:: python
-
-   @wp.kernel
-   def reward_and_done(valid: wp.array(dtype=wp.int32), oob: wp.array(dtype=wp.int32),
-                       passed: wp.array(dtype=wp.int32), dist: wp.array(dtype=wp.float32),
-                       laps: wp.array(dtype=wp.int32), max_laps: int,
-                       reward: wp.array(dtype=wp.float32), obs_dist: wp.array(dtype=wp.float32),
-                       done: wp.array(dtype=wp.int32)):
-       e = wp.tid()
-       ok = valid[e] != 0
-       r = 10.0 * float(passed[e]) - 5.0 * float(oob[e])
-       reward[e] = wp.where(ok, r, 0.0)        # a select: never r * float(valid[e])
-       obs_dist[e] = wp.where(ok, dist[e], 0.0)
-       d = 0
-       if oob[e] != 0 or laps[e] >= max_laps:
-           d = 1
-       if not ok:
-           d = 1                               # done |= 1 - valid
-       done[e] = d                             # EVERY entry, every step
-
-   done = course.inputs["regen_mask"]          # stable [E] int32, zero-initialised
-   reward = wp.zeros(E, dtype=wp.float32, device=device)
-   obs_dist = wp.zeros(E, dtype=wp.float32, device=device)
-
-   with wp.ScopedCapture(device=device) as cap:
-       sim_step(pos, quat)                     # your physics: writes the bound buffers
-       res = course.step()                     # progress events + contacts + valid
-       wp.launch(reward_and_done, E,
-                 [res.valid, res.contacts.oob, res.events.passed, res.events.dist_to_next,
-                  res.events.laps, 3, reward, obs_dist, done], device=device)
-       course.regenerate(mask=done, advance=True)  # new courses where done[e] != 0
-       respawn(done, pos, quat)                # your kernel: restart masked envs on them
-   step = cap.graph
-
-   for _ in range(num_steps):
-       wp.capture_launch(step)                 # no host work between steps
-
-``regenerate(mask=...)`` resets the masked envs itself, so this graph needs no
-``course.reset(done)``. Read ``reward`` and ``obs_dist`` (and the rest of your
-observations) BEFORE the regeneration in the graph, as here: after it, a masked env's
-arrays describe its new course.
-
-**Why the select and the ``valid`` term.** An invalid env (``res.valid[e] == 0``: its
-course failed a check, 0.4 to 1.6 % of the envs of the default ``hull``, ``checkpoint``
-and ``repulsive`` generators) reads ``oob = 1`` and frozen progress with
-``dist_to_next = 0`` at every step, and its other geometric outputs are NaN (the
-localizer's frame in gates mode, the contact's ``distance`` / ``nearest`` / ``normal``).
-Without ``done |= 1 - valid`` it would be penalised every step and never leave its
-course; ``course.reset(done)`` would respawn it on the same invalid course forever. A
-multiply does not mask a NaN (``NaN * 0`` is NaN), and one NaN env makes a batch mean NaN:
-use ``wp.where`` / ``torch.where``. A done env's new course can be invalid again: the next
-step marks it done again. See :ref:`utilities-invalid-envs` for every field.
-
-The rules for the mask:
-
-- It is a contiguous ``[E]`` int32 array on the course device (checked on the host
-  before anything launches); nonzero entries select envs. ``course.inputs["regen_mask"]`` is a ready-made,
-  zero-initialised one with a stable address. Any stable array of yours works too.
-- The library reads it and never clears it. Your kernel must write every entry on every
-  step: an entry left at ``1`` regenerates that env on every replay.
-- It is recorded by pointer, so keep writing into the same array. Outside a capture on
-  ``cuda``, the course keeps one self-graph per ``(mask array, advance)`` pair, recorded on
-  its first use: pass the same array on every call. ``course.graph`` is the self-graph of
-  a plain ``regenerate()``.
-
-What happens to each env, and what it costs:
-
-- The generator pipeline has fixed shapes, so a masked regeneration still recomputes
-  EVERY env. An unmasked env keeps the effective seed its current course was built from
-  and is recomputed to identical values, and so is everything derived from it (checkpoint
-  resample, SDF and height-field bakes, course line, gate posts); the generator's
-  commit also restores an unmasked env's ``Track`` rows bit for bit after the recompute.
-  Only the masked envs' runtime state is reset. A step with at least one masked env
-  therefore costs one full-batch generation.
-- Seeds you write (``course.rng.seeds_warp``, ``course.rng.set_seeds_warp(...)``) and
-  epochs you reset (``course.seeds.reset_epoch(...)``) between regenerations take effect
-  for an env when a masked regeneration selects it (its new course and its state reset
-  come together), or for every env at the next full ``course.regenerate()``. A masked
-  regeneration never changes an unmasked env, whatever you wrote.
-- With ``advance=False``, the masked envs are rebuilt from their current
-  ``(seed, epoch)``: the same course, unless your own kernel wrote new seeds for them
-  first. That is how you choose the seeds yourself (a curriculum, for example);
-  ``advance=True`` moves to the next epoch instead.
-- ``course.result.generation[e]`` is the epoch env ``e``'s current course was built with.
-  As long as you only advance epochs (no reseed, no epoch reset), it changes exactly when
-  env ``e`` gets a new course, so your observation and logging kernels can detect new
-  courses on device. It is the epoch, not a counter: a reseed at the same epoch leaves it
-  unchanged, and after an epoch reset earlier values come back.
-- ``(seed, epoch)`` fully determines an env's course. Epoch ``0`` uses the seed itself (the
-  batches of earlier releases); any other epoch uses a hash of the pair. Log both to
-  rebuild an episode's course later: ``track_gen.seeds.effective_seed(seed, epoch)``
-  returns the seed that rebuilds it in a fresh course (at epoch ``0``).
-- ``course.generate(seeds=...)`` zeroes every epoch, so it reproduces a fresh course built
-  with those seeds. ``course.rng.set_seeds_warp(...)`` alone keeps the epochs; follow it
-  with ``course.seeds.reset_epoch()`` and a FULL ``course.regenerate()`` (no mask) for the
-  same effect. A masked regeneration in between applies them only to the envs it selects.
-  ``generate(seeds=...)`` writes the seeds into ``course.rng.seeds_warp``, which is your
-  own array if ``CourseConfig.seeds`` was a ``wp.array``.
-
-On a bare generator, ``gen.generate(advance=True, mask=m)`` and
-``gen.enqueue(advance=True, mask=m)`` advance only the masked envs' epochs, then
-regenerate; ``gen.inputs["regen_mask"]`` is the generator's own stable mask. A generator
-has no runtime state to reset.
-
-Skipping the regeneration on device
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-``regenerate(mask=...)`` first reduces the mask to a one-element flag on device
-(``any_set``), then puts the rest of its body behind
-``LaunchContext.skip_unless(flag, body)``. That becomes a CUDA conditional graph node
-(``wp.capture_if``), so a step where no env is done costs two small kernels instead of a
-generation, when both of these hold:
-
-- the call is recorded into a capture that Warp registered on that stream:
-  ``wp.ScopedCapture``, ``wp.capture_begin`` (``external=True`` included), the course's own
-  self-graph, or a ``torch.cuda.graph`` inside
-  ``track_gen.interop.torch.registered(conditional=True)`` (below);
-- ``wp.is_conditional_graph_supported()`` is true: the CUDA driver and the CUDA toolkit
-  Warp was built with are both 12.4 or newer.
-
-Everywhere else (eager calls, the ``cpu`` device, a plain ``torch.cuda.graph`` or one
-registered without ``conditional=True``, an older driver or toolkit) the body runs
-unconditionally. That is still correct: with no env masked it recomputes identical values
-and resets nothing. It only costs a full generation on every replay. The flag is never
-read back on the host.
-
-A step graph that holds the conditional node cannot be used as a CUDA child graph (for
-example as ``wp.capture_if(cond, on_true=step)``). To nest it, record the step's calls
-inside a Python ``on_true`` callback instead, or keep the conditional out of the step
-graph by recording it without a Warp registration.
-
-Warp does not see a plain ``torch.cuda.graph`` capture, so the skip falls back to the
-unconditional body there. ``track_gen.interop.torch.registered(conditional=True)``,
-entered INSIDE ``torch.cuda.graph(g)``, registers torch's capture stream with Warp for the
-duration of the block, allows the conditional node in it, and yields the stream as a
-``wp.Stream``:
+.. snippet: group=torch cuda requires=tutorials/cuda-graph-in-a-sim#main
 
 .. code-block:: python
 
@@ -562,169 +311,384 @@ duration of the block, allows the conditional node in it, and yields the stream 
 
    g = torch.cuda.CUDAGraph()
    with torch.cuda.graph(g):
-       with registered(conditional=True) as s:  # torch's capture stream, known to Warp
-           sim_step(pos, quat, stream=s)       # your own Warp launches go to s
-           res = course.step()                 # library calls adopt it on their own
-           wp.launch(reward_and_done, E,       # the kernel above
-                     [res.valid, res.contacts.oob, res.events.passed,
-                      res.events.dist_to_next, res.events.laps, 3, reward, obs_dist, done],
-                     stream=s)
-           course.regenerate(mask=done, advance=True)
-           respawn(done, pos, quat, stream=s)  # Warp only: no torch allocation after it
-   retain(g, course)                           # course now lives as long as g
+       with registered() as s:                  # torch's capture stream, known to Warp
+           course.regenerate(advance=True)      # adopted: recorded into g
+           for _ in range(K):
+               sim_step(pos, quat, stream=s)    # your physics, on torch's capture stream
+               res = course.step()
+               update_crashed(res, crashed, stream=s)
+               course.reset(crashed)
+   retain(g, course)                            # the course now lives as long as g
 
-   for _ in range(num_steps):
+   for _ in range(3):
        g.replay()
 
-``conditional=True`` comes with one rule: after the conditional regeneration, the rest of
-the ``torch.cuda.graph`` (inside the block and after it) must not run torch ops that
-allocate. ``wp.capture_if`` ends and restarts the stream's capture around the node, which
-gives it a new CUDA capture id, and torch's caching allocator only routes allocations to
-the graph's private pool for the id it saw when the capture began. A torch op recorded
-later would fail to capture or take a block from the general pool that eager code can
-reuse while the graph still writes it. So compute torch observations and rewards BEFORE
-the regeneration, or into preallocated tensors (``out=``, in-place ops). Without
-``conditional=True``, ``registered()`` only registers the capture (for the lifetime
-anchoring below) and the regeneration runs unconditionally, with no such rule.
+.. _torch-stream-wrapper:
 
-Without ``registered()`` the same block still records (library calls adopt torch's capture
-stream), with the regeneration running unconditionally. Notes:
+Do not wrap the capture stream yourself with a fresh ``wp.stream_from_torch()`` for each
+capture: when such a wrapper is garbage-collected, Warp unregisters the stream handle for
+the whole process, which breaks a later capture on the same handle (torch reuses its
+capture stream across graphs). If you need your own wrapper, keep it alive for the life
+of the process. Warp does not see torch graphs, so nothing else ties the course's buffers
+to ``g``: keep ``course`` alive for as long as you replay ``g``, or call
+``track_gen.interop.torch.retain(g, course)`` once after the capture, as here (or pass
+``registered(graph=g)``). With ``conditional=True``, ``registered`` also lets a masked
+regeneration skip itself on device (:ref:`rl-cost`).
 
-- ``retain(g, *owners)`` stores strong references on the torch graph object, so the owners
-  live as long as ``g``; Warp cannot do that for a torch graph. ``registered(graph=g)``
-  does the same for every producer whose generation is recorded inside the block.
-- ``registered()`` raises ``CaptureError`` outside a torch capture. If you capture with a
-  non-default ``torch.cuda.graph(g, capture_error_mode=...)``, pass the same mode as
-  ``registered(capture_mode=...)``.
-- Importing ``track_gen`` does not import torch; ``track_gen.interop.torch`` imports it
-  only when one of its functions is called.
+Side-stream variant
+~~~~~~~~~~~~~~~~~~~
 
-A Mixed Batch in One Graph
-~~~~~~~~~~~~~~~~~~~~~~~~~~
+To capture a stream that is not Warp's current one, every library call must land on it.
+Enter ``LaunchContext(device, s).scope()`` once, or pass ``stream=s`` to each call:
 
-Envs from different generators can share one ``Track`` and one step graph: each
-``TrackGenerator`` writes an env-slice view of a preallocated result (``out=``), and the
-utilities read the whole result. A ``Course`` builds its own generator, so wire the
-utilities by hand:
+.. snippet: group=side-stream cuda requires=tutorials/cuda-graph-in-a-sim#main
 
 .. code-block:: python
 
-   from track_gen import TrackGenerator
-   from track_gen.collision import CollisionChecker
-   from track_gen.pipeline import presets
-   from track_gen.results import Layout, Track
-
-   big = Track.alloc(Layout(E, 384, device))           # cold: before any capture
-   half = E // 2
-   seeds = seeds_for(0)                                # [E] int32: one array, sliced per generator
-   gens = [TrackGenerator(presets.track(num_envs=half, device=device, generator=g),
-                          seeds=seeds[k * half:(k + 1) * half],
-                          out=big.view(k * half, (k + 1) * half))
-           for k, g in enumerate(("bezier", "polar"))]
-   collision = CollisionChecker(big, max_boxes=1)      # reads all E envs
+   from track_gen.exec import LaunchContext
 
    s = wp.Stream(device)
-   with wp.ScopedCapture(stream=s) as cap:
-       sim_step(pos, quat, stream=s)
-       contacts = collision.query(pos, quat, he, stream=s)  # he: [E] vec2f, above
-       update_done(contacts, done, stream=s)           # done: your [E] int32 mask
-       for k, gen in enumerate(gens):
-           gen.generate(stream=s, advance=True, mask=done[k * half:(k + 1) * half])
+   with wp.ScopedCapture(device=device, stream=s) as cap:
+       with LaunchContext(device, s).scope():   # every library call below resolves to s
+           course.regenerate(advance=True)
+           for _ in range(K):
+               sim_step(pos, quat, stream=s)    # your launches still need stream=s
+               res = course.step()
+               update_crashed(res, crashed, stream=s)
+               course.reset(crashed)
+   episode = cap.graph
+   # Explicit form, without the scope:
+   #   course.regenerate(advance=True, stream=s); course.step(stream=s); ...
+
+   for _ in range(3):
+       wp.capture_launch(episode, stream=s)
+
+Without the scope or ``stream=s``, a call resolves to Warp's current stream, which is not
+capturing: it runs there, outside your graph. Arrays you upload for a replay (new seeds,
+for example) are written on Warp's current stream: make ``s`` current around the upload
+(``with wp.ScopedStream(s):``) or write a preallocated buffer on ``s``, so the replay on
+``s`` is ordered after it.
+
+A mixed batch in one graph
+--------------------------
+
+Envs from different generators can share one ``Track`` and one step graph: each
+``TrackGenerator`` writes an env-slice view of a preallocated result (``out=``), and the
+utilities read the whole result:
+
+.. code-block:: python
+
+   from track_gen.collision import CollisionChecker
+   from track_gen.results import Layout, Track
+
+   big = Track.alloc(Layout(E, 384, device))        # cold: before any capture
+   half = E // 2
+   mixed_seeds = wp.array(np.arange(E, dtype=np.int32), device=device)
+   gens = [TrackGenerator(presets.track(num_envs=half, device=device, generator=name),
+                          seeds=mixed_seeds[k * half:(k + 1) * half],
+                          out=big.view(k * half, (k + 1) * half))
+           for k, name in enumerate(("bezier", "polar"))]
+   collision = CollisionChecker(big, max_boxes=1)   # reads all E envs
+   done = wp.zeros(E, dtype=wp.int32, device=device)  # your per-env mask
+
+   with wp.ScopedCapture(device=device) as cap:
+       contacts = collision.query(pos, quat, he)
+       for k, g in enumerate(gens):              # new courses for the masked envs
+           g.generate(advance=True, mask=done[k * half:(k + 1) * half])
    step = cap.graph
+   wp.capture_launch(step)
 
 Each generator regenerates the masked envs of its own range and leaves every other row
 untouched; views given to two live generators must be disjoint (the build raises
 otherwise). Every generator of the batch uses the same ``n_max``. Pass each one its slice
 of one seed array, as above (with ``seeds=None`` or an ``int``, the seeds are offset by the
-view's first env, so the batch is still seeded like one batch). See
-:ref:`results-mixed-batches` for the rules.
+view's first env, so the batch is still seeded like one batch). A ``Course`` drives one
+generator, so a mixed batch wires its utilities by hand. See :ref:`results-mixed-batches`
+for the rules.
 
-Recording the Per-Step Utilities
-----------------------------------
+Per-env auto-reset in the graph
+-------------------------------
 
-The runtime utilities (collision, progress, localizer, props, checkpoints,
-height field) and ``Course.step()``/``reset()`` never host-synchronize, so
-their per-step calls record into your own sim graph directly. No flag is
-needed: ``track_gen.set_capturing`` is a deprecated no-op.
+``course.regenerate(mask=done, advance=True)`` gives new courses to exactly the envs your
+kernel marked done, and records into your step graph next to ``course.step()``: one replay
+is then one full RL step, auto-reset included, with no host work between steps.
+:doc:`/user-guide/rl-auto-reset` has the recipe (:ref:`rl-in-graph`), gated on ``valid``,
+and what it costs (:ref:`rl-cost`).
+
+Recording the per-step utilities
+--------------------------------
+
+The runtime utilities (collision, progress, localizer, props, checkpoints, height field),
+their :term:`components <component>` and ``Course.step()`` / ``reset()`` never
+host-synchronize, so their per-step calls record into your own sim graph as they are,
+with no flag to set:
 
 .. code-block:: python
 
-   tracker = ProgressTracker(checkpoints, position=sim_pos)  # bind once
-   tracker.update()                                         # warm up outside capture
-   with wp.ScopedCapture(device="cuda") as cap:
+   from track_gen.checkpoints import CheckpointSampler
+   from track_gen.progress import ProgressTracker
+
+   checkpoints = CheckpointSampler(track, spacing=0.6).sample()
+   tracker = ProgressTracker(checkpoints, position=pos)   # bind once, outside the capture
+   tracker.update()                             # a first call outside the capture
+   with wp.ScopedCapture(device=device) as cap:
        physics_step()
-       tracker.update()
-   # every sim step:
-   wp.capture_launch(cap.graph)
+       events = tracker.update()
+   for _ in range(3):                           # every sim step
+       wp.capture_launch(cap.graph)
 
-The same calls outside a capture return without blocking the host. Results are
-ordered by the Warp stream they were launched on: ``.numpy()``, later Warp
-launches and torch on its default stream all see finished data. A consumer on a
-different stream (for example a torch side stream) must order itself explicitly,
-e.g. with ``wp.synchronize_device()`` or a recorded ``wp.Event``. Benchmarks must
-synchronize before reading a timer. For debugging asynchronous CUDA errors, set
-``TRACKGEN_DEBUG_SYNC=1`` to make every library call block on its stream. It is
-skipped while that stream (or a Warp capture on the device) is capturing; do not
-combine it with a foreign capture on another stream (e.g. a default
-``torch.cuda.graph``), which it cannot detect and whose capture the sync would
-invalidate.
+The same calls outside a capture return without blocking the host. Results are ordered by
+the Warp stream they were launched on: ``.numpy()``, later Warp launches and torch on its
+default stream all see finished data. A consumer on a different stream (for example a
+torch side stream) must order itself explicitly, e.g. with ``wp.synchronize_device()`` or
+a recorded ``wp.Event``. Benchmarks must synchronize before reading a timer. To debug
+asynchronous CUDA errors, set ``TRACKGEN_DEBUG_SYNC=1`` to make every library call block
+on its stream; it is skipped while that stream (or a Warp capture on the device) is
+capturing. Do not combine it with a foreign capture on another stream (e.g. a default
+``torch.cuda.graph``), which it cannot detect and whose capture the wait would invalidate.
 
-Performance Notes
-------------------
+.. _capture-rules:
 
-At large batch sizes the pipeline is compute-bound (XPBD relaxation dominates).
-The CUDA graph's benefit is a single, GPU-resident, deployable unit — not a
-speedup over eager execution. Representative replay times at ``E=8192``:
+Rules for recording into your graph
+-----------------------------------
+
+These rules hold for every generator, course and utility (:ref:`upgrading-capture` lists
+what changed from 0.1).
+
+- **Build outside, record inside.** Generators, courses and utilities are constructed
+  outside any capture (construction allocates and runs a real pass; inside a capture it
+  raises ``CaptureError``). Bind your buffers outside too.
+- **The stream decides.** A call is recorded when the stream it resolves is capturing. A
+  plain ``wp.ScopedCapture(device)`` captures Warp's current stream, which is what a call
+  without ``stream=`` resolves to, and inside ``torch.cuda.graph(g)`` torch's capture
+  stream is adopted automatically. When you capture a side stream, pass it
+  (``gen.generate(stream=s)``) or wrap the calls in ``LaunchContext(device, s).scope()``.
+  A call that resolves to a stream that is NOT capturing runs there, and is silently
+  missing from your graph. A generator or course built with ``stream=s`` runs on ``s`` by
+  default: pass the capturing stream when you record it.
+- **Seeds and epochs are read live.** Every replay generates from the current seeds and
+  epochs (``gen.seeds``). Reseed between replays by writing the seed array in place (the
+  array you passed as ``seeds=``, or ``rng.set_seeds_warp(new_seeds, None)``), or record
+  ``generate(advance=True)``: each replay then advances every env's epoch on device and
+  builds a new batch, with no host work between replays.
+- **Host values are frozen.** Python scalars and Python-side state are baked in at record
+  time (``course.generate(seeds=42)`` included); anything that must change between replays has
+  to be device data, written in place.
+- **Keep everything alive.** The graph reads the buffers of the generator, the course and
+  the arrays you bound; :ref:`capture-lifetime` says who keeps them alive.
+- **Only recordable generators.** A generator with a step that runs on the host (a plugin
+  registered with ``capturable=False``) raises ``NotCapturableError`` before launching
+  anything; build its pipeline with a :term:`PipelineSpec` with
+  ``require_caller_capturable=True``
+  to have that refused at construction instead. A generator plugin written for the 0.1
+  plugin interface (no ``accepts_ctx=True``) can only be recorded on Warp's current
+  stream (:ref:`plugin-abis`).
+
+.. _capture-requirements:
+
+What makes a call recordable
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The library holds these for every built-in generator, course and utility:
+
+- **No host synchronization.** No call host-synchronizes or reads device data back:
+  syncs are illegal inside a capture, and the stream (or the graph) already orders the
+  launches. ``TRACKGEN_DEBUG_SYNC=1`` adds a wait for debugging, skipped while the stream
+  is capturing. A step that runs on the host is the exception: it runs outside every
+  capture (:ref:`cuda-graph-host`).
+- **Iterative steps have a fixed bound.** A loop with a data-dependent stop runs a fixed
+  number of iterations on device, each env stopping once it converges, never a host-side
+  ``while`` (:ref:`cuda-graph-bounded`).
+- **No allocation.** Nothing allocates on a ``generate()`` / ``enqueue()`` path, with or
+  without ``advance`` and ``mask``, nor in ``SeedState.advance()`` / ``set()`` /
+  ``reset_epoch()``: every buffer is allocated at construction. Recording works with
+  Warp's mempool disabled.
+- **Stable addresses.** The seed array, the epochs, the result's ``generation``,
+  ``inputs["regen_mask"]`` and a generator's dynamic-parameter and input arrays keep
+  their addresses; a replay reads their current contents on device. A ``mask=`` array is
+  recorded by pointer: rewrite it in place.
+- **Device-side counts.** Each track's ``count[e]`` is device data, and the kernels that
+  depend on it keep static launch dimensions through ``N_max``.
+- **Choices made at construction.** Which generator and which stages run are decided at
+  construction, and the generator copies its config then, so a recorded graph cannot
+  drift.
+
+.. _capture-lifetime:
+
+Lifetime
+~~~~~~~~
+
+A ``wp.Graph`` keeps its kernel modules alive, not the buffers its nodes read and write.
+Who keeps those buffers alive depends on the capture:
+
+- **A capture Warp registered** (``wp.ScopedCapture``, ``wp.capture_begin`` including
+  ``external=True``, or ``track_gen.interop.torch.registered()`` inside a
+  ``torch.cuda.graph``). A recorded ``generate()`` / ``enqueue()`` attaches the
+  generator to the resulting ``wp.Graph``, so its buffers live as long as the graph.
+  Recording any course call (``step()``, ``reset()``, ``regenerate()``, ``generate()``,
+  ``enqueue_generate()``) attaches the course, and with it the generator, every
+  component and every bound array, plus the arrays the recorded call reads that the
+  course does not own: the binding ``step()`` read (after a rebind the course drops its
+  references to the old arrays; the graph keeps them) and a ``mask`` / ``seeds`` array
+  you passed. Drop every reference, or rebind, and the graph still finds every buffer it
+  reads.
+- **A CPU graph** (``wp.ScopedCapture("cpu")``) keeps the arrays its launches touch by
+  itself: the course object is released, the arrays live as long as the graph.
+- **A plain** ``torch.cuda.graph`` is not seen by Warp. Keep the generator or course
+  (and the masks and seed arrays you passed) alive for as long as you replay the graph,
+  or tie them to it: ``track_gen.interop.torch.retain(g, course, mask, ...)`` stores
+  strong references on the torch graph object ``g``. Inside
+  ``track_gen.interop.torch.registered(graph=g)`` the capture is registered with Warp, so
+  recorded calls attach as above, and the registration's Warp graph object is retained on
+  ``g`` when the block exits.
+
+.. _capture-threads:
+
+Threads
+~~~~~~~
+
+Built-in generators take no process-wide lock: each records its own graph on a private
+stream, so independent generators on different threads run concurrently. Each generator
+(and each course) is single-writer, though: do not run the same instance from two
+threads, or on two streams, at once; use one instance per concurrent generator.
+
+The exception is a generator built on a plugin written for the 0.1 plugin interface (no
+``accepts_ctx=True``). That plugin launches on Warp's current stream, which every thread
+shares, so every eager run of it holds a process-wide lock, and a recordable one also
+holds it while it records its own graph, which records that shared stream. Until every
+such generator has recorded its own graph, calls of other generators that resolve to
+Warp's current stream (the default) take the lock too, so they cannot mistake that
+recording for their caller's capture. Calls on any other stream (``stream=``, a
+constructor ``stream=``, a scope) stay lock-free. A non-recordable plugin of that kind
+holds the lock only while its host step runs.
+
+Two caveats apply to multi-threaded programs:
+
+- While a generator records its own graph (once, on its first ``generate()`` on
+  ``cuda``), Warp refuses ``wp.synchronize()``, ``wp.synchronize_device()`` and
+  ``wp.synchronize_stream()`` on that device from every thread. ``generate()``'s own wait
+  is not affected. If other threads call those functions, run each generator's first
+  ``generate()`` before starting them.
+- The private stream that recording uses is a blocking stream. Work that another thread
+  issues on the legacy default stream during that one-time recording can invalidate it,
+  so the library retries the recording once before raising.
+
+.. _capture-troubleshooting:
+
+Troubleshooting capture
+-----------------------
+
+:ref:`api-errors` lists the exception and warning classes. Every capture error derives
+from ``track_gen.exec.CaptureError``, a ``RuntimeError``.
 
 .. list-table::
    :header-rows: 1
+   :widths: 30 35 35
 
-   * - Generator
-     - Replay time (CUDA)
-   * - ``"bezier"``
-     - 93.2 ms
-   * - ``"checkpoint"``
-     - 92.2 ms
-   * - ``"hull"``
-     - 98.9 ms
-   * - ``"polar"``
-     - 80.8 ms
-   * - ``"voronoi"``
-     - 81.3 ms
+   * - Symptom
+     - Cause
+     - Fix
+   * - ``CaptureError``: "... must be constructed (prepared) outside any ... capture"
+     - a generator, ``Program`` or course was constructed inside a capture (a CPU capture
+       included)
+     - construct it before beginning the capture
+   * - ``CaptureError``: "... was built with stream= ... and is called while another
+       stream is capturing"
+     - a course built with ``stream=s`` was called without ``stream=`` while another
+       stream records
+     - pass ``stream=`` (the capturing stream, or ``"torch"``) to every recorded call
+   * - ``CaptureError``: "... was built with prepare=False and is being recorded"
+     - the course (or ``Program``) never ran its warm-up
+     - call ``course.prepare()`` outside the capture first
+   * - ``CaptureError`` naming the components, at ``regenerate(mask=...)``
+     - a component's ``on_generate`` or ``reset`` uses an operation a conditional body
+       cannot hold (a copy to or from pageable host memory, an event, another stream)
+     - find it with ``check_component`` (:ref:`kit-check-component`); record the call
+       inside ``track_gen.exec.unconditional()``
+   * - ``CaptureError`` from ``Track.clone()`` / ``GateSequence.clone()``
+     - ``clone()`` allocates
+     - clone outside the capture, or ``copy_from`` into a result preallocated with
+       ``alloc()``
+   * - ``CaptureError`` from ``track_gen.interop.torch.registered()``
+     - it was entered outside a ``torch.cuda.graph`` capture
+     - enter it inside ``with torch.cuda.graph(g):``
+   * - ``NotCapturableError``
+     - the generator has a step that runs on the host (a plugin registered with
+       ``capturable=False``); nothing was launched
+     - call it outside the capture (it runs eagerly), or use a recordable generator;
+       ``PipelineSpec(require_caller_capturable=True)`` refuses such a pipeline at
+       construction
+   * - ``LegacyPluginStreamError``
+     - a plugin written for the 0.1 plugin interface (no ``accepts_ctx=True``) was
+       recorded on a stream other than Warp's current one (a side stream, a plain
+       ``torch.cuda.graph``)
+     - capture Warp's current stream (a plain ``wp.ScopedCapture(device)``), or port the
+       plugin (:ref:`plugin-abis`)
+   * - ``RebindAfterCaptureWarning``
+     - ``bind`` replaced an array that a recorded ``step()`` / ``query()`` /
+       ``update()`` reads: the graph still reads the old one
+     - record the graph again after rebinding; filter the warning when you re-record on
+       purpose
+   * - A replay does not update some result
+     - that call resolved a stream that was not capturing, so it ran once, eagerly,
+       outside your graph
+     - pass ``stream=s``, or enter ``LaunchContext(device, s).scope()``, when you capture
+       a side stream
+   * - Every replay builds the same courses
+     - ``generate(seeds=<int>)`` was recorded: the ``int`` is baked into the graph; or
+       the seeds were never rewritten
+     - record ``regenerate(advance=True)``, or ``generate(seeds=seed_buf)`` with a stable
+       array you rewrite in place
+   * - A crash or garbage after deleting the course, replaying a ``torch.cuda.graph``
+     - Warp does not see torch graphs, so nothing kept the buffers alive
+     - ``track_gen.interop.torch.retain(g, course)``, or record inside
+       ``registered(graph=g)`` (:ref:`capture-lifetime`)
+   * - A masked regeneration costs a full generation on every replay of a torch graph
+     - a torch capture records the masked body unconditionally
+     - record it inside ``track_gen.interop.torch.registered(conditional=True)``; for
+       your own ``wp.ScopedCapture`` of torch's current stream, inside
+       ``track_gen.exec.conditional()`` (:ref:`rl-cost`)
+   * - ``cudaErrorStreamCaptureUnjoined`` at ``regenerate(mask=...)``; the capture is
+       invalidated
+     - a side stream forked in your capture is not joined yet, and the conditional node
+       restarts the capture
+     - join it first, or record the call inside ``track_gen.exec.unconditional()``
+   * - Adding the step graph as a CUDA child graph fails
+     - it holds a conditional node (a masked regeneration, ``repulsive``'s loop)
+     - record it inside ``track_gen.exec.unconditional()``
+   * - A torch op fails to capture after a conditional regeneration
+     - torch allocated after the node under ``registered(conditional=True)``
+     - compute torch values before the regeneration, or into preallocated tensors
 
-For high-throughput scenarios where relaxation is the bottleneck, the advanced
-XPBD separation cache (``relax_sep_every``, ``relax_sep_cache_slots``,
-``relax_sep_cache_skin``) can reduce per-replay time significantly. The
-recommended starting point from the benchmark is:
+Performance notes
+-----------------
 
-.. code-block:: python
+At large batch sizes the generation is compute-bound (the relaxation dominates). A CUDA
+graph's benefit is a single, GPU-resident, deployable unit, not a speedup over eager
+execution. Replay time per generation (``gen_ms_per_call``, milliseconds) and yield at
+``E = 8192``:
 
-   config = TrackGenConfig(
-       num_envs=E,
-       half_width=0.03,
-       N_max=512,
-       relax_iters=150,      # the long budget is what makes relax_sep_every=40 safe
-       relax_sep_every=40,
-       relax_sep_cache_slots=16,
-       relax_sep_cache_skin=0.0,
-       device="cuda",
-   )
+.. csv-table:: Generation cost on CUDA, ``E = 8192``
+   :file: ../_data/cost-cuda-e8192.csv
+   :header-rows: 1
 
-On the benchmark machine this setting achieved roughly ``0.066 s`` per replay
-versus ``0.366 s`` for the dense baseline at ``E=8192`` (``relax_iters=150``). Keep
-``relax_sep_every`` well below ``relax_iters``; see :doc:`/configuration/tuning`.
-Validate yield in your target regime before relying on the cache.
+The machine and the date of these numbers:
 
-CPU Fallback
--------------
+.. include:: ../_data/machine-cuda.txt
 
-On the ``cpu`` device the pipeline runs eagerly on every ``generate()`` call —
-there is no CUDA graph capture. The same ``TrackGenerator`` API works on both
-devices; only the device string in ``TrackGenConfig`` needs to change.
+:doc:`/contributing/rendering-assets` gives the command that regenerates the table.
 
-.. code-block:: python
+When the relaxation is the bottleneck, the separation cache (``relax_sep_every``,
+``relax_sep_cache_slots``, ``relax_sep_cache_skin``) can cut the replay time
+substantially; the separation-cache recipe in :doc:`/configuration/tuning` gives a starting
+configuration and its measured effect. Validate the yield in your own regime before
+relying on it.
 
-   config_cpu = TrackGenConfig(num_envs=E, half_width=0.03, N_max=512, device="cpu")
-   rng_cpu    = PerEnvSeededRNG(seeds=0, num_envs=E, device="cpu")
-   gen_cpu    = TrackGenerator(config_cpu, rng_cpu)
-   track_cpu  = gen_cpu.generate()   # eager, no graph
+CPU fallback
+------------
+
+On the ``cpu`` device every ``generate()`` runs the generation eagerly; there is no CUDA
+graph, and ``gen.graph`` stays ``None``. The same API works on both devices: only the
+``device`` changes. A ``wp.ScopedCapture(device="cpu")`` records library calls and
+``wp.capture_launch`` replays them, so every recording on this page also runs on a CPU
+machine (a masked regeneration then always runs in full, :ref:`rl-cost`).

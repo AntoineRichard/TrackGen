@@ -33,7 +33,7 @@ class HeightField:
     lo, hi : wp.array
         ``[E]`` vec2f world AABB corners; texel (x, y) center is at
         ``lo + ((x, y) + 0.5) / res * (hi - lo)``. ``(-1, -1)`` / ``(1, 1)`` for
-        degenerate and (roadmap PR14) invalid envs.
+        degenerate and invalid envs.
     res : int
         Grid resolution per side.
     """
@@ -44,6 +44,8 @@ class HeightField:
     res: int
 
     def clone(self) -> "HeightField":
+        """A deep copy: new ``height``, ``lo`` and ``hi`` arrays with the same values
+        (a snapshot that the next ``bake()`` does not overwrite)."""
         return HeightField(height=wp.clone(self.height), lo=wp.clone(self.lo),
                            hi=wp.clone(self.hi), res=self.res)
 
@@ -108,7 +110,7 @@ class HeightFieldBaker:
     after every regeneration (kernel launches only; the facade does this in
     its captured refresh when ``CourseConfig.heightfield_resolution`` is
     set). An env with ``valid[e] == 0`` bakes NaN heights with the box
-    ``(-1, -1)-(1, 1)``: the bake of a poisoned env (roadmap PR14).
+    ``(-1, -1)-(1, 1)``: the bake of a poisoned env.
     """
 
     #: The topologies this component supports (closed loops only in 0.x).

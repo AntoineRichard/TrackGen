@@ -1,4 +1,4 @@
-"""The track and gate pipelines as data (preview, roadmap PR10 / PR11).
+"""The track and gate pipelines as data.
 
 A :class:`PipelineSpec` lists the stages of the track pipeline in order
 (:class:`StageRef`: kind, name, params) over one :class:`BatchSpec`. :func:`build` plans
@@ -23,20 +23,21 @@ stations), an ``order`` stage, the sphere solve, an ``elevation`` stage (the tra
 rewired to the gates), the lift, tangents, frames and ``validity.gate_default``
 (:data:`GATE_FAIL_BITS`).
 
-Roadmap PR13b: ``build(spec, out=...)`` (and the facades' ``out=``) writes into a
-caller-owned result, a :meth:`view <track_gen.Track.view>` of a larger one included
+``build(spec, out=...)`` (and the facades' ``out=``) writes into a
+caller-owned result, a :meth:`view <track_gen.results.Track.view>` of a larger one included
 (mixed batches); ``randomize.uniform`` stages (``presets.track(randomize=...)``) draw
 dynamic params per env in the graph; ``generator="external"`` ingests caller-provided
 centerlines through ``Program.inputs`` (:class:`InputInfo`), loaded with
 :func:`load_centerlines`.
 
-Roadmap PR15: :class:`Producer` documents the generator surface a ``Course`` drives
+:class:`Producer` documents the generator surface a ``Course`` drives
 (``result``, ``layout``, ``enqueue(ctx, *, advance, mask)``, and optional members): a
 ``Program`` implements it, and so can a third-party producer (e.g. a mixed batch of
 generators writing views of one result; ``MixedBatch`` itself is not shipped).
 
-Preview: names and signatures may change before 1.0. ``import track_gen`` does not
-import this package.
+This package is public API under the package's deprecation policy (a deprecated name
+warns and keeps working through 0.x; see :ref:`api-reference`). ``import track_gen``
+does not import it.
 """
 from __future__ import annotations
 

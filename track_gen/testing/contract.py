@@ -5,14 +5,15 @@ library call it makes) must be recordable into a caller's CUDA graph. On a GPU t
 checked by capturing it (:mod:`track_gen.testing.capture`). Without one, the guards here
 check the *call shape* instead, on any device:
 
-- :func:`no_host_sync`: no ``wp.synchronize*``, no host readback
+- :func:`~track_gen.testing.no_host_sync`: no ``wp.synchronize*``, no host readback
   (``wp.array.numpy()`` / ``wp.array.list()``, ``np.asarray`` of a CPU array) and no
   ``wp.copy`` between two devices;
-- :func:`no_allocation`: no Warp array allocation (``wp.empty`` / ``zeros`` / ``full``
-  / ``ones`` / ``clone`` / ``array(data)`` / ``empty_like`` / ``zeros_like`` / ..., seen
-  at Warp's allocation chokepoint, so every path is covered) and no native Warp object
-  (``wp.HashGrid`` and ``HashGrid.reserve``, ``wp.Mesh``, ``wp.Volume``, ``wp.Bvh``);
-- :func:`stream_explicit`: every ``wp.launch`` / ``wp.launch_tiled`` /
+- :func:`~track_gen.testing.no_allocation`: no Warp array allocation (``wp.empty`` /
+  ``zeros`` / ``full`` / ``ones`` / ``clone`` / ``array(data)`` / ``empty_like`` /
+  ``zeros_like`` / ..., seen at Warp's allocation chokepoint, so every path is
+  covered) and no native Warp object (``wp.HashGrid`` and ``HashGrid.reserve``,
+  ``wp.Mesh``, ``wp.Volume``, ``wp.Bvh``);
+- :func:`~track_gen.testing.stream_explicit`: every ``wp.launch`` / ``wp.launch_tiled`` /
   ``wp.Launch.launch`` / ``wp.copy`` issued from the probed modules passes ``stream=``
   (also when it reaches Warp through a Warp utility the probed code called), and none
   of them calls ``wp.array.assign()`` / ``zero_()`` / ``fill_()`` (their copy or memset
@@ -21,28 +22,31 @@ check the *call shape* instead, on any device:
   ``LaunchContext`` passes) and a launch through a context other than the call's are
   only caught by recording into a real capture on CUDA
   (:mod:`track_gen.testing.capture`);
-- ``capture`` (in :func:`hot_path_guard`): no nested ``wp.ScopedCapture`` /
-  ``capture_begin`` / ``capture_end`` / ``capture_launch`` / ``capture_if`` /
-  ``capture_while`` (a graph launch cannot be recorded into another capture).
+- ``capture`` (in :func:`~track_gen.testing.hot_path_guard`): no nested
+  ``wp.ScopedCapture`` / ``capture_begin`` / ``capture_end`` / ``capture_launch`` /
+  ``capture_if`` / ``capture_while`` (a graph launch cannot be recorded into another
+  capture).
 
-:func:`hot_path_guard` combines all four. Each returns a :class:`HotPathGuard`, a
-context manager that yields itself::
+:func:`~track_gen.testing.hot_path_guard` combines all four. Each returns a
+:class:`HotPathGuard`, a context manager that yields itself::
 
+    from track_gen import TrackGenerator
+    from track_gen.pipeline import presets
     from track_gen.testing.contract import hot_path_guard
 
-    gen = TrackGenerator(cfg, rng)          # construction may allocate and sync
-    with hot_path_guard(modules=("track_gen", "acme_tracks")):
-        gen.generate()                      # raises HotPathViolation on the first breach
+    gen = TrackGenerator(presets.track(num_envs=64, device="cpu"))  # may allocate, sync
+    with hot_path_guard(modules=("track_gen", "acme_tracks")):      # + your package
+        gen.generate()              # raises HotPathViolation on the first breach
 
 With ``strict=True`` (the default) a violating call raises :class:`HotPathViolation`
 before it runs, and the block also raises on exit if a violation was recorded (so a
 broad ``except`` in the code under test cannot hide one). With ``strict=False`` the guard
-only records: every call goes through and :attr:`HotPathGuard.violations` lists them.
+only records: every call goes through and ``HotPathGuard.violations`` lists them.
 
 The guards patch Warp's entry points (wherever a module binds them, so ``from warp
 import launch`` is seen too) for as long as one is active, and dispatch on a context
 variable: calls made from other threads, or from a context without a guard, go straight
-to Warp and are not seen. While :func:`no_host_sync` is active the
+to Warp and are not seen. While :func:`~track_gen.testing.no_host_sync` is active the
 ``TRACKGEN_DEBUG_SYNC`` debug sync is switched off (it is a deliberate, opt-in host
 sync); the switch is the environment variable, so it is off for the whole process until
 the guard exits.
@@ -55,7 +59,7 @@ The host poll of :meth:`LaunchContext.bounded_loop
 <track_gen.exec.LaunchContext.bounded_loop>` (its lowering (a)) is the one sanctioned
 eager readback of a capturable path: it runs only on CPU outside every capture (or under
 the library's private forced-lowering seam). The guard lets it through, and lists it in
-:attr:`HotPathGuard.sanctioned`, only when it comes from the library's poll function
+``HotPathGuard.sanctioned``, only when it comes from the library's poll function
 called by the loop's window driver. A HOST stage's host operations
 (:class:`~track_gen.exec.HostOps`, ``ctx.host()``) are sanctioned the same way: the syncs
 and readbacks the ``HostOps`` methods make themselves pass and are listed in

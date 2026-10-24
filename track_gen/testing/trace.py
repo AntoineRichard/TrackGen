@@ -1,29 +1,35 @@
 """Record the device work a call emits, and compare it across calls.
 
-:func:`trace_launches` records every ``wp.launch`` / ``wp.launch_tiled`` /
-``wp.Launch.launch`` and ``wp.copy`` / ``wp.array.assign`` issued in a block (by any code
-outside the ``warp`` package, in the current context) as a :class:`LaunchRecord`: the
-kernel, the launch dimensions, the stream handle passed, the pointer of every array
-argument and the value of every other argument (the fields of a ``wp.struct`` argument
-included). Two properties
+:func:`~track_gen.testing.trace_launches` records every ``wp.launch`` /
+``wp.launch_tiled`` / ``wp.Launch.launch`` and ``wp.copy`` / ``wp.array.assign`` issued
+in a block (by any code outside the ``warp`` package, in the current context) as a
+:class:`LaunchRecord`: the kernel, the launch dimensions, the stream handle passed, the
+pointer of every array argument and the value of every other argument (the fields of a
+``wp.struct`` argument included). Two properties
 of a capturable hot path follow from that record:
 
-- **static topology** (:meth:`LaunchTrace.diff`, :func:`assert_same_topology`): a CUDA
-  graph replays the launches it recorded, so two calls with the same inputs must emit
-  the same launches, in the same order, with the same dimensions, buffers and scalar
-  arguments; a launch sequence that depends on a Python counter, on data read back or
-  on an allocation is not captured faithfully;
-- **owned buffers** (:meth:`LaunchTrace.foreign_pointers`,
-  :func:`assert_pointers_within`): every pointer must fall inside a buffer the producer
-  owns (its result, scratch, seed and parameter buffers, collected with
-  :func:`buffers_of`): a buffer allocated per call, or shared through a module global,
-  breaks a recorded graph or two producers running side by side. Ownership is also
-  checked from the other side by the conformance kit: two producers built alike must
-  launch on disjoint buffers.
+- **static topology** (:meth:`~track_gen.testing.LaunchTrace.diff`,
+  :func:`~track_gen.testing.assert_same_topology`): a CUDA graph replays the launches it
+  recorded, so two calls with the same inputs must emit the same launches, in the same
+  order, with the same dimensions, buffers and scalar arguments; a launch sequence that
+  depends on a Python counter, on data read back or on an allocation is not captured
+  faithfully;
+- **owned buffers** (:meth:`~track_gen.testing.LaunchTrace.foreign_pointers`,
+  :func:`~track_gen.testing.assert_pointers_within`): every pointer must fall inside a
+  buffer the producer owns (its result, scratch, seed and parameter buffers, collected
+  with :func:`~track_gen.testing.buffers_of`): a buffer allocated per call, or shared
+  through a module global, breaks a recorded graph or two producers running side by
+  side. Ownership is also checked from the other side by the conformance kit: two
+  producers built alike must launch on disjoint buffers.
 
-Example::
+Example (on CPU, where every generation runs eagerly)::
 
-    gen = TrackGenerator(cfg, rng)
+    from track_gen import TrackGenerator
+    from track_gen.pipeline import presets
+    from track_gen.testing import (assert_pointers_within, assert_same_topology,
+                                   buffers_of, trace_launches)
+
+    gen = TrackGenerator(presets.track(num_envs=64, device="cpu"))
     with trace_launches() as first:
         gen.generate()
     with trace_launches() as second:
@@ -249,6 +255,7 @@ class BufferSet:
         return len(self._entries)
 
     def labels(self) -> list[str]:
+        """The label of every buffer in the set, in address order."""
         return [e[2] for e in self._entries]
 
     def __repr__(self) -> str:
@@ -506,10 +513,18 @@ def _short(values: tuple, n: int = 4) -> str:
 
 
 def trace_launches(*, include_warp: bool = False) -> LaunchTrace:
-    """A :class:`LaunchTrace` to use as a context manager (it yields itself)::
+    """A :class:`LaunchTrace` to use as a context manager (it yields itself). Calls Warp
+    makes internally, such as the copy inside ``wp.clone``, are left out unless
+    ``include_warp=True``::
 
+        from track_gen import TrackGenerator
+        from track_gen.pipeline import presets
+        from track_gen.testing import trace_launches
+
+        gen = TrackGenerator(presets.track(num_envs=64, device="cpu"))
         with trace_launches() as trace:
             gen.generate()
+        print(len(trace.records), "launches and copies")
     """
     return LaunchTrace(include_warp=include_warp)
 

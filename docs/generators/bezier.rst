@@ -7,11 +7,11 @@ their centroid to form a simple star-shaped polygon, and assembles a closed cubi
 Bézier spline through those corners.  Handle lengths are proportional to
 ``rad * chord`` and adaptively clamped so that no handle overshoots a nearby corner.
 Its two handle knobs (``rad``, ``handle_clamp_frac``), its corner count
-(``min_num_points``) and its size (``size``) are per-env (dynamic) parameters:
+(``min_num_points``) and its size (``size``) are per-:term:`env` (:term:`dynamic
+<dynamic field>`) parameters:
 ``randomize=`` draws the ``float32`` ones and a curriculum can write all four from its own
 graph (`Per-env (dynamic) parameters`_). The older per-environment style draw
-(``style_sampling``) is deprecated since 0.2.0.dev5 (`Style sampling (deprecated) and
-its migration`_).
+(``style_sampling``) is deprecated (`Style sampling (deprecated) and its migration`_).
 Any smooth curve that still self-crosses after clamping is rescued by its provably
 simple corner polygon, which the downstream XPBD solver re-rounds.
 
@@ -235,8 +235,8 @@ checked when the ``TrackGenerator`` is constructed, and only for ``generator="be
     Opt-in per-environment Bézier style randomisation (default ``False``).  When
     ``True``, each environment draws its own ``rad``, ``scale``, and
     ``handle_clamp_frac`` from the ``*_range`` fields, so a single batch spans a
-    family of styles. **Deprecated** since 0.2.0.dev5 (a ``DeprecationWarning`` when the
-    generator is built; removed in 1.0, roadmap PR16): use ``randomize=`` on ``size``,
+    family of styles. **Deprecated** (a ``DeprecationWarning`` when the generator is
+    built; removed in 1.0): use ``randomize=`` on ``size``,
     ``rad`` and ``handle_clamp_frac`` (`Style sampling (deprecated) and its
     migration`_).
 
@@ -381,7 +381,7 @@ count adds or drops corners of one fixed set.
 - ``set`` takes a Python ``int`` or a NumPy integer: it refuses a scalar outside
   ``[2, max_num_points]`` (``ValueError`` naming ``max_num_points``), any ``float``
   (``9.0`` included) and a ``bool``; construction still converts a value ``int()``
-  accepts (a configured ``9.0`` from YAML, a NumPy integer, ``"9"``), as before.
+  accepts (a configured ``9.0`` from YAML, a NumPy integer, ``"9"``).
 - ``randomize={"generator.min_num_points": ...}`` raises ``PlanError``: ``randomize``
   draws ``float32`` fields only in 0.x (the count is already a per-env draw).
 - The ``bezier`` and ``hull`` **gate** generators keep a static ``min_num_points``: it is
@@ -392,7 +392,7 @@ count adds or drops corners of one fixed set.
 ``num_points_per_segment`` (sizes the dense buffer and its loops),
 ``min_point_distance`` (sets the corner grid on the host), ``edgy`` (turned into
 ``atan(edgy) / pi + 0.5`` on the host in double precision, which a kernel cannot
-reproduce bit for bit: planned for PR16), the ``style_sampling`` fields (a Python branch
+reproduce bit for bit), the ``style_sampling`` fields (a Python branch
 and host ranges) and the core ``scale`` (per-env: ``size``).
 
 .. _bezier-style-vs-randomize:
@@ -400,76 +400,21 @@ and host ranges) and the core ``scale`` (per-env: ``size``).
 Style sampling (deprecated) and its migration
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-``style_sampling`` is **deprecated** since 0.2.0.dev5 and will be removed in 1.0 (roadmap
-PR16; ``Course`` accepts a spec or a generator since 0.2.0.dev6). Building a ``bezier`` generator
-with it emits one ``DeprecationWarning`` per build, attributed to your code (not one per
-generation; ``TrackGenConfig(...)`` itself does not warn). Python's default filters
-hide a ``DeprecationWarning`` attributed to an imported module (a gym env, a training
-package) rather than the script you run: run your tests with
-``-W default::DeprecationWarning`` to see it. Its three ranges map to
-``randomize=`` on dynamic fields:
+``style_sampling`` is **deprecated** and goes at 1.0: draw ``size``, ``rad`` and
+``handle_clamp_frac`` with ``randomize=`` instead (`Per-env (dynamic) parameters`_).
+:ref:`upgrading-style-sampling` maps each range to its ``randomize=`` entry, shows the
+before and after, and covers a ``Course``. Building a ``bezier`` generator with it emits
+one ``DeprecationWarning`` per build, attributed to your code.
 
-.. list-table::
-   :header-rows: 1
-   :widths: 40 60
-
-   * - ``style_sampling`` range
-     - ``randomize=`` entry
-   * - ``scale_range=(a, b)``
-     - ``"generator.size": (a / scale, b / scale)`` (inside ``[0.1, 10]``)
-   * - ``rad_range=(a, b)``
-     - ``"generator.rad": (a, b)``
-   * - ``handle_clamp_frac_range=(a, b)``
-     - ``"generator.handle_clamp_frac": (a, b)``
-
-.. code-block:: python
-
-   # before (deprecated)
-   TrackGenConfig(style_sampling=True, scale_range=(0.8, 1.2), rad_range=(0.1, 0.35),
-                  handle_clamp_frac_range=(0.3, 0.9))
-
-   # after: the same distributions, other draws (rad is inert in the envs where its
-   # draw lands at or above the clamp's, see above)
-   spec = presets.track(num_envs=E, device=device,
-                        randomize={"generator.size": (0.8, 1.2),
-                                   "generator.rad": (0.1, 0.35),
-                                   "generator.handle_clamp_frac": (0.3, 0.9)})
-
-   # after, for a pipeline built from a config: style_sampling=False, explicitly
-   cfg = TrackGenConfig(style_sampling=False, num_envs=E, device=device)
-   gen = TrackGenerator(
-       legacy.to_pipeline_spec(cfg).with_randomize(
-           {"generator.size": (0.8, 1.2), "generator.rad": (0.1, 0.35),
-            "generator.handle_clamp_frac": (0.3, 0.9)}),
-       rng)
-
-- **Exact at equal values, not per seed.** Writing each env's style draw into the
-  dynamic fields (``size[e]`` the ``scale_range`` draw at ``scale = 1``) gives the
-  style run's bytes. The randomizers draw from the same uniform distributions but on
-  another random stream, so each seed gets a different track: fixed evaluation sets
-  built with ``style_sampling`` need re-baselining.
-- **Do not combine them.** With ``style_sampling`` and ``scale_range`` set, a
-  ``generator.size`` randomizer draws a second per-env size that multiplies the first;
-  the build emits a ``UserWarning`` (set ``style_sampling=False``).
-- **Course**: since 0.2.0.dev6 build it from the randomized spec of a config with
-  ``style_sampling=False``, ``Course.track(legacy.to_pipeline_spec(cfg).with_randomize(
-  {"generator.size": (a / scale, b / scale)}), checkpoint_spacing=...)``
-  (:doc:`/utilities/composing-a-course`). A
-  ``CourseConfig`` course takes no ``randomize=``: there, draw the sizes yourself and
-  write them, ``course.generator.params["generator"].set("size", sizes)`` (an ``[E]``
-  ``float32`` array), before ``course.regenerate()``. At flat elevation the default
-  checkpoint capacity holds every size since 0.2.0.dev6 (:ref:`tuning-size-utilities`).
-
-Until it is removed, ``style_sampling`` keeps its bytes, and ``size`` composes with it
-(the corners get ``scale[e] * size[e]``). Under ``style_sampling=True`` a knob with a
-range is **drawn by the style kernel**: its
-parameter array holds each env's draw after a generation (read it to log what each env
-was built with), ``gen.params["generator"].drawn`` maps it to the stage's own id
+Until it is removed, ``style_sampling`` keeps its outputs, and ``size`` composes with it
+(the corners get ``scale[e] * size[e]``; combining it with a ``generator.size``
+randomizer emits a ``UserWarning``). Under ``style_sampling=True`` a knob with a range is
+**drawn by the style kernel**: its parameter array holds each env's draw after a
+generation, ``gen.params["generator"].drawn`` maps it to the stage's own id
 (``"generator"``), ``set`` on it raises ``ValueError`` (``generator.rad is drawn every
 generation by the generator's style_sampling (rad_range); set rad_range=None to set
 it``), and a randomizer on it is a ``PlanError``. A knob whose range is ``None`` stays an
-ordinary dynamic field:
-``set`` and ``randomize=`` work on it.
+ordinary :term:`dynamic field`: ``set`` and ``randomize=`` work on it.
 
 What Makes It Distinct
 ----------------------
@@ -499,7 +444,7 @@ The Bezier generator is the **default** and most knob-rich of the six generators
   bounded-turn path through radial checkpoints and produces organically curving loops —
   the Bézier generator is purely geometric and not trajectory-based.
 
-- **Lowest relaxation burden at the default config.** At the default
+- **Low relaxation burden at the default config.** At the default
   ``handle_clamp_frac=0.4`` (matching ``rad=0.4``) and fat-band settings the valid
   yield is approximately 99.9 % end-to-end, and the generator produces consistently
   smooth, well-spaced centerlines before relaxation begins.

@@ -10,8 +10,8 @@ Points are flat ``wp.array`` of length ``E*N`` (or ``E*M``, ``E*P``). Internal
 generation and relaxation kernels stage them as ``wp.vec2f``; the public boundary
 arrays (``Track.center/outer/inner``, ``GateSequence.position`` …) surface as
 ``wp.vec3f`` after the 3D lift (``z=0`` for the planar track pipeline). Per-env scalars
-are ``[E]`` arrays. There are no nested lists or ragged tensors; every buffer is a
-dense, fixed-shape Warp array.
+are ``[E]`` arrays, one entry per :term:`env`. There are no nested lists or ragged
+tensors; every buffer is a dense, fixed-shape Warp array.
 
 Thread-per-element and ``e = tid // N``
 ----------------------------------------
@@ -23,8 +23,8 @@ environment as ``e = tid // N`` and its within-env index as ``i = tid % N``. Red
 Count-aware buffers
 --------------------
 
-Post-generation, ``n_max`` is the buffer stride and ``count[e]`` is env ``e``'s
-real-point count; padding slots ``i ≥ count[e]`` hold ``wp.nan``. Count-aware kernels:
+Post-generation, ``n_max`` (:term:`N_max`) is the buffer stride and ``count[e]`` is env
+``e``'s real-point count; padding slots ``i ≥ count[e]`` hold ``wp.nan``. Count-aware kernels:
 
 - Loop ``range(count[e])``.
 - Base their reads at ``e*n_max``.
@@ -89,7 +89,7 @@ and the fused ``_validity_k`` / ``gates`` all call the same helpers.
 Torch as the test oracle
 -------------------------
 
-The original torch implementation is **retained, but only as the verification oracle** and
+A torch implementation is kept **only as the verification oracle**; it
 lives under ``tests/_oracle/`` (importable by tests as ``tests._oracle.*``); it is **not**
 shipped as part of the ``track_gen`` package. The modules ``tests._oracle.geometry``,
 ``tests._oracle.inflation``, ``tests._oracle.generators``, and

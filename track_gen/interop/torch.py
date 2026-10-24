@@ -18,7 +18,26 @@ with Warp:
   with :func:`track_gen.exec.conditional`.)
 
 :func:`registered` registers torch's capture with Warp for the duration of a
-``with`` block; :func:`retain` ties Python objects to the torch graph's lifetime::
+``with`` block; :func:`retain` ties Python objects to the torch graph's lifetime (here
+``course`` is a bound ``Course`` and ``done`` your ``[E]`` int32 episode-end mask):
+
+.. snippet: cuda
+
+.. snippet: setup
+
+    import warp as wp
+    from track_gen.course import Course
+    from track_gen.pipeline import presets
+
+    E = 64
+    course = Course.track(presets.track(num_envs=E, device="cuda:0"), checkpoint_spacing=0.6)
+    course.bind(position=wp.zeros(E, dtype=wp.vec3f, device="cuda:0"))
+    done = wp.zeros(E, dtype=wp.int32, device="cuda:0")
+
+.. code-block:: python
+
+    import torch
+    import track_gen.interop.torch
 
     g = torch.cuda.CUDAGraph()
     with torch.cuda.graph(g):
@@ -26,6 +45,11 @@ with Warp:
             course.step()
             course.regenerate(mask=done, advance=True)
     track_gen.interop.torch.retain(g, course)   # keep the course's buffers alive with g
+
+.. snippet: after
+
+    g.replay()
+    torch.cuda.synchronize()
 
 This module imports torch lazily (only when a function is called).
 """

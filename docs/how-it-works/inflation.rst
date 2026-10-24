@@ -1,126 +1,116 @@
 Inflation — borders, validity, and the ``Track`` result
 =========================================================
 
-``inflate_warp(center, config, valid=None, count=None)`` is the final pipeline stage. It
-composes several sub-stages to produce the complete ``Track`` named-tuple from the relaxed
-centerline.
+*Inflation* is the tail of the track pipeline: the :term:`stages <stage>` after
+relaxation that turn the relaxed bead chain into the road band, judge it, and lift it to
+3D. In the default pipeline (:ref:`pipeline-stages-the-default-track-stages`) they are
+``uniform``, ``frames``, ``offset``, ``elevation``, ``validity`` and ``lift``.
 
 Composition
 -----------
 
-The function composes in order:
+In order, for every :term:`env`:
 
-1. ``resample_uniform`` — re-uniformize the relaxed bead chain so that frame and curvature
-   estimates are not biased by residual spacing irregularity.
-2. ``frame_curvature`` (``_frame_k``) — central-difference unit tangent, left-normal, and
-   Menger curvature at each bead.
-3. **Constant half-width offset** — ``offset`` (``_offset_build_k`` + ``_offset_assign_k``)
-   shifts every centerline point by ``±w`` along the normal. The outer border is chosen as
-   the larger-signed-area candidate, so the convention is consistent even for
-   counter-clockwise layouts.
-4. ``validity`` (``_validity_k``) — a single per-env kernel that combines all geometric
-   acceptance criteria (see below).
-5. ``_arclength_k`` — computes cumulative arc length along the centerline for each valid
-   env.
-6. Returns a ``Track`` named-tuple.
+1. ``uniform`` (``resample.uniform``: ``_resample_scan_k`` + ``_resample_lookup_k``)
+   re-uniformises the relaxed bead chain, so that frame and curvature estimates are not
+   biased by residual spacing irregularity (:doc:`resample`).
+2. ``frames`` (``_frame_k``, ``_arclength_k``, ``_winding_k``): central-difference unit
+   tangent, left normal and Menger curvature at each bead, the plan-view cumulative arc
+   length and loop length, and the signed winding.
+3. ``offset`` (``_offset_build_k`` + ``_offset_assign_k``) shifts every centerline point
+   by ``±w`` along the normal, ``w`` the point's half-width (``cl.half_width``). The outer
+   border is chosen as the larger-signed-area candidate, so the convention is consistent
+   for clockwise and counter-clockwise layouts.
+4. ``elevation`` writes the per-point altitude (nothing at the default ``flat``).
+5. ``validity`` (``_validity_k``): one per-env kernel that combines every geometric
+   acceptance criterion into the env's :term:`fail bits` (below).
+6. ``lift`` (``_lift_track_k``) builds the 3D ``Track`` arrays from the plan-view band
+   and the altitude.
 
-The offset, validity, and arclength stages are count-aware — they operate over each env's
-``count[e]`` real points. The fixed-N parity path is ``count[e] == N``.
+These stages are count-aware: they operate over each env's ``count[e]`` real points.
+``inflate_warp(center, config, ...)`` in
+``track_gen/_src/warp_pipeline.py`` is the same tail as one scalar composition; the
+pipeline does not call it, and the tests keep it as a byte-identity reference.
 
 Validity gate — ``_validity_k``
 --------------------------------
 
-``_validity_k`` is a single per-env kernel that combines the following checks:
+``_validity_k`` is a single per-env kernel that combines the following checks, one fail
+bit each (the bit table is in :ref:`pipeline-fail-bits`):
 
-- **Generation flag** — all True now that generation no longer gates; validity is purely
-  geometric.
-- **Closed-loop turning ≈ 2π** — the net turning number must be approximately one full
+- **Generation flag**: the generator's ``gen.valid`` (``1`` for every env of the
+  built-ins: validity is purely geometric).
+- **Closed-loop turning ≈ 2π**: the net turning number must be approximately one full
   winding.
-- **Width floor** — minimum track width must exceed the configured floor.
-- **No NaN** — all points in the env's real-point range must be finite.
-- **Thickness ≥** ``(1 − relax_tol) · half_width`` — the inflated road must not collapse
+- **No NaN**: all points in the env's real-point range must be finite.
+- **Thickness ≥** ``(1 − relax_tol) · half_width``: the inflated road must not collapse
   below the required half-width (within tolerance).
-- **Border self-intersections** — only when ``validity_border_check`` is set (**default
-  off**). This check is redundant with the thickness/separation gate: a crossing or
-  fat-band overlap drives ``separation_min → 0 → thickness < half_width → invalid`` anyway.
-- **Not truncated at** ``N_max`` (``Track.truncated == 0``) — the constant-spacing resample
+- **Width floor**: every real point's half-width must exceed ``w_floor``.
+- **Border self-intersections**: only when ``validity_border_check`` is set (**default
+  off**). This check is redundant with the thickness gate: a crossing or fat-band overlap
+  drives ``separation_min → 0 → thickness < half_width → invalid`` anyway.
+- **Grade**: a segment's ``|dz| / ds`` must not exceed ``z_valid_grade`` (only when it is
+  ``> 0``).
+- **Not truncated at** ``N_max`` (``Track.truncated == 0``): the constant-spacing resample
   flags any env whose loop needed more than ``N_max`` points; its clamped loop closes with
-  a chord across the dropped arc, so the env fails closed. The flags reach the kernel via
-  ``inflate_warp(..., truncated=...)``; with ``truncated=None`` (the standalone path) no
-  env is treated as truncated.
+  a chord across the dropped arc, so the env fails closed.
+
+An env with any bit set is an :term:`invalid env` (``Track.valid == 0``); what the result
+then holds is set by the commit (:ref:`pipeline-commit`), and :ref:`invalid-envs`
+covers it from the user's side.
 
 Index-aligned borders
 ---------------------
 
-The inner and outer borders returned in ``Track`` are index-aligned with the centerline:
-``outer[e, i]``, ``center[e, i]``, and ``inner[e, i]`` are all offset from the same
+The inner and outer borders are index-aligned with the centerline: ``outer[e * N_max +
+i]``, ``center[e * N_max + i]`` and ``inner[e * N_max + i]`` are all offset from the same
 centerline bead ``i``, so downstream consumers can index them identically.
 
 Half-width recovery
 -------------------
 
-The half-width at each bead can be recovered as
-``‖outer[e, i] − center[e, i]‖ = ‖center[e, i] − inner[e, i]‖ = half_width``
-(constant by construction, modulo floating-point rounding). The ``thickness`` validity
-metric checks the minimum over all beads to ensure no inflation collapsed.
-``Track.half_width`` stores it per point (NaN padding). In a pipeline whose width stage
-writes a per-point ``cl.half_width`` (anything but ``width.constant``), the offset, the
-thickness check and the width floor use each point's own half-width instead; see
-:ref:`pipeline-width`.
+At constant width the half-width at each bead can be recovered as
+``‖outer − center‖ = ‖center − inner‖ = half_width`` (modulo floating-point rounding);
+``Track.half_width`` stores it per point (NaN padding). The ``thickness`` validity metric
+checks the minimum over all beads to ensure no inflation collapsed. In a pipeline whose
+width stage writes a per-point ``cl.half_width`` (anything but ``width.constant``), the
+offset, the thickness check and the width floor use each point's own half-width instead;
+see :ref:`pipeline-width`.
 
-``Track`` fields
-----------------
+``Track`` geometry
+------------------
+
+Every per-point array is flat, ``[E * N_max]``, NaN-padded past ``count[e]``
+(:doc:`conventions`); :ref:`results` documents every field of the ``Track``.
 
 .. list-table::
    :header-rows: 1
 
    * - Field
-     - Shape
+     - Shape, dtype
      - Description
-   * - ``outer``
-     - ``[E, N_max, 2]``
-     - Outer border points (NaN-padded past ``count[e]``).
-   * - ``center``
-     - ``[E, N_max, 2]``
-     - Re-uniformized centerline points.
-   * - ``inner``
-     - ``[E, N_max, 2]``
-     - Inner border points (NaN-padded past ``count[e]``).
+   * - ``outer``, ``center``, ``inner``
+     - ``[E * N_max]`` ``vec3f``
+     - Outer border, re-uniformised centerline, inner border (``z`` the altitude).
    * - ``tangent``
-     - ``[E, N_max, 2]``
+     - ``[E * N_max]`` ``vec3f``
      - Unit tangent at each centerline bead.
    * - ``normal``
-     - ``[E, N_max, 2]``
-     - Left-normal ``(-tangent.y, tangent.x)`` at each centerline bead; the boundary
-       it faces is winding-dependent (see ``winding``), so read ``outer``/``inner``
-       to identify the borders.
-   * - ``arclen``
-     - ``[E, N_max]``
-     - Cumulative arc length at each bead (0 at bead 0).
-   * - ``length``
-     - ``[E]``
-     - Total track perimeter per env.
-   * - ``valid``
-     - ``[E]``
-     - Boolean validity mask (all criteria above must pass).
-   * - ``count``
-     - ``[E]``
-     - Number of real beads per env (padding is NaN past this index).
-   * - ``winding``
-     - ``[E]``
-     - Signed loop winding: ``+1.0`` CCW, ``-1.0`` CW, ``0.0`` degenerate
-       (sign of the centerline's signed area).
-   * - ``truncated``
-     - ``[E]``
-     - ``int32`` N_max truncation flag: ``1`` when the loop needed more than ``N_max``
-       points (``count[e]`` was clamped and the env is invalid). ``None`` on a ``Track``
-       built by the standalone ``inflate_warp`` path.
-   * - ``generation``
-     - ``[E]``
-     - ``int32`` epoch the env's current output was built with
-       (``generation[e] = epoch[e]``, written by every ``TrackGenerator`` generation;
-       ``0`` until the env's epoch is advanced). ``None`` on a ``Track`` built by the
-       standalone ``inflate_warp`` path. See :doc:`/how-it-works/cuda-graph`.
+     - ``[E * N_max]`` ``vec3f``
+     - Left normal at each centerline bead; the border it faces depends on the winding
+       (see ``winding``), so read ``outer`` / ``inner`` to identify the borders.
+   * - ``arclen``, ``half_width``
+     - ``[E * N_max]`` ``float32``
+     - Cumulative arc length (0 at bead 0) and the band's half-width per bead.
+   * - ``length``, ``winding``
+     - ``[E]`` ``float32``
+     - Loop length; signed winding (``+1.0`` CCW, ``-1.0`` CW, ``0.0`` degenerate: the
+       sign of the centerline's signed area).
+   * - ``count``, ``valid``, ``truncated``, ``fail_mask``, ``generation``
+     - ``[E]`` ``int32``
+     - Real beads per env; the validity flag; the truncation flag; the fail bits; the
+       :term:`epoch` the env's current output was built with
+       (:ref:`cuda-graph-masked-regeneration`).
 
 ``generate()`` always returns the **same** ``Track`` instance with stable ``wp.array``
-pointers. Callers that need a snapshot should use ``Track.clone()``.
+pointers. Callers that need a snapshot use ``Track.clone()``.

@@ -1,9 +1,8 @@
-"""Does a component honour the contract? ``check_component`` (roadmap PR14).
+"""Does a component honour the contract? ``check_component``.
 
 One call runs a :class:`~track_gen.tools.Component` (a built-in adapter or your own)
-through every check the component contract implies (see
-``docs/contributing/writing-a-component.rst``) and returns a
-:class:`~track_gen.testing.Report`::
+through every check the component contract implies (see :ref:`writing-a-component`) and
+returns a :class:`~track_gen.testing.Report`::
 
     from track_gen import tools
     from track_gen.testing import check_component
@@ -86,8 +85,7 @@ Checks (:data:`~track_gen.testing.CHECKS` ``["component"]``), per device:
     equal a never-advanced twin, the masked envs a fresh chain on a twin producer
     advanced with ``m`` before attaching; ``details["masked_rows_changed"]`` reports
     non-vacuity.
-``regenerate.self_reset`` (stateful, reads a source, and the read target carries
-``generation``)
+``regenerate.self_reset`` (stateful, reads a source that carries ``generation``)
     The same run WITHOUT ``reset`` gives the same bytes as with it (the
     generation-aware self-reset). Not applicable otherwise (skipped).
 ``invalid.sentinel``
@@ -116,20 +114,20 @@ Checks (:data:`~track_gen.testing.CHECKS` ``["component"]``), per device:
 ``hot_path.topology`` (CPU)
     Two calls of each hot method emit the same :class:`~track_gen.testing.LaunchTrace`;
     also ``step`` with the rebind flag of the wrapped utility armed (a ``LaunchContext``
-    reporting ``capturing``) vs unarmed: the documented G1 exception changes no emission.
+    reporting ``capturing``) vs unarmed: arming it changes no emission.
 ``hot_path.buffers`` (CPU)
     Every pointer the hot calls launch on belongs to the component, its upstream, the
-    source, the inputs or the masks (:func:`~track_gen.testing.buffers_of`); and (roadmap
-    PR15) ``on_generate(ctx, None)``, ``on_generate(ctx, m)`` and ``reset(ctx, m)``
+    source, the inputs or the masks (:func:`~track_gen.testing.buffers_of`); and
+    ``on_generate(ctx, None)``, ``on_generate(ctx, m)`` and ``reset(ctx, m)``
     launch on no pointer of a bound input (a ``Course`` runs them in its regeneration
-    body, whose self-graph is keyed on ``(advance, mask)`` only and would bake the
+    body, whose own CUDA graph is keyed on ``(advance, mask)`` only and would bake the
     input: read inputs in ``step``; a respawn snapshot of an input belongs in ``step``,
     with ``reset`` arming a per-env flag that ``step`` consumes). The upstream
     components are bound to the same input arrays, so an input reached through an
     upstream result that aliases it is caught too.
 ``capture.caller`` (CUDA)
     Per mode of ``modes`` (``"warp"``, ``"external"``, ``"torch"``): on a chain whose hot
-    methods never ran eagerly, the chain a ``Course`` records (roadmap PR15):
+    methods never ran eagerly, the chain a ``Course`` records:
     ``[any_set(done) -> flag; ctx.skip_unless(flag, [producer.enqueue(advance=True,
     mask=done) -> chain on_generate(ctx, done) -> chain reset(ctx, done)]) -> chain
     step(ctx)]``, recorded on a side stream (mempool disabled, ``wp.capture_launch``

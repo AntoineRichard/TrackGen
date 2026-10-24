@@ -1,18 +1,19 @@
 """Conformance kit for generator and pipeline-stage plugins (and TrackGen's own).
 
 A plugin author runs one call in their own CI and learns whether their generator (or
-relax / width / elevation / validity stage) honours the contract::
+relax / width / elevation / validity stage) honours the contract (here the built-ins
+``polar`` and ``relax.xpbd``; a plugin passes its own registered names)::
 
     from track_gen.testing import check_generator, check_stage
 
-    report = check_generator("acme.superformula", params={"m": 7.0})  # cpu (+ cuda:0)
+    report = check_generator("polar", params={"polar_num_knots": 9})  # cpu (+ cuda:0)
     report.raise_for_failures()
-    check_stage("relax", "acme.taubin").raise_for_failures()
+    check_stage("relax", "xpbd").raise_for_failures()
 
 or, in pytest, loads the opt-in plugin (``pytest_plugins =
 ["track_gen.testing.pytest_plugin"]``) and calls the ``track_gen_conformance`` fixture.
 TrackGen's own suite runs the same checks over every registered generator. Among them,
-``params.per_env`` (roadmap PR13c) sets every dynamic param of the unit's stage per env
+``params.per_env`` sets every dynamic param of the unit's stage per env
 and checks that env ``e`` equals a run with ``e``'s values as scalars (a stage must read
 ``param[e]``, never ``param[0]`` or a host copy, and never write its param arrays).
 
@@ -21,7 +22,7 @@ Modules:
 - :mod:`~track_gen.testing.conformance`: :func:`check_generator`,
   :func:`check_gate_generator`, :func:`check_stage`, :class:`Report`,
   :class:`CheckResult`, :data:`CHECKS`;
-- :mod:`~track_gen.testing.components`: :func:`check_component` (roadmap PR14: a
+- :mod:`~track_gen.testing.components`: :func:`check_component` (a
   :class:`~track_gen.tools.Component`, yours or a built-in adapter);
 - :mod:`~track_gen.testing.contract`: hot-path guards (:func:`hot_path_guard`,
   :func:`no_host_sync`, :func:`no_allocation`, :func:`stream_explicit`; each returns

@@ -397,12 +397,16 @@ class LaunchContext:
     # -- emission ---------------------------------------------------------------
     def launch(self, kernel, dim, inputs: Sequence = (), outputs: Sequence = (), *,
                block_dim: int = 256, max_blocks: int = 0) -> None:
+        """``wp.launch(kernel, dim, inputs, outputs)`` on this context's device and
+        stream (``block_dim`` and ``max_blocks`` as in ``wp.launch``)."""
         wp.launch(kernel, dim=dim, inputs=list(inputs), outputs=list(outputs),
                   device=self.device, stream=self.stream,
                   block_dim=block_dim, max_blocks=max_blocks)
 
     def copy(self, dst: "wp.array", src: "wp.array", *, dst_offset: int = 0,
              src_offset: int = 0, count: int = 0) -> None:
+        """``wp.copy(dst, src)`` on this context's stream: ``count`` elements (``0``:
+        the whole of ``src``) from ``src[src_offset:]`` into ``dst[dst_offset:]``."""
         wp.copy(dst, src, dest_offset=dst_offset, src_offset=src_offset, count=count,
                 stream=self.stream)
 

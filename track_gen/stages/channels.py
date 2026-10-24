@@ -56,7 +56,7 @@ PLUGIN_CHANNEL = re.compile(r"^(raw|cl|anchors|gates)\.[A-Za-z_]\w*(\.[A-Za-z_]\
 #: channel of that domain the user wires with ``StageRef.ports``.
 REQUIRED_PORT = re.compile(r"^(raw|cl|anchors|gates)\.\*$")
 #: The carry policies a generator's raw attribute declares (``StageBuilder.write(...,
-#: interp=)``): see :doc:`/how-it-works/pipeline-preview`.
+#: interp=)``): see :doc:`/how-it-works/pipeline-stages`.
 INTERPS = ("linear", "nearest", "previous", "angle")
 #: The catalogue channels carried through the resamples (with their ``interp``):
 #: a generator's provided ``raw.z`` / ``raw.half_width`` and the centerline's ``cl.z`` /

@@ -5,7 +5,7 @@ Relaxation is a PBD/XPBD-style position projection over the constant-spacing cen
 beads. It does not allocate dense ``[E,N,N]`` tensors, does not run an optimizer, and
 does not store a per-constraint Lagrange-multiplier history. Instead, every fixed sweep
 reads one complete position buffer, computes local position corrections, and writes a
-second buffer (see :doc:`solver`). This page covers the per-env **setup** and the three
+second buffer (see :doc:`solver`). This page covers the per-:term:`env` **setup** and the three
 **corrections** each sweep applies, then the **gate coupling** that ties the separation
 target to the downstream validity gate.
 
@@ -73,7 +73,7 @@ Count-aware kernels
 
 The solver is count-aware. Kernels launch over the static stride ``N_max``, but threads
 with ``i >= count[e]`` copy the NaN-padded tail through unchanged. When every
-``count[e] == N_max``, the same kernels reduce to the old fixed-N parity path.
+``count[e] == N_max``, the same kernels reduce to the fixed-N parity path.
 
 .. _relax-knobs:
 
@@ -112,8 +112,8 @@ Gate coupling — a load-bearing overshoot
 ----------------------------------------
 
 The separation target is **not** the validity gate's floor; it deliberately overshoots
-it, and that overshoot is load-bearing. Recent experiments established the relationship
-and, critically, that weakening it collapses yield.
+it, and that overshoot is load-bearing: measurements established the relationship and,
+critically, that weakening it collapses yield.
 
 At the library defaults (``half_width`` = ``hw``, ``relax_margin`` = 0.15,
 ``relax_tol`` = 0.02):
