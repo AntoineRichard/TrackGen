@@ -864,7 +864,8 @@ def test_a_recorded_call_anchors_the_binding_and_the_masks_it_reads():
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RebindAfterCaptureWarning)
         other.bind(course)                      # the course drops the recorded arrays
-    del agents, m_regen, m_reset, owners
+    # `obj` (the loop variable above) still holds the last item checked: the reset mask.
+    del agents, m_regen, m_reset, owners, obj
     gc.collect()
     dead = [k for k, r in refs.items() if r() is None]
     assert not dead, f"freed while the graph that reads them lives: {dead}"
@@ -912,7 +913,11 @@ class _RecordsAnEvent(_toys._MeanX):
         ctx.stream.record_event(self._event, external=True)
 
 
-_OFFENCES = {"pinned-copy": _CopiesFromPinnedHost, "event-record": _RecordsAnEvent}
+# A copy from pinned, device-mapped host memory is NOT an offence: CUDA accepts it in a
+# conditional body (measured on a GB10 and documented by the CUDA programming guide), so
+# the contract forbids pageable-host copies, events and other streams; the event record
+# is the negative toy.
+_OFFENCES = {"event-record": _RecordsAnEvent}
 
 
 @pytest.mark.parametrize("offence", sorted(_OFFENCES))
@@ -1282,8 +1287,12 @@ def test_the_cold_attach_phase_runs_on_warps_current_stream():
     raced = _host(toy.result.value).tobytes() != expected.tobytes()
     print(f"\n[attach race control] mempool {wp.is_mempool_enabled(DEV)}: an attach on "
           f"another stream {'raced' if raced else 'did not race'}")
-    if wp.is_mempool_enabled(DEV):
-        assert raced, "the control did not race: the comparison above is vacuous"
+    if wp.is_mempool_enabled(DEV) and not raced:
+        # The control cannot produce the race on this GPU (e.g. an integrated-memory
+        # device that completes the late fill first): the comparison above proves nothing
+        # here, so report it instead of failing on the platform.
+        pytest.skip("the race control did not race on this GPU: the attach-stream check "
+                    "above is vacuous here")
 
 
 def test_a_course_on_another_stream_waits_for_the_producers_stream(monkeypatch):

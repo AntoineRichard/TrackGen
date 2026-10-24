@@ -543,8 +543,9 @@ class LaunchContext:
         Under lowering (b) each window is the body graph of a CUDA conditional node,
         which may hold kernel launches, memsets and device-to-device copies only: a
         window may launch kernels and ``ctx.copy`` / ``ctx.fill`` between device arrays
-        on ``ctx``'s stream, and nothing else (no copy to or from host or pinned memory,
-        no event, no other stream). Anything else fails inside ``wp.capture_if`` while
+        on ``ctx``'s stream, and nothing else (no copy to or from pageable host memory,
+        no event, no other stream; a copy from pinned, device-mapped host memory is
+        accepted by CUDA but keep windows to device memory for portability). Anything else fails inside ``wp.capture_if`` while
         the caller's capture is being recorded. ``check_stage(..., devices=["cuda:0"])``
         (``bounded.lowering``) records every window that way.
 
@@ -682,11 +683,27 @@ def _call_context(device, stream=None, ctx: "LaunchContext | None" = None
 _REBIND_HITS: contextvars.ContextVar["list | None"] = contextvars.ContextVar(
     "track_gen_rebind_hits", default=None)
 
+# Set by a composition (``Course.step``) around its components' hot calls: a ``[ctx,
+# blocked]`` slot, ``blocked`` resolved lazily by the first probe that needs it, so the
+# bound utilities share one stream query per step (none once every one is armed).
+_RESOLVED_BLOCKED: contextvars.ContextVar["list | None"] = contextvars.ContextVar(
+    "track_gen_resolved_blocked", default=None)
+
 
 def _probe_recorded(owner, ctx) -> None:
     """Arm ``owner._recorded`` when ``ctx`` is recording (one probe per call until armed;
-    host flag only: no emission depends on it)."""
-    if not owner._recorded and _host_blocked(ctx):
+    host flag only: no emission depends on it). Inside a composition that already
+    resolved ``ctx``'s capture state, that answer is reused (no stream query)."""
+    if owner._recorded:
+        return
+    slot = _RESOLVED_BLOCKED.get()
+    if slot is not None and slot[0] is ctx:
+        if slot[1] is None:
+            slot[1] = _host_blocked(ctx)
+        blocked = slot[1]
+    else:
+        blocked = _host_blocked(ctx)
+    if blocked:
         owner._recorded = True
 
 

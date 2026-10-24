@@ -71,8 +71,9 @@ from dataclasses import dataclass
 import warp as wp
 
 from ..exec import _compat
-from ..exec.context import (_AMBIENT, LaunchContext, _host_blocked, _rebind_close,
-                            _rebind_open, _torch_capturing, resolve as _resolve_ctx)
+from ..exec.context import (_AMBIENT, _RESOLVED_BLOCKED, LaunchContext, _host_blocked,
+                            _rebind_close, _rebind_open, _torch_capturing,
+                            resolve as _resolve_ctx)
 from ..exec.errors import CaptureError
 from ..exec.runner import GraphRunner, _check_default_stream, ensure_not_capturing
 from ..ops.reduce import any_set
@@ -1389,7 +1390,7 @@ class Course:
                 f"{self._runner.name!r}: the masked regeneration body could not be "
                 f"recorded under a CUDA conditional node: a component's on_generate or "
                 f"reset uses an operation a conditional body cannot hold (a copy to or "
-                f"from host or pinned memory, an event, another stream). Components in "
+                f"from pageable host memory, an event, another stream). Components in "
                 f"the body: {[c.name for c in self._components]}. Check each with "
                 f"track_gen.testing.check_component (capture.caller); "
                 f"track_gen.exec.unconditional() records the body without the node."
@@ -1712,8 +1713,14 @@ class Course:
         if self._needs_bind and self._bind_args is None:
             raise RuntimeError("call bind() before step()")
         ctx = self._ctx(stream)
-        for comp in self._components:
-            comp.step(ctx)
+        # At most one capture-state query for the whole step, made by the first unarmed
+        # utility's rebind probe and shared (track_gen.exec.context._probe_recorded).
+        token = _RESOLVED_BLOCKED.set([ctx, None])
+        try:
+            for comp in self._components:
+                comp.step(ctx)
+        finally:
+            _RESOLVED_BLOCKED.reset(token)
         # The course and the binding this graph reads (a later rebind replaces the dict).
         _compat.anchor(ctx.stream, self, self._bind_args)
         return self._step_result

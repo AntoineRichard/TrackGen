@@ -136,8 +136,9 @@ class Component:
     they read and write no bound input (``step`` reads them; a respawn snapshot of an
     input belongs in ``step``: ``reset`` arms a per-env flag that the next ``step``
     consumes) and emit only kernels, ``ctx.fill`` and device-to-device ``ctx.copy`` on
-    ``ctx``'s stream (no copy to or from host or pinned memory, no event, no other
-    stream); ``reset`` reads only the component's own state and the mask (resets run in
+    ``ctx``'s stream (no copy to or from pageable host memory, no event, no other
+    stream; CUDA accepts a copy from pinned, device-mapped host memory, but keep the
+    body to device memory for portability); ``reset`` reads only the component's own state and the mask (resets run in
     reverse order, before the components they read); a component that overrides
     ``step`` is an entry of the course's ``StepResult`` (its :attr:`result`), one that
     keeps the base ``step`` (per-generation work) is read through
