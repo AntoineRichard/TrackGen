@@ -1,425 +1,193 @@
-2.5D tracks
-===========
+.. _course-elevation:
 
-.. note::
+Add elevation to a road
+======================
 
-   Figures and empirical yield, range and timing measurements on this page predate the
-   0.3 hashed-RNG switch. They are historical reference measurements; current generated
-   bytes and seed-specific outcomes differ (:ref:`upgrading-0.3-rng`).
+A TrackGen road is a ribbon with level cross-sections: XY layout and width are solved
+first, then the same altitude lifts the center, inner and outer point at each index.
+Choose rolling terrain without changing the plan-view layout.
 
-Tracks (``TrackGenerator``, tutorial at :doc:`/tutorials/batch-of-tracks`) are
-**2.5D**, exactly like :doc:`gate courses </gates-3d>`: the plan-view layout comes
-from the 2D centerline generators and the XPBD relaxer, and altitude (Z) is
-layered on afterwards by an elevation :term:`stage`. The result is a genuine
-3D road — every ``Track`` boundary point carries a ``vec3f`` position, distances
-and speed profiles account for real climbing/descending, and a heightfield can be
-baked for an external physics solver — without giving up any of the 2D pipeline's
-layout quality or determinism, and with a flat track's output unchanged.
+.. figure:: assets/racing/controls-elevation.png
+   :alt: Flat, uniform, random-walk and harmonic-noise altitude on one polar road,
+         each with a colored plan view and altitude against XY arclength.
 
-Why 2.5D
---------
+   Current output, seed 5, epoch 0, env 0. Every row has identical XY geometry.
+   The non-flat profiles use ``[-.4, .4]``; flat is at ``z_base=.2``. Altitude and
+   XY axes use caller coordinate units. These examples are selected, not yield data.
 
-The 2D track pipeline — resample to constant spacing, XPBD-relax, inflate into a
-constant-width band — is a plan-view (XY) computation. Altitude is added by a separate
-stage that runs on the already-offset 2D borders, *before* the lift to ``vec3f``. The
-track stages, by id (:ref:`generating-stages`):
-
-.. code-block:: text
-
-   generator -> resample -> width -> relax -> uniform -> frames (tangents, curvature,
-       arc length, winding) -> offset (outer/inner) -> ELEVATION (writes per-point z)
-       -> validity -> LIFT to vec3f [non-flat: recompute 3D tangent + true 3D arc length]
-
-With the default ``elevation="flat"`` (and ``z_base=0.0``) the lift writes a constant
-``z = 0.0`` and the arc-length and tangent tables are left untouched from the 2D stages:
-the planar track, bit for bit. With any other profile, the per-point altitude (computed
-by the same elevation stages :doc:`gate courses </gates-3d>` use) is applied to
-``outer`` / ``center`` / ``inner`` together, and the lift (``lift.elevated``) recomputes
-the tangent and the true 3D arc length from the now-3D centerline.
-
-Altitude profiles
------------------
-
-``presets.track(elevation=...)`` selects the altitude family: one of the four built-ins
-below, by name or as ``(name, params)``, or any elevation stage a plugin registers
-(``TrackGenConfig.z_profile`` and the flat ``z_*`` fields in a config,
-:ref:`flat-stage-shortcuts`). The same four profiles and knobs serve
-:doc:`gate courses </gates-3d>`. All four write every real centerline point and NaN the
-padding's xy; the padding's z is the flat lift's ``z_base`` (``presets.track(z_base=)``,
-0 by default, and 0 under a non-flat profile).
-
-.. list-table::
-   :header-rows: 1
-   :widths: 18 52 30
-
-   * - ``elevation``
-     - Altitude model
-     - Knobs
-   * - ``"flat"`` (default)
-     - Planar. Every real point sits at ``z_base``; with the default
-       ``z_base=0`` this is the planar track.
-     - ``z_base`` (``presets.track(z_base=)``)
-   * - ``"uniform"``
-     - Independent hill heights: ``z_control_points`` arc-spaced knots each
-       draw their own i.i.d. uniform altitude in ``[z_min, z_max]``, and the
-       points between knots are interpolated (see `Smoothness`_ below).
-     - ``z_min``, ``z_max``, ``z_control_points``
-   * - ``"random_walk"``
-     - Correlated rolling terrain: a grade-capped walk over the
-       ``z_control_points`` knots, clamped to ``[z_min, z_max]`` and closed
-       back to its start so the loop is continuous (Brownian-bridge drift
-       removal). Each knot-to-knot step is capped by a **grade** — the
-       maximum ``|dz|`` per unit of plan-view arc length between knots — so
-       altitude changes stay proportional to horizontal travel.
-     - ``z_base`` (walk origin), ``z_min``, ``z_max``, ``z_max_step`` (grade
-       cap), ``z_control_points``
-   * - ``"noise"``
-     - Smooth periodic terrain with harmonic control: decided per point (not
-       knot-based) as a sum of ``z_noise_harmonics`` sinusoids of total
-       amplitude ``z_noise_amplitude`` oscillating around ``z_base``, clamped
-       to ``[z_min, z_max]``.
-     - ``z_base``, ``z_noise_amplitude``, ``z_noise_harmonics`` (default 3),
-       ``z_min``, ``z_max``
+Try it
+------
 
 .. code-block:: python
 
+   import numpy as np
    from track_gen import TrackGenerator
    from track_gen.pipeline import presets
 
-   E, device = 64, "cuda:0"  # or "cpu"
-
-   spec = presets.track(num_envs=E, device=device,
-                        elevation=("random_walk", {"z_base": 1.0, "z_min": 0.2,
-                                                   "z_max": 2.0, "z_max_step": 0.3}))
-   track = TrackGenerator(spec, seeds=0).generate()
-   z = track.center.numpy().reshape(E, -1, 3)[..., 2]     # [E, N_max] altitudes
+   E, N = 4, 384
+   spec = presets.track(
+       num_envs=E, device="cpu", n_max=N,
+       elevation=("noise", {"z_min": -0.3, "z_max": 0.3,
+                            "z_noise_amplitude": 0.2}),
+   )
+   gen = TrackGenerator(spec, seeds=5)
+   track = gen.generate()
+   center = track.center.numpy().reshape(E, N, 3)
    count = track.count.numpy()
-   hills = [z[e, :count[e]] for e in range(E)]             # each env's real points
+   valid = track.valid.numpy() != 0
+   hills = [center[e, :count[e], 2] for e in range(E) if valid[e]]
 
 .. snippet: after
 
-   import numpy as np
-   real = np.concatenate(hills)
-   assert real.min() >= 0.2 - 1e-6 and real.max() <= 2.0 + 1e-6
+   assert hills and all(np.isfinite(z).all() for z in hills)
+   assert all((z >= -.3).all() and (z <= .3).all() for z in hills)
 
-``z_min``, ``z_max``, ``z_max_step`` and ``z_noise_amplitude`` are per-env
-(:term:`dynamic <dynamic field>`) parameters of the elevation stages: see `Per-env
-altitude: randomization and curricula`_.
+Change the altitude model
+-------------------------
 
-``z_control_points`` is not itself a profile — it is the knot-count knob used by the
-``uniform`` and ``random_walk`` rows above: the number of arc-spaced altitude control
-knots (default 10, must be ≥ 3) those two profiles interpolate between. It is inert for
-``flat`` (constant altitude, no knots) and for ``noise`` (per-point, decided by
-frequency via ``z_noise_harmonics`` instead of knot count).
+``presets.track(elevation=...)`` accepts a stage name, ``(name, params)`` or StageRef.
+A flat ``TrackGenConfig`` uses ``z_profile`` and its ``z_*`` shortcuts instead.
+Distances are in your coordinate units; a grade is ``abs(dz) / XY distance``.
 
-.. note::
+.. list-table:: Profiles and controls
+   :header-rows: 1
+   :widths: 19 43 38
 
-   ``z_max_step`` is a **grade**, not an absolute step. Under the knot profiles
-   (``uniform``, ``random_walk``) it bounds ``|dz|`` per unit plan-view arc length
-   **between adjacent knots** (``ds = perimeter / z_control_points``), not between
-   adjacent resampled points: for a fixed ``z_max_step``, the walk can swing over a
-   larger total altitude range than a point-to-point cap would allow, and
-   ``z_max_step`` alone does not bound how much altitude changes over any one resampled
-   segment (see `Smoothness`_).
+   * - Profile
+     - What changes
+     - Defaults / kind
+   * - ``"flat"``
+     - Constant altitude, no knots. Set ``presets.track(z_base=...)`` on the flat lift.
+     - ``z_base=0`` static distance. The track's ``elevation.flat.z_base`` must stay 0.
+   * - ``"uniform"``
+     - Independent uniform heights at arc-spaced knots, interpolated around the loop.
+     - ``z_min=0``, ``z_max=0`` dynamic distances;
+       ``z_control_points=10`` static knot count, ``>=3``.
+   * - ``"random_walk"``
+     - Correlated knot heights, bridge closure and bounds. Step size is proportional
+       to XY distance between knots, rather than an absolute altitude jump.
+     - ``z_base=0`` static distance; dynamic ``z_min=0``, ``z_max=0`` distances,
+       ``z_max_step=0`` nonnegative grade; static ``z_control_points=10`` (``>=3``).
+   * - ``"noise"``
+     - Periodic harmonics around a baseline, clipped to the altitude window.
+     - Static ``z_base=0`` distance, ``z_noise_harmonics=3`` count (``>=1``);
+       dynamic ``z_min=0``, ``z_max=0``, ``z_noise_amplitude=0`` distances (amplitude ``>=0``).
 
-A profiled batch can also be rejected outright: ``z_valid_grade`` (a parameter of
-``validity.default``: ``checks=(("default", {"z_valid_grade": 0.5}),)``, or the config
-field) is the maximum allowed ``|dz|/ds`` grade between adjacent points, with ``ds``
-measured along the **plan-view** (XY) arc length — not the 3D lifted length.
-``z_valid_grade = 0`` (the default) disables the check; any steeper adjacent pair marks
-the whole env :term:`invalid <invalid env>` (fail bit ``grade``), on top of the 2D
-checks (turning number, thickness, width floor, optional border self-intersection). The
-realized per-point grade of ``random_walk`` reaches about 1.5 times ``z_max_step`` (a
-monotone-cubic segment can overshoot its knot-to-knot slope, see `Smoothness`_), so ``z_valid_grade`` is what actually gates realized steepness: set it
-(non-zero) whenever a hard grade limit matters, and well above ``z_max_step``. With
-``random_walk`` (``z_base=1``, ``[z_min, z_max] = [0.2, 2.0]``, ``z_max_step=0.3``; 64
-envs, seeds 0, CPU), ``z_valid_grade`` = 0.35 / 0.40 / 0.45 / 0.55 keeps 17 / 39 / 57 /
-64 of the 64 envs.
+.. figure:: assets/racing/controls-elevation-knobs.png
+   :alt: Same-seed comparisons of altitude window, knot count, random-walk grade,
+         noise amplitude, harmonic count and clipping bounds.
 
-Smoothness
-----------
+   Each pair changes only the labeled control. A wider window permits larger hills;
+   more knots or harmonics can add detail. A positive-only clipping window flattens
+   negative noise. A closed window (``z_min == z_max``) makes amplitude and walk-step
+   controls inert; the default window is ``[0,0]``.
 
-For ``uniform`` and ``random_walk``, altitude is decided at only
-``z_control_points`` arc-spaced knots per env and interpolated between them
-with a periodic monotone cubic (Fritsch-Carlson-limited tangents, wrapping at
-the seam so the loop closes with no discontinuity). Two consequences follow
-directly:
-
-- **Exact bounds, no post-clamp.** Each knot's altitude is guaranteed to fall
-  in ``[z_min, z_max]`` before interpolation even runs: ``uniform`` draws each knot
-  directly in that range, and ``random_walk`` clamps its walk to it. The monotone
-  construction then guarantees the interpolant never leaves the interval spanned by
-  its two bracketing knots. So the whole curve stays within ``[z_min, z_max]``
-  exactly, with no additional clamping step required or applied.
-- **Resolution and bumpiness are decoupled.** Raising the track's resample
-  resolution samples the SAME underlying road more finely; it does not add
-  new altitude decisions or introduce new bumps, because the road between
-  knots is a fixed cubic, not a fresh per-point draw. This is what avoids
-  the washboard texture that a per-point ``uniform`` / ``random_walk`` draw
-  would produce at high resample density.
-
-That decoupling only holds while ``z_control_points`` stays well below the
-resampled point count; a very large ``z_control_points`` starts to
-reintroduce, knot by knot, per-point jitter (measured: ``z_control_points=200`` on a
-~95-point track produces 65 direction changes along the profile).
-
-The one caveat: monotonicity bounds the interpolant's *range*, not its local
-*slope*. A monotone-cubic segment's realized grade can reach up to 3× its
-knot-to-knot secant slope (the same Fritsch-Carlson limiter that kills
-overshoot also sets that bound), so ``z_max_step`` — which only shapes the
-walk *at the knots* — does not bound the steepest per-point grade actually
-realized between them. If a hard steepness limit matters for your use case,
-set ``z_valid_grade`` (non-zero) rather than relying on ``z_max_step`` alone;
-it is checked against the realized per-point grade after interpolation, on
-every adjacent pair.
-
-.. figure:: _static/z-profiles.png
-   :alt: The four z_profile altitude models on the same track layout, each as
-         a plan view colored by z and an elevation profile
-   :align: center
-
-   The four altitude profiles on the SAME plan-view layout and seed, rendered
-   by ``viz/plot_z_profiles.py`` (``z_base=1.0``, ``z_min=0.5``, ``z_max=1.5``,
-   ``z_max_step=0.3``, ``z_noise_amplitude=0.4``, ``z_control_points=10``).
-   ``flat`` is constant; ``uniform``, ``random_walk``, and ``noise`` are all
-   smooth rolling curves (never jittery), but visibly distinct in character —
-   independent knot-to-knot swings, a correlated single-basin walk, and
-   harmonic periodicity respectively. Regenerate with
-   ``python viz/plot_z_profiles.py --out docs/_static/z-profiles.png --seed 5``.
+Uniform and random-walk tracks use periodic monotone-cubic interpolation with limited
+knot tangents. This keeps each segment within its adjacent knot heights and closes the
+seam. Increasing raw or output resolution samples that model more finely; it does not
+add altitude knots. A knot count near or above the final point count loses this smooth
+terrain interpretation. Noise uses normalized arclength and no altitude knots.
 
 .. _tracks-25d-per-env:
 
-Per-env altitude: randomization and curricula
----------------------------------------------
+Live altitude controls and grade checks
+---------------------------------------
 
-Four knobs of the elevation stage are **dynamic**: per-env ``[E]`` ``float32`` arrays,
-initialised from the configured values, that ``randomize=`` draws at every generation
-and that a curriculum can write from its own graph (:doc:`/user-guide/curricula`). The
-rest (``z_base``, ``z_control_points``, ``z_noise_harmonics``) is static, as is
-validity's ``z_valid_grade``.
-
-.. list-table::
-   :header-rows: 1
-   :widths: 18 34 48
-
-   * - ``elevation``
-     - Dynamic fields (bounds)
-     - The difficulty knob, and the window it needs
-   * - ``"uniform"``
-     - ``z_min``, ``z_max`` (unbounded)
-     - ``z_max`` (higher: bigger hills), with ``z_min`` fixed at the ground
-   * - ``"random_walk"``
-     - ``z_min``, ``z_max``; ``z_max_step`` (``>= 0``)
-     - ``z_max_step`` (higher: steeper grades), in a wide window: at ``z_min == z_max``
-       the walk cannot move
-   * - ``"noise"``
-     - ``z_min``, ``z_max``; ``z_noise_amplitude`` (``>= 0``)
-     - ``z_noise_amplitude`` (higher: bigger hills), in a wide window symmetric around
-       ``z_base`` (``z_min = -z_max`` at ``z_base = 0``): the default ``[0, 0]`` makes it
-       inert and ``[0, z_max]`` clips the negative half of every hill
+The table's dynamic fields are per-env float32 arrays in ``gen.params["elevation"]``.
+Static baseline, knot count and harmonic count require rebuilding. For example:
 
 .. code-block:: python
 
-   spec = presets.track(
-       num_envs=E, device=device,
-       elevation=("noise", {"z_min": -0.3, "z_max": 0.3, "z_noise_amplitude": 0.1}),
-       randomize={"elevation.z_noise_amplitude": (0.0, 0.3)},
-   )
-   gen = TrackGenerator(spec)
-   gen.params["elevation"].set("z_max", 0.25)     # a curriculum lowers the ceiling
+   gen.params["elevation"].set("z_noise_amplitude", 0.1)
+   gentler = gen.generate()              # same epoch, lower live amplitude
+   randomized = TrackGenerator(presets.track(
+       num_envs=E, device="cpu",
+       elevation=("noise", {"z_min": -0.3, "z_max": 0.3}),
+       randomize={"elevation.z_noise_amplitude": (0.05, 0.25)},
+   ), seeds=5)
 
-The randomize keys are ``"elevation.<field>"``; ``gen.params["elevation"]["z_max"]`` is
-the live array a curriculum writes. The same stage classes run on gates and on the
-centerline before the stations, so the same keys work in ``presets.gates`` (:doc:`gate
-courses </gates-3d>`).
+The configured window requires ``z_min <= z_max``. Randomized bounds that can cross
+are rejected at planning; raw live writes need care (:ref:`tuning-per-env`).
+Negative scalar amplitudes/step caps raise; negative raw-array values clamp to zero.
+NaNs can fail validity.
 
-Rules:
+``z_max_step`` shapes the walk **at its knots**. Bridge closure and interpolation
+mean it is not a guarantee for every final segment. ``z_valid_grade=0`` disables
+the final check; a positive static value rejects any adjacent pair, including the
+closing pair, whose realized ``abs(dz) / XY distance`` exceeds it (fail bit ``grade``).
+Select it through ``checks=(("default", {"z_valid_grade": .5}),)`` or a config field.
+It changes acceptance, not the generated heights.
 
-- ``z_min <= z_max`` is checked for the configured values. An inert window warns when
-  the generator is built, randomizers on ``z_min`` / ``z_max`` that can cross raise
-  ``PlanError``, and a crossing written at run time is not refused: the exact rules are
-  in :ref:`tuning-per-env`.
-- ``z_max_step`` and ``z_noise_amplitude`` are bounded below by ``0``: a negative scalar
-  raises ``ValueError``, a negative array value is clamped to ``0``.
-- The per-env course :term:`size` (``generator.size``, :ref:`tuning-size`) scales the
-  plan view, not z. ``uniform`` places its knots at arc fractions and ``noise`` runs its
-  harmonics in normalized arc length, so their grades fall as ``~1 / size``
-  (``uniform``, ``z_max = 0.3``: median per-track maximum grade 0.666 / 0.337 / 0.225 at
-  size 1 / 2 / 3): scale ``z_max`` / ``z_noise_amplitude`` with the size to keep the
-  grade. ``random_walk``'s ``z_max_step`` is a grade cap per unit arc, the same at every
-  size.
+``generator.size`` and static ``scale`` change XY extent while altitude stays absolute.
+For the same uniform/noise profile, spreading the road reduces grades; scale altitude
+with XY size when you want comparable hill steepness. A walk's cap already uses grade,
+but the altitude window still bounds its movement. Capacity and simulator utility
+resolution must accommodate the largest course (:ref:`tuning-size-utilities`).
 
 .. _tracks-25d-provided:
 
-Altitude from the generator
----------------------------
+Use supplied altitude
+----------------------
 
-A centerline generator can compute its altitude itself: it writes ``raw.z`` (one value
-per raw point) and declares ``provides={"z"}`` (:ref:`generator-provides`). The pipeline
-then runs no elevation stage. The resamplers carry the altitude to every final point
-(linear interpolation along the loop; through relaxation it stays with its point, see
-:ref:`pipeline-carried-channels`), ``lift.elevated`` lifts the level cross-sections to it
-and recomputes the 3D tangent and arc length, and ``z_valid_grade`` checks it, as for a
-profile. The profile knobs do not apply: ``presets.track(elevation=...)`` with a
-non-flat profile, or a non-zero ``z_base``, raises ``ValueError``. ``external`` does
-this with ``generator_params={"with_z": True}`` for altitudes you load
-(:ref:`ingesting-centerlines`). In a gate pipeline the same altitude reaches the gates
-by index, and can space them in 3D (:ref:`gates-3d-stations`).
+An imported or plugin generator can write ``raw.z`` and declare ``provides={"z"}``.
+The pipeline then omits elevation; resampling carries the channel to final points,
+and relaxation preserves bead identity. The elevated lift uses those heights and
+recomputes 3D tangents and length. Non-flat ``elevation`` or a nonzero flat ``z_base``
+is rejected when altitude is supplied. ``external`` selects this contract with
+``generator_params={"with_z": True}`` (:ref:`ingesting-centerlines`).
 
-Level cross-sections, and why plan-view collision stays valid
--------------------------------------------------------------
+Geometry and simulator semantics
+--------------------------------
 
-The elevation stage lifts ``outer``, ``center``, and ``inner`` **together**: at
-every centerline index ``i``, all three boundary points share the same ``z``
-(``_lift_track_zvar_k`` — "level cross-sections"). Two consequences fall out of
-this directly:
+The pipeline runs XY generation, constant-spacing sampling, width and relaxation,
+uniform resampling, planar frames and offsets, then elevation, validity and lift.
+With flat height the lift keeps the planar tangent/arclength tables; a non-flat profile
+recomputes them from 3D centerline geometry.
 
-- The per-point half-width recovery ``‖outer[i] - center[i]‖`` still works
-  unmodified: since ``outer[i]`` and ``center[i]`` share a ``z``, the vertical
-  component cancels and the norm is exactly the plan-view (XY) half-width, lifted
-  track or not.
-- **Out-of-bounds collision stays a plan-view check.** ``CollisionChecker``
-  (:doc:`/utilities/collision`) drops every boundary point's ``z`` before
-  comparing against the query box (it only ever reads ``wp.vec2f(p[0], p[1])``
-  off the ``vec3f`` inputs) — so an agent's XY position is checked against the
-  SAME road cross-section regardless of the track's altitude at that point. This
-  is deliberate: elevation never changes *where* the drivable band is in plan
-  view (the offset stage that produces ``outer``/``inner`` runs entirely in 2D,
-  before the altitude is even computed — see the stage order above), so a
-  collision engine that only understands XY works on lifted tracks unchanged.
+- ``Track.center``, ``outer`` and ``inner`` are flat ``vec3f`` arrays. Reshape as
+  ``[E, N_max, 3]`` and use each env's real ``count``. Invalid output is poisoned by
+  default; padding is not usable geometry (:doc:`/user-guide/results`).
+- Center/inner/outer at one index share Z. The recovered half-width
+  ``norm(outer[i] - center[i])`` is still the planar half-width. There is no banking.
+- ``Track.length`` / ``arclen`` and the elevated tangent describe the 3D polyline.
+  ``Track.normal`` remains the planar left-normal, with zero Z; it is not a 3D
+  surface normal. Props/checkpoints sample true 3D boundary distance.
+- Road :doc:`collision </utilities/collision>` remains an XY out-of-bounds query.
+  It does not test vertical separation from the ribbon, and elevated crossings
+  do not become overpasses: XY generation/validity still governs the road layout.
+- Localization curvature uses planar turn angles with 3D chord lengths; it is not
+  a full spatial-curve curvature measure. Grade changes can affect reported curvature
+  and its speed-profile limit (:doc:`/utilities/localize`).
 
-One limitation carries over from the general 2.5D design and is listed in full on the
-:doc:`gate courses page </gates-3d>`: plan-view self-crossings are rejected for tracks
-(unlike gates, a track's plan view is not allowed to cross itself). The other is specific
-to tracks: the elevation stage adds no tube or banking geometry — a lifted track is a
-ribbon of level cross-sections, not a banked surface.
-
-3D distance semantics
----------------------
-
-Once a track is lifted, every distance-measuring utility in the package reads the
-LIFTED (3D) geometry rather than its plan-view projection, with one exception
-(collision, above) that is plan-view by design:
-
-- ``Track.arclen``/``Track.length`` — cumulative and total arc length along the
-  centerline. For the default flat profile this is the plan-view length; for a
-  non-flat profile it is the TRUE 3D length of the lifted centerline, strictly
-  greater than the plan-view length whenever the profile is non-constant (a hilly
-  loop is longer in 3D than in plan view).
-- ``Track.tangent`` — for a non-flat profile this is a true 3D central
-  difference over the lifted centerline (``_track_frames3_k``), not the 2D
-  tangent. ``Track.normal``, by contrast, is computed BEFORE the lift and stays
-  the plan-view left-normal at ``z = 0`` — it is not re-derived from the 3D
-  tangent, so ``normal = (-tangent.y, tangent.x, 0)`` does not hold literally
-  on a lifted track (the XY *direction* still matches, but ``tangent`` is
-  3D-unit-length, so its XY projection alone is sub-unit).
-- ``track_gen.props.PropSampler`` and ``track_gen.checkpoints.CheckpointSampler``
-  share the same boundary-scanning kernel (``_scan_boundary_k``), whose snap
-  spacing and reported ``PropSet.step``/``length`` (points and segments modes
-  alike) are measured along the true 3D polyline — identical to the planar
-  length whenever ``z = 0``, but a genuine 3D chord/arc-step on a lifted track.
-- ``track_gen.localize.curvature()`` keeps its turn-angle NUMERATOR exactly
-  plan-view (unaffected by grade on its own), but its denominator does pick up a
-  z contribution: a plan-view turn taken on a graded section reads a slightly
-  smaller magnitude than the same turn flat, and a steep enough grade reversal
-  (a sharp crest or dip) on an otherwise straight section can register as a
-  spurious sharp turn. ``speed_profile()`` inherits that ``kappa`` as its
-  corner-speed limit, but its accel/brake ``ds`` is the true 3D segment length,
-  so the distance budget for accelerating out of / braking into a corner
-  accounts for the real climbing/descending path length.
-
-``PropSet.position``
---------------------
-
-:class:`track_gen.props.PropSet` (:doc:`/utilities/props`) carries ``vec3f``
-positions (``.reshape(-1, 3)`` on the host): on a flat track every prop's ``z`` is
-``z_base``, and on a lifted track each prop's ``z`` tracks the boundary elevation at its
-sample point (an on-curve sample in ``"points"`` mode, a chord midpoint in
-``"segments"`` mode). No code change is needed to place props on an elevated road.
-
-Heightfield
------------
-
-For external physics solvers that want a grid rather than a polyline, the
-``tools.HeightFieldBake(resolution)`` :term:`component` of a :term:`course` bakes each
-:term:`env`'s road surface
-into a square height grid on every regeneration, exposed as ``course.heightfield`` (a
-``HeightFieldBaker``; ``CourseConfig.heightfield_resolution`` in a ``CourseConfig``
-course, track mode only, ``>= 8``):
+Heightfield for external physics
+--------------------------------
 
 .. code-block:: python
 
    from track_gen import tools
    from track_gen.course import Course
 
-   course = Course.track(spec, checkpoint_spacing=0.6, seeds=0,
-                         extra=[tools.HeightFieldBake(96)])
-   hf = course.heightfield.bake()          # HeightField; re-bakes from the CURRENT batch
-   grid = hf.height.numpy().reshape(E, 96, 96)   # [E, res, res], row-major (y, x)
+   course = Course.track(spec, checkpoint_spacing=0.6, seeds=5,
+                         extra=[tools.HeightFieldBake(64)])
+   hf = course.heightfield.bake()
+   grid = hf.height.numpy().reshape(E, 64, 64)
 
 .. snippet: after
 
-   assert hf.res == 96 and grid.shape == (E, 96, 96)
+   assert hf.res == 64 and grid.shape == (E, 64, 64)
 
-Every texel takes the road ``z`` of the NEAREST centerline cross-section by
-plan-view distance: on-road texels get the exact road surface, and off-road
-texels continue the nearest edge's height outward, so the surface has no cliff
-at the road edge. Flat tracks bake a constant ``z_base`` sheet; invalid or
-degenerate envs (``Track.valid[e] == 0`` or fewer than 3 real points) bake
-``NaN`` across the whole env, with the placeholder box ``lo = (-1, -1)``,
-``hi = (1, 1)`` (:ref:`utilities-invalid-envs`). The per-env world AABB is the
-plan-view band's bounding box plus padding (10% of the env's larger extent by default,
-matching the SDF baker's convention), and texel ``(x, y)`` centers map to world
-coordinates as:
+Each texel takes the altitude of the nearest centerline cross-section in XY. Off-road
+texels continue the nearest edge height; this is a nearest-section approximation,
+not a continuously triangulated banked surface. Invalid/degenerate envs bake NaN and
+a placeholder box ``[-1,1]^2``. The per-env ``lo`` / ``hi`` box includes padding
+(default 10% of its larger road extent); texel centers are
+``lo + ((x,y) + .5) / res * (hi-lo)`` in row-major ``(y,x)`` storage.
 
-.. code-block:: text
+Larger XY size enlarges texels at fixed resolution; choose resolution for the largest
+size (:ref:`collision-resolution-check`). Utility ring capacity also needs a 3D length
+bound. Dynamic altitude bounds alone declare none: positive ``z_valid_grade`` supplies
+a conservative climb bound; otherwise ``Course`` sizes checkpoints from its construction
+batch and ``tools.Checkpoints`` / ``tools.Props`` need an explicit capacity
+(:ref:`course-checkpoint-capacity`).
 
-   world = lo + ((x, y) + 0.5) / res * (hi - lo)
-
-with ``lo``/``hi`` the per-env ``[E]`` ``vec2f`` AABB corners (``HeightField.lo``/
-``HeightField.hi``) and ``res`` the grid resolution (``HeightField.res``).
-
-The grid spans each env's own bounding box, so under a per-env ``size`` its texels grow
-with the course while the road keeps its width: raise the resolution with the largest
-size (``R >= R_ref * size_hi``, memory ``~size_hi^2`` times;
-:ref:`tuning-size-utilities`). ``tools.HeightFieldBake(resolution, size_hi=...)`` warns
-at ``attach`` when the resolution is below that rule (:ref:`collision-resolution-check`).
-
-**Elevation and the utilities' capacities.** The checkpoint and prop rings are sized
-from the longest loop the generator can produce, ``1.5 * N_max * spacing + dZ``, with
-``dZ`` a bound on the elevation's climbs taken from the declared ranges of the elevation
-knobs (:doc:`/contributing/writing-a-component`). ``z_min`` / ``z_max`` are dynamic knobs
-with no declared range, so an elevated track declares no bound unless
-``z_valid_grade > 0`` (``dZ = z_valid_grade * 1.5 * N_max * spacing``): a ``Course``
-then sizes its checkpoints from the construction batch (:ref:`course-checkpoint-capacity`),
-and ``tools.Checkpoints`` / ``tools.Props`` need an explicit capacity.
-``1.5 * N_max * spacing`` alone does not bound an elevated loop: with ``uniform`` z in
-``[0, 8]`` the longest centerline reached 1.275 times it.
-
-.. figure:: _static/tracks-25d.png
-   :alt: Three 2.5D tracks, each as a plan view, an elevation profile, and a
-         baked heightfield
-   :align: center
-
-   Three tracks rendered by ``viz/plot_tracks_3d.py``
-   (``z_profile="random_walk"``, ``z_base=1.0``, ``z_min=0.2``, ``z_max=2.0``,
-   ``z_max_step=0.3``). Each row is one env: plan view (filled band + outer/inner
-   borders + dashed centerline), elevation profile (arc length vs. centerline
-   z), and the baked heightfield (``imshow``, extent from ``lo``/``hi``, with the
-   plan-view centerline overlaid) — the heightfield's ridge tracks the same
-   climbs and dips visible in the elevation panel, at the same plan-view
-   location. Regenerate with
-   ``python viz/plot_tracks_3d.py --out docs/_static/tracks-25d.png --envs 3 --seed 5``.
-
-See also
---------
-
-- :doc:`/gates-3d` — the same elevation stage applied to gate sequences, plus the
-  ``gate_align`` frame-tilting choice and the 3D ``CourseLine`` runtime.
-- :doc:`/tutorials/batch-of-tracks` — the end-to-end track-generation recipe.
-- :doc:`/utilities/course` — the ``Course`` facade and its components.
-- :doc:`/utilities/props` — boundary prop sampling, vec3f-native on lifted
-  tracks.
-- :doc:`/utilities/localize` — ``curvature()`` and ``speed_profile()``, whose
-  behavior on lifted tracks is detailed above.
-- :doc:`/utilities/collision` — the plan-view out-of-bounds checker.
+For altitude on gates and frame orientation, continue to :doc:`/gates-3d`.
