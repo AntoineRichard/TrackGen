@@ -1,20 +1,11 @@
-"""Byte-identity fingerprints of the built-in generators (roadmap PR7).
+"""Track and gate field fingerprints for the 0.3 RNG baseline.
 
-``compute()`` runs every built-in track and gate generator on CPU through the public
-facades only (names that exist at 1077b18 and after PR7) and returns the sha256 of each
-output field's bytes. The committed fingerprints were captured at 1077b18, before the
-built-ins were ported to ``track_gen.ops``; ``tests/test_generator_fingerprints.py``
-recomputes them on the current tree. Float results depend on the platform and the Warp
-version, so the file is keyed by :func:`platform_key` and the test skips on a key it does
-not hold.
-
-Capture (from the repository root, against a checkout of the reference tree)::
-
-    PYTHONPATH=<reference tree> python tests/tools/capture_pr7_fingerprints.py
-
-It adds or replaces this platform's entry in ``tests/goldens/pr7_fingerprints.json``.
+Use tests.tools.capture_03_goldens to capture and merge platform fragments together.
+The historical filename identifies its coverage family; values use the current keying.
 """
 from __future__ import annotations
+
+from tests.tools._golden_config import keep_config
 
 import hashlib
 import json
@@ -47,7 +38,7 @@ TRACK_CASES = {
                       half_width=0.1),
 }
 # Configurations where some envs self-cross and take the polygon fallback (asserted).
-FALLBACK_E = 32
+FALLBACK_E = 128
 FALLBACK_CASES = {
     "bezier_fallback": dict(generator="bezier", rad=0.49),
     "voronoi_fallback": dict(generator="voronoi", voronoi_radial_variation=0.85,
@@ -105,7 +96,7 @@ def _compute() -> dict:
     for case, kw in TRACK_CASES.items():
         gen = case.split("_")[0]
         n = 2 if gen == "repulsive" else E
-        cfg = TrackGenConfig(generator=gen, device="cpu", num_envs=n, **kw)
+        cfg = keep_config(TrackGenConfig, generator=gen, device="cpu", num_envs=n, **kw)
         track = TrackGenerator(cfg, PerEnvSeededRNG(seeds=seeds(n), num_envs=n,
                                                     device="cpu")).generate()
         for f in TRACK_FIELDS:
@@ -113,7 +104,7 @@ def _compute() -> dict:
     fb_seeds = wp.array(np.arange(FALLBACK_E, dtype=np.int32) * 7919 + 3, dtype=wp.int32,
                         device="cpu")
     for case, kw in FALLBACK_CASES.items():
-        cfg = TrackGenConfig(device="cpu", num_envs=FALLBACK_E, **kw)
+        cfg = keep_config(TrackGenConfig, device="cpu", num_envs=FALLBACK_E, **kw)
         tg = TrackGenerator(cfg, PerEnvSeededRNG(seeds=fb_seeds, num_envs=FALLBACK_E,
                                                  device="cpu"))
         track = tg.generate()
@@ -124,7 +115,7 @@ def _compute() -> dict:
     for gen in GATE_CASES:
         for ordering in ("ccw", "raw" if gen in ("polar", "voronoi", "checkpoint")
                          else "random_pairs"):
-            gcfg = GateGenConfig(generator=gen, device="cpu", num_envs=E, gate_width=0.05,
+            gcfg = keep_config(GateGenConfig, generator=gen, device="cpu", num_envs=E, gate_width=0.05,
                                  gate_ordering=ordering)
             seq = GateGenerator(gcfg, PerEnvSeededRNG(seeds=seeds(E), num_envs=E,
                                                       device="cpu")).generate()

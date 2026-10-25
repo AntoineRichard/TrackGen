@@ -299,9 +299,10 @@ It does not depend on the seeds, the batch or the course :term:`size`. At the de
   longer tracks, or pass ``max_checkpoints``.
 - **A warning.** When the default capacity clips a valid env of the construction batch,
   construction emits one ``UserWarning``. An explicit ``max_checkpoints`` never warns.
-- ``course.checkpoint_sampler.max_checkpoints`` reads the capacity in use. To keep the
-  array shapes of code written for 0.1, pass ``max_checkpoints`` explicitly
-  (:ref:`upgrading-checkpoint-capacity`).
+- ``course.checkpoint_sampler.max_checkpoints`` reads the capacity in use. Pass
+  ``max_checkpoints`` explicitly to preserve array shapes across a change in the
+  seed mapping or generator geometry (:ref:`upgrading-0.3-rng`), or when migrating
+  code written for 0.1 (:ref:`upgrading-checkpoint-capacity`).
 
 A size curriculum grows the tracks after construction: :ref:`curricula-course` shows how
 to size the checkpoint ring and the SDF and height-field grids for it.

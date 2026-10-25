@@ -34,11 +34,10 @@ from .builtin_params import BezierParams, _declared_bounds
 from .builtin_stage import check_dyn, default_alloc, run_view
 from .runtime import _init
 
-# RNG keying of the corner streams (``wp.rand_init(seed * salt + attempt)``, see
-# :func:`track_gen.ops.sample_counts`). The count and position salts differ so the two
-# streams stay decorrelated; the built-in generator always uses attempt 0.
-CORNER_COUNT_SALT = 6151
-CORNER_SALT = 9781
+# Fixed namespaces generator.bezier/corner_count and generator.bezier/corners.
+# Built-ins use hashed indexed streams; public sampling keeps its linear default.
+CORNER_COUNT_SALT = 0xB739AFFB
+CORNER_SALT = 0xC2C74E45
 
 
 
@@ -317,11 +316,11 @@ def _enqueue_bezier(seeds_wp, config, out_centerline, out_valid_wp, scratch, ctx
     # depend on TrackGenConfig's min_num_points >= 2 check (a config mutated after
     # construction is not re-validated).
     _sample_counts_launch(ctx, seeds_wp, CORNER_COUNT_SALT, 0, dyn["min_num_points"],
-                          int(config.max_num_points), scratch.gen_count)
+                          int(config.max_num_points), scratch.gen_count, keying="hashed")
     num_cells, cell = ops.grid_cells(config.min_point_distance)
     ops.sample_grid_points(ctx, seeds_wp, CORNER_SALT, 0, P, num_cells, float(cell),
                            float(config.scale),
-                           scratch.gen_used, scratch.gen_corners, size=dyn["size"])
+                           scratch.gen_used, scratch.gen_corners, size=dyn["size"], keying="hashed")
     _angle_sort_launch(ctx, scratch.gen_corners, P, scratch.gen_count, P, scratch.gen_keys,
                        scratch.gen_ordered, m_floor=1)
 

@@ -560,6 +560,12 @@ one.
 Seeds, epochs and the generation counter
 ----------------------------------------
 
+Built-in random streams hash the effective seed with a fixed named salt. Repeated
+calls with the same seeds, epochs and configuration reproduce output on the same
+device and Warp version; seed mappings can change at a breaking release. See
+:ref:`ops-rng-keying` for the namespaces and :ref:`upgrading-0.3-rng` for the current
+migration. The public ops samplers retain a linear default for plugin callers.
+
 Each env is keyed by a pair ``(seed, epoch)``, held by the generator's
 :class:`~track_gen.seeds.SeedState` (``gen.seeds``):
 

@@ -988,7 +988,7 @@ def _launch_cases():
 
 
 @pytest.mark.parametrize("case", _launch_cases())
-def test_gate_launch_counts_are_the_pr11_golden_plus_the_latches(case):
+def test_gate_launch_counts_match_the_03_golden(case):
     from tests.tools import capture_pr11_gate_stages as tool
 
     golden = tool.load().get(tool.platform_key())
@@ -1002,7 +1002,7 @@ def test_gate_launch_counts_are_the_pr11_golden_plus_the_latches(case):
         gen.generate()
     n = gate_latches(name, z)
     assert latch_dtypes(gen.program) == n
-    assert len(t) == len(golden["launches"][case]) + len(n)
+    assert len(t) == len(golden["launches"][case])
 
 
 def test_repulsive_and_the_default_gates_gain_exactly_the_pr13d_latches():

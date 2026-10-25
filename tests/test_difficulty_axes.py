@@ -356,19 +356,19 @@ def _make_gates(**kw):
 
 
 def test_the_count_twin_equals_the_scalar_kernel(monkeypatch):
-    dim, args = _capture(monkeypatch, _make_track(), ops_sampling._sample_counts_dyn_k)
+    dim, args = _capture(monkeypatch, _make_track(), ops_sampling._sample_counts_dyn_h_k)
     hi = int(args[4])
     assert hi == 13
 
     def scalar(lo):
         a = list(args)
         a[3] = int(lo)
-        return _launch(ops_sampling._sample_counts_k, dim, a)[5]
+        return _launch(ops_sampling._sample_counts_h_k, dim, a)[5]
 
     def twin(values):
         a = list(args)
         a[3] = _i32(values)
-        out = _launch(ops_sampling._sample_counts_dyn_k, dim, a)
+        out = _launch(ops_sampling._sample_counts_dyn_h_k, dim, a)
         assert out[3].tobytes() == np.asarray(values, np.int32).tobytes(), "lo written"
         return out[5]
 
@@ -390,9 +390,9 @@ def test_the_count_twin_equals_the_scalar_kernel(monkeypatch):
 def test_the_sized_grid_twins_equal_the_original(monkeypatch, variant):
     style = variant == "scaled"
     twin_k = ops_sampling._sample_grid_points_scaled_sized_k if style else \
-        ops_sampling._sample_grid_points_sized_k
+        ops_sampling._sample_grid_points_sized_h_k
     orig_k = ops_sampling._sample_grid_points_scaled_k if style else \
-        ops_sampling._sample_grid_points_k
+        ops_sampling._sample_grid_points_h_k
     if style:
         dim = E
         P = 13
@@ -1105,8 +1105,8 @@ _TRACK_DELTAS = {
     "bezier_z_random_walk": (_ZW, 161, 5, 163, [_I, _F, _F, _F, _F, _F, _F]),
     "bezier_z_noise": (_ZN, 159, 5, 161, [_I, _F, _F, _F, _F, _F, _F]),
 }
-_TRACK_TWINS = {"bezier": ("_sample_counts_dyn_k", "_sample_grid_points_sized_k"),
-                "hull": ("_sample_counts_dyn_k", "_sample_grid_points_sized_k"),
+_TRACK_TWINS = {"bezier": ("_sample_counts_dyn_h_k", "_sample_grid_points_sized_h_k"),
+                "hull": ("_sample_counts_dyn_h_k", "_sample_grid_points_sized_h_k"),
                 "polar": ("_normalize_extent_sized_k",),
                 "voronoi": ("_normalize_extent_sized_k", "_normalize_extent_sized_k"),
                 "checkpoint": ("_normalize_extent_sized_k",)}
@@ -1146,7 +1146,7 @@ def test_the_track_launch_deltas(case):
     name = kw.get("generator", "bezier")
     twins = list(_TRACK_TWINS[name])
     assert [n for n in names if n in set(twins)] == twins, names
-    for orig in ("_sample_counts_k", "_sample_grid_points_k", "_sample_grid_points_scaled_k",
+    for orig in ("_sample_counts_h_k", "_sample_grid_points_h_k", "_sample_grid_points_scaled_h_k",
                  "_normalize_extent_k"):
         assert orig not in names, orig
     # The generator's latches lead the block (the elevation's follow).
@@ -1241,7 +1241,7 @@ def test_the_gate_launch_deltas(case):
     # the PR11 record minus the toggle (scalar 11): z_valid_grade moves to index 11
     assert v[0].scalars == ((8, G), (9, 4), (10, 0.05), (11, 0.0)), v[0].scalars
     if name in ("bezier", "hull"):
-        assert "_sample_counts_k" in names and "_sample_grid_points_sized_k" in names
+        assert "_sample_counts_h_k" in names and "_sample_grid_points_sized_h_k" in names
     else:
         assert "_normalize_extent_to_sized_k" in names
         assert "_normalize_extent_to_k" not in names
@@ -1256,7 +1256,7 @@ def test_the_stations_launch_delta():
     assert len(plain) == 32
     assert assert_latch_block(gen.program, plain, masked) == [_I, _F, _F, _F, _F]
     names = _names(plain)
-    assert "_sample_counts_dyn_k" in names and "_sample_grid_points_sized_k" in names
+    assert "_sample_counts_dyn_h_k" in names and "_sample_grid_points_sized_h_k" in names
 
 
 # ---------------------------------------------------------------------------------------

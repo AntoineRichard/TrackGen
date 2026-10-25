@@ -1,4 +1,4 @@
-"""Private pre-0.3 scalar numeric reference; never imported by the library."""
+"""Independent scalar numeric reference with current stream initialization."""
 from __future__ import annotations
 from track_gen._src import warp_generate as _implementation
 from track_gen._src.runtime import _init
@@ -71,7 +71,7 @@ def corner_count_sample_inplace(seeds_wp, attempt, config, out_count,
     # Legacy entry point (kept for out-of-tree plugins): ops.sample_counts keyed
     # seed * CORNER_COUNT_SALT + attempt, without the public op's validation.
     _sample_counts_launch(ctx, seeds_wp, CORNER_COUNT_SALT, int(attempt),
-                          int(config.min_num_points), int(config.max_num_points), out_count)
+                          int(config.min_num_points), int(config.max_num_points), out_count, keying="hashed")
     ctx.sync()
 
 def corner_sample_inplace(seeds_wp, attempt, config, out_corners, used_scratch,
@@ -101,7 +101,7 @@ def corner_sample_inplace(seeds_wp, attempt, config, out_corners, used_scratch,
     scale = scale_per_env if per_env else float(config.scale)
     _sample_grid_points_launch(ctx, seeds_wp, CORNER_SALT, int(attempt), P, num_cells,
                                float(cell_size), scale, used_scratch, out_corners,
-                               per_env=per_env)
+                               per_env=per_env, keying="hashed")
     ctx.sync()
 
 def ccw_sort_inplace(corners_wp, count_wp, keys_scratch, out_wp, P,
@@ -184,9 +184,9 @@ def _enqueue_bezier(seeds_wp, config, out_centerline, out_valid_wp, scratch, ctx
     arc = ops.ArcScratch(scratch.gen_arc_real, scratch.gen_arc_seg, scratch.gen_arc_s, scratch.gen_arc_cr)
     style = bool(getattr(config, 'style_sampling', False))
     scale_pe = rad_pe = clamp_pe = None
-    ops.sample_counts(ctx, seeds_wp, CORNER_COUNT_SALT, 0, int(config.min_num_points), int(config.max_num_points), scratch.gen_count)
+    ops.sample_counts(ctx, seeds_wp, CORNER_COUNT_SALT, 0, int(config.min_num_points), int(config.max_num_points), scratch.gen_count, keying="hashed")
     num_cells, cell = ops.grid_cells(config.min_point_distance)
-    ops.sample_grid_points(ctx, seeds_wp, CORNER_SALT, 0, P, num_cells, float(cell), float(config.scale), scratch.gen_used, scratch.gen_corners)
+    ops.sample_grid_points(ctx, seeds_wp, CORNER_SALT, 0, P, num_cells, float(cell), float(config.scale), scratch.gen_used, scratch.gen_corners, keying="hashed")
     _angle_sort_launch(ctx, scratch.gen_corners, P, scratch.gen_count, P, scratch.gen_keys, scratch.gen_ordered, m_floor=1)
     assemble_inplace(scratch.gen_ordered, scratch.gen_count, config, scratch.gen_tan, scratch.gen_scale, scratch.gen_dense, rad_per_env=rad_pe, clamp_per_env=clamp_pe, ctx=ctx)
     ops.arc_resample(ctx, scratch.gen_dense, M, N, arc, scratch.gen_rs, scratch.gen_arc_co)

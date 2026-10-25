@@ -6,13 +6,13 @@ to its bounds by comparisons, so a NaN passes; the original kernel's body verbat
 
 - ``size`` (float32, default 1, bounds ``ops.constants.SIZE_BOUNDS``): a per-env factor
   applied where each generator applies ``scale`` (bezier / hull and the bezier / hull
-  gate generators: last in the corner grid, ``_sample_grid_points_sized_k`` /
-  ``_scaled_sized_k``; polar / voronoi / checkpoint: the normalization target,
+  gate generators: last in the corner grid, ``_sample_grid_points_sized_h_k``;
+  polar / voronoi / checkpoint: the normalization target,
   ``_normalize_extent_sized_k``; the polar / voronoi / checkpoint gate pipelines:
   ``normalize.size``, ``_normalize_extent_to_sized_k``; repulsive: a finite-gated
   multiply of its output copy, ``_copy_sized_k``);
 - ``min_num_points`` (int32, bezier / hull track generators): the corner count's lower
-  bound, clamped to ``[2, max_num_points]`` (``_sample_counts_dyn_k``);
+  bound, clamped to ``[2, max_num_points]`` (``_sample_counts_dyn_h_k``);
 - ``gate_frames.gate_width`` (float32, ``>= 0``): ``_finalize_frame_dyn_k``, and
   ``validity.gate_default`` checks bar crossings PER ENV (``_finalize_validity_bars_k``:
   the crossing loop runs for an env with a real gate of non-zero ``half_size``);
@@ -500,10 +500,10 @@ _GEOMETRY = "track_gen.ops.geometry"
 _GATES = "track_gen.stages.gates"
 _WARP_GATE = "track_gen._src.warp_gate"
 _PAIRS = {
-    "sample_counts": _Pair(f"{_SAMPLING}:_sample_counts_k", f"{_SAMPLING}:_sample_counts_dyn_k",
+    "sample_counts": _Pair(f"{_SAMPLING}:_sample_counts_h_k", f"{_SAMPLING}:_sample_counts_dyn_h_k",
                            "replace", 3, None, "track:bezier"),
-    "sample_grid_points": _Pair(f"{_SAMPLING}:_sample_grid_points_k",
-                                f"{_SAMPLING}:_sample_grid_points_sized_k",
+    "sample_grid_points": _Pair(f"{_SAMPLING}:_sample_grid_points_h_k",
+                                f"{_SAMPLING}:_sample_grid_points_sized_h_k",
                                 "append", None, 6, "track:bezier"),
     "sample_grid_points_scaled": _Pair(f"{_SAMPLING}:_sample_grid_points_scaled_k",
                                        f"{_SAMPLING}:_sample_grid_points_scaled_sized_k",
@@ -724,8 +724,8 @@ def _cmp(got: dict, want: dict, label: str, *, env=None, nan_ok: bool = False) -
 
 
 def test_count_twin_equals_the_original_on_generator_inputs(monkeypatch):
-    """``_sample_counts_dyn_k`` (bezier / hull ``min_num_points`` per env) against
-    ``_sample_counts_k`` on the inputs the PR9 composition handed it: a uniform array at
+    """``_sample_counts_dyn_h_k`` (bezier / hull ``min_num_points`` per env) against
+    ``_sample_counts_h_k`` on the inputs the reference composition handed it: a uniform array at
     the captured ``lo`` (9), at 2, at ``hi`` and interior == the original at that ``lo``;
     below 2 (0, -5, int32 min) == the original at 2; above ``hi`` (int32 max) == the
     original at ``hi``; per env == row by row the original at each env's clamped value;
@@ -1041,12 +1041,12 @@ _SIZES = (1.0, 0.7, 1.3, 1.0, 0.45, 2.2, 1.6, 0.9)
 #: Repulsive truncates from ~1.6 at the default n_max (design 1.5): stay below it.
 _SIZES_REPULSIVE = (1.0, 0.7, 1.3, 1.0, 0.85, 1.5, 1.2, 0.9)
 _COUNTS = (9, 2, 13, 11, 1, 40, 5, -3)
-_GRID_SIZED = (("_sample_grid_points_sized_k",), ("_sample_grid_points_k",))
+_GRID_SIZED = (("_sample_grid_points_sized_h_k",), ("_sample_grid_points_h_k",))
 _GATE_TWINS = (("_finalize_frame_dyn_k", "_finalize_validity_bars_k"),
                ("_finalize_frame_k", "_finalize_validity_k"))
 _NORM_TRACK = (("_normalize_extent_sized_k",), ("_normalize_extent_k",))
 _NORM_GATES = (("_normalize_extent_to_sized_k",), ("_normalize_extent_to_k",))
-_COUNT_TWINS = (("_sample_counts_dyn_k",), ("_sample_counts_k",))
+_COUNT_TWINS = (("_sample_counts_dyn_h_k",), ("_sample_counts_h_k",))
 
 
 def _gates_twins(twins):

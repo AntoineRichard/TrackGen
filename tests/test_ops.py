@@ -121,7 +121,7 @@ def _noisy_loops(rs, E, n, nan_rows=True):
 
 _ALL = ["ArcScratch", "all_set", "angle_sort", "any_set", "arc_resample", "check_array",
         "closed_catmull_rom", "constants", "fill", "funcs", "grid_cells", "hash32",
-        "hash32_host", "normalize_extent", "closed_polyline",
+        "hash32_host", "normalize_extent", "closed_polyline", "rng",
         "resample_constant_spacing", "resample_uniform", "sample_counts",
         "sample_grid_points", "self_intersections", "thickness", "turning_number",
         # roadmap PR13a: carried channels
@@ -140,6 +140,14 @@ def test_public_surface():
     assert ops.constants.TARGET_EXTENT == 1.44
     assert sorted(ops.funcs.__all__) == ["catmull_rom", "ccw", "cross2", "hash32", "nan0",
                                          "safe_normalize2", "segments_cross"]
+
+
+@pytest.mark.parametrize("name", ["sample_counts", "sample_grid_points"])
+def test_sampler_keying_is_keyword_only_and_defaults_to_linear(name):
+    keying = inspect.signature(getattr(ops, name)).parameters.get("keying")
+    assert keying is not None
+    assert keying.kind is inspect.Parameter.KEYWORD_ONLY
+    assert keying.default == "linear"
 
 
 @pytest.mark.parametrize("name", _CTX_OPS)

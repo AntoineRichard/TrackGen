@@ -1,4 +1,4 @@
-"""Frozen reference of the 0.2.0.dev3 (dd181f0) gate pipeline, for the PR11 parity test.
+"""Independent numeric composition of the PR11 gate pipeline, using current RNG streams.
 
 PR11 decomposed ``warp_gate._run_gate_pipeline`` into the stages of a gate
 :class:`~track_gen.pipeline.Program` and deleted the Python glue it ran. This module keeps
@@ -41,7 +41,7 @@ from track_gen.ops import funcs as _funcs
 from track_gen.ops.constants import TARGET_EXTENT
 from track_gen.ops.geometry import _angle_sort_launch, _normalize_extent_launch
 
-_ORDER_SALT = 7919
+_ORDER_SALT = 0x977A7D68
 _proper_segment_intersection = _funcs.segments_cross
 
 FINAL_FIELDS = ("position", "tangent", "forward", "orientation", "half_size", "left",
@@ -290,15 +290,15 @@ def _anchors(ctx, cfg, seeds):
         num_cells, cell_size = ops.grid_cells(cfg.min_point_distance)
         if name == "bezier":
             ops.sample_counts(ctx, seeds, warp_generate.CORNER_COUNT_SALT, 0,
-                              int(cfg.min_num_points), int(cfg.max_num_points), count)
+                              int(cfg.min_num_points), int(cfg.max_num_points), count, keying="hashed")
             ops.sample_grid_points(ctx, seeds, warp_generate.CORNER_SALT, 0, P, num_cells,
-                                   float(cell_size), float(cfg.scale), used, points)
+                                   float(cell_size), float(cfg.scale), used, points, keying="hashed")
         else:
             ops.sample_counts(ctx, seeds, hull.POINT_COUNT_SALT, hull.POINT_SALT_OFFSET,
-                              int(cfg.min_num_points), int(cfg.max_num_points), count)
+                              int(cfg.min_num_points), int(cfg.max_num_points), count, keying="hashed")
             ops.sample_grid_points(ctx, seeds, hull.POINT_SALT, hull.POINT_SALT_OFFSET, P,
                                    num_cells, float(cell_size), float(cfg.scale), used,
-                                   points)
+                                   points, keying="hashed")
         return points, P, count, None
     target_extent = float(cfg.scale) * TARGET_EXTENT
     count = wp.zeros(E, dtype=wp.int32, device=dev)
@@ -341,7 +341,7 @@ def _order_points(ctx, seeds, src, src_stride, count, G, ordering, keys, dst) ->
         _angle_sort_launch(ctx, src, int(src_stride), count, G, keys, dst, 0)
     elif ordering == "random_pairs":
         ctx.launch(_order_random_pairs_k, E,
-                   [seeds, src, int(src_stride), count, G, int(_ORDER_SALT), keys, dst])
+                   [seeds, src, int(src_stride), count, G, wp.uint32(_ORDER_SALT), keys, dst])
     else:
         raise ValueError(f"unsupported gate ordering {ordering!r}")
 

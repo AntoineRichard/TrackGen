@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import warp as wp
 
+from ..ops import rng as _rng
+
 from ..exec.context import LaunchContext, resolve as _resolve_ctx
 from ..ops import funcs as _funcs
 from ..ops.fill import fill as _ops_fill
@@ -35,7 +37,7 @@ from .runtime import _init as _initialize
 from .types import GateGenConfig, GateSequence
 
 # The random_pairs order's salt (order.random_pairs).
-_ORDER_SALT = 7919
+_ORDER_SALT = 0x977A7D68
 
 
 # Device helpers and fills now live in track_gen.ops (PR7); the historical names are
@@ -90,7 +92,7 @@ def _order_random_pairs_k(
     src_stride: int,
     count: wp.array(dtype=wp.int32),
     max_gates: int,
-    salt: int,
+    salt: wp.uint32,
     keys: wp.array(dtype=wp.float32),
     dst: wp.array(dtype=wp.vec2f),
 ):
@@ -108,7 +110,7 @@ def _order_random_pairs_k(
     pair_count = (m + 1) // 2
     for pair in range(max_gates):
         if pair < pair_count:
-            state = wp.rand_init(seeds[e] * 3187 + salt + pair * 104729)
+            state = _rng.init_at(seeds[e], salt, pair)
             keys[dst_base + pair] = wp.randf(state) + float(pair) * 1.0e-6
 
     out_i = int(0)

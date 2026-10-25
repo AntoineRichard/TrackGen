@@ -25,11 +25,13 @@ grade or amplitude is clamped to its declared lower bound at use.
 """
 import warp as wp
 
+from ..ops import rng as _rng
+
 from ..exec.context import LaunchContext, resolve as _resolve_ctx
 
-_P_UNIFORM = 15679
-_P_WALK = 15683
-_P_NOISE = 15731
+_P_UNIFORM = 0x7D59D787
+_P_WALK = 0x9717C554
+_P_NOISE = 0xD8AEA614
 _TWO_PI = 6.2831853071795864
 # The declared lower bound of z_max_step / z_noise_amplitude (stages.params; float32).
 _ZERO = wp.constant(wp.float32(0.0))
@@ -101,7 +103,7 @@ def _z_uniform_dyn_k(seeds: wp.array(dtype=wp.int32),
         return
     z_min = zmin_e[e]
     z_max = zmax_e[e]
-    state = wp.rand_init(seeds[e] * _P_UNIFORM + i)
+    state = _rng.init_at(seeds[e], wp.uint32(_P_UNIFORM), i)
     z[t] = z_min + wp.randf(state) * (z_max - z_min)
 
 
@@ -126,7 +128,7 @@ def _z_walk_dyn_k(seeds: wp.array(dtype=wp.int32),
         n = max_gates
     if n < 1:
         return
-    state = wp.rand_init(seeds[e] * _P_WALK)
+    state = _rng.init(seeds[e], wp.uint32(_P_WALK))
     acc = float(0.0)
     for i in range(n):
         if i > 0:
@@ -177,7 +179,7 @@ def _z_noise_dyn_k(seeds: wp.array(dtype=wp.int32),
     acc = float(0.0)
     norm = float(0.0)
     for k in range(harmonics):
-        state = wp.rand_init(seeds[e] * _P_NOISE + k)
+        state = _rng.init_at(seeds[e], wp.uint32(_P_NOISE), k)
         a = wp.randf(state)
         phase = wp.randf(state) * _TWO_PI
         w = 1.0 / float(k + 1)

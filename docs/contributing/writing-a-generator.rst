@@ -566,12 +566,12 @@ Five rules hold for the ``enqueue`` of every Stage whose capture class is not ``
    loop that should stop once every env has converged is a ``ctx.bounded_loop`` with a
    static bound, in a ``BOUNDED`` Stage (see :ref:`stage-bounded`).
 5. **Deterministic in the per-env seed and the parameters.** Draw every random number
-   with the Warp RNG from the env's seed, salted so your stream is not correlated with
-   the built-ins' streams for the same seed: a Stage takes its salts from ``b.salt``
-   (:ref:`stage-salts`), a ``GeneratorSpec`` uses a constant of its own
-   (``wp.rand_init(seeds[e], SALT)``), and the ``track_gen.ops`` samplers take a
-   ``(salt, offset)`` pair no built-in uses (:ref:`ops-rng-keying`). CPU and CUDA
-   results may differ, as elsewhere in TrackGen.
+   with the Warp RNG from the env's effective seed. A Stage takes its salts from
+   ``b.salt`` (:ref:`stage-salts`); a ``GeneratorSpec`` chooses constants of its own.
+   Mix each salt through ``ops.rng.init`` or ``init_at``. For the public ops samplers,
+   request ``keying="hashed"`` and give each independent stream its own salt/index
+   (:ref:`ops-rng-keying`). Existing plugin streams can retain their own formulas.
+   CPU and CUDA results may differ, as elsewhere in TrackGen.
 
 The conformance kit checks these rules mechanically: ``check_generator`` fails a
 generator that host-syncs, allocates, launches off the call's stream, changes its launch
@@ -676,7 +676,8 @@ Random streams: ``b.salt``
 an unsigned 32-bit integer computed from the stage id and the stream name only (the stage
 id is ``"generator"`` for every generator). The formula is frozen for plugin API version
 1, so a plugin's outputs stay reproducible across TrackGen releases. Key each env's
-stream on the effective seed and the salt, as the quick start's kernel does:
+stream on the effective seed and the salt with :func:`track_gen.ops.rng.init`.
+It is equivalent to the quick start's explicit hash:
 
 .. snippet: skip=fragment
 
@@ -685,11 +686,12 @@ stream on the effective seed and the salt, as the quick start's kernel does:
    key = hash32(wp.uint32(seed[e]) ^ salt) & wp.uint32(0x7FFFFFFF)
    state = wp.rand_init(wp.int32(key))
 
-``hash32`` is ``track_gen.ops.funcs.hash32``. Unlike the built-ins' linear
-``seed * salt + offset`` keying (see :ref:`ops-rng-keying`), this hashed keying does not
-collapse at seed 0: streams with different salts differ for every seed. Use one stream
-name per independent draw. Asking for the same name again returns the same salt, and two
-names whose salts collide raise ``ValueError``.
+``hash32`` is ``track_gen.ops.funcs.hash32``. Hashing retains the salt's effect at
+seed 0, avoiding the systematic collapse of linear ``seed * salt + offset`` keying.
+The finite 31-bit keys can still collide. Use one stream name per independent draw.
+Asking for the same name again returns the same salt, and two names whose salts
+collide raise ``ValueError``. Built-ins use fixed namespaces independent of Stage IDs
+(:ref:`ops-rng-keying`); plugin ``b.salt`` remains tied to the Stage ID.
 
 .. _stage-capture-classes:
 
@@ -1490,10 +1492,10 @@ an explicit argument. Every op:
 
    * - Op
      - What it does
-   * - ``sample_counts(ctx, seeds, salt, offset, lo, hi, out)``
+   * - ``sample_counts(ctx, seeds, salt, offset, lo, hi, out, *, keying="linear")``
      - One integer in ``[lo, hi]`` per env (how many corners, points or gates).
    * - ``sample_grid_points(ctx, seeds, salt, offset, num, num_cells, cell_size, scale,
-       used, out, *, size=None)``, ``grid_cells(min_point_distance)``
+       used, out, *, size=None, keying="linear")``, ``grid_cells(min_point_distance)``
      - ``num`` jittered points per env on distinct cells of a grid where possible (the
        ``bezier`` and ``hull`` sampler). The jitter is an absolute ``[-0.5, 0.5)``, so
        the points lie in ``[-0.5, (num_cells-1)*cell_size + 0.5) * scale`` and have no
@@ -1652,69 +1654,80 @@ overwrites it.
 RNG keying and the built-in salts
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The samplers (``sample_counts``, ``sample_grid_points``) key env ``e``'s stream as
-``wp.rand_init(seeds[e] * salt + offset)`` in int32 wrap-around arithmetic, the keying
-the built-in generators use, and take ``salt`` and ``offset`` as arguments. Give each
-stream of your generator its own pair, and pick salts no built-in uses. At seed 0 every
-key reduces to ``rand_init(offset)`` whatever the salt, so two streams with the same
-offset coincide for that seed: give your streams offsets that differ from each other and
-from the small ones the built-ins use (the examples on this page use 101 to 104). The
-pairs already taken:
+Built-ins always initialize random streams with :mod:`track_gen.ops.rng`:
+``init(seed, salt)`` for one state per env, or ``init_at(seed, salt, index)``
+for an indexed family of states. Both mix the effective seed with the salt before
+calling Warp's RNG. See :ref:`reference-ops` for the frozen formulas and host twins.
+
+Each built-in salt is ``hash32_host(fnv1a_32("<kind>.<name>/<stream>"))``, with
+FNV-1a over the UTF-8 bytes. The following names are fixed and independent of the
+Stage ID, including when a built-in occurs more than once in a pipeline. Gate
+generators reuse the matching track generator's names.
 
 .. list-table::
    :header-rows: 1
-   :widths: 44 18 38
+   :widths: 51 19 30
 
-   * - Stream
-     - Salt
-     - Offset
-   * - ``bezier`` corner count
-     - 6151
-     - ``attempt`` (0 in the built-in)
-   * - ``bezier`` corner positions
-     - 9781
-     - ``attempt`` (0 in the built-in)
-   * - ``hull`` point count
-     - 5119
-     - 1
-   * - ``hull`` point positions
-     - 7919
-     - 1
-   * - ``hull`` midpoint displacement
-     - 3083
-     - 1
-   * - ``polar`` controls
-     - 7919
-     - 17
-   * - ``voronoi`` sites
-     - 8171
-     - 19
-   * - ``voronoi`` anchors
-     - 3911
-     - 31
-   * - ``checkpoint`` candidate ``k``
-     - 4099
-     - ``k * 2741 + 1``
-   * - ``repulsive`` obstacles
-     - 6247
-     - 23
-   * - ``repulsive`` growth target
-     - 5209
-     - 41
-   * - gate ``"random_pairs"`` ordering, pair ``p``
-     - 3187
-     - ``7919 + p * 104729``
-   * - gate Z profile: uniform (gate ``i``), walk, noise (harmonic ``k``)
-     - 15679, 15683, 15731
-     - ``i``, 0, ``k``
-   * - ``PerEnvSeededRNG`` states
-     - 1
-     - 0
+   * - Stream namespace
+     - uint32 salt
+     - Initialization
+   * - ``generator.bezier/corner_count``
+     - ``0xb739affb``
+     - ``init_at(..., 0)``
+   * - ``generator.bezier/corners``
+     - ``0xc2c74e45``
+     - ``init_at(..., 0)``
+   * - ``generator.hull/point_count``
+     - ``0x55e558eb``
+     - ``init_at(..., 0)``
+   * - ``generator.hull/points``
+     - ``0xc60040a4``
+     - ``init_at(..., 0)``
+   * - ``generator.hull/displacement``
+     - ``0x8c818de1``
+     - ``init``
+   * - ``generator.polar/controls``
+     - ``0x23dab0d9``
+     - ``init``
+   * - ``generator.voronoi/sites``
+     - ``0x877be6df``
+     - ``init``
+   * - ``generator.voronoi/anchors``
+     - ``0xc9f3730a``
+     - ``init``
+   * - ``generator.checkpoint/rings``
+     - ``0x7357f137``
+     - ``init_at(..., k)``; candidate ``k``
+   * - ``generator.repulsive/obstacles``
+     - ``0x15710913``
+     - ``init``
+   * - ``generator.repulsive/growth``
+     - ``0xcd2aa706``
+     - ``init``
+   * - ``order.random_pairs/pairs``
+     - ``0x977a7d68``
+     - ``init_at(..., p)``; pair ``p``
+   * - ``elevation.uniform/z``
+     - ``0x7d59d787``
+     - ``init_at(..., i)``; knot/gate ``i``
+   * - ``elevation.random_walk/z``
+     - ``0x9717c554``
+     - ``init``
+   * - ``elevation.noise/z``
+     - ``0xd8aea614``
+     - ``init_at(..., k)``; harmonic ``k``
 
-The built-in gate generators reuse the matching track generator's streams. A hashed
-keying for the samplers, which removes the seed-0 collapse, is planned for a later
-release: it changes the built-ins' outputs, so it is not done yet. A Stage's own kernels
-can use the hashed keying of :ref:`stage-salts` today.
+``randomize.uniform`` already uses hashed keying with its Stage ID's ``b.salt``;
+it keeps that formula. The effective-seed prologue and ``PerEnvSeededRNG`` are
+unchanged. The other built-in stages draw no random numbers.
+
+Public ``sample_counts`` and ``sample_grid_points`` preserve their
+``keying="linear"`` default: ``wp.rand_init(seeds[e] * salt + offset)`` in
+int32 wrap-around arithmetic. Explicit ``keying="hashed"`` uses
+``init_at(seeds[e], salt, offset)``. A plugin can use ``b.salt`` as the uint32 salt
+and pick an int32 index for each stream. Keep the same keying to preserve an
+existing plugin's draws. Built-in keying has no legacy config field or
+reproduction mode; :ref:`upgrading-0.3-rng` explains the output migration.
 
 Gate generators
 ---------------
@@ -1781,8 +1794,10 @@ built-in gate generator that shares a track generator's sampling imports that mo
 public names (``CORNER_SALT``, ``sample_polar_controls_per_env``, ...), never its
 underscore kernels or constants. ``tests/test_ops.py`` checks both rules on the source,
 together with the short allow-list of private ``track_gen.ops`` launchers the
-built-ins use. A new built-in RNG stream takes a ``(salt, offset)`` pair that is not in
-the :ref:`table of built-in salts <ops-rng-keying>`, and adds its row there. The
+built-ins use. A new built-in RNG stream defines a fixed
+``<kind>.<name>/<stream>`` namespace, derives its salt with the formula in the
+:ref:`table of built-in salts <ops-rng-keying>`, checks for a salt collision and adds
+its row there. The
 built-ins' Params classes live in ``track_gen/_src/builtin_params.py``: each keeps the
 flat config field names, holds the generator's rules in ``validate()`` (with ``lo``/``hi``
 on a static field only where a rule rejects the same bound), and is listed in the

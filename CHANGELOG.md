@@ -1,6 +1,31 @@
 # Changelog
 
-## 0.3.0.dev1 (unreleased, `v3` branch)
+## 0.3.0.dev2 (unreleased, `v3` branch)
+
+Built-in RNG streams now use hashed salts. Track and gate geometry changes for the
+same seed; rebaseline generated-output goldens and cached datasets once. No legacy
+RNG config field, compatibility path or byte-identical reproduction mode is provided.
+The migration guide is `docs/upgrading/from-0.2.rst`.
+
+- Add public `track_gen.ops.rng`: device `init` / `init_at` and host twins
+  `key_host`, `init_host` / `init_at_host`, with formulas frozen for plugin API 1.
+- Switch all six track generators, all five gate generators, `order.random_pairs`
+  and uniform/random-walk/noise elevation to fixed named salts. Names do not depend
+  on Stage IDs; gate generators share their matching track generator's streams.
+  Effective seeds, epochs, `PerEnvSeededRNG` and `randomize.uniform` are unchanged.
+- Add keyword-only `keying="hashed"` to public ops samplers. Their default remains
+  `keying="linear"`, preserving draws for existing plugin callers.
+- Replace the old-keying byte comparison with a distribution gate covering two seed
+  blocks of at least 4096 envs each, every built-in track/gate generator, nonflat
+  elevation and random-pair ordering. It checks validity, counts, length,
+  compactness, curvature and elevation; byte goldens are rebaselined separately.
+- A `Course` capacity derived from newly sampled geometry may change. Pass explicit
+  `max_checkpoints=` to preserve the desired checkpoint buffer capacity.
+
+Poison defaults, frozen configs and required result fields remain pending for the
+next milestone.
+
+## 0.3.0.dev1 (`v3` branch)
 
 The removal milestone of the 0.3 cleanup. Surviving configurations retain their
 geometry and RNG keying. The hashed RNG switch, poison defaults, frozen configs and

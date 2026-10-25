@@ -41,6 +41,8 @@ from __future__ import annotations
 
 import warp as wp
 
+from ..ops import rng as _rng
+
 from .. import ops
 from ..exec.context import LaunchContext, resolve as _resolve_ctx
 from ..ops.geometry import _angle_sort_launch
@@ -50,13 +52,12 @@ from .builtin_params import HullParams, _declared_bounds
 from .builtin_stage import check_dyn, default_alloc, run_view
 from .runtime import _init
 
-# RNG keying of the point streams (``wp.rand_init(seed * salt + POINT_SALT_OFFSET)``, see
-# :func:`track_gen.ops.sample_counts`). The salts differ from bezier's (6151 / 9781) so the
-# two generators draw different point sets, and from each other so the count and position
-# streams stay decorrelated.
-POINT_COUNT_SALT = 5119
-POINT_SALT = 7919
-POINT_SALT_OFFSET = 1
+# Fixed namespaces generator.hull/{point_count,points,displacement}.
+# The indexed count/point streams use index zero; displacement uses rng.init.
+POINT_COUNT_SALT = 0x55E558EB
+POINT_SALT = 0xC60040A4
+POINT_SALT_OFFSET = 0
+_DISPLACE_SALT = 0x8C818DE1
 
 
 
@@ -100,7 +101,7 @@ def _midpoint_displace_dyn_k(
     cx = wp.float32(sx / wp.float64(m))
     cy = wp.float32(sy / wp.float64(m))
     centroid = wp.vec2f(cx, cy)
-    state = wp.rand_init(seeds[e] * 3083 + 1)
+    state = _rng.init(seeds[e], wp.uint32(_DISPLACE_SALT))
     for i in range(P):
         if i < m:
             v0 = sorted_pts[sbase + i]
@@ -217,11 +218,11 @@ def _enqueue_hull(seeds_wp, config, out_centerline, out_valid_wp, scratch, ctx,
     # Step 1: sample point count + positions.
     _sample_counts_launch(ctx, seeds_wp, POINT_COUNT_SALT, POINT_SALT_OFFSET,
                           dyn["min_num_points"], int(config.max_num_points),
-                          scratch.count)
+                          scratch.count, keying="hashed")
     num_cells, cell = ops.grid_cells(config.min_point_distance)
     ops.sample_grid_points(ctx, seeds_wp, POINT_SALT, POINT_SALT_OFFSET, P, num_cells,
                            float(cell), float(config.scale), scratch.used,
-                           scratch.points, size=dyn["size"])
+                           scratch.points, size=dyn["size"], keying="hashed")
 
     # Step 2: angle-sort the first m points about their centroid. This is ops.angle_sort's
     # kernel with the legacy count floor of 1 (a count < 1 sorts the first point), so the

@@ -1,23 +1,11 @@
-"""Digests of the PR11 ``relaxed_stations`` gate pipelines at ed075f6 (roadmap PR13a).
+"""Relaxed-station fingerprints for the 0.3 RNG baseline.
 
-PR13a moves the width stage before relax: a ``presets.gates(source="relaxed_stations")``
-spec now holds ``width.constant`` (which launches nothing) before ``relax.xpbd``, and
-``relax.xpbd`` reads its half-width from ``cl.half_width``. With the default
-``spacing_metric="xy"`` / ``elevation_on="gates"`` the outputs must stay byte-identical to
-PR11. This tool records, per case of :data:`CASES` (a ``presets.gates`` keyword set, the
-same in both releases), the sha256 of every ``GateSequence`` field and of the anchors /
-relaxed centerline taps; ``tests/goldens/pr13a_pr11_relaxed_stations.json`` keeps them,
-keyed by the PR7 platform key (float results depend on the platform and the Warp
-version). ``tests/test_stations_xyz.py`` rebuilds the cases with the current code and
-compares.
-
-Capture (from the repository root, against a checkout of ed075f6)::
-
-    PYTHONPATH=<ed075f6 tree> python tests/tools/capture_pr13a_relaxed_stations.py
-
-It adds or replaces this platform's entry.
+Use tests.tools.capture_03_goldens to capture and merge platform fragments together.
+The historical filename identifies its coverage family; values use the current keying.
 """
 from __future__ import annotations
+
+from tests.tools._golden_config import keep_config
 
 import hashlib
 import json
@@ -64,6 +52,7 @@ def capture(kw: dict) -> dict:
     from track_gen import GateGenerator, PerEnvSeededRNG
     from track_gen.pipeline import presets
 
+    kw = {"on_invalid": "keep", **kw}
     spec = presets.gates(num_envs=E, device="cpu", **kw)
     rng = PerEnvSeededRNG(seeds=wp.array(np.asarray(SEEDS, np.int32), dtype=wp.int32,
                                          device="cpu"), num_envs=E, device="cpu")

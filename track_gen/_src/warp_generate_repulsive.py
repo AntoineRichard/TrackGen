@@ -56,6 +56,8 @@ import types
 import numpy as np
 import warp as wp
 
+from ..ops import rng as _rng
+
 from .. import ops
 from ..exec.context import LaunchContext, resolve as _resolve_ctx
 from ..ops import funcs
@@ -67,7 +69,7 @@ from .runtime import _init
 # --- Obstacle layout constants (mirror the spike's sample_obstacles reference layout) ---
 # Independent RNG salt, distinct from the site/anchor/checkpoint/control salts.
 
-_OBSTACLE_SALT = 6247
+_OBSTACLE_SALT = 0x15710913
 _N_WALL = 96          # points on the domain-wall ring (weight 1.0)
 _N_DISC = 12          # points per inner-disc ring (weight 0.25)
 _C_FRAC = 0.90        # inner-disc radial-band outer bound as a fraction of r_dom
@@ -134,7 +136,7 @@ def _sample_obstacles_k(
     # rejection loop. Unused / skipped disc columns are NaN-padded with weight 0 so the
     # obstacle-energy kernel (which guards on ``mw != 0``) never reads them.
     e = wp.tid()
-    state = wp.rand_init(seeds[e] * _OBSTACLE_SALT + 23)
+    state = _rng.init(seeds[e], wp.uint32(_OBSTACLE_SALT))
     two_pi = 2.0 * wp.pi
     base = e * m_obs
 
@@ -203,7 +205,7 @@ def _sample_obstacles_inplace(seeds_wp: wp.array, config,
 
 
 # RNG salt for the per-env target-length draw (distinct from the obstacle salt).
-_GROW_SALT = 5209
+_GROW_SALT = 0xCD2AA706
 # Coarse-to-fine upsample trigger: subdivide N -> 2N when the mean edge has grown by this
 # factor (the reference's edge-length-doubling subdivision rule). Spike default 2.0.
 _SUBDIV_RATIO = 2.0
@@ -220,7 +222,7 @@ def _seed_lfinal_k(
     # One thread per env. Draw the per-env target-perimeter multiple and seed all per-env
     # growth state. L_init = L_target = init-circle perimeter; L_final = grow_mult * L_init.
     e = wp.tid()
-    state = wp.rand_init(seeds[e] * _GROW_SALT + 41)
+    state = _rng.init(seeds[e], wp.uint32(_GROW_SALT))
     grow_mult = grow_lo + (grow_hi - grow_lo) * wp.randf(state)
     l0 = 2.0 * wp.pi * r_init
     L_init[e] = l0

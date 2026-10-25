@@ -28,19 +28,19 @@ per-call allocation and no host-side branching on generated data, making it
 CUDA-graph-capturable.
 
 1. **Point count and position sampling.**
-   ``ops.sample_counts`` (salt ``5119``, offset ``1``) draws a per-environment point
+   ``ops.sample_counts`` with ``keying="hashed"``
+   (``generator.hull/point_count``, index ``0``) draws a per-environment point
    count ``m`` from the uniform integer range ``[min_num_points, max_num_points]`` (the
    Stage reads env ``e``'s ``min_num_points`` from its per-env array, clamped to ``[2,
    max_num_points]``).
-   ``ops.sample_grid_points`` (salt ``7919``, offset ``1``) then draws
+   ``ops.sample_grid_points`` with ``keying="hashed"``
+   (``generator.hull/points``, index ``0``) then draws
    ``P = max_num_points`` grid-jittered points per environment from the
    ``ops.grid_cells(min_point_distance)`` grid with bounded duplicate-cell rejection (up
    to eight retries per point).  The cell size is ``min_point_distance * 2``; each
    accepted cell receives a jitter of ``U(-0.5, 0.5)`` in each axis before being
-   multiplied by ``scale``, then by the env's ``size[e]``.  The salts are distinct from
-   the Bezier generator's
-   (``6151`` / ``9781``) so the two generators draw different point sets even at the
-   same seed.
+   multiplied by ``scale``, then by the env's ``size[e]``. The hull and Bezier
+   streams have distinct fixed namespaces (:ref:`ops-rng-keying`).
 
 2. **Angle-sort (hull-like ordering).**
    The ``ops.angle_sort`` kernel (with the legacy count floor of 1, like the Bezier
@@ -62,7 +62,8 @@ CUDA-graph-capturable.
        [v_0, mid_01', v_1, mid_12', v_2, ..., mid_(m-1,0)']
 
    For each edge ``(v_i, v_{i+1 mod m})``, the geometric midpoint ``M_i`` is computed
-   and then displaced along the radial direction from the centroid through ``M_i`` by a
+   and then displaced using the ``generator.hull/displacement`` RNG stream along
+   the radial direction from the centroid through ``M_i`` by a
    signed per-edge random amount.  Positive values push the midpoint outward (lobe);
    negative values pull it inward (pinch or straight).  Entries beyond index ``2m`` are
    written NaN and ignored by the arc-resampler downstream.  The augmented-loop stride

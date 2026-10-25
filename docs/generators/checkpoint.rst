@@ -23,8 +23,9 @@ How It Works
    ``checkpoint_angle_jitter * slot``, approximately angle-ordered so the steered path winds
    exactly once around) on radii drawn uniformly from
    ``[checkpoint_radius_min_frac * R, R]`` with ``R = 1``.  The sampling is repeated
-   independently for each of the ``K`` decorrelated candidates using per-candidate RNG
-   salt offsets.  ``checkpoint_radius_min_frac`` and ``checkpoint_angle_jitter`` are env
+   independently for each of the ``K`` decorrelated candidates using
+   ``ops.rng.init_at`` with the fixed ``generator.checkpoint/rings`` salt and
+   candidate index (:ref:`ops-rng-keying`).  ``checkpoint_radius_min_frac`` and ``checkpoint_angle_jitter`` are env
    ``e``'s values from the per-env parameter arrays (`Per-env (dynamic) parameters`_).
 
 2. **Fixed N-step bounded-turn steering walk.**  ``_steer_dyn_k`` (env ``e``'s

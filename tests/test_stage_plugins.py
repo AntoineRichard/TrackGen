@@ -331,7 +331,8 @@ def test_check_stage_takes_params_and_upstream():
 ])
 def test_a_broken_stage_fails_the_named_check(key, kind, failing):
     register_broken_stages(registry)
-    report = check_stage(kind, BROKEN[key], devices=DEV, num_envs=4)
+    report = check_stage(kind, BROKEN[key], devices=DEV,
+                         num_envs=8 if key == "failures_only" else 4)
     assert set(report.failed_names) == failing, str(report)
     if key == "relax":
         assert "wrote its read port 'xy'" in report.result("stage.isolation").message

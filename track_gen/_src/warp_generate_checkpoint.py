@@ -41,6 +41,8 @@ from __future__ import annotations
 
 import warp as wp
 
+from ..ops import rng as _rng
+
 from .. import ops
 from ..exec.context import LaunchContext
 from ..ops import funcs
@@ -51,12 +53,9 @@ from .builtin_stage import check_dyn, default_alloc, run_view
 from .runtime import _init
 
 
-# Independent RNG salt for checkpoint sampling. Distinct from polar (7919), bezier (9781, 6151),
-# and hull (7919, 5119, 3083) so this generator draws a different checkpoint set.
-_CHECKPOINT_SALT = 4099
-# Per-candidate offset salt: candidate k of env e uses rand_init(seeds[e]*_CHECKPOINT_SALT +
-# k*_CAND_SALT + 1). A large odd multiplier decorrelates the K candidates (the best-of-K trick).
-_CAND_SALT = 2741
+# Fixed generator.checkpoint/rings namespace; candidate k is its indexed stream.
+_CHECKPOINT_SALT = 0x7357F137
+# Candidate k receives its own indexed stream within the fixed rings namespace.
 
 #: Base ring radius. The loop is normalized after closure, so this only sets a stable
 #: pre-scale.
@@ -105,7 +104,7 @@ def _sample_checkpoints_dyn_k(
     angle_jitter = aj_e[e]
     angle_jitter = wp.where(angle_jitter < _AJ_LO, _AJ_LO, angle_jitter)
     angle_jitter = wp.where(angle_jitter > _AJ_HI, _AJ_HI, angle_jitter)
-    state = wp.rand_init(seeds[e] * _CHECKPOINT_SALT + k * _CAND_SALT + 1)
+    state = _rng.init_at(seeds[e], wp.uint32(_CHECKPOINT_SALT), k)
     b = slot_id * C
     two_pi = 2.0 * wp.pi
     slot = two_pi / float(C)

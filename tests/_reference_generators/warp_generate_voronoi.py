@@ -1,4 +1,4 @@
-"""Private pre-0.3 scalar numeric reference; never imported by the library."""
+"""Independent scalar numeric reference with current stream initialization."""
 from __future__ import annotations
 from track_gen._src import warp_generate_voronoi as _implementation
 from track_gen._src.runtime import _init
@@ -22,7 +22,7 @@ def _select_anchor_sites_k(
     e = wp.tid()
     sbase = e * S
     kbase = e * K
-    state = wp.rand_init(seeds[e] * _ANCHOR_SALT + 31)
+    state = _rng.init(seeds[e], wp.uint32(_ANCHOR_SALT))
     two_pi = 2.0 * wp.pi
     sector = two_pi / float(K)
     rotation = wp.randf(state) * two_pi

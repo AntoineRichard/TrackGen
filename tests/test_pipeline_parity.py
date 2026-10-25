@@ -252,4 +252,4 @@ def test_default_bezier_launch_count():
     assert len(t) == 156
     assert t[0].kernel.endswith("_effective_seed_k") and t[-1].op == "copy"
     assert [r.kernel for r in t[1:5]] == [LATCH_ALL["i32"]] + [LATCH_ALL["f32"]] * 3
-    assert t[5].kernel.endswith("_sample_counts_dyn_k")
+    assert t[5].kernel.endswith("_sample_counts_dyn_h_k")

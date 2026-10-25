@@ -26,13 +26,15 @@ How It Works
 The generator runs a fixed sequence of Warp kernels in a single pass — no
 host-side retry loop, no per-environment Python branching:
 
-1. **Corner count.**  ``ops.sample_counts`` (salt ``6151``, offset ``0``) draws
+1. **Corner count.**  ``ops.sample_counts`` with ``keying="hashed"``
+   (``generator.bezier/corner_count``, index ``0``) draws
    ``count[e]`` uniformly from ``[min_num_points, max_num_points]`` for each environment.
    The Stage launches its array-reading twin, which reads env ``e``'s ``min_num_points``
    from the per-env array and clamps it to ``[2, max_num_points]`` (`Corner count`_);
    the draw itself is unchanged.
 
-2. **Corner positions.**  ``ops.sample_grid_points`` (salt ``9781``, offset ``0``)
+2. **Corner positions.**  ``ops.sample_grid_points`` with ``keying="hashed"``
+   (``generator.bezier/corners``, index ``0``)
    samples ``max_num_points`` grid cells from the ``ops.grid_cells(min_point_distance)``
    grid of ``num_cells × num_cells`` cells, where
    ``num_cells = int(1 / (min_point_distance * 2))``.  Each cell selection uses

@@ -1,4 +1,4 @@
-"""Private pre-0.3 scalar numeric reference; never imported by the library."""
+"""Independent scalar numeric reference with current stream initialization."""
 from __future__ import annotations
 from track_gen._src import warp_generate_checkpoint as _implementation
 from track_gen._src.runtime import _init
@@ -22,7 +22,7 @@ def _sample_checkpoints_k(
     slot_id = wp.tid()
     e = slot_id // K
     k = slot_id % K
-    state = wp.rand_init(seeds[e] * _CHECKPOINT_SALT + k * _CAND_SALT + 1)
+    state = _rng.init_at(seeds[e], wp.uint32(_CHECKPOINT_SALT), k)
     b = slot_id * C
     two_pi = 2.0 * wp.pi
     slot = two_pi / float(C)

@@ -46,7 +46,8 @@ How It Works
 ------------
 
 1. **Seed-driven obstacle layout.**
-   ``_sample_obstacles_k`` draws, per environment, a domain-wall ring at radius ``r_dom``
+   ``_sample_obstacles_k`` uses the ``generator.repulsive/obstacles`` salt
+   (:ref:`ops-rng-keying`) and draws, per environment, a domain-wall ring at radius ``r_dom``
    (``n_wall = 96`` points, weight 1.0) plus ``k ~ randi[repulsive_obstacle_count_min,
    repulsive_obstacle_count_max]`` inner-disc obstacle rings (``n_disc = 12`` points each,
    weight 0.25), one per ``2π/k`` angular wedge with a per-env random phase.  Each disc's
@@ -155,9 +156,8 @@ capture fails while a side stream that joined it has not been joined back (each
 :doc:`/how-it-works/cuda-graph`). Under ``torch.cuda.graph``, windows become conditional
 nodes only inside ``registered(conditional=True)``, never in a hand-made
 ``external=True`` registration of torch's capture. The loop
-itself is ``generate_repulsive_warp(seeds_wp, config, out_centerline, out_valid_wp,
-scratch, ctx=None)``, still importable from ``track_gen._src.warp_generate_repulsive``;
-the registered ``Stage`` calls it.
+itself runs in the registered ``Stage`` through its launch context. Its target
+perimeter draw uses the fixed ``generator.repulsive/growth`` salt.
 
 
 

@@ -516,8 +516,9 @@ def test_kit_leaky_smoother_fails_absorbing_and_batch_independence():
     report = check_stage("relax", T.LEAKY, devices=[DEV])
     assert report.failed_names == ["batch_independence", "bounded.absorbing"], str(report)
     msg = report.result("bounded.absorbing").message
-    assert "with lowering (a) (batch A) the loop stopped at window 5/7 (active[0] == 0)" \
-        in msg, msg
+    assert report.result("bounded.absorbing").details["skipped"]["A"] > 0
+    assert "with lowering (a) (batch A) the loop stopped at window " in msg, msg
+    assert "(active[0] == 0)" in msg
     assert "the outputs differ from the unrolled lowering (c): env 0 (cl.xy@relax" in msg
     assert "an absorbing freeze" in msg
 

@@ -9,7 +9,7 @@ and each other, so importing ``track_gen.ops`` loads no generator module and no 
 A device op takes a :class:`~track_gen.exec.LaunchContext` first and launches on its
 stream; it never allocates, never synchronizes and never reads device data back (the
 conventions are listed in the module docstring below). ``grid_cells``, ``hash32_host``,
-``check_array`` and the scratch classes' ``alloc`` run on the host.
+``check_array``, the RNG host twins and the scratch classes' ``alloc`` run on the host.
 
 ``sample_grid_points`` and ``normalize_extent`` take a keyword-only ``size=``: an ``[E]``
 ``float32`` per-:term:`env` :term:`size` multiplier (the built-in generators' ``size``,
@@ -61,15 +61,56 @@ Polygon geometry
 Random sampling
 ---------------
 
-Each env's stream is ``wp.rand_init(seeds[e] * salt + offset)`` in int32 wrap-around
-arithmetic, the keying the built-in generators use. The ``(salt, offset)`` pairs the
-built-ins already use are listed in :ref:`the generator guide <ops-rng-keying>`.
+The public samplers default to ``keying="linear"``:
+``wp.rand_init(seeds[e] * salt + offset)`` in int32 wrap-around arithmetic.
+Pass ``keying="hashed"`` to initialize each env with
+``rng.init_at(seeds[e], salt, offset)`` instead; the salt is uint32 and the index
+(``offset``) is int32. Built-ins always request hashed keying, with the fixed
+:ref:`stream names and salts in the generator guide <ops-rng-keying>`.
 
 .. autofunction:: track_gen.ops.grid_cells
 
 .. autofunction:: track_gen.ops.sample_counts
 
 .. autofunction:: track_gen.ops.sample_grid_points
+
+Hashed RNG: ``track_gen.ops.rng``
+---------------------------------
+
+.. automodule:: track_gen.ops.rng
+   :no-members:
+
+These formulas are frozen for plugin API version 1. ``seed`` is an int32 effective
+seed; ``salt`` is uint32. All hash arithmetic wraps at 32 bits, and ``hash32`` is the
+MurmurHash3 ``fmix32`` finalizer. The 31-bit key avoids systematic loss of the salt
+at seed 0; it does not guarantee collision-free streams.
+
+.. py:currentmodule:: track_gen.ops.rng
+
+.. py:function:: init(seed: int32, salt: uint32) -> uint32
+
+   ``@wp.func`` for a kernel: initialize a Warp RNG state as
+   ``wp.rand_init(int32(hash32(uint32(seed) ^ salt) & 0x7FFFFFFF))``.
+
+.. py:function:: init_at(seed: int32, salt: uint32, index: int32) -> uint32
+
+   ``@wp.func`` for a kernel: initialize an indexed state as
+   ``wp.rand_init(int32(hash32(uint32(seed) ^ salt) & 0x7FFFFFFF), index)``.
+   This is Warp's two-argument ``rand_init``; the index selects a stream, not a
+   number of skipped draws. ``init_at(seed, salt, 0)`` differs from
+   ``init(seed, salt)`` because Warp's two-argument initialization hashes the index.
+
+.. autofunction:: track_gen.ops.rng.key_host
+
+.. autofunction:: track_gen.ops.rng.init_host
+
+.. autofunction:: track_gen.ops.rng.init_at_host
+
+.. py:currentmodule:: None
+
+The host twins return Python integers and launch no device work. Use them to check
+initial states without copying a device array. They do not replace a device RNG
+inside a capturable operation.
 
 Curves
 ------

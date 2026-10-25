@@ -1,4 +1,4 @@
-"""Private pre-0.3 scalar elevation reference."""
+"""Independent scalar elevation reference with current stream initialization."""
 from __future__ import annotations
 from track_gen._src import warp_zprofile as _implementation
 
@@ -15,7 +15,7 @@ def _z_uniform_k(seeds: wp.array(dtype=wp.int32),
     if i >= count[e]:
         z[t] = 0.0
         return
-    state = wp.rand_init(seeds[e] * _P_UNIFORM + i)
+    state = _rng.init_at(seeds[e], wp.uint32(_P_UNIFORM), i)
     z[t] = z_min + wp.randf(state) * (z_max - z_min)
 
 @wp.kernel
@@ -32,7 +32,7 @@ def _z_walk_k(seeds: wp.array(dtype=wp.int32),
         n = max_gates
     if n < 1:
         return
-    state = wp.rand_init(seeds[e] * _P_WALK)
+    state = _rng.init(seeds[e], wp.uint32(_P_WALK))
     acc = float(0.0)
     for i in range(n):
         if i > 0:
@@ -77,7 +77,7 @@ def _z_noise_k(seeds: wp.array(dtype=wp.int32),
     acc = float(0.0)
     norm = float(0.0)
     for k in range(harmonics):
-        state = wp.rand_init(seeds[e] * _P_NOISE + k)
+        state = _rng.init_at(seeds[e], wp.uint32(_P_NOISE), k)
         a = wp.randf(state)                       # harmonic amplitude in [0,1)
         phase = wp.randf(state) * _TWO_PI
         w = 1.0 / float(k + 1)                    # 1/f-ish spectrum

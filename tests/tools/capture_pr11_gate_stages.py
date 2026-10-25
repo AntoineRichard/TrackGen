@@ -1,29 +1,11 @@
-"""Per-stage-boundary digests of the 0.2.0.dev3 gate pipeline (roadmap PR11).
+"""Gate-stage boundary and launch fingerprints for the 0.3 RNG baseline.
 
-PR11 decomposes ``warp_gate._run_gate_pipeline`` into the stages of a gate
-:class:`~track_gen.pipeline.Program`. This tool drives the LIVE dd181f0 path (the
-``GateGenerator`` facade, with the boundary functions of ``warp_gate`` /
-``warp_zprofile`` wrapped: they are looked up at call time) and records, per case of
-:data:`CASES`, the array visible at every stage boundary under the channel name the
-Program gives it (:data:`TAPS`). ``tests/goldens/pr11_gate_stages.json`` keeps ONE digest
-per case (:func:`digest`: the sha256 over the sorted ``"tap:sha256"`` lines) and, for
-:data:`LAUNCH_CASES`, the launch sequence of one ``generate()`` (``[op, kernel, dim,
-scalars]``, :func:`launch_rows`). Float results depend on the platform and the Warp
-version, so the file is keyed by :func:`platform_key` (the PR7 key).
-
-``tests/_legacy_gate_pr11.py`` is the frozen reference (the HEAD code PR11 edits or
-deletes, the unchanged kernels imported live); ``tests/test_gate_pipeline_parity.py``
-checks that the reference reproduces these digests and that every Program tap equals
-the reference array.
-
-Capture (from the repository root, against a checkout of dd181f0)::
-
-    PYTHONPATH=<dd181f0 tree> python tests/tools/capture_pr11_gate_stages.py
-
-It adds or replaces this platform's entry. ``--diff`` prints, per case, the digest of
-every tap (to locate a mismatch) instead of writing.
+Use tests.tools.capture_03_goldens to capture and merge platform fragments together.
+The historical filename identifies its coverage family; values use the current keying.
 """
 from __future__ import annotations
+
+from tests.tools._golden_config import keep_config
 
 import hashlib
 import json
@@ -166,7 +148,7 @@ def launch_rows(trace) -> list:
 def _config(kw: dict):
     from track_gen import GateGenConfig
 
-    return GateGenConfig(num_envs=E, device="cpu", **kw)
+    return keep_config(GateGenConfig, num_envs=E, device="cpu", **kw)
 
 
 def _rng():
@@ -177,93 +159,32 @@ def _rng():
 
 
 def capture_head(kw: dict, *, legacy: bool = False) -> dict:
-    """The taps of one ``generate()`` of the LIVE dd181f0 ``GateGenerator`` (CPU)."""
+    """Capture every retained boundary from the current Program's public taps."""
     from track_gen import GateGenerator
-    from track_gen._src import warp_gate, warp_zprofile
+    from track_gen.plugin import registry
+    from tests import _legacy_gate_pr11 as reference
 
-    taps: dict = {}
-
-    def snap(a):
-        return a.numpy().copy()
-
-    orig = {}
-
-    def patch(mod, name, fn):
-        orig[(mod, name)] = getattr(mod, name)
-        setattr(mod, name, fn)
-
-    def order_points(seeds_wp, src, src_stride, count, max_gates, ordering, keys, dst,
-                     ctx=None):
-        taps["anchors.xy"] = snap(src)
-        taps["anchors.count"] = snap(count)
-        orig[(warp_gate, "order_points")](seeds_wp, src, src_stride, count, max_gates,
-                                          ordering, keys, dst, ctx=ctx)
-        taps["gates.xy@order"] = snap(dst)
-
-    def normalize_positions(position, max_gates, count, target_extent, ctx=None):
-        orig[(warp_gate, "normalize_positions")](position, max_gates, count,
-                                                 target_extent, ctx=ctx)
-        taps["gates.xy@normalize"] = snap(position)
-
-    def finish_ordered_gates(*args, **kwargs):
-        orig[(warp_gate, "finish_ordered_gates")](*args, **kwargs)
-        out = args[7] if len(args) > 7 else kwargs["out"]
-        taps["gates.count"] = snap(out.count)
-
-    def relax_gate_spheres(position, max_gates, count, target_distance, iterations,
-                           ctx=None):
-        if legacy and "gates.xy@generator" not in taps:
-            taps["gates.xy@generator"] = snap(position)
-        orig[(warp_gate, "relax_gate_spheres")](position, max_gates, count,
-                                                target_distance, iterations, ctx=ctx)
-        if float(target_distance) > 0.0 and int(iterations) > 0:
-            taps["gates.xy@gate_relax"] = snap(position)
-
-    def gate_cum_perim(pos2, count, max_gates, cum, perim, ctx=None):
-        if legacy and "gates.xy@generator" not in taps:
-            taps["gates.xy@generator"] = snap(pos2)
-        orig[(warp_zprofile, "gate_cum_perim")](pos2, count, max_gates, cum, perim,
-                                                ctx=ctx)
-        taps["gates.cum"] = snap(cum)
-        taps["gates.perim"] = snap(perim)
-
-    def apply_z_profile(config, seeds_wp, count, stride, cum, perim, z, ctx=None):
-        orig[(warp_zprofile, "apply_z_profile")](config, seeds_wp, count, stride, cum,
-                                                 perim, z, ctx=ctx)
-        taps["gates.z"] = snap(z)
-
-    def tangents_from_positions(position, tangent, max_gates, count, ctx=None):
-        taps["gates.position@lift"] = snap(position)
-        orig[(warp_gate, "tangents_from_positions")](position, tangent, max_gates, count,
-                                                     ctx=ctx)
-        taps["gates.tangent@tangents"] = snap(tangent)
-
-    def finalize_gate_sequence(gates, config, fallbacks=None, ctx=None):
-        orig[(warp_gate, "finalize_gate_sequence")](gates, config, fallbacks=fallbacks,
-                                                    ctx=ctx)
-        for f in FINAL_FIELDS:
-            taps[f] = snap(getattr(gates, f))
-        taps["fallbacks"] = snap(fallbacks)
-
-    gen = GateGenerator(_config(kw), _rng())          # warm-up runs unwrapped
-    for mod, name, fn in ((warp_gate, "order_points", order_points),
-                          (warp_gate, "normalize_positions", normalize_positions),
-                          (warp_gate, "finish_ordered_gates", finish_ordered_gates),
-                          (warp_gate, "relax_gate_spheres", relax_gate_spheres),
-                          (warp_zprofile, "gate_cum_perim", gate_cum_perim),
-                          (warp_zprofile, "apply_z_profile", apply_z_profile),
-                          (warp_gate, "tangents_from_positions", tangents_from_positions),
-                          (warp_gate, "finalize_gate_sequence", finalize_gate_sequence)):
-        patch(mod, name, fn)
-    try:
-        gen.generate()
-    finally:
-        for (mod, name), fn in orig.items():
-            setattr(mod, name, fn)
-    if kw["generator"] == "tests.zero-count":
-        # The staging buffer is uninitialised (wp.empty) and never written: only the
-        # finalized fields are defined.
-        taps = {k: v for k, v in taps.items() if k in FINAL_FIELDS or k == "fallbacks"}
+    cfg = _config(kw)
+    gen = GateGenerator(cfg, _rng())
+    seq = gen.generate()
+    if legacy:
+        keys = reference.run_reference_legacy(cfg, registry.get("gate_generator", cfg.generator), SEEDS)
+    else:
+        keys = reference.run_reference(cfg, SEEDS)
+    taps = {}
+    for key in keys:
+        if key in FINAL_FIELDS:
+            array = getattr(seq, key)
+        elif key == "fallbacks":
+            array = gen.frame_fallbacks
+        elif key == "gates.xy@generator":
+            array = gen.program.tap("gates.xy", after="order")
+        elif "@" in key:
+            channel, stage = key.split("@")
+            array = gen.program.tap(channel, after=stage)
+        else:
+            array = gen.program.tap(key)
+        taps[key] = array.numpy().copy()
     return taps
 
 

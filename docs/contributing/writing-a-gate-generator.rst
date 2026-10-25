@@ -370,8 +370,9 @@ the others with ``gate generator 'acme.helix' does not support gate_ordering
 'acme.reverse'; supported: ['raw'] (its preferred order is 'raw')``. An order that needs
 randomness reads the ``seed`` channel (``reads = {..., "seed": "seed"}``) and keys its
 stream on ``b.salt(<stream>)`` (:ref:`stage-salts`); the built-in ``order.random_pairs``
-keeps a fixed salt, 7919, for byte identity with earlier releases. The registry and the
-built-in orders are described in :ref:`pipeline-ordering-registry`.
+uses the fixed namespace ``order.random_pairs/pairs`` and
+``ops.rng.init_at(seed, salt, pair_index)`` (:ref:`ops-rng-keying`). The registry and
+the built-in orders are described in :ref:`pipeline-ordering-registry`.
 
 Gate fail bits
 --------------

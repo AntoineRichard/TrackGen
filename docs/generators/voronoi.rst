@@ -25,7 +25,8 @@ How It Works
 ------------
 
 1. **Draw the site field.**
-   ``_sample_sites_k`` draws ``S = voronoi_num_sites`` points per environment using one of
+   ``_sample_sites_k`` draws ``S = voronoi_num_sites`` points per environment with
+   ``ops.rng.init`` and the ``generator.voronoi/sites`` salt, using one of
    four ``voronoi_site_layout`` modes:
 
    - ``ring`` — uniform box fill.  Each site is drawn independently and uniformly within the
@@ -51,7 +52,8 @@ How It Works
      (source: ``_sample_sites_k``, line 78, ``wp.randf(state) < 0.65``).
 
 2. **Select anchor sites.**
-   ``_select_anchor_sites_dyn_k`` draws ``K = voronoi_control_points`` angular sector
+   ``_select_anchor_sites_dyn_k`` uses the ``generator.voronoi/anchors`` salt
+   (:ref:`ops-rng-keying`) and draws ``K = voronoi_control_points`` angular sector
    targets, with env ``e``'s ``voronoi_radial_variation`` and ``voronoi_angular_jitter``
    read from the per-env parameter arrays.
    A global random rotation ``ρ`` is applied; sector ``i`` is centered at angle

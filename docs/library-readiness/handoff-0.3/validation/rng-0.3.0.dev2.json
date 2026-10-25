@@ -1,0 +1,1211 @@
+{
+  "baseline": "v0.2.0",
+  "candidate": "0.3.0.dev2",
+  "comparisons": {
+    "gates/bezier/flat/default/compactness": {
+      "distance": 0.011962890625,
+      "limit": 0.03904882821333378,
+      "new_mean": 0.38523073340024255,
+      "new_n": 8192,
+      "old_mean": 0.3865146468918779,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/bezier/flat/default/count": {
+      "distance": 0.0120849609375,
+      "limit": 0.03904882821333378,
+      "new_mean": 11.0238037109375,
+      "new_n": 8192,
+      "old_mean": 10.9962158203125,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/bezier/flat/default/curvature": {
+      "distance": 0.0245361328125,
+      "limit": 0.03904882821333378,
+      "new_mean": 3.40969383658545,
+      "new_n": 8192,
+      "old_mean": 3.382349151232132,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/bezier/flat/default/length": {
+      "distance": 0.0133056640625,
+      "limit": 0.03904882821333378,
+      "new_mean": 4.706033905475159,
+      "new_n": 8192,
+      "old_mean": 4.717479031156738,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/bezier/flat/default/valid": {
+      "distance": 0.0,
+      "limit": 0.01,
+      "new_mean": 1.0,
+      "new_n": 8192,
+      "old_mean": 1.0,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/bezier/flat/default/z_mean": {
+      "distance": 0.0,
+      "limit": 0.03904882821333378,
+      "new_mean": 0.0,
+      "new_n": 8192,
+      "old_mean": 0.0,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/bezier/flat/default/z_std": {
+      "distance": 0.0,
+      "limit": 0.03904882821333378,
+      "new_mean": 0.0,
+      "new_n": 8192,
+      "old_mean": 0.0,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/bezier/flat/random_pairs/compactness": {
+      "distance": 0.015625,
+      "limit": 0.03904882821333378,
+      "new_mean": 0.06254078979058883,
+      "new_n": 8192,
+      "old_mean": 0.062008990165870664,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/bezier/flat/random_pairs/count": {
+      "distance": 0.0120849609375,
+      "limit": 0.03904882821333378,
+      "new_mean": 11.0238037109375,
+      "new_n": 8192,
+      "old_mean": 10.9962158203125,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/bezier/flat/random_pairs/curvature": {
+      "distance": 0.01611328125,
+      "limit": 0.03904882821333378,
+      "new_mean": 2.9373230687161422,
+      "new_n": 8192,
+      "old_mean": 2.925818506792508,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/bezier/flat/random_pairs/length": {
+      "distance": 0.012451171875,
+      "limit": 0.03904882821333378,
+      "new_mean": 8.037684929169894,
+      "new_n": 8192,
+      "old_mean": 8.066989934300139,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/bezier/flat/random_pairs/valid": {
+      "distance": 0.0,
+      "limit": 0.01,
+      "new_mean": 1.0,
+      "new_n": 8192,
+      "old_mean": 1.0,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/bezier/flat/random_pairs/z_mean": {
+      "distance": 0.0,
+      "limit": 0.03904882821333378,
+      "new_mean": 0.0,
+      "new_n": 8192,
+      "old_mean": 0.0,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/bezier/flat/random_pairs/z_std": {
+      "distance": 0.0,
+      "limit": 0.03904882821333378,
+      "new_mean": 0.0,
+      "new_n": 8192,
+      "old_mean": 0.0,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/bezier/noise/default/compactness": {
+      "distance": 0.0120849609375,
+      "limit": 0.03904882821333378,
+      "new_mean": 0.3815726972097798,
+      "new_n": 8192,
+      "old_mean": 0.38286664476443544,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/bezier/noise/default/count": {
+      "distance": 0.0120849609375,
+      "limit": 0.03904882821333378,
+      "new_mean": 11.0238037109375,
+      "new_n": 8192,
+      "old_mean": 10.9962158203125,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/bezier/noise/default/curvature": {
+      "distance": 0.0250244140625,
+      "limit": 0.03904882821333378,
+      "new_mean": 3.393763194130588,
+      "new_n": 8192,
+      "old_mean": 3.366626128403765,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/bezier/noise/default/length": {
+      "distance": 0.013916015625,
+      "limit": 0.03904882821333378,
+      "new_mean": 4.726280315166553,
+      "new_n": 8192,
+      "old_mean": 4.737752680521656,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/bezier/noise/default/valid": {
+      "distance": 0.0,
+      "limit": 0.01,
+      "new_mean": 1.0,
+      "new_n": 8192,
+      "old_mean": 1.0,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/bezier/noise/default/z_mean": {
+      "distance": 0.0223388671875,
+      "limit": 0.03904882821333378,
+      "new_mean": 6.127706248144762e-06,
+      "new_n": 8192,
+      "old_mean": -0.0001608437597089764,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/bezier/noise/default/z_std": {
+      "distance": 0.016357421875,
+      "limit": 0.03904882821333378,
+      "new_mean": 0.047272646755471034,
+      "new_n": 8192,
+      "old_mean": 0.047755368665999366,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/bezier/random_walk/default/compactness": {
+      "distance": 0.01171875,
+      "limit": 0.03904882821333378,
+      "new_mean": 0.38423855849665056,
+      "new_n": 8192,
+      "old_mean": 0.3855152366802797,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/bezier/random_walk/default/count": {
+      "distance": 0.0120849609375,
+      "limit": 0.03904882821333378,
+      "new_mean": 11.0238037109375,
+      "new_n": 8192,
+      "old_mean": 10.9962158203125,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/bezier/random_walk/default/curvature": {
+      "distance": 0.0242919921875,
+      "limit": 0.03904882821333378,
+      "new_mean": 3.4052654473906214,
+      "new_n": 8192,
+      "old_mean": 3.377947731500102,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/bezier/random_walk/default/length": {
+      "distance": 0.0133056640625,
+      "limit": 0.03904882821333378,
+      "new_mean": 4.712170390995605,
+      "new_n": 8192,
+      "old_mean": 4.7236430465443,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/bezier/random_walk/default/valid": {
+      "distance": 0.0,
+      "limit": 0.01,
+      "new_mean": 1.0,
+      "new_n": 8192,
+      "old_mean": 1.0,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/bezier/random_walk/default/z_mean": {
+      "distance": 0.008544921875,
+      "limit": 0.03904882821333378,
+      "new_mean": -2.996264977721109e-05,
+      "new_n": 8192,
+      "old_mean": 0.00022638998227164403,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/bezier/random_walk/default/z_std": {
+      "distance": 0.0098876953125,
+      "limit": 0.03904882821333378,
+      "new_mean": 0.02271987633225476,
+      "new_n": 8192,
+      "old_mean": 0.02283712254432261,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/bezier/uniform/default/compactness": {
+      "distance": 0.00927734375,
+      "limit": 0.03904882821333378,
+      "new_mean": 0.28129174732006434,
+      "new_n": 8192,
+      "old_mean": 0.2817143706440977,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/bezier/uniform/default/count": {
+      "distance": 0.0120849609375,
+      "limit": 0.03904882821333378,
+      "new_mean": 11.0238037109375,
+      "new_n": 8192,
+      "old_mean": 10.9962158203125,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/bezier/uniform/default/curvature": {
+      "distance": 0.0291748046875,
+      "limit": 0.03904882821333378,
+      "new_mean": 2.902366385339795,
+      "new_n": 8192,
+      "old_mean": 2.876748042931073,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/bezier/uniform/default/length": {
+      "distance": 0.0103759765625,
+      "limit": 0.03904882821333378,
+      "new_mean": 5.499041226007314,
+      "new_n": 8192,
+      "old_mean": 5.515695435787165,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/bezier/uniform/default/valid": {
+      "distance": 0.0,
+      "limit": 0.01,
+      "new_mean": 1.0,
+      "new_n": 8192,
+      "old_mean": 1.0,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/bezier/uniform/default/z_mean": {
+      "distance": 0.0107421875,
+      "limit": 0.03904882821333378,
+      "new_mean": 0.10006569893520265,
+      "new_n": 8192,
+      "old_mean": 0.09958703969210261,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/bezier/uniform/default/z_std": {
+      "distance": 0.018310546875,
+      "limit": 0.03904882821333378,
+      "new_mean": 0.16272610672505247,
+      "new_n": 8192,
+      "old_mean": 0.16328017318889565,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/checkpoint/flat/default/compactness": {
+      "distance": 0.0086669921875,
+      "limit": 0.03904882821333378,
+      "new_mean": 0.6072157919727299,
+      "new_n": 8192,
+      "old_mean": 0.6077348800371585,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/checkpoint/flat/default/count": {
+      "distance": 0.0,
+      "limit": 0.03904882821333378,
+      "new_mean": 12.0,
+      "new_n": 8192,
+      "old_mean": 12.0,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/checkpoint/flat/default/curvature": {
+      "distance": 0.0125732421875,
+      "limit": 0.03904882821333378,
+      "new_mean": 2.814770129802982,
+      "new_n": 8192,
+      "old_mean": 2.8102911521838108,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/checkpoint/flat/default/length": {
+      "distance": 0.0185546875,
+      "limit": 0.03904882821333378,
+      "new_mean": 4.583944534841194,
+      "new_n": 8192,
+      "old_mean": 4.581174348715265,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/checkpoint/flat/default/valid": {
+      "distance": 0.0,
+      "limit": 0.01,
+      "new_mean": 1.0,
+      "new_n": 8192,
+      "old_mean": 1.0,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/checkpoint/flat/default/z_mean": {
+      "distance": 0.0,
+      "limit": 0.03904882821333378,
+      "new_mean": 0.0,
+      "new_n": 8192,
+      "old_mean": 0.0,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/checkpoint/flat/default/z_std": {
+      "distance": 0.0,
+      "limit": 0.03904882821333378,
+      "new_mean": 0.0,
+      "new_n": 8192,
+      "old_mean": 0.0,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/hull/flat/default/compactness": {
+      "distance": 0.013160702772097466,
+      "limit": 0.03905002001629804,
+      "new_mean": 0.3853199360045361,
+      "new_n": 8191,
+      "old_mean": 0.385966982729887,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/hull/flat/default/count": {
+      "distance": 0.003882390328371066,
+      "limit": 0.03905002001629804,
+      "new_mean": 11.02685874740569,
+      "new_n": 8191,
+      "old_mean": 11.017333984375,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/hull/flat/default/curvature": {
+      "distance": 0.0122717250879395,
+      "limit": 0.03905002001629804,
+      "new_mean": 3.4021738339054837,
+      "new_n": 8191,
+      "old_mean": 3.409535540410254,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/hull/flat/default/length": {
+      "distance": 0.013116709173940921,
+      "limit": 0.03905002001629804,
+      "new_mean": 4.72890348434353,
+      "new_n": 8191,
+      "old_mean": 4.712843642853596,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/hull/flat/default/valid": {
+      "distance": 0.0001220703125,
+      "limit": 0.010732399522917139,
+      "new_mean": 0.9998779296875,
+      "new_n": 8192,
+      "old_mean": 1.0,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/hull/flat/default/z_mean": {
+      "distance": 0.0,
+      "limit": 0.03905002001629804,
+      "new_mean": 0.0,
+      "new_n": 8191,
+      "old_mean": 0.0,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/hull/flat/default/z_std": {
+      "distance": 0.0,
+      "limit": 0.03905002001629804,
+      "new_mean": 0.0,
+      "new_n": 8191,
+      "old_mean": 0.0,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/hull/flat/random_pairs/compactness": {
+      "distance": 0.011760955240507909,
+      "limit": 0.03905002001629804,
+      "new_mean": 0.06201488221275526,
+      "new_n": 8191,
+      "old_mean": 0.061854322385290816,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/hull/flat/random_pairs/count": {
+      "distance": 0.003882390328371066,
+      "limit": 0.03905002001629804,
+      "new_mean": 11.02685874740569,
+      "new_n": 8191,
+      "old_mean": 11.017333984375,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/hull/flat/random_pairs/curvature": {
+      "distance": 0.014598303873916474,
+      "limit": 0.03905002001629804,
+      "new_mean": 2.9372578663213065,
+      "new_n": 8191,
+      "old_mean": 2.943397493823043,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/hull/flat/random_pairs/length": {
+      "distance": 0.009691795635072054,
+      "limit": 0.03905002001629804,
+      "new_mean": 8.05990119716697,
+      "new_n": 8191,
+      "old_mean": 8.04124641279304,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/hull/flat/random_pairs/valid": {
+      "distance": 0.0001220703125,
+      "limit": 0.010732399522917139,
+      "new_mean": 0.9998779296875,
+      "new_n": 8192,
+      "old_mean": 1.0,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/hull/flat/random_pairs/z_mean": {
+      "distance": 0.0,
+      "limit": 0.03905002001629804,
+      "new_mean": 0.0,
+      "new_n": 8191,
+      "old_mean": 0.0,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/hull/flat/random_pairs/z_std": {
+      "distance": 0.0,
+      "limit": 0.03905002001629804,
+      "new_mean": 0.0,
+      "new_n": 8191,
+      "old_mean": 0.0,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/polar/flat/default/compactness": {
+      "distance": 0.01318359375,
+      "limit": 0.03904882821333378,
+      "new_mean": 0.558417135291213,
+      "new_n": 8192,
+      "old_mean": 0.5564702963474724,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/polar/flat/default/count": {
+      "distance": 0.0,
+      "limit": 0.03904882821333378,
+      "new_mean": 12.0,
+      "new_n": 8192,
+      "old_mean": 12.0,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/polar/flat/default/curvature": {
+      "distance": 0.0186767578125,
+      "limit": 0.03904882821333378,
+      "new_mean": 2.844939695810379,
+      "new_n": 8192,
+      "old_mean": 2.8567684346063738,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/polar/flat/default/length": {
+      "distance": 0.014892578125,
+      "limit": 0.03904882821333378,
+      "new_mean": 4.626345888236152,
+      "new_n": 8192,
+      "old_mean": 4.618464950057508,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/polar/flat/default/valid": {
+      "distance": 0.0,
+      "limit": 0.01,
+      "new_mean": 1.0,
+      "new_n": 8192,
+      "old_mean": 1.0,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/polar/flat/default/z_mean": {
+      "distance": 0.0,
+      "limit": 0.03904882821333378,
+      "new_mean": 0.0,
+      "new_n": 8192,
+      "old_mean": 0.0,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/polar/flat/default/z_std": {
+      "distance": 0.0,
+      "limit": 0.03904882821333378,
+      "new_mean": 0.0,
+      "new_n": 8192,
+      "old_mean": 0.0,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/voronoi/flat/default/compactness": {
+      "distance": 0.01611328125,
+      "limit": 0.03904882821333378,
+      "new_mean": 0.6724412866344348,
+      "new_n": 8192,
+      "old_mean": 0.6719536884398102,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/voronoi/flat/default/count": {
+      "distance": 0.0,
+      "limit": 0.03904882821333378,
+      "new_mean": 18.0,
+      "new_n": 8192,
+      "old_mean": 18.0,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/voronoi/flat/default/curvature": {
+      "distance": 0.0098876953125,
+      "limit": 0.03904882821333378,
+      "new_mean": 3.1812185375132334,
+      "new_n": 8192,
+      "old_mean": 3.1840598994788127,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/voronoi/flat/default/length": {
+      "distance": 0.0111083984375,
+      "limit": 0.03904882821333378,
+      "new_mean": 4.3513103227858165,
+      "new_n": 8192,
+      "old_mean": 4.3505502111799075,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/voronoi/flat/default/valid": {
+      "distance": 0.0,
+      "limit": 0.01,
+      "new_mean": 1.0,
+      "new_n": 8192,
+      "old_mean": 1.0,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/voronoi/flat/default/z_mean": {
+      "distance": 0.0,
+      "limit": 0.03904882821333378,
+      "new_mean": 0.0,
+      "new_n": 8192,
+      "old_mean": 0.0,
+      "old_n": 8192,
+      "passed": true
+    },
+    "gates/voronoi/flat/default/z_std": {
+      "distance": 0.0,
+      "limit": 0.03904882821333378,
+      "new_mean": 0.0,
+      "new_n": 8192,
+      "old_mean": 0.0,
+      "old_n": 8192,
+      "passed": true
+    },
+    "track/bezier/flat/default/compactness": {
+      "distance": 0.012666115484962048,
+      "limit": 0.039085824491857726,
+      "new_mean": 0.46143196091246197,
+      "new_n": 8174,
+      "old_mean": 0.4613314062313997,
+      "old_n": 8179,
+      "passed": true
+    },
+    "track/bezier/flat/default/count": {
+      "distance": 0.01303075458095626,
+      "limit": 0.039085824491857726,
+      "new_mean": 82.8690971372645,
+      "new_n": 8174,
+      "old_mean": 83.12898887394547,
+      "old_n": 8179,
+      "passed": true
+    },
+    "track/bezier/flat/default/curvature": {
+      "distance": 0.018618013338868478,
+      "limit": 0.039085824491857726,
+      "new_mean": 4.020812058196747,
+      "new_n": 8174,
+      "old_mean": 3.9991585080305376,
+      "old_n": 8179,
+      "passed": true
+    },
+    "track/bezier/flat/default/length": {
+      "distance": 0.013988601565539938,
+      "limit": 0.039085824491857726,
+      "new_mean": 4.973662063362344,
+      "new_n": 8174,
+      "old_mean": 4.988759020278565,
+      "old_n": 8179,
+      "passed": true
+    },
+    "track/bezier/flat/default/valid": {
+      "distance": 0.0006103515625,
+      "limit": 0.014074092661394859,
+      "new_mean": 0.997802734375,
+      "new_n": 8192,
+      "old_mean": 0.9984130859375,
+      "old_n": 8192,
+      "passed": true
+    },
+    "track/bezier/flat/default/z_mean": {
+      "distance": 0.0,
+      "limit": 0.039085824491857726,
+      "new_mean": 0.0,
+      "new_n": 8174,
+      "old_mean": 0.0,
+      "old_n": 8179,
+      "passed": true
+    },
+    "track/bezier/flat/default/z_std": {
+      "distance": 0.0,
+      "limit": 0.039085824491857726,
+      "new_mean": 0.0,
+      "new_n": 8174,
+      "old_mean": 0.0,
+      "old_n": 8179,
+      "passed": true
+    },
+    "track/bezier/noise/default/compactness": {
+      "distance": 0.012048885511371066,
+      "limit": 0.039085824491857726,
+      "new_mean": 0.45635364079984164,
+      "new_n": 8174,
+      "old_mean": 0.45628906387693036,
+      "old_n": 8179,
+      "passed": true
+    },
+    "track/bezier/noise/default/count": {
+      "distance": 0.01303075458095626,
+      "limit": 0.039085824491857726,
+      "new_mean": 82.8690971372645,
+      "new_n": 8174,
+      "old_mean": 83.12898887394547,
+      "old_n": 8179,
+      "passed": true
+    },
+    "track/bezier/noise/default/curvature": {
+      "distance": 0.018725020808420534,
+      "limit": 0.039085824491857726,
+      "new_mean": 4.000045316092364,
+      "new_n": 8174,
+      "old_mean": 3.9785653324185097,
+      "old_n": 8179,
+      "passed": true
+    },
+    "track/bezier/noise/default/length": {
+      "distance": 0.014131058811837849,
+      "limit": 0.039085824491857726,
+      "new_mean": 4.9978515272405835,
+      "new_n": 8174,
+      "old_mean": 5.013013344381055,
+      "old_n": 8179,
+      "passed": true
+    },
+    "track/bezier/noise/default/valid": {
+      "distance": 0.0006103515625,
+      "limit": 0.014074092661394859,
+      "new_mean": 0.997802734375,
+      "new_n": 8192,
+      "old_mean": 0.9984130859375,
+      "old_n": 8192,
+      "passed": true
+    },
+    "track/bezier/noise/default/z_mean": {
+      "distance": 0.010727984948234237,
+      "limit": 0.039085824491857726,
+      "new_mean": -4.973461483990743e-07,
+      "new_n": 8174,
+      "old_mean": 2.3446164398490683e-07,
+      "old_n": 8179,
+      "passed": true
+    },
+    "track/bezier/noise/default/z_std": {
+      "distance": 0.013746750324948875,
+      "limit": 0.039085824491857726,
+      "new_mean": 0.048426523906420146,
+      "new_n": 8174,
+      "old_mean": 0.04891228246199547,
+      "old_n": 8179,
+      "passed": true
+    },
+    "track/bezier/random_walk/default/compactness": {
+      "distance": 0.012788230243338361,
+      "limit": 0.039085824491857726,
+      "new_mean": 0.46002710956265375,
+      "new_n": 8174,
+      "old_mean": 0.45991802128576387,
+      "old_n": 8179,
+      "passed": true
+    },
+    "track/bezier/random_walk/default/count": {
+      "distance": 0.01303075458095626,
+      "limit": 0.039085824491857726,
+      "new_mean": 82.8690971372645,
+      "new_n": 8174,
+      "old_mean": 83.12898887394547,
+      "old_n": 8179,
+      "passed": true
+    },
+    "track/bezier/random_walk/default/curvature": {
+      "distance": 0.018058594921025184,
+      "limit": 0.039085824491857726,
+      "new_mean": 4.014678465063697,
+      "new_n": 8174,
+      "old_mean": 3.993034336526857,
+      "old_n": 8179,
+      "passed": true
+    },
+    "track/bezier/random_walk/default/length": {
+      "distance": 0.01411071632391614,
+      "limit": 0.039085824491857726,
+      "new_mean": 4.981271205712166,
+      "new_n": 8174,
+      "old_mean": 4.9964184576069375,
+      "old_n": 8179,
+      "passed": true
+    },
+    "track/bezier/random_walk/default/valid": {
+      "distance": 0.0006103515625,
+      "limit": 0.014074092661394859,
+      "new_mean": 0.997802734375,
+      "new_n": 8192,
+      "old_mean": 0.9984130859375,
+      "old_n": 8192,
+      "passed": true
+    },
+    "track/bezier/random_walk/default/z_mean": {
+      "distance": 0.010144768811065075,
+      "limit": 0.039085824491857726,
+      "new_mean": 6.961239637445669e-05,
+      "new_n": 8174,
+      "old_mean": 7.606089116679673e-05,
+      "old_n": 8179,
+      "passed": true
+    },
+    "track/bezier/random_walk/default/z_std": {
+      "distance": 0.011552558721508177,
+      "limit": 0.039085824491857726,
+      "new_mean": 0.022511217896389414,
+      "new_n": 8174,
+      "old_mean": 0.022612910176258823,
+      "old_n": 8179,
+      "passed": true
+    },
+    "track/bezier/uniform/default/compactness": {
+      "distance": 0.018402741951980772,
+      "limit": 0.039085824491857726,
+      "new_mean": 0.3616450409320626,
+      "new_n": 8174,
+      "old_mean": 0.3605947868658964,
+      "old_n": 8179,
+      "passed": true
+    },
+    "track/bezier/uniform/default/count": {
+      "distance": 0.01303075458095626,
+      "limit": 0.039085824491857726,
+      "new_mean": 82.8690971372645,
+      "new_n": 8174,
+      "old_mean": 83.12898887394547,
+      "old_n": 8179,
+      "passed": true
+    },
+    "track/bezier/uniform/default/curvature": {
+      "distance": 0.023354552243442794,
+      "limit": 0.039085824491857726,
+      "new_mean": 3.574720902022676,
+      "new_n": 8174,
+      "old_mean": 3.5506242356029674,
+      "old_n": 8179,
+      "passed": true
+    },
+    "track/bezier/uniform/default/length": {
+      "distance": 0.013968408654735476,
+      "limit": 0.039085824491857726,
+      "new_mean": 5.577904001375984,
+      "new_n": 8174,
+      "old_mean": 5.601469493181193,
+      "old_n": 8179,
+      "passed": true
+    },
+    "track/bezier/uniform/default/valid": {
+      "distance": 0.0006103515625,
+      "limit": 0.014074092661394859,
+      "new_mean": 0.997802734375,
+      "new_n": 8192,
+      "old_mean": 0.9984130859375,
+      "old_n": 8192,
+      "passed": true
+    },
+    "track/bezier/uniform/default/z_mean": {
+      "distance": 0.011123077945263932,
+      "limit": 0.039085824491857726,
+      "new_mean": 0.10019037404496392,
+      "new_n": 8174,
+      "old_mean": 0.10003953724319956,
+      "old_n": 8179,
+      "passed": true
+    },
+    "track/bezier/uniform/default/z_std": {
+      "distance": 0.018696032763132475,
+      "limit": 0.039085824491857726,
+      "new_mean": 0.14030173315128555,
+      "new_n": 8174,
+      "old_mean": 0.1404596047160572,
+      "old_n": 8179,
+      "passed": true
+    },
+    "track/checkpoint/flat/default/compactness": {
+      "distance": 0.008096443256508268,
+      "limit": 0.039150517147767426,
+      "new_mean": 0.6311344590108041,
+      "new_n": 8148,
+      "old_mean": 0.6323240615376887,
+      "old_n": 8151,
+      "passed": true
+    },
+    "track/checkpoint/flat/default/count": {
+      "distance": 0.018050135792946453,
+      "limit": 0.039150517147767426,
+      "new_mean": 70.38598429062347,
+      "new_n": 8148,
+      "old_mean": 70.19850325113482,
+      "old_n": 8151,
+      "passed": true
+    },
+    "track/checkpoint/flat/default/curvature": {
+      "distance": 0.009586136417389812,
+      "limit": 0.039150517147767426,
+      "new_mean": 3.688928757332603,
+      "new_n": 8148,
+      "old_mean": 3.6890596443342956,
+      "old_n": 8151,
+      "passed": true
+    },
+    "track/checkpoint/flat/default/length": {
+      "distance": 0.017802734433228218,
+      "limit": 0.039150517147767426,
+      "new_mean": 4.187367674954252,
+      "new_n": 8148,
+      "old_mean": 4.17614869374615,
+      "old_n": 8151,
+      "passed": true
+    },
+    "track/checkpoint/flat/default/valid": {
+      "distance": 0.0003662109375,
+      "limit": 0.01673505706592325,
+      "new_mean": 0.99462890625,
+      "new_n": 8192,
+      "old_mean": 0.9949951171875,
+      "old_n": 8192,
+      "passed": true
+    },
+    "track/checkpoint/flat/default/z_mean": {
+      "distance": 0.0,
+      "limit": 0.039150517147767426,
+      "new_mean": 0.0,
+      "new_n": 8148,
+      "old_mean": 0.0,
+      "old_n": 8151,
+      "passed": true
+    },
+    "track/checkpoint/flat/default/z_std": {
+      "distance": 0.0,
+      "limit": 0.039150517147767426,
+      "new_mean": 0.0,
+      "new_n": 8148,
+      "old_mean": 0.0,
+      "old_n": 8151,
+      "passed": true
+    },
+    "track/hull/flat/default/compactness": {
+      "distance": 0.013021575729345924,
+      "limit": 0.039178179627014545,
+      "new_mean": 0.44960912121290636,
+      "new_n": 8144,
+      "old_mean": 0.4514664436468048,
+      "old_n": 8132,
+      "passed": true
+    },
+    "track/hull/flat/default/count": {
+      "distance": 0.010547298165727192,
+      "limit": 0.039178179627014545,
+      "new_mean": 81.57981335952849,
+      "new_n": 8144,
+      "old_mean": 81.31640432857846,
+      "old_n": 8132,
+      "passed": true
+    },
+    "track/hull/flat/default/curvature": {
+      "distance": 0.014359338111726239,
+      "limit": 0.039178179627014545,
+      "new_mean": 4.311670162276043,
+      "new_n": 8144,
+      "old_mean": 4.3169658615661515,
+      "old_n": 8132,
+      "passed": true
+    },
+    "track/hull/flat/default/length": {
+      "distance": 0.01116414620452122,
+      "limit": 0.039178179627014545,
+      "new_mean": 4.878490385859845,
+      "new_n": 8144,
+      "old_mean": 4.862629139022532,
+      "old_n": 8132,
+      "passed": true
+    },
+    "track/hull/flat/default/valid": {
+      "distance": 0.00146484375,
+      "limit": 0.017586423021320814,
+      "new_mean": 0.994140625,
+      "new_n": 8192,
+      "old_mean": 0.99267578125,
+      "old_n": 8192,
+      "passed": true
+    },
+    "track/hull/flat/default/z_mean": {
+      "distance": 0.0,
+      "limit": 0.039178179627014545,
+      "new_mean": 0.0,
+      "new_n": 8144,
+      "old_mean": 0.0,
+      "old_n": 8132,
+      "passed": true
+    },
+    "track/hull/flat/default/z_std": {
+      "distance": 0.0,
+      "limit": 0.039178179627014545,
+      "new_mean": 0.0,
+      "new_n": 8144,
+      "old_mean": 0.0,
+      "old_n": 8132,
+      "passed": true
+    },
+    "track/polar/flat/default/compactness": {
+      "distance": 0.014264462209856887,
+      "limit": 0.03905002001629804,
+      "new_mean": 0.5759543835485905,
+      "new_n": 8192,
+      "old_mean": 0.5740830271462758,
+      "old_n": 8191,
+      "passed": true
+    },
+    "track/polar/flat/default/count": {
+      "distance": 0.012729380713206562,
+      "limit": 0.03905002001629804,
+      "new_mean": 78.6328125,
+      "new_n": 8192,
+      "old_mean": 78.51202539372483,
+      "old_n": 8191,
+      "passed": true
+    },
+    "track/polar/flat/default/curvature": {
+      "distance": 0.015465791460329947,
+      "limit": 0.03905002001629804,
+      "new_mean": 3.893005819485155,
+      "new_n": 8192,
+      "old_mean": 3.906635984345385,
+      "old_n": 8191,
+      "passed": true
+    },
+    "track/polar/flat/default/length": {
+      "distance": 0.011385877029666702,
+      "limit": 0.03905002001629804,
+      "new_mean": 4.712678475681749,
+      "new_n": 8192,
+      "old_mean": 4.705850807865794,
+      "old_n": 8191,
+      "passed": true
+    },
+    "track/polar/flat/default/valid": {
+      "distance": 0.0001220703125,
+      "limit": 0.010732399522917139,
+      "new_mean": 1.0,
+      "new_n": 8192,
+      "old_mean": 0.9998779296875,
+      "old_n": 8192,
+      "passed": true
+    },
+    "track/polar/flat/default/z_mean": {
+      "distance": 0.0,
+      "limit": 0.03905002001629804,
+      "new_mean": 0.0,
+      "new_n": 8192,
+      "old_mean": 0.0,
+      "old_n": 8191,
+      "passed": true
+    },
+    "track/polar/flat/default/z_std": {
+      "distance": 0.0,
+      "limit": 0.03905002001629804,
+      "new_mean": 0.0,
+      "new_n": 8192,
+      "old_mean": 0.0,
+      "old_n": 8191,
+      "passed": true
+    },
+    "track/repulsive/flat/default/compactness": {
+      "distance": 0.012894510622620647,
+      "limit": 0.03916613895752881,
+      "new_mean": 0.15319496771911612,
+      "new_n": 8143,
+      "old_mean": 0.15328515229416587,
+      "old_n": 8143,
+      "passed": true
+    },
+    "track/repulsive/flat/default/count": {
+      "distance": 0.008105120962790147,
+      "limit": 0.03916613895752881,
+      "new_mean": 220.35171312783987,
+      "new_n": 8143,
+      "old_mean": 220.31499447378116,
+      "old_n": 8143,
+      "passed": true
+    },
+    "track/repulsive/flat/default/curvature": {
+      "distance": 0.01743829055630608,
+      "limit": 0.03916613895752881,
+      "new_mean": 3.6828009059256055,
+      "new_n": 8143,
+      "old_mean": 3.6866787054558254,
+      "old_n": 8143,
+      "passed": true
+    },
+    "track/repulsive/flat/default/length": {
+      "distance": 0.008964755004298164,
+      "limit": 0.03916613895752881,
+      "new_mean": 13.119029581132159,
+      "new_n": 8143,
+      "old_mean": 13.116513008577721,
+      "old_n": 8143,
+      "passed": true
+    },
+    "track/repulsive/flat/default/valid": {
+      "distance": 0.0,
+      "limit": 0.01722888956588249,
+      "new_mean": 0.9940185546875,
+      "new_n": 8192,
+      "old_mean": 0.9940185546875,
+      "old_n": 8192,
+      "passed": true
+    },
+    "track/repulsive/flat/default/z_mean": {
+      "distance": 0.0,
+      "limit": 0.03916613895752881,
+      "new_mean": 0.0,
+      "new_n": 8143,
+      "old_mean": 0.0,
+      "old_n": 8143,
+      "passed": true
+    },
+    "track/repulsive/flat/default/z_std": {
+      "distance": 0.0,
+      "limit": 0.03916613895752881,
+      "new_mean": 0.0,
+      "new_n": 8143,
+      "old_mean": 0.0,
+      "old_n": 8143,
+      "passed": true
+    },
+    "track/voronoi/flat/default/compactness": {
+      "distance": 0.01953125,
+      "limit": 0.03904882821333378,
+      "new_mean": 0.7462776966187816,
+      "new_n": 8192,
+      "old_mean": 0.7455568102122698,
+      "old_n": 8192,
+      "passed": true
+    },
+    "track/voronoi/flat/default/count": {
+      "distance": 0.0101318359375,
+      "limit": 0.03904882821333378,
+      "new_mean": 71.598388671875,
+      "new_n": 8192,
+      "old_mean": 71.5892333984375,
+      "old_n": 8192,
+      "passed": true
+    },
+    "track/voronoi/flat/default/curvature": {
+      "distance": 0.0145263671875,
+      "limit": 0.03904882821333378,
+      "new_mean": 3.113958733710019,
+      "new_n": 8192,
+      "old_mean": 3.1210675793109277,
+      "old_n": 8192,
+      "passed": true
+    },
+    "track/voronoi/flat/default/length": {
+      "distance": 0.01123046875,
+      "limit": 0.03904882821333378,
+      "new_mean": 4.25477943574181,
+      "new_n": 8192,
+      "old_mean": 4.254303311018745,
+      "old_n": 8192,
+      "passed": true
+    },
+    "track/voronoi/flat/default/valid": {
+      "distance": 0.0,
+      "limit": 0.01,
+      "new_mean": 1.0,
+      "new_n": 8192,
+      "old_mean": 1.0,
+      "old_n": 8192,
+      "passed": true
+    },
+    "track/voronoi/flat/default/z_mean": {
+      "distance": 0.0,
+      "limit": 0.03904882821333378,
+      "new_mean": 0.0,
+      "new_n": 8192,
+      "old_mean": 0.0,
+      "old_n": 8192,
+      "passed": true
+    },
+    "track/voronoi/flat/default/z_std": {
+      "distance": 0.0,
+      "limit": 0.03904882821333378,
+      "new_mean": 0.0,
+      "new_n": 8192,
+      "old_mean": 0.0,
+      "old_n": 8192,
+      "passed": true
+    }
+  },
+  "device": "spark-home NVIDIA GB10 cuda:0",
+  "runtime_sha256": "4a39241b11aca8bf2efeabd4265a32b4ea06ee8e0bc5f8502aac39631c18cfc8",
+  "samples_per_case": 8192,
+  "seed_blocks": [
+    0,
+    1000003
+  ],
+  "warp": "1.18.0"
+}

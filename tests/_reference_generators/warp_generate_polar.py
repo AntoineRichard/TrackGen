@@ -1,4 +1,4 @@
-"""Private pre-0.3 scalar numeric reference; never imported by the library."""
+"""Independent scalar numeric reference with current stream initialization."""
 from __future__ import annotations
 from track_gen._src import warp_generate_polar as _implementation
 from track_gen._src.runtime import _init
@@ -32,7 +32,7 @@ def _polar_controls_k(
     # fraction of one knot spacing and is clamped by Python to < 0.5, so the fixed index
     # order remains the sorted angular order without a dynamic sort.
     e = wp.tid()
-    state = wp.rand_init(seeds[e] * _CONTROL_SALT + 17)
+    state = _rng.init(seeds[e], wp.uint32(_CONTROL_SALT))
     b = e * K
     two_pi = 2.0 * wp.pi
 

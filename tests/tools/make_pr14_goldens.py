@@ -1,23 +1,11 @@
-"""Digests of the runtime utilities' outputs for VALID envs (roadmap PR14).
+"""Utility and component fingerprints for the 0.3 RNG baseline.
 
-PR14 changes what the utilities write for an env whose ``valid[e] == 0`` (the sentinel
-table: an invalid env reads like a poisoned one) and adds a generation-aware self-reset,
-the ``out=`` forms and the component adapters. For every VALID env the outputs must stay
-byte-identical. This tool runs every utility (and both ``Course`` modes) on CPU, through
-the legacy API only (names that exist at 9267388 and after PR14), at EXPLICIT capacities,
-on batches where some envs are marked invalid with their geometry kept (``valid = 0`` on a
-clone: what ``on_invalid="keep"`` leaves), and records the sha256 of each output field's
-rows of the valid envs (per step for the stateful ones). ``tests/goldens/pr14_utilities.json``
-keeps them, keyed by the PR7 platform key (float results depend on the platform and the
-Warp version); ``tests/test_components.py`` recomputes them on the current tree.
-
-Capture (from the repository root, against a checkout of the base, 9267388)::
-
-    PYTHONPATH=<9267388 tree> python tests/tools/make_pr14_goldens.py
-
-It adds or replaces this platform's entry.
+Use tests.tools.capture_03_goldens to capture and merge platform fragments together.
+The historical filename identifies its coverage family; values use the current keying.
 """
 from __future__ import annotations
+
+from tests.tools._golden_config import keep_config
 
 import hashlib
 import json
@@ -129,7 +117,7 @@ def _boxes(n: int, s: int):
 def _track(**kw):
     from track_gen import PerEnvSeededRNG, TrackGenConfig, TrackGenerator
 
-    gen = TrackGenerator(TrackGenConfig(num_envs=E, device=DEV, **kw),
+    gen = TrackGenerator(keep_config(TrackGenConfig, num_envs=E, device=DEV, **kw),
                          PerEnvSeededRNG(seeds=11, num_envs=E, device=DEV))
     return gen.generate()
 
@@ -137,7 +125,7 @@ def _track(**kw):
 def _gates():
     from track_gen import GateGenConfig, GateGenerator, PerEnvSeededRNG
 
-    gen = GateGenerator(GateGenConfig(num_envs=E, device=DEV, gate_width=0.1),
+    gen = GateGenerator(keep_config(GateGenConfig, num_envs=E, device=DEV, gate_width=0.1),
                         PerEnvSeededRNG(seeds=5, num_envs=E, device=DEV))
     return gen.generate()
 
@@ -252,18 +240,18 @@ def _course_cases() -> dict:
 
     cases = {
         "course[track,segments,hf]": CourseConfig(
-            mode="track", gen=TrackGenConfig(num_envs=E, device=DEV), seeds=3,
+            mode="track", gen=keep_config(TrackGenConfig, num_envs=E, device=DEV), seeds=3,
             collision="segments", heightfield_resolution=16, checkpoint_spacing=0.5,
             max_checkpoints=48),
         "course[track,sdf,boxes2]": CourseConfig(
-            mode="track", gen=TrackGenConfig(num_envs=E, device=DEV), seeds=4,
+            mode="track", gen=keep_config(TrackGenConfig, num_envs=E, device=DEV), seeds=4,
             collision="sdf", sdf_resolution=16, max_boxes=2, checkpoint_spacing=0.4,
             max_checkpoints=64),
         "course[gates,posts,warm]": CourseConfig(
-            mode="gates", gen=GateGenConfig(num_envs=E, device=DEV, gate_width=0.1),
+            mode="gates", gen=keep_config(GateGenConfig, num_envs=E, device=DEV, gate_width=0.1),
             seeds=7, post_radius=0.03, localize_window=3),
         "course[gates,frames]": CourseConfig(
-            mode="gates", gen=GateGenConfig(num_envs=E, device=DEV, gate_width=0.1),
+            mode="gates", gen=keep_config(GateGenConfig, num_envs=E, device=DEV, gate_width=0.1),
             seeds=8, frame_collision=True, agent_radius=0.05, frame_thickness=0.02,
             frame_depth=0.02),
     }

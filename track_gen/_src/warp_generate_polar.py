@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import warp as wp
 
+from ..ops import rng as _rng
+
 from .. import ops
 from ..exec.context import LaunchContext
 from ..ops import funcs
@@ -32,7 +34,7 @@ from .builtin_stage import check_dyn, default_alloc, run_view
 from .runtime import _init
 
 # Independent RNG streams for controls. The constants are distinct from bezier/hull salts.
-_CONTROL_SALT = 7919
+_CONTROL_SALT = 0x23DAB0D9
 
 #: Radius of the control ring before normalisation. The curve is normalised after
 #: resampling, so the base radius only sets a stable pre-scale.
@@ -72,7 +74,7 @@ def _polar_controls_dyn_k(
     angular_jitter = angular_e[e]
     angular_jitter = wp.where(angular_jitter < _ANGULAR_LO, _ANGULAR_LO, angular_jitter)
     angular_jitter = wp.where(angular_jitter > _ANGULAR_HI, _ANGULAR_HI, angular_jitter)
-    state = wp.rand_init(seeds[e] * _CONTROL_SALT + 17)
+    state = _rng.init(seeds[e], wp.uint32(_CONTROL_SALT))
     b = e * K
     two_pi = 2.0 * wp.pi
 

@@ -1,4 +1,4 @@
-"""Private pre-0.3 scalar numeric reference; never imported by the library."""
+"""Independent scalar numeric reference with current stream initialization."""
 from __future__ import annotations
 from track_gen._src import warp_generate_hull as _implementation
 from track_gen._src.runtime import _init
@@ -46,7 +46,7 @@ def _midpoint_displace_k(
     centroid = wp.vec2f(cx, cy)
 
     # Per-edge displacement RNG (distinct multiplier 3083 from the count/position streams).
-    state = wp.rand_init(seeds[e] * 3083 + 1)
+    state = _rng.init(seeds[e], wp.uint32(_DISPLACE_SALT))
 
     for i in range(P):
         if i < m:
@@ -80,7 +80,7 @@ def point_count_sample_inplace(seeds_wp, config, out_count,
     # Legacy entry point (kept for out-of-tree plugins): ops.sample_counts keyed
     # seed * POINT_COUNT_SALT + POINT_SALT_OFFSET, without the public op's validation.
     _sample_counts_launch(ctx, seeds_wp, POINT_COUNT_SALT, POINT_SALT_OFFSET,
-                          int(config.min_num_points), int(config.max_num_points), out_count)
+                          int(config.min_num_points), int(config.max_num_points), out_count, keying="hashed")
     ctx.sync()
 
 def point_sample_inplace(seeds_wp, config, out_points, used_scratch,
@@ -101,7 +101,7 @@ def point_sample_inplace(seeds_wp, config, out_points, used_scratch,
     # seed * POINT_SALT + POINT_SALT_OFFSET, without the public op's validation.
     _sample_grid_points_launch(ctx, seeds_wp, POINT_SALT, POINT_SALT_OFFSET, P, num_cells,
                                float(cell_size), float(config.scale), used_scratch,
-                               out_points)
+                               out_points, keying="hashed")
     ctx.sync()
 
 def _generate(seeds_wp: wp.array, config,
@@ -141,9 +141,9 @@ def _enqueue_hull(seeds_wp, config, out_centerline, out_valid_wp, scratch, ctx, 
     AP = 2 * P
     M = AP * npseg
     arc = ops.ArcScratch(scratch.arc_real, scratch.arc_seg, scratch.arc_s, scratch.arc_cr)
-    ops.sample_counts(ctx, seeds_wp, POINT_COUNT_SALT, POINT_SALT_OFFSET, int(config.min_num_points), int(config.max_num_points), scratch.count)
+    ops.sample_counts(ctx, seeds_wp, POINT_COUNT_SALT, POINT_SALT_OFFSET, int(config.min_num_points), int(config.max_num_points), scratch.count, keying="hashed")
     num_cells, cell = ops.grid_cells(config.min_point_distance)
-    ops.sample_grid_points(ctx, seeds_wp, POINT_SALT, POINT_SALT_OFFSET, P, num_cells, float(cell), float(config.scale), scratch.used, scratch.points)
+    ops.sample_grid_points(ctx, seeds_wp, POINT_SALT, POINT_SALT_OFFSET, P, num_cells, float(cell), float(config.scale), scratch.used, scratch.points, keying="hashed")
     _angle_sort_launch(ctx, scratch.points, P, scratch.count, P, scratch.keys, scratch.sorted, m_floor=1)
     disp = float(getattr(config, 'hull_displacement', 0.15))
     ctx.launch(_midpoint_displace_k, E, [scratch.sorted, scratch.count, seeds_wp, P, disp, scratch.aug, scratch.aug_count])

@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import warp as wp
 
+from ..ops import rng as _rng
+
 from .. import ops
 from ..exec.context import LaunchContext
 from ..ops.constants import TARGET_EXTENT
@@ -35,8 +37,8 @@ _TARGET_EXTENT = TARGET_EXTENT
 #: Side of the square site field (centred at the origin) the built-in generator samples.
 BOX_SIZE = 2.0
 
-_SITE_SALT = 8171
-_ANCHOR_SALT = 3911
+_SITE_SALT = 0x877BE6DF
+_ANCHOR_SALT = 0xC9F3730A
 
 # NOTE: _LAYOUT_RING ("ring") is the uniform box-fill baseline — it does NOT sample an
 # annulus. Only _LAYOUT_VOID_RING ("void_ring") sets use_annulus; the "ring" name is kept
@@ -67,7 +69,7 @@ def _sample_sites_k(
     out_sites: wp.array(dtype=wp.vec2f),
 ):
     e = wp.tid()
-    state = wp.rand_init(seeds[e] * _SITE_SALT + 19)
+    state = _rng.init(seeds[e], wp.uint32(_SITE_SALT))
     base = e * S
     half = 0.5 * box_size
     two_pi = 2.0 * wp.pi
@@ -149,7 +151,7 @@ def _select_anchor_sites_dyn_k(
     angular_jitter = wp.where(angular_jitter > _AJ_HI, _AJ_HI, angular_jitter)
     sbase = e * S
     kbase = e * K
-    state = wp.rand_init(seeds[e] * _ANCHOR_SALT + 31)
+    state = _rng.init(seeds[e], wp.uint32(_ANCHOR_SALT))
     two_pi = 2.0 * wp.pi
     sector = two_pi / float(K)
     rotation = wp.randf(state) * two_pi
@@ -286,7 +288,7 @@ def sample_voronoi_sites(ctx: "LaunchContext", seeds: wp.array, S: int, layout_m
 
     ``layout_mode`` is a :func:`voronoi_layout_mode` code; sites lie in the
     ``box_size``-wide square (or the annulus of the ring layouts) centred at the origin,
-    drawn from ``wp.rand_init(seeds[e] * 8171 + 19)``. One launch (``E = seeds.shape[0]``
+    drawn from ``ops.rng.init`` with the fixed ``generator.voronoi/sites`` salt. One launch (``E = seeds.shape[0]``
     threads); no allocation, no host sync, no validation.
     """
     ctx.launch(_sample_sites_k, seeds.shape[0],

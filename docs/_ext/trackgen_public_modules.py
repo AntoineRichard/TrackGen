@@ -26,6 +26,7 @@ PUBLIC_MODULES = (
     "track_gen.ops",
     "track_gen.ops.funcs",
     "track_gen.ops.constants",
+    "track_gen.ops.rng",
     "track_gen.plugin",
     "track_gen.pipeline",
     "track_gen.pipeline.presets",

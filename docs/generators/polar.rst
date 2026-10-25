@@ -20,9 +20,8 @@ How It Works
 ------------
 
 1. **Control knot sampling.** The kernel ``_polar_controls_dyn_k`` draws
-   ``K = polar_num_knots`` control knots using an RNG stream seeded by
-   ``seeds[e] * 7919 + 17`` (salt ``7919`` is the polar stream constant;
-   ``+17`` is the control-specific offset). It first reads env ``e``'s
+   ``K = polar_num_knots`` control knots using ``ops.rng.init`` with the fixed
+   ``generator.polar/controls`` salt (:ref:`ops-rng-keying`). It first reads env ``e``'s
    ``radial_jitter`` and ``angular_jitter`` from the per-env parameter arrays and clamps
    them to their bounds, ``[0, 0.85]`` and ``[0, 0.45]``. For each knot index
    ``i`` in ``0 … K-1``:

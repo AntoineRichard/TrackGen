@@ -173,8 +173,8 @@ class OrderCcw(_Order):
 
 
 class OrderRandomPairs(_Order):
-    """``order.random_pairs``: consecutive anchor pairs in a seeded random order (salt
-    ``7919``, keyed on the effective seed)."""
+    """``order.random_pairs``: consecutive anchor pairs in a seeded random order,
+    using the fixed ``order.random_pairs/pairs`` namespace and pair indices."""
 
     name = "random_pairs"
     reads = {**_ORDER_READS, "seed": "seed"}
@@ -187,7 +187,7 @@ class OrderRandomPairs(_Order):
 
         def enqueue(ctx):
             ctx.launch(_wg._order_random_pairs_k, E,
-                       [seed, src, A, acount, G, int(_wg._ORDER_SALT), keys, dst])
+                       [seed, src, A, acount, G, wp.uint32(_wg._ORDER_SALT), keys, dst])
             ctx.copy(count, acount)
         return enqueue
 

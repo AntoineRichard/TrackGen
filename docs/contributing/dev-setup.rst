@@ -92,6 +92,28 @@ differences between two ``x86_64`` hosts. ``TRACKGEN_SKIP_HOST_SENSITIVE_GOLDENS
 leaves those fields out and compares every other one; CI sets it, because its runners are
 not the capture machines. Leave it unset on the machine a golden was captured on.
 
+Capturing a new byte baseline
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+After an intentional geometry change, capture one fragment per platform against
+identical source, then merge every fragment together:
+
+.. code-block:: bash
+
+   python -m tests.tools.capture_03_goldens capture golden-fragment.json
+   python -m tests.tools.capture_03_goldens merge darwin-fragment.json linux-fragment.json cuda-fragment.json
+
+Capture runs all five geometry and utility reference families. Merge checks source
+hashes and complete family coverage before writing any golden; it replaces the stored
+platform set with the supplied fragments. The manual test workflow's
+``capture_goldens`` input captures the Linux runner fragment as an artifact. The
+reference captures explicitly use ``on_invalid="keep"`` where supported so a later
+invalid-output default change does not require another geometry baseline.
+
+A changed seed mapping also needs the empirical distribution check described in
+:ref:`upgrading-0.3-rng`; replacing byte hashes alone does not establish that the
+shape distributions stayed close.
+
 Pytest markers
 --------------
 

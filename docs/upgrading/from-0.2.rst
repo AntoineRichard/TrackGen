@@ -3,16 +3,76 @@
 Upgrading from 0.2
 ==================
 
-The 0.3 development line removes obsolete APIs without compatibility shims or
-another warning cycle. This page currently describes the removal milestone
-``0.3.0.dev1``. Surviving configurations keep their generated geometry at this
-milestone. The hashed RNG switch, poison defaults, frozen configs and required
-result fields are later milestones; they are not active in this removal milestone.
+The current milestone, ``0.3.0.dev2``, includes the API removals from
+``0.3.0.dev1`` and switches every built-in random stream to hashed salts. Generated
+track and gate bytes change for the same seed. There is no compatibility shim,
+legacy RNG config field or reproduction mode. Poison defaults, frozen configs and
+required result fields remain pending for a later milestone.
 
-Update imports and configuration dictionaries first, run your tests, then review
-any stored pipeline specs. There is no compatibility option for a removed name.
-The :doc:`from-0.1` guide records the earlier 0.1 to 0.2 transition; examples marked
-historical there describe those releases rather than the current API.
+Update imports and configuration dictionaries, rebaseline stored generated outputs,
+run your tests, then review any saved pipeline specs. The :doc:`from-0.1` guide
+records the earlier 0.1 to 0.2 transition; examples marked historical there describe
+those releases rather than the current API.
+
+.. _upgrading-0.3-rng:
+
+Built-in RNG streams change
+---------------------------
+
+Previously, built-in streams initialized Warp's RNG from ``seed * salt + offset``
+in int32 arithmetic. At seed 0 the salt disappeared, so streams with the same
+offset coincided. Built-ins now mix the effective seed with a fixed named salt
+through :mod:`track_gen.ops.rng`. This removes that systematic seed-0 collapse;
+finite RNG states still permit collisions.
+
+All six track generators and all five gate generators use hashed keying, as do
+``order.random_pairs`` and the nonflat ``uniform``, ``random_walk`` and ``noise``
+elevations. Gate generators share the matching track generator's stream names.
+The :ref:`fixed stream table <ops-rng-keying>` defines the salts and index meanings;
+renaming or moving a built-in Stage does not change its salt. The effective-seed
+and epoch formulas, ``PerEnvSeededRNG`` and ``randomize.uniform`` are unchanged.
+Third-party plugin kernels retain their own RNG choices.
+
+Rebuild byte goldens and cached datasets once. The same seed remains reproducible
+within a fixed device, Warp version and configuration, but it does not reproduce
+0.2 geometry. No ``rng="0.2"`` / ``rng="1.0"`` setting exists on configs, presets
+or pipeline specs. The ``rng=`` object argument on generator facades still means a
+``PerEnvSeededRNG`` seed source, not a choice of keying.
+
+Public ``ops.sample_counts`` and ``ops.sample_grid_points`` keep
+``keying="linear"`` as their default so existing plugin callers keep their draws.
+Opt in with the keyword-only ``keying="hashed"`` to use
+``rng.init_at(seed, salt, offset)``. New plugin kernels can call ``rng.init`` or
+``rng.init_at`` directly; their formulas are frozen for plugin API version 1.
+
+A ``Course`` that derives checkpoint capacity by generating geometry at construction
+can derive a different capacity after this switch, especially for elevated tracks or
+plugin geometry without an analytic length bound. Record the old capacity as
+``course.checkpoint_sampler.max_checkpoints`` and pass it explicitly as
+``max_checkpoints=`` when constructing the replacement. Choose a larger explicit
+capacity if the new geometry needs more checkpoints.
+
+The RNG validation gate compares empirical distributions rather than old track bytes:
+all built-in track and gate generators, including ``repulsive``, run on two seed
+blocks of at least 4096 envs each. It includes nonzero uniform/walk/noise elevations
+and ``order.random_pairs``: 19 cases and 133 distributions. Validity uses a
+six-sigma binomial band plus one percentage point. Counts, length, compactness,
+curvature, mean altitude and altitude standard deviation use a two-sample empirical
+CDF bound with family-wise alpha ``0.001``. The tool reports the observed distances
+and limits rather than assuming a pass:
+
+.. code-block:: bash
+
+   # Run capture with each checkout's PYTHONPATH on the same device.
+   python tests/tools/rng_statistics.py capture old.npz --device cuda:0
+   python tests/tools/rng_statistics.py capture new.npz --device cuda:0
+   python tests/tools/rng_statistics.py compare old.npz new.npz
+
+The first capture uses the old-keying checkout; the second uses the new one.
+Exact-byte tests are rebaselined for the new streams and continue guarding future
+unintended changes. Earlier measured figures and tuning tables in the generator
+catalogue remain reference measurements; they are not exact expected values for the
+new seed mapping.
 
 .. _upgrading-0.3-removals:
 
@@ -132,8 +192,8 @@ and RNG constants when preserving a plugin's bytes. Run ``check_generator`` or
 Later 0.3 milestones
 --------------------
 
-The approved later work switches built-in streams to hashed salts with no legacy
-reproduction mode, changes every entry point's invalid-output default to
+The approved later work changes every entry point's invalid-output default to
 ``on_invalid="poison"``, freezes config dataclasses and makes the newer Track and
-GateSequence fields required. Those changes will be documented here when they land.
+GateSequence fields required. These are pending changes, not behavior in
+``0.3.0.dev2``; they will be documented here when they land.
 The final release follows an rc tested by the downstream racing repositories.

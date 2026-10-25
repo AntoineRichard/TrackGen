@@ -46,6 +46,9 @@ _DTYPE = {wp.float32: "f32", wp.int32: "i32"}
 #: scalar kernel -> (its PR13d twin, the scalar argument indices it takes as [E] arrays
 #: or drops, whether the later scalar indices move down: the argument is REMOVED).
 TWINS = {
+    "_sample_counts_h_k": ("_sample_counts_dyn_h_k", (3,), False),
+    "_sample_grid_points_h_k": ("_sample_grid_points_sized_h_k", (), False),
+    "_sample_grid_points_scaled_h_k": ("_sample_grid_points_scaled_sized_h_k", (), False),
     "_sample_counts_k": ("_sample_counts_dyn_k", (3,), False),
     "_sample_grid_points_k": ("_sample_grid_points_sized_k", (), False),
     "_sample_grid_points_scaled_k": ("_sample_grid_points_scaled_sized_k", (), False),
@@ -111,7 +114,7 @@ def twin_record(op, kernel, dim, scalars, *, count_twin: bool = True):
     without a twin; ``count_twin=False`` keeps ``_sample_counts_k``: a gate point
     generator's static count). ``scalars``: ``(index, value)`` pairs, tuples or lists."""
     name = _short(kernel)
-    if name not in TWINS or (name == "_sample_counts_k" and not count_twin):
+    if name not in TWINS or (name in ("_sample_counts_k", "_sample_counts_h_k") and not count_twin):
         return op, kernel, dim, scalars
     twin, idx, shift = TWINS[name]
     as_list = isinstance(scalars, list)

@@ -7,6 +7,11 @@ This is the catalogue of the built-in centerline generators: what each family bu
 its per-env knobs, the contract they share and what they cost. To pick one for a task,
 read the decision guide, :ref:`choosing-a-generator`.
 
+Built-in streams use the fixed hashed salts in :ref:`ops-rng-keying`. The sample
+figures and measured tuning tables were collected before the current salt switch;
+they illustrate each family's behavior rather than exact outputs for a current seed.
+See :ref:`upgrading-0.3-rng` for the output migration and distribution checks.
+
 ``track_gen`` ships six procedural centerline generators, plus the ``external``
 ingestion generator, which turns centerlines you load (a dataset, a learned model) into
 tracks and does not depend on the :term:`seed` (:ref:`ingesting-centerlines`). Select

@@ -1,39 +1,11 @@
-"""Launch-trace and state digests of the 0.x ``Course(CourseConfig)`` path (roadmap PR15).
+"""Course state and launch fingerprints for the 0.3 RNG baseline.
 
-PR15 rebuilds ``Course`` as the composition root (``Course(generator, components)``, the
-presets, the regeneration body over a component list). A ``Course(CourseConfig)`` must keep
-its outputs AND its launch sequences: this tool drives ten configurations (the PR14
-variants plus the defaulted capacities: the plan bound and the elevated readback) through
-construction, a bind and 40 steps with every call of the 0.x surface interleaved (a masked
-advancing regeneration, a respawn, a plain and an advance-all regeneration, both reseeds,
-``regenerate(mask=inputs["regen_mask"])``, ``enqueue_generate``), on CPU, through names that
-exist at d58ac55 and after PR15 only. Per call it records the sha256 of the launch trace's
-topology (kernel, dims, scalars, every array argument by ROLE: its label in
-``buffers_of(generator, rng, _regen_mask, _regen_flag, _reset_all_mask, _reseed_buf,
-*_components, *bound arrays, masks)``), and after every step the sha256 of every state
-buffer (result, checkpoints, step outputs, posts, sampler truncation, heightfield, course
-line, progress and localizer state, seeds and epochs). ``tests/goldens/pr15_course.json``
-keeps them, keyed by the PR7 platform key (float results depend on the platform and the
-Warp version), plus a platform-independent ``"topology"`` entry: the launch-trace
-digests (``construct``, ``calls``) and ``max_checkpoints``, whose kernels, dims, scalars
-(host-computed) and buffer roles do not depend on float results.
-``tests/test_course_composition.py`` recomputes them on the current tree: the launches
-on every platform (this platform's entry when present, else ``"topology"``), the states
-where this platform has an entry.
-
-Capture (from the repository root, against a checkout of the base, d58ac55, made BEFORE
-``track_gen/_src/course.py`` is edited)::
-
-    git archive d58ac55 track_gen tests | tar -x -C /tmp/base
-    cp tests/tools/make_pr15_course_goldens.py /tmp/base/tests/tools/
-    PYTHONPATH=/tmp/base python /tmp/base/tests/tools/make_pr15_course_goldens.py
-
-then merge the new platform entry of ``/tmp/base/tests/goldens/pr15_course.json`` into
-this tree's (the tool writes beside itself). It adds or replaces this platform's entry,
-writes ``"topology"`` when the file has none, and reports a platform whose launches
-differ from it (its own entry then takes precedence there).
+Use tests.tools.capture_03_goldens to capture and merge platform fragments together.
+The historical filename identifies its coverage family; values use the current keying.
 """
 from __future__ import annotations
+
+from tests.tools._golden_config import keep_config
 
 import hashlib
 import json
@@ -101,11 +73,11 @@ def _gen_cfg(mode: str):
     from track_gen import GateGenConfig, TrackGenConfig
 
     if mode == "track":
-        return TrackGenConfig(num_envs=E, device=DEV)
+        return keep_config(TrackGenConfig, num_envs=E, device=DEV)
     if mode == "track-elev":
-        return TrackGenConfig(num_envs=E, device=DEV, z_profile="uniform", z_min=0.0,
+        return keep_config(TrackGenConfig, num_envs=E, device=DEV, z_profile="uniform", z_min=0.0,
                               z_max=2.0)
-    return GateGenConfig(num_envs=E, device=DEV, gate_width=0.3)
+    return keep_config(GateGenConfig, num_envs=E, device=DEV, gate_width=0.3)
 
 
 def _state(c) -> dict:

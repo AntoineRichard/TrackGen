@@ -47,7 +47,8 @@ last column lists only what a module loads beyond ``import track_gen``.
      - :ref:`reference-plugin`
      - The registry module. The registry itself fills on its first lookup: the
        built-ins, then every installed entry point.
-   * - ``track_gen.ops``, ``track_gen.ops.funcs``, ``track_gen.ops.constants``
+   * - ``track_gen.ops``, ``track_gen.ops.funcs``, ``track_gen.ops.constants``,
+       ``track_gen.ops.rng``
      - :ref:`reference-ops`
      - Nothing more.
    * - ``track_gen.exec``, ``track_gen.seeds``
