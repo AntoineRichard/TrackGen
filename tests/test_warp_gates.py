@@ -69,9 +69,7 @@ def _oracle_accept(gen, pruned, dense, config):
 
 @pytest.mark.parametrize("dev", DEVS)
 def test_gates_matches_oracle(dev):
-    config = TrackGenConfig()
-    config.device = dev          # oracle Bernstein basis -> right device for _assemble_centerline
-    config.max_num_points = P
+    config = TrackGenConfig(device=dev, max_num_points=P)
 
     corners, count = _corner_sets()
     corners = corners.to(dev)

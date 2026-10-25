@@ -458,7 +458,8 @@ def test_provided_attributes_reach_the_sequence_under_capture(acme, name):
     GateSequence unchanged (``carry.*`` and ``_finalize_frame_posed_k`` /
     ``_finalize_frame_dyn_k`` on CUDA)."""
     attrs = _PROVIDES[name]
-    spec = _gates(generator=name)
+    # Inspect carried attributes even when the final gate validity check fails.
+    spec = _gates(generator=name, on_invalid="keep")
     for dropped in ("gate_arclen", "elevation", "tangents"):
         assert dropped not in spec.ids, spec.ids
     for a in attrs:

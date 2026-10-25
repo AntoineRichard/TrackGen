@@ -256,7 +256,7 @@ def test_flat_and_generator_params_conflict():
 
 
 def test_a_config_subclass_default_conflicts_with_partial_generator_params():
-    @dataclasses.dataclass
+    @dataclasses.dataclass(frozen=True)
     class MyCfg(TrackGenConfig):
         polar_num_knots: int = 9
 
@@ -398,7 +398,7 @@ def test_legacy_spec_with_a_dynamic_field_is_rejected_at_add():
 
 def test_a_config_subclass_plugin_keeps_working():
     # The 0.x pattern: a TrackGenConfig subclass adds the plugin's knobs.
-    @dataclasses.dataclass
+    @dataclasses.dataclass(frozen=True)
     class AcmeConfig(TrackGenConfig):
         acme_radius: float = 0.6
 

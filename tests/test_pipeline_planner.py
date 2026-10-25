@@ -239,7 +239,7 @@ def test_build_into_out_binds_the_track_buffers():
 
 def test_build_rejects_a_mismatched_out():
     out = warp_pipeline._inflate_warp_alloc(_cfg(N_max=200))[0]
-    with pytest.raises(ValueError, match=r"out\.outer: expected a contiguous \[768\]"):
+    with pytest.raises(ValueError, match=r"out: a Track for Layout\(2, 200,.*this pipeline writes Layout\(2, 384,"):
         build(_spec(), out=out)
 
 

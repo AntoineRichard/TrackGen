@@ -654,6 +654,8 @@ def alloc_gate_sequence(config: GateGenConfig) -> GateSequence:
     G = int(config.max_gates)
     dev = str(config.device)
     flat = E * G
+    from .types import Layout
+
     gates = GateSequence(
         position=wp.empty(flat, dtype=wp.vec3f, device=dev),
         tangent=wp.empty(flat, dtype=wp.vec3f, device=dev),
@@ -664,7 +666,9 @@ def alloc_gate_sequence(config: GateGenConfig) -> GateSequence:
         right=wp.empty(flat, dtype=wp.vec3f, device=dev),
         valid=wp.empty(E, dtype=wp.int32, device=dev),
         count=wp.empty(E, dtype=wp.int32, device=dev),
+        generation=wp.zeros(E, dtype=wp.int32, device=dev),
         fail_mask=wp.empty(E, dtype=wp.int32, device=dev),
+        layout=Layout(E, G, dev),
     )
     nan3 = wp.vec3f(wp.nan, wp.nan, wp.nan)
     nan_q = wp.quatf(wp.nan, wp.nan, wp.nan, wp.nan)

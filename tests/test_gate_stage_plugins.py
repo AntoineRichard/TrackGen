@@ -252,7 +252,7 @@ def test_superformula_stations_are_arc_spaced(source):
 
 def test_max_height_sets_its_bit_exactly_where_the_highest_gate_is_above_the_cap():
     gen = _gen(elevation=("uniform", {"z_min": 0.0, "z_max": 1.0}),
-               checks=("gate_default", gt.MAX_HEIGHT))
+               checks=("gate_default", gt.MAX_HEIGHT), on_invalid="keep")
     bit = gen.program.fail_bits[gt.MAX_HEIGHT]
     assert bit == 16 and gen._gate_sequence.fail_bits[gt.MAX_HEIGHT] == 16
     seq = gen._gate_sequence

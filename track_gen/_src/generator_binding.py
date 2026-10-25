@@ -133,7 +133,7 @@ def bind_generator(kind: str, config, *, registry) -> GeneratorBinding:
         from ..stages.gates import _default_order  # noqa: PLC0415 - import cycle
 
         config = _snapshot_config(config)
-        config.gate_ordering = _default_order(spec, registry)
+        object.__setattr__(config, "gate_ordering", _default_order(spec, registry))
     # Stage.Params, or the params= class of a GeneratorSpec; a
     # duck-typed legacy spec's own ``params`` attribute is not a Params class.
     params_cls = _params_class(spec)
@@ -158,7 +158,7 @@ def bind_generator(kind: str, config, *, registry) -> GeneratorBinding:
 
     user = _snapshot_config(user_config)
     if given is not None:
-        user.generator_params = params
+        object.__setattr__(user, "generator_params", params)
     run = _snapshot_config(config)
     if params is not None:
         if _is_flat(params):
@@ -174,7 +174,7 @@ def bind_generator(kind: str, config, *, registry) -> GeneratorBinding:
             # normalization erases; the run config keeps it (normalize.size's initial
             # value), the generator's own stays at its default (one key per array).
             params = dataclasses.replace(params, size=size_field.default)
-        run.generator_params = params
+        object.__setattr__(run, "generator_params", params)
 
     if stage and kind == "gate_generator":
         # An anchors Stage: the planner builds it as a stage of the gate pipeline (its

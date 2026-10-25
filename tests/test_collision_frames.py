@@ -3,7 +3,7 @@ import numpy as np
 import warp as wp
 
 from track_gen._src.collision_frames import FrameChecker
-from track_gen._src.types import GateSequence
+from track_gen._src.types import GateSequence, Layout
 
 E, G = 2, 4
 
@@ -31,6 +31,9 @@ def _square_gate_seq():
         right=wp.array(right, dtype=wp.vec3f, device=dev),
         valid=wp.array(np.array([1, 0], np.int32), device=dev),
         count=wp.array(np.array([1, 0], np.int32), device=dev),
+        generation=wp.zeros(E, dtype=wp.int32, device=dev),
+        fail_mask=wp.array([0, 1], dtype=wp.int32, device=dev),
+        layout=Layout(E, G, dev),
     )
 
 

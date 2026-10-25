@@ -37,9 +37,7 @@ def _fixed_corners(P: int, device) -> torch.Tensor:
 @pytest.mark.parametrize("dev", DEVS)
 @pytest.mark.parametrize("edgy", [0.0, 1.0])  # 0.0 -> p=0.5 bisector; 1.0 -> asymmetric blend
 def test_assemble_matches_oracle(dev, edgy):
-    config = TrackGenConfig()
-    config.edgy = edgy  # exercise both symmetric (p=0.5) and asymmetric tangent blends
-    config.device = dev  # oracle precomputes its Bernstein basis on config.device
+    config = TrackGenConfig(edgy=edgy, device=dev)
     P = config.max_num_points
     npseg = config.num_points_per_segment
 

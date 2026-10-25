@@ -17,6 +17,8 @@ Track fields are wp.array; test reads are wrapped with to_t() from _warp_compare
 """
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 import torch
 
@@ -188,9 +190,8 @@ def test_autocapture_replay_matches_eager_with_cached_separation():
     """Cached XPBD separation keeps graph replay equivalent to eager execution."""
     E = 16
     cfg = _cfg(E, relax_iters=9)
-    cfg.relax_sep_every = 3
-    cfg.relax_sep_cache_slots = 8
-    cfg.relax_sep_cache_skin = 0.0
+    cfg = replace(cfg, relax_sep_every=3, relax_sep_cache_slots=8,
+                  relax_sep_cache_skin=0.0)
     rng = _make_rng(E, seed=126)
     gen = TrackGenerator(cfg, rng)
 

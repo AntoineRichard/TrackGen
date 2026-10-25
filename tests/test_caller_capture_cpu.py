@@ -16,6 +16,7 @@ poisoned replays, torch adoption) lives in ``tests/test_caller_capture_cuda.py``
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import gc
 import sys
 import threading
@@ -554,7 +555,9 @@ def _fake_track_facade(monkeypatch, capturable=True):
     _put(GeneratorSpec(
         name="tests.fake", alloc_scratch=lambda config: object(),
         generate=generate, capturable=capturable))
-    track = types.SimpleNamespace(generation=None)
+    # Storage is faked with the pipeline body: padding has no device effect here.
+    track = types.SimpleNamespace(generation=None, half_width=object())
+    monkeypatch.setattr(LaunchContext, "fill", lambda ctx, arr, value: None)
     monkeypatch.setattr(legacy, "_to_pipeline_spec", lambda cfg, binding: PipelineSpec(
         BatchSpec(1, "cuda", cfg.N_max), (StageRef("generator", "tests.fake"),)))
     monkeypatch.setattr(stages_track, "_alloc_track", lambda layout: track)
@@ -840,17 +843,23 @@ def test_facade_stream_argument_must_be_a_wp_stream(cls, cfg):
 def test_config_is_a_deep_snapshot(which):
     make_cfg, cls, fields = ((_track_cfg, TrackGenerator, _TRACK_FIELDS) if which == "track"
                              else (_gate_cfg, GateGenerator, _GATE_FIELDS))
-    cfg = make_cfg()
+    @dataclasses.dataclass(frozen=True)
+    class WithMetadata(type(make_cfg())):
+        metadata: dict = dataclasses.field(default_factory=lambda: {"knobs": [1, 2]})
+
+    cfg = WithMetadata(**dataclasses.asdict(make_cfg()))
     gen = cls(cfg, _rng(21))
     ref = cls(make_cfg(), _rng(21)).generate().clone()
-    # Mutating the caller's object after construction has no effect ...
-    cfg.scale = 3.0
-    cfg.num_envs = E + 3
-    # ... nor does mutating the object the property hands out (a fresh deep copy).
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        cfg.scale = 3.0
+    cfg.metadata["knobs"].append(3)
     leaked = gen.config
-    leaked.scale = 123.0
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        leaked.scale = 123.0
+    leaked.metadata["knobs"].append(4)
     assert leaked is not gen.config and leaked != gen.config
-    assert gen.config == make_cfg()
+    assert gen.config.metadata == {"knobs": [1, 2]}
+    assert type(gen.config) is WithMetadata
     _assert_same(gen.generate(), ref, fields)
 
 
@@ -868,7 +877,8 @@ def test_config_with_a_device_object(which):
     gen = cls(cfg, _rng(21))
     snap = gen.config
     assert snap.device is dev and snap == cfg and snap is not cfg
-    cfg.num_envs = E + 1
+    changed = dataclasses.replace(cfg, num_envs=E + 1)
+    assert changed.num_envs == E + 1 and changed.device is dev
     assert gen.config.num_envs == E
     _assert_same(gen.generate(), cls(ref_cfg, _rng(21)).generate(), fields)
 

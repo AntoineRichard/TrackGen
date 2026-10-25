@@ -50,6 +50,12 @@ def _validate_z_fields(cfg) -> None:
         )
 
 
+def _validate_invalid_policy(cfg) -> None:
+    """Check the invalid-output policy without loading generators or plugins."""
+    if cfg.on_invalid not in ("keep", "poison"):
+        raise ValueError(f"on_invalid must be 'keep' or 'poison', got {cfg.on_invalid!r}")
+
+
 def _check_generator_params(cfg) -> None:
     """Registry-free type check of ``generator_params`` (the generator resolves and
     validates the value at construction)."""
@@ -60,7 +66,7 @@ def _check_generator_params(cfg) -> None:
                         f"fields, or None; got {type(gp).__name__}")
 
 
-@dataclass
+@dataclass(frozen=True)
 class TrackGenConfig:
     """Single configuration object passed to every stage of the pipeline.
 
@@ -623,7 +629,10 @@ class TrackGenConfig:
     # --- Per-generator parameters (None | Params instance | mapping of its fields) ---
     generator_params: Any = None
 
+    on_invalid: str = "poison"
+
     def __post_init__(self):
+        _validate_invalid_policy(self)
         if int(self.num_envs) < 1:
             raise ValueError(f"num_envs must be >= 1, got {self.num_envs!r}")
         if float(self.half_width) <= 0.0:
@@ -674,7 +683,7 @@ class TrackGenConfig:
         # Auto-couple spacing to half_width (~0.6*half_width relaxes to smoother tracks);
         # a fixed spacing default would be wrong as half_width varies (too coarse -> degenerate).
         if self.spacing is None:
-            self.spacing = 0.6 * self.half_width
+            object.__setattr__(self, "spacing", 0.6 * self.half_width)
         if float(self.spacing) <= 0.0:
             raise ValueError(f"spacing must be > 0, got {self.spacing!r}")
 
@@ -688,7 +697,7 @@ class TrackGenConfig:
                 f"{self.z_control_points!r}")
 
 
-@dataclass
+@dataclass(frozen=True)
 class GateGenConfig:
     """Configuration for fixed-batch native gate sequence generation.
 
@@ -902,7 +911,10 @@ class GateGenConfig:
     # --- Per-generator parameters (None | Params instance | mapping of its fields) ---
     generator_params: Any = None
 
+    on_invalid: str = "poison"
+
     def __post_init__(self):
+        _validate_invalid_policy(self)
         if int(self.num_envs) < 1:
             raise ValueError(f"num_envs must be >= 1, got {self.num_envs!r}")
         if int(self.min_gates) < 2:
@@ -1031,7 +1043,6 @@ _TRACK_SCHEMA = (
     ("truncated", "env", wp.int32), ("generation", "env", wp.int32),
     ("fail_mask", "env", wp.int32), ("half_width", "point", wp.float32),
 )
-_TRACK_OPTIONAL = frozenset({"truncated", "generation", "fail_mask", "half_width"})
 _GATE_SCHEMA = (
     ("position", "point", wp.vec3f), ("tangent", "point", wp.vec3f),
     ("forward", "point", wp.vec3f), ("orientation", "point", wp.quatf),
@@ -1040,7 +1051,6 @@ _GATE_SCHEMA = (
     ("count", "env", wp.int32), ("generation", "env", wp.int32),
     ("fail_mask", "env", wp.int32),
 )
-_GATE_OPTIONAL = frozenset({"generation", "fail_mask"})
 _CENTERLINE_SCHEMA = (
     ("center", "point", wp.vec3f), ("tangent", "point", wp.vec3f),
     ("arclen", "point", wp.float32), ("length", "env", wp.float32),
@@ -1173,30 +1183,40 @@ def _stored_layout(obj, owner: str) -> "Layout | None":
     return lay
 
 
+def _require_result_storage(self, owner=None) -> None:
+    """Reject missing concrete result storage without inspecting or touching arrays."""
+    owner = owner or type(self)._RESULT_NAME
+    for name in (*[n for n, _, _ in type(self)._SCHEMA], "layout"):
+        if getattr(self, name, None) is None:
+            raise ValueError(f"{owner}.{name} is None; required result storage")
+
+
 def _validate(self, need=()) -> Layout:
     """Check every field of this result against its layout; return the layout.
 
-    The layout is :attr:`layout` when set, else inferred (``num_envs`` from
-    ``count``, ``stride`` from the first per-point field, the device of ``count``,
-    ``closed=True``; nothing is mutated). Then every array field that is not ``None``
-    must be a contiguous 1-D array of its dtype, ``[E * stride]`` (per point) or
+    Track and GateSequence require every array field and a stored :attr:`layout`.
+    A Centerline without a layout infers one (``num_envs`` from ``count``, ``stride``
+    from the first per-point field, the device of ``count``, ``closed=True``;
+    nothing is mutated). Every array field present must be a contiguous 1-D array
+    of its dtype, ``[E * stride]`` (per point) or
     ``[E]`` (per env), on the layout's device (compared canonically: ``"cuda"`` ==
     ``"cuda:0"``), and every ``attributes`` entry a contiguous ``[E * stride]``
     float32 / int32 / vec2f / vec3f array on that device. Host only (a few
     microseconds): no device work, safe inside a capture.
 
     Args:
-        need: Field names that must not be ``None`` (an optional field a consumer
-            reads).
+        need: Field names that must not be ``None`` (for an optional Centerline
+            field a consumer reads). Track and GateSequence require all arrays.
 
     Returns:
-        The stored or inferred :class:`~track_gen.results.Layout`.
+        The stored :class:`~track_gen.results.Layout`, or an inferred Centerline layout.
 
     Raises:
         ValueError: the first field that does not match, naming it and the expected
             shape (e.g. ``Track.inner: expected a contiguous [3072] vec3f
             ([E*stride] = [8*384]) array on cpu, got shape (3064,) vec3f on cpu``); a
-            field of ``need`` that is ``None``; a ``count`` that is not an array.
+            required Track/GateSequence array or layout that is ``None``; a field
+            of ``need`` that is ``None``; a ``count`` that is not an array.
         TypeError: :attr:`layout` is neither a ``Layout`` nor ``None``.
     """
     return _validate_against(self, need, None, None)
@@ -1210,6 +1230,8 @@ def _validate_against(self, need, _owner: "str | None",
     a ``need`` field that is ``None``."""
     cls = type(self)
     owner = _owner or cls._RESULT_NAME
+    if getattr(cls, "_REQUIRED_STORAGE", False):
+        _require_result_storage(self, owner)
     if isinstance(need, str):
         need = (need,)
     stored = _stored_layout(self, owner)
@@ -1587,6 +1609,10 @@ class GateSequence:
     :meth:`clone` (an owned copy; allocates) and :meth:`alloc` (a fully allocated
     result).
 
+    Construction requires all concrete arrays and layout and rejects explicit None;
+    :meth:`validate` checks their shape, dtype and device. Metadata mappings can be
+    omitted and start empty.
+
     Attributes
     ----------
     position : wp.array
@@ -1622,7 +1648,7 @@ class GateSequence:
     count : wp.array
         ``[E]`` ``int32`` real gate counts per env.  All other arrays are NaN-padded
         for slots ``i >= count[e]``.
-    generation : wp.array or None
+    generation : wp.array
         ``[E]`` ``int32``: the seed epoch (``GateGenerator.seeds.epoch``) each
         env's current gates were built at.  ``0`` until the first advance.  It is
         the epoch, not a change counter: a reseed at the same epoch
@@ -1632,16 +1658,13 @@ class GateSequence:
         change exactly when an env gets a NEW sequence
         (``generate(advance=True, ...)`` / ``Course.regenerate(advance=True,
         ...)``), so that comparing it on device to a stored copy detects every
-        regeneration.  ``GateGenerator`` always allocates it; ``None`` on a
-        ``GateSequence`` built elsewhere.
-    fail_mask : wp.array or None
+        regeneration. Required also on a GateSequence built by hand.
+    fail_mask : wp.array
         ``[E]`` ``int32`` per-env fail bitmask: bit ``i`` set means check ``i``
         failed (``fail_bits`` names the bits: ``validity.gate_default``'s 0-5 are
         ``count``, ``finite``, ``tangent``, ``spacing``, ``crossing``, ``grade``;
-        plugin checks own 16-30).  When it is not ``None``,
-        ``valid[e] == (fail_mask[e] == 0)``.  ``GateGenerator`` and
-        ``warp_gate.alloc_gate_sequence`` always allocate it (``finalize_gate_sequence``
-        writes it); ``None`` on a ``GateSequence`` built by hand.
+        plugin checks own 16-30). ``valid[e] == (fail_mask[e] == 0)``.
+        Required also on a GateSequence built by hand.
     fail_bits : Mapping[str, int]
         ``name -> bit index`` of every bit of ``fail_mask`` the pipeline assigns
         (``GateGenerator.program.fail_bits``); the crossing / grade bits are named
@@ -1656,11 +1679,10 @@ class GateSequence:
         on the centerline, e.g. an elevation with ``elevation_on="centerline"``) is
         left out (``GateGenerator.program.attributes`` lists what is there).  Empty
         unless a stage exports one.
-    layout : Layout or None
-        The batch's :class:`~track_gen.results.Layout` (``stride`` = ``max_gates``),
-        set on every ``GateSequence`` TrackGen makes (a generator's result, a
-        :meth:`view`, :meth:`clone`, :meth:`alloc`); ``None`` on one built by hand
-        (:meth:`validate` infers it).
+    layout : Layout
+        The required batch :class:`~track_gen.results.Layout` (``stride`` =
+        ``max_gates``), including on a GateSequence built by hand. Use :meth:`alloc`
+        to allocate every concrete array for a layout.
     """
 
     position: wp.array
@@ -1672,16 +1694,17 @@ class GateSequence:
     right: wp.array
     valid: wp.array
     count: wp.array
-    generation: "wp.array | None" = None
-    fail_mask: "wp.array | None" = None
+    generation: wp.array
+    fail_mask: wp.array
+    layout: Layout
     fail_bits: Mapping[str, int] = field(default_factory=dict)
     attributes: Mapping[str, wp.array] = field(default_factory=dict)
 
-    layout: "Layout | None" = None
-
     _RESULT_NAME = "GateSequence"
     _SCHEMA = _GATE_SCHEMA
-    _OPTIONAL = _GATE_OPTIONAL
+    _OPTIONAL = frozenset()
+    _REQUIRED_STORAGE = True
+    __post_init__ = _require_result_storage
     _ANCHOR = "position"
     validate = _validate
     view = _view
@@ -1712,6 +1735,10 @@ class Track:
     mixed batch), :meth:`copy_from` (stream-ordered copies, no allocation: the hot-path
     snapshot), :meth:`clone` (an owned copy; allocates) and :meth:`alloc` (a fully
     allocated result).
+
+    Construction requires all concrete arrays and layout and rejects explicit None;
+    :meth:`validate` checks their shape, dtype and device. Metadata mappings can be
+    omitted and start empty.
 
     Attributes
     ----------
@@ -1787,15 +1814,14 @@ class Track:
         and hull wind clockwise; polar, voronoi and checkpoint wind counter-clockwise),
         so this field lets a consumer orient itself: for a CCW loop ``outer`` lies to
         the right of increasing arc length, for a CW loop to the left.
-    truncated : wp.array or None
+    truncated : wp.array
         ``[E]`` ``int32`` N_max truncation flags (0 or 1), written on device by the
         constant-spacing resample.  ``1`` means the loop needed more than ``N_max``
         points (``floor(perimeter / spacing) + 1 > N_max``), so ``count[e]`` was
         clamped to ``N_max`` and the tail of the loop was dropped; such envs always
         have ``valid == 0``.  Increase ``N_max`` (or ``spacing``) if any are set.
-        ``TrackGenerator`` always allocates it; ``None`` on a ``Track`` built
-        elsewhere (e.g. the standalone ``_inflate_warp`` path).
-    generation : wp.array or None
+        Required also on a Track built by hand.
+    generation : wp.array
         ``[E]`` ``int32``: the seed epoch (``TrackGenerator.seeds.epoch``) each
         env's current track was built at.  ``0`` until the first advance.  It is
         the epoch, not a change counter: a reseed at the same epoch
@@ -1805,28 +1831,25 @@ class Track:
         change exactly when an env gets a NEW track
         (``generate(advance=True, ...)`` / ``Course.regenerate(advance=True,
         ...)``), so that comparing it on device to a stored copy detects every
-        regeneration.  ``TrackGenerator`` always allocates it; ``None`` on a
-        ``Track`` built elsewhere.
-    fail_mask : wp.array or None
+        regeneration. Required also on a Track built by hand.
+    fail_mask : wp.array
         ``[E]`` ``int32`` per-env fail bitmask: bit ``i`` set means check ``i``
         failed (``fail_bits`` names the bits: the built-in checks' 0-7 are
         ``generator``, ``turning``, ``finite``, ``thickness``, ``w_floor``,
-        ``border``, ``grade``, ``truncation``; plugin checks own 16-30).  When it
-        is not ``None``, ``valid[e] == (fail_mask[e] == 0)``.  ``TrackGenerator``
-        always allocates it; ``None`` on a ``Track`` built elsewhere (e.g. the
-        standalone ``_inflate_warp`` path).
+        ``border``, ``grade``, ``truncation``; plugin checks own 16-30).
+        ``valid[e] == (fail_mask[e] == 0)``. Required also on a Track built by hand.
     fail_bits : Mapping[str, int]
         ``name -> bit index`` of every bit of ``fail_mask`` the pipeline assigns
         (``TrackGenerator.program.fail_bits``); the border / grade bits are named
         even when their check is off (then never set).  Empty on a ``Track`` built
         elsewhere.
-    half_width : wp.array or None
+    half_width : wp.array
         Flat ``[E * N_max]`` ``float32`` half-width of the band at each centerline
         point (the offset's: ``‖outer[i] - center[i]‖`` in plan view), NaN past
         ``count[e]``.  The constant ``half_width`` of the config on every real point
         at constant width (``width.constant``); the per-point width of a width stage
-        or a generator that provides one otherwise.  ``TrackGenerator`` always
-        allocates it; ``None`` on a ``Track`` built elsewhere.
+        or a generator that provides one otherwise. Required on every Track;
+        a pipeline without an offset stage retains an all-NaN array.
     attributes : Mapping[str, wp.array]
         The per-point attributes the pipeline exports (``StageBuilder.write(...,
         export=True)``), keyed by the channel name without its domain prefix
@@ -1835,11 +1858,10 @@ class Track:
         ``interp`` policy, NaN (floats) / ``-1`` (int32) past ``count[e]``.  Stable
         pointers for the generator's lifetime.  Empty unless a stage exports one
         (``TrackGenerator.program.attributes`` describes them).
-    layout : Layout or None
-        The batch's :class:`~track_gen.results.Layout` (``num_envs``, ``stride`` =
-        ``N_max``, ``device``, ``closed``), set on every ``Track`` TrackGen makes (a
-        generator's result, a :meth:`view`, :meth:`clone`, :meth:`alloc`); ``None`` on
-        one built by hand (:meth:`validate` infers it).
+    layout : Layout
+        The required batch :class:`~track_gen.results.Layout` (``num_envs``,
+        ``stride`` = ``N_max``, ``device``, ``closed``), including on a Track built
+        by hand. Use :meth:`alloc` to allocate every concrete array for a layout.
     """
 
     outer: wp.array
@@ -1852,17 +1874,19 @@ class Track:
     valid: wp.array
     count: wp.array
     winding: wp.array
-    truncated: "wp.array | None" = None
-    generation: "wp.array | None" = None
-    fail_mask: "wp.array | None" = None
+    truncated: wp.array
+    generation: wp.array
+    fail_mask: wp.array
+    half_width: wp.array
+    layout: Layout
     fail_bits: Mapping[str, int] = field(default_factory=dict)
-    half_width: "wp.array | None" = None
     attributes: Mapping[str, wp.array] = field(default_factory=dict)
-    layout: "Layout | None" = None
 
     _RESULT_NAME = "Track"
     _SCHEMA = _TRACK_SCHEMA
-    _OPTIONAL = _TRACK_OPTIONAL
+    _OPTIONAL = frozenset()
+    _REQUIRED_STORAGE = True
+    __post_init__ = _require_result_storage
     _ANCHOR = "center"
     validate = _validate
     view = _view

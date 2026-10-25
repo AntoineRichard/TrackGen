@@ -33,6 +33,7 @@ from tests._plugin_toys import (TOY_CIRCLE, register_stage_toys,
                                 toy_circle_alloc_scratch, toy_circle_generate)
 from tests._pr13c_delta import ELEVATION_LATCHES, pr13c_sequence
 from tests._pr13d_delta import LATCH_ALL
+from tests.tools._golden_config import keep_config
 from track_gen import PerEnvSeededRNG, TrackGenConfig, TrackGenerator
 from tests._reference_generators import warp_pipeline
 from track_gen._src.generator_binding import _StageGenerator, bind_generator
@@ -99,7 +100,7 @@ def _make(case):
         _register_toys()
     rng = PerEnvSeededRNG(seeds=wp.array(seeds, dtype=wp.int32, device=DEV), num_envs=E,
                           device=DEV)
-    return TrackGenerator(TrackGenConfig(device=DEV, num_envs=E, **kw), rng)
+    return TrackGenerator(keep_config(TrackGenConfig, device=DEV, num_envs=E, **kw), rng)
 
 
 def _bytes(arr) -> bytes:
@@ -245,7 +246,7 @@ def test_default_bezier_launch_count():
     E). Roadmap PR13c re-pin: 152 -> 154 (``rad`` / ``handle_clamp_frac``); roadmap
     PR13d re-pin: 154 -> 156 (``min_num_points`` int32 first, ``size`` last: the block
     ``[i32, f32, f32, f32]``; the corner count is the array-reading twin)."""
-    gen = TrackGenerator(TrackGenConfig(device=DEV, num_envs=2),
+    gen = TrackGenerator(keep_config(TrackGenConfig, device=DEV, num_envs=2),
                          PerEnvSeededRNG(seeds=3, num_envs=2, device=DEV))
     with trace_launches() as t:
         gen.generate()

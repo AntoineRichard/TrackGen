@@ -462,7 +462,7 @@ def _run_pipeline(
 
 
 def _check_hw_out(hw_out, out_outer) -> None:
-    """``hw_out`` (the offset's optional ``Track.half_width`` output) is ``None`` or a
+    """The offset's optional ``hw_out`` argument is ``None`` or a
     float32 array of ``out_outer``'s length on its device: the kernel writes
     ``hw_out[t]`` for every ``t < len(out_outer)`` when it is non-empty."""
     if hw_out is not None:
@@ -1039,7 +1039,7 @@ def _inflate_warp_alloc(config, generator_spec=None, *, seed=None):
     Returns:
         (Track, _Scratch) — both with all arrays on config.device.
     """
-    from .types import Track  # local import: keep warp_pipeline free of oracle modules
+    from .types import Layout, Track  # local import: no oracle dependencies
 
     _initialize()
     E = int(config.num_envs)
@@ -1060,6 +1060,8 @@ def _inflate_warp_alloc(config, generator_spec=None, *, seed=None):
         truncated=wp.zeros(E, dtype=wp.int32, device=dev),
         # Written by TrackGenerator after every generation (= the env's seed epoch).
         generation=wp.zeros(E, dtype=wp.int32, device=dev),
+        fail_mask=wp.zeros(E, dtype=wp.int32, device=dev),
+        layout=Layout(E, n_max, dev),
         # The offset's Track.half_width (InflateScratch.hw_out, roadmap PR13a).
         half_width=wp.empty(flat, dtype=wp.float32, device=dev),
     )
@@ -1120,7 +1122,7 @@ def _inflate_warp_alloc(config, generator_spec=None, *, seed=None):
         # Zero-filled: the flat path never writes z (grade check reads zeros).
         z=wp.zeros(flat, dtype=wp.float32, device=dev),
         # The validity gate's per-env fail bitmask (every env written each call).
-        fail=wp.zeros(E, dtype=wp.int32, device=dev),
+        fail=track.fail_mask,
         hw_out=track.half_width,
     )
     _fill_knot_scratch(inflate, config, E, dev)
@@ -1285,7 +1287,7 @@ def _inflate_warp(center, config, out=None,
         ValueError: if config.z_profile != "flat" and seeds is None (the standalone
             inflate path is flat-only unless seeds are provided).
     """
-    from .types import Track  # local import: keep warp_pipeline free of oracle modules
+    from .types import Layout, Track  # local import: no oracle dependencies
 
     _initialize()
 
@@ -1330,6 +1332,12 @@ def _inflate_warp(center, config, out=None,
             valid=wp.empty(E, dtype=wp.int32, device=dev),
             count=wp.empty(E, dtype=wp.int32, device=dev),
             winding=wp.empty(E, dtype=wp.float32, device=dev),
+            truncated=(truncated if truncated is not None else
+                       wp.zeros(E, dtype=wp.int32, device=dev)),
+            generation=wp.zeros(E, dtype=wp.int32, device=dev),
+            fail_mask=wp.zeros(E, dtype=wp.int32, device=dev),
+            half_width=wp.empty(flat, dtype=wp.float32, device=dev),
+            layout=Layout(E, n_max, dev),
         )
         if scratch is None:
             # Standalone path: only the inflate group is needed (no gen/relax buffers);
@@ -1361,6 +1369,12 @@ def _inflate_warp(center, config, out=None,
     # The 2D pipeline kernels write the vec2f staging buffers; the lift at the
     # end copies them into the public vec3f Track arrays with z = 0.
     stag = scratch.inflate
+    stag.fail = out.fail_mask
+    stag.hw_out = out.half_width
+    if truncated is None:
+        ctx.fill(out.truncated, 0)
+    elif truncated is not out.truncated:
+        ctx.copy(out.truncated, truncated)
     if stag.ctr2 is None:
         stag.out2 = wp.empty(flat, dtype=wp.vec2f, device=dev)
         stag.ctr2 = wp.empty(flat, dtype=wp.vec2f, device=dev)
@@ -1468,7 +1482,7 @@ def _inflate_warp(center, config, out=None,
     # grade branch is a no-op and validity is byte-identical to the legacy path.
     validity_inplace(stag.ctr2, stag.w, cnt_wp, gv_wp,
                      stag.out2, stag.inn2, has_border, n_max, stag.z,
-                     out.valid, config, truncated_wp=truncated, ctx=ctx,
+                     out.valid, config, truncated_wp=out.truncated, ctx=ctx,
                      fail_wp=stag.fail)
 
     # 6. Lift the vec2f staging buffers into the public vec3f Track arrays.

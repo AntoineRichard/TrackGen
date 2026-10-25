@@ -141,7 +141,8 @@ def _to_pipeline_spec(cfg, binding, registry=None) -> PipelineSpec:
     except ValueError as exc:
         raise ValueError(f"TrackGenConfig.z_profile: {exc}") from None
     batch = BatchSpec(num_envs=int(cfg.num_envs), device=str(cfg.device),
-                      n_max=int(cfg.N_max), closed=True, scale=cfg.scale)
+                      n_max=int(cfg.N_max), closed=True, scale=cfg.scale,
+                      on_invalid=cfg.on_invalid)
     if not cfg.relax_enable:
         relax = StageRef("relax", "none")
     else:
@@ -195,7 +196,7 @@ def generator_config(spec: PipelineSpec):
     return TrackGenConfig(generator=ref.name, device=batch.device,
                           num_envs=batch.num_envs, N_max=batch.n_max, scale=batch.scale,
                           num_points=int(ref.capacity.get("raw", 256)),
-                          generator_params=params)
+                          generator_params=params, on_invalid=batch.on_invalid)
 
 
 # ---------------------------------------------------------------------------------------
@@ -256,7 +257,7 @@ def _to_gate_pipeline_spec(cfg, binding, registry=None) -> PipelineSpec:
     reg = _default_registry if registry is None else registry
     spec = binding.spec
     if cfg.gate_ordering is None:
-        cfg.gate_ordering = _default_order(spec, reg)
+        object.__setattr__(cfg, "gate_ordering", _default_order(spec, reg))
     name, ordering = cfg.generator, cfg.gate_ordering
     # 1. the ordering
     try:
@@ -338,7 +339,8 @@ def _to_gate_pipeline_spec(cfg, binding, registry=None) -> PipelineSpec:
         min_gates=cfg.min_gates, z_valid_grade=cfg.z_valid_grade,
         carry_attributes=attrs, size=getattr(cfg, "size", 1.0) if routed else 1.0)
     batch = BatchSpec(num_envs=int(cfg.num_envs), device=str(cfg.device), n_max=384,
-                      closed=True, scale=cfg.scale, max_gates=int(cfg.max_gates))
+                      closed=True, scale=cfg.scale, max_gates=int(cfg.max_gates),
+                      on_invalid=cfg.on_invalid)
     return PipelineSpec(batch=batch, stages=stages)
 
 
@@ -374,7 +376,7 @@ def gate_generator_config(spec: PipelineSpec, *, registry=None):
         by_kind.setdefault((ref.kind, ref.name), ref)
         by_kind.setdefault(ref.kind, ref)
     kw: dict = dict(generator=first.name, device=batch.device, num_envs=batch.num_envs,
-                    max_gates=G, scale=batch.scale)
+                    max_gates=G, scale=batch.scale, on_invalid=batch.on_invalid)
     if first.kind == "gate_generator":
         params = first.params
         if isinstance(params, _MappingABC):

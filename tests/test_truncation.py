@@ -91,18 +91,20 @@ def test_inplace_resample_does_no_host_readback():
     assert int(truncated.numpy()[0]) == 1
 
 
-def _gen(dev, E, n_max, seed=1234):
-    cfg = TrackGenConfig(num_envs=E, device=dev, N_max=n_max)
+def _gen(dev, E, n_max, seed=1234, **kw):
+    cfg = TrackGenConfig(num_envs=E, device=dev, N_max=n_max, **kw)
     return TrackGenerator(cfg, PerEnvSeededRNG(seeds=seed, num_envs=E, device=dev))
 
 
 @pytest.mark.parametrize("dev", DEVS)
-def test_truncated_tracks_are_flagged_and_invalid(dev):
+@pytest.mark.parametrize("on_invalid", [None, "keep"])
+def test_truncated_tracks_are_flagged_and_invalid(dev, on_invalid):
     """Force truncation with a small N_max (default bezier needs ~57-95 points at the
     default spacing): every env is flagged and fails validity, on the first call and,
     on CUDA, on graph replay."""
     E, n_max = 8, 32
-    gen = _gen(dev, E, n_max)
+    policy = {} if on_invalid is None else {"on_invalid": on_invalid}
+    gen = _gen(dev, E, n_max, **policy)
     for _ in range(2):  # cuda: capture + replay
         with warnings.catch_warnings():
             warnings.simplefilter("error", RuntimeWarning)
@@ -111,7 +113,12 @@ def test_truncated_tracks_are_flagged_and_invalid(dev):
         assert track.truncated.shape == (E,) and track.truncated.dtype == wp.int32
         np.testing.assert_array_equal(track.truncated.numpy(), np.ones(E, np.int32))
         np.testing.assert_array_equal(track.valid.numpy(), np.zeros(E, np.int32))
-        np.testing.assert_array_equal(track.count.numpy(), np.full(E, n_max, np.int32))
+        expected_count = n_max if on_invalid == "keep" else 0
+        np.testing.assert_array_equal(track.count.numpy(), np.full(E, expected_count, np.int32))
+        if on_invalid is None:                         # the default poisons geometry
+            assert np.isnan(track.center.numpy()).all()
+            assert np.isnan(track.half_width.numpy()).all()
+            assert (track.fail_mask.numpy() != 0).all()
 
 
 def test_truncation_flag_is_per_env():

@@ -176,8 +176,8 @@ class BatchSpec:
             planner builds carries it).
         scale: ``TrackGenConfig.scale``, handed to the stages as ``StageBuilder.scale``.
         on_invalid: What an invalid env (``fail_mask != 0``) leaves in the ``Track``:
-            ``"keep"`` (default: its computed geometry, ``valid = 0``) or
-            ``"poison"`` (``count = 0``, NaN geometry, ``length = winding = 0``, so
+            ``"keep"`` (its computed geometry, ``valid = 0``) or
+            ``"poison"`` (default: ``count = 0``, NaN geometry, ``length = winding = 0``, so
             every utility's degenerate ``count < 3`` path fires; ``fail_mask`` and
             ``truncated`` are kept). A gate pipeline: ``count = 0``, every per-gate
             field NaN, ``valid = 0`` (``fail_mask`` kept).
@@ -192,7 +192,7 @@ class BatchSpec:
     n_max: int
     closed: bool = True
     scale: float = 1.0
-    on_invalid: str = "keep"
+    on_invalid: str = "poison"
     max_gates: "int | None" = None
 
     def _to_dict(self) -> dict:
@@ -370,7 +370,7 @@ class PipelineSpec:
         _required(b, "batch", ("num_envs", "device", "n_max"))
         batch = BatchSpec(num_envs=b["num_envs"], device=b["device"], n_max=b["n_max"],
                           closed=b.get("closed", True), scale=b.get("scale", 1.0),
-                          on_invalid=b.get("on_invalid", "keep"),
+                          on_invalid=b.get("on_invalid", "poison"),
                           max_gates=b.get("max_gates"))
         raw_stages = data["stages"]
         if isinstance(raw_stages, (str, bytes)) or not isinstance(raw_stages, (list, tuple)):

@@ -259,7 +259,7 @@ def track(*, num_envs: int, device: str, n_max: int = 384, scale: float = 1.0,
           spacing: "float | None" = None, relax: "StageSel | None" = "auto",
           width: StageSel = "constant", elevation: "StageSel | None" = "flat",
           checks: Sequence[StageSel] = ("default",),
-          on_invalid: str = "keep", z_base: float = 0.0, registry=None,
+          on_invalid: str = "poison", z_base: float = 0.0, registry=None,
           randomize=None) -> PipelineSpec:
     """The track pipeline: generator -> resample -> width -> relax -> uniform resample
     -> frames -> offset -> elevation -> checks -> lift (the width runs before relax:
@@ -311,7 +311,7 @@ def track(*, num_envs: int, device: str, n_max: int = 384, scale: float = 1.0,
             first is ``"default"`` (``validity.default``; plugin checks follow it).
             The first one's id is ``"validity"``; each further one's is its
             ``StageRef.id`` or its name.
-        on_invalid: ``"keep"`` (default) or ``"poison"`` (``BatchSpec.on_invalid``).
+        on_invalid: ``"poison"`` (default) or ``"keep"`` (``BatchSpec.on_invalid``).
         z_base: The altitude of the flat lift (``elevation.flat``; the flat
             ``TrackGenConfig.z_base``). Another elevation takes its altitude from its
             own params, so a nonzero ``z_base`` with it raises ``ValueError``.
@@ -631,7 +631,7 @@ def gates(*, num_envs: int, device: str, generator: "str | StageRef" = "bezier",
           z_base: float = 0.0, z_valid_grade: float = 0.0,
           checks: Sequence[StageSel] = ("gate_default",), scale: float = 1.0,
           size: float = 1.0,
-          on_invalid: str = "keep", n_max: int = 384, num_points: int = 256,
+          on_invalid: str = "poison", n_max: int = 384, num_points: int = 256,
           half_width: float = 0.1, spacing: "float | None" = None,
           relax: "StageSel | None" = "auto", width: StageSel = "constant",
           spacing_metric: str = "xy", elevation_on: "str | None" = None,
@@ -696,7 +696,7 @@ def gates(*, num_envs: int, device: str, generator: "str | StageRef" = "bezier",
             generator. ``1.0``
             (default) adds nothing to the spec; a generator with neither raises
             ``ValueError``, as does a ``size`` in its params too.
-        on_invalid: ``"keep"`` or ``"poison"``.
+        on_invalid: ``"poison"`` (default) or ``"keep"``.
         n_max, num_points, half_width, spacing, relax, width: The centerline
             sub-pipeline of a stations source (as :func:`track`; ``relax="auto"``: the
             generator's ``preferred["relax"]``, else ``"xpbd"``): a ``stations``

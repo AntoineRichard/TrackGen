@@ -12,6 +12,7 @@ import warp as wp
 
 from tests import _legacy_gate_pr11 as ref_mod
 from tests.tools import capture_pr11_gate_stages as tool
+from tests.tools._golden_config import keep_config
 from track_gen import GateGenConfig, GateGenerator, PerEnvSeededRNG
 from track_gen.seeds import effective_seed
 from track_gen.testing import trace_launches
@@ -25,7 +26,7 @@ def _golden():
 
 
 def _cfg(kw) -> GateGenConfig:
-    return GateGenConfig(num_envs=E, device="cpu", **kw)
+    return keep_config(GateGenConfig, num_envs=E, device="cpu", **kw)
 
 
 def _rng():
@@ -140,7 +141,7 @@ def test_launch_sequence_matches_head(case):
 def test_default_bezier_ccw_emits_16_records():
     """0.2.0.dev3's 14 records + the latches of the bezier gate generator's ``size`` and
     ``gate_frames.gate_width`` (roadmap PR13d re-pin)."""
-    gen = GateGenerator(GateGenConfig(num_envs=E, device="cpu"), _rng())
+    gen = GateGenerator(keep_config(GateGenConfig, num_envs=E, device="cpu"), _rng())
     with trace_launches() as trace:
         gen.generate()
     assert len(trace) == 16

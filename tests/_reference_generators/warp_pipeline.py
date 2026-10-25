@@ -434,7 +434,7 @@ def _inflate_warp(center, config, out=None,
         ValueError: if config.z_profile != "flat" and seeds is None (the standalone
             inflate path is flat-only unless seeds are provided).
     """
-    from track_gen._src.types import Track  # local import: keep warp_pipeline free of oracle modules
+    from track_gen._src.types import Layout, Track  # private test reference
 
     _init()
 
@@ -479,6 +479,12 @@ def _inflate_warp(center, config, out=None,
             valid=wp.empty(E, dtype=wp.int32, device=dev),
             count=wp.empty(E, dtype=wp.int32, device=dev),
             winding=wp.empty(E, dtype=wp.float32, device=dev),
+            truncated=(truncated if truncated is not None else
+                       wp.zeros(E, dtype=wp.int32, device=dev)),
+            generation=wp.zeros(E, dtype=wp.int32, device=dev),
+            fail_mask=wp.zeros(E, dtype=wp.int32, device=dev),
+            half_width=wp.empty(flat, dtype=wp.float32, device=dev),
+            layout=Layout(E, n_max, dev),
         )
         if scratch is None:
             # Standalone path: only the inflate group is needed (no gen/relax buffers);
@@ -510,6 +516,12 @@ def _inflate_warp(center, config, out=None,
     # The 2D pipeline kernels write the vec2f staging buffers; the lift at the
     # end copies them into the public vec3f Track arrays with z = 0.
     stag = scratch.inflate
+    stag.fail = out.fail_mask
+    stag.hw_out = out.half_width
+    if truncated is None:
+        ctx.fill(out.truncated, 0)
+    elif truncated is not out.truncated:
+        ctx.copy(out.truncated, truncated)
     if stag.ctr2 is None:
         stag.out2 = wp.empty(flat, dtype=wp.vec2f, device=dev)
         stag.ctr2 = wp.empty(flat, dtype=wp.vec2f, device=dev)
@@ -616,7 +628,7 @@ def _inflate_warp(center, config, out=None,
     # grade branch is a no-op and validity is byte-identical to the legacy path.
     validity_inplace(stag.ctr2, stag.w, cnt_wp, gv_wp,
                      stag.out2, stag.inn2, has_border, n_max, stag.z,
-                     out.valid, config, truncated_wp=truncated, ctx=ctx,
+                     out.valid, config, truncated_wp=out.truncated, ctx=ctx,
                      fail_wp=stag.fail)
 
     # 6. Lift the vec2f staging buffers into the public vec3f Track arrays.

@@ -230,13 +230,14 @@ def _assert_band(track, label):
 
 
 def test_track_half_width_is_the_band_at_constant_and_variable_width():
-    const = _gen(_track(half_width=0.09))._track
+    const = _gen(_track(half_width=0.09, on_invalid="keep"))._track
     count = const.count.numpy()
+    assert (count > 0).all()
     hw = _rows(const.half_width)
     for e in range(E):
         np.testing.assert_array_equal(hw[e, :count[e]], np.float32(0.09))
     _assert_band(const, "constant")
-    gen = _gen(_track(width="acme.wave"))
+    gen = _gen(_track(width="acme.wave", on_invalid="keep"))
     var = gen._track
     _assert_band(var, "variable")
     w = _rows(gen.program.tap("cl.half_width"))

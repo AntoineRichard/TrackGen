@@ -343,6 +343,9 @@ def _rng(seeds=SEEDS) -> PerEnvSeededRNG:
 
 
 def _track_cfg(kw: dict) -> TrackGenConfig:
+    """Keep raw invalid rows for the scalar-kernel geometry comparisons."""
+    kw = dict(kw)
+    kw.setdefault("on_invalid", "keep")
     return TrackGenConfig(device=DEV, num_envs=E, **kw)
 
 
@@ -825,6 +828,9 @@ _GATE_CASES = [(g, o, z) for g in _GATE_KNOBS for o in ("ccw", "raw")
 
 
 def _gate_cfg(kw: dict) -> GateGenConfig:
+    """Keep raw invalid rows for the frozen gate-reference comparisons."""
+    kw = dict(kw)
+    kw.setdefault("on_invalid", "keep")
     return GateGenConfig(num_envs=E, device=DEV, **kw)
 
 

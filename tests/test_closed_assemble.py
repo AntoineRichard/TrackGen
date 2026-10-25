@@ -8,6 +8,8 @@ samples.
 Oracle<->Warp parity is guarded by tests/test_warp_assemble.py: both paths get the same
 closed behaviour, so they must still match bit-for-bit.
 """
+from dataclasses import replace
+
 import math
 
 import pytest
@@ -43,8 +45,7 @@ def _fixed_corners(P: int, device) -> torch.Tensor:
 @pytest.mark.parametrize("dev", DEVS)
 def test_closed_assemble_keeps_all_count_segments(dev):
     """Every one of the `count` segments is a real Bezier -> count*npseg finite samples."""
-    config = TrackGenConfig()
-    config.device = dev
+    config = TrackGenConfig(device=dev)
     P = config.max_num_points
     npseg = config.num_points_per_segment
 
@@ -89,7 +90,7 @@ def test_adaptive_handle_clamp_drives_out_crossings(dev):
     what guarantees the FINAL centerline is simple. Pin both: the clamp MECHANISM at a tight
     frac (independent of the production default) and the polygon-fallback end-to-end guarantee."""
     cfg = _fatband_cfg(2048, dev)
-    cfg.handle_clamp_frac = 0.10  # tight clamp: exercise the overshoot-removal mechanism
+    cfg = replace(cfg, handle_clamp_frac=0.10)
     rs = _attempt0_centerline(cfg, dev)
     crossing_free = (self_intersections(rs) == 0).float().mean().item()
     assert crossing_free >= 0.985, (
@@ -130,8 +131,8 @@ def test_handle_clamp_preserves_shape_diversity(dev):
     corners = ccw_sort(corner_sample(seeds, 0, cfg), count)
 
     def area_std(frac):
-        cfg.handle_clamp_frac = frac
-        dense = assemble(corners, count, cfg)
+        varied = replace(cfg, handle_clamp_frac=frac)
+        dense = assemble(corners, count, varied)
         rs, _ = arc_length_resample_warp(dense, int(cfg.num_points))
         x, y = rs[..., 0], rs[..., 1]
         xn, yn = torch.roll(x, -1, 1), torch.roll(y, -1, 1)

@@ -248,7 +248,7 @@ def test_max_curvature_sets_its_bit_exactly_where_kappa_exceeds_the_threshold():
 
 
 def test_max_curvature_dynamic_threshold_moves_the_bit():
-    g = _gen(_spec(checks=("default", KMAX)))
+    g = _gen(_spec(checks=("default", KMAX), on_invalid="keep"))
     assert list(g.params) == ["generator", KMAX]
     assert not ((g._track.fail_mask.numpy() >> 16) & 1).any()      # default 50: none
     g.params[KMAX].set("kappa_max", 0.0)

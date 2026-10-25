@@ -946,13 +946,13 @@ def _check_width_placement(slots) -> None:
 # The result kinds (Track / GateSequence)
 # ---------------------------------------------------------------------------------------
 
-# Result fields a pipeline may leave without a writer (then None / the commit's own).
+# Result fields a pipeline may leave without a writer (retained as NaN padding).
 _OPTIONAL_EXPORTS = ("half_width",)
 
 
 def _check_exports(writers) -> None:
-    """Every ``Track`` field has a writer: the ``Track`` reads them all (``half_width``
-    excepted: a pipeline without ``offset.default`` leaves it ``None``)."""
+    """Every Track field has a writer except half_width, whose concrete array stays
+    NaN-filled in a pipeline without an offset."""
     from ..stages.track import TRACK_EXPORTS  # noqa: PLC0415
 
     missing = [f"Track.{field} ({' or '.join(chs)})"
@@ -1057,33 +1057,30 @@ def _check_flat_lift(slots) -> None:
             z_writers.append(s)
 
 
-def _check_result_out(out, cls, layout, optional) -> None:
-    """``out=``: a ``cls`` (``Track`` / ``GateSequence``) whose every field validates
-    against the Program's ``layout`` (owner ``out``; the optional fields may be ``None``,
-    ``truncated`` is required), and whose stored layout, when set, is that layout
-    (canonical device)."""
+def _check_result_out(out, cls, layout) -> None:
+    """``out=``: every concrete field is required and validates against the Program's
+    layout, including its stored layout (canonical device)."""
     from .._src.types import _validate_against  # noqa: PLC0415
 
     if not isinstance(out, cls):
         raise TypeError(f"out= must be a {cls.__name__} (this pipeline's result), got "
                         f"{type(out).__name__}")
-    need = tuple(f for f, _, _ in cls._SCHEMA if f not in optional)
+    need = tuple(f for f, _, _ in cls._SCHEMA)
     _validate_against(out, need, "out", layout, "this pipeline")
 
 
 def _check_out(out, layout) -> None:
-    """``out=`` of a track Program (``generation``, ``fail_mask`` and ``half_width`` may
-    be ``None``)."""
+    """``out=`` of a track Program, with complete required storage."""
     from .._src.types import Track  # noqa: PLC0415
 
-    _check_result_out(out, Track, layout, ("generation", "fail_mask", "half_width"))
+    _check_result_out(out, Track, layout)
 
 
 def _check_gate_out(out, layout) -> None:
-    """``out=`` of a gate Program (``generation`` and ``fail_mask`` may be ``None``)."""
+    """``out=`` of a gate Program, with complete required storage."""
     from .._src.types import GateSequence  # noqa: PLC0415
 
-    _check_result_out(out, GateSequence, layout, ("generation", "fail_mask"))
+    _check_result_out(out, GateSequence, layout)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1873,8 +1870,9 @@ def _build(spec: PipelineSpec, *, binding, seeds=None, out=None, stream=None,
     result = out if out is not None else kind.alloc(layout)
     # The final version of each exported channel IS the result's array (no copy).
     sources = _export_sources(writers, kind.exports, kind.own_valid)
-    if out is None and "half_width" in kind.exports and "half_width" not in sources:
-        result.half_width = None          # no offset.default: nothing writes it
+    if "half_width" in kind.exports and "half_width" not in sources:
+        # No offset writes this field: retain concrete storage with absent-band padding.
+        LaunchContext.current(dev).fill(result.half_width, float("nan"))
     bound = {}
     for field, ch in sources.items():
         arr = getattr(result, field, None)
@@ -2030,16 +2028,14 @@ def _build(spec: PipelineSpec, *, binding, seeds=None, out=None, stream=None,
     commit = None
     fields = kind.fields
     if all(f in sources or f in _OPTIONAL_EXPORTS for f in fields):
-        # The result's arrays; fail_mask: the final valid.fail version (the result's own
-        # unless out= brought none); half_width: the final track.half_width version
-        # (out= may bring none), or a private buffer when nothing writes it.
+        # Required result arrays: fail_mask is the final valid.fail version;
+        # half_width is the final track.half_width, or the result's NaN padding.
         targets = {f: getattr(result, f) for f in fields
                    if f not in ("fail_mask", "half_width")}
         targets["fail_mask"] = plan.current[FAIL]
         if "half_width" in fields:
             hw = plan.current.get("track.half_width")
-            targets["half_width"] = hw if hw is not None else wp.full(
-                E * S, float("nan"), dtype=wp.float32, device=dev)
+            targets["half_width"] = hw if hw is not None else result.half_width
         commit = kind.commit_cls(
             targets=targets, E=E, S=S, device=dev, dummy_mask=regen_mask,
             poison=batch.on_invalid == "poison", derive_valid=sources["valid"] is None,

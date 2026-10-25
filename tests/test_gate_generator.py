@@ -319,7 +319,7 @@ def test_gate_generator_sphere_solve_repairs_overlapping_native_points(plugin_re
         device="cpu",
     )
 
-    raw_cfg = GateGenConfig(gate_solve_iters=0, **base_kwargs)
+    raw_cfg = GateGenConfig(gate_solve_iters=0, on_invalid="keep", **base_kwargs)
     raw_gates = GateGenerator(raw_cfg, _make_rng(1, seed=53)).generate()
     raw_position = to_t(raw_gates.position).view(1, 4, 3)
     raw_distance = torch.linalg.norm(raw_position[0, 1] - raw_position[0, 0])

@@ -78,19 +78,19 @@ def _track_kw(g: str) -> dict:
     return {}
 
 
-def _track_cfg(g="bezier", n=E):
-    return TrackGenConfig(generator=g, num_envs=n, device=DEV, **_track_kw(g))
+def _track_cfg(g="bezier", n=E, **kw):
+    return TrackGenConfig(generator=g, num_envs=n, device=DEV, **_track_kw(g), **kw)
 
 
 def _gate_cfg(g="bezier", n=E, **kw):
     return GateGenConfig(generator=g, num_envs=n, device=DEV, gate_width=0.2, **kw)
 
 
-def _make(which: str, g: str, rng):
+def _make(which: str, g: str, rng, **kw):
     if which == "track":
-        gen = TrackGenerator(_track_cfg(g), rng)
+        gen = TrackGenerator(_track_cfg(g, **kw), rng)
         return gen, gen._track, _TRACK_FIELDS
-    gen = GateGenerator(_gate_cfg(g), rng)
+    gen = GateGenerator(_gate_cfg(g, **kw), rng)
     return gen, gen._gate_sequence, _GATE_FIELDS
 
 
@@ -312,7 +312,7 @@ def test_epoch0_is_byte_identical_to_the_pr3_seed_copy_path(which, g):
     fed straight to the pipeline) into separate buffers and compare every field."""
     for seed in (5, 1234):
         rng = _rng(seed)
-        gen, out, fields = _make(which, g, rng)
+        gen, out, fields = _make(which, g, rng, on_invalid="keep")
         gen.generate()
         ctx = LaunchContext.for_call(DEV)
         if which == "track":
@@ -433,17 +433,18 @@ def test_facade_inputs_and_mask_validation(which):
     assert _all_bytes(out, fields + ("generation",)) == snap
 
 
-def test_generation_field_is_optional_and_cloned():
+def test_generation_field_is_required_and_cloned():
     gen = TrackGenerator(_track_cfg(), _rng(3))
     gen.generate(advance=True, mask=_i32([0, 0, 1, 0]))
     snap = gen._track.clone()
     assert snap.generation is not gen._track.generation
     np.testing.assert_array_equal(snap.generation.numpy(), [0, 0, 1, 0])
-    hand_built = dataclasses.replace(gen._track, generation=None)
-    assert hand_built.clone().generation is None
+    with pytest.raises(ValueError, match=r"Track\.generation is None"):
+        dataclasses.replace(gen._track, generation=None)
     gseq = GateGenerator(_gate_cfg(), _rng(3))._gate_sequence
     assert gseq.clone().generation is not None
-    assert dataclasses.replace(gseq, generation=None).clone().generation is None
+    with pytest.raises(ValueError, match=r"GateSequence\.generation is None"):
+        dataclasses.replace(gseq, generation=None)
 
 
 def test_advance_paths_do_not_allocate(monkeypatch):

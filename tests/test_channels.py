@@ -70,7 +70,8 @@ def _ctx():
 # ---------------------------------------------------------------------------------------
 
 def test_families_never_change_the_geometry():
-    a, b = _gen(_track(generator="acme.ribbon")), _gen(_track(generator="acme.ribbon_plain"))
+    a = _gen(_track(generator="acme.ribbon", on_invalid="keep"))
+    b = _gen(_track(generator="acme.ribbon_plain", on_invalid="keep"))
     for f in GEOMETRY:
         assert _bytes(getattr(a._track, f)) == _bytes(getattr(b._track, f)), f
     for sid in ("resample", "relax", "uniform"):
@@ -514,7 +515,7 @@ def test_masked_regeneration_keeps_unmasked_attributes_byte_for_byte(on_invalid)
 
 
 def test_poison_pads_every_attribute_row_of_an_invalid_env():
-    spec_keep = _track(generator="acme.ribbon",
+    spec_keep = _track(generator="acme.ribbon", on_invalid="keep",
                        width=StageRef("width", "from_channel", ports={"src": "cl.acme.hw"}))
     keep, poison = _gen(spec_keep), _gen(_track(
         generator="acme.ribbon", on_invalid="poison",
@@ -547,7 +548,8 @@ def test_attribute_commit_launch_counts():
 
     n = len(ATTRS)
     m = [1, 0, 1, 0, 1, 0]
-    keep, plain = _track(generator="acme.ribbon"), _track(generator="acme.ribbon_plain")
+    keep = _track(generator="acme.ribbon", on_invalid="keep")
+    plain = _track(generator="acme.ribbon_plain", on_invalid="keep")
     poison = _track(generator="acme.ribbon", on_invalid="poison")
     poison_plain = _track(generator="acme.ribbon_plain", on_invalid="poison")
     # ribbon vs ribbon_plain: its attribute kernel + one carry per family per resampler
@@ -624,13 +626,13 @@ def test_attribute_programs_replay_from_a_cpu_graph_capture(case):
 def test_out_with_and_without_attributes():
     spec = _track(generator="acme.ribbon")
     layout = build(spec, seeds=1).layout
-    # out= without attributes / half_width: the planner owns them, nothing is added.
+    # Attributes may be absent, but the width array is required and bound in place.
     out = _alloc_track(layout)
-    out.half_width = None
     p = build(spec, seeds=1, out=out)
-    assert p.result is out and out.half_width is None and dict(out.attributes) == {}
+    assert p.result is out and dict(out.attributes) == {}
     assert set(p.attributes) == set(ATTRS)
-    assert np.isfinite(p.tap("track.half_width").numpy()).any()
+    assert p.tap("track.half_width") is out.half_width
+    assert np.isfinite(out.half_width.numpy()).any()
     # out= with an attribute: bound (the final version IS the caller's array).
     out2 = _alloc_track(layout)
     mine = wp.zeros(layout.num_envs * layout.stride, dtype=wp.float32, device=DEV)

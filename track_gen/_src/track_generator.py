@@ -132,9 +132,10 @@ class TrackGenerator:
                 :mod:`track_gen.exec`).
             out: optional caller-owned ``Track`` the pipeline writes INTO: the
                 generator's result IS ``out`` (stable caller pointers, so a
-                caller graph built over it keeps working). Every field is checked
-                against the pipeline's layout (``generation`` / ``fail_mask`` may be
-                ``None``, and ``half_width``). A view of a larger result
+                caller graph built over it keeps working). Every array and ``layout``
+                is required and checked against the pipeline's layout; none may be
+                ``None``. Use ``Track.alloc(Layout(...))`` for complete storage.
+                A view of a larger result
                 (``out=big.view(e0, e1)``) makes a mixed batch: several generators
                 writing disjoint env ranges of one ``Track`` (overlapping a live
                 generator's result raises ``PlanError``: release a generator

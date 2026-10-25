@@ -515,7 +515,7 @@ def test_the_validity_twin_decides_as_the_pr11_kernel(name):
     OFF on the zero-width envs (design A2)."""
     n = 64
     seeds = np.arange(n, dtype=np.int32) * 7919 + 13
-    gen = GateGenerator(_gcfg(generator=name, num_envs=n), _rng(seeds))
+    gen = GateGenerator(_gcfg(generator=name, num_envs=n, on_invalid="keep"), _rng(seeds))
     w = np.array([0.0, 0.2, 0.5, 0.0], np.float32)[np.arange(n) % 4]
     gen.params["gate_frames"].set("gate_width", _f32(w))
     seq = gen.generate()
@@ -535,7 +535,8 @@ def test_the_validity_twin_on_posed_like_half_sizes():
     """Per-gate half sizes {0, +, -, NaN} with left / right by the frames' formula: the
     twin decides as the PR11 kernel with the crossing check on (NaN counts as a bar)."""
     n = 64
-    gen = GateGenerator(_gcfg(num_envs=n), _rng(np.arange(n, dtype=np.int32) * 31 + 5))
+    gen = GateGenerator(_gcfg(num_envs=n, on_invalid="keep"),
+                        _rng(np.arange(n, dtype=np.int32) * 31 + 5))
     seq = gen.generate()
     G = seq.position.shape[0] // n
     r = np.random.default_rng(0)
@@ -1136,7 +1137,7 @@ def test_the_track_launch_deltas(case):
     kw, pr13c, pr13c_latches, pr13d, block = _TRACK_DELTAS[case]
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=_STYLE_DEP)
-        gen = TrackGenerator(_tcfg(**kw), _rng())
+        gen = TrackGenerator(_tcfg(on_invalid="keep", **kw), _rng())
     plain, masked = _traces(gen.program)
     assert len(plain) == pr13d
     assert pr13d - len(block) == pr13c - pr13c_latches     # only latches were added
@@ -1158,7 +1159,7 @@ def test_the_track_launch_deltas_against_the_legacy_composition():
     """The rule (``pr13d_sequence``) on HEAD's legacy (scalar) composition reproduces the
     default bezier trace record for record (``tests/test_dynamic_knobs.py`` runs it on
     every built-in)."""
-    gen = TrackGenerator(_tcfg(), _rng())
+    gen = TrackGenerator(_tcfg(on_invalid="keep"), _rng())
     ctx = LaunchContext.for_call(DEV)
     with trace_launches() as program:
         gen.program.enqueue(ctx)
@@ -1205,7 +1206,8 @@ def test_the_repulsive_launch_delta():
 
 
 def test_external_gains_no_launch():
-    gen = TrackGenerator(presets.track(num_envs=E, device=DEV, generator="external"),
+    gen = TrackGenerator(presets.track(num_envs=E, device=DEV, generator="external",
+                                      on_invalid="keep"),
                          _rng())
     plain, masked = _traces(gen.program)
     assert len(plain) == 20
@@ -1229,7 +1231,7 @@ _GATE_DELTAS = {
 def test_the_gate_launch_deltas(case):
     kw, pr13c, pr13d = _GATE_DELTAS[case]
     name, _, z = case.split("/")
-    gen = GateGenerator(presets.gates(num_envs=E, device=DEV, **kw), _rng())
+    gen = GateGenerator(presets.gates(num_envs=E, device=DEV, on_invalid="keep", **kw), _rng())
     plain, masked = _traces(gen.program)
     assert len(plain) == pr13d == pr13c + 2
     assert assert_latch_block(gen.program, plain, masked) == gate_latches(name, z)
@@ -1251,7 +1253,8 @@ def test_the_stations_launch_delta():
     """A stations source's track generator latches its four fields (bezier) and
     gate_frames its width: 29 -> 32 (+3: size, min_num_points and the width over PR13c's
     rad / clamp)."""
-    gen = GateGenerator(presets.gates(num_envs=E, device=DEV, source="stations"), _rng())
+    gen = GateGenerator(presets.gates(num_envs=E, device=DEV, source="stations",
+                                     on_invalid="keep"), _rng())
     plain, masked = _traces(gen.program)
     assert len(plain) == 32
     assert assert_latch_block(gen.program, plain, masked) == [_I, _F, _F, _F, _F]

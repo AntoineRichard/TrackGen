@@ -1,6 +1,25 @@
 # Changelog
 
-## 0.3.0.dev2 (unreleased, `v3` branch)
+## 0.3.0.dev3 (defaults and contracts milestone, `v3` branch)
+
+- Default `on_invalid="poison"` everywhere: Track/Gate configs, `BatchSpec`, presets,
+  Program construction, and `/2` dictionaries that omit the policy. Invalid envs
+  have `count=0`, NaN geometry and padded attributes; failure diagnostics and
+  generation remain readable. Set `on_invalid="keep"` explicitly to inspect failed
+  geometry. Runtime utilities retain their invalid-env sentinels.
+- Freeze `TrackGenConfig` and `GateGenConfig`. Use `dataclasses.replace` for changes
+  and decorate config subclasses with `frozen=True`. To recouple point spacing after
+  changing half-width, use `replace(cfg, half_width=..., spacing=None)`.
+- Require Track's `truncated`, `generation`, `fail_mask`, `half_width` and `layout`,
+  and GateSequence's `generation`, `fail_mask` and `layout`. All their concrete array
+  fields and layouts reject `None`, including through validation and `out=`. Use
+  `Track.alloc(Layout(...))` / `GateSequence.alloc(...)` for complete manual storage.
+  Metadata mappings still default empty; Centerline and capability-source layout
+  inference are retained. A no-offset Track retains a required NaN half-width array.
+- Retain the static `edgy` host transform and all other surviving geometry arithmetic;
+  this milestone changes invalid-result defaults and data contracts, not RNG streams.
+
+## 0.3.0.dev2 (RNG milestone, `v3` branch)
 
 Built-in RNG streams now use hashed salts. Track and gate geometry changes for the
 same seed; rebaseline generated-output goldens and cached datasets once. No legacy
@@ -15,15 +34,17 @@ The migration guide is `docs/upgrading/from-0.2.rst`.
   Effective seeds, epochs, `PerEnvSeededRNG` and `randomize.uniform` are unchanged.
 - Add keyword-only `keying="hashed"` to public ops samplers. Their default remains
   `keying="linear"`, preserving draws for existing plugin callers.
-- Replace the old-keying byte comparison with a distribution gate covering two seed
-  blocks of at least 4096 envs each, every built-in track/gate generator, nonflat
-  elevation and random-pair ordering. It checks validity, counts, length,
-  compactness, curvature and elevation; byte goldens are rebaselined separately.
+- Replace the old-keying byte comparison with a distribution gate covering every
+  built-in track/gate generator, nonflat elevation and random-pair ordering. All 133
+  distributions across 19 cases passed with 8192 envs per case (two blocks of 4096)
+  on the same GPU. The largest absolute yield delta was 0.00146484375 (about 0.1465
+  percentage points). It checks validity, counts, length, compactness, curvature and
+  elevation; byte goldens are rebaselined separately.
 - A `Course` capacity derived from newly sampled geometry may change. Pass explicit
   `max_checkpoints=` to preserve the desired checkpoint buffer capacity.
 
-Poison defaults, frozen configs and required result fields remain pending for the
-next milestone.
+This milestone changes valid geometry. The following milestone changes defaults and
+contracts; historical figures have not all been remeasured for the new seeds.
 
 ## 0.3.0.dev1 (`v3` branch)
 

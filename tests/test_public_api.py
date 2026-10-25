@@ -139,9 +139,8 @@ def test_the_channel_carry_surface_is_public():
     params = inspect.signature(StageBuilder.write).parameters
     assert params["interp"].default is None and params["export"].default is False
     track = [f.name for f in dataclasses.fields(track_gen.Track)]
-    # appended (PR13a: half_width, attributes; PR13b: layout)
-    assert track[-3:] == ["half_width", "attributes", "layout"]
-    assert [f.name for f in dataclasses.fields(track_gen.GateSequence)][-2:] == [
-        "attributes", "layout"]
+    assert {"half_width", "attributes", "layout"} <= set(track)
+    assert {"attributes", "layout"} <= {
+        f.name for f in dataclasses.fields(track_gen.GateSequence)}
     assert "tables" in inspect.signature(ops.resample_uniform).parameters
     assert "tables" in inspect.signature(ops.resample_constant_spacing).parameters

@@ -12,6 +12,7 @@ def test_config_defaults_instantiate():
     cfg = TrackGenConfig()
     # generator + batching
     assert cfg.generator == "bezier"
+    assert cfg.on_invalid == "poison"
     assert cfg.num_envs == 1
     assert cfg.device == "cpu"
     # Bezier params
@@ -203,23 +204,29 @@ def test_repulsive_stage_rule_still_only_binds_the_repulsive_generator():
 
 def test_track_construct_from_tensors_field_shapes():
     import warp as wp
+    from track_gen.results import Layout
     wp.init()
     E, N = 4, 16
     track = Track(
-        outer=wp.zeros(E * N, dtype=wp.vec2f),
-        center=wp.zeros(E * N, dtype=wp.vec2f),
-        inner=wp.zeros(E * N, dtype=wp.vec2f),
-        tangent=wp.zeros(E * N, dtype=wp.vec2f),
-        normal=wp.zeros(E * N, dtype=wp.vec2f),
-        arclen=wp.zeros(E * N, dtype=wp.float32),
-        length=wp.zeros(E, dtype=wp.float32),
-        valid=wp.zeros(E, dtype=wp.int32),
-        count=wp.zeros(E, dtype=wp.int32),
-        winding=wp.zeros(E, dtype=wp.float32),
+        outer=wp.zeros(E * N, dtype=wp.vec3f, device="cpu"),
+        center=wp.zeros(E * N, dtype=wp.vec3f, device="cpu"),
+        inner=wp.zeros(E * N, dtype=wp.vec3f, device="cpu"),
+        tangent=wp.zeros(E * N, dtype=wp.vec3f, device="cpu"),
+        normal=wp.zeros(E * N, dtype=wp.vec3f, device="cpu"),
+        arclen=wp.zeros(E * N, dtype=wp.float32, device="cpu"),
+        length=wp.zeros(E, dtype=wp.float32, device="cpu"),
+        valid=wp.zeros(E, dtype=wp.int32, device="cpu"),
+        count=wp.zeros(E, dtype=wp.int32, device="cpu"),
+        winding=wp.zeros(E, dtype=wp.float32, device="cpu"),
+        truncated=wp.zeros(E, dtype=wp.int32, device="cpu"),
+        generation=wp.zeros(E, dtype=wp.int32, device="cpu"),
+        fail_mask=wp.zeros(E, dtype=wp.int32, device="cpu"),
+        half_width=wp.zeros(E * N, dtype=wp.float32, device="cpu"),
+        layout=Layout(E, N, "cpu"),
     )
     for arr in (track.outer, track.center, track.inner, track.tangent, track.normal):
         assert arr.shape == (E * N,)
-        assert arr.dtype == wp.vec2f
+        assert arr.dtype == wp.vec3f
     assert track.arclen.shape == (E * N,)
     assert track.arclen.dtype == wp.float32
     assert track.length.shape == (E,)
@@ -262,6 +269,7 @@ def test_gate_config_defaults_instantiate():
 
     cfg = GateGenConfig()
     assert cfg.generator == "bezier"
+    assert cfg.on_invalid == "poison"
     assert cfg.device == "cpu"
     assert cfg.num_envs == 1
     assert cfg.min_gates == 4
@@ -383,20 +391,24 @@ def test_track_config_defaults_still_valid():
 
 def test_gate_sequence_construct_from_warp_arrays_and_clone():
     import warp as wp
+    from track_gen.results import Layout
     from track_gen._src.types import GateSequence
 
     wp.init()
     E, G = 2, 8
     gates = GateSequence(
-        position=wp.zeros(E * G, dtype=wp.vec3f),
-        tangent=wp.zeros(E * G, dtype=wp.vec3f),
-        forward=wp.zeros(E * G, dtype=wp.vec3f),
-        orientation=wp.zeros(E * G, dtype=wp.quatf),
-        half_size=wp.zeros(E * G, dtype=wp.float32),
-        left=wp.zeros(E * G, dtype=wp.vec3f),
-        right=wp.zeros(E * G, dtype=wp.vec3f),
-        valid=wp.zeros(E, dtype=wp.int32),
-        count=wp.zeros(E, dtype=wp.int32),
+        position=wp.zeros(E * G, dtype=wp.vec3f, device="cpu"),
+        tangent=wp.zeros(E * G, dtype=wp.vec3f, device="cpu"),
+        forward=wp.zeros(E * G, dtype=wp.vec3f, device="cpu"),
+        orientation=wp.zeros(E * G, dtype=wp.quatf, device="cpu"),
+        half_size=wp.zeros(E * G, dtype=wp.float32, device="cpu"),
+        left=wp.zeros(E * G, dtype=wp.vec3f, device="cpu"),
+        right=wp.zeros(E * G, dtype=wp.vec3f, device="cpu"),
+        valid=wp.zeros(E, dtype=wp.int32, device="cpu"),
+        count=wp.zeros(E, dtype=wp.int32, device="cpu"),
+        generation=wp.zeros(E, dtype=wp.int32, device="cpu"),
+        fail_mask=wp.zeros(E, dtype=wp.int32, device="cpu"),
+        layout=Layout(E, G, "cpu"),
     )
     assert gates.position.shape == (E * G,)
     assert gates.tangent.dtype == wp.vec3f

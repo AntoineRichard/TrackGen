@@ -160,7 +160,8 @@ def _sel(name: str, field: str, value):
 
 def _toy_spec(kind: str, name: str, field: "str | None" = None, value=None, **kw):
     """The default preset with ONE toy in its slot (a validity toy after the default
-    checks)."""
+    checks). Keep raw invalid geometry for the non-vacuous replay comparisons."""
+    kw.setdefault("on_invalid", "keep")
     sel = _sel(name, field, value)
     if kind == "validity":
         return _spec(checks=("default", sel), **kw)
@@ -320,11 +321,13 @@ def test_toy_stage_selected_through_presets_records_into_caller_capture(kind, na
         # A rewrite: the relax version is new, the version it read is left intact.
         assert not np.array_equal(tap("cl.xy", after=sid).numpy(),
                                   tap("cl.xy", after="resample").numpy(), equal_nan=True)
-        assert _differs(snap, _eager(_spec())), "acme.taubin must change the batch"
+        assert _differs(snap, _eager(_spec(on_invalid="keep"))), \
+            "acme.taubin must change the batch"
     elif kind == "elevation":
         z = np.nan_to_num(snap["center"].reshape(E, -1, 3)[..., 2])
         assert np.any(z != 0.0), "acme.sinusoid_hills must lift the centerline"
-        assert _differs(snap, _eager(_spec())), "acme.sinusoid_hills must change the batch"
+        assert _differs(snap, _eager(_spec(on_invalid="keep"))), \
+            "acme.sinusoid_hills must change the batch"
     else:
         bit = gen.program.fail_bits[sid]
         assert 16 <= bit <= 30 and snap["fail_mask"].dtype == np.int32, bit

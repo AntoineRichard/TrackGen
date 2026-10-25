@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from track_gen._src.types import TrackGenConfig
 
 
-@dataclass
+@dataclass(frozen=True)
 class OracleConfig(TrackGenConfig):
     min_angle: float = (12.5 / 180) * math.pi
     num_harmonics: int = 5  # K

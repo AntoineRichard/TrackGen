@@ -132,6 +132,7 @@ def _alloc_track(layout):
         generation=wp.zeros(E, dtype=wp.int32, device=dev),
         fail_mask=wp.zeros(E, dtype=wp.int32, device=dev),
         half_width=wp.empty(flat, dtype=wp.float32, device=dev),
+        layout=layout,
     )
 
 

@@ -906,7 +906,7 @@ def test_launch_delta_against_the_legacy_composition(case):
     to their twins), with the design section 6.2 counts; masked: the latches are masked,
     right after the effective seed, before the hold (+3: advance, hold, commit)."""
     kw, head, _pr13c, pr13d = LAUNCH_TABLE[case]
-    cfg = _tcfg(**kw)
+    cfg = _tcfg(on_invalid="keep", **kw)
     gen = TrackGenerator(cfg, _rng())
     ctx = LaunchContext.for_call(DEV)
     with trace_launches() as program:
@@ -959,7 +959,8 @@ def test_gate_launch_deltas(case):
            "random_walk": dict(z_profile="random_walk", z_max=1.5, z_max_step=0.3),
            "noise": dict(z_profile="noise", z_base=0.1, z_max=1.5, z_noise_amplitude=0.5,
                          z_noise_harmonics=4)}[z]
-    gen = GateGenerator(_gcfg(generator=name, gate_ordering=ordering, **zkw), _rng())
+    gen = GateGenerator(_gcfg(generator=name, gate_ordering=ordering,
+                              on_invalid="keep", **zkw), _rng())
     with trace_launches() as t:
         gen.generate()
     names = [r.kernel.rsplit(".", 1)[-1] for r in t]
@@ -995,7 +996,8 @@ def test_gate_launch_counts_match_the_03_golden(case):
     if golden is None:
         pytest.skip(f"no dd181f0 gate-stage launches for {tool.platform_key()}")
     name, z = case.split("/")[0], case.split("/")[2]
-    gen = GateGenerator(GateGenConfig(num_envs=tool.E, device=DEV, **tool.CASES[case]),
+    gen = GateGenerator(GateGenConfig(num_envs=tool.E, device=DEV, on_invalid="keep",
+                                    **tool.CASES[case]),
                         PerEnvSeededRNG(seeds=_seeds(SEEDS[:tool.E]), num_envs=tool.E,
                                         device=DEV))
     with trace_launches() as t:
@@ -1016,12 +1018,13 @@ def test_repulsive_and_the_default_gates_gain_exactly_the_pr13d_latches():
     names = [r.kernel.rsplit(".", 1)[-1] for r in t]
     assert names[1] == "_latch_all_f32_k" and names.count("_latch_all_f32_k") == 1
     assert names.count("_copy_sized_k") == 1
-    gates = GateGenerator(_gcfg(), _rng())
+    gates = GateGenerator(_gcfg(on_invalid="keep"), _rng())
     with trace_launches() as t:
         gates.generate()
     assert len(t) == 16
     assert latch_dtypes(gates.program) == ["f32", "f32"]
-    ext = TrackGenerator(presets.track(num_envs=E, device=DEV, generator="external"),
+    ext = TrackGenerator(presets.track(num_envs=E, device=DEV, generator="external",
+                                      on_invalid="keep"),
                          _rng())
     with trace_launches() as t:
         ext.generate()

@@ -406,7 +406,7 @@ _GATE_POINT = {"position": wp.vec3f, "tangent": wp.vec3f, "forward": wp.vec3f,
                "right": wp.vec3f}
 _GATE_ENV = {"valid": wp.int32, "count": wp.int32, "generation": wp.int32,
              "fail_mask": wp.int32}
-_OPTIONAL = {"truncated", "generation", "fail_mask", "half_width"}
+_OPTIONAL = set()
 # The prefix of a raw attribute buffer in a snapshot (``"raw.attr:raw.acme.grip"``).
 _RAW_ATTR = "raw.attr:"
 
@@ -798,6 +798,7 @@ class _DeviceRun:
         if self.stage is not None:
             return self.stage.facade()(self.stage.spec(E, dev), rng, out=out)
         kw = dict(self.overrides)
+        kw.setdefault("on_invalid", "keep")
         if self.params is not None:
             kw["generator_params"] = self.params
         if self.kind == "generator":
@@ -2089,7 +2090,8 @@ def check_generator(name: str, params=None, *, devices=None, num_envs: int = 8,
             (the "different seeds" batch) with ``seeds[1] + e``. They must not overlap.
         config: extra ``TrackGenConfig`` fields (e.g. ``{"num_points": 64}`` to keep a
             slow generator fast); ``generator``, ``device`` and ``num_envs`` are set by
-            the kit.
+            the kit. Diagnostic runs default to ``on_invalid="keep"`` to inspect raw
+            invalid geometry; an explicit ``on_invalid`` value is respected.
         capture_modes: the modes of ``capture.caller`` (see
             :func:`~track_gen.testing.assert_caller_capturable`).
         skip: check names (or a prefix such as ``"hot_path"``) to report as skipped.
@@ -2190,6 +2192,7 @@ class _StageUnderTest:
         from ..pipeline import presets  # noqa: PLC0415
 
         kw = dict(self.upstream)
+        kw.setdefault("on_invalid", "keep")
         first = "gate_default" if self.gate else "default"
         if self.rewrite:
             spec = presets.track(num_envs=E, device=device, **kw)
@@ -2274,7 +2277,8 @@ def check_stage(kind: str, name: str, params=None, *, upstream: "Mapping | None"
             ``generator_params``, ``num_points``, ``n_max``, ``half_width``, the other
             kinds' slots, ``checks`` (the checks BEFORE a validity check under test),
             ``on_invalid``, ``source``). ``num_envs``, ``device`` and the slot under
-            test are set by the kit.
+            test are set by the kit. Diagnostic runs default to ``on_invalid="keep"``;
+            an explicit ``on_invalid`` value is respected.
         pipeline: ``None`` (default: the gate pipeline for an ``order`` / ``stations``
             stage and a validity stage that reads gate channels, else the track
             pipeline), ``"track"`` or ``"gates"``. ``"gates"`` admits ``elevation``,

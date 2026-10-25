@@ -225,7 +225,7 @@ class _FlatParams(Params):
     def _apply_legacy(self, cfg) -> None:
         """Write every field onto ``cfg`` (the orchestrator's private run snapshot)."""
         for name in self._names():
-            setattr(cfg, name, getattr(self, name))
+            object.__setattr__(cfg, name, getattr(self, name))
 
     def _check_no_flat_conflict(self, cfg) -> None:
         """With ``generator_params`` given, a flat field this class owns must stay at

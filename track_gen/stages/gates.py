@@ -72,7 +72,6 @@ def _alloc_gate_sequence(layout):
     E, G, dev = int(layout.num_envs), int(layout.stride), str(layout.device)
     gates = _wg.alloc_gate_sequence(types.SimpleNamespace(num_envs=E, max_gates=G,
                                                           device=dev))
-    gates.generation = wp.zeros(E, dtype=wp.int32, device=dev)
     return gates
 
 

@@ -137,7 +137,7 @@ class Program:
                  inputs, params, pairs, enqueues, versions, scratch, stage_ids, kinds,
                  gen_scratch, stream=None, owner=None, commit=None, fail_bits=None,
                  fail_owner=None, capture_classes=None, segments=None,
-                 on_invalid: str = "keep", writers=None, ports=None,
+                 on_invalid: str = "poison", writers=None, ports=None,
                  attributes=None, input_info=None) -> None:
         if _token is not _PROGRAM_TOKEN:
             raise TypeError("Program is created by track_gen.pipeline.build()")

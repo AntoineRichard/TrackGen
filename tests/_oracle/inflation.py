@@ -11,7 +11,7 @@ from collections import namedtuple
 import torch
 
 from . import geometry
-from track_gen._src.types import Track, TrackGenConfig  # noqa: F401  (TrackGenConfig used for typing)
+from track_gen._src.types import Layout, Track, TrackGenConfig  # noqa: F401  (TrackGenConfig used for typing)
 
 # Intermediate result of the resample stage; replaced by a full Track once inflate() is complete.
 _ResampleResult = namedtuple("_ResampleResult", ["center", "count"])
@@ -182,7 +182,13 @@ def inflate(centerline, config) -> Track:
     winding = _winding_stage(center, count)
     return Track(outer=outer, center=center, inner=inner, tangent=T, normal=Nrm,
                  arclen=arclen, length=length, valid=valid, count=count,
-                 winding=winding)
+                 winding=winding,
+                 truncated=torch.zeros_like(count, dtype=torch.int32),
+                 generation=torch.zeros_like(count, dtype=torch.int32),
+                 fail_mask=(~valid.bool()).to(torch.int32),
+                 half_width=torch.where(torch.isfinite(center[..., 0]), w,
+                                        torch.full_like(w, float("nan"))),
+                 layout=Layout(center.shape[0], center.shape[1], str(center.device)))
 
 
 def _winding_stage(center, count):

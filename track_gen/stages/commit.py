@@ -29,7 +29,7 @@ commit existed). The commit then fixes, per env, what the generation leaves in t
   ``-1``).
 
 Cost: no launch for an unmasked generation of a pipeline whose ``valid`` is
-``validity.default``'s and ``on_invalid="keep"`` (the default); one launch for an
+``validity.default``'s and explicit ``on_invalid="keep"``; one launch for an
 unmasked generation otherwise (:func:`_derive_valid_k`, one thread per env, when only
 ``valid`` is derived; :func:`_commit_k` with ``on_invalid="poison"``); two (:func:`_hold_k` +
 :func:`_commit_k`, each over every ``(env, point)``, whatever the number of masked envs)

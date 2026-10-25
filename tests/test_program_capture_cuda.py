@@ -5,8 +5,9 @@
   and after a reseed (:func:`track_gen.testing.capture.assert_caller_capturable`);
 - its own self-graph replays the eager batch, also into poisoned outputs and for the
   masked-advance key;
-- on CUDA the Program is the PR9 composition byte for byte (every Track field, the
-  same launch sequence), as on CPU (``test_pipeline_parity``).
+- with ``on_invalid="keep"``, the Program is the PR9 composition byte for byte on
+  CUDA (every Track field, the same launch sequence), as on CPU
+  (``test_pipeline_parity``).
 
 ``TrackGenerator`` itself runs a Program: the existing caller-capture, stream-capture
 and in-place-regeneration CUDA tests cover it unchanged.
@@ -40,8 +41,11 @@ SPECS = {
 }
 
 
-def _spec(name):
-    return legacy.to_pipeline_spec(TrackGenConfig(device=DEV, num_envs=E, **SPECS[name]))
+def _spec(name, *, on_invalid=None):
+    options = dict(SPECS[name])
+    if on_invalid is not None:
+        options["on_invalid"] = on_invalid
+    return legacy.to_pipeline_spec(TrackGenConfig(device=DEV, num_envs=E, **options))
 
 
 def _twin(spec):
@@ -55,7 +59,9 @@ def _twin(spec):
 
 @pytest.mark.parametrize("name", sorted(SPECS))
 def test_a_standalone_program_is_caller_capturable(name):
-    spec = _spec(name)
+    # Without relaxation both reseed batches fail validity; retain distinct raw
+    # geometry so the helper's replay-after-reseed check cannot be vacuous.
+    spec = _spec(name, on_invalid="keep") if name == "noise_no_relax" else _spec(name)
     program = build(spec, seeds=3)
     status = assert_caller_capturable(program, record=lambda s: program.run(stream=s),
                                       twin=_twin(spec))
@@ -87,7 +93,9 @@ def test_the_program_self_graph_replays_the_eager_batch(name):
 
 @pytest.mark.parametrize("name", sorted(SPECS))
 def test_the_program_is_the_pr9_composition_on_cuda(name):
-    gen = TrackGenerator(TrackGenConfig(device=DEV, num_envs=E, **SPECS[name]),
+    # The raw composition has no invalid-output commit.
+    gen = TrackGenerator(TrackGenConfig(device=DEV, num_envs=E, on_invalid="keep",
+                                        **SPECS[name]),
                          PerEnvSeededRNG(seeds=3, num_envs=E, device=DEV))
     cfg = gen._config
     spec = bind_generator("generator", cfg, registry=registry).pipeline_spec

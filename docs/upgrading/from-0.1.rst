@@ -493,8 +493,9 @@ says so:
    config = TrackGenConfig(num_envs=E, half_width=0.05, device=device)
    gen = TrackGenerator(config)
    before = gen.generate().outer.numpy().copy()
-   config.half_width = 0.1                    # 0.1: the next batch was wider
-   after = gen.generate().outer.numpy()       # 0.2: the same batch
+   import dataclasses
+   changed = dataclasses.replace(config, half_width=0.1, spacing=None)
+   after = gen.generate().outer.numpy()       # the existing generator keeps its config
 
 .. snippet: after
 
@@ -1478,8 +1479,8 @@ the subclass configs your users already have keep their meaning:
    from track_gen.plugin import GeneratorSpec, Params, registry, static
 
 
-   @dataclasses.dataclass
-   class AcmeConfig(TrackGenConfig):              # your users' existing configs
+   @dataclasses.dataclass(frozen=True)
+   class AcmeConfig(TrackGenConfig):              # config subclasses are frozen too
        acme_lobes: int = 3
 
 

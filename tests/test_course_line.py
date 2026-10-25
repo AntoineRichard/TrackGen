@@ -4,7 +4,7 @@ import warp as wp
 from track_gen._src.course_line import CourseLine
 from track_gen._src.gate_generator import GateGenerator
 from track_gen._src.rng_utils import PerEnvSeededRNG
-from track_gen._src.types import GateGenConfig, GateSequence
+from track_gen._src.types import GateGenConfig, GateSequence, Layout
 
 E = 4
 
@@ -37,6 +37,9 @@ def _two_gate_seq():
         right=wp.array(right, dtype=wp.vec3f, device=dev),
         valid=wp.array(np.array([1], np.int32), device=dev),
         count=wp.array(np.array([2], np.int32), device=dev),
+        generation=wp.zeros(E1, dtype=wp.int32, device=dev),
+        fail_mask=wp.zeros(E1, dtype=wp.int32, device=dev),
+        layout=Layout(E1, G, dev),
     )
 
 
