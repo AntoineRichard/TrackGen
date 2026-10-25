@@ -64,7 +64,7 @@ intersphinx_mapping = {
 # Nitpicky: every cross-reference must resolve. Third-party targets that have no
 # inventory are ignored by pattern; the remaining docstring-origin targets that do not
 # resolve yet are listed in _tools/nitpick_allowlist.txt (generated from a nitpicky build;
-# entries may only be removed, the list goes to zero by 1.0). A new unresolved reference in
+# entries may only be removed as their targets are resolved). A new unresolved reference in
 # a page fails the build. The allowlist is applied by trackgen_docscheck (not
 # nitpick_ignore), which also fails a full build on an entry that no longer silences
 # anything.

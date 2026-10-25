@@ -49,7 +49,7 @@ def test_gate_flags_circles():
     pts = np.stack([np.cos(ang), np.sin(ang)], -1)[None] * radii[:, None, None]
     center = wp.array(pts.reshape(-1, 2).astype(np.float32), dtype=wp.vec2f, device="cpu")
     cfg = TrackGenConfig(device="cpu", num_envs=E, num_points=N, half_width=0.1)
-    track = warp_pipeline.inflate_warp(center, cfg)
+    track = warp_pipeline._inflate_warp(center, cfg)
     assert _median_valid_compactness(track, E) > 0.99
 
 

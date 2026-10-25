@@ -96,7 +96,7 @@ The registry
 
 ``track_gen.plugin.registry`` is the process-wide ``Registry``. It keys specs by *kind*
 and name: ``"generator"`` (a ``Stage`` class or a ``GeneratorSpec``),
-``"gate_generator"`` (a ``Stage`` class, or a legacy ``GateGeneratorSpec``) and the
+``"gate_generator"`` (a ``Stage`` class) and the
 pipeline stage kinds of :ref:`writing-a-stage` (``"relax"``, ``"width"``,
 ``"elevation"``, ``"validity"``, ``"order"``, ``"stations"``). The set of kinds is
 open: later releases add more.
@@ -109,7 +109,7 @@ open: later releases add more.
      - What it does
    * - ``registry.add(spec, *, kind=None, replace=False)``
      - Register ``spec`` (``reg.add`` inside ``register(reg)``). The kind is read from a
-       ``Stage`` class (its ``kind``), a ``GeneratorSpec`` or a ``GateGeneratorSpec``;
+       ``Stage`` class (its ``kind``) or a ``GeneratorSpec``;
        any other spec type needs ``kind=``. A Stage's declaration and its Params class
        are checked first (:ref:`generator-stage-contract`, :ref:`generator-params`,
        :ref:`stage-ports-channels`).
@@ -215,7 +215,7 @@ Loading
 
 The registry fills itself lazily, on the first registry call (``get``, ``available``,
 ``describe``, ``add``, ``unregister``, ``quarantined``, ``scoped()``, or one of the
-deprecated ``track_gen._src`` registry shims): in practice when the first
+public registry methods): in practice when the first
 ``TrackGenerator``, ``GateGenerator`` or ``Course`` is constructed. Calling
 ``acme_tracks.register(registry)`` by hand therefore also discovers the installed entry
 points first. ``import track_gen`` imports no generator module and loads no plugin.
@@ -307,7 +307,7 @@ class has no ``capturable`` or ``alloc_scratch``):
        for the Params defaults (:ref:`stage-capture-classes`). A ``GeneratorSpec``
        reports its ``capturable`` and no ``capture``.
    * - ``accepts_ctx``
-     - Always ``True`` for a Stage; a ``GeneratorSpec``'s flag
+     - Always ``True`` for a Stage or a ``GeneratorSpec``
        (:ref:`generator-streams`).
    * - ``output``, ``reads``, ``writes``, ``provides``
      - A Stage's ports and the attributes it provides (``declare()`` at the Params
@@ -316,7 +316,7 @@ class has no ``capturable`` or ``alloc_scratch``):
      - A gate generator's accepted orders and preferred stages; a centerline generator's
        ``preferred`` relax (:ref:`gate-generator-stage`).
    * - ``supported_orderings``
-     - A legacy ``GateGeneratorSpec``'s orderings (:ref:`plugin-abis`).
+     - A gate generator Stage's accepted orders, resolved against the registry.
    * - ``seeded``
      - Whether the output depends on the :term:`seed` (``True`` for a ``GeneratorSpec``):
        code that enumerates generators to check seed dependence filters on it.

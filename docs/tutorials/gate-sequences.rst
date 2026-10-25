@@ -278,11 +278,7 @@ bit ``crossing``) for every env that has a real gate with a non-zero ``half_size
 NaN counts as non-zero), and skips the check for the others. So a curriculum that starts
 from point gates is checked as soon as its bars widen, with the same decisions as a
 pipeline built with that width, and point-gate envs cost nothing (bars of width zero never
-cross). ``validity.gate_default``'s own ``gate_width`` and ``check_crossing`` fields are
-inert (kept so existing specs load; removed in 1.0); left at its default ``0`` it takes
-no part in the build's agreement check, and set to another value it must equal
-``gate_frames.default``'s initial ``gate_width`` (the presets and ``GateGenConfig`` set
-both). Posed gates (a generator that provides ``half_size``) are checked the same way.
+cross). Posed gates (a generator that provides ``half_size``) are checked the same way.
 
 **Course size.** The gate generators have a per-env :term:`size` too, under one of two keys:
 ``generator.size`` for the ``bezier`` and ``hull`` gate generators (it scales their

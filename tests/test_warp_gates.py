@@ -20,7 +20,7 @@ pytest.importorskip("warp")
 from tests._oracle import geometry  # noqa: E402
 from tests._oracle.generators import BezierCenterlineGenerator  # noqa: E402
 from tests._warp_compare import gates  # noqa: E402
-from track_gen._src.types import TrackGenConfig  # noqa: E402
+from tests._oracle.config import OracleConfig as TrackGenConfig
 
 from tests.conftest import DEVS  # noqa: E402
 

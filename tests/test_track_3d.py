@@ -80,7 +80,7 @@ def test_standalone_inflate_rejects_nonflat_without_seeds():
                          z_min=0.5, z_max=1.0)
     center = wp.zeros(cfg.num_points, dtype=wp.vec2f, device="cpu")
     with pytest.raises(ValueError, match="seeds"):
-        warp_pipeline.inflate_warp(center, cfg)
+        warp_pipeline._inflate_warp(center, cfg)
 
 
 def test_track_frames3_padding_is_nan_and_degenerate_row_zeroed():
@@ -130,7 +130,7 @@ def test_track_frames3_padding_is_nan_and_degenerate_row_zeroed():
     count_wp = wp.array([N, 2, N], dtype=wp.int32, device="cpu")
     seeds_wp = wp.array([1, 2, 3], dtype=wp.int32, device="cpu")
 
-    out = warp_pipeline.inflate_warp(center, cfg2, count=count_wp, seeds=seeds_wp)
+    out = warp_pipeline._inflate_warp(center, cfg2, count=count_wp, seeds=seeds_wp)
     assert int(out.count.numpy()[1]) == 2
     assert float(out.length.numpy()[1]) == 0.0
     tan1 = out.tangent.numpy().reshape(E2, N, 3)[1]

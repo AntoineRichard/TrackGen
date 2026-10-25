@@ -18,10 +18,7 @@ same kernels, dims and scalars; three kernels gained trailing input / fail array
 arithmetic for every count <= max_gates), and the extent normalization runs the same arithmetic out of place,
 ``_normalize_extent_to_k``), so the default Program is byte-identical to it. The generator is an ``anchors`` Stage
 (``kind="gate_generator"``, ``output="anchors"``: ``anchors.xy`` / ``anchors.count``,
-unordered or generator-ordered), a centerline generator followed by ``stations``, or a
-legacy :class:`~track_gen.plugin.GateGeneratorSpec` (:class:`_LegacyGateSlot`, which
-writes the ordered ``gates.xy`` / ``gates.count`` itself: no order / normalize stage
-follows it).
+unordered or generator-ordered), or a centerline generator followed by ``stations``.
 
 The ``order``, ``stations`` and ``validity`` stages (:data:`REGISTRY_STAGES`) are
 registered in :data:`track_gen.plugin.registry`; ``normalize``, ``carry``,
@@ -81,15 +78,11 @@ def _alloc_gate_sequence(layout):
 
 def _orderings_of(spec, registry) -> "list[str]":
     """The order names a gate generator supports, sorted: a Stage's whitelist
-    (``orderings``) or every registered order but its ``excluded_orderings``; a legacy
-    spec's ``supported_orderings``."""
-    from ..plugin.stage import _is_stage  # noqa: PLC0415
-
-    if _is_stage(spec):
-        if spec.orderings is not None:
-            return sorted(spec.orderings)
-        return sorted(set(registry.available("order")) - set(spec.excluded_orderings))
-    return sorted(getattr(spec, "supported_orderings", None) or ())
+    (``orderings``) or every registered order but its ``excluded_orderings``;
+    every registered order except its exclusions."""
+    if spec.orderings is not None:
+        return sorted(spec.orderings)
+    return sorted(set(registry.available("order")) - set(spec.excluded_orderings))
 
 
 def _supported_orderings(registry, name: str) -> "list[str]":
@@ -100,10 +93,8 @@ def _supported_orderings(registry, name: str) -> "list[str]":
 
 
 def _preferred(spec) -> dict:
-    """A gate generator Stage's ``preferred`` mapping (``{}`` for a legacy spec)."""
-    from ..plugin.stage import _is_stage  # noqa: PLC0415
-
-    return dict(spec.preferred) if _is_stage(spec) else {}
+    """A gate generator Stage's ``preferred`` mapping."""
+    return dict(spec.preferred)
 
 
 def _default_order(spec, registry) -> str:
@@ -126,62 +117,6 @@ class _Builtin(Stage):
 
     capture = CaptureClass.STATIC
     output = None
-
-
-# ---------------------------------------------------------------------------------------
-# The legacy GateGeneratorSpec adapter (private, never registered)
-# ---------------------------------------------------------------------------------------
-
-class _GateStaging:
-    """The vec2f staging view a legacy ``GateGeneratorSpec.generate`` writes:
-    ``position`` is the ``[E * max_gates]`` ``gates.xy`` buffer (in the configured
-    order, NaN-padded), ``count`` the ``gates.count`` buffer (``GateSequence.count``)."""
-
-    __slots__ = ("position", "count")
-
-    def __init__(self, position: wp.array, count: wp.array) -> None:
-        self.position = position
-        self.count = count
-
-
-class _LegacyGateSlot:
-    """Stage 0 of a gate pipeline whose generator is a legacy ``GateGeneratorSpec``:
-    ``alloc_scratch(run_config)`` once, then ``generate(seed, run_config,
-    _GateStaging(gates.xy, gates.count), scratch[, ctx=])`` (inside ``ctx.scope()`` when
-    the spec does not accept ``ctx``). The spec orders its own gates (the slot provides
-    ``order``), so no order / normalize stage follows it."""
-
-    kind = "gate_generator"
-    Params = NoParams
-    reads = types.MappingProxyType({})
-    writes = types.MappingProxyType({"xy": "gates.xy", "count": "gates.count"})
-    provides = frozenset({"order"})
-
-    def __init__(self, binding) -> None:
-        self.binding = binding
-        self.name = binding.name
-        self.scratch = None
-
-    def build(self, b, params) -> Callable:
-        binding = self.binding
-        spec, run_cfg = binding.pipeline_spec, binding.run_config
-        seed = b.seed
-        xy = b.write("xy", wp.vec2f, per="gates")
-        count = b.write("count", wp.int32)
-        scratch = spec.alloc_scratch(run_cfg)
-        self.scratch = scratch
-        staging = _GateStaging(xy, count)
-        generate = spec.generate
-        if getattr(spec, "accepts_ctx", False):
-            def enqueue(ctx):
-                generate(seed, run_cfg, staging, scratch, ctx=ctx)
-        else:
-            def enqueue(ctx):
-                # Legacy plugin: no ctx= keyword. Make ctx ambient so the helpers it
-                # calls with ctx=None resolve to this call's stream.
-                with ctx.scope():
-                    generate(seed, run_cfg, staging, scratch)
-        return enqueue
 
 
 # ---------------------------------------------------------------------------------------
@@ -733,9 +668,7 @@ class GateValidityDefault(_Builtin):
     Roadmap PR13d: the bar-crossing check runs per env, for every env with a real gate of
     non-zero ``half_size`` (``_finalize_validity_bars_k``: the bars of a run-time
     ``gate_frames.gate_width`` and posed gates alike), deciding exactly as the PR11
-    kernel with the crossing check on (a zero-width bar never crosses); its params'
-    ``gate_width`` and ``check_crossing`` are inert (kept so specs load; removed in
-    PR16)."""
+    kernel with the crossing check on (a zero-width bar never crosses)."""
 
     kind = "validity"
     name = "gate_default"
@@ -758,8 +691,7 @@ class GateValidityDefault(_Builtin):
         min_gates = int(p.min_gates)
         distance = float(_wg._gate_center_distance(p))
         grade = float(p.z_valid_grade)
-        # Roadmap PR13d: no static crossing toggle (gate_width / check_crossing are
-        # inert): the kernel checks the bars of every env that has one.
+        # The kernel checks the bars of every env that has one.
 
         def enqueue(ctx):
             ctx.launch(_wg._finalize_validity_bars_k, E,

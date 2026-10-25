@@ -10,8 +10,7 @@ Its two handle knobs (``rad``, ``handle_clamp_frac``), its corner count
 (``min_num_points``) and its size (``size``) are per-:term:`env` (:term:`dynamic
 <dynamic field>`) parameters:
 ``randomize=`` draws the ``float32`` ones and a curriculum can write all four from its own
-graph (`Per-env (dynamic) parameters`_). The older per-environment style draw
-(``style_sampling``) is deprecated (`Style sampling (deprecated) and its migration`_).
+graph (`Per-env (dynamic) parameters`_).
 Any smooth curve that still self-crosses after clamping is rescued by its provably
 simple corner polygon, which the downstream XPBD solver re-rounds.
 
@@ -27,35 +26,24 @@ How It Works
 The generator runs a fixed sequence of Warp kernels in a single pass — no
 host-side retry loop, no per-environment Python branching:
 
-1. **Optional style draw (deprecated).**  When ``style_sampling=True``, a dedicated kernel
-   (``_style_sample_k``) draws per-environment ``rad``, ``scale``, and
-   ``handle_clamp_frac`` values from their respective ``*_range`` fields using RNG salt
-   ``2741``.  A ranged ``rad`` / ``handle_clamp_frac`` is drawn straight into that
-   knob's per-env parameter array, which then reports the draw
-   (``gen.params["generator"]["rad"]``); a knob whose range is ``None`` is not drawn and
-   reads its own per-env parameter array, like a generation without style sampling. A
-   ``scale_range`` of ``None`` collapses to the scalar ``scale``.  This Python branch is
-   resolved at CUDA-graph capture time; the per-environment values are device arrays
-   and the captured graph remains static.
-
-2. **Corner count.**  ``ops.sample_counts`` (salt ``6151``, offset ``0``) draws
+1. **Corner count.**  ``ops.sample_counts`` (salt ``6151``, offset ``0``) draws
    ``count[e]`` uniformly from ``[min_num_points, max_num_points]`` for each environment.
    The Stage launches its array-reading twin, which reads env ``e``'s ``min_num_points``
    from the per-env array and clamps it to ``[2, max_num_points]`` (`Corner count`_);
    the draw itself is unchanged.
 
-3. **Corner positions.**  ``ops.sample_grid_points`` (salt ``9781``, offset ``0``)
+2. **Corner positions.**  ``ops.sample_grid_points`` (salt ``9781``, offset ``0``)
    samples ``max_num_points`` grid cells from the ``ops.grid_cells(min_point_distance)``
    grid of ``num_cells × num_cells`` cells, where
    ``num_cells = int(1 / (min_point_distance * 2))``.  Each cell selection uses
    bounded duplicate rejection (up to eight retries per corner) to spread corners
    across distinct cells, then adds per-axis jitter in ``[-0.5, 0.5)``.  Coordinates are
-   multiplied by ``scale`` (or by the per-environment ``scale[e]`` array in style mode),
+   multiplied by ``scale``,
    then by the env's ``size[e]``: ``((x * cell_size + jitter) * scale) * size[e]``
    (``ops.sample_grid_points(..., size=...)``; `Size`_). Everything downstream runs on
    the scaled corners.
 
-4. **Prune-then-sort.**  The ``ops.angle_sort`` kernel (with the legacy count floor of 1:
+3. **Prune-then-sort.**  The ``ops.angle_sort`` kernel (with the legacy count floor of 1:
    a count below 1 sorts the first corner) sorts only the first ``count[e]`` corners by
    ``atan2`` angle around the centroid of those same kept corners (not all
    ``max_num_points`` slots), writing NaN past the live count.  Sorting *after*
@@ -63,13 +51,13 @@ host-side retry loop, no per-environment Python branching:
    compute the centroid over unpruned slots, producing angular wedges around the wrong
    centroid that can close as figure-eight loops.
 
-5. **Vertex tangents.**  ``_vertex_tangents_k`` computes each corner's tangent as a
+4. **Vertex tangents.**  ``_vertex_tangents_k`` computes each corner's tangent as a
    normalized blend of the outgoing unit edge direction ``u_out`` and the incoming unit
    edge direction ``u_in``, weighted by ``p = atan(edgy) / π + 0.5``.  At the default
    ``edgy=0``, ``p=0.5`` gives a symmetric bisector tangent.  It also records each
-   corner's shorter incident edge length for the adaptive clamp (step 6).
+   corner's shorter incident edge length for the adaptive clamp (step 5).
 
-6. **Cubic Bézier assembly.**  ``_assemble_dyn_k`` emits ``num_points_per_segment`` dense
+5. **Cubic Bézier assembly.**  ``_assemble_dyn_k`` emits ``num_points_per_segment`` dense
    samples for each closed edge (corner ``i`` to corner ``(i+1) % count[e]``),
    including the wrap-around closing edge.  For each segment the handle lengths are
    computed as:
@@ -94,18 +82,14 @@ host-side retry loop, no per-environment Python branching:
 
    and the segment is evaluated via the standard Bernstein basis (see Math section).
    ``rad`` and ``handle_clamp_frac`` are env ``e``'s values, read from the per-env
-   arrays (step 1's draws for a ranged knob in style mode) and clamped to the declared
-   bounds (`Per-env (dynamic) parameters`_; a style draw is used as drawn).  The frozen
-   legacy entry point ``generate_centerline_warp`` keeps the scalar kernels
-   ``_assemble_k`` and, in style mode, ``_assemble_style_k``; the arithmetic is the
-   same, so both give the same bytes.
+   arrays and clamped to the declared bounds (`Per-env (dynamic) parameters`_).
 
-7. **Dense-to-N arc-resample.**  ``ops.arc_resample`` converts the dense
+6. **Dense-to-N arc-resample.**  ``ops.arc_resample`` converts the dense
    ``max_num_points × num_points_per_segment`` loop to exactly ``num_points``
    arc-uniformly spaced samples, building cumulative arc length in ``float64`` and
    interpolating with a searchsorted lookup.
 
-8. **Self-intersection check and fallback.**  ``ops.self_intersections`` counts
+7. **Self-intersection check and fallback.**  ``ops.self_intersections`` counts
    proper crossings on the ``num_points``-point resampled loop.  For environments
    where the Bézier curve self-crosses, ``_assemble_polygon_selected_k`` emits the
    straight corner polygon in Bernstein form (equivalent to ``handle_clamp_frac=0``;
@@ -114,7 +98,7 @@ host-side retry loop, no per-environment Python branching:
    ``_select_vec2_k`` then writes the Bézier result for non-crossers and the polygon
    result for crossers into the output buffer.
 
-9. **Generation flag.**  All environments are marked ``out_valid_wp=1`` unconditionally.
+8. **Generation flag.**  All environments are marked ``out_valid_wp=1`` unconditionally.
    The generation gate is always True; geometric validity is decided later by the
    shared post-relax inflation gate.
 
@@ -194,11 +178,6 @@ checked when the ``TrackGenerator`` is constructed, and only for ``generator="be
     Minimum grid-cell spacing for corner sampling.  Controls the corner grid as
     ``num_cells = int(1 / (min_point_distance * 2))``.  Must be in ``(0, 0.5]``.
 
-``min_angle``
-    Deprecated, and not part of ``BezierParams``: ``TrackGenerator`` never reads it (only
-    a corner-angle kernel the tests launch does). A non-default value emits a
-    ``DeprecationWarning``; the field will be removed in 1.0.
-
 ``rad``
     Handle length as a fraction of the segment chord — the primary curviness dial.
     Only live when ``rad <= handle_clamp_frac``; if ``rad`` exceeds the clamp,
@@ -230,32 +209,6 @@ checked when the ``TrackGenerator`` is constructed, and only for ``generator="be
     trims genuine overshoot; set below ``rad`` to bind every handle regardless of
     ``rad`` (near-polygonal tracks); set very large to disable. Dynamic, ``>= 0``
     (see below).
-
-``style_sampling``
-    Opt-in per-environment Bézier style randomisation (default ``False``).  When
-    ``True``, each environment draws its own ``rad``, ``scale``, and
-    ``handle_clamp_frac`` from the ``*_range`` fields, so a single batch spans a
-    family of styles. **Deprecated** (a ``DeprecationWarning`` when the generator is
-    built; removed in 1.0): use ``randomize=`` on ``size``,
-    ``rad`` and ``handle_clamp_frac`` (`Style sampling (deprecated) and its
-    migration`_).
-
-``rad_range``
-    ``(lo, hi)`` range for per-environment ``rad`` when ``style_sampling=True``.
-    ``None`` leaves ``rad`` to its per-env parameter array (every env at the configured
-    ``rad`` unless you ``set`` or randomize it). Deprecated with ``style_sampling``:
-    ``randomize={"generator.rad": (lo, hi)}``.
-
-``scale_range``
-    ``(lo, hi)`` range for per-environment ``scale`` when ``style_sampling=True``.
-    ``None`` collapses to the scalar ``scale`` for all environments. Deprecated with
-    ``style_sampling``: ``randomize={"generator.size": (lo / scale, hi / scale)}``.
-
-``handle_clamp_frac_range``
-    ``(lo, hi)`` range for per-environment ``handle_clamp_frac`` when
-    ``style_sampling=True``.  ``None`` leaves the clamp to its per-env parameter array.
-    Deprecated with ``style_sampling``: ``randomize={"generator.handle_clamp_frac": (lo,
-    hi)}``.
 
 .. _bezier-dynamic:
 
@@ -355,8 +308,7 @@ the nominal longest loop emits a ``UserWarning`` when the pipeline is built, nam
 ``n_max`` that fits. The nominal loop is the longest one above (8.68, the longest of
 8192 envs: a larger batch can truncate a few envs just below it), scaled by
 ``(max_num_points / 13) ** 0.6`` for a larger corner capacity (the corner-count recipe
-below) and taking the ``hi`` of ``style_sampling``'s ``scale_range``; a curriculum
-written with ``set`` is not checked.
+below); a curriculum written with ``set`` is not checked.
 
 .. _bezier-corner-count:
 
@@ -392,29 +344,16 @@ count adds or drops corners of one fixed set.
 ``num_points_per_segment`` (sizes the dense buffer and its loops),
 ``min_point_distance`` (sets the corner grid on the host), ``edgy`` (turned into
 ``atan(edgy) / pi + 0.5`` on the host in double precision, which a kernel cannot
-reproduce bit for bit), the ``style_sampling`` fields (a Python branch
-and host ranges) and the core ``scale`` (per-env: ``size``).
+reproduce bit for bit), and the core ``scale`` (per-env: ``size``).
 
 .. _bezier-style-vs-randomize:
 
-Style sampling (deprecated) and its migration
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Per-env style randomization
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-``style_sampling`` is **deprecated** and goes at 1.0: draw ``size``, ``rad`` and
-``handle_clamp_frac`` with ``randomize=`` instead (`Per-env (dynamic) parameters`_).
-:ref:`upgrading-style-sampling` maps each range to its ``randomize=`` entry, shows the
-before and after, and covers a ``Course``. Building a ``bezier`` generator with it emits
-one ``DeprecationWarning`` per build, attributed to your code.
-
-Until it is removed, ``style_sampling`` keeps its outputs, and ``size`` composes with it
-(the corners get ``scale[e] * size[e]``; combining it with a ``generator.size``
-randomizer emits a ``UserWarning``). Under ``style_sampling=True`` a knob with a range is
-**drawn by the style kernel**: its parameter array holds each env's draw after a
-generation, ``gen.params["generator"].drawn`` maps it to the stage's own id
-(``"generator"``), ``set`` on it raises ``ValueError`` (``generator.rad is drawn every
-generation by the generator's style_sampling (rad_range); set rad_range=None to set
-it``), and a randomizer on it is a ``PlanError``. A knob whose range is ``None`` stays an
-ordinary :term:`dynamic field`: ``set`` and ``randomize=`` work on it.
+Draw ``size``, ``rad`` and ``handle_clamp_frac`` with ``randomize=``
+(`Per-env (dynamic) parameters`_). :ref:`upgrading-0.3` maps the removed style ranges
+to randomizer entries and covers configs and courses.
 
 What Makes It Distinct
 ----------------------
@@ -423,7 +362,7 @@ The Bezier generator is the **default** and most knob-rich of the six generators
 
 - **Widest style control.** Eight primary knobs (``min_num_points``, ``max_num_points``,
   ``num_points_per_segment``, ``min_point_distance``, ``rad``, ``edgy``, ``scale``,
-  ``handle_clamp_frac``) plus the opt-in ``style_sampling`` family are all
+  ``handle_clamp_frac``) are
   exclusive to the corner-Bézier representation.  No other generator exposes handle
   geometry (every built-in sampling generator, ``bezier``, ``hull``, ``polar``,
   ``voronoi`` and ``checkpoint``, has per-env shape knobs and a per-env ``size`` for

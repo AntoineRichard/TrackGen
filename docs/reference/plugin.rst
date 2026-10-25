@@ -59,15 +59,8 @@ Registry
 .. autoclass:: track_gen.plugin.GeneratorSpec
    :no-members:
 
-   A generator written against this function-based form is supported through 0.x; a
-   ``Stage`` is the recommended form for a new generator (:ref:`plugin-abis`).
-
-.. autoclass:: track_gen.plugin.GateGeneratorSpec
-   :no-members:
-
-   **Deprecated**: binding one (``GateGenerator``, ``Course``, ``build``) emits a
-   ``DeprecationWarning``; it runs through an adapter until 1.0. Write a gate generator
-   ``Stage`` instead (:ref:`gate-generator-stage`).
+   A supported simple track-generator form. Its generate callable always accepts
+   ``ctx=``; use a Stage for dynamic parameters and gate generators (:ref:`plugin-abis`).
 
 .. autoexception:: track_gen.plugin.DuplicateSpecError
 
@@ -78,12 +71,9 @@ Registry
 Parameters
 ----------
 
-A generator's own parameters, set with ``generator_params`` (a config field or a preset
-argument) and reported by ``SpecInfo.params_schema``; see :ref:`generator-params` and
-:ref:`generator-params-config`. At run time, ``TrackGenerator.params`` and
-``GateGenerator.params`` return a :class:`ParamTable <track_gen.plugin.ParamTable>`
-(see :ref:`generator-runtime-params`), whose entries hold each :term:`dynamic field` as
-a live per-env array.
+A generator's parameters are selected with ``generator_params`` and reported by
+``SpecInfo.params_schema``. Runtime ``gen.params`` is the live per-stage
+:class:`~track_gen.plugin.ParamTable` (:ref:`generator-runtime-params`).
 
 .. autoclass:: track_gen.plugin.Params
    :members: validate, from_legacy
@@ -107,9 +97,8 @@ generators' shape knobs and ``size``, ``bezier`` / ``hull``'s ``int32``
 gate pipelines' ``normalize.size`` and ``gate_frames.gate_width``), with declared bounds:
 see :ref:`builtin-generator-params` and :ref:`generators-per-env`. ``in_effect`` and
 ``bounds`` are the curriculum bookkeeping of :ref:`the tuning guide <tuning-in-effect>`.
-Reach a built-in generator's class with ``registry.get("generator", name).Params``;
-``.params`` still works for ``bezier``, ``hull``, ``polar``, ``voronoi`` and
-``checkpoint`` but emits a ``DeprecationWarning`` and is removed in 1.0.
+Reach a built-in generator's Params class with
+``registry.get("generator", name).Params``.
 
 Stages
 ------
@@ -142,9 +131,8 @@ are TrackGen's built-ins (see :ref:`pipeline-stages`). A stage's ``CaptureClass`
    Every built-in generator is a ``Stage`` class: ``registry.get("generator",
    "bezier")`` (``hull``, ``polar``, ``voronoi``, ``checkpoint``: ``STATIC``;
    ``repulsive``: ``BOUNDED``; ``external``) and ``registry.get("gate_generator",
-   name)``. Their module functions (``generate_*_warp``, ``*_alloc_scratch``, the
-   ``sample_*`` helpers and their ``*_per_env`` forms) are not public API; see
-   :ref:`legacy-src-helpers`.
+   name)``. Internal module functions are private; plugins use the public ops
+   described in :ref:`generator-ops`.
 
 .. autoclass:: track_gen.plugin.StageBuilder
    :members: read, write, temp_like, stride_of, per_of, dtype_of, scratch, param, input,

@@ -298,9 +298,7 @@ stage list.
 - ``generator="external"`` with ``source="stations"`` or ``"relaxed_stations"`` places
   gates on ingested centerlines (`Your own centerlines`_); its ``with_z`` altitude and
   its attributes reach the gates through the stations.
-- A legacy ``GateGeneratorSpec`` orders its own gates: ``order=`` with one raises
-  ``ValueError``, choose its ordering with ``GateGenConfig(gate_ordering=...)``
-  (:ref:`plugin-abis`).
+
 
 .. _pipeline-gate-spec:
 

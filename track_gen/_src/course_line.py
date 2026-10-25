@@ -6,8 +6,7 @@
 :class:`~track_gen.results.HasCenterline`) work unchanged: ``center`` / ``tangent`` /
 ``arclen`` / ``length`` / ``count`` / ``valid``. It has no road band: a consumer that
 needs one (``CollisionChecker``, ``HeightFieldBaker``: ``HasBand``) refuses it at
-construction. ``CourseLine.track`` is a deprecated alias of ``centerline`` (a
-``DeprecationWarning``; removed at 1.0).
+construction.
 
 count[e] = samples_per_gate * gate_count[e]; N_max = samples_per_gate *
 max_gates. ``refresh()`` is two kernel launches, allocation-free and
@@ -15,7 +14,6 @@ capture-safe; call it after every gate regeneration (the facade does). It also w
 the centerline's own ``generation`` (roadmap PR14: the gates' ``generation``, 0 when they
 have none), so a ``TrackLocalizer`` on it self-resets with the gates.
 """
-import warnings
 
 import warp as wp
 
@@ -177,15 +175,6 @@ class CourseLine:
         """The :attr:`centerline` (the result :meth:`refresh` writes)."""
         return self.centerline
 
-    @property
-    def track(self) -> Centerline:
-        """Deprecated alias of :attr:`centerline` (a ``Centerline`` since 0.2.0.dev5, no
-        longer a ``Track``: it has no ``outer`` / ``inner`` / ``normal`` /
-        ``winding``); removed at 1.0."""
-        warnings.warn("CourseLine.track is a Centerline since 0.2.0.dev5 and is "
-                      "deprecated; use CourseLine.centerline (removed at 1.0)",
-                      DeprecationWarning, stacklevel=2)
-        return self.centerline
 
     def refresh(self, stream=None, *, ctx=None) -> None:
         """Resample from the CURRENT gate batch (capture-safe).

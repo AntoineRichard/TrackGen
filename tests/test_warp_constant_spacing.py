@@ -8,12 +8,12 @@ pytest.importorskip("warp")
 import warp as wp  # noqa: E402
 wp.init()
 
-from track_gen._src import warp_pipeline as wpl
+from tests._reference_generators import warp_pipeline as wpl
 from tests._oracle import geometry  # noqa: E402
 from tests._warp_compare import (  # noqa: E402
     to_t, thickness, self_intersections, turning_number, validity, xpbd_solve,
 )
-from track_gen._src.types import TrackGenConfig  # noqa: E402
+from tests._oracle.config import OracleConfig as TrackGenConfig
 from track_gen._src.track_generator import TrackGenerator  # noqa: E402
 from track_gen._src.rng_utils import PerEnvSeededRNG  # noqa: E402
 
@@ -428,7 +428,7 @@ def test_generate_tracks_constant_spacing_smoother_and_valid():
     dev = "cpu"
     E = 96
     N_max = 384
-    cfg = TrackGenConfig(output_mode="constant_spacing", spacing=0.30, N_max=N_max,
+    cfg = TrackGenConfig(spacing=0.30, N_max=N_max,
                          num_envs=E, num_points=256, half_width=0.5, scale=10.0,
                          relax_iters=150, device=dev)
     rng = PerEnvSeededRNG(seeds=42, num_envs=E, device=dev)
@@ -466,8 +466,8 @@ def test_inflate_warp_constant_spacing(dev):
     gv_wp = wp.empty(E, dtype=wp.int32, device=dev)
     wp.launch(wpl._fill_i32_k, dim=E, inputs=[gv_wp, 1], device=dev)
     cfg = TrackGenConfig(num_envs=E, num_points=120, half_width=hw,
-                         output_mode="constant_spacing", spacing=0.30, N_max=n_max, device=dev)
-    tr = wpl.inflate_warp(buf_wp, cfg, valid=gv_wp, count=cnt_wp)
+                         spacing=0.30, N_max=n_max, device=dev)
+    tr = wpl._inflate_warp(buf_wp, cfg, valid=gv_wp, count=cnt_wp)
     # Track fields are wp.array; convert to tensors for assertions.
     center_t = wp.to_torch(tr.center).view(E, n_max, 3)[..., :2]
     count_t = to_t(tr.count)
@@ -484,7 +484,7 @@ def test_inflate_warp_constant_spacing(dev):
 def test_graph_capture_constant_spacing():
     E = 8
     cfg = TrackGenConfig(num_envs=E, num_points=256, half_width=0.5, scale=10.0,
-                         output_mode="constant_spacing", spacing=0.30, N_max=384, device="cuda")
+                         spacing=0.30, N_max=384, device="cuda")
     # TrackGenerator auto-captures on first generate() call (cuda device); second replays.
     rng = PerEnvSeededRNG(seeds=42, num_envs=E, device="cuda")
     gen = TrackGenerator(cfg, rng)

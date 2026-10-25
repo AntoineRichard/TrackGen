@@ -6,7 +6,7 @@ whole family at once. :class:`RebindAfterCaptureWarning` is a warning.
 """
 from __future__ import annotations
 
-__all__ = ["CaptureError", "NotCapturableError", "LegacyPluginStreamError",
+__all__ = ["CaptureError", "NotCapturableError",
            "RebindAfterCaptureWarning"]
 
 
@@ -74,38 +74,6 @@ class NotCapturableError(CaptureError):
                 "or allocate per call). Call it outside the capture (it then runs "
                 "eagerly) or use a capturable generator."
             )
-        if detail:
-            msg = f"{msg} {detail}"
-        super().__init__(msg)
-
-
-class LegacyPluginStreamError(CaptureError):
-    """A legacy-ABI plugin would launch on the wrong stream under capture.
-
-    Legacy generator plugins (registered without ``accepts_ctx=True``) issue
-    their own ``wp.launch`` calls on Warp's CURRENT stream. Recording one into
-    a caller's capture is therefore only correct when the capture stream IS
-    Warp's current stream.
-    """
-
-    def __init__(self, name: str = "", detail: str = "") -> None:
-        self.name = name
-        what = repr(name) if name else "this producer"
-        msg = (
-            f"{what} uses a legacy plugin (no accepts_ctx=True) that launches on "
-            "Warp's current stream, but the call resolved a different, capturing "
-            "stream. Make the capture stream Warp's current stream for the "
-            "duration of the capture: capture Warp's current stream (a plain "
-            "`wp.ScopedCapture(device)`), or, for torch.cuda.graph, pass it an "
-            "explicit capture stream s and make that stream current first, through "
-            "ONE wrapper you keep for the stream's lifetime: `ws = "
-            "wp.stream_from_torch(s)` once, then `with wp.ScopedStream(ws): with "
-            "torch.cuda.graph(g, stream=s): ...` (a throwaway wrapper unregisters "
-            "the stream when it is collected; a plain `torch.cuda.graph(g)` "
-            "captures on torch's internal stream, which cannot be made current "
-            "beforehand). Porting the plugin to accept ctx= removes the "
-            "restriction."
-        )
         if detail:
             msg = f"{msg} {detail}"
         super().__init__(msg)

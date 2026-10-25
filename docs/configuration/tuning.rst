@@ -306,8 +306,7 @@ Bezier (``generator="bezier"``)
 - To let each env draw its own style, randomize ``rad``, ``handle_clamp_frac`` and
   ``size`` (``randomize={"generator.rad": (0.1, 0.4), "generator.size": (0.8, 1.2)}``;
   keep ``rad``'s range at or below the clamp, the lowest clamp draw if you draw it too).
-  ``style_sampling`` and its ranges are deprecated: they map one to one onto these keys
-  (:ref:`bezier-style-vs-randomize`).
+  :ref:`bezier-style-vs-randomize` describes per-env style randomization.
 
 Hull (``generator="hull"``)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

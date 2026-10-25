@@ -106,8 +106,8 @@ _DEFECT = {
                        r"\(\d+,\)",
     "broken.batch": r"env 0 \(seed 11\) changes when the other envs' seeds are permuted "
                     r"\(raw\.centerline",
-    "broken.legacy_stream": r"wp\.launch without stream= from "
-                            r"tests\._broken_toys\.legacy_stream_generate:.*accepts_ctx=False",
+    "broken.implicit_stream": r"wp\.launch without stream= from "
+                            r"tests\._broken_toys\.implicit_stream_generate:",
     "broken.stateful": r"generate\(\) #1 with unchanged seeds differs from the first batch",
     "broken.constant": r"env 0 is identical for seeds 11 and 1009",
     "broken.open": r"exceeds 3x the median step and 1\.5x the longest step: env 0: "
@@ -379,7 +379,7 @@ def test_construct_failure_is_one_failed_check(plugin_registry):
         raise RuntimeError("no scratch for you")
 
     plugin_registry.add(GeneratorSpec(name="broken.alloc_scratch", alloc_scratch=alloc,
-                                      generate=lambda *a, **k: None, accepts_ctx=True))
+                                      generate=lambda *a, **k: None))
     report = check_generator("broken.alloc_scratch", devices=CPU)
     assert report.failed_names == ["construct"]
     assert "RuntimeError: no scratch for you" in report.result("construct").message
@@ -407,10 +407,10 @@ def test_bad_arguments_raise(toys, kwargs, match):
 def test_the_origin_of_a_wrapped_generate_is_its_function(plugin_registry):
     """A functools.partial generate counts as the function it wraps: its package is
     probed for hot_path.stream (here: this test module, through the partial)."""
-    from tests._broken_toys import legacy_stream_generate
+    from tests._broken_toys import implicit_stream_generate
 
     spec = GeneratorSpec(name="broken.partial", alloc_scratch=lambda config: None,
-                         generate=functools.partial(legacy_stream_generate))
+                         generate=functools.partial(implicit_stream_generate))
     plugin_registry.add(spec)
     assert registry.describe("generator", "broken.partial").origin == "tests._broken_toys"
     report = check_generator("broken.partial", devices=CPU, skip=("diversity",))
@@ -950,7 +950,7 @@ def test_buffers_of_does_not_enter_a_registry_spec(plugin_registry):
         return shared
 
     spec = GeneratorSpec(name="toy.spec_closure", alloc_scratch=alloc, generate=generate,
-                         accepts_ctx=True)
+                         )
     assert len(buffers_of(generate)) == 1
     assert len(buffers_of({"spec": spec})) == 0
 

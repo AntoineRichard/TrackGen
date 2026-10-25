@@ -60,8 +60,8 @@ half-width), so the Jacobi XPBD solve **under-converges** within its fixed itera
 count, and the road of the jagged result overlaps itself. Relaxing at a width-appropriate
 spacing lets the same solve converge, giving smooth, valid tracks on fewer nodes per
 track (so it is also faster). ``num_points`` is only the dense resolution of the
-generators' output, before the constant-spacing step. ``TrackGenConfig.output_mode``
-accepts ``"constant_spacing"`` only (any other value raises).
+generators' output, before the constant-spacing step. The config path always uses
+constant-spacing output.
 
 ``count[e]`` derivation
 -----------------------

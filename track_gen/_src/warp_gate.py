@@ -21,29 +21,19 @@ Deprecated (until 1.0), for legacy ``GateGeneratorSpec`` plugins written to the 
 """
 from __future__ import annotations
 
-import warnings
 
 import warp as wp
 
 from ..exec.context import LaunchContext, resolve as _resolve_ctx
 from ..ops import funcs as _funcs
-from ..ops.fill import (  # noqa: F401 - the _fill_*_k names are legacy aliases
-    _fill_f32_k,
-    _fill_i32_k,
-    _fill_quatf_k as _fill_quat_k,
-    _fill_vec2f_k as _fill_vec2_k,
-    _fill_vec3f_k as _fill_vec3_k,
-    fill as _ops_fill,
-)
-from ..ops.geometry import _angle_sort_launch, _normalize_extent_launch  # noqa: F401
+from ..ops.fill import fill as _ops_fill
+from ..ops.geometry import _normalize_extent_launch  # noqa: F401
 from .collision_geom import _frame_quat, _safe_normalize3
 # Shared runtime helpers. _sync is re-exported for importers only: library code
 # syncs through ctx.sync() (a debug-only no-op unless TRACKGEN_DEBUG_SYNC=1).
-from .runtime import _init, _sync  # noqa: F401
+from .runtime import _init as _initialize
 from .types import GateGenConfig, GateSequence
 
-# Deprecated: no longer read or written by the library. Kept defined for importers.
-_CAPTURING = False
 # The random_pairs order's salt (order.random_pairs).
 _ORDER_SALT = 7919
 
@@ -54,7 +44,6 @@ _ORDER_SALT = 7919
 # _fill_f32_k, _fill_i32_k are imported above; this module fills through ops.fill.
 _cross2 = _funcs.cross2
 _proper_segment_intersection = _funcs.segments_cross
-_safe_normalize2 = _funcs.safe_normalize2
 
 
 @wp.kernel
@@ -658,7 +647,7 @@ def alloc_gate_sequence(config: GateGenConfig) -> GateSequence:
     """Allocate a fixed-stride gate sequence on ``config.device``: NaN per-gate fields,
     zero ``valid`` / ``count`` and a zero ``fail_mask`` (the buffer
     :func:`finalize_gate_sequence` writes the fail bits into by default)."""
-    _init()
+    _initialize()
     E = int(config.num_envs)
     G = int(config.max_gates)
     dev = str(config.device)
@@ -706,7 +695,7 @@ def normalize_positions(
         ctx: optional track_gen.exec.LaunchContext; default resolves the
             device's stream (see track_gen.exec).
     """
-    _init()
+    _initialize()
     dev = str(position.device)
     ctx = _resolve_ctx(ctx, dev)
     # track_gen.ops.normalize_extent(count=...) (the former _normalize_positions_k).
@@ -729,7 +718,7 @@ def relax_gate_spheres(
         ctx: optional track_gen.exec.LaunchContext; default resolves the
             device's stream (see track_gen.exec).
     """
-    _init()
+    _initialize()
     if float(target_distance) <= 0.0 or int(iterations) <= 0:
         return
     dev = str(position.device)
@@ -756,7 +745,7 @@ def tangents_from_positions(
         ctx: optional track_gen.exec.LaunchContext; default resolves the
             device's stream (see track_gen.exec).
     """
-    _init()
+    _initialize()
     dev = str(tangent.device)
     ctx = _resolve_ctx(ctx, dev)
     G = int(max_gates)
@@ -797,7 +786,7 @@ def finalize_gate_sequence(
         ctx: optional track_gen.exec.LaunchContext; default resolves the
             device's stream (see track_gen.exec).
     """
-    _init()
+    _initialize()
     E = gates.count.shape[0]
     G = int(config.max_gates)
     dev = str(gates.position.device)
@@ -853,129 +842,3 @@ def finalize_gate_sequence(
         ],
     )
     ctx.sync()
-
-
-# ---------------------------------------------------------------------------------------
-# Deprecated 0.1 helpers (until 1.0): the ordering helpers legacy GateGeneratorSpec
-# plugins called from generate(). The 0.2.0.dev3 bodies, verbatim; the built-in gate
-# generators order through the order stages instead (track_gen.stages.gates).
-# ---------------------------------------------------------------------------------------
-
-def _deprecated(name: str) -> None:
-    warnings.warn(
-        f"track_gen._src.warp_gate.{name} is deprecated and will be removed in 1.0; "
-        f"write a gate_generator Stage (docs/contributing/writing-a-generator.rst), "
-        f"which the pipeline's order stages order",
-        DeprecationWarning, stacklevel=3)
-
-
-def alloc_order_scratch(config: GateGenConfig):
-    """Deprecated (removed in 1.0): allocate the per-env count and ordering-key scratch
-    of a legacy gate generator: ``(count [E] int32, keys [E * max_gates] float32)``."""
-    _deprecated("alloc_order_scratch")
-    _init()
-    E = int(config.num_envs)
-    G = int(config.max_gates)
-    dev = str(config.device)
-    return (
-        wp.empty(E, dtype=wp.int32, device=dev),
-        wp.empty(E * G, dtype=wp.float32, device=dev),
-    )
-
-
-def _order_points(seeds_wp, src, src_stride, count, max_gates, ordering, keys, dst,
-                  ctx=None) -> None:
-    _init()
-    E = count.shape[0]
-    dev = str(dst.device)
-    ctx = _resolve_ctx(ctx, dev)
-    src_stride_i = int(src_stride)
-    max_gates_i = int(max_gates)
-    if ordering == "raw":
-        ctx.launch(
-            _order_raw_k,
-            E * max_gates_i,
-            [src, src_stride_i, count, max_gates_i, dst],
-        )
-    elif ordering == "ccw":
-        # track_gen.ops angle sort (the former _order_ccw_k): m_floor=0 -> count <= 0
-        # gives an all-NaN row.
-        _angle_sort_launch(ctx, src, src_stride_i, count, max_gates_i, keys, dst, 0)
-    elif ordering == "random_pairs":
-        ctx.launch(
-            _order_random_pairs_k,
-            E,
-            [seeds_wp, src, src_stride_i, count, max_gates_i, int(_ORDER_SALT), keys, dst],
-        )
-    else:
-        raise ValueError(f"unsupported gate ordering {ordering!r}")
-    ctx.sync()
-
-
-def order_points(
-    seeds_wp: wp.array,
-    src: wp.array,
-    src_stride: int,
-    count: wp.array,
-    max_gates: int,
-    ordering: str,
-    keys: wp.array,
-    dst: wp.array,
-    ctx: "LaunchContext | None" = None,
-) -> None:
-    """Deprecated (removed in 1.0): order source points into a fixed gate buffer and
-    NaN-pad inactive slots (``ordering``: ``"raw"``, ``"ccw"`` or ``"random_pairs"``,
-    the kernels of ``order.raw`` / ``order.ccw`` / ``order.random_pairs``).
-
-    Args:
-        ctx: optional track_gen.exec.LaunchContext; default resolves the
-            device's stream (see track_gen.exec).
-    """
-    _deprecated("order_points")
-    _order_points(seeds_wp, src, src_stride, count, max_gates, ordering, keys, dst,
-                  ctx=ctx)
-
-
-def finish_ordered_gates(
-    seeds_wp: wp.array,
-    src: wp.array,
-    src_stride: int,
-    count: wp.array,
-    max_gates: int,
-    ordering: str,
-    keys: wp.array,
-    out,
-    normalize_extent: float | None = None,
-    ctx: "LaunchContext | None" = None,
-) -> None:
-    """Deprecated (removed in 1.0): order gates into the 2D staging view ``out`` (the
-    ``_GateStaging`` a legacy ``generate`` receives), optionally normalize them to
-    ``normalize_extent``, copy the count into ``out.count``.
-
-    Args:
-        ctx: optional track_gen.exec.LaunchContext; default resolves the
-            device's stream (see track_gen.exec).
-    """
-    _deprecated("finish_ordered_gates")
-    ctx = _resolve_ctx(ctx, str(out.position.device))
-    G = int(max_gates)
-    _order_points(seeds_wp, src, int(src_stride), count, G, ordering, keys, out.position,
-                  ctx=ctx)
-    if normalize_extent is not None:
-        normalize_positions(out.position, G, count, float(normalize_extent), ctx=ctx)
-    ctx.copy(out.count, count)
-
-
-def __getattr__(name: str):
-    # _GateStaging moved into the legacy adapter (track_gen.stages.gates); the old name
-    # here warns.
-    if name == "_GateStaging":
-        warnings.warn(
-            "track_gen._src.warp_gate._GateStaging moved to the gate pipeline's legacy "
-            "adapter (track_gen.stages.gates._GateStaging); the warp_gate name is "
-            "deprecated and will be removed in 1.0",
-            DeprecationWarning, stacklevel=2)
-        from ..stages.gates import _GateStaging  # noqa: PLC0415
-
-        return _GateStaging
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

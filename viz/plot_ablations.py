@@ -278,49 +278,6 @@ def figure3_bezier_vs_fourier() -> str:
 # --------------------------------------------------------------------------- #
 
 
-def figure4_min_angle_min_dist(seed: int = 1234) -> str:
-    """min_angle rows (degrees) x min_point_distance cols.
-
-    Both settings change the point sampling (min_point_distance resizes the corner
-    grid; min_angle changes which draws survive regeneration), so a fixed seed is
-    only REPRESENTATIVE here, not a pure ablation -- noted in the suptitle. Invalid
-    cells are tinted red.
-    """
-    angles_deg = [5.0, 12.5, 20.0, 30.0]
-    min_dists = [0.03, 0.05, 0.08, 0.12]
-    n = 4
-
-    fig, axes = plt.subplots(n, n, figsize=(11, 11))
-    for r, ad in enumerate(angles_deg):
-        for c, md in enumerate(min_dists):
-            cfg = TrackGenConfig(
-                generator="bezier",
-                device=DEVICE,
-                num_envs=1,
-                num_points=256,
-                min_angle=(ad / 180.0) * math.pi,
-                min_point_distance=md,
-            )
-            track = generate(cfg, 1, seed=seed)
-            draw_track(
-                axes[r, c],
-                track,
-                0,
-                f"min_angle={ad}deg\nmin_dist={md}  valid={bool(track.valid[0])}",
-                _is_invalid(track, 0),
-            )
-
-    fig.suptitle(
-        "Figure 4 -- Bezier min_angle (rows) x min_point_distance (cols)\n"
-        "These settings CHANGE the sampling, so the fixed seed is representative, "
-        "not a pure ablation; red title = invalid env",
-        fontsize=11,
-    )
-    fig.tight_layout(rect=(0, 0, 1, 0.94))
-    path = os.path.join(OUT_DIR, "fig4_min_angle_min_dist.png")
-    fig.savefig(path, dpi=DPI)
-    plt.close(fig)
-    return path
 
 
 # --------------------------------------------------------------------------- #
@@ -335,7 +292,6 @@ def main() -> None:
     paths = [
         figure1_rad_edgy(),
         figure3_bezier_vs_fourier(),
-        figure4_min_angle_min_dist(),
     ]
     print(f"device={DEVICE}")
     for p in paths:

@@ -1,7 +1,7 @@
 import pytest
 
 from tests.conftest import override_spec
-from track_gen._src import generator_registry as reg
+from track_gen.plugin import GeneratorSpec, registry as reg
 
 
 def test_bezier_is_registered():
@@ -10,17 +10,15 @@ def test_bezier_is_registered():
     from track_gen._src import builtin_params, warp_generate
     from track_gen.plugin.stage import _is_stage
 
-    assert "bezier" in reg.available()
-    spec = reg.get("bezier")
+    assert "bezier" in reg.available("generator")
+    spec = reg.get("generator", "bezier")
     assert _is_stage(spec) and spec.name == "bezier" and spec.kind == "generator"
     assert spec.Params is builtin_params.BezierParams
-    assert callable(warp_generate.bezier_alloc_scratch)
-    assert callable(warp_generate.generate_centerline_warp)
 
 
 def test_generatorspec_has_capturable_default_true():
     # A three-arg GeneratorSpec (the existing registration shape) defaults capturable=True.
-    spec = reg.GeneratorSpec(name="x", alloc_scratch=lambda c: None, generate=lambda *a: None)
+    spec = GeneratorSpec(name="x", alloc_scratch=lambda c: None, generate=lambda *a: None)
     assert spec.capturable is True
 
 
@@ -35,7 +33,7 @@ def test_existing_generators_are_capturable():
 def test_unknown_generator_raises_with_available_list():
     import pytest
     with pytest.raises(ValueError) as e:
-        reg.get("does-not-exist")
+        reg.get("generator", "does-not-exist")
     assert "bezier" in str(e.value)  # error lists what IS available
 
 
@@ -82,17 +80,17 @@ def test_generator_scratch_names_do_not_shadow_inflate_buffers(plugin_registry):
     E = 4
     cfg = TrackGenConfig(num_envs=E, device="cpu")
     flat = E * int(cfg.N_max)
-    # The legacy bezier spec over the frozen public functions (the registered "bezier"
-    # is a Stage since roadmap PR13c).
-    base = reg.GeneratorSpec(name="bezier", alloc_scratch=warp_generate.bezier_alloc_scratch,
-                             generate=warp_generate.generate_centerline_warp,
-                             accepts_ctx=True)
+    from tests._plugin_toys import TOY_CIRCLE
+
+    base = TOY_CIRCLE
+    plugin_registry.add(base)
+    cfg = TrackGenConfig(generator=base.name, num_envs=E, device="cpu")
     sentinel = -7.0
     decoys = {}
 
     def alloc_with_decoys(config):
         gs = base.alloc_scratch(config)
-        fields = {k: getattr(gs, k) for k in warp_generate.GenScratch.__slots__}
+        fields = {}
         for name, n in (("w", flat), ("kappa", flat), ("z", flat), ("area_a", E), ("area_b", E)):
             decoys[name] = wp.full(n, sentinel, dtype=wp.float32, device="cpu")
             fields[name] = decoys[name]
@@ -127,9 +125,9 @@ def test_track_generator_uses_constructor_resolved_generator(plugin_registry):
     def fail_if_called(*args, **kwargs):
         raise AssertionError("existing TrackGenerator used a later registry entry")
 
-    override_spec(plugin_registry, reg.GeneratorSpec(
+    override_spec(plugin_registry, GeneratorSpec(
         name="bezier",
-        alloc_scratch=warp_generate.bezier_alloc_scratch,
+        alloc_scratch=lambda config: None,
         generate=fail_if_called,
     ))
     gen.generate(1)

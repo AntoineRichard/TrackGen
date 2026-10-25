@@ -12,7 +12,7 @@ after a capture recorded the method that reads it.
 """
 from .context import (LaunchContext, conditional, is_capturing, resolve, resolve_stream,
                       unconditional)
-from .errors import (CaptureError, LegacyPluginStreamError, NotCapturableError,
+from .errors import (CaptureError, NotCapturableError,
                      RebindAfterCaptureWarning)
 from .host import HostOps
 from .runner import GraphRunner
@@ -22,7 +22,6 @@ __all__ = [
     "GraphRunner",
     "HostOps",
     "LaunchContext",
-    "LegacyPluginStreamError",
     "NotCapturableError",
     "RebindAfterCaptureWarning",
     "is_capturing",

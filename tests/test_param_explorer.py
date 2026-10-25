@@ -60,11 +60,10 @@ def test_build_config_maps_and_clamps():
     cfg = px.build_config(_params(min_num_points=15, max_num_points=8))
     assert cfg.min_num_points <= cfg.max_num_points
     assert cfg.num_envs == 16  # batch_size=16 from _params default
-    assert cfg.output_mode == "constant_spacing"  # the only supported mode
     assert abs(cfg.half_width - 0.5) < 1e-9 and abs(cfg.scale - 10.0) < 1e-9
     assert abs(cfg.handle_clamp_frac - 0.10) < 1e-9  # the overshoot-clamp knob round-trips
     cfg2 = px.build_config(_params(spacing=0.3, n_max=384))
-    assert cfg2.output_mode == "constant_spacing" and cfg2.N_max == 384
+    assert cfg2.N_max == 384
     assert abs(cfg2.spacing - 0.3) < 1e-9
 
 
@@ -73,7 +72,6 @@ def test_build_config_auto_spacing():
     p = _params(half_width=0.5)
     p["spacing"] = None
     cfg = px.build_config(p)
-    assert cfg.output_mode == "constant_spacing"
     assert abs(cfg.spacing - 0.6 * 0.5) < 1e-9
 
 
@@ -332,11 +330,6 @@ def test_build_gate_config_uses_defaults_for_dropped_knobs():
     from track_gen._src.types import GateGenConfig
     d = GateGenConfig()
     cfg = px.build_gate_config(_gate_params(gate_generator="bezier"))
-    assert cfg.num_points_per_segment == d.num_points_per_segment
-    assert cfg.rad == d.rad
-    assert cfg.edgy == d.edgy
-    assert cfg.handle_clamp_frac == d.handle_clamp_frac
-    assert cfg.hull_displacement == d.hull_displacement
 
 
 def test_track_mode_visibility_orders_flags_to_match_outputs():
@@ -462,6 +455,11 @@ class _RingParams(plugin.Params):
     gates: int = plugin.static(8, lo=3, hi=16, doc="ring gates")
 
 
+class _ParamRing(TOY_RING):
+    name = "toy.ring_p"
+    Params = _RingParams
+
+
 def _wobble_schema():
     registry.add(ToyWobble)
     return registry.describe("generator", "toy.wobble").params_schema
@@ -554,7 +552,7 @@ def test_plugin_generators_lists_non_builtins_with_fields():
     registry.add(TOY_CIRCLE)                                 # legacy spec, no params=
     registry.add(_NoFields)                                  # Params without fields
     registry.add(TOY_RING)
-    registry.add(dataclasses.replace(TOY_RING, name="toy.ring_p", params=_RingParams))
+    registry.add(_ParamRing)
     assert px.plugin_generators("generator") == [
         "toy.lobed", "toy.wobble", "toy.wobble_host", "toy.wobble_input"]
     assert px.plugin_generators("gate_generator") == ["toy.ring_p"]
@@ -562,7 +560,7 @@ def test_plugin_generators_lists_non_builtins_with_fields():
 
 def test_plugin_section_visibility_and_keys():
     registry.add(ToyWobble)
-    registry.add(dataclasses.replace(TOY_RING, name="toy.ring_p", params=_RingParams))
+    registry.add(_ParamRing)
     sections = px.plugin_sections("generator")
     assert [(n, [s.field for s in specs]) for n, specs in sections] == [
         ("toy.wobble", ["lobes", "amp"])]
@@ -629,7 +627,7 @@ def test_render_grid_reports_plugin_param_errors():
 
 
 def test_gate_plugin_controls_reach_gate_config():
-    registry.add(dataclasses.replace(TOY_RING, name="toy.ring_p", params=_RingParams))
+    registry.add(_ParamRing)
     keys = px.plugin_control_keys(px.plugin_sections("gate_generator"))
     base = _gate_params(gate_generator="toy.ring_p", gate_ordering="ccw")
     vals = [base[k] for k in px.GATE_CONTROL_KEYS]

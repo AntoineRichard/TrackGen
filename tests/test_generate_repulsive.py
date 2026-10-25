@@ -10,6 +10,7 @@ for every generator by the conformance kit, in tests/test_conformance.py, on the
 small config (``_SMALL``).
 """
 from __future__ import annotations
+from tests._reference_generators import generate_raw
 
 import numpy as np
 import pytest
@@ -293,7 +294,7 @@ def test_repulsive_generate_has_no_host_sync_or_readback(monkeypatch):
     ``ctx.sync()`` funnels into (``runtime._sync``)."""
     E = 4
     cfg = TrackGenConfig(generator="repulsive", num_envs=E, device="cpu", **_SMALL)
-    scratch = rep.repulsive_alloc_scratch(cfg)
+    scratch = rep._alloc_repulsive_scratch(cfg)
     seeds = wp.array(np.arange(E, dtype=np.int32) + 3, dtype=wp.int32, device="cpu")
     out = wp.empty(E * int(cfg.num_points), dtype=wp.vec2f, device="cpu")
     valid = wp.empty(E, dtype=wp.int32, device="cpu")
@@ -304,8 +305,11 @@ def test_repulsive_generate_has_no_host_sync_or_readback(monkeypatch):
     # The generator's own module no longer holds a warp_pipeline reference (it is built
     # from track_gen.ops); the debug sync every ctx.sync() funnels into is runtime._sync.
     monkeypatch.setattr(runtime, "_sync", forbidden)
+    size = wp.full(E, 1.0, dtype=wp.float32, device="cpu")
+    from track_gen.exec import LaunchContext
     with no_host_sync():
-        rep.generate_repulsive_warp(seeds, cfg, out, valid, scratch)
+        rep._generate_repulsive(seeds, cfg, out, valid, scratch,
+                                LaunchContext.for_call("cpu"), size=size)
     monkeypatch.undo()
     assert np.isfinite(out.numpy()).all()
     assert (valid.numpy() == 1).all()

@@ -15,7 +15,7 @@ Programs into a CALLER's CUDA graph:
   ``acme.reverse`` (a third-party order), ``acme.max_height`` (a gate validity check with
   its own fail bit), and ``acme.sinusoid_hills`` from ``tests/_stage_toys.py`` (a track
   elevation plugin reused on gates through the planner's port rewiring);
-- the legacy ``GateGeneratorSpec`` adapter (``toy.ring``);
+- the ``toy.ring`` gate Stage plugin;
 - masked regeneration (the gate commit) and ``on_invalid="poison"``.
 
 Method (as in tests/test_caller_capture_cuda.py and tests/test_stages_cuda.py; the
@@ -348,18 +348,12 @@ def test_builtin_gate_generator_and_ordering_record_into_caller_capture(
         _assert_kit_capturable(gen, label)
 
 
-def test_legacy_gate_generator_adapter_records_into_caller_capture():
-    """A legacy ``GateGeneratorSpec`` (``toy.ring``: ``accepts_ctx``, capturable,
-    orders its own gates) runs through the adapter slot (no ``order`` / ``normalize``
-    stage) and records into the caller's capture like a native generator."""
+def test_gate_stage_plugin_records_into_caller_capture():
     registry.add(TOY_RING)
     cfg = GateGenConfig(device=DEV, num_envs=E, generator="toy.ring", gate_ordering="raw",
                         gate_width=0.05)
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)   # bind-time deprecation
-        gen, *_ = _record_replay_reseed(cfg, "toy.ring (legacy adapter)")
-    ids = gen.program.spec.ids
-    assert "order" not in ids and "normalize" not in ids, ids
+    gen, *_ = _record_replay_reseed(cfg, "toy.ring")
+    assert "order" in gen.program.spec.ids
 
 
 # ---------------------------------------------------------------------------------------

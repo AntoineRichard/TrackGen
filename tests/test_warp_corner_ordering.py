@@ -24,7 +24,7 @@ from tests.conftest import DEVS  # noqa: E402
 def test_prune_then_sort_eliminates_figure_eights(dev):
     E = 1024
     cfg = TrackGenConfig(num_envs=E, num_points=256, half_width=0.5, scale=10.0,
-                         output_mode="constant_spacing", spacing=0.30, N_max=384, device=dev)
+                         spacing=0.30, N_max=384, device=dev)
     seeds = torch.arange(E, dtype=torch.int32, device=dev)
 
     # Reproduce generate_centerline_warp's attempt-0 corner pipeline (prune-then-sort).

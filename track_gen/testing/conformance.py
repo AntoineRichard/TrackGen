@@ -1838,10 +1838,6 @@ class _DeviceRun:
         category("hot_path.allocation", "allocation", "allocation(s)")
         category("hot_path.stream", "stream", "call(s) off the call's stream")
         name, passed, msg, det = out[-1]
-        if not passed and not self.accepts_ctx:
-            out[-1] = (name, passed, msg + " A legacy spec (accepts_ctx=False) runs its own "
-                       "launches on Warp's current stream: set accepts_ctx=True and emit "
-                       "through ctx.", det)
         category("hot_path.capture", "capture", "nested capture / graph launch call(s)")
 
         allocated = guard.allocated()
@@ -2122,7 +2118,7 @@ def check_gate_generator(name: str, params=None, *, devices=None, num_envs: int 
                          capture_modes: Iterable[str] = CAPTURE_MODES,
                          skip: Iterable[str] = (), modules: Iterable[str] = ()) -> Report:
     """As :func:`check_generator`, for the registered gate generator ``name`` (a
-    ``gate_generator`` Stage or a legacy ``GateGeneratorSpec``; :data:`CHECKS`
+    ``gate_generator`` Stage; :data:`CHECKS`
     ``["gate_generator"]``). ``config`` holds extra ``GateGenConfig`` fields; without a
     ``gate_ordering`` the kit uses the generator's ``preferred["order"]`` when it
     supports it, else ``"ccw"`` when supported, else its first supported ordering."""

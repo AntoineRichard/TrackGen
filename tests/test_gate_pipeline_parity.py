@@ -70,6 +70,8 @@ def _taps(gen) -> dict:
             return getattr(seq, key)
         if key == "fallbacks":
             return gen.frame_fallbacks
+        if key == "gates.xy@generator":
+            return program.tap("gates.xy", after="order")
         if "@" in key:
             ch, after = key.split("@")
             return program.tap(ch, after=after)
@@ -143,8 +145,7 @@ def test_legacy_adapter_matches_head(case, plugin_registry):
     kw = tool.LEGACY_CASES[case]
     tool.register_legacy(plugin_registry)
     cfg = _cfg(kw)
-    with pytest.warns(DeprecationWarning, match="GateGeneratorSpec"):
-        gen = GateGenerator(cfg, _rng())
+    gen = GateGenerator(cfg, _rng())
     gen.generate()
     spec = plugin_registry.get("gate_generator", kw["generator"])
     want = ref_mod.run_reference_legacy(cfg, spec, tool.SEEDS)

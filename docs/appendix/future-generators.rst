@@ -410,7 +410,7 @@ Implementation Notes
 Keep the first production versions simple:
 
 - Prototype in torch/Python first with the same output contract as
-  ``generate_centerline_warp``.
+  the generator Stage.
 - Reuse the same downstream ``resample_constant_spacing -> xpbd -> inflate`` benchmark
   for every candidate.
 - Do not optimize for pre-relax visual smoothness alone. Optimize for post-relax valid

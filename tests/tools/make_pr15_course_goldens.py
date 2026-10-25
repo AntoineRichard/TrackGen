@@ -155,6 +155,16 @@ def _roles(c, extra=()):
     names = ["gen", "rng", "regen_mask", "regen_flag", "reset_all", "reseed"] + \
         [f"comp{i}" for i in range(len(c._components))] + \
         [f"x{i}" for i in range(len(extra))]
+    # The private inflation view now aliases the elevation's parameter arrays. Keep
+    # their original latch roles so that adding a second alias changes no trace digest.
+    gen = c.generator
+    dyn = getattr(getattr(getattr(gen, "_scratch", None), "inflate", None), "z_dyn", None)
+    if dyn:
+        pointers = {int(a.ptr) for a in dyn.values()}
+        for i, (_, work) in enumerate(gen._program._pairs):
+            if int(work.ptr) in pointers:
+                objs.insert(0, work)
+                names.insert(0, f"gen._program._pairs[{i}][1]")
     return buffers_of(*objs, root=names)
 
 

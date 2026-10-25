@@ -465,7 +465,6 @@ def build_config(p: dict) -> TrackGenConfig:
         rad=float(p["rad"]),
         edgy=float(p["edgy"]),
         handle_clamp_frac=float(p.get("handle_clamp_frac", 0.4)),
-        output_mode="constant_spacing",
         N_max=int(p["n_max"]),
         relax_iters=int(p["relax_iters"]),
         relax_sep_relax=float(p["relax_sep_relax"]),

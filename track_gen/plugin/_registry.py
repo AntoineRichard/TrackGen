@@ -3,8 +3,7 @@
 One registry holds every pluggable spec, keyed by ``(kind, name)``. Kinds are an open
 set of strings: ``"generator"`` (:class:`~track_gen.plugin.GeneratorSpec` or a
 :class:`~track_gen.plugin.Stage`), ``"gate_generator"`` (a gate generator
-:class:`~track_gen.plugin.Stage`, ``output="anchors"``, or a deprecated
-:class:`~track_gen.plugin.GateGeneratorSpec`), and the pipeline Stage kinds ``"relax"``,
+:class:`~track_gen.plugin.Stage`, ``output="anchors"``), and the pipeline Stage kinds ``"relax"``,
 ``"width"``, ``"elevation"``, ``"validity"`` (roadmap PR10b), ``"order"`` and
 ``"stations"`` (roadmap PR11; their built-ins are registered with the generators).
 Other kinds hold any object with a ``name`` (``registry.add(spec, kind=...)``).
@@ -28,14 +27,13 @@ import types
 import warnings
 from typing import Any, Iterator, Mapping
 
-from .._src.gate_generator_registry import GateGeneratorSpec
-from .._src.generator_registry import GeneratorSpec
+from ._specs import GeneratorSpec
 from .params import NoParams, Params, _check_params_class, _schema, _static_view
 from .stage import (_OPEN_KINDS, CaptureClass, Stage, _check_stage, _declared_of,
                     _is_stage)
 
 # The legacy spec types that may declare a static Params class through ``params=``.
-_PARAM_SPECS = (GeneratorSpec, GateGeneratorSpec)
+_PARAM_SPECS = (GeneratorSpec,)
 
 __all__ = [
     "API_VERSION",
@@ -102,7 +100,7 @@ class SpecInfo:
             Stage: ``capture != HOST``, computed from the DEFAULT Params; a stage whose
             :meth:`~track_gen.plugin.Stage.capture_class` depends on its params may
             differ for other values (the generator reports its own).
-        accepts_ctx: The spec's ``accepts_ctx`` flag (``False`` when it has none).
+        accepts_ctx: Whether the spec uses a launch context (all generator plugins do).
         builtin: ``True`` for the specs shipped with track_gen.
         entry_point: The name of the entry point that registered the spec, or ``None``.
         params_schema: The JSON schema (draft 2020-12) of the spec's Params class:
@@ -227,7 +225,6 @@ class _Snapshot:
     quarantine: list
     warned: frozenset
     loaded: bool
-    legacy_gate_warned: frozenset = frozenset()
 
 
 def _dist_text(dist: "tuple[str, str] | None") -> str:
@@ -347,7 +344,7 @@ def _check_spec(spec, kind: "str | None", *, builtin: bool = False) -> None:
     declared = getattr(spec if isinstance(spec, type) else type(spec), "registry_kind",
                        None)
     target = kind if kind is not None else declared
-    if target in _OPEN_KINDS and (declared is None or declared == target):
+    if target in {*_OPEN_KINDS, "gate_generator"} and (declared is None or declared == target):
         raise TypeError(f"a {target} spec must be a Stage subclass "
                         f"(registry.add(MyStage)), got {type(spec).__name__}")
     if isinstance(spec, _PARAM_SPECS) and spec.params is not None:
@@ -434,8 +431,6 @@ class Registry:
         self._quarantine: list[_Quarantine] = []      # in load order
         self._quarantined: dict[str, str] = {}        # public view: key -> error text
         self._warned: set = set()
-        # Legacy GateGeneratorSpec names whose bind-time DeprecationWarning was emitted.
-        self._legacy_gate_warned: set = set()
         self._builtin = False
         self._plugin: "_PluginLoad | None" = None
 
@@ -451,10 +446,10 @@ class Registry:
 
         Args:
             spec: The spec (a :class:`~track_gen.plugin.Stage` class,
-                ``GeneratorSpec``, ``GateGeneratorSpec``, or any object with a
+                ``GeneratorSpec``, or any object with a
                 ``name`` under another kind).
             kind: Inferred for a Stage (``Stage.kind``), ``GeneratorSpec``
-                (``"generator"``) and ``GateGeneratorSpec`` (``"gate_generator"``);
+                (``"generator"``);
                 required otherwise.
             replace: Replace an existing spec of that name, emitting a
                 :class:`PluginOverrideWarning` that names both origins.
@@ -478,7 +473,7 @@ class Registry:
         ``track_gen.plugin.stage``). A spec with a ``params=`` class has the class
         checked (frozen dataclass, every field with a default, static fields only).
         """
-        self._add(spec, kind=kind, replace=replace, legacy=False, stacklevel=3)
+        self._add(spec, kind=kind, replace=replace, stacklevel=3)
 
     def get(self, kind: str, name: str):
         """The spec registered under ``(kind, name)``.
@@ -570,11 +565,7 @@ class Registry:
                     preferred=types.MappingProxyType(dict(spec.preferred)))
         else:
             capturable = bool(getattr(spec, "capturable", True))
-            accepts_ctx = bool(getattr(spec, "accepts_ctx", False))
-            supported = getattr(spec, "supported_orderings", None) \
-                if kind == "gate_generator" else None
-            if supported is not None:
-                stage_info = dict(orderings=frozenset(supported))
+            accepts_ctx = isinstance(spec, GeneratorSpec)
         if kind == "gate_generator":
             from ..stages.gates import _orderings_of  # noqa: PLC0415
 
@@ -630,23 +621,10 @@ class Registry:
                 self._restore(snapshot)
 
     # -- private helpers used by the deprecated _src shims ----------------------------
-    def _table(self, kind: str) -> dict:
-        """The live ``{name: spec}`` dict of ``kind`` (stable identity)."""
-        with self._lock:
-            self._meta.setdefault(kind, {})
-            return self._specs.setdefault(kind, {})
 
-    def _add_legacy(self, spec, kind: str, *, same_module_only: bool = False) -> None:
-        """Old ``register(spec)`` semantics: overwrite an existing name, with a
-        ``DeprecationWarning``. With ``same_module_only`` (the old gate registry), only
-        a spec from the same module may overwrite; another module's raises
-        :class:`DuplicateSpecError`."""
-        self._add(spec, kind=kind, replace=True, legacy=True, stacklevel=4,
-                  same_module_only=same_module_only)
 
     # -- implementation ---------------------------------------------------------------
-    def _add(self, spec, *, kind, replace, legacy, stacklevel,
-             same_module_only=False) -> None:
+    def _add(self, spec, *, kind, replace, stacklevel) -> None:
         _check_spec(spec, kind, builtin=self._builtin)
         kind = _infer_kind(spec, kind)
         name = _spec_name(spec)
@@ -664,14 +642,10 @@ class Registry:
             previous = None
             if name in table:
                 previous = meta.get(name) or _Origin(_origin_module(table[name]))
-                if same_module_only and \
-                        _origin_module(table[name]) != _origin_module(spec):
-                    replace = False
             label = _kind_label(kind)
             if previous is not None:
                 if not replace:
-                    hint = ("Use track_gen.plugin.registry.add(spec, replace=True) to "
-                            "override it" if legacy else "Pass replace=True to override it")
+                    hint = "Pass replace=True to override it"
                     err = DuplicateSpecError(
                         f"{label} {name!r} is already registered by {previous}; refusing "
                         f"the registration from {origin}. {hint}, or choose another "
@@ -679,18 +653,10 @@ class Registry:
                     if plugin is not None:
                         plugin.refused.append(err)
                     raise err
-                if legacy:
-                    warnings.warn(
-                        f"{label} {name!r} registered by {previous} was replaced through "
-                        f"the deprecated track_gen._src registry register(); use "
-                        f"track_gen.plugin.registry.add(spec, replace=True)",
-                        DeprecationWarning, stacklevel=stacklevel)
-                else:
-                    warnings.warn(PluginOverrideWarning(
-                        f"{label} {name!r} registered by {previous} is overridden by "
-                        f"{origin} (replace=True)"), stacklevel=stacklevel)
-            elif not legacy and not origin.builtin and "." not in name \
-                    and (kind, name) not in self._warned:
+                warnings.warn(PluginOverrideWarning(
+                    f"{label} {name!r} registered by {previous} is overridden by "
+                    f"{origin} (replace=True)"), stacklevel=stacklevel)
+            elif not origin.builtin and "." not in name and (kind, name) not in self._warned:
                 self._warned.add((kind, name))
                 warnings.warn(
                     f"{label} {name!r} from {origin} is not a dotted name; third-party "
@@ -864,7 +830,6 @@ class Registry:
             quarantine=list(self._quarantine),
             warned=frozenset(self._warned),
             loaded=self._loaded,
-            legacy_gate_warned=frozenset(self._legacy_gate_warned),
         )
 
     def _restore(self, snapshot: _Snapshot, *, tables_only: bool = False) -> None:
@@ -887,7 +852,6 @@ class Registry:
         self._quarantine[:] = snapshot.quarantine
         self._sync_quarantined()
         self._warned = set(snapshot.warned)
-        self._legacy_gate_warned = set(snapshot.legacy_gate_warned)
         self._loaded = snapshot.loaded
 
     def _clear(self) -> None:
@@ -904,7 +868,6 @@ class Registry:
         self._quarantine.clear()
         self._quarantined.clear()
         self._warned = set()
-        self._legacy_gate_warned = set()
         self._loaded = False
 
 

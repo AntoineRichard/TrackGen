@@ -555,8 +555,7 @@ class TrackGenerator:
             track_gen.exec.NotCapturableError: recording a pipeline with HOST stages
                 (a ``capturable=False`` generator) into a capture, or running it under
                 a CPU graph capture (raised before any launch, naming them).
-            track_gen.exec.LegacyPluginStreamError: recording a legacy plugin
-                generator on a stream that is not Warp's current stream.
+
         """
         self._check_num_or_ids(num_or_ids)
         body, key = self._body(advance, mask)

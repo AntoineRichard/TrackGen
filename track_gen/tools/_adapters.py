@@ -514,7 +514,7 @@ class Progress(Component):
     :class:`~track_gen.progress.ProgressTracker`; stateful).
 
     Read target: the ``result`` of the component named ``source`` (default
-    ``"checkpoints"``; ``checkpoints=`` is an alias kept for 0.x) (``HasCheckpoints``;
+    ``"checkpoints"``) (``HasCheckpoints``;
     its ``valid`` / ``generation`` read when present: invalid envs frozen, self-reset on a
     new generation). Input: ``position``. ``step``: ``update`` -> ``ProgressEvents``;
     ``reset``: clears the masked envs' state.
@@ -524,13 +524,8 @@ class Progress(Component):
     requires = (HasCheckpoints,)
     optional = (HasValidity, HasGeneration)
 
-    def __init__(self, *, source: "str | None" = None, checkpoints: "str | None" = None,
-                 name: str = "progress") -> None:
-        if source is not None and checkpoints is not None and source != checkpoints:
-            raise TypeError(f"Progress: source={source!r} and its alias "
-                            f"checkpoints={checkpoints!r} disagree: pass source= only")
-        self.source = source if source is not None else \
-            (checkpoints if checkpoints is not None else "checkpoints")
+    def __init__(self, *, source: "str | None" = None, name: str = "progress") -> None:
+        self.source = "checkpoints" if source is None else source
         self.name = name
         self.inputs = _POSITION
 

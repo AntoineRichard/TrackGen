@@ -118,11 +118,11 @@ class _TrackView:
 
 
 def _gen(links, iters, n, regen=10, sr=1.0, pr=1.0, margin=0.15, seed0=0,
-         output_mode="constant_spacing", spacing=0.10, n_max=256):
+         spacing=0.10, n_max=256):
     cfg = TrackGenConfig(num_envs=n, num_points=links, half_width=HALF_WIDTH, scale=SCALE,
-                         relax_iters=iters, max_regen_iters=regen, relax_sep_relax=sr,
+                         relax_iters=iters, relax_sep_relax=sr,
                          relax_spc_relax=pr, relax_margin=margin, device=DEVICE,
-                         output_mode=output_mode, spacing=spacing, N_max=n_max)
+                         spacing=spacing, N_max=n_max)
     rng = PerEnvSeededRNG(seeds=seed0, num_envs=n, device=DEVICE)
     return _TrackView(TrackGenerator(cfg, rng).generate(n))
 
@@ -252,7 +252,6 @@ def page_constant_spacing(pdf):
         ],
         lambda spacing, n: _gen(
             256, 150, n,
-            output_mode="constant_spacing",
             spacing=spacing,
             n_max=CS["n_max"],
         ),

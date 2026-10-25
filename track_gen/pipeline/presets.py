@@ -187,7 +187,7 @@ _SIZE_REMEDY = ("a per-env size is a generator field: declare size = plugin.dyna
 
 
 #: ... and why a legacy spec cannot (its ``params=`` class takes static fields only).
-_LEGACY_SIZE_REMEDY = ("a legacy GeneratorSpec / GateGeneratorSpec has no per-env size: "
+_LEGACY_SIZE_REMEDY = ("a legacy GeneratorSpec has no per-env size: "
                        "port it to a Stage (docs/contributing/writing-a-generator.rst), "
                        "then declare size")
 
@@ -507,26 +507,19 @@ def _is_flat(ref: StageRef) -> bool:
     return z is None or float(z) == 0.0
 
 
-def _with_gate_validity(ref: StageRef, fill: dict,
-                        posed_by: "str | None" = None) -> StageRef:
+def _with_gate_validity(ref: StageRef, fill: dict) -> StageRef:
     """The first check, ``validity.gate_default``, with the preset's validity arguments
     (``fill``) where its params do not set them (a Params instance is taken as is).
-    ``gate_radius`` / ``gate_width`` set to another value than the preset's raise here
-    rather than as the planner's agreement error. ``posed_by``: the name of a generator
-    that provides ``half_size`` (its ``gate_width`` must stay 0, whatever the preset is
-    passed)."""
+    ``gate_radius`` set to another value than the preset's raises here rather than
+    as the planner's agreement error."""
     ref = _with_params(ref, fill)
-    for field in ("gate_radius", "gate_width"):
+    for field in ("gate_radius",):
         v = _param(ref, field)
         if isinstance(v, (int, float)) and not isinstance(v, bool) \
                 and float(v) != float(fill[field]):
-            if field == "gate_width" and posed_by is not None:
-                raise ValueError(f"checks: gate generator {posed_by!r} provides per-gate "
-                                 f"half_size; validity.gate_default's gate_width must "
-                                 f"stay 0, got {v!r}")
             raise ValueError(f"checks: validity.gate_default sets {field}={v!r} but "
                              f"{field}={fill[field]!r}; pass {field}={v!r} to "
-                             f"presets.gates (gate_relax / gate_frames and "
+                             f"presets.gates (gate_relax and "
                              f"validity.gate_default share one value)")
     return ref
 
@@ -568,7 +561,7 @@ def _gate_stages(gen_ref: StageRef, *, provides=frozenset(), upstream=(),
     ``legacy.to_gate_pipeline_spec``): generator [-> upstream] [-> stations] [-> order
     [-> normalize]] [-> carry_*] [-> carry_attributes] -> gate_relax [-> gate_arclen ->
     elevation] -> lift [-> tangents] -> gate_frames -> validity [-> checks].
-    ``order_ref=None``: a legacy generator that orders its own gates. The stages a
+    The stages a
     generator ``provides`` are dropped (z: gate_arclen + elevation; tangent: tangents)
     and carried instead; ``half_size`` + ``roll`` select ``gate_frames.posed``;
     ``carry_attributes`` carries the per-anchor plugin attributes to the gate slots.
@@ -609,9 +602,7 @@ def _gate_stages(gen_ref: StageRef, *, provides=frozenset(), upstream=(),
             "gate_width": gate_width, "gate_align": gate_align}))
     if validity_ref is None:
         vparams = {"min_gates": min_gates, "gate_radius": gate_radius,
-                   "gate_width": gate_width, "z_valid_grade": z_valid_grade}
-        if posed:
-            vparams["check_crossing"] = "always"
+                   "z_valid_grade": z_valid_grade}
         validity_ref = StageRef("validity", "gate_default", params=vparams)
     stages.append(validity_ref)
     stages.extend(checks)
@@ -660,8 +651,8 @@ def gates(*, num_envs: int, device: str, generator: "str | StageRef" = "bezier",
     registered as a gate generator (the built-in names are both: anchors win), else
     ``"stations"``. A generator that ``provides`` per-anchor attributes has the stages
     computing them dropped (``z``: gate_arclen and elevation; ``tangent``: tangents;
-    ``half_size`` + ``roll``: ``gate_frames.posed``; ``validity.gate_default`` checks
-    the bars of every env that has one, whatever its ``check_crossing``).
+    ``half_size`` + ``roll``: ``gate_frames.posed``). ``validity.gate_default`` checks
+    the bars of every env that has one.
 
     Args:
         num_envs: ``E``.
@@ -692,12 +683,9 @@ def gates(*, num_envs: int, device: str, generator: "str | StageRef" = "bezier",
             that provides ``z``) raises ``ValueError``.
         z_valid_grade: The validity grade cap (0: off).
         checks: The ``validity`` stages: ``"gate_default"`` first, plugin checks after.
-            ``validity.gate_default`` gets ``min_gates``, ``gate_radius``,
-            ``gate_width`` and ``z_valid_grade`` unless its params set them (a Params
-            instance is taken as is). Its ``gate_width`` and ``check_crossing`` are
-            inert (the bars of every env that has one are checked);
-            posed gates still get ``check_crossing="always"``, filled only so that
-            existing posed specs stay identical.
+            ``validity.gate_default`` gets ``min_gates``, ``gate_radius`` and
+            ``z_valid_grade`` unless its params set them (a Params instance is taken
+            as is).
         scale: ``BatchSpec.scale``.
         size: The INITIAL per-env course size (``GateGenConfig.size``),
             routed to the stage that holds it: ``normalize.size`` for a gate generator
@@ -863,18 +851,11 @@ def gates(*, num_envs: int, device: str, generator: "str | StageRef" = "bezier",
     # -- order / normalize ---------------------------------------------------------------
     upstream, stations_ref = (), None
     normalize = False
-    if anchors and not stage:
-        if order is not None:
-            raise ValueError(f"order=: gate generator {name!r} is a legacy "
-                             f"GateGeneratorSpec that orders its own gates; choose its "
-                             f"ordering with GateGenConfig(gate_ordering=...)")
-        order_ref = None
-    else:
-        explicit_order = order is not None
-        if order is None:
-            order = _default_order(spec_cls, reg) if anchors else "raw"
-        order_ref = _select("order", "order", order, hw)
-        normalize = anchors and _preferred(spec_cls).get("normalize") == "extent"
+    explicit_order = order is not None
+    if order is None:
+        order = _default_order(spec_cls, reg) if anchors else "raw"
+    order_ref = _select("order", "order", order, hw)
+    normalize = anchors and _preferred(spec_cls).get("normalize") == "extent"
     elev_sel_flat = elevation is None or _is_flat(
         _select("elevation", "elevation", elevation, hw))
     loop_z = False                  # the stations carry the loop's altitude (carry.z)
@@ -1035,14 +1016,9 @@ def gates(*, num_envs: int, device: str, generator: "str | StageRef" = "bezier",
         raise ValueError(f"checks: duplicate stage id {dup!r}; give one an explicit "
                          f"StageRef(id=...)")
     bar_width = 0.0 if posed else gate_width
-    vfill = {"min_gates": min_gates, "gate_radius": gate_radius, "gate_width": bar_width,
+    vfill = {"min_gates": min_gates, "gate_radius": gate_radius,
              "z_valid_grade": z_valid_grade}
-    if posed:
-        # Inert since 0.2.0.dev5 (the bars are checked per env): filled only so existing
-        # posed specs (and their dicts) stay identical.
-        vfill["check_crossing"] = "always"
-    validity_ref = _with_gate_validity(check_refs[0], vfill,
-                                       posed_by=name if posed else None)
+    validity_ref = _with_gate_validity(check_refs[0], vfill)
     # The per-env size (roadmap PR13d): a gate generator re-normalized by
     # normalize.extent has it there (the normalization erases a size of its own, declared
     # or not); any other gate generator holds it (no alias: one key per array).

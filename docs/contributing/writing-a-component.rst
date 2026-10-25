@@ -760,7 +760,7 @@ and method; ``adapter.result`` is that utility's ``.result``.
      - ``CheckpointSet.from_gates`` (zero copy; ``utility`` is ``None``)
      - course: ``HasGateFrames`` / ``HasGeneration``
      - none; stateless
-   * - ``Progress(*, source="checkpoints")`` (``checkpoints=``: a 0.x alias)
+   * - ``Progress(*, source="checkpoints")``
      - ``ProgressTracker``
      - the ``source`` component: ``HasCheckpoints`` / ``HasValidity``,
        ``HasGeneration``

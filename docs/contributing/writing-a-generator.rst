@@ -29,9 +29,8 @@ Two related forms have pages of their own:
   spreads, lifts and frames: :ref:`writing-a-gate-generator`. A track generator also
   makes gates with no code of its own: the gates :term:`preset` (``presets.gates``)
   places arc-length stations on its centerline (:ref:`pipeline-stations`);
-- a ``GeneratorSpec`` (two callables and a few flags) is the generator interface of 0.1.
-  It is still supported, and a quick start below shows it, but new generators are
-  Stages: :ref:`plugin-abis` holds its contract and the other 0.1 interfaces.
+- a ``GeneratorSpec`` wraps two callables for a simple fixed-shape track generator.
+  The quick start below shows it; :ref:`plugin-abis` describes its contract.
 
 Centerlines that come from elsewhere (a dataset, a learned model, a hand-drawn track)
 need no generator code: the built-in ``external`` generator reads them from device arrays
@@ -199,7 +198,7 @@ Quick start: a ``GeneratorSpec`` generator
 
 A ``GeneratorSpec`` wraps two callables: ``alloc_scratch`` allocates the generator's
 buffers once, and ``generate`` writes into the buffers the pipeline passes on every call.
-It is the interface of 0.1 plugins, still supported (:ref:`plugin-abis` has its contract
+It is the supported simple track-plugin form (:ref:`plugin-abis` has its contract
 and how to port one to a Stage). The same wobbly circle, with a fixed shape and no
 parameters:
 
@@ -243,7 +242,7 @@ parameters:
            phase=wp.empty(E, dtype=wp.float32, device=str(config.device)))
 
 
-   def generate(seeds_wp, config, out_centerline, out_valid_wp, scratch, ctx=None):
+   def generate(seeds_wp, config, out_centerline, out_valid_wp, scratch, *, ctx):
        ctx = resolve(ctx, out_centerline.device)  # the facades always pass ctx
        E, N = int(config.num_envs), int(config.num_points)
        ctx.launch(_phase_k, E, [seeds_wp, SALT, scratch.phase])
@@ -259,7 +258,6 @@ parameters:
            name="acme.wobbly",
            alloc_scratch=alloc_scratch,
            generate=generate,
-           accepts_ctx=True,  # generate takes ctx= and emits all its work through it
        ))
 
 .. snippet: after
@@ -1606,7 +1604,7 @@ quick start (in a Stage, the same calls go in ``enqueue`` and the buffers come f
            crossings=wp.empty(E, dtype=wp.int32, device=dev))
 
 
-   def generate_star(seeds_wp, config, out_centerline, out_valid_wp, scratch, ctx=None):
+   def generate_star(seeds_wp, config, out_centerline, out_valid_wp, scratch, *, ctx):
        ctx = resolve(ctx, out_centerline.device)
        N = int(config.num_points)
        sc = scratch
@@ -1634,7 +1632,7 @@ quick start (in a Stage, the same calls go in ``enqueue`` and the buffers come f
 
    def register_star(reg):
        reg.add(GeneratorSpec(name="acme.star", alloc_scratch=alloc_star_scratch,
-                             generate=generate_star, accepts_ctx=True))
+                             generate=generate_star))
 
 .. snippet: after
 
@@ -1676,9 +1674,6 @@ pairs already taken:
    * - ``bezier`` corner positions
      - 9781
      - ``attempt`` (0 in the built-in)
-   * - ``bezier`` style sampling
-     - 2741
-     - 0
    * - ``hull`` point count
      - 5119
      - 1
@@ -1726,14 +1721,14 @@ Gate generators
 
 Gate generators have their own page: :ref:`writing-a-gate-generator`. It covers the
 anchors ``Stage`` (``kind="gate_generator"``, ``output="anchors"``), its contract, the
-orderings, and how to port a ``GateGeneratorSpec`` (deprecated, :ref:`plugin-abis`) to
+orderings, and how to port a former function-based gate plugin to
 a Stage.
 
 The ``GeneratorSpec`` contract
 ------------------------------
 
 The ``GeneratorSpec`` contract (its fields, ``alloc_scratch``, ``generate``, the stream
-rule of ``accepts_ctx``, ``capturable=False``, its static ``params=`` class) is on
+rule of the required ``ctx``, ``capturable=False``, its static ``params=`` class) is on
 :ref:`plugin-abis`, with the other 0.1 plugin interfaces, their status, and the map from
 the 0.1 private helpers to ``track_gen.ops``.
 
@@ -1759,10 +1754,7 @@ generator an anchors ``Stage``, with a Params class whose fields are the flat
 ``TrackGenConfig`` / ``GateGenConfig`` knobs it reads, under the same names: its shape
 knobs are dynamic, the rest static (the :ref:`configuration reference
 <builtin-generator-params>` lists them). ``registry.get("generator", "polar")`` is that
-class: its parameters are ``.Params``. ``bezier``, ``hull``, ``polar``, ``voronoi`` and
-``checkpoint`` were ``GeneratorSpec`` objects in 0.1, so for them ``.params`` (the spec
-attribute) still returns ``.Params`` with a ``DeprecationWarning`` until 1.0; their
-``.generate`` / ``.alloc_scratch`` are gone (:ref:`upgrading-plugins`). ``external`` is a
+class: its parameters are ``.Params``. ``external`` is a
 ``STATIC`` ``Stage`` with its own ``ExternalParams`` (no flat field).
 
 The Voronoi method is implemented as a fixed-budget site-field / graph-cycle generator
@@ -1788,8 +1780,8 @@ step (see :ref:`generator-ops`), like a plugin, and never import ``warp_pipeline
 built-in gate generator that shares a track generator's sampling imports that module's
 public names (``CORNER_SALT``, ``sample_polar_controls_per_env``, ...), never its
 underscore kernels or constants. ``tests/test_ops.py`` checks both rules on the source,
-together with the short allow-list of private ``track_gen.ops`` launchers the legacy
-wrappers use. A new built-in RNG stream takes a ``(salt, offset)`` pair that is not in
+together with the short allow-list of private ``track_gen.ops`` launchers the
+built-ins use. A new built-in RNG stream takes a ``(salt, offset)`` pair that is not in
 the :ref:`table of built-in salts <ops-rng-keying>`, and adds its row there. The
 built-ins' Params classes live in ``track_gen/_src/builtin_params.py``: each keeps the
 flat config field names, holds the generator's rules in ``validate()`` (with ``lo``/``hi``
@@ -1813,18 +1805,9 @@ is read in the kernel:
   whose result for ``(-0.0, +0.0)`` is unspecified;
 - leave an unbounded side unclamped.
 
-While a generator still has a frozen legacy entry point (the shipped five keep
-``generate_*_warp`` and ``*_alloc_scratch`` until 1.0, :ref:`legacy-src-helpers`), keep
-its scalar kernel untouched and add the array-reading twin beside it
-(``_polar_controls_dyn_k`` beside ``_polar_controls_k``): the Stage launches the twin,
-the legacy function the scalar kernel, and both call one private core,
-``_enqueue_<name>(..., dyn)``, whose ``dyn`` is ``None`` or a mapping with exactly the
-generator's dynamic fields. A CPU test compares the generated CUDA source of each pair
-(the same arithmetic operations, in the same order) until the scalar kernels go. A
-sampling helper that a gate generator shares is public, in a float form
-(``sample_polar_controls``, frozen) and an ``[E]``-array form
-(``sample_polar_controls_per_env``, ``sample_checkpoint_rings_per_env``,
-``select_voronoi_anchors_per_env``) that clamps to the declared bounds the same way.
+A sampling helper shared with a gate generator takes per-env arrays, such as
+``sample_polar_controls_per_env``, ``sample_checkpoint_rings_per_env`` or
+``select_voronoi_anchors_per_env``, and clamps them to the declared bounds.
 The built-in Params set a private flag that makes each dynamic name of the static view
 (what ``build`` receives) a sentinel: any host read (``float(view.rad)``,
 ``getattr(view, "rad", 0.4)`` followed by arithmetic) raises ``TypeError``, and passing

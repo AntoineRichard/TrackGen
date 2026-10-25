@@ -45,8 +45,6 @@ Their causes and fixes are summarized in :ref:`api-errors`.
 
 .. autoexception:: track_gen.exec.NotCapturableError
 
-.. autoexception:: track_gen.exec.LegacyPluginStreamError
-
 .. autoexception:: track_gen.exec.RebindAfterCaptureWarning
 
 Seeds and epochs

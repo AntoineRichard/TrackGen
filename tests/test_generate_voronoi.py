@@ -7,6 +7,7 @@ the hot path) is checked for every generator by the conformance kit, in
 tests/test_conformance.py.
 """
 from __future__ import annotations
+from tests._reference_generators import generate_raw
 
 import numpy as np
 import pytest
@@ -75,13 +76,13 @@ def test_voronoi_generation_outputs_simple_finite_centerlines(dev):
         device=dev,
     )
     # The frozen legacy entry points (the registered "voronoi" is a Stage since PR13c).
-    scratch = warp_generate_voronoi.voronoi_alloc_scratch(cfg)
+    scratch = warp_generate_voronoi._alloc_voronoi_scratch(cfg)
     seeds_t = torch.arange(E, dtype=torch.int32, device=dev)
     seeds_wp = wp.from_torch(seeds_t, dtype=wp.int32)
     out = wp.empty(E * int(cfg.num_points), dtype=wp.vec2f, device=dev)
     valid_wp = wp.empty(E, dtype=wp.int32, device=dev)
 
-    warp_generate_voronoi.generate_voronoi_warp(seeds_wp, cfg, out, valid_wp, scratch)
+    generate_raw("voronoi", seeds_wp, cfg, out, valid_wp, scratch)
     if "cuda" in dev:
         wp.synchronize()
 

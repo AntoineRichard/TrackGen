@@ -62,13 +62,10 @@ from ..ops import funcs
 from ..ops.constants import SIZE_BOUNDS
 from ..plugin.stage import CaptureClass, Stage
 from .builtin_params import RepulsiveParams
-from .builtin_stage import check_no_size
 from .runtime import _init
 
 # --- Obstacle layout constants (mirror the spike's sample_obstacles reference layout) ---
 # Independent RNG salt, distinct from the site/anchor/checkpoint/control salts.
-# Legacy private name: the same arithmetic as ops.funcs.safe_normalize2.
-_safe_dir = funcs.safe_normalize2
 
 _OBSTACLE_SALT = 6247
 _N_WALL = 96          # points on the domain-wall ring (weight 1.0)
@@ -701,7 +698,7 @@ class RepulsiveScratch:
             setattr(self, k, v)
 
 
-def repulsive_alloc_scratch(config, *, alloc=None):
+def _alloc_repulsive_scratch(config, *, alloc=None):
     """Allocate the repulsive generator's PRIVATE scratch (one alloc per generator).
 
     Sizes every N-dependent buffer at ``Nmax`` and precomputes the host-side Sobolev rows +
@@ -818,44 +815,13 @@ def _copy_sized_k(src: wp.array(dtype=wp.vec2f), n: int,
 # Fixed-schedule coarse-to-fine growth loop (a bounded loop: capture class BOUNDED)
 # ===========================================================================
 
-def generate_repulsive_warp(seeds_wp: wp.array, config,
-                            out_centerline: wp.array, out_valid_wp: wp.array,
-                            scratch, ctx: "LaunchContext | None" = None) -> None:
-    """Grow E closed centerlines from small circles with the pure-Warp TP-Sobolev flow and
-    write the final ``[E*num_points]`` closed loops into ``out_centerline`` (valid=1 for all
-    envs; the shared downstream gate decides real validity).
-
-    Fixed host schedule (stage transitions and resample/stall-check cadences depend only on
-    the loop counter), absorbing per-env freeze. The growth loop is a
-    ``ctx.bounded_loop`` (``active`` = any env not frozen, refreshed by every stall check,
-    checked every stall window from the first window at the final stage), so the call is
-    recordable into any CUDA graph (``capture=CaptureClass.BOUNDED``): eagerly on CPU it
-    stops at the first window after every env froze (the one sanctioned host poll), on
-    CUDA it never host-syncs, and every lowering writes the same bytes. The gradient is
-    hand-written analytic adjoints (per-vertex gather, no atomics), so the flow is
-    byte-deterministic per device. Ported from the validated spike ``grow_warp.grow_warp``
-    (with the tape replaced). The registered generator is the :class:`Repulsive` Stage,
-    which runs the same private core with its per-env ``size`` (roadmap PR13d); this
-    frozen entry point has none and refuses a config whose ``size`` is not 1.
-
-    Args:
-        ctx: optional track_gen.exec.LaunchContext; default resolves the
-            device's stream (see track_gen.exec).
-    """
-    _init()
-    check_no_size(config, "generate_repulsive_warp")
-    ctx = _resolve_ctx(ctx, str(out_centerline.device))
-    assert scratch is not None, "generate_repulsive_warp requires scratch"
-    _generate_repulsive(seeds_wp, config, out_centerline, out_valid_wp, scratch, ctx, None)
 
 
 def _generate_repulsive(seeds_wp, config, out_centerline, out_valid_wp, scratch, ctx,
                         size) -> None:
     """The repulsive generator's launches on ``ctx`` (the private core of
-    :func:`generate_repulsive_warp` and the :class:`Repulsive` Stage). ``size``: ``None``
-    (the frozen entry point: the final copy is a ``ctx.copy``) or the Stage's ``[E]``
-    float32 ``size`` (roadmap PR13d: the final copy is :func:`_copy_sized_k`, an exact
-    scaling of the grown loop: its growth does not see the size)."""
+    the :class:`Repulsive` Stage). The final copy applies the Stage's per-env size
+    as an exact scaling of the grown loop; growth does not see the size."""
     s = scratch
     E = s.E
     dev = str(out_centerline.device)
@@ -996,10 +962,7 @@ def _generate_repulsive(seeds_wp, config, out_centerline, out_valid_wp, scratch,
     ops.fill(ctx, s.count, Ncur)
     ops.resample_uniform(ctx, center[0:E * Ncur], Ncur, rs_scratch, s.rs_out[0:E * Ncur],
                          count=s.count)
-    if size is None:
-        ctx.copy(out_centerline, s.rs_out, count=E * Ncur)
-    else:
-        ctx.launch(_copy_sized_k, E * Ncur, [s.rs_out, Ncur, size, out_centerline])
+    ctx.launch(_copy_sized_k, E * Ncur, [s.rs_out, Ncur, size, out_centerline])
     ops.fill(ctx, out_valid_wp, 1)
 
 
@@ -1008,7 +971,7 @@ def _generate_repulsive(seeds_wp, config, out_centerline, out_valid_wp, scratch,
 # ===========================================================================
 
 class Repulsive(Stage):
-    """``"repulsive"``: the repulsive-growth track generator (:func:`generate_repulsive_warp`)
+    """``"repulsive"``: the repulsive-growth track generator
     as a ``kind="generator"`` Stage of capture class ``BOUNDED`` (its growth loop is a
     ``ctx.bounded_loop`` with an absorbing per-env freeze). Roadmap PR13d: its dynamic
     ``size`` scales the grown loop in the final copy (:func:`_copy_sized_k`;
@@ -1028,7 +991,7 @@ class Repulsive(Stage):
 
     @staticmethod
     def _run_view(params, *, num_envs: int, scale: float, device: str):
-        """What :func:`repulsive_alloc_scratch` and :func:`generate_repulsive_warp` read:
+        """The static view read by the scratch allocator and private enqueue core:
         every static RepulsiveParams field, plus ``num_envs``, ``scale`` and ``device``
         (the dynamic ``size`` is read on the device)."""
         view = types.SimpleNamespace(num_envs=int(num_envs), scale=float(scale),
@@ -1041,7 +1004,7 @@ class Repulsive(Stage):
 
     def build(self, b, p):
         cfg = self._run_view(p, num_envs=b.E, scale=b.scale, device=str(b.device))
-        scratch = repulsive_alloc_scratch(cfg, alloc=b.scratch)
+        scratch = _alloc_repulsive_scratch(cfg, alloc=b.scratch)
         xy = b.write("xy", wp.vec2f, per="raw")
         valid = b.write("valid", wp.int32)
         seed = b.seed

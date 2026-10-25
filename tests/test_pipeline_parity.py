@@ -1,7 +1,7 @@
 """The Program is the PR9 composition, byte for byte, at every stage boundary (PR10a).
 
 ``TrackGenerator`` runs a :class:`track_gen.pipeline.Program` of the default stage list.
-The PR9 composition (``warp_pipeline._run_pipeline`` -> ``inflate_warp``) is kept
+The PR9 composition (``warp_pipeline._run_pipeline`` -> ``_inflate_warp``) is kept
 unchanged as the reference: each case builds a generator, generates (plainly, then with
 a masked advance), runs ``_run_pipeline`` on fresh PR9 buffers from the same effective
 seeds, and compares every channel version the Program wrote with the PR9 buffer it
@@ -34,7 +34,7 @@ from tests._plugin_toys import (TOY_CIRCLE, register_stage_toys,
 from tests._pr13c_delta import ELEVATION_LATCHES, pr13c_sequence
 from tests._pr13d_delta import LATCH_ALL
 from track_gen import PerEnvSeededRNG, TrackGenConfig, TrackGenerator
-from track_gen._src import warp_pipeline
+from tests._reference_generators import warp_pipeline
 from track_gen._src.generator_binding import _StageGenerator, bind_generator
 from track_gen.exec import LaunchContext
 from track_gen.plugin import GeneratorSpec, registry
@@ -67,8 +67,6 @@ CASES = {
     "voronoi_fallback": dict(generator="voronoi", voronoi_radial_variation=0.85,
                              voronoi_angular_jitter=0.6, voronoi_num_sites=64, _E=32),
     "hull_fallback": dict(generator="hull", hull_displacement=0.9, _E=32),
-    "bezier_style": dict(generator="bezier", style_sampling=True, rad_range=(0.1, 0.35),
-                         scale_range=(0.8, 1.2), handle_clamp_frac_range=(0.3, 0.9)),
     "no_relax": dict(generator="bezier", relax_enable=False),
     "flat_z_base": dict(generator="bezier", z_base=0.25),
     "z_uniform": dict(generator="bezier", **_ZU),
@@ -81,26 +79,14 @@ CASES = {
     "relax_band": dict(generator="bezier", relax_band=2),
     "truncation": dict(generator="bezier", N_max=64, spacing=0.06),
     "toy.circle": dict(generator="toy.circle"),
-    "toy.circle_legacy": dict(generator="toy.circle_legacy"),
     "toy.wobble": dict(generator="toy.wobble"),
     "toy.wobble_input": dict(generator="toy.wobble_input"),
     "toy.lobed": dict(generator="toy.lobed"),
 }
 
 
-def _legacy_circle_generate(seeds_wp, config, out_centerline, out_valid_wp, scratch):
-    toy_circle_generate(seeds_wp, config, out_centerline, out_valid_wp, scratch)
-
-
-# A legacy-ABI spec (accepts_ctx=False): run inside ctx.scope() by both compositions.
-TOY_CIRCLE_LEGACY = GeneratorSpec(name="toy.circle_legacy",
-                                  alloc_scratch=toy_circle_alloc_scratch,
-                                  generate=_legacy_circle_generate, accepts_ctx=False)
-
-
 def _register_toys():
     registry.add(TOY_CIRCLE)
-    registry.add(TOY_CIRCLE_LEGACY)
     register_stage_toys(registry)
 
 
@@ -214,7 +200,8 @@ def test_every_stage_boundary_matches_the_pr9_composition(case, monkeypatch):
 
 
 def _topology(trace) -> list:
-    return [(r.op, r.kernel, r.dim, r.scalars) for r in trace]
+    return [(r.op, r.kernel.replace("tests._reference_generators.", "track_gen._src."),
+             r.dim, r.scalars) for r in trace]
 
 
 def _pr13c_elevation_delta(case: str, rows: list, n_gen_latches: int, E: int) -> list:

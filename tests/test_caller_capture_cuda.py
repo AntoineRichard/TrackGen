@@ -151,13 +151,13 @@ def _eager_ref(kind: str, seeds: int, *, generator=None):
 
 
 def _counting(base_generate, calls: list, *, host_readback: bool = False):
-    """Wrap a shipped generator body: count Python body runs (optionally host-sync)."""
-    def generate(*args, **kwargs):
+    """Count strict context-aware generator calls, with an optional host readback."""
+    def generate(seeds_wp, config, out_centerline, out_valid_wp, scratch, *, ctx):
         calls.append(1)
         if host_readback:
-            # A blocking host readback: what makes a generator non-capturable.
-            args[0].numpy()
-        return base_generate(*args, **kwargs)
+            seeds_wp.numpy()
+        return base_generate(seeds_wp, config, out_centerline, out_valid_wp, scratch,
+                             ctx=ctx)
     return generate
 
 
@@ -310,11 +310,20 @@ def test_self_graph_outside_any_capture_matches_eager_twin(kind):
         _assert_same(out, ref, f"{kind}: self-graph replay {i}")
 
 
-def _polar_spec() -> GeneratorSpec:
-    """The polar generator's legacy ``GeneratorSpec`` over its frozen public functions
-    (``polar_alloc_scratch`` / ``generate_polar_warp``): the registered ``"polar"`` is a
-    generator Stage since roadmap PR13c (no ``alloc_scratch`` / ``generate``)."""
-    return warp_pipeline._legacy_generator_spec("polar")
+def _circle_spec() -> GeneratorSpec:
+    """Resolve the public context-aware circle plugin through the current registry."""
+    from tests._plugin_toys import TOY_CIRCLE
+
+    registry.add(TOY_CIRCLE)
+    return registry.get("generator", TOY_CIRCLE.name)
+
+
+def _register_circle_toy(name: str, calls: list, *, host: bool = False) -> None:
+    base = _circle_spec()
+    registry.add(GeneratorSpec(
+        name=name, alloc_scratch=base.alloc_scratch,
+        generate=_counting(base.generate, calls, host_readback=host),
+        capturable=not host))
 
 
 def test_python_body_runs_once_per_recording_and_never_on_replay():
@@ -322,12 +331,9 @@ def test_python_body_runs_once_per_recording_and_never_on_replay():
     run no Python; a caller recording made AFTER the self-graph exists re-enqueues the
     body (never launches the stored graph) and the caller's replays run no Python."""
     calls = []
-    base = _polar_spec()
-    registry.add(GeneratorSpec(name="toy.count", alloc_scratch=base.alloc_scratch,
-                               generate=_counting(base.generate, calls),
-                               capturable=True, accepts_ctx=True))
+    _register_circle_toy("toy.count", calls)
     gen, _ = _make("track", 11, generator="toy.count")
-    ref = _eager_ref("track", 11, generator="polar")
+    ref = _eager_ref("track", 11, generator="toy.circle")
     assert len(calls) == 1, "construction runs exactly one real pass"
     assert gen.graph is None
 
@@ -354,17 +360,12 @@ def test_python_body_runs_once_per_recording_and_never_on_replay():
 
 
 # ---------------------------------------------------------------------------------------
-# Non-capturable and legacy-plugin generators
+# Non-capturable generators
 # ---------------------------------------------------------------------------------------
 
 def _register_host_toys(calls: list) -> None:
-    """Register a non-capturable "toy.host" track AND gate generator (wrapping polar /
-    bezier, so their outputs equal those shipped generators); undone by the per-test
-    registry scope (tests/conftest.py)."""
-    tbase = _polar_spec()
-    registry.add(GeneratorSpec(name="toy.host", alloc_scratch=tbase.alloc_scratch,
-                               generate=_counting(tbase.generate, calls, host_readback=True),
-                               capturable=False, accepts_ctx=True))
+    """Register HOST circle and gate plugins through their public plugin interfaces."""
+    _register_circle_toy("toy.host", calls, host=True)
     gbase = registry.get("gate_generator", "bezier")   # an anchors Stage (roadmap PR11)
 
     class HostGates(gbase):
@@ -394,7 +395,7 @@ def test_non_capturable_generator_refuses_caller_capture_before_any_launch(kind)
     _register_host_toys(calls)
     gen, _ = _make(kind, 11, generator="toy.host")
     assert len(calls) == 1, "construction runs exactly one real pass"
-    ref = _eager_ref(kind, 11, generator="polar" if kind == "track" else "bezier")
+    ref = _eager_ref(kind, 11, generator="toy.circle" if kind == "track" else "bezier")
 
     out = gen.generate()
     wp.synchronize()
@@ -465,108 +466,7 @@ def test_course_with_non_capturable_generator_refuses_caller_capture():
     res = course.generate(seeds=3)
     assert len(calls) == n + 1
     assert course.graph is None, "a non-capturable course never self-graphs"
-    _assert_same(res, Course(cfg("polar", 3)).result, "course over toy.host, seeds=3")
-
-
-@wp.kernel
-def _copy_seeds_k(src: wp.array(dtype=wp.int32), dst: wp.array(dtype=wp.int32)):
-    e = wp.tid()
-    dst[e] = src[e]
-
-
-def _register_legacy_toy(calls: list) -> None:
-    """Register "toy.legacy": a legacy-ABI track plugin (no accepts_ctx) that, like a real
-    one, issues its OWN ``wp.launch`` with no ``stream=`` (so on Warp's CURRENT stream):
-    it copies the seeds into a private buffer, then runs polar on that copy (polar's
-    helpers follow the ambient context the orchestrator sets). Its output therefore
-    equals polar's only when that stream-less launch is ordered with the rest of the
-    body. Undone by the per-test registry scope (tests/conftest.py)."""
-    base = _polar_spec()
-
-    def alloc_scratch(config):
-        seeds = wp.zeros(int(config.num_envs), dtype=wp.int32, device=str(config.device))
-        return base.alloc_scratch(config), seeds
-
-    def legacy_generate(seeds_wp, config, out_centerline, out_valid_wp, scratch):
-        calls.append(1)
-        base_scratch, seed_copy = scratch
-        wp.launch(_copy_seeds_k, dim=seeds_wp.shape[0], inputs=[seeds_wp, seed_copy],
-                  device=seeds_wp.device)             # no stream=: Warp's current stream
-        base.generate(seed_copy, config, out_centerline=out_centerline,
-                      out_valid_wp=out_valid_wp, scratch=base_scratch)
-
-    registry.add(GeneratorSpec(name="toy.legacy", alloc_scratch=alloc_scratch,
-                               generate=legacy_generate))
-
-
-def test_legacy_plugin_records_only_on_warps_current_stream():
-    """A legacy-ABI plugin (no accepts_ctx) launches on Warp's current stream, so
-    recording it on another capturing stream raises LegacyPluginStreamError before any
-    launch; with the capture stream made current it records and replays correctly."""
-    calls = []
-    _register_legacy_toy(calls)
-    gen, _ = _make("track", 11, generator="toy.legacy")
-    ref = _eager_ref("track", 11, generator="polar")
-    out = gen.enqueue()
-    wp.synchronize()
-    _assert_same(out, ref, "legacy plugin: eager")
-    n = len(calls)
-
-    s = _side_stream()
-    marker, marker_src = _marker()
-    with _recording(s) as refused:
-        wp.copy(marker, marker_src, stream=s)
-        with pytest.raises(tg_exec.LegacyPluginStreamError):
-            gen.generate(stream=s)
-    assert len(calls) == n, "the legacy body ran on a stream it cannot follow"
-    _poison_all(out)
-    poisoned = _snapshot(out)
-    _replay(refused.graph, s)
-    np.testing.assert_array_equal(marker.numpy(), marker_src.numpy())
-    for name, arr in poisoned.items():
-        np.testing.assert_array_equal(getattr(out, name).numpy(), arr, err_msg=name)
-
-    with wp.ScopedStream(s):                      # the capture stream is now current
-        with _recording(s) as cap:
-            assert gen.generate() is out
-    assert len(calls) == n + 1
-    _poison_all(out)
-    _replay(cap.graph, s)
-    _assert_same(out, ref, "legacy plugin: recorded on the current stream")
-
-    out2 = gen.generate()                         # legacy self-graph (current stream)
-    assert gen.graph is not None
-    _assert_same(out2, ref, "legacy plugin: self-graph")
-
-
-def test_legacy_plugin_off_the_current_stream_outside_a_capture():
-    """Outside a capture, a legacy plugin whose call resolves a side stream (constructor
-    ``stream=``, explicit ``stream=``) must still have its own stream-less launches
-    ordered with the library's stages: the whole body runs on Warp's current stream,
-    bracketed by events with the side stream (construction, eager ``enqueue()``), and
-    the self-graph replays on the side stream."""
-    calls = []
-    _register_legacy_toy(calls)
-    s = _side_stream()
-    gen, rng = _make("track", 11, generator="toy.legacy", stream=s)   # prepared "on" s
-    assert len(calls) == 1
-    _assert_same(gen._track, _eager_ref("track", 11, generator="polar"),
-                 "legacy plugin: construction with stream=side")
-    for i, base in enumerate((101, 202, 303, 404)):
-        ref = _eager_ref("track", base, generator="polar")
-        _reseed(rng, base)
-        _poison_all(gen._track)
-        if i == 0:
-            out = gen.enqueue()                   # eager on the constructor stream
-        elif i == 1:
-            out = gen.enqueue(stream=s)           # eager, explicit side stream
-        elif i == 2:
-            out = gen.generate()                  # self-graph captured on the current stream
-            assert gen.graph is not None
-        else:
-            out = gen.generate(stream=s, sync=False)   # replayed on the side stream
-        wp.synchronize()
-        _assert_same(out, ref, f"legacy plugin off the current stream: call {i}")
+    _assert_same(res, Course(cfg("toy.circle", 3)).result, "course over toy.host, seeds=3")
 
 
 def _torch_cuda():
@@ -576,7 +476,7 @@ def _torch_cuda():
     return torch
 
 
-@pytest.mark.parametrize("generator", ["polar", "toy.legacy"])
+@pytest.mark.parametrize("generator", ["polar", "toy.context"])
 def test_documented_torch_recipe_leaves_the_wrapper_registered(generator):
     """The documented recipe: Warp's current stream = ``wp.stream_from_torch(s)``, then
     ``torch.cuda.graph(g, stream=s)``. Adoption must return THAT wrapper, never a
@@ -584,10 +484,11 @@ def test_documented_torch_recipe_leaves_the_wrapper_registered(generator):
     native current stream would turn NULL and a later Warp capture on the wrapper would
     fail with "unknown stream"). A second, Warp capture on the same wrapper must work."""
     torch = _torch_cuda()
-    if generator == "toy.legacy":
-        _register_legacy_toy([])
+    if generator == "toy.context":
+        _register_circle_toy("toy.context", [])
     gen, _ = _make("track", 11, generator=generator)
-    ref = _eager_ref("track", 11, generator="polar")
+    ref_name = "toy.circle" if generator == "toy.context" else "polar"
+    ref = _eager_ref("track", 11, generator=ref_name)
     ts = torch.cuda.Stream(device=DEV)
     ws = wp.stream_from_torch(ts)
     torch.cuda.synchronize()

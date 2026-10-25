@@ -2,9 +2,26 @@ import pytest
 import torch
 
 from track_gen import GateGenConfig, GateGenerator, PerEnvSeededRNG
-from track_gen._src import gate_generator_registry as reg
+from track_gen.plugin import Stage, registry
 from tests._warp_compare import to_t
 
+
+
+def _gate_stage(name, capacity, orderings=("ccw",), build=None):
+    class GateStage(Stage):
+        kind = "gate_generator"
+        output = "anchors"
+        writes = {"xy": "anchors.xy", "count": "anchors.count"}
+
+        def capacity(self, p, layout):
+            return {"gates": capacity}
+
+        def build(self, b, p):
+            return build(b, p) if build is not None else lambda ctx: None
+
+    GateStage.name = name
+    GateStage.orderings = frozenset(orderings)
+    return GateStage
 
 def _make_rng(num_envs: int, seed: int = 0, device: str = "cpu"):
     return PerEnvSeededRNG(seeds=seed, num_envs=num_envs, device=device)
@@ -48,13 +65,7 @@ def test_gate_generator_unknown_generator_raises_before_warp_gate_import():
 
 
 def test_gate_generator_unsupported_ordering_raises(plugin_registry):
-    plugin_registry.add(reg.GateGeneratorSpec(
-        name="tests.fake",
-        alloc_scratch=lambda config: object(),
-        generate=lambda seeds_wp, config, out, scratch: None,
-        max_gates=lambda config: 4,
-        supported_orderings=frozenset({"ccw"}),
-    ))
+    plugin_registry.add(_gate_stage("tests.fake", 4))
     cfg = GateGenConfig(generator="tests.fake", gate_ordering="raw")
     rng = PerEnvSeededRNG(seeds=0, num_envs=cfg.num_envs, device=cfg.device)
     with pytest.raises(ValueError, match="does not support gate_ordering"):
@@ -78,13 +89,7 @@ def test_gate_generator_rejects_unreachable_min_gates(cfg_kwargs, producible):
 
 
 def test_gate_generator_rejects_too_small_max_gates(plugin_registry):
-    plugin_registry.add(reg.GateGeneratorSpec(
-        name="tests.fake",
-        alloc_scratch=lambda config: object(),
-        generate=lambda seeds_wp, config, out, scratch: None,
-        max_gates=lambda config: 64,
-        supported_orderings=frozenset({"ccw"}),
-    ))
+    plugin_registry.add(_gate_stage("tests.fake", 64))
     cfg = GateGenConfig(generator="tests.fake", max_gates=32)
     rng = PerEnvSeededRNG(seeds=0, num_envs=cfg.num_envs, device=cfg.device)
     with pytest.raises(ValueError, match="max_gates"):
@@ -110,14 +115,12 @@ def test_cuda_prepares_at_construction_then_captures_once_and_replays(monkeypatc
     def generate(seeds_wp, config, out, scratch, ctx=None):
         calls.append((ctx.stream, ctx.capturing))
 
-    plugin_registry.add(reg.GateGeneratorSpec(
-        name="tests.fake-cuda",
-        alloc_scratch=lambda config: object(),
-        generate=generate,
-        max_gates=lambda config: 4,
-        supported_orderings=frozenset({"ccw"}),
-        accepts_ctx=True,
-    ))
+    def build(b, p):
+        b.write("xy", wp.vec2f, per="anchors")
+        b.write("count", wp.int32)
+        return lambda ctx: calls.append((ctx.stream, ctx.capturing))
+
+    plugin_registry.add(_gate_stage("tests.fake-cuda", 4, build=build))
 
     # PR11: GateGenerator runs a gate Program. The seam is a generator-only gate spec
     # (the planner's GateSequence-writer rule is lifted for it) and a fake result; the
@@ -293,33 +296,18 @@ def test_gate_generator_sphere_solve_repairs_overlapping_native_points(plugin_re
     import types
     import warp as wp
 
-    def alloc_scratch(config):
-        nan = float("nan")
-        return types.SimpleNamespace(
-            position=wp.array(
-                [
-                    wp.vec2f(0.0, 0.0),
-                    wp.vec2f(0.01, 0.0),
-                    wp.vec2f(nan, nan),
-                    wp.vec2f(nan, nan),
-                ],
-                dtype=wp.vec2f,
-                device=str(config.device),
-            ),
-            count=wp.array([2], dtype=wp.int32, device=str(config.device)),
-        )
+    def build(b, p):
+        fixed = wp.array([[0.0, 0.0], [0.01, 0.0]], dtype=wp.vec2f,
+                         device=str(b.device))
+        xy = b.write("xy", wp.vec2f, per="anchors")
+        count = b.write("count", wp.int32)
 
-    def generate(seeds_wp, config, out, scratch):
-        wp.copy(out.position, scratch.position)
-        wp.copy(out.count, scratch.count)
+        def enqueue(ctx):
+            ctx.copy(xy, fixed)
+            ctx.fill(count, 2)
+        return enqueue
 
-    plugin_registry.add(reg.GateGeneratorSpec(
-        name="tests.overlap",
-        alloc_scratch=alloc_scratch,
-        generate=generate,
-        max_gates=lambda config: 2,
-        supported_orderings=frozenset({"raw"}),
-    ))
+    plugin_registry.add(_gate_stage("tests.overlap", 2, ("raw",), build))
 
     base_kwargs = dict(
         generator="tests.overlap",
@@ -383,13 +371,18 @@ def test_point_family_gate_generators_cuda_capture_reuses_output(generator):
 
 
 def test_gate_generator_invalidates_zero_count_from_native_generator(plugin_registry):
-    plugin_registry.add(reg.GateGeneratorSpec(
-        name="tests.zero-count",
-        alloc_scratch=lambda config: object(),
-        generate=lambda seeds_wp, config, out, scratch: None,
-        max_gates=lambda config: 2,
-        supported_orderings=frozenset({"ccw"}),
-    ))
+    def build(b, p):
+        import warp as wp
+
+        xy = b.write("xy", wp.vec2f, per="anchors")
+        count = b.write("count", wp.int32)
+
+        def enqueue(ctx):
+            ctx.fill(xy, wp.vec2f(float("nan"), float("nan")))
+            ctx.fill(count, 0)
+        return enqueue
+
+    plugin_registry.add(_gate_stage("tests.zero-count", 2, build=build))
 
     E, G = 3, 2
     cfg = GateGenConfig(

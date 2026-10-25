@@ -451,11 +451,8 @@ def test_course_line_produces_a_centerline(gates):
     assert type(c) is Centerline and c.layout == Layout(E, 8 * 32, "cpu", True)
     line.refresh()
     assert c.validate() == c.layout
-    with pytest.warns(DeprecationWarning, match=r"CourseLine\.track is a Centerline since "
-                                                r"0\.2\.0\.dev5 and is deprecated; use "
-                                                r"CourseLine\.centerline"):
-        alias = line.track
-    assert alias is c and not isinstance(alias, Track)
+    assert not hasattr(line, "track")
+    assert not isinstance(c, Track)
     assert not hasattr(c, "outer")
 
 

@@ -36,9 +36,7 @@ selected generator. ``lo``/``hi`` are set only where a legacy rule rejects the s
 inclusive bound, so the generic bound check never fires before a legacy message.
 
 Not part of the public API: reach a class through ``registry.get(kind, name).Params``
-(the built-in track generators are ``generator`` Stages since roadmap PR13c, the gate
-generators ``gate_generator`` Stages since PR11; the track generators' deprecated
-``.params`` alias warns) or ``registry.describe(kind, name).params_schema``, or pass a
+(built-in track and gate generators are Stages) or ``registry.describe(kind, name).params_schema``, or pass a
 dict.
 """
 from __future__ import annotations
@@ -340,41 +338,10 @@ class BezierParams(_PointFamilyParams):
                                        doc="Adaptive Bezier-handle clamp (fraction of the "
                                            "shorter incident edge; per env; very large "
                                            "disables it).")
-    style_sampling: bool = static(False, doc="Per-env style randomisation from the "
-                                             "*_range fields.")
-    rad_range: "tuple[float, float] | None" = static(
-        None, doc="(lo, hi) per-env rad range when style_sampling.")
-    scale_range: "tuple[float, float] | None" = static(
-        None, doc="(lo, hi) per-env scale range when style_sampling.")
-    handle_clamp_frac_range: "tuple[float, float] | None" = static(
-        None, doc="(lo, hi) per-env handle_clamp_frac range when style_sampling.")
     size: float = _size_field()
 
-    #: The switch named in the messages about a knob the stage draws itself.
-    _self_draw_switch = "style_sampling"
-
     def _nominal_perimeter(self, scale: float, drawn: "Mapping[str, float]") -> float:
-        # The measured longest raw loop at the defaults (_LONGEST_LOOP), times the
-        # largest per-env scale (style_sampling's scale_range replaces scale) and the
-        # corner-capacity factor. rad / handle_clamp_frac move it by at most ~3%.
-        if bool(self.style_sampling) and self.scale_range is not None:
-            scale = float(self.scale_range[1])
         return _LONGEST_LOOP["bezier"] * float(scale) * _corner_factor(self)
-
-    def _self_drawn(self) -> "dict[str, str]":
-        """``field -> range field`` of the dynamic knobs ``style_sampling`` draws itself
-        every generation (those whose ``*_range`` is given, e.g. ``{"rad":
-        "rad_range"}``): the planner makes each a single unlatched array the style
-        kernel writes, reported in ``StageParams.drawn`` as drawn by the stage itself
-        (roadmap PR13c)."""
-        if not bool(self.style_sampling):
-            return {}
-        out = {}
-        if self.rad_range is not None:
-            out["rad"] = "rad_range"
-        if self.handle_clamp_frac_range is not None:
-            out["handle_clamp_frac"] = "handle_clamp_frac_range"
-        return out
 
     @classmethod
     def _check_draws(cls, params, ranges, randomized) -> None:
@@ -384,17 +351,7 @@ class BezierParams(_PointFamilyParams):
         ``handle_clamp_frac`` can take (its drawn ``hi``, or its value when not drawn)
         warns, since ``rad`` has no effect there (the handle is ``min(rad * chord,
         clamp * shorter edge)`` and the shorter edge is at most the chord). Roadmap
-        PR13d: a ``size`` randomizer next to ``style_sampling``'s ``scale_range`` warns
-        (two per-env size draws compose)."""
-        if "size" in randomized and bool(params.style_sampling) and \
-                params.scale_range is not None:
-            from .generator_binding import _outside_track_gen_stacklevel  # noqa: PLC0415
-
-            warnings.warn(
-                "two per-env size draws compose multiplicatively: style_sampling's "
-                "scale_range x generator.size; set style_sampling=False (scale_range=(a, "
-                "b) -> {'generator.size': (a / scale, b / scale)})", UserWarning,
-                stacklevel=_outside_track_gen_stacklevel())
+"""
         rad = ranges.get("rad")
         if rad is None or "rad" not in randomized:
             return

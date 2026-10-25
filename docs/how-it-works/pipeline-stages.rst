@@ -141,7 +141,7 @@ checks the spec before it allocates or launches anything, then allocates once:
    (:ref:`Planner rules for gate pipelines <pipeline-gate-plan-rules>`). Each randomizer is checked against its target
    (:ref:`Per-env draws <pipeline-randomize>`).
 5. **Capture class and segments.** Each stage's capture class comes from its
-   ``capture_class(params)`` (a legacy ``GeneratorSpec`` / ``GateGeneratorSpec``:
+   ``capture_class(params)`` (a ``GeneratorSpec``:
    ``STATIC``, or ``HOST`` with ``capturable=False``). The Program's is the highest
    (``STATIC`` < ``BOUNDED`` < ``HOST``), and the stages are grouped into segments of
    equal host-ness (see `Capture classes and segments`_). With
@@ -198,9 +198,7 @@ That covers the built-ins and Stage generators. A ``GeneratorSpec`` plugin that 
 config fields outside its Params class needs ``TrackGenerator`` with a config. A gate
 generator is bound the same way from a ``GateGenConfig`` derived from the spec
 (``num_envs``, ``device``, ``max_gates``, ``scale``, its params, and ``min_gates``,
-``gate_ordering`` and the gate scalars from the stages that hold them); a legacy
-``GateGeneratorSpec`` that reads other config fields needs ``GateGenerator`` with a
-config.
+``gate_ordering`` and the gate scalars from the stages that hold them).
 
 ``build`` accepts both kinds of spec: the ``Program`` it returns has a ``Track`` or a
 ``GateSequence`` as its ``result``.
@@ -256,8 +254,7 @@ The ``Program``
   ``host_stage_ids`` and ``segments`` (see `Capture classes and segments`_).
 - ``prepared`` (whether the warm-up has run), ``device``, ``default_stream`` (the stream
   a call runs on when it passes no ``stream=`` and no ambient scope applies), ``runner``
-  (its ``GraphRunner``) and ``legacy_stream`` (``True`` for a generator on the legacy
-  plugin ABI, which launches on Warp's current stream: :ref:`cuda-graph-host`).
+  (its ``GraphRunner``).
 
 .. _pipeline-segments:
 
@@ -278,7 +275,7 @@ body. ``Program.segments`` is a tuple of ``Segment`` (``track_gen.pipeline.Segme
 - ``stage_ids``, its slot ids in pipeline order;
 - ``host``, ``True`` for a ``HOST`` segment.
 
-A legacy ``GeneratorSpec(capturable=False)`` gives ``(HOST: generator) + (STATIC: the
+A ``GeneratorSpec(capturable=False)`` gives ``(HOST: generator) + (STATIC: the
 rest)``; a ``HOST`` relax stage between capturable stages gives three segments. Outside a
 capture on ``cuda`` the Program records every capturable segment into a graph of its own
 and runs the ``HOST`` ones eagerly between the graph launches (:ref:`cuda-graph-host`).
@@ -303,11 +300,7 @@ run the ``HOST`` segments eagerly.
 - Mixing ``advance`` / ``mask`` between the segments of a generation, running them out
   of order, or skipping one is not checked (a replayed segment runs no Python, so the
   Program cannot see its arguments) and leaves the output undefined.
-- A legacy-ABI generator (``Program.legacy_stream``) lives in segment ``0`` and launches
-  on Warp's current stream: when ``ctx``'s stream is another one, ``enqueue`` and
-  ``enqueue_segment(0, ...)`` raise ``LegacyPluginStreamError`` if ``ctx`` is capturing,
-  and otherwise run on the current stream, ordered after and before ``ctx``'s stream with
-  events.
+
 
 The checks run on the host before any launch, in this order: ``run`` validates ``mask``
 and ``advance`` (``ValueError``; ``enqueue`` and ``enqueue_segment`` leave that to their
@@ -329,7 +322,7 @@ before anything is allocated:
    #   flow, so they run eagerly and refuse a caller's capture): use STATIC / BOUNDED
    #   stages or drop require_caller_capturable
 
-A legacy ``GeneratorSpec(capturable=False)`` is named ``'generator' (generator 'acme.old',
+A ``GeneratorSpec(capturable=False)`` is named ``'generator' (generator 'acme.old',
 GeneratorSpec capturable=False)``.
 
 Channels
@@ -1287,8 +1280,7 @@ declares ``per="env"`` is latched the same way. Three consequences:
   and segments`_).
 
 A *drawn* field does not go through the latch: the stage that draws it (a
-``randomize.uniform`` stage, or ``bezier``'s deprecated ``style_sampling`` for a knob with
-a range) writes the one array the target reads, during the generation. So the runtime
+``randomize.uniform`` stage) writes the one array the target reads, during the generation. So the runtime
 arrays come in two kinds:
 
 .. list-table::
@@ -1310,7 +1302,7 @@ arrays come in two kinds:
 
 ``Program.input_info`` (``gen.input_info``) says which inputs are latched, and
 ``StageParams.drawn`` (``gen.params[stage].drawn``) maps each drawn field to the id of the
-stage that draws it (the stage's own id for a ``style_sampling`` draw).
+stage that draws it.
 
 **Randomizers.** ``randomize.uniform`` is a ``STATIC`` stage of a closed kind. Its Params,
 ``RandomizeUniformParams``, hold ``stage`` and ``field`` (static: the target) and ``lo``
@@ -1343,10 +1335,7 @@ bounds, narrowed per instance (``min_num_points``: ``(2, max_num_points)``, whic
 also enforces), so the value a built-in kernel used is
 ``clamp(in_effect(field), *bounds(field))``. Used as written, without a clamp:
 ``width.from_channel``'s ``scale`` / ``lo`` / ``hi`` (it clamps its output), a
-randomizer's ``lo`` / ``hi`` (it clamps its draw), and ``style_sampling``'s draws.
-``bezier`` passes its bounds to its kernel as arguments, which is how the last exception
-works. The scalar-argument kernels stay, unchanged, for the legacy entry points
-(``generate_*_warp``, ``apply_z_profile*``, the ``sample_*`` helpers).
+randomizer's ``lo`` / ``hi`` (it clamps its draw).
 
 **Size.** ``size`` multiplies where ``scale`` already acts, after it: the corner grid
 ``((x * cell_size + jitter) * scale) * size[e]``, or the normalization target
@@ -1356,8 +1345,6 @@ test locks the generated CUDA source of each kernel pair). ``repulsive``'s final
 multiplies only finite values (``where(size == 1 or not finite, v, w * size)``, with ``w``
 the finite-gated value): a size-1 copy keeps every finite value bit for bit, and a
 non-finite point is copied unscaled at every size (a NaN bit for bit, payload included).
-Under ``style_sampling``, ``size`` composes with the ``scale_range`` draw
-(``scale[e] * size[e]``).
 
 **Corner count.** ``_sample_counts_dyn_k`` loads env ``e``'s ``min_num_points``, clamps
 it to ``[2, max_num_points]`` and draws the count as the scalar kernel does.
@@ -1366,8 +1353,7 @@ it to ``[2, max_num_points]`` and draws the count as the scalar kernel does.
 ``_check_draws`` hook is checked, drawn or not: crossing ``z_min`` / ``z_max``
 randomizers raise ``PlanError``; an inert elevation window, a ``rad`` drawn above its
 clamp, a ``generator.size`` range (or construction value) that would truncate the nominal
-longest loop at the pipeline's ``n_max``, and a ``generator.size`` randomizer combined
-with ``style_sampling``'s ``scale_range`` emit a ``UserWarning``. :ref:`tuning-per-env`
+longest loop at the pipeline's ``n_max`` emit a ``UserWarning``. :ref:`tuning-per-env`
 and :ref:`tuning-size` give the rules from the user's side.
 
 **Launches.** One latch launch per latched dynamic field per generation, right after the
@@ -1454,12 +1440,6 @@ What the pipeline does not do in this release:
 Reference compositions
 ----------------------
 
-The scalar track composition (``warp_pipeline._run_pipeline``, ``inflate_warp``,
-``_inflate_warp_alloc``) stays importable: ``TrackGenerator`` does not call it, and the
-tests use it as the byte-identity reference of the default pipelines. ``gen._scratch`` is
-a view of the Program's buffers kept for the same reason; new code reads
-``gen.program.tap``. The gate pipeline has no such composition (the tests keep a frozen
-copy as its reference) and ``GateGenerator`` has no ``_scratch``: read
-``gen.program.tap``. The deprecated ``warp_gate`` helpers that legacy gate plugins call
-(``alloc_order_scratch``, ``order_points``, ``finish_ordered_gates``, ``_GateStaging``)
-stay until 1.0; the library does not call them (:ref:`plugin-abis`).
+The tests keep independent numeric reference compositions for parity checks. New
+code reads intermediate pipeline values through ``gen.program.tap``; private scratch
+views and kernels are not extension interfaces.

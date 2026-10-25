@@ -79,7 +79,7 @@ def test_guide_examples_generate_valid_tracks_and_gates(guide_module):
         g.register(registry)
         g.register_gates(registry)
         registry.add(GeneratorSpec(name="acme.star", alloc_scratch=g.alloc_star_scratch,
-                                   generate=g.generate_star, accepts_ctx=True))
+                                   generate=g.generate_star))
         for name in ("acme.wobbly", "acme.star"):
             cfg = TrackGenConfig(generator=name, num_envs=E, device="cpu")
             rng = PerEnvSeededRNG(seeds=0, num_envs=E, device="cpu")

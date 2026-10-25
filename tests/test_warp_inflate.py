@@ -1,4 +1,4 @@
-"""inflate_warp == torch inflation stages on a constant_spacing centerline.
+"""_inflate_warp == torch inflation stages on a constant_spacing centerline.
 
 Builds two closed loops (a fat circle -> valid, a thin ellipse -> invalid),
 constant-spacing-resamples them (the production path: NaN-padded center + per-env
@@ -38,8 +38,9 @@ pytest.importorskip("warp")
 import warp as wp  # noqa: E402
 from tests._oracle import inflation  # noqa: E402
 from tests._warp_compare import to_t  # noqa: E402
-from track_gen._src import warp_pipeline as wpl  # noqa: E402
-from track_gen._src.types import Track, TrackGenConfig  # noqa: E402
+from tests._reference_generators import warp_pipeline as wpl  # noqa: E402
+from track_gen._src.types import Track
+from tests._oracle.config import OracleConfig as TrackGenConfig
 
 from tests.conftest import DEVS  # noqa: E402
 
@@ -57,7 +58,7 @@ def _build_cs(dev: str, config: TrackGenConfig):
     """Constant-spacing-resample the dense loops via the pure-Warp in-place API.
 
     Returns (cs_center_wp, count_wp) — both wp.arrays — matching the production
-    path that inflate_warp receives on the owned pipeline.
+    path that _inflate_warp receives on the owned pipeline.
     """
     center = _build_center(dev)
     E, N, _ = center.shape
@@ -80,7 +81,7 @@ def test_inflate_warp_matches_oracle(dev):
     valid_wp = wp.empty(E, dtype=wp.int32, device=dev)
     wp.launch(wpl._fill_i32_k, dim=E, inputs=[valid_wp, 1], device=dev)
 
-    got = wpl.inflate_warp(cs_center_wp, config, valid=valid_wp, count=count_wp)
+    got = wpl._inflate_warp(cs_center_wp, config, valid=valid_wp, count=count_wp)
     assert isinstance(got, Track)
 
     count_t = wp.to_torch(count_wp).long()
@@ -111,7 +112,7 @@ def test_inflate_warp_matches_oracle(dev):
     for e in range(2):
         c = int(count_t[e].item())
 
-        # center: inflate_warp stores resample_uniform(cs_center) in Track.center.
+        # center: _inflate_warp stores resample_uniform(cs_center) in Track.center.
         assert torch.allclose(rs_wp[e, :c], rs_ref[e, :c], atol=1e-4), f"center env{e} on {dev}"
         assert torch.isnan(rs_wp[e, c:]).all(), f"center pad env{e} on {dev}"
 
@@ -177,8 +178,8 @@ def test_inflate_warp_valid_defaults_to_all_true(dev):
     valid_wp = wp.empty(E, dtype=wp.int32, device=dev)
     wp.launch(wpl._fill_i32_k, dim=E, inputs=[valid_wp, 1], device=dev)
 
-    ref = wpl.inflate_warp(cs_center_wp, config, valid=valid_wp, count=count_wp)
-    got = wpl.inflate_warp(cs_center_wp, config, count=count_wp)  # valid omitted -> all-True
+    ref = wpl._inflate_warp(cs_center_wp, config, valid=valid_wp, count=count_wp)
+    got = wpl._inflate_warp(cs_center_wp, config, count=count_wp)  # valid omitted -> all-True
 
     assert torch.equal(wp.to_torch(got.valid).bool().cpu(), wp.to_torch(ref.valid).bool().cpu())
     assert wp.to_torch(got.valid).bool().cpu().tolist() == [True, False]
@@ -194,10 +195,4 @@ def test_inflate_warp_count_none_rejects_wrong_N():
     # Build a wp.array with wrong N
     center_wp = wp.zeros(E * n_wrong, dtype=wp.vec2f, device=dev)
     with pytest.raises(AssertionError):
-        wpl.inflate_warp(center_wp, config)  # count=None -> fixed-N convenience path
-
-
-def test_constant_spacing_is_the_only_output_mode():
-    # Any output_mode other than constant_spacing is rejected at config time.
-    with pytest.raises(ValueError):
-        TrackGenConfig(half_width=0.1, num_points=256, output_mode="fixed")
+        wpl._inflate_warp(center_wp, config)  # count=None -> fixed-N convenience path

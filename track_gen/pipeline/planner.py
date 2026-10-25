@@ -64,10 +64,6 @@ _ON_INVALID = ("keep", "poison")
 _AGREE = {
     "half_width": "the stages with a half_width field share one value: the nominal width "
                   "(the per-point width is cl.half_width)",
-    "gate_width": "one value per pipeline: the initial bar width, where "
-                  "gate_frames.default's per-env width starts (validity.gate_default's "
-                  "copy is inert since 0.2.0.dev5: leave it at its default 0, or remove "
-                  "it; removed in PR16)",
     "gate_radius": "one value per pipeline: gate_relax.spheres separates the gates to "
                    "the distance validity.gate_default checks",
 }
@@ -302,7 +298,7 @@ class _Slot:
     builtin: bool = True        # shipped with track_gen (the registry's own record)
     ports: dict = dataclasses.field(default_factory=dict)   # effective rewiring
     layout: object = None       # the stage's Layout (its point domain)
-    generator: "str | None" = None  # "centerline" | "anchors" | "legacy" | None
+    generator: "str | None" = None  # "centerline" | "anchors" | None
     capacity: "dict | None" = None  # an anchors producer's {"gates": A, "min_gates": k}
     carries: tuple = ()             # the (src, dst) channels a carrier carries
     centerline: bool = False        # a gate Program's stage before the anchors producer
@@ -350,7 +346,7 @@ def _domain_layout(slot_cls, ref: StageRef, ports: dict, *, gate: bool, batch,
     closed = bool(batch.closed)
     if generator in ("centerline",):
         return Layout(E, n_max, dev, closed)
-    if generator in ("anchors", "legacy"):
+    if generator == "anchors":
         return Layout(E, int(batch.max_gates), dev, closed)
     declared = {**dict(slot_cls.reads), **dict(slot_cls.writes)}
     chans = {p: ports.get(p, ch) for p, ch in declared.items()}
@@ -417,7 +413,6 @@ def _resolve(spec: PipelineSpec, binding, layout, registry=None) -> "list[_Slot]
     from ..plugin import registry as _default_registry  # noqa: PLC0415
     from ..plugin.params import _check_values, _coerce, _static_view  # noqa: PLC0415
     from ..plugin.stage import _is_stage  # noqa: PLC0415
-    from ..stages.gates import _LegacyGateSlot  # noqa: PLC0415
     from ..stages.track import (ElevationFlat, OffsetDefault, ValidityDefault,  # noqa
                                 Xpbd, _GeneratorSlot)
 
@@ -440,10 +435,8 @@ def _resolve(spec: PipelineSpec, binding, layout, registry=None) -> "list[_Slot]
                                 f"{binding.kind.replace('_', ' ')}")
             if ref.kind == _GENERATOR:
                 kind, cls, inst = "centerline", _GeneratorSlot, _GeneratorSlot(binding)
-            elif _is_stage(binding.spec):
-                kind, cls, inst = "anchors", binding.spec, None
             else:
-                kind, cls, inst = "legacy", _LegacyGateSlot, _LegacyGateSlot(binding)
+                kind, cls, inst = "anchors", binding.spec, None
             slot_layout = _domain_layout(cls, ref, {}, gate=gate, batch=batch,
                                          generator=kind)
             bl = binding.layout
@@ -457,7 +450,7 @@ def _resolve(spec: PipelineSpec, binding, layout, registry=None) -> "list[_Slot]
                 slot.builtin = bool(reg.describe(_GATE_GENERATOR, ref.name).builtin)
                 slot.capacity = _check_capacity(cls, cls().capacity(
                     _static_view(binding.params), slot_layout))
-            anchored = kind in ("anchors", "legacy")
+            anchored = kind == "anchors"
             slots.append(slot)
             continue
         builtin = True
@@ -516,11 +509,7 @@ def _resolve(spec: PipelineSpec, binding, layout, registry=None) -> "list[_Slot]
 
 
 def _check_agreement(slots) -> None:
-    """Every stage that bakes ``half_width`` / ``gate_radius`` as a host scalar agrees
-    on its value; ``gate_width``: the stages' INITIAL values agree (roadmap PR13d:
-    ``gate_frames.default``'s is the initial per-env width; ``validity.gate_default``'s
-    is inert, so it takes part only when set to a value other than its default 0: a
-    pre-0.2.0.dev5 spec whose two widths disagree)."""
+    """Stages baking a shared half-width or gate radius agree on its value."""
     for field, why in _AGREE.items():
         vals = {}
         for s in slots:
@@ -528,9 +517,6 @@ def _check_agreement(slots) -> None:
             if s.generator is not None or s.params is None or field not in fields:
                 continue
             v = getattr(s.params, field)
-            if field in getattr(type(s.params), "_inert_fields", ()) and \
-                    v == fields[field].default:
-                continue
             vals[s.id] = v
         if len({float(v) for v in vals.values()}) > 1:
             raise PlanError(f"the stages disagree on {field}: {vals} ({why})")
@@ -560,15 +546,6 @@ def _check_gate_plan(spec, slots, registry) -> int:
         if cap > G:
             raise PlanError(f"{_label(s.ref)}: BatchSpec.max_gates={G} is too small for "
                             f"{what}; required max_gates {cap}.")
-    if gen.generator == "legacy":
-        # A legacy spec writes its gates itself: its max_gates(config) callable is its
-        # capacity (0.2.0.dev3's checks).
-        binding = gen.instance.binding
-        A = int(binding.pipeline_spec.max_gates(binding.run_config))
-        if A > G:
-            raise PlanError(f"{_label(gen.ref)}: BatchSpec.max_gates={G} is too small for "
-                            f"gate generator {name!r}; required max_gates {A}.")
-        producers = [gen]
     if producers:
         for s in slots:
             m = getattr(s.params, "min_gates", None) if s.generator is None else None
@@ -582,8 +559,6 @@ def _check_gate_plan(spec, slots, registry) -> int:
                             f"anchors per env (its capacity()['gates']).")
                 raise PlanError(f"{_label(s.ref)}: min_gates={m} is too large for {what}")
     orders = [s for s in slots if s.ref.kind == "order"]
-    if gen.generator == "legacy":
-        A = 0                     # no anchors channel: the legacy spec writes gates.*
     if gen.generator == "anchors":
         supported = _orderings_of(gen.cls, reg)
         preferred = _preferred(gen.cls).get("order")
@@ -604,7 +579,7 @@ def _check_gate_plan(spec, slots, registry) -> int:
                                 f"index, which needs order.raw; stage {o.id!r} is "
                                 f"{o.ref.kind}.{o.ref.name} (it permutes the anchors)")
     # Roadmap PR13d: validity.gate_default checks the bars of every env that has one
-    # (its check_crossing is inert), so posed gates need no check_crossing='always'.
+    # using the actual per-gate half sizes.
     return A
 
 
@@ -1573,8 +1548,7 @@ def _plugin_params(slot) -> bool:
 
 def _self_drawn(slots) -> list:
     """``[(slot, field, range field)]`` of the dynamic fields a stage draws itself every
-    generation (roadmap PR13c: bezier's ``style_sampling`` ranges,
-    ``Params._self_drawn()``, e.g. ``("rad", "rad_range")``): one unlatched array each,
+    generation (``Params._self_drawn()``): one unlatched array each,
     reported in ``StageParams.drawn`` as drawn by the stage's own id."""
     from ..plugin.params import _self_drawn as drawn_by_itself  # noqa: PLC0415
 
@@ -1589,7 +1563,7 @@ def _self_drawn(slots) -> list:
 def _check_param_writers(slots) -> list:
     """The ``randomize.*`` rules (host side, before any allocation): each draws a DYNAMIC
     float32 field of a later, existing, non-randomizer stage, at most one per field (a
-    field the stage draws itself, bezier's ``style_sampling`` ranges, counts as drawn),
+    field the stage draws itself counts as drawn),
     with an initial range inside the field's declared ``lo`` / ``hi`` (compared in
     float32, roadmap PR13c), and the target's cross-field draw rules
     (``Params._check_draws``: e.g. elevation randomizers whose ``z_min`` / ``z_max``
@@ -1932,7 +1906,7 @@ def _build(spec: PipelineSpec, *, binding, seeds=None, out=None, stream=None,
         f_lo = -float("inf") if fld.lo is None else float(fld.lo)
         f_hi = float("inf") if fld.hi is None else float(fld.hi)
         drawn_for[w.id] = (arr, f_lo, f_hi)
-    # A field the stage draws itself (roadmap PR13c: bezier's style_sampling ranges): one
+    # A field the stage draws itself: one
     # [E] array too, written by the stage every generation (unlatched).
     for t, name, _ in _self_drawn(slots):
         arr = wp.full(E, float(getattr(t.params, name)), dtype=wp.float32, device=dev)
@@ -1946,7 +1920,7 @@ def _build(spec: PipelineSpec, *, binding, seeds=None, out=None, stream=None,
     stage_params = {}
     gen_scratch = None
     for s, cap in zip(slots, caps):
-        bound_gen = s.generator in ("centerline", "legacy")
+        bound_gen = s.generator == "centerline"
         params = None if bound_gen else s.params
         mine = drawn.get(s.id, {})
         dynamic = {}

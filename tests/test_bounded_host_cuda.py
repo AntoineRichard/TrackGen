@@ -989,74 +989,8 @@ def _copy_seeds_k(src: wp.array(dtype=wp.int32), dst: wp.array(dtype=wp.int32)):
     dst[e] = src[e]
 
 
-def _lock_free_elsewhere() -> bool:
-    """Whether ANOTHER thread can take ``runtime._CAPTURE_LOCK`` right now (it is
-    reentrant, so the calling thread could always take it)."""
-    box: dict = {}
-
-    def probe():
-        got = tg_runtime._CAPTURE_LOCK.acquire(blocking=False)
-        if got:
-            tg_runtime._CAPTURE_LOCK.release()
-        box["free"] = got
-
-    t = threading.Thread(target=probe, daemon=True)
-    t.start()
-    t.join(timeout=30)
-    assert "free" in box, "the lock probe thread did not finish"
-    return box["free"]
 
 
-def test_legacy_non_capturable_generator_is_a_host_segment_with_a_captured_tail(monkeypatch):
-    """A legacy-ABI ``GeneratorSpec(capturable=False)`` (no ``accepts_ctx``: its own
-    launches go to Warp's current stream) wrapping polar becomes a HOST generator segment
-    followed by a captured tail: ``generate()`` replays a tail graph (none for the whole
-    Program), on the default and on a side stream, and equals polar's eager twin.
-    ``runtime._CAPTURE_LOCK`` is held around the legacy body (another thread cannot take
-    it there, as at HEAD) and NOT across the tail's graph launch (no legacy self-capture
-    is pending)."""
-    monkeypatch.setattr(runner_mod, "_PENDING_LEGACY", weakref.WeakSet())
-    gc.collect()
-    # The polar generator's legacy GeneratorSpec over its frozen public functions (the
-    # registered "polar" is a generator Stage since roadmap PR13c).
-    base = warp_pipeline._legacy_generator_spec("polar")
-    probes: list = []
-
-    def alloc_scratch(config):
-        seeds = wp.zeros(int(config.num_envs), dtype=wp.int32, device=str(config.device))
-        return base.alloc_scratch(config), seeds
-
-    def legacy_generate(seeds_wp, config, out_centerline, out_valid_wp, scratch):
-        probes.append(("body", _lock_free_elsewhere()))
-        base_scratch, seed_copy = scratch
-        wp.launch(_copy_seeds_k, dim=seeds_wp.shape[0], inputs=[seeds_wp, seed_copy],
-                  device=seeds_wp.device)              # no stream=: Warp's current stream
-        base.generate(seed_copy, config, out_centerline=out_centerline,
-                      out_valid_wp=out_valid_wp, scratch=base_scratch)
-
-    registry.add(GeneratorSpec(name="toy.legacy_host", alloc_scratch=alloc_scratch,
-                               generate=legacy_generate, capturable=False))
-    gen, rng = _track("toy.legacy_host", 11)
-    assert gen.program.legacy_stream
-    out = gen.program.result
-    s = _side_stream()
-    with _counting_capture_launch(
-            probe=lambda: probes.append(("tail launch", _lock_free_elsewhere()))) as launches:
-        for k, (base_seed, kw) in enumerate(((11, {}), (101, {"stream": s}), (202, {}))):
-            want = _eager(_track("polar", base_seed)[0])
-            if k:
-                _reseed(rng, base_seed)
-            _poison_all(out)
-            assert gen.generate(**kw) is out
-            wp.synchronize()
-            _assert_segmented(gen.program, f"legacy call {k}")
-            assert gen.graph is None
-            _assert_host(_snapshot(out), want, f"legacy capturable=False call {k} vs polar")
-    assert len(launches) == 3
-    body = [free for what, free in probes if what == "body"]
-    tail = [free for what, free in probes if what == "tail launch"]
-    assert body and not any(body), f"the legacy body ran without the lock: {probes}"
-    assert len(tail) == 3 and all(tail), f"the tail launch held the lock: {probes}"
 
 
 def test_host_gate_generator_is_segmented_and_matches_its_eager_twin():

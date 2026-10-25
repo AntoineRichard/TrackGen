@@ -98,17 +98,6 @@ def test_numeric_validation():
                      gen=GateGenConfig(num_envs=1, device="cpu", gate_width=0.0))
 
 
-def test_set_capturing_is_a_deprecated_noop():
-    import track_gen
-    from track_gen._src import runtime
-    from track_gen.course import Course, set_capturing
-    for fn in (set_capturing, track_gen.set_capturing, Course.set_capturing):
-        with pytest.warns(DeprecationWarning, match="set_capturing"):
-            fn(True)
-        # The name stays defined for importers, but nothing sets it any more.
-        assert runtime._CAPTURING is False
-
-
 def test_device_is_canonicalized():
     """Course stores the Warp-canonical device string (matches
     str(arr.device) used in bind/seed validation)."""

@@ -125,8 +125,7 @@ a pair that would not move anything: use ``gate_relax.none``); ``gate_frames.def
 takes ``gate_width`` and ``gate_align``, ``gate_frames.posed`` ``gate_align`` only; the
 elevation stages take the ``z_*`` fields their profile uses (``elevation.flat`` takes
 ``z_base`` on gates); ``validity.gate_default`` takes ``min_gates``, ``gate_radius``,
-``gate_width``, ``z_valid_grade`` and ``check_crossing`` (see `Gate fail bits`_; its
-``gate_width`` and ``check_crossing`` are inert). ``gate_frames.default``'s
+``z_valid_grade`` (see `Gate fail bits`_). ``gate_frames.default``'s
 ``gate_width`` is a :term:`dynamic field` (per env) (:ref:`gate-width-per-env`). The generator's
 params are its ``generator_params``; the order and ``carry`` stages take none, and
 ``normalize.extent`` takes ``size`` (``NormalizeExtentParams``, a dynamic per-env
@@ -134,9 +133,7 @@ multiplier, default ``1.0``, ``GateGenConfig.size`` for the ``polar``, ``voronoi
 ``checkpoint`` gate generators): it scales to ``ops.constants.TARGET_EXTENT *
 BatchSpec.scale * size[e]``.
 
-Then the commit (`The gate commit`_) and the ``generation`` write. A legacy
-``GateGeneratorSpec`` replaces ``generator``, ``order`` and ``normalize`` with one
-adapter slot (`Legacy gate generators`_), and a centerline generator replaces
+Then the commit (`The gate commit`_) and the ``generation`` write. A centerline generator replaces
 ``generator`` with ``generator`` + ``stations`` (`Stations: gates from any track
 generator`_).
 
@@ -264,9 +261,7 @@ A native gate generator is a ``Stage`` with ``kind="gate_generator"`` and
 and does not order, normalize or lift anything (:ref:`writing-a-gate-generator` is the
 guide, :ref:`gate-generator-stage` the stage's contract). Its ``capacity(params, layout)`` returns ``{"gates": A, "min_gates": k}``: ``A``
 is the most anchors it writes per env (its row stride), ``k`` the fewest (default ``0``).
-This replaces the legacy ``GateGeneratorSpec.max_gates`` callable, which meant both "how
-many slots I need" and "how many gates I can make". The planner checks it against the
-batch and the validity stage, with the messages ``GateGenConfig`` users already know:
+
 
 - ``A > BatchSpec.max_gates``: ``PlanError``: ``... BatchSpec.max_gates=8 is too small for
   gate generator 'polar'; required max_gates 12.``
@@ -418,8 +413,7 @@ A generator declares which orders it accepts, in one of two ways:
   order of its own), ``polar``, ``checkpoint`` and ``voronoi`` exclude ``random_pairs``.
   A third-party order therefore runs with every built-in generator.
 - ``orderings``, a whitelist. Generators that provide attributes declare
-  ``frozenset({"raw"})``; a legacy ``GateGeneratorSpec``'s ``supported_orderings`` is
-  one.
+  ``frozenset({"raw"})``.
 
 ``preferred = {"order": name, "normalize": name}`` names the generator's default order
 and its normalization (``preferred["normalize"] = "extent"`` inserts
@@ -435,8 +429,7 @@ it accepts it, else ``"ccw"`` when it accepts it, else the first order it accept
 ``GateGenConfig.gate_ordering=None`` (the config default, resolved by
 ``legacy.to_gate_pipeline_spec`` when ``GateGenerator`` or ``Course`` is constructed)
 and the conformance kit all apply it, so ``GateGenerator(GateGenConfig(
-generator="acme.helix"))`` runs ``order.raw``. The run config (the config a legacy
-``GateGeneratorSpec`` receives) holds the resolved name, never ``None``. For the five
+generator="acme.helix"))`` runs ``order.raw``. The run config holds the resolved name, never ``None``. For the five
 built-ins the rule gives ``"ccw"``. An explicit name is checked against the orders the
 generator accepts.
 
@@ -802,23 +795,8 @@ before allocating anything when:
 
 .. _pipeline-legacy-gates:
 
-Legacy gate generators
-----------------------
+Gate plugin migration
+---------------------
 
-A ``GateGeneratorSpec`` (the legacy gate plugin ABI, :ref:`plugin-abis`: ``generate(seeds, config, out,
-scratch[, ctx])`` writing ordered plan-view gates into a staging view, ``alloc_scratch``,
-``max_gates``, ``supported_orderings``) keeps working, through an adapter slot that
-writes ``gates.xy`` and ``gates.count`` directly. It orders its own gates as before, so no
-order or normalize stage follows it, and it reads the user's ``GateGenConfig``, exactly
-the fields it read before. A ``capturable=False`` spec is a ``HOST`` generator: it runs
-eagerly as the Program's first segment, ahead of a captured tail (see :ref:`Capture classes
-and segments <pipeline-segments>`); an ``accepts_ctx=False`` spec runs inside ``ctx.scope()`` (see
-:doc:`cuda-graph`).
-
-It is **deprecated**: registering one stays silent, but binding one (``GateGenerator``,
-``Course``, ``build``, ``legacy.to_gate_pipeline_spec``, the conformance kit) emits a
-``DeprecationWarning`` once per registry and name, attributed to the calling code:
-``GateGeneratorSpec 'acme.ring' (...) is deprecated: write a Stage with
-kind='gate_generator' and output='anchors' (docs/contributing/writing-a-generator.rst);
-legacy gate generators run through an adapter until 1.0``. Port it with
-:ref:`writing-a-gate-generator`.
+Gate generators use Stages. The removed function-based interface and its replacement
+are described in :ref:`upgrading-0.3` and :ref:`writing-a-gate-generator`.

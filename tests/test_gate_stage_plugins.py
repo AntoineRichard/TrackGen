@@ -11,7 +11,7 @@ the public surface only.
   ``relaxed_stations``;
 - a gate validity check with a dynamic field and its own fail bit (``acme.max_height``);
 - the conformance kit on the toys, the registration rules of gate generator Stages,
-  quarantine, and the legacy ``GateGeneratorSpec`` deprecation.
+  quarantine, and gate Stage registration.
 """
 from __future__ import annotations
 
@@ -378,10 +378,10 @@ def test_a_broken_anchors_plugin_is_quarantined(monkeypatch):
 
 
 # ---------------------------------------------------------------------------------------
-# The legacy GateGeneratorSpec deprecation (at bind time, once per name)
+# Gate Stage registration and default-order resolution
 # ---------------------------------------------------------------------------------------
 
-def test_registering_a_legacy_gate_spec_is_silent(monkeypatch):
+def test_registering_a_gate_stage_is_silent(monkeypatch):
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         registry.add(TOY_RING)
@@ -394,68 +394,32 @@ def test_registering_a_legacy_gate_spec_is_silent(monkeypatch):
             assert "toy.ring" in registry.available("gate_generator")
 
 
-def test_binding_a_legacy_gate_spec_warns_once_at_the_users_call():
-    registry.add(TOY_RING)
-    cfg = GateGenConfig(generator="toy.ring", gate_ordering="raw", num_envs=2)
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        GateGenerator(cfg)
-    dep = [w for w in caught if issubclass(w.category, DeprecationWarning)]
-    assert len(dep) == 1, [str(w.message) for w in dep]
-    assert "GateGeneratorSpec 'toy.ring'" in str(dep[0].message)
-    assert "write a Stage with kind='gate_generator' and output='anchors'" in \
-        str(dep[0].message)
-    assert dep[0].filename == __file__
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        GateGenerator(cfg)                       # once per (registry, name)
 
 
 @pytest.mark.parametrize("supported,want", [({"raw"}, "raw"),
                                             ({"ccw", "raw", "random_pairs"}, "ccw")])
-def test_a_legacy_spec_reads_the_resolved_default_ordering(supported, want):
-    """``GateGenConfig.gate_ordering=None``: every config a legacy ``GateGeneratorSpec``
-    receives (its ``Params.from_legacy``, ``max_gates``, ``alloc_scratch``, ``generate``)
-    holds the resolved name (``"ccw"`` when supported, else its first ordering), never
-    ``None``."""
-    from tests._plugin_toys import (toy_ring_alloc_scratch, toy_ring_generate,
-                                    toy_ring_max_gates)
-
+def test_gate_stage_params_read_the_resolved_default_ordering(supported, want):
     seen = []
 
     @dataclasses.dataclass(frozen=True)
     class RingParams(Params):
-        k: int = 8
-
         @classmethod
         def from_legacy(cls, config):
-            seen.append(("from_legacy", config.gate_ordering))
+            seen.append(config.gate_ordering)
             return cls()
 
-    def max_gates(config):
-        seen.append(("max_gates", config.gate_ordering))
-        return toy_ring_max_gates(config)
+    class Ring(TOY_RING):
+        name = "toy.ring_seen"
+        Params = RingParams
+        orderings = frozenset(supported)
+        preferred = {}
 
-    def alloc_scratch(config):
-        seen.append(("alloc_scratch", config.gate_ordering))
-        return toy_ring_alloc_scratch(config)
-
-    def generate(seeds_wp, config, out, scratch, ctx=None):
-        seen.append(("generate", config.gate_ordering))
-        toy_ring_generate(seeds_wp, config, out, scratch, ctx=ctx)
-
-    registry.add(dataclasses.replace(TOY_RING, name="toy.ring_seen", max_gates=max_gates,
-                                     alloc_scratch=alloc_scratch, generate=generate,
-                                     supported_orderings=frozenset(supported),
-                                     params=RingParams))
+    registry.add(Ring)
     cfg = GateGenConfig(generator="toy.ring_seen", num_envs=2)
-    with pytest.deprecated_call():
-        gen = GateGenerator(cfg)
+    gen = GateGenerator(cfg)
     gen.generate()
     assert cfg.gate_ordering is None and gen._config.gate_ordering == want
-    assert {k for k, _ in seen} == {"from_legacy", "max_gates", "alloc_scratch",
-                                    "generate"}
-    assert {v for _, v in seen} == {want}, seen
+    assert seen and set(seen) == {want}
 
 
 def test_course_with_a_provider_and_the_default_ordering():
@@ -470,16 +434,6 @@ def test_course_with_a_provider_and_the_default_ordering():
     assert course.generator._gate_sequence.valid.numpy().any()
 
 
-def test_an_error_filter_raises_on_every_bind():
-    # The name is marked warned only once the warning returned: under -W error every
-    # bind raises, not only the first one.
-    registry.add(TOY_RING)
-    cfg = GateGenConfig(generator="toy.ring", gate_ordering="raw", num_envs=2)
-    for _ in range(2):
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", DeprecationWarning)
-            with pytest.raises(DeprecationWarning, match="GateGeneratorSpec 'toy.ring'"):
-                GateGenerator(cfg)
 
 
 # ---------------------------------------------------------------------------------------

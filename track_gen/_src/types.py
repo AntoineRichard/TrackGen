@@ -10,9 +10,7 @@ fields are ``wp.array``).
 import dataclasses
 import math
 import operator
-import sys
 import types
-import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -62,49 +60,11 @@ def _check_generator_params(cfg) -> None:
                         f"fields, or None; got {type(gp).__name__}")
 
 
-# TrackGenConfig fields TrackGenerator does not use (torch-oracle / experimental only;
-# it only rejects smooth_finish=True): setting one to a value other than its class's
-# default emits a DeprecationWarning. ``output_mode`` is
-# deprecated too, but its own ValueError already rejects every non-default value.
-_DEAD_TRACK_FIELDS = (
-    "energy_steps", "energy_lr", "energy_w_sep", "energy_w_len", "energy_w_bend",
-    "energy_w_anchor", "tp_iters", "tp_tau", "tp_alpha", "tp_beta",
-    "smooth_finish", "smooth_finish_iters", "smooth_finish_tau",
-    "relax_chunk_size", "relax_use_warp", "max_regen_iters", "min_angle",
-    "num_harmonics", "decay_p", "amplitude", "num_centerline_samples",
-)
-
-
-def _warn_dead_fields(cfg) -> None:
-    # Defaults of the config's own class: a subclass that changes one is not "set".
-    defaults = {f.name: f.default for f in dataclasses.fields(type(cfg))}
-    names = [n for n in _DEAD_TRACK_FIELDS if getattr(cfg, n) != defaults[n]]
-    if names:
-        # Point at the code constructing the config: skip every frame of this object's
-        # construction (the generated __init__, and each __post_init__ of a subclass
-        # chain that calls super().__post_init__()).
-        level, frame = 2, sys._getframe(1)
-        while frame is not None and frame.f_locals.get("self") is cfg:
-            frame, level = frame.f_back, level + 1
-        warnings.warn(
-            f"TrackGenConfig fields {names} are deprecated and unused by TrackGenerator "
-            f"(oracle/experimental only; smooth_finish=True is rejected); they will be "
-            f"removed in 1.0",
-            DeprecationWarning, stacklevel=level)
-
-
 @dataclass
 class TrackGenConfig:
     """Single configuration object passed to every stage of the pipeline.
 
-    Fields configure the fixed-shape Warp pipeline. Scalar style knobs are used by
-    default; opt-in per-env style sampling is available through ``style_sampling`` and
-    the ``*_range`` fields for the Bezier generator. Only ``relax_solver="xpbd"`` is
-    used by the runtime path; the ``energy_*``, ``tp_*``, and ``smooth_finish*`` fields
-    serve the torch oracle backends in ``tests/_oracle/`` and are **not used by
-    TrackGenerator**. The Fourier fields (``num_harmonics``, ``decay_p``,
-    ``amplitude``, ``num_centerline_samples``) are retained only for compatibility with
-    ``track_gen._experimental.fourier`` and older experiment sweeps.
+    Fields configure the fixed-shape Warp pipeline.
 
     Per-generator parameters: each generator declares its own Params class
     (``track_gen.plugin.registry.describe("generator", name).params_schema``). Set
@@ -114,12 +74,6 @@ class TrackGenConfig:
     different values. The generator-specific rules (``voronoi_control_points >= 6``,
     the ``repulsive_*`` rules, ...) are checked when the generator is constructed, and
     only for the selected generator.
-
-    Deprecated (a ``DeprecationWarning`` when set to a non-default value; removed in
-    1.0): ``energy_*``, ``tp_*``, ``smooth_finish*``, ``relax_chunk_size``,
-    ``relax_use_warp``, ``max_regen_iters``, ``min_angle``, ``num_harmonics``,
-    ``decay_p``, ``amplitude``, ``num_centerline_samples`` (and ``output_mode``, which
-    only accepts its default).
 
     Attributes
     ----------
@@ -156,10 +110,6 @@ class TrackGenConfig:
         Minimum grid-cell spacing for corner-position sampling.  Must be in
         ``(0, 0.5]``.  Governs the cell grid as
         ``num_cells = int(1 / (min_point_distance * 2))``.
-    min_angle : float
-        Minimum interior angle (radians) at constrained Bezier corners; default
-        ~0.218 rad (12.5 deg).  Used by the gate-angle validity kernel in
-        ``warp_generate.py``; not applied directly to track-centerline generation.
     rad : float
         Cubic-Bezier handle length as a fraction of the segment chord — the primary
         curviness dial.  Typical range ``[0.2, 0.6]``.  Only live when
@@ -234,36 +184,6 @@ class TrackGenConfig:
         the first self-crossing of the selected centerline is clipped: split at the
         intersection point, keep the longer sub-loop arc, resample to ``num_points``.
         A capture-time Python branch; the captured graph stays fixed either way.
-
-    style_sampling : bool
-        Opt-in per-env Bezier style randomisation (default ``False``).  When
-        ``False``, ``scale`` is the scalar for all envs and ``rad`` /
-        ``handle_clamp_frac`` are their per-env dynamic arrays (the configured value
-        in every env unless you ``set`` or randomize them).  When ``True``, each env
-        draws its own values from the ``*_range`` fields via the per-env Warp RNG, so
-        a single batch spans a *family* of styles.  Resolved at CUDA-graph capture time (a Python branch);
-        per-env values are device data so the captured graph remains fixed.
-        **Deprecated** (a ``DeprecationWarning`` once per built generator;
-        removed in 1.0): draw per-env knobs with ``randomize=`` instead
-        (``scale_range=(a, b)`` -> ``{"generator.size": (a / scale, b / scale)}``,
-        ``rad_range`` -> ``{"generator.rad": ...}``, ``handle_clamp_frac_range`` ->
-        ``{"generator.handle_clamp_frac": ...}``).
-    rad_range : tuple of float or None
-        ``(lo, hi)`` range for per-env ``rad`` when ``style_sampling=True``.
-        ``None`` leaves ``rad`` to its per-env array (the configured ``rad`` unless
-        you ``set`` or randomize it).  Superseded by
-        ``randomize={"generator.rad": (lo, hi)}`` (still supported).
-    scale_range : tuple of float or None
-        ``(lo, hi)`` range for per-env ``scale`` when ``style_sampling=True``.
-        ``None`` collapses to the scalar ``scale`` for all envs.  Deprecated with
-        ``style_sampling``: ``randomize={"generator.size": (lo / scale, hi /
-        scale)}`` (the draws compose multiplicatively with ``size``).
-    handle_clamp_frac_range : tuple of float or None
-        ``(lo, hi)`` range for per-env ``handle_clamp_frac`` when
-        ``style_sampling=True``.  ``None`` leaves ``handle_clamp_frac`` to its
-        per-env array (the configured value unless you ``set`` or randomize it).
-        Superseded by
-        ``randomize={"generator.handle_clamp_frac": (lo, hi)}`` (still supported).
 
     polar_num_knots : int
         *Polar generator only.*  Number of periodic cubic-spline control knots.
@@ -381,20 +301,6 @@ class TrackGenConfig:
         obstacle weights once an env reaches its target length (the wall stays live),
         closing the disc halos.
 
-    num_harmonics : int
-        *Fourier / experimental — not used by the runtime path.*  Number of Fourier
-        harmonics (``K``).  Retained for compatibility with
-        ``track_gen._experimental.fourier`` and older sweeps.
-    decay_p : int
-        *Fourier / experimental — not used by the runtime path.*  Fourier amplitude
-        decay exponent: amplitude ~ ``amp / k ** decay_p``.
-    amplitude : float
-        *Fourier / experimental — not used by the runtime path.*  Fourier base
-        amplitude.
-    num_centerline_samples : int
-        *Fourier / experimental — not used by the runtime path.*  Dense sample count
-        for the Fourier generator (``M_max``).
-
     half_width : float
         Track half-width in the same coordinate units as the centerline.  Must be
         > 0.  All spacing, relaxation, and inflation distances couple to this value:
@@ -415,14 +321,6 @@ class TrackGenConfig:
         unknown one.  ``"energy"`` (Adam) and ``"tp_sobolev"`` are oracle-only
         backends in ``tests/_oracle/relaxation.py``, not relax stages:
         ``TrackGenerator`` rejects them.
-    relax_chunk_size : int or None
-        *Energy oracle backend only — not used by the runtime path.*  Env-chunk
-        size for the dense ``[E, N, N]`` interaction term in the energy backend.
-        ``None`` disables chunking.
-    relax_use_warp : bool or None
-        *Oracle-only — not used by the runtime path.*  When ``False``, oracle tests
-        redirect relaxation to the pure-torch path instead of Warp.  Ignored by
-        ``TrackGenerator`` and ``warp_relax.py``.
     relax_tol : float
         Validity thickness tolerance.  The minimum valid track half-width is
         ``(1 - relax_tol) * half_width``.  Default 0.02 (2% tolerance).
@@ -459,7 +357,7 @@ class TrackGenConfig:
     relax_smooth_passes : int
         Number of shrink-free Taubin smoothing passes applied after the main sweep
         loop.  Must be >= 0.  Default 5.  Each pass is two Laplacian half-steps
-        (:math:`\\lambda > 0` then :math:`\\mu < -\\lambda`), which removes the
+        (:math:`lambda > 0` then :math:`mu < -lambda`), which removes the
         sub-``R_min`` curvature noise the bending guard's deadband cannot see (bending
         only fires below the minimum radius; gentler wiggles are invisible to all three
         constraints) without shrinking corners through the validity gate the way a plain
@@ -508,55 +406,10 @@ class TrackGenConfig:
         ``target = 2 * half_width * (1 + relax_margin)``.  Default 0.15 (15%
         margin).  Leaves room for the downstream thickness validity gate.
 
-    energy_steps : int
-        *Energy oracle backend — not used by the runtime path.*  Adam optimiser
-        steps for the ``"energy"`` oracle backend in ``tests/_oracle/relaxation.py``.
-    energy_lr : float
-        *Energy oracle backend — not used by the runtime path.*  Adam learning rate.
-    energy_w_sep : float
-        *Energy oracle backend — not used by the runtime path.*  Separation loss
-        weight.
-    energy_w_len : float
-        *Energy oracle backend — not used by the runtime path.*  Edge-length loss
-        weight.
-    energy_w_bend : float
-        *Energy oracle backend — not used by the runtime path.*  Bending loss weight.
-    energy_w_anchor : float
-        *Energy oracle backend — not used by the runtime path.*  Anchor loss weight.
-
-    tp_iters : int
-        *TP-Sobolev oracle backend — not used by the runtime path.*  Flow steps for
-        the ``"tp_sobolev"`` oracle backend in ``tests/_oracle/relaxation.py``.
-    tp_tau : float
-        *TP-Sobolev oracle backend — not used by the runtime path.*  Step size for
-        the TP-Sobolev flow.
-    tp_alpha : float
-        *TP-Sobolev oracle backend — not used by the runtime path.*  Sobolev kernel
-        exponent alpha; shared with the ``smooth_finish`` finisher.
-    tp_beta : float
-        *TP-Sobolev oracle backend — not used by the runtime path.*  Sobolev kernel
-        exponent beta; shared with the ``smooth_finish`` finisher.
-    smooth_finish : bool
-        *Oracle-only — not used by the runtime path.*  When ``True``, a
-        tangent-point/Sobolev smoothing finisher runs after the primary relaxation
-        solve.  ``TrackGenerator`` rejects ``smooth_finish=True`` at construction
-        time.
-    smooth_finish_iters : int
-        *Oracle-only — not used by the runtime path.*  Flow steps for the smoothing
-        finisher.
-    smooth_finish_tau : float
-        *Oracle-only — not used by the runtime path.*  Step size for the smoothing
-        finisher.
-
     num_points : int
         Intermediate dense-resample resolution (``N``) used before the
         constant-spacing step.  Default 256.  The constant-spacing resampler then
         derives ``count[e] = floor(perimeter / spacing) + 1`` real points per env.
-    output_mode : str
-        Output resampling mode.  The only supported value is
-        ``"constant_spacing"`` (enforced by ``__post_init__``).  Constant arc
-        spacing produces smoother XPBD convergence and higher valid-track yield than
-        a fixed point count.
     spacing : float or None
         Constant arc-length step (m) between adjacent output points.  ``None``
         (default) auto-couples to ``0.6 * half_width`` — the relaxation-friendly
@@ -571,11 +424,6 @@ class TrackGenConfig:
         ~98% of the ``half_width = 0.03`` regime (~468 max).  Raise ``N_max`` or
         coarsen ``spacing`` for finer/larger-scale regimes.
 
-    max_regen_iters : int
-        *Vestigial on the Warp runtime path.*  Maximum regeneration iterations for
-        the torch oracle's accept-first-valid loop in
-        ``tests/_oracle/generators.py``.  Ignored by ``_run_pipeline``, which is
-        single-pass with no host-side retry loop.
     turning_tol : float
         Absolute angular tolerance in radians for the turning-number validity gate.
         Tracks whose signed curvature integral deviates from the expected full turn by
@@ -672,7 +520,6 @@ class TrackGenConfig:
     max_num_points: int = 13
     num_points_per_segment: int = 30
     min_point_distance: float = 0.05
-    min_angle: float = (12.5 / 180) * math.pi
     rad: float = 0.4
     edgy: float = 0.0
     scale: float = 1.0
@@ -691,11 +538,6 @@ class TrackGenConfig:
     checkpoint_best_of_k: int = 4
     checkpoint_clip_fallback: bool = False
 
-    # --- Per-env style sampling (method #1: "Per-env style randomization") ---
-    style_sampling: bool = False
-    rad_range: tuple[float, float] | None = None
-    scale_range: tuple[float, float] | None = None
-    handle_clamp_frac_range: tuple[float, float] | None = None
 
     # --- Polar / Fourier params ---
     polar_num_knots: int = 12
@@ -729,12 +571,6 @@ class TrackGenConfig:
     repulsive_stall_area_tol: float = 0.05
     repulsive_deactivate_obstacles: bool = True
 
-    # Experimental torch-only Fourier generator fields retained for compatibility with
-    # track_gen._experimental.fourier and older sweeps.
-    num_harmonics: int = 5  # K
-    decay_p: int = 2  # decay exponent: amplitude ~ amp / k**decay_p
-    amplitude: float = 1.0
-    num_centerline_samples: int = 256  # Fourier dense sample count (M_max)
 
     # --- Width params ---
     half_width: float = 0.1
@@ -742,8 +578,6 @@ class TrackGenConfig:
     # --- Relaxation: backend selection + scale ---
     relax_enable: bool = True
     relax_solver: str = "xpbd"            # {"xpbd","energy","tp_sobolev"}
-    relax_chunk_size: int | None = None
-    relax_use_warp: bool | None = None
     relax_tol: float = 0.02
     relax_band: int | None = None
     relax_iters: int = 50
@@ -761,31 +595,13 @@ class TrackGenConfig:
     relax_bend_relax: float = 1.5
     relax_margin: float = 0.15
 
-    # energy (Adam) — oracle-only backend
-    energy_steps: int = 800
-    energy_lr: float = 3e-3
-    energy_w_sep: float = 80.0
-    energy_w_len: float = 8.0
-    energy_w_bend: float = 1.0
-    energy_w_anchor: float = 0.01
-    # tp_sobolev — oracle-only backend (standalone + finisher share tp_alpha/tp_beta)
-    tp_iters: int = 100
-    tp_tau: float = 0.7
-    tp_alpha: float = 2.0
-    tp_beta: float = 4.5
-    # optional tangent-point/Sobolev smoothing finisher — oracle-only
-    smooth_finish: bool = False
-    smooth_finish_iters: int = 8
-    smooth_finish_tau: float = 0.2
 
     # --- Output params ---
     num_points: int = 256  # N: intermediate dense->resample resolution before constant-spacing
-    output_mode: str = "constant_spacing"  # the only supported mode (see __post_init__)
     spacing: float | None = None
     N_max: int = 384
 
     # --- Robustness params ---
-    max_regen_iters: int = 10
     turning_tol: float = 0.1
     w_floor: float = 1e-3
     validity_border_check: bool = False
@@ -855,10 +671,6 @@ class TrackGenConfig:
         # Only constant_spacing is supported: a constant link SIZE (~0.6*half_width) relaxes
         # to smoother, higher-yield tracks than a constant point COUNT, which over-resolves
         # the centerline (jagged XPBD -> folded roads).
-        if self.output_mode != "constant_spacing":
-            raise ValueError(
-                f"output_mode must be 'constant_spacing' (the only supported mode), "
-                f"got {self.output_mode!r}")
         # Auto-couple spacing to half_width (~0.6*half_width relaxes to smoother tracks);
         # a fixed spacing default would be wrong as half_width varies (too coarse -> degenerate).
         if self.spacing is None:
@@ -874,20 +686,13 @@ class TrackGenConfig:
             raise ValueError(
                 "z_control_points must be >= 3, got "
                 f"{self.z_control_points!r}")
-        _warn_dead_fields(self)
 
 
 @dataclass
 class GateGenConfig:
     """Configuration for fixed-batch native gate sequence generation.
 
-    Used by ``GateGenerator`` to produce batched ``GateSequence`` results.  The
-    gate path only samples corner anchors and emits them directly as gates; it never
-    runs Bezier or hull curve assembly.  As a result, ``num_points_per_segment``,
-    ``rad``, ``edgy``, ``handle_clamp_frac``, and ``hull_displacement`` are **inert
-    for gate output** (kept for config parity with ``TrackGenConfig``).  The
-    effective knobs for anchor placement are ``min_num_points``,
-    ``max_num_points``, ``min_point_distance``, and ``scale``.
+    Gate generators sample anchors directly.
 
     Attributes
     ----------
@@ -939,29 +744,12 @@ class GateGenConfig:
         Must be >= 2.  Affects the number of sampled anchor positions.
     max_num_points : int
         Maximum corner-anchor count per env.  Must be >= ``min_num_points``.
-    num_points_per_segment : int
-        *Inert for gate output.*  Dense samples per segment for Bezier/hull curve
-        assembly; the gate path does not assemble curves.  Kept for config parity
-        with ``TrackGenConfig``.
     min_point_distance : float
         Minimum grid-cell spacing for anchor-position sampling.  Must be > 0.
         Governs the cell grid as ``num_cells = int(1 / (min_point_distance * 2))``.
-    rad : float
-        *Inert for gate output.*  Bezier handle-length fraction.  Kept for config
-        parity with ``TrackGenConfig``.
-    edgy : float
-        *Inert for gate output.*  Corner-tangent blend weight.  Kept for config
-        parity with ``TrackGenConfig``.
     scale : float
         Isotropic scale multiplier for anchor positions.  Does affect the sampled
         anchor coordinates and hence gate positions.
-    handle_clamp_frac : float
-        *Inert for gate output.*  Bezier handle clamp.  Kept for config parity with
-        ``TrackGenConfig``.
-    hull_displacement : float
-        *Inert for gate output.*  Hull midpoint displacement fraction.  Kept for
-        config parity with ``TrackGenConfig``.
-
     polar_num_knots : int
         *Polar generator only.*  Number of periodic cubic-spline control knots.
         Default 12.
@@ -1062,9 +850,7 @@ class GateGenConfig:
     generator_params : Params, Mapping or None
         The selected gate generator's parameters, as
         ``TrackGenConfig.generator_params`` (``None``: the flat fields above).  The
-        inert fields (``num_points_per_segment``, ``rad``, ``edgy``,
-        ``handle_clamp_frac``, ``hull_displacement``) belong to no gate generator.
-        The generator-specific rules (point family, ``voronoi_*``, ``checkpoint_*``)
+        generator-specific rules (point family, ``voronoi_*``, ``checkpoint_*``)
         are checked at ``GateGenerator`` construction, for the selected generator
         only; ``max_gates`` sees the resolved values.
     """
@@ -1080,21 +866,11 @@ class GateGenConfig:
     gate_width: float = 0.0
     gate_ordering: "str | None" = None
 
-    # Point-family (bezier/hull) sampler inputs. The gate path only samples corner
-    # anchors and emits them as gates; it never runs the Bezier/hull curve assembly,
-    # so num_points_per_segment, rad, edgy, handle_clamp_frac, and hull_displacement
-    # are inert for gate output (they remain for parity with TrackGenConfig and are
-    # hidden in the explorer UI). min_num_points, max_num_points, min_point_distance,
-    # and scale do affect the sampled anchors.
+    # Point-family (bezier/hull) anchor sampler inputs.
     min_num_points: int = 9
     max_num_points: int = 13
-    num_points_per_segment: int = 30
     min_point_distance: float = 0.05
-    rad: float = 0.4
-    edgy: float = 0.0
     scale: float = 1.0
-    handle_clamp_frac: float = 0.4
-    hull_displacement: float = 0.15
 
     polar_num_knots: int = 12
     polar_radial_jitter: float = 0.60
@@ -2018,7 +1794,7 @@ class Track:
         clamped to ``N_max`` and the tail of the loop was dropped; such envs always
         have ``valid == 0``.  Increase ``N_max`` (or ``spacing``) if any are set.
         ``TrackGenerator`` always allocates it; ``None`` on a ``Track`` built
-        elsewhere (e.g. the standalone ``inflate_warp`` path).
+        elsewhere (e.g. the standalone ``_inflate_warp`` path).
     generation : wp.array or None
         ``[E]`` ``int32``: the seed epoch (``TrackGenerator.seeds.epoch``) each
         env's current track was built at.  ``0`` until the first advance.  It is
@@ -2038,7 +1814,7 @@ class Track:
         ``border``, ``grade``, ``truncation``; plugin checks own 16-30).  When it
         is not ``None``, ``valid[e] == (fail_mask[e] == 0)``.  ``TrackGenerator``
         always allocates it; ``None`` on a ``Track`` built elsewhere (e.g. the
-        standalone ``inflate_warp`` path).
+        standalone ``_inflate_warp`` path).
     fail_bits : Mapping[str, int]
         ``name -> bit index`` of every bit of ``fail_mask`` the pipeline assigns
         (``TrackGenerator.program.fail_bits``); the border / grade bits are named

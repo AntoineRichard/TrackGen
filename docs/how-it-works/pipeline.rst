@@ -169,8 +169,7 @@ measure the invalid fraction). Two design choices give that yield:
   Catmull-Rom self-crossers, ``voronoi`` falls back to its selected anchor polygon,
   ``checkpoint`` uses bounded best-of-K selection with an optional single-crossing clip
   fallback, and ``polar`` emits a closed radial spline with no generator-local fallback.
-  ``max_regen_iters`` is therefore ignored by the pipeline and deprecated (a non-default
-  value emits a ``DeprecationWarning``; see :ref:`deprecated-config-fields`).
+  The pipeline uses a single generation pass rather than a host retry budget.
 
 **FP tolerance and hard thresholds.** Validity gates (``th_ok``, ``turn_ok``) are hard
 comparisons; near a decision boundary the accepted ~1e-4 Warp-vs-torch drift can flip a

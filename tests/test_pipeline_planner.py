@@ -117,10 +117,6 @@ def test_to_pipeline_spec_raises_the_track_generator_errors():
                                          r"'bogus'; available: \['flat', 'noise', "
                                          r"'random_walk', 'uniform'\]"):
         legacy.to_pipeline_spec(_cfg(z_profile="bogus"))
-    with pytest.warns(DeprecationWarning):
-        cfg = _cfg(smooth_finish=True)
-    with pytest.raises(ValueError, match="smooth_finish=True"):
-        legacy.to_pipeline_spec(cfg)
     with pytest.raises(ValueError, match="unknown generator"):
         legacy.to_pipeline_spec(_cfg(generator="nope"))
 
@@ -180,7 +176,6 @@ def test_edit_operations():
 
 @pytest.mark.parametrize("kw", [{}, dict(z_profile="noise", z_max=0.3,
                                          z_noise_amplitude=0.1),
-                                dict(style_sampling=True, rad_range=(0.1, 0.3)),
                                 dict(relax_enable=False, z_profile="uniform", z_max=0.1)])
 def test_to_dict_round_trip_is_json_and_byte_identical(kw):
     spec = _spec(**kw)
@@ -765,7 +760,7 @@ def test_program_enqueue_allocates_nothing_and_returns_the_result():
 def test_program_state_and_call_errors():
     p = build(_spec(), seeds=3)
     assert p.layout == Layout(E, 384, "cpu") and p.device.alias == "cpu"
-    assert p.capturable and p.capture_class == CaptureClass.STATIC and not p.legacy_stream
+    assert p.capturable and p.capture_class == CaptureClass.STATIC
     assert p.graph is None and p.seed.shape == (E,) and p.seeds.num_envs == E
     assert repr(p).startswith("Program(stages=['generator', 'resample'")
     with pytest.raises(ValueError, match="requires advance=True"):

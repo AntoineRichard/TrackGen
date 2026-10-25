@@ -169,10 +169,7 @@ The built-in dynamic knobs
 The elevation stages are the same classes on a track, on gates
 (:ref:`pipeline-gate-elevation`) and on the centerline before the stations
 (:ref:`pipeline-stations-xyz`), so the same keys (``"elevation.z_max"``) work in all
-three. ``external`` has no dynamic field: it ingests your geometry as given. ``bezier``'s
-deprecated ``style_sampling`` draws ``rad`` / ``handle_clamp_frac`` / its scale itself
-when their ranges are set; such a field cannot also take a randomizer or a ``set``. Use
-``randomize=`` instead (:ref:`bezier-style-vs-randomize`, :ref:`upgrading-style-sampling`).
+three. ``external`` has no dynamic field: it ingests your geometry as given.
 
 Curricula: writing the live arrays
 ----------------------------------
@@ -310,7 +307,7 @@ a field a randomizer draws):
   array, every scalar ``set`` (checked on the host) and every randomizer draw (clamped
   when drawn). Write in-range values, or book the clamp. Exceptions, used as written:
   ``width.from_channel``'s ``scale`` / ``lo`` / ``hi`` (it clamps its output), a
-  randomizer's ``lo`` / ``hi`` (it clamps its draw), ``style_sampling``'s draws, and, in
+  randomizer's ``lo`` / ``hi`` (it clamps its draw), and, in
   a ``Course`` in gates mode, ``gate_frames.gate_width`` (its floor ``> 0`` is checked
   by ``set`` on a scalar only: an array value ``<= 0`` is used as ``0``).
 - **When it is current.** The arrays are written on the generation's stream: read them
@@ -450,9 +447,8 @@ world coordinates about the data's origin); scale ``centerline.xy`` in your own 
   (``num_envs``).
 - **A route that cannot apply it raises** ``ValueError`` instead of ignoring it: a flat
   ``size != 1`` with a generator that declares no ``size`` (``external``, a plugin whose
-  Params lack it, a legacy ``GeneratorSpec``), ``presets.track(generator="external",
-  size=2.0)``, ``size=`` together with ``generator_params={"size": ...}``, and the frozen
-  legacy module functions (``generate_*_warp``) given a config with ``size != 1``.
+  Params lack it, a ``GeneratorSpec``), ``presets.track(generator="external",
+  size=2.0)`` or ``size=`` together with ``generator_params={"size": ...}``.
 
 **Plan view only.** ``size`` scales xy. The widths (``half_width``, ``spacing``, the relax
 bands, ``gate_radius``, ``gate_width``) and z (``z_min`` / ``z_max``, the noise
@@ -553,8 +549,7 @@ emits one ``UserWarning`` naming the ``n_max`` that fits. The nominal loop is ex
 (so the warning fires from the "truncates from" column), scaled by the knobs that
 lengthen it: ``bezier`` / ``hull``'s ``max_num_points`` (``(max_num_points / 13) **
 0.6`` above 13), ``hull_displacement`` (its initial value or the ``hi`` of its
-randomizer: ``1 + 0.6 * (d - 0.15)`` above 0.15) and ``style_sampling``'s
-``scale_range``. It is not checked when ``polar``'s ``polar_num_knots`` /
+randomizer: ``1 + 0.6 * (d - 0.15)`` above 0.15). It is not checked when ``polar``'s ``polar_num_knots`` /
 ``polar_radial_jitter``, ``voronoi``'s ``voronoi_num_sites`` /
 ``voronoi_control_points`` / ``voronoi_angular_jitter``, or ``checkpoint``'s
 ``checkpoint_count`` / ``checkpoint_radius_min_frac`` / ``checkpoint_angle_jitter`` /

@@ -31,13 +31,12 @@ from tests.conftest import override_spec
 from track_gen import GateGenConfig, GateGenerator, PerEnvSeededRNG, TrackGenConfig, TrackGenerator
 from track_gen._src import course as course_mod
 from track_gen._src import runtime, warp_pipeline
-from track_gen.plugin import GateGeneratorSpec, GeneratorSpec, registry
+from track_gen.plugin import CaptureClass, Stage, GeneratorSpec, registry
 from track_gen.course import Course, CourseConfig
 from track_gen.exec import (
     CaptureError,
     GraphRunner,
     LaunchContext,
-    LegacyPluginStreamError,
     NotCapturableError,
     _compat,
     resolve_stream,
@@ -49,11 +48,6 @@ from track_gen.testing.contract import no_allocation
 E = 4
 
 
-@pytest.fixture(autouse=True)
-def _fresh_legacy_registry(monkeypatch):
-    """Isolate the pending-legacy-capture registry (a legacy runner kept alive by an
-    earlier test's traceback must not make this test's calls take the lock)."""
-    monkeypatch.setattr(runner_mod, "_PENDING_LEGACY", weakref.WeakSet())
 
 
 # ---------------------------------------------------------------------------------------
@@ -119,7 +113,7 @@ def _assert_same(a, b, fields) -> None:
 def _put(spec) -> None:
     """Register ``spec``, replacing a spec of the same name added earlier in the test
     (undone by the per-test registry scope, see tests/conftest.py)."""
-    kind = type(spec).registry_kind
+    kind = spec.kind if isinstance(spec, type) and issubclass(spec, Stage) else type(spec).registry_kind
     if spec.name in registry.available(kind):
         registry.unregister(kind, spec.name)
     registry.add(spec)
@@ -291,67 +285,12 @@ def test_non_capturable_raises_before_any_launch_and_runs_eagerly_outside(monkey
     assert body.runs == 2
 
 
-def test_legacy_plugin_records_only_on_the_current_stream(monkeypatch):
-    fake = FakeCuda(monkeypatch)
-    body = _Body()
-    side = FakeStream(fake.device)
-    r = GraphRunner("cuda:0", capturable=True, legacy_stream=True, name="legacy")
-    r.prepare(body)
-    side.is_capturing = True
-    with pytest.raises(LegacyPluginStreamError, match="ScopedStream"):
-        r.run(body, stream=side)
-    assert body.runs == 1
-    fake.current.is_capturing = True
-    r.run(body)                                # capture stream == current stream: fine
-    assert body.runs == 2 and body.ctxs[-1].stream is fake.current
 
 
-def _lock_free_in_another_thread() -> bool:
-    """Whether another thread can take ``runtime._CAPTURE_LOCK`` right now."""
-    out: list = []
-
-    def probe():
-        got = runtime._CAPTURE_LOCK.acquire(blocking=False)
-        if got:
-            runtime._CAPTURE_LOCK.release()
-        out.append(got)
-
-    t = threading.Thread(target=probe)
-    t.start()
-    t.join()
-    return out[0]
 
 
-def test_legacy_plugin_self_captures_on_the_current_stream_under_the_lock(monkeypatch):
-    fake = FakeCuda(monkeypatch)
-    held = []
-
-    def body(ctx):
-        if ctx.capturing:
-            out = [_lock_free_in_another_thread()]
-            held.append(not out[0])
-
-    r = GraphRunner("cuda:0", capturable=True, legacy_stream=True)
-    r.prepare(body)
-    r.run(body)
-    (cap,) = fake.captures
-    assert cap.stream is fake.current and fake.created == []
-    assert held == [True]                      # serialized process-wide while recording
 
 
-def test_ctx_aware_self_capture_takes_no_global_lock(monkeypatch):
-    FakeCuda(monkeypatch)
-    free = []
-
-    def body(ctx):
-        if ctx.capturing:
-            out = [_lock_free_in_another_thread()]
-            free.append(out[0])
-
-    r = GraphRunner("cuda:0", capturable=True)
-    r.prepare(body)
-    r.run(body)
-    assert free == [True]
 
 
 def test_failed_self_capture_is_retried_once(monkeypatch):
@@ -414,104 +353,12 @@ def test_run_syncs_only_when_asked_and_never_while_recording(monkeypatch):
     assert fake.synced == [fake.current] * 2
 
 
-def _holds_lock(cm) -> bool:
-    return cm is runtime._CAPTURE_LOCK
 
 
-def test_serial_locks_current_stream_calls_only_while_a_legacy_capture_is_pending(monkeypatch):
-    fake = FakeCuda(monkeypatch)
-    side = FakeStream(fake.device)
-    r = GraphRunner("cuda:0", capturable=True)
-    on_cur, on_side = r.context(), r.context(side)
-    assert not _holds_lock(r.serial(on_cur))             # no legacy producer: lock-free
-    assert not _holds_lock(GraphRunner("cpu", capturable=True, legacy_stream=True)
-                           .serial(LaunchContext("cpu", None)))
-    legacy = GraphRunner("cuda:0", capturable=True, legacy_stream=True)
-    assert _holds_lock(legacy.serial(on_side))           # a legacy producer: always
-    # it may self-capture on Warp's current stream: calls resolving there serialize
-    assert _holds_lock(r.serial(on_cur)) and not _holds_lock(r.serial(on_side))
-    legacy.prepare(_Body())
-    legacy.run(_Body())
-    assert legacy.graph is not None                      # captured once: nothing pending
-    assert not _holds_lock(r.serial(on_cur))
-    GraphRunner("cuda:0", capturable=False, legacy_stream=True)   # never self-captures
-    assert not _holds_lock(r.serial(on_cur))
-    pending = GraphRunner("cuda:0", capturable=True, legacy_stream=True)
-    assert _holds_lock(r.serial(on_cur))
-    del pending
-    gc.collect()
-    assert not _holds_lock(r.serial(on_cur))             # a dead runner never captures
 
 
-def test_current_stream_call_waits_for_a_legacy_self_capture(monkeypatch):
-    """A legacy producer self-captures Warp's shared current stream; another thread's
-    call resolving that stream must not mistake it for its caller's capture (it would
-    record itself into the legacy graph and return without running)."""
-    fake = FakeCuda(monkeypatch)
-    in_capture, release = threading.Event(), threading.Event()
-
-    def legacy_body(ctx):
-        if ctx.capturing:
-            in_capture.set()
-            assert release.wait(10)
-
-    legacy = GraphRunner("cuda:0", capturable=True, legacy_stream=True, name="legacy")
-    legacy.prepare(legacy_body)
-    body = _Body()
-    r = GraphRunner("cuda:0", capturable=True, name="toy")
-    r.prepare(body)
-    errors: list = []
-
-    def call(fn, *args, **kwargs):
-        try:
-            fn(*args, **kwargs)
-        except BaseException as exc:  # noqa: BLE001 - reported below
-            errors.append(exc)
-
-    t_legacy = threading.Thread(target=call, args=(legacy.run, legacy_body))
-    t_legacy.start()
-    try:
-        assert in_capture.wait(10)
-        assert fake.current.is_capturing                 # the legacy capture is open
-        t_other = threading.Thread(target=call, args=(r.run, body), kwargs={"sync": True})
-        t_other.start()
-        t_other.join(0.3)
-        assert t_other.is_alive(), "decided its mode while the legacy capture was open"
-    finally:
-        release.set()
-    t_legacy.join(10)
-    t_other.join(10)
-    assert not errors, errors
-    # Not recorded into the legacy graph: its own self-capture on a private stream,
-    # then a replay and a sync on the (no longer capturing) current stream.
-    assert body.runs == 2 and body.ctxs[1].stream is not fake.current
-    assert r.graph is not None and (r.graph, fake.current) in fake.launched
-    assert fake.synced[-1] is fake.current
 
 
-def test_legacy_plugin_eager_body_runs_on_the_current_stream(monkeypatch):
-    """A legacy plugin's own launches go to Warp's current stream: when the call resolved
-    another stream, the WHOLE body runs on the current stream, ordered after the resolved
-    stream and before it (prepare and eager calls alike)."""
-    fake = FakeCuda(monkeypatch)
-    side = FakeStream(fake.device)
-    body = _Body()
-    r = GraphRunner("cuda:0", capturable=True, legacy_stream=True, default_stream=side,
-                    name="legacy")
-    r.prepare(body)
-    assert body.ctxs[0].stream is fake.current
-    assert fake.current.waited_on == [side] and side.waited_on == [fake.current]
-    assert fake.synced == [side]
-    r.run(body, policy="eager", sync=True)
-    assert body.ctxs[1].stream is fake.current
-    assert fake.current.waited_on == [side] * 2 and side.waited_on == [fake.current] * 2
-    assert fake.synced == [side] * 2
-    r.run(body, stream=fake.current, policy="eager")     # already current: no detour
-    assert body.ctxs[2].stream is fake.current and len(side.waited_on) == 2
-    fake.current.is_capturing = True                     # the plugin would be recorded there
-    with pytest.raises(LegacyPluginStreamError, match="current stream is"):
-        r.run(body, policy="eager")
-    assert body.runs == 3
 
 
 def test_ctx_aware_eager_body_stays_on_the_resolved_stream(monkeypatch):
@@ -690,7 +537,7 @@ def test_construction_refuses_a_torch_capture_in_this_thread(monkeypatch):
 _Run = types.SimpleNamespace
 
 
-def _fake_track_facade(monkeypatch, capturable=True, accepts_ctx=True):
+def _fake_track_facade(monkeypatch, capturable=True):
     """TrackGenerator runs a track_gen.pipeline Program (PR10a): the seam is a
     generator-only PipelineSpec (the planner's Track-writer rule is lifted for it) and a
     fake result Track; the fake generator records the context of every pipeline run
@@ -706,7 +553,7 @@ def _fake_track_facade(monkeypatch, capturable=True, accepts_ctx=True):
 
     _put(GeneratorSpec(
         name="tests.fake", alloc_scratch=lambda config: object(),
-        generate=generate, capturable=capturable, accepts_ctx=accepts_ctx))
+        generate=generate, capturable=capturable))
     track = types.SimpleNamespace(generation=None)
     monkeypatch.setattr(legacy, "_to_pipeline_spec", lambda cfg, binding: PipelineSpec(
         BatchSpec(1, "cuda", cfg.N_max), (StageRef("generator", "tests.fake"),)))
@@ -716,7 +563,7 @@ def _fake_track_facade(monkeypatch, capturable=True, accepts_ctx=True):
     return cfg, runs, track, TrackGenerator
 
 
-def _fake_gate_facade(monkeypatch, capturable=True, accepts_ctx=True):
+def _fake_gate_facade(monkeypatch, capturable=True):
     """GateGenerator runs a gate Program (PR11): the seam is a generator-only gate spec
     (the planner's GateSequence-writer rule is lifted for it) and a fake result; the
     fake (legacy) gate generator records the context of every pipeline run (its ctx=,
@@ -730,11 +577,23 @@ def _fake_gate_facade(monkeypatch, capturable=True, accepts_ctx=True):
         ctx = ctx if ctx is not None else LaunchContext.for_call("cuda")
         runs.append(_Run(stream=ctx.stream, capturing=ctx.capturing))
 
-    _put(GateGeneratorSpec(
-        name="tests.fake", alloc_scratch=lambda config: object(),
-        generate=generate, max_gates=lambda config: 4,
-        supported_orderings=frozenset({"ccw"}), capturable=capturable,
-        accepts_ctx=accepts_ctx))
+    class FakeGate(Stage):
+        name = "tests.fake"
+        kind = "gate_generator"
+        output = "anchors"
+        capture = CaptureClass.STATIC if capturable else CaptureClass.HOST
+        writes = {"xy": "anchors.xy", "count": "anchors.count"}
+        orderings = frozenset({"ccw"})
+
+        def capacity(self, p, layout):
+            return {"gates": 4}
+
+        def build(self, b, p):
+            b.write("xy", wp.vec2f, per="anchors")
+            b.write("count", wp.int32)
+            return lambda ctx: generate(ctx=ctx)
+
+    _put(FakeGate)
     seq = types.SimpleNamespace(generation=None)
     monkeypatch.setattr(legacy, "_to_gate_pipeline_spec",
                         lambda cfg, binding, registry=None: PipelineSpec(
@@ -827,18 +686,6 @@ def test_facade_non_capturable(monkeypatch, make):
     assert len(runs) == 2 and len(copies) == 2         # nothing was launched
 
 
-@pytest.mark.parametrize("make", _FACADES)
-def test_facade_legacy_plugin_stream_rule(monkeypatch, make):
-    fake, gen, runs, copies, result = _setup_fake_facade(monkeypatch, make,
-                                                         accepts_ctx=False)
-    gen.generate()
-    (cap,) = fake.captures
-    assert cap.stream is fake.current                  # legacy: current stream
-    side = FakeStream(fake.device)
-    side.is_capturing = True
-    with pytest.raises(LegacyPluginStreamError):
-        gen.generate(stream=side)
-    assert len(runs) == 2
 
 
 @pytest.mark.parametrize("make", _FACADES)
@@ -1174,36 +1021,23 @@ def test_course_with_a_device_object(mode):
     _assert_course_same(c, _course(mode, seeds=99))
 
 
-def test_course_reseed_and_regeneration_hold_the_runner_lock_together(monkeypatch):
-    """generate(seeds=...) issues its reseed launches inside the same serialization as
-    the regeneration (GraphRunner.serial), never between two lock windows."""
+def test_course_reseed_precedes_generation(monkeypatch):
     c = _course("track")
-    depth = [0]
-    held: list = []
-
-    @contextlib.contextmanager
-    def serial(ctx):
-        depth[0] += 1
-        try:
-            yield
-        finally:
-            depth[0] -= 1
-
+    events = []
     real_set = c.rng.set_seeds_warp
     real_run = c._runner.run
 
-    def set_seeds_warp(*a, **k):
-        held.append(("reseed", depth[0] > 0))
-        return real_set(*a, **k)
+    def set_seeds_warp(*args, **kwargs):
+        events.append("reseed")
+        return real_set(*args, **kwargs)
 
-    def run(*a, **k):
-        held.append(("run", depth[0] > 0))
-        return real_run(*a, **k)
+    def run(*args, **kwargs):
+        events.append("run")
+        return real_run(*args, **kwargs)
 
-    monkeypatch.setattr(c._runner, "serial", serial)
     monkeypatch.setattr(c._runner, "run", run)
     monkeypatch.setattr(c.rng, "set_seeds_warp", set_seeds_warp)
     c.generate(seeds=5)
     c.generate(seeds=wp.array(np.arange(E, dtype=np.int32) + 5, dtype=wp.int32, device="cpu"))
-    assert held == [("reseed", True), ("run", True)] * 2
+    assert events == ["reseed", "run"] * 2
     _assert_course_same(c, _course("track", seeds=5))

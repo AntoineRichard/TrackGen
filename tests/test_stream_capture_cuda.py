@@ -20,7 +20,7 @@ pytestmark = pytest.mark.cuda
 import warp as wp  # noqa: E402
 
 from track_gen import GateGenConfig, PerEnvSeededRNG, TrackGenConfig  # noqa: E402
-from track_gen._src import gate_generator_registry, generator_registry  # noqa: E402
+from track_gen.plugin import registry  # noqa: E402
 from track_gen._src import warp_pipeline  # noqa: E402
 from track_gen._src.gate_generator import GateGenerator  # noqa: E402
 from track_gen._src.track_generator import TrackGenerator  # noqa: E402
@@ -49,7 +49,7 @@ def _poison(arr):
 # Pipelines recorded on a side stream through an explicit LaunchContext.
 # ---------------------------------------------------------------------------------------
 
-@pytest.mark.parametrize("generator", generator_registry.available())
+@pytest.mark.parametrize("generator", registry.available("generator"))
 def test_track_pipeline_records_on_side_stream(generator):
     cfg = TrackGenConfig(generator=generator, device=DEV, num_envs=E)
     gen = TrackGenerator(cfg, PerEnvSeededRNG(seeds=11, num_envs=E, device=DEV))
@@ -81,7 +81,7 @@ def test_track_pipeline_records_on_side_stream(generator):
                                       getattr(ref, f).numpy(), err_msg=f)
 
 
-@pytest.mark.parametrize("generator", gate_generator_registry.available())
+@pytest.mark.parametrize("generator", registry.available("gate_generator"))
 def test_gate_pipeline_records_on_side_stream(generator):
     cfg = GateGenConfig(generator=generator, device=DEV, num_envs=E, gate_width=0.05)
     gen = GateGenerator(cfg, PerEnvSeededRNG(seeds=11, num_envs=E, device=DEV))

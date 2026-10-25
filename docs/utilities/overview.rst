@@ -250,7 +250,7 @@ No utility host-synchronizes or reads device data back in
 each call only enqueues kernels on its stream (``ctx=``, else ``stream=``, else the
 resolved stream: an enclosing ``LaunchContext.scope()``, torch's capture stream, Warp's
 current stream). They therefore record into YOUR OWN CUDA graph as-is, with no flag to
-set (``track_gen.set_capturing`` is a deprecated no-op, :ref:`upgrading-set-capturing`).
+set; each call uses its launch context.
 :ref:`capture-rules` lists the rules for recording.
 ``localize.curvature`` and ``localize.speed_profile`` allocate their result unless you
 pass ``out=`` (:doc:`/utilities/localize`); with it they record too.

@@ -453,8 +453,7 @@ class GateGenerator:
             track_gen.exec.NotCapturableError: recording a pipeline with HOST stages (a
                 ``capturable=False`` generator) into a capture (raised before any
                 launch, naming them).
-            track_gen.exec.LegacyPluginStreamError: recording a legacy plugin
-                generator on a stream that is not Warp's current stream.
+
         """
         if num_or_ids is not None:
             if isinstance(num_or_ids, bool) or not isinstance(num_or_ids, numbers.Integral):

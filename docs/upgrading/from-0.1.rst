@@ -3,12 +3,19 @@
 Upgrading from 0.1 to 0.2
 =========================
 
+.. note::
+
+   This is the historical 0.1 to 0.2 guide. The current release has removed the
+   compatibility APIs described below; continue with :doc:`from-0.2` after this guide.
+   Historical examples of removed APIs either show the current error explicitly or
+   are marked non-executed. The working replacement examples run against current code.
+
 This page is for code written against TrackGen 0.1 (the ``v0.1.0`` release). It answers
 three questions in order: will my code still run, will my results change without an
 error, and do I have to retrain or rebaseline anything.
 
 Most 0.1 code runs unchanged. ``TrackGenConfig``, ``GateGenConfig``, ``TrackGenerator``,
-``GateGenerator`` and ``Course(CourseConfig(...))`` keep working through 0.x, and every
+``GateGenerator`` and ``Course(CourseConfig(...))`` keep working in 0.2, and every
 default generator except ``repulsive`` produces the same bytes as in 0.1. What needs your
 attention is a short list of changes that alter results without raising, led by the way
 :term:`invalid envs <invalid env>` now read. The 0.1 documentation is in the
@@ -1179,7 +1186,7 @@ Deprecations
 ------------
 
 These still work. Most emit a ``DeprecationWarning`` (each item says which), and each is
-removed at 1.0 (:ref:`upgrading-removals`).
+removed in 0.3 (:ref:`upgrading-removals`).
 
 .. _upgrading-set-capturing:
 
@@ -1194,13 +1201,13 @@ removed at 1.0 (:ref:`upgrading-removals`).
 ``Course.set_capturing``) has no effect: the utilities no longer synchronize the host, so
 they can be recorded into a graph without it (:ref:`upgrading-capture`).
 
-.. snippet: group=set-capturing expect-warning=DeprecationWarning
+.. snippet: group=set-capturing expect-error=AttributeError
 
 .. code-block:: python
 
    import track_gen
 
-   track_gen.set_capturing(True)   # DeprecationWarning: no effect, removed in 1.0
+   track_gen.set_capturing(True)   # AttributeError in the current release
 
 Delete the calls.
 
@@ -1217,13 +1224,12 @@ Building a ``bezier`` generator with ``style_sampling=True`` warns once per buil
 Its per-env draws become randomizers, which draw each env's value from a uniform range
 at every generation (:ref:`curricula`):
 
-.. snippet: group=style requires=upgrading/from-0.1#common expect-warning=DeprecationWarning
+.. snippet: group=style requires=upgrading/from-0.1#common expect-error=TypeError
 
 .. code-block:: python
 
    config = TrackGenConfig(num_envs=E, device=device, style_sampling=True,
                            scale_range=(0.8, 1.2), rad_range=(0.1, 0.35))
-   gen = TrackGenerator(config)   # DeprecationWarning
 
 .. snippet: group=style
 
@@ -1233,8 +1239,8 @@ at every generation (:ref:`curricula`):
    gen = TrackGenerator(presets.track(num_envs=E, device=device,
                                       randomize={"generator.size": (0.8, 1.2),
                                                  "generator.rad": (0.1, 0.35)}))
-   # from a config: style_sampling off, then randomize the spec the config builds
-   config = TrackGenConfig(num_envs=E, device=device, style_sampling=False)
+   # from a cleaned config: randomize the spec the config builds
+   config = TrackGenConfig(num_envs=E, device=device)
    spec = legacy.to_pipeline_spec(config).with_randomize({"generator.size": (0.8, 1.2)})
    gen = TrackGenerator(spec)
    # a Course
@@ -1299,7 +1305,7 @@ and registered it in the private registry. Here is one, a wobbly circle:
 
 Its 0.1 registration still works, with no warning:
 
-.. snippet: group=reg-01 requires=upgrading/from-0.1#common,upgrading/from-0.1#wobbly
+.. snippet: group=reg-01 skip=legacy
 
 .. code-block:: python
 
@@ -1312,14 +1318,14 @@ Its 0.1 registration still works, with no warning:
    assert TrackGenerator(TrackGenConfig(generator="wobbly", num_envs=E, device=device)).generate().valid.numpy().all()
 
 ``track_gen._src.generator_registry`` and ``gate_generator_registry`` are now views of
-the public registry, ``track_gen.plugin.registry``, and they go at 1.0. Writing into
+the public registry, ``track_gen.plugin.registry``, and they are removed in 0.3. Writing into
 ``GENERATORS`` or ``GATE_GENERATORS`` raises ``TypeError``: in tests, use
 ``registry.scoped()`` instead of resetting the dictionaries. The old ``register(spec)``
 still replaces a track generator of the same name, now with a ``DeprecationWarning``,
 while ``registry.add`` refuses a name that is already registered
 (``DuplicateSpecError``) unless you pass ``replace=True``. Two ports:
 
-.. snippet: group=reg-min requires=upgrading/from-0.1#common,upgrading/from-0.1#wobbly expect-warning=UserWarning
+.. snippet: group=reg-min skip=legacy
 
 .. code-block:: python
 
@@ -1343,7 +1349,7 @@ while ``registry.add`` refuses a name that is already registered
    from track_gen.plugin import GeneratorSpec, registry
 
 
-   def generate_ctx(seeds_wp, config, out_centerline, out_valid_wp, scratch, ctx=None):
+   def generate_ctx(seeds_wp, config, out_centerline, out_valid_wp, scratch, *, ctx):
        ctx = resolve(ctx, out_centerline.device)  # the facades always pass ctx
        E, N = int(config.num_envs), int(config.num_points)
        ctx.launch(_wobbly_k, E * N, [seeds_wp, N, out_centerline])
@@ -1351,7 +1357,7 @@ while ``registry.add`` refuses a name that is already registered
 
 
    registry.add(GeneratorSpec(name="acme.wobbly", alloc_scratch=alloc_scratch,
-                              generate=generate_ctx, accepts_ctx=True))
+                              generate=generate_ctx))
 
 .. snippet: after
 
@@ -1397,19 +1403,19 @@ The built-in generators are stages now (``Stage`` classes), not
 ``generator_registry.get``, ``GENERATORS[...]``, the gate equivalents) returns a class.
 
 - Its ``.generate`` and ``.alloc_scratch`` are gone (the module functions
-  ``generate_*_warp`` / ``*_alloc_scratch`` remain until 1.0). Read capture support and
+  ``generate_*_warp`` / ``*_alloc_scratch`` remained in 0.2). Read capture support and
   the rest from ``registry.describe(kind, name)`` (``.capturable``, ``.accepts_ctx``,
   ``.seeded``), and a gate generator's orders from
   ``registry.describe("gate_generator", name).supported_orderings``.
 - ``.params`` warns: use ``.Params``, the generator's :term:`Params` class.
 
-.. snippet: group=plugins expect-warning=DeprecationWarning
+.. snippet: group=plugins expect-error=AttributeError
 
 .. code-block:: python
 
    from track_gen.plugin import registry
 
-   params_cls = registry.get("generator", "bezier").params   # DeprecationWarning
+   params_cls = registry.get("generator", "bezier").params   # AttributeError in the current release
 
 .. snippet: group=plugins
 
@@ -1428,7 +1434,7 @@ For your own plugins:
   keeps working (:ref:`upgrading-registry`); one with ``capturable=False`` now runs as a
   host step between recorded segments instead of making the whole pipeline eager.
 - ``GateGeneratorSpec`` warns when a generator binds it (``GateGenerator``, ``Course``,
-  the conformance kit), not when it is registered, and is removed at 1.0: write a
+  the conformance kit), not when it is registered, and is removed in 0.3: write a
   ``Stage(kind="gate_generator", output="anchors")`` (:ref:`writing-a-gate-generator`).
 - The ``warp_gate`` helpers of 0.1 gate plugins (``alloc_order_scratch``,
   ``order_points``, ``finish_ordered_gates``) warn; the ``warp_pipeline``,
@@ -1493,7 +1499,7 @@ the subclass configs your users already have keep their meaning:
        out[t] = wp.vec2f(r * wp.cos(theta), r * wp.sin(theta))
 
 
-   def generate(seeds_wp, config, out_centerline, out_valid_wp, scratch, ctx=None):
+   def generate(seeds_wp, config, out_centerline, out_valid_wp, scratch, *, ctx):
        ctx = resolve(ctx, out_centerline.device)
        E, N = int(config.num_envs), int(config.num_points)
        lobes = config.generator_params.lobes     # the resolved, validated instance
@@ -1502,7 +1508,7 @@ the subclass configs your users already have keep their meaning:
 
 
    registry.add(GeneratorSpec(name="acme.lobes", alloc_scratch=lambda config: None,
-                              generate=generate, accepts_ctx=True, params=AcmeParams))
+                              generate=generate, params=AcmeParams))
 
    old = TrackGenerator(AcmeConfig(generator="acme.lobes", acme_lobes=5,
                                    num_envs=E, device=device))
@@ -1529,14 +1535,14 @@ Flat config, ``Params`` and presets
 :Affects: everyone
 :Find it: ``TrackGenConfig(``, ``GateGenConfig(``
 
-Flat ``TrackGenConfig`` and ``GateGenConfig`` fields keep working through 0.x, with
+Flat ``TrackGenConfig`` and ``GateGenConfig`` fields kept working in 0.2, with
 byte-identical outputs. 0.2 adds two forms that give the same bytes: each generator's
 knobs as a typed ``Params`` class (``generator_params``), and presets, functions that
 build a spec (a ``PipelineSpec``, the list of stages a generator runs).
 :ref:`generating` describes them. Only these force a change:
 
 - Fields that the generator never reads warn (``DeprecationWarning`` at config
-  construction, removed at 1.0): ``energy_steps``, ``energy_lr``, ``energy_w_sep``,
+  construction, removed in 0.3): ``energy_steps``, ``energy_lr``, ``energy_w_sep``,
   ``energy_w_len``, ``energy_w_bend``, ``energy_w_anchor``, ``tp_iters``, ``tp_tau``,
   ``tp_alpha``, ``tp_beta``, ``smooth_finish``, ``smooth_finish_iters``,
   ``smooth_finish_tau``, ``relax_chunk_size``, ``relax_use_warp``, ``max_regen_iters``,
@@ -1551,11 +1557,11 @@ build a spec (a ``PipelineSpec``, the list of stages a generator runs).
   ``TrackGenerator(...)`` (or ``Course(...)``) instead of ``TrackGenConfig(...)``, with
   the same message, and a bad knob of a generator you did not select is ignored.
 
-.. snippet: group=flat requires=upgrading/from-0.1#common expect-warning=DeprecationWarning
+.. snippet: group=flat requires=upgrading/from-0.1#common expect-error=TypeError
 
 .. code-block:: python
 
-   TrackGenConfig(num_envs=E, device=device, energy_steps=200)   # DeprecationWarning
+   TrackGenConfig(num_envs=E, device=device, energy_steps=200)   # TypeError in the current release
 
 .. snippet: group=flat
 
@@ -1804,7 +1810,7 @@ stream or an output, with what to do.
      - :ref:`upgrading-plugins`, :ref:`upgrading-style-sampling`
    * - 0.2.0.dev5
      - ``validity.gate_default`` checks bar crossings per env; its ``gate_width`` and
-       ``check_crossing`` are inert (removed at 1.0) and take part in the agreement
+       ``check_crossing`` are inert (removed in 0.3) and take part in the agreement
        check only when set
      - drop them from hand-built specs
    * - 0.2.0.dev5
@@ -1897,21 +1903,21 @@ unaffected.
 
 .. _upgrading-removals:
 
-Removed in 1.0, and what did not change
----------------------------------------
+Removed in 0.3, and what 0.2 kept
+---------------------------------
 
-What 0.2 deprecates goes at 1.0:
+What 0.2 deprecates is removed in 0.3:
 
 .. list-table::
    :header-rows: 1
    :widths: 45 25 30
 
-   * - Removed at 1.0
+   * - Removed in 0.3
      - Warns in 0.2
      - Replacement
    * - ``track_gen.set_capturing``, ``Course.set_capturing`` and the private
        ``_CAPTURING`` names
-     - yes
+     - calls: yes; flags: no
      - nothing (:ref:`upgrading-set-capturing`)
    * - ``CourseLine.track``
      - yes
@@ -1920,7 +1926,7 @@ What 0.2 deprecates goes at 1.0:
      - yes
      - ``.Params``
    * - ``style_sampling``, ``scale_range``, ``rad_range``, ``handle_clamp_frac_range``
-     - yes
+     - only when building a bezier generator with style enabled
      - ``randomize=`` (:ref:`upgrading-style-sampling`)
    * - ``GateGeneratorSpec`` and its adapter
      - yes, when bound
@@ -1930,7 +1936,7 @@ What 0.2 deprecates goes at 1.0:
      - the order stages and ``track_gen.ops``
    * - ``warp_pipeline.GenScratch``
      - yes
-     - ``warp_generate.GenScratch``
+     - the generator facade or a Stage's private scratch
    * - the ``_src`` plugin helpers (``warp_pipeline``, ``warp_generate``,
        ``warp_generate_hull``) and the built-ins' module functions (``generate_*_warp``,
        ``*_alloc_scratch``, ``apply_z_profile``)
@@ -1949,13 +1955,13 @@ What 0.2 deprecates goes at 1.0:
      - yes
      - save them again as ``/2``
 
-What did not change:
+What did not change in 0.2:
 
 - For valid envs, every default generator's output is byte-identical to 0.1, except
   ``repulsive`` (:ref:`upgrading-repulsive`); only the ``valid`` flag of tracks 0.1
   truncated changes (:ref:`upgrading-truncation`).
 - ``TrackGenConfig``, ``GateGenConfig`` and ``Course(CourseConfig)`` keep working
-  through 0.x, with no warning beyond the items above.
+  in 0.2, with no warning beyond the items above.
 - The runtime utilities give 0.1's outputs for valid envs, apart from the ``sdf`` query
   (:ref:`upgrading-sdf`) and the checkpoint capacity
   (:ref:`upgrading-checkpoint-capacity`).

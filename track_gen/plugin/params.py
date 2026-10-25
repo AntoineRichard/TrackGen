@@ -257,7 +257,7 @@ def _check_params_class(cls, *, allow_dynamic: bool = True, owner: str = "") -> 
         if not allow_dynamic:
             raise TypeError(
                 f"{name}.{fld.name}{where} is dynamic: dynamic fields need a Stage "
-                f"(StageBuilder.param); a GeneratorSpec/GateGeneratorSpec params= class "
+                f"(StageBuilder.param); a GeneratorSpec params= class "
                 f"takes static fields only")
         if fld.dtype is None:
             raise TypeError(
@@ -629,8 +629,7 @@ class StageParams(_MappingABC):
     (:attr:`drawn`) is a single array OWNED by its randomizer and written by it every
     generation: ``self[field]`` returns it (observable), :meth:`set` raises (set the
     randomizer's ``lo`` / ``hi`` instead), and a direct write is overwritten by the next
-    draw. Bezier's ``style_sampling`` ranges draw their knobs the same way, by the stage
-    itself (``drawn["rad"] == "generator"``, the stage's own id).
+    draw. A stage may also draw its own fields, reported under the stage's own id.
 
     Curriculum bookkeeping: :meth:`in_effect` returns the ``[E]`` values
     the stage READ for the current rows of each env (the latched working copy, or the
@@ -683,7 +682,7 @@ class StageParams(_MappingABC):
     def drawn(self) -> Mapping[str, str]:
         """``field -> id of the stage that draws it`` every generation: a
         ``randomize.*`` stage targeting this stage, or :attr:`stage_id` itself for a
-        field the stage draws itself (bezier's ``style_sampling`` ranges). Every value
+        field the stage draws itself. Every value
         is a key of ``gen.params``; empty when nothing draws this
         stage's fields."""
         return MappingProxyType(dict(self._drawn))
@@ -703,8 +702,7 @@ class StageParams(_MappingABC):
 
     def _drawn_text(self, field: str) -> str:
         """Who draws ``field``, for ``repr``: the randomizer's id (``'randomize.x'``) or,
-        for a field the stage draws itself, ``the generator's style_sampling
-        (rad_range)``."""
+        for a field the stage draws itself, the sampling rule and range field."""
         writer = self._drawn[field]
         own = _self_draw(self._params, field) if writer == self._stage_id else None
         if own is not None:
@@ -742,7 +740,7 @@ class StageParams(_MappingABC):
         at the start of every generation, for every env or only the masked ones, so an
         env left out of a masked regeneration keeps the value its rows were built with);
         for a drawn field (a ``randomize.*`` target, or a knob bezier's
-        ``style_sampling`` draws) the drawn array itself. Same dtype as ``self[field]``.
+        draws) the drawn array itself. Same dtype as ``self[field]``.
 
         Values read, not values used: an array written out of range is returned as
         written; a built-in stage clamps it to :meth:`bounds` where it reads it, so the
@@ -750,7 +748,7 @@ class StageParams(_MappingABC):
         ``in_effect`` for every in-range write, scalar :meth:`set` and randomizer
         draw). Exceptions: ``width.from_channel`` reads its ``scale`` / ``lo`` / ``hi``
         as written (it clamps its output), a randomizer its ``lo`` / ``hi`` (it clamps
-        its draw), bezier's ``style_sampling`` draws are not bounded, and ``Course``
+        its draw), a stage's own draws are not bounded, and ``Course``
         gates mode's floor ``gate_frames.gate_width > 0`` is checked by :meth:`set` on
         a scalar only (an array value is clamped to the declared ``0``).
 
@@ -854,7 +852,7 @@ class StageParams(_MappingABC):
                 ``hi``: outside the declared range of the field it draws; for bezier /
                 hull's ``min_num_points``: above ``max_num_points``; see
                 :meth:`bounds`); a field drawn every generation (by a randomizer, or by
-                the stage itself: bezier's ``style_sampling`` ranges).
+                the stage itself).
 
         An array is not range-checked: a built-in stage clamps each value to the
         field's declared bounds where it reads it.
@@ -863,7 +861,7 @@ class StageParams(_MappingABC):
         writer = self._drawn.get(field)
         if writer is not None:
             own = _self_draw(self._params, field) if writer == self._stage_id else None
-            if own is not None:              # drawn by the stage itself (style_sampling)
+            if own is not None:              # drawn by the stage itself
                 how, rng = own
                 raise ValueError(f"{self._stage_id}.{field} is drawn every generation by "
                                  f"the generator's {how} ({rng}); set {rng}=None to set "
@@ -946,15 +944,13 @@ class ParamTable(_MappingABC):
 
 def _self_drawn(params) -> "dict[str, str]":
     """``field -> range field`` of the dynamic fields a stage draws itself every
-    generation (the private Params hook ``_self_drawn()``, roadmap PR13c: bezier's
-    ``style_sampling`` ranges, e.g. ``{"rad": "rad_range"}``); empty without one."""
+    generation (the private Params hook ``_self_drawn()``); empty without one."""
     fn = getattr(params, "_self_drawn", None)
     return dict(fn()) if params is not None and callable(fn) else {}
 
 
 def _self_draw(params, field: str) -> "tuple[str, str] | None":
-    """``(switch, range field)`` when the stage draws ``field`` itself (bezier:
-    ``("style_sampling", "rad_range")``), else ``None``."""
+    """``(switch, range field)`` when the stage draws ``field`` itself, else ``None``."""
     rng = _self_drawn(params).get(field)
     if rng is None:
         return None

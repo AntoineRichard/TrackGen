@@ -35,8 +35,7 @@ one-point count floor.
 
 Roadmap PR13c: the registered ``"hull"`` generator is the :class:`Hull` Stage, whose
 ``hull_displacement`` is dynamic (a per-env array, :func:`_midpoint_displace_dyn_k`);
-``generate_hull_warp`` / ``hull_alloc_scratch`` keep their signatures and the scalar
-kernel on the same private core, :func:`_enqueue_hull`.
+the private :func:`_enqueue_hull` core launches its per-env array-reading kernel.
 """
 from __future__ import annotations
 
@@ -48,8 +47,7 @@ from ..ops.geometry import _angle_sort_launch
 from ..ops.sampling import _sample_counts_launch, _sample_grid_points_launch
 from ..plugin.stage import CaptureClass, Stage
 from .builtin_params import HullParams, _declared_bounds
-from .builtin_stage import (DeprecatedParamsAlias, check_dyn, check_no_size,
-                            default_alloc, run_view)
+from .builtin_stage import check_dyn, default_alloc, run_view
 from .runtime import _init
 
 # RNG keying of the point streams (``wp.rand_init(seed * salt + POINT_SALT_OFFSET)``, see
@@ -61,66 +59,6 @@ POINT_SALT = 7919
 POINT_SALT_OFFSET = 1
 
 
-@wp.kernel
-def _midpoint_displace_k(
-    sorted_pts: wp.array(dtype=wp.vec2f),
-    count: wp.array(dtype=wp.int32),
-    seeds: wp.array(dtype=wp.int32),
-    P: int,
-    disp: float,
-    out_aug: wp.array(dtype=wp.vec2f),
-    out_count: wp.array(dtype=wp.int32),
-):
-    # One thread per env e. Builds the augmented loop with 2m vertices interleaving the m
-    # angle-sorted vertices and m displaced edge-midpoints:
-    #   out_aug[base + 2*i]   = sorted[i]
-    #   out_aug[base + 2*i+1] = midpoint(sorted[i], sorted[(i+1)%m]) + r_i * radial_dir
-    # where radial_dir points from the centroid through the midpoint and r_i is a random
-    # per-edge signed amount in [-disp, +disp] * (centroid->midpoint distance). Positive
-    # r_i bulges the lobe OUT, negative pinches it IN — this is the racing-shape variety.
-    # Rows >= 2m are written NaN. The stride for the augmented loop is 2P.
-    e = wp.tid()
-    sbase = e * P
-    abase = e * (2 * P)
-    m = count[e]
-    if m < 1:
-        m = 1
-    if m > P:
-        m = P
-
-    # Centroid of the m real sorted vertices (for the radial displacement direction).
-    sx = wp.float64(0.0)
-    sy = wp.float64(0.0)
-    for i in range(P):
-        if i < m:
-            p = sorted_pts[sbase + i]
-            sx = sx + wp.float64(p[0])
-            sy = sy + wp.float64(p[1])
-    cx = wp.float32(sx / wp.float64(m))
-    cy = wp.float32(sy / wp.float64(m))
-    centroid = wp.vec2f(cx, cy)
-
-    # Per-edge displacement RNG (distinct multiplier 3083 from the count/position streams).
-    state = wp.rand_init(seeds[e] * 3083 + 1)
-
-    for i in range(P):
-        if i < m:
-            v0 = sorted_pts[sbase + i]
-            v1 = sorted_pts[sbase + (i + 1) % m]
-            mid = 0.5 * (v0 + v1)
-            radial = mid - centroid
-            rlen = wp.length(radial)
-            rdir = radial / wp.max(rlen, 1.0e-8)
-            # Signed per-edge amount in [-disp, +disp], scaled by the centroid->midpoint
-            # distance so the displacement is proportional to the local track radius.
-            amt = (wp.randf(state) * 2.0 - 1.0) * disp * rlen
-            out_aug[abase + 2 * i] = v0
-            out_aug[abase + 2 * i + 1] = mid + amt * rdir
-        else:
-            out_aug[abase + 2 * i] = wp.vec2f(wp.nan, wp.nan)
-            out_aug[abase + 2 * i + 1] = wp.vec2f(wp.nan, wp.nan)
-
-    out_count[e] = 2 * m
 
 
 # The declared bounds of HullParams.hull_displacement (the twin's clamp, float32).
@@ -180,43 +118,8 @@ def _midpoint_displace_dyn_k(
     out_count[e] = 2 * m
 
 
-def point_count_sample_inplace(seeds_wp, config, out_count,
-                               ctx: "LaunchContext | None" = None):
-    """In-place: per-env point count in [min_num_points, max_num_points]. Zero alloc.
-
-    Args:
-        ctx: optional track_gen.exec.LaunchContext; default resolves the
-            device's stream (see track_gen.exec).
-    """
-    _init()
-    ctx = _resolve_ctx(ctx, str(out_count.device))
-    # Legacy entry point (kept for out-of-tree plugins): ops.sample_counts keyed
-    # seed * POINT_COUNT_SALT + POINT_SALT_OFFSET, without the public op's validation.
-    _sample_counts_launch(ctx, seeds_wp, POINT_COUNT_SALT, POINT_SALT_OFFSET,
-                          int(config.min_num_points), int(config.max_num_points), out_count)
-    ctx.sync()
 
 
-def point_sample_inplace(seeds_wp, config, out_points, used_scratch,
-                         ctx: "LaunchContext | None" = None):
-    """In-place: writes [E*P] vec2f random points into out_points. Zero alloc.
-
-    Args:
-        ctx: optional track_gen.exec.LaunchContext; default resolves the
-            device's stream (see track_gen.exec).
-    """
-    _init()
-    P = int(config.max_num_points)
-    # The grid of ops.grid_cells, computed inline without its validation (as at 1077b18).
-    num_cells = int(1.0 / (config.min_point_distance * 2))
-    cell_size = config.min_point_distance * 2.0
-    ctx = _resolve_ctx(ctx, str(out_points.device))
-    # Legacy entry point (kept for out-of-tree plugins): ops.sample_grid_points keyed
-    # seed * POINT_SALT + POINT_SALT_OFFSET, without the public op's validation.
-    _sample_grid_points_launch(ctx, seeds_wp, POINT_SALT, POINT_SALT_OFFSET, P, num_cells,
-                               float(cell_size), float(config.scale), used_scratch,
-                               out_points)
-    ctx.sync()
 
 
 class HullScratch:
@@ -266,17 +169,10 @@ class HullScratch:
 _DYNAMIC = ("min_num_points", "hull_displacement", "size")
 
 
-def hull_alloc_scratch(config):
-    """Allocate the hull generator's PRIVATE working scratch (one alloc per generator).
-
-    The augmented loop has up to 2P vertices (P originals + P displaced midpoints), so the
-    augmented / dense / arc-resample buffers are sized for AP = 2P, not P.
-    """
-    return _alloc_hull_scratch(config)
 
 
 def _alloc_hull_scratch(config, alloc=None):
-    """:func:`hull_alloc_scratch` with every buffer from ``alloc(name, dtype, n)``
+    """the private scratch allocator with every buffer from ``alloc(name, dtype, n)``
     (named after its :class:`HullScratch` slot; default ``wp.empty`` on
     ``config.device``). The Stage passes its ``StageBuilder.scratch``."""
     _init()
@@ -304,43 +200,11 @@ def _alloc_hull_scratch(config, alloc=None):
     )
 
 
-def generate_hull_warp(seeds_wp: wp.array, config,
-                       out_centerline: wp.array, out_valid_wp: wp.array,
-                       scratch, ctx: "LaunchContext | None" = None) -> None:
-    """Convex-hull + midpoint-displacement centerline generation — in-place owned path.
-
-    Pure-Warp: sample points -> angle-sort -> midpoint-displace -> closed Catmull-Rom dense
-    -> arc-resample -> polygon fallback for self-crossers -> write the chosen centerline into
-    out_centerline. Marks all envs valid (generation gate is always True; inflate does the
-    real validity gate, as for bezier).
-
-    The legacy entry point (frozen signature; ``config.hull_displacement`` as a host
-    scalar): the registered ``"hull"`` generator is the :class:`Hull` Stage on the same
-    private core (roadmap PR13c).
-
-    Args:
-        seeds_wp:      [E] int32 wp.array per-env base seeds.
-        config:        TrackGenConfig.
-        out_centerline:[E*N] vec2f wp.array — written in-place with the generated centerline.
-        out_valid_wp:  [E] int32 wp.array — filled with 1 (all valid at generation stage).
-        scratch:       a HullScratch from hull_alloc_scratch.
-        ctx: optional track_gen.exec.LaunchContext; default resolves the
-            device's stream (see track_gen.exec).
-    """
-    _init()
-    check_no_size(config, "generate_hull_warp")
-    ctx = _resolve_ctx(ctx, str(out_centerline.device))
-    assert scratch is not None, "generate_hull_warp requires scratch"
-    _enqueue_hull(seeds_wp, config, out_centerline, out_valid_wp, scratch, ctx, None)
 
 
 def _enqueue_hull(seeds_wp, config, out_centerline, out_valid_wp, scratch, ctx,
                   dyn) -> None:
-    """The hull generator's launches on ``ctx``: ``dyn=None`` (the legacy path:
-    ``config.min_num_points`` / ``hull_displacement``, the scalar kernels) or the three
-    dynamic fields' ``[E]`` arrays ``{"min_num_points", "hull_displacement", "size"}``
-    (the Stage: the count twin, the sized point grid and
-    :func:`_midpoint_displace_dyn_k`)."""
+    """Enqueue the generator with resolved per-environment parameter arrays."""
     check_dyn(dyn, _DYNAMIC, "hull")
     E = scratch.count.shape[0]
     N = int(config.num_points)
@@ -351,25 +215,13 @@ def _enqueue_hull(seeds_wp, config, out_centerline, out_valid_wp, scratch, ctx,
     arc = ops.ArcScratch(scratch.arc_real, scratch.arc_seg, scratch.arc_s, scratch.arc_cr)
 
     # Step 1: sample point count + positions.
-    if dyn is None:
-        ops.sample_counts(ctx, seeds_wp, POINT_COUNT_SALT, POINT_SALT_OFFSET,
-                          int(config.min_num_points), int(config.max_num_points),
+    _sample_counts_launch(ctx, seeds_wp, POINT_COUNT_SALT, POINT_SALT_OFFSET,
+                          dyn["min_num_points"], int(config.max_num_points),
                           scratch.count)
-    else:
-        # Roadmap PR13d: the per-env min_num_points (clamped to [2, max] at use).
-        _sample_counts_launch(ctx, seeds_wp, POINT_COUNT_SALT, POINT_SALT_OFFSET,
-                              dyn["min_num_points"], int(config.max_num_points),
-                              scratch.count)
     num_cells, cell = ops.grid_cells(config.min_point_distance)
-    if dyn is None:
-        ops.sample_grid_points(ctx, seeds_wp, POINT_SALT, POINT_SALT_OFFSET, P, num_cells,
-                               float(cell), float(config.scale), scratch.used,
-                               scratch.points)
-    else:
-        # Roadmap PR13d: the per-env size, applied after scale.
-        ops.sample_grid_points(ctx, seeds_wp, POINT_SALT, POINT_SALT_OFFSET, P, num_cells,
-                               float(cell), float(config.scale), scratch.used,
-                               scratch.points, size=dyn["size"])
+    ops.sample_grid_points(ctx, seeds_wp, POINT_SALT, POINT_SALT_OFFSET, P, num_cells,
+                           float(cell), float(config.scale), scratch.used,
+                           scratch.points, size=dyn["size"])
 
     # Step 2: angle-sort the first m points about their centroid. This is ops.angle_sort's
     # kernel with the legacy count floor of 1 (a count < 1 sorts the first point), so the
@@ -379,15 +231,9 @@ def _enqueue_hull(seeds_wp, config, out_centerline, out_valid_wp, scratch, ctx,
                        scratch.sorted, m_floor=1)
 
     # Step 3: midpoint-displacement layer -> augmented 2m-vertex loop.
-    if dyn is None:
-        disp = float(getattr(config, "hull_displacement", 0.15))
-        ctx.launch(_midpoint_displace_k, E,
-                   [scratch.sorted, scratch.count, seeds_wp, P, disp,
-                    scratch.aug, scratch.aug_count])
-    else:
-        ctx.launch(_midpoint_displace_dyn_k, E,
-                   [scratch.sorted, scratch.count, seeds_wp, P, dyn["hull_displacement"],
-                    scratch.aug, scratch.aug_count])
+    ctx.launch(_midpoint_displace_dyn_k, E,
+               [scratch.sorted, scratch.count, seeds_wp, P, dyn["hull_displacement"],
+                scratch.aug, scratch.aug_count])
 
     # Step 4: closed Catmull-Rom smoothing -> dense polyline over the 2m-vertex loop
     # (endpoint-inclusive segments, u = s/(npseg-1); segments >= 2m are NaN and drop out
@@ -418,7 +264,7 @@ def _enqueue_hull(seeds_wp, config, out_centerline, out_valid_wp, scratch, ctx,
 
 class Hull(Stage):
     """``"hull"``: the convex-hull + midpoint-displacement track generator
-    (:func:`generate_hull_warp`) as a ``kind="generator"`` Stage (roadmap PR13c).
+    as a ``kind="generator"`` Stage.
     ``hull_displacement`` is dynamic: a per-env array read by
     :func:`_midpoint_displace_dyn_k`, clamped to ``[0, 1]`` at use. Roadmap PR13d:
     ``min_num_points`` (int32) and ``size`` too."""
@@ -429,8 +275,6 @@ class Hull(Stage):
     capture = CaptureClass.STATIC
     Params = HullParams
     writes = {"xy": "raw.xy", "valid": "gen.valid"}
-    #: Deprecated (0.2.0.dev4's ``GeneratorSpec.params``): use ``Params``.
-    params = DeprecatedParamsAlias()
 
     def build(self, b, p):
         cfg = run_view(p, b)

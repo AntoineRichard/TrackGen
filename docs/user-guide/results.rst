@@ -539,8 +539,7 @@ A centerline without a road band: ``center``, ``tangent`` (``[E * S]`` ``vec3f``
 (optional) and ``layout``, with ``validate``, ``view``, ``copy_from``, ``clone`` and
 ``alloc`` as above. A gates-mode ``Course`` localizes its agent on
 ``course.course_line.centerline``, a ``Centerline`` sampled from a closed Catmull-Rom
-spline through the gate centers (:doc:`/gates-3d`). ``CourseLine.track`` is a
-deprecated alias of ``centerline`` (it emits a ``DeprecationWarning``; removed in 1.0).
+spline through the gate centers (:doc:`/gates-3d`).
 
 .. _results-check-source:
 
@@ -614,7 +613,7 @@ contract, checked before anything runs (no kernel takes it):
   support closed loops only (Stage.topology='closed'); open topology arrives after
   1.0``). A pipeline whose stages all declare ``topology="any"`` is refused too.
 - Stages declare ``Stage.topology`` (``"closed"`` or ``"any"``); every built-in is
-  ``"closed"``, and a legacy ``GeneratorSpec`` counts as ``"closed"``.
+  ``"closed"``, and a ``GeneratorSpec`` counts as ``"closed"``.
 - The utilities that read a result declare ``topology = "closed"`` as a class
   attribute (``DiscChecker`` reads raw disc arrays and has none) and refuse a source
   whose layout has ``closed=False`` (``ValueError: CollisionChecker supports closed loops only

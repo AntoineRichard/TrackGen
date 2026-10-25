@@ -79,7 +79,8 @@ def test_arc_resample_clean_loop_uniform(dev):
 def test_arc_resample_selected_only_writes_active_rows(dev):
     import warp as wp
     wp.init()
-    from track_gen._src import warp_pipeline as wpl
+    from track_gen import ops
+    from track_gen.exec import LaunchContext
 
     num = 32
     pts = _make_batch(dev)[:3].contiguous()
@@ -97,10 +98,9 @@ def test_arc_resample_selected_only_writes_active_rows(dev):
     sentinel = torch.full((E, num, 2), -123.0, dtype=torch.float32, device=dev)
     out_wp = wp.from_torch(sentinel.reshape(E * num, 2).contiguous(), dtype=wp.vec2f)
 
-    wpl.arc_length_resample_selected_inplace(
-        pts_wp, active_wp, M, num,
-        real_wp, seg_wp, s_wp, count_r_wp, count_out_wp, out_wp, dev,
-    )
+    scratch = ops.ArcScratch(real_wp, seg_wp, s_wp, count_r_wp)
+    ops.arc_resample(LaunchContext.for_call(dev), pts_wp, M, num, scratch,
+                     out_wp, count_out_wp, active=active_wp)
     if "cuda" in dev:
         wp.synchronize()
 

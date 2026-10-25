@@ -11,13 +11,11 @@ selected generator only, and builds the two config snapshots a facade keeps:
   their flat fields and outputs stay byte-identical; ``run_config.generator_params``
   is the resolved instance (a legacy spec with ``params=`` reads it there).
 
-A :class:`~track_gen.plugin.Stage` generator is adapted to the legacy accepts-ctx
-generator ABI by :class:`_StageGenerator` (``alloc`` through a StageBuilder at build,
+A :class:`~track_gen.plugin.Stage` generator is adapted to the context-aware
+generator callable by :class:`_StageGenerator` (``alloc`` through a StageBuilder at build,
 ``generate`` = the stage's ``enqueue``), so the rest of the track pipeline is unchanged.
 A gate generator Stage (``output="anchors"``, roadmap PR11) is bound as is: the planner
-builds it like any other stage of the gate pipeline. Binding a legacy
-:class:`~track_gen.plugin.GateGeneratorSpec` emits a ``DeprecationWarning`` (once per
-registry and name).
+builds it like any other stage of the gate pipeline.
 
 Host-only: binding allocates nothing and launches nothing.
 """
@@ -27,7 +25,6 @@ import dataclasses
 import numbers
 import sys
 import types
-import warnings
 from typing import Any, Mapping
 
 import warp as wp
@@ -46,16 +43,15 @@ _STAGE_ID = "generator"
 class GeneratorBinding:
     kind: str                       # "generator" | "gate_generator"
     name: str
-    spec: object                    # GeneratorSpec | GateGeneratorSpec | type[Stage]
+    spec: object                    # GeneratorSpec | type[Stage]
     params: "Any | None"            # resolved + validated; None: a spec without params=
     user_config: object             # snapshot as passed (dict -> instance)
     run_config: object              # snapshot + built-in overlay; .generator_params = params
     pipeline_spec: object           # what the pipeline calls (the spec, or _StageGenerator)
     capturable: bool                # capture != HOST (may be recorded into a caller's graph)
-    accepts_ctx: bool
     layout: Layout
     # The generator's CaptureClass: a Stage's capture_class(static params); a legacy
-    # GeneratorSpec / GateGeneratorSpec: STATIC if capturable else HOST.
+    # GeneratorSpec: STATIC if capturable else HOST.
     capture: CaptureClass = CaptureClass.STATIC
     # Roadmap PR13b: a centerline generator Stage's declared (writes, provides) for its
     # params (Stage.declare); ({}, frozenset()) for a legacy spec.
@@ -74,8 +70,7 @@ def _is_flat(params) -> bool:
 
 
 def _outside_track_gen_stacklevel() -> int:
-    """The ``stacklevel`` (for a ``warnings.warn`` in the CALLER of this function) of the
-    first frame outside the ``track_gen`` package: the user's call."""
+    """Attribute a warning from the caller of this helper to the user's frame."""
     frame, level = sys._getframe(1), 1
     while frame is not None:
         name = frame.f_globals.get("__name__", "")
@@ -83,25 +78,6 @@ def _outside_track_gen_stacklevel() -> int:
             break
         frame, level = frame.f_back, level + 1
     return level
-
-
-def _warn_legacy_gate(registry, name: str) -> None:
-    """The ``GateGeneratorSpec`` deprecation, once per (registry, name), attributed to the
-    user's call (the first frame outside ``track_gen``)."""
-    warned = getattr(registry, "_legacy_gate_warned", None)
-    if warned is None or name in warned:
-        return
-    meta = getattr(registry, "_meta", {}).get("gate_generator", {}).get(name)
-    origin = str(meta) if meta is not None else "a legacy spec"
-    warnings.warn(
-        f"GateGeneratorSpec {name!r} ({origin}) is deprecated: write a Stage with "
-        f"kind='gate_generator' and output='anchors' "
-        f"(docs/contributing/writing-a-generator.rst); legacy gate generators run "
-        f"through an adapter until 1.0",
-        DeprecationWarning, stacklevel=_outside_track_gen_stacklevel())
-    # Marked only once the warning returned: under an error filter every bind raises
-    # (Python's own registries do not record a warning turned into an exception).
-    warned.add(name)
 
 
 def _with_flat_size(params, config, spec, kind: str):
@@ -158,7 +134,7 @@ def bind_generator(kind: str, config, *, registry) -> GeneratorBinding:
 
         config = _snapshot_config(config)
         config.gate_ordering = _default_order(spec, registry)
-    # Stage.Params, or the params= class of a GeneratorSpec / GateGeneratorSpec; a
+    # Stage.Params, or the params= class of a GeneratorSpec; a
     # duck-typed legacy spec's own ``params`` attribute is not a Params class.
     params_cls = _params_class(spec)
     _init()
@@ -208,7 +184,7 @@ def bind_generator(kind: str, config, *, registry) -> GeneratorBinding:
             raise TypeError(f"{spec.__name__}.capture_class() must return a CaptureClass, "
                             f"got {cap!r}")
         return GeneratorBinding(kind, str(run.generator), spec, params, user, run, spec,
-                                capturable=cap != CaptureClass.HOST, accepts_ctx=True,
+                                capturable=cap != CaptureClass.HOST,
                                 layout=layout, capture=cap)
     if stage:
         instance = spec()
@@ -233,15 +209,12 @@ def bind_generator(kind: str, config, *, registry) -> GeneratorBinding:
                                   capturable=cap != CaptureClass.HOST, capture=cap,
                                   writes=writes)
         return GeneratorBinding(kind, str(run.generator), spec, params, user, run, adapter,
-                                capturable=adapter.capturable, accepts_ctx=True,
+                                capturable=adapter.capturable,
                                 layout=layout, capture=cap, writes=writes,
                                 provides=provides)
-    if kind == "gate_generator":
-        _warn_legacy_gate(registry, str(run.generator))
     capturable = bool(getattr(spec, "capturable", True))
     return GeneratorBinding(kind, str(run.generator), spec, params, user, run, spec,
                             capturable=capturable,
-                            accepts_ctx=bool(getattr(spec, "accepts_ctx", False)),
                             layout=layout,
                             capture=CaptureClass.STATIC if capturable else CaptureClass.HOST)
 
@@ -319,7 +292,6 @@ class _StageGenerator:
     makes. Built once (:meth:`build`, by the pipeline's generator slot, or by the PR9
     ``_inflate_warp_alloc``)."""
 
-    accepts_ctx = True
 
     def __init__(self, stage, spec, params, layout: Layout, *, scale: float,
                  raw_points: int, capturable: bool, capture=None,
@@ -364,8 +336,8 @@ class _StageGenerator:
         composition) the builder allocates it privately (nothing carries it there).
         ``drawn`` (roadmap PR13b): ``field -> [E] array`` of the dynamic fields a
         ``randomize.*`` stage draws: that single array replaces the field's latch pair
-        (unlatched). A field the stage draws itself (roadmap PR13c: bezier's
-        ``style_sampling`` ranges, ``Params._self_drawn()``) gets such an array here
+        (unlatched). A field the stage draws itself through the private
+        ``Params._self_drawn()`` hook gets such an array here
         when the planner did not pass one (the PR9 reference composition)."""
         if self._built is not None:
             raise RuntimeError(f"Stage generator {self.name!r} is already built; its "

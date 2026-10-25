@@ -24,9 +24,7 @@ How It Works
    ``seeds[e] * 7919 + 17`` (salt ``7919`` is the polar stream constant;
    ``+17`` is the control-specific offset). It first reads env ``e``'s
    ``radial_jitter`` and ``angular_jitter`` from the per-env parameter arrays and clamps
-   them to their bounds, ``[0, 0.85]`` and ``[0, 0.45]`` (the frozen legacy
-   ``generate_polar_warp`` clamps on the host instead and launches the scalar
-   ``_polar_controls_k``: the same values, the same bytes). For each knot index
+   them to their bounds, ``[0, 0.85]`` and ``[0, 0.45]``. For each knot index
    ``i`` in ``0 … K-1``:
 
    - The nominal angle is ``2π i / K``.
@@ -149,11 +147,7 @@ checked when the ``TrackGenerator`` is constructed, and only for ``generator="po
    knot. At ``0.0`` all knots sit on ``base_radius`` and the spline is a
    near-circle. At the default (``0.60``) the generator produces substantial
    radial variety without collapsing radii. Dynamic, in ``[0, 0.85]``: a value
-   outside raises ``ValueError`` at construction (:ref:`upgrading-bounds`). (The
-   deprecated ``amplitude``
-   field only matters to the legacy ``generate_polar_warp`` called with a config-like
-   object without ``polar_radial_jitter``, where the fallback is
-   ``0.60 * amplitude``.)
+   outside raises ``ValueError`` at construction (:ref:`upgrading-bounds`).
 
 ``polar_angular_jitter``
    Maximum angular offset as a fraction of one knot cell

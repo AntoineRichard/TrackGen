@@ -72,10 +72,6 @@ How It Works
    resample, relaxation, and inflate stages see comparable coordinate ranges across
    generators, times the env's ``size[e]`` (``ops.normalize_extent(..., size=...)``).
 
-The frozen legacy entry point ``generate_checkpoint_warp`` launches the scalar kernels
-``_sample_checkpoints_k`` and ``_steer_k`` with the host values: the same arithmetic, the
-same bytes.
-
 Math
 ----
 

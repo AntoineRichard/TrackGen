@@ -19,7 +19,6 @@ def test_config_defaults_instantiate():
     assert cfg.max_num_points == 13
     assert cfg.num_points_per_segment == 30
     assert cfg.min_point_distance == 0.05
-    assert math.isclose(cfg.min_angle, (12.5 / 180) * math.pi)
     assert cfg.rad == 0.4
     assert cfg.handle_clamp_frac == 0.4  # kept == rad so the clamp doesn't bind every segment
     assert cfg.edgy == 0.0
@@ -36,49 +35,23 @@ def test_config_defaults_instantiate():
     assert cfg.voronoi_control_points == 18
     assert cfg.voronoi_radial_variation == 0.62
     assert cfg.voronoi_angular_jitter == 0.08
-    assert cfg.num_harmonics == 5
-    assert cfg.decay_p == 2
-    assert cfg.amplitude == 1.0
-    assert cfg.num_centerline_samples == 256
     # Width params
     assert cfg.half_width == 0.1
     # Output params
     assert cfg.num_points == 256
     # constant_spacing is the only supported output mode.
-    assert cfg.output_mode == "constant_spacing"
     # spacing defaults to None -> __post_init__ auto-couples it to 0.6*half_width.
     assert math.isclose(cfg.spacing, 0.6 * cfg.half_width)
     assert cfg.N_max == 384
     # Robustness params
-    assert cfg.max_regen_iters == 10
     assert cfg.turning_tol == 0.1
     assert cfg.w_floor == 1e-3
 
 
 def test_config_overrides_round_trip():
-    # decay_p / num_centerline_samples are deprecated dead fields (roadmap PR8).
-    with pytest.warns(DeprecationWarning, match="decay_p"):
-        cfg = TrackGenConfig(
-            generator="fourier",
-            num_envs=32,
-            num_points=128,
-            half_width=0.25,
-            output_mode="constant_spacing",
-            spacing=0.05,
-            N_max=512,
-            decay_p=3,
-            num_centerline_samples=512,
-            w_floor=1e-2,
-        )
-    assert cfg.generator == "fourier"
-    assert cfg.num_envs == 32
-    assert cfg.num_points == 128
-    assert cfg.output_mode == "constant_spacing"
-    assert cfg.spacing == 0.05
-    assert cfg.N_max == 512
-    assert cfg.decay_p == 3
-    assert cfg.num_centerline_samples == 512
-    assert cfg.w_floor == 1e-2
+    cfg = TrackGenConfig(generator="polar", num_envs=32, num_points=128,
+                         half_width=0.25, spacing=0.05, N_max=512, w_floor=1e-2)
+    assert dataclasses.asdict(TrackGenConfig(**dataclasses.asdict(cfg))) == dataclasses.asdict(cfg)
 
 
 def test_repulsive_config_defaults():
@@ -262,9 +235,6 @@ def test_relaxation_defaults():
     assert cfg.relax_solver == "xpbd"
     assert cfg.relax_bend_relax == 1.5
     assert cfg.relax_margin == 0.15
-    assert cfg.energy_steps == 800
-    assert cfg.tp_iters == 100
-    assert cfg.smooth_finish is False
 
 
 def test_deprecated_width_clamp_fields_removed():
@@ -455,63 +425,3 @@ def test_generator_params_type_is_checked_at_config_construction():
                 cls(generator_params=bad)
         assert cls(generator_params={"x": 1}).generator_params == {"x": 1}  # resolved later
         assert cls().generator_params is None
-
-
-DEAD_FIELDS = {
-    "energy_steps": 10, "energy_lr": 0.1, "energy_w_sep": 1.0, "energy_w_len": 1.0,
-    "energy_w_bend": 2.0, "energy_w_anchor": 1.0, "tp_iters": 3, "tp_tau": 0.1,
-    "tp_alpha": 1.5, "tp_beta": 3.0, "smooth_finish": True, "smooth_finish_iters": 2,
-    "smooth_finish_tau": 0.1, "relax_chunk_size": 8, "relax_use_warp": False,
-    "max_regen_iters": 4, "min_angle": 0.5, "num_harmonics": 3, "decay_p": 3,
-    "amplitude": 0.5, "num_centerline_samples": 64,
-}
-
-
-@pytest.mark.parametrize("field", sorted(DEAD_FIELDS))
-def test_dead_field_emits_a_deprecation_warning(field):
-    with pytest.warns(DeprecationWarning, match=field) as record:
-        TrackGenConfig(**{field: DEAD_FIELDS[field]})
-    assert len(record) == 1
-    assert "unused by TrackGenerator" in str(record[0].message)
-    assert record[0].filename == __file__        # stacklevel points at the caller
-
-
-def test_dead_field_warning_in_a_config_subclass():
-    import warnings
-
-    @dataclasses.dataclass
-    class Sub(TrackGenConfig):
-        amplitude: float = 0.5                          # a changed default: not "set"
-
-        def __post_init__(self):
-            super().__post_init__()
-
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        Sub()
-    with pytest.warns(DeprecationWarning, match="min_angle") as record:
-        Sub(min_angle=0.5)
-    assert len(record) == 1
-    assert record[0].filename == __file__        # through the subclass's __post_init__
-
-
-def test_dead_fields_are_silent_at_defaults_and_not_removed():
-    import warnings
-
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        cfg = TrackGenConfig()
-        TrackGenConfig(output_mode="constant_spacing", **{
-            f: getattr(cfg, f) for f in DEAD_FIELDS})
-        import dataclasses
-        dataclasses.replace(cfg, num_envs=2)
-    for f in DEAD_FIELDS:
-        assert hasattr(cfg, f)
-
-
-def test_dead_field_warning_names_every_field_once():
-    with pytest.warns(DeprecationWarning) as record:
-        TrackGenConfig(tp_iters=3, max_regen_iters=4)
-    assert len(record) == 1
-    assert "'tp_iters'" in str(record[0].message)
-    assert "'max_regen_iters'" in str(record[0].message)

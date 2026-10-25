@@ -2,21 +2,12 @@
 
 Owns the generation concern of the pipeline: sample corners (Warp-RNG) -> ccw-sort ->
 assemble cubic-Bezier dense centerline -> arc-resample -> polygon fallback for any
-self-crosser -> write the chosen centerline. ``generate_centerline_warp`` is the entry
-point; everything else here is a generation-only kernel or helper. The result is fed
+self-crosser -> write the chosen centerline through the Bezier Stage. The result is fed
 into resample/relax/inflate by the orchestrator in ``warp_pipeline``.
 
 Generation is single-pass: the generation gate is always True (inflate does the real
 validity gate), and any track that still self-crosses falls back to its corner polygon
 (``handle_clamp_frac=0``), which XPBD re-rounds.
-
-Roadmap PR13c: the registered ``"bezier"`` generator is the :class:`Bezier` Stage, whose
-``rad`` / ``handle_clamp_frac`` are dynamic (per-env arrays, :func:`_assemble_dyn_k`);
-``generate_centerline_warp`` / ``bezier_alloc_scratch`` keep their signatures and the
-scalar kernels (the legacy path) on the same private core, :func:`_enqueue_bezier`.
-Roadmap PR13d: ``min_num_points`` (int32, the count twin ``_sample_counts_dyn_k``) and
-``size`` (the corner grid's sized twin, applied after ``scale``) are dynamic too, and
-``style_sampling`` is deprecated (one ``DeprecationWarning`` per built Stage).
 
 Convention (shared with ``warp_pipeline``): one thread per output element; flat arrays
 ``[E*N]`` of ``wp.vec2f`` and ``[E]`` per-env scalars; env index ``e = tid // N``;
@@ -24,13 +15,12 @@ launch with ``device=str(tensor.device)``.
 
 The shared steps (count / grid-point sampling, angle sort, NaN-aware arc resample,
 self-intersection count, fills) are the public ``track_gen.ops`` primitives, the same
-building blocks a plugin generator uses; only the Bezier-specific kernels (style draw,
-vertex tangents, cubic assembly and its polygon fallback) live here.
+building blocks a plugin generator uses; Bezier-specific vertex tangents, cubic assembly
+and its polygon fallback live here.
 """
 from __future__ import annotations
 
 import math
-import warnings
 
 import warp as wp
 
@@ -41,8 +31,7 @@ from ..ops.geometry import _angle_sort_launch
 from ..ops.sampling import _sample_counts_launch, _sample_grid_points_launch
 from ..plugin.stage import CaptureClass, Stage
 from .builtin_params import BezierParams, _declared_bounds
-from .builtin_stage import (DeprecatedParamsAlias, check_dyn, check_no_size,
-                            default_alloc, run_view)
+from .builtin_stage import check_dyn, default_alloc, run_view
 from .runtime import _init
 
 # RNG keying of the corner streams (``wp.rand_init(seed * salt + attempt)``, see
@@ -51,37 +40,9 @@ from .runtime import _init
 CORNER_COUNT_SALT = 6151
 CORNER_SALT = 9781
 
-# Legacy private name (also reachable as warp_pipeline._safe_normalize2): the same
-# arithmetic as ops.funcs.safe_normalize2.
-_safe_normalize2 = funcs.safe_normalize2
 
 
 
-@wp.kernel
-def _style_sample_k(
-    seeds: wp.array(dtype=wp.int32),
-    rad_lo: float, rad_hi: float,
-    scale_lo: float, scale_hi: float,
-    clamp_lo: float, clamp_hi: float,
-    rad_out: wp.array(dtype=wp.float32),
-    scale_out: wp.array(dtype=wp.float32),
-    clamp_out: wp.array(dtype=wp.float32),
-):
-    # Per-env style draw for method #1 (per-env style randomization). One thread per env e.
-    #
-    # Seeding: state = wp.rand_init(seeds[e] * 2741). The 2741 multiplier is DISTINCT from
-    # corner_count's 6151 and corner_sample's 9781, so the style stream is decorrelated from
-    # both the count and the corner-position streams for the same seed. No `attempt` term:
-    # generation is single-pass, so each env's style is a pure function of its seed.
-    #
-    # Draw ORDER (fixed): rad, then scale, then handle_clamp_frac, each a single uniform
-    # randf mapped to [lo, hi). A "disabled" knob is encoded by lo == hi (the wrapper passes
-    # lo == hi == scalar when its *_range is None), which collapses to the constant lo.
-    e = wp.tid()
-    state = wp.rand_init(seeds[e] * 2741)
-    rad_out[e] = rad_lo + wp.randf(state) * (rad_hi - rad_lo)
-    scale_out[e] = scale_lo + wp.randf(state) * (scale_hi - scale_lo)
-    clamp_out[e] = clamp_lo + wp.randf(state) * (clamp_hi - clamp_lo)
 
 @wp.func
 def _pruned_corner(c: wp.array(dtype=wp.vec2f), b: int, i: int, cnt: int) -> wp.vec2f:
@@ -124,105 +85,7 @@ def _vertex_tangents_k(
     # Per-corner scale = shorter incident edge; the adaptive handle clamp caps handles by it.
     scale[t] = wp.min(wp.length(c_next - c_i), wp.length(c_i - c_prev))
 
-@wp.kernel
-def _assemble_k(
-    c: wp.array(dtype=wp.vec2f),
-    count: wp.array(dtype=wp.int32),
-    tangents: wp.array(dtype=wp.vec2f),
-    scale: wp.array(dtype=wp.float32),
-    P: int,
-    npseg: int,
-    rad: float,
-    clamp_frac: float,
-    out: wp.array(dtype=wp.vec2f),
-):
-    # One thread per dense sample t (dim = E*P*npseg). Decodes (e, segment i, sample s),
-    # rebuilds the cubic Bezier of segment i (corner i -> corner (i+1)%P) and evaluates
-    # it at parameter u = s/(npseg-1) with the degree-3 Bernstein basis. Mirrors
-    # BezierCenterlineGenerator._segment + _cubic_bezier: handle = rad*chord along the
-    # corner tangents. The count->NaN prune is folded in-kernel (corner i is NaN iff
-    # i >= count[e]); NaN corners/tangents propagate into the output as in the oracle.
-    t = wp.tid()
-    per_env = P * npseg
-    e = t // per_env
-    rem = t % per_env
-    i = rem // npseg
-    s = rem % npseg
-    b = e * P
-    cnt = count[e]
-    cm = wp.max(cnt, 1)                       # guard %0 for degenerate (cnt==0) envs
 
-    c0 = _pruned_corner(c, b, i, cnt)
-    # Closing segment i == cnt-1 wraps to corner 0 -> a real cubic Bezier (not the old
-    # straight chord). Segments i >= cnt keep c0 = NaN and drop out via the resample.
-    inext = (i + 1) % cm
-    c1 = _pruned_corner(c, b, inext, cnt)
-    t0 = tangents[b + i]
-    t1 = tangents[b + inext]
-
-    chord = wp.length(c1 - c0)
-    # F2: clamp each end's handle by clamp_frac * (that corner's shorter incident edge),
-    # so a long handle can't overshoot past a nearby corner and self-cross.
-    h0 = wp.min(rad * chord, clamp_frac * scale[b + i])
-    h1 = wp.min(rad * chord, clamp_frac * scale[b + inext])
-    p1 = c0 + t0 * h0    # leave c0 along its tangent
-    p2 = c1 - t1 * h1    # arrive at c1 along its tangent
-
-    u = float(s) / float(npseg - 1)
-    omu = 1.0 - u
-    b0 = omu * omu * omu          # (1-u)^3
-    b1 = 3.0 * u * omu * omu      # 3u(1-u)^2
-    b2 = 3.0 * u * u * omu        # 3u^2(1-u)
-    b3 = u * u * u                # u^3
-    out[t] = b0 * c0 + b1 * p1 + b2 * p2 + b3 * c1
-
-@wp.kernel
-def _assemble_style_k(
-    c: wp.array(dtype=wp.vec2f),
-    count: wp.array(dtype=wp.int32),
-    tangents: wp.array(dtype=wp.vec2f),
-    scale: wp.array(dtype=wp.float32),
-    P: int,
-    npseg: int,
-    rad: wp.array(dtype=wp.float32),
-    clamp_frac: wp.array(dtype=wp.float32),
-    out: wp.array(dtype=wp.vec2f),
-):
-    # Per-env (rad, clamp_frac) variant of _assemble_k (method #1). BIT-IDENTICAL to it
-    # except `rad` and `clamp_frac` are read per env from device arrays (rad[e],
-    # clamp_frac[e]) instead of broadcast scalars. For uniform per-env arrays equal to the
-    # config scalars this reproduces _assemble_k exactly.
-    t = wp.tid()
-    per_env = P * npseg
-    e = t // per_env
-    rem = t % per_env
-    i = rem // npseg
-    s = rem % npseg
-    b = e * P
-    cnt = count[e]
-    cm = wp.max(cnt, 1)
-
-    c0 = _pruned_corner(c, b, i, cnt)
-    inext = (i + 1) % cm
-    c1 = _pruned_corner(c, b, inext, cnt)
-    t0 = tangents[b + i]
-    t1 = tangents[b + inext]
-
-    rad_e = rad[e]
-    cf_e = clamp_frac[e]
-    chord = wp.length(c1 - c0)
-    h0 = wp.min(rad_e * chord, cf_e * scale[b + i])
-    h1 = wp.min(rad_e * chord, cf_e * scale[b + inext])
-    p1 = c0 + t0 * h0
-    p2 = c1 - t1 * h1
-
-    u = float(s) / float(npseg - 1)
-    omu = 1.0 - u
-    b0 = omu * omu * omu
-    b1 = 3.0 * u * omu * omu
-    b2 = 3.0 * u * u * omu
-    b3 = u * u * u
-    out[t] = b0 * c0 + b1 * p1 + b2 * p2 + b3 * c1
 
 @wp.kernel
 def _assemble_dyn_k(
@@ -240,12 +103,9 @@ def _assemble_dyn_k(
     clamp_hi: float,
     out: wp.array(dtype=wp.vec2f),
 ):
-    # The Bezier Stage's assemble (roadmap PR13c): _assemble_style_k's body with each
-    # per-env knob loaded once and clamped to [lo, hi] by COMPARISONS (x < lo / x > hi
+    # Each per-env knob is loaded once and clamped to [lo, hi] by COMPARISONS (x < lo / x > hi
     # are false for NaN and for every in-range value, signed zeros included, so an
-    # in-range operand passes bit for bit; no fminf / fmaxf). The bounds are the declared
-    # ones for a latched knob, (-inf, inf) for one drawn by style_sampling (its ranges
-    # were never bounded). In range it equals _assemble_k at the same scalars.
+    # in-range operand passes bit for bit; no fminf / fmaxf).
     t = wp.tid()
     per_env = P * npseg
     e = t // per_env
@@ -420,185 +280,25 @@ def _or_update_k(accept: wp.array(dtype=wp.int32), valid: wp.array(dtype=wp.int3
     if accept[e] != 0:
         valid[e] = 1
 
-def corner_count_sample_inplace(seeds_wp, attempt, config, out_count,
-                                ctx: "LaunchContext | None" = None):
-    """In-place: writes per-env corner counts into out_count ([E] int32 wp.array). Zero alloc.
-
-    Args:
-        ctx: optional track_gen.exec.LaunchContext; default resolves the
-            device's stream (see track_gen.exec).
-    """
-    _init()
-    ctx = _resolve_ctx(ctx, str(out_count.device))
-    # Legacy entry point (kept for out-of-tree plugins): ops.sample_counts keyed
-    # seed * CORNER_COUNT_SALT + attempt, without the public op's validation.
-    _sample_counts_launch(ctx, seeds_wp, CORNER_COUNT_SALT, int(attempt),
-                          int(config.min_num_points), int(config.max_num_points), out_count)
-    ctx.sync()
-
-def style_sample_inplace(seeds_wp, config, rad_out, scale_out, clamp_out,
-                         ctx: "LaunchContext | None" = None):
-    """In-place per-env style draw (method #1). Writes [E] float32 per-env rad/scale/
-    handle_clamp_frac into rad_out/scale_out/clamp_out. Zero alloc.
-
-    Each *_range that is None collapses to the corresponding config scalar (lo == hi), so
-    that knob is held constant across envs. Only called when config.style_sampling=True.
-
-    Args:
-        ctx: optional track_gen.exec.LaunchContext; default resolves the
-            device's stream (see track_gen.exec).
-    """
-    _init()
-    E = seeds_wp.shape[0]
-    dev = str(rad_out.device)
-    ctx = _resolve_ctx(ctx, dev)
-    rad_lo, rad_hi = _range_or_scalar(config.rad_range, float(config.rad))
-    scale_lo, scale_hi = _range_or_scalar(config.scale_range, float(config.scale))
-    clamp_default = float(getattr(config, "handle_clamp_frac", 1.0e9))
-    clamp_lo, clamp_hi = _range_or_scalar(config.handle_clamp_frac_range, clamp_default)
-    ctx.launch(_style_sample_k, E,
-               [seeds_wp, rad_lo, rad_hi, scale_lo, scale_hi, clamp_lo, clamp_hi,
-                rad_out, scale_out, clamp_out])
-    ctx.sync()
 
 
-def _range_or_scalar(rng, scalar):
-    """Map an optional (lo, hi) range to a (lo, hi) tuple, or (scalar, scalar) if None."""
-    if rng is None:
-        return float(scalar), float(scalar)
-    return float(rng[0]), float(rng[1])
 
 
-def corner_sample_inplace(seeds_wp, attempt, config, out_corners, used_scratch,
-                          scale_per_env=None, ctx: "LaunchContext | None" = None):
-    """In-place: writes [E*P] vec2f into out_corners. used_scratch is [E*P] int32 scratch.
-    Zero alloc.
 
-    scale_per_env: optional [E] float32 wp.array of per-env scale (method #1). When None the
-    config.scale scalar is broadcast to every env; when provided, scale[e] is read per env
-    (bit-identical to the scalar form for a uniform array).
-    ctx: optional track_gen.exec.LaunchContext; default resolves the
-        device's stream (see track_gen.exec).
 
-    Legacy entry point (kept for out-of-tree plugins): ops.sample_grid_points keyed
-    seed * CORNER_SALT + attempt on the ops.grid_cells(config.min_point_distance) grid,
-    without the public op's validation.
-    """
-    _init()
-    P = int(config.max_num_points)
-    # The grid of ops.grid_cells, computed inline without its validation (as at 1077b18).
-    num_cells = int(1.0 / (config.min_point_distance * 2))
-    cell_size = config.min_point_distance * 2.0
-    ctx = _resolve_ctx(ctx, str(out_corners.device))
-    # The kernel is chosen by whether a per-env scale was given, not by its type: as at
-    # 1077b18, any [E] array Warp's launch accepts (e.g. a numpy float32 array) works.
-    per_env = scale_per_env is not None
-    scale = scale_per_env if per_env else float(config.scale)
-    _sample_grid_points_launch(ctx, seeds_wp, CORNER_SALT, int(attempt), P, num_cells,
-                               float(cell_size), scale, used_scratch, out_corners,
-                               per_env=per_env)
-    ctx.sync()
 
-def ccw_sort_inplace(corners_wp, count_wp, keys_scratch, out_wp, P,
-                     ctx: "LaunchContext | None" = None):
-    """In-place: writes sorted corners into out_wp ([E*P] vec2f). keys_scratch is [E*P] float32.
-    Zero alloc.
-
-    Legacy entry point (kept for out-of-tree plugins): ops.angle_sort with the historical
-    ``count < 1 -> 1`` floor (the public op treats ``count <= 0`` as an empty row).
-
-    Args:
-        ctx: optional track_gen.exec.LaunchContext; default resolves the
-            device's stream (see track_gen.exec).
-    """
-    _init()
-    ctx = _resolve_ctx(ctx, str(out_wp.device))
-    _angle_sort_launch(ctx, corners_wp, P, count_wp, P, keys_scratch, out_wp, m_floor=1)
-    ctx.sync()
-
-def assemble_inplace(corners_wp, count_wp, config, tan_scratch, scale_scratch, out_wp,
-                     rad_per_env=None, clamp_per_env=None,
-                     ctx: "LaunchContext | None" = None):
-    """In-place: writes dense [E*P*npseg] vec2f into out_wp. Zero alloc.
-    tan_scratch: [E*P] vec2f; scale_scratch: [E*P] float32.
-
-    rad_per_env / clamp_per_env: optional [E] float32 wp.arrays of per-env rad /
-    handle_clamp_frac (method #1). When BOTH None the config scalars are broadcast via the
-    original _assemble_k (DEFAULT path, byte-for-byte unchanged). When provided, the
-    bit-identical _assemble_style_k reads rad[e]/clamp_frac[e] per env instead. (Both are
-    threaded together: the style path always supplies both arrays.)
-    ctx: optional track_gen.exec.LaunchContext; default resolves the
-        device's stream (see track_gen.exec).
-    """
-    _init()
-    E = count_wp.shape[0]
-    P = int(config.max_num_points)
-    npseg = int(config.num_points_per_segment)
-    assert npseg >= 2
-    p = math.atan(config.edgy) / math.pi + 0.5
-    clamp_frac = float(getattr(config, "handle_clamp_frac", 1.0e9))
-    dev = str(out_wp.device)
-    ctx = _resolve_ctx(ctx, dev)
-    ctx.launch(_vertex_tangents_k, E * P,
-               [corners_wp, count_wp, P, float(p), tan_scratch, scale_scratch])
-    if rad_per_env is None and clamp_per_env is None:
-        ctx.launch(_assemble_k, E * P * npseg,
-                   [corners_wp, count_wp, tan_scratch, scale_scratch,
-                    P, npseg, float(config.rad), clamp_frac, out_wp])
-    else:
-        ctx.launch(_assemble_style_k, E * P * npseg,
-                   [corners_wp, count_wp, tan_scratch, scale_scratch,
-                    P, npseg, rad_per_env, clamp_per_env, out_wp])
-    ctx.sync()
 
 #: The dynamic fields of the Bezier Stage (roadmap PR13c / PR13d), in Params order.
 _DYNAMIC = ("min_num_points", "rad", "handle_clamp_frac", "size")
 _RAD_BOUNDS = _declared_bounds(BezierParams, "rad")
 _CLAMP_BOUNDS = _declared_bounds(BezierParams, "handle_clamp_frac")
-_UNBOUNDED = (-math.inf, math.inf)
 
 
-def generate_centerline_warp(seeds_wp: wp.array, config,
-                              out_centerline: wp.array, out_valid_wp: wp.array,
-                              scratch, ctx: "LaunchContext | None" = None) -> None:
-    """Single-pass centerline generation — in-place owned path only.
-
-    Pure-Warp: sample corners -> sort ccw -> assemble Bezier -> arc-resample -> polygon
-    fallback (if self-crossing) -> write chosen centerline into out_centerline.
-    Marks all envs valid (generation gate is always True; inflate does the real gate).
-
-    The legacy entry point (frozen signature; host scalars from ``config``, the scalar
-    kernels): the registered ``"bezier"`` generator is the :class:`Bezier` Stage on the
-    same private core (roadmap PR13c).
-
-    Args:
-        seeds_wp:      [E] int32 wp.array per-env base seeds.
-        config:        TrackGenConfig.
-        out_centerline:[E*N] vec2f wp.array — written in-place with the chosen centerline.
-        out_valid_wp:  [E] int32 wp.array — filled with 1 (all valid at generation stage).
-        scratch:       the generation buffer group exposing the gen_* arrays — a
-                       GenScratch (the composite _Scratch's ``.gen``).
-        ctx: optional track_gen.exec.LaunchContext; default resolves the
-            device's stream (see track_gen.exec).
-    """
-    _init()
-    check_no_size(config, "generate_centerline_warp")
-    ctx = _resolve_ctx(ctx, str(out_centerline.device))
-    assert scratch is not None, "generate_centerline_warp requires scratch"
-    _enqueue_bezier(seeds_wp, config, out_centerline, out_valid_wp, scratch, ctx, None)
 
 
 def _enqueue_bezier(seeds_wp, config, out_centerline, out_valid_wp, scratch, ctx,
                     dyn) -> None:
-    """The bezier generator's launches on ``ctx``: ``dyn=None`` (the legacy path:
-    ``config.min_num_points`` / ``rad`` / ``handle_clamp_frac`` host scalars,
-    :func:`style_sample_inplace` / :func:`assemble_inplace`, unchanged), or the four
-    dynamic fields' ``[E]`` arrays ``{"min_num_points", "rad", "handle_clamp_frac",
-    "size"}`` (the Stage: the count twin, the sized corner grid and
-    :func:`_assemble_dyn_k`; under ``style_sampling`` a knob with a range is drawn by the
-    style kernel straight into its array, a knob without one reads its latched array and
-    the draw writes a placeholder into the private scratch; the style ``scale`` draw
-    composes with ``size``)."""
+    """Enqueue the generator with resolved per-environment parameter arrays."""
     check_dyn(dyn, _DYNAMIC, "bezier")
     E = scratch.gen_count.shape[0]
     N = int(config.num_points)
@@ -608,86 +308,32 @@ def _enqueue_bezier(seeds_wp, config, out_centerline, out_valid_wp, scratch, ctx
     arc = ops.ArcScratch(scratch.gen_arc_real, scratch.gen_arc_seg, scratch.gen_arc_s,
                          scratch.gen_arc_cr)
 
-    # Step 0 (opt-in, method #1): per-env style draw. The flag is a Python bool resolved at
-    # CUDA-graph capture time, so it selects which kernels the captured graph contains; the
-    # per-env style values themselves are device arrays (capturable). When OFF, the style
-    # arrays are never touched and the DEFAULT scalar kernels run (byte-for-byte unchanged).
-    # gen_style_* are present on the GenScratch group only when allocated for style.
-    style = bool(getattr(config, "style_sampling", False))
-    scale_pe = rad_pe = clamp_pe = None
-    if dyn is None:
-        if style:
-            style_sample_inplace(seeds_wp, config,
-                                 scratch.gen_style_rad, scratch.gen_style_scale,
-                                 scratch.gen_style_clamp, ctx=ctx)
-            scale_pe = scratch.gen_style_scale
-            rad_pe = scratch.gen_style_rad
-            clamp_pe = scratch.gen_style_clamp
-    else:
-        rad_pe, clamp_pe = dyn["rad"], dyn["handle_clamp_frac"]
-        rad_bounds, clamp_bounds = _RAD_BOUNDS, _CLAMP_BOUNDS
-        if style:
-            # The draw as style_sample_inplace's (same seed, same three randf calls). A
-            # knob with a range writes its own (unlatched, drawn) param array, unbounded
-            # like the legacy draws; a knob without one keeps its latched array and the
-            # draw gets lo = hi = 0 into the private scratch (read by nobody).
-            rad_rng = getattr(config, "rad_range", None)
-            clamp_rng = getattr(config, "handle_clamp_frac_range", None)
-            rad_lo, rad_hi = (0.0, 0.0) if rad_rng is None else \
-                (float(rad_rng[0]), float(rad_rng[1]))
-            scale_lo, scale_hi = _range_or_scalar(config.scale_range, float(config.scale))
-            clamp_lo, clamp_hi = (0.0, 0.0) if clamp_rng is None else \
-                (float(clamp_rng[0]), float(clamp_rng[1]))
-            rad_out = scratch.gen_style_rad if rad_rng is None else rad_pe
-            clamp_out = scratch.gen_style_clamp if clamp_rng is None else clamp_pe
-            ctx.launch(_style_sample_k, E,
-                       [seeds_wp, rad_lo, rad_hi, scale_lo, scale_hi, clamp_lo, clamp_hi,
-                        rad_out, scratch.gen_style_scale, clamp_out])
-            scale_pe = scratch.gen_style_scale
-            if rad_rng is not None:
-                rad_bounds = _UNBOUNDED
-            if clamp_rng is not None:
-                clamp_bounds = _UNBOUNDED
+    rad_pe, clamp_pe = dyn["rad"], dyn["handle_clamp_frac"]
+    rad_bounds, clamp_bounds = _RAD_BOUNDS, _CLAMP_BOUNDS
 
     # Step 1-3: sample the corner count and the grid corners, sort the first count[e]
     # corners by angle about their centroid. The sort is ops.angle_sort's kernel with the
     # legacy count floor of 1 (a count < 1 sorts the first corner), so the output does not
     # depend on TrackGenConfig's min_num_points >= 2 check (a config mutated after
     # construction is not re-validated).
-    if dyn is None:
-        ops.sample_counts(ctx, seeds_wp, CORNER_COUNT_SALT, 0, int(config.min_num_points),
+    _sample_counts_launch(ctx, seeds_wp, CORNER_COUNT_SALT, 0, dyn["min_num_points"],
                           int(config.max_num_points), scratch.gen_count)
-    else:
-        # Roadmap PR13d: the per-env min_num_points (clamped to [2, max] at use).
-        _sample_counts_launch(ctx, seeds_wp, CORNER_COUNT_SALT, 0, dyn["min_num_points"],
-                              int(config.max_num_points), scratch.gen_count)
     num_cells, cell = ops.grid_cells(config.min_point_distance)
-    if dyn is None:
-        ops.sample_grid_points(ctx, seeds_wp, CORNER_SALT, 0, P, num_cells, float(cell),
-                               scale_pe if style else float(config.scale),
-                               scratch.gen_used, scratch.gen_corners)
-    else:
-        # Roadmap PR13d: the per-env size, applied after scale (the style draw's too).
-        ops.sample_grid_points(ctx, seeds_wp, CORNER_SALT, 0, P, num_cells, float(cell),
-                               scale_pe if style else float(config.scale),
-                               scratch.gen_used, scratch.gen_corners, size=dyn["size"])
+    ops.sample_grid_points(ctx, seeds_wp, CORNER_SALT, 0, P, num_cells, float(cell),
+                           float(config.scale),
+                           scratch.gen_used, scratch.gen_corners, size=dyn["size"])
     _angle_sort_launch(ctx, scratch.gen_corners, P, scratch.gen_count, P, scratch.gen_keys,
                        scratch.gen_ordered, m_floor=1)
 
     # Step 4: assemble Bezier dense -> gen_dense
-    if dyn is None:
-        assemble_inplace(scratch.gen_ordered, scratch.gen_count, config,
-                         scratch.gen_tan, scratch.gen_scale, scratch.gen_dense,
-                         rad_per_env=rad_pe, clamp_per_env=clamp_pe, ctx=ctx)
-    else:
-        p = math.atan(config.edgy) / math.pi + 0.5
-        ctx.launch(_vertex_tangents_k, E * P,
-                   [scratch.gen_ordered, scratch.gen_count, P, float(p), scratch.gen_tan,
-                    scratch.gen_scale])
-        ctx.launch(_assemble_dyn_k, E * P * npseg,
-                   [scratch.gen_ordered, scratch.gen_count, scratch.gen_tan,
-                    scratch.gen_scale, P, npseg, rad_pe, clamp_pe, rad_bounds[0],
-                    rad_bounds[1], clamp_bounds[0], clamp_bounds[1], scratch.gen_dense])
+    p = math.atan(config.edgy) / math.pi + 0.5
+    ctx.launch(_vertex_tangents_k, E * P,
+               [scratch.gen_ordered, scratch.gen_count, P, float(p), scratch.gen_tan,
+                scratch.gen_scale])
+    ctx.launch(_assemble_dyn_k, E * P * npseg,
+               [scratch.gen_ordered, scratch.gen_count, scratch.gen_tan,
+                scratch.gen_scale, P, npseg, rad_pe, clamp_pe, rad_bounds[0],
+                rad_bounds[1], clamp_bounds[0], clamp_bounds[1], scratch.gen_dense])
 
     # Step 5: arc-resample Bezier dense -> gen_rs (N points per env)
     ops.arc_resample(ctx, scratch.gen_dense, M, N, arc, scratch.gen_rs, scratch.gen_arc_co)
@@ -723,7 +369,7 @@ class GenScratch:
     """Pre-allocated generation buffers for the bezier generator's PRIVATE working scratch.
 
     The generation OUTPUT buffers (gen_centerline, gen_valid) are owned by the orchestrator
-    (_Scratch) and passed into generate_centerline_warp; they are NOT part of this class.
+    (_Scratch) and passed into the private enqueue function; they are not part of this class.
 
     gen_count:     [E] int32 — per-env corner count (ops.sample_counts, salt
                    CORNER_COUNT_SALT).
@@ -746,10 +392,6 @@ class GenScratch:
     gen_arc_cr:    [E] int32 — ops.ArcScratch.count_real.
     gen_arc_co:    [E] int32 — ops.arc_resample's count_out (also the count=N input of
                    ops.self_intersections after the Bezier resample).
-    gen_style_rad:   [E] float32 — per-env rad draw (method #1; only written/read when
-                     config.style_sampling=True, else None/untouched). Optional.
-    gen_style_scale: [E] float32 — per-env scale draw (method #1). Optional.
-    gen_style_clamp: [E] float32 — per-env handle_clamp_frac draw (method #1). Optional.
     """
 
     __slots__ = (
@@ -757,7 +399,6 @@ class GenScratch:
         "gen_tan", "gen_scale", "gen_dense", "gen_poly",
         "gen_rs", "gen_crossers",
         "gen_arc_real", "gen_arc_seg", "gen_arc_s", "gen_arc_cr", "gen_arc_co",
-        "gen_style_rad", "gen_style_scale", "gen_style_clamp",
     )
 
     def __init__(
@@ -778,9 +419,6 @@ class GenScratch:
         gen_arc_s: "wp.array",
         gen_arc_cr: "wp.array",
         gen_arc_co: "wp.array",
-        gen_style_rad: "wp.array | None" = None,
-        gen_style_scale: "wp.array | None" = None,
-        gen_style_clamp: "wp.array | None" = None,
     ) -> None:
         self.gen_count = gen_count
         self.gen_corners = gen_corners
@@ -798,22 +436,12 @@ class GenScratch:
         self.gen_arc_s = gen_arc_s
         self.gen_arc_cr = gen_arc_cr
         self.gen_arc_co = gen_arc_co
-        self.gen_style_rad = gen_style_rad
-        self.gen_style_scale = gen_style_scale
-        self.gen_style_clamp = gen_style_clamp
 
 
-def bezier_alloc_scratch(config):
-    """Allocate the bezier generator's PRIVATE working scratch (one alloc per generator).
-
-    The generation OUTPUT buffers (gen_centerline, gen_valid) are owned by the orchestrator
-    and passed to generate_centerline_warp; they are not allocated here.
-    """
-    return _alloc_bezier_scratch(config)
 
 
 def _alloc_bezier_scratch(config, alloc=None):
-    """:func:`bezier_alloc_scratch` with every buffer from ``alloc(name, dtype, n)``
+    """the private scratch allocator with every buffer from ``alloc(name, dtype, n)``
     (named after its :class:`GenScratch` slot; default ``wp.empty`` on
     ``config.device``). The Stage passes its ``StageBuilder.scratch``."""
     _init()
@@ -823,12 +451,6 @@ def _alloc_bezier_scratch(config, alloc=None):
     npseg = int(config.num_points_per_segment)
     M_dense = P * npseg
     N_gen = int(config.num_points)
-    # Per-env style buffers (method #1): allocated ONLY when opt-in style sampling is on, so
-    # the default path's allocation footprint is unchanged. Each is [E] float32.
-    style = bool(getattr(config, "style_sampling", False))
-    gen_style_rad = alloc("gen_style_rad", wp.float32, E) if style else None
-    gen_style_scale = alloc("gen_style_scale", wp.float32, E) if style else None
-    gen_style_clamp = alloc("gen_style_clamp", wp.float32, E) if style else None
     return GenScratch(
         gen_count=alloc("gen_count", wp.int32, E),
         gen_corners=alloc("gen_corners", wp.vec2f, E * P),
@@ -846,33 +468,15 @@ def _alloc_bezier_scratch(config, alloc=None):
         gen_arc_s=alloc("gen_arc_s", wp.float32, E * (M_dense + 1)),
         gen_arc_cr=alloc("gen_arc_cr", wp.int32, E),
         gen_arc_co=alloc("gen_arc_co", wp.int32, E),
-        gen_style_rad=gen_style_rad,
-        gen_style_scale=gen_style_scale,
-        gen_style_clamp=gen_style_clamp,
     )
-
-
-#: The deprecation of bezier's ``style_sampling`` (roadmap PR13d), emitted once per
-#: built Stage.
-_STYLE_DEPRECATION = (
-    "bezier's style_sampling is deprecated and will be removed in 1.0: draw per-env "
-    "knobs with randomize= instead (scale_range=(a, b) -> {'generator.size': (a / scale, "
-    "b / scale)}, rad_range -> {'generator.rad': ...}, handle_clamp_frac_range -> "
-    "{'generator.handle_clamp_frac': ...}; set style_sampling=False and use "
-    "PipelineSpec.with_randomize for a config-built pipeline). Course: with "
-    "style_sampling=False, Course.track(legacy.to_pipeline_spec(cfg).with_randomize("
-    "{'generator.size': (a / scale, b / scale)}), checkpoint_spacing=...) "
-    "(track_gen.pipeline.legacy), or draw per-env sizes yourself and call "
-    "course.generator.params['generator'].set('size', arr) before regenerate)")
 
 
 class Bezier(Stage):
     """``"bezier"``: the corner-sampled cubic-Bezier track generator
-    (:func:`generate_centerline_warp`) as a ``kind="generator"`` Stage (roadmap PR13c).
+    as a ``kind="generator"`` Stage.
     ``rad`` / ``handle_clamp_frac`` are dynamic: per-env arrays read by
     :func:`_assemble_dyn_k`, clamped to their declared bounds at use. Roadmap PR13d:
-    ``min_num_points`` (int32) and ``size`` too, and a ``style_sampling`` build warns
-    (``DeprecationWarning``, attributed to the caller)."""
+    ``min_num_points`` (int32) and ``size`` are dynamic too."""
 
     kind = "generator"
     name = "bezier"
@@ -880,15 +484,8 @@ class Bezier(Stage):
     capture = CaptureClass.STATIC
     Params = BezierParams
     writes = {"xy": "raw.xy", "valid": "gen.valid"}
-    #: Deprecated (0.2.0.dev4's ``GeneratorSpec.params``): use ``Params``.
-    params = DeprecatedParamsAlias()
 
     def build(self, b, p):
-        if bool(p.style_sampling):
-            from .generator_binding import _outside_track_gen_stacklevel  # noqa: PLC0415
-
-            warnings.warn(_STYLE_DEPRECATION, DeprecationWarning,
-                          stacklevel=_outside_track_gen_stacklevel())
         cfg = run_view(p, b)
         scratch = _alloc_bezier_scratch(cfg, b.scratch)
         xy = b.write("xy", wp.vec2f, per="raw")

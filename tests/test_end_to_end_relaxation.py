@@ -20,7 +20,7 @@ def warp_rng():
 
 
 def test_xpbd_pipeline_makes_constant_width_tracks_valid(warp_rng):
-    from track_gen._src.types import TrackGenConfig
+    from tests._oracle.config import OracleConfig as TrackGenConfig
     from track_gen._src.track_generator import TrackGenerator
     import warp as wp
     E = 32
@@ -29,8 +29,7 @@ def test_xpbd_pipeline_makes_constant_width_tracks_valid(warp_rng):
     # (relax_margin=0.15, bend_relax=1.5) inflate the loops to a wide size distribution
     # (counts ~177..387 for these seeds), so N_max=448 sits above the 387 max -> no truncation.
     cfg = TrackGenConfig(generator="bezier", device="cpu", num_envs=E, scale=1.0,
-                         half_width=0.03, num_points=256, output_mode="constant_spacing",
-                         spacing=0.018, N_max=448,
+                         half_width=0.03, num_points=256, spacing=0.018, N_max=448,
                          relax_solver="xpbd", relax_iters=200, relax_bend_relax=1.5,
                          relax_margin=0.15, max_regen_iters=20)
     track = TrackGenerator(cfg, warp_rng(E)).generate(E)

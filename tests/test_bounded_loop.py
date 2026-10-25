@@ -504,7 +504,7 @@ def _grow_generate(seeds, config, out_centerline, out_valid_wp, scratch, ctx=Non
 
 def test_a_legacy_spec_bounded_loop_is_unchecked_and_probed():
     registry.add(GeneratorSpec(name="test.legacy_grow", alloc_scratch=_grow_alloc,
-                               generate=_grow_generate, accepts_ctx=True))
+                               generate=_grow_generate))
     gen = TrackGenerator(TrackGenConfig(generator="test.legacy_grow", device=DEV,
                                         num_envs=E, num_points=64),
                          PerEnvSeededRNG(seeds=11, num_envs=E, device=DEV))

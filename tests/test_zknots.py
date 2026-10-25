@@ -4,6 +4,7 @@ import pytest
 import warp as wp
 
 from track_gen._src import warp_zprofile
+from tests._reference_generators import apply_profile, apply_knots
 from track_gen._src.types import TrackGenConfig
 
 E, K, N = 2, 4, 240
@@ -91,7 +92,7 @@ def test_knot_pipeline_bounds_and_smoothness():
     arc_np = np.tile(np.linspace(0.0, 4.0, S, endpoint=False, dtype=np.float32), (E, 1)).reshape(-1)
     knot_cum, knot_count, knot_z = warp_zprofile.alloc_knot_scratch(E, Kc, dev)
     z = wp.zeros(E * S, dtype=wp.float32, device=dev)
-    warp_zprofile.apply_z_profile_knots(
+    apply_knots(
         cfg, wp.array(np.array([3, 11], np.int32), dtype=wp.int32, device=dev),
         wp.array(np.full(E, S, np.int32), dtype=wp.int32, device=dev), S,
         wp.array(arc_np, dtype=wp.float32, device=dev),

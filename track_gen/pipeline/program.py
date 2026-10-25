@@ -8,8 +8,8 @@ from typing import TYPE_CHECKING, Mapping
 
 from .._src.generator_binding import _LATCH_ALL, _LATCH_MASKED
 from ..exec.context import _host_blocked
-from ..exec.errors import LegacyPluginStreamError, NotCapturableError
-from ..exec.runner import GraphRunner, _BodyPart, _is_current, _SegmentedBody
+from ..exec.errors import NotCapturableError
+from ..exec.runner import GraphRunner, _BodyPart, _SegmentedBody
 from ..plugin.stage import CaptureClass
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -183,15 +183,11 @@ class Program:
                                      if c is CaptureClass.HOST)
         self._capture_class = max(caps)
         self._capturable = not self._host_stage_ids
-        self._legacy_stream = not bool(binding.accepts_ctx)
         self._E = int(layout.num_envs)
-        # A legacy-ABI generator (stage 0, segment 0) launches on Warp's current stream:
-        # its segment self-captures there unless it is a HOST segment (run eagerly).
         self._runner = GraphRunner(
-            self._device, capturable=self._capturable, legacy_stream=self._legacy_stream,
+            self._device, capturable=self._capturable,
             default_stream=stream, owner=self if owner is None else owner,
-            name=str(binding.name), _host_ids=self._host_stage_ids,
-            _legacy_capture=self._legacy_stream and not self._segments[0].host)
+            name=str(binding.name), _host_ids=self._host_stage_ids)
 
     def __repr__(self) -> str:
         return (f"Program(stages={list(self._stage_ids)}, E={self._E}, "
@@ -325,11 +321,6 @@ class Program:
         stage)."""
         return self._capturable
 
-    @property
-    def legacy_stream(self) -> bool:
-        """Whether the generator is a legacy-ABI spec (launches on Warp's current
-        stream; see :class:`~track_gen.exec.GraphRunner`)."""
-        return self._legacy_stream
 
     @property
     def runner(self) -> GraphRunner:
@@ -389,18 +380,12 @@ class Program:
             mask: Optional ``[E]`` int32 mask.
 
         An iterative (``BOUNDED``) stage runs its full iteration bound when called
-        eagerly on CUDA (its own CUDA graph skips converged windows on device). A
-        legacy-ABI
-        generator (:attr:`legacy_stream`) launches on Warp's current stream: when
-        ``ctx``'s stream is another one, the generation runs on the current stream,
-        ordered after and before ``ctx``'s with events (as ``GraphRunner`` does).
+        eagerly on CUDA (its own CUDA graph skips converged windows on device).
 
         Raises:
             track_gen.exec.NotCapturableError: the Program has HOST stages and ``ctx`` is
                 capturing (or a CPU graph capture is open on the device); raised before
                 any launch.
-            track_gen.exec.LegacyPluginStreamError: a legacy-ABI generator and ``ctx`` is
-                capturing a stream that is not Warp's current stream.
             track_gen.exec.CaptureError: ``ctx`` is capturing and :meth:`prepare` has
                 not run (the first launches would load modules inside the capture).
         """
@@ -412,7 +397,7 @@ class Program:
         def body(c) -> None:
             for seg in self._segments:
                 self._enqueue_segment(seg.index, c, advance, mask)
-        self._run_legacy_aware(body, ctx, True)
+        body(ctx)
         return self._result
 
     def enqueue_segment(self, i: int, ctx: "LaunchContext", *, advance: bool = False,
@@ -432,16 +417,10 @@ class Program:
         Mixing arguments, running segments out of order or skipping one leaves the
         result undefined.
 
-        A legacy-ABI generator (:attr:`legacy_stream`) lives in segment 0 and launches on
-        Warp's current stream: there, segment 0 follows the rule of :meth:`enqueue`.
-
         Raises:
             IndexError: no segment ``i``.
             track_gen.exec.NotCapturableError: segment ``i`` is HOST and ``ctx`` is
                 capturing (or a CPU graph capture is open on the device).
-            track_gen.exec.LegacyPluginStreamError: segment 0 holds a legacy-ABI
-                generator and ``ctx`` is capturing a stream that is not Warp's current
-                stream.
             track_gen.exec.CaptureError: ``ctx`` is capturing and :meth:`prepare` has
                 not run.
         """
@@ -453,24 +432,9 @@ class Program:
             raise self._not_capturable(tuple(seg.stage_ids))
         if not self._runner.prepared and ctx.capturing:
             raise self._not_prepared()
-        self._run_legacy_aware(lambda c: self._enqueue_segment(i, c, advance, mask), ctx,
-                               i == 0)
+        self._enqueue_segment(i, ctx, advance, mask)
         return self._result
 
-    def _run_legacy_aware(self, body, ctx, legacy: bool) -> None:
-        """Run ``body(ctx)``; when it holds the legacy-ABI generator (``legacy``) and
-        ``ctx``'s stream is not Warp's current stream, refuse a capture of that stream,
-        or run the body on the current stream ordered with events (the runner's legacy
-        eager path, under its lock)."""
-        if not (legacy and self._legacy_stream) or ctx.stream is None or \
-                _is_current(ctx.stream, self._device):
-            body(ctx)
-            return
-        if ctx.capturing:
-            raise LegacyPluginStreamError(str(self._binding.name))
-        runner = self._runner
-        with runner._legacy_eager(True):
-            runner._run_eager(body, ctx, legacy=True)
 
     def _enqueue_segment(self, i: int, ctx, advance: bool, mask) -> None:
         """Segment ``i``'s launches (no checks): [the prologue] -> its stages -> [the
@@ -514,8 +478,7 @@ class Program:
             kw = {"advance": True, "mask": mask} if advance else {}
             return _SegmentedBody(
                 _BodyPart(functools.partial(self.enqueue_segment, seg.index, **kw),
-                          host=seg.host,
-                          legacy=self._legacy_stream and seg.index == 0)
+                          host=seg.host)
                 for seg in self._segments), key
         if not advance:
             return self.enqueue, None

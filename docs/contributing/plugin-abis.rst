@@ -1,80 +1,15 @@
 .. _plugin-abis:
 
-GeneratorSpec and the 0.1 plugin ABIs
-=====================================
+GeneratorSpec plugins
+=====================
 
-.. admonition:: Before you start
-
-   - **Who this page is for:** you maintain a generator written as a ``GeneratorSpec``,
-     a gate generator written as a ``GateGeneratorSpec``, or a plugin that imports from
-     ``track_gen._src`` (the 0.1 plugin interface).
-   - **What to do:** a ``GeneratorSpec`` keeps working as it is; a new generator is
-     better written as a ``Stage`` (:ref:`writing-a-generator`,
-     :ref:`writing-a-gate-generator`). Everything else on this page is deprecated: the
-     status table says what warns and until when, and each section maps the old names
-     to their replacement. The upgrade guide lists the steps for a 0.1 plugin:
-     :ref:`upgrading-registry`, :ref:`upgrading-plugins` and
-     :ref:`upgrading-plugin-private-names`.
-   - **How you test it:** ``check_generator`` and ``check_gate_generator`` check both
-     forms against the same contract (:ref:`testing-a-plugin`).
-
-Status
-------
-
-.. list-table::
-   :header-rows: 1
-   :widths: 34 22 26 18
-
-   * - Interface
-     - Status
-     - Warning
-     - Runs in
-   * - ``track_gen.plugin.GeneratorSpec`` (with ``accepts_ctx=True``)
-     - Supported. A ``Stage`` is recommended for new generators (dynamic parameters,
-       attributes, ``provides``).
-     - none
-     - every 0.x release
-   * - ``GeneratorSpec`` with ``accepts_ctx=False`` (a *legacy plugin*)
-     - Supported; set ``accepts_ctx=True`` (`Streams: accepts_ctx`_).
-     - none; recording it on another stream raises ``LegacyPluginStreamError``
-     - every 0.x release
-   * - ``track_gen.plugin.GateGeneratorSpec`` (the 0.1 gate ABI)
-     - Deprecated: write an anchors ``Stage``.
-     - ``DeprecationWarning`` when bound (once per name); registering is silent
-     - 0.x; removed in 1.0
-   * - The ``track_gen._src`` registry shims: ``generator_registry`` /
-       ``gate_generator_registry`` ``register``, ``get``, ``available``,
-       ``GENERATORS``, ``GATE_GENERATORS``
-     - Deprecated: use ``track_gen.plugin.registry`` and an entry point.
-     - silent (``register`` warns when it overwrites a name)
-     - 0.x; removed in 1.0
-   * - The ``warp_gate`` helpers: ``alloc_order_scratch``, ``order_points``,
-       ``finish_ordered_gates``, ``_GateStaging``
-     - Deprecated: the pipeline's order and normalize stages replace them.
-     - ``DeprecationWarning`` on each use
-     - 0.x; removed in 1.0
-   * - The ``_src`` helpers of 0.1 track plugins (``warp_pipeline._fill_i32_k``,
-       ``self_intersections_inplace``, ...; `Legacy _src helpers`_)
-     - Deprecated: use ``track_gen.ops``.
-     - silent
-     - 0.x; removed in 1.0
-   * - ``track_gen._src.warp_pipeline.GenScratch``
-     - Deprecated: moved to ``track_gen._src.warp_generate.GenScratch``.
-     - ``DeprecationWarning``
-     - 0.x; removed in 1.0
-   * - ``registry.get("generator", <built-in>).params``
-     - Deprecated: the built-ins are Stage classes; read ``.Params``.
-     - ``DeprecationWarning``
-     - 0.x; removed in 1.0
-   * - A ``TrackGenConfig`` subclass carrying a plugin's knobs
-     - Superseded by a ``Params`` class and ``generator_params``
-       (`Per-generator parameters`_).
-     - none
-     - every 0.x release
-
-The hard rules, the registry and the conformance kit apply to both forms; what a
-``GeneratorSpec`` cannot do is listed where it matters (no :term:`dynamic field`, no
-per-point attributes, no ``provides``, no per-env :term:`size`).
+``track_gen.plugin.GeneratorSpec`` is the simple track-generator interface: two
+callables, a capture flag and an optional static Params class. It is supported for
+fixed-shape generators. Use a :class:`~track_gen.plugin.Stage` when you need dynamic
+parameters, exported attributes, ``provides`` or a bounded device loop; gate generators
+use Stages (:ref:`writing-a-gate-generator`). Both track forms use the same registry,
+entry points and conformance kit (:ref:`testing-a-plugin`). The two quick starts in
+:ref:`writing-a-generator` show the same loop in each form.
 
 The ``GeneratorSpec`` contract
 ------------------------------
@@ -85,7 +20,7 @@ the same generator written as a ``Stage``.
 What you implement
 ~~~~~~~~~~~~~~~~~~
 
-A ``GeneratorSpec`` has six fields:
+A ``GeneratorSpec`` has five fields:
 
 .. list-table::
    :header-rows: 1
@@ -99,16 +34,12 @@ A ``GeneratorSpec`` has six fields:
    * - ``alloc_scratch``
      - ``(config) -> scratch``, below.
    * - ``generate``
-     - ``(seeds_wp, config, out_centerline, out_valid_wp, scratch, ctx=None) -> None``,
+     - ``(seeds_wp, config, out_centerline, out_valid_wp, scratch, *, ctx) -> None``,
        below.
    * - ``capturable``
      - ``True`` (default): ``generate`` obeys the :ref:`hard rules
        <generator-hard-rules>` and is recorded into CUDA graphs. ``False``: see
        :ref:`generator-capture-opt-out`.
-   * - ``accepts_ctx``
-     - ``True``: ``generate`` takes a ``ctx=`` keyword and emits all its device work
-       through it (see :ref:`generator-streams`). The default ``False`` exists for
-       plugins written before it; set it to ``True``.
    * - ``params``
      - Optional: the generator's ``Params`` class, static fields only (see
        :ref:`generator-spec-params`). The default ``None`` takes no
@@ -122,7 +53,7 @@ from ``config`` (``num_envs``, ``num_points``, ...), all on ``str(config.device)
 Return any object exposing the buffers your ``generate`` function uses. Do **not**
 allocate the output centerline or the validity array here: the pipeline owns those.
 
-``generate(seeds_wp, config, out_centerline, out_valid_wp, scratch, ctx=None) -> None``
+``generate(seeds_wp, config, out_centerline, out_valid_wp, scratch, *, ctx) -> None``
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Write a closed centerline of ``config.num_points`` points per :term:`env` into the output
@@ -150,8 +81,8 @@ arrays in place. Parameters:
    * - ``scratch``
      - The object your ``alloc_scratch`` returned.
    * - ``ctx``
-     - The call's ``track_gen.exec.LaunchContext`` (one device, one stream), passed when
-       the spec sets ``accepts_ctx=True``. Emit every launch, copy and fill through it.
+     - The call's ``track_gen.exec.LaunchContext`` (one device, one stream), always
+       passed by the pipeline. Emit every launch, copy and fill through it.
 
 The rest of the generator contract is the Stage's: the raw loop, its size and what you
 do not have to guarantee (:ref:`generator-stage-contract`), and the
@@ -160,24 +91,14 @@ do not have to guarantee (:ref:`generator-stage-contract`), and the
 
 .. _generator-streams:
 
-Streams: ``accepts_ctx``
-~~~~~~~~~~~~~~~~~~~~~~~~
+Streams and launch contexts
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Set ``accepts_ctx=True`` and emit all device work through ``ctx``: ``ctx.launch(kernel,
-dim, inputs)``, ``ctx.copy(dst, src)``, ``ctx.fill(arr, value)`` (or
-``track_gen.ops.fill(ctx, arr, value)``). Every ``track_gen.ops`` op takes ``ctx`` as
-its first argument; pass ``ctx=ctx`` to any other helper that takes it. Never call
-``arr.zero_()``, ``arr.fill_()``, or a ``wp.launch`` / ``wp.copy`` without ``stream=``:
-they target Warp's current stream, which need not be the stream the call resolved (a
-side stream, or the stream torch is capturing). With ``accepts_ctx=True`` a generator can
-be recorded into a caller's CUDA graph on any stream.
-
-A spec that leaves ``accepts_ctx=False`` is a *legacy plugin*. It still runs, inside
-``ctx.scope()``, so the library helpers it calls inherit the stream, but its own direct
-``wp.launch`` calls go to Warp's current stream. The generator's own graph is then
-recorded behind a process-wide lock, and recording it into a caller's graph requires the
-capture stream to be Warp's current stream (``LegacyPluginStreamError`` otherwise); see
-:ref:`capture-troubleshooting`.
+``generate`` must accept the ``ctx=`` keyword and emit every launch, copy and fill
+through that :class:`~track_gen.exec.LaunchContext`: ``ctx.launch``, ``ctx.copy``,
+``ctx.fill`` or the public ``track_gen.ops`` functions. The context selects the call's
+stream, including a caller's capturing stream. Direct launches on Warp's current
+stream violate this contract. There is no context-free adapter or ``accepts_ctx`` flag.
 
 .. _generator-capture-opt-out:
 
@@ -191,8 +112,7 @@ transitions, readbacks that branch on generated data). It is then a ``HOST`` gen
 of the pipeline, and replays the rest of the pipeline from a graph
 (:ref:`cuda-graph-host`). This is a supported path, not a fallback for a broken
 generator. A caller cannot record it into a graph (``NotCapturableError``). Rules 1
-(pure Warp, no torch) and 4 (fixed-shape buffers) still apply. ``GateGeneratorSpec``
-carries the same flag. A ``Stage`` declares ``capture = CaptureClass.HOST`` instead and
+(pure Warp, no torch) and 4 (fixed-shape buffers) still apply. A ``Stage`` declares ``capture = CaptureClass.HOST`` instead and
 reaches the host through ``ctx.host()`` (:ref:`stage-host`), which the conformance kit
 can check; prefer it.
 
@@ -266,150 +186,38 @@ forms. The port is mechanical:
 
 The name, the entry point and the users' ``generator=`` strings stay the same.
 
-The legacy gate generator ABI: ``GateGeneratorSpec``
-----------------------------------------------------
-
-Gate generators written against the 0.1 interface are ``GateGeneratorSpec`` objects
-(exported by ``track_gen.plugin``). They keep working, unchanged, through an adapter
-stage (:ref:`pipeline-legacy-gates`), and are **deprecated**: registering one is silent,
-but the first ``GateGenerator``, ``Course``, ``build`` or conformance run that binds one
-emits a ``DeprecationWarning`` (once per name), pointing at the code that constructed
-the generator. They run until 1.0. A ``GateGeneratorSpec`` has the ``name``,
-``alloc_scratch``, ``capturable`` and ``accepts_ctx`` fields of a ``GeneratorSpec``,
-with the same meaning, the same hard rules and the same stream rules, plus:
-
-.. list-table::
-   :header-rows: 1
-   :widths: 24 76
-
-   * - Field
-     - Meaning
-   * - ``generate``
-     - ``(seeds_wp, config, out, scratch, ctx=None) -> None``. ``out.position`` is the
-       ``[E * max_gates]`` ``wp.vec2f`` plan-view staging buffer (``max_gates`` is
-       ``config.max_gates``): write env ``e``'s gates in order at ``e * max_gates + g``
-       for ``g < count``, and NaN in every slot after them. ``out.count`` is ``[E]``
-       int32: write each env's real gate count.
-   * - ``max_gates``
-     - ``(config) -> int``: the most gates ``generate`` can emit for ``config``.
-       ``GateGenerator`` raises ``ValueError`` unless ``config.min_gates <=
-       max_gates(config) <= config.max_gates``.
-   * - ``supported_orderings``
-     - ``frozenset`` of the ``GateGenConfig.gate_ordering`` values that ``generate``
-       honours. No order stage follows a legacy generator: ``generate`` emits the gates
-       in the configured order, and ``GateGenerator`` raises ``ValueError`` for an
-       ordering not in this set. ``GateGenConfig.gate_ordering=None`` (the default) is
-       resolved first (``"ccw"`` when supported, else the first of this set, sorted):
-       ``config.gate_ordering`` is never ``None`` in ``generate``, ``alloc_scratch``,
-       ``max_gates`` or the ``params`` class's ``from_legacy``.
-   * - ``params``
-     - Optional: a static ``Params`` class, as for a ``GeneratorSpec``. Users set it
-       with ``GateGenConfig.generator_params``, and ``generate``, ``alloc_scratch`` and
-       ``max_gates`` read the resolved instance as ``config.generator_params``.
-
-``presets.gates`` with a legacy generator refuses ``order=``: choose its ordering with
-``GateGenConfig(gate_ordering=...)``.
-
-To port one to an anchors ``Stage`` (:ref:`writing-a-gate-generator`):
-
-- move the body of ``generate`` up to (excluding) its ordering into ``build`` /
-  ``enqueue``, writing ``anchors.xy`` at the generator's own stride (``per="anchors"``)
-  instead of ``out.position``, and ``anchors.count`` instead of ``out.count``;
-- drop the ordering (``ops.angle_sort`` is ``order.ccw``) and the extent normalization
-  (declare ``preferred={"normalize": "extent"}``), and declare the orders it accepts
-  with ``excluded_orderings`` (or ``orderings``) and ``preferred={"order": ...}``;
-- turn ``max_gates(config)`` into ``capacity(params, layout) -> {"gates": A,
-  "min_gates": k}``, and ``alloc_scratch`` into ``b.write`` / ``b.scratch`` calls.
-
-The private ``warp_gate`` helpers that 0.1 gate plugins called from ``generate`` and
-``alloc_scratch`` (``alloc_order_scratch``, ``order_points``, ``finish_ordered_gates``
-and the ``_GateStaging`` name) are deprecated and removed in 1.0: until then they keep
-working, with a ``DeprecationWarning``. When porting such a spec, drop the call: the
-pipeline's ``order.raw``, ``order.ccw`` and ``order.random_pairs`` stages are the three
-orderings ``order_points`` dispatched to (``ops.angle_sort`` is ``order.ccw``), and
-``preferred={"normalize": "extent"}`` replaces ``normalize_extent=``.
-
 .. _legacy-src-helpers:
 
-Legacy ``_src`` helpers
------------------------
+Replacing private helpers
+-------------------------
 
-Plugins written before ``track_gen.ops`` existed import private helpers from
-``track_gen._src.warp_pipeline`` (usually as ``_pipe``), ``track_gen._src.warp_generate``
-and ``track_gen._src.warp_generate_hull``. They are still importable: each keeps its
-name and parameter list, which ``tests/test_legacy_plugin_abi.py`` pins for the 0.x
-series, and delegates to the same kernels as the op that replaces it, so its results are
-unchanged. They are deprecated in favour of ``track_gen.ops`` (they do not warn); port a
-plugin with this table (:ref:`upgrading-plugin-private-names` lists the private kernel
-names that are gone):
+Plugins import the public ``track_gen.plugin``, ``track_gen.exec`` and
+``track_gen.ops`` modules. Former ``track_gen._src`` compatibility helpers and registry
+modules have been removed. Their replacements are:
 
 .. list-table::
    :header-rows: 1
-   :widths: 50 50
+   :widths: 45 55
 
-   * - Legacy helper
-     - Replacement
-   * - ``_pipe._init()``, ``_pipe._sync(device)``
-     - Not needed: the facades initialise Warp before calling ``generate``, and the ops
-       never sync.
-   * - ``_pipe._fill_i32_k`` (a kernel)
-     - ``ops.fill(ctx, arr, value)``
-   * - ``_pipe._ccw`` (a ``wp.func``)
-     - ``ops.funcs.ccw``
-   * - ``_pipe._arc_resample_inplace``, ``_pipe._arc_resample_selected_inplace``
-       (and their ``arc_length_resample_*`` twins)
-     - ``ops.arc_resample(..., active=...)``, with an ``ops.ArcScratch`` wrapping the
-       same four buffers
-   * - ``_pipe.self_intersections_inplace``
-     - ``ops.self_intersections``
-   * - ``_pipe.turning_number_inplace``
-     - ``ops.turning_number``
-   * - ``_pipe.resample_uniform``
-     - ``ops.resample_uniform`` (pass the scratch: the helper allocates when ``seg_wp``
-       or ``s_wp`` is ``None``, the op never does)
-   * - ``_pipe.resample_constant_spacing``
-     - ``ops.resample_constant_spacing`` (the helper's allocating mode also reads the
-       truncation flag back to warn; the op leaves it on the device)
-   * - ``warp_generate.corner_count_sample_inplace``,
-       ``warp_generate_hull.point_count_sample_inplace``
-     - ``ops.sample_counts`` with the salts of :ref:`ops-rng-keying`
-   * - ``warp_generate.corner_sample_inplace``,
-       ``warp_generate_hull.point_sample_inplace``
-     - ``ops.grid_cells`` and ``ops.sample_grid_points``
-   * - ``warp_generate.ccw_sort_inplace``
-     - ``ops.angle_sort`` (the helper sorts one point when ``count[e] < 1``; the op
-       treats ``count[e] <= 0`` as empty)
+   * - Former operation
+     - Public replacement
+   * - Init and sync helpers
+     - Nothing: construction initializes Warp; hot paths use the launch context.
+   * - Fill kernels and device helpers
+     - ``ops.fill`` and ``ops.funcs``
+   * - Arc resampling and selected resampling
+     - ``ops.arc_resample`` with ``ops.ArcScratch`` and ``active=``
+   * - Self-intersections and turning number
+     - ``ops.self_intersections`` and ``ops.turning_number``
+   * - Uniform and constant-spacing resampling
+     - ``ops.resample_uniform`` and ``ops.resample_constant_spacing``
+   * - Corner or point sampling and sorting
+     - ``ops.sample_counts``, ``ops.grid_cells``, ``ops.sample_grid_points`` and
+       ``ops.angle_sort``
+   * - Gate ordering and normalization
+     - Gate pipeline order stages and ``preferred={"normalize": "extent"}``
+   * - Frozen built-in generation and elevation functions
+     - ``TrackGenerator``, ``GateGenerator`` or a pipeline preset
 
-The helpers keep their own conventions: ``ctx=None`` as the last argument (the ambient
-context when omitted), a debug-only ``ctx.sync()`` after their launches, and the config
-objects the samplers read. ``track_gen._src.warp_pipeline.GenScratch`` moved to
-``track_gen._src.warp_generate.GenScratch``; the old name still works and emits a
-``DeprecationWarning``.
-
-The built-in generators' module functions keep their former signatures and scalar
-kernels (their bytes are pinned by the fingerprint tests): ``generate_centerline_warp``
-and ``bezier_alloc_scratch``, ``generate_hull_warp`` / ``hull_alloc_scratch``,
-``generate_polar_warp`` / ``polar_alloc_scratch``, ``generate_voronoi_warp`` /
-``voronoi_alloc_scratch``, ``generate_checkpoint_warp`` / ``checkpoint_alloc_scratch``,
-``warp_zprofile.apply_z_profile`` / ``apply_z_profile_knots``, and the float sampling
-helpers ``sample_polar_controls`` (which still expects pre-clamped jitters),
-``sample_checkpoint_rings`` and ``select_voronoi_anchors``. The registered generators are
-Stages that no longer call them (they launch the array-reading twins). They go at 1.0,
-except the sampling helpers' ``*_per_env`` forms.
-
-The old private registries
---------------------------
-
-Plugins written for 0.1 imported ``track_gen._src.generator_registry`` (or
-``gate_generator_registry``) and called its ``register(spec)`` at import time. That keeps
-working: ``register``, ``get`` and ``available`` delegate to ``track_gen.plugin.registry``,
-and ``GENERATORS`` / ``GATE_GENERATORS`` are read-only views of it. Each old ``register``
-keeps its old duplicate rule. The track registry's still overwrites an existing name (it
-is ``registry.add(spec, replace=True)``). The gate registry's still raises when a
-different module registered the name (now ``DuplicateSpecError``, still a
-``ValueError``) and overwrites a spec from the same module. Either emits a
-``DeprecationWarning`` when it overwrites. Such a plugin must still be imported before
-use (TrackGen's own generator modules no longer register when imported: the registry
-calls their ``register(reg)``). Move it to an entry point and ``registry.add`` to drop
-that requirement (:ref:`packaging-a-plugin`). The shims and the built-in generators'
-``.params`` alias go at 1.0 (:ref:`upgrading-removals`).
+Every op takes ``ctx`` first and writes preallocated arrays. See :ref:`generator-ops`
+and :ref:`upgrading-0.3` for the full removal inventory and migration steps.

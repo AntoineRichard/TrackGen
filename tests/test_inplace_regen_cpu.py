@@ -36,7 +36,8 @@ import warp as wp
 from tests._fake_cuda import FakeCuda, FakeGraph, FakeSeedState, FakeStream, patch_facade_seeds
 from tests.test_caller_capture_cpu import _FACADES, _fake_rng
 from track_gen import GateGenConfig, GateGenerator, PerEnvSeededRNG, TrackGenConfig, TrackGenerator
-from track_gen._src import gate_generator_registry, generator_registry, warp_pipeline
+from track_gen._src import warp_pipeline
+from track_gen.plugin import registry
 from track_gen._src.generator_binding import _StageGenerator, bind_generator
 from track_gen.plugin import registry as _plugin_reg
 from track_gen.course import Course, CourseConfig
@@ -55,9 +56,6 @@ _GATE_FIELDS = ("position", "tangent", "forward", "orientation", "half_size", "l
                 "right", "valid", "count")
 
 
-@pytest.fixture(autouse=True)
-def _fresh_legacy_registry(monkeypatch):
-    monkeypatch.setattr(runner_mod, "_PENDING_LEGACY", weakref.WeakSet())
 
 
 # ---------------------------------------------------------------------------------------
@@ -114,9 +112,9 @@ def _assert_bytes_equal(a, b, fields, label=""):
 
 # Seed-dependent generators only: an ingestion generator (seeded=False, "external") does
 # not change with its epoch (roadmap PR13b; its masked reloads are tests/test_external.py).
-GENERATORS = ([("track", g) for g in generator_registry.available()
+GENERATORS = ([("track", g) for g in registry.available("generator")
                if _plugin_reg.describe("generator", g).seeded]
-              + [("gates", g) for g in gate_generator_registry.available()])
+              + [("gates", g) for g in registry.available("gate_generator")])
 GEN_IDS = [f"{w}-{g}" for w, g in GENERATORS]
 
 
@@ -872,21 +870,6 @@ def test_runner_bounds_its_keyed_self_graphs(monkeypatch):
     assert [g for g, _ in fake.launched][-2:] == [r.graph_for((True, 0x10)), r.graph]
 
 
-def test_legacy_runner_self_graphs_only_its_default_body(monkeypatch):
-    """A legacy-plugin producer self-captures on Warp's SHARED current stream, once: a
-    keyed body runs eagerly there instead (a second capture would reopen the window in
-    which other calls on that stream must serialize)."""
-    fake = FakeCuda(monkeypatch)
-    r = GraphRunner("cuda:0", capturable=True, legacy_stream=True, name="legacy")
-    plain, keyed = _Body(), _Body()
-    r.prepare(plain)
-    r.run(plain)
-    assert r.graph is not None and len(fake.captures) == 1
-    for _ in range(2):
-        r.run(keyed, key=(True, 0x40))
-    assert len(keyed.ctxs) == 2 and all(c.stream is fake.current for c in keyed.ctxs)
-    assert len(fake.captures) == 1 and r.graph_keys == (None,)
-    assert fake.launched == [(r.graph, fake.current)]
 
 
 def test_runner_keyed_capture_requires_prepare(monkeypatch):

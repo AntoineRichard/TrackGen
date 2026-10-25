@@ -16,7 +16,8 @@ import torch
 pytest.importorskip("warp")
 
 import warp as wp  # noqa: E402
-from track_gen._src import warp_pipeline as wpl
+from tests._reference_generators import warp_pipeline as wpl
+from tests._reference_generators import generate_raw
 from track_gen._src.types import TrackGenConfig
 from tests._warp_compare import (
     corner_count_sample, corner_sample, ccw_sort, assemble,
@@ -65,7 +66,7 @@ def test_closed_assemble_keeps_all_count_segments(dev):
 def _fatband_cfg(E: int, dev: str) -> TrackGenConfig:
     """The fat-band regime from tests/test_warp_corner_ordering.py."""
     return TrackGenConfig(num_envs=E, num_points=256, half_width=0.5, scale=10.0,
-                          output_mode="constant_spacing", spacing=0.30, N_max=384, device=dev)
+                          spacing=0.30, N_max=384, device=dev)
 
 
 def _attempt0_centerline(cfg, dev):
@@ -102,7 +103,7 @@ def test_adaptive_handle_clamp_drives_out_crossings(dev):
     _, scratch_fb = wpl._inflate_warp_alloc(fb_cfg)
     seeds_t = torch.arange(fb_cfg.num_envs, dtype=torch.int32, device=dev)
     seeds_wp = wp.from_torch(seeds_t, dtype=wp.int32)
-    wpl.generate_centerline_warp(seeds_wp, fb_cfg,
+    generate_raw("bezier", seeds_wp, fb_cfg,
                                  out_centerline=scratch_fb.gen_centerline,
                                  out_valid_wp=scratch_fb.gen_valid,
                                  scratch=scratch_fb.gen)

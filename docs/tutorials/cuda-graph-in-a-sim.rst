@@ -480,9 +480,7 @@ what changed from 0.1).
   registered with ``capturable=False``) raises ``NotCapturableError`` before launching
   anything; build its pipeline with a :term:`PipelineSpec` with
   ``require_caller_capturable=True``
-  to have that refused at construction instead. A generator plugin written for the 0.1
-  plugin interface (no ``accepts_ctx=True``) can only be recorded on Warp's current
-  stream (:ref:`plugin-abis`).
+  to have that refused at construction instead.
 
 .. _capture-requirements:
 
@@ -552,16 +550,6 @@ stream, so independent generators on different threads run concurrently. Each ge
 (and each course) is single-writer, though: do not run the same instance from two
 threads, or on two streams, at once; use one instance per concurrent generator.
 
-The exception is a generator built on a plugin written for the 0.1 plugin interface (no
-``accepts_ctx=True``). That plugin launches on Warp's current stream, which every thread
-shares, so every eager run of it holds a process-wide lock, and a recordable one also
-holds it while it records its own graph, which records that shared stream. Until every
-such generator has recorded its own graph, calls of other generators that resolve to
-Warp's current stream (the default) take the lock too, so they cannot mistake that
-recording for their caller's capture. Calls on any other stream (``stream=``, a
-constructor ``stream=``, a scope) stay lock-free. A non-recordable plugin of that kind
-holds the lock only while its host step runs.
-
 Two caveats apply to multi-threaded programs:
 
 - While a generator records its own graph (once, on its first ``generate()`` on
@@ -618,12 +606,6 @@ from ``track_gen.exec.CaptureError``, a ``RuntimeError``.
      - call it outside the capture (it runs eagerly), or use a recordable generator;
        ``PipelineSpec(require_caller_capturable=True)`` refuses such a pipeline at
        construction
-   * - ``LegacyPluginStreamError``
-     - a plugin written for the 0.1 plugin interface (no ``accepts_ctx=True``) was
-       recorded on a stream other than Warp's current one (a side stream, a plain
-       ``torch.cuda.graph``)
-     - capture Warp's current stream (a plain ``wp.ScopedCapture(device)``), or port the
-       plugin (:ref:`plugin-abis`)
    * - ``RebindAfterCaptureWarning``
      - ``bind`` replaced an array that a recorded ``step()`` / ``query()`` /
        ``update()`` reads: the graph still reads the old one

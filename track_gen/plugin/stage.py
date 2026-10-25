@@ -50,8 +50,7 @@ plus the per-anchor attributes it ``provides`` (``"anchors.z"``, ``"anchors.tang
 attributes (carried to the gate slots by index: ``orderings={"raw"}``); it declares the
 orders it supports
 (:attr:`Stage.orderings` or :attr:`Stage.excluded_orderings`) and may prefer one
-(:attr:`Stage.preferred`). A legacy :class:`~track_gen.plugin.GateGeneratorSpec` still
-works (deprecated) through an adapter.
+(:attr:`Stage.preferred`).
 """
 from __future__ import annotations
 

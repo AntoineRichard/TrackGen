@@ -38,8 +38,7 @@ GATE_FIELDS = ("position", "tangent", "forward", "orientation", "half_size", "le
                "right", "valid", "count")
 TRACK_CASES = {
     "bezier": {},
-    "bezier_style": dict(style_sampling=True, rad_range=(0.1, 0.35), scale_range=(0.8, 1.2),
-                         handle_clamp_frac_range=(0.3, 0.9)),
+
     "hull": {},
     "polar": {},
     "voronoi": {},

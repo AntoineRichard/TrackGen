@@ -31,11 +31,7 @@ Samples random grid-jittered corners, sorts them by angle around their centroid,
 and assembles a closed cubic Bézier spline.  Handle lengths are proportional to
 ``rad * chord`` and clamped by ``handle_clamp_frac`` so handles cannot overshoot
 nearby corners.  ``rad``, ``handle_clamp_frac``, ``size`` and the corner count are
-per-env knobs (below); the older, deprecated ``style_sampling`` draws per-environment
-``rad``, ``scale``, and ``handle_clamp_frac`` from configured ranges (``randomize=``
-replaces it).  Self-crossing smooth curves fall back
-to their provably simple corner polygon, which XPBD re-rounds.
-See :doc:`bezier` for the full deep dive.
+per-env knobs (below).
 
 hull
 ~~~~
@@ -222,9 +218,9 @@ Every built-in generator is a ``Stage`` of kind ``generator``
   number, thickness, NaNs, ``N_max`` truncation) is decided later by the shared validity
   stage, after relaxation (:ref:`pipeline-fail-bits`).
 
-Plugins may also use the original two-callable ``GeneratorSpec`` ABI
+Plugins may also use the simple two-callable ``GeneratorSpec`` form
 (``alloc_scratch(config)`` and ``generate(seeds_wp, config, out_centerline,
-out_valid_wp, scratch)``): :ref:`plugin-abis` documents it.
+out_valid_wp, scratch, *, ctx)``): :ref:`plugin-abis` documents it.
 
 Cost
 ----

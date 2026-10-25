@@ -150,8 +150,6 @@ def test_ownership_partitions_the_generator_fields():
 
 TRACK_CASES = {
     "bezier": ({}, dict(min_num_points=7, max_num_points=11, rad=0.3, edgy=0.2)),
-    "bezier_style": ({}, dict(style_sampling=True, rad_range=(0.1, 0.35),
-                              scale_range=(0.8, 1.2), handle_clamp_frac_range=(0.3, 0.9))),
     "bezier_fallback": ({}, dict(rad=0.49, min_num_points=10)),
     "hull": ({}, dict(hull_displacement=0.25, min_num_points=8)),
     "polar": ({}, dict(polar_num_knots=9, polar_radial_jitter=0.4)),
@@ -378,7 +376,6 @@ def test_a_duck_typed_legacy_spec_with_an_unrelated_params_attribute_runs():
         registry_kind = "generator"
         name = "acme.duck"
         capturable = True
-        accepts_ctx = True
         alloc_scratch = staticmethod(TOY_CIRCLE.alloc_scratch)
         generate = staticmethod(TOY_CIRCLE.generate)
 
@@ -412,7 +409,7 @@ def test_a_config_subclass_plugin_keeps_working():
         TOY_CIRCLE.generate(seeds_wp, config, out_centerline, out_valid_wp, scratch, ctx=ctx)
 
     registry.add(GeneratorSpec(name="acme.sub", alloc_scratch=lambda c: None,
-                               generate=generate, accepts_ctx=True))
+                               generate=generate))
     gen = TrackGenerator(AcmeConfig(generator="acme.sub", num_envs=E, acme_radius=0.5),
                          _rng())
     assert gen.generate().valid.numpy().tolist() == [1] * E
@@ -442,7 +439,6 @@ def test_builtin_schemas():
     assert rep["repulsive_stages"]["type"] == "array"
     assert rep["repulsive_stages"]["default"] == [64, 128, 256]
     bez = registry.describe("generator", "bezier").params_schema["properties"]
-    assert bez["rad_range"]["type"] == ["array", "null"]
     assert bez["min_point_distance"]["maximum"] == 0.5
     polar = registry.describe("generator", "polar").params_schema["properties"]
     # The generator's former clamp is the declared bound (roadmap PR13c).

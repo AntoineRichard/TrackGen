@@ -1,8 +1,40 @@
 # Changelog
 
-## 0.3.0.dev0 (unreleased, `v3` branch)
+## 0.3.0.dev1 (unreleased, `v3` branch)
 
-The breaking cleanup after 0.2 (roadmap PR16, retargeted from 1.0 to 0.3).
+The removal milestone of the 0.3 cleanup. Surviving configurations retain their
+geometry and RNG keying. The hashed RNG switch, poison defaults, frozen configs and
+required result fields follow in separate milestones. The complete migration guide
+is `docs/upgrading/from-0.2.rst`.
+
+### Breaking removals
+
+- Remove the `_src` registry modules/views, helper re-exports and module hooks;
+  use `track_gen.plugin.registry` and `track_gen.ops`.
+- Remove frozen `generate_*_warp`, `*_alloc_scratch`, `apply_z_profile*` and scalar
+  sampling helpers, with their scalar/style kernels. Use generator facades or presets.
+- Remove `GateGeneratorSpec`, its adapter, staging alias and legacy gate ordering
+  helpers. Gate plugins are Stages.
+- Retain `GeneratorSpec` as the documented simple track-plugin path: static
+  generators need only an allocator and a generate callable, using the same pipeline
+  and conformance kit. Its generate callable must accept `ctx=`. Remove the
+  `accepts_ctx` constructor flag and the context-free five-argument adapter, with
+  `LegacyPluginStreamError`, legacy-stream introspection/options and the shared
+  legacy capture lock.
+- Remove `style_sampling` and its three range fields from configs and Bezier Params;
+  use `randomize=`. Remove the five built-in Stage-class `.params` aliases; use `.Params`.
+  Runtime `gen.params` and `GeneratorSpec(params=...)` remain supported.
+- Remove the 21 unused track config fields (oracle energy/tangent-point/smoothing,
+  regeneration, old Fourier and dead relaxation knobs), `output_mode`, and the five
+  inert gate config parity fields. Removed keys now fail rather than being ignored.
+- Remove inert `validity.gate_default.gate_width` / `check_crossing` params;
+  set width on `gate_frames.default`. Nonzero bars remain checked per env.
+- Remove `set_capturing`, `Course.set_capturing`, `_CAPTURING`, the ignored private
+  `capturing=` arguments, `CourseLine.track`, and `tools.Progress(checkpoints=)`.
+  Use launch contexts, `CourseLine.centerline` and `Progress(source=)`.
+- Refuse `track_gen.pipeline/1` dictionaries; load and re-save with 0.2 as `/2` first.
+
+No compatibility shims, tombstones, warning cycles or reproduction modes are added.
 
 ## 0.2.0 (2026-10-24, tag `v0.2.0`)
 

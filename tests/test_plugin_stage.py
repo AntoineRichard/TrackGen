@@ -683,8 +683,6 @@ def test_private_pipeline_helpers_refuse_a_stage_class(toys):
     from track_gen._src import warp_pipeline
 
     cfg = TrackGenConfig(generator="toy.wobble", device=DEV, num_envs=E)
-    with pytest.raises(TypeError, match="Stage generators run through TrackGenerator"):
-        warp_pipeline._inflate_warp_alloc(cfg)
     gen = _gen()
     with pytest.raises(TypeError, match="Stage generators run through TrackGenerator"):
         warp_pipeline._run_pipeline(cfg, gen._seed_buf, out=gen._track, scratch=gen._scratch,

@@ -14,10 +14,12 @@ import numpy as np
 import pytest
 import warp as wp
 
-from track_gen._src import warp_pipeline as wpl
+from track_gen import ops
+from track_gen.exec import LaunchContext
 from track_gen._src.rng_utils import PerEnvSeededRNG
 from track_gen._src.track_generator import TrackGenerator
 from track_gen._src.types import TrackGenConfig
+from track_gen.testing import hot_path_guard
 
 DEVS = [
     "cpu",
@@ -59,13 +61,11 @@ def test_resample_flags_truncation_from_unclamped_count(dev):
     E = len(perims)
     out = wp.empty(E * n_max, dtype=wp.vec2f, device=dev)
     count = wp.empty(E, dtype=wp.int32, device=dev)
-    seg = wp.empty(E * _N, dtype=wp.float32, device=dev)
-    s = wp.empty(E * (_N + 1), dtype=wp.float32, device=dev)
+    scratch = ops.ArcScratch.alloc(E, _N, dev, compact=False)
     truncated = wp.full(E, -1, dtype=wp.int32, device=dev)
 
-    wpl.resample_constant_spacing(_loops_wp(perims, dev), spacing, n_max,
-                                  out_wp=out, count_wp=count, seg_wp=seg, s_wp=s,
-                                  truncated_wp=truncated)
+    ops.resample_constant_spacing(LaunchContext.for_call(dev), _loops_wp(perims, dev),
+                                  _N, spacing, n_max, scratch, out, count, truncated)
 
     assert truncated.numpy().tolist() == [1, 0, 0, 0]
     cnt = count.numpy()
@@ -75,21 +75,20 @@ def test_resample_flags_truncation_from_unclamped_count(dev):
 
 
 def test_inplace_resample_does_no_host_readback():
-    """The in-place (pipeline) path never reads count back to warn; the flag is the
-    diagnostic. The allocating convenience path still warns on truncation."""
+    """The op leaves truncation diagnostics on device and performs no host readback."""
     n_max, spacing = 64, 0.1
     src = _loops_wp([1.1 * n_max * spacing], "cpu")
     out = wp.empty(n_max, dtype=wp.vec2f, device="cpu")
     count = wp.empty(1, dtype=wp.int32, device="cpu")
     truncated = wp.empty(1, dtype=wp.int32, device="cpu")
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", RuntimeWarning)
-        wpl.resample_constant_spacing(src, spacing, n_max, out_wp=out, count_wp=count,
-                                      truncated_wp=truncated)
+    scratch = ops.ArcScratch.alloc(1, _N, "cpu", compact=False)
+    ctx = LaunchContext.for_call("cpu")
+    ops.resample_constant_spacing(ctx, src, _N, spacing, n_max, scratch, out, count,
+                                  truncated)
+    with hot_path_guard():
+        ops.resample_constant_spacing(ctx, src, _N, spacing, n_max, scratch, out, count,
+                                      truncated)
     assert int(truncated.numpy()[0]) == 1
-
-    with pytest.warns(RuntimeWarning, match="N_max"):
-        wpl.resample_constant_spacing(src, spacing, n_max, count_wp=count)  # out_wp allocated
 
 
 def _gen(dev, E, n_max, seed=1234):

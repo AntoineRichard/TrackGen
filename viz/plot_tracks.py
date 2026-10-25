@@ -143,7 +143,7 @@ def draw_track(ax, track: Track, e: int) -> None:
 
 def render(images=10, rows=9, cols=9, track_width_m=1.0, box_m=20.0, num_points=256,
            device="cuda", seed=0, dpi=150, cell_in=1.8,
-           output_mode="constant_spacing", spacing=0.30, n_max=384):
+           spacing=0.30, n_max=384):
     """Generate images*rows*cols tracks at metric scale and save ``images`` grid PNGs.
 
     Physical units (1 coordinate unit = 1 m): the track width is ``track_width_m`` (so

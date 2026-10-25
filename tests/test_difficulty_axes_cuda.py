@@ -42,7 +42,7 @@ break them:
    CHANGELOG.
 2. Per env == per-env scalar runs: ``set(field, [E] array)`` then ``enqueue()`` equals,
    env by env and on every result field, separate runs BUILT with each scalar value
-   (``size`` on the five track generators, bezier ``style_sampling``, repulsive, the
+   (``size`` on the five track generators, repulsive, the
    bezier / hull / stations gate generators; ``normalize.size`` on the polar /
    checkpoint / voronoi gates; ``min_num_points`` on bezier / hull, clamped values
    included); size-1 envs of a mixed array equal the default run; the traces show the
@@ -106,6 +106,7 @@ import warp as wp  # noqa: E402
 
 from track_gen import GateGenerator, PerEnvSeededRNG, TrackGenConfig, TrackGenerator  # noqa: E402
 from track_gen._src import warp_pipeline  # noqa: E402
+from tests._reference_generators import spec as _reference_generator_spec  # noqa: E402
 from track_gen._src.generator_binding import _StageGenerator  # noqa: E402
 from track_gen.exec import LaunchContext  # noqa: E402
 from track_gen.pipeline import GATE_FAIL_BITS, presets  # noqa: E402
@@ -128,8 +129,6 @@ _CROSSING = 1 << GATE_FAIL_BITS["crossing"]
 _REPULSIVE_SMALL = dict(num_points=64, generator_params={"repulsive_stages": (16, 32, 64)})
 _REPULSIVE_KIT = dict(num_points=64, repulsive_stages=(16, 32, 64), N_max=384,
                       half_width=0.1)
-#: bezier's deprecated style sampling (a per-env scale draw that size composes with).
-_STYLE = {"style_sampling": True, "scale_range": (0.8, 1.2)}
 
 
 # ---------------------------------------------------------------------------------------
@@ -194,14 +193,9 @@ def _kernel(path: str):
 
 @contextlib.contextmanager
 def _quiet():
-    """Silence PR13d's build-time warnings that are not under test here (the
-    style_sampling deprecation, the size truncation heuristic)."""
+    """Silence the build-time size truncation heuristic, which is not under test here."""
     with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", message=r"bezier's style_sampling is deprecated",
-                                category=DeprecationWarning)
         warnings.filterwarnings("ignore", message=r".*truncat", category=UserWarning)
-        warnings.filterwarnings("ignore", message=r".*per-env size draws compose",
-                                category=UserWarning)
         yield
 
 
@@ -513,7 +507,7 @@ _PAIRS = {
                                 "append", None, 6, "track:bezier"),
     "sample_grid_points_scaled": _Pair(f"{_SAMPLING}:_sample_grid_points_scaled_k",
                                        f"{_SAMPLING}:_sample_grid_points_scaled_sized_k",
-                                       "append", None, 6, "track:bezier-style"),
+                                       "append", None, 6, "ops:scaled-grid"),
     "normalize_extent": _Pair(f"{_GEOMETRY}:_normalize_extent_k",
                               f"{_GEOMETRY}:_normalize_extent_sized_k",
                               "append", None, 2, "track:polar"),
@@ -529,7 +523,6 @@ _PAIRS = {
 }
 #: The PR9 composition configs whose (frozen legacy) generator launches the originals.
 _TRACK_SOURCES = {"bezier": dict(generator="bezier"),
-                  "bezier-style": dict(generator="bezier", **_STYLE),
                   "polar": dict(generator="polar")}
 
 
@@ -539,7 +532,8 @@ def _run_pr9(kw: dict) -> None:
     ORIGINAL kernels."""
     with _quiet():
         cfg = TrackGenConfig(device=DEV, num_envs=E, **kw)
-        track, scratch = warp_pipeline._inflate_warp_alloc(cfg)
+        track, scratch = warp_pipeline._inflate_warp_alloc(
+            cfg, generator_spec=_reference_generator_spec(cfg.generator))
     spec = scratch.generator_spec
     assert not isinstance(spec, _StageGenerator) and callable(getattr(spec, "generate", None)), \
         f"the PR9 composition must run the legacy spec of {cfg.generator!r}, got {spec!r}"
@@ -553,6 +547,23 @@ def _source(source: str, widths=None):
     """``(run, generator)``: ``run()`` performs the generation whose launches are
     captured (the generator is built BEFORE, so its construction launches are not)."""
     kind, name = source.split(":")
+    if kind == "ops":
+        from track_gen import ops
+
+        assert name == "scaled-grid" and widths is None
+        points_per_env = 13
+        cells, cell_size = ops.grid_cells(0.05)
+        seed = _dev(SEEDS, wp.int32)
+        scale = _dev(np.linspace(0.8, 1.2, E, dtype=np.float32))
+        used = wp.empty(E * points_per_env, dtype=wp.int32, device=DEV)
+        points = wp.empty(E * points_per_env, dtype=wp.vec2f, device=DEV)
+        ctx = LaunchContext.for_call(DEV)
+
+        def run():
+            ops.sample_grid_points(ctx, seed, 9781, 0, points_per_env, cells,
+                                   float(cell_size), scale, used, points)
+            wp.synchronize()
+        return run, None
     if kind == "track":
         assert widths is None
         kw = _TRACK_SOURCES[name]
@@ -743,8 +754,7 @@ _SIZES_PER_ENV = (1.0, 0.7, 1.3, 0.01, 20.0, 2.5, math.nan, 0.45)
 
 @pytest.mark.parametrize("pair", ["sample_grid_points", "sample_grid_points_scaled"])
 def test_grid_twin_equals_the_original_on_generator_inputs(pair, monkeypatch):
-    """The sized corner-grid twins (bezier, and bezier under ``style_sampling``) against
-    the originals on the inputs the PR9 composition handed them: env ``e``'s points are
+    """The sized grid twins against scalar and per-env-scale public sampling inputs: env ``e``'s points are
     ``f32(original * clamp(size[e]))`` bitwise (size 1: the original's bytes; the scalar
     grid at scale 1 also == the original launched at ``scale = clamp(size)``), the cell
     history ``used`` is unchanged, out-of-range sizes act as the bound, a NaN size passes
@@ -1055,10 +1065,6 @@ _PER_ENV = {
                            _NORM_TRACK),
     "track.checkpoint.size": ("track", dict(generator="checkpoint"), "generator", "size",
                               _SIZES, _NORM_TRACK),
-    "track.bezier-style.size": ("track", dict(generator="bezier", generator_params=_STYLE),
-                                "generator", "size", _SIZES,
-                                (("_sample_grid_points_scaled_sized_k",),
-                                 ("_sample_grid_points_scaled_k",))),
     "track.repulsive.size": ("track", dict(generator="repulsive", **_REPULSIVE_SMALL),
                              "generator", "size", _SIZES_REPULSIVE,
                              (("_copy_sized_k",), ())),

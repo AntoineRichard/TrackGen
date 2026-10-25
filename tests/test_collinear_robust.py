@@ -43,7 +43,7 @@ def test_polygonal_fallback_not_flagged(dev):
     import warp as wp
     wp.init()
     from track_gen._src import warp_pipeline as wpl
-    from track_gen._src.types import TrackGenConfig
+    from tests._oracle.config import OracleConfig as TrackGenConfig
     from tests._warp_compare import (
         corner_count_sample, corner_sample, ccw_sort, assemble,
         arc_length_resample_warp, self_intersections as warp_self_intersections,
@@ -51,7 +51,7 @@ def test_polygonal_fallback_not_flagged(dev):
 
     E = 2048
     cfg = TrackGenConfig(num_envs=E, num_points=256, half_width=0.5, scale=10.0,
-                         output_mode="constant_spacing", spacing=0.30, N_max=384, device=dev)
+                         spacing=0.30, N_max=384, device=dev)
     seeds = torch.arange(E, dtype=torch.int32, device=dev)
     cc = corner_count_sample(seeds, 0, cfg)
     corners = ccw_sort(corner_sample(seeds, 0, cfg), cc)

@@ -21,12 +21,12 @@ from track_gen import PerEnvSeededRNG, TrackGenConfig, TrackGenerator
 
 
 def run_pipeline_benchmark(E=8192, N=256, half_width=0.03, scale=1.0, device="cuda",
-                           relax_iters=150, max_regen_iters=10, seed=0, graph=False, reps=3):
+                           relax_iters=150, seed=0, graph=False, reps=3):
     """Benchmark the end-to-end Warp pipeline. Returns a list of metric rows."""
     if device == "cuda" and not torch.cuda.is_available():
         device = "cpu"
     cfg = TrackGenConfig(device=device, num_envs=E, num_points=N, half_width=half_width,
-                         scale=scale, relax_iters=relax_iters, max_regen_iters=max_regen_iters)
+                         scale=scale, relax_iters=relax_iters)
     rng = PerEnvSeededRNG(seeds=seed, num_envs=E, device=device)
     rows = []
 

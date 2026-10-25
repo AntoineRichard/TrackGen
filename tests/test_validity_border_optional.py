@@ -29,7 +29,7 @@ def test_validity_border_check_defaults_off():
 def test_border_check_is_redundant_so_default_off_loses_nothing(dev):
     E = 512
     cfg = TrackGenConfig(num_envs=E, num_points=256, half_width=0.5, scale=10.0,
-                         output_mode="constant_spacing", spacing=0.30, N_max=384, device=dev)
+                         spacing=0.30, N_max=384, device=dev)
     cfg_on = dataclasses.replace(cfg, validity_border_check=True)
 
     rng_off = PerEnvSeededRNG(seeds=42, num_envs=E, device=dev)

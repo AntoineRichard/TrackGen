@@ -55,9 +55,7 @@ CUDA-graph-capturable.
 3. **Midpoint-displacement layer.**
    ``_midpoint_displace_dyn_k`` interleaves each adjacent pair of angle-sorted vertices
    with one displaced edge midpoint, producing an augmented loop of ``2m`` vertices
-   (it reads env ``e``'s ``hull_displacement`` from the per-env parameter array; the
-   frozen legacy ``generate_hull_warp`` launches the scalar ``_midpoint_displace_k``,
-   same arithmetic, same bytes):
+   (it reads env ``e``'s ``hull_displacement`` from the per-env parameter array):
 
    .. code-block:: text
 

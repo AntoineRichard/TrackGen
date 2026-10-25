@@ -6,7 +6,7 @@ import torch
 pytest.importorskip("warp")
 from tests._oracle import geometry, inflation
 from tests._warp_compare import validity, turning_number
-from track_gen._src.types import TrackGenConfig
+from tests._oracle.config import OracleConfig as TrackGenConfig
 
 from tests.conftest import DEVS  # noqa: E402
 

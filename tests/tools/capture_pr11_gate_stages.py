@@ -89,7 +89,7 @@ def _cases() -> dict:
 
 #: case id -> GateGenConfig keyword arguments (num_envs / device are E / "cpu").
 CASES = _cases()
-#: The legacy GateGeneratorSpec cases (run through the PR11 adapter).
+#: Historical toy cases, retained as independent numerical parity references.
 LEGACY_CASES = {
     "legacy/toy.ring": dict(generator="toy.ring", gate_ordering="raw"),
     "legacy/toy.ring/noise": dict(generator="toy.ring", gate_ordering="raw",
@@ -106,12 +106,30 @@ LAUNCH_CASES = tuple(f"{gen}/{order}/{z}/i{it}/yaw_only/w0.0"
 
 def zero_count_spec():
     """A legacy gate generator that writes nothing (``count`` stays 0)."""
-    from track_gen.plugin import GateGeneratorSpec
+    import warp as wp
 
-    return GateGeneratorSpec(
-        name="tests.zero-count", alloc_scratch=lambda config: object(),
-        generate=lambda seeds_wp, config, out, scratch: None,
-        max_gates=lambda config: 2, supported_orderings=frozenset({"ccw"}))
+    from track_gen.plugin import Stage
+
+    class ZeroCount(Stage):
+        name = "tests.zero-count"
+        kind = "gate_generator"
+        output = "anchors"
+        writes = {"xy": "anchors.xy", "count": "anchors.count"}
+        orderings = frozenset({"ccw"})
+
+        def capacity(self, p, layout):
+            return {"gates": 2}
+
+        def build(self, b, p):
+            xy = b.write("xy", wp.vec2f, per="anchors")
+            count = b.write("count", wp.int32)
+
+            def enqueue(ctx):
+                ctx.fill(xy, wp.vec2f(0.0, 0.0))
+                ctx.fill(count, 0)
+            return enqueue
+
+    return ZeroCount
 
 
 def register_legacy(reg) -> None:

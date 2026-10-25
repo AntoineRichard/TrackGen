@@ -5,10 +5,11 @@ TrackGen
 of smooth, validated tracks per call, expressed as NVIDIA Warp kernels and ready to drop
 into a batched RL simulator.
 
-.. admonition:: Coming from 0.1?
+.. admonition:: Upgrading an existing project?
 
-   Read :ref:`upgrading-0.2`. Most 0.1 code keeps running, but some results change
-   without an error: start with its :ref:`triage table <upgrading-triage>`.
+   Start with :ref:`upgrading-0.3` for the current cleanup. For an older project,
+   read :ref:`upgrading-0.2` first; its :ref:`triage table <upgrading-triage>`
+   identifies the earlier changes that affect results.
 
 .. grid:: 3
    :gutter: 2
@@ -88,13 +89,12 @@ Pick the path that matches what you are building; each one is a reading order.
       2. :ref:`testing-a-plugin`
       3. :ref:`packaging-a-plugin`
 
-   .. grid-item-card:: Upgrading from 0.1
+   .. grid-item-card:: Upgrading
 
-      What changed since ``v0.1.0``, what changes silently, and what to retrain or
-      rebaseline.
+      Removed APIs, replacement settings, and changes that need a rebaseline.
 
-      1. :ref:`upgrading-0.2`
-      2. :ref:`upgrading-procedure`
+      1. :ref:`upgrading-0.3`
+      2. :ref:`upgrading-0.2`
       3. :ref:`upgrading-triage`
 
 Features
@@ -238,6 +238,7 @@ Explore the docs
    :caption: Upgrading
    :hidden:
 
+   upgrading/from-0.2
    upgrading/from-0.1
 
 .. toctree::

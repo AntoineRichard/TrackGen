@@ -53,8 +53,7 @@ How It Works
 2. **Select anchor sites.**
    ``_select_anchor_sites_dyn_k`` draws ``K = voronoi_control_points`` angular sector
    targets, with env ``e``'s ``voronoi_radial_variation`` and ``voronoi_angular_jitter``
-   read from the per-env parameter arrays (the frozen legacy ``generate_voronoi_warp``
-   launches the scalar ``_select_anchor_sites_k``: same arithmetic, same bytes).
+   read from the per-env parameter arrays.
    A global random rotation ``ρ`` is applied; sector ``i`` is centered at angle
    ``ρ + (2π/K)·i`` and jittered by ``εᵢ ∈ [-j, +j]`` where ``j = voronoi_angular_jitter``.
    Each target also has a radial component: a multi-harmonic profile ``φ(θ)`` (see Math

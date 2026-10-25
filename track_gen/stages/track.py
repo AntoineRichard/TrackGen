@@ -3,7 +3,7 @@
 Each stage wraps the EXISTING kernels and wrappers of ``warp_pipeline`` /
 ``warp_relax`` / ``warp_zprofile`` verbatim: the same launches, in the same order, with
 the same scalars as the 0.2.0.dev2 composition (``warp_pipeline._run_pipeline`` +
-``inflate_warp``), so a :class:`~track_gen.pipeline.Program` of the default stage list
+``_inflate_warp``), so a :class:`~track_gen.pipeline.Program` of the default stage list
 is byte-identical to it. The wrappers are looked up on their module at every call (not
 bound at import), so a test that wraps one sees every call.
 
@@ -34,6 +34,7 @@ from .._src import warp_relax as _relax
 from .._src import warp_width as _width
 from .._src import warp_zprofile as _zprof
 from ..ops import resample as _ops_resample
+from ..ops.fill import fill as _fill
 from ..plugin.params import NoParams
 from ..plugin.stage import CaptureClass, Stage
 from . import params as _p
@@ -93,7 +94,7 @@ def _carry_ops(b, carried, tables, per: str) -> list:
             value, n = float(c.constant), int(dst.shape[0])
 
             def fill(ctx, dst=dst, value=value, n=n):
-                ctx.launch(_wpl._fill_f32_k, n, [dst, value])
+                _fill(ctx, dst, value)
             ops.append(fill)
             continue
         kernel = _ops_resample._carry_kernel(c.interp, c.dtype)
@@ -151,7 +152,7 @@ class _GeneratorSlot:
     A Stage plugin (its ``_StageGenerator`` adapter) is built on the PR8 builder code
     path (``adapter.build``) bound to this slot's ``raw.xy`` / ``gen.valid`` versions and
     the Program's seed; a ``GeneratorSpec`` gets ``alloc_scratch(run_config)`` and its
-    ``generate`` (with ``ctx=``, or inside ``ctx.scope()`` for a legacy spec).
+    ``generate`` with the required ``ctx=`` argument.
     """
 
     kind = "generator"
@@ -190,17 +191,9 @@ class _GeneratorSlot:
             gen = spec.alloc_scratch(run_cfg)
         self.scratch = gen
         generate = spec.generate
-        if getattr(spec, "accepts_ctx", False):
-            def enqueue(ctx):
-                generate(seed, run_cfg, out_centerline=xy, out_valid_wp=valid,
-                         scratch=gen, ctx=ctx)
-        else:
-            def enqueue(ctx):
-                # Legacy plugin: no ctx= keyword. Make ctx ambient so the _pipe helpers
-                # it calls with ctx=None resolve to this call's stream.
-                with ctx.scope():
-                    generate(seed, run_cfg, out_centerline=xy, out_valid_wp=valid,
-                             scratch=gen)
+        def enqueue(ctx):
+            generate(seed, run_cfg, out_centerline=xy, out_valid_wp=valid,
+                     scratch=gen, ctx=ctx)
         return enqueue
 
 
@@ -252,10 +245,12 @@ class ConstantSpacing(_Builtin):
         spacing = float(p.spacing)
         carried = b._carried()
         if not carried:
+            N = int(raw_xy.shape[0]) // b.E
             def enqueue(ctx):
-                _wpl.resample_constant_spacing(
-                    raw_xy, spacing, S, out_wp=xy, count_wp=count, seg_wp=seg, s_wp=s,
-                    truncated_wp=truncated, ctx=ctx)
+                _ops_resample._constant_spacing_launch(
+                    ctx, raw_xy, N, spacing, S,
+                    seg, s, xy, count, truncated)
+                ctx.sync()
             return enqueue
         N = int(raw_xy.shape[0]) // b.E
         tables = _tables(b, b.E * S, int(raw_xy.shape[0]))
@@ -364,14 +359,13 @@ class Uniform(_Builtin):
 
         def enqueue(ctx):
             if tables is None:
-                _wpl.resample_uniform(x_in, x_out, S, count, seg_wp=seg, s_wp=s,
-                                      device=dev, ctx=ctx)
+                _ops_resample._resample_uniform_launch(ctx, x_in, count, S, seg, s, x_out)
             else:
                 _ops_resample._resample_uniform_launch(ctx, x_in, count, S, seg, s, x_out,
                                                        tables=tables)
             for op in ops:
                 op(ctx)
-            ctx.sync()              # debug-only (TRACKGEN_DEBUG_SYNC=1), as inflate_warp
+            ctx.sync()              # debug-only (TRACKGEN_DEBUG_SYNC=1), as _inflate_warp
         return enqueue
 
 
@@ -539,7 +533,7 @@ class ElevationFlat(_Builtin):
         zcfg = _zcfg(b, self.name, p)
 
         def enqueue(ctx):
-            _zprof.apply_z_profile(zcfg, None, count, G, None, None, z, ctx=ctx)
+            _zprof._apply_z_profile(zcfg, None, count, G, None, None, z, ctx, None)
         return enqueue
 
 
@@ -694,7 +688,7 @@ class LiftFlat(_Builtin):
             ctx.launch(_wpl._lift_track_k, n,
                        [out2, ctr2, inn2, tan2, nrm2, z_base,
                         outer, center, inner, tangent, normal])
-            ctx.sync()              # debug-only (TRACKGEN_DEBUG_SYNC=1), as inflate_warp
+            ctx.sync()              # debug-only (TRACKGEN_DEBUG_SYNC=1), as _inflate_warp
         return enqueue
 
 
@@ -730,7 +724,7 @@ class LiftElevated(_Builtin):
                        [out2, ctr2, inn2, nrm2, z, outer, center, inner, normal])
             ctx.launch(_wpl._track_frames3_k, E,
                        [center, count, S, tangent, arclen, length])
-            ctx.sync()              # debug-only (TRACKGEN_DEBUG_SYNC=1), as inflate_warp
+            ctx.sync()              # debug-only (TRACKGEN_DEBUG_SYNC=1), as _inflate_warp
         return enqueue
 
 

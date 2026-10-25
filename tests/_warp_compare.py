@@ -4,6 +4,8 @@
 Torch-in/torch-out wrappers allocate wp.array buffers, call the in-place
 warp function, and return torch tensors.  All torch usage stays test-side.
 """
+import math
+
 import warp as wp
 
 
@@ -20,7 +22,7 @@ def to_t(a):
 def corner_count_sample(seeds, attempt, config):
     """Torch-in/out: per-env corner count [E] int32."""
     import torch
-    from track_gen._src import warp_pipeline as wpl
+    from tests._reference_generators import warp_pipeline as wpl
     E = seeds.shape[0]
     dev = str(seeds.device)
     seeds_wp = wp.from_torch(seeds.to(torch.int32).contiguous(), dtype=wp.int32)
@@ -37,7 +39,7 @@ def corner_sample(seeds, attempt, config):
 def _corner_sample_raw(seeds, attempt, config):
     """Torch-in/out: (corners [E, P, 2] float32, cells [E, P] int32)."""
     import torch
-    from track_gen._src import warp_pipeline as wpl
+    from tests._reference_generators import warp_pipeline as wpl
     E = seeds.shape[0]
     P = int(config.max_num_points)
     dev = str(seeds.device)
@@ -53,7 +55,7 @@ def _corner_sample_raw(seeds, attempt, config):
 def ccw_sort(points, count=None):
     """Torch-in/out: sorted corners [E, P, 2] float32."""
     import torch
-    from track_gen._src import warp_pipeline as wpl
+    from tests._reference_generators import warp_pipeline as wpl
     E, P, _ = points.shape
     dev = str(points.device)
     flat = E * P
@@ -72,7 +74,7 @@ def ccw_sort(points, count=None):
 def assemble(corners, count, config):
     """Torch-in/out: dense centerline [E, P*npseg, 2] float32."""
     import torch
-    from track_gen._src import warp_pipeline as wpl
+    from tests._reference_generators import warp_pipeline as wpl
     E, P, _ = corners.shape
     npseg = int(config.num_points_per_segment)
     dev = str(corners.device)
@@ -90,7 +92,7 @@ def assemble(corners, count, config):
 def arc_length_resample_warp(points, num):
     """Torch-in/out: (resampled [E, num, 2] float32, count [E] long)."""
     import torch
-    from track_gen._src import warp_pipeline as wpl
+    from tests._reference_generators import warp_pipeline as wpl
     E, M, _ = points.shape
     dev = str(points.device)
     pts_wp = wp.from_torch(points.reshape(E * M, 2).contiguous(), dtype=wp.vec2f)
@@ -110,7 +112,7 @@ def arc_length_resample_warp(points, num):
 def turning_number(center, count=None):
     """Torch-in/out: signed total turning [E] float32."""
     import torch
-    from track_gen._src import warp_pipeline as wpl
+    from tests._reference_generators import warp_pipeline as wpl
     E, N, _ = center.shape
     dev = str(center.device)
     cf = wp.from_torch(center.reshape(E * N, 2).contiguous(), dtype=wp.vec2f)
@@ -127,7 +129,7 @@ def turning_number(center, count=None):
 def self_intersections(poly, count=None):
     """Torch-in/out: crossing count [E] int32."""
     import torch
-    from track_gen._src import warp_pipeline as wpl
+    from tests._reference_generators import warp_pipeline as wpl
     E, N, _ = poly.shape
     dev = str(poly.device)
     pf = wp.from_torch(poly.reshape(E * N, 2).contiguous(), dtype=wp.vec2f)
@@ -144,7 +146,7 @@ def self_intersections(poly, count=None):
 def thickness(points, band, count=None):
     """Torch-in/out: min thickness per env [E] float32."""
     import torch
-    from track_gen._src import warp_pipeline as wpl
+    from tests._reference_generators import warp_pipeline as wpl
     E, N, _ = points.shape
     dev = str(points.device)
     pf = wp.from_torch(points.reshape(E * N, 2).contiguous(), dtype=wp.vec2f)
@@ -167,7 +169,7 @@ def thickness(points, band, count=None):
 def validity(center, w, count, gen_valid, config, outer=None, inner=None):
     """Torch-in/out: validity mask [E] bool."""
     import torch
-    from track_gen._src import warp_pipeline as wpl
+    from tests._reference_generators import warp_pipeline as wpl
     E, N = w.shape
     dev = str(center.device)
     flat = E * N
@@ -194,7 +196,7 @@ def gates(corners, dense, count, config):
     """Torch-in/out: accept mask [E] bool. Composed test-side from in-place primitives."""
     import math
     import torch
-    from track_gen._src import warp_pipeline as wpl
+    from tests._reference_generators import warp_pipeline as wpl
 
     E, P, _ = corners.shape
     dev = str(corners.device)
@@ -205,7 +207,7 @@ def gates(corners, dense, count, config):
     cnt_wp = wp.from_torch(cnt_t, dtype=wp.int32)
     angle_ok_wp = wp.empty(E, dtype=wp.int32, device=dev)
     wp.launch(wpl._corner_angles_gate_k, dim=E,
-              inputs=[cf, cnt_wp, P, float(config.min_angle), angle_ok_wp],
+              inputs=[cf, cnt_wp, P, float(getattr(config, "min_angle", (12.5 / 180.0) * math.pi)), angle_ok_wp],
               device=dev)
 
     # --- TURN + FINITE ---
@@ -237,7 +239,7 @@ def xpbd_solve(center0, band, L0, config, count=None):
     """Torch-in/out: full XPBD solve [E, N, 2] float32. Delegates to xpbd_solve_inplace."""
     import torch
     from track_gen._src import warp_relax
-    from track_gen._src import warp_pipeline as wpl
+    from tests._reference_generators import warp_pipeline as wpl
     E, N, _ = center0.shape
     n_max = N
     dev = str(center0.device)

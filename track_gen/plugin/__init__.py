@@ -54,7 +54,7 @@ explicitly overrides them), or when it unregisters a name it did not register.
 Parameters and stages. A generator declares its own parameters as a frozen
 :class:`Params` dataclass (fields marked :func:`static` or :func:`dynamic`) and users
 select them with ``TrackGenConfig(generator=..., generator_params=...)`` (an instance or
-a mapping of its fields). A legacy :class:`GeneratorSpec` takes a static Params class
+a mapping of its fields). A simple :class:`GeneratorSpec` takes a static Params class
 through ``params=``; a :class:`Stage` subclass (``kind="generator"``,
 ``output="centerline"``, registered as a class) allocates through a
 :class:`StageBuilder` and may declare dynamic, per-env params that callers write
@@ -78,8 +78,7 @@ their errors. Asking for a name the plugin tried to register, or a name namespac
 its entry-point name, entry-point module or distribution name (``acme.x`` for an entry
 point named ``acme``), raises :class:`PluginLoadError` chained from its load error.
 """
-from .._src.gate_generator_registry import GateGeneratorSpec
-from .._src.generator_registry import GeneratorSpec
+from ._specs import GeneratorSpec
 from ._registry import (
     API_VERSION,
     ENTRY_POINT_GROUP,
@@ -100,7 +99,6 @@ __all__ = [
     "POLICY_ENV",
     "CaptureClass",
     "DuplicateSpecError",
-    "GateGeneratorSpec",
     "GeneratorSpec",
     "Layout",
     "NoParams",

@@ -24,6 +24,9 @@ bound); 14. legacy surfaces; 15. the kit; 16. ``presets(size=)``; 17. hints; 18.
 gates.
 """
 from __future__ import annotations
+from tests._reference_generators import warp_pipeline as _scalar_pipeline
+from tests._reference_generators import warp_generate_repulsive as _rep_reference
+from tests._reference_generators import warp_generate as _bezier_reference
 
 import collections
 import inspect
@@ -247,7 +250,7 @@ def test_the_size_owners_and_the_other_axes():
     kinds = {x.name: (x.kind, x.dtype, x.lo) for x in _fields(sp.GateFramesParams)}
     assert kinds["gate_width"] == ("dynamic", wp.float32, 0.0)
     v = {x.name: x.kind for x in _fields(sp.GateValidityParams)}
-    assert v["gate_width"] == v["check_crossing"] == "static"
+    assert "gate_width" not in v and "check_crossing" not in v
 
 
 def test_the_flat_size_round_trips_and_reaches_its_stage():
@@ -385,13 +388,21 @@ def test_the_count_twin_equals_the_scalar_kernel(monkeypatch):
 
 @pytest.mark.parametrize("variant", ["plain", "scaled"])
 def test_the_sized_grid_twins_equal_the_original(monkeypatch, variant):
-    style = dict(style_sampling=True, scale_range=(0.8, 1.2)) if variant == "scaled" \
-        else {}
+    style = variant == "scaled"
     twin_k = ops_sampling._sample_grid_points_scaled_sized_k if style else \
         ops_sampling._sample_grid_points_sized_k
     orig_k = ops_sampling._sample_grid_points_scaled_k if style else \
         ops_sampling._sample_grid_points_k
-    dim, args = _capture(monkeypatch, _make_track(**style), twin_k)
+    if style:
+        dim = E
+        P = 13
+        nc, cell = ops.grid_cells(0.05)
+        args = [_seeds(), 9781, 0, nc, nc * nc, float(cell), _f32(np.linspace(0.8, 1.2, E)), P,
+                wp.empty(E * P, dtype=wp.int32, device=DEV),
+                wp.empty(E * P, dtype=wp.vec2f, device=DEV),
+                _f32(np.ones(E))]
+    else:
+        dim, args = _capture(monkeypatch, _make_track(), twin_k)
     base = args[:10]
 
     def twin(size):
@@ -817,10 +828,6 @@ def test_size_per_env_equals_scalar_runs(name):
                    used=_clamp_size)
 
 
-def test_size_per_env_composes_with_style_sampling():
-    make = _track_maker("bezier", gp=dict(style_sampling=True, scale_range=(0.8, 1.2),
-                                          rad_range=(0.1, 0.35)))
-    _check_per_env(make, "generator", "size", SIZES, "bezier style.size", used=_clamp_size)
 
 
 def test_size_per_env_on_repulsive():
@@ -1037,38 +1044,6 @@ def test_the_randomize_plan_rules_on_the_new_axes():
                                         r"capacity \(min_gates\): not per env in 0\.x\)"):
         build(presets.gates(num_envs=E, device=DEV,
                             randomize={"generator.min_num_points": (2.0, 9.0)}))
-    # The _AGREE disagreement message still matches (initial values) when validity's
-    # inert copy is set; at its default 0 it takes no part.
-    spec = presets.gates(num_envs=E, device=DEV).replace(
-        "gate_frames", StageRef("gate_frames", "default", params={"gate_width": 0.05}))
-    build(spec)
-    spec = spec.replace("validity", StageRef("validity", "gate_default",
-                                             params={"gate_width": 0.2}))
-    with pytest.raises(PlanError, match=r"the stages disagree on gate_width: \{'gate_frames'"
-                                        r": 0.05, 'validity': 0.2\} \(one value per "
-                                        r"pipeline: the initial bar width, where "
-                                        r"gate_frames\.default's per-env width starts "
-                                        r"\(validity\.gate_default's copy is inert since "
-                                        r"0\.2\.0\.dev5: leave it at its default 0"):
-        build(spec)
-
-
-def test_style_scale_range_and_a_size_randomizer_warn_once():
-    spec = legacy.to_pipeline_spec(_tcfg(style_sampling=True, scale_range=(0.8, 1.2)))
-    with warnings.catch_warnings(record=True) as rec:
-        warnings.simplefilter("always")
-        build(spec.with_randomize({"generator.size": (0.8, 1.2)}))
-    composed = [w for w in rec if issubclass(w.category, UserWarning) and
-                "two per-env size draws compose" in str(w.message)]
-    assert len(composed) == 1 and composed[0].filename == __file__
-    assert "set style_sampling=False" in str(composed[0].message)
-    with warnings.catch_warnings(record=True) as rec:
-        warnings.simplefilter("always")
-        build(legacy.to_pipeline_spec(_tcfg(style_sampling=True, rad_range=(0.1, 0.3)))
-              .with_randomize({"generator.size": (0.8, 1.2)}))
-        build(presets.track(num_envs=E, device=DEV,
-                            randomize={"generator.size": (0.8, 1.2)}))
-    assert not [w for w in rec if "two per-env size draws" in str(w.message)]
 
 
 def test_the_build_time_truncation_warning():
@@ -1114,8 +1089,6 @@ _ZW = dict(z_profile="random_walk", z_base=0.05, z_min=-0.2, z_max=0.3, z_max_st
            z_valid_grade=0.8, z_control_points=7)
 _ZN = dict(z_profile="noise", z_base=0.1, z_min=-0.3, z_max=0.4, z_noise_amplitude=0.2,
            z_noise_harmonics=4, z_valid_grade=0.6)
-_STYLE3 = dict(style_sampling=True, rad_range=(0.1, 0.35), scale_range=(0.8, 1.2),
-               handle_clamp_frac_range=(0.3, 0.9))
 _I, _F = "i32", "f32"
 #: case -> (TrackGenConfig kwargs, PR13c count, its latches, PR13d count, the PR13d
 #: latch block): the non-latch records are unchanged (PR13c - its latches == PR13d -
@@ -1128,13 +1101,6 @@ _TRACK_DELTAS = {
     "checkpoint": (dict(generator="checkpoint"), 149, 3, 150, [_F] * 4),
     "checkpoint_k1_clip": (dict(generator="checkpoint", checkpoint_best_of_k=1,
                                 checkpoint_clip_fallback=True), 149, 3, 150, [_F] * 4),
-    "bezier_style_all": (_STYLE3, 153, 0, 155, [_I, _F]),
-    "bezier_style_rad": (dict(style_sampling=True, rad_range=(0.1, 0.35)), 154, 1, 156,
-                         [_I, _F, _F]),
-    "bezier_style_clamp": (dict(style_sampling=True, handle_clamp_frac_range=(0.3, 0.9)),
-                           154, 1, 156, [_I, _F, _F]),
-    "bezier_style_scale": (dict(style_sampling=True, scale_range=(0.8, 1.2)), 155, 2, 157,
-                           [_I, _F, _F, _F]),
     "bezier_z_uniform": (_ZU, 160, 4, 162, [_I, _F, _F, _F, _F, _F]),
     "bezier_z_random_walk": (_ZW, 161, 5, 163, [_I, _F, _F, _F, _F, _F, _F]),
     "bezier_z_noise": (_ZN, 159, 5, 161, [_I, _F, _F, _F, _F, _F, _F]),
@@ -1151,7 +1117,7 @@ def _names(trace) -> list:
 
 
 def _rows(trace) -> list:
-    return [(r.op, r.kernel, r.dim, r.scalars) for r in trace]
+    return [(r.op, r.kernel.replace("tests._reference_generators.", "track_gen._src."), r.dim, r.scalars) for r in trace]
 
 
 def _traces(program) -> tuple:
@@ -1179,16 +1145,13 @@ def test_the_track_launch_deltas(case):
     names = _names(plain)
     name = kw.get("generator", "bezier")
     twins = list(_TRACK_TWINS[name])
-    if kw.get("style_sampling"):
-        twins = ["_sample_counts_dyn_k", "_sample_grid_points_scaled_sized_k"]
     assert [n for n in names if n in set(twins)] == twins, names
     for orig in ("_sample_counts_k", "_sample_grid_points_k", "_sample_grid_points_scaled_k",
                  "_normalize_extent_k"):
         assert orig not in names, orig
     # The generator's latches lead the block (the elevation's follow).
-    if not kw.get("style_sampling"):
-        gl = list(GENERATOR_LATCHES[name])
-        assert block[:len(gl)] == gl
+    gl = list(GENERATOR_LATCHES[name])
+    assert block[:len(gl)] == gl
 
 
 def test_the_track_launch_deltas_against_the_legacy_composition():
@@ -1200,11 +1163,11 @@ def test_the_track_launch_deltas_against_the_legacy_composition():
     with trace_launches() as program:
         gen.program.enqueue(ctx)
     cfg = gen.config
-    track, scratch = warp_pipeline._inflate_warp_alloc(cfg)
+    track, scratch = _scalar_pipeline._inflate_warp_alloc(cfg)
     seed = wp.empty(E, dtype=wp.int32, device=DEV)
     with trace_launches() as pr9:
         gen.seeds.effective(seed, None, ctx=ctx)
-        warp_pipeline._run_pipeline(cfg, seed, out=track, scratch=scratch, ctx=ctx)
+        _scalar_pipeline._run_pipeline(cfg, seed, out=track, scratch=scratch, ctx=ctx)
         gen.seeds._write_generation(track.generation, None, ctx)
     assert len(pr9) == 152
     want = pr13d_sequence(_rows(pr9), latch_dtypes(gen.program), E, legacy=True)
@@ -1231,11 +1194,11 @@ def test_the_repulsive_launch_delta():
     assert names.count("_copy_sized_k") == 1
     cs = names.index("_cs_scan_k")
     cfg = gen.config
-    scratch = wg_repulsive.repulsive_alloc_scratch(cfg)
+    scratch = _rep_reference._alloc_scratch(cfg)
     out = wp.empty(n * 64, dtype=wp.vec2f, device=DEV)
     valid = wp.empty(n, dtype=wp.int32, device=DEV)
     with trace_launches() as frozen:
-        wg_repulsive.generate_repulsive_warp(seed, cfg, out, valid, scratch, ctx=ctx)
+        _rep_reference._generate(seed, cfg, out, valid, scratch, ctx=ctx)
     want = pr13d_sequence(_rows(frozen), [], n, repulsive=True)
     assert rows[2:cs] == want
     assert out.numpy().tobytes() == raw.tobytes()  # size 1: the sized copy is a copy
@@ -1345,13 +1308,6 @@ def test_in_effect_of_drawn_fields_and_of_a_randomizers_bounds():
     assert rnd.in_effect("hi").numpy().tolist() == [np.float32(1.9), np.float32(1.6),
                                                     np.float32(1.9), np.float32(1.6)]
     assert rnd.bounds("hi") == rnd.bounds("lo") == (0.1, 10.0)
-    # a knob style_sampling draws: its own array
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", message=_STYLE_DEP)
-        style = TrackGenerator(_tcfg(num_envs=n, style_sampling=True, rad_range=(0.1, 0.3)),
-                               _rng(SEEDS[:n]))
-    st = style.params["generator"]
-    assert st.in_effect("rad") is st["rad"] and st.in_effect("size") is not st["size"]
 
 
 def test_in_effect_out_and_its_checks():
@@ -1460,58 +1416,8 @@ def test_in_effect_timing_in_segmented_programs(plugin_registry):
 # 10. style_sampling: deprecated (one warning per built generator), exact migration
 # ---------------------------------------------------------------------------------------
 
-def test_style_sampling_warns_once_per_construction_at_the_callers_line():
-    cfg = _tcfg(style_sampling=True, scale_range=(0.8, 1.2))
-    with warnings.catch_warnings(record=True) as rec:
-        warnings.simplefilter("always")
-        line = inspect.currentframe().f_lineno + 1
-        gen = TrackGenerator(cfg, _rng())
-        gen.generate()
-        gen.generate(advance=True)
-    dep = [w for w in rec if issubclass(w.category, DeprecationWarning)]
-    assert len(dep) == 1, [str(w.message) for w in dep]
-    assert (dep[0].filename, dep[0].lineno) == (__file__, line)
-    msg = str(dep[0].message)
-    assert msg.startswith("bezier's style_sampling is deprecated and will be removed in 1.0")
-    for part in ("{'generator.size': (a / scale, b / scale)}", "{'generator.rad': ...}",
-                 "{'generator.handle_clamp_frac': ...}", "PipelineSpec.with_randomize",
-                 "course.generator.params['generator'].set('size', arr) before "
-                 "regenerate)"):
-        assert part in msg, part
-    # Roadmap PR14: Course's default max_checkpoints IS the size-independent bound at flat
-    # elevation, so the advice to size it is gone.
-    assert "max_checkpoints" not in msg
-    # none without style_sampling, nor from the config itself
-    with warnings.catch_warnings(record=True) as rec:
-        warnings.simplefilter("always")
-        TrackGenerator(_tcfg(), _rng())
-        _tcfg(style_sampling=True, scale_range=(0.8, 1.2))
-        TrackGenConfig(style_sampling=True)
-    assert not [w for w in rec if issubclass(w.category, DeprecationWarning)]
 
 
-def test_style_sampling_migrates_exactly_at_equal_values():
-    """A style run's per-env draws fed to ``size`` / ``rad`` / ``handle_clamp_frac`` of a
-    plain bezier (scale 1) give the same bytes (design E13); the randomizer draws the same
-    distributions on another stream."""
-    n = 16
-    seeds = np.arange(n, dtype=np.int32) * 97 + 5
-    for ranges in ({"scale_range": (0.8, 1.2)},
-                   {"scale_range": (0.8, 1.2), "rad_range": (0.1, 0.35),
-                    "handle_clamp_frac_range": (0.3, 0.9)}):
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", message=_STYLE_DEP)
-            a = TrackGenerator(_tcfg(num_envs=n, style_sampling=True, **ranges),
-                               _rng(seeds))
-        scratch = {k.rsplit("/", 1)[-1]: v
-                   for k, v in a.program._gen_scratch.scratch.items()}
-        b = TrackGenerator(_tcfg(num_envs=n), _rng(seeds))
-        p = b.params["generator"]
-        p.set("size", wp.clone(scratch["gen_style_scale"]))
-        if "rad_range" in ranges:
-            for f in ("rad", "handle_clamp_frac"):
-                p.set(f, wp.clone(a.params["generator"].in_effect(f)))
-        assert not _differs(_snap(b.generate()), _snap(a._track)), sorted(ranges)
 
 
 # ---------------------------------------------------------------------------------------
@@ -1690,35 +1596,6 @@ def test_the_checkpoint_bound_holds_under_a_size_curriculum(explicit):
 # 14. Legacy surfaces
 # ---------------------------------------------------------------------------------------
 
-def test_the_frozen_signatures_and_entry_points():
-    frozen = {wg_repulsive.generate_repulsive_warp: "(seeds_wp, config, out_centerline, "
-                                                    "out_valid_wp, scratch, ctx=None)",
-              ops.sample_counts: "(ctx, seeds, salt, offset, lo, hi, out)"}
-    for fn, want in frozen.items():
-        sig = inspect.signature(fn)
-        bare = sig.replace(parameters=[p.replace(annotation=inspect.Parameter.empty)
-                                       for p in sig.parameters.values()],
-                           return_annotation=inspect.Signature.empty)
-        assert str(bare) == want, fn
-    assert list(inspect.signature(ops.sample_grid_points).parameters)[-1] == "size"
-    assert list(inspect.signature(ops.normalize_extent).parameters)[-2:] == ["count", "size"]
-    # each frozen generate_*_warp refuses a config size it would not apply
-    for mod, alloc, fn in ((wg_bezier, "bezier_alloc_scratch", "generate_centerline_warp"),
-                           (wg_hull, "hull_alloc_scratch", "generate_hull_warp"),
-                           (wg_polar, "polar_alloc_scratch", "generate_polar_warp"),
-                           (wg_voronoi, "voronoi_alloc_scratch", "generate_voronoi_warp"),
-                           (wg_checkpoint, "checkpoint_alloc_scratch",
-                            "generate_checkpoint_warp"),
-                           (wg_repulsive, "repulsive_alloc_scratch",
-                            "generate_repulsive_warp")):
-        name = fn.split("_")[1] if fn != "generate_centerline_warp" else "bezier"
-        extra = REP if name == "repulsive" else {}
-        cfg = _tcfg(generator=name, size=1.5, **extra)
-        scratch = getattr(mod, alloc)(cfg)
-        out = wp.empty(E * int(cfg.num_points), dtype=wp.vec2f, device=DEV)
-        ok = wp.empty(E, dtype=wp.int32, device=DEV)
-        with pytest.raises(ValueError, match=rf"{fn}: config\.size=1\.5 is not applied"):
-            getattr(mod, fn)(_seeds(), cfg, out, ok, scratch)
 
 
 def test_configs_and_specs_without_size_load():
@@ -1737,9 +1614,9 @@ def test_a_generator_spec_with_bezier_params_is_refused():
     with pytest.raises(TypeError, match=r"BezierParams\.min_num_points .* is dynamic: "
                                         r"dynamic fields need a Stage"):
         registry.add(GeneratorSpec(name="acme.legacy_bezier2",
-                                   alloc_scratch=wg_bezier.bezier_alloc_scratch,
-                                   generate=wg_bezier.generate_centerline_warp,
-                                   accepts_ctx=True, params=bp.BezierParams))
+                                   alloc_scratch=_bezier_reference._alloc_scratch,
+                                   generate=_bezier_reference._generate,
+                                   params=bp.BezierParams))
 
 
 def test_a_flat_size_no_stage_applies_raises(plugin_registry):
@@ -1759,15 +1636,14 @@ def test_a_flat_size_no_stage_applies_raises(plugin_registry):
     # a legacy spec cannot declare a dynamic size: the remedy is to port it to a Stage
     with pytest.raises(ValueError, match=r"TrackGenConfig\.size=2\.0: generator "
                                          r"'toy\.circle' declares no size \(a legacy "
-                                         r"GeneratorSpec / GateGeneratorSpec has no per-env "
+                                         r"GeneratorSpec has no per-env "
                                          r"size: port it to a Stage"):
         legacy.to_pipeline_spec(_tcfg(generator="toy.circle", size=2.0))
     TrackGenerator(_tcfg(generator="toy.wobble", size=1.0), _rng())
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", DeprecationWarning)    # the legacy gate spec
         with pytest.raises(ValueError, match=r"GateGenConfig\.size=2\.0: gate generator "
-                                             r"'toy\.ring' declares no size \(a legacy "
-                                             r"GeneratorSpec / GateGeneratorSpec"):
+                                             r"'toy\.ring' declares no size \(a per-env size "):
             legacy.to_gate_pipeline_spec(_gcfg(generator="toy.ring", size=2.0))
         legacy.to_gate_pipeline_spec(_gcfg(generator="toy.ring"))
     # a gate generator without size whose gates normalize.extent re-normalizes: routed
@@ -1887,16 +1763,6 @@ def test_the_hints_of_the_size_and_count_keys():
 # 18. Posed gates: check_crossing is inert
 # ---------------------------------------------------------------------------------------
 
-def test_posed_gates_check_their_bars_with_either_check_crossing(plugin_registry):
-    from tests import _gate_toys as gt
-
-    gt.register(plugin_registry)
-    always = presets.gates(num_envs=E, device=DEV, generator=gt.HELIX_POSED)
-    width = always.replace("validity", StageRef("validity", "gate_default",
-                                                params={"check_crossing": "width"}))
-    a = _snap(GateGenerator(always, _rng()).generate())
-    w = _snap(GateGenerator(width, _rng()).generate())
-    assert not _differs(a, w)
 
 
 # ---------------------------------------------------------------------------------------
@@ -2176,13 +2042,6 @@ def test_the_truncation_warning_tracks_the_loop_length_knobs():
                {"randomize": {"generator.hull_displacement": (0.1, 1.0)}}):
         w = _trunc_warnings(track(generator="hull", size=2.5, **kw))
         assert len(w) == 1 and f"~{nominal:.1f} >" in w[0], (kw, w)
-    # style_sampling's per-env scale draws reach scale_range's hi
-    size = {"generator.size": (1.0, 2.6)}
-    assert not _trunc_warnings(legacy.to_pipeline_spec(_tcfg(
-        style_sampling=True, rad_range=(0.1, 0.3))).with_randomize(size))   # 8.68 * 2.6
-    w = _trunc_warnings(legacy.to_pipeline_spec(_tcfg(
-        style_sampling=True, scale_range=(0.8, 1.4))).with_randomize(size))
-    assert len(w) == 1 and f"~{8.68 * 1.4 * 2.6:.1f} >" in w[0], w
     # the longest loop of 8192 envs: sizes that truncate a 256-env default-seed batch
     # (hull at 3.1, voronoi at 4.8) warn
     assert _trunc_warnings(track(generator="hull", size=3.1))
@@ -2196,9 +2055,7 @@ def test_the_truncation_warning_tracks_the_loop_length_knobs():
 
 
 def test_the_hints_of_the_review():
-    with pytest.raises(PlanError, match=r"validity\.gate_width is a static field.*\(inert "
-                                        r"since 0\.2\.0\.dev5: the per-env bar width is "
-                                        r"gate_frames\.gate_width\)"):
+    with pytest.raises(PlanError, match=r"has no param 'gate_width'"):
         build(presets.gates(num_envs=E, device=DEV,
                             randomize={"validity.gate_width": (0.0, 0.3)}))
     with pytest.raises(ValueError, match=r"names stage 'normalize', which this pipeline "
@@ -2222,17 +2079,6 @@ def test_the_hints_of_the_review():
         GateGenerator(_gcfg(generator="polar", generator_params={"size": 2.0}), _rng())
 
 
-def test_a_frozen_entry_point_names_a_non_numeric_config_size():
-    from track_gen._src.builtin_stage import check_no_size
-
-    class Cfg:
-        size = "arena"
-    with pytest.raises(ValueError, match=r"generate_centerline_warp: config\.size='arena' "
-                                         r"is not a number; since 0\.2\.0\.dev5 "
-                                         r"TrackGenConfig / GateGenConfig\.size is the "
-                                         r"per-env course size .* rename a config subclass "
-                                         r"field named size"):
-        check_no_size(Cfg(), "generate_centerline_warp")
 
 
 def test_course_gates_mode_refuses_a_zero_gate_width():

@@ -45,7 +45,7 @@ entirely on device); outside a capture the course replays its own graph
 regeneration is skipped on device when no env is masked, where CUDA supports it (see
 :meth:`Course.regenerate`). ``step()``/``reset()`` are never self-captured: they are
 capture-ready for the caller's sim graph as-is (no component host-synchronizes; the
-former ``track_gen.set_capturing`` is a deprecated no-op). Every launch of one call goes
+utilities detect capture directly). Every launch of one call goes
 to ONE stream: ``stream=`` when given, else an enclosing ``torch.cuda.graph`` capture
 stream, else the course's default stream, else Warp's current stream (see
 :mod:`track_gen.exec`).
@@ -89,7 +89,7 @@ from .heightfield import HeightFieldBaker
 from .localize import TrackFrame, TrackLocalizer
 from .progress import ProgressEvents, ProgressTracker
 from .rng_utils import PerEnvSeededRNG
-from .runtime import _check_arr, _init, set_capturing
+from .runtime import _check_arr, _init
 from .track_generator import TrackGenerator
 from .types import GateGenConfig, GateSequence, Track, TrackGenConfig
 
@@ -571,7 +571,7 @@ class _Producer:
     """The Producer surface of the object a course drives (private): the documented
     members (``result``, ``layout``, ``enqueue``; optional ``seeds``, ``capture_class``,
     ``prepared`` / ``prepare()``, ``default_stream``); a ``Program``'s specifics
-    (``capturable``, ``legacy_stream``, ``host_stage_ids``, ``runner.name``) are read
+    (``capturable``, ``host_stage_ids``, ``runner.name``) are read
     here only. A facade's ``program`` is unwrapped when it is a ``Program``; its ``rng``
     is used when it is a ``PerEnvSeededRNG`` (an unrelated attribute of either name is
     ignored)."""
@@ -588,7 +588,6 @@ class _Producer:
         self.obj = prod
         if _is_program(prod):
             self.capturable = bool(prod.capturable)
-            self.legacy_stream = bool(prod.legacy_stream)
             self.host_ids = tuple(prod.host_stage_ids)
             self.name = str(prod.runner.name)
         else:
@@ -598,7 +597,6 @@ class _Producer:
                 from ..plugin.stage import CaptureClass  # noqa: PLC0415 - keep import cheap
                 host = CaptureClass(cc) is CaptureClass.HOST
             self.capturable = not host
-            self.legacy_stream = False
             self.host_ids = ()
             self.name = type(prod).__name__
         self.default_stream = getattr(prod, "default_stream", None)
@@ -1009,7 +1007,7 @@ class Course:
         # A Course over a pipeline with HOST stages runs eagerly (it does not segment)
         # and refuses a caller's capture naming them.
         self._runner = GraphRunner(
-            self._device, capturable=pinfo.capturable, legacy_stream=pinfo.legacy_stream,
+            self._device, capturable=pinfo.capturable,
             default_stream=default_stream, owner=self, name=label,
             _host_ids=pinfo.host_ids)
         # The cold attach phase (allocation + readback-based sizing; never inside a
@@ -1666,26 +1664,25 @@ class Course:
                     "seeds=PerEnvSeededRNG(...) for the 0.x reseed-in-place behaviour")
         ctx = self._ctx(stream)
         # The reseed and the regeneration form one unit: same stream, and the same
-        # serialization as the regeneration itself (see GraphRunner.serial).
-        with self._runner.serial(ctx):
-            # Raise (before the reseed launches) where regenerate() would.
-            self._runner.check_record(ctx)
-            self._ready(ctx)
-            if self.rng is not None:
-                if isinstance(seeds, wp.array):
-                    self.rng.set_seeds_warp(seeds, None, ctx=ctx)
-                else:
-                    ctx.launch(_seed_range_k, self._E,
-                               [_wrap_int32(int(seeds)), self._reseed_buf])
-                    self.rng.set_seeds_warp(self._reseed_buf, None, ctx=ctx)
-                state.reset_epoch(ctx=ctx)
+        # context as the regeneration itself.
+        # Raise (before the reseed launches) where regenerate() would.
+        self._runner.check_record(ctx)
+        self._ready(ctx)
+        if self.rng is not None:
+            if isinstance(seeds, wp.array):
+                self.rng.set_seeds_warp(seeds, None, ctx=ctx)
             else:
-                if not isinstance(seeds, wp.array):
-                    ctx.launch(_seed_range_k, self._E,
-                               [_wrap_int32(int(seeds)), self._reseed_buf])
-                    seeds = self._reseed_buf
-                state.set(seeds, ctx=ctx)
-            self._runner.run(self._enqueue_regenerate, stream=ctx.stream, sync=sync)
+                ctx.launch(_seed_range_k, self._E,
+                           [_wrap_int32(int(seeds)), self._reseed_buf])
+                self.rng.set_seeds_warp(self._reseed_buf, None, ctx=ctx)
+            state.reset_epoch(ctx=ctx)
+        else:
+            if not isinstance(seeds, wp.array):
+                ctx.launch(_seed_range_k, self._E,
+                           [_wrap_int32(int(seeds)), self._reseed_buf])
+                seeds = self._reseed_buf
+            state.set(seeds, ctx=ctx)
+        self._runner.run(self._enqueue_regenerate, stream=ctx.stream, sync=sync)
         if isinstance(seeds, wp.array):
             _compat.anchor(ctx.stream, seeds)     # recorded: the graph reads it
         return self.result
@@ -1758,7 +1755,6 @@ class Course:
         ctx = _resolve_ctx(ctx, self._device)
         self._by_name["collision"].on_generate(ctx, None)
 
-    set_capturing = staticmethod(set_capturing)
 
 
 # ---------------------------------------------------------------------------------------

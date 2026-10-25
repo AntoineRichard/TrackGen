@@ -1178,10 +1178,6 @@ def test_op_allocates_nothing(name):
 
 
 def test_no_alloc_tripwire_positive_control():
-    from track_gen._src import warp_pipeline
-    E, n = 2, 8
-    loops = v2(np.stack([_circle(n)] * E))
-    out, cnt = ev2(E * n), i32([n] * E)
     with pytest.raises(AssertionError, match="allocation|wp.empty"):
         with _no_alloc():
-            warp_pipeline.resample_uniform(loops, out, n, cnt, device=DEV)
+            wp.empty(8, dtype=wp.float32, device=DEV)

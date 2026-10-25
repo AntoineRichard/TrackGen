@@ -344,7 +344,7 @@ HOST stages and segments
 ------------------------
 
 A stage that must read device data back or run host control flow declares ``capture =
-CaptureClass.HOST``; a legacy ``GeneratorSpec`` (or the deprecated ``GateGeneratorSpec``)
+CaptureClass.HOST``; a ``GeneratorSpec``
 registered with ``capturable=False`` is a ``HOST`` generator too. A ``HOST`` stage runs
 eagerly, outside every capture, on every call. It no longer makes the whole pipeline
 eager: the planner groups the stages into **segments**, maximal runs of consecutive
@@ -409,59 +409,12 @@ syncs run with the thread's capture mode relaxed. A direct ``.numpy()`` or
 ``wp.synchronize*()`` in a ``HOST`` stage allocates or syncs in the default mode, and can
 invalidate another thread's capture in torch's default global mode.
 
-Legacy plugin generators
-~~~~~~~~~~~~~~~~~~~~~~~~
+Plugin launch contexts
+~~~~~~~~~~~~~~~~~~~~~~
 
-A plugin generator that does not set ``accepts_ctx=True`` (the legacy ABI) issues its own
-``wp.launch`` calls on Warp's current stream rather than on the stream the call resolved.
-Its self-graph is therefore captured on Warp's current stream, behind a process-wide
-lock. Outside a capture, when a call resolves another stream (``stream=``, a constructor
-``stream=``, an ambient scope), the whole body runs on Warp's current stream instead,
-ordered after and before the resolved stream with events, so the plugin's launches and the
-library's stages stay ordered. Recording it into your graph requires the capture stream to
-BE Warp's current stream; otherwise the call raises ``LegacyPluginStreamError`` before any
-launch. Capture Warp's current stream (a plain ``wp.ScopedCapture(device)``), or make your
-capture stream current before the capture begins. With ``torch.cuda.graph``, pass it that
-explicit stream (a plain ``torch.cuda.graph(g)`` captures on torch's internal stream, which
-you cannot make current beforehand):
-
-.. snippet: group=legacy-torch cuda requires=upgrading/from-0.1#common,upgrading/from-0.1#reg-01
-
-.. snippet: setup
-
-   gen = TrackGenerator(TrackGenConfig(generator="wobbly", num_envs=E, device=device))
-
-.. code-block:: python
-
-   import torch
-
-   s = torch.cuda.Stream()
-   ws = wp.stream_from_torch(s)        # one Warp wrapper of s, created once and kept
-   g = torch.cuda.CUDAGraph()
-   with wp.ScopedStream(ws):                         # Warp's current stream is now s
-       with torch.cuda.graph(g, stream=s):           # torch captures that same stream
-           track = gen.generate()                    # recorded; returns the Track
-
-.. snippet: after
-
-   g.replay()
-   torch.cuda.synchronize()
-   assert track.valid.numpy().all()
-
-Create the wrapper once and keep it alive for the life of the process, not a fresh
-``wp.stream_from_torch(s)`` per capture: when a wrapper of a torch stream is
-garbage-collected, Warp unregisters the stream handle for the whole process, which breaks
-a later capture on the same handle (:ref:`the same warning <torch-stream-wrapper>` in the
-CUDA graphs tutorial).
-
-Every shipped generator sets ``accepts_ctx=True`` and has neither restriction.
-
-Inside ``torch.cuda.graph``, adoption reuses the ``wp.Stream`` that already wraps torch's
-capture stream (Warp's current stream, as in the recipe above, or the stream an open Warp
-capture was started on), and otherwise one wrapper per torch stream kept for the process.
-It never creates a short-lived wrapper per call: dropping one would unregister the handle
-from Warp for the whole process, breaking an open Warp capture on it and Warp's current
-stream.
+Every plugin generator emits device work through the call's launch context. A
+``GeneratorSpec`` generate callable must accept ``ctx=``; a Stage returns
+``enqueue(ctx)``. This lets a caller record either form on its own stream.
 
 Buffer reuse
 ------------

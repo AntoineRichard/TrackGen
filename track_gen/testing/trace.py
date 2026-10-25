@@ -271,10 +271,10 @@ def _shared_specs() -> tuple:
     """The registry's spec types: one spec object serves every generator built from
     it, so nothing reached through it belongs to one producer."""
     try:
-        from ..plugin import GateGeneratorSpec, GeneratorSpec  # noqa: PLC0415
+        from ..plugin import GeneratorSpec  # noqa: PLC0415
     except ImportError:  # pragma: no cover - a partial install
         return ()
-    return (GeneratorSpec, GateGeneratorSpec)
+    return (GeneratorSpec,)
 
 
 def buffers_of(*objects, root: "str | Sequence[str] | None" = None,
@@ -284,7 +284,7 @@ def buffers_of(*objects, root: "str | Sequence[str] | None" = None,
     sequences, the variables a function closes over and the object a bound method is
     bound to, up to ``max_depth`` levels. Warp objects other than arrays and structs
     (devices, streams, graphs, kernels), modules, types, a function's globals, numpy
-    data and registry specs (``GeneratorSpec`` / ``GateGeneratorSpec``, shared by every
+    data and registry specs (``GeneratorSpec``, shared by every
     generator built from them) are not entered.
 
     ``buffers_of(gen)`` collects a ``TrackGenerator``'s / ``GateGenerator``'s result,

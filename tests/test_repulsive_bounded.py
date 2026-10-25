@@ -10,6 +10,7 @@ and the legacy entry ``generate_repulsive_warp`` (also with a generate-time conf
 stall window differs from the scratch's) matches the full loop.
 """
 from __future__ import annotations
+from tests._reference_generators import generate_raw
 
 import random
 
@@ -89,7 +90,7 @@ def test_repulsive_is_a_bounded_stage():
 
 
 def test_the_schedule_at_the_defaults():
-    s = rep.repulsive_alloc_scratch(TrackGenConfig(generator="repulsive", device=DEV,
+    s = rep._alloc_repulsive_scratch(TrackGenConfig(generator="repulsive", device=DEV,
                                                    num_envs=1))
     assert (s.n_iters, s.stage_starts) == (269, [0, 59, 117])
     F = rep._first_check(s.stage_starts, 16)
@@ -144,10 +145,10 @@ def test_the_legacy_entry_equals_the_stage():
     gen = _gen(seeds, **_SMALL)
     stage, _ = _run(gen)
     cfg = TrackGenConfig(generator="repulsive", device=DEV, num_envs=8, **_SMALL)
-    s = rep.repulsive_alloc_scratch(cfg)
+    s = rep._alloc_repulsive_scratch(cfg)
     out = wp.zeros(8 * 64, dtype=wp.vec2f, device=DEV)
     valid = wp.zeros(8, dtype=wp.int32, device=DEV)
-    rep.generate_repulsive_warp(wp.array(seeds, dtype=wp.int32, device=DEV), cfg, out,
+    generate_raw("repulsive", wp.array(seeds, dtype=wp.int32, device=DEV), cfg, out,
                                 valid, s)
     assert out.numpy().reshape(8, -1).tobytes() == stage["raw"].tobytes()
     assert (valid.numpy() == 1).all()
@@ -164,15 +165,15 @@ def test_the_legacy_entry_with_a_mismatched_stall_window(stall_window):
     alloc_cfg = TrackGenConfig(generator="repulsive", device=DEV, num_envs=E, **_FREEZE)
     gen_cfg = TrackGenConfig(generator="repulsive", device=DEV, num_envs=E,
                              repulsive_stall_window=stall_window, **_FREEZE)
-    s = rep.repulsive_alloc_scratch(alloc_cfg)
+    s = rep._alloc_repulsive_scratch(alloc_cfg)
     out = wp.zeros(E * 64, dtype=wp.vec2f, device=DEV)
     valid = wp.zeros(E, dtype=wp.int32, device=DEV)
-    rep.generate_repulsive_warp(seeds, alloc_cfg, out, valid, s)
+    generate_raw("repulsive", seeds, alloc_cfg, out, valid, s)
     assert s.frozen.numpy().all() and int(s.active.numpy()[0]) == 0   # all frozen
     results = {}
     for mode in (None, "unroll"):
         with _force_lowering(mode), _probe_loops() as recs:
-            rep.generate_repulsive_warp(seeds, gen_cfg, out, valid, s)
+            generate_raw("repulsive", seeds, gen_cfg, out, valid, s)
         results[mode] = out.numpy().tobytes()
         (rec,) = recs
         assert rec.first_check == rep._first_check(s.stage_starts, stall_window)
