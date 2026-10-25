@@ -673,7 +673,7 @@ decides the crossing check per env (below). ``GateSequence.fail_mask`` is the fi
      - a chord's ``|dz| / ds`` exceeds ``z_valid_grade`` (only when it is ``> 0``)
    * - 6-15
      - reserved
-     - TrackGen's future built-in gate checks
+     - Reserved built-in gate-check range
    * - 16-30
      - plugin checks
      - assigned by ``StageBuilder.fail_bit()``, in pipeline order (as for tracks)

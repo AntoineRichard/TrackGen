@@ -21,6 +21,6 @@ def test_reader_pages_do_not_link_to_archived_upgrade_labels():
         if page.relative_to(DOCS).parts[0] in EXCLUDED:
             continue
         for i,line in enumerate(page.read_text().splitlines(),1):
-            if re.search(r":ref:`[^`]*upgrading-|historical measurements|pre-0\.3|Coming from 0\.1",line,re.I):
+            if re.search(r":ref:`[^`]*upgrading-|historical measurements|pre-0\.3|Coming from 0\.1|(?:scheduled|arrives) after 1\.0|Plugins written before Params existed",line,re.I):
                 bad.append(f"{page.relative_to(DOCS)}:{i}: {line}")
     assert not bad, "\n".join(bad)

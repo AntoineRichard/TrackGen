@@ -127,6 +127,47 @@ def render_import(path):
             "input_formula":"x=2*(1+.12*cos(3t))*cos(t), y=1.25*(1+.12*cos(3t))*sin(t), t=2*pi*i/64"}
 
 
+def render_gate_course(path):
+    """A finished 3D course: square openings from actual positions and quaternions."""
+    from track_gen import GateGenerator
+    from track_gen.pipeline import presets
+    params={"polar_num_knots":10,"polar_radial_jitter":.25,"polar_angular_jitter":.12}
+    elevation={"z_min":.2,"z_max":1.2,"z_base":.7,"z_noise_amplitude":.4,
+               "z_noise_harmonics":2}
+    config=dict(num_envs=1,device="cpu",generator="polar",generator_params=params,
+                size=2.,gate_width=.25,gate_radius=.05,gate_align="full_tangent",
+                elevation=("noise",elevation))
+    gates=GateGenerator(presets.gates(**config),seeds=23).generate()
+    assert gates.valid.numpy()[0] == 1
+    n=int(gates.count.numpy()[0]);pos=gates.position.numpy()[:n]
+    quat=gates.orientation.numpy()[:n];half=gates.half_size.numpy()[:n]
+    assert n == 10 and np.isfinite(pos).all() and np.isfinite(quat).all()
+    rotate=lambda q,v: v+2*np.cross(q[:3],np.cross(q[:3],v)+q[3]*v)
+    frames=[]
+    for c,q,h in zip(pos,quat,half):
+        left=rotate(q,np.array([0.,1.,0.]));up=rotate(q,np.array([0.,0.,1.]))
+        frame=np.array([c+h*(u*left+v*up) for u,v in [(-1,-1),(1,-1),(1,1),(-1,1),(-1,-1)]])
+        frames.append(frame)
+    fig=plt.figure(figsize=(10,5.8));ax=fig.add_subplot(111,projection="3d")
+    ordered=np.vstack((pos,pos[0]));ax.plot(*ordered.T,color="#9aa9bb",lw=1.2,ls="--")
+    for j,frame in enumerate(frames):
+        ax.plot(*frame.T,color=AMBER if j==0 else TEAL,lw=2.6)
+        ax.text(*(pos[j]+np.array([0.,0.,.17])),str(j),fontsize=9,color=INK)
+    all_points=np.concatenate(frames);lo=all_points.min(axis=0);hi=all_points.max(axis=0)
+    span=hi-lo;pad=.12*max(span)
+    ax.set(xlim=(lo[0]-pad,hi[0]+pad),ylim=(lo[1]-pad,hi[1]+pad),
+           zlim=(0,hi[2]+pad),xlabel="x [units]",ylabel="y [units]",zlabel="z [units]")
+    ax.set_box_aspect((span[0]+2*pad,span[1]+2*pad,hi[2]+pad))
+    ax.view_init(elev=24,azim=-62)
+    ax.set_title("A finished 3D gate course",fontsize=17,weight="bold",color=INK,pad=8)
+    ax.tick_params(labelsize=8)
+    fig.text(.5,.035,"Actual GateSequence poses · 10 gates · seed 23 · valid · dashed line shows passing order",
+             ha="center",fontsize=10,color=INK)
+    fig.tight_layout(rect=(0,.07,1,1));_save(fig,path)
+    return {"seed":23,"valid":1,"count":n,"config":config,
+            "render":"Square openings from position/orientation/half_size; line shows order, not a spline."}
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out-dir",type=Path,required=True)
@@ -134,10 +175,11 @@ def main():
     plt.rcParams.update({"font.family":"DejaVu Sans","text.color":INK})
     render_layout(out/"data-layout.png");render_lifecycle(out/"data-lifecycle.png")
     record=render_import(out/"data-import.png")
+    gate_record=render_gate_course(out/"data-gate-course.png")
     import track_gen
     (out/"data-manifest.json").write_text(json.dumps({"source_version":track_gen.__version__,
         "command":"python -m viz.render_data_guide --out-dir OUT","schematics":["data-layout.png","data-lifecycle.png"],
-        "import":record},indent=2)+"\n")
+        "import":record,"gate_course":gate_record},indent=2)+"\n")
     print(out)
 
 

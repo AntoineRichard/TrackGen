@@ -8,11 +8,27 @@ the architecture and the roadmap, and `CHANGELOG.md` for what shipped.
 
 ## State (2026-10-25)
 - `main` = **v0.2.0** (released; GitHub release v0.2.0). It is the v2 refactor, roadmap
-  PR0–PR15b; see the CHANGELOG and `docs/upgrading/from-0.1.rst`.
+  PR0–PR15b; see the CHANGELOG and `docs/library-readiness/archive/upgrading/from-0.1.rst`.
 - `v3` = the 0.3 line, version `0.3.0rc1`. Roadmap PR16 cleanup is implemented in
   four dev milestones. Draft PR #4 prepares the release candidate; downstream racing-
   repository validation and the user's explicit approval are required before 0.3.0.
   1.0 is a later milestone.
+
+## Documentation work and release progress
+- `v0.3.0rc1` is commit `4664986f6097b62e4f6557da925de0f9210c63fe` on `v3`.
+  Draft PR #4 is open. Both CPU CI lanes, strict docs and linkcheck passed.
+  The exact tag archive passed 756 CUDA tests and 4,270 full-suite tests on spark-home
+  (four optional Gradio skips); 210 full-generator + 4,800 gate arrays match freshly
+  rebuilt dev4 snapshots byte for byte. Release steps 1–2 below are complete.
+- Release step 3 is pending: the user's racing repos must validate `@v0.3.0rc1` and the
+  user must explicitly approve the final release. Do not restart the release sequence
+  or publish 0.3.0 while waiting.
+- The approved reader-documentation overhaul is on `codex/racing-docs`, based on the RC.
+  Its design and execution plan are in `docs/superpowers/`. Historical reader pages are
+  archived under `docs/library-readiness/archive/`, excluded from the site; internal
+  design/handoff/roadmap records remain. Preserve this published-only history scope.
+  The public site describes current behavior; release notes link the archived migration
+  guide on GitHub. Source docstring edits must not change executable runtime behavior.
 
 ## User decisions for 0.3 (binding; they override any older doc that says otherwise)
 Not production software: break things cleanly, with no compatibility shims or deprecation
@@ -37,7 +53,7 @@ cycles.
    required.
 5. Dev releases are `0.3.0.devN` tags on `v3`. 0.3.0 ships later, after an rc that the
    user's racing repos test. List every break in the CHANGELOG and in a new
-   `docs/upgrading/from-0.2.rst`.
+   `docs/library-readiness/archive/upgrading/from-0.2.rst`.
 
 Inputs: `docs/library-readiness/handoff-0.3/`:
 - `pr16-spec.md`;
@@ -104,7 +120,7 @@ old `workstation` host is dead.
 1. **CI on `v3`.** The test workflow runs only on pull requests and on pushes to `main`, so
    `v3` has never run on GitHub CI. Open a DRAFT pull request `v3` -> `main` with
    `gh pr create --draft --base main --head v3`. The body summarises dev1-dev4, links
-   `docs/upgrading/from-0.2.rst`, and lists the test plan. The PR runs:
+   `docs/library-readiness/archive/upgrading/from-0.2.rst`, and lists the test plan. The PR runs:
    - the CPU lanes on Linux x86_64 (Warp 1.18.0 and latest);
    - the docs build and the linkcheck.
 

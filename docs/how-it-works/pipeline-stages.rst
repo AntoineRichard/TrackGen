@@ -994,7 +994,7 @@ check, else derived by the commit.
      - ``N_max`` cut the loop (``Track.truncated``)
    * - 8-15
      - reserved
-     - TrackGen's future built-in checks
+     - Reserved built-in check range
    * - 16-30
      - plugin checks
      - assigned by ``StageBuilder.fail_bit()``, in pipeline order

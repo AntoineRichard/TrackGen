@@ -156,10 +156,9 @@ and ``describe()`` reports its schema. The class may have static fields only:
 ``registry.add`` rejects a dynamic field, which needs a Stage's ``b.param``. The shared
 fields (``num_envs``, ``num_points``, ``scale``, ``device``, ...) stay on the config.
 
-Plugins written before Params existed read their knobs from a ``TrackGenConfig``
-subclass (``getattr(config, "acme_lobes", 3)``). That still works, but it is no longer
-needed: move the knobs to a Params class and override ``from_legacy`` to read the old
-fields, so the subclass configs your users already have resolve to the same values.
+A custom ``TrackGenConfig`` subclass can carry extra fields. Map them into typed
+settings with ``Params.from_legacy`` when needed; a plain Params mapping is enough
+when callers pass ``generator_params`` directly.
 Registry-wide tools (``benchmarks/compare_generators.py``, ``viz/param_explorer.py``)
 build a plain ``TrackGenConfig`` for every registered generator, so a generator that
 needs a config subclass must still fall back to defaults there; a Params class needs

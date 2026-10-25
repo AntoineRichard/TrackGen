@@ -34,6 +34,14 @@ checkpoints and progress on CPU or CUDA.
    :ref:`generators-overview`; each generator guide shows its centerlines,
    construction steps and settings.
 
+.. figure:: assets/racing/data-gate-course.png
+   :alt: A finished 3D drone course with ten square gate openings, their actual poses and passing order.
+
+   Drone racing uses gate poses and openings. This selected valid course has a non-flat
+   elevation profile and full-tangent alignment; the dashed line connects the centers
+   in passing order. :ref:`quickstart-gates` starts with a small batch, and
+   :doc:`gates-3d` explains the 3D controls.
+
 Find your next step
 -------------------
 

@@ -615,10 +615,8 @@ contract, checked before anything runs (no kernel takes it):
 - ``BatchSpec.closed`` must be a ``bool`` (``PlanError: BatchSpec.closed must be a bool,
   got 1``). ``closed=False`` is refused right after the spec's shape checks, before any
   generator is bound or any ``Params.validate`` runs, naming the stages that support
-  closed loops only (``PlanError: BatchSpec.closed=False: open tracks are not supported
-  in 0.x: stages 'generator' (bezier), 'resample' (resample.constant_spacing), ...
-  support closed loops only (Stage.topology='closed'); open topology arrives after
-  1.0``). A pipeline whose stages all declare ``topology="any"`` is refused too.
+  closed loops only. This raises ``PlanError`` even when every stage declares
+  ``topology="any"``: the pipeline itself requires a closed loop.
 - Stages declare ``Stage.topology`` (``"closed"`` or ``"any"``); every built-in is
   ``"closed"``, and a ``GeneratorSpec`` counts as ``"closed"``.
 - The utilities that read a result declare ``topology = "closed"`` as a class
@@ -627,7 +625,6 @@ contract, checked before anything runs (no kernel takes it):
   (topology='closed'); its source has layout.closed=False``). ``copy_from`` refuses to
   copy across topologies (the layouts differ).
 
-Open tracks are scheduled after 1.0.
 
 .. _invalid-envs:
 

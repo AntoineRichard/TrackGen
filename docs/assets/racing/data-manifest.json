@@ -26,5 +26,35 @@
       "gate_width": 0.15
     },
     "input_formula": "x=2*(1+.12*cos(3t))*cos(t), y=1.25*(1+.12*cos(3t))*sin(t), t=2*pi*i/64"
+  },
+  "gate_course": {
+    "seed": 23,
+    "valid": 1,
+    "count": 10,
+    "config": {
+      "num_envs": 1,
+      "device": "cpu",
+      "generator": "polar",
+      "generator_params": {
+        "polar_num_knots": 10,
+        "polar_radial_jitter": 0.25,
+        "polar_angular_jitter": 0.12
+      },
+      "size": 2.0,
+      "gate_width": 0.25,
+      "gate_radius": 0.05,
+      "gate_align": "full_tangent",
+      "elevation": [
+        "noise",
+        {
+          "z_min": 0.2,
+          "z_max": 1.2,
+          "z_base": 0.7,
+          "z_noise_amplitude": 0.4,
+          "z_noise_harmonics": 2
+        }
+      ]
+    },
+    "render": "Square openings from position/orientation/half_size; line shows order, not a spline."
   }
 }
