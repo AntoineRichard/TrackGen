@@ -59,6 +59,12 @@ The separate auto-spacing review finding #4 remains deferred.
   CI now allows 45 minutes for the whole CPU job to cover runner variation; the
   per-example 120-second guard and the complete test selection remain unchanged.
   Normal CI on the final candidate head is still required before tagging.
+- A focused uncaptured Linux diagnostic confirmed that the eight-track unconditional
+  Repulsive graph example exceeded the CPU snippet guard during `wp.capture_launch`.
+  The teaching example now uses one environment; its capture/replay operations, full
+  CPU/CUDA test coverage and 120-second group guard are preserved. No library defaults,
+  runtime source or numerical references changed. Revalidate the final head before
+  tagging; keep the diagnostic and first-attempt CI results distinct from final CI.
 - The approved reader overhaul is integrated. Historical reader pages live under the
   excluded `docs/library-readiness/archive/`; keep internal design/handoff/roadmap
   records. The public site explains current racing usage, all six generators, Course,

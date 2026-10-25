@@ -136,7 +136,7 @@ inside ``unconditional()``:
    from track_gen.exec import unconditional
    from track_gen.pipeline import presets
 
-   gen = TrackGenerator(presets.track(num_envs=8, device="cuda:0", generator="repulsive"))
+   gen = TrackGenerator(presets.track(num_envs=1, device="cuda:0", generator="repulsive"))
    with wp.ScopedCapture(device="cuda:0") as cap:
        with unconditional():           # no conditional node in this recording
            gen.generate()              # repulsive: every window recorded
