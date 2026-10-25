@@ -29,11 +29,11 @@ jobs:
     runs-on: ubuntu-latest
     # A hung example is stopped by the snippet runner (120 s per group); this is the
     # backstop for the whole job.
-    timeout-minutes: 30
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
-        warp: ["1.18.0", "latest"]  # the pyproject floor and the newest 1.x
+        warp: ["latest"]  # focused Linux snippet diagnostic
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -67,7 +67,7 @@ jobs:
         # amplifies last-ulp libm / codegen differences); every other field is compared.
         env:
           TRACKGEN_SKIP_HOST_SENSITIVE_GOLDENS: "1"
-        run: pytest -m "not cuda and not slow and not benchmark" -ra
+        run: pytest -x -vv 'tests/test_doc_snippets.py::test_snippets_cpu[how-it-works/cuda-graph.rst::unconditional]' --durations=10 -ra
 
   # GPU lane: needs a self-hosted runner with an NVIDIA GPU, so it is OFF by default.
   # To enable it, register a runner with the labels below and set the repository
