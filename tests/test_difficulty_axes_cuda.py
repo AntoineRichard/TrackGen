@@ -1179,17 +1179,20 @@ def test_out_of_range_size_arrays_are_clamped_at_use(case):
                     f"{case}: per-env {per_env.tolist()} vs the scalar bound runs")
 
 
-def test_repulsive_size_scales_its_raw_loop_exactly():
-    """Repulsive's ``size`` multiplies its final copy only (the growth does not see it):
-    the raw loop (``raw.xy``) of env ``e`` at size ``s_e`` is ``f32(raw(1) * s_e)`` for a
-    finite vector and the size-1 vector otherwise (a NaN stays NaN: ``isnan`` on CUDA),
-    and size-1 envs are the default bytes. The device check of ``_copy_sized_k`` end to
-    end."""
+def test_repulsive_size_reserves_width_and_copies_the_current_unit_loop():
+    """Absolute width participates in growth; the final copy scales THAT unit loop.
+
+    Size1 retains default bytes. Per-env width margins and analytic barrier frames
+    must follow the same sizes, without claiming a size-independent optimizer.
+    The generic per-env/scalar-run tests above cover whole-result equivalence.
+    """
     kw = dict(generator="repulsive", **_REPULSIVE_SMALL)
     base = _build(TrackGenerator, _track_spec(kw))
     base.enqueue()
     wp.synchronize()
     raw1 = base.program.tap("raw.xy").numpy().reshape(E, -1, 2).copy()
+    base_scratch = base._scratch.gen.scratch
+    margin1 = base_scratch["scratch:generator/margin"].numpy().copy()
     sizes = _per_env(_SIZES_REPULSIVE)
     gen = _build(TrackGenerator, _track_spec(kw))
     gen.params["generator"].set("size", _dev(sizes))
@@ -1197,15 +1200,26 @@ def test_repulsive_size_scales_its_raw_loop_exactly():
     gen.enqueue()
     wp.synchronize()
     raws = gen.program.tap("raw.xy").numpy().reshape(E, -1, 2)
+    scratch = gen._scratch.gen.scratch
+    units = scratch["scratch:generator/center"].numpy().reshape(E, -1, 2)
+    margins = scratch["scratch:generator/margin"].numpy()
+    np.testing.assert_allclose(margins, margin1/sizes, rtol=2e-7, atol=0.)
+    _assert_bits(gen.program.tap("gen.repulsive.barriers").numpy()["size"], sizes,
+                 "repulsive: analytic barrier frames use the live size")
     assert np.isfinite(raw1).any(), "repulsive produced no finite raw point"
+    changed = False
     for e in range(E):
-        v = raw1[e]
-        fin = np.all(np.isfinite(v), axis=1)
-        with np.errstate(over="ignore", invalid="ignore"):
-            scaled = (v * np.float32(sizes[e])).astype(np.float32)
-        want = np.where(fin[:, None], v if sizes[e] == np.float32(1.0) else scaled, v)
-        _assert_bits(raws[e], want.astype(np.float32),
-                     f"repulsive: env {e} raw.xy at size {sizes[e]}", nan_ok=True)
+        v = units[e]
+        finite = np.all(np.isfinite(v), axis=1)
+        scaled = (v * np.float32(sizes[e])).astype(np.float32)
+        expected = np.where(finite[:, None], scaled, v)
+        _assert_bits(raws[e], expected.astype(np.float32),
+                     f"repulsive: env {e} copies its own constrained unit loop", nan_ok=True)
+        if sizes[e] == np.float32(1.):
+            _assert_bits(raws[e], raw1[e], f"repulsive: size1 env {e} keeps default bytes")
+        else:
+            changed |= units[e].tobytes() != raw1[e].tobytes()
+    assert changed, "road-width reservation did not affect any non-unit-size growth"
 
 
 # ---------------------------------------------------------------------------------------
