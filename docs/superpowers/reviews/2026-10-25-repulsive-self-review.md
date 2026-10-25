@@ -106,3 +106,20 @@ kernels by only about 10%; parallel evaluation/search is being implemented
 and must receive its own focused proof and full integration validation.
 The c017fd0 candidate snapshot was deliberately stopped after this discovery;
 no passing complete snapshot comparison or full GPU suite is claimed.
+
+
+## Parallel execution review
+
+The performance fix at `58de72f` received a fresh independent review against
+`0d14a23`, with no actionable findings. It covered the complete objective,
+FP64 association budget, swept geometry, masks and frozen/no-op/failure
+paths, first-accepted trial retention, in-place writes, preallocation, stage
+scratch naming/lifetimes and live context-driven wiring. The six sequential
+oracle functions moved into tests are AST-identical to their prior bodies.
+
+Exact-archive isolated helpers passed 21 CUDA tests; the wired selection
+passed 102. The complete 64-row run retained all geometry and diagnostic
+bytes from the corrected serial reference, reducing warm time from 188.255
+to 3.464 seconds. The 1,024-row run measured 12.679 seconds and retained
+its first 64 raw/valid rows byte-for-byte. These scoped results do not
+substitute for the pending full validation lanes and snapshot comparisons.
