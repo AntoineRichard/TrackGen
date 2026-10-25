@@ -1,0 +1,530 @@
+{
+  "seed_start": 0,
+  "batch": 24,
+  "on_invalid": "keep",
+  "device": "cpu",
+  "rounds": 16,
+  "config": {
+    "generator": "bezier",
+    "device": "cpu",
+    "num_envs": 24,
+    "min_gates": 4,
+    "max_gates": 32,
+    "gate_radius": 0.13,
+    "gate_solve_iters": 16,
+    "gate_width": 0.16,
+    "gate_ordering": null,
+    "min_num_points": 9,
+    "max_num_points": 13,
+    "min_point_distance": 0.05,
+    "scale": 1.0,
+    "polar_num_knots": 12,
+    "polar_radial_jitter": 0.6,
+    "polar_angular_jitter": 0.3,
+    "voronoi_num_sites": 256,
+    "voronoi_site_layout": "void_ring",
+    "voronoi_control_points": 18,
+    "voronoi_radial_variation": 0.62,
+    "voronoi_angular_jitter": 0.08,
+    "checkpoint_count": 12,
+    "checkpoint_radius_min_frac": 0.33,
+    "checkpoint_angle_jitter": 0.55,
+    "z_profile": "flat",
+    "z_base": 0.0,
+    "z_min": 0.0,
+    "z_max": 0.0,
+    "z_max_step": 0.0,
+    "z_noise_amplitude": 0.0,
+    "z_noise_harmonics": 3,
+    "z_valid_grade": 0.0,
+    "gate_align": "yaw_only",
+    "size": 1.0,
+    "generator_params": null,
+    "on_invalid": "keep"
+  },
+  "prefix_verified": true,
+  "source_commit": "66af09b1ec9a0cc4476b901b3feb9a340100db40",
+  "selection": "smallest raw pair distances among final-valid examples, plus final-invalid example when available",
+  "selected_envs": [
+    3,
+    0,
+    9
+  ],
+  "fps": 3,
+  "selected_seeds": [
+    3,
+    0,
+    9
+  ],
+  "frames": [
+    {
+      "phase": "round",
+      "iteration": 0,
+      "envs": [
+        {
+          "env": 3,
+          "count": 11,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.035616450011730194
+        },
+        {
+          "env": 0,
+          "count": 13,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.05496048927307129
+        },
+        {
+          "env": 9,
+          "count": 10,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.15958938002586365
+        }
+      ]
+    },
+    {
+      "phase": "round",
+      "iteration": 1,
+      "envs": [
+        {
+          "env": 3,
+          "count": 11,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.19681881368160248
+        },
+        {
+          "env": 0,
+          "count": 13,
+          "valid": 0,
+          "fail_mask": 24,
+          "min_distance": 0.08673687279224396
+        },
+        {
+          "env": 9,
+          "count": 10,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.20783531665802002
+        }
+      ]
+    },
+    {
+      "phase": "round",
+      "iteration": 2,
+      "envs": [
+        {
+          "env": 3,
+          "count": 11,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.24960525333881378
+        },
+        {
+          "env": 0,
+          "count": 13,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.2212362140417099
+        },
+        {
+          "env": 9,
+          "count": 10,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.2446819245815277
+        }
+      ]
+    },
+    {
+      "phase": "round",
+      "iteration": 3,
+      "envs": [
+        {
+          "env": 3,
+          "count": 11,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.2576420307159424
+        },
+        {
+          "env": 0,
+          "count": 13,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.25005409121513367
+        },
+        {
+          "env": 9,
+          "count": 10,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.25511524081230164
+        }
+      ]
+    },
+    {
+      "phase": "round",
+      "iteration": 4,
+      "envs": [
+        {
+          "env": 3,
+          "count": 11,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.25947484374046326
+        },
+        {
+          "env": 0,
+          "count": 13,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.2581155300140381
+        },
+        {
+          "env": 9,
+          "count": 10,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.257345974445343
+        }
+      ]
+    },
+    {
+      "phase": "round",
+      "iteration": 5,
+      "envs": [
+        {
+          "env": 3,
+          "count": 11,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.2598835229873657
+        },
+        {
+          "env": 0,
+          "count": 13,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.25947925448417664
+        },
+        {
+          "env": 9,
+          "count": 10,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.2585083246231079
+        }
+      ]
+    },
+    {
+      "phase": "round",
+      "iteration": 6,
+      "envs": [
+        {
+          "env": 3,
+          "count": 11,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.2599741816520691
+        },
+        {
+          "env": 0,
+          "count": 13,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.25985774397850037
+        },
+        {
+          "env": 9,
+          "count": 10,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.25914445519447327
+        }
+      ]
+    },
+    {
+      "phase": "round",
+      "iteration": 7,
+      "envs": [
+        {
+          "env": 3,
+          "count": 11,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.2599942684173584
+        },
+        {
+          "env": 0,
+          "count": 13,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.2599611282348633
+        },
+        {
+          "env": 9,
+          "count": 10,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.2595037519931793
+        }
+      ]
+    },
+    {
+      "phase": "round",
+      "iteration": 8,
+      "envs": [
+        {
+          "env": 3,
+          "count": 11,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 0.25999873876571655
+        },
+        {
+          "env": 0,
+          "count": 13,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.2599894404411316
+        },
+        {
+          "env": 9,
+          "count": 10,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.25971055030822754
+        }
+      ]
+    },
+    {
+      "phase": "round",
+      "iteration": 9,
+      "envs": [
+        {
+          "env": 3,
+          "count": 11,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 0.25999969244003296
+        },
+        {
+          "env": 0,
+          "count": 13,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.25999709963798523
+        },
+        {
+          "env": 9,
+          "count": 10,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.25983116030693054
+        }
+      ]
+    },
+    {
+      "phase": "round",
+      "iteration": 10,
+      "envs": [
+        {
+          "env": 3,
+          "count": 11,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 0.25999993085861206
+        },
+        {
+          "env": 0,
+          "count": 13,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 0.25999921560287476
+        },
+        {
+          "env": 9,
+          "count": 10,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.2599015235900879
+        }
+      ]
+    },
+    {
+      "phase": "round",
+      "iteration": 11,
+      "envs": [
+        {
+          "env": 3,
+          "count": 11,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 0.25999993085861206
+        },
+        {
+          "env": 0,
+          "count": 13,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 0.2599997818470001
+        },
+        {
+          "env": 9,
+          "count": 10,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.25994256138801575
+        }
+      ]
+    },
+    {
+      "phase": "round",
+      "iteration": 12,
+      "envs": [
+        {
+          "env": 3,
+          "count": 11,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 0.25999993085861206
+        },
+        {
+          "env": 0,
+          "count": 13,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 0.25999993085861206
+        },
+        {
+          "env": 9,
+          "count": 10,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.25996649265289307
+        }
+      ]
+    },
+    {
+      "phase": "round",
+      "iteration": 13,
+      "envs": [
+        {
+          "env": 3,
+          "count": 11,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 0.25999993085861206
+        },
+        {
+          "env": 0,
+          "count": 13,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 0.25999996066093445
+        },
+        {
+          "env": 9,
+          "count": 10,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.2599804699420929
+        }
+      ]
+    },
+    {
+      "phase": "round",
+      "iteration": 14,
+      "envs": [
+        {
+          "env": 3,
+          "count": 11,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 0.25999993085861206
+        },
+        {
+          "env": 0,
+          "count": 13,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 0.25999996066093445
+        },
+        {
+          "env": 9,
+          "count": 10,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.25998857617378235
+        }
+      ]
+    },
+    {
+      "phase": "round",
+      "iteration": 15,
+      "envs": [
+        {
+          "env": 3,
+          "count": 11,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 0.25999993085861206
+        },
+        {
+          "env": 0,
+          "count": 13,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 0.25999996066093445
+        },
+        {
+          "env": 9,
+          "count": 10,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.25999337434768677
+        }
+      ]
+    },
+    {
+      "phase": "round",
+      "iteration": 16,
+      "envs": [
+        {
+          "env": 3,
+          "count": 11,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 0.25999993085861206
+        },
+        {
+          "env": 0,
+          "count": 13,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 0.25999996066093445
+        },
+        {
+          "env": 9,
+          "count": 10,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.25999608635902405
+        }
+      ]
+    }
+  ],
+  "max_displacement_to_longer_budget": {
+    "3": 0.0,
+    "0": 0.0,
+    "9": 2.3833590603317134e-06
+  },
+  "encoded_frames": 26,
+  "duration_seconds": 8.666666666666666,
+  "warp_version": "1.18.0",
+  "numpy_version": "2.5.4",
+  "command": "python -m viz.render_relaxation_video --gates --device cpu --batch 24 --seed 0 --sweeps 50 --rounds 16 --smooth-passes 5 --polish 10 --out-dir DIR"
+}

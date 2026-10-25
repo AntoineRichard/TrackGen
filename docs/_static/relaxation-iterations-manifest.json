@@ -1,0 +1,1903 @@
+{
+  "seed_start": 0,
+  "batch": 24,
+  "on_invalid": "keep",
+  "device": "cpu",
+  "sweeps": 50,
+  "smooth_passes": 5,
+  "polish": 10,
+  "prefix_verified": true,
+  "config": {
+    "generator": "bezier",
+    "device": "cpu",
+    "num_envs": 24,
+    "min_num_points": 9,
+    "max_num_points": 13,
+    "num_points_per_segment": 30,
+    "min_point_distance": 0.05,
+    "rad": 0.4,
+    "edgy": 0.0,
+    "scale": 10.0,
+    "handle_clamp_frac": 0.4,
+    "hull_displacement": 0.15,
+    "checkpoint_count": 12,
+    "checkpoint_radius_min_frac": 0.33,
+    "checkpoint_angle_jitter": 0.55,
+    "checkpoint_turn_rate": 0.42,
+    "checkpoint_steer_gain": 0.65,
+    "checkpoint_lookahead_frac": 0.16,
+    "checkpoint_best_of_k": 4,
+    "checkpoint_clip_fallback": false,
+    "polar_num_knots": 12,
+    "polar_radial_jitter": 0.6,
+    "polar_angular_jitter": 0.3,
+    "voronoi_num_sites": 256,
+    "voronoi_site_layout": "void_ring",
+    "voronoi_control_points": 18,
+    "voronoi_radial_variation": 0.62,
+    "voronoi_angular_jitter": 0.08,
+    "repulsive_grow_mult_min": 4.5,
+    "repulsive_grow_mult_max": 5.5,
+    "repulsive_domain_frac": 0.35,
+    "repulsive_domain_init_ratio": 4.0,
+    "repulsive_obstacle_count_min": 8,
+    "repulsive_obstacle_count_max": 12,
+    "repulsive_obstacle_radius_min_frac": 0.02,
+    "repulsive_obstacle_radius_max_frac": 0.045,
+    "repulsive_ratchet_rate": 0.012,
+    "repulsive_alpha": 3.0,
+    "repulsive_beta": 6.0,
+    "repulsive_tau": 0.4,
+    "repulsive_w_len": 30.0,
+    "repulsive_stages": [
+      64,
+      128,
+      256
+    ],
+    "repulsive_settle_iters": 40,
+    "repulsive_resample_every": 25,
+    "repulsive_stall_window": 16,
+    "repulsive_stall_area_tol": 0.05,
+    "repulsive_deactivate_obstacles": true,
+    "half_width": 0.5,
+    "relax_enable": true,
+    "relax_solver": "xpbd",
+    "relax_tol": 0.02,
+    "relax_band": null,
+    "relax_iters": 50,
+    "relax_accel": "chebyshev",
+    "relax_cheby_rho": 0.98,
+    "relax_cheby_gamma": 0.9,
+    "relax_cheby_start": 8,
+    "relax_smooth_passes": 5,
+    "relax_smooth_spacing_iters": 10,
+    "relax_sep_every": 20,
+    "relax_sep_cache_slots": 16,
+    "relax_sep_cache_skin": 0.5,
+    "relax_sep_relax": 1.0,
+    "relax_spc_relax": 1.0,
+    "relax_bend_relax": 1.5,
+    "relax_margin": 0.15,
+    "num_points": 256,
+    "spacing": 0.3,
+    "N_max": 384,
+    "turning_tol": 0.1,
+    "w_floor": 0.001,
+    "validity_border_check": false,
+    "z_profile": "flat",
+    "z_base": 0.0,
+    "z_min": 0.0,
+    "z_max": 0.0,
+    "z_max_step": 0.0,
+    "z_noise_amplitude": 0.0,
+    "z_noise_harmonics": 3,
+    "z_control_points": 10,
+    "z_valid_grade": 0.0,
+    "size": 1.0,
+    "generator_params": null,
+    "on_invalid": "keep"
+  },
+  "display": "re-uniformised and inflated view of each solver prefix",
+  "source_commit": "66af09b1ec9a0cc4476b901b3feb9a340100db40",
+  "selection": "smallest raw pair distances among final-valid examples, plus final-invalid example when available",
+  "selected_envs": [
+    14,
+    21,
+    2
+  ],
+  "fps": 8,
+  "selected_seeds": [
+    14,
+    21,
+    2
+  ],
+  "frames": [
+    {
+      "phase": "raw",
+      "iteration": 0,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.06321351230144501
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.14471423625946045
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.237671360373497
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 1,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.18335920572280884
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.29600638151168823
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.5568966865539551
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 2,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.4588991701602936
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.5275170803070068
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.8397305011749268
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 3,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.6236738562583923
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.7084918022155762
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.9783288836479187
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 4,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.6969214081764221
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.8388969898223877
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 0.9967543482780457
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 5,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.731882631778717
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.8964098691940308
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.9887081980705261
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 6,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.8194522261619568
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.9402332305908203
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0087980031967163
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 7,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.8435137867927551
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.9537254571914673
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 1.00008225440979
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 8,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.8554024696350098
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.9648509621620178
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 1.0087782144546509
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 9,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.8593675494194031
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.970978319644928
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 1.0092487335205078
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 10,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.87712562084198
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 0.9945491552352905
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 1.0156139135360718
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 11,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.8722485303878784
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 0.9958651065826416
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0243408679962158
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 12,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.9064086079597473
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 1.0119932889938354
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.029910683631897
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 13,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.93817538022995
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.017664909362793
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.037015438079834
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 14,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.9564040303230286
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0244314670562744
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0429372787475586
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 15,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.9670982360839844
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.02727210521698
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0488553047180176
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 16,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.9522160291671753
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0319573879241943
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0548150539398193
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 17,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.9742814302444458
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0342648029327393
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.058801531791687
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 18,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0025752782821655
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 1.0390840768814087
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0606979131698608
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 19,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 1.0181516408920288
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0405683517456055
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0622756481170654
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 20,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.01910400390625
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.043585181236267
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0624141693115234
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 21,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0169358253479004
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0229343175888062
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.062372088432312
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 22,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0180820226669312
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0146338939666748
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0621452331542969
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 23,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0375691652297974
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.016755223274231
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.062469482421875
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 24,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0344630479812622
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0226057767868042
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0633177757263184
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 25,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.047013282775879
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0306274890899658
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0650653839111328
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 26,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0485421419143677
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0462749004364014
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0672065019607544
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 27,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0497456789016724
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0484424829483032
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0692355632781982
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 28,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0529195070266724
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0457357168197632
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0708876848220825
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 29,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.053695559501648
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0470733642578125
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0720188617706299
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 30,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0539013147354126
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0488203763961792
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0725854635238647
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 31,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0555481910705566
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0497257709503174
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0728540420532227
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 32,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0550258159637451
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.050076961517334
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0731256008148193
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 33,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0541582107543945
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0497345924377441
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.073464274406433
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 34,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0536142587661743
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.051198124885559
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0740145444869995
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 35,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.053805947303772
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.052051067352295
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0746431350708008
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 36,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.055025577545166
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0521847009658813
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0754070281982422
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 37,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0561772584915161
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0524033308029175
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0762696266174316
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 38,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.057716727256775
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0528634786605835
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0770556926727295
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 39,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0572991371154785
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0533121824264526
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0777746438980103
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 40,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.056994915008545
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0533748865127563
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.078524112701416
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 41,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0572322607040405
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0539140701293945
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.079373836517334
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 42,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.057610273361206
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0546410083770752
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0801026821136475
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 43,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.057774543762207
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.055134654045105
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0804837942123413
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 44,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0579837560653687
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0560698509216309
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0809952020645142
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 45,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.058290958404541
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0573440790176392
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.081697940826416
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 46,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0585678815841675
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0580177307128906
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.082470178604126
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 47,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0588443279266357
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0587235689163208
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0831140279769897
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 48,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0590180158615112
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0592405796051025
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0838370323181152
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 49,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0591706037521362
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0596500635147095
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0846141576766968
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 50,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0589160919189453
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0604052543640137
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.085312843322754
+        }
+      ]
+    },
+    {
+      "phase": "Taubin",
+      "iteration": 1,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0584357976913452
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.057525634765625
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0820419788360596
+        }
+      ]
+    },
+    {
+      "phase": "Taubin",
+      "iteration": 2,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0587631464004517
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.055376648902893
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0820183753967285
+        }
+      ]
+    },
+    {
+      "phase": "Taubin",
+      "iteration": 3,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0591824054718018
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0545423030853271
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0823343992233276
+        }
+      ]
+    },
+    {
+      "phase": "Taubin",
+      "iteration": 4,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.059577226638794
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0538725852966309
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0820690393447876
+        }
+      ]
+    },
+    {
+      "phase": "Taubin",
+      "iteration": 5,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0599380731582642
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0512343645095825
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.081678032875061
+        }
+      ]
+    },
+    {
+      "phase": "polish",
+      "iteration": 1,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.059633731842041
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0514318943023682
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.081470012664795
+        }
+      ]
+    },
+    {
+      "phase": "polish",
+      "iteration": 2,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.059443712234497
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0510588884353638
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0812760591506958
+        }
+      ]
+    },
+    {
+      "phase": "polish",
+      "iteration": 3,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.059295892715454
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0504432916641235
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.081105351448059
+        }
+      ]
+    },
+    {
+      "phase": "polish",
+      "iteration": 4,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0591670274734497
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0497314929962158
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.08095121383667
+        }
+      ]
+    },
+    {
+      "phase": "polish",
+      "iteration": 5,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0590487718582153
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0489909648895264
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.080819010734558
+        }
+      ]
+    },
+    {
+      "phase": "polish",
+      "iteration": 6,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0589367151260376
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0482542514801025
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0807063579559326
+        }
+      ]
+    },
+    {
+      "phase": "polish",
+      "iteration": 7,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0588377714157104
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0475350618362427
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0806105136871338
+        }
+      ]
+    },
+    {
+      "phase": "polish",
+      "iteration": 8,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0587420463562012
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0468406677246094
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0805257558822632
+        }
+      ]
+    },
+    {
+      "phase": "polish",
+      "iteration": 9,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0586425065994263
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0461722612380981
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.080451250076294
+        }
+      ]
+    },
+    {
+      "phase": "polish",
+      "iteration": 10,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.058547019958496
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0455317497253418
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0803886651992798
+        }
+      ]
+    }
+  ],
+  "encoded_frames": 90,
+  "duration_seconds": 11.25,
+  "warp_version": "1.18.0",
+  "numpy_version": "2.5.4",
+  "command": "python -m viz.render_relaxation_video --device cpu --batch 24 --seed 0 --sweeps 50 --rounds 16 --smooth-passes 5 --polish 10 --out-dir DIR"
+}

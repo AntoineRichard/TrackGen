@@ -1,85 +1,71 @@
-Track relaxation — overview
-===========================
+.. _track-relaxation:
 
-Relaxation is the core :term:`stage` of the runtime pipeline. It sits between the
-constant-spacing resample (and the width stage) and the constant-width inflation:
+Make room for the road
+======================
 
-.. code-block:: text
+Track relaxation moves sampled centerline beads apart at close approaches and rounds
+corners that are tight relative to the road half-width. It runs after constant-spacing
+resampling and width assignment, before final uniform resampling and border offsets.
 
-   generate → constant-spacing resample → RELAXATION → inflate
+.. raw:: html
 
-A raw constant-spacing centerline is not yet inflatable. The centerline generators
-produce closed loops that self-approach (two distant arcs of the loop passing close in
-the plane) and that contain under-radius corners tighter than the road half-width. If
-such a centerline were inflated directly into a constant-width band, the band would
-overlap itself or pinch to zero at the tight corner, and the track would fail the
-downstream thickness gate. Relaxation reshapes the bead chain — opening self-approaches
-and rounding tight corners — so that a constant-width inflation of it succeeds.
+   <video controls loop muted playsinline width="100%" poster="../_static/relaxation-iterations-poster.png" aria-label="Actual track relaxation prefixes, with iteration, validity and failure labels">
+     <source src="../_static/relaxation-iterations.mp4" type="video/mp4">
+     <p>Track relaxation opens close approaches and rounds tight bends. See the text below for phases and limits.</p>
+   </video>
 
-.. figure:: ../assets/relaxation-before-after.png
-   :alt: Raw constant-spacing centerlines versus relaxed and inflated road bands
-   :align: center
+Three selected fixed-seed examples, shown after each solve prefix has passed through
+uniform resampling and inflation. The raw outputs fail the sampled thickness check.
+The main solve runs 50 sweeps, followed by five Taubin passes, then ten spacing-polish
+sweeps. The camera stays fixed and each panel reports its actual validity and minimum
+nonlocal bead distance. These examples demonstrate motion; they do not estimate yield.
+The :doc:`convergence` page explains the frame construction and limitations.
 
-   Top row: raw constant-spacing centerlines (``relax_enable=False``), drawn as
-   centerlines only. Bottom row: the same seeds after relaxation and inflation into a
-   constant-width band. Relaxation is what makes the bottom row inflatable.
+Try a different budget
+-----------------------
 
-Why it is needed
-----------------
+.. code-block:: python
 
-Validity is decided **after** relaxation, by the inflation stage's thickness gate. A
-track is thickness-valid when
+   from track_gen import TrackGenConfig, TrackGenerator
 
-.. math::
+   config = TrackGenConfig(num_envs=4, device="cuda:0", relax_iters=75)
+   gen = TrackGenerator(config, seeds=42)
+   track = gen.generate()
+   accepted = track.valid.numpy() != 0
+   failures = track.fail_mask.numpy()
 
-   \min(r_{\min},\ \tfrac{1}{2}\,\text{sep}_{\min})
-   \ \ge\ (1 - \text{relax\_tol})\cdot \text{half\_width},
+.. snippet: after
 
-where :math:`r_{\min}` is the smallest local (Menger) radius of curvature,
-:math:`\text{sep}_{\min}` is the smallest non-adjacent bead-pair distance, and
-``relax_tol`` = 0.02. The half of ``sep_min`` is the load-bearing quantity: two arcs a
-distance :math:`d` apart can only host two half-width roads without overlap if
-:math:`d \ge 2\cdot\text{half\_width}`. A raw centerline routinely violates both terms;
-relaxation exists to satisfy them with margin to spare.
+   assert accepted.shape == (4,)
+   assert failures.shape == (4,)
 
-Because the gate is applied post-relax, relaxation is the single stage that determines
-end-to-end yield. At the library defaults the current solver reaches **~0.999**
-relaxed-valid yield.
+Use the fail bits to choose the next change. More sweeps may help unresolved sampled
+thickness; a truncation failure needs more capacity or larger spacing. A rejected
+imported centerline may need corrected input. Relaxation is not the only stage affecting
+acceptance (:ref:`geometry-validity`).
 
-The default solve
------------------
+The default ``relax.xpbd`` stage applies 50 Chebyshev-accelerated Jacobi sweeps and a
+smoothing tail. It is a position-projection solver: it does not retain XPBD constraint
+multipliers or solve a physical vehicle model. It can reshape the course and does not
+guarantee that every input becomes valid. In a preset, ``relax=None`` selects
+``relax.none``; the flat config equivalent is ``relax_enable=False``. External tracks
+default to no relaxation so their supplied shape is preserved apart from resampling.
 
-The default is **50 Chebyshev-accelerated Jacobi sweeps** (``relax_iters=50``,
-``relax_accel="chebyshev"``). Plain Jacobi (``relax_accel="none"``) needs about **150
-sweeps** for the same result: the accelerated solve reaches equal-or-higher yield and
-equal-or-better quality in a third of the sweeps, and roughly half the wall-clock (see
-:doc:`convergence` for the measured tables). A short
-**post-solve smoothing tail** (shrink-free Taubin passes plus spacing polish,
-``relax_smooth_passes`` / ``relax_smooth_spacing_iters``) then strips the fine curvature
-noise the constraints' deadband leaves behind, cutting curvature-difference RMS by ~a
-third with no validity loss.
+.. figure:: ../assets/racing/geometry-validity.svg
+   :alt: Actual validity results on selected synthetic centerlines show close
+         approaches, tight corners, crossings, overlapping bands and truncation.
 
-The four pages
---------------
+   The sampled thickness check is sensitive to local curvature and nonlocal bead
+   distances. Other failure bits describe different problems. Retained failed geometry
+   here uses ``on_invalid="keep"`` explicitly.
 
-- :doc:`constraints` — the solver setup (rest length, separation band, targets) and the
-  three per-sweep corrections (separation, spacing, bending), plus the **gate coupling**:
-  why the separation target deliberately overshoots the validity gate's floor, and why
-  weakening that overshoot was measured to collapse yield.
-- :doc:`solver` — how the solve executes: Jacobi double-buffering, the dense and cached
-  separation execution modes, and the **Chebyshev semi-iterative acceleration** that
-  makes 50 sweeps enough.
-- :doc:`convergence` — convergence behaviour and tuning: why plain Jacobi needs ~150
-  sweeps, what acceleration buys (with measured yield/quality/timing tables), the
-  ``relax_sep_every`` short-run pitfall, tuning guidance, and a list of measured dead
-  ends.
+Choose the detail you need
+--------------------------
 
-The implementation lives in ``track_gen/_src/warp_relax.py`` (setup + solve), run by the
-``relax.xpbd`` stage of ``track_gen/stages/track.py``; its scratch (``RelaxScratch``) and
-the post-relax validity gate (``_validity_k``, ``_thickness_func``) live in
-``track_gen/_src/warp_pipeline.py``. ``relax.xpbd`` is the built-in relax stage
-(``relax_solver="xpbd"``, the default); ``relax.none`` skips relaxation, and a plugin can
-register another (:ref:`the relax contract <stage-relax-contract>`).
+- :doc:`constraints`: bead neighbourhood, separation margin, spacing and bending.
+- :doc:`solver`: Jacobi execution, candidate caches, acceleration and smoothing.
+- :doc:`convergence`: how to read actual iteration states and tune a fixed budget.
+- :doc:`gates`: the separate gate-sphere relaxation, which uses sequential pair updates.
 
 .. toctree::
    :maxdepth: 1
