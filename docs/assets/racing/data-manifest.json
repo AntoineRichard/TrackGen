@@ -1,6 +1,13 @@
 {
   "source_version": "0.3.0rc2",
-  "command": "python -m viz.render_data_guide --out-dir OUT",
+  "command": "python -m viz.render_data_guide --out-dir OUT --theme light",
+  "theme": "light",
+  "render_geometry": {
+    "data-layout.png": "98e072a578297da5302781bd2c525d335a9355afb0037af0914e468551f6cee2",
+    "data-lifecycle.png": "a54d8957841f29b611b8a7f519312fbbc5e4c5936dd5c3963c173d75c19c575f",
+    "data-import.png": "5bd0e48df27f11ba38dcbf36c71066198e305e004b24c901cfd01d62796db410",
+    "data-gate-course.png": "43329947cd6445bdc66f4d246186ffdeaa32ce04986835af8797146c64b061f3"
+  },
   "schematics": [
     "data-layout.png",
     "data-lifecycle.png"

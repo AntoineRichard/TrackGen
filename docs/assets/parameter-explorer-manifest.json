@@ -1,0 +1,530 @@
+{
+  "browser": {
+    "browser": "151.0.7922.34",
+    "captures": [
+      {
+        "background": "rgba(0, 0, 0, 0)",
+        "body_background": "rgb(255, 255, 255)",
+        "native_dark_class": false,
+        "stats": "valid yield: 100% \u00b7 2048 valid \u00b7 mean length 46.8 m \u00b7 mean thickness 0.550 m \u00b7 mean count 156",
+        "theme": "light",
+        "visible_controls": [
+          {
+            "label": "generator method",
+            "type": "text",
+            "value": "polar"
+          },
+          {
+            "label": "number input for half_width (m)",
+            "type": "number",
+            "value": "0.5"
+          },
+          {
+            "label": "half_width (m)",
+            "type": "range",
+            "value": "0.5"
+          },
+          {
+            "label": "number input for scale (box)",
+            "type": "number",
+            "value": "10"
+          },
+          {
+            "label": "scale (box)",
+            "type": "range",
+            "value": "10"
+          },
+          {
+            "label": "number input for num_points_per_segment (generator smoothing samples)",
+            "type": "number",
+            "value": "30"
+          },
+          {
+            "label": "num_points_per_segment (generator smoothing samples)",
+            "type": "range",
+            "value": "30"
+          },
+          {
+            "label": "number input for polar knots",
+            "type": "number",
+            "value": "12"
+          },
+          {
+            "label": "polar knots",
+            "type": "range",
+            "value": "12"
+          },
+          {
+            "label": "number input for polar radial jitter",
+            "type": "number",
+            "value": "0.6"
+          },
+          {
+            "label": "polar radial jitter",
+            "type": "range",
+            "value": "0.6"
+          },
+          {
+            "label": "number input for polar angular jitter",
+            "type": "number",
+            "value": "0.3"
+          },
+          {
+            "label": "polar angular jitter",
+            "type": "range",
+            "value": "0.3"
+          },
+          {
+            "label": "number input for spacing (m)",
+            "type": "number",
+            "value": "0.3"
+          },
+          {
+            "label": "spacing (m)",
+            "type": "range",
+            "value": "0.3"
+          },
+          {
+            "label": "number input for N_max",
+            "type": "number",
+            "value": "384"
+          },
+          {
+            "label": "N_max",
+            "type": "range",
+            "value": "384"
+          },
+          {
+            "label": "number input for relax_iters",
+            "type": "number",
+            "value": "50"
+          },
+          {
+            "label": "relax_iters",
+            "type": "range",
+            "value": "50"
+          },
+          {
+            "label": "number input for sep factor",
+            "type": "number",
+            "value": "1"
+          },
+          {
+            "label": "sep factor",
+            "type": "range",
+            "value": "1"
+          },
+          {
+            "label": "number input for spc factor",
+            "type": "number",
+            "value": "1"
+          },
+          {
+            "label": "spc factor",
+            "type": "range",
+            "value": "1"
+          },
+          {
+            "label": "number input for bend factor",
+            "type": "number",
+            "value": "1.5"
+          },
+          {
+            "label": "bend factor",
+            "type": "range",
+            "value": "1.5"
+          },
+          {
+            "label": "number input for relax_margin",
+            "type": "number",
+            "value": "0.15"
+          },
+          {
+            "label": "relax_margin",
+            "type": "range",
+            "value": "0.15"
+          },
+          {
+            "label": "number input for K \u2014 broadphase refresh interval (sweeps)",
+            "type": "number",
+            "value": "20"
+          },
+          {
+            "label": "K \u2014 broadphase refresh interval (sweeps)",
+            "type": "range",
+            "value": "20"
+          },
+          {
+            "label": "number input for cache slots \u2014 broadphase candidates/bead (0 = exact dense)",
+            "type": "number",
+            "value": "16"
+          },
+          {
+            "label": "cache slots \u2014 broadphase candidates/bead (0 = exact dense)",
+            "type": "range",
+            "value": "16"
+          },
+          {
+            "label": "number input for cache skin \u2014 broadphase margin (\u00d7 target)",
+            "type": "number",
+            "value": "0.5"
+          },
+          {
+            "label": "cache skin \u2014 broadphase margin (\u00d7 target)",
+            "type": "range",
+            "value": "0.5"
+          },
+          {
+            "label": "grid (n x n)",
+            "type": "text",
+            "value": "4"
+          },
+          {
+            "label": "seed",
+            "type": "number",
+            "value": "0"
+          },
+          {
+            "label": "batch size",
+            "type": "text",
+            "value": "2048"
+          },
+          {
+            "label": "auto-update",
+            "type": "checkbox",
+            "value": "on"
+          }
+        ]
+      },
+      {
+        "background": "rgba(0, 0, 0, 0)",
+        "body_background": "rgb(15, 15, 17)",
+        "native_dark_class": true,
+        "stats": "valid yield: 100% \u00b7 2048 valid \u00b7 mean length 46.8 m \u00b7 mean thickness 0.550 m \u00b7 mean count 156",
+        "theme": "dark",
+        "visible_controls": [
+          {
+            "label": "generator method",
+            "type": "text",
+            "value": "polar"
+          },
+          {
+            "label": "number input for half_width (m)",
+            "type": "number",
+            "value": "0.5"
+          },
+          {
+            "label": "half_width (m)",
+            "type": "range",
+            "value": "0.5"
+          },
+          {
+            "label": "number input for scale (box)",
+            "type": "number",
+            "value": "10"
+          },
+          {
+            "label": "scale (box)",
+            "type": "range",
+            "value": "10"
+          },
+          {
+            "label": "number input for num_points_per_segment (generator smoothing samples)",
+            "type": "number",
+            "value": "30"
+          },
+          {
+            "label": "num_points_per_segment (generator smoothing samples)",
+            "type": "range",
+            "value": "30"
+          },
+          {
+            "label": "number input for polar knots",
+            "type": "number",
+            "value": "12"
+          },
+          {
+            "label": "polar knots",
+            "type": "range",
+            "value": "12"
+          },
+          {
+            "label": "number input for polar radial jitter",
+            "type": "number",
+            "value": "0.6"
+          },
+          {
+            "label": "polar radial jitter",
+            "type": "range",
+            "value": "0.6"
+          },
+          {
+            "label": "number input for polar angular jitter",
+            "type": "number",
+            "value": "0.3"
+          },
+          {
+            "label": "polar angular jitter",
+            "type": "range",
+            "value": "0.3"
+          },
+          {
+            "label": "number input for spacing (m)",
+            "type": "number",
+            "value": "0.3"
+          },
+          {
+            "label": "spacing (m)",
+            "type": "range",
+            "value": "0.3"
+          },
+          {
+            "label": "number input for N_max",
+            "type": "number",
+            "value": "384"
+          },
+          {
+            "label": "N_max",
+            "type": "range",
+            "value": "384"
+          },
+          {
+            "label": "number input for relax_iters",
+            "type": "number",
+            "value": "50"
+          },
+          {
+            "label": "relax_iters",
+            "type": "range",
+            "value": "50"
+          },
+          {
+            "label": "number input for sep factor",
+            "type": "number",
+            "value": "1"
+          },
+          {
+            "label": "sep factor",
+            "type": "range",
+            "value": "1"
+          },
+          {
+            "label": "number input for spc factor",
+            "type": "number",
+            "value": "1"
+          },
+          {
+            "label": "spc factor",
+            "type": "range",
+            "value": "1"
+          },
+          {
+            "label": "number input for bend factor",
+            "type": "number",
+            "value": "1.5"
+          },
+          {
+            "label": "bend factor",
+            "type": "range",
+            "value": "1.5"
+          },
+          {
+            "label": "number input for relax_margin",
+            "type": "number",
+            "value": "0.15"
+          },
+          {
+            "label": "relax_margin",
+            "type": "range",
+            "value": "0.15"
+          },
+          {
+            "label": "number input for K \u2014 broadphase refresh interval (sweeps)",
+            "type": "number",
+            "value": "20"
+          },
+          {
+            "label": "K \u2014 broadphase refresh interval (sweeps)",
+            "type": "range",
+            "value": "20"
+          },
+          {
+            "label": "number input for cache slots \u2014 broadphase candidates/bead (0 = exact dense)",
+            "type": "number",
+            "value": "16"
+          },
+          {
+            "label": "cache slots \u2014 broadphase candidates/bead (0 = exact dense)",
+            "type": "range",
+            "value": "16"
+          },
+          {
+            "label": "number input for cache skin \u2014 broadphase margin (\u00d7 target)",
+            "type": "number",
+            "value": "0.5"
+          },
+          {
+            "label": "cache skin \u2014 broadphase margin (\u00d7 target)",
+            "type": "range",
+            "value": "0.5"
+          },
+          {
+            "label": "grid (n x n)",
+            "type": "text",
+            "value": "4"
+          },
+          {
+            "label": "seed",
+            "type": "number",
+            "value": "0"
+          },
+          {
+            "label": "batch size",
+            "type": "text",
+            "value": "2048"
+          },
+          {
+            "label": "auto-update",
+            "type": "checkbox",
+            "value": "on"
+          }
+        ]
+      }
+    ],
+    "device_scale_factor": 1,
+    "node": "v24.19.0",
+    "playwright": "1.62.1",
+    "plot_payload_sha256": "35efddf558fe5521c853fb4685f8805fd5b2e199f9ea2560f9269d018cec4fce",
+    "screenshot_animations": "disabled",
+    "theme_method": "Gradio system theme via native prefers-color-scheme change",
+    "unchanged_plot_payload": true,
+    "viewport": {
+      "height": 1120,
+      "width": 1600
+    }
+  },
+  "device": "cpu",
+  "gate_controls": {
+    "gate_batch_size": 256,
+    "gate_checkpoint_angle_jitter": 0.55,
+    "gate_checkpoint_count": 12,
+    "gate_checkpoint_radius_min_frac": 0.33,
+    "gate_generator": "bezier",
+    "gate_grid_n": 4,
+    "gate_max_num_points": 13,
+    "gate_min_num_points": 9,
+    "gate_min_point_distance": 0.05,
+    "gate_ordering": "ccw",
+    "gate_polar_angular_jitter": 0.3,
+    "gate_polar_num_knots": 12,
+    "gate_polar_radial_jitter": 0.6,
+    "gate_radius": 0.025,
+    "gate_scale": 1.0,
+    "gate_seed": 0,
+    "gate_show_raw": false,
+    "gate_solve_iters": 8,
+    "gate_voronoi_angular_jitter": 0.08,
+    "gate_voronoi_control_points": 18,
+    "gate_voronoi_num_sites": 256,
+    "gate_voronoi_radial_variation": 0.62,
+    "gate_voronoi_site_layout": "void_ring",
+    "gate_width": 0.05
+  },
+  "images": {
+    "dark": {
+      "path": "dark.png",
+      "sha256": "3ff31f78705019b32c83f5e4d737db688862022517d091da1f68df59bbc03cd6"
+    },
+    "light": {
+      "path": "light.png",
+      "sha256": "033b44672a9b140008061b13a652f0b4290b55eca8ba49c8ccd4b8e398dcb41d"
+    }
+  },
+  "packages": {
+    "fastapi": "0.162.0",
+    "gradio": "6.30.0",
+    "gradio_client": "2.7.2",
+    "huggingface_hub": "2.3.0",
+    "matplotlib": "3.11.2",
+    "numpy": "2.5.4",
+    "pydantic": "2.14.1",
+    "torch": "2.14.1",
+    "warp-lang": "1.18.0"
+  },
+  "page": 0,
+  "presentation": "Native Gradio theme; app-owned Matplotlib plot is unchanged between themes",
+  "publication_layout": {
+    "dark": "_static/media-dark/parameter-explorer.png",
+    "light": "assets/parameter-explorer.png",
+    "note": "Relocated original captures; image hashes and capture metadata unchanged."
+  },
+  "python_version": "3.12.14",
+  "runtime_source_sha256": "0e56aabecdaa44da4655c0fab5d1a6dabb6912095b643d0fdb12b858cf9ef180",
+  "source_clean": true,
+  "source_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+  "source_files_sha256": {
+    "viz/capture_parameter_explorer.py": "6914ec1f9b89113bb5f1918b8eea32464fd37c981346dc6e8a03c7aa4ea40dd4",
+    "viz/param_explorer.py": "76d5169cdaf1551f44ccc4bcf646bf82f0b1601ae959f60eb20e15f0396a1d62",
+    "viz/plot_tracks.py": "2d5be8920e4edcf4fc85f7a137d95ad892592dc41c7d2876cac24db67b3ccbe2"
+  },
+  "source_status": [],
+  "track_controls": {
+    "batch_size": 2048,
+    "checkpoint_angle_jitter": 0.55,
+    "checkpoint_best_of_k": 4,
+    "checkpoint_clip_fallback": false,
+    "checkpoint_count": 12,
+    "checkpoint_lookahead_frac": 0.16,
+    "checkpoint_radius_min_frac": 0.33,
+    "checkpoint_steer_gain": 0.65,
+    "checkpoint_turn_rate": 0.42,
+    "edgy": 0.0,
+    "generator": "polar",
+    "grid_n": 4,
+    "half_width": 0.5,
+    "handle_clamp_frac": 0.4,
+    "hull_displacement": 0.15,
+    "max_num_points": 13,
+    "min_num_points": 9,
+    "min_point_distance": 0.05,
+    "n_max": 384,
+    "num_points": 256,
+    "num_points_per_segment": 30,
+    "polar_angular_jitter": 0.3,
+    "polar_num_knots": 12,
+    "polar_radial_jitter": 0.6,
+    "rad": 0.4,
+    "relax_bend_relax": 1.5,
+    "relax_iters": 50,
+    "relax_margin": 0.15,
+    "relax_sep_cache_skin": 0.5,
+    "relax_sep_cache_slots": 16,
+    "relax_sep_every": 20,
+    "relax_sep_relax": 1.0,
+    "relax_spc_relax": 1.0,
+    "repulsive_alpha": 3.0,
+    "repulsive_beta": 6.0,
+    "repulsive_domain_frac": 0.35,
+    "repulsive_domain_init_ratio": 4.0,
+    "repulsive_grow_mult_max": 3.0,
+    "repulsive_grow_mult_min": 2.0,
+    "repulsive_obstacle_count_max": 12,
+    "repulsive_obstacle_count_min": 8,
+    "repulsive_obstacle_radius_max_frac": 0.045,
+    "repulsive_obstacle_radius_min_frac": 0.02,
+    "repulsive_ratchet_rate": 0.012,
+    "repulsive_resample_every": 25,
+    "repulsive_settle_iters": 40,
+    "repulsive_stall_area_tol": 0.05,
+    "repulsive_stall_window": 16,
+    "repulsive_tau": 0.4,
+    "scale": 10.0,
+    "seed": 0,
+    "spacing": 0.3,
+    "voronoi_angular_jitter": 0.08,
+    "voronoi_control_points": 18,
+    "voronoi_num_sites": 256,
+    "voronoi_radial_variation": 0.62,
+    "voronoi_site_layout": "void_ring"
+  }
+}

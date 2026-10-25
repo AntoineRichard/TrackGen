@@ -208,17 +208,38 @@ def inventory(html_dir, source_dir, *, require_pairs=False):
         if (path.is_file() and path.suffix.lower() in _MEDIA
                 and not set(path.relative_to(source).parts) & excluded):
             available.setdefault(path.name, []).append(path)
-    used = set()
-    for path in Path(html_dir).rglob('*.html'):
-        used.update(_basename(uri) for uri in _References(path.read_text()).uris)
+    html_root = Path(html_dir).resolve()
+    used = {}
+    for page in html_root.rglob('*.html'):
+        for uri in _References(page.read_text()).uris:
+            used.setdefault(_basename(uri), []).append((page, uri))
     assets = {}
     for name in sorted(used):
         candidates = available.get(name, [])
         if not candidates:
             continue  # Sphinx chrome, such as its generated minus icon
-        if len(candidates) != 1:
-            raise ValueError(f'Ambiguous published media basename: {name}: {candidates}')
-        path = candidates[0]
+        if len(candidates) == 1:
+            path = candidates[0]
+        else:
+            hashes = {candidate: hashlib.sha256(candidate.read_bytes()).hexdigest()
+                      for candidate in candidates}
+            selected = set()
+            for page, uri in used[name]:
+                local = unquote(urlsplit(uri).path)
+                built = ((html_root / local.lstrip('/')) if local.startswith('/')
+                         else (page.parent / local)).resolve()
+                if not built.is_relative_to(html_root):
+                    raise ValueError(f'Published media is outside HTML root: {uri}')
+                if not built.is_file():
+                    raise ValueError(f'Missing built media for {name}: {uri}')
+                digest = hashlib.sha256(built.read_bytes()).hexdigest()
+                matches = [candidate for candidate, value in hashes.items() if value == digest]
+                if len(matches) != 1:
+                    raise ValueError(f'Ambiguous published media basename: {name}: {candidates}')
+                selected.add(matches[0])
+            if len(selected) != 1:
+                raise ValueError(f'Ambiguous published media basename: {name}: {sorted(selected)}')
+            path = selected.pop()
         assets[name] = dict(kind='video' if path.suffix in ('.mp4', '.webm') else 'image',
                             light=str(path.relative_to(source)),
                             dark='_static/media-dark/' + name,

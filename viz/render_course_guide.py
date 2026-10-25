@@ -142,7 +142,9 @@ def _gate_plan(ax, d, *, radius=0.0, numbering=False, limits=1.2):
 def _save(fig, out, stem, title):
     fig.suptitle(title + "\nCPU · seed 5 · epoch 0 · env 0 · selected examples, not yield estimates",
                  fontsize=13)
-    fig.tight_layout(rect=(0, 0, 1, 0.91))
+    # Projected 3D labels extend below the frame panel axes.
+    bottom = 0.10 if stem == "controls-gate-frames" else 0
+    fig.tight_layout(rect=(0, bottom, 1, 0.91))
     save_figure(fig, out / (stem + ".png"), dpi=160, facecolor="white")
     plt.close(fig)
 

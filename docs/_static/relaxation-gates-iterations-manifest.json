@@ -43,7 +43,10 @@
     "on_invalid": "keep"
   },
   "prefix_verified": true,
-  "source_commit": "66af09b1ec9a0cc4476b901b3feb9a340100db40",
+  "source_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+  "warp_version": "1.18.0",
+  "numpy_version": "2.5.4",
+  "command": "python -m viz.render_relaxation_video --gates --device cpu --batch 24 --seed 0 --sweeps 50 --rounds 16 --smooth-passes 5 --polish 10 --out-dir DIR",
   "selection": "smallest raw pair distances among final-valid examples, plus final-invalid example when available",
   "selected_envs": [
     3,
@@ -524,7 +527,25 @@
   },
   "encoded_frames": 26,
   "duration_seconds": 8.666666666666666,
-  "warp_version": "1.18.0",
-  "numpy_version": "2.5.4",
-  "command": "python -m viz.render_relaxation_video --gates --device cpu --batch 24 --seed 0 --sweeps 50 --rounds 16 --smooth-passes 5 --polish 10 --out-dir DIR"
+  "theme": "light",
+  "geometry_sha256": "5c965573e606d519708aadab814fb8954b8b47a32c14b9a12a4a07b6e3f1aaeb",
+  "render_geometry": {
+    "frame_0000.png": "c7253f48f168fd24dce290b8a25270a8a0033d981dca4a4caa89c08b2004b218",
+    "frame_0004.png": "2e07591d8a20ab66a8593c1e37658c063eb37a861816520984fbdbcc6fc7f223",
+    "frame_0005.png": "26cb9a94b791269606c60665be1044c562397138ccc08537232421bef519a4ce",
+    "frame_0006.png": "e2de74682ef2eb933aad03e263ea7e68a5ccd4029e4c479034bc6a5ba48bf094",
+    "frame_0007.png": "55d0824681a748617ef23b9f90f78649986e98d991ad4725408b3e1ec6fdf190",
+    "frame_0008.png": "6ad8ba40129271fac2cb5806514159c00800d4cad8e72c4c1532fb7b567479ec",
+    "frame_0009.png": "1843cb1547d4f090e50b53bfc60457c431a19cedeeb9956123c990998b40c86f",
+    "frame_0010.png": "374fdc6496494d4c94fbeb24ccaa3735ac878afb9e18a77b1591798ebba0a3c0",
+    "frame_0011.png": "333bc7ef52c8bdc0f60a3b1d5472188a38f688d1f2ff003e7b40e2fa20f630ee",
+    "frame_0012.png": "e9a6e6ea1072dfe6ac5ae5f93cf27495505539a917b0224214962039bd485956",
+    "frame_0013.png": "2ce48d38b0399c5d036471c1ee4b4279814a0c2ec3ddf869e7ce51ed47e15118",
+    "frame_0014.png": "5517871528689929330bb466ee47ca73bcb0f273cecd2ffb992beba6b1a81d91",
+    "frame_0015.png": "5e1ec3688534b7b1ecf1214dc29c2a1d0df38a3646936ca94180da1510c0b650",
+    "frame_0016.png": "017a5223ecdc71e52fbd5cc08d8d647785ad73eb0fda720b8c62b7ca76d9ea04",
+    "frame_0017.png": "b465147a95ee04350e50a503bc8ae86f3c7eb24aab9d53415d1df31608b44ad2",
+    "frame_0018.png": "608fa051160c09ed57af668163ea819ae5dbec67fc3c9f95ec187048a176329a",
+    "frame_0019.png": "fdaaff95d55d86c8fdddf8ff07b28294ad61d6978c9a267375f195168102ed13"
+  }
 }

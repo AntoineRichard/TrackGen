@@ -1,7 +1,25 @@
 {
-  "source_commit": "66af09b1ec9a0cc4476b901b3feb9a340100db40",
-  "command": "python -m viz.render_collision_guide --out-dir DIR",
+  "source_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+  "command": "python -m viz.render_collision_guide --out-dir DIR --theme light",
   "device": "cpu",
+  "theme": "light",
+  "render_geometry": {
+    "geometry-validity.svg": "19faf47e6d4cb478d34f5f3ecb21821a8526fcfda3375ca9f451c37ebdf8f47f",
+    "geometry-validity.png": "19faf47e6d4cb478d34f5f3ecb21821a8526fcfda3375ca9f451c37ebdf8f47f",
+    "geometry-crossing-predicates.svg": "af97a8bf0020d7ab2d1dee3402c454951ffa9201b3ff7ac30bf2775618edb703",
+    "geometry-crossing-predicates.png": "af97a8bf0020d7ab2d1dee3402c454951ffa9201b3ff7ac30bf2775618edb703",
+    "geometry-footprints.svg": "cbbcbdea9e5f3af63faa16afa8121951cd9288b210506ed11bed0e77017f10e9",
+    "geometry-footprints.png": "cbbcbdea9e5f3af63faa16afa8121951cd9288b210506ed11bed0e77017f10e9",
+    "geometry-sdf.svg": "6ef7ccbb140b9da85cc473fb0f7356ebafc9a20847c1316b362352b9321846ca",
+    "geometry-sdf.png": "6ef7ccbb140b9da85cc473fb0f7356ebafc9a20847c1316b362352b9321846ca",
+    "geometry-obstacles.svg": "f68dd323941b2f774a947a6a7f8e15e4a7372ce94ba06d4f1c901ab2d342fe14",
+    "geometry-obstacles.png": "f68dd323941b2f774a947a6a7f8e15e4a7372ce94ba06d4f1c901ab2d342fe14",
+    "geometry-constraints.svg": "0998c0f532d4762a0aa19b8162227495633e76928f189c1415ac5ac13de26700",
+    "geometry-constraints.png": "0998c0f532d4762a0aa19b8162227495633e76928f189c1415ac5ac13de26700"
+  },
+  "geometry_sha256": "fdff51ee37814feffe285dc6dddedfcc5259963b7bc68eb000d5de88e43d3d82",
+  "warp_version": "1.18.0",
+  "numpy_version": "2.5.4",
   "units": "arbitrary shared distance units",
   "selection": "synthetic counterexamples; no yield claim",
   "cases": {
@@ -16529,7 +16547,5 @@
         "depth": 0.15000000596046448
       }
     ]
-  },
-  "warp_version": "1.18.0",
-  "numpy_version": "2.5.4"
+  }
 }

@@ -223,7 +223,8 @@ def _limits(ax, points, *, span=None):
 def _style(ax, *, ticks=False):
     ax.set_aspect("equal")
     if ticks:
-        ax.tick_params(labelsize=9, colors="#6b7785")
+        palette = get_palette()
+        ax.tick_params(labelsize=9, colors=palette.muted if palette.name == "dark" else "#6b7785")
         ax.set_xlabel("x [coordinate units]", fontsize=10)
         ax.set_ylabel("y [coordinate units]", fontsize=10)
     else:

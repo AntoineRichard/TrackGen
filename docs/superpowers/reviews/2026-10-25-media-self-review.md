@@ -28,3 +28,28 @@ subsequent focused checks cover those repairs. Final assets must be captured fro
 committed sources. Full-site strict build, full-media browser inspection, final
 combined CPU/CI and GPU validation are separate release gates; this review does
 not claim those pending checks have passed.
+
+
+Final capture source A is `0da98417b18b9064250c6014f9fb5254ca825fdb`.
+All 80 published originals have real dark counterparts. The 43 generator/common
+assets have 36 matching plotted hashes and 144 matching nested data fingerprints;
+all 14 generator/common movies and four XPBD movies fully decode. Eight full-budget
+non-generator jobs passed paired geometry checks. Native UI controls, statistics
+and the original plot payload are identical under the two real Gradio themes.
+
+Final-image QA additionally caught a clipped projected axis label and dim dark
+Repulsive ticks. A dedicated bottom margin preserves Course geometry/camera, and
+dark ticks use the palette's readable muted color while light stays unchanged.
+Twelve Course/theme tests and 14 construction/provenance/Repulsive replay tests
+passed. Both affected producers receive fresh committed-source captures.
+
+The inventory also encountered an unused historical image with the same basename
+as a current illustration. It now identifies the current source from actual built
+file bytes while preserving historical assets and rejecting genuinely ambiguous
+publication. RED/GREEN checks cover the reproduced duplicate and HTML-root escape;
+22 focused theme/inventory tests passed.
+
+The full CPU lane passed 3,723 tests with four optional UI skips and 836 deselections
+(601.45 s), including executable documentation examples. The complete strict bootstrap
+site also passed. Final registry enforcement and browser checks follow the fresh
+captures; no final release approval is inferred from these results.

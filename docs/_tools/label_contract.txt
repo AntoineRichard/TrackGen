@@ -159,9 +159,13 @@ reference-results	W5	reference/results
 reference-runtime	W5	reference/runtime
 reference-testing	W5	reference/testing
 relax-gate-coupling	W6	relaxation/constraints
+relax-iteration-comparison	W6	relaxation/convergence
 relax-knobs	W6	relaxation/constraints
+relax-margin-comparison	W6	relaxation/constraints
+relax-smoothing-comparison	W6	relaxation/solver
 rendering-assets	W6	contributing/rendering-assets
 repulsive-dynamic	W6	generators/repulsive
+repulsive-limits	W6	generators/repulsive
 result-contracts	W5	reference/result-contracts
 results	W2	user-guide/results
 results-check-source	W5	reference/result-contracts
@@ -180,6 +184,7 @@ rl-cost	W3	user-guide/rl-auto-reset
 rl-in-graph	W3	user-guide/rl-auto-reset
 rl-masked-regeneration	W3	user-guide/rl-auto-reset
 rl-valid-recipe	W3	user-guide/rl-auto-reset
+sampling-stages	W2	configuration/tuning
 stage-bounded	W5	reference/stage-contracts
 stage-builder	W5	reference/generator-contracts
 stage-capture-classes	W5	reference/generator-contracts
@@ -230,6 +235,7 @@ utilities-components	W3	utilities/overview
 utilities-invalid-envs	W3	utilities/overview
 utilities-self-reset	W3	utilities/overview
 utilities-sources	W3	utilities/overview
+visual-tour	W7	getting-started/visual-tour
 voronoi-dynamic	W6	generators/voronoi
 width-config	W5	configuration/reference
 writing-a-component	W4	contributing/writing-a-component

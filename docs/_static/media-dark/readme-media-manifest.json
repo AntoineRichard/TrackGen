@@ -1,0 +1,12 @@
+{
+  "theme": "dark",
+  "render_geometry": {
+    "readme-pipeline-stages.png": "3ff1e93b3b9a2e39798e4c183cfa3c4d848c2e2648fd52f43e06f0b402066dec",
+    "batch-of-tracks.png": "002aad08545ec6aa5284b2e2cd1292183f621d5b222808f40d0833a31a8863b5"
+  },
+  "assets": [
+    "readme-pipeline-stages.png",
+    "batch-of-tracks.png"
+  ],
+  "published_only": true
+}

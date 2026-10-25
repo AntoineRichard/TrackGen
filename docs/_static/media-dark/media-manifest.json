@@ -1,0 +1,726 @@
+{
+  "assets": {
+    "batch-of-tracks.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/batch-of-tracks.png",
+      "dark_sha256": "e11b76ab648abcd9afa83a898c5987c87cfca87f4b2b82785d6f045a06b3368d",
+      "kind": "image",
+      "light": "assets/batch-of-tracks.png",
+      "light_sha256": "d8697c57fc8b5513e8b0369b7a8fdb64e562fb03642109af3efaf883c219736d",
+      "producer": "readme"
+    },
+    "boundary-props.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/boundary-props.png",
+      "dark_sha256": "a727c84a5e9dea7eecd08c25464f90ed770d8f0b997aa5a2e1e3cc3428523e1a",
+      "kind": "image",
+      "light": "assets/boundary-props.png",
+      "light_sha256": "5f7583898e3a4f737b7a89ad72d704d032c6c612b33d5d16f5980dc226a6d2d8",
+      "producer": "utility"
+    },
+    "checkpoints-overview.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/checkpoints-overview.png",
+      "dark_sha256": "144e44d822c38475ebaf3c1361506d830ab041c24a08601dc7ce97e0da73fcaa",
+      "kind": "image",
+      "light": "assets/checkpoints-overview.png",
+      "light_sha256": "156cea63c1f7bfaa0eebc75e201be535f47e4e5ce279115d2f60385a469f0ff2",
+      "producer": "utility"
+    },
+    "controls-elevation-knobs.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/controls-elevation-knobs.png",
+      "dark_sha256": "1eb1f2397c34e1bc73ba2b133db7cb43891adeef44bbdeb85e9307a790c03965",
+      "kind": "image",
+      "light": "assets/racing/controls-elevation-knobs.png",
+      "light_sha256": "ad5f74a576f231ead9b43e390b2237d8021f255b3486dcdec7cb971a58a6edee",
+      "producer": "course"
+    },
+    "controls-elevation.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/controls-elevation.png",
+      "dark_sha256": "c1dfa06e5173c19a5cf8a609b5b99f9c770bf811de598ed3ce86ccffbc0c16cb",
+      "kind": "image",
+      "light": "assets/racing/controls-elevation.png",
+      "light_sha256": "3bbd586d0cba7a14c548cc0e04162c54b03d795b9d41d9a32c14b330a498e595",
+      "producer": "course"
+    },
+    "controls-gate-capacity.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/controls-gate-capacity.png",
+      "dark_sha256": "beaeb667bbbcaf618700f40eeba0fa6f54700172520525a147ed1dd2c0dc738f",
+      "kind": "image",
+      "light": "assets/racing/controls-gate-capacity.png",
+      "light_sha256": "41c0cf55a4af08504bd01411c4cdaae46c03a6cfd614d67a15eba7910bd3b455",
+      "producer": "course"
+    },
+    "controls-gate-elevation.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/controls-gate-elevation.png",
+      "dark_sha256": "5bd3bf931c7aeaa125533c20e1de89ae98294288d87ced7476fc98c91ea1f8f1",
+      "kind": "image",
+      "light": "assets/racing/controls-gate-elevation.png",
+      "light_sha256": "b4f3bcf5fce69cebc303f275c189c3515b37c0859f9ca4ac9fcf52ce4efe8cc7",
+      "producer": "course"
+    },
+    "controls-gate-frames.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/controls-gate-frames.png",
+      "dark_sha256": "08a39c74664b63b8819778b33dd685e96f33bbe08d8a07ab61bb6a75263051ce",
+      "kind": "image",
+      "light": "assets/racing/controls-gate-frames.png",
+      "light_sha256": "2a999716553afcc982dfea5d2aa45a6fa5c4edf9f83f0c402160ca4f9e9d1cf5",
+      "producer": "course"
+    },
+    "controls-gate-order-width.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/controls-gate-order-width.png",
+      "dark_sha256": "248292877204811de50d02aa07df325588d8ce5f22c267f8829e018c4e474725",
+      "kind": "image",
+      "light": "assets/racing/controls-gate-order-width.png",
+      "light_sha256": "a5c4c7ba628dd591d83adb2fa92dee6ba8aea61de65d347fd62170e7e9f33093",
+      "producer": "course"
+    },
+    "controls-gate-radius.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/controls-gate-radius.png",
+      "dark_sha256": "8a8a6cb7dc04f8494c074308b2ca6f5387e0862058e51881cb0f367c44d32556",
+      "kind": "image",
+      "light": "assets/racing/controls-gate-radius.png",
+      "light_sha256": "d937143bb4ca6a877e0dab5006abd77131f0d4f8deb6a2331fef416d0ebf1685",
+      "producer": "course"
+    },
+    "controls-gate-sources.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/controls-gate-sources.png",
+      "dark_sha256": "adf2b95126f2c3b70a5f411f4678adc233a34bfe38d7d116c4c2f187735c7abc",
+      "kind": "image",
+      "light": "assets/racing/controls-gate-sources.png",
+      "light_sha256": "a58cb0db57ba7b5d99a62eaa0f70fb41118fc5538e66f392700225680999b854",
+      "producer": "course"
+    },
+    "controls-resolution.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/controls-resolution.png",
+      "dark_sha256": "2efaa63fcb32cf0ab4098fa5a293ed63fe967693181599e2b8a1155adb6b0635",
+      "kind": "image",
+      "light": "assets/racing/controls-resolution.png",
+      "light_sha256": "b6877ab097751f35da8821ffae71935dc61493b2405074a41a21a6e0e5f323ed",
+      "producer": "course"
+    },
+    "controls-sampling-capacity.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/controls-sampling-capacity.png",
+      "dark_sha256": "c6835888b00bbd0d1defe287c878e80d693f879fbee604e618f1efe23b18fec7",
+      "kind": "image",
+      "light": "assets/racing/controls-sampling-capacity.png",
+      "light_sha256": "f912d2abdc5f949f960c38c04e2539906b3f6fd17c420c1d61b5a62aa7dfc261",
+      "producer": "course"
+    },
+    "controls-size-width.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/controls-size-width.png",
+      "dark_sha256": "2ba33149fd6e9ed9544a126298246c8d1ad4514b367fe6c65ff97668ec21ab6f",
+      "kind": "image",
+      "light": "assets/racing/controls-size-width.png",
+      "light_sha256": "325ec6cd624ed995f71d8da33aa7bdfa3bc8b348ee6cb3acb30ef0e8418816c2",
+      "producer": "course"
+    },
+    "controls-stations-3d.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/controls-stations-3d.png",
+      "dark_sha256": "5fa3fc89d1ad94ca7aca88035098190220ddc28cdaf6104a4e1bf2b5b6e17990",
+      "kind": "image",
+      "light": "assets/racing/controls-stations-3d.png",
+      "light_sha256": "1c6427b3a34784e2e53984e689851d6f6b3ab0cf3f7ff12e7e1eff8040cf2fc0",
+      "producer": "course"
+    },
+    "controls-width-channel.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/controls-width-channel.png",
+      "dark_sha256": "81764a13433fa1bb437217135963916b613b1a9ae598f3e947af4b551f5c8e7e",
+      "kind": "image",
+      "light": "assets/racing/controls-width-channel.png",
+      "light_sha256": "393df21c3dfebd3917b7e5bbb7ed42efb484b7735fc2efadf62c17193d399c01",
+      "producer": "course"
+    },
+    "data-gate-course.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/data-gate-course.png",
+      "dark_sha256": "47839f38f56e246152ff8c84f46153b68b363d7a6d01862a213b5923f7cffa03",
+      "kind": "image",
+      "light": "assets/racing/data-gate-course.png",
+      "light_sha256": "af8885af7f50d3218e6b3ff6984ca2fcd69cb5119ffb23fa1b862b324ba07aca",
+      "producer": "data"
+    },
+    "data-import.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/data-import.png",
+      "dark_sha256": "f0f69e9141e6e4e5aae9dbbfc666202524ced4d45a67be90bbe6c88d39f5c3d7",
+      "kind": "image",
+      "light": "assets/racing/data-import.png",
+      "light_sha256": "b41d837788b6bf7bab7d3ac1e420e1d87f581b63ec5896661ce09c74e4ac52d5",
+      "producer": "data"
+    },
+    "data-layout.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/data-layout.png",
+      "dark_sha256": "f65218a407ff4f26b107ca16c13318d52bc4e39cc238035467c91566dd6b4f41",
+      "kind": "image",
+      "light": "assets/racing/data-layout.png",
+      "light_sha256": "0ab8d952d8f2be974f5749e9d23a981bda53dcfa2442374d96faade781d48966",
+      "producer": "data"
+    },
+    "data-lifecycle.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/data-lifecycle.png",
+      "dark_sha256": "d96d4b551c6c1ecd49a37c40b2cd5e86e451c4fc1ca445b9b27ce4234642a2a3",
+      "kind": "image",
+      "light": "assets/racing/data-lifecycle.png",
+      "light_sha256": "c0ed57f898163de38fee9195e459cc526fe5dc82a1583a8571a893aea2fe9b8d",
+      "producer": "data"
+    },
+    "generator-bezier-construction.mp4": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/generator-bezier-construction.mp4",
+      "dark_sha256": "ed9e6a358fb6d55416bdd69243cc7f331dd9503b2b5331b2f9be649e6c73a9f2",
+      "kind": "video",
+      "light": "assets/racing/generator-bezier-construction.mp4",
+      "light_sha256": "3551c91bba4d4554c7bca3723a05e596355aef22227b3dc7eedb844d8e4a2daf",
+      "producer": "generators"
+    },
+    "generator-bezier-construction.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/generator-bezier-construction.png",
+      "dark_sha256": "bbf71c93162e71879e4dd25dc052a6cbfd517a01a52e64630bf2b0bd88cebdd5",
+      "kind": "image",
+      "light": "assets/racing/generator-bezier-construction.png",
+      "light_sha256": "29c8dd43a420f9afde7375df06539dff0dcd4a063cb8208833dbccbe54a112c8",
+      "producer": "generators"
+    },
+    "generator-bezier-controls-more.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/generator-bezier-controls-more.png",
+      "dark_sha256": "c76aedf118d555bb8345c0406141017069cfa6eeae2c7582dc2686a9c291e4ca",
+      "kind": "image",
+      "light": "assets/racing/generator-bezier-controls-more.png",
+      "light_sha256": "35421b1cf7bf025cf31a00158f8f86f8bcc9f98e130a17b31333b5392c17f12c",
+      "producer": "generators"
+    },
+    "generator-bezier-controls.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/generator-bezier-controls.png",
+      "dark_sha256": "be59db62f44d924560cb929bcd8dc0febcf329355e633bb152d949fc18b05ac8",
+      "kind": "image",
+      "light": "assets/racing/generator-bezier-controls.png",
+      "light_sha256": "1aea744489934a798b3f8284ffe5ea9b4cb36e561d69be269e78ddf8e03b0c0a",
+      "producer": "generators"
+    },
+    "generator-bezier-examples.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/generator-bezier-examples.png",
+      "dark_sha256": "2affcac49e356a83fc8565fe28538b23b00e3090669030aecd98409cdeb4377e",
+      "kind": "image",
+      "light": "assets/racing/generator-bezier-examples.png",
+      "light_sha256": "73ee32f956e17470f21ebb14aa9ea0f8134a42cfab02609661585f5d89572a13",
+      "producer": "generators"
+    },
+    "generator-bezier-sampling.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/generator-bezier-sampling.png",
+      "dark_sha256": "723b2d708c747803d9f5938c4c987217ac74ad19daf82a63b26f47d53d003175",
+      "kind": "image",
+      "light": "assets/racing/generator-bezier-sampling.png",
+      "light_sha256": "17f557a353cd2b52319c4cbb9fec8788146514552a697d85328249169ab0b97c",
+      "producer": "generators"
+    },
+    "generator-checkpoint-candidates.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/generator-checkpoint-candidates.png",
+      "dark_sha256": "fbcb9863a7125d819bc166e786a49d382e9dcf8a5bf96a8aa14c2d1499580e7c",
+      "kind": "image",
+      "light": "assets/racing/generator-checkpoint-candidates.png",
+      "light_sha256": "64f8d0a7755bdf9cbedd8aa4afa8eb208b92c8a94071e8206689edc506b96ad8",
+      "producer": "generators"
+    },
+    "generator-checkpoint-construction.mp4": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/generator-checkpoint-construction.mp4",
+      "dark_sha256": "3274af812fc690c6b29949dd9b865cd4aa03a6cb718a0055b935adae00244979",
+      "kind": "video",
+      "light": "assets/racing/generator-checkpoint-construction.mp4",
+      "light_sha256": "34414ce09c0e4907c5942466fb4f3692338395b121b97550fd5f20f714574853",
+      "producer": "generators"
+    },
+    "generator-checkpoint-construction.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/generator-checkpoint-construction.png",
+      "dark_sha256": "9ae865ec87a822f50869990b9b74f168b62b4fd600061abc2187f678eb80e8ad",
+      "kind": "image",
+      "light": "assets/racing/generator-checkpoint-construction.png",
+      "light_sha256": "921543650fa1f64aea40fccb15fac81969c247f8b183a84375d17de62c237a63",
+      "producer": "generators"
+    },
+    "generator-checkpoint-controls-more.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/generator-checkpoint-controls-more.png",
+      "dark_sha256": "fa3dd2ac31c9db696bb34368c844f3f84d011cbf977eef6550f616603853715b",
+      "kind": "image",
+      "light": "assets/racing/generator-checkpoint-controls-more.png",
+      "light_sha256": "2d6b9923f244d12403c2d0db0120a1e27b5c692c35f4ac069b83dfd12250b263",
+      "producer": "generators"
+    },
+    "generator-checkpoint-controls.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/generator-checkpoint-controls.png",
+      "dark_sha256": "e8167da6c4370c4f0ab737d073b0ee9bb1eea5c1407310bfc02d9a836f773ab8",
+      "kind": "image",
+      "light": "assets/racing/generator-checkpoint-controls.png",
+      "light_sha256": "cdd369ec8f9cb6592527fc44d67d41cf63bb0dca54567877a306d876d931fb4a",
+      "producer": "generators"
+    },
+    "generator-checkpoint-examples.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/generator-checkpoint-examples.png",
+      "dark_sha256": "18d0e8167c72ade89eb94ed878e0cf6969c944abf8aa614d6817f28972b56dbd",
+      "kind": "image",
+      "light": "assets/racing/generator-checkpoint-examples.png",
+      "light_sha256": "47e93bc44507deb2cd9740e20b34d6e8ba2bd616719bd07d3812e9b6c5ec3023",
+      "producer": "generators"
+    },
+    "generator-checkpoint-fallback.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/generator-checkpoint-fallback.png",
+      "dark_sha256": "0618e8c30a361d85a406e731eadf1de044ebf3911b2cc5f773ba60f5c2a71f83",
+      "kind": "image",
+      "light": "assets/racing/generator-checkpoint-fallback.png",
+      "light_sha256": "4712428e8c430f18da27f3e41642275570384ab28488b1bb37da015d16439b3c",
+      "producer": "generators"
+    },
+    "generator-hull-construction.mp4": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/generator-hull-construction.mp4",
+      "dark_sha256": "bd22cde81d018c0132d0434618584fa28b83fbce1928d4aa70a9fdfecb41b5ef",
+      "kind": "video",
+      "light": "assets/racing/generator-hull-construction.mp4",
+      "light_sha256": "95ce3d4bbd60c7f33522458803fb39925d13ce3413e9edb47b9baf97710c9c0e",
+      "producer": "generators"
+    },
+    "generator-hull-construction.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/generator-hull-construction.png",
+      "dark_sha256": "6b8b7b90fb7508df109b759ed304cc3cd64e48c006c6fb4f04f177c012dbeb8d",
+      "kind": "image",
+      "light": "assets/racing/generator-hull-construction.png",
+      "light_sha256": "13708f96567b040dd519f7f8e2b55c0797624504062c0a23e83eefbba370a150",
+      "producer": "generators"
+    },
+    "generator-hull-controls-more.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/generator-hull-controls-more.png",
+      "dark_sha256": "c60b78e168351b3b55b974787887d15a5a912e7dc6b837f445f26d0524694eeb",
+      "kind": "image",
+      "light": "assets/racing/generator-hull-controls-more.png",
+      "light_sha256": "4909ddd681026084e1f963589c3a5563ab5cdc88a1882007c9021966dc312d6e",
+      "producer": "generators"
+    },
+    "generator-hull-controls.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/generator-hull-controls.png",
+      "dark_sha256": "85a89f7033fa996a70eed278f509a1047da78821242444277aff85612274039a",
+      "kind": "image",
+      "light": "assets/racing/generator-hull-controls.png",
+      "light_sha256": "9fbc3a3a619cda9609077fc307046ddc4c15524bf0a1ecf5a27adade2eb7ccf1",
+      "producer": "generators"
+    },
+    "generator-hull-examples.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/generator-hull-examples.png",
+      "dark_sha256": "a5cb993c87c317a5ced5405c88d43e24db87d2f7cceec0f70552472ef92d89a6",
+      "kind": "image",
+      "light": "assets/racing/generator-hull-examples.png",
+      "light_sha256": "c0a6d20fb2ee106ede8d7b21b8f084dd387d814e2325511c5dd573d6ea3fba2c",
+      "producer": "generators"
+    },
+    "generator-hull-sampling.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/generator-hull-sampling.png",
+      "dark_sha256": "0768120a320ba9f1282bdf44e77c35e99f4ce3bda094245e51bfcc0243978b1c",
+      "kind": "image",
+      "light": "assets/racing/generator-hull-sampling.png",
+      "light_sha256": "f7f1d94932a240a02d488de1300982c742ac2ee3facf839de53104b9d509e14c",
+      "producer": "generators"
+    },
+    "generator-polar-construction-poster.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/generator-polar-construction-poster.png",
+      "dark_sha256": "555a050caff0f6823c5ccae3fc24871570dbb5d5f9bae9866734cc6d521fa2c8",
+      "kind": "image",
+      "light": "assets/racing/generator-polar-construction-poster.png",
+      "light_sha256": "ee10393ac9e2ce927eac904a07cf80817517dc6cad0cbc56365e9948446425cb",
+      "producer": "generators"
+    },
+    "generator-polar-construction.mp4": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/generator-polar-construction.mp4",
+      "dark_sha256": "ef4660f066b764188aa9886177e31bedee6ace697705f03deddd0473b2728bad",
+      "kind": "video",
+      "light": "assets/racing/generator-polar-construction.mp4",
+      "light_sha256": "489fa4ab8be8a59d65f55230d4f3a2e876c3b7d3f5dafc65c9a3b0766f85278d",
+      "producer": "generators"
+    },
+    "generator-polar-construction.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/generator-polar-construction.png",
+      "dark_sha256": "93d717743c58a3f79d7cd03a1c126c3f6a3fae3f6c6fcb89435f3a00b619ab26",
+      "kind": "image",
+      "light": "assets/racing/generator-polar-construction.png",
+      "light_sha256": "222a4f5c14313a7a5c9d281bf11fc4f6684871af2333c510cbba0e1b5ffe1c02",
+      "producer": "generators"
+    },
+    "generator-polar-controls.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/generator-polar-controls.png",
+      "dark_sha256": "c79a6e846ffdedec3047dce884f21abf59ce101c627aeb39b0eb7e2f20779439",
+      "kind": "image",
+      "light": "assets/racing/generator-polar-controls.png",
+      "light_sha256": "7d2b8fb76cf6a75eeb49796edf565efda5dfba076173e361ca7b60cd6765ae78",
+      "producer": "generators"
+    },
+    "generator-polar-examples.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/generator-polar-examples.png",
+      "dark_sha256": "aaaba36c451391e60f2d9332b0a6353304418308986c29f5965b14e11d867d99",
+      "kind": "image",
+      "light": "assets/racing/generator-polar-examples.png",
+      "light_sha256": "1c2dad1505ee758e82324285d222913d00013653ed712a96a1f183fc64f38f8f",
+      "producer": "generators"
+    },
+    "generator-polar-sampling.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/generator-polar-sampling.png",
+      "dark_sha256": "7f3787d41b7c84237b157f5b426bef11d31c8e4759e44629f262d63be1b1fa2d",
+      "kind": "image",
+      "light": "assets/racing/generator-polar-sampling.png",
+      "light_sha256": "8d5e709f77e684f4fbdc4dddfb9765a1213d586cfdd9f82f6417d069fc3b0f0d",
+      "producer": "generators"
+    },
+    "generator-repulsive-controls-more.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/generator-repulsive-controls-more.png",
+      "dark_sha256": "7ed8aed4dc7c8e308b2a87f2e4fb19d26d63d9f6912ac60d41203d1612d5a65d",
+      "kind": "image",
+      "light": "assets/racing/generator-repulsive-controls-more.png",
+      "light_sha256": "fcb2dea7006d40bd8bc072d4da2d0e38cf808e6434ba32ac42dc58909331540e",
+      "producer": "generators"
+    },
+    "generator-repulsive-controls-obstacles.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/generator-repulsive-controls-obstacles.png",
+      "dark_sha256": "7586cc3464ae4538a6a4fb453bdd4d4fd1dbb09cc041b8689d69e1af46478c58",
+      "kind": "image",
+      "light": "assets/racing/generator-repulsive-controls-obstacles.png",
+      "light_sha256": "afb5dfdc30d42a3157bc77533a54c4ac156b65314036a29c20144dbace7131c0",
+      "producer": "generators"
+    },
+    "generator-repulsive-controls.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/generator-repulsive-controls.png",
+      "dark_sha256": "315cc04b62ccf7477bdf5783a3a55822be92d7e33caecd04d586ac93b44730fc",
+      "kind": "image",
+      "light": "assets/racing/generator-repulsive-controls.png",
+      "light_sha256": "dccfee52c3f192ac1a6a75b39080a4d2771f5dde078b61cb7da9e6ea36e68ac8",
+      "producer": "generators"
+    },
+    "generator-repulsive-examples.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/generator-repulsive-examples.png",
+      "dark_sha256": "2b8396f8f408f19429d5972549c37b4148606f8fc072eb1712c3d757a4deb9e7",
+      "kind": "image",
+      "light": "assets/racing/generator-repulsive-examples.png",
+      "light_sha256": "0b362279d80cc90380c24e2a6ebbc849d7f5fdc4068e576537a6fe1529ad9b58",
+      "producer": "generators"
+    },
+    "generator-repulsive-growth.mp4": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/generator-repulsive-growth.mp4",
+      "dark_sha256": "2f72c365e386be8f12851c8a92ecee66fa4f6f0693b6e3dbacfe317987bade5f",
+      "kind": "video",
+      "light": "assets/racing/generator-repulsive-growth.mp4",
+      "light_sha256": "2833447300b178eee86e54784ab1a5885f03a7172d01c2106d2c6303d525d6c6",
+      "producer": "generators"
+    },
+    "generator-repulsive-growth.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/generator-repulsive-growth.png",
+      "dark_sha256": "bfd576ebe47f258e66b7f2499184148aac983d3730b6a5678ba1deaabb7f00af",
+      "kind": "image",
+      "light": "assets/racing/generator-repulsive-growth.png",
+      "light_sha256": "05a8b314596f6336b354c2b528b852e4e97e437959e3c2f2a6eb8a50d4f33e72",
+      "producer": "generators"
+    },
+    "generator-repulsive-limits.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/generator-repulsive-limits.png",
+      "dark_sha256": "8938262610eec0feaba8934451cb3ac41bd25479aa96c7f1ae79ab8133c9960b",
+      "kind": "image",
+      "light": "assets/racing/generator-repulsive-limits.png",
+      "light_sha256": "0484b92f108e7d0bca3c54def0f1cbdc1e077fe6563a3de4c4f734c6d0a3f57f",
+      "producer": "generators"
+    },
+    "generator-repulsive-numerics.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/generator-repulsive-numerics.png",
+      "dark_sha256": "4b3463382433e94e8a1553bb1860aea91e4755105a181230a01c4f1b418377df",
+      "kind": "image",
+      "light": "assets/racing/generator-repulsive-numerics.png",
+      "light_sha256": "3d70c723c891ee3ac99b72a017cfcc94d4a8c41e7af660a5e5f1a8ef2a43026e",
+      "producer": "generators"
+    },
+    "generator-voronoi-construction.mp4": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/generator-voronoi-construction.mp4",
+      "dark_sha256": "28ffc9ca6739dd609eb6408271014badbd051bcc68911f2fc764f7012e60cfd2",
+      "kind": "video",
+      "light": "assets/racing/generator-voronoi-construction.mp4",
+      "light_sha256": "e5423dd7e6029e587a9150dd04243aab5ade66d90a5a0c30df34c35f9a6c5aaa",
+      "producer": "generators"
+    },
+    "generator-voronoi-construction.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/generator-voronoi-construction.png",
+      "dark_sha256": "e9ce4426d6e91592e03d6e6d7b2a8b595c953738b4cd91066435a247b73edecd",
+      "kind": "image",
+      "light": "assets/racing/generator-voronoi-construction.png",
+      "light_sha256": "31477a2c8d2e77aff9660f9b79058d45e48826744b19e92febc4e6167f1c2dd5",
+      "producer": "generators"
+    },
+    "generator-voronoi-controls-more.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/generator-voronoi-controls-more.png",
+      "dark_sha256": "24c4a5028047a95a79688becd96c879c2dd47091534507b4fea65d4f7d1285ba",
+      "kind": "image",
+      "light": "assets/racing/generator-voronoi-controls-more.png",
+      "light_sha256": "cc992d3f6a505217676ffe0d5e235abf86b7d8a665cc06c8b46a84709aa2bcb9",
+      "producer": "generators"
+    },
+    "generator-voronoi-controls.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/generator-voronoi-controls.png",
+      "dark_sha256": "f4b5b4c302dc61ad0cb39b17b8fa663e58113f28c2637d35f7d4c6c042c05942",
+      "kind": "image",
+      "light": "assets/racing/generator-voronoi-controls.png",
+      "light_sha256": "4222d9e73599a9b9ce68b86fde4a0a20ee619e9ba7df5a5c6ebd47568df66460",
+      "producer": "generators"
+    },
+    "generator-voronoi-examples.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/generator-voronoi-examples.png",
+      "dark_sha256": "b60cb8638f0393e727dfd5e90d3a27e5f84baff1a32ad5110928b298a4e64e93",
+      "kind": "image",
+      "light": "assets/racing/generator-voronoi-examples.png",
+      "light_sha256": "b249627c561005c8c05266fa9471cb97112bcd8d6e7968c146562f37339080a5",
+      "producer": "generators"
+    },
+    "generator-voronoi-layouts.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/generator-voronoi-layouts.png",
+      "dark_sha256": "75b181c0eac1b14de91423b15359051bcfb199558bb28d74ab641cb43729ca1c",
+      "kind": "image",
+      "light": "assets/racing/generator-voronoi-layouts.png",
+      "light_sha256": "f034ca7cb04948cd58c51949ec9779f9bbc018291e52a7a0feba84a8ff40c2ea",
+      "producer": "generators"
+    },
+    "generator-voronoi-sampling.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/generator-voronoi-sampling.png",
+      "dark_sha256": "b2607e6a6fefc97e2dba6e29003d0720dfde4b18ffc8f05d93f8572c9f19b7a5",
+      "kind": "image",
+      "light": "assets/racing/generator-voronoi-sampling.png",
+      "light_sha256": "d959f9bcb72f9d2d9e0949b4f7c5817755231d06b6f8898499fe62a190a1aa67",
+      "producer": "generators"
+    },
+    "generators-gallery.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/generators-gallery.png",
+      "dark_sha256": "4bce7510e25f92b3fb34d406f9b93b9d6a2f6c384c7dee8f2f5eb6ce808fabc2",
+      "kind": "image",
+      "light": "assets/racing/generators-gallery.png",
+      "light_sha256": "b4fdc03ebe831d78f2f65cbcd8785ef8772449a5dfbcc059a1bcd5a185daaa38",
+      "producer": "generators"
+    },
+    "geometry-constraints.svg": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/geometry-constraints.svg",
+      "dark_sha256": "e0748bdf1b8b6a179d4ba663334d2d4a1f2d946e42abdcb1b8f8b3bd96faa449",
+      "kind": "image",
+      "light": "assets/racing/geometry-constraints.svg",
+      "light_sha256": "4c4c41e360329d9fbe31d67a68784662b282bee217623afbb429b293eb92df88",
+      "producer": "collision"
+    },
+    "geometry-crossing-predicates.svg": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/geometry-crossing-predicates.svg",
+      "dark_sha256": "4f5ae19235e7a2263f3938281e7477d19b06fd5b20a49a25e598e143dd2f16be",
+      "kind": "image",
+      "light": "assets/racing/geometry-crossing-predicates.svg",
+      "light_sha256": "6c19254ce0de8b8aceff768cd62bda5df778b5c7a9d6abe30db36922468467a8",
+      "producer": "collision"
+    },
+    "geometry-footprints.svg": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/geometry-footprints.svg",
+      "dark_sha256": "36ec0c44c8a795d37734644a50f90723679a8a95f2d02ff5ed5e79ea74b234b9",
+      "kind": "image",
+      "light": "assets/racing/geometry-footprints.svg",
+      "light_sha256": "d54c0761bc8ad18508aa9e0c4fc5a555525119f3f7bf16c83221f1bbb54245ef",
+      "producer": "collision"
+    },
+    "geometry-obstacles.svg": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/geometry-obstacles.svg",
+      "dark_sha256": "3f1be62873b473df855dcd2858334ee57aec10e2dcc9861b140199eec17e7a8d",
+      "kind": "image",
+      "light": "assets/racing/geometry-obstacles.svg",
+      "light_sha256": "b0fb2d3422781f09142849a4833a5a56452ec5c1add56d8f99e3b00d20874db7",
+      "producer": "collision"
+    },
+    "geometry-sdf.svg": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/geometry-sdf.svg",
+      "dark_sha256": "74bf85f708579720e3588e0d3b29a29eb4ac04cacf29013c54cf6cc2b71e9427",
+      "kind": "image",
+      "light": "assets/racing/geometry-sdf.svg",
+      "light_sha256": "b8d11811eae03b1c3f059f3f4486ed5b11ed3f221eaa3b8106fda3c2bda9509f",
+      "producer": "collision"
+    },
+    "geometry-validity.svg": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/geometry-validity.svg",
+      "dark_sha256": "83ceedb08c3669b2a4e15a6c3a89210ea1ffb93a7f66e1a5539cba43eb71c30c",
+      "kind": "image",
+      "light": "assets/racing/geometry-validity.svg",
+      "light_sha256": "778c1259f93526ad23e37d1d9dd50186fbc4f0d834cdd1c1a83235410fa43962",
+      "producer": "collision"
+    },
+    "parameter-explorer.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/parameter-explorer.png",
+      "dark_sha256": "3ff31f78705019b32c83f5e4d737db688862022517d091da1f68df59bbc03cd6",
+      "kind": "image",
+      "light": "assets/parameter-explorer.png",
+      "light_sha256": "033b44672a9b140008061b13a652f0b4290b55eca8ba49c8ccd4b8e398dcb41d",
+      "producer": "explorer"
+    },
+    "pipeline-sampling.mp4": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/pipeline-sampling.mp4",
+      "dark_sha256": "2d9a4580f7e589a308df812b6a2f195c0543fa33cec6c25d8e92cde1ceae036e",
+      "kind": "video",
+      "light": "assets/racing/pipeline-sampling.mp4",
+      "light_sha256": "55e91bf9964ce0ffe18199e2ef686afe14296b075df22815065849c31f56f8d0",
+      "producer": "generators"
+    },
+    "pipeline-sampling.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/pipeline-sampling.png",
+      "dark_sha256": "5c78c555bb188fc722872c3d964c74cc6115a5378efcefee0037c6fa57df367e",
+      "kind": "image",
+      "light": "assets/racing/pipeline-sampling.png",
+      "light_sha256": "e094a17a9f770545d091ee6938a907f5d2aa2f204dd4bc3edd3fc7071ce66371",
+      "producer": "generators"
+    },
+    "progress-tracking.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/progress-tracking.png",
+      "dark_sha256": "ed4d9988c4dd11ee3c2f7bfad447657810feebd472beb91af6328a7d03a97a29",
+      "kind": "image",
+      "light": "assets/progress-tracking.png",
+      "light_sha256": "5c4a177b0c6c0104af014495f47eddf85781a4e74bbd041c88f59b11f21e5b46",
+      "producer": "utility"
+    },
+    "readme-pipeline-stages.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/readme-pipeline-stages.png",
+      "dark_sha256": "2c87ca51662e221adf96156f6c099fd5b3301dc412058751b91e6ad047285e68",
+      "kind": "image",
+      "light": "assets/readme-pipeline-stages.png",
+      "light_sha256": "88ef39e8b0ff238d6c8fac4216766a4c1a07edfb3f953066129961b28dfd3604",
+      "producer": "readme"
+    },
+    "relaxation-gates-iterations-poster.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/relaxation-gates-iterations-poster.png",
+      "dark_sha256": "92f027be3539dc61b338c5a045e10767b26532f10f5062688beb540173ced1cd",
+      "kind": "image",
+      "light": "_static/relaxation-gates-iterations-poster.png",
+      "light_sha256": "91cc2ab4f74fb7a569a98f6a9d78c497fc40cc5166f72c01992832d5e1e9730d",
+      "producer": "xpbd-gate"
+    },
+    "relaxation-gates-iterations.mp4": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/relaxation-gates-iterations.mp4",
+      "dark_sha256": "2858a1c276b6c04cd3a4860b55fb8b2cf932ffad25f8ae7f7965d1fb60b2a6ca",
+      "kind": "video",
+      "light": "_static/relaxation-gates-iterations.mp4",
+      "light_sha256": "ce8b1c42eda718b15b1c5ca4a7d917ec8f5192709b777295ad9d9720b03741f6",
+      "producer": "xpbd-gate"
+    },
+    "relaxation-iterations-poster.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/relaxation-iterations-poster.png",
+      "dark_sha256": "778a4c6f5e6857431acb8499e56f089a31b24772b48b5fe9487a59efdf44f18b",
+      "kind": "image",
+      "light": "_static/relaxation-iterations-poster.png",
+      "light_sha256": "cf042fb5f30728234f4482be21b739dee94411238dfbe55ce07102e432e8c680",
+      "producer": "xpbd-track"
+    },
+    "relaxation-iterations.mp4": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/relaxation-iterations.mp4",
+      "dark_sha256": "ae83cb0e1bfee4594316364589b3f56b751924e39e5eba185b5971eb32b13d47",
+      "kind": "video",
+      "light": "_static/relaxation-iterations.mp4",
+      "light_sha256": "4cfbdb8b622c04b022bd47d64251589b7f1c8f21d9223f94d4ef77d4bfc1ae4e",
+      "producer": "xpbd-track"
+    },
+    "relaxation-iterations.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/relaxation-iterations.png",
+      "dark_sha256": "392d4cfe062369aeab146a7a445e62101438b917c79ee3658b582994ebecb882",
+      "kind": "image",
+      "light": "assets/racing/relaxation-iterations.png",
+      "light_sha256": "8b19d9639c8f469420959e09cdd223c32bfee2a1e9819acee76ab88eb4ace573",
+      "producer": "relaxation-guide"
+    },
+    "relaxation-margin.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/relaxation-margin.png",
+      "dark_sha256": "2fba76103ba86ddbb8409ea9178450785ad27ae4f18eff8458f721720ba8817d",
+      "kind": "image",
+      "light": "assets/racing/relaxation-margin.png",
+      "light_sha256": "2f9df5cd9da38b44ab22e628119d8131d47f6035aef2120c3cace4f4aafac801",
+      "producer": "relaxation-guide"
+    },
+    "relaxation-smoothing.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/relaxation-smoothing.png",
+      "dark_sha256": "1f335a2bf6ca4431091e7dade7cbbdcdc74a4bd9a51bdcbee00985669a7acb38",
+      "kind": "image",
+      "light": "assets/racing/relaxation-smoothing.png",
+      "light_sha256": "0b3cf21fc65a339f34381f3fbe23bca4399dcd900e84b64d8593e27a82445f28",
+      "producer": "relaxation-guide"
+    },
+    "utilities-overview.png": {
+      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "dark": "_static/media-dark/utilities-overview.png",
+      "dark_sha256": "389d980ee4cfdca5e97ad63f8a0e9e451da1514cfe550758423d94ab5cc067a9",
+      "kind": "image",
+      "light": "assets/utilities-overview.png",
+      "light_sha256": "17c262e6c65b85d9c81b3d4938c9e271efec7d5625f6f1d8b085b064fe110677",
+      "producer": "utility"
+    }
+  },
+  "capture_note": "Original palette-specific renders from committed sources; native explorer UI capture. Image and video geometry is shared between themes; no raster recoloring.",
+  "format": 1
+}

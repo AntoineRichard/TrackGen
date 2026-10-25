@@ -131,3 +131,53 @@ def test_inventory_final_mode_hashes_both_variants_and_includes_download_only(tm
     with pytest.raises(ValueError,match='story.mp4'):
         tool.inventory(html,source,require_pairs=True)
     assert 'dark_sha256' not in tool.inventory(html,source)['assets']['story.mp4']
+
+
+def test_inventory_uses_built_bytes_to_ignore_an_unpublished_duplicate(tmp_path):
+    tool = _tool()
+    source = tmp_path/'docs'
+    html = tmp_path/'html'
+    for directory in (source/'assets/racing', html/'guide', html/'_images'):
+        directory.mkdir(parents=True)
+    old = source/'assets/curve.png'
+    current = source/'assets/racing/curve.png'
+    old.write_bytes(b'unpublished historical pixels')
+    current.write_bytes(b'published current pixels')
+    (html/'_images/curve.png').write_bytes(current.read_bytes())
+    (html/'guide/index.html').write_text('<img src="../_images/curve.png">')
+    result = tool.inventory(html, source)
+    assert result['assets']['curve.png']['light'] == 'assets/racing/curve.png'
+    assert old.read_bytes() == b'unpublished historical pixels'
+
+
+def test_inventory_rejects_distinct_published_sources_with_the_same_basename(tmp_path):
+    tool = _tool()
+    source = tmp_path/'docs'
+    html = tmp_path/'html'
+    for directory in (source/'assets/racing', html/'_images', html/'_downloads/hash'):
+        directory.mkdir(parents=True)
+    first = source/'assets/curve.png'
+    second = source/'assets/racing/curve.png'
+    first.write_bytes(b'first published pixels')
+    second.write_bytes(b'second published pixels')
+    (html/'_images/curve.png').write_bytes(first.read_bytes())
+    (html/'_downloads/hash/curve.png').write_bytes(second.read_bytes())
+    (html/'index.html').write_text(
+        '<img src="_images/curve.png"><a href="_downloads/hash/curve.png">Other figure</a>')
+    with pytest.raises(ValueError, match='Ambiguous published media basename'):
+        tool.inventory(html, source)
+
+
+def test_inventory_does_not_read_built_media_outside_the_html_root(tmp_path):
+    tool = _tool()
+    source = tmp_path/'docs'
+    html = tmp_path/'html'
+    outside = tmp_path/'outside'
+    for directory in (source/'assets/racing', html, outside):
+        directory.mkdir(parents=True)
+    (source/'assets/curve.png').write_bytes(b'old pixels')
+    (source/'assets/racing/curve.png').write_bytes(b'current pixels')
+    (outside/'curve.png').write_bytes(b'current pixels')
+    (html/'index.html').write_text('<img src="../outside/curve.png">')
+    with pytest.raises(ValueError, match='outside HTML root'):
+        tool.inventory(html, source)
