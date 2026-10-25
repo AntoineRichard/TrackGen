@@ -1,8 +1,8 @@
 Track relaxation — overview
 ===========================
 
-Relaxation is the **second stage** of the runtime pipeline. It sits between the
-constant-spacing resample and the constant-width inflation:
+Relaxation is the core :term:`stage` of the runtime pipeline. It sits between the
+constant-spacing resample (and the width stage) and the constant-width inflation:
 
 .. code-block:: text
 
@@ -46,14 +46,14 @@ Because the gate is applied post-relax, relaxation is the single stage that dete
 end-to-end yield. At the library defaults the current solver reaches **~0.999**
 relaxed-valid yield.
 
-What changed
-------------
+The default solve
+-----------------
 
-The relaxation solve was recently accelerated. The default is now **50
-Chebyshev-accelerated Jacobi sweeps** (``relax_iters=50``, ``relax_accel="chebyshev"``),
-replacing the previous **150 plain-Jacobi sweeps**. The accelerated solve reaches
-equal-or-higher yield and equal-or-better quality in a third of the sweeps, and roughly
-half the wall-clock — see :doc:`convergence` for the measured tables. A short
+The default is **50 Chebyshev-accelerated Jacobi sweeps** (``relax_iters=50``,
+``relax_accel="chebyshev"``). Plain Jacobi (``relax_accel="none"``) needs about **150
+sweeps** for the same result: the accelerated solve reaches equal-or-higher yield and
+equal-or-better quality in a third of the sweeps, and roughly half the wall-clock (see
+:doc:`convergence` for the measured tables). A short
 **post-solve smoothing tail** (shrink-free Taubin passes plus spacing polish,
 ``relax_smooth_passes`` / ``relax_smooth_spacing_iters``) then strips the fine curvature
 noise the constraints' deadband leaves behind, cutting curvature-difference RMS by ~a
@@ -67,14 +67,24 @@ The four pages
   why the separation target deliberately overshoots the validity gate's floor, and why
   weakening that overshoot was measured to collapse yield.
 - :doc:`solver` — how the solve executes: Jacobi double-buffering, the dense and cached
-  separation execution modes, and the **Chebyshev semi-iterative acceleration** that is
-  the substance of the recent update.
-- :doc:`convergence` — convergence behaviour and tuning: why plain Jacobi needed ~150
+  separation execution modes, and the **Chebyshev semi-iterative acceleration** that
+  makes 50 sweeps enough.
+- :doc:`convergence` — convergence behaviour and tuning: why plain Jacobi needs ~150
   sweeps, what acceleration buys (with measured yield/quality/timing tables), the
   ``relax_sep_every`` short-run pitfall, tuning guidance, and a list of measured dead
   ends.
 
-The implementation lives in ``track_gen/_src/warp_relax.py`` (setup + solve); the
-pipeline glue and post-relax validity gate live in ``track_gen/_src/warp_pipeline.py``
-(``_run_pipeline``, ``_validity_k``, ``_thickness_func``, ``RelaxScratch``). It is the
-only production relax backend used by ``TrackGenerator`` (``relax_solver="xpbd"``).
+The implementation lives in ``track_gen/_src/warp_relax.py`` (setup + solve), run by the
+``relax.xpbd`` stage of ``track_gen/stages/track.py``; its scratch (``RelaxScratch``) and
+the post-relax validity gate (``_validity_k``, ``_thickness_func``) live in
+``track_gen/_src/warp_pipeline.py``. ``relax.xpbd`` is the built-in relax stage
+(``relax_solver="xpbd"``, the default); ``relax.none`` skips relaxation, and a plugin can
+register another (:ref:`the relax contract <stage-relax-contract>`).
+
+.. toctree::
+   :maxdepth: 1
+   :hidden:
+
+   constraints
+   solver
+   convergence

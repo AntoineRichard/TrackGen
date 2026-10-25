@@ -1,0 +1,9 @@
+device cpu  E 8192  B 8  boxes/query 65536  sdf 128^2 (671 MB)
+generate(): 3.31s   sdf bake(): 42321.1 ms (paid per regeneration)
+
+backend      eager/query   graph/query
+segments      162.423 ms             -
+sdf            42.324 ms             -
+
+oob rate 0.214   flag agreement 0.9991
+sdf |distance error| vs exact: mean 0.00022  p99 0.00440  max 0.03997

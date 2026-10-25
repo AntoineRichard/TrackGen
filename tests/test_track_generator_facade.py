@@ -119,18 +119,50 @@ def test_generate_reuses_output_buffers():
 
 
 def test_relax_solver_energy_raises():
-    """TrackGenerator must reject relax_solver != 'xpbd' at construction time."""
-    cfg = TrackGenConfig(relax_solver="energy", num_envs=4)
+    """TrackGenerator must reject the oracle-only relax_solver backends at construction
+    time (relax_solver names a registered relax stage, roadmap PR10b)."""
     rng = _make_rng(4)
-    with pytest.raises(AssertionError):
-        TrackGenerator(cfg, rng)
+    # ValueError, not assert: the check must survive ``python -O``.
+    for name in ("energy", "tp_sobolev"):
+        cfg = TrackGenConfig(relax_solver=name, num_envs=4)
+        with pytest.raises(ValueError, match=(
+                rf"^TrackGenConfig.relax_solver='{name}' is an oracle-only backend "
+                r"\(tests/_oracle\), not a relax stage; TrackGenerator runs a registered "
+                r"relax stage: \['none', 'xpbd'\]$")):
+            TrackGenerator(cfg, rng)
+
+
+def test_relax_solver_and_z_profile_resolve_through_the_registry():
+    rng = _make_rng(4)
+    with pytest.raises(ValueError, match=r"^TrackGenConfig.relax_solver: unknown relax "
+                                         r"'bogus'; available: \['none', 'xpbd'\]$"):
+        TrackGenerator(TrackGenConfig(relax_solver="bogus", num_envs=4), rng)
+    with pytest.raises(ValueError, match=r"^TrackGenConfig.z_profile: unknown elevation "
+                                         r"'bogus'; available: \['flat', 'noise', "
+                                         r"'random_walk', 'uniform'\]$"):
+        TrackGenerator(TrackGenConfig(z_profile="bogus", num_envs=4), rng)
+    # relax_solver is resolved even with relax disabled; relax_enable=False -> relax.none
+    with pytest.raises(ValueError, match="relax_solver: unknown relax"):
+        TrackGenerator(TrackGenConfig(relax_solver="bogus", relax_enable=False,
+                                      num_envs=4), rng)
+    gen = TrackGenerator(TrackGenConfig(relax_enable=False, num_envs=4), rng)
+    assert gen.program._kinds["relax"] == ("relax", "none")
 
 
 def test_smooth_finish_raises():
     """TrackGenerator must reject smooth_finish=True at construction time."""
     cfg = TrackGenConfig(smooth_finish=True, num_envs=4)
     rng = _make_rng(4)
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValueError, match="smooth_finish"):
+        TrackGenerator(cfg, rng)
+
+
+def test_rng_seed_count_mismatch_raises():
+    """An rng sized for a different batch is rejected at construction (mirrors
+    GateGenerator), not as an opaque wp.copy size error on the first generate()."""
+    cfg = TrackGenConfig(num_envs=4, device="cpu")
+    rng = _make_rng(3)
+    with pytest.raises(ValueError, match="num_envs"):
         TrackGenerator(cfg, rng)
 
 
@@ -152,19 +184,6 @@ def test_generate_rejects_sequence_ids():
     gen = TrackGenerator(cfg, rng)
     with pytest.raises(TypeError, match="does not accept explicit environment ids"):
         gen.generate([0, 1, 2, 3])
-
-
-def test_repeated_generate_is_deterministic_for_a_fixed_rng():
-    # Documented contract: output is deterministic for a fixed rng state (the same instance
-    # and buffers are reused in place). Callers reseed the rng to vary the batch.
-    E, N_max = 4, 128
-    cfg = TrackGenConfig(
-        generator="bezier", num_envs=E, num_points=64, N_max=N_max, device="cpu"
-    )
-    gen = TrackGenerator(cfg, _make_rng(E))
-    a = to_t(gen.generate(E).center).clone()
-    b = to_t(gen.generate(E).center).clone()
-    assert torch.equal(torch.nan_to_num(a), torch.nan_to_num(b))
 
 
 def test_generate_accepts_numpy_int_and_rejects_bool():

@@ -18,7 +18,7 @@ from track_gen._src.types import TrackGenConfig  # noqa: E402
 from track_gen._src.track_generator import TrackGenerator  # noqa: E402
 from track_gen._src.rng_utils import PerEnvSeededRNG  # noqa: E402
 
-DEVS = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
+from tests.conftest import DEVS  # noqa: E402
 
 
 def test_validity_border_check_defaults_off():

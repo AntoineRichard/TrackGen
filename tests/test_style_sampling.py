@@ -29,7 +29,12 @@ from track_gen._src import warp_pipeline as wpl  # noqa: E402
 from track_gen._src.types import TrackGenConfig  # noqa: E402
 from benchmarks import track_metrics as tm  # noqa: E402
 
-DEVS = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
+from tests.conftest import DEVS  # noqa: E402
+
+# Roadmap PR13d: bezier's style_sampling is deprecated (one DeprecationWarning per built
+# generator); this module still exercises it.
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:bezier's style_sampling is deprecated:DeprecationWarning")
 
 E = 256
 
@@ -44,7 +49,7 @@ def _generate(config, dev):
         seeds_wp, config,
         out_centerline=scratch.gen_centerline,
         out_valid_wp=scratch.gen_valid,
-        scratch=scratch,
+        scratch=scratch.gen,
     )
     if "cuda" in dev:
         wp.synchronize()

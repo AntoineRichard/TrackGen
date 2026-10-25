@@ -1,0 +1,37 @@
+name: linkcheck
+# External links of the docs (sphinx -b linkcheck). Strict on the weekly schedule and on
+# manual dispatch; informational on pull requests that touch the docs (a remote host
+# that is down, rate-limits or refuses CI addresses must not block a merge). It never
+# gates the Pages deploy (docs.yml). Hosts that refuse automated clients are listed in
+# linkcheck_ignore in docs/conf.py, each with its reason. Links that are expected to be
+# broken for a known, temporary reason are marked in the summary
+# (docs/_tools/linkcheck_summary.py, EXPECTED_BROKEN) but still checked. sphinx linkcheck
+# reads the docs sources only: README.md's links into the site are checked by
+# tests/test_docs_links.py and docs.yml; its other external links are not checked.
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch: {}
+  pull_request:
+    paths: ["docs/**"]
+permissions:
+  contents: read
+concurrency:
+  group: linkcheck-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  linkcheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[docs]"
+      - name: Check external links
+        continue-on-error: ${{ github.event_name == 'pull_request' }}
+        run: python -m sphinx -b linkcheck -q docs docs/_build/linkcheck
+      - name: Summary
+        if: always()
+        run: python docs/_tools/linkcheck_summary.py docs/_build/linkcheck >> "$GITHUB_STEP_SUMMARY"

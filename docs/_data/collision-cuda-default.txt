@@ -1,0 +1,9 @@
+device cuda  E 8192  B 8  boxes/query 65536  sdf 128^2 (671 MB)
+generate(): 0.13s   sdf bake(): 300.3 ms (paid per regeneration)
+
+backend      eager/query   graph/query
+segments        1.818 ms      0.914 ms
+sdf             1.020 ms      0.473 ms
+
+oob rate 0.214   flag agreement 0.9991
+sdf |distance error| vs exact: mean 0.00022  p99 0.00439  max 0.03997

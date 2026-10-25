@@ -9,15 +9,17 @@ penetrating disc is reported per box.
 
 Disc validity: pass ``count`` (``[E]`` int32 real discs per env) OR rely on
 NaN-marked padding (slots with NaN centers are skipped) — GateSequence
-``left``/``right`` arrays interleaved as posts work out of the box.
+``left``/``right`` arrays interleaved as posts work out of the box. Per-env validity
+(roadmap PR14): pass ``valid`` (``[E]`` int32, e.g. the gates' ``valid``): an env with
+``valid[e] == 0`` has no discs (``hit = 0``, ``disc = -1``, ``depth = 0``, NaN
+``nearest``: the answer of a poisoned env).
 
 Per-step inputs can be bound at construction (``position=``, ``orientation=``,
 ``half_extents=`` — all three or none): ``query()`` then takes no arguments
 and reads the stable buffers in place (the CUDA-graph pattern).
 
-Like the sibling ``CollisionChecker``, ``query()`` performs no host sync
-while capturing is enabled (``track_gen.set_capturing``), so it is
-CUDA-graph capturable.
+Like the sibling ``CollisionChecker``, ``query()`` performs no host sync,
+so it is CUDA-graph capturable as-is.
 """
 from __future__ import annotations
 
@@ -32,7 +34,9 @@ from .collision_geom import (
     _rot2,
     _safe_normalize2,
 )
-from .runtime import _check_arr, _init, _sync
+from ..exec.context import (LaunchContext, _call_context, _note_rebind,  # noqa: F401
+                            _probe_recorded)
+from .runtime import _check_arr, _init, _sync  # noqa: F401  (_sync: legacy re-export)
 
 
 @dataclass
@@ -82,6 +86,8 @@ class DiscContact:
 def _box_query_discs_k(
     discs: wp.array(dtype=wp.vec3f),
     disc_count: wp.array(dtype=wp.int32),
+    disc_valid: wp.array(dtype=wp.int32),
+    has_valid: int,
     d_max: int,
     radius: float,
     max_boxes: int,
@@ -112,6 +118,9 @@ def _box_query_discs_k(
     nd = disc_count[e]
     if nd > d_max:
         nd = d_max
+    if has_valid != 0:
+        if disc_valid[e] == 0:
+            nd = 0   # an invalid env has no discs (roadmap PR14)
     base = e * d_max
 
     best = int(-1)
@@ -158,7 +167,8 @@ class DiscChecker:
                  count: "wp.array | None" = None,
                  position: "wp.array | None" = None,
                  orientation: "wp.array | None" = None,
-                 half_extents: "wp.array | None" = None) -> None:
+                 half_extents: "wp.array | None" = None, *,
+                 valid: "wp.array | None" = None) -> None:
         """Bind a flat disc array and allocate the result buffers.
 
         Args:
@@ -176,6 +186,8 @@ class DiscChecker:
             position, orientation, half_extents: optional constructor binding
                 (all-or-none); equivalent to calling :meth:`bind_inputs`
                 right after construction.
+            valid: optional ``[E]`` int32 per-env validity (aliased, stable
+                buffer): an env with ``valid[e] == 0`` has no discs.
         """
         _init()
         if not (float(radius) > 0.0):
@@ -207,6 +219,12 @@ class DiscChecker:
         else:
             self._count = wp.full(E, self._D, dtype=wp.int32,
                                   device=self._device)
+        if valid is not None:
+            _check_arr("valid", valid, (E,), wp.int32, self._device)
+            if not valid.is_contiguous:
+                raise ValueError("valid must be contiguous")
+        self._valid = valid                # aliased: stable user buffer (or None)
+        self._recorded = False
 
         self._bound = None
         if position is not None or orientation is not None \
@@ -236,19 +254,38 @@ class DiscChecker:
         """Bind (or rebind) stable per-step input buffers (validated once).
 
         After binding, ``query()`` takes no arguments and reads these arrays
-        in place; same-``.ptr`` rule applies under CUDA-graph capture.
+        in place; same-``.ptr`` rule applies under CUDA-graph capture (replacing
+        one after ``query()`` was recorded warns:
+        :class:`~track_gen.exec.RebindAfterCaptureWarning`).
         """
         self._validate_inputs(position, orientation, half_extents)
-        self._bound = (position, orientation, half_extents)
+        new = (position, orientation, half_extents)
+        _note_rebind(self, self._bound, new, "query", stacklevel=2)
+        self._bound = new
+
+    @property
+    def result(self) -> DiscContact:
+        """The preallocated :class:`DiscContact` :meth:`query` writes and returns (the
+        same instance for the checker's lifetime)."""
+        return self._contact
 
     def query(self, position: "wp.array | None" = None,
               orientation: "wp.array | None" = None,
-              half_extents: "wp.array | None" = None) -> DiscContact:
+              half_extents: "wp.array | None" = None,
+              stream=None, *, ctx=None) -> DiscContact:
         """Box-vs-disc contact for ``E * max_boxes`` boxes.
 
         Bound mode (inputs bound at construction): call with no arguments.
         Per-call mode: pass all three arrays; under CUDA-graph capture the
         SAME arrays must be used at capture and every replay.
+
+        Args:
+            stream: optional wp.Stream (or 'torch') to run on; by default the
+                stream is resolved per track_gen.exec (an enclosing
+                torch.cuda.graph capture is adopted, else Warp's current
+                stream).
+            ctx: optional :class:`~track_gen.exec.LaunchContext` on the checker's
+                device to emit on (exclusive with ``stream=``: ``TypeError``).
         """
         if self._bound is not None:
             if position is not None or orientation is not None \
@@ -262,13 +299,16 @@ class DiscChecker:
                     "checker is not bound; pass position, orientation and "
                     "half_extents to query()")
             self._validate_inputs(position, orientation, half_extents)
+        ctx = _call_context(self._device, stream, ctx)
+        _probe_recorded(self, ctx)
         c = self._contact
-        wp.launch(
-            _box_query_discs_k, dim=self._E * self._B,
-            inputs=[self._discs, self._count, self._D, self._radius, self._B,
-                    position, orientation, half_extents,
-                    c.hit, c.disc, c.depth, c.nearest],
-            device=self._device,
+        valid = self._valid
+        ctx.launch(
+            _box_query_discs_k, self._E * self._B,
+            [self._discs, self._count, self._count if valid is None else valid,
+             0 if valid is None else 1, self._D, self._radius, self._B,
+             position, orientation, half_extents,
+             c.hit, c.disc, c.depth, c.nearest],
         )
-        _sync(self._device)
+        ctx.sync()
         return c

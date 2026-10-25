@@ -1,0 +1,6 @@
+generator,yield,gen_ms_per_call
+bezier,0.9982,60.15
+checkpoint,0.994,66.58
+hull,0.9919,61.95
+polar,0.9999,61.03
+voronoi,1,140

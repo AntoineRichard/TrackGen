@@ -1,0 +1,1 @@
+Apple M5 Pro CPU (arm64, macOS 26.7), Warp 1.18.0 cpu device, measured 2026-10-24

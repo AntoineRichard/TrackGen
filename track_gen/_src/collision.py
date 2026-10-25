@@ -1,17 +1,23 @@
 """Batched box-vs-track out-of-bounds queries (segments backend + facade).
 
-``CollisionChecker`` binds to a :class:`Track` batch and answers, per oriented
-box, whether the box has left the drivable band (inside the outer loop AND
+``CollisionChecker`` binds to a :class:`~track_gen.results.Track` batch and answers, per
+oriented box, whether the box has left the drivable band (inside the outer loop AND
 outside the inner loop), with full contact info. The default ``segments``
 backend is exact: one Warp thread per box scans the env's boundary segments.
 The ``sdf`` backend (``collision_sdf.py``) trades exactness near boundaries
-for O(1) queries against baked per-env signed-distance grids.
+for cheap queries against baked per-env signed-distance grids: the minimum of
+the interpolated field over the box outline and centre.
 
 Layout follows the package conventions: flat ``[E * max_boxes]`` wp.arrays,
 NaN for inactive slots, in-place reuse of the output ``BoxContact`` across
-``query()`` calls (use ``clone()`` for snapshots), and no host syncs while
-capturing is enabled (``track_gen.set_capturing``) so ``query()``/``bake()``
-are CUDA-graph capturable.
+``query()`` calls (use ``clone()`` for snapshots), and no host syncs, so
+``query()``/``bake()`` are CUDA-graph capturable as-is.
+
+Invalid envs (roadmap PR14): when the source has ``valid``, an env with ``valid[e] ==
+0`` reads like a poisoned (degenerate) one with both backends: every active box gets
+``oob = 1``, NaN ``distance`` / ``nearest`` / ``normal`` and ``boundary = -1`` (the SDF
+bake writes NaN phi, ``bid = -1`` and the box ``(-1, -1)-(1, 1)``); inactive slots (NaN
+position) keep ``oob = 0``.
 """
 from __future__ import annotations
 
@@ -31,8 +37,10 @@ from .collision_geom import (
     _safe_normalize2,
     _seg_hits_aabb,
 )
-from .runtime import _BIG, _check_arr, _init, _sync
-from .types import Track
+from ..exec.context import (LaunchContext, _call_context, _note_rebind,  # noqa: F401
+                            _probe_recorded)
+from .runtime import _BIG, _check_arr, _init, _sync  # noqa: F401  (_sync: legacy re-export)
+from ..results import HasBand, _check_and_bind
 
 
 @dataclass
@@ -53,7 +61,10 @@ class BoxContact:
         ``float32`` signed clearance: positive = margin from the box to the
         nearest boundary; negative = deepest corner penetration when OOB
         (0.0 when the box only edge-crosses a boundary with all corners
-        inside). NaN for inactive slots. Cf. :class:`DiscContact.depth
+        inside). With ``method="sdf"`` it is the minimum of the interpolated
+        signed-distance field over the box outline and centre, so an edge
+        crossing a side reads negative too (``oob == (distance < 0)``).
+        NaN for inactive slots. Cf. :class:`DiscContact.depth
         <track_gen.collision.DiscContact>`, which reports an UNSIGNED
         penetration depth (0.0 = no hit) rather than a signed clearance.
     nearest : wp.array
@@ -61,8 +72,10 @@ class BoxContact:
     normal : wp.array
         ``vec2f`` boundary normal at ``nearest``, pointing INTO the band.
     boundary : wp.array
-        ``int32`` — 0 = inner boundary, 1 = outer boundary, -1 = inactive slot
-        or degenerate track (count < 3).
+        ``int32`` — 0 = inner boundary, 1 = outer boundary, -1 = inactive slot,
+        degenerate track (count < 3) or invalid env (``valid[e] == 0``); with
+        ``method="sdf"`` also -1 for a box whose corners are not finite (NaN or inf
+        half-extents, yaw or position; reported ``oob=1`` with NaN geometry).
     """
 
     oob: wp.array
@@ -88,6 +101,8 @@ def _box_query_segments_k(
     outer: wp.array(dtype=wp.vec3f),
     center: wp.array(dtype=wp.vec3f),
     count: wp.array(dtype=wp.int32),
+    valid: wp.array(dtype=wp.int32),
+    has_valid: int,
     n_max: int,
     max_boxes: int,
     position: wp.array(dtype=wp.vec3f),
@@ -117,6 +132,9 @@ def _box_query_segments_k(
     m = count[e]
     if m > n_max:
         m = n_max
+    if has_valid != 0:
+        if valid[e] == 0:
+            m = 0   # an invalid env reads like a poisoned one (roadmap PR14)
     if m < 3:
         # Degenerate/invalid track: conservative OOB, NaN geometry.
         out_oob[t] = 1
@@ -263,26 +281,34 @@ def _box_query_segments_k(
 
 
 class CollisionChecker:
-    """Batched box-vs-track out-of-bounds checker bound to a :class:`Track`.
+    """Batched box-vs-track out-of-bounds checker bound to a
+    :class:`~track_gen.results.Track`.
 
     Because ``TrackGenerator.generate()`` overwrites its ``Track`` buffers in
     place, the ``segments`` backend always reads the CURRENT track batch with
     no rebind step. The ``sdf`` backend requires ``bake()`` after each
     ``generate()`` call.
 
-    ``query()`` is allocation-free and, under graph capture (enabled via
-    ``track_gen.set_capturing``), host-sync-free (CUDA-graph capturable). In
-    normal (non-capturing) use a ``wp.synchronize()`` follows the launch,
-    per the codebase idiom. ``query()`` returns the same preallocated
-    :class:`BoxContact` on every call.
+    ``query()`` is allocation-free and host-sync-free (CUDA-graph
+    capturable); its launches are stream-ordered, so a consumer on another
+    stream must order itself explicitly. ``query()`` returns the same
+    preallocated :class:`BoxContact` on every call (:attr:`result`).
+
+    The source's ``valid`` is read when present (checked at construction like the
+    required members): an invalid env reads as out of bounds with NaN
+    geometry (see the module docstring).
     """
 
-    def __init__(self, track: Track, max_boxes: int, method: str = "segments",
+    #: The topologies this component supports (closed loops only in 0.x).
+    topology = "closed"
+
+    def __init__(self, track: HasBand, max_boxes: int, method: str = "segments",
                  sdf_resolution: int = 128, sdf_padding: "float | None" = None,
                  position: "wp.array | None" = None,
                  orientation: "wp.array | None" = None,
                  half_extents: "wp.array | None" = None) -> None:
-        """Bind to a :class:`Track` batch and allocate the result buffers.
+        """Bind to a :class:`~track_gen.results.Track` batch and allocate the result
+        buffers.
 
         Args:
             track: the bound track batch; the ``segments`` backend reads its
@@ -315,17 +341,17 @@ class CollisionChecker:
         if sdf_padding is not None and float(sdf_padding) <= 0.0:
             raise ValueError(
                 f"sdf_padding must be > 0 (or None for auto), got {sdf_padding!r}")
-        E = int(track.count.shape[0])
-        stride = int(track.outer.shape[0])
-        if E < 1 or stride % E != 0:
-            raise ValueError(
-                f"track batch layout invalid: outer has {stride} slots for {E} envs")
-        self._track = track
+        # The members checked here are the ones bound (read once: stable pointers).
+        lay, self._track = _check_and_bind(track, HasBand, consumer="CollisionChecker",
+                                           members=("center", "outer", "inner", "count"),
+                                           optional=("valid",), topology=self.topology)
+        E = int(lay.num_envs)
         self._method = method
+        self._recorded = False
         self._E = E
-        self._n_max = stride // E
+        self._n_max = int(lay.stride)
         self._B = int(max_boxes)
-        self._device = str(track.outer.device)
+        self._device = lay.device
 
         n = E * self._B
         dev = self._device
@@ -353,31 +379,54 @@ class CollisionChecker:
             self._sdf_bid = wp.zeros(E * R * R, dtype=wp.int8, device=dev)
             self.bake()
 
-    def bake(self) -> None:
+    @property
+    def method(self) -> str:
+        """The backend, ``"segments"`` or ``"sdf"`` (read-only)."""
+        return self._method
+
+    @property
+    def result(self) -> BoxContact:
+        """The preallocated :class:`BoxContact` :meth:`query` writes and returns (the
+        same instance for the checker's lifetime)."""
+        return self._contact
+
+    def _valid_args(self) -> tuple:
+        t = self._track
+        return (t.count, 0) if t.valid is None else (t.valid, 1)
+
+    def bake(self, stream=None, *, ctx=None) -> None:
         """(Re)bake the per-env SDF grids from the bound Track.
 
         Required after every ``TrackGenerator.generate()`` call when
         ``method="sdf"`` (the segments backend needs no rebake). Pure kernel
         launches — CUDA-graph capturable.
 
+        Args:
+            stream: optional wp.Stream (or 'torch') to run on; by default the
+                stream is resolved per track_gen.exec (an enclosing
+                torch.cuda.graph capture is adopted, else Warp's current
+                stream).
+            ctx: optional :class:`~track_gen.exec.LaunchContext` on the checker's
+                device to emit on (exclusive with ``stream=``: ``TypeError``).
+
         Raises:
             ValueError: if this checker was constructed with ``method="segments"``.
         """
         if self._method != "sdf":
             raise ValueError("bake() is only valid for method='sdf' checkers")
+        ctx = _call_context(self._device, stream, ctx)
         from . import collision_sdf
         t = self._track
         E = self._E
         R = self._sdf_resolution
-        wp.launch(collision_sdf._track_aabb_k, dim=E,
-                  inputs=[t.outer, t.count, self._n_max,
-                          self._sdf_padding, 0.1, self._sdf_lo, self._sdf_hi],
-                  device=self._device)
-        wp.launch(collision_sdf._sdf_bake_k, dim=E * R * R,
-                  inputs=[t.inner, t.outer, t.count, self._n_max, R,
-                          self._sdf_lo, self._sdf_hi, self._sdf_phi, self._sdf_bid],
-                  device=self._device)
-        _sync(self._device)
+        valid, has_valid = self._valid_args()
+        ctx.launch(collision_sdf._track_aabb_k, E,
+                   [t.outer, t.count, valid, has_valid, self._n_max,
+                    self._sdf_padding, 0.1, self._sdf_lo, self._sdf_hi])
+        ctx.launch(collision_sdf._sdf_bake_k, E * R * R,
+                   [t.inner, t.outer, t.count, valid, has_valid, self._n_max, R,
+                    self._sdf_lo, self._sdf_hi, self._sdf_phi, self._sdf_bid])
+        ctx.sync()
 
     def _validate_inputs(self, position, orientation, half_extents) -> None:
         n = (self._E * self._B,)
@@ -392,14 +441,19 @@ class CollisionChecker:
         After binding, ``query()`` takes no arguments and reads these arrays
         in place each call — the natural CUDA-graph pattern: the sim writes
         poses into its stable buffers and replays the captured query. The
-        arrays must keep the same ``.ptr`` for the binding's lifetime.
+        arrays must keep the same ``.ptr`` for the binding's lifetime: replacing
+        one after ``query()`` was recorded into a capture warns
+        (:class:`~track_gen.exec.RebindAfterCaptureWarning`).
         """
         self._validate_inputs(position, orientation, half_extents)
-        self._bound = (position, orientation, half_extents)
+        new = (position, orientation, half_extents)
+        _note_rebind(self, self._bound, new, "query", stacklevel=2)
+        self._bound = new
 
     def query(self, position: "wp.array | None" = None,
               orientation: "wp.array | None" = None,
-              half_extents: "wp.array | None" = None) -> BoxContact:
+              half_extents: "wp.array | None" = None,
+              stream=None, *, ctx=None) -> BoxContact:
         """Compute contact info for ``E * max_boxes`` oriented boxes.
 
         Two modes:
@@ -422,6 +476,12 @@ class CollisionChecker:
                 Required in per-call mode; omit in bound mode.
             half_extents: ``[E*max_boxes]`` ``vec2f`` per-box half sizes
                 (planar boxes). Required in per-call mode; omit in bound mode.
+            stream: optional wp.Stream (or 'torch') to run on; by default the
+                stream is resolved per track_gen.exec (an enclosing
+                torch.cuda.graph capture is adopted, else Warp's current
+                stream).
+            ctx: optional :class:`~track_gen.exec.LaunchContext` on the checker's
+                device to emit on (exclusive with ``stream=``: ``TypeError``).
 
         Returns:
             The checker's preallocated :class:`BoxContact` (same instance every
@@ -444,26 +504,28 @@ class CollisionChecker:
                     "checker is not bound; pass position, orientation and "
                     "half_extents to query() or call bind_inputs() first")
             self._validate_inputs(position, orientation, half_extents)
+        ctx = _call_context(self._device, stream, ctx)
+        _probe_recorded(self, ctx)
         n = self._E * self._B
         t = self._track
         c = self._contact
         if self._method == "segments":
-            wp.launch(
-                _box_query_segments_k, dim=n,
-                inputs=[t.inner, t.outer, t.center, t.count, self._n_max, self._B,
-                        position, orientation, half_extents,
-                        c.oob, c.distance, c.nearest, c.normal, c.boundary],
-                device=self._device,
+            valid, has_valid = self._valid_args()
+            ctx.launch(
+                _box_query_segments_k, n,
+                [t.inner, t.outer, t.center, t.count, valid, has_valid,
+                 self._n_max, self._B,
+                 position, orientation, half_extents,
+                 c.oob, c.distance, c.nearest, c.normal, c.boundary],
             )
         else:
             from . import collision_sdf
-            wp.launch(
-                collision_sdf._box_query_sdf_k, dim=n,
-                inputs=[self._sdf_lo, self._sdf_hi, self._sdf_phi, self._sdf_bid,
-                        self._sdf_resolution, self._B,
-                        position, orientation, half_extents,
-                        c.oob, c.distance, c.nearest, c.normal, c.boundary],
-                device=self._device,
+            ctx.launch(
+                collision_sdf._box_query_sdf_k, n,
+                [self._sdf_lo, self._sdf_hi, self._sdf_phi, self._sdf_bid,
+                 self._sdf_resolution, self._B,
+                 position, orientation, half_extents,
+                 c.oob, c.distance, c.nearest, c.normal, c.boundary],
             )
-        _sync(self._device)
+        ctx.sync()
         return c

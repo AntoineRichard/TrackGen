@@ -4,21 +4,33 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "track_gen"
-version = "0.1.0"
+version = "0.2.0"
 description = "GPU-batched race-track generator with centerline relaxation."
 requires-python = ">=3.10"
 # Warp-native runtime: the shipped package is pure NVIDIA Warp + numpy. torch and scipy
 # are NOT runtime deps — they are used only by the test suite + the torch oracle (tests/_oracle)
 # and the experimental Fourier generator, so they live in the dev extra.
-dependencies = ["numpy", "warp-lang>=1.14"]
+# warp-lang: 1.18 floor (CI tests the floor and the newest 1.x); <2 keeps an unvetted
+# major release out. Warp 1.18's PyPI wheels need an NVIDIA driver >= R580 and sm_75+.
+dependencies = ["numpy", "warp-lang>=1.18,<2"]
 
 [project.optional-dependencies]
 dev = ["pytest", "matplotlib", "scipy", "torch"]
 ui = ["gradio"]
-docs = ["sphinx", "furo", "sphinx-copybutton", "sphinx-design"]
+# docs: the build runs with -W, nitpicky and a local extension (docs/_ext) that uses
+# Sphinx events and its inventory API, so a new Sphinx major is taken deliberately:
+# raise the bound after a local `python docs/_tools/build_ci_env.py` build passes.
+docs = ["sphinx>=8.1,<10", "furo", "sphinx-copybutton", "sphinx-design"]
 
 [tool.setuptools.packages.find]
 include = ["track_gen*"]
+# Prototypes (torch/matplotlib-dependent, unsupported) stay in the source tree only.
+exclude = ["track_gen._experimental*"]
+
+# Also drop them as package data: a stale track_gen.egg-info/SOURCES.txt (e.g. from an
+# earlier editable install) would otherwise re-add the excluded files to the wheel.
+[tool.setuptools.exclude-package-data]
+track_gen = ["_experimental/*"]
 
 [tool.pytest.ini_options]
 markers = [

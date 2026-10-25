@@ -2,14 +2,13 @@
 ===============
 
 Gate sequences (``GateGenerator``, tutorial at :doc:`/tutorials/gate-sequences`) are
-**2.5D**: the plan-view layout comes from the proven 2D centerline generators, and
-altitude (Z) is layered on afterwards as a first-class profiler stage. The result is a
-genuine 3D course — gates carry a ``vec3f`` position, a roll-free orientation
-quaternion, and can be flown, localized, and collided against in three dimensions —
-without giving up any of the 2D generators' layout quality or determinism. This page
-covers the 2.5D design, the four ``z_profile`` families and their knobs, the two
-``gate_align`` modes, the runtime parity with track mode, the validity rules, and the
-breaking changes from the pre-3D API.
+**2.5D**: the plan-view layout comes from the 2D gate generators, and altitude (Z) is
+layered on afterwards by an elevation :term:`stage`. The result is a genuine 3D course —
+gates carry a ``vec3f`` position, a roll-free orientation quaternion, and can be flown,
+localized, and collided against in three dimensions — without giving up any of the 2D
+generators' layout quality or determinism. This page covers the 2.5D design, the four
+altitude profiles and their knobs, the two ``gate_align`` modes, the runtime parity with
+track mode, the validity rules, and how to read 3D gate geometry.
 
 Why 2.5D
 --------
@@ -18,39 +17,50 @@ The 2D gate pipeline is well understood: each native generator (``bezier``, ``hu
 ``polar``, ``voronoi``, ``checkpoint``) samples corner anchors, they are ordered and
 bounding-box normalized, the :doc:`gate self-collision solve </relaxation/gates>`
 separates overlapping gates, and tangents follow. All of that is a plan-view (XY)
-computation and stays **bit-identical** to the 2D era.
+computation, unchanged by altitude.
 
 Altitude is added as a separate stage that runs on the final ordered, relaxed 2D
-anchors — *before* the lift to ``vec3f``. Concretely, in ``_run_gate_pipeline``
-(``track_gen/_src/warp_gate.py``) the stage order is:
+anchors — *before* the lift to ``vec3f``. The gate pipeline is a list of stages
+(:ref:`pipeline-gate-stages`), and its stage ids, in order, are:
 
 .. code-block:: text
 
-   raw anchors → ordering → bbox normalization → SPHERE RELAXATION
-       → Z PROFILE (writes per-gate z) → lift to vec3f → tangents → frames + validity
+   generator (anchors) → order → normalize → gate_relax (SPHERE RELAXATION)
+       → gate_arclen → elevation (Z PROFILE, writes per-gate z) → lift (to vec3f)
+       → tangents → gate_frames → validity
 
-Keeping Z orthogonal to the XY layout is what makes the feature cheap and safe: the
-plan-view generators are untouched, the Z stage is a single data-independent kernel
-launch (graph-capturable, zero per-call allocation), and turning altitude off
-(``z_profile="flat"`` with ``z_base=0``) reproduces the old planar course exactly.
+``normalize`` runs for the generators that ask for it (``polar``, ``voronoi``,
+``checkpoint``), and ``gate_arclen`` (the plan-view arc tables the profiles read) for a
+non-flat profile. Keeping Z orthogonal to the XY layout is what makes the feature cheap
+and safe: the plan-view generators are untouched, the Z stage is a single
+data-independent kernel launch (recordable in a CUDA graph, zero per-call allocation),
+and with altitude off (``elevation="flat"`` with ``z_base=0``) the course is planar.
+
+The ``elevation`` stage is the one tracks use: the pipeline rewires its ports from the
+centerline channels to the gate ones (:ref:`pipeline-gate-elevation`), so a plugin
+elevation runs on gates too. A gate generator that knows its own altitudes and tangents
+*provides* them instead: the pipeline then drops ``gate_arclen``, ``elevation`` and
+``tangents`` and keeps the generator's values (:ref:`pipeline-provides`).
 
 Altitude profiles
 -----------------
 
-``GateGenConfig.z_profile`` selects the altitude family. All four write every real gate
-slot and NaN the padding; the ``z_*`` knobs below are inert for the profiles they do not
-apply to.
+``presets.gates(elevation=...)`` selects the altitude family: one of the four built-ins
+below, by name or as ``(name, params)``, or any elevation stage a plugin registers
+(``GateGenConfig.z_profile`` and the flat ``z_*`` fields in a config,
+:ref:`gate-stage-shortcuts`). All four built-ins write every real gate slot and NaN the
+padding; the ``z_*`` knobs below are inert for the profiles they do not apply to.
 
 .. list-table::
    :header-rows: 1
    :widths: 18 52 30
 
-   * - ``z_profile``
+   * - ``elevation``
      - Altitude model
      - Knobs
    * - ``"flat"`` (default)
      - Every real gate sits at ``z_base``. With the default ``z_base=0`` this is the
-       old planar course.
+       planar course.
      - ``z_base``
    * - ``"uniform"``
      - Each gate's altitude is drawn i.i.d. uniform in ``[z_min, z_max]``.
@@ -73,6 +83,75 @@ apply to.
    ``z_max_step`` is a **grade**, not an absolute step: it bounds ``|dz|`` per unit
    plan-view arc length between adjacent gates, so widely spaced gates may still differ
    in altitude by more than ``z_max_step``.
+
+``z_min``, ``z_max``, ``z_max_step`` and ``z_noise_amplitude`` are per-:term:`env`
+(:term:`dynamic <dynamic field>`) parameters, as on tracks: ``presets.gates(randomize={"elevation.z_max": (lo, hi)})``
+draws them per env at every generation, and a curriculum writes
+``gen.params["elevation"][...]`` from its own graph. Which knob sets the difficulty for
+each profile, the window it needs and the crossing rules are on the track page
+(:ref:`tracks-25d-per-env`); the gate generators' own dynamic knobs are listed in
+:ref:`generators-per-env`, and the per-env bar width and course size in
+:ref:`gate-width-per-env`. The course size (``generator.size`` or ``normalize.size``)
+scales the plan view, not the altitude: the gates spread out while ``z`` keeps its range,
+so the grades between adjacent gates fall and the ``z_valid_grade`` check passes more envs
+at a larger :term:`size` (:ref:`tuning-size`).
+
+.. _gates-3d-stations:
+
+Gates on a track centerline: 3D spacing
+---------------------------------------
+
+Gates made from a track generator's centerline (``presets.gates(..., source="stations"
+or "relaxed_stations")``, :ref:`pipeline-stations`) are placed at equal arc length along
+the loop. By default that is plan-view arc length, and the altitude is drawn afterwards,
+over the gates, exactly as for an anchors generator. On a course that climbs, equal
+plan-view spacing is not equal flight distance: ``spacing_metric="xyz"`` places the
+stations at equal **3D** arc length instead. That needs the altitude on the loop before
+the stations are placed, from one of two sources:
+
+- a generator that computes its own altitude (``provides={"z"}``,
+  :ref:`generator-provides`);
+- with ``source="relaxed_stations"``, the elevation stage run on the relaxed centerline:
+  ``elevation_on="centerline"``.
+
+The stations then carry the altitude to the gates (``carry.z``, with the stations'
+``order.raw``), and no gate-level elevation runs.
+
+.. code-block:: python
+
+   from track_gen import GateGenerator
+   from track_gen.pipeline import presets
+
+   E, device = 64, "cuda:0"  # or "cpu"
+   spec = presets.gates(num_envs=E, device=device, generator="bezier",
+                        source="relaxed_stations", gates=12,
+                        elevation=("noise", {"z_noise_amplitude": 0.3,
+                                             "z_min": -0.3, "z_max": 0.3}),
+                        spacing_metric="xyz")       # elevation_on defaults to "centerline"
+   gates = GateGenerator(spec).generate()
+
+.. warning::
+
+   ``spacing_metric`` and ``elevation_on`` are separate controls, and ``elevation_on=None``
+   (the default) follows the metric: ``"centerline"`` for ``"xyz"``, ``"gates"`` for
+   ``"xy"``. **Switching the metric with the default** ``elevation_on`` **therefore also
+   moves the elevation** from the gates to the centerline, which changes the course, not
+   only the spacing: a profile drawn along the loop and sampled at the stations instead
+   of one drawn over the gates. For the knot profiles (``uniform``, ``random_walk``) the
+   knots then lie along the loop (``z_control_points`` of them) rather than at the gates.
+   To compare the two metrics on the same altitude model, pass ``elevation_on``
+   explicitly (``elevation_on="centerline"`` with both metrics). Moving a plugin
+   elevation to the centerline also drops its exported channels from
+   ``GateSequence.attributes`` (the stations carry generator attributes only).
+
+``elevation_on="gates"`` with ``"xyz"``, ``elevation_on="centerline"`` with
+``source="stations"`` (a raw loop has no sub-pipeline to elevate), ``"xyz"`` with no
+altitude on the loop (a flat elevation and no ``z`` provider), an explicit
+``elevation_on`` with a ``z`` provider (no elevation runs), ``"xyz"`` with an
+anchors generator, and an explicit order other than ``raw`` with an altitude on the loop
+raise ``ValueError``; :ref:`pipeline-stations-xyz` has the full table. The gate arc
+tables (``gate_arclen``) stay plan-view in every case: they feed the gate elevation, which
+produces the altitude a 3D metric would need.
 
 .. figure:: _static/gate-courses.png
    :alt: Three 3D gate courses, each as a plan view and an elevation profile
@@ -109,9 +188,31 @@ downstream consumers read — the removed ``normal`` field is recovered as
 Runtime parity
 --------------
 
-A gates-mode :doc:`Course </utilities/course>` drives these 3D courses exactly like track
-mode — **construct → bind → generate → step / reset** — with three additions that make
-the third dimension first-class:
+A gates-mode :term:`course` (``Course.gates``, :doc:`/utilities/course`) drives these 3D
+courses exactly like track mode — **construct → bind → step / reset / regenerate** — with
+three additions that make the third dimension first-class:
+
+.. code-block:: python
+
+   import warp as wp
+   from track_gen import tools
+   from track_gen.course import Course
+
+   course = Course.gates(
+       presets.gates(num_envs=E, device=device, gate_width=0.1, gate_align="full_tangent",
+                     elevation=("random_walk", {"z_base": 1.0, "z_min": 0.5,
+                                                "z_max": 1.5, "z_max_step": 0.3})),
+       collision=tools.FrameCollision(0.02, 0.01, 0.01),   # agent sphere vs gate frames
+       seeds=0)
+   course.bind(position=wp.zeros(E, dtype=wp.vec3f, device=device))
+   res = course.step()
+   res.frame.n_up            # [E] vertical offset from the course line
+   res.contacts.hit          # [E] 1: the agent's sphere touches a frame member
+
+.. snippet: after
+
+   assert res.frame.n_up.shape == (E,) and res.contacts.hit.shape == (E,)
+
 
 Pass detection
 ~~~~~~~~~~~~~~~
@@ -120,9 +221,9 @@ Progress is a **swept-segment plane-crossing** test: between two steps the agent
 segment is tested against the target gate's plane, and a pass is counted only when the
 crossing falls inside the opening — within the left-right extent **and** vertically within
 the gate's half-opening (``CheckpointSet.up_half``, aliased from ``GateSequence.half_size``).
-Because track cross-sections use an effectively unbounded vertical half-opening, planar
-motion behaves exactly as before; a gate course, by contrast, will not credit a pass for a
-drone that flies over or under the gate. ``res.events`` still exposes ``passed``,
+Track cross-sections use an effectively unbounded vertical half-opening, so planar
+motion is counted as on a flat course; a gate course, by contrast, will not credit a pass
+for a drone that flies over or under the gate. ``res.events`` still exposes ``passed``,
 ``dist_to_next``, and ``progress`` for reward shaping.
 
 Pass detection uses the gate's *physical* plane — the pose forward — in both alignment
@@ -132,12 +233,14 @@ stands.
 The track frame
 ~~~~~~~~~~~~~~~~
 
-In gates mode ``course.step()`` returns a ``StepResult`` whose third field, ``res.frame``,
+In gates mode ``course.step()`` returns a ``StepResult`` whose ``res.frame``
 is a :class:`~track_gen.localize.TrackFrame` localizing the agent on a closed 3D
 ``CourseLine`` spline (a periodic Catmull-Rom curve through the gate centers). It carries
 ``s`` (arc length along the spline), ``n`` (signed lateral offset, positive to the right
 of travel), ``n_up`` (signed vertical offset in the roll-free frame at the foot point), and
-``segment`` (nearest spline segment). In track mode ``res.frame`` is ``None``.
+``segment`` (nearest spline segment). In track mode ``res.frame`` is ``None``. For an
+invalid sequence (``res.valid[e] == 0``) the frame is NaN with ``segment = -1``
+(:ref:`utilities-invalid-envs`).
 
 The centerline is sampled at ``samples_per_gate`` uniform *spline-parameter* steps per
 gate segment — not constant 3D arc-length (samples bunch slightly where gates are close
@@ -147,25 +250,29 @@ polyline, so localization and progress are unaffected.
 Frame collision
 ~~~~~~~~~~~~~~~~
 
-Beyond the ``post_radius`` gate-post discs, gates mode offers ``frame_collision=True``:
-each square gate becomes four thin oriented frame members and a ``FrameChecker`` tests the
-agent **sphere** against them in the gate's own 3D frame. It requires ``frame_thickness``,
-``frame_depth``, and ``agent_radius`` all ``> 0`` and is **mutually exclusive** with
-``post_radius > 0`` (choose discs *or* frames). The contact is a ``FrameContact``
-(``hit``, ``depth``).
+Beyond the gate-post discs (``collision=<post radius>``), gates mode offers frame
+collision, ``collision=tools.FrameCollision(radius, frame_thickness, frame_depth)``: each
+square gate becomes four thin oriented frame members and a ``FrameChecker`` tests the
+agent **sphere** (of ``radius``) against them in the gate's own 3D frame. All three
+sizes must be ``> 0``, and a course has one collision: discs *or* frames. The contact is
+a ``FrameContact`` (``hit``, ``depth``). In a ``CourseConfig`` the same is
+``frame_collision=True`` with ``frame_thickness``, ``frame_depth`` and ``agent_radius``,
+exclusive with ``post_radius > 0``.
 
 Validity
 --------
 
-The 2D layout validity checks are unchanged: a sequence is rejected for the same planar
-reasons as before (degenerate counts, crossing gate bars under a positive ``gate_width``,
-and so on). The 3D pipeline adds one altitude check:
+The plan-view checks apply to 3D courses as to flat ones: a sequence is rejected for
+degenerate counts, crossing gate bars in an env whose bars have a positive width
+(:ref:`gate-width-invalid-fraction`), and so on. ``GateSequence.fail_mask`` says which
+check rejected an env (an :term:`invalid env`), one bit per check (:ref:`invalid-envs`). Altitude adds one check
+(fail bit ``grade``):
 
 - ``z_valid_grade`` — the maximum allowed ``|dz|/ds`` grade between adjacent gates
   (``ds`` = plan-view distance). A sequence with any adjacent pair steeper than this is
   marked invalid. ``z_valid_grade = 0`` (the default) **disables** the check.
 
-Two v1 limitations are explicit by design:
+Two limitations are explicit by design:
 
 1. **Plan-view self-crossings.** The track pipeline still rejects plan-view crossings, but
    a *gate course* may self-cross in XY on purpose — a stacked over/under section is a
@@ -178,33 +285,23 @@ Two v1 limitations are explicit by design:
 
 .. _gates-3d-migration:
 
-Migration from the 2D API
--------------------------
+Reading 3D geometry
+-------------------
 
-The 3D data model is a breaking change relative to the pre-3D gate/track API. Verbatim
-from the commit that introduced it:
+Gate and track geometry is 3D everywhere, flat courses included:
 
-.. admonition:: Breaking changes
-   :class: warning
-
-   ``GateSequence``/``Track`` geometry is ``vec3f``; ``GateSequence.normal`` removed,
-   ``orientation`` (``quatf``) + ``half_size`` added; ``CheckpointSet`` gains ``up_half``;
-   ``TrackFrame`` gains ``n_up``; bound position buffers are ``[E]`` ``vec3f``;
-   ``Course.bind`` takes orientation quaternions instead of yaw. XY behavior is
-   golden-verified bit-identical.
-
-In practice:
-
-- Reshape geometry arrays with a trailing ``3`` instead of ``2``:
-  ``wp.to_torch(gates.position).view(E, G, 3)`` (likewise ``Track.center/outer/inner``).
-  The ``z`` component is 0 for the planar track pipeline and carries real altitude for
-  gate courses.
-- Replace ``GateSequence.normal`` reads with ``orientation`` (a ``quatf`` pose) plus
-  ``half_size``; recover the old left-normal as
-  ``wp.quat_rotate(orientation, wp.vec3f(0, 1, 0))``.
-- Bind ``vec3f`` position buffers and pass ``Course.bind(position=..., orientation=...,
-  half_extents=...)`` with an ``[E * max_boxes]`` ``quatf`` orientation buffer (identity
-  quaternion ``(0, 0, 0, 1)`` if you have no rotation) instead of a ``yaw`` float array.
+- Geometry arrays are ``vec3f``: reshape them with a trailing ``3``
+  (``gates.position.numpy().reshape(E, G, 3)``, likewise ``Track.center`` / ``outer`` /
+  ``inner``). The ``z`` component is ``z_base`` on a flat course and the altitude
+  otherwise.
+- A gate's pose is ``orientation`` (a roll-free ``quatf``) plus ``half_size``; there is
+  no planar ``normal`` field. The left axis is
+  ``wp.quat_rotate(orientation, wp.vec3f(0, 1, 0))``; ``forward``, ``left`` and
+  ``right`` are given too. ``CheckpointSet.up_half`` and ``TrackFrame.n_up`` carry the
+  vertical extent and offset.
+- A course binds ``vec3f`` position buffers and, for box collision, ``quatf``
+  orientations (``Course.bind(position=..., orientation=..., half_extents=...)``; the
+  identity quaternion ``(0, 0, 0, 1)`` if you have no rotation), not a yaw.
 
 See also
 --------

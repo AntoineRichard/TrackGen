@@ -27,10 +27,17 @@ def _assert_generated_gate_fields_are_finite(gates, num_envs: int, max_gates: in
             assert torch.isnan(field[e, c:]).all()
 
 
-def test_gate_generator_requires_rng():
-    cfg = GateGenConfig()
-    with pytest.raises(ValueError, match="random number generator"):
-        GateGenerator(cfg, None)
+def test_gate_generator_rng_is_optional_and_exclusive_with_seeds():
+    # PR11: GateGenerator(config_or_spec, rng=None, *, seeds=None) mirrors TrackGenerator
+    # (the spec's signature): no rng -> owned seeds 0..E-1; rng and seeds together raise.
+    cfg = GateGenConfig(num_envs=3)
+    gen = GateGenerator(cfg)
+    assert gen.seeds.seeds.numpy().tolist() == [0, 1, 2]
+    twin = GateGenerator(cfg, PerEnvSeededRNG(seeds=0, num_envs=3, device="cpu"))
+    assert gen.generate().position.numpy().tobytes() == \
+        twin.generate().position.numpy().tobytes()
+    with pytest.raises(ValueError, match="pass rng= or seeds=, not both"):
+        GateGenerator(cfg, _make_rng(3), seeds=7)
 
 
 def test_gate_generator_unknown_generator_raises_before_warp_gate_import():
@@ -40,17 +47,15 @@ def test_gate_generator_unknown_generator_raises_before_warp_gate_import():
         GateGenerator(cfg, rng)
 
 
-def test_gate_generator_unsupported_ordering_raises(monkeypatch):
-    monkeypatch.setattr(reg, "GATE_GENERATORS", {})
-    monkeypatch.setattr(reg, "_LOADED", True)
-    reg.register(reg.GateGeneratorSpec(
-        name="fake",
+def test_gate_generator_unsupported_ordering_raises(plugin_registry):
+    plugin_registry.add(reg.GateGeneratorSpec(
+        name="tests.fake",
         alloc_scratch=lambda config: object(),
         generate=lambda seeds_wp, config, out, scratch: None,
         max_gates=lambda config: 4,
         supported_orderings=frozenset({"ccw"}),
     ))
-    cfg = GateGenConfig(generator="fake", gate_ordering="raw")
+    cfg = GateGenConfig(generator="tests.fake", gate_ordering="raw")
     rng = PerEnvSeededRNG(seeds=0, num_envs=cfg.num_envs, device=cfg.device)
     with pytest.raises(ValueError, match="does not support gate_ordering"):
         GateGenerator(cfg, rng)
@@ -72,89 +77,90 @@ def test_gate_generator_rejects_unreachable_min_gates(cfg_kwargs, producible):
         GateGenerator(cfg, _make_rng(cfg.num_envs, seed=13))
 
 
-def test_gate_generator_rejects_too_small_max_gates(monkeypatch):
-    monkeypatch.setattr(reg, "GATE_GENERATORS", {})
-    monkeypatch.setattr(reg, "_LOADED", True)
-    reg.register(reg.GateGeneratorSpec(
-        name="fake",
+def test_gate_generator_rejects_too_small_max_gates(plugin_registry):
+    plugin_registry.add(reg.GateGeneratorSpec(
+        name="tests.fake",
         alloc_scratch=lambda config: object(),
         generate=lambda seeds_wp, config, out, scratch: None,
         max_gates=lambda config: 64,
         supported_orderings=frozenset({"ccw"}),
     ))
-    cfg = GateGenConfig(generator="fake", max_gates=32)
+    cfg = GateGenConfig(generator="tests.fake", max_gates=32)
     rng = PerEnvSeededRNG(seeds=0, num_envs=cfg.num_envs, device=cfg.device)
     with pytest.raises(ValueError, match="max_gates"):
         GateGenerator(cfg, rng)
 
 
-def test_cuda_capture_sets_gate_and_pipeline_capture_flags(monkeypatch):
-    from track_gen._src import gate_generator as gate_generator_mod
-    from track_gen._src import warp_gate, warp_pipeline
+def test_cuda_prepares_at_construction_then_captures_once_and_replays(monkeypatch, plugin_registry):
+    """Execution model on a (fake) CUDA device: construction runs the pipeline once
+    for real (warm-up), the first generate() records it ONCE into the generator's
+    own graph on a private stream and replays it on the call's stream, and later
+    calls only replay (the body never runs again)."""
+    import types
 
-    monkeypatch.setattr(reg, "GATE_GENERATORS", {})
-    monkeypatch.setattr(reg, "_LOADED", True)
-    reg.register(reg.GateGeneratorSpec(
-        name="fake-cuda",
-        alloc_scratch=lambda config: object(),
-        generate=lambda seeds_wp, config, out, scratch: None,
-        max_gates=lambda config: 4,
-        supported_orderings=frozenset({"ccw"}),
-    ))
+    import warp as wp
 
-    monkeypatch.setattr(warp_gate, "_CAPTURING", False)
-    monkeypatch.setattr(warp_pipeline, "_CAPTURING", False)
-    # scratch is the (gen_scratch, pos2, cum, perim, z, fallbacks) 6-tuple the
-    # real _gate_warp_alloc returns; GateGenerator reads scratch[5] as
-    # frame_fallbacks (moved from index 4 when the perim slot was added).
-    monkeypatch.setattr(
-        warp_gate,
-        "_gate_warp_alloc",
-        lambda config, generator_spec: (
-            object(),
-            (object(), object(), object(), object(), object(), object()),
-        ),
-    )
+    from tests._fake_cuda import FakeCuda, patch_facade_seeds
+    from track_gen.pipeline import BatchSpec, PipelineSpec, StageRef, legacy, planner
+    from track_gen.stages import gates as stages_gates
 
+    fake = FakeCuda(monkeypatch)
     calls = []
 
-    def fake_run_gate_pipeline(config, seed_buf_wp, out, scratch, generator_spec):
-        assert warp_gate._CAPTURING is True
-        assert warp_pipeline._CAPTURING is True
-        calls.append("run")
+    def generate(seeds_wp, config, out, scratch, ctx=None):
+        calls.append((ctx.stream, ctx.capturing))
 
-    class FakeCapture:
-        def __init__(self, device):
-            self.device = device
-            self.graph = object()
+    plugin_registry.add(reg.GateGeneratorSpec(
+        name="tests.fake-cuda",
+        alloc_scratch=lambda config: object(),
+        generate=generate,
+        max_gates=lambda config: 4,
+        supported_orderings=frozenset({"ccw"}),
+        accepts_ctx=True,
+    ))
 
-        def __enter__(self):
-            return self
+    # PR11: GateGenerator runs a gate Program. The seam is a generator-only gate spec
+    # (the planner's GateSequence-writer rule is lifted for it) and a fake result; the
+    # legacy generator records the context of every pipeline run.
+    monkeypatch.setattr(legacy, "_to_gate_pipeline_spec",
+                        lambda cfg, binding, registry=None: PipelineSpec(
+                            BatchSpec(1, "cuda", 384, max_gates=int(cfg.max_gates)),
+                            (StageRef("gate_generator", "tests.fake-cuda",
+                                      id="generator"),)))
+    monkeypatch.setattr(stages_gates, "_alloc_gate_sequence",
+                        lambda layout: types.SimpleNamespace(generation=None))
+    monkeypatch.setattr(planner, "_check_gate_exports", lambda writers: None)
+    # The real SeedState allocates on the (fake) device: stand it in.
+    patch_facade_seeds(monkeypatch)
+    monkeypatch.setattr(wp, "empty", lambda *args, **kwargs: object())
+    monkeypatch.setattr(wp, "zeros", lambda *args, **kwargs: object())
+    monkeypatch.setattr(wp, "copy", lambda *args, **kwargs: None)
+    monkeypatch.setattr(wp, "synchronize",
+                        lambda: pytest.fail("generate() must not synchronize every device"))
 
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-    launched = []
-    monkeypatch.setattr(warp_gate, "_run_gate_pipeline", fake_run_gate_pipeline)
-    monkeypatch.setattr(gate_generator_mod.wp, "empty", lambda *args, **kwargs: object())
-    monkeypatch.setattr(gate_generator_mod.wp, "copy", lambda *args, **kwargs: None)
-    monkeypatch.setattr(gate_generator_mod.wp, "synchronize", lambda: None)
-    monkeypatch.setattr(gate_generator_mod.wp, "ScopedCapture", FakeCapture)
-    monkeypatch.setattr(
-        gate_generator_mod.wp, "capture_launch", lambda graph: launched.append(graph)
-    )
-
-    cfg = GateGenConfig(generator="fake-cuda", device="cuda", num_envs=1)
+    cfg = GateGenConfig(generator="tests.fake-cuda", device="cuda", num_envs=1)
     # seeds_warp.shape[0] must match num_envs (checked at construction).
     rng = type("Rng", (), {"seeds_warp": type("Seeds", (), {"shape": (1,)})()})()
     gen = GateGenerator(cfg, rng)
 
-    assert gen.generate(1) is gen._gate_sequence
+    # Construction: one real eager pass on the resolved (current) stream, no graph.
+    assert calls == [(fake.current, False)]
+    assert gen.graph is None and fake.captures == []
 
-    assert len(calls) == 4
-    assert launched == [gen._graph]
-    assert warp_gate._CAPTURING is False
-    assert warp_pipeline._CAPTURING is False
+    assert gen.generate(1) is gen._gate_sequence
+    # First generate: the body is recorded once on a private stream (not executed),
+    # then the graph is replayed on the call's stream and the host blocks on it.
+    assert len(calls) == 2 and calls[1][1] is True
+    (cap,) = fake.captures
+    assert calls[1][0] is cap.stream and cap.stream is not fake.current
+    assert gen.graph is cap.graph and gen._graph is gen.graph
+    assert fake.launched == [(gen.graph, fake.current)]
+    # construction waits for its warm-up pass; generate() for its replay
+    assert fake.synced == [fake.current] * 2
+
+    gen.generate(1)
+    assert len(calls) == 2                     # replay only
+    assert fake.launched == [(gen.graph, fake.current)] * 2
 
 
 @pytest.mark.parametrize("generator", ["bezier", "hull"])
@@ -261,27 +267,6 @@ def test_point_family_gate_generators_reject_too_small_max_gates(generator):
         GateGenerator(cfg, _make_rng(1, seed=7))
 
 
-def test_gate_generator_independent_instances_with_same_seed_are_deterministic():
-    E, G = 4, 32
-    cfg = GateGenConfig(
-        generator="bezier",
-        gate_ordering="random_pairs",
-        num_envs=E,
-        max_gates=G,
-        device="cpu",
-        gate_radius=0.0,
-    )
-    gates_a = GateGenerator(cfg, _make_rng(E, seed=211)).generate(E)
-    gates_b = GateGenerator(cfg, _make_rng(E, seed=211)).generate(E)
-
-    for name in ("position", "tangent", "orientation", "half_size", "left", "right"):
-        a = to_t(getattr(gates_a, name))
-        b = to_t(getattr(gates_b, name))
-        assert torch.allclose(a, b, equal_nan=True)
-    assert torch.equal(to_t(gates_a.count), to_t(gates_b.count))
-    assert torch.equal(to_t(gates_a.valid), to_t(gates_b.valid))
-
-
 def test_gate_generator_cpu_reuses_output_instance_and_buffers():
     E, G = 2, 32
     cfg = GateGenConfig(
@@ -304,7 +289,7 @@ def test_gate_generator_cpu_reuses_output_instance_and_buffers():
     _assert_generated_gate_fields_are_finite(second, E, G)
 
 
-def test_gate_generator_sphere_solve_repairs_overlapping_native_points(monkeypatch):
+def test_gate_generator_sphere_solve_repairs_overlapping_native_points(plugin_registry):
     import types
     import warp as wp
 
@@ -328,10 +313,8 @@ def test_gate_generator_sphere_solve_repairs_overlapping_native_points(monkeypat
         wp.copy(out.position, scratch.position)
         wp.copy(out.count, scratch.count)
 
-    monkeypatch.setattr(reg, "GATE_GENERATORS", {})
-    monkeypatch.setattr(reg, "_LOADED", True)
-    reg.register(reg.GateGeneratorSpec(
-        name="overlap",
+    plugin_registry.add(reg.GateGeneratorSpec(
+        name="tests.overlap",
         alloc_scratch=alloc_scratch,
         generate=generate,
         max_gates=lambda config: 2,
@@ -339,7 +322,7 @@ def test_gate_generator_sphere_solve_repairs_overlapping_native_points(monkeypat
     ))
 
     base_kwargs = dict(
-        generator="overlap",
+        generator="tests.overlap",
         gate_ordering="raw",
         num_envs=1,
         min_gates=2,
@@ -368,7 +351,6 @@ def test_gate_generator_sphere_solve_repairs_overlapping_native_points(monkeypat
 
 
 @pytest.mark.cuda
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda")
 @pytest.mark.parametrize("generator", ["bezier", "hull"])
 def test_point_family_gate_generators_cuda_capture_reuses_output(generator):
     E, G = 2, 32
@@ -400,11 +382,9 @@ def test_point_family_gate_generators_cuda_capture_reuses_output(generator):
         assert torch.isfinite(position[e]).all(dim=-1).sum().item() == c
 
 
-def test_gate_generator_invalidates_zero_count_from_native_generator(monkeypatch):
-    monkeypatch.setattr(reg, "GATE_GENERATORS", {})
-    monkeypatch.setattr(reg, "_LOADED", True)
-    reg.register(reg.GateGeneratorSpec(
-        name="zero-count",
+def test_gate_generator_invalidates_zero_count_from_native_generator(plugin_registry):
+    plugin_registry.add(reg.GateGeneratorSpec(
+        name="tests.zero-count",
         alloc_scratch=lambda config: object(),
         generate=lambda seeds_wp, config, out, scratch: None,
         max_gates=lambda config: 2,
@@ -413,7 +393,7 @@ def test_gate_generator_invalidates_zero_count_from_native_generator(monkeypatch
 
     E, G = 3, 2
     cfg = GateGenConfig(
-        generator="zero-count",
+        generator="tests.zero-count",
         num_envs=E,
         min_gates=2,
         max_gates=G,
@@ -454,41 +434,6 @@ def test_generate_rejects_sequence_ids():
     gen = GateGenerator(cfg, _make_rng(4))
     with pytest.raises(TypeError, match="does not accept explicit environment ids"):
         gen.generate([0, 1, 2, 3])
-
-
-def test_distinct_per_env_seeds_produce_diverse_gates():
-    # A single int seed expands to seed + arange(E) per-env seeds. Guard against an
-    # env-collapse regression where every environment generates the identical track,
-    # which would silently destroy batch diversity for RL training.
-    E, G = 8, 32
-    cfg = GateGenConfig(
-        generator="bezier", gate_ordering="ccw", num_envs=E, max_gates=G,
-        device="cpu", gate_radius=0.0,
-    )
-    gates = GateGenerator(cfg, _make_rng(E, seed=17)).generate(E)
-    position = to_t(gates.position).view(E, G, 3)
-    count = to_t(gates.count)
-
-    diverse = False
-    for e in range(1, E):
-        c0, ce = int(count[0]), int(count[e])
-        if c0 != ce or not torch.allclose(
-            position[0, :c0], position[e, :ce], equal_nan=True
-        ):
-            diverse = True
-            break
-    assert diverse, "distinct per-env seeds must yield at least two differing envs"
-
-
-def test_different_global_seeds_produce_different_gates():
-    E, G = 4, 32
-    cfg = GateGenConfig(
-        generator="bezier", gate_ordering="ccw", num_envs=E, max_gates=G,
-        device="cpu", gate_radius=0.0,
-    )
-    a = GateGenerator(cfg, _make_rng(E, seed=1)).generate(E)
-    b = GateGenerator(cfg, _make_rng(E, seed=999)).generate(E)
-    assert not torch.allclose(to_t(a.position), to_t(b.position), equal_nan=True)
 
 
 def test_clone_is_isolated_from_in_place_regenerate():

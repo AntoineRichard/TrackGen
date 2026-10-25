@@ -1,18 +1,19 @@
-"""CUDA-only: facade Graph B refresh replay + user-captured step()."""
+"""CUDA-only: the course's regeneration graph replay + user-captured step().
+
+The course self-captures ONE regeneration graph (generator pipeline + refresh) on the
+first CUDA generate()/regenerate() made outside any capture and replays it afterwards.
+The user capture sets no flag: step()/reset() never host-synchronize.
+"""
 from __future__ import annotations
 
 import numpy as np
 import pytest
-import torch
 
-pytestmark = [
-    pytest.mark.cuda,
-    pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda"),
-]
+pytestmark = pytest.mark.cuda
 
 import warp as wp  # noqa: E402
 from track_gen import TrackGenConfig  # noqa: E402
-from track_gen.course import Course, CourseConfig, set_capturing  # noqa: E402
+from track_gen.course import Course, CourseConfig  # noqa: E402
 
 DEV = "cuda:0"
 E = 8
@@ -35,11 +36,12 @@ def _bound_course(seeds=5):
     return course, pos
 
 
-def test_graph_b_refresh_replay_recomputes():
+def test_regeneration_graph_replay_recomputes():
     from track_gen.checkpoints import CheckpointSampler
     course, _ = _bound_course()
+    assert course.graph is None                   # construction never self-captures
     course.generate()
-    assert course._refresh_graph is not None      # captured on first generate
+    assert course.graph is not None               # captured on first generate
     course.generate(seeds=901)                    # replay path
     # Poisoned-replay proof: trash the checkpoint buffers and progress state,
     # regenerate with new seeds; the replayed refresh must recompute both.
@@ -52,8 +54,8 @@ def test_graph_b_refresh_replay_recomputes():
     assert (course.progress._progress.numpy() == 0).all()
 
 
-def test_heightfield_bake_joins_graph_b_replay():
-    """The heightfield bake joins the captured refresh (Graph B): after the
+def test_heightfield_bake_joins_the_regeneration_graph():
+    """The heightfield bake is part of the regeneration graph: after the
     first cuda generate() the grid is captured, and a poisoned buffer is
     recomputed on the replayed regeneration (proving capture-safety)."""
     from track_gen._src.heightfield import HeightFieldBaker
@@ -64,7 +66,7 @@ def test_heightfield_bake_joins_graph_b_replay():
     course = Course(cfg)
     course.bind(position=wp.zeros(E, dtype=wp.vec3f, device=DEV))
     course.generate()
-    assert course._refresh_graph is not None
+    assert course.graph is not None
     assert course.heightfield is not None
     course.generate(seeds=901)               # replay path
     # Poison the baked grid, regenerate with new seeds; the replayed refresh
@@ -83,18 +85,14 @@ def test_user_captured_step_matches_eager_twin():
     course_c.generate()
     course_e.generate()
 
-    set_capturing(True)
-    try:
-        course_c.step()                            # warmup
-        wp.synchronize()
-        all_mask = wp.full(E, 1, dtype=wp.int32, device=DEV)
-        course_c.reset(all_mask)
-        course_e.reset(wp.full(E, 1, dtype=wp.int32, device=DEV))
-        wp.synchronize()
-        with wp.ScopedCapture(device=DEV) as cap:
-            course_c.step()
-    finally:
-        set_capturing(False)
+    course_c.step()                                # warmup
+    wp.synchronize()
+    all_mask = wp.full(E, 1, dtype=wp.int32, device=DEV)
+    course_c.reset(all_mask)
+    course_e.reset(wp.full(E, 1, dtype=wp.int32, device=DEV))
+    wp.synchronize()
+    with wp.ScopedCapture(device=DEV) as cap:
+        course_c.step()
 
     n_max = course_c.result.outer.shape[0] // E
     center = np.nan_to_num(

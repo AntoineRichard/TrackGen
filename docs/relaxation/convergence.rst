@@ -5,8 +5,8 @@ This page covers how the solve converges, what the Chebyshev acceleration buys (
 measured numbers), the ``relax_sep_every`` pitfall, and tuning guidance including the
 dead ends that were measured so you don't have to retry them.
 
-Why plain Jacobi needed ~150 sweeps
------------------------------------
+Why plain Jacobi needs ~150 sweeps
+----------------------------------
 
 Three effects compound to make the plain solve slow:
 
@@ -46,12 +46,12 @@ on.
 What acceleration buys — measured
 ---------------------------------
 
-All numbers below are E=4096 fixed seeds on CUDA. Two regimes: **defaults** is the
-library default config; **hard** is the benchmark regime ``half_width=0.5``,
-``scale=10``, ``spacing=0.30``.
+All numbers below are E=4096 fixed :term:`seeds <seed>` on CUDA, measured when the solver defaults were
+calibrated (no script regenerates them). Two regimes: **defaults** is the library
+default config; **hard** is the benchmark regime ``half_width=0.5``, ``scale=10``,
+``spacing=0.30``.
 
-Yield vs sweep count, old solver (plain Jacobi, ``relax_accel="none"``,
-``relax_sep_every=40``):
+Yield vs sweep count, plain Jacobi (``relax_accel="none"``, ``relax_sep_every=40``):
 
 .. list-table::
    :header-rows: 1
@@ -75,7 +75,7 @@ Yield vs sweep count, old solver (plain Jacobi, ``relax_accel="none"``,
      - 0.978
      - 0.993
 
-Yield vs sweep count, new solver (Chebyshev, ``relax_sep_every=20``):
+Yield vs sweep count, Chebyshev (the default, ``relax_sep_every=20``):
 
 .. list-table::
    :header-rows: 1
@@ -97,14 +97,14 @@ Yield vs sweep count, new solver (Chebyshev, ``relax_sep_every=20``):
      - 0.999
 
 .. figure:: ../assets/relaxation-convergence.png
-   :alt: Yield versus sweep count, old plain-Jacobi solver versus new Chebyshev solver
+   :alt: Yield versus sweep count, plain-Jacobi solver versus the Chebyshev solver
    :align: center
 
-   Measured yield vs sweep count in the defaults regime (E=2048, CUDA): the new
-   Chebyshev solver at 50 sweeps clears what the old plain-Jacobi solver needed 150 for.
+   Measured yield vs sweep count in the defaults regime (E=2048, CUDA): the Chebyshev
+   solver at 50 sweeps clears what the plain-Jacobi solver needs 150 for.
 
-Quality at the new 50-sweep operating point — which now includes the post-solve
-smoothing tail (see :doc:`solver`) — matches or beats the old 150-sweep point on
+Quality at the default 50-sweep operating point, which includes the post-solve
+smoothing tail (see :doc:`solver`), matches or beats the plain-Jacobi 150-sweep point on
 spacing, smoothness, and minimum radius. The smoothing tail trades a hair of gate margin
 (still comfortably above the ``1.0 · hw`` gate) for markedly lower curvature noise
 (defaults regime):
@@ -113,8 +113,8 @@ spacing, smoothness, and minimum radius. The smoothing tail trades a hair of gat
    :header-rows: 1
 
    * - Metric
-     - New @ 50
-     - Old @ 150
+     - Chebyshev @ 50
+     - Plain Jacobi @ 150
    * - Spacing RMS
      - 0.0049
      - 0.0086
@@ -127,19 +127,19 @@ spacing, smoothness, and minimum radius. The smoothing tail trades a hair of gat
    * - Gate-margin 5th percentile
      - 1.01 · hw
      - 1.03 · hw
-
-Warmed wall-clock per ``generate()`` call at E=4096: defaults **15.9 → 10.5 ms**, hard
-**53.5 → 19.5 ms**.
-
-Confirmed on a disjoint seed batch (seed 100000): new@50 = **0.9990 / 0.9990** vs
-old@150 = **0.9973 / 0.9924** (hard / defaults).
+   * - Warmed ms per ``generate()``, E=4096, CUDA (defaults / hard)
+     - 10.5 / 19.5
+     - 15.9 / 53.5
+   * - Yield on a disjoint seed batch, seed 100000 (hard / defaults)
+     - 0.9990 / 0.9990
+     - 0.9973 / 0.9924
 
 .. figure:: ../assets/relaxation-same-seeds.png
-   :alt: Same seeds relaxed by the old solver at 150 sweeps and the new solver at 50
+   :alt: Same seeds relaxed by plain Jacobi at 150 sweeps and by Chebyshev at 50
    :align: center
 
-   Identical seeds through the old solver at 150 sweeps (top) and the new solver at 50
-   (bottom), in the benchmark regime. The accelerated solve converges to the same fixed
+   Identical seeds through plain Jacobi at 150 sweeps (top) and the default Chebyshev
+   solve at 50 (bottom), in the benchmark regime. The accelerated solve converges to the same fixed
    point — the tracks are visually indistinguishable.
 
 The ``relax_sep_every`` pitfall
@@ -149,19 +149,19 @@ In the cached separation mode, the broadphase candidate cache is built at sweep 
 refreshed only at multiples of ``relax_sep_every``. **Any run shorter than that never
 refreshes the cache mid-solve** and silently misses contacts that emerge during the run
 — beads that were outside the broadphase radius at sweep 0 can drift into contact and
-never receive a separation push. Under the old default of 40 this produced a measured
-yield cliff between 40 and 50 sweeps: a 40-sweep run got exactly one broadphase build
-(at sweep 0), a 50-sweep run got a refresh at sweep 40. The default is now
-``relax_sep_every=20`` so the accelerated 50-sweep solve refreshes mid-solve (at sweeps
-20 and 40). If you shorten ``relax_iters``, keep ``relax_sep_every`` comfortably below
+never receive a separation push. With ``relax_sep_every=40`` this gives a measured
+yield cliff between 40 and 50 sweeps: a 40-sweep run gets exactly one broadphase build
+(at sweep 0), a 50-sweep run a refresh at sweep 40. The default
+``relax_sep_every=20`` makes the 50-sweep solve refresh mid-solve (at sweeps 20 and
+40). If you shorten ``relax_iters``, keep ``relax_sep_every`` comfortably below
 it.
 
 Tuning guidance
 ---------------
 
 - **Raise** ``relax_iters`` **first** if yield sags. Cost is linear in sweeps and it does
-  not restrict shapes. The current default of 50 is calibrated for ~0.999 end-to-end
-  yield at the library defaults.
+  not restrict shapes. The default of 50 is calibrated for ~0.999 end-to-end yield at
+  the library defaults.
 - **Don't push the Chebyshev knobs.** ``relax_cheby_rho >= 0.99`` and
   ``relax_cheby_start <= 5`` were both measured to overshoot on the nonsmooth separation
   contacts and *reduce* yield. ``relax_cheby_gamma`` below ~0.9 over-damps and gives

@@ -10,9 +10,18 @@ from track_gen._src.gate_generator import GateGenerator
 from track_gen._src.rng_utils import PerEnvSeededRNG
 from track_gen._src.track_generator import TrackGenerator
 from track_gen._src.types import GateGenConfig, TrackGenConfig
+from track_gen.plugin import registry
+
+
+def _builtin(kind: str) -> set[str]:
+    return {n for n in registry.available(kind) if registry.describe(kind, n).builtin}
+
 
 GOLDEN = str(Path(__file__).resolve().parents[1] / "goldens" / "pre_vec3f.npz")
-GENERATORS = ("bezier", "hull", "polar", "voronoi", "checkpoint")
+# Built-ins that are both a track and a gate generator (bezier, checkpoint, hull, polar,
+# voronoi at capture time); installed plugins are never captured. The test only compares
+# the keys stored in the golden, so a later built-in adds keys without breaking it.
+GENERATORS = tuple(sorted(_builtin("generator") & _builtin("gate_generator")))
 TRACK_FIELDS = ("outer", "center", "inner", "tangent", "normal", "arclen",
                 "length", "valid", "count", "winding")
 GATE_FIELDS = ("position", "tangent", "left", "right", "valid", "count")

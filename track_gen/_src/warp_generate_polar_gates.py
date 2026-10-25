@@ -1,93 +1,55 @@
-"""Gate-native polar control-knot generation."""
+"""Gate-native polar control-knot generation (a ``gate_generator`` Stage, roadmap PR11).
+
+The ``polar_num_knots`` control knots of the polar track generator, in loop order
+(``anchors.xy``); the gate pipeline orders them (``order.ccw`` by default, ``order.raw``
+keeps the loop order; ``order.random_pairs`` is excluded) and normalizes their extent
+(``preferred["normalize"] = "extent"``). The jitters are dynamic (roadmap PR13c): per-env
+arrays drawn by :func:`~track_gen._src.warp_generate_polar.sample_polar_controls_per_env`
+(the track generator's kernel), clamped to the declared bounds at use.
+"""
 from __future__ import annotations
 
 import warp as wp
 
-from .warp_generate_polar import (
-    _BASE_RADIUS,
-    _BEZIER_EXTENT,
-    _polar_controls_k,
-    _polar_num_knots,
-)
+from .. import ops
+from ..plugin.stage import CaptureClass, Stage
+from .builtin_params import PolarGateParams
+from .warp_generate_polar import polar_num_knots, sample_polar_controls_per_env
 
 
-class PolarGateScratch:
-    __slots__ = ("controls", "count", "keys")
+class GatePolar(Stage):
+    """``"polar"``: the polar track generator's control knots as gate anchors."""
 
-    def __init__(self, controls, count, keys):
-        self.controls = controls
-        self.count = count
-        self.keys = keys
+    kind = "gate_generator"
+    name = "polar"
+    output = "anchors"
+    capture = CaptureClass.STATIC
+    Params = PolarGateParams
+    writes = {"xy": "anchors.xy", "count": "anchors.count"}
+    excluded_orderings = frozenset({"random_pairs"})
+    preferred = {"order": "ccw", "normalize": "extent"}
 
+    def capacity(self, params, layout):
+        K = polar_num_knots(params)
+        return {"gates": K, "min_gates": K}
 
-def polar_gate_alloc_scratch(config):
-    from . import warp_gate
+    def build(self, b, p):
+        count = b.write("count", wp.int32)
+        controls = b.write("xy", wp.vec2f, per="anchors")
+        K = polar_num_knots(p)
+        # Per-env jitters, clamped at use like the polar track generator's.
+        radial_jitter = b.param("polar_radial_jitter")
+        angular_jitter = b.param("polar_angular_jitter")
+        seed = b.seed
 
-    warp_gate._init()
-    E = int(config.num_envs)
-    K = _polar_num_knots(config)
-    dev = str(config.device)
-    count, keys = warp_gate.alloc_order_scratch(config)
-    return PolarGateScratch(
-        controls=wp.empty(E * K, dtype=wp.vec2f, device=dev),
-        count=count,
-        keys=keys,
-    )
-
-
-def generate_polar_gates(seeds_wp, config, out, scratch) -> None:
-    from . import warp_gate
-
-    E = int(config.num_envs)
-    K = _polar_num_knots(config)
-    G = int(config.max_gates)
-    dev = str(out.position.device)
-
-    radial_default = 0.60 * float(getattr(config, "amplitude", 1.0))
-    radial_jitter = min(
-        max(float(getattr(config, "polar_radial_jitter", radial_default)), 0.0),
-        0.85,
-    )
-    angular_jitter = min(
-        max(float(getattr(config, "polar_angular_jitter", 0.30)), 0.0),
-        0.45,
-    )
-    target_extent = float(config.scale) * _BEZIER_EXTENT
-
-    wp.launch(warp_gate._fill_i32_k, dim=E, inputs=[scratch.count, K], device=dev)
-    wp.launch(
-        _polar_controls_k,
-        dim=E,
-        inputs=[
-            seeds_wp,
-            K,
-            radial_jitter,
-            angular_jitter,
-            _BASE_RADIUS,
-            scratch.controls,
-        ],
-        device=dev,
-    )
-    warp_gate.finish_ordered_gates(
-        seeds_wp,
-        scratch.controls,
-        K,
-        scratch.count,
-        G,
-        str(config.gate_ordering),
-        scratch.keys,
-        out,
-        normalize_extent=target_extent,
-    )
+        def enqueue(ctx):
+            ops.fill(ctx, count, K)
+            sample_polar_controls_per_env(ctx, seed, K, radial_jitter, angular_jitter,
+                                          controls)
+        return enqueue
 
 
-def register_specs() -> None:
-    from . import gate_generator_registry as _registry
-
-    _registry.register(_registry.GateGeneratorSpec(
-        name="polar",
-        alloc_scratch=polar_gate_alloc_scratch,
-        generate=generate_polar_gates,
-        max_gates=_polar_num_knots,
-        supported_orderings=frozenset({"ccw", "raw"}),
-    ))
+def register(reg) -> None:
+    """Register the built-in ``"polar"`` gate generator into ``reg`` (called by
+    ``track_gen._src.builtin_plugins``; importing this module registers nothing)."""
+    reg.add(GatePolar)

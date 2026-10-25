@@ -17,9 +17,7 @@ import time
 import torch
 import warp as wp
 
-from track_gen._src.types import TrackGenConfig
-from track_gen._src.track_generator import TrackGenerator
-from track_gen._src.rng_utils import PerEnvSeededRNG
+from track_gen import PerEnvSeededRNG, TrackGenConfig, TrackGenerator
 
 
 def run_pipeline_benchmark(E=8192, N=256, half_width=0.03, scale=1.0, device="cuda",

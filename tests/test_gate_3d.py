@@ -103,7 +103,7 @@ def _run_validity(positions, tangents, cnt, grade, gate_width=0.0,
         dim=1,
         inputs=[pos, tan, fwd, orient, half, left, right, count, G,
                 int(min_gates), float(center_distance), float(gate_width),
-                float(grade), valid],
+                float(grade), valid, wp.zeros(1, dtype=wp.int32, device="cpu")],
         device="cpu",
     )
     return int(valid.numpy()[0])
@@ -220,7 +220,7 @@ def test_frame_fallback_counter_increments_on_near_vertical():
     fallbacks = wp.zeros(E1, dtype=wp.int32, device=dev)
     wp.launch(warp_gate._finalize_frame_k, dim=E1 * G1,
               inputs=[pos, tan, forward, quat, hs, left, right, count, G1,
-                      0.1, 1, fallbacks], device=dev)
+                      0.1, 1, fallbacks, pos, tan], device=dev)
     assert int(fallbacks.numpy()[0]) == 1  # exactly the vertical gate
     fwd0 = forward.numpy()[0]
     np.testing.assert_allclose(fwd0, [1.0, 0.0, 0.0], atol=1e-6)  # +x fallback

@@ -1,9 +1,14 @@
 TrackGen
 ========
 
-**GPU-batched generation of closed-loop race tracks** — thousands of smooth,
-validated tracks per ``generate()`` call, expressed as NVIDIA Warp kernels and
-ready to drop into a batched RL simulator.
+**GPU-batched generation of closed-loop race tracks and drone gate courses**: thousands
+of smooth, validated tracks per call, expressed as NVIDIA Warp kernels and ready to drop
+into a batched RL simulator.
+
+.. admonition:: Coming from 0.1?
+
+   Read :ref:`upgrading-0.2`. Most 0.1 code keeps running, but some results change
+   without an error: start with its :ref:`triage table <upgrading-triage>`.
 
 .. grid:: 3
    :gutter: 2
@@ -11,21 +16,21 @@ ready to drop into a batched RL simulator.
    .. grid-item::
       :columns: auto
 
-      .. button-ref:: getting-started/installation
-         :ref-type: doc
+      .. button-ref:: quickstart
+         :ref-type: ref
          :color: primary
 
-         Get started
+         Quickstart
 
    .. grid-item::
       :columns: auto
 
-      .. button-ref:: generators/overview
+      .. button-ref:: getting-started/installation
          :ref-type: doc
          :color: primary
          :outline:
 
-         Browse generators
+         Install
 
    .. grid-item::
       :columns: auto
@@ -43,6 +48,55 @@ ready to drop into a batched RL simulator.
    The runtime pipeline turns a raw generated centerline into a constant-spacing path,
    relaxes it with XPBD, then inflates it into a constant-width road band.
 
+Start here
+----------
+
+Pick the path that matches what you are building; each one is a reading order.
+
+.. grid:: 1 2 2 2
+   :gutter: 3
+
+   .. grid-item-card:: Training an RL agent
+
+      Tracks or gate courses in a batched simulator, recorded into your CUDA graph,
+      with per-env resets.
+
+      1. :ref:`quickstart`
+      2. :ref:`courses`
+      3. :ref:`cuda-graph-sim-loop`
+      4. :ref:`rl-auto-reset`
+      5. :ref:`collision-backends`
+      6. :ref:`curricula-course`
+
+   .. grid-item-card:: Building datasets of tracks or gates
+
+      Batches of centerlines, track bands or gate sequences, with domain
+      randomization and curricula.
+
+      1. :ref:`quickstart`
+      2. :ref:`generating`
+      3. :ref:`results`
+      4. :ref:`choosing-a-generator`
+      5. :ref:`curricula`
+
+   .. grid-item-card:: Writing a plugin
+
+      Your own generator, gate generator, stage or runtime component, tested with
+      ``track_gen.testing``.
+
+      1. :ref:`writing-a-generator`
+      2. :ref:`testing-a-plugin`
+      3. :ref:`packaging-a-plugin`
+
+   .. grid-item-card:: Upgrading from 0.1
+
+      What changed since ``v0.1.0``, what changes silently, and what to retrain or
+      rebaseline.
+
+      1. :ref:`upgrading-0.2`
+      2. :ref:`upgrading-procedure`
+      3. :ref:`upgrading-triage`
+
 Features
 --------
 
@@ -59,21 +113,21 @@ Features
       Generation → constant-spacing resample → XPBD relaxation → inflation, every
       stage a Warp kernel over flat ``[E*N]`` arrays.
 
-   .. grid-item-card:: Six generators
+   .. grid-item-card:: Six generators, and yours
 
-      Bezier, Hull, Polar, Voronoi, Checkpoint, and Repulsive — pluggable centerline
-      generators, each with a distinct shape family.
+      Bezier, Hull, Polar, Voronoi, Checkpoint, and Repulsive, each with a distinct
+      shape family; your own centerlines, or a generator plugin.
 
    .. grid-item-card:: CUDA-graph capture
 
-      The whole pipeline is captured once into a replayable CUDA graph and replayed
-      on every later call for high throughput (all generators except ``repulsive``,
-      which runs eagerly every call — see :doc:`generators/repulsive`).
+      The whole pipeline runs as one CUDA graph: the generator's own, replayed on
+      every call, or recorded into your sim graph next to the physics (all six
+      generators).
 
    .. grid-item-card:: Gate sequences
 
-      Drone-style gate courses — gate centres and orientations — straight from the
-      centerline-generator anchors via ``GateGenerator``.
+      Drone-style gate courses (gate centres, orientations and bar widths) from the
+      generators' anchors or along any track, via ``GateGenerator``.
 
    .. grid-item-card:: RL-ready runtime
 
@@ -111,24 +165,50 @@ Explore the docs
    :gutter: 3
 
    .. grid-item-card:: Getting started
-      :link: getting-started/installation
-      :link-type: doc
+      :link: quickstart
+      :link-type: ref
 
-      Install the library and generate your first batch.
+      Install the library, generate your first batch, and learn the terms.
 
-   .. grid-item-card:: Tutorials
-      :link: tutorials/batch-of-tracks
-      :link-type: doc
+   .. grid-item-card:: Generating tracks and gates
+      :link: generating
+      :link-type: ref
 
-      End-to-end recipes for tracks, gates, CUDA-graph sim loops, and driving
-      RL agents against the built-in collision engines — track out-of-bounds
-      and gate posts.
+      Presets, specs and Params; seeds; reading results; invalid envs; curricula.
+
+   .. grid-item-card:: Courses, simulators and RL
+      :link: courses
+      :link-type: ref
+
+      One ``Course`` per batch: collision, checkpoints and progress, props, CUDA
+      graphs in a sim loop, and RL auto-reset.
 
    .. grid-item-card:: Generators
-      :link: generators/overview
-      :link-type: doc
+      :link: generators-overview
+      :link-type: ref
 
-      How each centerline generator works and when to use it.
+      The catalogue: how each centerline generator works, its knobs and its cost.
+
+   .. grid-item-card:: Extending TrackGen
+      :link: writing-a-generator
+      :link-type: ref
+
+      Write and test generators, gate generators, stages and components; package
+      them as plugins.
+
+   .. grid-item-card:: Reference
+      :link: api-reference
+      :link-type: ref
+
+      The public modules, errors and environment variables, and every configuration
+      field.
+
+   .. grid-item-card:: How it works
+      :link: pipeline-overview
+      :link-type: ref
+
+      The pipeline's data flow and stages, resampling, inflation, and CUDA-graph
+      mechanics.
 
    .. grid-item-card:: Track relaxation
       :link: relaxation/overview
@@ -143,30 +223,6 @@ Explore the docs
       The per-env collision solve that separates overlapping gates into usable
       drone-course sequences.
 
-   .. grid-item-card:: Runtime utilities
-      :link: utilities/overview
-      :link-type: doc
-
-      Collision, props, checkpoints & progress, and the Course facade.
-
-   .. grid-item-card:: How it works
-      :link: how-it-works/pipeline
-      :link-type: doc
-
-      The pipeline data flow, resample, inflation, and CUDA-graph capture.
-
-   .. grid-item-card:: Configuration & tuning
-      :link: configuration/tuning
-      :link-type: doc
-
-      Every knob, plus a guide to trading yield, diversity, and throughput.
-
-   .. grid-item-card:: API reference
-      :link: reference/api
-      :link-type: doc
-
-      ``TrackGenerator``, ``GateGenerator``, configs, and result types.
-
 .. toctree::
    :maxdepth: 1
    :caption: Getting started
@@ -174,109 +230,92 @@ Explore the docs
 
    getting-started/installation
    getting-started/quickstart
+   getting-started/concepts
    getting-started/parameter-explorer
 
 .. toctree::
    :maxdepth: 1
-   :caption: Tutorials
+   :caption: Upgrading
    :hidden:
 
+   upgrading/from-0.1
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Generating tracks and gates
+   :hidden:
+
+   user-guide/generating
+   user-guide/results
    tutorials/batch-of-tracks
-   tracks-25d
    tutorials/gate-sequences
+   tracks-25d
    gates-3d
    tutorials/choosing-a-generator
-   tutorials/cuda-graph-in-a-sim
-
-.. toctree::
-   :maxdepth: 1
-   :caption: Generators
-   :hidden:
-
    generators/overview
-   generators/bezier
-   generators/hull
-   generators/polar
-   generators/voronoi
-   generators/checkpoint
-   generators/repulsive
-   generators/benchmarks
-
-.. toctree::
-   :maxdepth: 1
-   :caption: Track relaxation
-   :hidden:
-
-   relaxation/overview
-   relaxation/constraints
-   relaxation/solver
-   relaxation/convergence
-
-.. toctree::
-   :maxdepth: 1
-   :caption: Gate relaxation
-   :hidden:
-
-   relaxation/gates
-
-.. toctree::
-   :maxdepth: 1
-   :caption: Runtime utilities
-   :hidden:
-
-   utilities/overview
-   utilities/collision
-   utilities/props
-   utilities/progress
-   utilities/localize
-   utilities/course
-
-.. toctree::
-   :maxdepth: 1
-   :caption: How it works
-   :hidden:
-
-   how-it-works/pipeline
-   how-it-works/resample
-   how-it-works/inflation
-   how-it-works/cuda-graph
-   how-it-works/conventions
-
-.. toctree::
-   :maxdepth: 1
-   :caption: Configuration & tuning
-   :hidden:
-
-   configuration/reference
+   user-guide/curricula
    configuration/tuning
 
 .. toctree::
    :maxdepth: 1
-   :caption: API reference
+   :caption: Courses, simulators and RL
    :hidden:
 
-   reference/api
+   utilities/course
+   utilities/composing-a-course
+   tutorials/cuda-graph-in-a-sim
+   user-guide/rl-auto-reset
+   utilities/overview
 
 .. toctree::
    :maxdepth: 1
-   :caption: Contributing
+   :caption: Extending TrackGen
    :hidden:
 
    contributing/writing-a-generator
+   contributing/writing-a-gate-generator
+   contributing/writing-a-stage
+   contributing/writing-a-component
+   contributing/testing-a-plugin
+   contributing/packaging-a-plugin
+   contributing/plugin-abis
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Reference
+   :hidden:
+
+   reference/api
+   configuration/reference
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Internals
+   :hidden:
+
+   how-it-works/pipeline
+   how-it-works/pipeline-stages
+   how-it-works/gate-pipeline
+   how-it-works/cuda-graph
+   how-it-works/resample
+   how-it-works/inflation
+   how-it-works/conventions
+   relaxation/overview
+   relaxation/gates
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Development
+   :hidden:
+
    contributing/dev-setup
    contributing/rendering-assets
 
 .. toctree::
    :maxdepth: 1
-   :caption: Related work
+   :caption: Background
    :hidden:
 
    related-work/prior-art
    related-work/state-of-the-art
-
-.. toctree::
-   :maxdepth: 1
-   :caption: Appendix
-   :hidden:
-
    appendix/future-generators

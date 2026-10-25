@@ -1,4 +1,11 @@
-"""End-to-end tests for the standard Voronoi first-stage generator."""
+"""End-to-end tests for the standard Voronoi first-stage generator.
+
+Voronoi's own properties: a reasonable valid yield, crossing-free generated loops, a
+site count that changes the tracks, and shapes that are not round blobs. The generator
+contract (finite points before count and NaN padding after it, count range, determinism,
+the hot path) is checked for every generator by the conformance kit, in
+tests/test_conformance.py.
+"""
 from __future__ import annotations
 
 import numpy as np
@@ -10,11 +17,11 @@ pytest.importorskip("warp")
 import warp as wp  # noqa: E402
 
 from track_gen import PerEnvSeededRNG  # noqa: E402
-from track_gen._src import generator_registry as reg  # noqa: E402
+from track_gen._src import warp_generate_voronoi  # noqa: E402
 from track_gen._src.track_generator import Track, TrackGenConfig, TrackGenerator  # noqa: E402
 from tests._warp_compare import self_intersections, to_t  # noqa: E402
 
-DEVS = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
+from tests.conftest import DEVS  # noqa: E402
 
 
 def _make_rng(num_envs: int, seed: int = 0, device: str = "cpu"):
@@ -28,13 +35,6 @@ def _compactness(pts: np.ndarray) -> np.ndarray:
         (pts[:, :, 0] * nxt[:, :, 1] - nxt[:, :, 0] * pts[:, :, 1]).sum(axis=1)
     )
     return 4.0 * np.pi * area / np.maximum(perimeter * perimeter, 1.0e-12)
-
-
-def test_voronoi_is_registered():
-    assert "voronoi" in reg.available()
-    spec = reg.get("voronoi")
-    assert spec.name == "voronoi"
-    assert callable(spec.alloc_scratch) and callable(spec.generate)
 
 
 def test_voronoi_config_defaults_are_available():
@@ -62,20 +62,7 @@ def test_voronoi_end_to_end(dev):
     track = gen.generate(E)
 
     assert isinstance(track, Track)
-    center = to_t(track.center).view(E, n_max, 3)[..., :2]
-    valid = to_t(track.valid).bool()
-    count = to_t(track.count)
-
-    assert valid.shape == (E,)
-    assert count.shape == (E,)
-    assert torch.all(count >= 1) and torch.all(count <= n_max)
-    assert float(valid.float().mean()) > 0.50
-
-    for e in range(E):
-        c = int(count[e])
-        finite = torch.isfinite(center[e]).all(dim=-1)
-        assert torch.all(finite[:c])
-        assert not torch.any(finite[c:])
+    assert float(to_t(track.valid).bool().float().mean()) > 0.50
 
 
 @pytest.mark.parametrize("dev", DEVS)
@@ -87,14 +74,14 @@ def test_voronoi_generation_outputs_simple_finite_centerlines(dev):
         num_points=128,
         device=dev,
     )
-    spec = reg.get("voronoi")
-    scratch = spec.alloc_scratch(cfg)
+    # The frozen legacy entry points (the registered "voronoi" is a Stage since PR13c).
+    scratch = warp_generate_voronoi.voronoi_alloc_scratch(cfg)
     seeds_t = torch.arange(E, dtype=torch.int32, device=dev)
     seeds_wp = wp.from_torch(seeds_t, dtype=wp.int32)
     out = wp.empty(E * int(cfg.num_points), dtype=wp.vec2f, device=dev)
     valid_wp = wp.empty(E, dtype=wp.int32, device=dev)
 
-    spec.generate(seeds_wp, cfg, out, valid_wp, scratch)
+    warp_generate_voronoi.generate_voronoi_warp(seeds_wp, cfg, out, valid_wp, scratch)
     if "cuda" in dev:
         wp.synchronize()
 
@@ -107,25 +94,21 @@ def test_voronoi_generation_outputs_simple_finite_centerlines(dev):
     assert crossing_free >= 0.95, f"voronoi crossing-free {crossing_free} < 0.95 on {dev}"
 
 
-def test_voronoi_deterministic_and_cell_count_changes_tracks_cpu():
+def test_voronoi_cell_count_changes_tracks_cpu():
+    # (Determinism at a given site count is the conformance kit's determinism check,
+    # run on this 64-site config too in tests/test_conformance.py.)
     E = 32
     base = dict(generator="voronoi", num_envs=E, num_points=96, N_max=192, device="cpu")
     cfg_a = TrackGenConfig(**base, voronoi_num_sites=64)
     cfg_b = TrackGenConfig(**base, voronoi_num_sites=256)
 
-    gen_a1 = TrackGenerator(cfg_a, _make_rng(E, seed=7, device="cpu"))
-    gen_a2 = TrackGenerator(cfg_a, _make_rng(E, seed=7, device="cpu"))
+    gen_a = TrackGenerator(cfg_a, _make_rng(E, seed=7, device="cpu"))
     gen_b = TrackGenerator(cfg_b, _make_rng(E, seed=7, device="cpu"))
 
-    a1 = to_t(gen_a1.generate(E).center).clone()
-    a2 = to_t(gen_a2.generate(E).center).clone()
+    a1 = to_t(gen_a.generate(E).center).clone()
     b = to_t(gen_b.generate(E).center).clone()
 
     fin1 = torch.isfinite(a1).all(dim=-1)
-    fin2 = torch.isfinite(a2).all(dim=-1)
-    assert torch.equal(fin1, fin2)
-    assert torch.allclose(a1[fin1], a2[fin2], atol=1e-5)
-
     both = fin1 & torch.isfinite(b).all(dim=-1)
     assert both.any()
     assert not torch.allclose(a1[both], b[both], atol=1e-3)

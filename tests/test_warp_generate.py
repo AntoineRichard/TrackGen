@@ -18,7 +18,7 @@ from track_gen._src import warp_pipeline as wpl  # noqa: E402
 from track_gen._src.types import TrackGenConfig  # noqa: E402
 from tests._warp_compare import corner_count_sample, self_intersections  # noqa: E402
 
-DEVS = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
+from tests.conftest import DEVS  # noqa: E402
 
 
 @pytest.mark.parametrize("dev", DEVS)
@@ -62,7 +62,7 @@ def test_generate_centerline_warp(dev):
         seeds_wp, config,
         out_centerline=scratch.gen_centerline,
         out_valid_wp=scratch.gen_valid,
-        scratch=scratch,
+        scratch=scratch.gen,
     )
     if "cuda" in dev:
         wp.synchronize()
@@ -91,7 +91,7 @@ def test_generate_centerline_warp(dev):
         seeds_wp2, config,
         out_centerline=scratch2.gen_centerline,
         out_valid_wp=scratch2.gen_valid,
-        scratch=scratch2,
+        scratch=scratch2.gen,
     )
     if "cuda" in dev:
         wp.synchronize()

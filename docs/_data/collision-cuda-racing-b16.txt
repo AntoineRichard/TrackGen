@@ -1,0 +1,4 @@
+racing near-edge: device cuda  E 4096  B 16  sdf 256^2 (median cell 119 mm)
+boxes 65520 on 4095 valid envs, exact oob rate 0.659
+sdf flag agreement 99.954%  FN 23  FP 7 (beyond 2 mm: 2, max exact clearance 3.33 mm)  contract violations 0
+graph replay per query: sdf 479.5 us (p95 1234.1 us)  segments 3203.6 us (p95 5321.3 us)

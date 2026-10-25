@@ -17,7 +17,7 @@ from track_gen._src.types import TrackGenConfig  # noqa: E402
 from track_gen._src.track_generator import TrackGenerator  # noqa: E402
 from track_gen._src.rng_utils import PerEnvSeededRNG  # noqa: E402
 
-DEVS = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
+from tests.conftest import DEVS  # noqa: E402
 
 
 def _circle(N, r, dev):
@@ -480,7 +480,7 @@ def test_inflate_warp_constant_spacing(dev):
     assert torch.allclose(length_t, torch.tensor([2 * math.pi * 5.0], device=dev), atol=0.5)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda")
+@pytest.mark.cuda
 def test_graph_capture_constant_spacing():
     E = 8
     cfg = TrackGenConfig(num_envs=E, num_points=256, half_width=0.5, scale=10.0,

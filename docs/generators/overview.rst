@@ -1,11 +1,19 @@
+.. _generators-overview:
+
 Generators Overview
 ===================
 
-``track_gen`` ships six registered centerline generators.
-Each generator is pluggable through ``TrackGenConfig.generator`` and follows the same
-pipeline contract: it writes one closed centerline per environment, then the shared
-resample → XPBD relax → inflate → validity stages take over — except ``repulsive``, which
-is not CUDA-graph-capturable (see below).
+This is the catalogue of the built-in centerline generators: what each family builds,
+its per-env knobs, the contract they share and what they cost. To pick one for a task,
+read the decision guide, :ref:`choosing-a-generator`.
+
+``track_gen`` ships six procedural centerline generators, plus the ``external``
+ingestion generator, which turns centerlines you load (a dataset, a learned model) into
+tracks and does not depend on the :term:`seed` (:ref:`ingesting-centerlines`). Select
+one by name, ``presets.track(generator="hull")`` (or ``TrackGenConfig.generator``). Each
+is the ``generator`` :term:`stage` of the pipeline: it writes one closed centerline per
+:term:`env`, then the shared resample → XPBD relax → inflate → validity stages take over
+(:doc:`/how-it-works/pipeline-stages`).
 
 .. figure:: ../assets/readme-generator-grid.png
    :alt: Grid of sample tracks produced by each generator
@@ -22,9 +30,10 @@ bezier
 Samples random grid-jittered corners, sorts them by angle around their centroid,
 and assembles a closed cubic Bézier spline.  Handle lengths are proportional to
 ``rad * chord`` and clamped by ``handle_clamp_frac`` so handles cannot overshoot
-nearby corners.  Optional ``style_sampling`` draws per-environment ``rad``,
-``scale``, and ``handle_clamp_frac`` from configured ranges, broadening the shape
-family without changing the representation.  Self-crossing smooth curves fall back
+nearby corners.  ``rad``, ``handle_clamp_frac``, ``size`` and the corner count are
+per-env knobs (below); the older, deprecated ``style_sampling`` draws per-environment
+``rad``, ``scale``, and ``handle_clamp_frac`` from configured ranges (``randomize=``
+replaces it).  Self-crossing smooth curves fall back
 to their provably simple corner polygon, which XPBD re-rounds.
 See :doc:`bezier` for the full deep dive.
 
@@ -46,8 +55,8 @@ Builds ``polar_num_knots`` control knots in polar coordinates: each knot starts 
 an evenly spaced angle, receives bounded angular and radial jitter, and the resulting
 sequence is smoothed by a closed uniform Catmull-Rom spline.  The output is
 bounding-box normalized to the shared target extent.  Because the shape is smooth
-and centered by construction, polar carries the lowest relaxation burden of the five
-generators and has no generator-local fallback.
+and centered by construction, polar carries a low relaxation burden and has no
+generator-local fallback.
 See :doc:`polar` for the full deep dive.
 
 voronoi
@@ -84,134 +93,193 @@ using a tangent-point energy and a Sobolev-preconditioned flow to keep the curve
 self-avoiding while it is confined to a disc domain seeded with random obstacles —
 coarse-to-fine (``N = 64 → 128 → 256``) with an area-based stall-stop.  It is the only
 generator built from iterative physical simulation rather than a single deterministic
-sampling + smoothing pass, and produces the foldiest, most serpentine circuits of the six
-(compactness ≈ 0.15).  It is also the first generator that is **not CUDA-graph-capturable**
-(``capturable=False``): its host-side stage transitions and stall-stop readback are illegal
-inside a capture region, so it runs eagerly on CUDA every call —
-roughly **1000× slower** than ``bezier`` (~0.2 s @ E=64, ~5 s @ E=8192 on an RTX 4090).
-Prefer a slow regeneration cadence or staggered per-env slices over calling ``generate()``
-every step. See :doc:`repulsive` for the full deep dive.
+sampling + smoothing pass, and produces the foldiest, most serpentine circuits of the six.
+Its growth loop runs a fixed iteration schedule in which each env stops changing once it
+converges, independently of the rest of the batch, so it is recorded into CUDA graphs
+like the others; its own graph skips the iterations left once every env has frozen. A
+generation still costs far more than any other generator's (`Cost`_): prefer a slow
+regeneration cadence or staggered per-env slices over calling ``generate()`` every step.
+See :doc:`repulsive` for the full deep dive.
 
-When to Use Which
------------------
+Families at a glance
+--------------------
 
 .. list-table::
    :header-rows: 1
-   :widths: 15 30 20 35
+   :widths: 15 40 45
 
    * - Generator
+     - Representation
      - Shape character
-     - Typical compactness
-     - Best suited for
    * - ``bezier``
-     - Star-shaped corner families; smooth cubic curves
-     - Low (~0.44)
-     - General-purpose diversity; most configurable style knobs
+     - sampled grid corners, angle-sorted, closed cubic Bézier; corner-polygon fallback
+     - star-shaped corner families, smooth cubic curves; the most knobs
    * - ``hull``
-     - Angle-sorted loop with radial lobes and pinches
-     - Low (~0.43)
-     - Tracks with pronounced lobes, pinches, or straight sections
+     - angle-sorted points, displaced midpoints, closed Catmull-Rom; augmented-polygon
+       fallback
+     - radial lobes, pinches and straights
    * - ``polar``
-     - Smooth periodic radial spline; centered by construction
-     - Medium (~0.56)
-     - Low-burden contrast to corner families; fast, symmetric shapes
+     - jittered polar knots, periodic Catmull-Rom; no fallback
+     - smooth, centered by construction, a low relaxation burden
    * - ``voronoi``
-     - Graph-cycle anchored to a site field; compact and feature-rich
-     - High (~0.73)
-     - Complex, compact layouts; largest lap-time variety
+     - site field, angular anchor cycle, Chaikin + Catmull-Rom; anchor-polygon fallback
+     - compact and feature-rich (the highest compactness of the sampling families)
    * - ``checkpoint``
-     - Flowing organic loop from bounded-turn steering
-     - Medium-high (~0.61)
-     - Organic circuit feel; CarRacing-style continuously curving tracks
+     - radial checkpoints, bounded-turn steering, heading-ramp closure; best-of-K
+     - organic, continuously curving loops (CarRacing-style)
    * - ``repulsive``
-     - Dense, foldy serpentine from self-repulsive growth
-     - Very high (~0.15)
-     - Maze-like circuits; **only** when the ~1000× generation cost (non-graph-captured,
-       see :doc:`repulsive`) fits your regeneration cadence
+     - seed circle grown by a tangent-point flow among obstacles (iterative)
+     - dense, foldy serpentines (the lowest compactness by far)
 
-Generator Contract
+The measured shape metrics (compactness, length, chicanes, curvature, yield) are in
+:doc:`benchmarks`; :ref:`choosing-a-generator` turns them into a recommendation.
+
+.. _generators-per-env:
+
+Per-env shape knobs
+-------------------
+
+Each of the five sampling generators has shape knobs that are **dynamic** (a
+:term:`dynamic field`): per-env
+``[E]`` arrays that ``randomize=`` draws at every generation and that a curriculum can
+write from its own CUDA graph, without rebuilding anything. Every built-in generator but
+``external`` also has a per-env ``size`` (the plan view's scale, applied after
+``scale``), and ``bezier`` / ``hull`` a per-env corner count (``min_num_points``, an
+``int32`` you write: ``randomize=`` draws ``float32`` fields only). The elevation
+profiles have dynamic knobs too (``z_min``, ``z_max``, ``z_max_step``,
+``z_noise_amplitude``).
+
+.. list-table::
+   :header-rows: 1
+   :widths: 16 46 38
+
+   * - Generator
+     - Dynamic knobs (``randomize=`` key ``"generator.<knob>"``)
+     - Details
+   * - ``bezier``
+     - ``rad``, ``handle_clamp_frac``, ``size``; ``min_num_points`` (``int32``,
+       ``set`` only); the gate generator: ``size``
+     - :ref:`bezier-dynamic`
+   * - ``hull``
+     - ``hull_displacement``, ``size``; ``min_num_points`` (``int32``, ``set`` only);
+       the gate generator: ``size``
+     - :ref:`hull-dynamic`
+   * - ``polar``
+     - ``polar_radial_jitter``, ``polar_angular_jitter`` (also the gate generator),
+       ``size`` (gates: ``normalize.size``)
+     - :ref:`polar-dynamic`
+   * - ``voronoi``
+     - ``voronoi_radial_variation``, ``voronoi_angular_jitter`` (also the gate
+       generator), ``size`` (gates: ``normalize.size``)
+     - :ref:`voronoi-dynamic`
+   * - ``checkpoint``
+     - ``checkpoint_radius_min_frac``, ``checkpoint_angle_jitter`` (also the gate
+       generator), ``checkpoint_turn_rate``, ``size`` (gates: ``normalize.size``)
+     - :ref:`checkpoint-dynamic`
+   * - ``repulsive``
+     - ``size`` (its output's scale; the other knobs feed a host schedule)
+     - :ref:`repulsive-dynamic`
+   * - ``external``
+     - none: it ingests your geometry as given (scale ``centerline.xy`` yourself)
+     - :ref:`ingesting-centerlines`
+
+.. code-block:: python
+
+   from track_gen import TrackGenerator
+   from track_gen.pipeline import presets
+
+   device = "cuda:0"  # or "cpu"
+   spec = presets.track(num_envs=64, device=device, generator="polar",
+                        randomize={"generator.polar_radial_jitter": (0.3, 0.85)})
+   gen = TrackGenerator(spec)          # each env draws its own jitter every generation
+
+Everything that sizes a buffer or fixes a launch (``max_num_points``, knot and
+checkpoint counts, ``half_width``, ``spacing``, ``n_max``), ``edgy``, the core ``scale``
+and the ``repulsive`` growth knobs stay static: build a new generator to change them.
+``size`` scales the plan view only (road width, spacing and z stay absolute), so a larger
+course needs more points: size ``n_max`` for the largest size (:ref:`tuning-size`).
+Each generator page lists its knobs' bounds, effective range and measured yield;
+:ref:`curricula` covers randomization and curricula (:ref:`tuning-per-env` the knobs'
+effects).
+
+Generator contract
 ------------------
 
-A generator produces the initial closed centerline fed to the shared pipeline.
-It implements two callables: ``alloc_scratch(config)`` allocates fixed-shape,
-generator-private Warp buffers once at construction time, and
-``generate(seeds_wp, config, out_centerline, out_valid_wp, scratch)`` writes one
-closed centerline per environment into the orchestrator-owned output buffer in place.
-The hot path must be pure Warp and deterministic in ``(seed, config)``.  For the five
-``capturable=True`` generators it must additionally be zero-allocation inside ``generate``
-and CUDA-graph-capturable — no host-side retry loop, no host branch on generated tensor
-data, and no per-environment Python branching inside ``generate``.  A generator may instead
-declare ``capturable=False`` (currently only ``repulsive``) to use host-side control flow
-and per-call allocation; it then runs eagerly on CUDA every call instead of being captured
-into a replayable graph.  Generators set ``out_valid_wp`` to ``1`` for every environment at
-this stage; final geometric validity (turning number, thickness, NaN checks) is decided
-later by the shared post-relax inflation validity gate.  The full contract, hard rules, and
-registration instructions are documented in :doc:`/contributing/writing-a-generator`.
+Every built-in generator is a ``Stage`` of kind ``generator``
+(:ref:`generator-stage-contract`), and a plugin generator is written the same way
+(:ref:`writing-a-generator`). The contract, in short:
 
-Benchmarks
-----------
+- the stage writes one closed centerline per env into ``raw.xy`` (its raw capacity,
+  ``num_points`` for the built-ins) and a per-env flag into ``gen.valid``; it allocates
+  everything it needs once, when the pipeline is built;
+- its launches depend only on the configuration and the :term:`seed`, never on data read
+  back from the device: no host-side retry loop, no host branch on generated data, no
+  per-env Python branching. That keeps it recordable in a CUDA graph, an iterative
+  stage with an early stop included (``repulsive``, :ref:`cuda-graph-bounded`); a stage
+  that must read data back runs on the host, eagerly, while the rest of the pipeline
+  replays (:ref:`cuda-graph-host`);
+- the built-ins set ``gen.valid = 1`` for every env: final geometric validity (turning
+  number, thickness, NaNs, ``N_max`` truncation) is decided later by the shared validity
+  stage, after relaxation (:ref:`pipeline-fail-bits`).
 
-The generation cost of each centerline generator is summarized below; a companion
-shape/geometry-metrics comparison table will follow later (the full quality/diversity
-metric suite already lives in :doc:`benchmarks`).  All rows were measured on an
-**NVIDIA RTX 5000 Ada** at ``num_envs = 4096`` with the library-default
-``TrackGenConfig`` (``half_width = 0.1``, ``num_points = 256``, ``relax_iters = 50``),
-timing the full ``TrackGenerator.generate()`` call — centerline generation plus the
-shared resample → XPBD relax → inflate stages — since only the centerline generator
-differs across rows.  *warmed ms/call* is the steady-state mean over 10 replays after a
-warmup call; for the five capturable generators this is a CUDA-graph replay.  *first
-call (s)* is that warmup call, which pays CUDA-graph capture plus cached Warp module
-load.  Each row was measured twice and agreed within ~10%.
+Plugins may also use the original two-callable ``GeneratorSpec`` ABI
+(``alloc_scratch(config)`` and ``generate(seeds_wp, config, out_centerline,
+out_valid_wp, scratch)``): :ref:`plugin-abis` documents it.
 
-.. list-table::
+Cost
+----
+
+The cost of one ``TrackGenerator.generate()`` call per generator, measured on CUDA at
+``num_envs = 4096`` with the default configuration (``half_width = 0.1``,
+``num_points = 256``, ``relax_iters = 50``): the full call, centerline generation plus
+the shared resample → XPBD relax → inflate stages, so only the generator differs across
+rows. ``gen_ms_per_call`` is the mean of five ``generate()`` calls after two warm ones
+(replays of the generator's own CUDA graph; construction already ran one eager warm-up
+pass). ``yield`` is the fraction of valid envs.
+
+.. csv-table:: Generation cost on CUDA, ``E = 4096`` (ms per ``generate()``)
+   :file: ../_data/cost-cuda-e4096.csv
    :header-rows: 1
-   :widths: 18 20 18 12
 
-   * - Generator
-     - warmed ms/call
-     - first call (s)
-     - yield
-   * - ``bezier``
-     - 10.1
-     - 0.05
-     - 0.998
-   * - ``hull``
-     - 11.1
-     - 0.05
-     - 0.992
-   * - ``polar``
-     - 7.7
-     - 0.04
-     - 1.000
-   * - ``voronoi``
-     - 13.9
-     - 0.06
-     - 1.000
-   * - ``checkpoint``
-     - 13.7
-     - 0.06
-     - 0.995
-   * - ``repulsive`` [#eager]_
-     - ~1880
-     - ~1.9
-     - 0.997
+``repulsive`` has its own table: its cost depends on how soon the batch converges, and
+it is measured at two batch sizes.
 
-.. [#eager] ``repulsive`` is ``capturable=False``: it runs **eagerly on CUDA every
-   call** with no CUDA-graph replay, so its *warmed* per-call cost equals its
-   first-call cost (~1.9 s at E=4096) and is **not comparable** to the graph-replayed
-   rows — roughly 150–250× the ms/call of the capturable generators here.  See
-   :doc:`repulsive` for the cost discussion and the recommended slow-cadence /
-   staggered-slice usage.
+.. csv-table:: ``repulsive`` generation cost on CUDA (ms per ``generate()``)
+   :file: ../_data/cost-repulsive-cuda.csv
+   :header-rows: 1
 
-The *first call (s)* figures above are taken with Warp's on-disk kernel cache warm
-(capture plus cached module load only); the very first run after a fresh install or a
-kernel-source change additionally pays a one-time ~4 s Warp JIT compilation that is
-shared across all generators.
+Machine of the CUDA tables:
 
-To reproduce per-generator timing at this scale, use
-``benchmarks/compare_generators.py`` (its ``gen_ms_per_call`` column is the warmed
-steady-state generation time):
+.. include:: ../_data/machine-cuda.txt
+
+The first call after a fresh install or a kernel-source change also pays Warp's one-time
+kernel compilation, shared by every generator; later processes load the compiled modules
+from Warp's on-disk kernel cache. CPU timings (``E = 512``) are in the ``gen_ms_per_call``
+column of :doc:`benchmarks`.
+
+Every number above is written by a command, never by hand (``docs/_data/README.md``
+lists them all):
 
 .. code-block:: bash
 
-   .venv/bin/python -m benchmarks.compare_generators --cuda --E 4096
+   python -m benchmarks.compare_generators --E 4096 --seed 0 --cuda \
+       | python docs/_tools/md_table_to_csv.py --columns generator,yield,gen_ms_per_call \
+       > docs/_data/cost-cuda-e4096.csv
+   python -m benchmarks.compare_generators --E 64 --seed 0 --cuda --generators repulsive \
+       | python docs/_tools/md_table_to_csv.py --columns generator,gen_ms_per_call \
+           --add-column E=64 > docs/_data/cost-repulsive-cuda.csv
+   python -m benchmarks.compare_generators --E 8192 --seed 0 --cuda --generators repulsive \
+       | python docs/_tools/md_table_to_csv.py --columns generator,gen_ms_per_call \
+           --add-column E=8192 --no-header >> docs/_data/cost-repulsive-cuda.csv
+
+.. toctree::
+   :maxdepth: 1
+   :hidden:
+
+   bezier
+   hull
+   polar
+   voronoi
+   checkpoint
+   repulsive
+   benchmarks

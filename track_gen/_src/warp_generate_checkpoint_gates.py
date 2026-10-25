@@ -1,86 +1,56 @@
-"""Gate-native checkpoint sampling generation."""
+"""Gate-native checkpoint sampling (a ``gate_generator`` Stage, roadmap PR11).
+
+One ring of ``checkpoint_count`` radial checkpoints (the checkpoint track generator's
+draw), in loop order (``anchors.xy``); the gate pipeline orders them (``order.ccw`` by
+default, ``order.raw`` keeps the loop order; ``order.random_pairs`` is excluded) and
+normalizes their extent (``preferred["normalize"] = "extent"``). The radius fraction and
+angle jitter are dynamic (roadmap PR13c): per-env arrays drawn by
+:func:`~track_gen._src.warp_generate_checkpoint.sample_checkpoint_rings_per_env`,
+clamped to the declared bounds at use.
+"""
 from __future__ import annotations
 
 import warp as wp
 
-from .warp_generate_checkpoint import (
-    _BASE_RADIUS,
-    _BEZIER_EXTENT,
-    _sample_checkpoints_k,
-)
+from .. import ops
+from ..plugin.stage import CaptureClass, Stage
+from .builtin_params import CheckpointGateParams
+from .warp_generate_checkpoint import sample_checkpoint_rings_per_env
 
 
-class CheckpointGateScratch:
-    __slots__ = ("checkpoints", "count", "keys")
+class GateCheckpoint(Stage):
+    """``"checkpoint"``: the checkpoint track generator's ring as gate anchors."""
 
-    def __init__(self, checkpoints, count, keys):
-        self.checkpoints = checkpoints
-        self.count = count
-        self.keys = keys
+    kind = "gate_generator"
+    name = "checkpoint"
+    output = "anchors"
+    capture = CaptureClass.STATIC
+    Params = CheckpointGateParams
+    writes = {"xy": "anchors.xy", "count": "anchors.count"}
+    excluded_orderings = frozenset({"random_pairs"})
+    preferred = {"order": "ccw", "normalize": "extent"}
 
+    def capacity(self, params, layout):
+        C = int(params.checkpoint_count)
+        return {"gates": C, "min_gates": C}
 
-def checkpoint_gate_alloc_scratch(config):
-    from . import warp_gate
+    def build(self, b, p):
+        count = b.write("count", wp.int32)
+        checkpoints = b.write("xy", wp.vec2f, per="anchors")
+        C = int(p.checkpoint_count)
+        radius_min_frac = b.param("checkpoint_radius_min_frac")
+        angle_jitter = b.param("checkpoint_angle_jitter")
+        seed = b.seed
 
-    warp_gate._init()
-    E = int(config.num_envs)
-    C = int(config.checkpoint_count)
-    dev = str(config.device)
-    count, keys = warp_gate.alloc_order_scratch(config)
-    return CheckpointGateScratch(
-        checkpoints=wp.empty(E * C, dtype=wp.vec2f, device=dev),
-        count=count,
-        keys=keys,
-    )
-
-
-def generate_checkpoint_gates(seeds_wp, config, out, scratch) -> None:
-    from . import warp_gate
-
-    E = int(config.num_envs)
-    C = int(config.checkpoint_count)
-    G = int(config.max_gates)
-    dev = str(out.position.device)
-
-    radius_min_frac = float(config.checkpoint_radius_min_frac)
-    angle_jitter = float(config.checkpoint_angle_jitter)
-    target_extent = float(config.scale) * _BEZIER_EXTENT
-
-    wp.launch(warp_gate._fill_i32_k, dim=E, inputs=[scratch.count, C], device=dev)
-    wp.launch(
-        _sample_checkpoints_k,
-        dim=E,
-        inputs=[
-            seeds_wp,
-            1,
-            C,
-            radius_min_frac,
-            angle_jitter,
-            _BASE_RADIUS,
-            scratch.checkpoints,
-        ],
-        device=dev,
-    )
-    warp_gate.finish_ordered_gates(
-        seeds_wp,
-        scratch.checkpoints,
-        C,
-        scratch.count,
-        G,
-        str(config.gate_ordering),
-        scratch.keys,
-        out,
-        normalize_extent=target_extent,
-    )
+        def enqueue(ctx):
+            ops.fill(ctx, count, C)
+            # One candidate ring per env (K = 1): the track generator's checkpoint draw.
+            sample_checkpoint_rings_per_env(ctx, seed, 1, C, radius_min_frac, angle_jitter,
+                                            checkpoints)
+        return enqueue
 
 
-def register_specs() -> None:
-    from . import gate_generator_registry as _registry
-
-    _registry.register(_registry.GateGeneratorSpec(
-        name="checkpoint",
-        alloc_scratch=checkpoint_gate_alloc_scratch,
-        generate=generate_checkpoint_gates,
-        max_gates=lambda config: int(config.checkpoint_count),
-        supported_orderings=frozenset({"ccw", "raw"}),
-    ))
+def register(reg) -> None:
+    """Register the built-in ``"checkpoint"`` gate generator into ``reg`` (called by
+    ``track_gen._src.builtin_plugins``; importing this module registers nothing)."""
+    reg.add(GateCheckpoint)

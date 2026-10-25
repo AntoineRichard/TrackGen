@@ -7,15 +7,10 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-import torch
 
-pytestmark = [
-    pytest.mark.cuda,
-    pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda"),
-]
+pytestmark = pytest.mark.cuda
 
 import warp as wp  # noqa: E402
-from track_gen._src import runtime  # noqa: E402
 from tests._collision_fixtures import make_annulus_track  # noqa: E402
 from track_gen.localize import TrackLocalizer  # noqa: E402
 
@@ -31,17 +26,12 @@ def test_localize_query_graph_replay_matches_eager_cold_twin():
 
     # Capture one bound query (warmup, then reset the warm memory so the
     # first replay starts from the same cold state as construction).
-    prev = runtime._CAPTURING
-    runtime._CAPTURING = True
-    try:
+    bound.query()
+    wp.synchronize()
+    bound.reset(wp.full(E, 1, dtype=wp.int32, device=DEV))
+    wp.synchronize()
+    with wp.ScopedCapture(device=DEV) as cap:
         bound.query()
-        wp.synchronize()
-        bound.reset(wp.full(E, 1, dtype=wp.int32, device=DEV))
-        wp.synchronize()
-        with wp.ScopedCapture(device=DEV) as cap:
-            bound.query()
-    finally:
-        runtime._CAPTURING = prev
 
     # Walk the annulus; steps stay well inside the warm window.
     for a in np.deg2rad(np.arange(0.0, 360.0, 10.0)):
@@ -67,15 +57,10 @@ def test_localize_reset_graph_replay():
     loc = TrackLocalizer(track, warm_window=8)
     mask = wp.full(E, 1, dtype=wp.int32, device=DEV)
 
-    prev = runtime._CAPTURING
-    runtime._CAPTURING = True
-    try:
-        loc.reset(mask)  # warmup
-        wp.synchronize()
-        with wp.ScopedCapture(device=DEV) as cap:
-            loc.reset(mask)
-    finally:
-        runtime._CAPTURING = prev
+    loc.reset(mask)  # warmup
+    wp.synchronize()
+    with wp.ScopedCapture(device=DEV) as cap:
+        loc.reset(mask)
 
     # Seed warm memory, then replay the captured reset: memory must drop.
     pts = np.tile(np.array([[1.1, 0.0, 0.0]], np.float32), (E, 1))

@@ -8,9 +8,11 @@ production distillation of the Voronoi / random-geometric prototype: the useful 
 of cells" control is retained through the fixed site field, while exact Delaunay / Voronoi
 ridge traversal and dynamic cycle extraction — which are incompatible with the fixed-shape
 CUDA-graph contract — are replaced by a static angular-snap cycle that is allocation-free and
-deterministic in ``(seed, config)``.  Of the five registered generators, ``voronoi`` yields the
-highest typical compactness (~0.73) and effectively eliminates pre-relax self-intersections
-without a generation retry loop.
+deterministic in ``(seed, config)`` (:term:`seed`).  Of the five sampling generators,
+``voronoi`` yields the highest typical compactness (:doc:`benchmarks`) and effectively
+eliminates pre-relax self-intersections without a generation retry loop. It writes one
+closed centerline per :term:`env` at every :term:`generation`, and its shape knobs are
+per-env :term:`dynamic fields <dynamic field>` (`Per-env (dynamic) parameters`_).
 
 .. figure:: ../assets/generator-voronoi.png
    :alt: Sample tracks produced by the voronoi generator
@@ -49,7 +51,10 @@ How It Works
      (source: ``_sample_sites_k``, line 78, ``wp.randf(state) < 0.65``).
 
 2. **Select anchor sites.**
-   ``_select_anchor_sites_k`` draws ``K = voronoi_control_points`` angular sector targets.
+   ``_select_anchor_sites_dyn_k`` draws ``K = voronoi_control_points`` angular sector
+   targets, with env ``e``'s ``voronoi_radial_variation`` and ``voronoi_angular_jitter``
+   read from the per-env parameter arrays (the frozen legacy ``generate_voronoi_warp``
+   launches the scalar ``_select_anchor_sites_k``: same arithmetic, same bytes).
    A global random rotation ``ρ`` is applied; sector ``i`` is centered at angle
    ``ρ + (2π/K)·i`` and jittered by ``εᵢ ∈ [-j, +j]`` where ``j = voronoi_angular_jitter``.
    Each target also has a radial component: a multi-harmonic profile ``φ(θ)`` (see Math
@@ -65,22 +70,25 @@ How It Works
    anchor-snap polygon before spline evaluation.
 
 4. **Closed Catmull-Rom spline.**
-   ``_catmull_rom_dense_k`` evaluates a closed uniform Catmull-Rom spline over the ``AP``
+   ``ops.closed_catmull_rom`` evaluates a closed uniform Catmull-Rom spline over the ``AP``
    augmented vertices, producing a dense ``M = AP × num_points_per_segment``-point loop per
    environment.
 
 5. **Arc-resample and normalize.**
-   ``_arc_resample_inplace`` arc-resamples the dense loop to ``num_points`` uniformly spaced
-   points.  ``_normalize_centerline_k`` then centers the environment's bounding box and
+   ``ops.arc_resample`` arc-resamples the dense loop to ``num_points`` uniformly spaced
+   points.  ``ops.normalize_extent`` then centers the environment's bounding box and
    isotropically rescales the longest dimension to ``scale × 1.44``, matching the shared
-   target extent of the other generators.
+   target extent of the other generators, times the env's ``size[e]``
+   (``ops.normalize_extent(..., size=...)``).
 
 6. **Fallback for self-crossing smooth loops.**
-   ``self_intersections_inplace`` counts proper crossings on the ``num_points``-point loop.
-   For environments where the smooth loop self-intersects, ``_assemble_polygon_selected_k``
-   emits the straight Chaikin-augmented (``AP``-vertex) polygon by linear interpolation, and
-   ``_arc_resample_selected_inplace`` overwrites those rows with an arc-resampled version of
-   that polygon.  A second ``_normalize_centerline_k`` pass re-applies the bbox rescale.
+   ``ops.self_intersections`` counts proper crossings on the ``num_points``-point loop.
+   For environments where the smooth loop self-intersects,
+   ``ops.closed_polyline(..., active=crossers)`` emits the straight Chaikin-augmented
+   (``AP``-vertex) polygon by linear interpolation, and
+   ``ops.arc_resample(..., active=crossers)`` overwrites those rows with an arc-resampled
+   version of that polygon.  A second ``ops.normalize_extent`` pass re-applies the bbox
+   rescale (to the same per-env target).
    Non-crossing rows are left untouched.
 
 
@@ -177,6 +185,12 @@ The following ``TrackGenConfig`` fields are owned by the ``voronoi`` generator. 
 fields (``num_points``, ``num_points_per_segment``, ``scale``, ``half_width``, etc.) are
 shared pipeline parameters described in the configuration reference.
 
+The generator-specific fields below are also the fields of ``VoronoiParams``, the
+generator's Params class (core fields such as ``scale`` are not): set them flat or
+through ``generator_params`` (see :ref:`builtin-generator-params`). Their rules are
+checked when the ``TrackGenerator`` is constructed, and only for
+``generator="voronoi"``. ``VoronoiParams`` also holds ``num_points_per_segment``.
+
 ``voronoi_num_sites`` (``S``, default 256)
    Number of cell sites drawn per environment.  Higher values make the anchor-snap richer
    and improve coverage of the site field, but scale the per-anchor O(S) cost scan linearly.
@@ -194,12 +208,113 @@ shared pipeline parameters described in the configuration reference.
 ``voronoi_radial_variation`` (default 0.62)
    Amplitude of the per-anchor radius modulation.  At 0 all anchor targets sit at the same
    base radius (0.34·L); at larger values the multi-harmonic profile drives anchors to vary
-   between 0.16·L and 0.52·L, producing more irregular, non-circular layouts.
+   between 0.16·L and 0.52·L, producing more irregular, non-circular layouts. The kernel
+   uses ``min(voronoi_radial_variation * boost, 0.85)`` with a per-layout ``boost >= 1``,
+   so the effect saturates at ``0.85 / boost`` and nothing changes above ``0.85``:
+   dynamic, in ``[0, 0.85]`` (a larger value raises ``ValueError`` at construction).
 
 ``voronoi_angular_jitter`` (default 0.08)
    Maximum angular perturbation (in radians) applied to each sector target.  Small values
    keep anchors close to their ideal evenly-spaced sectors; larger values break the rotational
-   regularity.
+   regularity. Dynamic, in ``[0, pi]``; the useful range is much smaller (below).
+
+``size`` (default 1.0)
+   Per-env size multiplier: both normalizations scale env ``e``'s longest bounding-box
+   side to ``f32(scale * 1.44) * size[e]``. Dynamic, in ``[0.1, 10]`` (below).
+
+.. _voronoi-dynamic:
+
+Per-env (dynamic) parameters
+----------------------------
+
+``voronoi_radial_variation``, ``voronoi_angular_jitter`` and ``size`` are **dynamic**
+fields of ``VoronoiParams`` (the first two also of ``VoronoiGateParams``: the voronoi gate
+generator selects its anchors with the same kernel): per-env ``[E]`` ``float32`` arrays,
+initialised from the configured values. Draw them per env with ``presets.track(generator="voronoi",
+randomize={"generator.voronoi_radial_variation": (lo, hi)})`` (``presets.gates`` takes
+the same keys), write them with ``gen.params["generator"].set(...)`` or from your own
+graph (a curriculum): see :ref:`tuning-per-env`. A scalar outside the bounds raises
+``ValueError``; an array value outside them is clamped to them when the kernel reads it.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 26 9 11 20 21 13
+
+   * - Field (``randomize=`` key)
+     - Default
+     - Bounds
+     - Harder / more varied when
+     - Effective range
+     - Yield at lo / default / hi
+   * - ``voronoi_radial_variation`` (``generator.voronoi_radial_variation``)
+     - ``0.62``
+     - ``[0, 0.85]``
+     - higher: stronger radial modulation, less circular layouts
+     - saturates at ``0.85 / boost`` (``0.85`` for ``"ring"``, about ``0.77`` for the
+       default ``"void_ring"``)
+     - 1.00 / 1.00 / 1.00
+   * - ``voronoi_angular_jitter`` (``generator.voronoi_angular_jitter``)
+     - ``0.08``
+     - ``[0, pi]``
+     - higher: more irregular anchor spacing
+     - **about** ``[0, 0.5]``: ``pi`` only bounds what is legal (``±pi`` spans the
+       circle), the yield collapses well before it
+     - 1.00 / 1.00 / 0.00
+   * - ``size`` (``generator.size``)
+     - ``1.0``
+     - ``[0.1, 10]``
+     - higher: a longer course relative to the (absolute) road width
+     - about ``[0.5, 4.6]`` at the default ``n_max`` (384): from about ``4.6`` the
+       longest tracks of a large batch truncate
+     - 0.996 / 1.00 / 1.00 at 0.5 / 1 / 2 (1.00 at 3)
+
+*Yield* is the fraction of valid tracks with the default pipeline, ``E = 128``, seeds
+``0..127`` (CPU), with the knob set to the value for every env (``size``: ``E = 256``,
+seeds ``7919 * e + 13``). For ``voronoi_angular_jitter`` it falls fast past ``0.3``
+(every layout):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 28 9 9 9 9 9 9 9 9
+
+   * - ``voronoi_angular_jitter``
+     - 0.08
+     - 0.2
+     - 0.3
+     - 0.5
+     - 0.8
+     - 1.2
+     - 1.6
+     - pi
+   * - yield (the four layouts)
+     - 1.00
+     - 1.00
+     - 0.97-0.99
+     - 0.71-0.85
+     - 0.29-0.38
+     - 0.03-0.05
+     - 0.00-0.01
+     - 0.00
+
+Keep a randomized or curriculum range within about ``[0, 0.5]``, and check the yield at
+both ends of it.
+
+**Size** scales the normalization target of both normalizations (step 5 and the
+fallback's): env ``e``'s longest bounding-box side is ``f32(scale * 1.44) * size[e]``,
+within one ``float32`` rounding of ``scale = s`` at ``size = s``, and bitwise unchanged
+at ``size = 1``. It scales the plan view only (road width, spacing and z stay absolute).
+The longest default ``voronoi`` loop of 8192 envs is 5.01 (p99 4.78) at ``scale = 1``:
+with the default ``n_max = 384`` and spacing ``0.06`` truncation (a failed env) starts
+at about ``size = 4.6``. Size ``n_max`` and
+``num_points`` for the largest size with the rule of :ref:`tuning-size`. On **gates**
+the size is the ``normalize.extent`` stage's (key ``normalize.size``), as for ``polar``
+(:ref:`polar-dynamic`).
+
+**Static knobs, and why.** ``voronoi_num_sites`` and ``voronoi_control_points`` (size
+the site, anchor and dense buffers and the launch dimensions), ``voronoi_site_layout``
+(an enum the kernels branch on; categorical draws are not planned yet),
+``num_points_per_segment`` (sizes the dense buffer) and the core ``scale`` (a host
+product with the target extent; per-env: ``size``).
 
 
 What Makes It Distinct
@@ -212,7 +327,8 @@ pure random Cartesian or polar coordinates, which gives the family a characteris
 
 Key contrasts:
 
-- **Highest compactness (~0.73).**  The ``void_ring`` default biases sites into an annular
+- **Highest compactness** of the sampling generators (:doc:`benchmarks`).  The
+  ``void_ring`` default biases sites into an annular
   band and selects anchors around the full perimeter, consistently producing compact,
   looping layouts with high area-to-perimeter ratios.
 
@@ -236,7 +352,7 @@ Fallback and Validity
 
 If the Chaikin-smoothed Catmull-Rom loop for an environment self-intersects after
 arc-resampling, the generator falls back to the corresponding Chaikin-augmented
-``AP``-vertex straight polygon, arc-resampled via ``_arc_resample_selected_inplace``.  Only
+``AP``-vertex straight polygon, arc-resampled via ``ops.arc_resample(..., active=...)``.  Only
 the crossing rows are overwritten; non-crossing rows are untouched.  Both the smooth-loop
 and polygon-fallback paths write ``out_valid_wp = 1`` for every environment.
 

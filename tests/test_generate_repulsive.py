@@ -1,8 +1,13 @@
 """End-to-end tests for the repulsive-growth first-stage generator.
 
-Task 3 lands the seed-driven obstacle-layout determinism test first; Task 4 extends
-this module with the full per-generator contract (registration, output shape, closed
-loop, NaN-tail, determinism/diversity, yield, compactness, no-graph on CUDA).
+Repulsive's own properties: a seed-driven obstacle layout, the analytic gradient, a
+stride-consistent output at the minimal growth budget, the default-config yield and
+compactness (CUDA), a fixed host schedule (no host sync, readback or debug sync in the
+growth loop) and an absorbing freeze (so per-env results do not depend on the rest of
+the batch). The generator contract (registration, output shape, closed loop, NaN tail,
+determinism, diversity, batch independence, graph capture + replay on CUDA) is checked
+for every generator by the conformance kit, in tests/test_conformance.py, on the same
+small config (``_SMALL``).
 """
 from __future__ import annotations
 
@@ -15,13 +20,14 @@ pytest.importorskip("warp")
 import warp as wp  # noqa: E402
 
 from track_gen._src.types import TrackGenConfig  # noqa: E402
-from track_gen._src import generator_registry as reg  # noqa: E402
 from track_gen._src import warp_generate_repulsive as rep  # noqa: E402
-from track_gen._src.track_generator import Track, TrackGenerator  # noqa: E402
+from track_gen._src import runtime  # noqa: E402
+from track_gen._src.track_generator import TrackGenerator  # noqa: E402
 from track_gen import PerEnvSeededRNG  # noqa: E402
+from track_gen.testing.contract import no_host_sync  # noqa: E402
 from tests._warp_compare import to_t  # noqa: E402
 
-DEVS = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
+from tests.conftest import DEVS  # noqa: E402
 
 # A deliberately small config keeps the O(N^2) host-driven optimizer fast enough to run
 # the structural contract on cpu; the default-config yield/compactness bar runs on cuda.
@@ -209,52 +215,9 @@ def test_analytic_gradient_matches_reference(dev):
 
 
 # ===========================================================================
-# Task 4: full per-generator contract (registration + generate through the tail)
+# Task 4: repulsive-specific checks through the tail (the generator contract itself is
+# checked for every generator by tests/test_conformance.py)
 # ===========================================================================
-
-def test_repulsive_is_registered():
-    assert "repulsive" in reg.available()
-    spec = reg.get("repulsive")
-    assert spec.name == "repulsive"
-    assert callable(spec.alloc_scratch) and callable(spec.generate)
-    assert spec.capturable is False
-
-
-@pytest.mark.parametrize("dev", DEVS)
-def test_repulsive_contract_through_tail(dev):
-    E = 8
-    cfg = TrackGenConfig(generator="repulsive", num_envs=E, device=dev, **_SMALL)
-    N = int(cfg.num_points)
-    gen = TrackGenerator(cfg, PerEnvSeededRNG(seeds=3, num_envs=E, device=dev))
-    track = gen.generate(E)
-    assert isinstance(track, Track)
-
-    # (h) The CUDA facade must NOT capture a graph for a non-capturable generator.
-    gen.generate(E)  # a second call would replay a captured graph if one existed
-    assert gen._graph is None
-
-    # (b) Raw generated centerline: [E*num_points, 2], all finite, correct shape.
-    gen_center = to_t(gen._scratch.gen_centerline).view(E, N, 2)
-    assert gen_center.shape == (E, N, 2)
-    assert torch.isfinite(gen_center).all()
-
-    # (c) Closed loop: last->first gap <= 3x the median step.
-    steps = (gen_center[:, 1:] - gen_center[:, :-1]).norm(dim=-1)
-    gap = (gen_center[:, 0] - gen_center[:, -1]).norm(dim=-1)
-    assert torch.all(gap <= 3.0 * steps.median(dim=1).values)
-
-    # (d) NaN-tail contract on the post-tail Track: finite < count[e], NaN after.
-    n_max = track.center.shape[0] // E
-    center = to_t(track.center).view(E, n_max, 3)[..., :2]
-    count = to_t(track.count)
-    valid = to_t(track.valid).bool()
-    assert count.shape == (E,) and valid.shape == (E,)
-    for e in range(E):
-        c = int(count[e])
-        finite = torch.isfinite(center[e]).all(dim=-1)
-        assert torch.all(finite[:c])
-        assert not torch.any(finite[c:])
-
 
 @pytest.mark.parametrize("dev", DEVS)
 def test_repulsive_stride_consistent_minimal_budget(dev):
@@ -287,45 +250,15 @@ def test_repulsive_stride_consistent_minimal_budget(dev):
     assert torch.all(c.norm(dim=-1).amax(dim=1) > 1e-3)
 
 
-@pytest.mark.parametrize("dev", DEVS)
-def test_repulsive_determinism_and_diversity(dev):
-    """Byte-identical determinism holds PER DEVICE (both CPU and CUDA).
-
-    The growth gradient is hand-written analytic adjoints -- a per-vertex gather with NO
-    atomics -- so the flow is bit-reproducible run-to-run on a given device (same seed ->
-    the same centerline, byte for byte, on CPU and on CUDA alike). Cross-device equality is
-    NOT claimed (fp32 rounding differs between CPU and CUDA); this test asserts byte-identity
-    independently on each available device. See the module docstring in
-    warp_generate_repulsive.py.
-    """
-    E = 8
-    cfg = TrackGenConfig(generator="repulsive", num_envs=E, device=dev, **_SMALL)
-    g1 = TrackGenerator(cfg, PerEnvSeededRNG(seeds=5, num_envs=E, device=dev))
-    g2 = TrackGenerator(cfg, PerEnvSeededRNG(seeds=5, num_envs=E, device=dev))
-    g3 = TrackGenerator(cfg, PerEnvSeededRNG(seeds=99, num_envs=E, device=dev))
-
-    a = to_t(g1.generate(E).center).clone()
-    b = to_t(g2.generate(E).center).clone()
-    c = to_t(g3.generate(E).center).clone()
-
-    # Determinism: same seed -> byte-identical (finite pattern + values).
-    fin_a = torch.isfinite(a).all(dim=-1)
-    fin_b = torch.isfinite(b).all(dim=-1)
-    assert torch.equal(fin_a, fin_b)
-    assert torch.equal(a[fin_a], b[fin_b])
-    # Diversity: distinct seeds -> distinct geometry on the shared finite support.
-    both = fin_a & torch.isfinite(c).all(dim=-1)
-    assert both.any()
-    assert not torch.allclose(a[both], c[both], atol=1e-3)
-
-
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda")
+@pytest.mark.cuda
 def test_repulsive_default_yield_and_shape_cuda():
     """The spike's bar: ~64/64 through the standard tail at E=64 with default config.
 
     With the analytic-adjoint gradient the CUDA flow is byte-deterministic, so a given seed
-    yields ONE stable answer run-to-run (seed=11 -> a stable 63/64 today; the previous tape
-    path fluctuated 62-64/64 from atomic-gradient noise). The hard gate is the design contract
+    yields ONE stable answer run-to-run (seed=11 gave a stable 63/64 before the freeze became
+    absorbing; envs that freeze early no longer get later periodic resamples, so the exact
+    count may shift by an env or two; the previous tape path fluctuated 62-64/64 from
+    atomic-gradient noise). The hard gate is the design contract
     (> 0.5); the soft gate (>= 58) guards against a genuinely broken port with margin for
     config/seed variation -- not a loosened bar hiding a bad port (the port matches the spike).
     """
@@ -333,7 +266,7 @@ def test_repulsive_default_yield_and_shape_cuda():
     cfg = TrackGenConfig(generator="repulsive", num_envs=E, device="cuda")
     gen = TrackGenerator(cfg, PerEnvSeededRNG(seeds=11, num_envs=E, device="cuda"))
     track = gen.generate(E)
-    assert gen._graph is None  # eager, never captured
+    assert gen._graph is not None  # captured (fixed-schedule loop, no host readback)
 
     valid = to_t(track.valid).bool()
     yield_frac = float(valid.float().mean())
@@ -346,3 +279,76 @@ def test_repulsive_default_yield_and_shape_cuda():
     # Serpentine/foldy band: well below the round-blob gate (0.85).
     assert float(np.median(compactness)) < 0.85, (
         f"median compactness {float(np.median(compactness)):.3f} not in the foldy band")
+
+
+# ===========================================================================
+# Capture readiness: fixed schedule, absorbing freeze
+# ===========================================================================
+
+def test_repulsive_generate_has_no_host_sync_or_readback(monkeypatch):
+    """The growth loop follows a fixed host schedule: no device->host readback, no host
+    sync. Both are illegal inside a CUDA graph capture; on cpu we prove their absence by
+    running the generator body under the conformance kit's ``no_host_sync`` guard. On top
+    of the contract, repulsive's loop never even calls the debug sync that every
+    ``ctx.sync()`` funnels into (``runtime._sync``)."""
+    E = 4
+    cfg = TrackGenConfig(generator="repulsive", num_envs=E, device="cpu", **_SMALL)
+    scratch = rep.repulsive_alloc_scratch(cfg)
+    seeds = wp.array(np.arange(E, dtype=np.int32) + 3, dtype=wp.int32, device="cpu")
+    out = wp.empty(E * int(cfg.num_points), dtype=wp.vec2f, device="cpu")
+    valid = wp.empty(E, dtype=wp.int32, device="cpu")
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("debug sync inside generate_repulsive_warp")
+
+    # The generator's own module no longer holds a warp_pipeline reference (it is built
+    # from track_gen.ops); the debug sync every ctx.sync() funnels into is runtime._sync.
+    monkeypatch.setattr(runtime, "_sync", forbidden)
+    with no_host_sync():
+        rep.generate_repulsive_warp(seeds, cfg, out, valid, scratch)
+    monkeypatch.undo()
+    assert np.isfinite(out.numpy()).all()
+    assert (valid.numpy() == 1).all()
+
+
+def _grow(seeds: list[int], dev: str = "cpu"):
+    """Run the generator through the tail for explicit per-env seeds; return
+    (gen_centerline [E,N,2], frozen [E], valid [E]) as numpy arrays."""
+    E = len(seeds)
+    cfg = TrackGenConfig(generator="repulsive", num_envs=E, device=dev, **_SMALL)
+    seeds_wp = wp.array(np.asarray(seeds, dtype=np.int32), dtype=wp.int32, device=dev)
+    gen = TrackGenerator(cfg, PerEnvSeededRNG(seeds=seeds_wp, num_envs=E, device=dev))
+    track = gen.generate(E)
+    N = int(cfg.num_points)
+    return (gen._scratch.gen_centerline.numpy().reshape(E, N, 2),
+            gen._scratch.gen.scratch["scratch:generator/frozen"].numpy(),
+            track.valid.numpy())
+
+
+@pytest.mark.parametrize("dev", DEVS)
+def test_repulsive_freeze_is_absorbing_and_batch_independent(dev):
+    """A frozen env is never touched again, so each env's track depends only on its own
+    seed, not on which other envs share the batch.
+
+    The big batch needs one env that never freezes (which seeds stay unfrozen is
+    device- and platform-dependent fp32 behaviour, so it is discovered, not hard-coded).
+    The small batch reruns five envs that froze in the big batch. Before the freeze was
+    absorbing, the all-frozen small batch stopped at the global early exit while the big
+    batch kept resampling its frozen envs until the iteration budget ran out, so the same
+    seed produced different tracks in the two batches. DELIBERATE OUTPUT CHANGE: envs that
+    froze before the end of the loop now keep their at-freeze shape (they skip the later
+    periodic resamples), so their tracks differ slightly from earlier releases; envs that
+    never freeze are byte-identical.
+    """
+    big_seeds = list(range(24))
+    big_c, big_frozen, big_valid = _grow(big_seeds, dev)
+    if big_frozen.all():
+        pytest.skip(f"every env froze on {dev}; nothing keeps the big batch running")
+    rows = np.flatnonzero(big_frozen)[:5]
+    if rows.size < 5:
+        pytest.skip(f"fewer than five envs froze on {dev}")
+
+    small_c, small_frozen, small_valid = _grow([big_seeds[i] for i in rows], dev)
+    assert small_frozen.all(), "freeze decisions must not depend on the batch"
+    assert np.array_equal(small_c, big_c[rows])
+    assert np.array_equal(small_valid, big_valid[rows])

@@ -5,14 +5,25 @@ A thin Gradio shell over a pure core (`build_config` + `render_grid`) that drive
 pure-Warp pipeline (`TrackGenerator.generate`) and renders a grid of
 tracks + yield/quality stats. Launch:  `.venv/bin/python -m viz.param_explorer`
 (needs the `ui` extra: `pip install -e ".[ui]"`).
+
+The built-in generators keep their curated control sections. Every other registered
+generator (a third-party plugin) whose Params declare fields gets a section built from
+its ``registry.describe(kind, name).params_schema`` (:func:`schema_controls`), and its
+values reach the config as ``generator_params``. Only generators registered when
+:func:`build_app` runs appear: a plugin registered later needs a new app.
 """
 from __future__ import annotations
 
+import dataclasses
+import functools
+import json
 import logging
 import math
 import os
 import sys
+import threading
 import traceback
+from typing import Any, Mapping, Sequence
 
 _PKG_PARENT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _PKG_PARENT not in sys.path:
@@ -27,16 +38,32 @@ import torch
 
 import warp as wp
 
-from track_gen import GateGenConfig, GateGenerator
-from track_gen._src.types import TrackGenConfig
-from track_gen._src.track_generator import TrackGenerator
-from track_gen._src.rng_utils import PerEnvSeededRNG
-from track_gen._src import gate_generator_registry, generator_registry, warp_gate
+from track_gen import (GateGenConfig, GateGenerator, PerEnvSeededRNG, TrackGenConfig,
+                       TrackGenerator, ops)
+from track_gen.exec import LaunchContext
+from track_gen.plugin import PluginLoadError, registry
 from viz.plot_tracks import draw_track
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 logger = logging.getLogger("param_explorer")
+
+# Gradio runs handlers on a thread pool, and one page load fires the track AND the gate
+# handler at once. Each handler builds a fresh generator, whose first generate() captures
+# its graph once on a (blocking) private stream; a concurrent readback on the legacy
+# default stream (wp.array.numpy(), torch on its default stream) in another handler would
+# invalidate that capture, and wp.synchronize() raises while it is open. Serialize the
+# handlers' GPU work and readbacks.
+_GPU_LOCK = threading.RLock()
+
+
+def _gpu_serialized(fn):
+    """Run ``fn`` under the explorer-wide GPU lock (see ``_GPU_LOCK``)."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with _GPU_LOCK:
+            return fn(*args, **kwargs)
+    return wrapper
 
 
 def _ui_error_message(exc: Exception, context: str) -> str:
@@ -65,6 +92,204 @@ GATE_CONTROL_KEYS = [
     "gate_checkpoint_count", "gate_checkpoint_radius_min_frac",
     "gate_checkpoint_angle_jitter", "gate_grid_n", "gate_seed", "gate_batch_size",
 ]
+
+# The Tracks tab's fixed (curated) controls, in the order of ``build_app``'s ``controls``.
+# Schema-driven plugin controls follow them (see ``_collect``).
+TRACK_CONTROL_KEYS = [
+    "generator", "half_width", "scale", "min_num_points", "max_num_points",
+    "min_point_distance", "num_points_per_segment", "hull_displacement",
+    "rad", "edgy", "handle_clamp_frac", "polar_num_knots", "polar_radial_jitter",
+    "polar_angular_jitter", "voronoi_num_sites", "voronoi_site_layout",
+    "voronoi_control_points", "voronoi_radial_variation", "voronoi_angular_jitter",
+    "checkpoint_count", "checkpoint_radius_min_frac", "checkpoint_angle_jitter",
+    "checkpoint_turn_rate", "checkpoint_steer_gain", "checkpoint_lookahead_frac",
+    "checkpoint_best_of_k", "checkpoint_clip_fallback",
+    "repulsive_grow_mult_min", "repulsive_grow_mult_max", "repulsive_domain_frac",
+    "repulsive_domain_init_ratio", "repulsive_obstacle_count_min",
+    "repulsive_obstacle_count_max", "repulsive_obstacle_radius_min_frac",
+    "repulsive_obstacle_radius_max_frac", "repulsive_ratchet_rate",
+    "repulsive_alpha", "repulsive_beta", "repulsive_tau", "repulsive_w_len",
+    "repulsive_settle_iters", "repulsive_resample_every", "repulsive_stall_window",
+    "repulsive_stall_area_tol", "repulsive_deactivate_obstacles",
+    "spacing", "n_max", "relax_iters",
+    "relax_sep_relax", "relax_spc_relax", "relax_bend_relax", "relax_margin",
+    "relax_sep_every", "relax_sep_cache_slots", "relax_sep_cache_skin",
+    "grid_n", "seed", "batch_size",
+]
+
+
+# ---------------------------------------------------------------------------------------
+# Schema-driven controls for plugin generators (pure: no gradio needed)
+# ---------------------------------------------------------------------------------------
+
+@dataclasses.dataclass(frozen=True)
+class ControlSpec:
+    """One UI control for one Params field, derived from its JSON schema.
+
+    Pure data: :func:`build_app` turns it into a gradio component, and :meth:`cast`
+    maps the component's value back to the field's Python value.
+
+    Attributes:
+        field: The Params field name (a ``generator_params`` key).
+        widget: ``"dropdown"``, ``"checkbox"``, ``"slider"``, ``"number"`` or
+            ``"textbox"`` (a JSON literal).
+        label: ``x-ui.label``, else the field name; ``" (dynamic)"`` is appended for
+            an ``x-dynamic`` field.
+        value: The initial value: the schema default (its JSON text for a textbox).
+        minimum: Slider lower bound (``None`` for other widgets).
+        maximum: Slider upper bound (``None`` for other widgets).
+        step: Slider step (``None`` for other widgets).
+        choices: Dropdown choices (``None`` for other widgets).
+        json_type: The schema ``"type"`` (a string, a list such as
+            ``["number", "null"]``, or ``None``).
+        dynamic: ``True`` for an ``x-dynamic`` field.
+    """
+
+    field: str
+    widget: str
+    label: str
+    value: Any
+    minimum: Any = None
+    maximum: Any = None
+    step: Any = None
+    choices: "tuple | None" = None
+    json_type: Any = None
+    dynamic: bool = False
+
+    def _types(self) -> tuple:
+        t = self.json_type
+        if t is None:
+            return ()
+        return tuple(t) if isinstance(t, (list, tuple)) else (t,)
+
+    def cast(self, value):
+        """The ``generator_params`` value of the component value ``value``: JSON-shaped
+        (arrays stay lists, enums are their values; the library converts them by the
+        field's annotation). Raises ``ValueError`` for a textbox that is not a JSON
+        literal, or a value outside ``choices``."""
+        types = self._types()
+        if self.widget == "dropdown":
+            for c in self.choices or ():
+                if value == c or str(value) == str(c):
+                    return c
+            raise ValueError(f"{self.field}: {value!r} is not one of {list(self.choices or ())}")
+        if self.widget == "checkbox":
+            return bool(value)
+        if self.widget in ("slider", "number"):
+            if value is None:
+                if "null" in types:
+                    return None
+                raise ValueError(f"{self.field}: a number is required")
+            if "integer" in types:
+                return int(round(float(value)))
+            return float(value)
+        # textbox: a JSON literal (a bare word is taken as a string for a string field)
+        if not isinstance(value, str):
+            return value
+        text = value.strip()
+        if not text and "null" in types:
+            return None
+        try:
+            parsed = json.loads(text)
+        except ValueError:
+            if "string" in types:
+                return value
+            raise ValueError(f"{self.field}: expected a JSON literal, got {value!r}") from None
+        if "string" in types and not isinstance(parsed, str) and parsed is not None:
+            return value
+        return parsed
+
+
+def _ui_hint(prop: Mapping, key: str):
+    ui = prop.get("x-ui")
+    return ui.get(key) if isinstance(ui, Mapping) else None
+
+
+def schema_controls(schema: Mapping) -> list[ControlSpec]:
+    """The controls for a Params JSON schema (``SpecInfo.params_schema``), in field order.
+
+    Widgets: an ``enum`` -> dropdown; ``boolean`` -> checkbox; an ``integer`` /
+    ``number`` with both ``minimum`` and ``maximum`` -> slider (step ``x-ui.step``, else
+    1 for an integer, else (max - min) / 100); any other number -> number box; anything
+    else -> a textbox holding a JSON literal.
+    """
+    out: list[ControlSpec] = []
+    for name, prop in (schema.get("properties") or {}).items():
+        jtype = prop.get("type")
+        types = tuple(jtype) if isinstance(jtype, (list, tuple)) else (jtype,)
+        default = prop.get("default")
+        dynamic = bool(prop.get("x-dynamic", False))
+        label = _ui_hint(prop, "label") or name
+        if dynamic:
+            label = f"{label} (dynamic)"
+        common = dict(field=name, label=str(label), json_type=jtype, dynamic=dynamic)
+        lo, hi = prop.get("minimum"), prop.get("maximum")
+        numeric = jtype in ("integer", "number")
+        if "enum" in prop:
+            out.append(ControlSpec(widget="dropdown", value=default,
+                                   choices=tuple(prop["enum"]), **common))
+        elif jtype == "boolean":
+            out.append(ControlSpec(widget="checkbox", value=bool(default), **common))
+        elif numeric and lo is not None and hi is not None:
+            step = _ui_hint(prop, "step")
+            if step is None:
+                span = float(hi) - float(lo)
+                step = 1 if jtype == "integer" else (span / 100.0 if span > 0 else 1.0)
+            out.append(ControlSpec(widget="slider", value=default, minimum=lo, maximum=hi,
+                                   step=step, **common))
+        elif numeric or (len(types) == 2 and "null" in types
+                         and ({"integer", "number"} & set(types))):
+            out.append(ControlSpec(widget="number", value=default, **common))
+        else:
+            out.append(ControlSpec(widget="textbox", value=json.dumps(default), **common))
+    return out
+
+
+def plugin_generators(kind: str) -> list[str]:
+    """The registered ``kind`` generators that get schema-driven controls: every
+    non-built-in generator whose Params declare at least one field."""
+    names = []
+    for name in registry.available(kind):
+        info = registry.describe(kind, name)
+        if not info.builtin and (info.params_schema or {}).get("properties"):
+            names.append(name)
+    return names
+
+
+def plugin_sections(kind: str) -> list[tuple[str, list[ControlSpec]]]:
+    """``[(generator, controls)]`` for every :func:`plugin_generators` entry."""
+    return [(name, schema_controls(registry.describe(kind, name).params_schema))
+            for name in plugin_generators(kind)]
+
+
+def plugin_section_visibility(generator: str,
+                              sections: Sequence[tuple[str, Sequence[ControlSpec]]]
+                              ) -> list[bool]:
+    """Per-component visibility of the plugin sections (each section: its header, then
+    its controls), visible only for the selected generator."""
+    flags: list[bool] = []
+    for name, specs in sections:
+        flags.extend([str(generator) == name] * (1 + len(specs)))
+    return flags
+
+
+def plugin_control_keys(sections: Sequence[tuple[str, Sequence[ControlSpec]]]
+                ) -> list[tuple[str, ControlSpec]]:
+    """``[(generator, control)]`` in component order (``_collect``'s ``plugin_keys``)."""
+    return [(name, spec) for name, specs in sections for spec in specs]
+
+
+def _plugin_params(generator, keys: Sequence[tuple[str, ControlSpec]], values) -> "dict | None":
+    """The selected generator's ``generator_params`` from the plugin control values
+    (``None`` when it has no plugin controls: a built-in keeps its flat fields)."""
+    params = None
+    for (name, spec), value in zip(keys, values):
+        if name != str(generator):
+            continue
+        if params is None:
+            params = {}
+        params[spec.field] = spec.cast(value)
+    return params
 
 
 def default_params() -> dict:
@@ -164,7 +389,10 @@ def build_config(p: dict) -> TrackGenConfig:
     Output is always constant_spacing (the only supported mode): ``spacing`` is the
     arc-length step and ``N_max`` the per-track point cap. ``num_points`` is the
     intermediate dense-resample resolution before constant-spacing (optional; the
-    config default is used when absent).
+    config default is used when absent). ``generator_params`` (optional) is passed
+    through as ``TrackGenConfig.generator_params``: the schema-driven controls of a
+    plugin generator land there (built-ins keep their flat fields). Generator-specific
+    rules are checked when the generator is built (``generate_batch``), not here.
     """
     lo = min(int(p["min_num_points"]), int(p["max_num_points"]))
     hi = max(int(p["min_num_points"]), int(p["max_num_points"]))
@@ -245,6 +473,7 @@ def build_config(p: dict) -> TrackGenConfig:
         relax_bend_relax=float(p["relax_bend_relax"]),
         relax_margin=float(p["relax_margin"]),
         device=DEVICE,
+        generator_params=p.get("generator_params"),
         **kw,
     )
 
@@ -349,19 +578,17 @@ def _stats(track) -> dict:
     hw = _estimate_half_width(t.outer, t.center, valid)
     cnt = t.count.clamp_min(1)
     band = (2.0 * hw / (t.length / cnt.float()).clamp_min(1e-9)).round().to(torch.int32).clamp_min(1)
-    # thickness: call the kernel in-place via wp.array (_thickness_k from warp_pipeline)
-    from track_gen._src import warp_pipeline as _wpl
+    # thickness: the public op (the validity gate's kernel) on the xy projection.
     E, n_max, _ = t.center.shape
     dev = str(t.center.device)
-    # _thickness_k is an internal 2D kernel: feed it the xy projection.
     pf = wp.from_torch(t.center[..., :2].reshape(E * n_max, 2).contiguous(), dtype=wp.vec2f)
     band_wp = wp.from_torch(band.contiguous(), dtype=wp.int32)
     cnt_wp = wp.from_torch(t.count.to(torch.int32).contiguous(), dtype=wp.int32)
     out_wp = wp.zeros(E, dtype=wp.float32, device=dev)
-    wp.launch(_wpl._thickness_k, dim=E, inputs=[pf, band_wp, n_max, cnt_wp, out_wp], device=dev)
-    if "cuda" in dev:
-        wp.synchronize()
-    th = wp.to_torch(out_wp)
+    ops.thickness(LaunchContext.for_call(dev), pf, n_max, band_wp, out_wp, count=cnt_wp)
+    # A blocking readback (the explorer's GPU work is serialized by _GPU_LOCK, so no
+    # capture is open on the device while it runs).
+    th = torch.from_numpy(out_wp.numpy()).to(valid.device)
     return {
         "yield": float(valid.float().mean()),
         "n_valid": n,
@@ -371,6 +598,7 @@ def _stats(track) -> dict:
     }
 
 
+@_gpu_serialized
 def render_grid(p: dict):
     """Generate a batch, draw page 0, compute stats over the full batch. Returns (Figure, stats dict).
     Any pipeline error is caught and returned as a small error figure + an 'error' stat."""
@@ -391,7 +619,8 @@ def default_gate_params() -> dict:
     cfg = GateGenConfig()
     return {
         "gate_generator": cfg.generator,
-        "gate_ordering": cfg.gate_ordering,
+        "gate_ordering": gate_default_ordering(cfg.generator)
+        if cfg.gate_ordering is None else cfg.gate_ordering,
         "gate_width": 0.05,
         "gate_radius": cfg.gate_radius,
         "gate_solve_iters": cfg.gate_solve_iters,
@@ -418,13 +647,36 @@ def default_gate_params() -> dict:
 
 
 def gate_supported_orderings(generator: str) -> list[str]:
+    """The orders gate generator ``generator`` supports: the built-ins first, in
+    ``("ccw", "raw", "random_pairs")`` order, then plugin orders sorted (roadmap PR11:
+    any registered order stage the generator does not exclude)."""
     try:
-        supported = gate_generator_registry.get(str(generator)).supported_orderings
-    except ValueError as exc:
+        supported = registry.describe("gate_generator", str(generator)).supported_orderings
+    except (ValueError, PluginLoadError) as exc:
         logger.warning("gate ordering lookup failed for %r: %s", generator, exc)
-        supported = frozenset({"ccw"})
-    ordered = [name for name in ("ccw", "raw", "random_pairs") if name in supported]
+        supported = ["ccw"]
+    builtin = ("ccw", "raw", "random_pairs")
+    ordered = [name for name in builtin if name in supported]
+    ordered += sorted(name for name in supported if name not in builtin)
     return ordered or ["ccw"]
+
+
+def gate_default_ordering(generator: str) -> str:
+    """The order ``GateGenConfig(gate_ordering=None)`` resolves to for gate generator
+    ``generator`` (the rule of ``presets.gates(order=None)``): its preferred order when it
+    supports it, else ``"ccw"`` when it supports it, else its first supported order."""
+    try:
+        info = registry.describe("gate_generator", str(generator))
+    except (ValueError, PluginLoadError) as exc:
+        logger.warning("gate ordering lookup failed for %r: %s", generator, exc)
+        return "ccw"
+    supported = sorted(info.supported_orderings)
+    preferred = dict(info.preferred or {}).get("order")
+    if preferred in supported:
+        return preferred
+    if "ccw" in supported or not supported:
+        return "ccw"
+    return supported[0]
 
 
 def gate_visible_sections(generator: str) -> dict[str, bool]:
@@ -473,6 +725,13 @@ def track_mode_visibility(generator: str) -> list[bool]:
 
 
 def build_gate_config(p: dict) -> GateGenConfig:
+    """Map a gate params dict to a GateGenConfig.
+
+    The gate counts of the curated built-ins are derived from their knobs; any other
+    generator gets the generic ``[2, max(2, gate_max_num_points)]`` range.
+    ``gate_generator_params`` (optional) is passed through as
+    ``GateGenConfig.generator_params`` (a plugin's schema-driven controls).
+    """
     generator = str(p["gate_generator"])
     min_points = min(int(p["gate_min_num_points"]), int(p["gate_max_num_points"]))
     max_points = max(int(p["gate_min_num_points"]), int(p["gate_max_num_points"]))
@@ -496,9 +755,10 @@ def build_gate_config(p: dict) -> GateGenConfig:
         max_gates = max(2, max_points)
     radius = float(p["gate_radius"])
     supported_orderings = gate_supported_orderings(generator)
-    ordering = str(p["gate_ordering"])
-    if ordering not in supported_orderings:
-        ordering = supported_orderings[0]
+    ordering = p.get("gate_ordering")
+    if ordering is None or str(ordering) not in supported_orderings:
+        ordering = gate_default_ordering(generator)
+    ordering = str(ordering)
     return GateGenConfig(
         generator=generator,
         gate_ordering=ordering,
@@ -524,11 +784,13 @@ def build_gate_config(p: dict) -> GateGenConfig:
         checkpoint_radius_min_frac=float(p["gate_checkpoint_radius_min_frac"]),
         checkpoint_angle_jitter=float(p["gate_checkpoint_angle_jitter"]),
         device=DEVICE,
+        generator_params=p.get("gate_generator_params"),
     )
 
 
 def _gate_center_target(cfg: GateGenConfig) -> float:
-    return warp_gate._gate_center_distance(cfg)
+    """The validity gate's minimum gate-center distance: ``2 * gate_radius``."""
+    return 2.0 * float(cfg.gate_radius)
 
 
 def generate_gate_batch(p: dict):
@@ -681,6 +943,7 @@ def _gate_stats(gates, cfg: GateGenConfig) -> dict:
     }
 
 
+@_gpu_serialized
 def render_gate_grid(p: dict):
     try:
         gates, cfg = generate_gate_batch(p)
@@ -696,12 +959,18 @@ def render_gate_grid(p: dict):
                      "target_center_distance": float("nan")}
 
 
-def _collect_gate(*vals) -> dict:
-    if len(vals) != len(GATE_CONTROL_KEYS):
+def _collect_gate(*vals, plugin_keys: Sequence[tuple[str, ControlSpec]] = ()) -> dict:
+    """The gate params dict of the Gates tab's values: the fixed controls
+    (``GATE_CONTROL_KEYS``), then one value per ``plugin_keys`` entry; the selected
+    generator's plugin values become ``p["gate_generator_params"]``."""
+    n = len(GATE_CONTROL_KEYS)
+    if len(vals) != n + len(plugin_keys):
         raise ValueError(
-            f"expected {len(GATE_CONTROL_KEYS)} gate controls, got {len(vals)}"
+            f"expected {n + len(plugin_keys)} gate controls, got {len(vals)}"
         )
-    return dict(zip(GATE_CONTROL_KEYS, vals))
+    p = dict(zip(GATE_CONTROL_KEYS, vals[:n]))
+    p["gate_generator_params"] = _plugin_params(p["gate_generator"], plugin_keys, vals[n:])
+    return p
 
 
 def _gate_stats_md(st: dict) -> str:
@@ -714,29 +983,18 @@ def _gate_stats_md(st: dict) -> str:
             f"min center distance {min_txt} / target {st['target_center_distance']:.3f}")
 
 
-def _collect(*vals) -> dict:
-    keys = ["generator", "half_width", "scale", "min_num_points", "max_num_points",
-            "min_point_distance", "num_points_per_segment", "hull_displacement",
-            "rad", "edgy", "handle_clamp_frac", "polar_num_knots", "polar_radial_jitter",
-            "polar_angular_jitter", "voronoi_num_sites", "voronoi_site_layout",
-            "voronoi_control_points", "voronoi_radial_variation", "voronoi_angular_jitter",
-            "checkpoint_count", "checkpoint_radius_min_frac", "checkpoint_angle_jitter",
-            "checkpoint_turn_rate", "checkpoint_steer_gain", "checkpoint_lookahead_frac",
-            "checkpoint_best_of_k", "checkpoint_clip_fallback",
-            "repulsive_grow_mult_min", "repulsive_grow_mult_max", "repulsive_domain_frac",
-            "repulsive_domain_init_ratio", "repulsive_obstacle_count_min",
-            "repulsive_obstacle_count_max", "repulsive_obstacle_radius_min_frac",
-            "repulsive_obstacle_radius_max_frac", "repulsive_ratchet_rate",
-            "repulsive_alpha", "repulsive_beta", "repulsive_tau", "repulsive_w_len",
-            "repulsive_settle_iters", "repulsive_resample_every", "repulsive_stall_window",
-            "repulsive_stall_area_tol", "repulsive_deactivate_obstacles",
-            "spacing", "n_max", "relax_iters",
-            "relax_sep_relax", "relax_spc_relax", "relax_bend_relax", "relax_margin",
-            "relax_sep_every", "relax_sep_cache_slots", "relax_sep_cache_skin",
-            "grid_n", "seed", "batch_size"]
-    if len(vals) != len(keys):
-        raise ValueError(f"expected {len(keys)} track controls, got {len(vals)}")
-    return dict(zip(keys, vals))
+def _collect(*vals, plugin_keys: Sequence[tuple[str, ControlSpec]] = ()) -> dict:
+    """The params dict of the Tracks tab's values: the fixed controls
+    (``TRACK_CONTROL_KEYS``), then one value per ``plugin_keys`` entry
+    (``(generator, ControlSpec)``, see :func:`plugin_control_keys`). Only the selected
+    generator's plugin values are kept, as ``p["generator_params"]`` (``None`` for a
+    generator without plugin controls)."""
+    n = len(TRACK_CONTROL_KEYS)
+    if len(vals) != n + len(plugin_keys):
+        raise ValueError(f"expected {n + len(plugin_keys)} track controls, got {len(vals)}")
+    p = dict(zip(TRACK_CONTROL_KEYS, vals[:n]))
+    p["generator_params"] = _plugin_params(p["generator"], plugin_keys, vals[n:])
+    return p
 
 
 def _stats_md(st: dict) -> str:
@@ -747,12 +1005,70 @@ def _stats_md(st: dict) -> str:
             f"mean count {st['count']:.0f}")
 
 
+def _schema_component(gr, spec: ControlSpec, visible: bool):
+    """The gradio component of a :class:`ControlSpec`."""
+    if spec.widget == "dropdown":
+        return gr.Dropdown(list(spec.choices or ()), value=spec.value, label=spec.label,
+                           visible=visible)
+    if spec.widget == "checkbox":
+        return gr.Checkbox(value=bool(spec.value), label=spec.label, visible=visible)
+    if spec.widget == "slider":
+        return gr.Slider(spec.minimum, spec.maximum, value=spec.value, step=spec.step,
+                         label=spec.label, visible=visible)
+    if spec.widget == "number":
+        integer = "integer" in spec._types()
+        return gr.Number(value=spec.value, precision=0 if integer else None,
+                         label=spec.label, visible=visible)
+    return gr.Textbox(value=spec.value, label=spec.label, placeholder="a JSON literal",
+                      visible=visible)
+
+
+def _plugin_components(gr, sections, selected: str) -> list:
+    """Build every plugin section (a ``### `name` parameters`` header, then its
+    controls; only the selected generator's is visible). Returns the components in
+    :func:`plugin_section_visibility` order; the controls are every non-header entry."""
+    comps = []
+    for name, specs in sections:
+        visible = str(selected) == name
+        comps.append(gr.Markdown(f"### `{name}` parameters", visible=visible))
+        comps.extend(_schema_component(gr, spec, visible) for spec in specs)
+    return comps
+
+
+def _plugin_controls(comps: list, sections) -> list:
+    """The control components of :func:`_plugin_components`' output (headers dropped)."""
+    out, i = [], 0
+    for _name, specs in sections:
+        out.extend(comps[i + 1:i + 1 + len(specs)])
+        i += 1 + len(specs)
+    return out
+
+
+def _auto_update_event(gr, component):
+    """The event that re-renders on a control change: a slider's release, a textbox's
+    submit (not every keystroke of a JSON literal), else change."""
+    if hasattr(component, "release"):
+        return component.release
+    if isinstance(component, gr.Textbox):
+        return component.submit
+    return component.change
+
+
 def build_app():
-    """Build the Gradio Blocks UI (does not launch). Requires the `ui` extra."""
+    """Build the Gradio Blocks UI (does not launch). Requires the `ui` extra.
+
+    Plugin generators (:func:`plugin_generators`) registered when this runs get a
+    schema-driven section in the Tracks / Gates tab; a plugin registered afterwards
+    does not appear until the app is rebuilt.
+    """
     import gradio as gr
 
     defaults = default_params()
     gate_defaults = default_gate_params()
+    track_sections = plugin_sections("generator")
+    gate_sections = plugin_sections("gate_generator")
+    track_plugin_keys = plugin_control_keys(track_sections)
+    gate_plugin_keys = plugin_control_keys(gate_sections)
 
     with gr.Blocks(title="Track-gen parameter explorer") as app:
         gr.Markdown("## Track-gen parameter explorer")
@@ -761,7 +1077,9 @@ def build_app():
                 with gr.Row():
                     with gr.Column(scale=1):
                         gr.Markdown("### Centerline generator")
-                        available_generators = generator_registry.available()
+                        available_generators = [
+                            n for n in registry.available("generator")
+                            if registry.describe("generator", n).seeded]
                         generator_default = defaults["generator"] if defaults["generator"] in available_generators else "bezier"
                         generator = gr.Dropdown(available_generators, value=generator_default,
                                                 label="generator method")
@@ -896,6 +1214,11 @@ def build_app():
                         rep_deac = gr.Checkbox(value=defaults["repulsive_deactivate_obstacles"],
                                                label="repulsive_deactivate_obstacles (close disc halos at target length)",
                                                visible=track_mode_visible["repulsive"])
+                        # Plugin generators: one schema-driven section each.
+                        track_plugin_outputs = _plugin_components(gr, track_sections,
+                                                                  generator_default)
+                        track_plugin_controls = _plugin_controls(track_plugin_outputs,
+                                                                 track_sections)
                         gr.Markdown("### Resolution (constant-spacing)")
                         spacing = gr.Slider(0.1, 1.0, value=defaults["spacing"], step=0.02, label="spacing (m)")
                         n_max = gr.Slider(128, 512, value=defaults["n_max"], step=8, label="N_max")
@@ -945,6 +1268,9 @@ def build_app():
                             rep_deac,
                             spacing, n_max, relax_iters, sep, spc, bend, margin,
                             sep_every, sep_slots, sep_skin, grid_n, seed, batch_size]
+                if len(controls) != len(TRACK_CONTROL_KEYS):
+                    raise RuntimeError("track control list and key list are out of sync")
+                controls = controls + track_plugin_controls
 
                 track_mode_outputs = [
                     sampling_md, min_np, max_np, min_dist,
@@ -969,15 +1295,18 @@ def build_app():
                     )
 
                 def _track_mode_update(generator_name):
-                    return [gr.update(visible=flag)
-                            for flag in track_mode_visibility(generator_name)]
+                    flags = (track_mode_visibility(generator_name)
+                             + plugin_section_visibility(generator_name, track_sections))
+                    return [gr.update(visible=flag) for flag in flags]
 
-                generator.change(_track_mode_update, [generator], track_mode_outputs)
+                generator.change(_track_mode_update, [generator],
+                                 track_mode_outputs + track_plugin_outputs)
 
+                @_gpu_serialized
                 def _generate(*vals):
-                    p = _collect(*vals)
-                    gn = int(p["grid_n"])
-                    try:
+                    try:   # _collect too: a bad plugin textbox shows the error figure
+                        p = _collect(*vals, plugin_keys=track_plugin_keys)
+                        gn = int(p["grid_n"])
                         track = generate_batch(p)
                         fig = render_page(track, 0, gn)
                         st = _stats(track)
@@ -992,6 +1321,7 @@ def build_app():
                                   "mean_len": float("nan"), "mean_thickness": float("nan"), "count": 0}
                         return err_fig, _stats_md(err_st), None, 0, "page 1/1"
 
+                @_gpu_serialized
                 def _go(track, page, gn, delta):
                     if track is None:
                         return gr.update(), page, gr.update()
@@ -1015,7 +1345,7 @@ def build_app():
                         return gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
                     return _generate(*rest)
                 for c in controls:
-                    ev = c.release if hasattr(c, "release") else c.change
+                    ev = _auto_update_event(gr, c)
                     ev(_maybe, controls + [auto], [plot, stats, track_state, page_state, page_lbl])
 
                 app.load(_generate, controls, [plot, stats, track_state, page_state, page_lbl])
@@ -1023,13 +1353,13 @@ def build_app():
                 with gr.Row():
                     with gr.Column(scale=1):
                         gr.Markdown("### Gate generator")
-                        gate_available_generators = gate_generator_registry.available()
+                        gate_available_generators = registry.available("gate_generator")
                         gate_generator_default = gate_defaults["gate_generator"] if gate_defaults["gate_generator"] in gate_available_generators else "bezier"
                         gate_mode_visible = gate_visible_sections(gate_generator_default)
                         gate_ordering_choices = gate_supported_orderings(gate_generator_default)
                         gate_ordering_default = gate_defaults["gate_ordering"]
                         if gate_ordering_default not in gate_ordering_choices:
-                            gate_ordering_default = gate_ordering_choices[0]
+                            gate_ordering_default = gate_default_ordering(gate_generator_default)
                         gate_generator = gr.Dropdown(gate_available_generators, value=gate_generator_default,
                                                      label="generator method")
                         gate_ordering = gr.Dropdown(gate_ordering_choices,
@@ -1094,6 +1424,11 @@ def build_app():
                                                                  value=gate_defaults["gate_checkpoint_angle_jitter"],
                                                                  step=0.01, label="checkpoint_angle_jitter",
                                                                  visible=gate_mode_visible["checkpoint"])
+                        # Plugin gate generators: one schema-driven section each.
+                        gate_plugin_outputs = _plugin_components(gr, gate_sections,
+                                                                 gate_generator_default)
+                        gate_plugin_controls = _plugin_controls(gate_plugin_outputs,
+                                                                gate_sections)
                         gr.Markdown("### Batch")
                         gate_grid_n = gr.Dropdown([3, 4, 5, 6], value=gate_defaults["gate_grid_n"],
                                                   label="grid (n x n)")
@@ -1125,6 +1460,7 @@ def build_app():
                                  gate_checkpoint_angle_jitter, gate_grid_n, gate_seed, gate_batch_size]
                 if len(gate_controls) != len(GATE_CONTROL_KEYS):
                     raise RuntimeError("gate control list and key list are out of sync")
+                gate_controls = gate_controls + gate_plugin_controls
 
                 gate_mode_outputs = [
                     gate_ordering,
@@ -1138,7 +1474,8 @@ def build_app():
 
                 def _gate_mode_update(generator_name, current_ordering):
                     supported = gate_supported_orderings(generator_name)
-                    ordering_value = current_ordering if current_ordering in supported else supported[0]
+                    ordering_value = current_ordering if current_ordering in supported \
+                        else gate_default_ordering(generator_name)
                     visible = gate_visible_sections(generator_name)
                     return [
                         gr.update(choices=supported, value=ordering_value),
@@ -1161,12 +1498,14 @@ def build_app():
                         gr.update(visible=visible["checkpoint"]),
                         gr.update(visible=visible["checkpoint"]),
                         gr.update(visible=visible["checkpoint"]),
-                    ]
+                    ] + [gr.update(visible=flag)
+                         for flag in plugin_section_visibility(generator_name, gate_sections)]
 
+                @_gpu_serialized
                 def _generate_gates(*vals):
-                    p = _collect_gate(*vals)
-                    gn = int(p["gate_grid_n"])
-                    try:
+                    try:   # _collect_gate too: a bad plugin textbox shows the error figure
+                        p = _collect_gate(*vals, plugin_keys=gate_plugin_keys)
+                        gn = int(p["gate_grid_n"])
                         gates, cfg = generate_gate_batch(p)
                         fig = render_gate_page(gates, cfg, 0, gn)
                         st = _gate_stats(gates, cfg)
@@ -1183,6 +1522,7 @@ def build_app():
                                   "target_center_distance": float("nan")}
                         return err_fig, _gate_stats_md(err_st), None, None, 0, "page 1/1"
 
+                @_gpu_serialized
                 def _go_gates(gates, cfg, page, gn, delta):
                     if gates is None or cfg is None:
                         return gr.update(), page, gr.update()
@@ -1191,7 +1531,8 @@ def build_app():
                     fig = render_gate_page(gates, cfg, new, int(gn))
                     return fig, new, f"page {new + 1}/{np_}"
 
-                gate_generator.change(_gate_mode_update, [gate_generator, gate_ordering], gate_mode_outputs)
+                gate_generator.change(_gate_mode_update, [gate_generator, gate_ordering],
+                                      gate_mode_outputs + gate_plugin_outputs)
                 gate_generate.click(_generate_gates, gate_controls,
                                     [gate_plot, gate_stats, gate_state, gate_config_state,
                                      gate_page_state, gate_page_lbl])
@@ -1211,7 +1552,7 @@ def build_app():
                         return gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
                     return _generate_gates(*rest)
                 for c in gate_controls:
-                    ev = c.release if hasattr(c, "release") else c.change
+                    ev = _auto_update_event(gr, c)
                     ev(_maybe_gates, gate_controls + [gate_auto],
                        [gate_plot, gate_stats, gate_state, gate_config_state, gate_page_state, gate_page_lbl])
 

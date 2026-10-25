@@ -23,7 +23,7 @@ from tests._warp_compare import (
     arc_length_resample_warp, self_intersections,
 )
 
-DEVS = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
+from tests.conftest import DEVS  # noqa: E402
 
 
 def _fixed_corners(P: int, device) -> torch.Tensor:
@@ -105,7 +105,7 @@ def test_adaptive_handle_clamp_drives_out_crossings(dev):
     wpl.generate_centerline_warp(seeds_wp, fb_cfg,
                                  out_centerline=scratch_fb.gen_centerline,
                                  out_valid_wp=scratch_fb.gen_valid,
-                                 scratch=scratch_fb)
+                                 scratch=scratch_fb.gen)
     if "cuda" in dev:
         wp.synchronize()
     centerline = wp.to_torch(scratch_fb.gen_centerline).view(fb_cfg.num_envs,

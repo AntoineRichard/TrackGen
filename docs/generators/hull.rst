@@ -8,7 +8,9 @@ radially displaced midpoint to introduce lobes and pinches, and then smooths the
 loop with a closed uniform Catmull-Rom spline.  The key identity of the method is
 the midpoint-displacement layer: without it the output would collapse toward a plain
 angle-sorted polygon; with it the generator produces the pronounced lobes, tight pinches,
-and extended straights that give racing tracks their character.
+and extended straights that give racing tracks their character. It writes one closed
+centerline per :term:`env` at every :term:`generation`, and its shape knobs are per-env
+:term:`dynamic fields <dynamic field>` (`Per-env (dynamic) parameters`_).
 
 .. figure:: ../assets/generator-hull.png
    :alt: Sample tracks produced by the hull generator
@@ -26,18 +28,23 @@ per-call allocation and no host-side branching on generated data, making it
 CUDA-graph-capturable.
 
 1. **Point count and position sampling.**
-   ``_point_count_sample_k`` draws a per-environment point count
-   ``m`` from the uniform integer range ``[min_num_points, max_num_points]`` using
-   RNG salt ``5119``.  ``_point_sample_k`` then draws ``P = max_num_points``
-   grid-jittered points per environment from a ``num_cells x num_cells`` grid with
-   bounded duplicate-cell rejection (up to eight retries per point).  The cell size is
-   ``min_point_distance * 2``; each accepted cell receives a sub-cell jitter of
-   ``U(-0.5, 0.5)`` in each axis before being multiplied by ``scale``.  RNG salt
-   ``7919`` is distinct from the Bezier generator's ``9781`` so the two generators
-   draw different point sets even at the same seed.
+   ``ops.sample_counts`` (salt ``5119``, offset ``1``) draws a per-environment point
+   count ``m`` from the uniform integer range ``[min_num_points, max_num_points]`` (the
+   Stage reads env ``e``'s ``min_num_points`` from its per-env array, clamped to ``[2,
+   max_num_points]``).
+   ``ops.sample_grid_points`` (salt ``7919``, offset ``1``) then draws
+   ``P = max_num_points`` grid-jittered points per environment from the
+   ``ops.grid_cells(min_point_distance)`` grid with bounded duplicate-cell rejection (up
+   to eight retries per point).  The cell size is ``min_point_distance * 2``; each
+   accepted cell receives a jitter of ``U(-0.5, 0.5)`` in each axis before being
+   multiplied by ``scale``, then by the env's ``size[e]``.  The salts are distinct from
+   the Bezier generator's
+   (``6151`` / ``9781``) so the two generators draw different point sets even at the
+   same seed.
 
 2. **Angle-sort (hull-like ordering).**
-   ``_angle_sort_k`` computes the centroid of the first ``m`` points and sorts them
+   The ``ops.angle_sort`` kernel (with the legacy count floor of 1, like the Bezier
+   generator) computes the centroid of the first ``m`` points and sorts them
    ascending by ``atan2(dx, dy)`` (x-first convention, matching the Bezier ccw-sort)
    around that centroid.  Entries beyond index ``m`` are written as NaN.  This is an
    insertion sort over a fixed ``P``-length window, so the kernel is single-threaded
@@ -46,8 +53,11 @@ CUDA-graph-capturable.
    fixed-shape stand-in that gives a topologically simple ordered polygon.
 
 3. **Midpoint-displacement layer.**
-   ``_midpoint_displace_k`` interleaves each adjacent pair of angle-sorted vertices
-   with one displaced edge midpoint, producing an augmented loop of ``2m`` vertices:
+   ``_midpoint_displace_dyn_k`` interleaves each adjacent pair of angle-sorted vertices
+   with one displaced edge midpoint, producing an augmented loop of ``2m`` vertices
+   (it reads env ``e``'s ``hull_displacement`` from the per-env parameter array; the
+   frozen legacy ``generate_hull_warp`` launches the scalar ``_midpoint_displace_k``,
+   same arithmetic, same bytes):
 
    .. code-block:: text
 
@@ -61,7 +71,8 @@ CUDA-graph-capturable.
    is ``2P`` to match the fixed allocation.
 
 4. **Closed Catmull-Rom smoothing.**
-   ``_catmull_rom_k`` evaluates a closed uniform Catmull-Rom spline over the ``2m``
+   ``ops.closed_catmull_rom(..., count=aug_count, endpoint=True)`` evaluates a closed
+   uniform Catmull-Rom spline over the ``2m``
    augmented vertices into a dense buffer of ``2P * num_points_per_segment`` slots per
    environment.  Each segment from vertex ``i`` to vertex ``i+1`` is sampled at
    ``num_points_per_segment`` equally-spaced parameter values ``u = s / (npseg - 1)``.
@@ -70,16 +81,17 @@ CUDA-graph-capturable.
    modulo ``cnt = aug_count[e]``, ensuring the spline closes back to the first vertex.
 
 5. **Arc-resample.**
-   ``_arc_resample_inplace`` (shared with the Bezier generator) converts the dense
+   ``ops.arc_resample`` (shared with the Bezier generator) converts the dense
    Catmull-Rom polyline into exactly ``num_points`` arc-length-uniform output points
    per environment by accumulating segment lengths, building a cumulative arc-length
    table, and interpolating.
 
 6. **Fallback for self-crossers.**
-   ``self_intersections_inplace`` counts proper crossings in the smooth resampled loop.
-   For environments where the smooth result self-crosses, ``_assemble_polygon_selected_k``
-   emits a straight piecewise-linear version of the augmented loop into the dense
-   buffer (only for those rows), and ``_arc_resample_selected_inplace`` overwrites the
+   ``ops.self_intersections`` counts proper crossings in the smooth resampled loop.
+   For environments where the smooth result self-crosses,
+   ``ops.closed_polyline(..., count=aug_count, endpoint=True, active=crossers)`` emits a
+   straight piecewise-linear version of the augmented loop into the dense buffer (only
+   for those rows), and ``ops.arc_resample(..., active=crossers)`` overwrites the
    corresponding output centerline rows in place.  Non-crossing rows are never touched
    by the selected resampler.  XPBD can re-round the straight polygonal fallback
    downstream.
@@ -119,8 +131,9 @@ Expanding the matrix product, the kernel evaluates:
 
 This is the standard tension-0.5 uniform Catmull-Rom formulation: the spline passes
 exactly through ``P_i`` at ``u = 0`` and through ``P_{i+1}`` at ``u = 1``, with
-C1 continuity at every knot.  The source (``_catmull_rom_k``) implements this
-expression directly; the matrix form and the expanded scalar form are equivalent.
+C1 continuity at every knot.  The source (``ops.funcs.catmull_rom``, called by
+``ops.closed_catmull_rom``) implements this expression directly; the matrix form and the
+expanded scalar form are equivalent.
 
 **Midpoint radial displacement.**
 
@@ -152,10 +165,16 @@ The following ``TrackGenConfig`` fields are consumed by the hull generator.
 For the full parameter reference and default values, see the configuration
 reference in ``docs/reference/``.
 
+The generator-specific fields below are also the fields of ``HullParams``, the
+generator's Params class (core fields such as ``scale`` are not): set them flat or
+through ``generator_params`` (see :ref:`builtin-generator-params`). Their rules are
+checked when the ``TrackGenerator`` is constructed, and only for ``generator="hull"``.
+
 ``min_num_points`` : int
     Minimum number of base corner-anchor points per environment.  Must be >= 2.
     Shared with the Bezier generator.  Larger values guarantee more vertices in
     the base loop, producing more complex shapes even at small ``hull_displacement``.
+    Dynamic, an ``int32`` per env in ``[2, max_num_points]`` (below).
 
 ``max_num_points`` : int
     Maximum number of corner-anchor points.  Also sets ``P``, the fixed allocation
@@ -177,7 +196,12 @@ reference in ``docs/reference/``.
 ``scale`` : float
     Isotropic scale multiplier applied to all sampled corner positions.  Shared with
     the Bezier generator; scales the coordinate range seen by the downstream
-    constant-spacing, XPBD-relax, and inflate stages.
+    constant-spacing, XPBD-relax, and inflate stages. A core field, static.
+
+``size`` : float
+    Per-env size multiplier of the plan view, applied to the corners right after
+    ``scale`` (as for ``bezier``: at ``scale = 1``, ``size = s`` is bitwise ``scale =
+    s``). Default ``1.0``. Dynamic, in ``[0.1, 10]`` (below).
 
 ``hull_displacement`` : float
     *Hull generator only.*  Maximum per-edge radial midpoint displacement expressed
@@ -185,7 +209,76 @@ reference in ``docs/reference/``.
     ``0.15``.  At ``0.0`` the midpoints remain on the edges and the method collapses
     toward a plain angle-sorted loop.  Typical range ``[0.1, 0.4]``; larger values
     produce stronger lobes, pinches, and straight sections at the cost of a higher
-    downstream relaxation and thickness burden.
+    downstream relaxation and thickness burden. Dynamic, in ``[0, 1]`` (below).
+
+.. _hull-dynamic:
+
+Per-env (dynamic) parameters
+----------------------------
+
+``hull_displacement`` and ``size`` are **dynamic** ``float32`` fields of ``HullParams``,
+and ``min_num_points`` a dynamic ``int32`` one: per-env ``[E]`` arrays, initialised from
+the configured values. Draw the ``float32`` ones per env with
+``presets.track(generator="hull", randomize={"generator.hull_displacement": (lo,
+hi)})``, write any of them with ``gen.params["generator"].set("hull_displacement", ...)``
+or from your own graph (a curriculum): see :ref:`tuning-per-env`. A scalar outside the
+bounds raises ``ValueError``; an array value outside them is clamped to them when the
+kernel reads it.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 24 9 10 22 22 13
+
+   * - Field (``randomize=`` key)
+     - Default
+     - Bounds
+     - Harder / more varied when
+     - Effective range
+     - Yield at lo / default / hi
+   * - ``hull_displacement`` (``generator.hull_displacement``)
+     - ``0.15``
+     - ``[0, 1]``
+     - higher: lobier, more irregular, tighter pinches
+     - the whole range; above 1 a midpoint could be pushed past the centroid, hence
+       the bound
+     - 0.98 / 0.98 / 0.88
+   * - ``size`` (``generator.size``)
+     - ``1.0``
+     - ``[0.1, 10]``
+     - higher: a longer course relative to the (absolute) road width
+     - about ``[0.75, 2.8]`` at the default ``n_max`` (384): from about ``2.8`` the
+       longest tracks of a large batch truncate; small sizes lose yield to the road
+       width
+     - 0.83 / 0.99 / 1.00 at 0.5 / 1 / 2 (1.00 at 3)
+   * - ``min_num_points`` (``set`` only: ``int32``)
+     - ``9``
+     - ``[2, max_num_points]``
+     - higher: more base corners
+     - the whole range; it only narrows the count toward ``max_num_points``
+     - 0.96 / 0.99 / 0.98 at 2 / 9 / 13
+
+*Yield* is the fraction of valid tracks with the default pipeline, ``E = 128``, seeds
+``0..127`` (CPU), with the knob set to the value for every env (``size``: ``E = 256``,
+``min_num_points``: ``E = 512``, seeds ``7919 * e + 13``).
+
+**Size** multiplies the corner grid right after ``scale``, before the midpoint
+displacement and the spline, exactly as for ``bezier`` (:ref:`bezier-dynamic`): the plan
+view scales, the road width, spacing and z stay absolute, and a larger course needs more
+points. The longest default ``hull`` loop of 8192 envs is 8.30 (p99 6.90) at ``scale =
+1``; with the default ``n_max = 384`` and spacing ``0.06`` truncation (a failed env)
+starts at about ``size = 2.8``. Size ``n_max`` and ``num_points`` for the largest size
+with the rule of :ref:`tuning-size`.
+
+**Corner count.** ``min_num_points`` behaves as ``bezier``'s (:ref:`bezier-corner-count`):
+the count is uniform in ``[clamp(min_e, 2, max_num_points), max_num_points]`` per env,
+from the same draw, over one fixed set of corner positions, so the axis only narrows the
+count toward the static ``max_num_points``; ``set`` refuses a scalar outside ``[2,
+max_num_points]``; it cannot be drawn by ``randomize=`` (``int32``). The augmented loop
+has ``2 * count[e]`` vertices.
+
+**Static knobs, and why.** ``max_num_points`` (sizes the point buffers),
+``num_points_per_segment`` (sizes the dense buffer), ``min_point_distance`` (sets the
+point grid on the host) and the core ``scale`` (per-env: ``size``).
 
 What Makes It Distinct
 ----------------------

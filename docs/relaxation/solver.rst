@@ -3,7 +3,7 @@ Track relaxation — the solver
 
 This page covers how the fixed-iteration solve executes: the Jacobi double-buffering
 that keeps it graph-capturable, the two separation execution modes, and the Chebyshev
-semi-iterative acceleration that is the substance of the recent update. The
+semi-iterative acceleration that makes the default 50 sweeps enough. The
 constraints themselves — separation, spacing, bending — are described in
 :doc:`constraints`.
 
@@ -19,8 +19,8 @@ consume in-place updates as it goes).
 Jacobi is the right choice here for two reasons:
 
 1. **GPU parallelism.** Every bead's update is independent within a sweep, so the whole
-   batch of ``E * N_max`` beads is one flat kernel launch with no ordering constraints
-   and no atomics on the position buffers.
+   batch of ``E * N_max`` beads (:term:`N_max` per :term:`env`) is one flat kernel launch
+   with no ordering constraints and no atomics on the position buffers.
 2. **Graph capture.** The launch sequence is fixed and data-independent (a known number
    of sweeps, each a fixed set of launches), so the entire solve captures once into a
    replayable CUDA graph and replays with zero per-call allocation. Gauss-Seidel's

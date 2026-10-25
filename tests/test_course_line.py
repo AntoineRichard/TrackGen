@@ -47,9 +47,9 @@ def test_n_lt_3_marks_invalid_zero_count():
     seq = _two_gate_seq()
     line = CourseLine(seq, samples_per_gate=4)
     line.refresh()
-    assert line.track.valid.numpy()[0] == 0
-    assert line.track.count.numpy()[0] == 0
-    center = line.track.center.numpy()
+    assert line.centerline.valid.numpy()[0] == 0
+    assert line.centerline.count.numpy()[0] == 0
+    center = line.centerline.center.numpy()
     assert np.isnan(center).all()
 
 
@@ -66,7 +66,7 @@ def test_interpolates_gate_anchors():
     line.refresh()
     G, spg = int(cfg.max_gates), 8
     n_max = G * spg
-    ctr = line.track.center.numpy().reshape(E, n_max, 3)
+    ctr = line.centerline.center.numpy().reshape(E, n_max, 3)
     gp = seq.position.numpy().reshape(E, G, 3)
     for e in np.flatnonzero(seq.valid.numpy()):
         n = int(seq.count.numpy()[e])
@@ -80,9 +80,9 @@ def test_arclen_monotone_and_closed():
     line = CourseLine(seq, samples_per_gate=8)
     line.refresh()
     n_max = int(cfg.max_gates) * 8
-    arc = line.track.arclen.numpy().reshape(E, n_max)
-    length = line.track.length.numpy()
-    cnt = line.track.count.numpy()
+    arc = line.centerline.arclen.numpy().reshape(E, n_max)
+    length = line.centerline.length.numpy()
+    cnt = line.centerline.count.numpy()
     for e in np.flatnonzero(seq.valid.numpy()):
         m = int(cnt[e])
         a = arc[e, :m]
@@ -94,11 +94,11 @@ def test_refresh_tracks_regeneration():
     seq, cfg = _seq(z_profile="uniform", z_min=0.5, z_max=1.5)
     line = CourseLine(seq, samples_per_gate=4)
     line.refresh()
-    before = line.track.center.numpy().copy()
+    before = line.centerline.center.numpy().copy()
     # GateGenerator overwrites in place on regenerate; rerun + refresh
     # (fresh rng advance via new seeds)
     rng2 = PerEnvSeededRNG(seeds=99, num_envs=E, device="cpu")
     seq2 = GateGenerator(cfg, rng2).generate()
     line2 = CourseLine(seq2, samples_per_gate=4)
     line2.refresh()
-    assert not np.allclose(before, line2.track.center.numpy(), equal_nan=True)
+    assert not np.allclose(before, line2.centerline.center.numpy(), equal_nan=True)

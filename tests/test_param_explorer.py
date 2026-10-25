@@ -443,3 +443,220 @@ def test_estimate_half_width_ignores_invalid_nan_envs():
 def test_collect_raises_on_control_count_mismatch():
     with pytest.raises(ValueError, match="track controls"):
         px._collect(1, 2, 3)  # far fewer than the expected key count
+
+
+# ---------------------------------------------------------------------------------------
+# Schema-driven plugin controls (roadmap PR8): registry.describe(...).params_schema
+# ---------------------------------------------------------------------------------------
+
+import dataclasses  # noqa: E402
+
+from track_gen import plugin  # noqa: E402
+from track_gen.plugin import registry  # noqa: E402
+from tests._plugin_toys import (TOY_CIRCLE, TOY_RING, ToyWobble,  # noqa: E402
+                                register_stage_toys)
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class _RingParams(plugin.Params):
+    gates: int = plugin.static(8, lo=3, hi=16, doc="ring gates")
+
+
+def _wobble_schema():
+    registry.add(ToyWobble)
+    return registry.describe("generator", "toy.wobble").params_schema
+
+
+def _track_vals(**over):
+    """Fixed Tracks-tab values in TRACK_CONTROL_KEYS order (the explorer defaults)."""
+    p = px.default_params()
+    p.update(grid_n=2, batch_size=4)
+    p.update(over)
+    return [p[k] for k in px.TRACK_CONTROL_KEYS]
+
+
+def test_schema_controls_toy_wobble_sliders():
+    specs = {s.field: s for s in px.schema_controls(_wobble_schema())}
+    assert list(specs) == ["lobes", "amp"]
+    lobes, amp = specs["lobes"], specs["amp"]
+    assert (lobes.widget, lobes.minimum, lobes.maximum, lobes.step) == ("slider", 2, 12, 1)
+    assert lobes.value == 5 and lobes.label == "lobes" and not lobes.dynamic
+    assert (amp.widget, amp.minimum, amp.maximum) == ("slider", 0.0, 0.4)
+    assert amp.step == pytest.approx(0.004)                    # (max - min) / 100
+    assert amp.value == pytest.approx(0.15)
+    assert amp.label == "amp (dynamic)" and amp.dynamic
+    assert lobes.cast(6.0) == 6 and isinstance(lobes.cast(6.0), int)
+    assert amp.cast(0.25) == pytest.approx(0.25)
+
+
+def test_schema_controls_widget_rules():
+    schema = {"properties": {
+        "mode": {"type": "string", "enum": ["a", "b"], "default": "b"},
+        "flag": {"type": "boolean", "default": True},
+        "gain": {"type": "number", "default": 0.5, "minimum": 0.0},
+        "iters": {"type": "integer", "default": 3},
+        "knots": {"type": "integer", "default": 6, "minimum": 4, "maximum": 20,
+                  "x-ui": {"label": "knot count", "step": 2}},
+        "stages": {"type": "array", "items": {"type": "integer"}, "default": [16, 32]},
+        "span": {"type": ["array", "null"], "default": None},
+        "tag": {"type": "string", "default": "x"},
+        "level": {"type": ["number", "null"], "default": None},
+    }}
+    specs = {s.field: s for s in px.schema_controls(schema)}
+    assert {k: s.widget for k, s in specs.items()} == {
+        "mode": "dropdown", "flag": "checkbox", "gain": "number", "iters": "number",
+        "knots": "slider", "stages": "textbox", "span": "textbox", "tag": "textbox",
+        "level": "number"}
+    assert specs["mode"].choices == ("a", "b") and specs["mode"].value == "b"
+    assert specs["knots"].label == "knot count" and specs["knots"].step == 2
+    assert specs["stages"].value == "[16, 32]"                 # a JSON literal
+    # cast: the component value back to the field value
+    assert specs["mode"].cast("a") == "a"
+    with pytest.raises(ValueError, match="not one of"):
+        specs["mode"].cast("c")
+    assert specs["flag"].cast(0) is False
+    assert specs["iters"].cast(4.0) == 4
+    assert specs["stages"].cast("[16, 32, 64]") == [16, 32, 64]  # JSON-shaped
+    assert specs["span"].cast("null") is None and specs["span"].cast("") is None
+    assert specs["span"].cast("[0.1, 0.3]") == [0.1, 0.3]
+    assert specs["tag"].cast('"y"') == "y" and specs["tag"].cast("bare") == "bare"
+    assert specs["level"].cast(None) is None
+    with pytest.raises(ValueError, match="JSON literal"):
+        specs["stages"].cast("[16, ")
+
+
+@pytest.mark.parametrize("kind", ["generator", "gate_generator"])
+def test_schema_controls_round_trip_builtin_params(kind):
+    # The generic path handles every built-in schema too: the controls' initial values,
+    # resolved as generator_params, give the Params defaults.
+    from track_gen.plugin._registry import _params_class
+    from track_gen.plugin.params import _coerce
+
+    for name in registry.available(kind):
+        info = registry.describe(kind, name)
+        # GeneratorSpec.params, or a Stage's Params (the gate built-ins since PR11)
+        params_cls = _params_class(registry.get(kind, name))
+        specs = px.schema_controls(info.params_schema)
+        assert specs, name
+        values = {s.field: s.cast(s.value) for s in specs}
+        assert _coerce(params_cls, values, what=name) == params_cls(), name
+
+
+def test_plugin_generators_lists_non_builtins_with_fields():
+    assert px.plugin_generators("generator") == []          # built-ins keep curated layout
+    assert px.plugin_generators("gate_generator") == []
+
+    class _NoFields(ToyWobble):
+        name = "toy.nofields"
+        Params = plugin.NoParams
+
+    register_stage_toys(registry)
+    registry.add(TOY_CIRCLE)                                 # legacy spec, no params=
+    registry.add(_NoFields)                                  # Params without fields
+    registry.add(TOY_RING)
+    registry.add(dataclasses.replace(TOY_RING, name="toy.ring_p", params=_RingParams))
+    assert px.plugin_generators("generator") == [
+        "toy.lobed", "toy.wobble", "toy.wobble_host", "toy.wobble_input"]
+    assert px.plugin_generators("gate_generator") == ["toy.ring_p"]
+
+
+def test_plugin_section_visibility_and_keys():
+    registry.add(ToyWobble)
+    registry.add(dataclasses.replace(TOY_RING, name="toy.ring_p", params=_RingParams))
+    sections = px.plugin_sections("generator")
+    assert [(n, [s.field for s in specs]) for n, specs in sections] == [
+        ("toy.wobble", ["lobes", "amp"])]
+    # header + one flag per control, visible only for the selected generator
+    assert px.plugin_section_visibility("toy.wobble", sections) == [True, True, True]
+    assert px.plugin_section_visibility("polar", sections) == [False, False, False]
+    keys = px.plugin_control_keys(sections)
+    assert [(g, s.field) for g, s in keys] == [("toy.wobble", "lobes"), ("toy.wobble", "amp")]
+    gate_sections = px.plugin_sections("gate_generator")
+    assert px.plugin_section_visibility("toy.ring_p", gate_sections) == [True, True]
+
+
+def test_collect_maps_selected_plugin_values_to_generator_params():
+    registry.add(ToyWobble)
+    registry.add(dataclasses.replace(TOY_CIRCLE, name="toy.circle_p", params=_RingParams))
+    keys = px.plugin_control_keys(px.plugin_sections("generator"))
+    assert [(g, s.field) for g, s in keys] == [
+        ("toy.circle_p", "gates"), ("toy.wobble", "lobes"), ("toy.wobble", "amp")]
+    extra = [9.0, 7.0, 0.2]
+    p = px._collect(*_track_vals(generator="toy.wobble"), *extra, plugin_keys=keys)
+    assert p["generator"] == "toy.wobble"
+    assert p["generator_params"] == {"lobes": 7, "amp": pytest.approx(0.2)}
+    assert isinstance(p["generator_params"]["lobes"], int)
+    # a built-in keeps its flat fields: no generator_params
+    p = px._collect(*_track_vals(generator="polar"), *extra, plugin_keys=keys)
+    assert p["generator_params"] is None
+    # the fixed controls map as before
+    assert p["polar_num_knots"] == px.default_params()["polar_num_knots"]
+    with pytest.raises(ValueError, match="track controls"):
+        px._collect(*_track_vals(), plugin_keys=keys)        # plugin values missing
+
+
+def test_build_config_passes_generator_params():
+    cfg = px.build_config(_params(generator="toy.wobble",
+                                  generator_params={"lobes": 4, "amp": 0.1}))
+    assert cfg.generator == "toy.wobble"
+    assert cfg.generator_params == {"lobes": 4, "amp": 0.1}
+    assert px.build_config(_params(generator="polar")).generator_params is None
+
+
+def _plugin_track(**gp):
+    registry.add(ToyWobble)
+    track = px.generate_batch(_params(generator="toy.wobble", batch_size=4, grid_n=2,
+                                      generator_params=gp))
+    import warp as wp
+    return wp.to_torch(track.center).clone(), wp.to_torch(track.valid).clone()
+
+
+def test_generate_batch_runs_plugin_stage_with_its_params():
+    center, valid = _plugin_track(lobes=4, amp=0.0)
+    assert valid.shape == (4,) and bool(valid.all())
+    center2, _ = _plugin_track(lobes=4, amp=0.3)
+    assert not torch.equal(torch.nan_to_num(center), torch.nan_to_num(center2)), \
+        "the dynamic amp value from generator_params must reach the stage"
+
+
+def test_render_grid_reports_plugin_param_errors():
+    registry.add(ToyWobble)
+    fig, stats = px.render_grid(_params(generator="toy.wobble", batch_size=4, grid_n=2,
+                                        generator_params={"lobes": 99}))
+    assert "lobes" in stats["error"]                          # lo/hi rule, at construction
+    import matplotlib.pyplot as plt
+    plt.close(fig)
+
+
+def test_gate_plugin_controls_reach_gate_config():
+    registry.add(dataclasses.replace(TOY_RING, name="toy.ring_p", params=_RingParams))
+    keys = px.plugin_control_keys(px.plugin_sections("gate_generator"))
+    base = _gate_params(gate_generator="toy.ring_p", gate_ordering="ccw")
+    vals = [base[k] for k in px.GATE_CONTROL_KEYS]
+    p = px._collect_gate(*vals, 6.0, plugin_keys=keys)
+    assert p["gate_generator_params"] == {"gates": 6}
+    cfg = px.build_gate_config(p)
+    assert cfg.generator == "toy.ring_p" and cfg.generator_params == {"gates": 6}
+    assert cfg.gate_ordering == "raw"                         # clamped to supported
+    assert (cfg.min_gates, cfg.max_gates) == (2, max(2, cfg.max_num_points))  # fallback
+    gates, used = px.generate_gate_batch(p)
+    assert used.generator == "toy.ring_p"
+    import warp as wp
+    assert wp.to_torch(gates.count).tolist() == [8] * 4
+    p_builtin = px._collect_gate(*[_gate_params()[k] for k in px.GATE_CONTROL_KEYS], 6.0,
+                                 plugin_keys=keys)
+    assert p_builtin["gate_generator_params"] is None
+    with pytest.raises(ValueError, match="gate controls"):
+        px._collect_gate(*vals, plugin_keys=keys)
+
+
+def test_build_app_renders_plugin_controls_hidden():
+    pytest.importorskip("gradio")
+    registry.add(ToyWobble)
+    app = px.build_app()
+    # the default generator is polar: the toy's section exists but is hidden
+    assert _visible_by_label(app, "lobes") is False
+    assert _visible_by_label(app, "amp (dynamic)") is False
+    markdown = {c.get("props", {}).get("value") for c in app.config["components"]
+                if c.get("type") == "markdown"}
+    assert "### `toy.wobble` parameters" in markdown

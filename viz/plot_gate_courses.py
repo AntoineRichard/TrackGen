@@ -37,10 +37,8 @@ import torch
 
 import warp as wp
 
-from track_gen import PerEnvSeededRNG
-from track_gen._src.course_line import CourseLine
-from track_gen._src.gate_generator import GateGenerator
-from track_gen._src.types import GateGenConfig
+from track_gen import GateGenConfig, GateGenerator, PerEnvSeededRNG
+from track_gen._src.course_line import CourseLine   # no public path yet
 
 OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out")
 
@@ -122,7 +120,7 @@ def render(envs=12, seed=0, out=None, dpi=150, cell_in=2.4,
     line.refresh()
 
     max_gates = seq.position.shape[0] // envs
-    n_max = line.track.center.shape[0] // envs
+    n_max = line.centerline.center.shape[0] // envs
 
     position_np = wp.to_torch(seq.position).view(envs, max_gates, 3).cpu().numpy()
     left_np = wp.to_torch(seq.left).view(envs, max_gates, 3).cpu().numpy()
@@ -130,10 +128,10 @@ def render(envs=12, seed=0, out=None, dpi=150, cell_in=2.4,
     gate_count_np = wp.to_torch(seq.count).cpu().numpy()
     gate_valid_np = wp.to_torch(seq.valid).bool().cpu().numpy()
 
-    center_np = wp.to_torch(line.track.center).view(envs, n_max, 3).cpu().numpy()
-    arclen_np = wp.to_torch(line.track.arclen).view(envs, n_max).cpu().numpy()
-    line_count_np = wp.to_torch(line.track.count).cpu().numpy()
-    line_valid_np = wp.to_torch(line.track.valid).bool().cpu().numpy()
+    center_np = wp.to_torch(line.centerline.center).view(envs, n_max, 3).cpu().numpy()
+    arclen_np = wp.to_torch(line.centerline.arclen).view(envs, n_max).cpu().numpy()
+    line_count_np = wp.to_torch(line.centerline.count).cpu().numpy()
+    line_valid_np = wp.to_torch(line.centerline.valid).bool().cpu().numpy()
 
     valid_e = np.flatnonzero(gate_valid_np & line_valid_np)
     print(f"generated {envs} gate courses on {device} "

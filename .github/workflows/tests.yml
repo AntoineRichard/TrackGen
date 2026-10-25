@@ -1,0 +1,91 @@
+name: tests
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Manual runs, e.g. the CPU lane of a branch on Linux before it is opened as a PR.
+  workflow_dispatch: {}
+permissions:
+  contents: read
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  # CPU lane: every PR. Runs the whole suite on the Warp cpu device; tests that need a
+  # GPU carry the `cuda` marker and are deselected here. It includes the documentation
+  # checks that need no Sphinx: every python example of docs/, README.md and the public
+  # docstrings runs (tests/test_doc_snippets.py: "cuda" literals rewritten to "cpu";
+  # groups marked `cuda` run in the GPU lane, `slow` ones nowhere by default), the
+  # snippet metadata, the README links into the published docs and the docs tools
+  # (tests/test_docs_links.py, tests/test_docs_tools.py). The Sphinx build itself is
+  # docs.yml; the external link check is linkcheck.yml.
+  cpu:
+    name: cpu (warp ${{ matrix.warp }})
+    runs-on: ubuntu-latest
+    # A hung example is stopped by the snippet runner (120 s per group); this is the
+    # backstop for the whole job.
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        warp: ["1.18.0", "latest"]  # the pyproject floor and the newest 1.x
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          # CPU-only torch (test oracle only): avoids pulling the CUDA wheels.
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[dev]"
+          if [ "${{ matrix.warp }}" != "latest" ]; then
+            pip install "warp-lang==${{ matrix.warp }}"
+          fi
+          python -c "import warp; print('warp-lang', warp.__version__)"
+      - name: Test
+        # The runners are not the machines the byte goldens were captured on: leave out
+        # the host-sensitive fields (the checkpoint track generator's chaotic path tracer
+        # amplifies last-ulp libm / codegen differences); every other field is compared.
+        env:
+          TRACKGEN_SKIP_HOST_SENSITIVE_GOLDENS: "1"
+        run: pytest -m "not cuda and not slow and not benchmark" -ra
+
+  # GPU lane: needs a self-hosted runner with an NVIDIA GPU, so it is OFF by default.
+  # To enable it, register a runner with the labels below and set the repository
+  # variable TRACKGEN_GPU_RUNNER=true (Settings > Secrets and variables > Actions >
+  # Variables). TRACKGEN_REQUIRE_CUDA=1 makes the session fail when Warp sees no GPU,
+  # when any `cuda` test is skipped, or when no `cuda` test runs (tests/conftest.py).
+  gpu:
+    name: gpu (warp ${{ matrix.warp }})
+    if: ${{ vars.TRACKGEN_GPU_RUNNER == 'true' }}
+    runs-on: [self-hosted, linux, x64, gpu]
+    strategy:
+      fail-fast: false
+      matrix:
+        warp: ["1.18.0", "latest"]
+    env:
+      TRACKGEN_REQUIRE_CUDA: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install
+        run: |
+          nvidia-smi
+          python3 -m venv .venv
+          . .venv/bin/activate
+          python -m pip install --upgrade pip
+          # Default PyPI torch on linux x64 is a CUDA build; some cuda tests use
+          # wp.to_torch / torch.cuda on device arrays.
+          pip install -e ".[dev]"
+          if [ "${{ matrix.warp }}" != "latest" ]; then
+            pip install "warp-lang==${{ matrix.warp }}"
+          fi
+          python -c "import warp; warp.init(); print('warp-lang', warp.__version__, 'cuda', warp.is_cuda_available())"
+      # Includes the documentation examples' `cuda` groups (tests/test_doc_snippets.py,
+      # unmodified, on the default CUDA device).
+      - name: Test
+        run: |
+          . .venv/bin/activate
+          pytest -m cuda -ra

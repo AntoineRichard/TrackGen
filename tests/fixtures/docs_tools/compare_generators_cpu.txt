@@ -1,0 +1,29 @@
+Warp 1.18.0 initialized:
+   CUDA not enabled in this build
+   Devices:
+     "cpu"      : "arm"
+   Kernel cache:
+     /Users/antoiner/Library/Caches/warp/1.18.0
+Module track_gen._src.rng_kernels 79c67f8 load on device 'cpu' took 4.63 ms  (cached)
+Module track_gen.seeds c2c3f0e load on device 'cpu' took 0.66 ms  (cached)
+Module track_gen._src.generator_binding ab2673b load on device 'cpu' took 0.61 ms  (cached)
+Module track_gen.ops.sampling e62f015 load on device 'cpu' took 0.52 ms  (cached)
+Module track_gen.ops.fill cfbdc1a load on device 'cpu' took 0.40 ms  (cached)
+Module track_gen.ops.geometry 2aab1d6 load on device 'cpu' took 0.46 ms  (cached)
+Module track_gen._src.warp_generate 966ac07 load on device 'cpu' took 0.45 ms  (cached)
+Module track_gen.ops.resample 9922a4b load on device 'cpu' took 0.57 ms  (cached)
+Module track_gen._src.warp_relax 1b2fcc1 load on device 'cpu' took 0.79 ms  (cached)
+Module track_gen._src.warp_pipeline 85689f7 load on device 'cpu' took 0.61 ms  (cached)
+Module track_gen.stages.commit 67283ad load on device 'cpu' took 0.93 ms  (cached)
+Module track_gen._src.warp_generate_checkpoint f206bc9 load on device 'cpu' took 0.86 ms  (cached)
+Module track_gen._src.warp_generate_hull 9bbfe0d load on device 'cpu' took 1.02 ms  (cached)
+Module track_gen.ops.curves e91e0be load on device 'cpu' took 0.54 ms  (cached)
+Module track_gen._src.warp_generate_polar 312f0db load on device 'cpu' took 1.13 ms  (cached)
+Module track_gen._src.warp_generate_voronoi db6f318 load on device 'cpu' took 1.18 ms  (cached)
+| generator | yield | pre_relax_self_intersection_rate | xpbd_displacement | mean_length | mean_compactness | compactness_p50 | compactness_degenerate_rate | shape_variety_pass | mean_chicanes | straight_frac | peak_curvature | lap_time | gen_ms_per_call |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| bezier | 1 | 0.005859 | 0.05294 | 4.988 | 0.4567 | 0.4411 | 0 | 1 | 9.586 | 0.2586 | 7.513 | 9.398 | 206.1 |
+| checkpoint | 0.998 | 0.001953 | 0.03702 | 4.204 | 0.6284 | 0.6427 | 0 | 1 | 10.98 | 0.2381 | 6.982 | 7.655 | 392.1 |
+| hull | 0.9883 | 0.007812 | 0.06599 | 4.887 | 0.4483 | 0.435 | 0 | 1 | 10.83 | 0.2287 | 7.635 | 9.643 | 220.9 |
+| polar | 1 | 0 | 0.02579 | 4.688 | 0.5714 | 0.5667 | 0 | 1 | 9.346 | 0.2272 | 7.03 | 8.816 | 131.4 |
+| voronoi | 1 | 0 | 0.01363 | 4.247 | 0.7436 | 0.7424 | 0 | 1 | 9.438 | 0.2319 | 5.828 | 7.13 | 231.9 |

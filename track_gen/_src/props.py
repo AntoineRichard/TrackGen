@@ -19,9 +19,12 @@ for out-of-bounds queries); this is the rendering/instancing complement.
 
 Layout follows the package conventions: flat ``[E * max_props]`` wp.arrays,
 NaN-padded past ``count[e]``, in-place reuse of the output ``PropSet`` across
-``sample()`` calls (use ``clone()`` for snapshots), and no host syncs while
-capturing is enabled (``track_gen.set_capturing``) so ``sample()`` is
-CUDA-graph capturable.
+``sample()`` calls (use ``clone()`` for snapshots), and no host syncs, so
+``sample()`` is CUDA-graph capturable as-is.
+
+Invalid envs (roadmap PR14): an env with ``valid[e] == 0`` reads like a poisoned one
+(``count = 0``, ``step`` NaN, ``truncated = 0``, NaN slots), whatever the source's
+``on_invalid``.
 """
 from __future__ import annotations
 
@@ -31,8 +34,9 @@ import numpy as np
 import warp as wp
 
 from .collision_geom import _safe_normalize2
-from .runtime import _init, _sync
-from .types import Track
+from ..exec.context import LaunchContext, _call_context  # noqa: F401  (LaunchContext: re-export)
+from .runtime import _init, _sync  # noqa: F401  (_sync: legacy re-export)
+from ..results import HasBand, _check_and_bind
 
 
 @dataclass
@@ -64,8 +68,8 @@ class PropSet:
         3D chord, in segments mode) between samples that may sit at different
         altitudes.
     count : wp.array
-        ``[E]`` ``int32`` real prop counts (0 for degenerate envs). Meaningful
-        only for envs with ``valid[e] == 1``.
+        ``[E]`` ``int32`` real prop counts (0 for degenerate and invalid envs:
+        ``valid[e] == 0`` on the source).
     truncated : wp.array
         ``[E]`` ``int32`` — 1 if ``max_props`` clipped this env's ring (the
         ring still closes, at a coarser effective spacing).
@@ -98,6 +102,7 @@ class PropSet:
 def _scan_boundary_k(
     points: wp.array(dtype=wp.vec3f),
     count: wp.array(dtype=wp.int32),
+    valid: wp.array(dtype=wp.int32),
     n_max: int,
     spacing: float,
     max_props: int,
@@ -109,12 +114,13 @@ def _scan_boundary_k(
     """Also launched by ``_src/checkpoints.py`` (CheckpointSampler) — keep the
     signature and snap semantics in sync. Arc lengths are the true 3D segment
     lengths of the (possibly lifted) polyline; on the flat z = 0 pipeline this
-    is identical to the xy length (z contributes 0 to every sum)."""
+    is identical to the xy length (z contributes 0 to every sum). An invalid env
+    (``valid[e] == 0``, roadmap PR14) takes the degenerate branch, as if poisoned."""
     e = wp.tid()
     m = count[e]
     if m > n_max:
         m = n_max
-    if m < 3:
+    if m < 3 or valid[e] == 0:
         out_count[e] = 0
         out_step[e] = wp.nan
         out_truncated[e] = 0
@@ -253,17 +259,14 @@ def _place_props_k(
 class PropSampler:
     """Resample one track boundary into instancing poses at a set spacing.
 
-    One sampler binds one :class:`Track`, one boundary curve, one mode, and
-    one spacing, so all output shapes are fixed and ``sample()`` is
-    CUDA-graph capturable (allocation-free; host-sync-free while capturing
-    is enabled via ``track_gen.set_capturing``). Because
-    ``TrackGenerator.generate()`` overwrites its ``Track`` buffers in place,
-    every ``sample()`` reads the CURRENT batch — no rebind after
-    regeneration. Props are rendering-only; they are not colliders. Results
-    for envs with ``valid[e] == 0`` are undefined — an invalid track can
-    still have >= 3 boundary points and will yield well-formed-looking props
-    with no NaN signal; callers must gate on ``Track.valid``, as everywhere
-    in the library.
+    One sampler binds one :class:`~track_gen.results.Track`, one boundary curve, one
+    mode, and one spacing, so all output shapes are fixed and ``sample()`` is CUDA-graph
+    capturable (allocation-free and host-sync-free). Because
+    ``TrackGenerator.generate()`` overwrites its ``Track`` buffers in place, every
+    ``sample()`` reads the CURRENT batch — no rebind after regeneration. Props are
+    rendering-only; they are not colliders. An env with ``valid[e] == 0`` gets no props
+    (``count = 0``, NaN slots: the sentinel of a poisoned env), whatever the source's
+    ``on_invalid``.
 
     ``PropSet.truncated``/``PropSet.step`` live on the RESULT because
     ``PropSampler`` is the ONLY producer of a ``PropSet`` — unlike
@@ -274,9 +277,13 @@ class PropSampler:
     gate-derived checkpoint sets.
     """
 
-    def __init__(self, track: Track, spacing: float, boundary: str = "outer",
+    #: The topologies this component supports (closed loops only in 0.x).
+    topology = "closed"
+
+    def __init__(self, track: HasBand, spacing: float, boundary: str = "outer",
                  mode: str = "points", max_props: "int | None" = None) -> None:
-        """Bind to a :class:`Track` boundary and allocate the result buffers.
+        """Bind to a :class:`~track_gen.results.Track` boundary and allocate the result
+        buffers.
 
         Args:
             track: the bound track batch; ``sample()`` reads its buffers
@@ -290,8 +297,13 @@ class PropSampler:
             mode: ``"points"`` (default, one pose per sample) or
                 ``"segments"`` (one pose per chord between samples).
             max_props: buffer capacity per env; ``None`` (default) derives
-                it from the CURRENT batch (see :meth:`_derive_max_props`).
-                Must be >= 3 when given explicitly.
+                it from the CURRENT batch (see ``_derive_max_props``: a
+                construction-time readback, kept as a supported convenience).
+                Must be >= 3 when given explicitly. The size-independent bound
+                ``max(3, ceil(max_loop_length / spacing))`` from the producer's plan
+                is the default of the component route:
+                ``track_gen.tools.Props(spacing)`` attached through
+                ``ComponentContext.for_producer(generator)``.
         """
         _init()
         if not (float(spacing) > 0.0):
@@ -305,20 +317,19 @@ class PropSampler:
         if max_props is not None and int(max_props) < 3:
             raise ValueError(
                 f"max_props must be >= 3 (or None for auto), got {max_props!r}")
-        E = int(track.count.shape[0])
-        stride = int(track.outer.shape[0])
-        if E < 1 or stride % E != 0:
-            raise ValueError(
-                f"track batch layout invalid: outer has {stride} slots for {E} envs")
-        self._track = track
+        # The members checked here are the ones bound (read once: stable pointers).
+        lay, self._track = _check_and_bind(track, HasBand, consumer="PropSampler",
+                                           members=("outer", "inner", "count", "valid"),
+                                           topology=self.topology)
+        E = int(lay.num_envs)
         self._spacing = float(spacing)
         self._boundary = boundary
         self._mode = mode
         self._mode_int = 0 if mode == "points" else 1
         self._E = E
-        self._n_max = stride // E
-        self._points = track.inner if boundary == "inner" else track.outer
-        self._device = str(track.outer.device)
+        self._n_max = int(lay.stride)
+        self._points = self._track.inner if boundary == "inner" else self._track.outer
+        self._device = lay.device
 
         if max_props is None:
             max_props = self._derive_max_props()
@@ -336,6 +347,17 @@ class PropSampler:
             truncated=wp.zeros(E, dtype=wp.int32, device=dev),
             step=wp.zeros(E, dtype=wp.float32, device=dev),
         )
+
+    @property
+    def max_props(self) -> int:
+        """The per-env capacity (slots per env) of the :class:`PropSet` (read-only)."""
+        return self._M
+
+    @property
+    def result(self) -> PropSet:
+        """The preallocated :class:`PropSet` :meth:`sample` refreshes and returns (the
+        same instance for the sampler's lifetime)."""
+        return self._props
 
     def _derive_max_props(self) -> int:
         """Slots to cover the batch bound NOW: ceil(1.5 * max perimeter / spacing).
@@ -362,26 +384,33 @@ class PropSampler:
                 "batch to derive a buffer size; pass max_props explicitly")
         return max(3, int(np.ceil(1.5 * best / self._spacing)))
 
-    def sample(self) -> PropSet:
+    def sample(self, stream=None, *, ctx=None) -> PropSet:
         """Resample the bound boundary; returns the preallocated :class:`PropSet`.
 
         Two kernel launches (scan + place); reads the Track buffers as they
         are NOW, so it reflects the latest ``generate()`` with no rebind.
+
+        Args:
+            stream: optional wp.Stream (or 'torch') to run on; by default the
+                stream is resolved per track_gen.exec (an enclosing
+                torch.cuda.graph capture is adopted, else Warp's current
+                stream).
+            ctx: optional :class:`~track_gen.exec.LaunchContext` on the sampler's
+                device to emit on (exclusive with ``stream=``: ``TypeError``).
         """
+        ctx = _call_context(self._device, stream, ctx)
         t = self._track
         p = self._props
-        wp.launch(
-            _scan_boundary_k, dim=self._E,
-            inputs=[self._points, t.count, self._n_max, self._spacing, self._M,
-                    self._cum, p.count, p.step, p.truncated],
-            device=self._device,
+        ctx.launch(
+            _scan_boundary_k, self._E,
+            [self._points, t.count, t.valid, self._n_max, self._spacing, self._M,
+             self._cum, p.count, p.step, p.truncated],
         )
-        wp.launch(
-            _place_props_k, dim=self._E * self._M,
-            inputs=[self._points, t.count, self._n_max, self._cum,
-                    p.count, p.step, self._M, self._mode_int,
-                    p.position, p.tangent, p.yaw, p.length],
-            device=self._device,
+        ctx.launch(
+            _place_props_k, self._E * self._M,
+            [self._points, t.count, self._n_max, self._cum,
+             p.count, p.step, self._M, self._mode_int,
+             p.position, p.tangent, p.yaw, p.length],
         )
-        _sync(self._device)
+        ctx.sync()
         return p

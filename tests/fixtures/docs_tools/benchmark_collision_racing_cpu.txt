@@ -1,0 +1,24 @@
+Warp 1.18.0 initialized:
+   CUDA not enabled in this build
+   Devices:
+     "cpu"      : "arm"
+   Kernel cache:
+     /Users/antoiner/Library/Caches/warp/1.18.0
+Module track_gen._src.rng_kernels 79c67f8 load on device 'cpu' took 4.58 ms  (cached)
+Module track_gen.seeds c2c3f0e load on device 'cpu' took 0.75 ms  (cached)
+Module track_gen._src.generator_binding ab2673b load on device 'cpu' took 0.69 ms  (cached)
+Module track_gen.ops.sampling e62f015 load on device 'cpu' took 0.48 ms  (cached)
+Module track_gen.ops.fill cfbdc1a load on device 'cpu' took 0.47 ms  (cached)
+Module track_gen.ops.geometry 2aab1d6 load on device 'cpu' took 0.71 ms  (cached)
+Module track_gen._src.warp_generate 966ac07 load on device 'cpu' took 0.58 ms  (cached)
+Module track_gen.ops.resample 9922a4b load on device 'cpu' took 0.67 ms  (cached)
+Module track_gen._src.warp_relax 1b2fcc1 load on device 'cpu' took 0.71 ms  (cached)
+Module track_gen._src.warp_pipeline 85689f7 load on device 'cpu' took 0.82 ms  (cached)
+Module track_gen.stages.commit 67283ad load on device 'cpu' took 0.75 ms  (cached)
+Module track_gen._src.collision_sdf fd0a5ae load on device 'cpu' took 1.01 ms  (cached)
+Module track_gen._src.collision 282a633 load on device 'cpu' took 1.26 ms  (cached)
+
+racing near-edge: device cpu  E 100  B 1024  sdf 256^2 (median cell 118 mm)
+boxes 102400 on 100 valid envs, exact oob rate 0.656
+sdf flag agreement 99.949%  FN 32  FP 20 (beyond 2 mm: 4, max exact clearance 4.54 mm)  contract violations 0
+graph replay per query: sdf - (p95 -)  segments - (p95 -)

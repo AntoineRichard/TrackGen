@@ -17,8 +17,9 @@ from dataclasses import dataclass
 import warp as wp
 
 from .collision_sdf import _track_aabb_k
-from .runtime import _BIG, _init, _sync
-from .types import Track
+from ..exec.context import LaunchContext, _call_context  # noqa: F401  (LaunchContext: re-export)
+from .runtime import _BIG, _init, _sync  # noqa: F401  (_sync: legacy re-export)
+from ..results import HasBand, _check_and_bind
 
 
 @dataclass
@@ -31,7 +32,8 @@ class HeightField:
         ``[e, y, x]``).
     lo, hi : wp.array
         ``[E]`` vec2f world AABB corners; texel (x, y) center is at
-        ``lo + ((x, y) + 0.5) / res * (hi - lo)``.
+        ``lo + ((x, y) + 0.5) / res * (hi - lo)``. ``(-1, -1)`` / ``(1, 1)`` for
+        degenerate and invalid envs.
     res : int
         Grid resolution per side.
     """
@@ -42,6 +44,8 @@ class HeightField:
     res: int
 
     def clone(self) -> "HeightField":
+        """A deep copy: new ``height``, ``lo`` and ``hi`` arrays with the same values
+        (a snapshot that the next ``bake()`` does not overwrite)."""
         return HeightField(height=wp.clone(self.height), lo=wp.clone(self.lo),
                            hi=wp.clone(self.hi), res=self.res)
 
@@ -105,10 +109,14 @@ class HeightFieldBaker:
     Lifecycle mirrors the SDF baker: construct once (allocates), ``bake()``
     after every regeneration (kernel launches only; the facade does this in
     its captured refresh when ``CourseConfig.heightfield_resolution`` is
-    set). Results are undefined for envs with ``valid[e] == 0`` (baked NaN).
+    set). An env with ``valid[e] == 0`` bakes NaN heights with the box
+    ``(-1, -1)-(1, 1)``: the bake of a poisoned env.
     """
 
-    def __init__(self, track: Track, resolution: int,
+    #: The topologies this component supports (closed loops only in 0.x).
+    topology = "closed"
+
+    def __init__(self, track: HasBand, resolution: int,
                  padding: "float | None" = None) -> None:
         _init()
         if int(resolution) < 8:
@@ -116,18 +124,17 @@ class HeightFieldBaker:
         if padding is not None and not (float(padding) > 0.0):
             raise ValueError(f"padding must be > 0 (or None for auto), got "
                              f"{padding!r}")
-        E = int(track.count.shape[0])
-        stride = int(track.center.shape[0])
-        if E < 1 or stride % E != 0:
-            raise ValueError(
-                f"track batch layout invalid: {stride} slots for {E} envs")
-        self._track = track
+        # The members checked here are the ones bound (read once: stable pointers).
+        lay, self._track = _check_and_bind(track, HasBand, consumer="HeightFieldBaker",
+                                           members=("outer", "center", "count", "valid"),
+                                           topology=self.topology)
+        E = int(lay.num_envs)
         self._E = E
-        self._n_max = stride // E
+        self._n_max = int(lay.stride)
         self._res = int(resolution)
         self._pad = 0.0 if padding is None else float(padding)
         self._pad_frac = 0.1
-        self._device = str(track.center.device)
+        self._device = lay.device
         dev = self._device
         self._hf = HeightField(
             height=wp.zeros(E * self._res * self._res, dtype=wp.float32,
@@ -137,17 +144,31 @@ class HeightFieldBaker:
             res=self._res,
         )
 
-    def bake(self) -> HeightField:
-        """Re-bake from the CURRENT track batch; returns the same instance."""
+    @property
+    def result(self) -> HeightField:
+        """The preallocated :class:`HeightField` :meth:`bake` refreshes and returns (the
+        same instance for the baker's lifetime)."""
+        return self._hf
+
+    def bake(self, stream=None, *, ctx=None) -> HeightField:
+        """Re-bake from the CURRENT track batch; returns the same instance.
+
+        Args:
+            stream: optional wp.Stream (or 'torch') to run on; by default the
+                stream is resolved per track_gen.exec (an enclosing
+                torch.cuda.graph capture is adopted, else Warp's current
+                stream).
+            ctx: optional :class:`~track_gen.exec.LaunchContext` on the baker's
+                device to emit on (exclusive with ``stream=``: ``TypeError``).
+        """
+        ctx = _call_context(self._device, stream, ctx)
         t = self._track
         f = self._hf
-        wp.launch(_track_aabb_k, dim=self._E,
-                  inputs=[t.outer, t.count, self._n_max, self._pad,
-                          self._pad_frac, f.lo, f.hi],
-                  device=self._device)
-        wp.launch(_height_bake_k, dim=self._E * self._res * self._res,
-                  inputs=[t.center, t.count, t.valid, self._n_max, self._res,
-                          f.lo, f.hi, f.height],
-                  device=self._device)
-        _sync(self._device)
+        ctx.launch(_track_aabb_k, self._E,
+                   [t.outer, t.count, t.valid, 1, self._n_max, self._pad,
+                    self._pad_frac, f.lo, f.hi])
+        ctx.launch(_height_bake_k, self._E * self._res * self._res,
+                   [t.center, t.count, t.valid, self._n_max, self._res,
+                    f.lo, f.hi, f.height])
+        ctx.sync()
         return f

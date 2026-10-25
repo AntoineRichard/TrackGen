@@ -39,10 +39,8 @@ import torch
 
 import warp as wp
 
-from track_gen import PerEnvSeededRNG
+from track_gen import PerEnvSeededRNG, TrackGenConfig, TrackGenerator
 from track_gen.heightfield import HeightFieldBaker
-from track_gen._src.track_generator import TrackGenerator
-from track_gen._src.types import TrackGenConfig
 
 OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out")
 

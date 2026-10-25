@@ -1,0 +1,4 @@
+racing near-edge: device cpu  E 100  B 1024  sdf 256^2 (median cell 118 mm)
+boxes 102400 on 100 valid envs, exact oob rate 0.656
+sdf flag agreement 99.949%  FN 32  FP 20 (beyond 2 mm: 4, max exact clearance 4.54 mm)  contract violations 0
+graph replay per query: sdf - (p95 -)  segments - (p95 -)
