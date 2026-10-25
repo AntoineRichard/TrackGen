@@ -6,25 +6,8 @@ import pytest
 import warp as wp
 
 from tests.conftest import DEVS
-from track_gen._src import warp_generate_repulsive as rep
+from track_gen._src.repulsive_parallel_energy import EnergyModel, alloc_energy_workspace, evaluate_energy
 from track_gen.exec import LaunchContext
-
-
-@wp.kernel
-def _objective(points: wp.array(dtype=wp.vec2f), n: int,
-               samples: wp.array(dtype=wp.vec2f), mass: wp.array(dtype=wp.float32), m: int,
-               centers: wp.array(dtype=wp.vec2f), radii: wp.array(dtype=wp.float32),
-               radius: float, margin: float, eps: float,
-               out: wp.array(dtype=wp.float64)):
-    e = wp.tid()
-    value, magnitude = rep._proposal_energy_parts(
-        points, points, e, n, 0., 3., 6., eps, samples, mass, m, -1.5,
-        centers, radii, 1, radius, margin)
-    out[3 * e] = wp.float64(rep._proposal_energy(
-        points, points, e, n, 0., 3., 6., eps, samples, mass, m, -1.5,
-        centers, radii, 1, radius, margin))
-    out[3 * e + 1] = wp.float64(value)
-    out[3 * e + 2] = wp.float64(magnitude)
 
 
 def _fixture(phase):
@@ -72,11 +55,17 @@ def _evaluate(phase, dev):
     weights = wp.array(np.tile(mass, e), dtype=wp.float32, device=dev)
     centers = wp.full(e, wp.vec2f(float('nan'), float('nan')), dtype=wp.vec2f, device=dev)
     radii = wp.zeros(e, dtype=wp.float32, device=dev)
-    out = wp.empty(e * 3, dtype=wp.float64, device=dev)
-    LaunchContext.current(dev).launch(
-        _objective, e, [x, n, obs, weights, m, centers, radii, radius, margin, eps, out])
+    total = wp.empty(e, dtype=wp.float64, device=dev)
+    magnitude = wp.empty(e, dtype=wp.float64, device=dev)
+    model = EnergyModel(3., 6., eps, obs, weights, m, -1.5, centers, radii, 1,
+                        radius, wp.full(e, margin, dtype=wp.float32, device=dev))
+    workspace = alloc_energy_workspace(e, n, dev)
+    active = wp.ones(e, dtype=wp.int32, device=dev)
+    evaluate_energy(LaunchContext.current(dev), x, x, n, 0., model, active,
+                    workspace, total, magnitude)
     expected = np.array([_reference(row, samples, mass, radius, margin, eps) for row in points])
-    return out.numpy().reshape(e, 3), expected
+    values = np.column_stack([total.numpy(), magnitude.numpy()])
+    return values, expected
 
 
 @pytest.mark.parametrize('phase', [0., .173])
@@ -86,7 +75,7 @@ def test_objective_resolves_near_stationary_circle_energy(phase, dev):
     # Every term is positive in this fixture, so the magnitude is the same energy.
     # A float32 O(N**2) scalar reduction misses this absolute scale by ~1e-4;
     # float64 accumulation leaves only the much smaller local FP32 kernel error.
-    np.testing.assert_allclose(actual, np.repeat(expected[:, None], 3, axis=1), rtol=0., atol=1e-5)
+    np.testing.assert_allclose(actual, np.repeat(expected[:, None], 2, axis=1), rtol=0., atol=1e-5)
 
 
 @pytest.mark.parametrize('phase', [0., .173])

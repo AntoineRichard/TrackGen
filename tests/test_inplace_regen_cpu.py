@@ -2,8 +2,8 @@
 
 What runs here without a GPU:
 
-- epoch 0 is byte-identical to the PR3 code path (the rng's seeds fed straight to the
-  pipeline) for every registered track and gate generator;
+- epoch 0 equals a direct copy of the rng's seeds for every track and gate generator;
+  unchanged algorithms also retain the frozen PR3 composition as a byte reference;
 - ``generate(advance=True, mask=m)``: masked envs change, unmasked envs are bitwise
   identical, ``generation`` equals the epoch, and ``(seed, epoch)`` reproduces an env;
 - ``SeedState`` (bound seeds are never written, ``set`` on bound raises, ``reset_epoch``),
@@ -302,20 +302,41 @@ def test_any_set():
 
 
 # ---------------------------------------------------------------------------------------
-# Facades: epoch 0 is the PR3 code path, byte for byte
+# Facades: epoch 0 equals a direct seed copy, byte for byte
 # ---------------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("which,g", GENERATORS, ids=GEN_IDS)
-def test_epoch0_is_byte_identical_to_the_pr3_seed_copy_path(which, g):
-    """PR3's body copied the rng's seeds into the pipeline's seed buffer; PR4 writes the
-    effective seeds, which equal the seeds at epoch 0. Run the PR3 body (the rng's seeds
-    fed straight to the pipeline) into separate buffers and compare every field."""
+def test_epoch0_is_byte_identical_to_the_pr3_seed_copy_path(which, g, monkeypatch):
+    """Compare epoch-zero effective keying with a direct RNG seed copy. Unchanged
+    algorithms also retain the frozen PR3 composition. Repulsive needs the current
+    planned stages for its width reservation and mandatory final clearance checks."""
     for seed in (5, 1234):
         rng = _rng(seed)
         gen, out, fields = _make(which, g, rng, on_invalid="keep")
         gen.generate()
         ctx = LaunchContext.for_call(DEV)
-        if which == "track":
+        if which == "track" and g == "repulsive":
+            from track_gen.pipeline import build
+
+            program = build(gen._program.spec, seeds=rng, prepare=False)
+            copies = []
+
+            def copy_rng_seeds(dst, mask=None, *, ctx):
+                assert mask is None
+                ctx.copy(dst, rng.seeds_warp)
+                copies.append(True)
+
+            # Bypass effective_seed entirely on the reference side; only the current
+            # geometry stages are shared, with separately allocated output/scratch.
+            monkeypatch.setattr(program.seeds, "effective", copy_rng_seeds)
+            assert program.seed.ptr != gen._seed_buf.ptr
+            assert program.result.outer.ptr != out.outer.ptr
+            program.enqueue(ctx)
+            assert copies == [True]
+            ref = program.result
+            _assert_bytes_equal(out, ref, ("fail_mask", "generation"), f"{g} seed {seed}")
+            np.testing.assert_array_equal(program.seed.numpy(), rng.seeds_warp.numpy())
+        elif which == "track":
             spec, kw = gen._generator_spec, {}
             if isinstance(spec, _StageGenerator):
                 # A Stage generator (repulsive since PR12) is built once per binding: the

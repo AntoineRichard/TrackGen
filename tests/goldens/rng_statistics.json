@@ -1,4 +1,7 @@
 {
+  "case_source_revisions": {
+    "track/repulsive/flat/default": "58de72fdb5268caa7cc72fe283421d8829089131"
+  },
   "cases": [
     {
       "config": {
@@ -536,8 +539,8 @@
         "repulsive_beta": 6.0,
         "repulsive_domain_frac": 0.35,
         "repulsive_domain_init_ratio": 4.0,
-        "repulsive_grow_mult_max": 5.5,
-        "repulsive_grow_mult_min": 4.5,
+        "repulsive_grow_mult_max": 3.0,
+        "repulsive_grow_mult_min": 2.0,
         "repulsive_obstacle_count_max": 12,
         "repulsive_obstacle_count_min": 8,
         "repulsive_obstacle_radius_max_frac": 0.045,
@@ -1382,24 +1385,24 @@
     "track/repulsive/flat/default": {
       "quantiles": {
         "compactness": [
-          0.17451416132355668,
-          0.19734220061984442,
-          0.21969892793521043
+          0.3745257439227221,
+          0.5564760057082423,
+          0.7379607948099585
         ],
         "count": [
-          196.2,
-          206.0,
-          223.6
+          96.1,
+          113.0,
+          128.0
         ],
         "curvature": [
-          3.396725602455616,
-          3.8102157853401843,
-          4.2565857615355585
+          1.6930622477789428,
+          1.9688876412967473,
+          2.1930372768341373
         ],
         "length": [
-          11.665961518846647,
-          12.234512987747156,
-          13.321368960281312
+          5.741819012704451,
+          6.718039835760325,
+          7.607363750413114
         ],
         "z_mean": [
           0.0,
@@ -1413,8 +1416,8 @@
         ]
       },
       "samples": 64,
-      "valid": 33,
-      "yield": 0.515625
+      "valid": 42,
+      "yield": 0.65625
     },
     "track/voronoi/flat/default": {
       "quantiles": {
