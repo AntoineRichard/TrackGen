@@ -1,6 +1,6 @@
 {
-  "source_revision": "66af09b1ec9a0cc4476b901b3feb9a340100db40",
-  "renderer_sha256": "0593d4ab7569d0f840dfd0afdbb2a3010df466cf0a8eddf105c44f869deffcf9",
+  "source_revision": "a73bb30b6282f36f1ba5c1548976b63f0edab753",
+  "renderer_sha256": "c5f22128cfaad18d1224ae4b81c052bb773f03b5c9dbcc9dfe805c15631a7139",
   "command": "python -m viz.render_course_guide --out-dir DIR --check",
   "device": "cpu",
   "units": "caller coordinate units",
@@ -27,6 +27,7 @@
     "elevation_knob_4_nonvacuous": true,
     "elevation_knob_5_nonvacuous": true,
     "sources_differ": true,
+    "gate_order_width_bounds_contain_geometry": true,
     "radius_solver_moves_centers": true,
     "gate_elevation_preserves_xy": true,
     "gate_elevation_all_active": true,

@@ -208,7 +208,7 @@ built-ins, none for external geometry. ``relax=None`` skips it; flat configs use
 the accepted sampled thickness threshold is ``(1 - relax_tol) * half_width``.
 ``turning_tol=.1`` radians, ``w_floor=.001`` distance,
 ``validity_border_check=False`` and ``z_valid_grade=0`` (off) are also static acceptance
-controls. See :doc:`/how-it-works/validity` for their limits.
+controls. See :ref:`geometry-validity` for their limits.
 
 Execution settings do not shape the road
 ----------------------------------------

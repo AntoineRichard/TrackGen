@@ -79,9 +79,12 @@ Watch actual rounds
 Native Bezier sequences, seed/env 3 (11 gates), 0 (13 gates) and 9 (10 gates), selected
 from 24 candidates at epoch 0 for crowded raw anchors. Radius ``.13`` gives target
 ``.26``; full opening width is ``.16``. Each frame regenerates an actual round budget
-from 0 through 16 with ``keep`` and a fixed viewpoint. The round-indexed deterministic
-tie-break makes each budget a prefix of the same solve, rather than an interpolation
-between pictures. The renderer checks this against its captured states.
+from 0 through 16 with ``keep`` and a fixed viewpoint. The renderer checks that the raw
+round-zero state repeats. The source uses a fixed pair schedule and a round-indexed
+deterministic tie-break; per-round arithmetic does not depend on the total budget.
+Together these justify interpreting the separately generated positions as prefixes of
+the same solve. Tangents and gate frames are recomputed for each budget; the prefix
+reasoning applies to the XY separation states.
 
 **Text alternative:** overlapping gray spacing disks separate most visibly in the
 early rounds, then the movement shrinks. The first two selected sequences pass validity

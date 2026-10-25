@@ -110,6 +110,16 @@ def _plan(ax, d, *, beads=False, limits=None):
             fontsize=8, color=GREEN if d["valid"] else RED)
 
 
+def _gate_xy(d):
+    return np.concatenate([d[field][:d["count"], :2] for field in ("position", "left", "right")])
+
+
+def _gate_bounds_contain(ax, d):
+    points = _gate_xy(d)
+    return bool(np.all(points >= (ax.get_xlim()[0], ax.get_ylim()[0])) and
+                np.all(points <= (ax.get_xlim()[1], ax.get_ylim()[1])))
+
+
 def _gate_plan(ax, d, *, radius=0.0, numbering=False, limits=1.2):
     p = d["position"]
     c = _closed(p)
@@ -282,12 +292,17 @@ def sources_and_order(out):
         ax.set_title(label, fontsize=10)
     CHECKS["sources_differ"] = not np.allclose(samples[0]["position"], samples[1]["position"])
     _save(fig, out, "controls-gate-sources", "The same family has distinct native-gate and track-station paths")
+    comparisons = [(order, width) for order in ("ccw", "random_pairs") for width in (0.0, 0.12, 0.4)]
+    order_samples = [gates(f"order-{order}-width-{width}", gate_ordering=order,
+                           gate_width=width, on_invalid="keep") for order, width in comparisons]
+    # All six panels share a square view, with room for bars and gate-number labels.
+    limits = float(np.max(np.abs(np.concatenate([_gate_xy(d) for d in order_samples])))) * 1.10
     fig, axes = plt.subplots(2, 3, figsize=(12, 8))
-    for row, order in enumerate(("ccw", "random_pairs")):
-        for col, width in enumerate((0.0, 0.12, 0.4)):
-            d = gates(f"order-{order}-width-{width}", gate_ordering=order, gate_width=width, on_invalid="keep")
-            _gate_plan(axes[row, col], d, numbering=True)
-            axes[row, col].set_title(f"order={order}, gate_width={width}", fontsize=10)
+    for ax, d, (order, width) in zip(axes.flat, order_samples, comparisons):
+        _gate_plan(ax, d, numbering=True, limits=limits)
+        ax.set_title(f"order={order}, gate_width={width}", fontsize=10)
+    CHECKS["gate_order_width_bounds_contain_geometry"] = all(
+        _gate_bounds_contain(ax, d) for ax, d in zip(axes.flat, order_samples))
     _save(fig, out, "controls-gate-order-width", "Ordering changes traversal; full gate width changes the opening")
     fig, axes = plt.subplots(1, 3, figsize=(12, 4.7))
     rad_samples = []
@@ -421,7 +436,7 @@ def validate():
                 "stations_xyz_equal_arc", "size_preserves_absolute_width", "poison_clears_failed_geometry",
                 "width_channel_nonvacuous", "width_channel_formula_0", "width_channel_formula_1",
                 "width_channel_bounds_0", "width_channel_bounds_1", "gate_elevation_preserves_xy",
-                "gate_elevation_all_active"}
+                "gate_elevation_all_active", "gate_order_width_bounds_contain_geometry"}
     assert required <= CHECKS.keys(), required - CHECKS.keys()
     assert len([k for k in CHECKS if k.startswith("elevation_knob_")]) == 6
     assert all(CHECKS.values()), {k: v for k, v in CHECKS.items() if not v}

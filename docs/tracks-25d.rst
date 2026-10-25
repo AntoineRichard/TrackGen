@@ -1,7 +1,7 @@
 .. _course-elevation:
 
 Add elevation to a road
-======================
+=======================
 
 A TrackGen road is a ribbon with level cross-sections: XY layout and width are solved
 first, then the same altitude lifts the center, inner and outer point at each index.
