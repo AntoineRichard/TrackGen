@@ -30,7 +30,7 @@ from track_gen.exec import LaunchContext  # noqa: E402
 DEV = "cuda:0"
 E = 8
 _TRACK_FIELDS = ("outer", "center", "inner", "tangent", "normal", "arclen", "length",
-                 "valid", "count", "winding")
+                 "valid", "count", "winding", "generation", "fail_mask")
 _GATE_FIELDS = ("position", "tangent", "left", "right", "valid", "count")
 
 
@@ -59,13 +59,10 @@ def test_track_pipeline_records_on_side_stream(generator):
 
     s = wp.Stream(DEV)
     ctx = LaunchContext(DEV, s)
-    wp.copy(gen._seed_buf, gen._rng.seeds_warp)
-    wp.synchronize()
-
     def run():
-        warp_pipeline._run_pipeline(gen._config, gen._seed_buf, out=gen._track,
-                                    scratch=gen._scratch,
-                                    generator_spec=gen._generator_spec, ctx=ctx)
+        # The current Program carries seed preparation, generator metadata and the
+        # mandatory final validity/commit policy onto the caller's stream.
+        gen.program.enqueue(ctx)
 
     run()                                   # warm-up on s (module load outside capture)
     wp.synchronize()
