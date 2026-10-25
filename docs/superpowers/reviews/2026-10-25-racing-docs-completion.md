@@ -78,3 +78,30 @@ root identity and retains measured source hashes. Seven focused checks pass both
 in the checkout and copied source archive. No figures or library code changed.
 Final full-suite and CI results are recorded in PR #5 after the corrected archive
 is validated.
+
+## Repulsive findings and parked documentation snapshot
+
+The user identified rough growth and apparent obstacle crossings in the actual
+Repulsive video. A quantitative investigation confirms raw roughness, default
+inner-force deactivation and unchecked hard rescaling through active barriers.
+The finished road can still pass existing validity because those rings/domain
+were not checked. A separate numerical audit identified the Sobolev-order error
+and weak stopping. The user then authorized a release-blocking runtime repair
+and chose hard clearance for the entire finished road, including width.
+
+The rc2 documentation snapshot now labels active/disabled soft forces, preserves
+all 52 geometry states and timing, explains raw versus smoothed output and current
+validity limits, and retains portable evidence under the excluded
+`docs/library-readiness/repulsive-growth/`. The corrected movie changes presentation
+only; default geometry is not replaced with an attractive tuned sample.
+
+Fresh local CPU after these presentation checks: 3,533 passed, four optional UI skips,
+763 deselected. The corrected-source archive at 4aec44a passed the full spark-home
+suite: 4,291 passed, four optional Gradio skips in 482.27 seconds; the dedicated CUDA
+lane passed 744 with zero skips. Final presentation checks on spark-home are run
+before this snapshot is pushed. Strict lean Sphinx passes, including the new limits.
+
+This documentation snapshot remains draft/parked while the runtime repair proceeds
+on `codex/repulsive-solver-fix`. Before release, reconcile the fixed behavior, rerender
+Repulsive assets from it and update the immutable installation pin to the validated
+next candidate. Current rc2 limitations must not be presented as the fixed contract.

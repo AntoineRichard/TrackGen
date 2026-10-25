@@ -513,8 +513,378 @@
       "stages": 4
     },
     "repulsive": {
+      "command": "python -m viz.render_generator_guide --repulsive-only --source-manifest docs/assets/racing/generators-manifest.json --out-dir DIR",
+      "encoded_frame_count": 64,
       "final_matches_generator": true,
+      "force_states": [
+        {
+          "final": false,
+          "inner_forces_active": true,
+          "iteration": 0,
+          "reached": false,
+          "wall_forces_active": true
+        },
+        {
+          "final": false,
+          "inner_forces_active": true,
+          "iteration": 1,
+          "reached": false,
+          "wall_forces_active": true
+        },
+        {
+          "final": false,
+          "inner_forces_active": true,
+          "iteration": 4,
+          "reached": false,
+          "wall_forces_active": true
+        },
+        {
+          "final": false,
+          "inner_forces_active": true,
+          "iteration": 8,
+          "reached": false,
+          "wall_forces_active": true
+        },
+        {
+          "final": false,
+          "inner_forces_active": true,
+          "iteration": 12,
+          "reached": false,
+          "wall_forces_active": true
+        },
+        {
+          "final": false,
+          "inner_forces_active": true,
+          "iteration": 16,
+          "reached": false,
+          "wall_forces_active": true
+        },
+        {
+          "final": false,
+          "inner_forces_active": true,
+          "iteration": 20,
+          "reached": false,
+          "wall_forces_active": true
+        },
+        {
+          "final": false,
+          "inner_forces_active": true,
+          "iteration": 24,
+          "reached": false,
+          "wall_forces_active": true
+        },
+        {
+          "final": false,
+          "inner_forces_active": true,
+          "iteration": 28,
+          "reached": false,
+          "wall_forces_active": true
+        },
+        {
+          "final": false,
+          "inner_forces_active": true,
+          "iteration": 32,
+          "reached": false,
+          "wall_forces_active": true
+        },
+        {
+          "final": false,
+          "inner_forces_active": true,
+          "iteration": 36,
+          "reached": false,
+          "wall_forces_active": true
+        },
+        {
+          "final": false,
+          "inner_forces_active": true,
+          "iteration": 40,
+          "reached": false,
+          "wall_forces_active": true
+        },
+        {
+          "final": false,
+          "inner_forces_active": true,
+          "iteration": 44,
+          "reached": false,
+          "wall_forces_active": true
+        },
+        {
+          "final": false,
+          "inner_forces_active": true,
+          "iteration": 48,
+          "reached": false,
+          "wall_forces_active": true
+        },
+        {
+          "final": false,
+          "inner_forces_active": true,
+          "iteration": 52,
+          "reached": false,
+          "wall_forces_active": true
+        },
+        {
+          "final": false,
+          "inner_forces_active": true,
+          "iteration": 56,
+          "reached": false,
+          "wall_forces_active": true
+        },
+        {
+          "final": false,
+          "inner_forces_active": true,
+          "iteration": 60,
+          "reached": false,
+          "wall_forces_active": true
+        },
+        {
+          "final": false,
+          "inner_forces_active": true,
+          "iteration": 64,
+          "reached": false,
+          "wall_forces_active": true
+        },
+        {
+          "final": false,
+          "inner_forces_active": true,
+          "iteration": 68,
+          "reached": false,
+          "wall_forces_active": true
+        },
+        {
+          "final": false,
+          "inner_forces_active": true,
+          "iteration": 72,
+          "reached": false,
+          "wall_forces_active": true
+        },
+        {
+          "final": false,
+          "inner_forces_active": true,
+          "iteration": 76,
+          "reached": false,
+          "wall_forces_active": true
+        },
+        {
+          "final": false,
+          "inner_forces_active": true,
+          "iteration": 80,
+          "reached": false,
+          "wall_forces_active": true
+        },
+        {
+          "final": false,
+          "inner_forces_active": true,
+          "iteration": 84,
+          "reached": false,
+          "wall_forces_active": true
+        },
+        {
+          "final": false,
+          "inner_forces_active": true,
+          "iteration": 88,
+          "reached": false,
+          "wall_forces_active": true
+        },
+        {
+          "final": false,
+          "inner_forces_active": true,
+          "iteration": 92,
+          "reached": false,
+          "wall_forces_active": true
+        },
+        {
+          "final": false,
+          "inner_forces_active": true,
+          "iteration": 96,
+          "reached": false,
+          "wall_forces_active": true
+        },
+        {
+          "final": false,
+          "inner_forces_active": true,
+          "iteration": 100,
+          "reached": false,
+          "wall_forces_active": true
+        },
+        {
+          "final": false,
+          "inner_forces_active": true,
+          "iteration": 104,
+          "reached": false,
+          "wall_forces_active": true
+        },
+        {
+          "final": false,
+          "inner_forces_active": true,
+          "iteration": 108,
+          "reached": false,
+          "wall_forces_active": true
+        },
+        {
+          "final": false,
+          "inner_forces_active": true,
+          "iteration": 112,
+          "reached": false,
+          "wall_forces_active": true
+        },
+        {
+          "final": false,
+          "inner_forces_active": true,
+          "iteration": 116,
+          "reached": false,
+          "wall_forces_active": true
+        },
+        {
+          "final": false,
+          "inner_forces_active": true,
+          "iteration": 118,
+          "reached": false,
+          "wall_forces_active": true
+        },
+        {
+          "final": false,
+          "inner_forces_active": true,
+          "iteration": 120,
+          "reached": false,
+          "wall_forces_active": true
+        },
+        {
+          "final": false,
+          "inner_forces_active": true,
+          "iteration": 124,
+          "reached": false,
+          "wall_forces_active": true
+        },
+        {
+          "final": false,
+          "inner_forces_active": true,
+          "iteration": 128,
+          "reached": false,
+          "wall_forces_active": true
+        },
+        {
+          "final": false,
+          "inner_forces_active": false,
+          "iteration": 132,
+          "reached": true,
+          "wall_forces_active": true
+        },
+        {
+          "final": false,
+          "inner_forces_active": false,
+          "iteration": 136,
+          "reached": true,
+          "wall_forces_active": true
+        },
+        {
+          "final": false,
+          "inner_forces_active": false,
+          "iteration": 140,
+          "reached": true,
+          "wall_forces_active": true
+        },
+        {
+          "final": false,
+          "inner_forces_active": false,
+          "iteration": 144,
+          "reached": true,
+          "wall_forces_active": true
+        },
+        {
+          "final": false,
+          "inner_forces_active": false,
+          "iteration": 148,
+          "reached": true,
+          "wall_forces_active": true
+        },
+        {
+          "final": false,
+          "inner_forces_active": false,
+          "iteration": 152,
+          "reached": true,
+          "wall_forces_active": true
+        },
+        {
+          "final": false,
+          "inner_forces_active": false,
+          "iteration": 156,
+          "reached": true,
+          "wall_forces_active": true
+        },
+        {
+          "final": false,
+          "inner_forces_active": false,
+          "iteration": 160,
+          "reached": true,
+          "wall_forces_active": true
+        },
+        {
+          "final": false,
+          "inner_forces_active": false,
+          "iteration": 164,
+          "reached": true,
+          "wall_forces_active": true
+        },
+        {
+          "final": false,
+          "inner_forces_active": false,
+          "iteration": 168,
+          "reached": true,
+          "wall_forces_active": true
+        },
+        {
+          "final": false,
+          "inner_forces_active": false,
+          "iteration": 172,
+          "reached": true,
+          "wall_forces_active": true
+        },
+        {
+          "final": false,
+          "inner_forces_active": false,
+          "iteration": 176,
+          "reached": true,
+          "wall_forces_active": true
+        },
+        {
+          "final": false,
+          "inner_forces_active": false,
+          "iteration": 180,
+          "reached": true,
+          "wall_forces_active": true
+        },
+        {
+          "final": false,
+          "inner_forces_active": false,
+          "iteration": 184,
+          "reached": true,
+          "wall_forces_active": true
+        },
+        {
+          "final": false,
+          "inner_forces_active": false,
+          "iteration": 188,
+          "reached": true,
+          "wall_forces_active": true
+        },
+        {
+          "final": false,
+          "inner_forces_active": false,
+          "iteration": 192,
+          "reached": true,
+          "wall_forces_active": true
+        },
+        {
+          "final": true,
+          "inner_forces_active": false,
+          "iteration": 192,
+          "reached": true,
+          "wall_forces_active": true
+        }
+      ],
+      "fps": 6,
       "frame_count": 52,
+      "hard_collision_obstacles": false,
       "iterations": [
         0,
         1,
@@ -569,8 +939,132 @@
         192
       ],
       "kind": "captured solver states",
+      "n_disc": 12,
+      "n_wall": 96,
       "output": "generator-repulsive-growth.mp4",
-      "seed": 7
+      "sample": {
+        "config": {
+          "N_max": 384,
+          "checkpoint_angle_jitter": 0.55,
+          "checkpoint_best_of_k": 4,
+          "checkpoint_clip_fallback": false,
+          "checkpoint_count": 12,
+          "checkpoint_lookahead_frac": 0.16,
+          "checkpoint_radius_min_frac": 0.33,
+          "checkpoint_steer_gain": 0.65,
+          "checkpoint_turn_rate": 0.42,
+          "device": "cpu",
+          "edgy": 0.0,
+          "generator": "repulsive",
+          "generator_params": null,
+          "half_width": 0.1,
+          "handle_clamp_frac": 0.4,
+          "hull_displacement": 0.15,
+          "max_num_points": 13,
+          "min_num_points": 9,
+          "min_point_distance": 0.05,
+          "num_envs": 4,
+          "num_points": 256,
+          "num_points_per_segment": 30,
+          "on_invalid": "keep",
+          "polar_angular_jitter": 0.3,
+          "polar_num_knots": 12,
+          "polar_radial_jitter": 0.6,
+          "rad": 0.4,
+          "relax_accel": "chebyshev",
+          "relax_band": null,
+          "relax_bend_relax": 1.5,
+          "relax_cheby_gamma": 0.9,
+          "relax_cheby_rho": 0.98,
+          "relax_cheby_start": 8,
+          "relax_enable": true,
+          "relax_iters": 50,
+          "relax_margin": 0.15,
+          "relax_sep_cache_skin": 0.5,
+          "relax_sep_cache_slots": 16,
+          "relax_sep_every": 20,
+          "relax_sep_relax": 1.0,
+          "relax_smooth_passes": 5,
+          "relax_smooth_spacing_iters": 10,
+          "relax_solver": "xpbd",
+          "relax_spc_relax": 1.0,
+          "relax_tol": 0.02,
+          "repulsive_alpha": 3.0,
+          "repulsive_beta": 6.0,
+          "repulsive_deactivate_obstacles": true,
+          "repulsive_domain_frac": 0.35,
+          "repulsive_domain_init_ratio": 4.0,
+          "repulsive_grow_mult_max": 5.5,
+          "repulsive_grow_mult_min": 4.5,
+          "repulsive_obstacle_count_max": 12,
+          "repulsive_obstacle_count_min": 8,
+          "repulsive_obstacle_radius_max_frac": 0.045,
+          "repulsive_obstacle_radius_min_frac": 0.02,
+          "repulsive_ratchet_rate": 0.012,
+          "repulsive_resample_every": 25,
+          "repulsive_settle_iters": 40,
+          "repulsive_stages": [
+            64,
+            128,
+            256
+          ],
+          "repulsive_stall_area_tol": 0.05,
+          "repulsive_stall_window": 16,
+          "repulsive_tau": 0.4,
+          "repulsive_w_len": 30.0,
+          "scale": 1.0,
+          "size": 1.0,
+          "spacing": 0.06,
+          "turning_tol": 0.1,
+          "validity_border_check": false,
+          "voronoi_angular_jitter": 0.08,
+          "voronoi_control_points": 18,
+          "voronoi_num_sites": 256,
+          "voronoi_radial_variation": 0.62,
+          "voronoi_site_layout": "void_ring",
+          "w_floor": 0.001,
+          "z_base": 0.0,
+          "z_control_points": 10,
+          "z_max": 0.0,
+          "z_max_step": 0.0,
+          "z_min": 0.0,
+          "z_noise_amplitude": 0.0,
+          "z_noise_harmonics": 3,
+          "z_profile": "flat",
+          "z_valid_grade": 0.0
+        },
+        "count": 204,
+        "env": 0,
+        "epoch": 0,
+        "fail": 0,
+        "raw_finite": true,
+        "real_geometry_finite": true,
+        "seed": 7,
+        "valid": true
+      },
+      "seed": 7,
+      "soft_shaping_forces": true,
+      "source": {
+        "device": "cpu",
+        "generator_source_sha256": "f87c497dbd86aedfdd4f8987f2feda546f78fb02ca165d274fadb866d0b41570",
+        "git_commit": "4aec44a8f30d7ef998bb37ce6cb86e6ad2d12bd2",
+        "matplotlib_version": "3.11.2",
+        "numpy_version": "2.5.4",
+        "renderer_sha256": "25dce1845dfe94e4f6edc2a352c5cdb16e699b57a557bb1606ebf0de9914180b",
+        "trackgen_version": "0.3.0rc2",
+        "warp_version": "1.18.0",
+        "worktree_dirty": true
+      },
+      "view_bounds": {
+        "xlim": [
+          -1.9905773401260376,
+          1.9905773401260376
+        ],
+        "ylim": [
+          -1.9905773401260376,
+          1.9905773401260376
+        ]
+      }
     },
     "voronoi": {
       "command": "python -m viz.render_generator_guide --construction-only --source-manifest docs/assets/racing/generators-manifest.json --out-dir DIR",
@@ -731,8 +1225,8 @@
     "generator-repulsive-controls-obstacles.png": 210978,
     "generator-repulsive-controls.png": 630794,
     "generator-repulsive-examples.png": 371496,
-    "generator-repulsive-growth.mp4": 514924,
-    "generator-repulsive-growth.png": 108022,
+    "generator-repulsive-growth.mp4": 521803,
+    "generator-repulsive-growth.png": 141854,
     "generator-repulsive-numerics.png": 336193,
     "generator-voronoi-construction.mp4": 284645,
     "generator-voronoi-construction.png": 196508,

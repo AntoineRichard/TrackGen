@@ -1,10 +1,15 @@
 Repulsive: grow a folded loop
 =============================
 
-Use ``repulsive`` when you want a circuit grown into folds around seeded obstacles.
+Use ``repulsive`` when you want a circuit grown into folds by sampled repulsion forces.
 It repeatedly updates a curve under self-repulsion and a hard target-length ratchet.
 This is an iterative optimizer: use small trial batches and measure regeneration
 cost at your actual device, batch size and cadence.
+
+**Treat the drawn rings as soft shaping guides.** The default disables inner-disc
+forces after reaching target length. A valid finished road can overlap those discs
+or leave the growth domain: final road validity checks neither. Read
+:ref:`repulsive-limits` before using the rings as simulator geometry.
 
 .. figure:: ../assets/racing/generator-repulsive-examples.png
    :alt: Three repulsive raw centerlines above the corresponding finished roads.
@@ -54,6 +59,11 @@ exact equality with an ordinary generation from the same seed/configuration.
 Reaching target length, freezing the growth state and passing final road validity
 are separate events.
 
+The blue curve here is the raw optimizer state. The shared road pipeline resamples
+and smooths it afterward; compare the finished roads above when judging the delivered
+centerline. The animation labels effective force activation, including disabled
+inner rings, rather than implying every drawn circle still repels the curve.
+
 Change the growth domain
 ------------------------
 
@@ -94,7 +104,7 @@ rows in the figures change both bounds of the named range together.
      - Domain radius divided by initial-circle radius, greater than 1. Changes initial perimeter and therefore the drawn final target.
    * - ``repulsive_obstacle_count_min`` / ``repulsive_obstacle_count_max``
      - 8 / 12; static
-     - Inner-disc count bounds: min ≥ 1 and max ≥ min. More discs change the constrained flow and increase obstacle work.
+     - Inner-disc count bounds: min ≥ 1 and max ≥ min. More discs change the soft repulsion field and increase obstacle work.
    * - ``repulsive_obstacle_radius_min_frac`` / ``repulsive_obstacle_radius_max_frac``
      - 0.02 / 0.045; static
      - Positive, ordered fractions of domain radius. Changes sampled inner-disc sizes, not road width.
@@ -127,8 +137,9 @@ The flow combines tangent-point self-repulsion, inverse-power obstacle repulsion
 an active secondary length regularizer. It preconditions the gradient with a
 fractional Sobolev filter, projects out the length direction, takes a normalized
 barycenter-pinned step, and hard-rescales to the current ratcheted target perimeter.
-The hard ratchet/rescale enforces length; ``repulsive_w_len`` still affects the
-computed gradient and is not inert.
+The hard ratchet/rescale enforces length. The length-penalty gradient lies in the
+direction removed by the projection: ``repulsive_w_len`` is not an independent
+shape control, although changing it can alter floating-point rounding.
 
 The algorithm draws on Yu, Schumacher and Crane's
 `Repulsive Curves <https://arxiv.org/abs/2006.07859>`_ and the
@@ -147,13 +158,18 @@ implementation choices.
      - Meaning and tradeoff
    * - ``repulsive_alpha`` / ``repulsive_beta``
      - 3 / 6
-     - Positive tangent-point energy exponents. Obstacle inverse power is beta − alpha. Changing them also changes the Sobolev filter; do not expect a simple shape trend.
+     - Positive tangent-point energy exponents. Obstacle inverse power is beta − alpha.
+       For obstacle repulsion, beta must exceed alpha: equal values remove that force
+       and beta < alpha reverses it, although both are accepted by the constructor.
+       Changing them also changes the Sobolev filter; do not expect a simple shape trend.
    * - ``repulsive_tau``
      - 0.4
      - Dimensionless normalized step size. Larger steps can change convergence or destabilize the flow; no scalar interval is enforced.
    * - ``repulsive_w_len``
      - 30
-     - Dimensionless secondary length-regularizer weight. The hard length constraint remains; this is a live force contribution, with no scalar interval enforced.
+     - Dimensionless length-penalty weight. Its direction is projected out;
+       numerical differences from changing it reflect rounding rather than an
+       independent geometric force. No scalar interval is enforced.
    * - ``repulsive_stages``
      - (64, 128, 256)
      - Strictly increasing positive multiples of 4. Last must equal track num_points. Arc-resampling at transitions gives finer degrees of freedom; pair work grows quadratically with active resolution.
@@ -171,12 +187,13 @@ implementation choices.
      - Relative area-change tolerance; meaningful nonnegative values compare change with the preceding check. Larger values can freeze shapes earlier. This is not road-clearance tolerance.
 
 .. figure:: ../assets/racing/generator-repulsive-numerics.png
-   :alt: Actual same-seed sensitivity to alpha, beta, step size and the active length-regularizer weight.
+   :alt: Same-seed sensitivity to alpha, beta, step size and length-weight rounding.
    :align: center
 
    One numerical setting changes in each pair. Raw-curve displacement, final road
    validity, target-reaching and freeze status are measured on the current CPU
-   implementation. The outcomes show sensitivity, not a monotonic quality rule.
+   implementation. The length-weight comparison exposes rounding sensitivity,
+   not a useful shaping direction. The outcomes do not establish a monotonic quality rule.
 
 The iteration bound is ``ceil(1.6 * n_ratchet) + repulsive_settle_iters``, where
 ``n_ratchet = ceil(log(grow_mult_max) / log1p(ratchet_rate))``. Resolution transitions
@@ -191,6 +208,34 @@ captures execute the full bound while frozen envs remain unchanged. Construction
 warms one generation; CUDA graph recording is another one-time cost. See
 :ref:`cuda-graph-bounded` for capture compatibility and :doc:`/reference/exec` for
 the execution contract. Measure amortized cost, not only the first call.
+
+.. _repulsive-limits:
+
+Roughness, stopping and clearance
+---------------------------------
+
+The optimizer uses a fixed normalized step and freezes after sufficiently small
+**area change**, once the target is reached. Small area change can coexist with
+alternating vertex motion and sharp corners. ``reached`` and ``frozen`` are internal
+growth diagnostics, rather than tests of smooth convergence. More settle iterations
+alone need not remove the roughness.
+
+Wall and inner-disc forces repel vertices from sampled points; they do not enforce
+continuous segment/circle or finite-road-width clearance. The hard perimeter rescale
+runs after the repulsion step and can move the curve back across an active ring.
+Final arc resampling and road relaxation also have no inputs describing these rings.
+Consequently, retaining inner forces can improve one sample without establishing a
+clearance guarantee. A smaller ``repulsive_tau`` can reduce zigzags while allowing
+the length ratchet to push the curve beyond the wall; it is not a safe preset by itself.
+
+Inspect the resulting road against the actual obstacle geometry your simulator uses.
+``track.valid`` reports the configured road checks, including self-thickness and
+optional border self-crossing; it does not certify containment, clearance from the
+shaping discs, or optimizer convergence. The rings are not exported as colliders.
+
+Use dynamic ``size`` for an output-coordinate multiplier. Static ``scale`` changes
+the growth problem and relative force balance. Resolution changes also affect that
+balance, as well as cost; they are more than a drawing-resolution adjustment.
 
 When it fails
 -------------

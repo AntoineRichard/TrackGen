@@ -57,6 +57,7 @@ parameter does not mutate that config.
    * - ``scale=1``
      - Static / XY multiplier
      - Changes procedural coordinate extent. More perimeter needs more samples.
+       For Repulsive it also changes the growth force balance; see :ref:`repulsive-limits`.
    * - ``size=1``
      - Dynamic / XY multiplier, ``[0.1, 10]``
      - Changes each env's extent without rebuilding. Does not scale altitude,
