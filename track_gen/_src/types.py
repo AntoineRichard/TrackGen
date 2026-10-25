@@ -363,7 +363,7 @@ class TrackGenConfig:
     relax_smooth_passes : int
         Number of shrink-free Taubin smoothing passes applied after the main sweep
         loop.  Must be >= 0.  Default 5.  Each pass is two Laplacian half-steps
-        (:math:`lambda > 0` then :math:`mu < -lambda`), which removes the
+        (:math:`\\lambda > 0` then :math:`\\mu < -\\lambda`), which removes the
         sub-``R_min`` curvature noise the bending guard's deadband cannot see (bending
         only fires below the minimum radius; gentler wiggles are invisible to all three
         constraints) without shrinking corners through the validity gate the way a plain
