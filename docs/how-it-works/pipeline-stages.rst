@@ -1348,7 +1348,7 @@ multiplies only finite values (``where(size == 1 or not finite, v, w * size)``, 
 the finite-gated value): a size-1 copy keeps every finite value bit for bit, and a
 non-finite point is copied unscaled at every size (a NaN bit for bit, payload included).
 
-**Corner count.** ``_sample_counts_dyn_k`` loads env ``e``'s ``min_num_points``, clamps
+**Corner count.** ``_sample_counts_dyn_h_k`` loads env ``e``'s ``min_num_points``, clamps
 it to ``[2, max_num_points]`` and draws the count as the scalar kernel does.
 
 **Cross-field rules.** At build, every stage whose Params class defines the private
@@ -1366,7 +1366,7 @@ per generation: its draw, and the latches of its ``lo`` and ``hi``, minus the la
 target field no longer needs. In a launch trace, each kernel that reads a knob from an
 array keeps the position, dimensions, arrays and other scalars of its scalar-argument
 twin; its knob scalars become arrays (``_assemble_dyn_k`` also takes the four bound
-scalars; ``_sample_counts_dyn_k`` and ``_finalize_frame_dyn_k`` take the array in place
+scalars; ``_sample_counts_dyn_h_k`` and ``_finalize_frame_dyn_k`` take the array in place
 of ``lo`` and ``gate_width``), the size kernels append the ``[E]`` size array, and
 ``repulsive``'s final copy is the ``_copy_sized_k`` launch.
 

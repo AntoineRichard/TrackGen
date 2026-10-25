@@ -61,11 +61,10 @@ Polygon geometry
 Random sampling
 ---------------
 
-The public samplers default to ``keying="linear"``:
-``wp.rand_init(seeds[e] * salt + offset)`` in int32 wrap-around arithmetic.
-Pass ``keying="hashed"`` to initialize each env with
-``rng.init_at(seeds[e], salt, offset)`` instead; the salt is uint32 and the index
-(``offset``) is int32. Built-ins always request hashed keying, with the fixed
+The public samplers initialize each env with
+``rng.init_at(seeds[e], salt, offset)``: ``salt`` is a uint32 namespace and
+``offset`` an int32 stream index. There is one hashed keying; distinct salts
+retain their effect at seed 0. Built-ins use the fixed
 :ref:`stream names and salts in the generator guide <ops-rng-keying>`.
 
 .. autofunction:: track_gen.ops.grid_cells

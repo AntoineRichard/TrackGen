@@ -34,12 +34,12 @@ per-call allocation and no host-side branching on generated data, making it
 CUDA-graph-capturable.
 
 1. **Point count and position sampling.**
-   ``ops.sample_counts`` with ``keying="hashed"``
+   ``ops.sample_counts`` with hashed streams
    (``generator.hull/point_count``, index ``0``) draws a per-environment point
    count ``m`` from the uniform integer range ``[min_num_points, max_num_points]`` (the
    Stage reads env ``e``'s ``min_num_points`` from its per-env array, clamped to ``[2,
    max_num_points]``).
-   ``ops.sample_grid_points`` with ``keying="hashed"``
+   ``ops.sample_grid_points`` with hashed streams
    (``generator.hull/points``, index ``0``) then draws
    ``P = max_num_points`` grid-jittered points per environment from the
    ``ops.grid_cells(min_point_distance)`` grid with bounded duplicate-cell rejection (up

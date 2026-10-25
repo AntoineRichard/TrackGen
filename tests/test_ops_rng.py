@@ -1,10 +1,11 @@
-"""Hashed RNG initialization and opt-in sampler keying (CPU)."""
+"""Hashed RNG initialization and sampler streams (CPU)."""
 from __future__ import annotations
 
 import numpy as np
 import pytest
 import warp as wp
 
+from tests import _reference_sampling as reference
 from track_gen import ops
 from track_gen.exec import LaunchContext
 from track_gen.ops import sampling
@@ -40,20 +41,6 @@ def _empty(n, dtype):
 
 def _same(a, b):
     np.testing.assert_array_equal(a.numpy().view(np.uint8), b.numpy().view(np.uint8))
-
-
-def _linearized_seeds(salt, index):
-    # Warp native/rand.h: rand_init(key, i) = rand_pcg(key + rand_pcg(i)).
-    # Feeding that sum to the existing linear sampler with salt=1, offset=0
-    # isolates the new sampler dispatch/keying from its unchanged numeric body.
-    mask = 0xFFFFFFFF
-    b = ((index & mask) * 747796405 + 2891336453) & mask
-    c = (((b >> ((b >> 28) + 4)) ^ b) * 277803737) & mask
-    offset_state = (c >> 22) ^ c
-    words = [(ops.hash32_host((seed & mask) ^ salt) & 0x7FFFFFFF) + offset_state
-             for seed in _SEEDS]
-    return wp.array(np.asarray([word & mask for word in words], np.uint32).view(np.int32),
-                    dtype=wp.int32, device=DEV)
 
 
 @pytest.mark.parametrize("seed,salt,index,key,state,state_at", _VECTORS)
@@ -97,16 +84,14 @@ def test_rng_device_matches_warp_formula_and_host_twins():
 def test_hashed_count_variants_keep_linear_numeric_body(dynamic, offset):
     E = len(_SEEDS)
     ctx = LaunchContext(DEV, None)
-    seeds, reference_seeds = _i32(_SEEDS), _linearized_seeds(0xB739AFFB, offset)
+    seeds, reference_seeds = _i32(_SEEDS), reference.linearized_seeds(_SEEDS, 0xB739AFFB, offset)
     lo = _i32([0, 2, 3, 4, 5, 6, 12, -1]) if dynamic else 3
     actual, expected = _empty(E, wp.int32), _empty(E, wp.int32)
-    sampling._sample_counts_launch(ctx, reference_seeds, 1, 0, lo, 11, expected)
-    sampling._sample_counts_launch(ctx, seeds, 0xB739AFFB, offset, lo, 11, actual,
-                                   keying="hashed")
+    reference._sample_counts_launch(ctx, reference_seeds, 1, 0, lo, 11, expected)
+    sampling._sample_counts_launch(ctx, seeds, 0xB739AFFB, offset, lo, 11, actual)
     _same(actual, expected)
     with hot_path_guard():
-        sampling._sample_counts_launch(ctx, seeds, 0xB739AFFB, offset, lo, 11, actual,
-                                       keying="hashed")
+        sampling._sample_counts_launch(ctx, seeds, 0xB739AFFB, offset, lo, 11, actual)
 
 
 @pytest.mark.parametrize("per_env", [False, True])
@@ -115,22 +100,22 @@ def test_hashed_count_variants_keep_linear_numeric_body(dynamic, offset):
 def test_hashed_grid_variants_keep_linear_numeric_body(per_env, sized, offset):
     E, P = len(_SEEDS), 12
     ctx = LaunchContext(DEV, None)
-    seeds, reference_seeds = _i32(_SEEDS), _linearized_seeds(0xC2C74E45, offset)
+    seeds, reference_seeds = _i32(_SEEDS), reference.linearized_seeds(_SEEDS, 0xC2C74E45, offset)
     scale = (wp.array([0.5, 1.0, 1.5, 2.0] * 2, dtype=wp.float32, device=DEV)
              if per_env else 1.25)
     size = (wp.array([0.0, 0.5, 1.0, 2.0, 3.0, 5.0, np.nan, -1.0],
                      dtype=wp.float32, device=DEV) if sized else None)
     actual, expected = _empty(E * P, wp.vec2f), _empty(E * P, wp.vec2f)
     used, reference_used = _empty(E * P, wp.int32), _empty(E * P, wp.int32)
-    sampling._sample_grid_points_launch(ctx, reference_seeds, 1, 0, P, 3, 0.2, scale,
+    reference._sample_grid_points_launch(ctx, reference_seeds, 1, 0, P, 3, 0.2, scale,
                                        reference_used, expected, size=size)
     sampling._sample_grid_points_launch(ctx, seeds, 0xC2C74E45, offset, P, 3, 0.2, scale,
-                                       used, actual, size=size, keying="hashed")
+                                       used, actual, size=size)
     _same(actual, expected)
     _same(used, reference_used)
     with hot_path_guard():
         sampling._sample_grid_points_launch(ctx, seeds, 0xC2C74E45, offset, P, 3, 0.2,
-                                           scale, used, actual, size=size, keying="hashed")
+                                           scale, used, actual, size=size)
 
 
 @pytest.mark.parametrize("salt", [0, 0x80000000, 0xFFFFFFFF, np.uint32(0xC2C74E45)])
@@ -141,34 +126,30 @@ def test_public_hashed_samplers_accept_uint32_salts(salt):
     actual_count, expected_count = _empty(E, wp.int32), _empty(E, wp.int32)
     actual_grid, expected_grid = _empty(E * P, wp.vec2f), _empty(E * P, wp.vec2f)
     used, reference_used = _empty(E * P, wp.int32), _empty(E * P, wp.int32)
-    reference_seeds = _linearized_seeds(int(salt), 0)
-    ops.sample_counts(ctx, reference_seeds, 1, 0, 3, 11, expected_count)
-    ops.sample_counts(ctx, seeds, salt, 0, 3, 11, actual_count, keying="hashed")
-    ops.sample_grid_points(ctx, reference_seeds, 1, 0, P, 3, 0.2, 1.0,
+    reference_seeds = reference.linearized_seeds(_SEEDS, int(salt), 0)
+    reference._sample_counts_launch(ctx, reference_seeds, 1, 0, 3, 11, expected_count)
+    ops.sample_counts(ctx, seeds, salt, 0, 3, 11, actual_count)
+    reference._sample_grid_points_launch(ctx, reference_seeds, 1, 0, P, 3, 0.2, 1.0,
                            reference_used, expected_grid)
-    ops.sample_grid_points(ctx, seeds, salt, 0, P, 3, 0.2, 1.0, used, actual_grid,
-                           keying="hashed")
+    ops.sample_grid_points(ctx, seeds, salt, 0, P, 3, 0.2, 1.0, used, actual_grid)
     _same(actual_count, expected_count)
     _same(actual_grid, expected_grid)
     _same(used, reference_used)
     with hot_path_guard():
-        ops.sample_counts(ctx, seeds, salt, 0, 3, 11, actual_count, keying="hashed")
-        ops.sample_grid_points(ctx, seeds, salt, 0, P, 3, 0.2, 1.0, used, actual_grid,
-                               keying="hashed")
+        ops.sample_counts(ctx, seeds, salt, 0, 3, 11, actual_count)
+        ops.sample_grid_points(ctx, seeds, salt, 0, P, 3, 0.2, 1.0, used, actual_grid)
 
 
 @pytest.mark.parametrize("op", ["sample_counts", "sample_grid_points"])
 @pytest.mark.parametrize("over,match", [
-    ({"keying": "unknown"}, "keying"),
-    ({"keying": None}, "keying"),
-    ({"keying": "hashed", "salt": -1}, "salt"),
-    ({"keying": "hashed", "salt": 2 ** 32}, "salt"),
-    ({"keying": "hashed", "salt": 1.5}, "salt"),
-    ({"keying": "hashed", "salt": True}, "salt"),
-    ({"keying": "hashed", "offset": 2 ** 31}, "offset"),
-    ({"keying": "linear", "salt": 2 ** 31}, "salt"),
+    ({"salt": -1}, "salt"),
+    ({"salt": 2 ** 32}, "salt"),
+    ({"salt": 1.5}, "salt"),
+    ({"salt": True}, "salt"),
+    ({"offset": 2 ** 31}, "offset"),
+    ({"offset": -2 ** 31 - 1}, "offset"),
 ])
-def test_sampler_keying_validation_precedes_launch(op, over, match):
+def test_sampler_validation_precedes_launch(op, over, match):
     class NoLaunch:
         device = DEV
 
@@ -191,8 +172,6 @@ def test_hashed_grid_separates_seed_zero_streams():
     seeds = _i32([0])
     out_a, out_b = _empty(8, wp.vec2f), _empty(8, wp.vec2f)
     used = _empty(8, wp.int32)
-    ops.sample_grid_points(ctx, seeds, 0xC2C74E45, 0, 8, 4, 0.25, 1.0, used, out_a,
-                           keying="hashed")
-    ops.sample_grid_points(ctx, seeds, 0xC60040A4, 0, 8, 4, 0.25, 1.0, used, out_b,
-                           keying="hashed")
+    ops.sample_grid_points(ctx, seeds, 0x1234ABCD, 0, 8, 4, 0.25, 1.0, used, out_a)
+    ops.sample_grid_points(ctx, seeds, 0x43F01337, 0, 8, 4, 0.25, 1.0, used, out_b)
     assert not np.array_equal(out_a.numpy(), out_b.numpy())

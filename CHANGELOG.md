@@ -2,6 +2,10 @@
 
 ## 0.3.0rc2 (in progress)
 
+- Remove `keying=` from `ops.sample_counts` / `sample_grid_points`: salts are
+  hashed uint32 namespaces, and draws differ from 0.2 for the same salt. Built-in
+  generator outputs remain identical to rc1; they already used the hashed path.
+
 - Remove `registry.describe(...).accepts_ctx`: every generator receives `ctx`;
   conformance reports no longer repeat this invariant flag.
 

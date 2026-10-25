@@ -568,7 +568,7 @@ Five rules hold for the ``enqueue`` of every Stage whose capture class is not ``
    with the Warp RNG from the env's effective seed. A Stage takes its salts from
    ``b.salt`` (:ref:`stage-salts`); a ``GeneratorSpec`` chooses constants of its own.
    Mix each salt through ``ops.rng.init`` or ``init_at``. For the public ops samplers,
-   request ``keying="hashed"`` and give each independent stream its own salt/index
+   give each independent stream its own uint32 salt and int32 index
    (:ref:`ops-rng-keying`). Existing plugin streams can retain their own formulas.
    CPU and CUDA results may differ, as elsewhere in TrackGen.
 
@@ -1492,10 +1492,10 @@ an explicit argument. Every op:
 
    * - Op
      - What it does
-   * - ``sample_counts(ctx, seeds, salt, offset, lo, hi, out, *, keying="linear")``
+   * - ``sample_counts(ctx, seeds, salt, offset, lo, hi, out)``
      - One integer in ``[lo, hi]`` per env (how many corners, points or gates).
    * - ``sample_grid_points(ctx, seeds, salt, offset, num, num_cells, cell_size, scale,
-       used, out, *, size=None, keying="linear")``, ``grid_cells(min_point_distance)``
+       used, out, *, size=None)``, ``grid_cells(min_point_distance)``
      - ``num`` jittered points per env on distinct cells of a grid where possible (the
        ``bezier`` and ``hull`` sampler). The jitter is an absolute ``[-0.5, 0.5)``, so
        the points lie in ``[-0.5, (num_cells-1)*cell_size + 0.5) * scale`` and have no
@@ -1721,12 +1721,9 @@ generators reuse the matching track generator's names.
 it keeps that formula. The effective-seed prologue and ``PerEnvSeededRNG`` are
 unchanged. The other built-in stages draw no random numbers.
 
-Public ``sample_counts`` and ``sample_grid_points`` preserve their
-``keying="linear"`` default: ``wp.rand_init(seeds[e] * salt + offset)`` in
-int32 wrap-around arithmetic. Explicit ``keying="hashed"`` uses
+Public ``sample_counts`` and ``sample_grid_points`` use
 ``init_at(seeds[e], salt, offset)``. A plugin can use ``b.salt`` as the uint32 salt
-and pick an int32 index for each stream. Keep the same keying to preserve an
-existing plugin's draws. Built-in keying has no legacy config field or
+and pick an int32 index for each stream. There is no keying selector or
 reproduction mode; :ref:`upgrading-0.3-rng` explains the output migration.
 
 Gate generators

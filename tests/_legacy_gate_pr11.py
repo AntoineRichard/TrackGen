@@ -290,15 +290,15 @@ def _anchors(ctx, cfg, seeds):
         num_cells, cell_size = ops.grid_cells(cfg.min_point_distance)
         if name == "bezier":
             ops.sample_counts(ctx, seeds, warp_generate.CORNER_COUNT_SALT, 0,
-                              int(cfg.min_num_points), int(cfg.max_num_points), count, keying="hashed")
+                              int(cfg.min_num_points), int(cfg.max_num_points), count)
             ops.sample_grid_points(ctx, seeds, warp_generate.CORNER_SALT, 0, P, num_cells,
-                                   float(cell_size), float(cfg.scale), used, points, keying="hashed")
+                                   float(cell_size), float(cfg.scale), used, points)
         else:
             ops.sample_counts(ctx, seeds, hull.POINT_COUNT_SALT, hull.POINT_SALT_OFFSET,
-                              int(cfg.min_num_points), int(cfg.max_num_points), count, keying="hashed")
+                              int(cfg.min_num_points), int(cfg.max_num_points), count)
             ops.sample_grid_points(ctx, seeds, hull.POINT_SALT, hull.POINT_SALT_OFFSET, P,
                                    num_cells, float(cell_size), float(cfg.scale), used,
-                                   points, keying="hashed")
+                                   points)
         return points, P, count, None
     target_extent = float(cfg.scale) * TARGET_EXTENT
     count = wp.zeros(E, dtype=wp.int32, device=dev)

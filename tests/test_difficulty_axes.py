@@ -295,8 +295,8 @@ def test_public_ops_take_a_per_env_size():
 
     plain, k0 = grid(1.0)
     ones, k1 = grid(1.0, _f32(np.ones(E)))
-    assert k0 == ["_fill_i32_k", "_sample_grid_points_k"]
-    assert k1 == ["_fill_i32_k", "_sample_grid_points_sized_k"]
+    assert k0 == ["_fill_i32_k", "_sample_grid_points_h_k"]
+    assert k1 == ["_fill_i32_k", "_sample_grid_points_sized_h_k"]
     assert ones.tobytes() == plain.tobytes()
     sized, _ = grid(1.0, _f32(SIZES))
     for e, v in enumerate(SIZES):
@@ -304,7 +304,7 @@ def test_public_ops_take_a_per_env_size():
         assert _row(sized, e) == _row(ref, e), (e, v)
     per_scale = _f32(np.linspace(0.8, 1.2, E))
     _, k2 = grid(per_scale, _f32(SIZES))
-    assert k2 == ["_fill_i32_k", "_sample_grid_points_scaled_sized_k"]
+    assert k2 == ["_fill_i32_k", "_sample_grid_points_scaled_sized_h_k"]
     a, _ = grid(per_scale)
     b, _ = grid(per_scale, _f32(np.ones(E)))
     assert a.tobytes() == b.tobytes()
@@ -388,9 +388,9 @@ def test_the_count_twin_equals_the_scalar_kernel(monkeypatch):
 @pytest.mark.parametrize("variant", ["plain", "scaled"])
 def test_the_sized_grid_twins_equal_the_original(monkeypatch, variant):
     style = variant == "scaled"
-    twin_k = ops_sampling._sample_grid_points_scaled_sized_k if style else \
+    twin_k = ops_sampling._sample_grid_points_scaled_sized_h_k if style else \
         ops_sampling._sample_grid_points_sized_h_k
-    orig_k = ops_sampling._sample_grid_points_scaled_k if style else \
+    orig_k = ops_sampling._sample_grid_points_scaled_h_k if style else \
         ops_sampling._sample_grid_points_h_k
     if style:
         dim = E
@@ -700,13 +700,15 @@ def _fma_edges(stmts) -> set:
 
 #: (original, twin, knob local, the argument it replaces or None (it multiplies),
 #: statements, mul -> add/sub edges) -- design section 1.4, E3.
+#: Hashed sampling uses one init_at call instead of mul/add/rand_init: two fewer
+#: statements and one fewer integer mul -> add edge than the frozen linear body.
 _CUDA_PAIRS = {
-    "counts": (ops_sampling._sample_counts_k, ops_sampling._sample_counts_dyn_k, "lo",
-               "lo", 14, 1),
-    "grid": (ops_sampling._sample_grid_points_k, ops_sampling._sample_grid_points_sized_k,
-             "size", None, 50, 6),
-    "grid_scaled": (ops_sampling._sample_grid_points_scaled_k,
-                    ops_sampling._sample_grid_points_scaled_sized_k, "size", None, 53, 6),
+    "counts": (ops_sampling._sample_counts_h_k, ops_sampling._sample_counts_dyn_h_k, "lo",
+               "lo", 12, 0),
+    "grid": (ops_sampling._sample_grid_points_h_k, ops_sampling._sample_grid_points_sized_h_k,
+             "size", None, 48, 5),
+    "grid_scaled": (ops_sampling._sample_grid_points_scaled_h_k,
+                    ops_sampling._sample_grid_points_scaled_sized_h_k, "size", None, 51, 5),
     "normalize": (ops_geometry._normalize_extent_k, ops_geometry._normalize_extent_sized_k,
                   "size", None, 43, 5),
     "normalize_to": (st_gates._normalize_extent_to_k, st_gates._normalize_extent_to_sized_k,
