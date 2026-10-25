@@ -10,6 +10,12 @@ from __future__ import annotations
 
 import warp as wp
 
+from ..ops.constants import SIZE_BOUNDS
+
+
+_C_SIZE_LO = wp.constant(wp.float32(SIZE_BOUNDS[0]))
+_C_SIZE_HI = wp.constant(wp.float32(SIZE_BOUNDS[1]))
+
 
 @wp.struct
 class RepulsiveBarriers:
@@ -114,7 +120,11 @@ def publish_barriers_k(centers: wp.array(dtype=wp.vec2f),
     m.count = count
     m.domain_center = wp.vec2f(0.0, 0.0)
     m.domain_radius = domain_radius
-    m.size = size[e]
+    # Match the geometry copy's comparison clamp, including NaN propagation.
+    effective = size[e]
+    effective = wp.where(effective < _C_SIZE_LO, _C_SIZE_LO, effective)
+    effective = wp.where(effective > _C_SIZE_HI, _C_SIZE_HI, effective)
+    m.size = effective
     out[e] = m
 
 
