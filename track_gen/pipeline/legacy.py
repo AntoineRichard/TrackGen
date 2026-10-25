@@ -243,21 +243,18 @@ def to_gate_pipeline_spec(config, *, registry=None) -> PipelineSpec:
 def _to_gate_pipeline_spec(cfg, binding, registry=None) -> PipelineSpec:
     """The default gate spec of the bound run config ``cfg`` (``binding.run_config``),
     with 0.2.0.dev3's checks and messages in its order (ordering, capacity), then the
-    z-profile and provided-attribute rules. ``cfg.gate_ordering=None`` is resolved here
-    to the generator's default order and written onto ``cfg`` (the binding's own
-    snapshot), so every later reader of the run config (a legacy spec's ``max_gates`` /
-    ``alloc_scratch`` / ``generate``, an elevation's ``from_legacy``,
-    ``GateGenerator._config``) sees the name."""
+    z-profile and provided-attribute rules. ``cfg.gate_ordering`` is already resolved:
+    ``bind_generator`` replaces ``None`` with the generator's default order on its
+    snapshot before constructing this run config."""
     from ..plugin import registry as _default_registry  # noqa: PLC0415
     from ..plugin.params import _static_view  # noqa: PLC0415
-    from ..stages.gates import _default_order, _orderings_of, _preferred  # noqa: PLC0415
+    from ..stages.gates import _orderings_of, _preferred  # noqa: PLC0415
     from .planner import _check_capacity  # noqa: PLC0415
     from .presets import _gate_stages  # noqa: PLC0415
 
     reg = _default_registry if registry is None else registry
     spec = binding.spec
-    if cfg.gate_ordering is None:
-        object.__setattr__(cfg, "gate_ordering", _default_order(spec, reg))
+    assert cfg.gate_ordering is not None, "bind_generator resolves gate_ordering"
     name, ordering = cfg.generator, cfg.gate_ordering
     # 1. the ordering
     try:
