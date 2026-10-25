@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.0rc2 (in progress)
+
+- Remove `registry.describe(...).accepts_ctx`: every generator receives `ctx`;
+  conformance reports no longer repeat this invariant flag.
+
 ## 0.3.0rc1 (release candidate, tag `v0.3.0rc1`)
 
 The first release candidate for 0.3 includes the legacy API removals, hashed built-in

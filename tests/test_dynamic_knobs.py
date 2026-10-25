@@ -320,7 +320,7 @@ def test_the_builtins_are_stage_classes_with_a_deprecated_params_alias(name):
     assert cls.capture is plugin.CaptureClass.STATIC
     assert not hasattr(cls, "params")
     info = registry.describe("generator", name)
-    assert info.builtin and info.capturable and info.accepts_ctx
+    assert info.builtin and info.capturable
 
 
 def test_no_params_alias_on_the_other_stages():

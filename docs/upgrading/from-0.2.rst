@@ -91,6 +91,8 @@ Removed APIs and replacements
        ``Course.set_capturing`` and private ``_CAPTURING`` flags
      - Delete the calls and flag writes. Calls use their launch context and can be
        recorded without a global capture switch.
+   * - ``registry.describe(...).accepts_ctx``
+     - Removed: every generator receives ``ctx``.
    * - ``CourseLine.track``
      - ``CourseLine.centerline``
    * - Built-in generator class ``.params`` aliases

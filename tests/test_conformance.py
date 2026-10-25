@@ -204,7 +204,7 @@ def test_the_builtins_are_all_checked():
 def test_builtins_are_capturable_and_stream_explicit(kind, names):
     for name in names:
         info = registry.describe(kind, name)
-        assert info.builtin and info.capturable and info.accepts_ctx, info
+        assert info.builtin and info.capturable, info
 
 
 def _case_id(name, config):

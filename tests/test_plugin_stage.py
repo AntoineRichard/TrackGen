@@ -246,7 +246,7 @@ def test_a_bounded_stage_registers():
 
 def test_describe_a_stage_generator(toys):
     info = registry.describe("generator", "toy.wobble")
-    assert info.capturable is True and info.accepts_ctx is True
+    assert info.capturable is True
     assert info.origin == "tests._plugin_toys" and not info.builtin
     assert info.params_schema["title"] == "ToyWobbleParams"
     assert info.params_schema["properties"]["amp"]["x-dynamic"] is True
