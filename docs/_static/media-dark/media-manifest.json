@@ -181,21 +181,21 @@
       "producer": "data"
     },
     "generator-bezier-construction.mp4": {
-      "capture_commit": "beb6e3cc2af4fefa6f3ecb5e035c0b1e2a6fd414",
+      "capture_commit": "22ed78a017d61b8b6a4a2b4298d13a4ab9f1f2a8",
       "dark": "_static/media-dark/generator-bezier-construction.mp4",
-      "dark_sha256": "defdb4ae503e370a78a38de59478fba290668622effcf595c938fd297312bd8b",
+      "dark_sha256": "8125994b982b45559511c55b213514e2c73a3c55ba15905ed04483cc3828fe97",
       "kind": "video",
       "light": "assets/racing/generator-bezier-construction.mp4",
-      "light_sha256": "7c69736ebabda8bcf094f454b8f41e02b89cf91ab098d190349498c0c313e099",
+      "light_sha256": "0bdd15ad19f0bec4d49144e7a252db0c42977800f85e11017457d2196ac5c4ec",
       "producer": "generators"
     },
     "generator-bezier-construction.png": {
-      "capture_commit": "beb6e3cc2af4fefa6f3ecb5e035c0b1e2a6fd414",
+      "capture_commit": "22ed78a017d61b8b6a4a2b4298d13a4ab9f1f2a8",
       "dark": "_static/media-dark/generator-bezier-construction.png",
-      "dark_sha256": "d503e5e3d798392f34b39abd05b3b458fd96f085b8d650010b5e97e71c4c95f2",
+      "dark_sha256": "e67edfa9195e01c2888dfe0bd5e4d526ee22e808255f041c4c052a9c441f4b0f",
       "kind": "image",
       "light": "assets/racing/generator-bezier-construction.png",
-      "light_sha256": "f0341383258fbda4eb99391c2af25695ecc4776b8b10e5328dd88f9c5033252c",
+      "light_sha256": "73c31997246b2c1d38d9df24ee63909913249da28d2afccae1c0d4fac6279d7a",
       "producer": "generators"
     },
     "generator-bezier-controls-more.png": {
@@ -739,6 +739,6 @@
       "producer": "utility"
     }
   },
-  "capture_note": "Native light/dark renders from committed sources; per-asset capture commits preserve selective updates. All nine movies and their movie posters use native16:9 canvases. The Bezier construction uses the selected real8x8-grid example; default galleries retain their actual settings.",
+  "capture_note": "Native light/dark renders from committed sources; per-asset capture commits preserve selective updates. All nine movies and their posters use native16:9 canvases. The labelled Bezier construction illustration remaps seed7 draws into ten selected cells of an8x8grid, then runs the real Bezier and road stages. Ordinary production sampling and default galleries are unchanged.",
   "format": 1
 }

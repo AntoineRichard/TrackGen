@@ -176,3 +176,11 @@ review pass. Both themed previews decode144frames at1696x954. Concise on-screen
 labels identify the illustration; mapping details live in the caption/manifest.
 The frozen numerical validation atd33cf89 continues unchanged while this media-only
 refinement receives its own current-source checks and capture provenance.
+
+The final ten-point Bezier movie/poster pair in each theme was captured from clean
+source22ed78a. Only those two media names and their animation/provenance records
+were refreshed; all other animation/family records remain identical. The82-file
+paired registry now records this illustration source explicitly. Strict Sphinx
+with the default enforced registry passed again, and all243 labels checked.
+The current complete CPU lane and CUDA-default-host media checks validate the
+new renderer while the frozen numerical suite continues atd33cf89.

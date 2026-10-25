@@ -37,13 +37,13 @@
   "animations": {
     "bezier": {
       "aspect_ratio": "16:9",
-      "command": "API: viz.render_generator_guide.sample_batch('bezier', seeds=[11560502], overrides={'min_num_points':4,'max_num_points':4,'min_point_distance':0.0625}); viz.render_generator_guide.render_construction(OUT, sample, movies=True, theme='light')",
+      "command": "API: viz.render_generator_guide.sample_batch('bezier', seeds=[7], overrides={'min_num_points':10,'max_num_points':10,'min_point_distance':0.0625}); viz.render_generator_guide.render_construction(OUT, sample, movies=True, theme='light')",
       "duration_seconds": 24.0,
       "effective_generator_params": {
         "edgy": 0.0,
         "handle_clamp_frac": 0.4000000059604645,
-        "max_num_points": 4,
-        "min_num_points": 4,
+        "max_num_points": 10,
+        "min_num_points": 10,
         "min_point_distance": 0.0625,
         "num_points_per_segment": 30,
         "rad": 0.4000000059604645,
@@ -51,27 +51,17 @@
       },
       "elapsed_runtime": false,
       "example_selection": {
-        "first_matching_seed": true,
-        "four_distinct_cells": true,
+        "distinct_cells": 10,
         "grid_cells_per_side": 8,
         "grid_pitch": 0.125,
-        "offset_distribution": "Unchanged independent U[-0.5,0.5) offsets before scale and size; the within-cell property belongs only to this selected sample.",
-        "policy": "First ascending seed with four distinct grid addresses, every actual sampled point inside [origin, origin+pitch), finite raw/final geometry and a valid road.",
+        "illustrative_inputs": true,
+        "production_sampler_unchanged": true,
         "sampled_inside_cells": true,
-        "search_method": "Canonical epoch-zero SeedState.effective and ops.sample_grid_points; sampler points/addresses/effective seeds verified against 64 actual generator rows; only matching sampler candidates run through the full pipeline.",
-        "seed_search": {
-          "chunk_size": 1048576,
-          "chunks": 12,
-          "count": 12582912,
-          "declared_stop_exclusive": 67108864,
-          "start": 0,
-          "step": 1,
-          "stop_exclusive": 12582912
-        },
-        "selected_seed": 11560502,
+        "sampler_remapping": "origin + (original_noise + 0.5) * pitch; exact canonical seed-7 cell IDs and RNG draws, remapped only for this illustration.",
+        "selected_seed": 7,
         "settings": {
-          "max_num_points": 4,
-          "min_num_points": 4,
+          "max_num_points": 10,
+          "min_num_points": 10,
           "min_point_distance": 0.0625
         }
       },
@@ -81,20 +71,78 @@
         "seed": 97,
         "settings": "current defaults"
       },
-      "final_count": 38,
+      "final_count": 51,
       "frame_size": [
         1696,
         954
       ],
       "frames": 144,
       "geometry_interpolated": false,
-      "kind": "progressive construction drawing of recorded geometry",
-      "observation_preserves_outputs": true,
+      "grid_ids": [
+        24,
+        35,
+        29,
+        2,
+        38,
+        21,
+        59,
+        36,
+        37,
+        20
+      ],
+      "illustrated_sampled_points": [
+        [
+          0.030882827937602997,
+          0.45005497336387634
+        ],
+        [
+          0.3831157684326172,
+          0.5746581554412842
+        ],
+        [
+          0.7027039527893066,
+          0.46487611532211304
+        ],
+        [
+          0.3377052843570709,
+          0.08373964577913284
+        ],
+        [
+          0.8634281158447266,
+          0.6122674942016602
+        ],
+        [
+          0.6735969185829163,
+          0.2678351402282715
+        ],
+        [
+          0.3801044821739197,
+          0.8858238458633423
+        ],
+        [
+          0.5022264122962952,
+          0.6185941696166992
+        ],
+        [
+          0.6959860920906067,
+          0.5421320199966431
+        ],
+        [
+          0.5242664813995361,
+          0.3700483441352844
+        ]
+      ],
+      "illustration_replay_equal": true,
+      "illustrative_inputs": true,
+      "kind": "construction illustration with remapped inputs and real Bezier/road stages",
+      "observation_preserves_outputs": false,
+      "ordinary_outputs_restored": true,
       "output": "generator-bezier-construction.mp4",
       "poster_frame_size": [
         1696,
         954
       ],
+      "production_sampler_unchanged": true,
       "raw_count": 256,
       "sample": {
         "config": {
@@ -114,8 +162,8 @@
           "half_width": 0.1,
           "handle_clamp_frac": 0.4,
           "hull_displacement": 0.15,
-          "max_num_points": 4,
-          "min_num_points": 4,
+          "max_num_points": 10,
+          "min_num_points": 10,
           "min_point_distance": 0.0625,
           "num_envs": 1,
           "num_points": 256,
@@ -185,22 +233,23 @@
           "z_profile": "flat",
           "z_valid_grade": 0.0
         },
-        "count": 38,
+        "count": 51,
         "env": 0,
         "epoch": 0,
         "fail": 0,
-        "geometry_sha256": "017b0751e64a85d18d7ee286a498997864cb5e1bea897d8d1ebced7be7ed70fb",
+        "geometry_sha256": "3de53502c2aad59677ec1453a14d4faa533ab6bc1282615a8e31b039964eee3c",
         "polygon_fallback_used": false,
         "raw_finite": true,
         "real_geometry_finite": true,
-        "seed": 11560502,
+        "seed": 7,
         "smooth_raw_crossings": 0,
         "valid": true
       },
+      "sampler_remapping": "origin + (original_noise + 0.5) * pitch; exact canonical seed-7 cell IDs and RNG draws, remapped only for this illustration.",
       "source": {
         "device": "cpu",
         "generator_source_sha256": "c8a3e7d3493b3d79f2edb5580d6a43a3a7f352665b5865d291734216195240ea",
-        "git_commit": "beb6e3cc2af4fefa6f3ecb5e035c0b1e2a6fd414",
+        "git_commit": "22ed78a017d61b8b6a4a2b4298d13a4ab9f1f2a8",
         "matplotlib_version": "3.11.2",
         "numpy_version": "2.5.4",
         "palette_sha256": "970abb32b2819c849df9360e5ec043d6e166877a7268952ee2217ca105246bce",
@@ -226,20 +275,104 @@
           "viz/render_relaxation_guide.py": "454fb741f4e93fa47c18a2f4b50f559666a410c39d9507a5d1d1c8675ee131ba",
           "viz/render_relaxation_video.py": "80f1f3d0535af47b460a385c0c8c2d32a5a57720a66e8946ca756fe16a12f02d",
           "viz/render_utility_assets.py": "f4e36737e66c2bc66f30fa7751ff6fb2ada58d677573b17d5bd4f472be41c541",
-          "viz/storyboard_bezier_hull.py": "b14784e4a1eddbb173cc0593a0083aeefc622012abd734373bf83925ae566b30",
+          "viz/storyboard_bezier_hull.py": "3259096c349da3565f1a7efccdd3b569da0c0f44c0c2e62f0c25b4223a5b837c",
           "viz/storyboard_polar.py": "03f5bbe7b763f5660c7e73d42cd09b93855dbcc830863fe0192aaa767b7e2c2d",
           "viz/storyboard_spacing.py": "08327ecfd115f28e0aa8917dcf670f163033fb0f49d36ff079160855f9d3ee6c"
         },
         "warp_version": "1.18.0",
         "worktree_dirty": false
       },
+      "source_sampler_noise": [
+        [
+          -0.252937376499176,
+          0.10043984651565552
+        ],
+        [
+          -0.43507373332977295,
+          0.09726536273956299
+        ],
+        [
+          0.1216314435005188,
+          0.21900904178619385
+        ],
+        [
+          0.2016422152519226,
+          0.16991716623306274
+        ],
+        [
+          0.4074251651763916,
+          0.3981401324272156
+        ],
+        [
+          -0.1112247109413147,
+          -0.3573188781738281
+        ],
+        [
+          -0.4591640830039978,
+          -0.41340917348861694
+        ],
+        [
+          -0.48218876123428345,
+          0.44875335693359375
+        ],
+        [
+          0.06788861751556396,
+          -0.16294366121292114
+        ],
+        [
+          -0.3058682084083557,
+          0.46038681268692017
+        ]
+      ],
+      "source_sampler_points": [
+        [
+          -0.252937376499176,
+          0.4754398465156555
+        ],
+        [
+          -0.06007373332977295,
+          0.597265362739563
+        ],
+        [
+          0.7466314435005188,
+          0.5940090417861938
+        ],
+        [
+          0.4516422152519226,
+          0.16991716623306274
+        ],
+        [
+          1.1574251651763916,
+          0.8981401324272156
+        ],
+        [
+          0.5137752890586853,
+          -0.10731887817382812
+        ],
+        [
+          -0.0841640830039978,
+          0.46159082651138306
+        ],
+        [
+          0.017811238765716553,
+          0.9487533569335938
+        ],
+        [
+          0.692888617515564,
+          0.33705633878707886
+        ],
+        [
+          0.1941317915916443,
+          0.7103868126869202
+        ]
+      ],
       "stage_titles": [
-        "Choose grid addresses",
-        "Add the actual random offsets",
+        "Select 10 grid cells",
+        "Add cell-bounded jitter",
         "Order around the centroid",
-        "Join corners with two cubic handles",
-        "If it crosses, replace the whole loop",
-        "Produce fixed-count raw samples"
+        "Join corners with cubic handles",
+        "Separate real example: whole-loop fallback",
+        "Resample, then build the road"
       ],
       "stages": 6,
       "theme": "light"
@@ -1909,11 +2042,11 @@
   },
   "asset_provenance": {
     "generator-bezier-construction.mp4": {
-      "command": "API: viz.render_generator_guide.sample_batch('bezier', seeds=[11560502], overrides={'min_num_points':4,'max_num_points':4,'min_point_distance':0.0625}); viz.render_generator_guide.render_construction(OUT, sample, movies=True, theme='light')",
+      "command": "API: viz.render_generator_guide.sample_batch('bezier', seeds=[7], overrides={'min_num_points':10,'max_num_points':10,'min_point_distance':0.0625}); viz.render_generator_guide.render_construction(OUT, sample, movies=True, theme='light')",
       "source": {
         "device": "cpu",
         "generator_source_sha256": "c8a3e7d3493b3d79f2edb5580d6a43a3a7f352665b5865d291734216195240ea",
-        "git_commit": "beb6e3cc2af4fefa6f3ecb5e035c0b1e2a6fd414",
+        "git_commit": "22ed78a017d61b8b6a4a2b4298d13a4ab9f1f2a8",
         "matplotlib_version": "3.11.2",
         "numpy_version": "2.5.4",
         "palette_sha256": "970abb32b2819c849df9360e5ec043d6e166877a7268952ee2217ca105246bce",
@@ -1939,7 +2072,7 @@
           "viz/render_relaxation_guide.py": "454fb741f4e93fa47c18a2f4b50f559666a410c39d9507a5d1d1c8675ee131ba",
           "viz/render_relaxation_video.py": "80f1f3d0535af47b460a385c0c8c2d32a5a57720a66e8946ca756fe16a12f02d",
           "viz/render_utility_assets.py": "f4e36737e66c2bc66f30fa7751ff6fb2ada58d677573b17d5bd4f472be41c541",
-          "viz/storyboard_bezier_hull.py": "b14784e4a1eddbb173cc0593a0083aeefc622012abd734373bf83925ae566b30",
+          "viz/storyboard_bezier_hull.py": "3259096c349da3565f1a7efccdd3b569da0c0f44c0c2e62f0c25b4223a5b837c",
           "viz/storyboard_polar.py": "03f5bbe7b763f5660c7e73d42cd09b93855dbcc830863fe0192aaa767b7e2c2d",
           "viz/storyboard_spacing.py": "08327ecfd115f28e0aa8917dcf670f163033fb0f49d36ff079160855f9d3ee6c"
         },
@@ -1948,11 +2081,11 @@
       }
     },
     "generator-bezier-construction.png": {
-      "command": "API: viz.render_generator_guide.sample_batch('bezier', seeds=[11560502], overrides={'min_num_points':4,'max_num_points':4,'min_point_distance':0.0625}); viz.render_generator_guide.render_construction(OUT, sample, movies=True, theme='light')",
+      "command": "API: viz.render_generator_guide.sample_batch('bezier', seeds=[7], overrides={'min_num_points':10,'max_num_points':10,'min_point_distance':0.0625}); viz.render_generator_guide.render_construction(OUT, sample, movies=True, theme='light')",
       "source": {
         "device": "cpu",
         "generator_source_sha256": "c8a3e7d3493b3d79f2edb5580d6a43a3a7f352665b5865d291734216195240ea",
-        "git_commit": "beb6e3cc2af4fefa6f3ecb5e035c0b1e2a6fd414",
+        "git_commit": "22ed78a017d61b8b6a4a2b4298d13a4ab9f1f2a8",
         "matplotlib_version": "3.11.2",
         "numpy_version": "2.5.4",
         "palette_sha256": "970abb32b2819c849df9360e5ec043d6e166877a7268952ee2217ca105246bce",
@@ -1978,7 +2111,7 @@
           "viz/render_relaxation_guide.py": "454fb741f4e93fa47c18a2f4b50f559666a410c39d9507a5d1d1c8675ee131ba",
           "viz/render_relaxation_video.py": "80f1f3d0535af47b460a385c0c8c2d32a5a57720a66e8946ca756fe16a12f02d",
           "viz/render_utility_assets.py": "f4e36737e66c2bc66f30fa7751ff6fb2ada58d677573b17d5bd4f472be41c541",
-          "viz/storyboard_bezier_hull.py": "b14784e4a1eddbb173cc0593a0083aeefc622012abd734373bf83925ae566b30",
+          "viz/storyboard_bezier_hull.py": "3259096c349da3565f1a7efccdd3b569da0c0f44c0c2e62f0c25b4223a5b837c",
           "viz/storyboard_polar.py": "03f5bbe7b763f5660c7e73d42cd09b93855dbcc830863fe0192aaa767b7e2c2d",
           "viz/storyboard_spacing.py": "08327ecfd115f28e0aa8917dcf670f163033fb0f49d36ff079160855f9d3ee6c"
         },
@@ -3792,8 +3925,8 @@
     }
   },
   "assets": {
-    "generator-bezier-construction.mp4": 553214,
-    "generator-bezier-construction.png": 122069,
+    "generator-bezier-construction.mp4": 492138,
+    "generator-bezier-construction.png": 101505,
     "generator-bezier-controls-more.png": 588189,
     "generator-bezier-controls.png": 593246,
     "generator-bezier-examples.png": 230885,
@@ -3841,7 +3974,7 @@
   "bezier_capture_source": {
     "device": "cpu",
     "generator_source_sha256": "c8a3e7d3493b3d79f2edb5580d6a43a3a7f352665b5865d291734216195240ea",
-    "git_commit": "beb6e3cc2af4fefa6f3ecb5e035c0b1e2a6fd414",
+    "git_commit": "22ed78a017d61b8b6a4a2b4298d13a4ab9f1f2a8",
     "matplotlib_version": "3.11.2",
     "numpy_version": "2.5.4",
     "palette_sha256": "970abb32b2819c849df9360e5ec043d6e166877a7268952ee2217ca105246bce",
@@ -3867,7 +4000,7 @@
       "viz/render_relaxation_guide.py": "454fb741f4e93fa47c18a2f4b50f559666a410c39d9507a5d1d1c8675ee131ba",
       "viz/render_relaxation_video.py": "80f1f3d0535af47b460a385c0c8c2d32a5a57720a66e8946ca756fe16a12f02d",
       "viz/render_utility_assets.py": "f4e36737e66c2bc66f30fa7751ff6fb2ada58d677573b17d5bd4f472be41c541",
-      "viz/storyboard_bezier_hull.py": "b14784e4a1eddbb173cc0593a0083aeefc622012abd734373bf83925ae566b30",
+      "viz/storyboard_bezier_hull.py": "3259096c349da3565f1a7efccdd3b569da0c0f44c0c2e62f0c25b4223a5b837c",
       "viz/storyboard_polar.py": "03f5bbe7b763f5660c7e73d42cd09b93855dbcc830863fe0192aaa767b7e2c2d",
       "viz/storyboard_spacing.py": "08327ecfd115f28e0aa8917dcf670f163033fb0f49d36ff079160855f9d3ee6c"
     },
@@ -16636,7 +16769,7 @@
     }
   },
   "plotted_geometry_sha256": {
-    "generator-bezier-construction.png": "a48c94e22c47469d44d16d21d05b5d5c6a2e0e5df77d81af31ad0184f30f5578",
+    "generator-bezier-construction.png": "2d3406bc84dbbcda74d99be6c1b15be64de4b4c77090d736524802fe2157ad5c",
     "generator-bezier-controls-more.png": "390fba10a4cd938edf0fb9497df3933702a9ea1644aac56d0c624febc1781835",
     "generator-bezier-controls.png": "d845425e6f7aa914af65a0535d3ae7739f96eadbf6546c69f9e6e9dd6a0bc112",
     "generator-bezier-examples.png": "737dc466095fc6217dceb94c9f9dea5ac00f0c7c2756bf4823114e1ab54d3888",
