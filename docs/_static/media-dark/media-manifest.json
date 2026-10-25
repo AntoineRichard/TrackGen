@@ -181,21 +181,21 @@
       "producer": "data"
     },
     "generator-bezier-construction.mp4": {
-      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "capture_commit": "beb6e3cc2af4fefa6f3ecb5e035c0b1e2a6fd414",
       "dark": "_static/media-dark/generator-bezier-construction.mp4",
-      "dark_sha256": "ed9e6a358fb6d55416bdd69243cc7f331dd9503b2b5331b2f9be649e6c73a9f2",
+      "dark_sha256": "defdb4ae503e370a78a38de59478fba290668622effcf595c938fd297312bd8b",
       "kind": "video",
       "light": "assets/racing/generator-bezier-construction.mp4",
-      "light_sha256": "3551c91bba4d4554c7bca3723a05e596355aef22227b3dc7eedb844d8e4a2daf",
+      "light_sha256": "7c69736ebabda8bcf094f454b8f41e02b89cf91ab098d190349498c0c313e099",
       "producer": "generators"
     },
     "generator-bezier-construction.png": {
-      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "capture_commit": "beb6e3cc2af4fefa6f3ecb5e035c0b1e2a6fd414",
       "dark": "_static/media-dark/generator-bezier-construction.png",
-      "dark_sha256": "bbf71c93162e71879e4dd25dc052a6cbfd517a01a52e64630bf2b0bd88cebdd5",
+      "dark_sha256": "d503e5e3d798392f34b39abd05b3b458fd96f085b8d650010b5e97e71c4c95f2",
       "kind": "image",
       "light": "assets/racing/generator-bezier-construction.png",
-      "light_sha256": "29c8dd43a420f9afde7375df06539dff0dcd4a063cb8208833dbccbe54a112c8",
+      "light_sha256": "f0341383258fbda4eb99391c2af25695ecc4776b8b10e5328dd88f9c5033252c",
       "producer": "generators"
     },
     "generator-bezier-controls-more.png": {
@@ -243,22 +243,31 @@
       "light_sha256": "64f8d0a7755bdf9cbedd8aa4afa8eb208b92c8a94071e8206689edc506b96ad8",
       "producer": "generators"
     },
+    "generator-checkpoint-construction-poster.png": {
+      "capture_commit": "fa1ee66c0354b43449e0009721662f6f2488f62a",
+      "dark": "_static/media-dark/generator-checkpoint-construction-poster.png",
+      "dark_sha256": "9987dd13be73e49964246694b553239569e7f476e25a06d03b3d720758969ec7",
+      "kind": "image",
+      "light": "assets/racing/generator-checkpoint-construction-poster.png",
+      "light_sha256": "ce8e228b23d12327210693d299ae91aadd5ac91264d3e3177d9fd94158474837",
+      "producer": "generators"
+    },
     "generator-checkpoint-construction.mp4": {
-      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "capture_commit": "fa1ee66c0354b43449e0009721662f6f2488f62a",
       "dark": "_static/media-dark/generator-checkpoint-construction.mp4",
-      "dark_sha256": "3274af812fc690c6b29949dd9b865cd4aa03a6cb718a0055b935adae00244979",
+      "dark_sha256": "7de563ba82478f740e6e37c4b7534d168715591c24da5294d6d1cf96dcd0c564",
       "kind": "video",
       "light": "assets/racing/generator-checkpoint-construction.mp4",
-      "light_sha256": "34414ce09c0e4907c5942466fb4f3692338395b121b97550fd5f20f714574853",
+      "light_sha256": "141bcfe94099cf3636c24cd9b0388943749b8c5276eefc02f1062777dbf1bac7",
       "producer": "generators"
     },
     "generator-checkpoint-construction.png": {
-      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "capture_commit": "fa1ee66c0354b43449e0009721662f6f2488f62a",
       "dark": "_static/media-dark/generator-checkpoint-construction.png",
-      "dark_sha256": "9ae865ec87a822f50869990b9b74f168b62b4fd600061abc2187f678eb80e8ad",
+      "dark_sha256": "a65126448226c465c2923378fb846749f1c70371cb23c5e68798ac15ae69e602",
       "kind": "image",
       "light": "assets/racing/generator-checkpoint-construction.png",
-      "light_sha256": "921543650fa1f64aea40fccb15fac81969c247f8b183a84375d17de62c237a63",
+      "light_sha256": "1772b27fa3cc8d3a847d9b6c444ef58f23a3515e59c1ecfa77c419133ce56e07",
       "producer": "generators"
     },
     "generator-checkpoint-controls-more.png": {
@@ -298,21 +307,21 @@
       "producer": "generators"
     },
     "generator-hull-construction.mp4": {
-      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "capture_commit": "fa1ee66c0354b43449e0009721662f6f2488f62a",
       "dark": "_static/media-dark/generator-hull-construction.mp4",
-      "dark_sha256": "bd22cde81d018c0132d0434618584fa28b83fbce1928d4aa70a9fdfecb41b5ef",
+      "dark_sha256": "0dd8fb90a3e7af013bbcfe80f358a1b3190067a7c57651d92cb8de5aacf68dc7",
       "kind": "video",
       "light": "assets/racing/generator-hull-construction.mp4",
-      "light_sha256": "95ce3d4bbd60c7f33522458803fb39925d13ce3413e9edb47b9baf97710c9c0e",
+      "light_sha256": "e41480a98127bcb62e9d1d2a709d4bfa3814b0adef12528c0688d4873dad6351",
       "producer": "generators"
     },
     "generator-hull-construction.png": {
-      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "capture_commit": "fa1ee66c0354b43449e0009721662f6f2488f62a",
       "dark": "_static/media-dark/generator-hull-construction.png",
-      "dark_sha256": "6b8b7b90fb7508df109b759ed304cc3cd64e48c006c6fb4f04f177c012dbeb8d",
+      "dark_sha256": "7daf528e8e459482320ce137eb37d2150f67da34a87efff0fb63a8ec25a4d6ae",
       "kind": "image",
       "light": "assets/racing/generator-hull-construction.png",
-      "light_sha256": "13708f96567b040dd519f7f8e2b55c0797624504062c0a23e83eefbba370a150",
+      "light_sha256": "6a9b65be552843f50fdecb8e9c4f22b2db9daa8931f6cf545515adc4b80f35c7",
       "producer": "generators"
     },
     "generator-hull-controls-more.png": {
@@ -352,25 +361,25 @@
       "producer": "generators"
     },
     "generator-polar-construction-poster.png": {
-      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "capture_commit": "fa1ee66c0354b43449e0009721662f6f2488f62a",
       "dark": "_static/media-dark/generator-polar-construction-poster.png",
-      "dark_sha256": "555a050caff0f6823c5ccae3fc24871570dbb5d5f9bae9866734cc6d521fa2c8",
+      "dark_sha256": "e53b18aa28864ae35382bf1203e1532a40e2f223bc19230166296e25dbd9ba5e",
       "kind": "image",
       "light": "assets/racing/generator-polar-construction-poster.png",
-      "light_sha256": "ee10393ac9e2ce927eac904a07cf80817517dc6cad0cbc56365e9948446425cb",
+      "light_sha256": "fbafde81c2f8f1e5ca1c2b9cc302a19a12079dc296862baccbed388f458a9444",
       "producer": "generators"
     },
     "generator-polar-construction.mp4": {
-      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "capture_commit": "fa1ee66c0354b43449e0009721662f6f2488f62a",
       "dark": "_static/media-dark/generator-polar-construction.mp4",
-      "dark_sha256": "ef4660f066b764188aa9886177e31bedee6ace697705f03deddd0473b2728bad",
+      "dark_sha256": "d3a660741e0ba665ff1655a42e46427f552a3ca5498c8d08d0130641514b8f79",
       "kind": "video",
       "light": "assets/racing/generator-polar-construction.mp4",
-      "light_sha256": "489fa4ab8be8a59d65f55230d4f3a2e876c3b7d3f5dafc65c9a3b0766f85278d",
+      "light_sha256": "b2f8eee7058f8845441e038afa7f20c55a9d8f6d70057e5e6b046f9f04d07e10",
       "producer": "generators"
     },
     "generator-polar-construction.png": {
-      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "capture_commit": "fa1ee66c0354b43449e0009721662f6f2488f62a",
       "dark": "_static/media-dark/generator-polar-construction.png",
       "dark_sha256": "93d717743c58a3f79d7cd03a1c126c3f6a3fae3f6c6fcb89435f3a00b619ab26",
       "kind": "image",
@@ -442,21 +451,21 @@
       "producer": "generators"
     },
     "generator-repulsive-growth.mp4": {
-      "capture_commit": "fa0d2fa96560f9d3a5eaddb54162db371224c9ec",
+      "capture_commit": "fa1ee66c0354b43449e0009721662f6f2488f62a",
       "dark": "_static/media-dark/generator-repulsive-growth.mp4",
-      "dark_sha256": "a2f57658d87f205ed24abc0e785bc0746e5a2a094f033ac888f658c83de4eaeb",
+      "dark_sha256": "0e2b4d78be0c7aa0b818407db8f264dcc4bd25f2585f75aebce6531ddb0a78b4",
       "kind": "video",
       "light": "assets/racing/generator-repulsive-growth.mp4",
-      "light_sha256": "2833447300b178eee86e54784ab1a5885f03a7172d01c2106d2c6303d525d6c6",
+      "light_sha256": "83c7b880c306f5dac06520f978bda9c9050c2dd16561dfa237334c3b9b820df1",
       "producer": "generators"
     },
     "generator-repulsive-growth.png": {
-      "capture_commit": "fa0d2fa96560f9d3a5eaddb54162db371224c9ec",
+      "capture_commit": "fa1ee66c0354b43449e0009721662f6f2488f62a",
       "dark": "_static/media-dark/generator-repulsive-growth.png",
-      "dark_sha256": "555c82f8a480a9db277beff777efff6f2b1be646bb7b267c35c0bd22be1c568e",
+      "dark_sha256": "5cd167d1825d46c444097424af92f9fa3ac5ad0963c10c92e25b2b81c7159e25",
       "kind": "image",
       "light": "assets/racing/generator-repulsive-growth.png",
-      "light_sha256": "05a8b314596f6336b354c2b528b852e4e97e437959e3c2f2a6eb8a50d4f33e72",
+      "light_sha256": "ca169efd7e6a0cfd12e5e20fe97b52dc797ea80eeac70b17ba3191779549178a",
       "producer": "generators"
     },
     "generator-repulsive-limits.png": {
@@ -477,17 +486,26 @@
       "light_sha256": "3d70c723c891ee3ac99b72a017cfcc94d4a8c41e7af660a5e5f1a8ef2a43026e",
       "producer": "generators"
     },
+    "generator-voronoi-construction-poster.png": {
+      "capture_commit": "fa1ee66c0354b43449e0009721662f6f2488f62a",
+      "dark": "_static/media-dark/generator-voronoi-construction-poster.png",
+      "dark_sha256": "c68ac49d1a4e9329c08e8b98cebde761c6253ad043ba1922325c6972d8135e6d",
+      "kind": "image",
+      "light": "assets/racing/generator-voronoi-construction-poster.png",
+      "light_sha256": "d8a99d5289618d7beca18ca9072cf9d62d8ecd4acf39fe8033581a1560e01598",
+      "producer": "generators"
+    },
     "generator-voronoi-construction.mp4": {
-      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "capture_commit": "fa1ee66c0354b43449e0009721662f6f2488f62a",
       "dark": "_static/media-dark/generator-voronoi-construction.mp4",
-      "dark_sha256": "28ffc9ca6739dd609eb6408271014badbd051bcc68911f2fc764f7012e60cfd2",
+      "dark_sha256": "ca23bca716b3f275697c98db42b7270381dfc91ae87dc6b5a42a8839c986ef4b",
       "kind": "video",
       "light": "assets/racing/generator-voronoi-construction.mp4",
-      "light_sha256": "e5423dd7e6029e587a9150dd04243aab5ade66d90a5a0c30df34c35f9a6c5aaa",
+      "light_sha256": "579c838a62138ae666ecc04cb86c69d25a8ae83e60fc1f9413d70cd56854925e",
       "producer": "generators"
     },
     "generator-voronoi-construction.png": {
-      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "capture_commit": "fa1ee66c0354b43449e0009721662f6f2488f62a",
       "dark": "_static/media-dark/generator-voronoi-construction.png",
       "dark_sha256": "e9ce4426d6e91592e03d6e6d7b2a8b595c953738b4cd91066435a247b73edecd",
       "kind": "image",
@@ -613,21 +631,21 @@
       "producer": "explorer"
     },
     "pipeline-sampling.mp4": {
-      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "capture_commit": "fa1ee66c0354b43449e0009721662f6f2488f62a",
       "dark": "_static/media-dark/pipeline-sampling.mp4",
-      "dark_sha256": "2d9a4580f7e589a308df812b6a2f195c0543fa33cec6c25d8e92cde1ceae036e",
+      "dark_sha256": "127a392ac278011c3794804ede71ed98fd90d89a015bec5d31bcf1dffd506753",
       "kind": "video",
       "light": "assets/racing/pipeline-sampling.mp4",
-      "light_sha256": "55e91bf9964ce0ffe18199e2ef686afe14296b075df22815065849c31f56f8d0",
+      "light_sha256": "9703107a265e29ae9475a8a998e0c580588653c2f6879178482eef1a27cc0f37",
       "producer": "generators"
     },
     "pipeline-sampling.png": {
-      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "capture_commit": "fa1ee66c0354b43449e0009721662f6f2488f62a",
       "dark": "_static/media-dark/pipeline-sampling.png",
-      "dark_sha256": "5c78c555bb188fc722872c3d964c74cc6115a5378efcefee0037c6fa57df367e",
+      "dark_sha256": "298c9e2795282d674fb25d10e4264e3f5a8e7121bbeec0d436f19e1dd23f697b",
       "kind": "image",
       "light": "assets/racing/pipeline-sampling.png",
-      "light_sha256": "e094a17a9f770545d091ee6938a907f5d2aa2f204dd4bc3edd3fc7071ce66371",
+      "light_sha256": "8653008ea2e4f0e85d2a31d7a92497b38cd6938967ebd55705ee10863f868544",
       "producer": "generators"
     },
     "progress-tracking.png": {
@@ -649,39 +667,39 @@
       "producer": "readme"
     },
     "relaxation-gates-iterations-poster.png": {
-      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "capture_commit": "fa1ee66c0354b43449e0009721662f6f2488f62a",
       "dark": "_static/media-dark/relaxation-gates-iterations-poster.png",
-      "dark_sha256": "92f027be3539dc61b338c5a045e10767b26532f10f5062688beb540173ced1cd",
+      "dark_sha256": "beec7ef718aff19ad02a2114b1926d1ef18c529bfcefbe1bf1513512fcbbdf0a",
       "kind": "image",
       "light": "_static/relaxation-gates-iterations-poster.png",
-      "light_sha256": "91cc2ab4f74fb7a569a98f6a9d78c497fc40cc5166f72c01992832d5e1e9730d",
+      "light_sha256": "7b81d7696e9ec0cb63abcfe7d4968dd7102c5a7e9f790ada75f122050cce952b",
       "producer": "xpbd-gate"
     },
     "relaxation-gates-iterations.mp4": {
-      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "capture_commit": "fa1ee66c0354b43449e0009721662f6f2488f62a",
       "dark": "_static/media-dark/relaxation-gates-iterations.mp4",
-      "dark_sha256": "2858a1c276b6c04cd3a4860b55fb8b2cf932ffad25f8ae7f7965d1fb60b2a6ca",
+      "dark_sha256": "13d43d5793f9f9e2369bd38be856c47cb842d4b54920a5c5db89d6aee57fc801",
       "kind": "video",
       "light": "_static/relaxation-gates-iterations.mp4",
-      "light_sha256": "ce8b1c42eda718b15b1c5ca4a7d917ec8f5192709b777295ad9d9720b03741f6",
+      "light_sha256": "fb2549f08c00a721f1d884d933b94a683a6a414d67650325c6e86a4c6e9d3cad",
       "producer": "xpbd-gate"
     },
     "relaxation-iterations-poster.png": {
-      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "capture_commit": "fa1ee66c0354b43449e0009721662f6f2488f62a",
       "dark": "_static/media-dark/relaxation-iterations-poster.png",
-      "dark_sha256": "778a4c6f5e6857431acb8499e56f089a31b24772b48b5fe9487a59efdf44f18b",
+      "dark_sha256": "1cc2f37ae6952db6d71e92710aceabddf5984c50d9890cb8762ebd570ba6fb62",
       "kind": "image",
       "light": "_static/relaxation-iterations-poster.png",
-      "light_sha256": "cf042fb5f30728234f4482be21b739dee94411238dfbe55ce07102e432e8c680",
+      "light_sha256": "55f0ef96120673f11a91e4e3eb3452bd2261a82ca48af0c0e5448ded296fe23a",
       "producer": "xpbd-track"
     },
     "relaxation-iterations.mp4": {
-      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "capture_commit": "fa1ee66c0354b43449e0009721662f6f2488f62a",
       "dark": "_static/media-dark/relaxation-iterations.mp4",
-      "dark_sha256": "ae83cb0e1bfee4594316364589b3f56b751924e39e5eba185b5971eb32b13d47",
+      "dark_sha256": "be38b34004bced3cdb8270fae6b326ff084dc30697193715ae5bcdfd9e23862b",
       "kind": "video",
       "light": "_static/relaxation-iterations.mp4",
-      "light_sha256": "4cfbdb8b622c04b022bd47d64251589b7f1c8f21d9223f94d4ef77d4bfc1ae4e",
+      "light_sha256": "82c48182649e52fa86854f6099643788592d0332f7d7e7141b99d38fd9cd83df",
       "producer": "xpbd-track"
     },
     "relaxation-iterations.png": {
@@ -721,6 +739,6 @@
       "producer": "utility"
     }
   },
-  "capture_note": "Original palette-specific renders from committed sources; native explorer UI capture. Image and video geometry is shared between themes; no raster recoloring.",
+  "capture_note": "Native light/dark renders from committed sources; per-asset capture commits preserve selective updates. All nine movies and their movie posters use native16:9 canvases. The Bezier construction uses the selected real8x8-grid example; default galleries retain their actual settings.",
   "format": 1
 }

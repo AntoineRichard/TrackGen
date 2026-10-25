@@ -141,3 +141,15 @@ is not described as a within-cell guarantee. Both preview movies fully decode
 144frames at1696x954 and preserve matching light/dark geometry. The23 focused
 sampler/selection/construction checks passed. Only actual newly captured files
 will receive this source revision; earlier captures retain their true sources.
+
+Final widescreen capture sources arefa1ee66 (all nine producers) andbeb6e3c
+(the final8x8 Bezier replacement only). Per-file metadata retains earlier captures
+for the untouched illustrations. All14 generator/common movies fromfa1 fully
+decoded, with matching16:9 movie posters and unchanged physical data except the
+explicitly selected Bezier illustration. The final replacement is the actual
+11560502 input and preserves every other animation/family record. XPBD's four
+movies also fully decode and preserve captured states, cameras, selections and
+holds. The assembled82-pair/9-movie registry passed the strict default Sphinx
+build; all243 labels checked without problems. Actual assembly/provenance/reader
+checks passed80 tests in37.32s. Final whole CPU/GPU lanes and final-site browser
+acceptance are the remaining release gates.
