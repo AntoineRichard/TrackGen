@@ -54,6 +54,11 @@ The separate auto-spacing review finding #4 remains deferred.
   executable doc examples. The strict docs build and full-site/scoped media browser
   reviews passed. Linux x86 reference capture, normal platform CI and the tag remain
   required gates; inspect actual GitHub/tag/log state when resuming.
+- The first normal Linux CPU lane passed 3,748 tests (six expected skips: four
+  optional UI and two unavailable pinned-memory allocations) in 27 min 06 s.
+  CI now allows 45 minutes for the whole CPU job to cover runner variation; the
+  per-example 120-second guard and the complete test selection remain unchanged.
+  Normal CI on the final candidate head is still required before tagging.
 - The approved reader overhaul is integrated. Historical reader pages live under the
   excluded `docs/library-readiness/archive/`; keep internal design/handoff/roadmap
   records. The public site explains current racing usage, all six generators, Course,
