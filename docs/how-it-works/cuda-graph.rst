@@ -204,8 +204,8 @@ Pass ``capture_mode=`` when torch captures with a non-default ``capture_error_mo
 Iterative stages (BOUNDED)
 --------------------------
 
-A stage whose work is an iteration that may stop early (an optimizer that runs until
-every env has converged) declares ``capture = CaptureClass.BOUNDED`` and emits its loop
+A stage whose work is an iteration that may stop early (a bounded optimizer whose
+envs can freeze before the budget) declares ``capture = CaptureClass.BOUNDED`` and emits its loop
 through ``LaunchContext.bounded_loop``:
 
 .. snippet: skip=signature
@@ -286,9 +286,15 @@ stage's ``ctx.host()`` operations; any other sync, including one made inside the
 body, is still a violation. The conformance kit runs its hot-path checks with every
 window unrolled, the superset of what any lowering launches.
 
-``repulsive`` is the built-in ``BOUNDED`` stage: its growth loop checks
-``active = any env not frozen`` every stall window (``check_every = 16``) from
-``first_check = 128``, 9 windows at the defaults (see :doc:`/generators/repulsive`).
+``repulsive`` is the built-in ``BOUNDED`` stage. At final-resolution stall
+checks it writes ``active = any env not frozen``. The host derives the first
+window boundary as ``W * ceil((s_final + 1) / W)``, where ``W`` is
+``repulsive_stall_window`` and ``s_final`` is the scheduled start iteration of the
+final resolution; subsequent boundaries are ``W`` iterations apart. The total
+bound follows the configured growth and settle budgets. Frozen envs remain
+unchanged, so skipping later windows does not change the result. A feasible
+target-reaching curve may also finish valid at the full bound without freezing;
+optional early exit is separate from validity (:doc:`/generators/repulsive`).
 
 .. _cuda-graph-warm-up:
 

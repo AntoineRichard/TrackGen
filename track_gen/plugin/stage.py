@@ -62,6 +62,7 @@ from typing import TYPE_CHECKING, Any, Callable, ClassVar, Mapping
 import warp as wp
 
 from .._src.types import Layout
+from .._src.repulsive_clearance import RepulsiveBarriers
 from .params import NoParams, _fields
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -70,7 +71,8 @@ if TYPE_CHECKING:  # pragma: no cover
 __all__ = ["CaptureClass", "Layout", "Stage", "StageBuilder"]
 
 # The channels a PR8 generator stage may write: name -> (dtype, per).
-_GENERATOR_CHANNELS = {"raw.xy": (wp.vec2f, "raw"), "gen.valid": (wp.int32, "env")}
+_GENERATOR_CHANNELS = {"raw.xy": (wp.vec2f, "raw"), "gen.valid": (wp.int32, "env"),
+                       "gen.repulsive.barriers": (RepulsiveBarriers, "env")}
 # The catalogue attributes a centerline generator may provide (roadmap PR13a): channel ->
 # the ``provides`` name. Carried to cl.<attr> by the constant-spacing resample.
 _RAW_PROVIDABLE = {"raw.z": "z", "raw.half_width": "half_width"}
@@ -524,6 +526,10 @@ class StageBuilder:
         if per != want_per:
             raise TypeError(f"channel {channel!r} is per={want_per!r}, got per={per!r}")
         self._written[port] = channel
+        if channel not in self._outputs:
+            resolve = self._outputs.get(_FAMILY_RESOLVER)
+            self._outputs[channel] = resolve(channel, dtype, None, None) if resolve else \
+                self.scratch(channel, dtype, self._length(per))
         return self._outputs[channel]
 
     def _adapter_attribute(self, port: str, channel: str, dtype, per, interp,

@@ -38,10 +38,10 @@ Data flow
 
    seeds[E]
      │  GENERATOR  (the registered generator: "bezier", "hull", "polar", "voronoi",
-     │    "checkpoint", "repulsive", or a plugin's; single pass, fixed shapes)
+     │    "checkpoint", "repulsive", or a plugin's; fixed buffers, Repulsive iterates)
      ▼
-   raw centerline [E * num_points]  (every env real) + gen.valid[E] (1 for the built-ins:
-     │                                 geometric validity is decided after relaxation)
+   raw centerline [E * num_points]  (every env real) + gen.valid[E]
+     │    Repulsive checks raw feasibility/target; final road checks follow the tail.
      │  RESAMPLE   constant spacing → count[e] = ⌊perimeter / spacing⌋ + 1, capped at N_max,
      │             + truncated[e] (1 where the cap applied: such envs fail validity)
      ▼
@@ -111,8 +111,8 @@ channels. The built-ins:
    * - ``"repulsive"``
      - ``warp_generate_repulsive.py``
      - obstacle-seeded disc → tangent-point/Sobolev growth
-     - a ``BOUNDED`` stage: fixed host schedule, each env frozen on device once it
-       converges; far slower than the others (:doc:`/generators/repulsive`)
+     - a ``BOUNDED`` stage: fixed host schedule, guarded growth and optional
+       per-env freezing; final full-band disc/wall checks (:doc:`/generators/repulsive`)
 
 ``external`` is the seventh registered name: it ingests centerlines you provide instead
 of drawing them (:ref:`ingesting-centerlines`).
@@ -127,10 +127,12 @@ Every built-in generator follows the same contract (:ref:`generator-stage-contra
   recordable: no host-side retry loop, no host branch on generated data, no per-env
   Python branching (``repulsive`` included: its iteration stops early on device, see
   :ref:`cuda-graph-bounded`);
-- ``gen.valid`` is ``1`` for every env. It is a stage flag, not the final quality
-  decision: turning, thickness, NaNs, width floor, ``N_max`` truncation and optional
-  border intersections are judged later by the ``validity`` stage, after the
-  constant-spacing resample and XPBD relaxation (:ref:`pipeline-fail-bits`).
+- the five sampling/steering generators write ``gen.valid=1`` for every env.
+  Repulsive requires finite feasible raw geometry at its sampled target length;
+  optional optimizer freezing is separate. Final turning, thickness, NaNs, width
+  floor, ``N_max`` truncation and optional border checks run after the shared tail.
+  Repulsive also checks full-band disc/wall clearance there
+  (:ref:`pipeline-fail-bits`, :ref:`geometry-validity`).
 
 Per-generator algorithm details are in the catalogue, :doc:`/generators/overview`.
 
@@ -143,10 +145,10 @@ device is internally reproducible, and cross-device yields are compared statisti
 not per env. This holds for **all six** generators including ``repulsive`` (the
 iterative optimizer): its growth gradient is hand-written analytic adjoints, a per-vertex
 gather with no atomics, so it is byte-identical run-to-run on both ``cpu`` and ``cuda``,
-per seed. As with every generator, cross-*device* output is statistically equivalent
-(same yield and compactness band) but not bit-identical, since fp32 rounding differs
-between CPU and CUDA. See ``track_gen/_src/warp_generate_repulsive.py``'s module
-docstring for the full account.
+per seed. Cross-device byte equality is not promised: floating-point arithmetic
+can follow different accepted paths on CPU and CUDA. Measure shape and validity
+statistics for the device and settings you use. See the module docstring in
+``track_gen/_src/warp_generate_repulsive.py`` for the full account.
 
 **Validity is measured on the completed geometry.** Width, spacing, shape and solve
 settings affect the fraction that passes. Size capacity for your largest perimeter and

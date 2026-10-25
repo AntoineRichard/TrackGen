@@ -72,6 +72,50 @@ explicitly when inspecting it, and always read ``valid`` and ``fail_mask`` first
 intentionally: the cold ``load_centerlines`` helper rejects insufficient capacity
 before generation.
 
+Repulsive disc and wall clearance
+----------------------------------
+
+Repulsive adds mandatory checks of its actual finished road band. Its generator
+retains analytic disc centers/radii and the circular wall through private stage
+metadata; sampled force rings alone do not certify clearance. The same effective
+per-env size is used for the road and barrier geometry. These failure bits appear
+only in Repulsive programs:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 25 55
+
+   * - Bit / value
+     - Name
+     - Checked geometry
+   * - 8 / ``256``
+     - ``repulsive_disc``
+     - Every finished road cell clears each sampled filled disc.
+   * - 9 / ``512``
+     - ``repulsive_wall``
+     - The entire finished band remains inside its circular wall.
+
+A cell joins the aligned inner and outer samples on one centerline segment.
+Double-precision predicates check the convex hull of its four vertices. The hull
+contains the occupied ruled strip and either triangle-strip diagonal, including
+folded cells. This is conservative: a disc in an unused part of a concave hull
+may be rejected. Checking cells separately leaves the global closed-loop hole
+unfilled, so a disc there is allowed. The circular wall bounds a convex region;
+containing every cell vertex contains its whole hull.
+
+These checks run after resampling, relaxation and offset construction. Constant
+width can reserve space during growth, but the actual finished band is the
+authority, including for variable widths. The planner requires the final check,
+refuses subsequent road-geometry changes and requires the lifted borders to be
+the checked band. No new public result fields are needed.
+
+Repulsive raw ``gen.valid`` separately requires finite feasible geometry at its
+sampled target length. A successful raw curve can still fail the final checks;
+a finite feasible curve can reach the normal budget without optimizer
+stationarity. Optional freezing does not replace either validity decision.
+See :ref:`repulsive-limits` for examples and tuning guidance. The generic sampled
+self-thickness and border checks below retain their own limits.
+
 Sampled thickness has limits
 ----------------------------
 

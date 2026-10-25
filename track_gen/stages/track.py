@@ -165,12 +165,15 @@ class _GeneratorSlot:
         self.binding = binding
         self.name = binding.name
         self.scratch = None            # the generator's private scratch (_scratch.gen)
+        self.repulsive_half_width = 0.0  # known constant band width, a planning hint
         # The fields a randomize.* stage draws: field -> [E] array (set by the planner).
         self.drawn: dict = {}
         # A Stage generator's raw attributes (roadmap PR13a): one write port each, named
         # after its channel (the planner carries them; static, before any build). Its
         # DECLARED writes for its params (Stage.declare, roadmap PR13b).
         attrs = raw_attributes(binding)
+        if "gen.repulsive.barriers" in binding.writes.values():
+            attrs.append("gen.repulsive.barriers")
         if attrs:
             self.writes = types.MappingProxyType(
                 {"xy": "raw.xy", "valid": "gen.valid", **{ch: ch for ch in attrs}})
@@ -185,9 +188,13 @@ class _GeneratorSlot:
         valid = b.write("valid", wp.int32)
         if isinstance(spec, _StageGenerator):
             def resolve(channel, dtype, interp, export):
-                return b.write(channel, dtype, per="raw", interp=interp, export=export)
+                from .channels import CHANNELS
+
+                per = CHANNELS[channel].per if channel in CHANNELS else "raw"
+                return b.write(channel, dtype, per=per, interp=interp, export=export)
             gen = spec.build(seed=seed, out_xy=xy, out_valid=valid, resolve=resolve,
-                             drawn=self.drawn)
+                             drawn=self.drawn,
+                             repulsive_half_width=self.repulsive_half_width)
         else:
             gen = spec.alloc_scratch(run_cfg)
         self.scratch = gen
@@ -632,8 +639,13 @@ class ValidityDefault(_Builtin):
              "z": "cl.z", "truncated": "cl.truncated"}
     writes = {"valid": "track.valid", "fail": "valid.fail"}
 
+    def __init__(self, *, repulsive_barriers=False):
+        if repulsive_barriers:
+            self.reads = {**self.reads, "barriers": "gen.repulsive.barriers"}
+
     def build(self, b, p):
         from .channels import BUILTIN_FAIL_BITS  # noqa: PLC0415
+        from .._src.repulsive_clearance import finished_band_validity_inplace
 
         S = int(b.layout.stride)
         xy, w, count = b.read("xy"), b.read("half_width"), b.read("count")
@@ -643,6 +655,15 @@ class ValidityDefault(_Builtin):
         valid = b.write("valid", wp.int32)
         fail = b.write("fail", wp.int32)
         b._reserve_fail_bits(BUILTIN_FAIL_BITS)
+        barriers = b.read("barriers") if "barriers" in self.reads else None
+        if barriers is not None:
+            b._reserve_fail_bits({"repulsive_disc": 8, "repulsive_wall": 9})
+
+        def check_barriers(ctx):
+            if barriers is not None:
+                finished_band_validity_inplace(ctx, outer2, inner2, count, barriers,
+                                               S, valid, fail)
+
         has_border = 1 if getattr(p, "validity_border_check", False) else 0
         if hw is not None:
             cfg = _with_half_width(p, hw)
@@ -651,11 +672,13 @@ class ValidityDefault(_Builtin):
                 _wpl.validity_inplace(xy, w, count, gen_valid, outer2, inner2, has_border,
                                       S, z, valid, cfg, truncated_wp=truncated, ctx=ctx,
                                       fail_wp=fail)
+                check_barriers(ctx)
             return enqueue
 
         def enqueue(ctx):
             _width.validity_w_inplace(xy, w, count, gen_valid, outer2, inner2, has_border,
                                       S, z, valid, p, truncated, fail, ctx=ctx)
+            check_barriers(ctx)
         return enqueue
 
 

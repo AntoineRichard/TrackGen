@@ -1,56 +1,31 @@
-"""Repulsive-growth centerline generator (``generator="repulsive"``).
+"""Repulsive growth with analytic circular barriers and bounded accepted steps.
 
-Grows each env's closed centerline from a small circle under a hard ratcheting
-length constraint while a tangent-point (TP) energy keeps the curve self-avoiding,
-confined to a disc domain seeded with per-env random disc obstacles. Coarse-to-fine
-``N = 64 -> 128 -> 256`` with an area-based stall-stop. The result is paper-quality
-serpentine tracks (Henrich et al., *Generating Race Tracks With Repulsive Curves*;
-Yu/Schumacher/Crane, *Repulsive Curves* SIGGRAPH 2021).
+The tangent-point energy uses disjoint-edge tangents and trapezoidal endpoint
+quadrature. Its fixed circulant Sobolev surrogate uses the intended differential
+order and normalized nonzero ring modes. Shape steps use bounded Armijo
+backtracking with perimeter projection recomputed at each trial; a separate bounded expansion approaches the
+ratcheted target. Every accepted shape/growth update and same-resolution
+resampling clears all analytic discs and the domain, including swept edges.
+Refinement inserts vertices along existing edges and preserves the exact loop.
 
-**CUDA-graph capturable, ``capture=CaptureClass.BOUNDED``** (the :class:`Repulsive`
-Stage): the growth loop runs a FIXED host schedule -- the iteration budget, the
-coarse-to-fine stage transitions, the resample cadence and the stall-check cadence all
-depend only on the config and the host loop counter, never on device data. Convergence
-is handled on device: an env whose enclosed area has stalled is frozen, every kernel
-skips frozen envs, and the periodic resample leaves them untouched, so a freeze is
-ABSORBING. The loop is a ``ctx.bounded_loop`` whose ``active`` flag (any env not frozen)
-is refreshed by every stall check and checked once per stall window from
-``first_check`` (the first window start at the final stage: 128 at the defaults, then 9
-windows of 16 iterations): CPU eager runs stop at the first window after every env
-froze (a host poll), CUDA eager runs execute the full bound without a host sync (frozen
-envs return early from every kernel), Warp-registered captures skip the converged
-windows on device (CUDA >= 12.4 conditional nodes), and every other capture (CPU
-captures included) records the loop unrolled (~4.25k nodes for the default Program).
-The absorbing freeze makes every lowering byte-identical. The per-iteration
-``wp.Tape`` that used to be the interior capture blocker is GONE (replaced by
-hand-written analytic adjoints below).
+The sampled rings contribute a curve-length-weighted shaping potential. An
+always-active analytic log potential steers the curve before hard constraints
+become active. Known constant road width is reserved during growth; the actual
+finished offset band is checked by the pipeline after its shared tail.
 
-Ported from the validated spike
-``docs/superpowers/spikes/2026-07-05-repulsive-growth-phase1/grow_warp.py`` (proven 64/64
-through the standard tail). Production changes:
-(a) obstacle layout is a seed-driven Warp kernel (not host torch rejection sampling);
-(b) scratch is allocated once, coarse stages slice the ``[0:E*N_stage]`` prefix;
-(c) the stage upsample and the periodic resample are the non-syncing
-``track_gen.ops.arc_resample`` / ``track_gen.ops.resample_uniform``.
-
-**torch-free:** imports only ``warp`` + ``numpy`` (host precompute uses ``numpy.fft``
-for the Sobolev circulant rows and ``numpy.log1p`` for the stage schedule).
-
-**Determinism (byte-identical per device, CPU AND CUDA):**
-The growth gradient comes from HAND-WRITTEN ANALYTIC ADJOINTS (see the gradient kernels
-below), not ``wp.Tape``. Every gradient kernel is a per-vertex GATHER -- one thread sums
-dE/dx_v into a local register in a fixed loop order, with NO atomics anywhere. That makes
-the whole flow bit-reproducible run-to-run on a given device: same config + seeds -> the
-same centerline, byte for byte, on both CPU and CUDA. (The old ``wp.Tape`` path accumulated
-the adjoint through nondeterministic ``atomic_add``, whose ~2e-6 float-order noise amplified
-chaotically -- a fold is a near-buckling instability -- into macroscopically different, if
-statistically equivalent, CUDA tracks; that is fixed.) Cross-DEVICE equality is NOT claimed:
-fp32 rounding differs between CPU and CUDA, so a CPU track and a CUDA track for the same seed
-are statistically equivalent but not bit-identical to each other. The per-generator
-determinism test asserts byte-identity independently on each available device.
+The static iteration/refinement schedule is CUDA-graph capturable through
+``ctx.bounded_loop``. An environment freezes only after reaching its actual
+length target with small area change, accepted movement and stationarity;
+rejected searches do not count as convergence. Freeze is absorbing, making
+poll/unrolled/conditional lowerings byte-equivalent on each device. Unmet or
+infeasible target lengths report invalid through the standard commit policy.
+A feasible target-length budget result can be valid without reaching optimizer
+equilibrium; frozen is only an early-stop diagnostic. Scratch is allocated once;
+all launches and copies use the caller's context.
 """
 from __future__ import annotations
 
+import math
 import types
 
 import numpy as np
@@ -65,6 +40,12 @@ from ..ops.constants import SIZE_BOUNDS
 from ..plugin.stage import CaptureClass, Stage
 from .builtin_params import RepulsiveParams
 from .runtime import _init
+from .repulsive_tangent_energy import directed_edge_pair_energy, directed_edge_pair_gradient
+from .repulsive_barrier_energy import (barrier_potential_gradient,
+                                      segment_barrier_potential_gradient)
+from .repulsive_clearance import (RepulsiveBarriers, publish_barriers_k,
+                                  segment_disc_clear, swept_segment_disc_clear,
+                                  _tolerance as _clearance_tolerance)
 
 # --- Obstacle layout constants (mirror the spike's sample_obstacles reference layout) ---
 # Independent RNG salt, distinct from the site/anchor/checkpoint/control salts.
@@ -76,20 +57,11 @@ _C_FRAC = 0.90        # inner-disc radial-band outer bound as a fraction of r_do
 _WALL_WEIGHT = 1.0
 _DISC_WEIGHT = 0.25
 
-# --- World-scale anchor (design §5, amended) ---
-# All absolute sizes anchor to ``config.scale`` like every other generator (polar/voronoi
-# anchor to the bezier extent 1.44). ``_DOMAIN_SCALE_REF`` is the world-scale reference
-# LENGTH in config.scale units: at scale=1.0 it equals the spike's build_setup median
-# bezier perimeter, so the domain radius / init radius / obstacle radii / target lengths
-# are numerically identical to the spike's validated 64/64 regime.
-#
-# NOTE (amended from the spec's §5): the design cited a bezier-coupled, per-batch-measured
-# ``_BEZIER_PERIMETER_REF ≈ 5.05``. That is REPLACED here by a fixed scale-anchored
-# constant (no bezier coupling, no per-batch measurement, no final rescale). The exact
-# value is the spike's *actual* build_setup median at scale=1 (E=64, the validated config),
-# which measures 4.9029 today -- the design's 5.05 was an earlier/approximate figure that
-# has drifted with the bezier defaults (exactly the risk the design flagged). Using the
-# spike-derived value keeps the generator IDENTICAL to the validated ground truth.
+# --- World-scale anchor ---
+# Geometry anchors to config.scale. This fixed length was measured from the early
+# prototype's Bezier setup; keeping the numeric anchor avoids coupling layouts to
+# a different generator or to batch-dependent host measurements. Absolute road
+# width is reserved separately, so Repulsive's size also affects raw feasibility.
 _DOMAIN_SCALE_REF = 4.9029
 
 
@@ -130,6 +102,9 @@ def _sample_obstacles_k(
     k_min: int, k_max: int, n_wall: int, n_disc: int, m_obs: int,
     nan_val: float,
     obs_pts: wp.array(dtype=wp.vec2f), obs_mw: wp.array(dtype=wp.float32),
+    write_discs: int, disc_centers: wp.array(dtype=wp.vec2f),
+    disc_radii: wp.array(dtype=wp.float32), use_margin: int,
+    margin: wp.array(dtype=wp.float32),
 ):
     # One thread per env. Writes a domain-wall ring (weight 1.0) plus k inner-disc rings
     # (weight 0.25) at angular-stratified positions with an analytic radial band -- no
@@ -159,6 +134,8 @@ def _sample_obstacles_k(
             # the p=beta-alpha energy blows up at t=0); the outer bound c_frac*r_dom stays
             # inside the wall. If the band is empty (tight config) the column is left unused.
             lo = r_init + r_disc + 0.05 * r_dom
+            if use_margin == 1:
+                lo += margin[e]
             hi = c_frac * r_dom
             rad = lo + (hi - lo) * wp.randf(state)
             active = float(1.0)
@@ -168,6 +145,9 @@ def _sample_obstacles_k(
             cx = rad * wp.cos(ang)
             cy = rad * wp.sin(ang)
             disc_mw = (two_pi * r_disc / float(n_disc)) * _DISC_WEIGHT
+            if write_discs == 1:
+                disc_centers[e * k_max + j] = wp.vec2f(cx, cy)
+                disc_radii[e * k_max + j] = wp.where(active == 1.0, r_disc, 0.0)
             for idx in range(n_disc):
                 a = float(idx) * two_pi / float(n_disc)
                 if active == 1.0:
@@ -178,6 +158,9 @@ def _sample_obstacles_k(
                     obs_pts[col + idx] = wp.vec2f(nan_val, nan_val)
                     obs_mw[col + idx] = 0.0
         else:
+            if write_discs == 1:
+                disc_centers[e * k_max + j] = wp.vec2f(0.0, 0.0)
+                disc_radii[e * k_max + j] = 0.0
             for idx in range(n_disc):
                 obs_pts[col + idx] = wp.vec2f(nan_val, nan_val)
                 obs_mw[col + idx] = 0.0
@@ -185,7 +168,8 @@ def _sample_obstacles_k(
 
 def _sample_obstacles_inplace(seeds_wp: wp.array, config,
                               obs_pts: wp.array, obs_mw: wp.array,
-                              device: str, ctx: "LaunchContext | None" = None) -> None:
+                              device: str, ctx: "LaunchContext | None" = None, *,
+                              disc_centers=None, disc_radii=None, margin=None) -> None:
     """Launch the seed-driven obstacle kernel in place. obs_pts/obs_mw are [E*M].
 
     Args:
@@ -198,7 +182,10 @@ def _sample_obstacles_inplace(seeds_wp: wp.array, config,
     ctx.launch(_sample_obstacles_k, s.E,
                [seeds_wp, s.r_dom, s.r_init, s.r_frac_lo, s.r_frac_hi, s.c_frac,
                 s.k_min, s.k_max, s.n_wall, s.n_disc, s.M, float("nan"),
-                obs_pts, obs_mw])
+                obs_pts, obs_mw, int(disc_centers is not None),
+                obs_pts if disc_centers is None else disc_centers,
+                obs_mw if disc_radii is None else disc_radii, int(margin is not None),
+                obs_mw if margin is None else margin])
     # No host sync here: the growth-loop launches that consume obs_pts/obs_mw are already
     # stream-ordered after this kernel. (Callers that read obs back on the host, e.g.
     # tests, go through wp.array.numpy(), which synchronizes on its own.)
@@ -215,22 +202,22 @@ _SUBDIV_RATIO = 2.0
 def _seed_lfinal_k(
     seeds: wp.array(dtype=wp.int32),
     r_init: float, grow_lo: float, grow_hi: float,
-    L_final: wp.array(dtype=wp.float32), L_init: wp.array(dtype=wp.float32),
-    L_target: wp.array(dtype=wp.float32), reached: wp.array(dtype=wp.int32),
-    frozen: wp.array(dtype=wp.int32), area_prev: wp.array(dtype=wp.float32),
+    L_final: wp.array(dtype=wp.float64), L_init: wp.array(dtype=wp.float64),
+    L_target: wp.array(dtype=wp.float64), reached: wp.array(dtype=wp.int32),
+    frozen: wp.array(dtype=wp.int32), area_prev: wp.array(dtype=wp.float64),
 ):
     # One thread per env. Draw the per-env target-perimeter multiple and seed all per-env
     # growth state. L_init = L_target = init-circle perimeter; L_final = grow_mult * L_init.
     e = wp.tid()
     state = _rng.init(seeds[e], wp.uint32(_GROW_SALT))
     grow_mult = grow_lo + (grow_hi - grow_lo) * wp.randf(state)
-    l0 = 2.0 * wp.pi * r_init
+    l0 = wp.float64(2.0) * wp.float64(wp.pi) * wp.float64(r_init)
     L_init[e] = l0
     L_target[e] = l0
-    L_final[e] = grow_mult * l0
+    L_final[e] = wp.float64(grow_mult) * l0
     reached[e] = 0
     frozen[e] = 0
-    area_prev[e] = 0.0
+    area_prev[e] = wp.float64(0.0)
 
 
 @wp.kernel
@@ -243,146 +230,84 @@ def _init_circle_k(center: wp.array(dtype=wp.vec2f), n: int, r_init: float):
 
 
 # ===========================================================================
-# Hand-written analytic gradient kernels (replace wp.Tape; grad -> scratch.grad).
-#
-# The total per-iteration energy is E = E_TP + E_obs + E_len, matching the spike's three
-# forward kernels exactly:
-#   E_TP  = sum_{i,j: circ>2} (|wedge_ij|+eps)^alpha / (d2_ij+eps^2)^(beta/2) * w_i * w_j
-#           with T_i = safe_dir(x_{i+1}-x_{i-1}), w_i = 0.5(|x_{i+1}-x_i|+|x_i-x_{i-1}|),
-#           diff_ij = x_j - x_i, wedge_ij = diff_ij x T_i (cross), d2_ij = |diff_ij|^2.
-#   E_obs = sum_i sum_m mw_m * (|x_i - p_m|^2 + 1e-8)^p_exp        (obstacles fixed)
-#   E_len = w_len * ((perimeter - L_target)/L_init)^2
-#
-# dE/dx_v is assembled as a per-vertex GATHER (one thread per v, register accumulate, no
-# atomics). x_v enters E_TP four ways: as x_i in pairs (v,*), as x_j in pairs (*,v), through
-# the tangents T_{v-1},T_{v+1} of its neighbors, and through the dual weights w_{v-1},w_v,
-# w_{v+1}. The tangent/weight couplings reduce to per-vertex accumulators (btan_i = J_i A_i,
-# wcoef_k = C_k + D_k) computed in a first pass and read at the v+-1 stencil in the gather;
-# the diff coupling is a genuine O(N) pair sum done in the gather. Derivation validated
-# against a float64 numpy reference + central finite differences to ~1e-10 rel (see
-# tests/test_generate_repulsive.py::test_analytic_gradient_matches_reference).
+# Complete analytic gradients: edge TP endpoint gathers plus weighted obstacle
+# integrals. The isolated helpers have independent float64/finite-difference tests.
+# Every vertex sums its incident-edge contributions locally, with no atomics.
 # ===========================================================================
 
 @wp.kernel
-def _tangent_weight_k(
-    center: wp.array(dtype=wp.vec2f), n: int,
-    frozen: wp.array(dtype=wp.int32),
-    tang: wp.array(dtype=wp.vec2f), wdual: wp.array(dtype=wp.float32),
-):
-    # O(E*N) precompute (once per iteration): the per-vertex tangent T_v = safe_dir(x_{v+1}-
-    # x_{v-1}) and dual weight w_v = 0.5(|x_{v+1}-x_v|+|x_v-x_{v-1}|). Both TP pair kernels
-    # (_tp_prepass_k, _grad_gather_k) read T[j]/w[j] and T[t]/w[t] from these buffers instead
-    # of recomputing them N times inside their O(N^2) partner loops. Bit-identical to the old
-    # inline formulas (same ops, same inputs), so the gradient and trajectory are unchanged.
-    # Frozen envs skip it (both consumers also skip frozen envs -> stale values never read).
+def _dual_weight_k(center: wp.array(dtype=wp.vec2f), n: int,
+                    frozen: wp.array(dtype=wp.int32), wdual: wp.array(dtype=wp.float32)):
     e, v = wp.tid()
     if frozen[e] == 1:
         return
     b = e * n
-    xv = center[b + v]
-    xvn = center[b + (v + 1) % n]
-    xvp = center[b + (v + n - 1) % n]
-    tang[b + v] = funcs.safe_normalize2(xvn - xvp)
-    wdual[b + v] = 0.5 * (wp.length(xvn - xv) + wp.length(xv - xvp))
+    wdual[b + v] = 0.5 * (wp.length(center[b + (v + 1) % n] - center[b + v])
+                          + wp.length(center[b + v] - center[b + (v + n - 1) % n]))
 
 
 @wp.kernel
-def _tp_prepass_k(
-    center: wp.array(dtype=wp.vec2f), n: int,
-    alpha: float, beta: float, eps: float,
-    frozen: wp.array(dtype=wp.int32),
-    tang: wp.array(dtype=wp.vec2f), wdual: wp.array(dtype=wp.float32),
-    wcoef: wp.array(dtype=wp.float32), btan: wp.array(dtype=wp.vec2f),
-):
-    # First pass of the TP gradient: one thread per vertex v accumulates the tangent- and
-    # weight-mechanism reductions that the gather reads at the v+-1 stencil.
-    #   wcoef[v] = C_v + D_v,  C_v = sum_j P(v,j) w_j,  D_v = sum_i P(i,v) w_i
-    #   btan[v]  = J_v A_v,    A_v = sum_j dP/dT_v(v,j) * w_v * w_j,  J_v = (I - T_v T_v^T)/|u_v|
-    # where P(i,j) = (|wedge_ij|+eps)^alpha / (d2_ij+eps^2)^(beta/2). Per-vertex tangents/weights
-    # come from _tangent_weight_k's precomputed buffers. Frozen envs skip it (the gather also
-    # skips them, so the stale values are never read).
-    e, v = wp.tid()
-    if frozen[e] == 1:
-        return
-    b = e * n
-    xv = center[b + v]
-    xvn = center[b + (v + 1) % n]
-    xvp = center[b + (v + n - 1) % n]
-    lv = wp.max(wp.length(xvn - xvp), float(1.0e-8))
-    Tv = tang[b + v]
-    wv = wdual[b + v]
-    hb = beta * 0.5
-    C = float(0.0)
-    D = float(0.0)
-    A = wp.vec2f(0.0, 0.0)
-    for j in range(n):
-        dd = wp.abs(v - j)
-        circ = wp.min(dd, n - dd)
-        if circ > 2:
-            xj = center[b + j]
-            Tj = tang[b + j]
-            wj = wdual[b + j]
-            diff = xj - xv                     # pair (v,j): owner v
-            d2 = wp.dot(diff, diff)
-            den = wp.pow(d2 + eps * eps, hb)
-            wedge = diff[0] * Tv[1] - diff[1] * Tv[0]
-            aw = wp.abs(wedge) + eps
-            P_vj = wp.pow(aw, alpha) / den
-            g_num = alpha * wp.pow(aw, alpha - 1.0) * wp.where(wedge < 0.0, float(-1.0), float(1.0))
-            # dP/dT_v = (g_num/den) * (-diff.y, diff.x)
-            A += (g_num / den) * wp.vec2f(-diff[1], diff[0]) * wj
-            C += P_vj * wj
-            # pair (j,v): owner j, diff2 = xv - xj (= -diff), same d2/den, tangent T_j
-            wedge2 = -diff[0] * Tj[1] + diff[1] * Tj[0]
-            P_jv = wp.pow(wp.abs(wedge2) + eps, alpha) / den
-            D += P_jv * wj
-    wcoef[b + v] = C + D
-    Af = wv * A
-    btan[b + v] = (Af - Tv * wp.dot(Tv, Af)) / lv
-
-
-@wp.kernel
-def _len_coef_k(
-    center: wp.array(dtype=wp.vec2f), n: int,
-    L_target: wp.array(dtype=wp.float32), L_init: wp.array(dtype=wp.float32),
-    w_len: float, frozen: wp.array(dtype=wp.int32),
-    len_coef: wp.array(dtype=wp.float32), peri_out: wp.array(dtype=wp.float32),
-):
-    # Per-env scalar dE_len/dperimeter = 2*w_len*(perimeter - L_target)/L_init^2. The gather
-    # multiplies it by dperimeter/dx_v = dir(x_v-x_{v-1}) - dir(x_{v+1}-x_v). The perimeter is
-    # also stashed in peri_out so _gmax_msl_k (same iteration, center still unmodified) reuses
-    # it for msl instead of summing the whole loop a second time. Computed for every env
-    # (including frozen ones) so peri_out is always fresh.
+def _perimeter_k(center: wp.array(dtype=wp.vec2f), n: int,
+                  peri_out: wp.array(dtype=wp.float64)):
     e = wp.tid()
-    b = e * n
-    peri = float(0.0)
+    peri = wp.float64(0.0)
     for i in range(n):
-        peri += wp.length(center[b + (i + 1) % n] - center[b + i])
+        peri += wp.length(wp.vec2d(center[e * n + (i + 1) % n]) - wp.vec2d(center[e * n + i]))
     peri_out[e] = peri
+
+
+@wp.kernel
+def _obstacle_energy_k(center: wp.array(dtype=wp.vec2f), n: int,
+                       obs_pts: wp.array(dtype=wp.vec2f),
+                       obs_mw: wp.array(dtype=wp.float32), m_obs: int, p_exp: float,
+                       disc_centers: wp.array(dtype=wp.vec2f),
+                       disc_radii: wp.array(dtype=wp.float32), k: int, r_dom: float,
+                       margin: wp.array(dtype=wp.float32),
+                       frozen: wp.array(dtype=wp.int32), out: wp.array(dtype=wp.float32),
+                       barrier_grad: wp.array(dtype=wp.vec2f),
+                       edge_barrier_grad: wp.array(dtype=wp.vec2f)):
+    # The obstacle integral uses curve dual lengths. Cache each vertex's
+    # unweighted potential for the weight derivative in the gather.
+    e, i = wp.tid()
     if frozen[e] == 1:
-        len_coef[e] = 0.0
         return
-    li = L_init[e]
-    len_coef[e] = 2.0 * w_len * (peri - L_target[e]) / (li * li)
+    potential = float(0.0)
+    for m in range(m_obs):
+        mw = obs_mw[e * m_obs + m]
+        if mw != 0.0:
+            d = center[e * n + i] - obs_pts[e * m_obs + m]
+            potential += mw * wp.pow(wp.dot(d, d) + 1.0e-8, p_exp)
+    barrier, bg = barrier_potential_gradient(
+        center[e * n + i], disc_centers, disc_radii, e * k, 0, r_dom, margin[e], -2.0 * p_exp)
+    out[e * n + i] = potential + barrier
+    barrier_grad[e * n + i] = bg
+    xi = center[e * n + i]
+    xn = center[e * n + (i + 1) % n]
+    xp = center[e * n + (i + n - 1) % n]
+    forward, gf, unused_f = segment_barrier_potential_gradient(
+        xi, xn, disc_centers, disc_radii, e * k, k, r_dom, margin[e], -2.0 * p_exp)
+    backward, unused_b, gb = segment_barrier_potential_gradient(
+        xp, xi, disc_centers, disc_radii, e * k, k, r_dom, margin[e], -2.0 * p_exp)
+    # Differentiate both endpoint gaps and edge-length quadrature weights.
+    edge_barrier_grad[e * n + i] = (
+        wp.length(xn - xi) * gf - forward * funcs.safe_normalize2(xn - xi)
+        + wp.length(xi - xp) * gb + backward * funcs.safe_normalize2(xi - xp))
 
 
 @wp.kernel
 def _grad_gather_k(
     center: wp.array(dtype=wp.vec2f), n: int,
     alpha: float, beta: float, eps: float,
-    tang: wp.array(dtype=wp.vec2f), wdual: wp.array(dtype=wp.float32),
-    wcoef: wp.array(dtype=wp.float32), btan: wp.array(dtype=wp.vec2f),
+    wdual: wp.array(dtype=wp.float32),
     obs_pts: wp.array(dtype=wp.vec2f), obs_mw: wp.array(dtype=wp.float32), m_obs: int,
-    p_exp: float, reached: wp.array(dtype=wp.int32),
-    n_wall: int, deac: int,
-    len_coef: wp.array(dtype=wp.float32),
+    p_exp: float, obstacle_energy: wp.array(dtype=wp.float32),
+    barrier_grad: wp.array(dtype=wp.vec2f), edge_barrier_grad: wp.array(dtype=wp.vec2f),
     frozen: wp.array(dtype=wp.int32),
     grad: wp.array(dtype=wp.vec2f),
 ):
-    # One thread per vertex v: gather the full dE/dx_v (TP diff + weight + tangent stencils,
-    # obstacle self-term, length regularizer) into a register and overwrite grad[v]. No
-    # atomics. Per-vertex tangents/weights read from _tangent_weight_k's precomputed buffers.
-    # Frozen envs return early (grad[v] stale; the preconditioner also skips them).
+    # Gather the two incident edges as owner and partner of every ordered
+    # disjoint edge pair. The local helper includes endpoint, tangent and both
+    # edge-length derivatives; no atomics or cancellation-prone point tangent.
     e, v = wp.tid()
     if frozen[e] == 1:
         return
@@ -390,72 +315,43 @@ def _grad_gather_k(
     xv = center[b + v]
     xvn = center[b + (v + 1) % n]
     xvp = center[b + (v + n - 1) % n]
-    Tv = tang[b + v]
     wv = wdual[b + v]
-    hb = beta * 0.5
     g = wp.vec2f(0.0, 0.0)
+    for incident in range(2):
+        i = v
+        if incident == 0:
+            i = (v + n - 1) % n
+        a = center[b + i]
+        z = center[b + (i + 1) % n]
+        for j in range(n):
+            distance = wp.abs(i - j)
+            if wp.min(distance, n - distance) > 1:
+                c = center[b + j]
+                d = center[b + (j + 1) % n]
+                value, ga, gb, gc, gd = directed_edge_pair_gradient(a, z, c, d, alpha, beta, eps)
+                reverse, ha, hb, hc, hd = directed_edge_pair_gradient(c, d, a, z, alpha, beta, eps)
+                if incident == 0:
+                    g += gb + hd
+                else:
+                    g += ga + hc
+    def_dir = funcs.safe_normalize2(xvn - xv)
+    deb_dir = funcs.safe_normalize2(xv - xvp)
 
-    # --- TP diff mechanism: sum over partners t of ww*(dP_ddiff(t,v) - dP_ddiff(v,t)) ---
-    for t in range(n):
-        dd = wp.abs(v - t)
-        circ = wp.min(dd, n - dd)
-        if circ > 2:
-            xt = center[b + t]
-            Tt = tang[b + t]
-            wt = wdual[b + t]
-            ww = wv * wt
-            diff = xt - xv                     # pair (v,t): owner v
-            d2 = wp.dot(diff, diff)
-            de2 = d2 + eps * eps
-            den = wp.pow(de2, hb)
-            wedge = diff[0] * Tv[1] - diff[1] * Tv[0]
-            aw = wp.abs(wedge) + eps
-            P = wp.pow(aw, alpha) / den
-            gn = alpha * wp.pow(aw, alpha - 1.0) * wp.where(wedge < 0.0, float(-1.0), float(1.0))
-            dP_vt = (gn / den) * wp.vec2f(Tv[1], -Tv[0]) - (P * beta / de2) * diff
-            # pair (t,v): owner t, diff2 = xv - xt (= -diff), same d2/den, tangent T_t
-            diff2 = xv - xt
-            wedge2 = diff2[0] * Tt[1] - diff2[1] * Tt[0]
-            aw2 = wp.abs(wedge2) + eps
-            P2 = wp.pow(aw2, alpha) / den
-            gn2 = alpha * wp.pow(aw2, alpha - 1.0) * wp.where(wedge2 < 0.0, float(-1.0), float(1.0))
-            dP_tv = (gn2 / den) * wp.vec2f(Tt[1], -Tt[0]) - (P2 * beta / de2) * diff2
-            g += ww * (dP_tv - dP_vt)
-
-    # --- TP weight mechanism (v+-1 stencil over wcoef) ---
-    ef = xvn - xv
-    eb = xv - xvp
-    def_dir = funcs.safe_normalize2(ef)
-    deb_dir = funcs.safe_normalize2(eb)
-    Wv = wcoef[b + v]
-    Wprev = wcoef[b + (v + n - 1) % n]
-    Wnext = wcoef[b + (v + 1) % n]
-    g += 0.5 * deb_dir * (Wv + Wprev) - 0.5 * def_dir * (Wv + Wnext)
-
-    # --- TP tangent mechanism (v+-1 stencil over btan) ---
-    g += btan[b + (v + n - 1) % n] - btan[b + (v + 1) % n]
-
-    # --- obstacle self-term ---
+    # --- obstacle direct derivative (curve dual length times potential gradient) ---
     ob = e * m_obs
-    is_reached = reached[e]
     for m in range(m_obs):
         mw = obs_mw[ob + m]
         if mw != 0.0:
-            # Deactivating only closes the inner-disc halos (m >= n_wall) once an env reaches
-            # its target length; the domain wall (m < n_wall) always stays live. The spike
-            # documented wall-deactivation as UNSAFE under a fixed iteration budget (the curve
-            # can escape the domain before it settles), so there is no wall-deactivation knob.
-            # See docs/superpowers/spikes/2026-07-05-repulsive-growth-phase1/README.md.
-            drop = int(0)
-            if deac == 1 and is_reached == 1 and m >= n_wall:
-                drop = int(1)
-            if drop == 0:
-                d = xv - obs_pts[ob + m]
-                d2 = wp.dot(d, d)
-                g += (mw * p_exp * wp.pow(d2 + float(1.0e-8), p_exp - 1.0) * 2.0) * d
+            d = xv - obs_pts[ob + m]
+            d2 = wp.dot(d, d)
+            g += (wv * mw * p_exp * wp.pow(d2 + 1.0e-8, p_exp - 1.0) * 2.0) * d
+    g += wv * barrier_grad[b + v] + edge_barrier_grad[b + v]
 
-    # --- length regularizer ---
-    g += len_coef[e] * (deb_dir - def_dir)
+    # --- obstacle dual-weight derivative (the curve-length quadrature) ---
+    ov = obstacle_energy[b + v]
+    op = obstacle_energy[b + (v + n - 1) % n]
+    on = obstacle_energy[b + (v + 1) % n]
+    g += 0.5 * (op + ov) * deb_dir - 0.5 * (ov + on) * def_dir
 
     grad[b + v] = g
 
@@ -466,19 +362,19 @@ def _grad_gather_k(
 
 @wp.kernel
 def _ratchet_k(
-    L_target: wp.array(dtype=wp.float32), L_final: wp.array(dtype=wp.float32),
+    L_target: wp.array(dtype=wp.float64), L_final: wp.array(dtype=wp.float64),
     growth: float, reached: wp.array(dtype=wp.int32),
 ):
     # L_target = min(L_target*(1+growth), L_final); reached once at final length.
     e = wp.tid()
-    lt = wp.min(L_target[e] * (1.0 + growth), L_final[e])
+    lt = wp.min(L_target[e] * (wp.float64(1.0) + wp.float64(growth)), L_final[e])
     L_target[e] = lt
-    reached[e] = wp.where(lt >= L_final[e] - float(1.0e-9), int(1), int(0))
+    reached[e] = wp.where(lt >= L_final[e] - wp.float64(1.0e-9), int(1), int(0))
 
 
 @wp.kernel
-def _conv_k(gin: wp.array(dtype=wp.vec2f), h: wp.array(dtype=wp.float32), n: int,
-            frozen: wp.array(dtype=wp.int32), out: wp.array(dtype=wp.vec2f)):
+def _conv_k(gin: wp.array(dtype=wp.vec2f), h: wp.array(dtype=wp.float64), n: int,
+            frozen: wp.array(dtype=wp.int32), out: wp.array(dtype=wp.vec2d)):
     # Circular convolution out[i] = sum_j h[(i-j) mod n] * gin[j] -- the FFT-free
     # fractional-Sobolev preconditioner A^{-1}. h is the fixed circulant row (numpy irfft
     # of the spectral filter). O(N^2); frozen envs skip it (stale out never used).
@@ -486,12 +382,13 @@ def _conv_k(gin: wp.array(dtype=wp.vec2f), h: wp.array(dtype=wp.float32), n: int
     if frozen[e] == 1:
         return
     b = e * n
-    acc = wp.vec2f(0.0, 0.0)
+    acc = wp.vec2d(0.0, 0.0)
+    reference = wp.vec2d(gin[b + i])
     for j in range(n):
         mmod = (i - j) % n
         if mmod < 0:
             mmod += n
-        acc += h[mmod] * gin[b + j]
+        acc += h[mmod] * (wp.vec2d(gin[b + j]) - reference)
     out[b + i] = acc
 
 
@@ -500,31 +397,33 @@ def _length_grad_k(center: wp.array(dtype=wp.vec2f), n: int, lg: wp.array(dtype=
     # relaxation._length_grad: lg[i] = -u_fwd[i] + u_fwd[i-1], u_fwd[i]=dir(x[i+1]-x[i]).
     e, i = wp.tid()
     b = e * n
-    u_i = funcs.safe_normalize2(center[b + (i + 1) % n] - center[b + i])
-    u_p = funcs.safe_normalize2(center[b + i] - center[b + (i + n - 1) % n])
-    lg[b + i] = -u_i + u_p
+    ef = wp.vec2d(center[b + (i + 1) % n]) - wp.vec2d(center[b + i])
+    u_i = ef / wp.max(wp.length(ef), wp.float64(1.0e-8))
+    eb = wp.vec2d(center[b + i]) - wp.vec2d(center[b + (i + n - 1) % n])
+    u_p = eb / wp.max(wp.length(eb), wp.float64(1.0e-8))
+    lg[b + i] = wp.vec2f(-u_i + u_p)
 
 
 @wp.kernel
-def _numden_k(g: wp.array(dtype=wp.vec2f), lg: wp.array(dtype=wp.vec2f),
-              ainv_lg: wp.array(dtype=wp.vec2f), n: int,
-              num: wp.array(dtype=wp.float32), den: wp.array(dtype=wp.float32)):
+def _numden_k(g: wp.array(dtype=wp.vec2d), lg: wp.array(dtype=wp.vec2f),
+              ainv_lg: wp.array(dtype=wp.vec2d), n: int,
+              num: wp.array(dtype=wp.float64), den: wp.array(dtype=wp.float64)):
     # Per-env inner products for the Sobolev-orthogonal projection:
     #   num = <g, lg>,  den = <lg, A^{-1} lg> (clamped).
     e = wp.tid()
     b = e * n
-    sn = float(0.0)
-    sd = float(0.0)
+    sn = wp.float64(0.0)
+    sd = wp.float64(0.0)
     for i in range(n):
-        sn += wp.dot(g[b + i], lg[b + i])
-        sd += wp.dot(lg[b + i], ainv_lg[b + i])
+        sn += wp.dot(wp.vec2d(g[b + i]), wp.vec2d(lg[b + i]))
+        sd += wp.dot(wp.vec2d(lg[b + i]), wp.vec2d(ainv_lg[b + i]))
     num[e] = sn
-    den[e] = wp.max(sd, float(1.0e-12))
+    den[e] = wp.max(sd, wp.float64(1.0e-12))
 
 
 @wp.kernel
-def _project_k(g: wp.array(dtype=wp.vec2f), ainv_lg: wp.array(dtype=wp.vec2f), n: int,
-               num: wp.array(dtype=wp.float32), den: wp.array(dtype=wp.float32)):
+def _project_k(g: wp.array(dtype=wp.vec2d), ainv_lg: wp.array(dtype=wp.vec2d), n: int,
+               num: wp.array(dtype=wp.float64), den: wp.array(dtype=wp.float64)):
     # g <- g - (num/den) * A^{-1} lg  (project out the length-increase direction).
     e, i = wp.tid()
     t = e * n + i
@@ -532,105 +431,176 @@ def _project_k(g: wp.array(dtype=wp.vec2f), ainv_lg: wp.array(dtype=wp.vec2f), n
 
 
 @wp.kernel
-def _gmean_k(g: wp.array(dtype=wp.vec2f), n: int, gmean: wp.array(dtype=wp.vec2f)):
+def _gmean_k(g: wp.array(dtype=wp.vec2d), n: int, gmean: wp.array(dtype=wp.vec2d)):
     # Per-env barycenter of g (the mean subtracted next -> barycenter pin).
     e = wp.tid()
     b = e * n
-    acc = wp.vec2f(0.0, 0.0)
+    acc = wp.vec2d(0.0, 0.0)
     for i in range(n):
-        acc += g[b + i]
-    gmean[e] = acc / float(n)
+        acc += wp.vec2d(g[b + i])
+    gmean[e] = acc / wp.float64(n)
+
+
+@wp.func
+def _flow_factor(n: int, r_dom: float, tau: float, energy_scale: wp.float64,
+                 gmax: wp.float64) -> wp.float64:
+    return wp.float64(tau) * wp.min(
+        wp.float64(n) * wp.float64(r_dom) * wp.float64(r_dom) / wp.max(energy_scale, wp.float64(1.0e-12)),
+        wp.float64(r_dom) / wp.max(gmax, wp.float64(1.0e-12)))
 
 
 @wp.kernel
-def _gmax_msl_k(g: wp.array(dtype=wp.vec2f), gmean: wp.array(dtype=wp.vec2f),
-                peri_in: wp.array(dtype=wp.float32), n: int,
-                gmax: wp.array(dtype=wp.float32), msl: wp.array(dtype=wp.float32)):
-    # gmax = max_i |g[i]-gmean|; msl = mean segment length. The perimeter comes from
-    # _len_coef_k's peri_out (same iteration, center unchanged between the two launches), so
-    # this kernel no longer re-sums the whole loop -- msl = perimeter / n, bit-identical.
+def _direction_metrics_k(g: wp.array(dtype=wp.vec2d), gmean: wp.array(dtype=wp.vec2d),
+                         grad: wp.array(dtype=wp.vec2f), peri: wp.array(dtype=wp.float64),
+                         energy_scale: wp.array(dtype=wp.float64), n: int,
+                         tau: float, r_dom: float, frozen: wp.array(dtype=wp.int32),
+                         gmax: wp.array(dtype=wp.float32), msl: wp.array(dtype=wp.float32),
+                         stationarity: wp.array(dtype=wp.float32),
+                         step_slope: wp.array(dtype=wp.float64),
+                         predicted_move: wp.array(dtype=wp.float64),
+                         numerical_stationary: wp.array(dtype=wp.int32),
+                         metric_failed: wp.array(dtype=wp.int32),
+                         lg: wp.array(dtype=wp.vec2f),
+                         num: wp.array(dtype=wp.float64), den: wp.array(dtype=wp.float64),
+                         h: wp.array(dtype=wp.float64)):
+    # Measure the actual projected metric field BEFORE step scaling or vec2f
+    # coordinate quantization. sqrt(N R^2 <grad,H_c grad>)/E is dimensionless,
+    # independent of tau, search fraction and point density. The field norm
+    # guards cancellation in the quadratic form (the inverse metric norm <=1).
     e = wp.tid()
-    b = e * n
-    gm = float(0.0)
+    if frozen[e] == 1:
+        return
+    coefficient = num[e] / den[e]
+    residual_mean = wp.vec2d(0.0, 0.0)
+    length_squared = wp.float64(0.0)
+    row_l1 = wp.float64(0.0)
     for i in range(n):
-        gm = wp.max(gm, wp.length(g[b + i] - gmean[e]))
-    gmax[e] = wp.max(gm, float(1.0e-12))
-    msl[e] = peri_in[e] / float(n)
+        length_gradient = wp.vec2d(lg[e * n + i])
+        residual_mean += wp.vec2d(grad[e * n + i]) - coefficient * length_gradient
+        length_squared += wp.dot(length_gradient, length_gradient)
+        row_l1 += wp.abs(h[i])
+    residual_mean /= wp.float64(n)
+    residual_squared = wp.float64(0.0)
+    q = wp.float64(0.0)
+    absolute = wp.float64(0.0)
+    field_squared = wp.float64(0.0)
+    gradient_squared = wp.float64(0.0)
+    maximum = wp.float64(0.0)
+    mean = wp.vec2d(gmean[e])
+    for i in range(n):
+        field = wp.vec2d(g[e * n + i]) - mean
+        gradient = wp.vec2d(grad[e * n + i])
+        residual = gradient - coefficient * wp.vec2d(lg[e * n + i]) - residual_mean
+        q += wp.dot(residual, field)
+        absolute += wp.abs(residual[0] * field[0]) + wp.abs(residual[1] * field[1])
+        residual_squared += wp.dot(residual, residual)
+        field_squared += wp.dot(field, field)
+        gradient_squared += wp.dot(gradient, gradient)
+        maximum = wp.max(maximum, wp.length(field))
+    # r=P0(grad-lambda*lg), p=P0(Hgrad-lambda*Hlg), so q=r.H.r>=0.
+    # Bound roundoff using PRE-projection norms, including the convolution and
+    # mean subtraction. Difference-form convolution has at most 3N operations
+    # per summand; Young's inequality supplies its row-L1 operator bound.
+    unit_roundoff = wp.float64(1.1102230246251565e-16)
+    gamma_n = wp.float64(n) * unit_roundoff / (wp.float64(1.0) - wp.float64(n) * unit_roundoff)
+    gamma_2n = wp.float64(2 * n) * unit_roundoff / (wp.float64(1.0) - wp.float64(2 * n) * unit_roundoff)
+    gamma_3n = wp.float64(3 * n) * unit_roundoff / (wp.float64(1.0) - wp.float64(3 * n) * unit_roundoff)
+    input_norm = wp.sqrt(gradient_squared) + wp.abs(coefficient) * wp.sqrt(length_squared)
+    field_error = (wp.float64(4.0) * gamma_3n + wp.float64(4.0) * gamma_n
+                   + wp.float64(8.0) * unit_roundoff) * row_l1 * input_norm
+    residual_error = (wp.float64(4.0) * unit_roundoff + wp.float64(2.0) * gamma_n) * input_norm
+    q_roundoff = (gamma_2n * absolute + wp.sqrt(residual_squared) * field_error
+                  + residual_error * (wp.sqrt(field_squared) + field_error))
+    relative_roundoff = wp.float64(64.0 * 1.1920928955078125e-7)
+    scale = energy_scale[e]
+    failed = (not wp.isfinite(q) or not wp.isfinite(field_squared)
+              or not wp.isfinite(gradient_squared) or not wp.isfinite(scale)
+              or scale <= wp.float64(0.0) or q < -q_roundoff)
+    gmax[e] = wp.float32(wp.max(maximum, wp.float64(1.0e-12)))
+    msl[e] = wp.float32(peri[e] / wp.float64(n))
+    numerical_stationary[e] = 0
+    if failed or metric_failed[e] != 0:
+        metric_failed[e] = 1
+        stationarity[e] = wp.inf
+        step_slope[e] = wp.float64(0.0)
+        predicted_move[e] = wp.float64(wp.inf)
+        return
+    radius_squared = wp.float64(r_dom) * wp.float64(r_dom)
+    measured = wp.sqrt(wp.float64(n) * radius_squared * wp.max(q, field_squared)) / scale
+    if not wp.isfinite(measured) or measured > wp.float64(3.4028234663852886e38):
+        metric_failed[e] = 1
+        stationarity[e] = wp.inf
+        step_slope[e] = wp.float64(0.0)
+        predicted_move[e] = wp.float64(wp.inf)
+        return
+    stationarity[e] = wp.float32(measured)
+    factor = _flow_factor(n, r_dom, tau, scale, maximum)
+    step_slope[e] = -factor * wp.max(q, wp.float64(0.0))
+    predicted_move[e] = factor * maximum
+    # A numerical stationary result is distinct from accepted progress. It is
+    # permitted only when the genuine projected field is at its arithmetic
+    # resolution AND its unrounded update is below coordinate storage precision.
+    if (wp.abs(q) <= q_roundoff
+            and field_squared <= relative_roundoff * relative_roundoff * gradient_squared
+            and predicted_move[e] <= wp.float64(8.0 * 1.1920928955078125e-7) * wp.float64(r_dom)):
+        numerical_stationary[e] = 1
+
+
+@wp.func
+def _target_length_ok(perimeter: wp.float64, target: wp.float64, n: int, r_dom: float) -> bool:
+    # A float32 coordinate perturbation changes each edge length by O(eps*R).
+    # This bound covers storage/retraction rounding, not a percent target shortfall.
+    tolerance = wp.float64(16.0 * 1.1920928955078125e-7) * wp.float64(n) * wp.float64(r_dom)
+    return (wp.isfinite(perimeter) and wp.isfinite(target) and target > wp.float64(0.0)
+            and wp.abs(perimeter - target) <= tolerance)
 
 
 @wp.kernel
-def _step_k(center: wp.array(dtype=wp.vec2f), g: wp.array(dtype=wp.vec2f),
-            gmean: wp.array(dtype=wp.vec2f), msl: wp.array(dtype=wp.float32),
-            gmax: wp.array(dtype=wp.float32), tau: float, n: int,
-            frozen: wp.array(dtype=wp.int32)):
-    # center <- center - (tau*msl/gmax) * (g - gmean). Frozen envs never move.
+def _step_k(center: wp.array(dtype=wp.vec2f), g: wp.array(dtype=wp.vec2d),
+            gmean: wp.array(dtype=wp.vec2d), energy: wp.array(dtype=wp.float64),
+            gmax: wp.array(dtype=wp.float32), tau: float, r_dom: float, n: int,
+            frozen: wp.array(dtype=wp.int32), proposal: wp.array(dtype=wp.vec2f)):
+    # The length-weighted energy has per-vertex gradient O(1/n). Normalize
+    # its continuum density by E/R^2, retaining gradient magnitude so a
+    # stationary curve stops moving. The trust cap is only an upper bound.
     e, i = wp.tid()
     if frozen[e] == 1:
         return
     t = e * n + i
-    center[t] = center[t] - (tau * msl[e] / gmax[e]) * (g[t] - gmean[e])
-
-
-@wp.kernel
-def _perim_bc_k(center: wp.array(dtype=wp.vec2f), n: int,
-                cur_len: wp.array(dtype=wp.float32), bc: wp.array(dtype=wp.vec2f)):
-    # Per-env perimeter (clamped) + barycenter for the hard rescale.
-    e = wp.tid()
-    b = e * n
-    peri = float(0.0)
-    acc = wp.vec2f(0.0, 0.0)
-    for i in range(n):
-        peri += wp.length(center[b + (i + 1) % n] - center[b + i])
-        acc += center[b + i]
-    cur_len[e] = wp.max(peri, float(1.0e-9))
-    bc[e] = acc / float(n)
-
-
-@wp.kernel
-def _rescale_k(center: wp.array(dtype=wp.vec2f), bc: wp.array(dtype=wp.vec2f),
-               cur_len: wp.array(dtype=wp.float32), L_target: wp.array(dtype=wp.float32), n: int,
-               frozen: wp.array(dtype=wp.int32)):
-    # center <- bc + (center-bc) * (L_target/cur_len)  -- hard rescale to the target.
-    e, i = wp.tid()
-    if frozen[e] == 1:
-        return
-    t = e * n + i
-    center[t] = bc[e] + (center[t] - bc[e]) * (L_target[e] / cur_len[e])
+    factor = _flow_factor(n, r_dom, tau, energy[e], wp.float64(gmax[e]))
+    proposal[t] = wp.vec2f(wp.vec2d(center[t]) - factor * (wp.vec2d(g[t]) - wp.vec2d(gmean[e])))
 
 
 @wp.kernel
 def _freeze_update_k(center: wp.array(dtype=wp.vec2f), n: int,
                      reached: wp.array(dtype=wp.int32), thresh: float,
-                     area_prev: wp.array(dtype=wp.float32),
-                     frozen: wp.array(dtype=wp.int32), md_out: wp.array(dtype=wp.float32)):
+                     area_prev: wp.array(dtype=wp.float64),
+                     frozen: wp.array(dtype=wp.int32), md_out: wp.array(dtype=wp.float64),
+                     final_target: wp.array(dtype=wp.float64),
+                     window_move: wp.array(dtype=wp.float32),
+                     stationarity: wp.array(dtype=wp.float32),
+                     blocked: wp.array(dtype=wp.int32), r_dom: float):
     # Per-env stall detector (once per stall window). An env freezes when it has reached its
-    # final length AND its enclosed-area relative change over the window is below thresh.
-    # Area (shoelace) is REPARAMETERIZATION-INVARIANT, unlike per-bead displacement.
+    # actual final length with small area change, movement and projected stationarity.
+    # A blocked search is not convergence.
     e = wp.tid()
     b = e * n
-    a2 = float(0.0)
+    a2 = wp.float64(0.0)
+    peri = wp.float64(0.0)
     for i in range(n):
-        p0 = center[b + i]
-        p1 = center[b + (i + 1) % n]
+        p0 = wp.vec2d(center[b + i])
+        p1 = wp.vec2d(center[b + (i + 1) % n])
         a2 += p0[0] * p1[1] - p1[0] * p0[1]
-    area = wp.abs(a2) * 0.5
-    rel = wp.abs(area - area_prev[e]) / wp.max(area, float(1.0e-9))
+        peri += wp.length(p1 - p0)
+    area = wp.abs(a2) * wp.float64(0.5)
+    rel = wp.abs(area - area_prev[e]) / wp.max(area, wp.float64(1.0e-9))
     md_out[e] = rel
     area_prev[e] = area
-    if reached[e] == 1 and frozen[e] == 0 and rel < thresh:
+    if (reached[e] == 1 and frozen[e] == 0 and rel < wp.float64(thresh)
+            and _target_length_ok(peri, final_target[e], n, r_dom) and window_move[e] < thresh
+            and stationarity[e] < thresh and blocked[e] == 0):
         frozen[e] = 1
-
-
-@wp.kernel
-def _copy_unfrozen_k(dst: wp.array(dtype=wp.vec2f), src: wp.array(dtype=wp.vec2f), n: int,
-                     frozen: wp.array(dtype=wp.int32)):
-    # dst <- src for envs still growing; frozen envs keep their at-freeze shape (absorbing
-    # freeze), so the result never depends on how long the rest of the batch keeps running.
-    e, i = wp.tid()
-    if frozen[e] == 1:
-        return
-    t = e * n + i
-    dst[t] = src[t]
+    window_move[e] = 0.0
 
 
 @wp.kernel
@@ -642,18 +612,332 @@ def _active_k(frozen: wp.array(dtype=wp.int32), active: wp.array(dtype=wp.int32)
         wp.atomic_max(active, 0, 1)
 
 
+@wp.func
+def _proposal_point(center: wp.array(dtype=wp.vec2f), proposal: wp.array(dtype=wp.vec2f),
+                    t: int, fraction: float):
+    if fraction == 0.0:
+        return center[t]
+    if fraction == 1.0:
+        return proposal[t]
+    a = wp.vec2d(center[t])
+    return wp.vec2f(a + wp.float64(fraction) * (wp.vec2d(proposal[t]) - a))
+
+
+@wp.func
+def _proposal_clear(center: wp.array(dtype=wp.vec2f), proposal: wp.array(dtype=wp.vec2f),
+                    e: int, n: int, fraction: float,
+                    disc_centers: wp.array(dtype=wp.vec2f),
+                    disc_radii: wp.array(dtype=wp.float32), k: int, r_dom: float,
+                    margin: float, swept: int):
+    limit = wp.float64(r_dom) - wp.float64(margin) - _clearance_tolerance(r_dom)
+    if not wp.isfinite(limit) or limit <= wp.float64(0.0):
+        return False
+    limit_squared = limit * limit
+    clear = bool(True)
+    b = e * n
+    for i in range(n):
+        a = _proposal_point(center, proposal, b + i, fraction)
+        z = _proposal_point(center, proposal, b + (i + 1) % n, fraction)
+        # Cast before the dot product: float32 norms can round an outside
+        # point below the wall at large coordinates. The domain is convex.
+        ad = wp.vec2d(a)
+        distance_squared = wp.dot(ad, ad)
+        if not wp.isfinite(distance_squared) or distance_squared >= limit_squared:
+            clear = False
+        for j in range(k):
+            radius = disc_radii[e * k + j]
+            if radius > 0.0:
+                c = disc_centers[e * k + j]
+                if not segment_disc_clear(a, z, c, radius + margin):
+                    clear = False
+                if swept == 1 and not swept_segment_disc_clear(
+                        center[b + i], center[b + (i + 1) % n], a, z, c, radius + margin):
+                    clear = False
+    return clear
+
+
+@wp.func
+def _proposal_energy_parts(center: wp.array(dtype=wp.vec2f), proposal: wp.array(dtype=wp.vec2f),
+                     e: int, n: int, fraction: float, alpha: float, beta: float,
+                     eps: float, obs_pts: wp.array(dtype=wp.vec2f),
+                     obs_mw: wp.array(dtype=wp.float32), m_obs: int,
+                     p_exp: float, disc_centers: wp.array(dtype=wp.vec2f),
+                     disc_radii: wp.array(dtype=wp.float32), k: int, r_dom: float,
+                     margin: float):
+    # Exactly the discrete objective differentiated by the gather; deterministic
+    # reductions and no atomics. The projected-out length penalty is omitted.
+    tangent_energy = wp.float64(0.0)
+    for i in range(n):
+        a = _proposal_point(center, proposal, e * n + i, fraction)
+        z = _proposal_point(center, proposal, e * n + (i + 1) % n, fraction)
+        for j in range(n):
+            distance = wp.abs(i - j)
+            if wp.min(distance, n - distance) > 1:
+                c = _proposal_point(center, proposal, e * n + j, fraction)
+                d = _proposal_point(center, proposal, e * n + (j + 1) % n, fraction)
+                tangent_energy += wp.float64(directed_edge_pair_energy(a, z, c, d, alpha, beta, eps))
+    total = tangent_energy
+    magnitude = tangent_energy
+    b = e * n
+    for i in range(n):
+        xi = _proposal_point(center, proposal, b + i, fraction)
+        xn = _proposal_point(center, proposal, b + (i + 1) % n, fraction)
+        xp = _proposal_point(center, proposal, b + (i + n - 1) % n, fraction)
+        wi = 0.5 * (wp.length(xn - xi) + wp.length(xi - xp))
+        for j in range(m_obs):
+            mw = obs_mw[e * m_obs + j]
+            if mw != 0.0:
+                d = xi - obs_pts[e * m_obs + j]
+                value = wp.float64(wi) * wp.float64(mw) * wp.float64(wp.pow(wp.dot(d, d) + 1.0e-8, p_exp))
+                total += value
+                magnitude += value
+        barrier, unused_grad = barrier_potential_gradient(
+            xi, disc_centers, disc_radii, e * k, 0, r_dom, margin, -2.0 * p_exp)
+        edge_barrier, unused_a, unused_b = segment_barrier_potential_gradient(
+            xi, xn, disc_centers, disc_radii, e * k, k, r_dom, margin, -2.0 * p_exp)
+        edge_length = wp.length(xn - xi)
+        total += wp.float64(wi) * wp.float64(barrier) + wp.float64(edge_length) * wp.float64(edge_barrier)
+        magnitude += wp.float64(wi) * wp.float64(wp.abs(barrier)) + wp.float64(edge_length) * wp.float64(wp.abs(edge_barrier))
+    return total, magnitude
+
+
+@wp.func
+def _proposal_energy(center: wp.array(dtype=wp.vec2f), proposal: wp.array(dtype=wp.vec2f),
+                     e: int, n: int, fraction: float, alpha: float, beta: float,
+                     eps: float, obs_pts: wp.array(dtype=wp.vec2f),
+                     obs_mw: wp.array(dtype=wp.float32), m_obs: int,
+                     p_exp: float, disc_centers: wp.array(dtype=wp.vec2f),
+                     disc_radii: wp.array(dtype=wp.float32), k: int, r_dom: float,
+                     margin: float):
+    total, unused_tangent = _proposal_energy_parts(
+        center, proposal, e, n, fraction, alpha, beta, eps, obs_pts, obs_mw, m_obs,
+        p_exp, disc_centers, disc_radii, k, r_dom, margin)
+    return total
+
+
+@wp.kernel
+def _shape_energy_k(center: wp.array(dtype=wp.vec2f), n: int, alpha: float, beta: float,
+                      eps: float, obs_pts: wp.array(dtype=wp.vec2f),
+                      obs_mw: wp.array(dtype=wp.float32), m_obs: int, p_exp: float,
+                      disc_centers: wp.array(dtype=wp.vec2f),
+                      disc_radii: wp.array(dtype=wp.float32), k: int, r_dom: float,
+                      margin: wp.array(dtype=wp.float32), frozen: wp.array(dtype=wp.int32),
+                      out: wp.array(dtype=wp.float64), scale_out: wp.array(dtype=wp.float64)):
+    e = wp.tid()
+    if frozen[e] == 0:
+        total, magnitude = _proposal_energy_parts(center, center, e, n, 0.0, alpha, beta, eps, obs_pts,
+                                                obs_mw, m_obs, p_exp, disc_centers, disc_radii, k, r_dom, margin[e])
+        out[e] = total
+        scale_out[e] = wp.max(magnitude, wp.float64(wp.pow(r_dom, 2.0 + 2.0 * p_exp)))
+
+
+@wp.kernel
+def _accept_shape_k(
+    center: wp.array(dtype=wp.vec2f), proposal: wp.array(dtype=wp.vec2f),
+    trial_points: wp.array(dtype=wp.vec2f),
+    grad: wp.array(dtype=wp.vec2f), energy: wp.array(dtype=wp.float64),
+    energy_scale: wp.array(dtype=wp.float64), n: int, alpha: float, beta: float, eps: float,
+    obs_pts: wp.array(dtype=wp.vec2f), obs_mw: wp.array(dtype=wp.float32), m_obs: int,
+    p_exp: float,
+    disc_centers: wp.array(dtype=wp.vec2f), disc_radii: wp.array(dtype=wp.float32),
+    k: int, r_dom: float, margin: wp.array(dtype=wp.float32), msl: wp.array(dtype=wp.float32),
+    frozen: wp.array(dtype=wp.int32), window_move: wp.array(dtype=wp.float32),
+    stationarity: wp.array(dtype=wp.float32), blocked: wp.array(dtype=wp.int32),
+    step_slope: wp.array(dtype=wp.float64), numerical_stationary: wp.array(dtype=wp.int32),
+    metric_failed: wp.array(dtype=wp.int32), accepted_out: wp.array(dtype=wp.int32),
+):
+    e = wp.tid()
+    if frozen[e] == 1:
+        return
+    b = e * n
+    accepted_out[e] = 0
+    if metric_failed[e] != 0:
+        blocked[e] = 1
+        return
+    if numerical_stationary[e] == 1:
+        blocked[e] = wp.int32(not _proposal_clear(
+            center, center, e, n, 0.0, disc_centers, disc_radii, k, r_dom, margin[e], 0))
+        return
+    before = energy[e]
+    if step_slope[e] >= wp.float64(0.0):
+        blocked[e] = 1
+        return
+    peri_before = wp.float64(0.0)
+    for i in range(n):
+        peri_before += wp.length(wp.vec2d(center[b + (i + 1) % n]) - wp.vec2d(center[b + i]))
+    fraction = float(1.0)
+    accepted = int(0)
+    for trial in range(24):
+        # Recompute the nonlinear perimeter projection at EVERY trial.
+        # Interpolating an already-projected endpoint need not be descent.
+        bc = wp.vec2d(0.0, 0.0)
+        peri = wp.float64(0.0)
+        for i in range(n):
+            xi = _proposal_point(center, proposal, b + i, fraction)
+            xn = _proposal_point(center, proposal, b + (i + 1) % n, fraction)
+            bc += wp.vec2d(xi)
+            peri += wp.length(wp.vec2d(xn) - wp.vec2d(xi))
+        bc /= wp.float64(n)
+        scale = peri_before / wp.max(peri, wp.float64(1.0e-9))
+        actual_move = float(0.0)
+        for i in range(n):
+            xi = _proposal_point(center, proposal, b + i, fraction)
+            trial_points[b + i] = wp.vec2f(wp.vec2d(xi) + (scale - wp.float64(1.0)) * (wp.vec2d(xi) - bc))
+            actual_move = wp.max(actual_move, wp.length(trial_points[b + i] - center[b + i]))
+        if actual_move == 0.0:
+            break
+        if _proposal_clear(center, trial_points, e, n, 1.0, disc_centers,
+                           disc_radii, k, r_dom, margin[e], 1):
+            after = _proposal_energy(center, trial_points, e, n, 1.0, alpha, beta, eps,
+                                     obs_pts, obs_mw, m_obs, p_exp, disc_centers, disc_radii, k, r_dom, margin[e])
+            if (wp.isfinite(after) and after < before
+                    and after <= before + wp.float64(1.0e-4) * wp.float64(fraction) * step_slope[e]):
+                accepted = 1
+                break
+        fraction *= 0.5
+    blocked[e] = wp.int32(accepted == 0)
+    accepted_out[e] = accepted
+    movement = float(0.0)
+    if accepted == 1:
+        for i in range(n):
+            movement = wp.max(movement, wp.length(trial_points[b + i] - center[b + i]))
+            center[b + i] = trial_points[b + i]
+    window_move[e] = wp.max(window_move[e], movement / wp.max(msl[e], 1.0e-9))
+
+
+@wp.kernel
+def _grow_feasible_k(
+    center: wp.array(dtype=wp.vec2f), proposal: wp.array(dtype=wp.vec2f), n: int,
+    target: wp.array(dtype=wp.float64), growth: float, disc_centers: wp.array(dtype=wp.vec2f),
+    disc_radii: wp.array(dtype=wp.float32), k: int, r_dom: float,
+    margin: wp.array(dtype=wp.float32), frozen: wp.array(dtype=wp.int32),
+):
+    # Growth is a separate forced constraint operation: energy may rise with
+    # length, but every accepted partial expansion remains analytically feasible.
+    e = wp.tid()
+    if frozen[e] == 1:
+        return
+    b = e * n
+    bc = wp.vec2d(0.0, 0.0)
+    peri = wp.float64(0.0)
+    for i in range(n):
+        bc += wp.vec2d(center[b + i])
+        peri += wp.length(wp.vec2d(center[b + (i + 1) % n]) - wp.vec2d(center[b + i]))
+    bc /= wp.float64(n)
+    scale = wp.min(target[e] / wp.max(peri, wp.float64(1.0e-9)), wp.float64(1.0) + wp.float64(growth))
+    for i in range(n):
+        proposal[b + i] = wp.vec2f(wp.vec2d(center[b + i]) + (scale - wp.float64(1.0)) * (wp.vec2d(center[b + i]) - bc))
+    fraction = float(1.0)
+    accepted = float(0.0)
+    for trial in range(16):
+        if _proposal_clear(center, proposal, e, n, fraction, disc_centers,
+                           disc_radii, k, r_dom, margin[e], 1):
+            accepted = fraction
+            break
+        fraction *= 0.5
+    if accepted > 0.0:
+        for i in range(n):
+            center[b + i] = _proposal_point(center, proposal, b + i, accepted)
+
+
+@wp.kernel
+def _accept_resample_k(center: wp.array(dtype=wp.vec2f), proposal: wp.array(dtype=wp.vec2f),
+                        n: int, disc_centers: wp.array(dtype=wp.vec2f),
+                        disc_radii: wp.array(dtype=wp.float32), k: int, r_dom: float,
+                        margin: wp.array(dtype=wp.float32), frozen: wp.array(dtype=wp.int32),
+                        window_move: wp.array(dtype=wp.float32), skip_frozen: int,
+                        alpha: float, beta: float, eps: float,
+                        obs_pts: wp.array(dtype=wp.vec2f), obs_mw: wp.array(dtype=wp.float32),
+                        m_obs: int, p_exp: float):
+    e = wp.tid()
+    if skip_frozen == 1 and frozen[e] == 1:
+        return
+    b = e * n
+    old_peri = wp.float64(0.0)
+    new_peri = wp.float64(0.0)
+    bc = wp.vec2d(0.0, 0.0)
+    for i in range(n):
+        old_peri += wp.length(wp.vec2d(center[b + (i + 1) % n]) - wp.vec2d(center[b + i]))
+        new_peri += wp.length(wp.vec2d(proposal[b + (i + 1) % n]) - wp.vec2d(proposal[b + i]))
+        bc += wp.vec2d(proposal[b + i])
+    bc /= wp.float64(n)
+    scale = old_peri / wp.max(new_peri, wp.float64(1.0e-9))
+    for i in range(n):
+        proposal[b + i] = wp.vec2f(wp.vec2d(proposal[b + i]) + (scale - wp.float64(1.0)) * (wp.vec2d(proposal[b + i]) - bc))
+    # Arc interpolation changes chords, not just point labels. Treat it as
+    # another shape proposal: same perimeter, full swept barriers, no energy kick.
+    if _proposal_clear(center, proposal, e, n, 1.0, disc_centers, disc_radii, k, r_dom, margin[e], 1):
+        before = _proposal_energy(center, center, e, n, 0.0, alpha, beta, eps, obs_pts,
+                                  obs_mw, m_obs, p_exp, disc_centers, disc_radii, k, r_dom, margin[e])
+        after = _proposal_energy(center, proposal, e, n, 1.0, alpha, beta, eps, obs_pts,
+                                 obs_mw, m_obs, p_exp, disc_centers, disc_radii, k, r_dom, margin[e])
+        if wp.isfinite(after) and after <= before:
+            movement = float(0.0)
+            for i in range(n):
+                movement = wp.max(movement, wp.length(proposal[b + i] - center[b + i]))
+                center[b + i] = proposal[b + i]
+            window_move[e] = wp.max(window_move[e], wp.float32(wp.float64(movement) / wp.max(old_peri / wp.float64(n), wp.float64(1.0e-9))))
+
+
+@wp.kernel
+def _upsample_safe_k(old: wp.array(dtype=wp.vec2f), n_old: int,
+                     out: wp.array(dtype=wp.vec2f), n_new: int):
+    # Preserve every old vertex, subdividing each edge. The geometric loop is
+    # identical, so refinement cannot cut a corner or change obstacle homotopy.
+    e = wp.tid()
+    base_count = n_new // n_old
+    extra = n_new % n_old
+    cursor = int(0)
+    for i in range(n_old):
+        count = base_count + wp.int32(i < extra)
+        a = old[e * n_old + i]
+        b = old[e * n_old + (i + 1) % n_old]
+        for j in range(count):
+            out[e * n_new + cursor] = a + float(j) / float(count) * (b - a)
+            cursor += 1
+
+
+@wp.kernel
+def _finish_valid_k(center: wp.array(dtype=wp.vec2f), n: int,
+                    disc_centers: wp.array(dtype=wp.vec2f),
+                    disc_radii: wp.array(dtype=wp.float32), k: int, r_dom: float,
+                    margin: wp.array(dtype=wp.float32), final_target: wp.array(dtype=wp.float64),
+                    metric_failed: wp.array(dtype=wp.int32), out_valid: wp.array(dtype=wp.int32)):
+    e = wp.tid()
+    peri = wp.float64(0.0)
+    for i in range(n):
+        peri += wp.length(wp.vec2d(center[e * n + (i + 1) % n]) - wp.vec2d(center[e * n + i]))
+    clear = _proposal_clear(center, center, e, n, 0.0, disc_centers, disc_radii, k, r_dom, margin[e], 0)
+    out_valid[e] = wp.int32(clear and metric_failed[e] == 0
+                           and _target_length_ok(peri, final_target[e], n, r_dom))
+
+
 # ===========================================================================
 # Host-side spectral filter + stage schedule (numpy only, precomputed once)
 # ===========================================================================
 
 def _sobolev_circulant_row(n, s, eps_reg):
-    """Real-space circulant first row h of A^{-1}: numpy irfft of the ring spectral filter
-    1/(lam_k^s + eps_reg). A^{-1} g = circular-conv(h, g). Matches the rfft preconditioner
-    to ~1e-4 abs / ~8e-7 rel."""
-    k = np.arange(n // 2 + 1)
-    lam = 2.0 - 2.0 * np.cos(2.0 * np.pi * k / n)
-    inv_filter = 1.0 / (np.clip(lam, 0.0, None) ** s + eps_reg)
-    return np.fft.irfft(inv_filter, n=n).astype(np.float32)
+    """Positive ring inverse metric, represented and accumulated in float64.
+
+    The Laplacian has differential order two; its power is s=(beta-1)/alpha.
+    Normalize by the first nonzero mode and omit the constrained translation
+    mode. Construction rejects filters whose double row cannot retain the
+    intended positive spectrum; clipping would silently change the operator.
+    """
+    k = np.arange(n // 2 + 1, dtype=np.float64)
+    lam = 4.0 * np.sin(np.pi * k / n) ** 2
+    lam /= lam[1]
+    inv_filter = 1.0 / (lam ** s + eps_reg)
+    inv_filter[0] = 0.0
+    row = np.fft.irfft(inv_filter, n=n)
+    actual = np.fft.rfft(row).real - math.fsum(row)
+    relative = np.max(np.abs(actual[1:] - inv_filter[1:]) / inv_filter[1:])
+    if (not np.isfinite(row).all() or not np.all(actual[1:] > 0.0)
+            or relative > 1.0e-5):
+        raise ValueError(
+            f"Repulsive Sobolev metric at resolution {n}, order {s:g} is not "
+            "representably positive and accurate in float64; reduce resolution or order")
+    return row
 
 
 def _stage_schedule(stages, growth, subdiv_ratio, n_ratchet):
@@ -686,13 +970,14 @@ class RepulsiveScratch:
     __slots__ = (
         "E", "Nmax", "M", "n_wall", "n_disc", "r_dom", "r_init",
         "stages", "stage_starts", "n_iters", "h_by_n",
-        "center", "grad", "tang", "wdual", "wcoef", "btan", "len_coef", "peri_e",
-        "obs_pts", "obs_mw",
-        "g", "lg", "ainv_lg", "rs_out", "rs_seg", "rs_s",
-        "arc_real", "arc_cr", "arc_co", "count",
+        "center", "grad", "wdual", "obstacle_energy", "peri_e",
+        "obs_pts", "obs_mw", "disc_centers", "disc_radii", "K",
+        "g", "lg", "ainv_lg", "rs_out", "barrier_grad", "edge_barrier_grad", "rs_seg", "rs_s",
+        "count",
         "L_final", "L_init", "L_target", "reached", "frozen", "area_prev", "md_out",
-        "num", "den", "gmax", "msl", "cur_len", "gmean", "bc",
-        "active",
+        "num", "den", "gmax", "msl", "gmean",
+        "active", "energy", "energy_scale", "step_slope", "predicted_move",
+        "numerical_stationary", "metric_failed", "step_accepted", "margin", "half_width", "proposal", "trial_points", "window_move", "stationarity", "blocked",
     )
 
     def __init__(self, **kw) -> None:
@@ -734,14 +1019,14 @@ def _alloc_repulsive_scratch(config, *, alloc=None):
     n_iters = int(np.ceil(n_ratchet * 1.6)) + settle_iters
     stage_starts = _stage_schedule(stages, growth, _SUBDIV_RATIO, n_ratchet)
 
-    s_exp = (beta - 1.0) / (2.0 * alpha)
+    s_exp = (beta - 1.0) / alpha
     h_by_n = {}
     for Ns in sorted(set(stages)):
         h_np = _sobolev_circulant_row(Ns, s_exp, 1e-3)
-        h = alloc(f"h{Ns}", wp.float32, Ns)
+        h = alloc(f"h{Ns}", wp.float64, Ns)
         # Construction-time copy on Warp's current stream (where the scratch was zeroed).
         LaunchContext.current(h.device).copy(
-            h, wp.array(h_np, dtype=wp.float32, device="cpu"))
+            h, wp.array(h_np, dtype=wp.float64, device="cpu"))
         h_by_n[Ns] = h
 
     bufs = {}
@@ -749,30 +1034,33 @@ def _alloc_repulsive_scratch(config, *, alloc=None):
     def buf(name, dtype, n):
         bufs[name] = alloc(name, dtype, n)
 
-    for name in ("center", "grad", "tang", "btan", "g", "lg", "ainv_lg", "rs_out",
-                 # arc_real is the only stage-transition-specific scratch; the seg/s scan
-                 # buffers alias the periodic-resample rs_seg/rs_s (stage transitions and
-                 # periodic resamples are strictly sequential on the same stream, never
-                 # live at once). Saves ~2*E*Nmax f32.
-                 "arc_real"):
+    for name in ("center", "grad", "lg", "rs_out",
+                 "proposal", "trial_points", "barrier_grad", "edge_barrier_grad"):
         buf(name, wp.vec2f, E * Nmax)
-    for name in ("wdual", "wcoef", "rs_seg"):
+    for name in ("wdual", "rs_seg", "obstacle_energy"):
         buf(name, wp.float32, E * Nmax)
     buf("rs_s", wp.float32, E * (Nmax + 1))
     buf("obs_pts", wp.vec2f, E * M)
     buf("obs_mw", wp.float32, E * M)
-    for name in ("len_coef", "peri_e", "L_final", "L_init", "L_target", "area_prev",
-                 "md_out", "num", "den", "gmax", "msl", "cur_len"):
+    buf("disc_centers", wp.vec2f, E * sc.k_max)
+    buf("disc_radii", wp.float32, E * sc.k_max)
+    for name in ("gmax", "msl", "window_move", "stationarity", "margin"):
         buf(name, wp.float32, E)
-    for name in ("arc_cr", "arc_co", "count", "reached", "frozen"):
+    for name in ("energy", "energy_scale", "peri_e", "L_final", "L_init", "L_target",
+                 "area_prev", "md_out", "num", "den", "step_slope", "predicted_move"):
+        buf(name, wp.float64, E)
+    for name in ("count", "reached", "frozen", "blocked", "numerical_stationary",
+                 "metric_failed", "step_accepted"):
         buf(name, wp.int32, E)
-    for name in ("gmean", "bc"):
-        buf(name, wp.vec2f, E)
+    for name in ("g", "ainv_lg"):
+        buf(name, wp.vec2d, E * Nmax)
+    buf("gmean", wp.vec2d, E)
     buf("active", wp.int32, 1)               # the bounded loop's flag (any env growing)
 
     return RepulsiveScratch(
         E=E, Nmax=Nmax, M=M, n_wall=sc.n_wall, n_disc=sc.n_disc,
-        r_dom=sc.r_dom, r_init=sc.r_init,
+        r_dom=sc.r_dom, r_init=sc.r_init, K=sc.k_max,
+        half_width=float(getattr(config, "_repulsive_half_width", 0.0)),
         stages=stages, stage_starts=stage_starts, n_iters=n_iters, h_by_n=h_by_n,
         **bufs,
     )
@@ -793,6 +1081,14 @@ def _first_check(stage_starts, stall_window: int) -> int:
 
 _C_SIZE_LO = wp.constant(wp.float32(SIZE_BOUNDS[0]))
 _C_SIZE_HI = wp.constant(wp.float32(SIZE_BOUNDS[1]))
+
+
+@wp.kernel
+def _clearance_margin_k(size: wp.array(dtype=wp.float32), half_width: float,
+                         out: wp.array(dtype=wp.float32)):
+    e = wp.tid()
+    scale = wp.clamp(size[e], _C_SIZE_LO, _C_SIZE_HI)
+    out[e] = half_width / scale
 
 
 @wp.kernel
@@ -820,10 +1116,10 @@ def _copy_sized_k(src: wp.array(dtype=wp.vec2f), n: int,
 
 
 def _generate_repulsive(seeds_wp, config, out_centerline, out_valid_wp, scratch, ctx,
-                        size) -> None:
+                        size, barriers=None) -> None:
     """The repulsive generator's launches on ``ctx`` (the private core of
-    the :class:`Repulsive` Stage). The final copy applies the Stage's per-env size
-    as an exact scaling of the grown loop; growth does not see the size."""
+    the :class:`Repulsive` Stage). The per-env size sets the unscaled road-width
+    reservation; the final copy transforms the grown loop into world coordinates."""
     s = scratch
     E = s.E
     dev = str(out_centerline.device)
@@ -832,14 +1128,11 @@ def _generate_repulsive(seeds_wp, config, out_centerline, out_valid_wp, scratch,
     beta = float(config.repulsive_beta)
     tau = float(config.repulsive_tau)
     growth = float(config.repulsive_ratchet_rate)
-    w_len = float(config.repulsive_w_len)
     resample_every = int(config.repulsive_resample_every)
     stall_window = int(config.repulsive_stall_window)
     stall_tol = float(config.repulsive_stall_area_tol)
-    deac_i = int(bool(config.repulsive_deactivate_obstacles))
-    eps = 1e-4
+    eps = 1e-4 * s.r_dom / (_DOMAIN_SCALE_REF * 0.35)
     p_exp = -(beta - alpha) / 2.0
-    n_wall = s.n_wall
     M = s.M
     stages = s.stages
     stage_starts = s.stage_starts
@@ -862,7 +1155,9 @@ def _generate_repulsive(seeds_wp, config, out_centerline, out_valid_wp, scratch,
     tail_ups = list(range(idx + 1, len(stages)))
 
     # 1. Seed-driven obstacle layout + per-env target length.
-    _sample_obstacles_inplace(seeds_wp, config, s.obs_pts, s.obs_mw, dev, ctx=ctx)
+    ctx.launch(_clearance_margin_k, E, [size, s.half_width, s.margin])
+    _sample_obstacles_inplace(seeds_wp, config, s.obs_pts, s.obs_mw, dev, ctx=ctx,
+                              disc_centers=s.disc_centers, disc_radii=s.disc_radii, margin=s.margin)
     grow_lo = float(config.repulsive_grow_mult_min)
     grow_hi = float(config.repulsive_grow_mult_max)
     ctx.launch(_seed_lfinal_k, E,
@@ -870,22 +1165,22 @@ def _generate_repulsive(seeds_wp, config, out_centerline, out_valid_wp, scratch,
                 s.L_final, s.L_init, s.L_target, s.reached, s.frozen, s.area_prev])
     # The loop flag: a check can only ever read a value written in THIS generation.
     ops.fill(ctx, s.active, 1)
+    ops.fill(ctx, s.window_move, 0.0)
+    ops.fill(ctx, s.blocked, 0)
+    ops.fill(ctx, s.metric_failed, 0)
+    ops.fill(ctx, s.step_accepted, 0)
+    ops.fill(ctx, s.numerical_stationary, 0)
 
     # 2. Initial circle at the coarsest stage prefix.
     N0 = stages[0]
     ctx.launch(_init_circle_k, (E, N0), [center, N0, s.r_init])
 
     def upsample(c, i):
-        # Advance one coarse-to-fine stage: arc-length resample center stages[i-1] ->
-        # stages[i]. The seg/s scan scratch aliases the periodic-resample rs_seg/rs_s
-        # (never live at once).
+        # Advance the resolution while retaining every old vertex and edge.
         Nold, Nnew = stages[i - 1], stages[i]
-        ops.arc_resample(
-            c, center[0:E * Nold], Nold, Nnew,
-            ops.ArcScratch(s.arc_real[0:E * Nold], s.rs_seg[0:E * Nold],
-                           s.rs_s[0:E * (Nold + 1)], s.arc_cr),
-            s.rs_out[0:E * Nnew], s.arc_co)
+        c.launch(_upsample_safe_k, E, [center, Nold, s.rs_out, Nnew])
         c.copy(center, s.rs_out, count=E * Nnew)
+        ops.fill(c, s.window_move, 1.0)
 
     def body(c, it):
         # --- coarse-to-fine stage transition (upsample center N -> next N) ---
@@ -894,23 +1189,19 @@ def _generate_repulsive(seeds_wp, config, out_centerline, out_valid_wp, scratch,
         Ncur = ncur[it]
         h_wp = s.h_by_n[Ncur]
 
-        # 1. ratchet target + deactivation flag
+        # 1. ratchet target
         c.launch(_ratchet_k, E, [s.L_target, s.L_final, growth, s.reached])
 
-        # 2. energy gradient via hand-written analytic adjoints (all 3 terms -> s.grad).
-        #    Per-vertex gather, no atomics -> byte-deterministic per device. Per-vertex
-        #    tangents/weights are precomputed once (O(E*N)) and shared by both pair kernels.
-        c.launch(_tangent_weight_k, (E, Ncur), [center, Ncur, s.frozen, s.tang, s.wdual])
-        c.launch(_tp_prepass_k, (E, Ncur),
-                 [center, Ncur, alpha, beta, eps, s.frozen,
-                  s.tang, s.wdual, s.wcoef, s.btan])
-        c.launch(_len_coef_k, E,
-                 [center, Ncur, s.L_target, s.L_init, w_len, s.frozen,
-                  s.len_coef, s.peri_e])
+        # 2. Analytic endpoint/tangent/length derivatives and weighted obstacle terms.
+        #    Per-vertex gather avoids atomics; shared dual weights are O(E*N).
+        c.launch(_dual_weight_k, (E, Ncur), [center, Ncur, s.frozen, s.wdual])
+        c.launch(_perimeter_k, E, [center, Ncur, s.peri_e])
+        c.launch(_obstacle_energy_k, (E, Ncur),
+                 [center, Ncur, s.obs_pts, s.obs_mw, M, p_exp, s.disc_centers,
+                  s.disc_radii, s.K, s.r_dom, s.margin, s.frozen, s.obstacle_energy, s.barrier_grad, s.edge_barrier_grad])
         c.launch(_grad_gather_k, (E, Ncur),
-                 [center, Ncur, alpha, beta, eps, s.tang, s.wdual, s.wcoef, s.btan,
-                  s.obs_pts, s.obs_mw, M, p_exp, s.reached,
-                  n_wall, deac_i, s.len_coef, s.frozen, s.grad])
+                 [center, Ncur, alpha, beta, eps, s.wdual,
+                  s.obs_pts, s.obs_mw, M, p_exp, s.obstacle_energy, s.barrier_grad, s.edge_barrier_grad, s.frozen, s.grad])
 
         # 3. Sobolev precondition g = A^{-1} grad
         c.launch(_conv_k, (E, Ncur), [s.grad, h_wp, Ncur, s.frozen, s.g])
@@ -919,14 +1210,26 @@ def _generate_repulsive(seeds_wp, config, out_centerline, out_valid_wp, scratch,
         c.launch(_conv_k, (E, Ncur), [s.lg, h_wp, Ncur, s.frozen, s.ainv_lg])
         c.launch(_numden_k, E, [s.g, s.lg, s.ainv_lg, Ncur, s.num, s.den])
         c.launch(_project_k, (E, Ncur), [s.g, s.ainv_lg, Ncur, s.num, s.den])
-        # 5. barycenter pin + normalized step
+        # 5. Shape descent at the CURRENT perimeter, with Armijo acceptance and
+        # analytic barriers. Growth is a separate feasible forced expansion.
         c.launch(_gmean_k, E, [s.g, Ncur, s.gmean])
-        c.launch(_gmax_msl_k, E, [s.g, s.gmean, s.peri_e, Ncur, s.gmax, s.msl])
+        c.launch(_shape_energy_k, E,
+                 [center, Ncur, alpha, beta, eps, s.obs_pts, s.obs_mw, M, p_exp,
+                  s.disc_centers, s.disc_radii, s.K, s.r_dom, s.margin, s.frozen, s.energy, s.energy_scale])
+        c.launch(_direction_metrics_k, E,
+                 [s.g, s.gmean, s.grad, s.peri_e, s.energy_scale, Ncur, tau, s.r_dom, s.frozen,
+                  s.gmax, s.msl, s.stationarity, s.step_slope, s.predicted_move,
+                  s.numerical_stationary, s.metric_failed, s.lg, s.num, s.den, h_wp])
         c.launch(_step_k, (E, Ncur),
-                 [center, s.g, s.gmean, s.msl, s.gmax, tau, Ncur, s.frozen])
-        # 6. hard rescale to the ratcheted target
-        c.launch(_perim_bc_k, E, [center, Ncur, s.cur_len, s.bc])
-        c.launch(_rescale_k, (E, Ncur), [center, s.bc, s.cur_len, s.L_target, Ncur, s.frozen])
+                 [center, s.g, s.gmean, s.energy_scale, s.gmax, tau, s.r_dom, Ncur, s.frozen, s.proposal])
+        c.launch(_accept_shape_k, E,
+                 [center, s.proposal, s.trial_points, s.grad, s.energy, s.energy_scale, Ncur, alpha, beta, eps, s.obs_pts, s.obs_mw,
+                  M, p_exp, s.disc_centers, s.disc_radii,
+                  s.K, s.r_dom, s.margin, s.msl, s.frozen, s.window_move, s.stationarity, s.blocked,
+                  s.step_slope, s.numerical_stationary, s.metric_failed, s.step_accepted])
+        c.launch(_grow_feasible_k, E,
+                 [center, s.proposal, Ncur, s.L_target, growth, s.disc_centers, s.disc_radii,
+                  s.K, s.r_dom, s.margin, s.frozen])
 
         # 7. periodic arc-length resample (pure Warp). Frozen envs are left untouched
         #    (absorbing freeze); every other kernel above already skips them.
@@ -934,12 +1237,15 @@ def _generate_repulsive(seeds_wp, config, out_centerline, out_valid_wp, scratch,
             ops.fill(c, s.count, Ncur)
             ops.resample_uniform(c, center[0:E * Ncur], Ncur, rs_scratch,
                                  s.rs_out[0:E * Ncur], count=s.count)
-            c.launch(_copy_unfrozen_k, (E, Ncur), [center, s.rs_out, Ncur, s.frozen])
+            c.launch(_accept_resample_k, E, [center, s.rs_out, Ncur, s.disc_centers,
+                     s.disc_radii, s.K, s.r_dom, s.margin, s.frozen, s.window_move, 1,
+                     alpha, beta, eps, s.obs_pts, s.obs_mw, M, p_exp])
 
         # 8. stall-stop: freeze converged envs (device-side), then refresh the loop flag.
         if Ncur == stages[-1] and (it + 1) % stall_window == 0:
             c.launch(_freeze_update_k, E,
-                     [center, Ncur, s.reached, stall_tol, s.area_prev, s.frozen, s.md_out])
+                     [center, Ncur, s.reached, stall_tol, s.area_prev, s.frozen, s.md_out,
+                      s.L_final, s.window_move, s.stationarity, s.blocked, s.r_dom])
             ops.fill(c, s.active, 0)
             c.launch(_active_k, E, [s.frozen, s.active])
 
@@ -964,8 +1270,15 @@ def _generate_repulsive(seeds_wp, config, out_centerline, out_valid_wp, scratch,
     ops.fill(ctx, s.count, Ncur)
     ops.resample_uniform(ctx, center[0:E * Ncur], Ncur, rs_scratch, s.rs_out[0:E * Ncur],
                          count=s.count)
-    ctx.launch(_copy_sized_k, E * Ncur, [s.rs_out, Ncur, size, out_centerline])
-    ops.fill(ctx, out_valid_wp, 1)
+    ctx.launch(_accept_resample_k, E, [center, s.rs_out, Ncur, s.disc_centers,
+               s.disc_radii, s.K, s.r_dom, s.margin, s.frozen, s.window_move, 0,
+               alpha, beta, eps, s.obs_pts, s.obs_mw, M, p_exp])
+    ctx.launch(_finish_valid_k, E, [center, Ncur, s.disc_centers, s.disc_radii, s.K,
+               s.r_dom, s.margin, s.L_final, s.metric_failed, out_valid_wp])
+    ctx.launch(_copy_sized_k, E * Ncur, [center, Ncur, size, out_centerline])
+    if barriers is not None:
+        ctx.launch(publish_barriers_k, E, [s.disc_centers, s.disc_radii, s.K, s.r_dom,
+                   size, barriers])
 
 
 # ===========================================================================
@@ -976,15 +1289,15 @@ class Repulsive(Stage):
     """``"repulsive"``: the repulsive-growth track generator
     as a ``kind="generator"`` Stage of capture class ``BOUNDED`` (its growth loop is a
     ``ctx.bounded_loop`` with an absorbing per-env freeze). Roadmap PR13d: its dynamic
-    ``size`` scales the grown loop in the final copy (:func:`_copy_sized_k`;
-    ``raw.xy(s) == f32(raw.xy(1) * s)``)."""
+    ``size`` scales the domain and sampled circles, while the road width remains
+    absolute. Growth reserves that width in the unscaled solver coordinates."""
 
     kind = "generator"
     name = "repulsive"
     output = "centerline"
     capture = CaptureClass.BOUNDED
     Params = RepulsiveParams
-    writes = {"xy": "raw.xy", "valid": "gen.valid"}
+    writes = {"xy": "raw.xy", "valid": "gen.valid", "barriers": "gen.repulsive.barriers"}
 
     def capacity(self, params, layout):
         # The last coarse-to-fine stage is the raw resolution (== num_points, checked by
@@ -1006,9 +1319,11 @@ class Repulsive(Stage):
 
     def build(self, b, p):
         cfg = self._run_view(p, num_envs=b.E, scale=b.scale, device=str(b.device))
+        cfg._repulsive_half_width = getattr(b, "_repulsive_half_width", 0.0)
         scratch = _alloc_repulsive_scratch(cfg, alloc=b.scratch)
         xy = b.write("xy", wp.vec2f, per="raw")
         valid = b.write("valid", wp.int32)
+        barriers = b.write("barriers", RepulsiveBarriers)
         seed = b.seed
         size = b.param("size")
         dev = str(xy.device)
@@ -1016,7 +1331,7 @@ class Repulsive(Stage):
         def enqueue(ctx):
             _init()
             _generate_repulsive(seed, cfg, xy, valid, scratch, _resolve_ctx(ctx, dev),
-                                size)
+                                size, barriers)
         return enqueue
 
 

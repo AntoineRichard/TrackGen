@@ -236,13 +236,13 @@ class TrackGenConfig:
     repulsive_grow_mult_min : float
         *Repulsive generator only.*  Lower bound of the per-env target-perimeter
         multiplier draw ``U(min, max)``: the grown loop's target perimeter is
-        ``grow_mult * 2π * r_init``.  Higher → denser mazes at some yield cost.
+        ``grow_mult * 2π * r_init``. Default 2.0. Higher targets may be infeasible
+        under the permanent obstacle and road-width constraints.
 
         .. warning::
 
-            The ``repulsive`` generator is an iterative optimizer — about **two orders
-            of magnitude slower** than ``bezier`` (its cost table is in
-            :doc:`/generators/repulsive`).  It is
+            The ``repulsive`` generator runs a bounded iterative optimizer; measure
+            its cost for your batch and device (:doc:`/generators/repulsive`). It is
             graph-captured on CUDA like the other generators; its loop has a fixed
             iteration bound (its own graph on CUDA 12.4+ and eager ``cpu`` calls stop
             at the first stall window after every env has frozen; eager ``cuda`` calls
@@ -275,18 +275,16 @@ class TrackGenConfig:
         Must be >= ``repulsive_obstacle_radius_min_frac``.
     repulsive_ratchet_rate : float
         *Repulsive generator only.*  Per-iteration length-growth factor of the hard
-        ratchet.  Must be > 0.  ``<= 0.013`` holds full yield with folds; ``>= 0.016``
-        collapses the folds (physical limit).
+        target ratchet. Must be > 0. Only feasible growth is accepted; an unmet
+        target at the iteration bound reports invalid.
     repulsive_alpha : float
-        *Repulsive generator only.*  Tangent-point energy exponent alpha.  Must be > 0.
+        *Repulsive generator only.*  Tangent-point exponent alpha. Must be > 1.
     repulsive_beta : float
         *Repulsive generator only.*  Tangent-point energy exponent beta; obstacle
-        inverse power is ``p = beta - alpha``.  Must be > 0.
+        inverse power is ``p = beta - alpha``. Requires ``alpha + 2 <= beta < 2*alpha + 1``.
     repulsive_tau : float
-        *Repulsive generator only.*  Normalized flow step size.
-    repulsive_w_len : float
-        *Repulsive generator only.*  Weight of the secondary target-length gradient.
-        Hard growth/length enforcement is separate from this soft correction.
+        *Repulsive generator only.* Energy-scaled gradient step with bounded
+        backtracking. Must be > 0; stationarity is measured independently of this value.
     repulsive_stages : tuple of int
         *Repulsive generator only.*  Coarse-to-fine resolution schedule ``N = 64 →
         128 → 256``.  Must be non-empty, strictly increasing, and each a positive
@@ -295,18 +293,16 @@ class TrackGenConfig:
     repulsive_settle_iters : int
         *Repulsive generator only.*  Settle-phase iteration budget above the ratchet.
     repulsive_resample_every : int
-        *Repulsive generator only.*  Periodic arc-length reparameterization interval.
+        *Repulsive generator only.* Interval between arc-length resampling proposals;
+        proposals must preserve clearance and decrease the shape energy.
     repulsive_stall_window : int
-        *Repulsive generator only.*  Iterations between per-env stall checks (an env
-        whose area has stopped changing is frozen on device).
+        *Repulsive generator only.* Iterations between optional early-stop checks.
+        A frozen environment remains unchanged through the remaining growth windows.
     repulsive_stall_area_tol : float
-        *Repulsive generator only.*  Freeze an env once it is past target length AND
-        its enclosed-area relative change over a stall window is below this
-        (reparameterization-invariant shape-convergence tolerance).
-    repulsive_deactivate_obstacles : bool
-        *Repulsive generator only.*  When ``True`` (default), zero the inner-disc
-        obstacle weights once an env reaches its target length (the wall stays live),
-        closing the disc halos.
+        *Repulsive generator only.* Early-stop tolerance for relative area change,
+        accepted motion per mean edge, and dimensionless projected stationarity.
+        Actual target length and genuine progress or numerical stationarity are also
+        required. A feasible budget output can be valid while still unfrozen.
 
     half_width : float
         Track half-width in the same coordinate units as the centerline.  Must be
@@ -557,8 +553,8 @@ class TrackGenConfig:
     voronoi_radial_variation: float = 0.62
     voronoi_angular_jitter: float = 0.08
     # --- Repulsive-growth generator params (generator="repulsive") ---
-    repulsive_grow_mult_min: float = 4.5
-    repulsive_grow_mult_max: float = 5.5
+    repulsive_grow_mult_min: float = 2.0
+    repulsive_grow_mult_max: float = 3.0
     repulsive_domain_frac: float = 0.35
     repulsive_domain_init_ratio: float = 4.0
     repulsive_obstacle_count_min: int = 8
@@ -569,13 +565,11 @@ class TrackGenConfig:
     repulsive_alpha: float = 3.0
     repulsive_beta: float = 6.0
     repulsive_tau: float = 0.4
-    repulsive_w_len: float = 30.0
     repulsive_stages: tuple[int, ...] = (64, 128, 256)
     repulsive_settle_iters: int = 40
     repulsive_resample_every: int = 25
     repulsive_stall_window: int = 16
     repulsive_stall_area_tol: float = 0.05
-    repulsive_deactivate_obstacles: bool = True
 
 
     # --- Width params ---

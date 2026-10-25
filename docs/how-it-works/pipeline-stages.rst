@@ -992,7 +992,13 @@ check, else derived by the commit.
    * - 7
      - ``truncation``
      - ``N_max`` cut the loop (``Track.truncated``)
-   * - 8-15
+   * - 8
+     - ``repulsive_disc``
+     - Repulsive programs only: the finished band fails sampled-disc clearance
+   * - 9
+     - ``repulsive_wall``
+     - Repulsive programs only: the finished band leaves the circular domain
+   * - 10-15
      - reserved
      - Reserved built-in check range
    * - 16-30
@@ -1006,7 +1012,11 @@ check, else derived by the commit.
 which also writes its own 0/1 flag ``track.valid``. An env with ``count == 0`` gets bit 1
 plus bits 0 and 7 when they apply. ``track_gen.pipeline.BUILTIN_FAIL_BITS`` is the
 name-to-bit table above (a read-only mapping); a name is listed even when its check is
-off (bits 5 and 6), and is then never set.
+off (bits 5 and 6), and is then never set. Repulsive programs additionally
+reserve names for bits 8 and 9 in ``Program.fail_bits`` and ``Track.fail_bits``;
+the generic ``BUILTIN_FAIL_BITS`` mapping stays at bits 0–7. Its mandatory
+post-tail check covers each road cell's convex hull and full wall containment
+(:ref:`geometry-validity`). Other programs do not add these two failure reasons.
 
 A validity plugin calls ``b.fail_bit(name=None)`` in its ``build`` for each independent
 check it runs and gets bits 16, 17, ... in pipeline order; the name (default: the stage
@@ -1342,10 +1352,15 @@ randomizer's ``lo`` / ``hi`` (it clamps its draw).
 ``((x * cell_size + jitter) * scale) * size[e]``, or the normalization target
 ``target * size[e]`` before its division. Neither product feeds an addition, so a size of
 ``1`` is bit-exact on CPU and CUDA (no fused multiply-add is created or removed; a CPU
-test locks the generated CUDA source of each kernel pair). ``repulsive``'s final copy
-multiplies only finite values (``where(size == 1 or not finite, v, w * size)``, with ``w``
-the finite-gated value): a size-1 copy keeps every finite value bit for bit, and a
-non-finite point is copied unscaled at every size (a NaN bit for bit, payload included).
+test locks the generated CUDA source of each kernel pair).
+
+Repulsive also uses the effective size to reserve known absolute road width in
+unscaled coordinates and to place its obstacles. Its raw layout, shape and
+feasible updates can therefore change with size. Its final copy scales finite
+coordinates, and its analytic barrier metadata uses the same effective clamp in
+``[0.1, 10]``. A NaN size remains invalid. The identity behavior of the final copy
+at size 1 does not imply pure scaling of an independently generated raw curve;
+see :ref:`repulsive-dynamic`.
 
 **Corner count.** ``_sample_counts_dyn_h_k`` loads env ``e``'s ``min_num_points``, clamps
 it to ``[2, max_num_points]`` and draws the count as the scalar kernel does.

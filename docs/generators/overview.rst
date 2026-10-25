@@ -111,14 +111,16 @@ integer controls use ``set``; counts and capacities that are static require rebu
      - checkpoint_radius_min_frac, checkpoint_angle_jitter, checkpoint_turn_rate, size
      - :ref:`checkpoint-dynamic`
    * - Repulsive
-     - size (applied after growth)
+     - size (also affects raw width reservation and layout)
      - :ref:`repulsive-dynamic`
    * - External
      - none; upload geometry directly
      - :ref:`ingesting-centerlines`
 
 ``size`` scales the XY layout while width, spacing and altitude stay absolute.
-A longer loop needs more output slots; budget ``N_max`` for the largest size:
+Repulsive also uses it for width reservation, which can change the raw layout
+and shape (:ref:`repulsive-dynamic`). A longer loop needs more output slots;
+budget ``N_max`` for the largest size:
 :ref:`tuning-size`. Native polar/voronoi/checkpoint gates instead use
 ``normalize.size``. Native Bezier/Hull gate count bounds are static.
 
@@ -129,10 +131,13 @@ For randomization, ownership and masked regeneration, follow
 Validity and generation cost
 ----------------------------
 
-Procedural generators write a raw closed loop and ``gen.valid=1``. Final road
-validity is checked after the shared pipeline. A generator-local fallback is not a
-road-clearance certificate. Count, padding, poison defaults and ``fail_mask`` are
-part of the :doc:`/user-guide/results` contract.
+The sampling/steering families write a raw closed loop and ``gen.valid=1``.
+Repulsive requires finite feasible raw geometry at its sampled target length;
+its optional freeze state is separate from validity. Final road validity is
+checked after the shared pipeline. Repulsive additionally certifies full-width
+disc and wall clearance on the finished band. A generator-local fallback alone
+is not a road-clearance certificate. Count, padding, poison defaults and
+``fail_mask`` are part of the :doc:`/user-guide/results` contract.
 
 Sampling/steering families use bounded sampling and geometry work. ``repulsive``
 additionally runs an iterative growth solve with quadratic self-pair work at each

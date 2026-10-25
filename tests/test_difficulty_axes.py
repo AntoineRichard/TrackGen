@@ -5,7 +5,7 @@
   on ``scale`` applied where each generator applies it (bezier / hull and their gate
   generators: last in the corner grid; polar / voronoi / checkpoint: the normalization
   target; the polar / voronoi / checkpoint gate pipelines: ``normalize.size``;
-  repulsive: a finite-gated multiply of its output copy). No size on ``external``.
+  repulsive: width-aware constrained growth followed by its sized output copy). No size on ``external``.
 - ``min_num_points`` (bezier / hull track generators): a dynamic int32 lower count
   bound, clamped to ``[2, max_num_points]`` at use.
 - ``gate_frames.gate_width`` dynamic; ``validity.gate_default`` checks bar crossings per
@@ -15,7 +15,7 @@
 Covered here (design section 9.2): 1. declarations, the flat ``size`` and the public ops;
 2. each twin == its original (generator-produced inputs, discriminating NaN payloads for
 the guarded copy); 3. the generated CUDA source of each twin (on CPU); 4. per env ==
-per-env scalar runs; 5. repulsive's exact output scaling; 6. size vs scale; 7. randomize
+per-env scalar runs; 5. repulsive's dynamic size consistency; 6. size vs scale; 7. randomize
 on the new axes and the plan rules (hints, truncation and composed-draw warnings); 8. the
 launch deltas of every pipeline (``tests/_pr13d_delta.py``, plain and masked); 9.
 ``in_effect`` / ``bounds``; 11.
@@ -25,7 +25,6 @@ gates.
 """
 from __future__ import annotations
 from tests._reference_generators import warp_pipeline as _scalar_pipeline
-from tests._reference_generators import warp_generate_repulsive as _rep_reference
 from tests._reference_generators import warp_generate as _bezier_reference
 
 import collections
@@ -888,22 +887,40 @@ def test_gate_width_per_env_equals_pipelines_built_with_each_width(name):
 
 
 # ---------------------------------------------------------------------------------------
-# 5. Repulsive: an exact scaling of the grown loop
+# 5. Repulsive: dynamic size consistently reserves absolute road width
 # ---------------------------------------------------------------------------------------
 
-def test_repulsive_output_is_an_exact_scaling():
-    """``raw.xy(s) == f32(raw.xy(1) * s)`` per point (the growth does not see ``size``):
-    the sized copy is the only change (design E11)."""
+def test_repulsive_dynamic_size_matches_a_fresh_constructor():
+    """The same live size produces the same constrained geometry regardless of the
+    initial constructor size. Width reservation makes growth size-dependent."""
     seeds = SEEDS[:4]
     gen = TrackGenerator(_tcfg(generator="repulsive", num_envs=4, **REP), _rng(seeds))
     gen.generate()
     r1 = gen.program.tap("raw.xy").numpy().copy()
     assert np.isfinite(r1).all()
-    for s in (0.7, 1.3, 2.0):
-        gen.params["generator"].set("size", s)
-        gen.generate()
-        rs = gen.program.tap("raw.xy").numpy()
-        assert rs.tobytes() == (r1 * np.float32(s)).astype(np.float32).tobytes(), s
+    differs = False
+    for size in (0.7, 1.3, 2.0):
+        gen.params["generator"].set("size", size)
+        actual = _snap(gen.generate())
+        raw = gen.program.tap("raw.xy").numpy().copy()
+        fresh = TrackGenerator(_tcfg(generator="repulsive", num_envs=4, size=size, **REP),
+                               _rng(seeds))
+        expected = _snap(fresh.generate())
+        assert raw.tobytes() == fresh.program.tap("raw.xy").numpy().tobytes()
+        assert actual.keys() == expected.keys()
+        assert all(actual[key].tobytes() == expected[key].tobytes() for key in actual)
+        differs |= raw.tobytes() != (r1 * np.float32(size)).astype(np.float32).tobytes()
+    assert differs, "absolute road width must participate in Repulsive growth"
+
+
+def test_repulsive_physically_infeasible_size_fails_closed():
+    gen = TrackGenerator(_tcfg(generator="repulsive", num_envs=4, size=0.1, **REP),
+                         _rng(SEEDS[:4]))
+    result = gen.generate()
+    assert not result.valid.numpy().any()
+    assert (result.fail_mask.numpy() != 0).all()
+    assert result.count.numpy().tolist() == [0] * 4
+    assert np.isnan(result.center.numpy()).all()
 
 
 # ---------------------------------------------------------------------------------------
@@ -1052,16 +1069,16 @@ def test_the_build_time_truncation_warning():
                generator_params={"repulsive_stages": (16, 32, 64)})
     with warnings.catch_warnings(record=True) as rec:
         warnings.simplefilter("always")
-        build(presets.track(num_envs=2, device=DEV, randomize={"generator.size": (0.8, 2.0)},
+        build(presets.track(num_envs=2, device=DEV, randomize={"generator.size": (0.8, 4.0)},
                             **rep))
     trunc = [w for w in rec if "truncates at n_max" in str(w.message)]
     assert len(trunc) == 1 and trunc[0].filename == __file__
     msg = str(trunc[0].message)
-    # repulsive's nominal perimeter is exact from its params: 5.5 * 2 pi * r_init
-    nominal = 5.5 * 2 * math.pi * 0.35 * 4.9029 / 4.0
-    need = math.ceil(2.0 * nominal / 0.06) + 1
-    assert re.search(rf"generator\.size drawn up to 2\.0 truncates at n_max=384 "
-                     rf"\(nominal raw perimeter ~{2.0 * nominal:.1f} > \(n_max - 1\) \* "
+    # repulsive's nominal perimeter is exact from its params: 3.0 * 2 pi * r_init
+    nominal = 3.0 * 2 * math.pi * 0.35 * 4.9029 / 4.0
+    need = math.ceil(4.0 * nominal / 0.06) + 1
+    assert re.search(rf"generator\.size drawn up to 4\.0 truncates at n_max=384 "
+                     rf"\(nominal raw perimeter ~{4.0 * nominal:.1f} > \(n_max - 1\) \* "
                      rf"spacing = 22\.98\): raise n_max to >= {need} or lower the range",
                      msg), msg
     # ... a spec with that n_max does not warn; nor does bezier's (0.8, 1.2); a
@@ -1069,14 +1086,14 @@ def test_the_build_time_truncation_warning():
     with warnings.catch_warnings():
         warnings.simplefilter("error", UserWarning)
         build(presets.track(num_envs=2, device=DEV, n_max=need,
-                            randomize={"generator.size": (0.8, 2.0)}, **rep))
+                            randomize={"generator.size": (0.8, 4.0)}, **rep))
         build(presets.track(num_envs=E, device=DEV,
                             randomize={"generator.size": (0.8, 1.2)}))
         build(presets.track(num_envs=E, device=DEV, size=1.0))
     with pytest.warns(UserWarning, match=r"generator\.size=4\.0 truncates at n_max=384"):
         build(presets.track(num_envs=E, device=DEV, size=4.0))
-    with pytest.warns(UserWarning, match=r"generator\.size=1\.8 truncates"):
-        TrackGenerator(_tcfg(size=1.8, **{k: v for k, v in rep.items()
+    with pytest.warns(UserWarning, match=r"generator\.size=3\.0 truncates"):
+        TrackGenerator(_tcfg(size=3.0, **{k: v for k, v in rep.items()
                                           if k != "generator_params"},
                              repulsive_stages=(16, 32, 64)), _rng())
 
@@ -1171,36 +1188,6 @@ def test_the_track_launch_deltas_against_the_legacy_composition():
     assert len(pr9) == 152
     want = pr13d_sequence(_rows(pr9), latch_dtypes(gen.program), E, legacy=True)
     assert _rows(program) == want
-
-
-def test_the_repulsive_launch_delta():
-    """+1 latch (its size) and the generator's final copy is the sized copy: the
-    generator's records == the frozen ``generate_repulsive_warp``'s (same effective
-    seeds) under the rule."""
-    n = 4
-    gen = TrackGenerator(_tcfg(generator="repulsive", num_envs=n, **REP), _rng(SEEDS[:n]))
-    ctx = LaunchContext.for_call(DEV)
-    with trace_launches() as plain:
-        gen.program.enqueue(ctx)
-    seed = wp.clone(gen.program.seed)              # the effective seeds of `plain`
-    raw = gen.program.tap("raw.xy").numpy().copy()
-    mask = wp.array([1, 0, 1, 0], dtype=wp.int32, device=DEV)
-    with trace_launches() as masked:
-        gen.program.enqueue(ctx, advance=True, mask=mask)
-    assert assert_latch_block(gen.program, plain, masked) == ["f32"]
-    rows = _rows(plain)
-    names = _names(plain)
-    assert names.count("_copy_sized_k") == 1
-    cs = names.index("_cs_scan_k")
-    cfg = gen.config
-    scratch = _rep_reference._alloc_scratch(cfg)
-    out = wp.empty(n * 64, dtype=wp.vec2f, device=DEV)
-    valid = wp.empty(n, dtype=wp.int32, device=DEV)
-    with trace_launches() as frozen:
-        _rep_reference._generate(seed, cfg, out, valid, scratch, ctx=ctx)
-    want = pr13d_sequence(_rows(frozen), [], n, repulsive=True)
-    assert rows[2:cs] == want
-    assert out.numpy().tobytes() == raw.tobytes()  # size 1: the sized copy is a copy
 
 
 def test_external_gains_no_launch():
@@ -1530,14 +1517,14 @@ def test_the_private_cores_check_the_new_dyn_keys():
 
 @pytest.mark.parametrize("on_invalid", ["keep", "poison"])
 def test_a_truncating_size_fails_closed(on_invalid):
-    """Repulsive at size 3 with the default ``n_max`` (its target perimeters 12.1-14.8 at
+    """Repulsive at size 5 with the default ``n_max`` (its target perimeters 5.4-8.1 at
     size 1 vs ``(n_max - 1) * spacing = 22.98``): every env truncated and invalid, its
     rows kept or poisoned as ``on_invalid`` says (PR5)."""
     n = 4
     spec = presets.track(num_envs=n, device=DEV, generator="repulsive", num_points=64,
-                         generator_params={"repulsive_stages": (16, 32, 64)}, size=3.0,
+                         generator_params={"repulsive_stages": (16, 32, 64)}, size=5.0,
                          on_invalid=on_invalid)
-    with pytest.warns(UserWarning, match=r"generator\.size=3\.0 truncates at n_max=384"):
+    with pytest.warns(UserWarning, match=r"generator\.size=5\.0 truncates at n_max=384"):
         gen = TrackGenerator(spec, _rng(SEEDS[:n]))
     t = gen.generate()
     assert t.truncated.numpy().tolist() == [1] * n

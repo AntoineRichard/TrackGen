@@ -129,3 +129,19 @@ def test_committed_manifest_has_nonvacuous_comparisons_and_provenance():
     assert growth["iterations"] == sorted(set(growth["iterations"]))
     assert len(growth["iterations"]) >= 10
     assert growth["final_matches_generator"]
+    assert growth["hard_collision_obstacles"]
+    assert growth["geometry_interpolated"] is False
+    assert all(state["inner_forces_active"] and state["wall_forces_active"]
+               and state["hard_barriers_active"] for state in growth["force_states"])
+    repulsive = manifest["families"]["repulsive"]
+    assert repulsive["source"]["git_commit"] == growth["source"]["git_commit"]
+    assert repulsive["source"]["source_tree_dirty"] is False
+    for sample in repulsive["examples"]:
+        assert sample["generator_valid"] and sample["reached"]
+        assert "repulsive_deactivate_obstacles" not in sample["config"]
+        assert "repulsive_w_len" not in sample["config"]
+        assert sample["barriers"]["half_width"] == .1
+    success, rejected = manifest["specials"]["finished_band_limit"]
+    assert success["valid"]
+    assert rejected["generator_valid"] and not rejected["valid"] and rejected["fail"] & 256
+    assert [sample["config"]["size"] for sample in manifest["specials"]["width_reservation"]] == [.5, 1., 2.]

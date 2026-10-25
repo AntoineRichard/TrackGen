@@ -2,7 +2,10 @@
 
 ``TrackGenerator`` runs a :class:`track_gen.pipeline.Program` of the default stage list.
 The PR9 composition (``warp_pipeline._run_pipeline`` -> ``_inflate_warp``) is kept
-unchanged as the reference: each case builds a generator, generates (plainly, then with
+unchanged as the reference for the generators retaining that algorithm. Repulsive
+intentionally changed its solver and final road checks; its geometry, bounded-loop
+and capture regressions live in the Repulsive-specific tests. Each case here builds
+a generator, generates (plainly, then with
 a masked advance), runs ``_run_pipeline`` on fresh PR9 buffers from the same effective
 seeds, and compares every channel version the Program wrote with the PR9 buffer it
 reproduces (raw bytes: NaN padding compares too). The launch sequences (op, kernel,
@@ -58,8 +61,6 @@ CASES = {
     "polar": dict(generator="polar"),
     "voronoi": dict(generator="voronoi"),
     "checkpoint": dict(generator="checkpoint"),
-    "repulsive": dict(generator="repulsive", num_points=64, repulsive_stages=(16, 32, 64),
-                      half_width=0.1, _E=2),
     "bezier_fallback": dict(generator="bezier", rad=0.49, _E=32),
     "voronoi_fallback": dict(generator="voronoi", voronoi_radial_variation=0.85,
                              voronoi_angular_jitter=0.6, voronoi_num_sites=64, _E=32),

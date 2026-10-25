@@ -16,21 +16,44 @@ the architecture and the roadmap, and `CHANGELOG.md` for what shipped.
   contract) is explicitly deferred until the user answers its review thread.
   1.0 is a later milestone.
 
+## Release-blocking Repulsive repair (user decision, 2026-10-25)
+
+The user has explicitly authorized fixing Repulsive before release and changing its
+seeded outputs where necessary. The entire finished road, including width, must
+clear every sampled disc and stay inside the outer wall. This is a hard validity
+contract after resampling, relaxation and inflation, not merely a soft growth force.
+No accepted optimizer/rescale/resample step may tunnel through the barriers. A run
+with infeasible geometry or a missed target length must report invalid and respect
+poison/keep. Geometric validity is separate from optional early-stop convergence:
+a feasible smooth road may use the full iteration budget while its energy still
+admits improvement. Only genuine small movement/stationarity may mark it frozen;
+a rejected or quantized no-op step must not fake convergence.
+
+Correct the evidenced numerical/roughness defects rather than only smoothing the
+visualization. The implementation design and plan are under docs/superpowers/.
+Preserve the other generators' outputs, RNG salts/draw order, lightweight imports,
+ctx launches, fixed buffers and CPU/CUDA capture. The immutable rc2 tag stays unchanged;
+new Repulsive fingerprints/statistics require correctness evidence and explicit review.
+No final release is authorized; a validated next candidate needs racing validation.
+The separate auto-spacing review finding #4 remains deferred.
+
 ## Documentation work and release progress
 - `v0.3.0rc2` is commit `a42759a3f999a8668a200cddc3f04e0508478dd1` on `v3`.
   Draft PR #4 is open. Both CPU CI lanes, strict docs and linkcheck passed.
   The exact tag archive passed 756 CUDA tests and 4,283 full-suite tests on spark-home
   (four optional Gradio skips); 210 full-generator + 4,800 gate arrays match freshly
   rebuilt rc1 snapshots byte for byte. Release steps 1–2 below are complete.
-- Release step 3 is pending: the user's racing repos must validate `@v0.3.0rc2` and the
-  user must explicitly approve the final release. Do not restart the release sequence
-  or publish 0.3.0 while waiting.
+- The reported Repulsive defect supersedes the rc2 racing handoff. The repair needs
+  a newly validated candidate and racing validation before the user can approve the
+  final release. The immutable rc2 tag stays available as the comparison baseline.
 - The approved reader-documentation overhaul is on `codex/racing-docs`, based on the RC.
   Its design and execution plan are in `docs/superpowers/`. Historical reader pages are
   archived under `docs/library-readiness/archive/`, excluded from the site; internal
   design/handoff/roadmap records remain. Preserve this published-only history scope.
   The public site describes current behavior; release notes link the archived migration
-  guide on GitHub. Source docstring edits must not change executable runtime behavior.
+  guide on GitHub. Reconcile this docs branch with the validated repair, rerender its
+  Repulsive assets and keep documentation-only source edits executable-equivalent
+  to that repaired runtime. Do not publish the site before final release approval.
 
 ## User decisions for 0.3 (binding; they override any older doc that says otherwise)
 Not production software: break things cleanly, with no compatibility shims or deprecation

@@ -53,7 +53,7 @@ SETTING_COVERAGE = {
                                "repulsive_domain_frac", "repulsive_domain_init_ratio",
                                "repulsive_obstacle_count_min", "repulsive_obstacle_count_max",
                                "repulsive_obstacle_radius_min_frac", "repulsive_obstacle_radius_max_frac",
-                               "repulsive_ratchet_rate", "repulsive_deactivate_obstacles"),
+                               "repulsive_ratchet_rate"),
                               "generator-repulsive-controls.png"),
 }
 for _name in FAMILIES:
@@ -65,11 +65,11 @@ SETTING_COVERAGE["checkpoint"].update({
     "checkpoint_best_of_k": "generator-checkpoint-candidates.png",
     "checkpoint_clip_fallback": "generator-checkpoint-fallback.png",
 })
-for _field in ("repulsive_alpha", "repulsive_beta", "repulsive_tau", "repulsive_w_len",
+for _field in ("repulsive_alpha", "repulsive_beta", "repulsive_tau",
                "repulsive_stages", "repulsive_settle_iters", "repulsive_resample_every",
                "repulsive_stall_window", "repulsive_stall_area_tol"):
     SETTING_COVERAGE["repulsive"][_field] = "generators/repulsive: Growth mechanics and schedule"
-for _field in ("repulsive_alpha", "repulsive_beta", "repulsive_tau", "repulsive_w_len"):
+for _field in ("repulsive_alpha", "repulsive_beta", "repulsive_tau", "repulsive_resample_every"):
     SETTING_COVERAGE["repulsive"][_field] = "generator-repulsive-numerics.png"
 for _name, _fields in {
     "bezier": ("min_num_points", "max_num_points", "min_point_distance"),
@@ -82,7 +82,7 @@ for _name, _fields in {
 }.items():
     for _field in _fields:
         SETTING_COVERAGE[_name][_field] = f"generator-{_name}-controls-more.png"
-SETTING_COVERAGE["repulsive"]["repulsive_deactivate_obstacles"] = "generator-repulsive-controls-obstacles.png"
+SETTING_COVERAGE["repulsive"]["size"] = "generator-repulsive-controls-obstacles.png"
 
 
 def curve_delta(a, b) -> float:
@@ -135,7 +135,8 @@ def _construction(gen, cfg, e):
         out = {"obstacles": rows("obs_pts"),
                "reached": bool(sc["reached"].numpy()[e]),
                "frozen": bool(sc["frozen"].numpy()[e]),
-               "force_samples": repulsive_force_samples(gen, env=e)}
+               "force_samples": repulsive_force_samples(gen, env=e),
+               "generator_valid": bool(gen.program.tap("gen.valid").numpy()[e])}
     return out
 
 
@@ -170,6 +171,13 @@ def _record(sample):
     if "crossings" in sample["construction"]:
         record["smooth_raw_crossings"] = sample["construction"]["crossings"]
         record["polygon_fallback_used"] = record["smooth_raw_crossings"] > 0
+    if sample["config"]["generator"] == "repulsive":
+        sc = sample["construction"]
+        record.update(generator_valid=sc["generator_valid"], reached=sc["reached"], frozen=sc["frozen"])
+        barriers = sc["force_samples"]
+        record["barriers"] = {key: barriers[key] for key in
+                              ("domain_radius", "size", "half_width", "unscaled_margin")}
+        record["barriers"]["disc_count"] = len(barriers["disc_radii"])
     return record
 
 
@@ -252,7 +260,13 @@ def render_examples(out_dir, examples):
                 _line(ax, sample["raw"], color=BLUE, lw=2)
             else:
                 _road(ax, sample)
-            _limits(ax, [sample["raw"], sample["outer"]], span=common_span)
+            if sample["config"]["generator"] == "repulsive":
+                draw_repulsive_forces(ax, sample["construction"]["force_samples"])
+                radius = sample["construction"]["force_samples"]["domain_radius"]
+                ax.set_xlim(-1.1*radius, 1.1*radius)
+                ax.set_ylim(-1.1*radius, 1.1*radius)
+            else:
+                _limits(ax, [sample["raw"], sample["outer"]], span=common_span)
             _style(ax)
             label = (f"seed {sample['seed']} · raw N={len(sample['raw'])} · final valid"
                      if row == 0 else _label(sample))
@@ -269,11 +283,16 @@ def render_examples(out_dir, examples):
 
 def render_gallery(out_dir, selections):
     fig, axes = plt.subplots(2, 3, figsize=(12, 8))
-    # All families have a shared viewport span, so the longer repulsive loop stays honest.
+    # Include Repulsive's full fixed domain at the same scale as the other panels.
     for ax, name in zip(axes.flat, FAMILIES):
         sample = selections[name][0]
         _road(ax, sample)
-        _limits(ax, [sample["outer"]], span=2.6)
+        if name == "repulsive":
+            draw_repulsive_forces(ax, sample["construction"]["force_samples"], reservation=False)
+        _limits(ax, [sample["outer"]], span=3.5)
+        if name == "repulsive":
+            ax.set_xlim(-.58*3.5, .58*3.5)
+            ax.set_ylim(-.58*3.5, .58*3.5)
         _style(ax)
         ax.set_title(name.capitalize(), fontsize=18, color=INK, fontweight="bold")
         ax.text(.5, -.02, _label(sample), transform=ax.transAxes, ha="center", fontsize=10)
@@ -323,8 +342,8 @@ def _cases():
             ("checkpoint_lookahead_frac", [{"checkpoint_lookahead_frac": .05}, {}, {"checkpoint_lookahead_frac": .35}]),
         ],
         "repulsive": [
-            ("grow range", [{"repulsive_grow_mult_min": 2.5, "repulsive_grow_mult_max": 3.5}, {},
-                            {"repulsive_grow_mult_min": 6., "repulsive_grow_mult_max": 7.}]),
+            ("grow range", [{"repulsive_grow_mult_min": 1.5, "repulsive_grow_mult_max": 2.}, {},
+                            {"repulsive_grow_mult_min": 3., "repulsive_grow_mult_max": 3.5}]),
             ("repulsive_domain_frac", [{"repulsive_domain_frac": .25}, {}, {"repulsive_domain_frac": .5}]),
             ("repulsive_domain_init_ratio", [{"repulsive_domain_init_ratio": 2.5}, {}, {"repulsive_domain_init_ratio": 6.}]),
             ("obstacle count range", [{"repulsive_obstacle_count_min": 2, "repulsive_obstacle_count_max": 4}, {},
@@ -332,7 +351,6 @@ def _cases():
             ("obstacle radius range", [{"repulsive_obstacle_radius_min_frac": .005, "repulsive_obstacle_radius_max_frac": .01}, {},
                                        {"repulsive_obstacle_radius_min_frac": .06, "repulsive_obstacle_radius_max_frac": .08}]),
             ("repulsive_ratchet_rate", [{"repulsive_ratchet_rate": .006}, {}, {"repulsive_ratchet_rate": .025}]),
-            ("repulsive_deactivate_obstacles", [{}, {"repulsive_deactivate_obstacles": False}]),
         ],
     }
 
@@ -388,8 +406,7 @@ def render_comparisons(out_dir, name, *, seed=23):
             for ax, overrides, sample in zip(row, values, samples):
                 _road(ax, sample, raw=True)
                 if name == "repulsive":
-                    obs = sample["construction"]["obstacles"]
-                    ax.scatter(*obs.T, s=2, color="#839485", alpha=.55, zorder=0)
+                    draw_repulsive_forces(ax, sample["construction"]["force_samples"])
                 if field == "num_points_per_segment":
                     dense = sample["construction"]["dense"]
                     # Bezier/Hull construction coordinates already share output units.
@@ -677,36 +694,57 @@ def _writer():
 
 
 def repulsive_force_samples(gen, *, env):
-    """Read real weighted samples and the source's wall/disc partition scalars."""
+    """Read analytic barriers and weighted force samples from the actual generation."""
     from track_gen._src.warp_generate_repulsive import _N_WALL, _N_DISC
 
-    # The config binding wraps RepulsiveScratch in _BuiltStage, which retains
-    # array scratch only. Use the same source constants as _RepulsiveScalars.
     sc = _generator_scratch(gen)
-    n_wall, n_disc = int(_N_WALL), int(_N_DISC)
     envs = sc["reached"].shape[0]
-    xy = sc["obs_pts"].numpy().reshape(envs, -1, 2)[env].copy()
+    metadata = gen.program.tap("gen.repulsive.barriers").numpy()[env]
+    size = float(metadata["size"])
+    xy = sc["obs_pts"].numpy().reshape(envs, -1, 2)[env].copy() * size
     weights = sc["obs_mw"].numpy().reshape(envs, -1)[env]
     used = np.isfinite(xy).all(axis=1) & (weights != 0)
     xy[~used] = np.nan
-    wall = xy[:n_wall][used[:n_wall]]
-    rings = [ring.copy() for ring in xy[n_wall:].reshape(-1, n_disc, 2)
+    wall = xy[:_N_WALL][used[:_N_WALL]]
+    rings = [ring.copy() for ring in xy[_N_WALL:].reshape(-1, _N_DISC, 2)
              if np.isfinite(ring).all(axis=1).any()]
-    return dict(wall=wall, inner_rings=rings, n_wall=n_wall, n_disc=n_disc)
+    centers = sc["disc_centers"].numpy().reshape(envs, -1, 2)[env] * size
+    radii = sc["disc_radii"].numpy().reshape(envs, -1)[env] * size
+    active = radii > 0
+    return dict(wall=wall, inner_rings=rings, n_wall=int(_N_WALL), n_disc=int(_N_DISC),
+                disc_centers=centers[active].copy(), disc_radii=radii[active].copy(),
+                domain_radius=float(metadata["domain_radius"])*size, size=size,
+                half_width=float(gen.config.half_width),
+                unscaled_margin=float(sc["margin"].numpy()[env]))
 
 
-def draw_repulsive_forces(ax, samples, *, inner_active):
-    """Depict enabled soft forces; dashed muted rings retain disabled samples."""
-    wall, = ax.plot(*_close(samples["wall"]).T, color="#65856f", lw=.65,
-                    marker=".", markersize=2.5, alpha=.7, label="Wall force: enabled")
-    inner = []
-    for i, ring in enumerate(samples["inner_rings"]):
-        line, = ax.plot(*_close(ring).T, color=ORANGE if inner_active else "#b4bac2",
-                        lw=.8, ls=":" if inner_active else "--", marker=".", markersize=2.5,
-                        alpha=.8 if inner_active else .65,
-                        label=("Inner forces: enabled" if inner_active else "Inner forces: off after target") if i == 0 else None)
-        inner.append(line)
-    return dict(wall=wall, inner=inner)
+def draw_repulsive_forces(ax, samples, *, reservation=True):
+    """Draw filled analytic discs, the hard wall and the centerline width reservation."""
+    from matplotlib.patches import Circle
+
+    radius, margin = samples["domain_radius"], samples["half_width"]
+    wall = Circle((0, 0), radius, fill=False, edgecolor="#65856f", lw=1.1,
+                  label="Hard domain wall", zorder=0)
+    ax.add_patch(wall)
+    ax.plot(*samples["wall"].T, color="#65856f", ls="", marker=".", markersize=2, alpha=.6)
+    inner, reserved = [], []
+    for i, (center, r) in enumerate(zip(samples["disc_centers"], samples["disc_radii"])):
+        disc = Circle(center, float(r), facecolor="#ead2ba", edgecolor=ORANGE, lw=.8,
+                      label="Hard filled discs" if i == 0 else None, zorder=0)
+        ax.add_patch(disc)
+        inner.append(disc)
+        if reservation:
+            ring = Circle(center, float(r)+margin, fill=False, edgecolor=ORANGE,
+                          lw=.65, ls=":", alpha=.8,
+                          label="Centerline width reservation" if i == 0 else None, zorder=0)
+            ax.add_patch(ring)
+            reserved.append(ring)
+    if reservation and radius > margin:
+        ring = Circle((0, 0), radius-margin, fill=False, edgecolor="#65856f",
+                      lw=.7, ls=":", alpha=.8, zorder=0)
+        ax.add_patch(ring)
+        reserved.append(ring)
+    return dict(wall=wall, inner=inner, reservation=reserved)
 
 
 def capture_repulsive(sample):
@@ -725,6 +763,7 @@ def capture_repulsive(sample):
     from track_gen._src.warp_generate_repulsive import _SUBDIV_RATIO
     starts = _stage_schedule(stages, cfg["repulsive_ratchet_rate"], _SUBDIV_RATIO, n_ratchet)
     frames = []
+    effective_size = float(gen.program.tap("gen.repulsive.barriers").numpy()[0]["size"])
     base = LaunchContext.current("cpu")
 
     class Observer:
@@ -743,58 +782,66 @@ def capture_repulsive(sample):
 
     def snapshot(iteration, n):
         reached = bool(sc["reached"].numpy()[0])
-        frames.append(dict(iteration=iteration, n=n, xy=sc["center"].numpy()[:n].copy(),
+        xy = sc["center"].numpy()[:n].copy()*effective_size
+        frames.append(dict(iteration=iteration, n=n, xy=xy,
                            reached=reached, frozen=bool(sc["frozen"].numpy()[0]),
-                           target=float(sc["L_target"].numpy()[0]), wall_forces_active=True,
-                           inner_forces_active=not (cfg["repulsive_deactivate_obstacles"] and reached)))
+                           target=float(sc["L_target"].numpy()[0])*effective_size,
+                           target_final=float(sc["L_final"].numpy()[0])*effective_size,
+                           perimeter=float(np.linalg.norm(np.roll(xy, -1, axis=0)-xy, axis=1).sum()),
+                           wall_forces_active=True, inner_forces_active=True,
+                           hard_barriers_active=True))
 
     expected = gen.program.tap("raw.xy").numpy().copy()
+    expected_valid = gen.program.tap("gen.valid").numpy().copy()
+    expected_barriers = gen.program.tap("gen.repulsive.barriers").numpy().tobytes()
     if not np.array_equal(expected, sample["raw"]):
         raise AssertionError("capture configuration does not reproduce the selected sample")
     gen.program._gen_scratch.enqueue(Observer())
     actual = gen.program.tap("raw.xy").numpy()
-    matches = bool(np.array_equal(expected, actual))
+    matches = bool(np.array_equal(expected, actual)
+                   and np.array_equal(expected_valid, gen.program.tap("gen.valid").numpy())
+                   and expected_barriers == gen.program.tap("gen.repulsive.barriers").numpy().tobytes())
     if not matches:
         raise AssertionError("observing the growth changed the final generator output")
     frames.append(dict(iteration=frames[-1]["iteration"], n=len(actual), xy=actual.copy(),
                        reached=frames[-1]["reached"], frozen=frames[-1]["frozen"],
-                       target=frames[-1]["target"], final=True, wall_forces_active=True,
-                       inner_forces_active=frames[-1]["inner_forces_active"]))
+                       target=frames[-1]["target"], target_final=frames[-1]["target_final"],
+                       perimeter=float(np.linalg.norm(np.roll(actual, -1, axis=0)-actual, axis=1).sum()),
+                       final=True, wall_forces_active=True, inner_forces_active=True,
+                       hard_barriers_active=True))
     return frames, matches
 
 
 def render_growth(out_dir, sample, *, movies=True):
     frames, matches = capture_repulsive(sample)
-    fig, ax = plt.subplots(figsize=(7.2, 6.2))
-    obs = sample["construction"]["obstacles"]
+    fig, (ax, final_ax) = plt.subplots(1, 2, figsize=(12, 6.5), gridspec_kw={"width_ratios": (1.55, 1)})
     samples = sample["construction"]["force_samples"]
-    force_artists = draw_repulsive_forces(ax, samples, inner_active=frames[0]["inner_forces_active"])
-    legend = ax.legend(loc="upper left", fontsize=9, framealpha=.9)
+    draw_repulsive_forces(ax, samples)
+    ax.legend(loc="upper left", fontsize=8, framealpha=.95)
     line, = ax.plot([], [], color=BLUE, lw=2)
-    label = ax.text(.02, .02, "", transform=ax.transAxes, fontsize=11, color=INK,
-                    bbox=dict(facecolor="white", edgecolor="none", alpha=.85))
-    _limits(ax, [obs] + [f["xy"] for f in frames])
-    _style(ax, ticks=True)
-    ax.set_title("Repulsive · captured growth states\nseed " + str(sample["seed"]) + " · fixed viewpoint", fontsize=15)
-    fig.text(.5,.012,"Soft shaping forces, not hard collision obstacles; muted inner rings have their forces switched off.\nRaw growth precedes shared smoothing; track.valid does not test these circles. Playback is not runtime.",ha="center",fontsize=9)
-    fig.tight_layout(rect=(0,.055,1,1))
+    label = ax.text(.02, .02, "", transform=ax.transAxes, fontsize=10, color=INK,
+                    bbox=dict(facecolor="white", edgecolor="none", alpha=.9))
+    radius = samples["domain_radius"]
+    for axis in (ax, final_ax):
+        axis.set_xlim(-1.12*radius, 1.12*radius)
+        axis.set_ylim(-1.12*radius, 1.12*radius)
+        _style(axis, ticks=True)
+    _road(final_ax, sample, raw=True)
+    draw_repulsive_forces(final_ax, samples)
+    final_ax.set_title("Finished road after shared pipeline\n" + _label(sample), fontsize=11,
+                       color=GREEN if sample["valid"] else RED)
+    ax.set_title("Repulsive · actual raw growth states\nseed " + str(sample["seed"]) + " · fixed viewpoint", fontsize=14)
+    fig.text(.5, .025, "Filled discs and outer wall are hard barriers; dotted curves reserve the absolute road half-width.\n"
+             "Disc/wall soft forces remain enabled. Final validity also checks every four-vertex road-cell hull. Playback is not runtime.",
+             ha="center", fontsize=10)
+    fig.tight_layout(rect=(0, .11, 1, 1))
 
     def draw(frame):
-        active = frame["inner_forces_active"]
-        for artist in force_artists["inner"]:
-            artist.set_color(ORANGE if active else "#b4bac2")
-            artist.set_linestyle(":" if active else "--")
-            artist.set_alpha(.8 if active else .65)
-        if force_artists["inner"]:
-            legend.get_texts()[1].set_text("Inner forces: enabled" if active else "Inner forces: off after target")
-        for handle in legend.get_lines()[1:]:
-            handle.set_color(ORANGE if active else "#b4bac2")
-            handle.set_linestyle(":" if active else "--")
         line.set_data(*_close(frame["xy"]).T)
         label.set_text(f"iteration {frame['iteration']} · N={frame['n']}\n"
-                       f"target perimeter {frame['target']:.2f} · reached={frame['reached']} · frozen={frame['frozen']}\n"
-                       f"wall force: enabled · inner forces: {'enabled' if active else 'off'}" +
-                       ("\nfinal generator resample" if frame.get("final") else ""))
+                       f"ratchet target {frame['target']:.2f} / final {frame['target_final']:.2f}\n"
+                       f"target reached={frame['reached']} · frozen={frame['frozen']}" +
+                       ("\nfinal output after resample check" if frame.get("final") else ""))
     if movies:
         writer = _writer()
         with writer.saving(fig, str(out_dir / "generator-repulsive-growth.mp4"), dpi=120):
@@ -804,18 +851,17 @@ def render_growth(out_dir, sample, *, movies=True):
             for _ in range(12):
                 writer.grab_frame()
     draw(frames[-1])
+    view_bounds = dict(xlim=list(ax.get_xlim()), ylim=list(ax.get_ylim()))
     _save(fig, out_dir / "generator-repulsive-growth.png")
     return dict(kind="captured solver states", iterations=sorted({f["iteration"] for f in frames}),
-                seed=sample["seed"], final_matches_generator=matches,
+                seed=sample["seed"], final_matches_generator=matches, geometry_interpolated=False,
                 frame_count=len(frames), encoded_frame_count=len(frames)+12 if movies else 0, fps=6,
-                view_bounds=dict(xlim=list(ax.get_xlim()), ylim=list(ax.get_ylim())),
-                output="generator-repulsive-growth." + ("mp4" if movies else "png"),
-                sample=_record(sample), soft_shaping_forces=True, hard_collision_obstacles=False,
-                n_wall=samples["n_wall"], n_disc=samples["n_disc"],
-                force_states=[dict(iteration=f["iteration"], reached=f["reached"],
-                                   inner_forces_active=f["inner_forces_active"],
-                                   wall_forces_active=f["wall_forces_active"], final=f.get("final", False))
-                              for f in frames])
+                view_bounds=view_bounds, output="generator-repulsive-growth." + ("mp4" if movies else "png"),
+                sample=_record(sample), soft_shaping_forces=True, hard_collision_obstacles=True,
+                width_reservation=samples["half_width"], n_wall=samples["n_wall"], n_disc=samples["n_disc"],
+                force_states=[{k: f.get(k, False) for k in ("iteration", "n", "target", "target_final",
+                              "reached", "frozen", "inner_forces_active", "wall_forces_active",
+                              "hard_barriers_active", "final")} for f in frames])
 
 
 def render_specials(out_dir):
@@ -884,25 +930,31 @@ def render_specials(out_dir):
     _save(fig,out_dir / "generator-checkpoint-fallback.png")
     records["clip_fallback"] = dict(search_seeds=list(range(48)), samples=[_record(s) for s in pair])
 
+    return records
+
+
+def render_repulsive_numerics(out_dir):
+    records = {}
     # End-state sensitivity data for numerical controls, without inventing monotonic
     # fold/quality trends or timing comparisons between unlike solver schedules.
     baseline = sample_batch("repulsive",seeds=[23])[0]
     fig,axes = plt.subplots(2,2,figsize=(10,9))
     experiments = []
-    for ax,(field,value) in zip(axes.flat,(("repulsive_alpha",2.5),("repulsive_beta",5.),
-                                         ("repulsive_tau",.2),("repulsive_w_len",0.))):
+    for ax,(field,value) in zip(axes.flat,(("repulsive_alpha",3.5),("repulsive_beta",6.5),
+                                         ("repulsive_tau",.2),("repulsive_resample_every",10))):
         alternative = sample_batch("repulsive",seeds=[23],overrides={field:value})[0]
         delta = curve_delta(baseline["raw"],alternative["raw"])
         assert delta > 1e-6
         _line(ax,baseline["raw"],color=BLUE,lw=1.8,label="default")
         _line(ax,alternative["raw"],color=ORANGE,lw=1.5,label="changed")
-        _limits(ax,[baseline["raw"],alternative["raw"]])
+        _limits(ax,[baseline["raw"],alternative["raw"],baseline["construction"]["force_samples"]["wall"]])
+        draw_repulsive_forces(ax, baseline["construction"]["force_samples"])
         _style(ax)
         ax.set_title(f"{field.removeprefix('repulsive_')}: {baseline['config'][field]} → {value}\n"
                      f"raw displacement max {delta:.3f} coordinate units",fontsize=12)
-        ax.text(.5,-.02,f"changed: valid={alternative['valid']} · target reached={alternative['construction']['reached']}\n"
+        ax.text(.5,-.02,f"changed: {_label(alternative)} · reached={alternative['construction']['reached']}\n"
                 f"growth frozen={alternative['construction']['frozen']}",transform=ax.transAxes,ha="center",fontsize=10)
-        ax.legend(loc="upper right",frameon=False,fontsize=9)
+        ax.legend(handles=ax.lines[:2], loc="upper right", frameon=True, fontsize=9)
         experiments.append(dict(field=field,max_raw_delta=delta,
                                 samples=[_record(baseline),_record(alternative)],
                                 changed_reached=alternative["construction"]["reached"],
@@ -913,6 +965,57 @@ def render_specials(out_dir):
     _save(fig,out_dir / "generator-repulsive-numerics.png")
     records["numerical_controls"] = experiments
     return records
+
+
+def render_repulsive_barriers(out_dir):
+    """Actual size-dependent layouts and a post-tail rejection, with failed output kept."""
+    sizes = [sample_batch("repulsive", seeds=[7], overrides={"size": value})[0]
+             for value in (.5, 1., 2.)]
+    fig, axes = plt.subplots(1, 3, figsize=(12, 5))
+    for ax, sample in zip(axes, sizes):
+        barriers = sample["construction"]["force_samples"]
+        _road(ax, sample, raw=True)
+        draw_repulsive_forces(ax, barriers)
+        radius = barriers["domain_radius"]
+        ax.set_xlim(-1.12*radius, 1.12*radius)
+        ax.set_ylim(-1.12*radius, 1.12*radius)
+        _style(ax, ticks=True)
+        ax.set_title(f"size={sample['config']['size']} · half_width=.1\n" + _label(sample), fontsize=11)
+        ax.text(.5, -.27, f"unscaled width reservation {barriers['unscaled_margin']:.2f}\n"
+                f"active sampled discs: {len(barriers['disc_radii'])}",
+                ha="center", transform=ax.transAxes, fontsize=10)
+    fig.suptitle("Repulsive · absolute width changes the growth reservation and disc layout", fontsize=15)
+    fig.text(.5, .015, "Same seed 7. Filled discs/wall: hard barriers; dotted: reserved centerline margin.\n"
+             "Each view includes its full domain; tick values show size. Blue raw, orange dashed final, grey road; keep retains failures.",
+             ha="center", fontsize=10)
+    fig.tight_layout(rect=(0, .19, 1, .94))
+    _save(fig, out_dir / "generator-repulsive-controls-obstacles.png")
+
+    pair = [sizes[1], sample_batch("repulsive", seeds=[7], overrides={
+        "repulsive_grow_mult_min": 3., "repulsive_grow_mult_max": 3.5})[0]]
+    if not pair[0]["valid"] or not pair[1]["construction"]["generator_valid"] or not (pair[1]["fail"] & 256):
+        raise AssertionError("the recorded CPU post-tail rejection no longer reproduces")
+    fig, axes = plt.subplots(1, 2, figsize=(10, 5.5))
+    for ax, sample, title in zip(axes, pair, ("Default growth range [2, 3]", "Growth range [3, 3.5]")):
+        _road(ax, sample, raw=True)
+        barriers = sample["construction"]["force_samples"]
+        draw_repulsive_forces(ax, barriers)
+        radius = barriers["domain_radius"]
+        ax.set_xlim(-1.12*radius, 1.12*radius)
+        ax.set_ylim(-1.12*radius, 1.12*radius)
+        _style(ax)
+        ax.set_title(title + "\n" + _label(sample), fontsize=12,
+                     color=GREEN if sample["valid"] else RED)
+        ax.text(.5, -.04, f"raw feasible={sample['construction']['generator_valid']} · "
+                f"target reached={sample['construction']['reached']}\n"
+                f"frozen={sample['construction']['frozen']}", transform=ax.transAxes, ha="center", fontsize=10)
+    fig.suptitle("Repulsive · feasible raw growth can still fail the finished-road check", fontsize=15)
+    fig.text(.5, .015, "Actual CPU seed 7, epoch 0, env 0. Blue raw; orange dashed final; grey finite-width road.\n"
+             "Right: final road-cell hull meets a disc (fail bit 256). on_invalid='keep' preserves the rejected geometry for diagnosis.",
+             ha="center", fontsize=10)
+    fig.tight_layout(rect=(0, .1, 1, .94))
+    _save(fig, out_dir / "generator-repulsive-limits.png")
+    return dict(width_reservation=[_record(s) for s in sizes], finished_band_limit=[_record(s) for s in pair])
 
 
 def render(out_dir: Path, *, movies=True):
@@ -947,7 +1050,8 @@ def render(out_dir: Path, *, movies=True):
             manifest["animations"][name] = construction_animation
         print(f"rendered {name}",flush=True)
     render_gallery(out_dir,examples)
-    manifest["specials"] = render_specials(out_dir)
+    manifest["specials"] = render_specials(out_dir) | render_repulsive_numerics(out_dir)
+    manifest["specials"].update(render_repulsive_barriers(out_dir))
     manifest["animations"]["repulsive"] = render_growth(out_dir,examples["repulsive"][0],movies=movies)
     manifest["assets"] = {p.name: p.stat().st_size for p in sorted(out_dir.glob("generator*")) if p.suffix in (".png",".mp4")}
     (out_dir / "generators-manifest.json").write_text(json.dumps(manifest,indent=2,sort_keys=True)+"\n")
@@ -966,8 +1070,7 @@ def render_construction_animations(out_dir: Path, source_manifest: Path):
                   matplotlib_version=matplotlib.__version__, trackgen_version=__version__, device="cpu")
     for name in FAMILIES[:-1]:
         old = manifest["animations"][name]["sample"]
-        overrides = {k: v for k, v in old["config"].items()
-                     if k not in ("generator", "num_envs", "device", "on_invalid")}
+        overrides = _current_overrides(old["config"])
         pool = sample_batch(name, seeds=manifest["families"][name]["seed_pool"], overrides=overrides)
         sample = pool[old["env"]]
         if sample["seed"] != old["seed"]:
@@ -991,8 +1094,7 @@ def render_repulsive_animation(out_dir: Path, source_manifest: Path):
     out_dir.mkdir(parents=True, exist_ok=True)
     manifest = json.loads(source_manifest.read_text())
     old = manifest["animations"]["repulsive"].get("sample", manifest["families"]["repulsive"]["examples"][0])
-    overrides = {k: v for k, v in old["config"].items()
-                 if k not in ("generator", "num_envs", "device", "on_invalid")}
+    overrides = _current_overrides(old["config"])
     pool = sample_batch("repulsive", seeds=manifest["families"]["repulsive"]["seed_pool"], overrides=overrides)
     sample = pool[old["env"]]
     if sample["seed"] != old["seed"]:
@@ -1016,6 +1118,71 @@ def render_repulsive_animation(out_dir: Path, source_manifest: Path):
     return manifest
 
 
+def _current_overrides(config):
+    """Replay an older selection with only settings supported by the current config."""
+    fields = {field.name for field in dataclasses.fields(TrackGenConfig)}
+    return {key: value for key, value in config.items()
+            if key in fields and key not in ("generator", "num_envs", "device", "on_invalid")}
+
+
+def render_repulsive_assets(out_dir: Path, source_manifest: Path, *, movies=True):
+    """Refresh all Repulsive figures plus its shared gallery, preserving other media."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    manifest = json.loads(source_manifest.read_text())
+    root = Path(__file__).resolve().parents[1]
+    source_file = root / "track_gen/_src/warp_generate_repulsive.py"
+    dirty_source = subprocess.check_output(
+        ["git", "status", "--porcelain", "--", "track_gen", "viz/render_generator_guide.py"], text=True)
+    if dirty_source:
+        raise RuntimeError("commit the resolved runtime and renderer before final asset rendering")
+    source = dict(git_commit=subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+                  worktree_dirty=bool(subprocess.check_output(["git", "status", "--porcelain"], text=True)),
+                  source_tree_dirty=False,
+                  renderer_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+                  generator_source_sha256=hashlib.sha256(source_file.read_bytes()).hexdigest(),
+                  repulsive_dependency_sha256={name: hashlib.sha256((source_file.parent / name).read_bytes()).hexdigest()
+                      for name in ("repulsive_clearance.py", "repulsive_barrier_energy.py", "repulsive_tangent_energy.py")},
+                  warp_version=wp.__version__, numpy_version=np.__version__,
+                  matplotlib_version=matplotlib.__version__, trackgen_version=__version__, device="cpu")
+    seeds = [7, 23, 41, 59]
+    pool = sample_batch("repulsive", seeds=seeds)
+    selected = [sample for sample in pool if sample["valid"] and np.isfinite(sample["center"]).all()][:3]
+    if len(selected) != 3:
+        raise AssertionError(f"not enough valid Repulsive examples: {[(s['seed'], s['fail']) for s in pool]}")
+    render_examples(out_dir, selected)
+    comparisons = render_comparisons(out_dir, "repulsive")
+    manifest["families"]["repulsive"] = dict(seed_pool=seeds, examples=[_record(s) for s in selected],
+                                               comparisons=comparisons, source=source)
+    manifest["specials"].update(render_repulsive_numerics(out_dir))
+    manifest["specials"].update(render_repulsive_barriers(out_dir))
+    animation = render_growth(out_dir, selected[0], movies=movies)
+    animation["source"] = source
+    manifest["animations"]["repulsive"] = animation
+    selections = {"repulsive": selected}
+    for name in FAMILIES[:-1]:
+        previous = manifest["families"][name]
+        config = previous["examples"][0]["config"]
+        batch = sample_batch(name, seeds=previous["seed_pool"], overrides=_current_overrides(config))
+        selections[name] = [batch[previous["examples"][0]["env"]]]
+    render_gallery(out_dir, selections)
+    command = ("python -m viz.render_generator_guide --repulsive-assets-only "
+               "--source-manifest docs/assets/racing/generators-manifest.json --out-dir DIR" +
+               (" --no-movies" if not movies else ""))
+    manifest["families"]["repulsive"]["command"] = command
+    animation["command"] = command
+    manifest["setting_coverage"] = SETTING_COVERAGE
+    provenance = manifest.setdefault("asset_provenance", {})
+    refreshed = [*out_dir.glob("generator-repulsive-*.png"), out_dir / "generators-gallery.png"]
+    if movies:
+        refreshed.extend(out_dir.glob("generator-repulsive-*.mp4"))
+    for path in sorted(refreshed):
+        if path.suffix in (".png", ".mp4"):
+            manifest["assets"][path.name] = path.stat().st_size
+            provenance[path.name] = dict(source=source, command=command)
+    (out_dir / "generators-manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True)+"\n")
+    return manifest
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out-dir",type=Path,default=Path("docs/assets/racing"))
@@ -1024,11 +1191,15 @@ def main():
     selection.add_argument("--construction-only", action="store_true",
                         help="refresh the five construction movies/posters using recorded manifest selections")
     selection.add_argument("--repulsive-only", action="store_true",
-                           help="refresh only Repulsive growth movie/poster with effective force states")
+                           help="refresh only Repulsive growth movie/poster")
+    selection.add_argument("--repulsive-assets-only", action="store_true",
+                           help="refresh all Repulsive assets and its shared gallery from committed source")
     parser.add_argument("--source-manifest", type=Path,
                         default=Path("docs/assets/racing/generators-manifest.json"))
     args = parser.parse_args()
-    if args.repulsive_only:
+    if args.repulsive_assets_only:
+        render_repulsive_assets(args.out_dir, args.source_manifest, movies=not args.no_movies)
+    elif args.repulsive_only:
         if args.no_movies:
             parser.error("--repulsive-only includes a movie; omit --no-movies")
         render_repulsive_animation(args.out_dir, args.source_manifest)
