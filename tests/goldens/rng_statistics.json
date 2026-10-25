@@ -1,0 +1,1478 @@
+{
+  "cases": [
+    {
+      "config": {
+        "N_max": 384,
+        "checkpoint_angle_jitter": 0.55,
+        "checkpoint_best_of_k": 4,
+        "checkpoint_clip_fallback": false,
+        "checkpoint_count": 12,
+        "checkpoint_lookahead_frac": 0.16,
+        "checkpoint_radius_min_frac": 0.33,
+        "checkpoint_steer_gain": 0.65,
+        "checkpoint_turn_rate": 0.42,
+        "device": "cpu",
+        "edgy": 0.0,
+        "generator": "bezier",
+        "generator_params": null,
+        "half_width": 0.1,
+        "handle_clamp_frac": 0.4,
+        "hull_displacement": 0.15,
+        "max_num_points": 13,
+        "min_num_points": 9,
+        "min_point_distance": 0.05,
+        "num_envs": 1024,
+        "num_points": 256,
+        "num_points_per_segment": 30,
+        "on_invalid": "poison",
+        "polar_angular_jitter": 0.3,
+        "polar_num_knots": 12,
+        "polar_radial_jitter": 0.6,
+        "rad": 0.4,
+        "relax_accel": "chebyshev",
+        "relax_band": null,
+        "relax_bend_relax": 1.5,
+        "relax_cheby_gamma": 0.9,
+        "relax_cheby_rho": 0.98,
+        "relax_cheby_start": 8,
+        "relax_enable": true,
+        "relax_iters": 50,
+        "relax_margin": 0.15,
+        "relax_sep_cache_skin": 0.5,
+        "relax_sep_cache_slots": 16,
+        "relax_sep_every": 20,
+        "relax_sep_relax": 1.0,
+        "relax_smooth_passes": 5,
+        "relax_smooth_spacing_iters": 10,
+        "relax_solver": "xpbd",
+        "relax_spc_relax": 1.0,
+        "relax_tol": 0.02,
+        "repulsive_alpha": 3.0,
+        "repulsive_beta": 6.0,
+        "repulsive_deactivate_obstacles": true,
+        "repulsive_domain_frac": 0.35,
+        "repulsive_domain_init_ratio": 4.0,
+        "repulsive_grow_mult_max": 5.5,
+        "repulsive_grow_mult_min": 4.5,
+        "repulsive_obstacle_count_max": 12,
+        "repulsive_obstacle_count_min": 8,
+        "repulsive_obstacle_radius_max_frac": 0.045,
+        "repulsive_obstacle_radius_min_frac": 0.02,
+        "repulsive_ratchet_rate": 0.012,
+        "repulsive_resample_every": 25,
+        "repulsive_settle_iters": 40,
+        "repulsive_stages": [
+          64,
+          128,
+          256
+        ],
+        "repulsive_stall_area_tol": 0.05,
+        "repulsive_stall_window": 16,
+        "repulsive_tau": 0.4,
+        "repulsive_w_len": 30.0,
+        "scale": 1.0,
+        "size": 1.0,
+        "spacing": 0.06,
+        "turning_tol": 0.1,
+        "validity_border_check": false,
+        "voronoi_angular_jitter": 0.08,
+        "voronoi_control_points": 18,
+        "voronoi_num_sites": 256,
+        "voronoi_radial_variation": 0.62,
+        "voronoi_site_layout": "void_ring",
+        "w_floor": 0.001,
+        "z_base": 0.0,
+        "z_control_points": 10,
+        "z_max": 0.0,
+        "z_max_step": 0.0,
+        "z_min": 0.0,
+        "z_noise_amplitude": 0.0,
+        "z_noise_harmonics": 3,
+        "z_profile": "flat",
+        "z_valid_grade": 0.0
+      },
+      "gates": false,
+      "name": "track/bezier/flat/default",
+      "seeds": {
+        "count": 1024,
+        "start": 0,
+        "step": 1
+      }
+    },
+    {
+      "config": {
+        "N_max": 384,
+        "checkpoint_angle_jitter": 0.55,
+        "checkpoint_best_of_k": 4,
+        "checkpoint_clip_fallback": false,
+        "checkpoint_count": 12,
+        "checkpoint_lookahead_frac": 0.16,
+        "checkpoint_radius_min_frac": 0.33,
+        "checkpoint_steer_gain": 0.65,
+        "checkpoint_turn_rate": 0.42,
+        "device": "cpu",
+        "edgy": 0.0,
+        "generator": "hull",
+        "generator_params": null,
+        "half_width": 0.1,
+        "handle_clamp_frac": 0.4,
+        "hull_displacement": 0.15,
+        "max_num_points": 13,
+        "min_num_points": 9,
+        "min_point_distance": 0.05,
+        "num_envs": 1024,
+        "num_points": 256,
+        "num_points_per_segment": 30,
+        "on_invalid": "poison",
+        "polar_angular_jitter": 0.3,
+        "polar_num_knots": 12,
+        "polar_radial_jitter": 0.6,
+        "rad": 0.4,
+        "relax_accel": "chebyshev",
+        "relax_band": null,
+        "relax_bend_relax": 1.5,
+        "relax_cheby_gamma": 0.9,
+        "relax_cheby_rho": 0.98,
+        "relax_cheby_start": 8,
+        "relax_enable": true,
+        "relax_iters": 50,
+        "relax_margin": 0.15,
+        "relax_sep_cache_skin": 0.5,
+        "relax_sep_cache_slots": 16,
+        "relax_sep_every": 20,
+        "relax_sep_relax": 1.0,
+        "relax_smooth_passes": 5,
+        "relax_smooth_spacing_iters": 10,
+        "relax_solver": "xpbd",
+        "relax_spc_relax": 1.0,
+        "relax_tol": 0.02,
+        "repulsive_alpha": 3.0,
+        "repulsive_beta": 6.0,
+        "repulsive_deactivate_obstacles": true,
+        "repulsive_domain_frac": 0.35,
+        "repulsive_domain_init_ratio": 4.0,
+        "repulsive_grow_mult_max": 5.5,
+        "repulsive_grow_mult_min": 4.5,
+        "repulsive_obstacle_count_max": 12,
+        "repulsive_obstacle_count_min": 8,
+        "repulsive_obstacle_radius_max_frac": 0.045,
+        "repulsive_obstacle_radius_min_frac": 0.02,
+        "repulsive_ratchet_rate": 0.012,
+        "repulsive_resample_every": 25,
+        "repulsive_settle_iters": 40,
+        "repulsive_stages": [
+          64,
+          128,
+          256
+        ],
+        "repulsive_stall_area_tol": 0.05,
+        "repulsive_stall_window": 16,
+        "repulsive_tau": 0.4,
+        "repulsive_w_len": 30.0,
+        "scale": 1.0,
+        "size": 1.0,
+        "spacing": 0.06,
+        "turning_tol": 0.1,
+        "validity_border_check": false,
+        "voronoi_angular_jitter": 0.08,
+        "voronoi_control_points": 18,
+        "voronoi_num_sites": 256,
+        "voronoi_radial_variation": 0.62,
+        "voronoi_site_layout": "void_ring",
+        "w_floor": 0.001,
+        "z_base": 0.0,
+        "z_control_points": 10,
+        "z_max": 0.0,
+        "z_max_step": 0.0,
+        "z_min": 0.0,
+        "z_noise_amplitude": 0.0,
+        "z_noise_harmonics": 3,
+        "z_profile": "flat",
+        "z_valid_grade": 0.0
+      },
+      "gates": false,
+      "name": "track/hull/flat/default",
+      "seeds": {
+        "count": 1024,
+        "start": 0,
+        "step": 1
+      }
+    },
+    {
+      "config": {
+        "N_max": 384,
+        "checkpoint_angle_jitter": 0.55,
+        "checkpoint_best_of_k": 4,
+        "checkpoint_clip_fallback": false,
+        "checkpoint_count": 12,
+        "checkpoint_lookahead_frac": 0.16,
+        "checkpoint_radius_min_frac": 0.33,
+        "checkpoint_steer_gain": 0.65,
+        "checkpoint_turn_rate": 0.42,
+        "device": "cpu",
+        "edgy": 0.0,
+        "generator": "polar",
+        "generator_params": null,
+        "half_width": 0.1,
+        "handle_clamp_frac": 0.4,
+        "hull_displacement": 0.15,
+        "max_num_points": 13,
+        "min_num_points": 9,
+        "min_point_distance": 0.05,
+        "num_envs": 1024,
+        "num_points": 256,
+        "num_points_per_segment": 30,
+        "on_invalid": "poison",
+        "polar_angular_jitter": 0.3,
+        "polar_num_knots": 12,
+        "polar_radial_jitter": 0.6,
+        "rad": 0.4,
+        "relax_accel": "chebyshev",
+        "relax_band": null,
+        "relax_bend_relax": 1.5,
+        "relax_cheby_gamma": 0.9,
+        "relax_cheby_rho": 0.98,
+        "relax_cheby_start": 8,
+        "relax_enable": true,
+        "relax_iters": 50,
+        "relax_margin": 0.15,
+        "relax_sep_cache_skin": 0.5,
+        "relax_sep_cache_slots": 16,
+        "relax_sep_every": 20,
+        "relax_sep_relax": 1.0,
+        "relax_smooth_passes": 5,
+        "relax_smooth_spacing_iters": 10,
+        "relax_solver": "xpbd",
+        "relax_spc_relax": 1.0,
+        "relax_tol": 0.02,
+        "repulsive_alpha": 3.0,
+        "repulsive_beta": 6.0,
+        "repulsive_deactivate_obstacles": true,
+        "repulsive_domain_frac": 0.35,
+        "repulsive_domain_init_ratio": 4.0,
+        "repulsive_grow_mult_max": 5.5,
+        "repulsive_grow_mult_min": 4.5,
+        "repulsive_obstacle_count_max": 12,
+        "repulsive_obstacle_count_min": 8,
+        "repulsive_obstacle_radius_max_frac": 0.045,
+        "repulsive_obstacle_radius_min_frac": 0.02,
+        "repulsive_ratchet_rate": 0.012,
+        "repulsive_resample_every": 25,
+        "repulsive_settle_iters": 40,
+        "repulsive_stages": [
+          64,
+          128,
+          256
+        ],
+        "repulsive_stall_area_tol": 0.05,
+        "repulsive_stall_window": 16,
+        "repulsive_tau": 0.4,
+        "repulsive_w_len": 30.0,
+        "scale": 1.0,
+        "size": 1.0,
+        "spacing": 0.06,
+        "turning_tol": 0.1,
+        "validity_border_check": false,
+        "voronoi_angular_jitter": 0.08,
+        "voronoi_control_points": 18,
+        "voronoi_num_sites": 256,
+        "voronoi_radial_variation": 0.62,
+        "voronoi_site_layout": "void_ring",
+        "w_floor": 0.001,
+        "z_base": 0.0,
+        "z_control_points": 10,
+        "z_max": 0.0,
+        "z_max_step": 0.0,
+        "z_min": 0.0,
+        "z_noise_amplitude": 0.0,
+        "z_noise_harmonics": 3,
+        "z_profile": "flat",
+        "z_valid_grade": 0.0
+      },
+      "gates": false,
+      "name": "track/polar/flat/default",
+      "seeds": {
+        "count": 1024,
+        "start": 0,
+        "step": 1
+      }
+    },
+    {
+      "config": {
+        "N_max": 384,
+        "checkpoint_angle_jitter": 0.55,
+        "checkpoint_best_of_k": 4,
+        "checkpoint_clip_fallback": false,
+        "checkpoint_count": 12,
+        "checkpoint_lookahead_frac": 0.16,
+        "checkpoint_radius_min_frac": 0.33,
+        "checkpoint_steer_gain": 0.65,
+        "checkpoint_turn_rate": 0.42,
+        "device": "cpu",
+        "edgy": 0.0,
+        "generator": "voronoi",
+        "generator_params": null,
+        "half_width": 0.1,
+        "handle_clamp_frac": 0.4,
+        "hull_displacement": 0.15,
+        "max_num_points": 13,
+        "min_num_points": 9,
+        "min_point_distance": 0.05,
+        "num_envs": 1024,
+        "num_points": 256,
+        "num_points_per_segment": 30,
+        "on_invalid": "poison",
+        "polar_angular_jitter": 0.3,
+        "polar_num_knots": 12,
+        "polar_radial_jitter": 0.6,
+        "rad": 0.4,
+        "relax_accel": "chebyshev",
+        "relax_band": null,
+        "relax_bend_relax": 1.5,
+        "relax_cheby_gamma": 0.9,
+        "relax_cheby_rho": 0.98,
+        "relax_cheby_start": 8,
+        "relax_enable": true,
+        "relax_iters": 50,
+        "relax_margin": 0.15,
+        "relax_sep_cache_skin": 0.5,
+        "relax_sep_cache_slots": 16,
+        "relax_sep_every": 20,
+        "relax_sep_relax": 1.0,
+        "relax_smooth_passes": 5,
+        "relax_smooth_spacing_iters": 10,
+        "relax_solver": "xpbd",
+        "relax_spc_relax": 1.0,
+        "relax_tol": 0.02,
+        "repulsive_alpha": 3.0,
+        "repulsive_beta": 6.0,
+        "repulsive_deactivate_obstacles": true,
+        "repulsive_domain_frac": 0.35,
+        "repulsive_domain_init_ratio": 4.0,
+        "repulsive_grow_mult_max": 5.5,
+        "repulsive_grow_mult_min": 4.5,
+        "repulsive_obstacle_count_max": 12,
+        "repulsive_obstacle_count_min": 8,
+        "repulsive_obstacle_radius_max_frac": 0.045,
+        "repulsive_obstacle_radius_min_frac": 0.02,
+        "repulsive_ratchet_rate": 0.012,
+        "repulsive_resample_every": 25,
+        "repulsive_settle_iters": 40,
+        "repulsive_stages": [
+          64,
+          128,
+          256
+        ],
+        "repulsive_stall_area_tol": 0.05,
+        "repulsive_stall_window": 16,
+        "repulsive_tau": 0.4,
+        "repulsive_w_len": 30.0,
+        "scale": 1.0,
+        "size": 1.0,
+        "spacing": 0.06,
+        "turning_tol": 0.1,
+        "validity_border_check": false,
+        "voronoi_angular_jitter": 0.08,
+        "voronoi_control_points": 18,
+        "voronoi_num_sites": 256,
+        "voronoi_radial_variation": 0.62,
+        "voronoi_site_layout": "void_ring",
+        "w_floor": 0.001,
+        "z_base": 0.0,
+        "z_control_points": 10,
+        "z_max": 0.0,
+        "z_max_step": 0.0,
+        "z_min": 0.0,
+        "z_noise_amplitude": 0.0,
+        "z_noise_harmonics": 3,
+        "z_profile": "flat",
+        "z_valid_grade": 0.0
+      },
+      "gates": false,
+      "name": "track/voronoi/flat/default",
+      "seeds": {
+        "count": 1024,
+        "start": 0,
+        "step": 1
+      }
+    },
+    {
+      "config": {
+        "N_max": 384,
+        "checkpoint_angle_jitter": 0.55,
+        "checkpoint_best_of_k": 4,
+        "checkpoint_clip_fallback": false,
+        "checkpoint_count": 12,
+        "checkpoint_lookahead_frac": 0.16,
+        "checkpoint_radius_min_frac": 0.33,
+        "checkpoint_steer_gain": 0.65,
+        "checkpoint_turn_rate": 0.42,
+        "device": "cpu",
+        "edgy": 0.0,
+        "generator": "checkpoint",
+        "generator_params": null,
+        "half_width": 0.1,
+        "handle_clamp_frac": 0.4,
+        "hull_displacement": 0.15,
+        "max_num_points": 13,
+        "min_num_points": 9,
+        "min_point_distance": 0.05,
+        "num_envs": 1024,
+        "num_points": 256,
+        "num_points_per_segment": 30,
+        "on_invalid": "poison",
+        "polar_angular_jitter": 0.3,
+        "polar_num_knots": 12,
+        "polar_radial_jitter": 0.6,
+        "rad": 0.4,
+        "relax_accel": "chebyshev",
+        "relax_band": null,
+        "relax_bend_relax": 1.5,
+        "relax_cheby_gamma": 0.9,
+        "relax_cheby_rho": 0.98,
+        "relax_cheby_start": 8,
+        "relax_enable": true,
+        "relax_iters": 50,
+        "relax_margin": 0.15,
+        "relax_sep_cache_skin": 0.5,
+        "relax_sep_cache_slots": 16,
+        "relax_sep_every": 20,
+        "relax_sep_relax": 1.0,
+        "relax_smooth_passes": 5,
+        "relax_smooth_spacing_iters": 10,
+        "relax_solver": "xpbd",
+        "relax_spc_relax": 1.0,
+        "relax_tol": 0.02,
+        "repulsive_alpha": 3.0,
+        "repulsive_beta": 6.0,
+        "repulsive_deactivate_obstacles": true,
+        "repulsive_domain_frac": 0.35,
+        "repulsive_domain_init_ratio": 4.0,
+        "repulsive_grow_mult_max": 5.5,
+        "repulsive_grow_mult_min": 4.5,
+        "repulsive_obstacle_count_max": 12,
+        "repulsive_obstacle_count_min": 8,
+        "repulsive_obstacle_radius_max_frac": 0.045,
+        "repulsive_obstacle_radius_min_frac": 0.02,
+        "repulsive_ratchet_rate": 0.012,
+        "repulsive_resample_every": 25,
+        "repulsive_settle_iters": 40,
+        "repulsive_stages": [
+          64,
+          128,
+          256
+        ],
+        "repulsive_stall_area_tol": 0.05,
+        "repulsive_stall_window": 16,
+        "repulsive_tau": 0.4,
+        "repulsive_w_len": 30.0,
+        "scale": 1.0,
+        "size": 1.0,
+        "spacing": 0.06,
+        "turning_tol": 0.1,
+        "validity_border_check": false,
+        "voronoi_angular_jitter": 0.08,
+        "voronoi_control_points": 18,
+        "voronoi_num_sites": 256,
+        "voronoi_radial_variation": 0.62,
+        "voronoi_site_layout": "void_ring",
+        "w_floor": 0.001,
+        "z_base": 0.0,
+        "z_control_points": 10,
+        "z_max": 0.0,
+        "z_max_step": 0.0,
+        "z_min": 0.0,
+        "z_noise_amplitude": 0.0,
+        "z_noise_harmonics": 3,
+        "z_profile": "flat",
+        "z_valid_grade": 0.0
+      },
+      "gates": false,
+      "name": "track/checkpoint/flat/default",
+      "seeds": {
+        "count": 1024,
+        "start": 0,
+        "step": 1
+      }
+    },
+    {
+      "config": {
+        "N_max": 384,
+        "checkpoint_angle_jitter": 0.55,
+        "checkpoint_best_of_k": 4,
+        "checkpoint_clip_fallback": false,
+        "checkpoint_count": 12,
+        "checkpoint_lookahead_frac": 0.16,
+        "checkpoint_radius_min_frac": 0.33,
+        "checkpoint_steer_gain": 0.65,
+        "checkpoint_turn_rate": 0.42,
+        "device": "cpu",
+        "edgy": 0.0,
+        "generator": "repulsive",
+        "generator_params": null,
+        "half_width": 0.1,
+        "handle_clamp_frac": 0.4,
+        "hull_displacement": 0.15,
+        "max_num_points": 13,
+        "min_num_points": 9,
+        "min_point_distance": 0.05,
+        "num_envs": 64,
+        "num_points": 64,
+        "num_points_per_segment": 30,
+        "on_invalid": "poison",
+        "polar_angular_jitter": 0.3,
+        "polar_num_knots": 12,
+        "polar_radial_jitter": 0.6,
+        "rad": 0.4,
+        "relax_accel": "chebyshev",
+        "relax_band": null,
+        "relax_bend_relax": 1.5,
+        "relax_cheby_gamma": 0.9,
+        "relax_cheby_rho": 0.98,
+        "relax_cheby_start": 8,
+        "relax_enable": true,
+        "relax_iters": 50,
+        "relax_margin": 0.15,
+        "relax_sep_cache_skin": 0.5,
+        "relax_sep_cache_slots": 16,
+        "relax_sep_every": 20,
+        "relax_sep_relax": 1.0,
+        "relax_smooth_passes": 5,
+        "relax_smooth_spacing_iters": 10,
+        "relax_solver": "xpbd",
+        "relax_spc_relax": 1.0,
+        "relax_tol": 0.02,
+        "repulsive_alpha": 3.0,
+        "repulsive_beta": 6.0,
+        "repulsive_deactivate_obstacles": true,
+        "repulsive_domain_frac": 0.35,
+        "repulsive_domain_init_ratio": 4.0,
+        "repulsive_grow_mult_max": 5.5,
+        "repulsive_grow_mult_min": 4.5,
+        "repulsive_obstacle_count_max": 12,
+        "repulsive_obstacle_count_min": 8,
+        "repulsive_obstacle_radius_max_frac": 0.045,
+        "repulsive_obstacle_radius_min_frac": 0.02,
+        "repulsive_ratchet_rate": 0.012,
+        "repulsive_resample_every": 25,
+        "repulsive_settle_iters": 40,
+        "repulsive_stages": [
+          16,
+          32,
+          64
+        ],
+        "repulsive_stall_area_tol": 0.05,
+        "repulsive_stall_window": 16,
+        "repulsive_tau": 0.4,
+        "repulsive_w_len": 30.0,
+        "scale": 1.0,
+        "size": 1.0,
+        "spacing": 0.06,
+        "turning_tol": 0.1,
+        "validity_border_check": false,
+        "voronoi_angular_jitter": 0.08,
+        "voronoi_control_points": 18,
+        "voronoi_num_sites": 256,
+        "voronoi_radial_variation": 0.62,
+        "voronoi_site_layout": "void_ring",
+        "w_floor": 0.001,
+        "z_base": 0.0,
+        "z_control_points": 10,
+        "z_max": 0.0,
+        "z_max_step": 0.0,
+        "z_min": 0.0,
+        "z_noise_amplitude": 0.0,
+        "z_noise_harmonics": 3,
+        "z_profile": "flat",
+        "z_valid_grade": 0.0
+      },
+      "gates": false,
+      "name": "track/repulsive/flat/default",
+      "seeds": {
+        "count": 64,
+        "start": 0,
+        "step": 1
+      }
+    },
+    {
+      "config": {
+        "checkpoint_angle_jitter": 0.55,
+        "checkpoint_count": 12,
+        "checkpoint_radius_min_frac": 0.33,
+        "device": "cpu",
+        "gate_align": "yaw_only",
+        "gate_ordering": null,
+        "gate_radius": 0.025,
+        "gate_solve_iters": 8,
+        "gate_width": 0.0,
+        "generator": "bezier",
+        "generator_params": null,
+        "max_gates": 32,
+        "max_num_points": 13,
+        "min_gates": 4,
+        "min_num_points": 9,
+        "min_point_distance": 0.05,
+        "num_envs": 1024,
+        "on_invalid": "poison",
+        "polar_angular_jitter": 0.3,
+        "polar_num_knots": 12,
+        "polar_radial_jitter": 0.6,
+        "scale": 1.0,
+        "size": 1.0,
+        "voronoi_angular_jitter": 0.08,
+        "voronoi_control_points": 18,
+        "voronoi_num_sites": 256,
+        "voronoi_radial_variation": 0.62,
+        "voronoi_site_layout": "void_ring",
+        "z_base": 0.0,
+        "z_max": 0.0,
+        "z_max_step": 0.0,
+        "z_min": 0.0,
+        "z_noise_amplitude": 0.0,
+        "z_noise_harmonics": 3,
+        "z_profile": "flat",
+        "z_valid_grade": 0.0
+      },
+      "gates": true,
+      "name": "gates/bezier/flat/default",
+      "seeds": {
+        "count": 1024,
+        "start": 0,
+        "step": 1
+      }
+    },
+    {
+      "config": {
+        "checkpoint_angle_jitter": 0.55,
+        "checkpoint_count": 12,
+        "checkpoint_radius_min_frac": 0.33,
+        "device": "cpu",
+        "gate_align": "yaw_only",
+        "gate_ordering": null,
+        "gate_radius": 0.025,
+        "gate_solve_iters": 8,
+        "gate_width": 0.0,
+        "generator": "hull",
+        "generator_params": null,
+        "max_gates": 32,
+        "max_num_points": 13,
+        "min_gates": 4,
+        "min_num_points": 9,
+        "min_point_distance": 0.05,
+        "num_envs": 1024,
+        "on_invalid": "poison",
+        "polar_angular_jitter": 0.3,
+        "polar_num_knots": 12,
+        "polar_radial_jitter": 0.6,
+        "scale": 1.0,
+        "size": 1.0,
+        "voronoi_angular_jitter": 0.08,
+        "voronoi_control_points": 18,
+        "voronoi_num_sites": 256,
+        "voronoi_radial_variation": 0.62,
+        "voronoi_site_layout": "void_ring",
+        "z_base": 0.0,
+        "z_max": 0.0,
+        "z_max_step": 0.0,
+        "z_min": 0.0,
+        "z_noise_amplitude": 0.0,
+        "z_noise_harmonics": 3,
+        "z_profile": "flat",
+        "z_valid_grade": 0.0
+      },
+      "gates": true,
+      "name": "gates/hull/flat/default",
+      "seeds": {
+        "count": 1024,
+        "start": 0,
+        "step": 1
+      }
+    },
+    {
+      "config": {
+        "checkpoint_angle_jitter": 0.55,
+        "checkpoint_count": 12,
+        "checkpoint_radius_min_frac": 0.33,
+        "device": "cpu",
+        "gate_align": "yaw_only",
+        "gate_ordering": null,
+        "gate_radius": 0.025,
+        "gate_solve_iters": 8,
+        "gate_width": 0.0,
+        "generator": "polar",
+        "generator_params": null,
+        "max_gates": 32,
+        "max_num_points": 13,
+        "min_gates": 4,
+        "min_num_points": 9,
+        "min_point_distance": 0.05,
+        "num_envs": 1024,
+        "on_invalid": "poison",
+        "polar_angular_jitter": 0.3,
+        "polar_num_knots": 12,
+        "polar_radial_jitter": 0.6,
+        "scale": 1.0,
+        "size": 1.0,
+        "voronoi_angular_jitter": 0.08,
+        "voronoi_control_points": 18,
+        "voronoi_num_sites": 256,
+        "voronoi_radial_variation": 0.62,
+        "voronoi_site_layout": "void_ring",
+        "z_base": 0.0,
+        "z_max": 0.0,
+        "z_max_step": 0.0,
+        "z_min": 0.0,
+        "z_noise_amplitude": 0.0,
+        "z_noise_harmonics": 3,
+        "z_profile": "flat",
+        "z_valid_grade": 0.0
+      },
+      "gates": true,
+      "name": "gates/polar/flat/default",
+      "seeds": {
+        "count": 1024,
+        "start": 0,
+        "step": 1
+      }
+    },
+    {
+      "config": {
+        "checkpoint_angle_jitter": 0.55,
+        "checkpoint_count": 12,
+        "checkpoint_radius_min_frac": 0.33,
+        "device": "cpu",
+        "gate_align": "yaw_only",
+        "gate_ordering": null,
+        "gate_radius": 0.025,
+        "gate_solve_iters": 8,
+        "gate_width": 0.0,
+        "generator": "voronoi",
+        "generator_params": null,
+        "max_gates": 32,
+        "max_num_points": 13,
+        "min_gates": 4,
+        "min_num_points": 9,
+        "min_point_distance": 0.05,
+        "num_envs": 1024,
+        "on_invalid": "poison",
+        "polar_angular_jitter": 0.3,
+        "polar_num_knots": 12,
+        "polar_radial_jitter": 0.6,
+        "scale": 1.0,
+        "size": 1.0,
+        "voronoi_angular_jitter": 0.08,
+        "voronoi_control_points": 18,
+        "voronoi_num_sites": 256,
+        "voronoi_radial_variation": 0.62,
+        "voronoi_site_layout": "void_ring",
+        "z_base": 0.0,
+        "z_max": 0.0,
+        "z_max_step": 0.0,
+        "z_min": 0.0,
+        "z_noise_amplitude": 0.0,
+        "z_noise_harmonics": 3,
+        "z_profile": "flat",
+        "z_valid_grade": 0.0
+      },
+      "gates": true,
+      "name": "gates/voronoi/flat/default",
+      "seeds": {
+        "count": 1024,
+        "start": 0,
+        "step": 1
+      }
+    },
+    {
+      "config": {
+        "checkpoint_angle_jitter": 0.55,
+        "checkpoint_count": 12,
+        "checkpoint_radius_min_frac": 0.33,
+        "device": "cpu",
+        "gate_align": "yaw_only",
+        "gate_ordering": null,
+        "gate_radius": 0.025,
+        "gate_solve_iters": 8,
+        "gate_width": 0.0,
+        "generator": "checkpoint",
+        "generator_params": null,
+        "max_gates": 32,
+        "max_num_points": 13,
+        "min_gates": 4,
+        "min_num_points": 9,
+        "min_point_distance": 0.05,
+        "num_envs": 1024,
+        "on_invalid": "poison",
+        "polar_angular_jitter": 0.3,
+        "polar_num_knots": 12,
+        "polar_radial_jitter": 0.6,
+        "scale": 1.0,
+        "size": 1.0,
+        "voronoi_angular_jitter": 0.08,
+        "voronoi_control_points": 18,
+        "voronoi_num_sites": 256,
+        "voronoi_radial_variation": 0.62,
+        "voronoi_site_layout": "void_ring",
+        "z_base": 0.0,
+        "z_max": 0.0,
+        "z_max_step": 0.0,
+        "z_min": 0.0,
+        "z_noise_amplitude": 0.0,
+        "z_noise_harmonics": 3,
+        "z_profile": "flat",
+        "z_valid_grade": 0.0
+      },
+      "gates": true,
+      "name": "gates/checkpoint/flat/default",
+      "seeds": {
+        "count": 1024,
+        "start": 0,
+        "step": 1
+      }
+    },
+    {
+      "config": {
+        "N_max": 384,
+        "checkpoint_angle_jitter": 0.55,
+        "checkpoint_best_of_k": 4,
+        "checkpoint_clip_fallback": false,
+        "checkpoint_count": 12,
+        "checkpoint_lookahead_frac": 0.16,
+        "checkpoint_radius_min_frac": 0.33,
+        "checkpoint_steer_gain": 0.65,
+        "checkpoint_turn_rate": 0.42,
+        "device": "cpu",
+        "edgy": 0.0,
+        "generator": "bezier",
+        "generator_params": null,
+        "half_width": 0.1,
+        "handle_clamp_frac": 0.4,
+        "hull_displacement": 0.15,
+        "max_num_points": 13,
+        "min_num_points": 9,
+        "min_point_distance": 0.05,
+        "num_envs": 1024,
+        "num_points": 256,
+        "num_points_per_segment": 30,
+        "on_invalid": "poison",
+        "polar_angular_jitter": 0.3,
+        "polar_num_knots": 12,
+        "polar_radial_jitter": 0.6,
+        "rad": 0.4,
+        "relax_accel": "chebyshev",
+        "relax_band": null,
+        "relax_bend_relax": 1.5,
+        "relax_cheby_gamma": 0.9,
+        "relax_cheby_rho": 0.98,
+        "relax_cheby_start": 8,
+        "relax_enable": true,
+        "relax_iters": 50,
+        "relax_margin": 0.15,
+        "relax_sep_cache_skin": 0.5,
+        "relax_sep_cache_slots": 16,
+        "relax_sep_every": 20,
+        "relax_sep_relax": 1.0,
+        "relax_smooth_passes": 5,
+        "relax_smooth_spacing_iters": 10,
+        "relax_solver": "xpbd",
+        "relax_spc_relax": 1.0,
+        "relax_tol": 0.02,
+        "repulsive_alpha": 3.0,
+        "repulsive_beta": 6.0,
+        "repulsive_deactivate_obstacles": true,
+        "repulsive_domain_frac": 0.35,
+        "repulsive_domain_init_ratio": 4.0,
+        "repulsive_grow_mult_max": 5.5,
+        "repulsive_grow_mult_min": 4.5,
+        "repulsive_obstacle_count_max": 12,
+        "repulsive_obstacle_count_min": 8,
+        "repulsive_obstacle_radius_max_frac": 0.045,
+        "repulsive_obstacle_radius_min_frac": 0.02,
+        "repulsive_ratchet_rate": 0.012,
+        "repulsive_resample_every": 25,
+        "repulsive_settle_iters": 40,
+        "repulsive_stages": [
+          64,
+          128,
+          256
+        ],
+        "repulsive_stall_area_tol": 0.05,
+        "repulsive_stall_window": 16,
+        "repulsive_tau": 0.4,
+        "repulsive_w_len": 30.0,
+        "scale": 1.0,
+        "size": 1.0,
+        "spacing": 0.06,
+        "turning_tol": 0.1,
+        "validity_border_check": false,
+        "voronoi_angular_jitter": 0.08,
+        "voronoi_control_points": 18,
+        "voronoi_num_sites": 256,
+        "voronoi_radial_variation": 0.62,
+        "voronoi_site_layout": "void_ring",
+        "w_floor": 0.001,
+        "z_base": 0.0,
+        "z_control_points": 10,
+        "z_max": 0.4,
+        "z_max_step": 0.0,
+        "z_min": -0.4,
+        "z_noise_amplitude": 0.2,
+        "z_noise_harmonics": 3,
+        "z_profile": "noise",
+        "z_valid_grade": 0.0
+      },
+      "gates": false,
+      "name": "track/bezier/noise/default",
+      "seeds": {
+        "count": 1024,
+        "start": 0,
+        "step": 1
+      }
+    },
+    {
+      "config": {
+        "checkpoint_angle_jitter": 0.55,
+        "checkpoint_count": 12,
+        "checkpoint_radius_min_frac": 0.33,
+        "device": "cpu",
+        "gate_align": "yaw_only",
+        "gate_ordering": "random_pairs",
+        "gate_radius": 0.025,
+        "gate_solve_iters": 8,
+        "gate_width": 0.0,
+        "generator": "bezier",
+        "generator_params": null,
+        "max_gates": 32,
+        "max_num_points": 13,
+        "min_gates": 4,
+        "min_num_points": 9,
+        "min_point_distance": 0.05,
+        "num_envs": 1024,
+        "on_invalid": "poison",
+        "polar_angular_jitter": 0.3,
+        "polar_num_knots": 12,
+        "polar_radial_jitter": 0.6,
+        "scale": 1.0,
+        "size": 1.0,
+        "voronoi_angular_jitter": 0.08,
+        "voronoi_control_points": 18,
+        "voronoi_num_sites": 256,
+        "voronoi_radial_variation": 0.62,
+        "voronoi_site_layout": "void_ring",
+        "z_base": 0.0,
+        "z_max": 0.0,
+        "z_max_step": 0.0,
+        "z_min": 0.0,
+        "z_noise_amplitude": 0.0,
+        "z_noise_harmonics": 3,
+        "z_profile": "flat",
+        "z_valid_grade": 0.0
+      },
+      "gates": true,
+      "name": "gates/bezier/flat/random_pairs",
+      "seeds": {
+        "count": 1024,
+        "start": 0,
+        "step": 1
+      }
+    }
+  ],
+  "device": "cpu",
+  "format": 1,
+  "platform": "darwin-arm64",
+  "quantile_levels": [
+    0.1,
+    0.5,
+    0.9
+  ],
+  "source_revision": "4664986f6097b62e4f6557da925de0f9210c63fe",
+  "summary": {
+    "gates/bezier/flat/default": {
+      "quantiles": {
+        "compactness": [
+          0.23818332707696468,
+          0.38674864829580174,
+          0.5463448831148973
+        ],
+        "count": [
+          9.0,
+          11.0,
+          13.0
+        ],
+        "curvature": [
+          2.5612720253541497,
+          3.319653821406318,
+          4.237660685035602
+        ],
+        "length": [
+          3.6670016628932283,
+          4.667353687836547,
+          5.7473161346731025
+        ],
+        "z_mean": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "z_std": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "samples": 1024,
+      "valid": 1024,
+      "yield": 1.0
+    },
+    "gates/bezier/flat/random_pairs": {
+      "quantiles": {
+        "compactness": [
+          0.008837413228526844,
+          0.05166522655834295,
+          0.1283976949196508
+        ],
+        "count": [
+          9.0,
+          11.0,
+          13.0
+        ],
+        "curvature": [
+          2.3465695438700074,
+          2.8670678295024947,
+          3.6054365086123608
+        ],
+        "length": [
+          5.901489441201271,
+          8.032737381784337,
+          10.325044669201844
+        ],
+        "z_mean": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "z_std": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "samples": 1024,
+      "valid": 1024,
+      "yield": 1.0
+    },
+    "gates/checkpoint/flat/default": {
+      "quantiles": {
+        "compactness": [
+          0.48565925099340973,
+          0.6068024149216401,
+          0.7402996467175375
+        ],
+        "count": [
+          12.0,
+          12.0,
+          12.0
+        ],
+        "curvature": [
+          2.2585922722087224,
+          2.793775290579464,
+          3.353127571267327
+        ],
+        "length": [
+          4.139228189143293,
+          4.549566379980357,
+          5.005843519024294
+        ],
+        "z_mean": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "z_std": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "samples": 1024,
+      "valid": 1024,
+      "yield": 1.0
+    },
+    "gates/hull/flat/default": {
+      "quantiles": {
+        "compactness": [
+          0.23536557642218522,
+          0.3834769165695852,
+          0.5399808185283095
+        ],
+        "count": [
+          9.0,
+          11.0,
+          13.0
+        ],
+        "curvature": [
+          2.590082713351525,
+          3.3200775405805376,
+          4.249514494266652
+        ],
+        "length": [
+          3.6663925128784123,
+          4.682841285956448,
+          5.842471946571634
+        ],
+        "z_mean": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "z_std": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "samples": 1024,
+      "valid": 1024,
+      "yield": 1.0
+    },
+    "gates/polar/flat/default": {
+      "quantiles": {
+        "compactness": [
+          0.4120487757587134,
+          0.5498173589157823,
+          0.6953562090803014
+        ],
+        "count": [
+          12.0,
+          12.0,
+          12.0
+        ],
+        "curvature": [
+          2.3205799909571616,
+          2.843868124769358,
+          3.4059953653264476
+        ],
+        "length": [
+          4.144457020407935,
+          4.606827427884973,
+          5.1410880148987985
+        ],
+        "z_mean": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "z_std": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "samples": 1024,
+      "valid": 1024,
+      "yield": 1.0
+    },
+    "gates/voronoi/flat/default": {
+      "quantiles": {
+        "compactness": [
+          0.6261506097304391,
+          0.6756313052362606,
+          0.7262525118645331
+        ],
+        "count": [
+          18.0,
+          18.0,
+          18.0
+        ],
+        "curvature": [
+          2.7364230455011294,
+          3.1523360352572927,
+          3.6629946407755125
+        ],
+        "length": [
+          4.03771240517598,
+          4.346665524597501,
+          4.6656650834126125
+        ],
+        "z_mean": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "z_std": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "samples": 1024,
+      "valid": 1024,
+      "yield": 1.0
+    },
+    "track/bezier/flat/default": {
+      "quantiles": {
+        "compactness": [
+          0.3289424631545301,
+          0.45303648541882324,
+          0.6201905463874539
+        ],
+        "count": [
+          64.0,
+          82.0,
+          102.0
+        ],
+        "curvature": [
+          3.1627867025566214,
+          4.041756736378619,
+          4.720234933814395
+        ],
+        "length": [
+          3.8369544132379785,
+          4.941528960743717,
+          6.115511939141707
+        ],
+        "z_mean": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "z_std": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "samples": 1024,
+      "valid": 1023,
+      "yield": 0.9990234375
+    },
+    "track/bezier/noise/default": {
+      "quantiles": {
+        "compactness": [
+          0.32725257102246763,
+          0.4464265227505757,
+          0.612489188104868
+        ],
+        "count": [
+          64.0,
+          82.0,
+          102.0
+        ],
+        "curvature": [
+          3.1469082770312804,
+          4.018386733106323,
+          4.705977543870601
+        ],
+        "length": [
+          3.8835979062719423,
+          4.962795745337687,
+          6.134363023384588
+        ],
+        "z_mean": [
+          -9.422281606627317e-05,
+          8.582840154321828e-07,
+          0.00011580167177447493
+        ],
+        "z_std": [
+          0.024465605436399494,
+          0.04757663328205707,
+          0.07345090115683481
+        ]
+      },
+      "samples": 1024,
+      "valid": 1023,
+      "yield": 0.9990234375
+    },
+    "track/checkpoint/flat/default": {
+      "quantiles": {
+        "compactness": [
+          0.5190357046498479,
+          0.6442017570809334,
+          0.7244842856715813
+        ],
+        "count": [
+          60.0,
+          68.0,
+          81.0
+        ],
+        "curvature": [
+          3.0824951504286147,
+          3.6975334472441723,
+          4.3297442089087745
+        ],
+        "length": [
+          3.588784752070709,
+          4.070094277571892,
+          4.862917419898304
+        ],
+        "z_mean": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "z_std": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "samples": 1024,
+      "valid": 1020,
+      "yield": 0.99609375
+    },
+    "track/hull/flat/default": {
+      "quantiles": {
+        "compactness": [
+          0.32655040940135677,
+          0.44137010476135297,
+          0.5790620802554471
+        ],
+        "count": [
+          64.0,
+          81.0,
+          100.5
+        ],
+        "curvature": [
+          3.604395434766905,
+          4.32452143933349,
+          4.908014921857736
+        ],
+        "length": [
+          3.78898041055679,
+          4.8318793549615915,
+          6.020957437705336
+        ],
+        "z_mean": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "z_std": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "samples": 1024,
+      "valid": 1016,
+      "yield": 0.9921875
+    },
+    "track/polar/flat/default": {
+      "quantiles": {
+        "compactness": [
+          0.4373579831812783,
+          0.5670699570455039,
+          0.7150735283479958
+        ],
+        "count": [
+          70.0,
+          78.0,
+          87.0
+        ],
+        "curvature": [
+          3.11665164411334,
+          3.9079414764744884,
+          4.703759110729348
+        ],
+        "length": [
+          4.19612563183384,
+          4.694189230022737,
+          5.261727245896711
+        ],
+        "z_mean": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "z_std": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "samples": 1024,
+      "valid": 1024,
+      "yield": 1.0
+    },
+    "track/repulsive/flat/default": {
+      "quantiles": {
+        "compactness": [
+          0.17451416132355668,
+          0.19734220061984442,
+          0.21969892793521043
+        ],
+        "count": [
+          196.2,
+          206.0,
+          223.6
+        ],
+        "curvature": [
+          3.396725602455616,
+          3.8102157853401843,
+          4.2565857615355585
+        ],
+        "length": [
+          11.665961518846647,
+          12.234512987747156,
+          13.321368960281312
+        ],
+        "z_mean": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "z_std": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "samples": 64,
+      "valid": 33,
+      "yield": 0.515625
+    },
+    "track/voronoi/flat/default": {
+      "quantiles": {
+        "compactness": [
+          0.7049634628623269,
+          0.7478223414318383,
+          0.7921460404996822
+        ],
+        "count": [
+          67.0,
+          71.0,
+          76.0
+        ],
+        "curvature": [
+          2.7347989771334698,
+          3.115565429079333,
+          3.477172577750239
+        ],
+        "length": [
+          3.9716967172074575,
+          4.240837947574207,
+          4.53549000911182
+        ],
+        "z_mean": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "z_std": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "samples": 1024,
+      "valid": 1024,
+      "yield": 1.0
+    }
+  },
+  "tolerances": {
+    "quantile_atol": 1e-05,
+    "quantile_rtol": 0.05,
+    "yield_sigma": 4.0
+  },
+  "track_gen_version": "0.3.0rc1",
+  "warp_version": "1.18.0"
+}
