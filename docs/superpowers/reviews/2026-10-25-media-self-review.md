@@ -128,3 +128,16 @@ independently proves raw target/width clearance, final disc penetration, exact
 fail256 and keep/poison behavior. Disabling final barrier validation makes both
 cases fail, and independent review found no issues. All70 related CPU/CUDA tests
 passed on spark-home without skips. Numerical runtime and golden values are unchanged.
+
+The user then refined the construction view to an8x8 grid. Its actual selected
+seed is11560502 with four corners and min_point_distance=.0625 (pitch.125).
+Sampler-only canonical epoch0 replay matched a real64-env generator byte for byte.
+A compact ascending search stopped after twelve1,048,576-seed chunks, through
+12582911, within a declared67108864-seed bound. Only matching candidates entered
+the full pipeline; no large TrackGenerator was allocated. All four recorded points
+lie inside their selected lower-left-origin cells, and the real finished road is
+valid. Settings and selection provenance are visible; the unchanged distribution
+is not described as a within-cell guarantee. Both preview movies fully decode
+144frames at1696x954 and preserve matching light/dark geometry. The23 focused
+sampler/selection/construction checks passed. Only actual newly captured files
+will receive this source revision; earlier captures retain their true sources.

@@ -22,14 +22,15 @@ from .racing_theme import (apply_plot_theme, get_palette, plotting_theme, save_f
 
 _CACHE = '_bezier_hull_storyboard'
 _FALLBACK_SEEDS = {'bezier': 97, 'hull': 23}
-_BEZIER_EXAMPLE_SETTINGS = dict(min_num_points=4, max_num_points=4, min_point_distance=.25)
+_BEZIER_EXAMPLE_SEED = 11560502
+_BEZIER_EXAMPLE_SETTINGS = dict(min_num_points=4, max_num_points=4, min_point_distance=.0625)
 
 
 @lru_cache(maxsize=1)
 def _calm_bezier_example():
     from .render_generator_guide import sample_batch
 
-    sample = sample_batch('bezier', seeds=[112], overrides=_BEZIER_EXAMPLE_SETTINGS)[0]
+    sample = sample_batch('bezier', seeds=[_BEZIER_EXAMPLE_SEED], overrides=_BEZIER_EXAMPLE_SETTINGS)[0]
     data = capture(sample)
     distinct = len(data['grid_ids']) == len(set(data['grid_ids'])) == 4
     inside = bool(((data['offset_vectors'] >= 0)
@@ -39,7 +40,13 @@ def _calm_bezier_example():
     if not (distinct and inside and finite and data['final_valid']):
         raise AssertionError('the declared calm Bezier example no longer meets its selection policy')
     sample['example_selection'] = dict(
-        selected_seed=112, seed_search=dict(start=0, stop_exclusive=2048, step=1),
+        selected_seed=_BEZIER_EXAMPLE_SEED,
+        seed_search=dict(start=0, stop_exclusive=12582912, step=1, count=12582912,
+                         chunk_size=1048576, chunks=12, declared_stop_exclusive=67108864),
+        search_method='Canonical epoch-zero SeedState.effective and ops.sample_grid_points; '
+                      'sampler points/addresses/effective seeds verified against 64 actual generator rows; '
+                      'only matching sampler candidates run through the full pipeline.',
+        grid_cells_per_side=data['grid_cells_per_side'], grid_pitch=data['grid_pitch'],
         first_matching_seed=True, four_distinct_cells=distinct, sampled_inside_cells=inside,
         settings=dict(_BEZIER_EXAMPLE_SETTINGS),
         policy='First ascending seed with four distinct grid addresses, every actual sampled '
@@ -245,11 +252,16 @@ def construction_stages(sample):
         ('Produce fixed-count raw samples', 'The generator stops at num_points raw samples. The shared spacing, XPBD and uniform stages determine the finished road and bead count.'),
     ])
     if sample.get('example_selection'):
+        selection = sample['example_selection']
+        seed = selection['selected_seed']
+        cells = selection['grid_cells_per_side']
+        distance = selection['settings']['min_point_distance']
         stages[0] = ('Choose grid addresses',
-                     'Selected seed 112 uses four corners and min_point_distance=0.25: '
-                     'a 2 × 2 grid with pitch 0.50. This example keeps one corner in each cell.')
+                     f'Selected seed {seed} uses four corners and min_point_distance={distance:g}: '
+                     f'an {cells} × {cells} grid with pitch {selection["grid_pitch"]:g}. '
+                     f'Choose four distinct cells from {cells*cells}.')
         stages[1] = ('Add the actual random offsets',
-                     'The selected real seed 112 keeps its sampled points inside their cells. '
+                     f'The selected real seed {seed} keeps its sampled points inside their cells. '
                      'The generator still draws offsets in [-0.5, 0.5); no jitter rule is changed.')
     smooth_stage = 3 if name == 'bezier' else 4
     return [dict(title=title, explanation=explanation, progressive_curve=i == smooth_stage)
@@ -285,8 +297,10 @@ def _grid(ax, data, p):
     for x in ticks:
         ax.plot([x, x], [0., end], color=p.grid, lw=.6, zorder=0)
         ax.plot([0., end], [x, x], color=p.grid, lw=.6, zorder=0)
+    pitch = (f"{data['grid_pitch']:g}" if data['name'] == 'bezier'
+             else f"{data['grid_pitch']:.2f}")
     ax.text(0., 1.02, f"{len(data['sampled'])} corners from [{data['parameters']['min_num_points']}, {data['parameters']['max_num_points']}] · "
-            f"{data['grid_cells_per_side']} × {data['grid_cells_per_side']} addresses · pitch {data['grid_pitch']:.2f}",
+            f"{data['grid_cells_per_side']} × {data['grid_cells_per_side']} addresses · pitch {pitch}",
             transform=ax.transAxes, va='bottom', color=p.ink, fontsize=11)
 
 
@@ -436,7 +450,9 @@ def _frame(sample, theme):
     heading = fig.text(.5, .95, '', ha='center', color=p.ink, fontsize=18)
     explanation = fig.text(.5, .875, '', ha='center', va='center', color=p.ink, fontsize=12)
     if sample.get('example_selection'):
-        fig.text(.5, .915, 'Selected seed 112 · min_num_points=max_num_points=4 · min_point_distance=0.25 · pitch 0.50',
+        selection = sample['example_selection']
+        fig.text(.5, .915, f"Selected seed {selection['selected_seed']} · min_num_points=max_num_points=4 · "
+                 f"min_point_distance={selection['settings']['min_point_distance']:g} · pitch {selection['grid_pitch']:g}",
                  ha='center', color=p.ink, fontsize=10)
     fig.text(.5, .055, 'Recorded geometry; staged explanation, not elapsed runtime.\n'
              'Shared tail: fixed-distance targets → XPBD → same-count uniform redistribution (see the spacing guide).',
