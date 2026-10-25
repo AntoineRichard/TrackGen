@@ -1,6 +1,6 @@
 {
-  "source_revision": "0da98417b18b9064250c6014f9fb5254ca825fdb",
-  "renderer_sha256": "1856a06ada356ffecdedc813262c4d338b5503eb1c9196e6c3ae04b96538d59f",
+  "source_revision": "fa0d2fa96560f9d3a5eaddb54162db371224c9ec",
+  "renderer_sha256": "3b1d02d219503fb2093155a90624e0dc6eebf95f18f1cbec39d52236650b36fc",
   "command": "python -m viz.render_course_guide --out-dir DIR --check --theme dark",
   "device": "cpu",
   "theme": "dark",

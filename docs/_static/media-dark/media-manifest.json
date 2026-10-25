@@ -28,7 +28,7 @@
       "producer": "utility"
     },
     "controls-elevation-knobs.png": {
-      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "capture_commit": "fa0d2fa96560f9d3a5eaddb54162db371224c9ec",
       "dark": "_static/media-dark/controls-elevation-knobs.png",
       "dark_sha256": "1eb1f2397c34e1bc73ba2b133db7cb43891adeef44bbdeb85e9307a790c03965",
       "kind": "image",
@@ -37,7 +37,7 @@
       "producer": "course"
     },
     "controls-elevation.png": {
-      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "capture_commit": "fa0d2fa96560f9d3a5eaddb54162db371224c9ec",
       "dark": "_static/media-dark/controls-elevation.png",
       "dark_sha256": "c1dfa06e5173c19a5cf8a609b5b99f9c770bf811de598ed3ce86ccffbc0c16cb",
       "kind": "image",
@@ -46,7 +46,7 @@
       "producer": "course"
     },
     "controls-gate-capacity.png": {
-      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "capture_commit": "fa0d2fa96560f9d3a5eaddb54162db371224c9ec",
       "dark": "_static/media-dark/controls-gate-capacity.png",
       "dark_sha256": "beaeb667bbbcaf618700f40eeba0fa6f54700172520525a147ed1dd2c0dc738f",
       "kind": "image",
@@ -55,7 +55,7 @@
       "producer": "course"
     },
     "controls-gate-elevation.png": {
-      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "capture_commit": "fa0d2fa96560f9d3a5eaddb54162db371224c9ec",
       "dark": "_static/media-dark/controls-gate-elevation.png",
       "dark_sha256": "5bd3bf931c7aeaa125533c20e1de89ae98294288d87ced7476fc98c91ea1f8f1",
       "kind": "image",
@@ -64,16 +64,16 @@
       "producer": "course"
     },
     "controls-gate-frames.png": {
-      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "capture_commit": "fa0d2fa96560f9d3a5eaddb54162db371224c9ec",
       "dark": "_static/media-dark/controls-gate-frames.png",
-      "dark_sha256": "08a39c74664b63b8819778b33dd685e96f33bbe08d8a07ab61bb6a75263051ce",
+      "dark_sha256": "4a76fd877aa6a81efdd4759670dd527e4aa3efe21c78d7ca6065a869f06ea65c",
       "kind": "image",
       "light": "assets/racing/controls-gate-frames.png",
-      "light_sha256": "2a999716553afcc982dfea5d2aa45a6fa5c4edf9f83f0c402160ca4f9e9d1cf5",
+      "light_sha256": "5828e95cbbd683f5e55c1bafd170d681d405e940585589252dda795148b52835",
       "producer": "course"
     },
     "controls-gate-order-width.png": {
-      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "capture_commit": "fa0d2fa96560f9d3a5eaddb54162db371224c9ec",
       "dark": "_static/media-dark/controls-gate-order-width.png",
       "dark_sha256": "248292877204811de50d02aa07df325588d8ce5f22c267f8829e018c4e474725",
       "kind": "image",
@@ -82,7 +82,7 @@
       "producer": "course"
     },
     "controls-gate-radius.png": {
-      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "capture_commit": "fa0d2fa96560f9d3a5eaddb54162db371224c9ec",
       "dark": "_static/media-dark/controls-gate-radius.png",
       "dark_sha256": "8a8a6cb7dc04f8494c074308b2ca6f5387e0862058e51881cb0f367c44d32556",
       "kind": "image",
@@ -91,7 +91,7 @@
       "producer": "course"
     },
     "controls-gate-sources.png": {
-      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "capture_commit": "fa0d2fa96560f9d3a5eaddb54162db371224c9ec",
       "dark": "_static/media-dark/controls-gate-sources.png",
       "dark_sha256": "adf2b95126f2c3b70a5f411f4678adc233a34bfe38d7d116c4c2f187735c7abc",
       "kind": "image",
@@ -100,7 +100,7 @@
       "producer": "course"
     },
     "controls-resolution.png": {
-      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "capture_commit": "fa0d2fa96560f9d3a5eaddb54162db371224c9ec",
       "dark": "_static/media-dark/controls-resolution.png",
       "dark_sha256": "2efaa63fcb32cf0ab4098fa5a293ed63fe967693181599e2b8a1155adb6b0635",
       "kind": "image",
@@ -109,7 +109,7 @@
       "producer": "course"
     },
     "controls-sampling-capacity.png": {
-      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "capture_commit": "fa0d2fa96560f9d3a5eaddb54162db371224c9ec",
       "dark": "_static/media-dark/controls-sampling-capacity.png",
       "dark_sha256": "c6835888b00bbd0d1defe287c878e80d693f879fbee604e618f1efe23b18fec7",
       "kind": "image",
@@ -118,7 +118,7 @@
       "producer": "course"
     },
     "controls-size-width.png": {
-      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "capture_commit": "fa0d2fa96560f9d3a5eaddb54162db371224c9ec",
       "dark": "_static/media-dark/controls-size-width.png",
       "dark_sha256": "2ba33149fd6e9ed9544a126298246c8d1ad4514b367fe6c65ff97668ec21ab6f",
       "kind": "image",
@@ -127,7 +127,7 @@
       "producer": "course"
     },
     "controls-stations-3d.png": {
-      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "capture_commit": "fa0d2fa96560f9d3a5eaddb54162db371224c9ec",
       "dark": "_static/media-dark/controls-stations-3d.png",
       "dark_sha256": "5fa3fc89d1ad94ca7aca88035098190220ddc28cdaf6104a4e1bf2b5b6e17990",
       "kind": "image",
@@ -136,7 +136,7 @@
       "producer": "course"
     },
     "controls-width-channel.png": {
-      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "capture_commit": "fa0d2fa96560f9d3a5eaddb54162db371224c9ec",
       "dark": "_static/media-dark/controls-width-channel.png",
       "dark_sha256": "81764a13433fa1bb437217135963916b613b1a9ae598f3e947af4b551f5c8e7e",
       "kind": "image",
@@ -415,9 +415,9 @@
       "producer": "generators"
     },
     "generator-repulsive-controls-obstacles.png": {
-      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "capture_commit": "fa0d2fa96560f9d3a5eaddb54162db371224c9ec",
       "dark": "_static/media-dark/generator-repulsive-controls-obstacles.png",
-      "dark_sha256": "7586cc3464ae4538a6a4fb453bdd4d4fd1dbb09cc041b8689d69e1af46478c58",
+      "dark_sha256": "cd95957e4469ae7a077673ab56ab7c8ba81aeefc94a0fb63b07584f7df47e43d",
       "kind": "image",
       "light": "assets/racing/generator-repulsive-controls-obstacles.png",
       "light_sha256": "afb5dfdc30d42a3157bc77533a54c4ac156b65314036a29c20144dbace7131c0",
@@ -442,25 +442,25 @@
       "producer": "generators"
     },
     "generator-repulsive-growth.mp4": {
-      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "capture_commit": "fa0d2fa96560f9d3a5eaddb54162db371224c9ec",
       "dark": "_static/media-dark/generator-repulsive-growth.mp4",
-      "dark_sha256": "2f72c365e386be8f12851c8a92ecee66fa4f6f0693b6e3dbacfe317987bade5f",
+      "dark_sha256": "a2f57658d87f205ed24abc0e785bc0746e5a2a094f033ac888f658c83de4eaeb",
       "kind": "video",
       "light": "assets/racing/generator-repulsive-growth.mp4",
       "light_sha256": "2833447300b178eee86e54784ab1a5885f03a7172d01c2106d2c6303d525d6c6",
       "producer": "generators"
     },
     "generator-repulsive-growth.png": {
-      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "capture_commit": "fa0d2fa96560f9d3a5eaddb54162db371224c9ec",
       "dark": "_static/media-dark/generator-repulsive-growth.png",
-      "dark_sha256": "bfd576ebe47f258e66b7f2499184148aac983d3730b6a5678ba1deaabb7f00af",
+      "dark_sha256": "555c82f8a480a9db277beff777efff6f2b1be646bb7b267c35c0bd22be1c568e",
       "kind": "image",
       "light": "assets/racing/generator-repulsive-growth.png",
       "light_sha256": "05a8b314596f6336b354c2b528b852e4e97e437959e3c2f2a6eb8a50d4f33e72",
       "producer": "generators"
     },
     "generator-repulsive-limits.png": {
-      "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
+      "capture_commit": "fa0d2fa96560f9d3a5eaddb54162db371224c9ec",
       "dark": "_static/media-dark/generator-repulsive-limits.png",
       "dark_sha256": "8938262610eec0feaba8934451cb3ac41bd25479aa96c7f1ae79ab8133c9960b",
       "kind": "image",

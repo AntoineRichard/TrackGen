@@ -10,10 +10,9 @@ native.**
 ![Warp](https://img.shields.io/badge/warp--lang-%E2%89%A5%201.18-76b900)
 
 > [!NOTE]
-> **These examples target the `v0.3.0rc2` release candidate.** Read [Upgrading from 0.2](https://github.com/AntoineRichard/TrackGen/blob/v0.3.0rc2/docs/upgrading/from-0.2.rst)
-> before updating: legacy APIs are removed, built-in seeds produce new geometry,
-> invalid results default to poison, configs are frozen, and Track/GateSequence storage
-> must be complete. The candidate is ready for downstream racing-repository validation.
+> **These examples target the `v0.3.0rc2` release candidate.**
+> Check `valid` and `fail_mask` before using generated geometry. Invalid rows
+> are poisoned by default.
 
 Given a batch of per-environment seeds, TrackGen generates `E` closed-loop
 tracks (or gate sequences) in parallel — and then keeps working at sim
@@ -25,7 +24,10 @@ seeds[E] ─► generator ─► resample ─► XPBD relax ─► road band ─
             bezier · checkpoint · hull · polar · voronoi · repulsive     valid[E]   checkpoints · progress · collision
 ```
 
-![Representative centerline outputs by generator](docs/assets/readme-generator-strip.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/_static/media-dark/generators-gallery.png">
+  <img src="docs/assets/racing/generators-gallery.png" alt="Current finished roads and centerlines from all six generators, with selected valid examples and equal coordinate scale.">
+</picture>
 
 ## What's in the box
 
@@ -43,7 +45,10 @@ seeds[E] ─► generator ─► resample ─► XPBD relax ─► road band ─
 | **The Course** | One object: `Course.track(...)` → `bind()` → `step()` / `reset(mask)` / `regenerate(mask=...)`, recordable into your CUDA graph | [Courses](https://antoinerichard.github.io/TrackGen/utilities/course.html) |
 | **Plugins** | Your own generators, stages and runtime components, found through an entry point and checked by a conformance kit | [Extending](https://antoinerichard.github.io/TrackGen/contributing/writing-a-generator.html) |
 
-![Runtime utilities on one generated track](docs/assets/utilities-overview.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/_static/media-dark/utilities-overview.png">
+  <img src="docs/assets/utilities-overview.png" alt="Runtime utilities on one generated track.">
+</picture>
 
 ## Install
 
@@ -128,7 +133,7 @@ More: [quickstart](https://antoinerichard.github.io/TrackGen/getting-started/qui
 | | |
 |---|---|
 | [Getting started](https://antoinerichard.github.io/TrackGen/getting-started/quickstart.html) | install, quickstart, concepts and terms, parameter explorer |
-| [Upgrading from 0.2](https://github.com/AntoineRichard/TrackGen/blob/v0.3.0rc2/docs/upgrading/from-0.2.rst) | every 0.3 break and its replacement; [historical 0.1 → 0.2 guide](https://github.com/AntoineRichard/TrackGen/blob/v0.3.0rc2/docs/upgrading/from-0.1.rst) |
+| [Release notes](CHANGELOG.md) | candidate changes and retained migration records |
 | [Generating tracks and gates](https://antoinerichard.github.io/TrackGen/user-guide/generating.html) | presets, specs, params, seeds; [results](https://antoinerichard.github.io/TrackGen/user-guide/results.html); [curricula](https://antoinerichard.github.io/TrackGen/user-guide/curricula.html); [choosing a generator](https://antoinerichard.github.io/TrackGen/tutorials/choosing-a-generator.html) |
 | [Generators](https://antoinerichard.github.io/TrackGen/generators/overview.html) | the six families, quality benchmarks |
 | [Courses, simulators and RL](https://antoinerichard.github.io/TrackGen/utilities/course.html) | courses, [CUDA graphs in a sim](https://antoinerichard.github.io/TrackGen/tutorials/cuda-graph-in-a-sim.html), [RL auto-reset](https://antoinerichard.github.io/TrackGen/user-guide/rl-auto-reset.html), [runtime utilities](https://antoinerichard.github.io/TrackGen/utilities/overview.html) |

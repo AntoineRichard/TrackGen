@@ -53,3 +53,19 @@ The full CPU lane passed 3,723 tests with four optional UI skips and 836 deselec
 (601.45 s), including executable documentation examples. The complete strict bootstrap
 site also passed. Final registry enforcement and browser checks follow the fresh
 captures; no final release approval is inferred from these results.
+
+
+Corrective capture source B is `fa0d2fa96560f9d3a5eaddb54162db371224c9ec`.
+The full Course producer reran both palettes: 13 figures, 48 samples and all 30
+numerical checks match A; only the gate-frame image bytes change. All projected
+labels fit while the camera and world coordinates remain unchanged.
+Repulsive's growth movie/poster and two barrier figures were selectively recaptured
+with matching-theme manifests. All light bytes remain identical; dark ticks are
+readable. Raw/sample/force records and all 36 plotted hashes still match A. Only
+actually recaptured files receive B provenance. The registry records each asset's
+actual capture commit rather than relabeling the complete original capture.
+
+The README now reuses the current paired six-family gallery instead of an older
+illustration and selects both gallery and utility artwork by the native color
+preference. Historical upgrade details remain in excluded project records and
+release notes; the reader introduction focuses on current result handling.
