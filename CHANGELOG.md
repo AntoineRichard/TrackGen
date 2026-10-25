@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.0.dev0 (unreleased, `v3` branch)
+
+The breaking cleanup after 0.2 (roadmap PR16, retargeted from 1.0 to 0.3).
+
 ## 0.2.0 (2026-10-24, tag `v0.2.0`)
 
 The first release of the 0.2 line: everything in 0.2.0.dev0 to 0.2.0.dev6 below (the
