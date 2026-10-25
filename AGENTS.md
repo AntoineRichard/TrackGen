@@ -9,9 +9,11 @@ the architecture and the roadmap, and `CHANGELOG.md` for what shipped.
 ## State (2026-10-25)
 - `main` = **v0.2.0** (released; GitHub release v0.2.0). It is the v2 refactor, roadmap
   PR0–PR15b; see the CHANGELOG and `docs/upgrading/from-0.1.rst`.
-- `v3` = the 0.3 line, version `0.3.0rc1`. Roadmap PR16 cleanup is implemented in
+- `v3` = the 0.3 line, version `0.3.0rc2`. Roadmap PR16 cleanup is implemented in
   four dev milestones. Draft PR #4 prepares the release candidate; downstream racing-
   repository validation and the user's explicit approval are required before 0.3.0.
+  RC2 addresses review findings #1–#3 and #5–#14; #4 (the auto-spacing config
+  contract) is explicitly deferred until the user answers its review thread.
   1.0 is a later milestone.
 
 ## User decisions for 0.3 (binding; they override any older doc that says otherwise)

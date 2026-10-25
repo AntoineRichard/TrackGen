@@ -1,6 +1,25 @@
 # Changelog
 
-## 0.3.0rc2 (in progress)
+## 0.3.0rc2 (release candidate, tag `v0.3.0rc2`)
+
+The second candidate addresses review findings #1–#3 and #5–#14 from PR #4.
+Generator outputs and existing byte goldens are unchanged from rc1. See the
+[0.2 to 0.3 migration guide](https://github.com/AntoineRichard/TrackGen/blob/v0.3.0rc2/docs/upgrading/from-0.2.rst)
+for the current API replacements.
+
+- Repair the track-gallery, Fourier-ablation and PDF-report tools; remove ignored
+  regeneration options and identify historical report measurements.
+- Share RNG initialization between the randomizer and plugin examples; remove
+  unused pipeline composition, self-drawn parameter machinery and obsolete test filters.
+- Restore the Taubin math symbols and complete GraphRunner execution contracts.
+- Add a default-lane CPU statistics gate against an exact rc1 reference for all
+  built-in generators, elevation and random gate ordering, with statistical tolerances.
+- Auto-derived config spacing retains its existing behavior: when replacing
+  `half_width`, also pass `spacing=None` to derive it again. Review finding #4 remains
+  deferred pending the user's decision on that public config contract.
+
+The candidate awaits downstream racing-repository validation. Final 0.3.0 still
+requires the user's explicit approval.
 
 - Remove `keying=` from `ops.sample_counts` / `sample_grid_points`: salts are
   hashed uint32 namespaces, and draws differ from 0.2 for the same salt. Built-in
