@@ -1730,8 +1730,8 @@ def _check_size_truncation(spec, slots, draws) -> None:
     ``(n_max - 1) * spacing / L_nom``, ``L_nom`` the generator's nominal maximum raw
     perimeter at size 1 (the built-ins' private ``_nominal_perimeter(scale, drawn)``:
     repulsive exact from its params, the others the measured longest loop at their
-    default shape knobs, scaled by bezier / hull's corner capacity, hull's displacement
-    and bezier's style ``scale_range``; ``None`` where a shape knob it does not model
+    default shape knobs, scaled by bezier / hull's corner capacity and hull's
+    displacement; ``None`` where a shape knob it does not model
     differs from its default, and for a generator without one: not checked). Truncated
     envs fail validity (fail-closed); ``set()`` curricula and caller-graph writes are
     not checked. A heuristic: a warning, never an error."""

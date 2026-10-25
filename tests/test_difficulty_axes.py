@@ -10,7 +10,7 @@
   bound, clamped to ``[2, max_num_points]`` at use.
 - ``gate_frames.gate_width`` dynamic; ``validity.gate_default`` checks bar crossings per
   env (its ``gate_width`` / ``check_crossing`` inert).
-- ``StageParams.in_effect`` / ``StageParams.bounds``; ``style_sampling`` deprecated.
+- ``StageParams.in_effect`` / ``StageParams.bounds``.
 
 Covered here (design section 9.2): 1. declarations, the flat ``size`` and the public ops;
 2. each twin == its original (generator-produced inputs, discriminating NaN payloads for
@@ -18,7 +18,7 @@ the guarded copy); 3. the generated CUDA source of each twin (on CPU); 4. per en
 per-env scalar runs; 5. repulsive's exact output scaling; 6. size vs scale; 7. randomize
 on the new axes and the plan rules (hints, truncation and composed-draw warnings); 8. the
 launch deltas of every pipeline (``tests/_pr13d_delta.py``, plain and masked); 9.
-``in_effect`` / ``bounds``; 10. ``style_sampling``'s deprecation and migration; 11.
+``in_effect`` / ``bounds``; 11.
 bounds and types; 12. poison; 13. capacity (truncation fails closed, the checkpoint
 bound); 14. legacy surfaces; 15. the kit; 16. ``presets(size=)``; 17. hints; 18. posed
 gates.
@@ -72,7 +72,6 @@ SEEDS = np.array([0, 1, 7, 99991, 2147483647, 1000003, 123456789, 46341], np.int
 #: Per-env sizes: interior values, 1 (== the default rows) and two clamped ones.
 SIZES = (1.0, 0.7, 1.3, 1.0, 0.45, 2.2, 20.0, 0.01)
 REP = dict(num_points=64, repulsive_stages=(16, 32, 64))
-_STYLE_DEP = "bezier's style_sampling is deprecated"
 
 
 # ---------------------------------------------------------------------------------------
@@ -809,13 +808,12 @@ def test_the_cuda_source_of_the_sized_copy_has_one_guarded_multiply():
 def _track_maker(name: str, field: str = "size", n: int = E, seeds=SEEDS, gp=None,
                  **kw):
     """``make(v)``: a TrackGenerator built with ``generator_params={**gp, field: v}``
-    (the truncation and style warnings silenced)."""
+    (the truncation warning silenced)."""
     def make(v):
         params = dict(gp or {})
         if v is not None:
             params[field] = v
         with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", message=_STYLE_DEP)
             warnings.filterwarnings("ignore", message=r"generator\.size.*truncates")
             return TrackGenerator(_tcfg(generator=name, num_envs=n,
                                         generator_params=params or None, **kw),
@@ -1135,9 +1133,7 @@ def _traces(program) -> tuple:
 @pytest.mark.parametrize("case", sorted(_TRACK_DELTAS))
 def test_the_track_launch_deltas(case):
     kw, pr13c, pr13c_latches, pr13d, block = _TRACK_DELTAS[case]
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", message=_STYLE_DEP)
-        gen = TrackGenerator(_tcfg(on_invalid="keep", **kw), _rng())
+    gen = TrackGenerator(_tcfg(on_invalid="keep", **kw), _rng())
     plain, masked = _traces(gen.program)
     assert len(plain) == pr13d
     assert pr13d - len(block) == pr13c - pr13c_latches     # only latches were added
@@ -1413,14 +1409,6 @@ def test_in_effect_timing_in_segmented_programs(plugin_registry):
     now = norm.in_effect("size").numpy()
     assert (now != prev).any()
     assert ((now >= np.float32(0.7)) & (now <= np.float32(1.6))).all()
-
-
-# ---------------------------------------------------------------------------------------
-# 10. style_sampling: deprecated (one warning per built generator), exact migration
-# ---------------------------------------------------------------------------------------
-
-
-
 
 
 # ---------------------------------------------------------------------------------------
@@ -2019,7 +2007,6 @@ def test_a_nan_size_builds():
 def _trunc_warnings(spec) -> list:
     with warnings.catch_warnings(record=True) as rec:
         warnings.simplefilter("always")
-        warnings.filterwarnings("ignore", message=_STYLE_DEP)
         build(spec)
     return [str(w.message) for w in rec if "truncates at n_max" in str(w.message)]
 
@@ -2027,7 +2014,7 @@ def _trunc_warnings(spec) -> list:
 def test_the_truncation_warning_tracks_the_loop_length_knobs():
     """The nominal loop is the measured LONGEST default loop (it fires from the
     documented "truncates from" size), scaled by the corner capacity, hull's displacement
-    (its randomizer's hi) and style_sampling's scale_range; a ring generator with a
+    (its randomizer's hi); a ring generator with a
     non-default shape knob is not checked."""
     def track(**kw):
         return presets.track(num_envs=E, device=DEV, **kw)

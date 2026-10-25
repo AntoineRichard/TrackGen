@@ -182,13 +182,11 @@ def _enqueue_bezier(seeds_wp, config, out_centerline, out_valid_wp, scratch, ctx
     npseg = int(config.num_points_per_segment)
     M = P * npseg
     arc = ops.ArcScratch(scratch.gen_arc_real, scratch.gen_arc_seg, scratch.gen_arc_s, scratch.gen_arc_cr)
-    style = bool(getattr(config, 'style_sampling', False))
-    scale_pe = rad_pe = clamp_pe = None
     ops.sample_counts(ctx, seeds_wp, CORNER_COUNT_SALT, 0, int(config.min_num_points), int(config.max_num_points), scratch.gen_count, keying="hashed")
     num_cells, cell = ops.grid_cells(config.min_point_distance)
     ops.sample_grid_points(ctx, seeds_wp, CORNER_SALT, 0, P, num_cells, float(cell), float(config.scale), scratch.gen_used, scratch.gen_corners, keying="hashed")
     _angle_sort_launch(ctx, scratch.gen_corners, P, scratch.gen_count, P, scratch.gen_keys, scratch.gen_ordered, m_floor=1)
-    assemble_inplace(scratch.gen_ordered, scratch.gen_count, config, scratch.gen_tan, scratch.gen_scale, scratch.gen_dense, rad_per_env=rad_pe, clamp_per_env=clamp_pe, ctx=ctx)
+    assemble_inplace(scratch.gen_ordered, scratch.gen_count, config, scratch.gen_tan, scratch.gen_scale, scratch.gen_dense, rad_per_env=None, clamp_per_env=None, ctx=ctx)
     ops.arc_resample(ctx, scratch.gen_dense, M, N, arc, scratch.gen_rs, scratch.gen_arc_co)
     ops.self_intersections(ctx, scratch.gen_rs, N, scratch.gen_crossers, count=scratch.gen_arc_co)
     ctx.launch(_assemble_polygon_selected_k, E * M, [scratch.gen_ordered, scratch.gen_count, P, npseg, scratch.gen_crossers, scratch.gen_poly])

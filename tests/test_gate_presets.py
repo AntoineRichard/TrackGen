@@ -636,10 +636,11 @@ def test_validity_params_in_checks_keep_the_preset_arguments():
         "min_gates": 6, "gate_radius": 0.03, "z_valid_grade": 0.5}
     assert _resolved(spec) == _resolved(_gates(min_gates=6, gate_radius=0.03,
                                                gate_width=0.05, z_valid_grade=0.5))
-    # the check's own min_gates wins; a posed generator gets check_crossing="always"
+    # The check's min_gates wins; posed generators use the same validity parameters.
     assert _ref(_gates(checks=(("gate_default", {"min_gates": 8}),)),
                 "validity").params["min_gates"] == 8
     posed = _gates(generator=gt.HELIX_POSED, checks=(("gate_default", None),))
+    assert set(_ref(posed, "validity").params) == {"min_gates", "gate_radius", "z_valid_grade"}
     for field, v in (("gate_radius", 0.05),):
         with pytest.raises(ValueError, match=rf"checks: validity.gate_default sets "
                                              rf"{field}={v!r} but {field}="):

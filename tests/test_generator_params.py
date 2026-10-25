@@ -28,11 +28,6 @@ from track_gen._src import builtin_params as bp
 from track_gen._src.generator_binding import bind_generator
 from track_gen.plugin import GeneratorSpec, registry
 
-# Roadmap PR13d: bezier's style_sampling is deprecated (one DeprecationWarning per built
-# generator); this module still exercises it.
-pytestmark = pytest.mark.filterwarnings(
-    "ignore:bezier's style_sampling is deprecated:DeprecationWarning")
-
 E = 4
 DEV = "cpu"
 TRACK_FIELDS = ("outer", "center", "inner", "tangent", "normal", "arclen", "length",
