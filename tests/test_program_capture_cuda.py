@@ -19,7 +19,7 @@ import pytest
 import warp as wp
 
 from track_gen import PerEnvSeededRNG, TrackGenConfig, TrackGenerator
-from track_gen._src import warp_pipeline
+from tests._reference_generators import warp_pipeline
 from tests._pr13c_delta import ELEVATION_LATCHES, pr13c_sequence
 from track_gen._src.generator_binding import _StageGenerator, bind_generator
 from track_gen.exec import LaunchContext
@@ -119,7 +119,11 @@ def test_the_program_is_the_pr9_composition_on_cuda(name):
         gen.seeds._write_generation(ref.generation, None, ctx)
     wp.synchronize_device(DEV)
     topo = [(r.op, r.kernel, r.dim, r.scalars) for r in program]
-    want = [(r.op, r.kernel, r.dim, r.scalars) for r in pr9]
+    # Frozen elevation kernels have a test-only namespace; their kernel suffix,
+    # dimensions, scalars and the subsequent output byte comparison remain exact.
+    want = [(r.op, r.kernel.replace("tests._reference_generators.warp_zprofile.",
+                                   "track_gen._src.warp_zprofile."),
+             r.dim, r.scalars) for r in pr9]
     n_z = ELEVATION_LATCHES[str(cfg.z_profile)]
     if n_z:
         n_gen = len(adapter._pairs) if adapter is not None else 0

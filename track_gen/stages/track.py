@@ -2,8 +2,7 @@
 
 Each stage wraps the EXISTING kernels and wrappers of ``warp_pipeline`` /
 ``warp_relax`` / ``warp_zprofile`` verbatim: the same launches, in the same order, with
-the same scalars as the 0.2.0.dev2 composition (``warp_pipeline._run_pipeline`` +
-``_inflate_warp``), so a :class:`~track_gen.pipeline.Program` of the default stage list
+the same scalars as the frozen PR9 composition in ``tests/_reference_generators``, so a :class:`~track_gen.pipeline.Program` of the default stage list
 is byte-identical to it. The wrappers are looked up on their module at every call (not
 bound at import), so a test that wraps one sees every call.
 
@@ -148,7 +147,8 @@ class _Builtin(Stage):
 # ---------------------------------------------------------------------------------------
 
 class _GeneratorSlot:
-    """Stage 0: runs the bound generator exactly as ``_run_pipeline`` step 1 does.
+    """Stage 0: runs the bound generator as in the frozen PR9 composition in
+    ``tests/_reference_generators``.
 
     A Stage plugin (its ``_StageGenerator`` adapter) is built on the PR8 builder code
     path (``adapter.build``) bound to this slot's ``raw.xy`` / ``gen.valid`` versions and

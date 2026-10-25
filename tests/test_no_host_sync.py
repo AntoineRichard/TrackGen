@@ -808,8 +808,10 @@ def _legacy_pipeline_wrappers():
     gen = _track_gen()
     ctx = LaunchContext.for_call(DEV)
 
+    from tests._reference_generators.warp_pipeline import _run_pipeline
+
     def hot():
-        warp_pipeline._run_pipeline(gen._config, gen._seed_buf, out=gen._track,
+        _run_pipeline(gen._config, gen._seed_buf, out=gen._track,
                                     scratch=gen._scratch,
                                     generator_spec=gen._generator_spec, ctx=ctx)
     return hot

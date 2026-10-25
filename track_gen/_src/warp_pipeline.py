@@ -42,7 +42,6 @@ from ..ops import geometry as _geometry_ops
 from .runtime import _init as _initialize
 
 
-
 @wp.kernel
 def _offset_build_k(
     center: wp.array(dtype=wp.vec2f),
@@ -348,119 +347,6 @@ def _winding_k(
     out[e] = wp.where(area2 > 0.0, 1.0, wp.where(area2 < 0.0, -1.0, 0.0))
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-def _run_pipeline(
-    config,
-    seed_buf_wp: wp.array,
-    out: "Track",
-    scratch: "_Scratch",
-    generator_spec=None,
-    ctx: "LaunchContext | None" = None,
-) -> "Track":
-    """Execute the owned pure-Warp pipeline into pre-allocated buffers. Zero alloc.
-
-    Composes: generate_centerline_warp -> _resample_constant_spacing -> band/L0 ->
-    xpbd_solve_inplace -> _inflate_warp. All buffers are pre-allocated in scratch/out.
-    Safe to call inside a wp.ScopedCapture region (no host syncs, no allocations).
-
-    PR9 composition, kept as the byte-identity reference (``tests/test_pipeline_parity``)
-    and for out-of-tree callers: ``TrackGenerator`` runs a :class:`track_gen.pipeline.
-    Program` of the same stages instead. Removed once the parity tests carry a frozen
-    copy (roadmap 1.0).
-
-    Every stage runs on ``ctx``'s stream. A generator whose spec sets ``accepts_ctx``
-    gets ``ctx=ctx``; a legacy generator runs inside ``ctx.scope()`` so the
-    ``warp_pipeline`` helpers it calls inherit the stream (its own direct
-    ``wp.launch`` calls still use Warp's current stream).
-
-    Args:
-        config:       TrackGenConfig.
-        seed_buf_wp:  [E] int32 wp.array — per-env base seeds.
-        out:          Pre-allocated Track (wp.array fields) — written in-place.
-        scratch:      Pre-allocated _Scratch — all intermediates written in-place.
-        ctx: optional track_gen.exec.LaunchContext; default resolves the
-            device's stream (see track_gen.exec).
-
-    Returns:
-        out (the same Track instance).
-    """
-    ctx = _resolve_ctx(ctx, str(config.device))
-    if generator_spec is None:
-        generator_spec = getattr(scratch, "generator_spec", None)
-    if generator_spec is None:
-        generator_spec = _registered_generator_spec(config)
-    _reject_stage_class(generator_spec)
-
-    n_max = int(config.N_max)
-    gen = scratch.gen        # generator-private scratch
-    relax = scratch.relax    # RelaxScratch — band/L0 + XPBD buffers
-    if out.truncated is None:
-        # Without the flag buffer a truncated track would pass validity (fail open).
-        raise ValueError("_run_pipeline requires out.truncated; allocate out via "
-                         "_inflate_warp_alloc")
-
-    # 1. Generate centerline in-place into the orchestrator-owned output buffers.
-    generate = generator_spec.generate
-    generate(seed_buf_wp, config,
-             out_centerline=scratch.gen_centerline,
-             out_valid_wp=scratch.gen_valid,
-             scratch=gen, ctx=ctx)
-
-    # 2. Constant-spacing resample (gen centerline -> bridge buffers).
-    _resample_constant_spacing(
-        scratch.gen_centerline, float(config.spacing), n_max,
-        out_wp=scratch.cs_center, count_wp=scratch.count,
-        seg_wp=scratch.cs_seg, s_wp=scratch.cs_s, truncated_wp=out.truncated,
-        ctx=ctx,
-    )
-
-    # 3-4. Relaxation (band/L0 setup + XPBD solve) in-place, then choose its input to
-    # inflate. relax_enable=False is an identity pass-through (matches the oracle's
-    # `if not relax_enable: return center`): skip the relax band/L0 + solve and inflate
-    # the constant-spacing centerline directly. The branch is resolved at capture time,
-    # so the captured graph is fixed and allocation-free either way.
-    if config.relax_enable:
-        # 3. Relaxation setup: band / L0 (the relax module owns its own setup).
-        warp_relax.band_l0_inplace(
-            scratch.cs_center, n_max, relax.band, relax.L0,
-            scratch.count, config, ctx=ctx,
-        )
-
-        # 4. XPBD relaxation in-place.
-        warp_relax.xpbd_solve_inplace(
-            scratch.cs_center, relax.relaxed, relax.xpbd_db,
-            relax.band, relax.L0, scratch.count, n_max, config,
-            sep_cache_idx_wp=relax.sep_cache_idx,
-            sep_cache_count_wp=relax.sep_cache_count,
-            sep_cache_overflow_wp=relax.sep_cache_overflow,
-            cheb_prev_wp=relax.cheb_prev,
-            ctx=ctx,
-        )
-        relax_out = relax.relaxed
-    else:
-        relax_out = scratch.cs_center
-
-    # 5. Inflate (_resample_uniform + frame + offset + validity) in-place. _inflate_warp
-    # reads scratch.inflate (kappa/w/area_a/area_b/z + staging) and the bridge buffers
-    # (cs_seg/cs_s/count) off the composite scratch.
-    return _inflate_warp(
-        relax_out, config, out=out, valid=scratch.gen_valid,
-        count=scratch.count, scratch=scratch, seeds=seed_buf_wp,
-        truncated=out.truncated, ctx=ctx,
-    )
-
-
 def _check_hw_out(hw_out, out_outer) -> None:
     """The offset's optional ``hw_out`` argument is ``None`` or a
     float32 array of ``out_outer``'s length on its device: the kernel writes
@@ -584,87 +470,6 @@ def _resample_uniform(
                                            out_wp)
 
 
-def _resample_constant_spacing(
-    center: "wp.array",
-    spacing: float,
-    n_max: int,
-    out_wp: "wp.array | None" = None,
-    count_wp: "wp.array | None" = None,
-    seg_wp: "wp.array | None" = None,
-    s_wp: "wp.array | None" = None,
-    truncated_wp: "wp.array | None" = None,
-    ctx: "LaunchContext | None" = None,
-) -> "tuple[wp.array, wp.array] | None":
-    """Arc-length resample each fully-real closed loop to constant ``spacing``, padded to
-    ``n_max`` with NaN.  Matches ``geometry.arc_length_resample(points, spacing=spacing,
-    n_max=n_max)``. Pure Warp (cpu+cuda).
-
-    ``center`` must be a ``wp.array [E*N] vec2f`` flat.
-
-    In-place mode (``out_wp`` and ``count_wp`` provided):
-        ``out_wp``       — [E*n_max] wp.vec2f written in-place (center output).
-        ``count_wp``     — [E] wp.int32 written in-place (real point count per env).
-        ``seg_wp``       — [E*N] wp.float32 scan scratch.
-        ``s_wp``         — [E*(N+1)] wp.float32 scan scratch.
-        ``truncated_wp`` — [E] wp.int32 written in-place (1 where the env was truncated).
-        Returns ``None`` (caller reads out_wp / count_wp / truncated_wp directly). With
-        all five buffers provided this path is zero-alloc, does no host readback, and is
-        safe inside a CUDA graph capture region; scratch it is not given is allocated.
-
-    Allocating-mode (``out_wp`` or ``count_wp`` omitted -> allocated internally):
-        Returns ``(out_wp, count_wp)`` — both freshly-allocated wp.arrays. This
-        branch allocates and reads ``truncated`` back to the host; do not use inside a
-        CUDA graph capture region.
-
-    ``count[e]`` is capped at ``n_max`` (required for fixed-buffer sizing). An env whose
-    true point count exceeds ``n_max`` is flagged ``truncated[e] = 1`` on device; the
-    pipeline's validity gate then fails it. Allocating mode additionally emits a
-    ``RuntimeWarning`` (a host readback); in-place mode never reads back. Choose
-    ``N_max >= max(perimeter) / spacing + 1`` across all envs to avoid truncation.
-
-    ``ctx``: optional track_gen.exec.LaunchContext; default resolves the device's stream
-    (see track_gen.exec)."""
-    _initialize()
-    if count_wp is not None:
-        E = count_wp.shape[0]
-    elif out_wp is not None:
-        E = out_wp.shape[0] // n_max
-    else:
-        raise ValueError(
-            "_resample_constant_spacing: need count_wp or out_wp to infer E from wp.array input")
-    N = center.shape[0] // E
-    dev = str(center.device)
-    ctx = _resolve_ctx(ctx, dev)
-
-    _allocating = out_wp is None or count_wp is None
-    if out_wp is None:
-        out_wp = wp.empty(E * n_max, dtype=wp.vec2f, device=dev)
-    if count_wp is None:
-        count_wp = wp.empty(E, dtype=wp.int32, device=dev)
-    if seg_wp is None:
-        seg_wp = wp.empty(E * N, dtype=wp.float32, device=dev)
-    if s_wp is None:
-        s_wp = wp.empty(E * (N + 1), dtype=wp.float32, device=dev)
-    if truncated_wp is None:
-        truncated_wp = wp.empty(E, dtype=wp.int32, device=dev)
-
-    _ops_resample._constant_spacing_launch(ctx, center, N, spacing, n_max, seg_wp, s_wp,
-                                           out_wp, count_wp, truncated_wp)
-    ctx.sync()
-
-    if _allocating:
-        # Convenience path only (it allocates, so it is never on a capture path): warn
-        # on host. The in-place path relies on the device-side truncated flag instead.
-        import warnings
-        if bool(truncated_wp.numpy().any()):
-            warnings.warn(
-                f"constant_spacing: a track needed more than N_max={n_max} points "
-                f"(spacing={spacing}); it was truncated — increase N_max to avoid "
-                f"truncation.",
-                RuntimeWarning,
-                stacklevel=2,
-            )
-        return out_wp, count_wp
 
 
 def validity_inplace(
@@ -911,7 +716,7 @@ class _Scratch:
     The PR9 composition's scratch (:func:`_inflate_warp_alloc`). ``TrackGenerator._scratch``
     is a ``_Scratch`` VIEW whose attributes alias its pipeline Program's channel versions
     and stage scratch (``track_gen.pipeline.legacy._scratch_view``), so the names below
-    keep their meaning and :func:`_run_pipeline` still runs on it. The buffers are
+    keep their meaning and the frozen PR9 composition in ``tests/_reference_generators`` still runs on it. The buffers are
     grouped by lifetime/concern so each stage receives only the group it owns:
 
     .generator_spec — GeneratorSpec resolved when this scratch was allocated.
@@ -1237,7 +1042,7 @@ def _inflate_warp(center, config, out=None,
                  ctx: "LaunchContext | None" = None):
     """Pure-Warp inflation: resample -> frame -> offset -> z-profile -> validity -> lift.
 
-    The tail of the PR9 composition (see :func:`_run_pipeline`); the
+    The tail of the frozen PR9 composition in ``tests/_reference_generators``; the
     ``track_gen.pipeline`` built-in stages wrap the same calls one stage each.
 
     Writes results into out's wp.array Track buffers (or allocates a fresh Track).

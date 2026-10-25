@@ -21,7 +21,7 @@ import warp as wp  # noqa: E402
 
 from track_gen import GateGenConfig, PerEnvSeededRNG, TrackGenConfig  # noqa: E402
 from track_gen.plugin import registry  # noqa: E402
-from track_gen._src import warp_pipeline  # noqa: E402
+from tests._reference_generators import warp_pipeline  # noqa: E402
 from track_gen._src.gate_generator import GateGenerator  # noqa: E402
 from track_gen._src.track_generator import TrackGenerator  # noqa: E402
 from track_gen.course import Course, CourseConfig  # noqa: E402

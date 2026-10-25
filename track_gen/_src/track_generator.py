@@ -4,7 +4,7 @@ Runs the pure-Warp track pipeline (generation -> resample -> relax -> inflate, a
 NVIDIA Warp kernels) and returns a fully-populated :class:`~track_gen.results.Track`.
 The pipeline is a :class:`track_gen.pipeline.Program` built from
 ``legacy.to_pipeline_spec(config)`` (roadmap PR10a): the ordered built-in stages,
-byte-identical to the 0.2.0.dev2 composition ``warp_pipeline._run_pipeline``. The public
+byte-identical to the frozen PR9 composition in ``tests/_reference_generators``. The public
 dataclasses ``TrackGenConfig`` and ``Track`` live in the dependency-free leaf module
 ``types.py``; this facade re-exports ``TrackGenerator`` as the package's top-level entry
 point.

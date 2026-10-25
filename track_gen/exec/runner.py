@@ -245,7 +245,6 @@ class GraphRunner:
         :class:`~track_gen.exec.NotCapturableError` inside a capture."""
         return self._capturable
 
-
     @property
     def default_stream(self) -> "wp.Stream | None":
         """The stream used when a call passes none and no ambient context applies
@@ -272,7 +271,6 @@ class GraphRunner:
         stream: call it before the producer's first allocation."""
         return ensure_not_capturing(self._device, default_stream=self._default_stream,
                                     label=self._name)
-
 
     # -- execution --------------------------------------------------------------
     def prepare(self, enqueue) -> None:
@@ -439,12 +437,10 @@ class GraphRunner:
             return
         _compat.stream_synchronize(ctx.stream)
 
-
     def _run_eager(self, enqueue, ctx: LaunchContext) -> None:
         """Run the body on the resolved launch context."""
         with ctx.scope():
             enqueue(ctx)
-
 
     def _capture(self, enqueue, key=None) -> "wp.Graph":
         """Capture the self-graph of ``key`` once (thread-safe; retried once on

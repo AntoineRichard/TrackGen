@@ -428,7 +428,8 @@ def _legacy_ordering(name: str, registry=None) -> str:
 def _scratch_view(program):
     """A PR9 ``warp_pipeline._Scratch`` whose attributes ALIAS the Program's channel
     versions and stage scratch (``TrackGenerator._scratch``): the same field names and
-    meanings, so ``_run_pipeline(..., scratch=gen._scratch)`` still runs on it. A slot
+    meanings, so the frozen PR9 composition in ``tests/_reference_generators`` still
+    runs on it. A slot
     whose stage is absent is ``None``."""
     from .._src.warp_pipeline import InflateScratch, RelaxScratch, _Scratch  # noqa: PLC0415
 

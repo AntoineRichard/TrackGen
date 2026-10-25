@@ -105,7 +105,7 @@ pytestmark = pytest.mark.cuda
 import warp as wp  # noqa: E402
 
 from track_gen import GateGenerator, PerEnvSeededRNG, TrackGenConfig, TrackGenerator  # noqa: E402
-from track_gen._src import warp_pipeline  # noqa: E402
+from tests._reference_generators import warp_pipeline  # noqa: E402
 from tests._reference_generators import spec as _reference_generator_spec  # noqa: E402
 from track_gen._src.generator_binding import _StageGenerator  # noqa: E402
 from track_gen.exec import LaunchContext  # noqa: E402

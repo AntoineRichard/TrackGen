@@ -719,7 +719,9 @@ def test_track_generator_scratch_is_a_view_of_the_program():
     assert gen._inputs is p.inputs and gen._regen_mask is p.inputs["regen_mask"]
     # The PR9 composition still runs on the view and writes the same Track.
     want = _snap(gen._track)
-    warp_pipeline._run_pipeline(gen._config, gen._seed_buf, out=gen._track, scratch=s,
+    from tests._reference_generators.warp_pipeline import _run_pipeline
+
+    _run_pipeline(gen._config, gen._seed_buf, out=gen._track, scratch=s,
                                 generator_spec=gen._generator_spec,
                                 ctx=LaunchContext.for_call(DEV))
     assert _snap(gen._track) == want
