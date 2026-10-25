@@ -1,132 +1,75 @@
 .. _generator-benchmarks:
 
-Generator Benchmarks
-====================
+Measure a generator
+===================
 
-.. note::
+Benchmark the course settings and batch size you intend to use. Compare families on
+the same machine, device, width, spacing, capacity and solver settings. The generator
+pictures are selected explanations; they do not establish yield, speed or a universal
+shape ranking.
 
-   Figures and empirical yield, range and timing measurements on this page predate the
-   0.3 hashed-RNG switch. They are historical reference measurements; current generated
-   bytes and seed-specific outcomes differ (:ref:`upgrading-0.3-rng`).
-
-Reference metrics for the six registered centerline generators, produced by
-``benchmarks/compare_generators.py``. They characterize trade-offs among quality,
-diversity and speed, and never gate which generators ship: every registered generator
-stays selectable by name. :ref:`choosing-a-generator` turns them into a recommendation.
-
-Suite: seed base 0, ``E = 512``, the default ``TrackGenConfig`` with ``generator=`` set.
-Every number on this page is written by the commands under `Reproduce`_ into
-``docs/_data/`` and shown from there, never typed by hand.
-
-Sampling generators (CPU)
--------------------------
-
-The ``bezier``, ``checkpoint``, ``hull``, ``polar`` and ``voronoi`` rows run on Warp's
-``cpu`` device. Every column but the last is deterministic for the suite (the same
-values on every run of the same Warp version and platform); ``gen_ms_per_call`` depends
-on the machine and its load, so compare it across rows of one table only.
-
-.. csv-table:: Generator metrics, ``cpu``, ``E = 512``, seed base 0
-   :file: ../_data/metrics-cpu.csv
-   :header-rows: 1
-
-Machine:
-
-.. include:: ../_data/machine-cpu.txt
-
-``repulsive`` (CUDA)
---------------------
-
-``repulsive`` is an iterative optimizer (:doc:`repulsive`), so its suite runs on
-``cuda``: on ``cpu`` the same suite takes far longer and tells little about production
-use. Its ``gen_ms_per_call`` is therefore **not comparable** to the CPU table above, and
-depends on how soon the batch converges (its own CUDA graph skips the iterations left
-once every env has frozen). Its metric columns are comparable.
-
-.. csv-table:: ``repulsive`` metrics, ``cuda``, ``E = 512``, seed base 0
-   :file: ../_data/metrics-repulsive-cuda.csv
-   :header-rows: 1
-
-Machine:
-
-.. include:: ../_data/machine-cuda.txt
-
-The generation cost of every generator at large batches on CUDA is in
-:ref:`the catalogue <generators-overview>` (its Cost section).
-
-Reproduce
----------
-
-From the repository root (``docs/_data/README.md`` lists every data file and its
-command):
+The repository's ``benchmarks.compare_generators`` command computes current metrics
+from actual generated batches. It reports the complete ``generate()`` call, including
+the shared road pipeline. Start with a small CPU sampling-family check:
 
 .. code-block:: bash
 
-   python -m benchmarks.compare_generators --E 512 --seed 0 \
-       --generators bezier checkpoint hull polar voronoi \
-       | python docs/_tools/md_table_to_csv.py > docs/_data/metrics-cpu.csv
-   python -m benchmarks.compare_generators --E 512 --seed 0 --cuda --generators repulsive \
-       | python docs/_tools/md_table_to_csv.py > docs/_data/metrics-repulsive-cuda.csv
+   python -m benchmarks.compare_generators --E 32 --seed 0 \
+       --generators bezier checkpoint hull polar voronoi
 
-``compare_generators`` prints a Markdown table (after Warp's start-up lines, which go to
-stdout too); ``md_table_to_csv.py`` keeps only the table rows.
+For production CUDA comparison, run the same suite on the same GPU and separate
+``repulsive`` if its iterative work dominates the run:
 
-Metric Definitions
-------------------
+.. code-block:: bash
 
-**yield**
-   Fraction of generated environments that pass the full post-relax validity gate
-   (``Track.valid``: turning number, thickness floor, no NaN, not truncated at
-   :term:`N_max`, see :ref:`pipeline-fail-bits`); higher is better.
+   python -m benchmarks.compare_generators --E 512 --seed 0 --cuda \
+       --generators bezier checkpoint hull polar voronoi
+   python -m benchmarks.compare_generators --E 32 --seed 0 --cuda \
+       --generators repulsive
 
-**pre_relax_self_intersection_rate**
-   Fraction of environments whose raw generated centerline contains at least one
-   proper crossing before any relaxation; lower indicates a cleaner generator-level
-   output.
+These commands are measurement recipes, not published results. Record the source
+commit, Warp version, platform/GPU, exact config and seeds with the output. CPU and
+CUDA timing rows are not comparable, and changing batch size changes amortization.
+Use several seed batches before drawing conclusions about rare failures or diversity.
 
-**xpbd_displacement**
-   Mean displacement (in track-coordinate units) that XPBD relaxation applies to the
-   centerline; lower means the generator already produces geometry close to the
-   relaxed equilibrium.
+What to compare
+---------------
 
-**mean_length**
-   Mean centerline perimeter (track-coordinate units) across valid environments;
-   reflects the typical physical size of generated tracks.
+.. list-table:: Metrics and their limits
+   :header-rows: 1
+   :widths: 30 70
 
-**mean_compactness**
-   Mean isoperimetric compactness (``4π·area / perimeter²``) across valid
-   environments; higher values indicate rounder, more compact track shapes.
+   * - Metric
+     - Interpretation
+   * - ``yield``
+     - Fraction passing final validity in the whole generated batch. Keep failed rows in the denominator; a gallery filtered to valid examples cannot estimate this.
+   * - ``pre_relax_self_intersection_rate``
+     - Fraction of raw generator centerlines with proper segment crossings. Endpoint/collinear contact and finite-width clearance are different questions.
+   * - ``xpbd_displacement``
+     - Mean motion from pre-relax to post-relax centerline in coordinate units. Shows how much the shared solver changes the sample, not a proof of road quality.
+   * - ``mean_length``
+     - Mean closed centerline perimeter over valid rows, in coordinate units. Compare with size/scale held fixed and report validity filtering.
+   * - ``mean_compactness`` / ``compactness_p50``
+     - Mean/median of 4π * enclosed area / perimeter² over valid rows. Round loops score higher; a racing task may prefer a different structure.
+   * - ``compactness_degenerate_rate``
+     - Fraction of valid shapes below the tool's near-degenerate compactness threshold. Consult the metric implementation before treating the threshold as a vehicle constraint.
+   * - ``shape_variety_pass``
+     - A batch diversity diagnostic implemented by the benchmark tool. A binary summary is not coverage of the task's whole track distribution.
+   * - ``mean_chicanes`` / ``straight_frac``
+     - Geometric heuristics for direction changes and straight portions. Their thresholds are not a driving policy or difficulty specification.
+   * - ``peak_curvature``
+     - Mean of each valid track's maximum absolute curvature. Sensitive to sample resolution; compare at the same spacing and pipeline settings.
+   * - ``lap_time``
+     - Seconds estimated by the benchmark's kinematic model. It is not a measured simulator or real-vehicle lap.
+   * - ``gen_ms_per_call``
+     - Mean wall-clock milliseconds of five calls after two warm calls. Includes the shared pipeline; excludes initial generator construction and its warm-up.
 
-**compactness_p50**
-   Median compactness; a robust central-tendency measure less sensitive to extreme
-   shape outliers than the mean.
+Include latency distribution and first-use cost in a simulator integration benchmark.
+Warp kernel compilation, pipeline construction/warm-up, initial CUDA graph recording
+and steady graph replay are distinct costs. A warm mean alone does not show the
+worst reset pause or the memory budget.
 
-**compactness_degenerate_rate**
-   Fraction of valid environments with compactness below a degenerate threshold;
-   zero means no degenerate (near-zero-area) shapes were produced in this suite run.
-
-**shape_variety_pass**
-   Binary flag (0 or 1) indicating whether the generator produces sufficient
-   shape diversity across the batch.
-
-**mean_chicanes**
-   Mean count of chicane-like direction-reversals per valid track; reflects how
-   much local curvature variation the generator introduces.
-
-**straight_frac**
-   Mean fraction of the centerline classified as a straight segment; higher values
-   indicate more open, high-speed layout character.
-
-**peak_curvature**
-   Mean maximum absolute curvature over the relaxed centerline; reflects how tight
-   the sharpest corner of a typical track is.
-
-**lap_time**
-   Estimated lap time (seconds) from a simple kinematic model; lower values
-   correspond to faster, more open tracks.
-
-**gen_ms_per_call**
-   Wall-clock time in milliseconds per ``TrackGenerator.generate()`` call: the mean of
-   five calls after two warm ones, at ``E = 512``. Machine-dependent: use it for
-   relative comparison within one table. The ``repulsive`` row is measured on ``cuda``
-   and is not comparable to the CPU rows.
+Read the implementation in ``benchmarks/compare_generators.py`` and its metric
+helpers when changing thresholds or adding a task-specific score. Choose a family
+with :doc:`/tutorials/choosing-a-generator`; inspect the raw/final overlays in its
+guide before interpreting a metric difference as a pure generator effect.
