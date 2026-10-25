@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """Visual ablation harness for the GPU-batched race-track generator.
 
-Renders three 4x4 figures that let a human eyeball how generation settings drive
+Renders two 4x4 figures that let a human eyeball how generation settings drive
 track shape and self-intersection:
 
     fig1_bezier_rad_edgy.png   -- Bezier handle-length (rad) x edginess (edgy)
     fig3_bezier_vs_fourier.png -- the two generators side by side per seed
-    fig4_min_angle_min_dist.png-- Bezier min_angle x min_point_distance
 
 Everything is headless (Agg backend); PNGs land in ``viz/out/`` next to this file.
 The pipeline is driven through the REAL public API exactly as the test-suite does:
@@ -23,7 +22,6 @@ underlying warp ``set_states`` kernel raises a device-mismatch error.
 
 from __future__ import annotations
 
-import math
 import os
 import sys
 
@@ -45,6 +43,8 @@ import torch
 import warp as wp
 
 from track_gen import PerEnvSeededRNG, Track, TrackGenConfig, TrackGenerator
+from track_gen._experimental.fourier import FourierCenterlineGenerator, FourierConfig
+from viz.plot_tracks import _track_to_torch
 
 # --------------------------------------------------------------------------- #
 # Paths / device
@@ -116,9 +116,10 @@ def draw_track(ax, track: Track, env_index: int, title: str, invalid_flag: bool)
     centerline as a dashed line. When ``invalid_flag`` is True the title is tinted
     red so failed envs are obvious at a glance.
     """
-    cx, cy = _np_loop(track.center[env_index])
-    ox, oy = _np_loop(track.outer[env_index])
-    ix, iy = _np_loop(track.inner[env_index])
+    center, outer, inner, _, _ = _track_to_torch(track)
+    cx, cy = _np_loop(center[env_index])
+    ox, oy = _np_loop(outer[env_index])
+    ix, iy = _np_loop(inner[env_index])
 
     # Filled band between outer and inner (only when both have matching length).
     if ox.size and ix.size and ox.size == ix.size:
@@ -155,7 +156,8 @@ def _style_cell(ax, title: str, invalid_flag: bool = False) -> None:
 
 
 def _is_invalid(track: Track, env_index: int) -> bool:
-    return not bool(track.valid[env_index].item())
+    valid = wp.to_torch(track.valid)
+    return not bool(valid[env_index].item())
 
 
 # --------------------------------------------------------------------------- #
@@ -185,6 +187,7 @@ def figure1_rad_edgy(seed: int = 7) -> str:
                 num_points=256,
                 rad=rad,
                 edgy=edgy,
+                on_invalid="keep",
             )
             track = generate(cfg, 1, seed=seed)
             ax = axes[r, c]
@@ -217,67 +220,56 @@ def figure1_rad_edgy(seed: int = 7) -> str:
 def figure3_bezier_vs_fourier() -> str:
     """4x4: left 2 cols Bezier, right 2 cols Fourier; each row a distinct seed.
 
-    Same seed across the row so the two generators are compared on matched RNG
-    streams; titles flag which envs come out valid.
+    Each row uses Bezier seeds s/s+1 and separate Fourier seeds s+1000/s+1001.
+    Shared axes preserve coordinate scale; Fourier is a bare centerline with its
+    longest span normalized to one unit, not an inflated or relaxed road.
     """
     seeds = [1, 2, 3, 4]
     n = 4
 
-    fig, axes = plt.subplots(n, n, figsize=(11, 11))
+    fig, axes = plt.subplots(n, n, figsize=(11, 11), sharex=True, sharey=True)
     for r, s in enumerate(seeds):
         bez = generate(
-            TrackGenConfig(generator="bezier", device=DEVICE, num_envs=2, num_points=256),
+            TrackGenConfig(generator="bezier", device=DEVICE, num_envs=2, num_points=256,
+                           on_invalid="keep"),
             2,
             seed=s,
         )
-        fou = generate(
-            TrackGenConfig(
-                generator="fourier",
-                device=DEVICE,
-                num_envs=2,
-                num_points=256,
-                num_harmonics=5,
-                decay_p=2,
-                num_centerline_samples=256,
-            ),
-            2,
-            seed=s + 1000,  # decouple stream from the bezier column on the same row
+        fcfg = FourierConfig(
+            device=DEVICE, num_harmonics=5, decay_p=2,
+            num_centerline_samples=256, scale=1.0,
         )
+        fgen = FourierCenterlineGenerator(fcfg, make_rng(2, seed=s + 1000, device=DEVICE))
+        fou = fgen.generate(torch.arange(2, device=DEVICE, dtype=torch.int32))
 
         for c in range(2):  # cols 0,1 -> Bezier envs 0,1
             draw_track(
                 axes[r, c],
                 bez,
                 c,
-                f"Bezier  seed {s}.{c}\nvalid={bool(bez.valid[c])}",
+                f"Bezier  seed {s + c}\nroad valid={not _is_invalid(bez, c)}",
                 _is_invalid(bez, c),
             )
         for c in range(2):  # cols 2,3 -> Fourier envs 0,1
-            draw_track(
+            ok = bool(fou.valid[c])
+            _draw_polyline(axes[r, c + 2], fou.points[c], color="0.25", lw=0.9)
+            _style_cell(
                 axes[r, c + 2],
-                fou,
-                c,
-                f"Fourier  seed {s}.{c}\nvalid={bool(fou.valid[c])}",
-                _is_invalid(fou, c),
+                f"Fourier  seed {s + 1000 + c}\nturning check={ok}",
+                not ok,
             )
 
     fig.suptitle(
-        "Figure 3 -- Bezier (left 2 cols) vs Fourier (right 2 cols), one seed per row\n"
-        "Bezier: piecewise-cubic corners; Fourier: smooth-by-construction; red title = invalid",
+        "Figure 3 -- Bezier (left 2 cols) vs Fourier (right 2 cols), fixed seed pairs per row\n"
+        "Bezier: relaxed road; Fourier: bare centerline (no road band or relax)\n"
+        "Shared coordinate scale; Fourier longest span = 1; red title = failed family check",
         fontsize=11,
     )
-    fig.tight_layout(rect=(0, 0, 1, 0.94))
+    fig.tight_layout(rect=(0, 0, 1, 0.92))
     path = os.path.join(OUT_DIR, "fig3_bezier_vs_fourier.png")
     fig.savefig(path, dpi=DPI)
     plt.close(fig)
     return path
-
-
-# --------------------------------------------------------------------------- #
-# Figure 4 -- Bezier min_angle x min_point_distance (sampling-changing settings)
-# --------------------------------------------------------------------------- #
-
-
 
 
 # --------------------------------------------------------------------------- #
