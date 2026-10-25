@@ -26,6 +26,8 @@ from pathlib import Path
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from viz.racing_theme import (save_figure, get_palette, geometry_digest,
+                              rendered_geometry, render_variants)
 import numpy as np
 import warp as wp
 
@@ -159,6 +161,7 @@ def _limits(states,envs,gates):
 
 def _frame(path,data,envs,limits,metadata,gates):
     fig,axs=plt.subplots(1,len(envs),figsize=(12,4.6),dpi=100,facecolor="white")
+    axs=np.atleast_1d(axs)
     for ax,e,(lo,hi) in zip(axs,envs,limits):
         n=data["count"][e]
         p=data["position" if gates else "center"][e,:n]
@@ -194,7 +197,7 @@ def _frame(path,data,envs,limits,metadata,gates):
             if gates else "Each prefix shown after uniform resampling + inflation. Selected examples; no yield claim.")
     fig.text(.5,.015,footer,ha="center",fontsize=9,color="#344253")
     fig.subplots_adjust(left=.05,right=.99,top=.79,bottom=.14,wspace=.25)
-    fig.savefig(path,facecolor="white")
+    save_figure(fig, path,facecolor="white")
     plt.close(fig)
 
 
@@ -209,7 +212,7 @@ def _ffmpeg(explicit=None):
         raise RuntimeError("Install optional ffmpeg or imageio-ffmpeg, or pass --ffmpeg") from exc
 
 
-def main():
+def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--gates",action="store_true")
     parser.add_argument("--device",default="cpu")
@@ -221,7 +224,8 @@ def main():
     parser.add_argument("--rounds",type=int,default=16)
     parser.add_argument("--smooth-passes",type=int,default=5)
     parser.add_argument("--polish",type=int,default=10)
-    args=parser.parse_args()
+    parser.add_argument("--theme",choices=("light","dark","both"),default="light")
+    args=parser.parse_args(argv)
     encoder=_ffmpeg(args.ffmpeg)
     wp.init()
     if args.gates:
@@ -254,29 +258,37 @@ def main():
         meta["max_displacement_to_longer_budget"]={str(e):float(np.linalg.norm(
             states[-1]["position"][e,:states[-1]["count"][e]]-
             long["position"][e,:long["count"][e]],axis=1).max()) for e in envs}
-    with tempfile.TemporaryDirectory(prefix="trackgen-video-") as tmp:
-        tmp=Path(tmp)
-        idx=0
-        for i,s in enumerate(states):
-            _frame(tmp/f"frame_{idx:04d}.png",s,envs,limits,meta,args.gates)
-            idx+=1
-            if i==0:
-                for _ in range(fps):
-                    shutil.copyfile(tmp/"frame_0000.png",tmp/f"frame_{idx:04d}.png");idx+=1
-        final=tmp/f"frame_{idx-1:04d}.png"
-        shutil.copyfile(final,args.out_dir/f"{stem}-poster.png")
-        for _ in range(2*fps):
-            shutil.copyfile(final,tmp/f"frame_{idx:04d}.png");idx+=1
-        target=tmp/f"{stem}.mp4"
-        subprocess.run([encoder,"-y","-loglevel","error","-framerate",str(fps),
-                        "-i",str(tmp/"frame_%04d.png"),"-c:v","libx264","-crf","24",
-                        "-pix_fmt","yuv420p","-movflags","+faststart",str(target)],check=True)
-        shutil.copyfile(target,args.out_dir/target.name)
-    meta["encoded_frames"]=idx
-    meta["duration_seconds"]=idx/fps
-    (args.out_dir/f"{stem}-manifest.json").write_text(json.dumps(meta,indent=2)+"\n")
-    print(json.dumps({"stem":stem,"envs":envs,"seeds":meta["selected_seeds"],
-                      "frames":idx,"seconds":idx/fps,"out_dir":str(args.out_dir)}))
+    capture_hash=geometry_digest(states)
+    def variant(out):
+        variant_meta=dict(meta)
+        with tempfile.TemporaryDirectory(prefix="trackgen-video-") as tmp:
+            tmp=Path(tmp)
+            idx=0
+            for i,s in enumerate(states):
+                _frame(tmp/f"frame_{idx:04d}.png",s,envs,limits,meta,args.gates)
+                idx+=1
+                if i==0:
+                    for _ in range(fps):
+                        shutil.copyfile(tmp/"frame_0000.png",tmp/f"frame_{idx:04d}.png");idx+=1
+            final=tmp/f"frame_{idx-1:04d}.png"
+            shutil.copyfile(final,out/f"{stem}-poster.png")
+            for _ in range(2*fps):
+                shutil.copyfile(final,tmp/f"frame_{idx:04d}.png");idx+=1
+            target=tmp/f"{stem}.mp4"
+            subprocess.run([encoder,"-y","-loglevel","error","-framerate",str(fps),
+                            "-i",str(tmp/"frame_%04d.png"),"-c:v","libx264","-crf","24",
+                            "-pix_fmt","yuv420p","-movflags","+faststart",str(target)],check=True)
+            shutil.copyfile(target,out/target.name)
+        variant_meta.update(encoded_frames=idx,duration_seconds=idx/fps,
+                            theme=get_palette().name,geometry_sha256=capture_hash,
+                            render_geometry=rendered_geometry())
+        (out/f"{stem}-manifest.json").write_text(json.dumps(variant_meta,indent=2)+"\n")
+        return variant_meta
+    results=render_variants(args.out_dir,args.theme,variant)
+    for theme,record in results.items():
+        print(json.dumps({"stem":stem,"theme":theme,"envs":envs,"seeds":meta["selected_seeds"],
+                          "frames":record["encoded_frames"],"seconds":record["duration_seconds"],
+                          "out_dir":str(args.out_dir)}))
 
 
 if __name__=="__main__":

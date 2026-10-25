@@ -54,34 +54,34 @@ growth clip records actual solver iterations. A gallery sample is not a yield es
 
       .. raw:: html
 
-         <video controls preload="none" style="width:100%;max-width:100%" poster="../_images/generator-bezier-construction.png" aria-label="Anchors and cubic handles build a smooth closed curve.">
+         <video controls preload="none" style="width:100%;max-width:100%" poster="../_images/generator-bezier-construction.png" aria-label="Grid addresses, actual offsets and handles build the loop; a crossing can select its entire polygon.">
            <source src="../generator-bezier-construction.mp4" type="video/mp4">
-           Anchors and cubic handles build a smooth closed curve.
+           Grid addresses, actual offsets and handles build the loop; a crossing can select its entire polygon.
          </video>
 
-      :doc:`Anchors and cubic handles build a smooth closed curve. </generators/bezier>`
+      :doc:`Grid addresses, actual offsets and handles build the loop; a crossing can select its entire polygon. </generators/bezier>`
 
    .. grid-item-card:: Hull
 
       .. raw:: html
 
-         <video controls preload="none" style="width:100%;max-width:100%" poster="../_images/generator-hull-construction.png" aria-label="Midpoint displacement adds lobes before smoothing.">
+         <video controls preload="none" style="width:100%;max-width:100%" poster="../_images/generator-hull-construction.png" aria-label="Grid selection, midpoint lobes and whole-loop fallback shape the route.">
            <source src="../generator-hull-construction.mp4" type="video/mp4">
-           Midpoint displacement adds lobes before smoothing.
+           Grid selection, midpoint lobes and whole-loop fallback shape the route.
          </video>
 
-      :doc:`Midpoint displacement adds lobes before smoothing. </generators/hull>`
+      :doc:`Grid selection, midpoint lobes and whole-loop fallback shape the route. </generators/hull>`
 
    .. grid-item-card:: Polar
 
       .. raw:: html
 
-         <video controls preload="none" style="width:100%;max-width:100%" poster="../_images/generator-polar-construction.png" aria-label="Angular slots and perturbed radii define the route.">
+         <video controls preload="none" style="width:100%;max-width:100%" poster="../generator-polar-construction-poster.png" aria-label="Regular slots, random radii and independent angular jitter define the route.">
            <source src="../generator-polar-construction.mp4" type="video/mp4">
-           Angular slots and perturbed radii define the route.
+           Regular slots, random radii and independent angular jitter define the route.
          </video>
 
-      :doc:`Angular slots and perturbed radii define the route. </generators/polar>`
+      :doc:`Regular slots, random radii and independent angular jitter define the route. </generators/polar>`
 
    .. grid-item-card:: Voronoi
 
@@ -115,6 +115,22 @@ growth clip records actual solver iterations. A gallery sample is not a yield es
          </video>
 
       :doc:`Watch a growing ring separate and bend. </generators/repulsive>`
+
+Raw samples become road beads
+-----------------------------
+
+All track generators share this ending. ``num_points`` fixes the raw count;
+``spacing`` sets an arc-distance target before relaxation. XPBD and final
+same-count redistribution explain why final chord lengths need not equal it.
+
+.. raw:: html
+
+   <video controls preload="none" style="width:100%;max-width:100%;aspect-ratio:5/3;object-fit:contain" poster="../_images/pipeline-sampling.png" aria-label="Raw fixed-count samples become target-spaced beads, move in XPBD and are redistributed uniformly.">
+     <source src="../pipeline-sampling.mp4" type="video/mp4">
+     Raw fixed-count samples become target-spaced beads, move in XPBD and are redistributed uniformly.
+   </video>
+
+:ref:`See the four stages and measured distances <sampling-stages>`.
 
 For side-by-side control effects, continue with :ref:`course-controls` and the
 :ref:`generator gallery <generators-overview>`. For failure geometry, see

@@ -67,7 +67,7 @@ Controls and defaults
      - Upper anchor-count bound and capacity, at least min_num_points. There are twice as many vertices after midpoint insertion.
    * - ``min_point_distance``
      - 0.05 / static
-     - Normalized grid spacing in (0, 0.5]; int(1/(2*d)) cells per side. Changes anchor placement, not final road clearance.
+     - Controls grid pitch ``2*d`` in normalized coordinates; int(1/(2*d)) addresses per side. It is not a minimum pairwise distance. Changes anchor placement, not final road clearance.
    * - ``num_points_per_segment``
      - 30 / static
      - At least 2 dense Catmull–Rom samples per augmented segment; trades sampling work for discretization accuracy.
@@ -104,38 +104,44 @@ Use track stations when gates should follow the finished lobes.
 How it is constructed
 ---------------------
 
-The anchor cycle is angle-sorted about its centroid. One midpoint is inserted per
-edge and displaced radially by a seed-dependent signed amount. A closed Catmull–Rom
-curve passes through this augmented cycle; dense samples are arc-resampled. The
-crossing check chooses the augmented polygon fallback when the smooth curve crosses.
-The shared tail then determines whether the finite-width road is valid.
+1. Sample grid addresses and independent offsets, using the same point-selection
+   rule as Bézier. Offsets can cross cell boundaries; ``min_point_distance`` sets
+   grid pitch rather than a minimum distance between sampled points.
+2. Keep **every** active anchor and sort around its centroid. There is no convex
+   hull computation and no discarded interior-point set.
+3. Insert one midpoint per edge and displace it inward or outward along its
+   centroid-relative radius. The original anchors stay in place. Join this
+   augmented cycle with a periodic Catmull–Rom curve.
+4. Arc-resample to ``num_points`` and check proper crossings. A crossing automatically
+   selects the **entire augmented polygon**, including displaced midpoints, instead
+   of the smooth loop. The movie shows the actual default seed-23 branch; it does
+   not illustrate a local spline repair or an optional toggle.
 
 .. figure:: ../assets/racing/generator-hull-construction.png
-   :alt: Four construction steps: sampled anchors, angle ordering, midpoint displacement and curve sampling, beside the raw centerline and finished road.
+   :alt: Grid addresses and actual random offsets for Hull, beside the raw loop and finished road.
    :align: center
 
-   Four steps explain sampled anchors, angle ordering, midpoint displacement and curve
-   sampling. The raw generator centerline and finished road at right use output coordinates;
-   construction panels use their original coordinates.
+   The large view explains point selection. The movie then separates angle ordering,
+   midpoint displacement, spline evaluation and the actual whole-loop fallback.
 
 .. raw:: html
 
-   <video controls preload="none" style="width:100%;max-width:100%" poster="../_images/generator-hull-construction.png" aria-label="Progressive drawing of sampled anchors, angle ordering, midpoint displacement and curve sampling, from actual hull geometry.">
+   <video controls preload="none" style="width:100%;max-width:100%;aspect-ratio:7/4;object-fit:contain" poster="../_images/generator-hull-construction.png" aria-label="Grid selection, offsets, angle ordering, midpoint displacement, Catmull-Rom and whole-loop fallback.">
      <source src="../generator-hull-construction.mp4" type="video/mp4">
-     Progressive drawing of sampled anchors, angle ordering, midpoint displacement and curve sampling, from actual hull geometry.
+     Grid selection, offsets, angle ordering, midpoint displacement, Catmull-Rom and whole-loop fallback.
    </video>
 
 :download:`Download the animation <../assets/racing/generator-hull-construction.mp4>`.
 
-**Text alternative:** The drawing first reveals sampled anchors and their angle-sorted
-cycle. Orange arrows then connect each ordinary edge midpoint to its actual displaced
-position, before drawing the curve or selected polygon fallback. The raw centerline and
-finished road remain visible at right.
+**Text alternative:** Grey grid addresses lead to the sampled blue points through
+orange offset vectors. Every active point enters the angle-sorted cycle. Orange
+arrows then show the inserted midpoints' actual displacements. A seed-23 inset
+marks crossings of the rejected smooth candidate and shows the entire selected
+augmented polygon. Raw and finished-road counts remain distinct.
 
-The geometry comes from recorded construction buffers. Prefix drawing explains
-algorithm order. Playback timing is illustrative, with no position morph
-between stages or claim of measured runtime or iterative solver states. The view
-stays fixed within each coordinate system.
+The drawings use observed buffers, including the rejected spline before the
+fallback overwrites it. Timing is explanatory. Continue with the
+:ref:`shared sampling and relaxation stages <sampling-stages>`.
 
 Continue with :doc:`/how-it-works/pipeline`, :doc:`/configuration/tuning`,
 :ref:`builtin-generator-params`, or :doc:`/tutorials/gate-sequences`.

@@ -79,6 +79,6 @@ def test_bezier_resampling_step_draws_the_selected_actual_raw_samples():
 
     sample = guide.sample_batch("bezier", seeds=[7])[0]
     fig, ax = plt.subplots()
-    frame = guide.draw_construction_step(ax, sample, 3, 1)
+    frame = guide.draw_construction_step(ax, sample, len(guide.construction_stages(sample))-1, 1)
     np.testing.assert_array_equal(frame["active_curve"], sample["raw"])
     plt.close(fig)

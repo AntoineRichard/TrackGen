@@ -127,40 +127,44 @@ along the curved road, use station sampling instead.
 How it is constructed
 ---------------------
 
-The generator samples distinct grid cells, chooses a corner count, and sorts the
-active corners by angle about their centroid. At each corner it blends the unit
-incoming and outgoing edge directions. Each cubic joins two corners with handles
-along those tangents, capped by local incident-edge lengths. Dense samples are
-resampled uniformly in arclength to the raw centerline; a crossing check selects the
-polygon fallback when needed. Angle sorting is a construction heuristic and does not
-make this a convex-hull algorithm.
+1. Choose active corners from grid addresses and add independent random offsets.
+   At ``min_point_distance=.05``, the grid pitch is ``.10``. Each coordinate offset
+   is drawn from ``[-.5, .5)`` before ``scale`` and ``size`` are applied, so points
+   can leave their selected cells. This is not a minimum pairwise-distance sampler.
+2. Keep every active point and sort its angle around the centroid. Adjacent corner
+   directions determine the tangents; ``rad`` and ``handle_clamp_frac`` limit the
+   two handles of each cubic.
+3. Evaluate the dense cubic segments and arc-resample to ``num_points`` raw points.
+   If that sampled smooth loop has proper crossings, automatically replace the
+   **whole loop** with an arc-resampled corner polygon. This is not a local spline
+   edit or an optional switch. The clip uses default seed 97 to show a real branch.
 
 .. figure:: ../assets/racing/generator-bezier-construction.png
-   :alt: Four construction steps: sampled corners, angle ordering, both cubic handles and curve sampling, beside the raw centerline and finished road.
+   :alt: Selected grid addresses and actual offset vectors, beside the raw Bézier loop and finished road.
    :align: center
 
-   Four steps explain sampled corners, angle ordering, both cubic handles and curve
-   sampling. The raw generator centerline and finished road at right use output coordinates;
-   construction panels use their original coordinates.
+   Grey squares are selected grid addresses; orange arrows end at the actual sampled
+   corners. Primary seed 7 uses a smooth curve. The movie separately shows the
+   crossing/fallback case and preserves the source geometry at every step.
 
 .. raw:: html
 
-   <video controls preload="none" style="width:100%;max-width:100%" poster="../_images/generator-bezier-construction.png" aria-label="Progressive drawing of sampled corners, angle ordering, both cubic handles and curve sampling, from actual bezier geometry.">
+   <video controls preload="none" style="width:100%;max-width:100%;aspect-ratio:7/4;object-fit:contain" poster="../_images/generator-bezier-construction.png" aria-label="Grid addresses, random offsets, angle ordering, cubic handles, whole-loop fallback and raw resampling.">
      <source src="../generator-bezier-construction.mp4" type="video/mp4">
-     Progressive drawing of sampled corners, angle ordering, both cubic handles and curve sampling, from actual bezier geometry.
+     Grid addresses, random offsets, angle ordering, cubic handles, whole-loop fallback and raw resampling.
    </video>
 
 :download:`Download the animation <../assets/racing/generator-bezier-construction.mp4>`.
 
-**Text alternative:** The drawing first reveals sampled corners and their angle-sorted
-cycle, then draws each cubic with its actual incoming and outgoing handles. The final step
-shows the selected raw loop; the raw centerline and finished road remain visible at right.
+**Text alternative:** Start with the selected grid addresses, then follow each
+orange offset vector to its sampled corner. Connect the angle-sorted corners,
+inspect both handles, and draw the actual dense cubic. A labelled seed-97 inset
+marks the rejected smooth crossings and the selected entire polygon. Finish with
+256 raw samples and the separate finished-road count.
 
-The geometry comes from recorded construction buffers; Bézier handles are derived
-from the recorded tangents and local scales. Prefix drawing and operation arrows
-explain algorithm order. Playback timing is illustrative, with no position morph
-between stages or claim of measured runtime or iterative solver states. The view
-stays fixed within each coordinate system.
+The animation stages recorded geometry to explain construction; playback is not
+elapsed runtime. Next, :ref:`watch how the shared pipeline turns raw samples into
+road beads <sampling-stages>`.
 
 Continue with :doc:`/how-it-works/pipeline`, :doc:`/configuration/tuning`,
 :ref:`builtin-generator-params`, or :doc:`/tutorials/gate-sequences`.

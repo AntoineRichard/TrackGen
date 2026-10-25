@@ -5,6 +5,7 @@ from pathlib import Path
 
 _HERE = Path(__file__).parent
 sys.path.insert(0, str(_HERE / "_ext"))
+sys.path.insert(0, str(_HERE / "_tools"))
 
 project = "TrackGen"
 author = "Antoine Richard"
@@ -24,6 +25,7 @@ extensions = [
     # Local checks (docs/_ext/trackgen_docscheck.py): every public symbol documented, no
     # roadmap / version jargon outside upgrading/*, every data file present.
     "trackgen_docscheck",
+    "themed_media",
 ]
 
 # Internal planning pages, review notes and the build tooling stay in the repository but
@@ -155,6 +157,8 @@ html_extra_path = [
     "assets/racing/generator-bezier-construction.mp4",
     "assets/racing/generator-hull-construction.mp4",
     "assets/racing/generator-polar-construction.mp4",
+    "assets/racing/generator-polar-construction-poster.png",
+    "assets/racing/pipeline-sampling.mp4",
     "assets/racing/generator-voronoi-construction.mp4",
     "assets/racing/generator-checkpoint-construction.mp4",
     "assets/racing/generator-repulsive-growth.mp4",

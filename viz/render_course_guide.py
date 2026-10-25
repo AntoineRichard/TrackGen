@@ -18,6 +18,8 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
+from viz.racing_theme import (save_figure, get_palette,
+                              rendered_geometry, render_variants)
 import numpy as np  # noqa: E402
 from matplotlib.collections import LineCollection  # noqa: E402
 
@@ -141,7 +143,7 @@ def _save(fig, out, stem, title):
     fig.suptitle(title + "\nCPU · seed 5 · epoch 0 · env 0 · selected examples, not yield estimates",
                  fontsize=13)
     fig.tight_layout(rect=(0, 0, 1, 0.91))
-    fig.savefig(out / (stem + ".png"), dpi=160, facecolor="white")
+    save_figure(fig, out / (stem + ".png"), dpi=160, facecolor="white")
     plt.close(fig)
 
 
@@ -449,21 +451,27 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--check", action="store_true", help="assert numerical coverage and meaningful comparisons")
+    parser.add_argument("--theme", choices=("light","dark","both"), default="light")
     args = parser.parse_args(argv)
-    args.out_dir.mkdir(parents=True, exist_ok=True)
-    plt.rcParams.update({"font.size": 9, "axes.spines.top": False, "axes.spines.right": False})
-    for renderer in (size_width, sampling, width_channel, elevation, sources_and_order, gate_elevation, frames, stations_3d):
-        renderer(args.out_dir)
-    if args.check:
-        validate()
-    revision = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
-    manifest = dict(source_revision=revision, renderer_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
-                    command="python -m viz.render_course_guide --out-dir DIR --check",
-                    device="cpu", units="caller coordinate units", selection="fixed seed 5, epoch 0, env 0; no yield inference",
-                    checks={k: bool(v) for k, v in CHECKS.items()}, samples=RECORDS,
-                    assets=sorted(p.name for p in args.out_dir.glob("controls-*.png")))
-    (args.out_dir / "controls-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
-    print(f"wrote {len(manifest['assets'])} figures; {len(RECORDS)} samples; {len(CHECKS)} checks passed")
+    def render(out):
+        RECORDS.clear(); CHECKS.clear()
+        plt.rcParams.update({"font.size": 9, "axes.spines.top": False, "axes.spines.right": False})
+        for renderer in (size_width, sampling, width_channel, elevation, sources_and_order, gate_elevation, frames, stations_3d):
+            renderer(out)
+        if args.check:
+            validate()
+        revision = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+        manifest = dict(source_revision=revision, renderer_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+                        command="python -m viz.render_course_guide --out-dir DIR --check --theme " + get_palette().name,
+                        device="cpu", theme=get_palette().name, render_geometry=rendered_geometry(),
+                        units="caller coordinate units", selection="fixed seed 5, epoch 0, env 0; no yield inference",
+                        checks={k: bool(v) for k, v in CHECKS.items()}, samples=list(RECORDS),
+                        assets=sorted(p.name for p in out.glob("controls-*.png")))
+        (out / "controls-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+        return manifest
+    results=render_variants(args.out_dir,args.theme,render)
+    for name,manifest in results.items():
+        print(f"{name}: wrote {len(manifest['assets'])} figures; {len(manifest['samples'])} samples")
 
 
 if __name__ == "__main__":

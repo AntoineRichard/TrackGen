@@ -16,6 +16,8 @@ from pathlib import Path
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from viz.racing_theme import (save_figure, get_palette, geometry_digest,
+                              rendered_geometry, render_variants)
 from matplotlib.patches import Polygon, Rectangle
 import numpy as np
 import warp as wp
@@ -151,7 +153,7 @@ def _render_comparison(row, out_dir):
     fig.subplots_adjust(left=.06, right=.98, top=.86 if not zoom else .91,
                         bottom=.33 if not zoom else .15, wspace=.35, hspace=.65)
     asset = f"relaxation-{row['name']}.png"
-    fig.savefig(out_dir / asset, dpi=160, facecolor="white")
+    save_figure(fig, out_dir / asset, dpi=160, facecolor="white")
     plt.close(fig)
     return dict(field=row["field"], asset=asset, max_center_displacement=max_delta,
                 samples=[{k: v for k, v in sample.items()
@@ -188,10 +190,10 @@ def _git_provenance(root):
         return unknown
 
 
-def render_guide(out_dir):
+def render_guide(out_dir, *, comparisons=None):
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    comparisons = collect_comparisons()
+    comparisons = collect_comparisons() if comparisons is None else comparisons
     source = dict(version=__version__, warp_version=wp.__version__,
                   numpy_version=np.__version__, device="cpu",
                   **_git_provenance(ROOT),
@@ -205,15 +207,20 @@ def render_guide(out_dir):
                                    method="selected for visible same-seed changes after inspecting seeds 0 through 23",
                                    display="final uniform-resampled and inflated output; not internal solver buffers"),
                     comparisons=[_render_comparison(row, out_dir) for row in comparisons])
+    manifest.update(theme=get_palette().name, render_geometry=rendered_geometry(),
+                    geometry_sha256=geometry_digest(comparisons))
     (out_dir / "relaxation-manifest.json").write_text(json.dumps(manifest, indent=2)+"\n")
     return manifest
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out-dir", type=Path, required=True)
-    args = parser.parse_args()
-    render_guide(args.out_dir)
+    parser.add_argument("--theme", choices=("light","dark","both"), default="light")
+    args = parser.parse_args(argv)
+    comparisons = collect_comparisons()
+    render_variants(args.out_dir,args.theme,
+                    lambda out: render_guide(out,comparisons=comparisons))
 
 
 if __name__ == "__main__":

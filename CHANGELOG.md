@@ -25,7 +25,7 @@
   stay unchanged. Repulsive programs add `repulsive_disc` (bit 8) and
   `repulsive_wall` (bit 9) failure reasons. Inspect validity and `fail_mask`;
   aggressive tuning can fail after the shared tail. See the
-  [migration guide](docs/upgrading/from-0.2.rst).
+  [migration guide](docs/library-readiness/archive/upgrading/from-0.2.rst).
 
 ## 0.3.0rc2 (release candidate, tag `v0.3.0rc2`)
 

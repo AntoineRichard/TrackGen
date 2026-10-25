@@ -26,6 +26,8 @@ import numpy as np
 import warp as wp
 from matplotlib.animation import FFMpegWriter
 
+from viz.racing_theme import get_palette, plotting_theme, save_figure, apply_plot_theme, geometry_digest, render_variants, rendered_geometry
+
 from track_gen import TrackGenConfig, TrackGenerator
 from track_gen._version import __version__
 
@@ -178,6 +180,8 @@ def _record(sample):
         record["barriers"] = {key: barriers[key] for key in
                               ("domain_radius", "size", "half_width", "unscaled_margin")}
         record["barriers"]["disc_count"] = len(barriers["disc_radii"])
+    record["geometry_sha256"] = geometry_digest({key: sample[key] for key in
+        ("raw", "center", "inner", "outer")})
     return record
 
 
@@ -227,11 +231,11 @@ def _style(ax, *, ticks=False):
         ax.set_yticks([])
     for spine in ax.spines.values():
         spine.set_visible(False)
-    ax.set_facecolor("white")
+    ax.set_facecolor(get_palette().background)
 
 
 def _save(fig, path):
-    fig.savefig(path, dpi=150, facecolor="white", bbox_inches="tight", pad_inches=.15)
+    save_figure(fig, path, theme=get_palette().name, dpi=150, bbox_inches="tight", pad_inches=.15)
     plt.close(fig)
 
 
@@ -441,25 +445,23 @@ def bezier_controls(sample):
                      b-h1[:, None]*np.roll(sc["tangents"], -1, axis=0), b), axis=1)
 
 
+def _storyboard_module(name):
+    if name in ("bezier", "hull"):
+        from viz import storyboard_bezier_hull
+        return storyboard_bezier_hull
+    if name == "polar":
+        from viz import storyboard_polar
+        return storyboard_polar
+    return None
+
+
 def construction_stages(sample):
-    """A drawing storyboard; stage order is algorithm order, never elapsed runtime."""
+    """Source-backed explanatory stages; playback is not elapsed runtime."""
     name = sample["config"]["generator"]
+    module = _storyboard_module(name)
+    if module is not None:
+        return module.construction_stages(sample)
     descriptions = {
-        "bezier": [
-            ("Sample corners", "Reveal the actual sampled grid corners; labels retain sampling order."),
-            ("Order around the centroid", "Connect the angle-sorted corners to form the anchor cycle."),
-            ("Draw each cubic with two handles", "Orange: active cubic control polygon. Blue: recorded dense curve samples."),
-            ("Resample and choose the raw loop", "Arc-resample the curve; a proper crossing selects the corner-polygon fallback.")],
-        "hull": [
-            ("Sample anchors", "Reveal the actual sampled grid anchors; labels retain sampling order."),
-            ("Order around the centroid", "The base cycle is angle-sorted; it is not a geometric convex hull."),
-            ("Displace inserted midpoints", "Arrows run from ordinary edge midpoints to their actual displaced positions."),
-            ("Join and check the curve", "Draw recorded Catmull–Rom samples, or the augmented polygon if fallback was selected.")],
-        "polar": [
-            ("Keep the angular slots ordered", "Dashed rays are the unjittered angular slots; their order is fixed."),
-            ("Sample radial and angular jitter", "Reveal actual knots and their radii; labels show the closed traversal order."),
-            ("Join the periodic spline", "Draw the recorded dense Catmull–Rom samples through the radial knots."),
-            ("Arc-resample, then normalize", "Left: recorded dense samples. Right: fixed-count arc-resampling and XY normalization.")],
         "voronoi": [
             ("Sample the site field", "Reveal actual sampled sites; a Voronoi edge graph is not traversed."),
             ("Select sites in anchor order", "Numbered blue sites were chosen against angular/radial targets, avoiding reused sites."),
@@ -471,7 +473,7 @@ def construction_stages(sample):
             ("Close each candidate", "Heading drift and positional-gap correction create closed candidates; no morph is implied."),
             ("Choose the fewest crossings", "Blue is the first minimum crossing score; selection precedes extent normalization.")],
     }
-    progressive = {"bezier": 2, "hull": 3, "polar": 2, "voronoi": 3, "checkpoint": 1}
+    progressive = {"voronoi": 3, "checkpoint": 1}
     return [dict(title=t, explanation=e, progressive_curve=(i == progressive[name]))
             for i, (t, e) in enumerate(descriptions[name])]
 
@@ -485,6 +487,9 @@ def _prefix(points, progress):
 def draw_construction_step(ax, sample, stage, progress):
     """Draw real geometry prefixes, with one fixed construction-coordinate view."""
     name, sc = sample["config"]["generator"], sample["construction"]
+    module = _storyboard_module(name)
+    if module is not None:
+        return module.draw_step(ax, sample, stage, progress, theme=get_palette().name)
     chosen = (int(np.argmin(sc["candidate_crossings"]))
               if name == "checkpoint" and sc["candidate_crossings"] is not None else 0)
     a = sc["checkpoints"][chosen] if name == "checkpoint" else sc["anchors"]
@@ -492,8 +497,6 @@ def draw_construction_step(ax, sample, stage, progress):
     for key in ("dense", "augmented", "sites", "walks", "candidates", "sampled"):
         if key in sc:
             view.append(sc[key].reshape(-1, 2))
-    if name == "bezier":
-        view.append(bezier_controls(sample).reshape(-1, 2))
     _limits(ax, view)
     _style(ax)
     active = np.empty((0, 2))
@@ -509,71 +512,7 @@ def draw_construction_step(ax, sample, stage, progress):
         p = _close(p) if closed else p
         ax.plot(*p.T, color=color, lw=lw, **kw)
 
-    if name in ("bezier", "hull"):
-        if stage == 0:
-            points(_prefix(sc["sampled"], progress), labels=True)
-        elif stage == 1:
-            points(a, color="#9eabb5", size=18)
-            active = _prefix(_close(a), progress)
-            path(active)
-            points(active[:len(a)], labels=True)
-        elif name == "bezier" and stage == 2:
-            controls = bezier_controls(sample)
-            dense = sc["dense"][:len(a)*sample["config"]["num_points_per_segment"]]
-            active = _prefix(dense, progress)
-            path(_close(a), color="#b4c0c9", lw=.8)
-            seg = min((len(active)-1)//sample["config"]["num_points_per_segment"], len(a)-1)
-            c = controls[seg]
-            path(c, color=ORANGE, lw=1.4)
-            points(c[1:3], color=ORANGE)
-            points(c[[0, 3]])
-            for label, p in zip(("P0", "P1", "P2", "P3"), c):
-                ax.annotate(label, p, xytext=(4, -12), textcoords="offset points", fontsize=9)
-            path(active)
-            points(active[-1:], color=ORANGE, size=38)
-        elif name == "hull" and stage == 2:
-            path(a, color="#a6b3be", closed=True, lw=1)
-            points(a, size=16)
-            mid = (a+np.roll(a, -1, axis=0))*.5
-            moved = sc["augmented"][1::2]
-            n = len(_prefix(moved, progress))
-            for p, q in zip(mid[:n], moved[:n]):
-                ax.annotate("", q, p, arrowprops=dict(arrowstyle="->", color=ORANGE, lw=1.6))
-            points(mid, color="#b4c0c9", size=12)
-            points(moved[:n], color=ORANGE)
-            path(_prefix(_close(sc["augmented"]), progress), color=ORANGE, lw=1)
-        else:
-            points(a, color="#a6b3be", size=14)
-            fallback = sc.get("crossings", 0) > 0
-            curve = (sample["raw"] if name == "bezier" else
-                     sc["augmented"] if fallback else sc["dense"])
-            active = _prefix(_close(curve) if fallback and name == "hull" else curve, progress)
-            path(active)
-            if name == "bezier":
-                points(active[::8], size=11)
-    elif name == "polar":
-        radius = np.linalg.norm(a, axis=1).max()
-        if stage <= 1:
-            for angle in np.arange(len(a))*2*np.pi/len(a):
-                path(np.array([[0, 0], [radius*np.cos(angle), radius*np.sin(angle)]]),
-                     color="#c2ccd4", lw=.8, ls="--")
-        if stage == 0:
-            angles = np.arange(len(a))*2*np.pi/len(a)
-            points(_prefix(np.column_stack((radius*np.cos(angles), radius*np.sin(angles))), progress),
-                   color="#8192a0", labels=True)
-        elif stage == 1:
-            p = _prefix(a, progress)
-            for q in p:
-                path(np.array([[0, 0], q]), color=ORANGE, lw=1)
-            points(p, labels=True)
-            path(p, lw=1)
-        else:
-            points(a, color="#8e9eab", size=18)
-            active = _prefix(sc["dense"], progress)
-            path(active)
-            if stage == 3:
-                points(active[::max(1, len(active)//48)], size=10)
-    elif name == "voronoi":
+    if name == "voronoi":
         sites = _prefix(sc["sites"], progress) if stage == 0 else sc["sites"]
         points(sites, color="#b9c3cb", size=10)
         if stage == 1:
@@ -639,7 +578,17 @@ def _construction_result_axes(raw_ax, road_ax, sample):
         _style(ax)
 
 
-def render_construction(out_dir, sample, *, movies=True):
+def render_construction(out_dir, sample, *, movies=True, theme=None):
+    palette = get_palette(theme)
+    module = _storyboard_module(sample["config"]["generator"])
+    if module is not None:
+        return module.render(out_dir, sample, movies=movies, theme=palette.name,
+                             writer_factory=_writer)
+    with plotting_theme(palette.name):
+        return _render_simple_construction(out_dir, sample, movies=movies)
+
+
+def _render_simple_construction(out_dir, sample, *, movies=True):
     """Family-specific progressive drawings and a still four-step storyboard."""
     name = sample["config"]["generator"]
     if name == "repulsive":
@@ -659,7 +608,7 @@ def render_construction(out_dir, sample, *, movies=True):
         writer = _writer()
         with writer.saving(fig, str(out_dir / f"generator-{name}-construction.mp4"), dpi=120):
             for i, stage in enumerate(stages):
-                heading.set_text(f"{name.capitalize()} · {i+1}/4 · {stage['title']}")
+                heading.set_text(f"{name.capitalize()} · {i+1}/{len(stages)} · {stage['title']}")
                 explanation.set_text(textwrap.fill(stage["explanation"], width=93))
                 for progress in [*np.linspace(.02, 1, 18), *([1]*6)]:
                     ax.clear()
@@ -667,7 +616,8 @@ def render_construction(out_dir, sample, *, movies=True):
                     if i == 3 and sample["construction"].get("crossings", 0):
                         ax.text(.02, .02, f"Polygon fallback: {sample['construction']['crossings']} smooth crossings",
                                 transform=ax.transAxes, color=RED, fontsize=11)
-                    writer.grab_frame()
+                    apply_plot_theme(fig, get_palette().name)
+                    writer.grab_frame(facecolor=get_palette().background)
         plt.close(fig)
     fig, axes = plt.subplots(2, 3, figsize=(12, 7.6))
     for i, stage in enumerate(stages):
@@ -849,9 +799,11 @@ def render_growth(out_dir, sample, *, movies=True):
         with writer.saving(fig, str(out_dir / "generator-repulsive-growth.mp4"), dpi=120):
             for frame in frames:
                 draw(frame)
-                writer.grab_frame()
+                apply_plot_theme(fig, get_palette().name)
+                writer.grab_frame(facecolor=get_palette().background)
             for _ in range(12):
-                writer.grab_frame()
+                apply_plot_theme(fig, get_palette().name)
+                writer.grab_frame(facecolor=get_palette().background)
     draw(frames[-1])
     view_bounds = dict(xlim=list(ax.get_xlim()), ylim=list(ax.get_ylim()))
     _save(fig, out_dir / "generator-repulsive-growth.png")
@@ -1020,17 +972,42 @@ def render_repulsive_barriers(out_dir):
     return dict(width_reservation=[_record(s) for s in sizes], finished_band_limit=[_record(s) for s in pair])
 
 
+def _source_record():
+    root = Path(__file__).resolve().parents[1]
+    dirty = subprocess.check_output(
+        ["git", "status", "--porcelain", "--", "track_gen", "viz"], text=True)
+    return dict(git_commit=subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+                worktree_dirty=bool(subprocess.check_output(["git", "status", "--porcelain"], text=True)),
+                source_tree_dirty=bool(dirty), theme=get_palette().name,
+                palette_sha256=geometry_digest(dataclasses.asdict(get_palette())),
+                renderer_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+                visual_dependency_sha256={str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
+                    for path in sorted((root / "viz").rglob("*.py"))},
+                warp_version=wp.__version__, numpy_version=np.__version__,
+                matplotlib_version=matplotlib.__version__, trackgen_version=__version__, device="cpu")
+
+
+def _family_source(source, name):
+    root = Path(__file__).resolve().parents[1] / "track_gen/_src"
+    path = root / ("warp_generate" + ("" if name == "bezier" else "_"+name) + ".py")
+    record = dict(source, generator_source_sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+    if name == "repulsive":
+        record["repulsive_dependency_sha256"] = {name: hashlib.sha256((root/name).read_bytes()).hexdigest()
+            for name in ("repulsive_clearance.py", "repulsive_barrier_energy.py", "repulsive_tangent_energy.py",
+                         "repulsive_parallel_energy.py", "repulsive_parallel_proposals.py")}
+    return record
+
+
 def render(out_dir: Path, *, movies=True):
     out_dir.mkdir(parents=True, exist_ok=True)
     source_dir = Path(__file__).resolve().parents[1] / "track_gen/_src"
     source_hashes = {name: hashlib.sha256((source_dir / ("warp_generate" +
                       ("" if name == "bezier" else "_"+name) + ".py")).read_bytes()).hexdigest()
                      for name in FAMILIES}
-    manifest = dict(source=dict(git_commit=subprocess.check_output(["git","rev-parse","HEAD"], text=True).strip(),
-                                warp_version=wp.__version__, platform=platform.platform(), device="cpu",
-                                python_version=platform.python_version(), numpy_version=np.__version__,
-                                matplotlib_version=matplotlib.__version__, generator_source_sha256=source_hashes,
-                                renderer_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest()),
+    source = _source_record()
+    source.update(platform=platform.platform(), python_version=platform.python_version(),
+                  generator_source_sha256=source_hashes)
+    manifest = dict(source=source,
                     command="python -m viz.render_generator_guide --out-dir DIR" + ("" if movies else " --no-movies"),
                     selection=dict(policy="first three valid finite rows from the listed explicit seed pool",
                                    claims_yield=False, epoch=0, coordinates="arbitrary coordinate units"),
@@ -1047,29 +1024,60 @@ def render(out_dir: Path, *, movies=True):
         construction_animation = render_construction(out_dir,selected[0],movies=movies)
         comparisons = render_comparisons(out_dir,name)
         manifest["families"][name] = dict(seed_pool=seeds, examples=[_record(s) for s in selected],
-                                          comparisons=comparisons)
+                                          comparisons=comparisons, source=_family_source(source, name))
         if name != "repulsive":
+            construction_animation["source"] = _family_source(source, name)
             manifest["animations"][name] = construction_animation
         print(f"rendered {name}",flush=True)
     render_gallery(out_dir,examples)
     manifest["specials"] = render_specials(out_dir) | render_repulsive_numerics(out_dir)
     manifest["specials"].update(render_repulsive_barriers(out_dir))
     manifest["animations"]["repulsive"] = render_growth(out_dir,examples["repulsive"][0],movies=movies)
-    manifest["assets"] = {p.name: p.stat().st_size for p in sorted(out_dir.glob("generator*")) if p.suffix in (".png",".mp4")}
+    manifest["animations"]["repulsive"]["source"] = _family_source(source, "repulsive")
+    from viz import storyboard_spacing
+    manifest["animations"]["sampling"] = storyboard_spacing.render(out_dir, movies=movies,
+        theme=get_palette().name, writer_factory=_writer)
+    manifest["animations"]["sampling"]["source"] = source
+    suffixes = (".png", ".mp4") if movies else (".png",)
+    files = [path for path in sorted(out_dir.iterdir()) if path.suffix in suffixes
+             and (path.name.startswith("generator") or path.name.startswith("pipeline-sampling"))]
+    manifest["assets"] = {path.name: path.stat().st_size for path in files}
+    manifest["plotted_geometry_sha256"] = rendered_geometry()
+    manifest["asset_provenance"] = {}
+    for path in files:
+        family = next((name for name in FAMILIES if path.name.startswith("generator-"+name+"-")), None)
+        manifest["asset_provenance"][path.name] = dict(
+            source=_family_source(source, family) if family is not None else source,
+            command=manifest["command"] + " --theme " + get_palette().name)
     (out_dir / "generators-manifest.json").write_text(json.dumps(manifest,indent=2,sort_keys=True)+"\n")
     return manifest
+
+
+def _register_refreshed_assets(manifest, paths, source, command):
+    """Replace metadata only for files actually written by a selective capture."""
+    assets = manifest.setdefault("assets", {})
+    provenance = manifest.setdefault("asset_provenance", {})
+    plotted = manifest.setdefault("plotted_geometry_sha256", {})
+    current = rendered_geometry()
+    for path in paths:
+        assets[path.name] = path.stat().st_size
+        provenance[path.name] = dict(source=source, command=command)
+        if path.name in current:
+            plotted[path.name] = current[path.name]
+        else:
+            plotted.pop(path.name, None)
+
+
+def _media_snapshot(out_dir):
+    return {path.name: (path.stat().st_mtime_ns, path.stat().st_size)
+            for path in out_dir.iterdir() if path.suffix in (".png", ".mp4")}
 
 
 def render_construction_animations(out_dir: Path, source_manifest: Path):
     """Refresh only construction assets, preserving the other visual selections."""
     out_dir.mkdir(parents=True, exist_ok=True)
     manifest = json.loads(source_manifest.read_text())
-    source_dir = Path(__file__).resolve().parents[1] / "track_gen/_src"
-    source = dict(git_commit=subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
-                  worktree_dirty=bool(subprocess.check_output(["git", "status", "--porcelain"], text=True)),
-                  renderer_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
-                  warp_version=wp.__version__, numpy_version=np.__version__,
-                  matplotlib_version=matplotlib.__version__, trackgen_version=__version__, device="cpu")
+    source = _source_record()
     for name in FAMILIES[:-1]:
         old = manifest["animations"][name]["sample"]
         overrides = _current_overrides(old["config"])
@@ -1078,14 +1086,15 @@ def render_construction_animations(out_dir: Path, source_manifest: Path):
         if sample["seed"] != old["seed"]:
             raise AssertionError("construction seed-pool selection changed")
         record = render_construction(out_dir, sample)
-        source_file = source_dir / ("warp_generate" + ("" if name == "bezier" else "_"+name) + ".py")
-        record["source"] = dict(source, generator_source_sha256=hashlib.sha256(source_file.read_bytes()).hexdigest())
+        record["source"] = _family_source(source, name)
         record["command"] = ("python -m viz.render_generator_guide --construction-only "
-                             "--source-manifest docs/assets/racing/generators-manifest.json --out-dir DIR")
+                             "--source-manifest docs/assets/racing/generators-manifest.json --out-dir DIR"
+                             " --theme " + get_palette().name)
         manifest["animations"][name] = record
-        for suffix in (".png", ".mp4"):
-            file = out_dir / ("generator-"+name+"-construction"+suffix)
-            manifest["assets"][file.name] = file.stat().st_size
+        paths = [out_dir / ("generator-"+name+"-construction"+suffix) for suffix in (".png", ".mp4")]
+        if record.get("poster"):
+            paths.append(out_dir / record["poster"])
+        _register_refreshed_assets(manifest, paths, record["source"], record["command"])
         print(f"rendered construction {name}", flush=True)
     (out_dir / "generators-manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True)+"\n")
     return manifest
@@ -1102,20 +1111,13 @@ def render_repulsive_animation(out_dir: Path, source_manifest: Path):
     if sample["seed"] != old["seed"]:
         raise AssertionError("Repulsive seed-pool selection changed")
     record = render_growth(out_dir, sample)
-    source_file = Path(__file__).resolve().parents[1] / "track_gen/_src/warp_generate_repulsive.py"
-    record["source"] = dict(
-        git_commit=subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
-        worktree_dirty=bool(subprocess.check_output(["git", "status", "--porcelain"], text=True)),
-        renderer_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
-        generator_source_sha256=hashlib.sha256(source_file.read_bytes()).hexdigest(),
-        warp_version=wp.__version__, numpy_version=np.__version__,
-        matplotlib_version=matplotlib.__version__, trackgen_version=__version__, device="cpu")
+    record["source"] = _family_source(_source_record(), "repulsive")
     record["command"] = ("python -m viz.render_generator_guide --repulsive-only "
-                         "--source-manifest docs/assets/racing/generators-manifest.json --out-dir DIR")
+                         "--source-manifest docs/assets/racing/generators-manifest.json --out-dir DIR"
+                         " --theme " + get_palette().name)
     manifest["animations"]["repulsive"] = record
-    for suffix in (".png", ".mp4"):
-        file = out_dir / ("generator-repulsive-growth"+suffix)
-        manifest["assets"][file.name] = file.stat().st_size
+    paths = [out_dir / ("generator-repulsive-growth"+suffix) for suffix in (".png", ".mp4")]
+    _register_refreshed_assets(manifest, paths, record["source"], record["command"])
     (out_dir / "generators-manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True)+"\n")
     return manifest
 
@@ -1131,22 +1133,12 @@ def render_repulsive_assets(out_dir: Path, source_manifest: Path, *, movies=True
     """Refresh all Repulsive figures plus its shared gallery, preserving other media."""
     out_dir.mkdir(parents=True, exist_ok=True)
     manifest = json.loads(source_manifest.read_text())
-    root = Path(__file__).resolve().parents[1]
-    source_file = root / "track_gen/_src/warp_generate_repulsive.py"
+    before = _media_snapshot(out_dir)
     dirty_source = subprocess.check_output(
-        ["git", "status", "--porcelain", "--", "track_gen", "viz/render_generator_guide.py"], text=True)
+        ["git", "status", "--porcelain", "--", "track_gen", "viz"], text=True)
     if dirty_source:
         raise RuntimeError("commit the resolved runtime and renderer before final asset rendering")
-    source = dict(git_commit=subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
-                  worktree_dirty=bool(subprocess.check_output(["git", "status", "--porcelain"], text=True)),
-                  source_tree_dirty=False,
-                  renderer_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
-                  generator_source_sha256=hashlib.sha256(source_file.read_bytes()).hexdigest(),
-                  repulsive_dependency_sha256={name: hashlib.sha256((source_file.parent / name).read_bytes()).hexdigest()
-                      for name in ("repulsive_clearance.py", "repulsive_barrier_energy.py", "repulsive_tangent_energy.py",
-                                   "repulsive_parallel_energy.py", "repulsive_parallel_proposals.py")},
-                  warp_version=wp.__version__, numpy_version=np.__version__,
-                  matplotlib_version=matplotlib.__version__, trackgen_version=__version__, device="cpu")
+    source = _family_source(_source_record(), "repulsive")
     seeds = [7, 23, 41, 59]
     pool = sample_batch("repulsive", seeds=seeds)
     selected = [sample for sample in pool if sample["valid"] and np.isfinite(sample["center"]).all()][:3]
@@ -1170,18 +1162,15 @@ def render_repulsive_assets(out_dir: Path, source_manifest: Path, *, movies=True
     render_gallery(out_dir, selections)
     command = ("python -m viz.render_generator_guide --repulsive-assets-only "
                "--source-manifest docs/assets/racing/generators-manifest.json --out-dir DIR" +
-               (" --no-movies" if not movies else ""))
+               (" --no-movies" if not movies else "") + " --theme " + get_palette().name)
     manifest["families"]["repulsive"]["command"] = command
     animation["command"] = command
     manifest["setting_coverage"] = SETTING_COVERAGE
-    provenance = manifest.setdefault("asset_provenance", {})
-    refreshed = [*out_dir.glob("generator-repulsive-*.png"), out_dir / "generators-gallery.png"]
-    if movies:
-        refreshed.extend(out_dir.glob("generator-repulsive-*.mp4"))
-    for path in sorted(refreshed):
-        if path.suffix in (".png", ".mp4"):
-            manifest["assets"][path.name] = path.stat().st_size
-            provenance[path.name] = dict(source=source, command=command)
+    after = _media_snapshot(out_dir)
+    refreshed = [out_dir / name for name, state in after.items()
+                 if state != before.get(name) and
+                 (name.startswith("generator-repulsive-") or name == "generators-gallery.png")]
+    _register_refreshed_assets(manifest, refreshed, source, command)
     (out_dir / "generators-manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True)+"\n")
     return manifest
 
@@ -1190,6 +1179,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out-dir",type=Path,default=Path("docs/assets/racing"))
     parser.add_argument("--no-movies",action="store_true",help="render posters only (no ffmpeg needed)")
+    parser.add_argument("--theme", choices=("light", "dark", "both"), default="light")
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument("--construction-only", action="store_true",
                         help="refresh the five construction movies/posters using recorded manifest selections")
@@ -1200,18 +1190,24 @@ def main():
     parser.add_argument("--source-manifest", type=Path,
                         default=Path("docs/assets/racing/generators-manifest.json"))
     args = parser.parse_args()
-    if args.repulsive_assets_only:
-        render_repulsive_assets(args.out_dir, args.source_manifest, movies=not args.no_movies)
-    elif args.repulsive_only:
-        if args.no_movies:
-            parser.error("--repulsive-only includes a movie; omit --no-movies")
-        render_repulsive_animation(args.out_dir, args.source_manifest)
-    elif args.construction_only:
-        if args.no_movies:
-            parser.error("--construction-only includes movies; omit --no-movies")
-        render_construction_animations(args.out_dir, args.source_manifest)
-    else:
-        render(args.out_dir,movies=not args.no_movies)
+    dirty = subprocess.check_output(["git", "status", "--porcelain", "--", "track_gen", "viz"], text=True)
+    if dirty:
+        parser.error("commit runtime and visual sources before a final media capture; use drawing APIs for previews")
+    def render_selected(out_dir):
+        if args.repulsive_assets_only:
+            return render_repulsive_assets(out_dir, args.source_manifest, movies=not args.no_movies)
+        elif args.repulsive_only:
+            if args.no_movies:
+                parser.error("--repulsive-only includes a movie; omit --no-movies")
+            return render_repulsive_animation(out_dir, args.source_manifest)
+        elif args.construction_only:
+            if args.no_movies:
+                parser.error("--construction-only includes movies; omit --no-movies")
+            return render_construction_animations(out_dir, args.source_manifest)
+        else:
+            return render(out_dir,movies=not args.no_movies)
+    render_variants(args.out_dir, args.theme, render_selected)
+
 
 
 if __name__ == "__main__":

@@ -16,6 +16,8 @@ from types import SimpleNamespace
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from viz.racing_theme import (save_figure, get_palette, geometry_digest,
+                              rendered_geometry, render_variants)
 from matplotlib.patches import Polygon, Rectangle, Circle
 import numpy as np
 import warp as wp
@@ -257,8 +259,8 @@ def render(cases, out_dir):
         ax.set_ylim(-1.55,1.55)
         _axes(ax)
     fig.suptitle("Validity checks inspect different parts of the geometry", fontsize=15)
-    fig.savefig(out_dir/"geometry-validity.svg")
-    fig.savefig(out_dir/"geometry-validity.png", dpi=130)
+    save_figure(fig, out_dir/"geometry-validity.svg")
+    save_figure(fig, out_dir/"geometry-validity.png", dpi=130)
     plt.close(fig)
 
     fig, axs = plt.subplots(1,3,figsize=(10,3.4),layout="constrained")
@@ -270,8 +272,8 @@ def render(cases, out_dir):
                      f"sampled thickness = {row['thickness']:.3f}",fontsize=11)
         ax.margins(.25)
         _axes(ax)
-    fig.savefig(out_dir/"geometry-crossing-predicates.svg")
-    fig.savefig(out_dir/"geometry-crossing-predicates.png", dpi=130)
+    save_figure(fig, out_dir/"geometry-crossing-predicates.svg")
+    save_figure(fig, out_dir/"geometry-crossing-predicates.png", dpi=130)
     plt.close(fig)
 
     fig, axs = plt.subplots(2,2,figsize=(9,7),layout="constrained")
@@ -286,8 +288,8 @@ def render(cases, out_dir):
         ax.set_title(f"{row['name']}\noob={c['oob']}   distance={c['distance']:+.4f}",fontsize=11)
         _axes(ax)
     fig.suptitle("Exact segment queries: read oob separately from distance",fontsize=14)
-    fig.savefig(out_dir/"geometry-footprints.svg")
-    fig.savefig(out_dir/"geometry-footprints.png", dpi=130)
+    save_figure(fig, out_dir/"geometry-footprints.svg")
+    save_figure(fig, out_dir/"geometry-footprints.png", dpi=130)
     plt.close(fig)
 
     fig, axs = plt.subplots(1,3,figsize=(10,4),layout="constrained")
@@ -315,8 +317,8 @@ def render(cases, out_dir):
         ax.set_xlim(-.2,.2);ax.set_ylim(-.52,.52)
         _axes(ax)
     fig.suptitle("A narrow off-road gap can disappear between texel centres",fontsize=14)
-    fig.savefig(out_dir/"geometry-sdf.svg")
-    fig.savefig(out_dir/"geometry-sdf.png", dpi=130)
+    save_figure(fig, out_dir/"geometry-sdf.svg")
+    save_figure(fig, out_dir/"geometry-sdf.png", dpi=130)
     plt.close(fig)
 
     fig,axs=plt.subplots(1,2,figsize=(10,4.5),layout="constrained")
@@ -339,8 +341,8 @@ def render(cases, out_dir):
     ax.set_title("3D frame against an agent sphere\nfront view (all sphere centres at x=0)",fontsize=11)
     ax.set_xlim(-1.4,1.9);ax.set_ylim(-1.4,1.4);_axes(ax)
     ax.set_xlabel("gate-local y [distance units]");ax.set_ylabel("gate-local z [distance units]")
-    fig.savefig(out_dir/"geometry-obstacles.svg")
-    fig.savefig(out_dir/"geometry-obstacles.png", dpi=130)
+    save_figure(fig, out_dir/"geometry-obstacles.svg")
+    save_figure(fig, out_dir/"geometry-obstacles.png", dpi=130)
     plt.close(fig)
 
     fig, axs = plt.subplots(1,2,figsize=(10,4),layout="constrained")
@@ -371,8 +373,8 @@ def render(cases, out_dir):
     ax.set_xlim(-.32,.32);ax.set_ylim(-.27,.25)
     ax.set_title("Margin expands the separation target\nblue: road radius; dashed: solver radius",fontsize=11)
     _axes(ax)
-    fig.savefig(out_dir/"geometry-constraints.svg")
-    fig.savefig(out_dir/"geometry-constraints.png",dpi=130)
+    save_figure(fig, out_dir/"geometry-constraints.svg")
+    save_figure(fig, out_dir/"geometry-constraints.png",dpi=130)
     plt.close(fig)
 
 
@@ -384,18 +386,24 @@ def _json_value(value):
     return value
 
 
-def main():
+def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out-dir",type=Path,default=Path("docs/assets/racing"))
-    args=parser.parse_args()
+    parser.add_argument("--theme",choices=("light","dark","both"),default="light")
+    args=parser.parse_args(argv)
     cases=collect_cases()
-    render(cases,args.out_dir)
-    manifest=dict(source_commit=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),
-                  command="python -m viz.render_collision_guide --out-dir DIR", device="cpu",
-                  warp_version=wp.__version__, numpy_version=np.__version__,
-                  units="arbitrary shared distance units", selection="synthetic counterexamples; no yield claim",
-                  cases=_json_value(cases))
-    (args.out_dir/"geometry-manifest.json").write_text(json.dumps(manifest,indent=2)+"\n")
+    def variant(out):
+        render(cases,out)
+        manifest=dict(source_commit=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),
+                      command="python -m viz.render_collision_guide --out-dir DIR --theme " + get_palette().name,
+                      device="cpu",theme=get_palette().name,render_geometry=rendered_geometry(),
+                      geometry_sha256=geometry_digest(_json_value(cases)),
+                      warp_version=wp.__version__,numpy_version=np.__version__,
+                      units="arbitrary shared distance units",selection="synthetic counterexamples; no yield claim",
+                      cases=_json_value(cases))
+        (out/"geometry-manifest.json").write_text(json.dumps(manifest,indent=2)+"\n")
+        return manifest
+    render_variants(args.out_dir,args.theme,variant)
     print(f"Wrote six SVGs, PNG previews and geometry-manifest.json to {args.out_dir}")
 
 

@@ -93,38 +93,43 @@ size belongs to ``normalize.size`` rather than the generator stage.
 How it is constructed
 ---------------------
 
-For knot i, the angle is 2π(i + angular_delta)/K and the radius has an independent
-bounded radial perturbation. The generator evaluates the periodic Catmull–Rom
-segments, arc-resamples the dense loop to ``num_points``, recenters its bounding box,
-and normalizes the longest side to the shared target extent times ``scale * size``.
-The shared resampling and relaxation stages follow.
+1. Start with ``K`` regular angular slots on the radius-1 reference ring.
+2. Draw each radius independently as ``1 + U[-radial_jitter, +radial_jitter]``.
+3. Add an independent angular offset to that knot:
+   ``theta_i = (2*pi/K) * (i + U[-angular_jitter, +angular_jitter])``.
+   Angular jitter is a **fraction of one slot**, not radians. At the defaults,
+   12 slots are 30 degrees apart, radii range from .4 to 1.6 and angular offsets
+   reach 9 degrees in either direction.
+4. Evaluate periodic Catmull–Rom segments and arc-resample to ``num_points``.
+   Recenter the bounding box and normalize its longest side to the output extent.
+   This generator has no local polygon-fallback branch.
 
 .. figure:: ../assets/racing/generator-polar-construction.png
-   :alt: Four construction steps: ordered angular slots, sampled knot radii, periodic spline and resampling, beside the raw centerline and finished road.
+   :alt: Six Polar stages showing regular slots, sampled radii, angular jitter, Catmull-Rom, fixed-count arc samples and normalization.
    :align: center
 
-   Four steps explain ordered angular slots, sampled knot radii, periodic spline and
-   resampling. The raw generator centerline and finished road at right use output
-   coordinates; construction panels use their original coordinates.
+   The reference ring is radius 1. Radial and angular changes are shown separately;
+   grey dense parameter samples and blue arc samples make resampling visible.
 
 .. raw:: html
 
-   <video controls preload="none" style="width:100%;max-width:100%" poster="../_images/generator-polar-construction.png" aria-label="Progressive drawing of ordered angular slots, sampled knot radii, periodic spline and resampling, from actual polar geometry.">
+   <video controls preload="none" style="width:100%;max-width:100%;aspect-ratio:30/19;object-fit:contain" poster="../generator-polar-construction-poster.png" aria-label="Polar angular slots, independent radii, angular jitter, spline, actual arc samples and normalization.">
      <source src="../generator-polar-construction.mp4" type="video/mp4">
-     Progressive drawing of ordered angular slots, sampled knot radii, periodic spline and resampling, from actual polar geometry.
+     Polar angular slots, independent radii, angular jitter, spline, actual arc samples and normalization.
    </video>
 
 :download:`Download the animation <../assets/racing/generator-polar-construction.mp4>`.
 
-**Text alternative:** Dashed rays show the unjittered angular slots, followed by the actual
-radially and angularly jittered knots in traversal order. The clip then draws the recorded
-periodic spline and marks its samples. The normalized raw centerline and finished road
-remain visible at right.
+**Text alternative:** Dashed rays and the unit ring establish regular slots. Move
+out to the sampled radii, then use arcs to show the actual independent angular
+changes. Draw the periodic spline and compare its dense parameter samples with
+256 actual arc samples. Before/after panels explain normalization; the finished
+seed-7 road has 75 beads after the shared tail.
 
-The geometry comes from recorded construction buffers. Prefix drawing explains
-algorithm order. Playback timing is illustrative, with no position morph
-between stages or claim of measured runtime or iterative solver states. The view
-stays fixed within each coordinate system.
+The radius-only reference uses the canonical sampler with angular jitter suppressed,
+keeping the same random draws. It explains the components of the sample, rather
+than claiming a literal intermediate kernel state or elapsed runtime. Continue
+with the :ref:`shared spacing, XPBD and final redistribution <sampling-stages>`.
 
 Continue with :doc:`/how-it-works/pipeline`, :doc:`/configuration/tuning`,
 :ref:`builtin-generator-params`, or :doc:`/tutorials/gate-sequences`.

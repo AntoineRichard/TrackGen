@@ -1,0 +1,8 @@
+/* Sources change; captions, controls and image accessibility remain single. */
+picture.themed-media-picture { display: block; }
+picture.themed-media-picture img,
+video.themed-media-video { max-width: 100%; height: auto; }
+@media print {
+  picture.themed-media-picture,
+  video.themed-media-video { break-inside: avoid; }
+}

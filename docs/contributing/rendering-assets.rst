@@ -12,15 +12,17 @@ Render to scratch first
 ------------------------
 
 Use a development environment with Matplotlib. Commands below run on CPU and write
-selected figure families to a scratch directory; inspect the output before copying it.
+light/dark pairs to separate scratch directories; inspect both before copying them.
+Commit runtime and rendering sources first so final captures have an exact source
+revision. The generator and native UI capture commands enforce this requirement.
 
 .. code-block:: bash
 
-   MPLCONFIGDIR=/tmp/trackgen-mpl python -m viz.render_generator_guide --out-dir /tmp/tg-generators
-   MPLCONFIGDIR=/tmp/trackgen-mpl python -m viz.render_course_guide --out-dir /tmp/tg-controls
-   MPLCONFIGDIR=/tmp/trackgen-mpl python -m viz.render_collision_guide --out-dir /tmp/tg-geometry
-   MPLCONFIGDIR=/tmp/trackgen-mpl python -m viz.render_relaxation_guide --out-dir /tmp/tg-relaxation
-   MPLCONFIGDIR=/tmp/trackgen-mpl python -m viz.render_data_guide --out-dir /tmp/tg-data
+   MPLCONFIGDIR=/tmp/trackgen-mpl python -m viz.render_generator_guide --theme both --out-dir /tmp/tg-generators
+   MPLCONFIGDIR=/tmp/trackgen-mpl python -m viz.render_course_guide --theme both --out-dir /tmp/tg-controls
+   MPLCONFIGDIR=/tmp/trackgen-mpl python -m viz.render_collision_guide --theme both --out-dir /tmp/tg-geometry
+   MPLCONFIGDIR=/tmp/trackgen-mpl python -m viz.render_relaxation_guide --theme both --out-dir /tmp/tg-relaxation
+   MPLCONFIGDIR=/tmp/trackgen-mpl python -m viz.render_data_guide --theme both --out-dir /tmp/tg-data
 
 .. list-table:: Asset families
    :header-rows: 1
@@ -75,6 +77,35 @@ Videos use a fixed view and a short final hold. Keep a poster and a nearby writt
 explanation, use player controls, and avoid autoplay. The generator MP4 files are copied
 by ``html_extra_path``; solver videos/posters live in ``docs/_static``. Both routes leave
 the Sphinx build free of rendering dependencies.
+
+Light and dark variants
+-----------------------
+
+``--theme both`` uses identical simulation settings and coordinates for both
+palettes, then checks plotted-coordinate hashes. Use ``light`` or ``dark`` for a
+single preview. The shared helpers in ``viz.racing_theme`` change artist colors and
+backgrounds; they leave scientific values and scalar colormaps unchanged.
+
+The README and simulator utility renderers support ``--published-only`` to avoid
+regenerating unpublished galleries. Capture the parameter explorer with
+``viz/capture_parameter_explorer.py`` in an environment with the ``ui`` extra and
+Playwright. It captures the real app under each system color preference and checks
+that controls, statistics and the app-owned plot remain identical.
+
+Keep the selected light files at their existing documentation paths. Store each
+same-named dark file under ``docs/_static/media-dark/``. After copying the pairs,
+build a temporary site without the registry, then inventory its actual media:
+
+.. code-block:: bash
+
+   python docs/_tools/build_ci_env.py -W -E -b html -D themed_media_registry= docs /tmp/tg-bootstrap
+   python docs/_tools/themed_media.py --inventory-html /tmp/tg-bootstrap --source-dir docs --output docs/_static/media-dark/media-manifest.json --require-pairs
+
+The final strict build uses the default registry. It checks every registered file
+and hash. Furo's selected theme controls the image, poster, movie and full-size
+media link. Each movie has one player; switching themes preserves playback position
+and paused or playing state. Keep nearby text explanations and accessible alternatives
+useful in either theme.
 
 Inspect and publish selected output
 -----------------------------------

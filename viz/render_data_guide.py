@@ -12,6 +12,8 @@ from pathlib import Path
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from viz.racing_theme import (save_figure, get_palette,
+                              rendered_geometry, render_variants)
 from matplotlib.patches import FancyArrowPatch, FancyBboxPatch, Rectangle
 import numpy as np
 
@@ -23,7 +25,7 @@ AMBER = "#b76a0a"
 
 
 def _save(fig, path):
-    fig.savefig(path, dpi=180, bbox_inches="tight", facecolor="white")
+    save_figure(fig, path, dpi=180, bbox_inches="tight", facecolor="white")
     plt.close(fig)
 
 
@@ -97,8 +99,8 @@ def imported_example():
     return xy,track,gates,n,g
 
 
-def render_import(path):
-    xy,track,gates,n,g=imported_example()
+def render_import(path, data=None):
+    xy,track,gates,n,g=imported_example() if data is None else data
     fig,axes=plt.subplots(1,3,figsize=(12,4.5),sharex=True,sharey=True)
     close=lambda a: np.vstack((a,a[0]))
     for ax,title in zip(axes,("1. Supply your loop","2. Resample and add a road","3. Place gates along the route")):
@@ -129,8 +131,8 @@ def render_import(path):
             "input_formula":"x=2*(1+.12*cos(3t))*cos(t), y=1.25*(1+.12*cos(3t))*sin(t), t=2*pi*i/64"}
 
 
-def render_gate_course(path):
-    """A finished 3D course: square openings from actual positions and quaternions."""
+def gate_course_example():
+    """Capture the public poses once for both presentation palettes."""
     from track_gen import GateGenerator
     from track_gen.pipeline import presets
     params={"polar_num_knots":10,"polar_radial_jitter":.25,"polar_angular_jitter":.12}
@@ -144,6 +146,13 @@ def render_gate_course(path):
     n=int(gates.count.numpy()[0]);pos=gates.position.numpy()[:n]
     quat=gates.orientation.numpy()[:n];half=gates.half_size.numpy()[:n]
     assert n == 10 and np.isfinite(pos).all() and np.isfinite(quat).all()
+    return dict(config=config, n=n, pos=pos, quat=quat, half=half)
+
+
+def render_gate_course(path, data=None):
+    """A finished 3D course: square openings from actual positions and quaternions."""
+    data=gate_course_example() if data is None else data
+    config,n,pos,quat,half=(data[k] for k in ("config","n","pos","quat","half"))
     rotate=lambda q,v: v+2*np.cross(q[:3],np.cross(q[:3],v)+q[3]*v)
     frames=[]
     for c,q,h in zip(pos,quat,half):
@@ -170,19 +179,28 @@ def render_gate_course(path):
             "render":"Square openings from position/orientation/half_size; line shows order, not a spline."}
 
 
-def main():
+def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out-dir",type=Path,required=True)
-    out=parser.parse_args().out_dir;out.mkdir(parents=True,exist_ok=True)
-    plt.rcParams.update({"font.family":"DejaVu Sans","text.color":INK})
-    render_layout(out/"data-layout.png");render_lifecycle(out/"data-lifecycle.png")
-    record=render_import(out/"data-import.png")
-    gate_record=render_gate_course(out/"data-gate-course.png")
-    import track_gen
-    (out/"data-manifest.json").write_text(json.dumps({"source_version":track_gen.__version__,
-        "command":"python -m viz.render_data_guide --out-dir OUT","schematics":["data-layout.png","data-lifecycle.png"],
-        "import":record,"gate_course":gate_record},indent=2)+"\n")
-    print(out)
+    parser.add_argument("--theme",choices=("light","dark","both"),default="light")
+    args=parser.parse_args(argv)
+    imported=imported_example()
+    course=gate_course_example()
+    def render(out):
+        plt.rcParams.update({"font.family":"DejaVu Sans","text.color":INK})
+        render_layout(out/"data-layout.png");render_lifecycle(out/"data-lifecycle.png")
+        record=render_import(out/"data-import.png",imported)
+        gate_record=render_gate_course(out/"data-gate-course.png",course)
+        import track_gen
+        manifest={"source_version":track_gen.__version__,
+            "command":"python -m viz.render_data_guide --out-dir OUT --theme " + get_palette().name,
+            "theme":get_palette().name,"render_geometry":rendered_geometry(),
+            "schematics":["data-layout.png","data-lifecycle.png"],
+            "import":record,"gate_course":gate_record}
+        (out/"data-manifest.json").write_text(json.dumps(manifest,indent=2)+"\n")
+        return manifest
+    render_variants(args.out_dir,args.theme,render)
+    print(args.out_dir)
 
 
 if __name__ == "__main__":

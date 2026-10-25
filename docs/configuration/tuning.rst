@@ -103,6 +103,43 @@ width channel. See :ref:`pipeline-carried-channels` and the
    centerline fixed here (external input, no relaxation). Coordinate units are
    distances; the multiplier is dimensionless.
 
+.. _sampling-stages:
+
+From raw samples to road beads
+-------------------------------
+
+The generator's ``num_points`` and the road's ``spacing`` control different stages.
+This clip follows one actual Polar seed-7 loop through the shared track pipeline:
+
+1. The generator supplies 256 fixed-count raw samples.
+2. Constant-spacing resampling uses arc positions ``k * spacing`` on that loop.
+   The closing remainder can be shorter; the count is chosen from length and capacity.
+3. XPBD moves positions without changing that count.
+4. Uniform redistribution places the same count at equal arc positions on the
+   relaxed source polyline. Its nominal step is the new source length divided
+   by the count, so it need not equal the initial spacing target exactly.
+
+.. figure:: ../assets/racing/pipeline-sampling.png
+   :alt: Actual final beads on a relaxed Polar loop, with an arc-distance ruler and the finished road.
+   :align: center
+
+   In this example ``spacing=.06`` produces 75 road beads. The final uniform stage
+   uses a nominal source-arc interval of about .060724 after relaxation.
+
+.. raw:: html
+
+   <video controls preload="none" style="width:100%;max-width:100%;aspect-ratio:5/3;object-fit:contain" poster="../_images/pipeline-sampling.png" aria-label="Fixed-count raw samples, target-distance samples, XPBD movement and final same-count uniform redistribution.">
+     <source src="../pipeline-sampling.mp4" type="video/mp4">
+     Fixed-count raw samples, target-distance samples, XPBD movement and final same-count uniform redistribution.
+   </video>
+
+:download:`Download the sampling animation <../assets/racing/pipeline-sampling.mp4>`.
+
+Distances here are measured **along the source curve**. Straight-line chords
+between adjacent output points can be shorter where they cut across bends.
+Arrows show actual net XPBD movement, not interpolated solver iterations;
+:doc:`/relaxation/convergence` shows the solve itself.
+
 Spacing and capacity
 ---------------------
 
