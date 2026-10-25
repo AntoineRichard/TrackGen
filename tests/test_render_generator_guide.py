@@ -136,6 +136,9 @@ def test_committed_manifest_has_nonvacuous_comparisons_and_provenance():
     repulsive = manifest["families"]["repulsive"]
     assert repulsive["source"]["git_commit"] == growth["source"]["git_commit"]
     assert repulsive["source"]["source_tree_dirty"] is False
+    assert {"repulsive_clearance.py", "repulsive_barrier_energy.py", "repulsive_tangent_energy.py",
+            "repulsive_parallel_energy.py", "repulsive_parallel_proposals.py"} <= set(
+                repulsive["source"]["repulsive_dependency_sha256"])
     for sample in repulsive["examples"]:
         assert sample["generator_valid"] and sample["ratchet_complete"]
         assert "repulsive_deactivate_obstacles" not in sample["config"]

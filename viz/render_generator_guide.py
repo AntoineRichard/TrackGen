@@ -1143,7 +1143,8 @@ def render_repulsive_assets(out_dir: Path, source_manifest: Path, *, movies=True
                   renderer_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                   generator_source_sha256=hashlib.sha256(source_file.read_bytes()).hexdigest(),
                   repulsive_dependency_sha256={name: hashlib.sha256((source_file.parent / name).read_bytes()).hexdigest()
-                      for name in ("repulsive_clearance.py", "repulsive_barrier_energy.py", "repulsive_tangent_energy.py")},
+                      for name in ("repulsive_clearance.py", "repulsive_barrier_energy.py", "repulsive_tangent_energy.py",
+                                   "repulsive_parallel_energy.py", "repulsive_parallel_proposals.py")},
                   warp_version=wp.__version__, numpy_version=np.__version__,
                   matplotlib_version=matplotlib.__version__, trackgen_version=__version__, device="cpu")
     seeds = [7, 23, 41, 59]

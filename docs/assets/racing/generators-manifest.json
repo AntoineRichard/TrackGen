@@ -1367,14 +1367,16 @@
       "soft_shaping_forces": true,
       "source": {
         "device": "cpu",
-        "generator_source_sha256": "499908359030b1e02abe10e2d81244d19f01e12e792f9c46b452750eaac603ad",
-        "git_commit": "4c9b7b7970b46a5351174d55a24ce66eba0039da",
+        "generator_source_sha256": "0028dc6ce25a42a54ceb53c8006d3cc3068736f17c0fda2f904eb3ce556b6c5e",
+        "git_commit": "98437f53ae2aefd943a017b38438608481f5995f",
         "matplotlib_version": "3.11.2",
         "numpy_version": "2.5.4",
         "renderer_sha256": "8badf8aa053500c971844e338f30d09d8486639bc7b76f7ef966ebf48790ffca",
         "repulsive_dependency_sha256": {
           "repulsive_barrier_energy.py": "9c1ec7397facd3a25109eb697c30153930793be6e3a08639cf66ea0b0f6b4c70",
           "repulsive_clearance.py": "e0f8d9b70fae0112da5f2696b34a8bf7b78c6bb3ef82c2c9de6e504547fae4e6",
+          "repulsive_parallel_energy.py": "581ee77dc0b0280835cbce76bf1ae19d8bdf2f865aa19773392eb8f688979eb5",
+          "repulsive_parallel_proposals.py": "eac19704afd2d6c3c57c42ed2856e9c50189b522e75f439a00c1523999f3e0d0",
           "repulsive_tangent_energy.py": "8d3fb4dc49a7cac55e2d9b72c76ca94f789846b860fd2d404ccd296f6fc8fad9"
         },
         "source_tree_dirty": false,
@@ -1529,14 +1531,16 @@
       "command": "python -m viz.render_generator_guide --repulsive-assets-only --source-manifest docs/assets/racing/generators-manifest.json --out-dir DIR",
       "source": {
         "device": "cpu",
-        "generator_source_sha256": "499908359030b1e02abe10e2d81244d19f01e12e792f9c46b452750eaac603ad",
-        "git_commit": "4c9b7b7970b46a5351174d55a24ce66eba0039da",
+        "generator_source_sha256": "0028dc6ce25a42a54ceb53c8006d3cc3068736f17c0fda2f904eb3ce556b6c5e",
+        "git_commit": "98437f53ae2aefd943a017b38438608481f5995f",
         "matplotlib_version": "3.11.2",
         "numpy_version": "2.5.4",
         "renderer_sha256": "8badf8aa053500c971844e338f30d09d8486639bc7b76f7ef966ebf48790ffca",
         "repulsive_dependency_sha256": {
           "repulsive_barrier_energy.py": "9c1ec7397facd3a25109eb697c30153930793be6e3a08639cf66ea0b0f6b4c70",
           "repulsive_clearance.py": "e0f8d9b70fae0112da5f2696b34a8bf7b78c6bb3ef82c2c9de6e504547fae4e6",
+          "repulsive_parallel_energy.py": "581ee77dc0b0280835cbce76bf1ae19d8bdf2f865aa19773392eb8f688979eb5",
+          "repulsive_parallel_proposals.py": "eac19704afd2d6c3c57c42ed2856e9c50189b522e75f439a00c1523999f3e0d0",
           "repulsive_tangent_energy.py": "8d3fb4dc49a7cac55e2d9b72c76ca94f789846b860fd2d404ccd296f6fc8fad9"
         },
         "source_tree_dirty": false,
@@ -1549,14 +1553,16 @@
       "command": "python -m viz.render_generator_guide --repulsive-assets-only --source-manifest docs/assets/racing/generators-manifest.json --out-dir DIR",
       "source": {
         "device": "cpu",
-        "generator_source_sha256": "499908359030b1e02abe10e2d81244d19f01e12e792f9c46b452750eaac603ad",
-        "git_commit": "4c9b7b7970b46a5351174d55a24ce66eba0039da",
+        "generator_source_sha256": "0028dc6ce25a42a54ceb53c8006d3cc3068736f17c0fda2f904eb3ce556b6c5e",
+        "git_commit": "98437f53ae2aefd943a017b38438608481f5995f",
         "matplotlib_version": "3.11.2",
         "numpy_version": "2.5.4",
         "renderer_sha256": "8badf8aa053500c971844e338f30d09d8486639bc7b76f7ef966ebf48790ffca",
         "repulsive_dependency_sha256": {
           "repulsive_barrier_energy.py": "9c1ec7397facd3a25109eb697c30153930793be6e3a08639cf66ea0b0f6b4c70",
           "repulsive_clearance.py": "e0f8d9b70fae0112da5f2696b34a8bf7b78c6bb3ef82c2c9de6e504547fae4e6",
+          "repulsive_parallel_energy.py": "581ee77dc0b0280835cbce76bf1ae19d8bdf2f865aa19773392eb8f688979eb5",
+          "repulsive_parallel_proposals.py": "eac19704afd2d6c3c57c42ed2856e9c50189b522e75f439a00c1523999f3e0d0",
           "repulsive_tangent_energy.py": "8d3fb4dc49a7cac55e2d9b72c76ca94f789846b860fd2d404ccd296f6fc8fad9"
         },
         "source_tree_dirty": false,
@@ -1569,14 +1575,16 @@
       "command": "python -m viz.render_generator_guide --repulsive-assets-only --source-manifest docs/assets/racing/generators-manifest.json --out-dir DIR",
       "source": {
         "device": "cpu",
-        "generator_source_sha256": "499908359030b1e02abe10e2d81244d19f01e12e792f9c46b452750eaac603ad",
-        "git_commit": "4c9b7b7970b46a5351174d55a24ce66eba0039da",
+        "generator_source_sha256": "0028dc6ce25a42a54ceb53c8006d3cc3068736f17c0fda2f904eb3ce556b6c5e",
+        "git_commit": "98437f53ae2aefd943a017b38438608481f5995f",
         "matplotlib_version": "3.11.2",
         "numpy_version": "2.5.4",
         "renderer_sha256": "8badf8aa053500c971844e338f30d09d8486639bc7b76f7ef966ebf48790ffca",
         "repulsive_dependency_sha256": {
           "repulsive_barrier_energy.py": "9c1ec7397facd3a25109eb697c30153930793be6e3a08639cf66ea0b0f6b4c70",
           "repulsive_clearance.py": "e0f8d9b70fae0112da5f2696b34a8bf7b78c6bb3ef82c2c9de6e504547fae4e6",
+          "repulsive_parallel_energy.py": "581ee77dc0b0280835cbce76bf1ae19d8bdf2f865aa19773392eb8f688979eb5",
+          "repulsive_parallel_proposals.py": "eac19704afd2d6c3c57c42ed2856e9c50189b522e75f439a00c1523999f3e0d0",
           "repulsive_tangent_energy.py": "8d3fb4dc49a7cac55e2d9b72c76ca94f789846b860fd2d404ccd296f6fc8fad9"
         },
         "source_tree_dirty": false,
@@ -1589,14 +1597,16 @@
       "command": "python -m viz.render_generator_guide --repulsive-assets-only --source-manifest docs/assets/racing/generators-manifest.json --out-dir DIR",
       "source": {
         "device": "cpu",
-        "generator_source_sha256": "499908359030b1e02abe10e2d81244d19f01e12e792f9c46b452750eaac603ad",
-        "git_commit": "4c9b7b7970b46a5351174d55a24ce66eba0039da",
+        "generator_source_sha256": "0028dc6ce25a42a54ceb53c8006d3cc3068736f17c0fda2f904eb3ce556b6c5e",
+        "git_commit": "98437f53ae2aefd943a017b38438608481f5995f",
         "matplotlib_version": "3.11.2",
         "numpy_version": "2.5.4",
         "renderer_sha256": "8badf8aa053500c971844e338f30d09d8486639bc7b76f7ef966ebf48790ffca",
         "repulsive_dependency_sha256": {
           "repulsive_barrier_energy.py": "9c1ec7397facd3a25109eb697c30153930793be6e3a08639cf66ea0b0f6b4c70",
           "repulsive_clearance.py": "e0f8d9b70fae0112da5f2696b34a8bf7b78c6bb3ef82c2c9de6e504547fae4e6",
+          "repulsive_parallel_energy.py": "581ee77dc0b0280835cbce76bf1ae19d8bdf2f865aa19773392eb8f688979eb5",
+          "repulsive_parallel_proposals.py": "eac19704afd2d6c3c57c42ed2856e9c50189b522e75f439a00c1523999f3e0d0",
           "repulsive_tangent_energy.py": "8d3fb4dc49a7cac55e2d9b72c76ca94f789846b860fd2d404ccd296f6fc8fad9"
         },
         "source_tree_dirty": false,
@@ -1609,14 +1619,16 @@
       "command": "python -m viz.render_generator_guide --repulsive-assets-only --source-manifest docs/assets/racing/generators-manifest.json --out-dir DIR",
       "source": {
         "device": "cpu",
-        "generator_source_sha256": "499908359030b1e02abe10e2d81244d19f01e12e792f9c46b452750eaac603ad",
-        "git_commit": "4c9b7b7970b46a5351174d55a24ce66eba0039da",
+        "generator_source_sha256": "0028dc6ce25a42a54ceb53c8006d3cc3068736f17c0fda2f904eb3ce556b6c5e",
+        "git_commit": "98437f53ae2aefd943a017b38438608481f5995f",
         "matplotlib_version": "3.11.2",
         "numpy_version": "2.5.4",
         "renderer_sha256": "8badf8aa053500c971844e338f30d09d8486639bc7b76f7ef966ebf48790ffca",
         "repulsive_dependency_sha256": {
           "repulsive_barrier_energy.py": "9c1ec7397facd3a25109eb697c30153930793be6e3a08639cf66ea0b0f6b4c70",
           "repulsive_clearance.py": "e0f8d9b70fae0112da5f2696b34a8bf7b78c6bb3ef82c2c9de6e504547fae4e6",
+          "repulsive_parallel_energy.py": "581ee77dc0b0280835cbce76bf1ae19d8bdf2f865aa19773392eb8f688979eb5",
+          "repulsive_parallel_proposals.py": "eac19704afd2d6c3c57c42ed2856e9c50189b522e75f439a00c1523999f3e0d0",
           "repulsive_tangent_energy.py": "8d3fb4dc49a7cac55e2d9b72c76ca94f789846b860fd2d404ccd296f6fc8fad9"
         },
         "source_tree_dirty": false,
@@ -1629,14 +1641,16 @@
       "command": "python -m viz.render_generator_guide --repulsive-assets-only --source-manifest docs/assets/racing/generators-manifest.json --out-dir DIR",
       "source": {
         "device": "cpu",
-        "generator_source_sha256": "499908359030b1e02abe10e2d81244d19f01e12e792f9c46b452750eaac603ad",
-        "git_commit": "4c9b7b7970b46a5351174d55a24ce66eba0039da",
+        "generator_source_sha256": "0028dc6ce25a42a54ceb53c8006d3cc3068736f17c0fda2f904eb3ce556b6c5e",
+        "git_commit": "98437f53ae2aefd943a017b38438608481f5995f",
         "matplotlib_version": "3.11.2",
         "numpy_version": "2.5.4",
         "renderer_sha256": "8badf8aa053500c971844e338f30d09d8486639bc7b76f7ef966ebf48790ffca",
         "repulsive_dependency_sha256": {
           "repulsive_barrier_energy.py": "9c1ec7397facd3a25109eb697c30153930793be6e3a08639cf66ea0b0f6b4c70",
           "repulsive_clearance.py": "e0f8d9b70fae0112da5f2696b34a8bf7b78c6bb3ef82c2c9de6e504547fae4e6",
+          "repulsive_parallel_energy.py": "581ee77dc0b0280835cbce76bf1ae19d8bdf2f865aa19773392eb8f688979eb5",
+          "repulsive_parallel_proposals.py": "eac19704afd2d6c3c57c42ed2856e9c50189b522e75f439a00c1523999f3e0d0",
           "repulsive_tangent_energy.py": "8d3fb4dc49a7cac55e2d9b72c76ca94f789846b860fd2d404ccd296f6fc8fad9"
         },
         "source_tree_dirty": false,
@@ -1649,14 +1663,16 @@
       "command": "python -m viz.render_generator_guide --repulsive-assets-only --source-manifest docs/assets/racing/generators-manifest.json --out-dir DIR",
       "source": {
         "device": "cpu",
-        "generator_source_sha256": "499908359030b1e02abe10e2d81244d19f01e12e792f9c46b452750eaac603ad",
-        "git_commit": "4c9b7b7970b46a5351174d55a24ce66eba0039da",
+        "generator_source_sha256": "0028dc6ce25a42a54ceb53c8006d3cc3068736f17c0fda2f904eb3ce556b6c5e",
+        "git_commit": "98437f53ae2aefd943a017b38438608481f5995f",
         "matplotlib_version": "3.11.2",
         "numpy_version": "2.5.4",
         "renderer_sha256": "8badf8aa053500c971844e338f30d09d8486639bc7b76f7ef966ebf48790ffca",
         "repulsive_dependency_sha256": {
           "repulsive_barrier_energy.py": "9c1ec7397facd3a25109eb697c30153930793be6e3a08639cf66ea0b0f6b4c70",
           "repulsive_clearance.py": "e0f8d9b70fae0112da5f2696b34a8bf7b78c6bb3ef82c2c9de6e504547fae4e6",
+          "repulsive_parallel_energy.py": "581ee77dc0b0280835cbce76bf1ae19d8bdf2f865aa19773392eb8f688979eb5",
+          "repulsive_parallel_proposals.py": "eac19704afd2d6c3c57c42ed2856e9c50189b522e75f439a00c1523999f3e0d0",
           "repulsive_tangent_energy.py": "8d3fb4dc49a7cac55e2d9b72c76ca94f789846b860fd2d404ccd296f6fc8fad9"
         },
         "source_tree_dirty": false,
@@ -1669,14 +1685,16 @@
       "command": "python -m viz.render_generator_guide --repulsive-assets-only --source-manifest docs/assets/racing/generators-manifest.json --out-dir DIR",
       "source": {
         "device": "cpu",
-        "generator_source_sha256": "499908359030b1e02abe10e2d81244d19f01e12e792f9c46b452750eaac603ad",
-        "git_commit": "4c9b7b7970b46a5351174d55a24ce66eba0039da",
+        "generator_source_sha256": "0028dc6ce25a42a54ceb53c8006d3cc3068736f17c0fda2f904eb3ce556b6c5e",
+        "git_commit": "98437f53ae2aefd943a017b38438608481f5995f",
         "matplotlib_version": "3.11.2",
         "numpy_version": "2.5.4",
         "renderer_sha256": "8badf8aa053500c971844e338f30d09d8486639bc7b76f7ef966ebf48790ffca",
         "repulsive_dependency_sha256": {
           "repulsive_barrier_energy.py": "9c1ec7397facd3a25109eb697c30153930793be6e3a08639cf66ea0b0f6b4c70",
           "repulsive_clearance.py": "e0f8d9b70fae0112da5f2696b34a8bf7b78c6bb3ef82c2c9de6e504547fae4e6",
+          "repulsive_parallel_energy.py": "581ee77dc0b0280835cbce76bf1ae19d8bdf2f865aa19773392eb8f688979eb5",
+          "repulsive_parallel_proposals.py": "eac19704afd2d6c3c57c42ed2856e9c50189b522e75f439a00c1523999f3e0d0",
           "repulsive_tangent_energy.py": "8d3fb4dc49a7cac55e2d9b72c76ca94f789846b860fd2d404ccd296f6fc8fad9"
         },
         "source_tree_dirty": false,
@@ -1689,14 +1707,16 @@
       "command": "python -m viz.render_generator_guide --repulsive-assets-only --source-manifest docs/assets/racing/generators-manifest.json --out-dir DIR",
       "source": {
         "device": "cpu",
-        "generator_source_sha256": "499908359030b1e02abe10e2d81244d19f01e12e792f9c46b452750eaac603ad",
-        "git_commit": "4c9b7b7970b46a5351174d55a24ce66eba0039da",
+        "generator_source_sha256": "0028dc6ce25a42a54ceb53c8006d3cc3068736f17c0fda2f904eb3ce556b6c5e",
+        "git_commit": "98437f53ae2aefd943a017b38438608481f5995f",
         "matplotlib_version": "3.11.2",
         "numpy_version": "2.5.4",
         "renderer_sha256": "8badf8aa053500c971844e338f30d09d8486639bc7b76f7ef966ebf48790ffca",
         "repulsive_dependency_sha256": {
           "repulsive_barrier_energy.py": "9c1ec7397facd3a25109eb697c30153930793be6e3a08639cf66ea0b0f6b4c70",
           "repulsive_clearance.py": "e0f8d9b70fae0112da5f2696b34a8bf7b78c6bb3ef82c2c9de6e504547fae4e6",
+          "repulsive_parallel_energy.py": "581ee77dc0b0280835cbce76bf1ae19d8bdf2f865aa19773392eb8f688979eb5",
+          "repulsive_parallel_proposals.py": "eac19704afd2d6c3c57c42ed2856e9c50189b522e75f439a00c1523999f3e0d0",
           "repulsive_tangent_energy.py": "8d3fb4dc49a7cac55e2d9b72c76ca94f789846b860fd2d404ccd296f6fc8fad9"
         },
         "source_tree_dirty": false,
@@ -12443,14 +12463,16 @@
       ],
       "source": {
         "device": "cpu",
-        "generator_source_sha256": "499908359030b1e02abe10e2d81244d19f01e12e792f9c46b452750eaac603ad",
-        "git_commit": "4c9b7b7970b46a5351174d55a24ce66eba0039da",
+        "generator_source_sha256": "0028dc6ce25a42a54ceb53c8006d3cc3068736f17c0fda2f904eb3ce556b6c5e",
+        "git_commit": "98437f53ae2aefd943a017b38438608481f5995f",
         "matplotlib_version": "3.11.2",
         "numpy_version": "2.5.4",
         "renderer_sha256": "8badf8aa053500c971844e338f30d09d8486639bc7b76f7ef966ebf48790ffca",
         "repulsive_dependency_sha256": {
           "repulsive_barrier_energy.py": "9c1ec7397facd3a25109eb697c30153930793be6e3a08639cf66ea0b0f6b4c70",
           "repulsive_clearance.py": "e0f8d9b70fae0112da5f2696b34a8bf7b78c6bb3ef82c2c9de6e504547fae4e6",
+          "repulsive_parallel_energy.py": "581ee77dc0b0280835cbce76bf1ae19d8bdf2f865aa19773392eb8f688979eb5",
+          "repulsive_parallel_proposals.py": "eac19704afd2d6c3c57c42ed2856e9c50189b522e75f439a00c1523999f3e0d0",
           "repulsive_tangent_energy.py": "8d3fb4dc49a7cac55e2d9b72c76ca94f789846b860fd2d404ccd296f6fc8fad9"
         },
         "source_tree_dirty": false,
@@ -14389,6 +14411,15 @@
         97
       ]
     }
+  },
+  "metadata_supplement": {
+    "dependency_sha256": {
+      "repulsive_parallel_energy.py": "581ee77dc0b0280835cbce76bf1ae19d8bdf2f865aa19773392eb8f688979eb5",
+      "repulsive_parallel_proposals.py": "eac19704afd2d6c3c57c42ed2856e9c50189b522e75f439a00c1523999f3e0d0"
+    },
+    "method": "SHA-256 over blob bytes returned by git show <recorded-commit>:track_gen/_src/<filename>.",
+    "purpose": "Explicit hashes for parallel helper modules omitted by the actual capture renderer.",
+    "source_git_commit": "98437f53ae2aefd943a017b38438608481f5995f"
   },
   "selection": {
     "claims_yield": false,
