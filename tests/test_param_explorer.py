@@ -335,25 +335,26 @@ def test_track_mode_visibility_orders_flags_to_match_outputs():
     # polar-only build-time assertion cannot.
     assert px.track_mode_visibility("bezier") == (
         [True] * 4 + [True] * 2 + [True] * 4 + [False] * 2
-        + [False] * 4 + [False] * 6 + [False] * 9 + [False] * 19
+        + [False] * 4 + [False] * 6 + [False] * 9 + [False] * 17
     )
     assert px.track_mode_visibility("hull") == (
         [True] * 4 + [True] * 2 + [False] * 4 + [True] * 2
-        + [False] * 4 + [False] * 6 + [False] * 9 + [False] * 19
+        + [False] * 4 + [False] * 6 + [False] * 9 + [False] * 17
     )
     assert px.track_mode_visibility("voronoi") == (
         [False] * 4 + [True] * 2 + [False] * 4 + [False] * 2
-        + [False] * 4 + [True] * 6 + [False] * 9 + [False] * 19
+        + [False] * 4 + [True] * 6 + [False] * 9 + [False] * 17
     )
     assert px.track_mode_visibility("checkpoint") == (
-        [False] * (4 + 2 + 4 + 2 + 4 + 6) + [True] * 9 + [False] * 19
+        [False] * (4 + 2 + 4 + 2 + 4 + 6) + [True] * 9 + [False] * 17
     )
     assert px.track_mode_visibility("repulsive") == (
-        [False] * (4 + 2 + 4 + 2 + 4 + 6 + 9) + [True] * 19
+        [False] * (4 + 2 + 4 + 2 + 4 + 6 + 9) + [True] * 17
     )
+    # Repulsive has its header plus 16 controls after the two obsolete knobs were removed.
     # Every generator yields the same fixed number of flags (one per output component).
     for gen in ("bezier", "hull", "polar", "voronoi", "checkpoint", "repulsive"):
-        assert len(px.track_mode_visibility(gen)) == 31 + 19
+        assert len(px.track_mode_visibility(gen)) == 31 + 17
 
 
 def _visible_by_label(app, label):

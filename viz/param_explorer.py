@@ -705,7 +705,7 @@ def track_visible_sections(generator: str) -> dict[str, bool]:
 # its header markdown plus its controls, in the SAME order as ``track_mode_outputs``.
 TRACK_MODE_SECTION_SIZES = (
     ("sampling", 4), ("smoothing", 2), ("bezier", 4), ("hull", 2),
-    ("polar", 4), ("voronoi", 6), ("checkpoint", 9), ("repulsive", 19),
+    ("polar", 4), ("voronoi", 6), ("checkpoint", 9), ("repulsive", 17),
 )
 
 
