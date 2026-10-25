@@ -133,7 +133,7 @@ def _construction(gen, cfg, e):
         out["candidate_crossings"] = sc["cross"].numpy().reshape(E, K)[e].copy() if K > 1 else None
     elif name == "repulsive":
         out = {"obstacles": rows("obs_pts"),
-               "reached": bool(sc["reached"].numpy()[e]),
+               "ratchet_complete": bool(sc["reached"].numpy()[e]),
                "frozen": bool(sc["frozen"].numpy()[e]),
                "force_samples": repulsive_force_samples(gen, env=e),
                "generator_valid": bool(gen.program.tap("gen.valid").numpy()[e])}
@@ -173,7 +173,7 @@ def _record(sample):
         record["polygon_fallback_used"] = record["smooth_raw_crossings"] > 0
     if sample["config"]["generator"] == "repulsive":
         sc = sample["construction"]
-        record.update(generator_valid=sc["generator_valid"], reached=sc["reached"], frozen=sc["frozen"])
+        record.update(generator_valid=sc["generator_valid"], ratchet_complete=sc["ratchet_complete"], frozen=sc["frozen"])
         barriers = sc["force_samples"]
         record["barriers"] = {key: barriers[key] for key in
                               ("domain_radius", "size", "half_width", "unscaled_margin")}
@@ -781,13 +781,14 @@ def capture_repulsive(sample):
             base.bounded_loop(n_iters, observed, **kwargs)
 
     def snapshot(iteration, n):
-        reached = bool(sc["reached"].numpy()[0])
+        ratchet_complete = bool(sc["reached"].numpy()[0])
         xy = sc["center"].numpy()[:n].copy()*effective_size
         frames.append(dict(iteration=iteration, n=n, xy=xy,
-                           reached=reached, frozen=bool(sc["frozen"].numpy()[0]),
+                           ratchet_complete=ratchet_complete, frozen=bool(sc["frozen"].numpy()[0]),
                            target=float(sc["L_target"].numpy()[0])*effective_size,
                            target_final=float(sc["L_final"].numpy()[0])*effective_size,
-                           perimeter=float(np.linalg.norm(np.roll(xy, -1, axis=0)-xy, axis=1).sum()),
+                           perimeter=float(np.linalg.norm(np.roll(xy.astype(np.float64), -1, axis=0)-xy,
+                                                          axis=1).sum()),
                            wall_forces_active=True, inner_forces_active=True,
                            hard_barriers_active=True))
 
@@ -804,9 +805,10 @@ def capture_repulsive(sample):
     if not matches:
         raise AssertionError("observing the growth changed the final generator output")
     frames.append(dict(iteration=frames[-1]["iteration"], n=len(actual), xy=actual.copy(),
-                       reached=frames[-1]["reached"], frozen=frames[-1]["frozen"],
+                       ratchet_complete=frames[-1]["ratchet_complete"], frozen=frames[-1]["frozen"],
                        target=frames[-1]["target"], target_final=frames[-1]["target_final"],
-                       perimeter=float(np.linalg.norm(np.roll(actual, -1, axis=0)-actual, axis=1).sum()),
+                       perimeter=float(np.linalg.norm(np.roll(actual.astype(np.float64), -1, axis=0)-actual,
+                                                      axis=1).sum()),
                        final=True, wall_forces_active=True, inner_forces_active=True,
                        hard_barriers_active=True))
     return frames, matches
@@ -839,8 +841,8 @@ def render_growth(out_dir, sample, *, movies=True):
     def draw(frame):
         line.set_data(*_close(frame["xy"]).T)
         label.set_text(f"iteration {frame['iteration']} · N={frame['n']}\n"
-                       f"ratchet target {frame['target']:.2f} / final {frame['target_final']:.2f}\n"
-                       f"target reached={frame['reached']} · frozen={frame['frozen']}" +
+                       f"perimeter {frame['perimeter']:.3f} · ratchet {frame['target']:.3f} / final {frame['target_final']:.3f}\n"
+                       f"ratchet complete={frame['ratchet_complete']} · frozen={frame['frozen']}" +
                        ("\nfinal output after resample check" if frame.get("final") else ""))
     if movies:
         writer = _writer()
@@ -860,7 +862,7 @@ def render_growth(out_dir, sample, *, movies=True):
                 sample=_record(sample), soft_shaping_forces=True, hard_collision_obstacles=True,
                 width_reservation=samples["half_width"], n_wall=samples["n_wall"], n_disc=samples["n_disc"],
                 force_states=[{k: f.get(k, False) for k in ("iteration", "n", "target", "target_final",
-                              "reached", "frozen", "inner_forces_active", "wall_forces_active",
+                              "perimeter", "ratchet_complete", "frozen", "inner_forces_active", "wall_forces_active",
                               "hard_barriers_active", "final")} for f in frames])
 
 
@@ -952,12 +954,12 @@ def render_repulsive_numerics(out_dir):
         _style(ax)
         ax.set_title(f"{field.removeprefix('repulsive_')}: {baseline['config'][field]} → {value}\n"
                      f"raw displacement max {delta:.3f} coordinate units",fontsize=12)
-        ax.text(.5,-.02,f"changed: {_label(alternative)} · reached={alternative['construction']['reached']}\n"
+        ax.text(.5,-.02,f"changed: {_label(alternative)} · raw valid={alternative['construction']['generator_valid']}\n"
                 f"growth frozen={alternative['construction']['frozen']}",transform=ax.transAxes,ha="center",fontsize=10)
         ax.legend(handles=ax.lines[:2], loc="upper right", frameon=True, fontsize=9)
         experiments.append(dict(field=field,max_raw_delta=delta,
                                 samples=[_record(baseline),_record(alternative)],
-                                changed_reached=alternative["construction"]["reached"],
+                                changed_ratchet_complete=alternative["construction"]["ratchet_complete"],
                                 changed_frozen=alternative["construction"]["frozen"]))
     fig.suptitle("Repulsive numerical controls · same seed 23 · one setting changed",fontsize=16)
     fig.text(.5,.01,"Blue default vs orange changed: actual final generator states, before the road tail.\nAxes match within each pair. These outcomes establish sensitivity, not a monotonic shape or runtime rule.",ha="center",fontsize=10)
@@ -1006,8 +1008,8 @@ def render_repulsive_barriers(out_dir):
         _style(ax)
         ax.set_title(title + "\n" + _label(sample), fontsize=12,
                      color=GREEN if sample["valid"] else RED)
-        ax.text(.5, -.04, f"raw feasible={sample['construction']['generator_valid']} · "
-                f"target reached={sample['construction']['reached']}\n"
+        ax.text(.5, -.04, f"raw valid={sample['construction']['generator_valid']} · "
+                f"ratchet complete={sample['construction']['ratchet_complete']}\n"
                 f"frozen={sample['construction']['frozen']}", transform=ax.transAxes, ha="center", fontsize=10)
     fig.suptitle("Repulsive · feasible raw growth can still fail the finished-road check", fontsize=15)
     fig.text(.5, .015, "Actual CPU seed 7, epoch 0, env 0. Blue raw; orange dashed final; grey finite-width road.\n"

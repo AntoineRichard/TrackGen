@@ -137,7 +137,7 @@ def test_committed_manifest_has_nonvacuous_comparisons_and_provenance():
     assert repulsive["source"]["git_commit"] == growth["source"]["git_commit"]
     assert repulsive["source"]["source_tree_dirty"] is False
     for sample in repulsive["examples"]:
-        assert sample["generator_valid"] and sample["reached"]
+        assert sample["generator_valid"] and sample["ratchet_complete"]
         assert "repulsive_deactivate_obstacles" not in sample["config"]
         assert "repulsive_w_len" not in sample["config"]
         assert sample["barriers"]["half_width"] == .1

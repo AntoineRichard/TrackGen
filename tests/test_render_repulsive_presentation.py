@@ -17,10 +17,14 @@ def observed():
 def test_capture_records_always_active_forces_and_barriers_without_changing_raw_states(observed):
     sample, _, frames, matches = observed
     assert matches
-    assert any(frame["reached"] for frame in frames)
-    assert any(not frame["reached"] for frame in frames)
+    assert any(frame["ratchet_complete"] for frame in frames)
+    assert any(not frame["ratchet_complete"] for frame in frames)
     assert all(frame["inner_forces_active"] and frame["wall_forces_active"]
                and frame["hard_barriers_active"] for frame in frames)
+    for frame in frames:
+        assert frame["ratchet_complete"] == (frame["target"] >= frame["target_final"]-1e-9)
+        xy = frame["xy"].astype(np.float64)
+        assert frame["perimeter"] == float(np.linalg.norm(np.roll(xy, -1, axis=0)-xy, axis=1).sum())
     np.testing.assert_array_equal(frames[-1]["xy"], sample["raw"])
     cfg = sample["config"]
     ratchet = int(np.ceil(np.log(cfg["repulsive_grow_mult_max"]) / np.log1p(cfg["repulsive_ratchet_rate"])))
