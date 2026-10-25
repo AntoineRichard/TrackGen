@@ -69,3 +69,21 @@ The README now reuses the current paired six-family gallery instead of an older
 illustration and selects both gallery and utility artwork by the native color
 preference. Historical upgrade details remain in excluded project records and
 release notes; the reader introduction focuses on current result handling.
+
+
+Final browser review at prepared candidate `e8acd90414b4caee7285fee818ac201ebfb4fdff`
+passed all 71 reader pages in explicit light/dark, nine mobile pages in both themes,
+all 160 delivered media hashes, all nine movies' themed playback/posters, native
+system preference, full-media/download links, playing/paused/rate/volume retention
+and rapid switches. Both README picture elements select and decode the actual
+native variants. No console/network errors or horizontal clipping remained.
+Thirty production movie frames were inspected for offsets, spline handles, Hull
+midpoints and whole-loop fallback, Polar neighbors/radii, shared sampling and gate
+convergence. The final strict Sphinx build passed with the registry enabled and
+243 generated labels. Version/public API/fingerprint/reader checks passed 39 tests;
+runtime, installed package metadata and pyproject all agree on `0.3.0rc3`.
+
+Relative to the GPU runtime-test tree `23fea40`, the only library file changed is
+`track_gen/_version.py`. Subsequent implementation changes are maintenance renderers,
+reader documentation and their tests. Final Linux platform CI and exact-candidate
+spark-home validation remain release gates; no final release approval is implied.
