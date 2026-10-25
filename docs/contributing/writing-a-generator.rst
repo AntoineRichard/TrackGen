@@ -76,7 +76,7 @@ it to the size the built-ins use:
    import warp as wp
 
    from track_gen import ops, plugin
-   from track_gen.ops.funcs import hash32
+   from track_gen.ops import rng
 
    track_gen_api = 1  # optional: the plugin API version this package targets
 
@@ -87,8 +87,7 @@ it to the size the built-ins use:
                  xy: wp.array(dtype=wp.vec2f)):
        t = wp.tid()                                  # one thread per point: t = e * n + i
        e = t // n
-       key = hash32(wp.uint32(seed[e]) ^ salt) & wp.uint32(0x7FFFFFFF)
-       state = wp.rand_init(wp.int32(key))           # this env's stream for this salt
+       state = rng.init(seed[e], salt)           # this env's stream for this salt
        phase = 6.2831853 * wp.randf(state)
        theta = 6.2831853 * float(t - e * n) / float(n)
        r = 1.0 + amp[e] * wp.sin(float(lobes) * theta + phase)
@@ -189,7 +188,7 @@ generators, and adding a name again with a different object raises ``DuplicateSp
 (adding the identical object again is a no-op).
 
 On the ``cpu`` device, Warp's first compile of a module that uses
-``track_gen.ops.funcs.hash32`` (as ``Wobble`` does) prints ``-Wconstant-conversion``
+``track_gen.ops.rng.init`` (as ``Wobble`` does) prints ``-Wconstant-conversion``
 compiler warnings for its ``uint32`` constants. They are harmless: the values round-trip,
 and the CPU kernel matches ``track_gen.ops.hash32_host`` bit for bit.
 
@@ -683,10 +682,11 @@ It is equivalent to the quick start's explicit hash:
 
 .. code-block:: python
 
-   key = hash32(wp.uint32(seed[e]) ^ salt) & wp.uint32(0x7FFFFFFF)
-   state = wp.rand_init(wp.int32(key))
+   from track_gen.ops import rng
 
-``hash32`` is ``track_gen.ops.funcs.hash32``. Hashing retains the salt's effect at
+   state = rng.init(seed[e], salt)
+
+The shared initializer retains the salt's effect at
 seed 0, avoiding the systematic collapse of linear ``seed * salt + offset`` keying.
 The finite 31-bit keys can still collide. Use one stream name per independent draw.
 Asking for the same name again returns the same salt, and two names whose salts
@@ -755,8 +755,8 @@ loop, and a half-width profile that a width stage can read (:ref:`stage-width`):
        t = wp.tid()                                  # one thread per raw point
        e = t // n
        i = t - e * n
-       key = hash32(wp.uint32(seed[e]) ^ salt) & wp.uint32(0x7FFFFFFF)
-       phase = 6.2831853 * wp.randf(wp.rand_init(wp.int32(key)))
+       state = rng.init(seed[e], salt)
+       phase = 6.2831853 * wp.randf(state)
        theta = 6.2831853 * float(i) / float(n)
        rr = r * (1.0 + 0.2 * wp.sin(3.0 * theta + phase))
        xy[t] = wp.vec2f(rr * wp.cos(theta), rr * wp.sin(theta))
@@ -868,8 +868,8 @@ lap:
                      z: wp.array(dtype=wp.float32)):
        t = wp.tid()
        e = t // n
-       key = hash32(wp.uint32(seed[e]) ^ salt) & wp.uint32(0x7FFFFFFF)
-       phase = 6.2831853 * wp.randf(wp.rand_init(wp.int32(key)))
+       state = rng.init(seed[e], salt)
+       phase = 6.2831853 * wp.randf(state)
        theta = 6.2831853 * float(t - e * n) / float(n)
        xy[t] = wp.vec2f(r * wp.cos(theta + phase), r * wp.sin(theta + phase))
        z[t] = height * wp.sin(3.0 * theta)

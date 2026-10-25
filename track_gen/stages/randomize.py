@@ -30,7 +30,7 @@ import dataclasses
 
 import warp as wp
 
-from ..ops.hash import hash32
+from ..ops import rng as _rng
 from ..plugin.params import Params, dynamic, static
 from ..plugin.stage import CaptureClass, Stage
 
@@ -66,7 +66,7 @@ def _randomize_uniform_k(seed: wp.array(dtype=wp.int32), salt: wp.uint32,
                          lo: wp.array(dtype=wp.float32), hi: wp.array(dtype=wp.float32),
                          f_lo: float, f_hi: float, out: wp.array(dtype=wp.float32)):
     e = wp.tid()
-    st = wp.rand_init(wp.int32(hash32(wp.uint32(seed[e]) ^ salt) & wp.uint32(0x7FFFFFFF)))
+    st = _rng.init(seed[e], salt)
     v = lo[e] + wp.randf(st) * (hi[e] - lo[e])
     if not wp.isnan(v):
         v = wp.min(wp.max(v, f_lo), f_hi)          # the target field's declared bounds
