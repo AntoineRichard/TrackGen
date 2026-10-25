@@ -1,129 +1,103 @@
 Repulsive Generator
 ====================
 
+The ``repulsive`` generator grows each environment's closed centerline from a small
+seed circle toward a sampled target perimeter. A tangent-point energy and a
+Sobolev-preconditioned flow shape the curve inside a circular domain containing
+random disc obstacles. Growth runs coarse-to-fine (``N = 64 → 128 → 256`` by default)
+before the shared resample → relax → inflate tail.
+
+A valid finished road must clear every sampled filled disc and remain inside the
+outer circular wall, including its full width. The sampled force rings shape the
+curve; they are not the clearance guarantee. Analytic checks guard raw updates,
+and a mandatory check certifies the actual finished road band after the tail.
+A disc inside the closed loop's central hole is allowed.
+
+The construction draws on Henrich and Kötter's *Generating Race Tracks With
+Repulsive Curves* and *From Generation to Gameplay: Authoring Race Tracks With
+Repulsive Curves*, and Yu, Schumacher, and Crane's *Repulsive Curves*. See
+:doc:`/related-work/state-of-the-art` for the references.
+
 .. note::
 
-   Sample figures, seed-specific ranges and measured yields on this page are historical
-   measurements from before the 0.3 RNG switch. The algorithms and parameter contracts
-   describe current code; remeasure current seeds (:ref:`upgrading-0.3-rng`).
-
-The ``repulsive`` generator grows each environment's closed centerline from a small seed
-circle under a **hard ratcheting length constraint**, while a tangent-point (TP) energy
-keeps the curve self-avoiding as it is confined to a disc domain seeded with per-env random
-disc obstacles.  Growth runs coarse-to-fine (``N = 64 → 128 → 256``) with an area-based
-stall-stop, then hands the grown loop to the unmodified standard tail (constant-spacing
-resample → XPBD relax → inflate → validity).  The result is dense, paper-quality serpentine
-circuits threading between the obstacles — a visibly different shape family from the other
-five generators, all of which assemble a curve from a fixed set of sampled/steered control
-points in a single deterministic pass.
-
-The method follows Henrich and Kötter, *Generating Race Tracks With Repulsive Curves*
-(IEEE, document 10645670), extended in the journal version *From Generation to Gameplay:
-Authoring Race Tracks With Repulsive Curves* (IEEE Transactions on Games, 2025,
-`doi:10.1109/TG.2025.3561107 <https://doi.org/10.1109/TG.2025.3561107>`__ — see
-:doc:`/related-work/state-of-the-art` for a fuller discussion), which itself builds on
-Yu, Schumacher, and Crane, *Repulsive Curves* (SIGGRAPH 2021 / arXiv 2020).
-
-.. warning::
-
-   ``repulsive`` is an **iterative optimizer**: a generation costs far more than any other
-   generator's (`Cost`_).  Its growth loop follows a fixed host schedule (stage
-   transitions, resample and stall-check cadences depend only on the iteration counter)
-   and converged :term:`envs <env>` are frozen on device, so it is recorded into CUDA
-   graphs like the other generators.  It is an iterative stage (``BOUNDED``,
-   :ref:`cuda-graph-bounded`): the loop may stop once every env has frozen,
-   in its own graph on device and in eager ``cpu`` calls, while eager ``cuda`` calls and
-   captures without conditional nodes run the full budget (see `Early exit and
-   capture`_).  Constructing the ``TrackGenerator`` runs one full eager pass (the warm-up),
-   and on CUDA the **first** ``generate()`` additionally records its graph before the
-   first replay (recording it into your own graph costs the same, once).  If you use
-   ``repulsive`` in a training loop, prefer a **slow regeneration cadence** (regenerate a
-   batch every N steps, not every step) or **staggered per-env slices** (regenerate a
-   fraction of environments per step) rather than calling ``generate()`` every frame.
-
-.. figure:: ../assets/generator-repulsive.png
-   :alt: Sample tracks produced by the repulsive generator
-   :align: center
-
-   Sample tracks produced by the ``repulsive`` generator across several seeds.
+   The clearance and solver repair changes Repulsive outputs, defaults and size
+   behavior. Earlier figures, yield measurements and timings do not characterize
+   this implementation. See :ref:`upgrading-0.3-repulsive` before reusing saved
+   configurations or generated datasets.
 
 
 How It Works
 ------------
 
-1. **Seed-driven obstacle layout.**
-   ``_sample_obstacles_k`` uses the ``generator.repulsive/obstacles`` salt
-   (:ref:`ops-rng-keying`) and draws, per environment, a domain-wall ring at radius ``r_dom``
-   (``n_wall = 96`` points, weight 1.0) plus ``k ~ randi[repulsive_obstacle_count_min,
-   repulsive_obstacle_count_max]`` inner-disc obstacle rings (``n_disc = 12`` points each,
-   weight 0.25), one per ``2π/k`` angular wedge with a per-env random phase.  Each disc's
-   radius is drawn from ``[repulsive_obstacle_radius_min_frac, repulsive_obstacle_radius_max_frac]
-   · r_dom``, and its center radius from an analytic band that clears the seed circle by
-   ``0.05·r_dom`` — no rejection loop, deterministic per ``(seed, env)``.
+1. **Sample the obstacles and target length.**
+   The ``generator.repulsive/obstacles`` salt (:ref:`ops-rng-keying`) draws inner
+   discs in angular wedges, with per-env radius and position variation. Their
+   analytic centers and radii are retained alongside the sampled force rings.
+   The ``generator.repulsive/growth`` salt draws ``grow_mult`` from
+   ``[repulsive_grow_mult_min, repulsive_grow_mult_max]`` and sets
+   ``L_final = grow_mult · 2π · r_init``. The RNG salts and draw order are unchanged
+   by the repair; width reservation can change the sampled obstacle positions.
 
-2. **Seed the target length and the initial circle.**
-   A per-env target-perimeter multiplier ``grow_mult ~ U(repulsive_grow_mult_min,
-   repulsive_grow_mult_max)`` sets ``L_final = grow_mult · 2π·r_init``.  ``_init_circle_k``
-   writes the radius-``r_init`` circle into the coarsest stage's buffer prefix.
+2. **Take bounded, feasible shape and growth steps.**
+   Analytic endpoint derivatives of the edge-tangent energy and obstacle
+   potentials are gathered without atomics. A circulant Sobolev inverse metric
+   preconditions the gradient; a metric projection removes its first-order
+   length change. Bounded Armijo backtracking accepts shape descent at the
+   current perimeter, then a separate guarded expansion approaches the ratcheted
+   target. Each accepted transition must clear the analytic discs and wall over
+   its entire swept edges. An endpoint-only check would permit tunneling.
+   Rejected proposals preserve the last feasible curve. Energy reductions,
+   perimeter/retraction arithmetic and metric operations use double precision;
+   stored curve coordinates remain ``float32``.
 
-3. **Coarse-to-fine ratcheted growth.**
-   Each iteration: the target length ``L_target`` ratchets toward ``L_final`` by
-   ``repulsive_ratchet_rate``; the gradient of the total energy (tangent-point self-repulsion
-   + inverse-power obstacle repulsion + a small length regularizer) is evaluated by
-   hand-written analytic adjoint kernels — a per-vertex gather with no atomics; the gradient
-   is preconditioned by a
-   fractional-Sobolev filter (FFT-free — a precomputed circulant convolution) and projected
-   to be orthogonal to the length direction; a normalized, barycenter-pinned step is applied;
-   and the curve is hard-rescaled back to ``L_target``.  Growth starts at ``N=64`` and
-   subdivides to 128 then 256 (arc-length resample) as the mean edge length doubles — the
-   coarse start forces the ratcheted length into low-frequency folds rather than
-   high-frequency wiggle.
+3. **Refine and reparameterize conservatively.**
+   Resolution transitions insert vertices along existing edges, preserving the
+   polygonal loop. Periodic and final same-resolution arc-length resampling are
+   guarded proposals too: they must retain feasibility, and cannot silently cut
+   through a disc or wall. The periodic proposal also checks its shape energy.
 
-4. **Deactivation + stall-stop.**
-   Once an env's length reaches ``L_final``, its inner-disc obstacles are zeroed out (when
-   ``repulsive_deactivate_obstacles``, the wall stays live) so the settle phase can close the
-   halos left around each disc.  Every ``repulsive_stall_window`` iterations, an env freezes
-   once it is past target length **and** its enclosed area (shoelace, reparameterization-
-   invariant) has stopped changing by more than ``repulsive_stall_area_tol``.  The freeze is
-   decided on device and is permanent: every later kernel, including the periodic resample,
-   skips a frozen env.  Once every env of the batch has frozen, the rest of the loop may be
-   skipped (see `Early exit and capture`_): a frozen env's curve no longer changes, so
-   where the loop stops changes no output.
+4. **Optionally freeze an env.**
+   At ``repulsive_stall_window`` intervals in the final resolution, an env may
+   freeze after reaching its actual target length with small area change, small
+   movement and small projected stationarity. The stationarity measure does not
+   shrink just because ``repulsive_tau`` is small. Rejected searches and
+   quantized no-op proposals do not count as progress. Freeze is absorbing.
+   A finite, feasible target-reaching raw curve may also finish at the iteration
+   budget while its energy still admits improvement: raw validity does not
+   promise optimizer convergence.
 
-5. **Hand off to the standard tail.**
-   The final ``N=256`` closed loop is periodically arc-length reparameterized and copied into
-   the shared ``out_centerline`` buffer with ``out_valid_wp = 1`` for every env — the same
-   contract as every other generator.  The untouched pipeline (constant-spacing resample at
-   ``0.6·half_width`` → XPBD relax → inflate → validity) then runs; feeding it a curve at the
-   tail's calibrated spacing (rather than the raw ``N=256`` growth resolution) is what lifts
-   post-tail yield to the target band.
+5. **Check the finished road.**
+   The generator publishes its raw validity and internal barrier metadata. The
+   shared tail resamples, relaxes and inflates the curve; ``validity.default``
+   then checks the actual band against those barriers as well as its ordinary
+   road-validity rules. The planner requires this final check and refuses
+   geometry-changing stages after it. No barrier metadata is added to the public
+   Track result.
 
 
 Early exit and capture
 ----------------------
 
-``repulsive`` is a ``Stage`` generator with ``capture = CaptureClass.BOUNDED``
-(``registry.describe("generator", "repulsive").capture``): its growth loop is a
-``ctx.bounded_loop`` (see :ref:`cuda-graph-bounded`). The schedule is computed on the
-host from the config:
+``repulsive`` is a Stage generator with ``capture = CaptureClass.BOUNDED``
+(``registry.describe("generator", "repulsive").capture``). Its
+``ctx.bounded_loop`` has a fixed host schedule computed from the static parameters
+(:ref:`cuda-graph-bounded`):
 
-- ``n_iters = ceil(1.6 · n_ratchet) + repulsive_settle_iters``, with ``n_ratchet =
-  ceil(log(repulsive_grow_mult_max) / log1p(repulsive_ratchet_rate))``: 143 and **269**
-  at the defaults. This is the bound.
-- The stall checks run at the iterations ``it`` with ``(it + 1) % W == 0`` once the last
-  stage (``N = 256``) has started, ``W = repulsive_stall_window``. Right after freezing
-  the stalled envs, each check writes the loop's flag on device:
-  ``active = any env not frozen``.
-- ``first_check = W · ceil((s + 1) / W)``, ``s`` being the iteration of the last stage
-  transition (117 at the defaults), and ``check_every = W``: the loop is checked before
-  the iterations 128, 144, ..., 256, **9 windows** at the defaults (the last one 13
-  iterations long). Every window starts right after a stall check, and no window holds a
-  stage transition.
+.. math::
 
-When the check before a window finds every env frozen, the rest of the loop can be
-skipped: a frozen env is never written again (``_step_k``, ``_rescale_k`` and
-``_copy_unfrozen_k`` return early for it), so the remaining iterations would change only
-scratch. Whether the loop does stop depends on where the generation runs:
+   n_{\mathrm{ratchet}} = \left\lceil
+       \frac{\log(\mathtt{repulsive\_grow\_mult\_max})}
+            {\log(1 + \mathtt{repulsive\_ratchet\_rate})}
+       \right\rceil,
+   \qquad
+   n_{\mathrm{iters}} = \lceil 1.6\,n_{\mathrm{ratchet}}\rceil
+       + \mathtt{repulsive\_settle\_iters}.
+
+Refinement, periodic resampling and stall-check cadences depend on this schedule,
+not device readback. After the final resolution begins, each stall check writes
+``active = any env not frozen`` on device. Frozen envs retain their geometry for
+all remaining iterations, so the following lowerings produce the same bytes on
+a fixed device:
 
 .. list-table::
    :header-rows: 1
@@ -131,251 +105,206 @@ scratch. Whether the loop does stop depends on where the generation runs:
 
    * - Call
      - Growth loop
-   * - Eager on ``cpu`` (every ``generate()``, ``enqueue()``)
-     - Stops at the first window whose check finds every env frozen (a host poll of
-       the flag).
-   * - Eager on ``cuda`` (``enqueue()`` outside a capture, ``policy="eager"``)
-     - Runs all 269 iterations, with no host sync; frozen envs return early in every
-       kernel, so the extra iterations cost launch overhead.
-   * - The generator's own graph, a ``wp.ScopedCapture`` or a capture registered with
-       ``registered(conditional=True)``, with CUDA 12.4+ conditional nodes
-     - One conditional node per window: a replay skips the windows after the batch has
-       frozen, on device.
-   * - Any other capture (a plain ``torch.cuda.graph``, ``registered()`` without
-       ``conditional=True``, older drivers, a recording inside
-       ``track_gen.exec.unconditional()``)
-     - Unrolled: every window is recorded and runs on each replay.
+   * - Eager on ``cpu``
+     - Polls at window boundaries and stops when all envs are frozen.
+   * - Eager on ``cuda``
+     - Runs the full bound without a host sync; frozen envs skip geometry work.
+   * - The generator's own graph, a ``wp.ScopedCapture`` or a capture registered
+       with ``registered(conditional=True)``, with supported CUDA conditional nodes
+     - Skips remaining windows on device when every env is frozen.
+   * - A capture without conditional nodes, including a plain ``torch.cuda.graph``
+       or a recording inside ``track_gen.exec.unconditional()``
+     - Records and runs the full bound; frozen envs skip geometry work.
 
-The first check cannot freeze an env at ``repulsive_stall_area_tol < 1`` (the area
-change is measured against 0), so the earliest stop is before iteration 144. The output
-is the same in every case, byte for byte: an env's track depends only on its own
-:term:`seed` (env ``e`` is identical at ``E=8`` and inside ``E=64``), and
-the next generation starts from scratch it re-initialises.
-
-The default pipeline records about 4.25k graph nodes with every window unrolled (the
-generator about 4.1k of them); with conditional windows,
-about 2.1k top-level nodes and the 9 conditional nodes that hold the windows. Such a graph
-cannot be used as a CUDA child graph, and recording a conditional window into your Warp
-capture fails while a side stream that joined it has not been joined back (each
-``wp.capture_if`` ends and resumes the capture). Record inside
-``track_gen.exec.unconditional()`` to get the unrolled graph instead (see
-:doc:`/how-it-works/cuda-graph`). Under ``torch.cuda.graph``, windows become conditional
-nodes only inside ``registered(conditional=True)``, never in a hand-made
-``external=True`` registration of torch's capture. The loop
-itself runs in the registered ``Stage`` through its launch context. Its target
-perimeter draw uses the fixed ``generator.repulsive/growth`` salt.
-
+A conditional-node graph cannot be used as a CUDA child graph, and a side stream
+that joined a Warp capture must rejoin before a conditional window is recorded.
+Use ``track_gen.exec.unconditional()`` when an unrolled graph is required; see
+:doc:`/how-it-works/cuda-graph`. Early exit is optional and does not determine
+whether a completed road is valid.
 
 
 Cost
 ----
 
-One ``TrackGenerator.generate()`` call on CUDA, measured at two batch sizes with the
-default configuration (the mean of five calls after two warm ones, each a replay of the
-generator's own graph):
+Repulsive runs an iterative dense-pair optimizer with bounded proposal searches.
+Its work depends on the resolution schedule and iteration budget, and conditional
+early exit depends on the whole batch freezing. Measure generation cost for your
+configuration and regeneration cadence. The earlier timing table is not a
+measurement of the repaired solver.
 
-.. csv-table:: ``repulsive`` generation cost on CUDA (ms per ``generate()``)
-   :file: ../_data/cost-repulsive-cuda.csv
-   :header-rows: 1
-
-Machine:
-
-.. include:: ../_data/machine-cuda.txt
-
-Compare with the sampling generators in :ref:`the catalogue's cost table
-<generators-overview>`. Constructing the ``TrackGenerator`` runs one full eager pass
-(the warm-up), and on CUDA the first ``generate()`` also records the graph. The commands
-that write the table are in ``docs/_data/README.md``.
+Construction runs an eager warm-up pass. On CUDA the first ``generate()`` also
+records the generator's graph before replay; recording into a caller's graph has
+its own one-time cost.
 
 
 Math
 ----
 
-**Tangent-point energy** (dense, ``O(N²)`` pairs per env, constant ``±2`` circular
-exclusion):
+**Edge-tangent energy.** For ordered disjoint edges ``I = (a, b)`` and
+``J = (c, d)``, let ``T_I = (b - a) / |I|``. The endpoint trapezoidal quadrature is
 
 .. math::
 
-   E_{\mathrm{TP}} = \sum_{i} \sum_{|i-j| \bmod N > 2}
-       \frac{|w_{ij}|^{\alpha}}{(\lVert x_j - x_i \rVert^2 + \varepsilon^2)^{\beta/2}}\;
-       w_i\, w_j,
+   E_{\mathrm{TP}} = \sum_{I,J\,\mathrm{disjoint}}
+       \frac{|I|\,|J|}{4}
+       \sum_{u\in\{a,b\}}\sum_{v\in\{c,d\}}
+       \frac{|(v-u)\times T_I|^{\alpha}}
+            {(\lVert v-u\rVert^2 + \varepsilon^2)^{\beta/2}}.
 
-where ``wᵢⱼ`` is the tangent-point wedge term (the signed distance of ``xⱼ`` from the
-tangent line at ``xᵢ``), ``wᵢ``/``wⱼ`` are lumped-edge quadrature weights, and ``α =
-repulsive_alpha``, ``β = repulsive_beta``.
+Edges sharing an endpoint are excluded, including across the loop closure.
+Derivatives include both edge lengths and the owner edge's tangent, rather than
+an averaged vertex tangent. The supported exponents satisfy
+``alpha > 1`` and ``alpha + 2 <= beta < 2 * alpha + 1``.
 
-**Obstacle energy** (inverse power ``p = β − α``):
+**Obstacle potential.** The sampled force-ring potential uses inverse power
+``p = beta - alpha`` and curve-length quadrature weights:
 
 .. math::
 
-   E_{\mathrm{obs}} = \sum_i \sum_{m} m_w \cdot \lVert x_i - o_m \rVert^{-p},
+   E_{\mathrm{rings}} = \sum_i w_i\sum_m
+       m_w(\lVert x_i-o_m\rVert^2+\varepsilon^2)^{-p/2}.
 
-summed over live obstacle-ring points ``o_m`` with mass/weight ``m_w`` (wall 1.0, inner
-discs 0.25, zero once deactivated).
+Analytic log-barrier potentials for vertex and segment clearances steer the curve
+before the hard constraints bind. These potentials stay active throughout growth
+and settling. Feasibility is enforced independently of their energy values.
 
-**Sobolev-preconditioned, length-orthogonal step.** The raw gradient ``g = ∇(E_TP + E_obs +
-E_len)`` is preconditioned by the fractional-Sobolev inverse ``A⁻¹`` (a circular convolution
-against a precomputed circulant row — the real-space form of ``1/(λₖˢ + ε)`` on the ring
-Laplacian spectrum), then projected to remove the length-increasing component before a
-normalized, barycenter-pinned step and a hard rescale back to the ratcheted target length —
-the same TP-Sobolev flow as Yu/Schumacher/Crane, adapted with a **hard** length constraint
-(ratchet + rescale) in place of their soft penalty, which the spike found necessary: the
-obstacle-energy gradient outweighs a soft length penalty by 10³–10⁵×, so only a hard
-constraint reliably grows the curve to target length.
+**Sobolev metric and length constraint.** The circulant inverse metric has
+nonzero Fourier response ``1 / (lambda_k**s + eps_reg)``, with
+``s = (beta - 1) / alpha`` and the ring-Laplacian eigenvalues normalized by their
+first nonzero mode. Its translation mode is zero. Metric rows and accumulation
+use double precision; a requested resolution/order whose metric cannot retain a
+positive accurate spectrum is rejected at construction. The projected shape step
+retracts to the current perimeter during each backtracking trial. The separate
+length ratchet does not guarantee that an infeasible target can be reached.
 
 
 Parameters
 ----------
 
-The following ``TrackGenConfig`` fields are owned by the ``repulsive`` generator.  All other
-fields (``num_points``, ``scale``, ``half_width``, etc.) are shared pipeline parameters
-described in the configuration reference.
+These ``TrackGenConfig`` fields are also the fields of ``RepulsiveParams``. Set
+them flat or through ``generator_params`` (:ref:`builtin-generator-params`).
+Generator-specific rules are checked when constructing a Repulsive generator.
+Core fields such as ``scale``, ``num_points`` and ``half_width`` remain shared
+pipeline parameters.
 
-The generator-specific fields below are also the fields of ``RepulsiveParams``, the
-generator's Params class (core fields such as ``scale`` are not): set them flat or
-through ``generator_params`` (see :ref:`builtin-generator-params`). Their rules are
-checked when the ``TrackGenerator`` is constructed, and only for
-``generator="repulsive"``.
-
-``repulsive_grow_mult_min`` / ``repulsive_grow_mult_max`` (default 4.5 / 5.5)
-   Bounds of the per-env target-perimeter multiplier draw ``U(min, max)``; the grown loop's
-   target perimeter is ``grow_mult · 2π·r_init``.  Higher → denser mazes at some yield cost.
+``repulsive_grow_mult_min`` / ``repulsive_grow_mult_max`` (default 2.0 / 3.0)
+   Bounds of the target-perimeter multiplier draw. The minimum must be at least
+   1; the maximum must be greater than 1 and at least the minimum. Larger targets
+   can be infeasible under permanent full-width clearance.
 
 ``repulsive_domain_frac`` (default 0.35)
-   Confinement-disc radius as a fraction of the world-scale reference length (``r_dom =
-   repulsive_domain_frac · scale_ref · config.scale``).  Tighter → richer folds.
+   Positive domain-radius fraction: ``r_dom = repulsive_domain_frac · scale_ref
+   · scale``, where ``scale_ref = 4.9029``.
 
 ``repulsive_domain_init_ratio`` (default 4.0)
-   Ratio ``r_dom / r_init`` of the domain radius to the initial seed-circle radius.
+   Ratio ``r_dom / r_init``; must exceed 1.
 
 ``repulsive_obstacle_count_min`` / ``repulsive_obstacle_count_max`` (default 8 / 12)
-   Bounds of the per-env inner-disc obstacle count ``k ~ randi[min, max]`` (~9.9/env at
-   defaults).
+   Inclusive bounds of the inner-disc count draw; the minimum is at least 1 and
+   the maximum is at least the minimum. A disc whose placement band is empty is
+   inactive, while the RNG draw sequence is preserved.
 
 ``repulsive_obstacle_radius_min_frac`` / ``repulsive_obstacle_radius_max_frac``
    (default 0.02 / 0.045)
-   Inner-disc radius as a fraction of ``r_dom``.
+   Disc-radius fractions of ``r_dom``; positive minimum, maximum at least minimum.
 
 ``repulsive_ratchet_rate`` (default 0.012)
-   Per-iteration length-growth factor of the hard ratchet.  ``<= 0.013`` holds full yield
-   with folds; ``>= 0.016`` collapses the folds (a physical limit of fold formation, not a
-   stall artifact).
+   Positive per-iteration target-length growth factor. Geometry advances only
+   through accepted feasible expansions.
 
 ``repulsive_alpha`` / ``repulsive_beta`` (default 3.0 / 6.0)
-   Tangent-point energy exponents; the obstacle inverse power is ``p = beta - alpha``.
+   Energy exponents: ``alpha > 1`` and
+   ``alpha + 2 <= beta < 2 * alpha + 1``.
 
 ``repulsive_tau`` (default 0.4)
-   Normalized flow step size.
-
-``repulsive_w_len`` (default 30.0)
-   Weight of the small inert length regularizer (the hard ratchet + rescale does the actual
-   length enforcement; this is a live secondary nudge).
+   Positive flow-step parameter. Backtracking and a trust cap bound the actual
+   displacement; reducing tau does not establish stationarity.
 
 ``repulsive_stages`` (default ``(64, 128, 256)``)
-   Coarse-to-fine resolution schedule.  Must be non-empty, strictly increasing, each a
-   positive multiple of 4, and its last entry must equal ``num_points``.
+   Non-empty, strictly increasing positive multiples of 4. The last entry must
+   equal ``num_points``.
 
 ``repulsive_settle_iters`` (default 40)
-   Settle-phase iteration budget above the ratchet.
+   Additional iteration budget; at least 1.
 
 ``repulsive_resample_every`` (default 25)
-   Periodic arc-length reparameterization interval (iterations).
+   Periodic arc-length proposal interval; at least 1.
 
 ``repulsive_stall_window`` (default 16)
-   Iterations between per-env stall checks (an env whose area has stopped changing is
-   frozen on device), and so the window of the loop's early exit.
+   Interval between optional per-env freeze checks; at least 1.
 
 ``repulsive_stall_area_tol`` (default 0.05)
-   Freeze an env once it is past target length and its enclosed-area relative change over a
-   stall window is below this tolerance.
-
-``repulsive_deactivate_obstacles`` (default ``True``)
-   Zero the inner-disc obstacle weights once an env reaches its target length (the wall
-   stays live), closing the disc halos during the settle phase.
+   Relative area-change tolerance, also used for normalized movement and
+   projected stationarity in the freeze check. Area change alone cannot freeze
+   an env.
 
 ``size`` (default 1.0)
-   Per-env size multiplier of the output, the generator's one dynamic field, in
-   ``[0.1, 10]`` (`Per-env size`_).
+   Dynamic per-env size in ``[0.1, 10]``; also affects the unscaled width
+   reservation (`Per-env size`_).
+
+``repulsive_w_len`` and ``repulsive_deactivate_obstacles`` are removed. They are
+not accepted by configs, Params or saved generator parameter mappings.
 
 .. _repulsive-dynamic:
 
 Per-env size
 ------------
 
-``size`` is a **dynamic** ``float32`` field of ``RepulsiveParams``: a per-env ``[E]``
-array, initialised from the configured value (``TrackGenConfig.size``, default ``1.0``).
-Draw it per env with ``presets.track(generator="repulsive",
-randomize={"generator.size": (lo, hi)})``, or write it with
-``gen.params["generator"].set("size", ...)`` or from your own graph (:ref:`tuning-per-env`).
-Every other ``repulsive`` knob is static: they set the growth schedule on the host.
+``size`` is Repulsive's one dynamic ``float32`` field. Draw it with
+``presets.track(generator="repulsive", randomize={"generator.size": (lo, hi)})``,
+or update ``gen.params["generator"].set("size", ...)`` or write it in your own
+graph (:ref:`tuning-per-env`). Other Repulsive knobs are static.
 
-- **Where it acts.** ``scale`` sets the physics domain of the growth (the domain and
-  seed-circle radii; the energy's regularizer ``eps`` is absolute), so a size inside the
-  flow would change the shapes, not scale them. ``size`` multiplies the **output**
-  instead: the copy of the grown loop into ``raw.xy`` (``_copy_sized_k``) writes
-  ``xy * size[e]``. So ``raw.xy`` at size ``s`` is ``f32(raw.xy(1) * s)``, bit for bit,
-  and the growth itself, its early exit and its cost do not depend on ``size``. At
-  ``size = 1`` every finite point is copied bit for bit (subnormals and ``-0.0``
-  included). A point with a non-finite component (an env whose flow diverged, which
-  fails validity anyway) is copied unscaled at every size: its finite component and
-  ``±inf`` bit for bit, a NaN bit for bit too (its payload included: the multiplied
-  operand is never the copied value, so no compiler select fold can quiet it; asserted
-  on CPU and by the CUDA test suite). The per-env array is clamped to ``[0.1, 10]`` where the kernel reads
-  it.
-- **It truncates early.** ``repulsive`` loops are long: the target perimeter is at most
-  ``repulsive_grow_mult_max * 2 * pi * r_init``, ``14.83`` at the defaults (14.48
-  measured). With the default ``n_max = 384`` and spacing ``0.06``, ``size`` above about
-  ``1.6`` truncates the longest loops (at ``size = 2`` every env is truncated and fails
-  validity). Raise ``n_max`` (and ``num_points``) with the rule of :ref:`tuning-size`:
-  ``n_max >= size_hi * 14.83 * scale / spacing + 1``. A ``generator.size`` randomizer or
-  a construction value whose ``hi`` would truncate emits a ``UserWarning`` when the
-  pipeline is built, with the ``n_max`` that fits (computed exactly from these
-  parameters).
-- **Launches.** One latch launch per generation (:ref:`pipeline-latch`); the final copy
-  into ``raw.xy`` is the ``_copy_sized_k`` launch.
+The final raw centerline, analytic discs and wall are multiplied by ``size[e]``;
+road width and spacing stay absolute. When constant road width is known, the
+planner supplies a width hint and growth reserves ``half_width / size[e]`` in
+unscaled coordinates. This affects obstacle placement, barrier forces and feasible
+motion. Changing size can therefore change the raw layout and curve shape, not
+just multiply a fixed curve's XY coordinates. The actual finished band remains
+authoritative, including with variable width or a custom tail.
+
+Size can also exceed the resampled point capacity. A target-perimeter capacity
+bound is ``size_hi * repulsive_grow_mult_max * 2π * r_init / spacing + 1``;
+round up and choose ``n_max`` for the largest size (:ref:`tuning-size`). A
+construction value or randomizer range that exceeds the planner's capacity bound
+emits a ``UserWarning``. Dynamic writes are not checked by that warning; truncated
+results fail validity.
 
 
 What Makes It Distinct
 -----------------------
 
-``repulsive`` is the only generator that constructs its output by **iterative physical
-simulation** rather than a single deterministic sampling + smoothing pass.  It still meets
-the capture contract (see :doc:`/how-it-works/cuda-graph`): the loop has no host readback,
-and an env whose enclosed area has stalled is frozen on device and never touched again,
-so each env's track depends only on its own seed, never on the
-rest of the batch (stored datasets of an earlier release: :ref:`upgrading-repulsive`).
+Repulsive constructs its raw curve through iterative constrained growth rather
+than a single sampling pass. Each env uses its own seed, target and feasibility
+checks; another env freezing does not change its curve. For fixed parameters,
+seeds, device and Warp version, the deterministic gathers and fixed reduction
+order make the result reproducible. Cross-device byte equality is not promised.
 
-Key contrasts:
-
-- **Foldiest, most serpentine family** (the lowest compactness, :doc:`benchmarks`).  The ratcheted overfill forces
-  the curve to buckle into dense multi-lobe circuits threading between the obstacles, well
-  below the compactness of any of the other five generators.
-- **Fixed host schedule.**  Stage transitions, the periodic resample (every
-  ``repulsive_resample_every`` iterations) and the stall checks (every
-  ``repulsive_stall_window``) are precomputed on the host from the config and the loop
-  counter alone — never from device data — so the launch sequence is static and replays as
-  one captured graph.  Convergence is handled by the per-env on-device freeze, and the
-  early exit by checks of a device flag between stall windows, never by a readback in a
-  captured path.
-- **Far slower.**  See `Cost`_; this is the dominant practical tradeoff against the
-  shape richness.
-- **Determinism.**  Output is **byte-identical per device** — same config and seeds give the
-  same centerline run-to-run, bit for bit, on **both CPU and CUDA**.  The gradient is
-  hand-written analytic adjoints (a per-vertex gather with no atomics), so there is no
-  nondeterministic float-summation order to amplify through the chaotically sensitive flow.
-  Cross-*device* equality is **not** claimed: fp32 rounding differs between CPU and CUDA, so a
-  CPU track and a CUDA track for the same seed are statistically equivalent but not
-  bit-identical to each other.  See the module docstring in
-  ``track_gen/_src/warp_generate_repulsive.py`` for the full account.
+Repulsive's repair changes its seeded outputs. The other generators' outputs and
+RNG streams are unchanged by this repair (:ref:`upgrading-0.3-repulsive`).
 
 
 Fallback and Validity
 ----------------------
 
-``repulsive`` has no generator-local self-intersection fallback: it writes
-``out_valid_wp = 1`` for every environment and relies entirely on the shared post-relax
-inflation validity gate (turning number, thickness floor, no NaN, width floor, not
-truncated at ``N_max``).  A self-crossing born during growth drives the local thickness
-toward zero, which the gate catches downstream — no generator-side retry is needed.  In
-the spike's validated configuration this yields 64/64 (100%) post-tail, with the XPBD tail
-doing modest polish (opening sub-half-width pinches) rather than untangling gross tangles.
+There is no generator-local retry or fallback. Raw ``gen.valid`` requires finite,
+feasible geometry that reaches the sampled target within the numerical length
+tolerance. A raw curve may satisfy this at the iteration budget without being
+frozen or stationary. A short or infeasible raw curve fails the generator check.
+
+Final ``Track.valid`` additionally requires the ordinary road checks and full-band
+clearance after resampling, relaxation and inflation. Each four-vertex road cell
+is checked through its convex hull. This certifies the occupied ruled strip,
+including folded cells, but can conservatively reject a disc in an unused part of
+a concave cell's hull. It does not fill the loop's global central hole. Circular
+wall containment of all band vertices contains each entire cell because the wall
+bounds a convex domain.
+
+Repulsive programs add ``repulsive_disc`` (bit 8, mask ``1 << 8``) and
+``repulsive_wall`` (bit 9, mask ``1 << 9``) to the result's ``fail_bits`` mapping.
+These bits are absent from other generators' programs. Inspect ``valid`` and
+``fail_mask`` before using a result. Explicit aggressive tuning can fail after the
+shared tail even if raw growth succeeded; no configuration or seed range has a
+universal success guarantee. Invalid results obey the existing ``on_invalid``
+policy: ``"poison"`` by default, or explicit ``"keep"`` for diagnosis
+(:ref:`upgrading-0.3-poison`).

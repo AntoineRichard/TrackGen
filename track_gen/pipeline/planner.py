@@ -497,7 +497,9 @@ def _resolve(spec: PipelineSpec, binding, layout, registry=None) -> "list[_Slot]
             raise PlanError(f"{_label(ref)}: z_base={params.z_base!r} sets gate altitudes "
                             f"(gate pipelines); a track's flat altitude is lift.flat's "
                             f"z_base (presets.track(z_base=...))")
-        slot = _Slot(i, sid, ref, cls, None, params, {}, {}, builtin, ports=ports,
+        instance = ValidityDefault(repulsive_barriers=True) if cls is ValidityDefault \
+            and "gen.repulsive.barriers" in binding.writes.values() else None
+        slot = _Slot(i, sid, ref, cls, instance, params, {}, {}, builtin, ports=ports,
                      layout=slot_layout, centerline=centerline)
         if "anchors.xy" in {ports.get(p, ch) for p, ch in dict(cls.writes).items()}:
             slot.capacity = _check_capacity(cls, cls().capacity(_static_view(params),
@@ -1022,6 +1024,49 @@ def _check_fail_start(slots, writers) -> None:
             f"(checks=('default', {slot.ref.name!r})) and read valid.fail in the check "
             f"(fail_out = fail_in | own). Replacing validity.default arrives with the "
             f"split built-in checks")
+
+
+def _check_repulsive_clearance(slots, writers, gate: bool) -> None:
+    """Repulsive's mandatory check reads the final offset geometry and metadata."""
+    from ..stages.track import ValidityDefault, WidthConstant  # noqa: PLC0415
+
+    channel = "gen.repulsive.barriers"
+    if channel not in writers or gate:
+        return
+    checks = [s for s in slots if s.cls is ValidityDefault
+              and s.reads.get("barriers") == channel]
+    if not checks:
+        raise PlanError("Repulsive requires validity.default to check its finished road barriers")
+    check = checks[-1]
+    for port, expected in (("outer", "band.outer2"), ("inner", "band.inner2"),
+                           ("count", "cl.count")):
+        if check.reads.get(port) != expected:
+            raise PlanError(f"Repulsive validity.default must read the final {expected} "
+                            f"through port {port!r}")
+    geometry = {"cl.xy", "cl.count", "cl.half_width", "band.outer2", "band.inner2"}
+    for s in slots[check.index + 1:]:
+        if geometry.intersection(s.writes.values()):
+            raise PlanError(f"Repulsive geometry changes after validity.default in "
+                            f"{_label(s.ref)}; move it before validity")
+    if len(writers[channel]) != 1:
+        raise PlanError("Repulsive barrier metadata must come directly from the generator")
+    # The exported 3D borders must lift the same final 2D cells that were checked.
+    # Rewiring a lift to arbitrary vec2 channels would otherwise bypass the proof.
+    for output, port, expected in (("track.outer", "outer", "band.outer2"),
+                                    ("track.inner", "inner", "band.inner2")):
+        owner = writers.get(output, (None,))[-1]
+        lift = next((s for s in slots if s.id == owner), None)
+        source_owner = writers.get(expected, (None,))[-1]
+        source = next((s for s in slots if s.id == source_owner), None)
+        if lift is None or lift.ref.kind != "lift" or lift.reads.get(port) != expected \
+                or source is None or source.index >= lift.index:
+            raise PlanError(f"Repulsive lift must export the final checked {expected}")
+    # A static hint may reserve known width during growth; the actual band check
+    # remains authoritative after resampling, relaxation, and variable-width stages.
+    widths = [s for s in slots[:check.index] if "cl.half_width" in s.writes.values()
+              and getattr(s.cls, "_carries", None) is None]
+    if widths and widths[-1].cls is WidthConstant:
+        _gen_slot(slots).instance.repulsive_half_width = float(widths[-1].params.half_width)
 
 
 def _check_gate_fail_start(slots, writers) -> None:
@@ -1819,6 +1864,7 @@ def _build(spec: PipelineSpec, *, binding, seeds=None, out=None, stream=None,
     if spec.require_caller_capturable:
         _check_caller_capturable(slots, caps, binding)
     writers = _plan_channels(slots, gate)
+    _check_repulsive_clearance(slots, writers, gate)
     if gate:
         _check_provided(slots)
     kind.check_exports(writers)
@@ -1901,7 +1947,7 @@ def _build(spec: PipelineSpec, *, binding, seeds=None, out=None, stream=None,
                 dynamic[f.name] = (wp.full(E, v, dtype=f.dtype, device=dev),
                                    wp.full(E, v, dtype=f.dtype, device=dev))
         view = None if params is None else _static_view(params)
-        instance = s.instance if bound_gen else s.cls()
+        instance = s.instance if s.instance is not None else s.cls()
         if bound_gen and s.generator == "centerline":
             instance.drawn = dict(mine)
         b = _new_builder(stage=instance, params=view, layout=s.layout, scale=batch.scale,

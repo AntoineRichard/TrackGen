@@ -439,8 +439,12 @@ Size: the sizing rule
 ``size`` is a per-env factor on the core ``scale``, applied where each generator applies
 ``scale``: the corner grid of ``bezier`` and ``hull`` (and their gate generators), the
 normalization target of ``polar``, ``voronoi`` and ``checkpoint`` (on gates, the
-``normalize.extent`` stage), the output of ``repulsive`` (whose ``scale`` sets its
-physics domain instead). At ``size = 1`` every output is byte-identical to a pipeline
+``normalize.extent`` stage), and the raw output and obstacle domain of
+``repulsive``. Repulsive also reserves the absolute road width in unscaled
+coordinates using ``half_width / size`` when constant width is known. Its raw
+obstacle layout and curve shape can therefore change with size; it does not
+promise a scaled copy of one curve (:ref:`repulsive-dynamic`). At ``size = 1``
+every output is byte-identical to a pipeline
 without it; ``bezier`` / ``hull`` at ``scale = 1`` and ``size = s`` are bitwise ``scale =
 s``, the normalized generators within one ``float32`` rounding of it. ``external`` has
 no ``size``: it ingests your geometry as given (a size would move a circuit ingested in
@@ -456,7 +460,8 @@ world coordinates about the data's origin); scale ``centerline.xy`` in your own 
   Params lack it, a ``GeneratorSpec``), ``presets.track(generator="external",
   size=2.0)`` or ``size=`` together with ``generator_params={"size": ...}``.
 
-**Plan view only.** ``size`` scales xy. The widths (``half_width``, ``spacing``, the relax
+**Plan view only.** ``size`` scales xy, with Repulsive's width-reservation effect
+above. The widths (``half_width``, ``spacing``, the relax
 bands, ``gate_radius``, ``gate_width``) and z (``z_min`` / ``z_max``, the noise
 amplitude, ``z_valid_grade``) are absolute: ``size`` is the "course larger relative to
 the car" axis. So:
@@ -473,15 +478,16 @@ the car" axis. So:
   passes more envs. A joint size and hills curriculum is therefore not orthogonal.
 
 **Truncation.** Size changes no buffer and no launch. The constant-spacing resample emits
-``floor(size * L / spacing) + 1`` points (``L`` the raw perimeter at size 1) into
+``floor(size * L / spacing) + 1`` points (``L`` the unscaled raw perimeter;
+Repulsive's curve can change with size) into
 ``n_max`` slots; a track that needs more is flagged in ``Track.truncated`` and fails
 validity (:ref:`invalid-envs`). A gate pipeline with ``source="relaxed_stations"`` fails
 the same way (its centerline is resampled into ``n_max``); anchor-sourced gates have a
 fixed count and are not affected (their spacing grows). At the defaults (``n_max = 384``,
 ``half_width = 0.1``, spacing ``0.06``; CPU), the longest loop (rounded up) and its p99
 over 8192 envs (seeds ``0..4095`` and ``7919 * e + 13`` for ``e < 4096``) and the yields
-over ``E = 256`` (seeds ``7919 * e + 13``); ``repulsive``: both over ``E = 32``, seeds
-``7919 * e + 13``:
+over ``E = 256`` (seeds ``7919 * e + 13``). Repulsive is omitted because its
+clearance/solver repair changes these measurements:
 
 .. list-table::
    :header-rows: 1
@@ -511,13 +517,11 @@ over ``E = 256`` (seeds ``7919 * e + 13``); ``repulsive``: both over ``E = 32``,
      - 7.26 (6.18)
      - ~3.2
      - 0.902 / 0.992 / 0.996 / 0.992
-   * - ``repulsive``
-     - 14.48 (bound 14.83)
-     - ~1.6
-     - — / 1.000 / 0.000 (every env truncated) / —
 
 **The sizing rule**, for a size range up to ``size_hi`` (``L_max`` from the table, times
-``scale``, or measured on your configuration with ``gen.program.tap("raw.xy")``):
+``scale``, or measured on your configuration with ``gen.program.tap("raw.xy")``).
+For Repulsive, use the analytic target-perimeter bound
+``repulsive_grow_mult_max * 2π * r_init`` (:ref:`repulsive-dynamic`):
 
 1. ``n_max >= size_hi * L_max / spacing + 1`` (else truncation, an invalid env);
 2. ``num_points >= size_hi * L_max / spacing``: the raw loop keeps its static
@@ -550,8 +554,8 @@ over ``E = 256`` (seeds ``7919 * e + 13``); ``repulsive``: both over ``E = 32``,
 
 **Build-time warning.** When the generator is built, a ``generator.size`` randomizer whose
 ``hi`` (or a construction value) would truncate the generator's nominal longest loop
-emits one ``UserWarning`` naming the ``n_max`` that fits. The nominal loop is exact for
-``repulsive`` (from its parameters); for the others it is the longest loop of the table
+emits one ``UserWarning`` naming the ``n_max`` that fits. Repulsive uses its
+analytic target-perimeter bound; for the others it is the longest loop of the table
 (so the warning fires from the "truncates from" column), scaled by the knobs that
 lengthen it: ``bezier`` / ``hull``'s ``max_num_points`` (``(max_num_points / 13) **
 0.6`` above 13), ``hull_displacement`` (its initial value or the ``hi`` of its

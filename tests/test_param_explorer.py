@@ -120,12 +120,10 @@ def test_build_config_maps_repulsive_shape_knobs():
         repulsive_alpha=2.5,
         repulsive_beta=5.5,
         repulsive_tau=0.35,
-        repulsive_w_len=25.0,
         repulsive_settle_iters=30,
         repulsive_resample_every=20,
         repulsive_stall_window=12,
         repulsive_stall_area_tol=0.04,
-        repulsive_deactivate_obstacles=False,
     ))
     assert cfg.generator == "repulsive"
     assert abs(cfg.repulsive_grow_mult_min - 4.0) < 1e-9
@@ -140,12 +138,10 @@ def test_build_config_maps_repulsive_shape_knobs():
     assert abs(cfg.repulsive_alpha - 2.5) < 1e-9
     assert abs(cfg.repulsive_beta - 5.5) < 1e-9
     assert abs(cfg.repulsive_tau - 0.35) < 1e-9
-    assert abs(cfg.repulsive_w_len - 25.0) < 1e-9
     assert cfg.repulsive_settle_iters == 30
     assert cfg.repulsive_resample_every == 20
     assert cfg.repulsive_stall_window == 12
     assert abs(cfg.repulsive_stall_area_tol - 0.04) < 1e-9
-    assert cfg.repulsive_deactivate_obstacles is False
 
 
 def test_build_gate_config_maps_solver_and_shape_knobs():

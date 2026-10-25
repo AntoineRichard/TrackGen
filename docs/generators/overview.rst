@@ -24,7 +24,8 @@ is the ``generator`` :term:`stage` of the pipeline: it writes one closed centerl
    :alt: Grid of sample tracks produced by each generator
    :align: center
 
-   Sample tracks from the six generators (one row per generator).
+   Sample tracks from the six generators (one row per generator). The Repulsive
+   row predates its clearance and solver repair.
 
 The Six Generators
 -------------------
@@ -89,18 +90,19 @@ See :doc:`checkpoint` for the full deep dive.
 repulsive
 ~~~~~~~~~
 
-Grows each centerline from a small seed circle under a hard ratcheting length constraint,
-using a tangent-point energy and a Sobolev-preconditioned flow to keep the curve
-self-avoiding while it is confined to a disc domain seeded with random obstacles —
-coarse-to-fine (``N = 64 → 128 → 256``) with an area-based stall-stop.  It is the only
-generator built from iterative physical simulation rather than a single deterministic
-sampling + smoothing pass, and produces the foldiest, most serpentine circuits of the six.
-Its growth loop runs a fixed iteration schedule in which each env stops changing once it
-converges, independently of the rest of the batch, so it is recorded into CUDA graphs
-like the others; its own graph skips the iterations left once every env has frozen. A
-generation still costs far more than any other generator's (`Cost`_): prefer a slow
-regeneration cadence or staggered per-env slices over calling ``generate()`` every step.
-See :doc:`repulsive` for the full deep dive.
+Grows each centerline from a small seed circle toward a sampled perimeter,
+using an edge-tangent energy and Sobolev-preconditioned shape descent among
+analytic disc obstacles and an outer circular wall. Growth runs coarse-to-fine
+(``N = 64 → 128 → 256`` by default), with guarded swept transitions. A valid
+finished road must clear the discs and wall across its full width after the
+shared tail. A disc in the central loop hole is allowed.
+
+The fixed bounded schedule is capturable. An env may freeze after reaching its
+actual target with small movement, projected stationarity and area change;
+a feasible target-reaching curve may also finish valid at the iteration budget
+without being converged. Conditional graphs can skip windows after every env
+freezes. Current yield, compactness and runtime require measurement after the
+repair. See :doc:`repulsive` for the full contract.
 
 Families at a glance
 --------------------
@@ -130,7 +132,7 @@ Families at a glance
      - organic, continuously curving loops (CarRacing-style)
    * - ``repulsive``
      - seed circle grown by a tangent-point flow among obstacles (iterative)
-     - dense, foldy serpentines (the lowest compactness by far)
+     - constrained folds shaped by the sampled obstacles and target length
 
 The measured shape metrics (compactness, length, chicanes, curvature, yield) are in
 :doc:`benchmarks`; :ref:`choosing-a-generator` turns them into a recommendation.
@@ -178,7 +180,7 @@ profiles have dynamic knobs too (``z_min``, ``z_max``, ``z_max_step``,
        generator), ``checkpoint_turn_rate``, ``size`` (gates: ``normalize.size``)
      - :ref:`checkpoint-dynamic`
    * - ``repulsive``
-     - ``size`` (its output's scale; the other knobs feed a host schedule)
+     - ``size`` (also affects width reservation and raw layout; other knobs static)
      - :ref:`repulsive-dynamic`
    * - ``external``
      - none: it ingests your geometry as given (scale ``centerline.xy`` yourself)
@@ -219,9 +221,11 @@ Every built-in generator is a ``Stage`` of kind ``generator``
   stage with an early stop included (``repulsive``, :ref:`cuda-graph-bounded`); a stage
   that must read data back runs on the host, eagerly, while the rest of the pipeline
   replays (:ref:`cuda-graph-host`);
-- the built-ins set ``gen.valid = 1`` for every env: final geometric validity (turning
-  number, thickness, NaNs, ``N_max`` truncation) is decided later by the shared validity
-  stage, after relaxation (:ref:`pipeline-fail-bits`).
+- the sampling built-ins set ``gen.valid = 1`` for every env. Repulsive requires
+  finite feasible raw geometry at its target length. The shared validity stage
+  checks final geometry after relaxation (turning number, thickness, NaNs,
+  ``N_max`` truncation); Repulsive also requires full-band disc and wall clearance
+  (:ref:`pipeline-fail-bits`).
 
 Plugins may also use the simple two-callable ``GeneratorSpec`` form
 (``alloc_scratch(config)`` and ``generate(seeds_wp, config, out_centerline,
@@ -242,12 +246,11 @@ pass). ``yield`` is the fraction of valid envs.
    :file: ../_data/cost-cuda-e4096.csv
    :header-rows: 1
 
-``repulsive`` has its own table: its cost depends on how soon the batch converges, and
-it is measured at two batch sizes.
-
-.. csv-table:: ``repulsive`` generation cost on CUDA (ms per ``generate()``)
-   :file: ../_data/cost-repulsive-cuda.csv
-   :header-rows: 1
+The Repulsive row in this shared table predates its clearance and solver repair;
+it is historical and does not measure the current implementation. Measure the
+repaired solver at your configuration and batch size. Its work depends on the
+bounded iteration schedule and proposal searches; early exit additionally depends
+on every env freezing (:doc:`repulsive`).
 
 Machine of the CUDA tables:
 

@@ -562,9 +562,9 @@ class CheckpointParams(_FlatParams):
 class RepulsiveParams(_FlatParams):
     """Parameters of the ``"repulsive"`` track generator."""
 
-    repulsive_grow_mult_min: float = static(4.5, lo=1.0, doc="Lower bound of the per-env "
+    repulsive_grow_mult_min: float = static(2.0, lo=1.0, doc="Lower bound of the per-env "
                                                              "target-perimeter multiplier.")
-    repulsive_grow_mult_max: float = static(5.5, doc="Upper bound of the target-perimeter "
+    repulsive_grow_mult_max: float = static(3.0, doc="Upper bound of the target-perimeter "
                                                      "multiplier (> 1, >= min).")
     repulsive_domain_frac: float = static(0.35, doc="Confinement-disc radius fraction "
                                                     "(> 0).")
@@ -582,10 +582,9 @@ class RepulsiveParams(_FlatParams):
                                                                   "fraction (>= min).")
     repulsive_ratchet_rate: float = static(0.012, doc="Per-iteration length-growth factor "
                                                       "(> 0).")
-    repulsive_alpha: float = static(3.0, doc="Tangent-point energy exponent alpha (> 0).")
-    repulsive_beta: float = static(6.0, doc="Tangent-point energy exponent beta (> 0).")
-    repulsive_tau: float = static(0.4, doc="Normalized flow step size.")
-    repulsive_w_len: float = static(30.0, doc="Weight of the inert length regularizer.")
+    repulsive_alpha: float = static(3.0, doc="Tangent-point exponent alpha (> 1).")
+    repulsive_beta: float = static(6.0, doc="Tangent-point exponent: alpha+2 <= beta < 2*alpha+1.")
+    repulsive_tau: float = static(0.4, doc="Energy-scaled gradient step with bounded backtracking.")
     repulsive_stages: "tuple[int, ...]" = static(
         (64, 128, 256), doc="Coarse-to-fine resolution schedule: strictly increasing "
                             "positive multiples of 4, the last equal to num_points.")
@@ -594,11 +593,8 @@ class RepulsiveParams(_FlatParams):
                                                          "interval.")
     repulsive_stall_window: int = static(16, lo=1, doc="Iterations between per-env stall "
                                                        "checks.")
-    repulsive_stall_area_tol: float = static(0.05, doc="Relative area-change tolerance of "
-                                                       "the stall check.")
-    repulsive_deactivate_obstacles: bool = static(True, doc="Zero the obstacle weights "
-                                                            "once an env reaches its "
-                                                            "target length.")
+    repulsive_stall_area_tol: float = static(0.05, doc="Optional early-stop tolerance for area, "
+                                                       "motion and projected stationarity.")
     size: float = _size_field()
 
     _field_hints = {"scale": _SCALE_HINT}
@@ -658,6 +654,16 @@ class RepulsiveParams(_FlatParams):
             raise ValueError(f"repulsive_alpha must be > 0, got {self.repulsive_alpha!r}")
         if float(self.repulsive_beta) <= 0.0:
             raise ValueError(f"repulsive_beta must be > 0, got {self.repulsive_beta!r}")
+        if float(self.repulsive_beta) <= float(self.repulsive_alpha):
+            raise ValueError("repulsive_beta must be > repulsive_alpha for repulsive obstacle forces")
+        if float(self.repulsive_alpha) <= 1.0:
+            raise ValueError("repulsive_alpha must be > 1 for the supported Sobolev order")
+        if float(self.repulsive_beta) < float(self.repulsive_alpha) + 2.0:
+            raise ValueError("repulsive_beta must be >= repulsive_alpha + 2")
+        if float(self.repulsive_beta) >= 2.0 * float(self.repulsive_alpha) + 1.0:
+            raise ValueError("repulsive_beta must be < 2 * repulsive_alpha + 1")
+        if float(self.repulsive_tau) <= 0.0:
+            raise ValueError("repulsive_tau must be > 0")
         stages = tuple(self.repulsive_stages)
         if len(stages) == 0:
             raise ValueError("repulsive_stages must be non-empty")

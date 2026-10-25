@@ -77,6 +77,52 @@ unintended changes. Earlier measured figures and tuning tables in the generator
 catalogue remain reference measurements; they are not exact expected values for the
 new seed mapping.
 
+.. _upgrading-0.3-repulsive:
+
+Repulsive clearance and solver repair
+--------------------------------------
+
+The Repulsive repair after ``0.3.0rc2`` intentionally changes its seeded outputs.
+Rebaseline Repulsive datasets and byte goldens after validating the new roads.
+This repair preserves the RNG salts and draw order, and leaves the other
+generators' outputs unchanged. The earlier RNG-switch measurements above record
+that separate historical change; they do not measure the repaired solver.
+
+- Remove ``repulsive_w_len`` and ``repulsive_deactivate_obstacles`` from configs,
+  Params and saved generator parameter mappings. Both keys are rejected, with no
+  compatibility path. Disc and wall barriers remain active during settling.
+- The default growth multiplier range is now 2.0–3.0, replacing 4.5–5.5. The old
+  targets can be infeasible when the entire road must permanently clear discs
+  and the outer wall. Accepted solver, growth and resampling transitions are
+  guarded against crossing those analytic barriers.
+- Energy exponents must satisfy ``alpha > 1`` and
+  ``alpha + 2 <= beta < 2 * alpha + 1``; ``repulsive_tau`` must be positive.
+  The edge-tangent energy, Sobolev order, bounded descent and double-precision
+  energy/length/metric calculations also change the curve.
+- ``size`` still scales the final raw curve and obstacle domain while width and
+  spacing stay absolute. It now also changes the unscaled width reservation,
+  obstacle layout and feasible growth. Repulsive no longer promises a pure XY
+  scaling of a fixed raw curve. Other generators retain their size behavior.
+- Raw validity now requires a finite, feasible curve that reaches its sampled
+  target length within numerical tolerance. Reaching the iteration budget can
+  still produce a valid curve without optimizer stationarity. Optional freezing
+  requires small movement and projected stationarity as well as small area
+  change; rejected or quantized no-op proposals do not establish convergence.
+- Final validity additionally checks the actual full road band after the shared
+  resample/relax/inflate tail. Each cell's convex hull certifies its occupied
+  strip; concave or folded cells can be rejected conservatively. Discs in the
+  central loop hole remain allowed. Custom Repulsive pipelines must preserve
+  generator barrier metadata, run the mandatory final check, and place all
+  geometry changes before it. Public result fields are unchanged.
+
+Inspect ``Track.valid`` and ``fail_mask``: Repulsive programs add
+``repulsive_disc`` at bit 8 (``1 << 8``) and ``repulsive_wall`` at bit 9
+(``1 << 9``) to ``fail_bits``. Other programs do not reserve these names or bits.
+Aggressive nondefault tuning may fail after the shared tail even when raw growth
+succeeded. Invalid results retain the existing poison/keep behavior
+(:ref:`upgrading-0.3-poison`); the repair does not guarantee success for all
+configurations or seeds. See :doc:`/generators/repulsive` for the current contract.
+
 .. _upgrading-0.3-removals:
 
 Removed APIs and replacements

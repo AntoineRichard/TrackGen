@@ -327,7 +327,7 @@ class _StageGenerator:
                         "through TrackGenerator")
 
     def build(self, *, seed, out_xy, out_valid, resolve=None,
-              drawn=None) -> _BuiltStage:
+              drawn=None, repulsive_half_width=0.0) -> _BuiltStage:
         """Allocate the dynamic-param arrays, run ``Stage.build`` on a StageBuilder bound
         to the orchestrator-owned outputs, and check its post-conditions. ``resolve``
         (the pipeline's generator slot, roadmap PR13a): ``resolve(channel, dtype, interp,
@@ -364,6 +364,7 @@ class _StageGenerator:
                          scale=self.scale, seed=seed, raw=self.raw_points,
                          outputs=outputs, dynamic=dynamic, stage_id=_STAGE_ID,
                          capture=self.capture)
+        b._repulsive_half_width = float(repulsive_half_width)
         b._declared_writes = types.MappingProxyType(dict(self.writes))
         enqueue = self.stage.build(b, view)
         _close_builder(b)

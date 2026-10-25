@@ -3,6 +3,9 @@ import importlib
 
 
 def spec(name):
+    if name == "repulsive":
+        raise ValueError("Repulsive has no frozen numeric oracle: its clearance solver "
+                         "and finished-road validity intentionally changed")
     from track_gen.plugin import GeneratorSpec
     module = importlib.import_module(f"tests._reference_generators.warp_generate{'' if name == 'bezier' else '_' + name}")
     return GeneratorSpec(name=name, alloc_scratch=module._alloc_scratch, generate=module._generate)

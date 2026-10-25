@@ -83,7 +83,10 @@ value of the generator's per-env :term:`size`, a :term:`dynamic field`: a multip
 the plan view applied after ``scale`` (a dynamic ``float32`` field in ``[0.1, 10]``, the
 bounds ``track_gen.ops.constants.SIZE_BOUNDS``). The course gets ``size`` times larger while
 the road width, the spacing, the gate radius and bar width and the altitudes stay
-absolute. It is not the batch size (:term:`num_envs`). For ``bezier`` / ``hull`` at
+absolute. Repulsive also uses ``size`` to reserve this absolute road width in
+unscaled growth coordinates; its raw layout and shape can change with size
+(:ref:`repulsive-dynamic`). The other generators retain their existing size
+behavior. It is not the batch size (:term:`num_envs`). For ``bezier`` / ``hull`` at
 ``scale = 1`` it equals ``scale``. Per-env
 values come from ``randomize=`` or a curriculum (:ref:`tuning-size`); the flat field is
 the only construction-time route for ``Course``.
@@ -851,8 +854,8 @@ sampler), plus:
      - dynamic
      - in ``[0.1, 10]``
 
-``RepulsiveParams`` (``generator="repulsive"``; ``size`` is its one dynamic field, a
-multiplier of its output, :ref:`repulsive-dynamic`):
+``RepulsiveParams`` (``generator="repulsive"``; ``size`` is its one dynamic field
+and participates in width reservation, :ref:`repulsive-dynamic`):
 
 .. list-table::
    :header-rows: 1
@@ -863,11 +866,11 @@ multiplier of its output, :ref:`repulsive-dynamic`):
      - Kind
      - Rule
    * - ``repulsive_grow_mult_min``
-     - ``4.5``
+     - ``2.0``
      - static
      - ``>= 1``
    * - ``repulsive_grow_mult_max``
-     - ``5.5``
+     - ``3.0``
      - static
      - ``> 1`` and ``>= repulsive_grow_mult_min``
    * - ``repulsive_domain_frac``
@@ -901,19 +904,15 @@ multiplier of its output, :ref:`repulsive-dynamic`):
    * - ``repulsive_alpha``
      - ``3.0``
      - static
-     - ``> 0``
+     - ``> 1``
    * - ``repulsive_beta``
      - ``6.0``
      - static
-     - ``> 0``
+     - ``alpha + 2 <= beta < 2 * alpha + 1``
    * - ``repulsive_tau``
      - ``0.4``
      - static
-     -
-   * - ``repulsive_w_len``
-     - ``30.0``
-     - static
-     -
+     - ``> 0``
    * - ``repulsive_stages``
      - ``(64, 128, 256)``
      - static
@@ -935,14 +934,16 @@ multiplier of its output, :ref:`repulsive-dynamic`):
      - ``0.05``
      - static
      -
-   * - ``repulsive_deactivate_obstacles``
-     - ``True``
-     - static
-     -
    * - ``size``
      - ``1.0``
      - dynamic
      - in ``[0.1, 10]``
+
+The removed ``repulsive_w_len`` and ``repulsive_deactivate_obstacles`` keys
+are not supported. Barriers remain active through growth and settling. The lower
+2.0–3.0 growth defaults replace 4.5–5.5; larger targets can be infeasible with
+permanent full-width clearance. The actual final band check is mandatory even
+when constant-width reservation is available (:doc:`/generators/repulsive`).
 
 ``ExternalParams`` (``generator="external"``, the ingestion generator of
 :ref:`ingesting-centerlines`; ``track_gen.stages.external.ExternalParams``). It has no

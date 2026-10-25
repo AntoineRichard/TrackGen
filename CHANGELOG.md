@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased
+
+### Repulsive repair
+
+- Require the entire finished road band to clear every sampled filled disc and
+  stay inside its circular wall after resampling, relaxation and inflation.
+  Preserve internal barrier metadata and require the final check in custom
+  pipelines. Cell convex-hull certificates are conservative for concave/folded
+  strips; discs in the central loop hole remain allowed.
+- Guard swept optimizer/growth/resampling transitions, preserve edges on
+  refinement, correct edge-tangent energy and Sobolev order, and use double
+  precision for energy reductions, length arithmetic and metric operations.
+  Raw validity requires finite feasible target-reaching geometry; optional
+  freezing requires genuine small movement and projected stationarity. A valid
+  budget-limited curve need not be converged.
+- Remove `repulsive_w_len` and `repulsive_deactivate_obstacles` without
+  compatibility. Require `alpha > 1`, `alpha + 2 <= beta < 2 * alpha + 1` and
+  positive `repulsive_tau`. Lower default growth bounds from 4.5–5.5 to 2.0–3.0.
+  Repulsive `size` now participates in unscaled width reservation and can change
+  raw obstacle layout and curve shape.
+- Repulsive seeded outputs change; other generators' outputs and all RNG salts
+  and draw order stay unchanged. Public result fields and poison/keep policy
+  stay unchanged. Repulsive programs add `repulsive_disc` (bit 8) and
+  `repulsive_wall` (bit 9) failure reasons. Inspect validity and `fail_mask`;
+  aggressive tuning can fail after the shared tail. See the
+  [migration guide](docs/upgrading/from-0.2.rst).
+
 ## 0.3.0rc2 (release candidate, tag `v0.3.0rc2`)
 
 The second candidate addresses review findings #1–#3 and #5–#14 from PR #4.

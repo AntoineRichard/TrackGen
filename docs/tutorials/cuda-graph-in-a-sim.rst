@@ -99,15 +99,17 @@ The generation can be recorded because it is **entirely static**:
   launch dimensions through :term:`N_max`;
 - nothing host-synchronizes or reads device data back; ordering comes from the stream.
 
-``repulsive`` stands out by its cost, not by its recording: its growth loop runs a fixed
-iteration bound, two orders of magnitude more work than the other generators (its own
-cost table is in :doc:`/generators/repulsive`). Each env stops changing once it
-converges, independently of the rest of the batch, so each env still depends only on its
-own seed. Its own graph on ``cuda`` skips, on device, the iterations left once every env
-has converged (CUDA 12.4+ :term:`conditional nodes <conditional node>`), while a plain
-``torch.cuda.graph`` records the full bound and an eager call on ``cuda`` runs it (an
-eager ``cpu`` call stops at the first check that finds every env converged). Its
-construction pays one full run; see :doc:`/generators/repulsive`.
+``repulsive`` runs a fixed iteration bound through a capturable bounded loop.
+Each env can freeze after reaching its actual target with small movement,
+projected stationarity and area change, independently of the rest of the batch.
+A feasible target-reaching curve can also finish valid at the normal budget;
+validity does not require every env to converge. Its own graph on ``cuda`` skips
+remaining windows once every env is frozen (supported CUDA 12.4+
+:term:`conditional nodes <conditional node>`). A plain ``torch.cuda.graph`` records
+the full bound, eager ``cuda`` runs it without host polling, and eager ``cpu``
+can stop at a window check that finds every env frozen. Construction runs a full
+warm-up pass. The repaired solver's runtime needs measurement for your settings;
+see :doc:`/generators/repulsive`.
 
 Buffer reuse and ``clone()``
 ----------------------------

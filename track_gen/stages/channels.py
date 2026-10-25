@@ -29,6 +29,8 @@ from typing import Mapping
 
 import warp as wp
 
+from .._src.repulsive_clearance import RepulsiveBarriers
+
 __all__ = ["BUILTIN_FAIL_BITS", "CARRIED_CATALOGUE", "CHANNELS", "Channel", "DOMAINS",
            "ELEVATION_GATE_CHANNELS", "FAIL", "GATE_FAIL_BITS", "INTERPS", "PERS",
            "PLUGIN_CHANNEL", "SEED", "channel_domain", "family_key", "is_plugin_channel",
@@ -107,6 +109,8 @@ CHANNELS: Mapping[str, Channel] = MappingProxyType({
                                             "generator provides (carried to "
                                             "cl.half_width).", "linear"),
     "gen.valid": _c("env", wp.int32, "The generator's per-env flag (0/1)."),
+    "gen.repulsive.barriers": _c("env", RepulsiveBarriers,
+                                  "Private analytic Repulsive barriers and output transform."),
     "cl.xy": _c("cl", wp.vec2f, "The centerline (constant-spacing, relaxed, uniform)."),
     "cl.count": _c("env", wp.int32, "Real points per env; NaN padding after."),
     "cl.truncated": _c("env", wp.int32, "1 where N_max cut the loop."),
