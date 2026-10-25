@@ -140,35 +140,35 @@ How it is constructed
    edit or an optional switch. The clip uses default seed 97 to show a real branch.
 
 .. figure:: ../assets/racing/generator-bezier-construction.png
-   :alt: Selected grid addresses and actual offset vectors, beside the raw Bézier loop and finished road.
+   :alt: Labelled 10-point construction illustration with cell-bounded inputs, the real Bezier curve and its finished road.
    :align: center
 
-   Grey squares are selected grid addresses; orange arrows end at the actual sampled
-   corners. For a calm introduction, primary seed 11560502 uses four corners and
-   ``min_point_distance=.0625``: four cells selected from an 8 × 8 grid with pitch
-   ``.125``. Its actual sampled points stay inside their selected cells. It is the first valid example with four
-   distinct cells and within-cell points in the recorded ascending seed search,
-   selected for clarity; the generator's offset distribution is unchanged. The movie
-   separately shows default seed 97's crossing/fallback case and preserves the source geometry.
+   **Construction illustration: 10 points on an 8 × 8 grid.** Cell-bounded jitter
+   makes the point selection easier to follow. Seed 7's real cell IDs and random
+   draws are remapped with ``origin + (original_noise + .5) * pitch``, at pitch
+   ``.125``. The unchanged Bezier and road stages then produce the matching curve
+   and 51-point valid road. This mapping applies only to the illustrated inputs;
+   the production sampler is unchanged. Default seed 97 separately shows a real
+   crossing/fallback case.
 
 .. raw:: html
 
-   <video controls preload="none" style="width:100%;max-width:100%;aspect-ratio:16/9;object-fit:contain" poster="../_images/generator-bezier-construction.png" aria-label="Grid addresses, random offsets, angle ordering, cubic handles, whole-loop fallback and raw resampling.">
+   <video controls preload="none" style="width:100%;max-width:100%;aspect-ratio:16/9;object-fit:contain" poster="../_images/generator-bezier-construction.png" aria-label="Bezier construction illustration: 10 cell-bounded points on an 8 by 8 grid, followed by the real curve and road stages.">
      <source src="../generator-bezier-construction.mp4" type="video/mp4">
-     Grid addresses, random offsets, angle ordering, cubic handles, whole-loop fallback and raw resampling.
+     Bezier construction illustration with 10 cell-bounded inputs, the real curve and its road.
    </video>
 
 :download:`Download the animation <../assets/racing/generator-bezier-construction.mp4>`.
 
-**Text alternative:** With ``min_num_points=max_num_points=4``,
-``min_point_distance=.0625`` and selected seed 11560502, start with the four grid
-addresses, then follow each actual orange offset vector to its sampled corner.
+**Text alternative:** The construction illustration uses 10 grid addresses from
+seed 7, ``min_num_points=max_num_points=10`` and ``min_point_distance=.0625``. Follow
+each orange vector to its illustrated point inside its selected cell.
 Connect the angle-sorted corners, inspect both handles, and draw the actual dense
-cubic. A labelled seed-97 inset marks the rejected smooth crossings and the selected entire polygon. Finish with
-256 raw samples and the separate finished-road count.
+cubic. A labelled seed-97 inset marks the rejected smooth crossings and the selected
+entire polygon. Finish with 256 raw samples and the matching 51-point finished road.
 
-The animation stages recorded geometry to explain construction; playback is not
-elapsed runtime. Next, :ref:`watch how the shared pipeline turns raw samples into
+The illustration records the real curve and road stages; playback is not elapsed
+runtime. Next, :ref:`watch how the shared pipeline turns raw samples into
 road beads <sampling-stages>`.
 
 Continue with :doc:`/how-it-works/pipeline`, :doc:`/configuration/tuning`,

@@ -1,7 +1,8 @@
 """Source-backed explanatory movies for Bezier and Hull construction.
 
-Sampling endpoints and spline candidates are recorded from the real generator.
-Prefixes explain the order of operations; they do not simulate elapsed runtime.
+Ordinary endpoints and spline candidates are recorded from the real generator.
+The labelled Bezier illustration remaps only its inputs, then records the actual
+Bezier and road stages. Prefixes explain operation order, not elapsed runtime.
 """
 from __future__ import annotations
 
@@ -22,47 +23,45 @@ from .racing_theme import (apply_plot_theme, get_palette, plotting_theme, save_f
 
 _CACHE = '_bezier_hull_storyboard'
 _FALLBACK_SEEDS = {'bezier': 97, 'hull': 23}
-_BEZIER_EXAMPLE_SEED = 11560502
-_BEZIER_EXAMPLE_SETTINGS = dict(min_num_points=4, max_num_points=4, min_point_distance=.0625)
+_BEZIER_EXAMPLE_SEED = 7
+_BEZIER_EXAMPLE_SETTINGS = dict(min_num_points=10, max_num_points=10, min_point_distance=.0625)
 
 
 @lru_cache(maxsize=1)
-def _calm_bezier_example():
-    from .render_generator_guide import sample_batch
-
-    sample = sample_batch('bezier', seeds=[_BEZIER_EXAMPLE_SEED], overrides=_BEZIER_EXAMPLE_SETTINGS)[0]
-    data = capture(sample)
-    distinct = len(data['grid_ids']) == len(set(data['grid_ids'])) == 4
+def _illustrative_bezier_example():
+    data = _capture_one('bezier', _BEZIER_EXAMPLE_SEED, _BEZIER_EXAMPLE_SETTINGS,
+                        illustrative_inputs=True)
+    distinct = len(set(data['grid_ids']))
     inside = bool(((data['offset_vectors'] >= 0)
                    & (data['offset_vectors'] < data['grid_pitch'])).all())
-    finite = all(np.isfinite(data[key]).all() for key in
-                 ('sampled', 'raw', 'final_center', 'final_inner', 'final_outer'))
-    if not (distinct and inside and finite and data['final_valid']):
-        raise AssertionError('the declared calm Bezier example no longer meets its selection policy')
-    sample['example_selection'] = dict(
-        selected_seed=_BEZIER_EXAMPLE_SEED,
-        seed_search=dict(start=0, stop_exclusive=12582912, step=1, count=12582912,
-                         chunk_size=1048576, chunks=12, declared_stop_exclusive=67108864),
-        search_method='Canonical epoch-zero SeedState.effective and ops.sample_grid_points; '
-                      'sampler points/addresses/effective seeds verified against 64 actual generator rows; '
-                      'only matching sampler candidates run through the full pipeline.',
-        grid_cells_per_side=data['grid_cells_per_side'], grid_pitch=data['grid_pitch'],
-        first_matching_seed=True, four_distinct_cells=distinct, sampled_inside_cells=inside,
-        settings=dict(_BEZIER_EXAMPLE_SETTINGS),
-        policy='First ascending seed with four distinct grid addresses, every actual sampled '
-               'point inside [origin, origin+pitch), finite raw/final geometry and a valid road.',
-        offset_distribution='Unchanged independent U[-0.5,0.5) offsets before scale and size; '
-                            'the within-cell property belongs only to this selected sample.')
+    if distinct != 10 or not inside or not data['final_valid']:
+        raise AssertionError('the declared Bezier illustration no longer meets its input/road checks')
+    selection = dict(selected_seed=_BEZIER_EXAMPLE_SEED,
+                     settings=dict(_BEZIER_EXAMPLE_SETTINGS), distinct_cells=distinct,
+                     sampled_inside_cells=inside, grid_cells_per_side=data['grid_cells_per_side'],
+                     grid_pitch=data['grid_pitch'], illustrative_inputs=True,
+                     production_sampler_unchanged=True,
+                     sampler_remapping='origin + (original_noise + 0.5) * pitch; exact canonical '
+                                       'seed-7 cell IDs and RNG draws, remapped only for this illustration.')
+    sample = dict(seed=_BEZIER_EXAMPLE_SEED, epoch=0, env=0, config=data['config'],
+                  count=data['final_count'], valid=data['final_valid'], fail=data['final_fail'],
+                  raw=data['raw'], center=data['final_center'], inner=data['final_inner'],
+                  outer=data['final_outer'], illustrative_inputs=True,
+                  construction=dict(sampled=data['sampled'], anchors=data['ordered'],
+                                    dense=data['smooth_dense'], tangents=data['tangents'],
+                                    handle_scales=data['handle_scales'], crossings=data['smooth_crossings']),
+                  example_selection=selection)
+    sample[_CACHE] = _with_fallback(data)
     return sample
 
 
 def select_construction_sample(sample):
-    """Use the declared calm Bezier teaching example; retain every other input.
+    """Use labelled illustrative Bezier inputs; retain every other input.
 
     Only render() calls this selection boundary. capture() and draw_step() continue
     to expose the actual sample supplied by their caller, including default jitter.
     """
-    return _calm_bezier_example() if sample['config']['generator'] == 'bezier' else sample
+    return _illustrative_bezier_example() if sample['config']['generator'] == 'bezier' else sample
 
 
 def _finite(points):
@@ -108,10 +107,12 @@ def _crossing_locations(points, expected):
     return np.asarray(out).reshape(-1, 2), np.asarray(pairs).reshape(-1, 4, 2)
 
 
-def _capture_one(name, seed, config):
+def _capture_one(name, seed, config, *, illustrative_inputs=False):
     from track_gen import TrackGenConfig, TrackGenerator
     from track_gen.exec import LaunchContext
-    from track_gen.ops.geometry import _self_intersections_by_i_k
+    from track_gen.ops.geometry import _self_intersections_by_i_k, _angle_sort_k
+    from track_gen.ops.sampling import _sample_grid_points_launch
+    from track_gen._src.warp_generate import CORNER_SALT
     from track_gen.testing.capture import result_arrays
 
     fields = {field.name for field in dataclasses.fields(TrackGenConfig)}
@@ -131,17 +132,41 @@ def _capture_one(name, seed, config):
     scratch = {key.rsplit('/', 1)[-1]: value for key, value in scratch.items()}
     n = int(scratch['gen_count' if name == 'bezier' else 'count'].numpy()[0])
     before = {key: value.numpy().tobytes() for key, value in result_arrays(track).items()}
-    raw = gen.program.tap('raw.xy').numpy().reshape(1, cfg.num_points, 2)[0].copy()
+    ordinary_raw = gen.program.tap('raw.xy').numpy().copy()
     valid = gen.program.tap('gen.valid').numpy().tobytes()
-    observed = {}
+    observed, remapping, lifetimes = {}, {}, []
     base = LaunchContext.current('cpu')
+    if illustrative_inputs:
+        if name != 'bezier':
+            raise ValueError('illustrative input mapping is only for the Bezier teaching clip')
+        noise = wp.empty(cfg.max_num_points, dtype=wp.vec2f, device='cpu')
+        noise_ids = wp.empty(cfg.max_num_points, dtype=wp.int32, device='cpu')
 
     class Observer:
         def __getattr__(self, key):
             return getattr(base, key)
 
         def launch(self, kernel, dim, inputs=(), outputs=(), **kwargs):
-            if kernel is _self_intersections_by_i_k:
+            if (illustrative_inputs and kernel is _angle_sort_k
+                    and inputs[0].ptr == scratch['gen_corners'].ptr):
+                ids = scratch['gen_used'].numpy().copy()
+                canonical = scratch['gen_corners'].numpy().copy()
+                # Reuse the sampler itself with its grid term zeroed, so the exact
+                # original RNG noise is retained rather than recovered by subtraction.
+                _sample_grid_points_launch(base, gen.program.seed, CORNER_SALT, 0,
+                    cfg.max_num_points, 8, 0., cfg.scale, noise_ids, noise,
+                    size=gen.params['generator'].in_effect('size'))
+                np.testing.assert_array_equal(ids, noise_ids.numpy())
+                draws = noise.numpy().copy()
+                origins = np.stack([ids % 8, ids // 8], axis=1).astype(np.float32)*np.float32(.125)
+                np.testing.assert_array_equal(origins+draws, canonical)
+                mapped = origins+(draws+np.float32(.5))*np.float32(.125)
+                mapped_wp = wp.array(mapped, dtype=wp.vec2f, device='cpu')
+                lifetimes.append(mapped_wp)
+                base.copy(scratch['gen_corners'], mapped_wp)
+                remapping.update(source_sampler_points=canonical, source_sampler_noise=draws)
+            if (kernel is _self_intersections_by_i_k
+                    and (not illustrative_inputs or inputs[0].ptr == scratch['gen_rs'].ptr)):
                 if observed:
                     raise AssertionError('expected one generator crossing check')
                 observed['smooth_raw'] = inputs[0].numpy().reshape(1, cfg.num_points, 2)[0].copy()
@@ -149,14 +174,26 @@ def _capture_one(name, seed, config):
                 observed['smooth_dense'] = _finite(scratch[key].numpy().reshape(1, -1, 2)[0]).copy()
             return base.launch(kernel, dim, inputs, outputs, **kwargs)
 
-    # Only the existing bound generator is rerun, with its already-resolved seed.
-    # Hull's rejected dense candidate would otherwise be overwritten by fallback.
-    gen.program._gen_scratch.enqueue(Observer())
-    assert raw.tobytes() == gen.program.tap('raw.xy').numpy().reshape(1, cfg.num_points, 2)[0].tobytes()
-    assert valid == gen.program.tap('gen.valid').numpy().tobytes()
-    assert before == {key: value.numpy().tobytes() for key, value in result_arrays(track).items()}
+    if illustrative_inputs:
+        # Only this maintenance CPU enqueue sees the mapping. All subsequent
+        # Bezier and road stages are the real bound Program, including validity.
+        gen.program.enqueue(Observer())
+        illustrated = {key: value.numpy().tobytes() for key, value in result_arrays(track).items()}
+        first_raw = gen.program.tap('raw.xy').numpy().copy()
+        observed.clear()
+        gen.program.enqueue(Observer())
+        assert illustrated == {key: value.numpy().tobytes() for key, value in result_arrays(track).items()}
+        np.testing.assert_array_equal(first_raw, gen.program.tap('raw.xy').numpy())
+    else:
+        # Only the bound generator is rerun. Hull's rejected dense candidate would
+        # otherwise be overwritten by its polygon fallback.
+        gen.program._gen_scratch.enqueue(Observer())
+        assert ordinary_raw.tobytes() == gen.program.tap('raw.xy').numpy().tobytes()
+        assert valid == gen.program.tap('gen.valid').numpy().tobytes()
+        assert before == {key: value.numpy().tobytes() for key, value in result_arrays(track).items()}
     if not observed:
         raise AssertionError('the generator crossing check was not observed')
+    raw = gen.program.tap('raw.xy').numpy().reshape(1, cfg.num_points, 2)[0].copy()
 
     def points(key, count):
         return scratch[key].numpy().reshape(1, -1, 2)[0, :count].copy()
@@ -180,11 +217,12 @@ def _capture_one(name, seed, config):
                 offset_bound=.5*float(cfg.scale)*float(size),
                 raw=raw, smooth_crossings=crossings, crossing_points=locations,
                 crossing_pairs=crossing_pairs, final_count=count,
-                final_valid=bool(track.valid.numpy()[0]),
+                final_valid=bool(track.valid.numpy()[0]), final_fail=int(track.fail_mask.numpy()[0]),
                 final_center=track.center.numpy().reshape(1, cfg.N_max, 3)[0, :count, :2].copy(),
                 final_inner=track.inner.numpy().reshape(1, cfg.N_max, 3)[0, :count, :2].copy(),
                 final_outer=track.outer.numpy().reshape(1, cfg.N_max, 3)[0, :count, :2].copy(),
-                observation_preserves_outputs=True, **observed)
+                observation_preserves_outputs=not illustrative_inputs,
+                illustrative_inputs=illustrative_inputs, production_sampler_unchanged=True, **observed)
     if name == 'hull':
         data['polygon_vertices'] = points('aug', 2*n)
         data['midpoints'] = .5*(ordered + np.roll(ordered, -1, axis=0))
@@ -194,10 +232,17 @@ def _capture_one(name, seed, config):
         chord = np.linalg.norm(following-ordered, axis=1)
         h0 = np.minimum(parameters['rad']*chord, parameters['handle_clamp_frac']*scales)
         h1 = np.minimum(parameters['rad']*chord, parameters['handle_clamp_frac']*np.roll(scales, -1))
+        data['tangents'], data['handle_scales'] = tangents.copy(), scales.copy()
         data['controls'] = np.stack([ordered, ordered+h0[:, None]*tangents,
                                      following-h1[:, None]*np.roll(tangents, -1, axis=0),
                                      following], axis=1)
         data['polygon_vertices'] = ordered.copy()
+    if illustrative_inputs:
+        data.update(remapping, illustration_replay_equal=True)
+        gen.generate()
+        assert before == {key: value.numpy().tobytes() for key, value in result_arrays(track).items()}
+        np.testing.assert_array_equal(ordinary_raw, gen.program.tap('raw.xy').numpy())
+        data['ordinary_outputs_restored'] = True
     return data
 
 
@@ -213,6 +258,12 @@ def capture(sample):
     np.testing.assert_array_equal(data['final_center'], sample['center'])
     if data['final_count'] != sample['count'] or data['final_valid'] != sample['valid']:
         raise AssertionError('standalone observation changed the selected example')
+    sample[_CACHE] = _with_fallback(data)
+    return sample[_CACHE]
+
+
+def _with_fallback(data):
+    name = data['name']
     fallback = _capture_one(name, _FALLBACK_SEEDS[name], {})
     if fallback['smooth_crossings'] <= 0:
         raise AssertionError('the declared default fallback example no longer crosses')
@@ -228,7 +279,6 @@ def capture(sample):
     center = .5*(low+high)
     half = .56*float((high-low).max())
     data['limits'] = (center-half, center+half)
-    sample[_CACHE] = data
     return data
 
 
@@ -251,18 +301,15 @@ def construction_stages(sample):
         ('If it crosses, replace the whole loop', f'A separate default seed {_FALLBACK_SEEDS[name]} shows the automatic branch: reject the smooth loop and choose its entire polygon. No local spline edit or user toggle.'),
         ('Produce fixed-count raw samples', 'The generator stops at num_points raw samples. The shared spacing, XPBD and uniform stages determine the finished road and bead count.'),
     ])
-    if sample.get('example_selection'):
-        selection = sample['example_selection']
-        seed = selection['selected_seed']
-        cells = selection['grid_cells_per_side']
-        distance = selection['settings']['min_point_distance']
-        stages[0] = ('Choose grid addresses',
-                     f'Selected seed {seed} uses four corners and min_point_distance={distance:g}: '
-                     f'an {cells} × {cells} grid with pitch {selection["grid_pitch"]:g}. '
-                     f'Choose four distinct cells from {cells*cells}.')
-        stages[1] = ('Add the actual random offsets',
-                     f'The selected real seed {seed} keeps its sampled points inside their cells. '
-                     'The generator still draws offsets in [-0.5, 0.5); no jitter rule is changed.')
+    if sample.get('illustrative_inputs'):
+        stages = [
+            ('Select 10 grid cells', 'This construction illustration selects 10 addresses from an 8 × 8 grid of 64 cells.'),
+            ('Add cell-bounded jitter', 'Orange arrows keep the illustrated points inside their selected cells.'),
+            ('Order around the centroid', 'Sort all 10 points by their angle around the centroid.'),
+            ('Join corners with cubic handles', 'Tangent directions and two handles join each pair of corners with a cubic.'),
+            ('Separate real example: whole-loop fallback', 'Default seed 97 rejects its crossing smooth loop and selects its entire polygon.'),
+            ('Resample, then build the road', 'The Bezier stage writes 256 raw samples; the shared road pipeline produces the finished beads.'),
+        ]
     smooth_stage = 3 if name == 'bezier' else 4
     return [dict(title=title, explanation=explanation, progressive_curve=i == smooth_stage)
             for i, (title, explanation) in enumerate(stages)]
@@ -299,9 +346,11 @@ def _grid(ax, data, p):
         ax.plot([0., end], [x, x], color=p.grid, lw=.6, zorder=0)
     pitch = (f"{data['grid_pitch']:g}" if data['name'] == 'bezier'
              else f"{data['grid_pitch']:.2f}")
-    ax.text(0., 1.02, f"{len(data['sampled'])} corners from [{data['parameters']['min_num_points']}, {data['parameters']['max_num_points']}] · "
-            f"{data['grid_cells_per_side']} × {data['grid_cells_per_side']} addresses · pitch {pitch}",
-            transform=ax.transAxes, va='bottom', color=p.ink, fontsize=11)
+    label = (f"{len(data['sampled'])} corners · {data['grid_cells_per_side']} × "
+             f"{data['grid_cells_per_side']} grid · pitch {pitch}" if data.get('illustrative_inputs')
+             else f"{len(data['sampled'])} corners from [{data['parameters']['min_num_points']}, {data['parameters']['max_num_points']}] · "
+                  f"{data['grid_cells_per_side']} × {data['grid_cells_per_side']} addresses · pitch {pitch}")
+    ax.text(0., 1.02, label, transform=ax.transAxes, va='bottom', color=p.ink, fontsize=11)
 
 
 def draw_step(ax, sample, stage, progress, theme='light'):
@@ -333,7 +382,7 @@ def draw_step(ax, sample, stage, progress, theme='light'):
             if count:
                 i = count-1
                 dx, dy = data['offset_vectors'][i]
-                note = ('This selected sample stays inside its displayed cells.'
+                note = ('Illustrative inputs: mapped draws stay inside the displayed cells.'
                         if sample.get('example_selection') else
                         f"Offsets may cross grid-cell boundaries (bound ±{data['offset_bound']:.2f}).")
                 ax.text(.02, .02, f"Point {i}: Δx={dx:+.3f}, Δy={dy:+.3f}\n" + note,
@@ -427,7 +476,10 @@ def _result_axes(raw_ax, road_ax, data, p):
         ax.set_xticks([])
         ax.set_yticks([])
     _line(raw_ax, data['raw'], p.blue, closed=True, lw=2)
-    raw_ax.set_title(f"Primary seed {data['seed']}\nraw n={len(data['raw'])}", color=p.ink, fontsize=12)
+    raw_title = ("Bézier curve"
+                 if data.get('illustrative_inputs') else
+                 f"Primary seed {data['seed']}\nraw n={len(data['raw'])}")
+    raw_ax.set_title(raw_title, color=p.ink, fontsize=12)
     outer, inner = data['final_outer'], data['final_inner']
     cells = np.stack([outer, np.roll(outer, -1, axis=0), np.roll(inner, -1, axis=0), inner], axis=1)
     road_ax.add_collection(PolyCollection(cells, facecolors=p.road, edgecolors='none'))
@@ -435,9 +487,11 @@ def _result_axes(raw_ax, road_ax, data, p):
         _line(road_ax, points, p.muted, closed=True, lw=.7)
     _line(road_ax, data['final_center'], p.blue, closed=True, lw=1.5)
     _scatter(road_ax, data['final_center'], p.blue, size=7)
-    road_ax.set_title(f"Finished road · n={data['final_count']}\n"
-                      f"{'valid' if data['final_valid'] else 'invalid'}", color=p.green if data['final_valid'] else p.red,
-                      fontsize=12)
+    road_title = (f"Finished road · n={data['final_count']} · "
+                  f"{'valid' if data['final_valid'] else 'invalid'}" if data.get('illustrative_inputs')
+                  else f"Finished road · n={data['final_count']}\n"
+                       f"{'valid' if data['final_valid'] else 'invalid'}")
+    road_ax.set_title(road_title, color=p.green if data['final_valid'] else p.red, fontsize=12)
 
 
 def _frame(sample, theme):
@@ -449,14 +503,15 @@ def _frame(sample, theme):
     _result_axes(fig.add_subplot(grid[0, 2]), fig.add_subplot(grid[1, 2]), data, p)
     heading = fig.text(.5, .95, '', ha='center', color=p.ink, fontsize=18)
     explanation = fig.text(.5, .875, '', ha='center', va='center', color=p.ink, fontsize=12)
-    if sample.get('example_selection'):
-        selection = sample['example_selection']
-        fig.text(.5, .915, f"Selected seed {selection['selected_seed']} · min_num_points=max_num_points=4 · "
-                 f"min_point_distance={selection['settings']['min_point_distance']:g} · pitch {selection['grid_pitch']:g}",
-                 ha='center', color=p.ink, fontsize=10)
-    fig.text(.5, .055, 'Recorded geometry; staged explanation, not elapsed runtime.\n'
-             'Shared tail: fixed-distance targets → XPBD → same-count uniform redistribution (see the spacing guide).',
-             ha='center', color=p.ink, fontsize=10)
+    if sample.get('illustrative_inputs'):
+        fig.text(.5, .915, 'Cell-bounded jitter for clarity',
+                 ha='center', color=p.ink, fontsize=12)
+        footer = ''
+    else:
+        footer = ('Recorded geometry; staged explanation, not elapsed runtime.\n'
+                  'Shared tail: fixed-distance targets → XPBD → same-count uniform redistribution (see the spacing guide).')
+    if footer:
+        fig.text(.5, .055, footer, ha='center', color=p.ink, fontsize=10)
     return fig, ax, heading, explanation
 
 
@@ -479,8 +534,13 @@ def render(out_dir, sample, movies=True, theme='light', writer_factory=None):
             allocations[:frames % len(stages)] += 1
             with writer.saving(fig, str(out_dir/f'generator-{name}-construction.mp4'), dpi=120):
                 for i, (stage, count) in enumerate(zip(stages, allocations)):
-                    heading.set_text(f"{name.capitalize()} · {i+1}/{len(stages)} · {stage['title']}")
-                    explanation.set_text(textwrap.fill(stage['explanation'], width=112))
+                    if sample.get('illustrative_inputs'):
+                        heading.set_text('Bézier construction illustration · 10 points · 8 × 8 grid')
+                        explanation.set_text(f"{i+1}/{len(stages)} · {stage['title']}\n"
+                                             + textwrap.fill(stage['explanation'], width=112))
+                    else:
+                        heading.set_text(f"{name.capitalize()} · {i+1}/{len(stages)} · {stage['title']}")
+                        explanation.set_text(textwrap.fill(stage['explanation'], width=112))
                     for progress in [*np.linspace(.02, 1., int(count)-5), *([1.]*5)]:
                         ax.clear()
                         draw_step(ax, sample, i, progress, theme=theme)
@@ -488,13 +548,16 @@ def render(out_dir, sample, movies=True, theme='light', writer_factory=None):
                         writer.grab_frame()
             plt.close(fig)
         fig, ax, heading, explanation = _frame(sample, theme)
-        heading.set_text(f"{name.capitalize()} · grid addresses and actual offsets")
+        heading.set_text("Bézier construction illustration · 10 points · 8 × 8 grid"
+                         if sample.get("illustrative_inputs") else f"{name.capitalize()} · grid addresses and actual offsets")
         explanation.set_text(textwrap.fill(stages[1]['explanation'], width=112))
         draw_step(ax, sample, 1, 1., theme=theme)
         save_figure(fig, out_dir/f'generator-{name}-construction.png', theme=theme, dpi=120)
         plt.close(fig)
     from .render_generator_guide import _record
-    record = dict(kind='progressive construction drawing of recorded geometry', sample=_record(sample),
+    record = dict(kind=('construction illustration with remapped inputs and real Bezier/road stages'
+                        if sample.get('illustrative_inputs') else
+                        'progressive construction drawing of recorded geometry'), sample=_record(sample),
                 stage_titles=[stage['title'] for stage in stages], stages=len(stages),
                 frames=frames if movies else 0, duration_seconds=frames/fps if movies else 0,
                 frame_size=[int(round(x*120)) for x in video_canvas_size(14, dpi=120)],
@@ -510,4 +573,13 @@ def render(out_dir, sample, movies=True, theme='light', writer_factory=None):
                 output=f'generator-{name}-construction.' + ('mp4' if movies else 'png'))
     if sample.get('example_selection'):
         record['example_selection'] = dict(sample['example_selection'])
+    if sample.get('illustrative_inputs'):
+        record.update(illustrative_inputs=True, production_sampler_unchanged=True,
+                      sampler_remapping=sample['example_selection']['sampler_remapping'],
+                      illustration_replay_equal=data['illustration_replay_equal'],
+                      ordinary_outputs_restored=data['ordinary_outputs_restored'],
+                      source_sampler_points=data['source_sampler_points'].tolist(),
+                      source_sampler_noise=data['source_sampler_noise'].tolist(),
+                      illustrated_sampled_points=data['sampled'].tolist(),
+                      grid_ids=data['grid_ids'].tolist())
     return record

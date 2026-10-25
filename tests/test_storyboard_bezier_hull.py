@@ -91,7 +91,7 @@ def test_progressive_curve_and_view_are_identical_between_themes(example):
     np.testing.assert_array_equal(*curves)
 
 
-def test_posters_keep_actual_sample_and_fallback_selection(example, tmp_path):
+def test_posters_keep_declared_input_and_separate_fallback_selection(example, tmp_path):
     story = _story()
     for theme in ('light', 'dark'):
         target = tmp_path / theme
@@ -99,13 +99,15 @@ def test_posters_keep_actual_sample_and_fallback_selection(example, tmp_path):
         name = example['config']['generator']
         assert (target / f'generator-{name}-construction.png').is_file()
         selected = story.select_construction_sample(example)
-        assert record['sample']['seed'] == (11560502 if name == 'bezier' else 7)
+        assert record['sample']['seed'] == 7
         assert example['seed'] == 7
         assert record['fallback_example']['seed'] == (97 if name == 'bezier' else 23)
         assert record['fallback_example']['proper_crossings'] == 2
         assert record['fallback_example']['automatic_whole_loop']
         assert record['raw_count'] == len(example['raw'])
         assert record['final_count'] == selected['count']
+        assert record.get('illustrative_inputs', False) == (name == 'bezier')
+        assert record['observation_preserves_outputs'] == (name != 'bezier')
         assert record['theme'] == theme
         assert record['geometry_interpolated'] is False
         assert record['elapsed_runtime'] is False
@@ -126,49 +128,60 @@ def test_explicit_generator_params_drive_grid_and_handles_instead_of_flat_defaul
                                    atol=3e-7, rtol=0.)
 
 
-def test_calm_bezier_render_selection_is_actual_and_does_not_change_default_example():
+def test_bezier_illustration_maps_ten_actual_draws_and_restores_ordinary_output():
     story = _story()
     default = guide.sample_batch('bezier', seeds=[7])[0]
     before = default['raw'].tobytes(), default['center'].tobytes()
     chosen = story.select_construction_sample(default)
-    assert chosen['seed'] == 11560502
-    assert chosen['config']['min_num_points'] == chosen['config']['max_num_points'] == 4
+    assert chosen['seed'] == 7
+    assert chosen['config']['min_num_points'] == chosen['config']['max_num_points'] == 10
     assert chosen['config']['min_point_distance'] == .0625
-    actual = story.capture(chosen)
-    assert len(set(actual['grid_ids'])) == 4
-    assert actual['grid_cells_per_side'] == 8 and actual['grid_pitch'] == .125
-    assert ((actual['offset_vectors'] >= 0) & (actual['offset_vectors'] < actual['grid_pitch'])).all()
-    assert actual['final_valid'] and actual['smooth_crossings'] == 0
-    canonical = guide.sample_batch('bezier', seeds=[11560502], overrides={
-        'min_num_points': 4, 'max_num_points': 4, 'min_point_distance': .0625})[0]
-    np.testing.assert_array_equal(chosen['raw'], canonical['raw'])
-    np.testing.assert_array_equal(chosen['center'], canonical['center'])
+    data = story.capture(chosen)
+    assert data['illustrative_inputs'] and data['production_sampler_unchanged']
+    assert not data['observation_preserves_outputs']
+    assert data['ordinary_outputs_restored'] and data['illustration_replay_equal']
+    assert len(set(data['grid_ids'])) == 10
+    assert data['grid_cells_per_side'] == 8 and data['grid_pitch'] == .125
+    assert ((data['offset_vectors'] >= 0) & (data['offset_vectors'] < data['grid_pitch'])).all()
+    expected = (data['grid_origins'].astype(np.float32)
+                + (data['source_sampler_noise'] + np.float32(.5))*np.float32(.125))
+    np.testing.assert_array_equal(data['sampled'], expected)
+    np.testing.assert_array_equal(data['source_sampler_points'],
+                                  data['grid_origins'].astype(np.float32)+data['source_sampler_noise'])
+    assert data['final_valid'] and data['final_fail'] == 0
     assert before == (default['raw'].tobytes(), default['center'].tobytes())
-    assert default['seed'] == 7 and default['config']['min_point_distance'] == .05
+    again = guide.sample_batch('bezier', seeds=[7])[0]
+    assert before == (again['raw'].tobytes(), again['center'].tobytes())
+    assert default['config']['min_point_distance'] == .05
     assert 'example_selection' not in default
+    assert not np.array_equal(chosen['raw'], default['raw'])
+    u = np.linspace(0., 1., data['parameters']['num_points_per_segment'])[:, None]
+    for i, (p0, p1, p2, p3) in enumerate(data['controls']):
+        evaluated = (1-u)**3*p0+3*u*(1-u)**2*p1+3*u*u*(1-u)*p2+u**3*p3
+        np.testing.assert_allclose(data['smooth_dense'][i*len(u):(i+1)*len(u)], evaluated,
+                                   atol=3e-7, rtol=0.)
 
 
-def test_calm_bezier_poster_records_selection_and_displays_actual_settings(tmp_path):
+def test_illustrative_bezier_poster_labels_input_mapping_and_real_pipeline(tmp_path):
     from PIL import Image
     story = _story()
     default = guide.sample_batch('bezier', seeds=[7])[0]
     record = story.render(tmp_path, default, movies=False)
     selection = record['example_selection']
-    assert selection['seed_search'] == {'start': 0, 'stop_exclusive': 12582912, 'step': 1,
-                                        'count': 12582912, 'chunk_size': 1048576, 'chunks': 12,
-                                        'declared_stop_exclusive': 67108864}
-    assert selection['selected_seed'] == 11560502
-    assert selection['first_matching_seed']
-    assert selection['four_distinct_cells'] and selection['sampled_inside_cells']
-    assert selection['settings'] == {'min_num_points': 4, 'max_num_points': 4,
+    assert selection['selected_seed'] == 7
+    assert selection['distinct_cells'] == 10 and selection['sampled_inside_cells']
+    assert selection['settings'] == {'min_num_points': 10, 'max_num_points': 10,
                                      'min_point_distance': .0625}
+    assert record['illustrative_inputs'] and record['production_sampler_unchanged']
+    assert 'original_noise + 0.5' in record['sampler_remapping']
+    assert not record['observation_preserves_outputs']
+    assert 'seed_search' not in selection and 'first_matching_seed' not in selection
     chosen = story.select_construction_sample(default)
     explanations = ' '.join(x['explanation'] for x in story.construction_stages(chosen))
-    assert '0.0625' in explanations and '11560502' in explanations
-    assert '8 × 8' in explanations and '64' in explanations
-    assert 'inside' in explanations and 'selected' in explanations.lower()
+    assert 'illustration' in explanations.lower()
+    assert '8 × 8' in explanations and '64' in explanations and '10' in explanations
     with Image.open(tmp_path/'generator-bezier-construction.png') as image:
-        assert image.width * 9 == image.height * 16
+        assert image.width*9 == image.height*16
         assert record['frame_size'] == record['poster_frame_size'] == [image.width, image.height]
         assert record['aspect_ratio'] == '16:9'
 
@@ -183,7 +196,7 @@ def test_point_family_movie_and_poster_use_the_same_native_widescreen_canvas(exa
     plt.close(fig)
 
 
-def test_calm_search_sampler_replay_matches_actual_generator_prefix():
+def test_ten_point_sampler_replay_matches_actual_generator_prefix():
     from track_gen import ops
     from track_gen.exec import LaunchContext
     from track_gen.seeds import SeedState
@@ -194,16 +207,23 @@ def test_calm_search_sampler_replay_matches_actual_generator_prefix():
     effective = wp.empty(64, dtype=wp.int32, device='cpu')
     state = SeedState(64, 'cpu', seeds)
     state.effective(effective, ctx=context)
-    used = wp.empty(64*4, dtype=wp.int32, device='cpu')
-    points = wp.empty(64*4, dtype=wp.vec2f, device='cpu')
+    used = wp.empty(64*10, dtype=wp.int32, device='cpu')
+    points = wp.empty(64*10, dtype=wp.vec2f, device='cpu')
     size = wp.ones(64, dtype=wp.float32, device='cpu')
-    ops.sample_grid_points(context, effective, CORNER_SALT, 0, 4, 8, .125, 1.,
+    ops.sample_grid_points(context, effective, CORNER_SALT, 0, 10, 8, .125, 1.,
                            used, points, size=size)
     _, generator = guide.sample_batch('bezier', seeds=range(64), overrides={
-        'min_num_points': 4, 'max_num_points': 4, 'min_point_distance': .0625},
+        'min_num_points': 10, 'max_num_points': 10, 'min_point_distance': .0625},
         return_generator=True)
     scratch = guide._generator_scratch(generator)
     np.testing.assert_array_equal(effective.numpy(), generator.program.seed.numpy())
     np.testing.assert_array_equal(used.numpy(), scratch['gen_used'].numpy())
     np.testing.assert_array_equal(points.numpy(), scratch['gen_corners'].numpy())
-    assert np.all(scratch['gen_count'].numpy() == 4)
+    assert np.all(scratch['gen_count'].numpy() == 10)
+
+    illustration = _story().capture(_story().select_construction_sample(
+        guide.sample_batch('bezier', seeds=[7])[0]))
+    np.testing.assert_array_equal(illustration['source_sampler_points'],
+                                  scratch['gen_corners'].numpy().reshape(64, 10, 2)[7])
+    np.testing.assert_array_equal(illustration['grid_ids'],
+                                  scratch['gen_used'].numpy().reshape(64, 10)[7])

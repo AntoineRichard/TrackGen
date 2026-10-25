@@ -153,3 +153,26 @@ holds. The assembled82-pair/9-movie registry passed the strict default Sphinx
 build; all243 labels checked without problems. Actual assembly/provenance/reader
 checks passed80 tests in37.32s. Final whole CPU/GPU lanes and final-site browser
 acceptance are the remaining release gates.
+
+
+## Final ten-point construction illustration
+
+The user requested ten points while retaining the8x8 grid and restrained jitter.
+The primary Bezier clip is now explicitly labelled as a construction illustration.
+It uses seed7's actual cell IDs and exact canonical RNG noise, remapped as
+origin+(noise+.5)*pitch into the selected cells. This is authored input geometry,
+not a new public jitter setting or an ordinary default sampler output. The real
+Bezier and entire road pipeline then generate its matching256-point raw curve and
+51-point valid road. The actual default97 fallback remains separate.
+
+A maintenance-only CPU Program observer copies the illustrative points immediately
+before sorting, retaining temporary buffer lifetimes. Two complete illustrated
+runs match byte for byte; after the observer is removed, ordinary public/raw arrays
+are restored exactly. Direct actual capture/draw and Hull remain unchanged; both
+Hull posters rerender byte-identically to their existing captures. Metadata marks
+illustrative_inputs=true, observation_preserves_outputs=false and the production
+sampler unchanged. Twenty-three integration tests and a fresh independent14-test
+review pass. Both themed previews decode144frames at1696x954. Concise on-screen
+labels identify the illustration; mapping details live in the caption/manifest.
+The frozen numerical validation atd33cf89 continues unchanged while this media-only
+refinement receives its own current-source checks and capture provenance.

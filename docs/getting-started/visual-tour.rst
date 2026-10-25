@@ -54,12 +54,12 @@ growth clip records actual solver iterations. A gallery sample is not a yield es
 
       .. raw:: html
 
-         <video controls preload="none" style="width:100%;max-width:100%" poster="../_images/generator-bezier-construction.png" aria-label="Grid addresses, actual offsets and handles build the loop; a crossing can select its entire polygon.">
+         <video controls preload="none" style="width:100%;max-width:100%" poster="../_images/generator-bezier-construction.png" aria-label="Ten-point construction illustration: cell-bounded inputs feed cubic handles and the real road pipeline; a separate real case shows whole-loop fallback.">
            <source src="../generator-bezier-construction.mp4" type="video/mp4">
-           Grid addresses, actual offsets and handles build the loop; a crossing can select its entire polygon.
+           Ten-point construction illustration: cell-bounded inputs feed cubic handles and the real road pipeline; a separate real case shows whole-loop fallback.
          </video>
 
-      :doc:`Grid addresses, actual offsets and handles build the loop; a crossing can select its entire polygon. </generators/bezier>`
+      :doc:`Ten-point construction illustration: cell-bounded inputs feed cubic handles and the real road pipeline; a separate real case shows whole-loop fallback. </generators/bezier>`
 
    .. grid-item-card:: Hull
 
