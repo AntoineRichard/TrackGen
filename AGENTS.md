@@ -45,10 +45,15 @@ The separate auto-spacing review finding #4 remains deferred.
   held; do not change it without a concrete reproduced failure. Only Repulsive reference
   fields/statistics may change. The fresh rc2 comparison passed 190 non-Repulsive full
   arrays and all 4,800 gate arrays byte for byte on spark-home.
-- The required repaired CUDA lane passed 817 tests with no CUDA skips. The combined
-  local CPU lane passed 3,723 tests (four optional UI skips), including doc examples.
-  Final platform CI, exact-candidate GPU validation and the tag remain required gates;
-  inspect actual GitHub/tag/log state when resuming rather than assuming they are done.
+- The required repaired CUDA lane passed 817 tests with no CUDA skips. The full
+  spark-home suite passed 4,586 tests (four optional UI skips) in 2,196.36 s on
+  `d33cf898ecdd47da6d804a088946d2ae733ace6f`. The final ten-point media revision
+  changes no library, package metadata or golden files relative to that validated
+  numerical source. Its 48 media tests also passed on spark-home with no skips.
+- The final local CPU lane passed 3,750 tests (four optional UI skips), including
+  executable doc examples. The strict docs build and full-site/scoped media browser
+  reviews passed. Linux x86 reference capture, normal platform CI and the tag remain
+  required gates; inspect actual GitHub/tag/log state when resuming.
 - The approved reader overhaul is integrated. Historical reader pages live under the
   excluded `docs/library-readiness/archive/`; keep internal design/handoff/roadmap
   records. The public site explains current racing usage, all six generators, Course,
@@ -57,7 +62,8 @@ The separate auto-spacing review finding #4 remains deferred.
   storyboards explain actual selection/jitter, splines, whole-loop crossing fallback
   and sampling; a shared clip distinguishes raw count, target spacing, XPBD movement and
   final same-count arc redistribution. All nine movies and their video posters use native 16:9 canvases; solver clips show
-  actual convergence.
+  actual convergence. Bezier illustrates ten points on an 8×8 grid with explicitly
+  labelled cell-bounded inputs; the production sampler remains unchanged.
   Committed per-asset provenance distinguishes the full capture from selective corrections.
   The Sphinx media registry verifies both files and hashes; never relabel old captures.
 - Render sources before generating final media; see `contributing/rendering-assets.rst`.
@@ -147,8 +153,9 @@ old `workstation` host is dead.
   ssh -o ConnectTimeout=10 spark-home 'cd ~/code/TrackGen-test/<name> && PYTHONPATH=$PWD \
     ~/venvs/trackgen/bin/python -m pytest -q -p no:cacheprovider -m cuda tests -ra'
   ```
-  Run long jobs (the full suite takes about 6 min; snapshots several minutes) with their
-  output redirected to a log, and read the log afterwards.
+  Run long jobs with their output redirected to a log, and read the log afterwards.
+  The corrected solver's full suite takes about 37 minutes on this host. Its slow CPU
+  E8/E64 Repulsive batch comparison can pause visible progress for many minutes.
 
 ## Next: release 0.3.0 (resume from actual Git/CI/tag state)
 1. **Validate the combined candidate.** The required CPU lane, strict docs build and
