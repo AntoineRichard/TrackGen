@@ -7,14 +7,16 @@ through a `LaunchContext` (`ctx`). Read `docs/library-readiness/target-architect
 the architecture and the roadmap, and `CHANGELOG.md` for what shipped.
 
 ## State (2026-10-25)
-- `main` = **v0.2.0** (released; GitHub release v0.2.0). It is the v2 refactor, roadmap
-  PR0–PR15b; see the CHANGELOG and `docs/library-readiness/archive/upgrading/from-0.1.rst`.
-- `v3` = the 0.3 line, version `0.3.0rc2`. Roadmap PR16 cleanup is implemented in
-  four dev milestones. Draft PR #4 prepares the release candidate; downstream racing-
-  repository validation and the user's explicit approval are required before 0.3.0.
-  RC2 addresses review findings #1–#3 and #5–#14; #4 (the auto-spacing config
-  contract) is explicitly deferred until the user answers its review thread.
-  1.0 is a later milestone.
+- `main` = **v0.2.0** (released). The 0.1/0.2 migration records are retained under
+  `docs/library-readiness/archive/`, outside the published site.
+- The combined working candidate is **0.3.0rc3**. Immutable `v0.3.0rc2` remains
+  `a42759a3f999a8668a200cddc3f04e0508478dd1`; never recreate an existing candidate tag.
+  Draft PR #4 (`v3` to `main`) prepares 0.3.0. PR4 review findings #1–#3 and #5–#14
+  were addressed in rc2; #4 (auto-spacing after `dataclasses.replace`) remains deferred
+  until the user answers its review thread. Do not change that public contract.
+- The release-blocking Repulsive repair and the racing documentation are combined.
+  Finish the candidate validation/tag steps below, then STOP for the user's racing
+  validation. Final release, merge to `main` and docs deployment need explicit approval.
 
 ## Release-blocking Repulsive repair (user decision, 2026-10-25)
 
@@ -38,22 +40,28 @@ No final release is authorized; a validated next candidate needs racing validati
 The separate auto-spacing review finding #4 remains deferred.
 
 ## Documentation work and release progress
-- `v0.3.0rc2` is commit `a42759a3f999a8668a200cddc3f04e0508478dd1` on `v3`.
-  Draft PR #4 is open. Both CPU CI lanes, strict docs and linkcheck passed.
-  The exact tag archive passed 756 CUDA tests and 4,283 full-suite tests on spark-home
-  (four optional Gradio skips); 210 full-generator + 4,800 gate arrays match freshly
-  rebuilt rc1 snapshots byte for byte. Release steps 1–2 below are complete.
-- The reported Repulsive defect supersedes the rc2 racing handoff. The repair needs
-  a newly validated candidate and racing validation before the user can approve the
-  final release. The immutable rc2 tag stays available as the comparison baseline.
-- The approved reader-documentation overhaul is on `codex/racing-docs`, based on the RC.
-  Its design and execution plan are in `docs/superpowers/`. Historical reader pages are
-  archived under `docs/library-readiness/archive/`, excluded from the site; internal
-  design/handoff/roadmap records remain. Preserve this published-only history scope.
-  The public site describes current behavior; release notes link the archived migration
-  guide on GitHub. Reconcile this docs branch with the validated repair, rerender its
-  Repulsive assets and keep documentation-only source edits executable-equivalent
-  to that repaired runtime. Do not publish the site before final release approval.
+- The repaired solver and its parallel implementation have independent code reviews,
+  full-road clearance evidence and same-machine comparisons. The numerical source is
+  held; do not change it without a concrete reproduced failure. Only Repulsive reference
+  fields/statistics may change. The fresh rc2 comparison passed 190 non-Repulsive full
+  arrays and all 4,800 gate arrays byte for byte on spark-home.
+- The required repaired CUDA lane passed 817 tests with no CUDA skips. The combined
+  local CPU lane passed 3,723 tests (four optional UI skips), including doc examples.
+  Final platform CI, exact-candidate GPU validation and the tag remain required gates;
+  inspect actual GitHub/tag/log state when resuming rather than assuming they are done.
+- The approved reader overhaul is integrated. Historical reader pages live under the
+  excluded `docs/library-readiness/archive/`; keep internal design/handoff/roadmap
+  records. The public site explains current racing usage, all six generators, Course,
+  collision/intersections, API/data and extension workflows. Centerlines remain prominent.
+- All 80 published media files have true light/dark counterparts. The Bezier/Hull/Polar
+  storyboards explain actual selection/jitter, splines, whole-loop crossing fallback
+  and sampling; a shared clip distinguishes raw count, target spacing, XPBD movement and
+  final same-count arc redistribution. Nine movies include actual solver convergence.
+  Committed per-asset provenance distinguishes the full capture from selective corrections.
+  The Sphinx media registry verifies both files and hashes; never relabel old captures.
+- Render sources before generating final media; see `contributing/rendering-assets.rst`.
+  Source-only bootstrap uses `-D themed_media_registry=`. Final builds must use the
+  default enforced registry. Do not deploy the site before final release approval.
 
 ## User decisions for 0.3 (binding; they override any older doc that says otherwise)
 Not production software: break things cleanly, with no compatibility shims or deprecation
@@ -141,37 +149,28 @@ old `workstation` host is dead.
   Run long jobs (the full suite takes about 6 min; snapshots several minutes) with their
   output redirected to a log, and read the log afterwards.
 
-## Next: release 0.3.0 (do the steps in order)
-1. **CI on `v3`.** The test workflow runs only on pull requests and on pushes to `main`, so
-   `v3` has never run on GitHub CI. Open a DRAFT pull request `v3` -> `main` with
-   `gh pr create --draft --base main --head v3`. The body summarises dev1-dev4, links
-   `docs/library-readiness/archive/upgrading/from-0.2.rst`, and lists the test plan. The PR runs:
-   - the CPU lanes on Linux x86_64 (Warp 1.18.0 and latest);
-   - the docs build and the linkcheck.
-
-   Fix every failure on `v3`, with the validation rules above. When a golden fails ONLY on
-   CI, decide whether it is host sensitivity or a real regression before touching it. For
-   0.2.0 the checkpoint path tracer's last-ulp differences were host sensitivity. Never
-   re-baseline blindly.
-2. **Cut `v0.3.0rc1`** once CI is green:
-   - set `0.3.0rc1` in `pyproject.toml` and `track_gen/_version.py`, plus a CHANGELOG header;
-   - commit "release: 0.3.0rc1", make an annotated tag `v0.3.0rc1`, push the branch and the tag;
-   - validate the rc tree on spark-home: the CUDA lane and the full suite. Its outputs must
-     equal dev4's, since only the version changed.
-3. **Hand the rc to the user.** The racing repositories pin
-   `git+https://github.com/AntoineRichard/TrackGen.git@v0.3.0rc2`. STOP here until the user
-   confirms the racing validation passed. Fix anything they report on `v3`, then cut the
-   next release candidate the same way.
-4. **Release, only after the user's explicit go:**
-   - set `0.3.0` and date the CHANGELOG section `## 0.3.0 (<date>, tag v0.3.0)`, with a short
-     summary that links the 0.2 -> 0.3 guide;
-   - pin `@v0.3.0` in `README.md` and `docs/getting-started/installation.rst`;
-   - commit "release: 0.3.0", push, and mark the PR ready;
-   - merge it with a MERGE COMMIT (`gh pr merge --merge`), so the dev and rc tags stay
-     reachable from `main`;
-   - tag `v0.3.0` (annotated) on the merge commit and push it;
-   - `gh release create v0.3.0` with notes that link the migration guide;
-   - check that the docs workflow on `main` deployed.
+## Next: release 0.3.0 (resume from actual Git/CI/tag state)
+1. **Validate the combined candidate.** The required CPU lane, strict docs build and
+   executable snippets are listed above. Finish both GitHub CPU lanes, strict docs and
+   linkcheck on draft PR #4. For a Linux x86_64 Repulsive capture, the existing tests
+   workflow accepts `capture_goldens=true`; extract only the 11 `track/repulsive/`
+   fields from its fingerprint fragment. Never merge whole fragments or update other
+   families/platforms. Follow capture with normal CI against all retained byte guards.
+2. **Validate on spark-home.** Run the CUDA lane and full suite. Rebuild the previous
+   validated baseline on that machine before byte comparison. Other generators and gate
+   snapshots must stay byte-identical; Repulsive changes are authorized only with the
+   independent full-road clearance, target/smoothness and statistics evidence. Keep
+   machine/log details out of public reader pages and never commit host addresses.
+3. **Cut `v0.3.0rc3` only after the required gates pass.** Package metadata and install
+   pins are prepared for rc3. Commit any final validated changes, create an annotated
+   tag, and push `v3` and the tag. Do not recreate immutable rc1/rc2 tags. The user's racing
+   repos then pin `git+https://github.com/AntoineRichard/TrackGen.git@v0.3.0rc3`.
+   Report the CI results and spark-home summary, then STOP until racing validation.
+4. **Final release, only after the user's explicit go.** Set version `0.3.0`, date the
+   CHANGELOG and update install pins. Push validated work, mark PR #4 ready, and merge
+   with a MERGE COMMIT so development/candidate tags remain reachable from `main`.
+   Annotate/push `v0.3.0` on that merge commit, create the GitHub release, and verify
+   docs deployment. No final release is authorized by the present task.
 
 ## Conventions
 - Commits: author "Antoine Richard <antoiner@nvidia.com>". Use

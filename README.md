@@ -10,7 +10,7 @@ native.**
 ![Warp](https://img.shields.io/badge/warp--lang-%E2%89%A5%201.18-76b900)
 
 > [!NOTE]
-> **These examples target the `v0.3.0rc2` release candidate.**
+> **These examples target the `v0.3.0rc3` release candidate.**
 > Check `valid` and `fail_mask` before using generated geometry. Invalid rows
 > are poisoned by default.
 
@@ -57,12 +57,12 @@ Python ≥ 3.10; `numpy` and `warp-lang` ≥ 1.18 are the only runtime deps. The
 wheels); the `cpu` device runs anywhere.
 
 ```bash
-uv add "git+https://github.com/AntoineRichard/TrackGen.git@v0.3.0rc2"                     # the release candidate
-pip install "track_gen @ git+https://github.com/AntoineRichard/TrackGen.git@v0.3.0rc2"    # or with pip
-uv add "track_gen[ui] @ git+https://github.com/AntoineRichard/TrackGen.git@v0.3.0rc2"      # with the UI extra
+uv add "git+https://github.com/AntoineRichard/TrackGen.git@v0.3.0rc3"                     # the release candidate
+pip install "track_gen @ git+https://github.com/AntoineRichard/TrackGen.git@v0.3.0rc3"    # or with pip
+uv add "track_gen[ui] @ git+https://github.com/AntoineRichard/TrackGen.git@v0.3.0rc3"      # with the UI extra
 ```
 
-From a checkout of `v0.3.0rc2`: `uv venv --python 3.12 && uv pip install -e ".[dev]"`.
+From a checkout of `v0.3.0rc3`: `uv venv --python 3.12 && uv pip install -e ".[dev]"`.
 Extras: `dev` (tests, torch, matplotlib) · `ui` (Gradio parameter explorer)
 · `docs` (Sphinx). Details:
 [installation](https://antoinerichard.github.io/TrackGen/getting-started/installation.html).

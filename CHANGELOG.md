@@ -1,6 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.3.0rc3 (release candidate, tag `v0.3.0rc3`)
+
+The third candidate repairs Repulsive's growth and full-road obstacle contract,
+then completes the racing documentation with current examples, visual setting
+comparisons, algorithm and solver movies, and native light/dark media. Repulsive
+seeded outputs change; the other generators retain their existing byte references.
+PR4's auto-spacing finding #4 remains deferred pending the user's decision.
+This candidate requires downstream racing validation before a final release.
 
 ### Repulsive repair
 
