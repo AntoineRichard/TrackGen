@@ -37,6 +37,9 @@ Change the shape
 
    The displacement row changes midpoint positions; count rows change the anchor cycle. Blue raw centerlines and orange final centerlines show what the shared road pipeline changes.
 
+Panels name the selected smooth curve or polygon fallback. Final road validity is
+reported separately; a valid panel can still show a generator fallback.
+
 ``hull_displacement=0`` keeps inserted midpoints on the base edges. Increasing it
 moves each midpoint inward or outward along its centroid-relative radial direction.
 This is one displacement layer; it is not recursive terrain subdivision.

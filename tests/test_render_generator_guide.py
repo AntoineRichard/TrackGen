@@ -47,6 +47,30 @@ def test_every_generator_setting_has_visual_or_precise_explanation():
         assert all(guide.SETTING_COVERAGE[name].values())
 
 
+@pytest.mark.parametrize("name", ("bezier", "hull", "voronoi"))
+def test_comparison_captions_expose_actual_fallback_selection(name, tmp_path, monkeypatch):
+    import matplotlib.pyplot as plt
+
+    visible_captions = []
+
+    def inspect_figure(fig, path):
+        visible_captions.extend("\n".join(text.get_text() for text in ax.texts)
+                                for ax in fig.axes if ax.get_visible())
+        plt.close(fig)
+
+    monkeypatch.setattr(guide, "_save", inspect_figure)
+    records = guide.render_comparisons(tmp_path, name)
+    samples = [sample for row in records for sample in row["samples"]]
+    assert len(visible_captions) == len(samples)
+    assert any(sample["polygon_fallback_used"] for sample in samples)
+    for sample, caption in zip(samples, visible_captions):
+        expected = "polygon fallback" if sample["polygon_fallback_used"] else "smooth curve selected"
+        assert expected in caption, (name, sample["seed"], caption)
+        if sample["polygon_fallback_used"]:
+            assert f"{sample['smooth_raw_crossings']} crossings" in caption
+        assert sample["caption"] == caption
+
+
 @pytest.mark.parametrize("overrides", [None, {"repulsive_tau": 0.2}])
 def test_repulsive_capture_preserves_the_real_generator_output(overrides):
     sample = guide.sample_batch("repulsive", seeds=[7], overrides=overrides)[0]
@@ -81,6 +105,7 @@ def test_committed_manifest_has_nonvacuous_comparisons_and_provenance():
             assert len({s["seed"] for s in comparison["samples"]}) == 1
             assert all(s["epoch"] == 0 for s in comparison["samples"])
             assert all(s["raw_finite"] and s["real_geometry_finite"] for s in comparison["samples"])
+            assert all(s["caption"] == guide._comparison_caption(s) for s in comparison["samples"])
             assert comparison["includes_default"]
             configs = [s["config"] for s in comparison["samples"]]
             changed = {key for cfg in configs[1:] for key in cfg if cfg[key] != configs[0][key]}

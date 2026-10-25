@@ -229,6 +229,16 @@ def _label(sample):
         "valid" if sample["valid"] else f"FAILED (bits {sample['fail']})")
 
 
+def _comparison_caption(sample):
+    """Keep generator fallback selection separate from the final road status."""
+    caption = _label(sample)
+    crossings = sample.get("construction", {}).get("crossings", sample.get("smooth_raw_crossings"))
+    if crossings is not None:
+        caption += (f"\npolygon fallback ({crossings} crossings)" if crossings > 0
+                    else "\nsmooth curve selected")
+    return caption
+
+
 def render_examples(out_dir, examples):
     fig, axes = plt.subplots(2, 3, figsize=(12, 8))
     common_span = max(float(np.ptp(s[k],axis=0).max()) for s in examples for k in ("raw","outer"))
@@ -351,7 +361,7 @@ def render_comparisons(out_dir, name, *, seed=23):
             raise AssertionError(f"vacuous {name}.{field} comparison over {seed_search}")
         records.append(dict(field=field, includes_default={} in values,
                             max_raw_delta_from_first=delta, seed_search=seed_search,
-                            samples=[_record(s) for s in samples]))
+                            samples=[dict(_record(s), caption=_comparison_caption(s)) for s in samples]))
         panels.append((field, values, samples))
     # Keep each published image at most three rows high at a ~736 px content width.
     regular = panels[:-1] if name in ("bezier", "hull", "polar", "voronoi") else panels
@@ -386,7 +396,7 @@ def render_comparisons(out_dir, name, *, seed=23):
                 ax.set_ylim(mid[1]-.58*span, mid[1]+.58*span)
                 _style(ax)
                 ax.set_title(_value_label(field, overrides, sample["config"]), fontsize=11)
-                ax.text(.5, -.025, _label(sample), transform=ax.transAxes, ha="center", fontsize=10,
+                ax.text(.5, -.025, _comparison_caption(sample), transform=ax.transAxes, ha="center", fontsize=10,
                         color=GREEN if sample["valid"] else RED)
             for ax in row[len(samples):]:
                 ax.set_visible(False)

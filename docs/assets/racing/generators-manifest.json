@@ -595,10 +595,10 @@
   "assets": {
     "generator-bezier-construction.mp4": 132998,
     "generator-bezier-construction.png": 147788,
-    "generator-bezier-controls-more.png": 560442,
-    "generator-bezier-controls.png": 568378,
+    "generator-bezier-controls-more.png": 583289,
+    "generator-bezier-controls.png": 589644,
     "generator-bezier-examples.png": 227535,
-    "generator-bezier-sampling.png": 248041,
+    "generator-bezier-sampling.png": 254108,
     "generator-checkpoint-candidates.png": 98923,
     "generator-checkpoint-construction.mp4": 147199,
     "generator-checkpoint-construction.png": 161373,
@@ -608,10 +608,10 @@
     "generator-checkpoint-fallback.png": 150610,
     "generator-hull-construction.mp4": 152865,
     "generator-hull-construction.png": 169197,
-    "generator-hull-controls-more.png": 237990,
-    "generator-hull-controls.png": 654582,
+    "generator-hull-controls-more.png": 249798,
+    "generator-hull-controls.png": 683806,
     "generator-hull-examples.png": 252958,
-    "generator-hull-sampling.png": 279884,
+    "generator-hull-sampling.png": 285569,
     "generator-polar-construction.mp4": 130451,
     "generator-polar-construction.png": 151260,
     "generator-polar-controls.png": 502713,
@@ -626,14 +626,37 @@
     "generator-repulsive-numerics.png": 336193,
     "generator-voronoi-construction.mp4": 144004,
     "generator-voronoi-construction.png": 135854,
-    "generator-voronoi-controls-more.png": 204104,
-    "generator-voronoi-controls.png": 474519,
+    "generator-voronoi-controls-more.png": 210104,
+    "generator-voronoi-controls.png": 499885,
     "generator-voronoi-examples.png": 221488,
     "generator-voronoi-layouts.png": 125954,
-    "generator-voronoi-sampling.png": 188498,
+    "generator-voronoi-sampling.png": 194190,
     "generators-gallery.png": 308330
   },
   "command": "python -m viz.render_generator_guide --out-dir DIR",
+  "comparison_caption_revision": {
+    "assets": [
+      "generator-bezier-controls-more.png",
+      "generator-bezier-controls.png",
+      "generator-bezier-sampling.png",
+      "generator-hull-controls-more.png",
+      "generator-hull-controls.png",
+      "generator-hull-sampling.png",
+      "generator-voronoi-controls-more.png",
+      "generator-voronoi-controls.png",
+      "generator-voronoi-sampling.png"
+    ],
+    "base_renderer_sha256": "116a38215555b115d43414f6305117d5cf5730a51d1eeb34b2af03af955addd4",
+    "command": "render_comparisons(out_dir, name) for name in (bezier, hull, voronoi)",
+    "families": [
+      "bezier",
+      "hull",
+      "voronoi"
+    ],
+    "geometry_selection": "identical configurations, seeds, sample indices, counts, validity and crossing data; captions only",
+    "git_commit": "fb180fdd6e33d71675587e6c8b71ea0f7674db37",
+    "renderer_sha256": "2eb232cb5ebfa8fdda77ee26f4e2678ea90d7b656c0a29a2c3f29889cd56c398"
+  },
   "families": {
     "bezier": {
       "comparisons": [
@@ -643,6 +666,7 @@
           "max_raw_delta_from_first": 0.07405558228492737,
           "samples": [
             {
+              "caption": "seed 23 \u00b7 n=76 \u00b7 valid\nsmooth curve selected",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -745,6 +769,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=81 \u00b7 valid\nsmooth curve selected",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -847,6 +872,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=81 \u00b7 valid\nsmooth curve selected",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -962,6 +988,7 @@
           "max_raw_delta_from_first": 0.09231945872306824,
           "samples": [
             {
+              "caption": "seed 23 \u00b7 n=76 \u00b7 valid\nsmooth curve selected",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -1064,6 +1091,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=81 \u00b7 valid\nsmooth curve selected",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -1166,6 +1194,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=81 \u00b7 valid\nsmooth curve selected",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -1281,6 +1310,7 @@
           "max_raw_delta_from_first": 0.09743333607912064,
           "samples": [
             {
+              "caption": "seed 23 \u00b7 n=82 \u00b7 valid\nsmooth curve selected",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -1383,6 +1413,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=81 \u00b7 valid\nsmooth curve selected",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -1485,6 +1516,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=82 \u00b7 valid\nsmooth curve selected",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -1600,6 +1632,7 @@
           "max_raw_delta_from_first": 1.3759313821792603,
           "samples": [
             {
+              "caption": "seed 23 \u00b7 n=66 \u00b7 valid\nsmooth curve selected",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -1702,6 +1735,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=81 \u00b7 valid\nsmooth curve selected",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -1804,6 +1838,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=83 \u00b7 valid\npolygon fallback (2 crossings)",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -1919,6 +1954,7 @@
           "max_raw_delta_from_first": 0.5519193410873413,
           "samples": [
             {
+              "caption": "seed 23 \u00b7 n=79 \u00b7 valid\nsmooth curve selected",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -2021,6 +2057,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=81 \u00b7 valid\nsmooth curve selected",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -2123,6 +2160,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=81 \u00b7 valid\nsmooth curve selected",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -2238,6 +2276,7 @@
           "max_raw_delta_from_first": 0.8898589015007019,
           "samples": [
             {
+              "caption": "seed 23 \u00b7 n=83 \u00b7 valid\nsmooth curve selected",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -2340,6 +2379,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=81 \u00b7 valid\nsmooth curve selected",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -2442,6 +2482,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=78 \u00b7 valid\nsmooth curve selected",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -2557,6 +2598,7 @@
           "max_raw_delta_from_first": 0.03097858652472496,
           "samples": [
             {
+              "caption": "seed 23 \u00b7 n=79 \u00b7 valid\nsmooth curve selected",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -2659,6 +2701,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=81 \u00b7 valid\nsmooth curve selected",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -2761,6 +2804,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=81 \u00b7 valid\nsmooth curve selected",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -3196,6 +3240,7 @@
           "max_raw_delta_from_first": 0.4809696078300476,
           "samples": [
             {
+              "caption": "seed 23 \u00b7 n=71 \u00b7 valid",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -3296,6 +3341,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=62 \u00b7 valid",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -3396,6 +3442,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=56 \u00b7 valid",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -3509,6 +3556,7 @@
           "max_raw_delta_from_first": 0.15181668102741241,
           "samples": [
             {
+              "caption": "seed 23 \u00b7 n=61 \u00b7 valid",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.0,
@@ -3609,6 +3657,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=62 \u00b7 valid",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -3709,6 +3758,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=64 \u00b7 valid",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.9,
@@ -3822,6 +3872,7 @@
           "max_raw_delta_from_first": 0.22478683292865753,
           "samples": [
             {
+              "caption": "seed 23 \u00b7 n=61 \u00b7 valid",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -3922,6 +3973,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=62 \u00b7 valid",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -4022,6 +4074,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=62 \u00b7 valid",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -4135,6 +4188,7 @@
           "max_raw_delta_from_first": 0.5869260430335999,
           "samples": [
             {
+              "caption": "seed 23 \u00b7 n=59 \u00b7 valid",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -4235,6 +4289,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=62 \u00b7 valid",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -4335,6 +4390,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=80 \u00b7 valid",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -4448,6 +4504,7 @@
           "max_raw_delta_from_first": 0.09793432801961899,
           "samples": [
             {
+              "caption": "seed 23 \u00b7 n=61 \u00b7 valid",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -4548,6 +4605,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=62 \u00b7 valid",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -4648,6 +4706,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=62 \u00b7 valid",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -4761,6 +4820,7 @@
           "max_raw_delta_from_first": 0.4517459571361542,
           "samples": [
             {
+              "caption": "seed 23 \u00b7 n=62 \u00b7 valid",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -4861,6 +4921,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=62 \u00b7 valid",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -4961,6 +5022,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=69 \u00b7 valid",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -5388,6 +5450,7 @@
           "max_raw_delta_from_first": 0.3887563645839691,
           "samples": [
             {
+              "caption": "seed 23 \u00b7 n=92 \u00b7 valid\npolygon fallback (2 crossings)",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -5490,6 +5553,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=93 \u00b7 valid\npolygon fallback (2 crossings)",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -5592,6 +5656,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=107 \u00b7 valid\npolygon fallback (4 crossings)",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -5707,6 +5772,7 @@
           "max_raw_delta_from_first": 0.681284487247467,
           "samples": [
             {
+              "caption": "seed 7 \u00b7 n=71 \u00b7 valid\nsmooth curve selected",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -5809,6 +5875,7 @@
               "valid": true
             },
             {
+              "caption": "seed 7 \u00b7 n=85 \u00b7 valid\nsmooth curve selected",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -5911,6 +5978,7 @@
               "valid": true
             },
             {
+              "caption": "seed 7 \u00b7 n=90 \u00b7 valid\nsmooth curve selected",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -6026,6 +6094,7 @@
           "max_raw_delta_from_first": 0.6769534945487976,
           "samples": [
             {
+              "caption": "seed 23 \u00b7 n=79 \u00b7 valid\nsmooth curve selected",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -6128,6 +6197,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=93 \u00b7 valid\npolygon fallback (2 crossings)",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -6230,6 +6300,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=100 \u00b7 valid\npolygon fallback (2 crossings)",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -6345,6 +6416,7 @@
           "max_raw_delta_from_first": 0.7698771953582764,
           "samples": [
             {
+              "caption": "seed 23 \u00b7 n=81 \u00b7 valid\npolygon fallback (1 crossings)",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -6447,6 +6519,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=93 \u00b7 valid\npolygon fallback (2 crossings)",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -6549,6 +6622,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=75 \u00b7 valid\nsmooth curve selected",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -6664,6 +6738,7 @@
           "max_raw_delta_from_first": 0.009505246765911579,
           "samples": [
             {
+              "caption": "seed 7 \u00b7 n=84 \u00b7 valid\nsmooth curve selected",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -6766,6 +6841,7 @@
               "valid": true
             },
             {
+              "caption": "seed 7 \u00b7 n=85 \u00b7 valid\nsmooth curve selected",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -6868,6 +6944,7 @@
               "valid": true
             },
             {
+              "caption": "seed 7 \u00b7 n=85 \u00b7 valid\nsmooth curve selected",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -7303,6 +7380,7 @@
           "max_raw_delta_from_first": 0.39179831743240356,
           "samples": [
             {
+              "caption": "seed 23 \u00b7 n=73 \u00b7 valid",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -7403,6 +7481,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=69 \u00b7 valid",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -7503,6 +7582,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=69 \u00b7 valid",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -7616,6 +7696,7 @@
           "max_raw_delta_from_first": 0.10896045714616776,
           "samples": [
             {
+              "caption": "seed 23 \u00b7 n=70 \u00b7 valid",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -7716,6 +7797,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=69 \u00b7 valid",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -7816,6 +7898,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=68 \u00b7 valid",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -7929,6 +8012,7 @@
           "max_raw_delta_from_first": 0.31421583890914917,
           "samples": [
             {
+              "caption": "seed 23 \u00b7 n=66 \u00b7 valid",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -8029,6 +8113,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=69 \u00b7 valid",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -8129,6 +8214,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=94 \u00b7 FAILED (bits 8)",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -8242,6 +8328,7 @@
           "max_raw_delta_from_first": 0.009308475069701672,
           "samples": [
             {
+              "caption": "seed 23 \u00b7 n=69 \u00b7 valid",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -8342,6 +8429,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=69 \u00b7 valid",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -8442,6 +8530,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=69 \u00b7 valid",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -8869,6 +8958,7 @@
           "max_raw_delta_from_first": 0.705251932144165,
           "samples": [
             {
+              "caption": "seed 23 \u00b7 n=120 \u00b7 valid",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -8969,6 +9059,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=210 \u00b7 valid",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -9069,6 +9160,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=272 \u00b7 valid",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -9182,6 +9274,7 @@
           "max_raw_delta_from_first": 1.021466612815857,
           "samples": [
             {
+              "caption": "seed 23 \u00b7 n=151 \u00b7 valid",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -9282,6 +9375,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=210 \u00b7 valid",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -9382,6 +9476,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=298 \u00b7 valid",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -9495,6 +9590,7 @@
           "max_raw_delta_from_first": 1.12962007522583,
           "samples": [
             {
+              "caption": "seed 23 \u00b7 n=331 \u00b7 valid",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -9595,6 +9691,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=210 \u00b7 valid",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -9695,6 +9792,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=142 \u00b7 valid",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -9808,6 +9906,7 @@
           "max_raw_delta_from_first": 1.5476720333099365,
           "samples": [
             {
+              "caption": "seed 23 \u00b7 n=204 \u00b7 valid",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -9908,6 +10007,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=210 \u00b7 valid",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -10008,6 +10108,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=211 \u00b7 valid",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -10121,6 +10222,7 @@
           "max_raw_delta_from_first": 1.0667625665664673,
           "samples": [
             {
+              "caption": "seed 23 \u00b7 n=209 \u00b7 valid",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -10221,6 +10323,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=210 \u00b7 valid",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -10321,6 +10424,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=211 \u00b7 valid",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -10434,6 +10538,7 @@
           "max_raw_delta_from_first": 1.2971185445785522,
           "samples": [
             {
+              "caption": "seed 23 \u00b7 n=209 \u00b7 valid",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -10534,6 +10639,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=210 \u00b7 valid",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -10634,6 +10740,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=211 \u00b7 valid",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -10747,6 +10854,7 @@
           "max_raw_delta_from_first": 0.7803013324737549,
           "samples": [
             {
+              "caption": "seed 23 \u00b7 n=210 \u00b7 valid",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -10847,6 +10955,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=211 \u00b7 valid",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -11272,6 +11381,7 @@
           "max_raw_delta_from_first": 0.43793347477912903,
           "samples": [
             {
+              "caption": "seed 23 \u00b7 n=74 \u00b7 valid\nsmooth curve selected",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -11374,6 +11484,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=66 \u00b7 valid\nsmooth curve selected",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -11476,6 +11587,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=67 \u00b7 valid\nsmooth curve selected",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -11591,6 +11703,7 @@
           "max_raw_delta_from_first": 0.21615450084209442,
           "samples": [
             {
+              "caption": "seed 23 \u00b7 n=65 \u00b7 valid\nsmooth curve selected",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -11693,6 +11806,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=66 \u00b7 valid\nsmooth curve selected",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -11795,6 +11909,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=80 \u00b7 FAILED (bits 8)\npolygon fallback (2 crossings)",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -11910,6 +12025,7 @@
           "max_raw_delta_from_first": 0.26757219433784485,
           "samples": [
             {
+              "caption": "seed 23 \u00b7 n=65 \u00b7 valid\nsmooth curve selected",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -12012,6 +12128,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=66 \u00b7 valid\nsmooth curve selected",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -12114,6 +12231,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=74 \u00b7 valid\nsmooth curve selected",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -12229,6 +12347,7 @@
           "max_raw_delta_from_first": 0.23716290295124054,
           "samples": [
             {
+              "caption": "seed 23 \u00b7 n=78 \u00b7 valid\nsmooth curve selected",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -12331,6 +12450,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=66 \u00b7 valid\nsmooth curve selected",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -12433,6 +12553,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=65 \u00b7 valid\nsmooth curve selected",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -12548,6 +12669,7 @@
           "max_raw_delta_from_first": 0.0010891599813476205,
           "samples": [
             {
+              "caption": "seed 23 \u00b7 n=66 \u00b7 valid\nsmooth curve selected",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -12650,6 +12772,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=66 \u00b7 valid\nsmooth curve selected",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -12752,6 +12875,7 @@
               "valid": true
             },
             {
+              "caption": "seed 23 \u00b7 n=66 \u00b7 valid\nsmooth curve selected",
               "config": {
                 "N_max": 384,
                 "checkpoint_angle_jitter": 0.55,
@@ -13270,7 +13394,7 @@
     "numpy_version": "2.5.4",
     "platform": "macOS-26.7.1-arm64-arm-64bit",
     "python_version": "3.12.14",
-    "renderer_sha256": "116a38215555b115d43414f6305117d5cf5730a51d1eeb34b2af03af955addd4",
+    "renderer_sha256": "2eb232cb5ebfa8fdda77ee26f4e2678ea90d7b656c0a29a2c3f29889cd56c398",
     "warp_version": "1.18.0"
   },
   "specials": {

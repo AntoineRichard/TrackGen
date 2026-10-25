@@ -38,6 +38,9 @@ Change the curve
 
    Each row holds the seed and other controls fixed. Blue is the raw generator centerline; orange dashed is the final centerline inside the grey road. Default values are marked. Failed examples retain their geometry explicitly.
 
+Panels name the selected smooth curve or polygon fallback independently of final
+road validity.
+
 ``rad`` requests a handle length relative to its segment chord. The actual handle
 also obeys ``handle_clamp_frac`` times the shorter incident edge. A larger ``rad``
 can therefore stop changing the curve when the clamp is already active. ``edgy``

@@ -44,17 +44,17 @@ What to compare
    * - ``yield``
      - Fraction passing final validity in the whole generated batch. Keep failed rows in the denominator; a gallery filtered to valid examples cannot estimate this.
    * - ``pre_relax_self_intersection_rate``
-     - Fraction of raw generator centerlines with proper segment crossings. Endpoint/collinear contact and finite-width clearance are different questions.
+     - Number of retained finite rows whose post-resample, pre-relax XY slice has proper crossings, divided by the whole batch E. The tap, final-count slicing and filtering are described below.
    * - ``xpbd_displacement``
-     - Mean motion from pre-relax to post-relax centerline in coordinate units. Shows how much the shared solver changes the sample, not a proof of road quality.
+     - Point-weighted mean XY displacement between the post-resample, pre-relax slice and final Track.center, in coordinate units. Uses the retained finite points described below; it is not a road-quality proof.
    * - ``mean_length``
      - Mean closed centerline perimeter over valid rows, in coordinate units. Compare with size/scale held fixed and report validity filtering.
    * - ``mean_compactness`` / ``compactness_p50``
      - Mean/median of 4π * enclosed area / perimeter² over valid rows. Round loops score higher; a racing task may prefer a different structure.
    * - ``compactness_degenerate_rate``
-     - Fraction of valid shapes below the tool's near-degenerate compactness threshold. Consult the metric implementation before treating the threshold as a vehicle constraint.
+     - Fraction of retained valid rows with compactness above 0.90, the tool's near-circular diagnostic. This threshold is a tool heuristic, not a vehicle constraint.
    * - ``shape_variety_pass``
-     - A batch diversity diagnostic implemented by the benchmark tool. A binary summary is not coverage of the task's whole track distribution.
+     - Heuristic based on mean compactness and the fraction above 0.90. It does not compare pairs of tracks or measure coverage of a task's whole distribution.
    * - ``mean_chicanes`` / ``straight_frac``
      - Geometric heuristics for direction changes and straight portions. Their thresholds are not a driving policy or difficulty specification.
    * - ``peak_curvature``
@@ -63,6 +63,21 @@ What to compare
      - Seconds estimated by the benchmark's kinematic model. It is not a measured simulator or real-vehicle lap.
    * - ``gen_ms_per_call``
      - Mean wall-clock milliseconds of five calls after two warm calls. Includes the shared pipeline; excludes initial generator construction and its warm-up.
+
+The crossing and displacement diagnostics read ``cl.xy`` after constant-spacing
+``resample``, rather than ``raw.xy``. Both that tap and final ``Track.center`` are
+sliced with the **final** ``track.count[e]``. Rows with count below 4 or nonfinite
+final XY geometry are skipped; a nonfinite pre-relax slice also contributes to
+neither crossing count nor displacement. Default poison output therefore excludes
+failed rows from these numerators. With explicit ``on_invalid="keep"``, finite
+failed rows can contribute: validity itself is not this filter.
+
+The crossing denominator remains the entire batch E, including skipped rows. Its
+value is a filtered post-resample diagnostic; a low value does not establish that
+raw generator output, or the excluded failed rows, had no crossings. Endpoint and
+collinear contact and finite-width clearance are separate questions. Displacement
+instead divides summed point distances by the retained point count (NaN if none
+remain), so it weights longer retained rows more heavily.
 
 Include latency distribution and first-use cost in a simulator integration benchmark.
 Warp kernel compilation, pipeline construction/warm-up, initial CUDA graph recording

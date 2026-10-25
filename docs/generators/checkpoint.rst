@@ -74,7 +74,7 @@ Controls and defaults
      - Fraction of the outer construction radius. Advance targets inside this distance; too small can trap the walk near a missed target.
    * - ``checkpoint_best_of_k``
      - 4 / static
-     - Candidate count, at least 1. Selects the closed candidate with fewest proper self-crossings; ties choose the first. More candidates increase work and change the draw streams.
+     - Candidate count, at least 1. Selects the closed candidate with fewest proper self-crossings; ties choose the first. Increasing K adds candidate streams while preserving existing candidates, and can change the selected candidate.
    * - ``checkpoint_clip_fallback``
      - False / static
      - If enabled, cut the selected loop at its first proper crossing and retain the longer sub-loop. Changes topology; does not remove every possible crossing.

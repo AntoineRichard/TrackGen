@@ -37,6 +37,9 @@ Change the targets
 
    Target changes select different sites from a fixed site field. The blue output is normalized before the common road pipeline. Defaults are marked; each row has equal axes.
 
+Panels name the selected smooth curve or polygon fallback independently of final
+road validity.
+
 The radial profile modulates target radius using several harmonics. Selection chooses
 the lowest-cost unused site for each angular sector, so a small parameter change can
 leave an anchor unchanged or switch it to a different site. There is no promise of a
